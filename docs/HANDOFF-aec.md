@@ -1,3168 +1,417 @@
-# Acoustic Echo Cancellation — investigation, design, and current state
+# Handoff: acoustic echo cancellation — engine, topology, lifecycle
 
-This document describes the AEC subsystem in detail: why it exists,
-what we tried, what failed, what shipped, and what's still open. It
-is the canonical source for anyone touching `jasper-aec-bridge`,
-`jasper-aec-init`, how the bridge CONSUMES its reference (the outputd
-UDP speaker monitor itself is owned by
-[HANDOFF-speaker-output-reference.md](HANDOFF-speaker-output-reference.md),
-which says to read it before changing AEC reference routing), the
-bridge↔voice
-UDP transport (see [HANDOFF-resilience.md](HANDOFF-resilience.md)
-for why it's UDP and not a second snd-aloop card), the
-`jasper/xvf/` XMOS control helper, or any of the
-supporting documentation in `BRINGUP.md` and
-`docs/audit-pending-followups.md`.
+Canonical for `jasper-aec-bridge`, `jasper-aec-init`,
+`jasper-aec-commission`, `jasper-aec-reconcile`, how the bridge CONSUMES its
+reference, and the `jasper/xvf/` XMOS control helper.
 
-**Companion doc**: [HANDOFF-xvf3800.md](HANDOFF-xvf3800.md) is the
-chip-side canonical reference — full parameter space, firmware
-variants, DFU flow, ALSA mixer invariants, ranked hypothesis ladder
-for raw-mic-silence symptoms, and diagnostic cookbook. This doc
-(HANDOFF-aec.md) explains the *engine* and the *why*: commissioned
-chip AEC for managed XVF3800 microphones, plus WebRTC AEC3 for
-non-XVF and explicit custom/lab routes. Option D became a positive
-lab result on 2026-05-29; the 2026-07-30 alignment pass made it the
-managed XVF product path. See
-[CHIP-AEC-EXPERIMENT.md](CHIP-AEC-EXPERIMENT.md) for earlier evidence.
-HANDOFF-xvf3800.md explains the *chip*.
-The `jasper/mics/xvf3800.py` profile module is the canonical
-source for chip-specific constants consumed at runtime.
+Neighbouring owners — do not restate their content here:
+[HANDOFF-xvf3800.md](HANDOFF-xvf3800.md) (the chip itself; `jasper/mics/xvf3800.py`
+is the runtime source for its constants) ·
+[HANDOFF-speaker-output-reference.md](HANDOFF-speaker-output-reference.md)
+(outputd's UDP speaker monitor — read before changing reference routing) ·
+[HANDOFF-enhanced-aec.md](HANDOFF-enhanced-aec.md) (the mandatory-v1 /
+optional-v2 delivery lifecycle) ·
+[HANDOFF-usb-gadget.md](HANDOFF-usb-gadget.md) (the USB-mic relay writer and
+descriptor) · [audio-paths.md](audio-paths.md) (the signal path) ·
+[HANDOFF-barge-in.md](HANDOFF-barge-in.md) (the option analysis behind today's
+topology; its warning against routing TTS through CamillaDSP describes an older
+topology — TTS now crosses CamillaDSP with program audio and reaches outputd's
+final-speaker reference safely) ·
+[historical/aec-investigation-2026-05.md](historical/aec-investigation-2026-05.md)
+(why the chip's own AEC fails in an external-DAC topology, the three 2026-05
+bridge bugs, the REF_GAIN trap, the rejected options).
 
-**Enhanced software-engine delivery**:
-[HANDOFF-enhanced-aec.md](HANDOFF-enhanced-aec.md) owns the mandatory
-AEC3 v1 vs. optional vendored v2/BEST_A boundary, background installer,
-verified marker/digest gate, deploy-race behavior, status API, and
-redistribution boundary. This document owns the audio topology and tuning;
-do not duplicate install-lifecycle policy here.
+## Managed XVF invariant
 
-**Barge-in decision archaeology**:
-[HANDOFF-barge-in.md](HANDOFF-barge-in.md) preserves the option analysis
-behind the current topology, including historical traps around split
-references and delay alignment. Its warning against routing TTS through
-CamillaDSP describes an older topology, not current production: TTS now
-enters through fan-in, crosses CamillaDSP with program audio, and reaches
-outputd's final-speaker reference safely. Read [audio-paths.md](audio-paths.md)
-and [HANDOFF-speaker-output-reference.md](HANDOFF-speaker-output-reference.md)
-for the current signal path before changing the music↔TTS↔AEC boundary; use
-the barge-in handoff for the reasoning that led there.
+A detected XVF3800 in any reconciler-managed profile is a chip-AEC product: it
+either runs a commissioned, verified `xvf_chip_aec` path or voice remains
+visibly parked with an action. It never silently becomes software AEC3 or a
+direct microphone. WebRTC AEC3 remains supported for non-XVF microphones and the
+explicit `custom` lab route.
 
-The goal is to make this enough context that a future session can
-pick up the work without re-doing the investigation.
+`jasper/mics/xvf3800.py` owns one fixed production profile — gains, HPF, ASR
+mode, emphasis, fixed 150°/210° gated beams, muxing, and bypass/arm sequence are
+**not tunables**. Commissioning varies only `AUDIO_MGR_SYS_DELAY`; boot and
+replug merely reapply the resulting volatile profile. No production path calls
+`SAVE_CONFIGURATION` (brick hazard — AGENTS.md non-negotiable 2).
 
----
+The speaker reference goes directly to the XVF USB-IN ALSA `hw` endpoint at
+16,000 Hz, stereo, S16_LE, period 128, buffer 256. `jasper-outputd` derives it
+from its final electrical speaker buffer using the fixed
+`stereo_mean_boxcar_decimate_dual_mono_v1` transform and rejects any different
+ALSA-installed geometry at the writer boundary. **Do not add an ALSA plug
+conversion, a second reference route, or a rate matcher.**
 
-## TL;DR / current state
+## Commissioning
 
-**Managed XVF invariant.** A detected XVF3800 in any reconciler-managed
-profile is a chip-AEC product: it either runs a commissioned, verified
-`xvf_chip_aec` path or voice remains visibly parked with an action. It never
-silently becomes software AEC3 or a direct microphone. WebRTC AEC3 remains
-supported for non-XVF microphones and the explicit `custom` lab route.
-
-`jasper/mics/xvf3800.py` owns one fixed production profile. Its gains, HPF,
-ASR mode, emphasis, fixed 150°/210° gated beams, muxing, and bypass/arm
-sequence are not tunables. Commissioning varies only
-`AUDIO_MGR_SYS_DELAY`; boot and replug merely reapply the resulting volatile
-profile. No production path calls `SAVE_CONFIGURATION`.
-
-The speaker reference goes directly to the XVF USB-IN ALSA `hw` endpoint as
-16,000 Hz, stereo, S16_LE, period 128, buffer 256. `jasper-outputd` derives
-that reference from its final electrical speaker buffer using the fixed
-`stereo_mean_boxcar_decimate_dual_mono_v1` transform and rejects any
-different ALSA-installed geometry at the writer boundary. Do not add an ALSA
-plug conversion, a second reference route, or a rate matcher.
-
-**Commissioning is explicit and foreground-only:**
+Explicit and foreground-only:
 
 ```sh
 sudo jasper-aec-commission
 ```
 
 That command is the only path allowed to play its bounded fixed signal or
-issue the single volatile XVF reset needed to clear stale adaptive state. It
+issue the single volatile XVF reset that clears stale adaptive state. It
 starts from the shipped `SYS_DELAY=-37` hardware baseline and plays one
 discarded sweep as the operator's quiet cue before collecting evidence. It
 then measures three accepted trials on all four physical microphones, chooses
-one global delay nearest the 20.5-sample causal-window center, requires at
-least eight samples of worst-case edge margin, verifies stable/current writer
-geometry and queue placement, observes convergence `0 → 1`, and requires:
+one global delay nearest the causal window's centre, requires at least
+`MIN_EDGE_MARGIN` (8) samples of worst-case edge margin, verifies
+stable/current writer geometry and queue placement, observes convergence
+`0 → 1`, and requires (thresholds in `jasper/chip_aec_alignment.py`):
 
 - timing peak-to-competitor ratio ≥ 1.10 and normalized peak ≥ 0.20;
 - all raw microphones ≥ 10 dB above room noise, with zero clipping;
 - both AEC-off beams ≥ 8 dB above room noise;
 - both production beams ≥ 10 dB conservative suppression.
 
-**Reference-device evidence (jts.local, 2026-07-30).** Native ALSA opened at
-exactly 16 kHz/stereo/S16_LE/128/256. Commissioning selected
-`SYS_DELAY=-37`, measured four-mic lags `[20, 17, 19, 22]` (center `19.5`,
-worst edge margin `16`), and published `K=248` from queue median `285`
-(spread `11`). Across 24 timing trials the peak ratio was `1.1298–2.1974`;
-minimum raw excess SNR was `15.76 dB`; AEC-off beam acquisition was
-`12.53/9.90 dB`; production-beam suppression was `26.08/23.49 dB`; clips
-were zero; convergence changed `0 → 1`. Silent reconcile and reboot preserved
-the artifact byte-for-byte while queue medians moved to `264–266` and runtime
-delay followed to `-16/-18`. The original schema-v1 artifact was operationally
-enriched with the same live hardware identity schema v2 required at the time while
-preserving its proven `K=248`; this was not a code migration or a recommission.
-Outputd reported zero playback xruns and the current boot contained no
-commissioner/reset events.
+Success atomically publishes only `/var/lib/jasper/chip-aec-alignment.json`:
+schema-v3 identity (XVF factory iSerial, firmware/beam/fixed-profile identity,
+physical USB-output serial or I²S profile/card identity, the final-edge sample
+format outputd NEGOTIATED and reports as `dac.format`, and negotiated output
+geometry) plus `K` and the commissioned `sys_delay`. Adding a field to that
+identity force-recommissions the fleet by design — existing artifacts fail the
+check, `jasper-aec-init` parks the managed-XVF stack (`jasper-voice` stopped and
+gated off by the reboot-surviving `/var/lib/jasper/voice-input-absent`), and a
+human runs `sudo jasper-aec-commission` at the speaker, whose own reconcile
+cleanup unparks voice. See
+[ADR-0106](adr/0106-a-verification-artifact-is-never-migrated-in-place.md).
 
-Success atomically publishes only
-`/var/lib/jasper/chip-aec-alignment.json`: schema-v3 identity (XVF factory
-iSerial, firmware/beam/fixed-profile identity, physical USB-output serial or
-I2S profile/card identity, the final-edge sample format outputd NEGOTIATED and
-reports as `dac.format`, and negotiated output geometry) plus `K` and the
-commissioned `sys_delay`. The lifecycle relationship is
-`K = commissioned SYS_DELAY + commissioned median reference queue`. On
-boot, update, reconcile, and same-identity replug, `jasper-aec-init` samples a
-run of progressing queue positions and applies
+## The K lifecycle
+
+`K = commissioned SYS_DELAY + commissioned median reference queue`. On boot,
+update, reconcile, and same-identity replug, `jasper-aec-init` samples a run of
+progressing queue positions and applies
 `runtime SYS_DELAY = K - median(live queue)`. An unstable queue, identity
-mismatch, or out-of-range result is rejected, never clamped.
+mismatch, or out-of-range result is **rejected, never clamped**.
 
 **The window comes out of outputd's per-write sample ring, and both ends
-measure it the same way (#2253; rewritten 2026-08-08 for the ring pivot).**
-outputd records `snd_pcm_delay` once per completed chip-reference write and
-publishes its most recent 256 observations as
-`reference_outputs.chip_ref_writer.recent_writes` — the ring is the transport,
+measure it the same way.** outputd records `snd_pcm_delay` once per completed
+chip-reference write and publishes its most recent 256 observations as
+`reference_outputs.chip_ref_writer.recent_writes`. The ring is the transport
 because outputd's state server is one thread with a 500 ms accept poll and one
-command per connection, so a sequential reader gets about two STATUS reads a
-second while the writer writes 47-375 times a second. An outputd without the
+command per connection — a sequential reader gets about two STATUS reads a
+second while the writer writes 47–375 times a second. An outputd without the
 ring is refused by name, not guessed around.
 
-How far the readings spread is a property of the mix cadence: one mix period
-carries `period_frames × 16000 / dac_rate` reference frames, and a burst wider
-than the writer's 256-frame ALSA ring makes every write block, so the reading
-lands wherever scheduling slack leaves it. Measured 2026-08-08 with identical
-chip-ref geometry: jts.local (128-frame mix period, 2.7 ms) spreads 11 frames
-and never shows a lag; jts3 (1024-frame period, 21.3 ms) spreads 86 and shows
-`reference_sequence_lag=1` on 10 reads in 24 — steady-state pipelining, not a
-fault. The window therefore holds the MEDIAN's precision constant rather than
-the raw spread: `required_queue_samples` in `jasper/chip_aec_alignment.py`
-keeps `spread / sqrt(readings)` at the eight-readings-over-16-frames reference
-ratio, so a wider spread buys its precision back by sampling longer (86 frames
-costs 232 readings, about 5 s at jts3's cadence, inside the 30 s collection
-budget). Two more conditions apply: the window must span `QUEUE_MIN_WINDOW_SEC`
-and its two halves must agree on the median within `QUEUE_MAX_MEDIAN_DRIFT`,
-which is what the count rule cannot see — a queue walking away from its start
-holds any spread you like if you stop looking soon enough. The window SLIDES
-(`QUEUE_WINDOW_MAX_SEC`), so one outlier write ages out instead of holding the
-required count up for the whole budget, and it never reaches back past the
-instant the writer's error-counter baseline was taken, so every reading in it
-lies between two instants at which those counters were observed equal. That
-floor is the baseline's own instant, not the collection's start: the counters
-are cumulative, so a seam before the baseline is one nothing can see, and a
-step at the leading edge is invisible to the split-half bound by construction.
+Spread is a property of the mix cadence, not a fault (a burst wider than the
+writer's 256-frame ALSA ring makes every write block, so the reading lands
+wherever scheduling slack leaves it — a 128-frame mix period spread 11 frames,
+a 1024-frame period spread 86). **The window therefore holds the MEDIAN's
+precision constant rather than the raw spread**, plus a minimum span and a
+split-half median-drift bound the count rule cannot see. The derivation of every
+constant lives beside them in `jasper/chip_aec_alignment.py` — read it there,
+not here.
 
-`collect_reference_queue` and `runtime_sys_delay` both read that one rule, so
-boot cannot reject a window on a criterion commissioning never applied. The
-symmetry is that of the RULE, not of the outcome: the live window at boot is a
-fresh measurement of a different stretch of time, and it can still fail on its
-own numbers — that is the check working.
+`collect_reference_queue` and `runtime_sys_delay` (both `jasper/cli/aec_init.py`)
+read that one rule, so boot cannot reject a window on a criterion commissioning
+never applied. The symmetry is of the RULE, not the outcome: boot's window is a
+fresh measurement of a different stretch of time and can fail on its own
+numbers — that is the check working.
 
 **Boot bounds the delay against the commissioned one.** Because
-`K = commissioned SYS_DELAY + commissioned median`, the gap between the delay
-boot resolves and the commissioned one IS the difference between the two
-windows' medians — the only error term between the alignment the commissioner
-verified (causal window, convergence transition, ≥ 10 dB beam suppression) and
-what boot applies. `choose_delay` reserves `MIN_EDGE_MARGIN` frames of margin
-on both causal-window edges, so that is the bound: past it, `jasper-aec-init`
-parks with the numbers instead of applying a delay nobody measured, and it
-parks as **commission_required** — the artifact stopped describing the box, so
-the action is a recommission, not an operator inspecting a healthy daemon. The
-chip's own −64..256 range spans 320 frames against a 39-frame causal window and
-was never a substitute for this.
+`K = commissioned SYS_DELAY + commissioned median`, the gap between boot's delay
+and the commissioned one IS the difference between the two windows' medians —
+the only error term between the alignment the commissioner verified and what
+boot applies. `choose_delay` reserves `MIN_EDGE_MARGIN` frames on both
+causal-window edges, so that is the bound; past it `jasper-aec-init` parks with
+the numbers as **commission_required**, because the artifact stopped describing
+the box. The chip's own −64..256 range spans 320 frames against a 39-frame
+causal window and was never a substitute for this.
 
-**Adding `dac.format` to the identity force-recommissions the fleet.** Every
-artifact commissioned before that field existed fails the identity check, so on
-first `jasper-aec-init` after the deploy the reconciler parks the whole
-managed-XVF stack: `jasper-voice` is stopped and gated off by
-`/var/lib/jasper/voice-input-absent`, which survives a reboot — wake detection
-and the voice assistant stay down until a human runs
-`sudo jasper-aec-commission` at the speaker (a foreground run, roughly two
-minutes of audible sweeps). The commissioner's own reconcile cleanup unparks
-voice, so one run per box is enough. `/aec`, `/state`, and `jasper-doctor` all
-name the parked state and the action.
+### The cross-transaction ordering guard
 
-That is a deliberate departure from how the v1→v2 identity addition was
-handled above, where the existing artifact was operationally *enriched* rather
-than recommissioned. The two cases are not alike. v1→v2 added fields
-describing hardware that had not moved and was not about to, so enrichment
-could not certify anything false. `output_format` exists to guard the
-electrical edge that the outputd native-format write moves — outputd now
-requests the registry-declared format on its DAC PCM and checks the installed
-`hw_params` back, so `dac.format` is what **outputd** is running rather than a
-declaration about it — and enrichment machinery would be a fail-open mechanism
-at exactly the point
-the guard has to be trustworthy — it would hand a box a "valid" artifact for an
-edge nobody re-measured. At the current fleet size (two lab boxes) one
-foreground recommission per box is cheaper and safer than shipping migration
-code that weakens the guard permanently.
+Within one reconcile pass, outputd's final native-plus-UDP configuration is
+installed while bridge/voice stay parked, that critical restart must succeed,
+and only then does init sample the live writer. **Across passes that ordering
+does not hold**: `jasper-audio-hardware-reconcile` writes
+`/var/lib/jasper/outputd.env` and kicks `jasper-outputd` and
+`jasper-aec-reconcile` as two separate `--no-block` transactions, and udev
+starts the reconciler in a transaction of its own, so
+`jasper-aec-init.service`'s `After=jasper-outputd.service` orders nothing here.
+The live outputd can still be answering STATUS with the previous geometry and
+final-edge format.
 
-Read the scope of `output_format` precisely: it is outputd's own CLIENT edge,
-read back from the `hw_params` installed on the PCM outputd opened. On a raw
-`hw:` device — every commissioned box today — the client edge is the hardware
-edge. Through an ALSA `plug` it is not: a plug installs the client's request
-client-side and converts on the slave side, so the readback agrees by
-construction and cannot see the DAC. The InnoMaker's hardware edge is
-guaranteed by the `format S32_LE` slave pinned in
-`deploy/lib/jasper-asound-render.sh` while that plug exists, and by the absence
-of any conversion layer once it is deleted. The identity field is not a
-substitute for either.
+`require_outputd_env_loaded` (`jasper/cli/aec_init.py`) closes that: before
+sampling any STATUS it compares outputd's `ExecMainStartTimestamp` against the
+env file's mtime, waits a bounded 10 s for a queued restart, then exits `3`
+rather than certify a stale edge. That is the `deferred` disposition — an
+ordering race, not a moved artifact — so it deliberately does **not** ask for a
+recommission, and doctor reports it as an intentional park on the
+`AEC bridge service` row rather than a bridge failure.
 
-`jasper-aec-reconcile` owns this lifecycle. While uncommissioned it keeps the
-native reference writer active but parks the bridge and voice. Once silent
-reapply/readback succeeds it starts the bridge and voice. Ordinary lifecycle
-handling never plays audio, resets the chip, searches parameters, rewrites the
-artifact, starts a timer, or runs a servo. `/aec`, `/state`, and
-`jasper-doctor` expose `ready`, `commission_required`, `deferred`,
-`unavailable`, or `fault` with the reconciler-provided reason/action.
-Specifically, reconcile installs outputd's final native-plus-UDP configuration
-while bridge/voice stay parked, requires that critical outputd restart to
-succeed, then init samples that same live writer before unpark; outputd is not
-restarted again after init.
+Three details of that comparison are easy to get wrong. **Both stamps must be
+the same clock**: comparing a CLOCK_REALTIME age against a CLOCK_MONOTONIC age
+fails *open* under a forward NTP step — routine on an RTC-less Pi at boot —
+certifying exactly the stale outputd the guard exists to catch, so the guard
+compares recorded realtime *instants* and "now" is not an input. The residual is
+inherent (only a backward step landing between the two stamps and exceeding
+their separation inverts them; fake-hwclock restores a past time so NTP's first
+correction goes the harmless way) and cannot be closed by unit ordering, because
+both stamps are written by other processes. **A stopped outputd is caught, not
+ignored**: systemd retains `ExecMainStartTimestamp` after a stop, so only a unit
+that never started this boot reports an empty value and leaves the guard inert —
+there `collect_reference_queue`'s writer-not-ready path owns the diagnosis.
+**An inert guard is logged**: a non-zero `systemctl` exit, an unparseable value,
+or a non-`ENOENT` `OSError` emits `event=chip_aec_init.ordering_probe` at WARN,
+because a guard that silently does not run looks identical to one that passed.
 
-That ordering holds only *within* a reconcile pass. Across passes it does not:
-`jasper-audio-hardware-reconcile` writes `/var/lib/jasper/outputd.env` and then
-kicks `jasper-outputd` and `jasper-aec-reconcile` as two separate `--no-block`
-systemd transactions, and udev starts the reconciler in a transaction of its
-own, so `jasper-aec-init.service`'s `After=jasper-outputd.service` orders
-nothing here (it only orders jobs that already share one transaction). The live
-outputd can therefore still be answering STATUS with the *previous* geometry and
-final-edge format. `require_outputd_env_loaded`
-(`jasper/cli/aec_init.py`) closes that: before sampling any STATUS it compares
-outputd's `ExecMainStartTimestamp` against the env file's mtime, waits a bounded
-10 s for a queued restart, and then exits `3` rather than certify a stale edge.
-That is the `deferred` disposition above — an ordering race, not a moved
-artifact, so it deliberately does **not** ask for a recommission, and
-`jasper-doctor` reports it as an intentional park on the `AEC bridge service` row
-rather than a bridge failure.
+## Reconciler and status
 
-Three details of that comparison are easy to get wrong. **Both sides must be the
-same clock.** An earlier revision compared a CLOCK_REALTIME age against a
-CLOCK_MONOTONIC age, which fails *open* under a forward NTP step — routine on an
-RTC-less Pi at boot — and certifies exactly the stale outputd the guard exists to
-catch. Comparing recorded realtime *instants* makes "now" not an input at all.
-The residual is inherent and not closable by unit ordering: only a **backward**
-step can invert the two stamps, and only when it lands between them and exceeds
-their separation (forward steps are non-decreasing). Both stamps are written by
-other processes — systemd for the start, `jasper-audio-hardware-reconcile` for the
-mtime — so no `After=` on the reading units can affect the verdict; an earlier
-revision carried `After=time-sync.target` for exactly this and it was a belt
-attached to nothing. fake-hwclock restores a *past* time at boot, so NTP's first
-correction is a forward step, the harmless direction. **A stopped outputd is
-caught, not ignored.** systemd retains `ExecMainStartTimestamp` after a unit
-stops, so a stopped outputd that ran this boot still reports its old instant and a
-newer declaration reads as stale; only a unit that never started this boot reports
-an empty value and leaves the guard inert, where `collect_reference_queue`'s
-writer-not-ready path owns the diagnosis. **An inert guard is logged.** The
-three anomalous inert paths — `systemctl` exiting non-zero, a non-empty value
-that does not parse, or `systemctl` raising a non-`ENOENT` `OSError` — emit
-`event=chip_aec_init.ordering_probe` at WARN, because a guard that silently
-does not run looks identical to one that passed.
+`jasper-aec-reconcile` owns the lifecycle. While uncommissioned it keeps the
+native reference writer active but parks the bridge and voice; once silent
+reapply/readback succeeds it starts both. Ordinary lifecycle handling never
+plays audio, resets the chip, searches parameters, rewrites the artifact,
+starts a timer, or runs a servo. `/aec`, `/state`, and `jasper-doctor` expose
+`ready`, `commission_required`, `deferred`, `unavailable`, or `fault` with the
+reconciler-provided reason/action. If the XVF is absent after a previous
+AEC-enabled boot, the reconciler clears the stale
+`JASPER_MIC_DEVICE=udp:9876`, disables the bridge, and stops voice instead of
+leaving wake-word on an unfed UDP socket.
 
-The `jasper-aec-bridge` remains a shared mic-to-voice carrier, not synonymous
-with WebRTC AEC3. With commissioned chip AEC it forwards the selected hardware
-beam to `:9876` while AEC3 is bypassed. In non-XVF/custom software-AEC paths it
-consumes outputd's 48 kHz monitor and runs AEC3. The optional v2/BEST_A
-delivery lifecycle remains owned by
-[HANDOFF-enhanced-aec.md](HANDOFF-enhanced-aec.md).
+`/aec` separates saved intent from applied runtime truth. `raw_intent` mirrors
+`/var/lib/jasper/aec_mode.env`; active fields (`mode`, `bridge_role`,
+`software_aec3`, `legs`, `audio_profile.active`, and `/wake/`'s `mic_settings`)
+come from the reconciler-applied `/etc/jasper/jasper.env` snapshot. A managed
+XVF rejected by the mic/DAC/alignment gates reports a parked chip profile and
+action, never an active AEC3/direct fallback. If runtime env is stale during a
+mic-card change, `/aec.bridge_role` reports `pending`. **Status surfaces must
+not infer the active engine from saved profile intent or bridge service state.**
 
-When `jasper-doctor` detects a sustained silent reference, its remediation is
-bound to the bridge's applied runtime provenance in the fresh
-`/run/jasper/aec_bridge_stats.json` snapshot. An `outputd_udp` bridge is
-diagnosed against outputd STATUS (`reference_outputs.udp_target`,
-`udp_active`, and `udp_error_count`), and that is the only provenance doctor
-will name a producer for. Missing, stale, malformed, or unknown provenance —
-which now includes the retired `alsa` spelling — stays source-neutral rather
-than guessing a legacy path; the `pcm.jasper_capture` / `jasper_ref` advice
-that used to fire for an applied `alsa` bridge is gone with the fallback.
-The reader is shared with the DTLN doctor check, so both checks identify the
-same live bridge snapshot source.
+## The bridge
 
-**Reference-input health is receiver-owned.** Bridge stats schema v4 publishes
-one bounded `reference_input` block: the runtime source and endpoint, the
-lifetime count of complete 20 ms frames successfully converted and accepted by
-the bounded AEC reference queue, monotonic `last_frame_age_ms` (`null` before
-the first frame), the same-boot monotonic snapshot instant, and process age at
-that instant. Reusing `last_ref_bytes` while the receiver is starved does not
-advance this telemetry. For `outputd_udp`, `jasper-doctor` gives a new bridge
-10 seconds to start, then fails when no frame has arrived or the newest receiver
-frame is more than 5 seconds old. All freshness arithmetic uses the monotonic
-fields, never the retained epoch timestamps, so RTC/NTP steps cannot change a
-verdict.
+`jasper-aec-bridge` is a shared mic-to-voice carrier, not a synonym for WebRTC
+AEC3. With commissioned chip AEC it forwards the selected hardware beam to
+`:9876` while AEC3 is bypassed. In non-XVF/custom software-AEC paths it consumes
+outputd's 48 kHz monitor and runs AEC3.
 
-Precedence is deliberately one-way. A schema-v4 freshness FAIL wins over
-historical RMS and the USB-blind loopback-activity heuristic, so USB Audio Input
-cannot hide a stale/no-frame transport. Freshness OK proves only transport and
-bounded-queue admission; the 90-second journal assessment still owns reference
-signal content and clock drift, so fresh silent/wrong samples still fail and
-excessive drift still warns. Missing, older, and unknown-future schemas retain
-that journal fallback for rolling-deploy compatibility. Exact schema v4 is a
-declared contract: malformed, future-monotonic, or stale v4 telemetry fails
-closed rather than aging into fallback. Explicit ALSA/custom reference routes
-retain the journal policy. Outputd `STATUS` is consulted only to localize a
-receiver failure (target drift, inactive/error state, or a sender claiming
-activity). Once exact v4 freshness validates its source and endpoint, that
-same-boot identity also owns later journal-failure localization; the legacy
-epoch-stamped `active_capture_plan` provenance is consulted only when exact-v4
-assessment is absent. UDP send success is never receiver proof. This is
-observability and diagnosis only: capture, queue bounds, frame carry-forward,
-DSP, and routing are unchanged.
-
-**CamillaDSP is a soft startup dependency, not a bridge lifecycle owner.**
-The bridge reads the XVF mic directly and consumes outputd's final-reference
-UDP stream, which is its only reference source — the pre-Camilla
-`pcm.jasper_ref` ALSA fallback was retired. Consequently,
-`jasper-aec-bridge.service` uses `After=` plus `Wants=` for
-CamillaDSP and deliberately has neither `Requires=` nor `PartOf=`. A brief
+**CamillaDSP is a soft startup dependency, not a lifecycle owner.** The bridge
+reads the XVF mic directly and consumes outputd's final-reference UDP stream,
+its only reference source (the pre-Camilla `pcm.jasper_ref` ALSA fallback was
+retired). So `jasper-aec-bridge.service` uses `After=` plus `Wants=` for
+CamillaDSP and deliberately has neither `Requires=` nor `PartOf=`: a brief
 Camilla pause must leave the UDP mic producer running so `jasper-voice` keeps
-making watchdog progress. `jasper-aec-reconcile` remains the single owner of
-whether the bridge is enabled and running. This contract closes the #1264
-failure where a USB combo toggle clean-stopped the bridge and voice watchdog-
-aborted 30 seconds later.
+making watchdog progress. This closes the #1264 failure where a USB combo
+toggle clean-stopped the bridge and voice watchdog-aborted 30 seconds later.
+
+**Reference-input health is receiver-owned.** Bridge stats schema v4
+(`/run/jasper/aec_bridge_stats.json`) publishes one bounded `reference_input`
+block: runtime source and endpoint, the lifetime count of complete 20 ms frames
+converted and accepted by the bounded AEC reference queue, monotonic
+`last_frame_age_ms` (`null` before the first frame), the same-boot monotonic
+snapshot instant, and process age at that instant. Reusing `last_ref_bytes`
+while the receiver is starved does not advance this telemetry. For
+`outputd_udp`, doctor gives a new bridge 10 s to start, then fails when no frame
+has arrived or the newest receiver frame is more than 5 s old; all freshness
+arithmetic uses the monotonic fields, so RTC/NTP steps cannot change a verdict.
+Precedence is one-way: a v4 freshness FAIL wins over historical RMS and the
+USB-blind loopback-activity heuristic, so USB Audio Input cannot hide a stale
+transport, while freshness OK proves only transport and bounded-queue admission
+— the 90-second journal assessment still owns reference signal content and clock
+drift. Missing, older, and unknown-future schemas retain that journal fallback
+for rolling-deploy compatibility; exact v4 is a declared contract and fails
+closed when malformed, future-monotonic, or stale. **UDP send success is never
+receiver proof.** This is observability only: capture, queue bounds, frame
+carry-forward, DSP, and routing are unchanged.
+
+Outputd `STATUS` (`reference_outputs.udp_target`, `udp_active`,
+`udp_error_count`) is consulted only to localize a receiver failure, and only
+for an `outputd_udp` bridge — that is the one provenance doctor will name a
+producer for. Missing, stale, malformed, or unknown provenance, including the
+retired `alsa` spelling, stays source-neutral rather than guessing a legacy path.
 
 ### Optional computer microphone carrier and source selection
 
-The optional computer microphone is a second consumer of that carrier, not a
-voice socket takeover. When `/var/lib/jasper/usb_mic.env` explicitly enables
-the feature, the bridge emits one selected 16 kHz mono source to localhost UDP
-`:9894`; `jasper-usbmic` alone consumes that port and writes the UAC2 Pi-to-host
-direction. This consumer emits each native 320-sample AEC frame
+The optional computer microphone is a second consumer of the carrier, not a
+voice socket takeover. When `/var/lib/jasper/usb_mic.env` explicitly enables the
+feature, the bridge emits one selected 16 kHz mono source to localhost UDP
+`:9894`; `jasper-usbmic` alone consumes that port and writes the UAC2
+Pi-to-host direction. This consumer emits each native 320-sample AEC frame
 immediately (20 ms) with a 16-byte v2 `JM` header carrying a uint32 sequence and
-`CLOCK_MONOTONIC` bridge-emit timestamp. The relay's in-process ALSA writer
-uses it to measure bridge emit through the frame's final successful ALSA period
-write; it does not include
-XVF capture, PortAudio, the mic queue, AEC processing, gadget fill, USB, or the
-host audio stack. The bridge logs the separately negotiated PortAudio input
-latency as `event=aec.mic_stream_latency`. `JASPER_AEC_CAPTURE_LATENCY` is an
-evidence-gated experiment knob: unset preserves PortAudio's current default,
-`low` requests the device's low-latency default, and a positive seconds value
-up to 0.25 requests an explicit buffer (0.01-0.08 is the normally useful
-experimental range). Because this one capture stream also feeds
-voice/wake, do not set a production value until hardware A/B evidence shows
-lower negotiated latency with no stalls, queue drops, or wake-rate regression.
-On 2026-07-16, build `1b1b36015` negotiated 80 ms with the knob unset and
-20 ms with `low` on the same XVF3800. During real macOS CoreAudio pulls, the
-corresponding 30-second USB-microphone artifacts passed at p95 46.1 ms and
-19.3 ms respectively, with zero run-delta packet loss, streaming drops,
-writer splices, or xruns; 50/60-second host captures also reported zero
-callback errors. The artifact metric begins at bridge emit and therefore does
-not directly include the 60 ms capture-buffer reduction. Treat `low` as a
-promising opt-in experiment, not the production default, until the shared
-wake/voice soak and wake-rate parity gates pass.
-Voice/wake legs keep their established raw
-1280-sample / 80 ms packet contract with no header.
-The same negotiated capture rate, block size, and input-latency frames are
-published in `/run/jasper/aec_bridge_stats.json` under `capture_stream`, so a
-USB-microphone latency artifact can bind its evidence without journal parsing.
+`CLOCK_MONOTONIC` bridge-emit timestamp. **Voice/wake legs keep their raw
+1280-sample / 80 ms packet contract with no header.**
 
-`JASPER_USB_MIC_LEG` independently selects that computer-only export. Its
-default, `primary`, preserves the production-clean carrier sent to `:9876`.
-When the reconciler-applied `ChipBeamPlan` proves a supported six-channel XVF
+`JASPER_USB_MIC_LEG` independently selects the computer-only export. Its
+default, `primary`, preserves the production-clean carrier sent to `:9876`. When
+the reconciler-applied `ChipBeamPlan` proves a supported six-channel XVF
 capture, `/wake/` also offers `raw0` as **Raw microphone (no echo
-cancellation)**. That comparison-only source reuses physical channel 2 already
-captured and emitted by the bridge; it adds no capture stack and receives
-neither chip/software AEC nor JTS voice gain. The plan's fixed chip beams remain
-additional choices. `/wake/` renders the server-provided list and the control
-endpoint rejects a token the active plan does not publish. The persistence and
-UI contracts therefore do not hard-code today's `chip_aec_150` /
+cancellation)** — comparison-only, reusing physical channel 2 already captured
+by the bridge, with neither chip/software AEC nor JTS voice gain. The plan's
+fixed chip beams remain additional choices. `/wake/` renders the server-provided
+list and the control endpoint rejects a token the active plan does not publish,
+so the persistence and UI contracts do not hard-code today's `chip_aec_150` /
 `chip_aec_210` vocabulary or advertise raw capture without validated geometry.
 
 Selection happens in-process immediately before the `usb_host_mic` emitter, so
 it adds no queue or frame latency. An explicitly selected chip frame receives
-the same post-AEC gain and soft-limit as `primary`. If that frame is absent for
-one iteration—including when software AEC3 is active—the export falls back to
-that iteration's final `clean` frame. `raw0` is intentionally different: a
-missing physical raw frame is skipped and logged, never replaced by clean or a
-beam, because comparison audio must not silently change identity. Bridge stats
-publish the bridge-applied selection separately from the resolved mode/physical
-leg so `/aec`, `/wake/`, and the latency artifact do not mistake saved intent
-for applied source. This branch is computer-microphone-only: it does not change
-the `:9876` session stream, any wake detector, the wake-leg wire format, or the
-chip primary-beam policy.
+the same post-AEC gain and soft-limit as `primary`; if it is absent for one
+iteration — including when software AEC3 is active — the export falls back to
+that iteration's final `clean` frame. **`raw0` is deliberately different: a
+missing physical raw frame is skipped and logged, never replaced**, because
+comparison audio must not silently change identity. Bridge stats publish the
+bridge-applied selection separately from the resolved mode/physical leg, so no
+surface mistakes saved intent for applied source. This branch is
+computer-microphone-only: it changes neither the `:9876` session stream, any
+wake detector, the wake-leg wire format, nor the chip primary-beam policy. The
+relay accepts the old raw 20 ms and legacy 80 ms packet shapes, but
+compatibility is one-way — an old relay cannot decode the 656-byte v2 packet, so
+deploy and rollback restart the bridge and its `PartOf=` relay at one revision
+and a staged rollout is unsupported. When the feature is off the extra emitter is
+not created; the `/wake/` switch restarts the bridge so intent and producer agree.
 
-The new relay accepts the old raw 20 ms and legacy 80 ms packet shapes, but
-compatibility is intentionally one-way: an old relay cannot decode the new
-656-byte v2 packet. Normal deploy and rollback therefore restart the bridge and
-its `PartOf=` relay at one revision. A staged rollout is unsupported in this
-slice; supporting one would require an earlier separately deployed receiver-
-only revision. The relay's drop-oldest queue is two 20 ms periods and its
-downstream buffering and occupancy control remain local to the computer
-microphone rather than changing wake/session timing. The normal voice/session
-stream stays on `:9876`. When the feature is off, the extra emitter is not
-created. The `/wake/` switch restarts the bridge so intent and producer agree.
-[HANDOFF-usb-gadget.md](HANDOFF-usb-gadget.md) owns the relay writer, status
-schema, descriptor composition, and latency acceptance gates;
-[PRIVACY.md](../PRIVACY.md) owns mic-mute behavior.
+`JASPER_AEC_CAPTURE_LATENCY` is an evidence-gated experiment knob on the shared
+capture stream: unset preserves PortAudio's default, `low` requests the device's
+low-latency default, and a positive seconds value up to 0.25 requests an
+explicit buffer (0.01–0.08 is the useful range). Because this one stream also
+feeds voice/wake, **do not set a production value** until hardware A/B evidence
+shows lower negotiated latency with no stalls, queue drops, or wake-rate
+regression — the 2026-07-16 A/B is in
+[historical/usb-gadget-hardware-evidence-2026-07.md](historical/usb-gadget-hardware-evidence-2026-07.md).
+The bridge logs the negotiated input latency as `event=aec.mic_stream_latency`
+and publishes the negotiated capture rate, block size, and input-latency frames
+under `capture_stream` in the stats file.
 
-The chip-AEC profile's default wake surface is deliberately one detector:
-the primary/session beam (`JASPER_MIC_DEVICE=udp:9876`, wake leg `on`).
-The 150-degree and 210-degree chip beams are advanced custom opt-ins via
-`JASPER_WAKE_LEG_CHIP_AEC_150=1` and
-`JASPER_WAKE_LEG_CHIP_AEC_210=1`; only then does the reconciler publish
-`JASPER_MIC_DEVICE_CHIP_AEC_150=udp:9887` or
-`JASPER_MIC_DEVICE_CHIP_AEC_210=udp:9888`. Selecting any named profile
-resets those optional beams to `0`; `custom` preserves them. This ties active
-wake-word instances to the audio-processing channels the reconciler actually
-applied, which avoids hidden extra Silero/openWakeWord model instances on
-chip-AEC hardware.
+### Wake legs
 
-`/aec` separates saved intent from applied runtime truth. `raw_intent` mirrors
-`/var/lib/jasper/aec_mode.env`; active fields such as `mode`, `bridge_role`,
-`software_aec3`, `legs`, `audio_profile.active`, and `/wake/`'s
-`mic_settings` come from the reconciler-applied `/etc/jasper/jasper.env`
-snapshot. A managed XVF rejected by the mic/DAC/alignment gates reports a
-parked chip profile and action, never an active AEC3/direct fallback. If
-runtime env is stale during a mic-card change, `/aec.bridge_role` reports
-`pending` until the reconciler applies concrete truth. Status surfaces must
-not infer the active engine from saved profile intent or bridge service state.
+The chip-AEC profile's default wake surface is deliberately one detector: the
+primary/session beam (`JASPER_MIC_DEVICE=udp:9876`, wake leg `on`). The 150°
+and 210° chip beams are advanced custom opt-ins via
+`JASPER_WAKE_LEG_CHIP_AEC_150=1` / `_210=1`; only then does the reconciler
+publish `JASPER_MIC_DEVICE_CHIP_AEC_150=udp:9887` or `..._210=udp:9888`.
+Selecting any named profile resets those optional beams to `0`; `custom`
+preserves them. This ties active wake-word instances to the channels the
+reconciler actually applied, avoiding hidden extra Silero/openWakeWord model
+instances on chip-AEC hardware.
 
-For an explicit managed-XVF custom/lab A/B test, the low-level direct route
-requires the `custom` escape hatch. Set the state file to disabled and run the
-reconciler:
+## Escape hatches
+
+Managed-XVF custom/lab A/B — the low-level direct route requires `custom`;
+`direct_mic` is the ordinary no-AEC selector for non-XVF microphones and cannot
+bypass commissioning on a managed XVF. Then back to auto:
+`JASPER_AUDIO_INPUT_PROFILE` is the authoritative selector, and the wake-leg
+booleans are kept for rollback compatibility and re-resolved by the reconciler
+from live hardware.
 
 ```sh
 printf 'JASPER_AUDIO_INPUT_PROFILE=custom\nJASPER_AEC_MODE=disabled\n' | sudo tee /var/lib/jasper/aec_mode.env
 sudo systemctl start jasper-aec-reconcile
-```
 
-`direct_mic` remains the ordinary no-AEC selector for non-XVF microphones.
-On a managed XVF, every selector except `custom` is deliberately resolved
-through chip-or-park policy, so `direct_mic` cannot bypass commissioning.
-The legacy `xvf_chip_aec_testing` token remains parser-compatible for stored
-state and automation, but `/wake/` does not render it as an operator choice.
-
-To return to auto mode:
-
-```sh
 printf 'JASPER_AUDIO_INPUT_PROFILE=auto\nJASPER_AEC_MODE=auto\nJASPER_WAKE_LEG_RAW=1\nJASPER_WAKE_LEG_DTLN=0\nJASPER_WAKE_LEG_CHIP_AEC=0\nJASPER_WAKE_LEG_CHIP_AEC_150=0\nJASPER_WAKE_LEG_CHIP_AEC_210=0\n' | sudo tee /var/lib/jasper/aec_mode.env
 sudo systemctl start jasper-aec-reconcile
 ```
 
-`JASPER_AUDIO_INPUT_PROFILE=auto` is the authoritative selector in that
-state file; the legacy wake-leg booleans are kept for rollback
-compatibility and are re-resolved by the reconciler from live hardware.
+The legacy `xvf_chip_aec_testing` token stays parser-compatible for stored state
+and automation, but `/wake/` does not render it as an operator choice.
 
-The reconciler also handles stale hardware state. If the Array is
-absent after a previous AEC-enabled boot, it clears the stale
-`JASPER_MIC_DEVICE=udp:9876`, disables the bridge, and stops voice
-instead of leaving wake-word on an unfed UDP socket.
+## High-pass filter architecture
 
-> ### Important: three bridge bugs fixed on 2026-05-19
->
-> A multi-day investigation surfaced three independent bugs that
-> had been silently corrupting AEC's reference signal since the
-> bridge shipped. All are fixed in current production. Briefly:
->
-> 1. **ALSA linear resampler** (PR #150) — `libasound2-plugins` +
->    the JTS audio-quality rate converter in `/etc/asound.conf`
->    (default `samplerate_medium`; `samplerate_best` optional from
->    `/system/`; legacy location was `/root/.asoundrc` before PR #223).
->    Without these, the plug-layer 44.1→48 conversion lost ~12 dB
->    of 4-8 kHz content.
-> 2. **Silence fallback on empty ref_q** (PR #154) — replaced
->    "ref_bytes = silence" with "carry forward last_ref_bytes."
->    Without this, AEC received zeroed reference 50 % of the time.
-> 3. **Drain-newest discarded burst frames** (PR #157) — replaced
->    drain-to-newest with consume-one-per-iteration. Without this,
->    50 % of frames in ref.wav were byte-identical duplicates of
->    their predecessor.
->
-> All three were documented separately in **"Resampler quality —
-> the 2026-05-19 finding"** and **"Bridge ref starvation bug —
-> fixed (2026-05-19)"** below. The deployment now feeds AEC3 a
-> continuous, full-bandwidth reference for the first time.
->
-> ⚠ **All wake-rate baseline data from before 2026-05-19 is
-> invalid for evaluating AEC's contribution.** The "AEC ON" leg of
-> every previous test ran with broken reference. The "AEC OFF" /
-> chip-direct legs remain valid (the bugs were bridge-only). Any
-> future "does AEC help?" question requires fresh measurement
-> after these fixes.
+The mic is consumed only by software (openWakeWord at 16 kHz mono, then a
+real-time speech LLM), so everything outside the speech band is noise the
+consumers do not use AND content AEC3's adaptive filter wastes capacity
+modelling. The stack, layered:
 
-> ### NS=low + AGC1 — 2026-05-20 production tuning
->
-> Post-ref-fix wake-rate sweep surfaced two further knobs that
-> moved the needle. **Both are now production defaults:**
->
-> - `JASPER_AEC_NS_LEVEL=low` (was `moderate`) — less aggressive
->   noise suppression preserves HF speech consonants the wake model
->   relies on. Wake rate: 5/20 vs prev 4/20 in the same data.
-> - `JASPER_AEC_AGC1_ENABLED=1` (default off in binding) — WebRTC
->   AGC1 in `kAdaptiveDigital` mode replaces the static `MIC_GAIN_DB`
->   approach for level normalization. Fixes "some Jarvises overblown,
->   some too quiet" — uniform output across utterances regardless of
->   instantaneous music level.
->
-> Full details in **"NS aggressiveness + AGC1 dynamic gain — 2026-05-20
-> findings"** below. Sweep methodology is captured in user memory
-> `project_aec_wake_rate_forensic_methodology.md`.
-
-### High-pass filter architecture
-
-The mic in this project is consumed only by software (openWakeWord
-at 16 kHz mono, then a real-time speech LLM). No human listens to
-it. Per [memory note](https://github.com/jaspercurry/JTS — internal
-memory `project_mic_consumed_by_robots_only`) and the research
-findings below, we band-limit the signal to the speech range
-because everything outside it is noise the consumers don't use AND
-content AEC3's adaptive filter wastes capacity trying to model.
-
-The HPF stack, layered defense:
-
-| Layer | Filter | Cutoff | Where | Tuning knob |
-|---|---|---|---|---|
-| Chip mic ingress | 4th-order Butterworth | 125 Hz | XVF3800 `AEC_HPFONOFF`, set in `jasper-aec-init` | `JASPER_AEC_CHIP_HPF_HZ` env, values 0/70/125/150/180 |
-| AEC3 internal capture | 2nd-order Butterworth | 100 Hz | `AudioProcessing` upstream of `EchoCanceller3`, enabled in `jasper_aec3/src/aec3_binding.cpp` | always on (compile-time) |
-| Bridge ref pipeline | 2nd-order Butterworth | **125 Hz** | `_ReferenceFrameConverter` in `jasper/cli/aec_bridge.py`, on the outputd UDP transport, after `resample_poly`, before REF_GAIN | `JASPER_AEC_REF_HPF_HZ` env, default 125 Hz |
-
-**Why HPFs on both legs are not redundant**: AEC3 applies its
-internal HPF to the **capture** (mic) signal only. The reference
-signal arrives untouched at AEC3's adaptive filter. Without the
-bridge-side ref HPF, AEC3 sees asymmetric inputs and its matched
-filter wastes coefficients on an LF relationship that doesn't
-exist in the capture. Symmetric HPF at both legs is the documented
-design intent (see WebRTC commit "AEC3: High-pass filter delay
-estimator signals").
-
-**Why 125 Hz on both**: openWakeWord's preprocessor
-(Google `speech_embedding`) has a 60 Hz mel floor. 125 Hz nulls
-2-3 of 32 mel bins (small unverified risk to wake accuracy) but
-provides more LF rejection at the source and matches XMOS's
-shipped smart-speaker default. The ref HPF cutoff matches the
-chip-side mic HPF cutoff so AEC3 sees symmetric bands. If wake
-accuracy regresses, drop to 70 Hz via the env var without a code
-change (both `JASPER_AEC_CHIP_HPF_HZ` and `JASPER_AEC_REF_HPF_HZ`).
-
-The bridge→voice transport is **UDP localhost** (default
-`127.0.0.1:9876`), not snd-aloop. The original `LoopbackAEC`
-two-card snd-aloop topology was retired in May 2026 after a
-kernel-state-corruption incident — see
-[HANDOFF-resilience.md](HANDOFF-resilience.md) for the rationale.
-
----
-
-## Software-AEC tuning (2026-05-16) — non-XVF/custom baseline
-
-This section records the WebRTC AEC3 engine and the older XVF software
-profile used during investigation. Current managed XVFs do not enter this
-path when chip AEC is unavailable; they park as specified in the TL;DR.
-AEC3 remains current for non-XVF microphones and explicit custom/lab routing.
-
-### Software-AEC architecture
-
-```
-4 mics → preamp → MIC_GAIN → AEC_HPFONOFF=125 Hz → [SHF_BYPASS=1: entire SHF block off]
-                                                          │
-                                                          ▼
-                                                   chip channel 1 carries
-                                                   raw-ish mic data
-                                                   (NO BF, NO NS, NO AGC,
-                                                    NO chip AEC; possibly
-                                                    post-MIC_GAIN per
-                                                    output mux routing)
-                                                       │
-                                                       ▼
-              jasper-aec-bridge:
-                ref = outputd UDP speaker monitor
-                      (final electrical samples: renderer/content plus
-                       TTS/cues, post-CamillaDSP/outputd)
-                     → resample 48k → 16k → HPF 125 Hz → REF_GAIN +0 dB
-                mic = chip ch 1 (16k mono, raw-ish)
-                     → AudioProcessing internal HPF 100 Hz
-                     → WebRTC AEC3 (does ALL the work: linear cancellation,
-                       residual suppression, internal NS at kModerate)
-                     → MIC_GAIN +6 dB
-                     → UDP 127.0.0.1:9876
-                                                                │
-                                                                ▼
-                                                       jasper-voice:
-                                                         UdpMicCapture
-                                                         → openWakeWord
-                                                         → real-time LLM
-```
-
-### Caveat: what `SHF_BYPASS=1` actually does
-
-When the chip's `SHF_BYPASS=1`, **the entire SHF block on the
-chip is removed from channels 0 and 1**, not just the AEC
-adaptive filter. SHF includes AEC + beamformer + post-SHF DSP
-(NS, NLP, AGC). So with SHF_BYPASS=1, channels 0/1 carry
-**raw-ish mic data**, similar to channels 2-5.
-
-Empirically verified 2026-05-16: with `SHF_BYPASS=1`, toggling
-`PP_MIN_NS` from 0.150 to 1.0 (NS off) and `PP_AGCONOFF` from
-1 to 0 changes channel 1's sub-bass band by **0.6 dB** — same
-order as the measurement noise on channel 2 (0.7 dB). The chip
-post-processing parameters do nothing when SHF_BYPASS=1.
-
-The HPF set via `AEC_HPFONOFF=2` may still apply (it lives at
-mic ingress before the SHF block), but BF / NS / AGC do not.
-
-The level difference between ch 1 (SHF_BYPASS=1) and ch 2 (raw
-mic 0) is about 1 dB across all bands — likely just MIC_GAIN
-being applied on ch 1 via the output mux but not on ch 2's
-Category 1 tap. The two channels are functionally similar.
-
-**Implication**: the "chip processing" we previously thought we
-were getting from channel 1 + SHF_BYPASS=1 was illusory. The
-performance win measured on 2026-05-16 came from `REF_GAIN=0`
-correcting the ref-mic level match for AEC3, NOT from chip BF /
-NS / AGC. If we ever want the chip's actual post-processing, we
-need `SHF_BYPASS=0` — which puts the chip's own AEC back in the
-signal path. That was incompatible with our external-DAC topology
-until outputd grew the XVF USB-IN reference fanout; the current
-`xvf_chip_aec` profile is the supported way to run that path.
-
-### Tuning values, with rationale per knob
-
-| Knob | Software fallback value | Where | Why this value |
+| Layer | Filter | Cutoff | Where |
 |---|---|---|---|
-| **Mic channel** | **1 (ASR beam, post-SHF tap)** | `jasper/mics/xvf3800.py` `MIC_CHANNEL_INDEX` | Canonical XVF3800 voice-assistant channel choice. With fallback `SHF_BYPASS=1`, ch 1 effectively carries raw-ish mic data; the chip-processing benefit usually associated with ch 0/1 is gated on SHF_BYPASS=0. Channel 2 (explicit raw mic 0, Category 1) would be functionally similar in the fallback config — see "Caveat" above. |
-| **Chip output mux** | **OP_L=`(8,0)`, OP_R=`(8,0)`** | `jasper-aec-init` | The bridge reads channel 1. Seeed's firmware default for channel 1 is OP_R=`(0,0)` (silence), so fallback init must keep OP_R on a non-silent route. 2026-05-31 failure mode: restoring OP_R to the firmware default made `jasper-aec-bridge` report `mic=0` even though ALSA capture and UDP output were healthy. |
-| **Chip SHF** | **BYPASSED (`SHF_BYPASS=1`)** | `jasper-aec-init` | The software fallback uses host-side AEC3 and intentionally keeps the chip AEC out of the near-end path. **SHF_BYPASS=1 disables the ENTIRE SHF stage (AEC + BF + NS + AGC) on channels 0/1**, not just AEC — see Caveat above. The chip-side HPF stays. The recommended chip-AEC profile is separate and uses `SHF_BYPASS=0` with a live XVF USB-IN reference from outputd. |
-| **Chip HPF** | **125 Hz, 4th-order Butter (`AEC_HPFONOFF=2`)** | `jasper-aec-init` | XMOS shipping default for smart-speaker presets. Applied at mic ingress before the SHF block (so survives SHF_BYPASS). Cuts LF rumble at the source. Configurable via `JASPER_AEC_CHIP_HPF_HZ` (off/70/125/150/180). |
-| **Ref-side HPF** | **125 Hz, 2nd-order Butter** | `_ReferenceFrameConverter` in `jasper/cli/aec_bridge.py` | Matches chip mic-side HPF cutoff so AEC3 sees symmetric bands. Configurable via `JASPER_AEC_REF_HPF_HZ`; both reference transports use the same stateful conversion. |
-| **`JASPER_AEC_REF_GAIN_DB`** | **0** | `/etc/jasper/jasper.env` + `.env.example` | The single most impactful knob in the 2026-05-16 tuning. The fallback raw-ish mic input (ch 1 with SHF_BYPASS=1) arrives at ~-22 dBFS RMS due to chip MIC_GAIN preamp + speaker-room-mic acoustic path. Digital ref is at -10 to -25 dBFS depending on music dynamics. AEC3's design point is ref ~= mic; +0 dB matches this. **Any positive REF_GAIN drives ref into hard clipping** — see "REF_GAIN trap" below. |
-| **`JASPER_AEC_MIC_GAIN_DB`** | **+6 dB** | `/etc/jasper/jasper.env` | Boosts AEC3 output to openWakeWord's training distribution (~-18 dBFS RMS). Static gain, doesn't reshape envelopes. Soft-clipped via tanh on the way out. With `AGC1_ENABLED=1` this stacks on top of AGC1's dynamic gain — drop to 0 if too hot. |
-| **`JASPER_AEC_AGC2`** | **0** (off) | `/etc/jasper/jasper.env` | Was investigated as a level-stabilizer; turns out our binding only sets `gain_controller2.enabled = true`, while the `adaptive_digital` sub-config defaults off in libwebrtc-audio-processing-1 v1.3-3. Net result: AGC2=on is a no-op for level control on this Trixie build. Use AGC1 instead (below). Kept env-tunable for backwards compatibility; recommended off. |
-| **`JASPER_AEC_AGC1_ENABLED`** + **`_TARGET_DBFS`** + **`_MAX_GAIN_DB`** | **1, 9, 18** | `/etc/jasper/jasper.env` | WebRTC AGC1 in `kAdaptiveDigital` mode. `TARGET_DBFS=9` → −9 dBFS target via `target_level_dbfs` (positive value = dBFS-below-zero; range 0–31). `MAX_GAIN_DB=18` → `compression_gain_db=18` (soft-knee compressor parameter, range 0–90 — *not* a "max gain ceiling" despite our env-var name; that name is misleading and retained only for compat with the shipped binding). Wake-rate sweep on 2026-05-20 showed these params have minimal observable effect on Trixie's `libwebrtc-audio-processing-1` v1.3-3 (the built-in limiter dominates); all configs converged to ~RMS 1213 output. The shipped benefit is *consistency*, not detection rate: vs static `MIC_GAIN_DB=+12` (also 5/20, RMS=2229 with audible inter-utterance level variance), AGC1 produces uniform output across utterances. **WebRTC AGC1 has no public attack-time or release-time parameter** — any earlier doc claim referencing "150 ms attack" was incorrect (audit 2026-05-21). |
-| **AEC3 internal capture HPF** | 100 Hz 2nd-order Butter | `jasper_aec3/src/aec3_binding.cpp` | Enabled via `cfg.high_pass_filter.enabled = true`. Defense in depth with chip + ref HPFs. |
-| **AEC3 internal NS** | **`kLow`** (was `kModerate` until 2026-05-20) | binding default + `/etc/jasper/jasper.env` `JASPER_AEC_NS_LEVEL` | Post-AEC noise/music suppression. More aggressive NS strips more HF speech-consonant features that openWakeWord depends on. Wake-rate sweep on 2026-05-20: `kLow` 5/20, `kModerate` (prev) 4/20, `kHigh` 3/20, `kVeryHigh` 2/20. `kLow` is the sweet spot; lower not exposed by Trixie v1.3-3 (no `kVeryLow`). Disable entirely via `JASPER_AEC_NS_ENABLED=0` for max HF preservation at the cost of residual music passing through. |
+| Chip mic ingress | 4th-order Butterworth | 125 Hz | `AEC_HPFONOFF=2`, fixed in the `jasper/mics/xvf3800.py` production profile |
+| AEC3 internal capture | 2nd-order Butterworth | 100 Hz | `AudioProcessing` upstream of `EchoCanceller3`, compile-time on in `jasper_aec3/src/aec3_binding.cpp` |
+| Bridge ref pipeline | 2nd-order Butterworth | 125 Hz | `_ReferenceFrameConverter` in `jasper/cli/aec_bridge.py`, after `resample_poly`, before REF_GAIN. `JASPER_AEC_REF_HPF_HZ`, default 125 |
 
-### Corpus-only AEC3 sweep knobs
+The chip-side cutoff is **not** an env knob — it is part of the fixed volatile
+profile. (`JASPER_AEC_CHIP_HPF_HZ` is read only by `voice_daemon.py` when
+stamping a wake event's bridge-config snapshot; nothing applies it to the chip.)
 
-The production `on` leg uses BEST_A when the verified enhancement is
-installed and mandatory v1 otherwise. The deep sweep knobs below require v2;
-they are unavailable on a v1-only installation. For wake-corpus pilot tuning,
-`jasper_aec3/src/aec3_binding_v2.cpp` and
-`_Aec3V2Engine` in `jasper/cli/aec_bridge.py` expose a small set of
-additional WebRTC AEC3 suppressor knobs as env overrides so the corpus
-bridge can run same-utterance variants without changing the production
-chain:
+**HPFs on both legs are not redundant.** AEC3 applies its internal HPF to the
+**capture** signal only; the reference arrives untouched at the adaptive filter,
+so without the bridge-side ref HPF the matched filter wastes coefficients on an
+LF relationship that does not exist in the capture. 125 Hz on both matches
+XMOS's shipped smart-speaker default; it nulls 2–3 of openWakeWord's 32 mel bins
+(60 Hz mel floor), an accepted, unmeasured risk.
 
-| Env var | BEST_A/default | Purpose |
-|---|---:|---|
-| `JASPER_AEC_NEAREND_AVERAGE_BLOCKS` | `4` | Near-end smoothing window. |
-| `JASPER_AEC_NEAREND_MASK_HF_ENR_T` / `_ENR_S` / `_EMR_T` | `0.1` / `0.3` / `0.3` | HF masking thresholds when AEC3 believes near-end speech dominates. |
-| `JASPER_AEC_NEAREND_MAX_DEC_LF` | `0.25` | Near-end suppressor gain-decrease rate. |
-| `JASPER_AEC_NEAREND_MAX_INC` | `2.0` | Near-end suppressor gain-increase rate. |
-| `JASPER_AEC_DND_SNR_THRESHOLD` | `30` | Dominant-near-end SNR threshold. Lower values trigger near-end mode sooner. |
-| `JASPER_AEC_DND_HOLD_DURATION` | `50` | Dominant-near-end hold duration in AEC3's native block units. |
-| `JASPER_AEC_DND_ENR_THRESHOLD` | `0.25` | Dominant-near-end echo-to-near-end-ratio threshold. |
-| `JASPER_AEC_DND_TRIGGER_THRESHOLD` | `12` | Number of detector hits required before dominant-near-end mode engages. |
-| `JASPER_AEC_STREAM_DELAY_MS` | `40` | WebRTC AEC3 stream-delay hint in milliseconds. The canceller still adapts internally; this is the coarse delay prior used by the binding. Corpus-only sweeps may vary it to test USB/ref alignment. |
+## Software AEC3 tuning — non-XVF and custom routes only
 
-As of 2026-05-28, the corpus AEC3 sweep registry in `jasper/aec_sweep.py`
-owns three stable pilot slots (`aec3_variant_1`, `aec3_variant_2`,
-and `aec3_variant_3`). The code defaults now match the current USB
-alignment pilot: USB `usb_webrtc` runs the edge-combo tuning at the
-baseline 40 ms delay hint, while the three variant slots run the same
-edge-combo tuning at 80, 120, and 160 ms. Labels and knob overrides
-can still be changed at runtime via
-`/var/lib/jasper/aec3_sweep_variants.json`; apply a validated file with
-`jasper-aec-sweep-config apply <file> --restart-bridge` to restart only
-`jasper-aec-bridge`. The sweep input source is explicit:
-`JASPER_AEC_CORPUS_AEC3_SWEEP_SOURCE=xvf` feeds variants from the XVF
-mic path, while `usb` feeds them from the cheap USB mic and requires
-`JASPER_AEC_CORPUS_USB_ENABLED=1` plus reference capture. New
-wake-corpus UI sessions default to USB-fed variants so the same
-utterance captures USB baseline + three USB AEC3 variants while keeping
-the XVF `on` leg as the comparison reference. Do not promote a sweep
-variant to production until it beats BEST_A on same-utterance listening
-review, corpus-quality metrics, and wake scoring under the far+music
-condition.
+Managed XVFs never enter this path; they park per the invariant above.
 
-### Measured outcome at this tuning
-
-Bridge log during AirPlay music playback:
-
-```
-ref=1675 mic=2549 aec=383 → attenuation=-16.5 dB (ref_clip=0.00%)
-ref=2482 mic=3246 aec=599 → attenuation=-14.7 dB (ref_clip=0.00%)
-ref=2581 mic=3693 aec=460 → attenuation=-18.1 dB (ref_clip=0.00%)
-ref=2614 mic=3822 aec=403 → attenuation=-19.5 dB (ref_clip=0.00%)
-```
-
-Steady-state attenuation -14 to -20 dB. Zero ref clipping. Stable
-across consecutive 5-second windows (previous architecture
-oscillated between -0.3 dB and -20.8 dB chaotically).
-
-### The REF_GAIN trap (don't repeat this)
-
-`REF_GAIN_DB=25` was the production value for a year, dating back
-to when the bridge consumed raw mic 0 (channel 2). At that point
-there was no chip AGC on the mic path, so the mic side arrived at
-~-50 dBFS while the digital ref was at full scale — and AEC3's
-adaptive filter needed roughly comparable levels for good
-convergence. +25 dB on the ref closed that gap.
-
-After the bridge moved to chip channel 1 (chip AGC normalizes mic
-to ~-24 dBFS), keeping `REF_GAIN_DB=25` drove the digital ref
-into 11–44% hard-clipping during music peaks. AEC3 was operating
-on a saturated reference and produced wildly variable attenuation
-(observed -0.3 to -20.8 dB across consecutive 5 s windows).
-
-**Rule of thumb**: if you change `MIC_CHANNEL_INDEX` (in
-`jasper/mics/xvf3800.py`), `REF_GAIN_DB` almost certainly needs to
-change too. The two are coupled. Production today: ch 1 + REF_GAIN=0.
-If anyone reverts to channel 2 (raw mic) for any reason,
-`REF_GAIN_DB` must be raised back to ~25 to compensate for the
-missing chip AGC.
-
----
-
-## Resampler quality — the 2026-05-19 finding
-
-This section documents a major discovery from the wake-rate
-investigation on 2026-05-19. **Until this date the bridge's
-reference signal was being silently degraded by ALSA's built-in
-linear resampler**, which lost ~12 dB of 4-8 kHz content during
-the unavoidable 44.1→48 kHz conversion. The mic captures speakers'
-full-bandwidth output; AEC was given a hollow reference; AEC could
-not cancel content its reference didn't contain; music residuals in
-the speech band masked wake-word phonemes; wake detection was
-intermittent.
-
-### The chain (mandatory rates, with no escape)
-
-The Apple USB-C dongle hardware-locks at 48 kHz (`/proc/asound/A/stream0`
-shows `Rates: 48000 - 48000 (continuous)`). CamillaDSP runs at 48 kHz
-to match. The snd-aloop "Loopback" card is locked at 48 kHz when
-CamillaDSP opens it.
-
-So *every renderer* that's not natively 48 kHz must resample
-somewhere in the chain:
-
-| Source | Native rate | Resampling site |
-|---|---|---|
-| AirPlay (shairport-sync) | 44.1 kHz | shairport writes `shairport_substream` → ALSA plug |
-| Spotify Connect (librespot) | 44.1 / 48 kHz | librespot → snd-aloop, plug if mismatch |
-| Bluetooth A2DP (bluealsa-aplay) | 44.1 / 48 kHz | bluealsa-aplay → snd-aloop, plug if mismatch |
-| AEC bridge ref read | 16 kHz (internal) | Only path: outputd UDP speaker monitor at 48 kHz → bridge resamples/downmixes. |
-
-The bridge's *own* 48→16 resample is scipy `resample_poly`, which
-is high-quality polyphase. That step has never been the issue.
-
-### What "linear resampler" actually meant in practice
-
-Without `libasound2-plugins` installed, ALSA's `plug:` plugin
-falls back to a built-in linear interpolator. It is famously poor
-for audio — the linux-audio mailing list has been complaining
-about it for ~15 years.
-
-Measured impact on our system (10 s window during AirPlay of
-Pink Floyd "Money", same physical mic, same speakers):
-
-| Band | mic_ch1 (chip raw, captures speakers) | ref.wav (post linear-resample plug) | gap |
+| Knob | Value | Where | Why |
 |---|---|---|---|
-| 0-200 Hz | 47.8 dB | 31.0 dB | — (chip HPF doing work; speakers + mic LF) |
-| 200-1000 Hz | 37.9 dB | 26.1 dB | — |
-| 1000-4000 Hz | 24.3 dB | 18.2 dB | — |
-| **4000-7000 Hz** | **15.8 dB** | **4.1 dB** | **−12 dB** |
-| **7000-8000 Hz** | **12.1 dB** | **1.8 dB** | **−10 dB** |
-
-The mic captures what the speakers emit. The ref tells AEC what we
-*sent to* the speakers. The 10-12 dB hole at 4-8 kHz in the ref is
-spectrally what the linear resampler dropped during 44.1→48. AEC
-cannot subtract content that isn't in its reference, so music
-energy at 4-8 kHz passes through aec_output uncancelled. Wake-word
-phonemes live in roughly this band. Music masks them.
-
-The user with audio-trained ears caught this listening to ref.wav
-before any measurement was done — "this sounds pixel-crushed."
-
-### The fix (current production)
-
-Installed `libasound2-plugins`, added one line at the top of
-`/etc/asound.conf`, rendered from `/var/lib/jasper/audio_quality.env`
-by `jasper-render-asound-conf`:
-
-```
-defaults.pcm.rate_converter "samplerate_medium"
-```
-
-This replaces ALSA's linear interpolator with libsamplerate's
-`SRC_SINC_MEDIUM_QUALITY` by default for every `plug:` and
-`plughw:` rate conversion on the system. `/system/` can flip the
-setting to `samplerate_best` when critical-listening CPU cost is
-acceptable. Effects:
-- shairport-sync's 44.1→48 write to plughw:Loopback now uses
-  libsamplerate sinc conversion
-- bluealsa-aplay's rate conversion (if any) uses the same configured
-  converter
-- `pcm.jasper_ref`'s plug wrapper used the same configured converter
-  (it has had no reader since U4/P7-3, so this one is spent)
-- Same fix benefits the speaker playback chain too — music quality
-  is incidentally improved
-
-Historical cost for `samplerate_best` on Pi 5: ~3-5% of one A76
-core on the resampler thread, ~15 MB resident memory. The current
-`samplerate_medium` default is expected to be cheaper while keeping
-the speech/AEC band intact.
-
-Both the `libasound2-plugins` install and the rate_converter line
-are now baked into `deploy/install.sh` + `deploy/alsa/asoundrc.jasper`
-so fresh deploys keep the fix.
-
-### Why not CamillaDSP for the resampling
-
-Considered. The "elegant" alternative would be to have CamillaDSP
-handle 44.1→48 internally via `capture_samplerate: 44100`,
-`samplerate: 48000`, `resampler: AsyncSinc Balanced`. Same
-quality (Rubato AsyncSinc Balanced has a ~-170 dB noise floor,
-comparable to libsamplerate sinc-best).
-
-**We already tried this.** The previous CamillaDSP config had
-AsyncSinc Balanced doing 1:1 resampling on top of
-`enable_rate_adjust=true`, which CamillaDSP itself flagged as
-"Needless 1:1 sample rate conversion active" and which produced
-the alternating +50/-485 ms sync errors documented in
-[HEnquist/camilladsp#207](https://github.com/HEnquist/camilladsp/issues/207)
-and [mikebrady/shairport-sync#1980](https://github.com/mikebrady/shairport-sync/issues/1980).
-
-To use CamillaDSP for input resampling we'd have to disable
-`enable_rate_adjust` (lose the snd-aloop virtual-clock drift
-correction we depend on for stable AirPlay sync) and rely on
-AsyncSinc Balanced's own ratio adjustment for drift. That's the
-"Option B" path in the canonical CamillaDSP setups — viable in
-principle but would re-enter shairport-sync#1980 territory and
-require re-validating all the AirPlay sync work documented in
-[HANDOFF-airplay.md](HANDOFF-airplay.md).
-
-The libasound2-plugins route gets the same audio quality with
-none of that risk. CamillaDSP option remains documented here for
-future reference if there's ever a reason to revisit.
-
-### Wake-rate measurements that led to this discovery
-
-Phase 2 wake-rate test on 2026-05-19, 4 runs all at SHF_BYPASS=1
-production state, music at "indicative" home listening level
-playing Pink Floyd "Money" via AirPlay, 20 × 'Jarvis' utterances
-from a phone speaker placed in the room:
-
-| Run | AEC ON (aec_output) | AEC OFF (mic_ch1) |
-|---|---|---|
-| v2 (clean Jarvis vol) | 7/20 (35%) | 12/20 (60%) |
-| v3 | 6/20 (30%) | 4/20 (20%) |
-| v4 | 0/20 (0%) | 1/20 (5%) |
-| v5 | 2/20 (10%) | 4/20 (20%) |
-| **Total** | **15/80 (19%)** | **21/80 (26%)** |
-
-Within-capture A/B is clean (both files derived from identical
-mic input, only the bridge processing differs). AEC OFF won 3 of
-4 runs and tied the 4th. AEC ON was never significantly better.
-This *contradicted* the Phase 1 ERLE measurements (which showed
-the bridge attenuating −15 dB speech-band), motivating the deeper
-investigation into *what* the bridge was actually attenuating. The
-answer: it was over-suppressing both echo AND wake utterances
-because its reference signal was missing the upper-frequency
-content needed to cancel echo cleanly.
-
-Whether the libasound2-plugins fix moves the wake-rate numbers
-back into "AEC helps" territory is an **open empirical question**
-as of 2026-05-19. Re-running Phase 2 with the fix in place is the
-next-step validation. Tools to do that re-test are in
-[`scripts/aec-erle-record.sh`](../scripts/aec-erle-record.sh),
-[`scripts/wake-rate-test.sh`](../scripts/wake-rate-test.sh),
-[`scripts/aec_erle_analyze.py`](../scripts/aec_erle_analyze.py),
-and [`scripts/_offline_wake_count.py`](../scripts/_offline_wake_count.py).
-
-### What's still unknown
-
-- **Does fixing the resampler make AEC a net positive again?** Open.
-- **The chip HPF was bypassed in the then-production software profile — by design.**
-  We initially flagged the measured ~6 dB/oct rolloff in `mic_ch1`
-  (vs the −24 dB/octave a documented 4th-order Butter at 125 Hz
-  should give) as a mystery. Verified 2026-05-19 against two
-  independent literature reviews of the v3.2.1 User Guide +
-  Programming Guide: the chip HPF lives *inside* the SHF block.
-  `SHF_BYPASS=1` in the software fallback bypasses the entire SHF
-  block, which means the HPF is *not* applied in that fallback even
-  though `AEC_HPFONOFF=2` is set. The 6 dB/oct slope we measured is the
-  **MEMS capsule's natural mechanical low-frequency rolloff** (per
-  TDK InvenSense AN-1112: "the low frequency roll-off below the
-  lower −3 dB point is first order"). No firmware anomaly; no bug
-  to file. The recommended chip-AEC profile now gets real chip HPF
-  action by running `SHF_BYPASS=0` with outputd feeding the XVF USB-IN
-  reference. The software fallback keeps a host-side HPF instead.
-- **Phase 2 testing methodology improvements.** Phone playback volume
-  drifted between v2 and v3-v5 (the operator accidentally adjusted
-  it), which produced a lot of the run-to-run variance. Future
-  Phase 2 runs should pin phone volume via a setup checklist.
-
-### Subtleties worth knowing (literature review 2026-05-19)
-
-These come from a thorough review of the XVF3800 v3.2.1 docs +
-Seeed README + community signals against our actual chip state.
-None of them change our architecture — but all of them have
-mis-led prior thinking at some point.
-
-- **The chip HPF is inside the SHF block.** Both reviewers
-  independently confirmed this. The Programming Guide §4.2.1
-  states `SHF_BYPASS=1` produces "the raw (but amplified)
-  microphone signals" on output channels — i.e. HPF, AEC, BF, NS,
-  AGC all skipped. The `AEC_*` parameter prefix and the
-  auto-generated `shf_aec_cmds.yaml` file corroborate that the
-  HPF is part of the licensed Philips BeClear SHF library.
-- **`AUDIO_MGR_OP_R` category 7 is dual-purpose.** Source N can
-  mean either "AEC residual for mic N" (when `AEC_ASROUTGAIN=0`)
-  OR "ASR output for beam N" (when `AEC_ASROUTGAIN > 0`). The
-  chip-AEC profile's `AEC_ASROUTGAIN=1.0` (Seeed default) means cat-7
-  routes output the ASR variant; the software fallback's
-  `SHF_BYPASS=1` makes both interpretations moot. If we ever need to
-  verify the HPF curve in isolation, we'd set `AEC_ASROUTGAIN=0` first.
-- **There is no mux tap between HPF and AEC.** The chip exposes
-  the input to SHF (cat 3 = amplified-with-system-delay) and the
-  output of AEC (cat 7 = AEC residual or ASR), but nothing in
-  between. Verifying HPF behavior in isolation requires the
-  **difference of two captures** at different `AEC_HPFONOFF`
-  settings, not a single direct tap.
-- **Seeed channel layouts under `SHF_BYPASS=0` (not the software fallback config).**
-  Reference for future debugging: stock 2-ch USB firmware emits
-  ch 0 = conference-tuned beam, ch 1 = ASR-tuned beam (both
-  fully processed). Seeed's 6-ch USB firmware (which we use)
-  adds ch 2-5 = raw mics 0-3 (mux category 1, pre-amplification).
-  None of this matters in the `SHF_BYPASS=1` software fallback — the
-  bypass means all of ch 0/1 carry raw-amplified mic data regardless
-  of mux routing — but it is exactly what the `xvf_chip_aec` profile
-  relies on.
-- **The "8-hour audio watchdog" only applies to the XK-VOICE-SQ66
-  dev kit**, not the Seeed ReSpeaker (which is a licensed
-  production XVF3800 device). Per User Guide §2.1: "Licensed
-  production XVF3800 devices do not have this restriction."
-  External "Google research" sources have been seen claiming this
-  is a runtime concern on Seeed boards and recommending
-  `SHF_BYPASS=1` as a workaround. That recommendation was correct
-  for the software fallback but for the *wrong* reason — the fallback
-  uses SHF_BYPASS=1 to skip chip AEC when the USB-IN reference is not
-  armed, not to avoid a non-existent watchdog.
-- **`PP_AGCTIME` (slow constant) is the right name; `PP_AGCALPHASLOW`
-  is fabricated.** Some external analyses cite the latter; it
-  doesn't exist in the User Guide. Confirmed on our device:
-  `PP_AGCTIME=0.9` (matches doc), `PP_AGCFASTTIME=0.1` (doc claims
-  0.6 — may be a firmware difference or a Seeed override).
-- **DO NOT use `SAVE_CONFIGURATION`.** Some external sources
-  recommend it for persisting tuning changes. Per memory note
-  `project_xvf_alsa_mixer_mute_trap.md` + this doc, it's a brick
-  hazard on certain firmware versions (respeaker repo issue #8).
-  The foreground commissioner performs exactly one volatile reset before
-  adaptation; ordinary boot/replug `jasper-aec-init` only reapplies and
-  verifies the fixed profile.
-
-### Chip-pipeline-only alternative considered + rejected
-
-External literature occasionally recommends "trust the chip's
-internal pipeline, drop the host-side WebRTC AEC." That would
-mean `SHF_BYPASS=0` + taking ch 0 (full conference output) as
-the wake-word input.
-
-We rejected this on two grounds:
-
-1. **Topology mismatch:** the chip's AEC pipeline assumes the
-   chip drives the speaker via its own codec, which we do NOT
-   do — speakers are driven by a separate USB DAC (Apple dongle).
-   Per User Guide §4.2.1, `AEC_FAR_EXTGAIN` auto-mirrors the
-   host's USB-OUT volume; in our topology it parks at −40 dB
-   internally, sabotaging the chip's own AEC reference. We
-   measured ≤2 dB attenuation across every configuration tested.
-   Documented at length in "What we found about chip-side AEC in
-   our topology" below.
-
-2. **Direct empirical evidence:** Phase 2 wake-rate test 2026-05-19
-   included a run with `SHF_BYPASS=0` (chip pipeline fully
-   engaged). Result: 15% wake-rate on both AEC ON and AEC OFF —
-   *worse* than `SHF_BYPASS=1` runs (35% and 60% respectively).
-   So even before the resampler fix, the chip pipeline was worse
-   than our hybrid.
-
-The recommendation is sound for the chip's intended geometry
-(chip-driven speaker). It's wrong for ours, **for the variants
-tested here.** Future sessions should not re-litigate this without
-first measuring under the new resampler-fix conditions.
-
-**What was NOT tested in either rejection:** Option D's variant —
-feed mono music to the chip's USB-IN as the AEC reference signal,
-then read its hardware-AEC'd mic stream. The 2025 dongle-topology
-test had no USB-IN reference. The 2026-05-19 wake-rate test ran
-with `SHF_BYPASS=0` but also without a USB-IN reference (chip was
-running its adaptive filter blind). Option D specifically supplies
-the reference signal the chip's AEC was designed to consume and
-uses the chip's USB Adaptive Mode PLL to share clock between mic
-and reference. That variant was tested on 2026-05-29 and produced a
-**positive lab result** when JTS fed the chip via direct source fanout.
-Current status: no-USB-IN variants remain rejected; USB-IN Option D is
-viable but not productionized. The test record and next steps live at
-[CHIP-AEC-EXPERIMENT.md](CHIP-AEC-EXPERIMENT.md).
-
----
-
-## Bridge ref starvation bug — fixed (2026-05-19)
-
-After the resampler fix above shipped, listening tests on the
-bridge's debug-record `ref.wav` revealed two more reference-signal
-bugs in series. Both are now fixed but worth documenting because
-they invalidate every AEC-side measurement made before this date.
-
-### The mechanism
-
-The bridge's `_aec_loop` consumed reference frames from `ref_q`,
-which is filled by `_ref_thread` reading from ALSA at 48 kHz
-stereo. The two threads were ostensibly running at 50 Hz each (one
-20 ms frame per iteration). They are not.
-
-ALSA negotiates the bridge's requested `periodsize=960` up to
-`1024` (to match dsnoop's underlying period). With buffer_size =
-4× period, `pcm.read()` delivers **two 1024-frame periods
-back-to-back every ~40 ms** — a 25 Hz "burst" cadence at the ALSA
-layer, despite the bridge requesting smooth 50 Hz. Mic delivery
-remains a smooth 50 Hz via the sounddevice callback.
-
-Result: on alternating main-loop iterations, `ref_q` is empty
-because the next burst hasn't arrived yet. The original code
-substituted `silence` (a zero-frame) on those iterations. A first
-fix attempt drained the newest frame and reused it on the empty
-iteration; this produced byte-identical duplicate frames. Each
-failure mode is independently audible and measurable.
-
-### The three layered fixes
-
-| Layer | Symptom | Fix | PR |
-|---|---|---|---|
-| ALSA plug 44.1→48 | ~12 dB HF loss in ref | `libasound2-plugins` + configured libsamplerate rate_converter (`samplerate_medium` default, `samplerate_best` optional) | [#150](https://github.com/jaspercurry/JTS/pull/150) |
-| `_aec_loop` empty-queue fallback to `silence` | 50 % of AEC frames received zero ref | Carry-forward `last_ref_bytes` | [#154](https://github.com/jaspercurry/JTS/pull/154) |
-| `_aec_loop` drain-newest discarded burst frames | 50 % of frames byte-identical duplicates | Consume one frame per iteration in order | [#157](https://github.com/jaspercurry/JTS/pull/157) |
-
-### Diagnostic methodology
-
-The bug was hidden because none of these failure modes raised log
-warnings. The `drained > 5` warning guards the *over*-full case;
-there was no instrumentation on the *under*-full path. Discovery
-required listening to `ref.wav` (the user's audio-trained ears
-caught a "25 Hz fan-like pulsing" with the original code and "50 Hz
-buzzing" with the PR #154 fix) and validating with frame-by-frame
-WAV analysis:
-
-- Original: 49.6 % silent frames in `ref.wav`, 98 % at one parity
-- PR #154: 0 % silent but 50.1 % byte-identical consecutive pairs
-- PR #157: 0 % silent, 0 % duplicates — verified working
-
-The verification script `scripts/verify-ref-no-silence-bug.sh`
-captures 30 s of `ref.wav` via the bridge's debug-record mode and
-returns a pass/fail verdict. It also catches the duplicate-pair
-regression implicitly (no carry-forward can ever produce
-byte-identical duplicates with the new consumer).
-
-### Visibility going forward
-
-The bridge's periodic RMS log line now includes
-`ref_starve=N` — the count of iterations in the 5 s window that
-hit the empty-queue path and carried forward. Under normal
-operation this should remain non-zero (the underlying ALSA
-bursting is still there, only the consequence is now harmless)
-but stable. A sudden rise indicates ref delivery has degraded.
-
-### Why this destroys all pre-fix AEC measurements
-
-Every "AEC ON" wake-rate measurement up to 2026-05-19 ran with
-the bridge feeding AEC3 a reference that was 50 % silent (and
-half-bandwidth in the speech band on top of that). The adaptive
-filter could not converge. The "AEC OFF" / chip-direct
-measurements remain valid because the bridge is bypassed in
-those.
-
-The wake-rate test protocol in `scripts/wake-rate-test.sh` is
-unchanged. Re-running it is the next step. Pre-fix data is in
-`logs/wake-rate/SHF_1_v*` for reference but should be cited only
-for the "AEC OFF" leg.
-
----
-
-## NS aggressiveness + AGC1 dynamic gain — 2026-05-20 findings
-
-Once the bridge ref-starvation bugs were fixed (above), wake-rate was
-still well below pre-degradation baselines. A forensic per-utterance
-analysis surfaced two further tuning knobs that move the needle.
-**These are now production defaults.**
-
-### What changed in the binding + bridge
-
-`jasper_aec3/src/aec3_binding.cpp` constructor now accepts:
-- `ns_enabled: bool` (default `true`) — toggle the post-AEC noise-
-  suppression stage entirely
-- `ns_level: str` (default **`"low"`**, was `"moderate"`) — one of
-  `low / moderate / high / very_high` (Trixie's
-  `libwebrtc-audio-processing-1` v1.3-3 doesn't expose `kVeryLow`)
-- `agc1_enabled: bool` (default `false`, **enabled in production via
-  env**) — turns on WebRTC AGC1 in `kAdaptiveDigital` mode for
-  per-utterance dynamic gain
-- `agc1_target_dbfs: int` (default `9`) — peak target for AGC1
-- `agc1_max_gain_db: int` (default `18`) — maps to WebRTC's
-  `compression_gain_db` (soft-knee compressor parameter, 0–90 dB
-  range). Note: this is *not* a "max gain ceiling" despite the
-  variable name; the name is retained for backwards compat. WebRTC
-  has no attack-time / release-time parameter at all.
-
-`jasper/cli/aec_bridge.py` reads matching env vars and wires them
-through. Existing knobs (`JASPER_AEC_MIC_GAIN_DB`, `JASPER_AEC_AGC2`,
-etc.) preserved for backwards compat; AGC2 is a documented no-op on
-this binding/libwebrtc combination and should stay off.
-
-### Why these two knobs
-
-**NS level**: openWakeWord (the `speech_embedding` CNN + small Dense
-head) is brittle to spectral distortion. AEC3's post-cancellation
-noise-suppression makes per-frequency-band gain decisions; more
-aggressive NS = more HF speech-consonant features masked out =
-more silent misses on Jarvis utterances that humans hear cleanly.
-The 2026-05-20 NS sweep on the test-1 capture:
-
-| `JASPER_AEC_NS_LEVEL` | Wake rate | Notes |
-|---|---|---|
-| `off` (NS disabled) | 5/20 (25%) | tied for best |
-| **`low`** | **5/20 (25%)** | **new default** |
-| `moderate` (prev default) | 4/20 (20%) | baseline |
-| `high` | 3/20 (15%) | worse |
-| `very_high` | 2/20 (10%) | worst |
-
-`low` ties `off` for wake rate but retains some residual noise
-suppression for non-detection paths, so it ships as the default.
-
-**AGC1**: Static `MIC_GAIN_DB=+12` won 5/20 in the same sweep but
-produced uneven output — manual listening showed some Jarvises
-peak-clipped while others stayed quiet, depending on the AEC's
-instantaneous output level (which varies with music content). AGC1
-in `kAdaptiveDigital` mode levels per-utterance, fixing the
-"overblown vs quiet" inconsistency. Wake rate is the same as
-static +12 dB (5/20), but the output is uniformly ~RMS 1213 across
-every utterance, no clipping, no inter-utterance pumping. AGC1's
-`target_dbfs` / `max_gain_db` parameters had minimal effect in our
-sweep (limiter dominates); the defaults (9/18) are inherited from
-HA Voice PE's same-purpose configuration.
-
-### Forensic methodology that surfaced this
-
-Per-utterance analysis on the AEC output, NOT the wake-rate summary.
-The full methodology is documented in memory note
-`project_aec_wake_rate_forensic_methodology.md`. Key principle: don't
-trust `_offline_wake_count.py`'s cross-correlation utterance finder
-alone — it picks the top-N normalized peaks globally, which can
-include pre/post-track noise. Use the AEC ON output's energy envelope
-(200 ms windows, ≥3s spacing, t=10-118s range) to locate the real
-Jarvises, then extract ≥2s pre / 4s post around each peak (the model
-needs ~1-2s of trailing context to commit a wake score), then run the
-model in isolation with 4s silence padding to flush state between
-utterances. Save WAVs and listen — the operator's ear catches
-misalignment and audio degradation that the analyzer doesn't.
-
-### Sweep tooling (one-off scripts retained for next investigation)
-
-The 2026-05-20 sweep used three Python scripts that lived in `/tmp`
-during the session; they're not in `scripts/` because each is a
-single-purpose forensic tool, but if a future session needs the same
-analysis they can be reconstructed from the memory note or pulled
-from the session transcript. The pipeline:
-
-1. Run `wake-rate-test.sh test-N` to capture `(mic, ref, aec_output)`
-   into `logs/wake-rate/<session>/test-N/`
-2. Offline replay through `jasper_aec3.Aec3(...)` with arbitrary
-   config — the binding's expanded constructor (above) enables
-   sweeping NS / AGC1 settings without rebuilds
-3. Run `openwakeword.Model.predict()` on each output to count fires
-4. Extract per-utterance WAVs for manual listening sanity-check
-
-The same `(mic, ref)` pair was used across all 23 NS×gain configs in
-the 2026-05-20 sweep — eliminates phone-playback variance entirely,
-since every config sees identical physical input.
-
-### Open question
-
-14 of the 20 utterances in test-1 stayed at 0.001 confidence across
-ALL 23 sweep configs (every NS level, every gain, AGC1 on/off). NS
-and AGC1 reach 6/20 → 5/20 worth of Jarvises (≈10% absolute
-improvement). The remaining 14 fail for reasons NS/AGC1 don't touch
-— hypotheses include the openWakeWord head being miscalibrated for
-TTS Jarvis in music ([Agent 1 research, 2026-05-20 session]) and the
-phone playback level being lower than pre-fix baselines. Open
-research directions:
-- DTLN-aec as a learned echo-residual-suppressor that replaces AEC3's
-  destructive nonlinear stage ([breizhn/DTLN-aec](https://github.com/breizhn/DTLN-aec); MIT licensed; Pi-validated via
-  [PiDTLN](https://github.com/SaneBow/PiDTLN))
-- Retrain the openWakeWord head on AEC-passed Jarvis positives via
-  `automatic_model_training.ipynb` (free Colab T4, ~2 weekends of
-  work; the path most likely to recover the remaining 14)
-
----
-
-## Wake-rate forensic test methodology — 2026-05-20
-
-This section captures the test methodology that surfaced the
-NS-level and AGC1 findings above. It's documented here (in the
-repo) so future sessions can reproduce the analysis without
-re-deriving it. Cross-referenced as user memory note
-`project_aec_wake_rate_forensic_methodology.md`.
-
-### Why a forensic methodology was needed
-
-`scripts/wake-rate-test.sh` gives a summary number (e.g. "AEC ON
-20% wake rate"). It doesn't tell you *which* Jarvises succeeded or
-failed, *why* the failures happened, or whether the
-cross-correlation utterance finder was even pointing at real
-Jarvises. The 2026-05-20 investigation found multiple non-obvious
-gotchas the summary numbers don't surface.
-
-### The pipeline (one capture, many analyses)
-
-1. **Capture once.** Run `scripts/wake-rate-test.sh test-1` with
-   music + the wake-test-track playing. Produces
-   `logs/wake-rate/<session>/test-1/{aec-on,aec-off,reference}.wav`
-   + a `result.txt` summary. AEC ON and AEC OFF are produced from
-   the *same* physical mic capture (the bridge debug-records both
-   pre- and post-AEC streams), so they're time-aligned.
-
-2. **Locate utterances by energy envelope, not by xcorr.**
-   `_offline_wake_count.py`'s cross-correlation utterance finder
-   picks the top-N normalized peaks globally; when fewer than N
-   actual Jarvises are in the capture window (pre-tap noise,
-   early/late timing), it picks random music transients as
-   "utterances" and the per-utterance scoring becomes unreliable.
-   Instead, compute the energy envelope of the AEC ON output
-   (200 ms windows; ≥3 s spacing; restrict to t=10–118 s to
-   exclude pre/post-track noise). With music suppressed by AEC,
-   the loudest 200 ms windows ARE the Jarvises. The xcorr finder
-   gave misaligned-by-up-to-5-seconds results on test-1, which
-   alone moved one Jarvis from "silent" to "fires" once corrected.
-
-3. **Extract wide windows.** ≥2 s pre / 4 s post around each
-   envelope peak (6 s total file). The wake model needs ~1–2 s of
-   trailing context after the word to commit a wake score; tighter
-   windows produce false negatives at the analysis layer that
-   weren't real misses in production.
-
-4. **Run the model in isolation.** For each utterance window,
-   pad with 4 s of silence at the start (2× 2-s `SIL_2S`) and 2 s
-   at the end, then run `openwakeword.Model.predict()` chunk-by-
-   chunk. The silence prefix flushes any state from the previous
-   utterance's call.
-
-5. **Always save WAVs for ear sanity-check.** The operator's ear
-   catches misalignment, truncation, and audio degradation that
-   the analyzer doesn't. Several methodology fixes in the
-   2026-05-20 session came from "this file sounds silent" /
-   "this file sounds clipped" observations on extracted WAVs.
-
-### The aligned A/B technique
-
-Use the AEC ON envelope to find Jarvis wall-clock times, then
-extract from BOTH `aec-on.wav` AND `aec-off.wav` at those *same*
-wall-clock times. The xcorr utterance-finder is independent across
-the two files and will produce different finds; the energy
-envelope on AEC OFF will find music peaks (since music isn't
-suppressed there), not Jarvises. Always use the AEC ON envelope
-for both legs.
-
-### The offline AEC replay technique
-
-The AEC3 binding's expanded constructor (NS level, AGC1 params,
-etc.) supports offline replay: load `(mic_ch1.wav, ref.wav)` from
-a debug-record capture, instantiate `jasper_aec3.Aec3(...)` with
-arbitrary config, call `.process(mic_bytes, ref_bytes)`, and you
-have an AEC output that would have been produced live under that
-config. Saved one or more `aec-output-<config>.wav` files per
-sweep iteration. **One physical capture → unlimited AEC
-configurations tested in minutes** — eliminates phone-playback /
-room / music variance across configs entirely. The 2026-05-20
-sweep tested 23 NS×gain×AGC2 configs in ~10 minutes from a single
-test-1 capture.
-
-### What we extracted into reusable infrastructure
-
-The 2026-05-20 sweep scripts (`jts_aec_sweep.py`,
-`jts_agc1_sweep.py`, `jts_extract_v2.py`,
-`jts_aligned_ab_v2.py`) lived in `/tmp` during the session. They
-weren't promoted to `scripts/` because each is a single-purpose
-forensic tool. If a future session needs the same analysis,
-reconstruct them from the memory note's documented pipeline.
-
-### What's verified vs unverified by this methodology
-
-- ✅ Verified: which AEC config produces best per-utterance scores
-- ✅ Verified: which Jarvis utterances are intrinsically silent
-  vs config-recoverable
-- ❌ Unverified: false-positive rate per AEC config (we measure
-  wake scores at the 20 Jarvis locations, not at music-only
-  stretches). Counting peaks ≥0.30 in inter-utterance windows
-  would give the per-config FP rate — quick add-on for any future
-  sweep.
-
----
-
-## Open work streams — 2026-05-21 roadmap
-
-Forward-looking inventory of paths we've investigated but haven't
-shipped, ordered roughly by value-per-effort. Each entry includes
-what it is, why it's on the list, cost, risk, and prerequisites.
-Updated as paths get picked up or new ones surface.
-
-### A — livekit-wakeword (parked 2026-05-21 — modest gains, not worth training)
-
-**Status:** Explored on 2026-05-21 via the LAION BUD-E
-`hey_buddy_en_medium.onnx` model as a no-training smoke test
-(conv-attention head, same architecture livekit-wakeword would
-train for Jarvis). **Verdict: real but marginal architectural
-improvement. Not worth a weekend of training given today's
-empirical evidence.** Keeping on the list because the rationale
-still has theoretical merit and the runtime compatibility is
-proven — if priorities ever shift, the door is open.
-
-**What it is:** Train a "Jarvis" wake-word model with LiveKit's
-training pipeline. The head is 1D-conv + multi-head self-attention
-instead of openWakeWord's flatten + Dense MLP; the audio front-end
-(mel-spec → Google `speech_embedding` CNN → 16×96 feature matrix)
-is identical, so the output ONNX is openWakeWord-runtime-
-compatible — drop into our existing wake-word loader with no
-infrastructure change. **Verified 2026-05-21: BUD-E
-`hey_buddy_en_medium.onnx` loads in our openWakeWord runtime on
-Pi 5 and produces predictions.**
-
-**Why originally on the list:** The 0.997/0.001 bimodal behavior
-we observe (every Jarvis either fires confidently or silently
-misses, nothing in between) is the textbook failure mode of an
-uncalibrated flatten + BCE sigmoid head. Conv + attention gives
-the network temporal inductive bias the flatten step destroys,
-and is more robust to spectral distortion in the academic
-small-footprint KWS literature. The hope: recover some of the
-14/20 silent-in-every-config Jarvises from the 2026-05-20 sweep.
-
-**What we found empirically (2026-05-21, same music level, same
-acoustic conditions, MIC_GAIN_DB=0 for both runs):**
-
-| | `jarvis_v2` (openWakeWord flatten+Dense) | `hey_buddy_en_medium` (livekit-wakeword conv+attention) |
-|---|---|---|
-| Max model score | 0.997 | 0.702 |
-| AEC ON fires @ threshold 0.30 (per apples-to-apples envelope rescore) | 4 | 3 |
-| AEC OFF fires @ threshold 0.30 | 5 | 1 |
-| Frames in 0.10-0.30 ("near-miss") | ~5 each | OFF: 10, ON: 17 |
-| AEC ON > AEC OFF? | No (5 OFF > 4 ON) | **Yes (3 ON > 1 OFF)** |
-
-**Two genuine findings from the experiment:**
-
-1. **Conv-attention IS somewhat more AEC-robust.** For Hey Buddy
-   the AEC ON leg actually beats AEC OFF (3 vs 1) — the opposite
-   of Jarvis (4 ON vs 5 OFF). Two specific moments where the
-   conv-attention head fired through AEC distortion that the
-   chip-direct OFF leg missed entirely: t=20.96 (ON 0.638 vs OFF
-   0.062) and t=84.16 (ON 0.332 vs OFF 0.103). The architectural
-   argument has empirical support, just for AEC-specific
-   robustness, not overall sensitivity.
-
-2. **But LAION's `hey_buddy` is much less sensitive overall**
-   than fwartner's `jarvis_v2`. Max scores of 0.7 vs 0.99, many
-   more frames in the [0.10, 0.30] "near-miss" band. Different
-   training data, different calibration. At identical thresholds,
-   `jarvis_v2` produces more confident, less-borderline detections.
-   The two factors (better topology, less sensitive training)
-   roughly cancel out in our data.
-
-**Why this might still be worth pursuing later:**
-
-The Hey Buddy test compared a *different model* with a *different
-phrase* in a *different architecture*. A true same-phrase
-architectural A/B (training a Jarvis-specific livekit-wakeword
-model and running it head-to-head against fwartner's jarvis_v2)
-would tell us whether the conv-attention head's specific
-AEC-robustness advantage transfers — and whether the LAION
-calibration issue was the dominant variable, not the architecture
-itself. If a future session has time to invest in training, this
-question remains genuinely open. The runtime compatibility is
-proven; the only blocker is the training step.
-
-**Cost (if revisited):** ~1 weekend. Training on free Colab T4
-(~1 hour active); data pipeline reuses Piper TTS positives +
-ACAV negatives + RIRs; the model exports as `.onnx`, scp into
-the JTS, point `JASPER_WAKE_MODEL` at it, restart `jasper-voice`.
-
-**Risk (if revisited):** Low. Reversible in seconds (point
-`JASPER_WAKE_MODEL` back to `jarvis_v2.onnx`). The 100× FPPH /
-17% recall numbers on LiveKit's PyPI page are vendor self-
-reported on their test set; absolute multipliers will differ on
-ours. Architectural improvement is theoretically durable; the
-empirical magnitude per the 2026-05-21 BUD-E test is modest.
-
-**Infrastructure that landed and stays useful** (regardless of
-whether livekit training is pursued):
-- `scripts/wake-rate-test.sh` and `scripts/make-wake-test-track.sh`
-  now accept `PHRASE` and `MODEL` env vars (PR #167). Any future
-  cross-model or cross-phrase A/B uses the existing harness with
-  one extra env var.
-
-**To repeat the smoke test in the future**:
-```sh
-curl -L -o /tmp/hey_buddy_en_medium.onnx \
-  "https://huggingface.co/laion/bud-e_wakeword-models_livekit-wakeword/resolve/main/en_medium/hey_buddy_en_medium.onnx"
-scp /tmp/hey_buddy_en_medium.onnx pi@jts.local:/tmp/
-ssh pi@jts.local "sudo install -m 0644 /tmp/hey_buddy_en_medium.onnx /var/lib/jasper/wake/"
-```
-(The model was installed on 2026-05-21 for the smoke test, then
-removed to keep `/var/lib/jasper/wake/` clean. Re-installing takes
-seconds when a future session wants to retest.)
-
-**Prerequisites:** None. Can start anytime; not currently planned.
-
-**Refs:** [livekit-wakeword PyPI](https://pypi.org/project/livekit-wakeword/),
-[piper-sample-generator](https://github.com/rhasspy/piper-sample-generator)
-(LibriTTS-R, 904 voices — not 2,456 as some external sources cite).
-
-### B — Per-AEC-config false-positive rate measurement (tiny)
-
-**What:** Add a step to the forensic methodology: count wake-score
-peaks ≥0.30 in the inter-utterance windows (music-only stretches)
-of each `aec-<config>.wav`. Gives a per-config FP rate alongside
-the existing per-config wake rate.
-
-**Why on the list:** The 2026-05-20 sweep didn't measure FP rate
-per config. Dual-stream wake (C below) crucially depends on this:
-if AEC OFF has high FPs from music, OR-gating with it gives best-
-of-both-worlds wake rate but worst-of-both-worlds FP rate. We need
-the FP number before committing to C.
-
-**Cost:** ~1 hour. Extension to existing sweep scripts.
-
-**Risk:** None — measurement only.
-
-**Prerequisites:** None. Can run on existing test-1 data without
-recapturing.
-
-### C — Dual-stream wake-word with reference-coherence gating
-
-> **Status: the OR-gate half shipped (PR #191), default-off.** Running
-> the wake-word detector on both the AEC ON stream (post-bridge UDP
-> output) and the AEC OFF stream (chip-direct mic, no AEC processing)
-> and OR-ing the detections is live — `jasper/wake_legs.py` registers
-> the `chip_direct`/`off` leg on UDP `:9877` as a `wake_input=True`
-> production leg alongside `aec3`/`on`, and `WakeLoop` OR-gates fires
-> across every `wake_input` leg with a shared refractory window. What
-> remains open is the coherence-gating refinement below — suppressing
-> an OFF-leg fire when mic-vs-reference correlation is high.
-
-**What (open part):** Gate the OR with a coherence check: if
-mic-vs-reference correlation at the detection moment is high (AEC's
-adaptive filter coefficients indicate strong self-talk), suppress.
-
-**Why on the list:** Test-1 aligned A/B data (in this doc above)
-shows AEC ON and AEC OFF catch *mostly disjoint* sets of Jarvises:
-
-| | AEC ON unique fires | Both fire | AEC OFF unique fires | Union |
-|---|---|---|---|---|
-| Test 1 | 3 (j-03, j-08, j-12) | 1 (j-10) | 4 (j-05, j-15, j-18, j-20) | **8/20 (40%)** |
-
-The union is **+15 percentage points over the better single leg
-(25%)**. That's the highest single-experiment wake-rate gain on
-the table, IF the FP cost is acceptable (option B above bounds
-it).
-
-The coherence-gating idea has named patent prior art —
-[Sonos US 11,769,505](https://patents.google.com/patent/US11769505)
-explicitly describes selective AEC activation based on wake-word
-detection; [Amazon US 12,361,942](https://patents.google.com/patent/US12361942)
-uses variable-step-size (Vss) trends in the AEC adaptive filter
-to distinguish user wake-word from wake-word-in-playback. The
-patterns exist in commercial smart speakers but have no canonical
-open-source implementation; we'd build it.
-
-**Cost:** ~3 days. The wake-word loop needs a second stream
-ingestion path; the AEC adaptive-filter state needs to be exposed
-from the binding (it's there internally); the gate logic is a
-few hundred lines of Python.
-
-**Risk:** Medium. Failure mode: more FPs from music. Mitigated by
-option B and by the coherence gate.
-
-**Prerequisites:** Option B (FP-rate measurement) to bound the
-worst-case FP cost.
-
-### D — Chip-AEC with USB-in reference topology
-
-> **Status: commissioned production path.** On 2026-05-29 we proved the
-> XVF3800's on-chip AEC can cancel usefully in JTS's external-DAC topology
-> when JTS feeds a clean USB-IN reference. The 2026-07-30 alignment pass
-> made managed XVFs chip-AEC-or-park and added explicit commissioning plus
-> silent K-based lifecycle reapplication. The wake-corpus recorder can
-> still enter reversible chip-AEC comparison profiles that use outputd
-> direct source fanout, apply the volatile chip profile, and capture
-> explicit `chip_aec_150` / `chip_aec_210` legs for validation.
-> Full test record lives in
-> [CHIP-AEC-EXPERIMENT.md](CHIP-AEC-EXPERIMENT.md), which is historical:
-> the `scripts/chip-aec-*` helpers it drives, and the
-> `jasper.chip_aec_experiment` daemon behind them, were deleted in
-> U4/P7-3 once the production path had shipped and the pre-DSP tap they
-> captured entered the deletion arc. Read that doc for the record, not
-> for a runnable recipe. User-authorized carve-out from the
-> "Architecture is fixed" policy in [AGENTS.md](../AGENTS.md).
-
-As of 2026-07-09, corpus chip-AEC mode has its own capture-plan
-contract. `JASPER_AEC_CORPUS_CHIP_AEC_ENABLED=1` is enough for
-`jasper-aec-bridge` to emit the dedicated `chip_aec_150` and
-`chip_aec_210` UDP legs on `:9887/:9888`; it no longer depends on
-production per-beam wake-device vars being configured. Bridge stats
-schema v4 publishes `active_capture_plan` with the wake-corpus
-`plan_id`, emitted legs, corpus flags, beam plan, ports, and mic /
-reference identity summary, plus the negotiated `capture_stream` geometry.
-The recorder uses that stats payload, not
-env inference alone, to block clip start when the active bridge no
-longer matches the stored session plan.
-
-**What:** Feed mono music to the XVF3800's USB-in left channel as the
-AEC reference signal, then read the chip's hardware-AEC'd USB capture
-stream. The winning lab shape uses the current 6-channel firmware:
-category 7 ASR output (`AEC_ASROUTONOFF=1`), fixed gated beams at
-`150°/210°`, and `AEC_AECEMPHASISONOFF=2`. A future production version
-should fan out one rendered source buffer directly to both the DAC and
-XVF3800 USB-IN reference. Do not ship the old `plug:jasper_capture`
-feeder as the architecture; it was the source of the apparent drift.
-
-**Why on the list:** The original chip-AEC rejection (documented
-in "What we found about chip-side AEC in our topology" and
-"Chip-pipeline-only alternative considered + rejected" below) was
-based on a *different* topology — the chip driving its own
-codec/speaker, where `AEC_FAR_EXTGAIN` auto-mirroring host UAC
-volume sabotaged the reference. With music routed via USB-in as
-a known-amplitude reference (the proposed new topology), that
-specific failure mode goes away. The May 2026 chip-AEC empirical
-test (15% wake rate with `SHF_BYPASS=0`) ran without a USB-in
-reference at all and is not directly applicable. **This is the
-"canned worms" path — re-opening a previously-closed investigation
-with a new variable.**
-
-**Cost:** Now mostly integration work rather than feasibility research.
-Expected next slice: direct source fanout + a lab/recorder capture mode
-for the chip leg, followed by a wake/corpus validation pass. The old
-multi-month "maybe clocks make this impossible" concern is retired for
-the direct-fanout topology.
-
-**Risk:** High. Topology change touches CamillaDSP routing,
-shairport-sync output target, firmware variant, and the bridge
-service unit. Reversible but with friction.
-
-**Prerequisites:** Read the chip-AEC delay-tolerance subsection
-below before scoping. Don't start the work without the delay
-budget.
-
-**2026-05-29 live gate update:** Option D moved from "maybe plausible"
-to positive lab result. The first fan-in-era chirp baseline measured
-ref→mic around `181-209 ms`, outside the chip's direct
-`AUDIO_MGR_SYS_DELAY` clamp (`[-64,+256]` samples), but that was the
-old delayed feeder harness. A direct dual-playback harness then showed
-the source-fanout topology is clock-stable (`~1 ppm` drift over 15
-minutes), and controlled direct A/B showed useful chip-AEC reduction
-with `SHF_BYPASS=0`. The best double-talk/wake-shaped output was not
-ch0 alone; it was category 7 ASR output with fixed gated `150°/210°`
-virtual beams, especially the `150°` beam. `AEC_FAR_EXTGAIN=+3/+6 dB`
-made results worse; `AEC_AECEMPHASISONOFF=2` improved the final
-strength/edge sweep.
-
-#### Chip-AEC delay tolerance — what the chip can and can't do
-
-Researched 2026-05-21 to scope option D before any future commits.
-Sources at end of subsection. The "out-of-sync" worry from prior
-sessions turns out to conflate **bulk delay** (real concern, easy
-fix) with **clock drift** (non-issue in the proposed topology).
-
-**`AUDIO_MGR_SYS_DELAY` — the explicit bulk-delay knob:**
-
-| Property | Value | Source |
-|---|---|---|
-| Type / unit | `int32`, samples at 16 kHz (62.5 µs/sample) | `jasper/xvf/xvf_host.py` command table; XMOS Tuning Guide §4 |
-| Empirical accepted range | **−64 to +256** (values >256 silently clamp) | HANDOFF-aec.md line 1461, our 2025 sweep |
-| Sign convention | positive delays the reference; negative delays the mic (used to fix acausal systems) | XMOS Tuning Guide §4 |
-| Seeed default | `AUDIO_MGR_SYS_DELAY = 12` (≈0.75 ms) | respeaker/host_control README |
-| XMOS-documented target | impulse-response peak within first 40 samples (≈2.5 ms) of the tail after compensation | XMOS Tuning Guide §4 |
-
-**Adaptive-filter tail = 192 ms.** lib_aec runs a main filter plus
-shadow filter; total tail length is 192 ms. Within that window the
-LMS adapts taps freely without retuning `SYS_DELAY`. *Quality*
-convergence (vs just "not divergent") needs the peak within the
-first 40 samples of the tail; beyond that, ERLE degrades and
-convergence slows. Beyond the 192 ms tail, the AEC has no
-tracking — those echoes are unmodelled.
-
-**Cross-clock drift is NOT a problem in the proposed topology**
-(this is the key insight). The XVF3800 USB UA runs in **USB
-Adaptive Mode**: a software PLL (`lib_sw_pll`) generates the
-chip's internal MCLK *from* the USB host's SOF clock, and the mic
-clock is locked to that same MCLK. In option D's topology (Pi USB
-host driving both music-out *and* mic-in via the same XVF3800
-device), mic and reference clocks derive from the same physical
-timebase. No SRC needed for clock matching, no host-feedback-
-endpoint negotiation, no long-term drift. This is the exact
-topology XMOS designed the chip for.
-
-> **DAC clock-domain dependency — "no drift" is conditional on the
-> speaker sharing the mic's clock domain.** The clause above holds only
-> because the *speaker* is a USB-SOF-disciplined device (the Apple
-> USB-C dongle, an adaptive/synchronous UAC DAC). Chip-AEC needs
-> **three** clocks frequency-locked, not two: the mic A/D, the chip
-> USB-IN reference, **and the airborne echo** (the speaker's D/A
-> conversion). The chip's Adaptive Mode PLL co-clocks the first two to
-> the Pi USB SOF by design; the third is coherent only because the
-> Apple dongle's D/A is *also* locked to that same USB SOF. The
-> production fanout (`jasper-outputd`) relies on this with **no drift
-> compensation anywhere** (integer 48k→16k decimator + a bounded
-> queue that only drops periods on overflow), which is glitch-free
-> only because every endpoint rides the one USB SOF.
->
-> **Swapping the speaker DAC changes only the echo clock — so the whole
-> question is "does the new DAC's D/A run in the mic's clock domain?"**
-> Don't shortcut it from the board's marketing tier. The HiFiBerry
-> DAC8x is **not** a self-clocked master (an early draft said so —
-> wrong): the kernel overlay proves it's a *Pi-clocked I2S slave*,
-> PCM5102A-class, no crystal. On Pi 5 its I2S clock (`pll_audio`) and
-> the USB-SOF the mic rides are *different RP1 PLLs* — **but both
-> descend from the one 50 MHz crystal, so they're frequency-coherent**
-> (common-mode crystal error cancels in the ratio; a second draft's
-> "separate PLLs → drift tens of ppm" claim was also wrong). So the
-> DAC8x is **uncertain, lean coherent — not a confirmed break.** The
-> residual risks are narrower than drift: a non-rational SOF divisor, or
-> a ref→air *delay* that wanders over time past the chip's fixed bulk
-> delay (0–500 ms) + 192 ms tail. Only measurement settles it. Software
-> AEC3 (the fallback for unvalidated DACs) sidesteps the whole question — its
-> reference is jasper-outputd's digital speaker monitor and AEC3 handles
-> render/capture clock mismatch in software; a DAC8x on AEC3 is a
-> routing + re-tune at low/negligible risk, **recommended until that
-> DAC passes the chip-AEC validation gate**.
->
-> **The full decision procedure for evaluating any candidate DAC**
-> (transport/clock-role classification, why "different PLL off the same
-> crystal" is still coherent, the empirical gate, and the escape hatches
-> — software SRO compensation, XVF-master I2S, synchronous-USB-only)
-> lives in [CHIP-AEC-EXPERIMENT.md](CHIP-AEC-EXPERIMENT.md) "DAC
-> clock-domain dependency — a methodology for evaluating any speaker
-> DAC." Before committing a DAC for a chip-AEC build, run the gate
-> there: measure ref→air→mic drift (and watch ref→air delay stability)
-> while checking outputd chip-ref health via
-> `/state.outputd.reference_outputs.chip_ref_writer` (`dropped_periods_due_to_full_queue`,
-> `write_xrun_count`, `write_underrun_count`, `reference_sequence_lag`) and
-> `event=outputd.chip_ref.queue_full` / `event=outputd.chip_ref.write_failed` —
-> ≤~1 ppm clean ⇒ viable (the expected outcome given the shared crystal),
-> tens of ppm or a wandering delay ⇒ needs compensation.
-
-(USB-IN endpoint advertises 16 kHz S16_LE 2-channel only — verified
-empirically on 2026-05-21 against firmware `ua-io16-6ch-sqr` v2.0.8,
-and cross-referenced against the XMOS Datasheet (USB Audio Interface
-section: "the XVF3800 audio sample rate can be either 16 kHz or
-48 kHz **fixed at build time**" — UAC2 Adaptive Mode, one rate per
-build). The runtime SRC documented in the datasheet is for the I²S
-path only, not USB. Seeed ships only `ua-io16-*` configs across all
-firmware variants. **Drive CamillaDSP's route to USB-IN at 16 kHz.**
-The earlier draft of this section said "48 kHz to USB-in is fine —
-chip transparently SRCs" — that was wrong, corrected
-[CHIP-AEC-EXPERIMENT.md](CHIP-AEC-EXPERIMENT.md).)
-
-**Failure modes:**
-- **Acausal** (ref arrives *after* mic, negative effective delay):
-  filter peak at tap 0, no useful tail → ≤2 dB attenuation. **This
-  matches what we observed in the dongle topology** — the chip
-  couldn't see the Apple dongle's playout at all, so effective
-  delay was nonsense. Fix: more-negative `SYS_DELAY` to shift mic
-  later. (The proposed option-D topology removes this failure mode
-  entirely by routing music through the chip itself.)
-
-> **Important caveat about the prior chip-AEC test result.** The
-> 2026-05-19 `SHF_BYPASS=0` run that produced 15% wake rate (cited
-> below in "Chip-pipeline-only alternative considered + rejected"
-> as evidence against chip AEC) ran in the dongle topology — chip
-> had NO USB-in reference signal at all. The chip's USB Adaptive
-> Mode PLL only engages when USB-in audio is flowing as the AEC
-> reference; with no reference, the PLL question doesn't even
-> arise, and the chip's AEC was running blind. **So the 15%
-> result tells us nothing about how chip AEC would perform in
-> option D's topology** (where music IS routed through USB-in).
-> The acausal-delay diagnosis above is the actual mechanism — and
-> it doesn't apply to option D. Don't cite the May 2026 result as
-> evidence against option D; the experimental conditions don't
-> match.
-- **Excessive positive delay** (peak >> 40 samples): filter still
-  adapts but spends tail budget on bulk delay → less budget for
-  room IR → poorer cancellation, slow convergence.
-- **Beyond 192 ms tail**: silent partial cancellation. Early energy
-  attenuated, late reflections pass through unmodelled.
-- **`AEC_AECCONVERGED` flag is the canary.** In all failure modes
-  above, the convergence flag stays at 0. If it won't flip to 1
-  after 30 s of music playing, something's wrong with
-  `SYS_DELAY`, `REF_GAIN`, or the routing. **Add this to
-  `jasper-doctor` checks before any production deploy of option D.**
-
-**Pi-side alignment plan (concrete, draft):**
-
-Current fan-in-era measurements exposed two different paths:
-
-- The old `plug:jasper_capture` feeder path measured about `181-209 ms`
-  ref→mic before Pi-side compensation. The chip cannot eat that
-  host/speaker delay on its own. A test-only upstream reference delay of
-  `180 ms` left a residual `+114` sample chip delay, which is writable.
-- The production-shaped direct source fanout path (one source buffer to
-  DAC + XVF3800 USB-IN) removed the apparent clock drift and held about
-  `~1 ppm` over a 15-minute run. This is the path to productionize.
-
-Conclusion: if Option D graduates, do not rely on
-`AUDIO_MGR_SYS_DELAY` to compensate a late feeder tap. Feed the chip at
-the same source-fanout point as the physical DAC, then use
-`AUDIO_MGR_SYS_DELAY` only for the small residual static offset.
-
-Realistic bring-up sequence:
-
-1. Add a CamillaDSP output route that delivers mono music to
-   XVF3800 USB-in left channel at **16 kHz S16_LE stereo** (the only
-   rate/format the endpoint accepts — see correction above). CamillaDSP
-   does the 48 k → 16 k SRC internally with its AsyncSinc resampler.
-   Right channel can be a copy of left or zero — the chip's AEC uses
-   left only.
-2. Use the smallest stable ALSA period (~5–10 ms) on the USB-in
-   stream — caps host-side latency tightly. Target end-to-end
-   host→chip-USB→mic < 16 ms (256 samples).
-3. Re-measure outputd-reference-to-mic timing with chirp
-   cross-correlation (`scripts/aec-probe-latency.sh`). If total is
-   10–15 ms, set
-   `AUDIO_MGR_SYS_DELAY` to compensate (positive value, 62.5 µs
-   per sample) until the impulse-response peak lands at taps 5–30.
-4. Do not assume coefficient-dump tooling exists in the local helper:
-   `SPECIAL_CMD_AEC_FILTER_COEFFS` is not currently exposed by
-   `jasper/xvf/xvf_host.py`. If coefficient inspection is needed,
-   add the single command from XMOS documentation and validate it on
-   hardware before relying on that workflow.
-5. Confirm `AEC_AECCONVERGED = 1` after 30 s of music, with the
-   latency/chirp evidence above as the primary sanity check.
-
-**Effort estimate:**
-
-| Phase | Duration |
-|---|---|
-| Weekend prototype: route music to USB-in, measure, tune `SYS_DELAY`, verify convergence | 2–3 days |
-| Corpus pilot integration: outputd direct reference fanout, recorder-owned env lifecycle, volatile aec-init chip profile, explicit chip-AEC corpus legs | Landed 2026-05-29 |
-| Productionize: production policy/reconciler logic for chip-AEC mode vs current bridge mode, boot-time persistence choices, bridge `:9876` repoint, outputd reference producer, and basic on-device validation | Landed and deployed 2026-05-31 (`c95bfdd`); doctor/live-arm verification passed. Wake-event telemetry review and any default-ON decision remain follow-up. |
-| Risk: PLL loop bandwidth on the chip's USB Adaptive Mode could introduce timing jitter that pushes the AEC peak past tap 40 intermittently. If so, the fallback is making the host-side ALSA period smaller (already in the bring-up plan above). No CamillaDSP-side SRC bypass possible since USB-IN is 16 kHz only — see correction note above. | — |
-
-**Verdict for future scoping:** managed XVFs use the commissioned chip-AEC
-path or park; they do not fall back. Corpus/custom routes may continue
-recording and scoring chip AEC, WebRTC AEC3, raw, USB, and optional DTLN
-legs. Current fixed square-board chip settings:
-`AEC_ASROUTONOFF=1`, fixed gated `150°/210°`, `AEC_AECEMPHASISONOFF=2`,
-`AEC_FAR_EXTGAIN=0 dB`. Keep WebRTC AEC3 available for non-XVF/custom work
-and never stack it under chip-AEC.
-
-**Sources** (verified URLs as of 2026-05-21):
-- [XMOS XVF3800 User Guide v3.2.1 — Tuning the Application](https://www.xmos.com/documentation/XM-014888-PC/html/modules/fwk_xvf/doc/user_guide/04_tuning_the_application.html) — `AUDIO_MGR_SYS_DELAY` definition, 40-sample target, causality / coefficient-inspection workflow
-- [XMOS XVF3800 Datasheet — Voice Processing Pipeline](https://www.xmos.com/documentation/XM-014888-PC/html/modules/fwk_xvf/doc/datasheet/03_audio_pipeline.html) — pipeline at 16 kHz, AEC tail = 192 ms, integrated SRC, ref signal on USB-in left channel
-- [XMOS XVF3800 Programming Guide — Theory of Operation](https://www.xmos.com/documentation/XM-014888-PC/html/modules/fwk_xvf/doc/programming_guide/02_theory_of_operation.html) — SW PLL, USB Adaptive Mode, MCLK derivation
-- [XMOS lib_aec Overview](https://www.xmos.com/documentation/XM-014785-PC/html/modules/voice/modules/lib_aec/doc/src/overview.html) — main/shadow adaptive filter design, 15 ms frame, phases + tail math
-- [XMOS lib_adec Overview](https://www.xmos.com/documentation/XM-014785-PC/html/modules/voice/modules/lib_adec/doc/src/overview.html) — Automatic Delay Estimation; estimation auto-triggers at power-up
-- [XMOS lib_sw_pll on GitHub](https://github.com/xmos/lib_sw_pll) — the software PLL implementation used for USB→mic clock sync
-- [reSpeaker XVF3800 host_control README](https://github.com/respeaker/reSpeaker_XVF3800_USB_4MIC_ARRAY/blob/master/host_control/README.md) — Seeed default `AUDIO_MGR_SYS_DELAY = 12`
-- In-repo: `jasper/xvf/xvf_host.py` (`AUDIO_MGR_SYS_DELAY` command
-  definition) and this doc's prior sweep history: range −64 to +256,
-  convergence flag never flipped, and the REF_GAIN trap that bricked
-  the previous attempt.
-
-### E — Vendor newer libwebrtc as a Meson subproject
-
-**What:** Build `libwebrtc-audio-processing` v2.x (or upstream
-WebRTC `main`) from source as a Meson subproject of our pybind11
-binding, exposing the deeper `EchoCanceller3Config` knobs that
-Debian Trixie's v1.3-3 public headers omit
-(`suppressor.dominant_nearend_detection`,
-`suppressor.nearend_threshold`, per-band gain masks, etc.).
-
-**Why on the list:** Our 2026-05-20 NS×AGC1 sweep showed we've
-saturated the tunable surface of Trixie's libwebrtc — every AGC1
-parameter combination converged to the same RMS=1213 output;
-`compression_gain_db` is essentially inert; the limiter dominates.
-Newer libwebrtc exposes residual-suppressor knobs that would let
-us reduce HF over-suppression (the documented mechanism for our
-silent misses).
-
-**Cost:** Multi-day initial build work (Meson + cross-compile for
-Pi 5 ARM); ongoing maintenance burden (each Debian upgrade
-potentially conflicts with the vendored lib). See "Deep tuning
-landscape — research notes" below for the full prior investigation.
-
-**Risk:** High maintenance cost. Long-term technical debt.
-
-**Prerequisites:** Measurement showing the existing AEC3 surface
-is genuinely the limit. As of 2026-05-21 we don't have that
-measurement — options A, B, C may reach the goal without needing
-E.
-
-### F — DTLN-aec post-AEC residual suppressor
-
-**What:** Insert [DTLN-aec](https://github.com/breizhn/DTLN-aec)
-between AEC3's linear stage and the wake-word detector. DTLN-aec
-takes `(mic, far-end reference)` — same inputs as AEC3 — and
-applies a learned residual suppressor designed to preserve speech
-features the rule-based residual stage destroys.
-
-**Why on the list:** MIT licensed, ~1.8M parameters, runs
-real-time on Pi 4 per community reports; Pi 5 has ~2.4× the
-multi-core perf. The fix is targeted at the exact failure mode we
-documented (HF speech-consonant stripping).
-
-**Cost:** ~half-day prototype on Pi via
-[PiDTLN](https://github.com/SaneBow/PiDTLN); validation against
-test-1 captures via the offline replay technique above.
-
-**Risk:** Medium. **DTLN-aec was trained on speech far-end (the
-ICASSP 2021 AEC Challenge dataset) — music-as-far-end performance
-is community-reported but not published.** Could be marginal or
-significantly helpful; only measurement will tell.
-
-**Prerequisites:** None for the prototype. None for measurement.
-
-### G — Custom wake-word retraining on AEC-passed positives
-
-**What:** Generate ~10k Piper TTS Jarvis utterances, pipe each
-through our actual JTS audio chain (play → capture → AEC), collect
-post-AEC positives, train a new openWakeWord Dense head against
-those positives + standard negatives.
-
-**Why on the list:** The path most likely to recover the 14/20
-silent-in-every-config Jarvises, because the training distribution
-would match the deployment distribution exactly.
-
-**Cost:** ~2 weekends. Compute on free Colab T4.
-
-**Risk:** **The resulting model is JTS-specific** — captures
-our DAC, speaker, room, mic placement. Doesn't transfer to other
-users / other JTS-style builds. Per project preference (this is a
-hobby project that might be useful to others), this is a
-last-resort option, not a first move.
-
-**Prerequisites:** Options A and (especially) C have been
-measured and found insufficient. Without that measurement, we'd
-be over-fitting to a problem partially addressable by cheaper
-interventions.
-
-### What's intentionally NOT on the list
-
-- **Hardware migration to a different mic.** We have the XVF3800
-  already. Option D is the only hardware-path remaining; everything
-  else is software.
-- **Switching to Picovoice Porcupine.** January 2025 license update
-  restricts the Free Plan to "personal non-commercial projects"
-  only — fine for the JTS-as-hobby case but creates risk if the
-  project's distribution model ever changes. openWakeWord (Apache)
-  + livekit-wakeword (Apache) are the only safe-by-default
-  choices.
-- **PipeWire / topology re-architecture.** Per the user-memory
-  feedback note, we don't redo the audio topology unless
-  measurement localizes the root cause there. None of the open
-  work streams above are in that category.
-
----
-
-## Channel choice — how we got here
-
-This section documents an architectural decision that previously
-took multiple sessions to investigate. Future debugging: consult
-[HANDOFF-xvf3800.md §3](HANDOFF-xvf3800.md) for the per-channel
-DSP reference table BEFORE making channel-choice changes.
-
-### Why we used to use channel 2 (raw mic 0)
-
-The original design for the WebRTC AEC3 bridge captured chip
-channel 2 = raw mic 0. The stated rationale was "AEC3 wants clean
-linear input; the chip's AGC introduces non-linearity that could
-confuse the adaptive filter." Defensible in isolation, but:
-
-1. **No public XVF3800 deployment does this.** Every reference
-   design we could find (Seeed's own examples, formatBCE ESPHome
-   integration, Pollen Robotics Reachy Mini) uses chip channel 0
-   or 1 — the chip-processed beam output.
-2. **Channels 2–5 bypass every chip DSP stage, not just AEC.**
-   Per XMOS User Guide §3.6.1 Table 3.2, "Category 1: Raw
-   microphone data — before amplification, no system delay
-   applied." That includes MIC_GAIN, HPF, beamforming, NS, AGC.
-   We were giving up the entire chip pipeline to preserve
-   linearity that AEC3's residual echo suppressor is designed to
-   tolerate.
-3. **Empirically verified 2026-05-15**: toggling chip NS/AGC
-   parameters caused 1.5–8 dB of variation on channels 0/1 and
-   0.0–0.4 dB on channels 2–5. Channels 2–5 are inert to every
-   chip-side parameter.
-
-### Why we switched to channel 1 (ASR beam) on 2026-05-15
-
-The decision was made on the assumption — based on the XMOS audio
-pipeline diagram and our reading of the SHF_BYPASS docs — that
-channel 1 with `SHF_BYPASS=1` would give us **chip BF + NS + AGC +
-HPF** without the chip's AEC. That assumption turned out to be
-wrong (see Caveat above): SHF_BYPASS bypasses the entire SHF block,
-not just the AEC adaptive filter. So channel 1 with SHF_BYPASS=1
-is effectively raw-ish mic data — similar to channel 2.
-
-That said, the architecture as deployed is still a win over the
-previous state because:
-
-- **`REF_GAIN=0` is correctly tuned for this raw-ish input.** The
-  previous architecture's `REF_GAIN=25` was wrong for raw mics too
-  (mismatched against AEC3's design point given our specific
-  acoustic path levels). Both architectures used a raw-ish mic;
-  the new one just has the gain knob in the right place.
-- **Channel 1 has chip MIC_GAIN applied** (the output mux preserves
-  MIC_GAIN even with SHF_BYPASS=1; channel 2 does not). The level
-  difference is small (~1 dB) but channel 1 is slightly more
-  predictable.
-- **`AEC_HPFONOFF=2` (125 Hz HPF) still applies** to ch 0/1 with
-  SHF_BYPASS=1 because the HPF lives at mic ingress, before the
-  SHF block. Channel 2 has no HPF.
-
-Historical note: the open question above was answered by the later
-Option D work. The current `xvf_chip_aec` profile keeps
-`SHF_BYPASS=0`, feeds the chip a known-good USB-IN reference from
-outputd, and uses fixed ASR beams. The explicit `custom` software-AEC
-lab route still uses `SHF_BYPASS=1` for the reasons in this section.
-
-### Why SHF_BYPASS=1 instead of relying on chip AEC
-
-In normal XVF3800 deployments, the chip drives the speaker via
-its own AIC3104 codec, and the chip's AEC handles echo
-cancellation. In JTS, the speaker is driven by an external Apple
-USB-C dongle. The chip's AEC reference signal arrives via the
-chip's USB-IN endpoint, and the chip's firmware auto-mirrors the
-host's UAC playback volume control into `AEC_FAR_EXTGAIN`. In our
-topology, the host writes essentially zero to the chip's USB-IN
-(we play to the dongle, not the chip), so the chip thinks the
-reference is silent and the AEC adaptive filter freezes with
-useless coefficients.
-
-`SHF_BYPASS=1` removes the entire SHF stage from the signal path
-on channels 0/1 — AEC, BF, NS, AGC all become passthrough.
-In the explicit `custom` software-AEC lab route, jasper-aec-bridge handles
-post-mic processing (echo cancellation + residual noise suppression via
-AEC3's internal NS).
-
----
-
-## Lessons learned (2026-05-15/16)
-
-Captured here so future sessions don't repeat the mistakes.
-
-1. **Read primary docs before experimenting.** Channel layout,
-   per-parameter scope, and chip pipeline ordering are all
-   documented in the XMOS User Guide v3.2.1 (XM-014888-PC).
-   Multiple sessions were spent rediscovering things that are in
-   §3.6.1 Table 3.2 and §4.1 Fig. 4.1. The user pushed back
-   correctly: *"there's an entire GitHub repo, document, and
-   website, and there are so many people that have worked with
-   this microphone before. Why are we guessing?"* — and the answer
-   was that nobody on the implementation side had consulted the
-   primary sources. Future debug sessions: **start with primary
-   sources, use empirical testing to verify** rather than as the
-   first line of investigation.
-
-2. **The mic is consumed by software, not humans.** Tune for
-   wake-word + ASR accuracy, not naturalness. See memory note
-   `project_mic_consumed_by_robots_only`. Aggressive band-limiting
-   is on-brand. Phase distortion at sub-200 Hz is invisible to
-   mel-spectrogram features. AGC compression is OK for ASR models
-   trained on similar distributions.
-
-3. **MIC_CHANNEL_INDEX and REF_GAIN_DB are coupled.** Any change
-   to which channel the bridge consumes requires a corresponding
-   change to REF_GAIN_DB. Channel-2 (raw mic, no AGC) needs
-   REF_GAIN ≈ +25 dB to align levels with the digital ref.
-   Channel-1 (chip AGC'd) needs REF_GAIN ≈ 0 dB. Mismatched gain
-   causes ref clipping → chaotic AEC behavior.
-
-4. **`SHF_BYPASS=1` bypasses the entire SHF block, not just AEC.**
-   We discovered this empirically on 2026-05-16 after initially
-   claiming (incorrectly, in this very document on 2026-05-15) that
-   SHF_BYPASS only removed the AEC adaptive filter. The correct
-   reading: SHF includes AEC + beamformer + NS + AGC, all gated on
-   the same bypass flag. With SHF_BYPASS=1, channels 0/1 carry
-   raw-ish mic data; the only chip processing that survives is the
-   AEC_HPFONOFF stage (which sits at mic ingress, before SHF). If
-   you want chip BF / NS / AGC, you need SHF_BYPASS=0 — and in our
-   external-DAC topology that puts chip AEC back in the path.
-
-5. **AEC3 wants symmetric mic/ref filtering.** WebRTC's commit
-   "AEC3: High-pass filter delay estimator signals" documents that
-   matched HPFs on both legs improve the matched-filter delay
-   estimator's adaptation in noisy environments. Our bridge applies
-   AEC3's internal capture HPF automatically; the ref-side HPF in
-   `_ReferenceFrameConverter` brings the ref to the same band on the
-   outputd UDP transport.
-
-6. **`pcm.jasper_capture` (dsnoop) must be wrapped in `plug:`**
-   when consumed by clients that lock a different rate than the
-   loopback's currently-locked rate. snd-aloop is first-opener-
-   wins; when shairport opens it at 44.1 kHz (post PR #75), the
-   bridge requesting 48 kHz from a raw dsnoop returns silence
-   instead of resampled audio. `plug:jasper_capture` (exposed as
-   `pcm.jasper_ref` in our asoundrc) auto-converts. This bug
-   destroyed AEC silently in production for ~4 days before
-   diagnosis on 2026-05-15.
-
-7. **Doctor checks should verify bridge OUTPUT quality, not just
-   service health.** The 4-day silent-AEC outage went undetected
-   because doctor only checked `systemctl is-active jasper-aec-
-   bridge` — the bridge WAS running, it just wasn't producing
-   useful output. A check that parses the bridge's `rms over` log
-   lines (verifying `ref` is non-zero during music and `attenuation`
-   reaches a healthy range) would have surfaced the bug immediately.
-   Shipped as `check_aec_bridge_output_health` in
-   `jasper/cli/doctor/aec.py`; its later false-positive mode and fix
-   are #10 below.
-
-8. **`jasper-aec-init` doesn't re-run after a code deploy.** It's
-   `Type=oneshot` with `RemainAfterExit=yes`, so the bridge unit's
-   `Wants=jasper-aec-init` only triggers it on fresh boot. After
-   deploying changes to chip-side params (HPF cutoff, SHF_BYPASS,
-   etc.), the operator must manually `systemctl restart
-   jasper-aec-init` to apply them. **Queued as follow-up** — fix
-   would be one line in `deploy/install.sh` to
-   `systemctl try-restart jasper-aec-init` after the rsync.
-
-9. **`REBOOT 1` in `jasper-aec-init` created a USB renumerate
-   feedback loop.** Diagnosed 2026-05-16. The chain:
-   `jasper-aec-init` ExecStart wrote `REBOOT 1` to the chip → chip
-   reset → USB disconnect/reconnect on the bus → kernel udev event
-   on `controlC*` → `99-jasper-aec-reconcile.rules` triggered
-   `jasper-aec-reconcile.service` → reconciler called
-   `enable_start_aec` → `systemctl restart jasper-aec-init.service`
-   → **goto top**. Sustained ~6–12 chip resets per hour after any
-   `--reason install` invocation (i.e. after every deploy). The
-   bridge correctly responded to each chip outage by stall-restarting
-   on `mic queue empty for 5s`; that's not a bug, that's the
-   `BridgeStalled` recovery path doing its job. **Removing the
-   REBOOT call** was the fix: in our pipeline the chip's AEC
-   adaptive filter is gated off by `SHF_BYPASS=1`, so REBOOT's only
-   documented benefit ("clear adaptive-filter state", per Reachy
-   Mini #389) is moot, and the three parameter writes that follow
-   it are idempotent and overwrite the chip's current state
-   directly. No conditional needed, just delete.
-   See `jasper/cli/aec_init.py` for the post-fix shape.
-
-10. **Doctor's `check_aec_bridge_output_health` had a false-positive
-    failure mode.** Same investigation date. The check flagged
-    `mic > 1500 RMS + ref < 50 RMS` as "ref path broken," but the
-    mic-loud signal can also come from **sound the speaker never
-    played**: room voice and ambient noise, pumped by the chip's
-    ASR-beam AGC. There `ref = 0` is correct — nothing was supposed
-    to be in the reference. Assistant TTS is *not* such a source on
-    current main: it rides the same fan-in → CamillaDSP → outputd
-    path as music, so it reaches outputd's final-speaker UDP monitor
-    — the bridge's only `JASPER_AEC_REF_SOURCE` — like any other program
-    audio. That holds for a passive bonded multiroom member too, whose
-    local TTS enters at outputd downstream of fan-in. (Before the ALSA
-    fallback was retired, a solo speaker's TTS also reached the
-    `jasper_ref` tap, since fan-in mixes TTS into the same sum it writes
-    to lane 7, while the bonded member's did not. Only the outputd tap
-    counts now.)
-    Prose here used to cite the pre-outputd dmix that genuinely did
-    bypass the reference; that alias was retired in issue #2240, and
-    naming TTS as the reason for a ref-silent window is now a wrong
-    diagnosis. **Fix**: count
-    `healthy_ref_windows` (any window where `ref ≥ 50`) and only
-    fail when zero healthy windows exist in the assessment period
-    AND the silent-ref pattern persists. PR #75's failure was
-    sustained `ref = 0` across all windows for days; this check
-    still catches that as the rolling-deploy fallback. Current bridge
-    stats additionally make receiver progress authoritative: a previously
-    nonzero RMS window cannot hide an `outputd_udp` receiver that has stopped
-    enqueuing fresh frames. See `_assess_aec_reference_input_from_stats` and
-    `_assess_aec_bridge_output` in `jasper/cli/doctor/aec.py`.
-
-    The same investigation produced `jasper-doctor --probe-aec`,
-    which actively plays a quiet sine into `correction_substream`
-    and verifies the bridge sees ref signal — useful when the
-    bridge's recent journal has no music for the passive check to
-    learn from. The opt-in audible probe is isolated in
-    `jasper/cli/doctor/aec_probe.py`; passive AEC checks remain in
-    `jasper/cli/doctor/aec.py`. Before generating or playing its tone,
-    the active probe requires a trustworthy `active_source="idle"` from
-    jasper-control `/state`, then uses the loopback-lane check as defense in
-    depth. Those are early diagnostic checks, not the isolation authority:
-    before any precheck, the standalone command takes a fail-fast advisory
-    lock at `/run/jasper/doctor-aec-probe.lock` and holds it through final
-    cleanup. The stable lock file is never unlinked; CLOEXEC prevents `aplay`
-    from inheriting it, and process death releases the kernel flock. This
-    serializes standalone doctor probes. After the prechecks, the probe enters
-    the existing correction
-    `measurement_window()` with its own mux owner (`doctor-aec-probe`) and
-    strict voice pause enabled. Mux then holds `correction` selected against
-    renderer starts that race the precheck, including USB/direct input, while
-    `MEASURE_PAUSE` atomically closes `AssistantOutputGate` admission and drains
-    already-admitted assistant audio whether TTS is routed pre-DSP through
-    fan-in or member-locally through outputd. Feedback and final-turn chirps
-    retain that gate ownership through the TTS route's physical-drain wait.
-    The compatible PAUSE reply keeps
-    `result=ok` whenever the pause armed and adds exact `drained` evidence. The
-    strict probe requires `drained is true`, so a timeout—or an old daemon
-    lacking the additive field—never yields while cleanup still owns
-    `MEASURE_RESUME`.
-    The probe creates the WAV, runs `aplay`, waits, and assesses telemetry only
-    inside that held window. The body uses bounded synchronous subprocess work
-    in a thread; cancellation (including repeated cancellation) does not kill
-    that worker, so teardown keeps isolation held until the worker actually
-    stops and only then re-raises cancellation. Unavailable/malformed STATUS,
-    refused or unconfirmed PAUSE, or a lost mux/voice lease aborts admission;
-    `MEASURE_RESUME` and owner-scoped mux release run on every exit. If teardown
-    fails after the body completes, doctor preserves each body result and
-    reports a neutral, distinct isolation-cleanup failure: it points to the
-    playback outcome above rather than inferring whether a tone ran.
-    An unavailable or malformed initial `/state` likewise fails closed with no
-    tone because USB/direct output can be invisible to the loopback check.
-
-    Refined further on 2026-05-17 (PR #134) for the corner case
-    where the entire assessment window has no music at all (a
-    pure-voice session). Even with `healthy_ref_windows = 0`, the
-    silent-ref + mic-loud pattern proves nothing when no renderer
-    is writing the loopback — a silent ref is expected rather than
-    suspicious there, and the mic-loud bursts are most likely room
-    voice or ambient noise (not from TTS, which rides the
-    reference; see above). Added a `music_chain_active` gate that
-    reads `/proc/asound/Loopback/pcm0p/sub*/status`; when every
-    sub is `closed`, the FAIL demotes to OK with a "Re-run doctor
-    with loopback music playing" hint. That gate sees only the
-    loopback renderer lanes, so it cannot prove the speaker is
-    silent — USB Audio Input plays without opening one. The
-    rate-lock catch from PR #75 still fires when a renderer is
-    actively writing the loopback.
-
-A smart speaker that **plays music** and **listens for a wake word**
-in the same physical box has a fundamental signal-processing
-problem. The microphone hears:
-
-- the user's voice (what we want), at typical levels of −30 to
-  −50 dBSPL at the mic;
-- the speaker's own output, reflected/refracted/reverberating
-  through the room and back to the mic, at levels that can be
-  20–40 dB louder than the voice when music is playing at any
-  meaningful volume.
-
-If we feed the raw mic signal to the wake-word detector
-(openWakeWord), the speaker's own output dominates the signal and
-the detector fires on phonemes from the music or — worse — on the
-TTS responses we just synthesised, causing a feedback loop. **Echo
-cancellation** is the standard fix: subtract the known speaker
-signal (the "far-end reference") from the mic capture, leaving
-only the voice (the "near-end signal"). The closer to perfect the
-cancellation, the better the wake-word reliability and the better
-the dialog UX (allowing barge-in over TTS, etc.).
-
-There are three well-known places to do this work:
-
-1. **In the mic chip** (hardware-accelerated AEC running on a
-   dedicated DSP next to the ADC). Fast, low-power, no host CPU
-   cost, but the chip has to be designed for this and the
-   topology has to match what the chip's firmware expects.
-2. **In the host** (software AEC running on the Pi CPU). Flexible,
-   tweakable, but costs CPU and RAM and is generally less effective
-   at high SPL than hardware AEC.
-3. **Avoid it entirely.** Push-to-talk, physical mic-speaker
-   isolation, or "duck the music to silence on wake" as workarounds.
-   These eliminate the AEC requirement at the cost of UX
-   compromises.
-
-This doc is about getting (1) or (2) working in our specific
-hardware topology.
-
----
-
-## Hardware overview
-
-| Component | Role |
-|---|---|
-| Raspberry Pi 5 (1GB or 2GB) | Host running the jasper daemons |
-| Apple USB-C → 3.5mm dongle | The actual speaker output. 48 kHz native, simple UAC2 device. |
-| TPA3255 amp + speakers | Driven from the dongle's 3.5mm output |
-| Seeed ReSpeaker XVF3800 (USB UA variant) | 4-mic array with on-board XMOS DSP. Connected over USB. |
-
-The crucial topological fact: **the speaker is driven by the Apple
-dongle, not by the XVF3800's onboard codec.** The XVF chip has its
-own AIC3104 codec with a 3.5mm jack, but it's electrically
-disconnected on this build (it was tried originally and produces
-unacceptable hiss).
-
-This decision — external DAC for speaker output — is what makes
-this project off the beaten path. Every published XVF3800 reference
-design (Seeed wiki tutorials, FormatBCE's ESPHome integration,
-HA Voice PE with the related XU316 chip) drives the speaker from
-the chip's own codec.
-
----
-
-## What the XVF3800 is designed to do
-
-The XVF3800 is a purpose-built voice DSP. Its on-chip pipeline is:
-
-```
-4 PDM mics → mic array preamp → AEC (BeClear adaptive filter)
-          → beamformer → noise suppression → AGC
-          → conference channel + ASR channel → USB capture out
-                                              (or I²S out)
-```
-
-It expects a **far-end reference** signal — the audio that the
-speaker is being asked to play — so the AEC adaptive filter can
-learn the room transfer function and subtract the echo. Per the
-XMOS XVF3800 v3.2.1 User Guide §3.5 ("Audio Pipeline"), every
-defined "Far end" source category in the chip's `AUDIO_MGR` enum
-is documented as **"Far end data received over I²S, post sample
-rate conversion to 16 kHz if required"**. The chip's design
-assumption is that whatever comes out the chip's own DAC pin is
-also what's playing in the room — they are the same node in the
-data plane.
-
-The chip exposes two firmware variants over USB (full table of
-published versions in [HANDOFF-xvf3800.md](HANDOFF-xvf3800.md) §2.1):
-
-- **2-channel firmware**: USB capture has 2 channels — channel 0
-  is "conference" (post-AEC + BF + NS + AGC), channel 1 is "ASR"
-  (different post-processing tuned for speech recognition). No
-  raw mic access. The boards we received from Seeed shipped on
-  v2.0.6 of this variant; v2.0.5 and v2.0.7 are also 2-channel.
-- **6-channel firmware** (the `_6chl_` filename variant): adds
-  raw mics on USB capture channels 2–5. The processed
-  conference/ASR channels stay on 0/1. As of 2026-05-15 the only
-  6-channel build in upstream `master` is v2.0.8.
-
-The chip's USB UAC2 endpoint also has a **playback** direction —
-the host can write audio TO the chip — and the chip's firmware
-documents that this can serve as the AEC reference *when running
-in the UA configuration with no I²S input*.
-
-So in principle, our setup should work: write the same audio to
-the chip's USB-IN that we're playing on the dongle, the chip's AEC
-sees a reference, cancels echo, and emits a clean processed mic
-on USB-OUT.
-
----
-
-## What we found about chip-side AEC in our topology
-
-> **Superseded.** The verdict below ("does not work usefully... regardless
-> of configuration") describes the *variants tested at the time this
-> section was written* — none of which fed music to the chip's USB-IN as
-> the AEC reference. That specific variant (Option D) became a positive
-> lab result on 2026-05-29 and now backs the recommended `xvf_chip_aec`
-> input profile — see the TL;DR above and
-> [CHIP-AEC-EXPERIMENT.md](CHIP-AEC-EXPERIMENT.md). This section is kept
-> for the investigation history and the still-valid tested-and-rejected
-> variants below.
-
-We pursued the chip-side AEC path first. It would be ideal — zero
-host CPU cost, lowest latency, the chip is purpose-built. The
-investigation took roughly half a session and ultimately concluded
-that the chip's AEC does not work usefully in our external-DAC
-topology, regardless of configuration.
-
-### What we built
-
-- A two-stage ALSA fan-out so the same audio that goes to the
-  dongle also goes to the chip's USB-IN endpoint at 16 kHz S16_LE
-  (the only rate/format the chip's USB-IN endpoint advertises).
-  The first attempt used `type plug → type multi → 2x[plug → dmix]`
-  with mismatched leg rates and failed with `EINVAL` (`type multi`
-  requires identical period_size across slaves; the underlying
-  cause was period-size negotiation, not the rate mismatch as
-  initially blamed). The working topology used `type plug` with
-  `route_policy "duplicate"` over `type multi` with all legs at
-  48 kHz, paired with a second CamillaDSP instance acting as a
-  rate-conversion bridge from 48k to 16k.
-- A `jasper-aec-init.service` that runs at boot to apply
-  `AUDIO_MGR_SYS_DELAY` (the chip's bulk-delay tuning knob).
-- A `jasper-aec-tune` CLI that does white-noise cross-correlation
-  to measure the host-to-mic round-trip delay. Its current default is
-  diagnostic-only; an explicit guarded `--apply` can write a candidate
-  to the chip for the current runtime only.
-- The JTS-owned `xvf_host.py` helper for talking to the chip's
-  parameter API over USB vendor control transfers.
-
-All of this is still in the repo, partly because the architecture
-(snd-aloop + chip control) is still useful and partly as
-investigation history.
-
-### What we measured
-
-**2026-05-29 fan-in-era pre-corpus re-check:** Option D was re-run as
-a bounded gate before wake-corpus recording. The first pass used the
-current fan-in / outputd topology and fed the chip USB-IN reference from
-`plug:jasper_capture`. That feeder path measured ref→mic delay around
-`181-209 ms`, outside the chip's `AUDIO_MGR_SYS_DELAY` clamp. Adding
-`--ref-delay-ms 180` left residual chip delay at `+114` samples and
-produced a partial ch0 positive, but the setup was still too feeder-
-shaped to trust as the final architecture.
-
-The later same-day direct-fanout tests changed the conclusion. Playing
-one source buffer directly to both the external DAC and XVF3800 USB-IN
-held the acoustic reference drift around `~1 ppm` over 15 minutes.
-Controlled direct A/B then showed useful chip-AEC reduction, and
-double-talk/listening sweeps found the best wake-shaped path:
-category-7 ASR output (`AEC_ASROUTONOFF=1`) with fixed gated
-`150°/210°` beams. Final strength sweep found `AEC_AECEMPHASISONOFF=2`
-better than baseline, while `AEC_FAR_EXTGAIN=+3/+6 dB` was worse.
-
-With the bridge confirmed running and the chip's USB-IN endpoint
-in `state: RUNNING` with `appl_ptr` advancing (i.e. real audio
-data physically reaching the chip):
-
-- `AEC_AECCONVERGED` returned 0 in every test. The chip's own
-  convergence flag never flipped to "converged."
-- A controlled-sweep test with `SHF_BYPASS=1` (raw mic) vs
-  `SHF_BYPASS=0` (full pipeline) at a range of
-  `AUDIO_MGR_SYS_DELAY` values from −64 to +256 samples
-  (the chip's accepted range — values >256 silently clamp)
-  showed bypass-vs-AEC RMS differing by ≤2 dB at every setting.
-- A historical filter coefficient dump (`SPECIAL_CMD_AEC_FILTER_COEFFS`,
-  from earlier external tooling; not currently exposed by JTS's local
-  `xvf_host.py` subset)
-  showed the adaptive filter HAD adapted in some past state
-  (RMS 0.224, peaks at taps 2 and 243), but with peak magnitudes
-  >1.0 — indicating the LMS algorithm had run away due to a
-  reference signal that was too quiet relative to the mic
-  capture.
-
-### Why it doesn't work — the discovery
-
-The XMOS User Guide §4.2.1 documents:
-
-> "AEC_FAR_EXTGAIN: This parameter informs the audio pipeline how
-> much external gain has been applied to the AEC reference signal.
-> In the UA device variant, when the host sets the output volume,
-> the AEC_FAR_EXTGAIN is internally set to be the same as the gain
-> set by the host, so the user shouldn't need to set this command
-> externally."
-
-Translation: the chip's AEC reference path runs through an internal
-gain stage that automatically tracks whatever the host has set as
-the chip's USB-OUT (playback) volume control. If the host's ALSA
-mixer hasn't explicitly set a volume on the chip's UAC2 sink, the
-chip parks `AEC_FAR_EXTGAIN` at the default reset value (in our
-case −40 dB), and **internally attenuates the AEC reference signal
-by 40 dB**. We then deliver our reference signal at full level via
-the dsnoop tap, but the chip's internal reference becomes
-inaudible to its own AEC adaptive filter — which then either
-gives up or runs away trying to compensate.
-
-We confirmed this by setting the chip's UAC2 PCM mixer to 0 dB
-unity (`amixer -c Array sset PCM,0 60 unmute`) and observing
-`AEC_FAR_EXTGAIN` flip from −40 dB to 0 dB. AEC effectiveness
-improved marginally (still ≤2 dB attenuation) but never approached
-the −20+ dB the chip is capable of in its native topology.
-
-The deeper issue: **even with EXTGAIN fixed, the chip's AEC is
-designed assuming the chip's own audio output drives the speaker.**
-In that intended topology, the chip can perfectly model the
-relationship between what it sent to its DAC and what the mic
-captures, because there's no external variable. In our topology,
-the speaker is driven by a different USB device (the dongle) on a
-different clock domain with different USB scheduling latency,
-different output buffering, and different hardware path delays.
-The chip's AEC isn't designed to handle that mismatch — and the
-public XMOS documentation never describes a working configuration
-for it.
-
-We searched the respeaker repo issues, the XMOS forums, and the
-broader open-source voice-assistant community (Stuart Naylor's
-Rhasspy/HA Voice writeups, the FutureProofHomes Satellite1
-project, the ESPHome XVF3800 integration, the HA Voice PE
-community) for any working external-DAC + USB-IN-as-reference
-setup on Linux. Found none. We would be the first.
-
-### Pros and cons of chip-side AEC (in summary)
-
-**Pros:**
-- Zero host CPU cost (DSP runs on the chip's dedicated cores).
-- Lowest possible latency (sub-millisecond from mic to AEC
-  output).
-- Includes 4-mic beamforming, dereverberation, noise suppression,
-  AGC, and direction-of-arrival as part of the pipeline — much
-  more than just AEC.
-- Tuned by professionals for high-SPL speech recognition.
-
-**Cons in our specific topology:**
-- The AEC pipeline assumes the chip drives the speaker. With an
-  external DAC, the chip can't observe the actual speaker output
-  and the volume-tracking internal gain mechanism actively
-  sabotages the reference signal.
-- No public documentation or community prior art for our
-  topology. We'd be guessing at undocumented chip behavior.
-- The XMOS firmware is closed (binaries downloadable, source
-  gated behind XMOS developer registration + XTAG-4 hardware
-  for re-flashing custom builds). Modifying chip behavior is a
-  significant project.
-- Even with the volume-mirror workaround, measured attenuation
-  was ≤2 dB — not useful. (This was the volume-mirror workaround,
-  not the USB-IN-reference variant — see the superseded callout
-  above; Option D's USB-IN reference measured usefully on
-  2026-05-29 and now ships as the recommended profile.)
-
----
-
-## The pivot: software AEC
-
-After confirming the chip-side path was a dead end, we pivoted to
-software AEC running on the Pi. The architecture for the chip-side
-attempt — capture-side fan-out, snd-aloop loopback, dedicated
-bridge process — happened to be exactly the right shape for
-software AEC too. Most of the work transferred over; the bridge
-just changed what it does internally.
-
-### The architecture
-
-```
-renderers / internal producers
-    │
-    ├─ librespot          → librespot_substream  → hw:Loopback,0,0
-    ├─ shairport-sync     → shairport_substream  → hw:Loopback,0,1
-    ├─ bluealsa-aplay     → bluealsa_substream   → hw:Loopback,0,2
-    ├─ USB UAC2 gadget    → fan-in DIRECT capture of hw:UAC2Gadget
-    └─ correction/probes  → correction_substream → hw:Loopback,0,4
-                                              │
-                                              ▼
-                  loopback private lanes + USB DIRECT → jasper-fanin
-                                              │ sums private lanes
-                                              ▼
-                                      hw:Loopback,0,7
-                                              │
-                                              ▼
-                         pcm.jasper_capture  ← dsnoop on Loopback,1,7
-                                              │
-                    ▼
-        jasper-camilla, via plug:jasper_capture
-          main_volume ducking + active processing
-                    │
-                    ▼
-       Ring B or outputd_content_playback/capture
-                    │
-                    ▼
-        jasper-outputd → physical DAC → speaker
-                    │
-                    └─ final speaker monitor UDP :9891 ───────┐
-                                                              ▼
-        detected supported XVF card, device 0 ──────── jasper-aec-bridge
-          NEAR-END MIC                                  FAR-END REFERENCE
-                                                        WebRTC AEC3 fallback
-                                                              │ UDP :9876
-                                                              ▼
-                                                         jasper-voice
-```
-
-One snd-aloop card provides the private renderer/correction lanes plus the
-loopback fallbacks at both sides of CamillaDSP. The product-default eligible
-path uses Ring A from fan-in to CamillaDSP and Ring B from CamillaDSP to
-outputd; the fallback uses `jasper_capture` and `outputd_content_*`. In both
-cases outputd owns the DAC and publishes the final-speaker UDP monitor that
-the bridge consumes — its only reference source. `pcm.jasper_ref` is a
-pre-Camilla alias with no reader left at all (U4/P7-1 took the bridge
-fallback, P7-3 the timing probe), and active tuner
-noise enters through the
-ordinary `correction_substream` fan-in lane. The AEC'd mic from bridge to voice
-rides UDP localhost instead of a second snd-aloop card; see
-[HANDOFF-resilience.md](HANDOFF-resilience.md) for why we retired
-the original `LoopbackAEC` snd-aloop topology in May 2026 (short
-version: snd-aloop's kernel-side `loopback_cable` wedges when a
-consumer is SIGKILL'd, requiring a reboot to clear; UDP localhost
-has no kernel state to corrupt).
-
-Card 5 specifically (rather than 1) because Pi 5's HDMI audio
-already occupies index 1 — the snd-aloop kernel module silently
-drops the second card on index collision.
-
-### Why the dsnoop tap
-
-Initial attempts used a `type multi` fan-out on the **playback**
-side (CamillaDSP outputs to a multi PCM with two slaves: dongle
-dmix + AEC-leg dmix). After significant debugging, this was found
-to silently fail to write data to slaves beyond the first — the
-multi accepted frames but only forwarded them to slave A. We
-verified via `appl_ptr` on the snd-aloop substreams (stuck at 0
-on slaves B and C despite the substreams showing `RUNNING`).
-Switching the fan-out to the **capture** side via `dsnoop` made
-this work cleanly: dsnoop is the canonical ALSA primitive for
-"multiple readers share one capture device" and it does what it
-says.
-
-### Engine choice: WebRTC AEC3 via direct pybind11 binding
-
-The software AEC engine landscape, with how we ended up where we
-are now:
-
-- **SpeexDSP** (xiph, `libspeexdsp-dev`). Mature, small, simple
-  Python bindings. Project initially shipped this because the
-  integration path was the shortest — `xiongyihui/speexdsp-python`
-  wraps the C library and slots into the bridge pattern cleanly.
-  Speex's own docs warn it can't model speaker non-linearity at
-  high SPL — falls over on music. Best measured was −2 to −8 dB.
-  Removed when AEC3 landed; see git log for the historical
-  config.
-- **WebRTC AEC3** (current non-XVF/custom software engine). The modern Google echo
-  controller — frequency-domain canceler with residual suppressor
-  and drift-tolerant delay estimator. Trixie's apt ships
-  `libwebrtc-audio-processing-1` v1.3-3, which IS AEC3 (the 1.x
-  is package-API stability, not algorithm version). We wrote our
-  own pybind11 binding (`jasper_aec3/`) rather than going through
-  PipeWire — PipeWire would have required restructuring our ALSA
-  topology and only forwards top-level `AudioProcessing::Config`
-  knobs anyway (the deep AEC3 config struct isn't exposed; see
-  "Deep tuning landscape" below).
-- **Neural AEC** (DeepVQE-S, DTLN-aec, GTCRN-AEC, etc.). Best
-  quality on AEC-Challenge benchmarks. Deferred — see "Deep
-  tuning landscape" below for staging.
-
-### Why alsaaudio was used for the reference capture (retired at U4/P7-1)
-
-**Retired.** The bridge's reference is jasper-outputd's UDP speaker
-monitor and the bridge imports no `alsaaudio` at all; this records why
-the ALSA path was built the way it was while it existed.
-
-The reference signal lived at `pcm.jasper_capture` — a custom-named
-PCM defined in `/etc/asound.conf`. PortAudio's device enumeration only
-sees `hw:N,M` style devices and a few standard aliases (`default`,
-`sysdefault`, `pulse`); custom asoundrc PCMs aren't enumerated. The
-Python `pyalsaaudio` library calls `snd_pcm_open(name)` directly via
-libasound and respects asoundrc, so it was used for the ref capture
-path. The MIC capture path still uses sounddevice/PortAudio (existing
-daemon convention) because it goes through a plain `hw:N,M` device —
-that half is unchanged. The AEC *output* path is not PortAudio either
-and has not been since the resilience-ladder PR 2: it is a
-non-blocking UDP `sendto` to jasper-voice (see `aec_bridge.py`'s "UDP
-output" comment, which records the `RawOutputStream` it replaced).
-
-The bridge runs as root (no `User=` in the systemd unit), matching the
-existing jasper-camilla/jasper-voice daemon posture for realtime audio
-and `/dev/snd` access. The ALSA graph itself now lives in
-`/etc/asound.conf` at mode 0644 so non-root renderers resolve the same
-named PCMs.
-
-### Why 6-channel firmware
-
-The 2-channel firmware exposes only the chip's processed channels
-(conference, ASR). Both have already had the chip's broken AEC
-applied, plus its NS, AGC, and beamformer — non-linear processing
-that distorts the residual and makes software AEC's linear
-adaptive filter struggle to model the echo path. Per Stuart
-Naylor's writeups, software AEC over chip-processed audio is
-generally a bad idea.
-
-The 6-channel firmware (single DFU command to flash, fully
-reversible) adds raw mics on channels 2–5. Software AEC on raw
-mic 0 sees a clean linear input — much better convergence. The
-DFU mechanism is in-system: the chip exposes its DFU interface in
-normal runtime mode, no Safe Mode entry or button combo required.
-Full operator procedure (download URL, verification, what each
-flag does) is in
-[BRINGUP.md "XVF firmware: switch to 6-channel variant via DFU"](../BRINGUP.md#xvf-firmware-switch-to-6-channel-variant-via-dfu).
-Headline:
-
-```
-sudo dfu-util -R -e -a 1 -D <6-channel-firmware.bin>
-```
-
-The chip's `SAVE_CONFIGURATION` op had a brick hazard on firmware
-2.0.6 (respeaker repo issue #8) and the upstream issue is still
-open as of 2026-05-15 with no release-note confirmation that any
-version fixed it — we never call it regardless of firmware version.
-
----
-
-## Historical comparison before the chip-AEC profile
-
-This table captures the pre-2026-05-29 state that justified building
-the WebRTC AEC3 bridge. At that point, JTS had an external-DAC speaker
-path without outputd's direct USB-IN reference fanout to the chip, so
-the XVF3800's built-in AEC could not converge usefully. The current
-recommended path is different: `xvf_chip_aec` arms outputd's chip
-reference producer and uses fixed 150°/210° ASR beams. Keep this
-comparison as history for why the software fallback exists, not as the
-current profile recommendation.
-
-| Dimension | Legacy XVF3800 hardware-AEC attempt | WebRTC AEC3 software-AEC fallback |
-|---|---|---|
-| **Topology fit for our setup** | Designed for chip-driven speaker; did not work in the pre-outputd external-DAC test path | Topology-agnostic — bridge can capture any reference and any mic |
-| **Effectiveness in our setup** | ≤2 dB sustained attenuation (measured) | −15 to −18 dB mean on music with production tuning; deep-cancel windows to −44 dB |
-| **Host CPU cost** | ~0% (chip handles it) | ~3-8% of one A76 core |
-| **Host RAM cost** | ~0 MB | ~110 MB RSS (Python + numpy + scipy + sounddevice + jasper_aec3) |
-| **Latency** | <1 ms (chip-internal) | ~40 ms ref-to-mic measured; AEC3's delay estimator manages alignment internally |
-| **Beamforming, NS, AGC, DoA** | Included, professional-grade | NS at kModerate is built into AEC3; no BF/AGC/DoA |
-| **Configurability** | Closed binary, ~30 documented parameters | Top-level `AudioProcessing::Config` is public; deep `EchoCanceller3Config` isn't (see "Deep tuning landscape") |
-| **Drift handling** | Internal (chip is single clock domain) | Two-clock-domain capture; AEC3 tolerates some drift via its built-in delay estimator |
-| **Convergence** | Stable when working | Stable; residual suppressor + drift-tolerant delay estimator keep it consistent across music passes |
-| **Worst-case (loud music + soft voice + far-field)** | Designed to handle this | Marginal — see Tuning findings for current numbers and remaining levers |
-
-The historical conclusion was: without a chip-owned or chip-fed
-speaker reference, hardware AEC was worse than software AEC3 in this
-external-DAC build. The production chip-AEC profile that shipped later
-changes that premise by feeding the XVF USB-IN reference through
-outputd and applying a volatile fixed-beam chip profile.
-
----
-
-## Resource cost (measured on Pi 5)
-
-```
-jasper-aec-bridge:  3-8% of one A76 core,  ~110 MB RSS
-jasper-camilla:     0.5%,                    8 MB RSS
-jasper-voice:      11.3%,                  265 MB RSS
-                  ----                     -----
-                   ~15-20% of one core      ~380 MB total
-```
-
-Relative to baseline (Pi 5 idle ≈ 270 MiB used), the bridge adds
-~110 MB which puts the 1GB Pi 5 at ~38% memory usage. The 2GB
-Pi 5 (which BRINGUP.md and PLAN.md have always recommended as the
-v1 target) has comfortable headroom.
-
-For the engine's actual attenuation numbers, see the Tuning
-findings section below.
-
----
-
-## Caveats and open issues
-
-### Cross-clock-domain drift between reference and mic
-
-The reference is captured from the snd-aloop loopback (kernel
-timer-driven), and the mic is captured from the XVF chip (USB
-UAC2 SYNC-clocked). These are independent clocks that drift by
-~tens of ppm relative to each other. Over time, the AEC's
-filter alignment slides. AEC3's delay estimator tolerates some
-drift but not unbounded — over long sessions effectiveness
-degrades.
-
-The classical fix is async resampling on one leg to lock both
-to the same clock (e.g. resample the mic to match the reference
-clock via a second CamillaDSP instance with `enable_rate_adjust:
-true`). We haven't implemented this; AEC3 currently rides on its
-own delay-estimator robustness. Listed as a Tier 2 item in
-PLAN.md's tuning roadmap.
-
-### The legacy ALSA tap is pre-CamillaDSP
-
-Production AEC consumes outputd's final speaker monitor, after CamillaDSP
-processing and ducking, and has no other source. `jasper_capture` remains a
-CamillaDSP-only tap on the renderer→Camilla loopback *before* CamillaDSP; its
-`pcm.jasper_ref` alias has no reader at all since U4/P7-3. The bridge can no
-longer be pointed at either. Do not infer speaker amplitude or final reference
-timing from that legacy tap.
-
-`jasper-aec-tune` does not read it either as of U4/P7-2: its passive reference
-leg takes the same outputd speaker monitor the bridge does, which is also where
-outputd publishes the chip's own USB-IN reference from one shared narrowed
-period. Numbers printed before P7-2 came from the pre-CamillaDSP tap and are
-not comparable — re-run rather than compare. In active mode the tuner's noise
-still enters through the correction lane, upstream of CamillaDSP, so
-`main_volume` continues to govern the audible output while the stimulus reaches
-the reference by the ordinary post-DSP path.
-
-### Bridge is Python (RAM-heavy)
-
-The ~110 MB RSS for the bridge is mostly Python interpreter +
-numpy + scipy + sounddevice. The `jasper_aec3` native binding
-itself is tiny (~5 MB plus the AEC3 library it links against).
-On the 1GB Pi 5 this is a noticeable fraction; on the 2GB Pi 5
-it's fine.
-
-If RAM becomes a constraint, the highest-impact savings are:
-1. Drop scipy (~30 MB). Replace `resample_poly` with a
-   pre-computed FIR + numpy.convolve.
-2. Drop sounddevice (~15 MB). Since U4/P7-1 the bridge's reference
-   is a stdlib UDP socket on outputd's speaker monitor and the
-   bridge imports no `alsaaudio` at all, so sounddevice's only
-   remaining job here is mic capture — dropping it means porting
-   that one path (`alsaaudio` is still a project dependency for the
-   USB-mic relay and the probes' direct mic capture).
-3. Rewrite as Rust or C (~80–100 MB, ~1–2 days work). Bridge
-   becomes a 10–20 MB process.
-
-### Chip-side control infrastructure
-
-`jasper-aec-init.service` is the silent volatile-profile applier. For a
-managed XVF it validates the native writer, loads the matching K artifact,
-derives the live delay, and applies/readbacks the fixed profile. The explicit
-custom/lab bypass path writes `SHF_BYPASS=1`; corpus mode remains an explicit
-low-level route. The older `jasper-aec-tune` is still installed for
-diagnostics / future manual delay work. It prints a candidate without changing
-state by default. Explicit
-`--apply` requires finite confidence of at least `0.001`, a candidate in the
-firmware-confirmed `[-64,+256]` range, a present XVF, and matching write
-readback. Before writing, it retains the current chip value and restores it if
-the apply or readback fails; an unsuccessful rollback is reported as uncertain
-chip state. The tuner stops and later restores both capture participants that
-were active (`jasper-voice` and `jasper-aec-bridge`) so its direct XVF capture
-cannot race either the bridge-owned or direct-mic topology. Every service and
-Camilla control operation is bounded. That write is volatile: the tool creates
-no delay state file and
-does not call `SAVE_CONFIGURATION`; the next AEC reconcile/init or reboot
-overwrites it from the active profile's `JASPER_AEC_*_CHIP_SYS_DELAY` value.
-The supported production path remains profile-managed through the reconciler
-and `jasper-aec-init`.
-
-### What's still unmeasured: live in-person wake attempts
-
-The whole point of AEC is to make wake-word detection work
-during music playback. The 2026-05-20 forensic sweep (below) DID
-measure end-to-end wake detection over music — captured audio,
-offline-scored against the wake model, with concrete pass/fail
-counts (e.g. "Wake rate: 5/20 vs prev 4/20"). What that sweep
-does NOT cover is a human standing in the room saying "Hey
-Jarvis" live and being interrupted/talked over by playback in
-real time, or per-config false-positive rate against ordinary
-household noise. That test requires sitting in front of the
-speaker and listening; it hasn't been done yet.
-
----
+| Mic channel | 1 (ASR beam) | `xvf3800.MIC_CHANNEL_INDEX` | Canonical XVF3800 voice-assistant channel. Under the fallback's `SHF_BYPASS=1` it carries raw-ish mic data. |
+| Chip output mux | OP_L=`(8,0)`, OP_R=`(8,0)` | `jasper-aec-init` | The bridge reads channel 1; Seeed's firmware default for channel 1 is OP_R=`(0,0)` (silence), which presents as `mic=0` with healthy ALSA capture and UDP output. |
+| Chip SHF | bypassed (`SHF_BYPASS=1`) | `jasper-aec-init` | Keeps the chip AEC out of the near-end path. This disables the ENTIRE SHF stage (AEC + BF + NS + AGC) on channels 0/1, not just AEC; the chip-side HPF survives. |
+| `JASPER_AEC_REF_GAIN_DB` | `0` | `jasper.env` + `.env.example` | AEC3's design point is ref ≈ mic. Any positive value drives the reference into hard clipping on this channel — see the REF_GAIN trap in the historical appendix. Coupled to the mic channel: change one, change the other. |
+| `JASPER_AEC_MIC_GAIN_DB` | `6` | `jasper.env` | Boosts AEC3 output toward openWakeWord's training distribution (~−18 dBFS RMS). Static, soft-clipped via tanh; stacks on AGC1's dynamic gain. |
+| `JASPER_AEC_AGC2` | `0` | `jasper.env` | The binding only sets `gain_controller2.enabled`; `adaptive_digital` defaults off in libwebrtc-audio-processing-1 v1.3-3, so AGC2 is a no-op for level control on this build. Kept for compat; recommended off. |
+| `JASPER_AEC_AGC1_ENABLED` / `_TARGET_DBFS` / `_MAX_GAIN_DB` | `1`, `9`, `18` | `jasper.env` | AGC1 in `kAdaptiveDigital`. `TARGET_DBFS=9` → −9 dBFS via `target_level_dbfs` (0–31). `MAX_GAIN_DB=18` → `compression_gain_db` (0–90) — a soft-knee compressor parameter, **not** a gain ceiling despite the env-var name. The shipped benefit is uniform output across utterances, not detection rate. AGC1 has no public attack/release parameter. |
+| `JASPER_AEC_NS_LEVEL` | `low` | binding default + `jasper.env` | More aggressive NS strips HF speech consonants openWakeWord depends on. `kVeryLow` is not exposed by v1.3-3; `JASPER_AEC_NS_ENABLED=0` disables NS entirely at the cost of residual music. |
+
+**Corpus-only sweep knobs.** `jasper/aec_sweep.py` owns three stable pilot slots
+(`aec3_variant_1..3`) exposing additional AEC3 suppressor knobs through
+`jasper_aec3/src/aec3_binding_v2.cpp` and `_Aec3V2Engine`. They require the
+verified v2 enhancement and are unavailable on a v1-only install. Labels and
+overrides come from `/var/lib/jasper/aec3_sweep_variants.json`, applied with
+`jasper-aec-sweep-config apply <file> --restart-bridge`. Do not promote a sweep
+variant to production until it beats BEST_A on same-utterance listening review,
+corpus-quality metrics, and wake scoring under the far+music condition.
+
+## Caveats
+
+- **The legacy ALSA tap is pre-CamillaDSP.** `jasper_capture` remains a
+  CamillaDSP-only tap on the renderer→Camilla loopback *before* CamillaDSP, and
+  its `pcm.jasper_ref` alias has no reader at all. Do not infer speaker
+  amplitude or final reference timing from it; timing numbers `jasper-aec-tune`
+  printed before it moved to the outputd monitor are not comparable — re-run.
+- **Cross-clock-domain drift.** Reference and mic ride independent clocks that
+  drift by tens of ppm. AEC3's delay estimator tolerates some drift but not
+  unbounded; no async resampling is implemented on either leg.
+- **`jasper-aec-tune` is diagnostic.** It prints a candidate without changing
+  state by default. `--apply` requires finite confidence ≥ 0.001, a candidate in
+  the firmware-confirmed `[-64,+256]` range, a present XVF, and matching write
+  readback; it retains the current chip value and restores it on failure,
+  reporting an unsuccessful rollback as uncertain chip state. It stops and
+  restores both capture participants so its direct XVF capture cannot race the
+  bridge. The write is volatile — no state file, no `SAVE_CONFIGURATION`; the
+  next reconcile/init or reboot overwrites it from the active profile.
+- **The bridge is Python (~110 MB RSS)** — interpreter + numpy + scipy +
+  sounddevice; the `jasper_aec3` binding is ~5 MB plus the AEC3 library.
+  Measured on a Pi 5: bridge 3–8% of one A76 core / ~110 MB, camilla 0.5% /
+  8 MB, voice 11.3% / 265 MB. If RAM becomes the constraint, in order: drop
+  scipy (~30 MB), drop sounddevice (~15 MB, one mic-capture path left to port),
+  rewrite in Rust/C (~80–100 MB).
+- **Live in-person wake attempts are still unmeasured.** Offline sweeps score
+  captured audio against the wake model; nobody has measured a human in the room
+  being talked over in real time, or per-config false-positive rate.
 
 ## File map
 
-Files involved in the AEC subsystem:
-
-- `jasper/cli/aec_bridge.py` — the AEC bridge daemon: WebRTC AEC3 in the
-  software fallback, chip-beam carrier in chip-AEC profiles
-- `jasper_aec3/` — sibling package, pybind11 binding for WebRTC AEC3
-  (`libwebrtc-audio-processing-1` v1.3-3 from Trixie's apt)
-- `jasper/cli/aec_init.py` — boot/replug fixed-profile reapply and read-back
-  verification; it never resets the chip
-- `jasper/cli/aec_commission.py` — explicit foreground alignment command;
-  owns the single volatile reset, bounded signal, evidence gates, and
-  alignment-artifact publication
-- `jasper/cli/aec_tune.py` — diagnostic estimator for chip-side
-  `AUDIO_MGR_SYS_DELAY`; explicit `--apply` is a guarded volatile lab write,
-  not production configuration ownership
-- `jasper/xvf/xvf_host.py` — JTS-owned XVF3800 USB control helper
+- `jasper/cli/aec_bridge.py` — the bridge daemon (AEC3 in the software path,
+  chip-beam carrier in chip-AEC profiles); `jasper_aec3/` — pybind11 binding for
+  WebRTC AEC3 (`libwebrtc-audio-processing-1` v1.3-3 from Trixie's apt).
+- `jasper/cli/aec_init.py` — boot/replug reapply, read-back verification, queue
+  collection, ordering guard. Never resets the chip.
+  `jasper/cli/aec_commission.py` — the foreground alignment command.
+  `jasper/chip_aec_alignment.py` — artifact schema, K math, window rule,
+  thresholds. `jasper/cli/aec_tune.py` — diagnostic delay estimator.
+  `jasper/xvf/xvf_host.py` — XVF3800 USB control helper.
 - `jasper/cli/doctor/aec.py` — `check_aec_bridge_running`,
-  `check_xvf_firmware_6ch`
-- `jasper/cli/doctor/audio.py` — `check_mic_capture`
-- `deploy/alsa/asoundrc.jasper` — defines `pcm.jasper_capture`
-  (the dsnoop tap)
-- `deploy/modprobe.d/snd-aloop.conf` — single-card music-chain
-  snd-aloop config (`index=6 id=Loopback`)
-- `deploy/modules-load.d/snd-aloop.conf` — auto-load at boot
-- `deploy/systemd/jasper-aec-bridge.service` — runs
-  `jasper-aec-bridge` Python daemon
-- `deploy/systemd/jasper-aec-init.service` — oneshot at boot
-- `deploy/bin/jasper-aec-reconcile` +
-  `deploy/systemd/jasper-aec-reconcile.service` — keeps
-  `JASPER_MIC_DEVICE`, AEC service enablement, and current mic
-  hardware in sync so stale `udp:9876` does not strand voice when
-  the Array is absent
-- `deploy/install.sh` — installs all of the above; builds mandatory
-  `jasper_aec3._aec3` against `libwebrtc-audio-processing-dev`, and installs
-  the optional-v2 background lifecycle described in
-  [HANDOFF-enhanced-aec.md](HANDOFF-enhanced-aec.md); installs `dfu-util` for
-  chip firmware operations; seeds
-  `/var/lib/jasper/aec_mode.env` and runs the reconciler once
-- `pyproject.toml` — registers `jasper-aec-bridge`,
-  `jasper-aec-init`, `jasper-aec-tune` console scripts; adds
-  `pyusb`, `libusb_package`, `pyalsaaudio` deps
-- `.env.example` — mic/AEC env knobs:
-  profile-managed `JASPER_AEC_MIC_DEVICE` derived by the reconciler,
-  `JASPER_MIC_DEVICE_CANDIDATES` direct-fallback hints, UDP transport
-  settings, and tuning gains
-- `scripts/aec-probe-timing.py` — current multi-source diagnostic timing
-  probe for outputd's final speaker-reference UDP stream, outputd's
-  chip-ref writer tee, and selected XVF3800 channels. It writes
-  JSON/CSV/Markdown artifacts and can repeat the standard 1024/3072,
-  1024/2048, and 512/1024 outputd profiles. See
-  [AEC-DIAG-03 Timing Probe](AEC-DIAG-03-timing-probe.md).
-- `scripts/aec-probe-latency.sh` — older chirp + cross-correlation
-  diagnostic. Existing historical results from this script must be read
-  with their run-era reference source in mind; early runs measured the
-  `jasper_capture` pre-DSP tap and must not be confused with production
-  outputd final-reference timing.
-- `scripts/aec-probe-pinknoise.sh` — runs the bridge against
-  stationary pink noise to measure the AEC engine's plateau
-  attenuation (the upper bound for this setup, since music is
-  documented as harder for AEC3)
+  `check_aec_bridge_output_health`, `check_aec_bridge_dtln_engine`,
+  `check_xvf_firmware_6ch`, `check_xvf_mixer_state`;
+  `jasper/cli/doctor/audio.py` — `check_mic_capture`.
+- `deploy/systemd/jasper-aec-{bridge,init,reconcile}.service`,
+  `deploy/bin/jasper-aec-reconcile`, `deploy/udev/99-jasper-aec-reconcile.rules`,
+  `deploy/alsa/asoundrc.jasper` (defines `pcm.jasper_capture`),
+  `deploy/modprobe.d/snd-aloop.conf`, `deploy/modules-load.d/snd-aloop.conf`.
+- `deploy/install.sh` builds mandatory `jasper_aec3._aec3`, installs the
+  optional-v2 lifecycle and `dfu-util`, seeds `/var/lib/jasper/aec_mode.env`,
+  and runs the reconciler once. `pyproject.toml` registers
+  `jasper-aec-{bridge,init,commission,tune,sweep-config}`.
+- `scripts/aec-probe-timing.py` — the current multi-source timing probe over
+  outputd's reference UDP stream, the chip-ref writer tee, and selected XVF
+  channels; see [AEC-DIAG-03](AEC-DIAG-03-timing-probe.md). Also
+  `scripts/aec-probe-latency.sh` (older chirp/cross-correlation — read its
+  historical results with their run-era reference source in mind) and
+  `scripts/aec-probe-pinknoise.sh` (plateau attenuation against pink noise).
 
----
-
-## Tuning findings (2026-05-08) — HISTORICAL
-
-> **⚠️ HISTORICAL.** This section documents tuning for the
-> previous architecture (raw mic 0 / channel 2, no chip processing
-> on the mic path). The "production config" recommended below
-> (`REF_GAIN_DB=25, AGC2=0`) is **no longer current** — see
-> [Software-AEC tuning (2026-05-16)](#software-aec-tuning-2026-05-16--non-xvfcustom-baseline)
-> for the current non-XVF/custom values. Retained for context: the
-> sweep matrix below shows AEC3 behavior on a raw-mic input, which
-> may be useful if someone ever needs to revisit that architecture.
-
-After landing the WebRTC AEC3 engine option, we ran a structured
-tuning pass to characterize attenuation against the actual hardware.
-Logged here as the calibration baseline.
-
-**Setup measured against:**
-
-- Apple USB-C dongle → user's TPA3255 amp → bookshelf speakers
-  (free-floating, not in a sealed cabinet)
-- ReSpeaker XVF3800 6-ch firmware, raw mic 0 (channel 2, BYPASS
-  mode = no chip-side AGC/BF/NS in path)
-- WebRTC AEC3 via `libwebrtc-audio-processing-1` v1.3-3
-- Mic placement: free-floating on desk ~3 ft from speakers
-- `main_volume` at 0 dB (the control surface's "100%")
-
-**Measurements (baseline, REF_GAIN_DB=0):**
-
-| What | How | Result |
-|------|------|--------|
-| End-to-end ref→mic delay | Chirp cross-correlation, `scripts/aec-probe-latency.sh` | **40 ms** (peak/median 5.2×) |
-| AEC3 plateau on stationary content | 30 s pink noise, `scripts/aec-probe-pinknoise.sh` | **−11 dB**, converges in ~10 s |
-| AEC3 on real-world music (AirPlay) | 90 s sustained streaming | **−2 to −7 dB**, oscillates with content, no convergence trend |
-| Loop gain (digital ref RMS → mic RMS) | Bridge log RMS averages | **+27 to +30 dB** on music |
-
-**Measurements (with REF_GAIN_DB=20, the loop-gain-correction lever):**
-
-| What | How | Result |
-|------|------|--------|
-| AEC3 plateau on pink noise | Same probe + `REF_GAIN_DB=20` | **−16 to −18 dB**, converges in ~5 s (+5 to +7 dB lift) |
-| AEC3 on music | 60 s music + `REF_GAIN_DB=20` | **−12 to −20 dB**, mean ~−15 dB, stable across loud and quiet passages (+10 dB lift) |
-| Loop gain after the boost | Same RMS averages | **+7 to +9 dB** (was +27 to +30 dB) — inside AEC3's design window |
-
-**Interpretation (with literature cross-reference):**
-
-The headline "20-40 dB ERLE" attributed to AEC3 is for ideal
-conferencing — near-field mic, integrated speaker, moderate SPL.
-On real-world far-field recordings AEC3 alone delivers single-digit
-to low-double-digit ERLE; the ICASSP AEC challenges stopped reporting
-ERLE entirely circa 2022 because the metric becomes misleading on
-real hardware. **Our −11 dB on pink noise is consistent with what
-AEC3 actually delivers on realistic setups.**
-
-The −5 to −10 dB gap between music and pink noise is the documented
-non-stationarity penalty: AEC3's linear adaptive filter can't model
-loudspeaker non-linearity, and music's transient content keeps the
-filter in a perpetual re-converge state. RFC 7874 explicitly says
-AEC SHOULD be turn-offable for music.
-
-**The dominant problem is loop gain inversion.** AEC3 was designed
-for setups where the digital reference is comparable to or louder
-than the mic capture (typical conferencing has loop gain of −7 to
-−10 dB; pro AEC guides — Bose, Biamp — recommend ref 7-10 dB
-*louder* than mic). Our smart-speaker setup inverts that: the amp
-+ speakers + room + chip mic preamp chain produces +27 to +30 dB
-of round-trip gain. AEC3's adaptive filter math expects loop gain
-near unity; ours sits well outside its design point.
-
-**Mitigations tested:**
-
-1. ✅ **Boost the digital reference** before it enters AEC3 — closes
-   the loop gain gap directly. Implemented as the
-   `JASPER_AEC_REF_GAIN_DB` env var on the bridge (default 0 dB).
-2. ✅ **Hint AEC3's delay estimator** with the measured 40 ms via
-   `set_stream_delay_ms`. Wired up as the AEC3 binding's
-   constructor default. Convergence speeds up modestly (5 s vs 10 s
-   on pink noise); steady-state plateau unchanged within
-   measurement noise.
-3. ✅ **AGC2 toggle** — `JASPER_AEC_AGC2=1` enables WebRTC's modern
-   post-AEC gain controller. See sweep results below.
-
-**Sweep matrix (pink noise, 30 s per config):**
-
-| Config (AGC2, REF_GAIN_DB) | Mean attenuation | Peak attenuation | Variability |
-|---|---|---|---|
-| off, 20 | −17.8 dB | −21.6 dB | low |
-| **off, 25** ← chosen | **−24.8 dB** (incl. deep-cancel moments) | **−43.8 dB** | high (deep moments + −16 dB floor) |
-| off, 30 | −21.9 dB | −38.9 dB | medium |
-| on, 20 | −14.8 dB | −17.5 dB | medium |
-| on, 25 | −16.5 dB | −17.1 dB | low |
-| on, 30 | −16.7 dB | −16.8 dB | very low |
-
-**Reading the matrix:**
-
-- **AGC2 ON looks like it makes attenuation worse by 3 dB on the metric, but that's measurement bias.** AGC2 sits *after* AEC and amplifies the residual back up to a target level. The actual residual echo isn't worse; the *amplified output* is louder, which makes the dB ratio look smaller. AGC2's value is in giving openWakeWord a normalized input, not in adding raw cancellation. The right judge of AGC2 is wake-word detection rate, not RMS attenuation.
-- **AGC2 OFF lets AEC3 reach much deeper cancellation when its filter is well-converged.** The −38 to −44 dB windows are real deep-cancel moments. With AGC2 ON, those moments still happen at the AEC3 layer but get masked in the metric.
-- **REF_GAIN above +25 dB hard-clips the digital reference at peaks** (np.clip is hard-clip; pink noise peak factor ≈ 3× RMS). The +30 dB config injects distortion AEC3 has to work around — fewer deep-cancel windows than +25 dB, suggesting the clipping is mildly hurting convergence. If we want to push beyond +25 dB cleanly we need to swap the hard-clip in `_ReferenceFrameConverter` for a soft-limiter (~15 lines of NumPy).
-
-**Chosen production config: `JASPER_AEC_AGC2=0`, `JASPER_AEC_REF_GAIN_DB=25`.** Best peak attenuation, hits the loop-gain target zone closely without excessive clipping, simplest signal path for openWakeWord. If real-world wake-word testing later shows level instability at high SPL, flipping `JASPER_AEC_AGC2=1` is one env edit + bridge restart.
-
-**Mitigations still on the table:**
-
-3. **Enable WebRTC AGC2** as the post-AEC stage. AGC2 is the
-   modern modular gain-controller (newer than AGC1; the "2" is
-   per-module numbering, not "older than AGC3"). One-line config
-   flip in the binding. Adds level normalization that helps
-   downstream wake-word detection too. Worth trying if the
-   wake-word-during-music acceptance test undershoots.
-4. **Neural residual stage (DeepVQE)**. Skips the linear-filter
-   fundamental limitation entirely. ~2-3 days of work per the
-   project plan; treat as Stage 4, only if AEC3 + REF_GAIN_DB +
-   AGC2 prove insufficient for the actual acceptance test. Given
-   we're now at −15 dB on music, this stage is probably not needed.
-
-**The acceptance test that matters** is end-to-end wake-word
-detection rate during music at conversational distance, not raw
-ERLE. We may already be close to passing with current attenuation
-+ ducking + good mic placement (the desk + free-floating mic
-geometry is favorable). That test is on the agenda for the next
-session.
-
----
-
-## Deep tuning landscape — research notes (2026-05-09)
-
-After landing the production tuning above, we did an OSS-ecosystem
-research pass on what AEC3 levers remain if the wake-word acceptance
-test undershoots. The findings calibrate whether deeper AEC3 work
-pays back vs pivoting to other architectural changes.
-
-### Realistic ceiling on deep AEC3 tuning
-
-The honest expected payoff for getting at AEC3's internal config:
-**a few extra dB at most beyond our current −15 to −18 dB on
-music.** AEC3 was tuned for conferencing topologies (near-field
-mic, integrated speaker, moderate SPL); smart-speaker problems
-(loud non-stationary content + far-field mic + speaker
-non-linearity) sit at the edge of what any linear adaptive filter
-can handle. The ICASSP AEC challenges stopped reporting ERLE
-around 2022 because the metric becomes misleading on real
-hardware. To reach the −25 to −35 dB band that commercial smart
-speakers achieve, the ecosystem consensus is hybrid: linear AEC +
-neural residual + retrained wake word.
-
-### `EchoCanceller3Config` is not in the public API
-
-The meaningful AEC3 tuning levers — `filter.refined.length_blocks`,
-`ep_strength.bounded_erl`,
-`suppressor.use_subband_nearend_detection`,
-`dominant_nearend_detection.snr_threshold` — all live inside
-`webrtc::EchoCanceller3Config`, which is **not in the public
-headers** of either v1.x or v2.x of the pulseaudio fork. Trixie's
-`libwebrtc-audio-processing-dev` 1.3-3 only ships
-`webrtc::AudioProcessing::Config` (the top-level), not the
-AEC3-specific config struct.
-
-Cross-reference of the OSS ecosystem confirms this is universal:
-
-- **PipeWire's** `spa/plugins/aec/aec-webrtc{,2}.cpp` only forwards
-  `high_pass_filter`, `noise_suppression`, `gain_control`,
-  `voice_detection`, `extended_filter` (legacy AEC2-only), plus a
-  handful of beamforming/intelligibility flags that are no-ops on
-  the v1.x/v2.x fork. Never instantiates `EchoCanceller3Config`,
-  never calls `SetEchoControlFactory`. The ArchWiki page for
-  `module-echo-cancel` documents this small surface and notes
-  "documentation for the WebRTC echo cancellation library is
-  difficult to find."
-- **GStreamer's** `webrtcdsp` (`gst-plugins-bad`), Mumble, Linphone,
-  Jitsi, Janus, Mediasoup: same pattern — only wrap the top-level
-  config.
-- **The single OSS project that exposes deep AEC3 config** is the
-  Rust crate `tonarino/webrtc-audio-processing`, behind the
-  `experimental-aec3-config` Cargo feature flag. The pattern: vendor
-  the private aec3 headers, build `webrtc-audio-processing` bundled
-  + static, expose a custom `EchoControlFactory` that constructs
-  `EchoCanceller3` with a mutated config, pass through
-  `AudioProcessingBuilder::SetEchoControlFactory`. The README
-  explicitly disclaims semver — these private headers churn between
-  WebRTC milestones. **This is the canonical reference if we ever
-  go deep.**
-
-### If we ever want the deep knobs: vendor v2.1 as a Meson subproject
-
-**Anti-pattern (do not do):** vendoring private aec3 headers against
-apt's `libwebrtc-audio-processing-1.so.3`. Vtable layouts of
-`EchoCanceller3` and the surrounding classes are not ABI-stable
-across Debian rebuilds — compiler version, abseil version, and
-`-D_GLIBCXX_USE_CXX11_ABI` setting all matter. The `auto-abseil`
-transition flagged on `tracker.debian.org/pkg/webrtc-audio-processing`
-is exactly this risk. Header version skew is also acute (v1.3 was cut
-from Chromium WebRTC ~M114; field names inside `EchoCanceller3Config`
-are M-version-dependent). No widely-cited public recipe exists for
-this pattern on Debian/Ubuntu — the closest thing (tonarino) deliberately
-doesn't link against the system .so for this exact reason.
-
-**Clean path:** mirror PipeWire 1.4.x's pattern. Vendor
-`webrtc-audio-processing` v2.1 from upstream as a Meson subproject:
-
-```
-subprojects/webrtc-audio-processing.wrap
-  [wrap-git]
-  url = https://gitlab.freedesktop.org/pulseaudio/webrtc-audio-processing.git
-  revision = v2.1
-  [provide]
-  dependency_names = webrtc-audio-processing-2
-```
-
-Build flags `-Dc_args=-fPIC -Dcpp_args=-fPIC -Ddefault_library=static`
-(plus `-march=armv8.2-a+crypto -mtune=cortex-a76` for NEON on Pi 5).
-Static archive ~8-12 MB, RPi5 builds in 3-5 minutes. Bridge links
-statically; we own both sides of the ABI boundary, CI-reproducible
-across Trixie point releases. Reference implementations to crib from:
-
-- `tonarino/webrtc-audio-processing` —
-  `webrtc-audio-processing-sys/src/wrapper.cpp` and `experimental.rs`
-  for the `SetEchoControlFactory` + `EchoCanceller3` construction
-  pattern.
-- PipeWire 1.4's `subprojects/webrtc-audio-processing.wrap` for the
-  Meson wrap file shape.
-
-Bring-up: ~1-3 days. Per-upgrade maintenance: low (pin to upstream
-tag, bump deliberately).
-
-**Don't wait for Trixie to ship `libwebrtc-audio-processing-2`.** The
-Debian package tracker note dated 2025-11-26 says "A new upstream
-version 2.1 is available, you should consider packaging it" but no
-v2.x package exists in trixie-backports, sid, or experimental. v2.x
-is shipping in Arch, Alpine, FreeBSD, and is bundled by
-PipeWire 1.2+ — but Trixie stable won't see it in its lifetime.
-Forky timeline at earliest.
-
-### Updated staged options if AEC3 isn't enough
-
-Run in roughly this cost-ordered sequence; stop early if any stage
-passes the acceptance test. (Supersedes the pre-AEC3 list near the
-top of this section.)
-
-1. **Run the wake-word acceptance test.** Haven't done it. If
-   detection rate ≥ 80% at 75 dB SPL music with current bridge
-   config, no further AEC work needed. ~½ day.
-2. **Drift / reference-tap diagnosis** (per the Caveats section
-   above). ERLE decay over 10 min indicates clock-domain drift.
-   **The reference-tap half is DONE — no longer a costed option.**
-   Every AEC reference consumer now reads outputd's speaker monitor:
-   the bridge at U4/P7-1 and `jasper-aec-tune` at U4/P7-2, so nothing
-   takes a PRE-CamillaDSP reference any more. Only the drift
-   measurement itself remains open here.
-3. **Vendor v2.1 + custom `EchoCanceller3Config`** (per "Clean
-   path" above). ~1-3 days. **DONE 2026-05-22 night (offline laptop
-   spike); BEST_A config identified.** The cross-reference research's
-   suggested starting config had a critical bug
-   (`ep_strength.bounded_erl=true` silently disables WebRTC
-   Transparent Mode) AND was insufficient on its own — the real
-   winning knobs were `erle.max_l=1.5, erle.max_h=1.0`,
-   `filter.refined.length_blocks=30`, `use_stationarity_properties=true`,
-   plus reverting `bounded_erl` to `false`. Full BEST_A config
-   + sweep methodology preserved at
-   `experiments/aec3-v2-deep-tune-spike/`. Results: rescues whisper-
-   music silent miss (peak 0.76 vs stock 0.28), beats AEC3-stock on
-   every failing music cell, competitive with DTLN-aec (BEST_A 27
-   events on music cells vs D256 31, AEC3-stock 23).
-   **Next move:** the triple-stream architecture in
-   [HANDOFF-mic-quality-v2.md](HANDOFF-mic-quality-v2.md) ships
-   BEST_A alongside raw mic and DTLN-aec as a 3-leg OR-fused
-   wake-word system.
-4. **Neural residual stage.** `breizhn/DTLN-aec` (Interspeech 2021,
-   MIT-licensed, TFLite, <4 ms/frame on Pi 3B+) is the most-cited
-   option; `SaneBow/PiDTLN` and `rolyantrauts/PiDTLN2` are working
-   RPi integrations. 256-unit quantized model is the RPi5 sweet
-   spot. Alternatives: GTCRN-AEC (ICASSP 2024, smaller), Ultra
-   Dual-Path Compression. Pipeline: AEC3 → neural residual → wake
-   word. ~2-5 days.
-5. **Custom-train "Hey Jarvis" with music/echo augmentation.**
-   dscripka's openWakeWord training notebook explicitly supports
-   mixing positive samples with realistic background music + room-
-   impulse-response convolution. With the AEC3-residual-shaped
-   noise distribution as the augmentation distribution, false-
-   reject rate at −15 dB SNR drops substantially. The
-   cross-reference research flags this as the lever commercial
-   smart speakers actually ship. Highest engineering cost but also
-   highest upside on the user-facing metric — if attenuation is in
-   the right range and detection still misses, retraining the
-   model to expect the residual is more transformative than
-   squeezing another 3 dB out of the canceler. ~1 week.
-6. **Push-to-talk fallback** for residual cases. Supported Bluetooth
-   remotes can already trigger the voice path; additional remote
-   mappings stay within the HID accessory registry.
-
-### What not to do (recorded so future sessions don't re-investigate)
-
-External recommendations that look reasonable but are wrong for our
-build, with reasoning so we don't keep re-litigating:
-
-- **Don't use the XVF3800's "processed left channel" expecting
-  25-40 dB hardware AEC.** External writeups (and ad-hoc research
-  reports) recommend this — the claim is accurate for the chip's
-  intended topology (chip's own codec drives the speaker, as in
-  HA Voice PE / Seeed reference designs) but **not for ours.** The
-  architectural mismatch is documented at length above (XMOS User
-  Guide §3.5, §4.2.1, the `AEC_FAR_EXTGAIN` auto-mirror). Measured
-  ≤−2 dB at every config tested. Already a feedback-memory rule;
-  the rule stands.
-- **Don't pivot to PipeWire `module-echo-cancel`.** Doesn't expose
-  the deep AEC3 knobs (only the top-level `AudioProcessing::Config`
-  surface) and adds an audio server to the dependency graph plus
-  shairport-sync/librespot integration churn.
-- **Don't wait for Trixie to ship `libwebrtc-audio-processing-2`.**
-  Won't happen in Trixie's lifetime per the Debian package tracker.
-- **Don't vendor private AEC3 headers against apt's `1.3-3.so`.**
-  ABI fragility per the anti-pattern note above.
-- **Don't pursue the field-trial mechanism** (e.g.
-  `field_trial::IsEnabled("WebRTC-Aec3ShortHeadroomKillSwitch")`).
-  Symbols are exported in the .so but `field_trial.h` is private,
-  the registry only flips ~a dozen named killswitches (not the
-  deep config struct), and you'd be vendoring private headers
-  anyway with worse ergonomics than the v2.1 path.
-
----
-
-## Sources we relied on
-
-- XMOS XVF3800 v3.2.1 User Guide (the binding reference for chip
-  behavior — particularly §3.5 audio pipeline, §4.2 tuning
-  parameters)
-- XMOS XVF3800 v3.2.1 Programming Guide (control protocol,
-  parameter table)
-- `respeaker/reSpeaker_XVF3800_USB_4MIC_ARRAY` GitHub repo
-  (firmware binaries, `xvf_host.py`, host control README, issues
-  #6 and #8 for documented bugs)
-- `xiongyihui/speexdsp-python` (Python bindings for SpeexDSP)
-- `voice-engine/ec` (reference implementation of the
-  bridge-shaped SpeexDSP integration)
-- `SaneBow/alsa-aec` and `koniu/sysrecord` (reference asoundrc
-  patterns for `multi` + dsnoop fan-out)
-- ALSA project Module-aloop documentation (substream and rate
-  semantics)
-- Stuart Naylor's writeups on the HA / Rhasspy / OVOS forums on
-  software AEC limitations and SpeexDSP-vs-WebRTC tradeoffs
-- HA Voice PE community forum threads on XU316 AEC behavior
-  (closest neighbor; same chip family)
-
-Last verified: 2026-08-14 (scope: the `### Why alsaaudio was used for the reference capture` section and this file's opening canonical-ownership paragraph only — that the bridge imports no `alsaaudio` at all, that the reference transport is a bound UDP socket drained on a thread (`_outputd_ref_udp_thread`), that sounddevice/PortAudio survives ONLY on the mic-capture path because the AEC *output* has been a non-blocking UDP `sendto` since the resilience-ladder PR 2, and that the outputd speaker monitor itself is owned by `HANDOFF-speaker-output-reference.md` rather than this file, rechecked against `jasper/cli/aec_bridge.py` and `docs/HANDOFF-speaker-output-reference.md`; U4/P7-5 gate SF-2/N4. The rest of this file was NOT re-verified in this pass — in particular the `## Bridge ref starvation bug — fixed (2026-05-19)` section's `_ref_thread` references are dated archaeology and were read, not re-derived. Prior 2026-08-13 pass, scope: the AEC reference-source contract only — that outputd's UDP speaker monitor is the bridge's sole reference, that the retired `JASPER_AEC_REF_SOURCE=alsa` / `pcm.jasper_ref` fallback is gone from the bridge, the reconciler, and doctor's remediation, and that a box still carrying the retired value converges with a warning while an unknown value still fails, rechecked against `jasper/cli/aec_bridge.py`, `deploy/bin/jasper-aec-reconcile`, `jasper/cli/doctor/aec.py`, and `tests/test_aec_ref_source_retirement.py`; the rest of this file was NOT re-verified in this pass. Prior 2026-08-08 pass, scope: the bridge reference-input freshness paragraph, silent-reference source-aware remediation, current bridge-stats schema prose, and lesson #10 only — exact-schema-v4 receiver-side source/endpoint/frame-count/monotonic snapshot/process/last-frame-age telemetry, the 10 s startup grace, 5 s sustained-staleness failure, fail-closed malformed/stale-v4 contract, one-way precedence over journal content/drift assessment, exact-v4 identity precedence over legacy epoch provenance, outputd-STATUS localization-only rule, old/future-schema journal fallback, bridge-stats provenance, and outputd STATUS fields were rechecked against `jasper/cli/aec_bridge.py`, `jasper/cli/doctor/aec.py`, and focused tests; separately, the active-probe idleness gate was rechecked against `jasper/cli/doctor/aec_probe.py` and focused tests; the rest of this file was NOT re-verified in those passes. Prior same-day pass: the K-lifecycle section only — the chip-reference window comes out of outputd's per-write sample ring, with the sliding window, the split-half median-drift bound, the collection-start floor, and boot's MIN_EDGE_MARGIN bound against the commissioned SYS_DELAY rechecked against `jasper/cli/aec_init.py`, `jasper/chip_aec_alignment.py`, and `rust/jasper-outputd/src/state.rs`. Prior 2026-07-30: managed XVF chip-or-park policy, foreground
-SYS_DELAY-only commissioning, strict identity-plus-K artifact, silent
-K-minus-live-queue lifecycle, native 16 kHz/stereo/S16_LE/128/256 writer
-boundary, and reconciler/status ownership rechecked against implementation and
-focused tests; prior 2026-07-29 recheck confirmed that the outputd UDP
-reference and `jasper_ref` ALSA fallback retain separate transport lifecycles
-while sharing `_ReferenceFrameConverter`'s framing, stateful DSP, clipping,
-and nonblocking queue contract; prior 2026-07-27 pass rechecked the mandatory
-v1 / optional verified-v2 runtime selection and delivery boundary against
-`jasper/cli/aec_bridge.py`, `jasper/enhanced_aec.py`, the lazy
-`jasper_aec3` package initializer, and focused lifecycle tests; broader
-audio-topology verification remains from 2026-07-23, when the bridge's
-Camilla-independent runtime inputs,
-soft `After=`/`Wants=` startup dependency, and reconciler-owned lifecycle were
-rechecked against the unit, bridge topology, and the #1264 hardware failure;
-the active-plan-derived computer-microphone source selector, `primary` default,
-plan-gated physical `raw0` comparison source, raw no-gain/no-fallback contract,
-chip-beam shared gain/soft-limit and per-frame clean fallback,
-applied-source truth, and isolation from `:9876` / wake legs were rechecked;
-the optional USB-host-mic duplicate on dedicated `:9894`, v2-only timestamp
-header, one-way rollout compatibility, negotiated capture-latency log,
-schema-4 bridge-emit-to-ALSA-write scope, in-process occupancy-targeted relay,
-and frozen `:9876` voice wire contract were rechecked
-against `jasper/cli/aec_bridge.py`, `jasper/cli/usb_mic.py`,
-`jasper/usb_mic.py`, and focused bridge/relay tests. Prior 2026-07-12 pass:
-`jasper-aec-tune` mic card and capture-width
-defaults rechecked against the shared XVF runtime profile, including the
-legacy hardware-absent fallback and registered Flex variants; its
-diagnostic-only default, guarded volatile apply/readback, reconciler overwrite
-semantics, and capture/volume/service cleanup contract were rechecked against
-`jasper/cli/aec_tune.py` and hardware-free tests; "What we
-found about chip-side AEC in our
-topology" section's obsolete verdict corrected with a superseded
-callout — the section previously read as a current negative verdict
-despite the doc's own TL;DR crediting Option D's 2026-05-29 lab result
-as the recommended `xvf_chip_aec` profile). Prior 2026-07-09 pass
-rechecked wake-corpus chip-AEC capture-plan gating and
-bridge stats schema v2 against `jasper/cli/aec_bridge.py` and
-`jasper/wake_corpus/bridge_session.py`. Prior 2026-06-30 pass rechecked
-chip-AEC one-detector default and optional 150/210 beam opt-ins against
-`jasper/audio_profile_state.py`, `deploy/bin/jasper-aec-reconcile`,
-`jasper/cli/aec_bridge.py`, `jasper/control/aec_endpoints.py`, `/wake/`,
-doctor, validation, and reconcile tests. Prior pass 2026-06-26: `/aec`
-intent-vs-applied-runtime status contract rechecked against
-`jasper/audio_profile_state.py`, `jasper/control/aec_endpoints.py`, and
-`tests/test_control_aec_state.py`. Prior pass 2026-06-25: central chip-AEC
-DAC gate, `xvf_chip_aec_testing`, profile-managed XVF mic-card derivation,
-and the chip-AEC bridge-carrier / software-AEC3-bypass distinction rechecked
-against the reconciler, `/aec`, doctor, and validation paths).
+Last verified: 2026-08-25 (triage pass — file map, console scripts, doctor check
+names, commissioning thresholds, artifact schema, queue-window constants, and
+bridge stats schema rechecked against the code. The chip-side HPF was found to
+be fixed in the production profile rather than env-tunable; that claim was
+corrected. Investigation history moved to
+`docs/historical/aec-investigation-2026-05.md`.)
