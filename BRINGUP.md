@@ -884,8 +884,8 @@ a second snd-aloop card before that, retired for resilience —
 see [`docs/HANDOFF-resilience.md`](docs/HANDOFF-resilience.md)).
 
 **Rollback key only — `JASPER_AEC_MODE`.** It predates the profile picker,
-and every managed profile branch forces `auto` on each reconcile pass, so
-the key is respected only under `JASPER_AUDIO_INPUT_PROFILE=custom`. `aec_mode.env` also carries
+and every managed profile branch overrides the key on each reconcile pass,
+so it is respected only under `JASPER_AUDIO_INPUT_PROFILE=custom`. `aec_mode.env` also carries
 `JASPER_AUDIO_INPUT_PROFILE` and the `JASPER_WAKE_LEG_*` keys, so edit the
 one key in place — overwriting the file with `tee` destroys the rest:
 
@@ -1116,9 +1116,9 @@ profile (`xvf_chip_aec`) both requested and active, and **AEC bridge service**
 forwarding the chip beam with WebRTC AEC3 bypassed. Short of that, **Audio
 profile** reads `warn` and carries the reconciler's own `reason=` and
 `action=`. The first two states below are designed waits — the system is
-waiting on you, not broken; `unavailable` and `fault` also fail the
-**AEC bridge service** row and need real attention. Do what `action=` says,
-then re-read the rows:
+waiting on you, not broken. `unavailable` means the hardware story needs
+attention (or, on Flex, is final — see below); `state=fault` is genuine
+breakage, not a wait. Do what `action=` says, then re-read the rows:
 
 | Doctor says | What it means | What to do |
 |---|---|---|
