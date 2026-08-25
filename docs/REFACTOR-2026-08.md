@@ -75,6 +75,12 @@ ack, never silence.
 ## Cloud waves
 
 **Wave 0 — correctness & safety (first, small PRs)**
+- [ ] CI matrix → the deployed interpreter only: `tests.yml` pytest matrix
+      becomes `["3.13"]` (PiOS Trixie ships python3.13 only — see
+      `deploy/lib/install/python-runtime.sh`) + the one classifier-test
+      assertion that names the version list. Campaign speed measure,
+      owner-directed; restoring the full matrix afterward is an owner call
+      (record either way via ADR).
 - [ ] BRINGUP.md Phase 5 rewrite: profile-first AEC flow, `jasper-aec-commission`,
       replace both config-truncating `tee` recipes (BLOCKER; validate on a Pi)
 - [ ] `install.sh` `install_nginx_site`: `return 1` on failed `nginx -t`
@@ -188,6 +194,20 @@ already open)**
       carries a notice line and the arm tooling gets re-verified before any
       measurement campaign runs
 - [ ] env-migrations fleet confirmation (unblocks Wave 2 item)
+
+## Driving PRs (the conductor's standing duties)
+
+Subscribe to every PR you open (`subscribe_pr_activity`) and enable
+auto-merge-on-green at creation — nobody waits between green and merge.
+Drive-to-green: never end a CI-failure wake without a pushed fix or a
+stated blocker. Exactly one re-run is legitimate: a job that died before
+any test body ran (checkout, install, runner loss — e.g. the uv
+manifest-fetch timeout) gets one `rerun_failed_jobs` after the run
+completes; a second failure is real. Never re-run to get past a real
+failure; never push empty commits to kick CI; never skip or quarantine a
+test for green. Keep an hourly `send_later` check-in armed until every
+open PR is merged or closed; re-arm silently when nothing changed. Keep
+~3–5 PRs in flight, land oldest-first, rebase followers after each merge.
 
 ## Definition of done (every PR)
 `scripts/test-fast` green (full lane in CI); docs PRs also pass
