@@ -6,7 +6,7 @@
 
 JTS's no-silent-failure doctrine: a measurement that cannot complete must say so
 audibly, because the household is standing at the listening position with their
-phone (plan §12, AGENTS.md "No silent failure paths"). These constants name the
+phone (plan §12, AGENTS.md's no-silent-deafness rule). These constants name the
 cues registered in `jasper/cues/registry.py`; the `*_CUE_SLUG` naming is what the
 cue-registry coverage guard recognizes as a play site. `classify_failure_cue`
 maps a transport/capture failure to the right cue so the host (the per-flow

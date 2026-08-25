@@ -296,7 +296,7 @@ for u in "${units[@]}"; do
 # further restarts) — visible to systemctl / jasper-doctor. Recover
 # with: systemctl reset-failed <unit> && systemctl start <unit>.
 # This file lives in /run and clears itself on the next boot.
-# See AGENTS.md "T5.2" + docs/HANDOFF-tier5-watchdog-liveness.md.
+# See docs/HANDOFF-tier5-watchdog-liveness.md.
 [Unit]
 StartLimitAction=none
 EOF

@@ -1524,7 +1524,7 @@ Notes specific to JTS that the research doesn't cover:
   whole page to HTTPS — that surfaces the self-signed cert warning. This comes from the
   private memory note `feedback_jts_http_not_https.md`.
 - **State files live under `/var/lib/jasper/*.env`** with `EnvironmentFile=`
-  chaining in the systemd units (see AGENTS.md "Voice provider switching"
+  chaining in the systemd units (see [HANDOFF-voice-providers.md](HANDOFF-voice-providers.md)
   for the canonical pattern). The new `setup_state.json` should follow:
   atomic tempfile + rename, mode 0644 unless it carries secrets, fail-safe
   default if unreadable.

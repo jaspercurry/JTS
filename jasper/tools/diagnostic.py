@@ -121,7 +121,7 @@ def make_diagnostic_tools(wake_event_store: "WakeEventStore | None"):
         try:
             result = await wake_event_store.record_flag(reason)
         except Exception as e:  # noqa: BLE001
-            # Fail-soft per the AGENTS.md "no silent failure paths"
+            # Fail-soft per AGENTS.md's no-silent-deafness rule
             # rule: the user gets an audible answer even when the
             # store write fails. Log for forensics.
             logger.warning(

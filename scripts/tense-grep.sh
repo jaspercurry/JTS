@@ -11,7 +11,7 @@
 # writer for Y yet") is a claim about a moment in time. Once a later
 # PR lands the described change, the sentence goes stale silently —
 # nobody's task is "notice this comment quietly became false." See
-# AGENTS.md "Documentation paradigm" rule 11 for the incident that
+# the 2026-08 wide-output-path incident that
 # motivated this script and the rule it backs — the story lives
 # there, not here, so it can't drift out of sync between the two.
 #

@@ -144,7 +144,7 @@ def test_fence_preserves_ordinary_brackets():
 def test_system_instruction_teaches_the_fence_rule():
     """The envelope is only a defense if SYSTEM_INSTRUCTION tells the
     model what it means. Pin the rule so a careless prompt edit can't
-    silently drop it (AGENTS.md "pin promises with tests")."""
+    silently drop it."""
     from jasper.voice.prompt import SYSTEM_INSTRUCTION
 
     assert _FENCE_TAG in SYSTEM_INSTRUCTION

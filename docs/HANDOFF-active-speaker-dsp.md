@@ -364,7 +364,7 @@ per-capture diagnostic events, failure taxonomy), see
 [HANDOFF-crossover-measurement-v2.md](HANDOFF-crossover-measurement-v2.md)
 "Failure taxonomy & debugging". For general log/journal fetching, see
 [testing-tooling.md](testing-tooling.md) "Pi-side diagnostics" and
-AGENTS.md "Debugging — fetch evidence before guessing".
+AGENTS.md's evidence-first rule.
 
 ---
 

@@ -28,7 +28,7 @@ pass.
   hardware, deployment, boot, audio, or runtime-sensitive behavior;
   otherwise `N/A` is sufficient
 - [ ] If voice-eval was run: cost was approximately $___ — see
-  AGENTS.md "Voice-eval cost discipline" for the discipline. Don't
+  AGENTS.md's paid-tests non-negotiable for the discipline. Don't
   run voice-eval if you can't justify the dollar figure.
 
 Validation evidence:

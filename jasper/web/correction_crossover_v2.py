@@ -203,7 +203,7 @@ MAX_PERSISTED_SUM_POINTS = 512
 #
 # Productizes a hot-patch that used to live directly in ``_analyze`` and kept
 # getting silently wiped by every deploy (runtime Python is copied fresh from
-# the rsync checkout — see AGENTS.md "Runtime Python lives in /opt/jasper").
+# the rsync checkout — see AGENTS.md on the /opt/jasper runtime).
 # An operator investigating a hardware failure creates
 # ``XOVER_CAPTURE_DUMP_DIR / "ENABLED"``; every subsequent CHECK/MEASURE/
 # VERIFY capture then persists its raw WAV + a diagnostic-summary sidecar

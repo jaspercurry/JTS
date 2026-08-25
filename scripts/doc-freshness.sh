@@ -177,7 +177,7 @@ fi
 if (( stale_count > 0 )); then
   printf '\nAction: for each stale doc, re-read it against the current code and either\n'
   printf '  (a) bump the footer to `Last verified: %s`, or\n' "$today_iso"
-  printf '  (b) update the content. See AGENTS.md "Documentation paradigm".\n'
+  printf '  (b) update the content.\n'
 fi
 if (( missing_footer_count > 0 )); then
   printf '\nAction: add a final `Last verified: YYYY-MM-DD` footer to each missing\n'

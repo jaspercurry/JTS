@@ -150,7 +150,7 @@ audio, no resumption). It is **not** a `LiveConnection` mirror.
 A self-contained **Pattern-2 registry** under `jasper/research/`,
 modeled on [`jasper/transit/`](../jasper/transit/__init__.py) (the
 repo's canonical "open-ended set of self-similar plugins" pattern — see
-AGENTS.md "Config ownership"):
+[docs/extensibility.md](extensibility.md)):
 
 ```
 jasper/research/

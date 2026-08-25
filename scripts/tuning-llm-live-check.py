@@ -15,7 +15,7 @@ CI / normal test runs NEVER touch this — the fixture-driven pytest suite
 covers behaviour with the saved responses. Run this by hand, once, when
 you want to confirm the live wire shape or refresh the fixtures.
 
-Cost discipline (AGENTS.md "Voice-eval cost discipline"):
+Cost discipline (AGENTS.md's paid-tests non-negotiable):
   * hard cap of 2 calls (interpret + propose), one round each — no loops,
     no retries;
   * ``--max-output-tokens`` caps each response;
