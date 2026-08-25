@@ -202,6 +202,41 @@ export function updateAudioQuality(aq, q) {
   });
 }
 
+// ---- USB latency (in-place update of the persistent buttons) ------------
+
+function usbLatencyLabel(mode) {
+  return { low: "Low", medium: "Medium", high: "High" }[mode] || mode || "unknown";
+}
+
+function effectiveUsbLatencyLabel(state) {
+  const mode = state && state.effective_mode;
+  if (state && state.state === "idle") return "Not active";
+  if (state && state.state === "starting") return "Starting";
+  if (state && state.state === "fallback") {
+    return mode ? usbLatencyLabel(mode) + " · stable fallback" : "Stable fallback";
+  }
+  if (state && state.state === "recovery" && !mode) return "Adjusting";
+  return usbLatencyLabel(mode);
+}
+
+export function updateUsbLatency(refs, state) {
+  const selected = state && state.selected_mode;
+  const effective = state && state.effective_mode;
+  const requestApplying = refs.buttons.some((button) => button.el.dataset.applying);
+  refs.preference.textContent = usbLatencyLabel(selected);
+  refs.effective.textContent = effectiveUsbLatencyLabel(state);
+  refs.live.textContent = state && Number.isFinite(state.live_buffer_ms)
+    ? state.live_buffer_ms.toFixed(1) + " ms" : "unknown";
+  if (!requestApplying) {
+    if (state && state.error) refs.status.textContent = "Could not apply: " + state.error;
+    else if (state && state.detail) refs.status.textContent = state.detail;
+  }
+  refs.buttons.forEach((button) => {
+    button.el.setAttribute("aria-pressed", button.mode === effective ? "true" : "false");
+    if (!button.el.dataset.applying) button.el.disabled = false;
+  });
+}
+
 // ---- network -------------------------------------------------------------
 
 export function networkList(cur) {

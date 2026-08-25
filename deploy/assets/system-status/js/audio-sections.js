@@ -6,8 +6,8 @@
 //
 // The backend owns diagnosis, classifications, presentation-ready summaries,
 // and incident lifecycle. This module owns only information hierarchy: one
-// current-stream snapshot, one optional current incident, a short incident
-// history, compact readiness for the other sources, and raw evidence behind a
+// current-stream snapshot, a session summary over its short incident history,
+// compact readiness for the other sources, and raw evidence behind a
 // disclosure. Missing optional facts disappear instead of becoming alarming
 // "Unknown" rows.
 
@@ -196,14 +196,13 @@ export function currentStreamBody(health) {
   const sourceId = stream.source_id || stream.id;
   const sourceLabel = text(stream.label || stream.source_label) || sourceName(health, sourceId) || "Current source";
   const groups = [
+    ["Latency", stream.latency],
     ["Audio quality", stream.quality || stream.media],
     ["Processing", stream.processing],
     ["Output", stream.output],
-    ["Latency", stream.latency],
     ["Signal", stream.signal],
     ["Reliability", stream.reliability],
   ].map(([label, value]) => factBlock(label, value)).filter(Boolean);
-  const session = sessionRollup(stream.session || health.session_summary);
 
   return h("div.current-stream", null,
     h("div.current-stream__head", null,
@@ -216,7 +215,6 @@ export function currentStreamBody(health) {
     groups.length
       ? h("div.stream-facts", null, groups)
       : h("p.audio-empty", null, "Stream diagnostics are still warming up."),
-    session,
   );
 }
 
@@ -245,7 +243,7 @@ export function outputAlertBody(alert) {
   );
 }
 
-export function currentIncident(health) {
+function currentIncident(health) {
   if (health.current_incident && typeof health.current_incident === "object") {
     return health.current_incident.status === "recovered" ? null : health.current_incident;
   }
@@ -292,29 +290,6 @@ function incidentEvidence(issue) {
       ? CLOCK_MODE_LABEL[value] : value,
   ]));
   return rows;
-}
-
-export function currentIncidentBody(health) {
-  const issue = currentIncident(health);
-  if (!issue) return null;
-  const recurrence = incidentRecurrence(issue);
-  const meta = [relativeTime(issue.started_at, "Started ")].filter(Boolean);
-  if (recurrence) meta.push(h("span", null, recurrence));
-  const evidence = incidentEvidence(issue);
-  const issueTone = tone(issue.severity || "warn");
-
-  const card = h("article.current-incident", {
-    style: { "--tone": `var(--status-${issueTone})` },
-  },
-    h("div.current-incident__head", null,
-      h("p.current-incident__title", null, text(issue.title) || "Audio issue observed"),
-      badge("Ongoing", issueTone)),
-    text(issue.detail) ? h("p.current-incident__detail", null, text(issue.detail)) : null,
-    meta.length ? h("p.current-incident__meta", null,
-      meta.flatMap((item, index) => index ? [h("span", { "attr:aria-hidden": "true" }, " · "), item] : [item])) : null,
-    evidence.length ? defList(evidence) : null,
-  );
-  return card;
 }
 
 function incidentTime(issue) {
@@ -370,21 +345,29 @@ export function recentIncidents(health) {
   const issues = Array.isArray(health.recent_incidents)
     ? health.recent_incidents : (Array.isArray(health.issues) ? health.issues : []);
   const active = currentIncident(health);
-  const activeId = active && text(active.id);
-  return issues.filter((issue) => {
+  const seenIds = new Set();
+  const seenObjects = new Set();
+  return [active, ...issues].filter((issue) => {
     if (!issue) return false;
-    if (issue === active) return false;
-    return !(activeId && text(issue.id) === activeId);
+    const id = text(issue.id);
+    if ((id && seenIds.has(id)) || seenObjects.has(issue)) return false;
+    if (id) seenIds.add(id);
+    seenObjects.add(issue);
+    return true;
   }).slice(0, 5);
 }
 
 export function issuesBody(health) {
   const issues = recentIncidents(health);
-  if (!issues.length) {
-    const windowLabel = text(health.incident_window_label) || "recently";
-    return h("p.audio-empty", null, `No audio-path incidents observed ${windowLabel}.`);
-  }
-  return h("div.incident-list", null, issues.map((issue) => incidentRow(issue, health)));
+  const stream = currentStream(health);
+  const session = sessionRollup(
+    (stream && stream.session) || health.session_summary,
+  );
+  const history = issues.length
+    ? h("div.incident-list", null, issues.map((issue) => incidentRow(issue, health)))
+    : h("p.audio-empty", null,
+      `No audio-path incidents observed ${text(health.incident_window_label) || "recently"}.`);
+  return h("div.issue-history", null, session, history);
 }
 
 export function otherSources(health) {

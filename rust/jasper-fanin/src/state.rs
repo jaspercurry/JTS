@@ -882,10 +882,13 @@ impl StateServer {
                 );
                 buf.push(',');
                 // Post-lock cushion-decay state (all inert while decay is off):
-                // active = actively decaying; floor = the configured decay floor;
+                // enabled = startup config; active = actively decaying;
+                // floor = the configured decay floor;
                 // frozen_reason = why decay is paused ("" while actively decaying,
                 // else unlocked / not_l0 / cascade / warmup / at_floor).
                 buf.push_str(r#""decay":{"#);
+                push_kv_bool(buf, "enabled", r.decay_enabled);
+                buf.push(',');
                 push_kv_bool(buf, "active", r.decay_active.load(Ordering::Relaxed));
                 buf.push(',');
                 push_kv_u64(buf, "floor_frames", r.decay_floor_frames);
@@ -1483,6 +1486,7 @@ mod tests {
                         // Decay INACTIVE on this fixture (held == ceiling); frozen
                         // reason code 0 → "" (actively-decaying rendering).
                         held_target_frames: Arc::new(AtomicU64::new(512)),
+                        decay_enabled: false,
                         decay_active: Arc::new(AtomicBool::new(false)),
                         decay_floor_frames: 0,
                         decay_frozen_reason: Arc::new(AtomicU64::new(0)),
@@ -1558,6 +1562,7 @@ mod tests {
                         fill_frames: Arc::new(AtomicU64::new(1024)),
                         target_fill_frames: 2560,
                         held_target_frames: Arc::new(AtomicU64::new(1024)),
+                        decay_enabled: true,
                         decay_active: Arc::new(AtomicBool::new(true)),
                         decay_floor_frames: 544,
                         decay_frozen_reason: Arc::new(AtomicU64::new(0)),
@@ -1777,7 +1782,7 @@ mod tests {
         // Every armed lane carries a decay block (inert when off). The airplay
         // fixture is not decaying: active:false, empty frozen_reason.
         assert!(
-            j.contains(r#""decay":{"active":false,"floor_frames":0,"frozen_reason":"","prime_armed":false}"#),
+            j.contains(r#""decay":{"enabled":false,"active":false,"floor_frames":0,"frozen_reason":"","prime_armed":false}"#),
             "missing inactive decay block on the airplay fixture: {j}"
         );
         // The direct fixture is ACTIVELY DECAYING: the held target (1024) sits
@@ -1791,7 +1796,7 @@ mod tests {
             "missing the direct fixture's live (decayed) held target: {j}"
         );
         assert!(
-            j.contains(r#""decay":{"active":true,"floor_frames":544,"frozen_reason":"","prime_armed":false}"#),
+            j.contains(r#""decay":{"enabled":true,"active":true,"floor_frames":544,"frozen_reason":"","prime_armed":false}"#),
             "missing active decay block on the direct fixture: {j}"
         );
         assert!(

@@ -59,6 +59,13 @@ from ..audio_quality import (  # noqa: F401 - route-mixin dependency exports
     apply_requested_converter as _apply_audio_quality,
     normalize_converter as _normalize_audio_converter,
 )
+from ..fanin.latency_mode import (  # noqa: F401 - route-mixin dependency exports
+    LatencyApplyError as _UsbLatencyApplyError,
+    apply_requested_mode as _apply_usb_latency_mode,
+    normalize_mode as _normalize_usb_latency_mode,
+    options as _usb_latency_options,
+    read_state as _read_usb_latency_state,
+)
 from . import (  # noqa: F401 - route-mixin dependency exports
     debug_control,
     grouping_supervisor,
@@ -289,6 +296,7 @@ _STREAMBOX_ALLOWED_POST_ROUTES = frozenset({
     "/system/poweroff",
     "/source/select",
     "/system/audio-quality",
+    "/system/usb-latency",
     "/system/restart/audio",
     "/transport/next",
     "/transport/previous",
@@ -541,6 +549,56 @@ _read_volume_state = _volume_ops.read_volume_state
 
 def _safe_audio_quality_state() -> dict[str, Any]:
     return _state_aggregate._safe_audio_quality_state()
+
+
+_USB_LATENCY_APPLY_GRACE_SEC = 30.0
+_usb_latency_applying: tuple[str, float] | None = None
+
+
+def _mark_usb_latency_applying(mode: str) -> None:
+    global _usb_latency_applying
+    _usb_latency_applying = (mode, time.monotonic() + _USB_LATENCY_APPLY_GRACE_SEC)
+
+
+def _usb_latency_applying_mode() -> str | None:
+    global _usb_latency_applying
+    current = _usb_latency_applying
+    if current is None:
+        return None
+    if current[1] <= time.monotonic():
+        _usb_latency_applying = None
+        return None
+    return current[0]
+
+
+def _safe_usb_latency_state(airplay_health: Any = None) -> dict[str, Any]:
+    global _usb_latency_applying
+    try:
+        applying_mode = _usb_latency_applying_mode()
+        state = _read_usb_latency_state(
+            airplay_health,
+            applying_mode=applying_mode,
+        )
+        if applying_mode is not None and state.get("state") != "applying":
+            if (
+                _usb_latency_applying is not None
+                and _usb_latency_applying[0] == applying_mode
+            ):
+                _usb_latency_applying = None
+        return state
+    except Exception as e:  # noqa: BLE001
+        logger.exception("USB latency state read failed")
+        return {
+            "selected_mode": "low",
+            "applied_mode": None,
+            "effective_mode": None,
+            "state": "error",
+            "detail": "USB latency state could not be read.",
+            "error": str(e),
+            "live_buffer_frames": None,
+            "live_buffer_ms": None,
+            "options": _usb_latency_options(),
+        }
 
 
 def _parse_env_bool(raw: str, default: bool) -> bool:
@@ -1937,6 +1995,7 @@ def _make_handler(
             "/debug": "_post_debug",
             "/usb-forensics": "_post_usb_forensics",
             "/system/audio-quality": "_post_system_audio_quality",
+            "/system/usb-latency": "_post_system_usb_latency",
             "/measurement/hold": "_post_measurement_hold",
             "/measurement/release": "_post_measurement_release",
             "/system/restart/voice": "_post_system_action",

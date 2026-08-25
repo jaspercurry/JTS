@@ -818,6 +818,9 @@ def test_streambox_profile_control_route_policy():
         "streambox", method="POST", path="/system/audio-quality",
     )
     assert _control_route_allowed_for_install_profile(
+        "streambox", method="POST", path="/system/usb-latency",
+    )
+    assert _control_route_allowed_for_install_profile(
         "streambox", method="POST", path="/system/restart/audio",
     )
     assert _control_route_allowed_for_install_profile(
@@ -1180,6 +1183,53 @@ def test_system_audio_quality_rejects_missing_converter(
 
     assert status == 400
     assert body["error"] == "converter is required"
+
+
+def test_system_usb_latency_applies_fixed_mode(
+    monkeypatch,
+    server_with_coordinator,
+):
+    base, _ = server_with_coordinator
+    import jasper.control.server as srv_mod
+
+    applied: list[str] = []
+    marked: list[str] = []
+    monkeypatch.setattr(
+        srv_mod,
+        "_apply_usb_latency_mode",
+        lambda mode: applied.append(mode),
+    )
+    monkeypatch.setattr(
+        srv_mod,
+        "_mark_usb_latency_applying",
+        lambda mode: marked.append(mode),
+    )
+
+    status, body = _post(f"{base}/system/usb-latency", {"mode": "medium"})
+
+    assert status == 200
+    assert applied == ["medium"]
+    assert marked == ["medium"]
+    assert body == {"ok": True, "action": "usb-latency", "mode": "medium"}
+
+
+def test_system_usb_latency_surfaces_apply_failure(
+    monkeypatch,
+    server_with_coordinator,
+):
+    base, _ = server_with_coordinator
+    import jasper.control.server as srv_mod
+
+    def fail(_mode: str) -> None:
+        raise srv_mod._UsbLatencyApplyError("fan-in restart failed")
+
+    monkeypatch.setattr(srv_mod, "_apply_usb_latency_mode", fail)
+
+    status, body = _post(f"{base}/system/usb-latency", {"mode": "high"})
+
+    assert status == 502
+    assert body["selected_mode"] == "high"
+    assert "fan-in restart failed" in body["error"]
 
 
 def test_usb_forensics_persists_intent_and_queues_fixed_action(

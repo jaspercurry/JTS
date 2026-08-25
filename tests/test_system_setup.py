@@ -31,6 +31,7 @@ from jasper.web import system_setup
 _NODE = shutil.which("node")
 _NAV_HARNESS = Path(__file__).resolve().parent / "js" / "system_status_navigation_test.mjs"
 _AUDIO_HARNESS = Path(__file__).resolve().parent / "js" / "system_audio_sections_test.mjs"
+_LATENCY_HARNESS = Path(__file__).resolve().parent / "js" / "system_latency_control_test.mjs"
 _OPTIONAL_FEATURES_HARNESS = (
     Path(__file__).resolve().parent / "js" / "system_optional_features_test.mjs"
 )
@@ -463,6 +464,22 @@ def test_post_audio_quality_proxies_json_body(dashboard_server) -> None:
     assert ("POST", "/system/audio-quality") in received
 
 
+def test_post_usb_latency_proxies_json_body(dashboard_server) -> None:
+    base, received, responses = dashboard_server
+    responses["/system/usb-latency"] = {
+        "ok": True,
+        "action": "usb-latency",
+        "mode": "medium",
+    }
+    status, body = _http_post_json(
+        f"{base}/usb-latency",
+        {"mode": "medium"},
+    )
+    assert status == 200
+    assert json.loads(body)["received_body"] == {"mode": "medium"}
+    assert ("POST", "/system/usb-latency") in received
+
+
 def test_post_usb_forensics_proxies_json_body(dashboard_server) -> None:
     base, received, _ = dashboard_server
     status, body = _http_post_json(
@@ -591,6 +608,21 @@ def test_static_modules_present() -> None:
         assert (_MODULE_DIR / f"{name}.js").is_file(), f"missing module {name}.js"
 
 
+@pytest.mark.skipif(_NODE is None, reason="node is not installed")
+def test_usb_latency_control_reports_recovery_and_apply_failure() -> None:
+    subprocess.run(
+        [
+            _NODE,
+            str(_LATENCY_HARNESS),
+            str(_MODULE_DIR / "sections.js"),
+            str(_MODULE_DIR / "actions.js"),
+        ],
+        check=True,
+        capture_output=True,
+        text=True,
+    )
+
+
 def test_modules_preserve_destructive_confirms_and_csrf() -> None:
     """The double-confirm on reboot + power off is load-bearing UX — the
     second prompt discourages a mis-click on the most destructive actions.
@@ -613,11 +645,12 @@ def test_modules_wire_the_proxy_endpoints() -> None:
     poll the same read endpoints."""
     js = _system_js()
     for path in ("restart/voice", "restart/audio", "reboot", "poweroff",
-                 "audio-quality", "usb-forensics", "data.json", "diagnostics.json",
+                 "audio-quality", "usb-latency", "usb-forensics", "data.json", "diagnostics.json",
                  "optional-features/enhanced-aec"):
         assert path in js, f"system modules no longer reference {path}"
     assert 'getJSON("/system/data.json")' in js
     assert 'fetch("/system/audio-quality"' in js
+    assert 'fetch("/system/usb-latency"' in js
 
 
 def test_enhanced_aec_is_progressively_disclosed_on_software_surface() -> None:
@@ -667,7 +700,7 @@ def test_audio_view_is_normalized_fail_soft_and_progressively_disclosed() -> Non
     assert "snap.audio_health" in audio_view
     assert "Waiting for audio diagnostics" in audio_sections
     assert "current_stream" in audio_view
-    assert "current_incident" in audio_sections
+    assert "current_incident" in audio_view
     assert "recent_incidents" in audio_sections
     assert "slice(0, 5)" in audio_sections
     assert "refreshRelativeTimes" in audio_sections
@@ -677,7 +710,7 @@ def test_audio_view_is_normalized_fail_soft_and_progressively_disclosed() -> Non
     assert 'h("span.incident-row__summary"' in audio_sections
     assert 'h("div.incident-row__summary"' not in audio_sections
     assert "stream.quality || stream.media" in audio_sections
-    assert "stream.session || health.session_summary" in audio_sections
+    assert "(stream && stream.session) || health.session_summary" in audio_sections
     assert '"--tone"' in audio_sections
     assert "Array.isArray(health.sources)" in audio_view
     assert "ageBucket" not in audio_view
@@ -686,6 +719,9 @@ def test_audio_view_is_normalized_fail_soft_and_progressively_disclosed() -> Non
     assert "Dashboard data was incomplete" in main_js
     assert 'title: "Technical evidence", open: false' in audio_view
     assert 'title: "Audio conversion", open: false' in audio_view
+    assert 'titledCard("USB latency")' in audio_view
+    assert '["low", "medium", "high"]' in audio_view
+    assert "snap.usb_latency" in audio_view
     assert "raw_mode" not in audio_sections
     assert "p95_budget_ms" not in audio_sections
     assert "snap.airplay_health" not in views

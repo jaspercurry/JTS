@@ -37,7 +37,7 @@ const fmtEpochAgo = (at) => `${Math.max(0, 1000 - Number(at))}s ago`;
 
 const AsyncFunction = Object.getPrototypeOf(async function () {}).constructor;
 const run = new AsyncFunction("h", "badge", "defList", "fmtEpochAgo", `${source}\nreturn {
-  currentStreamBody, currentIncidentBody, recentIncidents, issuesBody,
+  currentStreamBody, recentIncidents, issuesBody,
   otherSources, sourcesBody, refreshRelativeTimes,
   outputAlert, outputAlertBody,
 };`);
@@ -93,7 +93,8 @@ const streamText = strings(api.currentStreamBody(health)).join(" | ");
 assert.match(streamText, /USB Audio/);
 assert.match(streamText, /48 kHz PCM · shared path/);
 assert.match(streamText, /Lowest-latency route/);
-assert.match(streamText, /0 dropouts · 2 brief clock fallbacks/);
+assert.doesNotMatch(streamText, /0 dropouts · 2 brief clock fallbacks/,
+  "the current-stream card does not duplicate the session trend summary");
 assert.doesNotMatch(streamText, /Processing|Output|Signal|Unknown/,
   "absent diagnostic groups are omitted rather than filled with noise");
 
@@ -161,13 +162,15 @@ assert.equal(
   null,
   "a playing speaker with a warn-level incident keeps the front page quiet");
 
-const issueText = strings(api.currentIncidentBody(health)).join(" | ");
+const issueText = strings(api.issuesBody(health)).join(" | ");
+assert.match(issueText, /This session/);
+assert.match(issueText, /0 dropouts · 2 brief clock fallbacks/);
 assert.match(issueText, /USB latency increased/);
 assert.match(issueText, /3 occurrences in 30 minutes/);
 assert.match(issueText, /Audio continues with higher latency/);
 assert.match(issueText, /Clock mode \| Stable fallback/);
 assert.doesNotMatch(issueText, /l2_fallback/,
-  "primary incident evidence translates internal clock modes for households");
+  "incident evidence translates internal clock modes for households");
 for (const [rawMode, householdLabel] of [
   ["l0_locked", "Low latency stable"],
   ["l1_warn", "Clock adjusting"],
@@ -175,7 +178,7 @@ for (const [rawMode, householdLabel] of [
   ["probing", "Timing check in progress"],
   ["disabled", "Standard buffering"],
 ]) {
-  const translated = strings(api.currentIncidentBody({
+  const translated = strings(api.issuesBody({
     ...health,
     current_incident: {
       ...ongoing,
@@ -190,8 +193,10 @@ assert.doesNotMatch(issueText, /50s so far/,
 
 const recent = api.recentIncidents(health);
 assert.equal(recent.length, 5, "history is bounded to five rows");
-assert.ok(recent.every((issue) => issue.id !== ongoing.id),
-  "the detailed current incident is not repeated in history");
+assert.equal(recent[0].id, ongoing.id,
+  "the ongoing incident is the first trend row");
+assert.equal(recent.filter((issue) => issue.id === ongoing.id).length, 1,
+  "the ongoing incident appears once when current and recent data overlap");
 assert.equal(api.otherSources(health).length, 2, "active source is omitted from readiness");
 const sourceText = strings(api.sourcesBody(health)).join(" | ");
 assert.doesNotMatch(sourceText, /USB Audio/);

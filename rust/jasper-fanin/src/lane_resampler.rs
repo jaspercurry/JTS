@@ -130,9 +130,11 @@ pub struct LaneResamplerObservability {
     /// controllers can never disagree about where the fill should sit.
     pub held_target_frames: Arc<AtomicU64>,
     /// Live cushion-decay state (all `0`/inert while the decay feature is off).
-    /// `active` = actively decaying; `floor` = the configured decay floor;
+    /// `enabled` = startup configuration; `active` = actively decaying;
+    /// `floor` = the configured decay floor;
     /// `frozen_reason` = the stringly-typed reason decay is currently paused
     /// (`""` while actively decaying).
+    pub decay_enabled: bool,
     pub decay_active: Arc<AtomicBool>,
     pub decay_floor_frames: u64,
     pub decay_frozen_reason: Arc<AtomicU64>,
@@ -401,6 +403,7 @@ impl LaneResampler {
             // separate `held_target_frames` gauge below.
             target_fill_frames: self.ceiling_fill_frames() as u64,
             held_target_frames: Arc::clone(&self.held_target_frames),
+            decay_enabled: self.decay.enabled(),
             decay_active: Arc::clone(&self.decay_active),
             decay_floor_frames: self.decay.floor(),
             decay_frozen_reason: Arc::clone(&self.decay_frozen_reason),
@@ -1410,6 +1413,11 @@ mod decay {
         /// disabled.
         pub fn held(&self) -> u64 {
             self.held
+        }
+
+        /// Whether cushion decay was enabled in this process's startup config.
+        pub fn enabled(&self) -> bool {
+            self.enabled
         }
 
         /// The floor (for STATUS).

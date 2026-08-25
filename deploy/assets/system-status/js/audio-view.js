@@ -10,11 +10,11 @@ import { h } from "/assets/shared/js/dom.js";
 import {
   livePill, titledCard, choiceCard, collapsible, renderSection,
 } from "./components.js";
-import { AUDIO_OPTIONS, updateAudioQuality } from "./sections.js";
+import { AUDIO_OPTIONS, updateAudioQuality, updateUsbLatency } from "./sections.js";
 import { fmtEpochAgo } from "./format.js";
 import {
-  unavailableBody, currentStreamBody, currentIncident, currentIncidentBody,
-  issuesBody, otherSources, sourcesBody, technicalBody, refreshRelativeTimes,
+  unavailableBody, currentStreamBody, issuesBody, otherSources, sourcesBody,
+  technicalBody, refreshRelativeTimes,
 } from "./audio-sections.js";
 
 function buildAudioQuality(handlers) {
@@ -44,17 +44,46 @@ function buildAudioQuality(handlers) {
   return { section, requested, active, status, buttons };
 }
 
+function buildUsbLatency(handlers) {
+  const preference = h("dd", null, "—");
+  const effective = h("dd", null, "—");
+  const live = h("dd", null, "—");
+  const status = h("p.info-card__note", {
+    "attr:role": "status", "attr:aria-live": "polite",
+  });
+  const buttons = ["low", "medium", "high"].map((mode) => ({
+    mode,
+    el: h("button.segmented__btn", {
+      type: "button",
+      "attr:aria-pressed": "false",
+      onclick: () => handlers.setLatencyMode(mode),
+    }, mode[0].toUpperCase() + mode.slice(1)),
+  }));
+  const card = titledCard("USB latency");
+  card.body.append(
+    h("dl.deflist", null,
+      h("dt", null, "Preference"), preference,
+      h("dt", null, "Effective"), effective,
+      h("dt", null, "Live input buffer"), live),
+    h("p.info-card__note", null,
+      "Lower settings reduce delay. A busy computer can cause clicks or brief gaps."),
+    h("div.segmented", { "attr:role": "group", "attr:aria-label": "USB latency" },
+      buttons.map((button) => button.el)),
+    status,
+  );
+  return { section: card.section, preference, effective, live, status, buttons };
+}
+
 export function buildAudioPanel(handlers) {
   const live = livePill();
   const stream = titledCard("Current stream", { accent: true });
-  const currentIssue = titledCard("Current issue");
-  currentIssue.section.hidden = true;
   const issues = titledCard("Recent issues");
   const sources = titledCard("Other sources");
   const technicalBodyHost = h("div.info-card");
   const technical = collapsible({
     title: "Technical evidence", open: false, body: technicalBodyHost,
   });
+  const latency = buildUsbLatency(handlers);
   const quality = buildAudioQuality(handlers);
 
   const panel = h("main.app-main.audio-main", {
@@ -62,7 +91,7 @@ export function buildAudioPanel(handlers) {
   },
     live.el,
     stream.section,
-    currentIssue.section,
+    latency.section,
     issues.section,
     sources.section,
     technical,
@@ -72,12 +101,11 @@ export function buildAudioPanel(handlers) {
   const refs = {
     staleness: live.label,
     stream: stream.body,
-    currentIncidentSection: currentIssue.section,
-    currentIncident: currentIssue.body,
     issues: issues.body,
     sourcesSection: sources.section,
     sources: sources.body,
     technical: technicalBodyHost,
+    latency,
     qualitySection: quality.section,
     aq: quality,
     _memo: {},
@@ -118,14 +146,10 @@ export function updateAudio(refs, snap) {
     sources: healthSources,
   }, () => health ? currentStreamBody(health) : unavailableBody());
 
-  const incident = health ? currentIncident(health) : null;
-  refs.currentIncidentSection.hidden = !incident;
-  if (incident) {
-    renderSection(refs, "currentIncident", refs.currentIncident, incident,
-      () => currentIncidentBody(health));
-  }
-
   renderSection(refs, "issues", refs.issues, health && {
+    session_summary: health.session_summary,
+    stream_session: health.current_stream && health.current_stream.session,
+    current_incident: health.current_incident,
     recent_incidents: health.recent_incidents,
     issues: health.recent_incidents ? undefined : health.issues,
     incident_window_label: health.incident_window_label,
@@ -144,6 +168,11 @@ export function updateAudio(refs, snap) {
     () => health ? technicalBody(health) : h("p.audio-empty", null, "No technical snapshot available."));
   refreshRelativeTimes(refs.panel);
 
+  try {
+    updateUsbLatency(refs.latency, snap.usb_latency);
+  } catch (e) {
+    console.error("audio status: updating USB latency failed", e);
+  }
   try {
     updateAudioQuality(refs.aq, snap.audio_quality);
   } catch (e) {

@@ -138,6 +138,7 @@ class SystemRoutes(ControlHandlerMixin):
             ),
             "outputd": outputd_status,
             "audio_quality": _server._safe_audio_quality_state(),
+            "usb_latency": _server._safe_usb_latency_state(airplay_health),
             "voice_provider": read_active_provider(),
             "speaker_name": _read_speaker_name_state().__dict__,
             "home_assistant": ha_status,
@@ -326,6 +327,45 @@ class SystemRoutes(ControlHandlerMixin):
                 "audio_quality": state,
             }
         )
+        return
+
+    def _post_system_usb_latency(self) -> None:
+        body = self._read_json()
+        if not isinstance(body, dict):
+            self._send_json(
+                {"error": "invalid request body: expected JSON object"},
+                status=400,
+            )
+            return
+        raw_mode = body.get("mode")
+        if not isinstance(raw_mode, str) or not raw_mode.strip():
+            self._send_json({"error": "mode is required"}, status=400)
+            return
+        try:
+            mode = _server._normalize_usb_latency_mode(raw_mode)
+        except ValueError as e:
+            self._send_json({"error": str(e)}, status=400)
+            return
+        try:
+            _server._apply_usb_latency_mode(mode)
+        except (OSError, _server._UsbLatencyApplyError) as e:
+            _server.logger.exception("USB latency apply failed")
+            self._send_json(
+                {
+                    "error": f"USB latency apply failed: {e}",
+                    "selected_mode": mode,
+                },
+                status=502,
+            )
+            return
+        _server._mark_usb_latency_applying(mode)
+        _server.log_event(
+            _server.logger,
+            "usb_latency.set",
+            mode=mode,
+            client=self.address_string(),
+        )
+        self._send_json({"ok": True, "action": "usb-latency", "mode": mode})
         return
 
     def _post_system_action(self) -> None:
