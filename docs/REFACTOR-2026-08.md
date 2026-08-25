@@ -100,7 +100,7 @@ ack, never silence.
       (research Stage 3), each via ADR.
 
 **Wave 1 — verified dead code (~8.4K lines; one PR per row of audit §4.1)**
-- [ ] orbs.js bundle (+tests +CI step +css tokens)
+- [x] orbs.js bundle (+tests +CI step +css tokens)
 - [ ] multiroom/channel_split.py + always-None param chain
 - [ ] TtsPlayout PortAudio body collapse
 - [x] five dead wizard main()s + 2 orphan console_scripts

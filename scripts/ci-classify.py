@@ -222,7 +222,6 @@ DOCS_TEST_FILES = (
     "tests/test_waveform_fusion_experiment.py",
     "tests/test_web_correction_setup.py",
     "tests/test_web_design_system.py",
-    "tests/test_web_orbs_module.py",
 )
 # The bundle RUNS the classifier's own test, so every docs PR re-validates the
 # registration guard.  But a docs PR must not be able to EDIT that guard while
