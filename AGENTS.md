@@ -157,6 +157,10 @@ A gate claiming "safety" that is not on this list is a nanny — demote it.
 
 ## Memory
 
+Behavioral baseline (all agents, all projects): the owner's global ruleset,
+[jaspercurry/claude-rules](https://github.com/jaspercurry/claude-rules).
+Its spirit is folded into the Defaults above — do not restate it here.
+
 What agents must remember lives in, in order: this file (operational),
 `docs/adr/` (decisions and their why), git history and PR descriptions
 (what changed and when), HANDOFF docs (deep subsystem references, legacy —
