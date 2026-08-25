@@ -216,6 +216,7 @@ def test_usb_l0_and_matching_artifact_are_two_distinct_verified_facts() -> None:
     assert health["latency"]["runtime"] == {
         "mode": "lowest_latency",
         "raw_mode": "l0_locked",
+        "phase": "stable",
     }
     assert health["overall"]["status"] == "ok"
 
@@ -238,6 +239,7 @@ def test_usb_runtime_preset_outranks_stale_route_label() -> None:
     airplay = _airplay(selected="usbsink", ladder="l0_locked")
     usb = airplay["current"]["fanin"]["inputs"]["usbsink"]
     usb["resampler"] = {
+        "locked": True,
         "held_target_frames": 2560,
         "decay": {"enabled": True, "floor_frames": 1024},
     }
@@ -257,6 +259,36 @@ def test_usb_runtime_preset_outranks_stale_route_label() -> None:
     assert health["latency"]["status"] == "warn"
     assert health["current_stream"]["latency"]["summary"].endswith(
         "ms · latency adjusting"
+    )
+
+
+def test_usb_terminal_fallback_outranks_raised_recovery_buffer() -> None:
+    airplay = _airplay(selected="usbsink", ladder="l2_fallback")
+    airplay["current"]["fanin"]["host_clock"]["fallback_reason"] = (
+        "probe_noncompliant"
+    )
+    usb = airplay["current"]["fanin"]["inputs"]["usbsink"]
+    usb["resampler"] = {
+        "locked": True,
+        "held_target_frames": 2560,
+        "decay": {"enabled": True, "floor_frames": 576},
+    }
+
+    health = compose_audio_health(
+        airplay=airplay,
+        outputd=_outputd(),
+        route=_route(),
+        issues=[],
+        sampled_at=1000.0,
+    )
+
+    assert health["latency"]["runtime"]["phase"] == "fallback"
+    assert health["latency"]["headline"] == (
+        "Stable fallback · 53.3 ms input buffer"
+    )
+    assert "for this USB session" in health["latency"]["detail"]
+    assert health["current_stream"]["latency"]["summary"].endswith(
+        "ms · stable fallback"
     )
 
 

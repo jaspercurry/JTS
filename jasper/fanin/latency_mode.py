@@ -9,7 +9,7 @@ import os
 from collections.abc import Mapping
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any, Callable
+from typing import Any, Callable, Literal
 
 STATE_ENV_KEY = "JASPER_USB_LATENCY_MODE"
 DEFAULT_MODE = "low"
@@ -35,6 +35,25 @@ PRESETS = {
     "medium": LatencyPreset("medium", "Medium", 1024, True),
     "high": LatencyPreset("high", "High", 2560, False),
 }
+
+LatencyPhase = Literal[
+    "unavailable", "idle", "starting", "checking", "clock_adjusting",
+    "buffer_adjusting", "stable", "fallback",
+]
+
+
+@dataclass(frozen=True)
+class LatencyRuntime:
+    """One interpretation of the live fan-in latency telemetry."""
+
+    phase: LatencyPhase
+    applied_mode: str | None
+    effective_mode: str | None
+    held_frames: int | None
+    floor_frames: int | None
+    ladder: str | None
+    fallback_reason: str | None
+    buffer_above_floor: bool
 
 
 class LatencyApplyError(RuntimeError):
@@ -135,7 +154,9 @@ def _runtime_host_clock(airplay_health: Any) -> dict[str, Any]:
     return _mapping(_mapping(current.get("fanin")).get("host_clock"))
 
 
-def _usb_session_active(resampler: dict[str, Any], host_clock: dict[str, Any]) -> bool:
+def _usb_session_active(
+    resampler: Mapping[str, Any], host_clock: Mapping[str, Any]
+) -> bool:
     if resampler.get("locked") is True:
         return True
     ladder = host_clock.get("ladder")
@@ -176,6 +197,61 @@ def effective_mode_from_buffer(
     return None
 
 
+def classify_runtime(
+    resampler: Mapping[str, Any],
+    host_clock: Mapping[str, Any] | None = None,
+) -> LatencyRuntime:
+    """Classify fan-in facts without adding control or presentation state."""
+    clock = host_clock or {}
+    applied = applied_mode_from_resampler(resampler)
+    held_frames = _integer(resampler.get("held_target_frames"))
+    floor_frames = _integer(_mapping(resampler.get("decay")).get("floor_frames"))
+    locked = resampler.get("locked") is True
+    session_active = _usb_session_active(resampler, clock)
+    effective = (
+        effective_mode_from_buffer(held_frames, applied) if locked else None
+    )
+    buffer_above_floor = (
+        applied != "high"
+        and held_frames is not None
+        and floor_frames is not None
+        and held_frames > floor_frames
+    )
+    raw_ladder = clock.get("ladder")
+    ladder = str(raw_ladder) if raw_ladder is not None else None
+
+    if ladder == "l2_fallback" and applied != "high":
+        phase: LatencyPhase = "fallback"
+    elif ladder == "probing" and session_active:
+        phase = "checking"
+    elif ladder == "l1_warn":
+        phase = "clock_adjusting"
+    elif applied is None:
+        phase = "stable" if ladder == "l0_locked" else "unavailable"
+    elif not session_active:
+        phase = "idle"
+    elif not locked:
+        phase = "starting"
+    elif buffer_above_floor:
+        phase = "buffer_adjusting"
+    else:
+        phase = "stable"
+
+    fallback_reason = clock.get("fallback_reason")
+    return LatencyRuntime(
+        phase=phase,
+        applied_mode=applied,
+        effective_mode=effective,
+        held_frames=held_frames,
+        floor_frames=floor_frames,
+        ladder=ladder,
+        fallback_reason=(
+            str(fallback_reason) if fallback_reason is not None else None
+        ),
+        buffer_above_floor=buffer_above_floor,
+    )
+
+
 def read_state(
     airplay_health: Any = None,
     *,
@@ -190,11 +266,10 @@ def read_state(
         error = f"USB latency preference is invalid: {exc}"
     resampler = _runtime_resampler(airplay_health)
     host_clock = _runtime_host_clock(airplay_health)
-    applied = applied_mode_from_resampler(resampler)
-    held_frames = _integer(resampler.get("held_target_frames"))
-    locked = resampler.get("locked") is True
-    session_active = _usb_session_active(resampler, host_clock)
-    effective = effective_mode_from_buffer(held_frames, applied) if locked else None
+    runtime = classify_runtime(resampler, host_clock)
+    applied = runtime.applied_mode
+    held_frames = runtime.held_frames
+    effective = runtime.effective_mode
     selected_preset = PRESETS[selected]
     state = "unavailable"
     detail = "Waiting for live USB fan-in state."
@@ -213,60 +288,58 @@ def read_state(
             f"{PRESETS[applied].label}."
         )
         detail = error
-    elif applied is not None and not session_active:
+    elif applied is not None and runtime.phase == "idle":
         state = "idle"
         detail = (
             f"{selected_preset.label} is preferred. It will be used when USB "
             "audio starts."
         )
-    elif applied is not None and not locked:
+    elif applied is not None and runtime.phase in {"starting", "checking"}:
         state = "starting"
-        detail = "USB audio is starting; waiting for the live buffer."
+        detail = (
+            "Checking USB host timing; waiting for the live buffer."
+            if runtime.phase == "checking"
+            else "USB audio is starting; waiting for the live buffer."
+        )
     elif applied is not None:
         state = "applied"
         detail = f"{PRESETS[applied].label} is active."
-        if (
-            applied != "high"
-            and held_frames is not None
-            and held_frames > selected_preset.floor_frames
-        ):
-            if host_clock.get("ladder") == "l2_fallback":
-                state = "fallback"
-                fallback_reason = host_clock.get("fallback_reason")
-                live_ms = held_frames * 1000 / SAMPLE_RATE
-                if fallback_reason == "actuator_unavailable":
-                    detail = (
-                        f"High ({live_ms:.1f} ms) is active because USB timing "
-                        "control is temporarily unavailable. JTS will retry "
-                        "automatically."
-                    )
-                elif fallback_reason == "lost_authority":
-                    detail = (
-                        f"{selected_preset.label} is preferred, but host timing "
-                        f"became unstable. This USB session is using High "
-                        f"({live_ms:.1f} ms). {selected_preset.label} will be "
-                        "tried again when the next USB session starts."
-                    )
-                elif fallback_reason == "probe_noncompliant":
-                    detail = (
-                        f"{selected_preset.label} is preferred, but the host "
-                        f"timing check failed. This USB session is using High "
-                        f"({live_ms:.1f} ms). {selected_preset.label} will be "
-                        "tried again when the next USB session starts."
-                    )
-                else:
-                    detail = f"This USB session is using High ({live_ms:.1f} ms)."
-            else:
-                state = "recovery"
-                active = (
-                    PRESETS[effective].label
-                    if effective is not None
-                    else f"{held_frames * 1000 / SAMPLE_RATE:.1f} ms"
-                )
+        if runtime.phase == "fallback" and held_frames is not None:
+            state = "fallback"
+            live_ms = held_frames * 1000 / SAMPLE_RATE
+            if runtime.fallback_reason == "actuator_unavailable":
                 detail = (
-                    f"{active} is active while timing stabilizes; JTS will "
-                    f"reduce toward {selected_preset.label} automatically."
+                    f"High ({live_ms:.1f} ms) is active because USB timing "
+                    "control is temporarily unavailable. JTS will retry "
+                    "automatically."
                 )
+            elif runtime.fallback_reason == "lost_authority":
+                detail = (
+                    f"{selected_preset.label} is preferred, but host timing "
+                    f"became unstable. This USB session is using High "
+                    f"({live_ms:.1f} ms). {selected_preset.label} will be "
+                    "tried again when the next USB session starts."
+                )
+            elif runtime.fallback_reason == "probe_noncompliant":
+                detail = (
+                    f"{selected_preset.label} is preferred, but the host "
+                    f"timing check failed. This USB session is using High "
+                    f"({live_ms:.1f} ms). {selected_preset.label} will be "
+                    "tried again when the next USB session starts."
+                )
+            else:
+                detail = f"This USB session is using High ({live_ms:.1f} ms)."
+        elif runtime.buffer_above_floor and held_frames is not None:
+            state = "recovery"
+            active = (
+                PRESETS[effective].label
+                if effective is not None
+                else f"{held_frames * 1000 / SAMPLE_RATE:.1f} ms"
+            )
+            detail = (
+                f"{active} is active while timing stabilizes; JTS will "
+                f"reduce toward {selected_preset.label} automatically."
+            )
     return {
         "selected_mode": selected,
         "applied_mode": applied,
@@ -307,11 +380,13 @@ __all__ = [
     "DEFAULT_STATE_PATH",
     "LatencyApplyError",
     "LatencyPreset",
+    "LatencyRuntime",
     "PRESETS",
     "STATE_ENV_KEY",
     "VALID_MODES",
     "applied_mode_from_resampler",
     "apply_requested_mode",
+    "classify_runtime",
     "effective_mode_from_buffer",
     "normalize_mode",
     "options",

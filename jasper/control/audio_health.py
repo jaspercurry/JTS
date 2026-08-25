@@ -37,7 +37,7 @@ from ..audio_runtime_plan import (
 )
 from ..local_sources.registry import local_source_lifecycles
 from ..music_sources import MUSIC_SOURCE_SPECS, Source
-from ..fanin.latency_mode import PRESETS, applied_mode_from_resampler
+from ..fanin.latency_mode import PRESETS, classify_runtime
 from ..source_intent import read_source_intents
 from .airplay_health import (
     CAMILLA_UNIT_FULL,
@@ -861,11 +861,10 @@ def _usb_timing(
 ) -> dict[str, Any]:
     claimed = bool(route.get("low_latency_claim"))
     verification = _verification(route)
-    raw_mode = host_clock.get("ladder") if host_clock is not None else None
     resampler = _mapping(_mapping(usb_input).get("resampler"))
-    preset_mode = applied_mode_from_resampler(resampler)
-    held_frames = _as_int(resampler.get("held_target_frames"))
-    floor_frames = _as_int(_mapping(resampler.get("decay")).get("floor_frames"))
+    latency_runtime = classify_runtime(resampler, host_clock)
+    raw_mode = latency_runtime.ladder
+    preset_mode = latency_runtime.applied_mode
     mode = {
         "l0_locked": "lowest_latency",
         "l1_warn": "tracking_warn",
@@ -873,30 +872,44 @@ def _usb_timing(
         "probing": "checking",
         "disabled": "standard",
     }.get(str(raw_mode), "unknown")
-    runtime = {"mode": mode, "raw_mode": raw_mode}
+    runtime: dict[str, Any] = {
+        "mode": mode,
+        "raw_mode": raw_mode,
+        "phase": latency_runtime.phase,
+    }
     if preset_mode is not None:
         runtime.update({
             "preset": preset_mode,
-            "held_target_frames": held_frames or None,
-            "floor_frames": floor_frames or None,
+            "effective_preset": latency_runtime.effective_mode,
+            "held_target_frames": latency_runtime.held_frames,
+            "floor_frames": latency_runtime.floor_frames,
         })
 
     if preset_mode is not None:
         preset = PRESETS[preset_mode]
-        current_frames = held_frames or preset.floor_frames
+        current_frames = latency_runtime.held_frames or preset.floor_frames
         current_ms = current_frames * 1000 / 48_000
-        if active and preset_mode != "high" and current_frames > preset.floor_frames:
+        if active and latency_runtime.phase == "fallback":
+            status = "warn"
+            headline = f"Stable fallback · {current_ms:.1f} ms input buffer"
+            detail = (
+                "Playback is protected by more buffering while JTS retries "
+                "USB timing control."
+                if latency_runtime.fallback_reason == "actuator_unavailable"
+                else "Playback is protected by more buffering for this USB session."
+            )
+        elif active and latency_runtime.phase == "clock_adjusting":
+            status = "warn"
+            headline = f"{preset.label} latency · clock tracking under strain"
+            detail = "Playback remains locked while USB host timing stabilizes."
+        elif active and latency_runtime.phase == "buffer_adjusting":
             status = "warn"
             headline = f"Recovery buffer active · {current_ms:.1f} ms input buffer"
             detail = "Latency will fall after USB host timing stabilizes."
-        elif active and raw_mode == "l1_warn":
-            status = "warn"
-            headline = f"{preset.label} latency · clock tracking under strain"
-            detail = "Playback remains locked at the selected buffer setting."
-        elif active and raw_mode == "l2_fallback" and preset_mode != "high":
-            status = "warn"
-            headline = f"Stable fallback · {current_ms:.1f} ms input buffer"
-            detail = "Playback is protected by more buffering while host timing recovers."
+        elif active and latency_runtime.phase == "checking":
+            status = "idle"
+            headline = "Checking USB host timing"
+            detail = "Playback is safe while the host-clock check completes."
         else:
             status = "ok"
             headline = f"{preset.label} latency · {current_ms:.1f} ms input buffer"
@@ -1527,19 +1540,18 @@ def _receiver_latency(
         components.append(("DAC presentation queue", float(dac_delay)))
 
     runtime = _mapping(timing.get("runtime"))
-    mode = str(runtime.get("raw_mode") or "")
+    phase = str(runtime.get("phase") or "")
+    raw_mode = str(runtime.get("raw_mode") or "")
     preset = str(runtime.get("preset") or "")
-    held_frames = _as_int(runtime.get("held_target_frames"))
-    floor_frames = _as_int(runtime.get("floor_frames"))
-    if mode == "l2_fallback":
+    if phase == "fallback":
         mode_label = "stable fallback"
-    elif mode == "probing":
+    elif phase == "checking":
         mode_label = "timing check in progress"
-    elif mode == "l1_warn":
+    elif phase == "clock_adjusting":
         mode_label = "clock adjusting"
-    elif held_frames > floor_frames > 0:
+    elif phase == "buffer_adjusting":
         mode_label = "latency adjusting"
-    elif mode == "l0_locked":
+    elif phase == "stable":
         label = PRESETS[preset].label.lower() if preset in PRESETS else "low"
         mode_label = f"{label} latency stable"
     else:
@@ -1563,7 +1575,7 @@ def _receiver_latency(
         "detail": "",
         "details": details,
         "estimate": estimate,
-        "mode": mode or None,
+        "mode": raw_mode or None,
     }
 
 
