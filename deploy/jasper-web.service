@@ -175,12 +175,13 @@ ReadWritePaths=/var/lib/jasper /var/lib/jasper-secrets /var/lib/jasper-intsecret
 # /run cannot succeed here; RuntimeDirectory= both creates the directory as
 # jasper-web:jasper (the unit's User:Group) and excludes it from
 # ProtectSystem=. Mode 0755 keeps the root reconciler's read of the marker
-# working; the other two units that reach the same writer —
-# jasper-correction-web (through /correction/'s driver-capture arms) and
-# jasper-web-streambox.service (this same process, installed as
-# jasper-web.service on a streambox) — are root under ProtectSystem=full and
-# need nothing. 0755 is also what lets THIS unit release a marker one of them
-# created root:root 0600: unlink needs write on the directory, not the file.
+# working; jasper-correction-web (through /correction/'s driver-capture arms)
+# declares this same RuntimeDirectory= with the same user and mode since its
+# own de-root, and jasper-web-streambox.service (this same process, installed
+# as jasper-web.service on a streambox) stays root under ProtectSystem=full
+# and needs nothing. 0755 is also what lets either non-root unit release a
+# marker the streambox root writer created root:root 0600: unlink needs
+# write on the directory, not the file.
 # Preserve=yes is
 # load-bearing: jasper-web is socket-activated and idles out after 10 minutes,
 # and a commission hold has to outlive that stop — /run is tmpfs, so a reboot
