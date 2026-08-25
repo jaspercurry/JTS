@@ -203,11 +203,7 @@ from .integrations import (
     check_citibike,
 )
 from . import drift as drift
-from .drift import (
-    DriftItem,
-    _UNIT_DIRECTIVES,
-    check_installed_settings_drift,
-)
+from .drift import check_installed_settings_drift
 from . import memory as memory
 from .memory import (
     check_ram,
@@ -542,8 +538,6 @@ __all__ = [
     "check_google_routes",
     "check_home_assistant",
     "check_citibike",
-    "DriftItem",
-    "_UNIT_DIRECTIVES",
     "check_installed_settings_drift",
     "check_ram",
     "check_memory_headroom",

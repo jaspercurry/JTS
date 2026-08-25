@@ -429,13 +429,27 @@ def test_stopped_units_are_reported_as_skipped_not_drift():
     assert notes
 
 
-def test_systemd_drift_skips_cleanly_without_systemctl():
+@pytest.mark.parametrize("stdout", [None, "", "\n\n\n\n"])
+def test_systemd_drift_skips_when_systemctl_cannot_answer(stdout):
+    """Absent systemctl, and a present one answering nothing (no D-Bus, not
+    booted with systemd, non-zero exit), are both unknown — not "every unit
+    is installed at its systemd default", which fabricates drift on all."""
     def fake_run(cmd, **kwargs):
-        raise FileNotFoundError("systemctl not found")
+        if stdout is None:
+            raise FileNotFoundError("systemctl not found")
+        result = MagicMock()
+        result.stdout = stdout
+        return result
 
     with patch.object(doctor._shared, "_run", side_effect=fake_run):
         items, checked, notes = doctor_drift._systemd_drift()
     assert (items, checked) == ([], 0)
+    assert notes
+
+
+def test_unparseable_directive_value_is_disclosed_not_swallowed():
+    items, _, notes = _systemd_drift(oom={"jasper-camilla": "not-a-number"})
+    assert items == []
     assert notes
 
 
@@ -548,6 +562,51 @@ def test_mglru_absent_on_kernels_without_it(tmp_path, monkeypatch):
     items, checked, notes = doctor_drift._mglru_drift()
     assert (items, checked) == ([], 0)
     assert notes
+
+
+def test_mglru_read_failure_is_disclosed_not_reported_as_drift(
+    tmp_path, monkeypatch,
+):
+    """Re-running tmpfiles cannot fix a knob we could not read, so a read
+    failure must not carry that remedy."""
+    knob = tmp_path / "min_ttl_ms"
+    knob.write_text("1000\n")
+    monkeypatch.setattr(doctor_drift, "_MGLRU_MIN_TTL", knob)
+
+    def boom(self, *a, **kw):
+        raise OSError("EACCES")
+
+    monkeypatch.setattr(Path, "read_text", boom)
+    items, checked, notes = doctor_drift._mglru_drift()
+    assert (items, checked) == ([], 0)
+    assert notes
+
+
+def test_the_check_aggregates_every_source(monkeypatch):
+    """The registered check must reach all three readers — a dropped source
+    is a whole class of drift going unreported."""
+    captured = {}
+
+    def source(item, checked, note):
+        return lambda: (
+            [doctor_drift.DriftItem(item, "got", "want", "fix")], checked, [note],
+        )
+
+    monkeypatch.setattr(doctor_drift, "_systemd_drift", source("a", 1, "n1"))
+    monkeypatch.setattr(doctor_drift, "_sysctl_drift", source("b", 2, "n2"))
+    monkeypatch.setattr(doctor_drift, "_mglru_drift", source("c", 4, "n3"))
+    monkeypatch.setattr(
+        doctor_drift, "_classify_drift",
+        lambda drift, checked, notes: captured.update(
+            drift=drift, checked=checked, notes=notes,
+        ),
+    )
+
+    doctor_drift.check_installed_settings_drift()
+
+    assert [d.item for d in captured["drift"]] == ["a", "b", "c"]
+    assert captured["checked"] == 7
+    assert captured["notes"] == ["n1", "n2", "n3"]
 
 
 def test_drift_verdict_is_warn_only_when_something_drifted():

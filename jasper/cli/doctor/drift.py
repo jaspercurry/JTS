@@ -129,6 +129,7 @@ def _systemd_drift() -> tuple[list[DriftItem], int, list[str]]:
         for unit, raw in zip(units, values):
             got = _directive_value(directive, raw)
             if got is None:
+                notes.append(f"{unit} {directive} unparseable")
                 continue
             want = expected[unit]
             checked += 1
@@ -237,8 +238,10 @@ def _mglru_drift() -> tuple[list[DriftItem], int, list[str]]:
     try:
         got = _MGLRU_MIN_TTL.read_text().strip()
     except OSError:
-        got = "unreadable"
-    if got in ("0", "unreadable"):
+        # Not drift: re-running tmpfiles cannot fix a knob we could not
+        # read, so this must not carry that remedy.
+        return [], 0, [f"{_MGLRU_MIN_TTL} unreadable"]
+    if got == "0":
         return (
             [DriftItem("vm.lru_gen.min_ttl_ms", got, _MGLRU_INSTALLED_MS, _TMPFILES_FIX)],
             1,

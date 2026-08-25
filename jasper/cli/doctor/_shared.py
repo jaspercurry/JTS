@@ -336,18 +336,22 @@ def _installed_units(units: list[str]) -> set[str] | None:
     broken (``error`` / ``bad-setting``) is intentionally KEPT so its
     drift still surfaces rather than being silently hidden.
 
-    Returns ``None`` if systemctl is unavailable (dev host), so callers
-    can fall through to their existing "skipped" path.
+    Returns ``None`` if systemctl cannot answer — absent (dev host), or
+    present but returning nothing (no D-Bus, a host not booted with
+    systemd, a non-zero exit). Both are "unknown", not "everything is
+    installed": treating an empty answer as installed would read every
+    unit's directive as its systemd default and fabricate drift on all of
+    them. Callers fall through to their existing "skipped" path.
 
-    Why: drift checks (OOM score, StartLimitAction) verify a PROPERTY of
-    a unit. A unit a profile never installs — e.g. the voice/AEC stack on
-    a streambox — has no property to drift, and ``systemctl show`` reports
-    its directives as defaults, which would read as false drift. Callers
-    filter their expected set to this set so the check stays correct on
-    every install profile without hard-coding which units each tier runs.
+    Why: drift checks verify a PROPERTY of a unit. A unit a profile never
+    installs — e.g. the voice/AEC stack on a streambox — has no property
+    to drift, and ``systemctl show`` reports its directives as defaults,
+    which would read as false drift. Callers filter their expected set to
+    this set so the check stays correct on every install profile without
+    hard-coding which units each tier runs.
     """
     load_states = _systemctl_show_property("LoadState", units)
-    if load_states is None:
+    if load_states is None or not any(s.strip() for s in load_states):
         return None
     return {
         u for u, state in zip(units, load_states)

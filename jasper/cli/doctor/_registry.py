@@ -104,10 +104,12 @@ def doctor_check(
         order: sort key in the canonical run sequence — a sparse key, not
             a contiguous index. To insert between two checks pass a value
             between their orders (e.g. 20.5); no renumber. Must be unique.
-        group: subsystem/domain the check belongs to, normally its
-            module name. Organizational metadata only, except that
+        group: subsystem/domain the check belongs to. Usually the check's
+            module name, but it need not be — ``drift.py`` registers under
+            ``install``. Organizational metadata only, except that
             ``__init__._STREAMBOX_OMITTED_DOCTOR_GROUPS`` skips whole
-            groups a streambox does not install.
+            groups a streambox does not install; ``install`` is not one of
+            them, so drift checks run on both profiles.
         label: explicit display/crash label. Required for ``needs_cfg``
             checks (the original ``(label, lambda)`` tuples). Leave empty
             for bare checks so the label is derived from ``__name__``.
