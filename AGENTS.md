@@ -65,9 +65,15 @@ contract tests for every sentence, an ever-growing HANDOFF corpus,
 multi-round multi-agent review for every change — was itself producing
 repo bloat. Scale ceremony to RISK:
 
-- **Full rigor, unchanged and never waived:** anything touching hearing
-  safety, output levels or rails, DSP math, hardware brick hazards, or
-  secrets. Two-lens adversarial review, tests pinning the safety claim.
+- **Safety is a short, closed list of clamps — not a process.** The
+  hard-stop list is [`docs/measurement-loop-doctrine.md`](docs/measurement-loop-doctrine.md)
+  §4 (hearing: the commissioning SPL stop and the 0 dB volume ceiling;
+  component damage: declared driver caps and brick-hazard firmware ops)
+  plus not leaking secrets. Those few clamps stay working, and a change
+  to one of THEM gets a real review. Nothing else is "safety": DSP math,
+  level gates, prediction checks, and quality verdicts all disclose and
+  take the light path. A gate claiming safety that is not on the closed
+  list is a nanny — demote it (§5's nanny test).
 - **Ordinary production code:** one adversarial review pass. Tests for
   behavior that can break, not for prose. Extend an existing seam rather
   than adding a parallel one.
@@ -79,8 +85,8 @@ repo bloat. Scale ceremony to RISK:
   knob, or HANDOFF file needs a reason, not a reflex.
 
 When a rule elsewhere in this file conflicts with this directive, this
-directive wins; use judgment and say what you skipped. The safety floor
-above is the one thing this directive can never lighten. The full
+directive wins; use judgment and say what you skipped. The clamps
+above are the one thing this directive can never remove. The full
 doctrine slim-down is tracked in the tuning-program inventory (wave 2).
 
 ---
