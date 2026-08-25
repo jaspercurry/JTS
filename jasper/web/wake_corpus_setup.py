@@ -289,7 +289,7 @@ DEFAULT_HOST = "127.0.0.1"
 DEFAULT_PORT = 8782
 
 # CSRF header name. Matches common JS framework conventions; the
-# embedded JS reads `<meta name="csrf-token">` and sends this header
+# embedded JS reads `<meta name="jts-csrf">` and sends this header
 # on every mutating request.
 CSRF_HEADER = "X-CSRF-Token"
 
@@ -351,12 +351,17 @@ class _Handler(BaseHTTPRequestHandler):
         if not guard_mutating_host(self):
             self._send_error_json(
                 403,
-                "request rejected: only the speaker's LAN hostname or "
-                "address may make this request",
+                "request rejected: Host/Origin not allowed for "
+                "mutating requests",
             )
             return False
         header_token = self.headers.get(CSRF_HEADER, "")
-        if not secrets.compare_digest(header_token, self.csrf_token):
+        # http.server decodes headers latin-1, so a non-ASCII header byte
+        # still arrives as a str; compare_digest raises TypeError on a
+        # non-ASCII str operand, so reject one before the compare.
+        if not header_token.isascii() or not secrets.compare_digest(
+            header_token, self.csrf_token,
+        ):
             self._send_error_json(
                 403,
                 f"missing or invalid {CSRF_HEADER} header — reload "
