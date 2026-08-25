@@ -10,9 +10,13 @@
 JTS is a **hobbyist smart speaker** on Raspberry Pi (Python + Rust + C + a
 little JS). One owner, no other users, not yet a product. Development is done
 by AI agents with the owner directing. Deploys and rollbacks are cheap and
-spare Pis exist, so the default posture is: **make the smallest change that
-works, ship it, verify on hardware, and iterate** — except for the
-non-negotiables below, which are always production-grade.
+spare Pis exist, so the default posture is: **add the least new machinery
+that works, ship it, verify on hardware, and iterate** — except for the
+non-negotiables below, which are always production-grade. Scope is measured
+by what a change *adds*, never by lines touched: a deletion or consolidation
+that preserves behavior is a small change no matter how many lines it
+removes, and right-sizing refactors are welcome work, not scope creep. Big
+removals still land as reviewable, single-concern PRs.
 
 Read [README.md](README.md) for architecture and repo layout. The Pi has 1 GB
 of RAM; respect its budget (bounded loops, no heavy analysis on-device — use
