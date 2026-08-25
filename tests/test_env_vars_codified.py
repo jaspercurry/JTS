@@ -122,8 +122,6 @@ _UNCODIFIED = {
     # .env.example entry would advertise a setting that changes nothing.
     # Its only prior surface was a *reader* in the deleted chip-AEC
     # experiment teardown script (U4/P7-3), which is why it surfaces here now.
-    # NOTE: docs/HANDOFF-aec.md still calls it a live chip-HPF tuning knob in
-    # two rows — flagged, not fixed, by the PR that moved this entry.
     "JASPER_AEC_CHIP_HPF_HZ",
     "JASPER_AEC_CHIP_SYS_DELAY",
     "JASPER_AEC_CORPUS_CHIP_AEC_ENABLED",

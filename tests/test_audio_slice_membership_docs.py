@@ -13,7 +13,6 @@ from jasper import _oom_adj
 ROOT = Path(__file__).resolve().parents[1]
 SYSTEMD = ROOT / "deploy/systemd"
 SLICE = SYSTEMD / "jts-audio.slice"
-RESILIENCE = ROOT / "docs/HANDOFF-resilience.md"
 
 EXPECTED = {
     "bluealsa-aplay",
@@ -66,28 +65,11 @@ def _explicit_oom_adjustments() -> dict[str, int]:
     return adjustments
 
 
-def test_slice_header_and_resilience_diagram_name_every_member() -> None:
+def test_slice_header_names_every_member() -> None:
     assert _audio_slice_members() == EXPECTED
     header = SLICE.read_text().split("[Unit]", 1)[0]
-    doc = RESILIENCE.read_text()
-    stage_two = doc.split("**2. Carve audio + mic daemons", 1)[1]
-    diagram = stage_two.split("```", 2)[1]
     assert _named_audio_units(header) == EXPECTED
-    assert _named_audio_units(diagram.split("jts-mic.slice", 1)[0]) == EXPECTED
 
 
-def test_resilience_oom_ladder_covers_every_explicit_adjustment() -> None:
-    doc = RESILIENCE.read_text()
-    explicit = _explicit_oom_adjustments()
-    assert _oom_adj.EXPECTED == explicit
-    ladder = doc.split("| Daemon | OOMScoreAdjust |", 1)[1].split(
-        "Critical:", 1,
-    )[0]
-    documented: dict[str, int] = {}
-    for line in ladder.splitlines():
-        cells = [cell.strip() for cell in line.split("|")]
-        if len(cells) < 4 or not re.fullmatch(r"[+-]?\d+", cells[2]):
-            continue
-        for daemon in re.findall(r"`([^`]+)`", cells[1]):
-            documented["ssh" if daemon == "sshd" else daemon] = int(cells[2])
-    assert documented == explicit
+def test_oom_constants_match_every_explicit_unit_adjustment() -> None:
+    assert _oom_adj.EXPECTED == _explicit_oom_adjustments()

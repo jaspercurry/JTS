@@ -186,7 +186,6 @@ DOCS_TEST_FILES = (
     # and hiding the literal would blind the guard if this test ever did grow
     # a real doc read.
     "tests/test_active_speaker_attempts_replay.py",
-    "tests/test_audio_slice_membership_docs.py",
     "tests/test_bass_extension_limiter_protocol.py",
     "tests/test_bass_extension_plan_status.py",
     "tests/test_build_and_ci_contracts.py",

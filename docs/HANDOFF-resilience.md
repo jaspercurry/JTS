@@ -1,1500 +1,441 @@
-# Resilience — design, rationale, current state
+# Handoff: resilience — the recovery ladder and what it catches
 
-This document captures the architectural decisions behind JTS's
-failure-recovery design, the production incident that drove them,
-and what is wired vs. what is deferred. It pairs with the
-implementation in `jasper/watchdog.py`,
-`deploy/systemd/jasper-aec-bridge.service`, and
-`deploy/systemd/jasper-voice.service`.
+The speaker runs unattended in a home for years and must recover from failure
+without a human. This doc is the map of the machinery that makes that true and
+of what is deliberately not built.
 
-The goal: the speaker runs unattended in someone's home for years
-and recovers from any failure without human intervention.
+Neighbours: [HANDOFF-hotplug-resilience.md](HANDOFF-hotplug-resilience.md) owns
+the convergence contract for hardware attached/detached while running ·
+[HANDOFF-tier5-watchdog-liveness.md](HANDOFF-tier5-watchdog-liveness.md) owns
+the still-deferred T5.3–T5.5 option matrix ·
+[HANDOFF-privilege-separation.md](HANDOFF-privilege-separation.md) owns the
+polkit boundary the supervisors' restarts cross ·
+[historical/resilience-incidents-2026-05.md](historical/resilience-incidents-2026-05.md)
+holds the incident narratives and the never-shipped Stage 2 analysis.
 
-Runtime hardware that can be attached/detached while running (mic or
-output DAC/dongle) has its own convergence contract — clean park on
-unplug, automatic come-up on plug-in, never a crash-loop — in
-[HANDOFF-hotplug-resilience.md](HANDOFF-hotplug-resilience.md).
+Decisions extracted from this subsystem:
+[ADR-0102](adr/0102-mic-transport-is-udp-localhost.md) (UDP mic transport),
+[ADR-0103](adr/0103-config-apply-restarts-clear-the-flap-counter.md)
+(`reset-failed` erases `NRestarts`),
+[ADR-0104](adr/0104-per-daemon-memory-caps-stay-deferred.md) (Stage 2 stays
+deferred).
 
----
+## The ladder
 
-## The 2026-05-11 incident
-
-The motivating failure, summarised so future readers don't have to
-reconstruct it from PR descriptions.
-
-What happened: `jasper-aec-bridge`'s mic-side PortAudio
-`InputStream` stopped invoking its callback after a USB underrun
-on the XVF chip's UAC2 capture endpoint. The bridge's main thread
-was blocked in `out_stream.write()` (PortAudio writing to the old
-`hw:LoopbackAEC,0` snd-aloop card) and never observed Python's
-`SIGTERM` handler because signal handlers only run between Python
-bytecodes — a blocked C call holding the GIL is opaque to them.
-
-`systemd` waited the default 90 s `TimeoutStopSec`, then sent
-`SIGKILL`. The SIGKILL killed the bridge mid-flight while it held
-open the snd-aloop loopback fd. snd-aloop's kernel-side
-`loopback_cable` struct ([sound/drivers/aloop.c](https://github.com/torvalds/linux/blob/master/sound/drivers/aloop.c))
-was left in a half-bound state: the kernel timer that advances
-`hw_ptr` never re-armed. Every fresh bridge process opened
-`hw:LoopbackAEC,0` successfully but blocked on its second write
-forever, because the kernel-side transfer to the capture pair
-was wedged.
-
-Only `rmmod snd_aloop && modprobe snd_aloop` (after stopping all
-six snd-aloop consumers — `shairport-sync`, `librespot`,
-`bluealsa-aplay`, `jasper-camilla`, `jasper-aec-bridge`,
-`jasper-voice`) or a full reboot recovered the kernel state.
-The wake-word path was silently dead for ~10 minutes before we
-noticed; no audible cue fired because cues are gated on a wake
-event firing, and wake events require mic input we didn't have.
-
-Three classes of fragility composed into the incident:
-
-1. **PortAudio `InputStream` is one-shot** when the underlying
-   ALSA PCM hits `SND_PCM_STATE_DISCONNECTED`. `snd_pcm_recover()`
-   does not recover that state per the ALSA contract; there's no
-   in-process retry.
-   *(Detecting this stall is two-pronged as of 2026-05-31: the
-   original continuous-empty counter — `JASPER_AEC_STALL_RESTART_SEC`,
-   5 s — plus a slow-drip frame-rate watchdog,
-   `JASPER_AEC_STALL_DRIP_MAX_WINDOWS`, that catches an intermittent
-   trickle the continuous counter keeps resetting through. The first
-   never fired during a ~13 h deaf-but-trickling episode; the rate
-   watchdog closes that gap. Both raise `BridgeStalled` → systemd
-   restart; see `_MicStarvationWatchdog` in `jasper/cli/aec_bridge.py`.)*
-2. **Blocking I/O in a Python daemon defeats `SIGTERM`** — the
-   GIL + bytecode-boundary signal-handler model means a blocked C
-   call cannot be interrupted by Python's `signal.signal` handler.
-3. **`SIGKILL` of an snd-aloop consumer corrupts kernel state**
-   that survives process restarts. This is structural in aloop's
-   design (the cable struct is module-global and assumes
-   cooperative close).
-
----
-
-## What we adopted
-
-Two architectural changes, layered. The pattern is
-[Crash-Only Software (Candea & Fox, HotOS-IX 2003)](https://www.usenix.org/legacy/events/hotos03/tech/full_papers/candea/candea.pdf):
-design every component so the only stop path is crash-and-recover,
-exercise that path constantly, prefer micro-reboots over full
-reboots.
-
-### 1. Eliminate the kernel-state failure class structurally — UDP transport
-
-The bridge→voice path no longer uses snd-aloop. The bridge sends
-AEC'd mono int16 frames over UDP localhost
-(`127.0.0.1:JASPER_AEC_UDP_PORT`, default 9876) using a
-non-blocking `socket.SOCK_DGRAM`; `jasper-voice`'s `UdpMicCapture`
-(`jasper/audio_io.py`) binds the same port via
-`asyncio.DatagramProtocol` and yields the same 1280-sample frames
-that `MicCapture` does.
-
-Why UDP beats hardening snd-aloop:
-
-- **No kernel-side state to corrupt.** Either side can crash
-  without affecting the other. No module to reload, no consumer
-  ordering to enforce.
-- **`sendto()` is non-blocking on `lo`** at our rate
-  (~256 kbps). The bridge's main thread can always observe
-  `SIGTERM` and exit inside the 5 s `TimeoutStopSec` — no more
-  `SIGKILL` cascade.
-- **Standard pattern.** Mumble, every VoIP gateway, Snapcast.
-  UDP localhost packet loss is effectively zero on Linux's `lo`
-  at this rate.
-- **Same frame contract.** `UdpMicCapture.OUTPUT_FRAME_SAMPLES ==
-  MicCapture.OUTPUT_FRAME_SAMPLES`; voice's `WakeLoop` is
-  transport-agnostic.
-
-The music-side snd-aloop card (`Loopback`, card 6) stays —
-CamillaDSP is a well-behaved C++ daemon that handles `SIGTERM`
-correctly and never gets `SIGKILL`'d, so its loopback never
-wedges. We removed only the second card (`LoopbackAEC`) from
-`/etc/modprobe.d/snd-aloop.conf`.
-
-### 2. A five-tier resilience ladder, with sd_notify watchdog as Tier 1+2
-
-> **Note**: the 5-tier ladder below is the original 2026-05-11
-> response, scoped to **liveness failures** — stuck processes,
-> wedged supervisors, hung subsystems. Two later additions extend
-> the ladder, both shipped in May 2026:
->
-> - **Stage 1 — memory-pressure prevention** sits *parallel* to
->   the ladder. See [Memory-pressure resilience (Stage 1)](#memory-pressure-resilience-stage-1)
->   below.
-> - **T5.1 + T5.2** sit *below* Tier 5, catching the "userspace
->   dead but PID 1 alive" shape the hardware watchdog
->   structurally misses. See [Tier 5's liveness blind spot](#tier-5s-liveness-blind-spot--known-gap)
->   for the gap analysis and
->   [HANDOFF-tier5-watchdog-liveness.md](HANDOFF-tier5-watchdog-liveness.md)
->   for the option matrix + revisit triggers on the still-deferred
->   T5.3–T5.5 options.
-
-Even with the snd-aloop failure class eliminated, we want
-recovery from *any* future in-process hang — not just the
-specific one we hit. The systemd `sd_notify` watchdog gives us
-that generically.
+Scoped to **liveness** failures — stuck processes, wedged supervisors, hung
+subsystems. Memory-pressure prevention sits parallel to it; T5.1/T5.2 sit below
+Tier 5, catching the "userspace dead but PID 1 alive" shape the hardware
+watchdog structurally misses.
 
 | Tier | Mechanism | Catches | Wired? |
 |---|---|---|---|
-| 1 | `sdnotify` heartbeat thread with progress sentinel | Logic deadlock; blocked event loop; slow loop. `bump()` is called from each successful frame; the heartbeat thread only pats systemd if `now - last_progress < 5 s`, so a wedged loop stops patting even though the heartbeat thread itself keeps running. | ✅ — `jasper/watchdog.py`, wired into bridge `_aec_loop` and voice `WakeLoop.run` |
-| 2 | systemd `Type=notify` + `WatchdogSec=30s` + `Restart=on-watchdog` + `TimeoutStopSec=5s` + `StartLimitBurst=20` | Process exit, hang, fatal ALSA error. If the Tier 1 heartbeat stops patting, this fires at 30 s and brings the daemon back with a fresh process in ~2 s. | ✅ — `deploy/systemd/jasper-aec-bridge.service`, `deploy/systemd/jasper-voice.service` |
-| 3 | Sidecar protocol-level liveness probe in `jasper-control` + conditional `systemctl restart`, gated on no active session, canonical source authorization, and rate-limited | Third-party daemons that wedge at the protocol layer while still passing systemd's liveness check. shairport-sync AP2 today; pattern generalizes to other long-lived third-party renderers if they demonstrate the same failure class. | ✅ — `jasper/control/shairport_supervisor.py`, started from `server.py:main` via `start_supervisor()` |
-| 4 | Kernel-state recovery script (`rmmod && modprobe snd_aloop`, after stopping all consumers; rate-limited via state file) | snd-aloop kernel-side wedges, dsnoop wedges. | ❌ — not currently wired. The original motivation (bridge↔voice snd-aloop) is gone; the music-chain Loopback hasn't shown this failure mode in production. Deferred. |
-| 5 | BCM2712 hardware watchdog (`/dev/watchdog0`) patted by systemd PID 1 via `RuntimeWatchdogSec=1m` (with persistent journald for post-mortem forensics) | Kernel panic, PID 1 hang, total userspace wedge (CPU peg, swap thrash, I/O hung). | ✅ — wired by Raspberry Pi OS Trixie's `/usr/lib/systemd/system.conf.d/40-rpi-enable-watchdog.conf` (`RuntimeWatchdogSec=1m`, `RebootWatchdogSec=2m`). JTS contributes the other half: PR #160 (2026-05-20) overrode the paired RPi OS default of `Storage=volatile` so logs survive the reset and the cause is debuggable. |
+| 1 | `sdnotify` heartbeat thread with progress sentinel | Logic deadlock, blocked event loop, slow loop. `bump()` is called from each successful frame; the heartbeat thread only pats systemd if `now - last_progress < 5 s`, so a wedged loop stops patting even though the thread keeps running. | ✅ `jasper/watchdog.py`, wired into bridge `_aec_loop` and voice `WakeLoop.run` |
+| 2 | systemd `Type=notify` + `WatchdogSec=30s` + `Restart=on-watchdog` + `TimeoutStopSec=5s` + `StartLimitBurst=20` | Process exit, hang, fatal ALSA error. Fires 30 s after Tier 1 stops patting; fresh process in ~2 s. | ✅ `jasper-aec-bridge.service`, `jasper-voice.service` |
+| 3 | Protocol-level liveness probe in `jasper-control` + conditional `systemctl restart`, gated on no active session and rate-limited | Third-party daemons that wedge at the protocol layer while passing systemd's liveness check. shairport-sync AP2 today. | ✅ `jasper/control/shairport_supervisor.py`, started from `server.py:main` |
+| 4 | Kernel-state recovery (`rmmod && modprobe snd_aloop` after stopping consumers) | snd-aloop / dsnoop kernel-side wedges. | ❌ deferred. Its original motivation (bridge↔voice snd-aloop) is gone per ADR-0102; the music-chain Loopback has not shown this failure. Trigger: it wedges again. |
+| 5 | BCM2712 hardware watchdog (`/dev/watchdog0`) patted by PID 1, plus persistent journald for post-mortem forensics | Kernel panic, PID 1 hang, total userspace wedge. | ✅ RPi OS Trixie ships `RuntimeWatchdogSec=1m`/`RebootWatchdogSec=2m`; JTS contributes `deploy/journald/50-jts-persistent-storage.conf` so logs survive the reset |
 
-The honest framing: today's shipped resilience is **Tier 1, Tier 2, Tier 3 (shairport-sync only), Tier 5 (hardware watchdog with persistent journal forensics), and the architectural choice that obviated kernel-state recovery for the AEC path.** Tier 4 stays on the deferred list with a clear trigger ("rmmod + modprobe if snd-aloop ever wedges again").
+Tier 5 is the floor, not the first line: Tiers 1–4 catch in-process hangs and
+protocol wedges faster (~30 s vs ~60 s) and with a smaller blast radius (one
+daemon restart vs a full reboot).
 
-Current production observability for this ladder lives under
-`/state.resilience`: `shairport`, `grouping_supervisor`,
-`system_supervisor`, `wifi_guardian`, `bootloop_guard`, `content_lane`,
-`identity`, `disk`, `multiroom_cascade`, and `active_speaker_parked`.
-The first three are resident supervisor
-snapshots; `jasper-doctor` now reads them through its `supervisor runtime
-snapshots` check so a supervisor that is kicking, rate-limited, or failing
-to converge is visible in one-shot diagnostics. `multiroom_cascade` is a
-bounded after-the-fact ring sourced from the existing persistent journal
-`event=multiroom.reconcile.*`, `event=restart_broker.*`, and
-`event=grouping_supervisor.*` lines. It is deliberately small, fail-soft,
-and fixed-shape: enough to reconstruct "what kicked what recently" without
-turning `/state` into a raw log bundle. On sampler startup it scans a bounded
-15-minute journal lookback, then advances per-unit cursors; each event carries
-the journal occurrence time (`occurred_at`) and the sampler time
-(`observed_at`) separately.
+Production observability lives under `/state.resilience`: `shairport`,
+`grouping_supervisor`, `system_supervisor`, `wifi_guardian`, `bootloop_guard`,
+`content_lane`, `identity`, `disk`, `multiroom_cascade`, `active_speaker_parked`.
+The first three are resident supervisor snapshots, read by doctor's
+`supervisor runtime snapshots` check so a supervisor that is kicking,
+rate-limited, or failing to converge is visible in one-shot diagnostics.
+`multiroom_cascade` is a bounded after-the-fact ring sourced from persistent
+journal `event=multiroom.reconcile.*`, `event=restart_broker.*`, and
+`event=grouping_supervisor.*` lines — deliberately small, fail-soft, and
+fixed-shape, enough to reconstruct "what kicked what recently" without turning
+`/state` into a log bundle; each entry carries the journal occurrence time
+(`occurred_at`) and the sampler time (`observed_at`) separately.
 
-### 3. Wire third-party daemons into the ladder — protocol-level supervisor
+## Tier 3 — third-party protocol supervision
 
-Tiers 1+2 catch one failure class exceptionally well: **liveness of
-daemons we own**. We control the source, we add the sd_notify
-heartbeat, the work loop bumps it, systemd kills and restarts when it
-stops.
+Every 30 s ± 3 s jitter the shairport supervisor opens TCP to `127.0.0.1:7000`,
+sends a minimal RFC 2326 `OPTIONS *`, and expects `RTSP/1.0 200` within 3 s.
+After 3 consecutive failures, gated on MPRIS `PlaybackStatus != "Playing"`, it
+issues `systemctl reset-failed + --no-block restart` on `shairport-sync.service`
+and `nqptp.service` — the same units `scripts/airplay-reset.sh` touches.
+Because `jasper-control` runs as a non-root user, that is **polkit-authorized**
+against the `MANAGED_UNITS` allowlist (`deploy/polkit/49-jasper-control.rules`).
 
-What that ladder doesn't catch: a third-party daemon that wedges at
-the protocol layer while still passing every systemd liveness check.
-The motivating example, observed in production 2026-05-19:
-shairport-sync v4.3.7's AP2 control plane occasionally hangs after
-`accept()` on a per-connection RTSP handshake. The process stays
-alive, mDNS still advertises the AirPlay service, MPRIS still answers
-`PlaybackStatus`, and systemd sees nothing to restart. From the
-user's vantage point, "JTS" appears in the AirPlay picker but every
-new SETUP times out. The only manual fix has been
-[`scripts/airplay-reset.sh`](../scripts/airplay-reset.sh).
+The constraints that make it safe:
 
-The closest upstream report is
-[shairport-sync#2024](https://github.com/mikebrady/shairport-sync/issues/2024),
-where `strace` showed the listener thread stuck in `pselect6`. Issue
-closed without a code fix. Restarting the unit resolves it.
-
-The supervisor at
-[`jasper/control/shairport_supervisor.py`](../jasper/control/shairport_supervisor.py)
-adds Tier 3: a single async coroutine running on its own thread +
-asyncio loop inside `jasper-control` (same shape as
-`start_peering_daemon_if_enabled`). Every 30 s ± 3 s jitter it opens
-a TCP connection to `127.0.0.1:7000`, sends a minimal RFC 2326
-`OPTIONS *` request, and expects `RTSP/1.0 200` within 3 s. After
-3 consecutive failures, gated on MPRIS `PlaybackStatus != "Playing"`,
-it issues `systemctl reset-failed + --no-block restart` on
-`shairport-sync.service` and `nqptp.service` — the same units the
-manual fix already touches. (WS1 Phase 3b-2: `jasper-control` is now a
-non-root user, so this `reset-failed`+restart is **polkit-authorized**
-against the `MANAGED_UNITS` allowlist — `deploy/polkit/49-jasper-control.rules`;
-both `shairport-sync.service` and `nqptp.service` are in it. Validated on
-hardware. See [HANDOFF-privilege-separation.md](HANDOFF-privilege-separation.md).)
-
-Design constraints the supervisor satisfies:
-
-- **No new long-running process.** The supervisor is one async task
-  on infrastructure jasper-control already owns. Pss cost ≈ 0;
-  restart latency unchanged.
-- **The probe doesn't disturb a live session.** shairport's
-  `handle_options_2` returns 200 OK pre-pair, in a fresh
-  per-connection thread, independent of any in-flight `principal_conn`.
-- **The gate is the load-bearing safety net.** Probe failure during
-  a real listening session is more likely a hiccup than a wedge;
-  the gate keeps us from kicking the user.
-- **A deliberate disable is honored.** When the household turns
-  AirPlay off at `/sources/` (`systemctl is-enabled` reports
-  disabled/masked), failing probes idle the supervisor
+- **The no-active-session gate is the load-bearing safety net.** A probe failure
+  during real listening is more likely a hiccup than a wedge.
+- **A deliberate disable is honored.** When AirPlay is off at `/sources/`,
+  failing probes idle the supervisor
   (`event=shairport.probe_idle reason=unit_disabled`, surfaced as
-  `resilience.shairport.unit_disabled` in `/state`) instead of
-  counting toward a restart. Before this guard the supervisor
-  revived a disabled unit ~90 s after the toggle (observed on
-  hardware 2026-07-10): when MPRIS is unknown *and* systemd reports
-  the unit inactive, the no-active-session gate stands aside
-  (`event=shairport.gate_bypass reason=unit_inactive`) so a crashed
-  unit can be recovered — and that bypass alone could not tell
-  "crashed" from "turned off". The enablement check runs
-  only on failing probes, so the healthy path stays
-  subprocess-free; re-enabling resumes supervision on the next
-  tick. Errors reading enablement fail toward supervising, never
-  toward silently parking Tier 3. The final recovery mutation is
-  `systemctl --no-block restart`, which can revive a fully dead desired-On
-  receiver. A concurrent Off or follower park still wins because both AirPlay
-  units recheck canonical intent and effective role in their root
-  `ExecCondition` at the final start boundary.
-- **Rate limit prevents storms.** One supervisor-driven restart per
-  10 minutes. If the wedge persists past that, the underlying issue
-  is upstream and our restart isn't the right hammer.
-- **Failure modes degrade safely.** A probe exception is counted as
-  a probe failure (the wedge signature is "no response"; a Python
-  exception in our probe code is no better). A gate exception fails
-  safe to "active" (better to leave a possibly-live session alone
-  than risk killing one on a transient DBus stall).
-- **Off switch.** `JASPER_SHAIRPORT_SUPERVISOR=disabled` in
-  `/etc/jasper/jasper.env` parks the thread before it starts.
-  Exact match (case-insensitive); other values, including `off` /
-  `0` / `no`, log a warning and proceed as `auto`.
-- **Observable.** Structured `event=shairport.*` log lines for every
-  state transition; supervisor state surfaces in the `/state` JSON
-  under `resilience.shairport`.
+  `resilience.shairport.unit_disabled`) instead of counting toward a restart —
+  without it the supervisor revived a disabled unit ~90 s after the toggle. The
+  related bypass, where MPRIS-unknown *and* systemd-inactive stands the session
+  gate aside so a crashed unit can recover
+  (`event=shairport.gate_bypass reason=unit_inactive`), could not by itself tell
+  "crashed" from "turned off". The enablement check runs only on failing probes,
+  so the healthy path stays subprocess-free; errors reading enablement fail
+  toward supervising, never toward silently parking Tier 3.
+- **Rate limit:** one supervisor-driven restart per 10 minutes. Past that the
+  issue is upstream and a restart is the wrong hammer.
+- **Failure modes degrade safely.** A probe exception counts as a probe failure
+  (the wedge signature is "no response"); a gate exception fails safe to
+  "active".
+- **Off switch:** `JASPER_SHAIRPORT_SUPERVISOR=disabled`, exact match,
+  case-insensitive; other values log a warning and proceed as `auto`.
 
-What this Tier 3 instance is NOT designed to handle:
+Not designed to handle: MPRIS-says-Playing-but-RTSP-wedged (the user gets
+silence; the fix is `/system/restart/audio`), or an nqptp wedge independent of
+shairport (the restart bundles both units, the detector probes only shairport).
+The probe → gate → rate-limited restart shape generalizes to `librespot` and
+`bluez-alsa`; neither has demonstrated the failure class. **Do not preemptively
+spread it.**
 
-- An MPRIS-says-Playing-but-RTSP-wedged inconsistency. The gate is
-  conservative; in that very rare state the user gets silence and
-  the fix is the `/system/restart/audio` button. A secondary
-  detector based on `nqptp` shm `local_time` stagnation could close
-  this gap; deferred until observed.
-- A wedge in nqptp independently of shairport. The restart action
-  bundles both units because the manual fix has always done so, but
-  the detector only probes shairport's RTSP.
+## T5.1 and T5.2 — the userspace-liveness floor
 
-The same probe → gate → rate-limited restart shape generalizes to
-other third-party daemons we depend on (`librespot`, `bluez-alsa`).
-None have demonstrated this failure class. The pattern is here if
-they do — don't preemptively spread.
+**T5.1: `StartLimitAction=reboot`** on the critical jasper-* units (outputd,
+fanin, aec-bridge, voice, control). When one exceeds its `StartLimitBurst=`
+within `StartLimitIntervalSec=`, systemd cleanly reboots the box — `reboot`, not
+`reboot-force`, because a clean shutdown is essential on a 1 GB Pi to flush zram
+dirty pages. Per-unit thresholds preserve transient tolerance for audio-device
+dropouts (voice keeps 20/300; aec-bridge and control use 4/300). `jasper-voice`'s
+first-time unconfigured-provider exit is excluded via `SuccessExitStatus=78` +
+`RestartPreventExitStatus=78`; actual crashes still flow through T5.1.
 
-### 4. Tier 5: hardware watchdog with persistent journal forensics
+**The budget is for CRASH loops, so a deliberate config-apply must not spend
+it**: a reconciler restarting one of these daemons runs `systemctl reset-failed`
+first. A daemon's own `Restart=` path never runs that reset, so genuine crash
+loops still escalate. That call also erases `NRestarts`, a live flapping signal
+— an accepted cost, not a bug: [ADR-0103](adr/0103-config-apply-restarts-clear-the-flap-counter.md).
 
-The kernel hardware watchdog (`bcm2835-wdt` on the Pi 5's
-BCM2712 SoC) was already enabled before JTS existed: Raspberry Pi
-OS Trixie ships
-[`/usr/lib/systemd/system.conf.d/40-rpi-enable-watchdog.conf`](https://github.com/RPi-Distro/repo/blob/master/debian/changelog)
-with `RuntimeWatchdogSec=1m` and `RebootWatchdogSec=2m`. systemd
-PID 1 opens `/dev/watchdog0`, sets the kernel timer to 60 s, and
-pings every 30 s. If PID 1 itself can't get scheduled to ping
-within the window — which happens when userspace wedges hard
-enough to starve the scheduler (heavy zram thrash during OOM,
-massive I/O queue, an in-process deadlock that radiates outward) —
-the hardware watchdog hard-resets the board.
+**Camilla exception.** `jasper-camilla.service` uses `Restart=always` +
+`StartLimitBurst=5/60`, but start-limit exhaustion runs
+`OnFailure=jasper-camilla-recover.service` with `StartLimitAction=none` instead
+of a raw reboot: the observed failure was camilladsp exiting cleanly with ALSA
+`Device or resource busy` while deploy/renderers churned, and a reboot destroyed
+the `/dev/snd` holder evidence and made a reachable Pi look killed.
+`deploy/bin/jasper-camilla-recover` captures `fuser`/`lsof` and
+`/proc/asound/*/status`, parks likely graph owners, tries one bounded
+fanin→Camilla→outputd restart, kicks the AEC/grouping reconcilers, then leaves
+the unit parked (cooldown-gated, no reboot) if the graph still cannot converge.
+Doctor's `check_start_limit_action` surfaces drift if a distro update removes
+either the reboot directives or Camilla's handler.
 
-For a smart speaker that runs unattended for years, this is the
-right behaviour: a wedged box recovers in ~60 s without a human
-plugging it. The user perceives "the speaker restarted on its
-own" — accurate, and far better than a permanently silent speaker.
+**T5.1 circuit breaker.** `StartLimitAction=reboot` alone is unbounded across
+boots — a *permanent* daemon failure would reboot the Pi every few minutes
+forever. `jasper-bootloop-guard.service` (pure-bash oneshot, ordered `Before=`
+the escalating units) persists boot timestamps to
+`/var/lib/jasper/bootloop_guard_boots`; on the 3rd boot inside a 3600 s window it
+writes **runtime** drop-ins (`/run/systemd/system/<unit>.d/`,
+`StartLimitAction=none`). That changes only the escalation, not the rate limit:
+the sick unit exhausts its burst and systemd parks it failed — visible in
+`systemctl`/doctor — while the Pi stays reachable. Recovery is fix the cause,
+then `systemctl reset-failed <unit> && systemctl start <unit>`. Drop-ins live in
+`/run`, so a healthy boot self-re-arms with no operator action. Guarded units are
+discovered by grepping `StartLimitAction=reboot`, deliberately excluding Camilla.
+Fail-open on every error path; `event=bootloop_guard.ok|tripped|error` +
+`/state.resilience.bootloop_guard`.
 
-The cost we discovered on 2026-05-20: RPi OS also ships
-[`/usr/lib/systemd/journald.conf.d/40-rpi-volatile-storage.conf`](https://github.com/RPi-Distro/repo)
-with `Storage=volatile`, which throws the journal away on every
-reboot to protect the SD card from log-write wear. The two
-defaults compose into a debuggability hole: the wedge → watchdog
-reset → fresh boot → no record of what wedged the system. From
-the operator's vantage, the speaker spontaneously reboots with
-no explanation.
+**Recoverable front-door and renderers.** nginx, the socket-activated web
+daemons, source renderers, the Bluetooth agent, and `jasper-mux` use a generous
+finite window (`StartLimitIntervalSec=600`, `StartLimitBurst=20`; package-owned
+services get JTS drop-ins). Intentionally not "restart forever": transient OOM
+or update pressure should not park safe services, but genuine config/code loops
+still stop loudly.
 
-[PR #160](https://github.com/jaspercurry/JTS/pull/160) added
-`deploy/journald/50-jts-persistent-storage.conf` (installed at
-`/etc/systemd/journald.conf.d/`) flipping back to
-`Storage=persistent` with a 500 MB `SystemMaxUse=` cap (raised from
-the original 200 MB — `SystemMaxUse` is a retention ceiling, not a
-write-rate knob, so ~10 days of history now survives at the same
-bytes/day and the same SD wear, for ~300 MB extra disk). Now the
-previous boot's logs survive the reset and the cause is
-recoverable via `journalctl -b -1`. SD wear cost: ~30 MB/hour
-to disk with ZSTD compression, ~270 GB/year, well inside the
-endurance budget of any reasonable SD card (~100 TBW). Swap is
-on `zram0` (compressed RAM via Trixie's `zram-tools` default),
-not the SD card, so OOM events don't actually thrash the card —
-the wear protection RPi OS's volatile default was hedging
-against turned out to be the wrong threat for our topology.
+**T5.2: `SystemSupervisor`** (`jasper/control/system_supervisor.py`), mirroring
+the Tier 3 shape. Probes three layers every 30 s ± jitter: **sshd banner
+exchange** on `127.0.0.1:22` (TCP accept plus banner read within 2 s — the
+incident shape was sshd accepting the connect but never writing the banner);
+**jasper-control's own `/healthz`** on `127.0.0.1:8780` (yes, it probes itself;
+this catches "asyncio loop wedged but systemd thinks we're alive", and a
+`429 Too Many Requests` from the bounded request-admission gate counts as
+alive-but-shedding, because treating overload shedding as a failed liveness
+probe would let a LAN request burst manufacture a reboot); and a
+**`/proc/loadavg` read** within 1 s (kernel I/O stall).
 
-**Disk-pressure observability.** A filling root filesystem is the
-slow-burn companion to SD-card *wear*: an unclean power-cut on a full
-card is the corruption hazard the whole ladder exists to survive, yet
-nothing surfaced it before a write failed. `/state.resilience.disk`
-(`jasper/control/state_aggregate.py:_disk_snapshot`) is the
-always-visible dashboard number — `{path, percent_used, free_gib,
-total_gib}`, fail-soft (`null` on a non-POSIX host or statvfs error,
-like every other resilience section). The actionable warn (≥85%) /
-fail (≥95%) thresholds are owned by jasper-doctor's `check_disk_space`
-(`jasper/cli/doctor/memory.py`), keeping the dashboard number and the
-graded check from drifting.
-
-What this Tier covers that Tiers 1–4 don't:
-- Kernel panic (Tiers 1–2 require PID 1 to still be scheduling
-  the heartbeat thread).
-- PID 1 itself wedging (no userspace watchdog can save you when
-  PID 1 is the one stuck).
-- OOM-induced full-system stalls where every process — including
-  systemd — is blocked waiting on zram compression or swap I/O.
-- Any future failure class we haven't anticipated. Tier 5 is the
-  catch-all.
-
-What it explicitly does NOT replace: Tiers 1–4 still catch
-in-process hangs and protocol wedges much faster (~30 s vs ~60 s)
-and with a smaller blast radius (one daemon restart vs full
-reboot). Tier 5 is the floor, not the first line.
-
-To investigate a watchdog-triggered reset after the fact:
-
-```sh
-# How many boots are in the persistent journal?
-sudo journalctl --list-boots
-
-# Last warning+ from the previous boot, the 2 minutes before the
-# reset (usually where the wedge signature appears: OOM-kill,
-# softlockup, runaway daemon, etc.)
-sudo journalctl -b -1 -p warning --since "-2min"
-
-# EXT4 boot fingerprint: an unclean shutdown shows up in dmesg as
-# "EXT4-fs (mmcblk0p2): orphan cleanup on readonly fs" on the
-# *recovery* boot. Diagnostic shorthand for "the previous shutdown
-# wasn't clean" → power loss, hardware reset, OR watchdog bite.
-sudo dmesg -T | grep "orphan cleanup"
-```
-
-Heavy *offline* analysis on the Pi (e.g. instantiating
-`openwakeword.Model()` 100 times in a sweep script) is a known
-way to trip Tier 5 self-inflicted — each model load holds
-~100–200 MB and they don't free until the script does. Prefer
-the laptop for that kind of work; the Pi venv is sized for
-production daemons, not analysis bursts.
-
-### Tier 5's liveness blind spot — known gap
-
-The 2026-05-23 incident exposed a real limitation. A PIO compile
-on the 1 GB Pi 5 OOM-stalled userspace for >2 minutes:
-
-- ICMP ping stayed healthy (~7 ms RTT, 0% loss) — kernel and
-  network stack alive
-- `ssh` connection accepted at TCP layer but **banner exchange
-  timed out** — userspace was effectively dead
-- **No watchdog reset** — PID 1 got just enough scheduler time to
-  keep patting `/dev/watchdog0` every <60 s
-- Required a manual power-cycle to recover
-
-The gap: **systemd patting `/dev/watchdog0` is a very weak
-liveness signal**. It only confirms PID 1's main loop got CPU
-once in the last 60 s. It does not confirm that sshd accepts
-connections, that jasper-control answers HTTP, that camilladsp
-is processing audio, or that any user-visible service does
-anything useful. So userspace can be fully wedged while Tier 5
-thinks the system is healthy.
-
-**Design proposal**: [`HANDOFF-tier5-watchdog-liveness.md`](HANDOFF-tier5-watchdog-liveness.md)
-(2026-05-24). Two-PR sequence:
-
-- **T5.1** ✅ **shipped**: `StartLimitAction=reboot` on the critical
-  jasper-* units where a restart spiral means the box needs a clean
-  reboot (outputd, fanin, aec-bridge, voice, control). When any
-  one of them exceeds its `StartLimitBurst=` within `StartLimitIntervalSec=`,
-  systemd itself cleanly reboots the box — filesystems unmount,
-  journal flushes, dirty pages sync. Per-unit thresholds preserve
-  existing transient-tolerance for audio-device dropouts
-  (jasper-voice keeps 20/300, aec-bridge and control use proposal
-  default 4/300). `reboot` not `reboot-force`
-  — clean shutdown is essential on a 1 GB Pi to flush zram dirty
-  pages. Catches the "one critical daemon is sick" shape, but NOT
-  the "userspace is dead while jasper-* daemons happen to be alive"
-  shape. Since 2026-06-02, `jasper-voice`'s first-time unconfigured
-  provider exit is explicitly excluded from this budget via
-  `SuccessExitStatus=78` + `RestartPreventExitStatus=78`; actual
-  voice crashes still flow through T5.1. **The budget is for CRASH
-  loops, so a deliberate config-apply must not spend it**: a
-  reconciler that restarts one of these daemons to apply new config
-  runs `systemctl reset-failed <unit>` first (it clears the start
-  rate counter as well as the failed latch), so N control-plane
-  applies never accumulate toward the reboot. A daemon's own
-  `Restart=` path never runs that reset, so genuine crash loops
-  still escalate. Shipped in `jasper.multiroom.reconcile`
-  (2026-06-24 follower reboot: six `/grouping/set` POSTs in 44 s
-  tripped outputd's start-limit) and in
-  `jasper.fanin.coupling_reconcile` (#2175: repeatedly toggling
-  Bluetooth rebooted a Zero 2 W, because every source transaction
-  asks the coupling owner to converge and a desired-On USB source
-  that could not compose re-armed fan-in on each pass).
-  **The cost — an ACCEPTED decision, ratified 2026-08-14 (#2234)**:
-  the same call clears `NRestarts`, which is a live flapping signal,
-  not just a latch — doctor's `check_service_runtime_state` warns
-  while it is non-zero, `/system/data.json` carries it (a unit
-  surfaces on that alone), and the dashboard sorts the unit toward
-  the top of its services table on it (after a toggle-driven reset
-  the Restarts column simply reads 0). Only CamillaDSP
-  has a compensating "not running" detector
-  (`audio_health._camilla_stopped`, deliberately CamillaDSP-scoped
-  because outputd and voice have legitimate parked states);
-  `jasper-fanin` and `jasper-outputd` sit outside it. So a fan-in
-  that crash-restarted four times reads `NRestarts=0` after one
-  household source toggle: the reboot is prevented, the evidence
-  that it nearly happened is not preserved. This is not one
-  caller's doing — the reconcilers
-  (`jasper.fanin.coupling_reconcile`, `jasper.multiroom.reconcile`),
-  the recovery helpers (`jasper-audio-hardware-reconcile`,
-  `jasper-camilla-recover`, `jasper-outputd-failure-reconcile`, the
-  udev-driven `jasper-dongle-recover` unit) and every deploy
-  (`deploy/lib/install/systemd-units.sh`, over the core-graph
-  restart targets) all clear it, so the erasure predates and
-  outlives the source-toggle path #2231 added.
-  **Why accepted rather than fixed**: the obvious fix — generalising
-  the `_camilla_stopped` shape to fan-in and outputd — would not
-  restore what was lost. That is a *stoppage* detector ("not running
-  is the fact", per its own docstring), and a daemon that
-  crash-restarts four times and comes back up is `active` at every
-  sample; flapping is exactly the state it cannot see. The fix that
-  would work is a control-owned restart counter that `reset-failed`
-  cannot clear, which is an L-sized build to buy back an
-  early-warning signal, and it does not earn that. What still
-  catches the hard states is unchanged: `check_fanin_service` FAILs
-  on disabled/inactive and on a STATUS probe that cannot be read or
-  does not parse, so a fully-down or wedged fan-in is reported
-  whatever `NRestarts` says. What is given up is only the warning
-  that would have come *before* one of those hard states.
-  **Camilla exception
-  (2026-06-25, JTS5)**: `jasper-camilla.service` still uses
-  `Restart=always` + `StartLimitBurst=5/60`, but start-limit exhaustion
-  runs `OnFailure=jasper-camilla-recover.service` with
-  `StartLimitAction=none` instead of raw reboot. The observed failure was
-  camilladsp exiting cleanly with ALSA `Device or resource busy` while
-  deploy/renderers were churning; a reboot destroyed the `/dev/snd`
-  holder evidence and made an otherwise reachable Pi look "killed."
-  `deploy/bin/jasper-camilla-recover` captures `fuser`/`lsof` and
-  `/proc/asound/*/status`, parks likely graph owners, tries one bounded
-  fanin→Camilla→outputd restart, kicks AEC/grouping reconcilers, and then
-  leaves the unit parked (cooldown-gated, no reboot) if the graph still
-  cannot converge. `jasper-doctor`'s `check_start_limit_action` surfaces
-  drift if a Debian/RPi-OS update removes either the reboot directives or
-  Camilla's recovery handler.
-
-  **Recoverable front-door/renderers (2026-06-29):**
-  nginx, the socket-activated web daemons, source renderers, Bluetooth
-  agent, and `jasper-mux` use a generous finite start-limit window
-  (`StartLimitIntervalSec=600`, `StartLimitBurst=20`; package-owned
-  services get JTS drop-ins). This is intentionally not "restart forever":
-  transient OOM/update pressure should not park safe services, but genuine
-  config/code loops still stop loudly for the operator.
-
-  **T5.1 circuit breaker** (2026-06-10): `StartLimitAction=reboot`
-  alone is unbounded across boots — a *permanent* daemon failure
-  (corrupt config, dead binary) would reboot the Pi every ~2-5
-  minutes forever. `jasper-bootloop-guard.service`
-  ([`deploy/bin/jasper-bootloop-guard`](../deploy/bin/jasper-bootloop-guard),
-  pure-bash oneshot mirroring the wifi-guardian shape, ordered
-  `Before=` the escalating units) persists boot timestamps to
-  `/var/lib/jasper/bootloop_guard_boots`; on the 3rd boot inside a
-  3600 s window it writes **runtime** drop-ins
-  (`/run/systemd/system/<unit>.d/90-jts-bootloop-guard.conf`,
-  `StartLimitAction=none`). The drop-in changes only the escalation,
-  not the rate limit: once the sick unit exhausts its
-  `StartLimitBurst`, systemd parks it failed (visible in
-  `systemctl`/`jasper-doctor`) instead of rebooting, and the Pi stays
-  reachable. Operator recovery: fix the cause, then
-  `systemctl reset-failed <unit> && systemctl start <unit>` (or
-  reboot). Drop-ins live in `/run`, so a
-  healthy boot self-re-arms the ladder with zero operator action.
-  Guarded units are discovered dynamically by grepping
-  `StartLimitAction=reboot`; as of 2026-06-25 that deliberately excludes
-  Camilla because it uses the recovery/forensics handler above.
-  Fail-open on every error path.
-  Observability: `event=bootloop_guard.ok|tripped|error` +
-  `/state.resilience.bootloop_guard`.
-  **Hardware-validated 2026-06-11** on the jts3 lab Pi: synthetic
-  2-boot history tripped the guard on the next boot (then 6/6 runtime
-  drop-ins, `event=bootloop_guard.tripped`, doctor WARN, control
-  plane stayed up), and a clean history re-armed it on the boot
-  after (0 drop-ins, `event=bootloop_guard.ok`, doctor green) —
-  evidence in the
-  [PR #573 execution comment](https://github.com/jaspercurry/JTS/pull/573#issuecomment-4683638459);
-  runbook archived at
-  [historical/RUNBOOK-2026-06-10-batch-hardware-validation.md](historical/RUNBOOK-2026-06-10-batch-hardware-validation.md).
-- **T5.2** ✅ **shipped**: new `SystemSupervisor` in
-  [`jasper/control/system_supervisor.py`](../jasper/control/system_supervisor.py)
-  mirroring the proven `ShairportSupervisor` Tier 3 shape. Probes
-  three layers every 30 s ± jitter:
-    1. **sshd banner exchange** on `127.0.0.1:22` (TCP accept + SSH-
-       protocol banner read within 2 s — the 2026-05-23 shape was
-       sshd accepting the TCP connect but not writing the banner)
-    2. **jasper-control's own `/healthz`** on `127.0.0.1:8780`
-       (yes, we probe ourselves; this catches "asyncio loop wedged
-       but systemd thinks we're alive"). A `429 Too Many Requests`
-       from jasper-control's bounded request-admission gate counts as
-       alive-but-shedding, not dead; treating overload shedding as a
-       failed liveness probe would let a LAN request burst manufacture
-       a T5.2 reboot.
-    3. **`/proc/loadavg` read** within 1 s (kernel I/O stall)
-  After 3 consecutive failures (any probe), rate-limited at 1
-  reboot per 24 hours, calls `systemctl --no-block reboot` for
-  a clean shutdown. (WS1 Phase 3b-2: `jasper-control` now runs as a
-  non-root user, so this reboot is **polkit-authorized**, not a
-  uid-0 bypass — `deploy/polkit/49-jasper-control.rules` grants the
-  `jasper-control` user `org.freedesktop.login1.reboot`; validated on
-  hardware by a real induced reboot. See
-  [HANDOFF-privilege-separation.md](HANDOFF-privilege-separation.md).)
-  The rate-limit window is enforced against a
-  WALL-CLOCK last-reboot timestamp persisted to
-  `/var/lib/jasper/system_supervisor_reboot.json` (loaded on
-  construction, fail-open on a missing/corrupt file), so the window
-  survives the reboot it just issued — otherwise a *permanent*
-  userspace wedge would reboot-loop roughly every cold-start window
-  (~3.5 min) forever and the household could never reach jts.local.
-  Off via `JASPER_SYSTEM_SUPERVISOR=disabled`.
-  Surfaced on `/state` under `resilience.system_supervisor` and
-  via structured `event=system_supervisor.*` journal lines.
-  `jasper-doctor` surfaces the persisted state file too
-  (`supervisor reboot state`): missing → ok (never rebooted),
-  corrupt or future-dated beyond NTP skew → warn, since both are
-  silent fail-open at runtime.
-
-**Stage 1 + T5.1 + T5.2 now together cover the 2026-05-23 incident
-shape end-to-end**:
-  - Stage 1's MGLRU + OOMScoreAdjust + sysctls reduce *frequency*
-    of wedges
-  - T5.1's `StartLimitAction=reboot` catches the "one critical
-    daemon is broken" sub-shape
-  - T5.2's `SystemSupervisor` catches the "userspace dead but
-    no daemon technically failed" shape — the exact 2026-05-23
-    signature
-
-The Tier 5 kernel hardware watchdog stays as the floor for the
-case where T5.2 itself wedges.
+After 3 consecutive failures on any probe, rate-limited to 1 reboot per 24 h, it
+calls `systemctl --no-block reboot` (polkit-authorized). The rate-limit window is
+enforced against a **wall-clock** last-reboot timestamp persisted to
+`/var/lib/jasper/system_supervisor_reboot.json`, so it survives the reboot it
+just issued — otherwise a permanent userspace wedge would reboot-loop every
+cold-start window forever and the household could never reach the box. Off via
+`JASPER_SYSTEM_SUPERVISOR=disabled`. Doctor surfaces the persisted state file
+(`supervisor reboot state`): missing → ok, corrupt or future-dated beyond NTP
+skew → warn, since both are silent fail-open at runtime.
 
 ### Memory-pressure resilience (Stage 1)
 
-Added 2026-05-24 in response to the 2026-05-23 wedge. Stage 1
-ships the layer that works on the stock RPi 5 kernel without
-enabling the memory cgroup controller (which is disabled by
-the Pi 5 DTB — see [raspberrypi/linux#5933](https://github.com/raspberrypi/linux/issues/5933)
-and [#6980](https://github.com/raspberrypi/linux/issues/6980)).
-Stages 2 (cgroup-memory + slice architecture) and 3 (userspace
-OOM killer + observability) are planned follow-ups.
+Ships the layer that works on the stock RPi 5 kernel without the memory cgroup
+controller, which the Pi 5 DTB disables
+([raspberrypi/linux#5933](https://github.com/raspberrypi/linux/issues/5933)).
 
-**Layer 1a — `OOMScoreAdjust` ladder on critical daemons.** Per
-`systemd.exec(5)`, each unit can request a kernel-side bias on
-the OOM killer's victim selection. Values are added to
-`/proc/$pid/oom_score`, so the killer becomes much less likely
-to pick a daemon we've protected when memory tightens. The
-JTS ladder, descending priority:
+**1a — `OOMScoreAdjust` ladder.** `jasper/_oom_adj.py` is the single source of
+truth, shared by doctor's `check_oom_score_adj` drift check and install.sh's
+live-write step, with the per-daemon rationale beside each value. It runs from
+`jasper-outputd` at −950 (the final DAC owner; killing it means silence) down
+through the restartable accessory daemons at −300, `ssh` at −250, and two
+positive entries the kernel should prefer to kill. Editing the unit files is a
+separate step — the constants do not write them.
 
-| Daemon | OOMScoreAdjust | Rationale |
-|---|---|---|
-| `jasper-outputd` | -950 | Final DAC owner; killing it means speaker silence |
-| `jasper-camilla` | -900 | Silence is the worst possible UX |
-| `jasper-fanin` | -800 | Renderer audio convergence point |
-| `jasper-aec-bridge` | -700 | Real-time mic processing |
-| `jasper-control` | -600 | Recovery surface |
-| `jasper-voice`, `jasper-camilla-crossover` | -500 | Voice's large blast radius plus the reconciler-gated active-speaker crossover |
-| `nginx` | -450 | Management front door; package-owned, recoverable, protected below control/voice/audio |
-| `jasper-mux`, `jasper-input`, `jasper-usbmic`, `jasper-wiim-remote-mic`, `jasper-snapclient`, `jasper-snapserver` | -300 | Restartable control/accessory and managed grouping daemons; mux outage is user-visible because fan-in starts safe/closed; USB mic export stops safely and systemd restarts it; WiiM falls back to the normal mic; Snapcast is reconciler-recoverable |
-| `sshd` | -250 | Recovery path; moderately protected, but SSH-launched diagnostics stay killable |
-| `jasper-usbsink-volume` | +100 | Optional long-running, non-real-time volume observer; deliberately preferred over audio/control owners |
-| `jasper-enhanced-aec-install` | +900 | Explicitly requested background compiler; standard AEC remains available, so kill this before live audio/control daemons |
-
-Critical: **nothing operator-launched through SSH should inherit
--1000** because that fully disables OOM-kill for that PID. This was
-validated by the 2026-05-28 OOM-reset investigation: a root
-`python -` launched over SSH inherited the old `sshd=-1000` bias and
-survived while product daemons were killed around it. -900 is
-"almost never picked" for the most important product daemon;
--1000 is "literally never picked" and reserved for true system
-infrastructure, not arbitrary diagnostics.
-
-Open-ended Pi-side diagnostic work goes through
-[`scripts/pi-run-diagnostic.sh`](../scripts/pi-run-diagnostic.sh),
+**Nothing operator-launched through SSH may inherit −1000**, which fully
+disables OOM-kill for that PID. A root `python -` over SSH once inherited the
+old `sshd=-1000` bias and survived while product daemons were killed around it;
+−1000 is reserved for true system infrastructure. Open-ended Pi-side diagnostic
+work goes through [`scripts/pi-run-diagnostic.sh`](../scripts/pi-run-diagnostic.sh),
 which wraps `systemd-run` with memory/runtime bounds and a positive
-`OOMScoreAdjust` so the kernel kills the diagnostic before the
-speaker.
+`OOMScoreAdjust` so the kernel kills the diagnostic before the speaker.
 
-Works today on the stock kernel via `/proc/PID/oom_score_adj`
-— independent of the `cgroup_disable=memory` situation. Drift
-detection via `jasper-doctor`'s `check_oom_score_adj`.
+**1b — zram at 50% of RAM with lz4** (`/etc/rpi/swap.conf.d/50-jts.conf`). The
+Trixie default is ~100%, which amplifies thrash on a 1 GB Pi. zstd compresses
+~30% better but decompresses ~3× slower per page on Cortex-A76; for a real-time
+audio device predictable decompression latency beats compression ratio.
 
-**Layer 1b — Zram resized via `rpi-swap` drop-in
-(`/etc/rpi/swap.conf.d/50-jts.conf`).** The Trixie default puts
-zram at ~100% of RAM. On a 1 GB Pi this amplifies thrash:
-the more compressed RAM is sitting in zram, the more zsmalloc
-bookkeeping has to compete with the workload for CPU during
-reclaim. Modern best practice ([Fedora SwapOnZRAM](https://fedoraproject.org/wiki/Changes/SwapOnZRAM),
-[systemd-zram-generator defaults](https://github.com/systemd/zram-generator/blob/main/zram-generator.conf.example),
-HAOS) is 25–50%. We pick 50% (~500 MB on 1 GB) with **lz4**
-compression. zstd has ~30% better compression ratio but
-decompresses ~3× slower per page on Cortex-A76; for a
-real-time audio device, predictable decompression latency
-matters more than raw compression ratio.
+**1c — `vm.*` tuning** for low-RAM ARM with zram-only swap. Every knob and its
+justification is annotated in
+[`deploy/sysctl/99-jts-vm.conf`](../deploy/sysctl/99-jts-vm.conf), which owns
+that rationale — don't restate it here. The one value not in the file is
+`vm.min_free_kbytes`, computed per-Pi at install by `migrate_memory_resilience`
+as `clamp(0.02 × MemTotal_kB, 8192, 262144)`: 2% is inside the safe band (>5%
+causes OOM-immediate) and the 8 MB floor matches the Pi Foundation default and
+must never be reduced. Doctor verifies the live value against the installed conf.
 
-**Layer 1c — vm.* sysctl tuning
-(`/etc/sysctl.d/99-jts-vm.conf`).** Reclaim and watermark
-tuning for low-RAM ARM with a zram-only swap topology. The
-load-bearing knobs:
+**1d — MGLRU `min_ttl_ms=1000`** (`deploy/tmpfiles/jts-mglru.conf`): protect any
+page accessed in the last second from reclaim, even at the cost of triggering
+OOM-kill instead. The most direct fix for the wedge shape. If anything
+legitimate is killed under normal load, reduce to 500.
 
-- `vm.swappiness=100` — bias the reclaim algorithm toward
-  using compressed RAM over evicting hot file cache. **Note**:
-  Fedora ships 180 on zram-only systems. We pick 100 as a
-  conservative middle because audio jitter from zram
-  decompression is the dominant risk on this box — we'd
-  rather evict file cache (re-readable from SD) than swap anon
-  pages (decompression latency hits the audio path).
-- `vm.page-cluster=0` — universal recommendation for zram
-  (no spatial locality on compressed pages, default 8-page
-  read-ahead just wastes RAM).
-- `vm.watermark_scale_factor=125` — wake kswapd at 1.25%
-  headroom (default 0.1% is ~1 MB on a 991 MB box, kswapd
-  burns through it in milliseconds under burst → reclaim
-  becomes bursty).
-- `vm.min_free_kbytes` — kernel's reserved memory floor.
-  **Computed per-Pi at install time** by `install.sh`'s
-  `migrate_memory_resilience` step: `clamp(0.02 × MemTotal_kB,
-  8192, 262144)` = 2% of RAM with an 8 MB floor (matches Pi
-  Foundation default; never reduce below) and a 256 MB cap (so
-  a 16 GB Pi doesn't reserve unreasonably much). Resolves to
-  20 MB on 1 GB Pi, 40 MB on 2 GB, 80 MB on 4 GB, 160 MB on
-  8 GB. 2% is in the safe band per Linux Hint guidance
-  (>5% causes OOM-immediate); matches Pop!_OS's runtime
-  safeguard floor pattern at [pop-os/default-settings#163](https://github.com/pop-os/default-settings/pull/163).
-  Doctor reads the installed conf and verifies live `/proc/sys/vm/min_free_kbytes`
-  matches — drift surfaces immediately.
+**Stage-1 drift detection**, all fail-soft (warn, not fail):
+`check_oom_score_adj`, `check_zram_size_ratio` (WARN if zram > 60% of RAM),
+`check_mglru_min_ttl`, `check_sysctl_drift`, `check_memory_headroom`
+(RAM-tier-aware: WARN below `max(100 MB, 10% × RAM)`, FAIL below
+`max(30 MB, 3% × RAM)`). Disk pressure is separate:
+`/state.resilience.disk` is the always-visible dashboard number, fail-soft to
+`null`, while the graded thresholds (warn ≥85%, fail ≥95%) are owned by
+`check_disk_space` in `jasper/cli/doctor/memory.py` so the two cannot drift.
 
-Full annotated config at [`deploy/sysctl/99-jts-vm.conf`](../deploy/sysctl/99-jts-vm.conf).
+### Stage 2 — the audio-protection subset (shipped)
 
-**Layer 1d — MGLRU thrashing prevention
-(`/etc/tmpfiles.d/jts-mglru.conf`).** This is the single most
-direct fix for the 2026-05-23 incident shape. MGLRU has been
-on by default in the RPi kernel since 6.1. Setting
-`min_ttl_ms=1000` tells the kernel: protect any page that was
-accessed in the last 1 second from reclaim, even if it means
-triggering OOM-kill instead. Empirically validated by pelwell
-on Pi 4 Chromium ([forum thread](https://forums.raspberrypi.com/viewtopic.php?t=344246)).
-**Watch for spurious kills** in week 1 after this ships;
-reduce to 500 if anything legitimate is being killed under
-normal load.
-
-**Drift detection.** `jasper-doctor` adds five Stage-1 checks
-that fail-soft (warn, not fail) so the operator sees
-divergence at a glance:
-
-- `check_oom_score_adj` — actual vs expected adj per critical daemon
-- `check_zram_size_ratio` — WARN if zram > 60% of RAM
-- `check_mglru_min_ttl` — WARN if min_ttl_ms drifted from 1000
-- `check_sysctl_drift` — WARN on vm.* divergence from
-  `/etc/sysctl.d/99-jts-vm.conf`
-- `check_memory_headroom` — RAM-tier-aware percentage thresholds
-  with absolute MB floors: WARN if `MemAvailable < max(100 MB,
-  10% × RAM)`, FAIL if `< max(30 MB, 3% × RAM)`. Fires on every
-  Pi SKU (1 GB through 16 GB) — on 8 GB Pi, warn fires at
-  800 MB available, fail at 240 MB.
-
-**What Stage 1 explicitly does NOT do.** It doesn't enable the
-memory cgroup, so the `MemoryHigh=` / `MemoryMax=` directives
-already present in six unit files remain silent no-ops. It
-doesn't install a userspace OOM killer (earlyoom / systemd-oomd).
-It doesn't carve daemons into slices. Those are Stage 2 +
-Stage 3 — see the dedicated section below for what they'd
-add, what they'd cost, and the explicit triggers that should
-prompt picking the work back up.
-
-**What Stage 1 expected outcome is.** Re-running the 2026-05-23
-incident shape (PIO compile on 1 GB Pi): kernel OOM-killer
-fires within ~20 s (vs >2 min before), picks the offending
-process (lower OOMScoreAdjust than any jasper-* daemon), MGLRU
-prevents the grind-through-zram-thrash phase, system recovers
-without manual intervention. Verified by `jasper-doctor`
-post-install:
-
-```sh
-sudo /opt/jasper/.venv/bin/jasper-doctor | grep -E "OOM|zram|MGLRU|vm.|memory"
-```
-
-### Stage 2 — cgroup memory + slice architecture (audio-protection subset shipped 2026-05-24)
-
-**Status update (2026-05-24)**: the audio-protection subset of Stage 2
-shipped after the 2026-05-24 stress test produced empirical evidence
-that the trigger condition documented below ("audio xruns correlated
-with memory pressure") was met. **The rest of Stage 2** — per-daemon
-`MemoryHigh=`/`MemoryMax=` enforcement on non-audio slices,
-systemd-oomd integration — remains deferred per the trigger analysis.
-
-#### 2026-05-24 stress test (the evidence that triggered the audio subset)
-
-`stress-ng --vm 1 --vm-bytes 300M --vm-keep --timeout 60s` on the 1 GB
-Pi 5 with Stage 1 + T5.1 + T5.2 in place. The system *survived*:
-
-- Load capped at 3.07 (no scheduler death spiral)
-- SystemSupervisor probes stayed green (sshd / `/healthz` /
-  `/proc/loadavg` all responded within budget)
-- All 6 jasper-* daemons stayed active
-- OOM-killer never had to fire — zram absorbed the pressure
-
-**But the music played during the stress was audibly degraded** —
-"splotchy, crushed" per the operator's real-time report. Forensics
-captured immediately after the stress:
-
-```
-jasper-aec-bridge: VmLck=16 kB    VmSwap=43056 kB   ← 42 MB in zram
-jasper-camilla:    VmLck=64 kB    VmSwap=416 kB
-```
-
-Mechanism: under memory pressure, the kernel evicted the audio-path
-daemons' pages to zram. Subsequent audio-frame access triggered
-zstd decompression (~10-15 µs per page on Cortex-A76), and the
-decompression-latency variance exceeded the ALSA buffer's slack
-window (~10 ms), causing per-frame underruns. `LimitMEMLOCK=infinity`
-in the unit files grants permission to lock memory but the daemons
-weren't actually calling `mlockall()` — only ~64 kB locked.
-
-This is the failure mode `MemorySwapMax=0` on a cgroup explicitly
-prevents — and it's the audio-protection subset of Stage 2 that
-shipped in response. Same-day evidence → same-day fix.
-
-#### What the audio-protection subset does
-
-Two changes:
+Two changes, driven by a stress test that left the box alive but the music
+audibly degraded (forensics in the historical appendix).
 
 **1. Enable the memory cgroup controller.** `install.sh`'s
-`migrate_cgroup_memory_enabled` idempotently removes an explicit
-`cgroup_disable=memory` token from `/boot/firmware/cmdline.txt` if one
-is present, then adds three tokens:
-- `cgroup_enable=memory` — overrides the Raspberry Pi boot-time
-  `cgroup_disable=memory` injection
-- `cgroup_memory=1` — paired token (legacy, harmless on current kernels)
-- `psi=1` — enables `/proc/pressure/` if `CONFIG_PSI=y` (no-op
-  otherwise). Not required for Stage 2 audio but unlocks PSI
-  observability for future Stage 3 work.
+`migrate_cgroup_memory_enabled` idempotently removes any explicit
+`cgroup_disable=memory` from `/boot/firmware/cmdline.txt`, then adds
+`cgroup_enable=memory`, `cgroup_memory=1`, and `psi=1`. **Reboot required.**
 
-**Reboot required** — kernel only reads cmdline at boot. On Raspberry Pi
-OS, `/proc/cmdline` may still show a DTB-injected
-`cgroup_disable=memory` alongside the enable tokens; the load-bearing
-verification is whether `/sys/fs/cgroup/cgroup.controllers` includes
-`memory`.
+**2. Carve audio and mic daemons into protected slices** with
+`MemorySwapMax=0` + `ManagedOOMPreference=avoid`: `jts-audio.slice` (outputd,
+fanin, camilla, camilla-crossover, shairport-sync, librespot, bluealsa-aplay,
+and the bonded-grouping snapcast units) and `jts-mic.slice` (aec-bridge).
+`Slice=` directives in the unit files — or drop-ins for units JTS does not own,
+like `bluealsa-aplay.service.d/jts-slice.conf` — do the assignment. Once
+`MemorySwapMax=0` is in effect the kernel literally cannot swap those pages to
+zram: it keeps them in real RAM, sheds from unprotected cgroups, or OOM-kills
+the audio daemon (a clean restart, preferable to silent jitter). The
+full-profile installer enables and starts both slices after unit generation, so
+neither relies on a later member start to exercise its `[Install]` path.
 
-**2. Carve audio + mic daemons into protected slices** with
-`MemorySwapMax=0`:
+Slices rather than per-unit directives: a new audio daemon joins with one
+`Slice=` line and policy lives in one place. Audio and mic are separate slices
+because their failure modes differ (audible glitch vs missed wake events), which
+a future oomd policy might want to treat differently.
 
-```
-jts-audio.slice          ← jasper-outputd, jasper-fanin, jasper-camilla,
-                            jasper-camilla-crossover
-                         ← shairport-sync, librespot, bluealsa-aplay
-                         ← bonded grouping: jasper-snapclient /
-                            jasper-snapserver managed units
-                          MemorySwapMax=0
-                          ManagedOOMPreference=avoid
+Post-deploy verification (after the reboot) is one doctor line —
+`sudo /opt/jasper/.venv/bin/jasper-doctor | grep -E "cgroup memory|audio path"`.
+`check_cgroup_memory_enabled` reads `/sys/fs/cgroup/cgroup.controllers` (the
+load-bearing signal: `/proc/cmdline` may still show a DTB-injected
+`cgroup_disable=memory` alongside the enable tokens), and
+`check_audio_path_no_swap` reads each audio daemon's `VmSwap` — meaningful swap
+there means either `MemorySwapMax=0` is not enforcing (controller off, `Slice=`
+unassigned) or pressure has already begun evicting audio pages.
 
-jts-mic.slice            ← jasper-aec-bridge
-                          MemorySwapMax=0
-                          ManagedOOMPreference=avoid
-```
+**The rest of Stage 2 stays deferred** —
+[ADR-0104](adr/0104-per-daemon-memory-caps-stay-deferred.md) names the four
+triggers. Note that enabling the controller made the `MemoryHigh=`/`MemoryMax=`
+directives already present in six unit files (mux, input, system-web,
+bluetooth-web, librespot, and voice's `MemoryHigh=384M`) live: they now enforce
+with values chosen while they were no-ops. `jasper-voice` has a throttle-only
+`MemoryHigh` and no kill-cap; `jasper-control` (~35 MB) has no cap at all.
 
-`Slice=` directives in the unit files (or drop-ins for unit files
-JTS doesn't own, like `bluealsa-aplay.service.d/jts-slice.conf`)
-assign each daemon to its protected slice. Once `MemorySwapMax=0` is
-in effect, the kernel literally cannot swap those daemons' pages to
-zram — under memory pressure it either keeps the pages in real RAM,
-sheds pages from other (unprotected) cgroups, or OOM-kills the
-audio daemon (a clean restart that's preferable to silent jitter).
-The full-profile installer explicitly enables and starts both
-`jts-audio.slice` and `jts-mic.slice` after the complete unit generation has
-loaded; neither slice relies on a later member start to exercise its
-`[Install]` path.
+## Hardware-event recovery — sidebar to the ladder
 
-Why slices rather than `MemorySwapMax=0` on each unit directly:
-expressiveness for future scaling. New audio daemons go into the
-existing slice via one `Slice=` line; policy lives in one place.
+Daemons that **exit cleanly at startup** because a USB device is absent are not
+a hang and not a sibling-daemon problem: the dependency is physically missing.
+`WatchdogSec` cannot help, and raising `StartLimitBurst` only delays the same
+parked-failed outcome. Two parts answer it.
 
-Why audio + mic are separate slices: different failure-mode
-semantics. Audio jitter = audible glitch; mic jitter = missed wake
-events or stuttery voice turns. Future Stage 3 oomd policy might
-differ between them.
+A udev rule on the dongle's USB IDs (`deploy/udev/99-jasper-apple-dongle.rules`,
+using `SYSTEMD_WANTS` rather than `RUN+=` so systemctl dispatches via PID 1
+asynchronously and udev's pipeline stays responsive) triggers
+`jasper-dongle-recover.service` when Card A appears. That oneshot
+`reset-failed`s the audio daemons, starts the output graph (`jasper-camilla`,
+`jasper-outputd`, `jasper-audio-hardware-reconcile`), then best-effort starts
+`jasper-aec-reconcile` where that mic/voice policy unit exists — streambox-safe,
+since Zero-class boxes have output/DSP but no AEC brain. Idempotent, so rapid
+replug is harmless.
 
-#### Verification post-deploy + reboot
+`jasper-aec-reconcile` then owns the mic/AEC policy install-time detection could
+not express. Its four cases:
 
-```sh
-# 1. Memory cgroup actually online
-cat /sys/fs/cgroup/cgroup.controllers | tr ' ' '\n' | grep memory
+- `JASPER_AEC_MODE=auto` + a profile-managed 6-channel XVF present → derive
+  `JASPER_AEC_MIC_DEVICE`, set `JASPER_MIC_DEVICE=udp:<port>`, enable/start
+  `jasper-aec-init` + `jasper-aec-bridge`, queue a `--no-block` voice restart.
+- A configured direct mic candidate present but AEC unavailable → point
+  `JASPER_MIC_DEVICE` at it, keep the bridge off, queue the same restart.
+- No candidate mic present and the current value is one JTS owns (`Array`,
+  `udp:<port>`, legacy `hw:N,1`) → clear the stale UDP back to the first
+  candidate and stop voice so it does not watchdog-loop.
+- A genuinely custom `JASPER_MIC_DEVICE` is left untouched — the escape hatch.
 
-# 2. MemorySwapMax=0 in effect on the slice
-systemctl show jts-audio.slice -p MemorySwapMax     # → MemorySwapMax=0
-cat /sys/fs/cgroup/jts-audio.slice/memory.swap.max  # → 0
+XVF identity lives in `jasper.mics.xvf3800`, exported by `jasper-xvf-profile`;
+the reconciler is the single writer of `JASPER_AEC_MIC_DEVICE` for selectable
+profiles. `JASPER_MIC_DEVICE_CANDIDATES` is a direct-mic fallback hint, not the
+source of truth for XVF card identity.
 
-# 3. Each audio daemon is actually IN the slice
-systemctl show jasper-camilla -p Slice              # → Slice=jts-audio.slice
-# Bonded grouping member example (snapcast units run on any paired box):
-systemctl show jasper-snapclient -p Slice           # → Slice=jts-audio.slice
+## Wi-Fi profile recovery — sidebar to the ladder
 
-# 4. Daemons aren't swapping (this is the load-bearing one)
-for unit in jasper-camilla jasper-aec-bridge shairport-sync librespot bluealsa-aplay jasper-snapclient; do
-    pid=$(systemctl show -p MainPID --value ${unit}.service)
-    [ "$pid" != "0" ] && echo "$unit: $(grep VmSwap /proc/$pid/status)"
-done
-# All should show VmSwap: 0 kB (or very near zero)
+Same shape, with the missing dependency being a file on the local filesystem.
+Declarative reconciliation of state-vs-config drift, not liveness recovery. The
+two incident classes it answers (a lost keyfile after an unclean shutdown, and
+brcmfmac scan suppression that wedges scanning even while a profile is active)
+are in the historical appendix.
 
-# 5. Doctor verifies all of the above in one shot
-sudo /opt/jasper/.venv/bin/jasper-doctor | grep -E "cgroup memory|audio path"
-```
+The pieces: a **wizard-owned stash** at `/var/lib/jasper/wifi_guardian.env`
+(mode 0600, `JASPER_WIFI_SSID` / `_PSK` / `_KEY_MGMT`), seeded at install by
+`migrate_wifi_guardian`; a **pure-bash policy script**
+`deploy/bin/jasper-wifi-guardian` → `/usr/local/sbin/`, run at boot by
+`jasper-wifi-guardian.service` (`Type=oneshot`, after
+`NetworkManager-wait-online`, `ConditionPathExists=` on the stash); a
+**wizard helper** `jasper-wifi-scan-repair.service`, a root-only oneshot that
+`/wifi/scan` starts through jasper-control's restart broker so `jasper-web`
+stays cap-less; and **write hooks** in
+[`jasper/web/wifi_setup.py`](../jasper/web/wifi_setup.py) that harden each
+successful connect's NM profile (`autoconnect=yes`, `autoconnect-retries=0`
+retry-forever, `802-11-wireless.powersave=2`, `ipv6.method=link-local` — which
+keeps `.local` mDNS fast on Apple clients without routed IPv6, where `ignore`
+leaves them waiting on IPv6 mDNS and reads as a stalled page load).
 
-#### What the rest of Stage 2 would still add (still deferred)
+**The recovery timer** `jasper-wifi-recover.timer` runs every ~3 min with no
+resident RAM and is deliberately **not** gated on the stash: active-link scan
+repair does not need the PSK and must run on manually configured profiles too.
+Steady state is one `nmcli connection show --active` read plus a narrow
+recent-kernel-log check for `brcmf_cfg80211_scan: Scanning suppressed`, with
+**no script output**. On a hit it runs
+`python -m jasper.wifi_scan_repair --iface wlan0` even when NM reports an active
+profile; with no active connection it calls the guardian only when the root-only
+stash exists, else `event=wifi_recover.guardian_skip reason=no_stash`. Doctor's
+`check_wifi_recover_timer` warns if the timer is disabled. Minutes, not seconds:
+NM's retry-forever autoconnect already covers ordinary flaps, and the timer's
+unique job is the rare scan-suppression wedge.
 
-The audio-protection subset doesn't enforce `MemoryHigh=`/`MemoryMax=`
-on non-audio daemons. The unit files that already have those
-directives (mux, input, system-web, bluetooth-web,
-librespot, and `jasper-voice` — which carries `MemoryHigh=384M`
-since commit be2909e93) **do now enforce** as a side-effect of memory
-cgroup being on — those values become live the moment the controller
-is enabled.
+Guardian outcomes when invoked: SSID matches stash → `steady_state`; SSID
+differs → `stash_stale` no-op (the operator switched networks; do not stomp a
+working one); no active Wi-Fi but a profile for the stashed SSID exists →
+`nmcli connection up` (`activate`, matching by profile name then by
+`802-11-wireless.ssid`, so Imager/netplan names do not spawn duplicates); no
+active Wi-Fi and no profile → the incident case, `nmcli dev wifi connect`
+(`recreate_attempt`), deleting the broken half-profile and exiting non-zero on
+failure so the operator notices.
 
-`jasper-voice` therefore has a throttle-only `MemoryHigh=384M` but no
-`MemoryMax=` kill-cap. There are still no per-daemon caps on
-`jasper-control` (~35 MB) at all, and no per-slice cap on the
-non-audio path. Adding those would catch:
-- Slow memory leak in jasper-voice or jasper-control
-- A future regression that ballooned a daemon's working set
-
-These deferrals remain valid until the same "evidence → trigger"
-discipline that shipped the audio subset shows the same need on
-the non-audio path. The trigger conditions documented at the end
-of this section still apply.
-
----
-
-### Stage 2 — full architecture (still deferred, with explicit triggers)
-
-Below this point is the original deferred analysis (predating the
-2026-05-24 audio-subset ship). Kept for the rest of Stage 2 (per-
-daemon caps, systemd-oomd) that hasn't yet been justified by
-observed evidence.
-
-#### What Stage 2 would do
-
-Two changes, paired:
-
-**1. Enable the Linux memory cgroup controller.** The Pi 5's device-
-tree blob ships with `cgroup_disable=memory` in the kernel's boot
-arguments (an RPi-Foundation choice to save ~32 bytes per page of
-accounting overhead — ~8 MB on a 1 GB Pi). Adding
-`cgroup_enable=memory` to `/boot/firmware/cmdline.txt` and rebooting
-flips the controller on. Verified working on Pi 5 + kernel 6.12.x
-across the K3s / Docker / Home Assistant Supervised communities; no
-known stability regressions on JTS-relevant workloads.
-
-**Once on, the `MemoryHigh=` / `MemoryMax=` directives that already
-exist in 6 unit files** (`jasper-mux.service`, `jasper-input.service`,
-`jasper-wiim-remote-mic.service`,
-`jasper-system-web.service`,
-`jasper-bluetooth-web.service`, `librespot.service`) **start
-enforcing**. Today they're silent no-ops — systemd accepts them,
-kernel ignores them because there's no memory cgroup. This is a
-real bug class: the operator looks at the unit file and assumes
-they have protection, but they don't.
-
-**2. Carve daemons into purpose-named slices.** Express memory
-policy declaratively instead of per-unit:
-
-```
-jts-audio.slice    ← jasper-fanin, jasper-camilla, shairport-sync, librespot, bluealsa
-                     MemorySwapMax=0          # audio pages NEVER touch zram
-                     ManagedOOMPreference=avoid
-
-jts-mic.slice      ← jasper-aec-bridge
-                     MemorySwapMax=0          # realtime mic, same logic
-
-jts-control.slice  ← jasper-control, jasper-mux, jasper-input, jasper-wiim-remote-mic (profile-gated)
-                     MemoryHigh=120M MemoryMax=180M
-
-jts-voice.slice    ← jasper-voice
-                     MemoryHigh=220M MemoryMax=320M
-                     ManagedOOMMemoryPressure=kill   # oomd kills this first
-
-jts-wizard.slice   ← jasper-{web,system-web,bluetooth-web,correction-web}
-                     MemoryHigh=64M MemoryMax=128M
-                     ManagedOOMMemoryPressure=kill   # cheap to kill, re-spawned
-```
-
-The slice abstraction means a new daemon is one `Slice=jts-X.slice`
-drop-in away from inheriting the right policy. The `MemorySwapMax=0`
-on audio + mic is the single most defensible addition: audio pages
-never sitting in zram → no decompression-jitter window during memory
-pressure → no xrun-class failure mode from that path.
-
-#### What new protection it adds (vs what's already shipped)
-
-Three failure classes Stage 1 + T5.x do NOT catch:
-
-1. **Slow memory leak in a single daemon** (e.g. a regression in
-   jasper-voice). Stage 1's OOMScoreAdjust biases the kernel
-   OOM killer away from jasper-* but doesn't cap per-daemon
-   growth — a leak gradually starves everything else. With
-   `MemoryMax=320M` on `jts-voice.slice`, the cgroup OOM-killer
-   fires on jasper-voice specifically, `Restart=on-failure`
-   brings it back fresh, the rest of the system is unharmed.
-2. **Audio jitter from zram decompression.** Under memory
-   pressure, jasper-camilla's pages can be swapped to zram.
-   Next audio frame triggers a page-fault → lz4 decompression
-   (~5-15 µs on Cortex-A76, more on zstd). With a small ALSA
-   buffer (~10 ms) one bad timing window = an xrun.
-   `MemorySwapMax=0` on `jts-audio.slice` says these pages
-   never go to zram → eliminates the class.
-3. **`systemd-oomd` for surgical slice-level kills.** Once
-   cgroup memory + PSI are enabled, oomd can read pressure
-   signals and kill a whole slice (e.g., `jts-wizard.slice`)
-   before the kernel OOM-killer fires. More targeted than the
-   kernel's badness heuristic.
-
-#### What Stage 2 would cost
-
-| Cost | Estimate |
-|---|---|
-| Kernel-side RAM (memory cgroup accounting) | ~8 MB on a 1 GB Pi (~0.8%) |
-| Userspace RAM (systemd-oomd if shipped as part of Stage 3) | ~15 MB |
-| Engineering time | ~2-3 hours: cmdline guardian + 5 slice unit files + 6 Slice= drop-ins + 4 new doctor checks + tests |
-| Reboot | One, after the cmdline.txt edit |
-| Risk: existing `MemoryHigh/Max` values become effective | Moderate. They were sized when they were no-ops, so we don't actually know if `MemoryMax=120M` on jasper-mux is right or generous. First post-deploy soak may surface a daemon that briefly exceeds during startup. Mitigation: ship with generous headroom + monitor `/sys/fs/cgroup/.../memory.events` for a week before tightening |
-
-#### Why it's deferred (the honest framing)
-
-- **The motivating incident is covered.** Stage 1 (prevention) +
-  T5.2 (recovery) caught the 2026-05-23 shape end-to-end. Shipping
-  Stage 2 to catch hypothetical-future leaks is premature without
-  evidence.
-- **The existing `MemoryHigh/Max` values are unvalidated.** They've
-  never enforced — we don't actually know they're correctly sized.
-  Enabling them blind risks restarts on healthy daemons we'd then
-  need to debug. The right pattern is *measure first*: run Stage 1
-  + telemetry for ≥30 days, see what daemons' actual memory
-  profiles look like, then size the caps.
-- **The audio-xrun failure mode is theoretical here.** If we'd
-  seen the symptom (music glitching during memory pressure), the
-  `MemorySwapMax=0` fix would be obvious. We haven't observed
-  it on jts2.local. Worth instrumenting first (xrun count over
-  time correlated with PSI pressure events) before shipping the
-  structural fix.
-- **systemd-oomd has known issues** on Pi-class hardware: the
-  cgroup memory enablement quirks documented in
-  [HANDOFF-tier5-watchdog-liveness.md](HANDOFF-tier5-watchdog-liveness.md)
-  Option E, and the well-documented "kills the whole cgroup with no
-  per-process forensics" complaint from Fedora's 34-era rollout.
-
-#### Triggers for shipping Stage 2
-
-Any one of:
-- **Observed slow memory leak.** MemAvailable trends down over days
-  in `/system/`'s memory sparkline (60-min ring buffer in
-  `system_metrics.py` makes this easy to spot).
-- **Audio xruns correlated with memory pressure.** `/proc/asound/card*/pcm*/sub*/xrun`
-  counter ticking up during PSI memory-pressure events.
-- **A new dependency that might leak.** Adding a Python lib or
-  model that's known-leaky and we want a hard cap to bound it.
-- **Open-source adoption stress.** If JTS sees significant fork
-  activity and other operators report leak shapes we don't see
-  on the original hardware.
-
-Until then, the engineering hours are better spent elsewhere. The
-HANDOFF entry exists so the next contributor doesn't have to
-re-derive what the right structural fix is — only whether the
-trigger is present yet.
-
-### Hardware-event recovery — sidebar to the ladder
-
-Separate from the watchdog ladder above, one failure class is worth
-calling out because the ladder doesn't catch it: daemons that **exit
-cleanly at startup** because a USB device is absent. This is not a
-hang and not a sibling-daemon issue — it's the dependency physically
-missing at the moment the daemon tries to open it.
-
-The 2026-05-11 sequence:
-
-1. Power-cycle the Pi while nothing is plugged into the Apple dongle's
-   3.5 mm jack. The dongle drops its USB Audio Class interfaces
-   without an analog load, so the Pi boots with the dongle
-   USB-enumerated but no Card A.
-2. `jasper-camilla`, `jasper-aec-bridge`, and `jasper-voice` all try
-   to open `hw:CARD=A`, get `ValueError: No output device matching
-   'jasper_out'`, and exit with code 1.
-3. systemd retries each per `Restart=on-failure`, hits
-   `StartLimitBurst` after ~5 attempts, parks the units as failed,
-   stops watching.
-4. User plugs the speaker back into the 3.5 mm jack. Card A appears
-   in `/proc/asound/cards`. Nothing is monitoring for this; the units
-   stay parked and the speaker stays silent until manual
-   `systemctl reset-failed && start`.
-
-`WatchdogSec` doesn't help — the daemons exited cleanly, they didn't
-hang. `Restart=on-watchdog` only catches the watchdog timeout, not
-arbitrary exits. Bumping `StartLimitBurst` higher would just delay
-the same parked-failed outcome.
-
-Fix, part one: a udev rule on the dongle's USB IDs that triggers
-`jasper-dongle-recover.service`
-(`deploy/systemd/jasper-dongle-recover.service`) when Card A appears,
-which runs `systemctl reset-failed`, starts the output graph
-(`jasper-camilla`, `jasper-outputd`, and
-`jasper-audio-hardware-reconcile.service`), and then best-effort starts
-`jasper-aec-reconcile.service` when that mic/voice policy unit is
-installed. Idempotent — when the daemons are already healthy it's a no-op.
-This shape is streambox-safe: Zero-class streamboxes have output/DSP but no
-AEC brain service. The rule
-(`deploy/udev/99-jasper-apple-dongle.rules`) uses `SYSTEMD_WANTS`
-rather than `RUN+=` so systemctl dispatches via PID 1 asynchronously
-and udev's event pipeline stays responsive.
-
-Fix, part two: `jasper-aec-reconcile` owns the mic/AEC policy that
-the old install-time `enable_aec_if_compatible` could not express.
-The stale-state bug was: an earlier healthy boot could set
-`JASPER_MIC_DEVICE=udp:9876`, then a later boot without the XVF
-Array would make `jasper-aec-bridge` fail because `/proc/asound/Array`
-was gone while `jasper-voice` still listened on UDP for packets that
-would never arrive. The reconciler closes that loop:
-
-- `JASPER_AEC_MODE=auto` + profile-managed 6-channel XVF present:
-  derive `JASPER_AEC_MIC_DEVICE` from the detected mic profile, then
-  set `JASPER_MIC_DEVICE=udp:<port>`, enable/start
-  `jasper-aec-init` + `jasper-aec-bridge`, and queue a
-  `jasper-voice` restart with `systemctl --no-block restart`.
-- A configured direct mic candidate is present but AEC is unavailable
-  (2-channel firmware or AEC disabled): set `JASPER_MIC_DEVICE` to
-  that candidate, keep the bridge off, and queue the same voice
-  restart.
-- No candidate mic is present and the current value is one JTS owns
-  (`Array`, `udp:<port>`, or legacy `hw:N,1`): clear stale UDP back to
-  the first candidate and stop voice so it does not watchdog-loop.
-- A genuinely custom `JASPER_MIC_DEVICE` is left untouched. This is the
-  escape hatch for future mics while we keep the production default
-  simple.
-
-The future-mic hook is intentionally small: XVF identity lives in
-`jasper.mics.xvf3800`, exported as `JASPER_XVF_*` by
-`jasper-xvf-profile`, and the reconciler is the single writer of the
-concrete bridge mic (`JASPER_AEC_MIC_DEVICE`) for selectable profiles.
-`JASPER_MIC_DEVICE_CANDIDATES` remains a direct-mic fallback hint, not
-the source of truth for supported XVF card identity. `custom` is the
-escape hatch for a deliberately hand-pinned mic.
-
-### WiFi profile recovery — sidebar to the ladder
-
-Same shape as the dongle-recover case above, with the missing
-dependency being a **file on the local filesystem** instead of a
-USB device. Lives in this sidebar rather than as a new tier because
-it's declarative reconciliation of state-vs-config drift, not
-liveness recovery.
-
-The 2026-05-23 sequence:
-
-1. USB-C power yanked during a power-splitter swap. The Pi's root
-   ext4 partition had an in-flight write to
-   `/etc/NetworkManager/system-connections/<SSID>.nmconnection`.
-2. On reboot, ext4 journal recovery on the dirty mount discarded
-   the partially-written file entirely.
-3. The Pi came up with NO WiFi profile at all. NetworkManager
-   probed for known networks, found none, and stayed in a
-   disconnected state.
-4. Speaker unreachable on the LAN. Recovery required HDMI +
-   USB-keyboard console (~1 hour) to type `nmcli connect ssid
-   password ...` by hand.
-
-The behavioural fix — graceful shutdown via the `/system/` Power
-Off button — is being adopted separately. The WiFi profile
-guardian is the software floor under it: even with graceful
-shutdown adopted, filesystem corruption / accidental `rm` /
-botched migrations can still erase the keyfile, and the Pi
-should self-heal rather than brick.
-
-The 2026-06-19 JTS3 flap added a second class: the AP went up/down
-several times, the Pi 5 brcmfmac driver logged repeated
-`brcmf_cfg80211_scan: Scanning suppressed: status (4)`, and
-NetworkManager eventually stopped retrying the seeded netplan profile
-after a `no-secrets` failure. A power cycle brought it back. The
-2026-06-26 JTS flap added the nastier sibling: NetworkManager still
-reported an active profile while the brcmfmac scan path was wedged and
-the box disappeared from `jts.local`. The fix for these classes is not a
-resident watchdog; it is a tiny systemd timer that periodically checks
-for the narrow brcmfmac scan-suppression signature, runs the same bounded
-scan-suppression repair used by `/wifi/scan` when warranted, and only
-delegates profile activation to the guardian when WiFi is actually down.
-
-Core guardian shape mirrors `jasper-aec-reconcile`; the flap recovery
-layer is a periodic nudge around that same policy:
-
-- **Wizard-owned stash** at `/var/lib/jasper/wifi_guardian.env`
-  (mode 0600, env-var format with `JASPER_WIFI_SSID` /
-  `JASPER_WIFI_PSK` / `JASPER_WIFI_KEY_MGMT`).
-- **Pure-bash policy script** at
-  `/usr/local/sbin/jasper-wifi-guardian` (from
-  `deploy/bin/jasper-wifi-guardian`), driven at boot by
-  `jasper-wifi-guardian.service` (`Type=oneshot`, after
-  `NetworkManager-wait-online`, gated by `ConditionPathExists=`
-  on the stash), and also invoked by the recovery timer when WiFi
-  is down.
-- **Low-footprint recovery timer**:
-  `jasper-wifi-recover.timer` runs every ~3 min with no resident RAM. It is
-  deliberately **not** gated on the guardian stash: active-link brcmfmac scan
-  repair does not need the PSK, and must still run on manually configured or
-  not-yet-stashed WiFi profiles.
-  The steady-state path is one `nmcli connection show --active` read plus
-  a narrow recent-kernel-log check for
-  `brcmf_cfg80211_scan: Scanning suppressed` and **no script output** —
-  the `event=wifi_recover.*` lines fire only on a manual run or real
-  recovery work. (systemd still logs ~2 activation lines per tick
-  regardless; that, plus the fact that NM's
-  retry-forever autoconnect already covers ordinary flaps, is why the
-  cadence is minutes rather than seconds — the timer's unique job is the
-  rare scan-suppression wedge, where a few-minutes window is fine.) When
-  recent brcmfmac scan suppression is present, `jasper-wifi-recover` runs
-  `python -m jasper.wifi_scan_repair --iface wlan0` even if NetworkManager
-  still reports an active profile (skipped with
-  `event=wifi_recover.scan_repair_skip` if the venv python is absent).
-  If no WiFi connection is active, it calls the guardian only when the
-  root-only stash exists; without the stash it can still run scan repair, then
-  emits `event=wifi_recover.guardian_skip reason=no_stash` instead of calling
-  the guardian. With no stash and no scan-suppression evidence, timer ticks
-  exit quietly and manual runs report `event=wifi_recover.absent
-  reason=no_stash`.
-  `jasper-doctor`'s
-  `check_wifi_recover_timer` warns if the timer is disabled.
-- **Scan-suppression helper for the web wizard**:
-  `jasper-wifi-scan-repair.service` is a root-only oneshot that runs the
-  same bounded `jasper.wifi_scan_repair` primitive. `/wifi/scan` starts it
-  through jasper-control's restart broker when the web process is non-root,
-  then retries the scan only when the helper records an acknowledged repair.
-  This keeps `jasper-web` cap-less while preserving the connected-but-
-  scan-suppressed recovery path.
-- **Write hooks** in the `/wifi/` wizard
-  ([`jasper/web/wifi_setup.py`](../jasper/web/wifi_setup.py)) —
-  `connect_new` writes from the PSK on the wire, `connect_saved`
-  reads via `nmcli -s`, `forget` clears when the SSID matches.
-  Successful connects also harden the NM profile:
-  `connection.autoconnect=yes`, `connection.autoconnect-retries=0`
-  (NetworkManager's retry-forever value), and
-  `802-11-wireless.powersave=2`. As of 2026-06-25 they also set
-  `ipv6.method=link-local`: this keeps `.local` mDNS resolution fast on
-  iOS/macOS without enabling routed IPv6. Profiles with
-  `ipv6.method=ignore` leave Apple clients waiting on IPv6 mDNS before
-  falling back to IPv4, which made `jts5.local/correction` look like a
-  stalled page load.
-- **Install-time seed** in `install.sh`'s `migrate_wifi_guardian`
-  so SSH-driven setup paths arm recovery on the first deploy
-  rather than waiting for the user to open the wizard.
-
-What the guardian does when invoked:
-
-- Active WiFi SSID matches stash → no-op (`steady_state`).
-- Active WiFi SSID differs from stash → no-op (`stash_stale`,
-  operator switched networks via SSH; we don't know which is
-  "right", don't stomp the working network).
-- No active WiFi, but a profile for the stashed SSID exists →
-  `nmcli connection up PROFILE_NAME` (`activate`). The profile lookup
-  first matches by profile name, then by `802-11-wireless.ssid`, so
-  Pi Imager/netplan names such as `netplan-wlan0-Home` are handled
-  without creating duplicate profiles.
-- No active WiFi and no profile → THE INCIDENT CASE.
-  `nmcli dev wifi connect SSID password $PSK` (`recreate_attempt`).
-  On failure, delete the broken half-profile and exit non-zero so
-  the operator notices.
-
-Why a custom guardian rather than NM-native restoration? There
-isn't one. NetworkManager has no documented "restore profile from
-backup" path; the standard pattern people roll themselves is a
-dispatcher script on `up` events plus a sidecar config store —
-which is exactly the shape of this guardian.
-
-PSK redaction is enforced in three layers:
-- **Bash script:** never includes `$PSK` in `emit` / `log` calls;
-  scrubs literal-PSK and `password \S+` patterns from nmcli
-  stderr before re-emitting on `recreate_fail`.
-- **Python wizard hooks:** logs only SSID + `key_mgmt`; the PSK
-  travels through `_run_nmcli_secret`'s existing scrubber.
-- **`/state` snapshot + doctor:** read the stash for SSID but
-  never include the PSK in any output. `/state` is
-  unauthenticated on the LAN; doctor output ends up in install
-  transcripts and bug reports.
-
-Diagnostic surfaces:
+**PSK redaction is enforced in three layers:** the bash script never passes
+`$PSK` to `emit`/`log` and scrubs literal-PSK and `password \S+` patterns from
+nmcli stderr; the Python hooks log only SSID + `key_mgmt`; `/state` and doctor
+read the stash for SSID and never emit the PSK — `/state` is unauthenticated on
+the LAN and doctor output ends up in install transcripts.
 
 ```sh
-# Per-event structured lines (wizard actions + recovery/guardian work):
 journalctl -u jasper-web -u jasper-wifi-recover -u jasper-wifi-guardian \
   | grep -E 'event=(wifi\.(connect|forget|radio|post_dispatch_failed)|wifi_(recover|guardian))'
-
-# Live state from jasper-control:
 curl -s http://jts.local:8780/state | jq .resilience.wifi_guardian
-
-# Doctor (warns on stash absence + drift; informational only):
-sudo /opt/jasper/.venv/bin/jasper-doctor | grep "WiFi profile guardian"
-
-# Manual trigger for the full down-path nudge:
-sudo /usr/local/sbin/jasper-wifi-recover --reason manual
-
-# Manual trigger for guardian only:
-sudo /usr/local/sbin/jasper-wifi-guardian --reason manual
+sudo /usr/local/sbin/jasper-wifi-recover --reason manual   # full down-path nudge
+sudo /usr/local/sbin/jasper-wifi-guardian --reason manual  # guardian only
 ```
-
-Out of scope (deferred, see PR #266 description):
-- **NM dispatcher script** on `up` events. Adds complexity for an
-  asymmetry the wizard hooks already cover.
-- **Multi-network stash.** The speaker doesn't travel.
-- **WPA-Enterprise.** Wizard rejects it at write-time; script
-  defends in depth (`event=wifi_guardian.skip reason=enterprise`).
-
----
 
 ## Implementation map
 
-For anyone touching the resilience code:
-
-- `jasper/watchdog.py` — the `Heartbeat` class. Sentinel pattern,
-  graceful no-op when `NOTIFY_SOCKET` is unset (lets the daemons
-  run under `python -m` for development without breaking).
-- `jasper/cli/aec_bridge.py` — `_aec_loop` calls `heartbeat.bump()`
-  after each successful processed frame; UDP socket replaces the
-  old `sd.RawOutputStream`. Also keeps `BridgeStalled` as a
-  belt-and-suspenders explicit mic-empty detector — catches the
-  specific PortAudio-dead case faster than `WatchdogSec` and with
-  a clearer log line.
-- `jasper/voice_daemon.py` — `WakeLoop` accepts `heartbeat:
-  Heartbeat | None` and bumps it at the top of each iteration of
-  `run()`'s main loop. The mic source is constructed via
-  `make_mic_capture(cfg.mic_device, ...)` which dispatches to
-  `UdpMicCapture` for `udp:PORT` device strings. On a speaker with
-  no room mic (issue #2205) that loop iterates a fixed keepalive
-  tick instead of mic frames, so there the bump proves the loop is
-  alive but says nothing about input — see
-  [HANDOFF-hotplug-resilience.md](HANDOFF-hotplug-resilience.md)
-  "Which half satisfied the gate" and issue #2243.
-- `jasper/audio_io.py` — `UdpMicCapture`, `parse_udp_device`,
-  `make_mic_capture` factory. Queue init is deferred to
-  `__aenter__` so the classes are construct-safe from sync code.
-- `deploy/systemd/jasper-{aec-bridge,voice}.service` — the
-  `Type=notify` + `WatchdogSec=30s` + `Restart=on-watchdog` +
-  `TimeoutStopSec=5s` block.
+- `jasper/watchdog.py` — the `Heartbeat` sentinel; graceful no-op when
+  `NOTIFY_SOCKET` is unset, so daemons run under `python -m` in development.
+- `jasper/cli/aec_bridge.py` — `_aec_loop` bumps the heartbeat per processed
+  frame and keeps `BridgeStalled` as an explicit mic-empty detector: a
+  continuous-empty counter (`JASPER_AEC_STALL_RESTART_SEC`, 5 s) plus a
+  slow-drip frame-rate watchdog (`JASPER_AEC_STALL_DRIP_MAX_WINDOWS`) for the
+  intermittent trickle the continuous counter resets through — the first never
+  fired during a ~13 h deaf-but-trickling episode.
+- `jasper/voice_daemon.py` — `WakeLoop` bumps at the top of each `run()`
+  iteration. On a speaker with no room mic (#2205) that loop iterates a fixed
+  keepalive tick, so the bump proves the loop is alive but says nothing about
+  input; see HANDOFF-hotplug-resilience.md and #2243.
+  `jasper/audio_io.py` — `UdpMicCapture`, `parse_udp_device`,
+  `make_mic_capture`; queue init is deferred to `__aenter__` so the classes are
+  construct-safe from sync code.
+- `jasper/control/supervisor_runtime.py` — shared mechanics for the shairport,
+  grouping, and system supervisors: cold-start/jitter cadence, per-tick crash
+  isolation, env mode normalization, disabled snapshots, asyncio-thread
+  lifecycle. Subsystem policy, singleton ownership, and event names stay local.
+  `shairport_supervisor.py` is the reference adapter: `run()` is the subsystem
+  seam, `_tick()` the pure policy under test.
+- `deploy/bin/jasper-audio-hardware-reconcile` (+ unit and udev rule) — the same
+  event-driven shape for output DAC roles, and `deploy/bin/jasper-outputd-failure-reconcile`,
+  outputd's `ExecStopPost=` hook that parks repeated `EX_CONFIG=78` exits and a
+  four-times-failing content-lane open instead of looping into
+  `StartLimitAction=reboot`. Both are owned by
+  [HANDOFF-hotplug-resilience.md](HANDOFF-hotplug-resilience.md); the one thing
+  that belongs here is that the park record
+  (`/run/jasper-outputd-content-lane.state`) has ONE reader,
+  `jasper/control/content_lane_state.py`, feeding two surfaces that therefore
+  cannot disagree: `/state.resilience.content_lane` and doctor's
+  `check_outputd_content_lane_park`, which FAILs on a park and repeats the
+  record's lane-specific `action` verbatim.
 - `deploy/modprobe.d/snd-aloop.conf` — single-card config
-  (`enable=1 index=6 id=Loopback pcm_substreams=8`); the
-  historical-note comment block explains the retirement of
-  `LoopbackAEC`.
-- `deploy/bin/jasper-aec-reconcile` — the mic/AEC policy reconciler.
-  It reads `/etc/jasper/jasper.env` plus
-  `/var/lib/jasper/aec_mode.env`, derives the active XVF card from the
-  detected mic profile (`Array` for legacy square/circular,
-  `L16K6Ch` for Flex LINEAR-4) for selectable profiles, clears stale
-  UDP when no owned mic candidate is present, and starts or parks
-  `jasper-aec-*` + `jasper-voice` accordingly.
-- `deploy/systemd/jasper-aec-reconcile.service` — oneshot wrapper used
-  at install, boot, and udev-triggered hardware changes. It has
-  `TimeoutStartSec=60` so a future blocking child fails visibly instead
-  of holding voice startup in `activating` limbo.
-- `deploy/install.sh:reconcile_aec_state` — seeds
-  `/var/lib/jasper/aec_mode.env` with `JASPER_AEC_MODE=auto`, enables
-  the reconciler unit, and runs it once at install time.
-- `deploy/udev/99-jasper-apple-dongle.rules` — three rules keyed
-  on the dongle's USB IDs: Headphone-100% pin on hotplug, USB
-  autosuspend off, and `SYSTEMD_WANTS` trigger for the recovery
-  service on Card A appearance.
-- `deploy/udev/99-jasper-aec-reconcile.rules` — generic ALSA
-  `controlC*` add/remove trigger for the reconciler. The service itself
-  is what stays conservative about which mic config it owns.
-- `deploy/bin/jasper-audio-hardware-reconcile` +
-  `deploy/systemd/jasper-audio-hardware-reconcile.service` +
-  `deploy/udev/99-jasper-audio-hardware-reconcile.rules` — the same
-  event-driven shape for output DAC roles. The oneshot classifies the
-  selected final-output DAC, updates JTS-owned DAC identity/asound
-  state for recognized roles, writes
-  `/run/jasper-output-hardware/output_hardware.json` with observed-vs-active hardware
-  facts, renders the direct final-output `outputd_dac` path for recognized
-  hardware, and enables Apple mixer helpers only for the Apple output role.
-  A recognized role must render the managed ALSA template before the
-  reconciler publishes new active env values; if rendering fails, or if the
-  staged `outputd.env` candidate would violate outputd buffer/period config or
-  disconnect CamillaDSP's loaded playback endpoint from outputd's paired capture
-  endpoint,
-  the previous runtime env remains in place. If no recognized output DAC is
-  present, it parks `jasper-voice` and `jasper-outputd` instead of leaving
-  stale final-output state active;
-  recognized DAC arrival restarts outputd when state changed and
-  reset-failed+starts outputd when the arrival is value-neutral, so a
-  condition-parked final-output owner recovers without a full deploy.
-  If outputd exits with `EX_CONFIG=78` during hotplug shear, the
-  `jasper-outputd-failure-reconcile` stop hook runs one bounded no-restart
-  reconcile plus explicit outputd retry, then parks repeated config exits
-  instead of looping into `StartLimitAction=reboot`. The same hook parks a
-  content-lane open that fails on four consecutive starts — the first
-  failures still restart, because on the passive lane that open is how outputd
-  waits for CamillaDSP's half of the snd-aloop pair. On the ACTIVE lane the
-  failure is permanent (P9-C deleted its pair-5 PCMs), and the park's record
-  says so, naming the ring re-arm rather than a width fix. That record
-  (`/run/jasper-outputd-content-lane.state`, which also carries a `lane=`
-  token) is read by `jasper/control/content_lane_state.py` — ONE reader with
-  two surfaces, so they cannot disagree: `/state.resilience.content_lane` and
-  `jasper-doctor`'s `check_outputd_content_lane_park`, which fails on a park
-  (the speaker emits nothing and no automatic path re-arms it) and surfaces
-  the record's own lane-specific `action` verbatim. Details in
-  [docs/HANDOFF-hotplug-resilience.md](HANDOFF-hotplug-resilience.md).
-- `deploy/systemd/jasper-dongle-recover.service` — `Type=oneshot`
-  unit that `reset-failed`s the audio daemons, restarts the output graph
-  (`jasper-camilla`, `jasper-outputd`, `jasper-audio-hardware-reconcile`),
-  and then best-effort starts `jasper-aec-reconcile` on full speakers so
-  mic/AEC/voice state matches present hardware. Triggered by the udev rule
-  above; idempotent so re-fires on rapid replug are harmless and
-  streambox installs without AEC do not fail the recovery.
-- `deploy/journald/50-jts-persistent-storage.conf` — Tier 5
-  forensics pairing. Installed by `install.sh`'s
-  `install_journald_persistent_storage()` to
-  `/etc/systemd/journald.conf.d/`. Overrides RPi OS's
-  `40-rpi-volatile-storage.conf` so journal entries from the boot
-  preceding a watchdog reset survive to `/var/log/journal/`.
-- `jasper/control/shairport_supervisor.py` — Tier 3 supervisor for
-  shairport-sync's AP2 control plane. `ShairportSupervisor.run()` is
-  the subsystem adapter; `_tick()` is the pure policy under test.
-  Overridable `probe`, `is_session_active`, `restart_shairport` IO
-  methods are the seams for unit testing. Module-level `snapshot()`
-  feeds `/state.resilience.shairport`. Started from `server.py:main`
-  via `start_supervisor()`; no-op when
-  `JASPER_SHAIRPORT_SUPERVISOR=disabled`.
-- `jasper/control/supervisor_runtime.py` — shared mechanics for the
-  shairport, grouping, and system supervisors: cold-start/jitter cadence,
-  per-tick crash isolation, environment mode normalization, disabled
-  snapshots, and the dedicated asyncio-thread lifecycle. Subsystem policy,
-  singleton ownership, event names, and public wrappers remain local.
-- `tests/test_watchdog.py` — sentinel-contract tests
-  (fresh/stale/recovery/disabled-fallback).
-- `tests/test_udp_mic_capture.py` — UDP receiver contract
-  (parse-forms, factory dispatch, end-to-end frame yield).
-- `tests/test_aec_reconcile.py` — stale-UDP and hardware-mode tests
-  for the reconciler.
-- `tests/test_shairport_supervisor.py` — policy contract
-  (threshold / gate / rate-limit / failure-mode degradation) + default
-  RTSP probe IO contract against a real asyncio TCP server.
+  (`enable=1 index=6 id=Loopback pcm_substreams=8`).
+- Tests: `tests/test_watchdog.py` (sentinel contract),
+  `tests/test_udp_mic_capture.py` (receiver contract),
+  `tests/test_aec_reconcile.py` (stale-UDP and hardware modes),
+  `tests/test_shairport_supervisor.py` (threshold/gate/rate-limit/degradation
+  plus the default RTSP probe against a real asyncio server).
 
----
+## Verification on a running Pi
 
-## Verification
-
-After deploying the resilience changes, the following should be
-true on the running Pi. Useful for `jasper-doctor` follow-ups or
-manual verification.
-
-- `aplay -l` lists `Loopback` (card 6) and no `LoopbackAEC`.
-- `systemctl show jasper-aec-bridge -p Type -p WatchdogUSec -p
-  Restart -p TimeoutStopUSec` returns `Type=notify
-  Restart=on-watchdog TimeoutStopUSec=5s WatchdogUSec=30s`. Same
-  for `jasper-voice`.
-- `journalctl -u jasper-aec-bridge | grep "udp output"` shows
-  `udp output: dest=127.0.0.1:9876 frame=1280 samples (2560 bytes)`.
-- `journalctl -u jasper-voice | grep "UdpMicCapture"` shows
-  `UdpMicCapture listening on 127.0.0.1:9876 (frame=1280 samples
-  @ 16000 Hz)`.
-- `ss -ulpn | grep 9876` shows the voice process owning the UDP
-  socket.
-- If the selected XVF card (`Array` or `L16K6Ch`) is absent,
-  `journalctl -u jasper-aec-reconcile -e` should show stale owned UDP
-  state being cleared to the first candidate; `jasper-aec-bridge`
-  should be disabled/inactive and `jasper-voice` should be stopped
-  rather than watchdog-looping.
-- `journalctl -u jasper-control | grep 'event=shairport.start'` shows
-  one supervisor-start line per jasper-control boot. Once the cold
-  start has elapsed (60 s default), `curl -s localhost:8780/state |
-  jq .resilience.shairport` returns `enabled=true` with a recent
-  `last_probe_at` and `last_probe_ok=true`.
-- Tier 5 hardware watchdog active: `systemctl show -p
-  RuntimeWatchdogUSec` returns `1min` (RPi OS default) and
-  `WatchdogDevice=/dev/watchdog0`.
-- Persistent journal active: `sudo journalctl --header | grep
-  "File path"` shows `/var/log/journal/...` (not
-  `/run/log/journal/...`), and `sudo journalctl --list-boots`
-  enumerates more than one boot once the Pi has rebooted at least
-  once since PR #160 landed.
-
-Smoke test that the watchdog actually catches a wedge:
+`systemctl show jasper-aec-bridge -p Type -p WatchdogUSec -p Restart -p
+TimeoutStopUSec` returns `Type=notify Restart=on-watchdog TimeoutStopUSec=5s
+WatchdogUSec=30s` (same for `jasper-voice`); `systemctl show -p
+RuntimeWatchdogUSec` returns `1min` with `WatchdogDevice=/dev/watchdog0`;
+`sudo journalctl --header | grep "File path"` shows `/var/log/journal/...`, not
+`/run/log/journal/...`; `curl -s localhost:8780/state | jq .resilience.shairport`
+returns `enabled=true` with a recent `last_probe_at` once the 60 s cold start has
+elapsed. With the selected XVF card absent,
+`journalctl -u jasper-aec-reconcile -e` shows stale owned UDP state cleared, the
+bridge disabled/inactive, and voice stopped rather than watchdog-looping.
 
 ```sh
+# The watchdog actually catches a wedge:
 sudo kill -STOP $(pgrep -f jasper-aec-bridge | head -1)
 sudo journalctl -fu jasper-aec-bridge
 # within 30 s: "Watchdog timeout (limit 30s)!" → SIGABRT → restart
-```
 
-Smoke test that the dongle-recovery udev rule fires:
-
-```sh
-# Pull the speaker cable from the dongle's 3.5 mm jack, wait until
-# `cat /proc/asound/cards` no longer lists Card A, then re-seat it.
+# The dongle-recovery udev rule fires: pull the speaker cable from the
+# dongle's 3.5 mm jack until /proc/asound/cards drops Card A, then re-seat.
 sudo journalctl -fu jasper-dongle-recover
-# within 1-2 s of re-seat: ExecStart= lines, then exits successfully.
-# `systemctl is-active jasper-camilla jasper-voice` should both
-# return `active` after, regardless of prior state.
+# within 1-2 s: ExecStart= lines, then a clean exit; jasper-camilla and
+# jasper-voice both read `active` afterward regardless of prior state.
 ```
 
----
+## What we explicitly did NOT do
 
-## What we explicitly did NOT do, and why
+A **generic third-party-daemon supervisor framework**: Tier 3's shape is
+reusable, but shairport is the only daemon that has demonstrated the failure
+class, and lifting it before a second instance buys complexity, not value.
+**Tier 4 today**: kernel-state recovery waits on evidence of need. And the
+alternatives ADR-0102 rejected — a PipeWire migration (scoped to this question;
+HANDOFF-barge-in.md re-opens it honestly as a costed option when robust barge-in
+is the motivation), in-process AEC, and a separate watchdog daemon.
 
-- **PipeWire migration.** Out of scope per project policy. The
-  resilience win comes from removing snd-aloop from the
-  bridge↔voice path entirely, not from replacing the userspace
-  audio stack. (Note: the exclusion was scoped to this resilience
-  question. [HANDOFF-barge-in.md](HANDOFF-barge-in.md) re-opens
-  it honestly as a costed Option B when robust barge-in is the
-  motivation — different question, different trade.)
-- **In-process AEC** (embed `jasper_aec3` directly in
-  `jasper-voice`). Simpler but expands voice's blast radius — a
-  crash in AEC3 today takes down only the bridge; in-process it
-  would take down wake-word too. UDP preserves the isolation.
-- **A separate watchdog daemon** (monit, supervisord, custom).
-  systemd's built-in `sd_notify` + `Restart=on-watchdog` does
-  everything those would, with no new process.
-- **Tier 4 today.** Kernel-state recovery (`rmmod + modprobe
-  snd_aloop`) waits on evidence of need. Tiers 1+2 ship in the
-  AEC + voice paths; Tier 3 shipped after we observed the failure
-  class it covers (shairport AP2 wedge, 2026-05-19); Tier 5 was
-  always on (RPi OS default) and only needed the persistent
-  journal pairing to become useful, which shipped in PR #160
-  after the 2026-05-20 wedge investigation.
-- **A generic "third-party daemon supervisor" framework.** Tier 3's
-  shape (probe → gate → rate-limited restart) is reusable, but
-  shairport is the only third-party daemon that has demonstrated the
-  failure class. Lifting it into a generic supervisor before there's
-  a second instance buys complexity, not value.
-
----
-
-## References
-
-- [Crash-Only Software, Candea & Fox (HotOS-IX 2003)](https://www.usenix.org/legacy/events/hotos03/tech/full_papers/candea/candea.pdf) — the conceptual frame.
-- [Lennart Poettering, "systemd for Administrators, Part XV: Watchdogs"](http://0pointer.de/blog/projects/watchdog.html) — sd_notify + WatchdogSec design.
-- [sd_notify(3) man page](https://www.freedesktop.org/software/systemd/man/latest/sd_notify.html).
-- [sound/drivers/aloop.c on torvalds/linux](https://github.com/torvalds/linux/blob/master/sound/drivers/aloop.c) — the `loopback_cable` state machine that wedges on SIGKILL.
-- [ALSA C library — PCM Interface (snd_pcm_recover, states)](https://www.alsa-project.org/alsa-doc/alsa-lib/group___p_c_m.html) — why `DISCONNECTED` is unrecoverable.
-- PRs that shipped this design: [JTS#77](https://github.com/jaspercurry/JTS/pull/77) (Tier 1+2 watchdog), [JTS#93](https://github.com/jaspercurry/JTS/pull/93) (UDP transport + LoopbackAEC retirement).
-
----
-
-Last verified: 2026-08-14 (T5.1's `reset-failed` / `NRestarts` cost recorded as
-an accepted decision: the `_camilla_stopped` stoppage-vs-flapping distinction
-rechecked against its docstring, the surviving hard-state coverage rechecked
-against `check_fanin_service`, and the set of callers that clear the counter
-re-derived across the reconcilers, the recovery helpers, and the installer.
-Scoped to that block; the rest of this file was not re-verified in this pass.
-Prior 2026-07-15 pass: `jasper-usbmic` placed in the -300 optional,
-restartable OOM class and the complete explicit unit ladder rechecked against
-`jasper._oom_adj`; prior 2026-07-14 pass: shairport Tier-3 final mutation rechecked as
-inactive-capable `restart`, with concurrent Off/role-park safety owned by the
-source guard at the final systemd start boundary;
-supervisor loop/thread ownership rechecked against
-all three adapters and `supervisor_runtime`; jts-audio.slice membership and the complete
-OOMScoreAdjust ladder rechecked against every current unit/drop-in; Wi-Fi
-wizard action/exception events and their
-operator journal query rechecked against the real HTTP handler; output-DAC
-staged transport coherence and optional
-chip-reference failure isolation rechecked against the runtime plan,
-audio-hardware reconciler, outputd STATUS/worker lifecycle, and doctor; nginx
-added to the OOM ladder via package
-drop-in; recoverable front-door/web/renderer start-limit windows rechecked;
-WiiM Remote 2 BLE mic adapter remains in the restartable accessory/OOM/memory-limit inventory; Camilla start-limit recovery contract rechecked
-against `deploy/systemd/jasper-camilla.service`,
-`deploy/systemd/jasper-camilla-recover.service`,
-`deploy/bin/jasper-camilla-recover`, and `jasper-doctor` resilience policy;
-AEC reconciler mic-profile ownership rechecked: `JASPER_AEC_MIC_DEVICE` is
-derived from detected XVF profile for selectable profiles; AEC voice restart
-is queued with `--no-block` and the AEC oneshot timeout is bounded; Wi-Fi
-scan-suppression root helper path verified on `jts3.local` 2026-06-22 and
-active-profile scan-suppression recovery verified from `jts.local` incident
-logs 2026-06-26; 2026-07-07 review rechecked that
-`jasper-wifi-recover.service` is not stash-gated and that the script gates only
-the no-active guardian handoff on `/var/lib/jasper/wifi_guardian.env`;
-broader resilience doc last fully reviewed 2026-06-15; 2026-07-06
-output-DAC config-shear guard rechecked against
-`jasper-audio-hardware-reconcile`, `jasper-outputd-failure-reconcile`, and
-`jasper-outputd.service`; 2026-06-24
-`/state.resilience` supervisor doctor surface and multiroom cascade ring
-rechecked against current code)
+Last verified: 2026-08-25 (triage pass — unit and script paths, doctor check
+names, slice membership, the OOM ladder, and supervisor mechanics rechecked
+against `deploy/systemd/`, `deploy/bin/`, `jasper/_oom_adj.py`,
+`jasper/cli/doctor/`, and `jasper/control/`. Incident narratives and the
+never-shipped Stage 2 architecture moved to
+`docs/historical/resilience-incidents-2026-05.md`; three decisions extracted to
+ADR-0102/0103/0104.)
