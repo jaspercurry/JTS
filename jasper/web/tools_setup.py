@@ -46,7 +46,6 @@ URL surface (after nginx strips /tools/):
 """
 from __future__ import annotations
 
-import argparse
 import json
 import logging
 import math
@@ -878,46 +877,3 @@ def make_server(
             "apply_ts_path": apply_ts_path,
         }),
     )
-
-
-def main(argv: list[str] | None = None) -> int:
-    parser = argparse.ArgumentParser(
-        prog="jasper-tools-web",
-        description="Tool catalog wizard for the JTS speaker",
-    )
-    parser.add_argument(
-        "--host", default=os.environ.get("JASPER_TOOLS_WEB_HOST", "127.0.0.1"),
-    )
-    parser.add_argument(
-        "--port", type=int,
-        default=int(os.environ.get("JASPER_TOOLS_WEB_PORT", "8786")),
-    )
-    parser.add_argument(
-        "--catalog",
-        default=os.environ.get("JASPER_TOOLS_CATALOG_FILE", CATALOG_FILE),
-    )
-    parser.add_argument(
-        "--state",
-        default=os.environ.get("JASPER_TOOL_STATE_FILE", TOOL_STATE_FILE),
-    )
-    args = parser.parse_args(argv)
-    logging.basicConfig(
-        level=logging.INFO,
-        format="%(asctime)s %(levelname)s %(name)s: %(message)s",
-    )
-    server = make_server(
-        (args.host, args.port),
-        catalog_path=args.catalog, state_path=args.state,
-    )
-    logger.info(
-        "jasper-tools-web listening on http://%s:%d", args.host, args.port,
-    )
-    try:
-        server.serve_forever()
-    except KeyboardInterrupt:
-        return 0
-    return 0
-
-
-if __name__ == "__main__":
-    raise SystemExit(main())

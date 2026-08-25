@@ -41,7 +41,6 @@ URL surface (after nginx strips /sources/):
 """
 from __future__ import annotations
 
-import argparse
 import asyncio
 import logging
 import os
@@ -142,7 +141,6 @@ SOURCE_UNAVAILABLE = {
         "to set up the local renderer stack."
     ),
 }
-IDLE_SHUTDOWN_SEC = 600.0
 
 # The ALSA card the composite gadget's uac2 function registers. Its presence
 # is the host-visible "USB audio device is advertised" signal now that the
@@ -825,54 +823,3 @@ def make_server(target) -> ThreadingHTTPServer:
     socket/tuple/int per _systemd.make_http_server's contract."""
     from . import _systemd
     return _systemd.make_http_server(target, _make_handler())
-
-
-def main(argv: list[str] | None = None) -> int:
-    parser = argparse.ArgumentParser(
-        prog="jasper-sources-web",
-        description="Audio source on/off toggles for the Jasper smart speaker",
-    )
-    parser.add_argument(
-        "--host", default=os.environ.get("JASPER_SOURCES_WEB_HOST", "127.0.0.1"),
-    )
-    parser.add_argument(
-        "--port", type=int,
-        default=int(os.environ.get("JASPER_SOURCES_WEB_PORT", "8773")),
-    )
-    args = parser.parse_args(argv)
-    logging.basicConfig(
-        level=logging.INFO,
-        format="%(asctime)s %(levelname)s %(name)s: %(message)s",
-    )
-    from . import _systemd
-    sockets = _systemd.adopt_systemd_sockets()
-    target = sockets[0] if sockets else (args.host, args.port)
-    server = make_server(target)
-
-    tracker = _systemd.IdleShutdownTracker(
-        idle_threshold_sec=IDLE_SHUTDOWN_SEC,
-    )
-    _systemd.install_request_idle_bump(server.RequestHandlerClass, tracker)
-    tracker.start()
-
-    if sockets:
-        logger.info(
-            "jasper-sources-web adopting systemd fd (idle=%ds)",
-            int(IDLE_SHUTDOWN_SEC),
-        )
-    else:
-        logger.info(
-            "jasper-sources-web listening on http://%s:%d",
-            args.host, args.port,
-        )
-    _systemd.notify_ready()
-    try:
-        server.serve_forever()
-    except KeyboardInterrupt:
-        pass
-    _systemd.notify_stopping()
-    return 0
-
-
-if __name__ == "__main__":
-    raise SystemExit(main())

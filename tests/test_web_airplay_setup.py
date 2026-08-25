@@ -113,7 +113,6 @@ def _handler_cls():
 
 def test_public_surface_is_stable():
     assert callable(airplay_setup.make_server)
-    assert callable(airplay_setup.main)
     assert callable(airplay_setup._index_html)
     assert callable(airplay_setup._current_mode)
 

@@ -17,7 +17,6 @@ URL surface (after nginx strips /speaker/):
 
 from __future__ import annotations
 
-import argparse
 import asyncio
 import html
 import logging
@@ -458,37 +457,3 @@ def make_server(target, *, state_path: str = SPEAKER_NAME_FILE) -> ThreadingHTTP
 
     cfg = {"state_path": state_path}
     return _systemd.make_http_server(target, _make_handler(cfg))
-
-
-def main(argv: list[str] | None = None) -> int:
-    parser = argparse.ArgumentParser(
-        prog="jasper-speaker-web",
-        description="Speaker display-name settings for the Jasper smart speaker",
-    )
-    parser.add_argument(
-        "--host", default=os.environ.get("JASPER_SPEAKER_WEB_HOST", "127.0.0.1")
-    )
-    parser.add_argument(
-        "--port",
-        type=int,
-        default=int(os.environ.get("JASPER_SPEAKER_WEB_PORT", "8783")),
-    )
-    parser.add_argument(
-        "--state", default=os.environ.get("JASPER_SPEAKER_NAME_FILE", SPEAKER_NAME_FILE)
-    )
-    args = parser.parse_args(argv)
-
-    logging.basicConfig(level=os.environ.get("JASPER_LOG_LEVEL", "INFO").upper())
-    server = make_server((args.host, args.port), state_path=args.state)
-    logger.info("jasper-speaker-web listening on http://%s:%d", args.host, args.port)
-    try:
-        server.serve_forever()
-    except KeyboardInterrupt:
-        pass
-    finally:
-        server.server_close()
-    return 0
-
-
-if __name__ == "__main__":  # pragma: no cover
-    raise SystemExit(main())

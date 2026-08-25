@@ -36,9 +36,7 @@ URL surface (after nginx strips /airplay/):
 """
 from __future__ import annotations
 
-import argparse
 import logging
-import os
 import urllib.parse
 from http import HTTPStatus
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
@@ -254,32 +252,3 @@ def make_server(target, *, state_path: str = MODE_FILE) -> ThreadingHTTPServer:
     from . import _systemd
     cfg = {"state_path": state_path}
     return _systemd.make_http_server(target, _make_handler(cfg))
-
-
-def main(argv: list[str] | None = None) -> int:
-    parser = argparse.ArgumentParser(
-        prog="jasper-airplay-web",
-        description="AirPlay sync-mode toggle UI for the Jasper smart speaker",
-    )
-    parser.add_argument("--host", default=os.environ.get("JASPER_AIRPLAY_WEB_HOST", "127.0.0.1"))
-    parser.add_argument(
-        "--port", type=int,
-        default=int(os.environ.get("JASPER_AIRPLAY_WEB_PORT", "8771")),
-    )
-    parser.add_argument("--state", default=os.environ.get("JASPER_AIRPLAY_MODE_FILE", MODE_FILE))
-    args = parser.parse_args(argv)
-    logging.basicConfig(
-        level=logging.INFO,
-        format="%(asctime)s %(levelname)s %(name)s: %(message)s",
-    )
-    server = make_server((args.host, args.port), state_path=args.state)
-    logger.info("jasper-airplay-web listening on http://%s:%d", args.host, args.port)
-    try:
-        server.serve_forever()
-    except KeyboardInterrupt:
-        return 0
-    return 0
-
-
-if __name__ == "__main__":
-    raise SystemExit(main())
