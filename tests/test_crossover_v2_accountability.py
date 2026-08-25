@@ -225,6 +225,28 @@ def test_a_realized_disclosure_survives_a_fit_that_produced_no_core_bands():
     _one(decision, accountability.EVENT_LEVEL_MATCH_FINDING)
 
 
+def test_the_realized_band_fallback_does_not_describe_an_estimator_finding():
+    """The fallback is guarded on the REASON, not on the bands being absent.
+
+    A band has to be the span its own reason was measured over. An estimator
+    disagreement with no per-role core spans has no band it can honestly
+    state — the realized check's half-bands belong to a different
+    instrument — so the record is still ``None`` there rather than borrowing
+    them. The realized NUMBERS ride an estimator record freely; the BAND is
+    the one field that cannot be lent.
+    """
+    state = _state(suspect=True, matched=False)
+    state = dataclasses.replace(state, core_level_evidence={})
+
+    decision = _assess(state)
+
+    assert decision.finding is None
+    # Both journal lines still fire: losing the record is not losing the
+    # disclosure, only its durable half.
+    _one(decision, accountability.EVENT_LEVEL_ESTIMATOR_FINDING)
+    _one(decision, accountability.EVENT_LEVEL_MATCH_FINDING)
+
+
 def test_the_decision_carries_no_refusal_field_to_set():
     """**The demotion's structural mutation guard.**
 

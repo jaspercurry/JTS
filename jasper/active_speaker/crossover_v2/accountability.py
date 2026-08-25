@@ -332,13 +332,16 @@ def level_frame_record(
         band for role in cores
         if (band := cores[role].get("band_hz")) is not None
     ]
-    if not edges and realized is not None:
+    if not edges and realized is not None and not estimators_suspect:
         # The realized instrument's OWN spans — the mirrored half-bands about
-        # Fc that its two levels were read on. Reached only when the fit
-        # produced no core median for any role, in which case the estimator
-        # check has nothing to report either and this record is the realized
-        # disclosure or it is nothing. Both spans are non-optional on
-        # ``RealizedLevelMatch``, so no second guard is needed here.
+        # Fc that its two levels were read on — for a record the REALIZED
+        # condition is the reason for. Guarded on that rather than on the
+        # bands' absence alone: the band a finding carries has to be the span
+        # its own reason was measured over, so an estimator disagreement with
+        # no core spans still returns ``None`` (as the docstring says) rather
+        # than borrowing the other instrument's bands to describe itself.
+        # Both spans are non-optional on ``RealizedLevelMatch``, and the
+        # ``hi_edges`` filter below is the backstop either way.
         edges = [realized.woofer_band_hz, realized.tweeter_band_hz]
     lo_edges = [float(band[0]) for band in edges]
     hi_edges = [float(band[1]) for band in edges if band[1] is not None]
