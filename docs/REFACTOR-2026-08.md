@@ -88,7 +88,7 @@ ack, never silence.
 - [ ] `install.sh` `install_nginx_site`: `return 1` on failed `nginx -t`
 - [ ] `User=` + hardening for jasper-correction-web / -bluetooth-web /
       -system-web units
-- [ ] `/wake-corpus/`: call `guard_mutating_host` inside `_check_csrf`
+- [x] `/wake-corpus/`: call `guard_mutating_host` inside `_check_csrf`
 - [ ] Delete the phantom `acquire_lock` knob through `dsp_apply.py` (13 signatures)
 
 **Wave 0.5 — baseline instrumentation (report script, not CI gates)**
