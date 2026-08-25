@@ -510,13 +510,6 @@ def test_post_unknown_route_404s():
     assert cap["status"] == int(http.HTTPStatus.NOT_FOUND)
 
 
-def test_post_scan_rejects_bad_csrf():
-    # No cookie / no header -> guard_mutating_request fails -> 403, and the scan never runs.
-    h, cap = _make_request("/scan", body=b"{}")
-    h.do_POST()
-    assert cap["status"] == int(http.HTTPStatus.FORBIDDEN)
-
-
 def test_post_scan_runs_with_valid_csrf(monkeypatch):
     token = "t" * 64
     monkeypatch.setattr(

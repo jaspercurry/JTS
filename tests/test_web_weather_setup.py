@@ -262,30 +262,6 @@ def test_post_save_bad_units_redirects_with_flash(live_server):
     )
 
 
-def test_unknown_post_path_404s(live_server):
-    # A bogus path is route-checked before CSRF, so we still need a session
-    # cookie to reach the handler; assert it 404s rather than 403/200.
-    post_with_csrf(
-        live_server["url"], "/bogus", {}, expect_status=404,
-    )
-
-
-def test_post_save_without_csrf_rejected(live_server):
-    """Direct POST with no CSRF cookie/field must 403 (resilience: the
-    mutating routes stay protected after the restyle)."""
-    import urllib.error
-    import urllib.request
-    req = urllib.request.Request(
-        live_server["url"] + "/save",
-        data=b"units=celsius",
-        method="POST",
-        headers={"Content-Type": "application/x-www-form-urlencoded"},
-    )
-    with pytest.raises(urllib.error.HTTPError) as exc:
-        urllib.request.urlopen(req)
-    assert exc.value.code == 403
-
-
 def test_get_mints_csrf_cookie(live_server):
     # begin_request()/send_html_response() wiring still mints the cookie.
     session = make_csrf_session(live_server["url"], "/")

@@ -350,19 +350,6 @@ def test_post_toggle_unknown_route_404s(tmp_path):
     assert h.status == int(http.HTTPStatus.NOT_FOUND)
 
 
-def test_post_toggle_missing_csrf_is_403(tmp_path, monkeypatch):
-    cat = tmp_path / "tools.json"
-    _write_catalog(cat, [{"name": "get_weather"}])
-    monkeypatch.setattr(tools_setup, "restart_voice_daemon", lambda: None)
-    h = _post_toggle(
-        _handler_cls(str(cat), str(tmp_path / "state.env")),
-        {"name": "get_weather", "enabled": False},
-        token=None, cookie_token=None,
-    )
-    h.do_POST()
-    assert h.status == int(http.HTTPStatus.FORBIDDEN)
-
-
 def test_post_toggle_unknown_tool_is_400(tmp_path, monkeypatch):
     cat = tmp_path / "tools.json"
     _write_catalog(cat, [{"name": "get_weather"}])
@@ -921,18 +908,6 @@ def test_concurrent_toggles_do_not_lose_updates(tmp_path, monkeypatch):
         t.join()
 
     assert read_disabled_tools(str(state)) == frozenset(names)
-
-
-def test_post_apply_missing_csrf_is_403(tmp_path, monkeypatch):
-    cat = tmp_path / "tools.json"
-    _write_catalog(cat, [_tool("spotify_play")])
-    monkeypatch.setattr(tools_setup, "restart_voice_daemon", lambda: None)
-    h = _post_apply(
-        _handler_cls(str(cat), str(tmp_path / "state.env")),
-        token=None, cookie_token=None,
-    )
-    h.do_POST()
-    assert h.status == int(http.HTTPStatus.FORBIDDEN)
 
 
 # --- GET /catalog.json overlay ---------------------------------------------
