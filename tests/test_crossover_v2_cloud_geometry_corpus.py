@@ -25,9 +25,9 @@ import pytest
 
 from jasper.active_speaker.crossover_v2.spatial import (
     _CloudPosition,
+    cloud_geometry_verdict,
     cloud_position_capture,
 )
-from jasper.active_speaker.crossover_v2_flow import cloud_geometry_verdict
 from jasper.audio_measurement.spatial_combine import combine_positions
 
 from tests import _flat_lin_corpus as corpus
@@ -113,7 +113,7 @@ def test_conductor_group_verdict_reports_the_locked_corpus_as_locked():
     corpus known to contain a position-invariant comb, and the retry would be
     an untested claim rather than a measured one.
     """
-    verdict = cloud_geometry_verdict(_product_positions(corpus.S0_MAIN))
+    verdict = cloud_geometry_verdict(_product_positions(corpus.S0_MAIN)).verdict
 
     assert verdict["locked"] is True
     assert verdict["reason"] == "geometry_locked"
@@ -135,14 +135,25 @@ def test_a_malformed_position_degrades_to_a_verdict_instead_of_raising():
     broken = positions[:1]
     object.__setattr__(broken[0], "sample_rate_hz", 0)
 
-    verdict = cloud_geometry_verdict(broken)
-    assert verdict["locked"] is False
-    assert verdict["reason"] == "combine_failed"
+    answer = cloud_geometry_verdict(broken)
+    assert answer.verdict["locked"] is False
+    assert answer.verdict["reason"] == "combine_failed"
+    # The line the flow journals for this failure travels back as data, because
+    # the combiner is side-effect-free. Losing it would make a degraded cloud
+    # silent, which is the thing this whole path exists to prevent.
+    assert set(answer.diagnostics) == {"positions", "error"}
+    assert answer.diagnostics["positions"] == 1
+    assert answer.diagnostics["error"]
 
 
 def test_empty_group_is_unknown_not_fine():
-    verdict = cloud_geometry_verdict([])
-    assert verdict == {"locked": False, "reason": "no_positions", "n_positions": 0}
+    answer = cloud_geometry_verdict([])
+    assert answer.verdict == {
+        "locked": False, "reason": "no_positions", "n_positions": 0,
+    }
+    # Nothing was combined, so there is nothing to journal — distinct from a
+    # combine that failed and has an error to report.
+    assert answer.diagnostics is None
 
 
 @pytest.mark.parametrize("position_id", ["cloud_01", "cloud_10"])

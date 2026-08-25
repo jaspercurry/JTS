@@ -686,10 +686,11 @@ def test_the_module_writes_no_journal_lines():
     side-effecting module, and a claim nobody checks is how that stops being
     true.
 
-    The boost derivation is the one function here with a journal line in the
-    shipped flow; it returns those fields as data instead
-    (:class:`~.spatial.BoostExclusion`), and the flow emits them under the
-    event name it owns.
+    Two functions here have a journal line in the shipped flow — the boost
+    derivation and the cloud combine — and both return those fields as data
+    instead (:class:`~.spatial.BoostExclusion`,
+    :class:`~.spatial.CloudCombine`), leaving the flow to emit them under the
+    event names it owns.
     """
     import ast
     from pathlib import Path
@@ -703,3 +704,59 @@ def test_the_module_writes_no_journal_lines():
         if isinstance(node, ast.Call) and isinstance(node.func, ast.Name)
     }
     assert "log_event" not in called
+
+
+# --------------------------------------------------------------------------- #
+# the cloud combine, and the line it hands back instead of writing
+#
+# The corpus acceptance tests
+# (``tests/test_crossover_v2_cloud_geometry_corpus.py``) exercise the same two
+# functions against real S0 captures, and SKIP wherever those captures are not
+# on disk. These two run everywhere, so the seam is never unpinned.
+# --------------------------------------------------------------------------- #
+
+
+def _unusable_position() -> spatial._CloudPosition:
+    """A retained position the combiner cannot read.
+
+    ``response`` is what ``cloud_position_capture`` reaches into for the grid,
+    so ``None`` reaches the combiner's own refusal rather than faking one.
+    """
+    return spatial._CloudPosition(
+        position_id="cloud_01",
+        index=1,
+        attempt=1,
+        prompt="",
+        wide=False,
+        captured_at=0.0,
+        response=None,
+        sample_rate_hz=48000,
+    )
+
+
+def test_an_empty_group_names_its_own_degraded_path_and_journals_nothing():
+    answer = spatial.cloud_geometry_verdict([])
+
+    assert answer.verdict == {
+        "locked": False, "reason": "no_positions", "n_positions": 0,
+    }
+    assert answer.diagnostics is None
+    assert spatial.combine_cloud_positions([]).combined is None
+
+
+def test_a_combiner_failure_returns_its_journal_fields_instead_of_writing_them():
+    """A group's captures are already-accepted evidence, so a combiner failure
+    degrades to an honest "unknown" — and still says what went wrong, as data
+    the flow emits under its own event name."""
+    positions = [_unusable_position()]
+
+    combine = spatial.combine_cloud_positions(positions)
+    answer = spatial.cloud_geometry_verdict(positions)
+
+    assert combine.combined is None
+    assert set(combine.diagnostics) == {"positions", "error"}
+    assert combine.diagnostics["positions"] == 1
+    assert combine.diagnostics["error"]
+    assert answer.verdict["locked"] is False
+    assert answer.verdict["reason"] == "combine_failed"
+    assert answer.diagnostics == combine.diagnostics
