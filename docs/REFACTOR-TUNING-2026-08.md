@@ -232,6 +232,64 @@ fresh session reading §3's wave names will think VERIFY is still a thing:
 | `persist_conductor_state` · the record writers | `save` |
 | the apply/rollback transaction | none — it is not a verb, and it never moves |
 
+**Named measurement specs are DATA, not code** (owner, 2026-08-25): *"we can
+pass, like, do all of these measurements or do just these ones… different config
+spec, whether it's a baseline measurement or a full cloud measurement or only
+horizontal measurement."* A **PRESET is a saved parameter bundle for `measure`** —
+`baseline`, `full-cloud`, `horizontal-only`, `design-axis-diagnostics`, and
+whatever the campaign needs next. It may be authored by a person, by the runbook,
+or by the LLM. **Picking one is picking parameters. Adding one is writing data —
+it never touches the engine.** A preset that requires an engine edit is a design
+error, not a new preset.
+
+Presets compose **instruments with their natural scopes**, and the roster (§5)
+already implies the scope fact: some instruments are **design-axis-only** — the
+reverse-null is one act at one place — while others are **per-position** — the
+per-driver sweeps run at every pose the preset names. A preset therefore carries
+*which instruments* and *over which positions*, and the engine reads both as
+parameters. This is the **fourth absorption test of the settled vocabulary**, and
+it passes: presets needed no new verb. The running tally, kept here so it is
+stated once — (1) the reverse-null, (2) MS-17's third mover, (3) §5's
+six-instrument roster, (4) measurement presets. Four things the four verbs
+absorbed without growing a fifth.
+
+**`analyze` defaults to EVERYTHING the banked data supports** (owner,
+2026-08-25): *"once you have measurements, I think all the analysis should just
+kind of fall out… the analysis is relatively cheap, so you just may as well."*
+Three stated properties, not accidents:
+
+1. **The default is wholesale.** `analyze` runs **every** analysis whose input
+   kinds are present in the banked records. Not a selected subset, not what the
+   caller thought to ask for. Cheap compute is the reason the default can be
+   generous; the reason it *must* be is below.
+2. **A missing input is DISCLOSED, never silently skipped.** An analysis whose
+   inputs are absent reports as **not-run, naming the missing kind** — *"no
+   distortion analysis: no distortion-vs-level capture in this session."* Silence
+   is what let the current defects hide.
+3. **Every analysis is re-runnable offline, forever, without re-measuring.**
+   Because records persist complete (ruling S3, wave 4a), a banked session can be
+   re-analyzed by any future analysis that did not exist when it was captured.
+   That is a **property of the record contract**, and it is the whole return on
+   banking `DriverResponse` with phase.
+
+*This changes no analysis unit.* The wholesale default lives in the **caller** —
+the `analyze` verb deciding what to invoke — which is exactly the corollary §0
+already carries: *do not decouple the analysis layer, replace its caller.* The 92
+units still port whole and unedited; what changes is that something finally calls
+all of them.
+
+**This default is the direct fix for `13`'s largest finding class.** The gap
+audit's recurring shape is *measured-but-unconsumed*: the room stack banks the
+richest per-frequency curves in the tree and **nothing opens them**; distortion is
+separated scrupulously and **no gate reads it**; `flat_spec_views.directivity_table`
+computes measured per-angle directivity and **feeds a text renderer**;
+`forward_model.predict_sum` predicts the complex sum per angle with **zero
+production callers**. Each of those is an analysis that exists, has its inputs,
+and was never run because nothing asked. **A wholesale default makes that class
+structurally impossible to recreate** — the question stops being "did someone
+wire this up?" and becomes "are the inputs in the bank?", which is answerable by
+looking.
+
 **Refusals, three sorts.** **CLAMP** stops — 5 named mechanisms, ~112
 enforcement points; quote both numbers every time, because collapsing the 112 is
 not the job and naming the 5 is. **INTEGRITY** is the class that needs a NAME —
@@ -451,6 +509,8 @@ the charter's **Non-negotiables** gets a real review. (That charter replaced
 AGENTS.md's right-sizing directive; the substance is unchanged — see §6 R9a.)
 Where this plan spends more than that, it says so and why.
 
+**The merge discipline is now ENFORCED, not just agreed** (governance report, 2026-08-25). Branch protection went ON at **#2942**: the `ci` context is required with `if: always()`, `enforce_admins=true` so there is **no admin bypass**, and force-push and branch deletion are blocked, with conversation resolution required. **No red merge is possible** — a wave cannot land on a broken tree even by accident. One thing protection does *not* do: **strict / up-to-date is OFF**, per the 2026-08-07 ruling, so **serializing a batch landing is still a matter of discipline**, not machinery. When a wave lands several PRs close together, order them yourself; nothing will do it for you.
+
 ### The deletion rules — binding on every wave that deletes a test
 
 Settled by ruling S7. **The unit of deletion is the TEST FUNCTION, not the
@@ -515,6 +575,8 @@ their host-compliance PR until the stereo tap re-runs) · `doc-map.toml` zone ro
 **`experiments/usb-turntable`**, the robotic-arm driver every `measure` angle
 depends on, whose promotion into `jasper/` is the audit program's owner gate and
 whose re-verification before any campaign is ours. Terms in §6 R5.
+
+**Citation riders — fix them in the wave that touches the file, never alone.** The governance charter deleted the old AGENTS.md section headings, so roughly **42 quoted-name citation sites now dangle repo-wide** — invisible to link checkers, because they cite a heading by name rather than by link. **Our zone's share, verified by grep at `origin/main`:** `jasper/web/correction_crossover_v2.py` · `jasper/audio_measurement/correction_lane.py` · `tests/test_active_speaker_design_draft.py` · `docs/HANDOFF-active-speaker-dsp.md` · `docs/testing-tooling.md` (**2 sites**) · `scripts/tuning-llm-live-check.py`. Each gets its citation repointed **by the wave that already opens that file — a one-line rider, noted in the PR body. Never a standalone PR**, which would be churn for its own sake and exactly the ceremony the charter's Review policy cuts. Two dispositions that are not riders: `tests/test_docs_handoff_freshness.py`'s citation **dies with the file in 7h**, and the frozen banks' citations (`correction-ux-wave3/`, `bass-extension-waves/`) **stay frozen** per 7f's fencing — they are primary sources and are supposed to be stale. The **other ~30 sites belong to the parallel programs and are out of scope**; stated so nobody reads our six as the whole set.
 
 ### Wave 0 — Free the class-A suite. Zero design decisions.
 
@@ -1095,12 +1157,18 @@ licence note at the end of this subsection. No wave owns these; they are built
 after the engine lands and run once acceptance row 10 opens.
 
 **Every instrument is a parameterization of the four verbs. Not one needs a new
-one.** That is the point worth recording, and it is now **the third time the
-settled vocabulary has absorbed something new without growing**: (1) the
-reverse-null needed no new verb, (2) MS-17's third mover needs no engine edit,
-and (3) this entire six-instrument roster lands as `measure` parameters and
-`analyze` metrics. A vocabulary that absorbs a comprehensive diagnostic suite
-without a fifth verb is a vocabulary that was cut at the right joints.
+one.** That is the point worth recording: the whole roster lands as `measure`
+parameters and `analyze` metrics. It is **entry 3 on §1's absorption tally** — the
+running list lives there, stated once. A vocabulary that absorbs a comprehensive
+diagnostic suite without a fifth verb is a vocabulary that was cut at the right
+joints.
+
+**But an instrument is CODE; a preset is DATA — do not blur them.** Each roster row
+is real work: R-3 is an `analyze` function that does not exist, R-4 is a `measure`
+parameterization plus its consumer. What §1 calls data is the **preset that composes
+already-built instruments over already-supported positions**. Building R-1…R-6 is
+engineering; assembling `full-cloud` out of them afterwards is writing a parameter
+bundle.
 
 | # | Instrument | Verb shape | What it unlocks | Evidence |
 |---|---|---|---|---|
