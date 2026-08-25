@@ -871,29 +871,29 @@ To remove the CA from an iPhone (e.g., decommissioning a speaker):
 
 ---
 
----
+## Optional: AEC bridge on/off
 
-## Optional: Software AEC bridge
-
-`install.sh` runs `jasper-aec-reconcile`, which auto-enables AEC on
-a Pi running the 6-channel XVF firmware and clears stale UDP mic
-config when the Array is absent. To enable manually (e.g. you flashed
-6-ch after install and don't want to re-run install.sh):
-
-```sh
-printf 'JASPER_AEC_MODE=auto\n' | sudo tee /var/lib/jasper/aec_mode.env
-sudo systemctl start jasper-aec-reconcile
-```
+`install.sh` runs `jasper-aec-reconcile`, which converges the AEC stack
+against the mic it detects and clears stale UDP mic config when the
+Array is absent. The household control is the profile picker at
+`http://jts.local/wake/`; to make the reconciler look again after a
+firmware flash, `sudo systemctl start jasper-aec-reconcile`.
 
 The bridge→voice transport is UDP localhost since May 2026 (was
 a second snd-aloop card before that, retired for resilience —
 see [`docs/HANDOFF-resilience.md`](docs/HANDOFF-resilience.md)).
 
-To disable:
+**Rollback key only — `JASPER_AEC_MODE`.** It predates the profile picker,
+and the reconciler forces `auto` on a detected XVF, so it bites only on
+`custom` / non-XVF setups. `aec_mode.env` also carries
+`JASPER_AUDIO_INPUT_PROFILE` and the `JASPER_WAKE_LEG_*` keys, so edit the
+one key in place — overwriting the file with `tee` destroys the rest:
 
 ```sh
-printf 'JASPER_AEC_MODE=disabled\n' | sudo tee /var/lib/jasper/aec_mode.env
+sudo sed -i '/^JASPER_AEC_MODE=/d' /var/lib/jasper/aec_mode.env
+echo 'JASPER_AEC_MODE=disabled' | sudo tee -a /var/lib/jasper/aec_mode.env
 sudo systemctl start jasper-aec-reconcile
+# Same two lines with `auto` to roll forward.
 ```
 
 Verify with `sudo /opt/jasper/.venv/bin/jasper-doctor` either way.
@@ -1082,13 +1082,15 @@ sudo /opt/jasper/.venv/bin/python -m jasper.xvf.xvf_host BLD_REPO_HASH
 # for change-detection, not validation.
 ```
 
-#### Step 5 — bring AEC online
+#### Step 5 — bring AEC online (reconcile, then commission)
 
-The reconciler picks up the new firmware, flips voice's mic source
-to the AEC bridge's UDP output, and resets the kernel ALSA mixer
-to known-good values for the newly-exposed ch2-5 (which can
-otherwise persist a stale mute from before the firmware change —
-see "The reconciler step matters" below).
+Two commands, in order. The reconciler picks up the new firmware, points
+voice's mic source at the AEC bridge's UDP output, and resets the kernel
+ALSA mixer to known-good values for the newly-exposed ch2-5 (the stale-mute
+trap — see "Why the reconciler step matters" below). `jasper-aec-commission`
+then measures and stores this box's chip-AEC alignment; until it passes, a
+detected XVF stays parked on purpose. The managed path is chip-AEC or park,
+never a silent fall back to software AEC3 or the direct mic.
 
 On a fresh install, `deploy/install.sh` seeds `JASPER_MIC_DEVICE` from
 the detected card. On existing Pis, do not hand-pin
@@ -1102,14 +1104,25 @@ deliberately hand-pinned mic.
 ```sh
 sudo systemctl start jasper-aec-reconcile
 
-# Confirm everything's healthy:
+# Foreground, ~2 min of audible sweeps. Run it at the speaker, room
+# quiet, nothing else playing.
+sudo jasper-aec-commission
+
 sudo /opt/jasper/.venv/bin/jasper-doctor | grep -E '(Audio profile|AEC bridge|XVF)'
-# Expect four "✓" lines:
-#   AEC bridge service       running (software AEC3 enabled)
-#   Audio profile            requested=xvf_software_aec3, active=xvf_software_aec3, ...
-#   XVF firmware 6-ch        capture is 6-channel
-#   XVF mixer state          all 6 capture channels open
 ```
+
+Healthy box: all four rows "✓", with **Audio profile** reporting the chip-AEC
+profile (`xvf_chip_aec`) both requested and active, and **AEC bridge service**
+forwarding the chip beam with WebRTC AEC3 bypassed. Short of that, **Audio
+profile** reads `warn` and carries the reconciler's own `reason=` and
+`action=` — the system is waiting on you, not broken. Do what `action=` says,
+then re-read the rows. The named waits:
+
+| Doctor says | What it means | What to do |
+|---|---|---|
+| `state=commission_required` | No stored alignment matches this hardware + output identity | `sudo jasper-aec-commission` |
+| `state=deferred` | `jasper-outputd` hasn't loaded the current output declaration | Wait for it to restart, then re-run the reconciler |
+| `state=unavailable` | Firmware, mic geometry, or output DAC isn't one chip-AEC supports | Fix that, then re-run the reconciler |
 
 #### Why the reconciler step matters
 
