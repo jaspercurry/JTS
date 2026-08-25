@@ -904,6 +904,7 @@ coexistence window; the old swap machinery dies whole.
 | 7g | **Move `docs/calibration-agent/` (12 files / 1,356 lines) out of `docs/` entirely.** It is runtime product input, resolved at run time from three search roots by `calibration_agent/tools.py`. Its residence in `docs/` is what forces every doc rule to make an exception for it. `07` calls this the single highest-leverage item in its section — and it is a code change, not a doc change. | code |
 | 7h | Guards **7,436 → ~600**. Delete `MAX_LINES_BY_PATH` and its 1,439-line comment block (`test_lint_contracts.py` is 2,159 lines, **87.9% comments**, grew 61 → 2,159 in ten weeks, **7 of 8 ceilings at exactly zero slack**, **1 confirmed catch in 60 commits — outcome: ceilings raised**, and 13 of the last 60 commits were forced to edit it). Delete `test_doc_staleness_sweep_20260604.py` (167), `test_docs_handoff_freshness.py` (180), `test_crossover_v2_measurement_doc_pins.py` (336 lines and a 4-path AST resolver to pin 2 sentences — delete the restatement instead, which is the doc's own instruction). **Keep** `test_package_enumeration_contract.py`, `test_measurement_integrity_floor_contracts.py`, the two code-vocabulary tests, and everything pinning the 5 clamps. Replace the ratchet with **one un-ratcheted assertion at a round number nobody edits** — fires once, cannot be paid off with a paragraph. **RE-BASELINE — DONE (§6 R9b).** The governance-reset branch already deleted `test_agents_md_toc.py` (108) and `test_doc_staleness_sweep_20260604.py` (167) — **275 lines banked**, so this row is **−6,561**, not −6,836. It did **NOT** touch `test_lint_contracts.py`, `test_docs_handoff_freshness.py`, or `test_crossover_v2_measurement_doc_pins.py`; all three remain ours to delete. *(One clause for the executing session: `07`'s 22-test guard slice was the tuning slice, and the ToC test was not separately enumerated in it — confirm the 108 sits inside the 7,436 before booking the full 275.)* | **−6,561** |
 | 7j | **Demote the #2935 topology-staleness block** (ruling S10's worked example, and this program paid for it TWICE this week). Today, entering `driver_style` — **metadata** — rotates `topology_config_fingerprint`, the box goes `blocked` / `active_baseline_topology_changed`, and **a v2 measure session refuses to open** even though the edit provably does not affect the compiled graph for that role. After this: **playback continues on the applied graph, measuring continues**, and the fact surfaces as **one loud `event=` plus a doctor line** — *"topology changed since the applied baseline; re-mint when convenient."* **The narrow carve, and it is the only one:** a **DECLARED-CAP change that makes the currently-applied graph exceed the new limit** is clamp territory and may gate. **Metadata never does.** **Verify on the box that a metadata edit no longer blocks a measure session, and that the doctor line appears** — **sanctioned S11 validation act 5**. | a block becomes a disclosure |
+| 7k | **Small docs — the guide's stale Adoptions header.** `docs/crossover-design-guide-deep-research-2026-08-19.md` claims four adoptions in the present tense and **none of the four exists in the tree** — the measured-directivity bounds, the three-source precedence, the DI-continuity objective term, and the "slope-aware distortion-informed tweeter floor" were all to live in `candidate_space.py`, deleted with `search.py` and `objective.py` at `a31f1fa24` (#2832). `tuning-master-plan.md` and `llm-operator-runbook.md` both record the deletion correctly; this header is the sole stale claim, and R-4 must not import it. **Already dispatched as a separate small docs PR — do not re-do it**; listed so the plan does not double-book the fix. | `13 §H8` |
 
 **Wave 7i is DROPPED, and the reason is self-demonstrating.** It proposed adding
 `07`'s rule to AGENTS.md — *a doc may state a fact once; if a second doc needs it,
@@ -1000,7 +1001,7 @@ fresh session does not re-litigate them.
 |---|---|---|
 | **S1** | **Vocabulary: `measure` · `analyze` · `recommend` · `save`** | One vocabulary, not two layers — the engine's verbs **are** the loop's language, in words anyone would understand. *"Measuring is measuring"*: baseline, re-measure and candidate-check are one parameterized verb, one implementation, no duplication. *"Propose and prescribe and recommend are the same thing"* — the final recommendation *"is just now got more information."* **The plain word wins.** The owner also retired the slogan that had been the argument for calling it `propose`: *"'predictions propose, measurements dispose' — what does that mean? …That is a stupid thing, but let's turn it to recommend and keep it simple language that anyone would understand."* The motto's **sense** is kept and said plainly — *the LLM recommends; the measurement decides* — and wave 7a0 rewrites the doctrine's §2 accordingly. Run and Collect are *"just back to measure again."* Saving *"is simple."* **This overrules `00 §3.5`'s six-steps-plus-Run recommendation, which this draft carried before the ruling.** The engineering fact under that recommendation survives, restated: the play transaction is a **named internal module inside `measure`** with its own contract — a real code boundary, not a vocabulary item, because pipeline mechanics are *"just the mechanics of how we execute the verbs… the LLM doesn't really care about"* them. Wave 7a0 rewrites the doctrine's §1 loop to **measure → analyze → recommend → loop → save**. |
 | **S2** | **#2202: FIX it.** | *"2202 does seem like it should be fixed."* The commissioning lane is repaired, not routed around — which flips wave 4g from the deletion path to the **producer** path, and withdraws a −2,089-line deletion this plan had booked. |
-| **S3** | **`DriverResponse`: bank phase too.** | *"When we take a measurement, it should just be easy to get all the information we need… right now, let's just save the information."* Overrides fragment `02`'s *"magnitude now, phase behind a flag."* **The honest counter-argument stays on the record:** today nothing in the stack reads phase at all (`correction/interop.py:56-60`; REW exports emit a literal `0.000000` phase column), so this is banking for a forward model that does not yet exist. Size sanity: the cloud path already banks 89 points per position at 1/12 octave. **Addendum:** measurement management — sessions, browsing, deletion structure — is explicitly **future scope**, not this plan. |
+| **S3** | **`DriverResponse`: bank phase too.** | *"When we take a measurement, it should just be easy to get all the information we need… right now, let's just save the information."* Overrides fragment `02`'s *"magnitude now, phase behind a flag."* **The counter-argument stays on the record, CORRECTED by `13 §H3-a` — the draft version of this line was too strong.** Not *"nothing reads phase"*: **phase is computed and consumed in-process every round** (`DriverResponse.complex_tf` is a full complex transfer function, read by `crossover_v2/intervention.py`, `forward_model.driver_plants` and `spatial.lateral_pose_curve`; `compose_linearized_prediction` exists *because* magnitude-only measured ~2.0 dB worse). **What is missing is PERSISTENCE — and that is exactly what 4a fixes**: `complex_tf` has zero serializers, so every re-analysis re-derives phase from WAVs, and the forward model can never run from the bank. The real residual caveat is narrower: REW exports emit a literal `0.000000` phase column, and mic calibration is magnitude-only, so *absolute* phase carries the mic's own uncorrected response — common-mode and self-cancelling for relative cross-driver work inside one capture. *(Correcting this in place matters: a fresh session reading the old parenthetical would conclude phase is unused and might drop 4a as speculative.)* Size sanity: the cloud path already banks 89 points per position at 1/12 octave. **Addendum:** measurement management — sessions, browsing, deletion structure — is explicitly **future scope**, not this plan. |
 | **S4** | **Net-negative accounting.** | End-state deletion is the bar; temporary adds during a wave are fine. Hard rule: *"we're not investing in systems we're going to be deleting"* — no throwaway scaffolding. (Wave 1's test twin passes: it is permanent infrastructure for the permanent engine.) |
 | **S5** | **The old path dies immediately.** | *"The old path should die right after we've got the new one in… fallbacks aren't a thing. We're not going to have duplication… deleting old systems whole hog."* Build new → prove → delete old, inside one wave. Every "old route" and "session flag" in §3 is a **proof bracket**, never a fallback. |
 | **S6** | **The duck: dissolved, not decided.** | The whole volume-dance mechanism class is plumbing the LLM never sees. The engine changes configs without the dance; a simple pipeline-health check may remain; the gymnastics go. Presented in wave 6 as **design**, with the no-pop check as its evidence step and the real-review gate retained. |
@@ -1062,7 +1063,7 @@ nothing about whether *we* merge a wave before its evidence lands, and we do not
 | 7 | **Net lines at the END STATE** (ruling S4) | — | **NEGATIVE. Stated floor: −90,000.** Table below. Temporary adds during a wave do not count against this; scaffolding that would need deleting is not built at all. |
 | 8 | **The class-A suite** | 149 files / 126,663 lines | **green**, running against the new engine. Reference: 410 passed / 24 skipped / 10.6 s across three flagships at `e064fa43d`. |
 | 9 | **The baseline campaign reproduced** — *an instrument-validation act, not a measurement campaign* (S11) | `captures/postfix-baseline-2026-08` r1 + r2 | re-run on the new engine, **within the campaign's own measured noise floor: worst round-to-round change ≤ 0.37 dB**, 16/16 captures with the fader held, 0 glitched captures. The report's own bar: *"anything smaller than about 0.4 dB is noise, not a result."* |
-| 10 | **Then the real thing** — **only after every row above closes** (S11) | — | the owner's acceptance bar, quoted from that report: *"the full candidate campaign — many candidates, each measured, one winner, and the winner re-measured."* Entire trusted range, multi-candidate, best-of final, re-measured. |
+| 10 | **Then the real thing** — **only after every row above closes** (S11) | — | the owner's acceptance bar, quoted from that report: *"the full candidate campaign — many candidates, each measured, one winner, and the winner re-measured."* Entire trusted range, multi-candidate, best-of final, re-measured. **And the campaign OPENS with instrument bring-up in roster order — R-1 → R-4, with R-5/R-6 when the owner provides hardware** (the INSTRUMENT ROSTER below). |
 
 **Row 7 has a measurement instrument now — stop hand-counting.** The audit program
 is building **`scripts/right-size-report.sh`** with committed baselines: per-zone
@@ -1080,17 +1081,77 @@ published its own noise floor. Reproducing it on the new engine, inside that
 floor, is what turns "the refactor didn't break anything" from an assertion into
 a measurement. Run it **before** row 10, not after.
 
-### For the campaign that follows — AFTER acceptance closes, per S11
+### THE INSTRUMENT ROSTER — the campaign's opening phase (after acceptance closes, per S11)
 
-**Nothing in this subsection runs during the refactor.** Ruling S11 reserves the
-hardware for five enumerated validation acts, and this is not one of them. Recorded
-here because ruling S8 unlocked it and it would otherwise be lost, but **no wave owns
-it** — it is a campaign-phase instrument, wave-agnostic, built after the engine lands
-and run only once acceptance row 10 opens.
+Owner ruling, 2026-08-25: **"we need a comprehensive suite of tools to properly
+diagnose and prescribe our speakers."** This is that suite, ranked by
+`13-first-principles-gap-audit.md`'s cost-to-goal order — cost to the two things
+JTS actually does with measurement, **VERIFY** and **LINEARIZE**, not distance
+from any textbook.
 
-**The reverse-polarity null test.** Invert one driver's polarity and re-measure.
-A **deep, symmetric null centred at Fc** verifies **level and time
-simultaneously** — one measurement, two answers. Reading it:
+**Nothing here runs during the refactor.** Ruling S11 reserves the hardware for
+five enumerated validation acts and **the roster is not one of them** — see the
+licence note at the end of this subsection. No wave owns these; they are built
+after the engine lands and run once acceptance row 10 opens.
+
+**Every instrument is a parameterization of the four verbs. Not one needs a new
+one.** That is the point worth recording, and it is now **the third time the
+settled vocabulary has absorbed something new without growing**: (1) the
+reverse-null needed no new verb, (2) MS-17's third mover needs no engine edit,
+and (3) this entire six-instrument roster lands as `measure` parameters and
+`analyze` metrics. A vocabulary that absorbs a comprehensive diagnostic suite
+without a fifth verb is a vocabulary that was cut at the right joints.
+
+| # | Instrument | Verb shape | What it unlocks | Evidence |
+|---|---|---|---|---|
+| **R-1** | **Reverse-null** — shipped in three parts, executor deleted, **never run** | `measure(polarity=inverted)` + `analyze(null_depth)` | The guide's standard level **and** time diagnostic in one act — *"one measurement, two answers"* — **and** one of the two probes `docs/attribution-stage-plan.md:349` declares **"both required"** for the live M1 question. **Smallest step, biggest diagnostic.** | `13 §2.5`, `§H6`, `§"gaps 1 and 5 are jointly blocking"` |
+| **R-2** | **Wider horizontal orbit + DI consumption** | `measure(positions=[…±30, ±45])`, then give the DI / per-angle model its **first production caller** in `analyze` | Measured **DI continuity at Fc** — the strongest listener-preference correlate the guide cites (Toole) — and the **−6 dB @ 30° ceiling, which is uncomputable from today's set**. Closes the doctrine's own violation: *"every mic movement gathers the maximum information it can support."* | `13 §2.2`, `§1h-angles`, `§H2` |
+| **R-3** | **Near-field → far-field splice** | one `analyze` function over **two record kinds that already exist** | Lowers the **357 Hz** trusted floor; unblocks the explicit baffle-step model; and is the **named discriminator** for the campaign's one unexplained **~810–1055 Hz** feature. | `13 §2.3`, `§1h`, `§1e-note` |
+| **R-4** | **Distortion as a design input** | a distortion-vs-**level** `measure` parameterization + the `analyze` consumer that turns it into a measured floor | Lets the tweeter floor be **confirmed or moved on evidence** instead of read off a datasheet — the guide's §1c method. | `13 §2.4`, `§H5` |
+| **R-5** | **Vertical axis** — **HARDWARE-GATED, owner decision** | `measure(position_axis=vertical, …)` — the record already carries the axis | The one axis our own code names as **the** crossover axis and then defers. It is the discriminator for the delay/polarity degeneracy, and **P5** in the "both required" pair. | `13 §2.1`, `§1f`, `§H1-b`, master-plan **E1** |
+| **R-6** | **Impedance** — **HARDWARE-GATED, owner decision** | a sense-resistor jig feeding `measure`; two schema slots already wait | Genuinely **low cost for JTS** — we design no passive network, and the one place impedance enters arithmetic takes a declared nominal and refuses to invent a default. | `13 §2.7`, `§H4` |
+
+**What each hardware gate is actually asking for.** R-5 needs **rig capability
+for elevation** — our code names the axis (`crossover_v2_flow.POSITION_ROLE_XOVR`,
+*"the axis the woofer/tweeter crossover lobes on"*) and then makes it unreachable
+(`position_angle_deg` raises; `pose_at_angle` calls elevation *"the ratified
+deferred axis"*; `CLOUD_VERIFY_POSE_PROMPTS` is *"vertical-free BY
+CONSTRUCTION"*). R-6 needs **a sense-resistor jig**. Until the owner provides
+either, **the corresponding blind spot stays stated and disclosed** — vertical
+lobing in particular — which is S10's spirit applied to a measurement we cannot
+take: it never silently degrades a verdict, it says what it could not see.
+
+**Three notes the roster must carry, or it imports a stale claim.**
+
+- **R-2's assets are all built and none are connected.** The arm reaches **±45°**,
+  a human **±80°**, `jasper-angle-capture` already accepts **arbitrary whole
+  degrees**, `flat_spec_views.directivity_table` already computes measured
+  per-angle directivity, and `forward_model.predict_sum` already predicts the
+  complex sum **per angle** — with **zero production callers**. The shipped walk
+  takes five angles and stops at ±22. In `13`'s words: *"We take off-axis captures
+  and then drop them on the floor for design purposes."* R-2 is a **program
+  change, not a build**.
+- **R-4 must not import the guide's stale Adoptions claim.** That header claims a
+  *"slope-aware distortion-informed tweeter floor"* was adopted; `13 §H5` found
+  **zero hits for `slope_aware`**, and the slope relationship runs the **opposite**
+  way — filter order is a second bound a steeper filter must **satisfy**, never a
+  lever that buys a lower corner. Build R-4 as *distortion-informed*, and leave
+  slope out of it. (See also the small-docs item in wave 7 that fixes the header.)
+- **R-6 collides with the deletion waves, and the owner should settle it in one
+  sentence.** `bass_extension/profile.py:impedance_import` and
+  `capture_relay/spec.py:build_bass_nearfield_spec` are fully validated, fully
+  serialized, and have **no producer and no consumer anywhere** — `13 §2.7` names
+  them as clean right-sizing candidates, while this roster calls them *"two schema
+  slots already wait."* Both readings are correct and they point opposite ways.
+  **Decide once:** delete them in wave 8 and re-add with the jig (the default the
+  deletion rules and "every write needs a reader" imply), **or** keep them
+  explicitly as declared-reserved with a note saying so. Silence resolves to
+  deletion.
+
+#### R-1's reading table, kept from the earlier draft
+
+Invert one driver's polarity and re-measure. A **deep, symmetric null centred at
+Fc** verifies **level and time simultaneously**.
 
 | What you see | What it means |
 |---|---|
@@ -1102,10 +1163,41 @@ simultaneously** — one measurement, two answers. Reading it:
 Plus the **in-phase sanity check**: correctly matched and time-aligned drivers
 sum to **+6 dB** at Fc.
 
-**It needs no new verbs**, which is the point worth recording: the polarity
-inversion is a **parameter on `measure`**, and null depth is a **metric in
-`analyze`**. A settled four-verb vocabulary absorbing a genuinely new instrument
-with zero vocabulary growth is the first real test of ruling S1, and it passes.
+*One number to carry into R-1 and R-5, corrected by `13 §H1-b`:* the stable
+measured fact for this speaker is the **direct-arrival gap, −405.7 ± 3.3 µs
+(n = 33)**, banked as `BASIS_US`. A **+314 µs** figure appears in the tree as
+**one of three mutually inconsistent optimizer outputs at one physical
+configuration**, cited there as evidence the automatic solver is unreliable —
+never as a measured fact. Do not quote it as one. *(Swept: it never entered this
+plan; recorded here so it cannot.)*
+
+#### Prior specification — cited, not competed with
+
+The roster does **not** mint a second planning authority. Its measurement content
+is already specified in **`docs/tuning-master-plan.md`**, the program's planning
+authority, and the roster **absorbs those unbuilt waves by reference**:
+
+| Master-plan item | Roster home |
+|---|---|
+| **Wave 4.2 — Nearfield splice v1** (fully specified: 0.055×D placement, the Struck & Temme enclosure bound, port scaling by √(Sp/Sd), baffle step from f₃ ≈ 115/W) | **R-3** |
+| **The 13-pose `baseline` program** (0°, ±10°, ±20°, ±30°, ±40° horizontal; 0°, ±10°, ±20° vertical; plus nearfield per woofer) | **R-2** (horizontal) + **R-5** (vertical, gated) |
+| **The `verify` program's reverse-null**, and **E1** (lobe-tilt resolution) | **R-1**, **R-5** |
+| **Wave 4.1 — Butterworth support** | **Not ranked.** `13 §2.6` rates it low cost and the guide itself makes LR4 the default. It stays with the master plan, unabsorbed and unhidden. |
+
+**Wave 7e's doc consolidation carries this forward**: when the master plan folds
+into the merged operational runbook and the engine design doc, these waves travel
+as specification, not as a competing roadmap. That is the "one planning authority
+per domain" rule being obeyed rather than restated.
+
+#### The licence is unchanged
+
+**S11's five sanctioned validation acts stay exactly five.** This roster is
+**post-acceptance** and adds nothing to that list. Each instrument must be
+**added to the sanctioned list explicitly before it runs** — which, after
+acceptance closes, is simply the campaign beginning. Nothing here may be read as
+mid-refactor hardware licence. And **none of it touches the audit program's
+zone**: the roster is measurement-program content, checked against §6 R5's
+boundary table and clean of it.
 
 ### The net-lines table
 
