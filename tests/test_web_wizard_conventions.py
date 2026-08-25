@@ -212,8 +212,20 @@ def test_migrated_json_body_reads_remain_after_csrf_guard():
 # below.
 _BESPOKE_CSRF_WIZARDS = {"wake_corpus_setup.py"}
 _CSRF_GUARD_CALL_RE = re.compile(
-    r"\bguard_mutating_request\s*\(|\b_check_csrf\s*\("
+    r"\bguard_mutating_request\s*\(|\b_check_csrf\s*\(|\bguard_mutating_host\s*\("
 )
+
+
+def _call_target_name(call: ast.Call) -> str | None:
+    """Resolve a Call's target name, bare (`f(...)`) or attribute
+    (`mod.f(...)`) — `guard_mutating_host` and `secrets.compare_digest`
+    are called in each shape."""
+    func = call.func
+    if isinstance(func, ast.Name):
+        return func.id
+    if isinstance(func, ast.Attribute):
+        return func.attr
+    return None
 
 
 def _mutating_handlers():
@@ -503,7 +515,9 @@ def test_every_wizard_mutating_handler_uses_the_csrf_chokepoint():
             )
             continue
         if path.name in _BESPOKE_CSRF_WIZARDS:
-            assert "_check_csrf" in seg, (
+            # Call syntax, not just a docstring/comment mention: match the
+            # invocation shape, same as _CSRF_GUARD_CALL_RE above.
+            assert re.search(r"\b_check_csrf\s*\(", seg), (
                 f"{path}::{name} lost its bespoke _check_csrf() call"
             )
             source = path.read_text()
@@ -512,13 +526,38 @@ def test_every_wizard_mutating_handler_uses_the_csrf_chokepoint():
                 if isinstance(node, ast.FunctionDef) and node.name == "_check_csrf"
             ]
             assert len(check_csrf_defs) == 1, f"expected one _check_csrf in {path}"
-            csrf_body = ast.get_source_segment(source, check_csrf_defs[0]) or ""
-            # A call, not just a docstring mention: match the invocation
-            # shape, same as _CSRF_GUARD_CALL_RE above.
-            assert re.search(r"\bguard_mutating_host\s*\(", csrf_body), (
+            csrf_def = check_csrf_defs[0]
+            csrf_calls = [
+                node for node in ast.walk(csrf_def) if isinstance(node, ast.Call)
+            ]
+            # AST-walk for a real Call node, not a regex over the source
+            # text — a docstring/comment reading "guard_mutating_host(handler)"
+            # must not satisfy this.
+            guard_calls = [
+                c for c in csrf_calls
+                if _call_target_name(c) == "guard_mutating_host"
+            ]
+            assert guard_calls, (
                 f"{path}::_check_csrf must call guard_mutating_host() first — "
                 "the shared Host/Origin allowlist axis is not part of the "
                 "bespoke-CSRF-scheme exception"
+            )
+            compare_calls = [
+                c for c in csrf_calls if _call_target_name(c) == "compare_digest"
+            ]
+            assert compare_calls, (
+                f"{path}::_check_csrf must compare the token with "
+                "secrets.compare_digest()"
+            )
+            # Ordering invariant guard_mutating_request's docstring documents
+            # (_common.py): the host/Origin guard runs before the token
+            # compare. AST line positions, not string indexes.
+            assert (
+                min(c.lineno for c in guard_calls)
+                < min(c.lineno for c in compare_calls)
+            ), (
+                f"{path}::_check_csrf must call guard_mutating_host() before "
+                "the compare_digest() token compare"
             )
             continue
         if "guard_mutating_request" not in seg:

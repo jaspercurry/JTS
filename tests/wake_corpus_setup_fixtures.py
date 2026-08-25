@@ -254,7 +254,14 @@ def _use_tmp_bridge_env(
     )
     return system_path, bridge_path
 
-def _mutating_status(port: int, method: str, path: str, token: str = "") -> int:
+def _mutating_status(
+    port: int,
+    method: str,
+    path: str,
+    token: str = "",
+    *,
+    extra_headers: dict[str, str] | None = None,
+) -> int:
     """Issue one POST/DELETE against the fixture-owned live server."""
     import http.client
 
@@ -262,6 +269,8 @@ def _mutating_status(port: int, method: str, path: str, token: str = "") -> int:
     headers = {"Content-Length": "0"}
     if token:
         headers["X-CSRF-Token"] = token
+    if extra_headers:
+        headers.update(extra_headers)
     conn.request(method, path, b"", headers)
     try:
         return conn.getresponse().status

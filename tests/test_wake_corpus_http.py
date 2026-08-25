@@ -106,6 +106,22 @@ def test_post_known_path_without_token_403s(running_server_port: int) -> None:
     assert _mutating_status(running_server_port, "POST", "/api/session") == 403
 
 
+def test_post_known_path_disallowed_host_403s(running_server_port: int) -> None:
+    """guard_mutating_host rejects on the Host axis even carrying a
+    token that would otherwise pass — the host guard runs before the
+    token compare (_check_csrf's documented ordering)."""
+    assert (
+        _mutating_status(
+            running_server_port,
+            "POST",
+            "/api/session",
+            token="test-token",
+            extra_headers={"Host": "evil.example"},
+        )
+        == 403
+    )
+
+
 @pytest.mark.parametrize(
     ("body", "content_length", "expected_error", "expected_reads"),
     [
