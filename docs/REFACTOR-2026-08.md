@@ -193,11 +193,12 @@ already open)**
 **Owner-decision gates (blocked until answered)**
 - [ ] #1738: wire or delete bass-extension bench half (decision + execution
       owned by the tuning program; verifier's negative-proof rides its PR)
-- [ ] capture-relay proportionality (~27K lines for phone-mic calibration)
-- [ ] experiments/usb-turntable: promote into jasper/ or accept the anomaly.
-      Either way it is the tuning program's robotic-arm driver: a path move
-      carries a notice line and the arm tooling gets re-verified before any
-      measurement campaign runs
+- [x] capture-relay proportionality — owner ruling 2026-08-25: KEEP;
+      revisit at campaign end with the right-size report deltas in hand
+- [x] experiments/usb-turntable — owner ruling 2026-08-25: anomaly ACCEPTED,
+      no path move (it is the tuning program's robotic-arm driver; a move
+      would force re-verification for zero behavior win). Its README now
+      records the acceptance
 - [ ] env-migrations fleet confirmation (unblocks Wave 2 item)
 
 ## Driving PRs (the conductor's standing duties)

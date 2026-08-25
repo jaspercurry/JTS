@@ -1,5 +1,11 @@
 # USB turntable control on JTS3
 
+> **Production tooling, deliberately under `experiments/`** — this drives
+> the turntable-based speaker measurement program and deploys to the Pi.
+> The owner accepted the path anomaly (2026-08-25 right-sizing campaign)
+> rather than force a move that would re-verify the arm tooling for no
+> behavior win.
+
 This is an experimental controller for the USB turntable on JTS3. Positioning
 remains manual and opt-in: there is no voice tool, measurement scheduler, or
 permanent polling daemon. The sole automatic behavior is a bounded one-shot
