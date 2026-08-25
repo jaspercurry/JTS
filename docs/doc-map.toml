@@ -842,7 +842,6 @@ code = [
   "deploy/jasper-correction-web.*",
   "docs/room-correction-information-design.md",
   "docs/active-crossover-information-design.md",
-  "docs/calibration-agent/**",
 ]
 docs = [
   "docs/HANDOFF-audio-measurement-core.md",
@@ -879,7 +878,6 @@ docs = [
   # signatures. Scan it when a prescriber/round-runner/arm-walk CLI surface,
   # a door's refusal vocabulary, or an exit-code contract changes.
   "docs/llm-operator-runbook.md",
-  "docs/calibration-agent/README.md",
   "docs/research/2026-06-19-active-crossover-calibration/README.md",
   "docs/research/2026-07-23-driver-linearization/README.md",
   "docs/research/2026-07-25-flat-linearization/README.md",

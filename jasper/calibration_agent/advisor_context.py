@@ -275,14 +275,20 @@ def _load_sound_profile(path: Path | None) -> dict[str, Any]:
 
 
 def _safe_doc_path(raw_path: Any) -> str | None:
+    """A corpus hit's path, kept relative to the corpus root.
+
+    ``tools.look_up`` already emits corpus-relative paths; this is the belt.
+    An absolute path — or one that climbs out of the corpus — carries the
+    filesystem layout into an LLM prompt and onto the wizard, so it is
+    reduced to its bare name.
+    """
+
     if not raw_path:
         return None
     path = Path(str(raw_path))
-    parts = path.parts
-    for idx in range(len(parts) - 1):
-        if parts[idx] == "docs" and parts[idx + 1] == "calibration-agent":
-            return Path(*parts[idx:]).as_posix()
-    return path.name
+    if path.is_absolute() or ".." in path.parts:
+        return path.name
+    return path.as_posix()
 
 
 def _policy_action(

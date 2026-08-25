@@ -6,7 +6,7 @@
 > operational truth. Current implementation truth lives in
 > [`docs/HANDOFF-correction.md`](../../HANDOFF-correction.md),
 > [`docs/HANDOFF-sound-preferences.md`](../../HANDOFF-sound-preferences.md),
-> and [`docs/calibration-agent/`](../../calibration-agent/).
+> and [`docs/calibration-agent/`](../../../jasper/calibration_agent/corpus/).
 
 ## Use Rules
 

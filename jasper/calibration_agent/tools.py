@@ -23,11 +23,11 @@ from . import advisor_context
 
 
 DEFAULT_SESSIONS_DIR = Path("/var/lib/jasper/correction/sessions")
-DEFAULT_CORPUS_CANDIDATES = (
-    Path.cwd() / "docs" / "calibration-agent",
-    Path("/home/pi/jts/docs/calibration-agent"),
-    Path(__file__).resolve().parents[2] / "docs" / "calibration-agent",
-)
+# Package resource, not documentation: the product reads this corpus at
+# runtime and injects it into an LLM prompt on the live /correction/ wizard.
+# It ships inside the package because install.sh rsyncs `jasper/` and nothing
+# else on a speaker -- there is no /opt/jasper/docs to search.
+DEFAULT_CORPUS_DIR = Path(__file__).resolve().parent / "corpus"
 
 
 class AgentToolError(RuntimeError):
@@ -52,12 +52,8 @@ def _read_json(path: Path) -> dict[str, Any] | None:
 
 
 def resolve_corpus_dir(explicit: Path | None = None) -> Path | None:
-    if explicit is not None:
-        return explicit if explicit.is_dir() else None
-    for candidate in DEFAULT_CORPUS_CANDIDATES:
-        if candidate.is_dir():
-            return candidate
-    return None
+    candidate = DEFAULT_CORPUS_DIR if explicit is None else explicit
+    return candidate if candidate.is_dir() else None
 
 
 def load_measurement_bundle(
@@ -287,7 +283,9 @@ def look_up(
                 title = line.lstrip("#").strip()
                 break
         out.append({
-            "path": str(path),
+            # Corpus-relative: an absolute path here reaches an LLM prompt and
+            # the wizard, and carries the filesystem layout with it.
+            "path": path.relative_to(corpus).as_posix(),
             "title": title,
             "score": score,
             "excerpt": _excerpt(text, terms),

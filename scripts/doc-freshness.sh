@@ -91,13 +91,11 @@ while IFS= read -r d; do classify_doc "$d"; done \
 if (( include_all )); then
   while IFS= read -r d; do docs+=("$d"); done \
     < <(find . -maxdepth 1 -name '*.md' -type f 2>/dev/null | sed 's|^\./||' | sort)
-  # No -maxdepth: nested non-HANDOFF docs are 92 of the 208 `.md` files under
-  # docs/ (2026-08-02) and were entirely invisible to this report while this
-  # find was capped at depth 1 — including docs/calibration-agent/**, which
-  # the product READS at runtime and whose footers are ~68-70 days old. Being
-  # invisible, they could never have tripped the threshold at ANY age; that is
-  # the defect, not the current age. `--all` already promises "top-level +
-  # non-HANDOFF docs/"; capping the depth quietly broke that promise.
+  # No -maxdepth: nested non-HANDOFF docs were entirely invisible to this
+  # report while this find was capped at depth 1. Being invisible, they could
+  # never have tripped the threshold at ANY age; that is the defect, not their
+  # age. `--all` already promises "top-level + non-HANDOFF docs/"; capping the
+  # depth quietly broke that promise.
   #
   # Archival trees are pruned by `classify_doc` above (issue #2064, owner
   # ruling 2026-08-17). They are excluded by directory, not by per-file
