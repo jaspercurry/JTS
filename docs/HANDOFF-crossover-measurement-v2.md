@@ -23,18 +23,16 @@ correction, applies it on an explicit tap, and measures again to grade what
 changed — repeating that apply-and-re-measure round, up to three times, while
 the result is still getting flatter (#2602).
 
-- **Two tiers, chosen every session** on the `/correction/` wizard. At the
-  shipped defaults `TIER_FULL` is **9 captures — 3 then 6**, and
-  `TIER_EXPRESS` is **4 — the same 3, then 1**. The tiers differ in
-  **stage 2 only**: stage 1 is 3 captures for both. Do not restate those
-  numbers anywhere a plan change cannot reach them —
-  `tier_display_info()` derives them from the plans themselves and is what
-  the household-facing chooser reads (`TIER_FULL` / `TIER_EXPRESS` /
+- **Two tiers, chosen every session** on the `/correction/` wizard. Both run
+  the same stage 1 and differ in **stage 2 only** — Full takes the longer
+  stage-2 cloud, Express the shorter one. The capture counts are not written
+  here: `tier_display_info()` derives them from the plans themselves and is
+  what the household-facing chooser reads (`TIER_FULL` / `TIER_EXPRESS` /
   `DEFAULT_TIER` / `tier_display_info`, in
   [`crossover_v2_flow.py`](../jasper/active_speaker/crossover_v2_flow.py)).
   This doc describes Full unless it says otherwise.
-- **A third tier, `TIER_REMOTE`, is API-only and experimental.** It is
-  **9 — the same 3, then 6**: Full's walk driven by an external mic
+- **A third tier, `TIER_REMOTE`, is API-only and experimental.** It is Full's
+  own shape and counts — Full's walk driven by an external mic
   positioner instead of by hand, stating every pose as an ANGLE. It drops
   nothing: the post-apply pose set has been vertical-free by construction
   since the 2026-08-24 geometry ruling, so there is no pose a positioner
@@ -153,7 +151,7 @@ The class they were named after — `CrossoverV2Conductor` — was dissolved in
 The journey is **two relay sessions** with an untimed household decision
 between them. Both use `crossover_v2:session` / `crossover_v2:verify`.
 
-**Stage 1 — `POST /correction/crossover/v2/session`, 3 captures — the same 3 on both tiers.**
+**Stage 1 — `POST /correction/crossover/v2/session`, the same captures on both tiers.**
 
 | index | phase | what it is |
 |---|---|---|
@@ -215,13 +213,14 @@ particular hardware, and the vocabulary is *remote* / *external positioner* /
 
 | | Full | Remote |
 |---|---|---|
-| stage 1 | 3 captures | the same 3 |
-| stage 2 | 6 captures | the same 6 |
+| stage 1 | the shared opening captures | the same |
+| stage 2 | the post-apply cloud | the same |
 | per-entry advance | `AUTO_ADVANCE_TAP` | `AUTO_ADVANCE_COUNTDOWN` + `countdown_s` |
 | pose copy | "12 cm to the LEFT of the mark" | "Turn the microphone to −7°" |
 | stage-2 anchor | carries `confirm_title` (a tap) | omits it — the gate makes that promise |
 
-`remote_cloud_verify_positions()` **derives** the 6 rather than stating it: it
+`remote_cloud_verify_positions()` **derives** the stage-2 count rather than
+stating it: it
 is the longest prefix of `CLOUD_VERIFY_POSE_PROMPTS` containing no
 `POSITION_ROLE_XOVR` pose, so editing that table moves the walk instead of
 stranding it. Since the 2026-08-24 geometry ruling that table is vertical-free
@@ -6462,11 +6461,11 @@ on any fact in them.
 
 **Addendum, 2026-08-14 — the remote tier.** "The remote tier" section and the
 `TIER_REMOTE` bullet in "What it is" were written against the code that shipped
-them and verified by test: the capture counts are pinned to
-`tier_display_info()` by `test_doc_tier_capture_counts_match_tier_display_info`,
-and the behavioural claims (the derived walk, the angles, the gate, the dropped
+them and verified by test: the behavioural claims (the derived walk, the
+angles, the gate, the dropped
 confirm tap, the disclosure, the geometry-retake refusal) are pinned by
-`tests/test_crossover_v2_remote_tier.py`. The three-gesture start and the
+`tests/test_crossover_v2_remote_tier.py`. No capture count is restated in this
+doc, so none needs a pin. The three-gesture start and the
 rejected-capture stall were re-derived during the adversarial review of
 PR #2505 — the acknowledgement gate from `capture-page/js/render.js`
 (`acceptedAcknowledgement`, and the `refs.acknowledgement` block that holds
