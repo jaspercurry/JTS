@@ -2804,9 +2804,7 @@ not a re-read of the doc, so `Last verified` stays unbumped. See
 Doc-shape fix (2026-08-23): this file carried the hybrid shape — live spine,
 historical appendix — in bespoke wording, so the appendix's callout now opens
 with the canonical `> **Status: historical.**` tag and the title carries the
-orientation note that names the boundary (AGENTS.md documentation-paradigm
-rule 10). Until then `tests/test_docs_handoff_freshness.py` filtered this file
-out of its tag-placement check entirely. Scope of the verification recorded
+orientation note that names the boundary. Scope of the verification recorded
 below is unchanged — the current-truth spine was re-read on 2026-08-04 and the
 historical appendix was not, per the paradigm's rule that historical sections
 are deliberately not kept in sync with code — so `Last verified` stays

@@ -198,10 +198,8 @@ DOCS_TEST_FILES = (
     "tests/test_capture_page_js.py",
     "tests/test_check_rust_script.py",
     "tests/test_ci_classifier.py",
-    "tests/test_crossover_v2_measurement_doc_pins.py",
     "tests/test_deep_audit_ledger.py",
     "tests/test_docs_assistant_width_phrasing.py",
-    "tests/test_docs_handoff_freshness.py",
     "tests/test_docs_impact.py",
     "tests/test_docs_linkcheck.py",
     # Discovered because it reads experiments/e0-capture/README.md -- a real

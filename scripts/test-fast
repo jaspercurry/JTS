@@ -355,8 +355,13 @@ else
   echo "==> no direct changed-file test mapping found"
 fi
 
+# test_lint_contracts.py scans the WHOLE tree (broad-except suppression
+# markers, the noqa ceilings, the commissioning line ceilings, unclosed event
+# loops in tests/), so no changed-file mapping ever selects it — any Python
+# diff could break it while this lane stayed green. It costs ~4s.
 echo "==> pytest always-on fast guards"
-lane_pipe_pytest "${phase_tmp}" "${pytest_bin}" -q --tb=short tests/test_dependency_groups.py "$@"
+lane_pipe_pytest "${phase_tmp}" "${pytest_bin}" -q --tb=short \
+  tests/test_dependency_groups.py tests/test_lint_contracts.py "$@"
 _lane_passed_total=$(( _lane_passed_total + $(lane_extract_passed_count "${phase_tmp}") ))
 
 # LAST statement, deliberately: every phase the lane promises has now run, so

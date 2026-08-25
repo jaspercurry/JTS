@@ -249,7 +249,7 @@ def _changes(*paths: str, status: str = "M"):
         (
             "docs-companion-test-only",
             "pull_request",
-            _changes("tests/test_docs_handoff_freshness.py"),
+            _changes("tests/test_docs_impact.py"),
             "full",
         ),
         (
