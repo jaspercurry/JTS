@@ -3950,18 +3950,25 @@ below still grades the correction itself on this candidate.
 `_publish_measure_candidate` returned `auto_apply: True` on the reasoning that
 MEASURE's trust gates had already decided — true about the CAPTURE, silent
 about the CORRECTION built from it. (That key is DELETED since PR-T3: nothing
-auto-applies.) `_assert_accountable` runs PR-L4's items 1 and 2 between the
-candidate build and the publish — item 1 the committed pair's realized
-inter-driver level, item 2 the spec-graded prediction — because that is where
-the numbers they grade exist. **Neither refuses.** Item 2 stopped with the nanny
-burn-down ([`measurement-loop-doctrine.md`](measurement-loop-doctrine.md)
-deviation (c)) and item 1 with the realized-level demotion (deviation (i)); both
-now bank what they measured — `event=…_prediction_gate` carrying an
+auto-applies.) `_assert_accountable` runs THREE checks between the
+candidate build and the publish, most-specific-first — the level-frame
+agreement of the two per-driver level estimates, then PR-L4's item 1 (the
+committed pair's realized inter-driver level) and item 2 (the spec-graded
+prediction) — because that is where the numbers they grade exist. **None of the
+three refuses**; the module's own docstring is "Three disclosures and no
+refusals, most-specific-first". The agreement check flags the CAPTURE as
+retriable on `event=…_level_estimator_finding` (WARNING) and proceeds; item 2
+stopped refusing with the nanny burn-down
+([`measurement-loop-doctrine.md`](measurement-loop-doctrine.md) deviation (c))
+and item 1 with the realized-level demotion (deviation (i)), and both now bank
+what they measured — `event=…_prediction_gate` carrying an
 `accountability.LEDGER_*` value, `event=…_level_match_finding` plus a level-frame
-finding — and the round proceeds to the review screen. PR-L5's level-frame
-agreement gate, which used to run first here, was deleted outright by the
-single-datum-owner migration (#2609), so the "three pre-apply gates" this
-paragraph once described are now two, and both are disclosures.
+finding. The round proceeds to the review screen either way. What the
+single-datum-owner migration (#2609) deleted was the agreement check's REFUSAL
+ARM, not the check: that arm asked one more question — does the realized-level
+check pass on the pair about to ship? — and refused under item 1's own
+`driver_levels_disagree` code, so its deletion "removed a second owner of one
+refusal, not a stop", and the check itself still runs first on every round.
 
 What that leaves refusing in this flow: the four `correction_*` rows below, which
 fire AFTER the apply from the delta probe, and the admission seam, which refuses
