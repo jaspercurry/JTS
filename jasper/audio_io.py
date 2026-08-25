@@ -36,9 +36,9 @@ from .tts_routing import FANIN_TTS_SOCKET
 # (_log_audio_open_failure, MicCapture.__aenter__) so the module can be
 # imported on a dev machine, hardware-free tests can parse it, and the
 # lazy-import guards in test_lazy_imports.py can run.
-# The annotations on _stream attributes use `sd.InputStream` /
-# `sd.RawOutputStream`, but `from __future__ import annotations` above
-# makes those strings — never evaluated.
+# The annotation on MicCapture._stream uses `sd.InputStream`, but
+# `from __future__ import annotations` above makes that a string —
+# never evaluated.
 
 logger = logging.getLogger(__name__)
 
@@ -454,7 +454,6 @@ class TtsPlayout:
 
     def __init__(
         self,
-        device: str | int,
         output_rate: int = INPUT_RATE,
         gain_db: float = 0.0,
         *,
@@ -469,23 +468,19 @@ class TtsPlayout:
                 f"output_rate {output_rate} must be an integer multiple "
                 f"of {self.INPUT_RATE} (upsample ratio must be exact)"
             )
-        self._device = device
         self._output_rate = output_rate
         self._upsample = output_rate // self.INPUT_RATE
-        # Linear gain factor applied before resample/write. Updated at
-        # runtime via set_gain_db when a caller explicitly changes it.
         # Initial value is the floor (effectively silent) so the daemon
         # cannot accidentally play TTS loud during the brief window
         # between TtsPlayout construction and the first configured
         # gain. Until then we'd rather have inaudible TTS than blast.
-        self._gain_linear = float(10 ** (self.MIN_TTS_GAIN_DB / 20.0))
         self._gain_db = self.MIN_TTS_GAIN_DB
         # Cumulative pacing-sleep time since the last take_paced_sec().
         # Only the outputd/fan-in transport paces (a device-paced transport
         # wouldn't need to), but the field lives here so every transport
         # answers take_paced_sec() and callers stay transport-agnostic.
         self._paced_total_sec = 0.0
-        self._stream: sd.RawOutputStream | None = None
+        self._stream: _OutputdStreamAdapter | None = None
         # One-shot warning latch: if a caller invokes write() before
         # entering the async context (so _stream is still None), log
         # once. The class is a context manager and the underlying
@@ -506,8 +501,8 @@ class TtsPlayout:
     def set_gain_db(self, db: float) -> None:
         """Update TTS gain. Non-finite inputs are rejected and very low
         finite values floor to the mute-equivalent minimum. Single-float
-        assignment is atomic under the GIL, so no lock is needed for the
-        read path in write()."""
+        assignment is atomic under the GIL, so no lock is needed for
+        concurrent reads of `gain_db`."""
         try:
             db = float(db)
         except (TypeError, ValueError):
@@ -519,14 +514,6 @@ class TtsPlayout:
         clamped = max(self.MIN_TTS_GAIN_DB, db)
         if clamped == self._gain_db:
             return
-        # 0.0 dB -> 1.0 linear; floor -> ~0.001 linear. Computed once
-        # per change, not per write. With no max-gain ceiling, extremely
-        # large finite debug/test values can overflow the exponent; keep
-        # them representable as inf so the sample path clips explicitly.
-        try:
-            self._gain_linear = float(10 ** (clamped / 20.0))
-        except OverflowError:
-            self._gain_linear = float("inf")
         self._gain_db = clamped
         # DEBUG (not INFO): the active TTS IPC owner publishes the richer
         # assistant loudness decision telemetry, and this low-level floor
@@ -1248,8 +1235,9 @@ class _OutputdStreamAdapter:
         return ack
 
     def start(self) -> None:
-        # The stream remains open after FLUSH. This mirrors the
-        # sounddevice RawOutputStream.start() call TtsPlayout.flush uses.
+        # No-op: the stream stays open after FLUSH_SYNC. Satisfies the
+        # abort()+start() shape OutputdTtsPlayout.flush falls back to
+        # when a stream has no flush_sync.
         return None
 
     def close(self) -> None:
@@ -1289,7 +1277,6 @@ class OutputdTtsPlayout(TtsPlayout):
                 f"got output_rate={output_rate}"
             )
         super().__init__(
-            device=socket_path,
             output_rate=output_rate,
             gain_db=gain_db,
             drain_tail_sec=drain_tail_sec,
@@ -1389,7 +1376,7 @@ class OutputdTtsPlayout(TtsPlayout):
     async def __aenter__(self) -> "OutputdTtsPlayout":
         from scipy.signal import resample_poly  # noqa: F401  (pre-warm only)
 
-        self._stream = await self._connect_stream_adapter()  # type: ignore[assignment]
+        self._stream = await self._connect_stream_adapter()
         return self
 
     async def _current_outputd_stream(self):
@@ -1424,7 +1411,7 @@ class OutputdTtsPlayout(TtsPlayout):
                         level=logging.WARNING,
                     )
                     return None
-                self._stream = stream  # type: ignore[assignment]
+                self._stream = stream
         return stream
 
     def set_gain_db(self, db: float) -> None:
@@ -1816,7 +1803,6 @@ class OutputdTtsPlayout(TtsPlayout):
 def make_tts_playout(
     *,
     transport: str,
-    device: str | int,
     output_rate: int,
     gain_db: float,
     drain_tail_sec: float,
@@ -1828,10 +1814,10 @@ def make_tts_playout(
 ) -> TtsPlayout:
     """Construct the selected TTS playout transport.
 
-    ``outputd`` is the supported runtime path. The old ``sounddevice``
-    playout class remains for direct unit tests and pre-outputd archaeology,
-    but this outputd-loudness tree must not silently route runtime voice audio
-    through a fixed-gain PortAudio path.
+    ``outputd`` is the only implementation `TtsPlayout` has: the base class
+    is a typed contract (stub bodies that raise `NotImplementedError`) and
+    `OutputdTtsPlayout` overrides all of it. ``sounddevice`` is refused here
+    rather than accepted and routed nowhere.
     """
     if transport == "sounddevice":
         raise RuntimeError(

@@ -29,7 +29,6 @@ from __future__ import annotations
 
 import asyncio
 import logging
-import math
 import socket
 import threading
 import time
@@ -47,7 +46,7 @@ from ._async_wait import wait_signalled
 
 def _make() -> TtsPlayout:
     """Construct without entering the async context (no ALSA open)."""
-    return TtsPlayout(device="dummy", output_rate=48000, gain_db=-8.0)
+    return TtsPlayout(output_rate=48000, gain_db=-8.0)
 
 
 class _CaptureOutputdStream:
@@ -121,6 +120,19 @@ class _CaptureOutputdStream:
         pass
 
 
+def _make_outputd(*, drain_tail_sec: float = 0.0) -> OutputdTtsPlayout:
+    """OutputdTtsPlayout wired to a capturing fake stream, bypassing
+    __aenter__ (no real socket)."""
+    p = OutputdTtsPlayout(
+        socket_path="/tmp/outputd-test.sock",
+        output_rate=48000,
+        gain_db=-8.0,
+        drain_tail_sec=drain_tail_sec,
+    )
+    p._stream = _CaptureOutputdStream()  # type: ignore[assignment]
+    return p
+
+
 def _silence_pcm(*, sec: float, rate: int = TtsPlayout.INPUT_RATE) -> bytes:
     """Build a mono int16 PCM blob of the requested duration. The
     drain math keys off byte count, not amplitude, so all-zeros is
@@ -132,7 +144,7 @@ def _silence_pcm(*, sec: float, rate: int = TtsPlayout.INPUT_RATE) -> bytes:
 def test_constructor_clamps_through_set_gain_db():
     """Whatever the env passes, the constructor routes it through the
     same clamp/validate path as runtime updates."""
-    p = TtsPlayout(device="dummy", output_rate=48000, gain_db=-8.0)
+    p = TtsPlayout(output_rate=48000, gain_db=-8.0)
     assert p.gain_db == -8.0
 
 
@@ -187,17 +199,6 @@ def test_garbage_inputs_held():
     assert p.gain_db == -12.0
 
 
-def test_linear_gain_matches_db():
-    """Sanity-check the dB → linear conversion at the boundaries."""
-    p = _make()
-    p.set_gain_db(0.0)
-    assert math.isclose(p._gain_linear, 1.0, rel_tol=1e-9)
-    p.set_gain_db(6.0)
-    assert math.isclose(p._gain_linear, 10 ** (6.0 / 20.0), rel_tol=1e-9)
-    p.set_gain_db(-20.0)
-    assert math.isclose(p._gain_linear, 0.1, rel_tol=1e-9)
-
-
 def test_no_fixed_max_tts_gain_ceiling():
     """Regression: the old -6 dB ceiling must not come back and fight
     assistant loudness matching."""
@@ -238,8 +239,7 @@ def test_drain_deadline_includes_chunk_and_tail():
     The ring deadline itself is set directly here — populating it as
     audio is written is the write path's job, which is subclass-owned
     and pinned separately below against OutputdTtsPlayout."""
-    p = _make()
-    p._drain_tail_sec = 0.05
+    p = TtsPlayout(drain_tail_sec=0.05)
     ring_end = time.monotonic() + 0.4
     p._ring_end_monotonic = ring_end
     assert p.expected_drain_at() == pytest.approx(ring_end + 0.05, abs=1e-9)
@@ -294,22 +294,14 @@ async def test_wait_drained_requests_the_full_remaining_deadline(monkeypatch):
 # The ring-population side of the drain primitive (deadline chaining across
 # busy writes, resetting when stale, the empty-write guard) is subclass-owned
 # — OutputdTtsPlayout is the only production write path — so these drive it
-# directly instead of the base class, matching the fixture pattern the
-# outputd-specific tests below use (a capturing fake stream, no real socket).
+# directly instead of the base class, via _make_outputd.
 
 
 async def test_drain_appends_when_speaker_busy():
     """Back-pressure case: two writes in quick succession queue
     end-to-end. Deadline = now + 2 * chunk_duration, not now + chunk
     (which would be the wrong "stream restarted from idle" answer)."""
-    p = OutputdTtsPlayout(
-        socket_path="/tmp/outputd-test.sock",
-        output_rate=48000,
-        gain_db=-8.0,
-        drain_tail_sec=0.0,
-    )
-    stream = _CaptureOutputdStream()
-    p._stream = stream  # type: ignore[assignment]
+    p = _make_outputd()
     chunk_sec = 0.4
     before = time.monotonic()
     await p.write(_silence_pcm(sec=chunk_sec))
@@ -327,14 +319,7 @@ async def test_drain_anchors_fresh_after_idle_gap(monkeypatch):
     Without this, an idle daemon would push every subsequent end-of-turn
     further into the future based on every cue / chirp ever written.
     """
-    p = OutputdTtsPlayout(
-        socket_path="/tmp/outputd-test.sock",
-        output_rate=48000,
-        gain_db=-8.0,
-        drain_tail_sec=0.0,
-    )
-    stream = _CaptureOutputdStream()
-    p._stream = stream  # type: ignore[assignment]
+    p = _make_outputd()
     chunk_sec = 0.1
     await p.write(_silence_pcm(sec=chunk_sec))
     first_deadline = p.expected_drain_at()
@@ -356,14 +341,7 @@ async def test_drain_unchanged_after_empty_write():
     """Defensive: a zero-byte PCM write must not corrupt the drain
     sentinel. Without the early-return guard, ``len(pcm)=0`` would
     set ``_ring_end_monotonic = now + 0``, masking the idle state."""
-    p = OutputdTtsPlayout(
-        socket_path="/tmp/outputd-test.sock",
-        output_rate=48000,
-        gain_db=-8.0,
-        drain_tail_sec=0.0,
-    )
-    stream = _CaptureOutputdStream()
-    p._stream = stream  # type: ignore[assignment]
+    p = _make_outputd()
     await p.write(b"")
     assert p.expected_drain_at() == 0.0
 
@@ -372,7 +350,6 @@ def test_make_tts_playout_rejects_sounddevice_runtime_transport():
     with pytest.raises(RuntimeError, match="pre-outputd revision"):
         make_tts_playout(
             transport="sounddevice",
-            device="dummy",
             output_rate=48000,
             gain_db=-8.0,
             drain_tail_sec=0.0,
@@ -382,7 +359,6 @@ def test_make_tts_playout_rejects_sounddevice_runtime_transport():
 def test_make_tts_playout_can_select_outputd_transport():
     p = make_tts_playout(
         transport="outputd",
-        device="ignored",
         output_rate=48000,
         gain_db=-8.0,
         drain_tail_sec=0.0,
@@ -397,7 +373,6 @@ def test_make_tts_playout_rejects_unknown_transport():
     with pytest.raises(ValueError, match="unknown TTS transport"):
         make_tts_playout(
             transport="pipewire",
-            device="dummy",
             output_rate=48000,
             gain_db=-8.0,
             drain_tail_sec=0.0,

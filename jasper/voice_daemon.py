@@ -1647,9 +1647,10 @@ class WakeLoop:
         consecutive-failure escalation).
 
         Differs from `play_cue` by skipping if a user-driven turn is
-        in flight: TtsPlayout has a single PortAudio stream, so
-        layering an escalation cue on top of an active TTS turn would
-        garble both. Suppressing the cue mid-session is the safe
+        in flight: TtsPlayout has one active output stream (the
+        outputd/fan-in TTS IPC connection), so layering an escalation
+        cue on top of an active TTS turn would garble both. Suppressing
+        the cue mid-session is the safe
         default — if the connection is wedged, the next wake event
         will fire `cant_connect` reactively anyway.
 
