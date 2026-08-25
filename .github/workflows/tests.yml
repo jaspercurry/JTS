@@ -311,7 +311,11 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        python-version: ["3.11", "3.12", "3.13"]
+        # Deployed-interpreter only (PiOS Trixie ships python3.13 — see
+        # deploy/lib/install/python-runtime.sh). Campaign speed measure
+        # during the 2026-08 right-sizing refactor; restoring the full
+        # matrix afterward is an owner call, recorded via ADR either way.
+        python-version: ["3.13"]
     # Default provider for tests that load jasper.config (the config
     # loader hard-fails without this set). Individual tests can override.
     env:

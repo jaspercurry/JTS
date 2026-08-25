@@ -172,9 +172,9 @@ Two operational notes:
   merge through the full `ci` lane. No SDK auth or network. Runs the
   lenient, baselined `mypy` gate (pyproject.toml config) as a step
   before pytest, then the hardware-free suite in parallel, excluding
-  paid `tests/voice_eval`. Full CI runs this lane on Python 3.11, 3.12,
-  and 3.13; the internal `pytest` aggregate fails unless every
-  versioned matrix leg passes.
+  paid `tests/voice_eval`. Full CI runs this lane on Python 3.13 only —
+  the deployed interpreter (PiOS Trixie ships python3.13); the internal
+  `pytest` aggregate fails unless every versioned matrix leg passes.
 - **Python static checks** (`ruff check .` and `mypy`) — run once in the
   Python 3.13 matrix leg before the test suite. mypy starts permissive
   and baselined so existing type debt does not block day-one adoption,
