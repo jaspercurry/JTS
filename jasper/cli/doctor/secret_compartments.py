@@ -99,8 +99,12 @@ class SecretCompartment:
 # exactly the daemons Phase 4 documents losing the secret (4a: mux/control/input;
 # 4b: input). Units that intentionally share a compartment-holding Unix identity
 # are members even when their own unit file does not repeat SupplementaryGroups:
-# e.g. jasper-chat-web runs as the jasper-web user, and that user is in both
-# compartment groups on disk. The recon-tier oneshots
+# e.g. jasper-chat-web and the three de-rooted wizard units run as the
+# jasper-web user, and that user is in both compartment groups on disk. Only
+# jasper-correction-web actually reads a compartment file (the tuning LLM key
+# in voice_keys.env); the rest inherit the access with the identity, and the
+# manifest models the effective identity rather than the intent. The
+# recon-tier oneshots
 # (privsep.OUT_OF_SCOPE_NONROOT_UNITS) are in no compartment group and run as
 # jasper-recon, so they are not leak targets; world-exposure is caught by the
 # o-bit test independently.
@@ -111,7 +115,14 @@ COMPARTMENTS: tuple[SecretCompartment, ...] = (
     SecretCompartment(
         group="jasper-secrets",
         directory="/var/lib/jasper-secrets",
-        member_units=("jasper-chat-web", "jasper-voice", "jasper-web"),
+        member_units=(
+            "jasper-bluetooth-web",
+            "jasper-chat-web",
+            "jasper-correction-web",
+            "jasper-system-web",
+            "jasper-voice",
+            "jasper-web",
+        ),
         files=(
             # The 3 LLM API keys split out of voice_provider.env (Phase 4a).
             "/var/lib/jasper-secrets/voice_keys.env",
@@ -127,9 +138,12 @@ COMPARTMENTS: tuple[SecretCompartment, ...] = (
         group="jasper-intsecrets",
         directory="/var/lib/jasper-intsecrets",
         member_units=(
+            "jasper-bluetooth-web",
             "jasper-chat-web",
             "jasper-control",
+            "jasper-correction-web",
             "jasper-mux",
+            "jasper-system-web",
             "jasper-voice",
             "jasper-web",
         ),

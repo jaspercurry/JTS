@@ -19,13 +19,32 @@ ExecStart=/opt/jasper/.venv/bin/jasper-system-web --host 127.0.0.1 --port 8772
 Restart=on-failure
 RestartSec=2
 
-# Hardening — needs to read /etc/jasper/jasper.env (for JASPER_HOSTNAME
-# etc.), proxy localhost HTTP to jasper-control. No writes outside
-# stdout/stderr (journald).
-ProtectSystem=full
+# Runs as the shared wizard identity, like jasper-chat-web: the dashboard
+# renders a page shell and proxies JSON to jasper-control on 127.0.0.1:8780.
+# Its only disk reads are /etc/jasper/jasper.env (injected by systemd, which
+# reads EnvironmentFile= as root before the drop), /var/lib/jasper/build.txt
+# (0644), and the group-`jasper` 0640 control_token canonical_page() embeds.
+# It writes nothing, so ProtectSystem=strict carries no ReadWritePaths at all
+# and the privileged actions it exposes (restart / reboot / diagnostics) are
+# jasper-control's, reached over HTTP — never systemctl here.
+User=jasper-web
+Group=jasper
+CapabilityBoundingSet=
+SystemCallFilter=@system-service
+ProtectSystem=strict
 ProtectHome=true
 PrivateTmp=true
 NoNewPrivileges=true
+ProtectKernelTunables=true
+ProtectKernelModules=true
+ProtectControlGroups=true
+RestrictNamespaces=true
+RestrictSUIDSGID=true
+LockPersonality=true
+# AF_UNIX: sd_notify + journald. AF_INET/AF_INET6: the systemd-passed
+# loopback listener and the proxy connection to jasper-control.
+RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6
+SystemCallArchitectures=native
 
 # Small process: stdlib http.server + per-request proxy connection.
 # In-memory state is the idle tracker only.
