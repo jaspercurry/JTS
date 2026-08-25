@@ -823,9 +823,10 @@ def _flash_clear_cookie_header() -> str:
 
 def _is_valid_token(value: str) -> bool:
     # base64-url-safe alphabet only; correct length window. Strict to
-    # reject anything weird in the cookie (avoids time-leakage on
-    # compare_digest with weird inputs).
-    if not 32 <= len(value) <= 128:
+    # reject anything weird before compare_digest, which raises TypeError
+    # on non-ASCII str — and str.isalnum() alone is Unicode-aware, so the
+    # isascii() check is load-bearing, not redundant.
+    if not 32 <= len(value) <= 128 or not value.isascii():
         return False
     return all(
         c.isalnum() or c in "-_" for c in value
