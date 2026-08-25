@@ -172,20 +172,11 @@ class GeminiLiveTurn:
         )
         self._usage = dict(self._usage_baseline)
         self._turn_count = 0
-        self._interrupted = False
         self._interrupt_event = asyncio.Event()
         # Loop-time of the last audio chunk / tool_call / turn_complete.
         # Used by the daemon's idle watchdog and barge-in gate.
         self._last_activity_at: float = started_at
         self._last_chunk_at: float = 0.0
-        # Updated by audio_out() each time the consumer dequeues a
-        # chunk. The idle watchdog uses this for the tail wait so we
-        # don't end the turn while audio is still queued waiting to
-        # play through ALSA. Gemini paces audio chunks closer to
-        # real-time than OpenAI does, so this anchor matters less for
-        # this provider — but we track it anyway for protocol parity
-        # so daemon code stays single-path.
-        self._last_chunk_dequeued_at: float = 0.0
         self._first_chunk_logged = False
         self._started_at = started_at
         # Monotonic clock anchor for elapsed-ms log lines. The connection
@@ -256,7 +247,6 @@ class GeminiLiveTurn:
                 return
             if isinstance(chunk, bytes):
                 chunk = AudioOutChunk(pcm=chunk)
-            self._last_chunk_dequeued_at = asyncio.get_event_loop().time()
             yield chunk
 
     async def release(self) -> None:
@@ -292,9 +282,6 @@ class GeminiLiveTurn:
 
     def last_chunk_at(self) -> float:
         return self._last_chunk_at
-
-    def last_chunk_played_at(self) -> float:
-        return self._last_chunk_dequeued_at
 
     def server_turn_complete(self) -> bool:
         """True once the server has emitted server_content.turn_complete
@@ -347,14 +334,10 @@ class GeminiLiveTurn:
     def turn_lost(self) -> bool:
         return self._turn_lost
 
-    def interrupted(self) -> bool:
-        return self._interrupted
-
     async def wait_for_interrupt(self) -> None:
         await self._interrupt_event.wait()
 
     def clear_interrupted(self) -> None:
-        self._interrupted = False
         self._interrupt_event.clear()
 
     # ---- Barge-in capability seam (Gemini pack — final no-op) ----
@@ -392,7 +375,6 @@ class GeminiLiveTurn:
         # _play_responses' flush + clear_interrupted cycle is identical; the
         # only difference is the trigger source (daemon VAD vs server). The
         # cancel_response / truncate_assistant_audio seam above stays no-op.
-        self._interrupted = True
         self._interrupt_event.set()
 
     def drop_pending_audio(self) -> int:
@@ -456,7 +438,6 @@ class GeminiLiveTurn:
                         self._audio_q.get_nowait()
                     except asyncio.QueueEmpty:
                         break
-                self._interrupted = True
                 self._interrupt_event.set()
                 logger.info("model interrupted by user")
 
@@ -850,15 +831,6 @@ class GeminiLiveConnection:
 
     def supports_server_vad(self) -> bool:
         return False
-
-    def supports_provider_vad(self) -> bool:
-        # Gemini Live HAS native VAD — its default ActivityHandling is
-        # START_OF_ACTIVITY_INTERRUPTS. This is a different axis from
-        # supports_server_vad() (False for Gemini: the daemon cannot switch
-        # endpointing mode mid-session via set_turn_detection). Capability,
-        # not current config — JTS runs Gemini with manual VAD. Separate from
-        # barge-in support — see the LiveConnection docstring.
-        return True
 
     # ------------------------------------------------------------------
     # Internal — turn-side helpers

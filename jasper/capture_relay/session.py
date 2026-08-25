@@ -25,7 +25,6 @@ import json
 import logging
 import re
 import secrets
-import threading
 import time
 from collections.abc import Callable, Mapping
 from dataclasses import dataclass
@@ -672,60 +671,6 @@ class PhoneEventVerifier:
         the sequence to tell "the same event, still sitting there" from "the
         phone posted a new event" (begin dedup vs replay)."""
         return self._sequence
-
-
-class CaptureActivityProbe:
-    """Fail closed when a long host stimulus outlives the phone recorder.
-
-    ``run_capture`` normally polls phone state itself, but its synchronous
-    ``on_armed`` callback may run a host stimulus for several seconds.  A
-    caller with a long callback can poll through this probe while that callback
-    is active.  The mutable event slot is authenticated and sequence-checked
-    exactly like the main capture loop before an abort can affect playback.
-    """
-
-    def __init__(
-        self,
-        client: RelayClient,
-        session: PiCaptureSession,
-        *,
-        capture_index: int | None = None,
-    ) -> None:
-        self._client = client
-        self._session = session
-        self._verifier = PhoneEventVerifier(session)
-        self._lock = threading.Lock()
-        # In a capture-plan session "the recorder finished" is per-capture, not
-        # per-session. A prior attempt's blob leaves the session-wide
-        # `state == ready` set, so a plan-aware probe checks THIS capture's
-        # index in the per-index blob map instead.
-        self._capture_index = capture_index
-
-    def assert_active(self) -> None:
-        with self._lock:
-            status = self._client.status(
-                self._session.session_id, self._session.pull_token
-            )
-            relay_event = status.get("event") if isinstance(status, dict) else None
-            verified_event = self._verifier.verify(relay_event)
-            status = {**status, "event": verified_event}
-            state = classify_status(status)
-            if state.aborted:
-                raise CaptureAborted(
-                    f"phone aborted the capture ({state.abort_reason or 'no reason'})",
-                    reason=state.abort_reason,
-                )
-            capture_ended = (
-                state.ready
-                if self._capture_index is None
-                else _plan_blob_ready(state, self._capture_index)
-            )
-            if capture_ended:
-                raise CaptureAborted(
-                    "phone capture ended before host playback completed"
-                )
-            if not state.armed:
-                raise CaptureFailed("phone recorder is no longer armed")
 
 
 def classify_status(status_payload: dict) -> PollState:

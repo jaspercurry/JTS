@@ -47,16 +47,8 @@ def _shell_assignments(gate) -> str:
         "JASPER_CHIP_AEC_DAC_GATE_DAC": gate.dac_id,
         "JASPER_CHIP_AEC_DAC_GATE_STATUS": gate.status,
         "JASPER_CHIP_AEC_DAC_GATE_PERMITTED": "1" if gate.permitted else "0",
-        "JASPER_CHIP_AEC_DAC_GATE_AUTO_ALLOWED": "1" if gate.auto_allowed else "0",
-        "JASPER_CHIP_AEC_DAC_GATE_PRODUCTION_ALLOWED": (
-            "1" if gate.production_allowed else "0"
-        ),
-        "JASPER_CHIP_AEC_DAC_GATE_TESTING_ALLOWED": (
-            "1" if gate.testing_allowed else "0"
-        ),
         "JASPER_CHIP_AEC_DAC_GATE_SOURCE": gate.source,
         "JASPER_CHIP_AEC_DAC_GATE_DETAIL": gate.detail,
-        "JASPER_CHIP_AEC_DAC_GATE_ACTION": gate.recommended_action,
     }
     return "\n".join(f"{key}={shlex.quote(value)}" for key, value in values.items())
 

@@ -283,14 +283,6 @@ def _mutating_status(
         conn.close()
 
 
-def test_post_unknown_path_404s_without_revealing_csrf_state(running_server_port: int) -> None:
-    assert _mutating_status(running_server_port, "POST", "/api/nope") == 404
-
-
-def test_post_known_path_without_token_403s(running_server_port: int) -> None:
-    assert _mutating_status(running_server_port, "POST", "/api/session") == 403
-
-
 class _TrackingReader(BytesIO):
     def __init__(self, body: bytes, *, fail: bool = False) -> None:
         super().__init__(body)

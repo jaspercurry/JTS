@@ -95,7 +95,6 @@ def test_runtime_env_gate_round_trips_reconciler_written_status():
         "JASPER_AEC_CHIP_AEC_DAC_STATUS": "testing",
         "JASPER_AEC_CHIP_AEC_DAC_SOURCE": "explicit_testing",
         "JASPER_AEC_CHIP_AEC_DAC_DETAIL": "operator validation",
-        "JASPER_AEC_CHIP_AEC_DAC_ACTION": "run_chip_aec_testing_and_validate",
     })
 
     assert gate.status == STATUS_TESTING

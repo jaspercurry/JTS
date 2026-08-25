@@ -58,21 +58,17 @@ URL surface (after nginx strips the /wake/ prefix):
                         as the UAC2 host-input direction
   POST /usb-mic-leg     body {leg: str} — choose the server-advertised source
                         sent to the computer microphone
-  POST /layer/aec       body {enabled: bool} — legacy compatibility shim
-                        for the old software-AEC3 toggle; not rendered
   POST /layer/raw       body {enabled: bool} — set chip-direct leg
   POST /layer/dtln      body {enabled: bool} — set DTLN leg
   POST /layer/chip_aec_150 body {enabled: bool} — set optional 150° chip
                         beam wake detector
   POST /layer/chip_aec_210 body {enabled: bool} — set optional 210° chip
                         beam wake detector
-  POST /layer/chip_aec  body {enabled: bool} — legacy compatibility shim
-                        that sets both optional chip beam detectors
   POST /sensitivity     body {value: float}  — set wake threshold
   POST /save            write wake_model.env + restart voice daemon
 
 The /layer/* and /sensitivity routes proxy to jasper-control's
-/aec/{toggle,leg,threshold} on 127.0.0.1:8780. Wizard-side URLs use
+/aec/{leg,threshold} on 127.0.0.1:8780. Wizard-side URLs use
 the user-facing vocabulary (layers, sensitivity) so the surface
 reads as a coherent wake page rather than leaking the AEC internals.
 """
@@ -620,9 +616,9 @@ def _apply_save(
 
 # ----------------------------------------------------------------------
 # Detection-card request handlers — proxy to jasper-control with the
-# wizard's user-facing vocabulary (layer/aec, sensitivity) rewritten
-# to jasper-control's internal vocabulary (aec/toggle, aec/leg,
-# aec/threshold) at the proxy layer.
+# wizard's user-facing vocabulary (leg name, sensitivity) rewritten
+# to jasper-control's internal vocabulary (aec/leg, aec/threshold) at
+# the proxy layer.
 # ----------------------------------------------------------------------
 
 # Maximum JSON body length accepted on /layer/* and /sensitivity. Real
@@ -652,64 +648,14 @@ def _read_json_body(handler: BaseHTTPRequestHandler) -> tuple[dict | None, str |
 def _apply_layer(
     layer: str, enabled: bool, *, control_base: str,
 ) -> tuple[int, bytes]:
-    """Translate a /layer/<name> POST into jasper-control's
-    /aec/toggle (software AEC3) or /aec/leg (raw/dtln/chip beam) call.
-
-    The software-AEC3 toggle is flip-only on the control side. We read the current
-    mode and only POST when it differs from the requested state, so
-    a "set true while already on" returns the existing state instead
-    of toggling back to off. Chip-AEC mode bypasses WebRTC AEC3 but still
-    needs the bridge as its chip-beam carrier; "software AEC3 off" is
-    therefore already true in that mode, and must not be translated into a
-    bridge-disable POST. Returns (status, body) for proxying."""
-    if layer == "aec":
-        status, body = proxy_get("/aec", control_base=control_base, timeout=5.0)
-        if status != 200:
-            return status, body
-        try:
-            payload = json.loads(body.decode())
-        except (UnicodeDecodeError, json.JSONDecodeError):
-            payload = {}
-        current_mode = payload.get("mode")
-        software_aec3 = payload.get("software_aec3") or {}
-        software_bypassed = bool(software_aec3.get("bypassed"))
-        already_in_state = (
-            (
-                enabled
-                and current_mode == "auto"
-                and not software_bypassed
-            )
-            or (
-                not enabled
-                and (current_mode == "disabled" or software_bypassed)
-            )
-        )
-        if already_in_state:
-            # No-op: return the latest state read above so the client
-            # reconciles to the truth without an extra round trip.
-            return 200, body
-        return proxy_post(
-            "/aec/toggle", control_base=control_base, timeout=5.0,
-        )
+    """Translate a /layer/<name> POST into jasper-control's /aec/leg
+    call. Returns (status, body) for proxying."""
     if layer in ("raw", "dtln", "chip_aec_150", "chip_aec_210"):
         return proxy_post(
             "/aec/leg",
             control_base=control_base, timeout=5.0,
             body=json.dumps({"leg": layer, "enabled": enabled}).encode(),
         )
-    if layer == "chip_aec":
-        # Legacy compatibility for older browser bundles/bookmarks: the
-        # old single chip toggle now maps to both explicit extra-beam toggles.
-        status, body = 200, b"{}"
-        for beam in ("chip_aec_150", "chip_aec_210"):
-            status, body = proxy_post(
-                "/aec/leg",
-                control_base=control_base, timeout=5.0,
-                body=json.dumps({"leg": beam, "enabled": enabled}).encode(),
-            )
-            if status != 200:
-                return status, body
-        return status, body
     return 400, b'{"error":"unknown layer"}'
 
 
@@ -790,7 +736,7 @@ def _start_firmware_update(
 # ----------------------------------------------------------------------
 
 
-_VALID_LAYERS = ("aec", "raw", "dtln", "chip_aec_150", "chip_aec_210", "chip_aec")
+_VALID_LAYERS = ("raw", "dtln", "chip_aec_150", "chip_aec_210")
 _VALID_PROFILES = valid_profile_ids()
 
 

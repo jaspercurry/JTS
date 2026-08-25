@@ -420,9 +420,6 @@ provider-name-based:
   over the user — the local flush alone clears only the DAC ring. Optional
   (getattr-probed); an adapter that streams without a buffer omits it.
   Preserves any terminal end-of-audio sentinel so the consumer still ends.
-- `supports_provider_vad()` remains separate from barge-in support:
-  provider VAD can help detect or commit turns, but local TTS flush is
-  still required to stop audible audio immediately.
 - Adapters must tolerate missing provider item ids. Gemini currently
   has no OpenAI-style item id for audio truncation; OpenAI emits one and
   JTS already carries it through the outputd-compatible TTS IPC used by
@@ -436,8 +433,7 @@ provider-name-based:
   `interrupt_reconcile` declaration load-bearing, not test-only metadata.
 
 This seam landed in code as of PR-3 (added **behaviour-neutral**):
-`LiveTurn.cancel_response()` / `LiveTurn.truncate_assistant_audio()` and
-`LiveConnection.supports_provider_vad()` live in
+`LiveTurn.cancel_response()` / `LiveTurn.truncate_assistant_audio()` live in
 [`jasper/voice/session.py`](../jasper/voice/session.py). **PR-4 wired the
 OpenAI pack** (the reference): `cancel_response` → `response.cancel`
 (guarded to an in-progress response, so it can't trip the server's
@@ -510,10 +506,9 @@ should be:
    `tests/test_openai_session.py`. Pin: connect → tool round-trip →
    reconnect → manual-VAD payload shape → text-context injection does
    not request generation → tool round advances the turn's idle anchor
-   (see "Idle anchor + tool rounds" below). Also add the adapter's
-   turn/connection classes to `tests/test_voice_barge_in_contract.py`'s
-   parametrized lists so the barge-in seam (cancel / truncate /
-   `supports_provider_vad`) is covered.
+   (see "Idle anchor + tool rounds" below). Also add the adapter's turn
+   class to `tests/test_voice_barge_in_contract.py`'s `TURN_CLASSES` so
+   the barge-in seam (cancel / truncate) is covered.
 8. No provider-list edit in `scripts/switch-voice-provider.sh`: it
    reads provider IDs, key env vars, and model env vars from the
    installed runtime catalog on the Pi.

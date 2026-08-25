@@ -22,8 +22,8 @@ stubs. This file pins the *Gemini pack's* decision and contract on top:
     watchdog consumes (``server_turn_complete()``) is set by ``turn_complete``
     alone.
 
-Not duplicated here: ``supports_provider_vad()``/``supports_server_vad()``
-values are pinned by ``tests/test_voice_barge_in_contract.py``; the generic
+Not duplicated here: ``supports_server_vad()`` value is pinned by
+``tests/test_voice_barge_in_contract.py``; the generic
 "watchdog returns on ``server_turn_complete``" behaviour is pinned by
 ``tests/test_voice_daemon_defects.py``. The paid, on-device "speak over
 Gemini TTS" proof is a SKIPPED voice-eval placeholder — see
@@ -95,9 +95,9 @@ async def test_local_gate_sets_interrupt_event_and_seam_stays_noop():
     conn = GeminiLiveConnection(api_key="fake", model="fake")
     turn = _turn(conn)
 
-    assert turn.interrupted() is False
+    assert turn._interrupt_event.is_set() is False
     turn.request_local_interrupt()
-    assert turn.interrupted() is True
+    assert turn._interrupt_event.is_set() is True
     # Event is set, so the playback path's interrupt race resolves at once.
     await asyncio.wait_for(turn.wait_for_interrupt(), timeout=1.0)
 
@@ -107,7 +107,7 @@ async def test_local_gate_sets_interrupt_event_and_seam_stays_noop():
     assert await turn.truncate_assistant_audio(None, 1234) is None
 
     # The no-op reconcile must NOT have cleared the armed local interrupt.
-    assert turn.interrupted() is True
+    assert turn._interrupt_event.is_set() is True
 
 
 # ---------------------------------------------------------------------------
@@ -137,7 +137,7 @@ async def test_server_interrupt_drops_queued_audio_and_does_not_complete():
 
     # Server reports interruption (no turn_complete in this message).
     await turn._on_response(_Resp(server_content=_SC(interrupted=True)))
-    assert turn.interrupted() is True
+    assert turn._interrupt_event.is_set() is True
     # Queued pre-interrupt audio dropped so it is NOT played post-barge.
     assert turn._audio_q.empty()
     # NOT complete yet: no generation_complete, no turn_complete.

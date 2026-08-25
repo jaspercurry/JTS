@@ -363,8 +363,9 @@ config (BEST_A, below) is a clear win.
 
 A single-variable sweep was run against `V2FIXED` (the post-bug-fix
 V2tune) baseline, varying one knob at a time across ~27 configs,
-scoring against the 4 music cells. Methodology:
-[`experiments/aec3-v2-deep-tune-spike/sweep.py`](../experiments/aec3-v2-deep-tune-spike/sweep.py).
+scoring against the 4 music cells. Methodology: `sweep.py`, deleted
+from `experiments/aec3-v2-deep-tune-spike/` (its output shipped into
+`jasper_aec3`) — see git history.
 
 **The winning config — `BEST_A`** — is V2FIXED plus a single change:
 **`erle.max_l=1.5, erle.max_h=1.0`** (lower NLP-depth caps than
@@ -412,8 +413,8 @@ slow-music     |   7       7         6      7   | -1 event
 
 Music-cells totals: AEC3-stock 23, BEST_A 27 (+17%), D256 31 (+35%).
 
-**Knobs that were tuned in the campaign (full list in
-[`sweep.py`](../experiments/aec3-v2-deep-tune-spike/sweep.py)):**
+**Knobs that were tuned in the campaign (full list in `sweep.py`,
+now git history — see above):**
 
 Helped (kept in BEST_A):
 - `filter.refined.length_blocks=30` (vs default 13)

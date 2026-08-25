@@ -110,25 +110,6 @@ class LiveTurn(Protocol):
         to detect when the model is currently producing TTS."""
         ...
 
-    def last_chunk_played_at(self) -> float:
-        """Loop time when the playback consumer last DEQUEUED an audio
-        chunk via ``audio_out()``. Distinct from ``last_chunk_at()``,
-        which is when the chunk was RECEIVED from the server.
-
-        The two timestamps can diverge by several seconds. OpenAI
-        Realtime delivers all of a response's audio chunks back-to-back
-        over the WebSocket — typically faster than real-time — while
-        the consumer drains them at real-time playback rate via ALSA.
-        For deciding when audio playback is fully drained (the
-        daemon's idle-watchdog tail wait), this is the correct signal.
-        Using the network-arrival anchor instead ends the turn 1.5 s
-        after chunks STOPPED ARRIVING, well before the consumer has
-        finished playing them — abandoning the queue tail and audibly
-        cutting off the model mid-sentence.
-
-        Returns 0.0 if the consumer has not dequeued any chunks yet."""
-        ...
-
     def bytes_sent(self) -> int:
         """Total bytes of audio sent to the server during this turn.
         Used together with chunks_received() to detect the silent-failure
@@ -224,12 +205,6 @@ class LiveTurn(Protocol):
         correct for providers whose chunks arrive at real-time rate."""
         ...
 
-    def interrupted(self) -> bool:
-        """True if the model reported being interrupted by user audio.
-        Cleared by clear_interrupted() once the daemon has flushed
-        playback in response."""
-        ...
-
     async def wait_for_interrupt(self) -> None:
         """Resolve when the model signals the user interrupted its speech.
         Used by the playback path to race write-current-chunk against
@@ -243,9 +218,9 @@ class LiveTurn(Protocol):
 
     # ---- Barge-in capability seam (provider-pack reconciliation) ----
     #
-    # ``interrupted()`` / ``wait_for_interrupt()`` / ``clear_interrupted()``
-    # above stay the daemon-facing EVENT: "the provider reported (or the
-    # daemon observed) that the user interrupted." The two methods below are
+    # ``wait_for_interrupt()`` / ``clear_interrupted()`` above stay the
+    # daemon-facing EVENT: "the provider reported (or the daemon observed)
+    # that the user interrupted." The two methods below are
     # the matching ACTIONS the daemon takes to reconcile *provider* state
     # after it has already flushed local TTS playback. They are capability-
     # based, not provider-name-based: the daemon's ``_flush_for_interrupt``
@@ -436,33 +411,6 @@ class LiveConnection(Protocol):
         """Whether this provider supports mid-session switching to
         server-side VAD via set_turn_detection(). Default False —
         adapters that support it override to return True."""
-        ...
-
-    def supports_provider_vad(self) -> bool:
-        """Whether the provider's API has native voice-activity detection
-        that can *detect or commit* user turns on its own.
-
-        Deliberately a different axis from both barge-in support and
-        ``supports_server_vad()``:
-
-        - ``supports_server_vad()`` is narrow: can the daemon switch THIS
-          connection to provider-driven endpointing *mid-session* via
-          ``set_turn_detection()`` (the server-VAD experiment). Gemini is
-          False there because its activity detection is fixed at connect.
-        - ``supports_provider_vad()`` is broad: does the provider have a VAD
-          engine at all. It describes API capability, not current config —
-          JTS runs all three providers with manual VAD in production, and a
-          ``True`` here does not mean provider VAD is enabled or that it will
-          handle barge-in.
-
-        It is "separate from barge-in support" on purpose: even when this is
-        ``True``, the daemon STILL flushes local TTS playback itself, because
-        provider VAD never knows JTS's DAC queue depth and so cannot stop
-        audible audio. Packs must not use this to decide whether to flush or
-        cancel — that is the ``interrupt_reconcile`` declaration's job.
-
-        Default False — adapters whose API exposes VAD override to return
-        True."""
         ...
 
     async def set_turn_detection(self, mode: dict | None) -> None:
