@@ -2198,7 +2198,28 @@ def test_no_axis_combination_can_keep_a_graph_that_measured_worse():
 # --------------------------------------------------------------------------
 
 
-def test_the_evaluator_imports_no_web_host_and_no_legacy_flow():
+#: The strangler destination, module by module. ``verification.py`` was this
+#: pin's original subject; the wave-1 engine modules join it because the
+#: direction law binds the whole package and they are its newest members —
+#: ``docs/REFACTOR-TUNING-2026-08.md`` §3 wave 1 asks for exactly this
+#: repointing, and for the two assertions below to survive it verbatim.
+#:
+#: A module that lands in the engine adds its name here, in the same PR. This
+#: is a SOURCE-TEXT pin, which the charter otherwise forbids: it reads the
+#: module's own import lines rather than its behaviour. It is kept because it
+#: is the test-side guard on the zero-upward-imports invariant, and because an
+#: import that does not exist has no behaviour to observe.
+_STRANGLER_DESTINATION_MODULES = (
+    "verification.py",
+    "session.py",
+    "session_seams.py",
+    "playback_transaction.py",
+    "measure_spec.py",
+)
+
+
+@pytest.mark.parametrize("module", _STRANGLER_DESTINATION_MODULES)
+def test_the_evaluator_imports_no_web_host_and_no_legacy_flow(module: str):
     """#2291's dependency direction: domain modules do not import the host,
     and the strangler destination does not import the monolith it replaces."""
 
@@ -2207,7 +2228,7 @@ def test_the_evaluator_imports_no_web_host_and_no_legacy_flow():
         / "jasper"
         / "active_speaker"
         / "crossover_v2"
-        / "verification.py"
+        / module
     ).read_text()
     imports = [
         line
@@ -2217,6 +2238,20 @@ def test_the_evaluator_imports_no_web_host_and_no_legacy_flow():
     joined = "\n".join(imports)
     assert "jasper.web" not in joined
     assert "crossover_v2_flow" not in joined
+
+
+def test_the_direction_pin_still_names_modules_that_exist():
+    """Anti-vacuity. A renamed engine module must fail here rather than quietly
+    narrowing the scan to the four that still resolve."""
+    package = (
+        Path(__file__).resolve().parents[1]
+        / "jasper" / "active_speaker" / "crossover_v2"
+    )
+    missing = [
+        name for name in _STRANGLER_DESTINATION_MODULES
+        if not (package / name).is_file()
+    ]
+    assert not missing, missing
 
 
 def test_the_evaluator_is_pure():
