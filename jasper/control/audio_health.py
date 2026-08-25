@@ -1491,12 +1491,6 @@ def _receiver_latency(
     route: Mapping[str, Any],
     timing: Mapping[str, Any],
 ) -> dict[str, Any]:
-    """Present a lower bound from the already-sampled JTS queues.
-
-    This deliberately is neither a whole receiver-path estimate nor an
-    end-to-end claim: unreported stages, source transport, sender buffering,
-    and acoustic propagation are outside the sampled telemetry.
-    """
     current = _mapping(airplay.get("current"))
     fanin = _mapping(current.get("fanin"))
     output = _mapping(fanin.get("output"))
@@ -1548,18 +1542,14 @@ def _receiver_latency(
         total = sum(value for _label, value in components)
         lower = int(max(0.0, total) * 10.0) / 10.0
         estimate = {"lower_ms": lower}
-        summary = f"At least {lower:g} ms in observed JTS queues"
+        summary = f"{lower:g} ms"
     else:
         summary = "Live queue timing unavailable"
     if active_source == Source.USBSINK.value and mode_label:
         summary = f"{summary} · {mode_label}"
-    details.append(_detail("Scope", "Observed JTS queues only"))
     return {
         "summary": summary,
-        "detail": (
-            "A lower bound from the queues JTS can observe; excludes USB gadget "
-            "dwell, unreported processing, sender transport, and acoustic delay."
-        ),
+        "detail": "",
         "details": details,
         "estimate": estimate,
         "mode": mode or None,

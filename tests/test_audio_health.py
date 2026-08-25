@@ -1935,13 +1935,13 @@ def test_usb_current_stream_is_presentation_ready_without_bitrate_inference() ->
     assert stream["source_id"] == "usbsink"
     assert stream["media"]["summary"] == "48 kHz · Stereo PCM"
     assert "bitrate" not in json.dumps(stream).lower()
-    assert stream["latency"]["summary"].startswith("At least ")
-    assert "observed JTS queues" in stream["latency"]["summary"]
-    assert "end-to-end" not in stream["latency"]["summary"].lower()
-    assert stream["latency"]["details"][-1] == {
-        "label": "Scope",
-        "value": "Observed JTS queues only",
-    }
+    assert stream["latency"]["summary"].endswith("ms · low latency stable")
+    assert stream["latency"]["detail"] == ""
+    assert [row["label"] for row in stream["latency"]["details"]] == [
+        "Fan-in output queue",
+        "DSP queue",
+        "DAC presentation queue",
+    ]
     assert stream["output"]["summary"] == "48 kHz final output"
     assert stream["session"]["summary"] == "No interruptions observed"
     assert "reliability" not in stream  # session owns the roll-up once
@@ -1984,7 +1984,7 @@ def test_usb_latency_omits_negative_queue_telemetry() -> None:
     latency = health["current_stream"]["latency"]
 
     assert latency["estimate"] is None
-    assert [row["label"] for row in latency["details"]] == ["Scope"]
+    assert latency["details"] == []
     assert health["current_stream"]["output"]["details"] == []
 
 
