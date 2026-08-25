@@ -3776,7 +3776,6 @@ async def _apply_baseline_profile_locked(
             candidate_path=str((candidate.get("config") or {}).get("path")),
             load_config=load_config,
             get_current_config_path=get_current_config_path,
-            acquire_lock=False,
             expected_candidate_sha256=str(
                 (candidate.get("config") or {}).get("sha256") or ""
             ),
@@ -4028,7 +4027,6 @@ async def restore_applied_baseline_profile(
                 candidate_path=candidate_path,
                 load_config=load_config,
                 get_current_config_path=get_current_config_path,
-                acquire_lock=False,
                 expected_candidate_sha256=retained_digest,
                 validate=validate,
             )

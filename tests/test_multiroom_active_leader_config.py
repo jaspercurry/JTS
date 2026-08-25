@@ -154,8 +154,7 @@ def _patch_evidence(monkeypatch, tmp_path, topology, draft, preview, measurement
 
 
 def _fake_apply_dsp_config():
-    async def _apply(*, load_config, candidate_path, acquire_lock, **_kw):
-        assert acquire_lock is False
+    async def _apply(*, load_config, candidate_path, **_kw):
         assert dsp_apply_mod._DSP_LOCK_OWNERSHIP.get() is not None
         await load_config(str(candidate_path))
         return SimpleNamespace(to_dict=lambda: {"result": "applied"})

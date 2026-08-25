@@ -304,7 +304,6 @@ async def load_profile_config(
     audition: bool = False,
     output_trim_db: float = 0.0,
     profile_id: str | None = None,
-    writer_lock_held: bool = False,
     coupling: str | None = None,
 ) -> tuple[Any, Path, SoundProfile]:
     """Render and load ``profile`` on top of the currently loaded DSP graph.
@@ -387,7 +386,6 @@ async def load_profile_config(
         if persist_profile
         else None,
         sound_filter_count=len(build_sound_filters(profile)),
-        acquire_lock=not writer_lock_held,
     )
     return apply_state, out_path, profile
 
@@ -562,7 +560,6 @@ async def reconcile_current_dsp(
             persist_profile=False,
             output_trim_db=trim_db,
             profile_id=RECONCILE_PROFILE_ID,
-            writer_lock_held=True,
             coupling=coupling,
         )
     return _log_reconcile_result(

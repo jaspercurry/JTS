@@ -5830,19 +5830,6 @@ async def test_active_speaker_finish_commissioning_clears_pending_ramp(
             "last_action": "late_step",
         }
     )
-    real_abort = sound_setup._active_speaker_commission_ramp_abort_payload
-    lock_modes: list[bool] = []
-
-    async def abort_spy(**kwargs):
-        lock_modes.append(kwargs.get("acquire_lock", True))
-        return await real_abort(**kwargs)
-
-    monkeypatch.setattr(
-        sound_setup,
-        "_active_speaker_commission_ramp_abort_payload",
-        abort_spy,
-    )
-
     async def fake_apply_baseline_profile(_topology, **kwargs):
         callback = kwargs.get("on_candidate_verified")
         if callback is not None:
@@ -5892,7 +5879,6 @@ async def test_active_speaker_finish_commissioning_clears_pending_ramp(
 
     assert payload["status"] == "applied"
     assert payload["commissioning_cleanup"]["ramp"]["status"] == "aborted"
-    assert lock_modes == [False]
     assert load_ramp_state()["pending"] is None
 
 

@@ -89,7 +89,7 @@ ack, never silence.
 - [ ] `User=` + hardening for jasper-correction-web / -bluetooth-web /
       -system-web units
 - [x] `/wake-corpus/`: call `guard_mutating_host` inside `_check_csrf`
-- [ ] Delete the phantom `acquire_lock` knob through `dsp_apply.py` (13 signatures)
+- [x] Delete the phantom `acquire_lock` knob through `dsp_apply.py` (13 signatures)
 
 **Wave 0.5 — baseline instrumentation (report script, not CI gates)**
 - [ ] `scripts/right-size-report.sh`: comment-to-code ratio, test-vs-product

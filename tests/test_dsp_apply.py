@@ -478,7 +478,6 @@ async def test_apply_dsp_config_skips_lock_when_caller_already_owns_it(
             source="nested_apply",
             candidate_path=cfg,
             load_config=lambda _path: asyncio.sleep(0, result=True),
-            acquire_lock=False,
             validate=lambda path: CamillaConfigValidationResult(
                 status=ValidationStatus.VALID,
                 path=str(path),
@@ -489,7 +488,7 @@ async def test_apply_dsp_config_skips_lock_when_caller_already_owns_it(
     assert result.result == "success"
 
 
-async def test_apply_dsp_config_false_hint_acquires_when_ownership_is_absent(
+async def test_apply_dsp_config_acquires_lock_when_ownership_is_absent(
     tmp_path: Path,
 ) -> None:
     cfg = tmp_path / "candidate.yml"
@@ -508,7 +507,6 @@ async def test_apply_dsp_config_false_hint_acquires_when_ownership_is_absent(
         source="legacy_nested_apply",
         candidate_path=cfg,
         load_config=load,
-        acquire_lock=False,
         validate=lambda path: CamillaConfigValidationResult(
             status=ValidationStatus.VALID,
             path=str(path),

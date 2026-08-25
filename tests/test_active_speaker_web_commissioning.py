@@ -2384,7 +2384,6 @@ def test_driver_capture_holds_one_writer_lock_through_restore(monkeypatch, cance
             events.append("lock_exit")
 
     async def load(**kwargs):
-        assert kwargs["acquire_lock"] is False
         events.append("load")
         return {
             "load": {"status": "loaded"},
@@ -2408,9 +2407,8 @@ def test_driver_capture_holds_one_writer_lock_through_restore(monkeypatch, cance
             ),
         )
 
-    async def restore(_payload, *, camilla_factory, acquire_lock):
+    async def restore(_payload, *, camilla_factory):
         del camilla_factory
-        assert acquire_lock is False
         events.append("restore")
         return {"status": "anchored"}
 
