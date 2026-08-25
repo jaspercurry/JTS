@@ -439,6 +439,20 @@ def test_no_capability_is_provided_by_both_stages():
 # --------------------------------------------------------------------------
 
 
+#: The journey names the flow no longer reaches at all: wave 0c pointed every
+#: consumer at the owner, and the flow imports only the phases it reads itself.
+#: Written out so a name that silently STOPS being re-exported still fails
+#: below, and a name listed here that the flow starts importing again fails the
+#: absence half.
+JOURNEY_NAMES_THE_FLOW_NO_LONGER_READS = frozenset({
+    "CAPTURE_PHASES",
+    "PHASE_APPLYING",
+    "PHASE_CLOSING",
+    "PHASE_DONE",
+    "PHASE_REVIEW",
+})
+
+
 def test_the_flow_re_exports_every_phase_name_the_journey_owns():
     """The flow's names ARE the journey's objects, so there is one vocabulary
     and a change here cannot leave the flow describing the old one.
@@ -447,6 +461,11 @@ def test_the_flow_re_exports_every_phase_name_the_journey_owns():
     name added there and not re-exported is exactly the drift this catches, and
     a list maintained here would have to be updated by the same commit that
     caused it.
+
+    The names in :data:`JOURNEY_NAMES_THE_FLOW_NO_LONGER_READS` are checked the
+    other way round — the flow must NOT reach them, because their consumers
+    import from the journey directly and a flow binding could only be a second
+    way to say the same thing.
     """
 
     from jasper.active_speaker import crossover_v2_flow as flow
@@ -455,6 +474,13 @@ def test_the_flow_re_exports_every_phase_name_the_journey_owns():
     phase_names = [n for n in vars(journey) if n.startswith("PHASE_")]
     assert len(phase_names) == 11, phase_names
     for name in [*phase_names, "CAPTURE_PHASES", "GROUP_PHASES"]:
+        if name in JOURNEY_NAMES_THE_FLOW_NO_LONGER_READS:
+            assert not hasattr(flow, name), (
+                f"the flow reaches {name} again — repoint the consumer that "
+                "needed it, or drop the name from "
+                "JOURNEY_NAMES_THE_FLOW_NO_LONGER_READS"
+            )
+            continue
         assert hasattr(flow, name), f"{name} is not re-exported by the flow"
         assert getattr(flow, name) is getattr(journey, name), name
 
