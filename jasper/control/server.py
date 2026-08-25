@@ -591,6 +591,7 @@ def _safe_usb_latency_state(airplay_health: Any = None) -> dict[str, Any]:
         return {
             "selected_mode": "low",
             "applied_mode": None,
+            "effective_mode": None,
             "state": "error",
             "detail": "USB latency state could not be read.",
             "error": str(e),

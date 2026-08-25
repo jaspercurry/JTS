@@ -45,8 +45,8 @@ function buildAudioQuality(handlers) {
 }
 
 function buildUsbLatency(handlers) {
-  const selected = h("dd", null, "—");
-  const applied = h("dd", null, "—");
+  const preference = h("dd", null, "—");
+  const effective = h("dd", null, "—");
   const live = h("dd", null, "—");
   const status = h("p.info-card__note", {
     "attr:role": "status", "attr:aria-live": "polite",
@@ -62,8 +62,8 @@ function buildUsbLatency(handlers) {
   const card = titledCard("USB latency");
   card.body.append(
     h("dl.deflist", null,
-      h("dt", null, "Selected"), selected,
-      h("dt", null, "Applied"), applied,
+      h("dt", null, "Preference"), preference,
+      h("dt", null, "Effective"), effective,
       h("dt", null, "Live input buffer"), live),
     h("p.info-card__note", null,
       "Lower settings reduce delay. A busy computer can cause clicks or brief gaps."),
@@ -71,7 +71,7 @@ function buildUsbLatency(handlers) {
       buttons.map((button) => button.el)),
     status,
   );
-  return { section: card.section, selected, applied, live, status, buttons };
+  return { section: card.section, preference, effective, live, status, buttons };
 }
 
 export function buildAudioPanel(handlers) {

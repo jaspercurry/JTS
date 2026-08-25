@@ -411,7 +411,8 @@ def test_usb_latency_preference_reports_selected_applied_and_recovery(tmp_path):
                 "inputs": {
                     "usbsink": {
                         "resampler": {
-                            "held_target_frames": 2560,
+                            "locked": True,
+                            "held_target_frames": 2048,
                             "decay": {"enabled": True, "floor_frames": 1024},
                         },
                     },
@@ -424,8 +425,9 @@ def test_usb_latency_preference_reports_selected_applied_and_recovery(tmp_path):
 
     assert state["selected_mode"] == "medium"
     assert state["applied_mode"] == "medium"
+    assert state["effective_mode"] is None
     assert state["state"] == "recovery"
-    assert state["live_buffer_ms"] == 53.3
+    assert state["live_buffer_ms"] == 42.7
     assert lm.read_requested_mode(state_path) == "medium"
 
 
@@ -438,6 +440,7 @@ def test_usb_latency_reports_apply_transition_instead_of_stale_mismatch(tmp_path
                 "inputs": {
                     "usbsink": {
                         "resampler": {
+                            "locked": True,
                             "held_target_frames": 2560,
                             "decay": {"enabled": False, "floor_frames": 2560},
                         },
@@ -455,7 +458,7 @@ def test_usb_latency_reports_apply_transition_instead_of_stale_mismatch(tmp_path
 
     assert state["state"] == "applying"
     assert state["error"] is None
-    assert "waiting for live fan-in state" in state["detail"]
+    assert "High remains active" in state["detail"]
 
 
 def test_usb_latency_reports_terminal_host_clock_fallback(tmp_path):
@@ -464,10 +467,14 @@ def test_usb_latency_reports_terminal_host_clock_fallback(tmp_path):
     fallback = {
         "current": {
             "fanin": {
-                "host_clock": {"ladder": "l2_fallback"},
+                "host_clock": {
+                    "ladder": "l2_fallback",
+                    "fallback_reason": "probe_noncompliant",
+                },
                 "inputs": {
                     "usbsink": {
                         "resampler": {
+                            "locked": True,
                             "held_target_frames": 2560,
                             "decay": {"enabled": True, "floor_frames": 576},
                         },
@@ -480,8 +487,72 @@ def test_usb_latency_reports_terminal_host_clock_fallback(tmp_path):
     state = lm.read_state(fallback, state_path=state_path)
 
     assert state["state"] == "fallback"
+    assert state["effective_mode"] == "high"
     assert "host timing check failed" in state["detail"]
     assert "53.3 ms" in state["detail"]
+    assert "next USB session" in state["detail"]
+
+
+def test_usb_latency_does_not_treat_idle_ceiling_as_effective_high(tmp_path):
+    state_path = tmp_path / "usb_latency.env"
+    lm.write_requested_mode("low", state_path)
+    idle = {
+        "current": {
+            "fanin": {
+                "host_clock": {
+                    "ladder": "probing",
+                    "probe": {"waiting_for_lock": False},
+                },
+                "inputs": {
+                    "usbsink": {
+                        "resampler": {
+                            "locked": False,
+                            "held_target_frames": 2560,
+                            "decay": {"enabled": True, "floor_frames": 576},
+                        },
+                    },
+                },
+            },
+        },
+    }
+
+    state = lm.read_state(idle, state_path=state_path)
+
+    assert state["state"] == "idle"
+    assert state["effective_mode"] is None
+    assert "when USB audio starts" in state["detail"]
+
+
+def test_usb_latency_local_fallback_can_recover_in_same_session(tmp_path):
+    state_path = tmp_path / "usb_latency.env"
+    lm.write_requested_mode("low", state_path)
+    fallback = {
+        "current": {
+            "fanin": {
+                "host_clock": {
+                    "ladder": "l2_fallback",
+                    "fallback_reason": "actuator_unavailable",
+                },
+                "inputs": {
+                    "usbsink": {
+                        "resampler": {
+                            "locked": True,
+                            "held_target_frames": 2560,
+                            "decay": {"enabled": True, "floor_frames": 576},
+                        },
+                    },
+                },
+            },
+        },
+    }
+
+    state = lm.read_state(fallback, state_path=state_path)
+
+    assert state["state"] == "fallback"
+    assert state["effective_mode"] == "high"
+    assert "temporarily unavailable" in state["detail"]
+    assert "retry automatically" in state["detail"]
+    assert "next USB session" not in state["detail"]
 
 
 def test_usb_latency_apply_keeps_requested_mode_visible_on_reconcile_failure(

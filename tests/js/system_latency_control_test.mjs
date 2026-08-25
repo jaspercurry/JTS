@@ -32,8 +32,8 @@ function button(mode) {
 }
 
 const refs = {
-  selected: { textContent: "" },
-  applied: { textContent: "" },
+  preference: { textContent: "" },
+  effective: { textContent: "" },
   live: { textContent: "" },
   status: { textContent: "" },
   buttons: [button("low"), button("medium"), button("high")],
@@ -42,24 +42,41 @@ const refs = {
 sections.updateUsbLatency(refs, {
   selected_mode: "medium",
   applied_mode: "medium",
-  live_buffer_ms: 53.3,
+  effective_mode: null,
+  live_buffer_ms: 42.7,
   state: "recovery",
   detail: "Recovery buffer active; latency will fall after timing stabilizes.",
 });
-assert.equal(refs.selected.textContent, "Medium");
-assert.equal(refs.applied.textContent, "Medium");
-assert.equal(refs.live.textContent, "53.3 ms");
+assert.equal(refs.preference.textContent, "Medium");
+assert.equal(refs.effective.textContent, "Adjusting");
+assert.equal(refs.live.textContent, "42.7 ms");
 assert.match(refs.status.textContent, /Recovery buffer active/);
-assert.equal(refs.buttons[1].el.attrs["aria-pressed"], "true");
+assert.ok(refs.buttons.every((item) => item.el.attrs["aria-pressed"] === "false"));
 
 sections.updateUsbLatency(refs, {
   selected_mode: "low",
   applied_mode: "low",
+  effective_mode: "high",
   live_buffer_ms: 53.3,
   state: "fallback",
   detail: "Low is selected, but the host timing check failed. This USB session is using the stable 53.3 ms buffer.",
 });
 assert.match(refs.status.textContent, /host timing check failed/);
+assert.equal(refs.effective.textContent, "High · stable fallback");
+assert.equal(refs.buttons[0].el.attrs["aria-pressed"], "false");
+assert.equal(refs.buttons[2].el.attrs["aria-pressed"], "true");
+
+sections.updateUsbLatency(refs, {
+  selected_mode: "low",
+  applied_mode: "low",
+  effective_mode: null,
+  live_buffer_ms: 53.3,
+  state: "idle",
+  detail: "Low is preferred. It will be used when USB audio starts.",
+});
+assert.equal(refs.preference.textContent, "Low");
+assert.equal(refs.effective.textContent, "Not active");
+assert.ok(refs.buttons.every((item) => item.el.attrs["aria-pressed"] === "false"));
 
 const quietConsole = { error() {} };
 const actions = await new AsyncFunction(
