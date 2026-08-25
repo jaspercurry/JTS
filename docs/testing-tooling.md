@@ -3156,7 +3156,7 @@ refusal restores the household volume and banks nothing.
 | `spl_target_uncapturable` | the band sits above digital full scale at this mic |
 | `volume_ceiling_below_ramp_start` | the stimulus leaves no headroom to climb into |
 | `mic_not_observing` | the volume reached the headroom ceiling and the mic never rose above the room; the detail names the ceiling and the rise it required |
-| `spl_ceiling_exceeded` | one measured SAMPLE crossed `max_commissioning_level_db_spl` — not a settled reading; the window it stopped in is published beside it (below) |
+| `spl_ceiling_exceeded` | one measured SAMPLE crossed `max_commissioning_level_db_spl` — not a settled reading; the window (or fade leg) it stopped in is published beside it (below) |
 | `spl_target_unreachable` | the headroom ceiling was reached without entering the band; the detail names the volume it stopped at and the level that produced |
 | `spl_level_unconverged` | two steps commanded the whole measured gap and neither landed in the band; the refusal carries the measured dB-per-dB slope |
 | `spl_level_unsettled` | the level never stopped moving, at either of two scales — consecutive WINDOWS disagreeing until `JASPER_SEAT_LEVEL_SETTLE_TIMEOUT_S` ran out (one reading that could not be believed at all), or consecutive READINGS disagreeing until the walk's budget ran out (a level that reached the band and crept out from under it). One slug because it is one question; the detail says which scale and quotes the two figures that disagreed. Distinct from the row above, which is the ramp failing to REACH the band at all — that one is about where the level is, this one about whether it is holding still |
@@ -3165,12 +3165,17 @@ refusal restores the household volume and banks nothing.
 | `mic_feed_lost` / `mic_clipping` | no finite sample in a reading window, and a clipped capture |
 | `measurement_isolation_unavailable` | another measurement holds the speaker, or mux could not prove household music is out of the mix |
 
-**A refusal publishes the window it stopped in.** The two stops that
+**A refusal publishes the window it stopped in** — or the **fade leg**, when
+that is what it stopped in. The two stops that
 run on every sample — `spl_ceiling_exceeded` and `mic_clipping` — end a window
 part-way through, so there is no settled median for the volume they stopped at.
 The refusal carries that window instead, on the receipt as `ramp.stopped_window` and in
 the same sentence the CLI prints: how many samples it saw, their min/median/max
-dB SPL, and the sample that tripped with its offset from the volume step.
+dB SPL, and the sample that tripped with its offset from the volume step. Those
+same two stops run on the re-measure's fade legs, which open no window at all, so
+a refusal from a leg reports `windows: 0` and the CLI names it a *fade leg*
+rather than a window it never took — the volume it quotes is one the pass swept
+through on its way somewhere, not one it settled at.
 `spl_level_unsettled` publishes one too, and it is a different shape: its window
 ran to its own deadline rather than being abandoned, so `trip_db_spl` /
 `trip_offset_s` are null and the median is the whole content — read it against
