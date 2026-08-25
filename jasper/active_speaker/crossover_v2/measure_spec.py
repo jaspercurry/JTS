@@ -16,18 +16,14 @@ preset is picking parameters; adding one is writing data. A preset that would
 require an engine edit is a design error, not a new preset — so this module
 holds the parameter vocabulary and no preset catalogue.
 
-**Every word here is borrowed from the module that already owns it.** The
-duplication that this refactor exists to remove starts with a second spelling
-of a vocabulary, so:
-
-* the pose axes are :mod:`.spatial`'s :data:`~.spatial.POSITION_AXES`;
-* the capture regimes are
-  :data:`~jasper.active_speaker.driver_acoustics.CAPTURE_GEOMETRIES`, which is
-  exported for exactly this use — *"so a caller carrying a geometry out of an
-  operator-authored document can check it at its own door"*;
-* the polarity words are derived from
-  :func:`~jasper.audio_measurement.program_analysis.polarity_label`, which its
-  own docstring calls *"the ONE spelling of the map"*.
+**The vocabulary lives in :mod:`.contracts`, not here.** Quoting it from the
+modules that own the words (``spatial``, ``driver_acoustics``,
+``program_analysis``) costs ~1,100 imported modules including ``numpy`` — a
+price a 1 GB Pi's always-on daemon would pay to reach five string literals, and
+one this package's own ``__init__`` refuses to pay for ``forward_model`` for
+exactly this reason. ``contracts`` declares them and
+``tests/test_crossover_v2_engine_skeleton.py`` pins each equal to its owner's
+spelling, so the cheap copy cannot drift off the real one.
 
 **The four stubs, and which roster row lands each** (§5's instrument roster):
 
@@ -36,7 +32,7 @@ Parameter                    Instrument      What still happens today
 ===========================  ==============  ============================
 ``regime=near_field``        R-3             the capture is taken and banked
 ``polarity=inverted``        R-1             nothing is captured
-``level_ladder_dbfs=(…)``    R-4             the declared level is measured
+``level_ladder_dbfs=(…)``    R-4             every rung plays and banks
 ``position_axis=vertical``   R-5a            nothing is captured
 ===========================  ==============  ============================
 
@@ -53,29 +49,22 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 
-from jasper.active_speaker.driver_acoustics import CAPTURE_GEOMETRIES
-from jasper.audio_measurement.program_analysis import polarity_label
-
-from .spatial import (
-    POSITION_AXES,
+from .contracts import (
+    MEASURE_KINDS,
+    MEASURE_REGIMES,
+    POLARITIES,
+    POLARITY_INVERTED,
+    POLARITY_NORMAL,
     POSITION_AXIS_HORIZONTAL,
     POSITION_AXIS_VERTICAL,
+    REGIME_NEAR_FIELD,
+    REGIME_REFERENCE_AXIS,
 )
 
 __all__ = [
     "DISTORTION_VS_LEVEL_NOT_IMPLEMENTED",
     "INVERTED_POLARITY_NOT_IMPLEMENTED",
-    "MEASURE_KINDS",
-    "MEASURE_KIND_BASELINE",
-    "MEASURE_KIND_CANDIDATE",
-    "MEASURE_KIND_VERIFY",
-    "MEASURE_REGIMES",
     "NEAR_FIELD_SPLICE_NOT_IMPLEMENTED",
-    "POLARITIES",
-    "POLARITY_INVERTED",
-    "POLARITY_NORMAL",
-    "REGIME_NEAR_FIELD",
-    "REGIME_REFERENCE_AXIS",
     "STUB_CODES",
     "VERTICAL_AXIS_NOT_IMPLEMENTED",
     "CapabilityStub",
@@ -83,59 +72,19 @@ __all__ = [
     "stubbed_capabilities",
 ]
 
-#: The three parameterizations of the one ``measure`` verb — ruling S1's
-#: *"measuring is measuring"* made visible in the data, and wave 4j's ``kind``
-#: index column. A baseline, a candidate check and a re-measure differ by this
-#: word and by nothing else in the code that runs them.
-MEASURE_KIND_BASELINE = "baseline"
-MEASURE_KIND_CANDIDATE = "candidate"
-MEASURE_KIND_VERIFY = "verify"
-MEASURE_KINDS = (
-    MEASURE_KIND_BASELINE,
-    MEASURE_KIND_CANDIDATE,
-    MEASURE_KIND_VERIFY,
-)
-
-#: The regime SET is read from the module that declares it, so R-3's splice
-#: finds both of its record kinds under one vocabulary. The two names below are
-#: this module's handles on that set's members — pinned equal to it by
-#: ``tests/test_crossover_v2_engine_skeleton.py``, because a handle that drifts
-#: off its set is a parameter nobody can pass.
-MEASURE_REGIMES = tuple(sorted(CAPTURE_GEOMETRIES))
-REGIME_NEAR_FIELD = "near_field"
-REGIME_REFERENCE_AXIS = "reference_axis"
-
-#: The measurement frame's polarity words, DERIVED from their owner rather than
-#: respelled — the same discipline :data:`~.capture_source.INTEGRITY_COUNTER_KEYS`
-#: applies to the frame-ledger keys. Distinct from the candidate's polarity
-#: ACTIONS (``crossover_alignment.POLARITY_KEEP`` / ``POLARITY_INVERT``), which
-#: say what a speaker should DO rather than how a capture was taken.
-POLARITY_NORMAL = polarity_label(1)
-POLARITY_INVERTED = polarity_label(-1)
-POLARITIES = (POLARITY_NORMAL, POLARITY_INVERTED)
-
 #: R-3. The near-field capture ships; the splice onto the far-field trace is
 #: the ``analyze`` function that does not exist.
 NEAR_FIELD_SPLICE_NOT_IMPLEMENTED = "near_field_splice_not_implemented"
 #: R-1. The reverse-null is shipped in three parts with its executor deleted,
 #: so nothing plays an inverted-polarity stimulus today.
 INVERTED_POLARITY_NOT_IMPLEMENTED = "inverted_polarity_not_implemented"
-#: R-4. One level is measured today; the ladder across levels, and the consumer
-#: that turns it into a measured floor, are both unbuilt.
+#: R-4. Every rung of the ladder plays and banks its own record; what does not
+#: exist is the ``analyze`` consumer that turns the set into a measured floor.
 DISTORTION_VS_LEVEL_NOT_IMPLEMENTED = "distortion_vs_level_not_implemented"
 #: R-5a. Three sites refuse a vertical pose deliberately, and a fourth
 #: (``crossover_v2_flow.REMOTE_VERTICAL_DISCLOSURE``) tells the household the
 #: axis is not covered. Undoing that is real work; it just needs no hardware.
 VERTICAL_AXIS_NOT_IMPLEMENTED = "vertical_axis_not_implemented"
-
-#: Every code :func:`stubbed_capabilities` can return, so a caller can CHECK a
-#: code rather than trust it, and so a reader can count the holes.
-STUB_CODES = frozenset({
-    NEAR_FIELD_SPLICE_NOT_IMPLEMENTED,
-    INVERTED_POLARITY_NOT_IMPLEMENTED,
-    DISTORTION_VS_LEVEL_NOT_IMPLEMENTED,
-    VERTICAL_AXIS_NOT_IMPLEMENTED,
-})
 
 
 @dataclass(frozen=True)
@@ -157,16 +106,30 @@ class CapabilityStub:
     captured: bool
     message: str
 
+    def aborted(self) -> "CapabilityStub":
+        """The same hole, re-rendered for a call that captured nothing.
+
+        A spec can trip two stubs at once — one whose capture still ships and
+        one that stops the stimulus dead. When the second wins, the first must
+        stop claiming *"capture banked"*, or the disclosure lies about evidence
+        that does not exist. That is ruling S12's honesty clause turned on the
+        disclosure itself.
+        """
+        if not self.captured:
+            return self
+        return _stub(
+            self.code, _CAPABILITY[self.code], captured=False,
+            owed=_OWED[self.code], instrument=self.instrument,
+        )
+
 
 def _stub(code: str, capability: str, *, captured: bool, owed: str,
           instrument: str) -> CapabilityStub:
     """One stub in the wording shape ruling S12 fixes.
 
-    The canonical example the ruling quotes — *"near-field splice not
-    implemented; capture banked, splice pending R-3"* — renders from this
-    function exactly, which is why the sentence is composed rather than stored:
-    a second stub written by hand would drift out of the shape by its second
-    line.
+    The canonical example the ruling quotes renders from this function exactly,
+    which is why the sentence is composed rather than stored: a second stub
+    written by hand would drift out of the shape by its second line.
     """
     banked = "capture banked" if captured else "nothing captured"
     return CapabilityStub(
@@ -177,6 +140,50 @@ def _stub(code: str, capability: str, *, captured: bool, owed: str,
     )
 
 
+#: What each hole is called in the sentence, and what it still owes. Kept as
+#: data so :meth:`CapabilityStub.aborted` can re-render a stub without a second
+#: copy of either phrase.
+_CAPABILITY = {
+    NEAR_FIELD_SPLICE_NOT_IMPLEMENTED: "near-field splice",
+    INVERTED_POLARITY_NOT_IMPLEMENTED: "inverted-polarity capture",
+    DISTORTION_VS_LEVEL_NOT_IMPLEMENTED: "distortion-vs-level sweep",
+    VERTICAL_AXIS_NOT_IMPLEMENTED: "vertical-axis walk",
+}
+_OWED = {
+    NEAR_FIELD_SPLICE_NOT_IMPLEMENTED: "splice",
+    INVERTED_POLARITY_NOT_IMPLEMENTED: "reverse-null",
+    DISTORTION_VS_LEVEL_NOT_IMPLEMENTED: "level ladder",
+    VERTICAL_AXIS_NOT_IMPLEMENTED: "pose prompts",
+}
+_INSTRUMENT = {
+    NEAR_FIELD_SPLICE_NOT_IMPLEMENTED: "R-3",
+    INVERTED_POLARITY_NOT_IMPLEMENTED: "R-1",
+    DISTORTION_VS_LEVEL_NOT_IMPLEMENTED: "R-4",
+    VERTICAL_AXIS_NOT_IMPLEMENTED: "R-5a",
+}
+_CAPTURED = {
+    NEAR_FIELD_SPLICE_NOT_IMPLEMENTED: True,
+    INVERTED_POLARITY_NOT_IMPLEMENTED: False,
+    DISTORTION_VS_LEVEL_NOT_IMPLEMENTED: True,
+    VERTICAL_AXIS_NOT_IMPLEMENTED: False,
+}
+
+#: Built once at import. Each stub is a frozen value that depends on nothing
+#: but its code, so rebuilding one per ``measure`` call bought nothing.
+_STUBS = {
+    code: _stub(
+        code, _CAPABILITY[code], captured=_CAPTURED[code],
+        owed=_OWED[code], instrument=_INSTRUMENT[code],
+    )
+    for code in _CAPABILITY
+}
+
+#: Every code :func:`stubbed_capabilities` can return, so a caller can CHECK a
+#: code rather than trust it, and so a reader can count the holes. Derived from
+#: the table above rather than re-listed, so a fifth stub joins it by existing.
+STUB_CODES = frozenset(_STUBS)
+
+
 @dataclass(frozen=True)
 class MeasureSpec:
     """The parameter bundle one ``measure`` runs, and one preset saves.
@@ -184,27 +191,41 @@ class MeasureSpec:
     ``positions`` are signed whole-degree bearings on ``position_axis``, in the
     frame :class:`~.spatial.PositionGeometry` declares and owns: negative LEFT
     of the design axis as seen from the microphone looking at the speaker. An
-    empty tuple is the design axis alone.
+    empty tuple means the design axis alone, and the session spells that
+    :data:`~.contracts.DESIGN_AXIS_DEG` — the same ``0`` that module's own
+    ``_DESIGN_AXIS_GEOMETRY`` uses for a capture with no prompted move — so
+    ``positions=()`` and ``positions=(0,)`` name one pose and produce one
+    record shape, never two spellings of the same place.
+
+    ``pose_prompts`` is what the mover was TOLD, one per position, and it is
+    the ``place`` block's ``prompt`` field (§wave 4). MS-17 keeps it on the
+    shared shape whichever mover satisfied it: an arm-driven record carries the
+    field rather than growing a second record shape. Empty means no prompt was
+    issued; a non-empty tuple must be as long as ``positions``.
 
     **Nothing here names the mover** (MS-17). Who put the microphone at a
     bearing — an arm, a person, whatever comes next — is provenance the record
     carries and no parameter selects. That is why a third front end needs zero
     engine edits.
 
-    **The vertical axis carries no bearing on this rig.** ``PositionGeometry``
-    raises on a vertical pose that states degrees, because raising and lowering
-    a microphone commands no angle; a vertical walk's poses are therefore named
-    by the preset's prompts and not by this field. R-5a lands those prompts,
-    and until it does ``position_axis=vertical`` is a stub.
+    **The vertical axis carries no bearing on this rig.** A vertical walk's
+    poses are named by ``pose_prompts`` and not by degrees; R-5a lands those
+    prompts, and until it does ``position_axis=vertical`` is a stub. The
+    refusal that enforces it is :class:`~.spatial.PositionGeometry`'s own — see
+    :meth:`__post_init__`.
 
-    ``level_ladder_dbfs`` is R-4's axis. Empty means the session's one declared
-    level, which is what every capture uses today and what ruling S8's recipe
-    requires of a level-matched set — *same drive voltage, nothing touched
-    between measurements*.
+    ``level_ladder_dbfs`` is R-4's axis, and it moves the **stimulus**, never
+    the claim: each rung is a stimulus level in dBFS played through the one
+    fader claim this session holds. Ruling S8's recipe depends on that split —
+    *same drive voltage, nothing touched between measurements* is a statement
+    about the fader, and a ladder that re-levelled the claim would break it.
+    Empty means the single stimulus the program declares, which is what every
+    capture uses today.
     """
 
     kind: str
     positions: tuple[int, ...] = ()
+    pose_prompts: tuple[str, ...] = ()
     position_axis: str = POSITION_AXIS_HORIZONTAL
     regime: str = REGIME_REFERENCE_AXIS
     polarity: str = POLARITY_NORMAL
@@ -216,11 +237,6 @@ class MeasureSpec:
             raise ValueError(
                 f"a measure kind must be one of {MEASURE_KINDS}, got {self.kind!r}"
             )
-        if self.position_axis not in POSITION_AXES:
-            raise ValueError(
-                f"a pose axis must be one of {POSITION_AXES}, "
-                f"got {self.position_axis!r}"
-            )
         if self.regime not in MEASURE_REGIMES:
             raise ValueError(
                 f"a capture regime must be one of {MEASURE_REGIMES}, "
@@ -231,15 +247,44 @@ class MeasureSpec:
                 f"a capture polarity must be one of {POLARITIES}, "
                 f"got {self.polarity!r}"
             )
-        if self.position_axis == POSITION_AXIS_VERTICAL and self.positions:
-            # The same refusal ``PositionGeometry`` makes, made one layer
-            # earlier: a bearing on the vertical axis is a number nothing on
-            # this rig can command, and a spec that carried one would ask for a
-            # capture no record could honestly describe.
+        for bearing in self.positions:
+            # Whole degrees, for the reason `PositionGeometry` gives: the poses
+            # come from tape-measure offsets to a mark placed "about" 1 m out,
+            # and a tenth of a degree would claim a precision the placement
+            # never had. `bool` is an `int` and is never a bearing.
+            if isinstance(bearing, bool) or not isinstance(bearing, int):
+                raise ValueError(
+                    "a pose bearing is a whole number of degrees, got "
+                    f"{bearing!r}"
+                )
+        if self.pose_prompts and len(self.pose_prompts) != len(self.positions or (0,)):
             raise ValueError(
-                "a vertical walk carries no bearings — this rig raises and "
-                f"lowers the microphone rather than swinging it, got "
-                f"{self.positions!r}"
+                "pose_prompts must name every position or none: "
+                f"{len(self.pose_prompts)} prompts for "
+                f"{len(self.positions or (0,))} positions"
+            )
+        self._check_pose_axis()
+
+    def _check_pose_axis(self) -> None:
+        """Axis and bearing, checked by the module that owns the frame.
+
+        Deliberately not a second copy of the rule: building one
+        :class:`~.spatial.PositionGeometry` re-uses that class's own refusals,
+        so this cannot drift off them — which the hand-written copy this
+        replaces already had, by one word.
+
+        The import is deferred because :mod:`.spatial` costs ~1,100 modules
+        including ``numpy``, and a spec is constructed by callers that have no
+        other reason to pay for it. Only the paths that state a pose pay.
+        """
+        from .spatial import MARK_DISTANCE_M, PositionGeometry
+
+        bearings: tuple[int | None, ...] = self.positions or (None,)
+        for bearing in bearings:
+            PositionGeometry(
+                axis=self.position_axis,
+                degrees=bearing,
+                mark_distance_m=MARK_DISTANCE_M,
             )
 
 
@@ -253,25 +298,13 @@ def stubbed_capabilities(spec: MeasureSpec) -> tuple[CapabilityStub, ...]:
     and one whose ``captured`` is ``True`` as "play, bank, and say what the
     banked evidence is still owed."
     """
-    stubs: list[CapabilityStub] = []
+    codes: list[str] = []
     if spec.regime == REGIME_NEAR_FIELD:
-        stubs.append(_stub(
-            NEAR_FIELD_SPLICE_NOT_IMPLEMENTED, "near-field splice",
-            captured=True, owed="splice", instrument="R-3",
-        ))
+        codes.append(NEAR_FIELD_SPLICE_NOT_IMPLEMENTED)
     if spec.polarity == POLARITY_INVERTED:
-        stubs.append(_stub(
-            INVERTED_POLARITY_NOT_IMPLEMENTED, "inverted-polarity capture",
-            captured=False, owed="reverse-null", instrument="R-1",
-        ))
+        codes.append(INVERTED_POLARITY_NOT_IMPLEMENTED)
     if spec.level_ladder_dbfs:
-        stubs.append(_stub(
-            DISTORTION_VS_LEVEL_NOT_IMPLEMENTED, "distortion-vs-level sweep",
-            captured=True, owed="level ladder", instrument="R-4",
-        ))
+        codes.append(DISTORTION_VS_LEVEL_NOT_IMPLEMENTED)
     if spec.position_axis == POSITION_AXIS_VERTICAL:
-        stubs.append(_stub(
-            VERTICAL_AXIS_NOT_IMPLEMENTED, "vertical-axis walk",
-            captured=False, owed="pose prompts", instrument="R-5a",
-        ))
-    return tuple(stubs)
+        codes.append(VERTICAL_AXIS_NOT_IMPLEMENTED)
+    return tuple(_STUBS[code] for code in codes)
