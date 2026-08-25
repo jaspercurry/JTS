@@ -216,6 +216,7 @@ from jasper.web._common import (
     JsonBodyError,
     canonical_header,
     canonical_page,
+    guard_mutating_host,
     guard_read_request,
     json_island,
     read_json_object,
@@ -330,18 +331,30 @@ class _Handler(BaseHTTPRequestHandler):
             raise ValueError(message) from exc
 
     def _check_csrf(self) -> bool:
-        """Verify the X-CSRF-Token header matches the server token.
+        """Verify the request's Host/Origin, then its X-CSRF-Token header.
 
-        Returns True if valid, False (and sends 403) otherwise. The
-        token is embedded in the served HTML page via a meta tag; the
-        page's JS reads it and sends it on every mutating request.
-        Defense against a malicious cross-origin site triggering
+        Calls `guard_mutating_host` first — the same DNS-rebinding /
+        cross-site Host/Origin allowlist `guard_mutating_request` applies
+        for every other wizard — before comparing the X-CSRF-Token header
+        against the server-held token. Returns True if both pass, False
+        (having sent the 403 itself) otherwise.
+
+        The CSRF token is embedded in the served HTML page via a meta
+        tag; the page's JS reads it and sends it on every mutating
+        request. Defense against a malicious cross-origin site triggering
         recordings or daemon toggles from the operator's browser.
 
         Uses `secrets.compare_digest` for timing-safe comparison
         (defense-in-depth — the attacker probably can't observe
         latency in practice, but it's a one-line free win).
         """
+        if not guard_mutating_host(self):
+            self._send_error_json(
+                403,
+                "request rejected: only the speaker's LAN hostname or "
+                "address may make this request",
+            )
+            return False
         header_token = self.headers.get(CSRF_HEADER, "")
         if not secrets.compare_digest(header_token, self.csrf_token):
             self._send_error_json(

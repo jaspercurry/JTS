@@ -206,7 +206,10 @@ def test_migrated_json_body_reads_remain_after_csrf_guard():
 # wake_corpus_setup predates the shared double-submit seam and runs a
 # reviewed bespoke scheme (server-held token + X-CSRF-Token header compare
 # in _check_csrf). It is the only sanctioned exception to the
-# guard_mutating_request chokepoint; do not grow this set.
+# guard_mutating_request chokepoint; do not grow this set. It is NOT
+# exempt from the Host/Origin allowlist axis guard_mutating_request also
+# applies — _check_csrf must call guard_mutating_host first, asserted
+# below.
 _BESPOKE_CSRF_WIZARDS = {"wake_corpus_setup.py"}
 _CSRF_GUARD_CALL_RE = re.compile(
     r"\bguard_mutating_request\s*\(|\b_check_csrf\s*\("
@@ -502,6 +505,20 @@ def test_every_wizard_mutating_handler_uses_the_csrf_chokepoint():
         if path.name in _BESPOKE_CSRF_WIZARDS:
             assert "_check_csrf" in seg, (
                 f"{path}::{name} lost its bespoke _check_csrf() call"
+            )
+            source = path.read_text()
+            check_csrf_defs = [
+                node for node in ast.walk(ast.parse(source))
+                if isinstance(node, ast.FunctionDef) and node.name == "_check_csrf"
+            ]
+            assert len(check_csrf_defs) == 1, f"expected one _check_csrf in {path}"
+            csrf_body = ast.get_source_segment(source, check_csrf_defs[0]) or ""
+            # A call, not just a docstring mention: match the invocation
+            # shape, same as _CSRF_GUARD_CALL_RE above.
+            assert re.search(r"\bguard_mutating_host\s*\(", csrf_body), (
+                f"{path}::_check_csrf must call guard_mutating_host() first — "
+                "the shared Host/Origin allowlist axis is not part of the "
+                "bespoke-CSRF-scheme exception"
             )
             continue
         if "guard_mutating_request" not in seg:
