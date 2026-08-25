@@ -462,13 +462,20 @@ def promote_level_frame_disagreement(
         )
         return None
     # The producer's own answer to "why does this record exist", read and never
-    # recomputed (see the docstring's first paragraph). Imported inside the
-    # function on purpose: `intervention` costs ~1.8 s and ~1000 modules to
-    # import, and the attribution package is otherwise a leaf that a light
-    # surface can pull in for ~0.1 s. `storage.py`'s local import of the
-    # evidence store is the same move for the same reason. One owner for the
-    # literal either way — minting a copy of it here is what the
-    # one-vocabulary rule forbids.
+    # recomputed (see the docstring's first paragraph). Imported from its one
+    # owner rather than re-declared here, which is what the one-vocabulary rule
+    # asks; `storage.py`'s local import of the evidence store is the same move.
+    #
+    # Inside the function for two reasons, and the second is the load-bearing
+    # one. Cost: `intervention` is ~1.8 s and ~1000 modules, against ~0.1 s for
+    # the whole attribution package, which is otherwise a leaf a light surface
+    # can import. Safety: on the ONLY path that reaches here the module is
+    # already in `sys.modules` — `crossover_v2_flow` imports `accountability`,
+    # which imports this same constant from `intervention` — so this is a dict
+    # lookup that cannot raise. That matters because the seam above catches
+    # `(OSError, RuntimeError, TypeError, ValueError)` and an `ImportError`
+    # would escape it, costing a session whose candidate is already published
+    # the fail-soft guarantee this function's own docstring makes.
     from jasper.active_speaker.crossover_v2.intervention import (
         REALIZED_LEVEL_SUSPECT_REASON,
     )
