@@ -67,21 +67,6 @@ plumbing. Each numbered item is one logical edit point:
      arrival/status fetch. If it holds a connection pool, give it an
      `aclose()` — the daemon closes every built transit client on
      shutdown, duck-typed, so a pool is reclaimed with no daemon edit.
-  7. Install migration: add the new provider's env keys to the
-     `keys=(...)` array in `migrate_transit_config` (in
-     `deploy/lib/install/env-migrations.sh`). This list is a superset of
-     `transit.all_env_keys()` because it also carries the co-located Google
-     Routes travel-mode key (`JASPER_TRAVEL_DEFAULT_MODE`, owned by
-     `jasper/google_routes.py`, not any `TransitProvider`) — the
-     wizard learns provider keys from Python while the shell migration owns a
-     literal mirror. A contract test keeps those surfaces aligned. Drift is
-     operationally survivable
-     (operator-edited values stay in `jasper.env` instead of migrating
-     to `transit.env`), but worth keeping in sync. (`JASPER_TRANSIT_CITIES`
-     itself is a pack-level toggle, not a provider env key, so it is NOT
-     in that array; `migrate_transit_config` moves AND seeds it in its own
-     dedicated step.)
-
 Items 1+2 are the pure-data part the `REGISTRY`/`CityPack` abstraction
 buys you (and items 1+2 are ALL the daemon needs — no `voice_daemon.py`
 edit). Items 3-6 are bespoke (UI cards + the per-provider tool/client
