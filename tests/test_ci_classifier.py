@@ -180,15 +180,20 @@ def _changes(*paths: str, status: str = "M"):
             "full",
         ),
         (
-            "docs-plus-runtime-corpus-is-product-data",
+            "docs-plus-runtime-corpus-is-not-a-docs-diff",
             "pull_request",
-            _changes("README.md", "docs/calibration-agent/README.md"),
+            _changes(
+                "README.md",
+                "jasper/calibration_agent/corpus/README.md",
+            ),
             "full",
         ),
         (
             "runtime-corpus-alone-is-not-a-subject",
             "pull_request",
-            _changes("docs/calibration-agent/concepts/spatial-averaging.md"),
+            _changes(
+                "jasper/calibration_agent/corpus/concepts/spatial-averaging.md"
+            ),
             "full",
         ),
         (
@@ -560,30 +565,26 @@ def test_every_undiscoverable_bundle_entry_carries_a_recorded_reason() -> None:
     )
 
 
-def test_runtime_product_data_under_docs_is_not_a_docs_subject() -> None:
-    """docs/calibration-agent/** is product data, not inert prose.
+def test_the_runtime_corpus_lives_outside_the_docs_tree() -> None:
+    """The corpus the product reads at runtime is a package resource.
 
-    install rsyncs the whole docs/ tree to /opt/jasper, and
-    jasper/calibration_agent/tools.py sweeps
-    `<parents[2]>/docs/calibration-agent` with `rglob("*.md")` at runtime,
-    feeding the hits into the advisor packet the live /correction/ wizard
-    serves. Editing it changes product behaviour and LLM prompt input, so it
-    cannot ride a lane whose premise is that the change is inert.
+    `jasper/calibration_agent/tools.py` rglobs it and feeds the hits into the
+    advisor packet the live /correction/ wizard serves, so editing it changes
+    product behaviour and LLM prompt input. It sits under `jasper/` rather
+    than `docs/`, which is what keeps it off this lane by construction --
+    no prefix carve-out, and no way for a docs-only diff to reach it.
     """
 
-    assert not ci_classifier.is_docs_subject("docs/calibration-agent/README.md")
-    assert not ci_classifier.is_docs_subject(
-        "docs/calibration-agent/concepts/spatial-averaging.md"
-    )
-    assert not ci_classifier.is_docs_lane_path(
-        "docs/calibration-agent/README.md"
-    )
-    # The sibling prose tree is unaffected.
-    assert ci_classifier.is_docs_subject("docs/HANDOFF-aec.md")
+    corpus = ROOT / "jasper" / "calibration_agent" / "corpus"
+    assert corpus.is_dir(), "runtime corpus moved"
+    assert list(corpus.rglob("*.md")), "runtime corpus is empty"
 
-    corpus = ROOT / "docs" / "calibration-agent"
-    assert corpus.is_dir(), "corpus moved; update DOCS_PRODUCT_DATA_PREFIXES"
-    assert list(corpus.rglob("*.md")), "corpus is empty; is the prefix stale?"
+    for doc in corpus.rglob("*.md"):
+        rel = str(doc.relative_to(ROOT))
+        assert not ci_classifier.is_docs_subject(rel), rel
+        assert not ci_classifier.is_docs_lane_path(rel), rel
+    # The prose tree is unaffected.
+    assert ci_classifier.is_docs_subject("docs/HANDOFF-aec.md")
 
 
 def test_the_registration_guard_is_a_bundle_member_not_a_companion() -> None:

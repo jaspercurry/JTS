@@ -1251,8 +1251,9 @@ reference. Currently:
   as one stereo DAC per speaker. Keeps the experiment outside the
   product output path, requires serial-pinned direct hardware PCMs,
   and starts with no-speaker silence/identity/drift evidence.
-- [`docs/calibration-agent/`](docs/calibration-agent/README.md) —
-  Calibration/tuning knowledge corpus:
+- [`jasper/calibration_agent/corpus/`](jasper/calibration_agent/corpus/README.md) —
+  Calibration/tuning knowledge corpus the product reads at RUNTIME (a
+  package resource, not documentation):
   measurement-quality guidance, FIR research landing zone,
   active-speaker DSP / crossover notes, preference-EQ vocabulary,
   house-curve notes, and the public schema for private runtime

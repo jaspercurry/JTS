@@ -502,7 +502,7 @@ upload fallback, and one additive correction hook in the analysis path.
         │ delegates to
         ▼
 [ CalibrationAgent — provider-abstracted, mirrors LiveConnection/LiveTurn ]
-        ├─ system prompt: assembled from docs/calibration-agent/*.md
+        ├─ system prompt: assembled from jasper/calibration_agent/corpus/*.md
         ├─ tools: get_measurement / propose_peq / apply_peq /
         │         request_remeasurement / compute_schroeder /
         │         analyze_peaks_nulls / look_up
@@ -514,12 +514,12 @@ upload fallback, and one additive correction hook in the analysis path.
 
 ### Layer 1 — Knowledge base (markdown files)
 
-Live in `docs/calibration-agent/`. The initial corpus exists; keep
+Live in `jasper/calibration_agent/corpus/`. The initial corpus exists; keep
 filling it with short, source-backed concept files as research is
 distilled.
 
 ```
-docs/calibration-agent/
+jasper/calibration_agent/corpus/
 ├── README.md                    # how the loader assembles the prompt
 ├── concepts/
 │   ├── measurement-quality.md   # clipping, SNR, repeatability, mic cal
@@ -544,7 +544,7 @@ past ~150K tokens, which it shouldn't.
 
 The `jts-specific/` directory is the bit that makes the agent's
 advice grounded in *our* pipeline rather than general audio theory.
-[`implementation-ladder.md`](calibration-agent/jts-specific/implementation-ladder.md)
+[`implementation-ladder.md`](../jasper/calibration_agent/corpus/jts-specific/implementation-ladder.md)
 is particularly important: it prevents the agent from confidently
 suggesting FIR phase correction that the implementation can't
 actually deliver.
@@ -1005,13 +1005,13 @@ preference tuning, keep extending the source corpus and cite it:
 
 Current distilled corpus files:
 
-- [`docs/calibration-agent/concepts/measurement-quality.md`](calibration-agent/concepts/measurement-quality.md)
-- [`docs/calibration-agent/concepts/room-correction-limits.md`](calibration-agent/concepts/room-correction-limits.md)
-- [`docs/calibration-agent/concepts/spatial-averaging.md`](calibration-agent/concepts/spatial-averaging.md)
-- [`docs/calibration-agent/filter-design/fir-room-correction.md`](calibration-agent/filter-design/fir-room-correction.md)
-- [`docs/calibration-agent/filter-design/preference-eq.md`](calibration-agent/filter-design/preference-eq.md)
-- [`docs/calibration-agent/targets/house-curves.md`](calibration-agent/targets/house-curves.md)
-- [`docs/calibration-agent/jts-specific/implementation-ladder.md`](calibration-agent/jts-specific/implementation-ladder.md)
+- [`jasper/calibration_agent/corpus/concepts/measurement-quality.md`](../jasper/calibration_agent/corpus/concepts/measurement-quality.md)
+- [`jasper/calibration_agent/corpus/concepts/room-correction-limits.md`](../jasper/calibration_agent/corpus/concepts/room-correction-limits.md)
+- [`jasper/calibration_agent/corpus/concepts/spatial-averaging.md`](../jasper/calibration_agent/corpus/concepts/spatial-averaging.md)
+- [`jasper/calibration_agent/corpus/filter-design/fir-room-correction.md`](../jasper/calibration_agent/corpus/filter-design/fir-room-correction.md)
+- [`jasper/calibration_agent/corpus/filter-design/preference-eq.md`](../jasper/calibration_agent/corpus/filter-design/preference-eq.md)
+- [`jasper/calibration_agent/corpus/targets/house-curves.md`](../jasper/calibration_agent/corpus/targets/house-curves.md)
+- [`jasper/calibration_agent/corpus/jts-specific/implementation-ladder.md`](../jasper/calibration_agent/corpus/jts-specific/implementation-ladder.md)
 
 ### Phase A — Corpus loader + agent scaffold (CLI-testable, no UI)
 
@@ -1022,7 +1022,7 @@ Current distilled corpus files:
   + acoustic-quality issues, renders evidence readiness, finds
   bass-band peaks/nulls vs target, notes that Schroeder estimation is
   unavailable until room/RT60 context exists, and pulls short guidance
-  snippets from `docs/calibration-agent/`. It performs no side effects
+  snippets from `jasper/calibration_agent/corpus/`. It performs no side effects
   and does not call an LLM.
 - ✅ **LLM-ready advisor context packet.** Implemented 2026-05-29 as
   `jasper.calibration_agent.advisor_context` and exposed through
@@ -1076,7 +1076,7 @@ Current distilled corpus files:
   effect, but it is reversible and bounded: no volume control, no raw
   CamillaDSP YAML, no room-correction apply, no profile persistence,
   and the listener remains the judge.
-- Extend the markdown corpus under `docs/calibration-agent/` as
+- Extend the markdown corpus under `jasper/calibration_agent/corpus/` as
   needed. The current prompt package uses the redacted advisor context
   plus corpus snippets; a later provider adapter can add fuller corpus
   assembly without changing the response/action contract.

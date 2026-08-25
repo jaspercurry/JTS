@@ -107,7 +107,7 @@ def test_advisor_context_is_redacted_and_permissioned(tmp_path: Path):
     bundle = write_golden_correction_bundle(tmp_path)
     sound_profile_path = tmp_path / "sound_profile.json"
     _sound_profile(sound_profile_path)
-    corpus_dir = tmp_path / "docs" / "calibration-agent"
+    corpus_dir = tmp_path / "corpus"
     (corpus_dir / "concepts").mkdir(parents=True)
     (corpus_dir / "concepts" / "measurement-quality.md").write_text(
         "# Measurement Quality\n\nUse calibrated microphones.\n"
@@ -166,7 +166,7 @@ def test_advisor_context_is_redacted_and_permissioned(tmp_path: Path):
         is True
     )
     assert context["corpus"]["hits"][0]["path"] == (
-        "docs/calibration-agent/concepts/measurement-quality.md"
+        "concepts/measurement-quality.md"
     )
     assert str(tmp_path) not in encoded
     assert "810-8494" not in encoded

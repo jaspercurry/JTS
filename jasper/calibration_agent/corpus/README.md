@@ -19,12 +19,12 @@ schema for that context lives in
 [`jts-specific/runtime-context-schema.md`](jts-specific/runtime-context-schema.md).
 
 Raw 2026-05-25 research inputs are archived separately at
-[`../research/2026-05-25-calibration-agent/README.md`](../research/2026-05-25-calibration-agent/README.md).
+[`../research/2026-05-25-calibration-agent/README.md`](../../../docs/research/2026-05-25-calibration-agent/README.md).
 Use those reports for traceability and re-review, but move only
 verified/distilled claims into this corpus.
 
 Follow-up 2026-05-27 research inputs and syntheses are archived at
-[`../research/2026-05-27-room-correction-research/README.md`](../research/2026-05-27-room-correction-research/README.md).
+[`../research/2026-05-27-room-correction-research/README.md`](../../../docs/research/2026-05-27-room-correction-research/README.md).
 They cover mobile browser capture reliability, target/preference
 tuning, FIR/phase correction, and multi-position confidence.
 
@@ -63,7 +63,7 @@ Every concept file should have:
   — 2-way/3-way active crossover, driver alignment, speaker-baseline
   tuning, and the near-field/null-depth/gated measurement triad.
   Current operational truth and implementation planning live in
-  [`../HANDOFF-active-speaker-dsp.md`](../HANDOFF-active-speaker-dsp.md).
+  [`../HANDOFF-active-speaker-dsp.md`](../../../docs/HANDOFF-active-speaker-dsp.md).
 - [`filter-design/fir-room-correction.md`](filter-design/fir-room-correction.md)
   — FIR fundamentals and implementation constraints.
 - [`filter-design/preference-eq.md`](filter-design/preference-eq.md)
@@ -89,10 +89,10 @@ Every concept file should have:
   introduce FIR first as infrastructure, then as guarded
   minimum-phase / low-band mixed-phase correction; keep LLM behavior
   advisory and parameter-bounded. Raw archive:
-  [`docs/research/2026-05-25-calibration-agent/`](../research/2026-05-25-calibration-agent/README.md).
+  [`docs/research/2026-05-25-calibration-agent/`](../../../docs/research/2026-05-25-calibration-agent/README.md).
 - 2026-05-25: distilled three user-provided active speaker DSP /
   crossover commissioning reports into
-  [`HANDOFF-active-speaker-dsp.md`](../HANDOFF-active-speaker-dsp.md)
+  [`HANDOFF-active-speaker-dsp.md`](../../../docs/HANDOFF-active-speaker-dsp.md)
   and the active-speaker concept note. Consensus: treat active
   crossover tuning as a speaker-baseline commissioning module with
   separate safety gates, not as a room-correction extension. Same raw
@@ -116,7 +116,7 @@ Every concept file should have:
   FIR as a staged ladder gated by bundle provenance, timing, spatial
   stability, latency, headroom, and pre-ringing risk. Raw archive and
   synthesis:
-  [`docs/research/2026-05-27-room-correction-research/`](../research/2026-05-27-room-correction-research/README.md).
+  [`docs/research/2026-05-27-room-correction-research/`](../../../docs/research/2026-05-27-room-correction-research/README.md).
 - 2026-05-28: durable-evidence bundle substrate expanded. Correction
   bundles now use schema v3 and write `artifact_manifest.json` with
   checksums, schema/kind metadata, generator provenance, dependencies,
@@ -191,7 +191,7 @@ Every concept file should have:
   v2 action-type vocabulary in `jasper.calibration_agent.response`.
   This entry is a pointer, not the record — see "The P6 tuning
   surface" in
-  [HANDOFF-calibration-agent.md](../HANDOFF-calibration-agent.md) for
+  [HANDOFF-calibration-agent.md](../../../docs/HANDOFF-calibration-agent.md) for
   the full design and safety-vocabulary detail.
 
 Last verified: 2026-07-11

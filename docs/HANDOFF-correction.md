@@ -1803,7 +1803,7 @@ SNR/repeatability evidence; generated or applied FIR should still wait
 until the measurement substrate can prove capture quality, runtime
 health, spatial stability, and headroom.
 The rationale and source links live in
-[`docs/calibration-agent/jts-specific/implementation-ladder.md`](calibration-agent/jts-specific/implementation-ladder.md#2026-05-27-sequencing-update).
+[`docs/calibration-agent/jts-specific/implementation-ladder.md`](../jasper/calibration_agent/corpus/jts-specific/implementation-ladder.md#2026-05-27-sequencing-update).
 
 **Correction / preference composition note:** `/sound/room/` owns room
 measurement and room PEQ design; `/eq/` owns stock sound curves,

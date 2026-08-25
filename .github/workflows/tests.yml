@@ -86,12 +86,9 @@ jobs:
     # fifth of merged PRs are this shape, and they were paying the full
     # ~8m24s farm for it.
     #
-    # "Inert" is load-bearing and is enforced by the classifier, not assumed:
-    # install rsyncs the whole docs/ tree to /opt/jasper, and
-    # docs/calibration-agent/** is read there at runtime by
-    # jasper/calibration_agent/tools.py and injected into an LLM prompt on
-    # the live /correction/ wizard. That subtree is product data, so
-    # DOCS_PRODUCT_DATA_PREFIXES sends it to the full farm.
+    # "Inert" is load-bearing. The calibration-agent corpus the product reads
+    # at runtime is a package resource (jasper/calibration_agent/corpus/), not
+    # a document, so no change this lane can carry reaches product data.
     #
     # The bundle is the registered set of tests that READ documentation --
     # the "pin promises with tests" contracts (AGENTS.md), which assert that

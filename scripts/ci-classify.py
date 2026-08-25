@@ -75,26 +75,6 @@ DOCS_PROSE_FILES = frozenset((
     "README.md",
     "SECURITY.md",
 ))
-# Documents under docs/ that are NOT inert prose: the product reads them at
-# runtime, on the speaker.  install.sh rsyncs the whole `docs/` tree into
-# /opt/jasper (deploy/lib/install/python-runtime.sh, the rsync whose excludes
-# cover .venv/__pycache__/.git/tests/deploy/build/*.egg-info but not docs), and
-# jasper/calibration_agent/tools.py resolves DEFAULT_CORPUS_CANDIDATES to
-# `<parents[2]>/docs/calibration-agent` — i.e. /opt/jasper/docs/calibration-agent
-# on a deployed speaker — then sweeps it with `corpus.rglob("*.md")` and feeds
-# the hits into the advisor packet that jasper/web/correction_setup.py serves
-# from the live /correction/ wizard.
-#
-# Editing that subtree therefore changes product behaviour and LLM prompt
-# input, which is precisely what this lane's existence claims a change cannot
-# do.  It takes the full farm instead.  Note this is a POLICY-COHERENCE fix,
-# not a safety regression being closed: `full` has no corpus-content contract
-# either (only 5 of the 12 tracked corpus files are opened by any test), so
-# the real gap is missing corpus coverage and is tracked separately.
-#
-# "Ships to the speaker" is deliberately NOT the discriminator — all of docs/
-# ships. "Read by the product at runtime" is.
-DOCS_PRODUCT_DATA_PREFIXES = ("docs/calibration-agent/",)
 # The doc routing map is data for an informational, non-blocking PR comment
 # (see its own header), not a safety policy — so it rides the docs lane.  The
 # lane runs `docs-impact.py --validate-only` plus tests/test_docs_impact.py,
@@ -113,16 +93,8 @@ DOCS_ROUTING_MAP = "docs/doc-map.toml"
 # the guard's output and a runtime audit -- an audit hook that recorded every
 # open() of a document across all 667 test files (17/17 batches, per-batch
 # collection summing to the full 14679).  The audit found readers the guard
-# structurally cannot see, in three classes:
+# structurally cannot see, in two classes:
 #
-#   - Transitive reads through imported production code.  The
-#     tests/test_calibration_agent_*.py entries below import
-#     jasper.calibration_agent, whose tools.py resolves
-#     DEFAULT_CORPUS_CANDIDATES to `Path.cwd()/"docs"/"calibration-agent"` and
-#     sweeps it with `corpus.rglob("*.md")` -- so docs/calibration-agent/** is
-#     a RUNTIME corpus the product consumes.  Several of these tests write a
-#     FAKE corpus into tmp_path, which makes them look isolated when reading
-#     the source; they are not.
 #   - Generic directory sweeps.  tests/test_env_vars_codified.py walks
 #     `path.rglob("*")`, so no statically visible pattern names a document.
 #   - Child-process reads.  tests/test_script_help_excludes_spdx.py runs
@@ -149,16 +121,6 @@ DOCS_ROUTING_MAP = "docs/doc-map.toml"
 # that, a future undiscoverable entry could be added with no note at all and
 # every guard would still pass.
 DOCS_HAND_REGISTERED_READERS = {
-    # Transitive reads through imported production code: these import
-    # jasper.calibration_agent, whose tools.py resolves
-    # DEFAULT_CORPUS_CANDIDATES to `<parents[2]>/docs/calibration-agent` and
-    # sweeps it with `corpus.rglob("*.md")`.  Several write a FAKE corpus into
-    # tmp_path, which makes them look isolated when reading the source.
-    "tests/test_calibration_agent_actions.py": "corpus rglob via production code",
-    "tests/test_calibration_agent_response.py": "corpus rglob via production code",
-    "tests/test_calibration_agent_sound_actions.py": (
-        "corpus rglob via production code"
-    ),
     # Generic directory sweeps: no statically visible pattern names a document.
     # test_env_vars_codified.py walks `path.rglob("*")` over _SURFACES, which
     # contains no `docs` entry.  The one document it used to reach
@@ -189,10 +151,7 @@ DOCS_TEST_FILES = (
     "tests/test_bass_extension_limiter_protocol.py",
     "tests/test_bass_extension_plan_status.py",
     "tests/test_build_and_ci_contracts.py",
-    "tests/test_calibration_agent_actions.py",
     "tests/test_calibration_agent_advisor_context.py",
-    "tests/test_calibration_agent_response.py",
-    "tests/test_calibration_agent_sound_actions.py",
     "tests/test_calibration_agent_tools.py",
     "tests/test_capture_page_js.py",
     "tests/test_check_rust_script.py",
@@ -230,17 +189,9 @@ DOCS_POLICY_TEST_FILES = frozenset(("tests/test_ci_classifier.py",))
 DOCS_COMPANION_TEST_FILES = frozenset(DOCS_TEST_FILES) - DOCS_POLICY_TEST_FILES
 
 
-def is_docs_product_data(path: str) -> bool:
-    """True for a doc the product reads at runtime on the speaker."""
-
-    return path.startswith(DOCS_PRODUCT_DATA_PREFIXES)
-
-
 def is_docs_subject(path: str) -> bool:
     """True for a document whose presence can select the ``docs`` lane."""
 
-    if is_docs_product_data(path):
-        return False
     if path in DOCS_PROSE_FILES or path == DOCS_ROUTING_MAP:
         return True
     return path.startswith("docs/") and path.endswith(".md")
