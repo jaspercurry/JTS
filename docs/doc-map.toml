@@ -883,6 +883,10 @@ docs = [
   "docs/attribution-stage-plan.md",
   # Planning authority for the measurement/tuning program (supersessions listed in-doc).
   "docs/tuning-master-plan.md",
+  # Planning authority for the tuning-engine refactor (waves 0-8) and the
+  # coordination boundary it shares with docs/REFACTOR-2026-08.md's program.
+  "docs/REFACTOR-TUNING-2026-08.md",
+  "docs/REFACTOR-COORDINATION-2026-08.md",
   # Operator-facing map for the LLM driving the tuning loop over SSH: tool menu,
   # door refusal counts, exit-code vocabularies, program menu, mechanism
   # signatures. Scan it when a prescriber/round-runner/arm-walk CLI surface,
