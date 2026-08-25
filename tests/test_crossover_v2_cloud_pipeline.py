@@ -31,11 +31,13 @@ import numpy as np
 import pytest
 
 from jasper.active_speaker.crossover_envelope_v2 import build_crossover_envelope_v2
+from jasper.active_speaker.crossover_v2.journey import (
+    PHASE_CLOUD_MEASURE,
+    PHASE_CLOUD_VERIFY,
+)
 from jasper.active_speaker.crossover_v2_flow import (
     CLOUD_CURVE_MAX_JSON_POINTS,
     ECHO_BAND_HF_REGIME_FLOOR_HZ,
-    PHASE_CLOUD_MEASURE,
-    PHASE_CLOUD_VERIFY,
     _composed_swept_band_hz,
     _derive_cloud_echo_band_hz,
     _geometry_guidance_copy,

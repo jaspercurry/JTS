@@ -1595,7 +1595,12 @@ MAX_LINES_BY_PATH = {
     # stop it being "simplified" back.
     # 2026-08-18 (#2662 W2b): the group-close hoist to the host banked -4
     # (the closure now delegates to `drive_group_close`): 1,085 -> 1,081.
-    "jasper/web/correction_crossover_v2_relay.py": 1_081,
+    # Wave 0c: 1,081 -> 1,083, +2 physical / 0 logical. One flow import block
+    # became three, because the phase vocabulary and the failure taxonomy are
+    # now imported from the modules that own them rather than through the
+    # monolith's re-export door. Two `from ... import (` / `)` pairs is the
+    # whole cost, and it buys this file naming its real dependencies.
+    "jasper/web/correction_crossover_v2_relay.py": 1_083,
     # Born 2026-08-18 (#2662 W2b) at exactly this size: the WIRED capture
     # provider — source resolution, the local plan walk, and the answer
     # mint. Its ALSA/scan/encode mechanics live in

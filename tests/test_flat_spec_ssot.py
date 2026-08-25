@@ -35,9 +35,11 @@ import numpy as np
 import pytest
 
 from jasper.active_speaker.crossover_envelope_v2 import build_crossover_envelope_v2
-from jasper.active_speaker.crossover_v2_flow import (
+from jasper.active_speaker.crossover_v2.journey import (
     PHASE_CLOUD_MEASURE,
     PHASE_CLOUD_VERIFY,
+)
+from jasper.active_speaker.crossover_v2_flow import (
     assemble_cloud_group_result,
     cloud_trusted_floor_hz,
     cloud_validity_floor_hz,

@@ -30,9 +30,9 @@ from __future__ import annotations
 import inspect
 
 from jasper.active_speaker import crossover_v2_flow as flow
+from jasper.active_speaker.crossover_v2.journey import PHASE_MEASURE
 from jasper.active_speaker.crossover_v2_flow import (
     MAX_EXTRA_ATTEMPTS_PER_POSITION,
-    PHASE_MEASURE,
     STAGE1_INCLUDES_CLOUD_MEASURE,
     STAGE1_INCLUDES_ENTRY_BASELINE,
     CrossoverV2Session,

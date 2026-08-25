@@ -261,7 +261,7 @@ def _session_program(session_dir: Path) -> tuple[Any, Any, int, float]:
         PILOT_LEVEL_DELTA_DB,
         courtesy_prelude_for_phase,
     )
-    from jasper.active_speaker.crossover_v2_flow import PHASE_CLOUD_MEASURE
+    from jasper.active_speaker.crossover_v2.journey import PHASE_CLOUD_MEASURE
     from jasper.audio_measurement.program import BASE_STIMULUS_PEAK_DBFS
     from jasper.audio_measurement.program import build_verify_program
 

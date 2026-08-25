@@ -42,13 +42,16 @@ from typing import Any
 import pytest
 
 from jasper.active_speaker import crossover_v2_flow as flow
+from jasper.active_speaker.crossover_v2 import journey
 from jasper.active_speaker.crossover_v2.round_evidence import EntryBaseline
-from jasper.active_speaker.crossover_v2_flow import (
+from jasper.active_speaker.crossover_v2.journey import (
     GROUP_PHASES,
     PHASE_ENTRY_BASELINE,
     PHASE_VERIFY,
+)
+from jasper.active_speaker.crossover_v2.programs import SUMMED_SWEEP_PHASES
+from jasper.active_speaker.crossover_v2_flow import (
     REFERENCE_MARK_DESIGN_AXIS,
-    SUMMED_SWEEP_PHASES,
     build_v2_capture_plan,
     build_v2_cloud_index_phase_map,
     resolve_plan_shape,
@@ -182,7 +185,7 @@ def test_the_entry_baseline_is_a_summed_sweep_and_not_a_position_group():
     """
     assert PHASE_ENTRY_BASELINE in SUMMED_SWEEP_PHASES
     assert PHASE_ENTRY_BASELINE not in GROUP_PHASES
-    assert PHASE_ENTRY_BASELINE in flow.CAPTURE_PHASES
+    assert PHASE_ENTRY_BASELINE in journey.CAPTURE_PHASES
 
 
 # --------------------------------------------------------------------------- #

@@ -881,7 +881,7 @@ def _relay_failure_message(exc: BaseException) -> str:
     behavior) -- not evidenced as a wizard-facing problem, so left alone
     per "scope fixes to the observed-broken path."
     """
-    from jasper.active_speaker.crossover_v2_flow import (
+    from jasper.active_speaker.crossover_v2.refusal_copy import (
         REASON_INTERNAL_ERROR,
         REASON_REGISTRY,
     )

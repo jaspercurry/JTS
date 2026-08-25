@@ -275,7 +275,7 @@ def refusal_next_action(exc: BaseException) -> dict[str, Any] | None:
     hard-stop screen reads, so the pre-flight 400 and the post-persist screen
     can never offer different buttons for the same refusal.
     """
-    from jasper.active_speaker.crossover_v2_flow import REASON_REGISTRY
+    from jasper.active_speaker.crossover_v2.refusal_copy import REASON_REGISTRY
 
     code = str(getattr(exc, "code", "") or "")
     spec = REASON_REGISTRY.get(code) if code else None
@@ -329,14 +329,14 @@ def classify_program_failure(
     ``"program re-admission refused: program_profile_not_confirmed"`` reach the
     wizard's DOM while the phone was told something else entirely.
     """
-    from jasper.active_speaker.crossover_v2_flow import (
+    from jasper.active_speaker.crossover_v2.refusal_copy import (
         REASON_MEASUREMENT_VOLUME_DRIFT,
         REASON_PROGRAM_PROFILE_NOT_CONFIRMED,
         REASON_PROGRAM_UNPLAYABLE,
         REASON_PROTECTION_NOT_SEPARABLE,
         REASON_PROTECTION_SWEEP_TOO_LOW,
-        CrossoverV2FlowError,
     )
+    from jasper.active_speaker.crossover_v2_flow import CrossoverV2FlowError
     from jasper.active_speaker.program_admission import (
         ProgramAdmissionError,
         ProgramAdmissionRefusal,
@@ -406,7 +406,7 @@ def refused_from_flow_error(exc: BaseException) -> "CrossoverV2Refused":
     boundary's own ``correction.crossover_v2_refused`` log records what was
     SENT, which from here on is household copy.
     """
-    from jasper.active_speaker.crossover_v2_flow import (
+    from jasper.active_speaker.crossover_v2.refusal_copy import (
         REASON_INTERNAL_ERROR,
         REASON_REGISTRY,
     )
@@ -443,7 +443,7 @@ def profile_refusal_code(evaluation_status: str) -> str:
       cleared by one ordinary save: it rebuilds the profile from the visible
       values, so an output change and an unreadable artifact end the same way.
     """
-    from jasper.active_speaker.crossover_v2_flow import (
+    from jasper.active_speaker.crossover_v2.refusal_copy import (
         REASON_PROGRAM_PROFILE_INCOMPLETE,
         REASON_PROGRAM_PROFILE_MISSING,
         REASON_PROGRAM_PROFILE_NOT_CONFIRMED,
@@ -1070,7 +1070,7 @@ def _apply_failure_gate() -> str:
     by authorize_begin as an apply failure; only ``REASON_APPLY_FAILED``
     qualifies.
     """
-    from jasper.active_speaker.crossover_v2_flow import REASON_APPLY_FAILED
+    from jasper.active_speaker.crossover_v2.refusal_copy import REASON_APPLY_FAILED
 
     state = load_v2_state()
     failure = (state or {}).get("failure")
@@ -1392,7 +1392,7 @@ def reconcile_session_volume_for_new_session(
 
 
 def _phase_from_state(state: Mapping[str, Any] | None) -> str:
-    from jasper.active_speaker.crossover_v2_flow import (
+    from jasper.active_speaker.crossover_v2.journey import (
         CAPTURE_PHASES,
         PHASE_APPLYING,
         PHASE_CHECK,
@@ -1401,8 +1401,8 @@ def _phase_from_state(state: Mapping[str, Any] | None) -> str:
         PHASE_MEASURE,
         PHASE_REVIEW,
         PHASE_VERIFY,
-        PRE_CLOUD_CAPTURE_PHASES,
     )
+    from jasper.active_speaker.crossover_v2_flow import PRE_CLOUD_CAPTURE_PHASES
 
     accepted = set(
         state.get("accepted_phases") or () if isinstance(state, Mapping) else ()
@@ -2250,12 +2250,16 @@ def _post_apply_grade(block: Mapping[str, Any]) -> dict[str, Any]:
     surface-not-auto-restore paragraph above, which this extends rather than
     revisits.
     """
+    from jasper.active_speaker.crossover_v2.attempt_grading import (
+        PREDICTED_SPEC_MATERIAL_IMPROVEMENT_DB,
+    )
+    from jasper.active_speaker.crossover_v2.journey import PHASE_CLOUD_VERIFY
+    from jasper.active_speaker.crossover_v2.refusal_copy import (
+        REASON_VERIFY_CROSSOVER_REGION,
+    )
     from jasper.active_speaker.crossover_v2_flow import (
         CLAIM_FAIL,
         CLAIM_PASS,
-        PHASE_CLOUD_VERIFY,
-        PREDICTED_SPEC_MATERIAL_IMPROVEMENT_DB,
-        REASON_VERIFY_CROSSOVER_REGION,
         TIER_EXPRESS,
         TIER_FULL,
     )
@@ -3444,7 +3448,7 @@ def _cloud_summary(conductor: Any) -> dict[str, Any] | None:
     Reads the conductor's public group surfaces only, and tolerates a conductor
     double that has none (the persistence helper is called from test seams too).
     """
-    from jasper.active_speaker.crossover_v2_flow import GROUP_PHASES
+    from jasper.active_speaker.crossover_v2.journey import GROUP_PHASES
 
     try:
         session_phases = tuple(conductor.session_phases)
@@ -3591,7 +3595,7 @@ def persist_conductor_state(
     which of ``program_unplayable``'s several causes actually fired, which the
     old single-code collapse erased.
     """
-    from jasper.active_speaker.crossover_v2_flow import PHASE_MEASURE
+    from jasper.active_speaker.crossover_v2.journey import PHASE_MEASURE
 
     snap = conductor.snapshot()
     verify_outcome = conductor.verify_outcome
@@ -4206,7 +4210,7 @@ def persist_conductor_state(
     # its own session is left alone: ``_cloud_summary``'s own ``None`` there
     # honestly means "this session's group has not closed yet" and must not
     # be papered over with a stale prior verdict.
-    from jasper.active_speaker.crossover_v2_flow import GROUP_PHASES, PHASE_MEASURE
+    from jasper.active_speaker.crossover_v2.journey import GROUP_PHASES, PHASE_MEASURE
 
     conductor_session_phases = set(getattr(conductor, "session_phases", ()) or ())
     if not (conductor_session_phases & GROUP_PHASES):
@@ -4410,7 +4414,7 @@ def persist_conductor_state(
     # durability rule. Only when there IS a new identity — the ordinary
     # per-capture persist stays cheap.
     save_v2_state(state, durable=receipt_identity is not None)
-    from jasper.active_speaker.crossover_v2_flow import PHASE_DONE
+    from jasper.active_speaker.crossover_v2.journey import PHASE_DONE
 
     grade = (crossover_v2_status_block() or {}).get("post_apply_grade")
     grade = grade if isinstance(grade, Mapping) else {}
@@ -4450,7 +4454,7 @@ def _persist_terminal_failure(
     before this fix the reset always won, so that nudge was unreachable in
     production (only reachable by injecting the phase directly in a test).
     """
-    from jasper.active_speaker.crossover_v2_flow import REASON_APPLY_FAILED
+    from jasper.active_speaker.crossover_v2.refusal_copy import REASON_APPLY_FAILED
 
     prior = load_v2_state()
     session_id = str(getattr(conductor, "session_id", ""))
@@ -5381,7 +5385,7 @@ def bind_findings_publisher(
         from jasper.active_speaker.commissioning_evidence_store import (
             EVIDENCE_ROOT,
         )
-        from jasper.active_speaker.crossover_v2_flow import PHASE_MEASURE
+        from jasper.active_speaker.crossover_v2.journey import PHASE_MEASURE
         from jasper.attribution.findings import FindingSet
         from jasper.attribution.promotion import (
             PRODUCED_BY_LEVEL_FRAME,
@@ -5574,10 +5578,8 @@ def bind_production_play(
 
     ON-DEVICE: not exercised hardware-free; W6 validates acoustically.
     """
-    from jasper.active_speaker.crossover_v2_flow import (
-        SUMMED_SWEEP_PHASES,
-        bind_program_playback_seams,
-    )
+    from jasper.active_speaker.crossover_v2.programs import SUMMED_SWEEP_PHASES
+    from jasper.active_speaker.crossover_v2_flow import bind_program_playback_seams
     from jasper.active_speaker.web_commissioning import DEFAULT_CAMILLA_CONFIG_DIR
     from jasper.audio_measurement.program import write_program_wav
 
@@ -6172,10 +6174,8 @@ def resolve_conductor_context(status: Mapping[str, Any]) -> V2ConductorContext:
     it — the exact 2026-07-28 JTS3 dead-end.
     """
     from jasper.active_speaker.commission_wiring import resolve_capture_preset
-    from jasper.active_speaker.crossover_v2_flow import (
-        REASON_REGISTRY,
-        derive_session_volume_db,
-    )
+    from jasper.active_speaker.crossover_v2.refusal_copy import REASON_REGISTRY
+    from jasper.active_speaker.crossover_v2_flow import derive_session_volume_db
     from jasper.active_speaker.design_draft import (
         declared_effective_driver_sensitivities,
         load_design_draft,
@@ -6441,7 +6441,7 @@ def attach_stage2_preflight(status: MutableMapping[str, Any]) -> None:
     ``jasper.web`` — the envelope module reaching for it directly would be the
     first such import in the package.
     """
-    from jasper.active_speaker.crossover_v2_flow import PHASE_REVIEW
+    from jasper.active_speaker.crossover_v2.journey import PHASE_REVIEW
 
     v2 = status.get("crossover_v2")
     if not isinstance(v2, MutableMapping) or v2.get("phase") != PHASE_REVIEW:
@@ -7469,8 +7469,8 @@ def prepare_v2_session(
     from jasper.active_speaker.excitation_safety_plan import (
         resolve_driver_protection_slope_db_per_octave,
     )
+    from jasper.active_speaker.crossover_v2.journey import LATERAL_CONSUMER_FC_SELECTOR
     from jasper.active_speaker.crossover_v2_flow import (
-        LATERAL_CONSUMER_FC_SELECTOR,
         STAGE1_INCLUDES_CLOUD_MEASURE,
         STAGE1_INCLUDES_ENTRY_BASELINE,
         CrossoverV2Session,
@@ -8026,9 +8026,8 @@ def prepare_v2_verify(
     """
     import numpy as np
 
+    from jasper.active_speaker.crossover_v2.journey import PHASE_CHECK, PHASE_MEASURE
     from jasper.active_speaker.crossover_v2_flow import (
-        PHASE_CHECK,
-        PHASE_MEASURE,
         CrossoverV2Session,
         attempt_history_from_state,
         build_v2_verify_index_phase_map,

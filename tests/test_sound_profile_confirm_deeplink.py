@@ -27,7 +27,7 @@ from __future__ import annotations
 import re
 from pathlib import Path
 
-from jasper.active_speaker.crossover_v2_flow import (
+from jasper.active_speaker.crossover_v2.refusal_copy import (
     REASON_PROGRAM_PROFILE_NOT_CONFIRMED,
     REASON_REGISTRY,
 )

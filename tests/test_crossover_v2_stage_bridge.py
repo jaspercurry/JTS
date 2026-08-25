@@ -70,11 +70,13 @@ from jasper.active_speaker import commission_wiring, crossover_v2_flow, delta_pr
 from jasper.active_speaker import design_draft
 from jasper.active_speaker import driver_safety as driver_safety_mod
 from jasper.active_speaker import excitation_safety_plan as excitation_safety_plan_mod
-from jasper.active_speaker.crossover_v2_flow import (
+from jasper.active_speaker.crossover_v2.journey import (
     PHASE_CHECK,
     PHASE_CLOUD_MEASURE,
     PHASE_ENTRY_BASELINE,
     PHASE_MEASURE,
+)
+from jasper.active_speaker.crossover_v2_flow import (
     STAGE1_INCLUDES_CLOUD_MEASURE,
     STAGE1_INCLUDES_ENTRY_BASELINE,
     build_v2_cloud_index_phase_map,

@@ -136,7 +136,7 @@ def handle_v2_republish(
     from jasper.active_speaker.crossover_declaration import (
         declaration_change_for_candidate,
     )
-    from jasper.active_speaker.crossover_v2_flow import PHASE_MEASURE
+    from jasper.active_speaker.crossover_v2.journey import PHASE_MEASURE
     from jasper.active_speaker.design_draft import load_design_draft
     from jasper.output_topology import load_output_topology
 

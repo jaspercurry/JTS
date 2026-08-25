@@ -395,8 +395,8 @@ def build_v2_wired_run_and_consume(
 
     async def _run_and_consume(client: Any, pi_session: Any) -> None:
         del client  # local provider: no relay client exists
-        from jasper.active_speaker.crossover_v2_flow import (
-            PHASE_DONE,
+        from jasper.active_speaker.crossover_v2.journey import PHASE_DONE
+        from jasper.active_speaker.crossover_v2.refusal_copy import (
             REASON_INTERNAL_ERROR,
             REASON_REGISTRY,
             REASON_SESSION_CEILING_EXPIRED,

@@ -39,7 +39,7 @@ from typing import Any
 
 import pytest
 
-from jasper.active_speaker.crossover_v2_flow import (
+from jasper.active_speaker.crossover_v2.refusal_copy import (
     REASON_PROGRAM_PROFILE_INCOMPLETE,
     REASON_PROGRAM_PROFILE_MISSING,
     REASON_PROGRAM_PROFILE_NOT_CONFIRMED,
@@ -48,8 +48,8 @@ from jasper.active_speaker.crossover_v2_flow import (
     REASON_PROTECTION_SWEEP_TOO_LOW,
     REASON_REGISTRY,
     TEMPLATE_HARD_STOP,
-    CrossoverV2FlowError,
 )
+from jasper.active_speaker.crossover_v2_flow import CrossoverV2FlowError
 from jasper.active_speaker.driver_safety import (
     build_driver_safety_profile,
     evaluate_driver_safety_profile,

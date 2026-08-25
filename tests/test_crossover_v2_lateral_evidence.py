@@ -19,18 +19,24 @@ import pytest
 
 from jasper.active_speaker import angle_capture as ac
 from jasper.active_speaker import crossover_v2_flow as flow
-from jasper.active_speaker.crossover_v2_flow import (
+from jasper.active_speaker.crossover_v2 import journey
+from jasper.active_speaker.crossover_v2 import refusal_copy
+from jasper.active_speaker.crossover_v2.journey import (
     PHASE_CHECK,
     PHASE_LATERAL,
     PHASE_MEASURE,
-    POSITION_ROLE_OFFAX,
-    POSITION_ROLE_ONAX,
-    POSITION_ROLE_XOVR,
+)
+from jasper.active_speaker.crossover_v2.refusal_copy import (
     REASON_AGC_BEHAVIORAL_FAIL,
     REASON_CLIPPED,
     REASON_DRIFT_BASELINES_DISAGREE,
     REASON_LOCATE_FAILED,
     REASON_PILOT_LEVEL_COLLAPSE,
+)
+from jasper.active_speaker.crossover_v2_flow import (
+    POSITION_ROLE_OFFAX,
+    POSITION_ROLE_ONAX,
+    POSITION_ROLE_XOVR,
     LateralPose,
     build_v2_capture_plan,
     build_v2_cloud_index_phase_map,
@@ -705,7 +711,7 @@ def test_a_pose_is_not_refused_for_an_off_axis_alignment():
     _run_phase(other, 1, 1)
     anchor = _run_phase(other, 2, 1)
     assert anchor["accepted"] is False
-    assert anchor["code"] == flow.REASON_DELAY_EXCEEDS_SEARCH_WINDOW
+    assert anchor["code"] == refusal_copy.REASON_DELAY_EXCEEDS_SEARCH_WINDOW
 
 
 def test_a_pose_that_yielded_one_branch_is_not_evidence():
@@ -998,7 +1004,7 @@ def _evidence_conductor(fakes: FakeSeams, *, prompts=None, **kwargs):
             tier="full", include_cloud_measure=False, include_lateral=True,
             lateral_prompts=prompts,
         ),
-        lateral_consumer=flow.LATERAL_CONSUMER_FORWARD_MODEL,
+        lateral_consumer=journey.LATERAL_CONSUMER_FORWARD_MODEL,
         lateral_prompts=prompts,
         **kwargs,
     )
@@ -1138,7 +1144,7 @@ def test_an_accepted_pose_is_retained_with_its_angle():
     assert [m["at_mark"] for m in banked] == [True, False, False, False, False]
     assert {m["regime"] for m in banked} == {ac.REGIME_PER_DRIVER}
     assert {m["lateral_consumer"] for m in banked} == {
-        flow.LATERAL_CONSUMER_FORWARD_MODEL
+        journey.LATERAL_CONSUMER_FORWARD_MODEL
     }
     # ...and the identity/verifier fields a cloud position already carries, so
     # one replay path covers both kinds of retained take.
@@ -1194,7 +1200,7 @@ def test_a_closed_walk_says_so_by_name(caplog):
         rec.getMessage() for rec in caplog.records
         if "crossover_v2_lateral_walk_closed" in rec.getMessage()
     )
-    assert f"consumer={flow.LATERAL_CONSUMER_FORWARD_MODEL}" in line
+    assert f"consumer={journey.LATERAL_CONSUMER_FORWARD_MODEL}" in line
     assert f"planned={len(prompts)}" in line and f"captured={len(prompts)}" in line
 
 
@@ -1207,7 +1213,7 @@ def test_a_closed_walk_says_so_by_name(caplog):
             "states its own poses",
         ),
         (
-            {"lateral_consumer": flow.LATERAL_CONSUMER_FORWARD_MODEL},
+            {"lateral_consumer": journey.LATERAL_CONSUMER_FORWARD_MODEL},
             "states its own poses",
         ),
     ],

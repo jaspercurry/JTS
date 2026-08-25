@@ -55,13 +55,12 @@ from jasper.active_speaker.crossover_envelope_v2 import (
     _per_band_flatness_lines,
     build_crossover_envelope_v2,
 )
-from jasper.active_speaker.crossover_v2_flow import (
-    ATTEMPT_METRIC_VERIFY_MAX_NOTCH_EXCLUDED,
-    ATTEMPT_REASON_NO_FLOOR,
-    MEASURE_PREDICTED_RIPPLE_DISCLOSURE_DB,
+from jasper.active_speaker.crossover_v2.journey import (
     PHASE_CLOUD_MEASURE,
     PHASE_CLOUD_VERIFY,
     PHASE_REVIEW,
+)
+from jasper.active_speaker.crossover_v2.refusal_copy import (
     REASON_REGISTRY,
     REASON_AGC_BEHAVIORAL_FAIL,
     REASON_APPLY_FAILED,
@@ -82,6 +81,11 @@ from jasper.active_speaker.crossover_v2_flow import (
     reason_message,
     verify_inconclusive_cause,
     verify_inconclusive_message,
+)
+from jasper.active_speaker.crossover_v2_flow import (
+    ATTEMPT_METRIC_VERIFY_MAX_NOTCH_EXCLUDED,
+    ATTEMPT_REASON_NO_FLOOR,
+    MEASURE_PREDICTED_RIPPLE_DISCLOSURE_DB,
 )
 from jasper.active_speaker.crossover_v2.verification import RESULT_VERIFIED_TARGET
 from jasper.active_speaker.flat_spec import evaluate_flat_spec, spec_flatness_gauge
@@ -4488,7 +4492,7 @@ def test_rollback_failed_keeps_its_fact_and_its_instruction_when_aged():
     leave the household on the faulty correction with the reason to press Undo
     deleted — so this row keeps its fact and its instruction inside the dated
     history treatment."""
-    from jasper.active_speaker.crossover_v2_flow import (
+    from jasper.active_speaker.crossover_v2.refusal_copy import (
         REASON_CORRECTION_ROLLBACK_FAILED,
     )
 
@@ -4521,7 +4525,7 @@ def test_the_aged_nudge_takes_the_no_anchor_row_when_undo_is_gated():
     already took the no-anchor row before this change, so it could not tell
     the fix from the shipped behaviour.
     """
-    from jasper.active_speaker.crossover_v2_flow import (
+    from jasper.active_speaker.crossover_v2.refusal_copy import (
         REASON_CORRECTION_ROLLBACK_FAILED,
     )
 
@@ -4542,7 +4546,7 @@ def test_rollback_failed_falls_back_to_the_generic_note_when_nothing_is_applied(
     "The newer tuning is still applied" is not a sentence to print over a
     durable state that says nothing is applied — that would be the #1942
     defect wearing the fix's clothes."""
-    from jasper.active_speaker.crossover_v2_flow import (
+    from jasper.active_speaker.crossover_v2.refusal_copy import (
         REASON_CORRECTION_ROLLBACK_FAILED,
     )
 
@@ -4561,7 +4565,7 @@ def test_only_audited_durable_state_codes_are_exempt():
     its own reasoning — see _DURABLE_STATE_FACTS for the line and the three
     shapes deliberately left off it."""
     from jasper.active_speaker.crossover_envelope_v2 import _DURABLE_STATE_FACTS
-    from jasper.active_speaker.crossover_v2_flow import (
+    from jasper.active_speaker.crossover_v2.refusal_copy import (
         REASON_CORRECTION_ROLLBACK_FAILED,
     )
 
@@ -4721,7 +4725,9 @@ def test_envelope_carries_relay_block_awaiting_and_after_failure():
     """The v2 envelope threads status['relay'] into BOTH the awaiting-phone
     screen and the failure screen, so a page reload keeps the tap link and the
     failure copy reaches the household (Finding D — the slot was invisible)."""
-    from jasper.active_speaker.crossover_v2_flow import REASON_PROGRAM_UNPLAYABLE
+    from jasper.active_speaker.crossover_v2.refusal_copy import (
+        REASON_PROGRAM_UNPLAYABLE,
+    )
 
     relay = {"tap_link": "https://capture.test/#s=cap_x", "status": "awaiting_phone"}
 
@@ -5526,7 +5532,7 @@ def test_findings_ride_the_decision_and_result_screens_only():
     DERIVED from the phase→step map rather than hand-listed, so a phase added
     to the vocabulary joins this assertion the moment it exists.
     """
-    from jasper.active_speaker.crossover_v2_flow import PHASE_DONE
+    from jasper.active_speaker.crossover_v2.journey import PHASE_DONE
 
     others = set(_PHASE_STEP) - {PHASE_REVIEW, PHASE_DONE}
     assert others, "the phase vocabulary must have screens other than these two"

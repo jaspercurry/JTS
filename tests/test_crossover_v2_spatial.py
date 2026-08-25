@@ -27,6 +27,7 @@ from __future__ import annotations
 import pytest
 
 from jasper.active_speaker import crossover_v2_flow as flow
+from jasper.active_speaker.crossover_v2 import refusal_copy
 from jasper.active_speaker.crossover_v2 import capture_dispatch, spatial
 from jasper.active_speaker.crossover_v2.journey import (
     PHASE_CLOUD_MEASURE,
@@ -526,8 +527,8 @@ def test_every_screen_kind_has_a_household_sentence():
     # The two owners partition the vocabulary; an overlap would mean one kind
     # with two declarations, which is the drift a union quietly hides.
     assert not (spatial.SCREEN_KINDS & capture_dispatch.ANCHOR_SCREEN_KINDS)
-    assert set(flow.SCREEN_KIND_REASONS) == set(capture_dispatch.CAPTURE_SCREEN_KINDS)
-    for code in flow.SCREEN_KIND_REASONS.values():
+    assert set(refusal_copy.SCREEN_KIND_REASONS) == set(capture_dispatch.CAPTURE_SCREEN_KINDS)
+    for code in refusal_copy.SCREEN_KIND_REASONS.values():
         assert code in flow.REASON_REGISTRY, code
 
 

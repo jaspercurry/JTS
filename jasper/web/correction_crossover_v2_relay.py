@@ -386,17 +386,19 @@ def build_v2_run_and_consume(
             purge,
             run_capture_plan,
         )
-        from jasper.active_speaker.crossover_v2_flow import (
+        from jasper.active_speaker.crossover_v2.journey import (
             PHASE_APPLYING,
             PHASE_DONE,
+        )
+        from jasper.active_speaker.crossover_v2.refusal_copy import (
             REASON_INTERNAL_ERROR,
             REASON_REGISTRY,
             REASON_RELAY_TIMEOUT,
             REASON_REVIEW_HOLD_TIMEOUT,
             REASON_USER_STOPPED,
             TRANSIENT_AUTO_RETRY_CODES,
-            v2_first_begin_timeout_s,
         )
+        from jasper.active_speaker.crossover_v2_flow import v2_first_begin_timeout_s
         from jasper.active_speaker.session_volume_plan import SessionVolumePlanError
         from jasper.correction.coordinator import MeasurementWindowError
 
