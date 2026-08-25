@@ -83,7 +83,7 @@ _IMPORT_PROBE = (
 # `python -c` sets sys.path[0] = '' by default, so a doctor run started from
 # the rsync checkout (`cd ~/jts && sudo /opt/jasper/.venv/bin/jasper-doctor`)
 # would resolve `jasper.voice.*` from the checkout instead of /opt/jasper —
-# two different copies, per AGENTS.md "Runtime Python lives in /opt/jasper".
+# two different copies, per AGENTS.md on the /opt/jasper runtime.
 # That inverts the check: after a mid-install abort leaves the old runtime in
 # place, the fixed checkout would report green while the daemon still loads
 # the broken adapter. The probe needs nothing from cwd.

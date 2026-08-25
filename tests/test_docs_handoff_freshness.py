@@ -4,7 +4,7 @@
 
 """HANDOFF docs carry the freshness metadata the doc workflow runs on.
 
-Pins two rules from AGENTS.md "Documentation paradigm":
+Pins two HANDOFF-shape rules:
 
 * Rule 3 — "Every HANDOFF ends with `Last verified: YYYY-MM-DD`."
   `scripts/doc-freshness.sh` keys its staleness report off that footer

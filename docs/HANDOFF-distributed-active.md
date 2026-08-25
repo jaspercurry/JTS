@@ -588,7 +588,7 @@ Both paths reuse the LR4 primitive (`emit_linkwitz_riley`); they differ in
 - **Stream stall → silence, not full-range.** A capture underrun →
   CamillaDSP emits silence through Layer A (silence through a crossover is
   silence). Surface a cue ([cues/registry.py](../jasper/cues/registry.py))
-  + a `/state` flag + dashboard card (AGENTS.md "no silent failure").
+  + a `/state` flag + dashboard card (AGENTS.md's no-silent-deafness rule).
 - **Self-recovery (AGENTS.md resilience).** Unplug / brief WiFi loss /
   power cycle: un-bond → follower returns to solo active and plays local
   content; no silent restart loop. The reconciler owns the transition.

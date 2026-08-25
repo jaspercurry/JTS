@@ -74,7 +74,7 @@
 # status=<ok|fail|...>` line alongside the human-readable `==>`
 # headers, so a `bash scripts/onboard.sh ... 2>&1 | tee logs/x.log`
 # can later be grep-debugged with the same convention as the
-# Pi-side daemons (see AGENTS.md "Structured logging").
+# Pi-side daemons (see docs/HANDOFF-observability.md).
 
 set -euo pipefail
 

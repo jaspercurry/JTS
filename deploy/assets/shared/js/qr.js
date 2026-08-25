@@ -4,7 +4,7 @@
 // SPDX-License-Identifier: MIT AND Apache-2.0
 
 // qr.js — self-contained QR-code rendering for the phone-capture relay
-// hand-off (correction + crossover wizards, AGENTS.md "capture relay").
+// hand-off (correction + crossover wizards; docs/phone-mic-relay-plan.md).
 // No CDN, no network fetch, no runtime dependency: the encoder below is a
 // vendored, trimmed copy (MIT license, verbatim header retained immediately
 // below) of Kazuhiko Arase's "QR Code Generator for JavaScript"

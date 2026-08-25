@@ -18,7 +18,7 @@ that fail silently on the Pi when violated:
    that breaks the next deploy at install time.
 
 2. **Wizard-env precedence guard.** The documented "wizard file wins"
-   rule (AGENTS.md "Voice provider switching", comments in
+   rule (docs/HANDOFF-voice-providers.md, comments in
    jasper-voice.service): in any unit that sources both
    /etc/jasper/jasper.env and a wizard-owned /var/lib/jasper/*.env,
    the wizard file's EnvironmentFile= line must come AFTER jasper.env.

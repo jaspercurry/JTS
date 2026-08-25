@@ -1204,7 +1204,7 @@ def test_regenerate_crossover_preview_path_re_normalises_a_saved_pad_without_rai
     #
     # -- feeding the ALREADY-NORMALISED manual_settings (derived pad fields
     # included) straight back in. Mirrored here exactly rather than
-    # re-derived, per AGENTS.md "verify at the user's surface": on the
+    # re-derived, per AGENTS.md on verifying at the user's surface: on the
     # pre-fix code this call raises ActiveSpeakerDesignDraftError(
     # "manual_settings.driver.pad has unknown fields: effective_impedance_ohm").
     topology = _topology()

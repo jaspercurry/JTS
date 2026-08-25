@@ -357,7 +357,7 @@ async def test_source_less_start_on_a_speaker_with_no_room_mic_cues_and_refuses(
     assert wl._begin_turn.called is False
     assert wl._play_listening_chirp.called is False
     # Audible, not just logged: the household pressed something and must not
-    # be answered with silence (AGENTS.md "no silent failure paths").
+    # be answered with silence (AGENTS.md's no-silent-deafness rule).
     assert wl._cues.played == [NO_ROOM_MIC_CUE_SLUG]
     assert "event=session.manual_refused" in caplog.text
     assert "reason=no_room_microphone" in caplog.text

@@ -364,7 +364,7 @@ to a new `jasper-control` endpoint.
   trample each other.
 - Gate the button behind a confirmation modal ("This will restart
   the speaker for ~5 minutes. Continue?").
-- Per the AGENTS.md "no silent failure paths" rule, a failed update
+- Per AGENTS.md's no-silent-deafness rule, a failed update
   must play an audio cue. Add a new entry to
   [`jasper/cues/registry.py`](../jasper/cues/registry.py)
   (`update_failed_rolled_back`, "Update failed; the speaker rolled

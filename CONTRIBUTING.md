@@ -226,7 +226,7 @@ Two operational notes:
 - For larger or riskier changes, follow the review tiering in
   [AGENTS.md](AGENTS.md): correctness, hearing/hardware safety, secrets,
   and single-source-of-truth are what the heavy tier defends.
-- Web setup pages follow AGENTS.md "Web wizard conventions" — shared
+- Web setup pages follow the shared wizard conventions — shared
   CSRF helpers, checkbox-based toggles, and no generated inline JS for
   untrusted device/network metadata.
 - See [AGENTS.md](AGENTS.md) — the authoritative working agreement for

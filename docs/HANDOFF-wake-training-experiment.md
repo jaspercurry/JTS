@@ -1225,7 +1225,7 @@ this list is fine; removing items requires evidence.
   §2). The vocal tear artifact in the AEC ON leg is structural to
   single-reference linear AEC. The OR-gate is the architectural
   answer; further per-knob tuning has flat yield.
-- **No PipeWire migration.** AGENTS.md "Acoustic echo cancellation"
+- **No PipeWire migration.** [docs/HANDOFF-aec.md](HANDOFF-aec.md)
   is explicit about the ALSA-only policy. The dsnoop tap already
   provides the multi-reader fan-out PipeWire would give. Doesn't
   apply to JTS.

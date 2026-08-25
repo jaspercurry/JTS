@@ -278,7 +278,7 @@ here") belongs only to class A.
 
 Adopted from the external report, with one correction: **drop the implicit
 reliance on focus rings.** JTS's design system deliberately suppresses
-native focus outlines (AGENTS.md "Web wizard conventions"); active
+native focus outlines (`tests/test_web_wizard_conventions.py`); active
 Stop/Accept/Start affordances must read from component state (`.active`,
 `[aria-pressed]`, checked toggle styling), never `:focus-visible` rings.
 Keep: primary actions in the bottom thumb zone; progress conveyed by text +

@@ -170,7 +170,7 @@ ${speaker_line}
 Switch this checkout to a different speaker without re-onboarding:
 \`bash scripts/use <hostname>\`. Full re-onboard (rsync + install.sh
 + jasper-doctor): \`bash scripts/onboard.sh <hostname> --adopt\`. See
-[AGENTS.md](AGENTS.md) "Laptop-side state" for the full convention.
+[AGENTS.md](AGENTS.md) for the full convention.
 EOF
 }
 

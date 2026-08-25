@@ -196,7 +196,7 @@ def test_migrated_json_body_reads_remain_after_csrf_guard():
 # --- Mutating-request chokepoint: every wizard POST/DELETE handler funnels
 # through the shared CSRF seam, and route-checks unknown paths FIRST.
 #
-# AGENTS.md "Web wizard conventions": every state-changing handler calls
+# Wizard convention: every state-changing handler calls
 # guard_mutating_request(), and "Route-check unknown POST paths before
 # guard_mutating_request() so bogus paths return 404 without revealing CSRF
 # state" (the convention block at the top of jasper/web/_common.py says the
@@ -590,7 +590,7 @@ def test_wizards_do_not_need_js_string_attribute_escaping_helper():
     assert _matches(r"function\s+jsArg\b") == []
 
 
-# AGENTS.md "Web wizard conventions": "Do not put untrusted strings into
+# Wizard convention: "Do not put untrusted strings into
 # generated inline JavaScript such as onclick=\"handler('...')\". Prefer
 # escaped data-* attributes with a delegated click handler." The fixed
 # risky-handler list above only catches names it knows about; these two

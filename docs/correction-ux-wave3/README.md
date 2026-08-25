@@ -129,7 +129,7 @@ suggestions:
 3. **No new abstractions beyond those named in the prompt.** No base
    classes, factories, registries, or "manager" objects the prompt
    does not name. Reuse the shared wizard primitives named in
-   AGENTS.md "Web wizard conventions" (`canonical_page`, `json_island`,
+   the shared wizard conventions (`canonical_page`, `json_island`,
    `toggle_html`, `jtsConfirm`/`jtsAlert`, `escapeHtml`, `h()`/`svg()`,
    the shared dialog/escape/dom modules) — do not re-implement any of
    them.

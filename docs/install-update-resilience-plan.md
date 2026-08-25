@@ -221,7 +221,7 @@ Mission: make every heavy build step in deploy/install.sh safe on a 1 GB Pi 5
 an in-service update. The WebRTC AEC3 build was point-fixed (_webrtc_compile_jobs,
 RAM-budgeted -j); generalize the lesson. In scope: the Rust daemon builds, the
 source-built shairport-sync/nqptp, and any other compile/build the installer
-runs. Out of scope: re-architecting AEC (see AGENTS.md "Architecture is fixed").
+runs. Out of scope: re-architecting AEC (see [docs/HANDOFF-aec.md](HANDOFF-aec.md)).
 
 Investigate and propose (with trade-offs) before implementing:
 - Should heavy builds run memory-contained (systemd-run with MemoryMax/Swap,
@@ -302,7 +302,7 @@ Investigate and propose (with trade-offs) before implementing:
 - How to report a function that's correctly idle for missing hardware (doctor
   state, /state, dashboard, cue) as "expected: no mic" vs. "broken"?
 - Both directions must hold for the DAC/output and satellites too, not just the
-  mic. AGENTS.md "design for resilience" already codifies the principle; this
+  mic. AGENTS.md already codifies the resilience principle; this
   makes it a verified property.
 
 Build on the existing reconcilers (jasper-aec-reconcile,

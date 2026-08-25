@@ -218,8 +218,8 @@ concern from wake-word reliability. Today's barge-in is VAD-only;
 the design space (including why the obvious "put TTS in the AEC
 reference" fix is structurally wrong) is documented in
 [`docs/HANDOFF-barge-in.md`](docs/HANDOFF-barge-in.md). Per the
-[AGENTS.md](AGENTS.md) "Architecture is fixed; swap the engine,
-not the topology" rule, barge-in improvements must come through
+[docs/HANDOFF-aec.md](docs/HANDOFF-aec.md) "architecture is fixed; swap
+the engine, not the topology" rule, barge-in improvements must come through
 engine-internal tuning + measurement — the architectural options
 in that HANDOFF are explicitly a costing record, not a roadmap.
 
@@ -566,7 +566,7 @@ operator is in the loop.
   one or two breaking changes per upgrade. The `VoiceSession`
   interface limits the blast radius of any churn to a single
   adapter file. Fall back to `gemini-2.5-flash-native-audio-preview-12-2025`
-  if 3.1 silently breaks (see AGENTS.md "Gemini model switching").
+  if 3.1 silently breaks (see [docs/HANDOFF-voice-providers.md](docs/HANDOFF-voice-providers.md)).
 - **Gemini tool calling is sequential** (no parallel/non-blocking).
   A slow tool (e.g. Spotify search) will gate the next thing the
   model says. Keep tool implementations fast (5 s timeout, return

@@ -10,7 +10,7 @@ name: Doc freshness check
 # doc whose `Last verified: YYYY-MM-DD` footer (or, when absent, its
 # last git commit) is older than the threshold (default 90 days). For
 # each flagged doc, either bump the footer after re-reading, or fix
-# what's stale. See AGENTS.md "Documentation paradigm" rule 3.
+# what's stale, from each HANDOFF's `Last verified:` footer.
 #
 # Fork PRs note: the default GITHUB_TOKEN issued to a PR from a fork
 # can't write to the base repo, so the comment step will silently
@@ -122,7 +122,7 @@ jobs:
               echo "- bump the \`Last verified:\` footer to today's date, or"
               echo "- update the content."
               echo
-              echo 'See AGENTS.md "Documentation paradigm" rule 3. **Informational only — this PR can still merge.**'
+              echo '**Informational only — this PR can still merge.**'
             } > "$BODY_FILE"
           fi
           if [[ -n "$EXISTING_ID" ]]; then
