@@ -342,11 +342,19 @@ LEVEL_FRAME_HOUSEHOLD_COPY = (
 #: :func:`~jasper.attribution.findings._validated_household_copy` — "driver" is
 #: on its banned list, so the ranges are named the way the sibling above names
 #: them.
+#:
+#: **"would not end up" and not "did not come out"**, which is the tense the
+#: deleted refusal used and the one the instrument earns. The levels are read
+#: off the pair as the fit MODELS it emitting — the measured per-branch
+#: responses through the modelled correction — not off a capture of the applied
+#: tuning, which is the delta probe's job after an apply that has not happened
+#: yet. A household sentence saying the pair WAS measured that way would claim a
+#: capture the session never took.
 REALIZED_LEVEL_HOUSEHOLD_COPY = (
-    "Measured on the tuning this pass produced, this speaker's high and low "
-    "ranges do not come out level with each other. Re-check what you entered "
-    "in speaker setup — each range's sensitivity, and any resistor pad — then "
-    "measure again."
+    "This speaker's high and low ranges would not end up level with each other "
+    "on the tuning this pass produced. Re-check what you entered in speaker "
+    "setup — each range's sensitivity, and any resistor pad — then measure "
+    "again."
 )
 
 #: The band keys, which become ``band_hz`` rather than evidence. Named so the

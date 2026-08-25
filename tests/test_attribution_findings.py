@@ -836,6 +836,18 @@ def test_the_realized_household_copy_is_true_and_still_recommends() -> None:
     # the moment this is minted, same rule as the sibling copy.
     for banned in ("applied", "was kept", "your speaker now", "phone"):
         assert banned not in lowered, banned
+    # …and it must not claim the pair WAS measured at those levels. The check
+    # reads the fit's MODEL of the emission — the measured per-branch responses
+    # through the modelled correction — not a capture of the applied tuning,
+    # which is the delta probe's job after an apply that has not happened. The
+    # deleted refusal's "would not have ended up at matching levels" is the
+    # tense this instrument earns, and the copy keeps it.
+    assert "would not end up" in lowered
+    for overclaim in (
+        "measured on", "we measured", "confirmed", "verified", "proved",
+        "independent",
+    ):
+        assert overclaim not in lowered, overclaim
     # §3.1's contract holds on the new string too, enforced by the validator
     # rather than by this list: a round-trip reconstructs it unchanged.
     assert Finding.from_mapping(finding.to_dict()).household_copy == (
