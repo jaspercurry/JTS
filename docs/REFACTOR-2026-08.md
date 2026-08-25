@@ -149,7 +149,7 @@ program's wave 7h)**
 - [ ] README rebuild: repo-layout tree with all top-level dirs; atlas
       collapsed (historical entries one line)
 - [ ] .env.example: one-line comments; AEC knob table → pointer
-- [ ] PULL_REQUEST_TEMPLATE: drop doc-impact ritual to match charter
+- [x] PULL_REQUEST_TEMPLATE: drop doc-impact ritual to match charter
 - [ ] doc-freshness / docs-impact CI → link check only (keep doc-map pruned
       or fold)
 
