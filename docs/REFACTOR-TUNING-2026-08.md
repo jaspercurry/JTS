@@ -311,6 +311,51 @@ principles the consolidated code should carry forward.
     channel-content isolation is bounded at 2 through that lane; anything wider
     belongs on the topology-derived active ring, reached by the arm ladder.
 
+**One invariant this plan ADDS — not from `09`.** MS-1…MS-16 are reproduced from
+the seam-contract pass. MS-17 is new, added by **owner ruling, 2026-08-25**:
+
+> *"our cleaned up, tidied code is at its core AGNOSTIC of whether a robot arm
+> took the measurement or a human took the measurement, and the systems that power
+> both the human-guided measurement and the robot-guided measurement share as
+> absolutely much as possible."*
+
+17. **MS-17 — Mover-agnosticism.** The engine below the front-end seam contains
+    **zero arm-specific and zero wizard-specific code**; the only difference
+    between front ends is **who satisfies the "the mic is at position P"
+    precondition** — the arm reports it, a person confirms it — and both produce
+    an **identical `place` block** in the record, so **no analysis, gate, or
+    record SEMANTIC may branch on mover identity.**
+
+Three clauses that make it operable rather than aspirational:
+
+- **Provenance may note the mover; nothing may act on it.** Recording *which*
+  mover placed the mic is a fact worth banking. Reading that field to choose a
+  code path is the violation. The line is: it may appear in block 3, never in an
+  `if`.
+- **The `prompt` field is the human path's artifact, and it is carried either
+  way.** The arm-driven record keeps the field rather than growing a second
+  record shape — one shape, some fields empty, which is the *opposite* of the
+  union-type-with-null-columns mistake §wave 4 forbids, because `prompt` is one
+  optional field on a shared block, not half a schema.
+- **It is structurally testable, and PR 0d names the test.** The engine package
+  imports nothing from the arm tooling (`experiments/usb-turntable`, `arm_walk`,
+  `angle_capture`) and nothing from `jasper/web/` — an **AST import assertion in
+  the same family as the truth layer's zero-upward-imports test**
+  (`tests/test_correction_boundary_ssot.py`, the invariant `00 §7.1` calls the
+  reason this refactor's risk estimate is low). Both front ends call the same
+  `measure(position=...)`, and **a third mover — phone-guided, or whatever comes
+  next — is added with zero engine edits.** That last sentence is the real test of
+  MS-17, and it is the same test ruling S1 passed when the reverse-polarity null
+  test needed no new verbs.
+
+**Two pieces of evidence already stand under this.** The record half is proven:
+this week's baseline rounds were **arm-driven** and banked `place` blocks with the
+same fields a prompted human flow produces — the shape is not a hope, it is what
+`captures/postfix-baseline-2026-08` already contains. And the S8 recipe's
+governing constraint — *same drive voltage, nothing touched between measurements*
+— is **mover-independent by construction**: it constrains the fader and the graph,
+neither of which knows who moved the mic.
+
 **Tripwires — check before the design freezes:**
 
 7. **MS-7 — The chip-AEC alignment artifact is edge-bound.** A commissioned K is
@@ -473,12 +518,12 @@ half, without deciding anything.
 | 0a | Move the 23 symbols the class-A suite imports out of `crossover_v2_flow` into the package; give the two flow-owned constants (`VERIFY_TOLERANCE_DB`, `DEFAULT_CLOUD_MEASURE_POSITIONS`) a home in `crossover_v2/contracts.py`; repoint the two that are already package-side re-exports. |
 | 0b | Quarantine the single conductor-building test in `tests/test_audio_measurement_program_analysis.py` (`test_configured_path_matches_legacy_through_analyzer_and_fitter`, a four-line local import at `:392`), making the census's largest class-A file (8,170 lines, 187 tests) session-free. |
 | 0c | Repoint the two re-export doors — `refusal_copy`'s 67 `X as X` and the `journey` phase vocabulary — at their owning modules. |
-| 0d | **Build the invariant→pin table** (added by ruling S7). Turn §2's 16 must-survive invariants from a list of intentions into a table: **invariant → the NAMED test function that pins it.** Sixteen lookups; it is cheap and it is done before anything moves. **Any row that comes back with no name gets a pin WRITTEN — before the old pin is deleted, and before any wave touches its subject.** As waves land, each row's name is updated to the class-A survivor or the rewritten class-B test that carries it. Every deletion wave checks against this table. |
+| 0d | **Build the invariant→pin table** (added by ruling S7). Turn §2's **17** must-survive invariants from a list of intentions into a table: **invariant → the NAMED test function that pins it.** Seventeen lookups; it is cheap and it is done before anything moves. **MS-17 arrives with no pin at all** — its AST import assertion (engine imports nothing from `experiments/usb-turntable`, `arm_walk`, `angle_capture`, or `jasper/web/`) is **written in this PR**, modelled on `tests/test_correction_boundary_ssot.py`, and it is the first row filled. **Any row that comes back with no name gets a pin WRITTEN — before the old pin is deleted, and before any wave touches its subject.** As waves land, each row's name is updated to the class-A survivor or the rewritten class-B test that carries it. Every deletion wave checks against this table. |
 
 **Counted.** ~24 edits (`10` step 0). **−271 lines** (`06 §Judgment 5`). Frees
 **19 class-A files / 26,776 lines** and removes **23 of the web file's 50** flow
 imports. Tests: **0 ported, 0 rewritten, 0 deleted** — 15 test files' imports
-repoint. Plus 0d: **16 lookups, and one new pin written for every invariant that
+repoint. Plus 0d: **17 lookups, and one new pin written for every invariant that
 comes back unnamed** — the only lines this wave adds, and the cheapest insurance
 in the plan.
 
@@ -993,6 +1038,7 @@ The plan is DONE when every row below reads true.
 | 2 | **Swapping capture phases** | 3 of 7 require a swap | **0.** Config swaps per stimulus 2 → 0; per session, 2. Duck ramp per swapping stimulus ~0.94 s → 0. |
 | 3 | **Capture record shapes** | **4** same-fact duplications | **1** unified record, five blocks, place as a field, `DriverResponse` banked. 24 orphan sites cleared; 2 inverse orphans given writers or deleted. |
 | 3b | **The level fact** (ruling S8) | **2** estimators competing to answer one question, and a comparator that flagged their disagreement as a defect | **1** definition — matched acoustic output through the handover region — computed by **1** estimator (`solve_branch_trims`), with the passband estimate **kept and disclosed** as the starting estimate, never silently reconciled. Setting precision ≤0.5 dB; the 3.0 dB disclosure trigger survives as a separate knob. |
+| 3c | **Front-end sharing** (MS-17) | two front ends, no enforced seam between them | **the wizard and the arm runner import the same engine verbs**; the engine has **zero mover-conditional branches (AST-verified)**; and the unified record is **byte-identical in shape regardless of mover**. A third mover is added with no engine edit. |
 | 4 | **`crossover_v2_flow.py`** | 13,459 lines | **≈1,500** — `V2FlowSeams` (107) + `V2ConductorSnapshot` (87) + `attempt_history_from_state` (69) + `_CloudPosition` (54) + 47 read-only accessors (402) + a much smaller constructor + `hydrate`/`snapshot` (64) + journey delegation. A session record, its seam bundle, and its serialisation. |
 | 5 | **`CrossoverV2Session`** | 6,753 lines · 156 methods · 102 attributes · a **776-line `__init__`** | **dissolved** into its four destinations: volume owner **1** · capture record **44** · phase machine **22** · a session-identity builder **35**. |
 | 6 | **`web/correction_crossover_v2.py`** | 9,563 lines | the apply/rollback transaction (1,185) plus route wiring. *No explicit target exists in the evidence base — see §6.* |
