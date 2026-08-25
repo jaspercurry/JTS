@@ -660,6 +660,36 @@ Each gives back only the attenuation it applied, so either interleaving order
 ends at the canonical target; replaying the entry snapshot instead stranded the
 fader wherever the other holder had left it.
 
+**One exception, and it is the measurement path (#2929).** A swap may pass
+`held_target_db` — a synchronous, non-blocking READER for the level that
+caller still owns — and its answer REPLACES canonical as that release's
+reference. Only the crossover-v2 program load/restore does, asking
+`SessionVolumePlan.owned_measurement_volume_db_nowait`. Why it had to: a
+measurement volume is LOUDER than the household level, so canonical won that
+`min` every time and every routed capture's fader landed on the household
+value — which is what the 2026-08-23/24 overnight campaign measured at, 8.712
+dB below the level its excitation-safety ledger had admitted the programs
+against. The `min` still bounds the release by the attenuation this holder
+applied, so the reference can never raise the fader above the level its reader
+names.
+
+**Why a reader and not a number.** A bracket spans seconds, and a measurement
+session's volume can be drained inside one by a peer task — the gate panel
+reached it at the remote's own ~1.5 s status-poll cadence on a session
+straddling its wall-clock ceiling. A pre-resolved number would then put the
+measurement level back on a speaker whose session had just given it up
+(+13.21 dB, measured). Asked at release time, a drained plan answers `None`
+and the release takes the canonical path. The reader must not block: a drain
+holding the plan's restore lock also reads as `None` rather than being waited
+on, because this runs inside a shielded `finally` where a wedged holder would
+strand a ducked — silent — speaker. So the honest bound is per-swap, not
+absolute: a release can only put back a level its reader still names at the
+instant it lets go.
+
+#2925's account of this as CamillaDSP re-applying a config-stored volume was
+wrong: CamillaDSP v4.1.3 has no such config field and keeps the fader across a
+reload.
+
 The canonical target is per process. jasper-voice hands over its long-lived
 coordinator's `get_camilla_target_db`; every other process that swaps the graph
 calls `install_env_canonical_target_provider()` at startup, which builds a
@@ -827,4 +857,6 @@ existing mute intent; the landing-page poll is persistence-only, visible-only,
 500 ms, and single-flight; prior 2026-07-24 pass covered atomic post-DSP
 turn-start context and fail-closed outputd behavior)
 
-Last verified: 2026-08-04
+Last verified: 2026-08-24 (scope: the graph-swap duck release only — #2929's
+held_target_db exception and the corrected CamillaDSP mechanism; the rest of
+this doc carries its prior 2026-08-04 verification)

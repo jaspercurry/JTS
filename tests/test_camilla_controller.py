@@ -486,6 +486,129 @@ async def test_failed_graph_mutation_restores_the_pre_swap_volume(
     assert fake.volume.main_volume() == pytest.approx(-18.0)
 
 
+# --------------------------------------------------------------------------- #
+# the swap duck's release REFERENCE (#2929)
+# --------------------------------------------------------------------------- #
+#
+# `_duck_release_target_db` lands the fader at `min(reference, released)`. The
+# reference is the canonical household target unless a caller declares one it
+# owns across the swap. A crossover-v2 measurement session does: its volume is
+# LOUDER than the household level, so the household value won that `min` on
+# every routed capture and pulled every stimulus off the level its
+# excitation-safety ledger admitted it against.
+
+
+@pytest.mark.asyncio
+async def test_a_declared_release_target_wins_over_the_quieter_household_one(
+    tmp_path: Path, monkeypatch,
+) -> None:
+    """THE FIX. Household −21.2 (percent_to_db(58)), declared −12.5.
+
+    Without a declared reference the release clamps to the household level —
+    which is the whole overnight defect — so the two halves are asserted in
+    one test and cannot be read as passing for the wrong reason.
+    """
+    async def household() -> float:
+        return -21.212121
+
+    monkeypatch.setattr(camilla_module, "_canonical_target_db_provider", household)
+
+    fake = _FakeClient()
+    fake.volume.values.append(-12.5)
+    fake.ops.clear()
+    cam = _controller(fake, tmp_path)
+
+    assert await cam.set_active_config_raw("---\nfilters: {}\n", held_target_db=lambda: -12.5)
+    assert fake.volume.main_volume() == pytest.approx(-12.5)
+
+    # The control: same swap, no declared reference, household wins.
+    fake.ops.clear()
+    assert await cam.set_active_config_raw("---\nfilters: {}\n")
+    assert fake.volume.main_volume() == pytest.approx(-21.212121)
+
+
+@pytest.mark.asyncio
+async def test_a_swap_without_a_declared_target_is_unchanged(
+    tmp_path: Path, monkeypatch,
+) -> None:
+    """Every OTHER graph swap in the tree keeps today's behaviour exactly.
+
+    `set_config_file_path` / `patch_config` / `reload` never grew the
+    parameter, and `set_active_config_raw` defaulting it to None must release
+    to canonical like its three siblings.
+    """
+    async def household() -> float:
+        return -21.212121
+
+    monkeypatch.setattr(camilla_module, "_canonical_target_db_provider", household)
+
+    for mutate in (
+        lambda cam: cam.set_config_file_path(str(tmp_path / "c.yml")),
+        lambda cam: cam.set_active_config_raw("---\nfilters: {}\n"),
+        lambda cam: cam.patch_config({"filters": {}}),
+        lambda cam: cam.reload(),
+    ):
+        fake = _FakeClient()
+        fake.volume.values.append(-12.5)
+        fake.ops.clear()
+        cam = _controller(fake, tmp_path)
+        assert await mutate(cam)
+        assert fake.volume.main_volume() == pytest.approx(-21.212121)
+
+
+@pytest.mark.asyncio
+async def test_a_declared_target_never_raises_the_fader_above_what_it_took(
+    tmp_path: Path, monkeypatch,
+) -> None:
+    """The `min` still bounds the release by this holder's OWN attenuation.
+
+    A session declaring −12.5 over a fader somebody had already moved to −30
+    gets −30 back, not −12.5: the release gives back the 40 dB it took and
+    nothing else. Re-asserting the declared level is the fader hold's job, and
+    keeping that boundary here is what leaves the hold a real tripwire.
+    """
+    async def household() -> float:
+        return -21.212121
+
+    monkeypatch.setattr(camilla_module, "_canonical_target_db_provider", household)
+
+    fake = _FakeClient()
+    fake.volume.values.append(-30.0)
+    fake.ops.clear()
+    cam = _controller(fake, tmp_path)
+
+    assert await cam.set_active_config_raw("---\nfilters: {}\n", held_target_db=lambda: -12.5)
+
+    assert fake.volume.main_volume() == pytest.approx(-30.0)
+
+
+@pytest.mark.asyncio
+async def test_a_declared_target_moves_the_release_never_the_duck(
+    tmp_path: Path, monkeypatch,
+) -> None:
+    """Depth and dwell are untouched — only where the release lands.
+
+    The duck is a hearing-safety fade across a graph swap that can step the
+    graph's own gain by tens of dB; #2929 had no business changing it.
+    """
+    async def household() -> float:
+        return -21.212121
+
+    monkeypatch.setattr(camilla_module, "_canonical_target_db_provider", household)
+    duck = -12.5 - camilla_module.GRAPH_SWAP_DUCK_DB
+
+    fake = _FakeClient()
+    fake.volume.values.append(-12.5)
+    fake.ops.clear()
+    cam = _controller(fake, tmp_path)
+
+    assert await cam.set_active_config_raw("---\nfilters: {}\n", held_target_db=lambda: -12.5)
+
+    # Same duck op, same position in the bracket, as the untargeted swap in
+    # `test_every_graph_mutation_is_bracketed_by_a_duck`.
+    assert fake.ops == [f"vol={duck:g}", "set_active_raw", "vol=-12.5"]
+
+
 @pytest.mark.asyncio
 async def test_swap_below_the_duck_clamp_boundary_skips_the_duck(
     tmp_path: Path,

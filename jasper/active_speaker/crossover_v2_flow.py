@@ -13127,6 +13127,7 @@ def bind_program_playback_seams(
     role_targets: Mapping[str, str],
     session_volume_db: float,
     declared_sensitivities: Mapping[str, float] | None = None,
+    held_target_db: Callable[[], float | None] | None = None,
     timeout_s: float = 60.0,
 ) -> dict[str, Any]:
     """The real CamillaController-backed seams for :func:`play_program` (W2's
@@ -13155,6 +13156,23 @@ def bind_program_playback_seams(
       generated-config dir, so the program load/restore serializes with every
       other DSP writer.
 
+    ``held_target_db`` is an OPTIONAL synchronous, non-blocking reader of the
+    volume the session plan currently owns
+    (:meth:`~jasper.active_speaker.session_volume_plan.SessionVolumePlan.owned_measurement_volume_db_nowait`).
+    BOTH swaps hand it to ``set_active_config_raw`` as the duck's release
+    reference (issue #2929), so the fader lands on the declared measurement
+    volume by construction. The restore swap needs it as much as the load does:
+    releasing that one to the household level would simply move the drift to
+    the NEXT capture's load, which reads its own entry snapshot from wherever
+    the restore left the fader.
+
+    The READER travels, not its answer. A duck bracket spans seconds, and the
+    plan can drain inside one — so a number resolved here would be stale by the
+    release and would put back a level the session had just given up (the gate
+    panel measured +13.21 dB against a completed household drain). Asked at
+    release time instead, a drained plan answers ``None`` and the swap takes
+    the canonical household release with no further coordination.
+
     NOT hardware-validated yet — W6 exercises this binding end-to-end on JTS3;
     until then it is the single place the real transport is named, and every
     orchestration test injects fakes instead.
@@ -13170,14 +13188,18 @@ def bind_program_playback_seams(
         return await cam.get_config_file_path(best_effort=False)
 
     async def _load_program_graph(program_graph_yaml: str) -> bool:
-        if not await cam.set_active_config_raw(program_graph_yaml, best_effort=False):
+        if not await cam.set_active_config_raw(
+            program_graph_yaml, best_effort=False, held_target_db=held_target_db,
+        ):
             raise ProgramPlaybackError("program graph load was not confirmed")
         await confirm_graph_is_live(cam, program_graph_yaml)
         return True
 
     async def _restore_graph(entry_config_path: str) -> bool:
         text = Path(entry_config_path).read_text(encoding="utf-8")
-        return await cam.set_active_config_raw(text, best_effort=False)
+        return await cam.set_active_config_raw(
+            text, best_effort=False, held_target_db=held_target_db,
+        )
 
     async def _play_wav() -> Any:
         return await verified_program_aplay(bundle_dir, artifact, timeout_s=timeout_s)

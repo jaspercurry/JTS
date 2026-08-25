@@ -72,6 +72,18 @@ CanonicalTargetDbProvider = Callable[[], Awaitable[float]]
 
 _canonical_target_db_provider: CanonicalTargetDbProvider | None = None
 
+# "What level does this duck holder still own?", asked at the moment of
+# release. SYNCHRONOUS and non-blocking by contract: it is called inside a
+# shielded `finally`, so it must never await, and it must never wait on a lock
+# — a wedged holder would otherwise strand a ducked (silent) speaker. `None`
+# means "nothing owned any more", and the release falls back to canonical.
+HeldTargetDbReader = Callable[[], "float | None"]
+
+#: A held-target reader is a plain state read, so these are defects rather than
+#: conditions; they are caught only so a broken reader cannot convert a duck
+#: release into a stranded quiet fader.
+_HELD_TARGET_ERRORS = (AttributeError, OSError, RuntimeError, TypeError, ValueError)
+
 
 def set_canonical_target_db_provider(
     provider: CanonicalTargetDbProvider | None,
@@ -86,10 +98,11 @@ async def _duck_release_target_db(
     *,
     snapshot_db: float,
     duck_depth_db: float,
+    held_target_db: HeldTargetDbReader | None = None,
 ) -> float:
     """Where a duck holder should land the fader when it lets go.
 
-    ``min(canonical, current + duck_depth_db)`` — give back this holder's own
+    ``min(reference, current + duck_depth_db)`` — give back this holder's own
     attenuation and nothing else, and never end above the level that should be
     in effect. Both halves are load-bearing, and the two duck holders here
     (`CueDuck` and the graph-swap bracket) can interleave in either order:
@@ -101,11 +114,50 @@ async def _duck_release_target_db(
       when a volume change lands inside the window.
 
     ``duck_depth_db`` is the positive attenuation this holder applied.
+
+    The reference is the canonical household target, EXCEPT when a caller
+    supplies ``held_target_db`` — a reader for the level that caller still owns
+    (issue #2925 / #2929). Its answer replaces the canonical reference outright
+    rather than joining the ``min``: the household level sits BELOW a
+    measurement volume, so including it would win every time and pull the fader
+    off the declared level, which is the whole defect this parameter exists to
+    remove. A crossover-v2 session holds the speaker at a volume its
+    excitation-safety ledger admitted the program against; releasing to the
+    household level instead left every routed capture's fader wrong until the
+    per-stimulus hold repaired it.
+
+    **It is a reader rather than a number because the answer can change while
+    the swap is in flight.** The bracket spans seconds, and a measurement
+    session's volume can be drained inside it by a peer task; a pre-resolved
+    number would then put back a level whose owner had just given it up. Asked
+    HERE, a caller that no longer owns a level answers ``None`` and this falls
+    through to the canonical release — the same path every non-measurement swap
+    takes. The reader must be synchronous and non-blocking: it runs inside a
+    shielded ``finally``, where awaiting could strand a ducked speaker.
+
+    Supplying it never raises the fader above the level its reader names (the
+    ``min`` still bounds it by what this holder actually took away), and no
+    caller that omits it changes behaviour by a single write.
     """
     current_db = await camilla.get_volume_db(best_effort=True)
     released_db = (
         snapshot_db if current_db is None else current_db + abs(duck_depth_db)
     )
+    if held_target_db is not None:
+        try:
+            held_db = held_target_db()
+        except _HELD_TARGET_ERRORS:
+            # Named, not blind: the reader is a plain state read, so a raise is
+            # a defect rather than a condition. Falling through to canonical
+            # keeps a broken reader from turning a release into a stranded duck.
+            logger.warning(
+                "held volume target unreadable; releasing duck against the "
+                "canonical target instead",
+                exc_info=True,
+            )
+            held_db = None
+        if held_db is not None:
+            return min(float(held_db), released_db)
     provider = _canonical_target_db_provider
     if provider is None:
         return min(snapshot_db, released_db)
@@ -748,7 +800,9 @@ class CamillaController:
             raise
 
     @contextlib.asynccontextmanager
-    async def _graph_mutation(self, source: str):
+    async def _graph_mutation(
+        self, source: str, *, held_target_db: HeldTargetDbReader | None = None,
+    ):
         """Admit one CamillaDSP graph mutation, ducked across the swap.
 
         A mutation can move the graph's own gain by tens of dB while the
@@ -765,6 +819,11 @@ class CamillaController:
         clear the bracket mid-swap. A drop this deep reads as somebody's duck
         and is left alone. It also keeps the two existing ``main_mute``
         writers — the coordinator and the floor-tone audition — the only ones.
+
+        ``held_target_db`` rides through to :func:`_duck_release_target_db` as
+        the release reference; the duck's DEPTH and dwell are untouched by it,
+        only where the release lands. ``None`` (every caller but the
+        measurement path) is today's canonical-target behaviour exactly.
         """
         from jasper.dsp_apply import camilla_graph_mutation
 
@@ -790,12 +849,19 @@ class CamillaController:
                 # Shielded because an interrupted release leaves the speaker
                 # ducked — quiet, but the reconciler reads that as somebody's
                 # duck and will not undo it.
-                await asyncio.shield(self._release_graph_swap_duck(before_db))
+                await asyncio.shield(
+                    self._release_graph_swap_duck(
+                        before_db, held_target_db=held_target_db,
+                    )
+                )
 
-    async def _release_graph_swap_duck(self, before_db: float) -> None:
+    async def _release_graph_swap_duck(
+        self, before_db: float, *, held_target_db: HeldTargetDbReader | None = None,
+    ) -> None:
         """Let the swap duck go, best-effort, and say so when it does not."""
         target_db = await _duck_release_target_db(
             self, snapshot_db=before_db, duck_depth_db=GRAPH_SWAP_DUCK_DB,
+            held_target_db=held_target_db,
         )
         # Best-effort so a release failure cannot mask the mutation's own
         # error; the event is what keeps a stranded quiet fader visible.
@@ -837,6 +903,7 @@ class CamillaController:
 
     async def set_active_config_raw(
         self, config: str, *, best_effort: bool = False,
+        held_target_db: HeldTargetDbReader | None = None,
     ) -> bool:
         """Upload and apply a complete YAML config without changing the
         persisted config file path.
@@ -847,6 +914,12 @@ class CamillaController:
         anchor. Saved/apply flows should keep using the file-path
         loader so validation, state recording, and rollback stay
         boring and inspectable.
+
+        ``held_target_db`` is the swap duck's release reference for callers
+        that own a declared level across the swap — today only the crossover-v2
+        measurement path, which passes the volume its session plan currently
+        owns (see :func:`_duck_release_target_db`). Omitted everywhere else,
+        and omitting it is byte-for-byte today's behaviour.
         """
         if not isinstance(config, str) or not config.strip():
             if best_effort:
@@ -855,7 +928,9 @@ class CamillaController:
             raise ValueError("config must be a non-empty YAML string")
 
         try:
-            async with self._graph_mutation("camilla.set_active_config_raw"):
+            async with self._graph_mutation(
+                "camilla.set_active_config_raw", held_target_db=held_target_db,
+            ):
                 await self._call(lambda c: c.config.set_active_raw(config))
                 return True
         except CamillaUnavailable as e:
