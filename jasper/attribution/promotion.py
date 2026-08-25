@@ -488,6 +488,12 @@ def promote_level_frame_disagreement(
         REALIZED_LEVEL_SUSPECT_REASON,
     )
 
+    # `.get`, so an absent or unrecognised `reason` falls to the estimator arm
+    # — the conservative default rather than the arbitrary one. That arm asks
+    # for a re-measure, which costs a household nothing if it is wrong; the
+    # realized arm asks them to go change a setup value, which is an action to
+    # take only on a record that actually says so. The producer always writes
+    # the field, so this is a floor and not an expected path.
     realized_only = record.get("reason") == REALIZED_LEVEL_SUSPECT_REASON
     try:
         return Finding(
