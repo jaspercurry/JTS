@@ -147,6 +147,38 @@ already open)**
   split test_control_server along its own handler boundary (after the
   widening lifts) · point the 4 hand-rolled atomic writers at atomic_io
 
+**Wave 6 — one audio transport ([ADR-0100](adr/0100-one-audio-transport.md))**
+- [ ] Delete the central loopback route + all transition machinery (~6–8K
+      incl. tests and the 24 two-route docs): arm/disarm/recovery ladders,
+      ring-confirm strikes, transport arbitration in coupling_reconcile /
+      fanin_coupling / audio_runtime_plan, Rust transport branches, aloop
+      confs. Keep the hard-park refusals (safety, not fallback). Composite
+      (the dual-DAC box) parks loudly with the tracked issue number; jts3 is
+      NOT that box (owner-confirmed), so nothing gates on the bench.
+- [ ] Do NOT pre-fix the ring arming convergence bug — its habitat is the
+      deleted ceremony (owner ruling). A surviving defect presents as a
+      named park with `event=` logs; fix forward then.
+- [ ] GATES: tuning program's explicit ack (ring = its measurement
+      transport) + the 5-case stereo tap re-run after the fanin diff.
+- [ ] File the composite-on-ring tracked issue.
+
+**Wave 7 — proven once, disclose on change ([ADR-0101](adr/0101-proven-once-disclose-on-change.md))**
+- [ ] Recommission-gate demotion sweep (this campaign's zone: voice / mic /
+      AEC / audio_validation): inventory every park or refusal triggered by
+      staleness or unproven-ness rather than observed breakage; convert
+      each to run-and-disclose (doctor warn naming what changed + the exact
+      re-commission command). Chip-AEC-or-park → chip-AEC-or-disclose.
+      Parks stay only on the non-negotiables.
+- [ ] Hardware-class-keyed shipped proofs: commissioning artifacts bank
+      against hardware class (extend the DacProfile registry pattern); a
+      fresh install on recognized hardware starts from the shipped profile
+      and discloses deviation.
+- [ ] BRINGUP AEC section gets its second edit when the code flips (the
+      Wave 0 edit documents today's behavior).
+- [ ] Notify the tuning program: its topology-fingerprint parks (#2935
+      class) are re-adjudicated under ADR-0101 in its doctrine wave — its
+      zone, its mechanics.
+
 **Owner-decision gates (blocked until answered)**
 - [ ] #1738: wire or delete bass-extension bench half (decision + execution
       owned by the tuning program; verifier's negative-proof rides its PR)
@@ -166,5 +198,5 @@ negative-proof; after each wave touching runtime code, deploy to a spare Pi
 `55dee33aa48a` candidate would destroy the tournament winner's corrections);
 use jts.local or jts5 — and run `jasper-doctor` + a music/voice smoke test.
 Campaign ends when
-Waves 0–4 are checked, the right-size report shows the deltas, and this
-file is deleted.
+Waves 0–4 and 6–7 are checked, the right-size report shows the deltas, and
+this file is deleted.

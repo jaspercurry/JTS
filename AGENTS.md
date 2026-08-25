@@ -67,7 +67,10 @@ A gate claiming "safety" that is not on this list is a nanny — demote it.
 - **Guards:** do not defend hypotheticals. After a real incident: fix
   forward and add observability (`event=` log, `/state`, doctor). Permanent
   machinery needs a non-negotiable tie or a recurrence; any new guard ships
-  with a removal condition or expiry noted beside it.
+  with a removal condition or expiry noted beside it. A passed
+  commissioning/validation proof stays valid until something observably
+  breaks: upstream changes demote it to disclosed-stale, never to a park —
+  parking on unproven-ness is reserved for the non-negotiables (ADR-0101).
 - **Docs:** decisions go to `docs/adr/` (append-only, dated, one decision per
   file; supersede, never edit). Do not create or grow HANDOFF docs unless
   the owner asks. Do not restate here, in README, or in code what another
