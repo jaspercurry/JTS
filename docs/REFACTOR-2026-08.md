@@ -180,7 +180,10 @@ already open)**
       fresh install on recognized hardware starts from the shipped profile
       and discloses deviation.
 - [ ] BRINGUP AEC section gets its second edit when the code flips (the
-      Wave 0 edit documents today's behavior).
+      Wave 0 edit documents today's behavior). Fold in: doctor's stale
+      "Phase 2A.5" pointers (jasper/cli/doctor/aec.py:507, :1598 — no such
+      phase exists) and BRINGUP:~955's Flex retune pointer to
+      xvf_software_aec3 (intent-only on managed XVF).
 - [ ] Notify the tuning program: its topology-fingerprint parks (#2935
       class) are re-adjudicated under ADR-0101 in its doctrine wave — its
       zone, its mechanics.
