@@ -72,14 +72,28 @@ __all__ = [
     "CaptureValidity",
     "CrossoverV2ContractError",
     "DEFAULT_CLOUD_MEASURE_POSITIONS",
+    "DESIGN_AXIS_DEG",
     "EvidenceTrust",
     "InterventionProposal",
     "IterationHeadroom",
+    "MEASURE_KINDS",
+    "MEASURE_KIND_BASELINE",
+    "MEASURE_KIND_CANDIDATE",
+    "MEASURE_KIND_VERIFY",
+    "MEASURE_REGIMES",
     "NoCrossoverSectionsError",
     "PLAN_REFUSAL_REASONS",
+    "POLARITIES",
+    "POLARITY_INVERTED",
+    "POLARITY_NORMAL",
+    "POSITION_AXES",
+    "POSITION_AXIS_HORIZONTAL",
+    "POSITION_AXIS_VERTICAL",
     "PROPOSAL_FINGERPRINT_KINDS",
     "PlanRefusal",
     "QualityStatus",
+    "REGIME_NEAR_FIELD",
+    "REGIME_REFERENCE_AXIS",
     "RealizationStatus",
     "ResponseCurve",
     "RoundReceipt",
@@ -1374,3 +1388,57 @@ DEFAULT_CLOUD_MEASURE_POSITIONS = 9
 # measured against the notch-excluded max (W6.7 ruling 1 —
 # `program_analysis.VERIFY_NOTCH_EXCLUSION_DB`) rather than the raw max.
 VERIFY_TOLERANCE_DB = 1.5
+
+
+# --------------------------------------------------------------------------- #
+# The engine's measure/analyze parameter vocabulary
+# (docs/REFACTOR-TUNING-2026-08.md §3 wave 1, ruling S12)
+# --------------------------------------------------------------------------- #
+#
+# These live HERE rather than beside the engine's `MeasureSpec` for the reason
+# this package's own `__init__` gives for not re-exporting `forward_model`:
+# reaching a handful of string literals must not drag `numpy` and the analysis
+# stack into every importer. Read from their owning modules
+# (`spatial.POSITION_AXES`, `driver_acoustics.CAPTURE_GEOMETRIES`,
+# `program_analysis.polarity_label`) the vocabulary costs ~1,100 modules to
+# quote; declared here it costs none beyond this module, and
+# `tests/test_crossover_v2_engine_skeleton.py` pins every one of them equal to
+# its owner's spelling so the cheap copy cannot drift off the real one.
+
+#: The three parameterizations of the one `measure` verb — ruling S1's
+#: "measuring is measuring" made visible in the data, and wave 4j's `kind`
+#: index column. A baseline, a candidate check and a re-measure differ by this
+#: word and by nothing else in the code that runs them.
+MEASURE_KIND_BASELINE = "baseline"
+MEASURE_KIND_CANDIDATE = "candidate"
+MEASURE_KIND_VERIFY = "verify"
+MEASURE_KINDS = (
+    MEASURE_KIND_BASELINE,
+    MEASURE_KIND_CANDIDATE,
+    MEASURE_KIND_VERIFY,
+)
+
+#: The two capture regimes. Owner: `driver_acoustics.CAPTURE_GEOMETRIES`.
+REGIME_NEAR_FIELD = "near_field"
+REGIME_REFERENCE_AXIS = "reference_axis"
+MEASURE_REGIMES = (REGIME_NEAR_FIELD, REGIME_REFERENCE_AXIS)
+
+#: The measurement frame's polarity words. Owner:
+#: `program_analysis.polarity_label`, which calls itself "the ONE spelling of
+#: the map". Distinct from the candidate's polarity ACTIONS
+#: (`crossover_alignment.POLARITY_KEEP` / `POLARITY_INVERT`), which say what a
+#: speaker should DO rather than how a capture was taken.
+POLARITY_NORMAL = "normal"
+POLARITY_INVERTED = "inverted"
+POLARITIES = (POLARITY_NORMAL, POLARITY_INVERTED)
+
+#: The pose axes. Owner: `spatial.POSITION_AXES`.
+POSITION_AXIS_HORIZONTAL = "horizontal"
+POSITION_AXIS_VERTICAL = "vertical"
+POSITION_AXES = (POSITION_AXIS_HORIZONTAL, POSITION_AXIS_VERTICAL)
+
+#: The design axis, in `PositionGeometry`'s own spelling for it: a capture with
+#: no prompted move of its own is a design-axis capture at `0`, which is what
+#: `spatial._DESIGN_AXIS_GEOMETRY` declares. `None` is a different fact — "no
+#: side was declared" — and must never be minted here as a synonym for this.
+DESIGN_AXIS_DEG = 0

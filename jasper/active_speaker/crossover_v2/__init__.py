@@ -72,6 +72,19 @@ order — so this list is what exists, not a plan:
 * :mod:`.operator_notes` — everything a human typed, gathered into one labelled
   artifact that no code path reads for a decision.
 
+The engine skeleton (``docs/REFACTOR-TUNING-2026-08.md`` §3 wave 1) — one
+session over three lifetimes and ruling S1's four verbs, which both front ends
+call and neither extends:
+
+* :mod:`.session` — one tuning session: the three lifetimes it opens once, and
+  ``measure`` · ``analyze`` · ``recommend`` · ``save`` over them.
+* :mod:`.session_seams` — what that session needs from outside itself: the
+  session graph, the volume claim, the record store, and the play transaction.
+* :mod:`.playback_transaction` — ready → admit → lock → play → restore, a named
+  boundary INSIDE ``measure`` rather than a fifth verb.
+* :mod:`.measure_spec` — what one ``measure`` asks for, and the named stubs for
+  the mic-only regimes the engine has not built yet (ruling S12).
+
 Offline evaluation, deliberately not a search:
 
 * :mod:`.forward_model` — what a candidate nothing has played WILL measure,
