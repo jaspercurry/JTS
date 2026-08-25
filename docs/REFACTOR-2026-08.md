@@ -27,11 +27,25 @@ CLIs (`jasper/cli/active_speaker*.py`, `seat_level.py`,
 `read_distortion.py`, `round_views.py`, `classify_features.py`), their test
 files (prefixes `test_active_speaker*`, `test_audio_measurement*`,
 `test_correction*`, `test_crossover*`, `test_bass_extension*`,
-`test_seat_level*`, `test_spatial*`), and the tuning docs
-(`HANDOFF-crossover-measurement-v2.md`, `HANDOFF-correction*.md`,
-`tuning-master-plan.md`, `measurement-loop-doctrine.md`,
-`llm-operator-runbook.md`, the wave/plan docs). Its detailed plan is its
-own; owner shares the boundary overview when defined.
+`test_seat_level*`, `test_spatial*`), **`tests/crossover_v2_fixtures.py`**
+(no `test_` prefix but 1,948 lines / 26 importers — the subject of the
+tuning plan's wave 1), `tests/test_lint_contracts.py` and
+`tests/test_docs_handoff_freshness.py` (ceded — its plan's wave 7h owns
+both), and the tuning docs (`HANDOFF-crossover-measurement-v2.md`,
+`HANDOFF-correction*.md`, `tuning-master-plan.md`,
+`measurement-loop-doctrine.md`, `llm-operator-runbook.md`, the wave/plan
+docs). Its plan: `docs/REFACTOR-TUNING-2026-08.md` +
+`docs/REFACTOR-COORDINATION-2026-08.md` (binding on both programs).
+
+**Volume-surface widening (single-owner, for the duration of the tuning
+plan's wave 5):** `volume_coordinator.py`, `camilla.py`'s fader/duck paths,
+the fader-writer sites in `mux.py`, `control/volume_ops.py`,
+`web/sound_setup.py`, `cli/aec_tune.py`, and the suites
+`test_volume_coordinator.py`, `test_camilla_controller.py`,
+`test_camilla_ducker.py` belong to the tuning program while that wave runs;
+this campaign touches none of them without its ack. The duck machinery
+(`GRAPH_SWAP_DUCK_DB`, the swap duck, any lease) is single-owner theirs
+throughout.
 
 **Census-zone handoff items for the local agent** (verified by the audit):
 the `commissioning_capture_producer.py` orphan (1,235 + 854 test lines, its
@@ -49,7 +63,14 @@ not merge web listeners, delete outputd or the Gemini adapter, merge the AEC
 bridge, drop the loopback transport mid-campaign, collapse the health
 systems, or unify settings files. Before acting on transport/duck items,
 read the ~dozen core-seam contract tests the census filter swept in (audit
-§2 coverage ledger).
+§2 coverage ledger). Standing protocols agreed 2026-08-25: after this
+campaign's `rust/jasper-fanin` deletion lands, fanin edits freeze until the
+5-case stereo tap re-runs on the bench, and the tuning plan's wave 6 waits
+on that tap; `doc-map.toml` row-removals for tuning-zone docs ride the
+tuning program's PRs with a notice line (structural doc-map changes stay
+here); ADR numbers 0002–0099 are the tuning program's, 0100+ are this
+campaign's; every shared-seam deletion needs the other program's explicit
+ack, never silence.
 
 ## Cloud waves
 
@@ -65,8 +86,10 @@ read the ~dozen core-seam contract tests the census filter swept in (audit
 **Wave 0.5 — baseline instrumentation (report script, not CI gates)**
 - [ ] `scripts/right-size-report.sh`: comment-to-code ratio, test-vs-product
       LOC, dead-code scan (vulture / cargo lints / knip), per-zone; run and
-      commit the baseline numbers so the diet is provable. CI *budgets* come
-      only at campaign end (research Stage 3), each via ADR.
+      commit the baseline numbers so the diet is provable. The per-zone
+      output is also the tuning program's net-lines evidence — one
+      instrument, both programs. CI *budgets* come only at campaign end
+      (research Stage 3), each via ADR.
 
 **Wave 1 — verified dead code (~8.4K lines; one PR per row of audit §4.1)**
 - [ ] orbs.js bundle (+tests +CI step +css tokens)
@@ -88,14 +111,14 @@ read the ~dozen core-seam contract tests the census filter swept in (audit
 - [ ] wake-events WAV cap default 1 GiB → 128 MiB; move wake_training/ out of
       the shipped package
 
-**Wave 3 — test right-sizing (~15–20K)**
-- [ ] test_lint_contracts.py: keep 8 tests + constants, strip ~1,700 comment
-      lines
+**Wave 3 — test right-sizing (~13–18K; lint-contracts ceded to the tuning
+program's wave 7h)**
+- [ ] delete 962 redundant asyncio markers — repo-wide, and FIRST: lands
+      before the tuning program's first wave so its rebases stay clean
 - [ ] doctor tests → one file per domain, verdict + stable remediation codes
       (keep aec_probe isolation tests verbatim)
 - [ ] CSRF altitude collapse via test_web_wizard_conventions sweep
 - [ ] tests/js/_loader.mjs + _dom.mjs; convert the 12 strip-loader files
-- [ ] delete 962 redundant asyncio markers
 - [ ] convert the two worst literal-welded wiring test files to executing
       their subjects; ban new source-text assertions (charter default)
 
@@ -115,22 +138,33 @@ read the ~dozen core-seam contract tests the census filter swept in (audit
 
 **Wave 5 — structural convergence (opportunistic; only when the file is
 already open)**
-- Duck lease replacing GRAPH_SWAP_DUCK_DB carve-out · systemctl-through-
-  broker or honest docstring · sound_setup 502-helper · `git mv`
-  subway/citibike/bus into transit/providers/ · fold jasper/measurement/ ·
-  split test_control_server along its own handler boundary · point the 4
-  hand-rolled atomic writers at atomic_io
+- ~~Duck lease~~ **HELD — superseded**: the tuning program deletes the
+  swap-duck and the 1 Hz reconciler it coordinated with (its waves 5–6);
+  no lease gets built · systemctl-through-broker or honest docstring ·
+  sound_setup 502-helper (after the volume-surface widening lifts) ·
+  `git mv` subway/citibike/bus into transit/providers/ · fold
+  jasper/measurement/ (confirmed non-colliding: it serves `/balance/`) ·
+  split test_control_server along its own handler boundary (after the
+  widening lifts) · point the 4 hand-rolled atomic writers at atomic_io
 
 **Owner-decision gates (blocked until answered)**
-- [ ] #1738: wire or delete bass-extension bench half (→ local agent's zone)
+- [ ] #1738: wire or delete bass-extension bench half (decision + execution
+      owned by the tuning program; verifier's negative-proof rides its PR)
 - [ ] capture-relay proportionality (~27K lines for phone-mic calibration)
-- [ ] experiments/usb-turntable: promote into jasper/ or accept the anomaly
+- [ ] experiments/usb-turntable: promote into jasper/ or accept the anomaly.
+      Either way it is the tuning program's robotic-arm driver: a path move
+      carries a notice line and the arm tooling gets re-verified before any
+      measurement campaign runs
 - [ ] env-migrations fleet confirmation (unblocks Wave 2 item)
 
 ## Definition of done (every PR)
 `scripts/test-fast` green (full lane in CI); docs PRs also pass
 `scripts/docs-linkcheck.py`; deletion PRs carry the verifier's
 negative-proof; after each wave touching runtime code, deploy to a spare Pi
-and run `jasper-doctor` + a music/voice smoke test. Campaign ends when
+— **never jts3**, which is the measurement bench holding a deliberate
+`blocked/active_baseline_topology_changed` state (applying the bare
+`55dee33aa48a` candidate would destroy the tournament winner's corrections);
+use jts.local or jts5 — and run `jasper-doctor` + a music/voice smoke test.
+Campaign ends when
 Waves 0–4 are checked, the right-size report shows the deltas, and this
 file is deleted.
