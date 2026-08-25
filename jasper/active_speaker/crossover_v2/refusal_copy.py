@@ -1440,8 +1440,11 @@ def reason_message(
     shows the moment a capture is refused
     (:meth:`PhaseVerdict.to_relay_dict`), the envelope jts.local serves for
     the persisted terminal failure
-    (``crossover_envelope_v2._reason_message``), the apply-seam refusal, and
-    :meth:`_refuse`'s accountability refusals. Two codes now choose their copy
+    (``crossover_envelope_v2._reason_message``), and the apply-seam refusal.
+    (:meth:`_refuse`'s accountability refusals were a fourth until doctrine
+    deviation (i) demoted the gate that raised them; the constructor is still
+    the one that stamps the failure code, but nothing in production reaches
+    it.) Two codes now choose their copy
     from evidence rather than holding a literal, and a household looking at
     two of those surfaces after ONE failure must not be handed two different
     accounts of it — which is exactly how the inconclusive copy's own bug

@@ -193,11 +193,15 @@ def test_every_planner_record_reaches_this_sessions_journal(caplog):
 def test_the_realized_level_record_is_a_warning_only_when_it_did_not_match(
     caplog, matched, expected_level,
 ):
-    """The severity is the operator's precursor to the accountability refusal.
+    """The severity is the operator's early signal that the pair did not level.
 
-    An unmatched inter-driver level is what the gate refuses on one step later,
-    so the line announcing it has to stand out in a journal before anyone knows
-    to look for the refusal. That is a *conditional*, and the sibling
+    An unmatched inter-driver level is what the accountability seam DISCLOSES
+    one step later (doctrine deviation (i) demoted that gate; it banks
+    `event=…_level_match_finding` and the round proceeds), so this line is the
+    journal's first sight of the condition and has to stand out before anyone
+    knows to look for the finding. A round that discloses rather than stops is
+    if anything the stronger reason for the severity: nothing downstream halts
+    to make the operator notice. That is a *conditional*, and the sibling
     forwarding test cannot see it: that one compares the forwarded level
     against the record's own, so flattening the planner's conditional to
     always-INFO moves both sides together and stays green (verified by

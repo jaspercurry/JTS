@@ -1012,7 +1012,9 @@ journalctl -u jasper-correction-web | grep -E 'event=correction\.session_volume_
 # by name, never infer safety from a quiet log.
 journalctl -u jasper-correction-web | grep -E 'event=correction\.crossover_v2_(applied|volume_close_failed|volume_abandon_failed|volume_open_failed|volume_recovery_timeout)'
 
-# Why a session refused, and what the speaker actually did with the correction.
+# What accountability GRADED and banked (it refuses nothing since doctrine
+# deviations (c)/(i)), why a session refused (the delta probe, post-apply),
+# and what the speaker actually did with the correction.
 journalctl -u jasper-correction-web | grep -E 'event=correction\.crossover_v2_(level_estimator_finding|level_match_finding|prediction_gate|predicted_spec_failed|realized_level_match|delta_probe|round_restore|round_recovery_required|delta_probe_restore)'
 
 # Calibration handoff / uncalibrated warnings.
@@ -3944,21 +3946,32 @@ never the outcome: `predicted_ripple_db` says how coherently two branches can
 sum at all, not how the speaker will sound, and every accountability gate
 below still grades the correction itself on this candidate.
 
-**The accountability veto guards the confirm seam.** PR-6b's
+**The accountability seam GRADES the confirm seam; it refuses nothing.** PR-6b's
 `_publish_measure_candidate` returned `auto_apply: True` on the reasoning that
 MEASURE's trust gates had already decided — true about the CAPTURE, silent
 about the CORRECTION built from it. (That key is DELETED since PR-T3: nothing
-auto-applies, so a flag named for an automatic trigger would name a path that
-no longer exists. The veto below is unchanged and now refuses on the
-household's confirmation.) `_assert_accountable` runs its three pre-apply gates — PR-L5's level-frame
-agreement, then PR-L4's items 1 and 2, most-specific-first — between the
-candidate build and the publish, so a refusal leaves no candidate for anything
-downstream to apply. (The four `correction_*` rows are different: they fire
-after the apply, from the delta probe.) All three raise through
-`CrossoverV2Conductor._refuse`, which stamps `_last_failure_code`: the host's
-`CaptureBeginRefused` arm reads THAT, not the exception, and falls back to
-`relay_timeout` when it is unset — so raising any other way would render a
-deliberate refusal as a manufactured timeout.
+auto-applies.) `_assert_accountable` runs PR-L4's items 1 and 2 between the
+candidate build and the publish — item 1 the committed pair's realized
+inter-driver level, item 2 the spec-graded prediction — because that is where
+the numbers they grade exist. **Neither refuses.** Item 2 stopped with the nanny
+burn-down ([`measurement-loop-doctrine.md`](measurement-loop-doctrine.md)
+deviation (c)) and item 1 with the realized-level demotion (deviation (i)); both
+now bank what they measured — `event=…_prediction_gate` carrying an
+`accountability.LEDGER_*` value, `event=…_level_match_finding` plus a level-frame
+finding — and the round proceeds to the review screen. PR-L5's level-frame
+agreement gate, which used to run first here, was deleted outright by the
+single-datum-owner migration (#2609), so the "three pre-apply gates" this
+paragraph once described are now two, and both are disclosures.
+
+What that leaves refusing in this flow: the four `correction_*` rows below, which
+fire AFTER the apply from the delta probe, and the admission seam, which refuses
+a capture on its own codes. Those build `CaptureBeginRefused` where they classify
+it. `CrossoverV2Conductor._refuse` — the constructor that stamps
+`_last_failure_code`, which the host's `CaptureBeginRefused` arm reads INSTEAD of
+the exception, falling back to `relay_timeout` when unset — had exactly one
+production caller, the accountability refusal, and has none since deviation (i).
+The stamp rule it exists to enforce is unchanged and still the reason a refusal
+raised any other way would render as a manufactured timeout.
 
 **The delta probe verifies the apply; the ROUND rolls it back** (PR-L5, rerouted
 by the fifth principle). The three `correction_*` rows above are the only
@@ -4566,8 +4579,9 @@ journalctl -u jasper-correction-web | grep -E 'event=correction\.session_volume_
 journalctl -u jasper-correction-web | grep -E 'event=correction\.crossover_v2_(applied|volume_close_failed|volume_abandon_failed)'
 # Calibration handoff / uncalibrated warnings:
 journalctl -u jasper-correction-web | grep -E 'event=correction\.crossover_v2_(calibration_resolve_failed|uncalibrated_capture|default_calibration_hint_failed)'
-# Accountability + delta probe (PR-L4/L5) — why a session refused, and what
-# the speaker actually did with the correction:
+# Accountability + delta probe (PR-L4/L5) — what accountability graded and
+# banked, why a session refused (the delta probe half; accountability refuses
+# nothing now), and what the speaker actually did with the correction:
 journalctl -u jasper-correction-web | grep -E 'event=correction\.crossover_v2_(level_estimator_finding|level_match_finding|prediction_gate|realized_level_match|delta_probe|round_restore|round_recovery_required|delta_probe_restore)'
 ```
 

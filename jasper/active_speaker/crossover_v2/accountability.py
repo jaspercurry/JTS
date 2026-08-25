@@ -296,9 +296,12 @@ def level_frame_record(
     why; now the record is the only DURABLE half of a disclosure on a round that
     proceeds, and the journal line the gate also emits is not a reader.
 
-    Returns ``None`` only when NEITHER instrument can name a band — which needs
-    an estimator disagreement with no per-role core spans, since the realized
-    verdict always carries its two.
+    Returns ``None`` when the condition this record is ABOUT cannot name a
+    band — which needs an estimator disagreement with no per-role core spans,
+    since the realized verdict always carries its two. NEITHER instrument
+    having one is deliberately NOT the bar: in that same case the realized
+    spans do exist, and the guard below declines to borrow them to describe an
+    estimator finding.
     """
 
     consistency = state.level_consistency
