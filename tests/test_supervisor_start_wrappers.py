@@ -107,7 +107,6 @@ _RUN_CASES: list[
     ("module", "factory", "start_event", "tick_crash_event", "start_fields"),
     _RUN_CASES,
 )
-@pytest.mark.asyncio
 async def test_run_wrapper_preserves_local_runtime_contract(
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,

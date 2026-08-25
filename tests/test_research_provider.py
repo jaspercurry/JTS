@@ -132,7 +132,6 @@ async def _no_sleep(_seconds: float) -> None:
     return None
 
 
-@pytest.mark.asyncio
 async def test_openai_client_uses_background_responses_and_polling():
     fake = _FakeOpenAI()
     client = openai_research.OpenAIResearchClient(
@@ -164,7 +163,6 @@ async def test_openai_client_uses_background_responses_and_polling():
     assert fake.responses.retrieve_calls == 1
 
 
-@pytest.mark.asyncio
 async def test_openai_client_raises_research_error_on_terminal_failure():
     class FailedResponses:
         async def create(self, **_kwargs):
@@ -183,7 +181,6 @@ async def test_openai_client_raises_research_error_on_terminal_failure():
         await client.complete(ResearchRequest(query="x"))
 
 
-@pytest.mark.asyncio
 async def test_openai_client_normalizes_provider_sdk_errors():
     class FakeOpenAIError(Exception):
         pass
@@ -214,7 +211,6 @@ class _ClosableOpenAI:
         self.closed = True
 
 
-@pytest.mark.asyncio
 async def test_openai_client_aclose_closes_underlying_client():
     # The SDK exposes async close(); aclose() must actually drain it so the
     # httpx pool/FDs don't leak across daemon restarts (cf. transit BusClient).
@@ -224,7 +220,6 @@ async def test_openai_client_aclose_closes_underlying_client():
     assert fake.closed is True
 
 
-@pytest.mark.asyncio
 async def test_active_research_provider_aclose_forwards_to_client():
     # The registry wrapper duck-types aclose; the OpenAI client fulfills it now
     # (previously a no-op because the SDK has close(), not aclose()).
@@ -235,7 +230,6 @@ async def test_active_research_provider_aclose_forwards_to_client():
     assert fake.closed is True
 
 
-@pytest.mark.asyncio
 async def test_openai_client_aclose_is_noop_when_client_never_built():
     # Lazy client never constructed -> nothing to close, must not raise.
     await openai_research.OpenAIResearchClient(api_key="sk-test").aclose()
@@ -252,7 +246,6 @@ def test_default_research_model_is_priced():
     assert priced.text_output_per_million_usd > 0
 
 
-@pytest.mark.asyncio
 async def test_complete_cancellation_best_effort_cancels_background_job():
     # The scheduler's runtime ceiling cancels complete(); the server-side
     # background job keeps billing, so we best-effort cancel it.
@@ -290,7 +283,6 @@ async def test_complete_cancellation_best_effort_cancels_background_job():
     assert cancelled == ["resp_abc"]
 
 
-@pytest.mark.asyncio
 async def test_complete_cancellation_before_create_spawns_no_cancel():
     cancelled: list[str] = []
 

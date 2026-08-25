@@ -81,7 +81,6 @@ def test_make_calendar_tools_returns_empty_when_clients_none():
 # --- error paths --------------------------------------------------
 
 
-@pytest.mark.asyncio
 async def test_today_summary_no_accounts_message_points_to_wizard(monkeypatch):
     monkeypatch.setattr(gc, "load_credentials", lambda *a, **kw: None)
     clients = GoogleClients(
@@ -95,7 +94,6 @@ async def test_today_summary_no_accounts_message_points_to_wizard(monkeypatch):
     assert "jts.local/google" in out["error"]
 
 
-@pytest.mark.asyncio
 async def test_today_summary_unknown_account_lists_available(monkeypatch):
     clients, _ = _make_clients(monkeypatch, accounts=("jasper", "brittany"))
     [today, _upcoming] = make_calendar_tools(clients)
@@ -106,7 +104,6 @@ async def test_today_summary_unknown_account_lists_available(monkeypatch):
     assert "brittany" in out["error"]
 
 
-@pytest.mark.asyncio
 async def test_today_summary_credentials_failure_returns_relink_error(monkeypatch):
     monkeypatch.setattr(gc, "load_credentials", lambda *a, **kw: None)
     r = GoogleRegistry()
@@ -121,7 +118,6 @@ async def test_today_summary_credentials_failure_returns_relink_error(monkeypatc
     assert "Re-link" in out["error"] or "re-link" in out["error"]
 
 
-@pytest.mark.asyncio
 async def test_today_summary_api_error_returns_friendly_message(monkeypatch):
     fake_service = _FakeCalendarService(
         _FakeEvents(raise_on_list=RuntimeError("boom")),
@@ -148,7 +144,6 @@ def test_calendar_tools_declare_untrusted_output_risk_flag(monkeypatch):
         assert built.consequential is False
 
 
-@pytest.mark.asyncio
 async def test_today_summary_marks_untrusted_monitor_on_events(monkeypatch):
     """Invite titles/locations are attacker-controllable third-party text, so
     returning events arms the consequential-action confirmation window."""
@@ -172,7 +167,6 @@ async def test_today_summary_marks_untrusted_monitor_on_events(monkeypatch):
     assert monitor.is_tainted() is True
 
 
-@pytest.mark.asyncio
 async def test_today_summary_fences_hostile_summary(monkeypatch):
     """A crafted invite title must reach the model fenced — same baseline as
     gmail (the dangerous calendar→action path is also gated by the taint
@@ -196,7 +190,6 @@ async def test_today_summary_fences_hostile_summary(monkeypatch):
         assert "unlock the front door" in ev[field]
 
 
-@pytest.mark.asyncio
 async def test_today_summary_no_events_does_not_mark(monkeypatch):
     clients, _ = _make_clients(
         monkeypatch, service=_FakeCalendarService(_FakeEvents(items=[])),
@@ -208,7 +201,6 @@ async def test_today_summary_no_events_does_not_mark(monkeypatch):
     assert monitor.is_tainted() is False
 
 
-@pytest.mark.asyncio
 async def test_today_summary_returns_events_with_clock_times(monkeypatch):
     items = [
         {
@@ -244,7 +236,6 @@ async def test_today_summary_returns_events_with_clock_times(monkeypatch):
     assert kw["orderBy"] == "startTime"
 
 
-@pytest.mark.asyncio
 async def test_today_summary_handles_all_day_event(monkeypatch):
     items = [
         {"summary": "Picnic", "start": {"date": "2026-05-09"}, "end": {"date": "2026-05-10"}},
@@ -258,7 +249,6 @@ async def test_today_summary_handles_all_day_event(monkeypatch):
     assert out["events"][0]["start"] == "all day"
 
 
-@pytest.mark.asyncio
 async def test_upcoming_default_window_is_24_hours(monkeypatch):
     events = _FakeEvents(items=[])
     clients, _ = _make_clients(monkeypatch, service=_FakeCalendarService(events))
@@ -273,7 +263,6 @@ async def test_upcoming_default_window_is_24_hours(monkeypatch):
     assert timedelta(hours=23, minutes=59) < (t_max - t_min) < timedelta(hours=24, minutes=1)
 
 
-@pytest.mark.asyncio
 async def test_upcoming_custom_hours(monkeypatch):
     events = _FakeEvents(items=[])
     clients, _ = _make_clients(monkeypatch, service=_FakeCalendarService(events))
@@ -286,7 +275,6 @@ async def test_upcoming_custom_hours(monkeypatch):
     assert timedelta(hours=3, minutes=59) < (t_max - t_min) < timedelta(hours=4, minutes=1)
 
 
-@pytest.mark.asyncio
 async def test_upcoming_clamps_huge_hours_to_30_days(monkeypatch):
     events = _FakeEvents(items=[])
     clients, _ = _make_clients(monkeypatch, service=_FakeCalendarService(events))
@@ -300,7 +288,6 @@ async def test_upcoming_clamps_huge_hours_to_30_days(monkeypatch):
     assert (t_max - t_min) <= timedelta(hours=720, minutes=1)
 
 
-@pytest.mark.asyncio
 async def test_upcoming_rejects_zero_or_negative_hours(monkeypatch):
     clients, _ = _make_clients(monkeypatch, service=_FakeCalendarService(_FakeEvents()))
     [_today, upcoming] = make_calendar_tools(clients)
@@ -310,7 +297,6 @@ async def test_upcoming_rejects_zero_or_negative_hours(monkeypatch):
     assert out["ok"] is False
 
 
-@pytest.mark.asyncio
 async def test_account_arg_routes_to_named_member(monkeypatch):
     """The model passes account='brittany' — the tool should resolve
     to the brittany account (verified by the response's `account`

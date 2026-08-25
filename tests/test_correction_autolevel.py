@@ -19,7 +19,6 @@ from __future__ import annotations
 import asyncio
 import logging
 
-import pytest
 
 from jasper.correction.autolevel import AutolevelController, AutolevelData
 from jasper.correction.session import (
@@ -35,7 +34,6 @@ from .correction_session_fixtures import (
 # ---------- state_changed_from --------------------------------------------
 
 
-@pytest.mark.asyncio
 async def test_state_changed_from_returns_true_when_state_changes(tmp_path):
     sess = _make_session(tmp_path)
     # Spawn a task that flips state after a short delay.
@@ -51,7 +49,6 @@ async def test_state_changed_from_returns_true_when_state_changes(tmp_path):
     assert sess.state == SessionState.PREPARING
 
 
-@pytest.mark.asyncio
 async def test_state_changed_from_returns_false_on_timeout(tmp_path):
     sess = _make_session(tmp_path)
     # State never changes; helper should time out and return False.
@@ -62,7 +59,6 @@ async def test_state_changed_from_returns_false_on_timeout(tmp_path):
     assert sess.state == SessionState.IDLE
 
 
-@pytest.mark.asyncio
 async def test_state_changed_from_accepts_set_of_states(tmp_path):
     """The helper accepts a single state OR a set, so callers can
     block on 'state changed out of {APPLIED, VERIFIED}'."""
@@ -83,7 +79,6 @@ async def test_state_changed_from_accepts_set_of_states(tmp_path):
 # ---------- run_autolevel --------------------------------------------------
 
 
-@pytest.mark.asyncio
 async def test_autolevel_controller_restores_locked_level_once():
     controller = AutolevelController(session_id="restore-once")
     restored: list[float] = []
@@ -128,7 +123,6 @@ class _StubTonePlayer:
         self._cancel_event.set()
 
 
-@pytest.mark.asyncio
 async def test_autolevel_locks_when_lock_event_set(tmp_path):
     """Drive a fake autolevel: let the ramp take one step, signal lock,
     expect status=LOCKED at the ramp value it had reached."""
@@ -182,7 +176,6 @@ async def test_autolevel_locks_when_lock_event_set(tmp_path):
     assert player.cancelled
 
 
-@pytest.mark.asyncio
 async def test_autolevel_maxes_out_when_no_lock(tmp_path):
     """If lock is never signalled, the ramp reaches end_db and
     status becomes MAXED_OUT. The UI tells the user to turn up the
@@ -216,7 +209,6 @@ async def test_autolevel_maxes_out_when_no_lock(tmp_path):
     assert "external amplifier" in sess.autolevel.error
 
 
-@pytest.mark.asyncio
 async def test_autolevel_quiet_start_never_jumps_above_dynamic_cap(tmp_path):
     """A very quiet listener must not be raised to the nominal start_db."""
     sess = _make_session(tmp_path)
@@ -245,7 +237,6 @@ async def test_autolevel_quiet_start_never_jumps_above_dynamic_cap(tmp_path):
     assert sess.autolevel.locked_main_volume_db is None
 
 
-@pytest.mark.asyncio
 async def test_autolevel_cancel_restores_main_volume(tmp_path):
     """When the user cancels mid-ramp, main_volume must be restored
     to the pre-autolevel value. Otherwise their music would be at a
@@ -283,7 +274,6 @@ async def test_autolevel_cancel_restores_main_volume(tmp_path):
     assert set_history[-1] == ORIG
 
 
-@pytest.mark.asyncio
 async def test_autolevel_cancel_and_wait_prevents_late_volume_writes(tmp_path):
     """A graph reset may proceed only after the ramp restored listening volume."""
     sess = _make_session(tmp_path)
@@ -322,7 +312,6 @@ async def test_autolevel_cancel_and_wait_prevents_late_volume_writes(tmp_path):
     assert len(set_history) == writes_at_return
 
 
-@pytest.mark.asyncio
 async def test_autolevel_reservation_is_cancellable_before_first_write():
     controller = AutolevelController(session_id="reserved-run")
     writes: list[float] = []
@@ -361,7 +350,6 @@ async def test_autolevel_reservation_is_cancellable_before_first_write():
     assert await controller.release_run_reservation(next_token) is True
 
 
-@pytest.mark.asyncio
 async def test_autolevel_lock_is_not_authoritative_until_cleanup_finishes():
     controller = AutolevelController(session_id="cleanup-authority")
     writes: list[float] = []
@@ -398,7 +386,6 @@ async def test_autolevel_lock_is_not_authoritative_until_cleanup_finishes():
     assert controller.run_in_progress is False
 
 
-@pytest.mark.asyncio
 async def test_autolevel_graceful_stop_logs_setter_failures(caplog):
     """_graceful_stop's fade-down loop and its final lock-value set must
     LOG set_main_volume_db failures rather than swallowing them silently
@@ -450,7 +437,6 @@ async def test_autolevel_graceful_stop_logs_setter_failures(caplog):
     assert player.cancelled
 
 
-@pytest.mark.asyncio
 async def test_autolevel_lock_when_no_run_in_progress_returns_false(tmp_path):
     """Pre-condition guard: locking without a running autolevel is
     a no-op that returns False."""
@@ -459,14 +445,12 @@ async def test_autolevel_lock_when_no_run_in_progress_returns_false(tmp_path):
     assert fired is False
 
 
-@pytest.mark.asyncio
 async def test_autolevel_cancel_when_no_run_in_progress_returns_false(tmp_path):
     sess = _make_session(tmp_path)
     fired = await sess.cancel_autolevel()
     assert fired is False
 
 
-@pytest.mark.asyncio
 async def test_autolevel_safety_timeout_restores_main_volume(tmp_path):
     """If neither lock nor cancel arrives within safety_timeout_s,
     the autolevel auto-restores main_volume and reports CANCELLED.
@@ -505,7 +489,6 @@ async def test_autolevel_safety_timeout_restores_main_volume(tmp_path):
 # ---------- Order-of-operations + safety -----------------------------------
 
 
-@pytest.mark.asyncio
 async def test_autolevel_sets_quiet_start_volume_before_tone(tmp_path):
     """Bug fix from the first user run: the tone was starting at
     the user's previous main_volume (often loud) BEFORE the ramp
@@ -568,7 +551,6 @@ async def test_autolevel_sets_quiet_start_volume_before_tone(tmp_path):
     )
 
 
-@pytest.mark.asyncio
 async def test_autolevel_end_db_computed_relative_to_original(tmp_path):
     """end_db now defaults to None and is computed from the user's
         actual listening volume at the start of the run — NOT a fixed
@@ -621,7 +603,6 @@ async def test_autolevel_end_db_computed_relative_to_original(tmp_path):
         )
 
 
-@pytest.mark.asyncio
 async def test_autolevel_lock_fades_down_before_tone_cancel(tmp_path):
     """When the user locks, we must fade main_volume DOWN to a
     quiet value before killing the tone. Otherwise the abrupt

@@ -118,7 +118,6 @@ def test_tool_schema_is_serializable():
 # --- Dispatch + result shape ------------------------------------------
 
 
-@pytest.mark.asyncio
 async def test_tool_passes_route_through():
     fake = _FakeClient()
     [fn] = make_bus_tools(fake)
@@ -126,7 +125,6 @@ async def test_tool_passes_route_through():
     assert fake.calls == ["B70"]
 
 
-@pytest.mark.asyncio
 async def test_tool_empty_route_passes_empty_string():
     fake = _FakeClient()
     [fn] = make_bus_tools(fake)
@@ -134,7 +132,6 @@ async def test_tool_empty_route_passes_empty_string():
     assert fake.calls == [""]
 
 
-@pytest.mark.asyncio
 async def test_tool_result_shape_on_success():
     fake = _FakeClient(result=[_arrival("B35", 3), _arrival("B70", 7)])
     [fn] = make_bus_tools(fake)
@@ -145,7 +142,6 @@ async def test_tool_result_shape_on_success():
     assert result["arrivals"][0]["minutes_from_now"] == 3
 
 
-@pytest.mark.asyncio
 async def test_tool_empty_arrivals_is_not_an_error():
     """A reachable feed with nothing coming returns an empty arrivals
     list — the LLM narrates 'no buses', NOT the outage error. This is
@@ -161,7 +157,6 @@ async def test_tool_empty_arrivals_is_not_an_error():
 # --- Error handling: total outage -------------------------------------
 
 
-@pytest.mark.asyncio
 async def test_tool_returns_error_dict_on_total_outage():
     """Every configured stop failed AND no cache served → the client
     raises TransitError → the tool returns {error: ...} so the LLM
@@ -179,7 +174,6 @@ async def test_tool_returns_error_dict_on_total_outage():
     assert "stops_queried" not in result
 
 
-@pytest.mark.asyncio
 async def test_tool_propagates_unexpected_exception():
     """Programming-error exceptions (not TransitError) should bubble so
     the daemon's outer error handler logs and surfaces them. We don't

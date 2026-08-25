@@ -125,7 +125,6 @@ def _fp(exc_type="RuntimeError", code=None, reason="x"):
     return _FailureFingerprint(exc_type=exc_type, close_code=code, reason=reason)
 
 
-@pytest.mark.asyncio
 async def test_escalation_does_not_fire_below_threshold():
     """Buffer not yet full → no cue, no callback invocation."""
     conn = _conn_for_unit_test()
@@ -143,7 +142,6 @@ async def test_escalation_does_not_fire_below_threshold():
     assert calls == []
 
 
-@pytest.mark.asyncio
 async def test_escalation_fires_when_5_consecutive_identical():
     """5 identical failures → the callback fires with the
     cant_reach_cloud slug exactly once."""
@@ -161,7 +159,6 @@ async def test_escalation_fires_when_5_consecutive_identical():
     assert calls == [ESCALATION_CUE_SLUG]
 
 
-@pytest.mark.asyncio
 async def test_escalation_does_not_fire_with_mixed_failures():
     """Buffer has 5 entries but they're not all identical → no fire."""
     conn = _conn_for_unit_test()
@@ -185,7 +182,6 @@ async def test_escalation_does_not_fire_with_mixed_failures():
     assert calls == []
 
 
-@pytest.mark.asyncio
 async def test_escalation_rate_limited_within_window():
     """Once fired, a second call inside the rate-limit window doesn't
     re-fire even if the buffer is still all-identical."""
@@ -209,7 +205,6 @@ async def test_escalation_rate_limited_within_window():
     assert len(calls) == 1
 
 
-@pytest.mark.asyncio
 async def test_escalation_refires_after_rate_limit_window():
     """If the rate-limit window has elapsed, a still-identical buffer
     can fire the cue again. Simulated by rewinding `_last_escalation_at`."""
@@ -231,7 +226,6 @@ async def test_escalation_refires_after_rate_limit_window():
     await _wait_until(lambda: len(calls) == 2, timeout=1.0)
 
 
-@pytest.mark.asyncio
 async def test_escalation_no_op_without_callback():
     """No callback wired (test/minimal-harness mode) → silent no-op,
     no crash. Also: rate-limit timer not consumed, so wiring the

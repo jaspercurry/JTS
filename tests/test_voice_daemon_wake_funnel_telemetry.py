@@ -8,7 +8,6 @@ from __future__ import annotations
 
 import asyncio
 
-import pytest
 
 from jasper.tools import ToolRegistry, dispatch_tool
 from jasper.voice_daemon import WakeLoop
@@ -16,7 +15,6 @@ from jasper.wake_events import WakeEventStore
 from tests._async_wait import wait_signalled
 
 
-@pytest.mark.asyncio
 async def test_shared_dispatch_observer_populates_active_wake_event(tmp_path):
     store = WakeEventStore(tmp_path)
     store.open()
@@ -58,7 +56,6 @@ async def test_shared_dispatch_observer_populates_active_wake_event(tmp_path):
         store.close()
 
 
-@pytest.mark.asyncio
 async def test_concurrent_tools_preserve_first_call_and_completion_milestones(
     tmp_path,
 ):

@@ -431,7 +431,6 @@ def test_voice_characteristic_candidates_ignore_disconnected_wiim():
     assert voice_characteristic_candidates(managed) == []
 
 
-@pytest.mark.asyncio
 async def test_find_voice_characteristic_uses_only_cached_matching_report():
     managed, chars, _descs = _managed_voice_reports(
         [b"\x01\x01", Variant("ay", WIIM_VOICE_REPORT_REFERENCE)]
@@ -448,7 +447,6 @@ async def test_find_voice_characteristic_uses_only_cached_matching_report():
     assert bus.introspected == []
 
 
-@pytest.mark.asyncio
 async def test_find_voice_characteristic_reads_missing_descriptor_value():
     managed, chars, descs = _managed_voice_reports([None])
     bus = _FakeBus({descs[0]: Variant("ay", WIIM_VOICE_REPORT_REFERENCE)})
@@ -463,7 +461,6 @@ async def test_find_voice_characteristic_reads_missing_descriptor_value():
     assert bus.introspected == [descs[0]]
 
 
-@pytest.mark.asyncio
 async def test_find_voice_characteristic_rejects_no_match_and_descriptorless():
     managed, _chars, _descs = _managed_voice_reports(
         [b"\x02\x01"],
@@ -478,7 +475,6 @@ async def test_find_voice_characteristic_rejects_no_match_and_descriptorless():
         )
 
 
-@pytest.mark.asyncio
 async def test_find_voice_characteristic_rejects_multiple_matches_with_guidance():
     managed, _chars, _descs = _managed_voice_reports(
         [WIIM_VOICE_REPORT_REFERENCE, WIIM_VOICE_REPORT_REFERENCE],
@@ -496,7 +492,6 @@ async def test_find_voice_characteristic_rejects_multiple_matches_with_guidance(
         )
 
 
-@pytest.mark.asyncio
 async def test_find_voice_characteristic_propagates_descriptor_read_error():
     managed, _chars, descs = _managed_voice_reports([None])
     bus = _FakeBus({descs[0]: OSError("BlueZ read failed")})
@@ -509,7 +504,6 @@ async def test_find_voice_characteristic_propagates_descriptor_read_error():
         )
 
 
-@pytest.mark.asyncio
 async def test_find_voice_characteristic_scans_after_match_and_propagates_error():
     managed, _chars, descs = _managed_voice_reports([WIIM_VOICE_REPORT_REFERENCE, None])
     bus = _FakeBus({descs[1]: OSError("later BlueZ read failed")})
@@ -641,7 +635,6 @@ def test_close_segment_is_idempotent_and_does_not_repeat_a_hold(caplog):
 # ---------------------------------------------------------------------------
 
 
-@pytest.mark.asyncio
 async def test_ce_reservation_request_uses_the_start_only_helper(monkeypatch):
     """Exact broker call arguments. `start` is the only verb the helper is in
     the broker allowlist for, and the unit name has to match it verbatim."""
@@ -665,7 +658,6 @@ async def test_ce_reservation_request_uses_the_start_only_helper(monkeypatch):
     )]
 
 
-@pytest.mark.asyncio
 async def test_ce_reservation_request_does_not_block_the_event_loop(monkeypatch):
     """The 3c trap. `manage_units` is a blocking socket call and this loop is
     also delivering the mic notifications; running it inline stalls the loop
@@ -696,7 +688,6 @@ async def test_ce_reservation_request_does_not_block_the_event_loop(monkeypatch)
     assert ticks == 3
 
 
-@pytest.mark.asyncio
 async def test_ce_reservation_request_is_fail_soft_on_a_broker_error(monkeypatch):
     """Degraded audio beats no adapter: a broker that answers `ok: false` is
     logged and the subscription carries on."""
@@ -707,7 +698,6 @@ async def test_ce_reservation_request_is_fail_soft_on_a_broker_error(monkeypatch
     await wiim_remote_mic._request_ce_reservation()
 
 
-@pytest.mark.asyncio
 async def test_ce_reservation_request_is_fail_soft_when_the_broker_raises(monkeypatch):
     def boom(*_args, **_kwargs):
         raise OSError("broker socket vanished")
@@ -851,7 +841,6 @@ def _subscription_harness(monkeypatch) -> tuple[_SubscriptionBus, _FakeSink]:
     return bus, sink
 
 
-@pytest.mark.asyncio
 async def test_run_subscription_requests_the_ce_reservation_after_notify_starts(
     monkeypatch,
 ):
@@ -910,7 +899,6 @@ async def test_run_subscription_requests_the_ce_reservation_after_notify_starts(
     assert sink.closed
 
 
-@pytest.mark.asyncio
 async def test_run_subscription_reports_the_final_hold_when_the_link_drops(
     monkeypatch, caplog
 ):
@@ -972,7 +960,6 @@ async def test_run_subscription_reports_the_final_hold_when_the_link_drops(
     assert segments[0]["packets"] == "5"
 
 
-@pytest.mark.asyncio
 async def test_run_subscription_survives_a_broker_that_refuses_the_reservation(
     monkeypatch,
 ):

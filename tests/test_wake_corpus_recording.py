@@ -40,7 +40,6 @@ _IMPORTED_FIXTURES = (_backend_fixture, _patch_udp)
 # ---------------------------------------------------------------------------
 
 
-@pytest.mark.asyncio
 async def test_recording_task_collects_frames_per_leg() -> None:
     _FakeUdpMicCapture.port_to_value = {9876: 11, 9877: 22, 9878: 33}
     task = wake_corpus_setup.RecordingTask(
@@ -61,7 +60,6 @@ async def test_recording_task_collects_frames_per_leg() -> None:
     assert (dtln_samples == 33).all()
 
 
-@pytest.mark.asyncio
 async def test_recording_task_elapsed_grows() -> None:
     task = wake_corpus_setup.RecordingTask(ports={"on": 9876})
     await task.start()
@@ -823,7 +821,6 @@ def test_make_server_accepts_prebound_socket(backend) -> None:
 # ---------------------------------------------------------------------------
 
 
-@pytest.mark.asyncio
 async def test_recording_task_stop_idempotent() -> None:
     """Calling stop() twice must not crash on double __aexit__ or
     double-await of a cancelled task. Defensive against state-machine

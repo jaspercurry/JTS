@@ -57,7 +57,6 @@ def _mock_subprocess(stdout: bytes = b"", returncode: int = 0):
     return fake
 
 
-@pytest.mark.asyncio
 async def test_active_renderers_all_inactive(renderer):
     # No librespot state file present, busctl empty for AirPlay,
     # bluealsa-cli has no PCM.
@@ -75,7 +74,6 @@ async def test_active_renderers_all_inactive(renderer):
     }
 
 
-@pytest.mark.asyncio
 async def test_active_renderers_reports_fanin_usb_activity(renderer):
     with (
         patch("asyncio.create_subprocess_exec", new=_mock_subprocess(stdout=b"")),
@@ -86,7 +84,6 @@ async def test_active_renderers_reports_fanin_usb_activity(renderer):
     assert result["usbsinkactive"] is True
 
 
-@pytest.mark.asyncio
 async def test_selected_source_reads_manual_mux_status(renderer):
     reader = MagicMock()
     reader.readline = AsyncMock(
@@ -105,7 +102,6 @@ async def test_selected_source_reads_manual_mux_status(renderer):
         assert await renderer.selected_source() == "bluetooth"
 
 
-@pytest.mark.asyncio
 async def test_selected_source_reads_auto_winner(renderer):
     reader = MagicMock()
     reader.readline = AsyncMock(
@@ -124,7 +120,6 @@ async def test_selected_source_reads_auto_winner(renderer):
         assert await renderer.selected_source() == "airplay"
 
 
-@pytest.mark.asyncio
 async def test_active_renderers_spotify_playing(renderer):
     _write_librespot_state(renderer, {
         "playing": True, "paused": False, "stopped": False,
@@ -140,7 +135,6 @@ async def test_active_renderers_spotify_playing(renderer):
     assert result["btactive"] is False
 
 
-@pytest.mark.asyncio
 async def test_active_renderers_bluetooth_playing(renderer):
     fake_pcm = b"/org/bluealsa/hci0/dev_AA_BB_CC_DD_EE_FF/a2dpsnk/source\n"
     with patch(
@@ -152,7 +146,6 @@ async def test_active_renderers_bluetooth_playing(renderer):
     assert result["spotactive"] is False
 
 
-@pytest.mark.asyncio
 async def test_active_renderers_resilient_to_missing_state_file(renderer):
     """If librespot state file is absent (daemon not started yet, or
     session never connected), the spotify probe returns False rather
@@ -172,7 +165,6 @@ async def test_active_renderers_resilient_to_missing_state_file(renderer):
 # RendererClient.get_currentsong — cascade by active source
 # ----------------------------------------------------------------------
 
-@pytest.mark.asyncio
 async def test_currentsong_spotify_returns_uri(renderer):
     """librespot's --onevent only gives us URI/track_id in the state
     file — title/artist resolution requires a Spotify Web API call,
@@ -190,7 +182,6 @@ async def test_currentsong_spotify_returns_uri(renderer):
     assert song["uri"] == "spotify:track:6IiSsjuKiOIbOCSv10SqPn"
 
 
-@pytest.mark.asyncio
 async def test_currentsong_returns_empty_when_no_source(renderer):
     """When no Spotify, AirPlay, or BT is active, currentsong returns
     {} — the three real renderers are the only sources we introspect."""
@@ -208,7 +199,6 @@ async def test_currentsong_returns_empty_when_no_source(renderer):
 # pause_airplay — MPRIS Pause on shairport-sync
 # ----------------------------------------------------------------------
 
-@pytest.mark.asyncio
 async def test_pause_airplay_calls_mpris_pause(renderer):
     """Verify pause_airplay() invokes busctl with the Pause method on
     shairport-sync's MPRIS interface. We capture args by wrapping
@@ -264,7 +254,6 @@ def test_parse_mpris_metadata_empty_input():
 # Edge cases — make sure failure modes don't crash the cascade
 # ----------------------------------------------------------------------
 
-@pytest.mark.asyncio
 async def test_active_renderers_when_busctl_missing(renderer):
     """If busctl can't be found (FileNotFoundError), the airplay probe
     must return False rather than propagating — same fail-soft contract
@@ -281,7 +270,6 @@ async def test_active_renderers_when_busctl_missing(renderer):
     assert result["btactive"] is False
 
 
-@pytest.mark.asyncio
 async def test_currentsong_airplay_returns_metadata(renderer):
     """When AirPlay is the active source and shairport-sync's MPRIS
     has metadata, currentsong should populate title/album/artist

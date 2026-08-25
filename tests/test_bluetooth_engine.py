@@ -262,7 +262,6 @@ def _shared_bus_engine(
     return engine, bus, reasons
 
 
-@pytest.mark.asyncio
 async def test_pair_refreshes_accessory_profiles_before_ready_event():
     reasons: list[str] = []
     engine = _engine(reasons)
@@ -279,7 +278,6 @@ async def test_pair_refreshes_accessory_profiles_before_ready_event():
     assert refresh_index < ready_index
 
 
-@pytest.mark.asyncio
 async def test_connect_refreshes_accessory_profiles_after_bluez_connect():
     reasons: list[str] = []
     engine = _engine(reasons)
@@ -290,7 +288,6 @@ async def test_connect_refreshes_accessory_profiles_after_bluez_connect():
     assert reasons == ["bluetooth-connect"]
 
 
-@pytest.mark.asyncio
 async def test_forget_refreshes_accessory_profiles_after_pair_record_removed(
     monkeypatch,
     caplog,
@@ -313,7 +310,6 @@ async def test_forget_refreshes_accessory_profiles_after_pair_record_removed(
     assert "ok=true" in caplog.text
 
 
-@pytest.mark.asyncio
 async def test_scan_natural_expiry_stops_bluez_and_clears_task_identity():
     adapter = _FakeAdapter()
     engine = _scan_engine(adapter)
@@ -329,7 +325,6 @@ async def test_scan_natural_expiry_stops_bluez_and_clears_task_identity():
     assert engine._scan_task is None
 
 
-@pytest.mark.asyncio
 async def test_scan_start_before_engine_start_creates_no_timer():
     engine = BluetoothEngine()
 
@@ -338,7 +333,6 @@ async def test_scan_start_before_engine_start_creates_no_timer():
     assert engine._scan_task is None
 
 
-@pytest.mark.asyncio
 async def test_scan_manual_stop_cancels_expiry_and_stops_bluez():
     adapter = _FakeAdapter()
     engine = _scan_engine(adapter)
@@ -355,7 +349,6 @@ async def test_scan_manual_stop_cancels_expiry_and_stops_bluez():
     assert engine._scan_task is None
 
 
-@pytest.mark.asyncio
 async def test_scan_refresh_replaces_timer_without_stacking_stop_calls():
     adapter = _FakeAdapter(block_stop=True)
     engine = _scan_engine(adapter)
@@ -381,7 +374,6 @@ async def test_scan_refresh_replaces_timer_without_stacking_stop_calls():
     assert engine._scan_task is None
 
 
-@pytest.mark.asyncio
 async def test_failed_scan_refresh_preserves_prior_timer_and_deadline():
     adapter = _FakeAdapter()
     engine = _scan_engine(adapter)
@@ -402,7 +394,6 @@ async def test_failed_scan_refresh_preserves_prior_timer_and_deadline():
     assert engine._scan_task is None
 
 
-@pytest.mark.asyncio
 async def test_scan_refresh_wins_exact_expiry_race_and_remains_discovering():
     adapter = _FakeAdapter(block_stop=True)
     engine = _scan_engine(adapter)
@@ -430,7 +421,6 @@ async def test_scan_refresh_wins_exact_expiry_race_and_remains_discovering():
     await engine.stop_discovery()
 
 
-@pytest.mark.asyncio
 async def test_scan_start_introspection_timeout_creates_no_timer(monkeypatch):
     adapter = _FakeAdapter()
     bus = _FakeScanBus(adapter, block_introspect=True)
@@ -453,7 +443,6 @@ async def test_scan_start_introspection_timeout_creates_no_timer(monkeypatch):
     assert adapter.discovering is False
 
 
-@pytest.mark.asyncio
 async def test_scan_start_bluez_timeout_releases_lock_for_retry(monkeypatch):
     adapter = _FakeAdapter(block_start=True)
     engine = _scan_engine(adapter)
@@ -472,7 +461,6 @@ async def test_scan_start_bluez_timeout_releases_lock_for_retry(monkeypatch):
     assert adapter.discovering is False
 
 
-@pytest.mark.asyncio
 async def test_scan_start_timeout_stops_discovery_accepted_before_reply(monkeypatch):
     adapter = _FakeAdapter(
         block_start=True,
@@ -493,7 +481,6 @@ async def test_scan_start_timeout_stops_discovery_accepted_before_reply(monkeypa
     assert bus is not None and bus.disconnected is False
 
 
-@pytest.mark.asyncio
 async def test_scan_start_timeout_releases_bus_when_cleanup_times_out(
     monkeypatch,
     caplog,
@@ -522,7 +509,6 @@ async def test_scan_start_timeout_releases_bus_when_cleanup_times_out(
     assert "BlueZ StopDiscovery timed out after 0.01s" in caplog.text
 
 
-@pytest.mark.asyncio
 async def test_pair_recovers_shared_bus_after_auto_stop_failure(monkeypatch):
     first_adapter = _FakeAdapter(block_stop=True)
     engine, first_bus, reasons = _shared_bus_engine(first_adapter)
@@ -557,7 +543,6 @@ async def test_pair_recovers_shared_bus_after_auto_stop_failure(monkeypatch):
     assert reasons == ["bluetooth-pair"]
 
 
-@pytest.mark.asyncio
 async def test_connect_recovers_shared_bus_after_scan_start_cleanup_failure(
     monkeypatch,
 ):
@@ -588,7 +573,6 @@ async def test_connect_recovers_shared_bus_after_scan_start_cleanup_failure(
     assert reasons == ["bluetooth-connect"]
 
 
-@pytest.mark.asyncio
 async def test_concurrent_device_operations_share_one_recovered_bus(monkeypatch):
     replacement_bus = _FakeScanBus(_FakeAdapter(), device=_wiim_device())
 
@@ -646,7 +630,6 @@ async def test_concurrent_device_operations_share_one_recovered_bus(monkeypatch)
     assert connect_result == (True, "connected")
 
 
-@pytest.mark.asyncio
 async def test_scan_request_recovers_bus_after_fail_closed_release(monkeypatch):
     first_adapter = _FakeAdapter(
         block_start=True,
@@ -681,7 +664,6 @@ async def test_scan_request_recovers_bus_after_fail_closed_release(monkeypatch):
     assert replacement_adapter.discovering is False
 
 
-@pytest.mark.asyncio
 async def test_scan_auto_stop_timeout_logs_and_clears_timer(monkeypatch, caplog):
     adapter = _FakeAdapter(block_stop=True)
     engine = _scan_engine(adapter)
@@ -704,7 +686,6 @@ async def test_scan_auto_stop_timeout_logs_and_clears_timer(monkeypatch, caplog)
     assert "BlueZ StopDiscovery timed out after 0.01s" in caplog.text
 
 
-@pytest.mark.asyncio
 async def test_scan_manual_stop_timeout_preserves_deadline_and_propagates(
     monkeypatch,
 ):
@@ -727,7 +708,6 @@ async def test_scan_manual_stop_timeout_preserves_deadline_and_propagates(
     assert engine._scan_task is None
 
 
-@pytest.mark.asyncio
 async def test_scan_manual_stop_failure_without_deadline_releases_owner_bus(
     monkeypatch,
 ):
@@ -747,7 +727,6 @@ async def test_scan_manual_stop_failure_without_deadline_releases_owner_bus(
     assert adapter.discovering is False
 
 
-@pytest.mark.asyncio
 async def test_scan_recovery_failure_is_explicit_not_successful_noop(monkeypatch):
     class _BrokenConnector:
         async def connect(self):
@@ -770,7 +749,6 @@ async def test_scan_recovery_failure_is_explicit_not_successful_noop(monkeypatch
     assert engine._scan_task is None
 
 
-@pytest.mark.asyncio
 async def test_device_operations_surface_shared_bus_recovery_failure(
     monkeypatch,
     caplog,
@@ -819,7 +797,6 @@ async def test_device_operations_surface_shared_bus_recovery_failure(
     assert caplog.text.count("event=bluetooth.bus_recovery_failed") == 3
 
 
-@pytest.mark.asyncio
 async def test_scan_bus_recovery_has_a_fixed_timeout(monkeypatch):
     class _BlockingConnector:
         async def connect(self):
@@ -843,7 +820,6 @@ async def test_scan_bus_recovery_has_a_fixed_timeout(monkeypatch):
     assert engine._scan_task is None
 
 
-@pytest.mark.asyncio
 async def test_engine_stop_cancels_scan_and_disconnects_owner_bus():
     adapter = _FakeAdapter()
     engine = _scan_engine(adapter)
@@ -864,7 +840,6 @@ async def test_engine_stop_cancels_scan_and_disconnects_owner_bus():
     assert adapter.discovering is False
 
 
-@pytest.mark.asyncio
 async def test_engine_stop_during_start_does_not_resurrect_scan_or_timer():
     adapter = _FakeAdapter(block_start=True)
     engine = _scan_engine(adapter)
@@ -894,7 +869,6 @@ async def test_engine_stop_during_start_does_not_resurrect_scan_or_timer():
     assert observer.stopped is True
 
 
-@pytest.mark.asyncio
 async def test_scan_auto_stop_logs_unexpected_bluez_failure(caplog):
     adapter = _FakeAdapter(
         stop_error=DBusError("org.bluez.Error.Failed", "controller I/O failure")
@@ -915,7 +889,6 @@ async def test_scan_auto_stop_logs_unexpected_bluez_failure(caplog):
     assert "controller I/O failure" in caplog.text
 
 
-@pytest.mark.asyncio
 async def test_scan_start_accepts_only_exact_in_progress_error():
     adapter = _FakeAdapter(
         start_error=DBusError("org.bluez.Error.InProgress", "busy"),
@@ -928,7 +901,6 @@ async def test_scan_start_accepts_only_exact_in_progress_error():
     await expiry
 
 
-@pytest.mark.asyncio
 @pytest.mark.parametrize(
     ("error_type", "detail"),
     [
@@ -949,7 +921,6 @@ async def test_scan_start_rejects_in_progress_message_on_other_error_type(
     assert engine._scan_task is None
 
 
-@pytest.mark.asyncio
 @pytest.mark.parametrize(
     ("error_type", "detail"),
     [
@@ -970,7 +941,6 @@ async def test_scan_stop_accepts_only_proven_already_idle_errors(
     assert adapter.stop_calls == 1
 
 
-@pytest.mark.asyncio
 @pytest.mark.parametrize(
     ("error_type", "detail"),
     [

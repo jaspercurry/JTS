@@ -59,7 +59,6 @@ class _FakeTurn:
         self.sends.append(data)
 
 
-@pytest.mark.asyncio
 async def test_drain_sends_all_frames_in_fifo_order():
     """Core contract: frames sent to the turn in the exact order
     they were appended. A reordered drain would garble the user's
@@ -78,7 +77,6 @@ async def test_drain_sends_all_frames_in_fifo_order():
     assert turn.sends == [f"frame-{i}".encode() for i in range(10)]
 
 
-@pytest.mark.asyncio
 async def test_drain_picks_up_concurrent_appends():
     """The mic loop continues to append frames during the drain.
     The sync `while buffer:` check after each `await send_audio`
@@ -108,7 +106,6 @@ async def test_drain_picks_up_concurrent_appends():
     assert turn.sends == [f"frame-{i}".encode() for i in range(10)]
 
 
-@pytest.mark.asyncio
 async def test_drain_stops_at_first_send_audio_failure():
     """If `send_audio` raises (turn was torn down mid-drain, network
     blip), the helper must propagate so the caller can log + clear.
@@ -130,7 +127,6 @@ async def test_drain_stops_at_first_send_audio_failure():
     assert len(buf) == 2
 
 
-@pytest.mark.asyncio
 async def test_drain_on_empty_buffer_is_noop():
     """The fast-path: a wake event that opens a turn instantly
     (warm session, no context reset) leaves the acquire_buffer
@@ -146,7 +142,6 @@ async def test_drain_on_empty_buffer_is_noop():
     assert turn.sends == []
 
 
-@pytest.mark.asyncio
 async def test_drain_handles_bounded_deque():
     """`WakeLoop._acquire_buffer` is a bounded deque
     (`maxlen=ACQUIRE_BUFFER_MAX_FRAMES`). On a wedged connection
@@ -165,7 +160,6 @@ async def test_drain_handles_bounded_deque():
     assert turn.sends == [b"frame-4", b"frame-5", b"frame-6"]
 
 
-@pytest.mark.asyncio
 async def test_drain_with_vad_flags_sustained_speech():
     """Fast-talker compensation: a run of ≥``min_consecutive_speech``
     consecutive frames above the speech threshold should set
@@ -194,7 +188,6 @@ async def test_drain_with_vad_flags_sustained_speech():
     assert speech_seen is True
 
 
-@pytest.mark.asyncio
 async def test_drain_with_vad_below_threshold_stays_unarmed():
     """Acquire window with no speech (user wake-fired but walked
     away, or wake fired on background TV). Caller should NOT pre-arm
@@ -214,7 +207,6 @@ async def test_drain_with_vad_below_threshold_stays_unarmed():
     assert speech_seen is False
 
 
-@pytest.mark.asyncio
 async def test_drain_with_vad_requires_consecutive_frames():
     """A single high-score frame (e.g. a transient click registered
     as speech by Silero) must NOT pre-arm. Only sustained
@@ -239,7 +231,6 @@ async def test_drain_with_vad_requires_consecutive_frames():
     assert speech_seen is False
 
 
-@pytest.mark.asyncio
 async def test_drain_with_peak_min_rejects_wake_tail_residual():
     """Regression for the 2026-05-23 broken-event bug.
 
@@ -277,7 +268,6 @@ async def test_drain_with_peak_min_rejects_wake_tail_residual():
     assert speech_seen is False  # peak (0.52) < peak_min (0.60)
 
 
-@pytest.mark.asyncio
 async def test_drain_with_peak_min_passes_real_speech():
     """Counterpart to the wake-tail rejection test: real user
     speech reliably peaks well above 0.6 within the first few
@@ -306,7 +296,6 @@ async def test_drain_with_peak_min_passes_real_speech():
     assert speech_seen is True
 
 
-@pytest.mark.asyncio
 async def test_drain_with_peak_min_resets_across_silence_gap():
     """Peak tracker must reset on a sub-threshold frame, not
     accumulate across silence gaps. Otherwise a sequence like
@@ -343,7 +332,6 @@ async def test_drain_with_peak_min_resets_across_silence_gap():
     assert speech_seen is False  # peak in 2nd run (0.30) < peak_min
 
 
-@pytest.mark.asyncio
 async def test_drain_peak_min_default_is_off():
     """``peak_min`` defaults to 0.0 (off) — backward-compatible.
     Existing tests using the duration-only gate continue to pass."""
@@ -366,7 +354,6 @@ async def test_drain_peak_min_default_is_off():
     assert speech_seen is True
 
 
-@pytest.mark.asyncio
 async def test_drain_with_two_consecutive_speech_frames_stays_unarmed():
     """Regression: 2 consecutive speech frames (~160 ms) must NOT
     arm. That length is the natural signature of the wake-word

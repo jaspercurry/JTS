@@ -192,7 +192,6 @@ def _assert_boundary_log(
         assert any(f"failure_code={failure_code.value}" in row for row in expected)
 
 
-@pytest.mark.asyncio
 async def test_exact_stimulus_fresh_issuer_readmission_and_readback_precede_playback(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
@@ -261,7 +260,6 @@ async def test_exact_stimulus_fresh_issuer_readmission_and_readback_precede_play
     _assert_boundary_log(caplog, result="completed")
 
 
-@pytest.mark.asyncio
 async def test_fresh_refusal_never_calls_playback(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
@@ -313,7 +311,6 @@ async def test_fresh_refusal_never_calls_playback(
     _assert_boundary_log(caplog, result="refused")
 
 
-@pytest.mark.asyncio
 async def test_stale_playback_protection_proof_never_calls_playback(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
@@ -352,7 +349,6 @@ async def test_stale_playback_protection_proof_never_calls_playback(
     assert played is False
 
 
-@pytest.mark.asyncio
 async def test_changed_content_fails_before_issuer_or_persistence(
     tmp_path: Path,
     caplog: pytest.LogCaptureFixture,
@@ -389,7 +385,6 @@ async def test_changed_content_fails_before_issuer_or_persistence(
     )
 
 
-@pytest.mark.asyncio
 @pytest.mark.parametrize(
     ("alsa_device", "timeout_s"),
     [("", 12), ("measurement_lane", 0)],
@@ -430,7 +425,6 @@ async def test_invalid_playback_control_fails_before_issuer_or_persistence(
     )
 
 
-@pytest.mark.asyncio
 @pytest.mark.parametrize("failure", ["generation", "plan"])
 async def test_wrong_generation_or_plan_binding_fails_before_issuer(
     tmp_path: Path,
@@ -472,7 +466,6 @@ async def test_wrong_generation_or_plan_binding_fails_before_issuer(
     assert issuer_calls == 0
 
 
-@pytest.mark.asyncio
 async def test_malformed_or_wrong_duration_wav_fails_before_issuer(
     tmp_path: Path,
 ):
@@ -514,7 +507,6 @@ async def test_malformed_or_wrong_duration_wav_fails_before_issuer(
     assert duration_error.value.code is GeneratedStimulusFailureCode.DURATION_MISMATCH
 
 
-@pytest.mark.asyncio
 async def test_declared_oversized_wav_fails_before_open_or_issuer(tmp_path: Path):
     authority, limits, generation = _generation(tmp_path)
     _path, stimulus = _wav(tmp_path, generation)
@@ -543,7 +535,6 @@ async def test_declared_oversized_wav_fails_before_open_or_issuer(tmp_path: Path
     assert issuer_calls == 0
 
 
-@pytest.mark.asyncio
 async def test_symlink_artifact_is_refused_without_following_it(tmp_path: Path):
     authority, limits, generation = _generation(tmp_path)
     target, _target_stimulus = _wav(tmp_path, generation)
@@ -567,7 +558,6 @@ async def test_symlink_artifact_is_refused_without_following_it(tmp_path: Path):
     assert caught.value.code is WavSourceFailureCode.UNSAFE_PATH
 
 
-@pytest.mark.asyncio
 async def test_failed_generation_verification_prevents_issuer(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
@@ -609,7 +599,6 @@ async def test_failed_generation_verification_prevents_issuer(
     )
 
 
-@pytest.mark.asyncio
 async def test_final_artifact_readback_failure_prevents_playback(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
@@ -643,7 +632,6 @@ async def test_final_artifact_readback_failure_prevents_playback(
     assert played is False
 
 
-@pytest.mark.asyncio
 async def test_persistence_failure_never_calls_playback_and_is_correlated(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
@@ -687,7 +675,6 @@ async def test_persistence_failure_never_calls_playback_and_is_correlated(
     )
 
 
-@pytest.mark.asyncio
 async def test_repeated_cancellation_drains_persistence_and_requires_new_generation(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
@@ -752,7 +739,6 @@ async def test_repeated_cancellation_drains_persistence_and_requires_new_generat
     )
 
 
-@pytest.mark.asyncio
 async def test_cancellation_during_final_wav_recheck_is_typed_before_audio(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
@@ -816,7 +802,6 @@ async def test_cancellation_during_final_wav_recheck_is_typed_before_audio(
     )
 
 
-@pytest.mark.asyncio
 async def test_persistence_failure_wins_over_simultaneous_cancellation(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
@@ -856,7 +841,6 @@ async def test_persistence_failure_wins_over_simultaneous_cancellation(
     )
 
 
-@pytest.mark.asyncio
 async def test_malformed_fresh_issuer_result_fails_closed_and_is_correlated(
     tmp_path: Path,
     caplog: pytest.LogCaptureFixture,
@@ -885,7 +869,6 @@ async def test_malformed_fresh_issuer_result_fails_closed_and_is_correlated(
     )
 
 
-@pytest.mark.asyncio
 async def test_snapshot_close_failure_has_one_typed_failed_terminal_event(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
@@ -946,7 +929,6 @@ async def test_snapshot_close_failure_has_one_typed_failed_terminal_event(
     assert "audio_may_have_started=true" in terminal[0]
 
 
-@pytest.mark.asyncio
 async def test_playback_cancellation_preserves_admission_when_close_fails(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
@@ -1007,7 +989,6 @@ async def test_playback_cancellation_preserves_admission_when_close_fails(
     )
 
 
-@pytest.mark.asyncio
 async def test_playback_failure_and_cancellation_have_correlated_terminal_events(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
@@ -1096,7 +1077,6 @@ async def test_playback_failure_and_cancellation_have_correlated_terminal_events
     )
 
 
-@pytest.mark.asyncio
 @pytest.mark.parametrize(
     ("failure", "audio_may_have_started"),
     [

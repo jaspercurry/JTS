@@ -64,7 +64,6 @@ def _ducker_with_dynamic_target(
     return Ducker(camilla, duck_db, target_db_provider=provider)
 
 
-@pytest.mark.asyncio
 async def test_duck_lowers_camilla_by_duck_db():
     cam = _FakeCamilla(db=-15.0)
     d = _ducker(cam, duck_db=-25.0, target=-15.0)
@@ -73,7 +72,6 @@ async def test_duck_lowers_camilla_by_duck_db():
     assert cam.set_calls == [-40.0]
 
 
-@pytest.mark.asyncio
 async def test_restore_writes_target_db_absolutely():
     cam = _FakeCamilla(db=-15.0)
     d = _ducker(cam, duck_db=-25.0, target=-15.0)
@@ -84,7 +82,6 @@ async def test_restore_writes_target_db_absolutely():
     assert cam.set_calls == [-40.0, -15.0]
 
 
-@pytest.mark.asyncio
 async def test_restore_uses_current_target_not_pre_duck_value():
     """Regression for the remote-during-duck overshoot. If
     `listening_level` changes mid-session, restore lands at the new
@@ -102,7 +99,6 @@ async def test_restore_uses_current_target_not_pre_duck_value():
     assert cam._db == -27.0
 
 
-@pytest.mark.asyncio
 async def test_restore_after_external_camilla_write_still_uses_target():
     """Even if some other writer touched camilla during the duck
     (the bug case where _set_camilla wasn't gated), restore uses the
@@ -116,7 +112,6 @@ async def test_restore_after_external_camilla_write_still_uses_target():
     assert cam._db == -15.0
 
 
-@pytest.mark.asyncio
 async def test_double_duck_is_no_op():
     cam = _FakeCamilla(db=-15.0)
     d = _ducker(cam, duck_db=-25.0, target=-15.0)
@@ -125,7 +120,6 @@ async def test_double_duck_is_no_op():
     assert cam.set_calls == [-40.0]
 
 
-@pytest.mark.asyncio
 async def test_restore_without_duck_is_no_op():
     cam = _FakeCamilla(db=-15.0)
     d = _ducker(cam, duck_db=-25.0, target=-15.0)
@@ -133,7 +127,6 @@ async def test_restore_without_duck_is_no_op():
     assert cam.set_calls == []
 
 
-@pytest.mark.asyncio
 async def test_is_ducked_property_tracks_duck_state():
     """`is_ducked` is the public signal that jasper-control's
     VolumeCoordinator consults (via UDS session_status) to decide
@@ -153,7 +146,6 @@ def test_camilla_ducker_declares_exclusive_volume_ownership():
     assert _ducker(cam, duck_db=-25.0, target=-15.0).locks_camilla_volume is True
 
 
-@pytest.mark.asyncio
 async def test_is_ducked_stays_false_when_duck_skipped_camilla_down():
     """Camilla restart blip during the duck attempt — the write
     didn't land, so we mustn't claim we're ducked (jasper-control
@@ -169,7 +161,6 @@ async def test_is_ducked_stays_false_when_duck_skipped_camilla_down():
 # ---------- camilla unavailable / restart-blip handling --------------------
 
 
-@pytest.mark.asyncio
 async def test_duck_when_camilla_unreachable_does_not_raise():
     """A camilla restart blip during a wake event must not propagate
     into the voice loop. duck() returns silently."""
@@ -180,7 +171,6 @@ async def test_duck_when_camilla_unreachable_does_not_raise():
     assert cam.set_calls == []
 
 
-@pytest.mark.asyncio
 async def test_duck_when_camilla_unreachable_does_not_latch_ducked():
     """If duck() couldn't actually write, _ducked must stay False so the
     next duck() retries when camilla recovers, and restore() short-
@@ -196,7 +186,6 @@ async def test_duck_when_camilla_unreachable_does_not_latch_ducked():
     assert cam.set_calls == []
 
 
-@pytest.mark.asyncio
 async def test_camilla_recovers_voice_resumes_ducking():
     """After a camilla outage during which duck() was a no-op, when
     camilla comes back the next duck()/restore() cycle works normally.
@@ -219,7 +208,6 @@ async def test_camilla_recovers_voice_resumes_ducking():
     assert cam.set_calls == [-40.0, -15.0]
 
 
-@pytest.mark.asyncio
 async def test_restore_when_camilla_drops_mid_session_clears_latch():
     """duck() succeeded, then camilla went down before restore() — the
     Ducker still resets _ducked=False so a future duck() doesn't see
@@ -237,7 +225,6 @@ async def test_restore_when_camilla_drops_mid_session_clears_latch():
     assert cam.set_calls == [-40.0, -65.0]
 
 
-@pytest.mark.asyncio
 async def test_cue_plays_when_camilla_unreachable():
     """The single most important silent-failure regression guard:
     when a wake event hits a wake-blocking condition (spend cap,
@@ -290,7 +277,6 @@ async def test_cue_plays_when_camilla_unreachable():
 # where the music lands post-cue).
 
 
-@pytest.mark.asyncio
 async def test_cueduck_restores_to_exact_pre_duck_value():
     """Core contract: enter snapshots, exit writes that exact value.
     No reference to any 'target provider' — what was, returns."""
@@ -300,7 +286,6 @@ async def test_cueduck_restores_to_exact_pre_duck_value():
     assert cam._db == -14.0      # exact restore
 
 
-@pytest.mark.asyncio
 async def test_cueduck_restore_is_immune_to_coordinator_drift():
     """Regression guard for the bug that motivated CueDuck: if any
     other writer touches camilla during the duck window, the cue's
@@ -319,7 +304,6 @@ async def test_cueduck_restore_is_immune_to_coordinator_drift():
     assert cam._db == 0.0
 
 
-@pytest.mark.asyncio
 async def test_cueduck_drops_by_duck_db_additive():
     """Duck is additive (matches `Ducker.duck` so the perceived
     attenuation is identical between long-turn and brief-cue paths
@@ -329,7 +313,6 @@ async def test_cueduck_drops_by_duck_db_additive():
         assert cam._db == -31.0
 
 
-@pytest.mark.asyncio
 async def test_cueduck_restores_even_if_speak_raises():
     """The cue body running inside `async with` may raise (network
     blip, TTS empty response after retries, etc.). `__aexit__` must
@@ -342,7 +325,6 @@ async def test_cueduck_restores_even_if_speak_raises():
     assert cam._db == -10.0
 
 
-@pytest.mark.asyncio
 async def test_cueduck_skips_duck_when_camilla_unavailable():
     """Camilla restarting at cue time → snapshot read returns None.
     `__aenter__` skips the duck write (nothing to undo); `__aexit__`
@@ -355,7 +337,6 @@ async def test_cueduck_skips_duck_when_camilla_unavailable():
     assert cam.set_calls == []
 
 
-@pytest.mark.asyncio
 async def test_cueduck_writes_no_unnecessary_volume_writes():
     """Sanity: a CueDuck round-trip writes exactly two values to
     camilla (the duck delta, then the snapshot back). No spurious

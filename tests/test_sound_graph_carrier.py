@@ -1142,7 +1142,6 @@ def test_bass_extension_recompose_refuses_program_overlay_reset(
     assert exc.value.reason_code == "bass_extension_recompose_unavailable"
 
 
-@pytest.mark.asyncio
 @pytest.mark.parametrize(
     ("broken_source", "broken_value"),
     [

@@ -11,7 +11,6 @@ from jasper.correction import playback
 from ._async_wait import wait_signalled
 
 
-@pytest.mark.asyncio
 async def test_cancelled_sweep_kills_and_reaps_aplay(monkeypatch, tmp_path):
     wav_path = tmp_path / "sweep.wav"
     wav_path.write_bytes(b"RIFF")
@@ -50,7 +49,6 @@ async def test_cancelled_sweep_kills_and_reaps_aplay(monkeypatch, tmp_path):
     assert process.waited is True
 
 
-@pytest.mark.asyncio
 async def test_repeated_cancellation_still_reaps_aplay(monkeypatch, tmp_path):
     wav_path = tmp_path / "sweep.wav"
     wav_path.write_bytes(b"RIFF")

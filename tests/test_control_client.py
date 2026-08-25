@@ -126,7 +126,6 @@ def test_transport_failure_raises_control_error():
         client.get("/state", base_url="http://127.0.0.1:1", timeout=0.2)
 
 
-@pytest.mark.asyncio
 async def test_async_client_adjust_and_set_volume(server):
     c = client.AsyncControlClient(server)
     r1 = await c.adjust_volume(5)
@@ -143,14 +142,12 @@ async def test_async_client_adjust_and_set_volume(server):
     }
 
 
-@pytest.mark.asyncio
 async def test_async_client_raises_control_error_when_down():
     c = client.AsyncControlClient("http://127.0.0.1:1", timeout=0.2)
     with pytest.raises(client.ControlError):
         await c.get("/state")
 
 
-@pytest.mark.asyncio
 async def test_async_client_post_threads_headers_to_request(monkeypatch):
     """AsyncControlClient.post(headers=...) forwards the headers to _request —
     the seam the autonomous re-grouping path (Phase D) uses to attach the
@@ -175,7 +172,6 @@ async def test_async_client_post_threads_headers_to_request(monkeypatch):
     assert seen["headers"] == {"X-JTS-Household": "secret"}
 
 
-@pytest.mark.asyncio
 async def test_async_client_headers_default_none_is_backward_compatible(monkeypatch):
     """headers defaults to None, so the existing positional callers (bridge.py
     binds .request as a callable) keep working unchanged."""

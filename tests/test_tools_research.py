@@ -6,7 +6,6 @@ from __future__ import annotations
 
 import time
 
-import pytest
 
 from jasper.conversation_history import CAPTURE_ALIAS_ENV
 from jasper.research import DONE, RUNNING, ResearchJob, ResearchStartResult
@@ -76,7 +75,6 @@ class _DecisionScheduler:
         self.read.append(job_id)
 
 
-@pytest.mark.asyncio
 async def test_research_tool_accepts_and_returns_fast_confirm():
     sched = _Scheduler(ResearchStartResult(True, _job(), "unused"))
     research = _by_name(make_research_tools(sched), "research")
@@ -91,7 +89,6 @@ async def test_research_tool_accepts_and_returns_fast_confirm():
     assert sched.queries == ["research induction ranges"]
 
 
-@pytest.mark.asyncio
 async def test_research_tool_returns_speakable_decline_when_scheduler_declines():
     sched = _Scheduler(
         ResearchStartResult(
@@ -113,7 +110,6 @@ async def test_research_tool_returns_speakable_decline_when_scheduler_declines()
     assert sched.queries == ["research another thing"]
 
 
-@pytest.mark.asyncio
 async def test_research_tool_blocks_before_submit_when_spend_cap_reached():
     sched = _Scheduler(ResearchStartResult(True, _job(), "unused"))
     research = _by_name(
@@ -129,7 +125,6 @@ async def test_research_tool_blocks_before_submit_when_spend_cap_reached():
     assert sched.queries == []
 
 
-@pytest.mark.asyncio
 async def test_read_research_result_yes_marks_read_and_records_delivery():
     job = _job(
         "read123",
@@ -161,7 +156,6 @@ async def test_read_research_result_yes_marks_read_and_records_delivery():
     assert recorded == [("read123", "Induction is fast and efficient.", "yes")]
 
 
-@pytest.mark.asyncio
 async def test_read_research_result_no_uses_chat_log_line_when_capture_enabled(
     monkeypatch,
 ):
@@ -191,7 +185,6 @@ async def test_read_research_result_no_uses_chat_log_line_when_capture_enabled(
     ]
 
 
-@pytest.mark.asyncio
 async def test_read_research_result_no_uses_saved_line_when_capture_disabled(
     monkeypatch,
 ):
@@ -227,7 +220,6 @@ def test_research_empty_result_text_single_source() -> None:
     )
 
 
-@pytest.mark.asyncio
 async def test_read_research_result_yes_uses_empty_result_constant_when_job_has_no_text():
     """When decision='yes' and job.result is empty/None, the tool must return
     RESEARCH_EMPTY_RESULT_TEXT — not a re-inlined copy of the same string.

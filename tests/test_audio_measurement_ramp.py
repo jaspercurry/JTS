@@ -499,7 +499,6 @@ def test_agc_slope_env_knobs_apply_and_fall_back(monkeypatch):
 # linearity empirically from the ramp's own staircase before trusting a lock.
 
 
-@pytest.mark.asyncio
 async def test_agc_attested_path_is_unaffected_by_slope_machinery():
     """Regression pin: an ordinary attested ChainModel run never sets
     agc_unattested/agc_verified, and agc_trusted collapses to the raw
@@ -534,7 +533,6 @@ def test_agc_explicit_attestation_wins_over_contradictory_unattested_flag():
     assert data.agc_frozen is True
 
 
-@pytest.mark.asyncio
 async def test_agc_unattested_linear_chain_is_verified_and_locks():
     cfg = MeasurementRamp(**FAST)
     chain = ChainModel(
@@ -558,7 +556,6 @@ async def test_agc_unattested_linear_chain_is_verified_and_locks():
     assert cfg.window_low_dbfs <= data.locked_main_volume_db + 10.0 <= cfg.window_high_dbfs
 
 
-@pytest.mark.asyncio
 async def test_agc_unattested_flat_chain_aborts_before_window_at_quiet_levels():
     # An AGC clawing back 80% of any commanded change: reported rms tracks
     # commanded volume at slope ~0.2, well under the 0.7 threshold. gain_db is
@@ -684,7 +681,6 @@ def test_ramp_agc_suspected_event_has_exactly_one_emitter():
     assert source.count('"ramp_agc_suspected"') == 1
 
 
-@pytest.mark.asyncio
 async def test_agc_suspected_terminal_logs_exactly_one_event(caplog):
     """Behavioral companion to the source-scan pin above: drive a real
     AGC-suspected terminal end to end and confirm exactly one
@@ -712,7 +708,6 @@ async def test_agc_suspected_terminal_logs_exactly_one_event(caplog):
     assert len(marginal) == 1
 
 
-@pytest.mark.asyncio
 async def test_agc_unattested_noisy_but_linear_chain_still_verifies():
     # The reviewer-flagged fragility case: a true-slope-1.0 chain with
     # realistic per-reading jitter. Over a mere ~1.5 dB of x-leverage (3
@@ -735,7 +730,6 @@ async def test_agc_unattested_noisy_but_linear_chain_still_verifies():
     assert data.agc_slope > cfg.agc_slope_threshold
 
 
-@pytest.mark.asyncio
 async def test_agc_unattested_insufficient_evidence_at_lock_fails_closed():
     # The chain crosses the pre-window in a SINGLE staircase step (a near-cap
     # original volume), so the slope check never sees the required span/steps
@@ -759,7 +753,6 @@ async def test_agc_unattested_insufficient_evidence_at_lock_fails_closed():
     assert chain.commanded[-1] == pytest.approx(-50.0)  # restored
 
 
-@pytest.mark.asyncio
 async def test_agc_unattested_steps_met_but_span_unmet_is_still_indeterminate():
     # Isolates the SPAN gate from the steps floor: gain 28.2 crosses the
     # pre-window on the second staircase step, and the settle jump lands at
@@ -784,7 +777,6 @@ async def test_agc_unattested_steps_met_but_span_unmet_is_still_indeterminate():
     assert chain.commanded[-1] == pytest.approx(-50.0)  # restored
 
 
-@pytest.mark.asyncio
 async def test_agc_unattested_indeterminate_bounded_low_fails_closed_to_maxed_out():
     # A driver capped early (a tweeter ramp shape, per the design brief): the
     # mic only clears the noise+margin trust threshold at the single
@@ -822,7 +814,6 @@ async def test_agc_unattested_indeterminate_bounded_low_fails_closed_to_maxed_ou
 # lock every one of them, with the implied mic level never above window_high.
 
 
-@pytest.mark.asyncio
 @pytest.mark.parametrize("phase", [0.05, 0.15, 0.25, 0.35, 0.45, 0.55, 0.65, 0.74])
 async def test_sparse_relay_cadence_locks(phase):
     clock = FakeClock()
@@ -842,7 +833,6 @@ async def test_sparse_relay_cadence_locks(phase):
     assert cfg.window_low_dbfs <= mic_at_lock <= cfg.window_high_dbfs
 
 
-@pytest.mark.asyncio
 @pytest.mark.parametrize("seed", range(6))
 async def test_sparse_jittered_cadence_locks(seed):
     clock = FakeClock()
@@ -864,7 +854,6 @@ async def test_sparse_jittered_cadence_locks(seed):
     assert cfg.window_low_dbfs <= mic_at_lock <= cfg.window_high_dbfs
 
 
-@pytest.mark.asyncio
 async def test_sparse_feed_no_ratchet_past_window_top():
     # The review's secondary blocker effect: the SETTLING→CLIMBING bounce
     # re-stepped the staircase ~2 dB PAST window_high. With the hold extension
@@ -878,7 +867,6 @@ async def test_sparse_feed_no_ratchet_past_window_top():
     assert max_implied_mic <= cfg.window_high_dbfs + 1e-6
 
 
-@pytest.mark.asyncio
 @pytest.mark.parametrize("transport_lag", [0.5, 1.0, 1.5])
 async def test_sparse_transport_lag_never_overshoots(transport_lag):
     # The latency machinery this design exists for, exercised at lag > 0
@@ -900,7 +888,6 @@ async def test_sparse_transport_lag_never_overshoots(transport_lag):
     assert cfg.window_low_dbfs <= mic_at_lock <= cfg.window_high_dbfs
 
 
-@pytest.mark.asyncio
 async def test_sparse_down_jump_locks_loud_amp():
     # gain +40: the mic is ABOVE the window even at the -50 quiet floor. The
     # settle jump must go DOWN and lock in-window; after the freeze the
@@ -924,7 +911,6 @@ async def test_sparse_down_jump_locks_loud_amp():
     assert all(b <= a + 1e-9 for a, b in zip(tail, tail[1:]))
 
 
-@pytest.mark.asyncio
 async def test_sparse_confirming_accepts_explicit_bounded_low_lock():
     # gain -2 with cap -24: the jump target clamps at the cap and the confirm
     # stream reads consistently below the window. Stable trusted post-latency
@@ -956,7 +942,6 @@ async def test_sparse_confirming_accepts_explicit_bounded_low_lock():
         assert vol <= cap + 1e-9
 
 
-@pytest.mark.asyncio
 async def test_sparse_quiet_amp_reaches_bounded_lock_not_timeout():
     # The review's SF1.0 repro: gain=-14/original=-14 (cap -8) died at the old
     # fixed 25 s timeout mid-climb. The derived timeout must let it reach the
@@ -976,7 +961,6 @@ async def test_sparse_quiet_amp_reaches_bounded_lock_not_timeout():
     assert data.error is None or "timeout" not in data.error
 
 
-@pytest.mark.asyncio
 async def test_sparse_corrective_rejump_recovers_gain_shift():
     # The amp knob moves +6 dB right as the first jump lands: CONFIRMING sees a
     # consistent out-of-window stream, recomputes the gain map, and takes the
@@ -1000,7 +984,6 @@ async def test_sparse_corrective_rejump_recovers_gain_shift():
 # --- SAFETY: every commanded volume <= dynamic cap AND <= 0 dB ----------------
 
 
-@pytest.mark.asyncio
 @pytest.mark.parametrize(
     "gain_db,original",
     [
@@ -1031,7 +1014,6 @@ async def test_no_commanded_volume_exceeds_caps(gain_db, original):
         )
 
 
-@pytest.mark.asyncio
 async def test_hard_ceiling_belt_holds_in_loosest_config():
     # Pin the 0 dB belt itself (review nit): the loosest constructible cap
     # (cap_ceil_db=0, huge bump) must still never command above 0 dB.
@@ -1052,7 +1034,6 @@ def test_level_sample_from_dict_rejects_non_finite():
         LevelSample.from_dict({"seq": 1, "rms_dbfs": -20.0, "peak_dbfs": float("inf")})
 
 
-@pytest.mark.asyncio
 async def test_nan_poisoned_batches_never_reach_the_setter():
     # Every third sample is NaN (a hostile relay post): the ramp must still
     # lock on the finite samples, and no commanded volume is ever non-finite.
@@ -1065,7 +1046,6 @@ async def test_nan_poisoned_batches_never_reach_the_setter():
     assert data.gain_map_db is not None and math.isfinite(data.gain_map_db)
 
 
-@pytest.mark.asyncio
 async def test_non_finite_noise_floor_is_treated_as_unknown():
     cfg = MeasurementRamp(**FAST)
     chain = ChainModel(gain_db=10.0, start_vol=-30.0)
@@ -1090,7 +1070,6 @@ async def test_non_finite_noise_floor_is_treated_as_unknown():
     assert data.state == RampState.LOCKED
 
 
-@pytest.mark.asyncio
 async def test_non_finite_original_errors_before_any_volume_change():
     cfg = MeasurementRamp(**FAST)
     chain = ChainModel(gain_db=2.0, start_vol=-30.0)
@@ -1119,7 +1098,6 @@ async def test_non_finite_original_errors_before_any_volume_change():
 # --- SAFETY: clip aborts immediately ------------------------------------------
 
 
-@pytest.mark.asyncio
 async def test_clip_aborts_and_restores():
     cfg = MeasurementRamp(**FAST)
     # Clip fires as soon as the ramp climbs above -35 dB.
@@ -1135,7 +1113,6 @@ async def test_clip_aborts_and_restores():
 # --- SAFETY: restore is EXACT, never cap-clamped -------------------------------
 
 
-@pytest.mark.asyncio
 @pytest.mark.parametrize("original", [-4.0, -5.0, -8.5])
 async def test_cancel_restores_original_exactly_even_above_cap(original):
     # The review's regression: original -4/-5 sits ABOVE the -6 cap; the
@@ -1147,7 +1124,6 @@ async def test_cancel_restores_original_exactly_even_above_cap(original):
     assert chain.commanded[-1] == pytest.approx(original)
 
 
-@pytest.mark.asyncio
 async def test_timeout_restores_original_exactly_above_cap():
     cfg = MeasurementRamp(
         settle_hold_s=0.5,
@@ -1166,7 +1142,6 @@ async def test_timeout_restores_original_exactly_above_cap():
 # --- SAFETY: MAXED_OUT requires evidence; empty/untrusted feeds don't diagnose --
 
 
-@pytest.mark.asyncio
 async def test_jts3_level_evidence_locks_only_as_bounded_low():
     cfg = MeasurementRamp(**FAST, allow_bounded_low_level=True)
     # Hardware evidence reproduced from JTS3: cap ~= -3.15 dB, stable UMIK
@@ -1196,7 +1171,6 @@ async def test_jts3_level_evidence_locks_only_as_bounded_low():
         assert vol <= cap + 1e-9
 
 
-@pytest.mark.asyncio
 async def test_bounded_low_requires_known_noise_floor():
     cfg = MeasurementRamp(**FAST, allow_bounded_low_level=True)
     chain = ChainModel(
@@ -1212,7 +1186,6 @@ async def test_bounded_low_requires_known_noise_floor():
     assert chain.commanded[-1] == pytest.approx(-15.0)
 
 
-@pytest.mark.asyncio
 async def test_bounded_low_is_opt_in_not_shared_room_policy():
     cfg = MeasurementRamp(**FAST)
     chain = ChainModel(
@@ -1225,7 +1198,6 @@ async def test_bounded_low_is_opt_in_not_shared_room_policy():
     assert data.lock_kind is None
 
 
-@pytest.mark.asyncio
 async def test_bounded_low_rejects_signal_beyond_absolute_shortfall_limit():
     cfg = MeasurementRamp(
         **FAST,
@@ -1244,7 +1216,6 @@ async def test_bounded_low_rejects_signal_beyond_absolute_shortfall_limit():
     assert data.lock_kind is None
 
 
-@pytest.mark.asyncio
 async def test_unstable_cap_evidence_never_bounded_locks():
     cfg = MeasurementRamp(
         **FAST,
@@ -1280,7 +1251,6 @@ async def test_unstable_cap_evidence_never_bounded_locks():
     assert data.locked_main_volume_db is None
 
 
-@pytest.mark.asyncio
 async def test_sparse_cap_evidence_loses_feed_instead_of_locking():
     clock = FakeClock()
     cfg = MeasurementRamp(
@@ -1324,7 +1294,6 @@ async def test_sparse_cap_evidence_loses_feed_instead_of_locking():
     assert chain.commanded[-1] == pytest.approx(-15.0)
 
 
-@pytest.mark.asyncio
 async def test_clip_at_cap_aborts_before_bounded_lock():
     cfg = MeasurementRamp(**FAST, allow_bounded_low_level=True)
     cap = cfg.dynamic_cap(-15.0)
@@ -1341,7 +1310,6 @@ async def test_clip_at_cap_aborts_before_bounded_lock():
     assert chain.commanded[-1] == pytest.approx(-15.0)
 
 
-@pytest.mark.asyncio
 async def test_all_untrusted_samples_is_error_not_maxed_out(caplog):
     # Noise floor so high nothing is ever trusted: the old kernel called this
     # MAXED_OUT ("raise your amp") and stored a lock — affirmatively wrong.
@@ -1384,7 +1352,6 @@ async def test_all_untrusted_samples_is_error_not_maxed_out(caplog):
     assert chain.commanded[-1] == pytest.approx(-40.0)
 
 
-@pytest.mark.asyncio
 async def test_jts3_room_cap_clears_trust_without_weakening_shared_margin():
     """Pin the 2026-07-11 JTS3 UMIK listening-position regression."""
     original = -15.15
@@ -1438,7 +1405,6 @@ async def test_jts3_room_cap_clears_trust_without_weakening_shared_margin():
     assert room_chain.commanded[-1] == pytest.approx(room.dynamic_cap(original))
 
 
-@pytest.mark.asyncio
 async def test_agc_unfrozen_never_trusted_and_never_maxed_out():
     cfg = MeasurementRamp(
         settle_hold_s=0.5, max_loop_latency_s=0.5, safety_timeout_s=60.0
@@ -1456,7 +1422,6 @@ async def test_agc_unfrozen_never_trusted_and_never_maxed_out():
 # --- SAFETY: feed liveness ------------------------------------------------------
 
 
-@pytest.mark.asyncio
 async def test_vanished_phone_aborts_instead_of_blind_climbing():
     # The phone dies mid-climb (no pagehide): batches stop. The kernel must
     # abort within feed_timeout_s and restore — never blind-climb to the cap
@@ -1483,7 +1448,6 @@ async def test_vanished_phone_aborts_instead_of_blind_climbing():
 # --- SAFETY: safety timeout always fires ----------------------------------------
 
 
-@pytest.mark.asyncio
 async def test_safety_timeout_fires_and_restores():
     cfg_slow = MeasurementRamp(
         settle_hold_s=0.5,
@@ -1502,7 +1466,6 @@ async def test_safety_timeout_fires_and_restores():
 # --- tone contract ---------------------------------------------------------------
 
 
-@pytest.mark.asyncio
 async def test_tone_ending_early_errors_and_restores():
     # A tone that returns immediately (WAV too short / player crash) must not
     # leave the ramp blind-climbing a silent speaker.
@@ -1535,7 +1498,6 @@ async def test_tone_ending_early_errors_and_restores():
 # --- order of operations + fade -------------------------------------------------
 
 
-@pytest.mark.asyncio
 async def test_quiet_start_before_tone_and_fade_before_kill():
     cfg = MeasurementRamp(**FAST)
     events: list[tuple[str, float | None]] = []
@@ -1590,7 +1552,6 @@ async def test_quiet_start_before_tone_and_fade_before_kill():
 # --- manual lock + cancel ---------------------------------------------------------
 
 
-@pytest.mark.asyncio
 async def test_manual_lock_trusts_the_user():
     cfg = MeasurementRamp(settle_hold_s=5.0, max_loop_latency_s=2.0)
     chain = ChainModel(gain_db=2.0, start_vol=-40.0)
@@ -1603,7 +1564,6 @@ async def test_manual_lock_trusts_the_user():
         assert vol <= cap + 1e-9
 
 
-@pytest.mark.asyncio
 async def test_lock_cancel_return_false_after_terminal():
     controller = RampController(session_id="t")
     controller.data.state = RampState.LOCKED
@@ -1614,7 +1574,6 @@ async def test_lock_cancel_return_false_after_terminal():
 # --- restore hook is idempotent ---------------------------------------------------
 
 
-@pytest.mark.asyncio
 async def test_restore_is_idempotent():
     controller = RampController(session_id="restore")
     restored: list[float] = []
@@ -1631,7 +1590,6 @@ async def test_restore_is_idempotent():
     assert controller.data.restored is True
 
 
-@pytest.mark.asyncio
 async def test_restore_rejection_stays_retryable():
     controller = RampController(session_id="restore-retry")
     calls: list[float] = []

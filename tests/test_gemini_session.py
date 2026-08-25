@@ -73,7 +73,6 @@ async def _run_receive_loop_with(conn, responses):
         await conn._receive_loop()
 
 
-@pytest.mark.asyncio
 async def test_goaway_mid_turn_with_ample_time_defers_reconnect():
     """A GoAway arriving while a turn is in flight, with time_left
     comfortably above the deferral threshold, must NOT tear the session
@@ -103,7 +102,6 @@ async def test_goaway_mid_turn_with_ample_time_defers_reconnect():
     assert conn._reconnect_event.is_set()
 
 
-@pytest.mark.asyncio
 async def test_goaway_with_no_active_turn_reconnects_immediately():
     """No turn in flight → reconnect promptly as before, regardless of
     time_left."""
@@ -120,7 +118,6 @@ async def test_goaway_with_no_active_turn_reconnects_immediately():
     assert conn._reconnect_event.is_set()
 
 
-@pytest.mark.asyncio
 async def test_goaway_mid_turn_with_little_time_reconnects_immediately():
     """A GoAway mid-turn but with time_left below the threshold can't
     safely defer (the server is about to drop us) — reconnect promptly,
@@ -141,7 +138,6 @@ async def test_goaway_mid_turn_with_little_time_reconnects_immediately():
     assert conn._reconnect_event.is_set()
 
 
-@pytest.mark.asyncio
 async def test_goaway_mid_turn_with_unparseable_time_reconnects_immediately():
     """If time_left can't be interpreted, fail safe to the existing
     reconnect-immediately behaviour rather than deferring on a value we
@@ -176,7 +172,6 @@ def test_goaway_defer_threshold_covers_hard_recording_cap():
     assert GOAWAY_DEFER_MIN_TIME_LEFT_SEC >= HARD_RECORDING_CAP_SEC
 
 
-@pytest.mark.asyncio
 async def test_gemini_usage_is_per_turn_delta_not_cumulative():
     """Gemini's usage_metadata is cumulative for the WebSocket's lifetime.
     Each per-turn usage row must hold THIS turn's delta, not the running
@@ -202,7 +197,6 @@ async def test_gemini_usage_is_per_turn_delta_not_cumulative():
     assert (total_in, total_out) == (3000, 1500)
 
 
-@pytest.mark.asyncio
 async def test_gemini_usage_delta_handles_counter_reset_on_reconnect():
     """If the server-side counter resets (a fresh session after a
     reconnect restarts it), the observed value is below the captured
@@ -214,7 +208,6 @@ async def test_gemini_usage_delta_handles_counter_reset_on_reconnect():
     assert t.usage_tokens() == {"input_tokens": 200, "output_tokens": 100}
 
 
-@pytest.mark.asyncio
 async def test_gemini_turn_without_usage_metadata_reports_zero():
     """A turn that receives audio but no usage_metadata (silent-failure
     or lost turn) attributes zero tokens to itself rather than a negative
@@ -231,7 +224,6 @@ async def test_gemini_turn_without_usage_metadata_reports_zero():
     assert turn.usage_tokens() == {"input_tokens": 0, "output_tokens": 0}
 
 
-@pytest.mark.asyncio
 async def test_acquire_turn_rolls_back_active_turn_when_activity_start_fails():
     """A failed activity_start must not leave the turn slot occupied.
 

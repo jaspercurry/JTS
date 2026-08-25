@@ -4548,7 +4548,6 @@ async def test_state_aggregate_budget_fails_loud_on_runaway_probe(
     ), "aggregate timeout must emit a greppable event= line"
 
 
-@pytest.mark.asyncio
 async def test_wifi_guardian_snapshot_runs_off_aggregate_event_loop(monkeypatch):
     caller_thread = threading.get_ident()
     seen: list[int] = []
@@ -4939,7 +4938,6 @@ def test_make_spotify_router_caches_empty_build_until_account_cache_changes(
     assert calls["n"] == 2
 
 
-@pytest.mark.asyncio
 async def test_dispatch_transport_reuses_spotify_router_helper(monkeypatch):
     import jasper.control.server as srv_mod
     import jasper.renderer as renderer_mod

@@ -21,7 +21,6 @@ def _connection(reply: bytes):
     return reader, writer
 
 
-@pytest.mark.asyncio
 async def test_fanin_command_is_one_bounded_json_exchange(monkeypatch):
     reader, writer = _connection(b'{"result":"ok"}\n')
     opener = AsyncMock(return_value=(reader, writer))
@@ -40,7 +39,6 @@ async def test_fanin_command_is_one_bounded_json_exchange(monkeypatch):
     writer.close.assert_called_once()
 
 
-@pytest.mark.asyncio
 async def test_fanin_command_deadline_includes_connect(monkeypatch):
     connect_started = asyncio.Event()
 
@@ -55,7 +53,6 @@ async def test_fanin_command_deadline_includes_connect(monkeypatch):
     assert connect_started.is_set()
 
 
-@pytest.mark.asyncio
 async def test_fanin_command_wedged_close_cannot_extend_deadline(monkeypatch):
     reader, writer = _connection(b'{"result":"ok"}\n')
     writer.wait_closed.side_effect = lambda: asyncio.Event().wait()
@@ -72,7 +69,6 @@ async def test_fanin_command_wedged_close_cannot_extend_deadline(monkeypatch):
     writer.wait_closed.assert_not_awaited()
 
 
-@pytest.mark.asyncio
 async def test_fanin_command_rejects_error_and_malformed_responses(monkeypatch):
     for reply, match in (
         (b'{"error":"bad lane"}\n', "bad lane"),
@@ -90,7 +86,6 @@ async def test_fanin_command_rejects_error_and_malformed_responses(monkeypatch):
             await control.fanin_command("STATUS")
 
 
-@pytest.mark.asyncio
 async def test_fanin_control_rejects_multiline_command():
     with pytest.raises(ValueError, match="one non-empty line"):
         await control.fanin_command("STATUS\nNONE")

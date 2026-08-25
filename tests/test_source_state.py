@@ -76,7 +76,6 @@ def _mock_busctl_router(responses: dict[bytes, tuple[bytes, int]]):
 # spotify_playing — reads the librespot --onevent state file
 # ----------------------------------------------------------------------
 
-@pytest.mark.asyncio
 async def test_spotify_playing_missing_state_file(tmp_path):
     """librespot writes the state file lazily (first --onevent fires
     after the first session). Before that, the probe must report
@@ -85,7 +84,6 @@ async def test_spotify_playing_missing_state_file(tmp_path):
     assert await source_state.spotify_playing(str(path)) is False
 
 
-@pytest.mark.asyncio
 async def test_spotify_playing_state_file_says_playing(tmp_path):
     path = tmp_path / "librespot.state.json"
     path.write_text(json.dumps(
@@ -94,7 +92,6 @@ async def test_spotify_playing_state_file_says_playing(tmp_path):
     assert await source_state.spotify_playing(str(path)) is True
 
 
-@pytest.mark.asyncio
 async def test_spotify_playing_state_file_says_paused(tmp_path):
     """A paused session is not active. is_playing's contract is "playing,
     not paused, not stopped" — make sure paused state surfaces correctly."""
@@ -105,7 +102,6 @@ async def test_spotify_playing_state_file_says_paused(tmp_path):
     assert await source_state.spotify_playing(str(path)) is False
 
 
-@pytest.mark.asyncio
 async def test_spotify_observation_distinguishes_bad_read_from_stopped(tmp_path):
     path = tmp_path / "librespot.state.json"
     path.write_text("{not-json")
@@ -137,7 +133,6 @@ _METADATA_GENUINE = (
 _METADATA_PHANTOM = b"v a{sv} 0\n"
 
 
-@pytest.mark.asyncio
 async def test_airplay_playing_genuine_session_passes_both_checks():
     """Genuine AirPlay: PlaybackStatus=Playing AND metadata has title."""
     with patch(
@@ -150,7 +145,6 @@ async def test_airplay_playing_genuine_session_passes_both_checks():
         assert await source_state.airplay_playing() is True
 
 
-@pytest.mark.asyncio
 async def test_airplay_playing_phantom_session_returns_false():
     """Phantom SETUP from macOS: Playing reported but Metadata empty.
     Without the metadata gate, this case caused volume-routing flap
@@ -165,7 +159,6 @@ async def test_airplay_playing_phantom_session_returns_false():
         assert await source_state.airplay_playing() is False
 
 
-@pytest.mark.asyncio
 async def test_airplay_playing_returns_false_when_paused():
     """Paused short-circuits before the metadata probe — no point
     checking the title when PlaybackStatus alone disqualifies the
@@ -179,7 +172,6 @@ async def test_airplay_playing_returns_false_when_paused():
         assert await source_state.airplay_playing() is False
 
 
-@pytest.mark.asyncio
 async def test_airplay_playing_handles_busctl_missing():
     """If busctl isn't on PATH (unlikely on Trixie but possible on a
     stripped image), the probe must return False rather than raise."""
@@ -190,7 +182,6 @@ async def test_airplay_playing_handles_busctl_missing():
         assert await source_state.airplay_playing() is False
 
 
-@pytest.mark.asyncio
 async def test_airplay_observation_reports_transport_failure_as_unknown():
     with patch(
         "asyncio.create_subprocess_exec",
@@ -199,7 +190,6 @@ async def test_airplay_observation_reports_transport_failure_as_unknown():
         assert await source_state.airplay_playing_observed() is None
 
 
-@pytest.mark.asyncio
 async def test_airplay_playing_handles_busctl_nonzero_returncode():
     """An unclassified nonzero is unknown to mux but fail-soft to callers."""
     with patch(
@@ -210,7 +200,6 @@ async def test_airplay_playing_handles_busctl_nonzero_returncode():
         assert await source_state.airplay_playing() is False
 
 
-@pytest.mark.asyncio
 async def test_airplay_observation_treats_missing_bus_name_as_inactive():
     with patch(
         "asyncio.create_subprocess_exec",
@@ -226,7 +215,6 @@ async def test_airplay_observation_treats_missing_bus_name_as_inactive():
         assert await source_state.airplay_playing_observed() is False
 
 
-@pytest.mark.asyncio
 async def test_airplay_playing_off_switch_reverts_to_playbackstatus_only(
     monkeypatch,
 ):
@@ -248,7 +236,6 @@ async def test_airplay_playing_off_switch_reverts_to_playbackstatus_only(
         assert await source_state.airplay_playing() is True
 
 
-@pytest.mark.asyncio
 async def test_airplay_metadata_transport_failure_is_unknown_to_mux():
     """A Metadata transport glitch must not synthesize an AirPlay stop."""
     async def router(*args, **kwargs):
@@ -273,7 +260,6 @@ async def test_airplay_metadata_transport_failure_is_unknown_to_mux():
 # ----------------------------------------------------------------------
 
 
-@pytest.mark.asyncio
 async def test_usbsink_playing_reads_fanin_direct_activity(monkeypatch):
     monkeypatch.setattr(
         source_state,
@@ -291,7 +277,6 @@ async def test_usbsink_playing_reads_fanin_direct_activity(monkeypatch):
     assert await source_state.usbsink_playing() is True
 
 
-@pytest.mark.asyncio
 async def test_usbsink_playing_fails_soft_when_fanin_is_unavailable(monkeypatch):
     monkeypatch.setattr(source_state, "read_fanin_status", lambda: None)
 
@@ -317,7 +302,6 @@ def test_usbsink_direct_streaming_reads_new_fanin_edge_state():
 # bluetooth_playing — bluealsa-cli list-pcms parsing
 # ----------------------------------------------------------------------
 
-@pytest.mark.asyncio
 async def test_bluetooth_playing_detects_a2dpsnk_source():
     fake_pcm = b"/org/bluealsa/hci0/dev_AA_BB_CC_DD_EE_FF/a2dpsnk/source\n"
     with patch(
@@ -327,7 +311,6 @@ async def test_bluetooth_playing_detects_a2dpsnk_source():
         assert await source_state.bluetooth_playing() is True
 
 
-@pytest.mark.asyncio
 async def test_bluetooth_playing_returns_false_on_empty_output():
     with patch(
         "asyncio.create_subprocess_exec",
@@ -336,7 +319,6 @@ async def test_bluetooth_playing_returns_false_on_empty_output():
         assert await source_state.bluetooth_playing() is False
 
 
-@pytest.mark.asyncio
 async def test_bluetooth_playing_suppresses_after_bluealsa_cli_failure():
     calls = {"n": 0}
 
@@ -354,7 +336,6 @@ async def test_bluetooth_playing_suppresses_after_bluealsa_cli_failure():
     assert calls["n"] == 1
 
 
-@pytest.mark.asyncio
 async def test_bluetooth_playing_handles_timeout():
     """bluealsa-cli hanging (DBus daemon stuck) should time out cleanly
     and return False — the mux's 1 Hz tick can't tolerate a probe that
@@ -366,7 +347,6 @@ async def test_bluetooth_playing_handles_timeout():
         assert await source_state.bluetooth_playing() is False
 
 
-@pytest.mark.asyncio
 async def test_bluetooth_playing_kills_timed_out_bluealsa_cli():
     class _HungProc:
         returncode = None
@@ -396,7 +376,6 @@ async def test_bluetooth_playing_kills_timed_out_bluealsa_cli():
     assert proc.waited is True
 
 
-@pytest.mark.asyncio
 async def test_bluetooth_playing_handles_bluealsa_cli_missing():
     """bluealsa-cli isn't part of base Trixie; if the user ran the
     install script with no Bluetooth path, it may genuinely be missing."""

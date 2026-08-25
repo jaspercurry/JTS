@@ -58,7 +58,6 @@ def test_frequency_response_text_is_rew_friendly():
     assert rows[1].startswith("100.000000\t-3.000000\t0.000000")
 
 
-@pytest.mark.asyncio
 async def test_bundle_inspect_recompute_and_export(tmp_path: Path):
     sess = await _complete_one_position_bundle(tmp_path)
 
@@ -130,7 +129,6 @@ def test_bundle_calibration_reader_rejects_present_malformed_file(
     assert "mic_calibration.json" in str(exc.value)
 
 
-@pytest.mark.asyncio
 async def test_snr_estimate_is_recorded_in_capture_quality(tmp_path: Path):
     sess = await _complete_one_position_bundle(tmp_path)
     report = sess.capture_quality[0]

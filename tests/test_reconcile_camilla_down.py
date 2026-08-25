@@ -66,7 +66,6 @@ from tests.test_active_speaker_baseline_profile import (
     _valid_config,
 )
 
-pytestmark = pytest.mark.asyncio
 
 # The width jts4's statefile was stuck at: the pre-#2601 narrow wire. The
 # emitter now writes DEFAULT_PLAYBACK_FORMAT, so "did the reconcile converge?"

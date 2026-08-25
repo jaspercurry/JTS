@@ -324,7 +324,6 @@ async def _apply(
     return harness, candidate, result, state, predecessor_text, port, load_path
 
 
-@pytest.mark.asyncio
 async def test_candidate_apply_persists_fresh_proof_and_retained_graph(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
@@ -347,7 +346,6 @@ async def test_candidate_apply_persists_fresh_proof_and_retained_graph(
     assert saved["source"]["measured_candidate_fingerprint"] == candidate.fingerprint
 
 
-@pytest.mark.asyncio
 async def test_failed_candidate_load_restores_exact_predecessor_before_unlock(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
@@ -374,7 +372,6 @@ async def test_failed_candidate_load_restores_exact_predecessor_before_unlock(
     assert len({id(task) for task in mutation_tasks}) == 1
 
 
-@pytest.mark.asyncio
 async def test_retained_apply_retry_only_finishes_durable_state(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
@@ -473,7 +470,6 @@ async def test_retained_apply_retry_only_finishes_durable_state(
     )
 
 
-@pytest.mark.asyncio
 async def test_retained_sidecar_failure_restores_before_writer_unlock(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
@@ -513,7 +509,6 @@ async def test_retained_sidecar_failure_restores_before_writer_unlock(
     assert shared_state["rollback_succeeded"] is True
 
 
-@pytest.mark.asyncio
 async def test_ambiguous_retained_sidecar_write_reopens_exact_persisted_proof(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
@@ -540,7 +535,6 @@ async def test_ambiguous_retained_sidecar_write_reopens_exact_persisted_proof(
     assert mutation is not None and mutation.status == "retained"
 
 
-@pytest.mark.asyncio
 async def test_restart_after_proved_restore_finishes_without_mutating_dsp_again(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
@@ -599,7 +593,6 @@ async def test_restart_after_proved_restore_finishes_without_mutating_dsp_again(
     assert calls == 2
 
 
-@pytest.mark.asyncio
 async def test_applied_profile_change_keeps_preapply_plan_for_status_and_retry(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
@@ -691,7 +684,6 @@ async def test_applied_profile_change_keeps_preapply_plan_for_status_and_retry(
     ]
 
 
-@pytest.mark.asyncio
 @pytest.mark.parametrize(
     "restore_succeeds",
     [True, False],
@@ -840,7 +832,6 @@ async def test_repeated_cancellation_preserves_exact_restore_outcome(
     assert len({id(owner) for owner in mutation_tasks}) == 1
 
 
-@pytest.mark.asyncio
 @pytest.mark.parametrize("cancel_before_writer", [False, True])
 async def test_restart_with_pending_mutation_performs_live_exact_restore(
     tmp_path: Path,
@@ -955,7 +946,6 @@ async def test_restart_with_pending_mutation_performs_live_exact_restore(
     )
 
 
-@pytest.mark.asyncio
 async def test_writer_lock_timeout_leaves_candidate_ready_and_retryable(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
@@ -1018,7 +1008,6 @@ async def test_writer_lock_timeout_leaves_candidate_ready_and_retryable(
     assert calls == 2
 
 
-@pytest.mark.asyncio
 async def test_stale_rolled_back_review_does_not_change_known_restore_state(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,

@@ -9,7 +9,6 @@ import os
 import tempfile
 import time
 
-import pytest
 
 from jasper.research import (
     DONE,
@@ -130,7 +129,6 @@ class BlockingClient:
         return ResearchResult(text="done")
 
 
-@pytest.mark.asyncio
 async def test_concurrency_cap_rejects_cap_plus_one_with_speakable_busy_result():
     path = _tmp_db_path()
     client = BlockingClient()
@@ -155,7 +153,6 @@ async def test_concurrency_cap_rejects_cap_plus_one_with_speakable_busy_result()
             os.unlink(path)
 
 
-@pytest.mark.asyncio
 async def test_runtime_ceiling_marks_job_failed_and_fires_on_done():
     path = _tmp_db_path()
     done_jobs: list[ResearchJob] = []
@@ -196,7 +193,6 @@ async def test_runtime_ceiling_marks_job_failed_and_fires_on_done():
             os.unlink(path)
 
 
-@pytest.mark.asyncio
 async def test_provider_error_marks_job_failed_and_fires_on_done():
     path = _tmp_db_path()
     done_jobs: list[ResearchJob] = []
@@ -235,7 +231,6 @@ async def test_provider_error_marks_job_failed_and_fires_on_done():
             os.unlink(path)
 
 
-@pytest.mark.asyncio
 async def test_restart_restore_resurfaces_done_unannounced_and_marks_running_failed():
     path = _tmp_db_path()
     surfaced: list[ResearchJob] = []
@@ -285,7 +280,6 @@ async def test_restart_restore_resurfaces_done_unannounced_and_marks_running_fai
             os.unlink(path)
 
 
-@pytest.mark.asyncio
 async def test_resurfaced_done_jobs_do_not_consume_concurrency_slots():
     path = _tmp_db_path()
     surfaced_started = asyncio.Event()
@@ -323,7 +317,6 @@ async def test_resurfaced_done_jobs_do_not_consume_concurrency_slots():
             os.unlink(path)
 
 
-@pytest.mark.asyncio
 async def test_stop_cancels_in_flight_without_calling_on_done():
     path = _tmp_db_path()
     done_jobs: list[ResearchJob] = []
@@ -351,7 +344,6 @@ async def test_stop_cancels_in_flight_without_calling_on_done():
             os.unlink(path)
 
 
-@pytest.mark.asyncio
 async def test_set_on_done_wires_callback_after_construction():
     path = _tmp_db_path()
     done_jobs: list[ResearchJob] = []
@@ -380,7 +372,6 @@ async def test_set_on_done_wires_callback_after_construction():
             os.unlink(path)
 
 
-@pytest.mark.asyncio
 async def test_done_result_is_capped_and_usage_is_recorded():
     path = _tmp_db_path()
     done_jobs: list[ResearchJob] = []
@@ -505,7 +496,6 @@ class _InstantClient:
         return ResearchResult(text="ok", input_tokens=1, output_tokens=1)
 
 
-@pytest.mark.asyncio
 async def test_mark_announced_bounds_store_and_memory_to_retention():
     path = _tmp_db_path()
     sched = ResearchScheduler(_InstantClient(), db_path=path, retention=2)

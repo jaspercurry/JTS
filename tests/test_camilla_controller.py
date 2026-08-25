@@ -160,7 +160,6 @@ def test_crossover_controller_honors_env_overrides(monkeypatch):
     assert cam._port == 1299
 
 
-@pytest.mark.asyncio
 async def test_set_volume_db_clamps_positive_gain_to_zero():
     fake = _FakeClient()
     cam = _controller(fake)
@@ -170,7 +169,6 @@ async def test_set_volume_db_clamps_positive_gain_to_zero():
     assert fake.volume.values == [0.0]
 
 
-@pytest.mark.asyncio
 async def test_set_volume_db_rejects_non_finite_best_effort():
     fake = _FakeClient()
     cam = _controller(fake)
@@ -180,7 +178,6 @@ async def test_set_volume_db_rejects_non_finite_best_effort():
     assert fake.volume.values == []
 
 
-@pytest.mark.asyncio
 async def test_set_volume_db_rejects_non_finite_strict():
     fake = _FakeClient()
     cam = _controller(fake)
@@ -191,7 +188,6 @@ async def test_set_volume_db_rejects_non_finite_strict():
     assert fake.volume.values == []
 
 
-@pytest.mark.asyncio
 async def test_set_main_mute_forwards_boolean_to_camilla():
     fake = _FakeClient()
     cam = _controller(fake)
@@ -202,7 +198,6 @@ async def test_set_main_mute_forwards_boolean_to_camilla():
     assert fake.volume.mutes == [True, False]
 
 
-@pytest.mark.asyncio
 async def test_set_active_config_raw_uploads_without_file_path_reload(tmp_path):
     fake = _FakeClient()
     cam = _controller(fake, tmp_path)
@@ -213,7 +208,6 @@ async def test_set_active_config_raw_uploads_without_file_path_reload(tmp_path):
     assert fake.queries == []
 
 
-@pytest.mark.asyncio
 async def test_set_active_config_raw_rejects_empty_config():
     fake = _FakeClient()
     cam = _controller(fake)
@@ -223,7 +217,6 @@ async def test_set_active_config_raw_rejects_empty_config():
     assert fake.active_raw_values == []
 
 
-@pytest.mark.asyncio
 async def test_get_active_config_raw_returns_running_graph_yaml():
     fake = _FakeClient(active_raw_value="---\nfilters: {}\n")
     cam = _controller(fake)
@@ -233,7 +226,6 @@ async def test_get_active_config_raw_returns_running_graph_yaml():
     assert await cam.get_active_config_raw() == "---\nfilters: {}\n"
 
 
-@pytest.mark.asyncio
 async def test_get_active_config_raw_none_when_no_active_config():
     fake = _FakeClient(active_raw_value=None)
     cam = _controller(fake)
@@ -241,7 +233,6 @@ async def test_get_active_config_raw_none_when_no_active_config():
     assert await cam.get_active_config_raw() is None
 
 
-@pytest.mark.asyncio
 async def test_get_playback_peak_all_returns_full_channel_list_untruncated():
     # Unlike get_playback_peak (truncated/mirrored to a stereo pair via
     # _level_pair), every channel Camilla reports passes through in order.
@@ -251,7 +242,6 @@ async def test_get_playback_peak_all_returns_full_channel_list_untruncated():
     assert await cam.get_playback_peak_all() == [-3.0, -6.0, -9.0, -12.0]
 
 
-@pytest.mark.asyncio
 async def test_get_playback_rms_all_returns_full_channel_list_untruncated():
     # Same contract as get_playback_peak_all — and the reason /state can show
     # all four drivers of an active-crossover box instead of the front pair.
@@ -261,7 +251,6 @@ async def test_get_playback_rms_all_returns_full_channel_list_untruncated():
     assert await cam.get_playback_rms_all() == [-108.03, -1000.0, -108.03, -1000.0]
 
 
-@pytest.mark.asyncio
 async def test_get_playback_rms_all_missing_data_returns_empty_list():
     fake = _FakeClient(playback_rms_value=None)
     cam = _controller(fake)
@@ -269,7 +258,6 @@ async def test_get_playback_rms_all_missing_data_returns_empty_list():
     assert await cam.get_playback_rms_all() == []
 
 
-@pytest.mark.asyncio
 async def test_get_playback_rms_all_best_effort_returns_none_when_unavailable():
     fake = _FakeClient()
     cam = _controller(fake)
@@ -282,7 +270,6 @@ async def test_get_playback_rms_all_best_effort_returns_none_when_unavailable():
     assert await cam.get_playback_rms_all(best_effort=True) is None
 
 
-@pytest.mark.asyncio
 async def test_get_playback_peak_all_missing_data_returns_empty_list():
     # List analog of _level_pair's (-inf, -inf) sentinel pair.
     fake = _FakeClient(playback_peak_value=None)
@@ -291,7 +278,6 @@ async def test_get_playback_peak_all_missing_data_returns_empty_list():
     assert await cam.get_playback_peak_all() == []
 
 
-@pytest.mark.asyncio
 async def test_get_playback_peak_all_normalizes_per_channel_none_to_negative_infinity():
     fake = _FakeClient(playback_peak_value=[-3.0, None, -9.0])
     cam = _controller(fake)
@@ -299,7 +285,6 @@ async def test_get_playback_peak_all_normalizes_per_channel_none_to_negative_inf
     assert await cam.get_playback_peak_all() == [-3.0, float("-inf"), -9.0]
 
 
-@pytest.mark.asyncio
 async def test_get_playback_peak_all_best_effort_returns_none_when_unavailable():
     fake = _FakeClient()
     cam = _controller(fake)
@@ -312,7 +297,6 @@ async def test_get_playback_peak_all_best_effort_returns_none_when_unavailable()
     assert await cam.get_playback_peak_all(best_effort=True) is None
 
 
-@pytest.mark.asyncio
 async def test_get_playback_peak_all_raises_when_not_best_effort():
     fake = _FakeClient()
     cam = _controller(fake)
@@ -326,7 +310,6 @@ async def test_get_playback_peak_all_raises_when_not_best_effort():
         await cam.get_playback_peak_all()
 
 
-@pytest.mark.asyncio
 async def test_patch_config_uses_camilla_query_escape_hatch(tmp_path):
     fake = _FakeClient()
     cam = _controller(fake, tmp_path)
@@ -338,7 +321,6 @@ async def test_patch_config_uses_camilla_query_escape_hatch(tmp_path):
     assert fake.queries == [("PatchConfig", patch)]
 
 
-@pytest.mark.asyncio
 async def test_all_graph_mutations_enter_the_lowest_admission_context(
     tmp_path: Path,
     monkeypatch,
@@ -369,7 +351,6 @@ async def test_all_graph_mutations_enter_the_lowest_admission_context(
     assert fake.reload_count == 2
 
 
-@pytest.mark.asyncio
 async def test_every_graph_mutation_is_bracketed_by_a_duck(tmp_path: Path) -> None:
     """The headroom gain can move tens of dB across a swap at an unchanged
     volume; each mutation must duck the fader before it and restore after."""
@@ -393,7 +374,6 @@ async def test_every_graph_mutation_is_bracketed_by_a_duck(tmp_path: Path) -> No
     assert fake.ops == [f"vol={duck:g}", "reload", "vol=0"]
 
 
-@pytest.mark.asyncio
 async def test_graph_swap_never_touches_main_mute(tmp_path: Path) -> None:
     """The duck rides main_volume on purpose: a mute reads to the volume
     coordinator's 1 Hz reconciler as mute drift, which bypasses both of its
@@ -406,7 +386,6 @@ async def test_graph_swap_never_touches_main_mute(tmp_path: Path) -> None:
     assert fake.volume.mutes == []
 
 
-@pytest.mark.asyncio
 async def test_graph_swap_holds_the_duck_for_the_camilla_volume_ramp(
     tmp_path: Path,
     monkeypatch,
@@ -424,7 +403,6 @@ async def test_graph_swap_holds_the_duck_for_the_camilla_volume_ramp(
     assert fake.ops == [f"vol={duck:g}", "reload", "vol=0"]
 
 
-@pytest.mark.asyncio
 async def test_dsp_apply_ducks_both_the_load_and_its_rollback(
     tmp_path: Path,
 ) -> None:
@@ -464,7 +442,6 @@ async def test_dsp_apply_ducks_both_the_load_and_its_rollback(
     ]
 
 
-@pytest.mark.asyncio
 async def test_failed_graph_mutation_restores_the_pre_swap_volume(
     tmp_path: Path,
 ) -> None:
@@ -498,7 +475,6 @@ async def test_failed_graph_mutation_restores_the_pre_swap_volume(
 # excitation-safety ledger admitted it against.
 
 
-@pytest.mark.asyncio
 async def test_a_declared_release_target_wins_over_the_quieter_household_one(
     tmp_path: Path, monkeypatch,
 ) -> None:
@@ -527,7 +503,6 @@ async def test_a_declared_release_target_wins_over_the_quieter_household_one(
     assert fake.volume.main_volume() == pytest.approx(-21.212121)
 
 
-@pytest.mark.asyncio
 async def test_a_swap_without_a_declared_target_is_unchanged(
     tmp_path: Path, monkeypatch,
 ) -> None:
@@ -556,7 +531,6 @@ async def test_a_swap_without_a_declared_target_is_unchanged(
         assert fake.volume.main_volume() == pytest.approx(-21.212121)
 
 
-@pytest.mark.asyncio
 async def test_a_declared_target_never_raises_the_fader_above_what_it_took(
     tmp_path: Path, monkeypatch,
 ) -> None:
@@ -582,7 +556,6 @@ async def test_a_declared_target_never_raises_the_fader_above_what_it_took(
     assert fake.volume.main_volume() == pytest.approx(-30.0)
 
 
-@pytest.mark.asyncio
 async def test_a_declared_target_moves_the_release_never_the_duck(
     tmp_path: Path, monkeypatch,
 ) -> None:
@@ -609,7 +582,6 @@ async def test_a_declared_target_moves_the_release_never_the_duck(
     assert fake.ops == [f"vol={duck:g}", "set_active_raw", "vol=-12.5"]
 
 
-@pytest.mark.asyncio
 async def test_swap_below_the_duck_clamp_boundary_skips_the_duck(
     tmp_path: Path,
 ) -> None:
@@ -628,7 +600,6 @@ async def test_swap_below_the_duck_clamp_boundary_skips_the_duck(
     assert fake.ops == ["reload"]
 
 
-@pytest.mark.asyncio
 async def test_all_direct_graph_mutations_refuse_pending_intent_before_wire_io(
     tmp_path: Path,
     monkeypatch,
@@ -657,7 +628,6 @@ async def test_all_direct_graph_mutations_refuse_pending_intent_before_wire_io(
     assert fake.reload_count == 0
 
 
-@pytest.mark.asyncio
 async def test_direct_graph_mutation_wins_race_before_intent_publication(
     tmp_path: Path,
     monkeypatch,
@@ -715,7 +685,6 @@ async def test_direct_graph_mutation_wins_race_before_intent_publication(
     assert intent.exists()
 
 
-@pytest.mark.asyncio
 async def test_intent_publication_wins_race_before_direct_graph_mutation(
     tmp_path: Path,
     monkeypatch,
@@ -874,7 +843,6 @@ def test_connect_failure_restores_global_timeout_and_discards_client(monkeypatch
     assert websocket.default_timeout == 17.0
 
 
-@pytest.mark.asyncio
 async def test_silent_recv_uses_socket_timeout_and_keeps_one_retry(monkeypatch):
     clients: list[object] = []
 
@@ -901,7 +869,6 @@ async def test_silent_recv_uses_socket_timeout_and_keeps_one_retry(monkeypatch):
     assert controller._client is None
 
 
-@pytest.mark.asyncio
 async def test_call_classifies_config_validation_error_as_config_rejected(monkeypatch):
     """W6 hardware run 4 finding J: a healthy CamillaDSP that REJECTED a config
     (e.g. "Use of missing mixer 'split_active_2way'") used to be folded into
@@ -931,7 +898,6 @@ async def test_call_classifies_config_validation_error_as_config_rejected(monkey
     assert isinstance(exc_info.value, CamillaUnavailable)
 
 
-@pytest.mark.asyncio
 async def test_call_still_raises_bare_camilla_unavailable_for_other_errors(monkeypatch):
     """The new classification is SPECIFIC to ConfigValidationError -- an
     unrelated failure (e.g. a genuinely unreachable daemon) still raises the
@@ -966,7 +932,6 @@ class _BlockingWebSocket(_FakeWebSocket):
             self._release.set()
 
 
-@pytest.mark.asyncio
 async def test_cancellation_aborts_drains_clears_and_never_retries():
     started = threading.Event()
     release = threading.Event()
@@ -997,7 +962,6 @@ async def test_cancellation_aborts_drains_clears_and_never_retries():
     assert controller._client is None
 
 
-@pytest.mark.asyncio
 async def test_cancellation_cancels_worker_still_queued_in_executor(monkeypatch):
     queued = asyncio.Event()
     release = asyncio.Event()
@@ -1029,7 +993,6 @@ async def test_cancellation_cancels_worker_still_queued_in_executor(monkeypatch)
     assert controller._client is None
 
 
-@pytest.mark.asyncio
 async def test_cancellation_during_connect_aborts_and_restores_global_timeout(
     monkeypatch,
 ):
@@ -1069,7 +1032,6 @@ async def test_cancellation_during_connect_aborts_and_restores_global_timeout(
     assert websocket.default_timeout == 17.0
 
 
-@pytest.mark.asyncio
 async def test_repeated_cancellation_reaborts_but_still_drains_worker():
     started = threading.Event()
     release = threading.Event()
@@ -1100,7 +1062,6 @@ async def test_repeated_cancellation_reaborts_but_still_drains_worker():
     assert controller._client is None
 
 
-@pytest.mark.asyncio
 async def test_ordinary_failure_retries_once_with_a_fresh_client(monkeypatch):
     first = object()
     second = object()
@@ -1128,7 +1089,6 @@ async def test_ordinary_failure_retries_once_with_a_fresh_client(monkeypatch):
     assert ensured == 2
 
 
-@pytest.mark.asyncio
 async def test_close_disconnects_ephemeral_client_without_reconnect():
     disconnects = 0
 
@@ -1149,7 +1109,6 @@ async def test_close_disconnects_ephemeral_client_without_reconnect():
     assert controller._client is None
 
 
-@pytest.mark.asyncio
 async def test_wall_budget_aborts_each_attempt_and_bounds_retry(monkeypatch):
     monkeypatch.setattr(camilla_module, "CAMILLA_ATTEMPT_BUDGET_S", 0.05)
     clients: list[types.SimpleNamespace] = []
@@ -1183,7 +1142,6 @@ async def test_wall_budget_aborts_each_attempt_and_bounds_retry(monkeypatch):
     assert CAMILLA_ATTEMPT_BUDGET_S * 2 == 10.0
 
 
-@pytest.mark.asyncio
 async def test_cancelled_connect_queued_on_global_lock_never_runs_mutation(
     monkeypatch,
 ):
@@ -1306,7 +1264,6 @@ def test_normalize_config_raw_never_takes_the_graph_mutation_lock() -> None:
         raise AssertionError("normalize_config_raw not found in jasper/camilla.py")
 
 
-@pytest.mark.asyncio
 async def test_failed_duck_release_logs_a_named_event(
     tmp_path: Path,
     caplog,

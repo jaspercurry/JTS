@@ -18,7 +18,6 @@ class _StopLoop(BaseException):
     pass
 
 
-@pytest.mark.asyncio
 async def test_run_loop_isolates_tick_crash_and_preserves_cadence(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -85,7 +84,6 @@ async def test_run_loop_isolates_tick_crash_and_preserves_cadence(
     ]
 
 
-@pytest.mark.asyncio
 async def test_run_loop_does_not_swallow_cancellation(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:

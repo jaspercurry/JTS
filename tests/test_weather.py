@@ -436,7 +436,6 @@ def _mock_transport(handler) -> httpx.MockTransport:
     return httpx.MockTransport(handler)
 
 
-@pytest.mark.asyncio
 async def test_get_weather_uses_default_location_when_empty():
     captured_geocode_query = []
     captured_forecast_query = []
@@ -468,7 +467,6 @@ async def test_get_weather_uses_default_location_when_empty():
         await http.aclose()
 
 
-@pytest.mark.asyncio
 async def test_get_weather_uses_default_coordinates_without_geocoding():
     geocode_calls = 0
     captured_forecast_query = []
@@ -505,7 +503,6 @@ async def test_get_weather_uses_default_coordinates_without_geocoding():
         await http.aclose()
 
 
-@pytest.mark.asyncio
 async def test_get_weather_explicit_location_overrides_default():
     def handler(request: httpx.Request) -> httpx.Response:
         if "geocoding-api" in str(request.url):
@@ -541,7 +538,6 @@ async def test_get_weather_explicit_location_overrides_default():
         ("Buenos Aires, Argentina", "Buenos Aires, Argentina", ""),
     ],
 )
-@pytest.mark.asyncio
 async def test_get_weather_parses_spoken_location_qualifiers(
     query: str,
     expected_name: str,
@@ -649,7 +645,6 @@ async def test_get_weather_parses_spoken_location_qualifiers(
         await http.aclose()
 
 
-@pytest.mark.asyncio
 async def test_get_weather_caches_geocode():
     geocode_calls = 0
 
@@ -679,7 +674,6 @@ async def test_get_weather_caches_geocode():
         await http.aclose()
 
 
-@pytest.mark.asyncio
 async def test_get_weather_no_default_no_arg_returns_error():
     weather = WeatherClient(default_location="", http=httpx.AsyncClient())
     try:
@@ -690,7 +684,6 @@ async def test_get_weather_no_default_no_arg_returns_error():
         await weather.aclose()
 
 
-@pytest.mark.asyncio
 async def test_get_weather_unknown_location_returns_error():
     def handler(request: httpx.Request) -> httpx.Response:
         return httpx.Response(200, json={"results": []})
@@ -705,7 +698,6 @@ async def test_get_weather_unknown_location_returns_error():
         await http.aclose()
 
 
-@pytest.mark.asyncio
 async def test_get_weather_retries_transient_forecast_timeout_once():
     forecast_calls = 0
 
@@ -736,7 +728,6 @@ async def test_get_weather_retries_transient_forecast_timeout_once():
         await http.aclose()
 
 
-@pytest.mark.asyncio
 async def test_get_weather_timeout_error_includes_class_and_spoken_error():
     forecast_calls = 0
 
@@ -756,7 +747,6 @@ async def test_get_weather_timeout_error_includes_class_and_spoken_error():
         await http.aclose()
 
 
-@pytest.mark.asyncio
 async def test_get_weather_bad_json_returns_spoken_error(caplog):
     def handler(request: httpx.Request) -> httpx.Response:
         return httpx.Response(200, content=b"not json")
@@ -858,7 +848,6 @@ def _distinct_location_handler(geocode_calls: list[str]):
     return handler
 
 
-@pytest.mark.asyncio
 async def test_geocode_cache_evicts_oldest_at_cap():
     """The per-instance geocode cache is bounded at GEOCODE_CACHE_MAX with
     FIFO eviction — a long-lived daemon fielding many distinct place names
@@ -890,7 +879,6 @@ async def test_geocode_cache_evicts_oldest_at_cap():
         await http.aclose()
 
 
-@pytest.mark.asyncio
 async def test_forecast_cache_serves_second_call_within_ttl(monkeypatch):
     """A second weather query for the same location within the TTL is
     served from the forecast cache without re-hitting Open-Meteo."""
@@ -923,7 +911,6 @@ async def test_forecast_cache_serves_second_call_within_ttl(monkeypatch):
         await http.aclose()
 
 
-@pytest.mark.asyncio
 async def test_forecast_cache_refetches_after_ttl(monkeypatch):
     """Once the TTL has elapsed the entry is stale and the next query
     refetches the forecast."""

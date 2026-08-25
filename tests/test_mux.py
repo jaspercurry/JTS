@@ -153,7 +153,6 @@ def _stub_pauses(mux: Mux):
     mux._pause = AsyncMock()
 
 
-@pytest.mark.asyncio
 async def test_no_transitions_no_pause_calls(mux, patched_probes):
     _stub_probes(patched_probes, spotify=False, airplay=False, bluetooth=False)
     _stub_pauses(mux)
@@ -172,7 +171,6 @@ def test_duplicate_alerts_coalesce_without_applying_policy(mux):
     mux._fanin_select.assert_not_awaited()
 
 
-@pytest.mark.asyncio
 async def test_notify_control_command_only_marks_source_dirty(mux):
     class Writer:
         def __init__(self):
@@ -207,7 +205,6 @@ async def test_notify_control_command_only_marks_source_dirty(mux):
     mux._fanin_select.assert_not_awaited()
 
 
-@pytest.mark.asyncio
 async def test_alert_and_patrol_share_reconciler_policy(mux, patched_probes):
     _stub_pauses(mux)
     _stub_probes(patched_probes, spotify=True)
@@ -228,7 +225,6 @@ async def test_alert_and_patrol_share_reconciler_policy(mux, patched_probes):
     assert mux._patrol_repairs == 1
 
 
-@pytest.mark.asyncio
 async def test_startup_reconcile_failure_recovers_on_patrol_without_restart(
     mux, monkeypatch,
 ):
@@ -278,7 +274,6 @@ async def test_startup_reconcile_failure_recovers_on_patrol_without_restart(
     assert calls[:2] == [("startup", set()), ("patrol", set())]
 
 
-@pytest.mark.asyncio
 async def test_noop_alert_reconcile_uses_mux_event_at_debug(
     mux, patched_probes, caplog,
 ):
@@ -299,7 +294,6 @@ async def test_noop_alert_reconcile_uses_mux_event_at_debug(
     assert "event=source.reconcile" not in caplog.text
 
 
-@pytest.mark.asyncio
 async def test_run_answers_cancellation_racing_a_wake_alert(mux, monkeypatch):
     """Mux.run() must terminate when cancelled, even when a wake alert lands
     in the very same event-loop tick as the cancellation.
@@ -359,7 +353,6 @@ async def test_run_answers_cancellation_racing_a_wake_alert(mux, monkeypatch):
     assert mux_task.cancelled()
 
 
-@pytest.mark.asyncio
 async def test_alert_storm_does_not_postpone_fixed_patrol(
     mux, monkeypatch,
 ):
@@ -436,7 +429,6 @@ async def test_alert_storm_does_not_postpone_fixed_patrol(
     assert len(patrol_triggers) >= 2
 
 
-@pytest.mark.asyncio
 async def test_alert_during_coalesce_does_not_queue_empty_reconcile(
     mux, monkeypatch,
 ):
@@ -520,7 +512,6 @@ async def test_alert_during_coalesce_does_not_queue_empty_reconcile(
     ]
 
 
-@pytest.mark.asyncio
 async def test_unknown_probe_holds_last_known_state_without_flutter(
     mux, patched_probes,
 ):
@@ -538,7 +529,6 @@ async def test_unknown_probe_holds_last_known_state_without_flutter(
     assert status["sources"]["spotify"]["observation"] == "unknown"
 
 
-@pytest.mark.asyncio
 async def test_sustained_unknown_expires_instead_of_pinning_dead_winner(
     mux, patched_probes, monkeypatch,
 ):
@@ -564,7 +554,6 @@ async def test_sustained_unknown_expires_instead_of_pinning_dead_winner(
     )
 
 
-@pytest.mark.asyncio
 async def test_first_source_starting_has_nothing_to_preempt(mux, patched_probes):
     _stub_probes(patched_probes, spotify=True, airplay=False, bluetooth=False)
     _stub_pauses(mux)
@@ -574,7 +563,6 @@ async def test_first_source_starting_has_nothing_to_preempt(mux, patched_probes)
     assert mux._winner is Source.SPOTIFY
 
 
-@pytest.mark.asyncio
 async def test_new_source_preempts_current(mux, patched_probes):
     # First tick: Spotify is playing
     _stub_probes(patched_probes, spotify=True, airplay=False, bluetooth=False)
@@ -589,7 +577,6 @@ async def test_new_source_preempts_current(mux, patched_probes):
     assert mux._winner is Source.AIRPLAY
 
 
-@pytest.mark.asyncio
 async def test_continued_play_does_not_re_pause(mux, patched_probes):
     """Once preempted, the older source going back to not-playing
     should not trigger any further action."""
@@ -608,7 +595,6 @@ async def test_continued_play_does_not_re_pause(mux, patched_probes):
     assert mux._pause.await_count == 1
 
 
-@pytest.mark.asyncio
 async def test_three_way_preemption(mux, patched_probes):
     """BT playing → Spotify starts → AirPlay starts. Final winner
     is AirPlay, with Spotify getting preempted along the way and
@@ -635,7 +621,6 @@ async def test_three_way_preemption(mux, patched_probes):
     assert mux._winner is Source.AIRPLAY
 
 
-@pytest.mark.asyncio
 async def test_simultaneous_start_picks_one_deterministically(mux, patched_probes):
     """One snapshot cannot reveal real-world ordering between two starts.
 
@@ -654,7 +639,6 @@ async def test_simultaneous_start_picks_one_deterministically(mux, patched_probe
     )
 
 
-@pytest.mark.asyncio
 async def test_pause_is_resilient_to_action_failures(mux, patched_probes):
     """If _pause throws, _tick should not crash. Post-handoff preemption
     goes through _pause_best_effort (audit C5), so a failing pause is
@@ -816,7 +800,6 @@ def _stub_usbsink_preempt(mux: Mux):
     return mux._usbsink_set_preempt
 
 
-@pytest.mark.asyncio
 async def test_usbsink_starting_alone_takes_speaker(mux, patched_probes):
     """User plugs in Mac and starts playing while nothing else
     is active. USB wins the speaker, no other source to pause."""
@@ -828,7 +811,6 @@ async def test_usbsink_starting_alone_takes_speaker(mux, patched_probes):
     assert mux._winner is Source.USBSINK
 
 
-@pytest.mark.asyncio
 async def test_airplay_preempts_usbsink_with_silenced_post(mux, patched_probes):
     """USB playing. AirPlay starts. Mux POSTs silenced=true so the
     daemon stops mixing its audio into the loopback."""
@@ -845,7 +827,6 @@ async def test_airplay_preempts_usbsink_with_silenced_post(mux, patched_probes):
     assert mux._winner is Source.AIRPLAY
 
 
-@pytest.mark.asyncio
 async def test_usbsink_preempt_released_when_others_idle(mux, patched_probes):
     """After AirPlay stops, mux clears USB's preempt so the user can
     re-take the speaker just by playing on the host."""
@@ -866,7 +847,6 @@ async def test_usbsink_preempt_released_when_others_idle(mux, patched_probes):
     assert last_call.args[0] is False
 
 
-@pytest.mark.asyncio
 async def test_usb_pause_then_play_preempts_active_airplay(
     mux, patched_probes,
 ):
@@ -898,7 +878,6 @@ async def test_usb_pause_then_play_preempts_active_airplay(
     mux._pause.assert_any_await(Source.AIRPLAY)
 
 
-@pytest.mark.asyncio
 async def test_usbsink_preempt_release_idempotent(mux, patched_probes):
     """When already not preempted and all others go idle, mux
     should NOT spam release POSTs. The set_preempt method is itself
@@ -960,7 +939,6 @@ def _make_combo_box(mux: Mux, monkeypatch, frames_seq):
     return mux
 
 
-@pytest.mark.asyncio
 async def test_combo_usb_streaming_takes_speaker_in_auto(
     mux, patched_probes, monkeypatch,
 ):
@@ -985,7 +963,6 @@ async def test_combo_usb_streaming_takes_speaker_in_auto(
     assert mux._winner is Source.USBSINK
 
 
-@pytest.mark.asyncio
 async def test_fanin_streaming_edge_promotes_usb_without_two_patrol_baseline(
     mux, patched_probes, monkeypatch,
 ):
@@ -1015,7 +992,6 @@ async def test_fanin_streaming_edge_promotes_usb_without_two_patrol_baseline(
     assert mux._state.playing[Source.USBSINK] is True
 
 
-@pytest.mark.asyncio
 async def test_combo_usb_idle_frames_never_win(mux, patched_probes, monkeypatch):
     _stub_pauses(mux)
     _stub_usbsink_preempt(mux)
@@ -1028,7 +1004,6 @@ async def test_combo_usb_idle_frames_never_win(mux, patched_probes, monkeypatch)
     assert mux._status_payload()["active_source"] == "idle"
 
 
-@pytest.mark.asyncio
 async def test_combo_usb_preempted_by_newly_started_source(
     mux, patched_probes, monkeypatch,
 ):
@@ -1047,7 +1022,6 @@ async def test_combo_usb_preempted_by_newly_started_source(
     mux._pause.assert_any_await(Source.USBSINK)
 
 
-@pytest.mark.asyncio
 async def test_combo_usb_survives_single_fanin_status_miss(
     mux, patched_probes, monkeypatch,
 ):
@@ -1072,7 +1046,6 @@ async def test_combo_usb_survives_single_fanin_status_miss(
 # ----------------------------------------------------------------------
 
 
-@pytest.mark.asyncio
 async def test_usb_streaming_preempts_active_airplay(
     mux, patched_probes, monkeypatch,
 ):
@@ -1096,7 +1069,6 @@ async def test_usb_streaming_preempts_active_airplay(
     )
 
 
-@pytest.mark.asyncio
 async def test_winner_stop_falls_back_to_most_recent_active_source(
     mux, patched_probes,
 ):
@@ -1123,7 +1095,6 @@ async def test_winner_stop_falls_back_to_most_recent_active_source(
     assert mux._winner is Source.USBSINK
 
 
-@pytest.mark.asyncio
 async def test_auto_select_uses_starts_observed_while_manual_pin_was_active(
     mux, patched_probes,
 ):
@@ -1144,7 +1115,6 @@ async def test_auto_select_uses_starts_observed_while_manual_pin_was_active(
     mux._pause.assert_awaited_with(Source.AIRPLAY)
 
 
-@pytest.mark.asyncio
 async def test_manual_control_refresh_preserves_newest_start_for_auto(
     mux, patched_probes,
 ):
@@ -1169,7 +1139,6 @@ async def test_manual_control_refresh_preserves_newest_start_for_auto(
     assert mux._winner is Source.USBSINK
 
 
-@pytest.mark.asyncio
 async def test_source_observations_serialize_probe_and_record(mux):
     """Concurrent patrol/control refreshes cannot commit snapshots out of order."""
     first_probe_started = asyncio.Event()
@@ -1215,7 +1184,6 @@ def _make_mux_mute_stubbed(tmp_path):
     return m, fanin_mute
 
 
-@pytest.mark.asyncio
 async def test_all_fanin_mutations_use_mux_configured_socket(monkeypatch, tmp_path):
     """STATUS and mutations must not split across sockets under an override."""
 
@@ -1245,7 +1213,6 @@ async def test_all_fanin_mutations_use_mux_configured_socket(monkeypatch, tmp_pa
 # ----------------------------------------------------------------------
 
 
-@pytest.mark.asyncio
 async def test_usbsink_set_preempt_skips_mute_when_env_disabled(
     monkeypatch, tmp_path,
 ):
@@ -1264,7 +1231,6 @@ async def test_usbsink_set_preempt_skips_mute_when_env_disabled(
     fanin_mute.assert_not_awaited()
 
 
-@pytest.mark.asyncio
 async def test_usbsink_set_preempt_unsilencing_also_skips_when_env_disabled(
     monkeypatch, tmp_path,
 ):
@@ -1281,7 +1247,6 @@ async def test_usbsink_set_preempt_unsilencing_also_skips_when_env_disabled(
     fanin_mute.assert_not_awaited()
 
 
-@pytest.mark.asyncio
 async def test_usbsink_set_preempt_disabled_value_must_be_literal(
     monkeypatch, tmp_path,
 ):
@@ -1303,7 +1268,6 @@ async def test_usbsink_set_preempt_disabled_value_must_be_literal(
         )
 
 
-@pytest.mark.asyncio
 async def test_usbsink_set_preempt_disabled_case_insensitive(
     monkeypatch, tmp_path,
 ):
@@ -1327,7 +1291,6 @@ async def test_usbsink_set_preempt_disabled_case_insensitive(
 # ----------------------------------------------------------------------
 
 
-@pytest.mark.asyncio
 async def test_preempt_mutes_fanin_lane(tmp_path):
     """Silencing USB is a fan-in lane MUTE at its mix stage."""
     m, fanin_mute = _make_mux_mute_stubbed(tmp_path)
@@ -1336,7 +1299,6 @@ async def test_preempt_mutes_fanin_lane(tmp_path):
     assert m._usbsink_preempted is True
 
 
-@pytest.mark.asyncio
 async def test_release_unmutes_fanin_lane(tmp_path):
     """Release UNMUTEs the fan-in lane so a fresh host pause-then-play can
     retake the speaker."""
@@ -1347,7 +1309,6 @@ async def test_release_unmutes_fanin_lane(tmp_path):
     assert m._usbsink_preempted is False
 
 
-@pytest.mark.asyncio
 async def test_escape_hatch_never_mutes(monkeypatch, tmp_path):
     """JASPER_USBSINK_PREEMPT=disabled degrades to graceful mix: mux tracks
     state but issues no mute."""
@@ -1358,7 +1319,6 @@ async def test_escape_hatch_never_mutes(monkeypatch, tmp_path):
     fanin_mute.assert_not_awaited()
 
 
-@pytest.mark.asyncio
 async def test_mute_failure_is_bounded_and_retried(tmp_path, caplog):
     """A failed fan-in mute degrades gracefully: WARN, graceful mixing, tracked
     flag NOT advanced so the next tick re-attempts (1 Hz, no retry storm, no
@@ -1375,7 +1335,6 @@ async def test_mute_failure_is_bounded_and_retried(tmp_path, caplog):
     assert m._usbsink_preempted is True
 
 
-@pytest.mark.asyncio
 async def test_reassert_mute_reissues_while_preempted(tmp_path):
     """fan-in does not persist the mute (restarts unmuted), so mux reasserts it
     each tick while preempted — the next tick re-mutes a restarted fan-in."""
@@ -1385,7 +1344,6 @@ async def test_reassert_mute_reissues_while_preempted(tmp_path):
     fanin_mute.assert_awaited_once_with("usbsink", True)
 
 
-@pytest.mark.asyncio
 async def test_reassert_mute_noops_when_not_preempted_or_escaped(
     monkeypatch, tmp_path,
 ):
@@ -1405,7 +1363,6 @@ async def test_reassert_mute_noops_when_not_preempted_or_escaped(
     fanin_mute2.assert_not_awaited()
 
 
-@pytest.mark.asyncio
 async def test_tick_preempt_reaches_fanin_mute(
     mux, patched_probes, monkeypatch,
 ):
@@ -1428,7 +1385,6 @@ async def test_tick_preempt_reaches_fanin_mute(
     assert mux._usbsink_preempted is True
 
 
-@pytest.mark.asyncio
 async def test_tick_muted_host_stays_playing_for_liveness(
     mux, patched_probes, monkeypatch,
 ):
@@ -1458,7 +1414,6 @@ async def test_tick_muted_host_stays_playing_for_liveness(
 # ----------------------------------------------------------------------
 
 
-@pytest.mark.asyncio
 async def test_select_source_gates_fanin_without_pausing_other_sources(
     mux, patched_probes,
 ):
@@ -1486,7 +1441,6 @@ async def test_select_source_gates_fanin_without_pausing_other_sources(
     assert status["last_handoff"]["to"] == "airplay"
 
 
-@pytest.mark.asyncio
 async def test_test_fanin_label_overrides_manual_reassert_without_persisting(
     mux, patched_probes,
 ):
@@ -1509,7 +1463,6 @@ async def test_test_fanin_label_overrides_manual_reassert_without_persisting(
     assert mux._manual_source is Source.AIRPLAY
 
 
-@pytest.mark.asyncio
 async def test_test_fanin_release_restores_manual_source(mux):
     mux._manual_source = Source.AIRPLAY
     mux._winner = Source.AIRPLAY
@@ -1528,7 +1481,6 @@ async def test_test_fanin_release_restores_manual_source(mux):
     assert status["active_source"] == "airplay"
 
 
-@pytest.mark.asyncio
 async def test_test_fanin_gate_is_idempotent_for_owner_and_busy_for_other(mux):
     mux._fanin_select_label = AsyncMock(return_value={})
 
@@ -1558,7 +1510,6 @@ def test_aec_doctor_has_a_distinct_declared_test_gate_owner():
     assert "doctor-aec-probe" != "correction-measurement"
 
 
-@pytest.mark.asyncio
 async def test_aec_doctor_gate_refuses_foreign_owner_and_release(mux):
     mux._fanin_select_label = AsyncMock(return_value={})
 
@@ -1574,7 +1525,6 @@ async def test_aec_doctor_gate_refuses_foreign_owner_and_release(mux):
     assert mux._test_fanin_owner == "doctor-aec-probe"
 
 
-@pytest.mark.asyncio
 async def test_aec_doctor_gate_excludes_sources_that_race_idle_precheck(
     mux, patched_probes,
 ):
@@ -1599,7 +1549,6 @@ async def test_aec_doctor_gate_excludes_sources_that_race_idle_precheck(
     mux._fanin_select.assert_not_awaited()
 
 
-@pytest.mark.asyncio
 async def test_manual_select_is_rejected_without_mutation_during_test_gate(
     mux, patched_probes,
 ):
@@ -1617,7 +1566,6 @@ async def test_manual_select_is_rejected_without_mutation_during_test_gate(
     assert mux._test_fanin_owner == "correction-measurement"
 
 
-@pytest.mark.asyncio
 async def test_auto_select_is_rejected_before_probe_during_test_gate(
     mux, patched_probes,
 ):
@@ -1636,7 +1584,6 @@ async def test_auto_select_is_rejected_before_probe_during_test_gate(
     assert mux._test_fanin_owner == "correction-measurement"
 
 
-@pytest.mark.asyncio
 async def test_test_gate_renewal_extends_lease(monkeypatch, mux):
     mux._fanin_select_label = AsyncMock(return_value={})
     now = [10.0]
@@ -1655,7 +1602,6 @@ async def test_test_gate_renewal_extends_lease(monkeypatch, mux):
     assert mux._test_fanin_expires_at == 50.0 + mux_module.FANIN_TEST_LEASE_SEC
 
 
-@pytest.mark.asyncio
 async def test_test_gate_response_loss_rolls_back_or_retains_owner(mux):
     mux._fanin_select_label = AsyncMock(side_effect=RuntimeError("response lost"))
     mux._fanin_none = AsyncMock(side_effect=RuntimeError("rollback unavailable"))
@@ -1670,7 +1616,6 @@ async def test_test_gate_response_loss_rolls_back_or_retains_owner(mux):
     assert mux._test_fanin_expires_at is not None
 
 
-@pytest.mark.asyncio
 async def test_test_gate_release_failure_retains_owner_then_retry_clears(mux):
     mux._test_fanin_label = "correction"
     mux._test_fanin_owner = "correction-measurement"
@@ -1687,7 +1632,6 @@ async def test_test_gate_release_failure_retains_owner_then_retry_clears(mux):
     assert mux._test_fanin_expires_at is None
 
 
-@pytest.mark.asyncio
 async def test_owner_scoped_release_without_memory_reasserts_normal_gate(mux):
     """Recover SELECT-landed/response-lost even before ownership published."""
 
@@ -1699,7 +1643,6 @@ async def test_owner_scoped_release_without_memory_reasserts_normal_gate(mux):
     mux._fanin_none.assert_awaited_once()
 
 
-@pytest.mark.asyncio
 async def test_expired_test_gate_self_clears_through_strict_restore(
     mux, patched_probes,
 ):
@@ -1716,7 +1659,6 @@ async def test_expired_test_gate_self_clears_through_strict_restore(
     assert mux._fanin_none.await_count >= 1
 
 
-@pytest.mark.asyncio
 async def test_expired_test_gate_restore_failure_stays_owned_for_retry(
     mux, patched_probes,
 ):
@@ -1734,7 +1676,6 @@ async def test_expired_test_gate_restore_failure_stays_owned_for_retry(
     mux._fanin_select_label.assert_awaited_with("correction")
 
 
-@pytest.mark.asyncio
 async def test_select_source_prepares_volume_before_fanin_gate(
     mux, patched_probes,
 ):
@@ -1759,7 +1700,6 @@ async def test_select_source_prepares_volume_before_fanin_gate(
     ]
 
 
-@pytest.mark.asyncio
 async def test_select_source_does_not_open_fanin_when_handoff_fails(
     mux, patched_probes,
 ):
@@ -1777,7 +1717,6 @@ async def test_select_source_does_not_open_fanin_when_handoff_fails(
     assert status["mode"] == "auto"
 
 
-@pytest.mark.asyncio
 async def test_fanin_select_abort_republishes_final_volume_context(
     mux, patched_probes,
 ):
@@ -1796,7 +1735,6 @@ async def test_fanin_select_abort_republishes_final_volume_context(
     ]
 
 
-@pytest.mark.asyncio
 async def test_finalize_failure_republishes_final_volume_context(
     mux, patched_probes,
 ):
@@ -1816,7 +1754,6 @@ async def test_finalize_failure_republishes_final_volume_context(
     assert mux._last_handoff["result"] == "finalize_failed"
 
 
-@pytest.mark.asyncio
 async def test_manual_handoff_publishes_source_before_volume_lease_release(
     mux, patched_probes,
 ):
@@ -1833,7 +1770,6 @@ async def test_manual_handoff_publishes_source_before_volume_lease_release(
     assert state_at_release == [(Source.AIRPLAY, Source.AIRPLAY)]
 
 
-@pytest.mark.asyncio
 async def test_auto_handoff_publishes_winner_before_volume_lease_release(
     mux, patched_probes,
 ):
@@ -1849,7 +1785,6 @@ async def test_auto_handoff_publishes_winner_before_volume_lease_release(
     assert winner_at_release == [Source.SPOTIFY]
 
 
-@pytest.mark.asyncio
 async def test_auto_select_clears_manual_pin_before_volume_lease_release(
     mux, patched_probes,
 ):
@@ -1868,7 +1803,6 @@ async def test_auto_select_clears_manual_pin_before_volume_lease_release(
     assert state_at_release == [(None, Source.AIRPLAY)]
 
 
-@pytest.mark.asyncio
 async def test_real_coordinator_handoff_publishes_without_lock_reentry_deadlock(
     tmp_path, patched_probes,
 ):
@@ -1922,7 +1856,6 @@ async def test_real_coordinator_handoff_publishes_without_lock_reentry_deadlock(
     assert len(published) == 1
 
 
-@pytest.mark.asyncio
 async def test_startup_handoff_failure_uses_fanin_none(
     mux, patched_probes,
 ):
@@ -1940,7 +1873,6 @@ async def test_startup_handoff_failure_uses_fanin_none(
     assert coord.volume_context_publishes == 1
 
 
-@pytest.mark.asyncio
 async def test_failed_auto_handoff_retries_target_on_next_tick(
     mux, patched_probes,
 ):
@@ -1972,7 +1904,6 @@ async def test_failed_auto_handoff_retries_target_on_next_tick(
     ]
 
 
-@pytest.mark.asyncio
 async def test_new_start_supersedes_older_failed_handoff_retry(
     mux, patched_probes,
 ):
@@ -2004,7 +1935,6 @@ async def test_new_start_supersedes_older_failed_handoff_retry(
     assert mux._last_handoff["reason"] == "auto_new_source"
 
 
-@pytest.mark.asyncio
 async def test_auto_spotify_to_airplay_prepares_volume_before_fanin_gate(
     mux, patched_probes,
 ):
@@ -2036,7 +1966,6 @@ async def test_auto_spotify_to_airplay_prepares_volume_before_fanin_gate(
     assert mux._winner is Source.AIRPLAY
 
 
-@pytest.mark.asyncio
 async def test_airplay_session_drop_happens_after_successful_fanin_handoff(
     mux, patched_probes,
 ):
@@ -2072,7 +2001,6 @@ async def test_airplay_session_drop_happens_after_successful_fanin_handoff(
     assert mux._winner is Source.USBSINK
 
 
-@pytest.mark.asyncio
 async def test_winner_stopping_holds_fanin_none(
     mux, patched_probes,
 ):
@@ -2088,7 +2016,6 @@ async def test_winner_stopping_holds_fanin_none(
     assert mux._winner is None
 
 
-@pytest.mark.asyncio
 async def test_busctl_adapter_uses_shared_system_bus_runner(monkeypatch):
     calls: list[tuple[tuple[str, ...], float]] = []
 
@@ -2107,7 +2034,6 @@ async def test_busctl_adapter_uses_shared_system_bus_runner(monkeypatch):
     assert calls == [(("call", "org.example.Service"), 2.0)]
 
 
-@pytest.mark.asyncio
 async def test_airplay_preempt_drops_receiver_session(mux, monkeypatch, caplog):
     caplog.set_level(logging.INFO)
     calls: list[tuple[str, ...]] = []
@@ -2131,7 +2057,6 @@ async def test_airplay_preempt_drops_receiver_session(mux, monkeypatch, caplog):
     assert "result=ok" in caplog.records[-1].message
 
 
-@pytest.mark.asyncio
 async def test_airplay_preempt_falls_back_to_stop_when_drop_session_fails(
     mux, monkeypatch, caplog,
 ):
@@ -2155,7 +2080,6 @@ async def test_airplay_preempt_falls_back_to_stop_when_drop_session_fails(
     )
 
 
-@pytest.mark.asyncio
 async def test_airplay_preempt_failure_keeps_new_source_authoritative(
     mux, monkeypatch, caplog,
 ):
@@ -2176,7 +2100,6 @@ async def test_airplay_preempt_failure_keeps_new_source_authoritative(
     assert "action=new_source_remains_authoritative" in caplog.records[-1].message
 
 
-@pytest.mark.asyncio
 async def test_bluetooth_preempt_uses_avrcp_pause(mux, monkeypatch):
     calls: list[str] = []
 
@@ -2190,7 +2113,6 @@ async def test_bluetooth_preempt_uses_avrcp_pause(mux, monkeypatch):
     assert calls == ["Pause"]
 
 
-@pytest.mark.asyncio
 async def test_bluetooth_preempt_avrcp_failure_is_best_effort(
     mux, monkeypatch, caplog,
 ):
@@ -2206,7 +2128,6 @@ async def test_bluetooth_preempt_avrcp_failure_is_best_effort(
     assert "phone_side_pause_required" in caplog.records[-1].message
 
 
-@pytest.mark.asyncio
 async def test_manual_tick_keeps_selected_source_when_other_source_starts(
     mux, patched_probes,
 ):
@@ -2232,7 +2153,6 @@ async def test_manual_tick_keeps_selected_source_when_other_source_starts(
     )
 
 
-@pytest.mark.asyncio
 async def test_auto_select_clears_manual_source_and_releases_fanin_gate(
     mux, patched_probes,
 ):
@@ -2250,7 +2170,6 @@ async def test_auto_select_clears_manual_source_and_releases_fanin_gate(
     assert status["active_source"] == "airplay"
 
 
-@pytest.mark.asyncio
 async def test_auto_select_preempts_other_active_sources_before_auto_gate(
     mux, patched_probes,
 ):
@@ -2268,7 +2187,6 @@ async def test_auto_select_preempts_other_active_sources_before_auto_gate(
     assert status["mode"] == "auto"
 
 
-@pytest.mark.asyncio
 async def test_auto_select_with_no_active_sources_holds_fanin_none(
     mux, patched_probes,
 ):
@@ -2308,7 +2226,6 @@ def _fresh_mux_after_restart(tmp_path):
     return m
 
 
-@pytest.mark.asyncio
 async def test_select_source_persists_manual_pin_to_disk(
     mux, patched_probes, tmp_path,
 ):
@@ -2323,7 +2240,6 @@ async def test_select_source_persists_manual_pin_to_disk(
     }
 
 
-@pytest.mark.asyncio
 async def test_manual_pin_restored_after_simulated_restart(
     mux, patched_probes, tmp_path,
 ):
@@ -2341,7 +2257,6 @@ async def test_manual_pin_restored_after_simulated_restart(
     assert restarted._status_payload()["selected_source"] == "bluetooth"
 
 
-@pytest.mark.asyncio
 async def test_auto_select_persists_auto_so_restart_stays_auto(
     mux, patched_probes, tmp_path,
 ):
@@ -2404,7 +2319,6 @@ def test_mux_mode_state_path_defaults_from_env(monkeypatch, tmp_path):
 # ---------------------------------------------------------------------------
 
 
-@pytest.mark.asyncio
 async def test_usbsink_preempt_release_runs_inside_transition_lock(
     mux, patched_probes,
 ):
@@ -2427,7 +2341,6 @@ async def test_usbsink_preempt_release_runs_inside_transition_lock(
     assert held_during_release and held_during_release[0] is True
 
 
-@pytest.mark.asyncio
 async def test_one_pause_failure_does_not_abort_pausing_the_rest(
     mux, patched_probes,
 ):

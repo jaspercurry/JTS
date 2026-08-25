@@ -50,7 +50,6 @@ import json
 import logging
 from pathlib import Path
 
-import pytest
 
 from jasper.active_speaker.baseline_profile import (
     STATE_PATH_ENV,
@@ -67,8 +66,6 @@ from tests.test_active_speaker_baseline_profile import (
     _valid_config,
 )
 from tests.test_transport_endpoint_preservation import _FakeCamilla
-
-pytestmark = pytest.mark.asyncio
 
 
 def _reigning_candidate_box(tmp_path: Path, monkeypatch):

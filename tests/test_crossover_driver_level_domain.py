@@ -108,7 +108,6 @@ def test_quietest_locked_volume_is_exact_deterministic_and_fail_closed():
         )
 
 
-@pytest.mark.asyncio
 async def test_lease_requires_each_driver_and_summed_uses_quietest_lock():
     from jasper.web.correction_crossover_backend import CrossoverLevelLease
 
@@ -175,7 +174,6 @@ async def test_lease_requires_each_driver_and_summed_uses_quietest_lock():
     assert applied[-1] == -27.0
 
 
-@pytest.mark.asyncio
 async def test_summed_sweep_lease_is_bound_to_requested_group():
     from jasper.web.correction_crossover_backend import CrossoverLevelLease
 
@@ -237,7 +235,6 @@ async def test_summed_sweep_lease_is_bound_to_requested_group():
     )
 
 
-@pytest.mark.asyncio
 @pytest.mark.parametrize("invalid_lock", (float("nan"), 0.1, True))
 async def test_summed_sweep_refuses_invalid_required_role_lock(invalid_lock):
     from jasper.web.correction_crossover_backend import CrossoverLevelLease
@@ -272,7 +269,6 @@ async def test_summed_sweep_refuses_invalid_required_role_lock(invalid_lock):
     )
 
 
-@pytest.mark.asyncio
 async def test_reference_axis_sweep_never_falls_back_to_near_field_lock():
     from jasper.web.correction_crossover_backend import CrossoverLevelLease
 
@@ -339,7 +335,6 @@ def test_discard_reference_axis_outcome_clears_runtime_and_lock_store():
     assert lease.level_lock_store.get(geometry) is None
 
 
-@pytest.mark.asyncio
 async def test_reference_axis_level_ramp_uses_bounded_listening_position_cap(
     monkeypatch,
 ):
@@ -455,7 +450,6 @@ def test_driver_level_geometry_writer_rejects_non_active_role():
         driver_level_geometry("mono", "subwoofer", "reference_axis")
 
 
-@pytest.mark.asyncio
 @pytest.mark.parametrize(
     "geometry",
     (
@@ -476,7 +470,6 @@ async def test_run_level_match_rejects_noncanonical_geometry_before_ramp(geometr
         await lease.run_level_match(geometry)
 
 
-@pytest.mark.asyncio
 async def test_sweep_lease_persists_restore_when_volume_write_response_is_lost(
     tmp_path,
 ):
@@ -525,7 +518,6 @@ async def test_sweep_lease_persists_restore_when_volume_write_response_is_lost(
     assert current == -27.0
 
 
-@pytest.mark.asyncio
 async def test_sweep_lease_rejects_nonfinite_entry_volume():
     from jasper.web.correction_crossover_backend import CrossoverLevelLease
 
@@ -546,7 +538,6 @@ async def test_sweep_lease_rejects_nonfinite_entry_volume():
     )
 
 
-@pytest.mark.asyncio
 async def test_sweep_lease_rejects_positive_target_before_any_dsp_call():
     from jasper.web.correction_crossover_backend import CrossoverLevelLease
 
@@ -567,7 +558,6 @@ async def test_sweep_lease_rejects_positive_target_before_any_dsp_call():
     )
 
 
-@pytest.mark.asyncio
 async def test_sweep_lease_uses_emergency_attenuation_after_restore_rejection():
     from jasper.web.correction_crossover_backend import (
         EMERGENCY_SWEEP_VOLUME_DB,
@@ -605,7 +595,6 @@ async def test_sweep_lease_uses_emergency_attenuation_after_restore_rejection():
     assert lease.sweep_volume_active is False
 
 
-@pytest.mark.asyncio
 @pytest.mark.parametrize(
     "geometry",
     (
@@ -642,7 +631,6 @@ async def test_level_intent_write_failure_prevents_volume_mutation(
     assert writes == []
 
 
-@pytest.mark.asyncio
 async def test_sweep_intent_write_failure_prevents_volume_mutation(monkeypatch):
     from jasper.web import correction_crossover_backend as backend
 
@@ -673,7 +661,6 @@ async def test_sweep_intent_write_failure_prevents_volume_mutation(monkeypatch):
     assert writes == []
 
 
-@pytest.mark.asyncio
 async def test_sweep_dual_recovery_failure_survives_restart(tmp_path):
     from jasper.web.correction_crossover_backend import (
         CrossoverLevelLease,
@@ -716,7 +703,6 @@ async def test_sweep_dual_recovery_failure_survives_restart(tmp_path):
     )
 
 
-@pytest.mark.asyncio
 @pytest.mark.parametrize(
     "geometry",
     (
@@ -773,7 +759,6 @@ async def test_level_dual_recovery_failure_survives_restart(
     )
 
 
-@pytest.mark.asyncio
 @pytest.mark.parametrize(
     "geometry",
     (

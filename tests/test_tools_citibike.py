@@ -118,7 +118,6 @@ def test_tool_schema_is_serializable():
 # --- Dispatch + result shape ------------------------------------------
 
 
-@pytest.mark.asyncio
 async def test_tool_passes_label_as_station_filter():
     fake = _FakeClient()
     [fn] = make_citibike_tools(fake)
@@ -126,7 +125,6 @@ async def test_tool_passes_label_as_station_filter():
     assert fake.calls == ["9 Av"]
 
 
-@pytest.mark.asyncio
 async def test_tool_empty_label_passes_empty_filter():
     fake = _FakeClient()
     [fn] = make_citibike_tools(fake)
@@ -134,7 +132,6 @@ async def test_tool_empty_label_passes_empty_filter():
     assert fake.calls == [""]
 
 
-@pytest.mark.asyncio
 async def test_tool_result_includes_required_top_level_keys():
     fake = _FakeClient()
     [fn] = make_citibike_tools(fake)
@@ -144,7 +141,6 @@ async def test_tool_result_includes_required_top_level_keys():
     }
 
 
-@pytest.mark.asyncio
 async def test_tool_result_includes_classic_when_not_ebike_only():
     fake = _FakeClient(ebike_only_flag=False)
     [fn] = make_citibike_tools(fake)
@@ -156,7 +152,6 @@ async def test_tool_result_includes_classic_when_not_ebike_only():
     assert s["ebikes"] == 2
 
 
-@pytest.mark.asyncio
 async def test_tool_result_drops_classic_when_ebike_only():
     fake = _FakeClient(ebike_only_flag=True)
     [fn] = make_citibike_tools(fake)
@@ -168,7 +163,6 @@ async def test_tool_result_drops_classic_when_ebike_only():
     assert s["docks"] == 10
 
 
-@pytest.mark.asyncio
 async def test_tool_no_match_true_when_filter_excludes_everything():
     fake = _FakeClient(result=[])  # client returns empty
     [fn] = make_citibike_tools(fake)
@@ -178,7 +172,6 @@ async def test_tool_no_match_true_when_filter_excludes_everything():
     assert result["filter"] == "ghost"
 
 
-@pytest.mark.asyncio
 async def test_tool_no_match_false_when_no_filter_passed():
     fake = _FakeClient(result=[])  # client returns empty
     [fn] = make_citibike_tools(fake)
@@ -190,7 +183,6 @@ async def test_tool_no_match_false_when_no_filter_passed():
     assert result["no_match"] is False
 
 
-@pytest.mark.asyncio
 async def test_tool_no_match_false_when_filter_whitespace_only():
     fake = _FakeClient(result=[])
     [fn] = make_citibike_tools(fake)
@@ -199,7 +191,6 @@ async def test_tool_no_match_false_when_filter_whitespace_only():
     assert result["no_match"] is False
 
 
-@pytest.mark.asyncio
 async def test_tool_multi_station_returns_per_station_dicts():
     fake = _FakeClient(result=[
         _ok_station("abc", "9 Av"),
@@ -216,7 +207,6 @@ async def test_tool_multi_station_returns_per_station_dicts():
     assert result["stations"][1]["classic_bikes"] == 1
 
 
-@pytest.mark.asyncio
 async def test_tool_propagates_offline_and_missing_status():
     fake = _FakeClient(result=[
         _ok_station("abc", "9 Av"),
@@ -234,7 +224,6 @@ async def test_tool_propagates_offline_and_missing_status():
 # --- Error handling ---------------------------------------------------
 
 
-@pytest.mark.asyncio
 async def test_tool_returns_error_dict_on_transit_error():
     fake = _FakeClient(raise_on_call=TransitError("GBFS unreachable"))
     [fn] = make_citibike_tools(fake)
@@ -247,7 +236,6 @@ async def test_tool_returns_error_dict_on_transit_error():
     assert "stations" not in result
 
 
-@pytest.mark.asyncio
 async def test_tool_propagates_unexpected_exception():
     """Programming-error exceptions (not TransitError) should bubble
     so the daemon's outer error handler logs and surfaces them. We

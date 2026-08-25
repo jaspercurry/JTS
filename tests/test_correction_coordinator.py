@@ -63,7 +63,6 @@ def hold_calls(monkeypatch):
     return calls
 
 
-@pytest.mark.asyncio
 async def test_skip_both_leaves_only_the_volume_hold(monkeypatch, hold_calls):
     """With voice and music isolation skipped, no UDS traffic happens.
 
@@ -90,7 +89,6 @@ async def test_skip_both_leaves_only_the_volume_hold(monkeypatch, hold_calls):
     ]
 
 
-@pytest.mark.asyncio
 async def test_pause_and_resume_voice(monkeypatch):
     uds_calls: list[str] = []
 
@@ -111,7 +109,6 @@ async def test_pause_and_resume_voice(monkeypatch):
     assert pause_idx < resume_idx
 
 
-@pytest.mark.asyncio
 async def test_long_window_renews_voice_measurement_lease(monkeypatch):
     """Human relay setup may outlast the voice daemon's auto-clear timer."""
     uds_calls: list[str] = []
@@ -142,7 +139,6 @@ async def test_long_window_renews_voice_measurement_lease(monkeypatch):
     assert uds_calls[-1] == "MEASURE_RESUME"
 
 
-@pytest.mark.asyncio
 async def test_lease_refresh_failure_retries_and_still_restores(monkeypatch):
     """A malformed/empty renewal cannot strand voice paused."""
     uds_calls: list[str] = []
@@ -180,7 +176,6 @@ async def test_lease_refresh_failure_retries_and_still_restores(monkeypatch):
     assert "MEASURE_RESUME" in uds_calls
 
 
-@pytest.mark.asyncio
 async def test_measurement_gate_uses_mux_owned_diagnostic_selection(monkeypatch):
     command = AsyncMock(return_value={
         "active_source": "correction",
@@ -197,7 +192,6 @@ async def test_measurement_gate_uses_mux_owned_diagnostic_selection(monkeypatch)
     )
 
 
-@pytest.mark.asyncio
 async def test_measurement_gate_threads_custom_owner_through_acquire_and_release(
     monkeypatch,
 ):
@@ -226,7 +220,6 @@ async def test_measurement_gate_threads_custom_owner_through_acquire_and_release
     ]
 
 
-@pytest.mark.asyncio
 async def test_measurement_gate_refuses_unconfirmed_selection(monkeypatch):
     async def wrong_gate(*_args, **_kwargs):
         return {"active_source": "airplay", "test_source": None}
@@ -237,7 +230,6 @@ async def test_measurement_gate_refuses_unconfirmed_selection(monkeypatch):
         await REAL_ACQUIRE_MEASUREMENT_GATE()
 
 
-@pytest.mark.asyncio
 async def test_measurement_gate_release_retries_until_explicitly_clear(monkeypatch):
     replies = iter([
         {
@@ -264,7 +256,6 @@ async def test_measurement_gate_release_retries_until_explicitly_clear(monkeypat
     ]
 
 
-@pytest.mark.asyncio
 async def test_indeterminate_acquire_cleanup_never_releases_other_owner(monkeypatch):
     calls: list[str] = []
 
@@ -285,7 +276,6 @@ async def test_indeterminate_acquire_cleanup_never_releases_other_owner(monkeypa
     assert calls == ["TEST_RELEASE correction-measurement", "STATUS"]
 
 
-@pytest.mark.asyncio
 async def test_custom_owner_indeterminate_cleanup_never_releases_foreign_owner(
     monkeypatch,
 ):
@@ -311,7 +301,6 @@ async def test_custom_owner_indeterminate_cleanup_never_releases_foreign_owner(
     assert calls == ["TEST_RELEASE doctor-aec-probe", "STATUS"]
 
 
-@pytest.mark.asyncio
 async def test_indeterminate_acquire_always_runs_owner_scoped_cleanup(monkeypatch):
     cleanup_modes: list[bool] = []
 
@@ -333,7 +322,6 @@ async def test_indeterminate_acquire_always_runs_owner_scoped_cleanup(monkeypatc
     assert cleanup_modes == [True]
 
 
-@pytest.mark.asyncio
 async def test_long_window_renews_mux_gate_even_without_voice_pause(monkeypatch):
     gate_calls: list[str] = []
     gate_renewed = asyncio.Event()
@@ -365,7 +353,6 @@ async def test_long_window_renews_mux_gate_even_without_voice_pause(monkeypatch)
     assert gate_calls[-1] == "release"
 
 
-@pytest.mark.asyncio
 async def test_custom_owner_is_used_for_acquire_renew_and_release(monkeypatch):
     gate_calls: list[str] = []
     renewed = asyncio.Event()
@@ -395,7 +382,6 @@ async def test_custom_owner_is_used_for_acquire_renew_and_release(monkeypatch):
     assert gate_calls[-1] == "release:doctor-aec-probe:False"
 
 
-@pytest.mark.asyncio
 async def test_custom_owner_lost_acquire_runs_owner_scoped_cleanup(monkeypatch):
     releases: list[tuple[str, bool]] = []
 
@@ -613,7 +599,6 @@ def test_gate_abort_ladder_stays_inside_its_modelled_bound(
     assert abort_at < mux_module.FANIN_TEST_LEASE_SEC
 
 
-@pytest.mark.asyncio
 async def test_sustained_mux_renewal_failure_aborts_before_lease_expiry(monkeypatch):
     acquire_calls = 0
     released: list[bool] = []
@@ -643,7 +628,6 @@ async def test_sustained_mux_renewal_failure_aborts_before_lease_expiry(monkeypa
     assert released == [True]
 
 
-@pytest.mark.asyncio
 async def test_measurement_gate_wraps_body_without_source_process_churn(monkeypatch):
     """The one mux gate is the complete music-isolation boundary."""
 
@@ -668,7 +652,6 @@ async def test_measurement_gate_wraps_body_without_source_process_churn(monkeypa
     ]
 
 
-@pytest.mark.asyncio
 async def test_gate_release_failure_surfaces(monkeypatch):
     async def release(**_kwargs) -> None:
         raise MeasurementWindowError("gate stuck")
@@ -680,7 +663,6 @@ async def test_gate_release_failure_surfaces(monkeypatch):
             pass
 
 
-@pytest.mark.asyncio
 async def test_measurement_releases_mux_gate_after_body_exception(monkeypatch):
     restored: list[bool] = []
 
@@ -702,7 +684,6 @@ async def test_measurement_releases_mux_gate_after_body_exception(monkeypatch):
     assert restored == [True]
 
 
-@pytest.mark.asyncio
 async def test_resume_runs_even_on_exception(monkeypatch):
     """The whole point of the finally clause: a crash inside the
     measurement should not leave the speaker silent."""
@@ -721,7 +702,6 @@ async def test_resume_runs_even_on_exception(monkeypatch):
     assert "MEASURE_RESUME" in uds_calls
 
 
-@pytest.mark.asyncio
 async def test_active_voice_session_blocks_window(monkeypatch):
     """Refuse to start a measurement if a voice session is active —
     yanking it would orphan the user's turn."""
@@ -736,7 +716,6 @@ async def test_active_voice_session_blocks_window(monkeypatch):
         async with measurement_window():
             pass
 
-@pytest.mark.asyncio
 async def test_voice_daemon_unreachable_is_tolerated(monkeypatch):
     """If voice_daemon is not running, that means there's no session
     to interrupt and no WakeLoop to pause. The mux-isolated window opens."""
@@ -762,7 +741,6 @@ async def test_voice_daemon_unreachable_is_tolerated(monkeypatch):
     ],
     ids=["unreachable", "malformed", "nonmapping", "missing", "unknown", "session"],
 )
-@pytest.mark.asyncio
 async def test_strict_voice_status_fails_before_mux_acquire(monkeypatch, status):
     acquired: list[bool] = []
 
@@ -803,7 +781,6 @@ async def test_strict_voice_status_fails_before_mux_acquire(monkeypatch, status)
         "old-daemon-missing-drain-proof",
     ],
 )
-@pytest.mark.asyncio
 async def test_strict_pause_failure_resumes_and_releases_exact_owner(
     monkeypatch, pause_reply
 ):
@@ -845,7 +822,6 @@ async def test_strict_pause_failure_resumes_and_releases_exact_owner(
     ]
 
 
-@pytest.mark.asyncio
 async def test_permissive_window_owns_cleanup_after_voice_drain_timeout(
     monkeypatch,
 ):
@@ -872,7 +848,6 @@ async def test_permissive_window_owns_cleanup_after_voice_drain_timeout(
     ]
 
 
-@pytest.mark.asyncio
 async def test_permissive_window_accepts_old_daemon_pause_reply(monkeypatch):
     calls: list[str] = []
 
@@ -890,7 +865,6 @@ async def test_permissive_window_accepts_old_daemon_pause_reply(monkeypatch):
     assert calls == ["STATUS", "MEASURE_PAUSE", "body", "MEASURE_RESUME"]
 
 
-@pytest.mark.asyncio
 async def test_strict_window_orders_isolation_around_body(monkeypatch):
     events: list[str] = []
 
@@ -928,7 +902,6 @@ async def test_strict_window_orders_isolation_around_body(monkeypatch):
     ]
 
 
-@pytest.mark.asyncio
 async def test_strict_voice_renewal_failure_aborts_and_restores(monkeypatch):
     events: list[str] = []
     pause_calls = 0
@@ -968,7 +941,6 @@ async def test_strict_voice_renewal_failure_aborts_and_restores(monkeypatch):
     assert "release:doctor-aec-probe:False" in events
 
 
-@pytest.mark.asyncio
 async def test_strict_window_cancellation_restores_voice_and_mux(monkeypatch):
     events: list[str] = []
     entered = asyncio.Event()
@@ -1011,7 +983,6 @@ async def test_strict_window_cancellation_restores_voice_and_mux(monkeypatch):
     ]
 
 
-@pytest.mark.asyncio
 async def test_concurrent_measurement_window_is_rejected(monkeypatch):
     """Only one window may be open. A second concurrent window would let
     whichever exits first send MEASURE_RESUME + release the mux gate while the
@@ -1032,7 +1003,6 @@ async def test_concurrent_measurement_window_is_rejected(monkeypatch):
         pass
 
 
-@pytest.mark.asyncio
 async def test_window_flag_released_when_precondition_fails(monkeypatch):
     """A precondition failure (active voice session) must clear the window
     flag, or every later measurement would falsely report 'already in
@@ -1050,7 +1020,6 @@ async def test_window_flag_released_when_precondition_fails(monkeypatch):
     assert coordinator._window_active is False
 
 
-@pytest.mark.asyncio
 async def test_window_flag_released_even_if_gate_release_raises(monkeypatch):
     """A failed gate release must not wedge the in-process mutex."""
     monkeypatch.setattr(coordinator, "_window_active", False)
@@ -1066,7 +1035,6 @@ async def test_window_flag_released_even_if_gate_release_raises(monkeypatch):
     assert coordinator._window_active is False
 
 
-@pytest.mark.asyncio
 async def test_window_b_blocked_while_window_a_restore_in_flight(monkeypatch):
     """The mutex stays held until window A's mux-gate release completes."""
     monkeypatch.setattr(coordinator, "_window_active", False)
@@ -1098,7 +1066,6 @@ async def test_window_b_blocked_while_window_a_restore_in_flight(monkeypatch):
     assert coordinator._window_active is False
 
 
-@pytest.mark.asyncio
 async def test_sustained_renewal_failure_aborts_via_registered_target(monkeypatch):
     """W6.1 gate should-fix: with an abort_target (a held session window), the
     isolation-loss abort cancels the REGISTERED play task — not the task that
@@ -1142,7 +1109,6 @@ async def test_sustained_renewal_failure_aborts_via_registered_target(monkeypatc
     assert target.failed is True
 
 
-@pytest.mark.asyncio
 async def test_abort_target_falls_back_to_entering_task_when_none_registered(monkeypatch,
 ):
     """Between plays (nothing registered) the abort still cancels the entering
@@ -1203,7 +1169,6 @@ class _NoopVoiceWriter:
         pass
 
 
-@pytest.mark.asyncio
 async def test_voice_uds_command_answers_cancellation_racing_the_reply(monkeypatch):
     """_voice_uds_command must terminate its caller when cancelled, even
     when voice_daemon's reply lands in the very same event-loop tick as

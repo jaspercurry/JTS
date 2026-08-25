@@ -106,7 +106,6 @@ class _FakeUdpCapture:
             await asyncio.sleep(0.005)
 
 
-@pytest.mark.asyncio
 async def test_stream_to_wav_writes_correct_format(tmp_path: Path) -> None:
     cap = _FakeUdpCapture(sample_value=1234)
     wav = tmp_path / "noise.wav"
@@ -128,7 +127,6 @@ async def test_stream_to_wav_writes_correct_format(tmp_path: Path) -> None:
     assert (data == 1234).all()
 
 
-@pytest.mark.asyncio
 async def test_stream_to_wav_heartbeat_fires(tmp_path: Path) -> None:
     """Heartbeat must fire when configured + elapsed >= HEARTBEAT_SEC.
 
@@ -157,7 +155,6 @@ async def test_stream_to_wav_heartbeat_fires(tmp_path: Path) -> None:
     assert sample_values == sorted(sample_values)
 
 
-@pytest.mark.asyncio
 async def test_stream_to_wav_empty_capture_writes_empty_wav(tmp_path: Path) -> None:
     """Capture that produces no frames must still leave a valid (empty)
     WAV on disk — otherwise the operator gets a 'where's my file?'

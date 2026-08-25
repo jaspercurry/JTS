@@ -137,7 +137,6 @@ def test_both_tools_redact_argument_and_payload_previews():
 
 # ---- Dispatch: tool forwards to HAClient.process() (unfenced) ---------------
 
-@pytest.mark.asyncio
 async def test_tool_dispatches_query_to_process_verbatim():
     fake = _FakeHAClient(_ok_response("Turned on the bedroom lights."))
     fn = _ha_tool(fake)
@@ -155,7 +154,6 @@ async def test_tool_dispatches_query_to_process_verbatim():
     assert result["error_detail"] == ""
 
 
-@pytest.mark.asyncio
 async def test_dispatch_logs_redact_household_phrase(caplog):
     fake = _FakeHAClient(_ok_response("Turned on the bedroom lights."))
     registry = ToolRegistry()
@@ -177,7 +175,6 @@ async def test_dispatch_logs_redact_household_phrase(caplog):
     assert "Turned on the bedroom lights" not in caplog.text
 
 
-@pytest.mark.asyncio
 async def test_tool_surfaces_error_detail_on_failure():
     fake = _FakeHAClient(_network_error_response())
     fn = _ha_tool(fake)
@@ -189,7 +186,6 @@ async def test_tool_surfaces_error_detail_on_failure():
     assert result["error_detail"] == "Connection refused"
 
 
-@pytest.mark.asyncio
 async def test_tool_passes_household_specific_phrases_unchanged():
     """The tool is a relay — household sentence-trigger phrases like
     'bedroom medium' must go through verbatim so HA's NLU can match them.
@@ -244,7 +240,6 @@ def test_classify_consequential_ignores_safe_actions(query):
 
 # ---- Consequential gate: stash + confirm, never execute on request ---------
 
-@pytest.mark.asyncio
 async def test_consequential_request_gates_without_calling_ha():
     fake = _FakeHAClient(_ok_response("Unlocked the front door."))
     ha_tool, _confirm = make_home_assistant_tools(fake)
@@ -258,7 +253,6 @@ async def test_consequential_request_gates_without_calling_ha():
     assert fake.calls == []
 
 
-@pytest.mark.asyncio
 async def test_confirm_executes_pending_and_relays_original_query():
     fake = _FakeHAClient(_ok_response("Unlocked the front door."))
     ha_tool, confirm = make_home_assistant_tools(fake)
@@ -272,7 +266,6 @@ async def test_confirm_executes_pending_and_relays_original_query():
     assert out["spoken_response"] == "Unlocked the front door."   # unfenced
 
 
-@pytest.mark.asyncio
 async def test_confirm_with_nothing_pending_does_not_call_ha():
     fake = _FakeHAClient(_ok_response())
     _ha_tool_, confirm = make_home_assistant_tools(fake)
@@ -284,7 +277,6 @@ async def test_confirm_with_nothing_pending_does_not_call_ha():
     assert "nothing" in out["spoken_response"].lower()
 
 
-@pytest.mark.asyncio
 async def test_confirm_is_single_use():
     fake = _FakeHAClient(_ok_response("Unlocked."))
     ha_tool, confirm = make_home_assistant_tools(fake)
@@ -298,7 +290,6 @@ async def test_confirm_is_single_use():
     assert second["success"] is False
 
 
-@pytest.mark.asyncio
 async def test_pending_expires_after_ttl():
     fake = _FakeHAClient(_ok_response("Unlocked."))
     now = {"t": 1000.0}
@@ -312,7 +303,6 @@ async def test_pending_expires_after_ttl():
     assert out["success"] is False
 
 
-@pytest.mark.asyncio
 async def test_latest_consequential_request_replaces_pending():
     fake = _FakeHAClient(_ok_response("Done."))
     ha_tool, confirm = make_home_assistant_tools(fake)
@@ -324,7 +314,6 @@ async def test_latest_consequential_request_replaces_pending():
     assert fake.calls == ["disarm the alarm"]
 
 
-@pytest.mark.asyncio
 async def test_intervening_command_clears_stale_pending():
     """S3: a consequential request is gated, then the user issues a DIFFERENT
     (non-confirming) command — that supersedes the pending, so a later 'yes'
@@ -344,7 +333,6 @@ async def test_intervening_command_clears_stale_pending():
     assert fake.calls == ["turn on the kitchen lights"]   # the unlock never ran
 
 
-@pytest.mark.asyncio
 async def test_non_consequential_uses_fast_path():
     fake = _FakeHAClient(_ok_response("Turned on the lights."))
     ha_tool, _confirm = make_home_assistant_tools(fake)
@@ -358,7 +346,6 @@ async def test_non_consequential_uses_fast_path():
 
 # ---- Gate is conditional on recent untrusted content (taint window) --------
 
-@pytest.mark.asyncio
 async def test_clean_session_runs_consequential_without_confirmation():
     """No untrusted content read → not tainted → a consequential voice
     command runs directly, no nag. This is the point of the taint window:
@@ -375,7 +362,6 @@ async def test_clean_session_runs_consequential_without_confirmation():
     assert out["success"] is True
 
 
-@pytest.mark.asyncio
 async def test_tainted_session_confirms_consequential():
     """After untrusted content was read (monitor marked), a consequential
     action gates with needs_confirmation and does NOT run."""
@@ -390,7 +376,6 @@ async def test_tainted_session_confirms_consequential():
     assert fake.calls == []
 
 
-@pytest.mark.asyncio
 async def test_taint_expires_then_runs_directly():
     """Past the window the session is clean again → consequential runs
     directly (no lingering nag)."""
@@ -409,7 +394,6 @@ async def test_taint_expires_then_runs_directly():
     assert fake.calls == ["unlock the front door"]
 
 
-@pytest.mark.asyncio
 async def test_no_monitor_is_failsafe_always_confirms():
     """A wiring miss (monitor=None) errs toward caution: consequential
     actions always confirm. Pins the fail-safe direction."""
@@ -422,7 +406,6 @@ async def test_no_monitor_is_failsafe_always_confirms():
     assert fake.calls == []
 
 
-@pytest.mark.asyncio
 async def test_taint_only_gates_consequential_not_normal_commands():
     """Even in a tainted session, a non-consequential command runs straight
     through — the window guards unlock/disarm, not 'turn on the lights'."""
@@ -451,7 +434,6 @@ def test_system_instruction_teaches_needs_confirmation_flow():
     assert "same turn" in low
 
 
-@pytest.mark.asyncio
 async def test_gate_and_execute_emit_structured_logs_without_utterance(caplog):
     fake = _FakeHAClient(_ok_response("Done."))
     ha_tool, confirm = make_home_assistant_tools(fake)

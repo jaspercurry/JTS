@@ -6,7 +6,6 @@ from __future__ import annotations
 
 from types import SimpleNamespace
 
-import pytest
 
 from jasper.bass_extension import profile as profile_mod
 from jasper.bass_extension.profile import BassExtensionEvaluation, BassExtensionRefusal
@@ -144,7 +143,6 @@ async def _state_snapshot(monkeypatch, tmp_path):
     )
 
 
-@pytest.mark.asyncio
 async def test_state_bass_extension_section_is_populated(monkeypatch, tmp_path):
     summary = {
         "commissioned": True,
@@ -158,7 +156,6 @@ async def test_state_bass_extension_section_is_populated(monkeypatch, tmp_path):
     assert state["bass_extension"] == summary
 
 
-@pytest.mark.asyncio
 async def test_state_bass_extension_section_is_fail_soft(monkeypatch, tmp_path):
     def boom():
         raise RuntimeError("profile read failed")
