@@ -617,6 +617,14 @@ these are moves.
 **Goal.** A session object that can own a graph lifetime, a volume claim, and a
 record — and a `FakeSeams`-equivalent so tests have somewhere to land.
 
+**Carry the COMPLETE mic-only parameter surface here, with stubs** (ruling S12) —
+`regime=near_field`, `position_axis=vertical`, distortion-vs-level,
+`polarity=inverted`. Build it in this wave, not later: the whole point of S12 is that
+**the API shape never changes when a capability lands**, and a surface that grows
+per-capability is the thing it forbids. Each unimplemented regime returns a named
+not-implemented disclosure in the same shape as the analyze default's missing-input
+wording (§1). **New-hardware regimes — impedance — stay out.**
+
 **The finding that makes this wave non-optional.** `tests/crossover_v2_fixtures.py`
 is **1,948 lines imported by 26 test files totalling 57,079 lines**, and **21 of
 the 26 construct a `CrossoverV2Session` through it**. Only 2 of the 26 (2,906
@@ -1072,6 +1080,7 @@ fresh session does not re-litigate them.
 | **S9** | **The doctrine deviation table: DELETED.** Owner, verbatim: *"delete it."* | The nine-row table goes. **§4's clamp list becomes positively complete** — that is the substitute, and it is the part that must actually get written: a reader who can read the 5 clamps and their ~112 enforcement families never needs a list of what stopped being one. Row (e) `BOOST_ROUTE_UNAVAILABLE` **survives inline as a normal ruling sentence**, not as a table row — it is a live retention, so it reads as doctrine, not as archaeology. The demotion *record* lives in git history. `04`'s counter-proposal (add rows j, k, l and the camilla slope arm) is answered rather than overruled: those four demotions are real and already landed, and a positively-complete clamp list makes them unnecessary to track. **Wave 7b's gate is clear.** |
 | **S10** | **Attestation never gates OPERATION — only the clamps do.** *(Owner ruling, 2026-08-25.)* | Verbatim: *"things should just keep working as we are. And if something I did upstream breaks it, then we should just loudly complain… there should be a clear issue in the doctor… we shouldn't stop stuff from working because it hasn't been proven yet… when someone else downloads the software and they have that hardware that I've already tested… they shouldn't have to recommission it. It should just work."* Three consequences. **(1) Last-known-good keeps working.** Staleness and unproven-ness become a **LOUD disclosure** — a doctor line, an `event=`, a UI hint — **never a stop.** **(2) Proof travels with the PROJECT, not the box.** Hardware the project has commissioned once ships as known-good; per-box re-proving is reserved for genuinely novel hardware, and even there it **discloses and degrades** rather than parks, wherever the clamps permit. **(3) The distinction this plan already drew becomes law: refusing to WORK dies; refusing to CLAIM stays.** The integrity class banks nothing it cannot prove — and never stops the speaker playing or the session measuring again. **MS-14 is the canonical survivor**: a fader that cannot be proven refuses to BANK the capture; it does not refuse to play the stimulus, and it does not refuse to try again. Outside the §4 clamps, that is the only shape a refusal may take. |
 | **S11** | **Sequencing: finish the refactor FIRST. Hardware use during it is ENGINEERING VALIDATION ONLY.** *(Owner ruling, 2026-08-25.)* | Verbatim: *"I don't think there's any point in continuing to try to measure and test the speaker until all of this stuff is done, unless you're just trying to validate that your code is working as you expect on actual hardware, in which case that's fine… the cleanup and refactor is the most important thing. We'll get that done and then we'll start measuring on hardware once everything's landed to flush out issues."* **The licence is CLOSED, not open-ended — five sanctioned items, and only these five:** **(1)** acceptance row 9, the baseline reproduction — *an instrument-validation act, not a measurement campaign*; **(2)** wave 6's no-pop check; **(3)** the 5-case stereo-tap re-verify after a fan-in change; **(4)** the #2202 one-hour scoping; **(5)** 7j's demotion verification. **NO tuning. NO candidate campaigns. NO commissioning. NO EQ or crossover changes to the speaker's sound** until the plan's acceptance closes. Then — and only then — the campaign (acceptance row 10, the owner's linearization bar). **Anything hardware-shaped that is not on this list gets ADDED to it explicitly before it runs, never assumed onto it.** *Operational form (the bench discipline this program already follows):* **jts3 stays parked between validation acts**, and every act ends with the standing park — **nothing playing, fader at the household value, spool clean** — exactly as `captures/postfix-baseline-2026-08`'s end-state probe records it. |
+| **S12** | **Mic-only capability holes are STUBBED, not omitted.** *(Owner ruling, 2026-08-25.)* | Verbatim: *"If there's a hole in our existing capability that the plan points out — obviously not stuff that involves new hardware, like measuring resistance — but for just microphone measurements… we would just stub it for the time being."* **The `measure` / `analyze` parameter surface is built COMPLETE for every mic-only regime this plan identifies, from day one** — `regime=near_field`, `position_axis=vertical`, distortion-vs-level, `polarity=inverted`. An unimplemented regime is a **LOUD STUB**: invoking it returns a named not-implemented disclosure saying exactly what is missing — *"near-field splice not implemented; capture banked, splice pending R-3"* — in the same shape as the analyze default's missing-input wording (§1). **Never a silent skip, and the API shape never changes when the capability lands**, so a preset may name a stubbed regime today and simply start working later. This is **S10's disclosure discipline turned on our own gaps**: the engine admits what it cannot do instead of pretending the parameter does not exist. **New-HARDWARE regimes stay OUT of the parameter surface** — impedance (R-6) gets no stub until the owner's hardware decision, because a stub for hardware that may never exist is exactly the speculative flexibility the charter forbids. |
 
 ### Still open — none
 
@@ -1125,7 +1134,7 @@ nothing about whether *we* merge a wave before its evidence lands, and we do not
 | 7 | **Net lines at the END STATE** (ruling S4) | — | **NEGATIVE. Stated floor: −90,000.** Table below. Temporary adds during a wave do not count against this; scaffolding that would need deleting is not built at all. |
 | 8 | **The class-A suite** | 149 files / 126,663 lines | **green**, running against the new engine. Reference: 410 passed / 24 skipped / 10.6 s across three flagships at `e064fa43d`. |
 | 9 | **The baseline campaign reproduced** — *an instrument-validation act, not a measurement campaign* (S11) | `captures/postfix-baseline-2026-08` r1 + r2 | re-run on the new engine, **within the campaign's own measured noise floor: worst round-to-round change ≤ 0.37 dB**, 16/16 captures with the fader held, 0 glitched captures. The report's own bar: *"anything smaller than about 0.4 dB is noise, not a result."* **Like-for-like note:** the per-driver reproduction is applied-graph-independent (it rides the session measurement graph), but the **entry-baseline summed capture is not** — compare it against the same applied graph as the original, or disclose the delta (§6 R4). |
-| 10 | **Then the real thing** — **only after every row above closes** (S11) | — | the owner's acceptance bar, quoted from that report: *"the full candidate campaign — many candidates, each measured, one winner, and the winner re-measured."* Entire trusted range, multi-candidate, best-of final, re-measured. **And the campaign OPENS with instrument bring-up in roster order — R-1 → R-4, with R-5/R-6 when the owner provides hardware** (the INSTRUMENT ROSTER below). |
+| 10 | **Then the real thing** — **only after every row above closes** (S11) | — | the owner's acceptance bar, quoted from that report: *"the full candidate campaign — many candidates, each measured, one winner, and the winner re-measured."* Entire trusted range, multi-candidate, best-of final, re-measured. **And the campaign OPENS with instrument bring-up in roster order — R-1 → R-5a, with R-5b/R-6 when the owner provides hardware** (the INSTRUMENT ROSTER below). |
 
 **Row 7 has a measurement instrument now — stop hand-counting.** The audit program
 is building **`scripts/right-size-report.sh`** with committed baselines: per-zone
@@ -1174,20 +1183,41 @@ bundle.
 |---|---|---|---|---|
 | **R-1** | **Reverse-null** — shipped in three parts, executor deleted, **never run** | `measure(polarity=inverted)` + `analyze(null_depth)` | The guide's standard level **and** time diagnostic in one act — *"one measurement, two answers"* — **and** one of the two probes `docs/attribution-stage-plan.md:349` declares **"both required"** for the live M1 question. **Smallest step, biggest diagnostic.** | `13 §2.5`, `§H6`, `§"gaps 1 and 5 are jointly blocking"` |
 | **R-2** | **Wider horizontal orbit + DI consumption** | `measure(positions=[…±30, ±45])`, then give the DI / per-angle model its **first production caller** in `analyze` | Measured **DI continuity at Fc** — the strongest listener-preference correlate the guide cites (Toole) — and the **−6 dB @ 30° ceiling, which is uncomputable from today's set**. Closes the doctrine's own violation: *"every mic movement gathers the maximum information it can support."* | `13 §2.2`, `§1h-angles`, `§H2` |
-| **R-3** | **Near-field → far-field splice** | one `analyze` function over **two record kinds that already exist** | Lowers the **357 Hz** trusted floor; unblocks the explicit baffle-step model; and is the **named discriminator** for the campaign's one unexplained **~810–1055 Hz** feature. | `13 §2.3`, `§1h`, `§1e-note` |
+| **R-3** | **Near-field → far-field splice** — *capture SHIPS; the splice is the stub* | one `analyze` function over **two record kinds that already exist** | Lowers the **357 Hz** trusted floor; unblocks the explicit baffle-step model; and is the **named discriminator** for the campaign's one unexplained **~810–1055 Hz** feature. | `13 §2.3`, `§1h`, `§1e-note` |
 | **R-4** | **Distortion as a design input** | a distortion-vs-**level** `measure` parameterization + the `analyze` consumer that turns it into a measured floor | Lets the tweeter floor be **confirmed or moved on evidence** instead of read off a datasheet — the guide's §1c method. | `13 §2.4`, `§H5` |
-| **R-5** | **Vertical axis** — **HARDWARE-GATED, owner decision** | `measure(position_axis=vertical, …)` — the record already carries the axis | The one axis our own code names as **the** crossover axis and then defers. It is the discriminator for the delay/polarity degeneracy, and **P5** in the "both required" pair. | `13 §2.1`, `§1f`, `§H1-b`, master-plan **E1** |
+| **R-5a** | **Vertical axis via a HUMAN mover** — **mic-only, no hardware gate** | `measure(position_axis=vertical, …)` + a preset + MS-17's `prompt` carrying the placement instruction | The crossover axis, reachable **today** with a person and a stand. Joins the buildable roster behind R-1…R-4. | owner ruling S12; derived from MS-17 |
+| **R-5b** | **Vertical axis via the ARM** — **HARDWARE-GATED, owner decision** | the same parameters, driven by a positioner | Repeatability and unattended walks at vertical steps; master-plan **E1**'s 5° ladder. | `13 §2.1`, `§1f`, `§H1-b`, master-plan **E1** |
 | **R-6** | **Impedance** — **HARDWARE-GATED, owner decision** | a sense-resistor jig feeding `measure`; two schema slots already wait | Genuinely **low cost for JTS** — we design no passive network, and the one place impedance enters arithmetic takes a declared nominal and refuses to invent a default. | `13 §2.7`, `§H4` |
 
-**What each hardware gate is actually asking for.** R-5 needs **rig capability
+**What each hardware gate is actually asking for.** R-5b needs **rig capability
 for elevation** — our code names the axis (`crossover_v2_flow.POSITION_ROLE_XOVR`,
 *"the axis the woofer/tweeter crossover lobes on"*) and then makes it unreachable
 (`position_angle_deg` raises; `pose_at_angle` calls elevation *"the ratified
 deferred axis"*; `CLOUD_VERIFY_POSE_PROMPTS` is *"vertical-free BY
 CONSTRUCTION"*). R-6 needs **a sense-resistor jig**. Until the owner provides
-either, **the corresponding blind spot stays stated and disclosed** — vertical
-lobing in particular — which is S10's spirit applied to a measurement we cannot
-take: it never silently degrades a verdict, it says what it could not see.
+either, **the corresponding blind spot stays stated and disclosed** — which is
+S10's spirit applied to a measurement we cannot take: it never silently degrades a
+verdict, it says what it could not see.
+
+**The R-5 split is OWNER-RULING-DERIVED, and fragment `13` is silent on it — say so
+rather than implying support.** `13` frames vertical as hardware-blocked throughout
+(§2.1, §6 item 1 *"Blocked on elevation capture hardware"*, §3 item 4 *"no plan owns
+shipping it"*), because it read the code's framing and the code is arm-centric. The
+split follows instead from **MS-17**: the engine cannot know who moved the mic, so it
+cannot require an ARM for an AXIS. A person and a stand satisfy the *"mic is at
+position P"* precondition exactly as a positioner does, and `jasper-angle-capture`
+already carries the human mover as a first-class concept (`MOVER_MAX_ANGLE_DEG` =
+45 arm / **80 human**).
+
+**But R-5a is mic-only, NOT zero-code — do not budget it as free.** Three sites
+deliberately refuse a vertical pose today: `position_angle_deg` **raises**
+(*"an external positioner cannot raise or lower the microphone"* — note it says
+*positioner*, which is the seam the ruling reopens), `pose_at_angle` calls elevation
+*"the ratified deferred axis"*, and `CLOUD_VERIFY_POSE_PROMPTS` is *"vertical-free BY
+CONSTRUCTION"*. A fourth site, `REMOTE_VERTICAL_DISCLOSURE`, currently **tells the
+household vertical is not covered** and must be updated when R-5a lands, or the
+speaker will disclose a blind spot it no longer has. Undoing a deliberate constraint
+is real work — it is just work that needs no purchase order.
 
 **Three notes the roster must carry, or it imports a stale claim.**
 
@@ -1231,7 +1261,7 @@ Fc** verifies **level and time simultaneously**.
 Plus the **in-phase sanity check**: correctly matched and time-aligned drivers
 sum to **+6 dB** at Fc.
 
-*One number to carry into R-1 and R-5, corrected by `13 §H1-b`:* the stable
+*One number to carry into R-1 and the R-5 pair, corrected by `13 §H1-b`:* the stable
 measured fact for this speaker is the **direct-arrival gap, −405.7 ± 3.3 µs
 (n = 33)**, banked as `BASIS_US`. A **+314 µs** figure appears in the tree as
 **one of three mutually inconsistent optimizer outputs at one physical
@@ -1248,8 +1278,8 @@ authority, and the roster **absorbs those unbuilt waves by reference**:
 | Master-plan item | Roster home |
 |---|---|
 | **Wave 4.2 — Nearfield splice v1** (fully specified: 0.055×D placement, the Struck & Temme enclosure bound, port scaling by √(Sp/Sd), baffle step from f₃ ≈ 115/W) | **R-3** |
-| **The 13-pose `baseline` program** (0°, ±10°, ±20°, ±30°, ±40° horizontal; 0°, ±10°, ±20° vertical; plus nearfield per woofer) | **R-2** (horizontal) + **R-5** (vertical, gated) |
-| **The `verify` program's reverse-null**, and **E1** (lobe-tilt resolution) | **R-1**, **R-5** |
+| **The 13-pose `baseline` program** (0°, ±10°, ±20°, ±30°, ±40° horizontal; 0°, ±10°, ±20° vertical; plus nearfield per woofer) | **R-2** (horizontal) + **R-5a / R-5b** (vertical — R-5a needs no hardware) |
+| **The `verify` program's reverse-null**, and **E1** (lobe-tilt resolution) | **R-1**; **E1**'s 5° ladder is **R-5b** |
 | **Wave 4.1 — Butterworth support** | **Not ranked.** `13 §2.6` rates it low cost and the guide itself makes LR4 the default. It stays with the master plan, unabsorbed and unhidden. |
 
 **Wave 7e's doc consolidation carries this forward**: when the master plan folds

@@ -17,15 +17,15 @@ work). The evidence fragments (`00`–`13`) live beside the plan in
 Read these, in order, END TO END, before any act:
 
 1. `/Users/jaspercurry/Code/JTS/captures/NEXT-SESSION-PROMPT-2026-08-26-refactor.md` — the staging file:
-   bench state and its one trap, the eleven settled rulings (S1–S11), the
+   bench state and its one trap, the twelve settled rulings (S1–S12), the
    Instrument Roster pointer, coordination with the parallel audit program,
    and the hard-won operational rules from the week that built all this.
 2. **The plan — the authority:**
    `/Users/jaspercurry/Code/JTS/captures/tuning-stack-inventory-2026-08/12-refactor-plan-draft.md`
    (identical copies: `docs/REFACTOR-TUNING-2026-08.md` on branches
    `claude/tuning-refactor-plan` and `claude/wave-1-prs-baseline-0f21e4`).
-   Eleven rulings, seventeen must-survive invariants, the six-instrument
-   roster, waves 0–8 with counted targets, and §6's honest list of where
+   Twelve rulings, seventeen must-survive invariants, the seven-entry
+   roster (R-1…R-5a buildable; R-5b/R-6 hardware-gated), waves 0–8 with counted targets, and §6's honest list of where
    evidence ran out. Every number cites its source; nothing is re-derived.
 3. `AGENTS.md` at current `main` — the ~200-line charter. Its Review policy
    is your gate tiering; its Non-negotiables are the closed clamp list.
