@@ -29,6 +29,11 @@ from pathlib import Path
 import numpy as np
 import pytest
 
+# One constant shared with tests that rely on holding the VALID token
+# (e.g. the host-axis 403 pin, whose premise breaks silently if the
+# fixture token drifts from what the test sends).
+TEST_CSRF_TOKEN = "test-token"
+
 from jasper.wake_corpus import bridge_session
 from jasper.wake_corpus.capture_plan import PlanConformance
 from jasper.wake_corpus import recording_backend
@@ -222,7 +227,7 @@ def _running_server_port_fixture(backend) -> Iterator[int]:
     """Run one recorder HTTP server and own its complete lifecycle."""
     server = wake_corpus_setup.make_server(
         ("127.0.0.1", 0),
-        csrf_token="test-token",
+        csrf_token=TEST_CSRF_TOKEN,
         backend=backend,
     )
     port = server.server_address[1]

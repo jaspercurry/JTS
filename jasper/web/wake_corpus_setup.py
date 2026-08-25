@@ -288,8 +288,9 @@ CAPTURE_OPTIONS: tuple[CaptureOption, ...] = (
 DEFAULT_HOST = "127.0.0.1"
 DEFAULT_PORT = 8782
 
-# CSRF header name. Matches common JS framework conventions; the
-# embedded JS reads `<meta name="jts-csrf">` and sends this header
+# CSRF header name. Matches common JS framework conventions; the page's
+# ES module (/assets/wake-corpus/js/main.js) reads `<meta name="jts-csrf">`
+# and sends this header
 # on every mutating request.
 CSRF_HEADER = "X-CSRF-Token"
 

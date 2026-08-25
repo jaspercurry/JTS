@@ -18,6 +18,7 @@ from jasper.wake_corpus import bridge_session
 from jasper.web import wake_corpus_setup
 
 from tests.wake_corpus_setup_fixtures import (
+    TEST_CSRF_TOKEN,
     _corpus_post_handler,
     _backend_fixture,
     _mutating_status,
@@ -115,8 +116,23 @@ def test_post_known_path_disallowed_host_403s(running_server_port: int) -> None:
             running_server_port,
             "POST",
             "/api/session",
-            token="test-token",
+            token=TEST_CSRF_TOKEN,
             extra_headers={"Host": "evil.example"},
+        )
+        == 403
+    )
+
+
+def test_post_known_path_with_non_ascii_token_403s(running_server_port):
+    """A latin-1 byte in the token header must 403 like any wrong token,
+    never abort the connection (secrets.compare_digest raises TypeError
+    on non-ASCII str)."""
+    assert (
+        _mutating_status(
+            running_server_port,
+            "POST",
+            "/api/session",
+            token="\u00e9" * 32,
         )
         == 403
     )
