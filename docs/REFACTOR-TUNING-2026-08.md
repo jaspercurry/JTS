@@ -1,0 +1,1176 @@
+# 12 — The tuning-engine refactor plan (FINAL — all gates settled 2026-08-25)
+
+> **Location note (2026-08-25):** this plan's evidence base — inventory
+> fragments `00`–`11` cited throughout — lives in
+> `captures/tuning-stack-inventory-2026-08/` on the bench machine
+> (gitignored bench evidence). The numbers those citations back are stated
+> inline here. The coordination boundary with the repo-wide audit program is
+> [REFACTOR-COORDINATION-2026-08.md](REFACTOR-COORDINATION-2026-08.md).
+
+
+**Status: final.** Every gate the inventory escalated is closed — nine owner
+rulings, S1–S9, recorded in §4. A fresh session executes this. **Read §6's R9
+first**: the repo's governance surface changed after the gates closed, and it
+changes what you read at session start and how you re-baseline wave 7h.
+
+**Evidence base.** This plan decides. It does not survey. Every number below
+cites a fragment of the tuning-stack inventory (`00`–`11` in this directory),
+`docs/DEEP-AUDIT-2026-08-25.md`, or a named capture campaign. Nothing here was
+re-derived. Where the evidence was not enough to plan, §7 says so instead of
+guessing.
+
+**Provenance.** The inventory pinned itself at merged `main` `e064fa43d`. This
+plan was written at the same commit — `git rev-parse HEAD`, `origin/main`, and
+`00`'s pin all read `e064fa43d`, and the god-file counts reproduce byte-exactly
+(`13,459 + 9,563 = 23,022`). Plan and evidence share one tree.
+
+---
+
+## 0. Why we are doing this
+
+### The north star
+
+The owner, 2026-08-25:
+
+> "have a speaker play the test tones at a volume that we deem as correct using
+> the microphone, and then take a bunch of measurements in a bunch of different
+> locations, and then run a bunch of analysis on them, and then allow an LLM to
+> access all of that, and then create prescriptions, and then be able to test a
+> variety of configs at each physical measurement point… Everything should be
+> modular so that if the web interface is being used to take the measurements,
+> great. Or if the LLM is driving a robotic arm, that's also great. But they
+> should all use the same plumbing."
+
+The bar:
+
+> "any third party can walk in and understand exactly how our audio-tuning
+> pipeline is organized."
+
+The charter, 2026-08-24 (quoted verbatim in `00 §The charter this serves`):
+
+> "take the good ideas. the contracts. the fundamental actions. and wash away
+> the cruft. no nannys. one volume owner and source of truth. keep all of the
+> analysis functionality. just simplify and wash away the cruft."
+
+*(The north-star and bar quotes are the owner's spoken direction on 2026-08-25,
+recorded here for the first time. The charter is already in the tree at
+`00:16–19`.)*
+
+### Four rules the owner set
+
+**1. Net lines go DOWN at the END STATE, and we count them.** SETTLED,
+2026-08-25: **end-state deletion is the bar.** Temporary adds during a wave are
+fine. The hard rule is *"we're not investing in systems we're going to be
+deleting"* — **no throwaway scaffolding.** Anything built is built to keep, or it
+is not built. *Caveat that still travels* (`00 §5.4`, `00 §R5`): 60% of the god
+files' 23,022 lines are prose, and several rulings exist **only** as docstrings
+there. Success is measured in seams and call-graph depth; the line count is the
+budget, not the goal. **Extract the rulings before the code moves.**
+
+**2. Configs go inside positions.** Moving the mic is expensive — a person
+walks, or an arm drives. Patching a config is cheap. So the loop is:
+
+```
+for position in positions:          # EXPENSIVE — a mic move
+    for candidate in configs:       # CHEAP — a patch, no graph swap
+        run(stimulus) -> capture -> bank
+```
+
+Not new policy. The ratified principle this rule descends from is already in the
+doctrine — *"every mic movement gathers the maximum information it can support,
+not the minimum that answers one question"*
+(`docs/measurement-loop-doctrine.md §1`, quoted as **current** doctrine; that
+file's six-step loop is rewritten to the settled four verbs in wave 7). Today the
+code inverts the rule: the inner loop costs 2 config swaps, 2 ducks and ≥0.9 s of
+duck ramp per stimulus (`03 §Moving parts, counted`). Fixing the inner loop is
+the single change that makes the north star's *"test a variety of configs at each
+physical measurement point"* affordable.
+
+**3. The old path dies immediately.** SETTLED and strengthened, 2026-08-25:
+*"the old path should die right after we've got the new one in… fallbacks aren't
+a thing. We're not going to have duplication… deleting old systems whole hog."*
+Every wave runs **build new → prove → delete old**, in that order, and the
+deletion is not deferred to a later wave. **No fallback flags. No coexistence
+windows** beyond the proof step itself. This changes what "rollback" means
+everywhere in §3: rollback is `git revert` of the wave's PRs, never a runtime
+path kept alive as insurance.
+
+**4. AEC is out of scope.** See §1's fence line.
+
+### Non-goals — say them out loud
+
+- **AEC is explicitly OUT OF SCOPE** — not the bridge, engines, profiles, or
+  reconciler. **Fence line only: the same output device contract** (§1, MS-7).
+- **Measurement management is future work, not this plan.** Session structure,
+  browsing, and deletion of stored measurements are explicitly deferred by the
+  owner. This plan makes the information easy to bank and easy to read; it does
+  not build the library around it.
+- **The voice side is not touched.** No wake, providers, prompt, or cues.
+- **The audit program's zone is not touched.** `11` draws the boundary; the two
+  programs meet by handoff, never by shared files.
+- **The truth layer's behaviour does not change.** 92 analysis units port whole
+  and unedited (`00 §4.1`). The two known defects are in what the caller *hands*
+  them, and they get fixed as part of defining the record contract — never as
+  pre-work (`00 §3.3`).
+- **The apply/rollback transaction is never a refactor target.** It is the one
+  irreversible act and the only path that writes a live DSP graph. Moving it
+  buys nothing and risks the thing the household hears.
+- **We do not re-extract analyze and prescribe.** They already escaped: 9,526
+  package lines (28%) are consumed only by `jasper/cli/*` and `scripts/*`, and
+  four of those five entry points import **zero** from either god file
+  (`06 §Judgment 2`).
+
+---
+
+## 1. The target architecture
+
+One engine. Two thin front ends. One truth layer, untouched, behind a record
+contract.
+
+```
+ FRONT ENDS — thin. They pick WHAT to measure and WHERE. Never HOW.
+   ┌─ /correction/ web wizard ─┐        ┌─ LLM + robotic-arm runner ─┐
+   │  a person moves the mic   │        │    the arm moves the mic   │
+   └────────────┬──────────────┘        └──────────────┬─────────────┘
+                └──────── THE SAME VERBS ──────────────┘
+                                 ▼
+ THE ENGINE — one session object
+   VOLUME OWNER         SESSION GRAPH          CAPTURE RECORD
+   one write door       installed ONCE         one shape
+   4 claim kinds        role-routed            place is a field
+   ranked claims        crossover-free         DriverResponse banked
+   one tolerance        tweeter-protected      provenance + honesty
+         │                    │                        ▲
+         │        patch_config per candidate (cheap)   │ write
+         ▼                    ▼                        │
+   VERBS   measure · analyze · recommend · save
+           ONE cycle. `measure` is parameterized — a baseline, a
+           re-measure and a candidate-check are the same verb.
+           The playback transaction lives INSIDE measure, with one
+           owner: it is where every recorded incident in this
+           inventory happened.
+   REFUSALS  CLAMP      5 mechanisms / ~112 enforcement points — stops
+             INTEGRITY  ~100 — cost is a re-measure; MUST still bank
+             DISCLOSURE says it, never blocks
+                                 │  (program, samples, sample_rate) + a dir
+                                 ▼
+ TRUTH LAYER — 92 units. UNCHANGED. Zero upward imports, and tested.
+   62 of 79 in-product modules pure · 10 file readers · 7 live transport
+                                 ▼
+ TRANSPORT — the fan-in `correction` ring lane. Stereo, bit-exact
+   (measured). Same lane for both front ends. Isolation bounded at
+   2 channels, and it fails SILENTLY (MS-16).
+
+ FENCE — AEC. The bridge's only reference tap is DOWNSTREAM of CamillaDSP
+   (`jasper/cli/aec_bridge.py:263`), so nothing the engine does to the
+   graph reaches the reference signal. One shared surface: the OUTPUT
+   DEVICE CONTRACT — format/rate/channels/period/buffer (MS-7). Churn
+   across it goes DOWN (twice per stimulus → once per session), so the
+   risk direction is favourable. But `09 §2` warns the inventory is
+   SILENT on AEC: treat that silence as unsurveyed, not as cleared.
+```
+
+### The engine, part by part
+
+**One volume owner.** 18 production-reachable fader writers today (+2 test-only
+= 20 in tree; 21 live surfaces that can change loudness, counting the 3
+non-Camilla carriers), **9 colliding inside one crossover-v2 session** with no
+owner arbitrating (`01`). They collapse to **4 claim kinds** — household ·
+transient-duck · session-measurement · commissioning. Detail in wave 5.
+
+**One session graph, installed once, and it must be all THREE things** — `09`'s
+correction to the addendum's first draft (PC-8): **role-routed** (role → output
+channel) · **crossover-free** (or every driver is measured through the crossover
+the session is designing) · **per-driver protected** (the tweeter high-pass
+**and** the soft-clip limiter together, on exactly the tweeter channels, proven
+once by `_assert_program_graph_proven` before the first stimulus — MS-13).
+Isolation does **not** come from the graph: it rides the WAV's channels, and the
+lane was measured passing stereo bit-exactly with an idle channel at exact
+digital zero (`08`). Three axes, named once so nobody flattens them (PC-7):
+**lane = transport · graph = routing · WAV = isolation.** Per-candidate change
+is then a cheap `patch_config`, which already ships twice as prior art — the
+bass bench's "structural swap once, patch per candidate", and `/correction/`'s
+`_load_measurement_baseline`.
+
+**One capture record.** 102 persisted record types today, 4 same-fact
+duplications, 24 orphan sites, 2 inverse orphans (`02`). Five blocks: identity ·
+**place** · stimulus-and-path · honesty · **the curve**. Block 5 does not exist
+today for a lateral pose, *"and it is the whole gap."* Detail in wave 4.
+
+**The verb set — SETTLED by the owner, 2026-08-25** (full ruling and quotes at
+§4 S1). Four verbs, one vocabulary, no second layer: **`measure` · `analyze` ·
+`recommend` · `save`.** The engine's verbs **are** the loop's language, in words
+anyone would understand. *"Measuring is measuring"* — baseline, re-measure and
+candidate-check are one parameterized verb, so everything the code calls VERIFY
+today is `measure` with different arguments plus `analyze`. Propose, prescribe
+and recommend are one thing, and the plain word wins: **`recommend`.** Run and
+Collect are *"just back to measure again"* and are not verbs. `save` is simple.
+
+The inventory's argument for a fifth `Run` boundary (`00 §3.5`) is **superseded**.
+The engineering fact underneath it survives, relocated: the playback transaction —
+ready → admit → lock → play → restore, where every recorded incident in this
+inventory happened — becomes a **named internal module inside `measure`**, a
+first-class code boundary with its own contract, but **not** a vocabulary item.
+Pipeline mechanics are *"just the mechanics of how we execute the verbs… the LLM
+doesn't really care about"* them. Real seam, real owner, invisible to the LLM.
+
+**How today's code regions map onto the four verbs** — write this down once, or a
+fresh session reading §3's wave names will think VERIFY is still a thing:
+
+| Today's region | New verb |
+|---|---|
+| capture walk · capture plan · spatial group | `measure` |
+| VERIFY (prepare · grade · verdict) | `measure` (candidate-check parameterization) + `analyze` |
+| the 92-unit analysis layer · round views | `analyze` |
+| the prescriber CLI's `packet → propose → stage → status` *(existing subcommand names, left alone)* | `recommend` (already shipped, already decoupled — **do not re-extract**) |
+| `persist_conductor_state` · the record writers | `save` |
+| the apply/rollback transaction | none — it is not a verb, and it never moves |
+
+**Refusals, three sorts.** **CLAMP** stops — 5 named mechanisms, ~112
+enforcement points; quote both numbers every time, because collapsing the 112 is
+not the job and naming the 5 is. **INTEGRITY** is the class that needs a NAME —
+~100 refusals protect the honesty of the evidence and have no doctrinal home,
+which is how a nanny wore a costume for as long as it did. Adopt the principle
+verbatim — *"A dishonest measurement is worse than no measurement"* — with the
+owner's #2087 ruling as the discriminator: **would measuring again plausibly fix
+it?** Yes → capture defect; refuse, **and still bank**. No → it describes the
+room, the rig, or the result; disclose and recommend, never block.
+**DISCLOSURE** never blocks. Plus the **STOP-RELAXER** pattern — three pieces of
+production code exist only to let a mostly-right stop through, a census that
+greps for `raise` cannot see them, and naming it makes #2935's fix obviously a
+fourth one.
+
+**The front ends are thin, and that is the whole modularity claim.**
+Web-driven human measurement and LLM-plus-robot-arm measurement are thin front
+ends over **the same four verbs** — in the owner's words, *"they should all use
+the same plumbing."* A front end picks positions and candidates and shows
+results. It does not own volume, install a graph, or decide what banks. The
+wizard and the arm runner differ only in **who moves the mic**. If a change has
+to be made in both, it belongs in the engine.
+
+---
+
+## 2. The contract — what must survive
+
+These bind the plan. They come from `09-seam-contract-tests.md`, reproduced here
+as the plan's contract section. MS-1…MS-6 and MS-13…MS-16 are hard constraints;
+MS-7…MS-8 are tripwires to check before the design freezes; MS-9…MS-12 are
+principles the consolidated code should carry forward.
+
+**Hard constraints on the session graph and on WAV-channel routing:**
+
+1. **MS-1 — Whole device contract, or none.** Any graph a measurement path loads
+   must derive **every** `dataclasses.fields(ActiveEmitDevices)` field from
+   `active_emit_devices(playback_device, topology=...)` and forward all of them —
+   a subset is #2450/#2343/#2359/#2363 re-armed, and at session scope it poisons
+   every stimulus instead of one.
+2. **MS-2 — Both ends move together.** Under `shm_ring`, a graph's capture and
+   playback halves move on the same rung or neither does, because a ring sink over
+   the snd-aloop tap is digital silence with every daemon reporting healthy.
+3. **MS-3 — One wire.** A ring-named lane carries `resolve_ring_wire(topology).sample_format`
+   on *both* ends plus `RING_CAMILLA_CHUNKSIZE`, `RING_CAMILLA_TARGET_LEVEL`,
+   `queuelimit: 1`, `enable_rate_adjust: false` — the box's program-lane default is
+   the shear that halted jts3's arm attempt 2.
+4. **MS-4 — Stimuli enter pre-DSP.** A stimulus may ride a *renderer-lane* ring
+   (ingress into fan-in) but never the post-crossover `jts_ring_active_playback`,
+   whose single-producer epoch takeover *admits* a stray writer where a raw `hw`
+   device would refuse.
+5. **MS-5 — Every ring-naming emitter asks the width.** Any new emitter that can
+   name a ring device must call `_assert_ring_playback_width`, because the ioplug's
+   attach compares channel count field-by-field and *crashes* the ring rather than
+   refusing the config.
+6. **MS-6 — No full-range graph on a roleful box.** `flat_program_graph_blocked_reason`
+   must keep refusing the flat program lane on every topology that has an active
+   ring, or a full-range program reaches a compression driver.
+
+**Hard constraints the sibling tests add:**
+
+13. **MS-13 — The measurement graph is role-routed AND crossover-free AND
+    tweeter-guarded.** `_assert_program_graph_proven` is the emitter's fail-closed
+    return contract — reference-closure plus three L0 tweeter proofs requiring the
+    high-pass **and** the soft-clip limiter together on exactly the tweeter output
+    channels — and a session-scoped graph must still pass it, once, before the
+    first stimulus.
+14. **MS-14 — Every stimulus plays at the declared level, proven, or not at all.**
+    The fader is read back and proven before any audio, and a fader that cannot be
+    proven refuses the capture rather than banking it — because
+    `readmit_program_from_wav` admitted the program against that declared level.
+15. **MS-15 — The lane wire is a boot-time fact with zero writers.** A measurement
+    session must never write `JASPER_FANIN_RING_WIRE_FORMAT` or re-render the ring
+    conf.d; that key is the fleet's only rollback lever off the wide wire, and its
+    writer set is asserted empty across production Python, the installer, the
+    deploy bins and the units.
+16. **MS-16 — A stimulus WAV wider than the lane is silently downmixed, not
+    refused.** `pcm.correction_ring_lane` is a `plug` over a `channels 2` slave, so
+    channel-content isolation is bounded at 2 through that lane; anything wider
+    belongs on the topology-derived active ring, reached by the arm ladder.
+
+**Tripwires — check before the design freezes:**
+
+7. **MS-7 — The chip-AEC alignment artifact is edge-bound.** A commissioned K is
+   valid only for the exact `output_format/rate/channels/period/buffer` it was
+   measured against; any change to that geometry must park the box with
+   `CommissionRequired`, never degrade quietly. (The reference *signal* is safe —
+   the tap is downstream of CamillaDSP — so this is geometry only.)
+8. **MS-8 — A tone must fit its lease.** Anything played under a single
+   un-refreshed fan-in test lease stays shorter than `mux.FANIN_TEST_LEASE_SEC`
+   (60 s), or it adopts the measurement window's refresh loop instead.
+
+**Principles the consolidated code should carry forward:**
+
+9. **MS-9 — A secondary DSP instance fails closed to silence, never to a reboot**
+   (camilla#2 carries no `StartLimitAction`; only the always-on camilla#1 owns a
+   recovery handler).
+10. **MS-10 — A blocked graph-repair decision leaves the statefile byte-for-byte
+    untouched** — never half-act, never fall back to flat.
+11. **MS-11 — The fan-in gate is owner-scoped**: a select and its release name the
+    same owner, and an *indeterminate* select still releases, so one surface can
+    never steal or strand another's gate.
+12. **MS-12 — Commission-tone orchestration has exactly one owner module**, shared
+    by both operator surfaces as the same function objects and imported constants.
+
+### Three contract items the wave PRs must execute, not just respect
+
+**PC-3 — Re-point the two graph-emit guards; never drop them.**
+`test_the_crossover_v2_program_graph_follows_the_arm_in_both_directions`
+(`test_ring_active_endpoint.py:2410`) and the
+`bind_production_play(crossover_v2 CHECK/MEASURE)` entry in
+`test_every_emit_devices_field_reaches_the_emitter` (`:2603`) are the **only**
+tests holding the measurement path's emit to `active_emit_devices`, and both bind
+the per-stimulus call site this plan deletes. Add the session-graph emit site to
+both **in the same PR**. MS-1's blast radius grows under this change — a
+half-derived device block poisons one stimulus today, every angle and retry and
+driver tomorrow — so the guard gets *stronger*, not deleted with the site it
+happened to watch.
+
+**PC-4 — Two hard-coded counts break on a new emitter.**
+`test_the_width_refusal_actually_fires_through_an_emitter` asserts
+`len(call_sites) == 5`; `test_the_emitters_default_to_todays_literals_byte_for_byte`
+asserts `len(takes_the_pair) == len(emitters)`. Both are deliberate — the count
+*is* the claim. Update them **and** satisfy them (MS-5).
+
+**PC-10 — State the 2-channel bound before a 3-way finds it.** It fails
+*silently*: `plug` downmixes rather than refusing. Nothing is broken today (the
+emitter refuses non-2-way presets outright), so say the bound is deliberate and
+name the topology-derived active ring, reached by the arm ladder, as the path for
+anything wider.
+
+*One vocabulary note, so the plan does not mint a second set.* `04`'s census
+sorts refusals into **five** classes — CLAMP · INTEGRITY/LIVENESS ·
+QUALITY-IN-COSTUME · STOP-RELAXER · PROTOCOL (excluded). The three sorts above
+map onto it exactly: CLAMP is CLAMP, INTEGRITY is INTEGRITY/LIVENESS, and
+**disclosure is the destination** a demoted quality-in-costume refusal becomes,
+not a fifth bucket. PROTOCOL (~35) is out of the argument; STOP-RELAXER is a
+pattern, not a class. Use `04`'s five when counting, these three when deciding.
+
+---
+
+## 3. The waves
+
+Nine waves. Small PRs, one concern each.
+
+**The standing sequence, per ruling S5 — every wave, no exceptions:**
+
+```
+build new  →  prove  →  delete old        (all three inside ONE wave)
+```
+
+No fallback flags. No duplication. No coexistence windows. Where a wave keeps an
+old route alive for a moment, it is a **proof bracket** and it dies in that same
+wave. **What "prove" means scales with what the wave changes:** waves that alter
+what the box actually does (4, 5, 6) take the acceptance run — the r1/r2
+reproduction inside the 0.37 dB noise floor (§5 row 9). Waves that move code
+without changing measurement behaviour (0, 2, 3, 7, 8) prove with the class-A
+suite. *That split is the conductor's scoping of the rule, not the owner's
+words — say so, and let the owner collapse it if he meant a hardware run every
+time.*
+
+**The review gate is the right-sizing directive** (`AGENTS.md §Right-sizing
+directive`): mechanical and doc work gets author plus a sanity look; ordinary
+production code gets **one** adversarial review pass; only a change to the closed
+clamp list gets a real review. Where this plan spends more than that, it says so
+and why.
+
+### The deletion rules — binding on every wave that deletes a test
+
+Settled by ruling S7. **The unit of deletion is the TEST FUNCTION, not the
+file.** File-grained classes (`10`'s A–E) are a *map*, not a verdict — a mixed
+file is the normal case, not the exception.
+
+**The mechanical pass, run per mixed file before any deletion:**
+
+| | Step | Why |
+|---|---|---|
+| **a** | List the symbols each test exercises; mark whether the subject **survives in the new engine**. | The subject's fate decides the test's fate. Nothing else does. |
+| **b** | Grep the file's fixtures and helpers for **EXTERNAL importers**. | Sibling files reuse test infrastructure — `test_fanin_coupling_reconcile.py`'s recorders feed two siblings, and `crossover_v2_fixtures.py` has many. **Deleting a "dead" file can break a class-A survivor.** |
+| **c** | Any assertion touching **out-of-zone symbols** (camilla, mux, volume_coordinator, fanin, control) → the **SHARED-SEAM LIST**. | Coordinated with the audit program before deletion. **Never deleted unilaterally.** |
+| **d** | Any docstring citing a **dated incident or issue number** → the incident pin is re-pointed or kept. | **Never deleted with the mechanism.** |
+
+**Then:** functions whose subject dies and which trip none of (b)–(d) → **delete
+with the subject, in the same PR.** Surviving invariants → the **class-B rewrite
+queue**.
+
+**NEVER window-sample a big file.** The audit agent's own verification caught a
+wrong verdict drawn from a 190-line window of a file where whole-file measurement
+said **35 of 160**. Skim the **full def-list plus docstrings**; deep-read only the
+functions that flag.
+
+**Default-aggressive is licensed — for dying happy-path choreography ONLY.**
+Three exceptions, each of which is class B wearing a C or E costume:
+
+1. **FAILURE-BRANCH pins** — refusals, races, cancellation and retry, stall
+   recovery. **The proving ground exercises none of these**, so a green r1/r2 run
+   says nothing about them. A C/E failure-branch test is deletable **only** if the
+   new engine has no equivalent failure mode; otherwise it is class B in disguise
+   and goes to the rewrite queue.
+2. **DEADNESS-ENFORCING tests** — they die in the **same PR** as their subject,
+   never before. A deadness pin deleted early stops enforcing deadness during
+   exactly the window when something could resurrect.
+3. **CROSS-PROCESS / cross-language pins** — grep the subject's **literals**
+   repo-wide before deleting their pins. Agreement tests hide in unrelated files;
+   `09`'s verdict table is a worked example of exactly this shape across five
+   languages.
+
+**The deletion checklist, from the audit agent's verified failure patterns:**
+
+- **Read assertions, not names.** Ratios and name-greps *propose*; only reading
+  *disposes*. (Same discipline as R2, and the same failure shape `04` recorded
+  three times against itself.)
+- **"Is it in a CI lane" and "is it referenced" are two separate checks.** Do
+  both. Neither implies the other.
+- **Dedup by CONTENT, never by filename pattern.** Their flagged "redundant
+  family" of incident-replay tests turned out to document a **different real
+  incident each** — and that family is **in our zone**.
+- **Read every swept seam file before classing it C or E.** `09` already read the
+  six the audit named (5,556 lines) and its verdict table stands; the rule applies
+  to the **unidentified rest** — six of "roughly a dozen" remain unnamed, per §6.
+- **Check every deletion against the invariant→pin table** (wave 0, PR 0d). A
+  deletion that would leave a must-survive invariant with no named pin is blocked
+  until the replacement pin is written.
+
+### Wave 0 — Free the class-A suite. Zero design decisions.
+
+**Goal.** Make 149 test files portable and cut god-file-to-god-file coupling in
+half, without deciding anything.
+
+| PR | What |
+|---|---|
+| 0a | Move the 23 symbols the class-A suite imports out of `crossover_v2_flow` into the package; give the two flow-owned constants (`VERIFY_TOLERANCE_DB`, `DEFAULT_CLOUD_MEASURE_POSITIONS`) a home in `crossover_v2/contracts.py`; repoint the two that are already package-side re-exports. |
+| 0b | Quarantine the single conductor-building test in `tests/test_audio_measurement_program_analysis.py` (`test_configured_path_matches_legacy_through_analyzer_and_fitter`, a four-line local import at `:392`), making the census's largest class-A file (8,170 lines, 187 tests) session-free. |
+| 0c | Repoint the two re-export doors — `refusal_copy`'s 67 `X as X` and the `journey` phase vocabulary — at their owning modules. |
+| 0d | **Build the invariant→pin table** (added by ruling S7). Turn §2's 16 must-survive invariants from a list of intentions into a table: **invariant → the NAMED test function that pins it.** Sixteen lookups; it is cheap and it is done before anything moves. **Any row that comes back with no name gets a pin WRITTEN — before the old pin is deleted, and before any wave touches its subject.** As waves land, each row's name is updated to the class-A survivor or the rewritten class-B test that carries it. Every deletion wave checks against this table. |
+
+**Counted.** ~24 edits (`10` step 0). **−271 lines** (`06 §Judgment 5`). Frees
+**19 class-A files / 26,776 lines** and removes **23 of the web file's 50** flow
+imports. Tests: **0 ported, 0 rewritten, 0 deleted** — 15 test files' imports
+repoint. Plus 0d: **16 lookups, and one new pin written for every invariant that
+comes back unnamed** — the only lines this wave adds, and the cheapest insurance
+in the plan.
+
+**One thing this wave does NOT buy.** The 271-line door win does not translate
+to the test surface: exactly **2 files / 644 lines** import *only* door symbols.
+`PHASE_*` (51 imports) and `REASON_REGISTRY` (13) almost always arrive alongside
+`CrossoverV2Session` (`10 §Two things the ordering must not inherit`). Book the
+production win; do not book a test win.
+
+**One symbol is not free.** `spec_report_for_predicted_sum` is caller-side glue,
+part of the ~1,500-line irreducible core, and must land in the new engine before
+the A suite that calls it can run there (`10`).
+
+**Verify.** The class-A flagship suite stays green — `10` ran three of them at
+`e064fa43d` and got **410 passed, 24 skipped in 10.6 s**. Reproduce that number.
+**Gate:** mechanical — author plus a sanity look. **Rollback:** `git revert`;
+these are moves.
+
+### Wave 1 — The engine skeleton, and its test double shipped WITH it.
+
+**Goal.** A session object that can own a graph lifetime, a volume claim, and a
+record — and a `FakeSeams`-equivalent so tests have somewhere to land.
+
+**The finding that makes this wave non-optional.** `tests/crossover_v2_fixtures.py`
+is **1,948 lines imported by 26 test files totalling 57,079 lines**, and **21 of
+the 26 construct a `CrossoverV2Session` through it**. Only 2 of the 26 (2,906
+lines) would survive without a session harness. `10` is blunt: *"the new engine
+has to ship a `FakeSeams`-equivalent on day one or 54,000 lines of test have
+nowhere to land. Budget the test double as part of the engine, not as a
+follow-up."* The repo has already paid for skipping this once — the fixture file
+exists because `test_crossover_v2_conductor.py` had become a de-facto fixture
+library that 18 modules imported 25 symbols from, which made a 12,680-line file
+undeletable.
+
+**Counted.** This wave is **net POSITIVE lines** and that is correct under rule 1.
+Reference size for the twin: the 1,948-line fixture it replaces. Gates 57,079
+lines of test. Tests: 0 deleted.
+
+**This is not scaffolding, and rule 1 is satisfied.** The twin is **permanent
+test infrastructure for the permanent engine** — it replaces
+`crossover_v2_fixtures.py` one-for-one and outlives every wave. Nothing here is
+built to be thrown away, which is exactly what *"we're not investing in systems
+we're going to be deleting"* requires.
+
+**Verify.** The twin builds a session-equivalent for the 24 importers that need
+one; the 2 that do not stay green untouched.
+`test_crossover_v2_verification.py:2219` asserts `"crossover_v2_flow" not in
+joined` — **it must survive verbatim and be pointed at the new engine's package
+in this wave** (`10`). **Gate:** one review pass. **Rollback:** `git revert`;
+these are new files, and the old fixture is deleted in the same wave that its
+last importer moves.
+
+### Wave 2 — The verify REGION lifts first (it becomes `measure` + `analyze`).
+
+**Goal.** Prove the strangler works on the code region with the lowest coupling.
+*"VERIFY" here names a region of today's code, not a verb* — under ruling S1 it
+lands as `measure` (the candidate-check parameterization) plus `analyze` (the
+grading). See §1's mapping table; the wave names below are the inventory's labels
+for today's tree, kept so the citations line up.
+
+**Why this region first.** Its package half is already carved (4,769 lines); the flow file
+imports 1–3 symbols each with **zero dotted call sites** for four of five; the
+middle's verify code is contiguous and reads only `_verify_*` attributes — **18
+of the 102**, none shared with measure. One route, one preparer, one grader. It
+lifts on a single seam: **`(applied_candidate, entry_baseline, capture) →
+verdict`** (`00 §5.4`, from `06 §Judgment 3`).
+
+**Order inside the wave** (`10 §The VERIFY-first order`):
+
+| PR | What | Lines |
+|---|---|---|
+| 2a | Rewrite `test_crossover_v2_entry_baseline.py` against the new seam — and fix `02`'s duplication #2 in the same edit (the only durable full copy of the entry baseline lives in an overwritable file). Same edit, both jobs. | 613 |
+| 2b | Re-host `test_crossover_v2_round_wiring.py`'s restore/undo/anchor honesty **without its subject moving** — the apply/rollback transaction never moves. `10` calls this the trickiest B in the lane; do it while the context is fresh, not last. | 3,655 |
+| 2c | Lift the VERIFY slice: ~132 verify-named tests (67 + 33 + 32) out of three god-file suites occupying 31,729 lines. | — |
+
+**Counted.** VERIFY is ~7,403 lines total, **~2,634 of them in the middle** —
+that is what leaves the god files. Per-verb test surface: 54 files / 70,102
+lines. Tests: ~132 rewritten, 0 deleted.
+
+**Verify.** Class-A green. **Gate:** one review pass. **Rollback:** `git revert`.
+Per rule 3 the old route is a **proof bracket, not a fallback** — it lives only
+until the new route is green in the same wave, and then it is deleted in that
+wave. It never survives into the next one.
+
+### Wave 3 — The rest of the strangler, in rank order.
+
+| Rank | Target | Lines | Note |
+|---|---|---|---|
+| 2 | MEASURE — spatial group close | 1,219 session + 962 flow | `spatial.py` is already the destination and already takes 27 call sites. The seam exists; the work is *finishing* it. |
+| 3 | PERSISTENCE | 2,649 web | `persist_conductor_state` is **854 lines** — the single largest function in either file. Pure serialisation of state the session already enumerates in 102 named attributes. "A schema writer with no schema." Highest-density mechanical win; needs no audio judgment. |
+| 4 | MEASURE — capture walk + capture plan | 969 + 1,102 | Last: where `admission`'s 27 sites live and where the retry budget, the relay contract and the phase machine meet. |
+| **never** | apply / rollback transaction | 1,185 web | Not a target. Ever. |
+
+**Counted.** 6,901 lines leave the god files in this wave; with wave 2's 2,634
+that is **9,535 of 23,022**. Tests: class-B rewrites — SPATIAL 30 files / 27,165
+lines, PERSIST 20 / 19,023.
+
+**Verify.** Class-A green after each rank. **Gate:** one review pass per rank.
+**Rollback:** per-rank revert; ranks are independent.
+
+### Wave 4 — One capture record.
+
+**Goal.** Bank the curve. Stop re-deriving it. Make place a field.
+
+| PR | What | Counted |
+|---|---|---|
+| 4a | **Bank `DriverResponse`, magnitude AND phase** (owner-settled — see §4). Five lines at `crossover_v2_flow._retain_lateral_pose`. Deletes `round_views.verify_pose_curve`'s deconvolve→gate→smooth→resample block outright, and the campaign's `derive_position_curves.py`. | **+5, deletes more than it adds** |
+| 4b | Duplication 1 — bundle take vs ring sidecar: one builder, one index (`take_id`), delete the `ENABLED` gate. Five offline readers stop globbing a second index. | M |
+| 4c | Duplication 4 — `AdmittedRegionCapture` vs `AdmittedCaptureProof`: one shape, `post_apply` becomes a field. | S |
+| 4d | Duplication 2 — entry baseline full vs digest: move the full copy to a write-once artifact. *(Landed in wave 2a if taken there.)* | S |
+| 4e | Duplication 3 — room `position_analysis` ×3: one owner, two views. Kills four-way `or` chains in readers. | M |
+| 4f | Deletions: the dump-ring **sidecar** as a second capture record (its four unique blocks move into block 4; the ring keeps its WAVs) · `prediction.json` · the round-root `candidate.json` · the 72-point `fr_curve` third copy · the five dead commissioning publishers and their typed schemas · `CalibrationCurve.phase_deg` (delete or apply — "parsed, stored, reloaded, migrated, never applied" is a decision, not a pending task). | 24 orphan sites |
+| 4g | **The commissioning lane is being REPAIRED, not abandoned** — the owner settled #2202 as *fix*, so this is now the **producer path, not the deletion path.** `commissioning_capture_producer.SummedCaptureProducer` is a confirmed runtime orphan: nothing instantiates it, so `verification.json` and `commissioning-eligibility-receipt.json` are never produced and `read_commissioning_room_authority` always answers `active_commissioning_receipt_unavailable`. Wire a real producer as part of the #2202 fix, and correct `docs/HANDOFF-audio-measurement-core.md`, which still describes the module as live. **The free −2,089-line deletion this plan previously booked is withdrawn** — see §5's net-lines table and §6. | **+producer, −0** |
+| 4h | **Fix, do not unify, the two inverse orphans.** `runs/{run_id}/complete.json` (six production readers, writer callable only from three tests) and post-apply `repeat-{ordinal:04d}.json` (**no writer anywhere, tests included**). A reader whose writer does not exist stays broken whatever the record shape becomes. Warning that travels: if anyone re-arms a `protected → measured` transition without restoring a `complete.json` writer, `commissioning_host.status()` starts raising on every poll. | 2 |
+| 4i | Give the room stack its reader. It banks the richest per-frequency curves in the tree (`analysis/{stem}_response.json`) and nothing opens them; `recompute_bundle_summary` re-derives the whole chain from raw WAVs. | free |
+| 4j | **The little measurement database** (owner-added, 2026-08-25). A **small SQLite index over the banked record files**: session id · kind (`baseline` / `candidate` / `verify`) · position · candidate id · timestamp · record path. Nothing else. House precedent to copy: [`jasper/wake_events.py`](jasper/wake_events.py) — SQLite rows over banked WAVs, already shipped and already the pattern this repo trusts. | small |
+| 4k | **The level fact — one definition, one estimator** (unblocked by ruling S8). `solve_branch_trims` **becomes THE level fact**. `driver_core_level_db` is **demoted to the starting-estimate role and KEPT**, with its delta against the handover level **disclosed**. The comparator stops asking whether two estimates of one quantity agree — *they never measured one quantity* — and starts disclosing "the handover level and the passband estimate differ by X dB, which is expected for a sloped horn." **Depends on 4a**: any consolidation is a WAV re-analysis campaign until `DriverResponse` is banked. | 2 estimators · 1 comparator · 1 tolerance · 2 record fields · 1 journal payload; **no orchestration touched** |
+
+**The unified record is five blocks:** identity · **place** (`position_deg`,
+`position_axis`, `mark_distance_m`, `offset_cm`, `at_mark`, `role`, `prompt`) ·
+stimulus-and-path (the `provenance` block — *"the 8.712 dB level bug was two
+fields of this block disagreeing"*) · honesty (the whole
+`analysis_diagnostic_summary`, gate, integrity, frame ledger) · **the curve** on
+a shared log grid. Blocks 1–4 already exist split across two writers; merging
+them is mechanical. Block 5 for the lateral walk is the only genuinely new
+persistence.
+
+**On 4j — why an index, and how small "little" is.** The owner's reason: *"we
+should bank all information for every measurement, but we might want like a
+little database to organize them… baseline measurements and then measurements
+across three candidates and then verify measurements, that's a lot of
+measurements to just be floating around… nicely normalize all of the
+information."* One campaign is genuinely dozens of records across positions and
+candidates, and today the only way to find one is to glob a directory.
+
+Three constraints keep it small and keep it honest:
+
+1. **It is an INDEX over files, not a second store.** The banked record files stay
+   the single source of truth. Every column is derivable from them, so the
+   database must be **rebuildable by rescanning** — losing it loses zero
+   information, and it can never disagree with the files for long. This is the
+   `wav_sha256`-as-verifier-never-index discipline applied one level up.
+2. **It is not a management system.** Browsing, curation, and deletion of stored
+   measurements stay **future scope** — already stated in §0's non-goals, and
+   ruling S3 says so directly: *"right now, let's just save the information."*
+3. **"Little" is the owner's word.** Six columns, one table, one writer, one
+   reader. If a design conversation starts adding a schema migration story, it has
+   left the brief.
+
+One vocabulary note so 4j does not look like it contradicts S1: `baseline`,
+`candidate` and `verify` are the **kinds of measurement**, which are exactly the
+parameterizations of the one `measure` verb. The `kind` column is where
+*"measuring is measuring"* becomes visible in the data — one verb, one record
+shape, one index, three arguments.
+
+**On 4k — what the engine actually computes.** The definition is settled (S8);
+this recipe is **engineering synthesis, labelled as such** — the owner-commissioned
+research supplied the definition and its Stage 1–3 method, and the rendering into
+what `measure` and `analyze` implement is the conductor's, not a cited finding.
+
+| Stage | What |
+|---|---|
+| **measure** | **Same drive voltage across every per-driver measurement; no gain is touched between them.** |
+| **analyze** | **Energy / RMS average of 1/6-octave-smoothed magnitude over ±1 octave around Fc, computed AFTER the target filters are applied.** Not before — the level fact is a property of the filtered traces. |
+| **set** | Trim to **≤0.5 dB**. The research's phrase: it is *"free in DSP."* |
+
+**The `measure` row is not a new requirement — it is what waves 5 and 6 already
+deliver**, and that is a useful check on the architecture: one volume owner with
+one declared level (wave 5) plus MS-14's fader proven before every stimulus is
+precisely "same drive voltage, nothing touched between measurements." The recipe
+and the refactor were derived independently and agree.
+
+**Two tolerances, two jobs — say so, or someone will collapse them.**
+**≤0.5 dB is SETTING precision** (how close the trim must land).
+**`REALIZED_LEVEL_MATCH_TOLERANCE_DB = 3.0` is a DISCLOSURE trigger** (when to
+tell the user the realized match drifted). They are different questions; the
+3.0 stays.
+
+**Two constraints on the statistic, for the record.**
+*Slope:* with LR4 the sensitivity to level error concentrates **at Fc**, so the
+matching band is ±0.5–1 octave and the null test carries the weight; shallow
+crossovers widen the band to **±1.5 octaves** and the broad sum carries it.
+*Directivity (Toole):* where woofer beaming and horn directivity mismatch,
+on-axis, listening-window and power-response ratios differ — **there is no single
+correct level.** The tool must state **which axis it matched** and disclose the
+compromise. This is the same physics the campaign's graphs page already recorded
+as its beaming finding; connect the two rather than re-deriving it.
+
+**Two things this wave must not do.** Do **not** merge `lateral_pose_record` and
+`cloud_position_record` into one shape with optional columns — the tree has
+reasoned about this twice and reached the same answer: a common core plus a
+role-tagged extension, never a union type with half its columns null. And
+`wav_sha256` stays the **verifier, never the index** (`02 §Judgment`).
+
+**Verify.** Class-A green, then the acceptance run (§5 row 9) before the wave
+closes — this wave changes what the box banks.
+`test_crossover_v2_accountability.py` (527 lines, class A) **goes red on
+purpose** if the prediction-gate reference fix lands here — name it in the PR body
+(`00 §R2`; second site at `test_crossover_envelope_v2.py:3103`). **Gate:** one
+review pass; the excitation-ledger and driver-cap fields inside block 4 are on
+the clamp list, so any PR touching those gets a real review. **Rollback:**
+`git revert`. The new record is written, readers are flipped, and **the old
+writer is deleted in the same wave** — per rule 3 the two shapes never coexist
+past the flip.
+
+### Wave 5 — One volume owner.
+
+**Goal.** 18 production-reachable fader writers → **one owner exposing 4 claim
+kinds**: household · transient-duck · session-measurement · commissioning.
+
+| PR | What |
+|---|---|
+| 5a | Stand up the owner. It owns: the write door (`_coerce_main_volume_db` stays as defence in depth, and the owner becomes its **only** caller); one declared level replacing five overlapping notions (`listening_level`, `measurement_volume_db`, `locked_main_volume_db`, `SolvedLevel.main_volume_db`, `fader_db`); a **ranked claim** replacing seven ad-hoc gates; **one** confirm tolerance replacing `0.05`, a second independent `0.05` literal, and `1e-6`; and the release algebra `min(reference, current + depth)`. |
+| 5b | Route the 12 legitimate-intent writers through it: W1, W2, W4, W5, W7, W9, W10, W11, W12, W14, W15, W16. |
+| 5c | Close W18's bypass — `jasper/cli/aec_tune.py:_camilla_set_volume` **never sees the 0 dB ceiling clamp** today. There are **2 hardware doors, not 1**; this makes it 1. |
+| 5d | Merge W11 (`CrossoverLevelLease`) + W12 (`MeasurementSession`) + W7's third schema — one question, three durable schemas. |
+| 5e | Delete W3 (the 1 Hz reconciler), W8 (`hold_fader_at` → degrade to an assertion, not a repair-then-refuse ladder), W13, and the two already-dead X1/X2. |
+
+**W6 (the graph-swap duck) is NOT deleted here.** It moves to wave 6, because
+`09 §PC-9` binds it to the session graph: *"(a) and (c) land together, or not at
+all."*
+
+**Two gaps this plan closes that `01` left open.** `01`'s disposition covers 16
+of 18: **W17** (`bass_extension_bench._CamillaFloor`) is in neither list, and
+**W18** appears only as "close the bypass." Assign both — W17 becomes a
+`session-measurement` claim, W18 a `commissioning` claim that loses its own door.
+One grep also owed: chip-AEC commissioning's `prepare_volume()` → `-20.0` /
+`restore_volume(original)` may be an uncounted 19th writer (`09 §2`, a lead, not
+a finding).
+
+**Do not lose the disclosure discipline.** Whatever `hold_fader_at` becomes keeps
+(a) the unconditional proving read, (b) the empty-vs-numeric `observed_db`
+discriminator, (c) a positive `result=held` line. Each exists because absence of
+a log line was mistaken for absence of a problem — #2198, #2085.
+
+**One interaction to name in the PR body.** Deleting W3 dissolves the *reason*
+the 40 dB duck depth is load-bearing: it was chosen to trip
+`RECONCILE_DUCK_SKIP_DB` (10 dB) so the cross-process 1 Hz reconciler would leave
+the fader alone. That coupling **is** pinned — mutation-verified bidirectionally
+(`08 §Probe 6`: 40→5 breaks it, 10→50 breaks it, 40→15 intact) — but **stated
+nowhere as an inequality**, so a grep-based reviewer wrongly concludes NOT
+PINNED. Update the pin in the same PR, and beware the co-firing noise test
+(`test_failed_graph_mutation_restores_the_pre_swap_volume` hardcodes `vol=-58`
+and fails on any value change, which can steer a maintainer to "fix the literal,
+move on").
+
+**Counted.** 18 → 1 owner / 4 claim kinds. Hardware doors 2 → 1. Confirm
+tolerances 3 → 1. Declared-level notions 5 → 1. Four live + two dead writers
+deleted. Tests: **4,907 lines the census never counted** —
+`test_volume_coordinator.py` (3,210), `test_camilla_controller.py` (1,331),
+`test_camilla_ducker.py` (366). *"A plan that schedules the volume collapse
+inside a strangler wave will be editing files this census never counted"*
+(`10`) — which is why it is its own wave (`00 §7.4`).
+
+**Verify.** Class-A green; the three volume suites green; then the acceptance run
+(§5 row 9) before the wave closes. **Gate:** the 0 dB ceiling is on the closed
+clamp list, so 5a and 5c get a **real review**; the rest one pass.
+**Rollback:** `git revert`, per-writer — each 5b routing is independent. Per rule
+3 a routed writer's old path is deleted in its own PR, not left dual-writing.
+
+### Wave 6 — One measurement graph per session. The swap and its duck go together.
+
+**Goal.** Make the owner's loop order affordable: mic moves outside, cheap config
+patches inside.
+
+**Prerequisite (`00 §5.3` fix 1, `09 §PC-5`).** Consolidate the two swap
+transactions first — `program_playback.play_program` and
+`web_commissioning._load_driver_commissioning_config_for_level`, with its **11
+restore functions in one module**, are the same transaction written twice, *"the
+single loudest signal in this survey that the swap machinery has outgrown its
+shape."* Consolidate **into** `jasper.active_speaker.web_commissioning`: that is
+free. A **new** module re-homes the owner and trips
+`test_commission_tone_single_owner.py`'s hard-coded `OWNER_MODULE` string —
+re-point it in the same PR, never delete it (MS-12; the fork it caught, #1950,
+survived months).
+
+| PR | What |
+|---|---|
+| 6a | Consolidate the two swap transactions into `web_commissioning`. |
+| 6b | Install one session-scoped graph — role-routed **and** crossover-free **and** tweeter-protected. Satisfies **MS-1 through MS-6 and MS-13** as written in §2; none of them is optional and none of them relaxes at session scope. |
+| 6c | Re-point the two graph-emit guards at the session-graph owner and update the two hard-coded counts (PC-3, PC-4). **Same PR as 6b.** |
+| 6d | Delete the **measurement-swap** duck. Scope: measurement path only. `/sound/` apply and `/correction/` apply keep theirs — `test_dsp_apply_ducks_both_the_load_and_its_rollback` pins the correction apply *and its rollback*, "the direction its own docstring calls the loud one" (PC-1). **Not an owner gate — this is design** (see below); its evidence step is the no-pop check. |
+| 6e | Claim the free deletion: `held_target_db` (added by #2929/#2936 specifically because the measurement swap's release clamped to the household level) becomes dead on the measurement path. Claim it explicitly rather than orphan it. |
+| 6f | `patch_config` stops paying the graph-swap duck. Its one production caller is a per-speaker balance trim, where a 40 dB / 0.45 s fade is plainly wrong. |
+
+**Counted — measured, not derived** (`08 §Test 2`): per swapping stimulus,
+**Δ1 ≈ 489 ms + Δ2 ≈ 454 ms ≈ 0.94 s** of pure duck ramp, against a **64 ms**
+fader proof on the swap-free branch in the same round with session, hardware and
+fader held constant. Across the two baseline rounds' **14 swapping stimuli that
+is ~13 s of pure ramp**, and it multiplies by every angle and every retry.
+Per stimulus this deletes **2 config swaps, 2 ducks, ≥5 CamillaDSP round-trips**,
+the filter-state transient (a full reload resets biquad state), and the
+rate-adjust control-loop restart. Swapping capture phases **3 → 0**; swaps per
+session **2**.
+
+**The duck is design, not a decision — owner-ruled 2026-08-25:** *"I agree with
+the deleting the duck complexity. That sounds exactly right."* The whole
+volume-dance mechanism class is **plumbing the LLM never sees**. The new engine
+changes configs *without* the dance; a simple pipeline-health check may remain;
+the gymnastics are deleted. So this is not an open gate and the plan does not ask
+for a nod. What it does ask for is **one piece of evidence** — the no-pop check
+(swap the graph inside an open measurement window with the fader parked and a
+recorder running, and listen). It is still unrun. Pass → the duck goes on the
+measurement path. Fail → the session-scoped graph still fires it once per session
+instead of twice per stimulus, which is most of the win, and the health check
+absorbs the rest. Either way the scope is unchanged: **measurement-swap duck
+only.**
+
+**Three tests get DELETED, not fixed — say so in the PR body (PC-11).**
+`test_camilla_volume_ramp_default.py` (63 lines, whole file — it fails at
+*import*, not at an assert); the exact-set seam assertion in
+`test_crossover_v2_conductor.py:6820`; and the release-reference block of
+`test_crossover_v2_measurement_volume_drift.py`. **Keep the
+fader-proven-per-stimulus half of that last file** — it is MS-14, the
+excitation-safety ledger, not the duck. Decide deliberately about the collateral:
+`test_no_camilla_config_generator_emits_volume_ramp_time` is the only thing
+keeping any generator from emitting `volume_ramp_time`, and its stated
+justification dies with the duck.
+
+**Verify.** If any `rust/jasper-fanin` change has landed since, re-run `08`'s
+five-case stereo tap on the box **before** this wave executes (`11`). Then the
+acceptance run in §5. **Gate:** the duck is **not** on the closed clamp list, but
+it carries a hearing-safety claim in its own test docstring — *"a hearing-safety
+fade across a graph swap that can step the graph's own gain by tens of dB."* So
+this wave's PRs get a **real review**, and the no-pop check is the evidence that
+licenses the deletion. This is the one place the plan deliberately spends more
+ceremony than the directive requires. **Rollback:** `git revert`. 6b's session
+flag is a **PROOF BRACKET, not a fallback** — it exists only until acceptance
+row 9 passes, and then the per-stimulus swap path **and the flag itself** are
+deleted in this same wave. Per rule 3 there is no lingering fallback and no
+coexistence window; the old swap machinery dies whole.
+
+### Wave 7 — Doctrine, docs, guards.
+
+| PR | What | Counted |
+|---|---|---|
+| 7a0 | **Rewrite the doctrine's §1 loop AND its §2 motto into plain words.** The six-step loop (Measure · Propose · Run · Collect · Recommend · Confirm) becomes the owner's cycle: **measure → analyze → recommend → loop → save.** And §2's authority model stops speaking in slogan: *"predictions propose, measurements dispose"* → **the LLM recommends; the measurement decides.** The sense survives exactly; the jargon dies. Per the owner: *"what does that mean? …That is a stupid thing, but let's turn it to recommend and keep it simple language that anyone would understand."* Then sweep the tree for the retired step names and the retired motto used as going-forward language — AGENTS.md's doctrine pointer, the prescriber CLI's prose, `docs/measurement-loop-doctrine.md`'s own §2/§3, and any module or constant that took its name from a step. Per `00 §R4` this is a **deletion from an enumerated set**, the class the sweeps are structurally blind to, so sweep by subject and read the block around every edit. | rewrite |
+| 7a | **Name the integrity class** in the doctrine's §4 (or a new §4a — the doctrine's numbering, not this plan's), with the "would measuring again fix it?" test quoted from the #2087 ruling, its six sub-kinds, and its three rules. **Name the STOP-RELAXER pattern** — three implementations already, and it is the obvious shape for #2935's fix. | ADD |
+| 7b | **Delete the deviation table** (9 rows, 8 closed, 1 retained), keeping row (e) `BOOST_ROUTE_UNAVAILABLE` inline as the one live retention — and close `04`'s risk by the other route: **make §4's closed clamp list positively complete**. A reader who can read "here are the 5 clamps and their ~112 enforcement families" never needs a list of what stopped being one. **Settled by S9 — no gate; execute it.** Row (e) `BOOST_ROUTE_UNAVAILABLE` survives inline as a normal ruling sentence, not a table row. | doctrine 255 → ≈150 |
+| 7c | Demote the 4 nanny survivors: N1 `ALIGNMENT_CONFIDENCE_TRUST_FLOOR = 0.6` (confidence branch only), N2 `REASON_VERIFY_DETERMINISTIC_MISMATCH` (terminality only — "the clearest §3 violation in the tree"), N3 `INSUFFICIENT_POSITIONAL_EVIDENCE` + `BOOST_DIP_NOT_STABLE`, N4 `BOOST_IN_CROSSOVER_OVERLAP`. | 4 / 5 slugs |
+| 7d | Two doctrine edits `04` raises that this plan adopts: state **which registry codes can take a graph off the speaker** (`TEMPLATE_HARD_STOP`'s "0 retries" collides with §4's "hard stop" in the same file), and say whether a published **slope** is inside §4. | ADD |
+| 7e | Docs: 126 files / 70,039 lines → **three authored docs at ≈1,550 lines** (doctrine ≈150 · one merged operational runbook ≤600 replacing `llm-operator-runbook.md` + the live spine of `HANDOFF-crossover-measurement-v2.md` · one fresh engine design doc ≤800) **plus `testing-tooling.md` as the tool index at whatever size it earns**. Everything else → `docs/historical/`, tagged once, removed from `doc-map.toml` so the routing bot stops sending readers to 34 documents for one subsystem. Note this is mostly **archival, not deletion** — what actually leaves the repo is 7f, and only 7f is in the net-lines table. | see 7f |
+| 7f | The mechanical doc cuts: two HANDOFF hybrids lose their appendices (**−8,043, zero information lost**); the five-file linearization plan family collapses to one archived decision record (**−4,527, −5 files, −5 doc-map rows**); six already-`Status: historical` docs move. Fence `docs/research/`, `bass-extension-waves/`, `correction-ux-wave3/` (78 files / 19,460 lines) off the maintenance rules — they are primary sources and are *supposed* to be frozen. | −12,570 |
+| 7g | **Move `docs/calibration-agent/` (12 files / 1,356 lines) out of `docs/` entirely.** It is runtime product input, resolved at run time from three search roots by `calibration_agent/tools.py`. Its residence in `docs/` is what forces every doc rule to make an exception for it. `07` calls this the single highest-leverage item in its section — and it is a code change, not a doc change. | code |
+| 7h | Guards **7,436 → ~600**. Delete `MAX_LINES_BY_PATH` and its 1,439-line comment block (`test_lint_contracts.py` is 2,159 lines, **87.9% comments**, grew 61 → 2,159 in ten weeks, **7 of 8 ceilings at exactly zero slack**, **1 confirmed catch in 60 commits — outcome: ceilings raised**, and 13 of the last 60 commits were forced to edit it). Delete `test_doc_staleness_sweep_20260604.py` (167), `test_docs_handoff_freshness.py` (180), `test_crossover_v2_measurement_doc_pins.py` (336 lines and a 4-path AST resolver to pin 2 sentences — delete the restatement instead, which is the doc's own instruction). **Keep** `test_package_enumeration_contract.py`, `test_measurement_integrity_floor_contracts.py`, the two code-vocabulary tests, and everything pinning the 5 clamps. Replace the ratchet with **one un-ratcheted assertion at a round number nobody edits** — fires once, cannot be paid off with a paragraph. **RE-BASELINE THIS ROW FIRST — see §6 R9(b):** the governance-reset branch may already have deleted some of these, in which case part of the −6,836 is banked and the floor double-counts. | −6,836 |
+| 7i | Add `07`'s rule to AGENTS.md: *a doc may state a fact once; if a second doc needs it, the second doc links.* The `fc_sweep` deletion cost prose edits in eight documents because eight had each restated what one owned. | +1 rule |
+
+**`test_lint_contracts.py` has exactly one owner: this refactor** (`11`). The
+audit agent does not touch that file. Two hands in one 2,159-line file guarantee
+conflicts, and 7 of its 8 ceilings are this zone's files.
+
+**Verify.** `bash scripts/tense-grep.sh --all` against a baseline captured
+*before* the cut — and treat it as a floor, never a proof. This wave deletes many
+members of enumerated sets (refusal slugs, record types, fader writers, doc
+files), which is the class the sweeps are structurally blind to (`00 §R4`). Sweep
+by **subject** as well, and read the whole block around every edit. **Gate:**
+docs and guards get author plus a sanity look — except 7b, which **is** the clamp
+list and gets a real review. **Rollback:** per-PR revert; `docs/historical/` moves
+are `git mv`.
+
+### Wave 8 — Census-zone prose and test discipline.
+
+**Goal.** Take the work the audit priced and handed over.
+
+The deep audit's own §6 owner-decision 2 — its numbering, not this plan's gates —
+reads verbatim: *"**Tuning-stack participation** —
+apply Waves 3–4 discipline inside the census zone (~55K available; coordinate
+with the other agent; the `commissioning_capture_producer` orphan + its doc drift
+is theirs to take)."* Accepted. The orphan is wave 4g; this wave is the rest.
+
+**Counted.** **~30K prose** + **~15–20K test docstrings / fixture de-duplication
+as a RESIDUAL** — revised down from the audit's ~25K by ruling S7, because the
+function-grained deletions in waves 4–7 take their own docstrings with them. The
+plan books the conservative end (15K). Zone context: 68.9K prose lines at a 0.61 prose:code ratio and
+244K lines of tests (2.05× its source; crossover_v2 tests 2.5×). **Prose +
+test-altitude trims only, no behaviour changes.** Two things the audit's own
+verifier **refuted** and this plan does not retry: the blanket prose sweep
+(*"dated citations are the owner's documented house style, and most dense prose
+is genuine WHY-constraint documentation"*), and *"just delete the tuning stack's
+journeys"* (the flows are live and cross-wired). Category-scoped, by hand:
+superseded-value changelogs, self-labelled archaeology blocks, incident
+narratives for bugs the constant does not fix.
+
+**Sequencing — this wave runs LAST, and ruling S7 is why.** Trim docstrings only
+**after the deletion bracket resolves.** Editing prose in a file that is about to
+die is wasted motion, and S7's function-grained triage is what decides which
+files those are. So waves 4–7 delete first; wave 8 trims what is left standing.
+
+**The docstring rule, from S7 — the sharpest line in the whole deletion story:**
+
+> **A docstring line may be deleted only if every constant it justifies either
+> leaves with it or keeps its derivation.**
+
+Hand-derived expected values **are the audit trail**. Cut narrative; never cut
+derivation. A test that says *"expected −6.02 dB because …"* and shows the
+arithmetic is not prose, it is the proof that the number was not guessed.
+
+**Rulings get ADRs — and this is also how `00 §R5` gets satisfied.** §0's rule 1
+says *extract the rulings before the code moves*; S7 supplies the mechanism:
+
+- A design ruling that **still binds the new engine** but lives only in a test
+  docstring becomes an ADR in **`docs/adr/`**, and the docstring shrinks to
+  `See ADR-NNNN`. **Number from ADR-0002** — ADR-0001 is the governance reset's
+  operating-model record (§6 R9c).
+- A ruling the refactor **supersedes** is deleted outright. **Git history is the
+  archive** — that is the same call ruling G1 makes about the deviation table's
+  demotion record.
+
+`docs/adr/` does **not** break wave 7e's minimal-doc-set ruling. It is an
+append-only record class, like `docs/historical/` — not one of the three authored
+live docs, not routed through `doc-map.toml`, and never edited after it lands.
+The four rulings `00 §R5` names — the #2087 discriminator, the PR-L4 review B1
+frame argument, `_duck_release_target_db`'s three design constraints, the
+`fader_db` asymmetric-record-point reasoning — are the first ADRs, and they are
+written **before** the code that carries them moves, not after.
+
+**Verify.** Class-A green; class-B and class-C suites green or deleted on
+purpose. **Gate:** mechanical — author plus a sanity look. **Rollback:** per-PR.
+
+---
+
+## 4. What the owner settled — nine rulings, no open gates
+
+### Settled — owner rulings, 2026-08-25
+
+These replace the corresponding open decisions the inventory raised. Quoted so a
+fresh session does not re-litigate them.
+
+| # | Settled | The ruling |
+|---|---|---|
+| **S1** | **Vocabulary: `measure` · `analyze` · `recommend` · `save`** | One vocabulary, not two layers — the engine's verbs **are** the loop's language, in words anyone would understand. *"Measuring is measuring"*: baseline, re-measure and candidate-check are one parameterized verb, one implementation, no duplication. *"Propose and prescribe and recommend are the same thing"* — the final recommendation *"is just now got more information."* **The plain word wins.** The owner also retired the slogan that had been the argument for calling it `propose`: *"'predictions propose, measurements dispose' — what does that mean? …That is a stupid thing, but let's turn it to recommend and keep it simple language that anyone would understand."* The motto's **sense** is kept and said plainly — *the LLM recommends; the measurement decides* — and wave 7a0 rewrites the doctrine's §2 accordingly. Run and Collect are *"just back to measure again."* Saving *"is simple."* **This overrules `00 §3.5`'s six-steps-plus-Run recommendation, which this draft carried before the ruling.** The engineering fact under that recommendation survives, restated: the play transaction is a **named internal module inside `measure`** with its own contract — a real code boundary, not a vocabulary item, because pipeline mechanics are *"just the mechanics of how we execute the verbs… the LLM doesn't really care about"* them. Wave 7a0 rewrites the doctrine's §1 loop to **measure → analyze → recommend → loop → save**. |
+| **S2** | **#2202: FIX it.** | *"2202 does seem like it should be fixed."* The commissioning lane is repaired, not routed around — which flips wave 4g from the deletion path to the **producer** path, and withdraws a −2,089-line deletion this plan had booked. |
+| **S3** | **`DriverResponse`: bank phase too.** | *"When we take a measurement, it should just be easy to get all the information we need… right now, let's just save the information."* Overrides fragment `02`'s *"magnitude now, phase behind a flag."* **The honest counter-argument stays on the record:** today nothing in the stack reads phase at all (`correction/interop.py:56-60`; REW exports emit a literal `0.000000` phase column), so this is banking for a forward model that does not yet exist. Size sanity: the cloud path already banks 89 points per position at 1/12 octave. **Addendum:** measurement management — sessions, browsing, deletion structure — is explicitly **future scope**, not this plan. |
+| **S4** | **Net-negative accounting.** | End-state deletion is the bar; temporary adds during a wave are fine. Hard rule: *"we're not investing in systems we're going to be deleting"* — no throwaway scaffolding. (Wave 1's test twin passes: it is permanent infrastructure for the permanent engine.) |
+| **S5** | **The old path dies immediately.** | *"The old path should die right after we've got the new one in… fallbacks aren't a thing. We're not going to have duplication… deleting old systems whole hog."* Build new → prove → delete old, inside one wave. Every "old route" and "session flag" in §3 is a **proof bracket**, never a fallback. |
+| **S6** | **The duck: dissolved, not decided.** | The whole volume-dance mechanism class is plumbing the LLM never sees. The engine changes configs without the dance; a simple pipeline-health check may remain; the gymnastics go. Presented in wave 6 as **design**, with the no-pop check as its evidence step and the real-review gate retained. |
+| **S7** | **Deletion aggressiveness: the unit is the TEST FUNCTION, not the file.** *(Source: the audit agent's consult, 2026-08-25, via the owner.)* | This **supersedes the file-grained question** that stood here as gate G3 — `10`'s A–E classes are a map, not a verdict, and a mixed file is the normal case. **Default-aggressive is licensed for dying happy-path choreography ONLY**, with three exceptions that are class B in costume: FAILURE-BRANCH pins (the proving ground exercises none of them), DEADNESS-ENFORCING tests (die in the same PR as their subject, never before), and CROSS-PROCESS / cross-language pins (grep the subject's literals repo-wide first). The mechanical triage pass, the never-window-sample rule, and the deletion checklist are operational and live in **§3, "The deletion rules"**, because they bind every deleting wave — not just wave 8. Two consequences priced elsewhere: the docstring residual drops to **~15–20K** (S7's deletions take their docstrings for free, which also **retires this plan's double-count caveat**), and the invariant→pin table becomes **wave 0 PR 0d**. |
+| **S8** | **"Level-matched" means matched ACOUSTIC OUTPUT THROUGH THE HANDOVER REGION.** *(Source: owner-commissioned prior-art research, 2026-08-25.)* | After the target filters are applied, the two driver traces are **equal at Fc and each sits −6 dB against the summed target** — the Linkwitz-Riley unity condition; Rane/Bohn's *"amplitude response of each is −6 dB at crossover"*; McCarthy's equal-level acoustic-crossover definition. **Passband-average sensitivity is NOT the level fact.** It is the *starting estimate* that sizes the horn's fixed attenuation, and on a horn with a sloped response the two conventions **legitimately disagree by many dB**. Consequences: `solve_branch_trims` (linear-frequency power mean over mirrored ±1-octave halves about Fc) **is** the consensus statistic and becomes the level fact; `driver_core_level_db` is demoted, kept, and its delta disclosed — the research's own instruction being to *"surface this discrepancy to the user rather than hiding it."* **This explains the 8.6 dB dispute rather than fixing it:** the two owner comments two rounds apart that pointed opposite ways on the same numeric pair were each right about a different quantity, and `05`'s "defect 1" was never a defect in either estimator — it was a comparator asking a question neither one answered. Implemented as wave 4k; the campaign instrument it unlocks is in §5. |
+| **S9** | **The doctrine deviation table: DELETED.** Owner, verbatim: *"delete it."* | The nine-row table goes. **§4's clamp list becomes positively complete** — that is the substitute, and it is the part that must actually get written: a reader who can read the 5 clamps and their ~112 enforcement families never needs a list of what stopped being one. Row (e) `BOOST_ROUTE_UNAVAILABLE` **survives inline as a normal ruling sentence**, not as a table row — it is a live retention, so it reads as doctrine, not as archaeology. The demotion *record* lives in git history. `04`'s counter-proposal (add rows j, k, l and the camilla slope arm) is answered rather than overruled: those four demotions are real and already landed, and a positively-complete clamp list makes them unnecessary to track. **Wave 7b's gate is clear.** |
+
+### Still open — none
+
+**No open gates. The plan is final.**
+
+Every decision the inventory escalated has been answered by the owner on
+2026-08-25 and recorded as S1–S9 above. Nothing in this plan waits on a ruling;
+what remains is execution, and the evidence still owed is named in §6 rather than
+left as a decision in disguise — the no-pop check, the #2202 scoping hour, and
+the class-B verification pass are measurements to take, not questions to ask.
+
+---
+
+## 5. Acceptance, counted
+
+The plan is DONE when every row below reads true.
+
+| # | Criterion | From | To |
+|---|---|---|---|
+| 1 | **Fader writers** | 18 production-reachable (20 in tree) | **1 owner, 4 claim kinds.** Hardware doors 2 → 1. Confirm tolerances 3 → 1. Declared-level notions 5 → 1. |
+| 2 | **Swapping capture phases** | 3 of 7 require a swap | **0.** Config swaps per stimulus 2 → 0; per session, 2. Duck ramp per swapping stimulus ~0.94 s → 0. |
+| 3 | **Capture record shapes** | **4** same-fact duplications | **1** unified record, five blocks, place as a field, `DriverResponse` banked. 24 orphan sites cleared; 2 inverse orphans given writers or deleted. |
+| 3b | **The level fact** (ruling S8) | **2** estimators competing to answer one question, and a comparator that flagged their disagreement as a defect | **1** definition — matched acoustic output through the handover region — computed by **1** estimator (`solve_branch_trims`), with the passband estimate **kept and disclosed** as the starting estimate, never silently reconciled. Setting precision ≤0.5 dB; the 3.0 dB disclosure trigger survives as a separate knob. |
+| 4 | **`crossover_v2_flow.py`** | 13,459 lines | **≈1,500** — `V2FlowSeams` (107) + `V2ConductorSnapshot` (87) + `attempt_history_from_state` (69) + `_CloudPosition` (54) + 47 read-only accessors (402) + a much smaller constructor + `hydrate`/`snapshot` (64) + journey delegation. A session record, its seam bundle, and its serialisation. |
+| 5 | **`CrossoverV2Session`** | 6,753 lines · 156 methods · 102 attributes · a **776-line `__init__`** | **dissolved** into its four destinations: volume owner **1** · capture record **44** · phase machine **22** · a session-identity builder **35**. |
+| 6 | **`web/correction_crossover_v2.py`** | 9,563 lines | the apply/rollback transaction (1,185) plus route wiring. *No explicit target exists in the evidence base — see §6.* |
+| 7 | **Net lines at the END STATE** (ruling S4) | — | **NEGATIVE. Stated floor: −90,000.** Table below. Temporary adds during a wave do not count against this; scaffolding that would need deleting is not built at all. |
+| 8 | **The class-A suite** | 149 files / 126,663 lines | **green**, running against the new engine. Reference: 410 passed / 24 skipped / 10.6 s across three flagships at `e064fa43d`. |
+| 9 | **The baseline campaign reproduced** | `captures/postfix-baseline-2026-08` r1 + r2 | re-run on the new engine, **within the campaign's own measured noise floor: worst round-to-round change ≤ 0.37 dB**, 16/16 captures with the fader held, 0 glitched captures. The report's own bar: *"anything smaller than about 0.4 dB is noise, not a result."* |
+| 10 | **Then the real thing** | — | the owner's acceptance bar, quoted from that report: *"the full candidate campaign — many candidates, each measured, one winner, and the winner re-measured."* Entire trusted range, multi-candidate, best-of final, re-measured. |
+
+**Row 9 is the engine's proving ground.** The baseline campaign is the only
+measurement in the tree that ran the whole loop twice under held conditions and
+published its own noise floor. Reproducing it on the new engine, inside that
+floor, is what turns "the refactor didn't break anything" from an assertion into
+a measurement. Run it **before** row 10, not after.
+
+### For the campaign that follows — NOT refactor scope
+
+Recorded here because ruling S8 unlocked it and it would otherwise be lost, but
+**no wave owns it.** It is a campaign-phase instrument, wave-agnostic, built after
+the engine lands.
+
+**The reverse-polarity null test.** Invert one driver's polarity and re-measure.
+A **deep, symmetric null centred at Fc** verifies **level and time
+simultaneously** — one measurement, two answers. Reading it:
+
+| What you see | What it means |
+|---|---|
+| Deep symmetric null at Fc | Level and delay are both right |
+| **Shallow** null | Level or slope mismatch |
+| **Offset** null (not centred at Fc) | Delay error |
+| **< 15–20 dB** null after delay optimisation | **Revisit levels before any EQ** |
+
+Plus the **in-phase sanity check**: correctly matched and time-aligned drivers
+sum to **+6 dB** at Fc.
+
+**It needs no new verbs**, which is the point worth recording: the polarity
+inversion is a **parameter on `measure`**, and null depth is a **metric in
+`analyze`**. A settled four-verb vocabulary absorbing a genuinely new instrument
+with zero vocabulary growth is the first real test of ruling S1, and it passes.
+
+### The net-lines table
+
+| Row | Lines | Source |
+|---|---:|---|
+| Two re-export doors | −271 | `06 §Judgment 5` |
+| Guard machinery 7,436 → ~600 | −6,836 | `07 §Guard-test census` |
+| Two HANDOFF appendices | −8,043 | `07 §Consolidation map` |
+| Linearization plan family, 5 files → 1 | −4,527 | `07 §Consolidation map` |
+| Class C + D test deletion (floor) | −29,300 | `10 §Totals` |
+| Census-zone prose | −30,000 | DEEP-AUDIT §4.5 |
+| Census-zone test docstrings + fixture dedup — **residual, after S7's deletions take theirs** | −15,000 | S7 (revised down from DEEP-AUDIT §4.5's ~25,000) |
+| *WITHDRAWN by ruling S2 — `commissioning_capture_producer.py` + its tests* | *(−2,089)* | *the lane is fixed, so the module gets a producer, not a grave* |
+| **Deletion subtotal** | **−93,977** | |
+| Adds: engine test double (reference 1,948), engine design doc ≤800, runbook ≤600 (replacing 670 + 1,068), the #2202 producer, the little SQLite index, the ADRs | ~+2,000 | `10`, `07`, S2, S7 |
+| **Stated floor** | **−90,000** | reserves ~2,000 against the re-triage below |
+
+**The floor moved, and it moved the wrong way — say why.** It was **−95,000**
+before ruling S7 and is **−90,000** now. Nothing was lost; a number was corrected.
+The old table counted ~25,000 lines of census-zone docstring trimming *and*
+29,300 lines of whole-file test deletion, and I flagged that those two rows might
+double-count. **S7 nets them out explicitly: the deletions take their docstrings
+for free, so the docstring row is a ~15–20K RESIDUAL.** This plan books the
+conservative end. So the old floor's ~9,000-line overlap reserve is retired, the
+caveat it existed for is **closed**, and the honest number is smaller and firmer
+than the number it replaces.
+
+**Two caveats still travel.** First, the withdrawn `commissioning_capture_producer`
+row is shown rather than quietly removed: ruling S2 costs this plan a booked
+deletion, and a number that moves without a reason reads as an error. Second —
+and this is the live one — **the 29,300 figure is FILE-grained and S7 made
+deletion FUNCTION-grained.** It will move in both directions: functions inside
+class-E files become deletable, and functions inside class-C files get spared into
+the class-B rewrite queue. `10`'s own framing (*"read it as a floor, not a
+promise"*, against a 37-file / 81,699-line ceiling) was a file-grained bracket,
+and **S7 retires that bracket rather than picking an end of it.** Re-count per
+wave against the actual tree, using the §3 triage pass — not against either
+end of a range that no longer describes the method.
+
+---
+
+## 6. Risks, and where the evidence ran out
+
+**R1 — Class B is the least-verified class, and it is where the rewrite work
+lives.** 119 files / 117,797 lines, largely read at `meta` and `skim` depth, and
+**nothing in the census was run except class A**. `10` says it twice: *"if wave 2
+buys one more pass, buy it there."* **Action:** buy that pass during wave 1,
+before wave 2 commits to a schedule.
+
+**R2 — Deferred imports defeat every top-level grep, and this package uses them
+as a matter of course.** An AST walk finds **77 coupled test files / 123,778
+lines**; a top-level grep sees **51 of the 77 and misses 52,474 lines**. `04`
+recorded three of its own findings as wrong with one shape — *"reading a
+refusal-shaped name as a refusal without following it to its outcome"* — and
+`00 §7.1` is a fourth from a different fragment. **Any "X is dead / X refuses / X
+has no caller" claim needs its outcome followed, not its name matched, and any
+coupling claim must come from an AST walk.**
+
+**R3 — The AEC fence is real even though the signal is safe.** The session graph
+is **a new place where a format and a period get declared**, and a commissioned
+`K` is valid only for the exact geometry it was measured against. If the session
+graph's declared geometry differs from the applied graph's, **every commissioned
+chip-AEC box parks with `CommissionRequired`.** Check once, before wave 6's
+design freezes (MS-7).
+
+**R4 — The #2935 staleness trap is live on jts3, and there is one wrong way to
+clear it.** The box is `blocked` / `active_baseline_topology_changed` because
+entering the owner's `driver_style = cone_driver` fact rotated the topology
+fingerprint — documented and deliberate. **The next on-box campaign clears it by
+re-minting and applying a MEASURED baseline — never by applying the bare
+`55dee33aa48a` candidate**, which carries no measurements
+(`measured_group_ids: []`) and would wipe the tournament winner's blend
+correction, tweeter linearization, and level trim. **Carry this warning into the
+acceptance run's prompt** — it is exactly the shortcut a fresh session takes to
+unblock itself.
+
+**R5 — Coordination cadence with the audit program.** Four single-owner areas
+(`11`): `tests/test_lint_contracts.py` — this refactor, the audit agent does not
+touch it · `rust/jasper-fanin/**` — the audit may edit, but **the 5-case stereo
+tap must be re-run on the box after any `mixer.rs`/`lane_resampler.rs` change and
+before wave 6 executes** · the duck machinery — this refactor; the audit builds
+no lease (its Wave 5 is HELD, superseded by measurement) · tuning-slice docs —
+this refactor, while AGENTS.md and README are the audit's with the Right-sizing
+directive surviving verbatim. The audit's waves 0–1 are pure green light and are
+worth landing **before** this program starts; they shrink the tree it rebases
+over. One line in the other program's next PR body is enough notice for anything
+new that looks shared.
+
+**Double-lock every shared-seam deletion until the map is confirmed.** The audit
+agent's S7 consult referred in passing to *"my Wave 5 duck-lease work"* — but the
+coordination map **HOLDS** that item: the lease is superseded by measurement, the
+duck's single owner is this refactor, and the audit builds no lease. The owner is
+delivering the map to that agent. Until the audit agent **confirms** it, one side
+believes it owns work the other side has already been told to stop. So: every
+entry on §3's **SHARED-SEAM LIST** needs an explicit acknowledgement from the
+audit program before it is deleted — not an assumption of silence, and not a
+one-way notice. This is the cheap version of the failure `00 §R6` describes: a
+handoff that was made and never received.
+
+**R6 — The coupling trap has a second face: the fixture.** 24 of 26 importers of
+`crossover_v2_fixtures.py` want a session harness, and the repo has already been
+burned once by letting a test file become a de-facto fixture library. Defer wave
+1's twin "until the engine settles" and 54,000 lines of test have nowhere to land.
+
+**R7 — Prose deletion can delete the only record of a ruling.** 60% of the god
+files is prose and several rulings live nowhere else. Wave 8's ~30K is
+category-scoped by hand, never a sweep, and the ruling extraction is a
+prerequisite, not a nicety.
+
+**R8 — Ruling S2 turns a free deletion into design work, and the evidence base
+never scoped it.** Every source read for this plan assumed the commissioning
+lane might be abandoned, so `commissioning_capture_producer` was priced as a
+2,089-line orphan removal. Fixing #2202 makes the lane live, and then the real
+question is one nobody has asked: **the eligibility receipt has a production
+reader** — `read_commissioning_room_authority`, which answers
+`active_commissioning_receipt_unavailable` on every call today. Wiring a producer
+means deciding what that receipt should *say*, which is a design question about
+commissioning eligibility, not a plumbing fix. **Scope it on the box during the
+#2202 fix, before wave 4 books an estimate.** Two independent mechanisms were
+blocking this lane and only one of them is now settled.
+
+**R9 — GROUND SHIFT: the governance reset. Read this before your first edit.**
+Disclosed by the owner after the gates closed. **No plan-shape change** — every
+ruling in §4 stands and every wave keeps its target. This is an **execution
+surface** change, and it is the one thing in this document most likely to be
+stale by the time you read it.
+
+A separate owner-directed agent is landing, from branch
+`claude/codebase-complexity-audit-plynn4`: a **~200-line AGENTS.md charter**
+replacing the 3,534-line doctrine · **`docs/adr/` with ADR-0001** (the
+operating-model reset) · a whittled adversarial-review command scoped to a
+**closed safety tier** · **deleted prose-pinning tests** · and its own campaign
+plan at **`docs/REFACTOR-2026-08.md`**. Plus a global-rules widening: **a
+project's deletion mandates win.**
+
+Five things the executing session must handle:
+
+- **(a) Citations resolve to the NEW charter.** Every *"`AGENTS.md §Right-sizing
+  directive`"* reference in this plan — the review gates in §3, the clamp-tier
+  language in §1 and §4 — now points at the charter. **Substance is preserved**
+  (the closed clamp list and the scale-ceremony-to-risk rule are exactly what the
+  charter carries forward), but **read the charter at session start** rather than
+  trusting this plan's paraphrase of a file that no longer exists in that form.
+- **(b) RE-BASELINE WAVE 7h against post-charter `main`.** If the charter branch
+  already deleted guard and prose-pinning tests, **part of the −6,836 is already
+  banked and the −90,000 floor double-counts it.** Check specifically whether
+  **`tests/test_lint_contracts.py`** and the tuning doc-pin tests were touched.
+  Note the map tension and do **not** treat it as a conflict: `11` made those
+  single-owner to this plan, and **the owner's direction supersedes the map** —
+  reconcile the count, don't raise an alarm. This is the same discipline as the
+  S2 withdrawal: a number that moves gets a reason written next to it.
+- **(c) Our ADRs number from ADR-0002.** ADR-0001 is the operating-model reset.
+  Wave 8's ADR mechanism and the four `00 §R5` rulings start at 0002.
+- **(d) Cross-reference `docs/REFACTOR-2026-08.md` and this plan through the
+  coordination map**, so neither claims the other's zone. Two campaign plans
+  naming overlapping work with no supersession line is the exact defect
+  AGENTS.md's "one planning authority per domain" rule exists to catch — and the
+  five silently-competing tuning roadmaps of 2026-08-21 are the worked example.
+- **(e) Wave 7i must fit the charter's ≤220-line budget.** Its added rule (*a doc
+  may state a fact once; if a second doc needs it, the second doc links*) should
+  be **proposed charter-style — one line, no exposition — or dropped entirely if
+  the charter already carries the substance.** A 200-line charter is a budget, and
+  arriving with a paragraph is how budgets die.
+
+### Where the evidence base was not enough to plan — stated, not papered over
+
+1. **"Capture paths → 1" has no number behind it.** The phrase does not appear in
+   fragment `02`, and no current count of capture *paths* exists anywhere in the
+   inventory. What `02` does count is **102 record types** and **4 same-fact
+   duplications**; what `03` counts is **7 capture phases, 3 of which require the
+   swap**. Acceptance rows 2 and 3 are written against those counted things
+   instead. If the owner wants a literal "one capture path" criterion, it needs
+   defining before it can be measured.
+2. **No target line count exists for `web/correction_crossover_v2.py`.**
+   `06 §Judgment 4` gives the flow file's irreducible core (~1,500 lines,
+   enumerated part by part) and gives nothing equivalent for the web file.
+   Acceptance row 6 names its residue (apply/rollback 1,185 + route wiring)
+   without a number, on purpose.
+3. **`10` carries two internal inconsistencies this plan does not resolve.** It
+   states **23 distinct symbols** but enumerates 21 named plus one family (`PHASE_*`),
+   and it says **9** files take a bare `import crossover_v2_flow` in one section
+   and **8** in another. Wave 0's worklist should be built by re-deriving the set
+   against the tree, not by copying either figure.
+4. **`00 §7.6`'s "4 live docs, ~2,400 lines" does not reconcile** and this plan
+   does not repeat it. Three authored docs with explicit targets total **1,550**;
+   the fourth, `testing-tooling.md`, is 3,381 lines today and `07` explicitly
+   keeps it *"because it is checked by use, not by a guard."* §5 carries the 1,550
+   and states the index separately.
+5. **Whether every integrity refusal still banks is unverified** for the capture
+   screens and the seat-level ramp (verified only for the adoption path), and
+   `08` found `SCREEN_SNR_FLOOR` does **not** bank at round granularity. That is
+   proposed rule 3 of the integrity class, and it should be tested **before** the
+   class is written into doctrine in wave 7a — the rule may need a stated
+   carve-out rather than being asserted absolute.
+6. **`09` executed nothing.** Every "this test would fail" claim in the contract
+   section is derived by reading an assertion against the planned change; no
+   mutated tree was run. The three failure shapes for the graph-emit guards are
+   inferred from harness code, not observed. Expect surprises in wave 6c.
+7. **Six of the audit's "roughly a dozen" swept-in seam tests remain
+   unidentified.** The census regex was never disclosed; `09 §5`'s sibling set is
+   a symbol sweep, explicitly *"my best reconstruction, not a closure."* The
+   must-survive list is a floor on which seam tests break, not a bound.
+
+---
+
+*Draft written 2026-08-25 at `e064fa43d` by the tuning-stack conductor, from
+fragments `00`–`11` in this directory, `docs/DEEP-AUDIT-2026-08-25.md`
+(`origin/claude/codebase-complexity-audit-plynn4`), `docs/measurement-loop-doctrine.md`,
+and `captures/postfix-baseline-2026-08/`. Every count cites its source. Nothing
+was re-derived; where a number does not exist, §6 says so.*
