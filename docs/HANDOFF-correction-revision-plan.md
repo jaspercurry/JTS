@@ -1228,8 +1228,9 @@ C).
 - **Level ramp half-built:** `correction/autolevel.py::AutolevelController` ramps
   `main_volume` from quiet and locks — but ramps *blind* (lock decision in the
   browser), does not recover relay latency, does not pick an SNR window Pi-side.
-- **Bass management shipped:** wireless 2.1 (`multiroom/channel_split.py` +
-  `reconcile.py` mains-HP) and local-DAC sub (`active_speaker/profile.py
+- **Bass management shipped:** wireless 2.1 (`jasper-outputd`'s
+  `ChannelPick::Sub` low-pass + `reconcile.py` mains-HP) and local-DAC sub
+  (`active_speaker/profile.py
   LocalSubwoofer`), both LR4 @ 80 Hz (40–200 bounds). The "sub-LP upper ceiling"
   is already `graph_safety.py::sub_audible_guard_present` (200 Hz cap + mandatory
   limiter). Gaps: two layers emit the crossover independently; room correction
@@ -1400,14 +1401,12 @@ the iPhone/Android AGC-freeze confirmation (H1).
   response (it *reads* the corner, never re-picks it); Preference owns the
   sub-bass shelf. One bass target — never double-cut.
 - **The LR4 emit primitive is already shared** — `camilla_emit.emit_linkwitz_riley`
-  is used verbatim by both `channel_split` and `active_speaker`. P5's real
-  unification work is narrower than it first looks: the **duplicated corner
-  constant/bounds** (`channel_split.DEFAULT_CROSSOVER_HZ` vs
-  `profile.DEFAULT_SUB_CROSSOVER_HZ`, both already 80 Hz / 40–200 bounds, but
-  two independent numbers that can drift) plus the §6 corner-precedence
-  default for the main+wireless-sub case. Fix the stale `channel_split.py`
-  "mains HP is a V1 non-goal" docstring while touching this file — it
-  contradicts the shipped `reconcile.py` mains-HP path.
+  is used by `active_speaker` (the wireless-sub low-pass is a separate,
+  lightweight Rust LR4 in `jasper-outputd`'s `ChannelPick::Sub`, not this
+  Python primitive). P5's real unification work is narrower than it first
+  looks: the corner constant/bounds now have ONE home
+  (`jasper.camilla_emit.BASS_MANAGEMENT_CORNER_HZ_*`) plus the
+  §6 corner-precedence default for the main+wireless-sub case.
 - **"Reads the corner, never double-cuts" — operative definition.** The
   measured listening-position response already *is* the acoustic sum, so
   "the room designer corrects the summed response" is automatic once it
@@ -1528,7 +1527,7 @@ Each item is one or more small PRs to `main`, each with hardware-free tests.
   distinction; build out the bass wizard; fix the stale docstring. *(Status:
   implemented hardware-free. The corner default/bounds/order now have ONE home
   — `jasper.camilla_emit.BASS_MANAGEMENT_CORNER_HZ_*` — and `multiroom.config`,
-  `active_speaker.profile`, `output_topology`, and `multiroom.channel_split`
+  `active_speaker.profile`, and `output_topology`
   bind their public names to it (the 200 Hz sub-LP guard ceiling references the
   same constant). The §6 precedence is explicit + pinned in
   `reconcile.outputd_grouping_env` (an active endpoint clears the wireless HP;

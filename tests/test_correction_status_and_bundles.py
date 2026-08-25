@@ -1680,7 +1680,6 @@ async def test_measurement_baseline_hosts_program_bake_pipe(
         "jasper.multiroom.member_config.member_camilla_kwargs",
         lambda: {
             "enable_rate_adjust": False,
-            "channel_split": None,
             "playback_pipe_path": "/run/jasper-snapserver/snapfifo",
         },
     )

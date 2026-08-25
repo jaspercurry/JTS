@@ -15,7 +15,8 @@ outputd's ``dac_content`` lane, picking its channel THERE (outputd
   - ACTIVE LEADER: ``enable_rate_adjust=False`` (a File/pipe sink has no
     output clock; snapclient's sample-stuffing is the synced chain's ONE
     rate-tracker — §2 invariant 5) + ``playback_pipe_path`` pointed at
-    snapserver's FIFO. No channel_split: the pipe carries BOTH channels.
+    snapserver's FIFO — the pipe carries BOTH channels; each member picks
+    its own downstream, in outputd's ``ChannelPick``.
     Optional leader-owned L/R acoustic delays travel here too; they are
     room/pair correction state, not follower-local policy.
   - DUMB FOLLOWER (passive, single-DAC): solo defaults. Its local CamillaDSP
@@ -34,15 +35,6 @@ outputd's ``dac_content`` lane, picking its channel THERE (outputd
     arm), not by ``member_camilla_kwargs`` / ``emit_sound_config``. This
     function only governs the leader bake + the dumb-member solo defaults.
   - Solo / off / invalid: solo defaults (byte-for-byte unchanged).
-
-MIGRATION NOTE: before Increment 5 this policy applied the
-``channel_split`` weave to every active member's local config — the
-superseded self-correct model where each member's own CamillaDSP
-selected its channel. The canonical round-trip made that weave
-obsolete (members drop channels in outputd, downstream of the stream);
-``emit_sound_config``'s mutual-exclusion guards police the boundary.
-``build_channel_split`` itself remains for the channel vocabulary and
-lab paths.
 
 This module owns the decision so every config-apply path — ``/sound``,
 ``/correction``, and the grouping reconciler's bond apply
@@ -86,9 +78,8 @@ def member_camilla_kwargs(
     use this function: its driver-domain crossover config comes from
     :mod:`jasper.multiroom.follower_config` (distributed-active Slice 3).
 
-    ``channel_split`` is always ``None`` here (canonical members drop
-    channels in outputd's ChannelPick, never in a local CamillaDSP
-    weave — see the migration note in the module docstring).
+    Members drop channels in outputd's ChannelPick, never in a local
+    CamillaDSP weave.
 
     ``cfg`` defaults to a fresh read of ``grouping.env`` (the wizard
     apply paths); the reconciler passes its already-resolved ``cfg``.
@@ -100,7 +91,6 @@ def member_camilla_kwargs(
 
         out = {
             "enable_rate_adjust": False,
-            "channel_split": None,
             "playback_pipe_path": SNAPFIFO,
         }
         if cfg.left_delay_ms > 0.0 or cfg.right_delay_ms > 0.0:
@@ -113,6 +103,5 @@ def member_camilla_kwargs(
         return out
     return {
         "enable_rate_adjust": True,
-        "channel_split": None,
         "playback_pipe_path": None,
     }

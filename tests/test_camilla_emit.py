@@ -332,7 +332,7 @@ def test_bass_management_corner_shared_constant_values():
 
 
 def test_every_corner_consumer_is_bound_to_the_shared_constant():
-    """All four corner-carrying layers reference the ONE shared definition."""
+    """All three corner-carrying layers reference the ONE shared definition."""
     from jasper.active_speaker.profile import (
         DEFAULT_SUB_CROSSOVER_HZ,
         SUB_CROSSOVER_HZ_HI,
@@ -344,10 +344,6 @@ def test_every_corner_consumer_is_bound_to_the_shared_constant():
         BASS_MANAGEMENT_CORNER_HZ_HI,
         BASS_MANAGEMENT_CORNER_HZ_LO,
         BASS_MANAGEMENT_CROSSOVER_ORDER,
-    )
-    from jasper.multiroom.channel_split import (
-        DEFAULT_CROSSOVER_HZ as CS_DEFAULT,
-        _CROSSOVER_ORDER as CS_ORDER,
     )
     from jasper.multiroom.config import (
         CROSSOVER_HZ_HI,
@@ -367,12 +363,11 @@ def test_every_corner_consumer_is_bound_to_the_shared_constant():
     # order constant stays `==` because small ints are interned (`4 is 4`
     # always), making an `is` pin vacuous there.
     #
-    # Default corner: wireless-sub config, local-DAC-sub profile, and the
-    # channel-split low-pass are all THE shared default object.
+    # Default corner: wireless-sub config and local-DAC-sub profile are both
+    # THE shared default object.
     assert (
         DEFAULT_CROSSOVER_HZ
         is DEFAULT_SUB_CROSSOVER_HZ
-        is CS_DEFAULT
         is BASS_MANAGEMENT_CORNER_HZ_DEFAULT
     )
     # Lower bound across all consumers.
@@ -389,8 +384,8 @@ def test_every_corner_consumer_is_bound_to_the_shared_constant():
         is OT_HI
         is BASS_MANAGEMENT_CORNER_HZ_HI
     )
-    # LR4 order across the two crossover emitters that reference it.
-    assert SUB_CROSSOVER_ORDER == CS_ORDER == BASS_MANAGEMENT_CROSSOVER_ORDER
+    # LR4 order is bound to the shared constant.
+    assert SUB_CROSSOVER_ORDER == BASS_MANAGEMENT_CROSSOVER_ORDER
 
 
 def test_audible_sub_guard_ceiling_uses_the_shared_upper_bound():

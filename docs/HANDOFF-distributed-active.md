@@ -181,9 +181,9 @@ The reconciler's follower branch:
    L/R/mono) → split_active_<way>way (2→N) → per-driver [crossover, delay,
    gain, limiter] (+ tweeter HP)` — **no** program prefix, **no** EQ
    headroom (the leader baked B/C). Channel-select runs FIRST (inter-
-   speaker axis), then the crossover splits (intra-speaker axis) — exactly
-   [channel_split.py](../jasper/multiroom/channel_split.py)'s documented
-   composition order.
+   speaker axis), then the crossover splits (intra-speaker axis) — the same
+   composition order [camilla_yaml.py](../jasper/active_speaker/camilla_yaml.py)
+   documents for this emitter.
 3. **Disables outputd's `dac_content` ChannelPick on this box** — camilla
    now owns both the channel-pick and the split. This replaces the
    `dac_content_lane_rejects_non_single_alsa_sink` fence with the real
@@ -519,8 +519,11 @@ These are conflated in shorthand but are distinct designs:
   commissioned ≥3-output DAC — DAC8x/jts3). **Orthogonal to wireless — a
   solo-active win.**
 - **Wireless sub member (gap 5):** a *separate* bonded sub box. **Where its
-  filtering runs is a hardware-target tradeoff, not a fixed rule** —
-  `channel_split.py` already emits the sub fragment for *either* host:
+  filtering runs is a hardware-target tradeoff, not a fixed rule** — the
+  shared `jasper.camilla_emit` primitives (`emit_channel_select_mixer`,
+  `emit_linkwitz_riley`) can emit the sub fragment for *either* host below
+  (the member-side wrapper that once did this for a plain dumb sub,
+  `channel_split.py`, was removed as dead code, Wave 1 cleanup 2026-08-25):
   - **Receiver-side (brainy sub):** the sub runs endpoint-crossover mode,
     picks mono from the **one shared stereo stream**, and low-passes
     **locally** (leader specifies the corner). Reuses the follower path
@@ -534,8 +537,9 @@ These are conflated in shorthand but are distinct designs:
     stream** — the shared 2-ch stereo stream can't carry a pre-filtered sub
     channel without stripping the mains' bass or changing the pinned format.
     Loose sync is fine (bass is non-localizable — the multiroom
-    "loose-sub-sync" note). This is `channel_split.py`'s documented
-    "leader pre-bakes a DUMB endpoint's dedicated stream" path.
+    "loose-sub-sync" note). This is the "leader pre-bakes a DUMB endpoint's
+    dedicated stream" path (formerly documented on the now-removed
+    `channel_split.py`).
 
   **Default: receiver-side** — it follows the "crossover on the receiver"
   rule and reuses the follower path; sender-side is the **exception** for a
@@ -1150,8 +1154,7 @@ after Stage B.
   [runtime_contract.py](../jasper/active_speaker/runtime_contract.py),
   [graph_evidence.py](../jasper/active_speaker/graph_evidence.py)
 - Follower wiring: [reconcile.py](../jasper/multiroom/reconcile.py),
-  [member_config.py](../jasper/multiroom/member_config.py),
-  [channel_split.py](../jasper/multiroom/channel_split.py)
+  [member_config.py](../jasper/multiroom/member_config.py)
 - outputd lane: [dac_content.rs](../rust/jasper-outputd/src/dac_content.rs),
   [config.rs](../rust/jasper-outputd/src/config.rs)
 - Web: [sound_setup.py](../jasper/web/sound_setup.py)

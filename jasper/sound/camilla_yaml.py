@@ -21,7 +21,6 @@ from pathlib import Path
 from typing import TYPE_CHECKING
 
 from jasper.atomic_io import atomic_write_text
-from jasper.multiroom.channel_split import ChannelSplit, weave_channel_split
 from jasper.camilla_config_contract import (
     DEFAULT_CAPTURE_DEVICE,
     DEFAULT_CAPTURE_FORMAT,
@@ -121,7 +120,6 @@ def emit_sound_config(
     profile_id: str | None = None,
     output_trim_db: float = 0.0,
     enable_rate_adjust: bool = True,
-    channel_split: ChannelSplit | None = None,
     playback_pipe_path: str | None = None,
     muted_outputs: Iterable[int] | None = None,
 ) -> str:
@@ -148,17 +146,6 @@ def emit_sound_config(
     solo byte contract. Delays are for static acoustic alignment at the
     listening seat; Snapcast still owns distributed clock/transport sync.
 
-    ``channel_split`` (a :class:`jasper.multiroom.channel_split.ChannelSplit`)
-    is woven in for a bonded member that plays a single channel — the
-    ``channel_select`` mixer + (for a sub) the crossover. ``None`` or a
-    passthrough (``stereo``) split leaves the config untouched, so a solo
-    speaker is byte-for-byte unchanged.
-
-    ``room_peqs_right`` and ``channel_split`` are MUTUALLY EXCLUSIVE —
-    they belong to different topology models (leader-bake pre-stream
-    correction vs. the member-side channel-selection weave) and
-    combining them raises ``ValueError`` (see the guard below).
-
     ``playback_pipe_path`` is the BONDED-LEADER playback axis
     (docs/HANDOFF-multiroom.md §2, Increment 5): when set, the playback
     device becomes a CamillaDSP ``File`` sink writing the corrected
@@ -177,14 +164,10 @@ def emit_sound_config(
     pipe sink is refused — the two axes must not be conflated, and this is
     a pure presence check, never a value comparison against a mutable
     default (a caller who omits the argument entirely never trips it, no
-    matter what ``DEFAULT_PLAYBACK_FORMAT`` currently resolves to); a pipe
+    matter what ``DEFAULT_PLAYBACK_FORMAT`` currently resolves to); and a pipe
     sink REQUIRES ``enable_rate_adjust=False`` (a ``File`` backend has no
     output clock for rate_adjust to steer — Snapcast's sample-stuffing is
-    the one rate-tracker on the synced chain, §2 invariant 5); and it
-    never combines with ``channel_split`` (the member weave selects a
-    channel for a LOCAL DAC; the pipe carries the SHARED two-channel
-    program — members drop channels downstream, in outputd's
-    ChannelPick).
+    the one rate-tracker on the synced chain, §2 invariant 5).
 
     ``muted_outputs`` hard-mutes the named playback channels: each gets the
     repo's one mute idiom (a ``Gain`` at ``-120 dB`` with ``mute: true``)
@@ -228,31 +211,12 @@ def emit_sound_config(
                 "speaker channels have distinct room chains"
             )
 
-    # Contract guard (fail LOUD at the API boundary, before Increment 5
-    # wires real callers): room_peqs_right is the multi-room LEADER-BAKE
-    # axis — a pre-stream config carrying a different per-seat correction
-    # per channel — while channel_split is the member-side
-    # channel-selection weave from the superseded self-correct model.
-    # Combined, channel_select would run AHEAD of the per-channel filters,
-    # duplicating one program channel onto both outputs and then
-    # "correcting" the duplicate with the other seat's chain — nonsense
-    # audio. No topology ever combines them (even a passthrough split:
-    # the axes come from different call paths, so both-present indicates
-    # a wiring bug). See HANDOFF-multiroom.md §2.
-    if room_peqs_right is not None and channel_split is not None:
-        raise ValueError(
-            "room_peqs_right (leader-bake per-channel correction) and "
-            "channel_split (member channel-selection weave) are mutually "
-            "exclusive topology axes — see HANDOFF-multiroom.md §2"
-        )
     # Bonded-leader pipe-sink guards (fail LOUD at the API boundary,
     # at the playback-pipe API boundary). A File sink has no output clock, so
     # rate_adjust has nothing to steer — and the synced chain's one
     # rate-tracker must be snapclient's sample-stuffing (§2 invariant
     # 5); silently emitting `enable_rate_adjust: true` on a pipe config
-    # would hide a wiring bug in the caller. And the pipe carries the
-    # SHARED stereo program — a member's channel_split weave on it
-    # would strip the other speaker's channel out of the stream.
+    # would hide a wiring bug in the caller.
     if playback_pipe_path is not None:
         # D4 (wide-output-path program): the pipe sink's format is pinned to
         # DEFAULT_PIPE_SINK_FORMAT below, independently of playback_format —
@@ -282,14 +246,6 @@ def emit_sound_config(
                 "rate-tracker on the synced chain; see "
                 "HANDOFF-multiroom.md §2 invariant 5"
             )
-        if channel_split is not None:
-            raise ValueError(
-                "playback_pipe_path (the shared-stream pipe sink) and "
-                "channel_split (member channel-selection weave) are "
-                "mutually exclusive — members drop channels downstream "
-                "of the stream, never inside it; see "
-                "HANDOFF-multiroom.md §2"
-            )
     # Resolve the sentinel AFTER the explicitness guard above (mirrors the
     # chunksize/target_level None-or-default pattern a few lines up): the
     # ALSA loopback branch below still needs a concrete playback_format even
@@ -297,35 +253,6 @@ def emit_sound_config(
     if playback_format is None:
         playback_format = DEFAULT_PLAYBACK_FORMAT
     muted_channels = _normalize_muted_outputs(muted_outputs)
-    # Third mutually-exclusive pair, same shape and same fail-loud posture as
-    # the two above, and deliberately broad — it refuses EVERY channel value,
-    # for two different reasons:
-    #
-    # * `channel="sub"`: `weave_channel_split` APPENDS its crossover to each
-    #   per-channel Filter step's `names:` list, so the lowpass lands AFTER the
-    #   mute inside that step. CamillaDSP applies a step's filters in order, so
-    #   the mute is no longer terminal — exactly what
-    #   `jasper.active_speaker.runtime_contract._flat_output_terminally_muted`
-    #   refuses. (The channel_select Mixer itself is spliced right after
-    #   `master_gain`, i.e. BEFORE the per-channel steps, so it is not the
-    #   mechanism here — only the sub's appended crossover is.)
-    # * every channel: the weave duplicates ONE program channel onto both
-    #   outputs, so "output index i" no longer means what the saved topology's
-    #   per-output claim meant when the muted set was derived.
-    #
-    # The axes also come from different topology models: muting is a SOLO
-    # speaker declining its own unclaimed physical output, while channel_split
-    # is a bonded MEMBER selecting a channel out of a shared stereo program.
-    # Both present indicates a wiring bug, not a topology.
-    if muted_channels and channel_split is not None:
-        raise ValueError(
-            "muted_outputs (solo unclaimed-output silencing) and channel_split "
-            "(member channel-selection weave) are mutually exclusive — the sub "
-            "weave appends its crossover after the mute in the same pipeline "
-            "step, breaking the terminal-mute invariant the runtime contract "
-            "verifies, and the weave's channel duplication makes a per-output "
-            "muted set meaningless"
-        )
     # The shared stereo-prefix builder (jasper.camilla_stereo_prefix) owns the
     # room-PEQ -> headroom -> preamp -> preference assembly. Build the active
     # preference filters once and pass them in (it drops inactive specs);
@@ -447,12 +374,6 @@ mixers:
 pipeline:
 {pipeline_yaml}
 """
-
-    # Weave the bonded-member channel-split (channel_select mixer + sub
-    # crossover) BEFORE the out_path write so the written file is the woven
-    # config. Passthrough (stereo) / None leaves `yaml` byte-for-byte.
-    if channel_split is not None:
-        yaml = weave_channel_split(yaml, channel_split)
 
     if out_path is not None:
         out_path = Path(out_path)
