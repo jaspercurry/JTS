@@ -1954,6 +1954,27 @@ async def _remeasure_silence(
     # The fader is already at the floor, so the stimulus starts quiet and the up
     # leg is the only write needed to put it back where the climb had it.
     restarted: asyncio.Future[Any] = asyncio.ensure_future(play_continuous_tone())
+    # A flag rather than the down leg's plain `finally`, because this leg's
+    # SUCCESS path deliberately hands the caller a playing stimulus to carry on
+    # climbing with: cancelling unconditionally would end every pass at the
+    # re-measure. It says "any exit that is not a normal return", which is
+    # exactly the scope that was missing -- chiefly `CancelledError` from the
+    # operator's Ctrl-C and from the whole-operation watchdog, but a
+    # `GeneratorExit` or anything else `_watched_fade` could not turn into a
+    # refusal just as much. Naming no exception class is what makes that
+    # complete; an `except BaseException` here would say the same thing while
+    # spending one of this repo's ratcheted blind-except suppressions
+    # (`tests/test_lint_contracts.py`) to say it.
+    #
+    # What the exit would otherwise leave behind: the stimulus is commanded ON
+    # and the fader is somewhere between `quiet_db` and `volume_db`, so the
+    # caller's teardown would run with the room still playing.
+    #
+    # `restarted` is cancelled here and nowhere else. Every other exit hands it
+    # back for the caller's own teardown to cancel; an exit by exception hands
+    # back nothing, so this is the only chance anything has to stop the player
+    # this function just started.
+    returning = False
     try:
         faded_in = await _watched_fade(
             from_db=quiet_db,
@@ -1967,25 +1988,11 @@ async def _remeasure_silence(
             sleep=sleep,
             session_id=session_id,
         )
-    except BaseException:
-        # NOT a `finally`: this leg's success path deliberately hands the caller
-        # a PLAYING stimulus to carry on climbing with, so cancelling here
-        # unconditionally would end every pass at the re-measure.
-        #
-        # `BaseException` and not `Exception`, deliberately: the exits this
-        # covers are `CancelledError` -- the operator's Ctrl-C and the
-        # whole-operation watchdog -- which is the whole point. The stimulus is
-        # commanded ON and the fader is somewhere between `quiet_db` and
-        # `volume_db`, so an exit that skipped this would leave the room playing
-        # into a teardown computed from the climb's higher number.
-        #
-        # `restarted` is cancelled here and nowhere else. Every other exit hands
-        # it back for the caller's own teardown to cancel; an exit by exception
-        # hands back nothing, so this is the only chance anything has to stop the
-        # player it just started.
-        cancel_tone()
-        restarted.cancel()
-        raise
+        returning = True
+    finally:
+        if not returning:
+            cancel_tone()
+            restarted.cancel()
     if faded_in is not None:
         # A stop on the way back UP is the one RETURNING path here that would
         # otherwise hand the caller a PLAYING stimulus at a partly-restored
