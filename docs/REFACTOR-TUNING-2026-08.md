@@ -5,13 +5,19 @@
 > `captures/tuning-stack-inventory-2026-08/` on the bench machine
 > (gitignored bench evidence). The numbers those citations back are stated
 > inline here. The coordination boundary with the repo-wide audit program is
-> [REFACTOR-COORDINATION-2026-08.md](REFACTOR-COORDINATION-2026-08.md).
+> [REFACTOR-COORDINATION-2026-08.md](REFACTOR-COORDINATION-2026-08.md),
+> now superseded in part by the reconciliation terms recorded in this
+> plan's R5 (acknowledged 2026-08-25, both directions).
 
 
 **Status: final.** Every gate the inventory escalated is closed — nine owner
-rulings, S1–S9, recorded in §4. A fresh session executes this. **Read §6's R9
-first**: the repo's governance surface changed after the gates closed, and it
-changes what you read at session start and how you re-baseline wave 7h.
+rulings, S1–S9, recorded in §4 — and both programs have reconciled their
+boundaries in writing (§6 R5). One decision arrived *with* newly-assigned scope
+rather than being left open: **#1738**, wire or delete `jasper/bass_extension/`
+(§4). A fresh session executes this. **Read §6's R9 and R5 first**: the repo's
+governance surface changed after the gates closed, and the charter — not
+AGENTS.md's retired right-sizing directive — is what this plan's review gates now
+cite.
 
 **Evidence base.** This plan decides. It does not survey. Every number below
 cites a fragment of the tuning-stack inventory (`00`–`11` in this directory),
@@ -385,11 +391,12 @@ suite. *That split is the conductor's scoping of the rule, not the owner's
 words — say so, and let the owner collapse it if he meant a hardware run every
 time.*
 
-**The review gate is the right-sizing directive** (`AGENTS.md §Right-sizing
-directive`): mechanical and doc work gets author plus a sanity look; ordinary
-production code gets **one** adversarial review pass; only a change to the closed
-clamp list gets a real review. Where this plan spends more than that, it says so
-and why.
+**The review gate is the charter's Review policy** — scale ceremony to risk:
+mechanical and doc work gets author plus a sanity look; ordinary production code
+gets **one** adversarial review pass; only a change to the closed clamp list in
+the charter's **Non-negotiables** gets a real review. (That charter replaced
+AGENTS.md's right-sizing directive; the substance is unchanged — see §6 R9a.)
+Where this plan spends more than that, it says so and why.
 
 ### The deletion rules — binding on every wave that deletes a test
 
@@ -447,6 +454,14 @@ Three exceptions, each of which is class B wearing a C or E costume:
 - **Check every deletion against the invariant→pin table** (wave 0, PR 0d). A
   deletion that would leave a must-survive invariant with no named pin is blocked
   until the replacement pin is written.
+
+**The SHARED-SEAM LIST, as reconciled.** Standing entries, each needing an
+explicit acknowledgement rather than silence: `rust/jasper-fanin/**` (frozen after
+their host-compliance PR until the stereo tap re-runs) · `doc-map.toml` zone rows
+(removals ride our PRs) · **the volume surface** for the duration of wave 5 · and
+**`experiments/usb-turntable`**, the robotic-arm driver every `measure` angle
+depends on, whose promotion into `jasper/` is the audit program's owner gate and
+whose re-verification before any campaign is ours. Terms in §6 R5.
 
 ### Wave 0 — Free the class-A suite. Zero design decisions.
 
@@ -652,6 +667,23 @@ correct level.** The tool must state **which axis it matched** and disclose the
 compromise. This is the same physics the campaign's graphs page already recorded
 as its beaming finding; connect the two rather than re-deriving it.
 
+**Wave 4-adjacent, newly assigned: `jasper/bass_extension/` and #1738.** The
+audit program's boundary hands this package to us — it sits in our zone
+(audit-program reconciliation, 2026-08-25). It is **one owner decision and one
+PR**, not a wave:
+
+- **The decision is the owner's: #1738, wire it or delete it.** The package is
+  ~4,600 lines plus 715 lines of test.
+- **Their verifier's negative proof rides the PR** — the deadness is
+  *structurally enforced by the package's own tests*, which is a stronger claim
+  than "no caller found" and exactly the kind of evidence R2 says a deadness
+  claim needs.
+- **The deadness-enforcing tests die in the SAME PR as their subject**, per S7's
+  exception 2. Never before, never after.
+
+Sequence it beside wave 4 because it is a record/analysis-adjacent package, but
+it blocks nothing and nothing blocks it.
+
 **Two things this wave must not do.** Do **not** merge `lateral_pose_record` and
 `cloud_position_record` into one shape with optional columns — the tree has
 reasoned about this twice and reached the same answer: a common core plus a
@@ -717,6 +749,14 @@ deleted. Tests: **4,907 lines the census never counted** —
 `test_camilla_ducker.py` (366). *"A plan that schedules the volume collapse
 inside a strangler wave will be editing files this census never counted"*
 (`10`) — which is why it is its own wave (`00 §7.4`).
+
+**Coordination — this wave works OUTSIDE the census zone, by agreement.** It edits
+`volume_coordinator.py`, `camilla.py`'s fader/duck paths, `mux.py`'s writer sites,
+`control/volume_ops.py`, `web/sound_setup.py`, `cli/aec_tune.py` and the three
+volume suites. The audit program has agreed to widen single-owner area 3 to **"the
+volume surface" for the duration of this wave**: ours while it runs, untouched by
+them without our acknowledgement, expiring when the wave closes. **Every wave-5 PR
+body carries a one-line notice when it lands outside the zone** (§6 R5).
 
 **Verify.** Class-A green; the three volume suites green; then the acceptance run
 (§5 row 9) before the wave closes. **Gate:** the 0 dB ceiling is on the closed
@@ -808,10 +848,19 @@ coexistence window; the old swap machinery dies whole.
 | 7e | Docs: 126 files / 70,039 lines → **three authored docs at ≈1,550 lines** (doctrine ≈150 · one merged operational runbook ≤600 replacing `llm-operator-runbook.md` + the live spine of `HANDOFF-crossover-measurement-v2.md` · one fresh engine design doc ≤800) **plus `testing-tooling.md` as the tool index at whatever size it earns**. Everything else → `docs/historical/`, tagged once, removed from `doc-map.toml` so the routing bot stops sending readers to 34 documents for one subsystem. Note this is mostly **archival, not deletion** — what actually leaves the repo is 7f, and only 7f is in the net-lines table. | see 7f |
 | 7f | The mechanical doc cuts: two HANDOFF hybrids lose their appendices (**−8,043, zero information lost**); the five-file linearization plan family collapses to one archived decision record (**−4,527, −5 files, −5 doc-map rows**); six already-`Status: historical` docs move. Fence `docs/research/`, `bass-extension-waves/`, `correction-ux-wave3/` (78 files / 19,460 lines) off the maintenance rules — they are primary sources and are *supposed* to be frozen. | −12,570 |
 | 7g | **Move `docs/calibration-agent/` (12 files / 1,356 lines) out of `docs/` entirely.** It is runtime product input, resolved at run time from three search roots by `calibration_agent/tools.py`. Its residence in `docs/` is what forces every doc rule to make an exception for it. `07` calls this the single highest-leverage item in its section — and it is a code change, not a doc change. | code |
-| 7h | Guards **7,436 → ~600**. Delete `MAX_LINES_BY_PATH` and its 1,439-line comment block (`test_lint_contracts.py` is 2,159 lines, **87.9% comments**, grew 61 → 2,159 in ten weeks, **7 of 8 ceilings at exactly zero slack**, **1 confirmed catch in 60 commits — outcome: ceilings raised**, and 13 of the last 60 commits were forced to edit it). Delete `test_doc_staleness_sweep_20260604.py` (167), `test_docs_handoff_freshness.py` (180), `test_crossover_v2_measurement_doc_pins.py` (336 lines and a 4-path AST resolver to pin 2 sentences — delete the restatement instead, which is the doc's own instruction). **Keep** `test_package_enumeration_contract.py`, `test_measurement_integrity_floor_contracts.py`, the two code-vocabulary tests, and everything pinning the 5 clamps. Replace the ratchet with **one un-ratcheted assertion at a round number nobody edits** — fires once, cannot be paid off with a paragraph. **RE-BASELINE THIS ROW FIRST — see §6 R9(b):** the governance-reset branch may already have deleted some of these, in which case part of the −6,836 is banked and the floor double-counts. | −6,836 |
-| 7i | Add `07`'s rule to AGENTS.md: *a doc may state a fact once; if a second doc needs it, the second doc links.* The `fc_sweep` deletion cost prose edits in eight documents because eight had each restated what one owned. | +1 rule |
+| 7h | Guards **7,436 → ~600**. Delete `MAX_LINES_BY_PATH` and its 1,439-line comment block (`test_lint_contracts.py` is 2,159 lines, **87.9% comments**, grew 61 → 2,159 in ten weeks, **7 of 8 ceilings at exactly zero slack**, **1 confirmed catch in 60 commits — outcome: ceilings raised**, and 13 of the last 60 commits were forced to edit it). Delete `test_doc_staleness_sweep_20260604.py` (167), `test_docs_handoff_freshness.py` (180), `test_crossover_v2_measurement_doc_pins.py` (336 lines and a 4-path AST resolver to pin 2 sentences — delete the restatement instead, which is the doc's own instruction). **Keep** `test_package_enumeration_contract.py`, `test_measurement_integrity_floor_contracts.py`, the two code-vocabulary tests, and everything pinning the 5 clamps. Replace the ratchet with **one un-ratcheted assertion at a round number nobody edits** — fires once, cannot be paid off with a paragraph. **RE-BASELINE — DONE (§6 R9b).** The governance-reset branch already deleted `test_agents_md_toc.py` (108) and `test_doc_staleness_sweep_20260604.py` (167) — **275 lines banked**, so this row is **−6,561**, not −6,836. It did **NOT** touch `test_lint_contracts.py`, `test_docs_handoff_freshness.py`, or `test_crossover_v2_measurement_doc_pins.py`; all three remain ours to delete. *(One clause for the executing session: `07`'s 22-test guard slice was the tuning slice, and the ToC test was not separately enumerated in it — confirm the 108 sits inside the 7,436 before booking the full 275.)* | **−6,561** |
 
-**`test_lint_contracts.py` has exactly one owner: this refactor** (`11`). The
+**Wave 7i is DROPPED, and the reason is self-demonstrating.** It proposed adding
+`07`'s rule to AGENTS.md — *a doc may state a fact once; if a second doc needs it,
+the second doc links.* The governance charter's **Docs default** already owns that
+substance: *do not restate here, in README, or in code what another file owns.*
+Re-adding it would be a second file restating what the charter owns — the exact
+thing the rule forbids. So the rule is kept by **obeying** it, not by writing it
+down again. (Audit-program reconciliation, 2026-08-25, via the owner.)
+
+**`test_lint_contracts.py` has exactly one owner: this refactor** — and the audit
+program has now **ceded it in writing**, along with `test_docs_handoff_freshness.py`
+(§6 R5). The
 audit agent does not touch that file. Two hands in one 2,159-line file guarantee
 conflicts, and 7 of its 8 ceilings are this zone's files.
 
@@ -866,8 +915,8 @@ says *extract the rulings before the code moves*; S7 supplies the mechanism:
 
 - A design ruling that **still binds the new engine** but lives only in a test
   docstring becomes an ADR in **`docs/adr/`**, and the docstring shrinks to
-  `See ADR-NNNN`. **Number from ADR-0002** — ADR-0001 is the governance reset's
-  operating-model record (§6 R9c).
+  `See ADR-NNNN`. **Our range is ADR-0002 – ADR-0099**; the audit program takes
+  0100+. ADR-0001 is the governance reset's operating-model record (§6 R9c).
 - A ruling the refactor **supersedes** is deleted outright. **Git history is the
   archive** — that is the same call ruling G1 makes about the deviation table's
   demotion record.
@@ -914,6 +963,24 @@ what remains is execution, and the evidence still owed is named in §6 rather th
 left as a decision in disguise — the no-pop check, the #2202 scoping hour, and
 the class-B verification pass are measurements to take, not questions to ask.
 
+### One decision arrived WITH new scope — and it is not a reopened gate
+
+Said plainly, because the heading above must stay true. S1–S9 settled **this
+plan's shape**, and none of them reopens. But the audit-program reconciliation
+(2026-08-25) **assigned this plan a package it did not previously own**, and that
+package came with its own owner decision attached:
+
+> **#1738 — wire `jasper/bass_extension/` up, or delete it.** ~4,600 lines plus
+> 715 lines of test. The audit program's verifier supplies the negative proof
+> (deadness structurally enforced by the package's own tests); the owner supplies
+> the call. One PR either way, with the deadness-enforcing tests dying in the same
+> PR per S7.
+
+This is a **new scope item carrying a decision**, not a gate this plan left open —
+the distinction matters, because a fresh session reading "no open gates" and then
+finding an owner decision three sections later would rightly distrust the rest.
+Detail sits beside wave 4.
+
 ---
 
 ## 5. Acceptance, counted
@@ -933,6 +1000,16 @@ The plan is DONE when every row below reads true.
 | 8 | **The class-A suite** | 149 files / 126,663 lines | **green**, running against the new engine. Reference: 410 passed / 24 skipped / 10.6 s across three flagships at `e064fa43d`. |
 | 9 | **The baseline campaign reproduced** | `captures/postfix-baseline-2026-08` r1 + r2 | re-run on the new engine, **within the campaign's own measured noise floor: worst round-to-round change ≤ 0.37 dB**, 16/16 captures with the fader held, 0 glitched captures. The report's own bar: *"anything smaller than about 0.4 dB is noise, not a result."* |
 | 10 | **Then the real thing** | — | the owner's acceptance bar, quoted from that report: *"the full candidate campaign — many candidates, each measured, one winner, and the winner re-measured."* Entire trusted range, multi-candidate, best-of final, re-measured. |
+
+**Row 7 has a measurement instrument now — stop hand-counting.** The audit program
+is building **`scripts/right-size-report.sh`** with committed baselines: per-zone
+comment-to-code, test-vs-product, and a dead-code scan. **This plan's net-lines
+evidence consumes that report's census-zone output at every wave end**, instead of
+a hand count. Two things that buys: the number is produced the same way twice, and
+the baselines make a wave's delta a *measured* delta rather than an asserted one —
+which is the same standard §5 already holds the acoustics to. Re-baseline against
+the report at each wave close, and let it settle the function-grained re-triage
+caveat under the net-lines table.
 
 **Row 9 is the engine's proving ground.** The baseline campaign is the only
 measurement in the tree that ran the whole loop twice under held conditions and
@@ -970,16 +1047,16 @@ with zero vocabulary growth is the first real test of ruling S1, and it passes.
 | Row | Lines | Source |
 |---|---:|---|
 | Two re-export doors | −271 | `06 §Judgment 5` |
-| Guard machinery 7,436 → ~600 | −6,836 | `07 §Guard-test census` |
+| Guard machinery 7,436 → ~600, **less 275 already banked** by the governance-reset branch | **−6,561** | `07 §Guard-test census`, re-baselined by the audit-program reconciliation |
 | Two HANDOFF appendices | −8,043 | `07 §Consolidation map` |
 | Linearization plan family, 5 files → 1 | −4,527 | `07 §Consolidation map` |
 | Class C + D test deletion (floor) | −29,300 | `10 §Totals` |
 | Census-zone prose | −30,000 | DEEP-AUDIT §4.5 |
 | Census-zone test docstrings + fixture dedup — **residual, after S7's deletions take theirs** | −15,000 | S7 (revised down from DEEP-AUDIT §4.5's ~25,000) |
 | *WITHDRAWN by ruling S2 — `commissioning_capture_producer.py` + its tests* | *(−2,089)* | *the lane is fixed, so the module gets a producer, not a grave* |
-| **Deletion subtotal** | **−93,977** | |
+| **Deletion subtotal** | **−93,702** | 93,977 − 275 |
 | Adds: engine test double (reference 1,948), engine design doc ≤800, runbook ≤600 (replacing 670 + 1,068), the #2202 producer, the little SQLite index, the ADRs | ~+2,000 | `10`, `07`, S2, S7 |
-| **Stated floor** | **−90,000** | reserves ~2,000 against the re-triage below |
+| **Stated floor** | **−90,000** | net −91,702; reserves **1,702** against the re-triage below |
 
 **The floor moved, and it moved the wrong way — say why.** It was **−95,000**
 before ruling S7 and is **−90,000** now. Nothing was lost; a number was corrected.
@@ -990,6 +1067,14 @@ for free, so the docstring row is a ~15–20K RESIDUAL.** This plan books the
 conservative end. So the old floor's ~9,000-line overlap reserve is retired, the
 caveat it existed for is **closed**, and the honest number is smaller and firmer
 than the number it replaces.
+
+**Then the reconciliation moved it again, by 275, and the floor held.** The
+governance-reset branch had already deleted 275 lines this plan was still
+counting, so the subtotal is **−93,702** and the net is **−91,702**. The stated
+floor stays **−90,000** — the reserve narrows from ~2,000 to **1,702**, which is
+still real margin, and re-rounding to −89,000 would trade a true number for a
+tidy one. Said out loud so the third movement of this figure is as traceable as
+the first two.
 
 **Two caveats still travel.** First, the withdrawn `commissioning_capture_producer`
 row is shown rather than quietly removed: ruling S2 costs this plan a booked
@@ -1040,28 +1125,41 @@ correction, tweeter linearization, and level trim. **Carry this warning into the
 acceptance run's prompt** — it is exactly the shortcut a fresh session takes to
 unblock itself.
 
-**R5 — Coordination cadence with the audit program.** Four single-owner areas
-(`11`): `tests/test_lint_contracts.py` — this refactor, the audit agent does not
-touch it · `rust/jasper-fanin/**` — the audit may edit, but **the 5-case stereo
-tap must be re-run on the box after any `mixer.rs`/`lane_resampler.rs` change and
-before wave 6 executes** · the duck machinery — this refactor; the audit builds
-no lease (its Wave 5 is HELD, superseded by measurement) · tuning-slice docs —
-this refactor, while AGENTS.md and README are the audit's with the Right-sizing
-directive surviving verbatim. The audit's waves 0–1 are pure green light and are
-worth landing **before** this program starts; they shrink the tree it rebases
-over. One line in the other program's next PR body is enough notice for anything
-new that looks shared.
+**R5 — Coordination with the audit program: ACKNOWLEDGED, with terms.** The
+double-lock this section used to demand has cleared. Both programs have now
+reconciled **in writing** (audit-program reconciliation, 2026-08-25, via the
+owner), and these are the terms:
 
-**Double-lock every shared-seam deletion until the map is confirmed.** The audit
-agent's S7 consult referred in passing to *"my Wave 5 duck-lease work"* — but the
-coordination map **HOLDS** that item: the lease is superseded by measurement, the
-duck's single owner is this refactor, and the audit builds no lease. The owner is
-delivering the map to that agent. Until the audit agent **confirms** it, one side
-believes it owns work the other side has already been told to stop. So: every
-entry on §3's **SHARED-SEAM LIST** needs an explicit acknowledgement from the
-audit program before it is deleted — not an assumption of silence, and not a
-one-way notice. This is the cheap version of the failure `00 §R6` describes: a
-handoff that was made and never received.
+| Boundary | Term |
+|---|---|
+| **The duck lease** | **CONFIRMED HELD**, in the audit agent's own words: *"I build no lease… the lease was designed for a world your waves 5e + 6d dissolve."* The mechanism that would have needed it is the mechanism this plan deletes. |
+| **`test_lint_contracts.py`, `test_docs_handoff_freshness.py`** | **Ceded to us**, single-owner. The audit program does not touch either. |
+| **`rust/jasper-fanin/**`** | Agreed protocol: their host-compliance PR carries the notice; **fan-in edits FREEZE after it** until the 5-case stereo tap re-runs on the box; **wave 6 does not execute before that tap.** |
+| **The asyncio-marker sweep** | Lands repo-wide **before our wave 0**, or scopes our prefixes out. Either way wave 0 does not collide with it. |
+| **`doc-map.toml` zone rows** | Their removal **rides our PRs**, with a notice line. |
+| **The volume surface** *(new — see below)* | Ours for the duration of wave 5. |
+| **`experiments/usb-turntable`** *(new — see below)* | Shared seam; promotion is theirs, re-verification is ours. |
+
+**The volume surface — a widening this plan asked for and got.** Wave 5 edits
+files **outside the census zone**: `volume_coordinator.py`, `camilla.py`'s
+fader/duck paths, `mux.py`'s writer sites, `control/volume_ops.py`,
+`web/sound_setup.py`, `cli/aec_tune.py`, plus the three volume test suites. Single-
+owner area 3 is therefore widened from "the duck machinery" to **"the volume
+surface", for the duration of wave 5**: those files are ours while it runs, the
+audit program touches none of them without our acknowledgement, and **our wave-5
+PR bodies carry a one-line notice whenever they land outside the zone.** The
+widening expires when wave 5 closes.
+
+**The arm driver is a shared seam.** `experiments/usb-turntable` is the
+robotic-arm driver our `measure` rounds use at **every angle** — it is
+load-bearing for the north star's arm front end, and it currently lives outside
+`jasper/`. The audit program carries an owner gate to **promote it into `jasper/`
+or accept the anomaly**. If promotion lands mid-campaign, **the path move carries
+a notice and our arm tooling is re-verified before any measurement campaign
+runs.** Added to §3's SHARED-SEAM LIST.
+
+The audit's waves 0–1 remain pure green light and are worth landing **before**
+this program starts; they shrink the tree it rebases over.
 
 **R6 — The coupling trap has a second face: the fixture.** 24 of 26 importers of
 `crossover_v2_fixtures.py` want a session harness, and the repo has already been
@@ -1101,32 +1199,35 @@ project's deletion mandates win.**
 
 Five things the executing session must handle:
 
-- **(a) Citations resolve to the NEW charter.** Every *"`AGENTS.md §Right-sizing
-  directive`"* reference in this plan — the review gates in §3, the clamp-tier
-  language in §1 and §4 — now points at the charter. **Substance is preserved**
-  (the closed clamp list and the scale-ceremony-to-risk rule are exactly what the
-  charter carries forward), but **read the charter at session start** rather than
-  trusting this plan's paraphrase of a file that no longer exists in that form.
-- **(b) RE-BASELINE WAVE 7h against post-charter `main`.** If the charter branch
-  already deleted guard and prose-pinning tests, **part of the −6,836 is already
-  banked and the −90,000 floor double-counts it.** Check specifically whether
-  **`tests/test_lint_contracts.py`** and the tuning doc-pin tests were touched.
-  Note the map tension and do **not** treat it as a conflict: `11` made those
-  single-owner to this plan, and **the owner's direction supersedes the map** —
-  reconcile the count, don't raise an alarm. This is the same discipline as the
-  S2 withdrawal: a number that moves gets a reason written next to it.
-- **(c) Our ADRs number from ADR-0002.** ADR-0001 is the operating-model reset.
+- **(a) RESOLVED — citations now name the charter's own sections.** This plan's
+  review-gate and clamp-tier language cites the charter's **Non-negotiables** (the
+  closed clamp list, *"nothing else is safety"*, and nanny demotion) and its
+  **Review policy** (scale ceremony to risk). Substance preserved exactly; the
+  old *"`AGENTS.md §Right-sizing directive`"* pointer is retired. Still **read the
+  charter at session start** rather than trusting a paraphrase.
+- **(b) RESOLVED — wave 7h re-baselined, with facts.** The governance-reset branch
+  deleted **`test_agents_md_toc.py` (108)** and
+  **`test_doc_staleness_sweep_20260604.py` (167)** — **275 lines already banked**.
+  It did **NOT** touch `test_lint_contracts.py`, `test_docs_handoff_freshness.py`,
+  or `test_crossover_v2_measurement_doc_pins.py`; all three stay ours. Wave 7h's
+  row is **−6,561**, the subtotal **−93,702**, and the floor holds at −90,000 on a
+  1,702-line reserve. The map tension resolved the same way it was framed —
+  reconcile, don't alarm: the two contested files were **ceded to us in writing**
+  (see R5).
+- **(c) Our ADRs run ADR-0002 – ADR-0099; the audit program takes 0100+.**
+  ADR-0001 is the operating-model reset.
   Wave 8's ADR mechanism and the four `00 §R5` rulings start at 0002.
 - **(d) Cross-reference `docs/REFACTOR-2026-08.md` and this plan through the
   coordination map**, so neither claims the other's zone. Two campaign plans
   naming overlapping work with no supersession line is the exact defect
   AGENTS.md's "one planning authority per domain" rule exists to catch — and the
   five silently-competing tuning roadmaps of 2026-08-21 are the worked example.
-- **(e) Wave 7i must fit the charter's ≤220-line budget.** Its added rule (*a doc
-  may state a fact once; if a second doc needs it, the second doc links*) should
-  be **proposed charter-style — one line, no exposition — or dropped entirely if
-  the charter already carries the substance.** A 200-line charter is a budget, and
-  arriving with a paragraph is how budgets die.
+- **(e) RESOLVED — wave 7i is DROPPED.** Its rule (*a doc may state a fact once;
+  if a second doc needs it, the second doc links*) is already owned by the
+  charter's **Docs default**: *do not restate here, in README, or in code what
+  another file owns.* Adding it would be a second file restating what the charter
+  owns — the very thing the rule forbids. The rule is kept by obeying it. The
+  charter's ≤220-line budget is preserved untouched.
 
 ### Where the evidence base was not enough to plan — stated, not papered over
 
