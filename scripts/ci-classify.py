@@ -210,7 +210,6 @@ DOCS_TEST_FILES = (
     "tests/test_env_vars_codified.py",
     "tests/test_first_party_arm64_release.py",
     "tests/test_launch_blocker_docs_exist.py",
-    "tests/test_lib_usb_gadget_advisory.py",
     "tests/test_prepare_wake_livekit_smoke.py",
     "tests/test_prepare_wake_training_workdir.py",
     "tests/test_run_wake_training_phase0.py",
