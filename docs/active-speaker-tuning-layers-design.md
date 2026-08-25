@@ -78,8 +78,8 @@ compose into one CamillaDSP graph, but the *signal* order inside that graph
 is different — room and preference ride the stereo bus ahead of the split
 mixer, so they are emitted before everything numbered 1a–2. Do not read
 these numbers as filter order; the graph shape is in the
-["Layer Boundary"](HANDOFF-active-speaker-dsp.md#layer-boundary)
-section of HANDOFF-active-speaker-dsp.md.
+["Layer Boundary"](historical/active-speaker-dsp-investigation-history.md#layer-boundary)
+section of the active-speaker DSP investigation history.
 
 | # | Layer | Job | Instrument | Re-runs when |
 |---|---|---|---|---|
@@ -711,7 +711,7 @@ correctable:
 2. **An LLM prescriber** — [`tuning-master-plan.md`](tuning-master-plan.md)
    is the planning authority for agent-assisted tuning and is where that
    option's shape lives (it superseded
-   [`llm-native-tuning-workbench-plan.md`](llm-native-tuning-workbench-plan.md)
+   [`llm-native-tuning-workbench-plan.md`](historical/llm-native-tuning-workbench-plan.md)
    on 2026-08-21).
 
 The owner's stated concern is **complexity**. The observation that makes
@@ -1752,7 +1752,7 @@ instrument blindness · #2603 the driver low-limit's two declared values ·
 frame-coherence condition · #2662 the capture-source seam. Campaign-wide wave
 state lives in [`tuning-master-plan.md`](tuning-master-plan.md) and its
 tracking epics, not here (it replaced
-[`audio-commissioning-roadmap.md`](audio-commissioning-roadmap.md) whole on
+[`audio-commissioning-roadmap.md`](historical/audio-commissioning-roadmap.md) whole on
 2026-08-21).
 
 Load-bearing for decision 14 (2026-08-18), both from that day's

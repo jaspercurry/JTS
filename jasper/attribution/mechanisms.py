@@ -8,7 +8,7 @@ knowledge.
 **Shape.** This is the repo's shipped **registry-of-declarations**: a mapping
 from a stable id to a frozen spec, exactly the
 ``REASON_REGISTRY: dict[str, ReasonSpec]`` shape in
-:mod:`jasper.active_speaker.crossover_v2_flow`. ``docs/attribution-stage-plan.md``
+:mod:`jasper.active_speaker.crossover_v2_flow`. ``docs/historical/attribution-stage-plan.md``
 §2 rules out the transit-provider pattern for this deliberately — that
 pattern's defining property is each plugin parsing its own env from a plain
 ``Mapping`` (attribution has no analogue), and its flattening step *raises* on

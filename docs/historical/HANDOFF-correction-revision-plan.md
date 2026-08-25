@@ -12,7 +12,7 @@
 >
 > **Campaign-ordering authority moved out (2026-08-21).** "What supersedes
 > what", and what the program runs next, now live in
-> [`tuning-master-plan.md`](tuning-master-plan.md); this spine keeps its
+> [`tuning-master-plan.md`](../tuning-master-plan.md); this spine keeps its
 > charter, phase ladder, research index, issue index, and the CURRENT
 > POSITION record. Before acting on the mission named in that block: the R21
 > "apply-vertical" candidate is **cancelled**, not deferred — the reason is
@@ -42,7 +42,7 @@ elsewhere — see below):
 - **Layer 3 room correction — also this program**, and **deliberately
   simple**: the REW/CamillaDSP pattern, not a second machine.
 - **Layer 2 bass — not this program.** The bass-extension program owns it
-  ([`HANDOFF-bass-extension-plan.md`](HANDOFF-bass-extension-plan.md)): its
+  ([`HANDOFF-bass-extension-plan.md`](../HANDOFF-bass-extension-plan.md)): its
   captures are near-field, and its profile is a Layer-A artifact bound to
   the applied baseline, so it is commissioned *after* the speaker layer.
 - **Layer 4 taste EQ — not this program**: parametric; already good.
@@ -58,8 +58,8 @@ there will never be a third.**
 
 | Kernel | Owns | Shape |
 |---|---|---|
-| [`jasper/active_speaker/attempts_loop.py`](../jasper/active_speaker/attempts_loop.py) | the linearization lane's attempt loop | floor-aware: compares consecutive attempts against a measured repeat floor |
-| [`jasper/correction/acceptance.py`](../jasper/correction/acceptance.py) | the room lane | the simple accept/revert verdict; keeps that shape |
+| [`jasper/active_speaker/attempts_loop.py`](../../jasper/active_speaker/attempts_loop.py) | the linearization lane's attempt loop | floor-aware: compares consecutive attempts against a measured repeat floor |
+| [`jasper/correction/acceptance.py`](../../jasper/correction/acceptance.py) | the room lane | the simple accept/revert verdict; keeps that shape |
 
 If room correction ever wants floor-aware stopping, it **reuses the
 attempts-loop kernel with its own floor stats**. It does not grow a
@@ -67,7 +67,7 @@ floor-aware branch of its own, and nobody writes a third kernel.
 
 **Where the layer model itself is owned.** The layer architecture — what each
 layer measures, with which instrument, and when it re-runs — is
-[`active-speaker-tuning-layers-design.md`](active-speaker-tuning-layers-design.md).
+[`active-speaker-tuning-layers-design.md`](../active-speaker-tuning-layers-design.md).
 Read it for the layers; read this for the workstream order.
 
 > **Ruled 2026-08-13 (#2067).** An earlier revision of this section tabled a
@@ -416,7 +416,7 @@ accepted applied-candidate VERIFY grades are persisted through
 input, and the kernel's last decision reaches the household verdict through
 one copy writer. Attempt lifecycle stays in `CrossoverV2Conductor`; persistence
 stays in
-[`model_error_store.py`](../jasper/active_speaker/model_error_store.py); the
+[`model_error_store.py`](../../jasper/active_speaker/model_error_store.py); the
 decision kernel remains pure. Floors are still adopted only by the offline
 `adopt_floor` / replay path. A speaker with no stored floor banks the realized
 observation but makes no improvement claim (`ungraded_no_floor`) — the live
@@ -488,7 +488,7 @@ and the P0 repeat floor came out of 2.7 minutes of audio.
 
 **3. The quality bar is already binding.** Separation of concerns, single source
 of truth, elegant / modular / resilient / observable — enforced per PR by the
-standing method's adversarial gates ([`AGENTS.md`](../AGENTS.md)). The campaign
+standing method's adversarial gates ([`AGENTS.md`](../../AGENTS.md)). The campaign
 adds nothing here and restates nothing.
 
 **4. Rounds are code-locality clusters.** Each round owns **one code territory**:
@@ -904,7 +904,7 @@ reconciliation (#2105/#2108) — have landed.
 The canonical missions, exits, measurement/result contracts, issue
 disposition, dependency topology, anti-spiral rules, reviewer panel, and launch
 briefs live only in
-[`crossover-linearization-80-20-plan.md`](crossover-linearization-80-20-plan.md).
+[`crossover-linearization-80-20-plan.md`](../crossover-linearization-80-20-plan.md).
 This spine owns only status and order IDs:
 `R14 (complete) -> R15 -> fixed-2-kHz hardware checkpoint -> later re-gated rounds`.
 
@@ -986,7 +986,7 @@ them; that schedules the work, it does not adopt them into the program.
 ## CURRENT POSITION
 
 Update **this block** at the end of every round together with the
-[canonical campaign plan](crossover-linearization-80-20-plan.md). Do not
+[canonical campaign plan](../crossover-linearization-80-20-plan.md). Do not
 restate strategy in a handoff; move the marker here and point at it.
 
 ```
@@ -1114,13 +1114,13 @@ One writer per fact. Drift between these is a bug, not a style question.
 | Fact | Lives in | Never in |
 |---|---|---|
 | **Strategy** — charter, rungs, sequencing | **this document** | handoffs, issues |
-| **Program ordering** — what supersedes what, what runs next | [`tuning-master-plan.md`](tuning-master-plan.md) (since 2026-08-21) | this spine, handoffs, issues |
+| **Program ordering** — what supersedes what, what runs next | [`tuning-master-plan.md`](../tuning-master-plan.md) (since 2026-08-21) | this spine, handoffs, issues |
 | Campaign status/order — active round and dependency-ordered IDs | **this document** | handoffs, issues |
-| R14–R20 mission, territory, exit, and launch contract | [`crossover-linearization-80-20-plan.md`](crossover-linearization-80-20-plan.md) | this spine, handoffs, issues |
+| R14–R20 mission, territory, exit, and launch contract | [`crossover-linearization-80-20-plan.md`](../crossover-linearization-80-20-plan.md) | this spine, handoffs, issues |
 | Session state — where we are right now | the CURRENT POSITION block above | a handoff's prose |
 | Current session execution state and what just moved | `captures/NEXT-SESSION-PROMPT-*.md` (a **session brief**) | this document |
 | A single task: its defect, evidence, and fix | its **GitHub issue** | this document, handoffs |
-| Method — conductor rule, adversarial gate, values | [`AGENTS.md`](../AGENTS.md) | everywhere else |
+| Method — conductor rule, adversarial gate, values | [`AGENTS.md`](../../AGENTS.md) | everywhere else |
 
 Three planning layers, deliberately: **strategy** (this spine's ladder),
 **campaign** (the canonical R14–R20 plan linked above, with this spine retaining
@@ -1141,9 +1141,9 @@ contract to the canonical plan and retain only the status/order marker here.
 > this plan. Preserved for primary-source archaeology — threshold and flow facts
 > below will drift. Read this for the layered-pipeline rationale and completed
 > program history, not current state. Current shipped behavior lives in
-> [HANDOFF-correction.md](HANDOFF-correction.md); intended Room product behavior
+> [HANDOFF-correction.md](../HANDOFF-correction.md); intended Room product behavior
 > lives in
-> [room-correction-information-design.md](room-correction-information-design.md).
+> [room-correction-information-design.md](../room-correction-information-design.md).
 > H1's on-device settle, AGC, and threshold work carries forward in that
 > design's hardware track. H0/H2/H3/H4 remain crossover/bass hardware work and
 > do not become Room-owned tasks. **Its `P<N>` labels are the P-track
@@ -1495,7 +1495,7 @@ Each item is one or more small PRs to `main`, each with hardware-free tests.
   adversarial-panel remediation applied — buffered settle read with hold
   extension, run-token-scoped feed, armed gate, evidence-gated MAXED_OUT,
   derived safety timeout; H1 on-device tuning pending. Operational summary
-  in [HANDOFF-correction.md](HANDOFF-correction.md) §Status.)*
+  in [HANDOFF-correction.md](../HANDOFF-correction.md) §Status.)*
 - **P4 — Verify-acceptance loop.** `AcceptanceEvaluator` (store predicted curve
   at apply → after verify compute error-to-target reduction + a "did any band
   get worse" guard → accept / surface / auto-revert on clear regression),
@@ -1519,7 +1519,7 @@ Each item is one or more small PRs to `main`, each with hardware-free tests.
   adversarial-review remediation applied — outcome-recorded truthful revert
   surfacing, strict-adjacency concordance, floor-level smooth-noise +
   multi-position-basis pins; H1 threshold retuning pending. Operational
-  summary in [HANDOFF-correction.md](HANDOFF-correction.md) §Status.)*
+  summary in [HANDOFF-correction.md](../HANDOFF-correction.md) §Status.)*
 - **P5 — Bass management unification (§3.3, non-timing):** unify the
   duplicated crossover-corner constant/bounds and apply the §6 corner-
   precedence default; room correction reads the corner and enforces the
@@ -1793,7 +1793,7 @@ unchanged.
 
 **Verification scope.** A **2026-08-04 planning/contract-repair pass** verified
 the R14–R20 status/order against
-[`crossover-linearization-80-20-plan.md`](crossover-linearization-80-20-plan.md),
+[`crossover-linearization-80-20-plan.md`](../crossover-linearization-80-20-plan.md),
 re-read the linked issue bodies/states, confirmed local `main` at
 `d742b37bec8293b72f1897194d9bf8e10b85cb08`, read-only verified the public
 `capture_page_build` at `20260803.4`, and read-only verified jts3's matching
@@ -1863,7 +1863,7 @@ these sections:
 - **the charter** — including its layer-placement section, ordering rule, and
   two-stop-kernels rule (both kernel paths opened and confirmed to exist; the
   bass-position difference against
-  [`active-speaker-tuning-layers-design.md`](active-speaker-tuning-layers-design.md)
+  [`active-speaker-tuning-layers-design.md`](../active-speaker-tuning-layers-design.md)
   was flagged for the owner and ruled 2026-08-13 — the design doc's order
   won, see #2067);
 - **the ratification callout** and the **Status paragraph of every rung

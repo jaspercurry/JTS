@@ -4,7 +4,7 @@
 
 """Per-position cloud evidence — the members, not just the aggregate.
 
-**The gap this closes** (``docs/attribution-stage-plan.md`` §6). The cloud
+**The gap this closes** (``docs/historical/attribution-stage-plan.md`` §6). The cloud
 pipeline **already computes** every per-position value and then discards it:
 it reports ``n_confident: 6``, ``clustered_fraction: 1.0``, and the household
 sentence built on them, while persisting only one aggregate 512-point curve

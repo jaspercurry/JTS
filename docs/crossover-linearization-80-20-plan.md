@@ -8,7 +8,7 @@
 > code was merged, deployed, or measured. Independent Gate-0 audits narrowed
 > R15 to one atomic driver-only fixed-Fc vertical. Everything else is later and
 > separately gated. Live round status lives only in the
-> [program CURRENT POSITION](HANDOFF-correction-revision-plan.md#current-position).
+> [program CURRENT POSITION](historical/HANDOFF-correction-revision-plan.md#current-position).
 > This document owns R15's next slice: protected-neutral driver CHECK/MEASURE,
 > configured-Fc composition, and the existing review/Apply/VERIFY path.
 > Crossover selection, candidate linearization, and expanded verification below
@@ -20,7 +20,7 @@
 > the layer architecture remains in
 > [active-speaker-tuning-layers-design.md](active-speaker-tuning-layers-design.md);
 > the program-wide round/status spine remains in
-> [HANDOFF-correction-revision-plan.md](HANDOFF-correction-revision-plan.md).
+> [HANDOFF-correction-revision-plan.md](historical/HANDOFF-correction-revision-plan.md).
 
 ## 1. Product outcome
 

@@ -4,7 +4,7 @@
 
 """WO-1 storage contracts: bundle-lifetime retention and per-position evidence.
 
-Pins the acceptance items ``docs/attribution-stage-plan.md`` §7 assigns to
+Pins the acceptance items ``docs/historical/attribution-stage-plan.md`` §7 assigns to
 WO-1 that are about *storage* — the Q-C retention model, provenance-marker
 discipline, and §6's per-position evidence — plus the flow seam that produces
 them. The schema itself is pinned in ``tests/test_attribution_findings.py``.

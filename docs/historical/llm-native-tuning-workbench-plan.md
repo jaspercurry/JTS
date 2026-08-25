@@ -5,7 +5,7 @@
 > proposed 2026-07-28 and kept taking amendments after that (a callout below
 > is marked "Partly built, 2026-08-18" and records owner rulings through
 > 2026-08-21). Tagged historical the same day, superseded by
-> [`tuning-master-plan.md`](tuning-master-plan.md) — "its
+> [`tuning-master-plan.md`](../tuning-master-plan.md) — "its
 > planning-authority claim and its §5.5 'experiment workspace is the one new
 > mutation owner' are superseded: `play_program` is the single activation door
 > (invariant 5), and the SSH-operator + runbook model (R4/R11) replaces the
@@ -86,7 +86,7 @@ Therefore:
 - **Keep the model behind host-mediated indirection.**
 
 This is the cross-layer Feature shape from
-[`extensibility.md`](extensibility.md): declarations are inspectable as data;
+[`extensibility.md`](../extensibility.md): declarations are inspectable as data;
 the host owns dispatch, lifecycle, cleanup, and safety. It is not permission
 to build a generic plugin framework or a free-form `register_anything()` hook.
 
@@ -141,7 +141,7 @@ a schema, validator, or source of truth.
 ## 4. The factual layer model
 
 The workbench consumes—not redefines—the adopted layer architecture in
-[`active-speaker-tuning-layers-design.md`](active-speaker-tuning-layers-design.md).
+[`active-speaker-tuning-layers-design.md`](../active-speaker-tuning-layers-design.md).
 
 | Layer | Existing owner | Evidence that can inform it |
 |---|---|---|
@@ -215,14 +215,14 @@ existing owner.
 > **Partly built, 2026-08-18 — read this before planning around §5.0.** The
 > *shape* below is shipped for the crossover domain, under a narrower name and
 > without the tool catalog. `jasper-crossover-prescriber`
-> ([`jasper/cli/crossover_prescriber.py`](../jasper/cli/crossover_prescriber.py))
+> ([`jasper/cli/crossover_prescriber.py`](../../jasper/cli/crossover_prescriber.py))
 > is an installed console script with four verbs: `packet` emits one banked
 > round's evidence as a versioned JSON document
-> ([`crossover_v2/evidence_packet.py`](../jasper/active_speaker/crossover_v2/evidence_packet.py)),
+> ([`crossover_v2/evidence_packet.py`](../../jasper/active_speaker/crossover_v2/evidence_packet.py)),
 > `propose` reads a correction back through a strict gate, `stage`
 > (2026-08-19) leaves an accepted correction where the next crossover round
 > takes it
-> ([`crossover_v2/prescription_spool.py`](../jasper/active_speaker/crossover_v2/prescription_spool.py)),
+> ([`crossover_v2/prescription_spool.py`](../../jasper/active_speaker/crossover_v2/prescription_spool.py)),
 > and `status` (2026-08-21) reports declared / banked / staged / applied state
 > through those same builders without writing anything.
 > It follows this section's CLI conventions and the laptop-agent-as-SSH-client
@@ -231,15 +231,15 @@ existing owner.
 > There are **two** correction classes behind that one door, each owning its own
 > response format and the gate that enforces it, and a document's own `kind`
 > picks which: the summed blend region
-> ([`crossover_v2/blend_prescription.py`](../jasper/active_speaker/crossover_v2/blend_prescription.py))
+> ([`crossover_v2/blend_prescription.py`](../../jasper/active_speaker/crossover_v2/blend_prescription.py))
 > and one driver's own full band
-> ([`crossover_v2/driver_prescription.py`](../jasper/active_speaker/crossover_v2/driver_prescription.py),
+> ([`crossover_v2/driver_prescription.py`](../../jasper/active_speaker/crossover_v2/driver_prescription.py),
 > 2026-08-19). The second carries cuts and boosts, and requires a banked
 > minimum-phase classification of the MATCHING SIGN for every feature it aims
 > at — a boost additionally owing the dip's own measured depth
-> ([`crossover_v2/feature_classification.py`](../jasper/active_speaker/crossover_v2/feature_classification.py)
+> ([`crossover_v2/feature_classification.py`](../../jasper/active_speaker/crossover_v2/feature_classification.py)
 > is the verdict register;
-> [`crossover_v2/feature_classifier.py`](../jasper/active_speaker/crossover_v2/feature_classifier.py)
+> [`crossover_v2/feature_classifier.py`](../../jasper/active_speaker/crossover_v2/feature_classifier.py)
 > is the instrument that produces one, offline over a round's banked captures).
 >
 > `stage` closed the gap the first wired night hit: until it shipped, an
@@ -321,7 +321,7 @@ plan keeps the same, repo-standard split. Treat this as decided:
 
 The workbench is a Feature that contributes a `CapabilityPack` through JTS's
 existing Tools contract in
-[`tool-platform-plan.md`](tool-platform-plan.md). It does **not** define a
+[`tool-platform-plan.md`](../tool-platform-plan.md). It does **not** define a
 second capability descriptor, registry, executor, or dispatcher.
 
 Each operation is one canonical `ToolDefinition` plus `ToolExecutor`,
@@ -344,7 +344,7 @@ must **not** extend the voice assistant's `ToolDeps` or touch
 `jasper/voice/daemon_main.py` — editing those is the path by which
 commissioning operations would leak into the embedded voice registry, the
 exact outcome this design forbids. Follow the shape of
-[`docs/examples/tool_pack_starter.py`](examples/tool_pack_starter.py),
+[`docs/examples/tool_pack_starter.py`](../examples/tool_pack_starter.py),
 which is contract-tested to stay out of the production voice packs.
 Workbench adapters receive only host-injected, operation-scoped services;
 they never hold a `CamillaController`, filesystem handle, daemon object, or
@@ -705,7 +705,7 @@ hardware-proven; do not rediscover it:
   the *permanent-apply* transport. `CamillaController.set_active_config_raw()`
   (CamillaDSP `SetConfig`) loads a graph into the live pipeline and leaves
   the anchor untouched — proven on hardware (jts3) and documented in
-  [`HANDOFF-active-speaker-dsp.md`](HANDOFF-active-speaker-dsp.md).
+  [`HANDOFF-active-speaker-dsp.md`](../HANDOFF-active-speaker-dsp.md).
   Experiment `apply` and `bypass` use the raw transport, always.
 - **The named seam triple** is `commission_seams()` in
   `jasper/active_speaker/commission_wiring.py` —

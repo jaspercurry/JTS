@@ -65,6 +65,6 @@ These are point-in-time artifacts. For `01`–`03`, cited product behavior,
 patent numbers, and forum evidence reflect mid-2026 and are not maintained;
 for `04`–`08`, the corpus itself moves (the retention ring drops its oldest
 capture on every new one). The adopted decisions, as amended by review, live
-in [`docs/attribution-stage-plan.md`](../../attribution-stage-plan.md) — read
+in [`docs/attribution-stage-plan.md`](../../historical/attribution-stage-plan.md) — read
 that for current doctrine. Owner rulings and adoption notes are recorded on
 [issue #1866](https://github.com/jaspercurry/JTS/issues/1866).

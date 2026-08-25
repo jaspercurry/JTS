@@ -1,7 +1,7 @@
 # Instrument-error catalog
 
 > WO-0 deliverable 2 of the attribution-stage plan, §7.
-> Plan: [`docs/attribution-stage-plan.md`](../../attribution-stage-plan.md).
+> Plan: [`docs/attribution-stage-plan.md`](../../historical/attribution-stage-plan.md).
 > Every documented case where a JTS measurement instrument shipped a number or
 > a verdict that misled — with the mechanism of the lie and its disposition.
 > Read-only sweep, 2026-07-29. Every row cites a source; no row without one.
