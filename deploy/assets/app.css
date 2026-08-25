@@ -131,19 +131,6 @@
   --destructive: oklch(0.58 0.22 27);
   --destructive-foreground: oklch(0.985 0.005 80);
   --shadow: 0 1px 2px rgba(0, 0, 0, 0.06);
-  /* Thinking-orb ink ramp, read by /assets/shared/js/orbs.js. An orb
-     interpolates every dot between exactly these two endpoints:
-     --orb-ink is the nearest, densest dot; --orb-paper is the surface it
-     dissolves into. Both are derived, so orbs re-skin with the palette
-     rather than carrying their own colours. A container that sits an orb
-     on a different surface overrides the pair locally — e.g.
-     `.info-card { --orb-paper: var(--card); }`. Because the pair carries
-     direction as well as hue, a dark surface needs no separate mode: give
-     it a light --orb-ink and a dark --orb-paper and the depth ramp
-     follows. --orb-ink is the accent darkened rather than mixed toward
-     --foreground; mixing toward the warm text tone washes the green out. */
-  --orb-ink: color-mix(in oklab, var(--primary) 43%, black);
-  --orb-paper: var(--background);
   --font-sans: "Figtree", -apple-system, BlinkMacSystemFont, "Segoe UI",
     system-ui, sans-serif;
   --font-display: "Outfit", "Figtree", -apple-system,
