@@ -1571,3 +1571,49 @@ fragments `00`–`11` in this directory, `docs/DEEP-AUDIT-2026-08-25.md`
 (`origin/claude/codebase-complexity-audit-plynn4`), `docs/measurement-loop-doctrine.md`,
 and `captures/postfix-baseline-2026-08/`. Every count cites its source. Nothing
 was re-derived; where a number does not exist, §6 says so.*
+
+---
+
+## Appendix A — the invariant→pin table (PR 0d; updated as waves land)
+
+Every §2 invariant against the test function that pins it, verified by grep at
+`HEAD` rather than carried from `09` (which executed nothing). **No row came
+back unnamed**, so no pin was owed. Status is `named` (exists today) or
+`WRITTEN-NEW` (this PR). Every deletion wave checks against this table; a
+deletion that would leave a row unpinned is blocked until the replacement pin
+is written.
+
+| # | Invariant | Pin | Status |
+|---|---|---|---|
+| MS-1 | Whole device contract, or none — every `ActiveEmitDevices` field derived and forwarded | `tests/test_ring_active_endpoint.py::test_every_emit_devices_field_reaches_the_emitter` | named |
+| MS-2 | Both ends move together — under `shm_ring` a graph's capture and playback halves move on the same rung | `tests/test_ring_active_endpoint.py::test_the_capture_half_is_coherence_checked_in_both_directions` | named |
+| MS-3 | One wire — one `resolve_ring_wire` format on both ends, plus the `RING_CAMILLA_*` geometry | `tests/test_transport_endpoint_preservation.py::test_boot_anchor_derives_the_ring_device_block` | named |
+| MS-4 | Stimuli enter pre-DSP — a renderer-lane ring, never the post-crossover active ring | `tests/test_ring_active_endpoint.py::test_both_rings_are_forbidden_test_pcm_targets` | named |
+| MS-5 | Every ring-naming emitter asks the width via `_assert_ring_playback_width` | `tests/test_ring_active_endpoint.py::test_the_width_refusal_actually_fires_through_an_emitter` | named |
+| MS-6 | No full-range graph on a roleful box | `tests/test_ring_active_endpoint.py::test_the_flat_lane_is_refused_on_a_roleful_box_so_its_ring_kwargs_cannot_stomp` | named |
+| MS-7 | The chip-AEC K is edge-bound — moved output geometry parks with `CommissionRequired` | `tests/test_aec_init.py::test_production_chip_profile_parks_when_final_edge_format_changes` | named |
+| MS-8 | A tone must fit its fan-in test lease | `tests/test_commission_tone_single_owner.py::test_commissioning_tone_fits_inside_mux_gate_lease` | named |
+| MS-9 | A secondary DSP instance fails closed to silence, never to a reboot | `tests/test_camilla_crossover_unit.py::test_unit_never_reboots_the_box` | named |
+| MS-10 | A blocked graph-repair leaves the statefile byte-for-byte untouched | `tests/test_camilla_crossover_guard_script.py::test_runtime_contract_blocked_leaves_statefile_untouched` | named |
+| MS-11 | The fan-in gate is owner-scoped — select and release name the same owner | `tests/test_commission_tone_single_owner.py::test_commissioning_uses_its_owner_scoped_mux_gate` | named |
+| MS-12 | Commission-tone orchestration has exactly one owner module | `tests/test_commission_tone_single_owner.py::test_sound_setup_imports_commission_tone_constants_from_owner` | named |
+| MS-13 | The program graph is role-routed, crossover-free and tweeter-guarded, or the emitter refuses | `tests/test_active_speaker_program_config.py::test_program_config_passes_all_graph_safety_proofs` | named |
+| MS-14 | Every stimulus plays at the declared level, proven, or not at all | `tests/test_crossover_v2_measurement_volume_drift.py::test_a_drifted_fader_refuses_the_capture_before_any_audio` | named |
+| MS-15 | The lane wire is a boot-time fact with zero writers | `tests/test_ring_wire_format_contract.py::test_the_wire_key_has_no_writer_so_the_rollback_lever_survives` | named |
+| MS-16 | A stimulus WAV wider than the lane is silently downmixed — isolation is bounded at 2 ch | `tests/test_renderer_ring_lanes.py::test_the_confd_ring_slave_is_plug_wrapped_at_the_lane_wire` | named |
+| MS-17 | Mover-agnosticism — the engine holds zero arm-specific and zero wizard-specific code | `tests/test_measurement_mover_agnostic.py::test_the_engine_imports_no_mover_and_no_front_end` | WRITTEN-NEW |
+
+**Two rows carry an EXTENSION owed, not a missing pin.** Both are pinned for
+today's *per-stimulus* emit, and neither extension can be written until the
+session graph exists. **MS-1** is PC-3 verbatim: the named pin and its sibling
+`test_the_crossover_v2_program_graph_follows_the_arm_in_both_directions` both
+bind the call site this plan deletes, and the session-graph emit site joins
+both in the same PR — the guard gets stronger there rather than dying with the
+site it happened to watch. **MS-13**'s §2 clause "a session-scoped graph must
+still pass it, once, before the first stimulus" gets its assertion in that same
+wave.
+
+**MS-17's pin is bounded to the import graph.** The arm driver is reached as a
+subprocess tool path, not an import, so a hard-coded
+`experiments/usb-turntable` path literal inside the engine is a review finding
+the AST walk cannot see. Stated in the test rather than plugged.
