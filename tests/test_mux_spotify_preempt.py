@@ -62,7 +62,6 @@ def _stub_web_api_result(mux: Mux, ok: bool):
 # Web API succeeds — Tier 2 should NOT fire
 # ----------------------------------------------------------------------
 
-@pytest.mark.asyncio
 async def test_pause_spotify_web_api_succeeds_no_restart(mux):
     """The happy path. The restart broker must not be invoked."""
     _stub_web_api_result(mux, ok=True)
@@ -78,7 +77,6 @@ async def test_pause_spotify_web_api_succeeds_no_restart(mux):
 # Web API fails, escalation enabled — Tier 2 fires
 # ----------------------------------------------------------------------
 
-@pytest.mark.asyncio
 async def test_pause_spotify_web_api_fails_escalates_to_active_only_restart(mux):
     """Tier 1 returns False → Tier 2 may restart only active librespot."""
     _stub_web_api_result(mux, ok=False)
@@ -91,7 +89,6 @@ async def test_pause_spotify_web_api_fails_escalates_to_active_only_restart(mux)
     assert kwargs["verb"] == "try-restart"
 
 
-@pytest.mark.asyncio
 async def test_spotify_recovery_cannot_resurrect_concurrently_stopped_source(mux):
     """A source Off/park landing before the final mutation must remain Off."""
     unit_active = False  # source coordinator won the race before broker call
@@ -119,7 +116,6 @@ async def test_spotify_recovery_cannot_resurrect_concurrently_stopped_source(mux
 # Off-switch disables escalation
 # ----------------------------------------------------------------------
 
-@pytest.mark.asyncio
 async def test_pause_spotify_off_switch_disables_escalation(mux, monkeypatch):
     """JASPER_MUX_SPOTIFY_PREEMPT_RESTART=disabled reverts to Tier-1-only.
     With Web API failed and escalation off, the broker must not be asked."""
@@ -135,7 +131,6 @@ async def test_pause_spotify_off_switch_disables_escalation(mux, monkeypatch):
 # A failed try-restart doesn't raise — log and continue
 # ----------------------------------------------------------------------
 
-@pytest.mark.asyncio
 async def test_pause_spotify_restart_nonzero_does_not_raise(mux):
     """A non-zero try-restart result is logged but not raised; the mux tick must
     continue. (Retrying every tick would just create log noise.)"""
@@ -146,7 +141,6 @@ async def test_pause_spotify_restart_nonzero_does_not_raise(mux):
         await mux._pause(Source.SPOTIFY)
 
 
-@pytest.mark.asyncio
 async def test_pause_spotify_restart_broker_unavailable_does_not_raise(mux):
     """If the broker is unreachable (and mux is non-root so there's no
     fallback), manage_units returns {"ok": False}; the mux loop must fail
@@ -187,7 +181,6 @@ def _attach_fake_router(mux: Mux, clients: list[_FakeSpClient]):
     )
 
 
-@pytest.mark.asyncio
 async def test_web_api_prefers_active_device_when_available(mux, monkeypatch):
     """The two-pass logic should hit an is_active device on pass 1 and
     never fall through to pass 2 (which would also try inactive devs)."""
@@ -200,7 +193,6 @@ async def test_web_api_prefers_active_device_when_available(mux, monkeypatch):
     assert active.pause_calls == ["jts-active"]
 
 
-@pytest.mark.asyncio
 async def test_web_api_falls_through_to_inactive_device(mux, monkeypatch):
     """If no account has JTS as is_active, the second pass should still
     try inactive JTS devices. Real-world rationale: Spotify's is_active
@@ -215,7 +207,6 @@ async def test_web_api_falls_through_to_inactive_device(mux, monkeypatch):
     assert inactive.pause_calls == ["jts-inactive"]
 
 
-@pytest.mark.asyncio
 async def test_web_api_no_jts_device_at_all_returns_false(mux, monkeypatch):
     """If no account has any device named JTS, the Web API path fails
     cleanly (returns False); caller then escalates to systemctl."""
@@ -228,7 +219,6 @@ async def test_web_api_no_jts_device_at_all_returns_false(mux, monkeypatch):
     assert other.pause_calls == []
 
 
-@pytest.mark.asyncio
 async def test_web_api_pause_exception_on_one_account_tries_next(
     mux, monkeypatch,
 ):
@@ -299,7 +289,6 @@ def _clamp_wait_for(monkeypatch):
     return real_wait_for
 
 
-@pytest.mark.asyncio
 async def test_web_api_hung_devices_does_not_hang_tick(
     mux, monkeypatch, _clamp_wait_for,
 ):
@@ -325,7 +314,6 @@ async def test_web_api_hung_devices_does_not_hang_tick(
     assert good.pause_calls == ["jts-good"]
 
 
-@pytest.mark.asyncio
 async def test_web_api_hung_pause_does_not_hang_tick(
     mux, monkeypatch, _clamp_wait_for,
 ):

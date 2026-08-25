@@ -568,7 +568,6 @@ def test_candidate_refusal_is_persisted_blocked_and_not_retried(
     assert calls == 1
 
 
-@pytest.mark.asyncio
 async def test_runtime_port_uses_strict_camilla_readback_and_apply() -> None:
     calls: list[tuple[object, ...]] = []
 

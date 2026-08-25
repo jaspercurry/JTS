@@ -78,8 +78,6 @@ from jasper.active_speaker.camilla_yaml import COMMISSIONING_HEADROOM_DB
 from jasper.fanin_coupling import RING_ACTIVE_PLAYBACK_DEVICE, RING_CAPTURE_DEVICE
 from jasper.sound.profile import SimpleEq, SoundProfile, save_profile
 
-pytestmark = pytest.mark.asyncio
-
 
 class _FakeCamilla:
     """Reports one loaded config path and records what it was asked to load.

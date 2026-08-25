@@ -593,7 +593,6 @@ def test_start_supervisor_unrecognised_value_falls_back_to_auto():
 # ---------- /proc/loadavg probe ----------
 
 
-@pytest.mark.asyncio
 async def test_probe_loadavg_succeeds_in_normal_conditions():
     """Sanity check: on a healthy host /proc/loadavg reads quickly
     and the probe returns True. (Mocked path for non-Linux dev hosts.)"""

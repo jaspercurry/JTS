@@ -7,7 +7,6 @@ from __future__ import annotations
 import asyncio
 from collections.abc import AsyncIterator
 
-import pytest
 
 from jasper.bluetooth import scan
 from jasper.bluetooth.models import (
@@ -239,7 +238,6 @@ def test_battery_percent_from_read_value_rejects_invalid_values() -> None:
     assert _battery_percent_from_read_value(["not-a-byte"]) is None
 
 
-@pytest.mark.asyncio
 async def test_device_observer_tracks_interfaces_without_ghost_resurrection(
     monkeypatch,
 ) -> None:
@@ -345,7 +343,6 @@ async def test_device_observer_tracks_interfaces_without_ghost_resurrection(
     assert bus.disconnected is True
 
 
-@pytest.mark.asyncio
 async def test_device_observer_direct_battery_read_updates_once_and_stays_removed(
     monkeypatch,
 ) -> None:

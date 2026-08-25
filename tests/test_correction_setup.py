@@ -1175,7 +1175,6 @@ def test_run_async_drain_alarm_keeps_owner_fail_closed(monkeypatch):
     worker.join(timeout=2)
 
 
-@pytest.mark.asyncio
 async def test_crossover_level_relay_stop_publishes_cancelled_and_purges(monkeypatch):
     from jasper.capture_relay.session import CaptureStopped
     from jasper.correction import coordinator
@@ -1242,7 +1241,6 @@ async def test_crossover_level_relay_stop_publishes_cancelled_and_purges(monkeyp
     assert purged == ["cap-stop"]
 
 
-@pytest.mark.asyncio
 async def test_level_pump_refreshes_status_after_host_event_timeout(monkeypatch):
     """A slow acknowledgement cannot manufacture microphone feed loss."""
     from contextlib import asynccontextmanager
@@ -1356,7 +1354,6 @@ async def test_level_pump_refreshes_status_after_host_event_timeout(monkeypatch)
     assert purged == ["cap-level"]
 
 
-@pytest.mark.asyncio
 async def test_relay_level_match_unlocked_raises_refused_and_posts_mapped_message(
     monkeypatch,
 ):
@@ -1470,7 +1467,6 @@ async def test_relay_level_match_unlocked_raises_refused_and_posts_mapped_messag
     assert purged == ["cap-level"]
 
 
-@pytest.mark.asyncio
 async def test_relay_host_event_retries_one_transient_timeout(monkeypatch):
     attempts = []
 
@@ -1493,7 +1489,6 @@ async def test_relay_host_event_retries_one_transient_timeout(monkeypatch):
     ]
 
 
-@pytest.mark.asyncio
 async def test_relay_host_event_does_not_retry_nontransient_4xx(monkeypatch):
     from jasper.capture_relay.client import RelayError
 
@@ -1515,7 +1510,6 @@ async def test_relay_host_event_does_not_retry_nontransient_4xx(monkeypatch):
     assert attempts == [{"phase": "setup_validated"}]
 
 
-@pytest.mark.asyncio
 async def test_room_host_event_exhausted_429_is_definitive(monkeypatch):
     """The bounded retry does not turn a final rate limit into ambiguity."""
     from jasper.capture_relay.client import RelayError
@@ -1541,7 +1535,6 @@ async def test_room_host_event_exhausted_429_is_definitive(monkeypatch):
     ]
 
 
-@pytest.mark.asyncio
 async def test_relay_control_request_enforces_wall_clock_deadline():
     started = threading.Event()
     release = threading.Event()
@@ -1564,7 +1557,6 @@ async def test_relay_control_request_enforces_wall_clock_deadline():
     assert time.monotonic() - began < 0.25
 
 
-@pytest.mark.asyncio
 async def test_timed_out_relay_write_cannot_finish_after_newer_terminal_event(
     monkeypatch,
 ):
@@ -5158,7 +5150,6 @@ def _volume_recording_cam(restored):
     return _FakeCam()
 
 
-@pytest.mark.asyncio
 async def test_ready_reset_restores_exact_pre_measurement_graph():
     from jasper.correction.session import SessionState
 
@@ -5186,7 +5177,6 @@ async def test_ready_reset_restores_exact_pre_measurement_graph():
     )
 
 
-@pytest.mark.asyncio
 @pytest.mark.parametrize("automatic", [False, True], ids=["reset", "auto-revert"])
 @pytest.mark.parametrize(
     "running_path",
@@ -5257,7 +5247,6 @@ async def test_room_reversal_uses_immutable_running_graph_after_active_overwrite
     assert predecessor.read_text(encoding="utf-8") == refused_candidate
 
 
-@pytest.mark.asyncio
 async def test_room_reversal_does_not_restore_over_new_graph_loaded_at_same_path(
     tmp_path,
 ):
@@ -5290,7 +5279,6 @@ async def test_room_reversal_does_not_restore_over_new_graph_loaded_at_same_path
     ) is None
 
 
-@pytest.mark.asyncio
 async def test_running_graph_snapshot_does_not_mint_authority_for_custom_config(
     tmp_path,
 ):
@@ -5321,7 +5309,6 @@ async def test_running_graph_snapshot_does_not_mint_authority_for_custom_config(
     assert list(tmp_path.glob("sound_snapshot_custom_*.yml")) == []
 
 
-@pytest.mark.asyncio
 async def test_reset_safety_failure_preserves_current_and_uses_preemit_snapshot(
     monkeypatch,
     tmp_path,
@@ -5388,7 +5375,6 @@ async def test_reset_safety_failure_preserves_current_and_uses_preemit_snapshot(
     assert len(safety_calls) == 2
 
 
-@pytest.mark.asyncio
 @pytest.mark.parametrize("automatic", [False, True], ids=["reset", "auto-revert"])
 @pytest.mark.parametrize(
     "fallback_shape",
@@ -5471,7 +5457,6 @@ async def test_room_reversal_rejects_unverified_no_room_fallback(
     assert operations == []
 
 
-@pytest.mark.asyncio
 async def test_reset_accepts_verified_no_room_active_fallback(
     monkeypatch,
     tmp_path,
@@ -5524,7 +5509,6 @@ async def test_reset_accepts_verified_no_room_active_fallback(
     )
 
 
-@pytest.mark.asyncio
 @pytest.mark.parametrize("automatic", [False, True], ids=["reset", "auto-revert"])
 async def test_failed_room_reversal_preserves_newer_active_graph(
     monkeypatch,
@@ -5833,7 +5817,6 @@ def test_reset_quiesces_audio_under_intent_before_resolving_graph(
     ]
 
 
-@pytest.mark.asyncio
 @pytest.mark.parametrize("automatic", [False, True], ids=["reset", "auto-revert"])
 async def test_room_reversal_resolves_and_loads_after_concurrent_active_writer(
     monkeypatch,
@@ -5887,7 +5870,6 @@ async def test_room_reversal_resolves_and_loads_after_concurrent_active_writer(
     assert loaded == [str(tmp_path / "no-room-from-active-new.yml")]
 
 
-@pytest.mark.asyncio
 @pytest.mark.parametrize("automatic", [False, True], ids=["reset", "auto-revert"])
 async def test_concurrent_active_writer_cannot_publish_during_room_reversal(
     monkeypatch,

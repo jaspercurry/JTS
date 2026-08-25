@@ -253,7 +253,6 @@ def test_store_all_orders_by_fire_at():
 # --- TimerScheduler -----------------------------------------------
 
 
-@pytest.mark.asyncio
 async def test_scheduler_add_creates_timer_and_persists():
     path = _tmp_db_path()
     try:
@@ -275,7 +274,6 @@ async def test_scheduler_add_creates_timer_and_persists():
             os.unlink(path)
 
 
-@pytest.mark.asyncio
 async def test_scheduler_add_rejects_zero_and_negative():
     path = _tmp_db_path()
     try:
@@ -290,7 +288,6 @@ async def test_scheduler_add_rejects_zero_and_negative():
             os.unlink(path)
 
 
-@pytest.mark.asyncio
 async def test_scheduler_list_active_sorted_by_fire_at():
     path = _tmp_db_path()
     try:
@@ -306,7 +303,6 @@ async def test_scheduler_list_active_sorted_by_fire_at():
             os.unlink(path)
 
 
-@pytest.mark.asyncio
 async def test_scheduler_cancel_by_exact_label():
     path = _tmp_db_path()
     try:
@@ -326,7 +322,6 @@ async def test_scheduler_cancel_by_exact_label():
             os.unlink(path)
 
 
-@pytest.mark.asyncio
 async def test_scheduler_cancel_ambiguous_returns_matches_without_cancelling():
     path = _tmp_db_path()
     try:
@@ -344,7 +339,6 @@ async def test_scheduler_cancel_ambiguous_returns_matches_without_cancelling():
             os.unlink(path)
 
 
-@pytest.mark.asyncio
 async def test_scheduler_cancel_by_id_prefix():
     path = _tmp_db_path()
     try:
@@ -360,7 +354,6 @@ async def test_scheduler_cancel_by_id_prefix():
             os.unlink(path)
 
 
-@pytest.mark.asyncio
 async def test_scheduler_cancel_not_found():
     path = _tmp_db_path()
     try:
@@ -375,7 +368,6 @@ async def test_scheduler_cancel_not_found():
             os.unlink(path)
 
 
-@pytest.mark.asyncio
 async def test_scheduler_update_swaps_duration_and_preserves_label():
     """Happy path — `update('pasta', 120)` cancels the old 300s pasta
     timer and creates a new 120s one with the same label. The id
@@ -409,7 +401,6 @@ async def test_scheduler_update_swaps_duration_and_preserves_label():
             os.unlink(path)
 
 
-@pytest.mark.asyncio
 async def test_scheduler_update_not_found_returns_no_match():
     path = _tmp_db_path()
     try:
@@ -430,7 +421,6 @@ async def test_scheduler_update_not_found_returns_no_match():
             os.unlink(path)
 
 
-@pytest.mark.asyncio
 async def test_scheduler_update_ambiguous_returns_matches_without_mutating():
     """Two timers labelled 'pasta' — update('pasta', 120) must NOT
     mutate either. Caller (the tool) needs to disambiguate first."""
@@ -453,7 +443,6 @@ async def test_scheduler_update_ambiguous_returns_matches_without_mutating():
             os.unlink(path)
 
 
-@pytest.mark.asyncio
 async def test_scheduler_update_rejects_non_positive_seconds_atomically():
     """Validation MUST happen before the cancel step — a bad
     duration must leave the original timer untouched. Otherwise an
@@ -479,7 +468,6 @@ async def test_scheduler_update_rejects_non_positive_seconds_atomically():
             os.unlink(path)
 
 
-@pytest.mark.asyncio
 async def test_scheduler_update_preserves_null_label():
     """Unlabelled timer → updated unlabelled timer. The label is
     None throughout; the user references by id."""
@@ -498,7 +486,6 @@ async def test_scheduler_update_preserves_null_label():
             os.unlink(path)
 
 
-@pytest.mark.asyncio
 async def test_scheduler_update_old_task_does_not_fire():
     """The old timer's asyncio task must be cancelled — otherwise
     a short-duration update would fire the OLD on_fire callback
@@ -531,7 +518,6 @@ async def test_scheduler_update_old_task_does_not_fire():
             os.unlink(path)
 
 
-@pytest.mark.asyncio
 async def test_scheduler_fires_callback_with_timer_record():
     """Core fire path: a 50ms timer triggers on_fire with the matching
     Timer record. Persistence row is removed after fire so the next
@@ -562,7 +548,6 @@ async def test_scheduler_fires_callback_with_timer_record():
             os.unlink(path)
 
 
-@pytest.mark.asyncio
 async def test_scheduler_start_drops_expired_timers():
     """A timer with fire_at in the past (daemon was down at fire time)
     must NOT fire on restore — drop it cleanly."""
@@ -597,7 +582,6 @@ async def test_scheduler_start_drops_expired_timers():
             os.unlink(path)
 
 
-@pytest.mark.asyncio
 async def test_scheduler_start_restores_future_timers():
     """Future timers in the store must be restored to in-memory
     state and scheduled, so the daemon picks up where it left off."""
@@ -621,7 +605,6 @@ async def test_scheduler_start_restores_future_timers():
             os.unlink(path)
 
 
-@pytest.mark.asyncio
 async def test_scheduler_stop_prevents_fire():
     """After stop(), a previously-scheduled timer must NOT fire even
     if its deadline elapses."""
@@ -642,7 +625,6 @@ async def test_scheduler_stop_prevents_fire():
             os.unlink(path)
 
 
-@pytest.mark.asyncio
 async def test_scheduler_pre_render_fires_on_add():
     """Pre-render hook is called as a background task whenever a
     timer is added — the daemon uses this to render+cache the
@@ -668,7 +650,6 @@ async def test_scheduler_pre_render_fires_on_add():
             os.unlink(path)
 
 
-@pytest.mark.asyncio
 async def test_scheduler_pre_render_fires_on_restored_timers():
     """When the daemon restarts and start() restores persisted
     timers, each restored timer also gets a pre-render — handles the
@@ -701,7 +682,6 @@ async def test_scheduler_pre_render_fires_on_restored_timers():
             os.unlink(path)
 
 
-@pytest.mark.asyncio
 async def test_scheduler_pre_render_failure_doesnt_abort_add():
     """A failing pre_render must not break timer scheduling — the
     fire-time fallback (synthesise on demand) still works."""
@@ -731,7 +711,6 @@ async def test_scheduler_pre_render_failure_doesnt_abort_add():
             os.unlink(path)
 
 
-@pytest.mark.asyncio
 async def test_scheduler_set_on_fire_after_construction():
     """Late-bound on_fire works — daemon constructs scheduler before
     WakeLoop, then wires the callback once WakeLoop exists."""

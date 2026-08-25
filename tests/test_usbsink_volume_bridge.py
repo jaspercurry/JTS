@@ -204,7 +204,6 @@ def test_discover_raises_on_amixer_missing_or_timeout():
             bridge._discover()
 
 
-@pytest.mark.asyncio
 async def test_run_retries_discovery_after_transient_mixer_miss():
     bridge = VolumeBridge(
         card_name="UAC2Gadget",
@@ -474,7 +473,6 @@ def test_usbgadget_volume_range_writes_are_best_effort():
 # ----------------------------------------------------------------------
 
 
-@pytest.mark.asyncio
 async def test_tick_mute_overrides_to_zero(monkeypatch):
     """When PCM Capture Switch reports muted, the POSTed percent is 0
     regardless of the volume control's value."""
@@ -499,7 +497,6 @@ async def test_tick_mute_overrides_to_zero(monkeypatch):
     assert posted == [0]
 
 
-@pytest.mark.asyncio
 async def test_tick_deduplicates_identical_polls(monkeypatch):
     """The bridge POSTs ONLY when the observed percent changes. A
     quiet user generates one POST per slider move, not per poll
@@ -525,7 +522,6 @@ async def test_tick_deduplicates_identical_polls(monkeypatch):
     assert posted == [100]  # only first tick posted; subsequent are dedup'd
 
 
-@pytest.mark.asyncio
 async def test_tick_retries_observation_declined_before_source_activation(
     monkeypatch,
 ):
@@ -612,7 +608,6 @@ def _expected_declined_post_times(
     return times
 
 
-@pytest.mark.asyncio
 async def test_tick_declined_observation_backoff_is_bounded(monkeypatch, caplog):
     """A value jasper-control keeps declining must not be retried at the base
     poll cadence forever — unbounded retries mean unbounded HTTP+mux IPC
@@ -705,7 +700,6 @@ async def test_tick_declined_observation_backoff_is_bounded(monkeypatch, caplog)
     assert len(deferred_lines) == fake_control.calls
 
 
-@pytest.mark.asyncio
 async def test_tick_value_change_resets_backoff(monkeypatch):
     """A fresh slider move must not inherit the backoff accumulated while
     retrying a different, now-stale value — it always gets an immediate
@@ -755,7 +749,6 @@ async def test_tick_value_change_resets_backoff(monkeypatch):
     )
 
 
-@pytest.mark.asyncio
 async def test_tick_accepted_post_resets_backoff(monkeypatch):
     """An accepted post must drop the backoff back to the base interval, not
     leave it at whatever step the decline ramp had reached. Otherwise a
@@ -794,7 +787,6 @@ async def test_tick_accepted_post_resets_backoff(monkeypatch):
     assert bridge._retry_not_before == 0.0
 
 
-@pytest.mark.asyncio
 async def test_tick_marks_only_unchanged_startup_snapshot_as_initial(monkeypatch):
     """A bridge restart labels discovery state, but a later host move is intent."""
     bridge = VolumeBridge()
@@ -825,7 +817,6 @@ async def test_tick_marks_only_unchanged_startup_snapshot_as_initial(monkeypatch
     assert posted == [(64, True), (64, True), (25, False)]
 
 
-@pytest.mark.asyncio
 @pytest.mark.parametrize(
     ("payload", "expected"),
     [
@@ -864,7 +855,6 @@ async def test_post_requires_application_acknowledgement(payload, expected):
     assert await bridge._post(64) is expected
 
 
-@pytest.mark.asyncio
 async def test_tick_skips_when_raw_read_fails(monkeypatch):
     """A transient parse failure on the volume read (e.g. amixer
     returned garbled output) means the tick is skipped entirely —

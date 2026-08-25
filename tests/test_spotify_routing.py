@@ -105,7 +105,6 @@ def test_find_librespot_id_empty_list():
 # --- resolve_target branches ---
 
 
-import pytest
 
 from jasper.spotify_routing import resolve_target
 
@@ -138,7 +137,6 @@ def _devices(*names_and_ids):
     return {"devices": [{"id": i, "name": n} for n, i in names_and_ids]}
 
 
-@pytest.mark.asyncio
 async def test_resolve_airplay_carrying_spotify_targets_phone():
     sp = _FakeSp(
         playback={
@@ -158,7 +156,6 @@ async def test_resolve_airplay_carrying_spotify_targets_phone():
     assert "metadata match" in r.reason
 
 
-@pytest.mark.asyncio
 async def test_resolve_airplay_non_spotify_stops_airplay_targets_librespot():
     sp = _FakeSp(
         playback={"is_playing": False},  # no Spotify playing
@@ -173,7 +170,6 @@ async def test_resolve_airplay_non_spotify_stops_airplay_targets_librespot():
     assert r.stop_renderers == ["airplay"]
 
 
-@pytest.mark.asyncio
 async def test_resolve_bluetooth_stops_bluetooth_targets_librespot():
     sp = _FakeSp(playback=None, devices=_devices(("JTS jasper", "renderer-id")))
     renderer = _FakeRenderer(renderers={"btactive": True}, song={})
@@ -182,7 +178,6 @@ async def test_resolve_bluetooth_stops_bluetooth_targets_librespot():
     assert r.stop_renderers == ["bluetooth"]
 
 
-@pytest.mark.asyncio
 async def test_resolve_idle_targets_librespot_no_stop():
     sp = _FakeSp(playback=None, devices=_devices(("JTS jasper", "renderer-id")))
     renderer = _FakeRenderer(renderers={}, song={"state": "stop"})
@@ -191,7 +186,6 @@ async def test_resolve_idle_targets_librespot_no_stop():
     assert r.stop_renderers == []
 
 
-@pytest.mark.asyncio
 async def test_resolve_librespot_active_no_stop():
     """If librespot is already playing on the Pi, target it without
     touching anything else."""
@@ -212,7 +206,6 @@ async def test_resolve_librespot_active_no_stop():
     assert r.stop_renderers == []
 
 
-@pytest.mark.asyncio
 async def test_resolve_no_librespot_visible_returns_none_id():
     """If the Pi's librespot isn't in the devices list, fall back to None
     so the caller can return an actionable error to the user."""
@@ -223,7 +216,6 @@ async def test_resolve_no_librespot_visible_returns_none_id():
     assert r.stop_renderers == []
 
 
-@pytest.mark.asyncio
 async def test_stop_renderers_pauses_bluetooth_with_avrcp(monkeypatch):
     calls: list[str] = []
 

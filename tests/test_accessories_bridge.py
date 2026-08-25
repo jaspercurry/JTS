@@ -24,7 +24,6 @@ import sys
 import types
 from typing import List, Optional
 
-import pytest
 
 from jasper.accessories import bridge as bridge_mod
 from jasper.accessories.bridge import (
@@ -73,7 +72,6 @@ def _make_counter(post) -> tuple[_TapCounter, List[str]]:
     return tc, []
 
 
-@pytest.mark.asyncio
 async def test_single_tap_commits_toggle_after_window():
     calls: List[str] = []
     tc, _ = _make_counter(_recording_poster(calls))
@@ -86,7 +84,6 @@ async def test_single_tap_commits_toggle_after_window():
     assert calls == ["/transport/toggle"]
 
 
-@pytest.mark.asyncio
 async def test_double_tap_commits_next_after_window():
     calls: List[str] = []
     tc, _ = _make_counter(_recording_poster(calls))
@@ -99,7 +96,6 @@ async def test_double_tap_commits_next_after_window():
     assert calls == ["/transport/next"]
 
 
-@pytest.mark.asyncio
 async def test_triple_tap_commits_previous_immediately():
     """The third tap shouldn't wait another window — we know it's a
     triple at the moment it arrives because there's no quadruple-tap
@@ -121,7 +117,6 @@ async def test_triple_tap_commits_previous_immediately():
     assert calls == ["/transport/previous"]
 
 
-@pytest.mark.asyncio
 async def test_slow_double_tap_fires_two_toggles():
     """If the user double-taps but spaces them past the window, each
     tap commits independently as a play/pause toggle. Acceptable —
@@ -135,7 +130,6 @@ async def test_slow_double_tap_fires_two_toggles():
     assert calls == ["/transport/toggle", "/transport/toggle"]
 
 
-@pytest.mark.asyncio
 async def test_sequential_independent_sequences():
     """After a sequence commits, a fresh tap starts a new sequence
     from count=1. The counter must reset fully between gestures."""
@@ -152,7 +146,6 @@ async def test_sequential_independent_sequences():
     assert calls == ["/transport/next", "/transport/toggle"]
 
 
-@pytest.mark.asyncio
 async def test_quadruple_fires_previous_then_starts_new_sequence():
     """Four rapid taps: the first three fire previous immediately
     (count=3 is unambiguous), the fourth starts a new sequence at
@@ -174,7 +167,6 @@ async def test_quadruple_fires_previous_then_starts_new_sequence():
     assert calls == ["/transport/previous", "/transport/toggle"]
 
 
-@pytest.mark.asyncio
 async def test_unmapped_tap_count_is_silent():
     """If a TapAction has no on_double, double-tap should silently
     no-op rather than fall through to single or triple."""
@@ -193,7 +185,6 @@ async def test_unmapped_tap_count_is_silent():
     assert calls == []  # no on_double mapping → silent drop
 
 
-@pytest.mark.asyncio
 async def test_http_error_does_not_break_subsequent_taps():
     """If one dispatch fails (jasper-control down → ControlError), the
     counter must keep working for later taps. We've been bitten by "one
@@ -226,7 +217,6 @@ async def test_http_error_does_not_break_subsequent_taps():
     assert calls == ["/transport/toggle", "/transport/toggle"]
 
 
-@pytest.mark.asyncio
 async def test_post_once_failure_emits_canonical_event(caplog):
     """Pin the migrated knob.action.failed emit: the canonical
     log_event helper must render the device/key/err fields in logfmt,
@@ -251,7 +241,6 @@ async def test_post_once_failure_emits_canonical_event(caplog):
 _SPACED_DEVICE = "Anti cater VK-01"
 
 
-@pytest.mark.asyncio
 async def test_coalescer_adjust_emits_canonical_event(caplog):
     """Pin the migrated knob.adjust emit (success path in _Coalescer):
     the untrusted device label is quoted because it contains spaces,
@@ -277,7 +266,6 @@ async def test_coalescer_adjust_emits_canonical_event(caplog):
     )
 
 
-@pytest.mark.asyncio
 async def test_coalescer_flush_timer_is_not_pushed_out_by_burst(monkeypatch):
     """A second hit shortly before the window ends should join the
     first batch without delaying it. Remote volume buttons need the
@@ -303,7 +291,6 @@ async def test_coalescer_flush_timer_is_not_pushed_out_by_burst(monkeypatch):
     assert calls == [4]
 
 
-@pytest.mark.asyncio
 async def test_coalescer_flushes_hits_that_arrive_during_post(monkeypatch):
     """If the control HTTP call is slow, hits during that POST must not
     be stranded forever behind the in-flight flush task."""
@@ -332,7 +319,6 @@ async def test_coalescer_flushes_hits_that_arrive_during_post(monkeypatch):
     assert calls == [2, 4]
 
 
-@pytest.mark.asyncio
 async def test_tap_failure_emits_canonical_event(caplog):
     """Pin the migrated knob.tap.failed emit: the untrusted device
     label and free-text error are both quoted (spaces force quoting),
@@ -387,7 +373,6 @@ def _profile(
     )
 
 
-@pytest.mark.asyncio
 async def test_read_device_hold_action_posts_on_press_and_release(monkeypatch):
     calls: List[tuple[str, str, Optional[dict]]] = []
 
@@ -436,7 +421,6 @@ async def test_read_device_hold_action_posts_on_press_and_release(monkeypatch):
     ]
 
 
-@pytest.mark.asyncio
 async def test_read_device_hold_action_preserves_press_release_order(monkeypatch):
     calls: List[tuple[str, str, Optional[dict]]] = []
     start_posted = asyncio.Event()
@@ -493,7 +477,6 @@ async def test_read_device_hold_action_preserves_press_release_order(monkeypatch
     ]
 
 
-@pytest.mark.asyncio
 async def test_read_device_hold_action_releases_on_disconnect(monkeypatch):
     calls: List[tuple[str, str, Optional[dict]]] = []
 
@@ -538,7 +521,6 @@ async def test_read_device_hold_action_releases_on_disconnect(monkeypatch):
     ]
 
 
-@pytest.mark.asyncio
 async def test_read_device_ignores_kernel_autorepeat_during_host_repeat(
     monkeypatch,
 ):
@@ -593,7 +575,6 @@ async def test_read_device_ignores_kernel_autorepeat_during_host_repeat(
     ]
 
 
-@pytest.mark.asyncio
 async def test_read_device_repeats_coalesced_volume_while_held(monkeypatch):
     """A held volume key should keep moving even when the remote emits no
     kernel autorepeat events."""
@@ -644,7 +625,6 @@ async def test_read_device_repeats_coalesced_volume_while_held(monkeypatch):
     assert all(delta > 0 for delta in deltas)
 
 
-@pytest.mark.asyncio
 async def test_read_device_hold_action_retries_busy_start_until_held_ready(
     monkeypatch,
 ):
@@ -698,7 +678,6 @@ async def test_read_device_hold_action_retries_busy_start_until_held_ready(
     ]
 
 
-@pytest.mark.asyncio
 async def test_read_device_hold_action_skips_release_when_start_never_lands(
     monkeypatch,
 ):
@@ -746,7 +725,6 @@ async def test_read_device_hold_action_skips_release_when_start_never_lands(
     assert calls == [("POST", "/session/start", None)]
 
 
-@pytest.mark.asyncio
 async def test_hold_retry_rechecks_pressed_after_retry_timer(monkeypatch):
     """If release lands just as the retry timer fires, don't start a
     fresh manual session after the user has let go."""
@@ -787,7 +765,6 @@ async def _record_hold_call(
     return ControlResponse(200, b'{"result":"OK"}')
 
 
-@pytest.mark.asyncio
 async def test_read_device_open_failure_emits_canonical_event(caplog, monkeypatch):
     """Pin the migrated knob.open.failed emit through the real
     _read_device path: when InputDevice() raises OSError, the device
@@ -817,7 +794,6 @@ async def test_read_device_open_failure_emits_canonical_event(caplog, monkeypatc
     )
 
 
-@pytest.mark.asyncio
 async def test_read_device_close_emits_canonical_event(caplog, monkeypatch):
     """Pin the migrated knob.close emit through the real _read_device
     path: when the read loop raises OSError (unplug / BT out of range),

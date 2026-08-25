@@ -451,7 +451,6 @@ def test_active_aec_probe_never_generates_or_plays_without_isolation(
     assert not any(call and call[0] == "aplay" for call in calls)
 
 
-@pytest.mark.asyncio
 async def test_active_aec_probe_keeps_isolation_until_cancelled_body_stops(
     monkeypatch,
 ):

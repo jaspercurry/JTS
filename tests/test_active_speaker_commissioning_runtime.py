@@ -448,7 +448,6 @@ def _journal(
     return runtime.CommissioningMutationJournal(record_intent, record_restored)
 
 
-@pytest.mark.asyncio
 async def test_normal_capture_holds_candidate_and_restores_exact_predecessor(
     tmp_path: Path,
 ) -> None:
@@ -511,7 +510,6 @@ async def test_normal_capture_holds_candidate_and_restores_exact_predecessor(
     assert len({id(task) for task in mutation_tasks}) == 1
 
 
-@pytest.mark.asyncio
 @pytest.mark.parametrize("kind", ["normal", "reverse", "delay"])
 async def test_every_summed_candidate_caps_volume_at_the_measurement_level(
     tmp_path: Path,
@@ -547,7 +545,6 @@ def test_summed_candidate_does_not_relax_a_quieter_inherited_volume_limit() -> N
     assert normal["devices"]["volume_limit"] == -40.0
 
 
-@pytest.mark.asyncio
 async def test_fresh_readback_rereads_every_live_value_on_every_call(
     tmp_path: Path,
 ) -> None:
@@ -605,7 +602,6 @@ async def test_fresh_readback_rereads_every_live_value_on_every_call(
         await retained[0]()
 
 
-@pytest.mark.asyncio
 @pytest.mark.parametrize(
     ("drift", "code"),
     [
@@ -681,7 +677,6 @@ async def test_fresh_readback_refuses_drift_before_low_level_play(
     assert raised.value.side_effects.restore_succeeded is True
 
 
-@pytest.mark.asyncio
 async def test_mutation_intent_failure_refuses_before_live_apply(tmp_path: Path) -> None:
     fake = FakePort()
 
@@ -710,7 +705,6 @@ async def test_mutation_intent_failure_refuses_before_live_apply(tmp_path: Path)
     assert fake.apply_calls == []
 
 
-@pytest.mark.asyncio
 async def test_safe_volume_failure_refuses_before_graph_apply_and_audio(
     tmp_path: Path,
 ) -> None:
@@ -737,7 +731,6 @@ async def test_safe_volume_failure_refuses_before_graph_apply_and_audio(
     assert fake.events == ["volume", "graph", "volume"]
 
 
-@pytest.mark.asyncio
 async def test_cancellation_during_safe_volume_set_restores_without_audio(
     tmp_path: Path,
 ) -> None:
@@ -790,7 +783,6 @@ async def test_cancellation_during_safe_volume_set_restores_without_audio(
     assert fake.events == ["volume", "graph", "volume"]
 
 
-@pytest.mark.asyncio
 async def test_restore_marker_failure_reports_known_live_restore(tmp_path: Path) -> None:
     fake = FakePort()
     predecessor_raw = fake.raw
@@ -821,7 +813,6 @@ async def test_restore_marker_failure_reports_known_live_restore(tmp_path: Path)
     assert fake.raw == predecessor_raw
 
 
-@pytest.mark.asyncio
 async def test_durable_predecessor_can_be_exactly_recovered(tmp_path: Path) -> None:
     fake = FakePort()
     base = fake.port()
@@ -873,7 +864,6 @@ async def test_durable_predecessor_can_be_exactly_recovered(tmp_path: Path) -> N
     assert len(recovery_tasks) == 1
 
 
-@pytest.mark.asyncio
 async def test_repeated_recovery_cancellation_drains_exact_owner_task_restore(
     tmp_path: Path,
 ) -> None:
@@ -925,7 +915,6 @@ async def test_repeated_recovery_cancellation_drains_exact_owner_task_restore(
     assert len(mutation_tasks) == 1
 
 
-@pytest.mark.asyncio
 async def test_normal_graph_may_equal_predecessor_and_volume_is_still_restored(
     tmp_path: Path,
 ) -> None:
@@ -952,7 +941,6 @@ async def test_normal_graph_may_equal_predecessor_and_volume_is_still_restored(
     assert fake.volume == -28.0
 
 
-@pytest.mark.asyncio
 async def test_reverse_adds_only_upper_scoped_inversion_lane(tmp_path: Path) -> None:
     fake = FakePort()
     normal = yaml.safe_load(_request().normal_active_raw)
@@ -982,7 +970,6 @@ async def test_reverse_adds_only_upper_scoped_inversion_lane(tmp_path: Path) -> 
     )
 
 
-@pytest.mark.asyncio
 async def test_delay_uses_zero_relative_snapshot_and_exact_confirmation(
     tmp_path: Path,
 ) -> None:
@@ -1015,7 +1002,6 @@ async def test_delay_uses_zero_relative_snapshot_and_exact_confirmation(
     assert len(fake.apply_calls) == 3  # zero-relative, candidate, exact restore
 
 
-@pytest.mark.asyncio
 async def test_zero_delay_reuses_the_proven_zero_relative_graph(tmp_path: Path) -> None:
     fake = FakePort()
     request = _request("delay")
@@ -1044,7 +1030,6 @@ async def test_zero_delay_reuses_the_proven_zero_relative_graph(tmp_path: Path) 
     assert len(fake.apply_calls) == 2  # zero-relative plus exact restore
 
 
-@pytest.mark.asyncio
 async def test_delay_scoped_offsets_zero_unequal_emitter_baseline(
     tmp_path: Path,
 ) -> None:
@@ -1086,7 +1071,6 @@ async def test_delay_scoped_offsets_zero_unequal_emitter_baseline(
     )
 
 
-@pytest.mark.asyncio
 async def test_delay_rechecks_safe_volume_before_second_graph_apply(
     tmp_path: Path,
 ) -> None:
@@ -1130,7 +1114,6 @@ async def test_delay_rechecks_safe_volume_before_second_graph_apply(
     assert len(fake.apply_calls) == 2  # zero-relative plus exact restore
 
 
-@pytest.mark.asyncio
 @pytest.mark.parametrize(
     ("way_count", "lower_role", "upper_role", "lower_channel", "upper_channel"),
     [
@@ -1198,7 +1181,6 @@ async def test_stereo_delay_lanes_are_scoped_to_one_adjacent_group(
     )
 
 
-@pytest.mark.asyncio
 async def test_three_way_capture_mutes_sibling_and_other_speaker_outputs(
     tmp_path: Path,
 ) -> None:
@@ -1255,7 +1237,6 @@ async def test_three_way_capture_mutes_sibling_and_other_speaker_outputs(
     )
 
 
-@pytest.mark.asyncio
 @pytest.mark.parametrize(
     ("way_count", "upper_role", "lower_channel", "upper_channel"),
     [
@@ -1308,7 +1289,6 @@ async def test_stereo_reverse_is_scoped_to_one_group(
     )
 
 
-@pytest.mark.asyncio
 @pytest.mark.parametrize("delay_ms", [-0.1, 20.1])
 async def test_normal_graph_refuses_delay_outside_shared_ceiling(
     tmp_path: Path,
@@ -1337,7 +1317,6 @@ async def test_normal_graph_refuses_delay_outside_shared_ceiling(
     assert fake.apply_calls == []
 
 
-@pytest.mark.asyncio
 @pytest.mark.parametrize("layout", ["mono", "stereo"])
 async def test_normal_graph_refuses_unsafe_non_target_driver_delay(
     tmp_path: Path,
@@ -1374,7 +1353,6 @@ async def test_normal_graph_refuses_unsafe_non_target_driver_delay(
     assert fake.apply_calls == []
 
 
-@pytest.mark.asyncio
 async def test_delay_walk_refuses_without_headroom_above_emitter_baseline(
     tmp_path: Path,
 ) -> None:
@@ -1407,7 +1385,6 @@ async def test_delay_walk_refuses_without_headroom_above_emitter_baseline(
     assert fake.apply_calls == []
 
 
-@pytest.mark.asyncio
 @pytest.mark.parametrize(
     ("lower_role", "upper_role", "lower_channels", "upper_channels"),
     [
@@ -1449,7 +1426,6 @@ async def test_request_refuses_non_adjacent_or_cross_group_binding_before_lock(
     assert fake.apply_calls == []
 
 
-@pytest.mark.asyncio
 async def test_callback_failure_restores_and_classifies_possible_audio(
     tmp_path: Path,
 ) -> None:
@@ -1509,7 +1485,6 @@ def _refused_playback_admission():
     return admit_excitation(request, limits, protection_evidence=None)
 
 
-@pytest.mark.asyncio
 async def test_readmission_refusal_detail_is_copy_not_raw_slugs(
     tmp_path: Path, caplog,
 ) -> None:
@@ -1576,7 +1551,6 @@ async def test_readmission_refusal_detail_is_copy_not_raw_slugs(
     assert "protection_evidence_missing" in lines[0]
 
 
-@pytest.mark.asyncio
 async def test_unknown_capture_failures_keep_their_diagnostic_detail(
     tmp_path: Path,
 ) -> None:
@@ -1604,7 +1578,6 @@ async def test_unknown_capture_failures_keep_their_diagnostic_detail(
     )
 
 
-@pytest.mark.asyncio
 async def test_cleanup_failure_dominates_callback_cancellation(tmp_path: Path) -> None:
     fake = FakePort()
     fake.fail_apply_call = 2
@@ -1627,7 +1600,6 @@ async def test_cleanup_failure_dominates_callback_cancellation(tmp_path: Path) -
     assert raised.value.side_effects.restore_succeeded is False
 
 
-@pytest.mark.asyncio
 async def test_restore_continues_after_one_adapter_raises(tmp_path: Path) -> None:
     fake = FakePort()
     base = fake.port()
@@ -1693,7 +1665,6 @@ async def test_restore_continues_after_one_adapter_raises(tmp_path: Path) -> Non
     ]
 
 
-@pytest.mark.asyncio
 async def test_cancellation_during_restore_continues_remaining_cleanup(
     tmp_path: Path,
 ) -> None:
@@ -1759,7 +1730,6 @@ async def test_cancellation_during_restore_continues_remaining_cleanup(
     assert restore_events == ["path_readback"]
 
 
-@pytest.mark.asyncio
 async def test_external_cancellation_stops_interruptible_capture_and_restores(
     tmp_path: Path,
 ) -> None:
@@ -1795,7 +1765,6 @@ async def test_external_cancellation_stops_interruptible_capture_and_restores(
     assert fake.volume == -28.0
 
 
-@pytest.mark.asyncio
 async def test_cancel_suppressed_by_late_callback_reports_completed_result(
     tmp_path: Path,
 ) -> None:
@@ -1829,7 +1798,6 @@ async def test_cancel_suppressed_by_late_callback_reports_completed_result(
     assert raised.value.side_effects.restore_succeeded is True
 
 
-@pytest.mark.asyncio
 @pytest.mark.parametrize(
     ("drift", "code"),
     [
@@ -1872,7 +1840,6 @@ async def test_post_capture_drift_refuses_result_and_restores(
     assert fake.volume == -28.0
 
 
-@pytest.mark.asyncio
 async def test_unsafe_normal_graph_is_refused_before_mutation(tmp_path: Path) -> None:
     fake = FakePort()
     request = replace(
@@ -1898,7 +1865,6 @@ async def test_unsafe_normal_graph_is_refused_before_mutation(tmp_path: Path) ->
     assert fake.apply_calls == []
 
 
-@pytest.mark.asyncio
 @pytest.mark.parametrize(
     ("filter_name", "definition"),
     [
@@ -1960,7 +1926,6 @@ async def test_forged_post_limiter_filter_is_refused_before_mutation(
     assert fake.apply_calls == []
 
 
-@pytest.mark.asyncio
 async def test_normal_graph_cannot_predeclare_reserved_runtime_lane(
     tmp_path: Path,
 ) -> None:
@@ -1999,7 +1964,6 @@ async def test_normal_graph_cannot_predeclare_reserved_runtime_lane(
     assert fake.apply_calls == []
 
 
-@pytest.mark.asyncio
 async def test_normal_graph_cannot_supply_output_isolation_mutes(
     tmp_path: Path,
 ) -> None:
@@ -2038,7 +2002,6 @@ async def test_normal_graph_cannot_supply_output_isolation_mutes(
     assert fake.apply_calls == []
 
 
-@pytest.mark.asyncio
 async def test_fresh_candidate_readback_is_reclassified_before_capture(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
@@ -2082,7 +2045,6 @@ async def test_fresh_candidate_readback_is_reclassified_before_capture(
     assert fake.raw == predecessor_raw
 
 
-@pytest.mark.asyncio
 @pytest.mark.parametrize(
     ("drift", "code"),
     [("path", "config_path_drift"), ("volume", "volume_readback_mismatch")],
@@ -2114,7 +2076,6 @@ async def test_fresh_readback_drift_refuses_and_restores_when_possible(
     assert raised.value.side_effects.audio_may_have_emitted is (drift == "path")
 
 
-@pytest.mark.asyncio
 async def test_wrong_graph_readback_refuses_before_audio_and_restores(
     tmp_path: Path,
 ) -> None:
@@ -2154,7 +2115,6 @@ async def test_wrong_graph_readback_refuses_before_audio_and_restores(
     assert raised.value.side_effects.restore_succeeded is True
 
 
-@pytest.mark.asyncio
 async def test_shared_lock_default_and_explicit_bound_refuse_before_mutation(
     tmp_path: Path,
 ) -> None:
@@ -2186,7 +2146,6 @@ async def test_shared_lock_default_and_explicit_bound_refuse_before_mutation(
     assert fake.apply_calls == []
 
 
-@pytest.mark.asyncio
 async def test_cancellation_while_waiting_for_lock_is_pre_mutation(
     tmp_path: Path,
 ) -> None:
@@ -2217,7 +2176,6 @@ async def test_cancellation_while_waiting_for_lock_is_pre_mutation(
     assert fake.apply_calls == []
 
 
-@pytest.mark.asyncio
 async def test_recovery_cancellation_while_waiting_for_lock_is_pre_mutation(
     tmp_path: Path,
 ) -> None:

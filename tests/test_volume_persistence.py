@@ -171,7 +171,6 @@ def test_save_now_always_writes(tmp_path):
 # ---------- cross-daemon operation lease ---------------------------------
 
 
-@pytest.mark.asyncio
 async def test_operation_lock_timeout_propagates(tmp_path, monkeypatch):
     class TimeoutLock:
         def __enter__(self):
@@ -191,7 +190,6 @@ async def test_operation_lock_timeout_propagates(tmp_path, monkeypatch):
             pass
 
 
-@pytest.mark.asyncio
 async def test_operation_lock_cancel_preserved_when_acquire_times_out(
     tmp_path, monkeypatch,
 ):
@@ -226,7 +224,6 @@ async def test_operation_lock_cancel_preserved_when_acquire_times_out(
         await waiter
 
 
-@pytest.mark.asyncio
 async def test_operation_lock_cancel_releases_late_acquisition(
     tmp_path, monkeypatch,
 ):

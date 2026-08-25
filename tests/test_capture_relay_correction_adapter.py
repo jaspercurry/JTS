@@ -703,7 +703,6 @@ def test_relay_repeat_sweep_uses_repeat_state_machine_and_progress(monkeypatch):
     ]
 
 
-@pytest.mark.asyncio
 @pytest.mark.parametrize(
     ("post_ramp_mismatch", "commit_allowed"),
     ((False, True), (True, True), (False, False)),
@@ -1054,7 +1053,6 @@ class _BoundLevelMatchHarness:
         )
 
 
-@pytest.mark.asyncio
 @pytest.mark.parametrize(
     ("device_label", "expect_applied"),
     (
@@ -1102,7 +1100,6 @@ async def test_relay_level_bound_stored_calibration_refuses_a_different_mic(
         assert device_label in caplog.text
 
 
-@pytest.mark.asyncio
 async def test_relay_level_second_match_refuses_a_swapped_mic(
     monkeypatch, tmp_path, caplog,
 ):
@@ -1132,7 +1129,6 @@ async def test_relay_level_second_match_refuses_a_swapped_mic(
     assert "event=correction.calibration_device_identity_mismatch" in caplog.text
 
 
-@pytest.mark.asyncio
 async def test_relay_level_correct_mic_retry_recovers_the_calibration(
     monkeypatch, tmp_path,
 ):
@@ -1157,7 +1153,6 @@ async def test_relay_level_correct_mic_retry_recovers_the_calibration(
     )
 
 
-@pytest.mark.asyncio
 async def test_relay_level_household_mic_save_waits_for_the_realized_mic(
     monkeypatch, tmp_path, caplog,
 ):
@@ -1192,7 +1187,6 @@ async def test_relay_level_household_mic_save_waits_for_the_realized_mic(
     assert "event=correction.household_mic_saved" not in caplog.text
 
 
-@pytest.mark.asyncio
 async def test_relay_level_matching_raw_setup_resend_is_accepted_and_no_ops(
     monkeypatch, tmp_path, caplog,
 ):
@@ -1225,7 +1219,6 @@ async def test_relay_level_matching_raw_setup_resend_is_accepted_and_no_ops(
     assert "event=correction.calibration_device_identity_mismatch" not in caplog.text
 
 
-@pytest.mark.asyncio
 async def test_relay_level_mismatched_context_cannot_poison_ambient_floor(
     monkeypatch,
 ):
@@ -1303,7 +1296,6 @@ async def test_relay_level_mismatched_context_cannot_poison_ambient_floor(
     assert sess.noise_floor_db is None
 
 
-@pytest.mark.asyncio
 async def test_relay_level_stop_during_prepare_never_starts_ramp(monkeypatch):
     import asyncio
     from contextlib import asynccontextmanager
@@ -1397,7 +1389,6 @@ async def test_relay_level_stop_during_prepare_never_starts_ramp(monkeypatch):
     assert restores == [True]
 
 
-@pytest.mark.asyncio
 async def test_relay_driver_level_rejects_changed_microphone_before_tone(
     monkeypatch,
 ):
@@ -1481,7 +1472,6 @@ async def test_relay_driver_level_rejects_changed_microphone_before_tone(
     assert prepared == []
 
 
-@pytest.mark.asyncio
 async def test_relay_level_adapter_fails_closed_when_volume_write_is_rejected(
     monkeypatch,
 ):
@@ -1554,7 +1544,6 @@ async def test_relay_level_adapter_fails_closed_when_volume_write_is_rejected(
         )
 
 
-@pytest.mark.asyncio
 async def test_relay_level_agc_refusal_never_starts_tone_and_reaches_phone(
     monkeypatch,
 ):
@@ -1609,7 +1598,6 @@ async def test_relay_level_agc_refusal_never_starts_tone_and_reaches_phone(
     assert terminal["run_token"] == "run-agc"
 
 
-@pytest.mark.asyncio
 async def test_relay_level_stale_page_never_starts_tone_and_reaches_phone(
     monkeypatch,
 ):
@@ -1670,7 +1658,6 @@ async def test_relay_level_stale_page_never_starts_tone_and_reaches_phone(
     )
 
 
-@pytest.mark.asyncio
 async def test_relay_level_verifies_and_unwraps_authenticated_events(monkeypatch):
     from jasper.capture_relay.integrity import authenticated_phone_event
     from jasper.capture_relay.spec import build_level_ramp_spec
@@ -1725,7 +1712,6 @@ async def test_relay_level_verifies_and_unwraps_authenticated_events(monkeypatch
         )
 
 
-@pytest.mark.asyncio
 async def test_relay_level_refuses_unsigned_event_before_tone(monkeypatch):
     from jasper.capture_relay.spec import build_level_ramp_spec
     from jasper.capture_relay import session as relay_session

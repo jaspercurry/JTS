@@ -121,7 +121,7 @@ ack, never silence.
 
 **Wave 3 — test right-sizing (~13–18K; lint-contracts ceded to the tuning
 program's wave 7h)**
-- [ ] delete 962 redundant asyncio markers — repo-wide, and FIRST: lands
+- [x] delete 962 redundant asyncio markers — repo-wide, and FIRST: lands
       before the tuning program's first wave so its rebases stay clean
 - [ ] doctor tests → one file per domain, verdict + stable remediation codes
       (keep aec_probe isolation tests verbatim)

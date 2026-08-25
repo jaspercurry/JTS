@@ -106,7 +106,6 @@ def test_session_room_defaults_match_named_owners(tmp_path):
         ),
     ],
 )
-@pytest.mark.asyncio
 async def test_prepared_sweep_paths_preserve_events_and_runtime_evidence(
     tmp_path: Path,
     monkeypatch,
@@ -216,7 +215,6 @@ async def test_prepared_sweep_paths_preserve_events_and_runtime_evidence(
         ),
     ],
 )
-@pytest.mark.asyncio
 async def test_prepared_sweep_paths_preserve_failure_contract(
     tmp_path: Path,
     monkeypatch,
@@ -260,7 +258,6 @@ async def test_prepared_sweep_paths_preserve_failure_contract(
     assert sess._events[-1].payload == {"message": expected_error}
 
 
-@pytest.mark.asyncio
 async def test_apply_forwards_exact_guard_bass_summary_before_load(
     tmp_path: Path,
     monkeypatch,
@@ -318,7 +315,6 @@ async def test_apply_forwards_exact_guard_bass_summary_before_load(
     assert sess.state == SessionState.APPLIED
 
 
-@pytest.mark.asyncio
 @pytest.mark.parametrize(
     "guard_value",
     ["missing", None, object(), [], "not-a-mapping"],
@@ -401,7 +397,6 @@ def _synthesize_room_capture(
     return captured
 
 
-@pytest.mark.asyncio
 async def test_local_capture_setup_binds_realized_input_before_first_upload(
     tmp_path: Path,
 ):
@@ -453,7 +448,6 @@ async def test_local_capture_setup_binds_realized_input_before_first_upload(
         )
 
 
-@pytest.mark.asyncio
 async def test_local_capture_setup_rejects_relay_or_started_measurement(
     tmp_path: Path,
 ):
@@ -494,7 +488,6 @@ async def test_local_capture_setup_rejects_relay_or_started_measurement(
     assert unsafe.local_capture_setup_bound is False
 
 
-@pytest.mark.asyncio
 async def test_session_applies_mic_calibration_during_capture(
     tmp_path: Path, monkeypatch,
 ):
@@ -601,7 +594,6 @@ async def test_session_applies_mic_calibration_during_capture(
     ]
 
 
-@pytest.mark.asyncio
 async def test_analysis_offloaded_to_worker_thread(
     tmp_path: Path, monkeypatch,
 ):
@@ -672,7 +664,6 @@ def test_snapshot_returns_point_in_time_copies(tmp_path: Path):
     assert snap2["runtime_integrity"]["issues"] == [{"code": "a", "severity": "warn"}]
 
 
-@pytest.mark.asyncio
 async def test_overlong_capture_truncated_before_quality_assessment(
     tmp_path: Path, monkeypatch,
 ):
@@ -725,7 +716,6 @@ def test_band_levels_dbfs_bounds_oversized_input(monkeypatch, caplog):
     assert any("truncating" in r.getMessage() for r in caplog.records)
 
 
-@pytest.mark.asyncio
 async def test_overlong_noise_capture_is_bounded(tmp_path: Path, monkeypatch):
     """An over-long /upload-noise WAV is bounded before the rms/peak/abs/FFT
     math in _noise_report_dict, so it can't spike memory on the 1 GB Pi; the
@@ -745,7 +735,6 @@ async def test_overlong_noise_capture_is_bounded(tmp_path: Path, monkeypatch):
     assert sess.noise_reports[0]["duration_s"] == pytest.approx(1.0, abs=0.05)
 
 
-@pytest.mark.asyncio
 async def test_noise_report_marks_the_band_snr_scale(tmp_path: Path):
     """#1838: the noise report is persisted into the bundle and re-read
     later, so it carries the band-power provenance marker itself rather than
@@ -770,7 +759,6 @@ async def test_noise_report_marks_the_band_snr_scale(tmp_path: Path):
     assert report["band_snr_scale"] == acoustic_quality.BAND_SNR_SCALE
 
 
-@pytest.mark.asyncio
 async def test_repeat_and_verify_analysis_offloaded_to_worker_thread(
     tmp_path: Path, monkeypatch,
 ):
@@ -834,7 +822,6 @@ async def test_repeat_and_verify_analysis_offloaded_to_worker_thread(
     assert design_idents and main_ident not in design_idents
 
 
-@pytest.mark.asyncio
 async def test_session_records_failed_capture_quality_in_bundle(
     tmp_path: Path, monkeypatch,
 ):
@@ -877,7 +864,6 @@ async def test_session_records_failed_capture_quality_in_bundle(
     assert "runtime_integrity.json" in manifest_paths
 
 
-@pytest.mark.asyncio
 async def test_session_records_noise_and_repeat_artifacts(tmp_path: Path):
     sess = _make_session(tmp_path)
     sess.repeat_main_position = True
@@ -945,7 +931,6 @@ async def test_session_records_noise_and_repeat_artifacts(tmp_path: Path):
     )
 
 
-@pytest.mark.asyncio
 async def test_session_full_flow_synthetic_room(tmp_path: Path):
     """Run session.prepare_and_play_sweep → on_capture_uploaded →
     apply → reset against a synthetic 80 Hz modal room. Verify state
@@ -1033,7 +1018,6 @@ async def test_session_full_flow_synthetic_room(tmp_path: Path):
     assert reset_calls == [str(sess.cfg.base_config_path)]
 
 
-@pytest.mark.asyncio
 async def test_session_apply_failure_transitions_to_failed(tmp_path: Path):
     """If CamillaDSP rejects the config, the session moves to FAILED
     rather than silently leaving APPLIED in an inconsistent state."""
@@ -1051,7 +1035,6 @@ async def test_session_apply_failure_transitions_to_failed(tmp_path: Path):
     assert sess.error is not None and "rejected" in sess.error.lower()
 
 
-@pytest.mark.asyncio
 async def test_session_apply_from_wrong_state_raises(tmp_path: Path):
     sess = _make_session(tmp_path)
     # IDLE → apply should raise (not silently wreck CamillaDSP).
@@ -1062,7 +1045,6 @@ async def test_session_apply_from_wrong_state_raises(tmp_path: Path):
         await sess.apply(stub)
 
 
-@pytest.mark.asyncio
 async def test_session_snapshot_shape(tmp_path: Path):
     sess = _make_session(tmp_path)
     snap = sess.snapshot()
@@ -1080,7 +1062,6 @@ async def test_session_snapshot_shape(tmp_path: Path):
 # every future /start (observed on hardware 2026-06-04, session 07c57fbe8d12).
 
 
-@pytest.mark.asyncio
 async def test_awaiting_capture_times_out_to_failed(tmp_path: Path):
     sess = _make_session(tmp_path)
     sess.capture_timeout_sec = 0.05
@@ -1095,7 +1076,6 @@ async def test_awaiting_capture_times_out_to_failed(tmp_path: Path):
     assert "capture" in (sess.error or "").lower()
 
 
-@pytest.mark.asyncio
 async def test_capture_upload_cancels_the_timeout(tmp_path: Path):
     sess = _make_session(tmp_path)
     sess.capture_timeout_sec = 0.05
@@ -1114,7 +1094,6 @@ async def test_capture_upload_cancels_the_timeout(tmp_path: Path):
     assert sess.state != SessionState.FAILED
 
 
-@pytest.mark.asyncio
 async def test_needs_noise_capture_times_out_to_failed(tmp_path: Path):
     # needs_noise_capture is an automatic browser step (record pre-sweep room
     # noise, then upload). A denied mic / backgrounded tab strands it, blocking
@@ -1130,7 +1109,6 @@ async def test_needs_noise_capture_times_out_to_failed(tmp_path: Path):
     assert "capture" in (sess.error or "").lower()
 
 
-@pytest.mark.asyncio
 async def test_human_setup_can_suspend_and_resume_capture_watchdog_on_loop(
     tmp_path: Path,
 ):
@@ -1154,7 +1132,6 @@ async def test_human_setup_can_suspend_and_resume_capture_watchdog_on_loop(
     assert "capture" in (sess.error or "").lower()
 
 
-@pytest.mark.asyncio
 async def test_needs_noise_capture_times_out_on_later_positions_too(tmp_path: Path):
     # The watchdog arms via _set_state on BOTH entries to needs_noise_capture:
     # the first from IDLE (above) and later positions from needs_next_position.
@@ -1169,7 +1146,6 @@ async def test_needs_noise_capture_times_out_on_later_positions_too(tmp_path: Pa
     assert sess.state == SessionState.FAILED
 
 
-@pytest.mark.asyncio
 async def test_repeat_capture_times_out_to_failed(tmp_path: Path):
     sess = _make_session(tmp_path)
     sess.capture_timeout_sec = 0.05
@@ -1185,7 +1161,6 @@ async def test_repeat_capture_times_out_to_failed(tmp_path: Path):
     assert "capture" in (sess.error or "").lower()
 
 
-@pytest.mark.asyncio
 async def test_verify_capture_times_out_to_failed(tmp_path: Path):
     sess = _make_session(tmp_path)
     sess.capture_timeout_sec = 0.05
@@ -1202,7 +1177,6 @@ async def test_verify_capture_times_out_to_failed(tmp_path: Path):
 
 
 # --- reset() must not race an in-flight sweep/analysis task -----------------
-@pytest.mark.asyncio
 async def test_reset_rejected_while_a_sweep_or_analysis_is_in_flight(tmp_path: Path):
     # During preparing/sweeping/analyzing/verifying a fire-and-forget task is
     # running and will set the next state AFTER reset's IDLE. The server
@@ -1226,7 +1200,6 @@ async def test_reset_rejected_while_a_sweep_or_analysis_is_in_flight(tmp_path: P
             await sess.reset(fake_reset)
 
 
-@pytest.mark.asyncio
 async def test_emergency_stop_reaps_audio_task_before_reset(tmp_path: Path):
     sess = _make_session(tmp_path)
     started = asyncio.Event()
@@ -1261,7 +1234,6 @@ async def test_emergency_stop_reaps_audio_task_before_reset(tmp_path: Path):
     assert reset_calls == [str(sess.cfg.base_config_path)]
 
 
-@pytest.mark.asyncio
 async def test_reset_intent_atomically_blocks_autolevel_admission(tmp_path: Path):
     sess = _make_session(tmp_path)
     sess.state = SessionState.NEEDS_NOISE_CAPTURE
@@ -1276,7 +1248,6 @@ async def test_reset_intent_atomically_blocks_autolevel_admission(tmp_path: Path
     assert await sess.release_autolevel_run_reservation(token) is True
 
 
-@pytest.mark.asyncio
 async def test_reset_intent_atomically_blocks_sweep_and_level_admission(
     tmp_path: Path,
 ):
@@ -1313,7 +1284,6 @@ async def test_reset_intent_atomically_blocks_sweep_and_level_admission(
     assert await sess.end_autolevel_reset(intent) is True
 
 
-@pytest.mark.asyncio
 async def test_begin_reset_releases_its_intent_when_quiescence_fails(
     tmp_path: Path,
 ):
@@ -1334,7 +1304,6 @@ async def test_begin_reset_releases_its_intent_when_quiescence_fails(
     assert await sess.release_autolevel_run_reservation(token) is True
 
 
-@pytest.mark.asyncio
 async def test_emergency_stop_gracefully_reaps_active_relay_level_ramp(
     tmp_path: Path,
 ):
@@ -1380,7 +1349,6 @@ async def test_emergency_stop_gracefully_reaps_active_relay_level_ramp(
     assert await sess.end_autolevel_reset(intent) is True
 
 
-@pytest.mark.asyncio
 async def test_emergency_stop_reaps_level_match_before_phone_arms(
     tmp_path: Path,
 ):
@@ -1451,7 +1419,6 @@ async def test_emergency_stop_reaps_level_match_before_phone_arms(
     assert await sess.end_autolevel_reset(intent) is True
 
 
-@pytest.mark.asyncio
 async def test_reset_still_recovers_from_a_wedged_state(tmp_path: Path):
     # The escape hatch must keep working from settled/wedged states — the
     # whole point of reset is recovery.
@@ -1473,7 +1440,6 @@ async def test_reset_still_recovers_from_a_wedged_state(tmp_path: Path):
 # and leaves it LOCKED for the whole measurement; the web apply/reset handlers
 # own the success-path restore, so the session has to cover the endings they
 # never see — else a failed measurement strands the speaker loud until /reset.
-@pytest.mark.asyncio
 async def test_failed_measurement_restores_autolevel_volume(tmp_path: Path):
     sess = _make_session(tmp_path)
     sess.capture_timeout_sec = 0.05
@@ -1493,7 +1459,6 @@ async def test_failed_measurement_restores_autolevel_volume(tmp_path: Path):
     assert sess.autolevel.restored is True
 
 
-@pytest.mark.asyncio
 async def test_autolevel_restore_idempotent_and_skips_when_not_ramped(
     tmp_path: Path,
 ):
@@ -1592,7 +1557,6 @@ async def _run_verify(sess, verify_room_gain_db: float) -> None:
     await sess.on_verify_capture_uploaded(verify_path)
 
 
-@pytest.mark.asyncio
 async def test_verify_populates_acceptance_verdict_and_position1_basis(
     tmp_path: Path,
 ):
@@ -1620,7 +1584,6 @@ async def test_verify_populates_acceptance_verdict_and_position1_basis(
     assert sess.acceptance_verdict == sess.acceptance["verdict"]
 
 
-@pytest.mark.asyncio
 async def test_confirmatory_remeasure_concordance_and_auto_revert(
     tmp_path: Path,
 ):
@@ -1682,7 +1645,6 @@ async def test_confirmatory_remeasure_concordance_and_auto_revert(
     assert "removed the correction" in env["verdict_text"]
 
 
-@pytest.mark.asyncio
 async def test_clean_confirmatory_verify_clears_the_concordance_flag(
     tmp_path: Path,
 ):
@@ -1716,7 +1678,6 @@ async def test_clean_confirmatory_verify_clears_the_concordance_flag(
     assert sess.state == SessionState.VERIFIED
 
 
-@pytest.mark.asyncio
 async def test_auto_revert_camilla_reject_records_failed_outcome(
     tmp_path: Path,
 ):
@@ -1746,7 +1707,6 @@ async def test_auto_revert_camilla_reject_records_failed_outcome(
     assert sess.state == SessionState.FAILED
 
 
-@pytest.mark.asyncio
 async def test_auto_revert_falls_back_to_pre_apply_config(tmp_path: Path):
     """With no explicit target, auto_revert restores the pre-apply config the
     apply() path captured."""
@@ -1778,7 +1738,6 @@ async def test_auto_revert_falls_back_to_pre_apply_config(tmp_path: Path):
     assert fake_set.calls == [prior]  # restored the captured pre-apply graph
 
 
-@pytest.mark.asyncio
 async def test_acceptance_verdict_lands_in_result_json(tmp_path: Path):
     """The verdict is recorded in the evidence bundle's result.json."""
     sess = _make_session(tmp_path)
@@ -1799,7 +1758,6 @@ async def test_acceptance_verdict_lands_in_result_json(tmp_path: Path):
     assert data["position1"] is not None  # matched-basis curve recorded
 
 
-@pytest.mark.asyncio
 async def test_verify_accept_downgrades_to_surface_when_verify_snr_warned(
     tmp_path: Path,
 ):
@@ -1867,7 +1825,6 @@ async def test_verify_accept_downgrades_to_surface_when_verify_snr_warned(
     assert sess.acceptance_verdict == "surface"
 
 
-@pytest.mark.asyncio
 async def test_verify_accept_downgrades_to_surface_when_verify_snr_unavailable(
     tmp_path: Path,
 ):
@@ -1912,7 +1869,6 @@ async def test_verify_accept_downgrades_to_surface_when_verify_snr_unavailable(
     )
 
 
-@pytest.mark.asyncio
 async def test_verify_accept_survives_ok_verify_snr(tmp_path: Path):
     """The TRUE no-op control (#2058 SF3): the same measurement and verify
     parameters (same room mode, same correction, same near-flat verify —
@@ -1993,7 +1949,6 @@ def test_verify_snr_quality_warning_boundary_sweep(
         assert reason == ""
 
 
-@pytest.mark.asyncio
 async def test_multi_position_verify_judges_against_position1_not_average(
     tmp_path: Path,
 ):

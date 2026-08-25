@@ -236,7 +236,6 @@ def _feed(status_ref, clock, **kw):
     )
 
 
-@pytest.mark.asyncio
 async def test_relay_feed_dedupes_and_detects_abort():
     clock = Clock()
     ref = {"status": {"event": _batch([{"seq": 1, "rms_dbfs": -30.0}])}}
@@ -252,7 +251,6 @@ async def test_relay_feed_dedupes_and_detects_abort():
     assert feed.aborted_reason == "backgrounded"
 
 
-@pytest.mark.asyncio
 async def test_relay_feed_seq_regression_is_a_new_stream():
     # A phone page reload mid-ramp resets its counter; the feed must consume
     # the new stream rather than dropping every sample as stale (the review's
@@ -268,7 +266,6 @@ async def test_relay_feed_seq_regression_is_a_new_stream():
     assert await feed.next_samples() == []
 
 
-@pytest.mark.asyncio
 async def test_relay_feed_ignores_stale_previous_run_slot():
     # The previous run's final event (abort superset + samples, another token)
     # persists in the slot: a fresh tokened feed must ignore it completely —
@@ -291,7 +288,6 @@ async def test_relay_feed_ignores_stale_previous_run_slot():
     assert [s.seq for s in await feed.next_samples()] == [1]
 
 
-@pytest.mark.asyncio
 async def test_relay_feed_rate_limits_reads():
     clock = Clock()
     calls = {"n": 0}
@@ -310,7 +306,6 @@ async def test_relay_feed_rate_limits_reads():
     assert calls["n"] <= 5
 
 
-@pytest.mark.asyncio
 async def test_relay_feed_latches_read_failure_warning(caplog):
     clock = Clock()
     calls = {"n": 0}
@@ -329,7 +324,6 @@ async def test_relay_feed_latches_read_failure_warning(caplog):
     assert len(warnings) == 1  # latched, not per tick
 
 
-@pytest.mark.asyncio
 async def test_relay_feed_latches_schema_mismatch_warning(caplog):
     clock = Clock()
     bad = _batch([{"seq": 1, "rms_dbfs": -30.0}])
@@ -662,7 +656,6 @@ async def _run_geometry(sess, chain, geometry, *, clock=None, **kw):
     )
 
 
-@pytest.mark.asyncio
 async def test_level_match_session_locks_and_stores_geometry_lock():
     store = LevelLockStore()
     sess = _session(store)
@@ -681,7 +674,6 @@ async def test_level_match_session_locks_and_stores_geometry_lock():
         assert vol <= cap + 1e-9
 
 
-@pytest.mark.asyncio
 async def test_level_match_session_unattested_verified_locks_like_attested():
     """End-to-end through the full relay adapter: an unattested (undefined
     AGC) chain — the wire-level agc_frozen is false on every sample — still
@@ -702,7 +694,6 @@ async def test_level_match_session_unattested_verified_locks_like_attested():
     assert lock.agc_frozen is True  # verified-unattested reads as trustworthy
 
 
-@pytest.mark.asyncio
 async def test_level_match_maxed_out_restores_and_stores_no_lock():
     store = LevelLockStore()
     sess = _session(store, cap_bump_db=6.0, cap_ceil_db=-6.0)
@@ -719,7 +710,6 @@ async def test_level_match_maxed_out_restores_and_stores_no_lock():
     assert store.get(MicGeometry.LISTENING_POSITION.value) is None
 
 
-@pytest.mark.asyncio
 async def test_level_match_persists_bounded_low_evidence_in_lock_snapshot():
     store = LevelLockStore()
     sess = _session(store, allow_bounded_low_level=True)
@@ -750,7 +740,6 @@ async def test_level_match_persists_bounded_low_evidence_in_lock_snapshot():
     assert snapshot["lock"]["window_shortfall_db"] == 13.07
 
 
-@pytest.mark.asyncio
 async def test_level_match_terminal_state_repost_never_stops_on_first_echo():
     # The relay event slot is a whole-meta read-modify-write race: a phone
     # batch post whose read predates the Pi's terminal write reverts
@@ -771,7 +760,6 @@ async def test_level_match_terminal_state_repost_never_stops_on_first_echo():
     assert len(terminal_posts) == LevelMatchSession.TERMINAL_POST_ATTEMPTS
 
 
-@pytest.mark.asyncio
 async def test_level_match_terminal_state_reposts_without_echo():
     # If the echo never appears (a phone post keeps clobbering host_event),
     # the post is re-attempted the full bounded budget — never exactly once.
@@ -794,7 +782,6 @@ async def test_level_match_terminal_state_reposts_without_echo():
     assert len(terminal_posts) == LevelMatchSession.TERMINAL_POST_ATTEMPTS
 
 
-@pytest.mark.asyncio
 async def test_level_match_session_honors_phone_abort():
     store = LevelLockStore()
     sess = _session(store)
@@ -818,7 +805,6 @@ async def test_level_match_session_honors_phone_abort():
     assert chain.commanded[-1] == pytest.approx(-30.0)  # restored
 
 
-@pytest.mark.asyncio
 async def test_level_match_waits_for_armed_and_times_out():
     # No armed superset ever appears: the run must end without touching the
     # volume or the tone (a premature call must not burn a tone climb).
@@ -838,7 +824,6 @@ async def test_level_match_waits_for_armed_and_times_out():
     assert outcome.lock is None
 
 
-@pytest.mark.asyncio
 async def test_level_match_token_scoped_retry_ignores_stale_abort():
     # Run 2 of the same relay session: the slot still holds run 1's abort
     # superset. The tokened feed must ignore it and complete run 2 normally.
@@ -876,7 +861,6 @@ async def test_level_match_token_scoped_retry_ignores_stale_abort():
     assert outcome.aborted_reason is None
 
 
-@pytest.mark.asyncio
 async def test_level_match_manual_lock_via_public_seam():
     store = LevelLockStore()
     sess = _session(store, settle_hold_s=5.0, max_loop_latency_s=2.0)
@@ -906,7 +890,6 @@ async def test_level_match_manual_lock_via_public_seam():
 # --- MeasurementSession seam (run_level_match) --------------------------------
 
 
-@pytest.mark.asyncio
 async def test_session_run_level_match_stores_geometry_lock(tmp_path):
     sess = _make_session(tmp_path)
     chain = FakeChain(gain_db=10.0, start_vol=-30.0)
@@ -935,7 +918,6 @@ async def test_session_run_level_match_stores_geometry_lock(tmp_path):
     assert chain._vol == pytest.approx(-30.0)
 
 
-@pytest.mark.asyncio
 async def test_room_session_uses_sweep_headroom_window(tmp_path):
     """Room keeps 6 dB beyond the shared tone window for the full-band ESS."""
     sess = _make_session(tmp_path)
@@ -965,7 +947,6 @@ async def test_room_session_uses_sweep_headroom_window(tmp_path):
     assert chain._vol == pytest.approx(-30.0)
 
 
-@pytest.mark.asyncio
 async def test_stop_after_locked_waits_for_terminal_ack_then_restores(tmp_path):
     """Terminal RampState is not lifecycle completion or restore authority."""
     sess = _make_session(tmp_path)
@@ -1025,7 +1006,6 @@ async def test_stop_after_locked_waits_for_terminal_ack_then_restores(tmp_path):
     assert await sess.end_autolevel_reset(intent) is True
 
 
-@pytest.mark.asyncio
 async def test_room_session_accepts_stable_bounded_low_level(tmp_path):
     """A quiet external amp can proceed only with explicit degraded evidence."""
     sess = _make_session(tmp_path)
@@ -1054,7 +1034,6 @@ async def test_room_session_accepts_stable_bounded_low_level(tmp_path):
     assert chain._vol == pytest.approx(-30.0)
 
 
-@pytest.mark.asyncio
 async def test_room_session_jts3_evidence_locks_and_restores_exactly(tmp_path):
     """Pin the live UMIK miss at -3.15 dB and room-only raised-cap recovery."""
     sess = _make_session(tmp_path)
@@ -1089,7 +1068,6 @@ async def test_room_session_jts3_evidence_locks_and_restores_exactly(tmp_path):
     assert chain.commanded[-1] == pytest.approx(original)
 
 
-@pytest.mark.asyncio
 async def test_session_level_restore_is_retryable_and_exact_once(tmp_path):
     sess = _make_session(tmp_path)
     chain = FakeChain(gain_db=10.0, start_vol=-30.0)
@@ -1134,7 +1112,6 @@ async def test_session_level_restore_is_retryable_and_exact_once(tmp_path):
     assert calls == [-30.0]
 
 
-@pytest.mark.asyncio
 async def test_session_level_match_refuses_to_return_with_restore_unapplied(tmp_path):
     sess = _make_session(tmp_path)
     chain = FakeChain(gain_db=10.0, start_vol=-30.0)
@@ -1174,7 +1151,6 @@ async def test_session_level_match_refuses_to_return_with_restore_unapplied(tmp_
     assert ramp.restored is True
 
 
-@pytest.mark.asyncio
 async def test_session_reasserts_locked_volume_before_sweep(tmp_path):
     sess = _make_session(tmp_path)
     chain = FakeChain(gain_db=10.0, start_vol=-30.0)
@@ -1213,7 +1189,6 @@ async def test_session_reasserts_locked_volume_before_sweep(tmp_path):
         )
 
 
-@pytest.mark.asyncio
 async def test_session_ensure_and_restore_share_one_transition_lock(tmp_path):
     sess = _make_session(tmp_path)
     chain = FakeChain(gain_db=10.0, start_vol=-30.0)
@@ -1253,7 +1228,6 @@ async def test_session_ensure_and_restore_share_one_transition_lock(tmp_path):
     assert outcome.ramp.restored is True
 
 
-@pytest.mark.asyncio
 async def test_crossover_lease_restores_then_scopes_target_to_sweep_window():
     from jasper.web.correction_crossover_backend import CrossoverLevelLease
 
@@ -1299,7 +1273,6 @@ async def test_crossover_lease_restores_then_scopes_target_to_sweep_window():
     assert outcome.ramp.restored is True
 
 
-@pytest.mark.asyncio
 async def test_crossover_lease_accepts_and_reasserts_bounded_low_lock():
     from jasper.web.correction_crossover_backend import CrossoverLevelLease
 
@@ -1371,7 +1344,6 @@ def test_crossover_lease_phone_timeout_never_undercuts_server_safety_timeout():
         assert phone_timeout_ms > server_safety_timeout_s * 1000.0
 
 
-@pytest.mark.asyncio
 async def test_crossover_start_supplies_scheduler_ports(monkeypatch):
     """The production crossover caller need not inject test scheduler seams."""
     from types import SimpleNamespace
@@ -1412,7 +1384,6 @@ async def test_crossover_start_supplies_scheduler_ports(monkeypatch):
     assert seen["sleep"] is asyncio.sleep
 
 
-@pytest.mark.asyncio
 async def test_crossover_claimed_run_executes_its_frozen_env_config(
     monkeypatch, tmp_path
 ):
@@ -1504,7 +1475,6 @@ def test_crossover_terminal_success_requires_process_local_level_result(tmp_path
     assert lease.mark_level_run_succeeded(claim.run_id) is False
 
 
-@pytest.mark.asyncio
 async def test_crossover_explicit_claimed_run_id_fails_closed_when_stale(tmp_path):
     from jasper.active_speaker.capture_geometry import driver_level_geometry
     from jasper.active_speaker.crossover_level_run import CrossoverLevelRunError
@@ -1534,7 +1504,6 @@ async def test_crossover_explicit_claimed_run_id_fails_closed_when_stale(tmp_pat
         )
 
 
-@pytest.mark.asyncio
 async def test_crossover_claimed_run_must_match_relay_token(tmp_path):
     from jasper.active_speaker.capture_geometry import driver_level_geometry
     from jasper.active_speaker.crossover_level_run import CrossoverLevelRunError
@@ -1573,7 +1542,6 @@ def test_session_level_match_snapshot_empty_before_run(tmp_path):
     assert snap["last"] is None
 
 
-@pytest.mark.asyncio
 async def test_session_lock_cancel_level_match_are_noops_when_idle(tmp_path):
     # The P2 nit: the seams exist and are safe no-ops when no ramp is running
     # (mirrors lock_autolevel/cancel_autolevel returning False when idle).
@@ -1582,7 +1550,6 @@ async def test_session_lock_cancel_level_match_are_noops_when_idle(tmp_path):
     assert await sess.cancel_level_match() is False
 
 
-@pytest.mark.asyncio
 async def test_session_run_level_match_clears_retained_session(tmp_path):
     # The retained LevelMatchSession is cleared after the run so a stale
     # controller can't be locked/cancelled once the ramp has settled.
@@ -1608,7 +1575,6 @@ async def test_session_run_level_match_clears_retained_session(tmp_path):
     assert await sess.cancel_level_match() is False
 
 
-@pytest.mark.asyncio
 async def test_session_lock_level_match_reaches_running_ramp(tmp_path):
     # The whole point of retaining the session (the P2 nit): a Lock issued
     # through the SESSION seam while the ramp is in flight actually reaches the
@@ -1653,7 +1619,6 @@ async def test_session_lock_level_match_reaches_running_ramp(tmp_path):
     assert sess._level_match_session is None
 
 
-@pytest.mark.asyncio
 async def test_session_run_level_match_is_single_flight(tmp_path):
     # Should-fix (review): the retained slot is per-run, so overlapping runs
     # must be REFUSED (mirrors /autolevel/start's "already in progress" guard)

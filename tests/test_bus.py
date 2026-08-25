@@ -170,7 +170,6 @@ def test_label_for_falls_back_to_bare_id_when_unset():
     assert c.label_for("MTA_302680") == "302680"
 
 
-@pytest.mark.asyncio
 async def test_returns_empty_when_disabled():
     c = BusClient(stop_ids=[], api_key="")
     assert await c.get_arrivals() == []
@@ -179,7 +178,6 @@ async def test_returns_empty_when_disabled():
 # ---- Single-stop arrivals -------------------------------------------------
 
 
-@pytest.mark.asyncio
 async def test_parses_arrival_minutes_from_eta():
     now = datetime(2026, 5, 21, 16, 30, 0, tzinfo=timezone.utc)
     response = _siri_response([
@@ -202,7 +200,6 @@ async def test_parses_arrival_minutes_from_eta():
     assert arrivals[0].stop_label == "302680"
 
 
-@pytest.mark.asyncio
 async def test_arrival_carries_configured_stop_label():
     now = datetime(2026, 5, 21, 16, 30, 0, tzinfo=timezone.utc)
     response = _siri_response([
@@ -219,7 +216,6 @@ async def test_arrival_carries_configured_stop_label():
     assert arrivals[0].stop_label == "4 Av/39 St eastbound"
 
 
-@pytest.mark.asyncio
 async def test_filters_to_explicit_route_arg():
     now = datetime(2026, 5, 21, 16, 30, 0, tzinfo=timezone.utc)
     response = _siri_response([
@@ -234,7 +230,6 @@ async def test_filters_to_explicit_route_arg():
     assert [a.route for a in arrivals] == ["B70"]
 
 
-@pytest.mark.asyncio
 async def test_drops_past_arrivals_beyond_grace_window():
     now = datetime(2026, 5, 21, 16, 30, 0, tzinfo=timezone.utc)
     response = _siri_response([
@@ -255,7 +250,6 @@ async def test_drops_past_arrivals_beyond_grace_window():
     assert arrivals[0].minutes_from_now == 0
 
 
-@pytest.mark.asyncio
 async def test_sorts_by_eta_ascending():
     now = datetime(2026, 5, 21, 16, 30, 0, tzinfo=timezone.utc)
     response = _siri_response([
@@ -272,7 +266,6 @@ async def test_sorts_by_eta_ascending():
     assert minutes == sorted(minutes)
 
 
-@pytest.mark.asyncio
 async def test_handles_http_error_raises_when_all_stops_fail():
     """A total outage (the only configured stop 503s, no cache) raises
     TransitError so the tool can speak an error rather than narrate it
@@ -293,7 +286,6 @@ async def test_handles_http_error_raises_when_all_stops_fail():
         await client.aclose()
 
 
-@pytest.mark.asyncio
 async def test_caches_results_within_window():
     """Repeat queries to the same stop within CACHE_WINDOW_SEC should
     only hit the network once. Each stop has its own cache so a query
@@ -323,7 +315,6 @@ async def test_caches_results_within_window():
 # ---- Multi-stop fan-out ---------------------------------------------------
 
 
-@pytest.mark.asyncio
 async def test_multi_stop_unions_arrivals_sorted_by_eta():
     """Two configured stops, each returning one bus. The union is
     sorted by ETA regardless of which stop each arrival came from."""
@@ -355,7 +346,6 @@ async def test_multi_stop_unions_arrivals_sorted_by_eta():
     assert arrivals[1].stop_id == "302680"
 
 
-@pytest.mark.asyncio
 async def test_multi_stop_one_stop_fails_others_succeed():
     """Per-stop failure doesn't kill the whole query — the user still
     gets arrivals from the stops that responded."""
@@ -385,7 +375,6 @@ async def test_multi_stop_one_stop_fails_others_succeed():
     assert arrivals[0].stop_id == "302680"
 
 
-@pytest.mark.asyncio
 async def test_multi_stop_caps_at_limit_across_stops():
     """The default limit caps the unioned arrivals across all stops
     — not per stop. Critical for one-sentence voice answers."""
@@ -414,7 +403,6 @@ async def test_multi_stop_caps_at_limit_across_stops():
 # Post-fix, fetch failures bypass the cache.
 
 
-@pytest.mark.asyncio
 async def test_failed_fetch_does_not_poison_cache():
     """First call: upstream 503 → raises (the only stop failed, no
     cache). Second call: upstream recovers → fresh fetch returns
@@ -448,7 +436,6 @@ async def test_failed_fetch_does_not_poison_cache():
     assert call_state["n"] == 2         # upstream was hit twice
 
 
-@pytest.mark.asyncio
 async def test_failed_fetch_serves_stale_cache_when_available():
     """Refinement of the above: if we previously had a good response
     cached, a transient failure on the next refresh should serve the

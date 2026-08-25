@@ -15,7 +15,6 @@ from __future__ import annotations
 import os
 import tempfile
 
-import pytest
 
 from jasper.timers import TimerScheduler
 from jasper.tools.timer import make_timer_tools
@@ -55,7 +54,6 @@ def test_factory_exposes_update_timer():
             os.unlink(path)
 
 
-@pytest.mark.asyncio
 async def test_update_timer_happy_path_returns_confirm_and_new_state():
     """The shape the model sees on a successful update — `ok=True`,
     `confirm` is the spoken sentence, the rest mirrors `set_timer`'s
@@ -85,7 +83,6 @@ async def test_update_timer_happy_path_returns_confirm_and_new_state():
             os.unlink(path)
 
 
-@pytest.mark.asyncio
 async def test_update_timer_not_found_returns_explicit_error():
     """Critical: when the user asks to update a non-existent timer,
     the tool MUST NOT silently fall through to set_timer. The
@@ -109,7 +106,6 @@ async def test_update_timer_not_found_returns_explicit_error():
             os.unlink(path)
 
 
-@pytest.mark.asyncio
 async def test_update_timer_ambiguous_returns_matches():
     """Two timers labelled 'pasta' — update must NOT pick one. The
     response includes both candidates so the model can read durations
@@ -138,7 +134,6 @@ async def test_update_timer_ambiguous_returns_matches():
             os.unlink(path)
 
 
-@pytest.mark.asyncio
 async def test_update_timer_validation_error_returns_clean_error():
     """A non-positive `seconds` should never reach the scheduler's
     second-phase add; the tool catches ValueError and surfaces it as

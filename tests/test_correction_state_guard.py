@@ -8,7 +8,6 @@ import asyncio
 import logging
 from enum import Enum
 
-import pytest
 
 from jasper.correction.state_guard import SessionStateGuard
 
@@ -45,7 +44,6 @@ def _make_guard(
     )
 
 
-@pytest.mark.asyncio
 async def test_state_guard_times_out_stranded_capture_state(caplog):
     state_ref = {"state": _State.WAITING}
     failed: list[str] = []
@@ -67,7 +65,6 @@ async def test_state_guard_times_out_stranded_capture_state(caplog):
     )
 
 
-@pytest.mark.asyncio
 async def test_state_guard_transition_cancels_pending_timeout():
     state_ref = {"state": _State.WAITING}
     failed: list[str] = []

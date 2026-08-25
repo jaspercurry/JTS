@@ -98,7 +98,6 @@ def test_factory_returns_micapture_for_hw_shorthand():
 # ---- UdpMicCapture end-to-end ----
 
 
-@pytest.mark.asyncio
 async def test_udp_capture_receives_one_frame():
     """End-to-end: bind UdpMicCapture, send one packet via a raw
     socket, verify `frames()` yields exactly that data as int16."""
@@ -123,7 +122,6 @@ async def test_udp_capture_receives_one_frame():
         assert received.tolist() == frame.tolist()
 
 
-@pytest.mark.asyncio
 async def test_udp_capture_drops_odd_byte_count():
     """A malformed sender (or a corrupted packet) sending an odd byte
     count must NOT crash the daemon — drop and log."""
@@ -149,7 +147,6 @@ async def test_udp_capture_drops_odd_byte_count():
         assert received.tolist() == [1, 2, 3, 4]
 
 
-@pytest.mark.asyncio
 async def test_udp_capture_drops_empty_datagram():
     """Zero-length UDP packets are legal but useless. Drop without
     crashing — `np.frombuffer(b'', dtype=int16)` would otherwise
@@ -170,7 +167,6 @@ async def test_udp_capture_drops_empty_datagram():
         assert received.tolist() == [99]
 
 
-@pytest.mark.asyncio
 async def test_udp_capture_frame_size_constant_matches_micapture():
     """The UDP frame size contract is the SAME as MicCapture's output
     contract. Voice's WakeLoop is transport-agnostic only as long as

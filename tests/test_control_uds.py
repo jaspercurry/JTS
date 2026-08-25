@@ -41,7 +41,6 @@ class _PendingReader:
         return await self._reply
 
 
-@pytest.mark.asyncio
 async def test_mux_command_is_one_bounded_json_exchange(monkeypatch):
     reader, writer = _connection(b'{"active_source":"idle"}\n')
     opener = AsyncMock(return_value=(reader, writer))
@@ -60,7 +59,6 @@ async def test_mux_command_is_one_bounded_json_exchange(monkeypatch):
     writer.close.assert_called_once()
 
 
-@pytest.mark.asyncio
 async def test_mux_command_deadline_includes_connect(monkeypatch):
     connect_started = asyncio.Event()
 
@@ -75,7 +73,6 @@ async def test_mux_command_deadline_includes_connect(monkeypatch):
     assert connect_started.is_set()
 
 
-@pytest.mark.asyncio
 async def test_mux_command_wedged_close_cannot_extend_deadline(monkeypatch):
     reader, writer = _connection(b'{"active_source":"idle"}\n')
     writer.wait_closed.side_effect = lambda: asyncio.Event().wait()
@@ -92,7 +89,6 @@ async def test_mux_command_wedged_close_cannot_extend_deadline(monkeypatch):
     writer.wait_closed.assert_not_awaited()
 
 
-@pytest.mark.asyncio
 async def test_mux_command_validates_request_and_response(monkeypatch):
     with pytest.raises(ValueError, match="one non-empty line"):
         await uds._mux_socket_command("STATUS\nAUTO")
@@ -114,7 +110,6 @@ async def test_mux_command_validates_request_and_response(monkeypatch):
             await uds._mux_socket_command("STATUS")
 
 
-@pytest.mark.asyncio
 async def test_mux_command_answers_cancellation_racing_the_reply(monkeypatch):
     """_mux_socket_command must terminate its caller when cancelled, even
     when jasper-mux's reply lands in the very same event-loop tick as the
@@ -244,7 +239,6 @@ async def _serve_once(path: str, payload: bytes):
     return await asyncio.start_unix_server(handle, path=path)
 
 
-@pytest.mark.asyncio
 async def test_both_local_status_readers_survive_a_real_outputd_payload(
     short_sock_path,
 ):
@@ -272,7 +266,6 @@ async def test_both_local_status_readers_survive_a_real_outputd_payload(
     assert len(writer_view["recent_writes"]) == _RING_ENTRIES
 
 
-@pytest.mark.asyncio
 async def test_the_grouping_supervisor_probe_survives_the_same_payload(
     short_sock_path, monkeypatch
 ):
@@ -298,7 +291,6 @@ async def test_the_grouping_supervisor_probe_survives_the_same_payload(
     assert starvation_view["dac_content"]["serving_fifo"] is True
 
 
-@pytest.mark.asyncio
 async def test_a_reply_past_the_ceiling_is_refused_rather_than_truncated(
     short_sock_path,
 ):

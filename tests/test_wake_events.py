@@ -1159,7 +1159,6 @@ async def test_retention_estimate_reseeds_from_scan_on_prune(tmp_path: Path):
         s.close()
 
 
-@pytest.mark.asyncio
 async def test_concurrent_sweeps_do_not_double_scan(tmp_path):
     """Two attach-driven sweeps overlapping must run the blocking
     stat-walk once — the second caller skips while one is in flight

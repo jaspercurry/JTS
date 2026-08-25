@@ -17,7 +17,6 @@ from __future__ import annotations
 import asyncio
 import logging
 
-import pytest
 
 from jasper.tools import (
     DEFAULT_TOOL_TIMEOUT_SEC,
@@ -37,7 +36,6 @@ def _registry(*fns) -> ToolRegistry:
     return reg
 
 
-@pytest.mark.asyncio
 async def test_dict_result_passes_through():
     async def echo(x: str) -> dict:
         """echo back the argument."""
@@ -47,7 +45,6 @@ async def test_dict_result_passes_through():
     assert await dispatch_tool(reg, "echo", {"x": "hi"}) == {"got": "hi"}
 
 
-@pytest.mark.asyncio
 async def test_dispatch_runs_tool_executor_boundary():
     class RecordingExecutor:
         def __init__(self):
@@ -77,7 +74,6 @@ async def test_dispatch_runs_tool_executor_boundary():
     assert executor.calls == [{"x": "hi"}]
 
 
-@pytest.mark.asyncio
 async def test_scalar_result_is_wrapped():
     async def answer() -> int:
         """return a scalar."""
@@ -88,7 +84,6 @@ async def test_scalar_result_is_wrapped():
     assert await dispatch_tool(reg, "answer", {}) == {"value": 42}
 
 
-@pytest.mark.asyncio
 async def test_sync_tool_is_supported():
     def now() -> str:
         """a non-coroutine tool."""
@@ -98,14 +93,12 @@ async def test_sync_tool_is_supported():
     assert await dispatch_tool(reg, "now", {}) == {"value": "noon"}
 
 
-@pytest.mark.asyncio
 async def test_unknown_tool_returns_error():
     assert await dispatch_tool(ToolRegistry(), "nope", {}) == {
         "error": "unknown tool nope",
     }
 
 
-@pytest.mark.asyncio
 async def test_dispatch_observer_sees_registered_call_start_and_completion():
     async def echo(x: str) -> dict:
         """echo back the argument."""
@@ -123,7 +116,6 @@ async def test_dispatch_observer_sees_registered_call_start_and_completion():
     assert events == [("called", "echo"), ("completed", "echo")]
 
 
-@pytest.mark.asyncio
 async def test_dispatch_observer_completion_includes_tool_error_payloads():
     async def boom() -> dict:
         """always raises."""
@@ -141,7 +133,6 @@ async def test_dispatch_observer_completion_includes_tool_error_payloads():
     assert events == [("called", "boom"), ("completed", "boom")]
 
 
-@pytest.mark.asyncio
 async def test_dispatch_observer_ignores_unknown_tool_names():
     events: list[tuple[str, str]] = []
 
@@ -155,7 +146,6 @@ async def test_dispatch_observer_ignores_unknown_tool_names():
     assert events == []
 
 
-@pytest.mark.asyncio
 async def test_dispatch_observer_failure_does_not_block_tool(caplog):
     async def echo() -> dict:
         """return a normal payload."""
@@ -173,7 +163,6 @@ async def test_dispatch_observer_failure_does_not_block_tool(caplog):
     assert caplog.text.count("lifecycle observer failed") == 2
 
 
-@pytest.mark.asyncio
 async def test_dispatch_observer_timeout_does_not_block_tool(monkeypatch, caplog):
     import jasper.tools as tools_module
 
@@ -198,7 +187,6 @@ async def test_dispatch_observer_timeout_does_not_block_tool(monkeypatch, caplog
     assert caplog.text.count("lifecycle observer timed out") == 2
 
 
-@pytest.mark.asyncio
 async def test_exception_becomes_error_payload():
     async def boom() -> dict:
         """always raises."""
@@ -208,7 +196,6 @@ async def test_exception_becomes_error_payload():
     assert await dispatch_tool(reg, "boom", {}) == {"error": "kaboom"}
 
 
-@pytest.mark.asyncio
 async def test_timeout_returns_error_and_respects_per_tool_budget():
     @tool(timeout=0.01)
     async def slow() -> dict:
@@ -231,7 +218,6 @@ async def test_timeout_returns_error_and_respects_per_tool_budget():
     assert events == [("called", "slow"), ("completed", "slow")]
 
 
-@pytest.mark.asyncio
 async def test_redacted_tool_payload_omits_body_text_from_info_logs(caplog):
     @tool(log_payload=False)
     async def read_private_message() -> dict:
@@ -252,7 +238,6 @@ async def test_redacted_tool_payload_omits_body_text_from_info_logs(caplog):
     assert "Your appointment is Tuesday" not in caplog.text
 
 
-@pytest.mark.asyncio
 async def test_redacted_tool_args_omit_user_text_from_info_logs(caplog):
     @tool(log_args=False)
     async def relay_user_phrase(query: str) -> dict:
@@ -272,7 +257,6 @@ async def test_redacted_tool_args_omit_user_text_from_info_logs(caplog):
     assert "turn on the bedroom lights" not in caplog.text
 
 
-@pytest.mark.asyncio
 async def test_unknown_tool_args_are_value_redacted(caplog):
     with caplog.at_level(logging.WARNING, logger="jasper.tools"):
         out = await dispatch_tool(

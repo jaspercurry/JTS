@@ -128,7 +128,6 @@ def test_travel_mode_aliases_match_voice_wording(spoken: str, mode: str):
     assert google_routes.normalize_travel_mode(spoken) == mode
 
 
-@pytest.mark.asyncio
 async def test_compute_routes_request_and_transit_normalization():
     http = FakeHTTP(TRANSIT_RESPONSE)
     client = google_routes.build_google_routes_client(
@@ -175,7 +174,6 @@ async def test_compute_routes_request_and_transit_normalization():
     assert "42 St-Bryant Park" in first["steps"][1]["from_stop"]
 
 
-@pytest.mark.asyncio
 async def test_explicit_driving_override_wins_over_default():
     http = FakeHTTP({"routes": [{"duration": "600s", "distanceMeters": 1200}]})
     client = google_routes.build_google_routes_client(
@@ -198,7 +196,6 @@ async def test_explicit_driving_override_wins_over_default():
     assert out["routes"][0]["duration_minutes"] == 10
 
 
-@pytest.mark.asyncio
 async def test_invalid_travel_mode_returns_user_error_without_http_call():
     http = FakeHTTP(TRANSIT_RESPONSE)
     client = google_routes.build_google_routes_client(ENV, http=http)
@@ -213,7 +210,6 @@ async def test_invalid_travel_mode_returns_user_error_without_http_call():
     assert http.calls == []
 
 
-@pytest.mark.asyncio
 async def test_google_api_key_rejection_is_user_facing():
     http = FakeHTTP(FakeResponse(403))
     client = google_routes.build_google_routes_client(ENV, http=http)

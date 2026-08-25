@@ -304,7 +304,6 @@ def _synth_capture(
     return captured / max(1.0, float(np.max(np.abs(captured))))
 
 
-@pytest.mark.asyncio
 async def test_multi_position_flow_5_positions(tmp_path: Path):
     """Drive the full 5-position flow: each capture transitions to
     NEEDS_NEXT_POSITION until the last one, which transitions
@@ -355,7 +354,6 @@ async def test_multi_position_flow_5_positions(tmp_path: Path):
     assert len(sess.position_magnitudes) == 5
 
 
-@pytest.mark.asyncio
 async def test_target_choice_affects_design(tmp_path: Path):
     """With target='warm' (Harman-like), the designer's target curve
     should slope downward, so a measured curve that's actually
@@ -393,7 +391,6 @@ async def test_target_choice_affects_design(tmp_path: Path):
     assert warm_sess.target_choice == "warm"
 
 
-@pytest.mark.asyncio
 async def test_verify_pass_after_apply(tmp_path: Path):
     """Apply, then start verify, then upload a synthetic verify
     capture. Final state = VERIFIED, verify_curve + verify_metrics
@@ -470,7 +467,6 @@ async def test_verify_pass_after_apply(tmp_path: Path):
     )
 
 
-@pytest.mark.asyncio
 async def test_verify_from_wrong_state_raises(tmp_path: Path):
     sess = _make_session(tmp_path)
 

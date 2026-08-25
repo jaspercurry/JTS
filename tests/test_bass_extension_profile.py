@@ -650,7 +650,6 @@ def _transaction_harness(monkeypatch, tmp_path, *, predecessor=None):
     return applied, selected, profile_path, intent_path, statefile, cam, paths
 
 
-@pytest.mark.asyncio
 async def test_apply_and_bypass_commit_natural_graph_then_profile(monkeypatch, tmp_path):
     applied = {**_applied_baseline(), "status": "applied"}
     desired = _profile(applied_baseline=applied)
@@ -679,7 +678,6 @@ async def test_apply_and_bypass_commit_natural_graph_then_profile(monkeypatch, t
     assert cam.reload_count == 4
 
 
-@pytest.mark.asyncio
 async def test_no_block_replacement_skips_redundant_desired_reload(monkeypatch, tmp_path):
     applied = {**_applied_baseline(), "status": "applied"}
     predecessor = _profile(applied_baseline=applied, status="bypassed")
@@ -712,7 +710,6 @@ async def test_no_block_replacement_skips_redundant_desired_reload(monkeypatch, 
     assert load_bass_extension_profile(paths["profile_path"]) == desired
 
 
-@pytest.mark.asyncio
 @pytest.mark.parametrize("failure", ["profile_publish", "final_proof", "cancel"])
 async def test_apply_failure_restores_exact_graph_and_profile(
     monkeypatch, tmp_path, failure
@@ -759,7 +756,6 @@ async def test_apply_failure_restores_exact_graph_and_profile(
     assert not intent_path.exists()
 
 
-@pytest.mark.asyncio
 async def test_final_durable_unlink_failure_restores_then_repropagates_base_exception(
     monkeypatch,
     tmp_path,
@@ -809,7 +805,6 @@ async def test_final_durable_unlink_failure_restores_then_repropagates_base_exce
     assert not intent_path.exists()
 
 
-@pytest.mark.asyncio
 async def test_post_intent_rollback_reacquires_writer_lock_before_real_reload(
     monkeypatch,
     tmp_path,
@@ -850,7 +845,6 @@ async def test_post_intent_rollback_reacquires_writer_lock_before_real_reload(
     assert not intent_path.exists()
 
 
-@pytest.mark.asyncio
 async def test_delayed_rollback_cannot_replay_consumed_intent_over_new_commit(
     monkeypatch,
     tmp_path,
@@ -916,7 +910,6 @@ async def test_delayed_rollback_cannot_replay_consumed_intent_over_new_commit(
     assert not intent_path.exists()
 
 
-@pytest.mark.asyncio
 async def test_delayed_rollback_refuses_different_newer_pending_intent(
     monkeypatch,
     tmp_path,
@@ -999,7 +992,6 @@ async def test_delayed_rollback_refuses_different_newer_pending_intent(
     assert not intent_path.exists()
 
 
-@pytest.mark.asyncio
 async def test_repeated_cancellation_during_rollback_drains_one_restore_task(
     monkeypatch,
     tmp_path,
@@ -1073,7 +1065,6 @@ async def test_repeated_cancellation_during_rollback_drains_one_restore_task(
     assert not intent_path.exists()
 
 
-@pytest.mark.asyncio
 async def test_rollback_failure_wins_over_repeated_cancellation(
     monkeypatch,
     tmp_path,
@@ -1140,7 +1131,6 @@ async def test_rollback_failure_wins_over_repeated_cancellation(
     )["apply_recovery_required"] is True
 
 
-@pytest.mark.asyncio
 async def test_rollback_failure_wins_over_forward_failure(
     monkeypatch,
     tmp_path,
@@ -1177,7 +1167,6 @@ async def test_rollback_failure_wins_over_forward_failure(
     )["apply_recovery_required"] is True
 
 
-@pytest.mark.asyncio
 async def test_dsp_readback_failure_restores_both_authorities(monkeypatch, tmp_path):
     applied = {**_applied_baseline(), "status": "applied"}
     predecessor = _profile(applied_baseline=applied)
@@ -1203,7 +1192,6 @@ async def test_dsp_readback_failure_restores_both_authorities(monkeypatch, tmp_p
     assert not intent_path.exists()
 
 
-@pytest.mark.asyncio
 async def test_failed_apply_restores_predecessor_profile_absence(monkeypatch, tmp_path):
     applied = {**_applied_baseline(), "status": "applied"}
     desired = _profile(applied_baseline=applied)
@@ -1232,7 +1220,6 @@ async def test_failed_apply_restores_predecessor_profile_absence(monkeypatch, tm
     assert not intent_path.exists()
 
 
-@pytest.mark.asyncio
 async def test_recovery_restores_exact_predecessor_bytes_mode_and_profile(
     monkeypatch, tmp_path
 ):
@@ -1285,7 +1272,6 @@ async def test_recovery_restores_exact_predecessor_bytes_mode_and_profile(
     ) is False
 
 
-@pytest.mark.asyncio
 async def test_failed_recovery_retains_intent_and_reports_required(
     monkeypatch, tmp_path
 ):
@@ -1334,7 +1320,6 @@ async def test_failed_recovery_retains_intent_and_reports_required(
     )["apply_recovery_required"] is True
 
 
-@pytest.mark.asyncio
 async def test_recovery_validates_desired_record_before_mutating_predecessor(
     monkeypatch, tmp_path
 ):
@@ -1377,7 +1362,6 @@ async def test_recovery_validates_desired_record_before_mutating_predecessor(
     assert cam.reload_count == 0
 
 
-@pytest.mark.asyncio
 @pytest.mark.parametrize("role", ["leader", "follower"])
 async def test_bonded_owner_refuses_before_recovery_or_any_mutation(
     monkeypatch, tmp_path, role
@@ -1416,7 +1400,6 @@ async def test_bonded_owner_refuses_before_recovery_or_any_mutation(
     assert cam.reload_count == 0
 
 
-@pytest.mark.asyncio
 @pytest.mark.parametrize(
     "source",
     [
@@ -1466,7 +1449,6 @@ async def test_bonded_carrier_refuses_before_any_mutation(
     assert cam.reload_count == 0
 
 
-@pytest.mark.asyncio
 async def test_missing_sealed_subsonic_refuses_before_mutation(monkeypatch, tmp_path):
     applied = {**_applied_baseline(), "status": "applied"}
     predecessor = _profile(applied_baseline=applied, status="bypassed")

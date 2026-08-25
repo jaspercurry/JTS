@@ -47,7 +47,6 @@ def test_coerce_trim_rejects_boosts_floor_and_nonfinite(value: float) -> None:
         coerce_trim_db(value)
 
 
-@pytest.mark.asyncio
 async def test_apply_local_trim_active_endpoint_patches_camilla() -> None:
     calls = []
 
@@ -68,7 +67,6 @@ async def test_apply_local_trim_active_endpoint_patches_camilla() -> None:
     assert calls == [(camilla_patch_for_trim(-3.0), True)]
 
 
-@pytest.mark.asyncio
 async def test_apply_local_trim_passive_endpoint_calls_outputd() -> None:
     commands = []
 
@@ -88,7 +86,6 @@ async def test_apply_local_trim_passive_endpoint_calls_outputd() -> None:
     assert commands == ["SET_DAC_CONTENT_TRIM_DB -4.0"]
 
 
-@pytest.mark.asyncio
 @pytest.mark.parametrize(
     ("cfg", "expected_detail"),
     [
@@ -111,7 +108,6 @@ async def test_apply_local_trim_inactive_grouping_is_fail_soft(
     assert result.detail == expected_detail
 
 
-@pytest.mark.asyncio
 async def test_apply_local_trim_camilla_exception_is_fail_soft() -> None:
     class FailingCamilla:
         async def patch_config(self, patch, *, best_effort=False):
@@ -129,7 +125,6 @@ async def test_apply_local_trim_camilla_exception_is_fail_soft() -> None:
     assert result.detail == "CamillaDSP timed out"
 
 
-@pytest.mark.asyncio
 async def test_apply_local_trim_camilla_rejection_is_reported() -> None:
     class RejectingCamilla:
         async def patch_config(self, patch, *, best_effort=False):
@@ -147,7 +142,6 @@ async def test_apply_local_trim_camilla_rejection_is_reported() -> None:
     assert result.detail == "CamillaDSP patch was not applied"
 
 
-@pytest.mark.asyncio
 async def test_apply_local_trim_outputd_exception_is_fail_soft() -> None:
     async def failing_outputd(_command: str):
         raise OSError("outputd unavailable")
@@ -164,7 +158,6 @@ async def test_apply_local_trim_outputd_exception_is_fail_soft() -> None:
     assert result.detail == "outputd unavailable"
 
 
-@pytest.mark.asyncio
 async def test_apply_local_trim_outputd_error_payload_is_reported() -> None:
     async def rejecting_outputd(_command: str):
         return {"error": "trim rejected"}
@@ -181,7 +174,6 @@ async def test_apply_local_trim_outputd_error_payload_is_reported() -> None:
     assert result.detail == "trim rejected"
 
 
-@pytest.mark.asyncio
 async def test_apply_local_trim_outputd_missing_ack_is_reported() -> None:
     async def unacknowledged_outputd(_command: str):
         return {"ok": False}

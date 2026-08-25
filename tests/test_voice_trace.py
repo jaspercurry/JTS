@@ -4,13 +4,11 @@
 
 from __future__ import annotations
 
-import pytest
 
 from jasper.tools import Tool, ToolDefinition, ToolRegistry, dispatch_tool, tool
 from jasper.voice.trace import TurnTrace, reset_active, set_active, traced_registry
 
 
-@pytest.mark.asyncio
 async def test_traced_registry_wraps_explicit_executor_boundary():
     class ExplicitExecutor:
         async def execute(self, args):

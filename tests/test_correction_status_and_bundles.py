@@ -590,7 +590,6 @@ def test_capture_path_for_position_uses_per_session_dir(tmp_path: Path):
     assert sess.verify_capture_path() == sess.bundle_dir / "verify.wav"
 
 
-@pytest.mark.asyncio
 async def test_apply_copies_yaml_into_bundle(tmp_path: Path, monkeypatch):
     """apply() writes the correction YAML to /var/lib/camilladsp/configs
     and copies it into the bundle as applied.yml — so the bundle is
@@ -629,7 +628,6 @@ async def test_apply_copies_yaml_into_bundle(tmp_path: Path, monkeypatch):
     )
 
 
-@pytest.mark.asyncio
 async def test_correction_apply_preserves_saved_sound_profile(
     tmp_path: Path,
     monkeypatch,
@@ -657,7 +655,6 @@ async def test_correction_apply_preserves_saved_sound_profile(
     assert "sound_simple_treble:" in yaml
 
 
-@pytest.mark.asyncio
 async def test_correction_apply_replaces_existing_room_peqs(
     tmp_path: Path,
     monkeypatch,
@@ -708,7 +705,6 @@ async def test_correction_apply_replaces_existing_room_peqs(
     assert "freq: 45.0000" not in yaml
 
 
-@pytest.mark.asyncio
 async def test_correction_apply_runs_authority_guard_inside_dsp_lock(
     tmp_path: Path,
     monkeypatch,
@@ -772,7 +768,6 @@ async def test_correction_apply_runs_authority_guard_inside_dsp_lock(
     assert lock_held is False
 
 
-@pytest.mark.asyncio
 async def test_reset_no_room_config_preserves_preference_and_strips_room(
     tmp_path: Path,
     monkeypatch,
@@ -815,7 +810,6 @@ async def test_reset_no_room_config_preserves_preference_and_strips_room(
     assert "sound_simple_treble:" in yaml
 
 
-@pytest.mark.asyncio
 async def test_design_writes_result_json(tmp_path: Path, monkeypatch):
     """After spatial average + PEQ design, result.json captures the
     measured / target / predicted curves so a copied-off bundle is
@@ -1488,7 +1482,6 @@ def test_start_handler_loads_measurement_baseline_before_sweep(
     assert authority_checks == [(False, "passive_not_required", None)]
 
 
-@pytest.mark.asyncio
 async def test_measurement_baseline_snapshots_locked_prior_config(
     tmp_path: Path,
     monkeypatch,
@@ -1602,7 +1595,6 @@ async def test_measurement_baseline_snapshots_locked_prior_config(
     assert all(item is summary for item in safety_summaries)
 
 
-@pytest.mark.asyncio
 async def test_measurement_baseline_rejects_layer_a_change_inside_prepare(
     tmp_path: Path,
     monkeypatch,
@@ -1660,7 +1652,6 @@ async def test_measurement_baseline_rejects_layer_a_change_inside_prepare(
     assert fake_cam.set_calls == []
 
 
-@pytest.mark.asyncio
 async def test_measurement_baseline_hosts_program_bake_pipe(
     tmp_path: Path,
     monkeypatch,

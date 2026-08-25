@@ -170,7 +170,6 @@ async def _volume_ports(start_db: float):
     return current, get_main_volume_db, set_main_volume_db
 
 
-@pytest.mark.asyncio
 async def test_driver_sweep_reasserts_solved_volume_not_raw_lock(monkeypatch):
     topology, profile, targets = _safety_profile_and_targets()
     _patch_solve_environment(monkeypatch, topology, profile)
@@ -191,7 +190,6 @@ async def test_driver_sweep_reasserts_solved_volume_not_raw_lock(monkeypatch):
     assert current["value"] <= 0.0
 
 
-@pytest.mark.asyncio
 async def test_refused_solve_raises_and_preserves_the_lock(monkeypatch):
     topology, profile, targets = _safety_profile_and_targets()
     _patch_solve_environment(monkeypatch, topology, profile)
@@ -218,7 +216,6 @@ async def test_refused_solve_raises_and_preserves_the_lock(monkeypatch):
     assert lease.sweep_volume_active is False
 
 
-@pytest.mark.asyncio
 async def test_refusal_surfaces_on_level_match_snapshot(monkeypatch):
     topology, profile, targets = _safety_profile_and_targets()
     _patch_solve_environment(monkeypatch, topology, profile)
@@ -239,7 +236,6 @@ async def test_refusal_surfaces_on_level_match_snapshot(monkeypatch):
     assert refusal["role"] == "tweeter"
 
 
-@pytest.mark.asyncio
 async def test_level_solve_refused_str_is_the_mapped_household_copy(monkeypatch):
     """W2.4 (hardware run 20): ``str(LevelSolveRefused(...))`` used to be the
     raw diagnostic string ``"level_solve_refused code=... band=...Hz"`` --
@@ -348,7 +344,6 @@ def test_refusal_pending_predicate_across_the_three_stored_states():
     assert lease._target_refusal_pending(target_id) is False
 
 
-@pytest.mark.asyncio
 async def test_solve_falls_back_to_raw_lock_when_ceilings_unresolvable(monkeypatch):
     """No driver-safety profile confirmed -- the solve cannot resolve
     ceilings, so the pre-W2.1 raw-lock reassert behavior is preserved."""
@@ -377,7 +372,6 @@ async def test_solve_falls_back_to_raw_lock_when_ceilings_unresolvable(monkeypat
     assert current["value"] == pytest.approx(-20.0)
 
 
-@pytest.mark.asyncio
 async def test_missing_gain_map_falls_back_to_raw_lock(monkeypatch):
     """A test double (or legacy in-memory outcome) without gain_map_db must
     degrade to the raw lock, not crash."""
@@ -829,7 +823,6 @@ def test_new_level_match_run_clears_solve_state(monkeypatch):
     assert lease._solve_measured_peak_dbfs == {}
 
 
-@pytest.mark.asyncio
 async def test_fresh_ramp_lock_persists_that_targets_escalation(monkeypatch):
     """W2.3 (hardware run 19, replaces the old S2 "fresh-ramp-clears" rule):
     two full woofer repeat sets at the tester's stationary desk placement
@@ -920,7 +913,6 @@ async def test_fresh_ramp_lock_persists_that_targets_escalation(monkeypatch):
     assert corrected_total == pytest.approx(baseline_total + 5.0)
 
 
-@pytest.mark.asyncio
 async def test_solve_runs_once_per_sweep_and_reads_consume_it(monkeypatch):
     """N1: _acquire_sweep_volume computes and stores the SolvedLevel; the
     excitation-ledger and gain-override reads consume the stored result --

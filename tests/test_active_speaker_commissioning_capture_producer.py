@@ -348,7 +348,6 @@ def test_raw_capture_bytes_are_bounded(wav_bytes: bytes, expected_code: str) -> 
     assert raised.value.code == expected_code
 
 
-@pytest.mark.asyncio
 async def test_allowed_baseline_is_not_summed_protection(tmp_path: Path) -> None:
     harness = _harness(tmp_path)
     transport_called = False
@@ -367,7 +366,6 @@ async def test_allowed_baseline_is_not_summed_protection(tmp_path: Path) -> None
     assert transport_called is False
 
 
-@pytest.mark.asyncio
 @pytest.mark.parametrize("bass_profile_summary", [None, "invalid"])
 async def test_bass_authority_evidence_is_required_before_transport(
     tmp_path: Path,
@@ -435,7 +433,6 @@ def test_bass_authority_evidence_reaches_classifier_by_identity(
     assert observed[0] is summary
 
 
-@pytest.mark.asyncio
 async def test_summed_protection_refuses_a_ceiling_above_the_measurement_level(
     tmp_path: Path,
 ) -> None:
@@ -463,7 +460,6 @@ async def test_summed_protection_refuses_a_ceiling_above_the_measurement_level(
     assert transport_called is False
 
 
-@pytest.mark.asyncio
 async def test_guarded_graph_must_equal_operation_physical_outputs(
     tmp_path: Path,
 ) -> None:
@@ -486,7 +482,6 @@ async def test_guarded_graph_must_equal_operation_physical_outputs(
     assert transport_called is False
 
 
-@pytest.mark.asyncio
 async def test_canonical_stereo_grouped_role_filters_are_admitted(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
@@ -510,7 +505,6 @@ async def test_canonical_stereo_grouped_role_filters_are_admitted(
     assert admitted.payload.speaker_group_id == harness.operation.target.speaker_group_id
 
 
-@pytest.mark.asyncio
 async def test_stereo_cross_role_protection_group_is_refused_before_transport(
     tmp_path: Path,
 ) -> None:
@@ -554,7 +548,6 @@ async def test_stereo_cross_role_protection_group_is_refused_before_transport(
     assert transport_called is False
 
 
-@pytest.mark.asyncio
 @pytest.mark.parametrize("play_count", [0, 2])
 async def test_transport_must_consume_play_exactly_once(
     tmp_path: Path, play_count: int
@@ -578,7 +571,6 @@ async def test_transport_must_consume_play_exactly_once(
     )
 
 
-@pytest.mark.asyncio
 async def test_transport_cannot_retain_playback_capability_after_return(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
@@ -615,7 +607,6 @@ async def test_transport_cannot_retain_playback_capability_after_return(
     assert playback_calls == 0
 
 
-@pytest.mark.asyncio
 async def test_actual_analyzer_happy_path_reopens_complete_typed_evidence(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -661,7 +652,6 @@ async def test_actual_analyzer_happy_path_reopens_complete_typed_evidence(
     assert harness.store.reopen_admitted_region_capture(typed_artifact) == capture
 
 
-@pytest.mark.asyncio
 async def test_post_apply_capture_uses_current_protected_graph_and_receipt_identity(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
@@ -729,7 +719,6 @@ async def test_post_apply_capture_uses_current_protected_graph_and_receipt_ident
     assert isinstance(usable_failure.payload, AdmittedCaptureProof)
 
 
-@pytest.mark.asyncio
 async def test_quality_refusal_retains_replayable_analysis_and_decision(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -773,7 +762,6 @@ async def test_quality_refusal_retains_replayable_analysis_and_decision(
     assert quality["issues"] == ["capture_quality_failed"]
 
 
-@pytest.mark.asyncio
 async def test_summed_analysis_call_supplies_ambient_and_no_noise_report(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -828,7 +816,6 @@ async def test_summed_analysis_call_supplies_ambient_and_no_noise_report(
     assert "noise_floor_dbfs" not in kwargs
 
 
-@pytest.mark.asyncio
 async def test_never_returning_transport_is_cancelled_at_code_owned_deadline(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:

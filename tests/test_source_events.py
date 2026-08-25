@@ -10,7 +10,6 @@ import struct
 import sys
 from types import ModuleType, SimpleNamespace
 
-import pytest
 
 from jasper.music_sources import Source
 from jasper import source_events
@@ -60,7 +59,6 @@ def test_inotify_parser_handles_atomic_rename_record():
     assert inotify_changed_names(record) == ("state.json",)
 
 
-@pytest.mark.asyncio
 async def test_spotify_adapter_retries_until_state_directory_returns(
     monkeypatch, tmp_path,
 ):
@@ -95,7 +93,6 @@ async def test_spotify_adapter_retries_until_state_directory_returns(
     assert notifications == [(Source.SPOTIFY, "spotify_inotify")]
 
 
-@pytest.mark.asyncio
 async def test_dbus_adapter_reconnects_and_delivers_signal(monkeypatch):
     attempts = 0
     recovered = asyncio.Event()
@@ -170,7 +167,6 @@ async def test_dbus_adapter_reconnects_and_delivers_signal(monkeypatch):
     assert notifications == [(Source.AIRPLAY, "dbus")]
 
 
-@pytest.mark.asyncio
 async def test_unexpected_adapter_exit_is_observable(monkeypatch, caplog):
     async def crash(*args, **kwargs):
         raise RuntimeError("adapter bug")

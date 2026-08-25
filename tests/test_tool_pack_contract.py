@@ -8,7 +8,6 @@ import importlib.util
 import sys
 from pathlib import Path
 
-import pytest
 
 from jasper.tools import PythonExecutor, Tool, ToolDefinition, ToolRegistry
 from jasper.tools.catalog import build_catalog
@@ -50,7 +49,6 @@ def _pack(name: str) -> CapabilityPack:
     return next(pack for pack in TOOL_PACKS if pack.name == name)
 
 
-@pytest.mark.asyncio
 async def test_docs_starter_pack_uses_real_boundary_without_registering_production():
     starter = _load_starter_example()
 
@@ -212,7 +210,6 @@ def test_travel_routes_pack_satisfies_rich_first_party_contract():
     )
 
 
-@pytest.mark.asyncio
 async def test_travel_routes_pack_dispatches_through_executor_boundary():
     class StubRoutes:
         def __init__(self) -> None:
@@ -276,7 +273,6 @@ def test_travel_routes_pack_is_needs_setup_without_client():
     assert travel_tool["requires_setup"] is True
 
 
-@pytest.mark.asyncio
 async def test_weather_pack_dispatches_through_executor_boundary():
     class StubWeather:
         def __init__(self) -> None:

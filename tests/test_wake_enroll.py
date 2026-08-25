@@ -185,7 +185,6 @@ def test_refuse_if_muted_blocks_start(tmp_path: Path, caplog) -> None:
     assert "event=wake_enroll.mute_refused" in caplog.text
 
 
-@pytest.mark.asyncio
 async def test_run_session_refuses_while_muted_before_audio_imports(
     tmp_path: Path,
 ) -> None:
@@ -250,7 +249,6 @@ class _FakeUdpCapture:
             await asyncio.sleep(0.005)
 
 
-@pytest.mark.asyncio
 async def test_collect_for_returns_bytes_in_window() -> None:
     cap = _FakeUdpCapture(sample_value=42)
     pcm = await wake_enroll._collect_for(cap, duration_sec=0.2)
@@ -260,7 +258,6 @@ async def test_collect_for_returns_bytes_in_window() -> None:
     assert (samples == 42).all()
 
 
-@pytest.mark.asyncio
 async def test_record_legs_stops_when_mute_flips_mid_capture(
     tmp_path: Path,
 ) -> None:
@@ -286,7 +283,6 @@ async def test_record_legs_stops_when_mute_flips_mid_capture(
     await flipper
 
 
-@pytest.mark.asyncio
 async def test_record_legs_dict_api_handles_three_legs() -> None:
     """Triple-leg recording via the generic dict API. Each leg gets a
     different fake sample value so we can confirm the returned dict
@@ -304,7 +300,6 @@ async def test_record_legs_dict_api_handles_three_legs() -> None:
         assert (samples == expected_value).all()
 
 
-@pytest.mark.asyncio
 async def test_session_stats_handles_three_legs() -> None:
     s = wake_enroll.SessionStats()
     s.record(0.80, 0.60, 0.70)
@@ -328,7 +323,6 @@ def test_session_stats_dtln_optional_in_record() -> None:
     assert s.peaks_off == [0.5, 0.5]
 
 
-@pytest.mark.asyncio
 async def test_collect_for_empty_when_no_frames() -> None:
     """A capture that never yields any frames must return b'' rather
     than crashing on np.concatenate([])."""

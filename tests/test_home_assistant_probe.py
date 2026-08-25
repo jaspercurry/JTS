@@ -45,7 +45,6 @@ def _mock_client(handler):
     )
 
 
-@pytest.mark.asyncio
 async def test_probe_status_returns_unconfigured_when_url_missing():
     result = await probe_status("", "any-token")
     assert result == {
@@ -54,14 +53,12 @@ async def test_probe_status_returns_unconfigured_when_url_missing():
     }
 
 
-@pytest.mark.asyncio
 async def test_probe_status_returns_unconfigured_when_token_missing():
     result = await probe_status("http://homeassistant.local:8123", "")
     assert result["configured"] is False
     assert result["connected"] is False
 
 
-@pytest.mark.asyncio
 async def test_probe_status_connected_returns_instance_metadata(monkeypatch):
     """Healthy HA: GET /api/ returns API running, GET /api/config returns
     location_name + version."""
@@ -99,7 +96,6 @@ async def test_probe_status_connected_returns_instance_metadata(monkeypatch):
     assert requested == ["/api/", "/api/config"]
 
 
-@pytest.mark.asyncio
 async def test_probe_status_unreachable_returns_error(monkeypatch):
     def handler(request):
         raise httpx.ConnectError("Connection refused")
@@ -118,7 +114,6 @@ async def test_probe_status_unreachable_returns_error(monkeypatch):
     assert result["error"] and "Couldn't reach" in result["error"]
 
 
-@pytest.mark.asyncio
 async def test_probe_status_401_marks_not_connected(monkeypatch):
     def handler(request):
         return httpx.Response(401, text="Unauthorized")
@@ -139,7 +134,6 @@ async def test_probe_status_401_marks_not_connected(monkeypatch):
     assert result["error"]
 
 
-@pytest.mark.asyncio
 async def test_probe_status_falls_back_when_config_endpoint_fails(monkeypatch):
     """GET /api/ OK but /api/config returns 500 — still report connected,
     just without the enriched name/version."""
@@ -167,7 +161,6 @@ async def test_probe_status_falls_back_when_config_endpoint_fails(monkeypatch):
 # isolation from the HTTP path. Each call to the stub increments a
 # counter we use to assert hit vs miss.
 
-@pytest.mark.asyncio
 async def test_cache_hit_skips_uncached_probe(monkeypatch):
     """Second call within TTL with the same (url, token) reuses the
     cached result without re-invoking _probe_uncached."""
@@ -188,7 +181,6 @@ async def test_cache_hit_skips_uncached_probe(monkeypatch):
     assert r1 == r2
 
 
-@pytest.mark.asyncio
 async def test_cache_expires_after_ttl(monkeypatch):
     """After PROBE_CACHE_TTL_SEC elapses, the next call re-probes."""
     calls = {"n": 0}
@@ -213,7 +205,6 @@ async def test_cache_expires_after_ttl(monkeypatch):
     assert calls["n"] == 2
 
 
-@pytest.mark.asyncio
 async def test_cache_keyed_on_url_and_token(monkeypatch):
     """Changing url OR token invalidates the cache — the next probe
     runs fresh."""
@@ -234,7 +225,6 @@ async def test_cache_keyed_on_url_and_token(monkeypatch):
     assert calls["n"] == 3
 
 
-@pytest.mark.asyncio
 async def test_cache_keyed_on_verify_ssl_too(monkeypatch):
     """Toggling verify_ssl invalidates the cache. Without this, a
     'broken with strict TLS' cache entry would shadow a 'working with
@@ -263,7 +253,6 @@ async def test_cache_keyed_on_verify_ssl_too(monkeypatch):
     assert calls["n"] == 2
 
 
-@pytest.mark.asyncio
 async def test_force_bypasses_cache(monkeypatch):
     """jasper-doctor passes force=True so its output reflects ground
     truth at invocation time, not whatever was last cached."""
@@ -282,7 +271,6 @@ async def test_force_bypasses_cache(monkeypatch):
     assert calls["n"] == 2
 
 
-@pytest.mark.asyncio
 async def test_force_does_not_poison_cache(monkeypatch):
     """A force=True call doesn't write to the cache — subsequent
     non-forced calls still see the pre-force cached value (if any)
@@ -321,7 +309,6 @@ async def test_force_does_not_poison_cache(monkeypatch):
 
 # ---- State-transition logging ---------------------------------------------
 
-@pytest.mark.asyncio
 async def test_logs_reachable_on_first_connected_probe(monkeypatch, caplog):
     """First probe that returns connected=true emits event=ha.reachable."""
     async def fake_uncached(url, token, *, verify_ssl=True):
@@ -339,7 +326,6 @@ async def test_logs_reachable_on_first_connected_probe(monkeypatch, caplog):
     assert any("Home" in r.message and "2026.5.1" in r.message for r in caplog.records)
 
 
-@pytest.mark.asyncio
 async def test_logs_unreachable_on_transition(monkeypatch, caplog):
     """connected: true → false transition emits event=ha.unreachable."""
     state = {"connected": True}
@@ -368,7 +354,6 @@ async def test_logs_unreachable_on_transition(monkeypatch, caplog):
     assert any("event=ha.unreachable" in r.message for r in caplog.records)
 
 
-@pytest.mark.asyncio
 async def test_no_log_when_state_unchanged(monkeypatch, caplog):
     """Two consecutive probes both returning connected=true don't emit
     a second event=ha.reachable. We log on transitions, not per call."""

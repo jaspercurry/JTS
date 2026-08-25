@@ -51,7 +51,6 @@ def _artifact_identity(
     )
 
 
-@pytest.mark.asyncio
 async def test_play_wav_uses_stable_argv_and_returns_completion(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
@@ -91,7 +90,6 @@ async def test_play_wav_uses_stable_argv_and_returns_completion(
     assert "result=completed" in caplog.text
 
 
-@pytest.mark.asyncio
 async def test_verified_wav_uses_same_open_content_bound_fd_after_path_removal(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
@@ -126,7 +124,6 @@ async def test_verified_wav_uses_same_open_content_bound_fd_after_path_removal(
     assert result.wav_path == wav_path
 
 
-@pytest.mark.asyncio
 async def test_verified_wav_emits_immutable_snapshot_despite_in_place_mutation(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
@@ -161,7 +158,6 @@ async def test_verified_wav_emits_immutable_snapshot_despite_in_place_mutation(
         )
 
 
-@pytest.mark.asyncio
 async def test_verified_wav_refuses_changed_malformed_symlink_and_oversized_sources(
     tmp_path: Path,
 ) -> None:
@@ -214,7 +210,6 @@ async def test_verified_wav_refuses_changed_malformed_symlink_and_oversized_sour
     assert oversized_error.value.code is playback.WavSourceFailureCode.RESOURCE_LIMIT
 
 
-@pytest.mark.asyncio
 async def test_verified_wav_open_cancellation_survives_late_close_failure(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
@@ -268,7 +263,6 @@ async def test_verified_wav_open_cancellation_survives_late_close_failure(
     assert "result=cleanup_failed" in caplog.text
 
 
-@pytest.mark.asyncio
 async def test_verified_wav_close_failure_preserves_active_body_error(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
@@ -304,7 +298,6 @@ async def test_verified_wav_close_failure_preserves_active_body_error(
     assert "result=cleanup_failed" in caplog.text
 
 
-@pytest.mark.asyncio
 async def test_verified_wav_close_failure_is_typed_without_primary_error(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
@@ -338,7 +331,6 @@ async def test_verified_wav_close_failure_is_typed_without_primary_error(
     assert isinstance(caught.value.__cause__, OSError)
 
 
-@pytest.mark.asyncio
 async def test_verified_wav_internal_parse_cleanup_preserves_invalid_wav(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
@@ -381,7 +373,6 @@ async def test_verified_wav_internal_parse_cleanup_preserves_invalid_wav(
     assert "event=audio_measurement.verified_wav_source" in caplog.text
 
 
-@pytest.mark.asyncio
 async def test_verified_wav_directory_close_failure_closes_open_file(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
@@ -428,7 +419,6 @@ async def test_verified_wav_directory_close_failure_closes_open_file(
         os.fstat(file_fds[-1])
 
 
-@pytest.mark.asyncio
 async def test_play_wav_timeout_is_typed_and_reaped(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
@@ -474,7 +464,6 @@ async def test_play_wav_timeout_is_typed_and_reaped(
     assert process.killed is True
 
 
-@pytest.mark.asyncio
 async def test_play_wav_unconfirmed_cleanup_is_bounded_and_observable(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
@@ -524,7 +513,6 @@ async def test_play_wav_unconfirmed_cleanup_is_bounded_and_observable(
     assert "cleanup_state=kill_sent_reap_unconfirmed" in caplog.text
 
 
-@pytest.mark.asyncio
 async def test_process_wait_failure_is_not_suppressed(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
@@ -559,7 +547,6 @@ async def test_process_wait_failure_is_not_suppressed(
     assert str(caught.value.__cause__) == "wait backend broke"
 
 
-@pytest.mark.asyncio
 async def test_play_wav_nonzero_diagnostic_is_bounded(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
@@ -587,7 +574,6 @@ async def test_play_wav_nonzero_diagnostic_is_bounded(
     assert len(error.diagnostic_tail.encode()) <= playback._DIAGNOSTIC_TAIL_BYTES
 
 
-@pytest.mark.asyncio
 async def test_play_wav_startup_failure_is_typed(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
@@ -614,7 +600,6 @@ async def test_play_wav_startup_failure_is_typed(
     assert "failure_code=start_failed" in caplog.text
 
 
-@pytest.mark.asyncio
 async def test_play_wav_refuses_missing_file_before_spawn(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
@@ -638,7 +623,6 @@ async def test_play_wav_refuses_missing_file_before_spawn(
     assert called is False
 
 
-@pytest.mark.asyncio
 @pytest.mark.parametrize("alsa_device", ["", "  "])
 async def test_play_wav_rejects_empty_device(
     tmp_path: Path,
@@ -656,7 +640,6 @@ async def test_play_wav_rejects_empty_device(
     assert caught.value.code is playback.PlaybackFailureCode.INVALID_REQUEST
 
 
-@pytest.mark.asyncio
 @pytest.mark.parametrize("timeout_s", [0.0, -1.0, float("inf"), float("nan")])
 async def test_play_wav_rejects_invalid_timeout(
     tmp_path: Path,
@@ -887,7 +870,6 @@ def test_correction_compatibility_surface_preserves_types_and_defaults() -> None
     ].default == Path("/var/lib/jasper/correction/tones")
 
 
-@pytest.mark.asyncio
 async def test_correction_wrapper_preserves_missing_file_error(
     tmp_path: Path,
 ) -> None:
@@ -895,7 +877,6 @@ async def test_correction_wrapper_preserves_missing_file_error(
         await correction_playback.play_sweep(tmp_path / "missing.wav")
 
 
-@pytest.mark.asyncio
 async def test_correction_wrapper_preserves_startup_oserror(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
@@ -912,7 +893,6 @@ async def test_correction_wrapper_preserves_startup_oserror(
         await correction_playback.play_sweep(wav_path)
 
 
-@pytest.mark.asyncio
 async def test_continuous_tone_nonzero_exit_is_typed_and_bounded(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
@@ -933,7 +913,6 @@ async def test_continuous_tone_nonzero_exit_is_typed_and_bounded(
     assert caught.value.diagnostic_tail == "driver unavailable"
 
 
-@pytest.mark.asyncio
 async def test_continuous_tone_startup_failure_is_typed_and_logged(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
@@ -955,7 +934,6 @@ async def test_continuous_tone_startup_failure_is_typed_and_logged(
     assert "failure_code=start_failed" in caplog.text
 
 
-@pytest.mark.asyncio
 async def test_continuous_tone_cancel_reaps_and_logs_lifecycle(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
@@ -997,7 +975,6 @@ async def test_continuous_tone_cancel_reaps_and_logs_lifecycle(
     assert "cleanup_state=killed_and_reaped" in caplog.text
 
 
-@pytest.mark.asyncio
 async def test_continuous_tone_unconfirmed_cancel_cleanup_is_bounded(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
@@ -1048,7 +1025,6 @@ def test_shared_playback_holds_no_powerful_host_reference() -> None:
 # --- #2626: both aplay spawns carry the correction-lane umask ----------------
 
 
-@pytest.mark.asyncio
 async def test_both_aplay_spawns_carry_the_correction_lane_umask(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,

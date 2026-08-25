@@ -26,7 +26,6 @@ from __future__ import annotations
 import json
 
 import httpx
-import pytest
 
 from jasper.home_assistant import (
     CONVERSATION_ID_TTL_SEC,
@@ -190,7 +189,6 @@ def test_url_normalization_strips_api_slash_suffix():
 
 # ---- Happy path: action_done with speech -----------------------------------
 
-@pytest.mark.asyncio
 async def test_process_action_done_returns_speech_ok():
     captured: dict = {}
 
@@ -221,7 +219,6 @@ async def test_process_action_done_returns_speech_ok():
     assert "agent_id" not in captured["body"]
 
 
-@pytest.mark.asyncio
 async def test_process_query_answer_returns_speech_ok():
     def handler(request):
         return httpx.Response(200, json=_conversation_response(
@@ -241,7 +238,6 @@ async def test_process_query_answer_returns_speech_ok():
     assert result.speech == "The bedroom is 72 degrees."
 
 
-@pytest.mark.asyncio
 async def test_process_reads_ssml_when_plain_missing():
     def handler(request):
         return httpx.Response(200, json=_conversation_response(
@@ -260,7 +256,6 @@ async def test_process_reads_ssml_when_plain_missing():
 
 # ---- Error paths from HA --------------------------------------------------
 
-@pytest.mark.asyncio
 async def test_process_no_intent_match_is_speakable_but_logged_as_intent_miss():
     """HA returns response_type=error + a useful speech string ("Sorry,
     I am not aware of …"). The outcome bucket flags it as intent_miss
@@ -298,7 +293,6 @@ async def test_process_no_intent_match_is_speakable_but_logged_as_intent_miss():
     assert tool_result["error_detail"] == ""
 
 
-@pytest.mark.asyncio
 async def test_process_no_valid_targets_with_speech_is_intent_miss_but_speakable():
     """no_valid_targets is documented as benign in multi-speaker homes —
     HA's speech text is still useful to surface, and `success` reflects
@@ -328,7 +322,6 @@ async def test_process_no_valid_targets_with_speech_is_intent_miss_but_speakable
     assert tool_result["success"] is True
 
 
-@pytest.mark.asyncio
 async def test_process_failed_to_handle_is_intent_miss():
     def handler(request):
         return httpx.Response(200, json=_conversation_response(
@@ -347,7 +340,6 @@ async def test_process_failed_to_handle_is_intent_miss():
     assert result.error_code == "failed_to_handle"
 
 
-@pytest.mark.asyncio
 async def test_process_action_done_with_no_speech_is_parse_error():
     """An action_done response with no speech is a semantic edge case —
     HA succeeded but gave us nothing to say. Tag it as parse_error so
@@ -365,7 +357,6 @@ async def test_process_action_done_with_no_speech_is_parse_error():
     assert result.success is False
 
 
-@pytest.mark.asyncio
 async def test_process_error_with_no_speech_is_not_success():
     """response_type=error AND empty speech → success=False because
     there's no text to speak. The model falls back to error_detail
@@ -389,7 +380,6 @@ async def test_process_error_with_no_speech_is_not_success():
 
 # ---- HTTP-status error paths -----------------------------------------------
 
-@pytest.mark.asyncio
 async def test_process_401_is_auth_outcome():
     def handler(request):
         return httpx.Response(401, text="Unauthorized")
@@ -407,7 +397,6 @@ async def test_process_401_is_auth_outcome():
     assert "reconnect" in result.speech.lower() or "setup" in result.speech.lower()
 
 
-@pytest.mark.asyncio
 async def test_process_500_is_agent_error_outcome():
     def handler(request):
         return httpx.Response(500, text="Internal server error")
@@ -423,7 +412,6 @@ async def test_process_500_is_agent_error_outcome():
     assert "internal error" in result.speech.lower()
 
 
-@pytest.mark.asyncio
 async def test_process_unexpected_status_is_parse_error():
     def handler(request):
         return httpx.Response(418, text="I'm a teapot")
@@ -437,7 +425,6 @@ async def test_process_unexpected_status_is_parse_error():
     assert result.outcome == OUTCOME_PARSE_ERROR
 
 
-@pytest.mark.asyncio
 async def test_process_malformed_json_is_parse_error():
     def handler(request):
         return httpx.Response(200, text="not valid json {{{")
@@ -451,7 +438,6 @@ async def test_process_malformed_json_is_parse_error():
     assert result.outcome == OUTCOME_PARSE_ERROR
 
 
-@pytest.mark.asyncio
 async def test_process_connection_error_is_network_outcome():
     def handler(request):
         raise httpx.ConnectError("Connection refused")
@@ -466,7 +452,6 @@ async def test_process_connection_error_is_network_outcome():
     assert "can't reach Home Assistant" in result.speech
 
 
-@pytest.mark.asyncio
 async def test_process_timeout_is_timeout_outcome():
     def handler(request):
         raise httpx.ReadTimeout("Read timeout")
@@ -480,7 +465,6 @@ async def test_process_timeout_is_timeout_outcome():
     assert result.outcome == OUTCOME_TIMEOUT
 
 
-@pytest.mark.asyncio
 async def test_empty_query_is_parse_error_without_hitting_network():
     """Empty query short-circuits — no HTTP call, returns parse_error."""
     called = False
@@ -502,7 +486,6 @@ async def test_empty_query_is_parse_error_without_hitting_network():
 
 # ---- conversation_id lifecycle ---------------------------------------------
 
-@pytest.mark.asyncio
 async def test_conversation_id_not_sent_on_first_call():
     captured: list = []
 
@@ -519,7 +502,6 @@ async def test_conversation_id_not_sent_on_first_call():
     assert "conversation_id" not in captured[0]
 
 
-@pytest.mark.asyncio
 async def test_conversation_id_reused_when_continue_is_true():
     """After HA returns continue_conversation=True, the next call within
     TTL sends the cached conversation_id."""
@@ -558,7 +540,6 @@ async def test_conversation_id_reused_when_continue_is_true():
     assert client.conversation_id is None
 
 
-@pytest.mark.asyncio
 async def test_conversation_id_dropped_when_continue_is_false():
     captured: list = []
 
@@ -583,7 +564,6 @@ async def test_conversation_id_dropped_when_continue_is_false():
     assert "conversation_id" not in captured[1]
 
 
-@pytest.mark.asyncio
 async def test_conversation_id_expires_after_ttl():
     captured: list = []
     call = {"n": 0}
@@ -613,7 +593,6 @@ async def test_conversation_id_expires_after_ttl():
     assert "conversation_id" not in captured[1]
 
 
-@pytest.mark.asyncio
 async def test_conversation_id_property_reflects_cache():
     def handler(request):
         return httpx.Response(200, json=_conversation_response(
@@ -635,7 +614,6 @@ async def test_conversation_id_property_reflects_cache():
 
 # ---- agent_id / language pass-through --------------------------------------
 
-@pytest.mark.asyncio
 async def test_agent_id_pass_through_when_set():
     captured: list = []
 
@@ -652,7 +630,6 @@ async def test_agent_id_pass_through_when_set():
     assert captured[0]["agent_id"] == "conversation.openai_conversation"
 
 
-@pytest.mark.asyncio
 async def test_agent_id_omitted_when_empty():
     captured: list = []
 
@@ -669,7 +646,6 @@ async def test_agent_id_omitted_when_empty():
     assert "agent_id" not in captured[0]
 
 
-@pytest.mark.asyncio
 async def test_language_pass_through():
     captured: list = []
 
@@ -688,7 +664,6 @@ async def test_language_pass_through():
 
 # ---- healthcheck / config / list_agents ------------------------------------
 
-@pytest.mark.asyncio
 async def test_healthcheck_returns_true_on_200_api_running():
     def handler(request):
         assert request.url.path == "/api/"
@@ -701,7 +676,6 @@ async def test_healthcheck_returns_true_on_200_api_running():
         await client.aclose()
 
 
-@pytest.mark.asyncio
 async def test_healthcheck_returns_false_on_401():
     def handler(request):
         return httpx.Response(401, text="Unauthorized")
@@ -713,7 +687,6 @@ async def test_healthcheck_returns_false_on_401():
         await client.aclose()
 
 
-@pytest.mark.asyncio
 async def test_healthcheck_returns_false_on_unexpected_body():
     def handler(request):
         return httpx.Response(200, json={"message": "Something else"})
@@ -725,7 +698,6 @@ async def test_healthcheck_returns_false_on_unexpected_body():
         await client.aclose()
 
 
-@pytest.mark.asyncio
 async def test_healthcheck_returns_false_on_connection_error():
     def handler(request):
         raise httpx.ConnectError("Connection refused")
@@ -737,7 +709,6 @@ async def test_healthcheck_returns_false_on_connection_error():
         await client.aclose()
 
 
-@pytest.mark.asyncio
 async def test_config_returns_dict_on_success():
     def handler(request):
         assert request.url.path == "/api/config"
@@ -754,7 +725,6 @@ async def test_config_returns_dict_on_success():
     assert config == {"location_name": "Home", "version": "2026.5.1"}
 
 
-@pytest.mark.asyncio
 async def test_config_returns_none_on_error():
     def handler(request):
         return httpx.Response(500, text="boom")
@@ -766,7 +736,6 @@ async def test_config_returns_none_on_error():
         await client.aclose()
 
 
-@pytest.mark.asyncio
 async def test_list_agents_filters_conversation_domain():
     def handler(request):
         assert request.url.path == "/api/states"
@@ -800,7 +769,6 @@ async def test_list_agents_filters_conversation_domain():
     assert names == {"Home Assistant", "OpenAI"}
 
 
-@pytest.mark.asyncio
 async def test_list_agents_returns_empty_on_error():
     def handler(request):
         return httpx.Response(500, text="boom")
@@ -814,7 +782,6 @@ async def test_list_agents_returns_empty_on_error():
 
 # ---- as_tool_result shape (consumed by the model) --------------------------
 
-@pytest.mark.asyncio
 async def test_as_tool_result_omits_error_detail_on_success():
     def handler(request):
         return httpx.Response(200, json=_conversation_response())
@@ -831,7 +798,6 @@ async def test_as_tool_result_omits_error_detail_on_success():
     assert tool_result["error_detail"] == ""
 
 
-@pytest.mark.asyncio
 async def test_as_tool_result_includes_error_detail_on_failure():
     def handler(request):
         raise httpx.ConnectError("refused")
