@@ -1097,7 +1097,6 @@ async def run() -> None:
             )
             tts = await stack.enter_async_context(make_tts_playout(
                 transport=cfg.tts_transport,
-                device=cfg.tts_device,
                 output_rate=cfg.tts_output_rate,
                 # outputd owns the final gain decision. This fallback is
                 # used only by chirps/legacy sounddevice paths.

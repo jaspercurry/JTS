@@ -17,15 +17,18 @@ before the last sample exits the DAC. The orchestrator (idle watchdog
 + play-loop) anchors end-of-turn on this primitive, so its math has
 to track real ring contents through write/idle/flush/append cycles.
 
-We don't open a real ALSA stream — the API surface under test lives
-outside the stream lifecycle. Where the drain tests need to drive
-``write()`` we monkeypatch the stream to a no-op.
+``expected_drain_at`` / ``wait_drained`` live on the base class and are
+exercised directly against a bare ``TtsPlayout`` — no stream needed,
+the deadline is a plain field. The ring-population side — the write
+path that advances the deadline as audio is queued — is subclass-owned
+(``OutputdTtsPlayout`` is the only production transport), so those
+cases drive it with a capturing fake stream (``_CaptureOutputdStream``)
+instead of opening a real socket.
 """
 from __future__ import annotations
 
 import asyncio
 import logging
-import math
 import socket
 import threading
 import time
@@ -43,24 +46,7 @@ from ._async_wait import wait_signalled
 
 def _make() -> TtsPlayout:
     """Construct without entering the async context (no ALSA open)."""
-    return TtsPlayout(device="dummy", output_rate=48000, gain_db=-8.0)
-
-
-class _NoopStream:
-    """Stand-in for sounddevice.RawOutputStream — write() is a no-op so
-    the drain math is driven by sample counts, not real audio. abort()
-    and start() are also no-ops so flush() can exercise its reset path
-    without a real PortAudio handle.
-    """
-
-    def write(self, _data: bytes) -> None:
-        pass
-
-    def abort(self) -> None:
-        pass
-
-    def start(self) -> None:
-        pass
+    return TtsPlayout(output_rate=48000, gain_db=-8.0)
 
 
 class _CaptureOutputdStream:
@@ -134,17 +120,16 @@ class _CaptureOutputdStream:
         pass
 
 
-def _make_with_stream(*, drain_tail_sec: float = 0.0) -> TtsPlayout:
-    """Construct with a no-op stream attached, bypassing __aenter__.
-    Defaults the tail to 0 so deadline math is purely sample-counted
-    and easy to assert against."""
-    p = TtsPlayout(
-        device="dummy",
+def _make_outputd(*, drain_tail_sec: float = 0.0) -> OutputdTtsPlayout:
+    """OutputdTtsPlayout wired to a capturing fake stream, bypassing
+    __aenter__ (no real socket)."""
+    p = OutputdTtsPlayout(
+        socket_path="/tmp/outputd-test.sock",
         output_rate=48000,
         gain_db=-8.0,
         drain_tail_sec=drain_tail_sec,
     )
-    p._stream = _NoopStream()  # type: ignore[assignment]
+    p._stream = _CaptureOutputdStream()  # type: ignore[assignment]
     return p
 
 
@@ -156,30 +141,10 @@ def _silence_pcm(*, sec: float, rate: int = TtsPlayout.INPUT_RATE) -> bytes:
     return np.zeros(n, dtype=np.int16).tobytes()
 
 
-async def test_sounddevice_write_segment_accepts_source_profile(monkeypatch):
-    import scipy.signal
-
-    monkeypatch.setattr(
-        scipy.signal,
-        "resample_poly",
-        lambda arr, *, up, down: arr,
-    )
-
-    p = _make_with_stream()
-
-    await p.write_segment(
-        _silence_pcm(sec=0.01),
-        segment_kind="cue",
-        source_profile=object(),
-    )
-
-    assert p.expected_drain_at() != 0.0
-
-
 def test_constructor_clamps_through_set_gain_db():
     """Whatever the env passes, the constructor routes it through the
     same clamp/validate path as runtime updates."""
-    p = TtsPlayout(device="dummy", output_rate=48000, gain_db=-8.0)
+    p = TtsPlayout(output_rate=48000, gain_db=-8.0)
     assert p.gain_db == -8.0
 
 
@@ -234,17 +199,6 @@ def test_garbage_inputs_held():
     assert p.gain_db == -12.0
 
 
-def test_linear_gain_matches_db():
-    """Sanity-check the dB → linear conversion at the boundaries."""
-    p = _make()
-    p.set_gain_db(0.0)
-    assert math.isclose(p._gain_linear, 1.0, rel_tol=1e-9)
-    p.set_gain_db(6.0)
-    assert math.isclose(p._gain_linear, 10 ** (6.0 / 20.0), rel_tol=1e-9)
-    p.set_gain_db(-20.0)
-    assert math.isclose(p._gain_linear, 0.1, rel_tol=1e-9)
-
-
 def test_no_fixed_max_tts_gain_ceiling():
     """Regression: the old -6 dB ceiling must not come back and fight
     assistant loudness matching."""
@@ -263,88 +217,32 @@ def test_no_fixed_max_tts_gain_ceiling():
 
 def test_drain_idle_when_nothing_written():
     """Sentinel: a freshly-constructed player reports 0.0 (= drained)."""
-    p = _make_with_stream()
+    p = _make()
     assert p.expected_drain_at() == 0.0
 
 
 async def test_wait_drained_returns_immediately_when_idle():
     """wait_drained on an idle player must NOT sleep — the watchdog
     polls it on the hot path between mic frames."""
-    p = _make_with_stream()
+    p = _make()
     start = time.monotonic()
     await p.wait_drained()
     elapsed = time.monotonic() - start
     assert elapsed < 0.005  # well under one event-loop tick
 
 
-async def test_drain_deadline_includes_chunk_and_tail():
-    """Writing N seconds of audio sets the deadline to roughly
-    now + N + tail. Exercises both the sample-counted ring deadline
-    AND the configured tail being applied (regression catch: if
-    the `+ self._drain_tail_sec` in `expected_drain_at` gets removed,
-    this test fails)."""
-    tail_sec = 0.05
-    p = _make_with_stream(drain_tail_sec=tail_sec)
-    chunk_sec = 0.4
-    before = time.monotonic()
-    await p.write(_silence_pcm(sec=chunk_sec))
-    deadline = p.expected_drain_at()
-    # Lower bound: ring_end ≥ before + chunk; deadline = ring_end + tail.
-    # Upper bound: slack of 0.25 s absorbs to_thread scheduling jitter
-    # on noisy CI machines.
-    assert before + chunk_sec + tail_sec <= deadline
-    assert deadline <= time.monotonic() + chunk_sec + tail_sec + 0.25
+def test_drain_deadline_includes_chunk_and_tail():
+    """`expected_drain_at` adds the configured tail to whatever ring
+    deadline is queued (regression catch: if the `+ self._drain_tail_sec`
+    in `expected_drain_at` gets removed, this test fails).
 
-
-async def test_drain_appends_when_speaker_busy():
-    """Back-pressure case: two writes in quick succession queue
-    end-to-end. Deadline = now + 2 * chunk_duration, not now + chunk
-    (which would be the wrong "stream restarted from idle" answer)."""
-    p = _make_with_stream()
-    chunk_sec = 0.4
-    before = time.monotonic()
-    await p.write(_silence_pcm(sec=chunk_sec))
-    await p.write(_silence_pcm(sec=chunk_sec))
-    deadline = p.expected_drain_at()
-    assert before + 2 * chunk_sec <= deadline
-    assert deadline <= time.monotonic() + 2 * chunk_sec + 0.05
-
-
-async def test_drain_anchors_fresh_after_idle_gap(monkeypatch):
-    """The opposite of the append case: if enough wall-clock has
-    passed that the prior deadline is in the past, the next write must
-    anchor on now() — NOT chain onto the stale deadline.
-
-    Without this, an idle daemon would push every subsequent end-of-turn
-    further into the future based on every cue / chirp ever written.
-    """
-    p = _make_with_stream()
-    chunk_sec = 0.1
-    await p.write(_silence_pcm(sec=chunk_sec))
-    first_deadline = p.expected_drain_at()
-
-    # Fast-forward our notion of "now" past the first deadline. The
-    # write code only reads time.monotonic() in audio_io, so patching
-    # there is sufficient.
-    import jasper.audio_io as audio_io_mod
-    fake_now = first_deadline + 1.0
-    monkeypatch.setattr(audio_io_mod.time, "monotonic", lambda: fake_now)
-
-    await p.write(_silence_pcm(sec=chunk_sec))
-    second_deadline = p.expected_drain_at()
-    # New deadline is anchored on the fake "now", not chained to the
-    # first.
-    assert second_deadline == pytest.approx(fake_now + chunk_sec, abs=1e-6)
-
-
-async def test_drain_resets_on_flush():
-    """Barge-in (`flush`) discards the ring; the tracked deadline
-    must reset so the next write anchors fresh on now()."""
-    p = _make_with_stream()
-    await p.write(_silence_pcm(sec=2.0))  # would-be-long deadline
-    assert p.expected_drain_at() > time.monotonic() + 1.0
-    await p.flush()
-    assert p.expected_drain_at() == 0.0
+    The ring deadline itself is set directly here — populating it as
+    audio is written is the write path's job, which is subclass-owned
+    and pinned separately below against OutputdTtsPlayout."""
+    p = TtsPlayout(drain_tail_sec=0.05)
+    ring_end = time.monotonic() + 0.4
+    p._ring_end_monotonic = ring_end
+    assert p.expected_drain_at() == pytest.approx(ring_end + 0.05, abs=1e-9)
 
 
 async def test_wait_drained_requests_the_full_remaining_deadline(monkeypatch):
@@ -364,16 +262,14 @@ async def test_wait_drained_requests_the_full_remaining_deadline(monkeypatch):
 
     So pin the mechanism instead of the wall clock: jasper/audio_io.py
     imports `asyncio` as a full module, so `audio_io_mod.asyncio.sleep`
-    is patchable from the test side — the same seam
-    test_drain_anchors_fresh_after_idle_gap already uses for
-    `audio_io_mod.time.monotonic`. Recording the requested duration
+    is patchable from the test side. Recording the requested duration
     instead of actually sleeping removes the flaky scheduler dependency
     entirely while still asserting the one thing wait_drained computes
     and controls.
     """
-    p = _make_with_stream()
+    p = _make()
     wait_sec = 0.05  # keep the test fast
-    await p.write(_silence_pcm(sec=wait_sec))
+    p._ring_end_monotonic = time.monotonic() + wait_sec
     remaining = p.expected_drain_at() - time.monotonic()
     assert remaining > 0.0
 
@@ -395,11 +291,57 @@ async def test_wait_drained_requests_the_full_remaining_deadline(monkeypatch):
     assert requested[0] == pytest.approx(remaining, abs=0.01)
 
 
+# The ring-population side of the drain primitive (deadline chaining across
+# busy writes, resetting when stale, the empty-write guard) is subclass-owned
+# — OutputdTtsPlayout is the only production write path — so these drive it
+# directly instead of the base class, via _make_outputd.
+
+
+async def test_drain_appends_when_speaker_busy():
+    """Back-pressure case: two writes in quick succession queue
+    end-to-end. Deadline = now + 2 * chunk_duration, not now + chunk
+    (which would be the wrong "stream restarted from idle" answer)."""
+    p = _make_outputd()
+    chunk_sec = 0.4
+    before = time.monotonic()
+    await p.write(_silence_pcm(sec=chunk_sec))
+    await p.write(_silence_pcm(sec=chunk_sec))
+    deadline = p.expected_drain_at()
+    assert before + 2 * chunk_sec <= deadline
+    assert deadline <= time.monotonic() + 2 * chunk_sec + 0.05
+
+
+async def test_drain_anchors_fresh_after_idle_gap(monkeypatch):
+    """The opposite of the append case: if enough wall-clock has
+    passed that the prior deadline is in the past, the next write must
+    anchor on now() — NOT chain onto the stale deadline.
+
+    Without this, an idle daemon would push every subsequent end-of-turn
+    further into the future based on every cue / chirp ever written.
+    """
+    p = _make_outputd()
+    chunk_sec = 0.1
+    await p.write(_silence_pcm(sec=chunk_sec))
+    first_deadline = p.expected_drain_at()
+
+    # Fast-forward our notion of "now" past the first deadline. The
+    # write code only reads time.monotonic() in audio_io, so patching
+    # there is sufficient.
+    fake_now = first_deadline + 1.0
+    monkeypatch.setattr(audio_io_mod.time, "monotonic", lambda: fake_now)
+
+    await p.write(_silence_pcm(sec=chunk_sec))
+    second_deadline = p.expected_drain_at()
+    # New deadline is anchored on the fake "now", not chained to the
+    # first.
+    assert second_deadline == pytest.approx(fake_now + chunk_sec, abs=1e-6)
+
+
 async def test_drain_unchanged_after_empty_write():
     """Defensive: a zero-byte PCM write must not corrupt the drain
     sentinel. Without the early-return guard, ``len(pcm)=0`` would
     set ``_ring_end_monotonic = now + 0``, masking the idle state."""
-    p = _make_with_stream()
+    p = _make_outputd()
     await p.write(b"")
     assert p.expected_drain_at() == 0.0
 
@@ -408,7 +350,6 @@ def test_make_tts_playout_rejects_sounddevice_runtime_transport():
     with pytest.raises(RuntimeError, match="pre-outputd revision"):
         make_tts_playout(
             transport="sounddevice",
-            device="dummy",
             output_rate=48000,
             gain_db=-8.0,
             drain_tail_sec=0.0,
@@ -418,7 +359,6 @@ def test_make_tts_playout_rejects_sounddevice_runtime_transport():
 def test_make_tts_playout_can_select_outputd_transport():
     p = make_tts_playout(
         transport="outputd",
-        device="ignored",
         output_rate=48000,
         gain_db=-8.0,
         drain_tail_sec=0.0,
@@ -433,7 +373,6 @@ def test_make_tts_playout_rejects_unknown_transport():
     with pytest.raises(ValueError, match="unknown TTS transport"):
         make_tts_playout(
             transport="pipewire",
-            device="dummy",
             output_rate=48000,
             gain_db=-8.0,
             drain_tail_sec=0.0,
