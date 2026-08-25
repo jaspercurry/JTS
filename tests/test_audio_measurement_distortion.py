@@ -736,7 +736,7 @@ def test_the_replay_decodes_the_dump_rings_both_sample_widths(tmp_path):
 
 def _measure_program_at(downstream_db: float, *, courtesy_prelude: bool):
     """A MEASURE program in the exact shape ``rebuild_program`` reconstructs."""
-    from jasper.active_speaker.crossover_v2_flow import PILOT_LEVEL_DELTA_DB
+    from jasper.active_speaker.crossover_v2.programs import PILOT_LEVEL_DELTA_DB
 
     return build_measure_program(
         GAIN_PLAN_DB,
@@ -773,10 +773,10 @@ def test_the_replay_solves_a_synthetic_programs_identity_and_both_vintages():
     """
     import sys
 
-    from jasper.active_speaker.crossover_v2_flow import (
-        PHASE_MEASURE,
+    from jasper.active_speaker.crossover_v2.programs import (
         courtesy_prelude_for_phase,
     )
+    from jasper.active_speaker.crossover_v2_flow import PHASE_MEASURE
 
     cli, spec = _replay_cli("_hd_replay_identity")
     bands = {"woofer": WOOFER_BAND_HZ, "tweeter": TWEETER_BAND_HZ}
@@ -839,10 +839,10 @@ def test_the_replay_run_names_the_prelude_vintage_it_solved(
     import json
     import sys
 
-    from jasper.active_speaker.crossover_v2_flow import (
-        PHASE_MEASURE,
+    from jasper.active_speaker.crossover_v2.programs import (
         courtesy_prelude_for_phase,
     )
+    from jasper.active_speaker.crossover_v2_flow import PHASE_MEASURE
 
     cli, spec = _replay_cli("_hd_replay_disclosure")
     shipped = courtesy_prelude_for_phase(PHASE_MEASURE)

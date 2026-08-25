@@ -71,6 +71,7 @@ __all__ = [
     "CandidateFcDisagreementError",
     "CaptureValidity",
     "CrossoverV2ContractError",
+    "DEFAULT_CLOUD_MEASURE_POSITIONS",
     "EvidenceTrust",
     "InterventionProposal",
     "IterationHeadroom",
@@ -85,6 +86,7 @@ __all__ = [
     "SafetyStatus",
     "SpecStatus",
     "TrimStrategy",
+    "VERIFY_TOLERANCE_DB",
     "VerificationResult",
     "detached_json",
 ]
@@ -1341,3 +1343,34 @@ class RoundReceipt:
 
     def to_dict(self) -> dict[str, Any]:
         return {**self._core(), "fingerprint": self.fingerprint}
+
+
+# --------------------------------------------------------------------------- #
+# constants the flow used to own
+# --------------------------------------------------------------------------- #
+
+# Total MIC POSITIONS in the pre-apply cloud, MEASURE's design-axis anchor
+# included — so the plan emits ``N − 1`` additional prompted positions after
+# MEASURE.
+#
+# Read that literally: the cloud carries ``N − 1`` SUMMED CURVES, not N. The
+# anchor is a per-driver MEASURE capture, so ``_analyze_measure`` produces no
+# ``summed_response`` for it to contribute and only a modelled
+# ``predicted_sum``. The same holds for the post-apply group below, where
+# VERIFY's anchor DOES capture a summed sweep but is consumed by the tracking
+# verdict rather than joined to the group.
+#
+# 9 is chosen so that ``N − 1`` = 8 CURVES, which is what
+# docs/flat-linearization-plan.md fundamental 1's "N≈8–12 gated sweeps" floor
+# actually asks for (adjudication 3a, 2026-07-26: the first draft shipped 8
+# positions ⇒ 7 curves, meeting the floor in positions but not in the thing
+# that gets combined). Beyond that floor it is a WALL-CLOCK choice, not a
+# statistical optimum: S0's stability work (6-of-10 subsets,
+# docs/flat-linearization-plan.md "S0 executed") says more positions is
+# strictly better, and the session-length ceiling is what stops us at 9. Treat
+# it as a constant, never as a promise about accuracy.
+DEFAULT_CLOUD_MEASURE_POSITIONS = 9
+# VERIFY PASS: |measured sum − predicted sum| ≤ this over [Fc/2, 2·Fc] (§5.2),
+# measured against the notch-excluded max (W6.7 ruling 1 —
+# `program_analysis.VERIFY_NOTCH_EXCLUSION_DB`) rather than the raw max.
+VERIFY_TOLERANCE_DB = 1.5

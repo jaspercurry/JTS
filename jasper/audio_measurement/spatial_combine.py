@@ -674,7 +674,7 @@ RAHMONIC_MARGIN = 1.65
 # starting at 2000 Hz, which is exactly this speaker's crossover, and the
 # first real cloud session ran the detector on the (2000, 18000) row above.
 # What makes it true by construction is the caller's own floor:
-# `crossover_v2_flow.ECHO_BAND_HF_REGIME_FLOOR_HZ` (4000 Hz, anchored to
+# `crossover_v2.verification.ECHO_BAND_HF_REGIME_FLOOR_HZ` (4000 Hz, anchored to
 # this table) clamps the derived lower edge up and discloses the clamp.
 # Re-derived by test_band_deficit_separation_depends_on_the_analysis_band.
 #

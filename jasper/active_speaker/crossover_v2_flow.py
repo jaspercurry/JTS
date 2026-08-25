@@ -118,7 +118,6 @@ from typing import (
     TYPE_CHECKING,
     Any,
     Callable,
-    Iterable,
     Mapping,
     Protocol,
     Sequence,
@@ -185,6 +184,8 @@ from jasper.active_speaker.crossover_v2 import planning as _planning
 from jasper.active_speaker.crossover_v2 import priors as _priors
 from jasper.active_speaker.crossover_v2 import programs as _programs
 from jasper.active_speaker.crossover_v2 import spatial as _spatial
+from jasper.active_speaker.crossover_v2 import verification as _verification
+from jasper.active_speaker.crossover_v2 import contracts as _contracts
 from jasper.active_speaker.crossover_v2.contracts import (
     ENTRY_GRAPH_FINGERPRINT_UNKNOWN as _ENTRY_GRAPH_FINGERPRINT_UNKNOWN,
 )
@@ -365,27 +366,9 @@ ENTRY_GRAPH_FINGERPRINT_UNKNOWN = _ENTRY_GRAPH_FINGERPRINT_UNKNOWN
 # null decorrelation; ≥~30 cm spread to support the LF edge)". These constants
 # are the product's realisation of that fundamental.
 
-# Total MIC POSITIONS in the pre-apply cloud, MEASURE's design-axis anchor
-# included — so the plan emits ``N − 1`` additional prompted positions after
-# MEASURE.
-#
-# Read that literally: the cloud carries ``N − 1`` SUMMED CURVES, not N. The
-# anchor is a per-driver MEASURE capture, so ``_analyze_measure`` produces no
-# ``summed_response`` for it to contribute and only a modelled
-# ``predicted_sum``. The same holds for the post-apply group below, where
-# VERIFY's anchor DOES capture a summed sweep but is consumed by the tracking
-# verdict rather than joined to the group.
-#
-# 9 is chosen so that ``N − 1`` = 8 CURVES, which is what
-# docs/flat-linearization-plan.md fundamental 1's "N≈8–12 gated sweeps" floor
-# actually asks for (adjudication 3a, 2026-07-26: the first draft shipped 8
-# positions ⇒ 7 curves, meeting the floor in positions but not in the thing
-# that gets combined). Beyond that floor it is a WALL-CLOCK choice, not a
-# statistical optimum: S0's stability work (6-of-10 subsets,
-# docs/flat-linearization-plan.md "S0 executed") says more positions is
-# strictly better, and the session-length ceiling is what stops us at 9. Treat
-# it as a constant, never as a promise about accuracy.
-DEFAULT_CLOUD_MEASURE_POSITIONS = 9
+# Re-exported from :mod:`jasper.active_speaker.crossover_v2.contracts`,
+# which owns it.
+DEFAULT_CLOUD_MEASURE_POSITIONS = _contracts.DEFAULT_CLOUD_MEASURE_POSITIONS
 # The floor a caller may configure. Below 6 the cloud stops decorrelating HF
 # nulls well enough to be worth the extra session minutes, and
 # ``CLOUD_POSITION_PROMPTS``' wide-offset guarantee (below) is specified
@@ -546,27 +529,13 @@ MIN_CLOUD_OFFSET_CM = 10.0
 # this retake must not answer it by walking a household out of the room.
 GEOMETRY_RETRY_OFFSET_CM = 75.0
 
-# The named question each prompted position answers (McCarthy's mic-position
-# vocabulary, attribution-stage plan §5 promotion queue item 1). Persisted with
-# the position so the attribution stage can consume a labelled sample instead
-# of an anonymous member of an average; profile-independent, so both listening
-# profiles read the same labels.
-#
-#   ONAX  — inside the design-axis window (lateral offset < WIDE_OFFSET_MIN_CM)
-#   OFFAX — out at the coverage edge (lateral offset >= WIDE_OFFSET_MIN_CM)
-#   XOVR  — vertical offset: the axis the woofer/tweeter crossover lobes on,
-#           which is the mechanism M8 needs a labelled sample of
-#
-# WHAT A CONSUMER MUST NOT ASSUME: a cloud carries every role. Roles come from
-# the walked PREFIX of the table, so the Full tier's 8 prompted positions
-# sample all three, but EXPRESS's 4 sample {onax, offax} ONLY — its walk stops
-# before the first vertical move. That is by design (express is the shorter
-# instrument, §1.3), so an attribution consumer reads the roles a group
-# actually has and reports the absent one as unsampled, never as null evidence.
-POSITION_ROLE_ONAX = "onax"
-POSITION_ROLE_OFFAX = "offax"
-POSITION_ROLE_XOVR = "xovr"
-POSITION_ROLES = (POSITION_ROLE_ONAX, POSITION_ROLE_OFFAX, POSITION_ROLE_XOVR)
+# The prompted-position role vocabulary. Re-exported from
+# :mod:`jasper.active_speaker.crossover_v2.spatial`, which owns it beside
+# the geometry a retained take records.
+POSITION_ROLE_ONAX = _spatial.POSITION_ROLE_ONAX
+POSITION_ROLE_OFFAX = _spatial.POSITION_ROLE_OFFAX
+POSITION_ROLE_XOVR = _spatial.POSITION_ROLE_XOVR
+POSITION_ROLES = _spatial.POSITION_ROLES
 
 
 def format_position_distance(offset_cm: float) -> str:
@@ -926,11 +895,9 @@ if DEFAULT_CLOUD_VERIFY_POSITIONS != 1 + len(CLOUD_VERIFY_POSE_PROMPTS):
 
 # --- remote tier: the same walk, stated as ANGLES (external positioner) ------ #
 #
-# The mark distance the CHECK screen asks for ("about 1 m in front of the
-# speaker"). It is the reference length that turns this flow's lateral OFFSETS
-# into the BEARINGS a positioner can act on, so it lives beside them rather than
-# only inside that sentence.
-MARK_DISTANCE_M = 1.0
+# Re-exported from :mod:`jasper.active_speaker.crossover_v2.spatial`,
+# which owns it beside the pose it turns into a bearing.
+MARK_DISTANCE_M = _spatial.MARK_DISTANCE_M
 
 
 def position_angle_deg(prompt: CloudPositionPrompt) -> int:
@@ -1039,15 +1006,9 @@ def position_geometry(prompt: CloudPositionPrompt) -> _spatial.PositionGeometry:
     )
 
 
-#: The pose a capture with no prompted move of its own was taken at — every
-#: one of them (CHECK, MEASURE, the entry baseline, stage 2's anchor) is a
-#: design-axis capture, which is the same fact :func:`_entry_policy` states to
-#: the position gate when it is handed no prompt.
-_DESIGN_AXIS_GEOMETRY = _spatial.PositionGeometry(
-    axis=_spatial.POSITION_AXIS_HORIZONTAL,
-    degrees=0,
-    mark_distance_m=MARK_DISTANCE_M,
-)
+#: Re-exported from :mod:`jasper.active_speaker.crossover_v2.spatial`,
+#: which owns it beside :class:`PositionGeometry`.
+_DESIGN_AXIS_GEOMETRY = _spatial._DESIGN_AXIS_GEOMETRY
 
 
 def remote_position_prompt(prompt: CloudPositionPrompt) -> CloudPositionPrompt:
@@ -2351,13 +2312,12 @@ GAIN_CAP_BACKOFF_DB = _programs.GAIN_CAP_BACKOFF_DB
 CLIP_RETRY_BACKOFF_DB = 3.0
 # Re-exported; see ``crossover_v2.programs`` (#2291 Phase 5a-ii).
 PILOT_LEVEL_DELTA_DB = _programs.PILOT_LEVEL_DELTA_DB
-# A located stimulus below this correlation confidence reads as "couldn't hear
-# the speaker" (locate_failed).
-LOCATE_MIN_CONFIDENCE = 0.1
-# VERIFY PASS: |measured sum − predicted sum| ≤ this over [Fc/2, 2·Fc] (§5.2),
-# measured against the notch-excluded max (W6.7 ruling 1 —
-# `program_analysis.VERIFY_NOTCH_EXCLUSION_DB`) rather than the raw max.
-VERIFY_TOLERANCE_DB = 1.5
+# Re-exported from :mod:`jasper.active_speaker.crossover_v2.capture_dispatch`,
+# which owns it beside the screen that reads it.
+LOCATE_MIN_CONFIDENCE = _dispatch.LOCATE_MIN_CONFIDENCE
+# Re-exported from :mod:`jasper.active_speaker.crossover_v2.contracts`,
+# which owns it.
+VERIFY_TOLERANCE_DB = _contracts.VERIFY_TOLERANCE_DB
 
 
 def verify_absolute_tolerance_db(band_hz: Sequence[float]) -> float | None:
@@ -2677,37 +2637,9 @@ def alignment_delay_plausible(
 _analysis_json = _planning.analysis_json
 
 
-def _stimulus_locate_ok(analysis: ProgramAnalysis) -> bool:
-    """False when any ROLE's stimuli all failed the locate-confidence floor.
-
-    D8 (issue #1838). This used to be ``max(confidences) >= floor`` over every
-    stimulus segment in the capture, which is effectively no floor at all on a
-    multi-driver program: one clearly-located segment anywhere cleared the
-    gate for the whole capture, so a capture in which an entire driver was
-    inaudible passed and went on to be analysed as if both drivers had been
-    heard. Grouping by role first makes the gate mean what its name says.
-
-    Per ROLE, not per SEGMENT, deliberately. A role's segments are not
-    equally locatable by design — a two-level pilot pair's quiet side sits
-    10 dB under its loud side and locates more coarsely — so requiring every
-    segment to clear the floor would fail captures that are fine. One
-    confidently-located stimulus is enough to say "this driver was heard";
-    zero is not. Role-less stimuli (a summed sweep, which carries no role)
-    group together and are held to the same rule.
-
-    The stricter per-SWEEP floor that MEASURE also applies lives in
-    :func:`_sweep_locate_confidence_ok`.
-    """
-    by_role: dict[str | None, float] = {}
-    for loc in analysis.locations:
-        if loc.kind not in STIMULUS_KINDS:
-            continue
-        best = by_role.get(loc.role)
-        if best is None or loc.confidence > best:
-            by_role[loc.role] = loc.confidence
-    if not by_role:
-        return False
-    return all(best >= LOCATE_MIN_CONFIDENCE for best in by_role.values())
+#: Re-exported from :mod:`jasper.active_speaker.crossover_v2.capture_dispatch`,
+#: which owns the CHECK/MEASURE/VERIFY screens this predicate serves.
+_stimulus_locate_ok = _dispatch._stimulus_locate_ok
 
 
 
@@ -2733,17 +2665,9 @@ def _any_sweep_clipped(analysis: ProgramAnalysis) -> bool:
     )
 
 
-def _band_edge(band: Any, index: int) -> float | None:
-    """One edge of a persisted ``[lo, hi]`` band pair, or ``None``.
-
-    For log lines that carry a band as two scalars (the shape
-    ``_log_verify_diag``'s ``tracking_band_lo_hz``/``_hi_hz`` established)
-    rather than one bracketed value logfmt would have to quote.
-    """
-    if not isinstance(band, (list, tuple)) or len(band) != 2:
-        return None
-    edge = band[index]
-    return float(edge) if isinstance(edge, (int, float)) else None
+#: Re-exported from :mod:`jasper.active_speaker.crossover_v2.verification`,
+#: which owns it beside the diag field that reads it.
+_band_edge = _verification._band_edge
 
 
 def _per_band_flatness_log_field(bands: Any) -> str:
@@ -2786,47 +2710,9 @@ def _per_band_flatness_log_field(bands: Any) -> str:
     return ";".join(parts)
 
 
-def _flatness_tilt_log_field(flatness: Any) -> str:
-    """The band-to-band level step as one logfmt token — issue #1857's
-    frame-free reading, beside a ``flatness_max_db`` that is not.
-
-    ``flatness_max_db`` and ``flatness_bands`` are both distances from a
-    reference pooled ACROSS bands, so a uniformly-off band drags that zero
-    and inflates the others: on the corpus session this event's own
-    forensics started from, a woofer flat to +/-0.1 dB logged
-    ``+4.84 dB @ 1339.6 Hz`` because a ~5 dB dark tweeter had already pulled
-    the frame down. A step BETWEEN two band levels cannot be moved by the
-    frame -- the reference cancels in the subtraction -- so this token says
-    the same thing under whichever anchor #1857's still-open Q-E eventually
-    picks.
-
-    Shape: ``<step>dB:<lo>-<hi>Hz><lo>-<hi>Hz``, the higher-sitting band
-    first, no space or bracket for logfmt to quote. ``""`` (never a
-    fabricated reading) when the gauge carried no tilt -- an older
-    persisted block, or fewer than two bands with a measured level. Copied
-    from :func:`~jasper.active_speaker.flat_spec.spec_band_tilt`'s own
-    output; nothing here is recomputed and no verdict moves.
-    """
-    if not isinstance(flatness, Mapping):
-        return ""
-    tilt = flatness.get("tilt")
-    if not isinstance(tilt, Mapping) or tilt.get("evaluable") is not True:
-        return ""
-    step_db = tilt.get("step_db")
-    high, low = tilt.get("high_band_hz"), tilt.get("low_band_hz")
-    if (
-        not isinstance(step_db, (int, float)) or isinstance(step_db, bool)
-        or not isinstance(high, (list, tuple)) or len(high) != 2
-        or not isinstance(low, (list, tuple)) or len(low) != 2
-    ):
-        return ""
-    edges = [_band_edge(high, 0), _band_edge(high, 1), _band_edge(low, 0), _band_edge(low, 1)]
-    if any(edge is None for edge in edges):
-        return ""
-    high_lo, high_hi, low_lo, low_hi = edges
-    return (
-        f"{step_db:.2f}dB:{high_lo:.0f}-{high_hi:.0f}Hz>{low_lo:.0f}-{low_hi:.0f}Hz"
-    )
+#: Re-exported from :mod:`jasper.active_speaker.crossover_v2.verification`,
+#: which owns it.
+_flatness_tilt_log_field = _verification._flatness_tilt_log_field
 
 
 def _capture_wav_sha256(result: Any) -> str | None:
@@ -3627,61 +3513,9 @@ def attempt_record_from_verify(
 SlotAttempts = _admission.SlotAttempts
 
 
-@dataclass(frozen=True)
-class _CloudPosition:
-    """One accepted position inside a group, retained for the group-end combine.
-
-    ``response`` is the capture's ``ProgramAnalysis.summed_response`` — a
-    ``program_analysis.DriverResponse`` carrying the calibrated, reflection-gated
-    magnitude on a linear (rfftfreq) grid plus the matching complex TF. Holding
-    the response rather than a pre-built
-    :class:`~jasper.audio_measurement.spatial_combine.PositionCapture` is
-    deliberate: PR-4 needs the same object for the per-position work the null
-    gate and the spec curve do, and re-deriving it from a lossy intermediate
-    would be the drift this seam exists to prevent.
-    """
-
-    position_id: str
-    index: int
-    attempt: int
-    prompt: str
-    wide: bool
-    captured_at: float
-    response: Any
-    sample_rate_hz: int
-    # The named question this position answers (:data:`POSITION_ROLES`), copied
-    # off the prompt the operator was actually given. Persisted with the
-    # position so the attribution stage reads a labelled sample rather than an
-    # anonymous member of an average (attribution-stage plan §5 promotion queue
-    # item 1). Defaulted so every construction site that predates roles — the
-    # corpus and unit fixtures — stays valid unchanged.
-    role: str = POSITION_ROLE_ONAX
-    # WHERE the microphone was, carried off the SAME prompt ``role`` and
-    # ``wide`` come from (owner ruling, 2026-08-24). Held on the position
-    # rather than re-derived at retention: a geometry retake shows a different
-    # prompt than the table's, and a second derivation from the index would
-    # state the spot the operator was told to abandon.
-    #
-    # Defaulted to the design axis so every construction site that predates it
-    # — the corpus and unit fixtures — stays valid unchanged, exactly as
-    # ``role`` above is. That default is the honest one for a fixture: a
-    # position built without a pose is one nobody moved.
-    geometry: _spatial.PositionGeometry = _DESIGN_AXIS_GEOMETRY
-    # PR-4: the contract-derived analysis bands this position's GROUP should be
-    # combined/searched with — spatial_combine.combine_positions's own
-    # ``echo_band_hz`` / ``signal_band_hz`` kwargs, echoed here rather than
-    # threaded as a separate call-site argument. Carrying them on the position
-    # (every position in one group shares the same session-derived values —
-    # see ``CrossoverV2Session.__init__``) is what lets
-    # :func:`combine_cloud_positions` derive the right bands from
-    # ``positions`` alone, with no caller (``_close_cloud_group``'s single
-    # combine, ``cloud_geometry_verdict``'s convenience wrapper) needing to
-    # pass them explicitly or risk two call sites drifting apart.
-    # ``None`` means "use the module defaults" — the pre-PR-4 behaviour, still
-    # exercised by every corpus/unit test that builds a ``_CloudPosition``
-    # without these two kwargs.
-    echo_band_hz: tuple[float, float] | None = None
-    signal_band_hz: tuple[float, float] | None = None
+#: Re-exported from :mod:`jasper.active_speaker.crossover_v2.spatial`,
+#: which owns what a retained take records.
+_CloudPosition = _spatial._CloudPosition
 
 
 # R16's lateral evidence types and their shared log basis (plan §4.4).
@@ -3702,52 +3536,11 @@ lateral_pose_curve = _spatial.lateral_pose_curve
 _primary_sweep_bands = _spatial._primary_sweep_bands
 
 
-def cloud_position_capture(position: _CloudPosition) -> Any:
-    """One retained position → a :class:`spatial_combine.PositionCapture`.
-
-    **The PR-4 seam.** PR-3b calls the combiner for one thing — the geometry
-    verdict — but the input assembly is the whole assembly, so PR-4's wider
-    pipeline (``identify_interference_nulls`` → ``evaluate_flat_spec``) extends
-    the consumer, never this builder.
-
-    Regime of the ``ir`` field, stated exactly because ``detect_echo``'s answer
-    depends on it: it is the inverse rFFT of the response's **gated, calibrated**
-    complex transfer function — i.e. the impulse response AFTER
-    ``deconv.direct_arrival_window`` and the adaptive reflection gate that
-    ``program_analysis._driver_response`` applies, not the raw deconvolved IR.
-    The direct arrival is therefore present (the window places it at a fixed
-    pre-offset) and early secondary arrivals inside the gate survive, which is
-    the region ``detect_echo`` windows itself down to; LATE room reflections
-    beyond the gate are gone by construction. The S0 forensics ran the detector
-    on the ungated IR instead — ``tests/test_crossover_v2_cloud_geometry_corpus.py``
-    is the measurement that the two agree on the S0 corpus's geometry verdict,
-    rather than an assumption that they must.
-    """
-    from jasper.audio_measurement.spatial_combine import PositionCapture
-
-    response = position.response
-    freqs = np.asarray(response.freqs_hz, dtype=float)
-    magnitude = np.asarray(response.magnitude_db, dtype=float)
-    complex_tf = np.asarray(response.complex_tf)
-    # ``program_analysis._n_fft_for`` always returns a power of two (>= 8192),
-    # so the analysis grid is an even-length rfft and ``n = 2*(bins-1)``
-    # inverts it exactly rather than approximately.
-    ir = np.fft.irfft(complex_tf, n=2 * (complex_tf.size - 1))
-    return PositionCapture(
-        position_id=position.position_id,
-        freqs_hz=freqs,
-        magnitude_db=magnitude,
-        sample_rate=int(position.sample_rate_hz),
-        ir=ir,
-        # §4.2's one line. The role was written to the position RECORD and the
-        # persisted row and read by nothing analytical — the combiner's only
-        # per-position struct dropped it here, so nothing that decides or
-        # remembers a round ever saw a position's KIND. Carrying it changes no
-        # combination (the reduction stays unweighted; see
-        # ``PositionCapture.role``) and is what lets the per-position residual
-        # say "on-axis" rather than "position 3".
-        role=str(position.role or ""),
-    )
+# One retained position -> a capture, and the combined group's verdict
+# reduction. Re-exported from
+# :mod:`jasper.active_speaker.crossover_v2.spatial`.
+cloud_position_capture = _spatial.cloud_position_capture
+_geometry_verdict_from_combined = _spatial._geometry_verdict_from_combined
 
 
 def combine_cloud_positions(positions: Sequence[_CloudPosition]) -> Any:
@@ -3807,39 +3600,6 @@ def combine_cloud_positions(positions: Sequence[_CloudPosition]) -> Any:
         return None
 
 
-def _geometry_verdict_from_combined(
-    combined: Any, n_positions: int,
-) -> dict[str, Any]:
-    """The geometry-verdict dict from an ALREADY-COMBINED result.
-
-    Split out of :func:`cloud_geometry_verdict` (S3 review finding,
-    2026-07-26) so :meth:`CrossoverV2Session._close_cloud_group` can
-    combine a group's positions exactly ONCE and derive both the retry-gating
-    verdict and the honest-instrument pipeline from that ONE object, rather
-    than each deriving its own combine. A plain JSON-native dict, because the
-    host persists it verbatim into the durable v2 state. ``locked`` is
-    ``False`` on every degraded path — but the ``reason`` says WHICH degraded
-    path, so "no credible echo estimates" never reads the same as "the cloud
-    combined and its nulls move".
-    """
-    if combined is None:
-        return {
-            "locked": False,
-            "reason": "combine_failed",
-            "n_positions": n_positions,
-        }
-    geometry = combined.geometry
-    return {
-        "locked": bool(geometry.locked),
-        "reason": str(geometry.reason),
-        "n_confident": int(geometry.n_confident),
-        "n_positions": int(geometry.n_positions),
-        "median_tau_us": float(geometry.median_tau_us),
-        "clustered_fraction": float(geometry.clustered_fraction),
-        "thin_evidence": bool(geometry.thin_evidence),
-    }
-
-
 def cloud_geometry_verdict(positions: Sequence[_CloudPosition]) -> dict[str, Any]:
     """PR-3b's one use of the combiner: combine, then read ``.geometry``.
 
@@ -3881,55 +3641,9 @@ def cloud_geometry_verdict(positions: Sequence[_CloudPosition]) -> dict[str, Any
 # site." This section is that derivation, plus the single result-assembly
 # function issue #1742 item 4 asks for.
 
-# The contract-derived echo/null analysis band's LOWER edge must not drift
-# below this floor without disclosure. Provenance, not a new calibration:
-# spatial_combine.py's BAND_BELOW_PASSBAND_MARGIN_DB comment (PR-2, N-3) pins
-# a six-band sweep of the SAME JTS3 cdhorn corpus this program's corpus tests
-# already use --
-#
-#   band            residue deficit    screen catches it?
-#   (5000, 19000)   40.43-41.98 dB     yes  (the module default)
-#   (4000, 20000)   35.46-35.58 dB     yes, by 10.46 dB -- comfortable
-#   (3000, 19000)   26.53-27.05 dB     yes, by only 1.53 dB -- "already thin
-#                                      one octave up"
-#   (2000, 19000)   18.21-18.23 dB     NO -- a false negative, not a
-#                                      narrowed gap (this speaker's crossover
-#                                      sits at 2 kHz; the woofer's own
-#                                      passband is inside the analysed band)
-#
-# re-derived by test_band_deficit_separation_depends_on_the_analysis_band.
-# 4000 Hz is the lowest edge in that pinned table with COMFORTABLE headroom
-# (10.46 dB, vs the 3 kHz row's thin 1.53 dB) -- the row printed above is
-# the one that actually justifies this constant's value.
-#
-# **A declared contract whose derived echo band dips below this floor is
-# CLAMPED up to it, and the clamp is disclosed** (event + payload). PR-4
-# shipped the reviewed disclose-don't-override design -- warn, then run the
-# detector on the declared band anyway -- and the first real cloud session
-# falsified it (2026-07-27, session cap_4NUGqx3yIzSuv4ta2ozfKw; issue
-# #1763): the JTS3 tweeter's CORRECTLY declared measurement_band_hz
-# [2000, 18000] produced a (2000, 18000) analysis band, fired the designed
-# WARNING, and proceeded -- so that session's tau/r/registry outputs carry
-# an uncalibrated-regime asterisk on the one measurement that mattered (the
-# 2 kHz row above is a false NEGATIVE, not a narrowed gap: this speaker
-# crosses over at 2 kHz, so the woofer's own passband sits inside the
-# analysed band). Disclosure alone does not keep a session inside a
-# calibrated regime; the clamp does, and the disclosure keeps the declared
-# value visible so nobody has to read the clamped band as a declaration.
-# The two quantities the derivation had been conflating are the driver's
-# declared operating/measurement WINDOW (excitation + SNR scoring, which
-# measurement_band_hz owns) and the echo/null ANALYSIS band (a
-# detector-calibration concern, which this floor owns).
-#
-# **Clamping costs no cross-session comparability**, which is why it is
-# cheap: the detector's quefrency step is 1e6 / BANDWIDTH, so the clamped
-# JTS3 band (4000, 18000) resolves at 1e6 / 14000 = 71.4 us -- identical to
-# the module default (5000, 19000), also 14 kHz wide, the band S0 was
-# measured at. A clamped session's tau ladder is directly comparable to
-# S0's rather than merely adjacent to it.
-#
-# See _derive_cloud_echo_band_hz.
-ECHO_BAND_HF_REGIME_FLOOR_HZ = 4000.0
+# Re-exported from :mod:`jasper.active_speaker.crossover_v2.verification`,
+# which owns it beside the crossover-region registry that reads it.
+ECHO_BAND_HF_REGIME_FLOOR_HZ = _verification.ECHO_BAND_HF_REGIME_FLOOR_HZ
 
 # Cloud curves decimated for persistence (bundle cloud.json + the durable v2
 # state's compact cloud block) -- mirrors
@@ -4197,51 +3911,9 @@ def _decimate_curve_for_json(
     }
 
 
-def _null_registry_to_dict(report: Any) -> dict[str, Any]:
-    """``InterferenceNullReport`` -> a plain JSON dict.
-
-    PR-1 shipped no ``to_dict`` (the module docstring's own words: "zero
-    production callers by design until the plan's PR-4 wires it into the
-    session's cloud-group analysis") -- this is that wiring layer's owned
-    serialization, mirroring ``FlatSpecReport.to_dict``'s shape so the two
-    persisted reports read consistently.
-    """
-    return {
-        "nulls": [
-            {
-                "f_lo_hz": n.f_lo_hz, "f_hi_hz": n.f_hi_hz,
-                "f_center_hz": n.f_center_hz, "n": n.n, "tau_us": n.tau_us,
-                "r_time": n.r_time, "r_freq": n.r_freq,
-                "agreement": n.agreement, "depth_db": n.depth_db,
-                "classification": n.classification,
-                "evidence": dict(n.evidence),
-            }
-            for n in report.nulls
-        ],
-        "excluded_bands_hz": [list(b) for b in report.excluded_bands_hz],
-        "excluded_fraction": float(report.excluded_fraction),
-        "refusals": [
-            {
-                "f_center_hz": r.f_center_hz, "depth_db": r.depth_db,
-                "reason": r.reason, "evidence": dict(r.evidence),
-            }
-            for r in report.refusals
-        ],
-        "reason": report.reason,
-        "classification": report.classification,
-        "band_hz": list(report.band_hz),
-        "tau_ladder_us": float(report.tau_ladder_us),
-        "arrival_tau_us": float(report.arrival_tau_us),
-        "arrival_r_time": float(report.arrival_r_time),
-        "arrival_r_max": float(report.arrival_r_max),
-        "n_corroborating": int(report.n_corroborating),
-        "r_freq": float(report.r_freq),
-        "agreement": float(report.agreement),
-        "ladder_arrival_gap": float(report.ladder_arrival_gap),
-        "capped": bool(report.capped),
-        "min_depth_db": float(report.min_depth_db),
-        "n_candidates": int(report.n_candidates),
-    }
+#: Re-exported from :mod:`jasper.active_speaker.crossover_v2.verification`,
+#: which owns it.
+_null_registry_to_dict = _verification._null_registry_to_dict
 
 
 def _geometry_guidance_copy(geometry: Mapping[str, Any]) -> str:
@@ -4639,156 +4311,11 @@ def cloud_trusted_floor_hz(validity_floor_hz: float | None) -> float | None:
     return TRUSTED_FLOOR_MULTIPLIER * floor
 
 
-def _crossover_region_null_registry(
-    combined: Any,
-    *,
-    echo_band_hz: tuple[float, float],
-    crossover_region_hz: tuple[float, float] | None,
-    identify: Any,
-) -> dict[str, Any] | None:
-    """Ask the null registry about the CROSSOVER REGION — and never let the
-    answer gate anything (#1967, #1867).
-
-    The defect, in the panel's own words: the registry "did not return
-    'unknown,' it was **never asked** — its band excludes the region." The
-    gating band's lower edge is floored at
-    :data:`ECHO_BAND_HF_REGIME_FLOOR_HZ` (4 kHz), so on a 2 kHz crossover the
-    one region that dominates the residual is structurally unreachable by the
-    one instrument built to explain it, while the cloud screen separately
-    carves it out of grading. #1867 adds the mechanism that makes this
-    concrete: the τ ≈ 303 µs comb's own model puts rungs at 1649 Hz and
-    4948 Hz, and neither is visible from above 4 kHz.
-
-    **What the 4 kHz floor protects, stated before it is touched.** It is not
-    a round number: ``ECHO_BAND_HF_REGIME_FLOOR_HZ``'s comment pins a six-band
-    sweep of this same corpus in which the detector's signal-presence screen
-    catches the band-below-passband condition by 10.46 dB at a 4 kHz edge, by
-    only 1.53 dB at 3 kHz, and **fails outright at 2 kHz — a false NEGATIVE,
-    not a narrowed gap**, precisely because at that edge the woofer's own
-    passband sits inside the analysed band. #1763 then falsified the original
-    disclose-and-proceed design in the field: a correctly declared
-    [2000, 18000] window fired the designed warning, proceeded, and left that
-    session's τ/r/registry outputs carrying an uncalibrated-regime asterisk on
-    the one measurement that mattered. Disclosure did not keep the session
-    inside a calibrated regime; the clamp did.
-
-    **So the floor does not move.** ``echo_band_hz`` is unchanged, the gating
-    registry still runs on it, and this function's output is unioned into
-    NOTHING — not ``merged_mask``, not ``spec_mask``, not the trusted floor,
-    not a verdict. What changes is only that the question gets asked and the
-    answer gets published.
-
-    **Why that is sound, and it is the same argument R9 already ships.** The
-    failure the clamp prevents is a screen whose deficit statistic is
-    uncalibrated in this regime — i.e. the band's outputs are not trustworthy
-    enough to *decide* on. It is not that the detector produces nothing there.
-    Classification that can never reach a decision cannot be corrupted by a
-    mis-calibrated screen; the worst case is a finding a reader discounts.
-    ``gating.SEARCH_T_MIN_MS`` made exactly this trade for exactly this reason
-    — a candidate below it "is recorded in the ``internal_reflection_ledger``,
-    and it NEVER gates" — after the R9 certification found a challenger that
-    fired 13/13 on the horn's own internal feature. Asymmetric cost: a false
-    *detection* that gates is catastrophic, a false detection that only
-    classifies is noise.
-
-    **And this is where R10a's objective is the enabling context, not
-    decoration.** A finding here used to be uninterpretable: nothing in the
-    flow could say whether energy at 1649 Hz was a room null, a driver
-    feature, or the two branches summing. The committed crossover now answers
-    that — ``crossover_region_hz`` comes from the shipped graph's own
-    committed regions, and the per-branch objective knows what each branch is
-    *supposed* to be doing across that span. The finding is published WITH the
-    band that produced it, so a reader gets "a null inside the committed
-    handoff" rather than an unattributed anomaly. That is why this ships in
-    the objective round and not before it.
-
-    Returns ``None`` — never an empty dict — when there is no committed
-    crossover to name a region with, or when the gating band already reaches
-    the region (nothing was hidden, so there is nothing to disclose), or when
-    the extension would be degenerate.
-    """
-    if crossover_region_hz is None:
-        return None
-    region_lo_hz = float(crossover_region_hz[0])
-    gating_lo_hz, gating_hi_hz = float(echo_band_hz[0]), float(echo_band_hz[1])
-    if region_lo_hz >= gating_lo_hz:
-        return None
-    if region_lo_hz <= 0.0 or region_lo_hz >= gating_hi_hz:
-        return None
-
-    # The SAME upper edge as the gating band, lowered to reach the region.
-    # Extending rather than carving a narrow window keeps the detector's own
-    # width constraints satisfied (its quefrency step is 1e6 / bandwidth), so
-    # the extension is not a differently-resolved instrument reporting in the
-    # same units as the gating one.
-    band_hz = (region_lo_hz, gating_hi_hz)
-    try:
-        report = identify(combined, band_hz=band_hz)
-    except Exception:  # noqa: BLE001 - a classify-only surface may never
-        # break a session. The gating registry above has already run and is
-        # unaffected; an extension that cannot be computed is simply absent.
-        log_event(
-            logger, "correction.crossover_v2_crossover_region_registry_failed",
-            level=logging.WARNING, band_hz=list(band_hz),
-        )
-        return None
-
-    block = _null_registry_to_dict(report)
-    block.update({
-        "band_hz": list(band_hz),
-        # The two load-bearing flags, spelled out rather than implied by
-        # absence from a mask a reader cannot see from here.
-        "gating": False,
-        "regime": "uncalibrated_below_hf_floor",
-        "hf_regime_floor_hz": ECHO_BAND_HF_REGIME_FLOOR_HZ,
-        "crossover_region_hz": [
-            float(crossover_region_hz[0]), float(crossover_region_hz[1]),
-        ],
-        "why": (
-            "Classification only. Below "
-            f"{ECHO_BAND_HF_REGIME_FLOOR_HZ:.0f} Hz the detector's "
-            "signal-presence screen is uncalibrated for a band that spans the "
-            "committed crossover, so a finding here is evidence to read, "
-            "never a reason to exclude a band or move a verdict."
-        ),
-    })
-    log_event(
-        logger, "correction.crossover_v2_crossover_region_registry",
-        band_hz=list(band_hz),
-        crossover_region_hz=list(crossover_region_hz),
-        classification=str(block.get("classification", "")),
-        n_candidates=int(block.get("n_candidates", 0) or 0),
-        gating=False,
-    )
-    return block
-
-
-def committed_crossover_region_hz(
-    regions: Iterable[Any], *, octaves: float = 1.0,
-) -> tuple[float, float] | None:
-    """The band the COMMITTED crossover hands off in — ``Fc ± octaves`` across
-    every committed region, or ``None`` when nothing is committed.
-
-    Derived from the preset's own ``crossover_regions`` (the same objects
-    :func:`~jasper.active_speaker.branch_chain.sections_by_role` walks), never
-    from the session's working Fc, because this band's whole purpose is to say
-    where the SHIPPED graph divides the spectrum. A speaker with no committed
-    region has no handoff and gets ``None`` — the same "invent nothing" rule
-    ``sections_by_role`` follows.
-
-    One octave because that is the span the crossover report (#1968 Q4) uses
-    for correction-authority tapering and the span R10a's own bench scores the
-    crossover-region residual over; keeping one number for "the crossover
-    region" is why it is a default here rather than three literals.
-    """
-    fcs = [
-        float(getattr(r, "fc_hz", 0.0)) for r in regions
-        if float(getattr(r, "fc_hz", 0.0)) > 0.0
-    ]
-    if not fcs:
-        return None
-    span = 2.0 ** octaves
-    return (min(fcs) / span, max(fcs) * span)
+# The crossover-region null registry and the committed region it is asked
+# about. Re-exported from
+# :mod:`jasper.active_speaker.crossover_v2.verification`.
+_crossover_region_null_registry = _verification._crossover_region_null_registry
+committed_crossover_region_hz = _verification.committed_crossover_region_hz
 
 
 def assemble_cloud_group_result(

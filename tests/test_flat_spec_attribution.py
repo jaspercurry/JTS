@@ -47,7 +47,9 @@ import pytest
 
 import jasper.active_speaker.flat_spec as flat_spec
 from jasper.active_speaker.crossover_envelope_v2 import _flatness_lines_from_block
-from jasper.active_speaker.crossover_v2_flow import _flatness_tilt_log_field
+from jasper.active_speaker.crossover_v2.verification import (
+    _flatness_tilt_log_field,
+)
 from jasper.active_speaker.flat_spec import (
     NO_BAND_TILT,
     REFERENCE_BAND_HZ,

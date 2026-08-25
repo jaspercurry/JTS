@@ -257,12 +257,12 @@ def _session_program(session_dir: Path) -> tuple[Any, Any, int, float]:
     (:func:`sweep_anchor`), so rendering the whole ~681k-sample program on
     each call bought nothing but time.
     """
-    from jasper.active_speaker.crossover_v2_flow import (
-        BASE_STIMULUS_PEAK_DBFS,
-        PHASE_CLOUD_MEASURE,
+    from jasper.active_speaker.crossover_v2.programs import (
         PILOT_LEVEL_DELTA_DB,
         courtesy_prelude_for_phase,
     )
+    from jasper.active_speaker.crossover_v2_flow import PHASE_CLOUD_MEASURE
+    from jasper.audio_measurement.program import BASE_STIMULUS_PEAK_DBFS
     from jasper.audio_measurement.program import build_verify_program
 
     session = json.loads((session_dir / "session.json").read_text())

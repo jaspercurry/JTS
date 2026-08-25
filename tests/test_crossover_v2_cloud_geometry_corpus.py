@@ -23,11 +23,11 @@ from __future__ import annotations
 
 import pytest
 
-from jasper.active_speaker.crossover_v2_flow import (
+from jasper.active_speaker.crossover_v2.spatial import (
     _CloudPosition,
-    cloud_geometry_verdict,
     cloud_position_capture,
 )
+from jasper.active_speaker.crossover_v2_flow import cloud_geometry_verdict
 from jasper.audio_measurement.spatial_combine import combine_positions
 
 from tests import _flat_lin_corpus as corpus

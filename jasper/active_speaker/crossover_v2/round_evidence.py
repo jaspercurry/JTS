@@ -666,9 +666,9 @@ def evaluate_round(
         what every round before this one silently was.
       tracking: ``ProgramAnalysis.verify_tracking``, the realization
         comparator's home.
-      realization_tolerance_db: the flow's shipped ``VERIFY_TOLERANCE_DB``.
-        Passed rather than imported so this module holds no threshold the
-        flow already owns.
+      realization_tolerance_db: ``.contracts.VERIFY_TOLERANCE_DB``.
+        Passed rather than imported so this module holds no threshold
+        another one owns.
       reference_mark: the position identity both captures were taken at.
       boosted / rollback_available / restore_failed: the adoption modifiers;
         see :func:`~.verification.decide_adoption` for each one's scope.

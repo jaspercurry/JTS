@@ -1837,7 +1837,7 @@ def _reflections_block(cloud: dict[str, Any], reason: str) -> dict[str, Any]:
     ``reflector_path_distance_m = tau_ladder_us * 1e-6 * c``. The whole
     computation, and the reason it is here rather than in an instrument: tau is
     ALREADY banked (``honesty_mask.null_registry.tau_ladder_us``, written by
-    ``crossover_v2_flow._null_registry_to_dict``) and what was missing was the
+    ``.verification._null_registry_to_dict``) and what was missing was the
     multiply, not the measurement. This is a unit conversion of a number the
     packet already carries, not a second statistic — see this module's own
     boundary paragraph, which names the one statistic it does compute.

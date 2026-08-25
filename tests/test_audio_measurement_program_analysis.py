@@ -3154,10 +3154,10 @@ def test_a_held_round_clears_the_accountability_prediction_gate():
     """
     from jasper.active_speaker.crossover_v2 import accountability
     from jasper.active_speaker.crossover_v2.candidates import LinearizationState
-    from jasper.active_speaker.crossover_v2_flow import (
+    from jasper.active_speaker.crossover_v2.attempt_grading import (
         PREDICTED_SPEC_MATERIAL_IMPROVEMENT_DB,
-        spec_report_for_predicted_sum,
     )
+    from jasper.active_speaker.crossover_v2_flow import spec_report_for_predicted_sum
 
     shipped, combed = _held_round_models()
 
@@ -3209,7 +3209,7 @@ def test_verify_tracking_passes_a_held_round_and_still_fails_a_real_comb():
     """
     from jasper.active_speaker.crossover_v2 import verification
     from jasper.active_speaker.crossover_v2.contracts import RealizationStatus
-    from jasper.active_speaker.crossover_v2_flow import VERIFY_TOLERANCE_DB
+    from jasper.active_speaker.crossover_v2.contracts import VERIFY_TOLERANCE_DB
 
     shipped, combed = _held_round_models()
 

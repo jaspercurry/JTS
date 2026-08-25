@@ -441,7 +441,7 @@ def exclusion_evidence_json(
     ``cloud_result`` is this group's own pipeline result, which the caller must
     read at CALL time — always its CURRENT value, refreshed on every close
     including a retake's re-close (issue #1872) — and the registry inside it is
-    serialized by the host's ``_null_registry_to_dict``, the one owner of that
+    serialized by ``.verification._null_registry_to_dict``, the one owner of that
     shape, so the candidate's copy always describes the cloud actually retained
     at confirm time. ``cloud_measure.json``'s own copy can lag it: the
     evidence store's ``publish_cloud`` write is a per-phase SINGLETON

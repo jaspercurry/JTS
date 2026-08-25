@@ -367,7 +367,7 @@ class PositionCurve:
         named back to the spot it came from.
       role: what KIND of listening position this is, in the cloud's own
         vocabulary (``onax`` / ``offax`` / ``xovr``, owned by
-        ``crossover_v2_flow.POSITION_ROLES``). Read off the position's
+        ``crossover_v2.spatial.POSITION_ROLES``). Read off the position's
         record, never re-derived from a prompt string. This module never
         interprets the value beyond grouping equal ones together and
         matching the caller's chosen ``primary_role``; it defines no role
@@ -699,7 +699,7 @@ def role_split_flatness(
       positions: the cloud's member curves. Order is preserved within each
         role. An empty tuple yields an empty split, not an error.
       primary_role: which role is the headline, in the cloud's own
-        vocabulary (``crossover_v2_flow.POSITION_ROLE_ONAX`` for on-axis).
+        vocabulary (``crossover_v2.spatial.POSITION_ROLE_ONAX`` for on-axis).
         Required rather than defaulted, so this module holds no copy of a
         constant another module owns.
 

@@ -225,7 +225,7 @@ def test_jts3_derived_ceiling_flows_through_production_composition_and_admission
     guard for that retirement -- restore the hedge and every number below
     moves.
     """
-    from jasper.active_speaker.crossover_v2_flow import back_off_gain
+    from jasper.active_speaker.crossover_v2.programs import back_off_gain
     from jasper.active_speaker.excitation_safety_plan import (
         resolve_driver_excitation_ceilings,
     )
@@ -486,7 +486,7 @@ def test_solved_gain_at_a_deep_driver_cap_is_admitted_in_the_effective_frame():
     quieter by exactly the session volume, which is the SNR collapse the level
     solve exists to prevent.
     """
-    from jasper.active_speaker.crossover_v2_flow import back_off_gain
+    from jasper.active_speaker.crossover_v2.programs import back_off_gain
 
     topology, profile, targets = _profile_and_targets(woofer_peak=-8.0)
     session_volume_db = -12.5
