@@ -1,25 +1,9 @@
 ## Summary
 
 (1-3 sentences on what changes and why. Focus on the why — the diff
-shows the what.)
-
-## Documentation impact
-
-`docs-impact.yml` will comment with mapped canonical docs from
-`docs/doc-map.toml`. Use that list as the starting point; add anything
-the bot missed.
-
-- [ ] No canonical doc impact — rationale:
-- [ ] I scanned the mapped canonical doc(s) and they are still accurate.
-- [ ] I updated the mapped canonical doc(s) in this PR.
-- [ ] Follow-up doc issue is acceptable here — link:
-
-Docs scanned / evidence:
-
-- (docs/commands/source files checked, or "none")
-
-See `scripts/doc-freshness.sh` for HANDOFFs overdue for a verification
-pass.
+shows the what. `docs-impact.yml` will comment with any canonical docs
+this PR's changed files map to in `docs/doc-map.toml` — update those
+inline if they've gone stale.)
 
 ## Test plan
 
