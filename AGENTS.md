@@ -12,6 +12,7 @@ This file is long. Jump to a section (grouped by theme, not
 document order):
 
 **Conventions & quality bars**
+- [Right-sizing directive](#right-sizing-directive--read-this-before-applying-anything-below)
 - **Extensibility doctrine — the lens for adding anything modular: [`docs/extensibility.md`](docs/extensibility.md)** (one invariant, five contracts, decision tree)
 - **Measurement-loop doctrine — the LLM-driven crossover-v2/correction measurement loop: [`docs/measurement-loop-doctrine.md`](docs/measurement-loop-doctrine.md)** (propose/dispose authority, the guiding principle — least-bad measured, honed in bites — closed hard-stop list, the nanny test)
 - [Agent behavior baseline](#agent-behavior-baseline)
@@ -55,6 +56,32 @@ document order):
 - [Branch and remote](#branch-and-remote)
 - [PR workflow on a fast-moving `main` — read before you push](#pr-workflow-on-a-fast-moving-main--read-before-you-push)
 - [Worktree hygiene — clean up agent worktrees](#worktree-hygiene--clean-up-agent-worktrees)
+
+## Right-sizing directive — read this before applying anything below
+
+Owner ruling, 2026-08-25: this file's practices are tools, not tax. The
+historical frame — resilience supervisors and tiers everywhere, guard and
+contract tests for every sentence, an ever-growing HANDOFF corpus,
+multi-round multi-agent review for every change — was itself producing
+repo bloat. Scale ceremony to RISK:
+
+- **Full rigor, unchanged and never waived:** anything touching hearing
+  safety, output levels or rails, DSP math, hardware brick hazards, or
+  secrets. Two-lens adversarial review, tests pinning the safety claim.
+- **Ordinary production code:** one adversarial review pass. Tests for
+  behavior that can break, not for prose. Extend an existing seam rather
+  than adding a parallel one.
+- **Docs, bench evidence, mechanical cleanups:** author plus a sanity
+  look. No panels, no mutation ceremony, no new HANDOFF file unless the
+  owner asks for one.
+- **Prefer deletion to guarding.** A sentence that needs a pinning test
+  is often a sentence to delete. A new doctor check, `event=` line, env
+  knob, or HANDOFF file needs a reason, not a reflex.
+
+When a rule elsewhere in this file conflicts with this directive, this
+directive wins; use judgment and say what you skipped. The safety floor
+above is the one thing this directive can never lighten. The full
+doctrine slim-down is tracked in the tuning-program inventory (wave 2).
 
 ---
 
