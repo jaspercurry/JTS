@@ -3263,10 +3263,13 @@ def test_cancelling_on_the_fade_out_leg_cuts_the_room_and_still_restores(tmp_pat
 def test_cancelling_on_the_fade_in_leg_cuts_the_room_and_still_restores(tmp_path):
     """The same stop on the OTHER leg, which needs a different guard.
 
-    The fade-in leg cannot use a `finally`: its success path deliberately hands
-    the caller a playing stimulus to carry on climbing with. So it catches
-    `BaseException` -- `CancelledError` included, which is the point -- and this
-    is what proves that catch runs.
+    The fade-in leg cannot use the down leg's PLAIN `finally`: its success path
+    deliberately hands the caller a playing stimulus to carry on climbing with,
+    so cancelling unconditionally would end every pass at the re-measure. It
+    guards with a `returning` flag instead -- `finally: if not returning:` --
+    which fires on every exit that is not a normal return, `CancelledError`
+    included. That is the exit this test drives, and it is what proves the guard
+    runs on it.
     """
     exc, heard, written, volume, tone = _cancel_mid_fade(
         tmp_path,
@@ -3610,7 +3613,9 @@ def test_the_fade_writes_never_reach_the_climbs_own_accounting(tmp_path):
     assert ramp["slope_db_per_db"] == pytest.approx(1.0, abs=0.1)
 
 
-def test_a_hot_sample_during_the_fade_still_trips_the_commissioning_stop(tmp_path):
+def test_a_hot_sample_during_the_fade_still_trips_the_commissioning_stop(
+    tmp_path, caplog
+):
     """The 85 dB stop covers the mid-pass fade legs, not just the windows.
 
     A fade is audible seconds, and un-watched audible seconds would be a hole in
@@ -3623,12 +3628,13 @@ def test_a_hot_sample_during_the_fade_still_trips_the_commissioning_stop(tmp_pat
     it trips is unambiguously the fade's.
     """
     hot = SPL_CEILING + 5.0
-    result, volume, _tone, mic = _settling_room_pass(
-        tmp_path,
-        hot_sample_db_spl=hot,
-        # Below the first bite's volume: only the down leg goes there.
-        hot_below_volume_db=-46.0,
-    )
+    with caplog.at_level(logging.WARNING, logger=slr.logger.name):
+        result, volume, _tone, mic = _settling_room_pass(
+            tmp_path,
+            hot_sample_db_spl=hot,
+            # Below the first bite's volume: only the down leg goes there.
+            hot_below_volume_db=-46.0,
+        )
 
     assert result.status == "refused"
     assert result.reason == slr.REFUSE_SPL_CEILING_EXCEEDED
@@ -3651,6 +3657,21 @@ def test_a_hot_sample_during_the_fade_still_trips_the_commissioning_stop(tmp_pat
     assert stopped_at < max(volume.commanded), "the leg did not stop part-way down"
     assert f"stopped at {stopped_at:.2f} dB" in result.detail
     assert result.ramp["final_volume_db"] == pytest.approx(stopped_at, abs=0.01)
+
+    # ...AND SO DOES THE JOURNAL. `at_db=` is the third reader of that one fact,
+    # beside the operator's prose and the receipt, and it was the one with no
+    # pin -- a delta review reverted it to the climb's `volume_db` and the whole
+    # suite stayed green. An operator greps the journal precisely when the
+    # terminal output is gone, so a line that quotes a level the pass was never
+    # at sends them to the wrong volume with nothing to contradict it.
+    refusals = [
+        r.getMessage()
+        for r in caplog.records
+        if "event=active_speaker.seat_level_refused " in r.getMessage()
+    ]
+    assert len(refusals) == 1, refusals
+    assert f"at_db={stopped_at:.2f}" in refusals[0], refusals[0]
+
     # ...and the teardown leaves from there too, so its first act is not to
     # command the room back up toward the climb's number.
     _assert_teardown_left_from(volume, stopped_at)

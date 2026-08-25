@@ -1323,11 +1323,24 @@ async def _watched_fade(
     samples are not lost — a leg that STOPS publishes its trace on the refusal,
     which is where they have a reader.
 
-    A failure of the injected volume or sample seam mid-leg comes back as an
-    honest :data:`REFUSE_RAMP_ERROR` refusal, not as a traceback: the caller is
+    A mid-leg failure of the injected volume or sample seam **that belongs to
+    the RECOVERABLE_ERRORS family** comes back as an honest
+    :data:`REFUSE_RAMP_ERROR` refusal rather than propagating: the caller is
     inside the pass's own ``finally``, so a refusal still gets the household its
-    volume back and still publishes whether that restore landed, while an escaped
-    ``OSError`` would reach the operator's terminal with that fact unstated.
+    volume back and still publishes whether that restore landed, while an
+    escaped ``OSError`` would reach the operator's terminal with that fact
+    unstated.
+
+    **That family, and not "any failure" — the gap is real and is stated rather
+    than papered over.** The production volume seam is
+    ``CamillaController.set_volume_db``, which raises ``CamillaUnavailable``;
+    that derives from bare ``Exception``, so it is NOT in
+    :data:`RECOVERABLE_ERRORS` and it propagates past this guard to the CLI —
+    exactly as it does on ``main``, unchanged by this function. Widening the
+    tuple is not the fix (it is shared kernel vocabulary, and this seam is not
+    the only caller), and a bespoke second catch here would hide a seam problem
+    behind a leg. The observation belongs to the CLI's own orchestration layer
+    and is recorded against its replacement rather than patched behind it.
     """
     levels = _fade_levels(from_db=from_db, to_db=to_db)
     log_event(
@@ -1957,14 +1970,33 @@ async def _remeasure_silence(
     # A flag rather than the down leg's plain `finally`, because this leg's
     # SUCCESS path deliberately hands the caller a playing stimulus to carry on
     # climbing with: cancelling unconditionally would end every pass at the
-    # re-measure. It says "any exit that is not a normal return", which is
-    # exactly the scope that was missing -- chiefly `CancelledError` from the
-    # operator's Ctrl-C and from the whole-operation watchdog, but a
-    # `GeneratorExit` or anything else `_watched_fade` could not turn into a
-    # refusal just as much. Naming no exception class is what makes that
-    # complete; an `except BaseException` here would say the same thing while
-    # spending one of this repo's ratcheted blind-except suppressions
-    # (`tests/test_lint_contracts.py`) to say it.
+    # re-measure. What it has to cover is `CancelledError` -- the operator's
+    # Ctrl-C and the whole-operation watchdog -- plus anything else
+    # `_watched_fade` could not turn into a refusal.
+    #
+    # `except BaseException: ...; raise` would cover exactly the same set: this
+    # block contains no `return`, `break` or `continue`, so "not a normal
+    # return" and "an exception left" are the same exit here. The two forms are
+    # equivalent on behaviour, and the choice between them is a COST one.
+    #
+    # The cost, named precisely, because the obvious gate is NOT the one that
+    # binds. `ruff`'s BLE001 exempts a handler that re-raises, so ruff passes
+    # the bare-`raise` form -- ruff is not what forces this. Two guards in
+    # `tests/test_lint_contracts.py` are:
+    #   * `test_broad_exception_suppressions_are_explicit` -- a TEXT SCAN with
+    #     no re-raise exemption. It demands a literal BLE001 suppression comment
+    #     on any `except BaseException:` line, whatever the body does; and
+    #   * `test_noqa_debt_does_not_grow` -- which caps the suppression-comment
+    #     TOTAL across the tree, and that total is the ceiling actually sitting
+    #     full. (`MAX_BLE001_MARKERS` itself still has room; `MAX_NOQA_MARKERS`
+    #     does not.)
+    # Adding the suppression satisfies the first and trips the second, so no
+    # spelling of the handler passes both without raising a ratchet -- bought
+    # for a form with no behaviour the flag does not already have. Measured, not
+    # assumed: both variants were run against both guards.
+    #
+    # (Writing the marker out in full HERE would trip the same total, which is
+    # why this comment describes it rather than quoting it.)
     #
     # What the exit would otherwise leave behind: the stimulus is commanded ON
     # and the fader is somewhere between `quiet_db` and `volume_db`, so the

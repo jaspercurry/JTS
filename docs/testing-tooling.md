@@ -3173,9 +3173,12 @@ The refusal carries that window instead, on the receipt as `ramp.stopped_window`
 the same sentence the CLI prints: how many samples it saw, their min/median/max
 dB SPL, and the sample that tripped with its offset from the volume step. Those
 same two stops run on the re-measure's fade legs, which open no window at all, so
-a refusal from a leg reports `windows: 0` and the CLI names it a *fade leg*
-rather than a window it never took — the volume it quotes is one the pass swept
-through on its way somewhere, not one it settled at.
+a refusal from a leg reads *"the **fade leg** it stopped in saw N samples
+spanning …"* where a window's reads "the window it stopped in". That noun is the
+whole tell, and it is the only surface the difference reaches: `ramp.stopped_window`
+carries the same sample / min / median / max / trip keys either way, and `steps[]`
+gets no entry at all for a leg. The volume such a refusal quotes is one the pass
+swept through on its way somewhere, not one it settled at.
 `spl_level_unsettled` publishes one too, and it is a different shape: its window
 ran to its own deadline rather than being abandoned, so `trip_db_spl` /
 `trip_offset_s` are null and the median is the whole content — read it against
