@@ -24,10 +24,12 @@ outside the stream lifecycle. Where the drain tests need to drive
 from __future__ import annotations
 
 import asyncio
+import logging
 import math
 import socket
 import threading
 import time
+from types import SimpleNamespace
 
 import numpy as np
 import pytest
@@ -1338,3 +1340,13 @@ async def test_outputd_meter_control_reconnect_failure_is_best_effort(
 
     assert broken_stream.closed
     assert p._stream is broken_stream
+
+
+def test_absent_mic_capture_failure_logs_one_warning_not_a_cascade(monkeypatch, caplog):
+    monkeypatch.setattr(
+        "jasper.mic_presence.read_mic_presence",
+        lambda: SimpleNamespace(absent_confirmed=True),
+    )
+    with caplog.at_level(logging.WARNING, logger="jasper.audio_io"):
+        audio_io_mod._log_audio_open_failure("MicCapture", "hw:1,0", RuntimeError("boom"))
+    assert [r.levelno for r in caplog.records] == [logging.WARNING]

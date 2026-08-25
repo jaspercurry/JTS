@@ -89,7 +89,9 @@ def _log_audio_open_failure(role: str, device: str, exc: BaseException) -> None:
     # portaudio/arecord/aplay/dmesg snapshot. Keeps absence one flag, not a
     # cascade. Playback failures, and capture failures with a present/unknown
     # mic, still get the full snapshot below. See jasper/mic_presence.py.
-    if role == "capture":
+    # "MicCapture" is the literal the capture caller passes — a "capture"
+    # comparison here never matched and the cascade ran on absent mics too.
+    if role == "MicCapture":
         try:
             from jasper.mic_presence import read_mic_presence
             if read_mic_presence().absent_confirmed:
