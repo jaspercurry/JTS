@@ -43,14 +43,7 @@ _GUARD_FUNCTION = "ensure_openwakeword_import_safe"
 # Each exclusion must still match a real openWakeWord import, checked by
 # test_openwakeword_scan_exclusions_are_all_live — a stale exclusion that has
 # quietly become a blanket hole fails instead of lingering.
-_OPENWAKEWORD_EXCLUDED_DIRS = {
-    # experiments/aec3-v2-deep-tune-spike documents its prereqs as a standalone
-    # laptop venv holding "pybind11, numpy, openwakeword, onnxruntime" (see that
-    # directory's README) — frozen bench archaeology with no `jasper` importable,
-    # so a guard call there would be a new hard dependency for no runtime
-    # benefit. Nothing in it runs on a speaker.
-    "experiments": "standalone bench venv without `jasper`; never runs on a speaker",
-}
+_OPENWAKEWORD_EXCLUDED_DIRS: dict[str, str] = {}
 # `tests/` is deliberately NOT excluded. Test modules mention openwakeword only
 # as fake sys.modules entries and inside probe source strings, neither of which
 # is an import statement — so policing them costs nothing and a test that ever
@@ -313,13 +306,21 @@ def test_openwakeword_scanner_flags_unguarded_sites(tmp_path: Path) -> None:
 
 
 def test_openwakeword_scanner_reaches_new_dirs_and_dynamic_imports(
-    tmp_path: Path,
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     """Fail-closed: a brand-new top-level directory is policed, not ignored.
 
-    Also covers the two dynamic forms with a literal module name. An
-    include-list of scan roots would have missed every line below.
+    Also covers the two dynamic forms with a literal module name, and that
+    an excluded directory (a synthetic fixture name, independent of
+    whatever real entries _OPENWAKEWORD_EXCLUDED_DIRS currently holds) is
+    still skipped. An include-list of scan roots would have missed every
+    line below.
     """
+    monkeypatch.setattr(
+        sys.modules[__name__],
+        "_OPENWAKEWORD_EXCLUDED_DIRS",
+        {"excluded_fixture_dir": "test-only exclusion, not a real one"},
+    )
     newdir = tmp_path / "brand_new_service"
     newdir.mkdir()
     (newdir / "runtime.py").write_text(
@@ -341,7 +342,7 @@ def test_openwakeword_scanner_reaches_new_dirs_and_dynamic_imports(
         "    return importlib.util.find_spec('openwakeword.model')\n",
         encoding="utf-8",
     )
-    excluded = tmp_path / "experiments"
+    excluded = tmp_path / "excluded_fixture_dir"
     excluded.mkdir()
     (excluded / "spike.py").write_text("import openwakeword\n", encoding="utf-8")
 

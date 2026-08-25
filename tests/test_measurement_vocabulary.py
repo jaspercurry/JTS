@@ -137,8 +137,6 @@ ALLOWED_PHONE_FRAGMENTS: dict[str, str] = {
     # guard messages. These ride logs and support reads, not a household screen;
     # the household-facing sentence for the same conditions is
     # CAPTURE_INCOMPATIBLE_USER_MESSAGE and the §5.10 reason registry.
-    "phone capture ended before host playback completed": "CaptureFailed detail",
-    "phone recorder is no longer armed": "CaptureFailed detail",
     "phone aborted the capture (": "CaptureTimeout/CaptureFailed detail prefix",
     "phone never uploaded within ": "CaptureTimeout detail prefix",
     "phone never began the next capture within ": "CaptureTimeout detail prefix",
