@@ -103,9 +103,11 @@ TRANSIT_FILE = location_state.TRANSIT_FILE
 TRANSIT_FILE_MODE = location_state.TRANSIT_FILE_MODE
 GOOGLE_ROUTES_SECRET_FILE = google_routes.GOOGLE_ROUTES_SECRET_FILE
 
-# Wizard-owned coordinate state. Provider-owned env keys come from
-# `transit.all_env_keys()`. Splitting these is deliberate: coords
-# are wizard-internal scaffolding, not consumed by daemons directly.
+# Wizard-owned coordinate state (JASPER_TRANSIT_LAT, JASPER_TRANSIT_LON,
+# JASPER_TRANSIT_DISPLAY_NAME — written by the geocode handlers below).
+# Provider-owned env keys come from `transit.all_env_keys()`. Splitting
+# these is deliberate: coords are wizard-internal scaffolding, not
+# consumed by daemons directly.
 LAT_ENV = location_state.TRANSIT_LAT_ENV
 LON_ENV = location_state.TRANSIT_LON_ENV
 DISPLAY_NAME_ENV = location_state.TRANSIT_DISPLAY_NAME_ENV
