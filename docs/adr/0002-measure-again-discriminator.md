@@ -67,6 +67,16 @@ And the failure mode it generalizes, from `crossover_v2_flow.py:2330-2334`:
 > has already decided to proceed, and this method must never acquire a branch
 > that could change that, or the ruling would quietly grow a gate back.
 
+Nor does it relax anything downstream. From the consumption site,
+`crossover_v2_flow.py:7318-7326`:
+
+> **This does not refuse.** The capture is ACCEPTED and carries an honest
+> reservation to the household instead of sending them to move a microphone
+> that was never the problem, so the reservation changes what the household is
+> TOLD and nothing about what is built, fitted, gated, or applied. Every
+> accountability gate below still runs unchanged on this candidate, which is
+> what keeps "proceed" from meaning "unchecked".
+
 **Corollary 2 — a disclosure names what was observed, never a cause the session
 did not separate.** From `crossover_envelope_v2.py:2217-2223`:
 
