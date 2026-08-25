@@ -884,8 +884,8 @@ a second snd-aloop card before that, retired for resilience —
 see [`docs/HANDOFF-resilience.md`](docs/HANDOFF-resilience.md)).
 
 **Rollback key only — `JASPER_AEC_MODE`.** It predates the profile picker,
-and the reconciler forces `auto` on a detected XVF, so it bites only on
-`custom` / non-XVF setups. `aec_mode.env` also carries
+and every managed profile branch forces `auto` on each reconcile pass, so
+the key is respected only under `JASPER_AUDIO_INPUT_PROFILE=custom`. `aec_mode.env` also carries
 `JASPER_AUDIO_INPUT_PROFILE` and the `JASPER_WAKE_LEG_*` keys, so edit the
 one key in place — overwriting the file with `tee` destroys the rest:
 
@@ -1111,18 +1111,26 @@ sudo jasper-aec-commission
 sudo /opt/jasper/.venv/bin/jasper-doctor | grep -E '(Audio profile|AEC bridge|XVF)'
 ```
 
-Healthy box: all four rows "✓", with **Audio profile** reporting the chip-AEC
+Healthy box: every row "✓", with **Audio profile** reporting the chip-AEC
 profile (`xvf_chip_aec`) both requested and active, and **AEC bridge service**
 forwarding the chip beam with WebRTC AEC3 bypassed. Short of that, **Audio
 profile** reads `warn` and carries the reconciler's own `reason=` and
-`action=` — the system is waiting on you, not broken. Do what `action=` says,
-then re-read the rows. The named waits:
+`action=`. The first two states below are designed waits — the system is
+waiting on you, not broken; `unavailable` and `fault` also fail the
+**AEC bridge service** row and need real attention. Do what `action=` says,
+then re-read the rows:
 
 | Doctor says | What it means | What to do |
 |---|---|---|
 | `state=commission_required` | No stored alignment matches this hardware + output identity | `sudo jasper-aec-commission` |
 | `state=deferred` | `jasper-outputd` hasn't loaded the current output declaration | Wait for it to restart, then re-run the reconciler |
-| `state=unavailable` | Firmware, mic geometry, or output DAC isn't one chip-AEC supports | Fix that, then re-run the reconciler |
+| `state=unavailable` | Firmware, mic geometry, or output DAC isn't one chip-AEC supports | If this hardware should be supported, fix that and re-run the reconciler (Flex: see below) |
+| `state=fault` | A unit in the managed activation failed (`jasper-aec-init`, `jasper-aec-bridge`, or `jasper-outputd`) — genuine breakage, not a designed wait | Inspect the unit its `action=` names, then re-run the reconciler |
+
+On Flex LINEAR-4 (`L16K6Ch` firmware), `state=unavailable` is today's end
+state, not an operator error: chip AEC has no production beam plan for that
+variant yet, and `sudo jasper-aec-commission` refuses it. There is nothing
+to fix or re-run — an AEC path for Flex is future work.
 
 #### Why the reconciler step matters
 
