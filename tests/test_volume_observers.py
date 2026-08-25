@@ -509,9 +509,10 @@ async def test_tick_continues_when_reconciler_raises(monkeypatch, tmp_path, capl
 # not three modules'.
 #
 # NOTE ON WHAT THESE TESTS CAN OBSERVE: CPython 3.12 rewrote wait_for on top of
-# asyncio.timeout(), so on 3.12/3.13 these pass with or without the fix. The
-# py3.11 CI leg is the one that goes red on the pre-fix code -- same as #1935
-# and #1952, whose regressions only ever failed there.
+# asyncio.timeout(), so on 3.12/3.13 these pass with or without the fix. Only a
+# py3.11 interpreter goes red on the pre-fix code -- same as #1935 and #1952.
+# Whether any CI leg runs one is the pytest matrix's call (tests.yml); while
+# none does, these pins document the 3.11 hazard requires-python still permits.
 # ---------------------------------------------------------------------------
 
 

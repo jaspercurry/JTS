@@ -4,7 +4,7 @@
 "Check for updates" button, which is **not built**. Stage 1 of the
 recommended path — GitHub Actions CI — **has since shipped**
 (`.github/workflows/tests.yml`, #251, 2026-05-23; now pytest on
-Python 3.11/3.12/3.13 with `ruff`/`mypy`, plus `shell`, `js`, and
+the deployed interpreter (py3.13) with `ruff`/`mypy`, plus `shell`, `js`, and
 `rust` jobs and the doc-hygiene workflows). The remaining Stages 2–3
 (auto-release + the dashboard button) are still unbuilt research.
 This document captures the option space, the recommended staged
@@ -51,8 +51,8 @@ What's missing:
 - **The deploy path itself has no pre-merge/pre-deploy coupling to
   CI.** A CI gate now exists — `.github/workflows/tests.yml` runs the
   hardware-free suite on every PR and push to `main`, and `main` is
-  branch-protected on it (see AGENTS.md "PR workflow on a fast-moving
-  `main`"). What's still missing is the *link* from that green check
+  branch-protected on its `ci` aggregate (lanes and required checks:
+  CONTRIBUTING.md). What's still missing is the *link* from that green check
   to the deploy: `deploy-to-pi.sh` rsyncs whatever is in the local
   working tree, green or not, so "works on my laptop" is still the
   only bar the deploy itself enforces. Stage 1 of the recommended
@@ -280,15 +280,15 @@ any point.
 ### Stage 1: GitHub Actions CI (no Pi side at all) — **SHIPPED**
 
 This stage landed as `.github/workflows/tests.yml` (#251,
-2026-05-23) and has since grown. What ships today (see AGENTS.md "PR
-workflow on a fast-moving `main`" for the authoritative description):
+2026-05-23) and has since grown. What ships today (CONTRIBUTING.md's
+CI-lane section is the authoritative description):
 
 - **Triggers.** Every PR and every push to `main`; `main` is
-  branch-protected on the `pytest` and `rust` checks.
+  branch-protected on the `ci` aggregate check.
 - **Jobs.**
   - `pytest` — the hardware-free merge lane (`scripts/test-merge`,
-    voice_eval excluded) across Python 3.11/3.12/3.13, with
-    `ruff check .` and a lenient `mypy` gate in the 3.13 leg.
+    voice_eval excluded) on py3.13, the deployed interpreter, with
+    `ruff check .` and a lenient `mypy` gate.
   - `shell` (`bash -n` + `shellcheck`), `js`
     (`scripts/check-js-syntax.sh` + browser-module harnesses), and a
     pinned-toolchain `rust` job (Rustfmt, Clippy `-D warnings`,
