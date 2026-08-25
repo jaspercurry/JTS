@@ -13,8 +13,8 @@ import {
 import { AUDIO_OPTIONS, updateAudioQuality, updateUsbLatency } from "./sections.js";
 import { fmtEpochAgo } from "./format.js";
 import {
-  unavailableBody, currentStreamBody, currentIncident, currentIncidentBody,
-  issuesBody, otherSources, sourcesBody, technicalBody, refreshRelativeTimes,
+  unavailableBody, currentStreamBody, issuesBody, otherSources, sourcesBody,
+  technicalBody, refreshRelativeTimes,
 } from "./audio-sections.js";
 
 function buildAudioQuality(handlers) {
@@ -77,8 +77,6 @@ function buildUsbLatency(handlers) {
 export function buildAudioPanel(handlers) {
   const live = livePill();
   const stream = titledCard("Current stream", { accent: true });
-  const currentIssue = titledCard("Current issue");
-  currentIssue.section.hidden = true;
   const issues = titledCard("Recent issues");
   const sources = titledCard("Other sources");
   const technicalBodyHost = h("div.info-card");
@@ -93,10 +91,9 @@ export function buildAudioPanel(handlers) {
   },
     live.el,
     stream.section,
-    currentIssue.section,
+    latency.section,
     issues.section,
     sources.section,
-    latency.section,
     technical,
     quality.section,
   );
@@ -104,8 +101,6 @@ export function buildAudioPanel(handlers) {
   const refs = {
     staleness: live.label,
     stream: stream.body,
-    currentIncidentSection: currentIssue.section,
-    currentIncident: currentIssue.body,
     issues: issues.body,
     sourcesSection: sources.section,
     sources: sources.body,
@@ -151,14 +146,10 @@ export function updateAudio(refs, snap) {
     sources: healthSources,
   }, () => health ? currentStreamBody(health) : unavailableBody());
 
-  const incident = health ? currentIncident(health) : null;
-  refs.currentIncidentSection.hidden = !incident;
-  if (incident) {
-    renderSection(refs, "currentIncident", refs.currentIncident, incident,
-      () => currentIncidentBody(health));
-  }
-
   renderSection(refs, "issues", refs.issues, health && {
+    session_summary: health.session_summary,
+    stream_session: health.current_stream && health.current_stream.session,
+    current_incident: health.current_incident,
     recent_incidents: health.recent_incidents,
     issues: health.recent_incidents ? undefined : health.issues,
     incident_window_label: health.incident_window_label,

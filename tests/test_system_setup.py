@@ -700,7 +700,7 @@ def test_audio_view_is_normalized_fail_soft_and_progressively_disclosed() -> Non
     assert "snap.audio_health" in audio_view
     assert "Waiting for audio diagnostics" in audio_sections
     assert "current_stream" in audio_view
-    assert "current_incident" in audio_sections
+    assert "current_incident" in audio_view
     assert "recent_incidents" in audio_sections
     assert "slice(0, 5)" in audio_sections
     assert "refreshRelativeTimes" in audio_sections
@@ -710,7 +710,7 @@ def test_audio_view_is_normalized_fail_soft_and_progressively_disclosed() -> Non
     assert 'h("span.incident-row__summary"' in audio_sections
     assert 'h("div.incident-row__summary"' not in audio_sections
     assert "stream.quality || stream.media" in audio_sections
-    assert "stream.session || health.session_summary" in audio_sections
+    assert "(stream && stream.session) || health.session_summary" in audio_sections
     assert '"--tone"' in audio_sections
     assert "Array.isArray(health.sources)" in audio_view
     assert "ageBucket" not in audio_view
