@@ -1124,7 +1124,7 @@ nothing about whether *we* merge a wave before its evidence lands, and we do not
 | 6 | **`web/correction_crossover_v2.py`** | 9,563 lines | the apply/rollback transaction (1,185) plus route wiring. *No explicit target exists in the evidence base — see §6.* |
 | 7 | **Net lines at the END STATE** (ruling S4) | — | **NEGATIVE. Stated floor: −90,000.** Table below. Temporary adds during a wave do not count against this; scaffolding that would need deleting is not built at all. |
 | 8 | **The class-A suite** | 149 files / 126,663 lines | **green**, running against the new engine. Reference: 410 passed / 24 skipped / 10.6 s across three flagships at `e064fa43d`. |
-| 9 | **The baseline campaign reproduced** — *an instrument-validation act, not a measurement campaign* (S11) | `captures/postfix-baseline-2026-08` r1 + r2 | re-run on the new engine, **within the campaign's own measured noise floor: worst round-to-round change ≤ 0.37 dB**, 16/16 captures with the fader held, 0 glitched captures. The report's own bar: *"anything smaller than about 0.4 dB is noise, not a result."* |
+| 9 | **The baseline campaign reproduced** — *an instrument-validation act, not a measurement campaign* (S11) | `captures/postfix-baseline-2026-08` r1 + r2 | re-run on the new engine, **within the campaign's own measured noise floor: worst round-to-round change ≤ 0.37 dB**, 16/16 captures with the fader held, 0 glitched captures. The report's own bar: *"anything smaller than about 0.4 dB is noise, not a result."* **Like-for-like note:** the per-driver reproduction is applied-graph-independent (it rides the session measurement graph), but the **entry-baseline summed capture is not** — compare it against the same applied graph as the original, or disclose the delta (§6 R4). |
 | 10 | **Then the real thing** — **only after every row above closes** (S11) | — | the owner's acceptance bar, quoted from that report: *"the full candidate campaign — many candidates, each measured, one winner, and the winner re-measured."* Entire trusted range, multi-candidate, best-of final, re-measured. **And the campaign OPENS with instrument bring-up in roster order — R-1 → R-4, with R-5/R-6 when the owner provides hardware** (the INSTRUMENT ROSTER below). |
 
 **Row 7 has a measurement instrument now — stop hand-counting.** The audit program
@@ -1340,22 +1340,55 @@ chip-AEC box parks with `CommissionRequired`.** Check once, before wave 6's
 design freezes (MS-7). That park is the AEC side's clamp-class call and stays —
 **ruling S10 does not reach across the fence to demote it** (MS-7's note).
 
-**R4 — The #2935 staleness trap is live on jts3, and there is one wrong way to
-clear it.** The box is `blocked` / `active_baseline_topology_changed` because
-entering the owner's `driver_style = cone_driver` fact rotated the topology
-fingerprint — documented and deliberate. **The next on-box campaign clears it by
-re-minting and applying a MEASURED baseline — never by applying the bare
-`55dee33aa48a` candidate**, which carries no measurements
-(`measured_group_ids: []`) and would wipe the tournament winner's blend
-correction, tweeter linearization, and level trim. **Carry this warning into the
-acceptance run's prompt** — it is exactly the shortcut a fresh session takes to
-unblock itself.
+**R4 — jts3 is a TEST BOX. Apply whatever you need to test.** *(Owner ruling,
+2026-08-25, overruling the inherited warning this entry used to carry.)* Verbatim:
+*"who cares if it wipes out a tournament winner? We don't care about the
+tournament winner. In general, we should apply stuff to jts3 when we have
+something we need to test."*
 
-**R4 has an expiry date, and it is wave 7j.** Ruling S10 deletes this block rather
-than relaxing it: once 7j lands, a rotated topology fingerprint discloses instead of
-blocking, and **this whole trap class dies** — there is no longer a state a fresh
-session needs to "unblock itself" out of. **Until 7j lands the warning above stands in
-full**, because the trap is live on jts3 today and the acceptance run predates the fix.
+The box currently sits `blocked` / `active_baseline_topology_changed` because
+entering `driver_style = cone_driver` rotated the topology fingerprint. **Clear it
+however is convenient — including by applying the compiled candidate.** The
+previous version of this entry told a fresh session never to do that, on the
+grounds that it would wipe a tournament winner's blend correction, tweeter
+linearization and level trim. **The owner has disclaimed that preciousness: the
+winner is not precious, and its config is recoverable from the banked campaign
+artifacts if it is ever wanted.** A warning that costs a session an hour to
+protect something nobody values is a tax, not a safeguard.
+
+**What survives the ruling, and it is the load-bearing half.** The sealed r1/r2
+baseline remains the proving ground **regardless of what is applied to the box**,
+and the reason is structural rather than procedural: **the per-driver
+reproduction — the core of acceptance row 9 and of the 0.37 dB noise floor —
+runs through the session MEASUREMENT graph, not the applied production graph.**
+The per-driver phases (`PHASE_CHECK`, `PHASE_MEASURE`, `PHASE_LATERAL`) are
+exactly the complement that pays the swap today and rides the session graph after
+wave 6; the summed phases (`SUMMED_SWEEP_PHASES`, including
+`PHASE_ENTRY_BASELINE`) are the ones that play into whatever graph is live
+(`09 §1.2`). So applying a candidate cannot move the numbers row 9 is measured
+against.
+
+**One comparison IS applied-graph-dependent, and it gets a note, not a
+prohibition:** the **entry-baseline summed capture**. Compare it like-for-like —
+same applied graph as the original, or disclose the delta. That note now lives in
+row 9 itself.
+
+**Safety framing, per S10: this is a QUALITY unknown, never a safety one.** Every
+compiled graph carries the per-driver protections **structurally** — MS-13's
+`_assert_program_graph_proven` refuses to return a program graph whose tweeter
+output lacks the high-pass and the soft-clip limiter together on exactly the
+tweeter channels. An unmeasured candidate may sound worse. It cannot be unsafe by
+this mechanism. **"Never apply it because it is unproven" was precisely the nanny
+class S10 abolished** — refusing to WORK on an attestation gap — and this entry
+was carrying an instance of it. Naming that is the point: the plan wrote S10 and
+then kept a live example of what S10 forbids, three sections away.
+
+**Wave 7j is unchanged, and its rationale is now stronger.** The staleness block
+still dies. It was defending exactly the preciousness the owner has explicitly
+disclaimed, so the demotion is no longer only a doctrine correction — the thing
+the block was protecting turns out not to want protecting. Until 7j lands, the
+state is merely inconvenient rather than dangerous, and clearing it needs no
+ceremony.
 
 **R5 — Coordination with the audit program: ACKNOWLEDGED, with terms.** The
 double-lock this section used to demand has cleared. Both programs have now
