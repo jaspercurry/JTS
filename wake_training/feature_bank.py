@@ -23,7 +23,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Protocol
 
-from ..openwakeword_guard import ensure_openwakeword_import_safe
+from jasper.openwakeword_guard import ensure_openwakeword_import_safe
 
 try:
     import numpy as np

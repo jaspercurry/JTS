@@ -721,7 +721,7 @@ def _storage_check(
 
 
 _DEFAULT_CORRECTION_STORAGE_WARN_BYTES = 512 * 1024 * 1024  # 512 MiB
-_DEFAULT_WAKE_EVENTS_STORAGE_WARN_BYTES = 1300 * 1024 * 1024  # 1.3 GiB
+_DEFAULT_WAKE_EVENTS_STORAGE_WARN_BYTES = 166 * 1024 * 1024  # 166 MiB
 
 
 def _storage_warn_bytes(knob: str, default: int) -> int:
@@ -776,15 +776,15 @@ def check_wake_events_storage() -> CheckResult:
     """Read-only size warning for the wake-event corpus directory.
 
     The wake-event telemetry ring caps its WAV storage at
-    JASPER_WAKE_EVENTS_MAX_AUDIO_BYTES (1 GiB default) and rolls
+    JASPER_WAKE_EVENTS_MAX_AUDIO_BYTES (128 MiB default) and rolls
     oldest-first, so steady-state size is bounded — but the SQLite DB and
     any transient overshoot above the audio cap still live on the same SD
     card. This surfaces the on-disk total so an operator can catch a ring
     that has drifted well past its audio cap (a sign the reaper is wedged
     or the cap was raised and forgotten). Read-only — the ring owns its
     own oldest-first eviction. Threshold via
-    JASPER_WAKE_EVENTS_STORAGE_WARN_BYTES (default 1.3 GiB, comfortably
-    above the 1 GiB audio cap so a healthy ring never warns)."""
+    JASPER_WAKE_EVENTS_STORAGE_WARN_BYTES (default 166 MiB, comfortably
+    above the 128 MiB audio cap so a healthy ring never warns)."""
     wake_dir = Path(
         os.environ.get("JASPER_WAKE_EVENTS_DIR", "/var/lib/jasper/wake-events")
     )

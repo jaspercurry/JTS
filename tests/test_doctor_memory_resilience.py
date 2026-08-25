@@ -1381,7 +1381,7 @@ def test_wake_events_storage_warns_over_threshold(tmp_path):
 
 
 def test_wake_events_storage_ok_below_default_threshold(tmp_path):
-    """A healthy ring (well under the 1.3 GiB default) never warns."""
+    """A healthy ring (well under the 166 MiB default) never warns."""
     wake = tmp_path / "wake-events"
     wake.mkdir()
     (wake / "clip.wav").write_bytes(b"0" * 1024)

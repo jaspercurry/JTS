@@ -2,14 +2,14 @@
 #
 # SPDX-License-Identifier: Apache-2.0
 
-"""Tests for jasper.wake_training.feature_bank shared utilities."""
+"""Tests for wake_training.feature_bank shared utilities."""
 from __future__ import annotations
 
 from pathlib import Path
 
 import numpy as np
 
-from jasper.wake_training import feature_bank
+from wake_training import feature_bank
 from tests.wake_feature_bank_fixtures import (
     FakeExtractor,
     write_wav as _write_wav,

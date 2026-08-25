@@ -11,7 +11,7 @@ from pathlib import Path
 
 import numpy as np
 
-from jasper.wake_training import feature_bank as shared_features
+from wake_training import feature_bank as shared_features
 
 
 class FakeExtractor:
