@@ -1804,7 +1804,25 @@ MAX_LINES_BY_PATH = {
     #    ruling itself — why a separate bit and not a fifth member of the
     #    declared-design list, whose membership ALSO governs the anchor
     #    withdrawal a pinned round does not get.
-    "jasper/audio_measurement/program_analysis.py": 7_538,
+    #
+    # 2026-08-24, the realized-level demotion (doctrine deviation (i)):
+    # 7,538 -> 7,585, +47 physical. RECOUNTED against the current base (this
+    # branch was rebased onto #2933 after it merged), and trimmed twice before
+    # asking: the first cut condensed a 32-line re-telling of the dead-band
+    # account into a 19-line pointer at the doctrine row that owns it, and the
+    # second did the same to a field docstring — 27 lines given back, because
+    # restating one account at six sites is six places for it to drift.
+    #
+    # What earned the remaining room, in mechanism: the polish admission is
+    # now bound to `REALIZED_LEVEL_MATCH_TOLERANCE_DB` instead of its own
+    # deleted 6.0 dB constant, which closes a dead band in which a polish was
+    # admitted and the round it produced was then certain to be refused; the
+    # rejection carries its excursion on the event (`rejected_delta_db`,
+    # `tolerance_db`) and on a new `CrossoverCandidate` field with its
+    # docstring; and `analysis_diagnostic_summary` exports that field. The
+    # deleted constant and its comment block gave lines back; the new field,
+    # its export, and the coupling's stated invariant took more.
+    "jasper/audio_measurement/program_analysis.py": 7_585,
     #
     # 2026-08-21, the TOPOLOGY pin (#2795) — the basin pin's sibling one axis
     # over: a request-time prescription that names a crossover corner AND its
