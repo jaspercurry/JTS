@@ -355,8 +355,9 @@ pub enum Ladder {
 }
 
 /// Why the ladder is currently in [`Ladder::L2Fallback`]. This is deliberately
-/// separate from the ladder level: persisted host compliance must distinguish
-/// host evidence from a local actuator outage.
+/// separate from the ladder level: latched host evidence and a recoverable local
+/// actuator outage are the same level but different causes, and STATUS reports
+/// the cause.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum FallbackReason {
     None,

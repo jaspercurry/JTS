@@ -115,7 +115,7 @@ ack, never silence.
       accounting)
 
 **Wave 2 — over-engineering (~9–12K)**
-- [ ] rust host-compliance/prime machinery (host_compliance.rs + mixer/lane
+- [x] rust host-compliance/prime machinery (host_compliance.rs + mixer/lane
       branches + 36 contract assertions)
 - [ ] doctor never-fail consolidation (install-settings-drift family)
 - [ ] CI classifier shrink (~120-line path predicate + ~150-line tests)

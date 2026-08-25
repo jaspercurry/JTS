@@ -267,9 +267,6 @@ def test_generation_lifecycle_and_bounded_retry_contract_is_explicit():
     mixer = (_REPO / "rust" / "jasper-fanin" / "src" / "mixer.rs").read_text(
         encoding="utf-8"
     )
-    compliance = (
-        _REPO / "rust" / "jasper-fanin" / "src" / "host_compliance.rs"
-    ).read_text(encoding="utf-8")
 
     assert "capture_generation: Arc<AtomicU64>" in adapter
     assert "capture_generation: Arc::clone(&direct_obs.opens)" in mixer, (
@@ -286,19 +283,11 @@ def test_generation_lifecycle_and_bounded_retry_contract_is_explicit():
     assert 'Some("lost_authority")' in shared
     assert 'Some("actuator_unavailable")' in shared
 
-    assert "host_clock_fallback_reason_code" in mixer
-    assert "decode_fallback_reason_code" in mixer
-    assert "compute_revoke_reason(fallback_reason)" in compliance
-    assert "probe_verdict_is_live" not in compliance
-    assert "ladder_l2" not in compliance, (
-        "compliance cause must be explicit, never inferred from L2 + probe result"
-    )
-
 
 def test_host_clock_thread_boundary_is_data_only_and_thread_confined():
     adapter = _fanin_host_clock_text()
     signals_start = adapter.index("pub struct HostClockSignals")
-    signals_end = adapter.index("pub const PROBE_RATIO_NONE", signals_start)
+    signals_end = adapter.index("\n}\n", signals_start)
     signals = adapter[signals_start:signals_end]
     assert "pub pcm" not in signals.lower()
     assert "pub mixer" not in signals.lower()

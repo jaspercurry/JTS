@@ -37,9 +37,6 @@ _FANIN_LANE_RESAMPLER_RS = (
 )
 _FANIN_MIXER_RS = _REPO_ROOT / "rust" / "jasper-fanin" / "src" / "mixer.rs"
 _FANIN_STATE_RS = _REPO_ROOT / "rust" / "jasper-fanin" / "src" / "state.rs"
-_FANIN_HOST_COMPLIANCE_RS = (
-    _REPO_ROOT / "rust" / "jasper-fanin" / "src" / "host_compliance.rs"
-)
 _FANIN_DIRECT_CAPTURE_RS = (
     _REPO_ROOT / "rust" / "jasper-fanin" / "src" / "mixer" / "direct_capture.rs"
 )
@@ -70,12 +67,6 @@ def _state_rs_text() -> str:
     if not _FANIN_STATE_RS.exists():
         pytest.skip(f"rust source not present: {_FANIN_STATE_RS}")
     return _FANIN_STATE_RS.read_text(encoding="utf-8")
-
-
-def _host_compliance_rs_text() -> str:
-    if not _FANIN_HOST_COMPLIANCE_RS.exists():
-        pytest.skip(f"rust source not present: {_FANIN_HOST_COMPLIANCE_RS}")
-    return _FANIN_HOST_COMPLIANCE_RS.read_text(encoding="utf-8")
 
 
 def _direct_capture_rs_text() -> str:
@@ -524,304 +515,6 @@ def test_cushion_decay_held_target_is_single_source_of_truth():
     assert '"frozen_reason"' in state_text
 
 
-def test_cushion_decay_notl0_snap_back_is_prime_aware():
-    """The `NotL0` snap-back must be PRIME-AWARE — the floor-prime railed-regime fix.
-
-    A floor-primed session locks at the floor, but the host-clock ladder is
-    necessarily still Probing (`dll_l0=false`) at session start (l0 arrives only
-    after the ~21 s probe). Before this fix the FIRST locked tick took the `NotL0`
-    branch and SNAPPED the held target floor→ceiling, railing the resampler's ±500
-    ppm authority for ~40 s while it rebuilt the fill — the observed −500 ppm probe
-    rail. The fix: while a floor prime is live, the `NotL0` branch HOLDS the floor
-    (STATUS `prime_hold`) until the ladder reaches l0. This pins that contract in the
-    Rust source so it can't silently regress to the unconditional snap.
-    """
-    resampler_text = _lane_resampler_rs_text()
-    state_text = _state_rs_text()
-
-    # The prime-aware hold branch guards the NotL0 snap on `floor_prime_pending`.
-    assert "if self.floor_prime_pending && !s.dll_l0_locked {" in resampler_text, (
-        "the NotL0 branch must HOLD the floor while a floor prime is live and the "
-        "ladder is still Probing (the floor-prime railed-regime fix)"
-    )
-    # The unconditional NotL0 snap-back is STILL present for the UNPRIMED case (it is
-    # load-bearing for a genuine mid-stream DLL demotion / cold acquisition — the
-    # #1145 bit-identical invariant depends on it).
-    assert "self.snap_back(DecayFrozenReason::NotL0);" in resampler_text, (
-        "the unconditional NotL0 snap must remain for the UNPRIMED case"
-    )
-    # The honest STATUS token for the primed-holding state exists and rides an
-    # append-only wire code (6).
-    assert "PrimeHold," in resampler_text, "the PrimeHold frozen-reason variant must exist"
-    assert "Some(DecayFrozenReason::PrimeHold) => 6," in resampler_text, (
-        "PrimeHold must map to the append-only wire code 6"
-    )
-    assert '6 => "prime_hold",' in resampler_text, (
-        "wire code 6 must render as the prime_hold STATUS token"
-    )
-    # The token reaches STATUS via the shared code_str mapper (no separate emitter).
-    assert "DecayFrozenReason::code_str(" in state_text, (
-        "STATUS must render frozen_reason via the shared code_str mapper"
-    )
-
-
-def test_cushion_decay_session_boundary_snap_honours_the_live_proof():
-    """Session-boundary paths must snap the held target via the proof-honouring
-    primitive, NOT the unconditional ceiling snap.
-
-    Per-session prime-at-floor (PR #1146 → per-session): `reset` (idle/host-pause /
-    device-loss) and `unlock_for_underfill` (starvation = the natural session end)
-    both call `snap_decay_back_honoring_proof`, which re-primes at the FLOOR when a
-    live valid proof is present (skip the ~2.5-min descent every session) and the
-    CEILING otherwise. The unconditional `snap_decay_back` (ceiling) is reserved for
-    the revocation escape (`snap_decay_to_ceiling`).
-    """
-    resampler_text = _lane_resampler_rs_text()
-    assert "fn snap_decay_back(" in resampler_text
-    assert "fn snap_decay_back_honoring_proof(" in resampler_text, (
-        "the per-session honouring snap primitive must exist"
-    )
-    # Both session-boundary paths route through the honouring snap so a live proof
-    # re-primes at the floor.
-    reset_start = resampler_text.index("pub fn reset(")
-    reset_end = resampler_text.index("fn ", reset_start + 10)
-    assert "snap_decay_back_honoring_proof" in resampler_text[reset_start:reset_end], (
-        "reset() must snap via snap_decay_back_honoring_proof (floor when a proof is live)"
-    )
-    unlock_start = resampler_text.index("fn unlock_for_underfill(")
-    unlock_end = resampler_text.index("fn render_silence(", unlock_start)
-    assert (
-        "snap_decay_back_honoring_proof" in resampler_text[unlock_start:unlock_end]
-    ), (
-        "unlock_for_underfill() must snap via snap_decay_back_honoring_proof "
-        "(the natural session end honours the live proof)"
-    )
-
-    # The revocation escape stays the UNCONDITIONAL ceiling snap — a distrusted
-    # proof must always re-acquire deep, never re-prime at the floor.
-    ceiling_start = resampler_text.index("pub fn snap_decay_to_ceiling(")
-    ceiling_end = resampler_text.index("fn ", ceiling_start + 10)
-    ceiling_body = resampler_text[ceiling_start:ceiling_end]
-    assert "self.snap_decay_back(" in ceiling_body, (
-        "snap_decay_to_ceiling must call the UNCONDITIONAL snap_decay_back (ceiling)"
-    )
-    assert "snap_decay_back_honoring_proof" not in ceiling_body, (
-        "the revoke escape must NOT honour the proof — it always snaps to the ceiling"
-    )
-
-    # The proof-validity signal at snap time is the SAME `flag_present` atomic the
-    # revoke path clears — single source of truth (no second copy).
-    assert "fn live_proof_present(" in resampler_text
-    live_start = resampler_text.index("fn live_proof_present(")
-    live_end = resampler_text.index("fn ", live_start + 10)
-    assert "flag_present" in resampler_text[live_start:live_end], (
-        "live_proof_present must read the shared flag_present atomic (the revoke SSOT)"
-    )
-
-
-def test_host_compliance_status_block_and_wiring():
-    """The DEFAULT-OFF host-compliance persistence surfaces `resampler.compliance`
-    and rides the cushion-decay flag (no new top-level feature gate).
-
-    The prime-at-floor + revalidation feature persists a proof to a
-    fan-in-owned JSON file, primes the decay at its floor when a valid proof
-    exists, and revokes on the per-session probe fail / DLL demotion / early
-    unlock (a probe fail is TWO-strike; DLL demotion / confirmed churn are one).
-    STATUS must additively expose the four fields the operator watches
-    (`flag_present` / `proved_at` / `revoked_reason_last` /
-    `consecutive_failures`); the mixer must service it once per period; and the
-    persistence must be gated behind `input_resampler_cushion_decay_enabled`, not
-    a separate flag.
-    """
-    config_text = _config_rs_text()
-    mixer_text = _mixer_rs_text()
-    state_text = _state_rs_text()
-    resampler_text = _lane_resampler_rs_text()
-
-    # 1. STATUS surfaces the additive compliance fields under resampler, including
-    #    the two-strike probe-fail counter.
-    assert '"compliance":{' in state_text
-    for field in (
-        '"flag_present"',
-        '"proved_at"',
-        '"revoked_reason_last"',
-        '"consecutive_failures"',
-    ):
-        assert field in state_text, f"STATUS resampler.compliance must carry {field}"
-
-    # 2. The mixer services the compliance state once per period.
-    assert "fn service_host_compliance(" in mixer_text
-    assert "self.service_host_compliance(" in mixer_text, (
-        "the mixer step must call service_host_compliance once per render period"
-    )
-
-    # 3. Persistence rides the cushion-decay flag — NO separate top-level gate.
-    assert "config.input_resampler_cushion_decay_enabled" in mixer_text, (
-        "prime-at-floor / persistence must be gated behind the cushion-decay flag"
-    )
-
-    # 4. The prime-at-floor primitive exists on the resampler and is invoked only
-    #    from the gated build helper.
-    assert "pub fn prime_decay_at_floor(" in resampler_text
-    assert "resampler.prime_decay_at_floor()" in mixer_text, (
-        "the gated build helper must prime the decay at the floor for a valid proof"
-    )
-
-    # 5. The persistence path is a config knob defaulting under the fan-in state
-    #    dir (already-owned write path — no new StateDirectory / privilege grant).
-    assert "JASPER_FANIN_HOST_COMPLIANCE_PATH" in config_text
-    assert "/var/lib/jasper/fanin/host_compliance.json" in _host_compliance_rs_text(), (
-        "the default compliance path must be a sibling of the xrun log under the "
-        "fan-in state dir (the already-owned ReadWritePaths=/var/lib/jasper posture)"
-    )
-
-    # 6. The write/revoke/strike journal events are present (observability
-    #    contract). The two-strike probe-fail RETAIN and the probe-PASS reset are
-    #    their own events so an operator can tell a retained strike (proof kept)
-    #    from a delete-revoke and a counter reset.
-    # The prime decision is the mixer's; the four PERSISTENCE outcomes are logged
-    # by the deferred writer thread that performs them (#2533), so the events live
-    # with the I/O rather than on the render thread. Both halves are pinned: the
-    # names still exist, and they exist in the file that actually writes.
-    assert "event=fanin.host_compliance.prime_at_floor" in mixer_text, (
-        "the mixer must log the prime decision it makes"
-    )
-    for event in (
-        "event=fanin.host_compliance.written",
-        "event=fanin.host_compliance.revoked",
-        "event=fanin.host_compliance.strike_retained",
-        "event=fanin.host_compliance.pass_reset",
-    ):
-        assert event in _host_compliance_rs_text(), (
-            f"the compliance writer must emit {event}"
-        )
-
-    # 7. The two-strike probe-fail policy is a pure, testable classifier that the
-    #    mixer consults: a probe FAIL retains the proof the first time (a
-    #    measurement), a DLL demotion / confirmed churn revoke on one strike, and
-    #    the proof is deleted only at the strike limit. The mixer keeps
-    #    `flag_present` TRUE on a retained strike (so the next session still
-    #    primes) — the SSOT interaction with #1154 (a counter=1 session's snap
-    #    still lands at the floor).
-    host_compliance_text = _host_compliance_rs_text()
-    assert "pub fn classify_strike(" in host_compliance_text, (
-        "the two-strike policy must be a pure classifier"
-    )
-    assert "pub const PROBE_FAIL_STRIKE_LIMIT: u32 = 2;" in host_compliance_text, (
-        "a probe fail must be two-strike (retain once, delete on the second)"
-    )
-    assert "RetainWithStrike" in host_compliance_text
-    assert "classify_strike(reason, current_failures)" in mixer_text, (
-        "the mixer must decide keep-vs-delete via the pure classifier"
-    )
-    assert "on_strike_retained(" in mixer_text, (
-        "a retained probe-fail strike must persist the bumped counter and KEEP "
-        "flag_present true (the next session still primes at the floor)"
-    )
-
-
-def test_host_compliance_prime_is_per_session_not_construction_only():
-    """The prime-at-floor is PER-SESSION: the session-boundary snap honours the
-    live proof and the revalidation `floor_primed` is re-sampled per lock.
-
-    Hardware evidence (jts.local 2026-07-03): a second session in ONE fanin daemon
-    lifetime was descending from the full ceiling because the prime happened only at
-    lane construction. The fix routes both session-boundary snaps through the
-    proof-honouring primitive AND feeds the tracker the LIVE `flag_present` at each
-    lock so session B (primed off session A's fresh proof) both seats at the floor
-    and runs the one-strike revalidation.
-    """
-    mixer_text = _mixer_rs_text()
-    resampler_text = _lane_resampler_rs_text()
-    host_compliance_text = _host_compliance_rs_text()
-
-    # The RevalidationTracker.step takes the live per-lock prime signal, and the
-    # mixer feeds it from the SAME flag_present atomic (single source of truth).
-    assert "floor_primed_now: bool" in host_compliance_text, (
-        "RevalidationTracker::step must take the live per-lock floor_primed signal"
-    )
-    assert "self.floor_primed = floor_primed_now" in host_compliance_text, (
-        "the tracker must re-sample floor_primed at the rising edge (per-lock)"
-    )
-    assert "hc.obs.flag_present.load(Ordering::Relaxed)" in mixer_text, (
-        "the mixer must feed step() the live flag_present (the revoke SSOT), so the "
-        "snap destination and the per-lock revalidation gate share one signal"
-    )
-    # The honouring snap re-primes at the floor via the same prime_at_floor the
-    # construction path uses (one floor-prime mechanism, called per session).
-    honor_start = resampler_text.index("fn snap_decay_back_honoring_proof(")
-    honor_end = resampler_text.index("fn engage_armed_floor_prime(", honor_start)
-    honor_body = resampler_text[honor_start:honor_end]
-    assert "self.decay.arm_prime_at_floor()" in honor_body, (
-        "the honouring snap must ARM the floor prime when a live proof is present "
-        "(it engages on the lane's first frames — #2533)"
-    )
-
-
-def test_a_proven_floor_cannot_touch_a_lane_whose_host_is_not_streaming():
-    """#2533: the persisted floor prime is ARMED at a session boundary and ENGAGED
-    only by real input frames.
-
-    The proof is evidence about a host that STREAMED. Applying it to a lane that is
-    merely attached let a silent host's floor reach the output path: it lowered the
-    lock threshold from the acquisition ceiling to the floor, and it reported
-    `decay_at_floor()` — the compliance proof machine's "descent complete" input,
-    the gate in front of an `fsync` on the render thread — for a descent that never
-    ran. Fan-in's render loop has one period of budget (5.33 ms at 256 frames) and
-    the downstream pipeline holds two 128-frame slots, so anything blocking there
-    costs a whole slot of audio.
-    """
-    resampler_text = _lane_resampler_rs_text()
-
-    # The arm/engage pair exists and the engage is driven by the INPUT pushes.
-    assert "pub fn arm_prime_at_floor(" in resampler_text
-    assert "pub fn engage_armed_prime(" in resampler_text
-    for push in ("pub fn push_input(", "pub fn push_input_wide("):
-        start = resampler_text.index(push)
-        end = resampler_text.index("\n    }", start)
-        assert "self.engage_armed_floor_prime();" in resampler_text[start:end], (
-            f"{push} must engage an armed floor prime — frames are the trigger"
-        )
-
-    # The build-time entry ARMS rather than applying.
-    build_start = resampler_text.index("pub fn prime_decay_at_floor(")
-    build_end = resampler_text.index("\n    }", build_start)
-    assert "self.decay.arm_prime_at_floor();" in resampler_text[build_start:build_end], (
-        "the build-time prime entry must ARM, not apply"
-    )
-
-    # An arm must SURVIVE the routine snap-backs it waits through. `tick` calls
-    # `snap_back` on every unlocked period and the mixer ticks every period, so an
-    # arm retired there is destroyed in the same render period it is created — the
-    # regression the first cut of #2533 shipped: the prime became dead code and the
-    # per-session descent skip was silently lost. Retirement is explicit instead.
-    snap_start = resampler_text.index("pub fn snap_back(")
-    snap_end = resampler_text.index("\n        }", snap_start)
-    snap_body = resampler_text[snap_start:snap_end]
-    assert "self.floor_prime_pending = false;" in snap_body, (
-        "snap_back must still abandon an ENGAGED prime (the pre-#2533 contract)"
-    )
-    assert "floor_prime_armed" not in snap_body, (
-        "snap_back must NOT retire an ARM — it runs on every unlocked tick, so an "
-        "arm cleared here can never survive to meet the frames that engage it"
-    )
-    assert "pub fn disarm_prime(" in resampler_text, (
-        "retiring an arm must be an explicit operation"
-    )
-    # Both deciders call it: the revalidation escape and a no-proof boundary.
-    ceiling_start = resampler_text.index("pub fn snap_decay_to_ceiling(")
-    ceiling_end = resampler_text.index("\n    }", ceiling_start)
-    assert "disarm_prime()" in resampler_text[ceiling_start:ceiling_end], (
-        "the revalidation escape must retire a waiting arm (a distrusted proof "
-        "must not be resurrected by the next frame)"
-    )
-    honour_start = resampler_text.index("fn snap_decay_back_honoring_proof(")
-    honour_end = resampler_text.index("fn engage_armed_floor_prime(", honour_start)
-    assert "disarm_prime()" in resampler_text[honour_start:honour_end], (
-        "a session boundary with no live proof must retire any arm it inherits"
-    )
-
-
 def test_no_blocking_io_on_the_fanin_render_thread():
     """#2533: no filesystem write and no device open/close may run inside `step()`.
 
@@ -834,33 +527,17 @@ def test_no_blocking_io_on_the_fanin_render_thread():
     field. Fan-in's own ring-stall detector has a 1 s floor and is structurally
     blind to it, so nothing counts these; the guard has to be structural.
 
-    Three owners, all off-thread: `fanin-compliance-writer` (proof fsync +
-    revoke), `fanin-direct-opener` (gadget `snd_pcm_open` / `snd_pcm_close`), and
-    `fanin-ring-attacher` (`RingReader::create_or_attach`, whose inter-process
-    `flock` is bounded at 500 ms — ~187 slots — and which needs no USB host at
-    all to fire: a ring lane detached by a geometry shear or a permission refusal
-    stays detached until an operator clears it, paying that every ~2 s: #2538).
+    Two owners, both off-thread: `fanin-direct-opener` (gadget `snd_pcm_open` /
+    `snd_pcm_close`) and `fanin-ring-attacher` (`RingReader::create_or_attach`,
+    whose inter-process `flock` is bounded at 500 ms — ~187 slots — and which
+    needs no USB host at all to fire: a ring lane detached by a geometry shear or
+    a permission refusal stays detached until an operator clears it, paying that
+    every ~2 s: #2538).
     """
-    mixer_text = _mixer_rs_text()
-    host_compliance_text = _host_compliance_rs_text()
     direct_text = _direct_capture_rs_text()
     ring_text = _ring_capture_rs_text()
 
-    # 1. The compliance writer thread owns every proof write and the revoke.
-    assert "pub fn spawn_writer(" in host_compliance_text
-    assert '.name("fanin-compliance-writer".to_string())' in host_compliance_text, (
-        "the proof writer must be its own named thread"
-    )
-    # The mixer NEVER performs the I/O itself — it queues.
-    mixer_code = _rust_code_only(mixer_text)
-    for inline in (".store(&hc.path)", "HostCompliance::revoke("):
-        assert inline not in mixer_code, (
-            f"the render thread must not call {inline} — an fsync/unlink inside the "
-            "period budget is the #2533 defect"
-        )
-    assert "hc.request_write(" in mixer_code, "the mixer must queue writes instead"
-
-    # 2. The direct-lane opener thread owns every gadget open and close.
+    # 1. The direct-lane opener thread owns every gadget open and close.
     assert "pub(super) fn spawn(" in direct_text
     assert '.name("fanin-direct-opener".to_string())' in direct_text, (
         "the gadget opener must be its own named thread"
@@ -892,7 +569,7 @@ def test_no_blocking_io_on_the_fanin_render_thread():
         "the Absent retry must queue an open and poll for the result"
     )
 
-    # 3. The ring-lane attacher thread owns every reattach (#2538).
+    # 2. The ring-lane attacher thread owns every reattach (#2538).
     assert "pub(super) fn spawn(" in ring_text
     assert '.name(format!("fanin-ring-attacher-{label}"))' in ring_text, (
         "the ring attacher must be its own named thread, one per lane"
@@ -949,88 +626,11 @@ def test_no_blocking_io_on_the_fanin_render_thread():
         "each ring lane must seed its retry latch from its own phase"
     )
 
-    # 4. All three queues are observable in STATUS (depth / in-flight), so a stuck
-    #    writer, a hanging device open, or a hanging attach is visible rather than
-    #    silent.
+    # 3. Both queues are observable in STATUS (depth / in-flight), so a hanging
+    #    device open or a hanging attach is visible rather than silent.
     state_text = _state_rs_text()
-    assert '"pending_writes"' in state_text
     assert '"reopen_pending"' in state_text
     assert '"attach_pending"' in state_text
-
-
-def test_host_compliance_prime_gated_on_host_clock_servo_armed():
-    """The prime-at-floor must be gated on the host-clock DLL actually being armed.
-
-    The prime skips the ~2.5-min cushion descent on the strength of a PRIOR
-    session's host-clock compliance proof, and its whole safety story ("the
-    per-session servo probe revalidates the prime") is enacted by the
-    `fanin-host-clock` servo thread: `dll_l0_locked`, the probe verdict, the
-    two-strike ProbeFail (#1160), and the `PrimeHold` exit all ride it. That
-    thread runs ONLY when host-clock AND USB-direct are both armed
-    (`Config::host_clock_servo_armed`). If a valid proof primes a session while
-    that servo is NOT running, `dll_l0_locked` is pinned false forever: the
-    session sits in `PrimeHold` at the floor with no ladder to reach l0, no probe
-    to revalidate, and no demotion — the floor held FOREVER on stale evidence
-    (only the underfill/churn net could catch an unsustainable floor). #1145
-    proved this exact misconfig inert (armed-but-frozen decay == disabled); a prime
-    without the DLL would silently convert that into a permanent unvalidated
-    divergence. This pins the config gate so the prime and the servo can never
-    disagree about whether the revalidating DLL is live.
-    """
-    config_text = _config_rs_text()
-    mixer_text = _mixer_rs_text()
-    main_text = (_REPO_ROOT / "rust" / "jasper-fanin" / "src" / "main.rs").read_text(
-        encoding="utf-8"
-    )
-
-    # 1. The single-source-of-truth predicate is the AND of host-clock and direct.
-    assert "pub fn host_clock_servo_armed(&self) -> bool {" in config_text, (
-        "Config must expose the servo-armed predicate (the SSOT the prime gate + "
-        "the servo-spawn gate both read)"
-    )
-    armed_start = config_text.index("pub fn host_clock_servo_armed(&self) -> bool {")
-    armed_body = config_text[armed_start : config_text.index("}", armed_start)]
-    # Containment — the SAFE half of the first-`}` slicing class: this body has
-    # no braces of its own, so the slice lands on the fn's own closing brace. If
-    # it ever grows one the slice truncates EARLY, which fails the assertion
-    # below loudly rather than passing on a neighbour's text. This pins the
-    # other direction: the slice must not run past the function into the next
-    # one. (The count is 1, not 0 — the slice starts AT this fn's own opener.)
-    #
-    # Counts `fn `, not `pub fn `: a PRIVATE `fn` is the overrun this assertion
-    # is most likely to meet — `config.rs` carries private helpers between its
-    # public ones — and a `pub fn `-only count would run straight past one and
-    # keep reporting containment.
-    assert armed_body.count("fn ") == 1, (
-        "the host_clock_servo_armed slice ran past its own function"
-    )
-    assert "self.host_clock_enabled && self.usb_direct_enabled" in armed_body, (
-        "host_clock_servo_armed must be host_clock_enabled AND usb_direct_enabled"
-    )
-
-    # 2. The mixer's prime arm is guarded on that predicate — a valid proof alone
-    #    does NOT prime; the servo must be armed too. Pin the guarded match arm and
-    #    the un-primed fall-through arm for the disarmed case.
-    assert "let host_clock_armed = config.host_clock_servo_armed();" in mixer_text, (
-        "the prime gate must resolve host_clock_armed via the SSOT predicate"
-    )
-    assert (
-        "Some(rec) if rec.valid_for(live_floor) && host_clock_armed =>" in mixer_text
-    ), (
-        "the prime-at-floor arm must additionally require host_clock_armed "
-        "(the DLL that revalidates the prime must be live)"
-    )
-    assert "reason=host_clock_disarmed" in mixer_text, (
-        "a valid proof with the DLL disarmed must log the suppressed-prime "
-        "diagnostic and descend from the ceiling (proof preserved, lane inert)"
-    )
-
-    # 3. `main`'s servo-spawn gate derives from the SAME predicate, so the servo
-    #    and the prime can never disagree about whether the DLL is live.
-    assert "config.host_clock_servo_armed()" in main_text, (
-        "main's host_clock_enabled_effective must derive from the shared "
-        "servo-armed predicate (single source of truth)"
-    )
 
 
 def test_servo_thread_exit_clears_reverse_signals():
@@ -1038,15 +638,9 @@ def test_servo_thread_exit_clears_reverse_signals():
 
     The exit path (graceful shutdown OR caught panic) neutralizes the pitch ctl so
     the host free-runs. It must ALSO clear the outer-loop signals the mixer's decay
-    tick + compliance revalidation read (`ladder_l0`, `commanded_milli_ppm`, and —
-    since the host-compliance persistence landed — `fallback_reason_code`, `probe_result_code`,
-    `probe_response_ratio_milli`). Otherwise a dead thread leaves `ladder_l0=true`
-    frozen (driving the thin-cushion free-run churn loop) OR a stale host fallback
-    cause / probe FAIL that would make compliance spuriously REVOKE a
-    proof for a session whose ladder was fine when the daemon was told to stop —
-    revocation must be driven only by a LIVE explicit cause, not by the servo
-    shutting down. All stores sit AFTER the `catch_unwind` block so they run on both
-    exit paths.
+    tick reads (`ladder_l0`, `commanded_milli_ppm`); otherwise a dead thread leaves
+    `ladder_l0=true` frozen, driving the thin-cushion free-run churn loop. Both
+    stores sit AFTER the `catch_unwind` block so they run on both exit paths.
     """
     host_clock_text = (
         _REPO_ROOT / "rust" / "jasper-fanin" / "src" / "host_clock.rs"
@@ -1061,24 +655,6 @@ def test_servo_thread_exit_clears_reverse_signals():
     )
     assert "signals.commanded_milli_ppm.store(0, Ordering::Relaxed)" in exit_tail, (
         "servo-thread exit must clear commanded_milli_ppm"
-    )
-    # The three compliance-revalidation reverse signals must clear on exit too, so a
-    # stopped servo cannot leave a stale fallback cause / probe FAIL.
-    assert "signals.fallback_reason_code" in exit_tail, (
-        "servo-thread exit must clear the explicit fallback cause"
-    )
-    assert "fallback_reason_code(FallbackReason::None)" in exit_tail, (
-        "servo-thread exit must store the no-fallback code"
-    )
-    assert "signals.probe_result_code.store(" in exit_tail, (
-        "servo-thread exit must clear probe_result_code (→ ProbeResult::None) so a "
-        "dead thread cannot leave a stale probe FAIL that revokes a good proof"
-    )
-    assert "ProbeResult::None" in exit_tail, (
-        "the probe_result_code clear must store the None verdict, not a stale value"
-    )
-    assert "signals.probe_response_ratio_milli.store(" in exit_tail, (
-        "servo-thread exit must clear probe_response_ratio_milli alongside the verdict"
     )
 
 
