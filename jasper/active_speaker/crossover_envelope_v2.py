@@ -895,7 +895,7 @@ def _attribution_lines(
     (:func:`~jasper.active_speaker.flat_spec.spec_band_tilt`), the one
     reading here that **no reference-frame choice can move** — which is what
     makes it safe to render while WHICH anchor the spec should use is still
-    an open owner decision (#1857's Q-E, ``docs/attribution-stage-plan.md``
+    an open owner decision (#1857's Q-E, ``docs/historical/attribution-stage-plan.md``
     section 9).
 
     **Disclosure only — decides nothing.** Every figure is copied from the
@@ -1034,7 +1034,7 @@ def _per_band_flatness_lines(spec_bands: Any) -> list[str]:
     the pointer line reads); nothing is recomputed, no band's ``passed`` or
     the overall verdict moves, and the reference frame itself is untouched.
     WHICH frame the spec SHOULD anchor to is #1857's still-open Q-E (an
-    owner decision — see ``docs/attribution-stage-plan.md``); this function
+    owner decision — see ``docs/historical/attribution-stage-plan.md``); this function
     does not pick a side, it only stops the current frame's single pointer
     from being read alone.
 

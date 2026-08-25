@@ -942,7 +942,7 @@ class BandTilt:
     anything else, and ``step_db`` does not move -- which is precisely what
     makes it safe to ship while WHICH anchor the spec should use is still
     an open owner decision (#1857's Q-E,
-    ``docs/attribution-stage-plan.md`` section 9). This class does not pick
+    ``docs/historical/attribution-stage-plan.md`` section 9). This class does not pick
     a side; it states the relationship both sides agree on.
 
     The cancellation is exact in arithmetic and not quite exact in floating
@@ -1243,7 +1243,7 @@ def spec_flatness_gauge(report: FlatSpecReport) -> SpecFlatness:
     #1857, reproduced. Re-ranking here would not fix that, it would only
     move the same anchor question somewhere less visible; WHICH anchor the
     spec should use is an open owner decision (#1857's Q-E,
-    ``docs/attribution-stage-plan.md`` section 9) and picking one would
+    ``docs/historical/attribution-stage-plan.md`` section 9) and picking one would
     move graded verdicts, which this function must never do. What this
     function does instead is carry :func:`spec_band_tilt` beside the
     pointer, so the frame-free reading travels with the frame-dependent one

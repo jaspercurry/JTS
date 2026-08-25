@@ -4,7 +4,7 @@
 
 """The finding — attribution's unit of diagnosis, as a persisted artifact.
 
-``docs/attribution-stage-plan.md`` §3.1 defines it: ``{mechanism, band,
+``docs/historical/attribution-stage-plan.md`` §3.1 defines it: ``{mechanism, band,
 evidence, confidence, fix_class, household_copy, probes_run,
 probes_recommended}``. This module is that artifact, its validation, and its
 self-describing serialization. It computes nothing — detectors (WO-4) and the

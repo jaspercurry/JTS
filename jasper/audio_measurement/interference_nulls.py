@@ -1770,7 +1770,7 @@ def classify_dip_position_variance(
     binds the registry: *position-invariance says "this is real"; it does not
     say "this is correctable"*, and within one session it cannot separate an
     origin that travels with the speaker from a room path that did not move.
-    ``docs/attribution-stage-plan.md`` §5 rules on the same point for probe
+    ``docs/historical/attribution-stage-plan.md`` §5 rules on the same point for probe
     P2 — a finding whose only support is position variance stays ``unsure``,
     with P4 (rotating the speaker) as the adjudicator — and
     :mod:`jasper.attribution.promotion` routes ``position_invariant`` to

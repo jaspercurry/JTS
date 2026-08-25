@@ -670,7 +670,7 @@ never redirected.
   Room's listening-position spec still carries the flat `hard_timeout_ms`
   default (benign under the per-phase re-arm, which Room shares).
   Design of record:
-  [HANDOFF-correction-revision-plan.md](HANDOFF-correction-revision-plan.md) §3.1.
+  [HANDOFF-correction-revision-plan.md](historical/HANDOFF-correction-revision-plan.md) §3.1.
 - 🧪 **P4 — deterministic verify-acceptance loop (hardware-free complete,
   on-device threshold-tuning pending H1).** After a correction is applied
   and re-measured, deterministic code — never a model, never the user's
@@ -746,7 +746,7 @@ never redirected.
   and documents the measured pend rates as the H1 target. All synthetic (real
   evaluator against ground-truth curves + session/handler-level integration
   through the real verify path). Design of record:
-  [HANDOFF-correction-revision-plan.md](HANDOFF-correction-revision-plan.md) §4 P4.
+  [HANDOFF-correction-revision-plan.md](historical/HANDOFF-correction-revision-plan.md) §4 P4.
 - 🧪 **P7 — active-crossover measurement flow (hardware-free complete,
   on-device pending H2).** The Layer-A commissioning *flow* now rides
   the shared substrate. After protected speaker setup, one server envelope
@@ -845,7 +845,7 @@ never redirected.
   phone-mic `getUserMedia`/CSP path + the driver and future re-enabled summed sweep playback
   on real drivers are not exercised hardware-free (same status as the
   room/sync relay). Design of record:
-  [HANDOFF-correction-revision-plan.md](HANDOFF-correction-revision-plan.md) §4 P7.
+  [HANDOFF-correction-revision-plan.md](historical/HANDOFF-correction-revision-plan.md) §4 P7.
 
   > **Stale as of 2026-07-24 — the runner named in this paragraph is deleted.**
   > W5b (#1688) removed

@@ -4,7 +4,7 @@
 
 """One measurement session's identity, stable across every store.
 
-**The problem this exists to fix** (``docs/attribution-stage-plan.md`` §6, on
+**The problem this exists to fix** (``docs/historical/attribution-stage-plan.md`` §6, on
 WO-0's corpus sweep): the 2026-07 corpus was split across four stores that
 share no identifier — the laptop ``captures/`` archive, the crossover-v2
 commissioning bundles, the room-correction bundles, and the operator capture

@@ -52,7 +52,7 @@ view removes exactly one of them:
 Both are *views*, not fixes. Neither changes a graded verdict, and neither
 claims to be a better grader — which anchor and which weighting the spec
 *should* use is an open owner decision (issue #1857's Q-E,
-``docs/attribution-stage-plan.md`` section 9), and moving it here would move
+``docs/historical/attribution-stage-plan.md`` section 9), and moving it here would move
 graded verdicts, which this module must never do.
 
 Purity

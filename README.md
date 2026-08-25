@@ -1044,7 +1044,7 @@ reference. Currently:
   defect, the missing accountability assertions (inter-driver realized
   level, prediction-gated auto-apply, applied-implies-graded), and the
   evidence-gated boost doctrine with delta-probe verification.
-- [`llm-native-tuning-workbench-plan.md`](docs/llm-native-tuning-workbench-plan.md)
+- [`llm-native-tuning-workbench-plan.md`](docs/historical/llm-native-tuning-workbench-plan.md)
   — **Historical design plan (proposed 2026-07-28)**, superseded 2026-08-21 by
   `tuning-master-plan.md` above, for the agent-assisted tuning workbench:
   expose existing measurements and DSP capabilities through a factual context
@@ -1055,12 +1055,12 @@ reference. Currently:
   one new mutation owner" claim is superseded — `play_program` is the single
   activation door — and the SSH-operator + runbook model replaced the
   workbench direction. Read for the design archaeology.
-- [`tuning-bench-design.md`](docs/tuning-bench-design.md)
+- [`tuning-bench-design.md`](docs/historical/tuning-bench-design.md)
   — **Historical design snapshot (2026-07-27)** for the original
   prescriptive tuning-bench shape. Retained for the iLoud-session rationale
   and audit archaeology; superseded by the LLM-native workbench plan above —
   itself superseded; current direction lives in `tuning-master-plan.md`.
-- [`tuning-bench-execution-plan.md`](docs/tuning-bench-execution-plan.md)
+- [`tuning-bench-execution-plan.md`](docs/historical/tuning-bench-execution-plan.md)
   — **Historical execution snapshot (2026-07-27)** for the superseded
   PR-B1..B4 ladder. Retained for repository seams and implementation traps
   verified at the snapshot date and expected to drift, not as current
@@ -1091,7 +1091,7 @@ reference. Currently:
   predicted response is projected onto the wire, verify-failed demotes
   with Undo primary, and the phone gains an orientation/pattern preview
   plus honest time-budget and CHECK copy.
-- [`attribution-stage-plan.md`](docs/attribution-stage-plan.md)
+- [`attribution-stage-plan.md`](docs/historical/attribution-stage-plan.md)
   — **Historical work order (2026-07-29, issue #1866)**, its open work orders
   absorbed 2026-08-21 into `tuning-master-plan.md`'s waves while the shipped
   `jasper/attribution/` findings/promotion code stands as substrate, for the
@@ -1129,7 +1129,7 @@ reference. Currently:
   defaults, relay-first/local-backup parity, blocker-vs-nudge language,
   returning-user state, one phone handoff, target/headroom/latency promises,
   mandatory proof, acceptance authority, and ownership boundaries.
-- [`HANDOFF-correction-revision-plan.md`](docs/HANDOFF-correction-revision-plan.md) —
+- [`HANDOFF-correction-revision-plan.md`](docs/historical/HANDOFF-correction-revision-plan.md) —
   **The correction/measurement program's roadmap spine, plus the historical
   P-track plan as its appendix.** Program ordering — what supersedes what and
   what runs next — moved to `tuning-master-plan.md` above on 2026-08-21. The
@@ -1141,7 +1141,7 @@ reference. Currently:
   update. The appendix is the completed 2026-07-12 layered-pipeline
   campaign: H1 carries into the Room hardware track; the rest is rationale and
   archaeology, not current behavior.
-- [`audio-commissioning-roadmap.md`](docs/audio-commissioning-roadmap.md)
+- [`audio-commissioning-roadmap.md`](docs/historical/audio-commissioning-roadmap.md)
   — **Historical roadmap (owner-ratified 2026-08-14)**, replaced whole
   2026-08-21 by `tuning-master-plan.md` above; its Ethos section was the one
   carve-out until #2865 moved all five of its rulings on 2026-08-23 into

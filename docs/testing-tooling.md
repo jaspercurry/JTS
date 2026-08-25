@@ -1801,7 +1801,7 @@ graph the capture actually went through. A CHECK/MEASURE capture and a summed
 one report the same `config_path` while going through different transfer
 functions (the 2026-08-19 jts3 session observed a +7…+15 dB per-branch
 difference on that box), so `graph.kind` is the field that tells them apart. See
-["`provenance` — the config label is not the graph"](HANDOFF-crossover-measurement-v2.md#provenance--the-config-label-is-not-the-graph).
+["`provenance` — the config label is not the graph"](historical/crossover-measurement-v2-campaign-record.md#provenance--the-config-label-is-not-the-graph).
 
 Three things can make the script refuse a run, and none of them ever
 deletes a file that was already pulled — the refusal is the exit code

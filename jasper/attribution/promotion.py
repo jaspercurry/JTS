@@ -4,7 +4,7 @@
 
 """The promotion paths — verdicts the flow already computed become findings.
 
-``docs/attribution-stage-plan.md`` §3.1: "The excluded-band tau records are
+``docs/historical/attribution-stage-plan.md`` §3.1: "The excluded-band tau records are
 the embryo: [attribution] promotes them from 'reason to refuse EQ' to findings
 with mechanism and fix class attached."
 

@@ -17,7 +17,9 @@
 #   bash scripts/doc-freshness.sh 60          # custom threshold
 #   bash scripts/doc-freshness.sh 90 --all    # also include top-level + non-HANDOFF
 #                                             # docs/, minus the archival trees
-#                                             # (docs/research/, docs/historical/)
+#                                             # (docs/research/, docs/historical/,
+#                                             # docs/bass-extension-waves/,
+#                                             # docs/correction-ux-wave3/)
 #
 # Output columns:
 #   Date    last-verified (or last-touched) date
@@ -70,7 +72,21 @@ today_iso=$(date +%Y-%m-%d)
 # Build doc list (portable to bash 3.2 — no mapfile)
 docs=()
 archival_excluded=0
-while IFS= read -r d; do docs+=("$d"); done \
+
+# One classifier, both enumerations. An archival tree records WHEN something
+# was learned, so the only remedy this report offers — "re-verify and bump the
+# footer" — would falsify its provenance. A HANDOFF that has been archived is
+# archival too, which is why this runs over the HANDOFF list as well.
+classify_doc() {
+  case "$1" in
+    docs/research/*|docs/historical/*|docs/bass-extension-waves/*|docs/correction-ux-wave3/*)
+      archival_excluded=$(( archival_excluded + 1 )) ;;
+    *)
+      docs+=("$1") ;;
+  esac
+}
+
+while IFS= read -r d; do classify_doc "$d"; done \
   < <(find docs -maxdepth 2 -name 'HANDOFF-*.md' -type f 2>/dev/null | sort)
 if (( include_all )); then
   while IFS= read -r d; do docs+=("$d"); done \
@@ -83,25 +99,12 @@ if (( include_all )); then
   # the defect, not the current age. `--all` already promises "top-level +
   # non-HANDOFF docs/"; capping the depth quietly broke that promise.
   #
-  # RESOLVED — issue #2064 (owner ruling 2026-08-17): docs/research/** and
-  # docs/historical/** are pruned below. Those directories ARE the
-  # classification: in a research bank the date IS the fact, so the only
-  # action this report can offer — "re-verify and bump the footer" — would
-  # falsify the provenance it is reporting on. So they are excluded by
-  # directory, not by per-file opt-out, and the exclusion is PRINTED with its
-  # count: a silent prune would let this report read as "everything was
-  # checked" when it was not.
-  #
-  # One enumeration, one classifier: the count and the doc list come from the
-  # same pass, so they cannot disagree.
-  while IFS= read -r d; do
-    case "$d" in
-      docs/research/*|docs/historical/*)
-        archival_excluded=$(( archival_excluded + 1 )) ;;
-      *)
-        docs+=("$d") ;;
-    esac
-  done < <(find docs -name '*.md' -type f ! -name 'HANDOFF-*.md' 2>/dev/null | sort)
+  # Archival trees are pruned by `classify_doc` above (issue #2064, owner
+  # ruling 2026-08-17). They are excluded by directory, not by per-file
+  # opt-out, and the exclusion is PRINTED with its count: a silent prune would
+  # let this report read as "everything was checked" when it was not.
+  while IFS= read -r d; do classify_doc "$d"; done \
+    < <(find docs -name '*.md' -type f ! -name 'HANDOFF-*.md' 2>/dev/null | sort)
 fi
 
 missing_footer_rows=()
@@ -169,10 +172,12 @@ fi
 printf '\nSummary: %d missing footer, %d stale, %d fresh (threshold %d days).\n' \
   "$missing_footer_count" "$stale_count" "$fresh_count" "$days"
 if (( archival_excluded > 0 )); then
-  printf 'Excluded %d archival doc(s) under docs/research/ and docs/historical/:\n' \
+  printf 'Excluded %d archival doc(s) under docs/research/, docs/historical/,\n' \
     "$archival_excluded"
-  printf '  a research bank records when something was learned, so bumping a\n'
-  printf '  freshness footer there would falsify its provenance (issue #2064).\n'
+  printf '  docs/bass-extension-waves/, and docs/correction-ux-wave3/:\n'
+  printf '  a research bank or a spent delegation kit records when something was\n'
+  printf '  learned, so bumping a freshness footer there would falsify its\n'
+  printf '  provenance (issue #2064).\n'
 fi
 if (( stale_count > 0 )); then
   printf '\nAction: for each stale doc, re-read it against the current code and either\n'

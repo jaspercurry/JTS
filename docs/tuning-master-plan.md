@@ -286,7 +286,7 @@ the ruling those banners point back to.
 
 **Superseded (historical-tag or banner + pointer here):**
 
-- `docs/audio-commissioning-roadmap.md` (owner-ratified 2026-08-14) — the
+- `docs/historical/audio-commissioning-roadmap.md` (owner-ratified 2026-08-14) — the
   previous program-wide roadmap for the identical scope. Replaced whole. Its
   Ethos section was the one carve-out — "least bad is still the overall
   guiding principle", owner re-affirmed 2026-08-22 — and #2865 moved all five
@@ -295,7 +295,7 @@ the ruling those banners point back to.
   not into this plan: the doctrine is where the loop's rules live (see the
   orientation note above), and the three production sites that cite the
   ruling now cite it there.
-- `docs/HANDOFF-correction-revision-plan.md`'s CURRENT-POSITION
+- `docs/historical/HANDOFF-correction-revision-plan.md`'s CURRENT-POSITION
   `next_mission` — the **R21 "apply-vertical" candidate (a path that applies
   a machine-RECOMMENDED Fc) is cancelled** by invariant 2, and that
   document's campaign-ordering authority ("what supersedes what")
@@ -306,12 +306,12 @@ the ruling those banners point back to.
   unaffected by this cancellation. The 80-20 plan's landed R14–R20 record
   remains historical truth and is **not** superseded (it stands in the
   compatible list below).
-- `docs/llm-native-tuning-workbench-plan.md` — its planning-authority claim
+- `docs/historical/llm-native-tuning-workbench-plan.md` — its planning-authority claim
   and its §5.5 "experiment workspace is the one new mutation owner" are
   superseded: `play_program` is the single activation door (invariant 5),
   and the SSH-operator + runbook model (R4/R11) replaces the workbench
   direction. Its deferred embedded-agent appendix stays deferred.
-- `docs/attribution-stage-plan.md` — open work orders are absorbed, not
+- `docs/historical/attribution-stage-plan.md` — open work orders are absorbed, not
   pursued independently: P1 (reverse-null probe) → the `verify` program;
   P6/M6 (harmonic extraction) → ticket 1.4; P2 (position variance) →
   tickets 1.2/1.3; WO-7's serial dial-in loop → Loop B's tournament

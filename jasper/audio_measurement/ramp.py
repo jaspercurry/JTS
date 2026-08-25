@@ -5,7 +5,7 @@
 """Settle-based level-match ramp controller (shared measurement kernel).
 
 This is the P2 generalization of ``jasper.correction.autolevel`` per
-``docs/HANDOFF-correction-revision-plan.md`` §3.1. The analog amplifier's gain
+``docs/historical/HANDOFF-correction-revision-plan.md`` §3.1. The analog amplifier's gain
 is unknown; JTS controls only the digital ``main_volume``. The controller drives
 ``main_volume`` up from a quiet start until a phone-reported mic level settles
 inside the safe measurement window, then locks — never blasting up to find it.

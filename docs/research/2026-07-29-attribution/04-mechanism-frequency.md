@@ -1,7 +1,7 @@
 # Mechanism frequency — first pass over the corpus
 
 > WO-0 deliverable 3 of the attribution-stage plan, §4.
-> Plan: [`docs/attribution-stage-plan.md`](../../attribution-stage-plan.md).
+> Plan: [`docs/attribution-stage-plan.md`](../../historical/attribution-stage-plan.md).
 > For each seed mechanism M1–M6: which sessions in the corpus show it, at what
 > magnitude, and with what strength of evidence. Read-only sweep, 2026-07-29.
 > Session identifiers resolve through [`08-corpus-index.md`](08-corpus-index.md).

@@ -2026,7 +2026,7 @@ CI-provable:
   browser capture jitter makes those physically meaningless.
 - The walk is shared infrastructure: subwoofer↔mains delay/polarity in bass
   management rides the same implementation (see
-  [`HANDOFF-correction-revision-plan.md`](HANDOFF-correction-revision-plan.md)
+  [`HANDOFF-correction-revision-plan.md`](historical/HANDOFF-correction-revision-plan.md)
   §3.3), not a parallel one.
 - Support every crossover region in a three-way system, not only the lowest.
 - Verify the resulting sum before offering room correction.
