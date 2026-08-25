@@ -871,12 +871,47 @@ class AirPlayHealthSampler:
                     else None
                 ),
                 "health": direct.get("health") if direct is not None else None,
+                "direct": (
+                    {
+                        key: copy.deepcopy(direct.get(key))
+                        for key in (
+                            "present",
+                            "health",
+                            "streaming",
+                            "stream_starts",
+                            "stream_stops",
+                            "retries",
+                            "reopen_pending",
+                            "reopens",
+                            "card_gen_reopens",
+                            "period_frames",
+                            "buffer_frames",
+                            "drain_avail",
+                        )
+                        if key in direct
+                    }
+                    if direct is not None else None
+                ),
                 "resampler": (
                     {
-                        "health": resampler.get("health"),
-                        "locked": resampler.get("locked"),
-                        "fill_frames": resampler.get("fill_frames"),
-                        "target_fill_frames": resampler.get("target_fill_frames"),
+                        key: copy.deepcopy(resampler.get(key))
+                        for key in (
+                            "health",
+                            "locked",
+                            "input_frames",
+                            "output_frames",
+                            "silence_frames",
+                            "overrun_frames",
+                            "ratio_ppm",
+                            "lock_count",
+                            "unlock_count",
+                            "fill_frames",
+                            "target_fill_frames",
+                            "held_target_frames",
+                            "decay",
+                            "compliance",
+                        )
+                        if key in resampler
                     }
                     if resampler is not None else None
                 ),

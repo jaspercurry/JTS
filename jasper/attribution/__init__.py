@@ -4,7 +4,7 @@
 
 """Mechanism attribution — naming which physics owns a response feature.
 
-The attribution stage, per ``docs/attribution-stage-plan.md`` (issue #1866).
+The attribution stage, per ``docs/historical/attribution-stage-plan.md`` (issue #1866).
 JTS already has strong **instrument diagnosis** (is this measurement
 trustworthy) and strong **prescription** (fit → predict → apply → verify); it
 had almost no **mechanism attribution** — naming which physics owns a feature,

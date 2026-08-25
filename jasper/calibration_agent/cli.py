@@ -285,7 +285,7 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument(
         "--corpus-dir",
         type=Path,
-        help="docs/calibration-agent directory to search for guidance snippets",
+        help="corpus directory to search for guidance snippets",
     )
     parser.add_argument(
         "--repeat-bundle-dir",

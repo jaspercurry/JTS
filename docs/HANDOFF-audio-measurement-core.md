@@ -1650,7 +1650,7 @@ against what the Pi itself persisted. Where it can reproduce a diagnostic it is
 exact — the 2026-08-02 replay of four banked jts3 CHECK→MEASURE pairs
 (`captures/r12-e2e-pass-20260802/`, gitignored; the bank is recorded in the R12
 outcome block of
-[HANDOFF-correction-revision-plan.md](HANDOFF-correction-revision-plan.md))
+[HANDOFF-correction-revision-plan.md](historical/HANDOFF-correction-revision-plan.md))
 recomputed each capture's CHECK woofer pilot SNR and matched the persisted
 sidecar on all four, to every digit the sidecar carries. That makes it an
 excellent *regression* instrument. But it is the model grading itself. It proves

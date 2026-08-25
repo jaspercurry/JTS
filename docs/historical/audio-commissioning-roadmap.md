@@ -4,7 +4,7 @@
 > revision — not its ratification date: the roadmap was owner-ratified
 > 2026-08-14 and kept taking rulings after that (its Ethos heading below is
 > marked "extended 2026-08-16"). Tagged historical 2026-08-22, superseded by
-> [`tuning-master-plan.md`](tuning-master-plan.md) — "the previous
+> [`tuning-master-plan.md`](../tuning-master-plan.md) — "the previous
 > program-wide roadmap for the identical scope" (that plan's Supersessions
 > section, which states the one exception below), now the planning authority
 > for the measurement/tuning program.
@@ -14,7 +14,7 @@
 > tinker-first, the reserved-rollback rule, "Least-bad measured, honed in
 > bites", the probabilistic posture, and the investment split — moved on
 > 2026-08-23 to the guiding-principle section of
-> [`measurement-loop-doctrine.md`](measurement-loop-doctrine.md#3-the-guiding-principle--least-bad-measured-honed-in-bites),
+> [`measurement-loop-doctrine.md`](../measurement-loop-doctrine.md#3-the-guiding-principle--least-bad-measured-honed-in-bites),
 > which is now their one home and what production code cites. This whole file,
 > that section included, is preserved for primary-source archaeology — specific
 > facts (sequencing, wave contents, ratification-pending lists, measurement
@@ -30,14 +30,14 @@ This doc holds **sequence and rationale**. It does not hold definitions,
 architecture, or campaign state, all of which have owners:
 
 - **D1–D8 gating decisions and the PR-G ladder** —
-  [`gating-v2-plan.md`](gating-v2-plan.md) (issue #1790)
+  [`gating-v2-plan.md`](../gating-v2-plan.md) (issue #1790)
 - **Room tiers, the room-boundary ceiling, the two-instrument boundary** —
-  [`room-correction-regime-plan.md`](room-correction-regime-plan.md)
+  [`room-correction-regime-plan.md`](../room-correction-regime-plan.md)
   (issue #1791)
 - **Campaign state, owed hardware slices, CURRENT POSITION** —
   [`HANDOFF-correction-revision-plan.md`](HANDOFF-correction-revision-plan.md)
 - **Commission flow architecture, grading, file map** —
-  [`HANDOFF-crossover-measurement-v2.md`](HANDOFF-crossover-measurement-v2.md)
+  [`HANDOFF-crossover-measurement-v2.md`](../HANDOFF-crossover-measurement-v2.md)
 
 Where this doc and one of those disagree, the owning doc wins. Items here
 move to issues and PRs as they start; session-level detail (what a given
@@ -60,7 +60,7 @@ against its primary source before acting on it.
 ## Ethos (owner-ratified 2026-08-14; extended 2026-08-16)
 
 > Live home since 2026-08-23 (#2865): the guiding-principle section of
-> [`measurement-loop-doctrine.md`](measurement-loop-doctrine.md#3-the-guiding-principle--least-bad-measured-honed-in-bites).
+> [`measurement-loop-doctrine.md`](../measurement-loop-doctrine.md#3-the-guiding-principle--least-bad-measured-honed-in-bites).
 > What follows is the original text, kept as archaeology.
 
 These were ratified here as binding product principles, not preferences. They
@@ -150,7 +150,7 @@ fan-in/output path this run exercises and one is on the measurement path,
 so redeploy before the session.
 
 Release order is **direction-dependent**, not a constant — see
-[`capture-page/README.md`](../capture-page/README.md) "Release order
+[`capture-page/README.md`](../../capture-page/README.md) "Release order
 (direction matters)": the narrowing side always goes last, which puts the
 page first when adding a protocol and the Pi first when removing one. A
 plain Pi redeploy with no capture-page or relay-Worker change has no page
@@ -227,13 +227,13 @@ four returned **six more**, none of them on the hand list. Also trued up —
 `linearization_fit.py`'s module docstring and `fit_driver_linearization`'s own
 first line (both said "cut-only" while the same docstrings described the boost
 vocabulary below); this file's live-spine sibling
-[`HANDOFF-crossover-measurement-v2.md`](HANDOFF-crossover-measurement-v2.md)
+[`HANDOFF-crossover-measurement-v2.md`](../HANDOFF-crossover-measurement-v2.md)
 invariant 11, which claimed the emitter re-proves a *non-positive gain* when it
 re-proves the cap; the duplicated cut-only justification in
 `deploy/assets/correction/js/crossover/{chart,cloud}.js` (the per-curve
 reference rule there never depended on the sign, so only the premise moved);
 and a dated superseded note on
-[`flat-linearization-plan.md`](flat-linearization-plan.md)'s S3 paragraph,
+[`flat-linearization-plan.md`](../flat-linearization-plan.md)'s S3 paragraph,
 which still asks for the owner amendment that was granted 2026-07-27.
 
 **7. Collapse the driver low-limit to one declared owner (#2603).**
@@ -246,7 +246,7 @@ consumer derives from that one field. As of the ruling, jts3 carries two
 values for it. #2603 owns the collapse and the companion fix to the
 research prompt that produced the second one; the rule, the datasheet
 evidence, and the published-field convention live in
-[`active-speaker-tuning-layers-design.md`](active-speaker-tuning-layers-design.md)
+[`active-speaker-tuning-layers-design.md`](../active-speaker-tuning-layers-design.md)
 decisions 8–9. Small, and sequenced early for the reason recorded in
 decision 8 — anything measured before it grades itself against a number
 nobody stands behind.
@@ -256,7 +256,7 @@ piece of work between this wave and the next tuning series: correction
 inside the crossover blend region moves from the (blind) per-driver fit to
 the summed response. That contract is a design-and-build, not a small item,
 and it is owned by
-[`active-speaker-tuning-layers-design.md`](active-speaker-tuning-layers-design.md)
+[`active-speaker-tuning-layers-design.md`](../active-speaker-tuning-layers-design.md)
 ("The region-based adjustment contract", decisions 10–12) — this roadmap
 carries only its position in the order: upstream truth (item 7) → the
 contract → a hardware series that proves the dip moves → then the
@@ -289,7 +289,7 @@ first.
 Post-run. This is the deliberate deeper investment named in the ethos, and
 it is largely the probabilistic posture made concrete — mostly by executing
 the adopted-but-unstarted gating-v2 ladder
-([`gating-v2-plan.md`](gating-v2-plan.md)). Three pieces are this
+([`gating-v2-plan.md`](../gating-v2-plan.md)). Three pieces are this
 roadmap's own rather than the plan's: item 7's prominence-margin
 persistence, item 10's distance prior, and item 11's placement
 recommendation.
@@ -362,7 +362,7 @@ swap**: the shipped `2.5/T` is a binary disclosed floor that never gates,
 while D4's `2/T` is the endpoint of a confidence taper. The proposal is to
 keep D4's taper and put its full-authority endpoint at the shipped `2.5/T`,
 so the system carries two ratios rather than three. If ratified, amend
-[`gating-v2-plan.md`](gating-v2-plan.md)'s D4 in the same change.
+[`gating-v2-plan.md`](../gating-v2-plan.md)'s D4 in the same change.
 
 ### Skipped, with reasons
 

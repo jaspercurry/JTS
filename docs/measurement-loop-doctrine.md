@@ -38,7 +38,7 @@ household's judgment call, made on data.
 Owner-ratified 2026-08-14 as the commissioning program's ethos, extended
 2026-08-16, and re-affirmed 2026-08-22: *"least bad is still the overall
 guiding principle"* (#2865). Migrated here from
-[`audio-commissioning-roadmap.md`](audio-commissioning-roadmap.md), which is
+[`audio-commissioning-roadmap.md`](historical/audio-commissioning-roadmap.md), which is
 historical and keeps its original text as archaeology; this section is the
 live home, and it is the file production code cites.
 
@@ -214,7 +214,7 @@ unchanged; the hard-stop list, the nanny test, and the pointers are numbered
 one higher since, unmoved.
 
 Migration (2026-08-23, #2865): section 3 arrived from
-[`audio-commissioning-roadmap.md`](audio-commissioning-roadmap.md)'s Ethos —
+[`audio-commissioning-roadmap.md`](historical/audio-commissioning-roadmap.md)'s Ethos —
 its ruling text re-read from that file, and the owner's 2026-08-22
 re-affirmation and intervention-granularity refinement quoted from #2865 and
 #2862, at writing time.

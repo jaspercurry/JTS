@@ -152,10 +152,10 @@ is the persistence layer for that confidence story.
 
 Source syntheses:
 
-- [`../../research/2026-05-27-room-correction-research/synthesis/multi-position-room-correction.md`](../../research/2026-05-27-room-correction-research/synthesis/multi-position-room-correction.md)
-- [`../../research/2026-05-27-room-correction-research/synthesis/mobile-browser-audio-reliability.md`](../../research/2026-05-27-room-correction-research/synthesis/mobile-browser-audio-reliability.md)
-- [`../../research/2026-05-27-room-correction-research/synthesis/target-curves-preference-tuning.md`](../../research/2026-05-27-room-correction-research/synthesis/target-curves-preference-tuning.md)
-- [`../../research/2026-05-27-room-correction-research/synthesis/fir-phase-room-correction.md`](../../research/2026-05-27-room-correction-research/synthesis/fir-phase-room-correction.md)
+- [`../../research/2026-05-27-room-correction-research/synthesis/multi-position-room-correction.md`](../../../../docs/research/2026-05-27-room-correction-research/synthesis/multi-position-room-correction.md)
+- [`../../research/2026-05-27-room-correction-research/synthesis/mobile-browser-audio-reliability.md`](../../../../docs/research/2026-05-27-room-correction-research/synthesis/mobile-browser-audio-reliability.md)
+- [`../../research/2026-05-27-room-correction-research/synthesis/target-curves-preference-tuning.md`](../../../../docs/research/2026-05-27-room-correction-research/synthesis/target-curves-preference-tuning.md)
+- [`../../research/2026-05-27-room-correction-research/synthesis/fir-phase-room-correction.md`](../../../../docs/research/2026-05-27-room-correction-research/synthesis/fir-phase-room-correction.md)
 
 ## DSP Pipeline Boundary
 

@@ -1,7 +1,7 @@
 # JTS measurement corpus — index
 
 > WO-0 deliverable 1 of the attribution-stage plan, §7.
-> Plan: [`docs/attribution-stage-plan.md`](../../attribution-stage-plan.md).
+> Plan: [`docs/attribution-stage-plan.md`](../../historical/attribution-stage-plan.md).
 > Machine-readable companion: `corpus-index.json` in the gitignored bulk-data
 > directory `captures/wo0-retrospective-20260729/` (regenerate with
 > `python3 build_corpus_index.py` there).

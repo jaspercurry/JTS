@@ -4,7 +4,7 @@
 
 """WO-1 schema contracts: the finding artifact, the registry, the identity.
 
-Pins the acceptance items ``docs/attribution-stage-plan.md`` §7 assigns to
+Pins the acceptance items ``docs/historical/attribution-stage-plan.md`` §7 assigns to
 WO-1 that are about *shape* rather than *storage* — the schema test, the
 golden round-trip, the stable cross-store session identity, and the plan rules
 the excluded-band promotion path is bound by. Storage, retention, and the

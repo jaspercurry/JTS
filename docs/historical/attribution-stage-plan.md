@@ -4,7 +4,7 @@
 > revision — not its adoption date: it was adopted 2026-07-29 (round-3
 > architect session) and kept taking amendments after that (its M3 row records
 > #1999's 2026-08-01 close, its M7 row #2609). Tagged historical 2026-08-22,
-> superseded by [`tuning-master-plan.md`](tuning-master-plan.md), which
+> superseded by [`tuning-master-plan.md`](../tuning-master-plan.md), which
 > absorbed the open work orders: "P1 (reverse-null probe) → the `verify`
 > program; P6/M6 (harmonic extraction) → ticket 1.4; P2 (position variance) →
 > tickets 1.2/1.3; WO-7's serial dial-in loop → Loop B's tournament
@@ -27,18 +27,18 @@
 >
 > **Composes with — does not re-open —** the two-stage commission flow work
 > order ([issue #1806](https://github.com/jaspercurry/JTS/issues/1806) /
-> [`two-stage-commission-flow-plan.md`](two-stage-commission-flow-plan.md)),
+> [`two-stage-commission-flow-plan.md`](../two-stage-commission-flow-plan.md)),
 > which is the chassis this stage renders on; the
 > [`llm-native-tuning-workbench-plan.md`](llm-native-tuning-workbench-plan.md),
 > then the planning authority for agent-assisted tuning surfaces, itself
 > historical since 2026-08-21;
-> [`gating-v2-plan.md`](gating-v2-plan.md); and
-> [`room-correction-regime-plan.md`](room-correction-regime-plan.md).
+> [`gating-v2-plan.md`](../gating-v2-plan.md); and
+> [`room-correction-regime-plan.md`](../room-correction-regime-plan.md).
 > **Supersedes: nothing.**
 >
 > Verbatim research — the two briefs and the owner-run dissertation whose
 > Stage 0–4 blueprint is this plan's skeleton — is preserved in
-> [`docs/research/2026-07-29-attribution/`](research/2026-07-29-attribution/README.md).
+> [`docs/research/2026-07-29-attribution/`](../research/2026-07-29-attribution/README.md).
 > Evidence base: the 2026-07-29 Fc forensics (#1867–#1870), the field and
 > follow-on issues #1872–#1877, and the 2026-07 measurement corpus as swept
 > by WO-0's two reported passes, whose mechanism-frequency table,
@@ -122,7 +122,7 @@ Owner rulings this plan is bound by (recorded 2026-07-29 on #1866):
   **registry-of-declarations**: a pure-data mapping from a stable id to a
   spec, read by an engine with zero per-entry knowledge — the
   `REASON_REGISTRY: dict[str, ReasonSpec]` shape in
-  [`jasper/active_speaker/crossover_v2_flow.py`](../jasper/active_speaker/crossover_v2_flow.py).
+  [`jasper/active_speaker/crossover_v2_flow.py`](../../jasper/active_speaker/crossover_v2_flow.py).
   It is deliberately **not** the transit provider registry (extensibility
   doctrine pattern 2): that pattern's defining property is that each plugin
   parses its own env from a plain `Mapping`, which attribution has no
@@ -161,7 +161,7 @@ surfaces (the finding record, the harness artifact, `jasper-doctor`-class
 output, the expert disclosure). `household_copy` stays **phenomenon-level
 and hardware-noun-free**, because the shipped prohibition it inherits is
 explicit — `_null_classification_copy`'s docstring in
-[`crossover_v2_flow.py`](../jasper/active_speaker/crossover_v2_flow.py) says
+[`crossover_v2_flow.py`](../../jasper/active_speaker/crossover_v2_flow.py) says
 of its own two branches: *"No hardware noun appears here … naming one would
 be the device-taxonomy guess this program forbids in shipped copy (the JTS3
 rim-wave attribution is session knowledge, not measured general truth)."*
@@ -224,7 +224,7 @@ dispositions it as a routing-rule generalization.
 routing* field; it is not a second copy vocabulary. Where a finding's
 consequence is a per-bin correction limit, it must resolve to the one
 shipped closed vocabulary —
-[`linearization_envelope.ReasonCode`](../jasper/active_speaker/linearization_envelope.py),
+[`linearization_envelope.ReasonCode`](../../jasper/active_speaker/linearization_envelope.py),
 whose docstring already insists every persisted reason code, wherever
 produced, stays self-identifying against that single enum — rather than mint
 a parallel one (`carve`, for example, resolves through
@@ -235,7 +235,7 @@ boundary is a WO-4 acceptance item.
 
 After measurement close, before prescription. In the two-stage flow
 ([#1806](https://github.com/jaspercurry/JTS/issues/1806) /
-[`two-stage-commission-flow-plan.md`](two-stage-commission-flow-plan.md)),
+[`two-stage-commission-flow-plan.md`](../two-stage-commission-flow-plan.md)),
 findings render on the **review screen** between "what we measured" and
 "the decision" — the refuse-and-recommend-the-probe outcome ("unsure — run
 the 30-second polarity test to decide") becomes a first-class session
@@ -314,7 +314,7 @@ The profile is a *policy input consumed above the shared foundation*:
 
 Two accuracy notes on that boundary:
 
-- [`room-correction-regime-plan.md`](room-correction-regime-plan.md) is an
+- [`room-correction-regime-plan.md`](../room-correction-regime-plan.md) is an
   **adopted work order whose RC1–RC5 ladder has not shipped**. Its Schroeder
   helper is documented there as dead in practice (its only caller passes no
   arguments, and nothing measures room volume). The room line consumes that
@@ -484,7 +484,7 @@ contradict a P6 harmonic finding there.
 | P7 | Repeat-variance validity gate (Stage 0): time-variant features excluded from attribution | 1 repeat | No |
 
 **P2 cannot name a source, and the shipped instrument says so.**
-[`interference_nulls.py`](../jasper/audio_measurement/interference_nulls.py)'s
+[`interference_nulls.py`](../../jasper/audio_measurement/interference_nulls.py)'s
 module docstring is explicit: *"Position-invariance within one session is
 consistent with an origin that travels with the speaker **or** with a path
 through the room that did not change while the session ran, and a single
@@ -653,7 +653,7 @@ scriptable, no phone, no relay, no human mid-loop.
 
 **The carrier, decided.** The harness is an **operator CLI** whose graph
 lifecycle is the shape of
-[`jasper/bass_extension/bench/activation.py`](../jasper/bass_extension/bench/activation.py)
+[`jasper/bass_extension/bench/activation.py`](../../jasper/bass_extension/bench/activation.py)
 — `activate → prove → yield for measurement → restore`, where the
 predecessor is snapshotted and fingerprinted first, only the *running*
 config is mutated (never the on-disk file, so `reload()` is always a valid
@@ -662,7 +662,7 @@ cancellation, shielded, and is re-proven. That module contributes the
 lifecycle; it does **not** contribute config validation (its proofs are
 bass-block-specific). So it is **composed with `dsp_apply`-grade validation
 before any load**:
-[`jasper/dsp_apply.py`](../jasper/dsp_apply.py) contributes
+[`jasper/dsp_apply.py`](../../jasper/dsp_apply.py) contributes
 `validate_camilla_config` — including the `devices.volume_limit` ≤ 0 dB
 safety-ceiling refusal — the shared DSP writer lock, and the
 re-hash-immediately-before-load check. Note the honest boundary:
@@ -734,7 +734,7 @@ actually hit — they are the prototype users):
   laptop-pull path — that, not the mode bits, was the 2026-07-29 friction.
   The deliberate privacy posture that already exists for raw room audio —
   `captures/` gitignored, directory `0700`, files `0600`, as
-  [`testing-tooling.md`](testing-tooling.md) records for the correction
+  [`testing-tooling.md`](../testing-tooling.md) records for the correction
   capture diagnostic — is **preserved**, not relaxed. Group-readable
   ownership plus the existing modes is the shape.
 - **Access**: read surfaces work over plain SSH + file reads; no
@@ -756,8 +756,8 @@ actually hit — they are the prototype users):
 
 **Prior art, and WO-2's delta over it.** Three shipped tools already own
 pieces of this and must not be re-implemented:
-[`scripts/capture-correction-diagnostic.py`](../scripts/capture-correction-diagnostic.py)
-+ [`analyze-correction-diagnostic.py`](../scripts/analyze-correction-diagnostic.py)
+[`scripts/capture-correction-diagnostic.py`](../../scripts/capture-correction-diagnostic.py)
++ [`analyze-correction-diagnostic.py`](../../scripts/analyze-correction-diagnostic.py)
 (laptop-side UMIK capture + manifest + bounded SSH state snapshot + the
 privacy posture above — but a passive *observer* of a browser/relay run: it
 starts nothing and changes no gain), `jasper-bass-extension-bench` (the
@@ -768,7 +768,7 @@ producer, not a sweep/response one). WO-2's delta is exactly: an *active*
 loop (it commands the DSP change it then measures), over the crossover
 sweep programs, with the composed restore-on-every-exit + validated-load
 carrier. Adding its entry to
-[`docs/testing-tooling.md`](testing-tooling.md) is a WO-2 acceptance item,
+[`docs/testing-tooling.md`](../testing-tooling.md) is a WO-2 acceptance item,
 per that doc's own "add it here in the same PR" rule.
 
 This is deliberately *also* the LLM-ready tooling: an agent that can
@@ -812,11 +812,11 @@ ship; the later owner inherits the record and may extend it.
 - **WO-0 — Corpus retrospective** (multi-agent, read-only; no code).
   **Reported 2026-07-29, both passes; acceptance met.** The five findings
   documents are checked in as
-  [`04-mechanism-frequency.md`](research/2026-07-29-attribution/04-mechanism-frequency.md),
-  [`05-instrument-error-catalog.md`](research/2026-07-29-attribution/05-instrument-error-catalog.md),
-  [`06-reanalysis-farina.md`](research/2026-07-29-attribution/06-reanalysis-farina.md),
-  [`07-reanalysis-position-variance.md`](research/2026-07-29-attribution/07-reanalysis-position-variance.md),
-  and [`08-corpus-index.md`](research/2026-07-29-attribution/08-corpus-index.md);
+  [`04-mechanism-frequency.md`](../research/2026-07-29-attribution/04-mechanism-frequency.md),
+  [`05-instrument-error-catalog.md`](../research/2026-07-29-attribution/05-instrument-error-catalog.md),
+  [`06-reanalysis-farina.md`](../research/2026-07-29-attribution/06-reanalysis-farina.md),
+  [`07-reanalysis-position-variance.md`](../research/2026-07-29-attribution/07-reanalysis-position-variance.md),
+  and [`08-corpus-index.md`](../research/2026-07-29-attribution/08-corpus-index.md);
   bulk data (CSVs, WAVs, scripts, the machine-readable index) stays in the
   gitignored `captures/wo0-retrospective-20260729/`. Every seed-table citation
   above is therefore reviewable in-repo before WO-4's freeze.
@@ -945,7 +945,7 @@ ship; the later owner inherits the record and may extend it.
   **There is a second clamp, and an implementer widening the band needs
   both:** `_analyze_verify` then applies `lo_clamped = max(lo,
   summed.validity_floor_hz)`
-  ([`program_analysis.py`](../jasper/audio_measurement/program_analysis.py)),
+  ([`program_analysis.py`](../../jasper/audio_measurement/program_analysis.py)),
   which can only raise the floor further — so widening `overlap_band_hz`
   alone does not reach 1919 Hz at a reflective mic position. So "VERIFY also
   evaluates an absolute frame at Fc" cannot see the defect unless both clamps
@@ -977,7 +977,7 @@ ship; the later owner inherits the record and may extend it.
   discriminator and its copy, not the relay-session plumbing.
   (**Landed ahead of WO-5** — the discriminator and its copy shipped on their
   own in the #1873 lane: `VERIFY_REPEAT_FLOOR_DB` in
-  [`crossover_v2_flow.py`](../jasper/active_speaker/crossover_v2_flow.py), the
+  [`crossover_v2_flow.py`](../../jasper/active_speaker/crossover_v2_flow.py), the
   `verify_deterministic_mismatch` reason code, and a terminal verdict that ends
   the capture session rather than offering a retry. WO-5 inherits it rather
   than building it; its own remaining scope is #1868 / #1857, unchanged.)
@@ -1021,7 +1021,7 @@ ship; the later owner inherits the record and may extend it.
     different fix class);
   - the **predicted-vs-measured delta of every applied change enters the
     findings stream as first-class evidence**. This generalizes the shipped
-    [`delta_probe`](../jasper/active_speaker/delta_probe.py) —
+    [`delta_probe`](../../jasper/active_speaker/delta_probe.py) —
     realized-vs-commanded per-frequency map, four verdicts, three of which
     roll back — from a rollback gate to a per-attempt evidence producer.
     Where an attempt's delta must bound the next attempt's correction depth,
@@ -1039,7 +1039,7 @@ ship; the later owner inherits the record and may extend it.
     electronic; within the electronic spectral-crossover case,
     level → delay → EQ.
   Research input:
-  [`03-brief-iterative-dialin-and-position.md`](research/2026-07-29-attribution/03-brief-iterative-dialin-and-position.md).
+  [`03-brief-iterative-dialin-and-position.md`](../research/2026-07-29-attribution/03-brief-iterative-dialin-and-position.md).
   Related bench work: #1876 (convergence — does a clean-slate re-run reach
   the same tune?) and #1877 (position-aware clouds; acoustic
   time-of-flight first, sensor fusion parked).
@@ -1118,12 +1118,12 @@ ship; the later owner inherits the record and may extend it.
   body is preserved as the decision record).** The adopted
   canon is that the speaker layer's contract is *flat gated direct sound on
   the **design axis***
-  ([`active-speaker-tuning-layers-design.md`](active-speaker-tuning-layers-design.md)'s
+  ([`active-speaker-tuning-layers-design.md`](../active-speaker-tuning-layers-design.md)'s
   "top of the table" contract, immediately above its
   do-not-re-litigate list), and that **"the fit stays anchored on the
   design-axis per-driver curves … the recorded trigger for revisiting is
   S3 closed-loop evidence, nothing else"**
-  ([`flat-linearization-productization-plan.md`](flat-linearization-productization-plan.md),
+  ([`flat-linearization-productization-plan.md`](../flat-linearization-productization-plan.md),
   interpretation call A and its risk register). That plan also records that
   an anchor-vs-cloud offset on surviving features is **expected**, bounded
   by the cloud's own `BandSpread` diagnostics, and **not a defect** — so an
@@ -1198,7 +1198,7 @@ ship; the later owner inherits the record and may extend it.
   the per-band level/ripple split state the band-to-band relationship the
   frame cannot move, and every graded number is pinned unchanged against
   pre-change values
-  ([`tests/test_flat_spec_attribution.py`](../tests/test_flat_spec_attribution.py)).
+  ([`tests/test_flat_spec_attribution.py`](../../tests/test_flat_spec_attribution.py)).
   The ruling still owns the anchor; nothing above pre-empts it.
 - **Q-F: household-copy specificity.** Today household copy stays
   phenomenon-level with no hardware nouns (§3.1), because a single session

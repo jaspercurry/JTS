@@ -7,7 +7,7 @@
 The pure staircase / settle / lock math lives in the shared kernel
 (:mod:`jasper.audio_measurement.ramp`). This module is the correction-layer glue
 that the kernel deliberately does not know about, per
-``docs/HANDOFF-correction-revision-plan.md`` §3.1:
+``docs/historical/HANDOFF-correction-revision-plan.md`` §3.1:
 
   * :class:`RelayLevelFeed` — the ``next_samples`` source the kernel awaits each
     tick, reading the phone's **batched, client-timestamped** level samples out

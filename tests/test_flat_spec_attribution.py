@@ -24,8 +24,8 @@ statement: it asserts the misattribution AS IT STILL SHIPS.
 
 **What this module's fix does and deliberately does not do.** WHICH anchor
 the spec's reference frame should use is an explicitly open owner decision —
-#1857's Q-E (``docs/attribution-stage-plan.md`` §9), which
-``docs/attribution-stage-plan.md``'s WO-5 says the implementer "does not
+#1857's Q-E (``docs/historical/attribution-stage-plan.md`` §9), which
+``docs/historical/attribution-stage-plan.md``'s WO-5 says the implementer "does not
 pick". Re-anchoring would move graded verdicts. So nothing here touches the
 frame, and
 :func:`test_no_graded_number_moved_on_any_corpus_shape` pins that claim

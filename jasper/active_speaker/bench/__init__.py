@@ -6,7 +6,7 @@
 
 **Stage: VERIFY (offline).** This subpackage closes R10b's "emit loop … (the
 shelf-Q class)" deliverable of
-[`docs/HANDOFF-correction-revision-plan.md`](../../../docs/HANDOFF-correction-revision-plan.md).
+[`docs/historical/HANDOFF-correction-revision-plan.md`](../../../docs/historical/HANDOFF-correction-revision-plan.md).
 
 **Why it exists.** On 2026-07-27 a linearization shipped whose emitted shelves
 realized at Q 0.476 while every gate in the fit engine evaluated them at Q

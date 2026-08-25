@@ -93,13 +93,13 @@ const AsyncFunction = Object.getPrototypeOf(async function () {}).constructor;
 const run = new AsyncFunction(
   "document", "window", "location", "history", "setTimeout", "console",
   "buildSystemPanel", "update", "buildAudioPanel", "updateAudio", "header",
-  "getJSON", "postAction", "setQuality", "runDiagnostics",
+  "getJSON", "postAction", "setQuality", "setLatencyMode", "runDiagnostics",
   source,
 );
 await run(
   document, window, location, history, setTimeout, quietConsole,
   buildSystemPanel, update, buildAudioPanel, updateAudio, header,
-  getJSON, noop, noop, noop,
+  getJSON, noop, noop, noop, noop,
 );
 
 assert.equal(builds.system, 1, "initial System panel is built once");

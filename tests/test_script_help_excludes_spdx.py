@@ -129,18 +129,32 @@ def test_doc_freshness_normal_threshold_and_all_mode_still_work():
     assert "threshold 90 days" in out
 
 
-_ARCHIVAL_DOC_DIRS = ("research", "historical")
+_ARCHIVAL_DOC_DIRS = (
+    "research",
+    "historical",
+    "bass-extension-waves",
+    "correction-ux-wave3",
+)
 
 
 def _archival_doc_count() -> int:
-    """Mirror of doc-freshness.sh's `--all` non-HANDOFF predicate, archival half."""
+    """Mirror of doc-freshness.sh's `classify_doc` predicate over both finds.
+
+    The non-HANDOFF find has no depth cap; the HANDOFF find is capped at
+    `docs -maxdepth 2`, so an archived HANDOFF counts only when it sits
+    directly in the archival directory.
+    """
     docs_root = _SCRIPTS.parent / "docs"
-    return sum(
-        1
-        for name in _ARCHIVAL_DOC_DIRS
-        for path in (docs_root / name).rglob("*.md")
-        if path.is_file() and not path.name.startswith("HANDOFF-")
-    )
+    total = 0
+    for name in _ARCHIVAL_DOC_DIRS:
+        root = docs_root / name
+        for path in root.rglob("*.md"):
+            if not path.is_file():
+                continue
+            if path.name.startswith("HANDOFF-") and path.parent != root:
+                continue
+            total += 1
+    return total
 
 
 def _doc_freshness(threshold: str) -> str:
@@ -189,16 +203,19 @@ def test_doc_freshness_empty_state_does_not_claim_it_checked_every_doc():
 
 
 def test_doc_freshness_all_reports_what_it_excluded():
-    """The prune is stated with its count, never silent.
+    """The prune is stated with its count and its scope, never silent.
 
-    A report that quietly drops 54 files reads as "everything was checked".
-    The count is asserted against the tree so a half-applied prune (one
-    directory, or a predicate that drifts from the enumeration) fails here.
+    A report that quietly drops files reads as "everything was checked". The
+    count is asserted against the tree so a half-applied prune (one directory,
+    or a predicate that drifts from the enumeration) fails here, and every
+    pruned directory must be named so the notice cannot describe less than it
+    did.
     """
 
     out = _doc_freshness("90")
     expected = _archival_doc_count()
     assert expected > 0, "fixture assumption: the repo has archival docs"
     assert f"Excluded {expected} archival doc(s)" in out, out
-    assert "docs/research/ and docs/historical/" in out, out
+    for name in _ARCHIVAL_DOC_DIRS:
+        assert f"docs/{name}/" in out, (name, out)
     assert "issue #2064" in out, out

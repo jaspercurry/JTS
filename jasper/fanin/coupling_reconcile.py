@@ -96,6 +96,10 @@ from jasper.fanin.coupling_auto import (
     usb_combo_actions,
     usbsink_effectively_enabled,
 )
+from jasper.fanin.latency_mode import (
+    normalize_mode as normalize_usb_latency_mode,
+    read_requested_mode as read_usb_latency_mode,
+)
 from jasper.fanin_coupling import (
     COUPLING_ENV_VAR,
     COUPLING_LOOPBACK,
@@ -1481,6 +1485,7 @@ class AutoResult:
     reason: str
     combo_armed: bool = False
     usb_intent_enabled: bool = False
+    usb_latency_mode: str = "low"
     coupling_result: "CouplingResult | None" = None
     restarted_fanin_for_combo: bool = False
     detail: str = ""
@@ -1494,6 +1499,7 @@ def reconcile_auto(
     apply: bool = True,
     gadget_present: bool | None = None,
     usb_intent_enabled: bool | None = None,
+    usb_latency_mode: str | None = None,
     restart_fanin: "DaemonOp | None" = None,
     restart_outputd: "DaemonOp | None" = None,
     stop_camilla: "DaemonOp | None" = None,
@@ -1523,9 +1529,9 @@ def reconcile_auto(
        fail-CLOSED topology gate (unreadable topology → loopback — defect-F4).
        Resolve the USB combo from gadget presence AND the household's USB-audio
        intent plus current local-source role permission (defect-B2).
-    3. Write the three fan-in keys into fanin.env (explicit ``enabled`` on a combo
-       box, explicit ``disabled`` off it — never unset, defeating jasper.env
-       precedence). Idempotent — a second pass with the same inputs writes nothing.
+    3. Write the fan-in feature keys and preset floor into fanin.env (explicit
+       values, never unset, defeating jasper.env precedence). Idempotent — a
+       second pass with the same inputs writes nothing.
     4. Delegate the coupling flip + ordered daemon transition to
        :func:`reconcile_coupling` (``mark_operator_choice=False`` so the marker
        stays absent — auto-owned). A combo-only change that took the no-bounce
@@ -1596,6 +1602,25 @@ def reconcile_auto(
             )
     else:
         usb_intent = usb_intent_enabled
+    usb_latency_failure = ""
+    try:
+        latency_mode = (
+            read_usb_latency_mode()
+            if usb_latency_mode is None
+            else normalize_usb_latency_mode(usb_latency_mode)
+        )
+    except (OSError, UnicodeError, ValueError) as exc:
+        latency_mode = "high"
+        usb_latency_failure = f"USB latency preference invalid or unreadable: {exc}"[:500]
+        log_event(
+            logger,
+            "fanin.coupling_reconcile",
+            result="auto_usb_latency_invalid",
+            reason=reason,
+            usb_latency_mode=latency_mode,
+            detail=usb_latency_failure,
+            level=logging.ERROR,
+        )
     # MIGRATION — a persisted REMOVED coupling value (the deleted transport_pipe,
     # or any typo) is NOT a valid operator choice; the mode the operator picked no
     # longer exists. Converge the box to loopback (the fail-safe rung) LOUDLY,
@@ -1623,7 +1648,7 @@ def reconcile_auto(
             ),
             level=logging.WARNING,
         )
-        if not usb_intent_failure:
+        if not usb_intent_failure and not usb_latency_failure:
             result = reconcile_coupling(
                 COUPLING_LOOPBACK,
                 reason=f"{reason}:removed_coupling_failsafe",
@@ -1667,10 +1692,13 @@ def reconcile_auto(
         decision = AutoCouplingDecision(
             owned=not is_operator_choice(marker),
             coupling=safe_coupling,
-            usb_combo_actions=usb_combo_actions(armed=False),
+            usb_combo_actions=usb_combo_actions(
+                armed=False, latency_mode=latency_mode
+            ),
             combo_armed=False,
             gadget_present=gadget,
             usb_intent_enabled=False,
+            usb_latency_mode=latency_mode,
             reason=(
                 "USB source intent invalid — combo failed closed; "
                 + (
@@ -1692,6 +1720,7 @@ def reconcile_auto(
             usb_intent_enabled=usb_intent,
             ring_gates=(),
             current_coupling=current,
+            usb_latency_mode=latency_mode,
         )
     else:
         # Self-heal a shear-prone stale JASPER_FANIN_RING_SLOTS BEFORE the gates
@@ -1728,6 +1757,7 @@ def reconcile_auto(
             gadget_present=gadget,
             usb_intent_enabled=usb_intent,
             ring_gates=ring_gates,
+            usb_latency_mode=latency_mode,
         )
 
     # Step 3a — fan-in combo keys (reconciler = single writer). Write only on change.
@@ -1772,6 +1802,7 @@ def reconcile_auto(
             gadget_present=gadget,
             usb_intent_enabled=usb_intent,
             combo_armed=decision.combo_armed,
+            usb_latency_mode=decision.usb_latency_mode,
             keys=",".join(a.key for a in decision.usb_combo_actions),
         )
 
@@ -1784,6 +1815,7 @@ def reconcile_auto(
         gadget_present=gadget,
         usb_intent_enabled=usb_intent,
         combo_armed=decision.combo_armed,
+        usb_latency_mode=decision.usb_latency_mode,
         usb_combo_changed=combo_changed,
         detail=decision.reason,
     )
@@ -1871,18 +1903,31 @@ def reconcile_auto(
                 gadget_present=gadget,
                 usb_intent_enabled=usb_intent,
                 combo_armed=decision.combo_armed,
+                usb_latency_mode=decision.usb_latency_mode,
                 usb_combo_changed=combo_changed,
                 reason=decision.reason,
                 coupling_result=coupling_result,
                 restarted_fanin_for_combo=restarted_for_combo,
                 detail="; ".join(
-                    part for part in (usb_intent_failure, coord.detail) if part
+                    part
+                    for part in (
+                        usb_intent_failure,
+                        usb_latency_failure,
+                        coord.detail,
+                    )
+                    if part
                 ),
             )
 
-    ok = coupling_result.ok and not usb_intent_failure
+    ok = coupling_result.ok and not usb_intent_failure and not usb_latency_failure
     detail = "; ".join(
-        part for part in (usb_intent_failure, coupling_result.detail) if part
+        part
+        for part in (
+            usb_intent_failure,
+            usb_latency_failure,
+            coupling_result.detail,
+        )
+        if part
     )
     if usb_intent_failure:
         log_event(
@@ -1904,6 +1949,7 @@ def reconcile_auto(
         gadget_present=gadget,
         usb_intent_enabled=usb_intent,
         combo_armed=decision.combo_armed,
+        usb_latency_mode=decision.usb_latency_mode,
         usb_combo_changed=combo_changed,
         reason=decision.reason,
         coupling_result=coupling_result,

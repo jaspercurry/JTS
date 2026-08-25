@@ -246,8 +246,7 @@ a.link:hover { text-decoration: underline; text-underline-offset: 2px; }
   font-size: 12px;
 }
 
-/* An ongoing incident gets one detailed explanation; the history below stays
-   scannable and uses native <details> for optional freeze-frame evidence. */
+/* The only large audio alert is reserved for a path that cannot play. */
 .current-incident {
   margin: -20px;
   padding: 20px 20px 20px 18px;
@@ -283,6 +282,7 @@ a.link:hover { text-decoration: underline; text-underline-offset: 2px; }
 .current-incident__meta > [aria-hidden="true"] { margin-inline: 3px; }
 .current-incident .deflist { margin-top: 16px !important; }
 
+.issue-history { display: grid; gap: 16px; }
 .incident-list { display: grid; }
 .incident-row {
   border-top: 1px solid var(--border);

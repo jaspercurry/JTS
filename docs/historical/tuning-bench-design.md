@@ -5,7 +5,7 @@
 > primary-source archaeology — specific contracts below are not current
 > planning authority. Read this for the investigation and original rationale;
 > current direction lives in
-> [`tuning-master-plan.md`](tuning-master-plan.md) (it superseded
+> [`tuning-master-plan.md`](../tuning-master-plan.md) (it superseded
 > [`llm-native-tuning-workbench-plan.md`](llm-native-tuning-workbench-plan.md),
 > which replaced this design, on 2026-08-21).
 > Durable evidence this design reasoned from is laptop-side and gitignored:
@@ -134,7 +134,7 @@ The second half of that finding — `_advisor_packet_for_model`
 hand-writing a policy rather than calling `advisor_context._advisor_policy`
 — is resolved: the hand-written list existed only to satisfy a per-action
 confidence veto in `response.py`, and retiring that veto under
-[`measurement-loop-doctrine.md`](measurement-loop-doctrine.md) deleted the
+[`measurement-loop-doctrine.md`](../measurement-loop-doctrine.md) deleted the
 list along with it. `_advisor_policy` is now the single policy authority
 and emits advisories, not permissions. Roughly 55% of the package is
 live (model client, key provisioning, spend gate, interpret/propose

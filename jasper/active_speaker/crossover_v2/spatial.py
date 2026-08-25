@@ -1031,7 +1031,7 @@ def boost_excluded_bands_hz(
     asymmetry is deliberate and is not this module's call to make —
     ``interference_nulls``' module docstring ("position-invariance says *this is
     real*; it does not say *this is correctable*"),
-    ``docs/attribution-stage-plan.md`` §5 (a finding supported only by position
+    ``docs/historical/attribution-stage-plan.md`` §5 (a finding supported only by position
     variance stays ``unsure``, adjudicated by rotating the speaker), and
     :mod:`jasper.attribution.promotion` (which routes ``position_invariant`` to
     ``carve``) all refuse to read stationarity as a driver property.  So this

@@ -15,7 +15,7 @@ vocabularies are parked in neither of them. They are enumerated rather than
 counted: a cardinality is a second claim about the same list, and it is the
 half that goes stale when the list grows.
 
-Every set here is **closed on purpose**. ``docs/attribution-stage-plan.md``
+Every set here is **closed on purpose**. ``docs/historical/attribution-stage-plan.md``
 §3.3 names the fix classes as "closed set, v1"; §3.2 rules confidence to a
 three-word tier ("never a bare number in household copy"); §5 tabulates the
 probe primitives; §4's preamble rules the corpus evidence tiers. A value
