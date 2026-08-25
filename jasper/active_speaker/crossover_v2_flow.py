@@ -2455,8 +2455,10 @@ ALIGNMENT_DELAY_PLAUSIBILITY_MARGIN_MS = 0.1
 # threshold's calibration changed; only what crossing it does.
 #
 # What did NOT change, stated because a reader will ask: the trust floor, the
-# delay-plausibility backstop, the SNR/linearity/glitch verdicts and
-# accountability's item 1 still REFUSE. This one number stopped being a veto
+# delay-plausibility backstop, and the SNR/linearity/glitch verdicts still
+# REFUSE. Accountability's item 1 is no longer on that list — doctrine
+# deviation (i) demoted it to a disclosure of its own, on the same reasoning
+# this paragraph makes for the ripple. This one number stopped being a veto
 # because a bad ripple describes how well two branches can sum in this room on
 # this rig — a thing the household cannot act on by moving anything — and not
 # a defect in the capture that measuring again would fix.
@@ -6512,7 +6514,7 @@ class CrossoverV2Session:
         whole point of stashing it: what SURVIVES to the durable state is
         ``_decimate_sum``'s 512-point block average (issue #1858 — a raw
         stride before that fix), and re-grading that would be a different
-        instrument from the one the accountability veto refused on.
+        instrument from the one the accountability seam grades on.
         """
         return (
             dict(self._measure_predicted_spec_report)
@@ -7866,8 +7868,9 @@ class CrossoverV2Session:
         # the reservation changes what the household is TOLD and nothing about
         # what is built, fitted, gated, or applied. Every accountability gate
         # below still runs unchanged on this candidate, which is what keeps
-        # "proceed" from meaning "unchecked" — one of the three still REFUSES
-        # (realized-level); level-frame and predicted-improvement now bank.
+        # "proceed" from meaning "unchecked". None of the three refuses now:
+        # level-frame, realized-level (deviation (i)) and predicted-improvement
+        # all bank, and each says what it measured.
         #
         # The candidate presence check is the caller's because reading the
         # ripple off it requires it; the alignment half of the shipped skip
@@ -8645,10 +8648,11 @@ class CrossoverV2Session:
         (:meth:`_close_cloud_group`) and the next accept re-runs it.
 
         **A failure here is dropped, not remembered.** The bank stays empty and
-        the confirm refits from scratch, so a household that hits the
-        accountability veto or a fit bug sees the identical failure, raised
-        from the identical place, at the identical moment they would have seen
-        it before this rider existed. The cost is one wasted fit on a session
+        the confirm refits from scratch, so a household that hits a fit bug
+        sees the identical failure, raised from the identical place, at the
+        identical moment they would have seen it before this rider existed.
+        (Accountability used to be on that list; neither of its items refuses
+        any more — deviations (c) and (i).) The cost is one wasted fit on a session
         that is already ending; the alternative — re-raising a stored
         exception across a thread boundary — buys seconds on a terminal path
         in exchange for a second, subtly different failure route to reason
@@ -8674,9 +8678,11 @@ class CrossoverV2Session:
                 # household has not asked about yet, and the confirm path is
                 # about to run the same fit and raise the same thing where it
                 # CAN be handled. Swallowing it here must therefore not depend
-                # on guessing the fit's raise surface — the accountability veto
-                # (``CaptureBeginRefused``) alone raises outside the named
-                # families this file's other boundaries use. ``Exception``, not
+                # on guessing the fit's raise surface. The accountability
+                # veto used to be the one raise outside the named families
+                # this file's other boundaries use; both its items now bank
+                # instead, which narrows what can arrive here but does not
+                # make it enumerable. ``Exception``, not
                 # ``BaseException``: a Stop or an interpreter teardown must
                 # still tear this thread down rather than be logged as a fit
                 # that merely did not bank.
@@ -8868,21 +8874,20 @@ class CrossoverV2Session:
 
         **The accountability seam (linearization-integrity PR-L4).** This is the
         last moment before the speaker is touched, and it is where the two
-        load-bearing assertions live — the realized inter-driver level (item 1)
-        and the spec-graded prediction (item 2). Both run AFTER the build and
-        BEFORE ``self._candidate`` is set and ``publish_candidate`` fires, so an
-        item-1 refusal leaves no candidate for anything downstream to apply, and
-        the confirm seam's ``CaptureBeginRefused`` arm persists a named reason
-        with its own household copy. Item 2 GRADES rather than refuses (#2854),
-        so it reaches the same seam without ever being the reason nothing
-        published.
+        load-bearing measurements live — the realized inter-driver level
+        (item 1) and the spec-graded prediction (item 2). **NEITHER refuses.**
+        Item 2 stopped with the nanny burn-down (#2854, deviation (c)) and
+        item 1 with the realized-level demotion (deviation (i)); both now GRADE,
+        bank what they measured, and let the round proceed. They still run
+        AFTER the build and BEFORE ``self._candidate`` is set and
+        ``publish_candidate`` fires, because that is where the numbers they
+        grade exist.
 
         They live here and not inside :meth:`_build_candidate` on purpose: that
         method's SF2 arm catches a fit-engine failure and degrades to the
-        trims-only path, which is the right answer for a BUG in the fit and
-        exactly the wrong answer for an accountability refusal — quietly
-        shipping an unlinearized candidate is the silent-failure shape this PR
-        exists to remove.
+        trims-only path, which is the right answer for a BUG in the fit and the
+        wrong answer for an accountability verdict — a verdict banked about a
+        candidate nobody built describes a graph that was never proposed.
 
         On the pre-cloud 3-entry shape — which no production caller constructs
         (see :meth:`_measure_verdict`'s own note) — this method is reached from
@@ -8921,11 +8926,9 @@ class CrossoverV2Session:
         moots can simply be dropped, leaving the session exactly as it was.
 
         The accountability gate DOES run here, and deliberately: it is part of
-        producing a candidate, not part of proposing one. It raises
-        ``CaptureBeginRefused`` before anything is banked, which on the eager
-        path means the bank stays empty and the confirm refits — see
-        :meth:`run_speculative_group_close` for why that costs a failing
-        session one extra fit and buys an unchanged failure path.
+        producing a candidate, not part of proposing one. It refuses nothing
+        (deviations (c) and (i)) — what it produces is the level-frame record
+        this method returns, banked against the candidate it is about.
 
         **It writes no session state at all** since #2291 Phase 2b. The fit's
         by-products — the outcome string, the linearized VERIFY prior, the
@@ -8963,10 +8966,10 @@ class CrossoverV2Session:
             if linearization.linearized_predicted_sum is not None
             else analysis.predicted_sum
         )
-        # PR-L4: the last gate before a candidate can be proposed at all.
-        # Raises CaptureBeginRefused, so nothing below runs — no candidate is
-        # stashed, none is published, and the review screen has nothing to
-        # offer rather than an unaccountable proposal.
+        # PR-L4: the last GRADING before a candidate can be proposed at all.
+        # It refuses nothing since deviations (c) and (i); what it returns is
+        # the level-frame record, which the publish below banks so the review
+        # screen offers the proposal WITH what was measured about it.
         level_frame_finding = self._assert_accountable(
             predicted_sum, analysis.predicted_sum, linearization=linearization,
             # Read off the CANDIDATE rather than off ``self._prescribed_driver``:
@@ -9371,9 +9374,11 @@ class CrossoverV2Session:
           The finding store is write-once, so a gate-site publish would ask it
           twice for one path and hit a PATH_CONFLICT on the second.
         * **Never for a candidate that does not exist.** A build the household
-          retakes past, or one item 1 refuses after the frame gate banked,
-          leaves no finding: the record describes the frame behind a specific
-          proposal. Item 2 is not on that list — it no longer refuses.
+          retakes past leaves no finding: the record describes the frame behind
+          a specific proposal. Neither accountability item is on that list any
+          more — both stopped refusing (deviations (c) and (i)), so a level
+          verdict arrives here as a record to bank, never as a missing
+          candidate.
         * **The citation resolves.** The finding cites the candidate artifact,
           which the line above just published.
 
@@ -9389,8 +9394,12 @@ class CrossoverV2Session:
         try:
             self._seams.publish_findings(record)
         except (OSError, RuntimeError, TypeError, ValueError):
+            # LEVEL FRAME, not level estimator: this publish carries
+            # realized-only records too. `…_publish_failed` and not
+            # `…_finding_failed`, because `…_level_frame_finding` is a RETIRED
+            # name (#2609) that must not start matching a live line again.
             log_event(
-                logger, "correction.crossover_v2_level_estimator_finding_failed",
+                logger, "correction.crossover_v2_level_frame_publish_failed",
                 level=logging.WARNING, session_id=self.session_id, exc_info=True,
             )
 
@@ -9545,6 +9554,14 @@ class CrossoverV2Session:
         for the code, its template, and its budget; since #2085 the sentence
         itself comes from :func:`reason_message` — see below).
 
+        **No production path calls this today.** Its one caller was the
+        accountability level refusal, deleted by doctrine deviation (i); the
+        admission seam builds ``CaptureBeginRefused`` inline, already holding a
+        classified ``decision``. Kept because it alone owns the stamp below, so
+        the next refusal here reaches for a correct constructor rather than a
+        fifth inline one — and the endpoint test that drives the host's refusal
+        plumbing raises through it instead of re-implementing that stamp.
+
         **Stamping ``_last_failure_code`` is the load-bearing half**, not
         bookkeeping. The host's ``CaptureBeginRefused`` arm persists
         ``conductor.last_failure_code`` and falls back to
@@ -9556,10 +9573,8 @@ class CrossoverV2Session:
 
         Copy comes from :func:`reason_message`, not from ``spec`` directly
         (#2085), so a refusal built here renders the same sentence the
-        capture's own relay verdict did. No code routed through this method is
-        evidence-keyed TODAY — the accountability refusal holds a literal — but
-        every other render path now asks the selector, and leaving one that
-        does not is how the two accounts diverge again the first time a
+        capture's own relay verdict did. Asking the selector rather than the
+        spec is what stops the two accounts diverging again the first time a
         refusal code grows a fact to branch on.
 
         The evidence is read BEFORE the stamp below, because
@@ -9651,12 +9666,14 @@ class CrossoverV2Session:
                 else PREDICTED_SPEC_MATERIAL_IMPROVEMENT_DB
             ),
         )
-        if decision.spec_report_written:
-            self._measure_predicted_spec_report = decision.spec_report
+        # Unconditional: item 2 is reached on every path the gate takes, so
+        # `spec_report` is always written — `None` meaning "graded nothing",
+        # which is the value the stash should then hold. The
+        # `spec_report_written` guard went with the deleted level refusal, the
+        # one return that could reach here without item 2 having run.
+        self._measure_predicted_spec_report = decision.spec_report
         for record in decision.journal:
             self._journal_linearization(record)
-        if decision.refusal_reason is not None:
-            raise self._refuse(decision.refusal_reason)
         return decision.finding
 
     def _cloud_fit_evidence(self, combined: Any) -> "_CloudFitEvidence | None":
@@ -11557,10 +11574,8 @@ class CrossoverV2Session:
                 )
                 if cand and cand.trim_band_average_db is not None else None
             ),
-            # The disambiguator for the 0.0 above: non-``None`` only when a
-            # polish was computed and REJECTED, and then it is the excursion
-            # that was thrown away. Without it the line's 0.0 is three
-            # different rounds wearing one face.
+            # Disambiguates the 0.0 above, which is otherwise three rounds
+            # wearing one face; see the field's own docstring.
             ripple_polish_rejected_delta_db=(
                 round(float(cand.ripple_polish_rejected_delta_db), 4)
                 if cand and cand.ripple_polish_rejected_delta_db is not None else None

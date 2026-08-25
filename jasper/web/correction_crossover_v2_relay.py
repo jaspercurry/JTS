@@ -349,8 +349,8 @@ def build_v2_run_and_consume(
       reason (backgrounded / vanished) still reads as ``relay_timeout``. Both
       abandon the volume identically — only the persisted reason differs.
     * ``CaptureBeginRefused`` — the conductor already recorded the phase's own
-      failure code (including the PR-L4 accountability veto refusing ON the
-      household's group-close confirmation); persist it + abandon.
+      failure code; persist it + abandon. (PR-L4's seam was the group-close
+      producer and has refused nothing since (c)/(i); admission still does.)
     * ``CaptureStopped`` / cancellation — expected control flow: abandon the
       volume, no failure code.
     * ANY other ``Exception`` — the W6.1 catch-all cleanup arm: the seams
@@ -431,10 +431,10 @@ def build_v2_run_and_consume(
             so a confirmation whose fit never reached disk would leave the
             review screen with nothing to review.
 
-            A refusal (the PR-L4 accountability veto raises
-            ``CaptureBeginRefused``) propagates to the runner, which publishes
-            it to the phone and ends the session exactly as an admission
-            refusal does.
+            A ``CaptureBeginRefused`` raised under the close propagates to the
+            runner, which publishes it to the phone and ends the session
+            exactly as an admission refusal does — a contract, not a claim
+            about PR-L4's seam, which has refused nothing since (c) and (i).
 
             The sequence itself — persist FIRST (the combine plus the fit are
             the slowest thing in the session, the wizard renders from durable

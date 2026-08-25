@@ -4413,7 +4413,7 @@ def test_the_tier_rides_the_durable_state_and_state_block():
 def _closed_cloud_conductor():
     """A real conductor walked to its cloud-measure close, so it carries a
     candidate, a full-resolution ``measure_predicted_sum``, and the spec report
-    its accountability veto graded that sum with."""
+    its accountability seam graded that sum with."""
     from tests.crossover_v2_fixtures import (
         FakeSeams,
         _cloud_conductor,

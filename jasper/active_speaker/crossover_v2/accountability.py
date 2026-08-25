@@ -67,10 +67,12 @@ module should own and are deliberately not:
   this gate reads rather than being passed alongside it.)
 * **The household reason codes — all of them, now gone.**  This module used to
   be handed the token to refuse under, precisely because it never rendered or
-  branched on one and only routed it into a journal payload and into
-  :attr:`AccountabilityDecision.refusal_reason`.  Item 2's went with item 2's
+  branched on one and only routed it into a journal payload and into a
+  ``refusal_reason`` on the decision it returns.  Item 2's went with item 2's
   refusal, and item 1's with the realized-level demotion, so the parameter is
-  deleted rather than left unused.  The finding vocabulary that replaced it is
+  deleted rather than left unused — and so is that field, since deleting the
+  last writer of a thing and keeping the thing is how a dead branch outlives
+  the condition it described.  The finding vocabulary that replaced it is
   owned where the verdicts are — :data:`~.intervention.LEVEL_ESTIMATOR_SUSPECT_REASON`
   and :data:`~.intervention.REALIZED_LEVEL_SUSPECT_REASON` — and is imported
   rather than passed, because a disclosure's reason is this gate's own word for
@@ -193,35 +195,30 @@ class GateRecord:
 class AccountabilityDecision:
     """What the gate decided, and everything the caller must do about it.
 
-    ``refusal_reason`` is the household code to refuse under, or ``None`` to
-    proceed.  **Nothing in this gate sets it any more** — item 2's refusal went
-    with the nanny burn-down (deviation (c)) and item 1's with the realized-level
-    demotion (deviation (i)), so it is ``None`` on every path.  The field is kept
-    rather than deleted because the caller's contract is "a decision says whether
-    to refuse", and a gate that has nothing to refuse on today should say so by
-    returning ``None`` rather than by losing the ability to say it.
+    **There is no ``refusal_reason``, and its absence is the ruling rather than
+    an omission.**  This gate carried one until the realized-level demotion
+    (`docs/measurement-loop-doctrine.md` deviation (i)) deleted its last writer;
+    item 2's had already gone with the nanny burn-down (deviation (c)).  The
+    field went WITH that writer rather than staying behind as a permanently
+    ``None`` seam, because a field nothing can set is not an ability the gate
+    retains — it is a branch every caller must trace to discover is dead, and
+    the flow carried exactly such a ``raise`` until this change removed it.  A
+    future refusal here would be a deliberate act under §4's closed list, and it
+    adds the field back beside the writer that earns it.
+
+    ``spec_report_written`` went in the same cut and for the same reason.  It
+    existed to tell "item 2 ran and produced no report — clear the stash" from
+    "item 2 never ran — do not touch it", and deviation (i)'s deleted return was
+    the last path that could produce the second.  Item 2 is now reached on every
+    path this gate takes, so the caller assigns the stash unconditionally and
+    ``spec_report`` alone carries the one fact left: a report, or ``None``
+    meaning there was no summed model to grade.
 
     ``finding`` is the banked record when EITHER level check had something to
     report: the two per-driver estimates in disagreement, the committed pair's
     realized levels too far apart, or both.  Neither has a refusal arm, so a
     ``finding`` now accompanies a round that proceeds — which is the only kind
     of round there is.
-
-    **``spec_report`` and ``spec_report_written`` are two facts, not one.**
-    ``None`` with ``spec_report_written`` True means item 2 ran and produced no
-    report — no summed model to grade, or an evaluator that declined the
-    curve — so the stash must be cleared.  ``None`` with it False means item 2
-    never ran and the stash must not be touched.  Collapsing them would clear a
-    stash the gate never reached, which is a different session state than the
-    one that happened.
-
-    That second case has narrowed twice and is worth stating as it now stands
-    rather than by what it excludes: item 2 is reached on every path this gate
-    takes, so ``False`` today means the gate itself raised.  It used to also
-    mean "a level refusal returned before item 2" (deviation (i) removed that
-    return) and, earlier, "graded, and the grader refused" (deviation (c)
-    removed that arm).  The pair is kept because the distinction is real
-    whenever it arises, not because a shipped path still produces it.
 
     ``journal`` is in emission order.  A caller that writes the stash first and
     then iterates produces the same journal, and the same session state, as
@@ -231,13 +228,11 @@ class AccountabilityDecision:
     """
 
     journal: tuple[GateRecord, ...] = ()
-    refusal_reason: str | None = None
     finding: Mapping[str, Any] | None = None
     #: A ``dict`` rather than a ``Mapping``: this IS the host's stash, which the
     #: host owns and the review screen's persistence later reads back, and the
     #: gate has already merged item 2's ``comparison`` block into it.
     spec_report: dict[str, Any] | None = None
-    spec_report_written: bool = False
 
 
 def level_frame_record(
@@ -289,11 +284,21 @@ def level_frame_record(
     offsets; no verdict here moves a number, so there is no dB consequence to
     report and those two fields are deleted rather than left reading zero.
 
-    Returns ``None`` when the planner produced no per-role bands to describe —
-    unreachable on this path (a suspicion needs an owner and both estimators,
-    which needs roles), but a record with no band cannot become a finding, and
-    returning ``None`` here says so at the producer instead of failing
-    validation two layers away.
+    **A realized-only record does not need the fit's core bands, and no longer
+    dies without them.** The band a finding carries has to come from somewhere,
+    and the estimator condition can only take it from ``cores`` — the spans its
+    two medians were computed on. The realized condition has its own: the
+    mirrored half-bands about Fc that ``realized_branch_level_match`` read the
+    two levels on, which ride on the verdict itself. So a missing core band
+    falls back to those rather than dropping the record. This mattered the
+    moment the realized check stopped refusing: while it refused, losing the
+    record cost a diagnosis beside a session that had already stopped and said
+    why; now the record is the only DURABLE half of a disclosure on a round that
+    proceeds, and the journal line the gate also emits is not a reader.
+
+    Returns ``None`` only when NEITHER instrument can name a band — which needs
+    an estimator disagreement with no per-role core spans, since the realized
+    verdict always carries its two.
     """
 
     consistency = state.level_consistency
@@ -327,6 +332,14 @@ def level_frame_record(
         band for role in cores
         if (band := cores[role].get("band_hz")) is not None
     ]
+    if not edges and realized is not None:
+        # The realized instrument's OWN spans — the mirrored half-bands about
+        # Fc that its two levels were read on. Reached only when the fit
+        # produced no core median for any role, in which case the estimator
+        # check has nothing to report either and this record is the realized
+        # disclosure or it is nothing. Both spans are non-optional on
+        # ``RealizedLevelMatch``, so no second guard is needed here.
+        edges = [realized.woofer_band_hz, realized.tweeter_band_hz]
     lo_edges = [float(band[0]) for band in edges]
     hi_edges = [float(band[1]) for band in edges if band[1] is not None]
     if not lo_edges or not hi_edges:
@@ -349,9 +362,21 @@ def level_frame_record(
         record["reason"] = consistency.reason
     else:
         record["reason"] = REALIZED_LEVEL_SUSPECT_REASON
+    # PREFIXED, like every other key that belongs to one of the two
+    # instruments. They were bare while this record could only ever be about
+    # the estimators, and widening it to the realized condition is what made
+    # bare ambiguous: a reader who finds ``reason=realized_levels_disagree``
+    # beside an unqualified ``worst_delta_db`` has no way to know the number
+    # belongs to the OTHER instrument and is not the realized error. The prefix
+    # is the record's own existing one — ``estimator_delta_db_{role}`` below —
+    # so this disambiguates without minting a second vocabulary, and it matches
+    # what ``plan_linearization``'s journal already spells
+    # ``level_estimator_worst_delta_db`` one module over.
     if consistency is not None:
-        record["worst_delta_db"] = round(float(consistency.worst_delta_db), 3)
-        record["tolerance_db"] = float(consistency.tolerance_db)
+        record["estimator_worst_delta_db"] = round(
+            float(consistency.worst_delta_db), 3
+        )
+        record["estimator_tolerance_db"] = float(consistency.tolerance_db)
     if realized is not None:
         record.update(
             realized_difference_db=round(float(realized.difference_db), 3),
@@ -692,7 +717,6 @@ def assess_accountability(
             journal=tuple(journal),
             finding=finding,
             spec_report=spec_report,
-            spec_report_written=True,
         )
 
     if raw_predicted_sum is None or state.linearized_predicted_sum is None:

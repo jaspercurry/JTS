@@ -40,6 +40,17 @@ Verify becomes its own short session. Auto-apply goes away.
 Seven premises that earlier drafts of this design got wrong. Each was
 read in the tree, not inferred from a name.
 
+> **One premise has since been overtaken by a ruling, and is annotated in
+> place rather than rewritten** — this block records what was read at
+> `07896df48` and is dated for that reason. `_assert_accountable` is no
+> longer a veto: item 2 stopped refusing with the nanny burn-down
+> ([`measurement-loop-doctrine.md`](measurement-loop-doctrine.md) deviation
+> (c)) and item 1 with the realized-level demotion (deviation (i)). Both now
+> grade, bank what they measured, and let the round proceed. The premise's
+> conclusion is unaffected: what it argued is that removing auto-apply must
+> not remove the accountability machinery, and that machinery is still there
+> — as a disclosure rather than a stop.
+
 - **There is no "auto-apply-on-improved" gate.** Apply is
   **unconditional**: `"auto_apply": True` is a hardcoded literal in
   `_close_measure_cloud_candidate`
@@ -875,9 +886,12 @@ apply from the screen, because T3 is what makes the screen's Apply real.
   `baseline_profile`'s `provisional` to express "this failed verify" is
   wrong by construction and corrupts a shipped meaning rendered
   elsewhere. Use the grade vocabulary.
-- **Do not delete the accountability veto.** `_assert_accountable` is
+- **Do not delete the accountability seam.** `_assert_accountable` is
   not auto-apply; removing it with auto-apply would drop the
-  realized-level and prediction ledger together.
+  realized-level and prediction ledger together. (It was a veto when this
+  was written and refuses nothing now — see the note under "Current
+  state" — which makes the ledger the whole of what it produces, and so
+  makes this do-not stronger rather than weaker.)
 - **The prediction is model-vs-model.** Any copy that presents
   `improvement_db` as evidence about the *room* is measured-narrow-
   stated-wide. The measured evidence on the review screen is the

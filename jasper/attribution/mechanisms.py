@@ -198,11 +198,17 @@ _SEED: tuple[MechanismSpec, ...] = (
         id=MECHANISM_LEVEL_FRAME,
         title="Inter-driver level-frame error",
         # Plan §4 M7: "`eq` (level) — and `refit` when the level error is
-        # upstream in the fit's own frame". Both are real and a finding picks
-        # one. The frame-gate site only ever produces the second: a
-        # disagreement BETWEEN two estimates of the frame is by construction
-        # upstream of any trim derived from them, so adding level cannot be
-        # the answer — re-solving the frame is. Pinned by test.
+        # upstream in the fit's own frame". Both are real, a finding picks one,
+        # and the frame-gate site now produces BOTH — one per condition it can
+        # bank, which is why this declaration needs two entries rather than
+        # one. `refit` for a disagreement BETWEEN two estimates of the frame,
+        # which is by construction upstream of any trim derived from them, so
+        # adding level cannot be the answer. `eq` for the committed pair's
+        # REALIZED levels landing apart, which is the first half of the split
+        # verbatim — the frame is not in dispute there. Until doctrine
+        # deviation (i) demoted that second condition from a refusal it had no
+        # finding at all, which is why this comment used to say the site
+        # produced only `refit`. Both routes pinned by test.
         fix_classes=("eq", "refit"),
         # **A gap, declared as one — no §5 probe DECIDES M7 today.** This
         # field's contract is the strong one ("the probe that would decide

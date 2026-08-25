@@ -665,24 +665,20 @@ RIPPLE_TRIM_SEARCH_STEP_DB = 0.1
 RIPPLE_TRIM_FLAT_MINIMUM_EPSILON_DB = 0.25
 
 # How far the ripple-optimal trim may move from the band-average seed before it
-# is discarded lives BELOW, as REALIZED_LEVEL_MATCH_TOLERANCE_DB, because it is
-# the same number answering the same question: the polish's excursion passes
-# straight through the give-back to become the committed pair's realized
-# inter-driver level error, identically. Admitting a polish the level gate
-# cannot then grade as matched is a round the session refuses for a reason it
-# manufactured. There is deliberately no RIPPLE_TRIM_SANITY_MARGIN_DB here any
-# more; it was 6.0 dB — double this tolerance — and deleting it is the fix.
-# The full account, with the jts3 numbers, is doctrine deviation (i)
-# (`docs/measurement-loop-doctrine.md`); in-repo precedent for binding an
-# admission bound to this same tolerance is
-# `intervention.MIN_TRIM_SANITY_MARGIN_RATIO`.
+# is discarded is not a bound this seam owns: the excursion passes through the
+# give-back to become the committed pair's realized inter-driver level error, so
+# the bound is REALIZED_LEVEL_MATCH_TOLERANCE_DB below and a polish admitted
+# past it produces a pair the level check can only report against. The
+# RIPPLE_TRIM_SANITY_MARGIN_DB that stood here was 6.0 dB — double that
+# tolerance — and deleting it is the fix (doctrine deviation (i),
+# `docs/measurement-loop-doctrine.md`; precedent for binding an admission bound
+# to this tolerance: `intervention.MIN_TRIM_SANITY_MARGIN_RATIO`).
 #
-# NOT a mirror of `intervention.LINEARIZATION_TRIM_SANITY_MARGIN_DB` (6.0),
-# which this comment used to claim it was: that one bounds how far the
-# LINEARIZED re-solve's summed-flatness optimum may drift from the measured
-# level anchor, and wants slack OVER this tolerance rather than equality. Same
-# word, different question — the conflation that let a level-match bound
-# inherit a flatness bound's number.
+# It was never the mirror of `intervention.LINEARIZATION_TRIM_SANITY_MARGIN_DB`
+# (6.0) this comment used to claim: that bounds the LINEARIZED re-solve's
+# summed-flatness optimum against the measured level anchor and wants slack OVER
+# this tolerance rather than equality. Same word, different question — the
+# conflation that let a level-match bound inherit a flatness bound's number.
 
 # A trim is a passive level-match: never net gain (> 0 dB), and never beyond
 # the shared -60 dB attenuation floor the active-speaker candidate/profile
@@ -699,8 +695,12 @@ RIPPLE_TRIM_MIN_DB = -60.0
 
 # How far the two branches' realized levels — read on their own mirrored
 # ±1-octave half-bands about Fc, NOT across each driver's whole passband — may
-# sit apart after the committed trim before the pair is refused (linearization-integrity PR-L4
-# item 1 — the assertion nothing in the chain made). The design intent is that
+# sit apart after the committed trim before the pair is REPORTED as mislevelled
+# (linearization-integrity PR-L4 item 1 — the assertion nothing in the chain
+# made). It refused a round until doctrine deviation (i) demoted it to a
+# disclosure; the number and what it measures are unchanged, and what changed is
+# that a pair past it now reaches the household with a finding rather than not
+# reaching it at all. The design intent is that
 # they are EQUAL: a 2-way's summed response is flat only when each branch hands
 # off at the same level, which is the whole purpose of a trim. This is the
 # acceptance check on that intent, read by
@@ -713,8 +713,10 @@ RIPPLE_TRIM_MIN_DB = -60.0
 #   level-match frame and the fit frame agree to 1.08-1.30 dB after PR-L3, and
 #   the estimator carries a KNOWN +0.54 dB linear-bin systematic
 #   (:func:`solve_branch_trims`' own N1 note). A tolerance near that floor would
-#   turn a normal session into a refusal, which is the one failure mode a
-#   safety assertion must not have.
+#   put a finding on every normal session, which is the one failure mode a
+#   disclosure must not have — it was a refusal on every normal session when
+#   this bound was derived, and the argument for the floor is the same either
+#   way: a bar the honest spread crosses says nothing.
 #
 #   That 1.08-1.30 dB is the PRE-#1929 measurement, taken with the fit's median
 #   over each driver's whole declared capture span. #1929 moved that median to
@@ -738,7 +740,9 @@ RIPPLE_TRIM_MIN_DB = -60.0
 # So the band between "measurable" and "already out of spec" is narrow, and
 # 3.0 dB is the top of it: every level error the spec itself calls a failure is
 # caught, with 2.3x margin over the worst honest frame disagreement measured.
-# The 2026-07-27 profile the owner heard as dark would have refused here.
+# The 2026-07-27 profile the owner heard as dark reads ~9 dB here — a round that
+# would have been refused when this was a gate, and that now ships with the
+# finding saying so.
 REALIZED_LEVEL_MATCH_TOLERANCE_DB = 3.0
 
 # Direct-arrival window used to isolate each driver's IR before deconvolution
@@ -1651,13 +1655,11 @@ class CrossoverCandidate:
     #: ``None`` when nothing was thrown away.
     #:
     #: On the candidate and not only in the journal, for the reason
-    #: :attr:`left_anchor_lobe` is: the fact is invisible in every number the
-    #: receipt already carries. A rejection commits the band-average seed, so
-    #: ``trim_db[tweeter] == trim_band_average_db[tweeter]`` — byte-identical to
+    #: :attr:`left_anchor_lobe` is: a rejection commits the band-average seed,
+    #: so ``trim_db[tweeter] == trim_band_average_db[tweeter]`` — identical to
     #: an admitted polish that moved nothing, and to the one-sided skip that
     #: never ran a scan. Three outcomes, one signature; this separates the one
-    #: where a flatness answer was computed and discarded. The fallback needs
-    #: no field of its own: it is ``trim_band_average_db``, already here.
+    #: where a flatness answer was computed and discarded.
     ripple_polish_rejected_delta_db: float | None = None
 
 
@@ -6739,10 +6741,8 @@ def _build_candidate(
     # it. A selector that cannot see the woofer must not set the woofer's
     # handoff level, so it is skipped rather than guarded on that geometry.
     ripple_band_straddles_fc = lo_clamped < fc_hz < hi
-    # The rejected excursion, or ``None`` when no polish was thrown away —
-    # which is BOTH the admitted case and the skipped one. On the candidate as
-    # well as this line because those three outcomes are otherwise
-    # indistinguishable downstream; see the field's own docstring.
+    # The rejected excursion; ``None`` covers BOTH the admitted case and the
+    # skipped one (see the field's own docstring).
     ripple_polish_rejected_delta_db: float | None = None
     if ripple_band_straddles_fc:
         trim_t_ripple, _ripple_t_ripple, _seed = solve_ripple_optimal_trim(
@@ -6753,10 +6753,8 @@ def _build_candidate(
             sign=polarity_sign,
         )
         # Admitted only where the pair it produces can be GRADED as level
-        # matched — see the tolerance's own block above for why the two are one
-        # number. The excursion passes through to the committed pair, so a
-        # polish this check rejects is one the realized-level gate could only
-        # have reported as an inter-driver level error.
+        # matched; the tolerance's own block above says why the two are one
+        # number.
         polish_delta_db = trim_t_ripple - trim_t_band_average
         if abs(polish_delta_db) > REALIZED_LEVEL_MATCH_TOLERANCE_DB:
             ripple_polish_rejected_delta_db = float(polish_delta_db)
@@ -6766,10 +6764,9 @@ def _build_candidate(
                 woofer_role=woofer_role, tweeter_role=tweeter_role,
                 band_average_trim_db=round(trim_t_band_average, 3),
                 ripple_optimal_trim_db=round(trim_t_ripple, 3),
-                # The excursion, signed, beside the bound that refused it.
-                # Spelled `tolerance_db` — the level gate's own field name —
-                # rather than the old `margin_db`, because it is now that
-                # gate's number and a reader greps one word for one question.
+                # The excursion, signed, beside the bound that rejected it.
+                # Spelled `tolerance_db` rather than the old `margin_db`: it is
+                # the level check's own number, and one word per question.
                 rejected_delta_db=round(polish_delta_db, 3),
                 tolerance_db=REALIZED_LEVEL_MATCH_TOLERANCE_DB,
             )

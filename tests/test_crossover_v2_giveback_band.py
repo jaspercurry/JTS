@@ -420,7 +420,10 @@ def test_the_fix_can_commit_a_HOTTER_trim_and_that_is_still_correct():
 @pytest.mark.parametrize(
     "polish_delta_db",
     [
-        2.0,   # a polish inside the coupled bound: applied, and gradeable
+        # The LARGEST polish the coupled admission can hand over, read from the
+        # constant rather than typed as a literal so this case moves if the
+        # tolerance ever does.
+        REALIZED_LEVEL_MATCH_TOLERANCE_DB,
         0.0,   # what a REJECTED polish hands over — the band-average seed
     ],
 )
@@ -434,6 +437,14 @@ def test_a_polished_base_passes_its_delta_straight_through(polish_delta_db):
     **δ of polish becomes exactly δ of realized inter-driver level error**,
     since the give-back is a per-role constant that knows nothing about how the
     base was chosen.
+
+    Stated precisely, the identity is the **two-role difference**
+    ``polish_t − polish_w``, and it reduces to the tweeter's term alone only
+    because the shipped MEASURE path polishes one trim — ``_build_candidate``
+    ripple-solves ``trim_t`` and commits the woofer's band-average seed
+    unchanged, so ``polish_delta_db[woofer]`` is 0.0. The next test pins the
+    difference form directly, so a future path that polished both roles would
+    not silently falsify this one's shorthand.
 
     **That identity is why the polish admission is bound to the realized-level
     tolerance and not to a number of its own.** It used to be bound to
@@ -471,11 +482,64 @@ def test_a_polished_base_passes_its_delta_straight_through(polish_delta_db):
 
     # δ in, δ out. Not "about δ" — exactly δ.
     assert realized == pytest.approx(polish_delta_db, abs=1e-9)
-    # And therefore: every δ MEASURE can now hand over is one the realized gate
-    # can grade as matched. That is the coupling, stated as the property it
-    # buys rather than as the constant it is written with — a re-widened
-    # admission bound fails here as well as at its own site.
-    assert abs(realized) <= REALIZED_LEVEL_MATCH_TOLERANCE_DB
+    # So the largest polish the admission can pass through lands EXACTLY on the
+    # level check's bound and never past it.
+    #
+    # What this does and does NOT pin, stated because the difference matters:
+    # it is the identity's consequence at a δ this file supplies, not a guard
+    # on the admission bound. Patching that bound back to 6.0 in
+    # ``program_analysis`` leaves every case here green, because the δ values
+    # come from the parametrize list above. The coupling's mutation guard lives
+    # at the admission site — ``test_build_candidate_rejects_a_polish_the_
+    # level_gate_could_not_grade`` and its admitting sibling, in
+    # ``tests/test_audio_measurement_program_analysis.py`` — where a re-widened
+    # bound does fail.
+    #
+    # The slop is one ulp's worth, not a loosened bound: the largest admissible
+    # δ lands ON the tolerance, and a bare ``<=`` would fail at 3.0000000000004
+    # on float rounding rather than on anything about the coupling.
+    assert abs(realized) <= REALIZED_LEVEL_MATCH_TOLERANCE_DB + 1e-9
+
+
+def test_the_identity_is_the_two_role_difference_not_the_tweeters_term_alone():
+    """``realized == polish_t − polish_w``, pinned as the difference it is.
+
+    The shorthand everywhere else — "δ of polish becomes δ of realized level
+    error" — is the tweeter's term alone, and it is true only because the
+    shipped MEASURE path polishes one trim. Writing the identity down in its
+    general form costs one test and stops a future two-sided polish from
+    inheriting a claim that was never about it.
+
+    Three cases, and the third is the one a single-role test cannot show:
+    polishing BOTH roles by the same amount is common mode and cancels, because
+    ``anchor_trims`` normalizes the pair. A speaker does not get mislevelled by
+    a shift both branches share.
+    """
+    freqs, W, T, w_lin, t_lin = _horn_case()
+    band_average = _raw_trim_db(freqs, W, T)
+    giveback = _level_band_giveback_db(freqs, W, T, w_lin, t_lin)
+    delta = 2.0
+
+    def _realized_for(polish: dict[str, float]) -> float:
+        base = {role: band_average[role] + polish[role] for role in band_average}
+        committed, _s = anchor_trims(
+            roles=(WOOFER, TWEETER), anchor_base_db=base, giveback_db=giveback,
+        )
+        return _realized_error_db(freqs, w_lin, t_lin, committed)
+
+    # Tweeter only — the shipped shape, and the shorthand's case.
+    assert _realized_for({WOOFER: 0.0, TWEETER: delta}) == pytest.approx(
+        delta, abs=1e-9
+    )
+    # Woofer only — the sign the shorthand cannot show, and the reason the
+    # identity is a DIFFERENCE rather than one role's term.
+    assert _realized_for({WOOFER: delta, TWEETER: 0.0}) == pytest.approx(
+        -delta, abs=1e-9
+    )
+    # Both, equally — common mode, which cancels.
+    assert _realized_for({WOOFER: delta, TWEETER: delta}) == pytest.approx(
+        0.0, abs=1e-9
+    )
 
 
 # --------------------------------------------------------------------------- #

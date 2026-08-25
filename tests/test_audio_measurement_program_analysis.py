@@ -3297,7 +3297,9 @@ def test_a_held_round_clears_the_accountability_prediction_gate():
             grade_prediction=spec_report_for_predicted_sum,
             material_improvement_db=PREDICTED_SPEC_MATERIAL_IMPROVEMENT_DB,
         )
-        assert decision.refusal_reason is None
+        # No refusal to assert away: the gate has no ``refusal_reason`` to set
+        # since the realized-level demotion (doctrine deviation (i)), which
+        # ``test_crossover_v2_accountability`` pins structurally.
         return decision.spec_report["comparison"]["reason"]
 
     # The held round clears its own gate…
@@ -7070,14 +7072,17 @@ def test_realized_level_match_tolerance_clears_the_measured_frame_noise():
     PR-L3 measured the level frame against the fit frame on all five archived
     cdhorn MEASURE captures and they agreed to 1.30 dB worst case, on top of a
     known +0.54 dB linear-bin systematic. A tolerance at or below that would
-    refuse honest sessions; this pins the margin that keeps it from doing so.
+    put a finding on honest sessions — a refusal on them, when this bound was
+    derived and the check still refused — and either way a bar the honest
+    spread crosses says nothing. This pins the margin that keeps it from doing
+    so.
     """
     worst_measured_frame_disagreement_db = 1.30
     assert REALIZED_LEVEL_MATCH_TOLERANCE_DB > worst_measured_frame_disagreement_db
     assert REALIZED_LEVEL_MATCH_TOLERANCE_DB >= 2.0 * MIRRORED_HALVES_BIAS_DB
     # ...and its ceiling argument: a level error of this size already puts each
     # side of Fc at the tightest spec band's tolerance, so nothing the spec
-    # calls a pass is refused here.
+    # calls a pass is reported as mislevelled here.
     from jasper.active_speaker.flat_spec import SPEC_BANDS
 
     assert REALIZED_LEVEL_MATCH_TOLERANCE_DB == pytest.approx(

@@ -1049,12 +1049,15 @@ def decide_trim(
     construction — each branch's own measured give-back, normalized so no trim
     is ever positive — so the committed pair can never exceed the branch's own
     pre-correction system level, and the emitted trims stay cut-only. And the
-    committed pair is not final: it still faces the realized-level assertion at
-    the host's accountability seam, which refuses the session rather than
-    shipping a pair that does not level. Falling back to a badly-levelled
-    anchor therefore produces a loud refusal, not a loud speaker.
+    committed pair is still MEASURED afterwards: it faces the realized-level
+    assertion at the host's accountability seam, which since doctrine deviation
+    (i) DISCLOSES rather than refuses — it banks
+    ``event=…_level_match_finding`` plus a level-frame finding and the round
+    proceeds. So falling back to a badly-levelled anchor produces a round that
+    SAYS it is badly levelled, not a silent one; the bound on loudness is the
+    clause above it, not this one.
 
-    **That last sentence is CONDITIONAL, and the condition is enforced rather
+    **That statement is CONDITIONAL, and the condition is enforced rather
     than assumed.** It holds only while
 
         ``sanity_margin_db >= MIN_TRIM_SANITY_MARGIN_RATIO *
@@ -1062,9 +1065,14 @@ def decide_trim(
 
     — today 6.0 against 2 × 3.0, exactly on the edge. Below it there is a band
     of drifts where the anchor is committed, is louder than the scan by more
-    than the accountability gate can see, and passes: at a 4.0 dB margin the
-    #2313 hearing-safety lens measured a tweeter landing +4.05 dB hotter than
-    legacy would have shipped, *through* a matched gate. Because this function
+    than the accountability check can SEE, and so ships with the round saying
+    nothing about it: at a 4.0 dB margin the #2313 hearing-safety lens measured
+    a tweeter landing +4.05 dB hotter than legacy would have shipped, *through*
+    a matched check. (That lens argued the relation from the check REFUSING;
+    deviation (i) demoted it, so what ``M >= 2T`` buys is now that such a
+    fallback is one the round DISCLOSES rather than one it is silent on. The
+    constant and its value are unchanged, and so is the silent band below
+    ``2T``.) Because this function
     takes the margin as an argument, that relation is validated in
     :meth:`LinearizationRequest.__post_init__`, where the margin enters — the
     constant's own comment carries the derivation.
@@ -1073,9 +1081,12 @@ def decide_trim(
     levelled better than the anchor is no longer committed. PR-L4's review
     measured one such case (a 6.5 dB drift committing at −1.6 dB of level
     error). That case now falls back and — if the anchor misses item 1's
-    tolerance — refuses. That is the intended trade: an honest refusal beats an
-    unaccountable application, and the margin is judged from live guard
-    telemetry rather than widened here to avoid the refusal.
+    tolerance — ships with a finding saying so. That is the intended trade: an
+    accounted-for application beats an unaccountable one, and the margin is
+    judged from live guard telemetry rather than widened here to dodge the
+    disclosure. (It read "an honest refusal beats an unaccountable
+    application" while item 1 refused; deviation (i) changed which of the two
+    outcomes the fallback earns, not which is preferable.)
     """
     drift_db = abs(
         float(resolved_db[tweeter_role]) - float(anchored_db[tweeter_role])
@@ -1498,10 +1509,14 @@ def plan_linearization(
     # The trim solve's own level-match result (``trim_band_average_db``) — not
     # ``trim_db``, which is that result AFTER the ripple-optimal polish moved it
     # for summed flatness. Reading the applied trim made the check sensitive to
-    # a refinement it is not measuring: the polish is bounded by the sanity
-    # margin (6.0), DOUBLE the tolerance, so an ordinary 3-6 dB polish hard-
-    # stopped an otherwise healthy session (adversarial review S5). Falls back
-    # to ``trim_db`` only for a legacy candidate constructed before the field
+    # a refinement it is not measuring: the polish was bounded by a sanity
+    # margin of 6.0 dB, DOUBLE the tolerance, so an ordinary 3-6 dB polish
+    # hard-stopped an otherwise healthy session (adversarial review S5). That
+    # margin is deleted and the admission is bound to the tolerance itself
+    # (doctrine deviation (i)), which closes the band the S5 case lived in;
+    # reading the band-average result here is still right, because the polish
+    # is a flatness refinement and this check is about level. Falls back to
+    # ``trim_db`` only for a legacy candidate constructed before the field
     # existed.
     #
     # It is a CHECK INPUT now, not a voter: since the single-datum-owner
@@ -1524,16 +1539,17 @@ def plan_linearization(
         trim_band_average_db=trim_band_estimate_db,
         core_proposal_db=core_proposal_db,
     )
-    # The frame's own INPUTS, for the refusal's journal line (#1929). A refusal
+    # The frame's own INPUTS, for the finding's journal line (#1929). A line
     # that names only the disagreement asks whoever reads it to re-derive which
-    # driver read what, and over which band.
+    # driver read what, and over which band. (It was a refusal's line when
+    # #1929 wrote this; both level verdicts disclose now.)
     #
     # BOTH bands are reported, and that is the point. ``radiating_band_hz`` is
     # the bound this gate asked for; ``band_hz`` is the span the median was
     # actually taken over. The interesting divergence is the width floor
     # REFUSING the bound for leaving too little band — the case where a reader
-    # diagnosing a refusal would otherwise be shown a band the number in front
-    # of them was never computed over. They also differ by a grid snap in the
+    # diagnosing the finding would otherwise be shown a band the number in
+    # front of them was never computed over. They also differ by a grid snap in the
     # ordinary case, always: ``band_hz`` is resolved onto the envelope's own
     # bins, so its edges are the outermost bins inside the declared span (on
     # the 2026-08-16 jts3 woofer, 1291.4105 against a declared 1321.3 — bin 77,
@@ -1777,7 +1793,12 @@ def plan_linearization(
     # ``solve_ripple_optimal_trim``'s result, a FLATNESS choice the candidate
     # made. When it fires, the base is δ away from what this give-back is
     # calibrated to, and δ passes straight through: the committed pair lands
-    # with exactly δ of realized inter-driver level error.
+    # with exactly δ of realized inter-driver level error. Precisely, that error
+    # is the two roles' δ DIFFERENCE — a shift both share is common mode and
+    # normalizes away — and it reduces to the tweeter's δ alone only because
+    # ``_build_candidate`` ripple-solves ``trim_t`` and commits the woofer's
+    # band-average seed unchanged. Pinned both ways in
+    # ``test_crossover_v2_giveback_band``.
     #
     # **The architect has ruled, and the bound is now the gate's own tolerance**
     # (`docs/measurement-loop-doctrine.md` deviation (i)). The polish used to be
@@ -1811,9 +1832,13 @@ def plan_linearization(
     # up HOTTER than the old rule left it — still under the non-positive clamps
     # below, and still level-correct. What is restored is equality between the
     # two branches at the handoff, not a monotone reduction in level. Anyone
-    # reasoning about hearing safety here should reason about the clamps and the
-    # realized gate, which are unchanged, and not about a direction this change
-    # does not have.
+    # reasoning about hearing safety here should reason about the CLAMPS — the
+    # non-positive trim clamps below, the output limiters, `devices.volume_
+    # limit`, and the commissioning SPL stop, all unchanged — and not about a
+    # direction this change does not have. Deliberately NOT the realized-level
+    # check: it never bounded absolute output, and since doctrine deviation (i)
+    # it discloses rather than stopping anything, so a reader sent to it as a
+    # rail would be sent to the wrong place.
     #
     # Reproducible: ``+8.13 dB`` hotter on a correction confined to the graded
     # span (level-band give-back 9.000 dB against the core band's 0.870 dB),
@@ -2072,8 +2097,9 @@ def plan_linearization(
             # came from the band-average solve; when MEASURE polished the trim
             # for ripple instead, this is how far the base moved, and the pair
             # lands with exactly that much realized inter-driver level error.
-            # Zero on the ordinary path. The realized-level gate is still the
-            # arbiter — this only makes its reason legible.
+            # Zero on the ordinary path. The realized-level check still MEASURES
+            # that error — it discloses rather than arbitrating since doctrine
+            # deviation (i) — and this only makes its cause legible.
             "band_average_trim_db": {
                 role: round(band_average_trim_db[role], 3)
                 for role in (woofer_role, tweeter_role)
@@ -2232,10 +2258,12 @@ def plan_linearization(
 
     # PR-L4 item 1: the inter-driver realized-level ledger, on every fitted
     # candidate whatever the guard decided. Recorded here (where the linearized
-    # branches live) and ASSERTED at the host's accountability seam —
-    # deliberately outside the host's degrade-to-trims-only catch, because an
-    # accountability refusal must stop the session rather than quietly become
-    # the unlinearized path.
+    # branches live) and GRADED at the host's accountability seam —
+    # deliberately outside the host's degrade-to-trims-only catch, so the
+    # verdict is reached and banked on the candidate that was actually built
+    # rather than swallowed into the unlinearized path. It was a REFUSAL that
+    # had to stop the session when this was written; doctrine deviation (i)
+    # made it a disclosure, and a disclosure that never runs is the same loss.
     committed_match = trim.committed_match
     emit(
     "correction.crossover_v2_realized_level_match",

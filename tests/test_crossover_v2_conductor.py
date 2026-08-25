@@ -9007,7 +9007,9 @@ def test_large_raw_shift_is_accepted_by_the_guard_and_disclosed_by_the_level_che
     # (Was 9.700 against an anchor of −20.0 while the give-back was measured
     # over the driver's core band. The band-matched give-back moved this
     # fixture 0.917 dB and the drift with it; the guard's behaviour — fires,
-    # commits the anchored pair, and lets item 1 refuse — is unchanged.)
+    # commits the anchored pair, and lets item 1 grade it — is unchanged. Item 1
+    # refused when that note was written; deviation (i) changed what item 1 does
+    # with the pair, not what this guard does.)
     assert "event=correction.crossover_v2_linearization_trim_rejected" in caplog.text
     assert "drift_db=9.8" in caplog.text
     assert "committed=anchored" in caplog.text
@@ -9609,8 +9611,8 @@ def test_the_stashed_prediction_verdict_is_the_full_resolution_grade():
     """Two-stage commission D4, the "one grading instrument" pin.
 
     The verdict the conductor holds for the host to persist must be the grade
-    of the FULL-RESOLUTION prediction — the same tuple the accountability veto
-    refused on — and not a re-grade of what survives persistence. This asserts
+    of the FULL-RESOLUTION prediction — the same tuple the accountability seam
+    grades — and not a re-grade of what survives persistence. This asserts
     the identity AND that the identity is a real constraint: the 512-point
     ``_decimate_sum`` reduction is demonstrably a different instrument, grading
     45/154/206 bins per band where the full 2048-point curve grades
