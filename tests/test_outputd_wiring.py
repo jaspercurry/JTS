@@ -363,7 +363,7 @@ def test_audio_hardware_reconciler_is_installed_and_udev_triggered():
     assert "deploy/lib/jasper-asound-render.sh" in install_sh
     assert "/usr/local/lib/jasper/jasper-asound-render.sh" in install_sh
     assert "99-jasper-audio-hardware-reconcile.rules" in install_sh
-    assert "ExecStart=/usr/local/sbin/jasper-audio-hardware-reconcile --reason systemd" in unit
+    assert "ExecStart=/usr/local/sbin/jasper-audio-hardware-reconcile --reason unit-start" in unit
     assert "Before=jasper-outputd.service" in unit
     before_line = next(
         line for line in unit.splitlines() if line.startswith("Before=")
