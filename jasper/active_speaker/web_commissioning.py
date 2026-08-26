@@ -23,7 +23,7 @@ import subprocess
 from collections.abc import Coroutine
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any, Callable
+from typing import Any, Awaitable, Callable
 
 from jasper.active_speaker import capture_entry_anchor
 from jasper.active_speaker.calibration_level import (
@@ -181,6 +181,38 @@ class AutomaticDriverConfigRestoreError(RuntimeError):
 
 class AutomaticSummedConfigRestoreError(RuntimeError):
     """Automatic summed capture could not restore its prior production config."""
+
+
+async def attempt_graph_restore(
+    restore: Callable[[], Awaitable[Any]],
+) -> tuple[bool, str | None]:
+    """Run one graph restore and never raise: ``(took_effect, raise_message)``.
+
+    The one verdict the swap transaction reaches, here and on
+    ``program_playback``'s measurement path: it TOOK, it RAISED (message
+    present), or CamillaDSP REJECTED it (``False``, no message). Both failures
+    are returned rather than collapsed to a bool because they are different
+    failures at the same call site — #2198 is what an absent distinction costs.
+    Callers own the consequence, which is the half that legitimately differs:
+    a restore inside a ``finally`` reports, one inside an ``except`` raises.
+    """
+    try:
+        restored = await restore()
+    except _COMMISSION_OPERATION_ERRORS as exc:
+        return False, str(exc)
+    return restored is True, None
+
+
+async def _resilient(
+    operation: Coroutine[Any, Any, dict[str, Any]],
+) -> dict[str, Any]:
+    """Run one restore coroutine to completion before propagating cancellation.
+
+    :func:`_await_restore_task_resilient` takes a Task, so every caller was
+    spelling its own ``create_task`` line first — a restore could be written
+    without the shield and still read as if it had one. One runner instead.
+    """
+    return await _await_restore_task_resilient(asyncio.create_task(operation))
 
 
 _SUMMED_TEST_ARM_REPORT: dict[str, Any] = {
@@ -758,8 +790,7 @@ async def _commission_tone_select_fanin_lane_async(
                 fanin_gate_context=fanin_gate_context,
             )
 
-        cleanup_task = asyncio.create_task(_settle_select_then_release())
-        await _await_restore_task_resilient(cleanup_task)
+        await _resilient(_settle_select_then_release())
         raise
 
 
@@ -1187,14 +1218,13 @@ async def _load_applied_summed_measurement_config(
         }
 
     async def _restore_previous_after_failed_load() -> dict[str, Any]:
-        try:
-            restored = await cam.set_config_file_path(
-                str(previous), best_effort=False
-            )
-        except _COMMISSION_OPERATION_ERRORS as exc:
-            return {"status": "failed", "error": str(exc)}
+        took_effect, error = await attempt_graph_restore(
+            lambda: cam.set_config_file_path(str(previous), best_effort=False)
+        )
+        if error is not None:
+            return {"status": "failed", "error": error}
         return {
-            "status": "rolled_back" if restored is True else "failed",
+            "status": "rolled_back" if took_effect else "failed",
             "config_path": str(previous),
         }
 
@@ -1207,8 +1237,7 @@ async def _load_applied_summed_measurement_config(
                 )
             return rollback
 
-        restore_task = asyncio.create_task(_restore_or_raise())
-        return await _await_restore_task_resilient(restore_task)
+        return await _resilient(_restore_or_raise())
 
     async def _restore_after_failed_load_payload() -> dict[str, Any]:
         try:
@@ -1277,9 +1306,8 @@ async def _load_applied_summed_measurement_config(
                 camilla_factory=camilla_factory,
             )
 
-        cleanup_task = asyncio.create_task(_settle_load_then_restore())
         try:
-            await _await_restore_task_resilient(cleanup_task)
+            await _resilient(_settle_load_then_restore())
         except AutomaticSummedConfigRestoreError as restore_error:
             raise restore_error from operation_error
         raise
@@ -1328,19 +1356,17 @@ async def _restore_applied_summed_previous_config(
     camilla_factory: CamillaFactory,
 ) -> dict[str, Any]:
     """Restore summed capture's production graph or fail loudly."""
-    restore_error: str | None
-    try:
-        cam = camilla_factory()
-        restored = await cam.set_config_file_path(
+    took_effect, raise_message = await attempt_graph_restore(
+        lambda: camilla_factory().set_config_file_path(
             previous_config_path,
             best_effort=False,
         )
-    except _COMMISSION_OPERATION_ERRORS as exc:
-        restore_error = str(exc)
-    else:
-        restore_error = (
-            None if restored is True else "CamillaDSP rejected the prior graph"
-        )
+    )
+    restore_error = (
+        None
+        if took_effect
+        else (raise_message or "CamillaDSP rejected the prior graph")
+    )
     if restore_error is not None:
         log_event(
             logger,
@@ -1361,13 +1387,12 @@ async def _restore_applied_summed_previous_config_resilient(
     camilla_factory: CamillaFactory,
 ) -> dict[str, Any]:
     """Finish summed production restoration while the caller is cancelled."""
-    restore_task = asyncio.create_task(
+    return await _resilient(
         _restore_applied_summed_previous_config(
             previous_config_path,
             camilla_factory=camilla_factory,
         )
     )
-    return await _await_restore_task_resilient(restore_task)
 
 
 async def _await_restore_task_resilient(
@@ -1841,16 +1866,14 @@ async def _restore_automatic_driver_entry_config(
     except _COMMISSION_OPERATION_ERRORS as exc:
         inner_rollback = {"status": "failed", "error": str(exc)}
 
-    restore_error: str | None
-    try:
-        cam = camilla_factory()
-        restored = await cam.set_config_file_path(entry_path, best_effort=False)
-    except _COMMISSION_OPERATION_ERRORS as exc:
-        restore_error = str(exc)
-    else:
-        restore_error = (
-            None if restored is True else "CamillaDSP rejected the entry graph"
-        )
+    took_effect, raise_message = await attempt_graph_restore(
+        lambda: camilla_factory().set_config_file_path(entry_path, best_effort=False)
+    )
+    restore_error = (
+        None
+        if took_effect
+        else (raise_message or "CamillaDSP rejected the entry graph")
+    )
     if restore_error is not None:
         inner_status = (inner_rollback or {}).get("status") or _dict_value(
             (inner_rollback or {}).get("rollback")
@@ -1879,13 +1902,12 @@ async def _restore_automatic_driver_entry_config_resilient(
     camilla_factory: CamillaFactory,
 ) -> dict[str, Any]:
     """Finish production restoration even while the caller is being cancelled."""
-    restore_task = asyncio.create_task(
+    return await _resilient(
         _restore_automatic_driver_entry_config(
             load_payload,
             camilla_factory=camilla_factory,
         )
     )
-    return await _await_restore_task_resilient(restore_task)
 
 
 async def _rollback_capture_attempt_to_anchor(
@@ -1946,13 +1968,12 @@ async def _rollback_capture_attempt_to_anchor_resilient(
     camilla_factory: CamillaFactory,
 ) -> dict[str, Any]:
     """Finish the anchor re-mute even while the caller is being cancelled."""
-    restore_task = asyncio.create_task(
+    return await _resilient(
         _rollback_capture_attempt_to_anchor(
             load_payload,
             camilla_factory=camilla_factory,
         )
     )
-    return await _await_restore_task_resilient(restore_task)
 
 
 async def restore_pending_capture_entry_config(
@@ -2199,8 +2220,7 @@ async def _play_capture_sweep(
                     camilla_factory=camilla_factory,
                 )
             )
-            rollback_task = asyncio.create_task(rollback_operation)
-            rollback = await _await_restore_task_resilient(rollback_task)
+            rollback = await _resilient(rollback_operation)
         except _COMMISSION_OPERATION_ERRORS as exc:
             if not isinstance(exc, AutomaticDriverConfigRestoreError):
                 log_event(

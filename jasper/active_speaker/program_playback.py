@@ -20,6 +20,13 @@ three Wave 2 pieces:
   re-admitted from a fresh WAV byte readback right before playback, exactly as
   ``play_admitted_wav`` re-admits before an isolated driver sweep.
 
+The graph swap this brackets is the same transaction
+``web_commissioning._load_driver_commissioning_config_for_level`` runs, so the
+restore verdict has one owner for both:
+:func:`jasper.active_speaker.web_commissioning.attempt_graph_restore`. Only the
+consequence is per-path — this one reports from a ``finally``, the
+commissioning ones raise from an ``except``.
+
 Playback itself rides the existing verified-aplay path
 (:func:`verified_program_aplay` → ``play_verified_wav``) to ``correction_substream``.
 The CamillaDSP graph seams and the writer lock are injected callables so the
@@ -37,7 +44,7 @@ import logging
 from contextlib import AbstractAsyncContextManager
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Awaitable, Callable
+from typing import Any, Awaitable, Callable
 
 # The ALSA lane a program WAV is played into — the correction fan-in substream
 # that feeds CamillaDSP's capture, same as the isolated driver sweep
@@ -53,6 +60,7 @@ from jasper.audio_measurement.program import ExcitationProgram
 from jasper.log_event import log_event
 
 from .program_admission import ProgramAdmission
+from .web_commissioning import attempt_graph_restore
 
 logger = logging.getLogger(__name__)
 
@@ -121,31 +129,26 @@ async def verified_program_aplay(
 
 async def _safe_restore(
     restore_graph: RestoreGraph, entry_config_path: str, *, program_id: str
-) -> tuple[bool, Exception | None]:
+) -> bool:
     """Restore the prior graph without ever raising into a finally block."""
-    try:
-        restored = await restore_graph(entry_config_path)
-    except (OSError, RuntimeError, TimeoutError, ValueError) as exc:
+    took_effect, raise_message = await attempt_graph_restore(
+        lambda: restore_graph(entry_config_path)
+    )
+    if not took_effect:
+        fields: dict[str, Any] = {
+            "action": "restore",
+            "result": "rejected" if raise_message is None else "failed",
+            "program_id": program_id,
+        }
+        if raise_message is not None:
+            fields["error"] = raise_message
         log_event(
             logger,
             "active_speaker.program_playback",
             level=logging.CRITICAL,
-            action="restore",
-            result="failed",
-            program_id=program_id,
-            error=str(exc),
+            fields=fields,
         )
-        return False, exc
-    if restored is not True:
-        log_event(
-            logger,
-            "active_speaker.program_playback",
-            level=logging.CRITICAL,
-            action="restore",
-            result="rejected",
-            program_id=program_id,
-        )
-    return bool(restored is True), None
+    return took_effect
 
 
 async def play_program(
@@ -212,7 +215,7 @@ async def play_program(
             await load_program_graph(program_graph_yaml)
             playback = await play_wav()
         finally:
-            restored, _restore_error = await _safe_restore(
+            restored = await _safe_restore(
                 restore_graph, entry_config_path, program_id=program.program_id
             )
         # Reached only when load + play did not raise. A played program whose

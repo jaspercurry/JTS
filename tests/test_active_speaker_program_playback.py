@@ -24,6 +24,7 @@ from jasper.active_speaker.program_playback import (
     play_program,
 )
 from jasper.active_speaker.session_volume_plan import SessionVolumePlanError
+from jasper.camilla import CamillaUnavailable
 from jasper.audio_measurement.excitation_admission import FrequencyBand
 from jasper.audio_measurement.playback import PlaybackResult
 from jasper.audio_measurement.program import RoleBand, build_measure_program
@@ -65,11 +66,20 @@ class FakePlan:
 class Boundary:
     """Records the staging/playback/restore sequence for one play_program run."""
 
-    def __init__(self, *, entry_path=ENTRY_PATH, load_ok=True, play_ok=True, restore_ok=True):
+    def __init__(
+        self,
+        *,
+        entry_path=ENTRY_PATH,
+        load_ok=True,
+        play_ok=True,
+        restore_ok=True,
+        restore_raises=None,
+    ):
         self.entry_path = entry_path
         self.load_ok = load_ok
         self.play_ok = play_ok
         self.restore_ok = restore_ok
+        self.restore_raises = restore_raises
         self.order: list = []
 
     async def read_current_config_path(self):
@@ -91,6 +101,8 @@ class Boundary:
 
     async def restore_graph(self, path):
         self.order.append(("restore", path))
+        if self.restore_raises is not None:
+            raise self.restore_raises
         return self.restore_ok
 
     @contextlib.asynccontextmanager
@@ -203,3 +215,26 @@ def test_restore_failure_after_play_raises(caplog):
     ]
     assert end_lines and all("result=restore_failed" in line for line in end_lines)
     assert not any("result=completed" in line for line in end_lines)
+
+
+def test_an_unavailable_dsp_during_restore_never_escapes_the_finally(caplog):
+    """A CamillaDSP outage is the restore's likeliest failure, and it reports.
+
+    ``set_active_config_raw(best_effort=False)`` — the production restore seam —
+    raises ``CamillaUnavailable``, which is not an ``OSError`` subclass. Escaping
+    the ``finally`` would replace whatever error was already propagating and
+    skip the CRITICAL restore marker entirely, so the speaker would be left in
+    the program graph with nothing in the journal saying so.
+    """
+    program = _program()
+    boundary = Boundary(restore_raises=CamillaUnavailable("websocket closed"))
+    with caplog.at_level("INFO"):
+        with pytest.raises(ProgramGraphRestoreError):
+            _run(program, boundary, FakePlan())
+    assert ("restore", ENTRY_PATH) in boundary.order
+    restore_lines = [
+        r.getMessage()
+        for r in caplog.records
+        if "action=restore" in r.getMessage()
+    ]
+    assert restore_lines and all("result=failed" in line for line in restore_lines)
