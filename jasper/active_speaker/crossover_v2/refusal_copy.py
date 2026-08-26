@@ -253,12 +253,19 @@ REASON_VERIFY_LEVEL_SHIFT = "verify_level_shift"
 # and the crossover as designed-and-aligned is what does not sum.
 REASON_VERIFY_CROSSOVER_REGION = "verify_crossover_region"
 # Owner ruling (2026-07-20): the alignment-estimator confidence floor that
-# used to gate ONLY a review-screen nudge (informed consent, Apply stayed
-# available regardless) is now a hard MEASURE-phase gate — see
-# ALIGNMENT_CONFIDENCE_TRUST_FLOOR below. A household has no basis to judge a
-# raw confidence number, so doubt becomes guidance ("move the mic"), never a
-# question ("apply anyway?").
-REASON_LOW_ALIGNMENT_CONFIDENCE = "low_alignment_confidence"
+# The measured delay is one physics rules out for this geometry — a GCC
+# estimator returning a CONFIDENTLY WRONG lag, observed on hardware at −631 us
+# against a declared [50, 300] us search bound.
+#
+# **It replaced ``low_alignment_confidence``, which covered two answers.** That
+# code was shared with the 0.6 GCC trust floor, and the floor was a confidence
+# heuristic — the category ``docs/measurement-loop-doctrine.md`` §4 names as
+# provenance rather than a gate — so the nanny burn-down demoted it and the
+# confidence now rides the receipt. The physics half still REFUSES and needed
+# its own name to keep its own sentence: the old copy sent the household to
+# move a microphone, which is the #2087 pathology when the microphone was
+# never the problem.
+REASON_DELAY_IMPLAUSIBLE = "delay_implausible"
 # The apply transaction came back blocked or raised. It was the session's
 # OWN auto-apply until the two-stage split (D1); since then the only apply is
 # the household's POST from the review screen, which persists its blocking
@@ -1122,12 +1129,17 @@ REASON_REGISTRY: dict[str, ReasonSpec] = {
             "previous sound.",
         ),
     ),
-    REASON_LOW_ALIGNMENT_CONFIDENCE: _retriable_reason(
-        REASON_LOW_ALIGNMENT_CONFIDENCE, TEMPLATE_FIX_AND_RETRY, 1,
+    REASON_DELAY_IMPLAUSIBLE: _retriable_reason(
+        REASON_DELAY_IMPLAUSIBLE, TEMPLATE_FIX_AND_RETRY, 1,
+        # Names what was measured and no cause, per ADR-0002's corollary 2:
+        # a lag outside the search window is consistent with the locator
+        # latching wrong, with something moving mid-sweep, and with a
+        # mispositioned microphone, and this capture separated none of them.
         RetryableReasonCopy(
-            "Alignment is less certain at this mic position.",
-            "Place the microphone about 1 m in front of the speaker at tweeter "
-            "height, then measure again.",
+            "The delay JTS measured between the drivers isn't one this "
+            "speaker's geometry can produce.",
+            "Measure again — if it repeats, check that nothing moved during "
+            "the sweep.",
         ),
     ),
     REASON_APPLY_FAILED: _retriable_reason(
@@ -1326,7 +1338,7 @@ SCREEN_KIND_REASONS: dict[str, str] = {
     _dispatch.SCREEN_SNR_FLOOR: REASON_SNR_FLOOR,
     _dispatch.SCREEN_NOISY_ROOM_LINEARITY: REASON_NOISY_ROOM_LINEARITY,
     _dispatch.SCREEN_ALIGNMENT_UNRESOLVED: REASON_DELAY_EXCEEDS_SEARCH_WINDOW,
-    _dispatch.SCREEN_LOW_ALIGNMENT_CONFIDENCE: REASON_LOW_ALIGNMENT_CONFIDENCE,
+    _dispatch.SCREEN_DELAY_IMPLAUSIBLE: REASON_DELAY_IMPLAUSIBLE,
 }
 
 

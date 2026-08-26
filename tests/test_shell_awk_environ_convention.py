@@ -40,6 +40,8 @@ from pathlib import Path
 
 import pytest
 
+from ._shell_corpus import shell_files
+
 ROOT = Path(__file__).resolve().parents[1]
 SCAN_DIRS = ("deploy", "scripts")
 
@@ -57,31 +59,6 @@ _VALUE_CARRIER = re.compile(
     r"(?:^|_)(?:line|value|val|quoted|payload)(?:_|$)", re.IGNORECASE
 )
 _SHELL_VAR = re.compile(r"\$\{?([A-Za-z_][A-Za-z0-9_]*)")
-
-
-def _is_bash_file(path: Path) -> bool:
-    """Shebang-detected bash, plus the shebang-less source-only libs that
-    mark themselves with a `# shellcheck shell=bash` directive near the top
-    (e.g. scripts/_lib.sh). That directive may now sit just below an SPDX
-    license header, so scan the first several lines rather than only line 1."""
-    try:
-        with path.open("rb") as fh:
-            head = [fh.readline().decode("utf-8", "replace").strip() for _ in range(8)]
-    except OSError:
-        return False
-    first = head[0] if head else ""
-    if first.startswith("#!"):
-        return bool(re.search(r"\b(?:ba)?sh\b", first))
-    return any(ln.replace(" ", "") == "#shellcheckshell=bash" for ln in head)
-
-
-def _bash_files() -> list[Path]:
-    files = []
-    for top in SCAN_DIRS:
-        for path in sorted((ROOT / top).rglob("*")):
-            if path.is_file() and _is_bash_file(path):
-                files.append(path)
-    return files
 
 
 def _classify_dangerous(name: str, payload: str) -> str | None:
@@ -114,7 +91,7 @@ def _violations_in(text: str) -> list[tuple[int, str, str]]:
 def test_scanner_sees_the_shell_corpus():
     """Meta-check: shebang detection actually finds the tree. If this
     shrinks dramatically the guard below is vacuously green."""
-    files = _bash_files()
+    files = shell_files(*SCAN_DIRS)
     assert len(files) >= 40, [str(p) for p in files]
     assert any(p.name == "install.sh" for p in files)
     assert any(p.name == "jasper-env-file.sh" for p in files)
@@ -163,7 +140,7 @@ def test_no_bash_script_pipes_values_into_awk_dash_v():
     ENVIRON["..."], or call jasper_env_file_set from
     deploy/lib/jasper-env-file.sh, which already does this."""
     failures = []
-    for path in _bash_files():
+    for path in shell_files(*SCAN_DIRS):
         text = path.read_text(encoding="utf-8", errors="replace")
         for lineno, line, reason in _violations_in(text):
             failures.append(

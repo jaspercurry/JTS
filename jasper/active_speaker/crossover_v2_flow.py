@@ -67,8 +67,9 @@ apply a trusted candidate itself. Two-stage T3 (commit ``61ba33ff1``,
 #1806 / #1906) replaced that: the apply left the session entirely and is now
 the household's explicit POST from the review screen, so nothing here applies
 anything. Read that commit for what replaced it rather than this paragraph.
-What did NOT change is :data:`ALIGNMENT_CONFIDENCE_TRUST_FLOOR`, still a hard
-gate on the candidate rather than a review-screen nudge.
+:data:`ALIGNMENT_CONFIDENCE_TRUST_FLOOR` outlived that ruling as a hard gate
+and no longer is one: the nanny burn-down made it a DISCLOSURE threshold, so
+it decides what a receipt says and nothing about what is built.
 
 It is deliberately I/O-free: every side effect (playback, analysis, evidence
 publish, apply-gate observation) crosses an INJECTED seam
@@ -685,16 +686,15 @@ def verify_absolute_tolerance_db(band_hz: Sequence[float]) -> float | None:
 # The prescribed on-axis mic distance the parallax correction assumes (§5.2).
 MEASUREMENT_DISTANCE_M = 1.0
 # Below this GCC-seed/capture confidence (see ``AlignmentEstimate.confidence``
-# and ``confidence_source`` in ``program_analysis.py``), the session refuses
-# to auto-apply and rejects
-# MEASURE with ``REASON_LOW_ALIGNMENT_CONFIDENCE`` instead of building a
-# candidate (owner ruling, 2026-07-20). Formerly
-# ``crossover_envelope_v2.ALIGNMENT_CONFIDENCE_NUDGE_FLOOR`` — a review-screen
-# nudge that left Apply available regardless ("informed consent, not a
-# gate"). Moved here and promoted to a hard gate now that apply is automatic:
-# there is no more human screen to hand the informed-consent judgment to.
-# PROVISIONAL pending W6 bench distributions on confidence-vs-outcome
-# correlation (unchanged from the prior nudge floor's own provisional status).
+# and ``confidence_source`` in ``program_analysis.py``), the capture is
+# ACCEPTED and the confidence is banked as a reservation — see
+# ``_note_alignment_confidence_reservation``. **It is a disclosure trigger, not
+# a gate**, since the nanny burn-down: it refused MEASURE and spent a retry
+# until then, on a number this file's own comment called PROVISIONAL pending
+# W6 bench validation, and the one live bench datum undercut it (two captures
+# at ~0.677, one accepted and one refused 58 s apart). Converting it did not
+# recalibrate it — 0.6 is the same number, and only what crossing it does
+# changed.
 ALIGNMENT_CONFIDENCE_TRUST_FLOOR = 0.6
 # Physical-plausibility backstop (Fix 3, 2026-07-21): the GCC estimator can
 # return a CONFIDENTLY WRONG delay (a hardware run reported a confident
@@ -2954,6 +2954,7 @@ class CrossoverV2Session:
         # group), so the surviving value always belongs to the capture the
         # candidate was built from.
         self._measure_ripple_reservation: dict[str, Any] | None = None
+        self._measure_alignment_reservation: dict[str, Any] | None = None
 
     # --- program composition -------------------------------------------------
 
@@ -3647,6 +3648,23 @@ class CrossoverV2Session:
         class, so a caller cannot reach back into the session's state.
         """
         reservation = self._measure_ripple_reservation
+        return dict(reservation) if reservation else None
+
+    @property
+    def measure_alignment_reservation(self) -> dict[str, Any] | None:
+        """The banked reservation about an accepted low-confidence alignment.
+
+        ``{"confidence": float, "delay_us": float, "trust_floor": float}``, or
+        ``None`` when the alignment cleared the floor or no estimate existed.
+        Provenance for the prescriber to weigh, which is what §4 says a
+        confidence heuristic is. It renders no household sentence: this is a
+        capture that was ACCEPTED, and spending a household's attention on a
+        demoted heuristic is the non-event the sibling property above declines
+        to report.
+
+        Copied on the way out, like every other dict-valued property here.
+        """
+        reservation = self._measure_alignment_reservation
         return dict(reservation) if reservation else None
 
     @property
@@ -4713,11 +4731,56 @@ class CrossoverV2Session:
             threshold_db=float(MEASURE_PREDICTED_RIPPLE_DISCLOSURE_DB),
         )
 
+    def _note_alignment_confidence_reservation(
+        self, confidence: float, delay_us: float
+    ) -> None:
+        """Bank the reservation about an accepted low-confidence alignment.
+
+        The GCC trust floor used to REFUSE here and spend a retry. It named no
+        damage mechanism, its own file called it ``PROVISIONAL pending W6 bench
+        validation``, and §4 names its exact category as excluded — "geometry
+        blindness, beaming priors, **confidence heuristics**, prediction-engine
+        rankings — is provenance, not a gate". The one live bench datum
+        undercuts it directly: the 2026-08-03 validation found two captures
+        both at ~0.677 confidence, one accepted and one refused, "so confidence
+        was never the discriminator the reused reason code claimed it was".
+
+        Same contract as :meth:`_note_ripple_reservation`, deliberately: it
+        records and decides nothing, and must never acquire a branch that could
+        change what the caller already decided. What still refuses is the
+        PHYSICS half, which now has its own screen kind
+        (``capture_dispatch.SCREEN_DELAY_IMPLAUSIBLE``) and its own sentence —
+        a confidently wrong lag is a measured failure mode, not a prior.
+
+        WARNING for :meth:`_note_ripple_reservation`'s reason: the session
+        proceeds, so this is not an error, but the alignment term the fit
+        builds on is less trustworthy than usual and an operator reading at
+        INFO would have to know to look for it.
+        """
+        self._last_measure_guard = "alignment_confidence_disclosure"
+        self._measure_alignment_reservation = {
+            "confidence": float(confidence),
+            "delay_us": float(delay_us),
+            # The floor rides WITH the value, for the reason the ripple
+            # disclosure's threshold does: a rendered "0.41, below 0.6" becomes
+            # a lie the moment the constant moves.
+            "trust_floor": float(ALIGNMENT_CONFIDENCE_TRUST_FLOOR),
+        }
+        log_event(
+            logger, "correction.crossover_v2_alignment_confidence_disclosed",
+            level=logging.WARNING,
+            session_id=self.session_id,
+            confidence=round(float(confidence), 3),
+            delay_us=round(float(delay_us), 1),
+            trust_floor=float(ALIGNMENT_CONFIDENCE_TRUST_FLOOR),
+        )
+
     def _measure_verdict(self, analysis: ProgramAnalysis) -> PhaseVerdict:
         # Reset every call — a stale value from a PRIOR attempt must never
         # leak into THIS attempt's diagnostic (see __init__'s comment).
         self._last_measure_guard = ""
         self._measure_ripple_reservation = None
+        self._measure_alignment_reservation = None
         # The seven linearization fields this used to reset with them are gone
         # (#2291 Phase 2b): a build returns its own :class:`_LinearizationState`
         # and nothing outlives the build, so there is no prior attempt's value
@@ -4744,18 +4807,9 @@ class CrossoverV2Session:
                     analysis.alignment is not None
                     and analysis.alignment.status == ALIGNMENT_OK
                 ),
-                # The trust gate (owner ruling 2026-07-20): GCC's capture/seed
-                # confidence, not confidence in the refined delay. ``True`` with
-                # no estimate at all, which is what makes the trims-only path
-                # skip all three alignment rungs rather than fail them.
-                alignment_confidence_ok=(
-                    analysis.alignment is None
-                    or analysis.alignment.confidence
-                    >= ALIGNMENT_CONFIDENCE_TRUST_FLOOR
-                ),
-                # Also a callable: the physical backstop (Fix 3) is asked ONLY
-                # of an estimate that already cleared the two rungs above, and
-                # it reads the preset's declared search bound.
+                # A callable: the physical backstop (Fix 3) is asked ONLY of an
+                # estimate that already cleared the rung above, and it reads
+                # the preset's declared search bound.
                 delay_physically_plausible=lambda: (
                     analysis.alignment is None
                     or alignment_delay_plausible(
@@ -4795,6 +4849,13 @@ class CrossoverV2Session:
             disclosure_threshold_db=MEASURE_PREDICTED_RIPPLE_DISCLOSURE_DB,
         ):
             self._note_ripple_reservation(candidate.predicted_ripple_db)
+        if (
+            analysis.alignment is not None
+            and analysis.alignment.confidence < ALIGNMENT_CONFIDENCE_TRUST_FLOOR
+        ):
+            self._note_alignment_confidence_reservation(
+                analysis.alignment.confidence, analysis.alignment.delay_us
+            )
         if analysis.candidate is None:
             # Fail FAST, at the capture that produced the unusable analysis.
             # Until the 2026-07-27 timing move this raise happened one call
@@ -7761,6 +7822,9 @@ class CrossoverV2Session:
             # Its own name: the integrity-screen branch above already binds a
             # ``payload`` in this scope, and the two describe different
             # captures' verdicts.
+            # Its own name: the integrity-screen branch above already binds a
+            # ``payload`` in this scope, and the two describe different
+            # captures' verdicts.
             mismatch_payload: dict[str, Any] = {"tracking": dict(tracking)}
             if code == REASON_VERIFY_DETERMINISTIC_MISMATCH:
                 # The runner's own contract for "no later capture can make this
@@ -8928,8 +8992,8 @@ async def confirm_graph_is_live(cam: Any, submitted_yaml: str) -> None:
     cannot — a readback is a default-filled, normalized SUPERSET — so
     ``ReadConfig`` canonicalizes first and STRICT equality still applies.
     Evidence, and what was NOT measured:
-    ``docs/HANDOFF-crossover-measurement-v2.md`` "Confirming a program graph
-    is live".
+    ``docs/historical/crossover-measurement-v2-campaign-record.md``,
+    "Confirming a program graph is live".
     """
     from jasper.camilla import CamillaConfigRejected
 

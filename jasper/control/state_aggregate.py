@@ -54,6 +54,7 @@ from ..volume_diagnostics import (
 )
 from . import (
     bootloop_guard_state,
+    camilla_recover_state,
     content_lane_state,
     debug_control,
     grouping_supervisor,
@@ -1419,6 +1420,15 @@ async def _get_state(
             # jasper-doctor's check_outputd_content_lane_park uses, so the two
             # surfaces cannot disagree.
             "content_lane": content_lane_state.snapshot(),
+            # jasper-camilla-recover's core-graph park record (ADR-0175).
+            # parked=true means one bounded recovery pass could not bring the
+            # DSP graph back, so CamillaDSP was stopped out-of-band: the
+            # speaker emits NOTHING and nothing re-arms it automatically — the
+            # record's own `action`/`re_arm` are the remedy. Fresh /run read
+            # per call; {"status": "absent"} on a healthy boot. Same reader
+            # jasper-doctor's check_camilla_recover_park uses, so the two
+            # surfaces cannot disagree.
+            "camilla_recover": camilla_recover_state.snapshot(),
             # Bounded after-the-fact timeline for multiroom restart cascades:
             # existing event=multiroom.reconcile.*, restart_broker.*, and
             # grouping_supervisor.* journal lines, scanned into a tiny ring so

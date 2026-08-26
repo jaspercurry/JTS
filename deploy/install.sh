@@ -44,6 +44,7 @@ SYSTEMD_DIR="/etc/systemd/system"
 INSTALL_PROFILE_DEFAULT="full"
 INSTALL_PROFILE_MARKER="${STATE_DIR}/install_profile"
 
+source "${REPO_DIR}/deploy/lib/jasper-sed-inplace.sh"
 source "${REPO_DIR}/deploy/lib/jasper-asound-render.sh"
 source "${REPO_DIR}/deploy/lib/jasper-alsa-card.sh"
 source "${REPO_DIR}/deploy/lib/install/env-migrations.sh"
@@ -1411,8 +1412,7 @@ EOF
 set_jasper_env_value() {
     local key="$1"
     local value="$2"
-    sed -i.bak "/^${key}=/d" "${ENV_DIR}/jasper.env"
-    rm -f "${ENV_DIR}/jasper.env.bak"
+    sed_inplace "${ENV_DIR}/jasper.env" "/^${key}=/d"
     printf '%s=%s\n' "${key}" "${value}" >> "${ENV_DIR}/jasper.env"
 }
 
@@ -1658,7 +1658,8 @@ install_management_static_assets() {
     # manifest will record, so the cache key matches the installed build.
     app_css_ver="$(resolve_build_sha_short)"
     [[ -n "${app_css_ver}" && "${app_css_ver}" != "unknown" ]] || app_css_ver="dev"
-    sed -i "s/__APP_CSS_VERSION__/${app_css_ver}/g" /usr/share/jasper-web/index.html
+    sed_inplace /usr/share/jasper-web/index.html \
+        "s/__APP_CSS_VERSION__/${app_css_ver}/g"
     # Bake the install profile's capability map into the landing page so its
     # capability-gated sections render correctly at FIRST PAINT — no
     # /system/data.json round-trip to lay out the page, and it stays correct

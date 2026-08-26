@@ -233,7 +233,6 @@ __all__ = [
     "DRIVER_PRESCRIPTION_SCHEMA_VERSION",
     "LINEARIZATION_CANDIDATE_FIELD",
     "MAX_SPL_SPEND_BOUND_DB",
-    "BOOST_IN_CROSSOVER_OVERLAP",
     "ClassificationBasis",
     "check_driver_document_size",
     "DriverPassbands",
@@ -620,58 +619,17 @@ FILTER_BOOST_TOO_HIGH = "driver_filter_boost_too_high"
 FILTER_BOOST_TOO_SHALLOW = "driver_filter_boost_too_shallow"
 COMPOSED_BOOST_EXCEEDED = "driver_composed_boost_exceeded"
 
-#: A BELL's centre sits where two drivers' declared bands overlap — the
-#: crossover knee. Owner ruling, 2026-08-19 (hearing lens), and the one
-#: evidence-shaped bar on this door the 2026-08-23 ruling left standing.
-#:
-#: A per-driver boost there is charged nothing by the crossover stage and still
-#: moves the SUMMED response, which is the crossover's own quantity to own.
-#: ``linearization_fit`` bars its own engine from lifting in the radiating band
-#: for #1809's reason; a prescriber may not reach past that from outside. CUTS
-#: are unaffected: a cut past the handoff "is ordinary useful work, because
-#: whatever leaks through still reaches the sum and removing it spends no
-#: headroom", and no round has observed it failing.
-#:
-#: **What it bounds is a BELL's reach, through its centre — not the overlap as
-#: a band.** A Peaking filter's ``freq`` IS its placement, so the centre check
-#: is a bound on where the lift lives. Deliberately only the centre, which is
-#: the owner's never-nanny calibration rather than an oversight: a bell centred
-#: just outside still reaches in on its skirt (a Q-0.5 +12 dB bell at 3200 Hz
-#: puts +11.93 dB into the shipped two-way's 1600-3000 Hz overlap and is
-#: admitted), and what adjudicates the summed response there is the
-#: deciding-frame measurement, not a wider refusal here.
-#:
-#: **A SHELF is a different geometry and this bar does not reach it.** Its
-#: ``freq`` is "a CORNER, not a placement: its authority is the whole band to
-#: one side of it" (``linearization_fit._blind_zone_placements``, which skips
-#: shelves by type for exactly this reason), so a Lowshelf cornered ABOVE the
-#: overlap covers the overlap at its full gain however far away it is cornered
-#: — and asking whether that one frequency is inside the knee is the same
-#: category error. **No shelf-side bar is added, because the consequence is
-#: measured bounded**: the per-filter and composed caps hold the covered side
-#: to :data:`DRIVER_MAX_COMPOSED_BOOST_DB`, and the emitter's PRE-SPLIT charge
-#: (``camilla_yaml.linearization_headroom_db``, ``peak + HEADROOM_MARGIN_DB``)
-#: then attenuates the program by more than the shelf raises it. Measured on
-#: the shipped two-way: a +12 dB Lowshelf cornered at 20 kHz reads +12.0000 dB
-#: flat across the whole overlap and composes to 12.0000, so it is charged **up
-#: to** 13.0000 = :data:`MAX_SPL_SPEND_BOUND_DB` — and **12.9812 realized**
-#: (net **-0.9812**), because ``linearization_headroom_db`` reads the branch
-#: the graph actually emits and the tweeter's own LR4 high-pass at 1600 Hz
-#: takes the realized peak to 11.9812 before the margin is added. The cap-
-#: implied 13.0000 is the BOUND; 12.9812 is what the emitter returns. Either
-#: way the overlap lands BELOW unity, which is the claim — and adding a bar for
-#: it would be the nanny ``docs/measurement-loop-doctrine.md`` §5 names.
-BOOST_IN_CROSSOVER_OVERLAP = "driver_boost_in_crossover_overlap"
-
-# SIX slugs stood beside that one until 2026-08-23, all of them the
-# classification bar's: `driver_feature_not_classified`,
+# SEVEN slugs stood here and every one is now a DISCLOSURE. Six went on
+# 2026-08-23, all the classification bar's: `driver_feature_not_classified`,
 # `driver_feature_not_cuttable`, `driver_feature_not_boostable`,
-# `driver_feature_depth_unavailable`, `driver_boost_exceeds_feature_depth`, and
-# `driver_boost_unvouched` (the same bar restated at the route). The owner's
-# ruling made every one of them a DISCLOSURE — see `_check_classification` — so
-# they are deleted rather than registered-but-unreachable: no reader maps a
-# refusal slug back, and a vocabulary naming an answer this door can no longer
-# give would mislead the prescriber reading `refusal_reasons`.
+# `driver_feature_depth_unavailable`, `driver_boost_exceeds_feature_depth`,
+# and `driver_boost_unvouched` (the same bar restated at the route) — see
+# `_check_classification`. The seventh, `driver_boost_in_crossover_overlap`,
+# went with the nanny burn-down: see `_boosts_in_crossover_overlap`, which
+# counts what it used to refuse. All seven are deleted rather than
+# registered-but-unreachable: no reader maps a refusal slug back, and a
+# vocabulary naming an answer this door can no longer give would mislead the
+# prescriber reading `refusal_reasons`.
 
 DRIVER_PRESCRIPTION_REFUSAL_REASONS = frozenset({
     DRIVER_PRESCRIPTION_TOO_LARGE,
@@ -692,7 +650,6 @@ DRIVER_PRESCRIPTION_REFUSAL_REASONS = frozenset({
     FILTER_BOOST_TOO_HIGH,
     FILTER_BOOST_TOO_SHALLOW,
     COMPOSED_BOOST_EXCEEDED,
-    BOOST_IN_CROSSOVER_OVERLAP,
 })
 
 #: Top-level fields a proposal may carry. Anything else is refused rather than
@@ -714,6 +671,7 @@ _PRESCRIPTION_FIELDS = frozenset({
     "passbands_hz",
     "classification_basis",
     "unvouched_filters",
+    "boosts_in_crossover_overlap",
     "composed_boost_db",
     "composed_boost_role",
     "max_spl_spend_bound_db",
@@ -813,6 +771,11 @@ class DriverPrescription:
     #: cannot tell them apart — which is the whole reason this number is
     #: carried rather than derived.
     unvouched_filters: int | None = None
+    #: How many boosting filters sit inside a crossover overlap. ``None`` means
+    #: nobody computed it (the durable read-back, same convention as
+    #: :attr:`unvouched_filters`); ``0`` means it was computed and none does.
+    #: A DISCLOSURE, never a bound — see :func:`_boosts_in_crossover_overlap`.
+    boosts_in_crossover_overlap: int | None = None
     #: The worst per-role composed boost the gate evaluated, dB, or ``None``
     #: when nothing evaluated it. ``0.0`` means "measured, and this document
     #: puts nothing above unity"; ``None`` means the durable read-back, which
@@ -876,6 +839,7 @@ class DriverPrescription:
                 basis.to_dict() for basis in self.classification_basis
             ],
             "unvouched_filters": self.unvouched_filters,
+            "boosts_in_crossover_overlap": self.boosts_in_crossover_overlap,
             "composed_boost_db": self.composed_boost_db,
             "composed_boost_role": self.composed_boost_role,
             "max_spl_spend_bound_db": MAX_SPL_SPEND_BOUND_DB,
@@ -1175,6 +1139,33 @@ def _crossover_overlaps(
     return tuple(out)
 
 
+def _boosts_in_crossover_overlap(
+    filters: Sequence[Mapping[str, Any]], passbands: DriverPassbands
+) -> int:
+    """How many boosting filters sit where two declared bands overlap.
+
+    **It refuses nothing.** Both drivers radiate in the overlap, so a
+    per-driver boost there moves the summed response the crossover stage owns —
+    worth telling a reader, and not worth stopping a round for. The bar that
+    used to stop it was already incoherent with itself: it declined to bar the
+    SKIRT case (a filter centred outside the overlap whose skirt reaches into
+    it, +11.93 dB admitted) and the shelf case, on the reasoning its own
+    comment gives — that barring those would be "the nanny
+    ``docs/measurement-loop-doctrine.md`` §5 names". A centre-only bar is a
+    coherence gap, not a bound, and what bounds the SPEND is the composed and
+    per-filter caps that run either way.
+    """
+    overlaps = _crossover_overlaps(passbands)
+    if not overlaps:
+        return 0
+    return sum(
+        1
+        for entry in filters
+        if float(entry["gain"]) > 0.0
+        and any(lo <= float(entry["freq"]) <= hi for lo, hi, _a, _b in overlaps)
+    )
+
+
 def _check_bounds(
     filters: tuple[dict[str, Any], ...], passbands: DriverPassbands
 ) -> str:
@@ -1188,7 +1179,6 @@ def _check_bounds(
     :func:`_check_classification` reads the evidence per filter by the same
     sign.
     """
-    overlaps = _crossover_overlaps(passbands)
     for position, entry in enumerate(filters):
         role = str(entry["role"])
         freq = float(entry["freq"])
@@ -1224,23 +1214,6 @@ def _check_bounds(
                 q_max=DRIVER_MAX_CUT_Q,
             )
         if gain > 0.0:
-            for lo_o, hi_o, role_a, role_b in overlaps:
-                if lo_o <= freq <= hi_o:
-                    _refuse(
-                        BOOST_IN_CROSSOVER_OVERLAP,
-                        f"filter {position} boosts {freq:.1f} Hz, inside the "
-                        f"{lo_o:.1f}-{hi_o:.1f} Hz region where the {role_a} "
-                        f"and {role_b} declared bands overlap. Both drivers "
-                        "radiate there, so a per-driver boost moves the SUMMED "
-                        "response the crossover stage owns and is charged "
-                        "nothing for it. Correct the handoff, or aim the boost "
-                        "outside the overlap. A cut here is allowed",
-                        role=role,
-                        freq_hz=freq,
-                        gain_db=gain,
-                        overlap_hz=[lo_o, hi_o],
-                        overlap_roles=[role_a, role_b],
-                    )
             if gain < DRIVER_MIN_BOOST_DB:
                 _refuse(
                     FILTER_BOOST_TOO_SHALLOW,
@@ -1804,6 +1777,9 @@ def read_driver_prescription(
         ),
         classification_basis=basis,
         unvouched_filters=unvouched_filters,
+        boosts_in_crossover_overlap=_boosts_in_crossover_overlap(
+            filters, passbands
+        ),
         composed_boost_db=composed_boost_db,
         composed_boost_role=composed_boost_role,
         displaced_filters=displaced_filters,
@@ -2176,15 +2152,15 @@ def driver_prescription_response_format() -> dict[str, Any]:
                 "1 dB. A boost buried in that branch's own crossover stopband "
                 "reaches nothing and is charged nothing"
             ),
-            "not_at_the_crossover_knee": (
-                "a boost may not sit where two drivers' declared bands OVERLAP. "
-                "Both radiate there, so a per-driver boost moves the summed "
-                "response the crossover stage owns and is charged nothing for "
-                "it — correct the handoff instead. A cut in the overlap is "
-                "allowed"
+            "at_the_crossover_knee_it_discloses": (
+                "a boost sitting where two drivers' declared bands OVERLAP is "
+                "COUNTED, not refused: both radiate there, so a per-driver "
+                "boost moves the summed response the crossover stage owns. The "
+                "count comes back as prescription.boosts_in_crossover_overlap "
+                "— weigh it, and correct the handoff if it matters. What the "
+                "boost SPENDS is bounded by the caps above either way"
             ),
             "refusals": sorted({
-                BOOST_IN_CROSSOVER_OVERLAP,
                 FILTER_BOOST_TOO_HIGH,
                 FILTER_BOOST_TOO_SHALLOW,
                 COMPOSED_BOOST_EXCEEDED,

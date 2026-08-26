@@ -18,7 +18,7 @@ session_artifacts = [
   "docs/AEC-DIAG-01-baseline.md",
   # (crossover-measurement-reproducibility-plan.md was archived 2026-07-22 —
   # historical decision archaeology, no longer a scan target; current truth
-  # is HANDOFF-crossover-measurement-v2.md.)
+  # is tuning-operator-runbook.md.)
   # Verbatim point-in-time implementation plan retained as an execution record;
   # current relay truth lives in HANDOFF-usb-gadget.md and HANDOFF-aec.md.
   "docs/PLAN-usb-mic-export-latency-fix.md",
@@ -840,7 +840,6 @@ code = [
 docs = [
   "docs/HANDOFF-audio-measurement-core.md",
   "docs/HANDOFF-correction.md",
-  "docs/HANDOFF-crossover-measurement-v2.md",
   "docs/measurement-loop-doctrine.md",
   "docs/correction-journey-design.md",
   "docs/room-correction-information-design.md",
@@ -853,11 +852,6 @@ docs = [
   "docs/active-crossover-information-design.md",
   "docs/crossover-measurement-productization-design.md",
   "docs/active-speaker-tuning-layers-design.md",
-  "docs/flat-linearization-plan.md",
-  "docs/flat-linearization-productization-plan.md",
-  "docs/flat-linearization-flow-simplification-plan.md",
-  "docs/crossover-linearization-80-20-plan.md",
-  "docs/linearization-integrity-plan.md",
   "docs/gating-v2-plan.md",
   "docs/room-correction-regime-plan.md",
   "docs/two-stage-commission-flow-plan.md",
@@ -867,11 +861,13 @@ docs = [
   # coordination boundary it shares with docs/REFACTOR-2026-08.md's program.
   "docs/REFACTOR-TUNING-2026-08.md",
   "docs/REFACTOR-COORDINATION-2026-08.md",
-  # Operator-facing map for the LLM driving the tuning loop over SSH: tool menu,
-  # door refusal counts, exit-code vocabularies, program menu, mechanism
-  # signatures. Scan it when a prescriber/round-runner/arm-walk CLI surface,
-  # a door's refusal vocabulary, or an exit-code contract changes.
-  "docs/llm-operator-runbook.md",
+  # The one operational map for the v2 commission session and the tuning loop
+  # over SSH: what v2 is, the capture flow, the tool menu, door refusal counts,
+  # exit-code vocabularies, the graded round, the contracts a refactor must
+  # preserve, and the debugging recipes. Scan it when the session, a capture
+  # provider, a door's refusal vocabulary, an exit-code contract, or one of
+  # those contracts changes.
+  "docs/tuning-operator-runbook.md",
   "docs/research/2026-06-19-active-crossover-calibration/README.md",
   "docs/research/2026-07-23-driver-linearization/README.md",
   "docs/research/2026-07-25-flat-linearization/README.md",
@@ -882,8 +878,7 @@ requires_docs_when = [
   "Measurement workflow, sweep playback, generated correction config, confidence scoring, calibration-agent tool boundary, or active-speaker DSP assumptions change.",
   "Driver-research/safety-profile authority, excitation-admission limits, neutral evidence identities, commissioning lifecycle/receipt, rollback-state identity, or the Active-to-Room eligibility gate changes.",
   "The Room screen catalog, whole-page visibility/readiness contract, disclosed defaults, returning-user persistence, blocker/nudge/failure language, relay/local parity, one-handoff model, mandatory proof, acceptance authority, or target/headroom/latency promise changes.",
-  "The v2 crossover commission session (excitation program, phase state machine, session volume plan, or the v2 apply/verify/restore endpoints) changes — scan HANDOFF-crossover-measurement-v2.md.",
-  "The flat-linearization measurement basis (spatial capture cloud, combining estimator, interference exclusion screen, spec tolerances, or closed-loop policy) changes — scan flat-linearization-plan.md.",
+  "The v2 crossover commission session (excitation program, phase state machine, session volume plan, or the v2 apply/verify/restore endpoints) changes — scan tuning-operator-runbook.md.",
 ]
 verification = [
   "pytest tests/test_correction_*.py tests/test_sound_graph_carrier.py tests/test_active_speaker_runtime_contract.py tests/test_active_speaker_baseline_profile.py",
@@ -1175,6 +1170,8 @@ code = [
   "jasper/control/airplay_health.py",
   "jasper/control/audio_health.py",
   "jasper/control/bootloop_guard_state.py",
+  "jasper/control/camilla_recover_state.py",
+  "jasper/control/park_record.py",
   "jasper/web/system_setup.py",
   "jasper/web/airplay_setup.py",
   "deploy/journald/**",
@@ -1320,12 +1317,12 @@ code = [
 docs = [
   "docs/phone-mic-relay-plan.md",
   "docs/room-correction-information-design.md",
-  "docs/HANDOFF-crossover-measurement-v2.md",
+  "docs/tuning-operator-runbook.md",
   "docs/two-stage-commission-flow-plan.md",
 ]
 requires_docs_when = [
   "The relay API contract, the opaque-spec/blob invariant, the E2E wire format (AES-256-GCM, IV-prepended, plaintext SHA-256), the DATA-only renderer's component/theme allowlist, the capture-page CSP, a measurement-validity gate (realized-constraints / alignment-confidence / clock-drift), a failure cue, or the deploy steps change.",
-  "The heterogeneous per-capture plan (CapturePlanEntry), the deferred begin/hold (CaptureBeginDeferred / REVIEW_HOLD_BUDGET_S), the first-begin timeout, or the capture page's v3 session loop / per-begin setup piggyback changes — scan HANDOFF-crossover-measurement-v2.md.",
+  "The heterogeneous per-capture plan (CapturePlanEntry), the deferred begin/hold (CaptureBeginDeferred / REVIEW_HOLD_BUDGET_S), the first-begin timeout, or the capture page's v3 session loop / per-begin setup piggyback changes — scan tuning-operator-runbook.md.",
 ]
 verification = [
   "python3 scripts/docs-impact.py --validate-only",

@@ -7,7 +7,7 @@
 > here was verified to exist at that commit. The implementing PR should
 > follow the checklist in §8 and update this banner to point at the
 > shipped code. Related canon:
-> [HANDOFF-crossover-measurement-v2.md](HANDOFF-crossover-measurement-v2.md)
+> [tuning-operator-runbook.md](tuning-operator-runbook.md)
 > (step 1), [HANDOFF-correction.md](HANDOFF-correction.md) (step 2),
 > [HANDOFF-bass-extension-plan.md](HANDOFF-bass-extension-plan.md) +
 > [bass-extension-waves/](bass-extension-waves/README.md) (step 3).
@@ -34,7 +34,7 @@ A household calibrates a JTS speaker in a fixed physical order:
    > three-step journey actually depends on. Current tier counts and
    > group structure move at every plan change, so they are not restated
    > here — current truth:
-   > [HANDOFF-crossover-measurement-v2.md](HANDOFF-crossover-measurement-v2.md)
+   > [tuning-operator-runbook.md](tuning-operator-runbook.md)
    > "The capture flow" / "When the fit runs".
 2. **Room** — measure and apply room correction at the listening
    position. Already **gated on step 1** by the shipped Active-to-Room
@@ -324,5 +324,5 @@ Strip copy (initial set — keep this terse, user-centric voice):
 
 Last verified: 2026-08-13 (#2400 — the spine annotation's capture-count and
 position-group claims had drifted again since the two-stage commission
-split; corrected to point at HANDOFF-crossover-measurement-v2.md instead of
+split; corrected to point at tuning-operator-runbook.md instead of
 restating numbers that move at every plan change)

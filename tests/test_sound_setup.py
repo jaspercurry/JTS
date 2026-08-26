@@ -578,6 +578,74 @@ def test_commission_ramp_abort_http_contains_secondary_failures(
     assert records[0].exc_info[0] is type(error)
 
 
+@pytest.mark.parametrize(
+    ("method", "route", "builder", "event", "extra_fields"),
+    [
+        (
+            "GET",
+            "/output-topology",
+            "_output_topology_payload",
+            "sound.output_topology",
+            "",
+        ),
+        (
+            "POST",
+            "/active-speaker/channel-protection",
+            "_active_speaker_channel_protection_save_payload",
+            "sound.active_speaker_channel_protection",
+            " error=OSError",
+        ),
+    ],
+)
+def test_sound_route_builder_failure_answers_502_and_logs_one_error_event(
+    tmp_path,
+    monkeypatch,
+    caplog,
+    method,
+    route,
+    builder,
+    event,
+    extra_fields,
+):
+    """A route whose payload builder raises answers `{"error": …}` at 502 and
+    emits exactly one `result=error` event named for that route."""
+    error = OSError("payload builder failed")
+
+    def fail(*_args, **_kwargs):
+        raise error
+
+    monkeypatch.setattr(sound_setup, builder, fail)
+    caplog.set_level(logging.ERROR, logger=sound_setup.logger.name)
+    try:
+        server, base = _start_sound_server(tmp_path)
+    except PermissionError:
+        pytest.skip("environment does not allow loopback test server bind")
+    try:
+        if method == "GET":
+            try:
+                urllib.request.urlopen(f"{base}{route}")
+            except urllib.error.HTTPError as e:
+                response = e
+            else:
+                raise AssertionError(f"{route} did not fail the request")
+            assert response.code == 502
+        else:
+            response = json_post_with_csrf(base, route, {}, expect_status=502)
+        assert response.headers.get_content_type() == "application/json"
+        payload = json.loads(response.read().decode("utf-8"))
+    finally:
+        server.shutdown()
+        server.server_close()
+
+    assert payload == {"error": str(error)}
+    messages = [
+        record.getMessage()
+        for record in caplog.records
+        if record.getMessage().startswith(f"event={event} ")
+    ]
+    assert messages == [f"event={event} result=error{extra_fields}"]
+
+
 def test_sound_post_does_not_secondary_send_after_response_write_failure(
     tmp_path,
     monkeypatch,

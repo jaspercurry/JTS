@@ -360,8 +360,7 @@ migrate_voice_keys_split() {
 _strip_key_from_broad() {
     local key="$1" jasper_env="$2"
     if [[ -f "${jasper_env}" ]]; then
-        sed -i.bak "/^${key}=/d" "${jasper_env}"
-        rm -f "${jasper_env}.bak"
+        sed_inplace "${jasper_env}" "/^${key}=/d"
     fi
 }
 

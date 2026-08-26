@@ -5,7 +5,7 @@
 """Delta-probe verification: did the speaker do what the correction asked?
 
 The linearization-integrity ladder's PR-L5 primitive
-(``docs/linearization-integrity-plan.md``). Every applied correction change is
+(``docs/historical/linearization-campaign-2026-07.md``). Every applied correction change is
 verified as a **realized-vs-commanded per-frequency map** and classified into
 one of four verdicts; the three non-matched ones roll the correction back
 automatically. Pure computation — numpy in, a frozen verdict record out. No

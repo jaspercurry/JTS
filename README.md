@@ -355,10 +355,10 @@ Its own doctrine and cadence; start at the doctrine, not the plans.
   cycle, the authority model, the ethos rulings, the hard-stop list
 - [`tuning-master-plan.md`](docs/tuning-master-plan.md) — ratified plan:
   declared-design executor, linearization tournaments, LLM operator
-- [`llm-operator-runbook.md`](docs/llm-operator-runbook.md) — operational map
-  for the LLM operator driving the loop over SSH
-- [`HANDOFF-crossover-measurement-v2.md`](docs/HANDOFF-crossover-measurement-v2.md)
-  — operational canon for the `/sound/crossover/` commission session
+- [`tuning-operator-runbook.md`](docs/tuning-operator-runbook.md) — the one
+  operational map: what the `/sound/crossover/` commission session is, how to
+  drive a round over SSH, what the doors refuse, and the contracts a refactor
+  must preserve
 - [`HANDOFF-active-speaker-dsp.md`](docs/HANDOFF-active-speaker-dsp.md) —
   active-speaker DSP commissioning, baseline lifecycle, safety invariants
 - [`HANDOFF-bass-extension-plan.md`](docs/HANDOFF-bass-extension-plan.md) —
@@ -385,15 +385,13 @@ Its own doctrine and cadence; start at the doctrine, not the plans.
   — product/architecture designs of record for the two builder surfaces
 - [`correction-journey-design.md`](docs/correction-journey-design.md) — the
   three-step Crossover → Room → Bass journey (design record)
-- [`flat-linearization-plan.md`](docs/flat-linearization-plan.md),
-  [`flat-linearization-productization-plan.md`](docs/flat-linearization-productization-plan.md),
-  [`flat-linearization-flow-simplification-plan.md`](docs/flat-linearization-flow-simplification-plan.md)
-  — the flat-linearization program: strategy, work order, flow simplification
+- [`historical/linearization-campaign-2026-07.md`](docs/historical/linearization-campaign-2026-07.md)
+  — the 2026-07 linearization campaign's archived decision record: the flat
+  spec, the six fundamentals, the non-goals, the boost ruling, and the
+  integrity ladder that production constants cite as provenance
 - [`gating-v2-plan.md`](docs/gating-v2-plan.md),
   [`room-correction-regime-plan.md`](docs/room-correction-regime-plan.md),
-  [`two-stage-commission-flow-plan.md`](docs/two-stage-commission-flow-plan.md),
-  [`crossover-linearization-80-20-plan.md`](docs/crossover-linearization-80-20-plan.md),
-  [`linearization-integrity-plan.md`](docs/linearization-integrity-plan.md)
+  [`two-stage-commission-flow-plan.md`](docs/two-stage-commission-flow-plan.md)
   — adopted work orders, each scoped to one campaign
 - [`crossover-measurement-productization-design.md`](docs/crossover-measurement-productization-design.md)
   — decision archaeology for the phone-mic measurement flow

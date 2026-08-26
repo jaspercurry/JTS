@@ -1057,6 +1057,11 @@ def build_conductor_state(
     # nothing else. An absent property is "nothing reserved", which is what the
     # key's own absence already means downstream.
     ripple_reservation = getattr(conductor, "measure_ripple_reservation", None)
+    # Same duck-typed read, same reason as the line above: a stand-in conductor
+    # predating the alignment-confidence demotion means "nothing reserved".
+    alignment_reservation = getattr(
+        conductor, "measure_alignment_reservation", None
+    )
     # #2923: same duck-typed read, on ``snap`` rather than ``conductor`` since
     # this one lives on ``V2ConductorSnapshot`` itself — a snapshot stand-in
     # built before this field existed means "not banked", which is what the
@@ -1197,8 +1202,19 @@ def build_conductor_state(
         # verdict-time judgement about the capture the artifact was built from.
         # Folding it in there would make one dict have two owners.
         "measure": (
-            {"ripple_reservation": dict(ripple_reservation)}
-            if ripple_reservation
+            {
+                **(
+                    {"ripple_reservation": dict(ripple_reservation)}
+                    if ripple_reservation
+                    else {}
+                ),
+                **(
+                    {"alignment_reservation": dict(alignment_reservation)}
+                    if alignment_reservation
+                    else {}
+                ),
+            }
+            if ripple_reservation or alignment_reservation
             else None
         ),
         "verify": (

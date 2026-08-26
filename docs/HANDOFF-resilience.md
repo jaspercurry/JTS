@@ -117,10 +117,17 @@ of a raw reboot: the observed failure was camilladsp exiting cleanly with ALSA
 the `/dev/snd` holder evidence and made a reachable Pi look killed.
 `deploy/bin/jasper-camilla-recover` captures `fuser`/`lsof` and
 `/proc/asound/*/status`, parks likely graph owners, tries one bounded
-fanin→Camilla→outputd restart, kicks the AEC/grouping reconcilers, then leaves
-the unit parked (cooldown-gated, no reboot) if the graph still cannot converge.
-Doctor's `check_installed_settings_drift` surfaces drift if a distro update
-removes either the reboot directives or Camilla's handler.
+fanin→Camilla→outputd restart, and kicks the AEC/grouping reconcilers. If the
+graph still cannot converge it **parks the core graph once**
+([ADR-0175](adr/0175-a-failed-camilla-recovery-parks-the-core-graph-once.md)):
+a `/run/jasper-camilla-recover.state` record (`reason`/`action`/`re_arm`, the
+ADR-0141 vocabulary) plus `reset-failed` + `stop` on CamillaDSP, so `OnFailure=`
+cannot re-enter and stop all eleven units again every cooldown. Surfaced by
+`/state.resilience.camilla_recover` and doctor's `check_camilla_recover_park`;
+retired by CamillaDSP starting again (`jasper-camilla.service`'s
+`ExecStartPost` removes the record) — an operator start, a deploy, or a
+reboot. Doctor's `check_installed_settings_drift` surfaces drift if a distro
+update removes either the reboot directives or Camilla's handler.
 
 **T5.1 circuit breaker.** `StartLimitAction=reboot` alone is unbounded across
 boots — a *permanent* daemon failure would reboot the Pi every few minutes

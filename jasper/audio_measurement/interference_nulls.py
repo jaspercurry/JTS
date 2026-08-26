@@ -16,7 +16,7 @@ power-mean-vs-median screen
 That is not a hypothetical: on the plan's S0 session (2026-07-25) the screen
 excluded **0 of 5462 bins** in 8-16 kHz — the power-vs-median gap there
 measured **+1.27 dB** against its own >2 dB trigger — while a source-fixed
-comb sat inside that band cutting 5-7 dB nulls (docs/flat-linearization-plan.md,
+comb sat inside that band cutting 5-7 dB nulls (docs/historical/linearization-campaign-2026-07.md,
 "S0 executed" section e.1). Position-invariance says "this is real"; it does
 not say "this is correctable". This gate is the second, orthogonal
 instrument: it asks whether a dip is a *rung of a null ladder* attributable
@@ -246,7 +246,7 @@ FLANK_SEARCH_MAX_OCT = 0.50
 # leg's four hand-width-low positions, produced a 3-rung "ladder" at tau
 # 290 us built on two 1.3-1.6 dB dips instead of the real 8-16 kHz family.
 #
-# **2.5 dB is the plan's own 8-16 kHz tolerance** (docs/flat-linearization-plan.md,
+# **2.5 dB is the plan's own 8-16 kHz tolerance** (docs/historical/linearization-campaign-2026-07.md,
 # "The spec"), and that — not a measured gap, which does not exist here — is
 # where the default comes from. Excluding a band costs the correction real
 # bandwidth permanently, so the floor is set at the scale on which the spec

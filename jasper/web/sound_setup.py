@@ -233,6 +233,7 @@ from ._common import (
     reject_csrf,
     send_html_response,
     send_json_response,
+    send_route_failure,
 )
 
 logger = logging.getLogger(__name__)
@@ -5409,131 +5410,91 @@ def _make_handler(
                 try:
                     self._send_json(_output_topology_payload())
                 except Exception as e:  # noqa: BLE001
-                    log_event(
-                        logger,
-                        "sound.output_topology",
-                        level=logging.ERROR,
-                        exc_info=True,
-                        result="error",
+                    send_route_failure(
+                        self._send_json, e, logger=logger,
+                        event="sound.output_topology",
                     )
-                    self._send_json({"error": str(e)}, status=502)
                 return
             if path == "/active-speaker/design-draft":
                 try:
                     self._send_json(_active_speaker_design_draft_payload())
                 except Exception as e:  # noqa: BLE001
-                    log_event(
-                        logger,
-                        "sound.active_speaker_design_draft",
-                        level=logging.ERROR,
-                        exc_info=True,
-                        result="error",
+                    send_route_failure(
+                        self._send_json, e, logger=logger,
+                        event="sound.active_speaker_design_draft",
                     )
-                    self._send_json({"error": str(e)}, status=502)
                 return
             if path == "/active-speaker/crossover-preview":
                 try:
                     self._send_json(_active_speaker_crossover_preview_payload())
                 except Exception as e:  # noqa: BLE001
-                    log_event(
-                        logger,
-                        "sound.active_speaker_crossover_preview",
-                        level=logging.ERROR,
-                        exc_info=True,
-                        result="error",
+                    send_route_failure(
+                        self._send_json, e, logger=logger,
+                        event="sound.active_speaker_crossover_preview",
                     )
-                    self._send_json({"error": str(e)}, status=502)
                 return
             if path == "/active-speaker/measurements":
                 try:
                     self._send_json(_active_speaker_measurements_payload())
                 except Exception as e:  # noqa: BLE001
-                    log_event(
-                        logger,
-                        "sound.active_speaker_measurements",
-                        level=logging.ERROR,
-                        exc_info=True,
-                        result="error",
+                    send_route_failure(
+                        self._send_json, e, logger=logger,
+                        event="sound.active_speaker_measurements",
                     )
-                    self._send_json({"error": str(e)}, status=502)
                 return
             if path == "/active-speaker/baseline-profile":
                 try:
                     self._send_json(_active_speaker_baseline_profile_payload())
                 except Exception as e:  # noqa: BLE001
-                    log_event(
-                        logger,
-                        "sound.active_speaker_baseline_profile",
-                        level=logging.ERROR,
-                        exc_info=True,
-                        result="error",
+                    send_route_failure(
+                        self._send_json, e, logger=logger,
+                        event="sound.active_speaker_baseline_profile",
                     )
-                    self._send_json({"error": str(e)}, status=502)
                 return
             if path == "/active-speaker/environment":
                 try:
                     self._send_json(_active_speaker_environment_payload())
                 except Exception as e:  # noqa: BLE001
-                    log_event(
-                        logger,
-                        "sound.active_speaker_environment",
-                        level=logging.ERROR,
-                        exc_info=True,
-                        result="error",
+                    send_route_failure(
+                        self._send_json, e, logger=logger,
+                        event="sound.active_speaker_environment",
                     )
-                    self._send_json({"error": str(e)}, status=502)
                 return
             if path == "/active-speaker/safe-playback":
                 try:
                     self._send_json(_active_speaker_safe_playback_payload())
                 except Exception as e:  # noqa: BLE001
-                    log_event(
-                        logger,
-                        "sound.active_speaker_safe_playback",
-                        level=logging.ERROR,
-                        exc_info=True,
-                        result="error",
+                    send_route_failure(
+                        self._send_json, e, logger=logger,
+                        event="sound.active_speaker_safe_playback",
                     )
-                    self._send_json({"error": str(e)}, status=502)
                 return
             if path == "/active-speaker/calibration-level":
                 try:
                     self._send_json(_active_speaker_calibration_level_payload())
                 except Exception as e:  # noqa: BLE001
-                    log_event(
-                        logger,
-                        "sound.active_speaker_calibration_level",
-                        level=logging.ERROR,
-                        exc_info=True,
-                        result="error",
+                    send_route_failure(
+                        self._send_json, e, logger=logger,
+                        event="sound.active_speaker_calibration_level",
                     )
-                    self._send_json({"error": str(e)}, status=502)
                 return
             if path == "/active-speaker/bringup-preflight":
                 try:
                     self._send_json(_active_speaker_bringup_preflight_payload())
                 except Exception as e:  # noqa: BLE001
-                    log_event(
-                        logger,
-                        "sound.active_speaker_bringup_preflight",
-                        level=logging.ERROR,
-                        exc_info=True,
-                        result="error",
+                    send_route_failure(
+                        self._send_json, e, logger=logger,
+                        event="sound.active_speaker_bringup_preflight",
                     )
-                    self._send_json({"error": str(e)}, status=502)
                 return
             if path == "/active-speaker/startup-load":
                 try:
                     self._send_json(_active_speaker_startup_load_payload())
                 except Exception as e:  # noqa: BLE001
-                    log_event(
-                        logger,
-                        "sound.active_speaker_startup_load",
-                        level=logging.ERROR,
-                        exc_info=True,
-                        result="error",
+                    send_route_failure(
+                        self._send_json, e, logger=logger,
+                        event="sound.active_speaker_startup_load",
                     )
-                    self._send_json({"error": str(e)}, status=502)
                 return
             if path == "/active-speaker/commission-state":
                 try:
@@ -5545,14 +5506,10 @@ def _make_handler(
                         )
                     )
                 except Exception as e:  # noqa: BLE001
-                    log_event(
-                        logger,
-                        "sound.active_speaker_commission",
-                        level=logging.ERROR,
-                        exc_info=True,
-                        result="error",
+                    send_route_failure(
+                        self._send_json, e, logger=logger,
+                        event="sound.active_speaker_commission",
                     )
-                    self._send_json({"error": str(e)}, status=502)
                 return
             if path == "/active-speaker/commissioning-view":
                 try:
@@ -5564,40 +5521,28 @@ def _make_handler(
                         )
                     )
                 except Exception as e:  # noqa: BLE001
-                    log_event(
-                        logger,
-                        "sound.active_speaker_commissioning_view",
-                        level=logging.ERROR,
-                        exc_info=True,
-                        result="error",
+                    send_route_failure(
+                        self._send_json, e, logger=logger,
+                        event="sound.active_speaker_commissioning_view",
                     )
-                    self._send_json({"error": str(e)}, status=502)
                 return
             if path == "/active-speaker/staged-config":
                 try:
                     self._send_json(_active_speaker_staged_config_payload())
                 except Exception as e:  # noqa: BLE001
-                    log_event(
-                        logger,
-                        "sound.active_speaker_staged_config",
-                        level=logging.ERROR,
-                        exc_info=True,
-                        result="error",
+                    send_route_failure(
+                        self._send_json, e, logger=logger,
+                        event="sound.active_speaker_staged_config",
                     )
-                    self._send_json({"error": str(e)}, status=502)
                 return
             if path == "/active-speaker/channel-identity":
                 try:
                     self._send_json(_active_speaker_channel_identity_payload())
                 except Exception as e:  # noqa: BLE001
-                    log_event(
-                        logger,
-                        "sound.active_speaker_channel_identity",
-                        level=logging.ERROR,
-                        exc_info=True,
-                        result="error",
+                    send_route_failure(
+                        self._send_json, e, logger=logger,
+                        event="sound.active_speaker_channel_identity",
                     )
-                    self._send_json({"error": str(e)}, status=502)
                 return
             self.send_error(HTTPStatus.NOT_FOUND)
 
@@ -5699,15 +5644,11 @@ def _make_handler(
                             _active_speaker_channel_identity_save_payload(raw)
                         )
                     except (OSError, RuntimeError) as e:
-                        log_event(
-                            logger,
-                            "sound.active_speaker_channel_identity",
-                            level=logging.ERROR,
-                            exc_info=True,
-                            result="error",
+                        send_route_failure(
+                            self._send_json, e, logger=logger,
+                            event="sound.active_speaker_channel_identity",
                             error=type(e).__name__,
                         )
-                        self._send_json({"error": str(e)}, status=502)
                     return
                 if path == "/active-speaker/channel-protection":
                     try:
@@ -5715,15 +5656,11 @@ def _make_handler(
                             _active_speaker_channel_protection_save_payload(raw)
                         )
                     except OSError as e:
-                        log_event(
-                            logger,
-                            "sound.active_speaker_channel_protection",
-                            level=logging.ERROR,
-                            exc_info=True,
-                            result="error",
+                        send_route_failure(
+                            self._send_json, e, logger=logger,
+                            event="sound.active_speaker_channel_protection",
                             error=type(e).__name__,
                         )
-                        self._send_json({"error": str(e)}, status=502)
                     return
                 if path == "/active-speaker/stage-config":
                     self._send_json(_active_speaker_stage_config_payload(raw))
@@ -5740,15 +5677,11 @@ def _make_handler(
                         payload["error"] = str(e)
                         self._send_json(payload, status=HTTPStatus.CONFLICT)
                     except OSError as e:
-                        log_event(
-                            logger,
-                            "sound.active_speaker_design_draft_save",
-                            level=logging.ERROR,
-                            exc_info=True,
-                            result="error",
+                        send_route_failure(
+                            self._send_json, e, logger=logger,
+                            event="sound.active_speaker_design_draft_save",
                             error=type(e).__name__,
                         )
-                        self._send_json({"error": str(e)}, status=502)
                     return
                 if path == "/active-speaker/driver-research-request":
                     self._send_json(
@@ -5761,29 +5694,21 @@ def _make_handler(
                             _active_speaker_crossover_preview_save_payload()
                         )
                     except OSError as e:
-                        log_event(
-                            logger,
-                            "sound.active_speaker_crossover_preview_save",
-                            level=logging.ERROR,
-                            exc_info=True,
-                            result="error",
+                        send_route_failure(
+                            self._send_json, e, logger=logger,
+                            event="sound.active_speaker_crossover_preview_save",
                             error=type(e).__name__,
                         )
-                        self._send_json({"error": str(e)}, status=502)
                     return
                 if path == "/active-speaker/driver-measurement":
                     try:
                         self._send_json(_active_speaker_driver_measurement_payload(raw))
                     except OSError as e:
-                        log_event(
-                            logger,
-                            "sound.active_speaker_driver_measurement",
-                            level=logging.ERROR,
-                            exc_info=True,
-                            result="error",
+                        send_route_failure(
+                            self._send_json, e, logger=logger,
+                            event="sound.active_speaker_driver_measurement",
                             error=type(e).__name__,
                         )
-                        self._send_json({"error": str(e)}, status=502)
                     return
                 if path == "/active-speaker/summed-test":
                     try:
@@ -5796,15 +5721,11 @@ def _make_handler(
                             )
                         )
                     except OSError as e:
-                        log_event(
-                            logger,
-                            "sound.active_speaker_summed_test",
-                            level=logging.ERROR,
-                            exc_info=True,
-                            result="error",
+                        send_route_failure(
+                            self._send_json, e, logger=logger,
+                            event="sound.active_speaker_summed_test",
                             error=type(e).__name__,
                         )
-                        self._send_json({"error": str(e)}, status=502)
                     return
                 if path == "/active-speaker/summed-test/level":
                     try:
@@ -5817,15 +5738,11 @@ def _make_handler(
                             )
                         )
                     except OSError as e:
-                        log_event(
-                            logger,
-                            "sound.active_speaker_summed_test_level",
-                            level=logging.ERROR,
-                            exc_info=True,
-                            result="error",
+                        send_route_failure(
+                            self._send_json, e, logger=logger,
+                            event="sound.active_speaker_summed_test_level",
                             error=type(e).__name__,
                         )
-                        self._send_json({"error": str(e)}, status=502)
                     return
                 if path == "/active-speaker/summed-test/stop":
                     reason = str(raw.get("reason") or "operator_stop")
@@ -5857,15 +5774,11 @@ def _make_handler(
                             return
                         self._send_json(_active_speaker_summed_validation_payload(raw))
                     except OSError as e:
-                        log_event(
-                            logger,
-                            "sound.active_speaker_summed_validation",
-                            level=logging.ERROR,
-                            exc_info=True,
-                            result="error",
+                        send_route_failure(
+                            self._send_json, e, logger=logger,
+                            event="sound.active_speaker_summed_validation",
                             error=type(e).__name__,
                         )
-                        self._send_json({"error": str(e)}, status=502)
                     return
                 if path == "/active-speaker/baseline-profile":
                     try:
@@ -5873,15 +5786,11 @@ def _make_handler(
                             _active_speaker_baseline_profile_payload(write=True)
                         )
                     except OSError as e:
-                        log_event(
-                            logger,
-                            "sound.active_speaker_baseline_profile",
-                            level=logging.ERROR,
-                            exc_info=True,
-                            result="error",
+                        send_route_failure(
+                            self._send_json, e, logger=logger,
+                            event="sound.active_speaker_baseline_profile",
                             error=type(e).__name__,
                         )
-                        self._send_json({"error": str(e)}, status=502)
                     return
                 if path == "/active-speaker/baseline-profile/apply":
                     self._send_json(
@@ -5996,15 +5905,11 @@ def _make_handler(
                         payload["error"] = str(e)
                         self._send_json(payload, status=HTTPStatus.CONFLICT)
                     except (OSError, RuntimeError) as e:
-                        log_event(
-                            logger,
-                            "sound.output_topology_save",
-                            level=logging.ERROR,
-                            exc_info=True,
-                            result="error",
+                        send_route_failure(
+                            self._send_json, e, logger=logger,
+                            event="sound.output_topology_save",
                             error=type(e).__name__,
                         )
-                        self._send_json({"error": str(e)}, status=502)
                     return
                 if path == "/output-topology/reset":
                     try:

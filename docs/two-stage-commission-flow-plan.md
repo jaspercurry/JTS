@@ -10,7 +10,7 @@
 > dead air).
 >
 > **Supersedes §2.2 and §2.6 of**
-> [`docs/flat-linearization-flow-simplification-plan.md`](flat-linearization-flow-simplification-plan.md)
+> [`docs/historical/linearization-campaign-2026-07.md`](historical/linearization-campaign-2026-07.md)
 > — see D10 and D1 respectively. Composes with — does not re-open — the
 > rest of that document (screen grammar §2.1/§2.3, tier chooser §3) and
 > [`docs/gating-v2-plan.md`](gating-v2-plan.md) /
@@ -163,7 +163,7 @@ Two more facts that shape the ladder:
 > which removes the pre-apply cloud — so the group-close confirm D1 adopts has
 > no cloud captures to close on that path, and the machinery below is retained
 > for future Room work rather than run. The rest of this section is unaffected.
-> See [`crossover-linearization-80-20-plan.md`](crossover-linearization-80-20-plan.md).
+> See [`linearization-campaign-2026-07.md`](historical/linearization-campaign-2026-07.md).
 
 **D1 — Stage 1 ends at the group-close confirm; nothing is applied.
 ADOPT.** The shipped group-close confirm gate is the seam: the
@@ -177,7 +177,7 @@ PR-6b moved the FIT from MEASURE's acceptance (index 2) to the
 pre-apply cloud's close (index 10); the pre-apply cloud was already
 captured clean, and apply now moves further away from it, not closer.
 
-**Supersedes** [`flat-linearization-flow-simplification-plan.md`](flat-linearization-flow-simplification-plan.md)
+**Supersedes** [`linearization-campaign-2026-07.md`](historical/linearization-campaign-2026-07.md)
 **§2.6's group-close consequence** — its adopted contract is *"apply
 still runs under the same gates; one extra user tap now sits in front of
 it"*, i.e. confirm → fit → auto-apply, in-session. This decision keeps
@@ -266,7 +266,7 @@ seams re-threaded, the group's floor honoured
 (`predicted_sum`, `gate_window_ms`) the 1-entry path already does. (At
 plan time that list also carried the G3 pilot-transfer baseline; #1927
 made that reference session-scoped, so it now travels as dated history
-only — see `HANDOFF-crossover-measurement-v2.md`.)
+only — see `tuning-operator-runbook.md`.)
 
 **Capture arithmetic (corrected — an earlier draft said 11/6).** The
 Full plan is 16 entries: CHECK 1 + MEASURE 1 + `N−1` = 8 cloud-measure
@@ -278,7 +278,7 @@ cloud-verify (`DEFAULT_CLOUD_VERIFY_POSITIONS = 6`). So **stage 1 is
 *(Design-time arithmetic, kept as written. The shipped stage 1 has been
 smaller since R15 turned the pre-apply cloud off — today it is 3 captures at
 either tier. `tier_display_info()` is the derivation of record; see
-`HANDOFF-crossover-measurement-v2.md`.)*
+`tuning-operator-runbook.md`.)*
 
 **The split reduces the time-budget pressure; it does not resolve it —
 do not claim otherwise.** The number to compare is the *realized*
@@ -403,7 +403,7 @@ so the candidate's reachability is a contract, not an accident:
 
 **`headroom_cost_db` carries a cross-era stamp, and D3 puts it in front
 of the household.** Per
-[`docs/linearization-integrity-plan.md`](linearization-integrity-plan.md)
+[`docs/historical/linearization-campaign-2026-07.md`](historical/linearization-campaign-2026-07.md)
 ("Cross-era disclosure"): the stamp *"is not re-derived on load,
 deliberately"*, so a candidate persisted before that amendment discloses
 **~22.5 dB** where re-emitting the same candidate now charges **~5**.
@@ -540,7 +540,7 @@ documented.** #1805 asks to *"let the user PREVIEW and adjust the
 movement pattern before step 1 begins (show the whole walk up front,
 adjustable spacing)"*. At least two walked positions must still clear
 the ≥30 cm spread that the LF-decorrelation side-finding in
-[`docs/flat-linearization-plan.md`](flat-linearization-plan.md) makes
+[`docs/historical/linearization-campaign-2026-07.md`](historical/linearization-campaign-2026-07.md) makes
 load-bearing. Resolution: **adjustment has a floor, and the floor is the
 same derived one the plan builder already enforces.** The preview may
 widen spacing freely and may narrow the non-wide moves, but a wide
@@ -600,7 +600,7 @@ the conductor's concurrency and lifecycle are already in hand.
 
 **Sibling copy the reshaped walk orphans — PR-T4 owns all of it:**
 - The screen-grammar exemplar in
-  [`flat-linearization-flow-simplification-plan.md`](flat-linearization-flow-simplification-plan.md)
+  [`linearization-campaign-2026-07.md`](historical/linearization-campaign-2026-07.md)
   §2.1, whose worked example is literally `Measurement 4 of 7` /
   `A forearm's length LEFT of the mark` — wrong on both counts after
   this ladder.
@@ -743,7 +743,7 @@ and `REVIEW_HOLD_BUDGET_S` stop governing a live session. They are
 `apply_failed` refusal still reach them — but no new design may depend
 on them.
 
-**Supersedes** [`flat-linearization-flow-simplification-plan.md`](flat-linearization-flow-simplification-plan.md)
+**Supersedes** [`linearization-campaign-2026-07.md`](historical/linearization-campaign-2026-07.md)
 **§2.2's VERIFY contract.** That section's adopted contract is
 begin-first with the household confirming **after apply completes** —
 *"the VERIFY tone must not fire until the user confirms after apply

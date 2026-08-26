@@ -23,12 +23,14 @@ chmod) runs for real against tmp paths.
 from __future__ import annotations
 
 import os
+import shlex
 import stat
 import subprocess
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
 LIB = ROOT / "deploy" / "lib" / "install" / "env-migrations.sh"
+SED_LIB = ROOT / "deploy" / "lib" / "jasper-sed-inplace.sh"
 
 # `getent` stubbed to succeed so the `getent group jasper-secrets` guard passes;
 # the chgrp/chown/systemd-tmpfiles become no-ops; `install` emulates just enough
@@ -75,7 +77,13 @@ def _extract(name: str) -> str:
 
 
 def _helpers() -> str:
-    return _STUBS + "\n".join(_extract(n) for n in _FUNCS)
+    # install.sh sources the shared in-place-sed helper for the whole
+    # install lib; extracted functions need it too.
+    return (
+        f". {shlex.quote(str(SED_LIB))}\n"
+        + _STUBS
+        + "\n".join(_extract(n) for n in _FUNCS)
+    )
 
 
 def _prep(tmp_path: Path) -> tuple[Path, Path, Path]:

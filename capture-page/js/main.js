@@ -1611,7 +1611,7 @@ const RELAY_BEGIN_RECONNECT_BACKOFF_MS = [2000, 4000, 8000];
 
 // …and the WALL CLOCK that actually bounds that ladder. Rung count alone does
 // not, and this arithmetic is load-bearing —
-// docs/HANDOFF-crossover-measurement-v2.md delegates the safety argument for
+// docs/tuning-operator-runbook.md delegates the safety argument for
 // the pre-arm retry to this comment rather than restating it.
 //
 // What one retry-eligible attempt can cost:

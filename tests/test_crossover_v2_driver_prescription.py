@@ -690,23 +690,26 @@ def test_the_response_format_states_every_bound_the_gate_applies():
     # reads, so a bar it can walk into is a bar it was told about.
     assert set(fmt["boosts"]["refusals"]) <= DRIVER_PRESCRIPTION_REFUSAL_REASONS
     assert set(fmt["boosts"]["refusals"]) == {
-        dp.BOOST_IN_CROSSOVER_OVERLAP,
         dp.FILTER_BOOST_TOO_HIGH,
         dp.FILTER_BOOST_TOO_SHALLOW,
         dp.COMPOSED_BOOST_EXCEEDED,
     }
-    # …and all six the 2026-08-23 ruling retired are gone from the module
-    # entirely, not merely from this block: a prescriber that could still read
+    # …and all SEVEN retired slugs are gone from the module entirely, not
+    # merely from this block: a prescriber that could still read
     # `driver_feature_not_boostable` in `refusal_reasons` would satisfy a bar
-    # nothing applies.
+    # nothing applies. Six went on 2026-08-23; the knee bar went with the nanny
+    # burn-down.
     for retired in (
         "driver_feature_not_classified", "driver_feature_not_cuttable",
         "driver_feature_not_boostable", "driver_feature_depth_unavailable",
         "driver_boost_exceeds_feature_depth", "driver_boost_unvouched",
+        "driver_boost_in_crossover_overlap",
     ):
         assert retired not in DRIVER_PRESCRIPTION_REFUSAL_REASONS
         assert not hasattr(dp, retired.upper().removeprefix("DRIVER_"))
-    assert "OVERLAP" in fmt["boosts"]["not_at_the_crossover_knee"].upper()
+    # The knee is still NAMED to the prescriber, as a disclosure rather than a
+    # bar — a finding it can walk into is one it was told about.
+    assert "OVERLAP" in fmt["boosts"]["at_the_crossover_knee_it_discloses"].upper()
 
 
 def test_a_cut_only_document_names_no_role_as_having_spent(tmp_path):
@@ -1927,37 +1930,51 @@ def test_the_worst_role_is_the_documents_composed_boost_not_the_last_role(tmp_pa
 # --- the crossover knee: a boost may not move the summed response ----------- #
 
 
-def test_a_boost_in_the_declared_band_overlap_is_refused(tmp_path):
-    """The knee ruling (2026-08-19). Both drivers radiate in the overlap, so a
-    per-driver boost there moves the SUMMED response the crossover stage owns
-    and is charged nothing for it."""
+def test_a_boost_in_the_declared_band_overlap_is_counted_not_refused(tmp_path):
+    """The knee bar, burnt down. Both drivers radiate in the overlap, so a
+    per-driver boost there moves the SUMMED response the crossover stage owns —
+    worth telling a reader, and not worth stopping a round for.
+
+    Transformed rather than deleted: the overlap it detects is the same one,
+    and only the consequence of sitting in it changed."""
     packet = _speaker(tmp_path, classification=_boostable([
         _dip(hz=2000.0, depth_db=20.0),
     ]))
 
-    with pytest.raises(BlendPrescriptionRefused) as excinfo:
-        _gate(packet, _document([_boost(freq=2000.0)], packet))
+    prescription = _gate(packet, _document([_boost(freq=2000.0)], packet))
 
-    assert excinfo.value.reason == dp.BOOST_IN_CROSSOVER_OVERLAP
-    # The tweeter's 1.6 kHz protective floor up to the woofer's 3 kHz ceiling,
-    # derived from the declared bands the gate already holds.
-    assert excinfo.value.evidence["overlap_hz"] == [1600.0, 3000.0]
-    assert excinfo.value.evidence["overlap_roles"] == ["tweeter", "woofer"]
+    # Admitted, and the finding rides the receipt instead of the exception.
+    assert prescription.prescription_class == "boost"
+    assert prescription.boosts_in_crossover_overlap == 1
+    assert prescription.to_dict()["boosts_in_crossover_overlap"] == 1
 
 
-def test_the_knee_bar_bounds_a_bells_centre_and_not_the_overlap_as_a_band(tmp_path):
-    """What the knee bar reaches, and what it deliberately does not.
+def test_a_boost_outside_the_overlap_counts_zero(tmp_path):
+    """The discriminator: the count is about the overlap, not about boosting.
 
-    Its subject is a BELL: a Peaking's ``freq`` IS its placement, so bounding
-    the centre bounds where the lift lives. Only the centre, which is the
-    owner's never-nanny calibration — a bell centred just OUTSIDE still reaches
-    in on its skirt and is admitted, and the deciding-frame measurement is what
-    adjudicates the summed response there.
+    Without this, ``boosts_in_crossover_overlap == 1`` above would pass just as
+    well if the field counted every boost."""
+    packet = _speaker(tmp_path, classification=_boostable([
+        _dip(hz=8000.0, depth_db=20.0),
+    ]))
 
-    Both halves are pinned because the docstring on
-    :data:`~.driver_prescription.BOOST_IN_CROSSOVER_OVERLAP` states the second
-    one as a measured number, and a safety claim no test asserts is where the
-    drift starts.
+    prescription = _gate(packet, _document([_boost(freq=8000.0)], packet))
+
+    assert prescription.prescription_class == "boost"
+    assert prescription.boosts_in_crossover_overlap == 0
+
+
+def test_the_knee_finding_reads_a_bells_centre_and_not_the_overlap_as_a_band(tmp_path):
+    """What the knee finding reaches, and what it deliberately does not.
+
+    Its subject is a BELL: a Peaking's ``freq`` IS its placement, so reading the
+    centre reads where the lift lives. Only the centre — a bell centred just
+    OUTSIDE still reaches in on its skirt, and the deciding-frame measurement is
+    what adjudicates the summed response there.
+
+    The measured skirt number is the incoherence the demotion rests on: a bar
+    that admitted +11.93 dB into the overlap through a skirt while refusing a
+    centre was a coherence gap, not a bound.
     """
     packet = _speaker(tmp_path, classification=_boostable([
         _dip(hz=3200.0, depth_db=20.0),
@@ -1971,12 +1988,16 @@ def test_the_knee_bar_bounds_a_bells_centre_and_not_the_overlap_as_a_band(tmp_pa
 
     assert prescription.filters[0]["freq"] == 3200.0
     # …and it really does reach in: the skirt puts nearly its full gain across
-    # the overlap the bar refused a CENTRE in.
+    # the overlap the bar used to refuse a CENTRE in.
     overlap = np.geomspace(1600.0, 3000.0, 2000)
     reach = float(np.max(20.0 * np.log10(np.abs(chain_response(
         [{key: value for key, value in outside.items() if key != "role"}], overlap,
     )))))
     assert reach == pytest.approx(11.93, abs=0.01)
+    # …and the count agrees it is outside: the finding reads centres, so this
+    # +11.93 dB of real reach is invisible to it. That asymmetry is why a bar
+    # here was incoherent and a count is honest.
+    assert prescription.boosts_in_crossover_overlap == 0
 
 
 def test_a_shelf_reaches_the_overlap_and_the_charge_is_what_bounds_it(tmp_path):

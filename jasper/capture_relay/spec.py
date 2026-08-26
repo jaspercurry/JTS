@@ -80,7 +80,7 @@ CAPTURE_PROTOCOL_VERSION = 3
 # (pinned by tests/test_capture_relay_spec.py).
 #
 # 32 is sized from PR-3b's DECLARED choreography defaults — design inputs from
-# docs/flat-linearization-productization-plan.md § PR-3b, not measurements.
+# docs/historical/linearization-campaign-2026-07.md § PR-3b, not measurements.
 # Worst-case ENTRY count at that section's documented maxima:
 #     CHECK 1 + MEASURE 1 + (N-1) cloud-measure at max N=12 => 11
 #             + M=6 cloud-verify + 2 geometry-retry positions          = 21
