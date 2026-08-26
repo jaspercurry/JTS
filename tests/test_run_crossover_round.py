@@ -402,7 +402,6 @@ def test_a_round_runs_its_phases_in_order(checkout, wizard, tmp_path):
     ]
     assert all(row["ok"] for row in _trail(trail))
     assert len(bank_lines) == 1
-    assert (tmp_path / "camp" / "r1" / "candidate.json").exists()
 
 
 def test_the_staged_walk_and_the_arm_walk_carry_what_the_operator_wrote(
@@ -1050,7 +1049,7 @@ def test_an_apply_that_answers_200_but_did_not_apply_is_a_failure(checkout):
 # --------------------------------------------------------------------------- #
 
 
-@pytest.mark.parametrize("bank_exit,expected_rc,banked", [
+@pytest.mark.parametrize("bank_exit,expected_rc,summarised", [
     (0, 0, True),    # clean
     (1, 0, True),    # nothing to grade: no dump-ring sidecars, not a dirty round
     (2, 9, False),   # dirty captures
@@ -1058,7 +1057,7 @@ def test_an_apply_that_answers_200_but_did_not_apply_is_a_failure(checkout):
     (4, 9, False),   # the destination was already used
 ])
 def test_the_banks_own_exit_contract_decides_the_round(
-    checkout, wizard, tmp_path, bank_exit, expected_rc, banked
+    checkout, wizard, tmp_path, bank_exit, expected_rc, summarised
 ):
     trail = tmp_path / "trail.jsonl"
     proc, _, bank_lines = _run(
@@ -1071,7 +1070,9 @@ def test_the_banks_own_exit_contract_decides_the_round(
     assert len(bank_lines) == 1
     row = next(r for r in _trail(trail) if r["step"] == "bank")
     assert row["bank_exit"] == bank_exit
-    assert (tmp_path / "camp" / "r1" / "candidate.json").exists() is banked
+    # A refused bank stops the round before the candidate is summarised at
+    # all; the trail is the observable now that nothing is written beside it.
+    assert any(r["step"] == "candidate" for r in _trail(trail)) is summarised
 
 
 def test_a_failing_arm_walk_stops_the_round_and_keeps_its_own_name(
