@@ -473,3 +473,73 @@ Both halves are dead: owner ruling R4 overrules the prohibition, and after 7j
 a `warning`. That file is the audit program's single-owner planning authority
 (§6 R5's boundary table), so this brief flags it rather than editing across the
 boundary. It wants one line from whoever owns that doc.
+
+---
+
+## 2. Row 10 — the instrument roster's status
+
+### 2.1 What row 10 demands
+
+Row 10 (`:1303`) is the owner's acceptance bar, quoted from the baseline
+report: *"the full candidate campaign — many candidates, each measured, one
+winner, and the winner re-measured."* Entire trusted range, multi-candidate,
+best-of final, re-measured. It opens **only after every row above closes**, and
+it **opens with instrument bring-up in roster order — R-1 → R-5a**, with
+R-5b/R-6 when the owner provides hardware.
+
+Two constraints the roster carries and this brief will not soften. **S11's five
+sanctioned acts stay exactly five** — the roster is post-acceptance and adds
+nothing to that list (`:1456-1464`). And **an instrument is CODE; a preset is
+DATA** (`:1341-1346`) — assembling `full-cloud` out of built instruments is a
+parameter bundle, but building R-1…R-6 is engineering.
+
+### 2.2 The status table at HEAD
+
+Since the plan was written, **ruling S12's stub surface has SHIPPED**:
+`jasper/active_speaker/crossover_v2/measure_spec.py` names each roster row in
+code, declares its parameter, and returns a loud not-implemented disclosure
+carrying a `captured` discriminator. That module is now the authoritative
+statement of each instrument's code state, and its own docstring table
+(`:28-40`) is the thing to read before the plan's prose.
+
+The `captured` flag is the operationally load-bearing half: *"a stub whose
+capture still happened has evidence waiting for the analysis that will read it,
+and a stub whose capture did not happen has nothing banked and nothing to
+re-analyze later."*
+
+| # | What the row demands | State at HEAD | What remains |
+|---|---|---|---|
+| **R-1** | `measure(polarity=inverted)` + `analyze(null_depth)` | **Stub shipped, `captured=False`** — `INVERTED_POLARITY_NOT_IMPLEMENTED` (`measure_spec.py:78-81`; `_ROWS` at `:163-165`), rendering *"inverted-polarity capture not implemented; nothing captured, reverse-null pending R-1"*. The **decision** half is live: `crossover_alignment.py:61-62`'s `POLARITY_KEEP` / `POLARITY_INVERT` decide on measured null depth, and `:149-154` bank `in_phase_null_depth_db` / `reverse_null_depth_db` / `polarity_margin_db`. The **executor** `run_null_walk` was deleted for want of callers. **`PROBE_REVERSE_NULL = "P1"` (`attribution/closed_sets.py:81`) has never been run** | **both ends.** Make `polarity=inverted` play and bank, then write the `analyze(null_depth)` consumer. Nothing is banked to re-analyze, so this is a capture build first, not an analysis pass |
+| **R-2** | wider orbit + first production caller for DI / per-angle | **Every asset built, zero production callers — re-verified at HEAD.** `flat_spec_views.directivity_table` and `forward_model.predict_sum` appear **only** in `tests/test_flat_spec_views.py` and `tests/test_crossover_forward_model.py`. Reach: `MOVER_MAX_ANGLE_DEG` (`angle_capture.py:196`) maps arm → `ARM_ENVELOPE_DEG`, human → `MAX_ANGLE_DEG`. `--angles` already accepts arbitrary whole degrees. **The shipped walk stops at ±22** — the r1/r2 arm-walk logs record exactly `0, 0, 0, +7, −7, +22, −22, 0` | **a program change, not a build.** Widen the angle set and give the two computed models their first caller. **No stub exists and none is owed** — nothing is missing from the parameter surface |
+| **R-3** | one `analyze` function over two record kinds that already exist | **Stub shipped, `captured=True`** — `NEAR_FIELD_SPLICE_NOT_IMPLEMENTED` (`measure_spec.py:76-78`), *"near-field splice not implemented; capture banked, splice pending R-3"*. `REGIME_NEAR_FIELD` declared (`contracts.py:1440`); `NEAR_FIELD_EXEMPT` already carves gating (`audio_measurement/gating.py:337`) | **the splice only.** The capture ships, so evidence accrues today and is re-analyzable the day the function lands. Cheapest row on the board |
+| **R-4** | distortion-vs-**level** `measure` + the `analyze` consumer | **Stub shipped, `captured=True`** — `DISTORTION_VS_LEVEL_NOT_IMPLEMENTED` (`measure_spec.py:82-85`), *"distortion-vs-level sweep not implemented; capture banked, level ladder pending R-4"*: **every rung plays and banks its own record.** Supporting code exists — `audio_measurement/distortion.py`, `crossover_v2/harmonic_evidence.py`, `jasper-read-distortion` | **the consumer** that turns the banked set into a measured floor. The roster's warning is spent: **wave 7k is DONE** — the guide's Adoptions header now states the split and names the live slope-blind gates, so there is no stale claim left to import |
+| **R-5a** | `measure(position_axis=vertical)` + a preset + MS-17's `prompt` | **Stub shipped, `captured=False`** — `VERTICAL_AXIS_NOT_IMPLEMENTED` (`measure_spec.py:86-90`), *"vertical-axis walk not implemented; nothing captured, pose prompts pending R-5a"*. `POSITION_AXIS_VERTICAL` is declared in `contracts.py`. Four sites still refuse deliberately: `position_angle_deg` raises, `pose_at_angle` calls elevation *"the ratified deferred axis"*, `CLOUD_VERIFY_POSE_PROMPTS` is *"vertical-free BY CONSTRUCTION"* (`angle_capture.py:378`), and `REMOTE_VERTICAL_DISCLOSURE` **tells the household the axis is not covered** | **undo three deliberate refusals and update the fourth**, or the speaker discloses a blind spot it no longer has. Mic-only, **not zero-code** |
+| **R-5b** | the same parameters, driven by a positioner | **HARDWARE-GATED, unchanged.** Needs rig capability for elevation. Until then the blind spot stays stated and disclosed — S10's spirit applied to a measurement we cannot take | **owner decision only.** No code moves until the rig does |
+| **R-6** | a sense-resistor jig feeding `measure` | **BOTH HALVES RULED — the plan's open decision is CLOSED and its count is stale.** The relay slot `build_bass_nearfield_spec` was **deleted** by #3081 (`056cc8cfc`, owner ruling 2026-08-26: *"delete now, re-add when the impedance hardware exists"*), taking `SHIPPED_KINDS`, `BUILDERS`, the re-export pair and `test_capture_relay_bass_nearfield.py` with it. The `bass_extension/profile.py:211` `impedance_import` slot **stays, under ADR-0018's park**. **Deliberately no stub** (S12: a stub for hardware that may never exist is the speculative flexibility the charter forbids) | **owner decision only.** The roster's *"two schema slots already wait"* is now **one**, and the *"decide once… silence resolves to deletion"* paragraph is spent — it was decided twice, and the two rulings agree |
+
+### 2.3 Three things the roster's prose now gets wrong
+
+1. **`:1356` — "two schema slots already wait."** One does.
+2. **`:1404-1413` — R-6 framed as a live owner decision.** Closed by #3081 plus
+   ADR-0018. The paragraph reads as pending work and is archaeology.
+3. **`:1350` — R-1 cites `docs/attribution-stage-plan.md:349`.** The file moved
+   to `docs/historical/` at #2979 (`b25216fff`). The *claim* holds exactly — the
+   M1 row still reads *"Reverse-null (P1) **and** design-axis/vertical-offset
+   (P5) — both **required**"* — but the path resolves nowhere.
+   `crossover-design-guide-deep-research-2026-08-19.md:29` carries the same
+   stale path in prose.
+
+*None of the three changes what row 10 costs.* They are citation hygiene and
+belong in whatever PR next touches §5 — not in this brief, which does not own
+that file.
+
+### 2.4 Two things the table shows that the ranked order does not
+
+- **R-3 and R-4 are already accruing evidence.** Both stubs are `captured=True`,
+  so every session run between now and their landing banks records the missing
+  `analyze` function will be able to read. They get *cheaper* by waiting. R-1
+  and R-5a bank nothing and do not.
+- **R-2 is the only row that is purely a program change.** No new `measure`
+  parameter, no `analyze` function that does not exist — two built models
+  wanting their first caller, and a longer angle list. If the campaign wants an
+  early win that is not R-1, it is this one.
