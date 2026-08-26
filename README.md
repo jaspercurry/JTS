@@ -450,7 +450,7 @@ Preserved for archaeology; **not** current operational truth.
   evidence that proved external-DAC chip AEC; use `HANDOFF-aec.md` instead
 - [`historical/chip-aec-dac-portability-2026-06.md`](docs/historical/chip-aec-dac-portability-2026-06.md)
   — clock-domain measurements and the rejected rate-matcher design
-- [`HANDOFF-volume-control-redesign.md`](docs/HANDOFF-volume-control-redesign.md)
+- [`historical/volume-control-redesign-2026-05.md`](docs/historical/volume-control-redesign-2026-05.md)
   — why AirPlay receiver-originated volume reflection did not work
 - [`RESEARCH-pipewire-low-latency.md`](docs/RESEARCH-pipewire-low-latency.md) —
   what PipeWire's source does, and the JTS verdict per technique

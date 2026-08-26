@@ -594,7 +594,6 @@ code = [
 ]
 docs = [
   "docs/HANDOFF-volume.md",
-  "docs/HANDOFF-volume-control-redesign.md",
   "docs/HANDOFF-source-capabilities.md",
   "docs/audio-paths.md",
   "docs/HANDOFF-sound-preferences.md",
@@ -1091,7 +1090,6 @@ docs = [
   "PLAN.md",
   "docs/adr/0145-remote-updates-stay-a-laptop-deploy.md",
   "docs/HANDOFF-source-capabilities.md",
-  "docs/HANDOFF-volume-control-redesign.md",
   "docs/PROPOSAL-dac-profile-registry.md",
   "docs/tool-platform-plan.md",
 ]

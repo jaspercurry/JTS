@@ -151,9 +151,14 @@ program's wave 7h)**
 - [ ] Code comments, category-scoped only: superseded-value changelogs,
       self-labeled archaeology, reviewer-addressed notes; epitaph
       consolidation (rate_match / transport_pipe)
-- [ ] HANDOFF triage, one PR per batch: each doc → keep-trimmed (<400-line
+- [x] HANDOFF triage, one PR per batch: each doc → keep-trimmed (<400-line
       operational spine) / decisions → ADR / appendix → docs/historical/ /
-      delete. Census-zone docs belong to the local agent.
+      delete. Census-zone docs belong to the local agent. **Done in 13
+      batches.** Batch 13 (last) took the two volume docs once the tuning
+      plan's wave-5 volume-surface widening expired: `HANDOFF-volume.md`
+      862 → 399 with ADR-0176/0177, and the disproven AirPlay push-mode
+      redesign brief archived. The duck machinery stays tuning-owned — the
+      spine points at ADR-0004 rather than restating it.
 - [x] README rebuild: repo-layout tree with all top-level dirs; atlas
       collapsed (historical entries one line)
 - [x] .env.example: one-line comments; AEC knob table → pointer
