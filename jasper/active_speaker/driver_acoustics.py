@@ -93,12 +93,6 @@ PRESENT_MIN_SEPARATION_DB = 0.0  # in-band must be at least as strong as out
 OUT_OF_BAND_SEPARATION_DB = -3.0  # clearly more energy outside the band
 DEFAULT_NULL_THRESHOLD_DB = DRIVER.null_threshold_db  # deep crossover null = "present"
 
-# Surfaced frequency-response curve (per-driver + summed), so the maintainer can
-# eyeball Fc/slope by hand. Downsampled log-spaced so the JSON stays small. This
-# module never auto-rewrites Fc/slope — it only surfaces the evidence; the
-# polarity proposal lives in crossover_alignment.py.
-FR_CURVE_MAX_POINTS = 72
-
 # Overlap-band level, read by both measured level-match paths: the guided
 # phone captures (L1) and the headless `jasper-driver-trim` base trim. For a
 # per-driver near-field
@@ -191,10 +185,8 @@ class DriverAcousticResult:
     # the capture was silent/clipped/unusable or the band had too few bins, so
     # the trim math (jasper.active_speaker.baseline_profile) can fail closed.
     overlap_levels: tuple[dict[str, Any], ...] = ()
-    # L2 calibrated-mic evidence. ``calibrated`` is True when a real measurement
-    # mic's calibration curve was applied to the magnitude. ``fr_curve`` is the
-    # downsampled (calibrated) magnitude response surfaced for the maintainer.
-    fr_curve: dict[str, Any] | None = None
+    # L2 calibrated-mic evidence: True when a real measurement mic's
+    # calibration curve was applied to the magnitude.
     calibrated: bool = False
     # SC-1 band-specific SNR verdict block (magnitude decision class), from
     # jasper.audio_measurement.snr_policy.band_snr_verdicts. None when no
@@ -231,7 +223,6 @@ class DriverAcousticResult:
             "mic_clipping": self.mic_clipping,
             "quality": self.quality,
             "overlap_levels": [dict(entry) for entry in self.overlap_levels],
-            "fr_curve": self.fr_curve,
             "calibrated": self.calibrated,
             "snr": self.snr,
             "ambient": self.ambient,
@@ -256,7 +247,6 @@ class SummedAcousticResult:
     # the polarity/delay problem. ``null_depth_db`` is always the raw measured
     # depth; the verdict interprets it per ``expect_null``.
     expect_null: bool = False
-    fr_curve: dict[str, Any] | None = None
     calibrated: bool = False
     # SC-1 band-specific SNR verdict block (alignment decision class), from
     # jasper.audio_measurement.snr_policy.band_snr_verdicts over the overlap
@@ -291,7 +281,6 @@ class SummedAcousticResult:
             "mic_clipping": self.mic_clipping,
             "quality": self.quality,
             "expect_null": self.expect_null,
-            "fr_curve": self.fr_curve,
             "calibrated": self.calibrated,
             "snr": self.snr,
             "ambient": self.ambient,
@@ -783,40 +772,6 @@ def _band_mean_db(freqs, mag_db, lo_hz: float, hi_hz: float) -> float | None:
     return float(np.mean(mag_db[mask]))
 
 
-def _downsample_curve(
-    freqs,
-    mag_db,
-    *,
-    lo_hz: float = ANALYSIS_LO_HZ,
-    hi_hz: float = ANALYSIS_HI_HZ,
-    max_points: int = FR_CURVE_MAX_POINTS,
-) -> dict[str, Any] | None:
-    """Log-spaced downsample of a magnitude response, for the maintainer's plot.
-
-    Restricted to the trusted analysis window and re-referenced to 0 dB at its
-    peak — a RELATIVE shape (read it for Fc/slope, not absolute level; the
-    cross-driver level relationship lives in ``overlap_levels`` / the alignment
-    proposal). Keeps the surfaced JSON small. ``None`` for an empty window.
-    """
-    import numpy as np
-
-    mask = (freqs >= lo_hz) & (freqs <= hi_hz)
-    f = freqs[mask]
-    m = mag_db[mask]
-    if f.size == 0:
-        return None
-    if f.size > max_points:
-        targets = np.geomspace(f[0], f[-1], max_points)
-        idx = np.unique(np.searchsorted(f, targets).clip(0, f.size - 1))
-        f = f[idx]
-        m = m[idx]
-    m = m - float(np.max(m))
-    return {
-        "freqs_hz": [round(float(x), 2) for x in f],
-        "mag_db": [round(float(x), 2) for x in m],
-    }
-
-
 def _overlap_band_levels(
     freqs,
     mag_db,
@@ -1049,7 +1004,6 @@ def analyze_driver_capture(
                 validity_floor_hz=None,
                 validity_floor_known=validity_known,
             ),
-            fr_curve=None,
             calibrated=calibrated,
             snr=None,
             gating=None,
@@ -1085,7 +1039,6 @@ def analyze_driver_capture(
                 validity_floor_hz=floor_hz,
                 validity_floor_known=validity_known,
             ),
-            fr_curve=_downsample_curve(freqs, mag_db),
             calibrated=calibrated,
             ambient=paired_ambient,
             gating=gating_block,
@@ -1172,7 +1125,6 @@ def analyze_driver_capture(
             validity_floor_hz=floor_hz,
             validity_floor_known=validity_known,
         ),
-        fr_curve=_downsample_curve(freqs, mag_db),
         calibrated=calibrated,
         snr=snr_block,
         ambient=paired_ambient,
@@ -1284,7 +1236,6 @@ def analyze_summed_crossover(
             mic_clipping=mic_clipping,
             quality=quality_dict,
             expect_null=expect_null,
-            fr_curve=None,
             calibrated=calibrated,
             snr=None,
             null_depth_capped=False,
@@ -1308,7 +1259,6 @@ def analyze_summed_crossover(
             mic_clipping=mic_clipping,
             quality=quality_dict,
             expect_null=expect_null,
-            fr_curve=None,
             calibrated=calibrated,
             ambient=paired_ambient,
             gating=gating_block,
@@ -1329,7 +1279,6 @@ def analyze_summed_crossover(
                 mic_clipping=mic_clipping,
                 quality=quality_dict,
                 expect_null=expect_null,
-                fr_curve=None,
                 calibrated=calibrated,
                 ambient=paired_ambient,
                 gating=gating_block,
@@ -1439,7 +1388,6 @@ def analyze_summed_crossover(
         mic_clipping=mic_clipping,
         quality=quality_dict,
         expect_null=expect_null,
-        fr_curve=_downsample_curve(freqs, mag_db),
         calibrated=calibrated,
         snr=snr_block,
         ambient=paired_ambient,

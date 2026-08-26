@@ -870,8 +870,9 @@ create a second retention system.
   does not perform baffle-step correction or splice the raw responses; that
   consumer is Lane B's next slice.
 
-  `acoustic.fr_curve` remains a peak-normalized display surface and must never
-  be treated as physical splice evidence. Existing driver repeat artifacts now
+  The stored `acoustic` block carries verdicts and band levels and no response
+  curve at all, so there is nothing there to mistake for physical splice
+  evidence. Existing driver repeat artifacts
   store a versioned `analysis_input` beside each immutable raw WAV: exact
   generated-sweep metadata, played excitation/level ledger, capture geometry,
   ambient duration, and a serial-free snapshot of the applied calibration

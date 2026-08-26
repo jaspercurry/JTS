@@ -1303,7 +1303,6 @@ def test_recorded_driver_record_is_the_repeat_aggregate(tmp_path: Path) -> None:
     # repeats leak into measurement state; that lives only in the bundle.
     for entry in record["repeats"]["per_repeat"]:
         assert "acoustic" not in entry
-        assert "fr_curve" not in entry
         assert set(entry) == {
             "index",
             "attempt",

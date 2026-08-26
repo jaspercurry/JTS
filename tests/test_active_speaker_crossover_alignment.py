@@ -472,11 +472,11 @@ def test_magnitude_only_proposal_unaffected_by_alignment_snr_gate():
 
 
 # ===========================================================================
-# analyze_driver_capture — calibration curve + surfaced FR (no arrival)
+# analyze_driver_capture — calibration flag (no arrival)
 # ===========================================================================
 
 
-def test_driver_capture_surfaces_fr_curve_and_calibrated_flag(tmp_path):
+def test_driver_capture_reports_the_calibrated_flag(tmp_path):
     sig, meta = _reference_sweep()
     ir = firwin(1023, 400, fs=SR).astype(np.float64)
     captured = fftconvolve(sig.astype(np.float64), ir)
@@ -488,12 +488,12 @@ def test_driver_capture_surfaces_fr_curve_and_calibrated_flag(tmp_path):
     )
     assert result.verdict == "present"
     assert result.calibrated is True
-    assert result.fr_curve is not None
-    assert len(result.fr_curve["freqs_hz"]) == len(result.fr_curve["mag_db"]) > 2
-    assert max(result.fr_curve["mag_db"]) == pytest.approx(0.0, abs=1e-6)
     d = result.to_dict()
     assert d["calibrated"] is True
     assert "arrival_s" not in d  # arrival removed (cross-capture timing not locked)
+    # The stored acoustic block carries verdicts and band levels, never a
+    # response curve: amplitudes are recomputed from the raw WAV.
+    assert "fr_curve" not in d
 
 
 def test_uncalibrated_driver_capture_is_not_marked_calibrated(tmp_path):
