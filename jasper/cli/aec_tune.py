@@ -117,11 +117,10 @@ Usage:
 from __future__ import annotations
 
 import argparse
-from contextlib import contextmanager
+import asyncio
 import logging
 import math
 import os
-import signal
 import socket
 import subprocess
 import sys
@@ -129,13 +128,17 @@ import tempfile
 import threading
 import time
 import wave
-from collections.abc import Iterator
 from pathlib import Path
-from types import FrameType
+from typing import Awaitable, Callable
 
 import numpy as np
 
+from jasper.active_speaker.volume_latch import (
+    READBACK_TOLERANCE_DB,
+    fader_matches,
+)
 from jasper.audio_measurement.correction_lane import popen_correction_play
+from jasper.camilla import CamillaController, CamillaUnavailable, primary_controller
 from jasper.env_load import merged_env_files
 from jasper.mics import xvf3800
 
@@ -161,9 +164,7 @@ MIN_APPLY_CONFIDENCE = 0.001
 MIN_SYS_DELAY = -64
 MAX_SYS_DELAY = 256
 PROCESS_EXIT_GRACE_SEC = 3.0
-VOLUME_READBACK_TOLERANCE_DB = 0.05
 SYSTEMCTL_TIMEOUT_SEC = 10.0
-CAMILLA_OPERATION_TIMEOUT_SEC = 5.0
 AUDIO_CONTROL_ERRORS = (
     OSError,
     RuntimeError,
@@ -191,28 +192,6 @@ class CamillaVolumeError(RuntimeError):
 
 class TuneError(RuntimeError):
     """Raised when a diagnostic cannot produce a trustworthy candidate."""
-
-
-@contextmanager
-def _bounded_sync_operation(label: str, timeout_sec: float) -> Iterator[None]:
-    """Hard-bound one synchronous hardware/client operation on Linux.
-
-    `jasper-aec-tune` is a foreground Pi CLI and executes on the main thread,
-    so SIGALRM is the one mechanism that can interrupt pycamilladsp calls even
-    when the underlying websocket has wedged. Restore any caller alarm on exit.
-    """
-
-    def _raise_timeout(_signum: int, _frame: FrameType | None) -> None:
-        raise TimeoutError(f"{label} timed out after {timeout_sec:g}s")
-
-    previous_handler = signal.getsignal(signal.SIGALRM)
-    signal.signal(signal.SIGALRM, _raise_timeout)
-    previous_timer = signal.setitimer(signal.ITIMER_REAL, timeout_sec)
-    try:
-        yield
-    finally:
-        signal.setitimer(signal.ITIMER_REAL, *previous_timer)
-        signal.signal(signal.SIGALRM, previous_handler)
 
 
 def _positive_channel_count(value: str) -> int:
@@ -292,80 +271,64 @@ def _select_mic_channel(
     return samples[:, channel_index].astype(np.float32)
 
 
-def _camilla_get_volume() -> float:
+async def _with_controller(
+    work: Callable[[CamillaController], Awaitable[float | None]],
+) -> float | None:
+    """Run one fader operation on a short-lived primary controller.
+
+    ``CamillaController`` is where the tree's ONE fader door lives, and it
+    brings its own bounds: a 2 s socket timeout per exchange, a 5 s composite
+    attempt budget that aborts a wedged websocket, and one transparent retry.
+    A CLI-local SIGALRM watchdog used to supply the first of those and none of
+    the rest, so this both closes the bypass and deletes the weaker guard
+    rather than keeping two.
+    """
+    controller = primary_controller()
     try:
-        from camilladsp import CamillaClient
-    except ImportError as exc:
-        raise CamillaVolumeError("camilladsp client is not available") from exc
-    c = CamillaClient("localhost", 1234)
-    connected = False
-    try:
-        with _bounded_sync_operation(
-            "CamillaDSP connect",
-            CAMILLA_OPERATION_TIMEOUT_SEC,
-        ):
-            c.connect()
-        connected = True
-        with _bounded_sync_operation(
-            "CamillaDSP main_volume read",
-            CAMILLA_OPERATION_TIMEOUT_SEC,
-        ):
-            volume = float(c.volume.main_volume())
+        return await work(controller)
+    except CamillaUnavailable as exc:
+        raise CamillaVolumeError(f"CamillaDSP is unreachable: {exc}") from exc
     finally:
-        if connected:
-            with _bounded_sync_operation(
-                "CamillaDSP disconnect",
-                CAMILLA_OPERATION_TIMEOUT_SEC,
-            ):
-                c.disconnect()
-    if not math.isfinite(volume):
+        await controller.close()
+
+
+def _camilla_get_volume() -> float:
+    async def read(controller: CamillaController) -> float | None:
+        return await controller.get_volume_db()
+
+    volume = asyncio.run(_with_controller(read))
+    if volume is None or not math.isfinite(volume):
         raise CamillaVolumeError(f"Camilla main_volume is not finite: {volume!r}")
-    return volume
+    return float(volume)
 
 
 def _camilla_set_volume(db: float) -> None:
+    """Set the main fader through the tree's one clamped door.
+
+    ``CamillaController.set_volume_db`` runs every write through
+    ``_coerce_main_volume_db``, so this path now sees the 0 dB ceiling that
+    ``devices.volume_limit`` states in the config. It did not before: this
+    module built its own ``CamillaClient`` and wrote ``set_main_volume``
+    directly, which made two hardware doors out of one clamp.
+
+    Still fail-closed on the readback, and the clamp makes that stricter
+    rather than looser — a request above the ceiling lands at the ceiling and
+    the confirm then refuses, instead of the caller believing a level the
+    speaker never played.
+    """
     if not math.isfinite(db):
         raise CamillaVolumeError(f"refusing non-finite Camilla volume: {db!r}")
-    try:
-        from camilladsp import CamillaClient
-    except ImportError as exc:
-        raise CamillaVolumeError("camilladsp client is not available") from exc
-    c = CamillaClient("localhost", 1234)
-    connected = False
-    try:
-        with _bounded_sync_operation(
-            "CamillaDSP connect",
-            CAMILLA_OPERATION_TIMEOUT_SEC,
-        ):
-            c.connect()
-        connected = True
-        with _bounded_sync_operation(
-            "CamillaDSP main_volume write",
-            CAMILLA_OPERATION_TIMEOUT_SEC,
-        ):
-            c.volume.set_main_volume(db)
-        with _bounded_sync_operation(
-            "CamillaDSP main_volume readback",
-            CAMILLA_OPERATION_TIMEOUT_SEC,
-        ):
-            actual = float(c.volume.main_volume())
-    finally:
-        if connected:
-            with _bounded_sync_operation(
-                "CamillaDSP disconnect",
-                CAMILLA_OPERATION_TIMEOUT_SEC,
-            ):
-                c.disconnect()
-    if not math.isfinite(actual):
+
+    async def write(controller: CamillaController) -> float | None:
+        await controller.set_volume_db(db)
+        return await controller.get_volume_db()
+
+    actual = asyncio.run(_with_controller(write))
+    if actual is None or not math.isfinite(actual):
         raise CamillaVolumeError(
             f"Camilla volume readback is not finite after setting {db:.2f} dB"
         )
-    if not math.isclose(
-        actual,
-        db,
-        rel_tol=0.0,
-        abs_tol=VOLUME_READBACK_TOLERANCE_DB,
-    ):
+    if not fader_matches(actual, db, tolerance_db=READBACK_TOLERANCE_DB):
         raise CamillaVolumeError(
             f"Camilla volume readback mismatch: wrote {db:.2f} dB, read {actual:.2f} dB"
         )
