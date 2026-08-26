@@ -34,6 +34,8 @@ from jasper.output_topology import (
     OutputTopology,
     OutputTopologyError,
     load_output_topology,
+    output_topology_mutation,
+    set_channel_identity_verified,
 )
 from jasper.output_hardware import (
     APPLE_USB_C_DONGLE_DEVICE_ID,
@@ -2171,15 +2173,10 @@ def _active_speaker_mono_topology_payload(
                 "kind": "mono",
                 "mode": "active_2_way",
                 "channels": [
-                    {
-                        "role": "woofer",
-                        "physical_output_index": 0,
-                        "identity_verified": True,
-                    },
+                    {"role": "woofer", "physical_output_index": 0},
                     {
                         "role": "tweeter",
                         "physical_output_index": 1,
-                        "identity_verified": True,
                         "startup_muted": True,
                         "protection_required": True,
                         "protection_status": protection_status,
@@ -2189,6 +2186,21 @@ def _active_speaker_mono_topology_payload(
         ],
         "routing": {"mono_group_id": "mono"},
     }
+
+
+def _confirm_channel_identity(group_id: str, *roles: str) -> None:
+    """Record the per-lane audition a save payload can no longer claim."""
+
+    with output_topology_mutation() as mutation:
+        topology = mutation.snapshot().topology
+        for role in roles:
+            topology = set_channel_identity_verified(
+                topology,
+                speaker_group_id=group_id,
+                role=role,
+                identity_verified=True,
+            )
+        mutation.save(topology)
 
 
 _ACTIVE_SPEAKER_STATE_FILENAMES = {
@@ -3047,6 +3059,7 @@ def test_active_speaker_crossover_preview_refreshes_current_output_topology(
     sound_setup._save_output_topology_payload(
         _active_speaker_mono_topology_payload(protection_status="required_missing")
     )
+    _confirm_channel_identity("mono", "woofer", "tweeter")
     refreshed = _save_active_speaker_design_and_preview()
 
     assert refreshed["status"] == "ready_for_protected_staging"
@@ -3080,6 +3093,7 @@ def test_active_speaker_summed_test_records_current_artifact(
     sound_setup._save_output_topology_payload(
         _active_speaker_mono_topology_payload(protection_status="present")
     )
+    _confirm_channel_identity("mono", "woofer", "tweeter")
     _save_active_speaker_design_and_preview()
     arm_safe_playback_session({
         "status": "pass",
@@ -3150,9 +3164,11 @@ def test_active_speaker_protection_and_stage_config_payloads_are_no_load(
         "JASPER_ACTIVE_SPEAKER_STAGED_METADATA_PATH",
     )
     monkeypatch.setenv("JASPER_ACTIVE_SPEAKER_PLAYBACK_DEVICE", "hw:DAC8,0")
-    saved = sound_setup._save_output_topology_payload(
+    sound_setup._save_output_topology_payload(
         _active_speaker_mono_topology_payload(protection_status="required_missing")
     )
+    _confirm_channel_identity("mono", "woofer", "tweeter")
+    saved = sound_setup._output_topology_payload()
 
     preview_ready = _save_active_speaker_design_and_preview()
     staged = sound_setup._active_speaker_stage_config_payload({})
@@ -3193,6 +3209,7 @@ def test_active_speaker_path_safety_payload_writes_no_audio_evidence(
             protection_status="software_guard_requested",
         )
     )
+    _confirm_channel_identity("mono", "woofer", "tweeter")
     preview = _save_active_speaker_design_and_preview()
     staged = sound_setup._active_speaker_stage_config_payload({})
     fake = FakeCamilla(staged["config"]["path"])
@@ -4212,7 +4229,7 @@ def test_sound_output_topology_save_accepts_measured_dual_apple_hardware(
         path=tmp_path / "output_hardware.json",
     )
 
-    payload = sound_setup._save_output_topology_payload({
+    sound_setup._save_output_topology_payload({
         "artifact_schema_version": 1,
         "kind": OUTPUT_TOPOLOGY_KIND,
         "topology_id": "dual_apple_pair",
@@ -4226,15 +4243,10 @@ def test_sound_output_topology_save_accepts_measured_dual_apple_hardware(
                 "kind": "left",
                 "mode": "active_2_way",
                 "channels": [
-                    {
-                        "role": "woofer",
-                        "physical_output_index": 0,
-                        "identity_verified": True,
-                    },
+                    {"role": "woofer", "physical_output_index": 0},
                     {
                         "role": "tweeter",
                         "physical_output_index": 1,
-                        "identity_verified": True,
                         "startup_muted": True,
                         "protection_required": True,
                         "protection_status": "present",
@@ -4247,15 +4259,10 @@ def test_sound_output_topology_save_accepts_measured_dual_apple_hardware(
                 "kind": "right",
                 "mode": "active_2_way",
                 "channels": [
-                    {
-                        "role": "woofer",
-                        "physical_output_index": 2,
-                        "identity_verified": True,
-                    },
+                    {"role": "woofer", "physical_output_index": 2},
                     {
                         "role": "tweeter",
                         "physical_output_index": 3,
-                        "identity_verified": True,
                         "startup_muted": True,
                         "protection_required": True,
                         "protection_status": "present",
@@ -4268,6 +4275,9 @@ def test_sound_output_topology_save_accepts_measured_dual_apple_hardware(
             "main_right_group_id": "right",
         },
     })
+    _confirm_channel_identity("left", "woofer", "tweeter")
+    _confirm_channel_identity("right", "woofer", "tweeter")
+    payload = sound_setup._output_topology_payload()
 
     topology = payload["output_topology"]
 
@@ -4323,7 +4333,7 @@ def test_sound_output_topology_save_discloses_a_cross_child_speaker_group(
         path=tmp_path / "output_hardware.json",
     )
 
-    payload = sound_setup._save_output_topology_payload({
+    sound_setup._save_output_topology_payload({
         "artifact_schema_version": 1,
         "kind": OUTPUT_TOPOLOGY_KIND,
         "topology_id": "dual_apple_pair",
@@ -4341,13 +4351,11 @@ def test_sound_output_topology_save_discloses_a_cross_child_speaker_group(
                         "role": "woofer",
                         # Output 1 belongs to the left dongle...
                         "physical_output_index": 0,
-                        "identity_verified": True,
                     },
                     {
                         "role": "tweeter",
                         # ...and output 3 belongs to the right one.
                         "physical_output_index": 2,
-                        "identity_verified": True,
                         "startup_muted": True,
                         "protection_required": True,
                         "protection_status": "present",
@@ -4357,8 +4365,9 @@ def test_sound_output_topology_save_discloses_a_cross_child_speaker_group(
         ],
         "routing": {"mono_group_id": "mono"},
     })
+    _confirm_channel_identity("mono", "woofer", "tweeter")
 
-    topology = payload["output_topology"]
+    topology = sound_setup._output_topology_payload()["output_topology"]
     verdicts = [
         issue for issue in topology["evaluation"]["warnings"]
         if issue["code"] == CROSS_CHILD_GROUP_CODE
@@ -4483,11 +4492,7 @@ def test_sound_output_topology_save_validates_and_persists_complete_contract(
                     "kind": "left",
                     "mode": "full_range_passive",
                     "channels": [
-                        {
-                            "role": "full_range",
-                            "physical_output_index": 0,
-                            "identity_verified": True,
-                        }
+                        {"role": "full_range", "physical_output_index": 0}
                     ],
                 }
             ],
@@ -4495,7 +4500,9 @@ def test_sound_output_topology_save_validates_and_persists_complete_contract(
         }
     }
 
-    payload = sound_setup._save_output_topology_payload(raw)
+    sound_setup._save_output_topology_payload(raw)
+    _confirm_channel_identity("left", "full_range")
+    payload = sound_setup._output_topology_payload()
     topology = payload["output_topology"]
     saved = json.loads(path.read_text(encoding="utf-8"))
 
