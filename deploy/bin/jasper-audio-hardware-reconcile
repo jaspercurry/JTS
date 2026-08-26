@@ -674,9 +674,9 @@ DUAL_APPLE_DAC_A_PCM=""
 DUAL_APPLE_DAC_B_PCM=""
 DUAL_APPLE_ORDER_SOURCE=""
 # The endpoint device `active_graph_status` reports for an accepted composite
-# graph — the SECOND field of its payload, which this branch used to discard.
+# graph — the SECOND field of its payload.
 # Empty means "no endpoint field", which set_outputd_active_lane_pair reads as
-# NO ring marker (fail closed by positive equality). P8b item 1f.
+# NO ring marker (fail closed by positive equality).
 DUAL_APPLE_ACTIVE_ENDPOINT_DEVICE=""
 
 detect_roles() {
@@ -748,11 +748,10 @@ for child in mapping.child_devices:
     # sink is rigidly 4-channel in outputd regardless, so the dual branch needs
     # the gate's pass/fail and its ENDPOINT DEVICE, but not the returned width.
     #
-    # THE ENDPOINT FIELD USED TO BE DISCARDED (P8b item 1f). While a composite
-    # could not ride the ACTIVE ring there was nothing to do with it; now that it
-    # can, throwing the second field away is what would keep every composite
-    # unarmable no matter what the Python preflights admit — the marker
-    # `active_ring_endpoint_proof` demands is derived from exactly this device.
+    # THE ENDPOINT FIELD MUST NOT BE DISCARDED: throwing the second field away
+    # is what would keep every composite unarmable no matter what the Python
+    # preflights admit — the marker `active_ring_endpoint_proof` demands is
+    # derived from exactly this device.
     if ! graph_status="$(active_graph_status 4)"; then
         OUTPUT_DAC_ID="dual_apple_usb_c_dac_4ch"
         OUTPUT_DAC_CARD=""
@@ -1044,12 +1043,11 @@ PY
 # for. Prints nothing when the coupling probe could not answer, which the caller
 # reads as "leave the key alone" rather than "write a guess".
 #
-# There is no per-bridge narrowing here any more. The i16-only `rate_match`
-# content bridge — the one bridge that could not accept the coupling's own
-# width — was deleted; a persisted `rate_match` value now fail-safes to
-# `direct` inside outputd (see REMOVED_RATE_MATCH_BRIDGE_SPELLINGS in
-# rust/jasper-outputd/src/config.rs), so the reconciler can no longer construct
-# a pair outputd would reject.
+# There is no per-bridge narrowing here: no surviving bridge refuses the
+# coupling's own width, and a persisted deleted spelling fail-safes to `direct`
+# inside outputd (see REMOVED_RATE_MATCH_BRIDGE_SPELLINGS in
+# rust/jasper-outputd/src/config.rs), so the reconciler cannot construct a pair
+# outputd would reject.
 resolved_content_format() {
     content_format_for_coupling
 }
@@ -1595,10 +1593,8 @@ apply_audio_runtime_env() {
         set_env_file_var_if_changed "$OUTPUTD_ENV_TARGET_FILE" "JASPER_OUTPUTD_SINK" "dual_apple" && changed=1
         # NO CONTENT PCM. A composite sink is roleful, and a roleful box reaches
         # outputd over the ACTIVE RING, which outputd reads as a FILE — it opens
-        # no content PCM at all. This used to write the snd-aloop ACTIVE lane's
-        # capture half, a PCM #2534 deleted, so every composite box carried a
-        # name nothing could open. Explicit-empty rather than left alone, so a
-        # box that previously ran with the deleted name converges instead of
+        # no content PCM at all. Explicit-empty rather than left alone, so a box
+        # carrying a stale name converges instead of
         # keeping it: outputd's own parse refuses an undeclared content PCM on
         # the direct bridge (config.rs) and skips it entirely on the ring.
         set_env_file_var_if_changed "$OUTPUTD_ENV_TARGET_FILE" "JASPER_OUTPUTD_CONTENT_PCM" "" && changed=1
@@ -1705,8 +1701,7 @@ apply_audio_runtime_env() {
             OUTPUTD_ACTIVE_CHANNELS="$active_channels"
             # NO CONTENT PCM — same reason as the composite branch above: an
             # ACTIVE single-ALSA box is roleful, so it reaches outputd over the
-            # ACTIVE RING and outputd opens no content PCM. The snd-aloop lane
-            # this used to name was deleted by #2534.
+            # ACTIVE RING and outputd opens no content PCM.
             set_env_file_var_if_changed "$OUTPUTD_ENV_TARGET_FILE" "JASPER_OUTPUTD_CONTENT_PCM" "" && changed=1
             set_env_file_var_if_changed "$OUTPUTD_ENV_TARGET_FILE" "JASPER_OUTPUTD_ACTIVE_CHANNELS" "$active_channels" && changed=1
             # Belt-and-suspenders for the latent outputd-TTS-mixer hazard: an

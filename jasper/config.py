@@ -318,9 +318,9 @@ class Config:
     # costs the user a ~3 s `cant_connect` cue on the next wake. The
     # watchdog tears down voluntarily at `(session_max_sec -
     # proactive_buffer_sec)` so the reconnect lands in an idle window.
-    # Two values, not one, so OpenAI raising the cap (it went 30→60 in
-    # 2025) only requires bumping `session_max_sec` — the safety buffer
-    # ("how much margin we want") stays correct. Set either to 0 to
+    # Two values, not one, so OpenAI raising the cap only requires
+    # bumping `session_max_sec` — the safety buffer ("how much margin
+    # we want") stays correct. Set either to 0 to
     # disable. Gemini handles this server-side via GoAway + resumption
     # handle, so no equivalent knob is needed there.
     openai_session_max_sec: int

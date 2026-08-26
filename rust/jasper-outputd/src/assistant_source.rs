@@ -5,10 +5,9 @@
 //! The real assistant-audio render/gain engine, plus the DAC-write sink
 //! `OutputCore` calls unconditionally each period.
 //!
-//! Both used to live in `fake.rs` under `Fake*` names — misleading for
-//! `AssistantSource` (renamed here; formerly `FakeAssistantSource`), which is
-//! not a test double at all: it is the per-period gain-ramp/mute/reference
-//! render path `OutputCore` runs on every real assistant reply, on both the
+//! `AssistantSource` is not a test double despite the `Fake*` company it keeps
+//! here: it is the per-period gain-ramp/mute/reference render path
+//! `OutputCore` runs on every real assistant reply, on both the
 //! ALSA daemon path (`OutputCore::new_for_daemon`, `main.rs::run_alsa`) and
 //! the safe-developer-run path (`main.rs::run_fake`).
 //!

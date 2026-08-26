@@ -8,10 +8,9 @@
 //! `jasper-voice` (client) to whichever daemon owns assistant playout:
 //! `jasper-fanin` on a solo speaker, `jasper-outputd` on a bonded
 //! multiroom member (HANDOFF-multiroom.md Increment 5 PR-2). Both
-//! daemons previously carried byte-twin copies of this layer; this crate
-//! is the extraction that makes wire drift impossible — the parser,
-//! command vocabulary, and the SEGMENT_START profile types are defined
-//! once and consumed by both ends.
+//! daemons consume this one crate, which makes wire drift impossible —
+//! the parser, command vocabulary, and the SEGMENT_START profile types
+//! are defined once and consumed by both ends.
 //!
 //! It also owns the shared K-weighted assistant loudness policy used by
 //! fan-in and outputd. Queueing policy, epochs, metrics, the per-daemon

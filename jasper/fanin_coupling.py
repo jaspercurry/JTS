@@ -21,19 +21,11 @@ CamillaDSP's capture. Two transports:
 This module is import-cheap (stdlib only) so socket-activated web surfaces and
 the config emitters can resolve the coupling without pulling in NumPy/SciPy.
 
-**Removed 2026-07-11 — the ``transport_pipe`` coupling.** A third transport
-(fan-in → bounded named pipe → CamillaDSP ``RawFile`` capture → File playback
-pipe → outputd) was a default-off lab path for low latency. It was never
-selected by ``--auto`` (which resolves only ``shm_ring`` / ``loopback``) and was
-hardware-demoted 2026-07-01 (the 16 KiB Pi kernel page floor made its FIFOs too
-deep); ``shm_ring`` now ships as the frame-bounded default that replaced its
-diagnostic value. It has been deleted (fan-in ``Output::Fifo`` + ``fifo.rs``,
-outputd ``local_content_pipe``, the reconciler arm/gate branches, doctor
-validation, and the ``JASPER_FANIN_CAMILLA_PIPE`` /
-``JASPER_OUTPUTD_LOCAL_CONTENT_PIPE`` env keys). A persisted
-``JASPER_FANIN_CAMILLA_COUPLING=transport_pipe`` now FAILS SAFE to ``loopback``
-via :func:`resolve_coupling`, and the ``--auto`` reconciler converges it loudly
-(see :func:`coupling_value_removed` and
+The ``transport_pipe`` coupling and its ``JASPER_FANIN_CAMILLA_PIPE`` /
+``JASPER_OUTPUTD_LOCAL_CONTENT_PIPE`` env keys were deleted (git history holds
+them). A persisted ``JASPER_FANIN_CAMILLA_COUPLING=transport_pipe`` FAILS SAFE
+to ``loopback`` via :func:`resolve_coupling`, and the ``--auto`` reconciler
+converges it loudly (see :func:`coupling_value_removed` and
 ``jasper.fanin.coupling_reconcile.reconcile_auto``).
 """
 
@@ -62,7 +54,7 @@ COUPLING_SHM_RING = "shm_ring"
 # The recognized coupling tokens. Public so other planners (e.g.
 # ``jasper.audio_runtime_plan``) can reuse this SSOT instead of re-listing the
 # tokens and drifting when a new lab coupling lands. Any value NOT in this set
-# (a typo, or the removed ``transport_pipe``) fails safe to loopback — see
+# (a typo, or a deleted token) fails safe to loopback — see
 # :func:`resolve_coupling` and :func:`coupling_value_removed`.
 # ``_VALID_COUPLINGS`` stays as the backward-compatible private alias.
 VALID_COUPLINGS = frozenset({COUPLING_LOOPBACK, COUPLING_SHM_RING})
@@ -575,10 +567,10 @@ def resolve_coupling(raw: str | None) -> str:
     """Normalize a raw ``JASPER_FANIN_CAMILLA_COUPLING`` value to a transport.
 
     Fail-SAFE to ``loopback`` (the byte-identical-to-today path) on unset, empty,
-    or any unrecognized value — a typo in the env file, or the REMOVED
-    ``transport_pipe`` token on a migrating box, must never silently flip the
-    shared realtime capture to a transport the operator did not intend, nor crash
-    a config emit. The Rust daemon applies the same normalization so both sides
+    or any unrecognized value — a typo in the env file, or a deleted token on a
+    migrating box, must never silently flip the shared realtime capture to a
+    transport the operator did not intend, nor crash a config emit. The Rust
+    daemon applies the same normalization so both sides
     agree on every recognized token (``loopback`` / ``shm_ring``).
     Case-insensitive; surrounding whitespace ignored.
     """
@@ -593,9 +585,9 @@ def resolve_coupling(raw: str | None) -> str:
 def coupling_value_removed(raw: str | None) -> bool:
     """True iff a persisted coupling value is present but NOT a recognized token.
 
-    Catches both a typo and the REMOVED ``transport_pipe`` coupling (deleted
-    2026-07-11). Such a value fails safe to ``loopback`` in :func:`resolve_coupling`;
-    the ``--auto`` reconciler uses this predicate to converge the box to loopback
+    Catches both a typo and a coupling token that has since been deleted. Such
+    a value fails safe to ``loopback`` in :func:`resolve_coupling`; the
+    ``--auto`` reconciler uses this predicate to converge the box to loopback
     with a loud ``event=…result=removed_coupling_failsafe`` line (so a migrating
     box never silently keeps a deleted mode), and the doctor surfaces it. An
     unset / empty value is NOT "removed" — it is the ordinary loopback default.
@@ -672,8 +664,8 @@ def resolve_outputd_content_bridge(raw: str | None) -> str:
     Rust daemon's (``config.rs``): ``direct`` (loopback's partner) and
     ``shm_ring`` (Ring B). Case-insensitive; surrounding whitespace ignored.
 
-    The REMOVED ``rate_match`` lab bridge lands here as an unrecognized value
-    and resolves ``direct``, matching the daemon's own fail-safe arm
+    A deleted bridge spelling lands here as an unrecognized value and resolves
+    ``direct``, matching the daemon's own fail-safe arm
     (``REMOVED_RATE_MATCH_BRIDGE_SPELLINGS``). Do NOT reach for this resolver
     where a *policy* must reject a stale value: the route-latency policy in
     :mod:`jasper.audio_runtime_plan` compares the RAW literal precisely so this
@@ -773,8 +765,8 @@ def capture_kwargs_for_coupling(raw: str | None) -> dict[str, object]:
       ``capture_device`` / ``capture_format`` defaults emit the dsnoop ALSA
       capture — **byte-identical** to today. This empty-dict contract is what
       keeps every existing caller unchanged when the flag is unset. Any
-      unrecognized value (a typo, or the removed ``transport_pipe``) resolves to
-      ``loopback`` here too.
+      unrecognized value (a typo, or a deleted token) resolves to ``loopback``
+      here too.
 
     - ``shm_ring`` (Ring A + Ring B): returns the FULL end-to-end ring topology
       kwargs — the CamillaDSP capture device ``jts_ring_capture`` (Ring A, fan-in

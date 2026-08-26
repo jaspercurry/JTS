@@ -1489,12 +1489,11 @@ class GeminiLiveConnection:
                 #     the user is done). Any turn_complete arriving
                 #     here is the prior turn's belated ack — pop it
                 #     but DO NOT mark the active turn as completed.
-                #     This is the bugfix: previously a belated
-                #     turn_complete from turn N-1 (typically arriving
-                #     30 ms after we sent activity_start for turn N)
-                #     was routed to turn N, setting
-                #     server_turn_complete=True and causing the idle
-                #     watchdog to close turn N 1.5 s later — before
+                #     A belated turn_complete from turn N-1 typically
+                #     arrives 30 ms after we send activity_start for
+                #     turn N; routing it to turn N would set
+                #     server_turn_complete=True and let the idle
+                #     watchdog close turn N 1.5 s later — before
                 #     turn N's real response could land.
                 #   unack >  1  → multiple turns are pending. Same
                 #     stale treatment as the unack==1+!ended case.

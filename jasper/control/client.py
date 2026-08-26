@@ -10,8 +10,7 @@ volume / source / mic / AEC / cue / state endpoints — its route table in
 daemons and CLIs talk to it, so this is the ONE place that owns the base
 URL, the timeout policy, the transport, and the error model. Call sites use
 methods here instead of each re-deriving ``http://127.0.0.1:8780`` + a
-urllib/httpx block (which previously scattered the base URL across ~8 files
-with per-site timeouts and error handling).
+urllib/httpx block with its own timeout and error handling.
 
 Transport is stdlib only on purpose: jasper-control is always localhost with
 no TLS, so httpx's connection-pool / TLS / HTTP2 machinery is pure RAM tax on

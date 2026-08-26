@@ -223,61 +223,24 @@ def test_capture_page_version_contract_is_published_and_cache_busted():
     # Pi's build gate checks the stamp's FORMAT, not its value — so a phone
     # holding the previous bundle would be accepted silently. Bumping
     # version.json without bumping this is therefore a shipping hazard, not a
-    # cosmetic mismatch: that is what this pairing exists to catch, and what it
-    # caught for the flat-linearization PR-3b page fix.
+    # cosmetic mismatch: that is what this pairing exists to catch.
     assert "main.js?v=20260818-1" in index_html
     main_js = (_REPO / "capture-page/js/main.js").read_text(encoding="utf-8")
+    # Every import stamp below must move whenever that module's content moves,
+    # and the move must CASCADE to each module that imports it — otherwise a
+    # warm-cache phone pairs the new main.js with an old module and either
+    # silently loses the feature or fails to boot at all.
     assert 'from "./render.js?v=20260802-1"' in main_js
-    # Bumped with #2094: the recorder worklet now reports the frame count the
-    # host's end-to-end ledger compares against. A warm-cache phone holding the
-    # old module would declare no count, which grades as not-evaluated — the
-    # ledger would look like it shipped while checking nothing.
-    #
-    # Bumped again with #2557: the module's own account of what `silent_blocks`
-    # can and cannot witness was wrong, and the counter it names is the one the
-    # new zero-run scan compensates for.
     assert 'from "./measurement-audio.js?v=20260815-4"' in main_js
-    # Same bump, same reason, for the module that puts those counts on the wire
-    # — and, since #2557, the one that scans the assembled capture for the
-    # zero-filled render quantum. A warm-cache phone holding the old module
-    # sends no zero-run keys at all, which reads as "not scanned" and would
-    # quietly turn a shipped detector back into no detector.
-    #
-    # Bumped again for phase B: the module now also owns the predicate that
-    # decides whether a witnessed run is the SPLICE worth spending an attempt
-    # on. Had this stamp not moved, a warm-cache phone would pair the NEW
-    # main.js with the OLD module, which exports no such predicate — a module
-    # resolution error, so the page would not boot at all rather than merely
-    # losing a feature.
     assert 'from "./capture-integrity.js?v=20260815-5"' in main_js
-    # Bumped with #1941 R4: constraints.js's realized-constraint describe()
-    # feeds household copy, so a warm-cache browser holding the old module
-    # would keep attributing the browser's own track settings to the
-    # microphone — the exact misattribution this sweep removed.
     assert 'from "./constraints.js?v=20260731-1"' in main_js
-    # Bumped with P0.3: relay-client.js owns the serialized, session-persistent
-    # authenticated event sequence. A warm-cache phone holding the old module
-    # could still race or restart the counter after a reload.
     assert 'from "./relay-client.js?v=20260808-1"' in main_js
-    # Both modules changed in the protocol-deletion PR, and both carry a
-    # SECURITY tightening (mandatory spec MAC; a version-less spec is refused
-    # rather than read as legacy protocol 1). An unstamped or stale-stamped
-    # import means a warm-cache phone keeps the permissive module — the
-    # tightening silently would not take effect. capture-protocol.js had no
-    # stamp at all before this PR.
+    # These two carry a SECURITY tightening (mandatory spec MAC; a version-less
+    # spec is refused rather than read as legacy protocol 1), so a stale stamp
+    # means a warm-cache phone keeps the permissive module.
     assert 'from "./capture-protocol.js?v=20260727-1"' in main_js
     assert 'from "./transport-integrity.js?v=20260727-1"' in main_js
-    # Bumped with #1975: level-events.js's OWN import of measurement-audio.js
-    # was stuck at the stale ?v=20260630-1 while main.js and ambient-stats.js
-    # both moved on to ?v=20260711-4 — three importers, two cache keys for one
-    # module, so a warm cache could hold two different copies of
-    # measurement-audio.js in the same page load. Fixed by converging
-    # level-events.js on the current stamp; level-events.js's own content
-    # changed, so every place that imports IT (here, and ambient-stats.js)
-    # bumps too, or a warm-cache phone would keep the stale import forever.
-    # Both bumped again with #2094 by the same cascade: each imports
-    # measurement-audio.js, so each one's own content moved when that stamp did.
-    # #2557 is the same cascade a third time.
+    # Both import measurement-audio.js, so both stamps ride its cascade.
     assert 'from "./level-events.js?v=20260815-4"' in main_js
     assert 'from "./ambient-stats.js?v=20260815-4"' in main_js
     assert 'cp "${HERE}/version.json" "${DIST}/version.json"' in build_sh
@@ -1505,12 +1468,11 @@ def test_capture_page_names_the_device_instead_of_ambiguous_this_page():
 
 
 def test_crossover_candidate_review_collapses_provenance_hashes():
-    """PHONE-4: renderCandidateReview() lives in the Pi-served /correction/
-    crossover wizard (deploy/assets/correction/js/crossover/main.js), not
-    capture-page/ — the reviewer's cited surface is what actually renders the
-    candidate to the household. The raw fingerprint + alignment confidence move
-    behind a collapsed <details> disclosure; the plain-language trims / delay /
-    polarity rows stay primary (W6.10 blocker #2 reworked the shape)."""
+    """renderCandidateReview() lives in the Pi-served /correction/ crossover
+    wizard (deploy/assets/correction/js/crossover/main.js), not capture-page/ —
+    that file is what actually renders the candidate to the household. The raw
+    fingerprint + alignment confidence sit behind a collapsed <details>
+    disclosure; the plain-language trims / delay / polarity rows stay primary."""
     crossover_js = (
         _REPO / "deploy/assets/correction/js/crossover/main.js"
     ).read_text(encoding="utf-8")
@@ -1630,8 +1592,8 @@ def test_capture_page_plan_loop_timeouts_are_terminal_not_stale_retries():
 
 
 def test_capture_page_plan_loop_post_arm_errors_are_terminal_pre_arm_retries():
-    """S1 (adversarial review of this PR): runPlanCapture's generic catch-all
-    used to leave the previous "Next measurement"/"Try again" button live and
+    """runPlanCapture's generic catch-all used to leave the previous
+    "Next measurement"/"Try again" button live and
     bound to the SAME (index, attempt) already posted — a re-tap after e.g. a
     transient putBlob failure posts a begin the Pi refuses (begin_replayed /
     out_of_order → session-ending CaptureFailed), or worse re-records a

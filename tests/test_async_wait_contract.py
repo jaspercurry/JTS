@@ -49,7 +49,7 @@ from ._async_wait import DEFAULT_SIGNAL_TIMEOUT_S, wait_signalled
 #: first. Fix with `wait_signalled()` and DELETE the entry — the guard
 #: fails on a stale entry too, so this only ever shrinks. Never add.
 #:
-#: The 2026-08-02 tranche emptied this (was 41). Even a racing-producer
+#: Even a racing-producer
 #: site with no single task nameable as `wait_signalled`'s `producer=` —
 #: test_concurrent_device_operations_share_one_recovered_bus's pair_task
 #: vs. connect_task — still migrates: `producer=` is optional, and the

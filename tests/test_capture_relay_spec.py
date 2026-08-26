@@ -894,8 +894,8 @@ def test_capture_plan_presence_is_decoupled_from_the_protocol():
     [
         (0, 4, "1..max_attempts"),
         (5, 4, "1..max_attempts"),
-        # Derived, never a literal: the ceiling moved 8 -> 32 for multi-position
-        # capture plans and a hardcoded bound would have silently gone stale.
+        # Derived, never a literal: a hardcoded bound goes silently stale the
+        # next time the ceiling moves.
         (3, spec_mod.MAX_CAPTURE_PLAN_ATTEMPTS + 1, "<= "),
         (True, 4, "integer"),
         (3, None, "integer"),

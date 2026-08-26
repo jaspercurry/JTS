@@ -26,8 +26,7 @@ pub struct MixStats {
 /// Sum the content and assistant periods into `out`, clamping to the spine's
 /// rails and counting every sample the clamp had to move.
 ///
-/// Formerly `mix_i16_saturating`; the name lost its `_i16` because the mix now
-/// happens at the program spine's width, upstream of the single edge
+/// The mix happens at the program spine's width, upstream of the single edge
 /// quantization. `saturating_add` on the i64 accumulator is belt over the width
 /// argument above — two i32 operands cannot overflow i64 — kept because a silent
 /// wrap here is the one failure mode that would be catastrophic rather than
@@ -58,7 +57,7 @@ mod tests {
     use super::*;
 
     /// One S16 sample at the program spine's scale — the same conversion ingest
-    /// applies, so these fixtures read as the S16 values they used to be.
+    /// applies, so these fixtures read as plain S16 values.
     fn w(sample: i16) -> ProgramSample {
         jasper_resampler::widen_i16_to_i32(sample)
     }

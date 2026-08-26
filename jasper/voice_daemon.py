@@ -410,9 +410,9 @@ CAPTURE_RING_FRAMES = int(
 # for this long AFTER they spoke. With manual VAD on the server
 # side, this marker is what actually closes the user's turn so the
 # model can respond. 0.8 s matches what mature open-source assistants
-# (Mycroft, Silero defaults, OpenAI Realtime, Vapi) cluster around;
-# was 1.2 s previously, dropped here to cut perceived "I stopped
-# talking → response starts" latency by ~400 ms. If we see premature
+# (Mycroft, Silero defaults, OpenAI Realtime, Vapi) cluster around,
+# and keeps perceived "I stopped talking → response starts" latency
+# low. If we see premature
 # `activity_end` fires (logs show speech being chopped during a
 # natural mid-sentence pause), nudge back up to 1.0 s.
 END_OF_UTTERANCE_SILENCE_SEC = 0.8

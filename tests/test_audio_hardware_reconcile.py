@@ -811,8 +811,7 @@ def test_reconcile_innomaker_arms_the_width_two_lane_on_a_legal_active_graph(
     outputd_env = (tmp_path / "outputd.env").read_text(encoding="utf-8")
     assert "JASPER_OUTPUTD_SINK=single_alsa" in outputd_env
     # #2285 P2 (A6): a ROLEFUL box reaches outputd over the ACTIVE RING, which
-    # outputd reads as a FILE — it opens no content PCM at all. This used to
-    # name the snd-aloop ACTIVE capture half, a PCM #2534 deleted. Written
+    # outputd reads as a FILE — it opens no content PCM at all. Written
     # EXPLICIT-EMPTY rather than omitted, so a box carrying the old value
     # converges instead of keeping it; the retired name is asserted ABSENT.
     assert "JASPER_OUTPUTD_CONTENT_PCM=''" in outputd_env
@@ -1294,14 +1293,10 @@ def test_reconcile_dual_apple_pins_pcm_order_from_saved_topology(
     # features by its channel width, so the reconciler does NOT set the 2-ch
     # WIDTH knob here — it stays cleared.
     assert "JASPER_OUTPUTD_ACTIVE_CHANNELS=''" in outputd_env
-    # #2285 P2: the lane PAIR is staged, because the accepted graph now names
-    # the ACTIVE RING. This used to assert the pair stayed cleared, which was
-    # only true while the fixture staged the snd-aloop composite — the shape the
-    # reconciler's own comment calls "an ALOOP composite keeps the unconditional
-    # clear". That shape no longer exists: the aloop ACTIVE endpoint is retired,
-    # so a composite with a legal active graph is a RING composite (jts.local,
-    # armed 2026-08-15). The two markers are one fact, so both are asserted —
-    # outputd bails at startup on an incoherent pair.
+    # The lane PAIR is staged, because the accepted graph names the ACTIVE
+    # RING: a composite with a legal active graph is a RING composite. The two
+    # markers are one fact, so both are asserted — outputd bails at startup on
+    # an incoherent pair.
     assert "JASPER_OUTPUTD_ACTIVE_LANE=1" in outputd_env
     assert "JASPER_OUTPUTD_RING_ACTIVE_ENDPOINT=1" in outputd_env
     template = (tmp_path / "asoundrc.jasper.template").read_text(encoding="utf-8")
@@ -2072,8 +2067,7 @@ def test_reconcile_dac8x_active_graph_wide_profile_emits_that_width(tmp_path: Pa
     assert "JASPER_OUTPUTD_BACKEND=alsa" in outputd_env
     assert "JASPER_OUTPUTD_SINK=single_alsa" in outputd_env
     # #2285 P2 (A6): a ROLEFUL box reaches outputd over the ACTIVE RING, which
-    # outputd reads as a FILE — it opens no content PCM at all. This used to
-    # name the snd-aloop ACTIVE capture half, a PCM #2534 deleted. Written
+    # outputd reads as a FILE — it opens no content PCM at all. Written
     # EXPLICIT-EMPTY rather than omitted, so a box carrying the old value
     # converges instead of keeping it; the retired name is asserted ABSENT.
     assert "JASPER_OUTPUTD_CONTENT_PCM=''" in outputd_env
@@ -2105,8 +2099,7 @@ def test_reconcile_dac8x_active_graph_two_way_drives_only_two(tmp_path: Path):
     outputd_env = (tmp_path / "outputd.env").read_text(encoding="utf-8")
     assert "JASPER_OUTPUTD_SINK=single_alsa" in outputd_env
     # #2285 P2 (A6): a ROLEFUL box reaches outputd over the ACTIVE RING, which
-    # outputd reads as a FILE — it opens no content PCM at all. This used to
-    # name the snd-aloop ACTIVE capture half, a PCM #2534 deleted. Written
+    # outputd reads as a FILE — it opens no content PCM at all. Written
     # EXPLICIT-EMPTY rather than omitted, so a box carrying the old value
     # converges instead of keeping it; the retired name is asserted ABSENT.
     assert "JASPER_OUTPUTD_CONTENT_PCM=''" in outputd_env
@@ -2121,10 +2114,8 @@ def test_reconcile_dac8x_active_graph_two_way_drives_only_two(tmp_path: Path):
     # startup on an incoherent pair — so the same helper states both from the
     # same decision.
     #
-    # #2285 P2: the accepted endpoint is now the ACTIVE RING, the one legal
-    # ACTIVE endpoint, so this marker is SET rather than empty. It used to be
-    # explicitly empty here because the accepted endpoint was the snd-aloop
-    # ALSA lane, which no longer resolves.
+    # The accepted endpoint is the ACTIVE RING, the one legal ACTIVE endpoint,
+    # so this marker is SET rather than empty.
     assert "JASPER_OUTPUTD_RING_ACTIVE_ENDPOINT=1" in outputd_env
     assert (
         "mode=single_alsa_active active_channels=2 active_lane_cap=8 "
@@ -2150,8 +2141,7 @@ def test_reconcile_single_apple_active_graph_drives_width_two(tmp_path: Path):
     outputd_env = (tmp_path / "outputd.env").read_text(encoding="utf-8")
     assert "JASPER_OUTPUTD_SINK=single_alsa" in outputd_env
     # #2285 P2 (A6): a ROLEFUL box reaches outputd over the ACTIVE RING, which
-    # outputd reads as a FILE — it opens no content PCM at all. This used to
-    # name the snd-aloop ACTIVE capture half, a PCM #2534 deleted. Written
+    # outputd reads as a FILE — it opens no content PCM at all. Written
     # EXPLICIT-EMPTY rather than omitted, so a box carrying the old value
     # converges instead of keeping it; the retired name is asserted ABSENT.
     assert "JASPER_OUTPUTD_CONTENT_PCM=''" in outputd_env
@@ -2181,8 +2171,7 @@ def test_reconcile_active_leader_program_bake_uses_crossover_endpoint(
     outputd_env = (tmp_path / "outputd.env").read_text(encoding="utf-8")
     assert "JASPER_OUTPUTD_SINK=single_alsa" in outputd_env
     # #2285 P2 (A6): a ROLEFUL box reaches outputd over the ACTIVE RING, which
-    # outputd reads as a FILE — it opens no content PCM at all. This used to
-    # name the snd-aloop ACTIVE capture half, a PCM #2534 deleted. Written
+    # outputd reads as a FILE — it opens no content PCM at all. Written
     # EXPLICIT-EMPTY rather than omitted, so a box carrying the old value
     # converges instead of keeping it; the retired name is asserted ABSENT.
     assert "JASPER_OUTPUTD_CONTENT_PCM=''" in outputd_env
@@ -2194,10 +2183,8 @@ def test_reconcile_active_leader_program_bake_uses_crossover_endpoint(
     # startup on an incoherent pair — so the same helper states both from the
     # same decision.
     #
-    # #2285 P2: the accepted endpoint is now the ACTIVE RING, the one legal
-    # ACTIVE endpoint, so this marker is SET rather than empty. It used to be
-    # explicitly empty here because the accepted endpoint was the snd-aloop
-    # ALSA lane, which no longer resolves.
+    # The accepted endpoint is the ACTIVE RING, the one legal ACTIVE endpoint,
+    # so this marker is SET rather than empty.
     assert "JASPER_OUTPUTD_RING_ACTIVE_ENDPOINT=1" in outputd_env
     assert (
         "mode=single_alsa_active active_channels=2 active_lane_cap=8 "
@@ -2273,8 +2260,7 @@ def test_reconcile_active_graph_does_not_render_route_aliases(tmp_path: Path):
     assert result.returncode == 0, result.stderr
     outputd_env = (tmp_path / "outputd.env").read_text(encoding="utf-8")
     # #2285 P2 (A6): a ROLEFUL box reaches outputd over the ACTIVE RING, which
-    # outputd reads as a FILE — it opens no content PCM at all. This used to
-    # name the snd-aloop ACTIVE capture half, a PCM #2534 deleted. Written
+    # outputd reads as a FILE — it opens no content PCM at all. Written
     # EXPLICIT-EMPTY rather than omitted, so a box carrying the old value
     # converges instead of keeping it; the retired name is asserted ABSENT.
     assert "JASPER_OUTPUTD_CONTENT_PCM=''" in outputd_env

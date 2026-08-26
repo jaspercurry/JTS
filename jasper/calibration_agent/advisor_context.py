@@ -61,12 +61,9 @@ _PRIVATE_AUDIO_SENSITIVITIES = {"private_audio", "private_raw_audio"}
 # sensitivity: an artifact that carries room audio is still counted if its
 # sensitivity is ever written wrong.
 #
-# Four of the five entries here used to be `capture_audio` / `noise_audio` /
-# `repeat_audio` / `verify_audio` -- strings no writer in the tree emits. They
-# were the test fixtures' invented vocabulary, so the clause matched nothing
-# in production and read as coverage it did not have. Only `sensitivity` was
-# doing the work. `test_artifact_kind_vocabulary.py` now pins every member to
-# a kind something actually writes. (A verify capture is written as
+# Every member must be a kind some writer in the tree actually emits, or the
+# clause matches nothing in production and reads as coverage it does not have.
+# `test_artifact_kind_vocabulary.py` pins that. (A verify capture is written as
 # `raw_capture`: SessionArtifacts.record_raw_capture_artifact names only
 # noise and repeat, and defaults the rest.)
 _PRIVATE_AUDIO_KINDS = {

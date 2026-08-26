@@ -1204,8 +1204,8 @@ def _route_policy_errors(
     normalized_coupling = resolve_coupling(coupling)
     # RAW bridge value (lowercased) — NOT resolve_outputd_content_bridge, which
     # fail-safes ANY unrecognized bridge to `direct` and would hide it here. A
-    # box can still carry a stale literal in outputd.env — the REMOVED
-    # `rate_match` lab bridge, or a typo — and the route policy must refuse the
+    # box can still carry a stale literal in outputd.env — a deleted bridge
+    # spelling, or a typo — and the route policy must refuse the
     # low-latency claim on it rather than certify a box whose operator asked for
     # something else. So it compares the operator's literal value.
     # DO NOT "simplify" this to the resolver now that only two bridges parse:
@@ -1222,8 +1222,7 @@ def _route_policy_errors(
     # the artifact binder must accept it — the earlier
     # blanket "requires loopback + direct" would turn a ring-armed box's shipped
     # low-latency claim permanently red (gap 8). Any OTHER raw bridge literal
-    # stays rejected — including the removed `rate_match` lab transport, which
-    # failed the 2026-07-02 USB tuning and was deleted.
+    # stays rejected, deleted lab transports included.
     if normalized_coupling == COUPLING_SHM_RING and ring_pair_intent_is_coherent(
         normalized_coupling, raw_bridge
     ):
@@ -2401,15 +2400,15 @@ def fanin_coupling_capture_kwargs(
     None`` AND ``env is None``): we delegate to
     :func:`coupling_capture_kwargs_from_env` with ``env=None`` so it reads the
     persisted ``fanin.env`` SSOT (:func:`read_persisted_coupling`) rather than a
-    STALE ``os.environ``. This is the same ``os.environ``-stale class the #1158
-    Blocker-1 fix closed for the socket-activated wizards (``/sound/`` /
-    ``/correction/``) — but that fix lived inside
-    ``coupling_capture_kwargs_from_env``, and this helper previously synthesized
-    ``dict(os.environ)`` unconditionally, forcing the explicit-env branch and
-    defeating it on the CLI/install ``jasper-sound reconcile-current-dsp`` path
+    STALE ``os.environ``. This is the same ``os.environ``-stale class issue
+    #1158 closed for the socket-activated wizards (``/sound/`` /
+    ``/correction/``), but that fix lives inside
+    ``coupling_capture_kwargs_from_env``: synthesizing ``dict(os.environ)``
+    unconditionally here would force the explicit-env branch and defeat it on
+    the CLI/install ``jasper-sound reconcile-current-dsp`` path
     (which only ``load_env_files()``-hydrates via ``setdefault`` and is NOT the
     reconciler's pre-synced-env caller). On a loopback box a polluted
-    ``os.environ`` coupling then emitted a RING capture/playback config —
+    ``os.environ`` coupling then emits a RING capture/playback config —
     CamillaDSP crash-loops on a ring nobody writes (hardware-reproduced on
     jts.local). An EXPLICIT ``env`` mapping stays authoritative (no file read) for
     callers that want to pin the resolution deterministically — today only unit
@@ -2697,7 +2696,7 @@ def _resolve_outputd_content_buffer_int(
     # `outputd_latency_floor_actions` path does not thread fanin.env, so the coupling
     # is invisible there, but the outputd bridge is always in outputd.env. Uses the
     # fail-safe resolver so only a genuine `shm_ring` suppresses the policy: any
-    # other value (a garbage literal, or the removed `rate_match`) resolves
+    # other value (a garbage literal, or a deleted spelling) resolves
     # `direct`, which DOES open the content PCM, so the policy still applies.
     generated_bridge = resolve_outputd_content_bridge(
         _raw(generated_env, OUTPUTD_CONTENT_BRIDGE_KEY)

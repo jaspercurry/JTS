@@ -2,7 +2,7 @@
 #
 # SPDX-License-Identifier: Apache-2.0
 
-"""Cross-file pins for the SHM-ring geometry ACCEPT-SET (P3 review Nit 3).
+"""Cross-file pins for the SHM-ring geometry ACCEPT-SET.
 
 Several ring constants are declared independently in C and in two Rust crates
 and must stay in lockstep by hand:

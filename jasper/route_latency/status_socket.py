@@ -7,10 +7,9 @@
 Several route-latency surfaces need "connect to a JTS control socket, send
 ``STATUS\\n``, read the JSON reply to EOF, parse it, and confirm it's an
 object": the artifact writer (:mod:`jasper.cli.route_latency_artifact`) and the
-click/capture harness (:mod:`jasper.cli.route_latency_harness`). Both live in
-this subsystem and previously carried near-identical copies of the socket
-mechanic. This module owns the mechanic once; each caller keeps its OWN error
-policy on top, because they genuinely differ:
+click/capture harness (:mod:`jasper.cli.route_latency_harness`). This module
+owns that mechanic once; each caller keeps its OWN error policy on top,
+because they genuinely differ:
 
 * the artifact writer wants the exception to propagate so it can classify the
   failure (``live_fanin_status_unreadable:{type}``); it wraps this in a

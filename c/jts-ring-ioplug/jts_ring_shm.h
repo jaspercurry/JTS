@@ -69,7 +69,7 @@ _Static_assert(ATOMIC_LLONG_LOCK_FREE == 2,
 #define JTS_RING_MAX_SLOT_BYTES 65536u
 
 #define JTS_RING_MIN_SLOTS 2u
-// Ceiling raised 4 -> 16 (2026-07-02): CamillaDSP's playback BufferManager
+// Ceiling 16: CamillaDSP's playback BufferManager
 // negotiates buffer = next_pow2(max(3*chunksize, 4*min_period)) and then drives
 // its rate controller toward `target_level` frames of device delay. With
 // slot_frames pinned at 128 (the outputd DAC-period contract), n_slots is the

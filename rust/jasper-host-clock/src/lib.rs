@@ -3131,8 +3131,8 @@ mod tests {
     /// Ending the session while the probe never left AwaitLock is NOT an abort —
     /// no baseline was ever taken, so there is nothing to abort. `probe_result`
     /// stays as it was (None on a first session), and the neutral pitch write
-    /// still fires. This pins the review's Nit 3: the journal must not read
-    /// "result=aborted" for a probe that never started measuring.
+    /// still fires: the journal must not read "result=aborted" for a probe that
+    /// never started measuring.
     #[test]
     fn end_session_in_await_lock_does_not_mark_aborted() {
         let mut hc = HostClock::new(enabled_cfg());
@@ -3566,10 +3566,7 @@ mod tests {
     /// FILL mode (usbsink solo) settles on LOCK regardless of the `correction_ppm`
     /// field, which it never consults (there is no resampler; real usbsink Obs
     /// carries correction 0). Lock-only settle applies in both modes now; this
-    /// feeds a bogus railed −500 to prove FILL never reads it. (Formerly named
-    /// `fill_mode_settle_ignores_correction_rail_guard`, back when a
-    /// CORRECTION-only rail guard existed; the guard is gone, but FILL-mode
-    /// correction-obliviousness is still worth pinning.)
+    /// feeds a bogus railed −500 to prove FILL never reads it.
     #[test]
     fn fill_mode_settle_ignores_correction_field() {
         let mut hc = HostClock::new(enabled_cfg()); // ObsMode::Fill
@@ -3704,7 +3701,7 @@ mod tests {
         assert!(hc.status_fragment().contains("\"waiting_for_lock\":false"));
     }
 
-    /// `waiting_for_lock` is gated on a LIVE session (review Nit 4): `end_session`
+    /// `waiting_for_lock` is gated on a LIVE session: `end_session`
     /// parks the ladder in Probing/AwaitLock as its armed-for-next-session resting
     /// state, but with no session flowing the flag must read `false` — otherwise
     /// an enabled-but-idle box publishes `waiting_for_lock:true` forever, reading

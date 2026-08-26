@@ -1062,8 +1062,7 @@ async def test_record_flag_reason_with_pipe_character_preserved(
     """The label_notes format is `{iso_ts}|{reason}`, so a reason
     that itself contains a `|` could confuse a naive parser. We
     don't escape — the convention is split-on-first-pipe-only when
-    reading back. Document the behavior so reviewers know what to
-    expect."""
+    reading back."""
     await _seed_event(store, "evt-prior", "2026-05-23T19:00:00+00:00")
     await _seed_event(store, "evt-flag",  "2026-05-23T19:00:05+00:00")
     await store.record_flag(reason="said A|B|C as if")

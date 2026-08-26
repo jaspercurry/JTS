@@ -88,7 +88,7 @@
 //    target_level of 1536 frames ~= 32 ms, so observed occupancy sits ~12/16
 //    slots. n_slots MUST be >= ceil(target_level / period_frames) with
 //    headroom, or camilla's rate controller chases a target the reported delay
-//    can never reach (see the n_slots 4 -> 16 note in jts_ring_shm.h). The
+//    can never reach (see the n_slots ceiling note in jts_ring_shm.h). The
 //    SHIPPED default sits at the shallow end of that same rule:
 //    JTS_RING_DEFAULT_SLOTS (2) * 128 frames against target_level 128.
 //    Effective latency == the writer's target_level, not the ring depth.

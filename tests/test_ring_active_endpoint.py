@@ -2078,10 +2078,8 @@ def test_resolve_output_layout_answers_the_ring_without_reading_the_marker(
 #          -> jasper-audio-hardware-reconcile   (marker derives 1)
 #          -> jasper-fanin-coupling-reconcile shm_ring
 #
-# #2285 P2 deleted the ROLLBACK ordering that used to sit here. Its first rung
-# was `baseline-reemit --endpoint aloop`, which argparse now rejects, onto a
-# transport whose PCMs are deleted (#2534). Recovery is forward only, by
-# re-arming; a roleful box on `loopback` is parked, not rolled back.
+# There is no ROLLBACK ordering: recovery is forward only, by re-arming, and a
+# roleful box on `loopback` is parked, not rolled back.
 # --------------------------------------------------------------------------
 
 

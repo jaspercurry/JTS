@@ -1994,15 +1994,14 @@ mod tests {
         );
     }
 
-    /// **The wire guard that did not exist before the spine widened.**
+    /// **The :9891 reference-datagram wire guard.**
     ///
     /// The :9891 reference datagram is what `jasper-aec-bridge` parses as one
-    /// stereo S16 period — `period_frames * 2 channels * 2 bytes`. Nothing in this
-    /// repo asserted its length, and the byte helper that produced it used to be
-    /// type-adaptive: handed the (now i32) program period it would have emitted
+    /// stereo S16 period — `period_frames * 2 channels * 2 bytes`. A
+    /// type-adaptive byte helper handed the i32 program period would emit
     /// silently DOUBLE-length datagrams, with `mark_reference_udp_active(true)` and
-    /// every counter still reporting success. The AEC consumer would have
-    /// mis-framed every period and the only symptom would have been echo
+    /// every counter still reporting success. The AEC consumer would
+    /// mis-frame every period and the only symptom would be echo
     /// cancellation quietly getting worse.
     ///
     /// Two layers now stop that: `i16_bytes` is monomorphic so a spine slice does

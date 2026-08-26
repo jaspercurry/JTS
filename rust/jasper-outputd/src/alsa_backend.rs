@@ -166,9 +166,8 @@ fn baseline_relatch_decision(
 /// So a composite whose children will not link is a box whose recovery model
 /// does not hold, and it must keep the aloop transport until it does. This is
 /// deliberately NOT a flip of the global `JASPER_OUTPUTD_DUAL_REQUIRE_LINK`
-/// default: an unlinked composite on the loopback transport behaves exactly as
-/// it did before this change, because nothing about that box's behaviour
-/// changed. Only ARMING is gated.
+/// default: an unlinked composite on the loopback transport is unaffected.
+/// Only ARMING is gated.
 fn composite_ring_arm_link_ok(ring_armed: bool, linked: bool) -> bool {
     !ring_armed || linked
 }
@@ -555,11 +554,8 @@ pub struct AlsaBackend {
     /// takes the program spine straight through with no staging at all, and on an
     /// `S24_3Le` edge, which stages into [`Self::dac_pack_buf`] instead.
     ///
-    /// This is the inverse of what stood here before the i32 spine: the staging
-    /// used to be an `S32Le` edge's WIDENING buffer, because the program was i16
-    /// and the wide edge was the exception. Now the program is wide and the S16
-    /// edge is the one that converts — the same "only the mismatched edge pays"
-    /// rule, with the mismatch on the other side.
+    /// Only the mismatched edge pays: the program spine is wide, so the S16 edge
+    /// is the one that converts.
     dac_narrow_buf: Vec<i16>,
     /// Reused PACKING staging for an `S24_3Le` edge: one period as packed
     /// little-endian 24-bit BYTES, allocated once at open. Empty (zero bytes) at
@@ -1769,9 +1765,8 @@ impl PairedCompositeSink {
         // hazard and has not been changed here. It is reached from two callers,
         // not one — `AlsaBackend::read_content_period` (which `?`-propagates out
         // of the run loop exactly as this does) and the dac_content drain (which
-        // swallows) — so "the sibling's is swallowed" would be false. Scoping
-        // this PR to the composite is why it stayed as it was, not evidence that
-        // exit-1 is right for it.
+        // swallows) — so "the sibling's is swallowed" would be false. Its shape
+        // is not evidence that exit-1 is right for it.
         let content = final_sink_startup(self.content.as_ref().context(
             "outputd active content PCM was not opened (SHM-ring content source); \
              refusing to read a lane this sink does not hold",
@@ -2314,8 +2309,8 @@ fn configure_pcm(config: PcmConfig<'_>) -> Result<NegotiatedPcm> {
         // The COMPOSITE CHILDREN reach here on the same terms and with the same
         // scope: `jasper.output_hardware` hands the reconciler each child as a
         // raw `hw:CARD=<card>,DEV=<n>` alias, so a child's client edge is its
-        // hardware edge too, and until this PR neither child was checked at all
-        // — both simply asked for S16 and believed it.
+        // hardware edge too, and each child is checked rather than trusted to
+        // have honoured the S16 it asked for.
         let current = pcm
             .hw_params_current()
             .context("reading installed outputd DAC HwParams")?;
@@ -2329,11 +2324,8 @@ fn configure_pcm(config: PcmConfig<'_>) -> Result<NegotiatedPcm> {
         // role does — and read the scope of THIS claim just as honestly, because
         // the content lane's plumbing differs per build:
         //
-        // The ACTIVE lane no longer reaches this readback AT ALL. It used to be
-        // a raw `type hw` snd-aloop pair, where the client edge WAS the lane and
-        // this was a genuine second proof of what got installed; #2534 deleted
-        // those PCM definitions and #2285 P2 retired the endpoint, so an
-        // `active_content` role now arrives only over the ACTIVE RING, which
+        // The ACTIVE lane no longer reaches this readback AT ALL: an
+        // `active_content` role arrives only over the ACTIVE RING, which
         // opens no ALSA PCM here. The role token survives in this condition
         // because it is outputd's LANE-ROLE vocabulary — the ring lane still
         // carries that role — and because a future ALSA-backed active lane would
@@ -3278,8 +3270,8 @@ mod tests {
 
     #[test]
     fn dac_format_readback_rejects_an_edge_outside_the_vocabulary() {
-        // The sentinel is `FloatLE`, not the `S24LE` this used to use. `S24_3LE`
-        // is IN the vocabulary now, and a reader meeting `S24LE` beside it would
+        // The sentinel is `FloatLE`, not `S24LE`. `S24_3LE` is IN the
+        // vocabulary now, and a reader meeting `S24LE` beside it would
         // reasonably wonder whether the test was asserting the accepted 24-bit
         // width is rejected. `FloatLE` is unambiguously outside — outputd's
         // vocabulary is integer-only — so the assertion says what it means.

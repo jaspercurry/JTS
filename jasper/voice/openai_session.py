@@ -113,8 +113,8 @@ DAEMON_MIC_RATE_HZ = 16000
 #    supervisor reconnect — so the same DNS blip on the 61st minute
 #    looks the same as the same blip at boot.
 # 2. Budget exhaustion still raises ``RuntimeError``. systemd's
-#    ``Restart=on-failure`` (now correctly set, was ``on-watchdog``)
-#    + ``StartLimitBurst=20`` / ``StartLimitIntervalSec=300`` is the
+#    ``Restart=on-failure`` + ``StartLimitBurst=20`` /
+#    ``StartLimitIntervalSec=300`` is the
 #    outer loop: process exits non-zero, systemd waits ``RestartSec=5``,
 #    spawns a fresh process, gets another 10-minute budget.
 #

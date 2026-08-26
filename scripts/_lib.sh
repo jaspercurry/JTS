@@ -92,7 +92,7 @@ is_ipv4_host() {
 
 # Quote one value so it survives a remote shell (`ssh host "cmd $(shell_quote x)"`).
 # Single home for the helper — deploy-to-pi.sh and pi-run-diagnostic.sh
-# previously each carried their own copy.
+# both use it.
 shell_quote() {
     printf '%q' "$1"
 }

@@ -838,7 +838,7 @@ DUAL_APPLE_USB_C_DAC_4CH = DacProfile(
     # measurement that produced these values also found period 64 / buffer 128
     # producing bridge xruns, so the margin below 128 is known to be thin.
     # Item 6's on-box buffering-regime check owns confirming this on real
-    # hardware; it is called out in the PR body rather than assumed away.
+    # hardware.
     latency_floor=LatencyFloor(
         camilla_chunksize=256,
         camilla_target_level=1536,

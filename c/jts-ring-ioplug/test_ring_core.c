@@ -301,7 +301,7 @@ static void test_geometry_math_and_validation(void) {
     bad.n_slots = 1;
     CHECK(jts_ring_geometry_validate(&bad, &reason) != 0, "reject 1 slot");
     bad = g;
-    bad.n_slots = 17; // ceiling is 16 (raised 4 -> 16 on 2026-07-02)
+    bad.n_slots = 17; // ceiling is 16
     CHECK(jts_ring_geometry_validate(&bad, &reason) != 0, "reject 17 slots (> ceiling 16)");
     bad = g;
     bad.sample_format = 3; // neither S16LE (1) nor S32LE (2)
@@ -1832,10 +1832,10 @@ static void test_can_accept_semantics(void) {
 }
 
 static void test_deep_ring_16_slots(void) {
-    // 2026-07-02: the ceiling was raised 4 -> 16 so CamillaDSP's playback
-    // BufferManager gets an ALSA buffer (n_slots * period_frames = 16*128 =
-    // 2048 frames) that clears its negotiated buffer and target_level. Prove the
-    // core is correct at the new ceiling: geometry validates, file size is right,
+    // The 16-slot ceiling gives CamillaDSP's playback BufferManager an ALSA
+    // buffer (n_slots * period_frames = 16*128 = 2048 frames) that clears its
+    // negotiated buffer and target_level. Prove the core is correct at the
+    // ceiling: geometry validates, file size is right,
     // and publish/consume ping-pongs cleanly all the way to full and back.
     char path[256];
     tmp_path(path, sizeof(path), "deep16");

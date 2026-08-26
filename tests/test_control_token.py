@@ -91,9 +91,9 @@ def test_cli_enable_writes_0640_token(monkeypatch, tmp_path, capsys):
     rc = cli.main(["--enable"])
     assert rc == 0
     assert path.exists()
-    # WS1 Phase 3b-2: 0640 group jasper (was 0600) so the non-root
-    # jasper-control/jasper-web can read the gate token — an unreadable token
-    # fails safe to gate-OFF, silently disabling the mandatory gate.
+    # 0640 group jasper so the non-root jasper-control/jasper-web can read the
+    # gate token — an unreadable token fails safe to gate-OFF, silently
+    # disabling the mandatory gate.
     mode = stat.S_IMODE(os.stat(path).st_mode)
     assert mode == 0o640, f"expected 0640, got {oct(mode)}"
     token = path.read_text().strip()
@@ -218,10 +218,10 @@ def test_ensure_token_is_0640(monkeypatch, tmp_path):
     path = tmp_path / "control_token"
     monkeypatch.setattr(control_token, "TOKEN_FILE", str(path))
     control_token.ensure_token()
-    # WS1 Phase 3b-2: 0640 group jasper (was 0600). The non-root jasper-control
-    # may not OWN this file (StateDirectory recursive-chown can make the owner
-    # jasper-voice), and jasper-web reads it via canonical_page() — group read is
-    # what keeps the mandatory gate from silently fail-OFF'ing post-drop.
+    # 0640 group jasper. The non-root jasper-control may not OWN this file
+    # (StateDirectory recursive-chown can make the owner jasper-voice), and
+    # jasper-web reads it via canonical_page() — group read is what keeps the
+    # mandatory gate from silently fail-OFF'ing post-drop.
     mode = stat.S_IMODE(os.stat(path).st_mode)
     assert mode == 0o640, f"token file is {oct(mode)}, expected 0o640"
 

@@ -811,7 +811,7 @@ def _runtime_findings() -> _Findings:
                     continue
 
                 # Every panic-family construct on the line is checked
-                # independently, not exclusively (issue #1718 gate NIT 5):
+                # independently, not exclusively (issue #1718):
                 # a line combining an ALLOWLISTED .expect() with an
                 # UNREGISTERED assert used to short-circuit on the expect
                 # branch's `continue` before the assert branch ever ran,

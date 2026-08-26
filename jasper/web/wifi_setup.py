@@ -46,8 +46,8 @@ Security:
     system-connections/ at mode 0600 — we never touch those files.
   - PSKs are NEVER logged: the subprocess wrapper scrubs `password ***`.
   - HTTP, not HTTPS — matches the rest of the JTS wizard surface. The
-    PSK is the most sensitive thing we transmit; LAN-only deployment
-    posture is documented in the PR.
+    PSK is the most sensitive thing we transmit; the deployment posture
+    is LAN-only.
 """
 from __future__ import annotations
 

@@ -43,11 +43,9 @@ def test_fanin_delegates_underfill_floor_to_shared_resampler() -> None:
     fine. Pinning the body (not just "the helper is mentioned somewhere") is
     what fails if someone inlines the formula back.
 
-    This used to compare TWO owners — outputd's `content_bridge.rs` had the same
-    method. That bridge was deleted with the `rate_match` content bridge, so the
-    lane resampler is the only in-tree implementor left; `test_no_second_owner_
-    of_the_underfill_floor` below is what catches a new one appearing without
-    being added here.
+    The lane resampler is the only in-tree implementor of the floor;
+    `test_no_second_owner_of_the_underfill_floor` below is what catches a new
+    one appearing without being added here.
     """
     fanin_body = _without_whitespace(_function_body(_FANIN_RESAMPLER))
 

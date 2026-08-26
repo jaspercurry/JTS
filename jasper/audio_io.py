@@ -710,7 +710,7 @@ def _quantize_to_wire(arr, *, wide: bool):
     NARROW is preserved verbatim — ``np.clip(...).astype(np.int16)``, the same
     saturating truncate-toward-zero it has always been. Its bytes are a shipped
     contract; "the same thing but rounded" would be a different signal on every
-    box in the fleet for no reason this PR needs.
+    box in the fleet.
 
     WIDE scales to the i32 spine (``_SPINE_SCALE``, the exact 2^16 the Rust
     ``widen_i16_to_i32`` shifts by) and quantizes ROUND-TO-NEAREST saturating —
