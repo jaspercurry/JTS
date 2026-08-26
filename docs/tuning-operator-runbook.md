@@ -85,7 +85,12 @@ The session, end to end, from an SSH shell. Every step is an
 artifact-dependency refusal; there is no workflow engine to fight, so a step
 that refuses is telling you which artifact is missing.
 
-The four doors (alignment, topology, blend, driver) are cataloged in
+The four doors (alignment, topology, blend, driver) reach the session through
+the prescriber CLI **plus the session-open request body** — the doors are a
+prescription class, not a CLI verb. Blend and driver arrive at
+`jasper-crossover-prescriber stage`; alignment and topology arrive as
+request-body keys on `POST /crossover/v2/session` and are judged at session open
+(#2773). Both surfaces are cataloged in
 [`testing-tooling.md`](testing-tooling.md#crossover-prescriber-harness).
 
 1. **Orient.** `jasper-crossover-prescriber status` — declared / banked /
@@ -503,7 +508,8 @@ nothing durable · **mutating** = changes what the speaker plays ·
 (`jasper-angle-capture plan | stage | withdraw` declares one angle walk and banks
 it for the next session; `plan` resolves and prints without writing, `stage`
 writes, `withdraw` clears) and the **poses**
-(`scripts/run-crossover-round.py --per-position N` takes N captures at one pose;
+(`scripts/run-crossover-round.py --per-position N` takes N captures at one pose,
+so one mic movement answers more questions than one capture can;
 which pose each take was measured at is derived from the bank into
 `position_cycle.json`). Multiple DSP *configs* per position has a door but no
 wiring: republish-then-apply reaches a named prior config between takes, and

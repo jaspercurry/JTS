@@ -99,10 +99,12 @@ there once.
 support counts, confidence margins, tapered authority — beats a binary
 per-session verdict. The implementation is **deterministic decision tables fed
 by graded evidence**, extending the envelope min-composition pattern the code
-already uses: no Bayesian machinery, no inference engine. The measurement
-substrate gets foundation-grade investment, because wrong measurements poison
-every layer downstream of them; intervention layers get the 80/20 lens, and
-when the two pull against each other the substrate wins.
+already uses. No Bayesian machinery, no inference engine.
+
+**Investment split.** The measurement substrate gets foundation-grade
+investment, because wrong measurements poison every layer downstream of them.
+Intervention layers get the 80/20 lens. When those two pull against each other,
+the substrate wins.
 
 **Selection is intervention-granular, not only candidate-granular.** Owner
 refinement, 2026-08-22 (#2862): *"if one intervention was really good but
@@ -187,7 +189,7 @@ against damage, and nothing else on the bench may hard-stop.
 5. **Firmware brick hazards** — e.g. the XVF `SAVE_CONFIGURATION` ban
    (`jasper/cli/aec_tune.py`).
 
-**One retention kept by ruling rather than by mechanism.** Blend's
+**One retention that is kept by ruling rather than by mechanism.** Blend's
 `BOOST_ROUTE_UNAVAILABLE` (`crossover_v2/blend_prescription.py`) refuses the
 boost class outright, and ruling R8 in
 [`tuning-master-plan.md`](tuning-master-plan.md) keeps it: *"Blend's
@@ -251,12 +253,14 @@ The clamps are not the only refusals in the round path, and they are not the
 largest group. About **100 refusals protect the honesty of the evidence rather
 than the speaker**, against §4's **5 clamp mechanisms and their ~112 enforcement
 points** (refusal census, 2026-08-25; counts in
-[`REFACTOR-TUNING-2026-08.md`](REFACTOR-TUNING-2026-08.md) §1). The class is named here because a review holding only §4
-and §5 re-derives "is this safety?" from scratch every time, which is how a
-quality ceiling wore a refusal's costume as long as it did. **A dishonest
-measurement is worse than no measurement**: a refusal whose only cost is a
-re-measure, and whose alternative is banking a number that is not what it claims
-to be, is not a nanny.
+[`REFACTOR-TUNING-2026-08.md`](REFACTOR-TUNING-2026-08.md) §1). The class is
+named here because a review holding only §4 and §5 re-derives "is this safety?"
+from scratch every time, which is how a quality ceiling wore a refusal's costume
+as long as it did.
+
+**A dishonest measurement is worse than no measurement.** A refusal whose only
+cost is a re-measure, and whose alternative is banking a number that is not what
+it claims to be, is not a nanny.
 
 **The test, and it decides the class.** From
 [ADR-0002](adr/0002-measure-again-discriminator.md), which extracts the owner's
