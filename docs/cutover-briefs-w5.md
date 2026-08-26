@@ -32,8 +32,11 @@ decisions that hold.
 
 ---
 
-<!-- BEGIN READY-TO-LAND ADR — copy verbatim into docs/adr/NNNN-….md -->
+**The block below is the file's whole contents.** Fenced so its own `#`/`##`
+headings do not become this brief's; copy the fence's interior verbatim, change
+the number in the title, and save it under the matching slug.
 
+```markdown
 # ADR-0179: The tuning engine's seams are async, and a release completes before cancellation propagates
 
 - **Date:** 2026-08-26
@@ -148,8 +151,7 @@ and `analyze` sync and a caller has to remember which; and it is unstable,
 because the first `RecordStore` that wants to `await` an fsync flips the sync
 half anyway. `session_seams.py:95-102` and `crossover-v2-engine-design.md:87`
 both foreclose it in advance.
-
-<!-- END READY-TO-LAND ADR -->
+```
 
 ---
 
@@ -506,7 +508,7 @@ Six PRs. Sizes are re-estimated against what §2 and §3 found, not copied.
 | **W4-a** colour flip | `session_seams.py` (12 declarations) · `playback_transaction.py:190` · `session.py` (10 seam sites, 4 verbs, `:332-351`, `_attach_cleanup_failure` `:73-92`, both release paths) · re-tense `crossover-v2-engine-design.md:81-89` · land the ADR | ~270 | **adversarial** |
 | **W4-b** twin follows | `tests/engine_twin.py` (**418**, not 419) · `test_engine_twin.py` (401) · `test_crossover_v2_engine_skeleton.py` (1,267). `engine_declarations.py` (93) is untouched — it imports nothing and declares constants | ~200 | mechanical |
 | **W4-c** `VolumeClaim` adapter | one handle-holding class over `acquire_level` / `prove` / `release` | ~90 | **default** (demoted — §6) |
-| **W5-a** preparers converge | push `verify_only` one frame down; reconcile the `publish_check` asymmetry | ~250 net | default |
+| **W5-a** preparers converge | push `verify_only` one frame down; reconcile the `publish_check` asymmetry; re-point 26 comments in 4 further files (§5.1) | ~250 net, **6 files** | default |
 | **W5-b** `TuningSession` in production | build `EngineSeams` beside `bind_v2_stage_seams`; delete the two `holder` dicts and the `_session_graph` global | ~350 | **adversarial** |
 | **W5-c** plan sheds its doors | three-way split (§3.3), five call sites across three files | ~350 | **adversarial** |
 | **W5-d** stale docs + grep | engine-design `:252-268` only; the widened grep | ~25 | docs |
@@ -549,15 +551,13 @@ Six PRs. Sizes are re-estimated against what §2 and §3 found, not copied.
   Plus one that `seat_level_ramp.py:1573`/`:1689` still open and close.
 - **W5-d.** Paste the widened grep's own output into the PR (§5.2 has today's).
 
-**On the tiers.** Four of the plan's five calls hold and one does not; the
-reasoning is in §6. Where a call is arguable, note that AGENTS.md's
-non-negotiable list is **closed** — clamps, DSP math on the output path,
-secrets, `deploy/install.sh` — and none of these six items touches a clamp.
-W4-a, W5-b and W5-c are kept at adversarial not because the list names them but
-because each one's failure mode is a fader nobody holds, which is the shape
-`correction_setup.py:1323-1326` already treats as fail-closed. That is a stated
-reason, not a ceremony, and it is the standard to argue against if you want the
-tier lowered.
+**On the tiers.** AGENTS.md's non-negotiable list is **closed** — clamps, DSP
+math on the output path, secrets, `deploy/install.sh` — and **none of these six
+items touches any of them.** W4-a, W5-b and W5-c are still adversarial, on a
+stated reason rather than the list: each one's failure mode is a fader nobody
+holds, the shape `correction_setup.py:1323-1326` already treats as fail-closed.
+That is the standard to argue against if you want a tier lowered. W4-c is
+demoted; §6, Ruling B.
 
 ## 5. Content-greps for the post-merge check
 
@@ -572,12 +572,22 @@ HEAD`), not the branch. Paste each count into the PR.
 | W4-a | `grep -n "asyncio.shield" jasper/active_speaker/crossover_v2/session.py` | 2 sites |
 | W4-a | `grep -rn "held_target_db" docs/crossover-v2-engine-design.md` | the `:252-268` hits re-tensed |
 | W4-c | `grep -rn "acquire_level(" jasper/ \| grep -v volume_owner.py` | **5** (today: **4** — see §6, the owner already has takers) |
-| W5-a | `grep -rn "prepare_v2_verify" jasper/` | 0 (today: **28**, of which one is the def at `correction_crossover_v2.py:6520`, one the selector at `correction_setup.py:6341`, the rest prose) |
+| W5-a | `grep -rn "prepare_v2_verify" jasper/` | 0 (today: **28 across 6 files** — see below) |
 | W5-b | `grep -rn "TuningSession(\|EngineSeams(" jasper/` | ≥ 1 (today: **0** — production constructs neither) |
 | W5-b | `grep -n "_session_graph\b" jasper/web/correction_crossover_v2.py` | 0 (today: declared `:1191`, written `:1212`, cleared `:1179` / `:1235`, read `:1203` / `:1232`, plus `global` at `:1176` / `:1202` / `:1231`. Four further hits — `:1209`, `:1334`, `:4102`, `:5438` — are log-event names and a `source=` string, and stay) |
 | W5-b | `grep -n "holder\[" jasper/web/correction_crossover_v2.py` | 0 (today: `:6432`, `:6449`, `:6856`, `:6873`) |
 | W5-c | `grep -n "_session_volume_io" jasper/web/correction_crossover_v2.py` | def + the one read-only site (today: def + 5) |
 | W5-c | `grep -rn "set_main_volume_db=\|get_main_volume_db=" jasper/active_speaker/session_volume_plan.py` | the latch's internals only |
+
+**W5-a's real reach, which resizes it again.** `prepare_v2_verify` has **28
+hits across six files**: `correction_crossover_v2.py` **11** (the def at `:6520`
+plus prose), `crossover_v2/durable_state.py` **11**, `crossover_v2_flow.py`
+**3**, `crossover_v2/journey.py` **1**, `crossover_v2/capture_plan.py` **1**,
+and `correction_setup.py` **1** (the selector at `:6341`). Two are code; **26
+are comments and docstrings naming the function by name.** They go stale the
+moment it folds, and AGENTS.md's comment rule makes deleting or re-pointing them
+part of the same PR — so W5-a touches six files, not two, and its "no behaviour
+change" claim needs a grep to back it, not just a green suite.
 
 **One grep that lies, so read it rather than counting it.** `grep -rn "def bank("`
 returns four hits, not three: the Protocol (`session_seams.py:236`), two test
@@ -674,18 +684,15 @@ over; each is a place an executor following §4/§5 literally would go wrong.
 that *"the fix is a superseding note."* Those lines say the opposite: *"Scope
 note, so the next reader does not mistake this for still-live plumbing: the
 specific `held_target_db` parameter goes dead on the measurement path once the
-engine installs one session-scoped graph and stops swapping per candidate."* The
-scope note came true. An ADR is a dated record and reads as of its date; a
-superseding ADR minted because a correct forecast was fulfilled is ceremony, and
-AGENTS.md's *"a guard claiming safety that is not on the list is a nanny"* is
-the same instinct one level over. **W5-d keeps only the engine-design half
-(`crossover-v2-engine-design.md:252-268`, which really does say *"read this
-parameter as live plumbing … until 6e lands"*) and the widened grep — §5.2
-already carries that grep's output, so W5-d is ~25 lines, not 60.**
-*(Separately visible and deliberately not acted on: ADR-0004's own citations
-`jasper/camilla.py:96-141` no longer match HEAD — `_duck_release_target_db` is
-now at `:85-130`. The directory is immutable; a superseding ADR to fix line
-numbers would be worse than the drift.)*
+engine installs one session-scoped graph…"* The forecast came true; an ADR is a
+dated record and reads as of its date, so minting a supersession because a
+correct forecast was fulfilled is ceremony. **W5-d keeps only the engine-design
+half (`crossover-v2-engine-design.md:252-268`, which really does say *"read this
+parameter as live plumbing … until 6e lands"*) plus the widened grep — whose
+output §5.2 already carries. ~25 lines, not 60.** *(Visible and deliberately not
+acted on: ADR-0004's own `jasper/camilla.py:96-141` citations no longer match
+HEAD — `_duck_release_target_db` is now at `:85-130`. The directory is
+immutable, and a supersession to fix line numbers is worse than the drift.)*
 
 **Ruling B — W4-c demotes from adversarial to default, and the premise under it
 is wrong.** The plan's reason is *"the first production implementation of a
