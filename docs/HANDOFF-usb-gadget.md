@@ -538,7 +538,8 @@ still owed a hardware pass:
   that can break gadget detection. Try a different host if detection fails.
 - **8086 Consultancy USB-C/PWR Splitter:** the data leg carries the gadget link;
   the power leg stays on the Pi's normal PSU. Topology diagram in
-  [HANDOFF-usbsink.md](HANDOFF-usbsink.md) "Hardware setup".
+  [historical/usbsink-implementation-appendix.md](historical/usbsink-implementation-appendix.md)
+  "Physical topology".
 - **Pi 5 halts at boot (solid red LED) on splitter power without
   `usb_max_current_enable`.** The Pi 5 sizes its power budget from the USB-C
   **PD** negotiation and the splitter does not pass PD through, so the Pi cannot

@@ -83,8 +83,8 @@ are now further-improvement candidates — deliver it from the *first click* and
 push below the floor — not gates on reaching it.
 
 **Delta with the 2026-07-03 tap→ref number — explained, not a regression.**
-[HANDOFF-usb-low-latency.md](HANDOFF-usb-low-latency.md) records a 2026-07-03
-"FINAL" tap→ref p50 of **34.71** ms, ~6 ms below this doc's 2026-07-07
+The 2026-07-03 pre-productization run measured a tap→ref p50 of
+**34.71** ms, ~6 ms below this doc's 2026-07-07
 tap→`:9891` p50 of **40.73** ms. Both runs used identical ring geometry
 (2-slot Ring A/B, Camilla chunk 128 / target 128 / queue 1) and the same
 `:9891` tap, so the delta is not a measurement-point difference — it's the
@@ -94,9 +94,8 @@ deliberate operating-point change shipped in PR #1173 (commit `50d167e1`,
 and cushion-decay OFF, free-running); 40.73 ms is the productized **churn-safe
 default** (target 512, cushion-decay floor 576, host-clock DLL + decay armed).
 ~3 ms of the delta is the higher steady resampler fill (~13.7 ms vs ~10.7 ms);
-the rest is churn margin the lab recipe was borrowing — its lane rode the
-underfill-unlock threshold (see the 256+256 guard discussion in
-HANDOFF-usb-low-latency.md) — plus session-length variance (640 impulses over
+the rest is churn margin the lab recipe was borrowing — its 256+256 lane rode
+the underfill-unlock threshold — plus session-length variance (640 impulses over
 20 min vs 40). Live corroboration on jts.local: the lane was observed
 descending to held 644 / fill 657 (13.69 ms, matching this doc's ~13.8 ms
 cushion term) then snapping back to the 2048 ceiling — direct observation of

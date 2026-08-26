@@ -1507,7 +1507,7 @@ def test_main_camilla_failure_is_fail_soft_but_flips_rc(tmp_path, monkeypatch):
 # ---------- the leader's music-producer predicate ----------
 # (The outputd-as-producer tap machinery — env write/read, change-gate,
 # try-restart, SNAPFIFO_PRODUCER_WIRED — was REMOVED 2026-06-11 with the
-# canonical design; see HANDOFF-multiroom.md §2 "Stranded by this design".
+# canonical design; see HANDOFF-multiroom.md §2, timing invariant 1.
 # desired_snapfifo_path survives as the pure "this role needs a producer"
 # predicate driving the runtime-health derive.)
 
