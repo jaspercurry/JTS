@@ -449,7 +449,7 @@ deploy/
   nginx-jasper.conf             Main nginx site: HTTP wizards + HTTPS correction hub
 
 docs/                           Subsystem deep-dives ("HANDOFF" docs)
-  HANDOFF-wake-training-experiment.md  Primary active workstream: custom wake-model training
+  HANDOFF-wake-training-experiment.md  Custom per-leg wake-model training plan
   HANDOFF-custom-wakeword-training.md  Off-Pi custom wake model training/deploy workflow
   HANDOFF-wake-corpus-quality.md  Methodology for wake-corpus audio QA / artifact review
   HANDOFF-usb-mic-wake.md   Parked cheap-USB mic wake/AEC follow-up plan
@@ -639,12 +639,9 @@ reference. Currently:
   `jasper/voice/prompt.py` or any tool description in
   `jasper/tools/`.** Refreshed against provider docs 2026-05-23.
 - [`HANDOFF-peering.md`](docs/HANDOFF-peering.md) — Multi-Pi wake
-  arbitration. When a household runs multiple JTS speakers on the
-  same LAN, peering picks exactly one winner per wake event so they
-  don't all answer at once. Off by default; user flips it on at
-  `http://jts.local/rooms/`. P2P via mDNS-SD + multicast UDP, no
-  hub, no SPOF. **Start here for `jasper/peering/`, the wake-handler
-  restructure, or anything related to the `/rooms/` wake-response card.**
+  arbitration (off by default, hubless P2P over mDNS-SD + multicast UDP);
+  start here for `jasper/peering/`, the wake-handler restructure or the
+  `/rooms/` wake-response card, with the design decisions in ADR-0127–0128.
 - [`HANDOFF-multiroom.md`](docs/HANDOFF-multiroom.md) — **In-progress
   grouped playback.** Stereo-pair control/observability, the music
   dataplane, and member-local TTS are built and off by default; the
@@ -705,17 +702,10 @@ reference. Currently:
   adding a second mic family, or moving corpus/onboarding modes into
   productized hardware setup.
 - [`HANDOFF-wake-training-experiment.md`](docs/HANDOFF-wake-training-experiment.md) —
-  **Current primary workstream (2026-05-26).** The forward-looking
-  plan for training a custom `jarvis_jts_*_v1` wake-word model
-  matched to the JTS audio chain, replacing the community
-  `jarvis_v2` model (published recall 26%). Sequenced phases
-  (−1 → 0 → 1 → 2 → 3), pre-committed failure criteria, five
-  explicit listening checkpoints. Capture tooling shipped end-to-
-  end via the browser recorder at http://jts.local/wake-corpus/
-  (PRs #303 → #323, plus the 2026-05-26 USB/ref/DTLN follow-up) with
-  a 4th `raw0` leg and corpus-only cheap USB mic/reference/DTLN legs
-  for future cheaper-mic experiments. Read this before working on wake-
-  word reliability, training data collection, or testing methodology.
+  Training custom per-leg wake models matched to the JTS audio chain (corpus
+  tooling shipped at `http://jts.local/wake-corpus/`, training not yet run);
+  decisions in ADR-0129–0131, May 2026 pilots in
+  [`historical/wake-corpus-pilots-2026-05.md`](docs/historical/wake-corpus-pilots-2026-05.md).
 - [`HANDOFF-custom-wakeword-training.md`](docs/HANDOFF-custom-wakeword-training.md) —
   Productization plan for converting JTS wake-corpus recordings into
   custom wake-word models trained off-Pi with LiveKit/openWakeWord-
@@ -1223,14 +1213,10 @@ reference. Currently:
   narrative (near-field/null-depth measurement triad, Wave 1-3
   nine-state receipt lifecycle) is preserved as a historical appendix.
 - [`HANDOFF-distributed-active.md`](docs/HANDOFF-distributed-active.md) —
-  **Design-of-record (proposed 2026-06-20)** for running an active
-  speaker's driver-domain crossover (Layer A) as a wireless **follower**,
-  while the leader owns the program domain (room correction + preference
-  EQ) and streams the corrected stereo program. Owns the
-  distributed-active boundary the graph-carrier doc defers: the
-  CamillaDSP-re-entry follower engine, the role/capture contract, the
-  follower-409 narrowing, the local-vs-wireless subwoofer split, the
-  fail-closed/clock-domain safety story, and the safest-first slice plan.
+  Operational spine for an active speaker's Layer-A crossover across a
+  wireless pair (follower landed, leader's on-device bring-up owed);
+  decisions in ADR-0122–0126, June 2026 bring-up evidence in
+  [`historical/distributed-active-bringup-2026-06.md`](docs/historical/distributed-active-bringup-2026-06.md).
 - [`active-crossover-information-design.md`](docs/active-crossover-information-design.md)
   — **Product and architecture design of record** for the active crossover
   builder: first-class manual control, calibrated-microphone automatic tuning,
