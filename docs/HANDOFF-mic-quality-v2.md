@@ -539,7 +539,7 @@ JASPER_AEC_DTLN_ENABLED=1              # enable DTLN-aec in the bridge
 JASPER_MIC_DEVICE_DTLN=udp:9878        # voice's tertiary leg UDP source
 ```
 
-Both live in `/etc/jasper/jasper.env`. The 1 GB audio-ring cap is
+Both live in `/etc/jasper/jasper.env`. The 128 MiB audio-ring cap is
 the `config.py` default; no env var needed unless overriding.
 
 ### Rollback ladder

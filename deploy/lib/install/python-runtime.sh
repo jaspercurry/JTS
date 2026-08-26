@@ -147,6 +147,16 @@ seed_capture_relay_env() {
     chmod 0640 "${ENV_DIR}/jasper.env"
 }
 
+# Pre-PR .env.example seeded this exact value uncommented; jasper.env is a
+# frozen first-install seed (never re-synced — see the comment above its
+# creation), so every existing Pi would keep the retired 1 GiB cap forever,
+# and the doctor's new smaller warn threshold would warn on it permanently.
+# Anchored on the full stale line so a deliberate non-default override
+# (any other value) survives untouched.
+migrate_wake_events_cap_seed() {
+    sed -i '/^JASPER_WAKE_EVENTS_MAX_AUDIO_BYTES=1073741824$/d' "${ENV_DIR}/jasper.env"
+}
+
 install_jasper() {
     install -d -m 0755 "${INSTALL_DIR}"
     ensure_state_dir
@@ -393,6 +403,7 @@ PY
         -e '/^SPOTIFY_REDIRECT_URI=/d' \
         -e '/^SPOTIPY_REDIRECT_URI=/d' \
         "${ENV_DIR}/jasper.env"
+    migrate_wake_events_cap_seed
     if [[ -n "${OUTPUT_DAC_ID:-}" ]]; then
         sed -i.bak '/^JASPER_AUDIO_DAC_ID=/d' "${ENV_DIR}/jasper.env"
         rm -f "${ENV_DIR}/jasper.env.bak"

@@ -696,7 +696,7 @@ the geometry-aware XVF profile resolver; retention/off-loop language was
 rechecked 2026-06-10 against `jasper/wake_events.py`: WAV writes and
 `_retention_sweep` run via `asyncio.to_thread`, gated by the running
 `_audio_bytes_estimate`, and the sweep still runs from the audio-attach
-path with no hourly timer; audio ring-buffer cap still matches the 1 GB
+path with no hourly timer; audio ring-buffer cap now matches the 128 MiB
 production default,
-`JASPER_WAKE_EVENTS_MAX_AUDIO_BYTES=1073741824`. Prior
+`JASPER_WAKE_EVENTS_MAX_AUDIO_BYTES=134217728`. Prior
 schema/file-layout checks still apply.)
