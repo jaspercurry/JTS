@@ -5,8 +5,8 @@
 """Contract tests for the interference-null identification gate.
 
 Five layers, per the plan's second honesty instrument
-(docs/flat-linearization-plan.md "S0 executed" section e.1, and
-docs/flat-linearization-productization-plan.md PR-1):
+(docs/historical/linearization-campaign-2026-07.md "S0 executed" section e.1, and
+docs/historical/linearization-campaign-2026-07.md PR-1):
 
 A. **Synthetic ground truth** — a two-path impulse response with a known
    ``tau`` and ``r``, and the magnitude curve derived from that *same* IR, so
@@ -1080,7 +1080,7 @@ def test_refusals_are_reported_in_ascending_frequency():
 # E. Real-data acceptance — the 2026-07-25 S0 session
 #
 # The plan pre-registered this gate against these captures before it existed
-# (docs/flat-linearization-productization-plan.md PR-1, "Acceptance"), so
+# (docs/historical/linearization-campaign-2026-07.md PR-1, "Acceptance"), so
 # these are the tests that decide whether it works. Every number asserted
 # below is quoted in the module's own constants.
 # --------------------------------------------------------------------------- #

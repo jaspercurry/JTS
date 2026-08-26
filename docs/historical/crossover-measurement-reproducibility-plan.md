@@ -11,7 +11,7 @@
 > (env defaults, line numbers, "what's working" snapshots) will drift over
 > time. Read this for the narrative, not for current state. Current
 > operational truth lives in
-> [HANDOFF-crossover-measurement-v2.md](../HANDOFF-crossover-measurement-v2.md);
+> [tuning-operator-runbook.md](../tuning-operator-runbook.md);
 > the follow-on productization workstream is tracked in issues #1650 and
 > #1652.
 > This is the execution and decision reference for the "MEASURE is not
@@ -28,7 +28,7 @@
 > *targeted refactor of the measurement core*, not a rewrite of the conductor
 > architecture.
 >
-> Canonical operational truth: [HANDOFF-crossover-measurement-v2.md](../HANDOFF-crossover-measurement-v2.md).
+> Canonical operational truth: [tuning-operator-runbook.md](../tuning-operator-runbook.md).
 > v2 decision record: [crossover-measurement-productization-design.md](../crossover-measurement-productization-design.md).
 > Keep those two authoritative; this doc is the plan + decision log until the
 > work lands, after which the durable outcomes fold into the HANDOFF and this
@@ -462,7 +462,7 @@ Captured so they're off the table for the landing work:
     minimum — is moot (flatness no longer selects anything). *(Superseded
     2026-08-16 by issue #2598, which makes summed flatness the selector for the
     polarity/delay pair; this clause is the 2026-07-22 record. Current state:
-    [HANDOFF-crossover-measurement-v2.md](../HANDOFF-crossover-measurement-v2.md)
+    [tuning-operator-runbook.md](../tuning-operator-runbook.md)
     "(Polarity, delay) selection".)* Its residual
     value (more correlation bandwidth → sharper snap peaks at low SNR) is
     real physics but unneeded at the measured margins (1.22 µs selection
@@ -947,7 +947,7 @@ Captured so they're off the table for the landing work:
   evidence; `flatness_at_bound` retired for `anchor_delay_us` / `snap_delta_us`
   / `snap_found`). Hardware-free physics/regression tests land in the same
   change; canonical operational truth is
-  [HANDOFF-crossover-measurement-v2.md](../HANDOFF-crossover-measurement-v2.md)
+  [tuning-operator-runbook.md](../tuning-operator-runbook.md)
   "Delay selection". Local replay on the two hardware-anchored captures matches
   the bake-off within <1 µs (run A applied 33.7 µs, run B 31.4 µs; anchors
   28.281 / 49.948 exact; A–B spread 2.4 µs, inside the ±20.8 µs stop-rule).

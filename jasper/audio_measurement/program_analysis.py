@@ -887,7 +887,7 @@ GAIN_BOUNDS = frozenset({
 # ambient inflate the quiet woofer pilot's peak and compress the captured
 # delta, tripping this tight a tolerance on a perfectly linear driver (the
 # same bug class the channel-map discriminator was fixed for in #1594 —
-# gotcha #6/#16 in docs/HANDOFF-crossover-measurement-v2.md).
+# gotcha #6/#16 in docs/historical/crossover-measurement-v2-campaign-record.md).
 LINEARITY_TOLERANCE_DB = 0.5
 
 # Pilot edge-fade trim: `sweep.synchronized_swept_sine` applies a fixed 5 ms
@@ -6188,8 +6188,8 @@ def _compose_configured_path_ir(
     segment declaring no sweep bounds is missing evidence, not
     ill-conditioning. Numbers, the splice this replaced, the DC/Nyquist
     zero-ratio bins and this mask's over-scope fix:
-    ``docs/HANDOFF-crossover-measurement-v2.md`` "Composing the configured-Fc
-    path".
+    ``docs/historical/crossover-measurement-v2-campaign-record.md``,
+    "Composing the configured-Fc path".
     """
     maps = (
         priors.measurement_protection_response_by_role,

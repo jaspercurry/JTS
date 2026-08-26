@@ -2,7 +2,7 @@
 
 One owner-commissioned deep-research artifact behind the flat-linearization
 program plan in
-[`flat-linearization-plan.md`](../../flat-linearization-plan.md).
+[`linearization-campaign-2026-07.md`](../../historical/linearization-campaign-2026-07.md).
 Preserved verbatim as a primary source; the plan carries the adopted
 synthesis and wins where they disagree. Commissioned after offline comb
 forensics on the 2026-07-24/25 JTS3 session found a ~0.31 ms boundary-bounce

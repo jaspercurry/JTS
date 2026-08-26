@@ -170,7 +170,10 @@ already open)**
 - ~~Duck lease~~ **HELD — superseded**: the tuning program deletes the
   swap-duck and the 1 Hz reconciler it coordinated with (its waves 5–6);
   no lease gets built · systemctl-through-broker or honest docstring ·
-  sound_setup 502-helper (after the volume-surface widening lifts) ·
+  ~~sound_setup 502-helper~~ **done**: the 24 identical log-and-502 blocks
+  call one `_common.send_route_failure`; the `logger.exception` 502 sites
+  (sound, sources, bluetooth) stay — plain-message logging, a different
+  concern ·
   ~~`git mv` subway/citibike/bus into transit/providers/~~ **superseded by
   [ADR-0167](adr/0167-each-transit-network-is-its-own-provider-module.md)**:
   transit/providers/ is the wizard-adapter layer (#2770); the top-level
@@ -180,8 +183,13 @@ already open)**
   ~~split test_control_server along its own handler boundary~~ **DONE**: one
   module per `jasper/control/handlers/` mixin (system / volume / voice / aec /
   grouping) plus `tests/control_server_fixtures.py`; the original file keeps
-  dispatch, guards, gating and follower forwarding · point the 4 hand-rolled
-  atomic writers at atomic_io
+  dispatch, guards, gating and follower forwarding ·
+  ~~point the 4 hand-rolled atomic writers at
+  atomic_io~~ **DONE**: 3 of the 4 converged (output_hardware,
+  assistant_loudness, audio_quality — modes unchanged at 0644, bytes
+  identical); wifi_guardian_persistence stays hand-rolled and
+  allowlisted — its parent-dir fsync is fail-soft where
+  `durable=True` re-raises
 
 **Wave 6 — one audio transport ([ADR-0100](adr/0100-one-audio-transport.md))**
 - [ ] Delete the central loopback route + all transition machinery (~6–8K

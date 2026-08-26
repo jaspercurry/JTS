@@ -614,7 +614,7 @@ def assess_accountability(
     # PR-6b made auto-apply unconditional at this seam ("this is
     # unconditionally True here, not a second decision"). This deliberately
     # AMENDS that, under the linearization-integrity work order's PR-L4
-    # item 2 (docs/linearization-integrity-plan.md), which is the sanction
+    # item 2 (docs/historical/linearization-campaign-2026-07.md), which is the sanction
     # for the change: on 2026-07-27 the honest flatness instrument failed
     # all three bands two seconds before an unconditional auto-apply, and
     # its verdict reached zero surfaces. PR-6b's claim — that MEASURE's

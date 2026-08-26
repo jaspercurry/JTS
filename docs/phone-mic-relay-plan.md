@@ -104,7 +104,7 @@
 > the `record_*_capture` seam (`record_driver_capture` has no production caller
 > left). `summed` is a `driver_role` on that one kind, not a capture kind of its
 > own. The flow is owned by
-> [HANDOFF-crossover-measurement-v2.md](HANDOFF-crossover-measurement-v2.md).
+> [tuning-operator-runbook.md](tuning-operator-runbook.md).
 > The rest of this paragraph still holds: the capture sweep plays on `armed`,
 > reading the play payload's
 > REAL shape (top-level `status` + nested `playback.audio_emitted`, top-level
@@ -606,7 +606,7 @@ since the earlier PR in this series.
 > have since been trued up: `HANDOFF-audio-measurement-core.md` by #2065,
 > and `HANDOFF-correction.md` / `HANDOFF-active-speaker-dsp.md` alongside this
 > doc's own orientation section. The flow is owned by
-> [HANDOFF-crossover-measurement-v2.md](HANDOFF-crossover-measurement-v2.md);
+> [tuning-operator-runbook.md](tuning-operator-runbook.md);
 > remaining alignment work stays tracked in #1882.
 
 `jasper/web/correction_crossover_flow.py`'s

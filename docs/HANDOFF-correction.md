@@ -65,7 +65,7 @@ never redirected.
   truth — how to run it, the file
   map, invariants, failure taxonomy, session-state paths, and the W6 bug
   catalog — lives in
-  [HANDOFF-crossover-measurement-v2.md](HANDOFF-crossover-measurement-v2.md);
+  [tuning-operator-runbook.md](tuning-operator-runbook.md);
   this doc does not restate it. The **legacy per-driver crossover flow was
   removed in W5b (2026-07-24)** — the per-driver envelope, its measurement
   handlers, and the `JASPER_CROSSOVER_FLOW` selector are gone; v2 is the only
@@ -761,7 +761,7 @@ never redirected.
   so relay state and the one next action cannot disagree. Driver sweeps ride
   the **v2 conductor** (`POST /crossover/v2/session`) over the **same**
   phone-mic relay transport the room/sync flows use; that flow is owned by
-  [HANDOFF-crossover-measurement-v2.md](HANDOFF-crossover-measurement-v2.md)
+  [tuning-operator-runbook.md](tuning-operator-runbook.md)
   and not restated here. **`POST /crossover/relay-capture` no longer exists** —
   W5b (#1688, 2026-07-24) retired the legacy per-driver flow, removing the
   route from `correction_setup`'s POST allowlist along with the
@@ -855,7 +855,7 @@ never redirected.
   > (`correction_crossover_flow.py` itself survives — page-render, status,
   > envelope, reset and level-target helpers — but it no longer hosts a capture
   > runner). The shipped driver path is the **v2 conductor**, owned by
-  > [HANDOFF-crossover-measurement-v2.md](HANDOFF-crossover-measurement-v2.md);
+  > [tuning-operator-runbook.md](tuning-operator-runbook.md);
   > the `record_driver_capture` analysis/record path described below is reached
   > by no production caller. **The protocol-v3 substrate itself is NOT stale:**
   > capture plans, `run_capture_plan`, and the audible/infra budget split all
@@ -1266,7 +1266,7 @@ never redirected.
   sign. Measured on the live JTS3 UMIK-2 file: mean +1.71 dB / max +1.84 dB
   of over-cut across 2.8–8 kHz, reversing to a mean −1.14 dB under-cut over
   11–16 kHz (one of the confirmed contributors in
-  `docs/linearization-integrity-plan.md`). `migrate_stored_sign_conventions`
+  `docs/historical/linearization-campaign-2026-07.md`). `migrate_stored_sign_conventions`
   repairs already-stored vendor records on every deploy: keyed on each
   record's own stored convention (so it can never double-negate a correct
   one), re-derived from the retained raw file, and never applied to a
@@ -2077,8 +2077,9 @@ POST /crossover/reset        scoped in-flow "start over": stops any active relay
 POST /crossover/v2/session   v2 conductor flow (W5a; the only crossover flow):
                              open STAGE 1's relay session. NOTE: R15 (#2106)
                              makes stage 1 CHECK→MEASURE only — it removes the
-                             pre-apply cloud; see crossover-linearization-80-20
-                             -plan.md. Everything below describes the pre-R15
+                             pre-apply cloud; see historical/linearization-
+                             campaign-2026-07.md. Everything below describes
+                             the pre-R15
                              shipped flow: CHECK→MEASURE→the
                              pre-apply cloud, and nothing after (10-entry
                              capture plan at the Full tier's shipped defaults,
@@ -3569,7 +3570,7 @@ the shared RAM-tier-aware headroom policy; hardware-free tests only). Prior
 "16 captures" claim and the `POST /crossover/v2/session` endpoint-table entry
 now name both tiers; the tier chooser itself lives on the wizard's
 `microphone_check` screen, not documented page-by-page here — see
-[HANDOFF-crossover-measurement-v2.md](HANDOFF-crossover-measurement-v2.md)).
+[tuning-operator-runbook.md](tuning-operator-runbook.md)).
 Prior 2026-07-19 (v2 calibration handoff page-side fix, W6.13 — see
 the new Status bullet above: `setup` now piggybacks on every
 `begin_capture` post so the household-mic hint reaches

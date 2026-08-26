@@ -13,10 +13,10 @@ keyed on ``needs_recovery`` (the W2 gate ruling — never
 Owner ruling (2026-07-20): the human ``review_apply`` screen is gone from the
 happy path. MEASURE accepted + not yet applied now renders the ``applying``
 screen (no candidate review, no action — the conductor's own auto-apply is in
-flight); the low-confidence trust gate rejects MEASURE itself
-(``low_alignment_confidence``, rendered through the ordinary fix_and_retry
-template at the ``measure`` step) instead of nudging a still-available Apply
-button; and ``done`` is now the RESULT screen — plain outcome first, the
+flight); an alignment rejection reaches MEASURE itself
+(``delay_implausible``, rendered through the ordinary fix_and_retry template at
+the ``measure`` step) instead of nudging a still-available Apply button; and
+``done`` is now the RESULT screen — plain outcome first, the
 measured numbers in ``candidate_review`` for the wizard's collapsed expert
 disclosure, Undo as the primary action.
 """
@@ -67,7 +67,7 @@ from jasper.active_speaker.crossover_v2.refusal_copy import (
     REASON_CLIPPED,
     REASON_CHANNEL_MAP_MISMATCH,
     REASON_LOCATE_FAILED,
-    REASON_LOW_ALIGNMENT_CONFIDENCE,
+    REASON_DELAY_IMPLAUSIBLE,
     REASON_NOISY_ROOM_LINEARITY,
     REASON_RELAY_TIMEOUT,
     REASON_SNR_FLOOR,
@@ -450,18 +450,25 @@ def test_applying_phase_has_no_action_and_no_candidate_review():
     assert "apply" in env["verdict_text"].lower()
 
 
-def test_low_alignment_confidence_rejects_at_the_measure_step():
-    """Owner ruling (2026-07-20): the former review-screen nudge is now a hard
-    MEASURE-phase gate. The household never sees a candidate to judge — just
-    guidance to re-measure, rendered through the ordinary fix_and_retry
-    template at the ``measure`` step (never ``applying``, since no candidate
-    was ever built)."""
+def test_an_implausible_delay_rejects_at_the_measure_step():
+    """The alignment rejection that SURVIVED the nanny burn-down, rendering.
+
+    Transformed from the confidence floor's pin: that rung is a disclosure now
+    and reaches no screen at all, while the physics backstop still refuses at
+    the ``measure`` step through the ordinary fix_and_retry template (never
+    ``applying``, since no candidate was ever built).
+
+    The copy assertion inverts with it, and that is the point. It used to
+    require the word "microphone", because both rungs shared one sentence; a
+    confidently-wrong delay is not a mic-placement problem, so this screen must
+    NOT send the household to move one (#2085)."""
     env = build_crossover_envelope_v2(_status(
-        phase="measure", failure={"code": REASON_LOW_ALIGNMENT_CONFIDENCE},
+        phase="measure", failure={"code": REASON_DELAY_IMPLAUSIBLE},
     ))
     assert env["screen"] == "fix_and_retry"
-    assert env["verdict_text"] == REASON_REGISTRY[REASON_LOW_ALIGNMENT_CONFIDENCE].message
-    assert "mic" in env["verdict_text"].lower() or "microphone" in env["verdict_text"].lower()
+    assert env["verdict_text"] == REASON_REGISTRY[REASON_DELAY_IMPLAUSIBLE].message
+    assert "delay" in env["verdict_text"].lower()
+    assert "microphone" not in env["verdict_text"].lower()
     assert env["next_action"]["id"] == "retry"
     assert _step_statuses(env)["measure"] == "active"
 

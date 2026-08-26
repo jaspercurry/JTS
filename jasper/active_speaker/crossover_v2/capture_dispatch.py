@@ -94,7 +94,7 @@ __all__ = [
     "SCREEN_ALIGNMENT_UNRESOLVED",
     "SCREEN_ANCHOR_AMBIGUOUS",
     "SCREEN_CHANNEL_MAP_MISMATCH",
-    "SCREEN_LOW_ALIGNMENT_CONFIDENCE",
+    "SCREEN_DELAY_IMPLAUSIBLE",
     "SCREEN_NOISY_ROOM_LINEARITY",
     "SCREEN_SNR_FLOOR",
     "SWEEP_LOCATE_CONFIDENCE_FLOOR",
@@ -136,8 +136,17 @@ SCREEN_SNR_FLOOR = "snr_floor"
 SCREEN_NOISY_ROOM_LINEARITY = "noisy_room_linearity"
 #: An alignment estimate exists and did not resolve inside its search window.
 SCREEN_ALIGNMENT_UNRESOLVED = "alignment_unresolved"
-#: An alignment estimate exists and is not trustworthy enough to build on.
-SCREEN_LOW_ALIGNMENT_CONFIDENCE = "low_alignment_confidence"
+#: An alignment estimate resolved to a delay physics rules out — the GCC
+#: estimator returning a CONFIDENTLY WRONG lag, which is a measured failure
+#: mode rather than a prior (a hardware run reported a confident −631 us
+#: against a declared [50, 300] us search bound).
+#:
+#: **Its own kind since the nanny burn-down, and that split is the point.** It
+#: shared ``low_alignment_confidence`` with the 0.6 GCC trust floor, so one
+#: household sentence covered both — and when the floor was demoted this
+#: rejection would have lost its voice with it. A physics fact and a prior are
+#: different answers and now say different things.
+SCREEN_DELAY_IMPLAUSIBLE = "delay_implausible"
 
 #: The six kinds only an anchor phase can produce.
 ANCHOR_SCREEN_KINDS = frozenset({
@@ -146,7 +155,7 @@ ANCHOR_SCREEN_KINDS = frozenset({
     SCREEN_SNR_FLOOR,
     SCREEN_NOISY_ROOM_LINEARITY,
     SCREEN_ALIGNMENT_UNRESOLVED,
-    SCREEN_LOW_ALIGNMENT_CONFIDENCE,
+    SCREEN_DELAY_IMPLAUSIBLE,
 })
 
 #: Every kind any capture ladder in this package can return.
@@ -263,12 +272,17 @@ class MeasureScreens:
     would move an observable failure.  The rest are plain answers already in
     the caller's hand.
 
-    The four alignment fields encode the shipped three-rung alignment ladder
-    without importing its thresholds.  ``alignment_present`` gates all three
-    (a trims-only candidate has no estimate and skips them entirely);
-    ``alignment_status_ok`` is the resolve verdict; ``alignment_confidence_ok``
-    is the trust floor; ``delay_physically_plausible`` is the backstop, which
-    the shipped ladder asks ONLY of a resolved estimate.
+    The three alignment fields encode the shipped alignment ladder without
+    importing its thresholds.  ``alignment_present`` gates both rungs (a
+    trims-only candidate has no estimate and skips them entirely);
+    ``alignment_status_ok`` is the resolve verdict; ``delay_physically_plausible``
+    is the physics backstop, which the ladder asks ONLY of a resolved estimate.
+
+    **A fourth rung was here and is now a disclosure.**  The GCC trust floor
+    (``ALIGNMENT_CONFIDENCE_TRUST_FLOOR``) refused a capture whose
+    capture/seed confidence fell below 0.6; the nanny burn-down demoted it, so
+    the confidence rides the receipt as provenance and this ladder no longer
+    reads it.
     """
 
     stimulus_located: bool
@@ -280,7 +294,6 @@ class MeasureScreens:
     linearity_ok: bool | None
     alignment_present: bool
     alignment_status_ok: bool
-    alignment_confidence_ok: bool
     delay_physically_plausible: Callable[[], bool]
 
 
@@ -336,14 +349,12 @@ def measure_screens(
         return MeasureScreen(SCREEN_LINEARITY_FAILED)
     if screens.alignment_present and not screens.alignment_status_ok:
         return MeasureScreen(SCREEN_ALIGNMENT_UNRESOLVED)
-    if screens.alignment_present and not screens.alignment_confidence_ok:
-        return MeasureScreen(SCREEN_LOW_ALIGNMENT_CONFIDENCE)
     if (
         screens.alignment_present
         and screens.alignment_status_ok
         and not screens.delay_physically_plausible()
     ):
-        return MeasureScreen(SCREEN_LOW_ALIGNMENT_CONFIDENCE)
+        return MeasureScreen(SCREEN_DELAY_IMPLAUSIBLE)
     return None
 
 

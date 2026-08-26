@@ -41,7 +41,7 @@ import os
 import time
 from typing import Any
 
-from ..env_load import parse_env_text
+from . import park_record
 
 #: Must equal ``CONTENT_LANE_STATE`` in
 #: ``deploy/bin/jasper-outputd-failure-reconcile``. Pinned against that script
@@ -120,23 +120,9 @@ def snapshot(
     Never raises.
     """
     target = path if path is not None else _state_path()
-    try:
-        with open(target, encoding="utf-8", errors="replace") as fh:
-            text = fh.read()
-    except FileNotFoundError:
-        return {"status": "absent", "parked": False}
-    except OSError as exc:
-        return {
-            "status": "unreadable",
-            "parked": False,
-            "path": target,
-            "error": str(exc),
-        }
-
-    try:
-        fields = parse_env_text(text)
-    except Exception:  # noqa: BLE001 - a malformed record must not raise here
-        fields = {}
+    terminal, fields = park_record.read(target)
+    if terminal is not None:
+        return terminal
 
     count = _int_or_none(fields.get("count"))
     last_failure_epoch = _int_or_none(fields.get("last_failure_epoch"))

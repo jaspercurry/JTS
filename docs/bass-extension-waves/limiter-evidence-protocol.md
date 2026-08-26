@@ -10,7 +10,7 @@
 This is the reviewed prerequisite amendment to
 [`wave-4-commissioning-backend.md`](wave-4-commissioning-backend.md). The JTS3
 crossover substrate burn-in is complete, as recorded in
-[`HANDOFF-crossover-measurement-v2.md`](../HANDOFF-crossover-measurement-v2.md).
+[`tuning-operator-runbook.md`](../tuning-operator-runbook.md).
 The remaining result is **not established**: no retained bundle binds a
 target-specific limiter setting to the exact downstream sample point, the
 active target/candidate graph, replayable digital evidence, and passing

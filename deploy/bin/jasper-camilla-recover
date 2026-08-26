@@ -15,9 +15,10 @@
 #
 # This oneshot is triggered by OnFailure= after the burst is exhausted. It
 # captures ALSA holder state, parks likely audio owners, tries one controlled
-# Camilla/outputd restart, and leaves the unit parked if the graph still will
-# not converge. It never reboots the host; keeping SSH and /system/ reachable
-# is more useful than a blind reboot loop for this failure class.
+# Camilla/outputd restart, and parks the core graph on a written record if it
+# still will not converge (ADR-0175). It never reboots the host; keeping SSH
+# and /system/ reachable is more useful than a blind reboot loop for this
+# failure class.
 
 set -uo pipefail
 
@@ -30,6 +31,11 @@ DEV_SND_ROOT="${JASPER_DEV_SND_ROOT:-/dev/snd}"
 COOLDOWN_SEC="${JASPER_CAMILLA_RECOVER_COOLDOWN_SEC:-300}"
 STATE_FILE="${STATE_DIR}/camilla_recover_last_attempt"
 LOCK_DIR="${RUN_DIR}/jasper-camilla-recover.lock"
+# The park record lives in /run, not STATE_DIR: the park is terminal for the
+# BOOT, and a reboot must re-arm the graph by wiping it. Same shape and field
+# vocabulary as jasper-outputd's content-lane park record (ADR-0141), read by
+# jasper/control/camilla_recover_state.py.
+PARK_STATE="${JASPER_CAMILLA_RECOVER_PARK_STATE:-${RUN_DIR%/}/jasper-camilla-recover.state}"
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 PARK_UNITS_LIB="${JASPER_CORE_GRAPH_PARK_UNITS_LIB:-}"
 
@@ -217,6 +223,78 @@ write_attempt_stamp() {
     printf '%s\n' "$1" >"$STATE_FILE" 2>/dev/null || true
 }
 
+# The remediation sentence, written to the record AND the journal line so
+# neither surface sends an operator to the other to learn what to do. Two legs,
+# two sentences: the remedy has to name the daemon that actually failed
+# (ADR-0141's lane-specific rule), and one generic sentence would send an
+# outputd failure hunting CamillaDSP's config.
+PARK_ACTION_CAMILLA="free whatever owns the DAC or fix why CamillaDSP will not load (the capture_line/asound_status_line evidence in this journal names the holder), then: systemctl start jasper-camilla.service"
+PARK_ACTION_OUTPUTD="jasper-outputd could not take the DAC back; its own open error is in journalctl -u jasper-outputd (a remaining holder, or a content-lane width mismatch). Fix that, then: systemctl start jasper-camilla.service"
+PARK_RE_ARM="nothing re-arms the core graph on its own: an operator 'systemctl start jasper-camilla.service', a deploy, or a reboot (the record lives in /run, so the park is per-boot)"
+
+park_action() {
+    if [[ "$1" == "outputd_restart_failed" ]]; then
+        printf '%s' "$PARK_ACTION_OUTPUTD"
+    else
+        printf '%s' "$PARK_ACTION_CAMILLA"
+    fi
+}
+
+write_park_record() {
+    local reason="$1"
+    local detail="$2"
+    local action="$3"
+    local tmp
+    mkdir -p "$(dirname "$PARK_STATE")" 2>/dev/null || true
+    # tempfile+rename so a reader never sees a truncated record.
+    tmp="${PARK_STATE}.tmp.$$"
+    {
+        printf 'parked_utc=%s\n' "$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+        printf 'reason=%s\n' "$reason"
+        printf 'detail=%s\n' "$detail"
+        printf 'action=%s\n' "$action"
+        printf 're_arm=%s\n' "$PARK_RE_ARM"
+    } >"$tmp" 2>/dev/null || true
+    mv -f "$tmp" "$PARK_STATE" 2>/dev/null || rm -f "$tmp" 2>/dev/null || true
+}
+
+# The floor for a pass that cannot converge the graph (ADR-0175). reset-failed
+# clears the exhausted burst and stop cancels Restart=always, so the unit
+# cannot reach `failed` on its own and this handler's OnFailure= trigger is
+# disarmed — without that it re-armed camilla every pass and stopped all
+# JASPER_CORE_GRAPH_PARK_UNITS again each cooldown (#2564).
+#
+# ORDER: the record is written after the stop is ENQUEUED. Because
+# jasper-camilla.service retires the record from its own ExecStartPost, the two
+# orders trade different interleavings, and neither is airtight. Writing first
+# lets a pending auto-restart delete the record of a park that still stands — a
+# silent park, disclosed only by the pre-existing path.camilla_stopped row.
+# Writing second lets an external start that beats the stop job leave a record
+# saying parked while CamillaDSP runs — a visible, wrong doctor row that the
+# next start retires. The second is the recoverable half, so it is the one
+# taken.
+park_core_graph() {
+    local reason="$1"
+    local detail="$2"
+    local action
+    local stop_status
+    action="$(park_action "$reason")"
+    unit_action reset-failed jasper-camilla.service
+    # --no-block, matching park_content_lane: the stop job lands in PID 1 and
+    # this handler moves straight on to the record. A blocking stop of a daemon
+    # wedged on a busy ALSA device can run to TimeoutStopSec (90s default, none
+    # declared on the unit) inside a handler whose own TimeoutStartSec is 45 —
+    # and a SIGTERM before the record write would stop CamillaDSP with nothing
+    # recording why.
+    "$SYSTEMCTL" --no-block stop jasper-camilla.service >/dev/null 2>&1
+    stop_status=$?
+    emit unit_action action "stop" unit "jasper-camilla.service" \
+        status "$stop_status" mode "no_block"
+    write_park_record "$reason" "$detail" "$action"
+    emit park reason "$reason" detail "$detail" state "$PARK_STATE" \
+        action "$action" re_arm "$PARK_RE_ARM"
+}
+
 mkdir -p "$RUN_DIR" 2>/dev/null || true
 if ! mkdir "$LOCK_DIR" 2>/dev/null; then
     emit suppressed reason "already_running" trigger "$REASON"
@@ -226,6 +304,17 @@ trap 'rmdir "$LOCK_DIR" 2>/dev/null || true' EXIT
 
 NOW="$(now_epoch 2>/dev/null || echo 0)"
 emit start reason "$REASON" service_result "${SERVICE_RESULT:-unknown}" exit_status "${EXIT_STATUS:-unknown}" invocation_id "${INVOCATION_ID:-unknown}"
+
+# A standing park is checked BEFORE the captures: re-entry has to be a cheap
+# no-op, and the run that wrote the record already captured the evidence that
+# diagnosed it. The record is present only while the park stands —
+# jasper-camilla.service's ExecStartPost retires it the moment CamillaDSP is
+# started again — so re-entry is gated on the cause, not on a clock.
+if [[ -s "$PARK_STATE" ]]; then
+    emit suppressed reason "parked" state "$PARK_STATE"
+    exit 0
+fi
+
 capture_dev_snd_holders
 capture_asound_status
 run_capture service_state "$SYSTEMCTL" --no-pager --plain --full status \
@@ -234,7 +323,7 @@ run_capture service_state "$SYSTEMCTL" --no-pager --plain --full status \
     librespot.service bluealsa-aplay.service jasper-mux.service
 
 if cooldown_active "$NOW"; then
-    emit suppressed reason "cooldown" cooldown_sec "$COOLDOWN_SEC" action "parked_no_reboot"
+    emit suppressed reason "cooldown" cooldown_sec "$COOLDOWN_SEC" action "no_unit_action_this_pass"
     exit 0
 fi
 write_attempt_stamp "$NOW"
@@ -256,7 +345,8 @@ unit_action restart jasper-fanin.service
 camilla_status=$?
 emit unit_action action "start" unit "jasper-camilla.service" status "$camilla_status"
 if [[ "$camilla_status" -ne 0 ]]; then
-    emit failed reason "camilla_start_failed" action "parked_no_reboot"
+    park_core_graph camilla_start_failed \
+        "jasper-camilla.service would not start after the core-graph park and one bounded restart attempt"
     exit 0
 fi
 
@@ -264,7 +354,11 @@ fi
 outputd_status=$?
 emit unit_action action "restart" unit "jasper-outputd.service" status "$outputd_status"
 if [[ "$outputd_status" -ne 0 ]]; then
-    emit failed reason "outputd_restart_failed" action "parked_no_reboot"
+    # CamillaDSP came back but the final output owner did not, so nothing
+    # reaches the DAC either way. Park the graph rather than leaving Camilla
+    # armed to flap into another OnFailure= pass.
+    park_core_graph outputd_restart_failed \
+        "jasper-outputd.service would not restart after CamillaDSP came back"
     exit 0
 fi
 
@@ -274,5 +368,7 @@ done
 unit_action start jasper-aec-reconcile.service
 unit_action start jasper-grouping-reconcile.service
 
+# `systemctl start` of a Type=simple unit returns 0 at fork, so this leg can
+# declare recovery on a CamillaDSP that dies moments later. See #3096.
 emit recovered action "core_graph_restarted"
 exit 0

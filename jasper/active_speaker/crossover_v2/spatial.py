@@ -1579,7 +1579,7 @@ def cloud_geometry_verdict(positions: Sequence[_CloudPosition]) -> CloudVerdict:
 # PR-4: contract-derived analysis bands + the live-flow honesty pipeline
 # --------------------------------------------------------------------------- #
 #
-# docs/flat-linearization-productization-plan.md, PR-4: "The echo/detector
+# docs/historical/linearization-campaign-2026-07.md, PR-4: "The echo/detector
 # band and PR-2's signal_band_hz derive from the declared contract: the
 # summed system's swept band (RoleBand.band as composed) for the passband;
 # the tweeter's usable_frequency_range_hz / measurement_band_hz for the upper

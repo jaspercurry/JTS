@@ -18,7 +18,7 @@ P2 in
 [active-speaker-tuning-layers-design.md](active-speaker-tuning-layers-design.md);
 the amendment ships in Wave 2 together with the deletions that make it true,
 so prose never leads code. The operator-facing companion,
-`docs/llm-operator-runbook.md`, is Wave 1 work.
+`docs/tuning-operator-runbook.md`, is Wave 1 work.
 
 Authority model and method are **not restated here**: the loop's rules live in
 [measurement-loop-doctrine.md](measurement-loop-doctrine.md) (the authority
@@ -320,16 +320,23 @@ the ruling those banners point back to.
   package's shipped findings/promotion code is substrate for that join, not
   a parallel system.
 
-**Standing, compatible (no action):** the `flat-linearization-*` trio
-(foundational, absorbed into Loop B),
-`crossover-linearization-80-20-plan.md` (its R14–R20 record is historical
-truth; 2.4 names the R17 deliverable it retires), `gating-v2-plan.md`
+**Archived, not standing.** The five-file linearization family — the
+`flat-linearization-*` trio, the 80/20 revision and the integrity ladder —
+was listed here as “standing, compatible (no action)”. That framing was wrong
+by the time it was written: the trio was foundational and fully absorbed into
+Loop B, the 80/20 plan's R14–R20 record was already historical truth, and the
+integrity ladder's five items had all landed. Nothing was standing to be
+compatible with. All five collapsed into
+[`historical/linearization-campaign-2026-07.md`](historical/linearization-campaign-2026-07.md)
+in wave 7e; ticket 2.4 still names the R17 deliverable it retires.
+
+**Standing, compatible (no action):** `gating-v2-plan.md`
 (feeds the kernel), `HANDOFF-bass-extension-plan.md` (parked; converges at
 4.4),
 `room-correction-regime-plan.md` (parked under the Loop C pin),
 `crossover-measurement-productization-design.md`,
 `two-stage-commission-flow-plan.md`, the information-design docs, and the
-operational HANDOFFs. `HANDOFF-crossover-measurement-v2.md` stays the
+operational HANDOFFs. `tuning-operator-runbook.md` stays the
 operational canon; its file-map rows for `fc_sweep.py`/`fc_selector.py` are
 amended by the Wave-2 deletion PRs that make them false.
 
@@ -375,7 +382,7 @@ figure it is published as `unseparated` with the separation named as pending —
     / banked / staged / applied state and possible next actions, reading the
     same builders the doors read; hostname-derived URLs at every human
     handoff point.
-1.9 `docs/llm-operator-runbook.md`: the tool menu (as inventoried), the
+1.9 `docs/tuning-operator-runbook.md`: the tool menu (as inventoried), the
     happy path, division-of-labor rules, the untrusted-notes rule, the
     program menu, the mechanism-signature table (the LLM's Block-D
     interpretation guide), and the σ-interpretation caveat (σ_position is
@@ -394,7 +401,7 @@ every deletion PR in this wave: run `bash scripts/tense-grep.sh --all`
 against a pre-cut baseline plus a subject sweep for the deleted thing's own
 vocabulary; update `docs/doc-map.toml` routing; update
 `crossover_v2/__init__`'s module docstring; amend
-`HANDOFF-crossover-measurement-v2.md`'s file-map rows.
+`tuning-operator-runbook.md`'s file-map rows.
 2.1 Layers-doc P2 amendment + pointer to this plan (lands with/after 2.2–2.4
     so prose states what is); also trues up the Measurement Program v2
     section's ×3 anchor-repeat count to the adopted ×4.

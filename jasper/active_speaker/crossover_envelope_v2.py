@@ -474,7 +474,7 @@ def _candidate_review_payload(
         #
         # **A compound, not a bare float, and that is the whole point.** The
         # charge's derivation changed under #1808 and the stamp is not
-        # re-derived on load (``docs/linearization-integrity-plan.md``,
+        # re-derived on load (``docs/historical/linearization-campaign-2026-07.md``,
         # "Cross-era disclosure"), so the same correction discloses ~22.5 dB
         # under the old rule where it now costs ~5. A renderer handed a lone
         # ``headroom_cost_db`` has no way to know which it is holding and would

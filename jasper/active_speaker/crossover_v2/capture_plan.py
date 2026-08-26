@@ -109,7 +109,7 @@ CAPTURE_PLAN_MAX_ATTEMPTS = 8
 # position-group choreography (flat-linearization PR-3b)
 # --------------------------------------------------------------------------- #
 #
-# docs/flat-linearization-plan.md fundamental 1: "Spatial multi-capture is THE
+# docs/historical/linearization-campaign-2026-07.md fundamental 1: "Spatial multi-capture is THE
 # measurement... N≈8–12 gated sweeps at guided positions (≥10 cm spread for HF
 # null decorrelation; ≥~30 cm spread to support the LF edge)". These constants
 # are the product's realisation of that fundamental.
@@ -1028,7 +1028,7 @@ DEFAULT_TIER = TIER_FULL
 # ``M = 1`` plan emits NO cloud-verify entries, so express makes no
 # cross-position post-apply claim at all — it verifies tracking at the mark
 # (``VERIFY_TOLERANCE_DB``, unchanged) and says so. See the degraded-claims
-# table in docs/flat-linearization-flow-simplification-plan.md §1.3.
+# table in docs/historical/linearization-campaign-2026-07.md §1.3.
 EXPRESS_CLOUD_VERIFY_POSITIONS = 1
 
 

@@ -2121,10 +2121,19 @@ def test_an_unreadable_floor_leaves_the_denominator_rather_than_voting(tmp_path)
         ],
     )
     packet = build_crossover_evidence_packet(session)
+    # It reaches the ROUTE, which is what says the positional bar no longer
+    # stops anything: `boost_route_unavailable` is row (e), retained by ruling
+    # R8, and it is now the only thing refusing a blend boost.
     with pytest.raises(BlendPrescriptionRefused) as excinfo:
         _gate(packet, _document([_cut(gain=2.0, freq=1000.0)], packet))
-    assert excinfo.value.reason == "insufficient_positional_evidence"
-    assert excinfo.value.evidence["n_testifying"] == 2
+    assert excinfo.value.reason == "boost_route_unavailable"
+    # …and the count this test exists for survives as the finding: two
+    # positions could testify, which is the direction that matters.
+    support = bp._check_boost_evidence(
+        ({"role": "blend", "freq": 1000.0, "q": 1.0, "gain": 2.0},),
+        packet_positional_evidence(packet),
+    )
+    assert support[0].n_testifying == 2
 
 
 def test_a_bignum_flat_reference_makes_the_positional_evidence_unavailable(tmp_path):
@@ -2140,9 +2149,14 @@ def test_a_bignum_flat_reference_makes_the_positional_evidence_unavailable(tmp_p
     )
     packet = build_crossover_evidence_packet(session)
     assert packet_positional_evidence(packet) is None
+    # Unavailable evidence records no finding rather than refusing, so the
+    # boost reaches the route — R8's retained refusal, not the demoted bar.
     with pytest.raises(BlendPrescriptionRefused) as excinfo:
         _gate(packet, _document([_cut(gain=2.0, freq=1000.0)], packet))
-    assert excinfo.value.reason == "insufficient_positional_evidence"
+    assert excinfo.value.reason == "boost_route_unavailable"
+    assert bp._check_boost_evidence(
+        ({"role": "blend", "freq": 1000.0, "q": 1.0, "gain": 2.0},), None,
+    ) == ()
     # A cut still works: it needs no positional evidence.
     assert _gate(packet, _document([_cut(-1.5)], packet)).prescription_class == "cut"
 
@@ -2300,15 +2314,25 @@ def test_a_boost_is_a_distinct_class_and_the_receipt_says_so(packet):
     }
 
 
-def test_a_single_position_dip_is_presumed_an_interference_null(tmp_path):
-    """The null-exclusion rule made deterministic without the null instrument."""
+def test_a_single_position_dip_is_reported_unsupported_not_refused(tmp_path):
+    """The null-exclusion rule made deterministic without the null instrument.
+
+    It REFUSED on this until the nanny burn-down — a prediction about whether
+    the filter would help, vetoing the measurement that settles it. The fraction
+    is unchanged and now rides the receipt; the delta probe disposes."""
     session, _ = _bundle(tmp_path, dip_at=[1000.0, None, None, None])
     packet = build_crossover_evidence_packet(session)
+    # Unsupported no longer pre-empts: it reaches R8's retained route refusal.
     with pytest.raises(BlendPrescriptionRefused) as excinfo:
         _gate(packet, _document([_cut(gain=2.0, freq=1000.0)], packet))
-    assert excinfo.value.reason == "boost_dip_not_stable"
-    assert excinfo.value.evidence["n_with_dip"] == 1
-    assert excinfo.value.evidence["n_testifying"] == 4
+    assert excinfo.value.reason == "boost_route_unavailable"
+    support = bp._check_boost_evidence(
+        ({"role": "blend", "freq": 1000.0, "q": 1.0, "gain": 2.0},),
+        packet_positional_evidence(packet),
+    )[0]
+    assert support.n_with_dip == 1
+    assert support.n_testifying == 4
+    assert support.supported is False
 
 
 def test_a_dip_at_all_but_one_position_clears_the_positional_bar(tmp_path):
@@ -2321,16 +2345,22 @@ def test_a_dip_at_all_but_one_position_clears_the_positional_bar(tmp_path):
     assert excinfo.value.reason == "boost_route_unavailable"
 
 
-def test_too_few_positions_is_go_and_measure_not_no(tmp_path):
-    """A different instruction, so a different slug."""
+def test_too_few_positions_records_no_finding_and_still_admits(tmp_path):
+    """"Go and measure" is still a different answer from "no" — and neither
+    of them refuses now.
+
+    Below ``BOOST_MIN_TESTIFYING_POSITIONS`` the rule can say nothing, so the
+    receipt carries no finding rather than a verdict."""
     session, _ = _bundle(tmp_path, dip_at=[1000.0, 1000.0])
+    assert 2 < BOOST_MIN_TESTIFYING_POSITIONS  # the condition under test
     packet = build_crossover_evidence_packet(session)
     with pytest.raises(BlendPrescriptionRefused) as excinfo:
         _gate(packet, _document([_cut(gain=2.0, freq=1000.0)], packet))
-    assert excinfo.value.reason == "insufficient_positional_evidence"
-    assert excinfo.value.evidence["min_testifying_positions"] == (
-        BOOST_MIN_TESTIFYING_POSITIONS
-    )
+    assert excinfo.value.reason == "boost_route_unavailable"
+    assert bp._check_boost_evidence(
+        ({"role": "blend", "freq": 1000.0, "q": 1.0, "gain": 2.0},),
+        packet_positional_evidence(packet),
+    ) == ()
 
 
 def test_a_cut_needs_no_positional_evidence(tmp_path):
@@ -2688,8 +2718,18 @@ def test_the_response_format_states_every_bound_the_gate_applies():
     assert fmt["bounds"]["q_max_cut"] == PRESCRIPTION_MAX_CUT_Q
     assert fmt["bounds"]["q_max_boost"] == PRESCRIPTION_MAX_BOOST_Q
     assert "q_max" not in fmt["bounds"], "one q_max would hide the sign split"
-    assert fmt["boost_bar"]["min_testifying_positions"] == BOOST_MIN_TESTIFYING_POSITIONS
+    # The positional block is a FINDING now, not a bar, and its key says so —
+    # a prescriber reading "boost_bar" would take it for something that refuses.
+    assert "boost_bar" not in fmt, "the bar is gone; the key must not outlive it"
+    finding = fmt["boost_positional_finding"]
+    assert finding["min_testifying_positions"] == BOOST_MIN_TESTIFYING_POSITIONS
+    assert "REFUSES NOTHING" in finding["note"]
     assert set(fmt["refusal_reasons"]) == BLEND_PRESCRIPTION_REFUSAL_REASONS
+    # …and the two retired slugs are gone from the vocabulary entirely, so a
+    # prescriber cannot read a bar this door no longer applies.
+    for retired in ("insufficient_positional_evidence", "boost_dip_not_stable"):
+        assert retired not in BLEND_PRESCRIPTION_REFUSAL_REASONS
+        assert not hasattr(bp, retired.upper())
     assert fmt["execution_boundary"]["model_may_execute"] is False
     assert fmt["execution_boundary"]["model_may_grade_itself"] is False
 

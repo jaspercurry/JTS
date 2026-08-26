@@ -93,6 +93,17 @@ def check_web_design_assets() -> CheckResult:
 NGINX_SITE = Path("/etc/nginx/sites-enabled/jasper.conf")
 MANAGEMENT_PROBE_URL = "http://127.0.0.1/system/data.json"
 
+# Shared with check_usbnet_management_probe (jasper/cli/doctor/network.py),
+# which probes the same /system/ chain over the USB fallback address.
+MANAGEMENT_502_HINT = (
+    " — two hops produce this identically: the socket-activated "
+    "jasper-system-web wizard (nginx got no answer) or jasper-control behind "
+    "it (the wizard answered but could not reach it). This run's `wizard "
+    "socket start limits` check covers the commonest wizard cause; "
+    "`systemctl status jasper-system-web.service jasper-control` separates "
+    "the rest"
+)
+
 
 @doctor_check(order=24.5, group="web")
 def check_management_surface() -> CheckResult:
@@ -107,8 +118,13 @@ def check_management_surface() -> CheckResult:
     from a seeded bind value and every dashboard poll 403ed, with
     nothing on the Pi noticing. Any break in the nginx → wizard →
     control chain (guard rejection, wizard socket misbind, control
-    down) fails here with the layer named. Skips on a non-Pi checkout
-    (no installed nginx site)."""
+    down) fails here. A 502 is the one status two of those hops share
+    — an unanswered wizard socket and a wizard forwarding its own
+    unreachable-control error are identical from nginx — so that
+    branch names both candidates and hands the wizard one to
+    :func:`check_wizard_socket_start_limits`, instead of attributing it
+    to jasper-control alone (#2465). Skips on a non-Pi checkout (no
+    installed nginx site)."""
     import urllib.error
     import urllib.request
 
@@ -140,10 +156,7 @@ def check_management_surface() -> CheckResult:
             "JASPER_CONTROL_HOST / JASPER_MANAGEMENT_ALLOWED_HOSTS in the env"
         )
     elif status == 502:
-        hint = (
-            " — wizard answered but jasper-control is unreachable "
-            "(systemctl status jasper-control)"
-        )
+        hint = MANAGEMENT_502_HINT
     else:
         hint = ""
     return CheckResult(label, "fail", f"HTTP {status} ({detail}){hint}")

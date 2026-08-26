@@ -519,7 +519,7 @@ create a second retention system.
   snapped to the nearest local GCC-PHAT peak within ±(period/6) at Fc, is the
   SEED pair, and `_select_alignment_pair` then commits whichever polarity and
   delay sum flattest through the blend (issue #2598 — the canonical write-up is
-  [HANDOFF-crossover-measurement-v2.md](HANDOFF-crossover-measurement-v2.md)
+  [tuning-operator-runbook.md](tuning-operator-runbook.md)
   "(Polarity, delay) selection"). VERIFY plays one mono summed
   sweep, so none of MEASURE's repeat-pair drift checks exists there;
   `_verify_capture_integrity` gives it its own shaped record
@@ -599,7 +599,7 @@ create a second retention system.
   deliberately does not import `gating`, reading a gating block purely as data
   (`_gate_disclosure`'s docstring). That flow is owned
   by
-  [HANDOFF-crossover-measurement-v2.md](HANDOFF-crossover-measurement-v2.md).
+  [tuning-operator-runbook.md](tuning-operator-runbook.md).
   **Their calibrated thresholds are justified in-module, in constant tables
   beside each constant — those tables are the single source of truth for
   those numbers; do not copy a figure out of them into prose.**
@@ -911,7 +911,7 @@ create a second retention system.
   `crossover_envelope.build_crossover_envelope_logged`, which is that call plus
   a serve log; the `build_crossover_envelope` shim that used to forward to it
   has been deleted) — and it is owned by
-  [HANDOFF-crossover-measurement-v2.md](HANDOFF-crossover-measurement-v2.md),
+  [tuning-operator-runbook.md](tuning-operator-runbook.md),
   not restated here. **L1
   then closed the level-match loop (2026-06-20):** each per-driver capture also
   records an **overlap-band level** at the crossover Fc, and
@@ -1154,7 +1154,7 @@ signal to a compression driver.
 > records — was **retired by W5b on 2026-07-24**. The shipped crossover
 > measurement is the v2 conductor's guided spatial cloud, captured by the
 > cloud phone page, and it is owned by
-> [HANDOFF-crossover-measurement-v2.md](HANDOFF-crossover-measurement-v2.md).
+> [tuning-operator-runbook.md](tuning-operator-runbook.md).
 > What is still live, and why this section stays, is the **tier contract**:
 > the trim chain (`baseline_profile._measured_level_trims` →
 > `_derive_corrections`), the provenance ladder, the fail-closed
@@ -1651,7 +1651,7 @@ checked against the tree at that date, and it is **outside the scope of this
 file's `Last verified:` pass below**, which does not cover it. "Ladder" here
 means the instruments and what each can prove — unrelated to W6's
 scripted-then-Chrome hardware sequence in
-[HANDOFF-crossover-measurement-v2.md](HANDOFF-crossover-measurement-v2.md).*
+[tuning-operator-runbook.md](tuning-operator-runbook.md).*
 
 Two instruments carry the weight of validating the correction flow today, and
 neither can answer the question that matters most.
@@ -1767,7 +1767,7 @@ cut-only for want of evidence the plan never collects. The ruling permits boost
 there, on a named and accepted risk — a boost can land on a position-specific
 artifact an at-mark verification cannot detect — adjudicated by post-apply
 `VERIFY`, household listening, and retained Undo. The ruling's own text is the
-"Boost ruling" block in `docs/crossover-linearization-80-20-plan.md` §4.2.
+"Boost ruling" block in `docs/historical/linearization-campaign-2026-07.md` §4.2.
 
 What did NOT change is the case the retired condition was written for: a
 session that PLANNED a cloud and LOST it (`_cloud_fit_evidence` has two

@@ -7,7 +7,7 @@
 > `v2` on 2026-07-19. **Current operational truth — how to run it, the
 > file map, invariants, the failure taxonomy, and the W6 bug catalog —
 > now lives in
-> [HANDOFF-crossover-measurement-v2.md](HANDOFF-crossover-measurement-v2.md).**
+> [tuning-operator-runbook.md](tuning-operator-runbook.md).**
 > Read this doc for the decision archaeology; read the HANDOFF for what
 > the flow does today. W5b (2026-07-24) deleted the legacy flow and the
 > `JASPER_CROSSOVER_FLOW` selector — v2 is the only flow now.
@@ -185,7 +185,7 @@ adds phase — the high-credibility view for a crossover product).
 > trigger moved from a human tap to the auto-apply completing. Current
 > operational truth (screen names, reason codes, the RESULT screen shape)
 > lives in
-> [`HANDOFF-crossover-measurement-v2.md`](HANDOFF-crossover-measurement-v2.md)
+> [`historical/crossover-measurement-v2-campaign-record.md`](historical/crossover-measurement-v2-campaign-record.md)
 > gotcha #18. The rest of this section is preserved for design-rationale
 > archaeology — read it for the "why," not for the current screen
 > sequence.
@@ -206,9 +206,9 @@ adds phase — the high-credibility view for a crossover product).
 > amendment's own flow-simplification PR-U1/PR-U3 figures (16 captures at
 > Full, 7 at Express) share the same fate, so neither generation of the
 > numbers is restated here. Current operational truth:
-> [`HANDOFF-crossover-measurement-v2.md`](HANDOFF-crossover-measurement-v2.md)
+> [`tuning-operator-runbook.md`](tuning-operator-runbook.md)
 > "The capture flow" / "What it is"; why the cloud is necessary at all:
-> [`flat-linearization-plan.md`](flat-linearization-plan.md) fundamental 1.
+> [`linearization-campaign-2026-07.md`](historical/linearization-campaign-2026-07.md) fundamental 1.
 
 One mic position for the whole session: **~1 m on the listening axis**
 (tweeter height, facing the speaker; picture on the placement screen). The
@@ -846,7 +846,7 @@ than being dropped — `predicted_ripple_db` (the G1 threshold, a disclosure
 trigger since #2087) stays on the
 independently aligned frame, and the ±(period/6) snap radius bounds the residual
 below one comb period. Consequence recorded in
-`HANDOFF-crossover-measurement-v2.md`: the predicted-spec improvement gate's
+`tuning-operator-runbook.md`: the predicted-spec improvement gate's
 margin narrows with the residual. v2.5 (2026-07-22) — delay selection is
 anchor-primary with a
 gated ±(period/6) local-peak snap of the drift-corrected physical peak gap;

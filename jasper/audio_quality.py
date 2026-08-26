@@ -18,6 +18,8 @@ import tempfile
 from pathlib import Path
 from typing import Any
 
+from jasper.atomic_io import atomic_write_text
+
 DEFAULT_CONVERTER = "samplerate_medium"
 STATE_ENV_KEY = "JASPER_ALSA_RATE_CONVERTER"
 VALID_CONVERTERS = ("samplerate_medium", "samplerate_best")
@@ -109,12 +111,11 @@ def read_requested_converter(
     return normalize_converter(raw)
 
 
-def _write_converter_env(converter: str, path: Path) -> None:
-    path.write_text(
+def _converter_env_text(converter: str) -> str:
+    return (
         "# Written by JTS /system audio quality control.\n"
-        f"{STATE_ENV_KEY}={converter}\n",
+        f"{STATE_ENV_KEY}={converter}\n"
     )
-    os.chmod(path, 0o644)
 
 
 def read_active_converter(
@@ -171,11 +172,7 @@ def write_requested_converter(
     path: str | os.PathLike[str] | None = None,
 ) -> str:
     canonical = normalize_converter(converter)
-    dst = _state_path(path)
-    dst.parent.mkdir(parents=True, exist_ok=True)
-    tmp = dst.with_name(dst.name + ".tmp")
-    _write_converter_env(canonical, tmp)
-    os.replace(tmp, dst)
+    atomic_write_text(_state_path(path), _converter_env_text(canonical), mode=0o644)
     return canonical
 
 
@@ -205,10 +202,7 @@ def apply_requested_converter(
             delete=False,
         ) as tmp:
             tmp_name = tmp.name
-            tmp.write(
-                "# Written by JTS /system audio quality control.\n"
-                f"{STATE_ENV_KEY}={canonical}\n",
-            )
+            tmp.write(_converter_env_text(canonical))
         os.chmod(tmp_name, 0o644)
         env = os.environ.copy()
         env["JASPER_AUDIO_QUALITY_FILE"] = tmp_name
