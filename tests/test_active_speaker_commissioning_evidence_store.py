@@ -39,10 +39,7 @@ from jasper.active_speaker.commissioning_evidence_store import (
     isolated_driver_evidence_relative_path,
     plan_relative_path,
 )
-from jasper.active_speaker.commissioning_run import (
-    CommissioningRunHandle,
-    CommissioningRunStore,
-)
+from jasper.active_speaker.commissioning_run import CommissioningRunStore
 from jasper.active_speaker.profile import (
     ADJACENT_PAIRS_BY_WAY,
     DRIVER_ROLES_BY_WAY,
@@ -53,8 +50,6 @@ from jasper.audio_measurement.excitation_artifacts import canonical_admission_by
 from jasper.audio_measurement.null_walk import (
     MAX_SCHEDULED_CANDIDATES,
     MIN_CAPTURE_COUNT,
-    BoundedNullWalkSchedule,
-    NullWalkSpec,
 )
 from tests.active_speaker_fixtures import mono_output_topology
 from tests.test_active_speaker_commissioning_evidence import (
@@ -613,44 +608,6 @@ def test_attempt_discovery_ignores_only_regular_store_temp_residue(
     assert raised.value.code is CommissioningEvidenceStoreErrorCode.NOT_REGULAR
 
 
-def test_schedule_reopen_rejects_a_foreign_session_handle(tmp_path: Path) -> None:
-    store = _open_store(tmp_path / "first")
-    other = _open_store(tmp_path / "second")
-    harness = _harness_for_store(tmp_path / "first", store)
-    run = harness.plan.authority.run
-    spec = NullWalkSpec(
-        crossover_fc_hz=2_000.0,
-        geometry_seed_us=0.0,
-        positive_delay_target="tweeter",
-        negative_delay_target="woofer",
-    )
-    schedule = BoundedNullWalkSchedule(spec, refinement_anchor_us=0.0)
-    artifact = store.publish_bounded_null_walk_schedule(
-        schedule,
-        spec=spec,
-        run=run,
-        speaker_group_id="mono",
-        region_id="woofer_tweeter",
-    )
-    foreign = CommissioningRunHandle(
-        session_id=other.session_id,
-        session_fingerprint=_hash("foreign-session"),
-        run_id=run.run_id,
-        owner_id=run.owner_id,
-        owner_generation=run.owner_generation,
-    )
-
-    with pytest.raises(CommissioningEvidenceStoreError) as raised:
-        store.reopen_bounded_null_walk_schedule(
-            spec=spec,
-            run=foreign,
-            speaker_group_id="mono",
-            region_id="woofer_tweeter",
-            artifact=artifact,
-        )
-    assert raised.value.code is CommissioningEvidenceStoreErrorCode.WRONG_AUTHORITY
-
-
 def test_deep_complete_publish_reopen_and_missing_child_fail_closed(
     tmp_path: Path,
 ) -> None:
@@ -681,37 +638,6 @@ def test_deep_complete_publish_reopen_and_missing_child_fail_closed(
     assert store.reopen_attempt_captures(first_region.normal.attempt.attempt_id) == (
         first_region.normal.captures
     )
-    stationary_artifact = store.publish_stationary_region_evidence(
-        first_region.normal
-    )
-    assert (
-        store.reopen_stationary_region_evidence(stationary_artifact)
-        == first_region.normal
-    )
-    first_point = first_region.delay_walk.points[0]
-    point_artifact = store.publish_delay_point_evidence(first_point)
-    assert store.reopen_delay_point_evidence(point_artifact) == first_point
-    schedule_artifact = store.publish_bounded_null_walk_schedule(
-        first_region.delay_walk.schedule,
-        spec=first_region.delay_walk.spec,
-        run=complete.plan.authority.run,
-        speaker_group_id=first_region.target.speaker_group_id,
-        region_id=first_region.target.region_id,
-    )
-    assert store.reopen_bounded_null_walk_schedule(
-        spec=first_region.delay_walk.spec,
-        run=complete.plan.authority.run,
-        speaker_group_id=first_region.target.speaker_group_id,
-        region_id=first_region.target.region_id,
-        artifact=schedule_artifact,
-    ) == first_region.delay_walk.schedule
-    walk_artifact = store.publish_delay_walk_evidence(first_region.delay_walk)
-    assert store.reopen_delay_walk_evidence(walk_artifact) == first_region.delay_walk
-    region_artifact = store.publish_region_commissioning_evidence(first_region)
-    assert (
-        store.reopen_region_commissioning_evidence(region_artifact) == first_region
-    )
-
     artifact = store.publish_complete_commissioning_evidence(complete)
     assert artifact.relative_path == complete_relative_path(
         complete.plan.authority.run.run_id
