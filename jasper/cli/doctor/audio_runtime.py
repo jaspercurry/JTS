@@ -1632,11 +1632,15 @@ def check_fanin_coupling() -> CheckResult:
         # exactly this state and is not broken. What the detail owes the operator
         # is the command that finishes it.
         if roleful:
+            # The first two steps are the SAME ladder the transport-park check
+            # records, composed from its constant rather than respelled, so the
+            # two surfaces cannot prescribe different things to the same
+            # operator while both live. Only the third step is this check's own.
+            from ...control.transport_park import ACTIVE_ENDPOINT_REMEDY
+
             recovery = (
-                "the ACTIVE-ring ladder, in order: sudo /opt/jasper/.venv/bin/"
-                "jasper-active-speaker baseline-reemit --endpoint ring && sudo "
-                "systemctl start jasper-audio-hardware-reconcile && sudo "
-                "/opt/jasper/.venv/bin/jasper-fanin-coupling-reconcile shm_ring"
+                f"the ACTIVE-ring ladder, in order: {ACTIVE_ENDPOINT_REMEDY} && "
+                "sudo /opt/jasper/.venv/bin/jasper-fanin-coupling-reconcile shm_ring"
             )
         else:
             recovery = (
@@ -4177,8 +4181,21 @@ def check_ring_transport_park() -> CheckResult:
         )
 
     if status == "ok":
+        # The honest claim, not "the ring can serve this box": a box with no
+        # ring geometry that no class names lands in `unclassified` below, and
+        # this sentence must not have already told the operator it was fine.
         return CheckResult(
-            label, "ok", "the ring can serve this box's declared topology"
+            label, "ok", "this box is in none of the four named transport parks"
+        )
+
+    if status == "unclassified":
+        return CheckResult(
+            label,
+            "warn",
+            "this box's declared topology resolves no ring geometry of either "
+            "kind, and none of the four named parks describes it — so it is "
+            "neither servable by the single transport nor tracked by an issue "
+            "yet. Report the saved layout (/sound/setup/) so it can be named.",
         )
 
     parks = state.get("parks") or []

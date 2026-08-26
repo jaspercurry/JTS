@@ -828,6 +828,7 @@ async def _get_state(
     aec_full_status: Callable[[], dict] = _aec_full_status,
     read_transit_state_func: Callable[[], dict] = read_transit_state,
     ha_status_snapshot: Callable[[], dict[str, Any]] | None = None,
+    transport_park_snapshot: Callable[[], dict[str, Any]] = transport_park.snapshot,
 ) -> dict[str, Any]:
     """Aggregate state across daemons for GET /state. Each section
     fails soft — voice unreachable or Camilla restarting reports null
@@ -1431,17 +1432,12 @@ async def _get_state(
             # surfaces cannot disagree.
             "camilla_recover": camilla_recover_state.snapshot(),
             # The four named parks of the one-audio-transport rule
-            # (ADR-0178): topologies and runtime pins the shm_ring transport
-            # cannot serve, each carrying its tracked rebuild issue or its
-            # one-command remedy. status="parked" means the ring is the only
-            # transport and none serves this box — it emits NOTHING;
-            # status="pending" means it still plays on the loopback route but
-            # parks when that route is deleted. Fresh topology + outputd env
-            # read per call (this daemon is never restarted when a bond forms
-            # or a reconciler rewrites outputd.env). Same reader
-            # jasper-doctor's check_ring_transport_park and the household
-            # audio card use, so the three surfaces cannot disagree.
-            "transport_park": transport_park.snapshot(),
+            # (ADR-0178). Read from the audio-health sampler's cached verdict
+            # when there is one, so this field and the household rows built
+            # from it in the same payload cannot disagree in time. Same reader
+            # jasper-doctor's check_ring_transport_park uses, so the three
+            # surfaces cannot disagree either.
+            "transport_park": transport_park_snapshot(),
             # Bounded after-the-fact timeline for multiroom restart cascades:
             # existing event=multiroom.reconcile.*, restart_broker.*, and
             # grouping_supervisor.* journal lines, scanned into a tiny ring so

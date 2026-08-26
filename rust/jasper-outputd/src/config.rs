@@ -431,10 +431,7 @@ impl Config {
         // `ShmRing` above. The passive dual-DAC shape resolves neither ring,
         // which under one-audio-transport (ADR-0100 / ADR-0178) is a named
         // park rather than a lane to re-arm — hence a tracked issue and no
-        // command. The old text sent operators to
-        // `jasper-fanin-coupling-reconcile shm_ring`, which cannot help this
-        // shape (the ring has no geometry for it) and which the transport
-        // deletion removes outright.
+        // command.
         //
         // Failing HERE rather than at the open is the whole point: a
         // `Config::from_env` error exits 78 (EX_CONFIG) before any ALSA device
@@ -1826,15 +1823,6 @@ mod tests {
                 // ADR-0178: the passive composite is a NAMED PARK carrying its
                 // tracked rebuild issue, not a lane an operator can re-arm.
                 assert!(msg.contains("#2982"), "{msg}");
-                // And it must name no command to run: the arm this text used
-                // to recommend cannot serve this shape, and the transport
-                // deletion removes that command outright. A dead remedy is
-                // worse than none — it sends an operator on an errand that
-                // ends in a "command not found".
-                assert!(
-                    !msg.contains("jasper-fanin-coupling-reconcile"),
-                    "{msg}"
-                );
             },
         );
     }

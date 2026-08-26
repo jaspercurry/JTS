@@ -2,37 +2,15 @@
 #
 # SPDX-License-Identifier: Apache-2.0
 
-"""The four named parks of the one-audio-transport rule (ADR-0178).
+"""The four named parks of the one-audio-transport rule.
 
 ADR-0100 makes ``shm_ring`` the only central transport and says a topology the
 ring cannot serve **parks loudly** — doctor FAIL, ``/state``, web banner —
-naming its tracked issue. This module is the one place that answers *which*
-park a box is in, so the three operator/household surfaces cannot disagree
-about it (the shape ``content_lane_state`` and ``camilla_recover_state``
-already use for their own out-of-band records).
-
-Four classes, and no fifth without an ADR:
-
-``passive_stereo_composite``
-    A multi-child (dual-DAC) sink carrying a passive full-range program. No
-    Ring B (the ring carries one coherent stereo sink) and no ACTIVE ring (it
-    is not roleful). Rebuilt on the ring under #2982. A **roleful** composite
-    is deliberately NOT in this class: its post-crossover program rides the
-    ACTIVE ring and jts.local runs exactly that shape today.
-``mono_full_range``
-    A declared 1-channel full-range layout. The ring layout's accept-set
-    starts at two channels, so no ring geometry is representable at all.
-    Rebuilt under #3117. Active-crossover **mono** (roleful, 2+ channels) is
-    ring-eligible and is not in this class.
-``roleful_active_endpoint_unconverged``
-    A roleful box whose ACTIVE ring width resolves but whose endpoint marker
-    has not converged onto it. The only class with an immediate remedy rather
-    than a rebuild issue — :data:`ACTIVE_ENDPOINT_REMEDY`, one command.
-``grouped_dac_content_lane``
-    A bonded/grouped member whose round-trip ``dac_content`` lane is armed.
-    That lane pins ``JASPER_OUTPUTD_CONTENT_BRIDGE=direct`` and outputd
-    refuses it against ``shm_ring``, so it is mutually exclusive with the ring
-    by construction. Rebuilt under #3118.
+naming its tracked issue. [ADR-0178](../../docs/adr/0178-every-shape-the-ring-cannot-serve-parks-under-its-own-name.md)
+names the four shapes and why each is a class; this module is the one place
+that answers *which* park a box is in, so the three operator/household
+surfaces cannot disagree about it (the shape ``content_lane_state`` and
+``camilla_recover_state`` already use for their own out-of-band records).
 
 **Eligibility is read, never restated.** ``ring_channels_for_topology`` /
 ``active_ring_channels_for_topology`` in
@@ -57,7 +35,8 @@ if TYPE_CHECKING:
     from ..output_topology import OutputTopology
 
 #: Park class tokens. Structured, matched by tests and by the web surface;
-#: the human prose beside them is presentation and may be reworded freely.
+#: the human prose beside them is presentation. See ADR-0178 for what each
+#: shape is and why it is a class of its own.
 PARK_PASSIVE_STEREO_COMPOSITE = "passive_stereo_composite"
 PARK_MONO_FULL_RANGE = "mono_full_range"
 PARK_ROLEFUL_ACTIVE_ENDPOINT_UNCONVERGED = "roleful_active_endpoint_unconverged"
@@ -65,14 +44,28 @@ PARK_GROUPED_DAC_CONTENT_LANE = "grouped_dac_content_lane"
 
 #: The tracked rebuild issue each shape waits on, in the tree's ``#NNNN``
 #: spelling. ``roleful_active_endpoint_unconverged`` has none on purpose: it
-#: needs no rebuild, only the one command below.
+#: needs no rebuild, only the ladder below.
 ISSUE_COMPOSITE_ON_RING = "#2982"
 ISSUE_MONO_ON_RING = "#3117"
 ISSUE_GROUPED_ON_RING = "#3118"
 
-#: The recorded one-command remedy for an unconverged ACTIVE endpoint. Owner
-#: ruling 2026-08-26: a recorded command, not a new reconciler rung.
-ACTIVE_ENDPOINT_REMEDY = "jasper-active-speaker baseline-reemit --endpoint ring"
+#: The recorded remedy for an unconverged ACTIVE endpoint. Owner ruling
+#: 2026-08-26: a recorded command, not a new reconciler rung.
+#:
+#: BOTH steps, because the first one alone does not clear this park.
+#: ``baseline-reemit --endpoint ring`` moves the GRAPH; the endpoint marker
+#: this park reads has exactly one writer, ``jasper-audio-hardware-reconcile``,
+#: which derives it from that graph. Recording only step 1 would send an
+#: operator to re-run the doctor and find the identical park still there —
+#: the dead-remedy defect this campaign is removing, one level in.
+#:
+#: The doctor's fan-in coupling check prescribes the same ladder plus its own
+#: third step and composes it FROM this constant, so the two surfaces cannot
+#: drift apart while both live.
+ACTIVE_ENDPOINT_REMEDY = (
+    "sudo /opt/jasper/.venv/bin/jasper-active-speaker baseline-reemit "
+    "--endpoint ring && sudo systemctl start jasper-audio-hardware-reconcile"
+)
 
 
 def _outputd_env() -> dict[str, str]:
@@ -111,6 +104,17 @@ class TransportPark:
         }
 
 
+@dataclass(frozen=True)
+class _Assessment:
+    """One pass over the topology + env: the parks, and the honest silence."""
+
+    parks: tuple[TransportPark, ...]
+    #: Configured, yet the eligibility SSOT resolved NO ring geometry of
+    #: either kind. When no class then names it, the box is neither servable
+    #: nor named, and saying "the ring can serve this box" would be false.
+    ring_unresolved: bool
+
+
 def ring_only_transport() -> bool:
     """Is the ring the only central transport on this tree yet?
 
@@ -118,29 +122,24 @@ def ring_only_transport() -> bool:
     transport-deletion slice flips this by deleting the loopback coupling —
     there is no second edit to forget and no dead knob left behind. While
     ``loopback`` is still a legal coupling, a box in one of the four classes
-    below still has a working route and must not be reported as silent.
+    still has a working route and must not be reported as silent.
+
+    A fan-in COUPLING vocabulary correctly gates a CONTENT-BRIDGE park
+    (``grouped_dac_content_lane``) because
+    :func:`jasper.audio_runtime_plan.coupling_supported_for_route` already
+    joins the two: it blocks the ``shm_ring`` coupling exactly where the
+    dac_content lane is armed, so "loopback is gone" and "the armed lane has
+    nowhere left to run" are one fact seen from two ends.
     """
     from ..fanin_coupling import COUPLING_SHM_RING, VALID_COUPLINGS
 
     return set(VALID_COUPLINGS) == {COUPLING_SHM_RING}
 
 
-def classify(
-    topology: "OutputTopology | None" = None,
-    env: Mapping[str, str] | None = None,
-) -> tuple[TransportPark, ...]:
-    """Every park this box is in, in the order ADR-0178 lists them.
-
-    A TUPLE rather than one winning verdict: the classes answer different
-    questions (three topology shapes, one runtime pin) and a box can genuinely
-    be in two — a bonded mono speaker is waiting on both #3117 and #3118. A
-    single verdict would force an invented precedence and hide the other
-    tracked issue from the operator who has to clear both.
-
-    ``()`` — no park — is the answer for every ring-eligible box, and for an
-    UNCONFIGURED topology, which holds silence through the speaker-setup park
-    (#2135) and is not this module's to re-report.
-    """
+def _assess(
+    topology: "OutputTopology | None",
+    env: Mapping[str, str] | None,
+) -> _Assessment:
     from ..active_speaker.runtime_contract import (
         CONTRACT_NORMAL_MONO_FULL_RANGE,
         active_ring_channels_for_topology,
@@ -150,23 +149,33 @@ def classify(
     )
     from ..fanin_coupling import ring_active_endpoint_armed
     from ..multiroom.reconcile import OUTPUTD_DAC_CONTENT_FIFO_ENV
-    from ..output_topology import load_output_topology
+    from ..output_topology import load_output_topology_strict
 
     if topology is None:
-        topology = load_output_topology()
+        # STRICT, not the fail-soft loader: that one degrades a corrupt or
+        # unreadable topology to an empty draft, which classifies as
+        # not-configured and would report a box with a rotted topology file as
+        # a healthy speaker on all three surfaces. Raising here is what makes
+        # this module's documented "unavailable" posture reachable. Missing is
+        # still an empty draft — a fresh box must not park on never-configured.
+        topology = load_output_topology_strict()
     if env is None:
         env = _outputd_env()
 
     contract = classify_output_contract(topology)
     stereo_ring = ring_channels_for_topology(topology)
     active_ring = active_ring_channels_for_topology(topology)
+    ring_unresolved = bool(
+        contract.topology_configured and stereo_ring is None and active_ring is None
+    )
 
     parks: list[TransportPark] = []
 
-    if contract.topology_configured and stereo_ring is None and active_ring is None:
+    if ring_unresolved:
         # The eligibility SSOT resolved NO ring geometry of either kind for
         # this saved layout. Name which shape it is; a shape with no name here
-        # is out of ADR-0178's four classes and gets no park from this module.
+        # leaves `ring_unresolved` standing and is disclosed as unclassified
+        # rather than reported servable.
         if topology_sink_is_composite(topology) and not contract.requires_roleful_graph:
             parks.append(
                 TransportPark(
@@ -195,16 +204,25 @@ def classify(
                 )
             )
 
-    if active_ring is not None and not ring_active_endpoint_armed(env):
+    # ACTIVE-CROSSOVER boxes only, not every roleful one. `requires_roleful_graph`
+    # is also True for a passive stereo box that merely adds a subwoofer or a
+    # protected output, and those have no active-speaker baseline to re-emit —
+    # parking them would hand the household a remedy that cannot run. The
+    # narrower `active_modes` is the fact the remedy actually needs.
+    if (
+        active_ring is not None
+        and contract.active_modes
+        and not ring_active_endpoint_armed(env)
+    ):
         parks.append(
             TransportPark(
                 park_class=PARK_ROLEFUL_ACTIVE_ENDPOINT_UNCONVERGED,
                 issue=None,
                 remedy=ACTIVE_ENDPOINT_REMEDY,
                 detail=(
-                    f"this roleful box resolves a {active_ring}-channel ACTIVE "
-                    "ring, but its endpoint marker has not converged onto it, "
-                    "so nothing carries the post-crossover program"
+                    f"this active-crossover box resolves a {active_ring}-channel "
+                    "ACTIVE ring, but its endpoint marker has not converged onto "
+                    "it, so nothing carries the post-crossover program"
                 ),
             )
         )
@@ -226,7 +244,31 @@ def classify(
             )
         )
 
-    return tuple(parks)
+    return _Assessment(parks=tuple(parks), ring_unresolved=ring_unresolved)
+
+
+def classify(
+    topology: "OutputTopology | None" = None,
+    env: Mapping[str, str] | None = None,
+) -> tuple[TransportPark, ...]:
+    """Every park this box is in, in the order ADR-0178 lists them.
+
+    A TUPLE rather than one winning verdict: the classes answer different
+    questions (three topology shapes, one runtime pin) and a box can genuinely
+    be in two — a bonded mono speaker is waiting on both #3117 and #3118. A
+    single verdict would force an invented precedence and hide the other
+    tracked issue from the operator who has to clear both.
+
+    ``()`` — no park — is the answer for every ring-eligible box, and for an
+    UNCONFIGURED topology, which holds silence through the speaker-setup park
+    (#2135) and is not this module's to re-report. It is NOT by itself proof
+    the ring can serve the box; :func:`snapshot` carries that distinction as
+    ``unclassified``.
+
+    Raises ``OutputTopologyError`` on a corrupt or unreadable topology when
+    ``topology`` is not supplied; :func:`snapshot` is the fail-soft caller.
+    """
+    return _assess(topology, env).parks
 
 
 def snapshot(
@@ -237,10 +279,10 @@ def snapshot(
 ) -> dict[str, Any]:
     """Fail-soft park verdict for jasper-doctor, ``/state`` and the web card.
 
-    Three shapes, discriminated by ``status``:
+    Shapes, discriminated by ``status``:
 
     ``{"status": "ok", "parked": False, "parks": []}``
-        The ring can serve this box.
+        The ring resolves a geometry for this box, or it is not configured yet.
 
     ``{"status": "pending", "parked": False, "parks": [...]}``
         This box is in one or more of the four classes, but the loopback route
@@ -253,6 +295,13 @@ def snapshot(
         Ring-only, and no ring serves this box: it emits NOTHING. Loud on
         every surface.
 
+    ``{"status": "unclassified", "parked": False, "parks": []}``
+        Configured, no ring geometry of either kind, and none of the four
+        classes names it — a mid-commissioning layout with an unassigned lane,
+        say. NOT a fifth class and not a household incident; it is the refusal
+        to claim "the ring can serve this box" about a box the ring demonstrably
+        cannot serve, which is the false quiet ADR-0100 exists to prevent.
+
     ``{"status": "unavailable", "parked": False, "parks": [], "error": ...}``
         Topology or env could not be read. Reported distinctly rather than as
         a healthy box, the same posture the other park readers hold.
@@ -261,7 +310,7 @@ def snapshot(
     """
     resolved_ring_only = ring_only_transport() if ring_only is None else ring_only
     try:
-        parks = classify(topology, env)
+        assessment = _assess(topology, env)
     except Exception as exc:  # noqa: BLE001 - a park reader must not raise here
         return {
             "status": "unavailable",
@@ -271,12 +320,13 @@ def snapshot(
             "error": str(exc),
         }
 
-    if not parks:
-        status = "ok"
-    elif resolved_ring_only:
-        status = "parked"
+    parks = assessment.parks
+    if parks:
+        status = "parked" if resolved_ring_only else "pending"
+    elif assessment.ring_unresolved:
+        status = "unclassified"
     else:
-        status = "pending"
+        status = "ok"
 
     return {
         "status": status,

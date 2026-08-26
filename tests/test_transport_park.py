@@ -42,6 +42,66 @@ _FIFO_ENV = "JASPER_OUTPUTD_DAC_CONTENT_FIFO"
 _ARMED = {OUTPUTD_RING_ACTIVE_ENDPOINT_ENV_VAR: "1"}
 
 
+def _stereo_plus_subwoofer() -> OutputTopology:
+    """Passive stereo mains plus a subwoofer: roleful, but NOT active-crossover.
+
+    ``requires_roleful_graph`` is True (the sub), and the ACTIVE ring width
+    resolves at 3 — so this reaches class (c)'s site and is stopped only by
+    the active-crossover narrowing.
+    """
+    from tests.test_active_speaker_runtime_contract import _topology
+
+    return _topology(
+        [
+            {
+                "id": "left",
+                "label": "Left speaker",
+                "kind": "left",
+                "mode": "full_range_passive",
+                "channels": [{"role": "full_range", "physical_output_index": 0}],
+            },
+            {
+                "id": "right",
+                "label": "Right speaker",
+                "kind": "right",
+                "mode": "full_range_passive",
+                "channels": [{"role": "full_range", "physical_output_index": 1}],
+            },
+            {
+                "id": "sub",
+                "label": "Subwoofer",
+                "kind": "subwoofer",
+                "mode": "subwoofer",
+                "channels": [{"role": "subwoofer", "physical_output_index": 2}],
+            },
+        ],
+        {
+            "main_left_group_id": "left",
+            "main_right_group_id": "right",
+            "subwoofer_group_ids": ["sub"],
+        },
+    )
+
+
+def _left_only() -> OutputTopology:
+    """A configured layout that is neither stereo nor mono — a half-finished
+    commissioning save. No ring geometry of either kind, and no named class."""
+    from tests.test_active_speaker_runtime_contract import _topology
+
+    return _topology(
+        [
+            {
+                "id": "left",
+                "label": "Left speaker",
+                "kind": "left",
+                "mode": "full_range_passive",
+                "channels": [{"role": "full_range", "physical_output_index": 0}],
+            }
+        ],
+        {"main_left_group_id": "left"},
+    )
+
+
 def _composite_subwoofer_only() -> OutputTopology:
     """A ROLEFUL composite whose ACTIVE ring width does not resolve.
 
@@ -105,7 +165,12 @@ _PARK_CASES = (
         {},
         PARK_ROLEFUL_ACTIVE_ENDPOINT_UNCONVERGED,
         None,
-        "jasper-active-speaker baseline-reemit --endpoint ring",
+        # BOTH steps. `baseline-reemit` moves the graph and writes no env; the
+        # marker this park reads has one writer, jasper-audio-hardware-reconcile.
+        # A one-step remedy would leave the operator re-running the doctor into
+        # the identical park.
+        "sudo /opt/jasper/.venv/bin/jasper-active-speaker baseline-reemit "
+        "--endpoint ring && sudo systemctl start jasper-audio-hardware-reconcile",
         id="roleful_active_endpoint_unconverged",
     ),
     pytest.param(
@@ -201,6 +266,14 @@ def test_active_crossover_mono_does_not_park_as_mono_full_range():
     assert parks == ()
 
 
+def test_a_passive_stereo_plus_subwoofer_box_does_not_park_on_the_endpoint():
+    """`requires_roleful_graph` is True for a passive box that merely adds a
+    sub, but there is no active-speaker baseline to re-emit — parking it would
+    hand the household a remedy that cannot run."""
+    parks = transport_park.classify(_stereo_plus_subwoofer(), {})
+    assert PARK_ROLEFUL_ACTIVE_ENDPOINT_UNCONVERGED not in _classes(parks)
+
+
 def test_converged_active_endpoint_does_not_park():
     parks = transport_park.classify(
         _active_topology("stereo", "active_2_way"), _ARMED
@@ -226,6 +299,44 @@ def test_unconfigured_topology_does_not_park():
     from tests.test_active_speaker_runtime_contract import _topology
 
     assert transport_park.classify(_topology([]), {}) == ()
+
+
+# --- the honest silence ------------------------------------------------------
+
+
+@pytest.mark.parametrize(
+    "topology",
+    [
+        pytest.param(_left_only(), id="left_only_half_saved"),
+        pytest.param(_subwoofer_topology(), id="subwoofer_only"),
+        pytest.param(_composite_subwoofer_only(), id="composite_subwoofer_only"),
+    ],
+)
+def test_configured_but_unnamed_is_disclosed_not_called_servable(topology):
+    """No ring geometry of either kind and no class names it. Saying "ok" here
+    would tell an operator the ring can serve a box it demonstrably cannot."""
+    state = transport_park.snapshot(topology, {}, ring_only=True)
+    assert state["status"] == "unclassified"
+    assert state["parked"] is False
+    assert state["parks"] == []
+
+
+def test_unclassified_reaches_no_household_surface():
+    from jasper.control.audio_health import _state_issues, _transport_park_signal
+
+    state = transport_park.snapshot(_left_only(), {}, ring_only=True)
+    assert _transport_park_signal(state) is None
+    assert not _state_issues(
+        {"warmup_active": True}, None, {}, {}, None, transport_park=state
+    )
+
+
+def test_a_ring_eligible_box_still_reports_ok():
+    """The ok arm must stay reachable — otherwise `unclassified` has quietly
+    become the answer for everything."""
+    assert transport_park.snapshot(
+        _full_range_stereo(), {}, ring_only=True
+    )["status"] == "ok"
 
 
 # --- the gate ----------------------------------------------------------------
@@ -266,14 +377,31 @@ def test_a_box_in_two_classes_reports_both():
     assert _classes(parks) == {PARK_MONO_FULL_RANGE, PARK_GROUPED_DAC_CONTENT_LANE}
 
 
-def test_an_unreadable_input_is_not_a_healthy_box(monkeypatch):
-    def _boom(*_args, **_kwargs):
-        raise OSError("topology unreadable")
+def test_a_corrupt_topology_file_is_not_a_healthy_box(tmp_path, monkeypatch):
+    """A REAL corrupt file, not a monkeypatched raise: the fail-soft loader
+    degrades corruption to an empty draft, which classifies as not-configured
+    and would report a rotted box as healthy on all three surfaces. The strict
+    loader is what makes `unavailable` reachable."""
+    from jasper import output_topology as ot
 
-    monkeypatch.setattr(transport_park, "classify", _boom)
-    state = transport_park.snapshot(ring_only=True)
+    corrupt = tmp_path / "output_topology.json"
+    corrupt.write_text("{not json at all", encoding="utf-8")
+    monkeypatch.setattr(ot, "topology_path", lambda _p=None: corrupt)
+
+    state = transport_park.snapshot(env={}, ring_only=True)
     assert state["status"] == "unavailable"
     assert state["parked"] is False
+    assert state["parks"] == []
+
+
+def test_a_missing_topology_is_still_not_configured(tmp_path, monkeypatch):
+    """Missing is NOT corrupt: a fresh box must reach `ok`, never `unavailable`."""
+    from jasper import output_topology as ot
+
+    monkeypatch.setattr(
+        ot, "topology_path", lambda _p=None: tmp_path / "absent.json"
+    )
+    assert transport_park.snapshot(env={}, ring_only=True)["status"] == "ok"
 
 
 # --- doctor -----------------------------------------------------------------
@@ -281,7 +409,13 @@ def test_an_unreadable_input_is_not_a_healthy_box(monkeypatch):
 
 @pytest.mark.parametrize(
     "status,expected",
-    [("ok", "ok"), ("pending", "warn"), ("parked", "fail"), ("unavailable", "warn")],
+    [
+        ("ok", "ok"),
+        ("pending", "warn"),
+        ("parked", "fail"),
+        ("unavailable", "warn"),
+        ("unclassified", "warn"),
+    ],
 )
 def test_doctor_severity_follows_the_park_status(monkeypatch, status, expected):
     from jasper.cli.doctor.audio_runtime import check_ring_transport_park
@@ -308,6 +442,13 @@ def test_doctor_severity_follows_the_park_status(monkeypatch, status, expected):
 
 
 # --- /state and the household card -------------------------------------------
+
+
+def test_the_remedy_converges_the_marker_it_reads():
+    """The park reads the endpoint marker, whose single writer is
+    jasper-audio-hardware-reconcile. A remedy that stops at baseline-reemit
+    would not clear the park it is recorded against."""
+    assert "jasper-audio-hardware-reconcile" in transport_park.ACTIVE_ENDPOINT_REMEDY
 
 
 def test_state_resilience_carries_the_park_reader():

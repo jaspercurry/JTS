@@ -1120,7 +1120,7 @@ def _state_issues(
         for park in park_state.get("parks") or []:
             if not isinstance(park, Mapping):
                 continue
-            park_class = str(park.get("park_class") or "unknown")
+            park_class = str(park.get("park_class"))
             detail = str(park.get("detail") or "")
             tracked = park.get("issue")
             remedy = park.get("remedy")
@@ -2514,6 +2514,26 @@ class AudioHealthSampler:
                 output_topology_snapshot=self._output_topology_snapshot,
                 transport_park=self._transport_park,
             )
+
+    def transport_park_snapshot(self) -> dict[str, Any]:
+        """The transport-park verdict THIS sampler last computed.
+
+        ``/state`` reads it from here rather than calling
+        ``transport_park.snapshot()`` again: the household incident rows and
+        the signal-path headline in the same payload were built from this
+        cached value on the sampler's slow cadence, and a second, fresher read
+        would let one response disagree with itself in time — the box parked
+        in ``resilience`` and playing in ``audio_health``.
+
+        Falls back to a fresh read only before the first slow tick, when there
+        is no cached verdict to be consistent with yet.
+        """
+        from . import transport_park as transport_park_reader
+
+        cached = self._transport_park
+        if cached is not None:
+            return cached
+        return transport_park_reader.snapshot()
 
     def _record_point(
         self,

@@ -41,12 +41,27 @@ own ADR.
 | --- | --- | --- |
 | `passive_stereo_composite` | multi-child sink, not roleful | #2982 |
 | `mono_full_range` | declared 1-channel full-range layout | #3117 |
-| `roleful_active_endpoint_unconverged` | ACTIVE ring width resolves, endpoint marker has not | `jasper-active-speaker baseline-reemit --endpoint ring` |
+| `roleful_active_endpoint_unconverged` | **active-crossover** box, ACTIVE ring width resolves, endpoint marker has not | `baseline-reemit --endpoint ring && systemctl start jasper-audio-hardware-reconcile` |
 | `grouped_dac_content_lane` | the bonded round-trip `dac_content` lane is armed | #3118 |
 
 Every class carries exactly one of: a tracked rebuild issue to wait on, or a
 command to run. A class with neither would be a park nobody can act on and
 nobody can follow.
+
+**A recorded remedy must clear the park it is recorded against.** The third
+class reads the endpoint marker, whose single writer is
+`jasper-audio-hardware-reconcile`; `baseline-reemit` moves the graph the
+marker is derived *from* and writes no env. So the remedy is both steps. A
+one-step remedy would send an operator to re-run the doctor and meet the
+identical park — the dead-remedy defect this ADR removes from the composite
+refusal, reproduced one level in. The doctor's fan-in coupling check
+prescribes the same ladder plus its own third step and composes it from the
+same constant, so the two cannot drift while both live.
+
+The third class is scoped to **active-crossover** layouts, not every roleful
+one: `requires_roleful_graph` is also true for a passive stereo box that adds
+a subwoofer or a protected output, and those have no active-speaker baseline
+to re-emit. Parking them would hand a household a remedy that cannot run.
 
 `jasper.control.transport_park` is the single owner. It **names** refusals the
 eligibility SSOT already returns — `ring_channels_for_topology` /
@@ -77,6 +92,16 @@ no second edit and leaves no dead knob behind.
 
 The composite refusal in `jasper-outputd`'s config parse names #2982 and
 **recommends no command**. A dead remedy is worse than none.
+
+**Silence is not a verdict.** A configured topology for which the eligibility
+SSOT resolves no ring geometry of either kind, and which none of the four
+classes names, reports `unclassified` — doctor warn, no household row. It is
+not a fifth class; it is the refusal to answer "the ring can serve this box"
+about a box the ring demonstrably cannot serve. The classifier reads the
+topology through the **strict** loader for the same reason: the fail-soft one
+degrades a corrupt file to an empty draft, which classifies as
+not-configured, and a rotted topology would have been reported as a healthy
+speaker on all three surfaces.
 
 ## Consequences
 
