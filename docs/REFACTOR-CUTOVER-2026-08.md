@@ -12,7 +12,7 @@
 > truth this plan builds on. Read a shape question there and a scheduling
 > question here.
 
-**STATUS — all eight sections VERIFIED-COMPLETE at `5da40b9e2`.**
+**STATUS — all eight sections VERIFIED-COMPLETE, re-derived at `4a9e9f631`.**
 
 | § | Section | Status |
 |---|---|---|
@@ -30,7 +30,8 @@
 
 ## 0. Premise re-derivation ledger
 
-Every premise this plan was handed was re-derived at HEAD (`5da40b9e2`, wave 6e).
+Every premise this plan was handed was re-derived at HEAD, first at `5da40b9e2`
+(wave 6e) and again at `4a9e9f631` after five merges landed under the open PR.
 The ones that moved are recorded here rather than silently corrected, because a
 plan whose inputs drifted is a plan whose schedule drifted.
 
@@ -42,11 +43,11 @@ plan whose inputs drifted is a plan whose schedule drifted.
 | `_hand_to_retention` call sites at `:5056 / :5252 / :7018` | **`:5056` / `:5254` / `:7020`** | **corrected.** The handed numbers are #3130's, written one merge earlier. Definition is `crossover_v2_flow.py:5256`. |
 | `TuningSession._record()` at `session.py:~692` | `crossover_v2/session.py:655` (def), returns the record dict at **`:692-708`** | holds. |
 | `analyze` hard-codes `results={}` at `session.py:~194/:428-461` | `AnalyzeOutcome` at `:194`; `analyze()` `:428-463`; **`results={}` at `:461`** | holds. |
-| `Recommender` Callable seam at `session_seams.py:~270` | **`:270`** | holds. |
+| `Recommender` Callable seam at `session_seams.py:~270` | **`:271`** | **renumbered.** #3140 added a line to that module's `SessionGraph` docstring, shifting every declaration below `:100` by one. Every `session_seams.py` citation in this document is re-derived at the new HEAD. |
 | Five seams, all sync; one production implementation (`MeasurementSessionGraph`) is async | **three** production implementations are async — graph, volume owner, and `play_program` | **widened.** See §4. |
-| *(implied)* the front end is an `asyncio` web server | stdlib `ThreadingHTTPServer` + sync `BaseHTTPRequestHandler` (`web/correction_setup.py:61`), bridging into **one** background loop thread `jasper-correction-loop` (`_ensure_loop` `:1275`) via `_run_async` (`:1293`) | **corrected, and it changes §4's argument.** The seam colour decision turns on *which* thread each caller is on, and they are not all on one. |
+| *(implied)* the front end is an `asyncio` web server | stdlib `ThreadingHTTPServer` + sync `BaseHTTPRequestHandler` (`web/correction_setup.py:61`), bridging into **one** background loop thread `jasper-correction-loop` (`_ensure_loop` `:1275`) via `_run_async` (`:1292`) | **corrected, and it changes §4's argument.** The seam colour decision turns on *which* thread each caller is on, and they are not all on one. |
 | The wizard's routes live in `web/correction_crossover_v2.py` | **zero** routes, zero HTML, zero CSRF there. The `if path == …` dispatch chain is `web/correction_setup.py:7366` (`_dispatch_crossover`), reached from `:8014` | **corrected.** `correction_crossover_v2.py` is an orchestration host, not a page. See §5. |
-| `owned_measurement_volume_db_nowait` is zero-caller post-6e; wave 8 may have deleted it | see §5 | re-derived there. |
+| `owned_measurement_volume_db_nowait` is zero-caller post-6e; wave 8 may have deleted it | **deleted on `main` by #3140**, with its two stale docstrings and its three test assertions | **closed.** It was still present, zero-caller, at `5da40b9e2`; #3140 landed while this document was in review. §5 records it as closed rather than dropping it. |
 | Sync call sites at `session.py ~:306/:534/:554` | ten `self.seams.*` call sites: `:307 :309 :478 :501 :532 :548 :552 :585 :598 :624` | **widened.** The handed three are #3106's N6 note, which counted `SessionGraph`'s three (`:307`, `:532`, `:552`) only. See §4. |
 | The three `spatial.py` take builders share `_take_identity` | see §1 | re-derived there. |
 | `position_cycle.json` is THE index (#3064) | see §1 | re-derived there. |
@@ -66,10 +67,10 @@ failure mode in a different costume.
 
 ### What the protocol requires, and what pins it
 
-`RecordStore` (`crossover_v2/session_seams.py:207`) is two pairs: `bank` `:235` /
-`read` `:239` for one capture record, `persist` `:247` / `read_state` `:251` for
+`RecordStore` (`crossover_v2/session_seams.py:208`) is two pairs: `bank` `:236` /
+`read` `:240` for one capture record, `persist` `:248` / `read_state` `:252` for
 the session's own durable state. Both reads return `None` rather than raising —
-`:243-244` for a missing record, `:255-259` for a state id that outlived its
+`:244-245` for a missing record, `:256-260` for a state id that outlived its
 state. The engine calls exactly two of the four: `records.bank` at
 `crossover_v2/session.py:598` and `records.persist` at `:501`. **`read` and
 `read_state` have no engine caller** — they exist for `PriorBank`
@@ -176,11 +177,11 @@ Two consequences the executor must carry:
 
 `position_cycle.json` is **not** an authority and does not claim to be:
 *"The index is DERIVED, never authored — this file writes down no fact of its
-own"* (`crossover_v2/position_cycle.py:37-38`), and `:57-60` calls it convenience
+own"* (`crossover_v2/position_cycle.py:37-38`), and `:53` calls it convenience
 over a nested glob. It is written by `bank_position_cycle`
 (`scripts/run-crossover-round.py:713`, write at `:735`) from one call site
-(`:1001`) **only when `--angles` is passed**; `read_position_cycle` (`:346`) and
-`takes_by_position` (`:398`) have **zero production callers** — tests only.
+(`:1001`) **only when `--angles` is passed**; `read_position_cycle` (`:351`) and
+`takes_by_position` (`:392`) have **zero production callers** — tests only.
 
 So the rule the plan inherits is sharper than "do not mint a second index": the
 banked files are the SSOT, any index is derived and rebuildable by rescanning
@@ -432,7 +433,7 @@ would break the one-place-to-add-a-row argument `measure_spec.py:157-158` and
 `refusal_copy.py:788` both make explicitly. **Use a literal table.**
 
 **Home: an in-layer import, not a sixth seam.** `EngineSeams` has no `analyze`
-field (`session_seams.py:298-302`) and `analyze()` is deliberately seam-free
+field (`session_seams.py:299-303`) and `analyze()` is deliberately seam-free
 (`session.py:459-463`). Adding a seam would make the registry injectable —
 i.e. optional — which is the opposite of *wholesale*. The caller imports the
 table. That is what *"do not decouple the analysis layer, replace its caller"*
@@ -489,8 +490,8 @@ has a pin at all.
 ### What the seam is, and what is bound to it
 
 `Recommender` is a bare type alias — `Callable[[Sequence[str]], Mapping[str,
-Any]]` at `crossover_v2/session_seams.py:270`, exported at `:65`, and the
-`EngineSeams.recommend` field's type at `:302`. Those three sites are its **only**
+Any]]` at `crossover_v2/session_seams.py:271`, exported at `:65`, and the
+`EngineSeams.recommend` field's type at `:303`. Those three sites are its **only**
 production references; a whole-tree grep finds nothing else outside
 `tests/engine_twin.py` (`FakeRecommender`, `:298-313`) and
 `tests/test_crossover_v2_engine_skeleton.py:181`. It is unbound in production and
@@ -534,7 +535,7 @@ binding consumes — the tree already maps *a bank on disk* to *a packet*.
 ### The two gaps, and the one they expose
 
 1. **Arity.** The seam takes `Sequence[str]` — record ids minted by
-   `RecordStore.bank` (`session_seams.py:235`). The prescriber takes an
+   `RecordStore.bank` (`session_seams.py:236`). The prescriber takes an
    `argparse.Namespace` carrying four filesystem paths. **Nothing today maps
    banked record ids to a bundle directory.** This is a hard dependency on §1:
    the binding cannot be built before the store defines what an id resolves to.
@@ -565,7 +566,7 @@ order of weight:
   is a call, not a re-implementation. `_staged_section` (`:740`) already answers
   *"is a prescription waiting"* from `staged_prescription_pending()` (`:748`)
   **without consuming the spool**, so no `peek` needs inventing beside `take`.
-- It honours the seam docstring's standing order at `session_seams.py:265-267` —
+- It honours the seam docstring's standing order at `session_seams.py:266-268` —
   **do not re-extract the prescriber**. The logic stays in `crossover_prescriber.py`;
   what moves is the print/return boundary.
 - When a prescription **has** been staged for the next round ordinal, the staged
@@ -614,9 +615,9 @@ All five seams are declared **synchronous**:
 
 | Seam | Methods | Declared at |
 |---|---|---|
-| `SessionGraph` | `install` · `patch` · `restore` | `session_seams.py:104` · `:120` · `:131` |
-| `VolumeClaim` | `acquire` · `prove` · `release` | `:161` · `:170` · `:197` |
-| `RecordStore` | `bank` · `read` · `persist` · `read_state` | `:235` · `:239` · `:247` · `:251` |
+| `SessionGraph` | `install` · `patch` · `restore` | `session_seams.py:105` · `:121` · `:132` |
+| `VolumeClaim` | `acquire` · `prove` · `release` | `:162` · `:171` · `:198` |
+| `RecordStore` | `bank` · `read` · `persist` · `read_state` | `:236` · `:240` · `:248` · `:252` |
 | `Recommender` | the callable | `:270` (no `Awaitable` in the return type) |
 | `PlaybackTransaction` | `run` | `playback_transaction.py:190` |
 
@@ -640,7 +641,7 @@ what "async web host" would suggest.** The transport is stdlib
 and **every HTTP handler is a plain `def`**. There is exactly one background
 event loop — thread `jasper-correction-loop`, started by `_ensure_loop`
 (`web/correction_setup.py:1275`) — and handler threads reach it through
-`_run_async` (`:1293`), which is
+`_run_async` (`:1292`), which is
 `asyncio.run_coroutine_threadsafe(...)` followed by `fut.result(timeout=60.0)`,
 with a cancel-and-drain path on timeout (`:1311-1320`).
 
@@ -749,7 +750,7 @@ here and it blocks §5. The owner's API is **handle-carrying**:
 `acquire_level(kind, level_db) -> VolumeClaimHandle` (`volume_owner.py:261`),
 `release(handle, *, household_level_db=None)` (`:504`), `prove(handle)` (`:582`).
 The seam's is **handle-free**: `acquire(level_db)`, `prove()`, `release()`
-(`session_seams.py:161/170/197`). So the production `VolumeClaim` is a small
+(`session_seams.py:162/171/198`). So the production `VolumeClaim` is a small
 stateful adapter that holds the handle between calls — and its `release` must be
 idempotent and safe against nothing-held, which is exactly what the owner already
 promises (`volume_owner.py:509-514` cites the seam's contract by name).
@@ -776,7 +777,7 @@ The chain, end to end:
 | nginx `location /correction/` | `deploy/nginx-jasper.conf:463` |
 | one `ThreadingHTTPServer` | `web/correction_setup.py:61`, started per location by `web/__main__.py` |
 | `/crossover/*` funnel | `correction_setup.py:8014` → `_dispatch_crossover` `:7366`, a linear `if path == …` chain |
-| the loop bridge | `_ensure_loop` `:1275`, `_run_async` `:1293` |
+| the loop bridge | `_ensure_loop` `:1275`, `_run_async` `:1292` |
 | the walk | `_run_relay_capture` `:1037`, fired at `:1153` |
 | the host module | `web/correction_crossover_v2.py` |
 
@@ -833,13 +834,13 @@ owner. Five call sites — `:1367`, `:1409`, `:1446`, `:4187` (which **discards*
 `_set`; read-only), `:5397` — so four consume the write door.
 
 **`SessionVolumePlan` (`jasper/active_speaker/session_volume_plan.py:667`, module
-1,208 lines) splits cleanly, and the split is the section's decision.**
+1,171 lines) splits cleanly, and the split is the section's decision.**
 
 *What dissolves into `VolumeOwner`:* the fader writes. The class **owns no
-CamillaDSP** (`:670-671`) — `open`, `close`, `abandon`, `enforce_ceiling` and
+CamillaDSP** (`:670`) — `open`, `close`, `abandon`, `enforce_ceiling` and
 `recover_unresolved` all take `(set, get)` as *parameters*. Swapping the injected
 door for a `VolumeClaim` over the owner therefore needs **no internal
-restructure**: `acquire`/`prove`/`release` (`session_seams.py:161/170/197`) map
+restructure**: `acquire`/`prove`/`release` (`session_seams.py:162/171/198`) map
 onto `acquire_level`/`prove`/`release` (`volume_owner.py:261/582/504`) through
 the handle-holding adapter W4-c builds.
 
@@ -848,43 +849,44 @@ the handle-holding adapter W4-c builds.
 state belongs to the claim holders that own it"* (`volume_owner.py:65-68`). The
 owner provides none of:
 
-- the persisted `_State` (`:589-596`) at
-  `/var/lib/jasper/active_speaker_crossover_session_volume.json` (`:109-111`),
+- the persisted `_State` (`:590-596`) at
+  `/var/lib/jasper/active_speaker_crossover_session_volume.json` (`:109-110`),
   `SCHEMA_VERSION = 1` (`:80`);
-- `original_main_volume_db`, snapshotted in `open` at `:933-936` and persisted
-  **before the first fader mutation** (`:946-948`);
-- `_drain_restore`'s exact→emergency ladder (`:1093-1144`, candidates at
-  `:1113-1136`) and the `session_volume_restore_unconfirmed` latch (`:1137`);
-- `needs_recovery`'s two branches (`:744-762`), including the
-  durably-active-but-not-opened-this-process one that survives a crash — crash
-  hydration deliberately does **not** flip `active`→`unresolved` (`:652-654`);
-- the 1,800 s wall-clock ceiling (`DEFAULT_WALL_CLOCK_CEILING_S` `:87`, hard cap
-  `:96`).
+- `original_main_volume_db`, snapshotted in `open` (`:906`) at `:938-944` and
+  persisted **before the first fader mutation** — the code says so in a comment,
+  `:945-946`;
+- `_drain_restore`'s (`:1056`) exact→emergency ladder (candidates built at
+  `:1076-1081`) and the `session_volume_restore_unconfirmed` latch (`:1100`);
+- `needs_recovery`'s two branches (`:744-748`) — a latched `unresolved` state,
+  **or** a durably `active` state this process did not open (crash/restart
+  hydration);
+- the 1,800 s wall-clock ceiling (`DEFAULT_WALL_CLOCK_CEILING_S` `:87`) under the
+  1-hour hard cap (`MAX_WALL_CLOCK_CEILING_S` `:96`).
 
 That set **is** design-doc contract 9, the walked-away guarantee, and it does not
-move. Two ordering invariants ride with it and are easy to lose in a rewrite:
-`_clear_resolved` (`:858`) drops the in-memory intent **before** persisting
-(`:893-896`) — its docstring at `:862-874` records the measured **+47.5 dB**
-(−60.0 → −12.5) hazard of the other order — and the restore is **once**, drained
-by close, session death, or the ceiling.
+move. Its four drain entries are `close` `:1109`, `abandon` `:1121`,
+`enforce_ceiling` `:1133` and `recover_unresolved` `:1153`. One ordering
+invariant rides with it and is easy to lose in a rewrite: `_clear_resolved`
+(`:858`) drops the in-memory intent **before** persisting, and its docstring
+(`:862-880`) records both halves — the measured **+47.5 dB** (−60.0 → −12.5)
+hazard of the other order at `:868`, and the mirror-image persist guard at
+`:875-880`.
 
-### Three stale facts to true up while here
+### Two stale facts to true up while here
 
-1. **`owned_measurement_volume_db_nowait` still exists at HEAD** —
-   `session_volume_plan.py:1060` — and wave 8 did **not** delete it. Whole-repo
-   grep: the definition, four own-module docstring cross-references (`:39`,
-   `:871`, `:990`, `:1039`), three test assertions
-   (`tests/test_crossover_v2_measurement_volume_drift.py:962`, `:968`, `:976`),
-   and two historical docs. **Zero production callers.** Its own docstrings at
-   `:871` and `:990` still claim it *"feeds the swap's release reference"* — the
-   consumer 6d deleted.
-2. **`held_target_db` is gone from code but live in two docs.** Zero `.py` hits
+*A third — `owned_measurement_volume_db_nowait`, which this plan reported as a
+live zero-caller orphan — was **deleted on `main` by #3140** while this document
+was in review, together with the two docstrings that still claimed a consumer for
+it and the three test assertions that pinned it. Recorded rather than removed:
+the finding was correct when made, and it is closed.*
+
+1. **`held_target_db` is gone from code but live in two docs.** Zero `.py` hits
    at HEAD (6e / #3137); `camilla.py:106-109` now states the exception is gone.
    But `docs/adr/0004-duck-release-algebra-and-reference.md:101-106` and
    `crossover-v2-engine-design.md:252-268` both still describe it as live
    plumbing, the latter in the future tense (*"until 6e lands"*). ADR-0004 is
    append-only, so the fix is a superseding note, not an edit.
-3. **The ledger's enumerated-set check cannot see one writer.**
+2. **The ledger's enumerated-set check cannot see one writer.**
    `REFACTOR-TUNING-2026-08.md:919-925` greps `set_volume_db(` with a trailing
    paren; `jasper/cli/seat_level.py:413` binds `set_main_volume_db=cam.set_volume_db`
    — a bare bound-method reference with no paren. It is a separate CLI process
@@ -907,7 +909,7 @@ suite passes with no assertion edited; both stages still produce a
 the converged preparer, holding the session for the `_run()` coroutine's
 lifetime. This is the PR that makes `crossover-v2-engine-design.md`'s *"is
 constructed only in tests"* false, and wave 2's engine-internal enforcement pin
-(`session_seams.py:294-295`) lands with it — it now has a front end to point at.
+(`session_seams.py:295-296`) lands with it — it now has a front end to point at.
 *Depends on:* W4-a (colour), W4-c (`VolumeClaim`), W1-a (`RecordStore`), W3-b
 (recommender), §2 (analyze registry). **This is the DAG's join node.**
 *Size:* ~350 lines. *Verification bar:* one end-to-end pin driving a whole
@@ -926,14 +928,15 @@ asserting the `_clear_resolved`-before-persist order — mutation-verified by
 swapping the two statements and watching that pin alone fail. *Tier:*
 **adversarial** (fader path, and the walked-away guarantee).
 
-**W5-d — claim the two orphans and the two stale docs.** Delete
-`owned_measurement_volume_db_nowait` with its three test assertions and correct
-the two stale docstrings; add the ADR-0004 superseding note and re-tense the
-engine design doc's 6e paragraph; widen the ledger's writer grep to catch a bare
-bound-method reference and re-run it.
-*Size:* ~120 lines net negative. *Verification bar:* zero `owned_measurement`
-hits in `jasper/`; the widened grep's own output pasted into the PR.
-*Tier:* default. Independent of every other item — **schedulable first.**
+**W5-d — true up the two stale docs.** Add the ADR-0004 superseding note and
+re-tense the engine design doc's 6e paragraph (`:252-268`), so neither still
+describes `held_target_db` as live plumbing; widen the ledger's writer grep to
+catch a bare bound-method reference and re-run it. *(The orphan half of this item
+was closed on `main` by #3140 — see above.)*
+*Size:* ~60 lines. *Verification bar:* zero `held_target_db` occurrences in
+`docs/` that describe it in the present tense; the widened grep's own output
+pasted into the PR. *Tier:* docs — author judgment plus a sanity look.
+Independent of every other item — **schedulable first.**
 
 ## 6. God-file dissolution map
 
@@ -1157,5 +1160,5 @@ behind that door as its only caller, never as its exception
   fails silently in **both** directions reads as covered either way, so check
   that the un-mutated run is green too.
 - **Re-derive the line numbers.** Every `file:line` in this document was true at
-  `5da40b9e2`. §0 exists because two of the numbers handed *to* this plan had
+  `4a9e9f631`. §0 exists because two of the numbers handed *to* this plan had
   already moved by two lines within a single merge. Re-derive before you cut.
