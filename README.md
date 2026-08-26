@@ -244,7 +244,7 @@ One line each; the doc is the canonical "read this before modifying".
 - [`HANDOFF-barge-in.md`](docs/HANDOFF-barge-in.md) — assistant-speech
   barge-in plan and current-code gap analysis
 - [`HANDOFF-aec.md`](docs/HANDOFF-aec.md) — AEC architecture and operations
-  (commissioned XVF chip AEC, lifecycle, software AEC3)
+  (chip-AEC commissioning, the disclosed AEC3 fallback, bridge lifecycle)
 - [`HANDOFF-enhanced-aec.md`](docs/HANDOFF-enhanced-aec.md) — optional
   vendored AEC3 v2: verified marker, background build, licensing boundary
 - [`HANDOFF-xvf3800.md`](docs/HANDOFF-xvf3800.md) — canonical XVF3800
