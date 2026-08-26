@@ -53,26 +53,20 @@ re-derive them: `MEASURE_KINDS` is `contracts.py:1433-1437`; `_record()`'s
 "exactly three call sites" also holds** — `spatial.py:914`, `:1044`, `:1107`,
 zero in tests (§3.1).
 
-### Why D6 happened, and the rule it argues for
+### Why D6 happened
 
-The inlined copies were **real**, and were removed. At `27f13a4e4~1` there were
-two — inside `_retain_cloud_position` and inside `_retain_entry_baseline` —
-and commit `27f13a4e4` (*"a staged angle walk is taken by the next session…"*,
-#2753, 2026-08-20) introduced `_hand_to_retention` and collapsed both into it.
+The inlined copies were **real, and were removed.** At `27f13a4e4~1` there were
+two — in `_retain_cloud_position` and in `_retain_entry_baseline` — and commit
+`27f13a4e4` (#2753, 2026-08-20) introduced `_hand_to_retention` and collapsed
+both into it. What survived is a **comment** whose wording still matches.
 
-So §1's structural finding was true of a tree, just not of this one; what
-survived the collapse is a **comment** whose wording matches. This is §8's
-*"re-derive the line numbers"* trap (`:1162-1164`) in its most expensive form:
-the citation was to a line that still existed and still said the quoted words,
-so a spot-check that read the line without reading its enclosing block would
-confirm it. **Confirm a call site by grepping the symbol, never by reading the
-cited line.** Here the symbol grep is decisive in one command and the line read
-is decisive in neither direction.
+That is §8's *"re-derive the line numbers"* trap (`:1162-1164`) in its most
+expensive form: the cited line still exists and still says the quoted words, so a
+spot-check that reads the line without its enclosing block **confirms a false
+premise**. The rule it argues for is §7.1.
 
-**W1-c is therefore three sites in, not four**, and the *"a lift that migrates
-only the three named call sites leaves a second writer behind"* hazard (§1
-`:60-62`) **does not exist**. The lift is correspondingly smaller and safer than
-§1 scheduled it.
+**W1-c is three sites in, not four**, and §1 `:60-62`'s *"leaves a second writer
+behind"* hazard **does not exist** — the lift is smaller and safer than scheduled.
 
 ---
 
@@ -673,27 +667,24 @@ the one place it is currently violated.
 
 **Three traps in that table:**
 
-- **Three `FIDELITY_FIELDS` definitions exist and they disagree** — 5
+- **Three `FIDELITY_FIELDS` definitions exist and disagree** — 5
   (`harmonic_evidence.py:199`), 10 (`harmonic-distortion-replay.py:105`), 19
-  (`severed-twin-replay.py:74`). Converging them is a duplication finding in its
-  own right; **do not silently pick one** while flipping readers.
-- **G3 parses the filename**, not just the JSON (`:487`). Any new naming scheme
-  must either preserve a leading stamp token or fix G3 in the same PR.
-- **F4 is a pinned frozen bank**, not a live path — it globs
-  `bundle/dsp_state/capture_dump_20260810/*_measure_*.json`. It depends on the
-  `{stamp}_{phase}_{device}` scheme, so it breaks on the **rename** as well as
-  the deletion. It is a fixture deriver, so the right answer may be to re-derive
-  the fixture once and freeze the result — **an owner call, not a builder's.**
+  (`severed-twin-replay.py:74`). A duplication finding in its own right;
+  **do not silently pick one** while flipping readers.
+- **G3 parses the filename** (`:487`), not just the JSON. A new naming scheme
+  must preserve a leading stamp token or fix G3 in the same PR.
+- **F4 is a pinned frozen bank**, not a live path
+  (`bundle/dsp_state/capture_dump_20260810/*_measure_*.json`). It breaks on the
+  **rename** as well as the deletion. Being a fixture deriver, the right answer
+  may be to re-derive and re-freeze once — **an owner call, not a builder's.**
 
-**The WAV re-pairing rule is two places, not three (D10):**
-`harmonic_evidence.py:613` and `feature_classifier.py:482`, both
-`sidecar.parent.parent / "wav" / f"{sidecar.stem}.wav"`. The other two are
-different rules — `severed-twin-replay.py:249` uses
-`sidecar_path.with_suffix(".wav")` (flat sibling, the **un-split** ring), and
-`harmonic-distortion-replay.py:266-271` binds by sha256 content across a
-separate `--captures` directory with no path derivation at all. **Three
-"replacements" for what is really three different bindings would be three new
-defects.**
+**WAV re-pairing is two places, not three (D10):** `harmonic_evidence.py:613`
+and `feature_classifier.py:482`, both `sidecar.parent.parent / "wav" /
+f"{sidecar.stem}.wav"`. `severed-twin-replay.py:249` uses
+`with_suffix(".wav")` (flat sibling, the **un-split** ring) and
+`harmonic-distortion-replay.py:266-271` binds by sha256 across a separate
+`--captures` dir. **Three "replacements" for three different bindings would be
+three new defects.**
 
 > **3.** **The sidecar dies in that same PR**, per ruling S5 — it is a proof
 > bracket, not a fallback.
@@ -854,19 +845,14 @@ way (§8 `:1156-1161`).
 | 5 | all seven readers' suites + `test_docs_impact` | break each reader's key lookup one at a time | `git grep -c RING_SIDECAR_GLOB` = **0**; `git grep -c xover-capture-dump` = **0** across `jasper/`, `scripts/` **and** `deploy/`; `bank-crossover-round.sh` has no `dumps/sidecar` |
 | 6 | `test_crossover_v2_record_store` + the new index suite | delete the index, rebuild by rescan, assert the same six columns | the six column names present |
 
-**Wrap-safe sweeps for every grep above.** This tree wraps at ~79 columns, so a
-symbol and its qualifier routinely land on two lines — §8 `:1147-1151` records
-that a single-line grep for `set_volume_db(` is exactly what let
-`jasper/cli/seat_level.py:413` escape the wave-5 ledger. Join line pairs before
-matching, and **paste the count into the PR** whenever a check counts something.
+**Every grep above must be wrap-safe** (§8 `:1147-1151`) — join line pairs before
+matching, and **paste the count into the PR**.
 
 ### 6.3 Review tier — judged against AGENTS.md, not inherited
 
-AGENTS.md's non-negotiable tier is a **closed list**: a diff touching the
-hearing clamps (`devices.volume_limit`, `CamillaController.set_volume_db`, the
-commissioning SPL stop), the XVF3800 brick hazard, secrets handling, deploy
-integrity, renderer ALSA resolution, silent deafness, paid tests, or
-`deploy/install.sh`.
+AGENTS.md's non-negotiable tier is a **closed list**: the hearing clamps, the
+XVF3800 brick hazard, secrets, deploy integrity, renderer ALSA, silent deafness,
+paid tests, `deploy/install.sh`.
 
 | PR | Tier | Honest reasoning |
 |---|---|---|
