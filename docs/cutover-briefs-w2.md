@@ -146,37 +146,95 @@ splitting one obliges the author to name a bank that separates it.
    driver capture (R-3) separates them, which is exactly the bank W2-c must
    disclose against.
 
-### 1.5 Who calls the analysis layer today
+### 1.5 Who calls the analysis layer today — TWO production entries, not one
 
-One production entry point, reached through one seam, from one flow method.
+**Correction to §2.** §2's *"Who calls analysis today"* enumerates the wizard
+path only. There is a **second production entry**, reached from a shipped
+console script, and it is the one W2 most needs to know about.
 
-- **`analyze_program_capture`** (`jasper/audio_measurement/program_analysis.py:6054`),
-  signature `(program, samples, sample_rate, *, calibration, geometry, priors,
-  capture_report)`. Two corrections §2 already records hold: the WAV arrives
-  **already decoded** as `(np.ndarray, int)`, and `capture_report` is a fourth
-  optional input.
-- **The one production call** is `_pa.analyze_program_capture(...)` at
-  `jasper/web/correction_crossover_v2.py:3144`, inside `_analyze` (`:3074`), the
-  closure `bind_production_analyze` (`:3037`) returns.
-- **The seam** is `V2FlowSeams.analyze`, typed `AnalyzeCapture` — a Protocol
-  (`jasper/active_speaker/crossover_v2_flow.py:1437`, `__call__` **`:1462-1470`**
-  — §2 cites `:1463-1471`, one line late at HEAD), field at `:1504`, the
-  required-keyword argument at `:1447-1461`, bound in the only product
-  `V2FlowSeams(...)` construction
-  (`jasper/web/correction_crossover_v2.py:5740`, `analyze=` at `:5742`).
-- **The one flow call** is `self._seams.analyze(program, result, priors,
-  self._geometry, phase=phase)` at `crossover_v2_flow.py:4207`, inside
-  `consume_capture` (`:4183`). §2 of this brief maps what surrounds it.
-- **The debug sidecar** calls `analysis_diagnostic_summary(analysis)`
+`analyze_program_capture` (`jasper/audio_measurement/program_analysis.py:6054`)
+takes `(program, samples, sample_rate, *, calibration, geometry, priors,
+capture_report)`. §2's two corrections hold: the WAV arrives **already decoded**
+as `(np.ndarray, int)`, and `capture_report` is a fourth optional input.
+
+**Entry 1 — the wizard seam (live session).**
+
+- `_pa.analyze_program_capture(...)` at `jasper/web/correction_crossover_v2.py:3144`,
+  inside `_analyze` (`:3074`), the closure `bind_production_analyze` (`:3037`)
+  returns.
+- Seam: `V2FlowSeams.analyze`, typed `AnalyzeCapture` — a Protocol
+  (`crossover_v2_flow.py:1437`, `__call__` **`:1462-1470`**; §2 cites
+  `:1463-1471`, one line late at HEAD), field `:1504`, the required-keyword
+  argument `:1447-1461`. Bound in the only product `V2FlowSeams(...)`
+  construction (`web/correction_crossover_v2.py:5740`, `analyze=` at `:5742`).
+- One flow call: `self._seams.analyze(program, result, priors, self._geometry,
+  phase=phase)` at `crossover_v2_flow.py:4207`, inside `consume_capture`
+  (`:4183`).
+- Debug sidecar: `analysis_diagnostic_summary(analysis)`
   (`program_analysis.py:7345`) at `web/correction_crossover_v2.py:3297`.
-- **The one direct layer call from the flow** is `polarity_label(...)`
+- One direct layer call from the flow: `polarity_label(...)`
   (`program_analysis.py:4215`) at `crossover_v2_flow.py:8538`; everything else
   the flow imports at `:237-249` is a type or a constant.
 
-**There is no CLI caller and no evidence-packet caller.** `analyze` is reached
-only through the wizard's flow today, which is why `TuningSession.analyze`'s
-offline promise (ruling S3, `session.py:431-436`) has no existing consumer to
-match.
+**Entry 2 — `jasper-read-distortion` (OFFLINE, over banked captures).**
+
+```
+jasper/cli/read_distortion.py:211      read_round_harmonics(bundle, --dumps, --state, …)
+  → crossover_v2/harmonic_evidence.py:1057   read_round_harmonics
+     → :1139 → :831                          _read_one_capture
+        → :867                               analyze_program_capture(...)
+        → :873                               analysis_diagnostic_summary(analysis)
+```
+
+Console script `jasper-read-distortion` (`pyproject.toml:205`). This matters to
+W2 for four reasons, each verified at HEAD:
+
+1. **It is already the offline analyze ruling S3 describes**, and it predates
+   the engine. `TuningSession.analyze` is therefore the *second* offline
+   re-analysis path, not the first.
+2. **It already gates on what the bank carries.** `_read_one_capture:859-865`
+   refuses a sidecar holding none of `FIDELITY_FIELDS` (`:199-204` — five names)
+   with an explicit *"nothing was validated"* reason, then compares replayed vs
+   banked at `FIDELITY_TOLERANCE` (`:211`). That is a bank-content gate with a
+   stated reason, shipped.
+3. **It imports three PRIVATE analysis-layer symbols** — `_estimate_drift`,
+   `_global_offset`, `_locate_segments` (`:847-849`) — which are exactly units
+   7, 2 and 3 of the table above. A partial unit-level decomposition of the
+   layer already exists, outside the layer, undeclared. `scripts/harmonic-distortion-replay.py:335-344`
+   duplicates that import block verbatim.
+4. **It reads the ring, not the bank.** `--dumps` (`read_distortion.py:102-105`)
+   is §1's sidecar family (c) — `/var/lib/jasper/xover-capture-dump`, behind an
+   `ENABLED` marker, **off by default**. So the one shipped offline analyze
+   reads a store an ordinary household run does not write.
+
+It also calls with `MeasurementGeometry()` and
+`MeasurementPriors(crossover_fc_hz=fc_hz)` (`:868-870`) — defaults for every
+input the wizard binding assembles. A second caller already proves the layer
+runs on defaults; what it cannot do is produce units 9, 10, 13 or 14, whose
+gates need priors it never supplies.
+
+### 1.5a Field consumption — §2's "18 of the 25" is understated
+
+Counted at HEAD across `crossover_v2_flow.py`: **22 of 25** fields have a real
+read there (comment/docstring mentions at `:5935`, `:6143`, `:8817` excluded).
+The three absent from the flow are consumed one hop away:
+
+| Field | Consumer |
+|---|---|
+| `program_id` | `crossover_v2/planning.py:320` (`analysis_json`), `:917` (`build_candidate`); `round_evidence.py:287`; `coordinator.py:252` |
+| `mic_tier` | `crossover_v2/planning.py:416` (`ineligible_reason`) |
+| `frame_ledger` | `web/correction_crossover_v2.py:3318`; `program_analysis.py:7558` (`analysis_diagnostic_summary`) |
+
+**All 25 fields have a live consumer; none is dead.** A W2 PR that trims
+"unconsumed" fields from a `crossover_v2_flow.py`-only scan breaks
+`planning.ineligible_reason`, `planning.analysis_json` and the #2094 frame-ledger
+sidecar. Do not trim fields in W2 at all — the layer ports **whole**.
+
+Four more crossover_v2 modules read fields directly and so are downstream of any
+registry output shape: `capture_dispatch.py` (`:441`, `:443`, `:453`, `:538`,
+`:544`, `:579`, `:601`, `:772`, `:816`, `:890`), `spatial.py` (`:470`, `:472`,
+`:488`), `planning.py` (`:229`, `:314-322`, `:416`, `:917`), `round_evidence.py`
+(`:286-287`, `:746`, `:884`).
 
 ### 1.6 The input/output shapes, and the one that does not exist
 
