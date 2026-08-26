@@ -869,6 +869,11 @@ docs = [
   # the cutover work item that absorbs it. Scan it before cutting that file.
   # Dies when tier 7 completes.
   "docs/cutover-map-flow.md",
+  # The tier-7 dissolution map for jasper/web/correction_crossover_v2.py: every
+  # concern in that file with a measured line range, its callers, and where it
+  # goes. Scan it before cutting anything out of that file. EXPIRES when tier 7
+  # completes — the file it maps will not exist, and this doc is deleted with it.
+  "docs/cutover-map-web.md",
   # The one operational map for the v2 commission session and the tuning loop
   # over SSH: what v2 is, the capture flow, the tool menu, door refusal counts,
   # exit-code vocabularies, the graded round, and the debugging recipes. Scan it
