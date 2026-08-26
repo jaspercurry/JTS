@@ -463,6 +463,17 @@ Its two dispatches have different owners and different waves:
   per §6.3, their diagnostic emitters with them — in its **own** dissolution
   rows. A W2 PR that touches them is out of scope and will collide with §6.
 
+**"W2-b" now names two different things — resolve it before dispatching.**
+[`cutover-map-flow.md`](cutover-map-flow.md) labels eleven god-file bands
+`W2-b` and totals them at **3,734 lines / 40.5% of the file**, flagging that
+size as *"worth a second look"* against §8's default tier. §2's W2-b is *"the
+walker replaces `results={}`"* at **~150 lines**. Both readings are defensible —
+the bands' eventual **home** is the registry; their **move** is §6's row — but
+they are not one PR and must not be scheduled as one. **Recommend:** keep `W2-b`
+for the walker (this brief's sense) and relabel the map's bands `→ W2-b`
+(destination) versus `W2-b` (work item), so a 150-line item and a 3,734-line
+obligation stop sharing a name.
+
 **Site D — `harmonic_evidence._read_one_capture` (`:831`, call `:867`). Does not
 flip in W2, and is where units 16–17 will come from.** R-4's stub
 (`measure_spec.py:84-86`) says the missing piece is *"the `analyze` consumer that
