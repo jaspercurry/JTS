@@ -287,7 +287,7 @@ One line each; the doc is the canonical "read this before modifying".
 - [`HANDOFF-source-capabilities.md`](docs/HANDOFF-source-capabilities.md) —
   the Sources contract: vocabulary, capability map, new-source checklist
 - [`HANDOFF-voice-music-control.md`](docs/HANDOFF-voice-music-control.md) —
-  source-aware transport across AirPlay and Spotify Connect
+  source-aware voice volume, transport, and Spotify play routing
 - [`HANDOFF-airplay.md`](docs/HANDOFF-airplay.md) — AirPlay glitch
   troubleshooting; start here for audio artifacts on AirPlay
 - [`multi-user-spotify.md`](docs/multi-user-spotify.md) — per-household-member
