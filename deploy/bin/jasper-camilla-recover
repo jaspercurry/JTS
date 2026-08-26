@@ -264,17 +264,32 @@ write_park_record() {
 # disarmed — without that it re-armed camilla every pass and stopped all
 # JASPER_CORE_GRAPH_PARK_UNITS again each cooldown (#2564).
 #
-# ORDER MATTERS: the record is written after the stop. jasper-camilla.service
-# retires the record from its own ExecStartPost, so a pending auto-restart
-# landing between an earlier write and the stop would delete the record of a
-# park that then stood with nothing recording it.
+# ORDER: the record is written after the stop is ENQUEUED. Because
+# jasper-camilla.service retires the record from its own ExecStartPost, the two
+# orders trade different interleavings, and neither is airtight. Writing first
+# lets a pending auto-restart delete the record of a park that still stands — a
+# silent park, disclosed only by the pre-existing path.camilla_stopped row.
+# Writing second lets an external start that beats the stop job leave a record
+# saying parked while CamillaDSP runs — a visible, wrong doctor row that the
+# next start retires. The second is the recoverable half, so it is the one
+# taken.
 park_core_graph() {
     local reason="$1"
     local detail="$2"
     local action
+    local stop_status
     action="$(park_action "$reason")"
     unit_action reset-failed jasper-camilla.service
-    unit_action stop jasper-camilla.service
+    # --no-block, matching park_content_lane: the stop job lands in PID 1 and
+    # this handler moves straight on to the record. A blocking stop of a daemon
+    # wedged on a busy ALSA device can run to TimeoutStopSec (90s default, none
+    # declared on the unit) inside a handler whose own TimeoutStartSec is 45 —
+    # and a SIGTERM before the record write would stop CamillaDSP with nothing
+    # recording why.
+    "$SYSTEMCTL" --no-block stop jasper-camilla.service >/dev/null 2>&1
+    stop_status=$?
+    emit unit_action action "stop" unit "jasper-camilla.service" \
+        status "$stop_status" mode "no_block"
     write_park_record "$reason" "$detail" "$action"
     emit park reason "$reason" detail "$detail" state "$PARK_STATE" \
         action "$action" re_arm "$PARK_RE_ARM"
@@ -353,5 +368,7 @@ done
 unit_action start jasper-aec-reconcile.service
 unit_action start jasper-grouping-reconcile.service
 
+# `systemctl start` of a Type=simple unit returns 0 at fork, so this leg can
+# declare recovery on a CamillaDSP that dies moments later. See #3096.
 emit recovered action "core_graph_restarted"
 exit 0

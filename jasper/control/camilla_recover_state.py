@@ -14,9 +14,10 @@ the unit cannot exhaust another restart burst and re-enter the handler
 This module is the reader, and it is deliberately ONE reader with two
 consumers — ``jasper-doctor``'s ``check_camilla_recover_park`` and
 ``/state.resilience.camilla_recover`` — so the operator-facing verdict
-cannot differ between the two surfaces. Shape, field vocabulary, and
-fail-soft posture mirror :mod:`jasper.control.content_lane_state`, the
-outputd park this one is the core-graph twin of.
+cannot differ between the two surfaces. It is the core-graph twin of
+:mod:`jasper.control.content_lane_state`; the shared read half, and the
+reasoning behind its fail-soft posture, live in
+:mod:`jasper.control.park_record`.
 
 **Freshness.** Re-read on every call: jasper-control is not restarted when
 the graph parks, so a value captured at import would be permanently wrong.
@@ -26,7 +27,7 @@ from __future__ import annotations
 import os
 from typing import Any
 
-from ..env_load import parse_env_text
+from . import park_record
 
 #: Must equal ``PARK_STATE``'s default in
 #: ``deploy/bin/jasper-camilla-recover``. Pinned against that script by
@@ -44,16 +45,8 @@ def _state_path() -> str:
 def snapshot(path: str | None = None) -> dict[str, Any]:
     """Fail-soft read of the core-graph park record.
 
-    Returns one of four shapes, discriminated by ``status``:
-
-    ``{"status": "absent", "parked": False}``
-        No record — the recovery handler has not parked the graph this boot
-        (``/run`` wipes at boot, so this is per-boot truth).
-
-    ``{"status": "unreadable", "parked": False, "error": ...}``
-        The record exists but could not be read. Reported distinctly from
-        "absent" on purpose: a permissions regression must not read as a
-        healthy speaker.
+    ``absent`` and ``unreadable`` come from :mod:`jasper.control.park_record`.
+    On top of those this module discriminates:
 
     ``{"status": "unintelligible", "parked": False, ...}``
         A record with no ``reason`` — reachable only through a partial write
@@ -68,23 +61,9 @@ def snapshot(path: str | None = None) -> dict[str, Any]:
     Never raises.
     """
     target = path if path is not None else _state_path()
-    try:
-        with open(target, encoding="utf-8", errors="replace") as fh:
-            text = fh.read()
-    except FileNotFoundError:
-        return {"status": "absent", "parked": False}
-    except OSError as exc:
-        return {
-            "status": "unreadable",
-            "parked": False,
-            "path": target,
-            "error": str(exc),
-        }
-
-    try:
-        fields = parse_env_text(text)
-    except Exception:  # noqa: BLE001 - a malformed record must not raise here
-        fields = {}
+    terminal, fields = park_record.read(target)
+    if terminal is not None:
+        return terminal
 
     reason = fields.get("reason")
     if not reason:

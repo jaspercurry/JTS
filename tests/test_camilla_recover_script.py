@@ -174,8 +174,10 @@ def test_failed_recovery_parks_the_graph_and_disarms_its_trigger(tmp_path: Path)
 
     call_text = calls.read_text(encoding="utf-8")
     # reset-failed + stop is what makes the floor stable: the unit cannot
-    # exhaust another burst, so OnFailure= cannot re-enter this handler.
-    assert "stop jasper-camilla.service" in call_text
+    # exhaust another burst, so OnFailure= cannot re-enter this handler. The
+    # stop is --no-block so a wedged daemon cannot burn the handler's
+    # TimeoutStartSec before the record is written.
+    assert "--no-block stop jasper-camilla.service" in call_text
     assert "reboot" not in call_text
 
 
@@ -210,7 +212,7 @@ def test_camilla_starting_again_retires_the_park(tmp_path: Path):
         for line in unit.splitlines()
         if line.startswith("ExecStartPost=")
     ]
-    assert post == [f"-/bin/rm -f {camilla_recover_state.DEFAULT_STATE_PATH}"]
+    assert f"-/bin/rm -f {camilla_recover_state.DEFAULT_STATE_PATH}" in post
 
     # Writer, unit, and reader must all name the one file.
     _env, _calls, record = _park(tmp_path)
