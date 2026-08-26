@@ -12,6 +12,7 @@ asks the root hardware reconciler to converge the final saved intent.
 from __future__ import annotations
 
 import logging
+import subprocess
 from pathlib import Path
 from typing import Any, Callable
 
@@ -30,6 +31,11 @@ logger = logging.getLogger("jasper.output_topology_runtime")
 RECONCILE_UNIT = "jasper-audio-hardware-reconcile.service"
 GROUPING_RECONCILE_UNIT = "jasper-grouping-reconcile.service"
 RECONCILE_UNITS = (GROUPING_RECONCILE_UNIT, RECONCILE_UNIT)
+
+# Read-only unit probes are deliberately not brokered (any user may run them),
+# so this asks systemd directly. Bounded because a save handler waits on it.
+_UNIT_OUTCOME_TIMEOUT_SEC = 5.0
+_UNIT_OUTCOME_PROPERTIES = ("ActiveState", "Result", "ExecMainStatus")
 
 
 def topology_summary(topology: OutputTopology) -> dict[str, Any]:
@@ -58,6 +64,63 @@ def read_before(path: str | Path | None) -> dict[str, Any]:
         return {"readable": False, "error": str(exc), "speaker_groups": []}
 
 
+def _unit_outcome(unit: str) -> dict[str, str]:
+    """systemd's own verdict on the reconcile pass that just ran.
+
+    Empty when systemd cannot be asked at all; callers treat that as "no
+    verdict" rather than as a failure.
+    """
+
+    argv = ["systemctl", "show"]
+    for prop in _UNIT_OUTCOME_PROPERTIES:
+        argv += ["--property", prop]
+    argv.append(unit)
+    try:
+        show = subprocess.run(
+            argv,
+            check=False,
+            timeout=_UNIT_OUTCOME_TIMEOUT_SEC,
+            capture_output=True,
+            text=True,
+        )
+    except (OSError, subprocess.SubprocessError):
+        return {}
+    if show.returncode != 0:
+        return {}
+    properties: dict[str, str] = {}
+    for line in show.stdout.splitlines():
+        key, separator, value = line.partition("=")
+        if separator and key in _UNIT_OUTCOME_PROPERTIES:
+            properties[key] = value.strip()
+    return properties
+
+
+def _with_reconcile_outcome(unit: str, started: dict[str, Any]) -> dict[str, Any]:
+    """Replace the broker's START verdict with the reconcile's OUTCOME.
+
+    The broker's ``ok``/``rc`` say systemd accepted and ran the unit; a
+    ``Type=oneshot`` reconciler that refuses its candidate and preserves the
+    runtime env (``EX_CONFIG`` 78) starts perfectly well and converges
+    nothing (#2493). Gate on ``ActiveState`` and merely report ``Result`` —
+    the rule ``jasper.cli.doctor.correction`` already applies, because
+    ``ActiveState`` is the broader signal and survives a marker rename.
+    """
+
+    properties = _unit_outcome(unit)
+    if properties.get("ActiveState") != "failed":
+        return started
+    exit_status = properties.get("ExecMainStatus", "")
+    return {
+        **started,
+        "ok": False,
+        "unit": unit,
+        "active_state": "failed",
+        "result": properties.get("Result", "") or "unknown",
+        "exit_status": int(exit_status) if exit_status.isdigit() else None,
+        "error": f"{unit} failed to converge",
+    }
+
+
 def trigger_reconcile(*, reason: str = "output_topology_reset") -> dict[str, Any]:
     """Synchronously ask both topology consumers to apply saved state."""
 
@@ -73,6 +136,8 @@ def trigger_reconcile(*, reason: str = "output_topology_reset") -> dict[str, Any
                 no_block=False,
                 timeout=15.0,
             )
+            if result.get("ok"):
+                result = _with_reconcile_outcome(unit, result)
         except (OSError, RuntimeError, ValueError, TimeoutError) as exc:
             result = {"ok": False, "error": f"{type(exc).__name__}: {exc}"}
         log_event(
@@ -81,6 +146,8 @@ def trigger_reconcile(*, reason: str = "output_topology_reset") -> dict[str, Any
             reason=reason,
             unit=unit,
             ok=bool(result.get("ok")),
+            unit_result=result.get("result"),
+            exit_status=result.get("exit_status"),
             error=result.get("error"),
             level=logging.INFO if result.get("ok") else logging.WARNING,
         )

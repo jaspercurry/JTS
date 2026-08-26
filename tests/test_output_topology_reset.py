@@ -6,6 +6,7 @@
 
 from __future__ import annotations
 
+import subprocess
 from pathlib import Path
 
 import pytest
@@ -170,6 +171,55 @@ def test_grouping_reconcile_failure_blocks_hardware_reconcile(
 
     assert result == {"ok": False, "error": "grouping failed"}
     assert calls == [topology_runtime.GROUPING_RECONCILE_UNIT]
+
+
+@pytest.mark.parametrize(
+    ("reconciler_show", "expect_started_verdict"),
+    [
+        ("ActiveState=failed\nResult=exit-code\nExecMainStatus=78\n", False),
+        ("ActiveState=inactive\nResult=success\nExecMainStatus=0\n", True),
+    ],
+)
+def test_reconcile_reports_the_unit_outcome_not_the_unit_start(
+    monkeypatch: pytest.MonkeyPatch,
+    reconciler_show: str,
+    expect_started_verdict: bool,
+) -> None:
+    """A broker start that succeeded says nothing about convergence (#2493)."""
+
+    started = {
+        "ok": True,
+        "action": "start",
+        "rc": 0,
+        "confirmed": True,
+        "self_deferred": False,
+    }
+    monkeypatch.setattr(
+        "jasper.control.restart_broker.manage_units",
+        lambda _unit, **_kwargs: dict(started),
+    )
+
+    def fake_show(argv, **_kwargs):
+        stdout = (
+            reconciler_show
+            if argv[-1] == topology_runtime.RECONCILE_UNIT
+            else "ActiveState=inactive\nResult=success\nExecMainStatus=0\n"
+        )
+        return subprocess.CompletedProcess(argv, 0, stdout, "")
+
+    monkeypatch.setattr(topology_runtime.subprocess, "run", fake_show)
+
+    result = topology_runtime.trigger_reconcile(reason="test")
+
+    if expect_started_verdict:
+        assert result == started
+        return
+    assert result["ok"] is False
+    assert result["unit"] == topology_runtime.RECONCILE_UNIT
+    assert result["active_state"] == "failed"
+    assert result["result"] == "exit-code"
+    assert result["exit_status"] == 78
+    assert result["rc"] == 0
 
 
 def test_cleanup_failure_keeps_new_topology_and_does_not_restore_old_graph(
