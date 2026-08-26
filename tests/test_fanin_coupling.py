@@ -23,7 +23,6 @@ from jasper.fanin_coupling import (
     RING_WIRE_FORMAT_WIDE,
     capture_kwargs_for_coupling,
     coupling_value_removed,
-    is_shm_ring_coupling,
     resolve_coupling,
     resolve_ring_path,
     resolve_ring_slots,
@@ -44,33 +43,17 @@ def test_resolve_coupling_accepts_explicit_transports_case_insensitive():
     assert resolve_coupling("Shm_Ring") == COUPLING_SHM_RING
 
 
-def test_resolve_coupling_removed_transport_pipe_fails_safe_to_loopback():
-    # transport_pipe is a removed coupling token; a migrating box's persisted value
-    # must fail safe to loopback, never crash or silently keep a deleted mode.
-    assert resolve_coupling("transport_pipe") == COUPLING_LOOPBACK
-    assert resolve_coupling(" TRANSPORT_PIPE ") == COUPLING_LOOPBACK
-    # capture kwargs resolve loopback -> the byte-identical empty dict.
-    assert capture_kwargs_for_coupling("transport_pipe") == {}
-
-
-def test_coupling_value_removed_flags_removed_and_typo_values():
-    # True iff present but unrecognized: the removed transport_pipe OR a typo.
-    # Unset / empty / recognized tokens are NOT "removed".
+def test_coupling_value_removed_flags_every_token_but_the_ring():
+    # True iff present but not in VALID_COUPLINGS. Since ADR-0100 that includes
+    # `loopback` — the retired route a migrating box may still carry — alongside
+    # the older removed tokens and any typo. Unset / empty is NOT "removed": an
+    # absent key is the ordinary state of a box the reconciler has not written.
+    assert coupling_value_removed("loopback") is True
     assert coupling_value_removed("transport_pipe") is True
     assert coupling_value_removed("fifo") is True
     assert coupling_value_removed("shm_ring") is False
-    assert coupling_value_removed("loopback") is False
     assert coupling_value_removed(None) is False
     assert coupling_value_removed("") is False
-
-
-def test_is_shm_ring_coupling_predicate():
-    assert is_shm_ring_coupling("shm_ring") is True
-    assert is_shm_ring_coupling("loopback") is False
-    assert is_shm_ring_coupling("transport_pipe") is False
-    assert is_shm_ring_coupling(None) is False
-    # A typo must never flip on the ring capture.
-    assert is_shm_ring_coupling("ring") is False
 
 
 def test_shm_ring_kwargs_are_full_ring_topology_capture_and_playback():
@@ -104,36 +87,22 @@ def test_shm_ring_kwargs_are_full_ring_topology_capture_and_playback():
 
 
 def test_content_lane_format_is_one_definition_for_both_ends_of_the_hop():
-    """wide-output-path PR-6: ONE function answers the CamillaDSP→outputd hop's
-    width, so CamillaDSP's emitted `playback: format:` and outputd's requested
+    """ONE function answers the CamillaDSP→outputd hop's width, so CamillaDSP's
+    emitted `playback: format:` and outputd's requested
     JASPER_OUTPUTD_CONTENT_FORMAT cannot disagree.
 
-    loopback answers the box-wide program lane (the emitters' own default, since
-    loopback kwargs are deliberately empty); shm_ring answers
-    resolve_ring_wire()'s resolved format for this box. Since the ring wire's
-    resolver default flipped WIDE (PR #2601, convergence design §3.2/B3), an
-    undeclared box's shm_ring answer now EQUALS loopback's
-    DEFAULT_PLAYBACK_FORMAT — the "shm_ring coupling FORCES the lane narrow"
-    asymmetry the PR-6 ring ruling used to describe is GONE; only an operator's
-    explicit JASPER_FANIN_RING_WIRE_FORMAT=S16_LE pin still narrows the ring
-    below loopback's width. Fail-safe values follow resolve_coupling.
+    The answer is the ring wire's resolved format for this box, whatever token
+    is handed in — there is no second route to select (ADR-0100).
     """
-    from jasper.camilla_config_contract import DEFAULT_PLAYBACK_FORMAT
     from jasper.fanin_coupling import content_lane_format_for_coupling
 
-    assert content_lane_format_for_coupling("shm_ring") == RING_WIRE_FORMAT_WIDE
-    assert content_lane_format_for_coupling("loopback") == DEFAULT_PLAYBACK_FORMAT
-    # The two now agree on an undeclared box (both S32_LE) — proof the old
-    # narrow-vs-wide asymmetry is gone, not just that each resolves to something.
-    assert content_lane_format_for_coupling("shm_ring") == DEFAULT_PLAYBACK_FORMAT
-    # Unset / empty / typo / the removed transport_pipe all resolve loopback.
-    for raw in (None, "", "   ", "ring", "transport_pipe"):
-        assert content_lane_format_for_coupling(raw) == DEFAULT_PLAYBACK_FORMAT
-    # The ring answer is the kwargs' own value, not a second literal: it tracks
+    for raw in (None, "", "   ", "shm_ring", "loopback", "ring", "transport_pipe"):
+        assert content_lane_format_for_coupling(raw) == RING_WIRE_FORMAT_WIDE
+    # The answer is the kwargs' own value, not a second literal: it tracks
     # capture_kwargs_for_coupling, which is what actually reaches the emitters.
     assert (
-        content_lane_format_for_coupling("shm_ring")
-        == capture_kwargs_for_coupling("shm_ring")["playback_format"]
+        content_lane_format_for_coupling()
+        == capture_kwargs_for_coupling()["playback_format"]
     )
 
 
@@ -228,119 +197,52 @@ def test_shm_ring_armed_env_emits_ring_capture_device_s32le():
     assert "enable_rate_adjust: false" in cfg
 
 
-def test_live_env_path_reads_coupling_file_fresh_not_os_environ(monkeypatch):
-    # BLOCKER 1: the wizard processes (jasper-web /sound/, jasper-correction-web
-    # /correction/) do NOT EnvironmentFile= fanin.env, so os.environ lacks
-    # JASPER_FANIN_CAMILLA_COUPLING even on an armed box. Reading the token from
-    # os.environ would emit a LOOPBACK capture/playback config and silently revert
-    # CamillaDSP off the rings. The live-env path (env=None) must resolve the
-    # coupling FILE-FRESH from the persisted fanin.env — the same SSOT the daemons
-    # and reconciler read — so an armed box's /sound/ save emits the full ring
-    # topology. Mirrors the os.environ-stale fix pattern for the voice provider.
+def test_capture_kwargs_from_env_are_the_ring_with_no_coupling_declared_at_all(
+    monkeypatch,
+):
+    """THE PIN for ADR-0100's capture seam: the answer is UNCONDITIONAL.
+
+    The emitters that reach this — jasper-web `/sound/`, jasper-correction-web
+    `/correction/`, and the correction session's mid-EQ-apply re-emit — do not
+    `EnvironmentFile=` fanin.env, so `os.environ` carries no coupling token, and
+    a box that has never been written carries none on disk either. While the
+    loopback route existed that resolved to `{}` and the caller kept its dsnoop
+    defaults. With the ring the only transport, a `{}` fallthrough would emit a
+    graph whose capture names a lane nothing writes — a dead-lane CamillaDSP
+    config, applied silently in the middle of an EQ save. So: no env, no file,
+    the full ring topology.
+    """
     from jasper import fanin_coupling
 
-    # Armed persisted file; os.environ carries NOTHING (the wizard's real shape).
-    monkeypatch.setattr(
-        "jasper.fanin.coupling_reconcile.read_persisted_coupling",
-        lambda *a, **k: "shm_ring",
-    )
-    monkeypatch.delenv("JASPER_FANIN_CAMILLA_COUPLING", raising=False)
-
-    kwargs = fanin_coupling.coupling_capture_kwargs_from_env()
-
-    # Format values are RING_WIRE_FORMAT_WIDE, not this test's subject: it pins
-    # that the COUPLING token is read file-fresh, and the box declares no
-    # JASPER_FANIN_RING_WIRE_FORMAT here, so the format axis resolves the
-    # resolver's ordinary default.
-    assert kwargs == {
-        "capture_device": RING_CAPTURE_DEVICE,
-        "capture_format": RING_WIRE_FORMAT_WIDE,
-        "playback_device": RING_PLAYBACK_DEVICE,
-        "playback_format": RING_WIRE_FORMAT_WIDE,
-        "chunksize": RING_CAMILLA_CHUNKSIZE,
-        "target_level": RING_CAMILLA_TARGET_LEVEL,
-        "queuelimit": RING_CAMILLA_QUEUELIMIT,
-        "enable_rate_adjust": RING_CAMILLA_ENABLE_RATE_ADJUST,
-    }
-
-
-def test_live_env_path_loopback_when_file_disarmed_is_byte_identical(monkeypatch):
-    # The file-fresh fallback stays fail-SAFE: a disarmed box (loopback fanin.env,
-    # or the read fail-safing to loopback) resolves to {} on the live path, byte-
-    # identical to today. This is the guard that the Blocker-1 fix does not turn a
-    # non-armed box's ordinary /sound/ save into a ring config.
-    from jasper import fanin_coupling
-
-    monkeypatch.setattr(
-        "jasper.fanin.coupling_reconcile.read_persisted_coupling",
-        lambda *a, **k: "loopback",
-    )
-    monkeypatch.delenv("JASPER_FANIN_CAMILLA_COUPLING", raising=False)
-
-    assert fanin_coupling.coupling_capture_kwargs_from_env() == {}
-
-
-def test_explicit_env_mapping_stays_authoritative_ignores_file(monkeypatch):
-    # An EXPLICIT env mapping (the plan/binder path passes dict(os.environ) right
-    # after the reconciler pre-synced it; unit tests pass a controlled env) must
-    # NOT read the file — the caller's env wins. Prove a shm_ring fanin.env on disk
-    # does not leak into an explicit loopback env. (Also fails loudly if the file
-    # reader is consulted at all: it raises here.)
-    from jasper import fanin_coupling
-
+    # Nothing declares a coupling: not the process env, and not the file — which
+    # this test also proves is never consulted.
     def _boom(*a, **k):
-        raise AssertionError("explicit-env path must not read the persisted file")
+        raise AssertionError("the capture kwargs must not depend on a coupling token")
 
     monkeypatch.setattr(
-        "jasper.fanin.coupling_reconcile.read_persisted_coupling", _boom
+        "jasper.fanin.ring_health.read_persisted_coupling", _boom
     )
+    monkeypatch.delenv("JASPER_FANIN_CAMILLA_COUPLING", raising=False)
 
-    assert fanin_coupling.coupling_capture_kwargs_from_env({}) == {}
-    assert (
-        fanin_coupling.coupling_capture_kwargs_from_env(
-            {"JASPER_FANIN_CAMILLA_COUPLING": "loopback"}
-        )
-        == {}
-    )
-
-
-def test_resolve_coupling_unknown_and_old_fifo_fail_safe_to_loopback():
-    assert resolve_coupling("fifo") == COUPLING_LOOPBACK
-    assert resolve_coupling("pipe") == COUPLING_LOOPBACK
-    assert resolve_coupling("disabled") == COUPLING_LOOPBACK
-
-
-def test_loopback_capture_kwargs_are_empty():
-    assert capture_kwargs_for_coupling(None) == {}
-    assert capture_kwargs_for_coupling("loopback") == {}
-    assert capture_kwargs_for_coupling("garbage") == {}
-    assert capture_kwargs_for_coupling("fifo") == {}
+    for env in (None, {}, {"JASPER_FANIN_CAMILLA_COUPLING": ""}):
+        kwargs = fanin_coupling.coupling_capture_kwargs_from_env(env)
+        assert kwargs == {
+            "capture_device": RING_CAPTURE_DEVICE,
+            "capture_format": RING_WIRE_FORMAT_WIDE,
+            "playback_device": RING_PLAYBACK_DEVICE,
+            "playback_format": RING_WIRE_FORMAT_WIDE,
+            "chunksize": RING_CAMILLA_CHUNKSIZE,
+            "target_level": RING_CAMILLA_TARGET_LEVEL,
+            "queuelimit": RING_CAMILLA_QUEUELIMIT,
+            "enable_rate_adjust": RING_CAMILLA_ENABLE_RATE_ADJUST,
+        }, env
 
 
-def test_loopback_coupling_is_byte_identical_to_no_coupling():
-    profile = SoundProfile()
-    baseline = emit_sound_config(profile, profile_id="x")
-    coupled = emit_sound_config(
-        profile,
-        profile_id="x",
-        **capture_kwargs_for_coupling("loopback"),
-    )
-    assert coupled == baseline
-
-
-def test_coupling_capture_kwargs_from_env_default_is_empty():
-    from jasper.fanin_coupling import coupling_capture_kwargs_from_env
-
-    assert coupling_capture_kwargs_from_env({}) == {}
-    assert coupling_capture_kwargs_from_env({"JASPER_FANIN_CAMILLA_COUPLING": ""}) == {}
-    assert (
-        coupling_capture_kwargs_from_env({"JASPER_FANIN_CAMILLA_COUPLING": "loopback"})
-        == {}
-    )
-    assert (
-        coupling_capture_kwargs_from_env({"JASPER_FANIN_CAMILLA_COUPLING": "fifo"})
-        == {}
-    )
+def test_resolve_coupling_answers_loopback_for_every_non_ring_value():
+    # The retired token is what a migrating box's file still says; the resolver
+    # names it so `coupling_value_removed` and the doctor can report it.
+    for raw in ("fifo", "pipe", "disabled", "transport_pipe", None, "", "  "):
+        assert resolve_coupling(raw) == COUPLING_LOOPBACK
 
 
 def test_member_kwargs_are_pipe_sink_detects_grouped_sink():
@@ -555,7 +457,7 @@ def test_capture_kwargs_take_their_format_from_the_resolver(monkeypatch):
             period_frames=fc.RING_SLOT_FRAMES,
         ),
     )
-    kwargs = fc.capture_kwargs_for_coupling(COUPLING_SHM_RING)
+    kwargs = fc.capture_kwargs_for_coupling()
     assert kwargs["capture_format"] == "S32_LE"
     assert kwargs["playback_format"] == "S32_LE"
-    assert fc.content_lane_format_for_coupling(COUPLING_SHM_RING) == "S32_LE"
+    assert fc.content_lane_format_for_coupling() == "S32_LE"

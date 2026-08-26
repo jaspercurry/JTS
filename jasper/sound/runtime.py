@@ -166,15 +166,10 @@ class StatefileCamillaController:
     :mod:`jasper.active_speaker.runtime_contract`'s job (install runs it as
     ``jasper-active-speaker runtime-safe-graph`` immediately before this).
 
-    PRIOR ART, and why it is not reused here.
-    :func:`jasper.fanin.coupling_reconcile._reseed_loopback_statefile` already
-    names this hole — "there is no websocket to talk to: the reconcile fails, the
-    statefile still names the [bad] config, and the daemon's NEXT start comes up
-    on the same [one] and fails again". It closes it by asking the seeding
-    contract for a SAFE graph with the coupling pinned to loopback, which is
-    right for a recovery that is deliberately de-arming the box. A deploy is the
-    opposite job: it must keep the speaker on its own graph and its own
-    coupling, and merely refresh them. It also could not have healed jts4 —
+    WHY THE SEEDING CONTRACT IS NOT REUSED HERE. Asking it for a SAFE graph is
+    right for a recovery that is deliberately de-arming a box; a deploy is the
+    opposite job — it must keep the speaker on its own graph and merely refresh
+    it. It also could not have healed jts4 —
     ``classify_camilla_config_text`` reads ``playback_device``,
     ``playback_channels`` and ``volume_limit_db``, never the sample format, so
     the seeding contract re-proves a stale-width graph LEGAL and preserves it.
@@ -500,34 +495,16 @@ async def reconcile_current_dsp(
             )
 
         out_path = dry.output_path
-        coupling_capture_kwargs = fanin_coupling_capture_kwargs(coupling)
 
-        if (
-            not force
-            # A non-loopback coupling (shm_ring) must flip the shared graph even on
-            # a flat profile. This noop used to fire before topology differences
-            # were considered, which can strand endpoints on different transports.
-            # When coupling kwargs are set, fall through to the YAML diff below so
-            # the arm actually applies.
-            and not coupling_capture_kwargs
-            and dry.carrier_kind == "base_flat"
-            and sound_filter_count == 0
-            and trim_db == 0.0
-            and dry.room_peq_count == 0
-        ):
-            return _log_reconcile_result(
-                {
-                    "status": "skipped",
-                    "reason": "flat_profile_noop",
-                    "transport": transport,
-                    "carrier_kind": dry.carrier_kind,
-                    "current_config_path": str(current_path),
-                    "candidate_config_path": str(out_path),
-                    "output_trim_db": trim_db,
-                    "sound_filter_count": sound_filter_count,
-                    "room_peq_count": dry.room_peq_count,
-                }
-            )
+        # THE FLAT-PROFILE NOOP IS GONE, and its own guard is why. It skipped the
+        # apply on a flat box — nothing to EQ, so nothing to write — but it was
+        # already conditioned on the coupling kwargs being empty, because a graph
+        # that has to name the ring's capture must be written even when the
+        # profile is flat. ADR-0100 made those kwargs unconditional, so the skip
+        # became unreachable; restoring it would strand a flat box's graph on a
+        # lane fan-in does not write. The equality check below is what now
+        # short-circuits a flat box, and it compares the actual bytes.
+        #
         # The saved intent is ALREADY what the speaker is playing, whatever that
         # config is named — so there is nothing to refresh. Returning here is
         # what keeps a kept active-crossover candidate the running config

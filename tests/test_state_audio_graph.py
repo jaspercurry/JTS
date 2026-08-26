@@ -319,10 +319,19 @@ def test_coupling_state_partial_flip_reports_incoherent(monkeypatch, tmp_path):
     assert block["intent_coherent"] is False
 
 
-def test_coupling_state_fail_soft_on_read_error(monkeypatch):
-    # A read failure degrades to the loopback default, never raises. OSError is a
-    # realistic failure (an unreadable env file); the fail-soft catch is a
-    # concrete exception set, not a blind except.
+def test_coupling_state_fail_soft_reports_the_unknown_rather_than_a_default(
+    monkeypatch,
+):
+    """A read failure is fail-SOFT, but it is not a diagnosis.
+
+    It used to degrade to ``"persisted": "loopback"`` with
+    ``"intent_coherent": True`` — after ADR-0100 that named the RETIRED
+    transport and called it healthy, so an unreadable env file surfaced as a
+    working speaker. ``None`` says what actually happened. OSError is the
+    realistic failure (an unreadable env file); the catch is a concrete
+    exception set, not a blind except.
+    """
+
     def _boom(*a, **k):
         raise OSError("boom")
 
@@ -331,43 +340,31 @@ def test_coupling_state_fail_soft_on_read_error(monkeypatch):
     )
     block = state_aggregate._coupling_state(fanin_status=None)
     assert block == {
-        "persisted": "loopback",
-        "content_bridge": "direct",
-        "intent_coherent": True,
+        "persisted": None,
+        "content_bridge": None,
+        "intent_coherent": None,
         "live_transport": None,
         "observed": {"ring_a": None, "ring_b": None},
-        "choice": "auto",
         "combo": {"state": "disarmed"},
     }
 
 
-def test_coupling_state_choice_reports_operator_marker(monkeypatch, tmp_path):
-    # P4 default-flip: /state surfaces whether the coupling is an operator pick or
-    # an auto-resolved default, read from the JASPER_FANIN_COUPLING_CHOICE marker.
+def test_coupling_state_publishes_no_operator_pin(monkeypatch, tmp_path):
+    """The block stopped carrying `choice`, and the reason is not tidiness.
+
+    That key reported whether the coupling was an operator pick or the auto
+    default, read from JASPER_FANIN_COUPLING_CHOICE. ADR-0100 left one transport
+    and the endpoint convergence stopped honouring the marker, so a box whose
+    fanin.env still carries `operator` was being shown a pin that nothing in the
+    system obeys — a surface telling the household something untrue about who
+    controls their speaker. The marker file may survive on a deployed box, which
+    is exactly why this is driven with one present.
+    """
     fanin_env = tmp_path / "fanin.env"
     fanin_env.write_text(
         "JASPER_FANIN_COUPLING_CHOICE=operator\n"
-        "JASPER_FANIN_CAMILLA_COUPLING=loopback\n"
+        "JASPER_FANIN_CAMILLA_COUPLING=shm_ring\n"
     )
-    monkeypatch.setattr(
-        "jasper.fanin.ring_health.read_persisted_coupling",
-        lambda *a, **k: "loopback",
-    )
-    monkeypatch.setattr(
-        "jasper.fanin.ring_health.FANIN_ENV_PATH", str(fanin_env)
-    )
-    monkeypatch.setattr(
-        "jasper.fanin.ring_health.OUTPUTD_ENV_PATH",
-        str(tmp_path / "nope.env"),
-    )
-    block = state_aggregate._coupling_state(fanin_status=None)
-    assert block["choice"] == "operator"
-
-
-def test_coupling_state_choice_defaults_to_auto(monkeypatch, tmp_path):
-    # No marker in fanin.env -> the default is auto-owned.
-    fanin_env = tmp_path / "fanin.env"
-    fanin_env.write_text("JASPER_FANIN_CAMILLA_COUPLING=shm_ring\n")
     monkeypatch.setattr(
         "jasper.fanin.ring_health.read_persisted_coupling",
         lambda *a, **k: "shm_ring",
@@ -380,7 +377,8 @@ def test_coupling_state_choice_defaults_to_auto(monkeypatch, tmp_path):
         str(tmp_path / "nope.env"),
     )
     block = state_aggregate._coupling_state(fanin_status=None)
-    assert block["choice"] == "auto"
+    assert "choice" not in block
+    assert block["persisted"] == "shm_ring"
 
 
 # ---- combo resolved state --------------------------------------------------

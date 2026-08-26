@@ -1080,68 +1080,6 @@ def _steps_one_and_two_box(monkeypatch, tmp_path):
     monkeypatch.setattr(ra, "RING_CONF_D", str(conf_d))
 
 
-def test_the_auto_pass_finishes_step_three_on_a_steps_one_and_two_box(
-    monkeypatch, tmp_path
-):
-    """THE COROLLARY of the narrowing, pinned because nothing else pins it.
-
-    Step 2 alone satisfies ``active_ring_endpoint_proof``; the operator-freeze
-    marker is stamped only by step 3; and after P6 the roleful gate no longer
-    blocks. So a box parked between steps 2 and 3 — which used to sit there
-    until a human ran the third command — is now converged by the next boot or
-    deploy. This is the newly-enabled behaviour, and it is the exact set for
-    which "never armed by the unattended pass" stopped being true.
-    """
-    from jasper.fanin.coupling_auto import resolve_auto_decision
-    from jasper.fanin.coupling_reconcile import default_ring_gates
-    from jasper.fanin_coupling import COUPLING_SHM_RING
-
-    _steps_one_and_two_box(monkeypatch, tmp_path)
-
-    decision = resolve_auto_decision(
-        marker_raw=None,  # step 3 never ran, so no operator choice is stamped
-        gadget_present=False,
-        usb_intent_enabled=False,
-        ring_gates=default_ring_gates(),
-    )
-    assert decision.owned is True
-    assert decision.coupling == COUPLING_SHM_RING, decision.gate_details
-
-
-def test_a_fully_armed_operator_frozen_box_never_evaluates_the_gates(
-    monkeypatch, tmp_path
-):
-    """The other polarity: step 3 HAS run, so the operator marker freezes it.
-
-    A fully-armed box is owned by the operator, and ``resolve_auto_decision``
-    returns before the gate loop — so the narrowed roleful gate cannot re-open,
-    re-arm, or re-decide anything on a box a human already committed. Proved by
-    a spy rather than by the verdict, because the verdict alone cannot tell
-    "gates passed" from "gates never ran".
-    """
-    from jasper.fanin.coupling_auto import resolve_auto_decision
-    from jasper.fanin.coupling_reconcile import default_ring_gates
-    from jasper.fanin_coupling import COUPLING_SHM_RING
-
-    _steps_one_and_two_box(monkeypatch, tmp_path)
-
-    evaluated: list[str] = []
-    spied = tuple(
-        (name, (lambda n=name, g=gate: (evaluated.append(n), g())[1]))
-        for name, gate in default_ring_gates()
-    )
-    decision = resolve_auto_decision(
-        marker_raw="operator",
-        gadget_present=False,
-        usb_intent_enabled=False,
-        ring_gates=spied,
-        current_coupling=COUPLING_SHM_RING,
-    )
-    assert decision.owned is False
-    assert decision.coupling == COUPLING_SHM_RING
-    assert evaluated == []
-
-
 # --- the two proven arms (§4.7, owner ruling §12 decision 1) -----------------
 
 
@@ -1480,42 +1418,6 @@ def test_the_stale_active_ring_file_is_deleted_like_the_other_two(
     )
 
 
-def test_the_confirm_predicate_escalates_on_a_stale_active_ring_file(
-    tmp_path, monkeypatch
-):
-    """The two halves must mean the same thing by "coherent".
-
-    The CONFIRM predicate decides whether to escalate to the arm that runs the
-    delete above. If it did not consider the active file while the delete did, a
-    stale active ring would read as coherent, the escalation would never fire,
-    and the file the arm is ready to remove would sit there forever.
-    """
-    import jasper.fanin.coupling_reconcile as cr
-    import jasper.ring_assets as ra
-    paths = _point_all_ring_files_at(monkeypatch, tmp_path)
-    # S32_LE — every block in the shipped conf.d now DECLARES `format S32_LE`
-    # explicitly, so a "coherent" fixture file must carry it too (see the
-    # sibling delete test above for the same reasoning).
-    _ring_file(paths["a"], sample_format=ra.RING_SAMPLE_FORMAT_S32LE)
-    _ring_file(paths["b"], sample_format=ra.RING_SAMPLE_FORMAT_S32LE)
-
-    # Positive control: all three coherent -> stay lightweight.
-    _ring_file(paths["active"], sample_format=ra.RING_SAMPLE_FORMAT_S32LE)
-    needed, detail = cr._ring_confirm_needs_self_heal("")
-    assert needed is False, detail
-
-    # Only the ACTIVE file drifts -> escalate. Format stays S32_LE (coherent)
-    # so the mismatch below is provably on the CHANNELS axis alone — the axis
-    # the "channels" substring below asserts.
-    _ring_file(
-        paths["active"], sample_format=ra.RING_SAMPLE_FORMAT_S32LE, channels=6
-    )
-    needed, detail = cr._ring_confirm_needs_self_heal("")
-    assert needed is True
-    assert "channels" in detail
-    assert "stale-file self-heal" in detail
-
-
 # --------------------------------------------------------------------------
 # 9. INERTNESS — nothing moves until an operator arms.
 # --------------------------------------------------------------------------
@@ -1752,16 +1654,10 @@ def test_the_coupling_warn_on_an_armed_box_names_the_forward_ladder_not_a_rollba
     arms: the loaded graph still spells ``outputd_active_content_playback``. The
     warn must name the one ladder that converges.
 
-    #2285 P2 renamed and re-pointed this. It used to pin the #2332 canonical
-    ROLLBACK route (owner-ruled 2026-08-12): the warn said the
-    jasper-audio-hardware-reconcile refusal was EXPECTED mid-rollback and to
-    skip to ``jasper-fanin-coupling-reconcile loopback (step 3)``. Both premises
-    died with the aloop endpoint — there is no aloop candidate to refuse, and
-    for a ROLEFUL box ``loopback`` is now the park (snd-aloop pair 5's PCMs are
-    deleted), so that text sent an armed speaker to a dead transport. It is not
-    deleted outright because the ARMED branch of this check has no other test:
-    what survives is that the branch still WARNs and still hands over a runnable
-    ladder.
+    It used to pin a ROLLBACK route instead, whose destination no longer exists
+    (ADR-0100). What survives, and what this asserts, is that the ARMED branch
+    still WARNs and still hands over a ladder an operator can actually run —
+    the branch has no other test.
     """
     from jasper.active_speaker.runtime_contract import OUTPUTD_ACTIVE_PLAYBACK_DEVICE
     from jasper.cli.doctor import audio_runtime
@@ -2727,7 +2623,7 @@ def test_the_arm_sequence_completes_from_an_unarmed_roleful_box(monkeypatch):
     ladder follows it.
     """
     from jasper.cli.active_speaker import _baseline_reemit_endpoint
-    from jasper.fanin.coupling_reconcile import COUPLING_SHM_RING, _outputd_actions
+    from jasper.fanin.coupling_reconcile import _outputd_actions
     from jasper.output_topology import resolve_output_layout
 
     topology = _active_topology("mono", "active_2_way")
@@ -2785,33 +2681,8 @@ def test_the_arm_sequence_completes_from_an_unarmed_roleful_box(monkeypatch):
     # the previous step wrote into outputd.env, and step 3 must read that file
     # rather than a predicate this test is holding down.
     monkeypatch.undo()
-    actions = _outputd_actions(COUPLING_SHM_RING, _outputd_env(marker="1"))
+    actions = _outputd_actions(_outputd_env(marker="1"))
     assert _ring_path_written(actions) == DEFAULT_OUTPUTD_ACTIVE_RING_PATH
-
-
-def test_a_loopback_coupling_unsets_the_ring_path_entirely():
-    """The disarm/park direction of the coupling reconciler still converges.
-
-    #2285 P2 cut this down from ``test_the_release_sequence_completes_from_an_
-    armed_roleful_box``, which walked the RELEASE ladder end to end. Its first
-    two rungs are gone with the aloop endpoint: ``_baseline_reemit_endpoint(...,
-    "aloop")`` now raises, the "byte-identical to the pre-arm graph" restore has
-    no destination, and a marker deriving CLEAR from an aloop graph describes a
-    graph no writer produces. Only rung 3 survives on its own terms — a
-    ``loopback`` coupling must leave NO ring path behind, whether it was reached
-    by a park or by a passive box's ordinary state — and nothing else in the
-    suite drives ``_outputd_actions`` in that direction, so it is kept rather
-    than deleted with the ladder around it.
-    """
-    from jasper.fanin.coupling_reconcile import COUPLING_LOOPBACK, _outputd_actions
-    from jasper.fanin_coupling import OUTPUTD_RING_PATH_ENV_VAR
-
-    actions = _outputd_actions(COUPLING_LOOPBACK, _outputd_env(marker=""))
-    assert _ring_path_written(actions) is None
-    assert any(
-        action.action == "unset" and action.key == OUTPUTD_RING_PATH_ENV_VAR
-        for action in actions
-    )
 
 
 def _coherence_errors(*, coupling, capture, playback, outputd_env=None):
@@ -2943,9 +2814,9 @@ def test_every_mid_sequence_state_is_silence_or_coherent_never_wrong_audio():
     State C (step 3, marker set): coherent by construction, because the path is
     DERIVED from the marker rather than preserved.
     """
-    from jasper.fanin.coupling_reconcile import COUPLING_SHM_RING, _outputd_actions
+    from jasper.fanin.coupling_reconcile import _outputd_actions
 
-    coherent = _outputd_actions(COUPLING_SHM_RING, _outputd_env(marker="1"))
+    coherent = _outputd_actions(_outputd_env(marker="1"))
     assert _ring_path_written(coherent) == DEFAULT_OUTPUTD_ACTIVE_RING_PATH
 
     # The state the blocker described — arming an UNMARKED box — cannot name the
@@ -2953,7 +2824,7 @@ def test_every_mid_sequence_state_is_silence_or_coherent_never_wrong_audio():
     # admit-then-park. It resolves the stereo ring, which a roleful graph never
     # names, so the box lands on silence rather than on a full-range program
     # reaching a compression driver.
-    unmarked = _outputd_actions(COUPLING_SHM_RING, _outputd_env(marker=""))
+    unmarked = _outputd_actions(_outputd_env(marker=""))
     assert _ring_path_written(unmarked) != DEFAULT_OUTPUTD_ACTIVE_RING_PATH
 
 
@@ -3022,10 +2893,10 @@ def _run_validate_outputd_env(
     return rc, capsys.readouterr().out
 
 
-def test_the_arm_ladder_clears_the_validator_the_reconciler_actually_runs(
+def test_the_convergence_walk_clears_the_validator_the_reconciler_actually_runs(
     tmp_path, capsys, monkeypatch
 ):
-    """The missing layer: the ladder walked THROUGH `validate-outputd-env`.
+    """The missing layer: the walk goes THROUGH `validate-outputd-env`.
 
     The four walks above drive the emit, marker-derivation, and coupling layers
     and all passed — while the real ladder deadlocked on jts3 (2026-08-11) at
@@ -3054,7 +2925,6 @@ def test_the_arm_ladder_clears_the_validator_the_reconciler_actually_runs(
     """
     from jasper.cli.active_speaker import _baseline_reemit_endpoint
     from jasper.fanin.coupling_reconcile import (
-        COUPLING_SHM_RING,
         LoadedCamillaGraph,
         _outputd_actions,
         ring_edge_width_ready,
@@ -3137,7 +3007,7 @@ def test_the_arm_ladder_clears_the_validator_the_reconciler_actually_runs(
     assert "was NOT one of them" not in detail
 
     # --- Step 3: with step 2's marker on disk, the path converges. ---------
-    actions = _outputd_actions(COUPLING_SHM_RING, _outputd_env(marker="1"))
+    actions = _outputd_actions(_outputd_env(marker="1"))
     assert _ring_path_written(actions) == DEFAULT_OUTPUTD_ACTIVE_RING_PATH
 
 
@@ -3250,10 +3120,9 @@ def test_the_first_arm_of_a_box_already_on_the_stereo_ring_clears_the_validator(
 
     # ...and the pass that note names actually converges the pair, from the
     # marker this validation just allowed to be written.
-    from jasper.fanin.coupling_reconcile import COUPLING_SHM_RING, _outputd_actions
+    from jasper.fanin.coupling_reconcile import _outputd_actions
 
-    actions = _outputd_actions(
-        COUPLING_SHM_RING, _outputd_env(marker="1", ring_path=DEFAULT_OUTPUTD_RING_PATH)
+    actions = _outputd_actions(_outputd_env(marker="1", ring_path=DEFAULT_OUTPUTD_RING_PATH)
     )
     assert _ring_path_written(actions) == DEFAULT_OUTPUTD_ACTIVE_RING_PATH
 
@@ -3316,25 +3185,20 @@ def test_the_unarmed_ring_path_projection_never_carries_the_active_file_forward(
     recovery path for an interrupted transition, and it is why the waypoint above
     can be a note rather than a refusal.
     """
-    from jasper.fanin.coupling_reconcile import COUPLING_SHM_RING, _outputd_actions
+    from jasper.fanin.coupling_reconcile import _outputd_actions
 
-    stuck = _outputd_actions(
-        COUPLING_SHM_RING,
-        _outputd_env(marker="", ring_path=DEFAULT_OUTPUTD_ACTIVE_RING_PATH),
+    stuck = _outputd_actions(_outputd_env(marker="", ring_path=DEFAULT_OUTPUTD_ACTIVE_RING_PATH),
     )
     assert _ring_path_written(stuck) == DEFAULT_OUTPUTD_RING_PATH
 
     # An operator's own Ring B path is still honoured — the fallback is scoped to
     # the ONE file the allowlist reserves, not to every non-default value.
-    custom = _outputd_actions(
-        COUPLING_SHM_RING, _outputd_env(marker="", ring_path="/dev/shm/operator.ring")
+    custom = _outputd_actions(_outputd_env(marker="", ring_path="/dev/shm/operator.ring")
     )
     assert _ring_path_written(custom) == "/dev/shm/operator.ring"
 
     # ...and the armed side is unchanged: it discards whatever the key held.
-    armed = _outputd_actions(
-        COUPLING_SHM_RING,
-        _outputd_env(marker="1", ring_path="/dev/shm/operator.ring"),
+    armed = _outputd_actions(_outputd_env(marker="1", ring_path="/dev/shm/operator.ring"),
     )
     assert _ring_path_written(armed) == DEFAULT_OUTPUTD_ACTIVE_RING_PATH
 
@@ -3599,7 +3463,7 @@ def test_the_crossed_pair_is_unreachable_from_the_reconciler():
     # Hostile input: the file already names the STEREO ring while the marker
     # says armed. The old code preserved that value verbatim.
     hostile = _outputd_env(marker="1", ring_path=DEFAULT_OUTPUTD_RING_PATH)
-    actions = _outputd_actions(COUPLING_SHM_RING, hostile)
+    actions = _outputd_actions(hostile)
     assert _ring_path_written(actions) == DEFAULT_OUTPUTD_ACTIVE_RING_PATH, (
         "an armed box was handed the stereo ring's path — this is the pair "
         "outputd bails on at startup (exit 78, silent speaker)"

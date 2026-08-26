@@ -1559,16 +1559,11 @@ resolve_fanin_coupling_default() {
     # P3/P4 default-flip. Enable the boot-time default-resolution unit AND run
     # the pass once now so this deploy converges the box onto the shipped
     # defaults:
-    #   - fan-in coupling: shm_ring on a solo, ring-eligible box (all #1169 arm
-    #     preflights pass), else loopback;
+    #   - fan-in coupling: the ring, the only central transport (ADR-0100);
     #   - USB combo (JASPER_FANIN_USB_DIRECT + _HOST_CLOCK + _RESAMPLER_CUSHION_DECAY):
     #     enabled on a gadget box (dtoverlay=dwc2,dr_mode=peripheral present), else
     #     cleared.
-    # An explicit operator choice
-    # (JASPER_FANIN_COUPLING_CHOICE=operator in fanin.env) freezes only the
-    # fan-in/Camilla coupling — a deliberate transport revert sticks across
-    # deploys. USB direct-capture still follows canonical source intent. An
-    # already-resolved box remains a zero-churn confirm.
+    # An already-converged box remains a zero-churn confirm.
     # Mirrors reconcile_aec_state / reconcile_grouping_state: reconciler is the
     # single env writer; daemons read the resolved env. The reconciler CLI hydrates
     # its own env (load_env_files) so the camilla re-emit keeps the tuned chunksize.

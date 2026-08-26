@@ -315,13 +315,14 @@ ENV_CONTRACT_EXCEPTIONS: dict[str, str] = {
     "JASPER_OUTPUTD_CONTENT_LANE_WINDOW_SEC": "outputd failure helper streak window; script-only",
     "JASPER_OUTPUTD_CONTENT_LANE_PARK_AFTER": "outputd failure helper park bound; script-only",
     "JASPER_OUTPUTD_CONTENT_LANE_JOURNAL_LINES": "outputd failure helper journal-tail bound; script-only",
-    # The removed transport_pipe coupling's env keys. The Rust
-    # local_content_pipe path was deleted with the coupling, so neither is
-    # Rust-read anymore. JASPER_FANIN_CAMILLA_PIPE survives ONLY in the
-    # fanin_coupling removal docstring; JASPER_OUTPUTD_LOCAL_CONTENT_PIPE survives
-    # as the reconciler's legacy migration-sweep UNSET target
-    # (_LEGACY_OUTPUTD_LOCAL_CONTENT_PIPE_ENV) so a migrating box converges clean.
-    "JASPER_FANIN_CAMILLA_PIPE": "removed transport_pipe coupling; named only in the removal docstring, not Rust-read",
+    # The removed transport_pipe coupling's outputd key. The Rust
+    # local_content_pipe path was deleted with the coupling, so it is not
+    # Rust-read anymore; it survives as the reconciler's legacy migration-sweep
+    # UNSET target (_LEGACY_OUTPUTD_LOCAL_CONTENT_PIPE_ENV) so a migrating box
+    # converges clean. (Its sibling JASPER_FANIN_CAMILLA_PIPE was excepted while
+    # the fanin_coupling removal docstring still named it; ADR-0100 deleted that
+    # docstring, so this guard demanded the dead entry back — removed here, in
+    # the direction the guard exists to force.)
     "JASPER_OUTPUTD_LOCAL_CONTENT_PIPE": "removed transport_pipe coupling; reconciler migration-sweep unset target, not Rust-read",
     # (JASPER_OUTPUTD_DAC_FORMAT was excepted for one PR while the registry
     # declared it and no consumer existed. PR-2 landed outputd's read, so the

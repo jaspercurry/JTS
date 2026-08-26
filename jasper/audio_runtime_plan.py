@@ -295,9 +295,11 @@ GROUPED_SHM_RING_MECHANISM = (
     "JASPER_OUTPUTD_CONTENT_BRIDGE=direct, and under `direct` outputd reads the "
     "snd-aloop content PCM an armed ring moves CamillaDSP off."
 )
+#: There is no second transport to disarm onto (ADR-0100), so the action is
+#: ungrouping — and until composite-on-ring lands the shape is a named park.
 _GROUPED_SHM_RING_DETAIL = GROUPED_SHM_RING_MECHANISM + (
-    " Disarm the ring (jasper-fanin-coupling-reconcile loopback) or ungroup "
-    "this speaker; keeping the coupling on loopback."
+    " Ungroup this speaker to put it back on the ring; until then it is the "
+    "grouped_dac_content_lane park (#3118)."
 )
 
 

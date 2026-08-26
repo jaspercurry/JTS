@@ -362,10 +362,10 @@ def test_ring_only_is_derived_from_the_coupling_vocabulary(monkeypatch):
     assert transport_park.ring_only_transport() is False
 
 
-def test_todays_tree_still_has_the_loopback_route():
-    """Pins that this slice ships INERT on the fleet: while loopback is a
-    legal coupling nothing new reports a speaker silent."""
-    assert transport_park.ring_only_transport() is False
+def test_todays_tree_is_ring_only_so_the_parks_are_live():
+    """The transport deletion landed: `shm_ring` is the only legal coupling, so
+    a box in one of the four classes is reported PARKED rather than pending."""
+    assert transport_park.ring_only_transport() is True
 
 
 def test_a_box_in_two_classes_reports_both():

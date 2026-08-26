@@ -2,31 +2,22 @@
 #
 # SPDX-License-Identifier: Apache-2.0
 
-"""fan-in → CamillaDSP coupling selector (``JASPER_FANIN_CAMILLA_COUPLING``).
+"""fan-in → CamillaDSP coupling vocabulary (``JASPER_FANIN_CAMILLA_COUPLING``).
 
 The single source of truth for HOW the fan-in mixer's summed program reaches
-CamillaDSP's capture. Two transports:
-
-- ``loopback`` — fan-in writes the ALSA snd-aloop substream
-  (``hw:Loopback,0,7``); CamillaDSP captures ``plug:jasper_capture`` (a dsnoop
-  on ``hw:Loopback,1,7``). With the flag unset or set to ``loopback``, both the
-  fan-in daemon and the emitted CamillaDSP capture block stay on the historical
-  snd-aloop topology. This is the fail-safe rung of the ladder.
-
-- ``shm_ring`` — the end-to-end SHM-ring path (Ring A + Ring B); see the ring
-  vocabulary below and :mod:`jasper.fanin.coupling_reconcile` for the ordered
-  transition. This is the hardware-validated product default the ``--auto``
-  reconciler resolves eligible solo boxes to.
+CamillaDSP's capture. ONE transport: ``shm_ring``, the end-to-end SHM-ring path
+(Ring A + Ring B). fan-in writes Ring A (program.ring) that CamillaDSP captures
+via ``jts_ring_capture``; CamillaDSP writes its post-DSP program to Ring B (or
+to the ACTIVE ring on an armed roleful box). See ADR-0100 — a topology the ring
+cannot serve parks under its own name
+(:mod:`jasper.control.transport_park`); it never falls back.
 
 This module is import-cheap (stdlib only) so socket-activated web surfaces and
-the config emitters can resolve the coupling without pulling in NumPy/SciPy.
+the config emitters can resolve the ring without pulling in NumPy/SciPy.
 
-The ``transport_pipe`` coupling and its ``JASPER_FANIN_CAMILLA_PIPE`` /
-``JASPER_OUTPUTD_LOCAL_CONTENT_PIPE`` env keys were deleted (git history holds
-them). A persisted ``JASPER_FANIN_CAMILLA_COUPLING=transport_pipe`` FAILS SAFE
-to ``loopback`` via :func:`resolve_coupling`, and the ``--auto`` reconciler
-converges it loudly (see :func:`coupling_value_removed` and
-``jasper.fanin.coupling_reconcile.reconcile_auto``).
+:data:`COUPLING_LOOPBACK` is the RETIRED route's token, kept only so the readers
+that still parse a migrating box's persisted value recognize it. It is not in
+:data:`VALID_COUPLINGS` and nothing in this repo writes it.
 """
 
 from __future__ import annotations
@@ -41,23 +32,22 @@ if TYPE_CHECKING:
 # Environment selector. Read at config-emit time and at fan-in daemon startup.
 COUPLING_ENV_VAR = "JASPER_FANIN_CAMILLA_COUPLING"
 
-# The accepted transports. ``loopback`` is the default and the
-# byte-identical-to-today path.
+# The RETIRED snd-aloop route's token (ADR-0100). Kept out of
+# :data:`VALID_COUPLINGS` so it reads as what it is — a value a migrating box's
+# ``fanin.env`` may still carry — while the readers that parse such a file keep
+# one spelling for it.
 COUPLING_LOOPBACK = "loopback"
 # Ring A: fan-in writes an SPSC SHM ring (``jasper_ring::RingWriter``) that
 # CamillaDSP reads via a CAPTURE direction of the ``jts_ring`` ioplug. Same SHM
-# contract v1 as Ring B; roles flipped. The product auto reconciler now resolves
-# eligible solo boxes to this coupling by default; explicit loopback / operator
-# markers still fail safe to the historical snd-aloop path. The Rust
-# ``Coupling::ShmRing`` normalizer MUST agree with this token.
+# contract v1 as Ring B; roles flipped. The Rust ``Coupling::ShmRing``
+# normalizer MUST agree with this token.
 COUPLING_SHM_RING = "shm_ring"
-# The recognized coupling tokens. Public so other planners (e.g.
-# ``jasper.audio_runtime_plan``) can reuse this SSOT instead of re-listing the
-# tokens and drifting when a new lab coupling lands. Any value NOT in this set
-# (a typo, or a deleted token) fails safe to loopback — see
-# :func:`resolve_coupling` and :func:`coupling_value_removed`.
+# THE transport, spelled once. Public so other planners (e.g.
+# ``jasper.audio_runtime_plan``) reuse this SSOT instead of re-listing the token,
+# and so :func:`jasper.control.transport_park.ring_only_transport` can DERIVE
+# "the ring is the only route" rather than carry a second flag for it.
 # ``_VALID_COUPLINGS`` stays as the backward-compatible private alias.
-VALID_COUPLINGS = frozenset({COUPLING_LOOPBACK, COUPLING_SHM_RING})
+VALID_COUPLINGS = frozenset({COUPLING_SHM_RING})
 _VALID_COUPLINGS = VALID_COUPLINGS
 
 # Ring A (``shm_ring``) SHM ring file + slot-count env vars. fan-in creates the
@@ -520,59 +510,24 @@ RING_PCM_DEVICES = (
     RING_ACTIVE_PLAYBACK_DEVICE,
 )
 
-
-# The two transports a JTS graph can play over, spelled once (#2412 Wave 4).
-# Observability values, not config: nothing parses these back, so they are short
-# and stable rather than device-shaped.
+# The transport's observability token, spelled once for the two surfaces that
+# report it — the ``driver_commission_prepared`` / ``driver_commission_load``
+# journal lines and ``/state``'s commissioning block. An observability value, not
+# config: nothing parses it back. Its ``alsa`` sibling and the two-route
+# ``transport_label`` chooser retired with the loopback route (ADR-0100); the
+# surfaces now answer this token or nothing, and "is this device a ring end?" is
+# membership in :data:`RING_PCM_DEVICES`.
 TRANSPORT_RING = "ring"
-TRANSPORT_ALSA = "alsa"
-
-
-def transport_label(playback_device: str | None) -> str | None:
-    """Which transport a graph naming ``playback_device`` plays over.
-
-    ONE derivation, three surfaces — the ``driver_commission_prepared`` and
-    ``driver_commission_load`` journal lines and ``/state``'s commissioning
-    block — because a device name reported without its transport is the exact
-    half-fact that produced #2412: a graph COULD name the ACTIVE lane and reach
-    it over either snd-aloop or the ring, and only one of those is fed by fan-in
-    under ``shm_ring``. #2285 P2 retired the snd-aloop ACTIVE endpoint, so that
-    ambiguity is gone from the active lane and the surfaces now record which
-    transport a box is on rather than which of two it chose.
-
-    THIS FUNCTION IS UNCHANGED BY THAT, deliberately (post-seal correction 9).
-    It labels whatever device string it is handed, so its ``alsa`` branch stays
-    live for every non-ring device — the explicit lab/CI override, and the
-    content/stereo lanes that were never the active lane's question. Only
-    ``/state``'s SURFACE contract narrowed to ``ring``/``null``; do not "tidy"
-    the ``alsa`` branch away on the strength of that narrowing.
-
-    Keyed on :data:`RING_PCM_DEVICES`, the set that already owns "is this end a
-    ring end?", so this never becomes a second list of the three ring names.
-    Never returns a device name: the device is already its own field wherever
-    this is reported, and restating it here would be the second source of truth.
-
-    ``None`` for an unresolved device (an empty string, or a box whose route
-    does not resolve at all) — the caller decides how to render "no answer",
-    because the journal's convention is the literal ``-`` while ``/state``'s is
-    JSON ``null``, and inventing one of those here would force the other surface
-    to translate it back.
-    """
-    if not playback_device:
-        return None
-    return TRANSPORT_RING if playback_device in RING_PCM_DEVICES else TRANSPORT_ALSA
 
 
 def resolve_coupling(raw: str | None) -> str:
     """Normalize a raw ``JASPER_FANIN_CAMILLA_COUPLING`` value to a transport.
 
-    Fail-SAFE to ``loopback`` (the byte-identical-to-today path) on unset, empty,
-    or any unrecognized value — a typo in the env file, or a deleted token on a
-    migrating box, must never silently flip the shared realtime capture to a
-    transport the operator did not intend, nor crash a config emit. The Rust
-    daemon applies the same normalization so both sides
-    agree on every recognized token (``loopback`` / ``shm_ring``).
-    Case-insensitive; surrounding whitespace ignored.
+    Answers :data:`COUPLING_LOOPBACK` for unset, empty, or any value outside
+    :data:`VALID_COUPLINGS` — i.e. for a migrating box's file, which the
+    reconciler rewrites on its next pass. Case-insensitive; whitespace ignored.
+    For "is this file still on the retired route?" ask
+    :func:`coupling_value_removed`, which answers it directly.
     """
     if raw is None:
         return COUPLING_LOOPBACK
@@ -583,24 +538,19 @@ def resolve_coupling(raw: str | None) -> str:
 
 
 def coupling_value_removed(raw: str | None) -> bool:
-    """True iff a persisted coupling value is present but NOT a recognized token.
+    """True iff a persisted coupling value is present but NOT in
+    :data:`VALID_COUPLINGS`.
 
-    Catches both a typo and a coupling token that has since been deleted. Such
-    a value fails safe to ``loopback`` in :func:`resolve_coupling`; the
-    ``--auto`` reconciler uses this predicate to converge the box to loopback
-    with a loud ``event=…result=removed_coupling_failsafe`` line (so a migrating
-    box never silently keeps a deleted mode), and the doctor surfaces it. An
-    unset / empty value is NOT "removed" — it is the ordinary loopback default.
+    Catches a typo and — since ADR-0100 — the retired ``loopback`` token on a
+    box that has not yet run a reconcile. The doctor surfaces it; the next
+    reconcile pass rewrites the file. An unset / empty value is NOT "removed":
+    an absent key is the ordinary state of a box the reconciler has not written
+    yet.
     """
     if raw is None:
         return False
     value = raw.strip().lower()
     return bool(value) and value not in _VALID_COUPLINGS
-
-
-def is_shm_ring_coupling(raw: str | None) -> bool:
-    """True iff the resolved coupling is ``shm_ring`` (Ring A)."""
-    return resolve_coupling(raw) == COUPLING_SHM_RING
 
 
 def resolve_ring_path(raw_path: str | None) -> str:
@@ -758,69 +708,48 @@ def ring_pair_intent_is_coherent(
     return bridge == OUTPUTD_CONTENT_BRIDGE_DIRECT
 
 
-def capture_kwargs_for_coupling(raw: str | None) -> dict[str, object]:
-    """Return the ``emit_sound_config`` capture kwargs for the resolved coupling.
+def capture_kwargs_for_coupling(raw: str | None = None) -> dict[str, object]:
+    """Return the ``emit_sound_config`` capture kwargs for the ring.
 
-    - ``loopback`` (default): returns ``{}`` so the caller's existing
-      ``capture_device`` / ``capture_format`` defaults emit the dsnoop ALSA
-      capture — **byte-identical** to today. This empty-dict contract is what
-      keeps every existing caller unchanged when the flag is unset. Any
-      unrecognized value (a typo, or a deleted token) resolves to ``loopback``
-      here too.
+    UNCONDITIONAL: a ``{}`` here would emit a graph whose capture names a lane
+    nothing writes — a dead-lane CamillaDSP config, mid-EQ-apply, on a healthy
+    box.
 
-    - ``shm_ring`` (Ring A + Ring B): returns the FULL end-to-end ring topology
-      kwargs — the CamillaDSP capture device ``jts_ring_capture`` (Ring A, fan-in
-      writes it) AND the playback device ``jts_ring_playback`` (Ring B, outputd
-      reads it), both at the format :func:`resolve_ring_wire` resolves for this
-      box, which is what makes the emitted config and the ring's other three
-      declaring ends one answer instead of four. (outputd widens a narrow
-      consumed slot onto its own i32 program spine after the copy, on its side
-      of the ring.) The resolution is taken with NO topology — the shipped
-      geometry — because nothing this function emits is per-topology: the
-      devices are fixed and the format is one per box. A wire whose format ever
-      became topology-dependent would shear against this emit, and
-      ``ring_edge_width_ready`` is the gate that reports that rather than a
-      parameter here that no caller passes. The two rings are ONE coupling on a
-      SOLO box: its ``/sound/`` save must emit a config whose capture AND
-      playback are the ring — a half-ring config would strand one end. (An emit
-      that already owns its sink takes only the capture half; see below.) These
-      kwargs flow through :func:`coupling_capture_kwargs_from_env` into the
-      product emitters (``/sound/``, ``/correction/``,
-      ``audio_runtime_plan.apply_capture_precedence``) — but only when the
-      persisted coupling (``fanin.env``'s :data:`COUPLING_ENV_VAR`, read file-fresh
-      on the live-env path because the socket-activated wizards do NOT
-      ``EnvironmentFile=`` it) resolves to ``shm_ring``: coherence-when-armed. The devices only RESOLVE once P1's ioplug conf.d
-      block (``60-jts-ring.conf``) is installed and the reconciler has armed both
-      rings; until then the flag stays unset (env unset -> ``loopback`` -> ``{}``).
-      The ring graph carries its own low-latency CamillaDSP geometry: chunk 128 /
-      target 128 / queue 1 / rate_adjust off, coupled to the 2-slot Ring A
-      default (chunk 256 would span the whole buffer).
+    The FULL end-to-end ring topology: the CamillaDSP capture device
+    ``jts_ring_capture`` (Ring A, fan-in writes it) AND the playback device
+    ``jts_ring_playback`` (Ring B, outputd reads it), both at the format
+    :func:`resolve_ring_wire` resolves for this box, which is what makes the
+    emitted config and the ring's other three declaring ends one answer instead
+    of four. (outputd widens a narrow consumed slot onto its own i32 program
+    spine after the copy, on its side of the ring.) The resolution is taken with
+    NO topology — the shipped geometry — because nothing this function emits is
+    per-topology: the devices are fixed and the format is one per box. The ring
+    graph carries its own low-latency CamillaDSP geometry: chunk 128 / target
+    128 / queue 1 / rate_adjust off, coupled to the 2-slot Ring A default (chunk
+    256 would span the whole buffer).
 
     **THE TWO HALVES ARE NOT INTERCHANGEABLE**, which is why :func:`capture_half`
     exists. CAPTURE is topology-INVARIANT — Ring A's device is fixed, its
     ``sample_format`` is the box's own declaration (:func:`resolve_ring_wire`,
     not a per-topology axis) and its width is :data:`RING_A_CHANNELS` — so it is
-    safe anywhere, and it is the half that MUST move: an armed ring is fan-in no
-    longer feeding ``plug:jasper_capture``. PLAYBACK must never cross into an
-    emit whose sink is already owned: ``jts_ring_playback`` is the STEREO Ring B,
-    and pointing a ``File``/SNAPFIFO pipe (the leader's bake) or a roleful box's
-    ACTIVE ring at it strands the bond or sends a full-range program to a
-    per-driver ring. ``resolve_output_layout`` owns that device.
+    safe anywhere. PLAYBACK must never cross into an emit whose sink is already
+    owned: ``jts_ring_playback`` is the STEREO Ring B, and pointing a
+    ``File``/SNAPFIFO pipe (the leader's bake) or a roleful box's ACTIVE ring at
+    it strands the bond or sends a full-range program to a per-driver ring.
+    ``resolve_output_layout`` owns that device.
     """
-    resolved = resolve_coupling(raw)
-    if resolved == COUPLING_SHM_RING:
-        wire = resolve_ring_wire()
-        return {
-            "capture_device": RING_CAPTURE_DEVICE,
-            "capture_format": wire.sample_format,
-            "playback_device": RING_PLAYBACK_DEVICE,
-            "playback_format": wire.sample_format,
-            "chunksize": RING_CAMILLA_CHUNKSIZE,
-            "target_level": RING_CAMILLA_TARGET_LEVEL,
-            "queuelimit": RING_CAMILLA_QUEUELIMIT,
-            "enable_rate_adjust": RING_CAMILLA_ENABLE_RATE_ADJUST,
-        }
-    return {}
+    del raw  # one transport: nothing here selects on a coupling token
+    wire = resolve_ring_wire()
+    return {
+        "capture_device": RING_CAPTURE_DEVICE,
+        "capture_format": wire.sample_format,
+        "playback_device": RING_PLAYBACK_DEVICE,
+        "playback_format": wire.sample_format,
+        "chunksize": RING_CAMILLA_CHUNKSIZE,
+        "target_level": RING_CAMILLA_TARGET_LEVEL,
+        "queuelimit": RING_CAMILLA_QUEUELIMIT,
+        "enable_rate_adjust": RING_CAMILLA_ENABLE_RATE_ADJUST,
+    }
 
 
 #: The CAPTURE half of :func:`capture_kwargs_for_coupling`'s result — see its
@@ -838,27 +767,24 @@ def capture_half(kwargs: Mapping[str, object]) -> dict[str, object]:
     return {key: value for key, value in kwargs.items() if key in CAPTURE_HALF_KEYS}
 
 
-def content_lane_format_for_coupling(raw: str | None) -> str:
-    """The CamillaDSP→outputd content-hop sample format this coupling carries.
+def content_lane_format_for_coupling(raw: str | None = None) -> str:
+    """The CamillaDSP→outputd content-hop sample format the ring carries.
 
     ONE definition of that hop's width, for both of its ends:
 
-    - CamillaDSP's emitted ``playback: format:`` — this returns exactly what
-      :func:`capture_kwargs_for_coupling` puts in ``playback_format``, or the
-      emitters' own default (``DEFAULT_PLAYBACK_FORMAT``) for the ``loopback``
-      coupling, whose kwargs are deliberately empty so every existing caller
-      keeps its default.
+    - CamillaDSP's emitted ``playback: format:`` — exactly what
+      :func:`capture_kwargs_for_coupling` puts in ``playback_format``.
     - outputd's requested ``JASPER_OUTPUTD_CONTENT_FORMAT`` — the audio-hardware
       reconciler emits this value, so the reader cannot ask for a width the
       writer does not emit. Deriving both from the same function is what makes
       that a structural property instead of two constants a maintainer must
       remember to move together.
 
-    ``shm_ring`` therefore answers :func:`resolve_ring_wire`'s
-    ``sample_format`` for this box, and ``loopback`` answers the box's
-    program-lane default, which the wide-output-path program widens to S32_LE.
-    Unrecognized values fail safe to ``loopback`` exactly as
-    :func:`resolve_coupling` does.
+    So this answers :func:`resolve_ring_wire`'s ``sample_format`` for this box —
+    read back OUT of the emit kwargs rather than from the resolver directly, so
+    an emit that ever stopped forcing the ring's own width is visible here (and
+    to ``ring_edge_width_ready``, which compares the ends) instead of being
+    papered over by a second read of the same resolver.
 
     NOT a sink-type axis: a bonded leader's File/pipe sink is pinned to
     ``DEFAULT_PIPE_SINK_FORMAT`` (D4) and does not write this hop at all — its
@@ -866,12 +792,12 @@ def content_lane_format_for_coupling(raw: str | None) -> str:
     Callers that need the format for an arbitrary sink want
     ``jasper.camilla_config_contract`` instead.
     """
+    del raw  # one transport: nothing here selects on a coupling token
     # Local import: this module stays stdlib-only at import time for the
-    # socket-activated web surfaces (see the module docstring), and the
-    # contract module is the same one-way direction every other caller uses.
+    # socket-activated web surfaces (see the module docstring).
     from jasper.camilla_config_contract import DEFAULT_PLAYBACK_FORMAT
 
-    value = capture_kwargs_for_coupling(raw).get("playback_format")
+    value = capture_kwargs_for_coupling().get("playback_format")
     if isinstance(value, str) and value:
         return value
     return DEFAULT_PLAYBACK_FORMAT
@@ -880,46 +806,17 @@ def content_lane_format_for_coupling(raw: str | None) -> str:
 def coupling_capture_kwargs_from_env(
     env: dict[str, str] | None = None,
 ) -> dict[str, object]:
-    """Resolve the live ``emit_sound_config`` capture kwargs from the process env.
+    """The live ``emit_sound_config`` capture kwargs — always the ring's.
 
     The one call shape a config emitter uses to thread the SHARED fan-in→Camilla
-    coupling into a live re-emit. Returns ``{}`` for the default ``loopback``
-    coupling (byte-identical to today) and the full ring topology kwargs for
-    ``shm_ring``.
-
-    **Coupling token is resolved FILE-FRESH on the live-env path** (``env`` is
-    ``None``). The wizard processes that call this — jasper-web (``/sound/``) and
-    jasper-correction-web (``/correction/``) — do NOT load ``fanin.env`` /
-    ``outputd.env`` via ``EnvironmentFile=`` (they carry only ``jasper.env`` +
-    their own wizard files), and a socket-activated daemon stays alive across a
-    coupling flip, so ``os.environ`` is a STALE reader of the coupling — exactly
-    the ``os.environ``-stale class AGENTS.md canonizes for the voice provider
-    (fix: read the SSOT file fresh, ``jasper.voice.provider_state``). Without this
-    an armed box's ``/sound/`` or ``/correction/`` save would emit a *loopback*
-    capture/playback config and silently revert CamillaDSP off the rings (a silent
-    audio outage: outputd reads Ring B while CamillaDSP writes the loopback lane).
-    So on the live path we consult the persisted ``fanin.env`` for the coupling
-    token — the same SSOT the daemons and the reconciler read. An EnvironmentFile
-    flip still takes effect on the next regeneration without a code edit; the
-    persisted file is just the authoritative source for WHICH coupling.
-
-    An EXPLICIT ``env`` mapping is treated as authoritative (no file fallback) for
-    a caller that wants the env it hands in, not a disk read. Today that is unit
-    tests only: since the CLI-render-coupling fix, ``jasper.audio_runtime_plan``'s
-    live path calls this with ``env=None`` (file-fresh), and no production caller
-    synthesizes ``dict(os.environ)`` into the explicit branch anymore — the
-    reconciler pre-syncs ``os.environ`` + the files and then leans on the
-    ``env is None`` file-fresh read above.
+    coupling into a live re-emit. It consults NO env: the ring is the only
+    central transport (ADR-0100), so there is nothing for a token to select and
+    a token that failed to resolve can no longer make this answer ``{}`` — which
+    would re-emit a graph capturing a lane fan-in does not write, silently, in
+    the middle of a ``/sound/`` or ``/correction/`` save.
     """
-    if env is None:
-        # Live-env path: file-fresh coupling token (SSOT).
-        # Lazy import — jasper.fanin.coupling_reconcile imports THIS module, so a
-        # top-level import would be circular (mirrors every other in-tree caller).
-        from jasper.fanin.coupling_reconcile import read_persisted_coupling
-
-        return capture_kwargs_for_coupling(read_persisted_coupling())
-
-    return capture_kwargs_for_coupling(env.get(COUPLING_ENV_VAR))
+    del env  # see above: no env selects this answer
+    return capture_kwargs_for_coupling()
 
 
 def member_kwargs_are_pipe_sink(member_kwargs: dict[str, object] | None) -> bool:

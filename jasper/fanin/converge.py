@@ -16,9 +16,8 @@ a DAC hotplug.
 IT IS ONE STEP, NOT A SEQUENCER. The already-landed gates decide whether this
 box may be on the ring — ``ring_roleful_unattended_ready`` (P6) is the whole
 admission argument and none of it is restated here. This function only asks the
-questions those gates cannot: is the graph already there, did a human pin this
-box, and is the applied record still the truth. Then it moves the graph and lets
-the pass carry on.
+questions those gates cannot: is the graph already there, and is the applied
+record still the truth. Then it moves the graph and lets the pass carry on.
 
 NO RESTORE POINT, AND THE REASON IS IDEMPOTENCE, not optimism. Every crash point
 leaves a state the next pass handles:
@@ -31,16 +30,13 @@ leaves a state the next pass handles:
 * after the move, before the kick — the hardware reconciler is
   ``WantedBy=multi-user.target`` and re-derives the marker pair from the loaded
   graph at the next boot anyway;
-* during the arm — that is the coupling reconciler's own ordered rollback,
-  unchanged.
+* during the convergence — that is the coupling reconciler's own ordered
+  spine, unchanged.
 
-The one interval this leaves is a graph at the ring under a ``loopback``
-coupling. It converges on the next pass, it does not start silent (the re-emit
-performs no CamillaDSP reload, so the box keeps playing the graph it already
-had until the next camilla start), and while it lasts the doctor names it
-outright — ``check_active_ring_split_transport``, with the runnable remedy. A
-one-owner box gets a loud, actionable state and self-heals; that is the trade
-this ships instead of a durable restore point.
+While the moved graph and the endpoint marker disagree the doctor names it
+outright — ``check_active_ring_split_transport``, with the runnable remedy — and
+the next pass converges it. A one-owner box gets a loud, actionable state and
+self-heals; that is the trade this ships instead of a durable restore point.
 
 WHAT IT WRITES: the graph artifact, the canonical copy, and the statefile
 pointer — all three already ``baseline-reemit``'s job, reached by calling that
@@ -48,8 +44,9 @@ CLI rather than by a second implementation of it. NO env: the hardware
 reconciler stays the single writer of ``outputd.env``'s active-lane marker pair
 and is only asked to re-derive from the moved graph.
 
-WHAT IT NEVER DOES: decide the coupling. A refusal here is not an abort — the
-pass continues into its gate set, which resolves loopback on its own terms.
+WHAT IT NEVER DOES: decide the coupling — there is one (ADR-0100). A refusal
+here is not an abort: the pass carries on, and a box nothing carries parks under
+its own name (:mod:`jasper.control.transport_park`).
 """
 from __future__ import annotations
 
@@ -92,15 +89,6 @@ def converge_active_endpoint(*, reason: str = "converge") -> str:
     from jasper.fanin import coupling_reconcile as cr
     from jasper.output_topology import OutputTopologyError, load_output_topology_strict
 
-    # AN OPERATOR PIN IS A DECISION ABOUT THIS BOX'S TRANSPORT, read first. The
-    # pass contractually refuses to CHANGE a pinned coupling, so moving the
-    # graph anyway would leave graph@ring under a pinned loopback — and on a
-    # roleful box the moved graph is also the boot graph, so it would survive the
-    # reboot. It is also a silent override of an explicit human choice, which is
-    # the one thing a box for tinkerers must not do.
-    if cr.is_operator_choice(cr.read_marker(cr._read_snapshot(cr.FANIN_ENV_PATH).text)):
-        return _emit("noop_operator_pinned", reason=reason)
-
     # Fail-closed on an unreadable topology: a graph move cannot be proved right
     # against a topology this pass cannot read.
     try:
@@ -129,26 +117,16 @@ def converge_active_endpoint(*, reason: str = "converge") -> str:
     if converged:
         return _emit("already_converged", reason=reason, detail=converged_detail)
 
-    # PROVE BEFORE MOVING — FOUR of the pass's EIGHT gates, and the arithmetic
-    # is stated because "the gate list" would otherwise read as all of it.
-    # ``default_ring_gates()`` is five; this skips one; the pass appends three
-    # more that this step cannot run. (It was six until #2285 deleted the
-    # install-profile gate, which refused a whole box class rather than proving
-    # anything about the box in front of it.)
+    # PROVE BEFORE MOVING — FOUR of ``default_ring_gates()``'s five.
     #
     # THE ONE SKIPPED. ``ring_topology``'s roleful arm ends in
     # ``active_ring_endpoint_proof``, which reads the marker derived from the
     # graph this has not moved yet — requiring it here IS the fixed point. The
-    # pass re-runs it immediately after, so it is proved just after the write
-    # instead of before it.
+    # coupling reconcile that follows re-runs it, so it is proved just after the
+    # write instead of before it.
     #
-    # THE THREE UNAVAILABLE. ``ring_route``, ``ring_geometry`` and
-    # ``ring_slot_geometry`` are closures ``reconcile_auto`` binds over the route
-    # mode and the outputd/fanin snapshots it loads AFTER this step. Re-reading
-    # those files here would make this a second reader of facts the pass owns,
-    # and a refusal there costs only a graph move the pass re-decides on its very
-    # next line. What IS exact is the single-ownership half: every gate this runs
-    # comes from ``default_ring_gates()``, never from a second list.
+    # Every gate this runs comes from ``default_ring_gates()``, never a second
+    # list.
     for name, gate in cr.default_ring_gates():
         if name == "ring_topology":
             continue

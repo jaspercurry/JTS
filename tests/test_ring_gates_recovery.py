@@ -2,22 +2,17 @@
 #
 # SPDX-License-Identifier: Apache-2.0
 
-"""Ring v2 R5b: the arm/confirm gates, and what recovery does when they fail.
+"""The ring's wire gates, and the geometry heals the convergence runs.
 
-Three failure walks the coupling reconciler could not previously get out of:
+Two questions a box has to answer before its graph can attach to the ring:
 
-* an ioplug that cannot PARSE the wire the box resolves (a stale ``.so`` beside
-  new daemons — the build degrades to a WARN, so this is the ordinary shape of a
-  bad deploy, not an exotic one). CamillaDSP then cannot start against the ring;
-* an ALREADY-armed box whose camilla confirm keeps failing. The CONFIRM path
-  never reached ``_arm_ring`` or ``_fail_ring_arm``, so it logged and left the
-  box exactly as broken as it found it;
-* a recovery whose camilla step fails — which is the normal case when the reason
-  for recovering is that CamillaDSP cannot start. The env moved to loopback while
-  the statefile still named the ring config, so the next start came up on the
-  ring again.
+* can the INSTALLED ioplug parse the wire this box resolves? (a stale ``.so``
+  beside new daemons — the build degrades to a WARN, so this is the ordinary
+  shape of a bad deploy, not an exotic one);
+* does every declaring end state the SAME wire?
 
-Plus the every-end wire gate that decides the first of those before an arm.
+Plus the two heals the reconciler runs on every pass: a shear-prone stale
+``JASPER_FANIN_RING_SLOTS`` and a geometry-mismatched on-disk ring file.
 """
 
 from __future__ import annotations
@@ -25,14 +20,11 @@ from __future__ import annotations
 import pytest
 
 from jasper.fanin.coupling_reconcile import (
-    RING_CONFIRM_STRIKE_LIMIT,
-    read_persisted_coupling,
     ring_edge_width_ready,
     ring_wire_caps_ready,
 )
 from jasper.fanin_coupling import (
     COUPLING_ENV_VAR,
-    COUPLING_LOOPBACK,
     COUPLING_SHM_RING,
     OUTPUTD_CONTENT_BRIDGE_ENV_VAR,
 )
@@ -42,8 +34,6 @@ from jasper.fanin_coupling import (
 # be a second answer to "what does an armable box look like".
 from tests.test_fanin_coupling_reconcile import (
     SHIPPED_RING_CONF_D,
-    _recorder,
-    _reconcile,
     _write,
     force_ring_gates_pass,
     isolate_base_jasper_env,
@@ -125,13 +115,12 @@ def _real_caps_record_compare(monkeypatch):
 
 
 def _armed_env(tmp_path):
-    """The env pair an ALREADY-armed box carries.
+    """The env pair a box already converged onto the ring carries.
 
     outputd.env must hold the COMPLETE reconciler-owned ring key set, not just
-    the bridge: a reconcile that would still move any of them counts as a
-    coupling transition and takes ``_arm_ring``, not the CONFIRM path these
-    tests are about. Deriving it from ``_outputd_actions`` keeps the fixture
-    honest as that set grows.
+    the bridge: a pass that would still move any of them counts as a change and
+    takes the ordered spine rather than the no-bounce path. Deriving it from
+    ``_outputd_actions`` keeps the fixture honest as that set grows.
     """
     import jasper.fanin.coupling_reconcile as cr
 
@@ -140,7 +129,7 @@ def _armed_env(tmp_path):
     )
     outputd_env = _write(
         tmp_path / "outputd.env",
-        cr._apply_actions("", cr._outputd_actions(COUPLING_SHM_RING, ""))[0],
+        cr._apply_actions("", cr._outputd_actions(""))[0],
     )
     assert OUTPUTD_CONTENT_BRIDGE_ENV_VAR in outputd_env.read_text()
     return fanin_env, outputd_env
@@ -200,391 +189,6 @@ def test_caps_gate_refuses_a_wide_wire_with_no_record(monkeypatch, tmp_path):
     assert "no provenance record" in detail
 
 
-def test_arm_refuses_and_recovers_when_the_ioplug_cannot_parse_the_wire(
-    tmp_path, monkeypatch, _ring_assets_present
-):
-    """The arm-side half: refuse BEFORE bouncing a daemon, recover to loopback."""
-    import jasper.ring_assets as ra
-
-    _real_caps_record_compare(monkeypatch)
-    _wide_wire(monkeypatch)
-    monkeypatch.setattr(ra, "RING_IOPLUG_PROVENANCE", str(tmp_path / "absent"))
-    fanin_env = _write(tmp_path / "fanin.env", "")
-    outputd_env = _write(tmp_path / "outputd.env", "")
-    calls, ro, rf, rc = _recorder()
-
-    result = _reconcile(
-        COUPLING_SHM_RING,
-        fanin_env=fanin_env,
-        outputd_env=outputd_env,
-        restart_outputd=ro,
-        restart_fanin=rf,
-        reconcile_camilla=rc,
-        active_leader_check=lambda: False,
-    )
-
-    assert result.ok is False
-    assert result.recovered is True
-    assert "camilla:shm_ring" not in calls
-    assert read_persisted_coupling(fanin_env) == COUPLING_LOOPBACK
-
-
-def test_confirm_recovers_immediately_when_the_ioplug_cannot_parse_the_wire(
-    tmp_path, monkeypatch, _ring_assets_present
-):
-    """THE DEGRADED-DEPLOY WALK, on an ALREADY-armed box.
-
-    A stale ``.so`` beside new daemons leaves CamillaDSP unable to start against
-    the ring. The CONFIRM path only re-ran the camilla reconcile — it never
-    reached ``_arm_ring`` or ``_fail_ring_arm``, so nothing ever moved the box.
-    Re-arming would meet the same ``-EINVAL``, so this recovers to loopback
-    DIRECTLY rather than escalating to an arm that cannot succeed.
-    """
-    import jasper.ring_assets as ra
-
-    _real_caps_record_compare(monkeypatch)
-    _wide_wire(monkeypatch)
-    monkeypatch.setattr(ra, "RING_IOPLUG_PROVENANCE", str(tmp_path / "absent"))
-    fanin_env, outputd_env = _armed_env(tmp_path)
-    calls, ro, rf, rc = _recorder()
-
-    result = _reconcile(
-        COUPLING_SHM_RING,
-        fanin_env=fanin_env,
-        outputd_env=outputd_env,
-        restart_outputd=ro,
-        restart_fanin=rf,
-        reconcile_camilla=rc,
-        active_leader_check=lambda: False,
-    )
-
-    assert result.direction == "confirm"
-    assert result.ok is False
-    assert result.recovered is True
-    assert "camilla:loopback" in calls
-    assert "camilla:shm_ring" not in calls
-    assert read_persisted_coupling(fanin_env) == COUPLING_LOOPBACK
-
-
-# --- repeated CONFIRM failure escalates to recovery -------------------------
-
-
-def _strike_state(monkeypatch, tmp_path):
-    path = tmp_path / "strikes.json"
-    monkeypatch.setattr(
-        "jasper.fanin.coupling_reconcile.RING_CONFIRM_STRIKE_STATE", str(path)
-    )
-    return path
-
-
-def _confirm_once(tmp_path, *, camilla_ok):
-    """One CONFIRM pass on an armed box.
-
-    ``camilla_ok=False`` fails camilla for the RING coupling only, not for every
-    coupling: the walk being modelled is "CamillaDSP cannot load the ring
-    config", and a loopback config it also cannot load would be a different
-    (and much worse) box. Keeping loopback loadable is what lets the escalation
-    prove it actually recovered rather than just attempting to.
-    """
-    fanin_env, outputd_env = _armed_env(tmp_path)
-    calls, ro, rf, rc = _recorder(
-        camilla_fail_for=None if camilla_ok else COUPLING_SHM_RING
-    )
-    result = _reconcile(
-        COUPLING_SHM_RING,
-        fanin_env=fanin_env,
-        outputd_env=outputd_env,
-        restart_outputd=ro,
-        restart_fanin=rf,
-        reconcile_camilla=rc,
-        active_leader_check=lambda: False,
-    )
-    return result, calls, fanin_env
-
-
-def test_a_single_confirm_failure_is_a_strike_not_a_recovery(
-    tmp_path, monkeypatch, _ring_assets_present
-):
-    """One failure can be a transient — it must not disarm a working box."""
-    strikes = _strike_state(monkeypatch, tmp_path)
-    result, calls, fanin_env = _confirm_once(tmp_path, camilla_ok=False)
-    assert result.ok is False
-    assert result.recovered is False
-    assert result.direction == "confirm"
-    # Still armed: the box gets another chance before we take its ring away.
-    assert read_persisted_coupling(fanin_env) == COUPLING_SHM_RING
-    assert "camilla:loopback" not in calls
-    assert strikes.exists()
-
-
-def test_consecutive_confirm_failures_escalate_to_recovery(
-    tmp_path, monkeypatch, _ring_assets_present
-):
-    """THE HOLE. An armed box whose CamillaDSP cannot load the ring config used
-    to sit there logging ``confirm_failed`` with nothing that would ever move it.
-    At the strike limit it goes back to loopback — the only state that plays
-    audio."""
-    _strike_state(monkeypatch, tmp_path)
-    for _ in range(RING_CONFIRM_STRIKE_LIMIT - 1):
-        _confirm_once(tmp_path, camilla_ok=False)
-    result, calls, fanin_env = _confirm_once(tmp_path, camilla_ok=False)
-
-    assert result.ok is False
-    assert result.recovered is True
-    assert "camilla:loopback" in calls
-    assert read_persisted_coupling(fanin_env) == COUPLING_LOOPBACK
-    assert "recovered the box to loopback" in result.detail
-
-
-def test_a_successful_confirm_clears_accumulated_strikes(
-    tmp_path, monkeypatch, _ring_assets_present
-):
-    """Strikes are CONSECUTIVE. Without the clear, a box that failed once months
-    ago would be one transient away from being disarmed."""
-    strikes = _strike_state(monkeypatch, tmp_path)
-    _confirm_once(tmp_path, camilla_ok=False)
-    assert strikes.exists()
-    result, _calls, fanin_env = _confirm_once(tmp_path, camilla_ok=True)
-    assert result.ok is True
-    assert not strikes.exists()
-    assert read_persisted_coupling(fanin_env) == COUPLING_SHM_RING
-
-
-def test_a_successful_rearm_clears_accumulated_strikes(
-    tmp_path, monkeypatch, _ring_assets_present
-):
-    """THE POLICY, DRIVEN END TO END: a fresh re-arm resets the strike count.
-
-    Without the clear at the end of ``_arm_ring`` the two-strike policy silently
-    degraded to ONE for any box that had failed a confirm before the arm: the
-    operator re-arms, CamillaDSP loads the ring config, everything is healthy —
-    and the very next transient confirm hits the limit and recovers the box to
-    loopback, citing a failure the arm had already fixed.
-
-    The walk is: confirm fails (strike 1) -> a real ARM lands -> one more
-    transient confirm failure. That last one must be strike 1 of a NEW incident,
-    which means it stays a strike and the box stays armed.
-    """
-    strikes = _strike_state(monkeypatch, tmp_path)
-
-    _confirm_once(tmp_path, camilla_ok=False)
-    assert strikes.exists(), "the pre-arm failure must have recorded a strike"
-
-    # A real ARM: loopback env -> shm_ring, so the coupling MOVES and the
-    # reconcile takes _arm_ring rather than the confirm path.
-    fanin_env = _write(tmp_path / "fanin.env", "")
-    outputd_env = _write(tmp_path / "outputd.env", "")
-    calls, ro, rf, rc = _recorder()
-    armed = _reconcile(
-        COUPLING_SHM_RING,
-        fanin_env=fanin_env,
-        outputd_env=outputd_env,
-        restart_outputd=ro,
-        restart_fanin=rf,
-        reconcile_camilla=rc,
-        active_leader_check=lambda: False,
-    )
-    assert armed.ok is True and armed.direction == "arm", armed.detail
-    assert "camilla:shm_ring" in calls
-    assert not strikes.exists(), (
-        "a completed arm must clear the record — CamillaDSP just loaded the ring "
-        "config, which is the success the strike count is counting the absence of"
-    )
-
-    # One transient AFTER the arm is strike 1 of a new incident, not the limit.
-    result, calls_after, fanin_after = _confirm_once(tmp_path, camilla_ok=False)
-    assert result.recovered is False, (
-        "a single post-arm transient must not recover the box — that is the "
-        "one-strike degradation this clear prevents"
-    )
-    assert "camilla:loopback" not in calls_after
-    assert read_persisted_coupling(fanin_after) == COUPLING_SHM_RING
-
-
-def test_a_successful_disarm_clears_accumulated_strikes(
-    tmp_path, monkeypatch, _ring_assets_present
-):
-    """Leaving the ring ends the incident the strikes were evidence of.
-
-    Strikes describe an ARMED ring whose confirm keeps failing. Once the box is
-    off the ring that evidence is spent, and carrying it forward would make the
-    next arm inherit a head start toward being recovered.
-    """
-    strikes = _strike_state(monkeypatch, tmp_path)
-    _confirm_once(tmp_path, camilla_ok=False)
-    assert strikes.exists()
-
-    fanin_env, outputd_env = _armed_env(tmp_path)
-    calls, ro, rf, rc = _recorder()
-    result = _reconcile(
-        COUPLING_LOOPBACK,
-        fanin_env=fanin_env,
-        outputd_env=outputd_env,
-        restart_outputd=ro,
-        restart_fanin=rf,
-        reconcile_camilla=rc,
-        active_leader_check=lambda: False,
-    )
-    assert result.ok is True and result.direction == "disarm", result.detail
-    assert "camilla:loopback" in calls
-    assert not strikes.exists()
-
-
-def test_a_partial_disarm_keeps_the_strike_record(
-    tmp_path, monkeypatch, _ring_assets_present
-):
-    """The clear is gated on the disarm SUCCEEDING, and that boundary matters.
-
-    A partial disarm can leave part of the box still on the ring, so the
-    accumulated evidence is still about the live state. Clearing there would
-    throw away the strikes on exactly the box whose disarm did not land.
-    """
-    strikes = _strike_state(monkeypatch, tmp_path)
-    _confirm_once(tmp_path, camilla_ok=False)
-    assert strikes.exists()
-
-    fanin_env, outputd_env = _armed_env(tmp_path)
-    _calls, ro, rf, rc = _recorder(fanin_ok=False)
-    result = _reconcile(
-        COUPLING_LOOPBACK,
-        fanin_env=fanin_env,
-        outputd_env=outputd_env,
-        restart_outputd=ro,
-        restart_fanin=rf,
-        reconcile_camilla=rc,
-        active_leader_check=lambda: False,
-    )
-    assert result.ok is False and result.direction == "disarm"
-    assert strikes.exists(), "a partial disarm must not discard live evidence"
-
-
-def test_strikes_outside_the_window_are_not_counted(tmp_path, monkeypatch):
-    """Evidence ages out. The reconciler is event-driven — boot, deploy, a
-    /sources/ toggle — so two failures a year apart are two incidents, not a
-    pattern."""
-    import json
-    import time
-
-    import jasper.fanin.coupling_reconcile as cr
-
-    path = _strike_state(monkeypatch, tmp_path)
-    path.write_text(
-        json.dumps(
-            {
-                "count": 99,
-                "first_ts": time.time() - cr.RING_CONFIRM_STRIKE_WINDOW_SEC - 1,
-            }
-        )
-    )
-    assert cr._read_ring_confirm_strikes(str(path)) == 0
-
-
-# --- recovery re-seeds the statefile when camilla is unreachable ------------
-
-
-def test_recovery_reseeds_the_statefile_when_the_camilla_reconcile_fails(
-    tmp_path, monkeypatch
-):
-    """THE CONVERGENCE FIX.
-
-    Recovery's camilla step goes over the daemon's websocket. When the reason we
-    are recovering is that CamillaDSP cannot START, there is no websocket: the
-    reconcile fails, the statefile still names the ring config, and the next
-    start comes up on the same ring and fails the same way. The env said
-    loopback; the graph never moved.
-    """
-    import jasper.fanin.coupling_reconcile as cr
-
-    seeded: list[str] = []
-    monkeypatch.setattr(
-        cr,
-        "_reseed_loopback_statefile",
-        lambda reason: (seeded.append(reason) or (True, "re-seeded")),
-    )
-    _calls, ro, rf, rc = _recorder(camilla_ok=False)
-    ok = cr._recover_to_loopback(
-        rf, ro, rc, tmp_path / "fanin.env", tmp_path / "outputd.env", "t"
-    )
-    assert ok is False  # the camilla step genuinely failed
-    assert seeded == ["t"], "a failed camilla step must re-seed the statefile"
-
-
-def test_recovery_does_not_reseed_when_camilla_answered(tmp_path, monkeypatch):
-    """The live re-point is authoritative when it lands; writing the statefile on
-    top of a successful reconcile would be a second writer of one fact."""
-    import jasper.fanin.coupling_reconcile as cr
-
-    seeded: list[str] = []
-    monkeypatch.setattr(
-        cr,
-        "_reseed_loopback_statefile",
-        lambda reason: (seeded.append(reason) or (True, "re-seeded")),
-    )
-    _calls, ro, rf, rc = _recorder()
-    ok = cr._recover_to_loopback(
-        rf, ro, rc, tmp_path / "fanin.env", tmp_path / "outputd.env", "t"
-    )
-    assert ok is True
-    assert seeded == []
-
-
-def test_reseed_pins_the_coupling_to_loopback(monkeypatch):
-    """It pins ``coupling=loopback`` rather than re-reading the persisted token.
-
-    Recovery must not re-select the ring graph it is recovering FROM. Reading
-    the persisted coupling here would do exactly that on the CONFIRM path, where
-    the env still says ``shm_ring`` at the moment the decision is taken.
-    """
-    import jasper.fanin.coupling_reconcile as cr
-    from jasper.active_speaker import runtime_contract as rc_mod
-    from jasper.output_topology import OutputTopologyError
-
-    seen: dict[str, object] = {}
-
-    def _decide(topology=None, **kwargs):
-        seen.update(kwargs)
-        raise OutputTopologyError("saved topology is corrupt")
-
-    monkeypatch.setattr(rc_mod, "safe_graph_for_current_topology", _decide)
-    ok, detail = cr._reseed_loopback_statefile("t")
-    assert seen["coupling"] == COUPLING_LOOPBACK
-    assert ok is False
-    assert "saved topology is corrupt" in detail
-
-
-def test_reseed_swallows_realistic_failures_but_not_programming_errors(monkeypatch):
-    """The catch is a CONCRETE set, and the boundary is deliberate.
-
-    A corrupt topology or an unwritable statefile is an operational condition
-    that must not blow up a recovery in progress — it is reported and the
-    recovery continues to its daemon ops. A ``RuntimeError`` is not that: it is
-    a bug in this code path, and swallowing it would hide the bug behind a
-    recovery that said "re-seed failed" and carried on. Pinning both halves is
-    what stops the catch from silently widening back to a blind except.
-    """
-    import jasper.fanin.coupling_reconcile as cr
-    from jasper.active_speaker import runtime_contract as rc_mod
-
-    def _raise(exc):
-        def _decide(topology=None, **kwargs):
-            raise exc
-
-        return _decide
-
-    monkeypatch.setattr(
-        rc_mod, "safe_graph_for_current_topology", _raise(OSError("read-only fs"))
-    )
-    ok, detail = cr._reseed_loopback_statefile("t")
-    assert ok is False
-    assert "read-only fs" in detail
-
-    monkeypatch.setattr(
-        rc_mod, "safe_graph_for_current_topology", _raise(RuntimeError("bug"))
-    )
-    with pytest.raises(RuntimeError):
-        cr._reseed_loopback_statefile("t")
-
-
 # --- the slot migration declines when the WIRE is sheared -------------------
 
 
@@ -610,7 +214,7 @@ def _migrate(tmp_path, monkeypatch, *, fanin_text: str):
 
     monkeypatch.setattr(cr, "log_event", _capture)
     snapshot = cr._read_snapshot(path)
-    result = cr._migrate_stale_fanin_ring_slots(snapshot, "t")
+    result, _healed = cr._migrate_stale_fanin_ring_slots(snapshot, "t")
     return result.text, records
 
 
@@ -700,8 +304,9 @@ def test_slot_migration_declines_on_a_sheared_channel_count(tmp_path, monkeypatc
             )
         ),
     )
-    out = cr._migrate_stale_fanin_ring_slots(cr._read_snapshot(path), "t")
+    out, healed = cr._migrate_stale_fanin_ring_slots(cr._read_snapshot(path), "t")
     assert "stale_ring_slots_override_declined" in records
+    assert healed is False
     assert f"{RING_SLOTS_ENV_VAR}=8" in out.text
 
 
@@ -767,38 +372,6 @@ def test_stale_file_guard_deletes_a_format_mismatched_ring(tmp_path, monkeypatch
 
     assert not ring_a.exists(), "a format-stale ring file must be deleted"
     assert ring_b.exists(), "a coherent ring file must be left alone"
-
-
-def test_confirm_self_heal_escalates_on_a_format_mismatched_ring(
-    tmp_path, monkeypatch
-):
-    """The SECOND consumer of the same comparator must agree with the first.
-
-    The CONFIRM-path predicate decides whether to escalate to the arm that runs
-    the delete above. If it were blind to ``sample_format`` while the delete was
-    not, a format-stale file would read as coherent, the escalation would never
-    fire, and the file the arm is ready to remove would sit there — the two
-    halves meaning different things by "coherent" is exactly the drift the
-    shared comparator exists to prevent.
-    """
-    import jasper.fanin.coupling_reconcile as cr
-    import jasper.ring_assets as ra
-
-    ring_a, ring_b = _point_ring_files_at(monkeypatch, tmp_path)
-    _ring_file(ring_b, sample_format=ra.RING_SAMPLE_FORMAT_S32LE)
-
-    # Coherent on every axis -> stay lightweight (the positive control). The
-    # coherent token is the WIDE one: that is what an undeclared box resolves.
-    _ring_file(ring_a, sample_format=ra.RING_SAMPLE_FORMAT_S32LE)
-    needed, detail = cr._ring_confirm_needs_self_heal("")
-    assert needed is False, detail
-
-    # Same file, stale narrow format -> escalate, naming the axis.
-    _ring_file(ring_a, sample_format=ra.RING_SAMPLE_FORMAT_S16LE)
-    needed, detail = cr._ring_confirm_needs_self_heal("")
-    assert needed is True
-    assert "sample_format" in detail
-    assert "stale-file self-heal" in detail
 
 
 # --- the four-ends wire gate, per end ---------------------------------------
@@ -1402,124 +975,3 @@ def test_wire_gate_says_so_when_it_could_not_read_the_graph(monkeypatch, tmp_pat
     assert "is unreadable" in detail
 
 
-# --- a DEAD CamillaDSP keeps its strikes, and still escalates ----------------
-
-
-def _camilla_down_rung(monkeypatch, *, status="reconciled"):
-    """A ``reconcile_camilla`` hook wired to the REAL rung, daemon down.
-
-    The ring coupling gets the real ``_reconcile_camilla`` fed the real shape a
-    camilla-down ``reconcile_current_dsp`` returns since #2664 (it converges over
-    the statefile and reports success). Loopback stays loadable for the same
-    reason ``_confirm_once`` keeps it loadable: the walk being modelled is "the
-    ring reader is dead", and the escalation can only PROVE it recovered if the
-    state it recovers to works.
-    """
-    from jasper.fanin import coupling_reconcile as cr
-    from jasper.sound import runtime
-
-    calls: list[str] = []
-
-    async def camilla_down_reconcile(**_kwargs):
-        return {
-            "status": status,
-            "transport": "statefile",
-            "carrier_kind": "sound_or_correction",
-            "current_config_path": "/var/lib/camilladsp/configs/sound_current.yml",
-        }
-
-    monkeypatch.setattr(runtime, "reconcile_current_dsp", camilla_down_reconcile)
-
-    def reconcile_camilla(coupling: str) -> tuple[bool, str]:
-        calls.append(f"camilla:{coupling}")
-        if coupling != COUPLING_SHM_RING:
-            return True, "reconciled"
-        return cr._reconcile_camilla(coupling, reason="confirm", force=False)
-
-    return calls, reconcile_camilla
-
-
-def _confirm_once_with_dead_camilla(tmp_path, monkeypatch, *, status="reconciled"):
-    from tests.test_fanin_coupling_reconcile import _recorder
-
-    fanin_env, outputd_env = _armed_env(tmp_path)
-    _calls, ro, rf, _rc = _recorder()
-    calls, rc = _camilla_down_rung(monkeypatch, status=status)
-    result = _reconcile(
-        COUPLING_SHM_RING,
-        fanin_env=fanin_env,
-        outputd_env=outputd_env,
-        restart_outputd=ro,
-        restart_fanin=rf,
-        reconcile_camilla=rc,
-        active_leader_check=lambda: False,
-    )
-    return result, calls, fanin_env
-
-
-def test_a_dead_camilla_confirm_records_a_strike_instead_of_clearing_them(
-    tmp_path, monkeypatch, _ring_assets_present
-):
-    """THE CONSEQUENCE #2664's first fix opened, pinned.
-
-    ``jasper-fanin-coupling-auto`` declares ``Wants=`` (not ``Requires=``)
-    CamillaDSP precisely so a degraded box still runs this pass, so an armed box
-    with a dead CamillaDSP reaches the confirm rung at every boot. Once the
-    reconcile started SUCCEEDING over the statefile, the rung reported
-    ``ok=True`` and the confirm cleared the strike record on every tick — so the
-    counter could never reach the limit and the escalation to loopback, the only
-    unattended path back to audio, was disabled for exactly the boxes that
-    needed it.
-
-    A recorded strike is therefore the load-bearing observation here, not the
-    return value.
-    """
-    strikes = _strike_state(monkeypatch, tmp_path)
-    result, calls, fanin_env = _confirm_once_with_dead_camilla(tmp_path, monkeypatch)
-
-    assert result.ok is False, result.detail
-    assert strikes.exists(), "a dead-reader confirm cleared its strikes"
-    assert "camilla:shm_ring" in calls
-    # One failure is still only a strike: the box keeps its ring for one more
-    # chance, exactly as with any other transient confirm failure.
-    assert result.recovered is False
-    assert read_persisted_coupling(fanin_env) == COUPLING_SHM_RING
-
-
-def test_a_dead_camilla_still_escalates_to_loopback_at_the_strike_limit(
-    tmp_path, monkeypatch, _ring_assets_present
-):
-    """And the ladder actually completes: audio comes back unattended.
-
-    The strike above is only worth recording if it can still reach the limit.
-    This walks the whole ladder on a box whose CamillaDSP is dead and asserts the
-    box ends on loopback — the state that plays.
-    """
-    _strike_state(monkeypatch, tmp_path)
-    for _ in range(RING_CONFIRM_STRIKE_LIMIT - 1):
-        _confirm_once_with_dead_camilla(tmp_path, monkeypatch)
-    result, calls, fanin_env = _confirm_once_with_dead_camilla(tmp_path, monkeypatch)
-
-    assert result.ok is False
-    assert result.recovered is True
-    assert "camilla:loopback" in calls
-    assert read_persisted_coupling(fanin_env) == COUPLING_LOOPBACK
-
-
-def test_an_unchanged_camilla_down_confirm_is_refused_the_same_way(
-    tmp_path, monkeypatch, _ring_assets_present
-):
-    """``unchanged`` shares the branch with ``reconciled`` and the same premise.
-
-    A box whose saved intent already matches the graph the statefile names
-    answers ``unchanged``, and that is just as much "CamillaDSP loaded nothing"
-    as a re-emit is. Covered separately so a future narrowing of the guard to one
-    status word fails here.
-    """
-    strikes = _strike_state(monkeypatch, tmp_path)
-    result, _calls, _fanin_env = _confirm_once_with_dead_camilla(
-        tmp_path, monkeypatch, status="unchanged"
-    )
-
-    assert result.ok is False, result.detail
-    assert strikes.exists()

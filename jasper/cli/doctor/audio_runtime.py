@@ -1458,10 +1458,9 @@ def check_fanin_coupling_value() -> CheckResult:
             label,
             "warn",
             f"{COUPLING_ENV_VAR}={raw!r} in {FANIN_ENV_PATH} names a removed/unknown "
-            "transport (e.g. the deleted transport_pipe coupling); it fails safe to "
-            "loopback. Run: sudo /opt/jasper/.venv/bin/"
-            "jasper-fanin-coupling-reconcile loopback (or --auto) to converge the box "
-            "and clean the file.",
+            "transport — the ring is the only one. Run: sudo /opt/jasper/.venv/bin/"
+            "jasper-fanin-coupling-reconcile --auto to converge the box and clean "
+            "the file.",
         )
     return CheckResult(label, "ok", f"{COUPLING_ENV_VAR}={raw or '(unset → loopback)'}")
 
@@ -1557,7 +1556,7 @@ def check_fanin_coupling() -> CheckResult:
             f"intent={coupling} but stale {OUTPUTD_CONTENT_BRIDGE_ENV_VAR}=shm_ring "
             f"remains in {DEFAULT_OUTPUTD_ENV_PATH}; outputd waits on Ring B that "
             "CamillaDSP no longer writes — run: sudo /opt/jasper/.venv/bin/"
-            "jasper-fanin-coupling-reconcile loopback",
+            "jasper-fanin-coupling-reconcile --auto",
         )
     capture = _loaded_capture_type(config_path)
     if capture is None:
@@ -1684,36 +1683,22 @@ def check_fanin_coupling() -> CheckResult:
         in (RING_CAPTURE_DEVICE, RING_PLAYBACK_DEVICE, RING_ACTIVE_PLAYBACK_DEVICE)
     ]
     if stale_ring_devices:
-        # WHICH command clears this depends on the topology, and on a roleful box
-        # the coupling reconciler alone cannot. `jasper-fanin-coupling-reconcile
-        # loopback` routes through `reconcile_current_dsp`, which refuses to host
-        # a roleful box's transient startup/commissioning graph
-        # (`eq_on_active_not_wired` -> status `skipped`) and — because the
-        # coupling is already non-ring — reports SUCCESS without moving the
-        # graph. The operator then re-runs a command that converges nothing while
-        # the warn persists. The graph has to be moved by step 1 of the ladder,
-        # exactly as the shm_ring branch above already spells out for its own
-        # direction.
+        # WHICH command clears this depends on the topology: on a roleful box the
+        # coupling reconciler alone cannot move the graph, so it gets the ladder
+        # whose step 1 does.
         if _requires_roleful_graph():
-            # A ROLEFUL box has no loopback destination to be sent to any more.
-            # This used to print the rollback ladder; both of its premises died —
-            # `baseline-reemit` no longer accepts an aloop endpoint, and a roleful
-            # box on `loopback` coupling has no content transport at all (pair 5's
-            # PCMs are deleted), which is the park, not a recovery. So the honest
-            # remediation is the forward one: converge onto the ACTIVE ring.
             recovery = (
-                "this box is ROLEFUL, so a loopback coupling leaves it with no "
-                "content transport (snd-aloop pair 5 is deleted) — that is a "
-                "park, not a rollback. Converge it forward onto the ACTIVE ring, "
-                "in order: sudo /opt/jasper/.venv/bin/jasper-active-speaker "
-                "baseline-reemit --endpoint ring && sudo systemctl start "
-                "jasper-audio-hardware-reconcile && sudo /opt/jasper/.venv/bin/"
-                "jasper-fanin-coupling-reconcile shm_ring"
+                "this box is ROLEFUL, so nothing carries its post-crossover "
+                "program until the ACTIVE ring does — that is a park. Converge "
+                "it forward, in order: sudo /opt/jasper/.venv/bin/"
+                "jasper-active-speaker baseline-reemit --endpoint ring && sudo "
+                "systemctl start jasper-audio-hardware-reconcile && sudo "
+                "/opt/jasper/.venv/bin/jasper-fanin-coupling-reconcile shm_ring"
             )
         else:
             recovery = (
                 "Run: sudo /opt/jasper/.venv/bin/"
-                "jasper-fanin-coupling-reconcile loopback"
+                "jasper-fanin-coupling-reconcile --auto"
             )
         return CheckResult(
             label,
@@ -1735,15 +1720,16 @@ def check_fanin_coupling() -> CheckResult:
                 f"sink ({playback_path or '(missing)'}); a stale File sink left by "
                 "the removed transport_pipe coupling — run: "
                 "sudo /opt/jasper/.venv/bin/"
-                "jasper-fanin-coupling-reconcile loopback",
+                "jasper-fanin-coupling-reconcile --auto",
             )
         return CheckResult(label, "ok", f"{coupling} (capture={capture})")
     return CheckResult(
         label,
         "warn",
         f"intent={coupling} but loaded capture={capture} (expected {expected}); "
-        f"half-applied transition — run: "
-        f"sudo /opt/jasper/.venv/bin/jasper-fanin-coupling-reconcile {coupling}",
+        "half-applied transition — run: "
+        f"sudo /opt/jasper/.venv/bin/jasper-fanin-coupling-reconcile "
+        f"{COUPLING_SHM_RING}",
     )
 
 
@@ -2098,26 +2084,22 @@ def check_ring_platform_assets() -> CheckResult:
         ring_armed = False
 
     if missing:
-        if ring_armed:
-            # ARMED but an asset is gone: the ring is load-bearing now, so this is
-            # a genuine failure (the ioplug/conf.d must exist for the armed graph).
-            return CheckResult(
-                label,
-                "fail",
-                "shm_ring is ARMED but a ring-platform asset is missing: "
-                + "; ".join(missing)
-                + " — the armed graph cannot resolve its ring devices; "
-                "disarm (jasper-fanin-coupling-reconcile loopback) or redeploy.",
-            )
-        # Inert phase: a missing asset means the ring platform is
-        # unavailable, but loopback still carries audio — degraded, not
-        # a hard failure. Redeploy to rebuild/replace.
+        # ONE VERDICT, because there is no inert phase left to be degraded into.
+        # This used to split on ``ring_armed``: a missing asset FAILED an armed
+        # box and merely WARNED an unarmed one, on the reasoning that "loopback
+        # still carries audio". ADR-0100 retired that route, so the unarmed
+        # branch claimed a transport the box does not have — a speaker emitting
+        # nothing, reported as degraded-but-playing. The verdict no longer turns
+        # on a persisted token at all: the ring is the only way this box makes
+        # sound, and an asset it needs is absent.
         return CheckResult(
             label,
-            "warn",
-            "inert platform incomplete (loopback still active): "
+            "fail",
+            "a ring-platform asset is missing: "
             + "; ".join(missing)
-            + " — redeploy (bash scripts/deploy-to-pi.sh) to rebuild",
+            + " — the ring is this box's only transport, so its graph cannot "
+            "resolve the ring devices and nothing carries audio; redeploy "
+            "(bash scripts/deploy-to-pi.sh) to rebuild them.",
         )
 
     if ring_armed:
@@ -3258,7 +3240,7 @@ def _transport_route_remedy() -> str:
     return (
         ". Run jasper-audio-hardware-reconcile to restore the paired "
         "CamillaDSP playback/outputd capture lane, then re-run "
-        "jasper-fanin-coupling-reconcile only if the coupling check also "
+        "jasper-fanin-coupling-reconcile --auto only if the coupling check also "
         "reports Ring A/Ring B drift."
     )
 
@@ -3298,7 +3280,7 @@ def _outputd_transport_health(
             "fail",
             f"content.source={actual_content_source!r}; expected "
             f"{expected_content_source!r} for persisted coupling={coupling!r}. "
-            "Run jasper-fanin-coupling-reconcile to restart outputd onto the "
+            "Run jasper-fanin-coupling-reconcile --auto to restart outputd onto the "
             "persisted topology.",
         )
     live_outputd_env = dict(outputd_env)

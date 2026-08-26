@@ -2,38 +2,28 @@
 #
 # SPDX-License-Identifier: Apache-2.0
 
-"""Ordered arm/disarm of the fan-in -> CamillaDSP coupling.
+"""Ordered convergence of the fan-in -> CamillaDSP ring coupling.
 
-WHY THIS EXISTS — the two daemons must transition in a specific order.
+WHY THIS EXISTS — the three audio daemons must come up in a specific order.
 :mod:`jasper.fanin_coupling` owns the *vocabulary* (the flag, the ring device
-names, the emit kwargs); this module owns the *transition* across all three audio
-daemons. One non-loopback coupling is supported:
+names, the emit kwargs); this module owns the *convergence* across all three.
 
-- ``shm_ring`` (audio-graph consolidation P2) — the end-to-end SHM-ring path.
-  fan-in writes Ring A (program.ring) that CamillaDSP captures via
-  ``jts_ring_capture``; CamillaDSP writes its post-DSP program to Ring B
-  (content.ring) via ``jts_ring_playback`` that jasper-outputd reads — or, on a
-  roleful box whose active endpoint is armed, to the ACTIVE ring
-  (active-content.ring) via ``jts_ring_active_playback``. Arming it is
-  ONE coherent flip of BOTH ends: ``JASPER_FANIN_CAMILLA_COUPLING=shm_ring``
-  (fanin.env) AND ``JASPER_OUTPUTD_CONTENT_BRIDGE=shm_ring`` + the post-DSP
-  ring's path/slots (outputd.env). ``_outputd_actions`` is the single writer of that
-  pair; ``_arm_ring`` PREFLIGHTs the P1 ring assets (``ring_assets_ready``), the
-  topology eligibility, and BOTH geometry axes (period AND Ring-A slot count),
-  self-heals a shear-prone stale ``JASPER_FANIN_RING_SLOTS``, deletes a
-  geometry-mismatched on-disk ring, and fail-safes to loopback+direct on any
-  failure, so a half-installed ring platform, an incoherent geometry, or a partial
-  flip never strands the realtime path.
+ONE TRANSPORT (ADR-0100). fan-in writes Ring A (program.ring) that CamillaDSP
+captures via ``jts_ring_capture``; CamillaDSP writes its post-DSP program to
+Ring B (content.ring) via ``jts_ring_playback`` that jasper-outputd reads — or,
+on a roleful box whose active endpoint is armed, to the ACTIVE ring
+(active-content.ring) via ``jts_ring_active_playback``. Both ends are ONE
+coherent state: ``JASPER_FANIN_CAMILLA_COUPLING=shm_ring`` (fanin.env) AND
+``JASPER_OUTPUTD_CONTENT_BRIDGE=shm_ring`` + the post-DSP ring's path/slots
+(outputd.env). ``_outputd_actions`` is the single writer of that pair.
 
-  - **ARM** (loopback -> shm_ring): outputd (the post-DSP ring's reader) MUST
-    come up first,
-    fan-in (Ring A writer) second, and only then may CamillaDSP load the ring
-    config. See :func:`_arm_ring`.
-
-  - **DISARM** (shm_ring -> loopback): CamillaDSP must leave the ring config
-    before either endpoint is moved back to ALSA. A sub-second silence spans the
-    transition; it is acceptable on a deliberate operator change and it never
-    strands Camilla on a config it cannot open.
+NO FALLBACK. A pass writes the ring state and, when something moved, converges
+the daemons in the order hardware validated — outputd (the post-DSP ring's
+reader) first, fan-in (the Ring A writer) second, CamillaDSP (which attaches to
+both) last. A step that fails reports ``ok=False`` and the box PARKS visibly:
+doctor FAIL, ``/state``, the web banner, all naming the class through
+:mod:`jasper.control.transport_park`. Recovery from a bad deploy is
+``git revert`` + redeploy (ADR-0100).
 
 SINGLE WRITER. This module is the sole writer of the topology keys it owns:
 ``JASPER_FANIN_CAMILLA_COUPLING`` in ``/var/lib/jasper/fanin.env`` and the Ring B
@@ -41,17 +31,9 @@ bridge keys in ``/var/lib/jasper/outputd.env``. The order-preserving single-key
 helpers (:mod:`jasper.env_file`) leave neighboring operator/reconciler lines
 intact.
 
-FAIL-SAFE DIRECTION = loopback (the byte-identical-to-today path). Any failure
-during ARM rolls the whole transition back to loopback (env + camilla + fan-in)
-so a half-applied coupling never strands the realtime path. ``reconcile_camilla``
-itself fail-closes on an invalid config (CamillaDSP ``--check`` rejects it; the
-apply never loads it), so the worst case is "stayed on / reverted to loopback",
-never a bricked DSP. The result carries ``ok`` so a caller's own ladder can
-react; daemon-op failures are reported, not raised.
-
-NOT a per-tick hot path. This runs on a deliberate coupling change (a CLI / the
-deploy), not in the mux loop — a real transition bounces the SHARED fan-in
-daemon (a brief all-source glitch), which is why it is change-gated, not polled.
+NOT a per-tick hot path. A pass whose env and ring geometry are already coherent
+re-confirms CamillaDSP only and bounces nothing — a real convergence restarts the
+SHARED fan-in daemon (a brief all-source glitch), so it is change-gated.
 """
 
 from __future__ import annotations
@@ -67,23 +49,13 @@ from pathlib import Path
 from typing import IO
 
 from jasper.atomic_io import atomic_write_text
-from jasper.audio_runtime_plan import (
-    GROUPED_SHM_RING_MECHANISM,
-    RouteMode,
-    RuntimeEnvAction,
-    fanin_coupling_action,
-)
+from jasper.audio_runtime_plan import RuntimeEnvAction
 from jasper.output_topology_runtime import GROUPING_RECONCILE_UNIT
 from jasper.env_file import read_value, remove, upsert
 from jasper.fanin.coupling_auto import (
-    AutoCouplingDecision,
-    COUPLING_CHOICE_ENV_VAR,
-    COUPLING_CHOICE_OPERATOR,
     RingGate,
-    is_operator_choice,
-    read_marker,
+    combo_is_armed,
     read_usb_gadget_available,
-    resolve_auto_decision,
     usb_combo_actions,
     usbsink_effectively_enabled,
 )
@@ -93,15 +65,11 @@ from jasper.fanin.latency_mode import (
 )
 from jasper.fanin_coupling import (
     COUPLING_ENV_VAR,
-    COUPLING_LOOPBACK,
     COUPLING_SHM_RING,
     OUTPUTD_CONTENT_BRIDGE_ENV_VAR,
     OUTPUTD_CONTENT_BRIDGE_SHM_RING,
     OUTPUTD_RING_PATH_ENV_VAR,
     OUTPUTD_RING_SLOTS_ENV_VAR,
-    coupling_value_removed,
-    resolve_coupling,
-    resolve_outputd_content_bridge,
     resolve_outputd_ring_path,
     resolve_outputd_ring_slots,
 )
@@ -160,20 +128,16 @@ CAMILLA_UNIT = "jasper-camilla.service"
 # :func:`_restart_voice_for_assistant_width`.
 VOICE_UNIT = "jasper-voice.service"
 # Root oneshot that re-detects output hardware and re-emits the route floor
-# actions (incl. the outputd content-buffer floor) into outputd.env. The disarm
-# path kicks it when leaving a live shm_ring bridge — see _disarm.
+# actions into outputd.env. It is the single writer of
+# ``JASPER_OUTPUTD_CONTENT_FORMAT``, which is why the spine below starts it
+# before restarting outputd — see :func:`_converge_ring`.
 AUDIO_HARDWARE_RECONCILE_UNIT = "jasper-audio-hardware-reconcile.service"
-# Fallback ``event=`` result token for a route-unsupported coupling block (the
-# route policy's own ``support.reason`` normally wins). Today the only blocked
-# combination is shm_ring on a grouped box whose outputd dac_content lane is
-# armed.
-UNSUPPORTED_COUPLING_BLOCK_REASON = "coupling_unsupported_for_route"
 
 # Legacy env key of a deleted coupling (the Camilla -> outputd File playback
-# pipe outputd read under it). Retained ONLY so the loopback/shm_ring
-# ``_outputd_actions`` branches can UNSET a stale value off a migrating box's
-# outputd.env (nothing writes it anymore; a stale value is inert but swept for
-# cleanliness). Not vocabulary — a one-way migration sweep target.
+# pipe outputd read under it). Retained ONLY so ``_outputd_actions`` can UNSET a
+# stale value off a migrating box's outputd.env (nothing writes it anymore; a
+# stale value is inert but swept for cleanliness). Not vocabulary — a one-way
+# migration sweep target.
 _LEGACY_OUTPUTD_LOCAL_CONTENT_PIPE_ENV = "JASPER_OUTPUTD_LOCAL_CONTENT_PIPE"
 
 # Cross-invocation serialization of the reconcile ENTRY verbs (#1233 follow-up).
@@ -192,41 +156,21 @@ DaemonOp = Callable[[], tuple[bool, str]]
 
 @dataclass(frozen=True)
 class CouplingResult:
-    """Outcome of a coupling reconcile.
+    """Outcome of one ring-coupling convergence pass.
 
-    ``ok`` is True only when the env write AND every daemon op the chosen
-    direction needs succeeded (or there was nothing to do). ``changed`` is True
-    when the persisted env value actually moved. ``direction`` is ``arm`` /
-    ``disarm`` / ``confirm`` (env already at desired — camilla re-confirmed, no
-    fan-in bounce). ``recovered`` is True when an ARM failure rolled the box back
-    to loopback. ``detail`` carries the first failure's reason for the log/CLI;
-    it can be non-empty with ``ok=True`` when the disarm's best-effort
-    floor-reemit kick failed (see :func:`_disarm`).
+    ``ok`` is True only when the env write AND every daemon op the pass needed
+    succeeded (or there was nothing to do). ``changed`` is True when the
+    persisted env actually moved. ``detail`` carries the failure's reason for the
+    log/CLI — and it is the PARK's text: nothing is rolled back, so a caller
+    reading ``ok=False`` is reading a box that is not playing.
     """
 
     ok: bool
-    desired: str
     changed: bool
-    direction: str
     restarted_fanin: bool = False
     restarted_outputd: bool = False
     reconciled_camilla: bool = False
-    recovered: bool = False
     detail: str = ""
-
-
-@dataclass(frozen=True)
-class _LoopbackDaemonOps:
-    """Ordered Camilla/fan-in/outputd convergence result for loopback."""
-
-    camilla_ok: bool
-    fanin_ok: bool
-    outputd_ok: bool
-    detail: str
-
-    @property
-    def ok(self) -> bool:
-        return self.camilla_ok and self.fanin_ok and self.outputd_ok
 
 
 # A DELIBERATE restart must not spend a daemon's CRASH-recovery start budget.
@@ -415,11 +359,10 @@ def _assistant_width_token(env_path: str | Path) -> str:
 # ``do_restart()`` returned not-ok (its own comment says "ALWAYS resume camilla,
 # even if the fan-in restart failed"), and a failed or client-truncated restart
 # is precisely fan-in inactive-or-activating; and :func:`reconcile_auto` runs
-# ``reconcile_coupling`` BEFORE the coordinated restart, so the arm's outputd
-# restart and the loopback recovery's fan-in/outputd restarts — each bounded at
-# 8 s against a legal 95 s — precede this start and can leave either dependency
-# activating. The conditions are correlated: a failed fan-in restart IS fan-in
-# down.
+# ``reconcile_coupling`` BEFORE the coordinated restart, so the spine's outputd
+# and fan-in restarts — each bounded at 8 s against a legal 95 s — precede this
+# start and can leave either dependency activating. The conditions are
+# correlated: a failed fan-in restart IS fan-in down.
 #
 # So the dependency term is the CRITICAL PATH through what camilla pulls, which
 # is not simply the largest of the three: jasper-audio-hardware-reconcile
@@ -521,31 +464,30 @@ def _restart_outputd(reason: str) -> tuple[bool, str]:
 
 # How long a blocking start of the audio-hardware reconciler may take.
 #
-# The DISARM kick keeps the 15 s bound it shipped with — the same one the
-# topology-reset kick uses (``jasper.cli.output_topology_reset._trigger_reconcile``)
-# — because a timeout there costs only a delayed content-BUFFER floor re-emit,
-# which the next udev/boot/deploy event converges anyway.
+# The ENDPOINT-CONVERGENCE kick (``jasper.fanin.converge``) keeps the 15 s bound
+# it shipped with — the same one the topology-reset kick uses
+# (``jasper.cli.output_topology_reset._trigger_reconcile``) — because a timeout
+# there costs only a delayed marker re-derivation, which the next
+# udev/boot/deploy event converges anyway.
 #
-# The ARM converge gets real headroom instead, and the reason is a measured one:
-# on jts4 (Pi Zero 2 W) a full reconciler pass takes on the order of the old
-# bound itself, so 15 s left approximately zero margin on the slowest board in
-# the fleet — and a timeout there is not a delayed nicety, it is a refused arm
-# plus a re-converge (see :func:`_arm_ring`). 60 s is four times the observed
-# duration.
+# The CONTENT-FORMAT converge gets real headroom instead, and the reason is a
+# measured one: on jts4 (Pi Zero 2 W) a full reconciler pass takes on the order
+# of the old bound itself, so 15 s left approximately zero margin on the slowest
+# board in the fleet — and a timeout there is not a delayed nicety, it refuses
+# the whole convergence (see :func:`_converge_ring`). 60 s is four times the
+# observed duration.
 #
 # THE BUDGET THIS SPENDS IS THE CALLER UNIT'S, not the broker's. The broker's
 # ``_EXEC_TIMEOUT_CEILING_SEC`` (120 s) only CLAMPS a larger request; it sets no
 # value and 60 s is nowhere near it. The binding limit is the ``Type=oneshot``
 # ``deploy/systemd/jasper-fanin-coupling-auto.service`` ceiling, which is
-# :data:`COUPLING_AUTO_TIMEOUT_START_SEC` below and now carries this converge —
-# both its first attempt and the best-effort re-converge in the failure
-# branch — as enumerated terms rather than as an accepted overrun. Trimming
-# 60 s to fit a smaller ceiling would instead make the ordinary first arm time
-# out on the slowest board, which is the failure this constant exists to
-# prevent.
+# :data:`COUPLING_AUTO_TIMEOUT_START_SEC` below, which carries this converge as
+# an enumerated term rather than as an accepted overrun. Trimming 60 s to fit a
+# smaller ceiling would instead make the ordinary first convergence time out on
+# the slowest board, which is the failure this constant exists to prevent.
 _HARDWARE_RECONCILE_TIMEOUT_SEC = 15.0
 _KICK_ACCEPT_TIMEOUT_SEC = 5.0  # `--no-block` returns in ms; bounds the accept.
-_ARM_CONTENT_FORMAT_CONVERGE_TIMEOUT_SEC = 60.0
+_CONTENT_FORMAT_CONVERGE_TIMEOUT_SEC = 60.0
 
 
 # --- The outer ceiling one `--auto` pass needs -------------------------------
@@ -608,12 +550,11 @@ _COUPLING_AUTO_NON_DAEMON_WORK_SEC = 39.0
 def _coupling_auto_pass_ceiling_sec(*, broker_dead: bool) -> float:
     """One ``--auto`` pass, enumerated along its worst reachable path.
 
-    The coupling-flip half and the USB-combo half are ADDITIVE, in that order:
-    :func:`reconcile_auto` delegates the flip to ``reconcile_coupling`` at
-    "Step 4" and only THEN, when the combo changed and the flip did not already
-    bounce fan-in, runs the coordinated restart. Fan-in is restarted THREE times
-    across that path — once by the arm, once by the arm's ordered recovery, once
-    by the combo coordination.
+    The coupling half and the USB-combo half are ADDITIVE, in that order:
+    :func:`reconcile_auto` delegates the convergence to ``reconcile_coupling``
+    and only THEN, when the combo changed and the convergence did not already
+    bounce fan-in, runs the coordinated restart. Fan-in is restarted TWICE across
+    that path — once by the convergence spine, once by the combo coordination.
     """
 
     def op(timeout: float, reset_failed: bool) -> float:
@@ -621,15 +562,10 @@ def _coupling_auto_pass_ceiling_sec(*, broker_dead: bool) -> float:
             timeout, reset_failed=reset_failed, broker_dead=broker_dead
         )
 
-    arm = (
-        op(_ARM_CONTENT_FORMAT_CONVERGE_TIMEOUT_SEC, False)
+    spine = (
+        op(_CONTENT_FORMAT_CONVERGE_TIMEOUT_SEC, False)
         + op(8.0, True)  # outputd restart
         + op(8.0, True)  # fan-in restart
-        # _fail_ring_arm: the ordered loopback recovery, then a best-effort
-        # content-format re-converge.
-        + op(8.0, True)
-        + op(8.0, True)
-        + op(_ARM_CONTENT_FORMAT_CONVERGE_TIMEOUT_SEC, False)
     )
     combo = (
         op(8.0, False)  # camilla stop: not a start verb, so no reset preamble
@@ -639,8 +575,8 @@ def _coupling_auto_pass_ceiling_sec(*, broker_dead: bool) -> float:
     return (
         _COUPLING_AUTO_NON_DAEMON_WORK_SEC
         + op(_HARDWARE_RECONCILE_TIMEOUT_SEC, False)  # endpoint-convergence kick
-        + arm
-        # An assistant-width TRANSITION inside the flip try-restarts voice. Not a
+        + spine
+        # An assistant-width TRANSITION inside the pass try-restarts voice. Not a
         # crash-budget unit, so no reset preamble; bounded, so it is enumerated
         # rather than being left for the headroom to absorb silently.
         + op(8.0, False)
@@ -656,13 +592,16 @@ COUPLING_AUTO_ENUMERATED_WORST_SEC = _coupling_auto_pass_ceiling_sec(broker_dead
 # the broker back; the fail-closed usbsink rollback can recur in that window.
 # That is acceptable because the mode itself already demands operator attention.
 COUPLING_AUTO_BROKER_DEAD_WORST_SEC = _coupling_auto_pass_ceiling_sec(broker_dead=True)
-# THE UNQUANTIFIED TERM, stated rather than hidden: a pass can also run
-# :func:`_reconcile_camilla` up to twice, and that calls
+# THE UNQUANTIFIED TERM, stated rather than hidden: a pass also runs
+# :func:`_reconcile_camilla`, and that calls
 # ``asyncio.run(reconcile_current_dsp())`` with NO timeout of its own. No finite
 # ceiling covers an unbounded term, so this headroom is a courtesy and the
-# disclosure is the honesty — bounding that call is new behaviour on a path this
-# change was not asked to touch, and is tracked on ledger issue #2802.
-_COUPLING_AUTO_CEILING_HEADROOM_SEC = 159.0
+# disclosure is the honesty — bounding that call is tracked on ledger issue
+# #2802. It grew when the loopback recovery ladder was deleted (ADR-0100): the
+# enumerated worst dropped by that ladder's ops and the shipped
+# ``TimeoutStartSec`` is held where it was, so the deletion spends its saving on
+# the unbounded term rather than tightening a ceiling nothing asked to tighten.
+_COUPLING_AUTO_CEILING_HEADROOM_SEC = 270.0
 COUPLING_AUTO_TIMEOUT_START_SEC = (
     COUPLING_AUTO_ENUMERATED_WORST_SEC + _COUPLING_AUTO_CEILING_HEADROOM_SEC
 )
@@ -686,54 +625,23 @@ def _start_audio_hardware_reconcile(
     )
 
 
-def kick_timed_out(detail: str) -> bool:
-    """Did a failed daemon op TIME OUT, rather than being refused outright?
-
-    The distinction decides whether a still-running oneshot can land a write
-    BEHIND a rollback, and it is the only reason the two are told apart:
-
-    - **Refused** (allowlist rejection, unknown verb, a completed unit exiting
-      non-zero): nothing is in flight when the caller gives up, so a rollback
-      that rewrites the env afterwards is the last writer and stays the last
-      writer.
-    - **Timed out**: the unit may still be RUNNING. It read its inputs before
-      the rollback and can write its outputs after it, inverting the order the
-      rollback depends on. The caller must re-run it once the rollback's own
-      write has landed — see ``reconverge_content_format`` in
-      :func:`_fail_ring_arm`.
-
-    Both of the broker's timeout paths carry the same substring and nothing else
-    does: ``subprocess.TimeoutExpired`` stringifies as "... timed out after N
-    seconds" (the exec bound, on the broker thread and on the root direct
-    fallback alike), and a client socket timeout reaches
-    :class:`~jasper.control.restart_broker.BrokerUnavailable` as bare "timed
-    out". Matching on the broker's wording is the fragile part, so
-    ``tests/test_fanin_coupling_reconcile.py`` builds BOTH real exception
-    strings and asserts this returns True for each: a broker-side re-wording
-    fails there loudly instead of silently downgrading every timeout to a
-    refusal, which is the fail-OPEN direction.
-    """
-    return "timed out" in detail.lower()
-
-
 def _reconcile_camilla(
-    coupling: str,
     *,
     reason: str,
     force: bool = True,
 ) -> tuple[bool, str]:
-    """Re-emit + load the CamillaDSP config for ``coupling``. (ok, detail).
+    """Re-emit + load the CamillaDSP ring config. (ok, detail).
 
-    ARM/DISARM callers force a full reconcile because the coupling is the
-    change.  A topology-confirm caller passes ``force=False`` so unchanged
-    source reconciles take the runtime's YAML-equality fast path while still
-    repairing a genuinely drifted loaded config.  ``coupling`` is explicit so
-    the emit does not depend on this process's stale ``os.environ`` (the env
-    file was just rewritten under us). reconcile_current_dsp validates with
-    ``camilladsp --check`` before loading and fail-closes on an invalid config,
-    so a failure here leaves the previously-loaded config running.
+    A pass whose env moved forces a full reconcile because the graph is the
+    change.  A no-op pass passes ``force=False`` so unchanged source reconciles
+    take the runtime's YAML-equality fast path while still repairing a genuinely
+    drifted loaded config.  The coupling is passed explicitly so the emit does
+    not depend on this process's stale ``os.environ`` (the env file was just
+    rewritten under us). reconcile_current_dsp validates with ``camilladsp
+    --check`` before loading and fail-closes on an invalid config, so a failure
+    here leaves the previously-loaded config running.
 
-    ONE ``skipped`` IS ACCEPTED IN THE ARM DIRECTION, on direct proof only. A
+    ONE ``skipped`` IS ACCEPTED, on direct proof only. A
     mid-commission roleful box boots from the all-muted staged startup anchor,
     which the carrier correctly refuses to host EQ on
     (:data:`CARRIER_TRANSIENT_ACTIVE_REFUSAL`) — so every arm of the
@@ -757,7 +665,9 @@ def _reconcile_camilla(
     from jasper.sound.runtime import reconcile_current_dsp
 
     try:
-        payload = asyncio.run(reconcile_current_dsp(force=force, coupling=coupling))
+        payload = asyncio.run(
+            reconcile_current_dsp(force=force, coupling=COUPLING_SHM_RING)
+        )
     except Exception as e:  # noqa: BLE001 - report, never raise out of the reconcile
         return False, f"camilla reconcile raised: {e}"
     status = payload.get("status")
@@ -773,11 +683,7 @@ def _reconcile_camilla(
     # for free: ``reconcile_current_dsp`` RAISED with the daemon down and the
     # except above turned that into ``(False, …)``. Guarding only the anchor
     # branch would leave the two common ones — a commissioned box and a flat box
-    # both answer ``reconciled`` — reporting success about a dead daemon, which
-    # clears the ring-confirm strike record and disables the two-strike
-    # escalation to loopback that is the only unattended path back to audio. The
-    # escalation would then survive for the mid-commission special case and be
-    # gone for the production fleet.
+    # both answer ``reconciled`` — reporting success about a dead daemon.
     #
     # This does NOT slow #2664's own heal: install performs that through the
     # ``jasper-sound`` CLI, which never enters this function, and by the time the
@@ -787,12 +693,9 @@ def _reconcile_camilla(
         return False, f"camilla down: reconcile converged over the statefile ({status})"
     if status in ("reconciled", "unchanged"):
         return True, str(status)
-    # A "skipped" reconcile is acceptable only for loopback (a flat box with
-    # nothing to flip). For the shm_ring coupled mode the whole point is applying
-    # the ring config — a skip means the config was NOT loaded, so treat it as a
-    # failure and fail-safe back to loopback.
-    if status == "skipped" and coupling != COUPLING_SHM_RING:
-        return True, str(status)
+    # A "skipped" reconcile means the ring config was NOT loaded, and applying it
+    # is the whole point of the pass — so it fails, with the one proven exception
+    # below.
     refusal = str(payload.get("reason") or "")
     if status == "skipped" and refusal == CARRIER_TRANSIENT_ACTIVE_REFUSAL:
         # Keyed on the ONE refusal this acceptance is about, not on "skipped"
@@ -833,16 +736,14 @@ def _reconcile_camilla(
 class _CoordinatedFaninRestart:
     """Outcome of a CamillaDSP-coordinated fan-in restart.
 
-    ``fanin_restarted`` is whether fan-in actually restarted; ``coordinated`` is
-    whether camilla was paused/resumed around it (False on loopback, where the
-    coordination is skipped). ``camilla_stopped`` / ``camilla_started`` record the
-    pause/resume outcomes for the log + result. ``ok`` is True only when every step
-    the chosen path needed succeeded.
+    ``fanin_restarted`` is whether fan-in actually restarted;
+    ``camilla_stopped`` / ``camilla_started`` record the pause/resume outcomes for
+    the log + result. ``ok`` is True only when every step the chosen path needed
+    succeeded.
     """
 
     ok: bool
     fanin_restarted: bool
-    coordinated: bool
     camilla_stopped: bool
     camilla_started: bool
     detail: str = ""
@@ -853,7 +754,6 @@ def _restart_fanin_coordinated(
     do_stop_camilla: DaemonOp,
     do_start_camilla: DaemonOp,
     *,
-    coupling: str,
     reason: str,
     phase: str,
 ) -> _CoordinatedFaninRestart:
@@ -877,12 +777,6 @@ def _restart_fanin_coordinated(
     camilladsp then exits cleanly on SIGTERM instead of an RTTIME-SIGKILL: no
     start-limit, no OnFailure, no core-graph bounce -- one intentional brief camilla
     restart replacing today's kill cascade.
-
-    On LOOPBACK the coupling keeps a snd-aloop buffer between fan-in and CamillaDSP,
-    so a fan-in restart does NOT spin the ioplug (camilla reads silence from the
-    loopback, not a detached ring). The coordination is skipped there
-    (``coupling == loopback``) so an ordinary loopback combo toggle keeps its single
-    lightweight fan-in restart with no camilla glitch.
 
     FAILURE HONESTY: if CamillaDSP cannot be STOPPED it may still be running on the
     ring, so we do NOT restart fan-in (restarting it is exactly what SIGKILLs a
@@ -911,18 +805,6 @@ def _restart_fanin_coordinated(
     camilla stop/start beats a silence window plus resync). See
     ``docs/HANDOFF-usb-low-latency.md`` (USB DIRECT combo section).
     """
-    if coupling == COUPLING_LOOPBACK:
-        # snd-aloop decouples fan-in from camilla — a plain restart is safe.
-        fan_ok, fan_detail = do_restart()
-        return _CoordinatedFaninRestart(
-            ok=fan_ok,
-            fanin_restarted=fan_ok,
-            coordinated=False,
-            camilla_stopped=False,
-            camilla_started=False,
-            detail=fan_detail,
-        )
-
     stop_ok, stop_detail = do_stop_camilla()
     if not stop_ok:
         # Camilla could not be paused -> it may still be on the ring. Do NOT restart
@@ -934,7 +816,6 @@ def _restart_fanin_coordinated(
             result="camilla_pause_failed",
             reason=reason,
             phase=phase,
-            coupling=coupling,
             detail=stop_detail or None,
             camilla_started=start_ok,
             level=logging.WARNING,
@@ -942,7 +823,6 @@ def _restart_fanin_coordinated(
         return _CoordinatedFaninRestart(
             ok=False,
             fanin_restarted=False,
-            coordinated=True,
             camilla_stopped=False,
             camilla_started=start_ok,
             detail=(
@@ -958,7 +838,6 @@ def _restart_fanin_coordinated(
         result="camilla_paused_for_fanin_restart",
         reason=reason,
         phase=phase,
-        coupling=coupling,
     )
     fan_ok, fan_detail = do_restart()
     # ALWAYS resume camilla, even if the fan-in restart failed -- never leave the DSP
@@ -972,7 +851,6 @@ def _restart_fanin_coordinated(
         else "camilla_resume_failed",
         reason=reason,
         phase=phase,
-        coupling=coupling,
         fanin_restarted=fan_ok,
         detail=start_detail or None,
         level=logging.INFO if start_ok else logging.WARNING,
@@ -988,7 +866,6 @@ def _restart_fanin_coordinated(
     return _CoordinatedFaninRestart(
         ok=fan_ok and start_ok,
         fanin_restarted=fan_ok,
-        coordinated=True,
         camilla_stopped=True,
         camilla_started=start_ok,
         detail=detail,
@@ -996,74 +873,67 @@ def _restart_fanin_coordinated(
 
 
 def reconcile_coupling(
-    desired_raw: str | None,
     *,
     reason: str,
     env_path: str | Path = FANIN_ENV_PATH,
     outputd_env_path: str | Path = OUTPUTD_ENV_PATH,
     apply: bool = True,
-    mark_operator_choice: bool = False,
     restart_fanin: "DaemonOp | None" = None,
     restart_outputd: "DaemonOp | None" = None,
-    reconcile_camilla=None,
+    reconcile_camilla: "DaemonOp | None" = None,
     kick_hardware_reconcile: "DaemonOp | None" = None,
-    active_leader_check: "Callable[[], bool] | None" = None,
     restart_voice: "DaemonOp | None" = None,
 ) -> CouplingResult:
-    """Reconcile the coupling, then bound the ASSISTANT-width transient it can open.
+    """Converge the box onto the ring, then bound the two transients it can open.
 
-    The coupling reconcile itself is :func:`_reconcile_coupling_inner`; this
-    wrapper adds ONE thing, and wraps rather than threading it through because
-    the inner function has a dozen exits (arm, disarm, confirm, three recovery
-    ladders) and every one of them can land on a different coupling than it was
-    asked for.
+    The convergence itself is :func:`_converge_ring`; this wrapper adds the two
+    things that must happen AROUND it rather than inside, and wraps rather than
+    threading them through because the inner function has several exits.
 
-    WHY VOICE IS IN THIS MODULE'S RESTART SET AT ALL. The box's assistant IPC
-    width is ``wire_format == S32_LE AND coupling == shm_ring``
+    THE BONDED LEADER'S BAKED CAPTURE. A bonded ACTIVE leader's camilla#1 carries
+    the coupling's capture device, baked at BOND time; nothing else re-derives it
+    when this pass moves the env, and the two units are unordered — so a pass
+    that moved the coupling kicks the grouping re-bake.
+
+    THE ASSISTANT WIRE. The box's assistant IPC width is ``wire_format == S32_LE
+    AND coupling == shm_ring``
     (:func:`jasper.fanin_coupling.assistant_wire_is_wide`), and ``jasper-voice``
     resolves it ONCE at start — it is not restarted by the ordered audio-graph
-    bounce. So a coupling flip alone can leave voice speaking the old width into
-    a fan-in that now expects the other one. That is converted losslessly and
-    logged (``event=fanin.tts_wire_width_mismatch``), never a level error — but
-    without this it is a STANDING disagreement, not a transient, and nothing in
-    the system would ever end it. Comparing the resolved width across the
-    reconcile and issuing one ``try-restart`` makes the window the length of a
-    flip.
+    bounce. So a pass that moves the coupling can leave voice speaking the old
+    width into a fan-in that now expects the other one. That is converted
+    losslessly and logged (``event=fanin.tts_wire_width_mismatch``), never a
+    level error — but without this it is a STANDING disagreement, not a
+    transient, and nothing in the system would ever end it. Comparing the
+    resolved width across the pass and issuing one ``try-restart`` makes the
+    window the length of a convergence.
 
     Both reads are file-fresh and go through the same rule voice uses, so the
-    comparison sees the transition voice would see. The restart is best-effort:
-    a failure is logged and never changes the coupling verdict, because the
-    coupling IS reconciled either way and the remaining exposure is a precision
-    difference the reader already handles.
+    comparison sees the transition voice would see. The restart is best-effort: a
+    failure is logged and never changes the pass's verdict, because the coupling
+    IS converged either way and the remaining exposure is a precision difference
+    the reader already handles.
     """
     before = _assistant_width_token(env_path)
-    result = _reconcile_coupling_inner(
-        desired_raw,
+    result = _converge_ring(
         reason=reason,
         env_path=env_path,
         outputd_env_path=outputd_env_path,
         apply=apply,
-        mark_operator_choice=mark_operator_choice,
         restart_fanin=restart_fanin,
         restart_outputd=restart_outputd,
         reconcile_camilla=reconcile_camilla,
         kick_hardware_reconcile=kick_hardware_reconcile,
-        active_leader_check=active_leader_check,
     )
     if not apply:
         # Staging/migration writes the env but runs no daemon ops; restarting
         # voice here would be the one daemon op an apply=False pass performed.
         return result
     if result.changed and result.ok:
-        # A bonded ACTIVE leader's camilla#1 carries the coupling's capture
-        # device, baked at BOND time; nothing else re-derives it on a flip and the
-        # two units are unordered, so an arm would leave camilla#1 on the tap the
-        # ring just took fan-in off — a silent bond with healthy daemons. No-op on
-        # a solo box. FIRE-AND-FORGET: the re-bake routinely outruns any wait this
-        # side could justify (TimeoutStartSec=6346) and killing the client would
-        # not cancel the queued job, so waiting could only manufacture a WARN for
-        # work that succeeded. `ok` is "systemd ACCEPTED the job" — logged because
-        # a drifted unit name would otherwise make this fix a SILENT no-op.
+        # FIRE-AND-FORGET: the re-bake routinely outruns any wait this side could
+        # justify (TimeoutStartSec=6346) and killing the client would not cancel
+        # the queued job, so waiting could only manufacture a WARN for work that
+        # succeeded. `ok` is "systemd ACCEPTED the job" — logged because a drifted
+        # unit name would otherwise make this a SILENT no-op.
         kicked, kick_detail = _restart_unit(
             GROUPING_RECONCILE_UNIT, verb="start", reason=reason,
             no_block=True, timeout=_KICK_ACCEPT_TIMEOUT_SEC,
@@ -1082,7 +952,11 @@ def reconcile_coupling(
     log_event(
         logger,
         "fanin.coupling_reconcile",
-        result="assistant_width_voice_restarted" if ok else "assistant_width_voice_restart_failed",
+        result=(
+            "assistant_width_voice_restarted"
+            if ok
+            else "assistant_width_voice_restart_failed"
+        ),
         reason=reason,
         assistant_width_before=before,
         assistant_width_after=after,
@@ -1092,153 +966,80 @@ def reconcile_coupling(
     return result
 
 
-def _reconcile_coupling_inner(
-    desired_raw: str | None,
+def _converge_ring(
     *,
     reason: str,
     env_path: str | Path = FANIN_ENV_PATH,
     outputd_env_path: str | Path = OUTPUTD_ENV_PATH,
     apply: bool = True,
-    mark_operator_choice: bool = False,
     restart_fanin: "DaemonOp | None" = None,
     restart_outputd: "DaemonOp | None" = None,
-    reconcile_camilla=None,
+    reconcile_camilla: "DaemonOp | None" = None,
     kick_hardware_reconcile: "DaemonOp | None" = None,
-    active_leader_check: "Callable[[], bool] | None" = None,
 ) -> CouplingResult:
-    """Make the live fan-in->Camilla coupling match ``desired_raw``, in order.
+    """Write the ring state, heal its geometry, and converge the daemons in order.
 
-    ``desired_raw`` is normalized by :func:`resolve_coupling` (unknown/typo or a
-    deleted token -> loopback, fail-safe). Writes the persisted env,
-    then runs the direction's ordered daemon ops:
+    The write comes first (single source of truth for the daemons' next start),
+    then the two GEOMETRY heals — a shear-prone stale ``JASPER_FANIN_RING_SLOTS``
+    and a geometry-mismatched on-disk ring file — then, only if something
+    actually moved, the ordered spine:
 
-    - ARM (-> shm_ring): restart outputd, restart fan-in, then reconcile camilla.
-      On any failure, roll the whole box back to loopback (``recovered=True``) and
-      report ``ok=False``. See :func:`_arm_ring`.
-    - DISARM (-> loopback): reconcile camilla, restart fan-in, then restart
-      outputd. A camilla failure still proceeds to both restarts and reports
-      ``ok=False``. When the box is leaving a LIVE shm_ring outputd bridge, the
-      disarm additionally kicks ``jasper-audio-hardware-reconcile`` after the
-      ordered ops (#1231 follow-up): that reconciler suppresses the route's
-      outputd content-buffer floor while the bridge is shm_ring (the key is
-      inert there), so without the kick a disarmed box sits on outputd's
-      compile-default buffer until the next udev/boot/deploy event. Best-effort
-      — see :func:`_disarm`.
-    - CONFIRM (env already at desired): on the happy path, re-run only the
-      camilla reconcile to self-heal a drifted loaded config, WITHOUT
-      bouncing fan-in. Three exceptions on an armed shm_ring box, in order:
-      an ioplug that cannot parse the resolved wire recovers to loopback
-      immediately (re-arming would meet the same refusal); an incoherent box
-      (stale ring slots/files) escalates to the full ``_arm_ring`` ordered
-      bounce; and ``RING_CONFIRM_STRIKE_LIMIT`` consecutive camilla-confirm
-      failures recover to loopback, so a box whose CamillaDSP cannot load the
-      ring config stops sitting there silently.
+    1. ``jasper-audio-hardware-reconcile``, the single writer of
+       ``JASPER_OUTPUTD_CONTENT_FORMAT``, so outputd is restarted against the
+       ring's own wire rather than a stale one. This step FAILS the pass: without
+       it outputd comes up asking for a width CamillaDSP's ioplug does not
+       attach, which is a hard ``attach_fatal`` (jts4, 2026-08-14).
+    2. jasper-outputd — the post-DSP ring's READER — first,
+    3. jasper-fanin — the Ring A WRITER — second,
+    4. CamillaDSP last, because it attaches to both.
 
-    ``apply=False`` writes the env only (no daemon ops) — for staging/migration.
-    ``mark_operator_choice=True`` (the explicit CLI/HTTP paths) additionally stamps
-    the operator-choice marker ``JASPER_FANIN_COUPLING_CHOICE=operator`` into
-    fanin.env in the SAME write, so a later ``--auto`` pass treats this coupling as
-    an explicit operator choice and never overrides it (the revert lever). The
-    ``--auto`` pass itself passes False so it leaves the marker absent (its writes
-    stay auto-owned). ``restart_fanin`` / ``restart_outputd`` / ``reconcile_camilla``
-    / ``kick_hardware_reconcile`` / ``active_leader_check`` are injectable for tests
-    (default to the real broker + reconcile_current_dsp + grouping-state reader);
-    the camilla hook takes the resolved coupling string.
+    A pass whose env and geometry are already coherent skips the spine entirely
+    and re-confirms CamillaDSP only, so a ``/sources/`` toggle does not bounce
+    the shared fan-in daemon.
+
+    NOTHING IS ROLLED BACK: a failing step returns ``ok=False`` with the reason
+    and the box parks under its own name. ``apply=False`` writes the env only
+    (staging/migration). The daemon ops are injectable for tests and default to
+    the real broker + reconcile_current_dsp.
     """
     do_restart = restart_fanin or (lambda: _restart_fanin(reason=reason))
     do_restart_outputd = restart_outputd or (lambda: _restart_outputd(reason=reason))
-    do_kick_hardware = kick_hardware_reconcile or (
-        lambda: _start_audio_hardware_reconcile(reason=reason)
-    )
-    # The SAME unit, a different bound, because the two callers' stakes differ
-    # (see _HARDWARE_RECONCILE_TIMEOUT_SEC). An injected op overrides both, so a
-    # test still has one hook rather than two.
     do_converge_content_format = kick_hardware_reconcile or (
         lambda: _start_audio_hardware_reconcile(
-            reason=reason, timeout=_ARM_CONTENT_FORMAT_CONVERGE_TIMEOUT_SEC
+            reason=reason, timeout=_CONTENT_FORMAT_CONVERGE_TIMEOUT_SEC
         )
     )
 
-    def do_reconcile(coupling: str) -> tuple[bool, str]:
+    def do_reconcile(*, force: bool) -> tuple[bool, str]:
         if reconcile_camilla is not None:
-            return reconcile_camilla(coupling)
-        return _reconcile_camilla(coupling, reason=reason)
-
-    def do_confirm_reconcile(coupling: str) -> tuple[bool, str]:
-        if reconcile_camilla is not None:
-            return reconcile_camilla(coupling)
-        return _reconcile_camilla(coupling, reason=reason, force=False)
+            return reconcile_camilla()
+        return _reconcile_camilla(reason=reason, force=force)
 
     fanin_snapshot = _read_snapshot(env_path)
     outputd_snapshot = _read_snapshot(outputd_env_path)
-    current = resolve_coupling(read_value(fanin_snapshot.text, COUPLING_ENV_VAR))
 
-    route_mode, dac_content_lane_armed = _route_mode_for_reconcile(active_leader_check)
-    action, support = fanin_coupling_action(
-        desired_raw, route_mode, dac_content_lane_armed=dac_content_lane_armed
+    fanin_new_text, fanin_changed = _apply_action(
+        fanin_snapshot.text,
+        RuntimeEnvAction("set", COUPLING_ENV_VAR, COUPLING_SHM_RING),
     )
-    desired = support.coupling
-    if not support.supported:
-        return _block_unsupported_coupling(
-            do_restart,
-            do_restart_outputd,
-            do_reconcile,
-            fanin_snapshot,
-            outputd_snapshot,
-            current,
-            reason,
-            desired=desired,
-            block_detail=support.detail,
-            block_result=support.reason or UNSUPPORTED_COUPLING_BLOCK_REASON,
-            apply=apply,
-            do_kick_hardware=do_kick_hardware,
-        )
-
-    assert action is not None, "supported coupling must resolve an env action"
-    fanin_new_text, coupling_changed = _apply_action(fanin_snapshot.text, action)
-    # ``coupling_changed`` is the COUPLING line moving alone — it (with
-    # ``outputd_changed``) drives the arm/disarm-vs-confirm decision below. A
-    # marker-only write must NOT be mistaken for a coupling flip (that would bounce
-    # the daemons on an already-at-desired box), so the marker's own change is
-    # tracked separately and folded only into ``fanin_changed`` (whether to rewrite
-    # the file), never into the transition decision.
-    fanin_changed = coupling_changed
-    if mark_operator_choice:
-        # Stamp the operator-choice marker in the SAME fanin.env write as the
-        # coupling flip, so an explicit CLI/HTTP arm is recorded as an operator
-        # choice the --auto pass must never override (the revert lever). Absence =
-        # auto-owned; presence-and-operator = frozen to the operator's pick.
-        fanin_new_text, marker_changed = _apply_action(
-            fanin_new_text,
-            RuntimeEnvAction("set", COUPLING_CHOICE_ENV_VAR, COUPLING_CHOICE_OPERATOR),
-        )
-        fanin_changed = fanin_changed or marker_changed
     outputd_new_text, outputd_changed = _apply_actions(
-        outputd_snapshot.text, _outputd_actions(desired, outputd_snapshot.text)
+        outputd_snapshot.text, _outputd_actions(outputd_snapshot.text)
     )
     # Did this pass CONVERGE the ring-path/marker pair? Compared as RESOLVED
     # values so first-writing an absent key (which resolves to the same default)
     # is not mistaken for a heal — only a real move counts. The pair is crossed
     # for a bounded window by construction (its two halves have two writers), so
-    # the heal is the normal end of an arm or a disarm; logging it is what keeps
-    # that window observable instead of silent, and what tells an operator
-    # reading the journal that a box which had been refusing outputd's attach
-    # just stopped.
+    # logging the heal is what keeps that window observable instead of silent.
     ring_path_before = resolve_outputd_ring_path(
         read_value(outputd_snapshot.text, OUTPUTD_RING_PATH_ENV_VAR)
     )
     ring_path_converged = (
-        desired == COUPLING_SHM_RING
-        and _outputd_ring_path_for(outputd_snapshot.text) != ring_path_before
+        _outputd_ring_path_for(outputd_snapshot.text) != ring_path_before
     )
-    # ``changed`` = should we rewrite either file. ``coupling_moved`` = did the
-    # actual coupling topology move (gates the transition vs the confirm path).
     changed = fanin_changed or outputd_changed
-    coupling_moved = coupling_changed or outputd_changed
 
-    # Persist the desired value first (single source of truth for the daemons'
-    # next start). A write failure aborts BEFORE any daemon op so we never bounce
-    # a daemon into a value the file doesn't carry.
+    # A write failure aborts BEFORE any daemon op so we never bounce a daemon
+    # into a value the file doesn't carry.
     if changed:
         try:
             if fanin_changed:
@@ -1252,247 +1053,156 @@ def _reconcile_coupling_inner(
                 logger,
                 "fanin.coupling_reconcile",
                 result="write_failed",
-                desired=desired,
                 reason=reason,
                 error=e,
                 level=logging.ERROR,
             )
-            return CouplingResult(
-                ok=False,
-                desired=desired,
-                changed=False,
-                direction="error",
-                detail=str(e),
-            )
+            return CouplingResult(ok=False, changed=False, detail=str(e))
 
     if ring_path_converged:
         log_event(
             logger,
             "fanin.coupling_reconcile",
             result="ring_path_converged",
-            desired=desired,
             reason=reason,
             was=ring_path_before,
             now=_outputd_ring_path_for(outputd_new_text),
         )
 
-    _sync_process_env_for_emit(desired, outputd_new_text)
+    _sync_process_env_for_emit(outputd_new_text)
 
     if not apply:
         log_event(
             logger,
             "fanin.coupling_reconcile",
             result="written",
-            desired=desired,
             changed=changed,
             reason=reason,
         )
-        # Any non-loopback coupling (shm_ring) is an ARM direction; only loopback
-        # is a disarm.
-        return CouplingResult(
-            ok=True,
-            desired=desired,
-            changed=changed,
-            direction="disarm" if desired == COUPLING_LOOPBACK else "arm",
-        )
+        return CouplingResult(ok=True, changed=changed)
 
-    if not coupling_moved:
-        # Coupling already at desired (a marker-only or combo-only fanin.env write
-        # still lands here — the env was rewritten above, but the coupling topology
-        # did not move, so there is no daemon transition to run). An already-armed
-        # shm_ring box can still be
-        # INCOHERENT — a stale JASPER_FANIN_RING_SLOTS or a stale on-disk ring file
-        # from a pre-fix arm that leaves CamillaDSP crash-looping on the ioplug
-        # geometry mismatch. The coupling-flip write didn't change (already
-        # shm_ring), so the arm self-heal never ran; the doctor then pointed the
-        # operator at a reconcile that only re-loaded camilla and healed nothing
-        # (defect A CONFIRM-path gap, 2026-07-05). Detect that exact incoherence and
-        # escalate to the full _arm_ring spine (self-heal THEN ordered bounce). A
-        # coherent box skips this and keeps the lightweight camilla-only confirm
-        # below (no daemon bounce on every reconcile tick).
-        if desired == COUPLING_SHM_RING:
-            # CAPABILITY first, and it does not escalate to an arm: a box armed
-            # on a wire the INSTALLED ioplug cannot open (the degraded-deploy
-            # walk — a stale .so beside new daemons) has CamillaDSP failing to
-            # start, and re-running the arm would meet the same -EINVAL. The only
-            # state that plays audio is loopback, so go there directly.
-            caps_ok, caps_detail = ring_wire_caps_ready()
-            if not caps_ok:
-                log_event(
-                    logger,
-                    "fanin.coupling_reconcile",
-                    result="confirm_ring_ioplug_caps_missing",
-                    desired=desired,
-                    reason=reason,
-                    detail=caps_detail,
-                    level=logging.ERROR,
-                )
-                recovered = _recover_to_loopback(
-                    do_restart,
-                    do_restart_outputd,
-                    do_reconcile,
-                    fanin_snapshot.path,
-                    outputd_snapshot.path,
-                    reason,
-                )
-                _clear_ring_confirm_failures()
-                return CouplingResult(
-                    ok=False,
-                    desired=COUPLING_LOOPBACK,
-                    changed=True,
-                    direction="confirm",
-                    recovered=recovered,
-                    detail=caps_detail,
-                )
+    # GEOMETRY HEALS, every pass. They used to live inside the arm, which only
+    # ran when the coupling-flip WRITE moved — so a box already on the ring with
+    # a stale slot count or a stale on-disk ring stayed broken while the doctor
+    # told the operator to run a reconcile that healed nothing (defect A
+    # CONFIRM-path gap, 2026-07-05). Both are write-on-change, so a coherent box
+    # pays a few small reads and still takes the no-bounce path below.
+    fanin_snapshot, slots_healed = _migrate_stale_fanin_ring_slots(
+        fanin_snapshot, reason
+    )
+    files_cleared = _delete_stale_ring_files(reason, fanin_snapshot.text)
 
-            heal_needed, heal_detail = _ring_confirm_needs_self_heal(
-                fanin_snapshot.text
-            )
-            if heal_needed:
-                log_event(
-                    logger,
-                    "fanin.coupling_reconcile",
-                    result="confirm_ring_self_heal",
-                    desired=desired,
-                    reason=reason,
-                    detail=heal_detail,
-                    level=logging.WARNING,
-                )
-                return _arm_ring(
-                    do_restart,
-                    do_restart_outputd,
-                    do_reconcile,
-                    desired,
-                    reason,
-                    fanin_snapshot,
-                    outputd_snapshot,
-                    do_converge_content_format,
-                )
-
-        # Env already at desired AND coherent: re-confirm camilla only (self-heal a
-        # drifted loaded config) — no fan-in bounce on a no-op tick.
-        ok, detail = do_confirm_reconcile(desired)
-
-        # A FAILED confirm on an ARMED ring used to end here: logged, ok=False,
-        # box left armed with CamillaDSP unable to load the ring config and
-        # nothing that would ever move it. Count consecutive failures and
-        # escalate to recovery, which is the only outcome that restores audio.
-        if desired == COUPLING_SHM_RING:
-            if ok:
-                _clear_ring_confirm_failures()
-            else:
-                strikes = _record_ring_confirm_failure(detail, reason)
-                if strikes >= RING_CONFIRM_STRIKE_LIMIT:
-                    log_event(
-                        logger,
-                        "fanin.coupling_reconcile",
-                        result="confirm_ring_failure_escalated",
-                        desired=desired,
-                        reason=reason,
-                        strikes=strikes,
-                        limit=RING_CONFIRM_STRIKE_LIMIT,
-                        detail=detail or None,
-                        level=logging.ERROR,
-                    )
-                    recovered = _recover_to_loopback(
-                        do_restart,
-                        do_restart_outputd,
-                        do_reconcile,
-                        fanin_snapshot.path,
-                        outputd_snapshot.path,
-                        reason,
-                    )
-                    _clear_ring_confirm_failures()
-                    return CouplingResult(
-                        ok=False,
-                        desired=COUPLING_LOOPBACK,
-                        changed=True,
-                        direction="confirm",
-                        recovered=recovered,
-                        detail=(
-                            f"CamillaDSP failed to confirm the ring config "
-                            f"{strikes} times in a row ({detail}); recovered the "
-                            "box to loopback so audio returns"
-                        ),
-                    )
-                log_event(
-                    logger,
-                    "fanin.coupling_reconcile",
-                    result="confirm_ring_failure_strike",
-                    desired=desired,
-                    reason=reason,
-                    strikes=strikes,
-                    limit=RING_CONFIRM_STRIKE_LIMIT,
-                    detail=detail or None,
-                    level=logging.WARNING,
-                )
-
+    if not (changed or slots_healed or files_cleared):
+        # Already coherent: re-confirm camilla only (self-heal a drifted loaded
+        # config) — no fan-in bounce on a no-op tick.
+        ok, detail = do_reconcile(force=False)
         log_event(
             logger,
             "fanin.coupling_reconcile",
             result="confirmed" if ok else "confirm_failed",
-            desired=desired,
             reason=reason,
             detail=detail or None,
-            level=logging.INFO if ok else logging.WARNING,
+            level=logging.INFO if ok else logging.ERROR,
         )
         return CouplingResult(
             ok=ok,
-            desired=desired,
-            changed=changed,
-            direction="confirm",
+            changed=False,
             reconciled_camilla=ok,
             detail="" if ok else detail,
         )
 
-    if desired == COUPLING_SHM_RING:
-        return _arm_ring(
-            do_restart,
-            do_restart_outputd,
-            do_reconcile,
-            desired,
-            reason,
-            fanin_snapshot,
-            outputd_snapshot,
-            do_converge_content_format,
+    kick_ok, kick_detail = do_converge_content_format()
+    if not kick_ok:
+        detail = (
+            "could not converge JASPER_OUTPUTD_CONTENT_FORMAT to the ring wire "
+            f"({kick_detail}); restarting jasper-outputd on a stale width would "
+            "fail CamillaDSP's ring attach — run `sudo systemctl start "
+            "jasper-audio-hardware-reconcile`, then re-run this reconcile"
         )
-    return _disarm(
-        do_restart,
-        do_restart_outputd,
-        do_reconcile,
-        desired,
-        reason,
-        # Kick the floor re-emit only when this disarm is actually leaving a live
-        # shm_ring bridge — the one state in which the hardware reconciler had
-        # suppressed the content-buffer floor (#1231). An already-direct disarm
-        # never had the floor suppressed, so no kick.
-        kick_hardware_reconcile=(
-            do_kick_hardware
-            if _leaves_live_shm_ring_bridge(outputd_snapshot.text)
-            else None
+        log_event(
+            logger,
+            "fanin.coupling_reconcile",
+            result="ring_content_format_converge_failed",
+            reason=reason,
+            detail=detail,
+            level=logging.ERROR,
+        )
+        return CouplingResult(ok=False, changed=changed, detail=detail)
+    log_event(
+        logger,
+        "fanin.coupling_reconcile",
+        result="ring_content_format_converged",
+        reason=reason,
+        detail=kick_detail or None,
+    )
+
+    # THE ORDERED SPINE. Each step is a precondition of the next — outputd must
+    # be reading the post-DSP ring before fan-in re-creates Ring A, and both ends
+    # must be up before CamillaDSP attaches to them — so a failure short-circuits
+    # rather than bouncing the rest of the graph into a half-converged one.
+    out_ok, out_detail = do_restart_outputd()
+    fan_ok, fan_detail = (
+        do_restart() if out_ok else (False, "skipped: outputd did not come up")
+    )
+    cam_ok, cam_detail = (
+        do_reconcile(force=True)
+        if fan_ok
+        else (False, "skipped: fan-in did not come up")
+    )
+    ok = out_ok and fan_ok and cam_ok
+    detail = "; ".join(
+        d
+        for d in (
+            "" if out_ok else f"outputd restart failed ({out_detail})",
+            "" if fan_ok else f"fan-in restart failed ({fan_detail})",
+            "" if cam_ok else f"camilla reconcile failed ({cam_detail})",
+        )
+        if d
+    )
+    log_event(
+        logger,
+        "fanin.coupling_reconcile",
+        result="ring_converged" if ok else "ring_converge_failed",
+        reason=reason,
+        detail=(detail or cam_detail) or None,
+        level=logging.INFO if ok else logging.ERROR,
+    )
+    return CouplingResult(
+        ok=ok,
+        changed=changed,
+        restarted_fanin=fan_ok,
+        restarted_outputd=out_ok,
+        reconciled_camilla=cam_ok,
+        # The camilla step has two success shapes, and the operator's stdout line
+        # prints ``detail`` only when it is non-empty. An ORDINARY re-emit stays
+        # silent there — byte-identical for every applied-baseline box — while the
+        # anchor-converged acceptance says so, because "the ring config was
+        # loaded" and "the graph was already the anchor at the ring" are different
+        # facts and only one of them wrote anything.
+        detail=(
+            detail
+            or (
+                CAMILLA_ANCHOR_CONVERGED_DETAIL
+                if cam_detail == CAMILLA_ANCHOR_CONVERGED_DETAIL
+                else ""
+            )
         ),
     )
 
 
 @dataclass(frozen=True)
 class AutoResult:
-    """Outcome of a ``--auto`` default-resolution pass (P3/P4 default-flip).
+    """Outcome of one unattended (``--auto``) pass.
 
-    ``owned`` reports coupling ownership: False means an operator choice froze
-    the transport mode, while USB combo state still follows canonical source
-    intent. ``coupling`` then reports the box's ACTUAL persisted coupling, not a
-    hardcoded loopback. Otherwise ``coupling`` is the resolved default,
     ``combo_armed`` is whether the USB combo resolved on, ``usb_combo_changed``
-    records whether the fan-in combo keys moved, ``coupling_result`` is the delegated
-    :class:`CouplingResult`, ``restarted_fanin_for_combo`` is True when a combo-only
-    change forced an extra fan-in restart (the coupling reconcile did not bounce it).
-    ``ok`` reflects the delegated coupling reconcile plus the combo restart while
-    preserving an operator-frozen coupling.
+    records whether the fan-in combo keys moved, ``coupling_result`` is the
+    delegated :class:`CouplingResult`, and ``restarted_fanin_for_combo`` is True
+    when a combo-only change forced an extra fan-in restart (the ring
+    convergence did not bounce it). ``ok`` reflects the delegated convergence
+    plus the combo restart.
     """
 
     ok: bool
-    owned: bool
-    coupling: str
     gadget_present: bool
     usb_combo_changed: bool
     reason: str
@@ -1517,76 +1227,42 @@ def reconcile_auto(
     restart_outputd: "DaemonOp | None" = None,
     stop_camilla: "DaemonOp | None" = None,
     start_camilla: "DaemonOp | None" = None,
-    reconcile_camilla=None,
+    reconcile_camilla: "DaemonOp | None" = None,
     kick_hardware_reconcile: "DaemonOp | None" = None,
-    active_leader_check: "Callable[[], bool] | None" = None,
 ) -> AutoResult:
-    """DEFAULT-RESOLUTION pass (P3/P4): resolve the coupling + USB combo by
-    eligibility when the household made no explicit choice.
+    """The unattended pass: USB combo from household intent, then the ring.
 
-    Runs on deploy (install.sh) and boot (the reconciler's ``--auto`` CLI). Steps:
+    Runs on deploy (install.sh) and boot (the reconciler's ``--auto`` CLI). Two
+    independent halves, in this order:
 
-    1. Read the operator-choice marker from fanin.env. If it names an explicit
-       operator choice (``JASPER_FANIN_COUPLING_CHOICE=operator``), preserve that
-       exact coupling and return ``owned=False``. USB combo state remains owned
-       here and still follows canonical USB intent; an operator
-       transport choice cannot authorize a household-Off capture lane.
-    2. Otherwise the pass OWNS the box. First self-heal a shear-prone stale
-       ``JASPER_FANIN_RING_SLOTS`` (the same migration a manual arm runs) so the
-       auto slot gate sees the corrected value — a stale ``=8`` old-default line
-       must not DISARM a box a manual arm would migrate+keep (defect-F6). Then
-       resolve the
-       coupling default via :func:`jasper.fanin.coupling_auto.resolve_auto_decision`,
-       gating on the SAME #1169 ring preflights a manual arm uses PLUS a
-       ROUTE-support gate (grouped boxes resolve loopback — defect-F3) and a
-       fail-CLOSED topology gate (unreadable topology → loopback — defect-F4).
-       Resolve the USB combo from gadget presence AND the household's USB-audio
-       intent plus current local-source role permission (defect-B2).
-    3. Write the fan-in feature keys and preset floor into fanin.env (explicit
-       values, never unset, defeating jasper.env precedence). Idempotent — a
-       second pass with the same inputs writes nothing.
-    4. Delegate the coupling flip + ordered daemon transition to
-       :func:`reconcile_coupling` (``mark_operator_choice=False`` so the marker
-       stays absent — auto-owned). A combo-only change that took the no-bounce
-       confirm path issues one extra
-       fan-in restart — and on a live ``shm_ring`` coupling that restart is
-       CamillaDSP-coordinated (:func:`_restart_fanin_coordinated`): camilla is
-       paused before, resumed after, so the fan-in restart can't RTTIME-SIGKILL it.
-       On loopback the plain restart is kept (snd-aloop decouples the two).
+    1. Resolve the USB combo from gadget presence AND the household's USB-audio
+       intent plus current local-source role permission, and write the fan-in
+       feature keys and preset floor into fanin.env (explicit values, never
+       unset, defeating jasper.env precedence). Idempotent — a second pass with
+       the same inputs writes nothing.
+    2. Delegate the ring convergence to :func:`reconcile_coupling`. There is no
+       coupling DECISION left to make: the ring is the only transport, and a box
+       it cannot serve parks under its own name
+       (:mod:`jasper.control.transport_park`) rather than resolving a second
+       route. A combo-only change that took the no-bounce path issues one extra
+       CamillaDSP-coordinated fan-in restart
+       (:func:`_restart_fanin_coordinated`): camilla is paused before and resumed
+       after, so the fan-in restart cannot RTTIME-SIGKILL it.
 
     If canonical USB intent is malformed or unreadable, the pass narrows itself
-    to the safety action: preserve the current valid coupling, resolve effective
-    USB intent False, run the same explicit-off combo write + ordered fan-in
-    restart, emit ``result=auto_usb_intent_fail_closed``, and return ``ok=False``.
-    A removed coupling still takes its independent loopback fail-safe.
+    to the safety action: resolve effective USB intent False, run the same
+    explicit-off combo write + ordered fan-in restart, emit
+    ``result=auto_usb_intent_fail_closed``, and return ``ok=False``. Derived or
+    unit state must never authorize capture when canonical intent cannot be
+    proved valid.
 
-    NO-OP on an ineligible / fanin-less box: jts3 (roleful) / jts5 (composite)
-    resolve loopback with the combo off (no gadget intent) and converge with zero
-    churn.
-
-    A BOX CAN ALSO BE A NO-OP FOR THE OTHER REASON, and the two must not be
-    confused. Step 1's operator-marker branch returns ``owned=False`` with
-    ``ring_gates=()`` — an EMPTY tuple — so on an operator-pinned box the gate
-    set is never even constructed and neither ``ring_wire_caps_ready`` nor
-    ``ring_edge_width_ready`` runs, whatever the box's hardware would say. That
-    is by design (an operator choice is not the auto pass's to re-litigate), but
-    it means "the fleet's fail-closed wire gates protect this box" is FALSE for
-    every pinned box, and all three armed fleet boxes are pinned. jts4 is the
-    worked example, and the earlier "streambox, no fan-in stack" claim was wrong
-    about the CONSEQUENCE rather than about the profile: its ``install_profile``
-    IS streambox. What does not follow is the no-op. Its output TOPOLOGY is flat,
-    it is armed ``shm_ring``, and it is pinned ``operator`` — so it reaches this
-    function and returns HERE, before any gate, rather than being filtered out
-    upstream by its profile.
-    ``gadget_present`` / ``usb_intent_enabled`` / ``restart_*`` / ``stop_camilla`` /
-    ``start_camilla`` / ``reconcile_camilla`` / ``kick_hardware_reconcile`` /
-    ``active_leader_check`` are injectable for tests; ``gadget_present=None`` reads
-    the resolved USB hardware capability and ``usb_intent_enabled=None`` reads canonical source
-    intent plus current local-source role permission.
+    ``gadget_present`` / ``usb_intent_enabled`` / ``restart_*`` / ``stop_camilla``
+    / ``start_camilla`` / ``reconcile_camilla`` / ``kick_hardware_reconcile`` are
+    injectable for tests; ``gadget_present=None`` reads the resolved USB hardware
+    capability and ``usb_intent_enabled=None`` reads canonical source intent plus
+    current local-source role permission.
     """
     fanin_snapshot = _read_snapshot(env_path)
-    outputd_snapshot = _read_snapshot(outputd_env_path)
-    marker = read_marker(fanin_snapshot.text)
     gadget = (
         read_usb_gadget_available() if gadget_present is None else gadget_present
     )
@@ -1599,9 +1275,7 @@ def reconcile_auto(
             # closed, but a previously armed fan-in process can still retain its
             # DIRECT lane until this owner writes + applies the explicit-off combo
             # plan. Treat the unreadable preference as effective False, complete
-            # the ordinary ordered disarm below, and only then return failure.
-            # Derived/unit state must never authorize capture when canonical
-            # intent cannot be proved valid.
+            # the ordinary ordered write below, and only then return failure.
             usb_intent = False
             usb_intent_failure = f"USB source intent invalid or unreadable: {exc}"[:500]
             log_event(
@@ -1624,7 +1298,9 @@ def reconcile_auto(
         )
     except (OSError, UnicodeError, ValueError) as exc:
         latency_mode = "high"
-        usb_latency_failure = f"USB latency preference invalid or unreadable: {exc}"[:500]
+        usb_latency_failure = (
+            f"USB latency preference invalid or unreadable: {exc}"[:500]
+        )
         log_event(
             logger,
             "fanin.coupling_reconcile",
@@ -1634,148 +1310,15 @@ def reconcile_auto(
             detail=usb_latency_failure,
             level=logging.ERROR,
         )
-    # MIGRATION — a persisted REMOVED coupling value (a deleted token, or any
-    # typo) is NOT a valid operator choice; the mode the operator picked no
-    # longer exists. Converge the box to loopback (the fail-safe rung) LOUDLY,
-    # IGNORING the operator marker, so a migrating box never silently keeps a
-    # deleted mode. ``resolve_coupling`` already fails such a value safe to loopback
-    # at read time; this rewrites fanin.env so the file stops lying, sweeps the
-    # legacy outputd pipe key, and runs the ordered disarm so a box that really
-    # armed the deleted transport is recovered. Runs BEFORE the operator
-    # short-circuit for exactly this reason. The doctor's
-    # ``check_fanin_coupling_value`` surfaces the same condition until this
-    # pass runs.
-    persisted_raw = read_value(fanin_snapshot.text, COUPLING_ENV_VAR)
-    persisted_coupling_removed = coupling_value_removed(persisted_raw)
-    if persisted_coupling_removed:
-        log_event(
-            logger,
-            "fanin.coupling_reconcile",
-            result="removed_coupling_failsafe",
-            reason=reason,
-            persisted=persisted_raw,
-            coupling=COUPLING_LOOPBACK,
-            detail=(
-                "persisted JASPER_FANIN_CAMILLA_COUPLING names a removed/unknown "
-                "transport (e.g. the deleted transport_pipe); failing safe to loopback"
-            ),
-            level=logging.WARNING,
-        )
-        if not usb_intent_failure and not usb_latency_failure:
-            result = reconcile_coupling(
-                COUPLING_LOOPBACK,
-                reason=f"{reason}:removed_coupling_failsafe",
-                env_path=env_path,
-                outputd_env_path=outputd_env_path,
-                apply=apply,
-                mark_operator_choice=False,
-                restart_fanin=restart_fanin,
-                restart_outputd=restart_outputd,
-                reconcile_camilla=reconcile_camilla,
-                kick_hardware_reconcile=kick_hardware_reconcile,
-                active_leader_check=active_leader_check,
-            )
-            return AutoResult(
-                ok=result.ok,
-                owned=True,
-                coupling=COUPLING_LOOPBACK,
-                gadget_present=gadget,
-                usb_intent_enabled=usb_intent,
-                usb_combo_changed=False,
-                reason="persisted coupling was removed — failed safe to loopback",
-                coupling_result=result,
-                detail=result.detail,
-            )
-        # Two fail-safe conditions coincide. Continue through the shared combo
-        # path so its explicit-off keys and ordered fan-in restart land too; the
-        # decision below also forces the removed coupling to loopback.
 
-    forced_usb_safety_decision = bool(usb_intent_failure)
-    if forced_usb_safety_decision:
-        # A USB-local parse/read failure must not make an unrelated coupling
-        # decision. Preserve the current valid coupling (or force a removed one
-        # to loopback) while using the same explicit-off actions and transition
-        # path as an ordinary combo disarm. An operator marker freezes the
-        # coupling choice, not an unsafe USB capture lane.
-        safe_coupling = (
-            COUPLING_LOOPBACK
-            if persisted_coupling_removed
-            else resolve_coupling(persisted_raw)
-        )
-        decision = AutoCouplingDecision(
-            owned=not is_operator_choice(marker),
-            coupling=safe_coupling,
-            usb_combo_actions=usb_combo_actions(
-                armed=False, latency_mode=latency_mode
-            ),
-            combo_armed=False,
-            gadget_present=gadget,
-            usb_intent_enabled=False,
-            usb_latency_mode=latency_mode,
-            reason=(
-                "USB source intent invalid — combo failed closed; "
-                + (
-                    "removed coupling also failed safe to loopback"
-                    if persisted_coupling_removed
-                    else (
-                        "operator coupling preserved"
-                        if is_operator_choice(marker)
-                        else "current coupling preserved"
-                    )
-                )
-            ),
-        )
-    elif is_operator_choice(marker):
-        current = resolve_coupling(persisted_raw)
-        decision = resolve_auto_decision(
-            marker_raw=marker,
-            gadget_present=gadget,
-            usb_intent_enabled=usb_intent,
-            ring_gates=(),
-            current_coupling=current,
-            usb_latency_mode=latency_mode,
-        )
-    else:
-        # Self-heal a shear-prone stale JASPER_FANIN_RING_SLOTS BEFORE the gates
-        # read it, exactly as a manual arm does inside _arm_ring — otherwise a
-        # stale `=8` old-default line fails the slot gate and DISARMS a box a
-        # manual arm would migrate+keep (defect-F6). The forced malformed-USB
-        # safety branch above deliberately skips this unrelated coupling
-        # migration when an operator choice is frozen.
-        fanin_snapshot = _migrate_stale_fanin_ring_slots(fanin_snapshot, reason)
+    combo_armed = not usb_intent_failure and combo_is_armed(
+        gadget_present=gadget, usb_intent_enabled=usb_intent
+    )
+    combo_actions = usb_combo_actions(armed=combo_armed, latency_mode=latency_mode)
 
-        # Route shape + dac_content lane verdict for the ring ROUTE-support gate
-        # (defect-F3). Computed once here and reused; reconcile_coupling
-        # recomputes its own from the same active_leader_check so both agree.
-        route_mode, route_lane_armed = _route_mode_for_reconcile(active_leader_check)
-
-        # The full ordered ring preflight set: assets + fail-closed topology
-        # (from default_ring_gates), then route-support, then the two geometry
-        # gates that need the outputd/fanin env text (bound here as closures).
-        ring_gates = default_ring_gates() + (
-            (
-                "ring_route",
-                lambda: ring_route_ready(
-                    route_mode, dac_content_lane_armed=route_lane_armed
-                ),
-            ),
-            ("ring_geometry", lambda: ring_geometry_ready(outputd_snapshot.text)),
-            (
-                "ring_slot_geometry",
-                lambda: ring_slot_geometry_ready(fanin_snapshot.text),
-            ),
-        )
-        decision = resolve_auto_decision(
-            marker_raw=marker,
-            gadget_present=gadget,
-            usb_intent_enabled=usb_intent,
-            ring_gates=ring_gates,
-            usb_latency_mode=latency_mode,
-        )
-
-    # Step 3a — fan-in combo keys (reconciler = single writer). Write only on change.
+    # Step 1 — fan-in combo keys (reconciler = single writer). Write only on change.
     fanin_after_combo, combo_changed = _apply_actions(
-        fanin_snapshot.text, decision.usb_combo_actions
+        fanin_snapshot.text, combo_actions
     )
     if combo_changed:
         try:
@@ -1792,17 +1335,16 @@ def reconcile_auto(
             )
             return AutoResult(
                 ok=False,
-                owned=decision.owned,
-                coupling=decision.coupling,
                 gadget_present=gadget,
                 usb_intent_enabled=usb_intent,
-                combo_armed=decision.combo_armed,
+                combo_armed=combo_armed,
+                usb_latency_mode=latency_mode,
                 usb_combo_changed=False,
-                reason=decision.reason,
+                reason="USB combo write failed",
                 detail="; ".join(part for part in (usb_intent_failure, str(e)) if part),
             )
-        # Keep the live env coherent for the coupling reconcile's own re-read.
-        for a in decision.usb_combo_actions:
+        # Keep the live env coherent for the ring convergence's own re-read.
+        for a in combo_actions:
             if a.action == "set":
                 os.environ[a.key] = a.value
             else:
@@ -1814,84 +1356,37 @@ def reconcile_auto(
             reason=reason,
             gadget_present=gadget,
             usb_intent_enabled=usb_intent,
-            combo_armed=decision.combo_armed,
-            usb_latency_mode=decision.usb_latency_mode,
-            keys=",".join(a.key for a in decision.usb_combo_actions),
+            combo_armed=combo_armed,
+            usb_latency_mode=latency_mode,
+            keys=",".join(a.key for a in combo_actions),
         )
 
-    log_event(
-        logger,
-        "fanin.coupling_reconcile",
-        result="auto_resolved",
+    # Step 2 — the ring. The reconciler re-reads fanin.env fresh (it snapshots
+    # inside), so the combo keys just written persist untouched.
+    coupling_result = reconcile_coupling(
         reason=reason,
-        coupling=decision.coupling,
-        gadget_present=gadget,
-        usb_intent_enabled=usb_intent,
-        combo_armed=decision.combo_armed,
-        usb_latency_mode=decision.usb_latency_mode,
-        usb_combo_changed=combo_changed,
-        detail=decision.reason,
+        env_path=env_path,
+        outputd_env_path=outputd_env_path,
+        apply=apply,
+        restart_fanin=restart_fanin,
+        restart_outputd=restart_outputd,
+        reconcile_camilla=reconcile_camilla,
+        kick_hardware_reconcile=kick_hardware_reconcile,
     )
 
-    # Step 4 — delegate the coupling flip. The reconciler re-reads fanin.env fresh
-    # (it snapshots inside), so the combo keys we just wrote persist untouched (it
-    # owns only the coupling line + ring slots).
-    if decision.owned:
-        coupling_result = reconcile_coupling(
-            decision.coupling,
-            reason=reason,
-            env_path=env_path,
-            outputd_env_path=outputd_env_path,
-            apply=apply,
-            mark_operator_choice=False,
-            restart_fanin=restart_fanin,
-            restart_outputd=restart_outputd,
-            reconcile_camilla=reconcile_camilla,
-            kick_hardware_reconcile=kick_hardware_reconcile,
-            active_leader_check=active_leader_check,
-        )
-    else:
-        # An operator-pinned box still converges its ring-path PROJECTION.
-        # `reconcile_coupling` is the projection's only writer, and step 1
-        # returns before it, so without this a pinned box never runs that writer
-        # at all — a crossed marker/path pair is PERMANENT there, in either
-        # direction. That is not a corner: every armed box on the fleet is
-        # pinned (see step 1's note above), so it is the ordinary case.
-        #
-        # The pin freezes the transport-topology CHOICE. This key is not a
-        # choice: outputd's allowlist admits exactly one value for a given
-        # marker, so the path is derived state and converging it overrides
-        # nothing the operator picked — the coupling line, the bridge, and every
-        # daemon are untouched here.
-        projection_converged = _converge_outputd_ring_projection(
-            outputd_env_path, decision.coupling, reason=reason
-        )
-        coupling_result = CouplingResult(
-            ok=True,
-            desired=decision.coupling,
-            changed=projection_converged,
-            direction="confirm",
-        )
-
-    # If the fan-in combo changed but the coupling reconcile did NOT restart fan-in
-    # (a combo-only change on an already-at-desired-coupling box takes the no-bounce
-    # confirm path), the new combo won't be live until fan-in restarts. Issue one —
-    # CamillaDSP-coordinated when a ring/pipe coupling is live so it can't RTTIME-
-    # SIGKILL camilla (see _restart_fanin_coordinated). This is the combo-arm or
-    # combo-disarm restart. The
-    # active coupling is re-read from the just-written fanin.env so a block-forced
-    # loopback is honoured (skip the pause) even when decision.coupling was shm_ring.
+    # If the fan-in combo changed but the ring convergence did NOT restart fan-in
+    # (a combo-only change on an already-coherent box takes the no-bounce path),
+    # the new combo won't be live until fan-in restarts. Issue one —
+    # CamillaDSP-coordinated so it cannot RTTIME-SIGKILL camilla off the ring.
     restarted_for_combo = False
     if apply and combo_changed and not coupling_result.restarted_fanin:
         do_restart = restart_fanin or (lambda: _restart_fanin(reason=reason))
         do_stop_camilla = stop_camilla or (lambda: _stop_camilla(reason=reason))
         do_start_camilla = start_camilla or (lambda: _start_camilla(reason=reason))
-        active_coupling = read_persisted_coupling(env_path)
         coord = _restart_fanin_coordinated(
             do_restart,
             do_stop_camilla,
             do_start_camilla,
-            coupling=active_coupling,
             reason=reason,
             phase="auto_usb_combo",
         )
@@ -1903,22 +1398,18 @@ def reconcile_auto(
             if coord.ok
             else "auto_usb_combo_fanin_restart_failed",
             reason=reason,
-            coupling=active_coupling,
-            camilla_coordinated=coord.coordinated,
             detail=coord.detail or None,
             level=logging.INFO if coord.ok else logging.WARNING,
         )
         if not coord.ok:
             return AutoResult(
                 ok=False,
-                owned=decision.owned,
-                coupling=decision.coupling,
                 gadget_present=gadget,
                 usb_intent_enabled=usb_intent,
-                combo_armed=decision.combo_armed,
-                usb_latency_mode=decision.usb_latency_mode,
+                combo_armed=combo_armed,
+                usb_latency_mode=latency_mode,
                 usb_combo_changed=combo_changed,
-                reason=decision.reason,
+                reason="USB combo fan-in restart failed",
                 coupling_result=coupling_result,
                 restarted_fanin_for_combo=restarted_for_combo,
                 detail="; ".join(
@@ -1949,7 +1440,7 @@ def reconcile_auto(
             result="auto_usb_intent_fail_closed",
             reason=reason,
             usb_intent_enabled=False,
-            combo_armed=decision.combo_armed,
+            combo_armed=combo_armed,
             usb_combo_changed=combo_changed,
             restarted_fanin=(coupling_result.restarted_fanin or restarted_for_combo),
             detail=detail,
@@ -1957,205 +1448,18 @@ def reconcile_auto(
         )
     return AutoResult(
         ok=ok,
-        owned=decision.owned,
-        coupling=decision.coupling,
         gadget_present=gadget,
         usb_intent_enabled=usb_intent,
-        combo_armed=decision.combo_armed,
-        usb_latency_mode=decision.usb_latency_mode,
+        combo_armed=combo_armed,
+        usb_latency_mode=latency_mode,
         usb_combo_changed=combo_changed,
-        reason=decision.reason,
+        reason=(
+            "USB source intent invalid — combo failed closed"
+            if usb_intent_failure
+            else "USB combo resolved from canonical source intent"
+        ),
         coupling_result=coupling_result,
         restarted_fanin_for_combo=restarted_for_combo,
-        detail=detail,
-    )
-
-
-def _route_mode_for_reconcile(
-    check: "Callable[[], bool] | None",
-) -> tuple[RouteMode, bool]:
-    """Return the route shape AND the dac_content lane verdict for the support
-    matrix.
-
-    The two travel together because the matrix needs both and neither can be
-    derived from the other: ``route_mode`` classifies on ``cfg.role`` alone, so
-    a DUMB member and an ACTIVE follower are the same mode with opposite lane
-    states. Both come off ONE config read on the live path.
-    """
-    if check is not None:
-        try:
-            leader = bool(check())
-        except (OSError, RuntimeError, TypeError, ValueError) as e:
-            log_event(
-                logger,
-                "fanin.coupling_reconcile",
-                result="active_leader_check_failed",
-                detail=e,
-                level=logging.WARNING,
-            )
-            return "unknown", True
-        # The injected seam reports leader-vs-solo only, which cannot separate
-        # an ACTIVE-speaker leader (whose dac_content lane the writer clears)
-        # from a PASSIVE one (whose lane it arms), so the lane verdict fails
-        # CLOSED here — the pre-narrowing answer. ``solo`` never consults it.
-        return ("active_leader", True) if leader else ("solo", False)
-    try:
-        from jasper.audio_runtime_plan import route_mode_from_grouping_config
-        from jasper.multiroom.config import load_config
-        from jasper.multiroom.reconcile import box_dac_content_lane_armed
-
-        cfg = load_config()
-        return route_mode_from_grouping_config(cfg), box_dac_content_lane_armed(cfg)
-    except (ImportError, OSError, RuntimeError, TypeError, ValueError) as e:
-        log_event(
-            logger,
-            "fanin.coupling_reconcile",
-            result="active_leader_check_failed",
-            detail=e,
-            level=logging.DEBUG,
-        )
-        return "unknown", True
-
-
-def _block_unsupported_coupling(
-    do_restart,
-    do_restart_outputd,
-    do_reconcile,
-    fanin_snapshot: _EnvSnapshot,
-    outputd_snapshot: _EnvSnapshot,
-    current: str,
-    reason: str,
-    *,
-    desired: str,
-    block_detail: str | None = None,
-    block_result: str = UNSUPPORTED_COUPLING_BLOCK_REASON,
-    apply: bool,
-    do_kick_hardware: "DaemonOp | None" = None,
-) -> CouplingResult:
-    """Refuse an unsupported coupling for this route and fail-closed to loopback.
-
-    Covers the blocked combination from ``coupling_supported_for_route``:
-    ``shm_ring`` on a grouping-enabled box whose outputd dac_content lane is
-    armed. Forces fan-in loopback + clears every
-    reconciler-owned outputd content-source key (Ring B, plus a sweep of the legacy
-    pipe key), so a previously-armed shm_ring box recovers rather than
-    stranding one transport end. A force-disarm off a LIVE shm_ring bridge leaves
-    the same suppressed content-buffer floor an ordinary disarm does, so the
-    recovery `_disarm` gets the same gated ``do_kick_hardware`` (see
-    :func:`_leaves_live_shm_ring_bridge`). ``desired`` is the coupling the operator
-    asked for — reported back verbatim so ``/state`` / logs name the real request,
-    not a hardcoded one. ``block_result`` is the stable ``event=`` result token (the
-    route-policy ``support.reason``).
-    """
-    detail = block_detail or (
-        f"{COUPLING_ENV_VAR}={desired} is not supported for this route; the "
-        "fan-in coupling was kept on / reverted to loopback"
-    )
-    fanin_action = RuntimeEnvAction("set", COUPLING_ENV_VAR, COUPLING_LOOPBACK)
-    fanin_new_text, fanin_changed = _apply_action(fanin_snapshot.text, fanin_action)
-    # Clear ALL reconciler-owned outputd content-source keys (Ring B + the legacy
-    # pipe-key sweep) for the loopback fallback, so the block never leaves
-    # outputd on a stale content source that fan-in's loopback coupling no longer
-    # feeds.
-    outputd_new_text, outputd_changed = _apply_actions(
-        outputd_snapshot.text,
-        _outputd_actions(COUPLING_LOOPBACK, outputd_snapshot.text),
-    )
-    # A previously-armed shm_ring box must be recovered, even
-    # if its outputd keys happen to already be clear.
-    stale_non_loopback = current != COUPLING_LOOPBACK or outputd_changed
-    if stale_non_loopback:
-        try:
-            if fanin_changed:
-                _write_env_text(fanin_snapshot.path, fanin_new_text)
-            if outputd_changed:
-                _write_env_text(outputd_snapshot.path, outputd_new_text)
-        except OSError as e:
-            _restore_snapshot(fanin_snapshot)
-            _restore_snapshot(outputd_snapshot)
-            log_event(
-                logger,
-                "fanin.coupling_reconcile",
-                result=block_result,
-                action="loopback_write_failed",
-                reason=reason,
-                detail=e,
-                level=logging.ERROR,
-            )
-            return CouplingResult(
-                ok=False,
-                desired=desired,
-                changed=False,
-                direction="blocked",
-                detail=f"{detail}; failed to write loopback fallback: {e}",
-            )
-        _sync_process_env_for_emit(COUPLING_LOOPBACK, outputd_new_text)
-        if apply:
-            disarm = _disarm(
-                do_restart,
-                do_restart_outputd,
-                do_reconcile,
-                COUPLING_LOOPBACK,
-                reason,
-                # Same #1231 window as the ordinary disarm: a force-disarmed box
-                # leaving a live shm_ring bridge needs the floor re-emitted.
-                kick_hardware_reconcile=(
-                    do_kick_hardware
-                    if do_kick_hardware is not None
-                    and _leaves_live_shm_ring_bridge(outputd_snapshot.text)
-                    else None
-                ),
-            )
-            log_event(
-                logger,
-                "fanin.coupling_reconcile",
-                result=block_result,
-                action="recovered_to_loopback",
-                reason=reason,
-                recovered=disarm.ok,
-                detail=disarm.detail or None,
-                level=logging.WARNING,
-            )
-            return CouplingResult(
-                ok=False,
-                desired=desired,
-                changed=True,
-                direction="blocked",
-                restarted_fanin=disarm.restarted_fanin,
-                restarted_outputd=disarm.restarted_outputd,
-                reconciled_camilla=disarm.reconciled_camilla,
-                recovered=disarm.ok,
-                detail=detail if disarm.ok else f"{detail}; {disarm.detail}",
-            )
-        log_event(
-            logger,
-            "fanin.coupling_reconcile",
-            result=block_result,
-            action="wrote_loopback_no_apply",
-            reason=reason,
-            level=logging.WARNING,
-        )
-        return CouplingResult(
-            ok=False,
-            desired=desired,
-            changed=True,
-            direction="blocked",
-            detail=detail,
-        )
-
-    log_event(
-        logger,
-        "fanin.coupling_reconcile",
-        result=block_result,
-        action="kept_loopback",
-        reason=reason,
-        level=logging.WARNING,
-    )
-    return CouplingResult(
-        ok=False,
-        desired=desired,
-        changed=False,
-        direction="blocked",
         detail=detail,
     )
 
@@ -2180,15 +1484,15 @@ CAMILLA_ANCHOR_CONVERGED_DETAIL = "converged_anchor"
 def ring_topology_ready_strict() -> tuple[bool, str]:
     """``ring_topology_ready`` fail-CLOSED on an unreadable topology.
 
-    Used by BOTH arming paths — the unattended ``--auto`` default pass
-    (defect-F4) and the explicit operator arm. See the ``strict_unreadable`` note
-    on :func:`ring_topology_ready` for why the operator arm stopped failing open.
+    See the ``strict_unreadable`` note on :func:`ring_topology_ready`: a
+    topology this pass cannot read cannot prove anything about the graph it
+    would move.
     """
     return ring_topology_ready(strict_unreadable=True)
 
 
 def ring_roleful_unattended_ready() -> tuple[bool, str]:
-    """May the UNATTENDED pass arm a ROLEFUL box? Fail-closed, two proven arms.
+    """May an unattended pass MOVE a ROLEFUL box's graph? Fail-closed, two arms.
 
     THE NARROWING, not a deletion. This gate used to refuse every roleful box
     unconditionally. It still refuses by DEFAULT, and now admits exactly two
@@ -2226,13 +1530,12 @@ def ring_roleful_unattended_ready() -> tuple[bool, str]:
     A CORRUPT applied record is caught HERE rather than left to the caller.
     ``load_applied_baseline_profile_state`` returns ``None`` for the shapes its
     own loader catches, but a non-UTF-8 byte — the documented SD-card /
-    power-cut truncation — raises ``UnicodeDecodeError`` straight past it.
-    ``resolve_auto_decision`` would convert that to a fail-closed refusal on its
-    own (``ValueError`` is in its backstop), but the sentence it renders carries
-    no remediation, which would make this the one refusal in this gate that
-    leaves an operator without a way out. The local catch keeps every refusal
-    the same shape; the backstop stays as belt-and-braces. The SHARED loader is
-    deliberately not widened — it has other callers whose contracts are theirs.
+    power-cut truncation — raises ``UnicodeDecodeError`` straight past it. The
+    caller's own ``except`` would turn that into a refusal with no remediation
+    in it, which would make this the one refusal in this gate that leaves an
+    operator without a way out. The local catch keeps every refusal the same
+    shape. The SHARED loader is deliberately not widened — it has other callers
+    whose contracts are theirs.
     """
     from jasper.active_speaker.baseline_profile import (
         applied_baseline_hardware_match,
@@ -2249,8 +1552,8 @@ def ring_roleful_unattended_ready() -> tuple[bool, str]:
         contract = classify_output_contract(topology)
     except (OutputTopologyError, OSError, ValueError) as exc:
         return False, (
-            f"topology unreadable ({exc}); the unattended default cannot prove "
-            "this box is not roleful, so it resolves loopback (fail-closed)"
+            f"topology unreadable ({exc}); an unattended pass cannot prove this "
+            "box is not roleful, so it leaves the graph alone (fail-closed)"
         )
     if not contract.requires_roleful_graph:
         return True, "topology is not roleful"
@@ -2300,21 +1603,13 @@ def ring_roleful_unattended_ready() -> tuple[bool, str]:
     return False, (
         "roleful topology, and neither proven arm holds: the applied baseline "
         f"({stale_detail or 'no applied active-speaker profile on this box'}) "
-        f"and the all-muted staged anchor ({anchor_detail}). Keeping the "
-        "coupling on loopback. To arm this box deliberately, run "
+        f"and the all-muted staged anchor ({anchor_detail}). Leaving the graph "
+        "where it is; re-apply the speaker profile at /correction/, then run "
         "`jasper-fanin-coupling-reconcile shm_ring`."
     )
 
 
-# THE ring preflights, in ONE order, shared by BOTH arm paths.
-#
-# THIS TUPLE EXISTS BECAUSE THE TWO PATHS HAD DRIFTED. The unattended resolver
-# and the manual arm each enumerated these four gates in their own body, and the
-# orders disagreed: the resolver ran topology BEFORE assets, ``_arm_ring`` ran
-# assets BEFORE topology. So a box broken in both ways was told a DIFFERENT
-# first thing to fix depending on which path found it, and
-# :func:`default_ring_gates`'s docstring claimed "in manual-arm order" while
-# describing the order the manual arm did not use. Nothing compared them.
+# THE ring preflights, in ONE order.
 #
 # ORDER IS A DIAGNOSTIC DECISION. Each gate sits ahead of the gates whose
 # answers would be MEANINGLESS or MISLEADING without it: topology eligibility
@@ -2326,11 +1621,6 @@ def ring_roleful_unattended_ready() -> tuple[bool, str]:
 # any per-end disagreement. ``ring_edge_width`` ran first while it was a zero-I/O
 # check over two constants; it now reads the conf.d and both env files, so
 # "cheapest first" no longer describes it.
-#
-# Each path still adds its OWN gates around this spine — the unattended resolver
-# prepends the coarse rolefulness question and appends route/geometry closures;
-# the manual arm appends the two geometry gates and binds the snapshots it
-# already holds into the width gate. What neither may do is restate this order.
 _SHARED_RING_PREFLIGHTS: tuple[tuple[str, RingGate], ...] = (
     ("ring_topology", ring_topology_ready_strict),
     ("ring_assets", ring_assets_ready),
@@ -2340,62 +1630,26 @@ _SHARED_RING_PREFLIGHTS: tuple[tuple[str, RingGate], ...] = (
 
 
 def default_ring_gates() -> tuple[tuple[str, RingGate], ...]:
-    """Return the unattended ring preflights, in the shared order.
+    """The ring preflights an unattended graph move must pass, in one order.
 
-    This factory lives beside the reconciler-owned asset and topology probes it
-    composes.  Keeping the pure decision module independent of this transition
-    owner makes the dependency one-way while still sharing the exact predicates
-    used by a manual arm.  The unattended path deliberately uses the strict
-    topology probe so an unreadable topology fails closed.
+    Its one caller is :func:`jasper.fanin.converge.converge_active_endpoint`,
+    which runs this set before re-emitting a roleful box's graph onto the ACTIVE
+    ring — a graph move is a hearing event, so it is proved first. These are NOT
+    a transport decision: the ring is the only transport (ADR-0100) and a box
+    that fails them parks under its own name rather than resolving a route.
 
     The order is :data:`_SHARED_RING_PREFLIGHTS`' and is documented there; this
-    function only prepends the one gate the manual arm has no use for.
-
-    ``ring_roleful_unattended`` runs FIRST, because it is the coarser question
-    and its refusal is the one an operator of a crossover box needs to read. It
-    is independent of every eligibility predicate on purpose — see its
-    docstring. ``_arm_ring`` does not run it: an operator arriving at the
-    explicit arm has already decided.
+    prepends ``ring_roleful_unattended``, the coarser question, because its
+    refusal is the one an operator of a crossover box needs to read.
     """
     return (
         ("ring_roleful_unattended", ring_roleful_unattended_ready),
     ) + _SHARED_RING_PREFLIGHTS
 
 
-def ring_route_ready(
-    route_mode: RouteMode, *, dac_content_lane_armed: bool
-) -> tuple[bool, str]:
-    """The shm_ring PREFLIGHT gate for ROUTE support (defect-F3).
-
-    ``coupling_supported_for_route`` blocks a box whose dac_content lane is
-    armed (mechanism:
-    :func:`jasper.multiroom.reconcile.dac_content_lane_armed`), and the auto
-    default MUST resolve loopback there — otherwise
-    ``resolve_auto_decision`` resolves ``shm_ring`` (the topology/geometry gates
-    pass on the box's stereo shape), ``reconcile_coupling`` route-blocks it, and
-    the boot/deploy oneshot FAILs on every boot of a healthy grouped box. Solo /
-    unknown never block (unknown = a transient indeterminate read that must not
-    refuse a legitimate solo arm), and neither does a bonded box whose lane is
-    CLEARED: an ACTIVE endpoint's CamillaDSP owns its channel-pick and split.
-    """
-    from jasper.audio_runtime_plan import coupling_supported_for_route
-
-    support = coupling_supported_for_route(
-        COUPLING_SHM_RING,
-        route_mode,
-        dac_content_lane_armed=dac_content_lane_armed,
-    )
-    if support.supported:
-        return True, f"route supports shm_ring (route_mode={route_mode})"
-    return False, (
-        f"route blocked ({support.reason}): {GROUPED_SHM_RING_MECHANISM} "
-        "The auto default resolves loopback."
-    )
-
-
 def _migrate_stale_fanin_ring_slots(
     fanin_snapshot: _EnvSnapshot, reason: str
-) -> _EnvSnapshot:
+) -> tuple[_EnvSnapshot, bool]:
     """Override a stale, shear-prone ``JASPER_FANIN_RING_SLOTS`` into fanin.env.
 
     ``JASPER_FANIN_RING_SLOTS`` is an operator-tunable env (documented range
@@ -2408,27 +1662,28 @@ def _migrate_stale_fanin_ring_slots(
     Writing the coherent value is deliberate: simply deleting from fanin.env can
     expose a stale value in ``/etc/jasper/jasper.env`` on the next systemd start.
 
+    Returns the current snapshot and whether the key actually moved — the
+    caller converges the daemons on a heal, because fan-in creates Ring A with
+    this value and CamillaDSP's ioplug attaches expecting the conf.d's.
+
     Fail-safe: an unreadable conf.d (indeterminate expected geometry), an
     absent/default env value, a non-default custom conf.d mismatch, or an invalid
-    value is a no-op — the slot preflight is the backstop. A write failure logs and
-    returns the CURRENT snapshot; the preflight then refuses on the still-stale
-    effective value, never a silent bad arm.
+    value is a no-op — fan-in's own attach error is the backstop. A write failure
+    logs and reports no heal.
 
     IT DOES NOT CONVERGE A BOX SHEARED ON AN AXIS IT DOES NOT OWN. This writes
     ONE axis — the Ring-A slot count. If the box also disagrees about the WIRE
     (fan-in's declared format vs the conf.d's), converging the slots would make
-    the geometry look repaired while the arm still cannot succeed, and the
+    the geometry look repaired while the ring still cannot attach, and the
     operator would read a ``stale_ring_slots_overridden`` line as progress. So
-    the wire is read first and a shear there DECLINES the write, leaving
-    ``ring_edge_width_ready`` to refuse with the reason that actually describes
-    the box. Declining costs nothing: the slots value it would have written is
-    still writable on the next pass, once the wire agrees.
+    the wire is read first and a shear there DECLINES the write. Declining costs
+    nothing: the slots value it would have written is still writable on the next
+    pass, once the wire agrees.
 
-    IMPORTANT: this runs INSIDE ``_arm_ring``, AFTER ``reconcile_coupling`` already
-    persisted the coupling flip (``JASPER_FANIN_CAMILLA_COUPLING=shm_ring``) to
-    fanin.env. The passed ``fanin_snapshot`` is the PRE-flip snapshot, so we re-read
-    the file fresh here and write the override into the CURRENT content — writing
-    the stale snapshot back would clobber the just-written coupling line.
+    IMPORTANT: this runs AFTER the coupling write, so the passed
+    ``fanin_snapshot`` is the PRE-write snapshot; the file is re-read fresh here
+    and the override written into the CURRENT content — writing the stale
+    snapshot back would clobber the just-written coupling line.
     """
     from jasper.fanin_coupling import (
         DEFAULT_FANIN_RING_SLOTS,
@@ -2473,33 +1728,32 @@ def _migrate_stale_fanin_ring_slots(
             key=RING_SLOTS_ENV_VAR,
             detail=(
                 f"{wire_shear} — converging the slot count alone would report a "
-                "geometry this box does not have; the wire gate refuses the arm "
-                "with the accurate reason"
+                "geometry this box does not have"
             ),
             level=logging.WARNING,
         )
-        return current
+        return current, False
 
     conf_a = ring_conf_n_slots(RING_A_CONF_PCM)
     if conf_a is None:
-        return current  # indeterminate conf.d → the preflight fails closed.
+        return current, False  # indeterminate conf.d → nothing provable to heal.
     resolution = resolve_effective_fanin_ring_slots(current.text)
     if resolution.raw is None or (
         resolution.raw.strip() == "" and resolution.source == "default"
     ):
-        return current  # nothing persisted → default already coherent.
+        return current, False  # nothing persisted → default already coherent.
     if resolution.value is None:
-        return current  # invalid → preflight refuses with a crisp reason.
+        return current, False  # invalid → fan-in refuses with a crisp reason.
     if resolution.value == conf_a:
-        return current  # coherent operator override → keep it.
+        return current, False  # coherent operator override → keep it.
     if conf_a != DEFAULT_FANIN_RING_SLOTS:
-        return current  # custom conf.d mismatch → preflight must fail loud.
+        return current, False  # custom conf.d mismatch → fan-in must fail loud.
 
     new_text, changed = _apply_action(
         current.text, RuntimeEnvAction("set", RING_SLOTS_ENV_VAR, str(conf_a))
     )
     if not changed:
-        return current
+        return current, False
     try:
         _write_env_text(current.path, new_text)
     except OSError as e:
@@ -2514,7 +1768,7 @@ def _migrate_stale_fanin_ring_slots(
             error=e,
             level=logging.WARNING,
         )
-        return current
+        return current, False
     os.environ[RING_SLOTS_ENV_VAR] = str(conf_a)
     log_event(
         logger,
@@ -2526,27 +1780,28 @@ def _migrate_stale_fanin_ring_slots(
         stale_source=resolution.source,
         conf_n_slots=conf_a,
     )
-    return _EnvSnapshot(current.path, new_text, True)
+    return _EnvSnapshot(current.path, new_text, True), True
 
 
-def _delete_stale_ring_files(reason: str, fanin_text: str = "") -> None:
-    """Delete on-disk ring files whose geometry != the expected arm geometry.
+def _delete_stale_ring_files(reason: str, fanin_text: str = "") -> bool:
+    """Delete on-disk ring files whose geometry != the expected one. Did any go?
 
     A ring file left over from a PRIOR geometry (e.g. an 8-slot program.ring from
     before the 2-slot default shipped) is a
     create-or-ATTACH ``open()`` error for the writer: ``RingWriter::create_or_attach``
     validates the existing header's geometry against the requested one and bails on
     a mismatch. The files live on tmpfs (``/dev/shm``) — pure transport state,
-    recreated by the writer on the next arm, NOT user data — so deleting a
-    geometry-mismatched file is safe and lets the arm re-create it fresh.
+    recreated by the writer on its next start, NOT user data — so deleting a
+    geometry-mismatched file is safe and lets the writer re-create it fresh. The
+    caller converges the daemons when this returns True, because a deleted file
+    is only re-created by the writer coming back.
 
     Only deletes a file whose header is VALID (carries the ``JRIN`` magic) AND
     whose geometry differs from what fan-in / the conf.d will create, on ANY of
     the four attach-compared axes: ``n_slots``, ``period_frames`` (the ring slot
     IS one outputd period), ``sample_format`` and ``channels``. The comparison
     is :func:`jasper.ring_assets.ring_header_matches_conf`, shared with the
-    CONFIRM-path self-heal predicate and the doctor so the three cannot mean
-    different things by "coherent".
+    doctor so the two cannot mean different things by "coherent".
 
     THE FORMAT AXIS IS WHAT MAKES THE ROLLBACK LEVER ONE-SHOT. While this guard
     was blind to ``sample_format``, forcing the wire narrow again
@@ -2588,6 +1843,7 @@ def _delete_stale_ring_files(reason: str, fanin_text: str = "") -> None:
     if expected_a is None:
         expected_a = fanin_slots
 
+    deleted = False
     for path, pcm_name, expected_slots in (
         (RING_A_PROGRAM_FILE, RING_A_CONF_PCM, expected_a),
         (RING_B_CONTENT_FILE, RING_B_CONF_PCM, None),
@@ -2620,6 +1876,7 @@ def _delete_stale_ring_files(reason: str, fanin_text: str = "") -> None:
                 level=logging.WARNING,
             )
             continue
+        deleted = True
         log_event(
             logger,
             "fanin.coupling_reconcile",
@@ -2629,972 +1886,7 @@ def _delete_stale_ring_files(reason: str, fanin_text: str = "") -> None:
             axis=verdict.axis,
             detail=verdict.detail,
         )
-
-
-def _ring_confirm_needs_self_heal(fanin_text: str) -> tuple[bool, str]:
-    """Does an ALREADY-armed shm_ring box have a ring-geometry incoherence the arm
-    self-heal would fix? (defect A CONFIRM-path gap, 2026-07-05.)
-
-    The CONFIRM path (``reconcile_coupling`` with the env already at ``shm_ring``)
-    used to only re-load CamillaDSP — it never ran the slot-migration / stale-file
-    self-heal, because those live inside ``_arm_ring`` and ``_arm_ring`` is only
-    reached when the coupling-flip WRITE changed something. So a box armed pre-fix
-    with a stale ``JASPER_FANIN_RING_SLOTS=8`` (or a stale on-disk ring file) —
-    CamillaDSP crash-looping on the ioplug geometry mismatch — stayed broken: the
-    doctor told the operator to run the reconciler, they ran it, it logged
-    ``confirmed ok``, and nothing healed. This predicate lets the CONFIRM path
-    detect exactly that incoherence and escalate to the full ``_arm_ring`` spine
-    (which self-heals THEN bounces the daemons), while a coherent box keeps the
-    lightweight camilla-only confirm (no bounce on every reconcile tick).
-
-    Returns ``(True, reason)`` ONLY on POSITIVE evidence of a self-healable
-    incoherence — a stale/invalid ``JASPER_FANIN_RING_SLOTS`` that disagrees with a
-    READABLE conf.d, or an on-disk ring file whose valid header geometry disagrees
-    with the READABLE conf.d. Fail-SAFE: an unreadable/indeterminate conf.d returns
-    ``(False, ...)`` so the CONFIRM path does NOT escalate to an arm that might fail
-    its own asset/topology gates and recover a working box to loopback. We only
-    escalate when we can prove the box is in the exact state the self-heal repairs.
-    """
-    from jasper.fanin_coupling import RING_SLOTS_ENV_VAR
-    from jasper.ring_assets import (
-        RING_A_CONF_PCM,
-        RING_A_PROGRAM_FILE,
-        RING_ACTIVE_CONF_PCM,
-        RING_ACTIVE_CONTENT_FILE,
-        RING_B_CONF_PCM,
-        RING_B_CONTENT_FILE,
-        ring_conf_n_slots,
-        ring_header_matches_conf,
-    )
-
-    conf_a = ring_conf_n_slots(RING_A_CONF_PCM)
-    if conf_a is None:
-        # Indeterminate expected geometry: can't prove incoherence — stay
-        # lightweight (never disarm a working box on a hunch).
-        return False, "conf.d Ring-A n_slots unreadable — CONFIRM stays lightweight"
-
-    # Axis 1 — stale/invalid slots line. Resolve through the same jasper.env ->
-    # fanin.env chain systemd gives jasper-fanin; a stale old-default line in the
-    # earlier system env is still live when fanin.env has no override.
-    resolution = resolve_effective_fanin_ring_slots(fanin_text)
-    if resolution.raw is not None and resolution.raw.strip():
-        if resolution.value is None:
-            return True, (
-                f"{RING_SLOTS_ENV_VAR} from {resolution.source} is invalid "
-                f"({resolution.error}) — needs the arm self-heal to fail loud / "
-                "re-converge"
-            )
-        if resolution.value != conf_a:
-            return True, (
-                f"{RING_SLOTS_ENV_VAR}={resolution.value} from {resolution.source} "
-                f"disagrees with conf.d jts_ring_capture n_slots={conf_a} — needs "
-                "the arm slot self-heal"
-            )
-
-    # Axis 2 — stale on-disk ring file. A valid header whose geometry differs
-    # from the readable conf.d expectation on ANY attach-compared axis (n_slots,
-    # period_frames, sample_format, channels) is what _delete_stale_ring_files
-    # clears; its presence means the writer would hit a create-or-attach mismatch
-    # on next start. Both call the SAME comparator, so the CONFIRM path escalates
-    # on exactly the files the arm would then remove — a narrower predicate here
-    # would leave a file the arm deletes looking coherent, and a wider one would
-    # escalate to an arm that heals nothing.
-    for path, pcm_name, expected_slots in (
-        (RING_A_PROGRAM_FILE, RING_A_CONF_PCM, conf_a),
-        (RING_B_CONTENT_FILE, RING_B_CONF_PCM, None),
-        # Same three files _delete_stale_ring_files clears, in the same order,
-        # against the same comparator: this predicate must escalate on EXACTLY
-        # the files that self-heal would then remove. A narrower list here leaves
-        # a file the arm deletes looking coherent; a wider one escalates to an
-        # arm that heals nothing.
-        (RING_ACTIVE_CONTENT_FILE, RING_ACTIVE_CONF_PCM, None),
-    ):
-        verdict = ring_header_matches_conf(
-            path, pcm_name, expected_n_slots=expected_slots
-        )
-        if verdict.present and not verdict.ok:
-            return True, f"{verdict.detail} — needs the arm stale-file self-heal"
-
-    return False, "ring geometry coherent — CONFIRM stays lightweight"
-
-
-def _fail_ring_arm(
-    do_restart,
-    do_restart_outputd,
-    do_reconcile,
-    desired: str,
-    reason: str,
-    fanin_snapshot: _EnvSnapshot,
-    outputd_snapshot: _EnvSnapshot,
-    *,
-    event_result: str,
-    detail: str,
-    restarted_fanin: bool = False,
-    restarted_outputd: bool = False,
-    reconverge_content_format: "DaemonOp | None" = None,
-) -> CouplingResult:
-    """Recover one failed ring-arm stage and publish its common outcome.
-
-    Every ring preflight and ordered daemon step has the same fail-safe contract:
-    force both env files and all three daemons back to loopback, emit one warning,
-    and return a failed arm result.  Keeping that sequence here prevents a new
-    stage from accidentally omitting recovery or reporting different progress
-    flags while each caller still owns its domain-specific event name and detail.
-
-    ``reconverge_content_format`` is passed by the stages that can leave
-    ``JASPER_OUTPUTD_CONTENT_FORMAT`` naming the RING wire on a box being sent
-    back to loopback, and it kicks that key's single writer once more. That is
-    four callers, of two kinds: the three ordered spine steps (outputd, fan-in,
-    CamillaDSP), which run after the converge confirmably LANDED; and the
-    converge's own TIMEOUT branch, which passes it precisely because the
-    converge did NOT confirmably land — a timed-out oneshot may still be
-    running, holding the pre-rollback coupling it read on entry, and can write
-    the ring wire after the rollback. The converge's REFUSAL branch is the one
-    failure that does NOT pass it: nothing is in flight there, so the rollback's
-    write is the last one. See :func:`kick_timed_out`. Recovery has just
-    written ``loopback`` back into fanin.env, so the same oneshot re-derives the
-    LOOPBACK lane's width from it — without this, a narrow-pinned box recovered
-    to loopback would keep asking for the ring's narrow S16_LE while CamillaDSP
-    emits the wide program default, which the plug-wrapped passive lane
-    silently requantizes and the RAW active lane refuses at the open (an
-    outputd park).
-    ``_recover_to_loopback`` deliberately does not kick for the content-BUFFER
-    floor (a cushion, where being wrong is safe); a content-lane WIDTH is not a
-    cushion, which is why this one is reconverged and that one is not.
-    Best-effort: a failed re-converge is carried in ``detail`` and never
-    downgrades the recovery, whose own env + daemon work already landed.
-    """
-    recovered = _recover_to_loopback(
-        do_restart,
-        do_restart_outputd,
-        do_reconcile,
-        fanin_snapshot.path,
-        outputd_snapshot.path,
-        reason,
-    )
-    if reconverge_content_format is not None:
-        reconverge_ok, reconverge_detail = reconverge_content_format()
-        if not reconverge_ok:
-            detail = "; ".join(
-                d
-                for d in (
-                    detail,
-                    "and the content-format re-converge to loopback failed "
-                    f"({reconverge_detail}) — jasper-outputd may still request the "
-                    "ring wire until the next audio-hardware reconcile",
-                )
-                if d
-            )
-    log_event(
-        logger,
-        "fanin.coupling_reconcile",
-        result=event_result,
-        desired=desired,
-        reason=reason,
-        detail=detail or None,
-        recovered=recovered,
-        level=logging.WARNING,
-    )
-    return CouplingResult(
-        ok=False,
-        desired=desired,
-        changed=False,
-        direction="arm",
-        restarted_fanin=restarted_fanin,
-        restarted_outputd=restarted_outputd,
-        detail=detail,
-        recovered=recovered,
-    )
-
-
-def _arm_ring(
-    do_restart,
-    do_restart_outputd,
-    do_reconcile,
-    desired,
-    reason,
-    fanin_snapshot,
-    outputd_snapshot,
-    do_converge_content_format: "DaemonOp",
-) -> CouplingResult:
-    """Arm the ``shm_ring`` coupling (Ring A + Ring B), fail-safe to loopback.
-
-    PREFLIGHTs run in order, each fail-safe to loopback (no daemon bounced until
-    all pass). The first four are :data:`_SHARED_RING_PREFLIGHTS`, run from that
-    ONE enumeration rather than restated here — topology eligibility
-    (``ring_topology_ready_strict``: either the STEREO arm or the ACTIVE arm,
-    fail-CLOSED on an unreadable topology), P1 ring assets present
-    (``ring_assets_ready``: a half-installed ring platform would strand the
-    realtime path), the installed ioplug can parse the wire
-    (``ring_wire_caps_ready``: a record compare against what the installer
-    built, never an open-probe), and every declaring end states one wire
-    (``ring_edge_width_ready``: fan-in's env, both stereo conf.d blocks,
-    CamillaDSP's emitted stanzas, outputd's declarations, and the LOADED
-    CamillaDSP graph's own ring lanes — a disagreement is a hard ioplug attach
-    failure at arm). Then two gates only this path can run, because they read
-    the snapshots it holds: (5) conf.d period == outputd period
-    (``ring_geometry_ready``); (6) Ring-A slot count == conf.d n_slots
-    (``ring_slot_geometry_ready``, after ``_migrate_stale_fanin_ring_slots``
-    self-heals a shear-prone stale ``JASPER_FANIN_RING_SLOTS`` — the 2026-07-05
-    defect-A geometry hole); then (7) ``_delete_stale_ring_files`` clears a
-    geometry-mismatched on-disk ring so the writer re-creates it fresh. Then the
-    CONTENT-FORMAT CONVERGE (``do_converge_content_format``, below), and only
-    then the
-    ordered spine — outputd (the post-DSP ring's reader) first, fan-in (Ring A
-    writer) second,
-    CamillaDSP (loads the ring config, opening jts_ring_capture plus the post-DSP
-    ring the marker selects — jts_ring_playback, or jts_ring_active_playback on an
-    armed roleful box)
-    last — the arm order validated on hardware: every ring END is up before the
-    graph that attaches to it. Any failure rolls the whole
-    box back to loopback + direct (``recovered=True``). The rings are forgiving
-    (empty-ring reader/writer emit/drop silence), so there is no queue-drift
-    activation window; the gates are wire-width + asset-presence + geometry
-    coherence + the ordered restart landing, and the fan-in STATUS transport is
-    confirmed by the doctor.
-
-    THE CONTENT-FORMAT CONVERGE, and the first-arm reboot it closes.
-    ``JASPER_OUTPUTD_CONTENT_FORMAT`` is a pure function of the coupling
-    (``content_lane_format_for_coupling``) but its single writer is
-    ``jasper-audio-hardware-reconcile``, not this module — so on a FIRST arm
-    nothing had re-derived it by the time the spine restarts outputd, and outputd
-    came up still asking for the LOOPBACK lane's wide ``S32_LE`` while CamillaDSP's
-    ioplug attached the ring at the resolved ``S16_LE``. That is a hard
-    ``attach_fatal``, and the box rebooted; a SECOND arm then converged, because
-    by then some ordinary hardware-reconcile pass had moved the key. jts4
-    reproduced exactly that on 2026-08-14.
-
-    WHICH UNIT REBOOTED IT IS AN INFERENCE, and an earlier version of this
-    comment got it wrong by naming jasper-camilla. Camilla cannot reboot a
-    speaker: ``jasper-camilla.service`` carries ``StartLimitAction=none`` and
-    parks through its own recovery handler instead (see the ``_CRASH_BUDGET_UNITS``
-    block comment at the top of this module, which had it right). The two units
-    that DO escalate an exhausted start window to ``StartLimitAction=reboot`` are
-    ``jasper-outputd`` and ``jasper-fanin``, and a sheared ring takes out the
-    READER as well as CamillaDSP — so the reboot came from one of those. Which
-    one is not derivable from here, and is not load-bearing for the fix below.
-
-    The fix asks the OWNER to converge rather than writing the key here: this
-    reconcile has already persisted ``JASPER_FANIN_CAMILLA_COUPLING=shm_ring``
-    into fanin.env (the write happens before the preflights run), and the
-    hardware reconciler reads that token file-fresh on every pass, so one blocking
-    start of that oneshot re-derives the ring wire into outputd.env. Writing
-    ``JASPER_OUTPUTD_CONTENT_FORMAT`` from here instead would make two writers of
-    one key; reordering the spine would fix nothing, since no step of it re-derived
-    the format at all. The kick lands AFTER every preflight so a refused arm still
-    bounces nothing and moves no width, and FAIL-CLOSED: a kick that does not land
-    refuses the arm rather than restarting outputd into the stale value the whole
-    step exists to retire (with one asymmetry on the way out — see
-    :func:`kick_timed_out`).
-
-    OUTPUTD IS DOUBLE-BOUNCED ON A FIRST ARM, and that is a COST, not a
-    correctness problem — the same trade the disarm sibling documents for its own
-    kick. The converge changes a key, so the kicked pass takes
-    ``restart_outputd_only`` (a single ``--no-block restart jasper-outputd``, no
-    blocking ``systemctl stop jasper-voice``, no ``jasper-aec-reconcile`` kick),
-    and this function's own blocking restart follows seconds later. Two starts
-    rather than one, inherent to single-writer ownership: the only way to avoid
-    them is to write the key here, which is the second writer this design exists
-    to refuse. They cannot compound into ``StartLimitAction=reboot``, because
-    every start this module issues is preceded by a best-effort ``reset-failed``
-    on the crash-budget units (see :func:`_restart_unit`), so a deliberate
-    config-apply starts from a clean budget. And the cost is paid only on a FIRST
-    arm: on an already-converged box the kicked pass changes no key, so it
-    restarts nothing at all.
-
-    ``do_converge_content_format`` is that kick, injected rather than resolved
-    here so tests drive it; production passes a blocking start of
-    ``jasper-audio-hardware-reconcile`` bound by
-    :data:`_ARM_CONTENT_FORMAT_CONVERGE_TIMEOUT_SEC`. It is REQUIRED, not
-    defaulted — a default here would silently reach the real broker from a test
-    that forgot it, which is the one caller shape that must fail loudly.
-    """
-    # THE SHARED PREFLIGHTS, run from the one enumeration (see
-    # :data:`_SHARED_RING_PREFLIGHTS`). This function used to spell the same
-    # four gates out again in its own order, and the two orders had drifted
-    # apart; the arm now takes the shared spine and adds only what is genuinely
-    # its own — the snapshots it already holds, and its own per-gate event
-    # names, so a refused arm still says which gate refused.
-    #
-    # WHAT EACH SHARED GATE COSTS AN OPERATOR HERE, kept because the arm's
-    # stakes differ from the unattended pass's:
-    #
-    # * ``ring_topology`` is STRICT on an unreadable topology, and that is a
-    #   deliberate change of direction. The operator arm used to fail OPEN,
-    #   justified as "backstopped by outputd's own guard" — and that backstop
-    #   was proven to fail open on the SAME error: a topology read failure
-    #   clears the active-lane marker, outputd's stereo predicate then admits
-    #   the ring, and on a 2-way box no width check can tell that apart. An
-    #   operator is present to fix an unreadable topology, so refusing costs a
-    #   rerun where admitting costs a park. Its two admitting arms are a
-    #   full-range stereo single-sink box (STEREO ring) and a roleful box whose
-    #   endpoint is staged (ACTIVE ring); a composite/mono box fits neither and
-    #   is refused up front rather than through outputd's later Rust rejection.
-    # * ``ring_wire_caps`` is the degraded-deploy walk: the resolved wire may
-    #   render a conf.d `format`/`channels` key the INSTALLED ioplug cannot
-    #   parse, because a failed plugin rebuild degrades to a WARN and leaves the
-    #   previous .so beside new daemons. A RECORD compare, never an open-probe —
-    #   probing a ring PCM from here would disturb a live arm.
-    # * ``ring_edge_width`` reads every declaring end. The arm binds the two env
-    #   snapshots it already wrote rather than letting the gate re-read them;
-    #   the LOADED graph is left to the gate, since nothing on this path has
-    #   opened the statefile and passing one would mean opening it twice.
-    arm_gate_events = {
-        "ring_topology": "arm_ring_topology_ineligible",
-        "ring_assets": "arm_ring_assets_missing",
-        "ring_wire_caps": "arm_ring_ioplug_caps_missing",
-        "ring_edge_width": "arm_ring_edge_width_mismatch",
-    }
-    for gate_name, gate in _SHARED_RING_PREFLIGHTS:
-        if gate_name == "ring_edge_width":
-            gate_ok, gate_detail = ring_edge_width_ready(
-                fanin_text=fanin_snapshot.text,
-                outputd_text=outputd_snapshot.text,
-            )
-        else:
-            gate_ok, gate_detail = gate()
-        if not gate_ok:
-            return _fail_ring_arm(
-                do_restart,
-                do_restart_outputd,
-                do_reconcile,
-                desired,
-                reason,
-                fanin_snapshot,
-                outputd_snapshot,
-                event_result=arm_gate_events[gate_name],
-                detail=gate_detail,
-            )
-
-    # Period-geometry preflight: the conf.d ring period MUST equal outputd's
-    # resolved DAC period (the ring slot IS one outputd period). A mismatch is a
-    # hard ioplug open() error, so CamillaDSP's ring load would fail and this arm
-    # would roll back with a confusing daemon-level error. Refuse UP FRONT with a
-    # crisp reason (fail-safe: recover to loopback), before bouncing any daemon.
-    geom_ok, geom_detail = ring_geometry_ready(outputd_snapshot.text)
-    if not geom_ok:
-        return _fail_ring_arm(
-            do_restart,
-            do_restart_outputd,
-            do_reconcile,
-            desired,
-            reason,
-            fanin_snapshot,
-            outputd_snapshot,
-            event_result="arm_ring_geometry_mismatch",
-            detail=geom_detail,
-        )
-
-    # Migrate a stale, shear-prone JASPER_FANIN_RING_SLOTS FIRST (defect A
-    # migration): an old-default `=8` effective value from jasper.env or fanin.env
-    # that disagrees with the conf.d self-heals to an explicit coherent value in
-    # fanin.env, so the arm proceeds instead of being blocked forever. A value that
-    # MATCHES the conf.d (a coherent operator override) is kept. The preflight below
-    # validates the post-migration state.
-    fanin_snapshot = _migrate_stale_fanin_ring_slots(fanin_snapshot, reason)
-
-    # Slot-COUNT preflight (defect A): fan-in's resolved Ring-A n_slots
-    # (JASPER_FANIN_RING_SLOTS) MUST equal the conf.d jts_ring_capture n_slots. A
-    # mismatch — the old-default `=8` residue class — makes fan-in write an
-    # 8-slot program.ring while CamillaDSP's ioplug attaches expecting 2:
-    # hw_params EINVAL + attach_fatal → CamillaDSP crash-loop → start-limit-hit.
-    # The period gate above does NOT cover this second axis. Refuse UP FRONT.
-    # (After the migration this only still fails for a genuinely custom conf.d
-    # needing a matching env, where the crisp reason names both values.)
-    slot_ok, slot_detail = ring_slot_geometry_ready(fanin_snapshot.text)
-    if not slot_ok:
-        return _fail_ring_arm(
-            do_restart,
-            do_restart_outputd,
-            do_reconcile,
-            desired,
-            reason,
-            fanin_snapshot,
-            outputd_snapshot,
-            event_result="arm_ring_slot_mismatch",
-            detail=slot_detail,
-        )
-
-    # Stale-ring-file guard (defect A): a ring file left over from a PRIOR geometry
-    # is a create-or-ATTACH open() error for the writer (the header geometry won't
-    # match the requested one). Delete any geometry-mismatched on-disk ring before
-    # bouncing the daemons so the writer re-creates it fresh. tmpfs transport state,
-    # not user data. Best-effort — the writer's own attach error is the backstop.
-    _delete_stale_ring_files(reason, fanin_snapshot.text)
-
-    # CONTENT-FORMAT CONVERGE — see the docstring. Kick the single writer of
-    # JASPER_OUTPUTD_CONTENT_FORMAT so it re-derives that key from the coupling
-    # already persisted above, BEFORE the spine restarts outputd against it.
-    # Blocking, so this returns with the key actually re-emitted rather than
-    # merely requested.
-    kick_ok, kick_detail = do_converge_content_format()
-    if not kick_ok:
-        # TIMED OUT vs REFUSED, and the asymmetry is about a RACE, not severity.
-        # Both refuse the arm. Only a timeout leaves the oneshot possibly still
-        # RUNNING: it read `shm_ring` before the rollback and can write the ring
-        # wire after it, so recovery's loopback write would not be the last one.
-        # Re-running it settles that — systemd serialises starts of one unit, so
-        # the second run begins after the in-flight one ends and reads the
-        # loopback coupling recovery has by then persisted. A REFUSAL has nothing
-        # in flight, so a second kick would be pointless work that fails the same
-        # way. See :func:`kick_timed_out`.
-        timed_out = kick_timed_out(kick_detail)
-        log_event(
-            logger,
-            "fanin.coupling_reconcile",
-            result="arm_content_format_converge_failed",
-            desired=desired,
-            reason=reason,
-            detail=kick_detail or None,
-            timed_out=timed_out,
-            level=logging.WARNING,
-        )
-        return _fail_ring_arm(
-            do_restart,
-            do_restart_outputd,
-            do_reconcile,
-            desired,
-            reason,
-            fanin_snapshot,
-            outputd_snapshot,
-            event_result="arm_ring_content_format_converge_failed",
-            detail=(
-                "could not converge JASPER_OUTPUTD_CONTENT_FORMAT to the ring "
-                f"wire ({kick_detail}); arming would restart jasper-outputd on "
-                "the loopback lane's width and fail CamillaDSP's ring attach — "
-                "run `sudo systemctl start jasper-audio-hardware-reconcile`, "
-                "then re-arm"
-            ),
-            reconverge_content_format=(
-                do_converge_content_format if timed_out else None
-            ),
-        )
-    log_event(
-        logger,
-        "fanin.coupling_reconcile",
-        result="arm_content_format_converged",
-        desired=desired,
-        reason=reason,
-        detail=kick_detail or None,
-    )
-
-    out_ok, out_detail = do_restart_outputd()
-    if not out_ok:
-        return _fail_ring_arm(
-            do_restart,
-            do_restart_outputd,
-            do_reconcile,
-            desired,
-            reason,
-            fanin_snapshot,
-            outputd_snapshot,
-            event_result="arm_ring_outputd_failed",
-            detail=out_detail,
-            reconverge_content_format=do_converge_content_format,
-        )
-
-    fan_ok, fan_detail = do_restart()
-    if not fan_ok:
-        return _fail_ring_arm(
-            do_restart,
-            do_restart_outputd,
-            do_reconcile,
-            desired,
-            reason,
-            fanin_snapshot,
-            outputd_snapshot,
-            event_result="arm_ring_fanin_failed",
-            detail=fan_detail,
-            restarted_outputd=True,
-            reconverge_content_format=do_converge_content_format,
-        )
-
-    cam_ok, cam_detail = do_reconcile(COUPLING_SHM_RING)
-    if not cam_ok:
-        return _fail_ring_arm(
-            do_restart,
-            do_restart_outputd,
-            do_reconcile,
-            desired,
-            reason,
-            fanin_snapshot,
-            outputd_snapshot,
-            event_result="arm_ring_camilla_failed",
-            detail=cam_detail,
-            restarted_fanin=True,
-            restarted_outputd=True,
-            reconverge_content_format=do_converge_content_format,
-        )
-
-    # A completed arm is a SUCCESS for the strike record's purpose: CamillaDSP
-    # just loaded the ring config. That premise is what makes the clear safe, so
-    # it is enforced rather than assumed — reaching here means ``_reconcile_camilla``
-    # accepted, and since #2664 it refuses any payload that came over the
-    # statefile, which is the one shape where "loaded the ring config" would be
-    # false because the daemon is not running.
-    #
-    # Leaving stale strikes here would silently
-    # degrade the two-strike policy to one — an operator's fresh re-arm would be
-    # one transient confirm away from being recovered to loopback, with the
-    # escalation log citing a failure from before the arm that fixed it.
-    _clear_ring_confirm_failures()
-    log_event(
-        logger,
-        "fanin.coupling_reconcile",
-        result="armed_ring",
-        desired=desired,
-        reason=reason,
-        detail=cam_detail or None,
-    )
-    return CouplingResult(
-        ok=True,
-        desired=desired,
-        changed=True,
-        direction="arm",
-        restarted_fanin=True,
-        restarted_outputd=True,
-        reconciled_camilla=True,
-        # The camilla step has two success shapes now, and the operator's stdout
-        # line prints ``detail`` only when it is non-empty. An ORDINARY re-emit
-        # stays silent there — byte-identical for every applied-baseline box —
-        # while the anchor-converged acceptance says so, because "the ring config
-        # was loaded" and "the graph was already the anchor at the ring" are
-        # different facts and only one of them wrote anything.
-        detail=(
-            CAMILLA_ANCHOR_CONVERGED_DETAIL
-            if cam_detail == CAMILLA_ANCHOR_CONVERGED_DETAIL
-            else ""
-        ),
-    )
-
-
-def _leaves_live_shm_ring_bridge(prior_outputd_text: str) -> bool:
-    """True when the outputd.env being rewritten carried a LIVE shm_ring bridge.
-
-    A shm_ring bridge is the condition under which
-    ``jasper-audio-hardware-reconcile`` SUPPRESSES the route's outputd
-    content-buffer floor (#1231: the key is inert while outputd reads Ring B, so
-    emitting it there is one-knob-two-truths drift — see
-    ``_resolve_outputd_content_buffer_int`` in :mod:`jasper.audio_runtime_plan`).
-    A disarm from this state can land outputd on its compile-default content
-    buffer until the floor re-emits, so the disarm path kicks the hardware
-    reconciler when this is True. The gate is NECESSARY, not exact: the floor
-    itself only exists on the USB-low-latency route, so on other routes the
-    kicked reconciler converges to a no-op (its daemon restarts are conditional
-    on the env actually changing) — a bounded free convergence sweep. Uses the
-    same fail-safe resolver as the suppression, so only a genuine ``shm_ring``
-    matches.
-    """
-    return (
-        resolve_outputd_content_bridge(
-            read_value(prior_outputd_text, OUTPUTD_CONTENT_BRIDGE_ENV_VAR)
-        )
-        == OUTPUTD_CONTENT_BRIDGE_SHM_RING
-    )
-
-
-def _run_loopback_daemon_ops(
-    do_restart,
-    do_restart_outputd,
-    do_reconcile,
-) -> _LoopbackDaemonOps:
-    """Run the single ordered daemon sequence that converges to loopback."""
-    cam_ok, cam_detail = do_reconcile(COUPLING_LOOPBACK)
-    fan_ok, fan_detail = do_restart()
-    out_ok, out_detail = do_restart_outputd()
-    detail = "; ".join(
-        d
-        for d in (
-            cam_detail if not cam_ok else "",
-            fan_detail if not fan_ok else "",
-            out_detail if not out_ok else "",
-        )
-        if d
-    )
-    return _LoopbackDaemonOps(cam_ok, fan_ok, out_ok, detail)
-
-
-def _disarm(
-    do_restart,
-    do_restart_outputd,
-    do_reconcile,
-    desired,
-    reason,
-    kick_hardware_reconcile: "DaemonOp | None" = None,
-) -> CouplingResult:
-    """Camilla first (off RawFile/File -> Alsa), then fan-in and outputd. Even
-    if the camilla reconcile fails, still restart both endpoints to loopback.
-
-    ``kick_hardware_reconcile`` is set only when the box is leaving a live
-    shm_ring outputd bridge (:func:`_leaves_live_shm_ring_bridge`). It starts
-    ``jasper-audio-hardware-reconcile`` AFTER the ordered disarm so the route's
-    outputd content-buffer floor — which that reconciler unsets while the
-    bridge is shm_ring (#1231) — re-emits promptly instead of waiting for the
-    next udev/boot/deploy/outputd-failure event. Best-effort: a failed kick is
-    logged and carried in ``detail`` but does not fail the disarm — the
-    interim compile-default content buffer is a LARGER cushion than the floor
-    (fail-safe), and the next hardware-reconcile event still converges it.
-
-    Post-#1257 the kicked pass's only committed delta on this path is
-    outputd.env (the floor re-emit), and ``jasper-audio-hardware-reconcile``
-    now classifies its restart by cause. An outputd-only change (no
-    DAC-identity or asound-render move) takes ``restart_outputd_only`` — a
-    single ``--no-block restart jasper-outputd`` with NO blocking
-    ``systemctl stop jasper-voice`` and NO ``jasper-aec-reconcile`` kick — so a
-    shm_ring -> direct disarm (including a household ``/sources/`` USB
-    toggle-off) no longer costs the ~10-15 s of wake deafness the original
-    PR #1251 did not disclose; wake detection stays up across the outputd
-    bounce. outputd is still double-bounced: this function's own blocking
-    restart above, then the kicked pass's no-block outputd-only restart
-    seconds later — inherent to single-writer floor ownership (the hardware
-    reconciler is the only writer of the floor key). A DAC-identity or asound
-    change on the same pass would instead take the full path
-    (``restart_audio_if_needed``, which does stop voice), because that class
-    can move the mic/input profile.
-    """
-    daemon_ops = _run_loopback_daemon_ops(
-        do_restart,
-        do_restart_outputd,
-        do_reconcile,
-    )
-    kick_detail = ""
-    if kick_hardware_reconcile is not None:
-        kick_ok, kick_fail = kick_hardware_reconcile()
-        log_event(
-            logger,
-            "fanin.coupling_reconcile",
-            result="disarm_floor_reemit" if kick_ok else "disarm_floor_reemit_failed",
-            desired=desired,
-            reason=reason,
-            detail=kick_fail or None,
-            level=logging.INFO if kick_ok else logging.WARNING,
-        )
-        if not kick_ok:
-            kick_detail = f"audio-hardware reconcile kick failed ({kick_fail})"
-    ok = daemon_ops.ok
-    if ok:
-        # A completed disarm ends the incident the strikes were evidence of: the
-        # box is off the ring, and the next arm starts a fresh one. A PARTIAL
-        # disarm keeps the record — some of the box may still be on the ring, so
-        # the accumulated evidence is still about the live state.
-        _clear_ring_confirm_failures()
-    detail = "; ".join(
-        d
-        for d in (
-            daemon_ops.detail,
-            kick_detail,
-        )
-        if d
-    )
-    log_event(
-        logger,
-        "fanin.coupling_reconcile",
-        result="disarmed" if ok else "disarm_partial",
-        desired=desired,
-        reason=reason,
-        detail=detail or None,
-        level=logging.INFO if ok else logging.WARNING,
-    )
-    return CouplingResult(
-        ok=ok,
-        desired=desired,
-        changed=True,
-        direction="disarm",
-        restarted_fanin=daemon_ops.fanin_ok,
-        restarted_outputd=daemon_ops.outputd_ok,
-        reconciled_camilla=daemon_ops.camilla_ok,
-        detail=detail,
-    )
-
-
-# Repeated CONFIRM failure on an ARMED ring escalates to recovery. Two strikes,
-# not one: a single failure can be a transient (CamillaDSP momentarily busy, a
-# lost websocket), while two consecutive ones on a box whose audio is already
-# down is evidence, not noise.
-#
-# The reconciler is EVENT-DRIVEN (boot, deploy, a /sources/ toggle, an operator
-# start) — there is no timer — so strikes accumulate across events rather than
-# on a schedule, and the window only DISCARDS evidence too old to be about the
-# same incident.
-#
-# STRIKES ARE CONSECUTIVE, so EVERY successful transition clears the record, not
-# just a successful confirm: a completed ``_arm_ring`` and a completed
-# ``_disarm`` clear it too. Without those two the two-strike policy silently
-# degraded to one — an operator whose fresh re-arm succeeded was left holding a
-# pre-arm strike, and the next single transient recovered the box to loopback
-# citing a failure the arm had already fixed.
-#
-# INSTALL DOES NOT CLEAR IT, deliberately. The record survives a deploy inside
-# its window, and that is the honest behaviour: this reconciler is its single
-# owner, and an unconditional deploy-time wipe would discard real evidence on
-# exactly the box that needs the escalation — one whose confirm fails, gets
-# redeployed WITHOUT the cause being fixed, and fails again. Those are two
-# consecutive failures of one incident; a deploy in between proves nothing about
-# the ring. The 24 h window is what bounds stale evidence.
-#
-# WHAT DOES clear it is a successful TRANSITION, and a deploy only reaches one on
-# an AUTO-OWNED box. Install drives the `--auto` pass, which delegates to
-# ``reconcile_coupling`` only when the pass OWNS the box; on an OPERATOR-FROZEN
-# box (``JASPER_FANIN_COUPLING_CHOICE=operator``) it preserves the choice and
-# synthesises a confirm result WITHOUT running one, so no deploy clears the
-# record there. That is not a corner case: an OPERATOR arm of the ACTIVE ring
-# stamps that very marker, so an operator-armed active-ring box is frozen by
-# construction. On such a box the record is cleared by the operator's own next
-# `jasper-fanin-coupling-reconcile <coupling>` — or it ages out of the 24 h
-# window.
-#
-# SINCE P6 that no longer covers EVERY active-ring box, and the difference is
-# this record's, not a corner of it. A roleful box the unattended pass converged
-# itself (``ring_roleful_unattended_ready``'s two proven arms) carries no
-# operator marker and stays AUTO-OWNED, so a deploy does reach a transition
-# there and clears the record exactly as it does on any auto-owned box.
-RING_CONFIRM_STRIKE_STATE = "/var/lib/jasper/ring-confirm-strikes.json"
-RING_CONFIRM_STRIKE_LIMIT = 2
-RING_CONFIRM_STRIKE_WINDOW_SEC = 24 * 3600
-
-
-def _read_ring_confirm_strikes(path: str | None = None) -> int:
-    """Strikes recorded within the window; 0 for absent / stale / unreadable.
-
-    ``path=None`` resolves :data:`RING_CONFIRM_STRIKE_STATE` at CALL time, not as
-    a bound default — the same rule ``ring_conf_n_slots`` follows, and for the
-    same reason: a default bound at import captures the constant forever, so a
-    caller (or a test) that repoints the module attribute is silently ignored
-    and the write lands on the real path.
-    """
-    import json
-
-    path = RING_CONFIRM_STRIKE_STATE if path is None else path
-    try:
-        with open(path, encoding="utf-8") as fh:
-            data = json.load(fh)
-        count = int(data["count"])
-        first_ts = float(data["first_ts"])
-    except (OSError, ValueError, KeyError, TypeError):
-        return 0
-    if time.time() - first_ts > RING_CONFIRM_STRIKE_WINDOW_SEC:
-        return 0  # evidence too old to be about this incident
-    return max(0, count)
-
-
-def _record_ring_confirm_failure(
-    detail: str, reason: str, path: str | None = None
-) -> int:
-    """Add one strike and return the new in-window count. Never raises.
-
-    ``path=None`` resolves the module constant at call time — see
-    :func:`_read_ring_confirm_strikes`.
-    """
-    import json
-
-    path = RING_CONFIRM_STRIKE_STATE if path is None else path
-    prior = _read_ring_confirm_strikes(path)
-    count = prior + 1
-    first_ts = time.time()
-    if prior:
-        try:
-            with open(path, encoding="utf-8") as fh:
-                first_ts = float(json.load(fh)["first_ts"])
-        except (OSError, ValueError, KeyError, TypeError):
-            pass
-    try:
-        atomic_write_text(
-            Path(path),
-            json.dumps(
-                {
-                    "count": count,
-                    "first_ts": first_ts,
-                    "last_ts": time.time(),
-                    "last_detail": detail,
-                    "last_reason": reason,
-                }
-            )
-            + "\n",
-            mode=0o644,
-        )
-    except OSError as e:
-        # A strike we cannot persist is a strike we cannot accumulate; say so
-        # rather than let the escalation silently never fire.
-        log_event(
-            logger,
-            "fanin.coupling_reconcile",
-            result="ring_confirm_strike_write_failed",
-            reason=reason,
-            path=path,
-            error=e,
-            level=logging.WARNING,
-        )
-    return count
-
-
-def _clear_ring_confirm_failures(path: str | None = None) -> None:
-    """Drop the strike record (a successful confirm). Never raises.
-
-    ``path=None`` resolves the module constant at call time — see
-    :func:`_read_ring_confirm_strikes`.
-    """
-    try:
-        os.unlink(RING_CONFIRM_STRIKE_STATE if path is None else path)
-    except OSError:
-        pass
-
-
-def _reseed_loopback_statefile(reason: str) -> tuple[bool, str]:
-    """Re-point CamillaDSP's statefile at a loopback-safe graph, WITHOUT a socket.
-
-    THE CONVERGENCE HOLE THIS CLOSES. Recovery's camilla step goes through
-    ``reconcile_current_dsp``, which talks to the running daemon over its
-    websocket. When the reason we are recovering is that CamillaDSP cannot START
-    — a ring config it cannot open, the degraded-deploy walk — there is no
-    websocket to talk to: the reconcile fails, the statefile still names the ring
-    config, and the daemon's NEXT start comes up on the same ring and fails
-    again. The env said loopback; the graph never moved. So when the live path is
-    unavailable we write the statefile directly, through the same decision the
-    installer's seeder uses (``safe_graph_for_current_topology`` +
-    ``apply_safe_graph_decision_to_statefile``), with the coupling pinned to
-    loopback so the decision selects the loopback flat graph rather than
-    re-reading the persisted token.
-
-    Write-on-change and topology-aware by construction — it is the same seeder,
-    not a second one, so a roleful box gets its roleful/parked graph and not a
-    flat stereo one. Best-effort: a failure here is logged and reported, never
-    raised, because it runs inside a recovery that must not itself explode.
-    """
-    try:
-        from jasper.active_speaker.runtime_contract import (
-            apply_safe_graph_decision_to_statefile,
-            safe_graph_for_current_topology,
-        )
-
-        topology = load_topology_for_wire()
-        decision = safe_graph_for_current_topology(
-            topology, coupling=COUPLING_LOOPBACK
-        )
-        if not decision.ok:
-            return False, (
-                f"safe-graph decision unusable ({decision.status}: "
-                f"{decision.reason})"
-            )
-        wrote = apply_safe_graph_decision_to_statefile(decision, topology=topology)
-    except (OSError, ValueError, TypeError, AttributeError, ImportError) as e:
-        # Concrete set, not a blind except: an unreadable/corrupt topology
-        # (OutputTopologyError subclasses ValueError), a statefile that cannot be
-        # written, or a missing import are the ways this fails. It still must not
-        # raise — it runs INSIDE a recovery — but swallowing everything would
-        # hide a genuine programming error behind a recovery that reported
-        # "re-seed failed" and moved on.
-        return False, f"statefile re-seed failed: {e}"
-    if wrote:
-        log_event(
-            logger,
-            "fanin.coupling_reconcile",
-            result="recovery_statefile_reseeded",
-            reason=reason,
-            config_path=decision.selected_config_path,
-            decision=decision.status,
-        )
-        return True, f"statefile re-seeded to {decision.selected_config_path}"
-    return True, (
-        f"statefile already names {decision.selected_config_path} — no re-seed "
-        "needed"
-    )
-
-
-def _recover_to_loopback(
-    do_restart,
-    do_restart_outputd,
-    do_reconcile,
-    fanin_path,
-    outputd_path,
-    reason,
-) -> bool:
-    """ARM-failure recovery: force the whole box back to loopback (env + camilla
-    Alsa + fan-in loopback + outputd ALSA). Returns True iff the recovery fully
-    succeeded.
-
-    Unlike :func:`_disarm`, this takes no ``kick_hardware_reconcile`` and so
-    never kicks ``jasper-audio-hardware-reconcile`` itself — including on the one
-    route here that can be leaving a LIVE shm_ring bridge (the CONFIRM path's
-    ring self-heal escalating to :func:`_arm_ring`, which then fails its own
-    preflight). Intentional: a box already mid-failure-recovery gets the
-    larger fail-safe cushion and less daemon churn instead of another
-    oneshot; the content-buffer floor re-emit just waits for the next
-    udev/boot/deploy event on this path, same as before #1251.
-
-    ON THE ARM PATH THAT IS NOW USUALLY MOOT, because a caller kicks it just
-    after this returns. :func:`_fail_ring_arm`'s ``reconverge_content_format``
-    starts the SAME oneshot to settle the content-lane WIDTH, and that pass
-    re-emits the content-BUFFER floor in the same run — so on those four
-    branches the wait above does not happen at all. It still describes this
-    function's own behaviour, and it still holds on the routes that call this
-    directly (the two CONFIRM-path recoveries) and whenever that best-effort
-    re-converge does not land.
-
-    When the camilla step FAILS, the CamillaDSP statefile is re-seeded directly
-    (:func:`_reseed_loopback_statefile`) so recovery converges even with no
-    daemon to talk to — the case where recovery matters most.
-    """
-    try:
-        existing = Path(fanin_path).read_text(encoding="utf-8")
-    except OSError:
-        existing = ""
-    new_text, _ = upsert(existing, COUPLING_ENV_VAR, COUPLING_LOOPBACK)
-    try:
-        _write_env_text(Path(fanin_path), new_text)
-    except OSError:
-        return False
-    try:
-        existing_outputd = Path(outputd_path).read_text(encoding="utf-8")
-    except OSError:
-        existing_outputd = ""
-    # Clear EVERY reconciler-owned outputd content-source key (Ring B
-    # bridge/path/slots, plus the legacy pipe-key sweep) so a failed ring
-    # arm never leaves a stale JASPER_OUTPUTD_CONTENT_BRIDGE=shm_ring pointing
-    # outputd at a ring nobody writes. _outputd_actions(loopback) is the single
-    # source of that set.
-    new_outputd, _ = _apply_actions(
-        existing_outputd, _outputd_actions(COUPLING_LOOPBACK, existing_outputd)
-    )
-    try:
-        _write_env_text(Path(outputd_path), new_outputd)
-    except OSError:
-        return False
-    _sync_process_env_for_emit(COUPLING_LOOPBACK, new_outputd)
-    daemon_ops = _run_loopback_daemon_ops(
-        do_restart,
-        do_restart_outputd,
-        do_reconcile,
-    )
-    if not daemon_ops.camilla_ok:
-        # The live re-point did not land — most likely because CamillaDSP is not
-        # running to be talked to, which is the shape of the failure we are
-        # recovering FROM. Write the statefile directly so the daemon's next
-        # start comes up on loopback instead of the ring config it cannot open.
-        # Without this the env says loopback while the graph still says ring, and
-        # the box never converges on its own.
-        reseeded, reseed_detail = _reseed_loopback_statefile(reason)
-        log_event(
-            logger,
-            "fanin.coupling_reconcile",
-            result=(
-                "recovery_statefile_reseed"
-                if reseeded
-                else "recovery_statefile_reseed_failed"
-            ),
-            reason=reason,
-            detail=reseed_detail,
-            level=logging.WARNING if not reseeded else logging.INFO,
-        )
-    if not daemon_ops.ok:
-        log_event(
-            logger,
-            "fanin.coupling_reconcile",
-            result="recovery_daemon_ops_failed",
-            reason=reason,
-            detail=daemon_ops.detail or None,
-            level=logging.WARNING,
-        )
-    return daemon_ops.ok
+    return deleted
 
 
 def _restore_snapshot(snapshot: _EnvSnapshot) -> None:
@@ -3676,99 +1968,19 @@ def _outputd_ring_path_for(outputd_text: str) -> str:
     return carried
 
 
-def _converge_outputd_ring_projection(
-    outputd_env_path: str | os.PathLike,
-    coupling: str,
-    *,
-    reason: str,
-) -> bool:
-    """Converge the ring-path projection ALONE, ownership-independent.
+def _outputd_actions(outputd_text: str) -> tuple[RuntimeEnvAction, ...]:
+    """The COMPLETE set of reconciler-owned outputd.env actions for the ring.
 
-    The full :func:`_outputd_actions` set is owned-gated because most of it moves
-    the transport: the content bridge, the ring slots, the legacy sweep. The ring
-    PATH is the one member that is not a choice at all — outputd's allowlist
-    admits exactly one value for a given endpoint marker, so
-    :func:`_outputd_ring_path_for` derives it and nothing chooses it. This writes
-    that one key and nothing else, so an operator-frozen box converges its
-    projection without its frozen coupling ever being re-litigated.
+    Sets ``JASPER_OUTPUTD_CONTENT_BRIDGE=shm_ring`` + the post-DSP ring's
+    path/slots — content.ring, or active-content.ring on an armed roleful box
+    (see the convergence note below). The two rings move together: fan-in's Ring
+    A capture (fanin.env) and outputd's post-DSP ring bridge (here) are ONE
+    coupling, and a split leaves one end reading or writing a ring nobody serves.
 
-    Scoped to :data:`COUPLING_SHM_RING` on purpose. Under ``loopback`` outputd's
-    bridge is ``direct`` and its ring-path allowlist does not run at all
-    (``Config::from_env``, ``rust/jasper-outputd/src/config.rs`` — the check is
-    inside ``if content_bridge_mode == ContentBridgeMode::ShmRing``), so a stale
-    ring path there is inert: there is no crossed pair to heal, and clearing the
-    key would be a transport write on a box whose transport is frozen.
-
-    Writes only; bounces nothing. A moved projection means outputd is not
-    currently running that value — it either refused the crossed pair (exit 78,
-    ``RestartPreventExitStatus``) or has not read it yet — so the durable fix is
-    the file, and every existing trigger (deploy, boot, a sound-card udev event,
-    ``jasper-camilla-recover``'s OnFailure pass, an operator restart) now finds a
-    coherent pair where it used to find a permanently crossed one. Restarting the
-    final output owner from an unattended pass would buy nothing the file has not
-    already bought.
-
-    Returns True when the key moved. Fail-soft: a write error is logged and
-    reported as "did not move" rather than aborting the surrounding auto pass.
-    """
-    if coupling != COUPLING_SHM_RING:
-        return False
-    path = Path(outputd_env_path)
-    try:
-        text = path.read_text(encoding="utf-8")
-    except OSError:
-        text = ""
-    derived = _outputd_ring_path_for(text)
-    if resolve_outputd_ring_path(read_value(text, OUTPUTD_RING_PATH_ENV_VAR)) == derived:
-        return False
-    new_text, moved = upsert(text, OUTPUTD_RING_PATH_ENV_VAR, derived)
-    if not moved:
-        return False
-    try:
-        _write_env_text(path, new_text)
-    except OSError as e:
-        log_event(
-            logger,
-            "fanin.coupling_reconcile",
-            result="ring_path_converge_failed",
-            reason=reason,
-            error=e,
-            level=logging.ERROR,
-        )
-        return False
-    log_event(
-        logger,
-        "fanin.coupling_reconcile",
-        result="ring_path_converged",
-        desired=coupling,
-        reason=reason,
-        was=resolve_outputd_ring_path(read_value(text, OUTPUTD_RING_PATH_ENV_VAR)),
-        now=derived,
-        owned=False,
-    )
-    return True
-
-
-def _outputd_actions(coupling: str, outputd_text: str) -> tuple[RuntimeEnvAction, ...]:
-    """The COMPLETE set of reconciler-owned outputd.env actions for a coupling.
-
-    outputd's content source is coupling-specific and MUTUALLY EXCLUSIVE across
-    couplings, so this writes exactly one content-source key set and unsets the
-    others — the two ends must never split (a stale outputd key while fan-in flips
-    strands one transport):
-
-    - ``shm_ring``: set ``JASPER_OUTPUTD_CONTENT_BRIDGE=shm_ring`` + the post-DSP
-      ring's path/slots — content.ring, or active-content.ring on an armed
-      roleful box (see the convergence note below). The two rings flip together —
-      fan-in's Ring A capture (fanin.env) and outputd's post-DSP ring bridge
-      (here) are ONE coupling.
-    - ``loopback``: clear the ring keys — outputd reads the snd-aloop content
-      lane.
-
-    Every branch also UNSETS the legacy ``JASPER_OUTPUTD_LOCAL_CONTENT_PIPE`` key
-    (a deleted coupling's outputd content source) — a one-way migration sweep so
-    a box that once armed it converges clean on its next reconcile (nothing
-    writes the key anymore).
+    It also UNSETS the legacy ``JASPER_OUTPUTD_LOCAL_CONTENT_PIPE`` key (a
+    deleted coupling's outputd content source) — a one-way migration sweep so a
+    box that once armed it converges clean on its next reconcile (nothing writes
+    the key anymore).
 
     **The ring PATH converges from the endpoint MARKER, it is not preserved.**
     outputd enforces a biconditional between the two — the active ring file may
@@ -3793,33 +2005,25 @@ def _outputd_actions(coupling: str, outputd_text: str) -> tuple[RuntimeEnvAction
     because a refusal there can only fire while the projection is stale and
     would block the writer that converges it.
     """
-    if coupling == COUPLING_SHM_RING:
-        return (
-            RuntimeEnvAction(
-                "set", OUTPUTD_CONTENT_BRIDGE_ENV_VAR, OUTPUTD_CONTENT_BRIDGE_SHM_RING
-            ),
-            RuntimeEnvAction(
-                "set",
-                OUTPUTD_RING_PATH_ENV_VAR,
-                _outputd_ring_path_for(outputd_text),
-            ),
-            RuntimeEnvAction(
-                "set",
-                OUTPUTD_RING_SLOTS_ENV_VAR,
-                str(
-                    resolve_outputd_ring_slots(
-                        read_value(outputd_text, OUTPUTD_RING_SLOTS_ENV_VAR)
-                    )
-                ),
-            ),
-            RuntimeEnvAction("unset", _LEGACY_OUTPUTD_LOCAL_CONTENT_PIPE_ENV),
-        )
-    # loopback / anything else: outputd reads the snd-aloop content lane.
     return (
+        RuntimeEnvAction(
+            "set", OUTPUTD_CONTENT_BRIDGE_ENV_VAR, OUTPUTD_CONTENT_BRIDGE_SHM_RING
+        ),
+        RuntimeEnvAction(
+            "set",
+            OUTPUTD_RING_PATH_ENV_VAR,
+            _outputd_ring_path_for(outputd_text),
+        ),
+        RuntimeEnvAction(
+            "set",
+            OUTPUTD_RING_SLOTS_ENV_VAR,
+            str(
+                resolve_outputd_ring_slots(
+                    read_value(outputd_text, OUTPUTD_RING_SLOTS_ENV_VAR)
+                )
+            ),
+        ),
         RuntimeEnvAction("unset", _LEGACY_OUTPUTD_LOCAL_CONTENT_PIPE_ENV),
-        RuntimeEnvAction("unset", OUTPUTD_CONTENT_BRIDGE_ENV_VAR),
-        RuntimeEnvAction("unset", OUTPUTD_RING_PATH_ENV_VAR),
-        RuntimeEnvAction("unset", OUTPUTD_RING_SLOTS_ENV_VAR),
     )
 
 
@@ -3834,42 +2038,27 @@ def _apply_actions(
     return text, changed
 
 
-def _sync_process_env_for_emit(
-    coupling: str,
-    outputd_text: str,
-) -> None:
+def _sync_process_env_for_emit(outputd_text: str) -> None:
     """Make the in-process Camilla re-emit see the env we just persisted.
 
     Mirrors :func:`_outputd_actions`: the in-process env must carry the SAME
     content-source keys the files now carry so the immediate camilla re-emit names
-    the right devices for any reader. Note the coupling TOKEN itself no longer
-    rides ``os.environ`` for the live emit: since the CLI-render-coupling fix,
-    ``fanin_coupling_capture_kwargs(None)`` reads the coupling file-fresh from the
-    persisted ``fanin.env`` (which we wrote BEFORE calling this). shm_ring's
-    capture/playback devices come from the coupling constant, not the env, so the
-    coupling key alone drives the emit; the outputd ring keys below keep the
-    in-process env coherent for any other reader. The legacy pipe outputd key is
-    popped on every branch (migration sweep).
+    the right devices for any reader. The legacy pipe key is popped as the same
+    one-way migration sweep.
 
     The ring PATH is taken from :func:`_outputd_ring_path_for`, the same single
     derivation the persisted write uses, so the in-process env can never carry a
     different ring than the file just written.
     """
-    os.environ[COUPLING_ENV_VAR] = coupling
-    if coupling == COUPLING_SHM_RING:
-        os.environ[OUTPUTD_CONTENT_BRIDGE_ENV_VAR] = OUTPUTD_CONTENT_BRIDGE_SHM_RING
-        os.environ[OUTPUTD_RING_PATH_ENV_VAR] = _outputd_ring_path_for(outputd_text)
-        os.environ[OUTPUTD_RING_SLOTS_ENV_VAR] = str(
-            resolve_outputd_ring_slots(
-                read_value(outputd_text, OUTPUTD_RING_SLOTS_ENV_VAR)
-            )
+    os.environ[COUPLING_ENV_VAR] = COUPLING_SHM_RING
+    os.environ[OUTPUTD_CONTENT_BRIDGE_ENV_VAR] = OUTPUTD_CONTENT_BRIDGE_SHM_RING
+    os.environ[OUTPUTD_RING_PATH_ENV_VAR] = _outputd_ring_path_for(outputd_text)
+    os.environ[OUTPUTD_RING_SLOTS_ENV_VAR] = str(
+        resolve_outputd_ring_slots(
+            read_value(outputd_text, OUTPUTD_RING_SLOTS_ENV_VAR)
         )
-        os.environ.pop(_LEGACY_OUTPUTD_LOCAL_CONTENT_PIPE_ENV, None)
-    else:
-        os.environ.pop(_LEGACY_OUTPUTD_LOCAL_CONTENT_PIPE_ENV, None)
-        os.environ.pop(OUTPUTD_CONTENT_BRIDGE_ENV_VAR, None)
-        os.environ.pop(OUTPUTD_RING_PATH_ENV_VAR, None)
-        os.environ.pop(OUTPUTD_RING_SLOTS_ENV_VAR, None)
+    )
+    os.environ.pop(_LEGACY_OUTPUTD_LOCAL_CONTENT_PIPE_ENV, None)
 
 
 @dataclass(frozen=True)
@@ -3963,15 +2152,12 @@ def _acquire_entry_lock(
 
 
 def main(argv: "list[str] | None" = None) -> int:
-    """CLI: ``jasper-fanin-coupling-reconcile <loopback|shm_ring>``
-    (explicit operator choice) or ``--auto`` (P3/P4 default resolution).
-
-    The explicit positional path stamps the operator-choice marker so a later
-    ``--auto`` pass never overrides the operator's pick; ``--auto`` resolves the
-    coupling + USB combo by eligibility and leaves the marker absent (auto-owned).
+    """CLI: ``jasper-fanin-coupling-reconcile shm_ring`` (an operator asking for
+    the ring convergence now) or ``--auto`` (the unattended boot/deploy pass,
+    which also converges the USB combo from household intent).
 
     Every verb runs under the shared entry flock (:func:`_acquire_entry_lock`)
-    so two passes can never interleave their ordered daemon transitions.
+    so two passes can never interleave their ordered daemon convergences.
     """
     import argparse
 
@@ -3992,27 +2178,24 @@ def main(argv: "list[str] | None" = None) -> int:
 
     parser = argparse.ArgumentParser(
         prog="jasper-fanin-coupling-reconcile",
-        description="Arm/disarm the fan-in -> CamillaDSP coupling in order.",
+        description="Converge the fan-in -> CamillaDSP ring coupling in order.",
     )
     parser.add_argument(
         "coupling",
         nargs="?",
-        choices=[COUPLING_LOOPBACK, COUPLING_SHM_RING],
+        choices=[COUPLING_SHM_RING],
         help=(
-            "explicit operator choice (stamps the operator-choice marker so --auto "
-            "won't override it): loopback (snd-aloop); shm_ring (Ring A plus the "
-            "post-DSP SHM ring — Ring B, or the ACTIVE ring on an armed roleful "
-            "box; arms both fan-in and outputd). Mutually exclusive with --auto."
+            "converge the box onto the ring now: Ring A plus the post-DSP SHM "
+            "ring (Ring B, or the ACTIVE ring on an armed roleful box). "
+            "Mutually exclusive with --auto."
         ),
     )
     parser.add_argument(
         "--auto",
         action="store_true",
         help=(
-            "DEFAULT-RESOLUTION pass (P3/P4): when NO operator choice is recorded, "
-            "resolve shm_ring on a ring-eligible box (else loopback) and arm the USB "
-            "combo on a gadget box. An operator marker preserves the coupling choice "
-            "while USB still follows source intent."
+            "the unattended boot/deploy pass: converge the USB combo from "
+            "household source intent, then converge the ring."
         ),
     )
     parser.add_argument("--reason", default="cli")
@@ -4024,9 +2207,9 @@ def main(argv: "list[str] | None" = None) -> int:
     args = parser.parse_args(argv)
     _modes = [args.auto, args.coupling is not None]
     if sum(bool(m) for m in _modes) > 1:
-        parser.error("--auto and an explicit coupling choice are mutually exclusive")
+        parser.error("--auto and an explicit coupling are mutually exclusive")
     if not any(_modes):
-        parser.error("give an explicit coupling choice or --auto")
+        parser.error("give an explicit coupling or --auto")
 
     # Serialize the WHOLE pass against the sibling entry verbs (the two oneshot
     # units + install.sh / operator CLI runs) — see _acquire_entry_lock. On
@@ -4049,8 +2232,7 @@ def main(argv: "list[str] | None" = None) -> int:
 def _handle_entry_lock_contention(args, *, detail: str = "") -> int:
     """Abort an apply verb that could not acquire the coupling entry lock.
 
-    ``--auto`` / an explicit coupling wanted to apply a change and could not, so
-    they abort loudly.
+    Both verbs wanted to apply a change and could not, so they abort loudly.
     """
     log_event(
         logger,
@@ -4085,16 +2267,11 @@ def _run_entry_verb(args) -> int:
 
     load_env_files()
 
-    # Converge the ACTIVE endpoint before the gate set reads it (#2285 P7).
-    # Inside the entry flock, so it can never interleave with another pass.
-    #
-    # UNATTENDED PATH ONLY. The explicit operator arm is unchanged, ladder and
-    # all — this exists to spare a household that ladder, not to change what the
-    # CLI does for someone already typing it.
-    # Skipped under --no-apply, which promises env-only staging.
-    #
-    # A refusal is NOT an abort: it leaves the box as it found it and the gate
-    # set below decides the coupling, as it did before this existed.
+    # Converge the ACTIVE endpoint before the ring convergence reads it
+    # (#2285 P7). Inside the entry flock, so it can never interleave with another
+    # pass. UNATTENDED PATH ONLY, and skipped under --no-apply, which promises
+    # env-only staging. A refusal is NOT an abort: it leaves the box as it found
+    # it and the box parks under its own name if nothing carries its program.
     if args.auto and not args.no_apply:
         from jasper.fanin.converge import converge_active_endpoint
 
@@ -4123,8 +2300,8 @@ def _run_entry_verb(args) -> int:
     if args.auto:
         auto = reconcile_auto(reason=args.reason, apply=not args.no_apply)
         print(
-            f"coupling auto: owned={auto.owned} coupling={auto.coupling} "
-            f"gadget={auto.gadget_present} usb_intent={auto.usb_intent_enabled} "
+            f"coupling auto: gadget={auto.gadget_present} "
+            f"usb_intent={auto.usb_intent_enabled} "
             f"combo_armed={auto.combo_armed} "
             f"usb_combo_changed={auto.usb_combo_changed} ok={auto.ok}"
             + (
@@ -4137,20 +2314,14 @@ def _run_entry_verb(args) -> int:
         )
         return 0 if auto.ok else 1
 
-    # Explicit operator choice: mark_operator_choice=True freezes the box to this
-    # pick across future --auto passes (the revert lever).
     result = reconcile_coupling(
-        args.coupling,
         reason=args.reason,
         apply=not args.no_apply,
-        mark_operator_choice=True,
     )
     print(
-        f"coupling reconcile: desired={result.desired} direction={result.direction} "
-        f"ok={result.ok} changed={result.changed} "
+        f"coupling reconcile: ok={result.ok} changed={result.changed} "
         f"outputd={result.restarted_outputd} fanin={result.restarted_fanin} "
         f"camilla={result.reconciled_camilla}"
-        + (f" recovered={result.recovered}" if result.recovered else "")
         + (f" detail={result.detail}" if result.detail else "")
     )
     return 0 if result.ok else 1

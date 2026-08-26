@@ -51,13 +51,10 @@ class _Box:
         self.converged = False
         self.applied: dict | None = None
         self.displacement = ""
-        self.operator_pinned = False
         self.roleful = True
         self.gates: tuple = ()
 
         cr = "jasper.fanin.coupling_reconcile"
-        monkeypatch.setattr(f"{cr}.read_marker", lambda _t: None)
-        monkeypatch.setattr(f"{cr}.is_operator_choice", lambda _m: self.operator_pinned)
         monkeypatch.setattr(f"{cr}.default_ring_gates", lambda: self.gates)
         monkeypatch.setattr(
             "jasper.output_topology.load_output_topology_strict",
@@ -119,20 +116,6 @@ def test_a_plugged_in_roleful_box_converges_itself(box):
     """THE HEADLINE: no operator command anywhere in this path."""
     assert box.run() == "graph_reemitted"
     assert box.reemits == ["reemit"] and box.kicks == ["kick"]
-
-
-def test_an_operator_pinned_box_is_never_touched(box):
-    """A human pinned this box's transport; the machine does not overrule it.
-
-    The pass contractually refuses to CHANGE a pinned coupling, so moving the
-    graph anyway would leave graph@ring under a pinned loopback — and on a
-    roleful box the moved graph is also the boot graph, so it would survive the
-    reboot.
-    """
-    box.operator_pinned = True
-
-    assert box.run() == "noop_operator_pinned"
-    assert not box.touched_anything()
 
 
 def test_a_flat_box_is_a_no_op(box):
@@ -366,8 +349,6 @@ def test_a_convergence_that_raises_costs_the_box_its_convergence_not_its_reconci
         "reconcile_auto",
         lambda **k: reached.append("pass ran")
         or types.SimpleNamespace(
-            owned=True,
-            coupling="loopback",
             gadget_present=False,
             usb_intent_enabled=False,
             combo_armed=False,
@@ -446,7 +427,7 @@ def test_a_non_derived_raise_inside_the_cli_costs_only_the_convergence(
         "reconcile_auto",
         lambda **k: reached.append("pass ran")
         or types.SimpleNamespace(
-            owned=True, coupling="loopback", gadget_present=False,
+            gadget_present=False,
             usb_intent_enabled=False, combo_armed=False, usb_combo_changed=False,
             restarted_fanin_for_combo=False, ok=True, reason="", detail="",
         ),

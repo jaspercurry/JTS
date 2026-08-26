@@ -257,11 +257,7 @@ async def precheck_active_leader(
         ),
     )
     if not coupling_support.supported:
-        raise ActiveLeaderError(
-            coupling_support.reason,
-            coupling_support.detail
-            + " Run `jasper-fanin-coupling-reconcile loopback` before bonding.",
-        )
+        raise ActiveLeaderError(coupling_support.reason, coupling_support.detail)
 
     # 1. camilla#2 driver-domain (Layer A) — the leader's OWN drivers, captured
     #    from the grouping ring. Identical build to the active follower
