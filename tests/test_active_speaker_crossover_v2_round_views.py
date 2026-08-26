@@ -22,7 +22,6 @@ from typing import Any
 
 import numpy as np
 import pytest
-from scipy.signal import fftconvolve
 
 from jasper.active_speaker.crossover_v2.round_views import (
     RoundViewsError,
@@ -34,10 +33,6 @@ from jasper.active_speaker.crossover_v2.round_views import (
     verify_pose_curve,
 )
 from jasper.active_speaker.flat_spec import evaluate_flat_spec
-from jasper.audio_measurement import sweep
-from jasper.audio_measurement.analysis import smooth_fractional_octave
-from jasper.audio_measurement.deconv import deconvolve, magnitude_response
-from jasper.audio_measurement.gating import gate_impulse_response
 
 #: A log-spaced curve grid spanning all three SPEC_BANDS rows
 #: (250-2000 / 2000-8000 / 8000-16000 Hz) with plenty of bins in each.
@@ -273,65 +268,31 @@ def test_frozen_reference_refuses_a_target_position_absent_from_baseline(tmp_pat
 # --------------------------------------------------------------------------- #
 
 
-def _write_wired_capture(
+def _bank_verify_measured(
     round_dir: Path,
-    session_dir: Path,
     *,
-    phase: str = "verify",
-    n_takes: int = 1,
-    reflection_delay_samples: int | None = None,
-    reflection_gain: float = 0.0,
-    noise_scale: float = 1e-5,
-    noise_seed: int = 0,
-    bank_shape: bool = False,
-) -> np.ndarray:
-    """Bank a ``{phase}_program.wav`` plus ``n_takes`` dump-ring captures of
-    it through a synthetic "room" — a pure delay by default (an identity
-    system beyond a fixed propagation delay, the same synthetic-IR shape
-    ``tests/test_correction_sweep_deconv.py`` uses for the underlying DSP),
-    plus one optional reflection.
+    freqs_hz: np.ndarray | None = None,
+    measured_db: np.ndarray | None = None,
+) -> Path:
+    """Bank a ``state.json`` carrying ``verify_priors.verify_measured``.
 
-    ``bank_shape=True`` banks the program WAV the way the product's own sole
-    producer (``_play`` in ``jasper.web.correction_crossover_v2``) always
-    does: in a SIBLING ``crossover_v2/<relay>/`` directory next to — not
-    inside — ``evidence/``. Every real banked round is in this shape; the
-    default (``False``) is the shape this suite's fixtures assumed instead,
-    which a #2796 gate review found the product has never once produced.
-
-    Returns the truth IR's peak sample offset, for the caller's own checks.
+    The record is built by the PRODUCT's own persist-side reducer rather than
+    hand-typed, for this suite's standing reason: a drift in what
+    ``persist_conductor_state`` writes must fail here instead of leaving the
+    fixture agreeing with nothing that ships.
     """
-    sig, meta = sweep.synchronized_swept_sine(duration_approx_s=1.0, sample_rate=48000)
-    sr = meta.sample_rate
-    relay_dir = next((session_dir / "evidence/v1/artifacts/crossover_v2").iterdir())
-    program_dir = (session_dir / "crossover_v2" / relay_dir.name) if bank_shape else relay_dir
-    program_dir.mkdir(parents=True, exist_ok=True)
-    sweep.write_sweep_wav(program_dir / f"{phase}_program.wav", sig, sr)
+    from jasper.active_speaker.crossover_v2.durable_state import (
+        _decimate_verify_measured,
+    )
 
-    delay_samples = 480  # 10 ms
-    length = delay_samples + 50
-    if reflection_delay_samples is not None:
-        length = max(length, delay_samples + reflection_delay_samples + 50)
-    ir_truth = np.zeros(length, dtype=np.float64)
-    ir_truth[delay_samples] = 1.0
-    if reflection_delay_samples is not None:
-        ir_truth[delay_samples + reflection_delay_samples] = reflection_gain
-    rng = np.random.default_rng(noise_seed)
-
-    wav_dir = round_dir / "dumps" / "wav"
-    sidecar_dir = round_dir / "dumps" / "sidecar"
-    wav_dir.mkdir(parents=True)
-    sidecar_dir.mkdir(parents=True)
-    for i in range(n_takes):
-        captured = fftconvolve(sig.astype(np.float64), ir_truth, mode="full")
-        # Noise so the post-arrival span is not exact digital silence (the
-        # reflection-envelope detector expects a real floor); amplified by
-        # ``noise_scale`` past the default trace where a test needs the
-        # raw, un-smoothed magnitude response to carry measurable ripple.
-        captured = captured + rng.normal(scale=noise_scale, size=captured.shape)
-        basename = f"{1000 + i}_{phase}_synthetic"
-        sweep.write_sweep_wav(wav_dir / f"{basename}.wav", captured.astype(np.float32), sr)
-        (sidecar_dir / f"{basename}.json").write_text(json.dumps({"phase": phase}))
-    return ir_truth
+    freqs_hz = GRID if freqs_hz is None else freqs_hz
+    measured_db = _flat_curve() if measured_db is None else measured_db
+    record = _decimate_verify_measured(
+        (freqs_hz, measured_db, np.zeros_like(np.asarray(measured_db, dtype=float)))
+    )
+    path = round_dir / "state.json"
+    path.write_text(json.dumps({"verify_priors": {"verify_measured": record}}))
+    return path
 
 
 def _stamp_ring_sidecar(
@@ -382,210 +343,84 @@ def test_load_banked_round_hands_the_capture_ring_to_the_packet(tmp_path):
     assert block["captures"][0]["snr"]["woofer_snr_db"] == 31.2
 
 
-def test_a_nested_ring_is_one_directory_to_both_readers_in_this_module(tmp_path):
-    """One module must not answer "where is the ring" two different ways.
-
-    ``_dump_ring_captures`` used to spell ``dumps/sidecar`` with a flat glob
-    while ``load_banked_round`` passed the ring root, so on a REAL nested ring
-    the packet found captures and the verify-pose reader found none. Both now
-    resolve through ``RING_SIDECAR_GLOB`` from the root.
+def test_a_nested_ring_reaches_the_packet_from_the_ring_root(tmp_path):
+    """``load_banked_round`` hands the ring ROOT to the packet, so a real
+    multi-run bank (``dumps/{final,night-all,phase7}/sidecar/``) is found.
+    A flat ``dumps/sidecar`` glob would see none of it — the disagreement
+    #2796 cost this module once.
     """
     round_dir = _make_round_dir(
         tmp_path, "r1", position_curves={"cloud_verify_02": ("onax", _flat_curve())},
     )
     _stamp_ring_sidecar(round_dir, "1_measure.json", nested="night-all")
 
-    # The packet half.
     assert load_banked_round(round_dir).packet["capture_snr"]["n_captures"] == 1
-    # The verify-pose half, reading the same nested tree for its own phase.
-    from jasper.active_speaker.crossover_v2.round_views import _dump_ring_captures
-
-    assert len(_dump_ring_captures(round_dir, phase="measure")) == 0, (
-        "no wav beside it yet — this pins the WAV pairing, not the glob"
-    )
-    nested_wav = round_dir / "dumps" / "night-all" / "wav"
-    nested_wav.mkdir(parents=True, exist_ok=True)
-    (nested_wav / "1_measure.wav").write_bytes(b"RIFF....WAVEfmt ")
-    assert [p[1].name for p in _dump_ring_captures(round_dir, phase="measure")] == [
-        "1_measure.json"
-    ]
 
 
-def test_verify_pose_curve_absent_without_dump_ring(tmp_path):
+def test_verify_pose_curve_reads_the_banked_curve_onto_the_rounds_grid(tmp_path):
+    """The VERIFY curve is READ from the bank, and made comparable in one hop.
+
+    Banked on a DIFFERENT, coarser grid than the round's on purpose: the
+    persisted curve sits on the VERIFY capture's own frequencies, so an
+    implementation that handed the banked array straight back could not pass
+    this. The two endpoints are shared between the grids, so they pin the
+    VALUES as banked — no re-derivation and no re-levelling — while the
+    whole-array check pins the interpolation rule that carries the rest.
+    """
     round_dir = _make_round_dir(
         tmp_path, "r1", position_curves={"cloud_verify_02": ("onax", _flat_curve())},
     )
-    banked = load_banked_round(round_dir)
-    result = verify_pose_curve(banked)
+    banked_freqs = np.geomspace(GRID[0], GRID[-1], 41)
+    banked_db = REFERENCE_DB + 3.0 * np.log2(banked_freqs / banked_freqs[0])
+    _bank_verify_measured(round_dir, freqs_hz=banked_freqs, measured_db=banked_db)
+
+    result = verify_pose_curve(load_banked_round(round_dir))
+
+    assert result.reason == ""
+    assert result.curve is not None
+    assert np.array_equal(result.curve.freqs_hz, GRID)
+    assert result.curve.magnitude_db[0] == pytest.approx(float(banked_db[0]))
+    assert result.curve.magnitude_db[-1] == pytest.approx(float(banked_db[-1]))
+    assert np.allclose(
+        result.curve.magnitude_db, np.interp(GRID, banked_freqs, banked_db)
+    )
+    # The persisted curve is block-averaged in dB, never smoothed at a
+    # fractional-octave width, so the attestation is "not attested" rather
+    # than a fraction this reader would have had to invent.
+    assert result.curve.smoothing_fraction == 0
+    # What the phase MEANS, not an angle recovered from a walk log.
+    assert result.curve.degrees == 0.0
+
+
+@pytest.mark.parametrize(
+    "written",
+    [
+        None,
+        "{not json",
+        "[]",
+        '{"verify_priors": {}}',
+        '{"verify_priors": {"verify_measured": {}}}',
+    ],
+    ids=["no_state_file", "unreadable", "not_an_object", "no_key", "empty_record"],
+)
+def test_verify_pose_curve_names_why_it_has_no_curve(tmp_path, written):
+    """Every absence answers the same shape: no curve, WITH a reason.
+
+    A round banked before the curve was persisted, one banked without its
+    state file, and one whose state file is damaged are all "there is no
+    VERIFY curve to compare" — and none of them may raise, because the three
+    other views of the same round are still perfectly readable.
+    """
+    round_dir = _make_round_dir(
+        tmp_path, "r1", position_curves={"cloud_verify_02": ("onax", _flat_curve())},
+    )
+    if written is not None:
+        (round_dir / "state.json").write_text(written)
+
+    result = verify_pose_curve(load_banked_round(round_dir))
+
     assert result.curve is None
-    assert result.n_captures == 0
     assert result.reason
-
-
-def test_verify_pose_curve_recovers_a_flat_response_from_an_identity_capture(tmp_path):
-    round_dir = _make_round_dir(
-        tmp_path, "r1", position_curves={"cloud_verify_02": ("onax", _flat_curve())},
-    )
-    banked = load_banked_round(round_dir)
-    _write_wired_capture(round_dir, banked.session_dir, n_takes=2)
-
-    result = verify_pose_curve(banked)
-    assert result.curve is not None
-    assert result.n_captures == 2
-    assert result.curve.position_id == "verify"
-    assert result.curve.role == "verify"
-    assert result.curve.freqs_hz.shape == banked.curve_grid_hz.shape
-
-    # A pure-delay "room" is an all-pass system: the recovered magnitude
-    # response should be flat well within the trusted sweep, once each
-    # curve is normalised against its own median level the way
-    # per_seat_curves compares it to the cloud positions.
-    seats = per_seat_curves(banked, result.curve)
-    verify_seat = next(s for s in seats if s.position_id == "verify")
-    trusted = (banked.curve_grid_hz >= 500.0) & (banked.curve_grid_hz <= 12000.0)
-    assert np.max(np.abs(verify_seat.normalized_db[trusted])) < 3.0
-
-
-def test_verify_pose_curve_resolves_the_bank_shape_program_wav(tmp_path):
-    """The shape every real banked round is actually in.
-
-    A #2796 gate review proved the product's sole program-WAV producer
-    (``_play`` in ``jasper.web.correction_crossover_v2``) has never once
-    written into ``evidence/v1/artifacts/`` — a tree-wide sweep of a real
-    banked round found zero ``*_program.wav`` files there. Before
-    ``_find_program_wav`` adopted
-    ``evidence_packet.round_program_dir``, this view returned "no
-    verify_program.wav banked" on every real bundle, silently inert since
-    #2769/#2781 shipped it. This is that failure, reproduced synthetically
-    with the program WAV where the product actually banks it.
-    """
-    round_dir = _make_round_dir(
-        tmp_path, "r1", position_curves={"cloud_verify_02": ("onax", _flat_curve())},
-    )
-    banked = load_banked_round(round_dir)
-    _write_wired_capture(round_dir, banked.session_dir, n_takes=2, bank_shape=True)
-
-    result = verify_pose_curve(banked)
-    assert result.curve is not None
-    assert result.n_captures == 2
-    assert result.curve.position_id == "verify"
-
-
-def test_verify_pose_curve_smooths_at_the_positions_fraction_not_the_spec_ones(tmp_path):
-    """B3: a real banked round's combined-curve ``spec`` and per-position
-    ``curve_grid`` are not always smoothed at the same fraction (the cloud
-    smooths member positions finer than the combined curve on a real
-    corpus), AND a real round often carries a non-``None`` trusted floor.
-    Both are exercised here at once, matching real-round shape. The VERIFY
-    pose must smooth at the POSITIONS' fraction (6, coarser) — using the
-    spec's (3, finer) would leave more raw FFT ripple in the result, an
-    artifact of which report field this function happened to read rather
-    than of anything the speaker did.
-    """
-    round_dir = _make_round_dir(
-        tmp_path, "r1", position_curves={"cloud_verify_02": ("onax", _flat_curve())},
-        spec_smoothing_fraction=3, positions_smoothing_fraction=6, trusted_floor_hz=180.0,
-    )
-    banked = load_banked_round(round_dir)
-    assert banked.report.smoothing_fraction == 3
-    assert banked.positions[0].smoothing_fraction == 6
-    assert banked.report.trusted_floor_hz == 180.0
-    _write_wired_capture(round_dir, banked.session_dir, n_takes=1)
-
-    result = verify_pose_curve(banked)
-    assert result.curve is not None
-    assert result.curve.smoothing_fraction == 6, (
-        "verify_pose_curve must default to the POSITIONS' smoothing fraction, "
-        "not the report's (spec's)"
-    )
-
-
-def test_verify_pose_curve_gating_removes_a_reflection_comb_artifact(tmp_path):
-    """S6 mutation-killer: a synthetic "room" with a real reflection (0.5
-    gain, 3 ms after the direct arrival — squarely inside
-    ``gating.SEARCH_T_MIN_MS``..``SEARCH_T_MAX_MS``) produces a comb-
-    filtered magnitude response if left ungated. ``verify_pose_curve``'s
-    real (gated) result stays flat within a tolerance the manually
-    reconstructed UNGATED curve — built from the SAME captured bytes via
-    the same ``deconvolve``/``magnitude_response``/``smooth_fractional_octave``
-    calls, just skipping ``gate_impulse_response`` — measurably exceeds.
-    Deleting the gate call inside ``verify_pose_curve`` would make its
-    output equal the ungated curve computed here, which fails this bound.
-    """
-    round_dir = _make_round_dir(
-        tmp_path, "r1", position_curves={"cloud_verify_02": ("onax", _flat_curve())},
-    )
-    banked = load_banked_round(round_dir)
-    _write_wired_capture(
-        round_dir, banked.session_dir, n_takes=1,
-        reflection_delay_samples=144, reflection_gain=0.5,  # 3 ms, -6 dB
-    )
-
-    result = verify_pose_curve(banked)
-    assert result.curve is not None
-    seats = per_seat_curves(banked, result.curve)
-    verify_seat = next(s for s in seats if s.position_id == "verify")
-    trusted = (banked.curve_grid_hz >= 500.0) & (banked.curve_grid_hz <= 12000.0)
-    gated_max_dev = float(np.max(np.abs(verify_seat.normalized_db[trusted])))
-
-    # The same bytes, the same deconvolution, the same smoothing — the ONLY
-    # difference is that gating is skipped.
-    relay_dir = next(banked.session_dir.glob("evidence/v1/artifacts/crossover_v2/*"))
-    program, program_sr = sweep.read_wav_mono(relay_dir / "verify_program.wav")
-    captured, sr = sweep.read_wav_mono(next((round_dir / "dumps" / "wav").glob("*.wav")))
-    assert sr == program_sr
-    ir = deconvolve(captured, program, sr)
-    freqs_lin, mag_db_lin = magnitude_response(ir, sr)  # NOT gated
-    mag_smoothed = smooth_fractional_octave(freqs_lin, mag_db_lin, fraction=result.curve.smoothing_fraction)
-    ungated_curve = np.interp(banked.curve_grid_hz, freqs_lin, mag_smoothed)
-    sel = (banked.curve_grid_hz >= 400.0) & (banked.curve_grid_hz <= 8000.0)
-    ungated_normalized = ungated_curve - float(np.median(ungated_curve[sel]))
-    ungated_max_dev = float(np.max(np.abs(ungated_normalized[trusted])))
-
-    tolerance = 4.0
-    assert gated_max_dev < tolerance, gated_max_dev
-    assert ungated_max_dev > tolerance, ungated_max_dev
-
-
-def test_verify_pose_curve_smoothing_reduces_raw_fft_roughness(tmp_path):
-    """S6 mutation-killer: amplified capture noise (still a fixed seed —
-    fully deterministic) leaves measurable ripple in the RAW magnitude
-    response; ``smooth_fractional_octave`` must reduce it. Compares the
-    real ``verify_pose_curve`` result's roughness (sum of squared bin-to-
-    bin differences over the trusted band) against the SAME bytes run
-    through the identical chain with the smoothing step skipped. Deleting
-    the ``smooth_fractional_octave`` call inside ``verify_pose_curve``
-    would make its output equal the unsmoothed curve computed here, which
-    fails the ratio bound.
-    """
-    round_dir = _make_round_dir(
-        tmp_path, "r1", position_curves={"cloud_verify_02": ("onax", _flat_curve())},
-        positions_smoothing_fraction=3,
-    )
-    banked = load_banked_round(round_dir)
-    assert banked.positions[0].smoothing_fraction == 3
-    _write_wired_capture(round_dir, banked.session_dir, n_takes=1, noise_scale=0.02)
-
-    result = verify_pose_curve(banked)
-    assert result.curve is not None
-    seats = per_seat_curves(banked, result.curve)
-    verify_seat = next(s for s in seats if s.position_id == "verify")
-    trusted = (banked.curve_grid_hz >= 500.0) & (banked.curve_grid_hz <= 12000.0)
-    smoothed_roughness = float(np.sum(np.diff(verify_seat.normalized_db[trusted]) ** 2))
-
-    relay_dir = next(banked.session_dir.glob("evidence/v1/artifacts/crossover_v2/*"))
-    program, program_sr = sweep.read_wav_mono(relay_dir / "verify_program.wav")
-    captured, sr = sweep.read_wav_mono(next((round_dir / "dumps" / "wav").glob("*.wav")))
-    assert sr == program_sr
-    ir = deconvolve(captured, program, sr)
-    gated_ir, _fragment = gate_impulse_response(ir, sr)
-    freqs_lin, mag_db_lin = magnitude_response(gated_ir, sr)  # NOT smoothed
-    unsmoothed_curve = np.interp(banked.curve_grid_hz, freqs_lin, mag_db_lin)
-    sel = (banked.curve_grid_hz >= 400.0) & (banked.curve_grid_hz <= 8000.0)
-    unsmoothed_normalized = unsmoothed_curve - float(np.median(unsmoothed_curve[sel]))
-    unsmoothed_roughness = float(np.sum(np.diff(unsmoothed_normalized[trusted]) ** 2))
-
-    assert unsmoothed_roughness > 1.5 * smoothed_roughness, (smoothed_roughness, unsmoothed_roughness)
 
 
 def test_per_seat_curves_includes_every_position_and_the_verify_pose(tmp_path):
@@ -596,8 +431,8 @@ def test_per_seat_curves_includes_every_position_and_the_verify_pose(tmp_path):
             "cloud_verify_04": ("offax", _flat_curve(offset_db=-3.0)),
         },
     )
+    _bank_verify_measured(round_dir, measured_db=_flat_curve(offset_db=1.0))
     banked = load_banked_round(round_dir)
-    _write_wired_capture(round_dir, banked.session_dir)
     verify = verify_pose_curve(banked)
 
     seats = per_seat_curves(banked, verify.curve)
@@ -1040,32 +875,5 @@ def test_cli_reports_exit_1_on_an_unreadable_round(tmp_path, capsys):
     from jasper.cli.round_views import main
 
     rc = main(["per-seat", str(tmp_path / "nope")])
-    assert rc == 1
-    assert "error:" in capsys.readouterr().err
-
-
-def test_cli_reports_exit_1_not_a_traceback_on_a_header_truncated_wav(tmp_path, capsys):
-    """SF-2: a dump-ring WAV truncated inside its RIFF/fmt header raises
-    ``struct.error`` from ``scipy.io.wavfile.read`` — NOT ``ValueError`` —
-    which the CLI's exception tuple did not originally cover, so this shape
-    reached the operator as an unhandled traceback instead of the
-    documented exit 1. Verified by hand that a real WAV cut at 30 bytes
-    raises exactly ``struct.error`` (10 bytes raises ``ValueError``
-    instead, already covered; 44+ bytes is a DATA truncation that raises
-    nothing at all, out of this tool's scope).
-    """
-    from jasper.cli.round_views import main
-
-    round_dir = _make_round_dir(
-        tmp_path, "r1", position_curves={"cloud_verify_02": ("onax", _flat_curve())},
-    )
-    banked = load_banked_round(round_dir)
-    _write_wired_capture(round_dir, banked.session_dir, n_takes=1)
-    wav_path = next((round_dir / "dumps" / "wav").glob("*.wav"))
-    data = wav_path.read_bytes()
-    assert len(data) > 30
-    wav_path.write_bytes(data[:30])  # header-truncated: struct.error on read
-
-    rc = main(["per-seat", str(round_dir)])
     assert rc == 1
     assert "error:" in capsys.readouterr().err

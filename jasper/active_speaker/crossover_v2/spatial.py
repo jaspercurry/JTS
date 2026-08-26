@@ -133,6 +133,7 @@ __all__ = [
     "geometry_retake",
     "take_id_for",
     "cloud_position_record",
+    "pose_curve_record",
     "lateral_pose_record",
     "entry_baseline_record",
     "boost_excluded_bands_hz",
@@ -945,6 +946,43 @@ def cloud_position_record(
 #: ``test_the_pose_record_states_the_seams_own_regime_word``.
 LATERAL_POSE_REGIME = "per_driver"
 
+#: Deep-null floor applied before the log, so a bin that cancelled to exactly
+#: zero banks a number instead of ``-inf``, which is not JSON.  The same 1e-12
+#: :func:`~jasper.audio_measurement.deconv.magnitude_response` applies, for the
+#: same reason and at the same place in the arithmetic.
+_POSE_MAGNITUDE_FLOOR = 1e-12
+
+
+def pose_curve_record(curve: LateralPoseCurve) -> dict[str, Any]:
+    """One driver's pose curve, banked as magnitude AND phase (ruling S3).
+
+    ``complex_tf`` has no serializer, so before this every offline re-analysis
+    re-derived phase from the WAVs and the forward model could not run from the
+    bank at all.  The pair banked here reconstructs it exactly --
+    ``10 ** (magnitude_db / 20) * exp(1j * radians(phase_deg))`` -- which is
+    what makes the ruling's *"just save the information"* true of phase and not
+    only of magnitude.
+
+    ``phase_deg`` is WRAPPED to (-180, 180], the value :func:`numpy.angle`
+    produces.  An unwrapped phase is a derived VIEW with a choice of branch in
+    it; the wrapped value is what the transform computed, and a consumer that
+    wants the unwrapped one can take it without this record having guessed.
+
+    Absolute phase carries the microphone's own uncorrected response, since mic
+    calibration here is magnitude-only -- common-mode across the roles of one
+    capture, and so self-cancelling for the relative cross-driver work this
+    curve exists for.  It is not a claim about the driver's absolute phase.
+    """
+    tf = np.asarray(curve.complex_tf, dtype=np.complex128)
+    magnitude = np.maximum(np.abs(tf), _POSE_MAGNITUDE_FLOOR)
+    return {
+        "role": curve.role,
+        "band_hz": [float(curve.band_hz[0]), float(curve.band_hz[1])],
+        "freqs_hz": [float(hz) for hz in curve.freqs_hz],
+        "magnitude_db": [float(db) for db in 20.0 * np.log10(magnitude)],
+        "phase_deg": [float(deg) for deg in np.degrees(np.angle(tf))],
+    }
+
 
 def lateral_pose_record(
     pose: LateralPose,
@@ -964,8 +1002,20 @@ def lateral_pose_record(
 
     Guarantees: WHERE the microphone was (``position_deg`` + ``offset_cm`` +
     ``at_mark``), WHAT played (``regime``), WHO the walk was for
-    (``lateral_consumer``), and the identity/verifier pair
-    (``take_id``, ``wav_sha256``) a replay needs.  Refuses nothing.
+    (``lateral_consumer``), the identity/verifier pair (``take_id``,
+    ``wav_sha256``) a replay needs, and WHAT WAS MEASURED --- ``curves``, one
+    :func:`pose_curve_record` per driver, on the shared log basis
+    :func:`lateral_evidence_grid_hz` names.  Refuses nothing.
+
+    ``curves`` is empty for a pose that carried none.  That shape is reachable
+    only through a direct construction: the walk's own
+    :func:`lateral_curves_sufficient` floor rejects a capture that produced
+    fewer than two before any record is built.
+
+    Nothing in the tree READS ``curves`` yet, and that is ruling S3's whole
+    point --- *"right now, let's just save the information"*.  The forward
+    model already consumes this exact quantity in-process every round; what it
+    could never do was run from the bank.
 
     Separate from :func:`cloud_position_record` rather than a widened one: a
     cloud position is a summed sweep judged by gating and ripple, and those
@@ -984,6 +1034,7 @@ def lateral_pose_record(
         "at_mark": bool(pose.at_mark),
         "regime": LATERAL_POSE_REGIME,
         "lateral_consumer": lateral_consumer,
+        "curves": [pose_curve_record(curve) for curve in pose.curves],
     }
 
 
