@@ -19,8 +19,14 @@ because "unchanged" is a finding too.
 
 ## 0. Where this brief disagrees with §1
 
-Five. Four are premises that moved under §1 between its derivation and HEAD; one
-is a shape §1 states in a section its own work item does not cite.
+Ten. Group A (D1–D5) are shape questions W1-a has to answer and §1 leaves
+partly open. Group B (D6–D10) are **counts that are wrong at HEAD** — and D6 is
+the one that changes a work item's title.
+
+Every one was verified by reading the file, not by taking a prior document's
+word. Where §1 is right, this brief says so instead of re-asserting it as new.
+
+### Group A — the shapes
 
 | # | §1 says | At HEAD | Disposition |
 |---|---|---|---|
@@ -30,9 +36,43 @@ is a shape §1 states in a section its own work item does not cite.
 | D4 | W1-a's verification bar names bank/read/round-trip and the discriminator constant (`:261-263`) — no error contract | `SeamFailure` has **no production definition**: `tests/engine_twin.py:81` is the only one in the tree (`jasper/` has zero). The engine does not catch it — `session.py:598` calls `bank` bare | **gap, closed in §2.5.** The store's raise behaviour is unspecified by the protocol, and it is the one thing the twin *cannot* pin because its exception type is test-only. |
 | D5 | *"`read` and `read_state` have no engine caller"* (`:76-77`) | Holds, and is sharper: `PriorBank.read` (`prior_bank.py:115`) calls `store.read_state` at `:127` and `_baselines_by_pose` (`:151`) calls `store.read` at `:157` | **holds.** Named here because `PriorBank` is the *only* consumer, so it is the acceptance test for the read halves. |
 
+### Group B — the counts
+
+| # | §1 says | At HEAD | Evidence |
+|---|---|---|---|
+| **D6** | **The retention lift is FOUR sites**: the three `_hand_to_retention` call sites plus an *"inlined copy"* of the same try/except/WARN/return-`False` shape at `crossover_v2_flow.py:6879` inside `_run_cloud_pipeline`, *"with a comment saying it mirrors `_retain_cloud_position`'s fail-soft boundary"*. §0 `:55-62` calls this *"one structural finding the handed brief did not carry"*; §1 `:216-217` repeats it; W1-c's title is *"four sites in"* | **THREE sites. There is no fourth, and no second writer.** `crossover_v2_flow.py:6879` is a **comment**, not code — it sits inside the `except` arm of a `publish_cloud` call (`:6873-6888`) and reads *"Mirrors `_retain_cloud_position`'s fail-soft boundary"*. Different seam, different arity (`(phase, group_result)` vs `(take_id, result, metadata)`), different event (`…_cloud_publish_failed` vs `…_position_retain_failed`), and it has an `else:` arm mutating `_group_cloud_published` (`:6887-6888`) instead of returning `bool` | **`self._seams.retain_position` appears exactly twice in the entire 9,228-line file** — `:5266` (the `None` check) and `:5269` (the call), both inside `_hand_to_retention`. `_hand_to_retention` has exactly three call sites: `:5056`, `:5254`, `:7020`. The file says so itself at `:6980`: *"`retain_position` is reused rather than duplicated"* |
+| **D7** | *"four via `evidence_packet.RING_SIDECAR_GLOB` (`evidence_packet`, `harmonic_evidence`, `feature_classifier`, `round_views`)"* (`:231-233`) | **THREE.** `round_views` contains **no `glob` call at all**. It reaches the ring *indirectly*, by passing `dump_ring_dir=` (`round_views.py:243`) into `build_crossover_evidence_packet` — i.e. through reader #1. Its `:55` is a docstring line | the three real readers are `evidence_packet.py:1246` (`_capture_snr_block` `:1191`), `harmonic_evidence.py:603` (`_bind_measure_captures` `:582`), `feature_classifier.py:456` (`load_round_captures` `:414`) |
+| **D8** | *"three that glob flat `*.json`"* (`:233-236`) | **FOUR.** The three named are right; a fourth is missed: `scripts/derive-crossover-incident-fixture.py:138` (`_measure_sidecar` `:121`), globbing `*_measure_*.json` over a **pinned frozen bank** of the flat ring | it depends on the `{stamp}_{phase}_{device}` filename scheme, so it breaks on the naming change as well as on the deletion |
+| — | *"**seven** readers"* (`:230`) | **seven** — 3 + 4 | the total survives; **both halves of it are wrong.** Do not let the matching total read as confirmation |
+| **D9** | *"`level_db` and `stimulus_dbfs` live only in the debug ring today, through `CaptureProvenance.to_dict` (`capture_provenance.py:117-134`)"* (`:162-164`) | **Neither name exists in that file** — zero occurrences. `to_dict` (`:117`, body `:119-134`) emits `main_volume_db`, `session_volume_db`, `graph{kind,config_path,fingerprint}`, `stimulus{program_id,phase,wav_sha256,peak_dbfs}` | §1's *conclusion* holds and is if anything understated (§4.3); its *field names* are the engine's, not the ring's, and a builder grepping for them finds nothing |
+| **D10** | *"three readers re-pair the WAV by `parent.parent / "wav" / stem` written out verbatim in three places"* (`:248-250`) | **TWO:** `harmonic_evidence.py:613`, `feature_classifier.py:482`. The other two pairings are **different rules** — `severed-twin-replay.py:249` uses `sidecar_path.with_suffix(".wav")` (flat sibling, the un-split ring), and `harmonic-distortion-replay.py:266-271` binds by sha256 content across a separate `--captures` directory with no path derivation at all | reader #1 (`_capture_snr_block`) never touches a WAV |
+
 **Two §1 numbers re-checked and unchanged at HEAD**, so the builder does not
 re-derive them: `MEASURE_KINDS` is `contracts.py:1433-1437`; `_record()`'s
-`def` is `session.py:655` and its dict is `:692-708`.
+`def` is `session.py:655` and its dict is `:692-708`. **`_take_identity`'s
+"exactly three call sites" also holds** — `spatial.py:914`, `:1044`, `:1107`,
+zero in tests (§3.1).
+
+### Why D6 happened, and the rule it argues for
+
+The inlined copies were **real**, and were removed. At `27f13a4e4~1` there were
+two — inside `_retain_cloud_position` and inside `_retain_entry_baseline` —
+and commit `27f13a4e4` (*"a staged angle walk is taken by the next session…"*,
+#2753, 2026-08-20) introduced `_hand_to_retention` and collapsed both into it.
+
+So §1's structural finding was true of a tree, just not of this one; what
+survived the collapse is a **comment** whose wording matches. This is §8's
+*"re-derive the line numbers"* trap (`:1162-1164`) in its most expensive form:
+the citation was to a line that still existed and still said the quoted words,
+so a spot-check that read the line without reading its enclosing block would
+confirm it. **Confirm a call site by grepping the symbol, never by reading the
+cited line.** Here the symbol grep is decisive in one command and the line read
+is decisive in neither direction.
+
+**W1-c is therefore three sites in, not four**, and the *"a lift that migrates
+only the three named call sites leaves a second writer behind"* hazard (§1
+`:60-62`) **does not exist**. The lift is correspondingly smaller and safer than
+§1 scheduled it.
 
 ---
 
