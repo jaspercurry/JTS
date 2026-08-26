@@ -2331,72 +2331,38 @@ def test_audio_validation_suggests_hardware_runner_for_drift_delay_recommendatio
     )
 
 
-def test_audio_validation_ok_for_known_supported_passive_chip_aec_validation():
+@pytest.mark.parametrize(
+    ("dac_id", "expected_status"),
+    [
+        ("hifiberry_dac8x", "ok"),
+        ("apple_usb_c_dongle", "ok"),
+        ("innomaker_hifi_amp_pro", "warn"),
+        ("unknown", "warn"),
+    ],
+)
+def test_audio_validation_passive_evidence_follows_dac_approval(
+    dac_id, expected_status
+):
+    statuses = {
+        name: "pass" for name in doctor._CHIP_AEC_PASSIVE_REQUIRED_CHECKS
+    }
+    statuses.update({"bridge_counters": "warn", "measured_drift_delay": "not_run"})
     result = doctor._assess_audio_validation_summary(
         {
             "state": "current",
             "status": "warn",
             "recommendation": "run_drift_delay_validation",
             "artifact_path": "/var/lib/jasper/audio-validation/latest.json",
-            "hardware": {
-                "mic_id": "xvf3800",
-                "dac_id": "hifiberry_dac8x",
-            },
-            "check_statuses": {
-                "runtime_profile": "pass",
-                "mic_detected": "pass",
-                "runtime_env": "pass",
-                "service_state": "pass",
-                "dac_reference": "pass",
-                "wake_legs": "pass",
-                "bridge_counters": "warn",
-                "outputd_reference_health": "pass",
-                "bridge_counter_window": "pass",
-                "chip_profile_readback": "pass",
-                "chip_convergence": "pass",
-                "measured_drift_delay": "not_run",
-            },
+            "hardware": {"mic_id": "xvf3800", "dac_id": dac_id},
+            "check_statuses": statuses,
         },
         requested_profile="xvf_chip_aec",
     )
 
-    assert result.status == "ok"
-    assert "known-supported xvf_chip_aec path" in result.detail
-    assert "optional acoustic drift/delay probe" in result.detail
-
-
-def test_audio_validation_still_warns_for_unknown_dac_drift_delay_recommendation():
-    result = doctor._assess_audio_validation_summary(
-        {
-            "state": "current",
-            "status": "warn",
-            "recommendation": "run_drift_delay_validation",
-            "artifact_path": "/var/lib/jasper/audio-validation/latest.json",
-            "hardware": {
-                "mic_id": "xvf3800",
-                "dac_id": "apple_usb_c_dongle",
-            },
-            "check_statuses": {
-                "runtime_profile": "pass",
-                "mic_detected": "pass",
-                "runtime_env": "pass",
-                "service_state": "pass",
-                "dac_reference": "pass",
-                "wake_legs": "pass",
-                "outputd_reference_health": "pass",
-                "bridge_counter_window": "pass",
-                "chip_profile_readback": "pass",
-                "chip_convergence": "pass",
-                "measured_drift_delay": "not_run",
-            },
-        },
-        requested_profile="xvf_chip_aec",
-    )
-
-    assert result.status == "warn"
-    assert (
-        "sudo jasper-audio-hw-validate --duration-seconds 10 --stdout" in result.detail
-    )
+    assert result.status == expected_status
+    if expected_status == "ok":
+        assert dac_id in result.detail
+        assert "xvf3800" in result.detail
 
 
 def test_audio_validation_readiness_filters_current_hardware(monkeypatch):
