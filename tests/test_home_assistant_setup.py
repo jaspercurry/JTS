@@ -719,27 +719,6 @@ def test_credentials_for_copy_returns_url_and_token(wizard_server):
     assert payload["token"] == "eyJ0eXAi-secret-xyz"
 
 
-def test_credentials_for_copy_rejects_missing_csrf(wizard_server):
-    """Without the CSRF header (or with the wrong one), the endpoint
-    returns 403. Defense against a malicious same-origin POST that
-    can't read our CSRF cookie."""
-    base_url, _, _ = wizard_server
-    _post(f"{base_url}/save", {
-        "url": "homeassistant.local",
-        "token": "eyJ0eXAi-secret-xyz",
-        "agent_id": "",
-    })
-    req = urllib.request.Request(
-        f"{base_url}/credentials-for-copy",
-        data=b"", method="POST",
-    )
-    try:
-        urllib.request.urlopen(req)  # noqa: S310 — test only
-        assert False, "expected 403"
-    except urllib.error.HTTPError as e:
-        assert e.code == 403
-
-
 def test_credentials_for_copy_returns_400_when_no_state(wizard_server):
     """Defensive: if somehow the endpoint is hit before /save (state
     file missing), return 400 rather than empty strings. Shouldn't

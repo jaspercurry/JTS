@@ -48,7 +48,7 @@ engine replaces. A third spelling of either would read as the same thing.
 from __future__ import annotations
 
 from dataclasses import dataclass, field
-from typing import Any, Mapping
+from typing import Any, Callable, Mapping
 
 from .contracts import DESIGN_AXIS_DEG, POSITION_AXIS_VERTICAL
 from .measure_spec import CapabilityStub, MeasureSpec, stubbed_capabilities
@@ -64,6 +64,28 @@ __all__ = [
     "StimulusOutcome",
     "TuningSession",
 ]
+
+
+def _attach_cleanup_failure(
+    primary: BaseException, cleanup: "Callable[[], None]",
+) -> None:
+    """Run a cleanup; if it fails, hang the failure on ``primary`` and go on.
+
+    The one place this engine knows the rule *a cleanup failure never replaces
+    the failure that caused the cleanup*. An exception raised out of a
+    ``finally`` or an ``__exit__`` demotes the original to ``__context__`` and
+    reports the symptom — so the original propagates and the cleanup's failure
+    is attached to it instead. The FIRST such failure wins, because the first
+    thing to fail while unwinding is the one nearest the cause.
+
+    The broad catch is the point rather than an oversight: a seam may raise
+    anything, and there is no narrower type that means "the cleanup failed".
+    """
+    try:
+        cleanup()
+    except Exception as cleanup_exc:  # noqa: BLE001 - see the docstring
+        if primary.__context__ is None:
+            primary.__context__ = cleanup_exc
 
 
 class SessionStateError(RuntimeError):
@@ -285,16 +307,13 @@ class TuningSession:
         the original goes on. With nothing in flight, a close failure IS the
         failure and propagates normally.
 
-        The broad catch is the point rather than an oversight: a seam may raise
-        anything, and there is no narrower type that means "the close failed".
+        With nothing in flight, a close failure IS the failure and propagates
+        normally.
         """
         if exc_value is None:
             self.close()
             return
-        try:
-            self.close()
-        except Exception as close_exc:  # noqa: BLE001 - see the docstring
-            exc_value.__context__ = close_exc
+        _attach_cleanup_failure(exc_value, self.close)
 
     @property
     def is_open(self) -> bool:
@@ -442,14 +461,8 @@ class TuningSession:
         report the wrong thing. The volume's failure is the one attached when
         both fail — it is the slot whose loss is audible.
         """
-        first: BaseException | None = None
         for release in (self.seams.volume.release, self.seams.graph.restore):
-            try:
-                release()
-            except Exception as cleanup_exc:  # noqa: BLE001 - see the docstring
-                first = first or cleanup_exc
-        if first is not None:
-            opening_exc.__context__ = first
+            _attach_cleanup_failure(opening_exc, release)
         self._volume_held = False
         self._graph_installed = False
 

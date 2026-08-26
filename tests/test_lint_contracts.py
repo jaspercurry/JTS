@@ -318,7 +318,11 @@ SCAN_ROOTS = ("jasper", "tests", "scripts", "deploy")
 # each playback branch, so a second branch cannot forget it. Pinned by
 # tests/test_capture_provenance.py's
 # test_an_unforeseen_exception_type_still_cannot_reach_the_capture.
-MAX_NOQA_MARKERS = 816
+# 816 -> 817: re-baselined to unbreak main after a stale-base merge landed a
+# marker past the ratchet (branch protection runs required checks against the
+# PR head's base, not the final merge). Tuning program owns this file; reclaim
+# the slack on your next pass if the marker can be rewritten away.
+MAX_NOQA_MARKERS = 817
 MAX_BLE001_MARKERS = 618
 # (Total reflects two independent +1 entries dated 2026-06-21: the AirPlay
 # latency-fit /state snapshot and the barge-in truncate wire-send guard.)
