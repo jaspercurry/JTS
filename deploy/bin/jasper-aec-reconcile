@@ -1684,19 +1684,25 @@ disclose_stale_chip_aec() {
     # Software AEC3 reads the 6-channel capture endpoint; on anything else
     # there is no bridge to run and the direct handover below is the only leg.
     if aec_ready "$AEC_MIC_DEVICE"; then
-        # enable_start_aec re-runs init under JASPER_AEC_CHIP_AEC_ENABLED=0 (its
-        # bypass profile) so the chip stops holding a half-applied alignment. A
-        # disclosure is LONG-LIVED by design, so paying that — and the leg
-        # publication that precedes it — on every udev event, deploy and wizard
-        # save for as long as it stands is the deafness the gate exists to stop.
-        # Skipping the writes with it is safe because the gate can only hold
-        # when nothing voice-relevant changed this pass, which is exactly when
-        # they would rewrite the values already on disk.
+        # This publication MUST stay ahead of the bounce gate below. Its
+        # per-key change detection is the only thing that sees a pass whose leg
+        # vector MOVED: everything this path writes earlier (the DAC gate
+        # record, the alignment status) is voice-irrelevant by design, so a
+        # gate consulted first would hold on the very pass that revokes the DAC
+        # verdict and leave the chip legs armed under a disclosure claiming
+        # software AEC3. Pinned by
+        # test_a_revoked_dac_verdict_flips_a_settled_chip_aec_box_onto_aec3.
+        write_leg_env "1" "1" "0" "0" "0" "0"
+        restart_outputd_if_needed
+        # enable_start_aec blocking-restarts init and the bridge — a mic outage
+        # of its own, and it re-runs init under JASPER_AEC_CHIP_AEC_ENABLED=0
+        # (its bypass profile) so the chip stops holding a half-applied
+        # alignment. A disclosure is LONG-LIVED by design, so paying that on
+        # every udev event, deploy and wizard save for as long as it stands is
+        # the deafness the gate exists to stop.
         if aec_stack_bounce_can_be_skipped; then
             log "event=aec_reconcile.disclosed_bounce_skipped reason=no_voice_relevant_change alignment=disclosed_stale profile=${AUDIO_INPUT_PROFILE:-unknown}"
         else
-            write_leg_env "1" "1" "0" "0" "0" "0"
-            restart_outputd_if_needed
             enable_start_aec
         fi
         # `systemctl restart` exits 0 when an ExecCondition SKIPS the unit, so

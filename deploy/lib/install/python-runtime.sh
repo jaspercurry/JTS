@@ -406,6 +406,8 @@ PY
         -e '/^SPOTIFY_OAUTH_MODE=/d' \
         -e '/^SPOTIFY_REDIRECT_URI=/d' \
         -e '/^SPOTIPY_REDIRECT_URI=/d' \
+        -e '/^JASPER_AEC_CHIP_AEC_DAC_AUTO=/d' \
+        -e '/^JASPER_AEC_CHIP_AEC_DAC_TRIAL=/d' \
         "${ENV_DIR}/jasper.env"
     rm -f "${ENV_DIR}/jasper.env.bak"
     migrate_wake_events_cap_seed

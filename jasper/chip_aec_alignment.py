@@ -343,15 +343,20 @@ def validate_banked_delays(k_samples: int, sys_delay: int) -> None:
 
     ``CHIP_AEC_SYS_DELAY_MIN..MAX`` is the chip's DECLARED driver cap, so this
     refuses rather than clamps — for a commissioned artifact, a superseded one,
-    and a shipped hardware-class default alike.
+    a shipped hardware-class default, and the delay boot resolves from a live
+    queue alike.  The message names no source for that reason, and carries the
+    refused value: how far past the cap it landed is the whole diagnostic.
     """
 
     if type(k_samples) is not int or type(sys_delay) is not int:
-        raise ValueError("artifact K and SYS_DELAY must be integers")
+        raise ValueError("K and SYS_DELAY must be integers")
     if not (
         xvf3800.CHIP_AEC_SYS_DELAY_MIN <= sys_delay <= xvf3800.CHIP_AEC_SYS_DELAY_MAX
     ):
-        raise ValueError("artifact SYS_DELAY is out of range")
+        raise ValueError(
+            f"SYS_DELAY {sys_delay} is out of range "
+            f"({xvf3800.CHIP_AEC_SYS_DELAY_MIN}..{xvf3800.CHIP_AEC_SYS_DELAY_MAX})"
+        )
 
 
 @dataclass(frozen=True)

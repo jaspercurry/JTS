@@ -623,6 +623,26 @@ def test_spotify_wizard_owned_values_are_not_seeded_into_jasper_env():
 
 
 @pytest.mark.parametrize(
+    "key",
+    ["JASPER_AEC_CHIP_AEC_DAC_AUTO", "JASPER_AEC_CHIP_AEC_DAC_TRIAL"],
+)
+def test_retired_chip_aec_gate_keys_leave_no_reader_writer_or_seeded_line(
+    key: str,
+) -> None:
+    """The DAC gate's status IS its verdict, so the per-selection keys retired.
+
+    An upgraded box keeps whatever its last pass wrote, and a key nothing
+    rewrites is a value that can only rot — the reconciler's carry would be
+    reading a verdict from a build that no longer computes one.
+    """
+    reconciler = _INSTALL_LIB_DIR.parent.parent.joinpath(
+        "bin", "jasper-aec-reconcile"
+    ).read_text(encoding="utf-8")
+    assert key not in reconciler
+    assert f"/^{key}=/d" in "\n".join(_installer_shell_texts().values())
+
+
+@pytest.mark.parametrize(
     ("seeded_value", "expected_line"),
     [
         ("1073741824", None),  # exact pre-PR frozen-seed default: migrated away

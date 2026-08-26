@@ -2816,6 +2816,40 @@ def test_a_settled_disclosed_aec3_box_re_arms_nothing_on_an_unchanged_pass(
     assert (tmp_path / "jasper.env").read_text() == body
 
 
+def test_a_revoked_dac_verdict_flips_a_settled_chip_aec_box_onto_aec3(
+    tmp_path: Path,
+) -> None:
+    """The TRANSITION pass the settled-pass skip must never swallow.
+
+    Every key this pass writes before the bounce gate — the DAC gate record and
+    the alignment status — is voice-irrelevant by design, so the gate sees no
+    voice-relevant change yet. What makes the pass a change is the leg vector it
+    is ABOUT to publish, which is why that publication stays ahead of the gate:
+    a box left running chip legs on a revoked DAC while /state reports software
+    AEC3 would persist that contradiction on every following pass.
+    """
+    _armed_chip_aec_box(tmp_path)
+    env_file = tmp_path / "jasper.env"
+    env_file.write_text(
+        env_file.read_text().replace(
+            "JASPER_AUDIO_DAC_ID=apple_usb_c_dongle",
+            "JASPER_AUDIO_DAC_ID=mystery_usb_audio",
+        )
+    )
+
+    result = _run_reconcile(tmp_path, "--reason", "udev")
+
+    assert result.returncode == 0, result.stderr
+    body = env_file.read_text()
+    assert "JASPER_AEC_CHIP_AEC_ENABLED=0" in body
+    assert "JASPER_MIC_DEVICE_RAW=udp:9877" in body
+    assert "JASPER_AEC_CHIP_AEC_ALIGNMENT_STATUS=disclosed_stale" in body
+    commands = _systemctl_log(tmp_path)
+    assert "restart jasper-aec-init.service" in commands, result.stderr
+    assert VOICE_RESTART_CMD in commands
+    assert "event=aec_reconcile.disclosed_bounce_skipped" not in result.stderr
+
+
 def test_measurement_mic_hotplug_does_not_bounce_the_voice_assistant(
     tmp_path: Path,
 ) -> None:
