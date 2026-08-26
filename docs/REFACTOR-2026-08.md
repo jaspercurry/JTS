@@ -169,7 +169,15 @@ program's wave 7h)**
 already open)**
 - ~~Duck lease~~ **HELD — superseded**: the tuning program deletes the
   swap-duck and the 1 Hz reconciler it coordinated with (its waves 5–6);
-  no lease gets built · systemctl-through-broker or honest docstring ·
+  no lease gets built · ~~systemctl-through-broker or honest docstring~~
+  **DONE — docstring**: no site qualified for conversion. jasper-control is
+  not a client of itself (it runs as the uid the broker would act as, polkit
+  mediating the same grant — `deploy/systemd/jasper-control.service`), root
+  oneshots/CLIs hold the privilege directly, and `source_intent`'s
+  enable/disable is un-brokerable by the broker's own vocabulary rule. The
+  false "single mediated systemctl boundary" / "one place that privilege
+  survives" claim and the MANAGED_UNITS "union of every unit any client
+  touches" comment now say what actually happens ·
   sound_setup 502-helper (after the volume-surface widening lifts) ·
   ~~`git mv` subway/citibike/bus into transit/providers/~~ **superseded by
   [ADR-0167](adr/0167-each-transit-network-is-its-own-provider-module.md)**:
