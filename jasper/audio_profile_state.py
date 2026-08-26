@@ -29,13 +29,6 @@ PROFILE_XVF_SOFTWARE_AEC3 = "xvf_software_aec3"
 PROFILE_DIRECT_MIC = "direct_mic"
 PROFILE_CUSTOM = "custom"
 
-# `action` is operator text rendered verbatim by /wake/ and the doctor, while
-# the chip gate answers in action CODES, which chip_aec_policy's contract keeps
-# out of human-facing fields. Only the uncodified-DAC code has a command behind
-# it — the one the reconciler pairs with its own disclosure of that same
-# condition; every other code is said by `reason` instead.
-_GATE_ACTION_TEXT = {ACTION_USE_SOFTWARE_OR_TEST: "Run sudo jasper-aec-commission"}
-
 CONCRETE_PROFILES = (
     PROFILE_XVF_CHIP_AEC,
     PROFILE_XVF_CHIP_AEC_TESTING,
@@ -580,11 +573,9 @@ def build_audio_profile_status(
     gate = dict(chip_gate or {})
     gate_auto_allowed = bool(gate.get("auto_allowed", chip_available))
     gate_arm_allowed = bool(gate.get("arm_allowed", chip_available))
-    # One question, asked once: does the gate allow the selection in play? An
-    # uncodified DAC is arm_allowed since ADR-0101, so only an EXPLICIT arm may
-    # read that flag — the testing selection, and a custom profile whose chip
-    # leg the operator set by hand, which the reconciler honours. Everything
-    # automatic needs auto_allowed.
+    # ADR-0101: an uncodified DAC is arm_allowed, so only an EXPLICIT arm may
+    # read that flag — the testing selection, or a custom profile whose chip leg
+    # the operator set by hand and the reconciler honours.
     custom_chip_leg = selection == PROFILE_CUSTOM and intent.chip_aec_enabled
     explicitly_armed = (
         selection == PROFILE_XVF_CHIP_AEC_TESTING or custom_chip_leg
@@ -770,7 +761,7 @@ def build_audio_profile_status(
         elif not bridge_active:
             profile_state = "waiting_bridge"
             profile_reason = "AEC bridge is not active yet."
-        elif hardware_requested and not (chip_available and gate_permitted):
+        elif hardware_requested and not chip_allowed_for_selection:
             # ADR-0101: unproven chip-AEC is a disclosure on a box that is
             # hearing and a refusal only on one that is not, so the state
             # follows the engine the wake path actually has.
@@ -783,9 +774,19 @@ def build_audio_profile_status(
             if active_profile is None:
                 profile_state = "unavailable"
             else:
+                # The GATE's own disclosure, for a box whose blocked chip-AEC no
+                # alignment status describes; `disclosed_engine` above serves the
+                # ones the reconciler already published an alignment reason for.
                 profile_state = "disclosed_stale"
-                profile_action = _GATE_ACTION_TEXT.get(
-                    str(gate.get("recommended_action") or ""), ""
+                # `action` is operator text, while the gate answers in action
+                # CODES. Only the uncodified-DAC code has a command behind it —
+                # the one the reconciler pairs with its own disclosure of that
+                # same condition; every other code is said by `reason` instead.
+                profile_action = (
+                    "Run sudo jasper-aec-commission"
+                    if str(gate.get("recommended_action") or "")
+                    == ACTION_USE_SOFTWARE_OR_TEST
+                    else ""
                 )
         elif hardware_requested:
             profile_state = "pending"

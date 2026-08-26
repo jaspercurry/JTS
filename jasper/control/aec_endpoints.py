@@ -506,14 +506,8 @@ def _chip_aec_gate(
         ),
     )
     testing_requested = selection == PROFILE_XVF_CHIP_AEC_TESTING
-    runtime_gate = (
-        gate_from_runtime_env(env, testing_requested=testing_requested)
-        if env.get("JASPER_AEC_CHIP_AEC_DAC_STATUS")
-        else None
-    )
-    if runtime_gate is not None:
-        dac_gate = runtime_gate
-    else:
+    dac_gate = gate_from_runtime_env(env, testing_requested=testing_requested)
+    if dac_gate is None:
         dac_gate = resolve_chip_aec_dac_gate(
             env.get("JASPER_AUDIO_DAC_ID", "unknown"),
             testing_requested=testing_requested,
@@ -533,11 +527,7 @@ def _chip_aec_gate(
     )
     payload["testing_available"] = bool(mic_available and gate.testing_allowed)
     payload["available"] = bool(
-        mic_available
-        and (
-            gate.production_allowed
-            or (testing_requested and gate.testing_allowed)
-        )
+        mic_available and gate.permits(testing_requested=testing_requested)
     )
     return payload
 

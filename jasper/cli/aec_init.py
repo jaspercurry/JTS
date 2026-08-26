@@ -20,10 +20,12 @@ import sys
 import time
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
+from pathlib import Path
 from typing import Any
 
 from jasper import chip_aec_shipped_alignment as shipped_alignment
 from jasper import output_hardware
+from jasper.atomic_io import atomic_write_text
 from jasper.audio_hardware import dac as dac_registry
 
 # The declaration outputd loads through `EnvironmentFile=` (its runtime output
@@ -962,16 +964,15 @@ def shipped_class_alignment(
     entry = shipped_alignment.for_identity(live)
     if entry is not None:
         return entry
-    nearest = min(
-        shipped_alignment.REGISTRY,
-        key=lambda row: len(row.divergence(live)),
-        default=None,
+    # The caller only reaches here with a non-empty REGISTRY, and the divergence
+    # that ranks the rows is the same one the message names.
+    nearest, changed = min(
+        ((row, row.divergence(live)) for row in shipped_alignment.REGISTRY),
+        key=lambda pair: len(pair[1]),
     )
-    if nearest is None:
-        raise CommissionRequired(absent)
     raise CommissionRequired(
         f"{absent}; nearest shipped class {nearest.label} differs in "
-        + ", ".join(nearest.divergence(live))
+        + ", ".join(changed)
     )
 
 
@@ -987,14 +988,18 @@ def publish_disclosure(reason: str, *, env: Mapping[str, str] | None = None) -> 
     source = os.environ if env is None else env
     path = source.get("JASPER_AEC_ALIGNMENT_DISCLOSURE_FILE") or DISCLOSURE_PATH
     try:
-        if not reason:
-            os.unlink(path)
-            return
-        os.makedirs(os.path.dirname(path), exist_ok=True)
-        with open(path, "w", encoding="utf-8") as handle:
-            handle.write(" ".join(reason.split()) + "\n")
-    except OSError:
-        pass
+        if reason:
+            atomic_write_text(path, " ".join(reason.split()) + "\n")
+        else:
+            Path(path).unlink(missing_ok=True)
+    except OSError as exc:
+        log_event(
+            logger,
+            "chip_aec_init.disclosure_unpublished",
+            path=path,
+            reason=str(exc),
+            level=logging.WARNING,
+        )
 
 
 def main() -> int:
@@ -1100,22 +1105,18 @@ def main() -> int:
                 raise ChipInitError(str(exc)) from exc
             apply_profile(dev, plan, delay, card=card)
             disclosure = "; ".join(disclosed)
-            applied: dict[str, Any] = {
-                "outcome": "disclosed_stale" if disclosure else "ready",
-                "sys_delay": delay,
-                "commissioned_sys_delay": commissioned_sys_delay,
-                "k_samples": k_samples,
-                "queue_median": median_samples(queue),
-                "queue_spread": max(queue) - min(queue),
-                "queue_samples": len(queue),
-            }
-            if disclosure:
-                applied["reason"] = disclosure
             log_event(
                 logger,
                 "chip_aec_init",
-                fields=applied,
                 level=logging.WARNING if disclosure else logging.INFO,
+                outcome="disclosed_stale" if disclosure else "ready",
+                sys_delay=delay,
+                commissioned_sys_delay=commissioned_sys_delay,
+                k_samples=k_samples,
+                queue_median=median_samples(queue),
+                queue_spread=max(queue) - min(queue),
+                queue_samples=len(queue),
+                **({"reason": disclosure} if disclosure else {}),
             )
         elif mode == "corpus":
             plan = xvf3800.chip_beam_plan_from_env(os.environ)

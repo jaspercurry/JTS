@@ -7,10 +7,10 @@
 from __future__ import annotations
 
 import json
-from types import SimpleNamespace
 
 import pytest
 
+from jasper.chip_aec_policy import ChipAecGate
 from jasper.cli import chip_aec_policy
 
 
@@ -75,16 +75,14 @@ def test_query_outputd_status_classifies_empty_invalid_and_non_object(monkeypatc
 
 
 def test_shell_assignments_quote_values():
-    gate = SimpleNamespace(
+    gate = ChipAecGate(
         dac_id="a dac",
         status="approved",
-        permitted=True,
-        auto_allowed=False,
-        production_allowed=True,
-        testing_allowed=False,
         source="registry",
         detail="operator's choice",
-        recommended_action="keep current",
+        auto_allowed=True,
+        arm_allowed=True,
+        trial_allowed=True,
     )
 
     output = chip_aec_policy._shell_assignments(gate, testing_requested=False)
@@ -108,15 +106,14 @@ def test_shell_permitted_answers_the_requested_selection(
     must read production_allowed or it would silently arm uncommissioned
     hardware.
     """
-    gate = SimpleNamespace(
+    gate = ChipAecGate(
         dac_id="mystery_usb_audio",
         status="needs_calibration",
-        permitted=True,
-        auto_allowed=False,
-        production_allowed=False,
-        testing_allowed=True,
         source="static",
         detail="no codified timing",
+        auto_allowed=False,
+        arm_allowed=True,
+        trial_allowed=True,
     )
 
     output = chip_aec_policy._shell_assignments(
@@ -128,17 +125,14 @@ def test_shell_permitted_answers_the_requested_selection(
 
 def test_main_forwards_status_and_emits_shell_or_json(monkeypatch, capsys):
     seen = []
-    gate = SimpleNamespace(
+    gate = ChipAecGate(
         dac_id="apple_usb_c_dongle",
         status="approved",
-        permitted=True,
-        auto_allowed=True,
-        production_allowed=True,
-        testing_allowed=True,
         source="registry",
         detail="ok",
-        recommended_action="none",
-        to_dict=lambda: {"status": "approved"},
+        auto_allowed=True,
+        arm_allowed=True,
+        trial_allowed=True,
     )
     monkeypatch.setattr(
         chip_aec_policy,
@@ -154,7 +148,7 @@ def test_main_forwards_status_and_emits_shell_or_json(monkeypatch, capsys):
     assert chip_aec_policy.main([
         "--dac-id", "apple_usb_c_dongle", "--outputd-socket", "/run/o.sock",
     ]) == 0
-    assert json.loads(capsys.readouterr().out) == {"status": "approved"}
+    assert json.loads(capsys.readouterr().out) == gate.to_dict()
     assert seen[0][1]["outputd_status"] == {"reference_outputs": {}}
 
     assert chip_aec_policy.main([
