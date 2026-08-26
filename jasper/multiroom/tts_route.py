@@ -8,7 +8,8 @@ from __future__ import annotations
 from dataclasses import dataclass
 
 from ..tts_routing import FANIN_TTS_SOCKET, OUTPUTD_TTS_SOCKET
-from .config import GroupingConfig, is_active_member
+from . import config
+from .config import GroupingConfig
 
 
 VOICE_PARK_ENV = "JASPER_GROUPING_VOICE_PARK"
@@ -52,7 +53,7 @@ def expected_grouping_tts_route(
         (the voice socket override still targets the unarmed outputd socket so
         an unexpected unpark fails silent instead of falling back to fan-in)
     """
-    if not is_active_member(cfg):
+    if not config.is_active_member(cfg):
         return GroupingTtsRoute(
             kind="solo",
             voice_env_socket=None,

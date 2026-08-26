@@ -996,7 +996,7 @@ def _patch_main_io(monkeypatch, tmp_path, cfg):
         "_systemctl_unit_state",
         lambda _query, _unit: False,
     )
-    monkeypatch.setattr(reconcile_mod, "load_config", lambda *a, **k: cfg)
+    monkeypatch.setattr("jasper.multiroom.config.load_config", lambda *a, **k: cfg)
     # Snapcast provisioning (main() calls it for any enabled bond): default to a
     # present no-op so these tests never shell out to apt. The provisioning tests
     # override it. main() from-imports it, so patch the provision module attr.

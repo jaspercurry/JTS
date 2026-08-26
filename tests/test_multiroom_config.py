@@ -1080,3 +1080,49 @@ def test_crossover_hz_default_constructor_and_disabled():
     assert load_config("/nonexistent/grouping.env").crossover_hz == (
         DEFAULT_CROSSOVER_HZ
     )
+
+
+@pytest.mark.parametrize(
+    "module_name, attr",
+    [
+        ("jasper.multiroom", "is_enabled"),
+        ("jasper.multiroom", "load_config"),
+        ("jasper.multiroom.airplay_latency", "is_active_leader"),
+        ("jasper.multiroom.member_config", "is_active_leader"),
+        ("jasper.multiroom.member_config", "load_config"),
+        ("jasper.multiroom.reconcile", "bond_has_subwoofer"),
+        ("jasper.multiroom.reconcile", "is_active_leader"),
+        ("jasper.multiroom.reconcile", "is_active_member"),
+        ("jasper.multiroom.reconcile", "load_config"),
+        ("jasper.multiroom.reconcile", "local_sources_parked"),
+        ("jasper.multiroom.runtime_balance", "is_active_member"),
+        ("jasper.multiroom.runtime_balance", "load_config"),
+        ("jasper.multiroom.state", "load_config"),
+        ("jasper.multiroom.tts_route", "is_active_member"),
+    ],
+)
+def test_multiroom_modules_resolve_config_callables_at_call_time(
+    monkeypatch, module_name, attr
+):
+    """Regression for #1270/#1678. Modules in this package must reach config
+    CALLABLES through the ``config`` module (``config.load_config(...)``), not
+    capture them with ``from .config import load_config``. A captured binding
+    ignores a monkeypatch of ``jasper.multiroom.config.<attr>`` AND survives
+    its teardown, poisoning later tests; xdist sharding hides it by varying
+    which test first-imports the module.
+
+    Patching config with a sentinel is the leak-proof part: a from-import
+    would still hold the ORIGINAL function here, so the identity check fails
+    the moment anyone reintroduces one.
+    """
+    import importlib
+
+    import jasper.multiroom.config as cfgmod
+
+    module = importlib.import_module(module_name)
+    sentinel = object()
+    monkeypatch.setattr(cfgmod, attr, sentinel)
+
+    # Either the module holds no binding of its own (call-time resolution via
+    # ``config.<attr>``), or it re-exports lazily and sees the patch.
+    assert getattr(module, attr, sentinel) is sentinel
