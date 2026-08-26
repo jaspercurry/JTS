@@ -239,8 +239,8 @@ One line each; the doc is the canonical "read this before modifying".
   `LiveConnection`/`LiveTurn` abstraction over Gemini/OpenAI/Grok
 - [`HANDOFF-prompting.md`](docs/HANDOFF-prompting.md) — voice prompting
   playbook; start here for `jasper/voice/prompt.py` or tool descriptions
-- [`HANDOFF-pricing-editor.md`](docs/HANDOFF-pricing-editor.md) — per-model
-  voice pricing, the `/voice/` rates editor, spend caps
+- [`HANDOFF-pricing-editor.md`](docs/HANDOFF-pricing-editor.md) — where
+  per-model rate data comes from and the `/voice/` rates editor
 - [`HANDOFF-barge-in.md`](docs/HANDOFF-barge-in.md) — assistant-speech
   barge-in plan and current-code gap analysis
 - [`HANDOFF-aec.md`](docs/HANDOFF-aec.md) — AEC architecture and operations
@@ -287,7 +287,7 @@ One line each; the doc is the canonical "read this before modifying".
 - [`HANDOFF-source-capabilities.md`](docs/HANDOFF-source-capabilities.md) —
   the Sources contract: vocabulary, capability map, new-source checklist
 - [`HANDOFF-voice-music-control.md`](docs/HANDOFF-voice-music-control.md) —
-  source-aware transport across AirPlay and Spotify Connect
+  source-aware voice volume, transport, and Spotify play routing
 - [`HANDOFF-airplay.md`](docs/HANDOFF-airplay.md) — AirPlay glitch
   troubleshooting; start here for audio artifacts on AirPlay
 - [`multi-user-spotify.md`](docs/multi-user-spotify.md) — per-household-member
@@ -328,8 +328,8 @@ One line each; the doc is the canonical "read this before modifying".
   — the ARM64 build lane, bundle format, and reproducibility boundary
 - [`HANDOFF-homeassistant.md`](docs/HANDOFF-homeassistant.md) — smart-home
   delegation through Home Assistant's conversation API; `/ha/` wizard
-- [`HANDOFF-transit-citibike.md`](docs/HANDOFF-transit-citibike.md) — GBFS
-  bikeshare integration and its caching semantics
+- [`HANDOFF-transit-citibike.md`](docs/HANDOFF-transit-citibike.md) — subway,
+  Citi Bike, and Routes: config ownership, caching, and fallback contracts
 - [`HANDOFF-audible-feedback.md`](docs/HANDOFF-audible-feedback.md) —
   pre-rendered cues; start here when a failure path must not fall silent
 - [`HANDOFF-management-ui.md`](docs/HANDOFF-management-ui.md) — management-
@@ -338,8 +338,6 @@ One line each; the doc is the canonical "read this before modifying".
   UI: type ladder, depth, radii, touch targets, motion, interface writing
 - [`HANDOFF-dlna.md`](docs/HANDOFF-dlna.md) — DLNA/UPnP media input (design
   only, no code yet)
-- [`HANDOFF-apple-music.md`](docs/HANDOFF-apple-music.md) — Apple Music
-  feasibility and the chosen build path (research only)
 - [`adr/0145-remote-updates-stay-a-laptop-deploy.md`](docs/adr/0145-remote-updates-stay-a-laptop-deploy.md)
   — why there is no OTA update button, and the shape if that changes
 - [`dumb-endpoint-bringup.md`](docs/dumb-endpoint-bringup.md) — Zero 2 W
