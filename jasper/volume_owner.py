@@ -353,8 +353,21 @@ class VolumeOwner:
         replacing. Returns the REPLACEMENT handle. The old one is spent, and
         passing it to :meth:`release` afterwards is the usual no-op.
 
-        Fail-closed like :meth:`acquire_level`: a level that could not be
-        established leaves NO claim held and hands the fader back.
+        **Fail-closed here means fail QUIET, and it is the one place this
+        owner does NOT unwind.** :meth:`acquire_level` hands the fader back on
+        an unconfirmable write because nothing was playing at its level yet.
+        A relevel is different: its holder is mid-act with audio out — the
+        floor-tone audition's slider, a measurement ramp climbing toward its
+        level — and both hold levels QUIETER than the household one they would
+        unwind to. Handing the fader back there raises the level under a live
+        tone, which is the loud direction next to the hearing clamp. So an
+        unconfirmable relevel KEEPS the claim at the level it last confirmed,
+        discloses at ERROR, and raises. The caller decides abort or retry; it
+        is not decided for them by a jump.
+
+        The claim that survives is the ORIGINAL handle, still held at its own
+        ``level_db`` — the caller's handle stays valid precisely because the
+        move did not happen.
         """
         target = _finite(level_db, "level_db")
         async with self._lock:
@@ -367,23 +380,28 @@ class VolumeOwner:
                 kind=handle.kind, token=next(self._tokens), level_db=target,
             )
             self._claims[moved.token] = moved
-            taken = False
-            try:
-                if self._top_level_claim() is not moved:
-                    taken = True
-                    return moved
-                if await self._apply(context=f"relevel:{handle.kind.value}"):
-                    taken = True
-                    return moved
-                raise VolumeClaimRefused(
-                    f"could not establish {target:.6f} dB for "
-                    f"{handle.kind.value}"
-                )
-            finally:
-                if not taken:
-                    await self._unwind(
-                        moved, context=f"relevel_failed:{handle.kind.value}",
-                    )
+            if self._top_level_claim() is not moved:
+                return moved
+            if await self._apply(context=f"relevel:{handle.kind.value}"):
+                return moved
+            # Put the ORIGINAL claim back, at its last confirmed level, and do
+            # not touch the fader: the speaker is already at (or below) that
+            # level, so leaving it alone cannot be the loud direction.
+            del self._claims[moved.token]
+            self._claims[handle.token] = handle
+            log_event(
+                logger,
+                "volume.relevel_unconfirmed",
+                level=logging.ERROR,
+                kind=handle.kind.value,
+                requested_db=f"{target:.6f}",
+                held_db=f"{handle.level_db:.6f}",
+            )
+            raise VolumeClaimRefused(
+                f"could not establish {target:.6f} dB for "
+                f"{handle.kind.value}; the claim is held at "
+                f"{handle.level_db:.6f} dB"
+            )
 
     async def acquire_duck(self, depth_db: float) -> VolumeClaimHandle:
         """Take ``depth_db`` of transient attenuation off the level in effect.

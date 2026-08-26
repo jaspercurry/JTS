@@ -707,14 +707,63 @@ async def test_relevelling_a_claim_nobody_holds_is_refused():
         await owner.relevel(claim, -36.0)
 
 
-async def test_a_relevel_that_cannot_be_established_hands_the_fader_back():
+async def test_a_relevel_that_cannot_be_established_keeps_the_claim():
+    """FAIL-CLOSED HERE MEANS FAIL QUIET, and this is why it is not an unwind.
+
+    A relevel's holder is mid-act with audio out, at a level QUIETER than the
+    household one an unwind would hand back to. These very numbers say it:
+    the claim sits at −24.0 and ``HOUSEHOLD_DB`` is −21.212124, so unwinding
+    would raise the speaker 2.8 dB under a live tone. The claim therefore
+    stays at the level it last CONFIRMED, and the caller — not a jump —
+    decides abort or retry off the raise.
+    """
     fader = _Fader()
     owner = await _household(fader)
     claim = await owner.acquire_level(ClaimKind.COMMISSIONING, -24.0)
     fader.ceiling = -30.0
+    fader.writes.clear()
 
     with pytest.raises(VolumeClaimRefused):
         await owner.relevel(claim, -12.0)
 
+    assert owner.declared_level_db() == -24.0
+    assert owner.holds(claim) is True
+    # The ORIGINAL handle survives, so the caller's own reference still works.
+    await owner.release(claim)
     assert owner.declared_level_db() == HOUSEHOLD_DB
-    assert owner.holds(claim) is False
+
+
+@pytest.mark.parametrize(
+    "held_db, requested_db",
+    [
+        (-24.0, -12.0),   # asked louder, refused
+        (-24.0, -36.0),   # asked quieter, refused
+        (-40.0, -0.5),    # asked far louder, refused
+        (-5.0, -60.0),    # asked far quieter, refused
+    ],
+)
+async def test_an_unconfirmed_relevel_never_raises_the_effective_level(
+    held_db, requested_db
+):
+    """THE PROPERTY, stated over the whole direction space rather than a case.
+
+    Whatever was asked for and whichever way it pointed, a relevel that could
+    not be confirmed must never leave the speaker louder than it already was.
+    This is the pin that makes the unwind unreachable: restoring the old
+    ``_unwind`` on the failure path turns the louder-request rows red, because
+    the effective level would jump to the household claim underneath.
+    """
+    fader = _Fader()
+    owner = await _household(fader)
+    claim = await owner.acquire_level(ClaimKind.COMMISSIONING, held_db)
+    before_db = fader.db
+    before_declared = owner.declared_level_db()
+    fader.ceiling = min(held_db, requested_db) - 1.0
+    fader.writes.clear()
+
+    with pytest.raises(VolumeClaimRefused):
+        await owner.relevel(claim, requested_db)
+
+    assert fader.db <= before_db
+    assert owner.declared_level_db() <= before_declared
+    assert owner.holds(claim) is True
