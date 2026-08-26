@@ -947,39 +947,37 @@ async def test_cancelled_proactive_tail_retains_concrete_duck_owner(
             self._ducked = False
             restored.set()
 
-    class _Camilla:
-        async def get_volume_db(self, *, best_effort: bool) -> float:
-            assert best_effort
-            return -20.0
+    class _Fader:
+        """The cue duck's half of the seam, now a claim on the volume owner.
 
-        async def adjust_volume_db(
-            self,
-            db: float,
-            *,
-            best_effort: bool,
-        ) -> float:
-            assert db < 0.0
-            assert best_effort
-            ducked.set()
-            return -40.0
+        One door for both directions: the duck and its give-back are both
+        absolute writes through the owner, discriminated by where they land.
+        """
+
+        def __init__(self) -> None:
+            self.db = -20.0
+
+        async def get_volume_db(self, *, best_effort: bool = False) -> float:
+            return self.db
 
         async def set_volume_db(
-            self,
-            db: float,
-            *,
-            best_effort: bool,
-        ) -> float:
+            self, db: float, *, best_effort: bool = False,
+        ) -> bool:
             nonlocal restore_calls
-            restore_calls += 1
+            if db < -20.0:
+                self.db = db
+                ducked.set()
+                return True
             assert db == -20.0
-            assert best_effort
+            restore_calls += 1
             restore_started.set()
             await wait_signalled(
                 release_restore,
                 "release CueDuck proactive restore",
             )
+            self.db = db
             restored.set()
-            return db
+            return True
 
     wl = WakeLoop.for_tests()
     gate = _EndCountingGate()
@@ -991,8 +989,16 @@ async def test_cancelled_proactive_tail_retains_concrete_duck_owner(
     if duck_kind == "fanin":
         wl._ducker = _FanInDuck()
     else:
+        from jasper.volume_owner import VolumeOwner
+
         wl._ducker = object()  # type: ignore[assignment]
-        wl._camilla = _Camilla()
+        fader = _Fader()
+        owner = VolumeOwner(
+            set_fader_db=fader.set_volume_db,
+            get_fader_db=fader.get_volume_db,
+        )
+        await owner.declare_household_level_db(-20.0)
+        wl._volume_coordinator.volume_owner = owner  # type: ignore[attr-defined]
 
     playing = asyncio.create_task(wl._play_dynamic_text("Timer finished"))
     await wait_signalled(ducked, f"{duck_kind} proactive duck", producer=playing)

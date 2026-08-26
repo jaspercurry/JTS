@@ -233,8 +233,8 @@ def _tts_ready_detail(cfg: Config) -> str:
 
 def build_ducker(
     cfg: Config,
-    camilla: Any,
     *,
+    volume_owner: Any,
     target_db_provider: Callable[[], Awaitable[float]],
 ) -> Ducker | FanInDucker:
     """Pick the duck transport that matches where TTS enters the mix.
@@ -245,7 +245,9 @@ def build_ducker(
     """
     if cfg.duck_transport == "fanin":
         return FanInDucker(cfg.tts_outputd_socket, cfg.duck_db)
-    return Ducker(camilla, cfg.duck_db, target_db_provider=target_db_provider)
+    return Ducker(
+        volume_owner, cfg.duck_db, target_db_provider=target_db_provider,
+    )
 
 
 def _make_connection(
@@ -781,10 +783,12 @@ async def run() -> None:
     # bracket — releases against the coordinator's canonical target so their
     # interleavings cannot strand the fader at a value one of them had ducked.
     set_canonical_target_db_provider(volume_coordinator.get_camilla_target_db)
-    # Built after the coordinator so restore follows the active output topology.
+    # Built after the coordinator so restore follows the active output topology,
+    # and so the Camilla duck shares the coordinator's fader owner rather than
+    # writing beside it.
     ducker = build_ducker(
         cfg,
-        camilla,
+        volume_owner=volume_coordinator.volume_owner,
         target_db_provider=volume_coordinator.get_camilla_target_db,
     )
     try:
