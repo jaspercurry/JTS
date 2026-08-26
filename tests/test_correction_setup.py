@@ -3602,7 +3602,14 @@ def test_e2e_start_safety_refusal_returns_422(monkeypatch):
                     "speaker setup, then try again."
                 ),
                 "retryable": False,
-                "recovery_action": None,
+                # The reachable cause of this refusal is now an unready
+                # speaker — `/start` no longer turns that away before the
+                # graph load — so the household gets somewhere to act rather
+                # than a retry that would refuse again.
+                "recovery_action": {
+                    "label": "Open speaker setup",
+                    "href": "/sound/setup/",
+                },
             },
         }
         assert "flat sweep is unsafe" not in str(body)

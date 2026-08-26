@@ -1976,6 +1976,56 @@ def test_start_defaults_to_configured_relay_before_session_admission(
     assert correction_setup._start_in_progress is False
 
 
+def test_start_keeps_an_unsafe_graph_refusal_typed_for_the_dispatcher(
+    monkeypatch,
+):
+    """An unsafe measurement baseline must not reach the household as a 500.
+
+    `CorrectionRuntimeSafetyError` subclasses `RuntimeError`, and `/start`'s
+    generic arm re-raised `RuntimeError(str(exc))` — flattening the type, so
+    the dispatcher's typed arm never fired and the request degraded to an
+    untyped error with generic retryable copy. That matters more now that
+    `/start` no longer refuses ahead of this point: this is the surface that
+    answers for an unready speaker.
+    """
+    from jasper.correction.runtime_safety import CorrectionRuntimeSafetyError
+    from jasper.web import correction_setup
+
+    monkeypatch.setattr(
+        correction_setup,
+        "_room_correction_readiness",
+        lambda: _READY_ROOM_CORRECTION_SETUP,
+    )
+    monkeypatch.setattr(correction_setup, "_start_in_progress", False)
+
+    async def restore_level_match_volume(_setter):
+        return True
+
+    monkeypatch.setattr(
+        correction_setup,
+        "_get_or_create_session",
+        lambda: SimpleNamespace(
+            restore_level_match_volume=restore_level_match_volume,
+        ),
+    )
+    monkeypatch.setattr(
+        correction_setup,
+        "_replace_session",
+        lambda **_kwargs: SimpleNamespace(browser_audio_report={"failed": False}),
+    )
+    monkeypatch.setattr(correction_setup, "_camilla", lambda: object())
+
+    def _unsafe(*_args, **_kwargs):
+        raise CorrectionRuntimeSafetyError("graph would be unsafe")
+
+    monkeypatch.setattr(correction_setup, "_load_measurement_baseline", _unsafe)
+
+    with pytest.raises(CorrectionRuntimeSafetyError):
+        correction_setup._handle_start(_DummyJsonHandler())
+
+    assert correction_setup._start_in_progress is False
+
+
 def test_start_rejects_explicit_relay_when_it_is_not_configured(monkeypatch):
     from jasper.capture_relay import correction_adapter
     from jasper.web import correction_setup

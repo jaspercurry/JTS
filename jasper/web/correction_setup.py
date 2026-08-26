@@ -2554,12 +2554,13 @@ class _RoomReadiness:
         """Opaque Active decision that Room may carry and compare only.
 
         Total, including the denied answer. Active publishes no authority and
-        no Layer A identity when it cannot vouch, and under ruling S10 that is
-        a state Room runs in rather than refuses — so ``(True, None, None)``
-        is a real binding meaning "unproven", not an absent one. The writer
-        boundary still compares it: an authority that APPEARS or changes mid
-        run is drift either way, and a run that started unproven and is still
-        unproven has not moved.
+        no Layer A identity when it cannot vouch, and ``_normalize_room_readiness``
+        carries no ``active`` on that path either — so the denied binding is
+        ``(None, None, None)``, a real binding meaning "unproven" rather than
+        an absent one. Under ruling S10 that is a state Room runs in rather
+        than refuses. The writer boundary still compares it: an authority that
+        APPEARS or changes mid run is drift either way, and a run that started
+        unproven and is still unproven has not moved.
         """
 
         return (self.active, self.authority, self.layer_a_identity)
@@ -2947,6 +2948,7 @@ def _handle_start(handler: BaseHTTPRequestHandler) -> dict[str, Any]:
         # the two points. So it was always the verdict the block above had
         # already raised on.
 
+        from jasper.correction.runtime_safety import CorrectionRuntimeSafetyError
         from jasper.sound.graph_carrier import CarrierCannotHostEq
 
         try:
@@ -2959,6 +2961,15 @@ def _handle_start(handler: BaseHTTPRequestHandler) -> dict[str, Any]:
             )
         except CarrierCannotHostEq:
             logger.warning("/start: measurement baseline rejected by graph carrier")
+            raise
+        except CorrectionRuntimeSafetyError:
+            # It subclasses RuntimeError, so the arm below would re-raise it as
+            # a BARE RuntimeError and the dispatcher's typed arm would never
+            # see it — an unsafe graph would reach the household as an untyped
+            # 500. Matters more now that `/start` no longer refuses ahead of
+            # this point: this is the surface that answers for an unready
+            # speaker, so it has to keep its type.
+            logger.warning("/start: measurement baseline refused as unsafe")
             raise
         except RuntimeError as exc:
             logger.exception("/start: measurement baseline load rejected")
@@ -7817,6 +7828,14 @@ def _make_handler(cfg: dict[str, Any]) -> type[BaseHTTPRequestHandler]:
                         self._send_room_failure(
                             failures.public_failure(
                                 failures.SPEAKER_MEASUREMENT_UNSAFE,
+                                # The reachable cause of this refusal is now an
+                                # unready speaker, so send the household where
+                                # they can act on it rather than to a retry
+                                # that will refuse again.
+                                recovery_action={
+                                    "label": "Open speaker setup",
+                                    "href": "/sound/setup/",
+                                },
                             ),
                             diagnostic=str(e),
                             status=HTTPStatus.UNPROCESSABLE_ENTITY,
