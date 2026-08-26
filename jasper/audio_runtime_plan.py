@@ -1316,7 +1316,7 @@ def outputd_content_format_change(
     the ring branch was never exercised and the suppression never fired.
     """
 
-    from jasper.fanin.coupling_reconcile import read_persisted_coupling
+    from jasper.fanin.ring_health import read_persisted_coupling
     from jasper.fanin_coupling import (
         COUPLING_SHM_RING,
         content_lane_format_for_coupling,
@@ -1689,7 +1689,7 @@ def transport_topology_for_coupling(
         # The stereo shape keeps its topology-free resolution byte-for-byte —
         # nothing it publishes is per-topology.
         if active_endpoint:
-            from jasper.fanin.coupling_reconcile import load_topology_for_wire
+            from jasper.fanin.ring_health import load_topology_for_wire
 
             wire = resolve_ring_wire(load_topology_for_wire())
             post_dsp_device = RING_ACTIVE_PLAYBACK_DEVICE

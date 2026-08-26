@@ -62,6 +62,7 @@ def isolate_base_jasper_env(tmp_path, monkeypatch):
     monkeypatch.setattr(
         "jasper.fanin.coupling_reconcile.JASPER_ENV_PATH", str(jasper_env)
     )
+    monkeypatch.setattr("jasper.fanin.ring_health.JASPER_ENV_PATH", str(jasper_env))
     # ...and of its /var/lib state. ``resolve_ring_wire`` reads the box's declared
     # ring wire off the SAME jasper.env -> fanin.env chain jasper-fanin resolves,
     # so a real /var/lib/jasper/fanin.env on the host running the suite (a Pi, or
@@ -73,6 +74,7 @@ def isolate_base_jasper_env(tmp_path, monkeypatch):
     monkeypatch.setattr(
         "jasper.fanin.coupling_reconcile.FANIN_ENV_PATH", str(fanin_env)
     )
+    monkeypatch.setattr("jasper.fanin.ring_health.FANIN_ENV_PATH", str(fanin_env))
     # Keep every main() invocation's entry flock inside the test tmp dir — never
     # the real /run path — so parallel test workers can't contend on one file.
     monkeypatch.setattr(
@@ -1429,6 +1431,7 @@ def test_arm_shm_ring_refused_on_broken_narrowing_recovers_to_loopback(
     monkeypatch.setattr(
         "jasper.fanin.coupling_reconcile.JASPER_ENV_PATH", str(jasper_env)
     )
+    monkeypatch.setattr("jasper.fanin.ring_health.JASPER_ENV_PATH", str(jasper_env))
     import jasper.ring_assets as ra
 
     monkeypatch.setattr(
@@ -1747,6 +1750,7 @@ def test_geometry_gate_honours_an_outputd_period_from_the_jasper_env_position(
     monkeypatch.setattr(
         "jasper.fanin.coupling_reconcile.JASPER_ENV_PATH", str(jasper_env)
     )
+    monkeypatch.setattr("jasper.fanin.ring_health.JASPER_ENV_PATH", str(jasper_env))
     # The seam's whole shape: the generated key is ABSENT from outputd.env.
     fanin_env = _write(tmp_path / "fanin.env", "")
     outputd_env = _write(tmp_path / "outputd.env", "")
@@ -1788,6 +1792,7 @@ def test_geometry_gate_prefers_outputd_env_over_the_jasper_env_position(
     monkeypatch.setattr(
         "jasper.fanin.coupling_reconcile.JASPER_ENV_PATH", str(jasper_env)
     )
+    monkeypatch.setattr("jasper.fanin.ring_health.JASPER_ENV_PATH", str(jasper_env))
     fanin_env = _write(tmp_path / "fanin.env", "")
     outputd_env = _write(
         tmp_path / "outputd.env", "JASPER_OUTPUTD_PERIOD_FRAMES=1024\n"
@@ -1905,6 +1910,7 @@ def test_arm_shm_ring_overrides_stale_base_ring_slots_then_arms(tmp_path, monkey
     monkeypatch.setattr(
         "jasper.fanin.coupling_reconcile.JASPER_ENV_PATH", str(jasper_env)
     )
+    monkeypatch.setattr("jasper.fanin.ring_health.JASPER_ENV_PATH", str(jasper_env))
 
     fanin_env = _write(tmp_path / "fanin.env", "")
     outputd_env = _write(tmp_path / "outputd.env", "JASPER_OUTPUTD_PERIOD_FRAMES=128\n")
@@ -2243,6 +2249,7 @@ def test_confirm_shm_ring_self_heals_stale_base_ring_slots(tmp_path, monkeypatch
     monkeypatch.setattr(
         "jasper.fanin.coupling_reconcile.JASPER_ENV_PATH", str(jasper_env)
     )
+    monkeypatch.setattr("jasper.fanin.ring_health.JASPER_ENV_PATH", str(jasper_env))
 
     fanin_env = _write(
         tmp_path / "fanin.env",

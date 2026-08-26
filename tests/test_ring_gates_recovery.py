@@ -1087,6 +1087,9 @@ def test_wire_gate_refuses_the_jts3_graph_shear_and_names_the_graph_end(
 
     monkeypatch.setattr(ra, "RING_CONF_D", str(SHIPPED_RING_CONF_D))
     monkeypatch.setattr(cr, "load_topology_for_wire", _mono_two_way_topology)
+    monkeypatch.setattr(
+        "jasper.fanin.ring_health.load_topology_for_wire", _mono_two_way_topology
+    )
     config = tmp_path / "active-speaker-baseline.yml"
     config.write_text(
         _ring_graph_text(
@@ -1147,6 +1150,9 @@ def test_wire_gate_refuses_a_graph_whose_active_width_is_not_the_resolved_one(
 
     monkeypatch.setattr(ra, "RING_CONF_D", str(SHIPPED_RING_CONF_D))
     monkeypatch.setattr(cr, "load_topology_for_wire", _mono_two_way_topology)
+    monkeypatch.setattr(
+        "jasper.fanin.ring_health.load_topology_for_wire", _mono_two_way_topology
+    )
     config = tmp_path / "active-speaker-baseline.yml"
     config.write_text(
         _ring_graph_text(
@@ -1217,6 +1223,9 @@ def test_wire_gate_holds_the_active_ring_to_its_OWN_width_not_ring_bs(
 
     monkeypatch.setattr(ra, "RING_CONF_D", str(SHIPPED_RING_CONF_D))
     monkeypatch.setattr(cr, "load_topology_for_wire", _three_way_topology)
+    monkeypatch.setattr(
+        "jasper.fanin.ring_health.load_topology_for_wire", _three_way_topology
+    )
 
     wire = resolve_ring_wire(_three_way_topology())
     assert wire.ring_active_channels == 3 and wire.ring_b_channels == 2, (
@@ -1267,6 +1276,9 @@ def test_wire_gate_holds_a_non_ring_graph_to_nothing(monkeypatch, tmp_path):
 
     monkeypatch.setattr(ra, "RING_CONF_D", str(SHIPPED_RING_CONF_D))
     monkeypatch.setattr(cr, "load_topology_for_wire", _mono_two_way_topology)
+    monkeypatch.setattr(
+        "jasper.fanin.ring_health.load_topology_for_wire", _mono_two_way_topology
+    )
     config = tmp_path / "active-speaker-baseline.yml"
     config.write_text(
         _ring_graph_text(
@@ -1316,6 +1328,9 @@ def test_a_declared_narrow_pin_moves_the_resolver_and_the_refusal(
         f"{RING_WIRE_FORMAT_ENV_VAR}={RING_WIRE_FORMAT}\n", encoding="utf-8"
     )
     monkeypatch.setattr(cr, "FANIN_ENV_PATH", str(fanin_env))
+    monkeypatch.setattr(
+        "jasper.fanin.ring_health.FANIN_ENV_PATH", str(fanin_env)
+    )
 
     assert resolve_ring_wire().sample_format == RING_WIRE_FORMAT
 
@@ -1350,6 +1365,9 @@ def test_an_unparseable_declared_wire_refuses_instead_of_raising(
     fanin_env = tmp_path / "fanin.env"
     fanin_env.write_text(f"{RING_WIRE_FORMAT_ENV_VAR}=s16le\n", encoding="utf-8")
     monkeypatch.setattr(cr, "FANIN_ENV_PATH", str(fanin_env))
+    monkeypatch.setattr(
+        "jasper.fanin.ring_health.FANIN_ENV_PATH", str(fanin_env)
+    )
 
     for gate in (cr.ring_edge_width_ready, cr.ring_wire_caps_ready):
         ok, detail = gate()
@@ -1370,6 +1388,9 @@ def test_wire_gate_says_so_when_it_could_not_read_the_graph(monkeypatch, tmp_pat
 
     monkeypatch.setattr(ra, "RING_CONF_D", str(SHIPPED_RING_CONF_D))
     monkeypatch.setattr(cr, "load_topology_for_wire", _mono_two_way_topology)
+    monkeypatch.setattr(
+        "jasper.fanin.ring_health.load_topology_for_wire", _mono_two_way_topology
+    )
     statefile = tmp_path / "outputd-statefile.yml"
     statefile.write_text(f"config_path: {tmp_path / 'gone.yml'}\n", encoding="utf-8")
     monkeypatch.setenv("JASPER_CAMILLA_STATEFILE", str(statefile))

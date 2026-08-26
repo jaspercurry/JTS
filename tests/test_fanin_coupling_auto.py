@@ -1355,6 +1355,7 @@ def test_auto_stale_base_ring_slots_self_heals_and_keeps_ring(tmp_path, monkeypa
     outputd.write_text(_armed_outputd_env(), encoding="utf-8")
     jasper_env.write_text("JASPER_FANIN_RING_SLOTS=8\n", encoding="utf-8")
     monkeypatch.setattr(cr, "JASPER_ENV_PATH", str(jasper_env))
+    monkeypatch.setattr("jasper.fanin.ring_health.JASPER_ENV_PATH", str(jasper_env))
     _persist_ring_eligible_topology(tmp_path, monkeypatch)
 
     assets = ("ring_assets", lambda: (True, "assets"))

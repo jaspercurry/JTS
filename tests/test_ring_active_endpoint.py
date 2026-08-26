@@ -1705,7 +1705,7 @@ def test_the_coupling_warn_names_the_recovery_ladder_and_never_the_forbidden_rin
 
     monkeypatch.setattr(audio_runtime, "_requires_roleful_graph", lambda: True)
     monkeypatch.setattr(
-        "jasper.fanin.coupling_reconcile.read_persisted_coupling",
+        "jasper.fanin.ring_health.read_persisted_coupling",
         lambda *a, **k: COUPLING_SHM_RING,
     )
     monkeypatch.setattr(
@@ -1769,7 +1769,7 @@ def test_the_coupling_warn_on_an_armed_box_names_the_forward_ladder_not_a_rollba
 
     monkeypatch.setattr(audio_runtime, "_requires_roleful_graph", lambda: True)
     monkeypatch.setattr(
-        "jasper.fanin.coupling_reconcile.read_persisted_coupling",
+        "jasper.fanin.ring_health.read_persisted_coupling",
         lambda *a, **k: COUPLING_SHM_RING,
     )
     monkeypatch.setattr(
@@ -3117,6 +3117,9 @@ def test_the_arm_ladder_clears_the_validator_the_reconciler_actually_runs(
     from jasper.fanin import coupling_reconcile as cr
 
     monkeypatch.setattr(cr, "load_topology_for_wire", lambda: topology)
+    monkeypatch.setattr(
+        "jasper.fanin.ring_health.load_topology_for_wire", lambda: topology
+    )
     monkeypatch.setattr(ring_assets_module, "RING_CONF_D", str(RING_CONF))
 
     ok, detail = ring_edge_width_ready(
@@ -3194,6 +3197,9 @@ def _first_arm_on_a_stereo_ring_box(tmp_path, capsys, monkeypatch, *, graph_yaml
 
     topology = _active_topology("mono", "active_2_way")
     monkeypatch.setattr(cr, "load_topology_for_wire", lambda: topology)
+    monkeypatch.setattr(
+        "jasper.fanin.ring_health.load_topology_for_wire", lambda: topology
+    )
     if graph_yaml is None:
         graph_yaml = _emit_active_baseline(
             _mono_two_way_preset(), RING_ACTIVE_PLAYBACK_DEVICE, topology=topology

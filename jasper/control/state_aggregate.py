@@ -336,7 +336,7 @@ def _coupling_state(
             COUPLING_CHOICE_ENV_VAR,
             resolved_choice_label,
         )
-        from ..fanin.coupling_reconcile import (
+        from ..fanin.ring_health import (
             FANIN_ENV_PATH,
             OUTPUTD_ENV_PATH,
             read_persisted_coupling,
