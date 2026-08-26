@@ -105,18 +105,17 @@ def test_provider_key_checks_the_ssot_provider_not_the_environments(
 
 
 @pytest.mark.parametrize(
-    "state, env_provider, status",
+    "state, status",
     [
-        (_state("invalid", raw="nope"), "gemini", "fail"),
-        (_state("unreadable"), "gemini", "warn"),
-        (_state("missing"), "gemini", "warn"),
-        (_state("unset"), "gemini", "warn"),
-        (_state("unset"), "", "ok"),
+        (_state("invalid", raw="nope"), "fail"),
+        (_state("unreadable"), "warn"),
+        (_state("missing"), "warn"),
+        (_state("unset"), "warn"),
     ],
-    ids=["invalid", "unreadable", "file-missing", "unset", "nothing-anywhere"],
+    ids=["invalid", "unreadable", "file-missing", "unset"],
 )
 def test_provider_key_adjudicates_the_selection_by_status(
-    monkeypatch, state, env_provider, status
+    monkeypatch, state, status
 ):
     """This check owns the verdict on the selection itself (its neighbours
     defer to it), gated on ActiveProviderState.status — never on the
@@ -124,7 +123,10 @@ def test_provider_key_adjudicates_the_selection_by_status(
     monkeypatch.setattr(
         doctor_voice, "read_active_provider_state", lambda: state,
     )
-    cfg = SimpleNamespace(voice_provider=env_provider, gemini_api_key="AIzaSy1")
+    # The environment always names a provider by the time any check runs:
+    # Config.from_env() raises VoiceProviderNotConfigured for an unset one
+    # and jasper-doctor exits on it before building the check list.
+    cfg = SimpleNamespace(voice_provider="gemini", gemini_api_key="AIzaSy1")
 
     r = doctor.check_provider_key(cfg)  # type: ignore[arg-type]
 
@@ -209,6 +211,28 @@ def test_pricing_warns_only_for_an_unpriced_active_model(
     cfg = _fresh_cfg(monkeypatch, GEMINI_API_KEY="AIzaABCDEF12345", **extra)
 
     assert doctor.check_pricing(cfg).status == status
+
+
+@pytest.mark.parametrize(
+    "status, verdict",
+    [
+        ("unreadable", "warn"),
+        ("invalid", "warn"),
+        ("missing", "ok"),
+        ("unset", "ok"),
+    ],
+)
+def test_pricing_warns_when_it_could_not_ask_which_model_is_active(
+    monkeypatch, status, verdict
+):
+    """A row that could not resolve its own question reports "can't tell",
+    not "fine" — first-time setup (missing/unset) stays ok."""
+    monkeypatch.setattr(
+        doctor_voice, "read_active_provider_state", lambda: _state(status),
+    )
+    cfg = _fresh_cfg(monkeypatch, GEMINI_API_KEY="AIzaABCDEF12345")
+
+    assert doctor.check_pricing(cfg).status == verdict
 
 
 def test_pricing_prices_the_ssot_providers_model(monkeypatch, tmp_path: Path):

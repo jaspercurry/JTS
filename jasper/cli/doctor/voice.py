@@ -59,7 +59,7 @@ def check_provider_key(cfg: Config) -> CheckResult:
     Also the module's adjudicator for the *selection* itself: an
     unreadable or unsupported SSOT value is reported here, once."""
     state = read_active_provider_state()
-    env_provider = str(getattr(cfg, "voice_provider", "") or "")
+    env_provider = cfg.voice_provider
     if state.status == "invalid":
         return CheckResult(
             "voice provider key", "fail", f"{state.detail} in {state.path}",
@@ -70,12 +70,6 @@ def check_provider_key(cfg: Config) -> CheckResult:
             f"active provider undetermined ({state.detail}); no key checked",
         )
     if not state.configured:
-        if not env_provider:
-            return CheckResult(
-                "voice provider key", "ok",
-                "no provider configured (skipped — pick one in the /voice "
-                "wizard)",
-            )
         # The file is the canonical home for this selection (.env.example
         # says so, and the wizard is its only writer), so a provider that
         # exists only in this process's environment is drift, not config.
@@ -94,7 +88,7 @@ def check_provider_key(cfg: Config) -> CheckResult:
     # itself a finding rather than a silent tiebreak.
     drift = (
         ""
-        if not env_provider or env_provider == state.provider
+        if env_provider == state.provider
         else (
             f" — note {state.provider} is active per {state.path} while "
             f"this process's environment names {env_provider!r}; the key "
@@ -482,7 +476,8 @@ def check_pricing(cfg: Config) -> CheckResult:
         model = cfg.voice_model_for(state.provider) if state.configured else ""
         if not model:
             return CheckResult(
-                "voice model pricing", "ok",
+                "voice model pricing",
+                "warn" if state.status in _PROVIDER_UNDETERMINED else "ok",
                 f"{len(defaults)} models priced (as of {as_of}); "
                 f"active model not checked ({state.detail or 'no model'})",
             )
