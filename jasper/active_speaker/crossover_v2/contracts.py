@@ -64,6 +64,7 @@ __all__ = [
     "ADOPTION_ROW_RESTORE_REGRESSION",
     "ADOPTION_ROW_RESTORE_UNSAFE",
     "ADOPTION_ROW_RESTORE_UNTRUSTED",
+    "ATTEMPT_METRIC_VERIFY_MAX_NOTCH_EXCLUDED",
     "AdoptionDecision",
     "AdoptionOutcome",
     "BenefitStatus",
@@ -1388,6 +1389,12 @@ DEFAULT_CLOUD_MEASURE_POSITIONS = 9
 # measured against the notch-excluded max (W6.7 ruling 1 —
 # `program_analysis.VERIFY_NOTCH_EXCLUSION_DB`) rather than the raw max.
 VERIFY_TOLERANCE_DB = 1.5
+# …and the key that number is compared against, which is why it lives beside
+# it. The absolute VERIFY tracking error used by both the live attempts loop
+# and the offline repeat-floor replay. Lower is better: zero is the model's
+# prediction of perfect realization, while the analyzer's value is what the
+# applied speaker actually realized.
+ATTEMPT_METRIC_VERIFY_MAX_NOTCH_EXCLUDED = "max_db_notch_excluded"
 
 
 # --------------------------------------------------------------------------- #

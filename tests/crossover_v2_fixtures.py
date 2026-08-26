@@ -1375,6 +1375,35 @@ def _driver_response_diag(
     )
 
 
+def _gate_block(
+    *,
+    direct_peak_ms: float = 10.40,
+    first_reflection_ms: float = 15.73,
+    rms_db: float | None = 2.59,
+    floor_source: str = gating.FLOOR_MEASURED,
+) -> dict:
+    """A gating block with the two absolute times AND the priced delta on it.
+
+    The fixture ``_driver_response_diag`` builds carries neither, because the
+    consumers it was written for read only ``window_ms``/``floor_source``.
+    Ticket 1.5's numbers come off the other fields, so they need a block that
+    has them — and one where ``first_reflection_ms`` differs from the DELAY by
+    a lot, so a helper that returned the absolute time by mistake could not
+    pass by coincidence.
+    """
+    delta = None if rms_db is None else {
+        "rms_db": rms_db, "max_db": 6.1, "eval_band_hz": [357.0, 20000.0],
+    }
+    return {
+        "applied": True,
+        "window_ms": 5.33,
+        "floor_source": floor_source,
+        "direct_peak_ms": direct_peak_ms,
+        "first_reflection_ms": first_reflection_ms,
+        "pre_post_gate_delta": delta,
+    }
+
+
 def _check_analysis_with_solves(program, *, snr_floor_ok=True, pilot_snr_ok=True):
     """A CHECK analysis whose gain plan carries #1825 per-role solves."""
     return ProgramAnalysis(
