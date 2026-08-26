@@ -662,3 +662,59 @@ async def test_the_registered_owner_is_the_one_that_arbitrates():
 
     await volume_owner().release(claim)
     assert fader.db == pytest.approx(HOUSEHOLD_DB)
+
+
+# --- relevel ----------------------------------------------------------------
+
+
+async def test_relevel_moves_a_held_claim_in_one_write():
+    """The floor-tone slider shape: the claim outlives the level it was taken at.
+
+    Release-then-reacquire would step through the household level on the way,
+    so the speaker would jump up and back down between two floors. One settle.
+    """
+    fader = _Fader()
+    owner = await _household(fader)
+    claim = await owner.acquire_level(ClaimKind.COMMISSIONING, -24.0)
+    fader.writes.clear()
+
+    moved = await owner.relevel(claim, -36.0)
+
+    assert fader.writes == [-36.0]
+    assert owner.declared_level_db() == -36.0
+    assert owner.holds(moved) is True
+    assert owner.holds(claim) is False
+
+
+async def test_a_releveled_claim_still_releases_to_the_household_level():
+    fader = _Fader()
+    owner = await _household(fader)
+    claim = await owner.acquire_level(ClaimKind.COMMISSIONING, -24.0)
+
+    moved = await owner.relevel(claim, -36.0)
+    await owner.release(moved)
+
+    assert fader.db == pytest.approx(HOUSEHOLD_DB)
+
+
+async def test_relevelling_a_claim_nobody_holds_is_refused():
+    fader = _Fader()
+    owner = await _household(fader)
+    claim = await owner.acquire_level(ClaimKind.COMMISSIONING, -24.0)
+    await owner.release(claim)
+
+    with pytest.raises(VolumeClaimRefused):
+        await owner.relevel(claim, -36.0)
+
+
+async def test_a_relevel_that_cannot_be_established_hands_the_fader_back():
+    fader = _Fader()
+    owner = await _household(fader)
+    claim = await owner.acquire_level(ClaimKind.COMMISSIONING, -24.0)
+    fader.ceiling = -30.0
+
+    with pytest.raises(VolumeClaimRefused):
+        await owner.relevel(claim, -12.0)
+
+    assert owner.declared_level_db() == HOUSEHOLD_DB
+    assert owner.holds(claim) is False

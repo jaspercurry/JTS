@@ -214,6 +214,11 @@ from jasper.sound.settings import (
     save_sound_settings,
 )
 from jasper.volume_curve import percent_to_db
+from jasper.volume_owner import (
+    ClaimKind,
+    VolumeClaimHandle,
+    volume_owner,
+)
 
 from ._common import (
     JsonBodyError,
@@ -1446,11 +1451,54 @@ class _LoopingVolumeFloorTone:
                 self._on_finish(self, finish_reason)
 
 
+async def _claim_floor_level(
+    household_db: float, floor_target_db: float,
+) -> VolumeClaimHandle | None:
+    """Take the audition's COMMISSIONING claim over the household level.
+
+    The household level is declared from the snapshot this audition just read,
+    because in the web process nothing else has told the owner what the
+    speaker plays at — and without it the release below has no reference and
+    would leave the fader parked at the floor.
+
+    ``None`` when no owner is registered: the audition still runs, one level
+    quieter than it asked for at worst, rather than refusing to play. That is
+    the disclose-and-degrade posture, not a silent fallback — the owner logs
+    the refusal itself.
+    """
+    owner = volume_owner()
+    if owner is None:
+        return None
+    await owner.declare_household_level_db(household_db)
+    return await owner.acquire_level(ClaimKind.COMMISSIONING, floor_target_db)
+
+
+async def _release_floor_level(
+    claim: VolumeClaimHandle | None, household_db: float,
+) -> None:
+    """Give the audition's claim back, landing on the household level.
+
+    Two calls rather than one, and that costs nothing here: the audition
+    snapshots the household level once at start and restores that exact value,
+    so the reference cannot move while the claim is held. The declaration is
+    outranked by the claim and therefore writes nothing; the release is the
+    single fader move.
+    """
+    owner = volume_owner()
+    if owner is None or claim is None:
+        return
+    await owner.declare_household_level_db(household_db)
+    await owner.release(claim)
+
+
 class _VolumeFloorToneSession:
     def __init__(self) -> None:
         self._lock = threading.RLock()
         self._camilla_op_lock = threading.Lock()
         self._runner: Any | None = None
+        # The COMMISSIONING claim this audition holds on the main fader. The
+        # level it sits at moves with the slider, so the claim outlives it.
+        self._claim: VolumeClaimHandle | None = None
         self._original_db: float | None = None
         self._original_mute: bool | None = None
         self._floor_db: float | None = None
@@ -1513,7 +1561,9 @@ class _VolumeFloorToneSession:
                 original = await camilla.get_volume_and_mute(best_effort=True)
                 if original is None:
                     raise RuntimeError("CamillaDSP volume state is unavailable")
-                await camilla.set_volume_db(percent_to_db(1, floor_db=floor_db))
+                self._claim = await _claim_floor_level(
+                    original[0], percent_to_db(1, floor_db=floor_db),
+                )
                 await camilla.set_main_mute(False)
                 with self._lock:
                     cancelled = self._cancel_start
@@ -1575,7 +1625,13 @@ class _VolumeFloorToneSession:
                         status="stale",
                     )
                 camilla = camilla_factory()
-                await camilla.set_volume_db(percent_to_db(1, floor_db=floor_db))
+                # The claim is held; only the level it sits at moves. One
+                # settle, so the tone steps between floors instead of jumping
+                # up to the household level and back down.
+                if self._claim is not None:
+                    self._claim = await volume_owner().relevel(
+                        self._claim, percent_to_db(1, floor_db=floor_db),
+                    )
                 await camilla.set_main_mute(False)
                 with self._lock:
                     if self._runner is runner and self._generation == generation:
@@ -1752,11 +1808,18 @@ class _VolumeFloorToneSession:
         original_mute: bool,
     ) -> None:
         camilla = camilla_factory()
+        # The ONE restore funnel — every path out of an audition reaches here,
+        # so releasing the claim here covers the cancelled start, the failed
+        # runner, the outer error path and an ordinary stop alike. The release
+        # lands on the household level the start declared, which is
+        # ``original_db``; the mute ordering around it is unchanged and stays
+        # this session's, not the owner's.
+        claim, self._claim = self._claim, None
         if original_mute:
             await camilla.set_main_mute(True, best_effort=True)
-            await camilla.set_volume_db(original_db, best_effort=True)
+            await _release_floor_level(claim, original_db)
         else:
-            await camilla.set_volume_db(original_db, best_effort=True)
+            await _release_floor_level(claim, original_db)
             await camilla.set_main_mute(False, best_effort=True)
 
     def _clear_active_locked(self) -> None:
