@@ -1,16 +1,20 @@
-# HANDOFF — Apple Music integration (research + plan)
+# Apple Music integration — research record (2026-05)
 
-Research-only doc. No implementation yet. Captures the feasibility
-analysis, architecture decision, chosen integration path, and
-sequenced build plan for adding Apple Music as a voice-controllable
-music source alongside the existing Spotify / AirPlay / Bluetooth /
-USB Audio sources.
-
-> **Audio topology note (updated 2026-05-26):** JTS now uses the
-> fan-in renderer topology. Any future native Apple Music player should
-> write to its own private fan-in lane, not directly to
-> `hw:Loopback,0,0`. The older raw-loopback examples below have been
-> updated where they describe the planned implementation path.
+> **An unbuilt plan, archived.** Nothing here exists in the codebase:
+> there is no `jasper/apple_music/`, no Apple Music voice tool, no
+> `Source.APPLE_MUSIC`, and no `/apple-music/` wizard. The live pointer
+> is the **v10 row in [PLAN.md](../../PLAN.md)**, which owns the roadmap
+> summary and the pre-implementation gate; this file keeps the
+> feasibility survey, the rejected paths, the vendoring plan, and the
+> sequenced build sketch that produced it.
+>
+> **Before implementing any of it**, re-read
+> [audio-paths.md](../audio-paths.md) "Adding a new music source" and
+> [HANDOFF-source-capabilities.md](../HANDOFF-source-capabilities.md) —
+> those are the operational source of truth for the topology and the
+> source contract. This document is written against the topology and the
+> provider surfaces as they stood in 2026-05; the file map, line-count
+> budgets, and API shapes below have not been re-verified since.
 
 ## TL;DR
 
@@ -368,7 +372,7 @@ they will on live albums.
 ### Step 5: Mux + volume + source_state integration
 
 Start with
-[`audio-paths.md`](audio-paths.md#adding-a-new-music-source); that is
+[`audio-paths.md`](../audio-paths.md#adding-a-new-music-source); that is
 the canonical add-a-music-source checklist. This section only adds the
 Apple-specific notes.
 
@@ -475,4 +479,4 @@ Investigation against MA's actual source code:
 | "44.1/16 → 24/48 is zero-pad" | **Correct but irrelevant.** | Matches librespot's behavior (source-native decode → 48 kHz fan-in lane → output dmix). Consistency across sources > bit-perfect. |
 | "Run MA spike first" | **Correct.** | Cheapest possible validation of the full chain on aarch64. Do before any code. |
 
-Last verified: 2026-06-04
+Archived 2026-08-26. Frozen as of its last verification, 2026-06-04.

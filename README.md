@@ -338,8 +338,6 @@ One line each; the doc is the canonical "read this before modifying".
   UI: type ladder, depth, radii, touch targets, motion, interface writing
 - [`HANDOFF-dlna.md`](docs/HANDOFF-dlna.md) — DLNA/UPnP media input (design
   only, no code yet)
-- [`HANDOFF-apple-music.md`](docs/HANDOFF-apple-music.md) — Apple Music
-  feasibility and the chosen build path (research only)
 - [`adr/0145-remote-updates-stay-a-laptop-deploy.md`](docs/adr/0145-remote-updates-stay-a-laptop-deploy.md)
   — why there is no OTA update button, and the shape if that changes
 - [`dumb-endpoint-bringup.md`](docs/dumb-endpoint-bringup.md) — Zero 2 W
