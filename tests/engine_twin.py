@@ -178,6 +178,24 @@ class FakeVolume:
         return len(self.acquired) > self.releases
 
 
+def _mint(
+    prefix: str, into: list[Mapping[str, Any]], item: Mapping[str, Any],
+) -> str:
+    """Store ``item`` and hand back its id — which IS its 1-based position."""
+    into.append(dict(item))
+    return f"{prefix}-{len(into)}"
+
+
+def _find(
+    prefix: str, among: list[Mapping[str, Any]], wanted: str,
+) -> Mapping[str, Any] | None:
+    """The item :func:`_mint` gave ``wanted`` to, or ``None``."""
+    for index, item in enumerate(among, start=1):
+        if wanted == f"{prefix}-{index}":
+            return item
+    return None
+
+
 @dataclass
 class FakeRecords:
     """The record slot: an in-memory bank that reads back.
@@ -196,24 +214,16 @@ class FakeRecords:
     def bank(self, record: Mapping[str, Any]) -> str:
         if self.bank_raises:
             raise SeamFailure("twin record bank failed")
-        self.banked.append(dict(record))
-        return f"rec-{len(self.banked)}"
+        return _mint("rec", self.banked, record)
 
     def read(self, record_id: str) -> Mapping[str, Any] | None:
-        for index, record in enumerate(self.banked, start=1):
-            if record_id == f"rec-{index}":
-                return record
-        return None
+        return _find("rec", self.banked, record_id)
 
     def persist(self, state: Mapping[str, Any]) -> str:
-        self.persisted.append(dict(state))
-        return f"state-{len(self.persisted)}"
+        return _mint("state", self.persisted, state)
 
     def read_state(self, state_id: str) -> Mapping[str, Any] | None:
-        for index, state in enumerate(self.persisted, start=1):
-            if state_id == f"state-{index}":
-                return state
-        return None
+        return _find("state", self.persisted, state_id)
 
     def by_position(self, position_deg: int | None) -> list[Mapping[str, Any]]:
         """Every banked record taken at one pose, in bank order."""
