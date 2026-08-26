@@ -20,10 +20,34 @@ from jasper.voice.catalog import PROVIDERS, provider_ids_manifest_text
 from .doctor_test_support import _fresh_cfg
 
 # -------------------------------------------------- provider-aware key check
+#
+# "Which provider is active?" is answered by the wizard-owned SSOT file, not
+# by Config/os.environ — the two can name different providers in one report
+# (issue #2212), so every test here lays the file down explicitly.
+
+
+def _ssot(monkeypatch, tmp_path: Path, provider: str = "") -> Path:
+    """Point the active-provider reader at a tmp SSOT file. Empty
+    ``provider`` writes a file that selects nothing."""
+    path = tmp_path / "voice_provider.env"
+    path.write_text(f"JASPER_VOICE_PROVIDER={provider}\n" if provider else "")
+    monkeypatch.setenv("JASPER_VOICE_PROVIDER_FILE", str(path))
+    return path
+
+
+def _state(status: str, provider: str = "", raw: str = ""):
+    from jasper.voice.provider_state import ActiveProviderState
+
+    return ActiveProviderState(
+        provider, None, status, "/tmp/voice_provider.env", raw_provider=raw,
+    )
 
 
 @pytest.mark.parametrize("provider", PROVIDERS, ids=lambda p: p.id)
-def test_provider_key_accepts_each_catalog_provider(provider):
+def test_provider_key_accepts_each_catalog_provider(
+    monkeypatch, tmp_path: Path, provider
+):
+    _ssot(monkeypatch, tmp_path, provider.id)
     key = provider.key_prefix_hint.rstrip(".") + "test-key"
     cfg = SimpleNamespace(
         voice_provider=provider.id,
@@ -36,7 +60,8 @@ def test_provider_key_accepts_each_catalog_provider(provider):
     assert r.name == provider.key_env
 
 
-def test_provider_key_warns_on_wrong_prefix(monkeypatch):
+def test_provider_key_warns_on_wrong_prefix(monkeypatch, tmp_path: Path):
+    _ssot(monkeypatch, tmp_path, "openai")
     cfg = _fresh_cfg(
         monkeypatch,
         JASPER_VOICE_PROVIDER="openai",
@@ -46,8 +71,9 @@ def test_provider_key_warns_on_wrong_prefix(monkeypatch):
     assert doctor.check_provider_key(cfg).status == "warn"
 
 
-def test_provider_key_ignores_dormant_providers(monkeypatch):
+def test_provider_key_ignores_dormant_providers(monkeypatch, tmp_path: Path):
     """Active=openai with GEMINI_API_KEY unset: gemini is dormant, not broken."""
+    _ssot(monkeypatch, tmp_path, "openai")
     cfg = _fresh_cfg(
         monkeypatch,
         JASPER_VOICE_PROVIDER="openai",
@@ -55,6 +81,56 @@ def test_provider_key_ignores_dormant_providers(monkeypatch):
     )
 
     assert doctor.check_provider_key(cfg).status == "ok"
+
+
+def test_provider_key_checks_the_ssot_provider_not_the_environments(
+    monkeypatch, tmp_path: Path
+):
+    """The SSOT file selects gemini while this process's environment names
+    openai (`sudo -E JASPER_VOICE_PROVIDER=openai jasper-doctor`). The row
+    must be about gemini's key, and must not resolve the disagreement
+    silently."""
+    _ssot(monkeypatch, tmp_path, "gemini")
+    cfg = _fresh_cfg(
+        monkeypatch,
+        JASPER_VOICE_PROVIDER="openai",
+        OPENAI_API_KEY="sk-openai1234",
+        GEMINI_API_KEY="AIzaSyGemini1234",
+    )
+
+    r = doctor.check_provider_key(cfg)
+
+    assert r.name == "GEMINI_API_KEY"
+    assert r.status == "warn"
+
+
+@pytest.mark.parametrize(
+    "state, status",
+    [
+        (_state("invalid", raw="nope"), "fail"),
+        (_state("unreadable"), "warn"),
+        (_state("missing"), "warn"),
+        (_state("unset"), "warn"),
+    ],
+    ids=["invalid", "unreadable", "file-missing", "unset"],
+)
+def test_provider_key_adjudicates_the_selection_by_status(
+    monkeypatch, state, status
+):
+    """This check owns the verdict on the selection itself (its neighbours
+    defer to it), gated on ActiveProviderState.status — never on the
+    environment's opinion."""
+    monkeypatch.setattr(
+        doctor_voice, "read_active_provider_state", lambda: state,
+    )
+    # The environment always names a provider by the time any check runs:
+    # Config.from_env() raises VoiceProviderNotConfigured for an unset one
+    # and jasper-doctor exits on it before building the check list.
+    cfg = SimpleNamespace(voice_provider="gemini", gemini_api_key="AIzaSy1")
+
+    r = doctor.check_provider_key(cfg)  # type: ignore[arg-type]
+
+    assert r.status == status
 
 
 @pytest.mark.parametrize(
@@ -126,12 +202,63 @@ def test_spotify_connect_device_consumes_build_result(monkeypatch, tmp_path: Pat
     [(None, "ok"), ("gemini-9.9-does-not-exist", "warn")],
     ids=["priced", "unpriced"],
 )
-def test_pricing_warns_only_for_an_unpriced_active_model(monkeypatch, model, status):
+def test_pricing_warns_only_for_an_unpriced_active_model(
+    monkeypatch, tmp_path: Path, model, status
+):
     """An unpriced active model reads $0 cost, so the spend cap cannot bound it."""
+    _ssot(monkeypatch, tmp_path, "gemini")
     extra = {"JASPER_GEMINI_MODEL": model} if model else {}
     cfg = _fresh_cfg(monkeypatch, GEMINI_API_KEY="AIzaABCDEF12345", **extra)
 
     assert doctor.check_pricing(cfg).status == status
+
+
+@pytest.mark.parametrize(
+    "status, verdict",
+    [
+        ("unreadable", "warn"),
+        ("invalid", "warn"),
+        ("missing", "ok"),
+        ("unset", "ok"),
+    ],
+)
+def test_pricing_warns_when_it_could_not_ask_which_model_is_active(
+    monkeypatch, status, verdict
+):
+    """A row that could not resolve its own question reports "can't tell",
+    not "fine" — first-time setup (missing/unset) stays ok."""
+    monkeypatch.setattr(
+        doctor_voice, "read_active_provider_state", lambda: _state(status),
+    )
+    cfg = _fresh_cfg(monkeypatch, GEMINI_API_KEY="AIzaABCDEF12345")
+
+    assert doctor.check_pricing(cfg).status == verdict
+
+
+def test_pricing_prices_the_ssot_providers_model(monkeypatch, tmp_path: Path):
+    """Which model gets a rate follows the SSOT provider; the model string
+    itself still comes from Config, which merges the operator env with the
+    wizard file exactly as jasper-voice does."""
+    import jasper.usage as usage
+
+    _ssot(monkeypatch, tmp_path, "gemini")
+    cfg = _fresh_cfg(
+        monkeypatch,
+        JASPER_VOICE_PROVIDER="openai",
+        OPENAI_API_KEY="sk-openai1234",
+    )
+    priced: list[str] = []
+    real = usage.pricing_for_model
+    monkeypatch.setattr(
+        usage,
+        "pricing_for_model",
+        lambda m, **kw: (priced.append(m), real(m, **kw))[1],
+    )
+
+    doctor.check_pricing(cfg)
+
+    assert cfg.gemini_model != cfg.openai_model
+    assert priced == [cfg.gemini_model]
 
 
 def _spend_cap_cfg(monkeypatch, tmp_path: Path, cap: str) -> Config:

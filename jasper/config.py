@@ -981,17 +981,28 @@ class Config:
             ),
         ))
 
-    @property
-    def active_voice_model(self) -> str:
-        """Model name configured for the active provider, or "" for an
-        unset/unknown provider. Single source for the daemon's startup
-        logging, the spend-cap pricing lookup, and jasper-doctor — so a
-        new provider's model resolution lives in exactly one place."""
+    def voice_model_for(self, provider: str) -> str:
+        """Model name this config resolves for ``provider``, or "" for an
+        unknown provider id. The one provider→model mapping: a new
+        provider's model resolution lives here and nowhere else.
+
+        Takes the provider rather than reading ``self.voice_provider`` so
+        a caller that resolves the active provider from the wizard-owned
+        SSOT file (jasper.voice.provider_state — jasper-doctor does) can
+        still get the model the daemon would use, which merges the
+        operator's ``/etc/jasper/jasper.env`` with the wizard file."""
         return {
             "gemini": self.gemini_model,
             "openai": self.openai_model,
             "grok": self.grok_model,
-        }.get(self.voice_provider, "")
+        }.get(provider, "")
+
+    @property
+    def active_voice_model(self) -> str:
+        """Model name configured for the active provider, or "" for an
+        unset/unknown provider. Used by the daemon whose environment
+        defines "active" — jasper-voice, restarted on every switch."""
+        return self.voice_model_for(self.voice_provider)
 
     @property
     def weather_prompt_location(self) -> str:

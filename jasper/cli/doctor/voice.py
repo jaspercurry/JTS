@@ -32,34 +32,86 @@ from ._shared import (
 def _provider_api_key_attr(provider_id: str) -> str:
     return f"{provider_id.replace('-', '_')}_api_key"
 
+
+# WHICH provider is active is answered in this module by exactly one
+# authority: the wizard-owned SSOT file, via read_active_provider_state()
+# (jasper.voice.provider_state). Config/os.environ answers a different
+# question — what THIS jasper-doctor process inherited — and a calling-shell
+# export outranks the file there (jasper.env_load.load_env_files uses
+# setdefault), so the two can name different providers in one report
+# (issue #2212). Config stays the authority for what the daemon resolves
+# *given* a provider: key material and model, from the same env files
+# jasper-voice sources.
+#
+# Statuses where the file cannot name a provider. check_provider_key
+# adjudicates a bad or unreadable selection; its neighbours defer to it and
+# only report "can't tell".
+_PROVIDER_UNDETERMINED = frozenset({"unreadable", "invalid"})
+
+
 @doctor_check(order=2, group="voice", label="provider key", needs_cfg=True)
 def check_provider_key(cfg: Config) -> CheckResult:
     """Check that the active provider's API key is set and has the
     expected prefix. Other providers' keys are intentionally not
     checked — they may be set (so the wizard can switch without a
-    re-paste) or not, and either is fine."""
-    provider = provider_by_id(cfg.voice_provider)
-    if provider is None:
+    re-paste) or not, and either is fine.
+
+    Also the module's adjudicator for the *selection* itself: an
+    unreadable or unsupported SSOT value is reported here, once."""
+    state = read_active_provider_state()
+    env_provider = cfg.voice_provider
+    if state.status == "invalid":
         return CheckResult(
-            "voice provider key", "fail",
-            f"unsupported JASPER_VOICE_PROVIDER={cfg.voice_provider!r}",
+            "voice provider key", "fail", f"{state.detail} in {state.path}",
         )
+    if state.status == "unreadable":
+        return CheckResult(
+            "voice provider key", "warn",
+            f"active provider undetermined ({state.detail}); no key checked",
+        )
+    if not state.configured:
+        # The file is the canonical home for this selection (.env.example
+        # says so, and the wizard is its only writer), so a provider that
+        # exists only in this process's environment is drift, not config.
+        return CheckResult(
+            "voice provider key", "warn",
+            f"{state.detail}, but this process's environment names "
+            f"{env_provider!r} — no key checked. Pick a provider at "
+            f"http://jts.local/voice/ so every surface agrees.",
+        )
+
+    provider = provider_by_id(state.provider)
+    assert provider is not None  # read_active_provider_state validated it
     env_name = provider.key_env
-    prefix = provider.key_prefix_hint.rstrip(".")
-    attr = _provider_api_key_attr(provider.id)
-    key = getattr(cfg, attr, "")
+    # Configured vs. inherited, reported distinctly: the key verdict is
+    # always about the SSOT provider, and a disagreeing environment is
+    # itself a finding rather than a silent tiebreak.
+    drift = (
+        ""
+        if env_provider == state.provider
+        else (
+            f" — note {state.provider} is active per {state.path} while "
+            f"this process's environment names {env_provider!r}; the key "
+            f"checked is the active provider's"
+        )
+    )
+    key = getattr(cfg, _provider_api_key_attr(provider.id), "")
     if not key:
         return CheckResult(
             env_name, "fail",
-            f"not set; required because JASPER_VOICE_PROVIDER="
-            f"{cfg.voice_provider!r}. Paste at http://jts.local/voice/ "
-            f"or add to /etc/jasper/jasper.env.",
+            f"not set; required because {state.provider} is the active "
+            f"provider. Paste at http://jts.local/voice/ "
+            f"or add to /etc/jasper/jasper.env.{drift}",
         )
+    prefix = provider.key_prefix_hint.rstrip(".")
     if not key.startswith(prefix):
         return CheckResult(
             env_name, "warn",
-            f"doesn't start with '{prefix}' — may be a stale or wrong key",
+            f"doesn't start with '{prefix}' — may be a stale or wrong "
+            f"key{drift}",
         )
+    if drift:
+        return CheckResult(env_name, "warn", f"{key[:8]}...{drift}")
     return CheckResult(env_name, "ok", f"{key[:8]}...")
 
 # Imports the module names handed to it on argv, in order, and reports the
@@ -146,23 +198,20 @@ def check_provider_importable() -> CheckResult:
     import, and the adapter's own deferred ``from openai import
     AsyncOpenAI``. It does **not** prove jasper-voice starts (keys, mic,
     ALSA, network are all separate) and does not open a session.
-
-    The active provider is read from the wizard-owned SSOT file rather
-    than ``Config``/``os.environ`` — see jasper.voice.provider_state.
     """
     state = read_active_provider_state()
-    if state.status in {"unset", "missing"}:
-        return CheckResult(
-            "voice provider imports", "ok",
-            "no provider configured (skipped — pick one in the /voice wizard)",
-        )
-    if state.status in {"unreadable", "invalid"}:
+    if state.status in _PROVIDER_UNDETERMINED:
         # Not this check's job to adjudicate: check_provider_key and the
         # /voice wizard already report a bad or unreadable selection. Say
         # "can't tell" rather than inventing a second verdict on it.
         return CheckResult(
             "voice provider imports", "warn",
             f"active provider undetermined ({state.detail}); imports not checked",
+        )
+    if not state.configured:
+        return CheckResult(
+            "voice provider imports", "ok",
+            "no provider configured (skipped — pick one in the /voice wizard)",
         )
 
     provider = provider_by_id(state.provider)
@@ -420,12 +469,17 @@ def check_pricing(cfg: Config) -> CheckResult:
                 "model_pricing.json failed to load — every model is unpriced, "
                 "so cost reads $0 and the spend cap can't bound it. Re-deploy.",
             )
-        model = cfg.active_voice_model
+        # Active provider from the SSOT file; the model that provider will
+        # actually run from Config, which merges the operator env with the
+        # wizard file exactly as jasper-voice does.
+        state = read_active_provider_state()
+        model = cfg.voice_model_for(state.provider) if state.configured else ""
         if not model:
             return CheckResult(
-                "voice model pricing", "ok",
+                "voice model pricing",
+                "warn" if state.status in _PROVIDER_UNDETERMINED else "ok",
                 f"{len(defaults)} models priced (as of {as_of}); "
-                "no active provider configured yet",
+                f"active model not checked ({state.detail or 'no model'})",
             )
         pricing = pricing_for_model(model, overrides=load_pricing_overrides())
         if pricing.label.startswith("unpriced:"):
