@@ -898,7 +898,7 @@ create a second retention system.
   `tests/test_correction_crossover_backend_level_solve.py` reaches it; and
   `kind=summed` is not a shipped capture kind at all (`capture_relay/spec.py`
   ships `room_sweep`, `balance_burst`, `sync_marker`, `crossover_sweep`,
-  `level_ramp`, `bass_nearfield`; `"summed"` survives only as a `driver_role`
+  `level_ramp`; `"summed"` survives only as a `driver_role`
   value selecting consent/placement copy). The shipped crossover measurement
   is now the **v2 conductor** — the cloud phone capture page driving
   `/crossover/v2/*`, serving `build_crossover_envelope_v2` (directly, or via
