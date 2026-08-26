@@ -5,6 +5,7 @@
 import json
 from pathlib import Path
 
+import numpy as np
 import pytest
 
 from jasper.audio_measurement import sweep
@@ -13,7 +14,16 @@ from jasper.correction.session import MeasurementSession, SessionState
 from .correction_session_fixtures import make_measurement_session
 
 
-async def _complete_one_position_bundle(tmp_path: Path) -> MeasurementSession:
+async def _complete_one_position_bundle(
+    tmp_path: Path, *, tail_s: float = 0.0,
+) -> MeasurementSession:
+    """One READY single-position bundle.
+
+    ``tail_s`` pads the capture past the sweep so the length cap engages —
+    the analysis reaches it through ``cap_capture_length`` and a fresh replay
+    through ``deconvolve``'s own guard, and a test that never pads exercises
+    neither route.
+    """
     sess = make_measurement_session(
         tmp_path,
         input_device={
@@ -35,6 +45,11 @@ async def _complete_one_position_bundle(tmp_path: Path) -> MeasurementSession:
     assert sess.state == SessionState.AWAITING_CAPTURE
 
     sweep_signal, sample_rate = sweep.read_wav_mono(sess.sweep_wav_path)
+    if tail_s:
+        sweep_signal = np.concatenate([
+            sweep_signal,
+            np.zeros(int(tail_s * sample_rate), dtype=sweep_signal.dtype),
+        ])
     capture_path = sess.capture_path_for_position(0)
     sweep.write_sweep_wav(capture_path, sweep_signal, sample_rate)
     await sess.on_capture_uploaded(capture_path)
@@ -139,6 +154,73 @@ async def test_the_replay_grades_each_capture_against_its_banked_curve(
     assert absent["banked_capture_deltas"] == [
         {"stem": "p0", "unavailable": "no banked response artifact"}
     ]
+
+
+async def test_the_banked_impulse_response_is_what_a_replay_derives(
+    tmp_path: Path,
+):
+    """The agreement the IR export now rests on, asserted rather than assumed.
+
+    ``export_bundle`` copies the banked IR instead of re-deconvolving. That is
+    only safe while the two paths agree, and they reach the length cap by
+    different routes — the analysis calls ``cap_capture_length`` before
+    deconvolving, a fresh replay hits the same cap inside ``deconvolve``. The
+    40 s tail engages that cap on both sides (the run logs
+    ``exceeds cap ... truncating`` and ``code=capture_truncated``), so a
+    capture that never padded would exercise neither route.
+
+    EXACT equality is the assertion, not a tolerance: both routes run the same
+    ``deconv.deconvolve`` over the same samples in one process, so any
+    difference at all means the two derivations diverged — it is not float
+    drift, and a tolerance wide enough to absorb drift is wide enough to hide
+    the divergence this pin exists for.
+    """
+    sess = await _complete_one_position_bundle(tmp_path, tail_s=40.0)
+
+    banked, banked_rate = sweep.read_wav_mono(
+        sess.bundle_dir / "analysis" / "p0_ir.wav"
+    )
+    info = json.loads((sess.bundle_dir / "info.json").read_text())
+    replayed, replayed_rate = interop.impulse_response_from_capture(
+        sess.capture_path_for_position(0),
+        sweep_meta=info["sweep_meta"],
+    )
+
+    assert banked_rate == replayed_rate
+    assert banked.shape == replayed.shape
+    assert np.array_equal(banked, replayed)
+
+
+async def test_the_ir_export_hands_over_the_bundles_own_evidence(tmp_path: Path):
+    """Byte-for-byte the banked artifact, proved by mutating it.
+
+    A value that could not have come from deconvolving the capture is the only
+    way to show the export is copying rather than re-deriving.
+    """
+    sess = await _complete_one_position_bundle(tmp_path)
+    banked = sess.bundle_dir / "analysis" / "p0_ir.wav"
+    marked = banked.read_bytes() + b"JTS-MARKER"
+    banked.write_bytes(marked)
+
+    out_dir = tmp_path / "exported"
+    bundle_tools.export_bundle(sess.bundle_dir, out_dir)
+
+    exported = out_dir / f"{sess.bundle_dir.name}-p0-ir.wav"
+    assert exported.read_bytes() == marked
+
+
+async def test_a_bundle_with_no_banked_ir_still_exports_one(tmp_path: Path):
+    """The era bridge: a bundle banked before `replay_artifacts` existed."""
+    sess = await _complete_one_position_bundle(tmp_path)
+    (sess.bundle_dir / "analysis" / "p0_ir.wav").unlink()
+
+    out_dir = tmp_path / "exported"
+    bundle_tools.export_bundle(sess.bundle_dir, out_dir)
+
+    exported = out_dir / f"{sess.bundle_dir.name}-p0-ir.wav"
+    assert exported.is_file()
+    derived, _rate = sweep.read_wav_mono(exported)
+    assert derived.size > 0
 
 
 def test_bundle_export_refuses_empty_bundle(tmp_path: Path):

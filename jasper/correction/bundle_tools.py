@@ -11,6 +11,7 @@ REW-friendly exports small and shared by CLI/tests/future web surfaces.
 from __future__ import annotations
 
 import json
+import shutil
 from pathlib import Path
 from typing import Any
 
@@ -139,6 +140,17 @@ def fir_readiness(bundle_dir: Path) -> dict[str, Any]:
 def _banked_response(bundle_dir: Path, stem: str) -> dict[str, Any] | None:
     """One capture's banked ``analysis/{stem}_response.json``, or ``None``."""
     return _read_json(bundle_dir / "analysis" / f"{stem}_response.json")
+
+
+def _banked_impulse_response(bundle_dir: Path, stem: str) -> Path | None:
+    """One capture's banked ``analysis/{stem}_ir.wav``, or ``None``.
+
+    The capture WAV and its replay artifacts share a stem by construction:
+    ``replay_artifacts.capture_stem`` names a measurement position ``p{index}``,
+    which is the name the capture itself was written under.
+    """
+    path = bundle_dir / "analysis" / f"{stem}_ir.wav"
+    return path if path.is_file() else None
 
 
 def _banked_analysis_curve(
@@ -467,17 +479,33 @@ def export_bundle(
     if include_ir and info and isinstance(info.get("sweep_meta"), dict):
         sweep_meta = info["sweep_meta"]
         for capture_path in _raw_capture_paths(bundle_dir):
-            ir, sample_rate = interop.impulse_response_from_capture(
-                capture_path,
-                sweep_meta=sweep_meta,
+            out_path = output_dir / (
+                f"{bundle_dir.name}-{capture_path.stem}-ir.wav"
             )
-            out_name = f"{bundle_dir.name}-{capture_path.stem}-ir.wav"
-            out_path = output_dir / out_name
-            interop.write_impulse_response_wav(
-                out_path,
-                ir,
-                sample_rate=sample_rate,
-            )
+            banked = _banked_impulse_response(bundle_dir, capture_path.stem)
+            if banked is not None:
+                # The exported IR IS the bundle's own evidence, byte for byte,
+                # rather than a fresh derivation that happens to agree with it.
+                # The two agree today — pinned by
+                # `test_the_banked_impulse_response_is_what_a_replay_derives` —
+                # and copying makes that true by construction instead of by
+                # coincidence, so a change to either deconvolution path cannot
+                # quietly give the export a different meaning from the curves
+                # the bundle was graded on.
+                shutil.copyfile(banked, out_path)
+            else:
+                # The era bridge: a bundle banked before `replay_artifacts`
+                # existed carries no `analysis/` tree, so its IR is derived the
+                # way every export used to derive it.
+                ir, sample_rate = interop.impulse_response_from_capture(
+                    capture_path,
+                    sweep_meta=sweep_meta,
+                )
+                interop.write_impulse_response_wav(
+                    out_path,
+                    ir,
+                    sample_rate=sample_rate,
+                )
             written.append(str(out_path))
 
     if not written:
