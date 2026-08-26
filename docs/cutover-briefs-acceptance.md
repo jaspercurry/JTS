@@ -402,8 +402,8 @@ scripts are not either.** `captures/` is gitignored. The four scripts that
 produce the 0.37 dB figure live inside the gitignored campaign directory. The
 intermediate `curves.json` is **already gone from disk** — only `compact.json`
 survives — so the chain is not re-runnable from step 2 without re-running
-`replay.py`. And `replay.py:22-25` **hardcodes an absolute path into a
-different campaign directory**
+`replay.py`. And `replay.py:21-24` **hardcodes an absolute path into a
+different campaign directory** — verified, not relayed —
 (`captures/flat-linearization-20260725/umik2-cal/umik2-b7343c0c625b.txt`).
 Losing either directory loses the ability to compute the bar the same way
 twice. *This is the standard §5 row 7 imposed on the line count — "the number is
