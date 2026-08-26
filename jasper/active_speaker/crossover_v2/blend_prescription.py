@@ -405,9 +405,9 @@ BOOST_MIN_DIP_DB = BLEND_MIN_CUT_DB
 #: seen at exactly one of them, which is precisely the single-point artifact
 #: the rule exists to exclude — and undefined at one. Three is the smallest
 #: count at which the rule can refuse anything, so it is the floor. Below it
-#: the answer is :data:`INSUFFICIENT_POSITIONAL_EVIDENCE`: not "no", but "go
-#: and measure", which is a different instruction and the prescriber can act
-#: on it.
+#: the rule can say nothing, and the receipt carries no positional finding at
+#: all rather than a verdict — "go and measure", which the prescriber can act
+#: on, and which refuses nothing.
 BOOST_MIN_TESTIFYING_POSITIONS = 3
 
 #: How many positions may miss the dip and still leave it supported. One, per
@@ -442,8 +442,6 @@ FILTER_BOOST_TOO_HIGH = "filter_boost_too_high"
 COMPOSED_CUT_EXCEEDED = "composed_cut_exceeded"
 COMPOSED_BOOST_EXCEEDED = "composed_boost_exceeded"
 REGION_UNAVAILABLE = "region_unavailable"
-INSUFFICIENT_POSITIONAL_EVIDENCE = "insufficient_positional_evidence"
-BOOST_DIP_NOT_STABLE = "boost_dip_not_stable"
 STRICT_READER_DISAGREEMENT = "strict_reader_disagreement"
 
 #: A boost that cleared every bar above and still has nowhere to go.
@@ -472,8 +470,6 @@ BLEND_PRESCRIPTION_REFUSAL_REASONS = frozenset({
     COMPOSED_CUT_EXCEEDED,
     COMPOSED_BOOST_EXCEEDED,
     REGION_UNAVAILABLE,
-    INSUFFICIENT_POSITIONAL_EVIDENCE,
-    BOOST_DIP_NOT_STABLE,
     STRICT_READER_DISAGREEMENT,
     BOOST_ROUTE_UNAVAILABLE,
 })
@@ -796,12 +792,15 @@ def prescription_response_format() -> dict[str, Any]:
                 "whose skirts overlap deliver more than either alone"
             ),
         },
-        "boost_bar": {
+        "boost_positional_finding": {
             "note": (
-                "a positive gain is a distinct prescription class and must "
-                "clear an extra, positional bar. A dip that appears at only "
-                "one seat is presumed to be an interference null, which "
-                "swallows added energy instead of being filled by it."
+                "a positive gain is a distinct prescription class and carries "
+                "a positional finding on the receipt. It REFUSES NOTHING: a "
+                "dip appearing at only one seat is evidence it may be an "
+                "interference null, which swallows added energy instead of "
+                "being filled by it — weigh it, and let the next measurement "
+                "settle it. The delta probe rolls a boost back if it proves "
+                "spatially costly."
             ),
             "min_testifying_positions": BOOST_MIN_TESTIFYING_POSITIONS,
             "max_dissenting_positions": BOOST_MAX_DISSENTING_POSITIONS,
@@ -809,11 +808,11 @@ def prescription_response_format() -> dict[str, Any]:
             "denominator": (
                 "positions whose own validity floor sits above the proposed "
                 "frequency cannot testify and are removed from the "
-                "denominator; the refusal reports both counts"
+                "denominator; the finding reports both counts"
             ),
             "if_evidence_is_missing": (
-                f"refused as '{INSUFFICIENT_POSITIONAL_EVIDENCE}' rather than "
-                "as a no — measure more positions and propose again"
+                "no positional finding is recorded at all — measure more "
+                "positions to get one; the prescription is not refused for it"
             ),
         },
         "refusal_reasons": sorted(BLEND_PRESCRIPTION_REFUSAL_REASONS),
@@ -1215,61 +1214,44 @@ def _check_boost_evidence(
     filters: tuple[dict[str, Any], ...],
     evidence: PositionalEvidence | None,
 ) -> tuple[PositionalSupport, ...]:
-    """The positional bar, per boosting filter.
+    """The positional finding, per boosting filter. **It refuses nothing.**
 
-    Refuses with :data:`INSUFFICIENT_POSITIONAL_EVIDENCE` when the packet
-    cannot answer at all — an instruction to go and measure, not a verdict on
-    the proposal — and with :data:`BOOST_DIP_NOT_STABLE` when it answered no.
+    Every number this used to refuse on now rides the receipt as provenance —
+    ``n_testifying``, ``n_with_dip`` and ``supported`` per boost — for the
+    prescriber and the household to weigh. Two refusals went with the nanny
+    burn-down: ``INSUFFICIENT_POSITIONAL_EVIDENCE`` and
+    ``BOOST_DIP_NOT_STABLE`` were a PREDICTION about whether a filter would
+    help, vetoing the measurement that settles it, which the doctrine's
+    authority model forbids (``docs/measurement-loop-doctrine.md`` §2 and §5).
+    The instrument that disposes already runs downstream: the delta probe
+    rolls a boost back on ``spatially_costly``.
+
+    An empty return on a boost-class prescription means the packet could not
+    answer at all — no per-position curves, or fewer than
+    :data:`BOOST_MIN_TESTIFYING_POSITIONS` positions. That is legible because
+    a boost-class prescription carries at least one boosting filter by
+    construction, so ``[]`` cannot mean "nothing to evaluate".
+
+    What bounds the COST of an admitted boost is untouched and lives
+    elsewhere — the composed and per-filter caps ``_check_bounds`` applies.
     """
     if evidence is None:
-        _refuse(
-            INSUFFICIENT_POSITIONAL_EVIDENCE,
-            "this packet carries no usable per-position curves, so a boost's "
-            "stability across positions cannot be judged. Measure a cloud of at "
-            f"least {BOOST_MIN_TESTIFYING_POSITIONS} positions and propose again.",
-            min_testifying_positions=BOOST_MIN_TESTIFYING_POSITIONS,
-        )
+        return ()
     positions, freqs_hz, reference_db = evidence
     if len(positions) < BOOST_MIN_TESTIFYING_POSITIONS:
-        _refuse(
-            INSUFFICIENT_POSITIONAL_EVIDENCE,
-            f"this packet carries {len(positions)} position(s); "
-            f"{BOOST_MIN_TESTIFYING_POSITIONS} are needed before "
-            '"present at all but one" can refuse anything',
-            n_positions=len(positions),
-            min_testifying_positions=BOOST_MIN_TESTIFYING_POSITIONS,
-        )
+        return ()
     findings: list[PositionalSupport] = []
     for entry in filters:
         if float(entry["gain"]) <= 0.0:
             continue
-        support = positional_support(
-            float(entry["freq"]),
-            positions=positions,
-            freqs_hz=freqs_hz,
-            reference_db=reference_db,
+        findings.append(
+            positional_support(
+                float(entry["freq"]),
+                positions=positions,
+                freqs_hz=freqs_hz,
+                reference_db=reference_db,
+            )
         )
-        findings.append(support)
-        if support.n_testifying < BOOST_MIN_TESTIFYING_POSITIONS:
-            _refuse(
-                INSUFFICIENT_POSITIONAL_EVIDENCE,
-                f"only {support.n_testifying} position(s) can testify about "
-                f"{support.evaluated_at_hz:.1f} Hz, and "
-                f"{BOOST_MIN_TESTIFYING_POSITIONS} are needed before "
-                '"present at all but one" can refuse anything'
-                + (f" ({support.excluded_reason})" if support.excluded_reason else ""),
-                **support.to_dict(),
-            )
-        if not support.supported:
-            _refuse(
-                BOOST_DIP_NOT_STABLE,
-                f"the dip at {support.evaluated_at_hz:.1f} Hz appears at "
-                f"{support.n_with_dip} of {support.n_testifying} testifying "
-                "positions; a dip that moves with the microphone is presumed to "
-                "be an interference null, which swallows added energy instead of "
-                "being filled by it",
-                **support.to_dict(),
-            )
     return tuple(findings)
 
 
