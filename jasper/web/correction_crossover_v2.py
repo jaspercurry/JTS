@@ -1498,7 +1498,7 @@ def _provenance_note(measured_this_session: bool | None) -> str:
 
     ``""`` for both "definitely current" and "unknown" (a durable state
     written before this marker existed, or the whole entry unavailable) —
-    mirrors :func:`~jasper.active_speaker.crossover_v2_flow._geometry_guidance_copy`'s
+    mirrors :func:`~jasper.active_speaker.crossover_v2.spatial._geometry_guidance_copy`'s
     "empty string when nothing to say" rule rather than asserting freshness
     it cannot prove. Only the one state worth interrupting the household
     for — data that is KNOWN to be stale — gets a sentence.
@@ -1572,7 +1572,7 @@ def _compact_cloud_status(
     committed to, so summarising them to a count here would leave the only
     surface a page reads unable to say why a band lost bins — and would grow
     the second copy owner the producer
-    (:func:`~jasper.active_speaker.crossover_v2_flow.carve_outs_by_band`)
+    (:func:`~jasper.active_speaker.crossover_v2.spatial.carve_outs_by_band`)
     exists to prevent. **It is the largest thing on the entry, and that is
     stated rather than glossed:** measured 2026-07-27 on the S0 ten-position
     cloud (the widest real case this program has — three identified nulls plus
@@ -1599,7 +1599,7 @@ def _compact_cloud_status(
     :func:`~jasper.active_speaker.crossover_v2_flow.assemble_cloud_group_result`'s
     own ``available: False`` shape). ``geometry_guidance`` is computed
     directly from the ``geometry`` verdict via
-    :func:`~jasper.active_speaker.crossover_v2_flow._geometry_guidance_copy`
+    :func:`~jasper.active_speaker.crossover_v2.spatial._geometry_guidance_copy`
     rather than read out of the pipeline's own copy of it, because geometry
     locking is decided and RECORDED before the pipeline ever runs (see
     ``_close_cloud_group``) — a locked group's "spread the mic further"
@@ -1617,7 +1617,7 @@ def _compact_cloud_status(
     stale, so an upgrade does not manufacture a false "this is old" warning
     for data nobody ever mis-attributed.
     """
-    from jasper.active_speaker.crossover_v2_flow import _geometry_guidance_copy
+    from jasper.active_speaker.crossover_v2.spatial import _geometry_guidance_copy
 
     if not isinstance(cloud_state, Mapping):
         return None
@@ -1694,7 +1694,7 @@ def _compact_cloud_status(
 
 
 # PR-7's own re-decimation ceiling for the polled chart feed — HALF of
-# crossover_v2_flow.CLOUD_CURVE_MAX_JSON_POINTS (512), the ceiling the
+# crossover_v2.spatial.CLOUD_CURVE_MAX_JSON_POINTS (512), the ceiling the
 # pipeline's own ``curve`` key (and the persisted bundle artifact it is
 # copied from) already uses. Review S-1 (2026-07-27) measured the byte cost
 # of NOT re-decimating: 41,161 bytes for both phases' ``cloud_chart`` entries
