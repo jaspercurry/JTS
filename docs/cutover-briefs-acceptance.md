@@ -25,8 +25,16 @@
 | 0 | Premise re-derivation ledger | VERIFIED-COMPLETE |
 | 1 | Row 9 — the baseline re-park | VERIFIED-COMPLETE, three gaps flagged |
 | 2 | Row 10 — the instrument roster's status | VERIFIED-COMPLETE |
-| 3 | The S11 amendment for the producer build | DRAFTED — awaits the owner |
+| 3 | The S11 amendment for the producer build | **DRAFTED — awaits the owner** |
 | 4 | The chunk-3 order | VERIFIED-COMPLETE |
+
+**The three things to read if you read nothing else.** (1) Row 9's pass/fail
+instrument is a bespoke script chain inside a **gitignored** directory, not a
+shipped tool — the tool the criterion names errors on this round shape by design
+(§1.6). (2) 7j demoted the topology block, but **`driver_style` is not
+metadata** and a second gate one step downstream is untouched, so "7j landed"
+does not mean "the box opens" (§1.4). (3) **Three of S11's five sanctioned acts
+are unrun**, and they batch into one bench evening in dependency order (§4.4).
 
 ---
 
@@ -668,3 +676,131 @@ lane working and says so loudly. **Nothing in acceptance rows 1–10 depends on
 the producer.** The cost of refusing is that `read_commissioning_room_authority`
 goes on denying, and 4h's six production readers go on being unreachable, until
 the campaign era.
+
+---
+
+## 4. The chunk-3 order
+
+### 4.1 Row 9 does NOT wait for the cutover — and the plan says why twice
+
+Two independent arguments, both from the plan's own text:
+
+**(a) Row 9 is a per-wave merge gate, not an end gate.** §5's preamble
+(`:1285-1288`) is explicit that these are *"development gates on merging a wave,
+not runtime gates on the speaker."* §3's standing sequence (`:496-503`) assigns
+it per wave: waves that alter *"what the box actually does (4, 5, 6) take the
+acceptance run"*; waves that move code without changing measurement behaviour
+(0, 2, 3, 7, 8) prove with the class-A suite. Waves 4 and 5 name it in their
+**Verify** blocks (`:849`, `:917`) as due *before the wave closes*.
+
+**(b) Row 9 is applied-graph-independent, which is a structural fact, not a
+convenience.** §6 R4 (`:1555-1565`): the per-driver reproduction — *"the core of
+acceptance row 9 and of the 0.37 dB noise floor"* — rides the session
+**measurement** graph, not the applied production graph. So the state of the
+engine's *bindings* does not move the numbers row 9 is measured against. Only
+the entry-baseline summed capture is applied-graph-dependent, and that gets the
+like-for-like note, not a wait.
+
+**Row 10 is the opposite, and unambiguously so.** It opens *"only after every
+row above closes"* (`:1303`). Rows 4, 5 and 6 are the god-file targets, and
+**those are chunk 2's own deliverables** — `crossover_v2_flow.py` → ≈1,500,
+`CrossoverV2Session` dissolved into its four destinations (chunk 2 §6 names
+`__init__:2181-2957` as dissolving *"into acceptance row 5's four
+destinations"*), `web/correction_crossover_v2.py` down to the apply transaction
+plus route wiring. **Row 10 waits on the full cutover. There is no reading in
+which it does not.**
+
+### 4.2 The honest part: the plan's schedule has already been overtaken
+
+Saying only 4.1 would be misleading. Three facts at HEAD:
+
+| Fact | Evidence |
+|---|---|
+| **Wave 5 is CLOSED**, and its Verify block demanded the acceptance run *before the wave closes* | ledger at `:923`; Verify at `:917` |
+| **Wave 6d/6e/6f have merged** (`f6a6c56f3`, `5da40b9e2`, `b9738bf67`), and 6d's own body set the bar it did not clear: *"**Not merged.** This is the staging point: it wants the adversarial pass, and the no-pop check on jts3 is the evidence that licenses it"* | PR #3111 |
+| **S11 act 5 was explicitly deferred** — PR #3006: *"The on-box verification (S11 sanctioned act 5) is **deferred**"*, because jts3 was running a build that is not an ancestor of `origin/main` | PR #3006 |
+
+**So three of S11's five sanctioned acts are unrun: 1 (row 9), 2 (the no-pop
+check), and 5 (7j's demotion verification).** No record of any of them exists in
+`captures/`.
+
+This is not a violation to litigate — it is the predictable result of a rule the
+plan itself flagged as the conductor's own scoping. `:501-503`, verbatim:
+
+> *That split is the conductor's scoping of the rule, not the owner's words —
+> say so, and let the owner collapse it if he meant a hardware run every time.*
+
+The owner's actual words in S11 read the other way: *"We'll get that done and
+then we'll start measuring on hardware once everything's landed to flush out
+issues."* That is **one hardware session at the end**, not one per wave.
+Execution has followed the owner's sentence rather than the conductor's split.
+**Recording it as such is the honest disposition; re-litigating closed waves is
+not.**
+
+### 4.3 What must land before acceptance can run
+
+| Gate | Blocks row 9? | Blocks row 10? |
+|---|---|---|
+| The cutover (chunk 2, W1–W5) | **No** — §4.1(a) and (b) | **Yes** — rows 4, 5, 6 are its deliverables |
+| 7j on the deployed build | **Yes, practically** — without it, or without the re-mint, the session does not open (§1.4) | yes, transitively |
+| The re-mint on jts3 | **Yes** — §1.4, §1.5 | yes, transitively |
+| The 4g/4h producer build + a sanctioned act 6 | **No** — nothing in rows 1–10 depends on it (§3.4) | **No** |
+| Chunk 2's two open acceptance questions (below) | **No** — both are counting/claim questions, not measurements | **Yes** — they are rows 3 and 3c |
+
+**Chunk 2 raised two acceptance items this brief inherits and does not own.**
+Row 3's *"`DriverResponse` banked"* is *"satisfied in spirit for one of three
+kinds and unsatisfied for two"* — lateral banks a curve with phase, entry banks
+magnitude only, cloud banks no curve at all — and chunk 2 says to **record it as
+an open acceptance question, not as done**. And row 3c's analysis claim rests on
+a "92 analysis units" figure that **cannot be reproduced at HEAD**; chunk 2's
+W2-d either enumerates it with a committed counting method or restates the claim
+against the pinnable 79. Both are docs work on `REFACTOR-TUNING-2026-08.md`,
+both are scheduled in chunk 2's tier 0, and **neither touches a microphone.**
+
+**One scheduling gap worth naming: the 4g/4h producer build is on no DAG.**
+Chunk 2's merge-order DAG (§7) contains no producer item, and grep finds no
+`4g`, `4h` or producer row anywhere in that document. It is chunk-1 residual
+work that chunk 2 did not inherit and chunk 1 did not close. §3's amendment is
+the licence question; **who schedules the build is a separate open question and
+this brief does not answer it.**
+
+### 4.4 The recommendation
+
+**Batch the three unrun acts into one bench evening.** They all need jts3, they
+all need the same deploy, and their natural order is a dependency chain rather
+than a list:
+
+```
+deploy (scripts/deploy-to-pi.sh, PI_HOST=jts3.local)
+  └─ ACT 5   7j's demotion verification
+     │       a metadata edit no longer blocks a measure session;
+     │       the doctor line appears. This is also gap 3's
+     │       determination — it tells you which gate the box is behind.
+     └─ re-mint (§1.5)
+        └─ ACT 1   row 9, round r1
+           │       └─ ACT 2   the no-pop check, INSIDE r1's open
+           │                  measurement window — fader parked,
+           │                  recorder running, listen
+           └─ ACT 1   row 9, round r2 (no re-level between rounds)
+              └─ the standing park
+```
+
+Act 5 must come first because it is what tells you whether the session will open
+at all. Act 2 is a listening check *inside* an open measurement window, which
+row 9's r1 already provides — running it standalone would mean opening a session
+twice for one answer. That is one evening for three acts instead of three.
+
+**Then gate the next box-behaviour change on row 9's result.** §3's own rule —
+*waves that alter what the box actually does take the acceptance run* — now
+points at chunk 2's join node, **W5-b (`TuningSession` in production)**, and at
+**W1-c (the retention lift)**, which change how the box measures and what it
+banks. Those are the changes row 9 was written to gate.
+
+**Row 10 opens when the cutover finishes and rows 1–8 read true**, and it opens
+with R-1, per §2.
+
+**One thing the evening does not settle.** The proving ground exercises no
+failure branch — no refusals, races, cancellation, retry or stall recovery
+(`:542`, ruling S7). A green row 9 licenses the happy path and nothing else. If
+the cutover's deletions are to be trusted past that line, it is the class-A
+suite and the invariant→pin table that carry the weight, not the microphone.
