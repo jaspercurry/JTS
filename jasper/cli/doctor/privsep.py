@@ -49,7 +49,7 @@ wizard save), and the CamillaDSP configs of the #900/#901 family — under
 an exhaustive read trace, and it deliberately excludes the secret compartments
 (``jasper-secrets`` / ``jasper-intsecrets``), whose own group ownership is a
 separate concern. The manifest is drift-pinned against the systemd units by
-``tests/test_doctor_privsep_manifest.py`` so it cannot fall behind a unit edit
+``tests/test_doctor_privsep.py`` so it cannot fall behind a unit edit
 or a newly-added non-root daemon.
 
 The ``household_secret`` file gets a dedicated check

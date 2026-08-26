@@ -1922,7 +1922,7 @@ def check_active_ring_split_transport() -> CheckResult:
     # deleted config) while camilla#2 names the ACTIVE ring would have gone
     # quiet from BOTH surfaces. Measured, not assumed: two such shapes were
     # constructed on disk and are pinned in
-    # tests/test_ring_split_transport_doctor.py.
+    # tests/test_doctor_audio_runtime.py.
     #
     # The primary path still comes from `_active_camilla_config_path()` so an
     # operator's `JASPER_CAMILLA_STATEFILE` override keeps working; the reader
@@ -4179,7 +4179,7 @@ _ALOOP_CARD_ID = "Loopback"
 _ALOOP_PCM_DIRS = ("pcm0p", "pcm0c", "pcm1p", "pcm1c")
 
 #: `pcm_substreams=8` in deploy/modprobe.d/snd-aloop.conf — pairs 0..7. Pinned
-#: against that file by tests/test_doctor_aloop_remnant.py so a future
+#: against that file by tests/test_doctor_audio_runtime.py so a future
 #: reduction cannot leave this walker scanning a range the module no longer
 #: has, and cannot leave the owning constants naming a pair that no longer
 #: exists.
