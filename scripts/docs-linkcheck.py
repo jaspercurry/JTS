@@ -18,6 +18,7 @@ import re
 import subprocess
 import sys
 import unicodedata
+from bisect import bisect_right
 from dataclasses import dataclass
 from pathlib import Path
 from urllib.parse import unquote
@@ -26,9 +27,13 @@ from urllib.parse import unquote
 ROOT = Path(__file__).resolve().parents[1]
 MARKDOWN_SUFFIXES = {".md", ".markdown"}
 
-INLINE_LINK_RE = re.compile(r"!?\[[^\]\n]*\]\(\s*(<[^>]*>|[^)\s]+)")
-REF_LINK_RE = re.compile(r"^\s{0,3}\[[^\]]+\]:\s*(<[^>]*>|[^\s]+)")
-HTML_LINK_RE = re.compile(r"""(?:href|src)\s*=\s*["']([^"']+)["']""", re.I)
+# Link text wraps across lines at the repo's prose width, so inline matching
+# spans newlines but stops at a blank line (paragraph break) and is length
+# bounded. The two alternation branches are disjoint on their first character,
+# so matching stays linear — no catastrophic backtracking. See issue #2442.
+INLINE_LINK_RE = re.compile(r"!?\[(?:[^\]\n]|\n(?!\s*\n)){0,400}\]\(\s*(<[^>]*>|[^)\s]+)")
+REF_LINK_RE = re.compile(r"^[ \t]{0,3}\[[^\]\n]+\]:[ \t]*(<[^>]*>|[^\s]+)", re.M)
+HTML_LINK_RE = re.compile(r"""(?:href|src)\s*=\s*["']([^"'\n]+)["']""", re.I)
 HEADING_RE = re.compile(r"^(#{1,6})\s+(.+?)\s*#*\s*$")
 HTML_ANCHOR_RE = re.compile(r"""<(?:a|[^>]+)\s+[^>]*(?:id|name)=["']([^"']+)["']""", re.I)
 SCHEME_RE = re.compile(r"^[a-zA-Z][a-zA-Z0-9+.-]*:")
@@ -140,14 +145,29 @@ def iter_non_fenced_lines(path: Path):
             yield line_no, line
 
 
-def collect_links(path: Path) -> tuple[Link, ...]:
-    links: list[Link] = []
+def scannable_text(path: Path) -> str:
+    # Fenced-block lines become blank lines so offsets still map 1:1 to source
+    # line numbers and no link text can span a code fence.
+    parts: list[str] = []
+    previous = 0
     for line_no, line in iter_non_fenced_lines(path):
-        for regex in (INLINE_LINK_RE, REF_LINK_RE, HTML_LINK_RE):
-            for match in regex.finditer(line):
-                target = clean_target(match.group(1))
-                if target:
-                    links.append(Link(path, line_no, target))
+        parts.extend("" for _ in range(line_no - previous - 1))
+        parts.append(line)
+        previous = line_no
+    return "\n".join(parts)
+
+
+def collect_links(path: Path) -> tuple[Link, ...]:
+    text = scannable_text(path)
+    line_starts = [0]
+    line_starts.extend(index + 1 for index, char in enumerate(text) if char == "\n")
+    links: list[Link] = []
+    for regex in (INLINE_LINK_RE, REF_LINK_RE, HTML_LINK_RE):
+        for match in regex.finditer(text):
+            target = clean_target(match.group(1))
+            if target:
+                links.append(Link(path, bisect_right(line_starts, match.start()), target))
+    links.sort(key=lambda link: link.line)
     return tuple(links)
 
 
