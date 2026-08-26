@@ -2332,21 +2332,23 @@ def test_audio_validation_suggests_hardware_runner_for_drift_delay_recommendatio
 
 
 @pytest.mark.parametrize(
-    ("dac_id", "expected_status"),
+    ("dac_id", "check_overrides", "expected_status"),
     [
-        ("hifiberry_dac8x", "ok"),
-        ("apple_usb_c_dongle", "ok"),
-        ("innomaker_hifi_amp_pro", "warn"),
-        ("unknown", "warn"),
+        ("hifiberry_dac8x", {}, "ok"),
+        ("apple_usb_c_dongle", {}, "ok"),
+        ("innomaker_hifi_amp_pro", {}, "warn"),
+        ("unknown", {}, "warn"),
+        ("apple_usb_c_dongle", {"chip_convergence": "fail"}, "warn"),
     ],
 )
 def test_audio_validation_passive_evidence_follows_dac_approval(
-    dac_id, expected_status
+    dac_id, check_overrides, expected_status
 ):
     statuses = {
         name: "pass" for name in doctor._CHIP_AEC_PASSIVE_REQUIRED_CHECKS
     }
     statuses.update({"bridge_counters": "warn", "measured_drift_delay": "not_run"})
+    statuses.update(check_overrides)
     result = doctor._assess_audio_validation_summary(
         {
             "state": "current",
