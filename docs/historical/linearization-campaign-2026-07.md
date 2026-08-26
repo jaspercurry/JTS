@@ -154,6 +154,16 @@ The corollary the same section corrected: "a defect every position sees carries
 more weight" is false for a position-fixed defect, because the screen carries
 no signal about it either way.
 
+### § e.2 — the 8–16 kHz tolerance is not achievable by EQ
+
+The ±2.5 dB tolerance cannot be met against a **5.4–7.0 dB source-fixed comb**
+sitting inside that band, so the spec needs a documented carve-out for
+identified interference nulls, pending the owner's decision on a source fix
+(horn redesign). Per standard diffraction reasoning, more lip roll-back should
+reduce the echo's amplitude r **without** materially shifting τ, because delay
+tracks mouth radius while amplitude tracks how abruptly the rim's curvature
+changes — design guidance only, never confirmed acoustically.
+
 ### Why the cloud carries 9 positions, not 8
 
 Adjudication 3a, 2026-07-26. Fundamental 1's floor is **N≈8–12 gated sweeps**,
@@ -251,7 +261,7 @@ that premise does not hold.
 
 | Surface | Full (N=9, M=6) | Express (N=5, M=1) |
 |---|---|---|
-| Correction fit evidence | 8-position power-mean cloud | 4-position power-mean cloud; the envelope's σ/√N position-stability term computes from Express's own spread — **automatic** |
+| Correction fit evidence | 8-position power-mean cloud | 4-position power-mean cloud; the envelope's σ/√N position-stability term computes from Express's own spread (§1.1 — **its limit is unmeasured until the JTS3 smoke**) — **automatic** |
 | HF-null decorrelation | 8 dispersed positions | 4 positions decorrelate HF nulls less well on a speaker that still combs; the registry/carve-out machinery still refuses honestly, with less evidence |
 | Outlier exclusion screen | power-vs-median over 8 | over 4 (weaker; a single bad take is harder to identify) — **automatic**, disclosed |
 | Echo/geometry adjudication | n = 8, `thin_evidence` cliff at 2-of-≥4 | n = 4, same cliff semantics — **automatic** |
@@ -286,11 +296,69 @@ the VERIFY begin-first/confirm-after-apply contract and the group-close
 
 The revision that preserved the gated/spatial honesty research but gave the
 anchor, lateral samples, candidate solver and later Room cloud separate jobs.
-Its R14–R20 mission, territory, exit and launch-contract record is
+The round-by-round position, commits and PR numbers are
 [`HANDOFF-correction-revision-plan.md`](HANDOFF-correction-revision-plan.md)'s;
 the campaign's own dated narrative is
 [`crossover-measurement-v2-campaign-record.md`](crossover-measurement-v2-campaign-record.md)'s.
-One ruling from it is live.
+Three things are **only** here.
+
+### One owner per fact
+
+The table this plan opened with, because a campaign that spans five documents
+needs one. It is the ancestor of the owner table at the top of this file.
+
+| Fact | Owner |
+|---|---|
+| Shipped phase/state behavior and operator recovery | [`tuning-operator-runbook.md`](../tuning-operator-runbook.md) |
+| Speaker/room/bass/preference layer boundaries | [`active-speaker-tuning-layers-design.md`](../active-speaker-tuning-layers-design.md) |
+| Why spatially gated measurements, exclusions, and power averages exist | this record |
+| This revision's measurement contracts, rounds, and issue disposition | this record |
+| Program-wide current position and campaign ordering | [`HANDOFF-correction-revision-plan.md`](HANDOFF-correction-revision-plan.md) |
+| Individual defect, evidence, and acceptance tests | the owning GitHub issue |
+
+### R16's unrecorded ratification — the finding, kept because it is a finding
+
+R16 shipped at **649 gross production lines across 4 files** against a ceiling
+of 350. **The overage's ratification is not in the record.** R20 checked:
+#2157's body cites `#1894#issuecomment-5203437285`, which **404s and is absent
+from #1894's comments**, and its prose (≤600 / ≤640) contradicts its own table
+(≤650 / ≤790) — under the prose pair the round busts both. Per the campaign's
+own §9 item 10, *an unrecorded ratification did not happen*; recording or
+re-ratifying one is a conductor/owner act R20 did not take. It remains untaken.
+
+### R17's three structural discoveries
+
+Each was verified in code before it was acted on, and each reshaped the round's
+ceiling (400 → 650 → 800 → 1000; it landed at 1,365 cumulative production).
+
+1. **Evidence lifetime.** The raw capture is alive only inside
+   `consume_capture`; what survives past it are derived `DriverResponse`s that
+   the conditioning policy refuses to un-compose. So every candidate is
+   evaluated at MEASURE-consume, **evaluate-and-release** — each candidate's
+   analysis and fit are freed before the next starts — and only the small
+   per-candidate records cross the walk to be adjudicated at its close.
+2. **The preset-mismatch gate.** A selected Fc cannot reach applied DSP:
+   `baseline_profile` refuses any candidate whose preset differs from the saved
+   crossover, a deliberate one-writer-per-fact defence. Making an alternative
+   applicable is a nine-site change across six modules — its own round. So the
+   selector produced a **RECOMMENDATION**: the household is told the measured
+   number, declares it in `/sound`, and the next session's configured Fc *is*
+   that number, applied through the untouched golden path. Byte-equivalence
+   becomes structural rather than asserted, and keep-configured is a
+   first-class honest verdict rather than silence. **This is the shape the
+   selector's deletion did not change** — a corner is declared and executed.
+3. **The phone's deadline** (superseded 2026-08-22). `waitForCaptureResult`
+   allowed `max(30 000, spec.duration_ms)` — **41,885 ms** on the live stage-1
+   spec — and its expiry was a TERMINAL `sweepFailed`, not a retry. The
+   evaluation budget was derived from that deadline and spent a conservative
+   fraction of it, because the anchor's own ~7 s analysis had already come out
+   of the window before the sweep started. A loaded Pi scored fewer candidates
+   than it proposed; that was disclosed as k-of-N and was never a session
+   failure. Ticket 2.3 deleted the Pi-minted per-capture `result_wait_s` this
+   budget derived from along with the rest of the sweep; the capture page's own
+   90 s `CAPTURE_RESULT_WAIT_BUDGET_MS` floor governs every round instead.
+
+One ruling from the revision is still live.
 
 ### §4.2 — the "Boost ruling" (owner, 2026-08-05)
 
@@ -302,7 +370,8 @@ One ruling from it is live.
 > position-specific artifact that an at-mark verification cannot detect. The
 > standing rails all remain — envelope depth limits, the realized-cascade
 > stopband-gain guard, headroom accounting, post-apply `VERIFY`, and retained
-> Undo.
+> Undo. Prerequisite: the composition must be splice-free (in-band evidence
+> unpolluted by the out-of-band seam) before this path is trusted on hardware.
 
 **Implemented scope.** `allow_boost` is `post_apply_verifies AND (a cloud
 verdict reached the envelope OR the session's capture plan contains no
@@ -372,10 +441,15 @@ bands and auto-apply fired unconditionally two seconds later.
 ### PR-L5 — the delta probe
 
 Every applied correction change is verified as a **realized-vs-commanded
-per-frequency map** and classified into one of four verdicts; the three
-non-matched ones roll the correction back automatically. It exists because on
-2026-07-27 a linearization shipped whose emitted shelves were realized at
-Q 0.476 while every gate in the fit engine evaluated them at Q 0.707.
+per-frequency map** (one sweep before/after) and classified into one of four
+verdicts — **matched** (keep), **model-error** (rollback + flag; permanently
+catches the PR-L2 shelf-Q class), **level-dependent shortfall** (a driver
+compression diagnostic), and **spatially costly** (cross-position spread
+widened — interference; the service verdict routes placement-vs-speaker via the
+tau ladder). Rollback is automatic on the three non-matched classes. It exists
+because on 2026-07-27 a linearization shipped whose emitted shelves were
+realized at Q 0.476 while every gate in the fit engine evaluated them at
+Q 0.707.
 
 Named tolerances: `DELTA_PROBE_TOLERANCE_LOW_DB = 1.5` (below the 1.70 dB the
 shelf-Q defect peaked at, and the same bar `VERIFY_TOLERANCE_DB` already sets)
@@ -417,7 +491,11 @@ branch does not follow one into its own deep stopband — breakup, cabinet leaka
 and the capture's noise floor sit tens of dB above it — so the objective was
 being fed demand no cut-only cascade can realize, and the greedy search spent
 filter slots on it. Measured on the reconstructed fixture: all eight slots
-between 9.7 and 11.8 kHz on a branch declared to radiate to 1282.3 Hz.
+between 9.7 and 11.8 kHz on a branch declared to radiate to 1282.3 Hz. The
+give-back the unbounded solve was buying with out-of-band content alone —
+0.0136 dB against 2.1668 dB on the same fixture — and the 2026-08-19 band fix
+that renamed the quantity `core_band_giveback_db` are owned by
+`linearization_fit.py`, which states both inline.
 
 ---
 

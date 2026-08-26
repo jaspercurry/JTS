@@ -5,9 +5,9 @@
 // Before/after cloud chart (flat-linearization plan PR-7). Pure canvas
 // renderer — every number it draws (curves, corridor, excluded intervals)
 // comes from the server; this module computes screen geometry only and
-// never derives a spec verdict of its own (see docs/flat-linearization-
-// productization-plan.md's PR-7 section: "reuse … never derive a spec-facing
-// number privately").
+// never derives a spec verdict of its own (see
+// docs/historical/linearization-campaign-2026-07.md's PR-7 section: "reuse …
+// never derive a spec-facing number privately").
 //
 // **Deviation frame, not absolute dB (review B-1, 2026-07-27).** A fit moves
 // VERIFY's own reference level away from MEASURE's — below it on a cut-only
