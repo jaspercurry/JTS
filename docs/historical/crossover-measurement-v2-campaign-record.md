@@ -2660,7 +2660,8 @@ momentarily loaded Pi from a budget that no longer fits its work.
 
 > **Live reference — the historical tag above does not cover this section.**
 > The spine's "[Debugging — where to look
-> first](#debugging--where-to-look-first)" delegates its deeper catalogs here,
+> first](../HANDOFF-crossover-measurement-v2.md#debugging--where-to-look-first)"
+> delegates its deeper catalogs here,
 > and they are maintained against the code rather than frozen with the
 > campaign. Read that spine section first; it flags what in here is still
 > dated. One clause of the tag above still applies here: campaign-era class
@@ -4552,7 +4553,8 @@ that same capture is 0.490 dB max (raw-to-raw is 0.606 dB).
 
 > **Live reference — the historical tag above does not cover this section.**
 > The spine's "[Debugging — where to look
-> first](#debugging--where-to-look-first)" delegates its bug-class list here,
+> first](../HANDOFF-crossover-measurement-v2.md#debugging--where-to-look-first)"
+> delegates its bug-class list here,
 > and "do not reintroduce" is a current instruction, not a campaign result.
 
 Each was found on hardware and fixed at root cause (no wrapper layers,

@@ -8,6 +8,8 @@ import importlib.util
 import sys
 from pathlib import Path
 
+import pytest
+
 
 ROOT = Path(__file__).resolve().parents[1]
 
@@ -108,6 +110,29 @@ def test_links_inside_fenced_code_are_ignored(tmp_path):
     )
 
     assert docs_linkcheck.check_file(doc) == ()
+
+
+@pytest.mark.parametrize(
+    ("target", "expected"),
+    [
+        ("target.md#hello-world", ()),
+        ("target.md#no-such-anchor", ("markdown anchor missing",)),
+        ("missing.md", ("local link target missing",)),
+    ],
+)
+def test_wrapped_link_text_is_checked(tmp_path, target, expected):
+    """A link whose text wraps at the prose margin was invisible to the
+    scanner, so its target went unvalidated — see issue #2442. The passing
+    case is the control: the failure mode was a checker that looked like one."""
+
+    docs_linkcheck = load_docs_linkcheck()
+    docs_linkcheck.ROOT = tmp_path.resolve()
+    doc = tmp_path / "doc.md"
+    doc.write_text(f"Prose before a [wrapped\nlink]({target}) and after.\n", encoding="utf-8")
+    (tmp_path / "target.md").write_text("# Hello, World!\n", encoding="utf-8")
+
+    assert tuple(issue.message for issue in docs_linkcheck.check_file(doc)) == expected
+    assert docs_linkcheck.main(["--changed-file", "doc.md"]) == (1 if expected else 0)
 
 
 def test_local_line_suffix_passes(tmp_path):
