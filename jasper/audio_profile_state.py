@@ -677,14 +677,14 @@ def build_audio_profile_status(
     alignment_owned = managed_xvf or custom_chip_leg
     alignment_status = runtime.chip_aec_alignment_status
     # A device mismatch means the bridge is not capturing the detected XVF, so
-    # what arrives cannot be this mic's chip beam however good the alignment
-    # record and the DAC gate look.
+    # what arrives cannot be this mic's chip beam. The beam plan and the DAC
+    # gate answer whether chip-AEC may arm, not what the bridge is carrying, so
+    # they gate the ready arm alone: a disclosed box keeps the armed chip legs
+    # the reconciler left running under its disclosure.
     chip_claimable = bool(
-        chip_available
-        and gate_permitted
-        and not aec_device_mismatch
+        not aec_device_mismatch
         and (
-            alignment_status == "ready"
+            (chip_available and gate_permitted and alignment_status == "ready")
             or (alignment_owned and alignment_status == "disclosed_stale")
         )
     )
@@ -697,8 +697,6 @@ def build_audio_profile_status(
         chip_profile=requested_profile,
     )
     running_profile = running_engine[3] if running_engine is not None else None
-    # Four arms, one engine: each names what the resolver found, and differs
-    # only in the state it reports around it.
     disclosed_engine = (
         running_engine
         if alignment_owned

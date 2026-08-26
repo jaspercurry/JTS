@@ -553,7 +553,13 @@ def test_an_unqualified_chip_path_discloses_while_an_engine_carries_wake():
     assert stopped["audio_profile"]["action"] == ""
 
 
-def _chip_box(*, aec_device: str, alignment_status: str) -> dict:
+def _chip_box(
+    *,
+    aec_device: str,
+    alignment_status: str,
+    chip_available: bool = True,
+    chip_gate: dict | None = None,
+) -> dict:
     return build_audio_profile_status(
         AecIntent(mode="auto", profile_selection="xvf_chip_aec"),
         RuntimeAecEnv(
@@ -570,7 +576,8 @@ def _chip_box(*, aec_device: str, alignment_status: str) -> dict:
             alsa_card_name="XVF3800",
         ),
         bridge_active=True,
-        chip_available=True,
+        chip_available=chip_available,
+        chip_gate=chip_gate,
     )
 
 
@@ -612,6 +619,37 @@ def test_a_mic_the_bridge_is_not_using_stops_every_arm_claiming_its_chip_beam(
     assert mismatched["audio_profile"]["active"] == mismatched_active
     assert mismatched["audio_profile"]["state"] == mismatched_state
     assert mismatched["microphone"]["processing_mode"] == mismatched_mode
+
+
+@pytest.mark.parametrize(
+    ("chip_available", "chip_gate"),
+    [
+        (False, None),
+        (True, {"auto_allowed": False, "arm_allowed": False, "status": "unsupported"}),
+    ],
+    ids=["no_beam_plan", "dac_gate_refuses"],
+)
+def test_the_ready_arm_claims_no_chip_beam_it_was_never_allowed_to_arm(
+    chip_available,
+    chip_gate,
+):
+    """Arming policy gates the ready arm, whatever the runtime env applied.
+
+    Every live fact says chip: the leg is enabled, the bridge is up on the
+    carrier and the mic matches. Only the beam plan and the DAC gate say this
+    box may not arm chip-AEC on its own, and `active` follows them.
+    """
+    status = _chip_box(
+        aec_device="XVF3800",
+        alignment_status="ready",
+        chip_available=chip_available,
+        chip_gate=chip_gate,
+    )
+
+    assert status["audio_profile"]["active"] is None
+    assert status["audio_profile"]["state"] == "unavailable"
+    assert status["microphone"]["processing_mode"] == "Chip-AEC pending"
+    assert status["microphone"]["wake_legs"] == []
 
 
 def test_a_chip_engine_is_never_stamped_with_a_profile_it_is_not_running():
