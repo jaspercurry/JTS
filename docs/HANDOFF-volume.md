@@ -1,594 +1,308 @@
-# HANDOFF — Volume coordination
+# Handoff: volume coordination — one canonical level, many attenuators
 
-Volume control on a Pi-based smart speaker has more moving parts than
-"set the slider" suggests. The user's iPhone, the Spotify app, the
-Bluetooth phone, a supported remote, the voice tool, and the always-on
-CamillaDSP all attenuate audio independently. This document explains
-how `jasper.volume_coordinator` makes them feel like one knob.
+Canonical for `jasper/volume_coordinator.py`, `volume_observers.py`,
+`volume_persistence.py`, `volume_curve.py`, `volume_diagnostics.py`, the
+`/volume` surface in `jasper/control/`, and `jasper/tools/audio.py`.
 
-If you're modifying anything in this subsystem, read this first.
+Neighbouring owners — do not restate their content here:
+[audio-paths.md](audio-paths.md) (the signal path and the complete
+[assistant-loudness contract](audio-paths.md#assistant-loudness-matching)) ·
+[HANDOFF-multiroom.md](HANDOFF-multiroom.md) (bonded pairs; §2 for the bypass) ·
+[HANDOFF-sound-preferences.md](HANDOFF-sound-preferences.md) ·
+[HANDOFF-usbsink.md](HANDOFF-usbsink.md) (the host slider) ·
+[HANDOFF-speaker-output-reference.md](HANDOFF-speaker-output-reference.md) ·
+[historical/volume-control-redesign-2026-05.md](historical/volume-control-redesign-2026-05.md)
+(the disproven AirPlay push-mode brief).
 
-## The problem
+Decisions live in ADRs, not here:
+[0151](adr/0151-a-new-source-is-camilla-master-until-it-proves-an-observable-volume-surface.md)
+(push is earned) ·
+[0176](adr/0176-the-airplay-sender-slider-is-not-a-control-surface.md) (AirPlay
+is Camilla-master both directions) ·
+[0177](adr/0177-duck-ownership-is-asked-of-the-owner-never-inferred-from-a-db-gap.md)
+(the duck probe) ·
+[0009](adr/0009-measurement-volume-hold-is-not-gated-on-observation.md) (the
+measurement hold) ·
+[0004](adr/0004-duck-release-algebra-and-reference.md) (duck release
+algebra — **tuning-program owned**).
 
-Several attenuators sit on the audio chain in series:
+## The canonical state
 
-```
-track_loudness × airplay_sender_vol × spotify_connect_vol
-    × bt_avrcp_vol × usbsink_host_vol × camilla_main_volume → DAC
-```
-
-Most of these are **upstream of CamillaDSP**. If the iPhone slider is
-at 30%, that's a ~20 dB pre-attenuation. Moving CamillaDSP's
-`main_volume` between 0% and 100% only spans the remaining 70% of
-perceived loudness.
-
-The pre-coordinator behaviour: voice tool's `set_volume(percent)` only
-adjusted CamillaDSP. So "Hey Jarvis, set volume to 80%" with the
-iPhone slider at 30% sounded like 24% — a confusing disconnect.
-
-## The model
-
-There is **one canonical volume state** persisted in
-`/var/lib/jasper/speaker_volume.json` and interpreted by
-`jasper.volume_coordinator.VolumeState`:
+Several attenuators sit on the chain in series — the sender app's slider, the
+source's protocol volume, CamillaDSP's `main_volume` — and most are *upstream*
+of CamillaDSP. There is nonetheless **one canonical state**, in
+`/var/lib/jasper/speaker_volume.json`, interpreted by `VolumeState`:
 
 - `listening_level` (0-100) is the user's remembered level and the level
   restored after a temporary mute.
 - `pre_mute_level` being present is the temporary mute latch.
-- `mute_token` identifies that exact temporary-mute transition so the
-  long-lived source observer can distinguish a stale pre-push reading from a
-  later user change.
+- `mute_token` identifies that exact transition, so the long-lived source
+  observer can tell a stale pre-push reading from a later user change.
 - `effective_percent` is derived exactly once: 0 while the latch is present,
   otherwise `listening_level`.
 
 Every input writes through `VolumeCoordinator`, and every user-facing read uses
-that same `VolumeState` projection. No HTTP handler, voice tool, accessory, or
-web client infers mute independently. This distinction is load-bearing:
-temporarily muting at 60% must render and actuate as 0% while retaining 60% as
-the unmute target. Explicitly setting volume to 0% has no restore target but
-still derives the same effective silence and final-output mute.
+that same `VolumeState` projection — no HTTP handler, voice tool, accessory, or
+web client infers mute independently. The distinction is load-bearing: muting at
+60% must render and actuate as 0% while retaining 60% as the unmute target,
+while an explicit 0% has no restore target yet derives the same silence and
+final-output mute.
 
-Cross-daemon mutation is serialized by the persistence-owned operation lock:
-the voice observer, jasper-control requests, and voice tools cannot interleave
-two half-applied source changes. The lock spans the physical renderer/Camilla
-actuation. Mux also holds it from carrier preparation through fan-in selection,
-carrier finalization, and publication of the new selected source; a queued
-old-source observation therefore cannot become authoritative after the lane
-has moved. The 1 Hz Camilla reconciler does a cheap unlocked preflight, but any
-candidate write joins this same operation lock and re-reads source, canonical
-intent, and Camilla at the write boundary. Independent persistence field
-updates use a separate short read-modify-write lock and reload the record while
-holding it, so a stale `VolumePersistence` instance cannot erase a newer mute
-latch or token. Read surfaces never take the long operation lock.
+**Serialization.** The persistence-owned operation lock spans the physical
+renderer/Camilla actuation, so the voice observer, control requests, and voice
+tools cannot interleave two half-applied source changes; mux holds the same lock
+across a whole handoff (`source_handoff_operation`), so a queued old-source
+observation cannot become authoritative after the lane has moved. Independent
+persistence field updates take a separate short read-modify-write lock and
+reload under it, so a stale `VolumePersistence` cannot erase a newer mute latch
+or token. Read surfaces never take the long lock.
 
-The coordinator's job is to keep this canonical state in sync with whatever
-attenuator is actually doing the work.
+## Which attenuator carries the level
 
-### Outbound dispatch
+`jasper/music_sources.py` declares each source's `VolumeMode`, consumed by
+`_camilla_carries_level(source)`. **Push-mode** means JTS can drive the source's
+own slider, so Camilla is pinned at 0 dB; **camilla-as-master** means Camilla
+carries `listening_level` on the calibrated curve.
 
-When the voice tool / remote / "louder" wants to change volume:
+| Source | Mode | Carrier |
+|---|---|---|
+| Spotify | `PUSH` | Web API `PUT /me/player/volume` via the multi-account `spotify_router`; librespot 0.8.0 has no local control HTTP, so the write goes cloud → spirc → librespot (~200-800 ms) and visibly moves the app slider on every client |
+| Bluetooth | `PUSH` | `org.bluez.MediaTransport1.Volume` on the active a2dpsnk path (uint16 0..127) |
+| AirPlay | `CAMILLA_MASTER` | `main_volume` — always, both directions ([ADR-0176](adr/0176-the-airplay-sender-slider-is-not-a-control-surface.md)) |
+| USB sink | `CAMILLA_MASTER` | `main_volume`; the host slider is observed one-way by `jasper-usbsink`, never written |
+| Idle | `CAMILLA_MASTER` | `main_volume` (the coordinator's internal fallback, not a mux-selectable lane) |
 
-1. Coordinator asks `backend.selected_source()` for mux's effective
-   audible source: manual `selected_source` when the user picked one,
-   or auto `winner` when latest-source-wins owns the gate.
-2. If mux is unavailable or has no winner yet, falls back to raw
-   `backend.active_renderers()` with priority
-   `airplay > spotify > bluetooth > usbsink > idle`.
-3. Decides whether the source is **push-mode** (it has a slider we
-   can drive — camilla pinned at 0 dB) or **camilla-as-master** (we
-   can't drive its slider — Camilla carries `listening_level` on the
-   calibrated 1..100% dB curve). The decision lives in the source registry at
-   `jasper/music_sources.py` (`VolumeMode`), consumed by
-   `_camilla_carries_level(source)`:
-   - **IDLE** → camilla-as-master
-   - **AIRPLAY** → camilla-as-master *always* (see "AirPlay is always
-     camilla-as-master" below for the why)
-   - **SPOTIFY** → push-mode (Web API)
-   - **BLUETOOTH** → push-mode (AVRCP via bluez-alsa)
-   - **USBSINK** → camilla-as-master (the host slider is observed
-     one-way by `jasper-usbsink`, not driven by JTS)
-4. Pushes the level to the right attenuator:
-   - **AirPlay** → CamillaDSP `main_volume` (1% maps to the calibrated
-     floor, default −50 dB; 100% maps to 0 dB)
-   - **Spotify** → Spotify Web API `PUT /me/player/volume` via the multi-account `spotify_router` (librespot 0.8.0 has no local control HTTP, so we go through Spotify's cloud → spirc → librespot, ~200-800ms latency, also propagates to all Spotify clients so the app slider visibly moves)
-   - **Bluetooth** → `org.bluez.MediaTransport1.Volume` property on the active a2dpsnk path (uint16 0..127)
-   - **USB sink** → CamillaDSP `main_volume`
-   - **Idle** → CamillaDSP `main_volume`
-5. In push-mode, **CamillaDSP `main_volume` is normally pinned at
-   0 dB** so there's no double-attenuation. If a source-side push
-   fails, Camilla remains a degraded-safe fallback guard at the
-   canonical level until a later handoff or recovery path can clear it.
-   `listening_level=0` is the explicit exception: the source slider is
-   still pushed to zero, but Camilla also asserts `main_mute` and stores
-   the calibrated floor (default −50 dB) so content/music "0%" is actually
-   muted, not just the renderer's lowest slider value. Assistant speech is
-   governed by the voice/mic policy and outputd path, not by source volume.
-   In camilla-as-master mode (idle, AirPlay, USB), `main_volume` IS the
-   user-facing knob. The same 0% rule applies there: the normal
-   calibrated 1-100% curve applies, while 0% additionally sets Camilla's
-   `main_mute`.
+Outbound dispatch resolves the source first: `backend.selected_source()` for
+mux's effective audible source (manual selection, else the latest-source-wins
+`winner`); if mux is unreachable or has no winner yet, raw
+`backend.active_renderers()` at `airplay > spotify > bluetooth > usbsink > idle`.
 
-The audible curve is configured by `/sound/setup/`:
-`volume_floor_db` is the dB value for 1%, clamped to −60..−10 dB and
-defaulting to −50 dB. The page can start a continuous 1% calibration tone,
-update CamillaDSP `main_volume` as the floor slider moves, and stop the tone
-explicitly or on page leave. The Reset floor button saves the default −50 dB
-floor through the same path; only `/sound/settings` persists the chosen floor.
-JTS never maps the user slider above 0 dB; raising the floor only compresses
-the quiet end of the slider for low-sensitivity speakers. The settings file is
-published `0640` with the parent `jasper` group so both `jasper-web` and
-`jasper-control` read the same floor; otherwise voice/control volume commands
-would silently fall back to the shipped default curve.
+`listening_level=0` is the explicit exception in both modes: the source slider
+is still pushed to zero, and Camilla additionally asserts `main_mute` and stores
+the calibrated floor, so "0%" is really muted rather than the renderer's lowest
+slider value. (Assistant speech follows the voice/mic policy and the outputd
+path, never source volume.)
 
-### Bonded-follower volume proxy (stereo pairs)
+**The audible curve.** `percent_to_db` maps 1% to `volume_floor_db` and 100% to
+0 dB. The floor is calibrated on `/sound/setup/` against a live 1% tone, clamped
+to −60..−10 dB and defaulting to −50 dB (`jasper/volume_curve.py`); only
+`/sound/settings` persists it. **JTS never maps the user slider above 0 dB** —
+raising the floor only compresses the quiet end for low-sensitivity speakers.
+The settings file is `0640` with the parent `jasper` group so `jasper-web` and
+`jasper-control` read the same floor; otherwise voice and control commands
+silently fall back to the default curve.
 
-While a speaker is an ACTIVE multiroom bond follower, its local volume
-knobs are inert — bonded content bypasses the local CamillaDSP entirely
-(the leader's one Camilla bakes the program;
-[HANDOFF-multiroom.md](HANDOFF-multiroom.md) §2). jasper-control
-therefore forwards `GET /volume` and `POST /volume/{set,adjust,mute}`
-verbatim to the leader's control API and relays the answer (tagged
-`pair_leader`), so the landing-page slider, a paired remote, and any HTTP
-client control the PAIR volume from whichever member they talk to. A
-`X-JTS-Pair-Forwarded` header breaks forward loops; the follower check
-is one grouping.env parse per call. Solo speakers and leaders never
-enter this path. Voice volume commands on a follower route through the
-SAME forward: the audio tools (`jasper/tools/audio.py`,
-`_pair_volume`) drive the local control API via loopback when
-bonded-as-follower, so "Jarvis, louder" moves the pair from either
-speaker; a leader-unreachable failure becomes a spoken error, never a
-silently inaudible local write. Voice mute/unmute send an explicit
-`{"muted": bool}` — `/volume/mute` accepts that additively (absent
-body = the legacy HID toggle, contract pinned by tests).
+**Bonded followers proxy everything.** An ACTIVE bond follower's local knobs are
+inert (bonded content bypasses the local CamillaDSP), so jasper-control forwards
+every `/volume` verb verbatim to the leader, tagged `pair_leader`, with
+`X-JTS-Pair-Forwarded` breaking loops and the follower check kept to one
+env-file read per call through the shared effective-role reader — never the
+runtime derive with its systemctl/RPC probes. Voice takes the SAME forward via
+`_pair_volume` (`jasper/tools/audio.py`), so a leader-unreachable failure is a
+spoken error rather than a silently inaudible local write. Solo speakers and
+leaders never enter this path.
 
-### `/state` volume policy visibility
+## Inbound observation
 
-`jasper-control` exposes `/state.audio.volume_policy` so the quiet
-Spotify-at-100% class of bug is visible without SSH. The block includes:
+`VolumeObserver` polls at 1 Hz (`POLL_INTERVAL_SEC`) and feeds detected changes
+into `coordinator.observe_source_volume(...)`; its module docstring says why
+polling and not DBus `PropertiesChanged`.
 
-- `active_source` from the top-level `/state` view and the resolved
-  music `source` used for volume policy.
-- `volume_mode` and `carrier` (`camilla`, `source`, or
-  `camilla_guard`).
-- effective `listening_level_percent`, current `main_volume_db`, and persisted
-  `main_volume_db`.
-- `push_guard_active`, `guard_db`, `guard_reason`, `guard_context`, and
-  `previous_db` when a push-mode source is protected by a Camilla
-  fallback guard.
-- `last_source_push_result`, `last_clear_event`, and mux
-  `last_handoff` when those facts are available.
+- **Spotify** — `/run/librespot/state.json`, written atomically at 0644 by
+  librespot's `--onevent` hook so non-root readers can see it; raw 0-65535.
+- **Bluetooth** — `bluealsa-cli list-pcms` for the transport, then
+  `busctl get-property` for `Volume`.
+- **AirPlay** — `busctl get-property` for `AirplayVolume`, read for diagnostics
+  and **unconditionally ignored** downstream
+  ([ADR-0176](adr/0176-the-airplay-sender-slider-is-not-a-control-surface.md)).
+  `-144` is AirPlay's mute sentinel, clamped up to `AIRPLAY_DB_MIN`.
+- **USB sink** — not polled here. `jasper-usbsink` watches the gadget mixer at
+  4 Hz in its own daemon and POSTs `source="usbsink"` observations.
 
-The snapshot is cheap by design. `/state` builds it from values it
-already collected (Camilla status, mux status, and
-`/var/lib/jasper/speaker_volume.json`) plus a tiny volatile diagnostics
-file at `/run/jasper/volume_policy.json` written by
-`jasper.volume_diagnostics`. That file is updated only when a source
-push, degraded guard, or guard clear happens. It performs no Spotify,
-DBus, network, or Camilla calls, and it is fail-soft: if `/run` state is
-missing, `/state` still derives the current guard from persisted/current
-Camilla dB.
+**Echo prevention.** Every outbound write timestamps itself per source
+(`_OutboundStamp`); an observation of our own value inside `ECHO_WINDOW_SEC`
+(500 ms) is ignored — enough for a DBus round trip on a busy Pi, short enough
+that a real slider movement just after our write is not swallowed.
 
-Hardware validation for the Spotify quiet-at-100% fix is still required
-after deploy. During the AirPlay → Spotify Connect reproduction, check:
+**Clearing a degraded guard.** A confirmed Spotify/Bluetooth source volume
+clears a Camilla fallback guard (for any `VolumeMode.PUSH` source) and pins
+Camilla back to 0 dB; "confirmed" means either a real user-side slider change or
+an observation that the active source already sits at the canonical
+`listening_level`. **The Ducker is the exception:** while a voice/TTS duck holds
+Camilla, a push confirmation is not a real clear — the coordinator records a
+failed/deferred clear and leaves the guard persisted for the next tick, so
+persistence never claims Camilla is pinned at 0 dB while the graph is
+attenuated.
 
-```sh
-curl -s http://jts.local:8780/state | jq .audio.volume_policy
-```
+**USB is observed, not authoritative.** A host-side observation updates
+`listening_level` and then converges Camilla (`main_volume` plus the 0%
+`main_mute` flag) — the macOS mute/unmute path. The legacy Camilla-ducker lock
+defers the dB write; the mute flag always reflects current intent. USB carries
+`observation_initial=true` while retrying the startup mixer snapshot: that may
+synchronize an ordinary unmuted session, but it yields to a mute already
+asserted elsewhere.
 
-Healthy recovery after Spotify push or confirmed source observation:
-`volume_mode="push"`, `carrier="source"`, `push_guard_active=false`,
-and `main_volume_db` near `0.0`. A safe degraded failure shows
-`carrier="camilla_guard"` and `push_guard_active=true`; that is quieter
-than intended but protects against a loud transient.
+**A live measurement hold declines, it does not defer.**
+[`control/measurement_hold.py`](../jasper/control/measurement_hold.py), taken by
+[`measurement_window()`](../jasper/correction/coordinator.py) and shown at
+`/state.measurement`, makes `_post_volume_set`
+(`jasper/control/handlers/volume.py`) short-circuit every `source=`-bearing
+request BEFORE a coordinator is built: nothing is updated, Camilla is untouched,
+and the caller gets the established `observation_applied: false` on an HTTP 200.
+Nothing replays it — the USB bridge re-presents the host value once the hold
+lapses. **Authoritative** writes (no `source`) are unaffected; this is
+isolation, not a lockout.
 
-### Inbound observation
+**Mute is token-barriered.** A temporary mute preserves `listening_level` and
+atomically records `pre_mute_level` plus a fresh `mute_token`; dispatch still
+receives the derived effective 0%. Push writes can be slow, so a nonzero
+observation is ignored until the observer has seen renderer 0% for that same
+token — that 0% confirms the mute rather than being a new canonical 0% edit, and
+cannot erase the restore level. After the barrier a nonzero source-side change
+is unambiguous fresh intent and clears the mute normally. Observer dedup
+includes the token revision as well as the renderer value, so two rapid mutes
+that both expose 0% stay distinct.
 
-A 1 Hz poller (`jasper.volume_observers.VolumeObserver`) reads each
-source's current value and feeds detected changes into
-`coordinator.observe_source_volume(...)`:
-
-- AirPlay: `busctl get-property` for `AirplayVolume` (read but
-  unconditionally ignored downstream — see exception below)
-- Spotify: read `/run/librespot/state.json` (written atomically at 0644 by librespot's `--onevent` hook on every player event, so non-root mux/control readers can observe it; `volume` field is raw 0-65535, mapped to percent)
-- Bluetooth: `bluealsa-cli list-pcms` to find the transport, then
-  `busctl get-property` for `Volume`
-- USB sink: observed in the `jasper-usbsink` daemon itself. The host
-  slider is bridged into `VolumeCoordinator.observe_source_volume(...)`
-  with `source="usbsink"`; the shared `VolumeObserver` does not poll it.
-
-When the user moves the Spotify app slider or BT volume, the next
-poll picks it up (sub-second latency) and the coordinator updates
-`listening_level` accordingly.
-
-If a push-mode source handoff had fallen back to a Camilla guard
-(`degraded_safe`), a confirmed Spotify/Bluetooth source volume clears
-that guard and pins Camilla back to 0 dB. "Confirmed" includes both
-a real user-side source slider change and an observation that the
-active source already sits at the canonical `listening_level`. At that
-point the source slider has proven it is carrying the user's intent, so
-leaving the downstream fallback attenuation in place would make
-"Spotify 100%" still sound like the older guarded level.
-
-The Ducker is the exception: if a voice/TTS duck is actively holding
-Camilla, a push confirmation does **not** count as a real guard clear.
-The coordinator records a failed/deferred clear and leaves the guard
-persisted so the next observer tick can retry after the duck releases.
-That keeps the repair behind the scenes without letting persistence
-claim Camilla is pinned at 0 dB while the live graph is still attenuated.
-
-USB is different from Spotify/Bluetooth: the Mac/PC host slider is an
-observed input, but not the final speaker-volume carrier. When USB is
-active, a host-side observation updates `listening_level` and then
-converges Camilla (`main_volume` plus the 0% `main_mute` flag) to match.
-That is the Wispr Flow/macOS mute-unmute path: host "0%" asserts content
-mute; host unmute restores Camilla to the observed level immediately during a
-normal fan-in voice session. The legacy Camilla-ducker lock defers the dB
-write; the mute flag always reflects the user's current intent.
-
-A live **measurement hold** ([`jasper/control/measurement_hold.py`](../jasper/control/measurement_hold.py))
-is the other exception, and it is a decline rather than a deferral. While the
-hold is up, `_post_volume_set` short-circuits every `source=`-bearing request
-BEFORE `observe_source_volume` is reached: `listening_level` is not updated,
-Camilla is not touched, and the caller gets the established
-`observation_applied: false` on an HTTP 200. Nothing replays it — the USB
-bridge re-presents the host's value on its own next tick once the hold lapses.
-Without this, a host slider moved mid-sweep walks the very fader a measurement
-is holding. **Authoritative** writes (no `source`: remote, web, voice) are
-unaffected; the hold is isolation, not a lockout. The hold is taken by
-[`measurement_window()`](../jasper/correction/coordinator.py) as one of its
-three self-expiring leases and is visible at `/state.measurement`.
-
-A JTS temporary mute (remote, web, or voice) preserves the remembered
-`listening_level` and atomically records `pre_mute_level` plus a fresh
-`mute_token`; source dispatch still receives the derived effective 0%.
-Spotify/Bluetooth writes can be slow, so a nonzero observation is ignored until
-the long-lived observer has seen renderer 0% for that same token. That 0% is
-confirmation of the mute, not a new canonical 0% edit, and cannot erase the
-restore level. After the token-specific zero barrier, a later nonzero
-source-side change is unambiguous fresh user intent and clears the temporary
-mute through the normal observer path. Observer deduplication includes that
-opaque token revision as well as the renderer value, so two rapid mutes that
-both expose 0% are still distinct. A policy-declined observation is not cached
-as truth and is retried on the next bounded poll.
-
-USB carries one additional fact on its source-observation request:
-`observation_initial=true` while it is retrying the unchanged mixer snapshot
-discovered at bridge startup. That snapshot may synchronize an ordinary
-unmuted session, but it yields to a temporary mute already asserted by another
-surface. Once the host value actually changes, the bridge sends a normal
-observation and that fresh user action may clear the mute.
-
-**Exception: AirPlay observations are unconditionally skipped.** The
-sender's slider sits *upstream* of camilla in the audio chain —
-honoring it as the user's master-volume intent would mean the
-canonical level bounces around with whatever the phone/Mac is
-showing, disconnected from what camilla (the actual master) is
-doing. So we ignore the iPhone/Mac AirPlay slider and let JTS remote,
-web, and voice controls own the canonical speaker level. The sender
-slider remains upstream trim, not the JTS volume source of truth.
-
-### Echo prevention
-
-When the coordinator writes to a source, the source emits a property-
-changed event that the observer also sees. We don't want this to look
-like user input. So every outbound write timestamps itself per source
-(`_OutboundStamp`), and on observation:
-
-```
-if observed.source.was_written_by_us within ECHO_WINDOW_SEC (500 ms):
-    ignore
-```
-
-500 ms covers DBus round-trip + bus latency on a busy Pi 5 with
-generous slack. It's short enough that a real user-touched slider
-movement landing just after our write isn't swallowed.
-
-### Why polling, not DBus subscriptions
-
-`busctl get-property` through the bounded `jasper.busctl` subprocess boundary is
-the proven pattern in this codebase. DBus PropertiesChanged
-subscriptions would need a new dependency (dbus-next) and a more
-complex error model (long-lived subscriptions to manage). For our
-use case the ergonomic wins don't materialise: source-side volume
-changes happen at finger-touch speed, and 1 Hz polling captures
-everything with sub-second latency.
-
-## The boot path
-
-`VolumeCoordinator.initialize()` is called once at voice_daemon
-startup:
-
-1. Load `VolumeRecord` from disk (handles v1→v2 migration internally —
-   v1 files derive `listening_level` from `main_volume_db` percent).
-2. Compute the boot target via `regress_listening_level_if_stale`:
-   - **No record** → `first_boot_default_pct` (50% by default).
-   - **Fresh** (now − last_used_at < `stale_after_sec`) → use as-is.
-   - **Stale + extreme** → clamp into `[safe_low_pct, safe_high_pct]`.
-   - **Stale + safe** → use as-is.
-3. Apply via dispatch (whichever source is active, or camilla if idle).
-4. Persist with `mark_user_change=False` — boot writes do NOT bump
-   `last_used_at`. Otherwise every reboot would reset the staleness
-   clock and yesterday's bedtime 90% would never get clamped.
-
-`stale_after_sec` is tied to `last_used_at` (last user-initiated
-change), not `updated_at` (last write of any kind). This decouples
-"how recently the user actually touched volume" from "how recently
-the daemon wrote to disk".
+**Boot.** `VolumeCoordinator.initialize()` runs once at voice_daemon startup:
+load `VolumeRecord` (v1→v2 migration is internal), compute the boot target via
+`regress_listening_level_if_stale` (its defaults are the ladder), apply through
+the normal dispatch, and persist with `mark_user_change=False`. Boot writes do
+NOT bump `last_used_at`, or every reboot would reset the staleness clock and
+yesterday's bedtime 90% would never get clamped. Staleness is anchored on
+`last_used_at` (last user-initiated change), not `updated_at` (last write of any
+kind) — that field is the authority if you change staleness semantics, and it is
+written ONLY on set/adjust/observe, never on boot restore.
 
 ## The two consumers
 
-**`jasper.tools.audio.make_audio_tools(coordinator)`** — voice tool
-surface. Five tools: `get_volume`, `set_volume`, `adjust_volume`,
-`mute`, `unmute`. Each is a thin wrapper around the coordinator's
-public API.
+**`jasper.tools.audio.make_audio_tools(coordinator)`** — `get_volume`,
+`set_volume`, `adjust_volume`, `mute`, `unmute`, each a thin wrapper on the
+coordinator's public API. Voice mute/unmute send an explicit `{"muted": bool}`;
+`/volume/mute` accepts that additively (absent body = the legacy HID toggle).
 
-**`jasper.control.server`** — HTTP surface for management clients,
-supported accessories, and LAN automation. Builds a fresh
-`VolumeCoordinator` per request via
-`_with_coordinator` (matches the pre-existing `_toggle_transport`
-pattern). Relative adjustments use `delta_percent`; absolute setters
-accept `percent`, with the established `db` form retained for
-automation compatibility.
+**`jasper.control`** — HTTP for management clients, accessories, and LAN
+automation, building a fresh `VolumeCoordinator` per request via
+`_with_coordinator`. Relative adjustments use `delta_percent`; absolute setters
+take `percent`, with the established `db` form retained for automation. Only
+mutating requests construct the actuators — `GET /volume` is deliberately
+persistence-only, so the landing page's 500 ms visible-only single-flight
+refresh never rebuilds Spotify clients or renderer-control machinery. Both
+daemons converge through the persistence file; only voice_daemon's coordinator
+runs the inbound observers. Every successful `/volume` response shares one
+additive payload contract — `{"db", "percent", "muted", "restore_percent"}`,
+where `percent` and `db` are what a client should render, `muted` is the
+effective silence assertion (temporary mute or explicit 0%), and
+`restore_percent` is non-null only for a temporary mute. Existing clients stay
+compatible by reading only `percent`.
 
-Both daemons converge through the persistence file. voice_daemon's
-coordinator runs the inbound observers; control_daemon's
-coordinator does not (it doesn't need them — it's a write surface).
-Mutating control requests construct the coordinator and its actuators;
-`GET /volume` is deliberately persistence-only, so the visible page's 2 Hz
-refresh never rebuilds Spotify clients or renderer-control machinery.
+## Cross-daemon Camilla ownership
 
-All successful `/volume` responses share one additive payload contract:
-
-```json
-{
-  "db": -50.0,
-  "percent": 0,
-  "muted": true,
-  "restore_percent": 60
-}
-```
-
-`percent` and `db` are the effective values every existing client should
-render. `muted` is the effective silence assertion (temporary mute or explicit
-0%); `restore_percent` is non-null only for a temporary mute. Existing
-clients remain compatible because they can continue reading only
-`percent`. The landing page polls `GET /volume` every 500 ms while visible,
-with at most one request in flight, and does no volume fetch from a hidden tab;
-with no page open there is no web polling. The USB gadget's separate 4 Hz ALSA
-mixer observer remains always-on because it is the hardware-input bridge, not
-a web-view refresh loop.
-
-### Cross-daemon Camilla ownership signal
-
-Voice-session state and Camilla ownership are separate facts. The current
-production `FanInDucker` attenuates only renderer/program audio in fan-in;
-Camilla remains the final master for music + TTS, so a remote/web/voice volume
-change must still write Camilla during speech. The legacy Camilla `Ducker`
-temporarily owns `main_volume`, so only that transport defers Camilla writes.
-
-`WakeLoop` tells its long-lived coordinator both facts through
-`note_voice_session(active, camilla_volume_locked=...)`:
-
-- `_voice_session_active` still suppresses source handoffs and the 1 Hz
-  reconciler. Those operations can race session topology even when fan-in owns
-  the duck.
-- `_camilla_volume_locked` gates `_set_camilla`; it is false for fan-in and
-  true for the legacy Camilla ducker.
-
-Per-request coordinators in jasper-control cannot read the process-local lock,
-so `_duck_active_probe` asks jasper-voice `STATUS` for the explicit
-`camilla_volume_locked` boolean. During rolling upgrades it falls back to the
-older `duck_active` field. Probe `None` (voice unreachable, wedged, or malformed)
-fails open so an accessory control never becomes inert. Both fields are visible in
-`/state.voice`; `duck_active=true, camilla_volume_locked=false` is the normal
-fan-in speech state.
-
-When the legacy lock is true, `listening_level` still persists and
-`Ducker.restore()` converges Camilla to `get_camilla_target_db()` at session
-end. In the normal pre-DSP fan-in path, the write lands immediately and the
-coordinator also publishes one absolute `VOLUME_CONTEXT` message: canonical
-user dB, actual downstream Camilla dB, the quiet-room TTS envelope target,
-mute, and a `CLOCK_BOOTTIME` nanosecond stamp captured at snapshot acquisition
-and carried immutably through publication. An older snapshot therefore stays
-older even if its socket write is delayed until after a newer update.
-The mute bit is fail-safe: persisted pre-mute intent, canonical 0%, or observed
-Camilla mute can raise it; a stale/unreadable observation can never lower user
-intent.
-Fan-in rejects a context older than the last accepted stamp. At turn start,
-voice embeds the same five fields directly in `PREPARE_ASSISTANT`, so the
-identity and safety snapshot are one atomic command rather than two separately
-queued messages. The legacy four-field prepare still parses for rolling
-upgrades; fan-in can continue from its latest separately published context,
-while the post-DSP outputd consumer treats a missing or rejected turn-start
-context as silence.
-
-Slow push-mode actuators are ordered differently from local Camilla writes.
-For Spotify/Bluetooth, the coordinator publishes the already-known user intent
-before awaiting the source round trip, then publishes a fresh converged
-snapshot after dispatch. Mute publishes `muted=true` to fan-in before even the
-best-effort Camilla final-output backstop, so neither cloud latency nor a wedged
-Camilla connection can delay the immediate TTS stop. Non-muted Camilla-master
-edits keep the single post-write publication; a provisional context there would
-briefly compensate against stale downstream gain and create a needless second
-ramp.
-
-The grouping reconciler is the single writer of `JASPER_TTS_MIX_STAGE`. A
-passive bonded member sets `post_dsp`. Since #1547 outputd interprets
-`VOLUME_CONTEXT` as a first-class post-DSP consumer, so voice and the
-coordinator publish the SAME absolute wire message to outputd's socket — they
-never mutate `downstream_db` to 0 (the post-DSP consumer's shared
-`AssistantLoudness` engine treats it as 0.0 via `MixStage::PostDsp`). Absent
-means the normal `pre_dsp` fan-in path only when there is no grouping-owned
-socket override. A legacy socket-only grouping file is ambiguous during a
-rolling upgrade and fails closed (neither pre-DSP nor post-DSP compensation is
-published, and outputd silences context-free prepares). Callers use
-`tts_socket_feeds_pre_dsp_fanin()` /
-`tts_socket_feeds_post_dsp_outputd()` rather than inferring stage from a socket
-pathname or duck transport. The message contains no source name or gain policy:
-source dispatch stays in `VolumeCoordinator`, while fan-in / outputd own
-measurement/reference policy. The complete loudness contract lives in
+Voice-session state and Camilla ownership are two facts, not one
+([ADR-0177](adr/0177-duck-ownership-is-asked-of-the-owner-never-inferred-from-a-db-gap.md)
+has the rule and why the alternative failed). `WakeLoop` publishes both through
+`note_voice_session(active, camilla_volume_locked=...)`: `_voice_session_active`
+suppresses source handoffs and the 1 Hz reconciler (both can race session
+topology even when fan-in owns the duck), while `_camilla_volume_locked` gates
+`_set_camilla` and is set only by the legacy Camilla `Ducker`. Per-request
+coordinators in jasper-control cannot read a process-local flag, so
+`_duck_active_probe` asks jasper-voice `STATUS` for that boolean, falls back to
+the older `duck_active` field during rolling upgrades, and fails open on `None`.
+Both appear in `/state.voice`, where
+`duck_active=true, camilla_volume_locked=false` is normal fan-in speech and
+volume writes proceed. Under the legacy lock, `listening_level` still persists
+and `Ducker.restore()` converges Camilla to `get_camilla_target_db()` at session
+end. **What this surface publishes:** one absolute `VOLUME_CONTEXT` of five —
+canonical user dB, downstream Camilla dB, the quiet-room TTS envelope target,
+mute, and a `CLOCK_BOOTTIME` stamp taken at snapshot acquisition and carried
+immutably, so an older snapshot stays older even if its write is delayed. The
+same five ride `PREPARE_ASSISTANT` at turn start, making identity and safety one
+atomic command. The mute bit is fail-safe: pre-mute intent, canonical 0%, or
+observed Camilla mute can raise it; a stale or unreadable observation can never
+lower user intent. Slow actuators are ordered differently — for
+Spotify/Bluetooth the coordinator publishes known user intent BEFORE awaiting
+the source round trip and a converged snapshot after, and mute publishes
+`muted=true` before even the best-effort Camilla backstop, so neither cloud
+latency nor a wedged Camilla can delay the TTS stop. The message carries no
+source name or gain policy: source dispatch stays here, and everything
+downstream — consumption, mix-stage selection (`JASPER_TTS_MIX_STAGE`,
+single-written by the grouping reconciler; callers use
+`tts_socket_feeds_pre_dsp_fanin()` / `tts_socket_feeds_post_dsp_outputd()`
+rather than inferring stage from a socket path), and the gain math — belongs to
 [audio-paths.md](audio-paths.md#assistant-loudness-matching).
 
-#### Why the probe replaced the prior dB-comparison heuristic
+## Source handoff guard
 
-Until 2026-05-25, gate #2 was a heuristic: "if the requested target
-is more than 5 dB above camilla's current `main_volume`, infer a
-duck and defer." This conflated two situations that produced an
-identical signal — *Ducker has lowered camilla by 25 dB* and *a
-client sent one large relative increase*. Any sufficiently large
-request crossed the threshold.
+`jasper-mux` owns source policy; `VolumeCoordinator` owns the handoff safety
+invariant: **a fan-in lane must not become audible until the correct volume
+carrier is safe for the current `listening_level`.** Under the lease above, mux
+calls `prepare_source_handoff(prev, current, reason=...)` before
+`SELECT <label>` and `finalize_source_handoff(...)` after the gate moves.
 
-The misfire wasn't merely a glitch. When the heuristic deferred,
-`listening_level` was persisted (the caller does it in `_dispatch`'s
-finally block) but `main_volume_db` was not. With no actual Ducker
-running, nothing came along to converge them. Every subsequent
-relative request computed its target from the now-inflated `listening_level`,
-the gap to current `main_volume` only widened, and the heuristic
-fired again — a self-perpetuating cascade. Users saw control surfaces
-reading 100% while the speaker stayed quiet.
+- **Push-mode target** (`spotify`, `bluetooth`): push `listening_level` to the
+  source FIRST; after fan-in selects the lane, hold the prior Camilla guard for
+  a propagation window (`JASPER_SOURCE_PUSH_SETTLE_SEC`, 0.75 s) before
+  returning Camilla to 0 dB. A failed push still allows the switch, in a
+  `degraded_safe` state at the canonical guard level — quieter than ideal, never
+  louder. That guarded `main_volume_db` is persisted and
+  `get_camilla_target_db()` preserves it through `Ducker.restore()` rather than
+  unmasking a source whose volume could not be set.
+- **Camilla-master target** (`airplay`, `usbsink`): lower Camilla to the guard
+  level FIRST and wait past Camilla's 400 ms ramp
+  (`JASPER_SOURCE_HANDOFF_SETTLE_SEC`, 0.45 s) before mux exposes the lane. This
+  is the real Spotify → AirPlay failure: Spotify leaves Camilla at 0 dB, but
+  AirPlay depends on Camilla for its volume. During a voice duck, prepare
+  succeeds only if the ducked level is already at or below the guard; otherwise
+  mux leaves fan-in closed on the prior source and retries.
 
-The probe replaces a structurally ambiguous signal with an
-authoritative one: jasper-voice is the source of truth about whether
-its own Ducker owns Camilla, so we ask it. The fail-open behavior
-preserves the AGENTS.md "production speaker — must be resilient and
-plug-and-play" contract: if jasper-voice is down or wedged, accessory
-controls keep working at the cost of *possibly* un-ducking music for a
-moment (which wouldn't happen anyway because the wedged daemon
-can't duck either). The previous fix's asymmetric "only raises
-defer" rationale was correct in spirit but the wrong target — what
-mattered was "is a duck *actually* active," not "would this write
-*look like* it's fighting a duck."
+Final handoffs log `event=source.handoff` with `id`, `from`, `to`, `reason`,
+`level`, `guard_db`, `camilla_before`, `prev_mode`, `target_mode`, `push_ok`,
+`settled_ms`, `result`, `elapsed_ms`; early prepare/fan-in failures log the
+compact `id/from/to/reason/result/detail` shape at WARNING. Mux status exposes
+`last_handoff` with the richer fields, so `/source/state` and
+`/state.source_selection` carry it on failure paths too.
+`apply_active_source_transition(...)` remains an observer backstop for raw
+renderer-state changes, boot convergence, and paths outside mux's control; it
+follows the same carrier rules and calls `_refresh_from_disk()` first, because
+the control daemon writes `listening_level` on every change and a stale cache
+would dispatch the wrong level.
 
-TTS responds during playback. For music-anchored speech, fan-in applies the
-residual `canonical dB delta - downstream dB delta` to queued raw speech. For
-no-music speech it instead follows the deliberately gentler TTS-envelope delta,
-minus the downstream delta, so turning the knob cannot switch to Camilla's
-steeper music curve. Both paths use a 100 ms ramp and the segment's existing
-peak cap; mute is immediate. Equal-level source observations that repair or
-clear the downstream Camilla carrier republish the context too, so an in-flight
-reply sees the real mutation even when `listening_level` did not change.
+## Self-healing reconciler
 
-### Source handoff guard
+`maybe_reconcile_camilla()` runs inside `VolumeObserver._tick` at 1 Hz on
+jasper-voice: a no-op when healthy, a write-back when `main_volume_db` has
+drifted from `percent_to_db(listening_level)`. It is **not** the primary defense
+against desync — the ownership signal above is — but it catches drift from other
+writers whatever the cause. **Gates**, all required:
 
-`jasper-mux` owns source policy, but `VolumeCoordinator` owns the
-handoff safety invariant: **a fan-in lane must not become audible until
-the correct volume carrier is safe for the current `listening_level`.**
-The mux calls `prepare_source_handoff(prev, current, reason=...)`
-before `SELECT <label>` for selectable music sources and
-`finalize_source_handoff(...)` after the fan-in gate moves. That complete
-sequence plus mux winner/manual-source publication holds the persistence-owned
-volume operation lease. Source observers acquire the same lease and re-check
-mux ownership there, so no window exists where the new lane is audible while
-the prior lane still appears authoritative to volume policy. The best-effort
-assistant volume-context snapshot is published once after that lease releases:
-it is observability/mix convergence, not part of the gate's hearing-safety
-ordering, and its snapshot method takes the coordinator's local mutation lock.
-
-The two cases:
-
-- **Push-mode target** (`spotify`, `bluetooth`): push
-  `listening_level` to the source first. After fan-in selects that
-  lane, keep the prior Camilla guard for a short propagation window
-  (`JASPER_SOURCE_PUSH_SETTLE_SEC`, default 0.75 s), then return
-  CamillaDSP to 0 dB. If the push fails, lower CamillaDSP to the
-  canonical guard level and still allow the switch in a `degraded_safe`
-  state; this is quieter than ideal, never louder. The guarded
-  `main_volume_db` is persisted, and `get_camilla_target_db()`
-  preserves it through `Ducker.restore()` instead of unmasking a source
-  whose own volume could not be set. A later successful push dispatch
-  or confirmed active-source observation clears the guard generically
-  for all `VolumeMode.PUSH` sources.
-- **Camilla-master target** (`airplay`, `usbsink`; `idle` is the
-  coordinator's internal fallback, not a mux-selectable lane): lower
-  CamillaDSP to the canonical guard level first and wait slightly past
-  CamillaDSP's 400 ms default ramp before mux exposes the lane. This
-  covers the real Spotify → AirPlay failure mode: Spotify leaves
-  Camilla at 0 dB, but AirPlay depends on Camilla for receiver-side
-  volume. During a voice duck, the prepare step succeeds only if the
-  current ducked Camilla level is already at/below the guard; otherwise
-  mux leaves fan-in closed/on the prior source and retries later.
-
-The source registry in `jasper/music_sources.py` declares each source's
-`VolumeMode`; source-specific push I/O remains in the coordinator
-dispatchers. Successful/final handoff logs use `event=source.handoff`
-with `prev_mode`, `target_mode`, `guard_db`, `camilla_before`,
-`push_ok`, `settled_ms`, and `result`; early prepare/fan-in failures
-log the compact `from/to/reason/result/detail` shape. Mux status also
-exposes `last_handoff` with the richer fields, so `/source/state` and
-`/state.source_selection` have the same recent diagnostic even for
-failure paths.
-
-## Self-healing reconciler (backstop)
-
-`VolumeCoordinator.maybe_reconcile_camilla()` is the resilience
-backstop that runs inside `VolumeObserver._tick` at 1 Hz on
-jasper-voice. It's a no-op when state is healthy; when
-`camilla.main_volume_db` has drifted from
-`percent_to_db(listening_level)`, it writes the expected value back
-to converge.
-
-The reconciler is **not** the primary defense against the desync
-class of bugs — the cross-daemon Camilla ownership signal (above) is. The
-reconciler protects against drift from other writers (room
-correction, a future code path that bypasses the coordinator, a
-camilla restart blip that swallows a write) and gives the system a
-self-healing property no matter how the drift was introduced.
-
-**Gates** (all must pass for a write to land):
-
-1. No voice session or correction measurement is active. Voice sessions pause
-   this background repair (`_voice_session_active`) so it cannot race session
-   topology; foreground user volume writes remain live unless the separate
-   `_camilla_volume_locked` fact is true. During
-   `MEASURE_PAUSE`, `_measurement_active` narrowly disables this voice-process
-   reconciler so it cannot replace a measurement ramp's requested volume with
-   persisted `listening_level` while the ramp state machine still believes its
-   own value is live. This is not a cross-daemon Camilla lock and does not block
-   emergency user mute/attenuation. Long relay setup windows renew
-   `MEASURE_PAUSE` every `coordinator.MEASUREMENT_LEASE_REFRESH_SEC`; if the
-   correction process dies, the voice daemon's auto-clear timer
-   (`voice_daemon.MEASUREMENT_AUTOCLEAR_SEC`) still releases the guard.
-2. Active source uses camilla-as-master (idle / AirPlay / USBSINK).
-   Push-mode sources pin camilla at 0 dB by design, except for the
-   explicit 0% content-mute floor.
-3. `|drift| > RECONCILE_DRIFT_DB` (1 dB) — dead band above camilla's
-   normal jitter (~0.1 dB). Mute-state drift is also repaired: if dB is
-   already at −50 but `main_mute=false`, 0% is not converged.
-   A persisted `pre_mute_level` is treated as active mute intent: the
-   reconciler expects the 0% floor and `main_mute=true` while preserving
-   the restore level for the next unmute, instead of "repairing" back to
-   the prior audible `listening_level`.
-4. Deep quiet drift is skipped (`expected - current >=
-   RECONCILE_DUCK_SKIP_DB`) — CueDuck plays proactive cues without
-   setting `_voice_session_active`, so a 25 dB drop below expected can
-   be intentional. The graph-swap duck below rides the same carve-out.
-   Deep loud drift is **not** skipped. If Camilla is
-   much louder than the canonical level, the reconciler pulls it back
-   even when the drift is larger than 10 dB.
-5. The unlocked 1 Hz preflight is only a hint that repair may be needed.
-   Before writing, the reconciler acquires the shared volume operation lease
-   and re-reads the active source, effective canonical level, and live Camilla
-   state. A newer control-daemon command therefore wins instead of being
+1. No voice session or correction measurement active. Voice sessions pause this
+   background repair; foreground user writes stay live unless
+   `_camilla_volume_locked` is separately true. `MEASURE_PAUSE` sets
+   `_measurement_active`, which narrowly disables the reconciler so it cannot
+   replace a measurement ramp's requested volume with persisted
+   `listening_level` — not a cross-daemon Camilla lock, and never a block on
+   emergency user mute or attenuation.
+2. Active source is camilla-as-master (push-mode pins Camilla at 0 dB by design,
+   the 0% mute floor excepted).
+3. `|drift| > RECONCILE_DRIFT_DB` (1 dB) — a dead band above Camilla's normal
+   jitter. Mute-state drift is repaired too: at −50 dB with `main_mute=false`,
+   0% is not converged. A persisted `pre_mute_level` is active mute intent, so
+   the reconciler expects the floor and `main_mute=true` while preserving the
+   restore level rather than "repairing" back to the prior audible level.
+4. Deep QUIET drift is skipped (`expected - current >= RECONCILE_DUCK_SKIP_DB`,
+   10 dB) — `CueDuck` plays proactive cues without setting
+   `_voice_session_active`, and the graph-mutation bracket rides the same
+   carve-out. Deep LOUD drift is **not** skipped: a writer that left Camilla far
+   above canonical is unsafe, not a duck. (An operator who sets `JASPER_DUCK_DB`
+   shallower than 10 dB may therefore see cues briefly un-duck; the production
+   default, −25 dB, is well clear.)
+5. The unlocked preflight is only a hint. Before writing, the reconciler takes
+   the shared operation lease and re-reads source, canonical level, and live
+   Camilla state, so a newer control-daemon command wins instead of being
    overwritten by a stale observer snapshot.
 
-**Trade-off:** if an operator configures `JASPER_DUCK_DB` shallower
-than 10 dB (e.g., -5 dB), the reconciler may briefly un-duck cues
-during proactive cue playback (1 Hz of "raise camilla to expected"
-inside a 5–10 s cue window). Production default of -25 dB is well
-clear. If this needs to change, gate the reconciler on a "cue
-active" flag set by the cue manager, mirroring `note_voice_session`.
-
-**Emits** `event=volume.reconciled` on every write with
-`source=`, `level=`, `current_db=`, `expected_db=`, `drift_db=`,
-`current_mute=`, and `expected_mute=`. Visible in
-`journalctl -u jasper-voice` for drift forensics.
-
-The reconciler does NOT replace mux-owned source handoff. Mux
-`prepare_source_handoff(...)` / `finalize_source_handoff(...)` is the
-primary path for landing-page selection and latest-source-wins fan-in
-changes. `apply_active_source_transition(...)` remains an observer
-backstop for raw renderer-state changes, boot convergence, and older
-paths that report activity outside mux's control.
+Every write emits `event=volume.reconciled` with `source`, `level`,
+`current_db`, `expected_db`, `drift_db`, `current_mute`, `expected_mute` — the
+drift forensics in `journalctl -u jasper-voice`.
 
 ## Hearing-safety belt
 
@@ -601,11 +315,7 @@ Multiple guardrails sit on top:
   source-gain ceiling. Both match assistant loudness to measured content or the
   quiet-room envelope and cap the result with the dynamic peak-aware limit
   (`max_peak_dbfs - source_peak_dbfs`) so quiet voices are not pinned below
-  music by a stale global clamp. Passive bonded outputd TTS now has full
-  volume-context parity (#1547): the shared `AssistantLoudness` engine takes a
-  `MixStage` so post-DSP zeroes the downstream term, and outputd applies mute,
-  live re-gain, and a learned/persisted quiet-room reference just like fan-in.
-  See
+  music by a stale global clamp. See
   [HANDOFF-speaker-output-reference.md](HANDOFF-speaker-output-reference.md).
 - `volume_limit: 0.0` in every JTS CamillaDSP YAML — base,
   room-correction, sound-preference, and active-speaker baseline configs
@@ -617,246 +327,73 @@ Multiple guardrails sit on top:
   target before clearing `main_mute`.
 - `jasper-doctor` checks the active Camilla config for
   `devices.volume_limit <= 0` and fails if it is missing or positive.
+- `dsp_apply` refuses at apply time any config that omits `volume_limit` or
+  sets it above 0 dB, so a bad graph never reaches CamillaDSP.
 - `/state.audio` exposes Camilla playback RMS, playback peak, and
   clipped-sample count for lightweight diagnostics.
 
 Don't bypass any of these. The user is volume-sensitive ("don't blow
-my eardrums out"); defense in depth is the design.
+my eardrums out"); defense in depth is the design. `devices.volume_limit`
+staying `0.0` and the `set_volume_db` clamp are **AGENTS.md non-negotiable 1** —
+never weaken either.
 
-### Bounded CamillaDSP control transport
+## Diagnosing at the user's surface
 
-Long-running daemon control/read paths and `jasper-doctor` use
-`CamillaController`. The pinned pycamilladsp client is synchronous, so the
-controller gives each newly-created
-websocket a fixed two-second socket timeout and arms a fixed five-second abort
-watchdog around each worker attempt. An ordinary transport failure still gets one fresh
-connection retry (roughly ten seconds total); caller cancellation never retries
-a mutation. Cancellation aborts websocket-client's underlying socket to wake a
-blocked receive, drains the worker while retaining the controller lock, then
-forgets the client before propagating cancellation. This prevents a detached
-thread from applying an obsolete volume/config write after its caller has moved
-on. The AirPlay health sampler and `jasper-doctor` use the same boundary.
-The operator-only `jasper-aec-tune` helper still constructs pycamilladsp
-directly; it is not covered by this daemon availability guarantee.
+`/state.audio.volume_policy` makes the quiet-Spotify-at-100% class of bug
+readable without SSH, at the cost of no Spotify, DBus, network, or Camilla call
+(`volume_diagnostics.build_volume_policy_snapshot` is the field list). Healthy
+after a push or a confirmed observation: `volume_mode="push"`,
+`carrier="source"`, `push_guard_active=false`, `main_volume_db` near `0.0`. A
+safe degraded failure reads `carrier="camilla_guard"`, `push_guard_active=true`,
+and a `guard_reason` — quieter than intended, protecting against a loud
+transient.
 
-`set_config_file_path()` is a sequential `SetConfigFilePath` then `Reload`, not
-an atomic protocol. A higher-level DSP transaction that needs rollback must
-retain and restore its prior path; the transport timeout does not turn an
-ambiguous response into proof that a mutation did or did not land.
-
-Every websocket graph mutation — load, inline apply, patch, reload, and the
-rollback loads a failed transaction issues — runs inside a deep main-fader
-duck (`CamillaController._graph_mutation`), so a swap that changes the graph's
-own headroom gain fades down and back up instead of stepping at an unchanged
-volume setting. The duck rides `main_volume`, not `main_mute`, because
-`maybe_reconcile_camilla` treats a mute as drift it must correct while a drop
-of at least `RECONCILE_DUCK_SKIP_DB` is left alone as somebody's duck. The
-statefile-plus-restart path needs no duck: CamillaDSP stops and starts, so the
-speaker is silent across it rather than stepping.
-
-Both duck holders — that bracket and `CueDuck` — release through
-`_duck_release_target_db`, which writes `min(canonical, current + own depth)`.
-Each gives back only the attenuation it applied, so either interleaving order
-ends at the canonical target; replaying the entry snapshot instead stranded the
-fader wherever the other holder had left it.
-
-**One exception, and it is the measurement path (#2929).** A swap may pass
-`held_target_db` — a synchronous, non-blocking READER for the level that
-caller still owns — and its answer REPLACES canonical as that release's
-reference. Only the crossover-v2 program load/restore does, asking
-`SessionVolumePlan.owned_measurement_volume_db_nowait`. Why it had to: a
-measurement volume is LOUDER than the household level, so canonical won that
-`min` every time and every routed capture's fader landed on the household
-value — which is what the 2026-08-23/24 overnight campaign measured at, 8.712
-dB below the level its excitation-safety ledger had admitted the programs
-against. The `min` still bounds the release by the attenuation this holder
-applied, so the reference can never raise the fader above the level its reader
-names.
-
-**Why a reader and not a number.** A bracket spans seconds, and a measurement
-session's volume can be drained inside one by a peer task — the gate panel
-reached it at the remote's own ~1.5 s status-poll cadence on a session
-straddling its wall-clock ceiling. A pre-resolved number would then put the
-measurement level back on a speaker whose session had just given it up
-(+13.21 dB, measured). Asked at release time, a drained plan answers `None`
-and the release takes the canonical path. The reader must not block: a drain
-holding the plan's restore lock also reads as `None` rather than being waited
-on, because this runs inside a shielded `finally` where a wedged holder would
-strand a ducked — silent — speaker. So the honest bound is per-swap, not
-absolute: a release can only put back a level its reader still names at the
-instant it lets go.
-
-#2925's account of this as CamillaDSP re-applying a config-stored volume was
-wrong: CamillaDSP v4.1.3 has no such config field and keeps the fader across a
-reload.
-
-The canonical target is per process. jasper-voice hands over its long-lived
-coordinator's `get_camilla_target_db`; every other process that swaps the graph
-calls `install_env_canonical_target_provider()` at startup, which builds a
-coordinator per release. Which processes those are is a maintained list, not a
-derived one — read `_ENTRY_POINTS` in the pin below for the current set rather
-than trusting a count restated here. Which processes those are is pinned by
-[`tests/test_canonical_target_registration.py`](../tests/test_canonical_target_registration.py):
-a lost registration line compiles fine and would silently put that daemon's
-swaps back on snapshot releases.
-
-## AirPlay is always camilla-as-master
-
-shairport-sync exposes `SetAirplayVolume` as a method that should
-forward volume changes back to the AirPlay sender via the legacy DACP
-back-channel. In modern AirPlay 2 sessions, this is not a reliable
-control surface. Real hardware validation on 2026-05-14 showed both
-macOS and iOS sessions reporting:
-
-```
-RemoteControl.Available = false
-SETUP AP2 no Active-Remote information
-SETUP AP2 doesn't include DACP-ID string information
+```sh
+curl -s http://jts.local:8780/state | jq .audio.volume_policy
 ```
 
-Calling `SetAirplayVolume` returned success at the DBus layer but left
-`AirplayVolume` unchanged and did not move the sender UI or audible
-level. This matches upstream shairport-sync issue #1822: iOS 17.4 /
-macOS 14.4 stopped providing the DACP-ID / Active-Remote headers in
-AirPlay 2 mode, so DBus/MPRIS receiver-originated commands are ignored
-or impossible. shairport-sync's AirPlay 2 documentation also states
-that modern remote-control facilities are not implemented.
+## Reaching Camilla
 
-So instead of trying to drive the AirPlay sender's slider, we
-attenuate at camilla — `main_volume` sits *downstream* of
-shairport's receiver in the audio chain (shairport → snd-aloop →
-camilla → DAC), so it reduces what the speakers actually emit
-regardless of what the sender chose to send. JTS controls behave like
-a master volume on every source.
+`CamillaController` is the tree's one fader door: every daemon path,
+`jasper-doctor`, and `jasper-aec-tune` go through it, and it bounds the
+synchronous pycamilladsp client. Two of its constraints reach this surface:
 
-**Trade:** the iPhone/Mac AirPlay slider on the sender does not
-visibly move when a JTS control changes volume. The audio at the
-speaker does. Voice, web, and supported remote volume controls share
-the same coordinator path, so they remain reliable during AirPlay.
+- `set_config_file_path()` is a sequential `SetConfigFilePath` then `Reload`,
+  not an atomic protocol. A DSP transaction needing rollback must retain and
+  restore its prior path; a transport timeout is not proof a mutation did or did
+  not land.
+- Every websocket graph mutation runs inside a deep main-fader duck
+  (`_graph_mutation`). Its release algebra, `held_target_db` included, is
+  tuning-program owned:
+  **[ADR-0004](adr/0004-duck-release-algebra-and-reference.md) is authoritative
+  and this doc states nothing further about it.** The one fact this surface owns
+  is reconciler gate 4 — the duck rides `main_volume`, not `main_mute`, because
+  `maybe_reconcile_camilla` treats a mute as drift to correct while a deep drop
+  is left alone.
 
-Mux-owned source handoff is the primary boundary path. The observer
-backstop, `apply_active_source_transition`, still follows the same
-rules for raw active-source transitions:
+The canonical release target is per process: jasper-voice hands over its
+long-lived coordinator's `get_camilla_target_db`, and every other graph-swapping
+process calls `install_env_canonical_target_provider()` at startup. That set is
+a maintained list, not a derived one — read `_ENTRY_POINTS` in
+[`tests/test_canonical_target_registration.py`](../tests/test_canonical_target_registration.py),
+because a lost registration line compiles fine and would silently put that
+daemon's swaps back on snapshot releases.
 
-| Edge | What happens |
-|---|---|
-| camilla-as-master → push-mode (e.g. AirPlay → Spotify) | push level to new source first; confirm Camilla's push-mode carrier only after the push succeeds (`0 dB` for 1-100%, `main_mute=true` + calibrated floor for 0%) |
-| push-mode → camilla-as-master (e.g. Spotify → AirPlay) | camilla → percent_to_db(level) and `main_mute=(level == 0)` (take over) |
-| push → push (e.g. Spotify → BT) | push level to new source; keep/clear Camilla's 0% content mute as needed |
-| camilla → camilla (idle ↔ AirPlay) | no change; camilla already carries level |
+## Adding a source
 
-The first edge is the one users notice: without it, the residual
-camilla attenuation from AirPlay mode would compound with the new
-source's own slider when they switch (e.g. start Spotify Connect
-and find the speaker mysteriously twice as quiet as expected).
-
-**Cross-process staleness fix.** `apply_active_source_transition`
-calls `_refresh_from_disk()` before dispatch. The control daemon
-(accessory / HTTP) writes `listening_level` to disk on every change; without
-the refresh, voice_daemon's in-memory cache lags and a transition
-that fires between voice operations would dispatch a stale level.
-
-If the sender slider is below 100%, it pre-attenuates upstream of
-camilla and the JTS control position stops being a 1:1 read of perceived
-loudness. JTS still responds audibly; the user may need to raise the
-JTS volume further. Do not add hidden fallback behavior that sometimes treats
-AirPlay as push-mode — that recreates two competing product contracts.
-
-A previous iteration tried to make AirPlay push-mode by calling
-`SetAirplayVolume` and treating `AirplayVolume` observations as
-canonical. That worked in unit tests but failed on real iOS/macOS
-AirPlay 2 sessions for the protocol reasons above. The code now leans
-fully into the robust contract: AirPlay is camilla-as-master.
-
-### Future research: Bose/HomePod-style reflection
-
-Commercial AirPlay 2 speakers such as Bose can reflect receiver-side
-hardware volume back into the iPhone/Mac slider. That does not appear
-to use shairport-sync's legacy DACP/DBus path. Public reverse-
-engineering points to the modern AirPlay 2 control plane: `/info`
-capabilities such as `initialVolume` / `volumeControlType`,
-`POST /command`, event/data channels, HomeKit/HAP-derived encryption,
-and MRP-style protobuf messages.
-
-If we revisit AirPlay slider reflection, keep it separate from the
-production volume path and test it as protocol research:
-
-1. Capture Bose or HomePod traffic while changing physical speaker
-   volume and compare it with JTS/shairport.
-2. Look specifically for `/info` volume capability fields,
-   `POST /command`, event/data-channel traffic, and MRP volume messages.
-3. Check whether shairport-sync receives, ignores, or never establishes
-   the needed channel.
-4. Prototype below the Python coordinator layer, likely as a
-   shairport-sync patch or AirPlay 2 sidecar. Do not reintroduce
-   `SetAirplayVolume` as the normal JTS AirPlay volume path unless
-   hardware proves receiver-originated slider reflection works on
-   current iOS/macOS.
-
-Useful references:
-
-- https://github.com/mikebrady/shairport-sync/issues/1822
-- https://github.com/mikebrady/shairport-sync/blob/master/AIRPLAY2.md
-- https://emanuelecozzi.net/docs/airplay2/rtsp/
-- https://emanuelecozzi.net/docs/airplay2/protocols/
-- https://pyatv.dev/documentation/protocols/
-- https://openairplay.github.io/airplay-spec/audio/volume_control.html
-
-## What's NOT here
-
-- **No DBus subscription library**. Polling at 1 Hz is the model; if
-  someone wants to switch to PropertiesChanged subscriptions later,
-  `dbus-next` is the recommended async option.
-- **No AirPlay mute via -144 dB sentinel**. AirPlay
-  `AirplayVolume = -144` is a documented "muted" sentinel; we
-  treat it as effective silence (clamped to AIRPLAY_DB_MIN → 0%).
-  The source-volume 0% mute is owned by `VolumeCoordinator` through
-  Camilla `main_mute`, not by source-specific sentinel values.
-- **No iPhone-side slider visual update on Jarvis-initiated changes**.
-  This is an AirPlay protocol limitation, not a JTS limitation.
-  Audio attenuates correctly; the slider widget on the phone shows
-  a stale position until the user touches it.
-
-## Changes that need this doc
-
-If you're adding another audio source, start with
-[`audio-paths.md`](audio-paths.md#adding-a-new-music-source), then hook
-into the volume-specific pieces here:
-
-- `MusicSourceSpec` in `jasper/music_sources.py`, including
-  `volume_mode` and fan-in label.
-- `_active_source()` priority chain. Source selection is an audible
-  fan-in gate owned by mux; volume follows mux's effective
-  `selected_source`/`winner` when mux is reachable, then falls back to
-  raw renderer probes.
-- One `_set_<source>` dispatcher
-- One `_read_<source>_*` observer reader, or a source-local bridge like
-  `jasper-usbsink` if polling from `VolumeObserver` would be the wrong
-  ownership boundary
-- Echo-prevention: `_stamp_outbound(Source.NEW, level)` in the
-  dispatcher
-- Handoff tests for both push-mode and camilla-master transitions
-
-If you're changing the staleness semantics (idle reset thresholds),
-the field of authority is `last_used_at` in the persistence record,
-written ONLY on user-initiated changes (set/adjust/observe), NOT
-on boot restore.
+After [`audio-paths.md`](audio-paths.md#adding-a-new-music-source): declare
+`MusicSourceSpec` with its fan-in label and `volume_mode` (`CAMILLA_MASTER`
+unless push is earned — ADR-0151); extend the `_active_source()` priority chain;
+add one `_set_<source>` dispatcher carrying `_stamp_outbound(Source.NEW, level)`
+and one `_read_<source>_*` observer reader — or a source-local bridge like
+`jasper-usbsink` where `VolumeObserver` would be the wrong ownership boundary;
+pin both a push-mode and a camilla-master handoff.
 
 ---
 
-Verification scope (2026-08-04): route-only recheck: the volume-floor calibration UI
-is now published at `/sound/setup/`; its existing volume owner, API, and safety
-semantics are unchanged and were covered by the focused Sound tests. No
-hardware validation was performed. Prior 2026-07-28 (canonical `VolumeState`
-projection owns remembered-level + mute interpretation across `/volume`,
-`/state`, voice reads, source observers, and carrier handoffs; cross-daemon
-operations—including mux gate/winner publication and candidate reconciler
-writes—and persistence merges are serialized; push-mode mute transitions use a
-durable token/revision/zero-observation barrier; USB startup snapshots yield to
-existing mute intent; the landing-page poll is persistence-only, visible-only,
-500 ms, and single-flight; prior 2026-07-24 pass covered atomic post-DSP
-turn-start context and fail-closed outputd behavior)
-
-Last verified: 2026-08-24 (scope: the graph-swap duck release only — #2929's
-held_target_db exception and the corrected CamillaDSP mechanism; the rest of
-this doc carries its prior 2026-08-04 verification)
+Last verified: 2026-08-26 (triage pass — every surviving claim rechecked against
+the volume and camilla modules, `control/handlers/volume.py`, `mux.py`,
+`tools/audio.py`, `cli/doctor/audio.py`, `dsp_apply.py`,
+`usbsink/volume_bridge.py`, `deploy/index.html`. Corrected: `jasper-aec-tune` no
+longer constructs pycamilladsp directly. AirPlay → ADR-0176; duck probe →
+ADR-0177; duck release algebra → ADR-0004.)

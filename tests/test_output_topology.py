@@ -180,13 +180,19 @@ def _topology(
     return OutputTopology.from_mapping(raw)
 
 
-def _passive_main(group_id: str, kind: str, index: int) -> dict:
+def _passive_main(
+    group_id: str, kind: str, index: int, *, identity_verified: bool = False
+) -> dict:
     return {
         "id": group_id,
         "label": group_id.title(),
         "kind": kind,
         "mode": "full_range_passive",
-        "channels": [{"role": "full_range", "physical_output_index": index}],
+        "channels": [{
+            "role": "full_range",
+            "physical_output_index": index,
+            "identity_verified": identity_verified,
+        }],
     }
 
 
@@ -1435,6 +1441,82 @@ def test_mutation_save_returns_revision_without_post_write_read(
     data = path.read_bytes()
     assert revision == "sha256:" + hashlib.sha256(data).hexdigest()
     assert json.loads(data)["name"] == "Published once"
+
+
+@pytest.mark.parametrize(
+    ("recorded", "claimed_group", "claimed_index", "claimed", "stored"),
+    [
+        (False, "mono", 0, True, False),
+        (True, "mono", 0, True, True),
+        (True, "mono", 0, False, False),
+        # The audition names one lane: neither re-pinning it to another output
+        # nor renaming its group carries the proof over.
+        (True, "mono", 1, True, False),
+        (True, "renamed", 0, True, False),
+    ],
+)
+def test_saved_channel_identity_is_server_owned(
+    tmp_path: Path,
+    recorded: bool,
+    claimed_group: str,
+    claimed_index: int,
+    claimed: bool,
+    stored: bool,
+) -> None:
+    """A save payload may clear a lane's audition, never claim one."""
+
+    path = tmp_path / "output_topology.json"
+    save_output_topology(_topology(groups=[_passive_main("mono", "mono", 0)]), path)
+    if recorded:
+        with output_topology_mod.output_topology_mutation(path) as mutation:
+            mutation.save(
+                set_channel_identity_verified(
+                    mutation.snapshot().topology,
+                    speaker_group_id="mono",
+                    role="full_range",
+                    identity_verified=True,
+                )
+            )
+
+    with output_topology_mod.output_topology_mutation(path) as mutation:
+        mutation.save(
+            _topology(
+                groups=[
+                    _passive_main(
+                        claimed_group,
+                        "mono",
+                        claimed_index,
+                        identity_verified=claimed,
+                    )
+                ]
+            )
+        )
+
+    assert [
+        channel.identity_verified
+        for group in load_output_topology_snapshot(path).topology.speaker_groups
+        for channel in group.channels
+    ] == [stored]
+
+
+def test_channel_identity_authorization_cannot_arrive_in_a_payload() -> None:
+    """Only the server can mark a lane's audition, so no payload may say it."""
+
+    topology = _topology(groups=[{
+        "id": "mono",
+        "label": "Mono",
+        "kind": "mono",
+        "mode": "full_range_passive",
+        "channels": [{
+            "role": "full_range",
+            "physical_output_index": 0,
+            "identity_verified": True,
+            "identity_verified_authorized": True,
+        }],
+    }])
+    channel = topology.speaker_groups[0].channels[0]
+
+    assert channel.identity_verified_authorized is False
 
 
 def test_topology_publication_uses_durable_atomic_write(

@@ -151,9 +151,14 @@ program's wave 7h)**
 - [ ] Code comments, category-scoped only: superseded-value changelogs,
       self-labeled archaeology, reviewer-addressed notes; epitaph
       consolidation (rate_match / transport_pipe)
-- [ ] HANDOFF triage, one PR per batch: each doc → keep-trimmed (<400-line
+- [x] HANDOFF triage, one PR per batch: each doc → keep-trimmed (<400-line
       operational spine) / decisions → ADR / appendix → docs/historical/ /
-      delete. Census-zone docs belong to the local agent.
+      delete. Census-zone docs belong to the local agent. **Done in 13
+      batches.** Batch 13 (last) took the two volume docs once the tuning
+      plan's wave-5 volume-surface widening expired: `HANDOFF-volume.md`
+      862 → 399 with ADR-0176/0177, and the disproven AirPlay push-mode
+      redesign brief archived. The duck machinery stays tuning-owned — the
+      spine points at ADR-0004 rather than restating it.
 - [x] README rebuild: repo-layout tree with all top-level dirs; atlas
       collapsed (historical entries one line)
 - [x] .env.example: one-line comments; AEC knob table → pointer
@@ -169,7 +174,15 @@ program's wave 7h)**
 already open)**
 - ~~Duck lease~~ **HELD — superseded**: the tuning program deletes the
   swap-duck and the 1 Hz reconciler it coordinated with (its waves 5–6);
-  no lease gets built · systemctl-through-broker or honest docstring ·
+  no lease gets built · ~~systemctl-through-broker or honest docstring~~
+  **DONE — docstring**: no site qualified for conversion. jasper-control is
+  not a client of itself (it runs as the uid the broker would act as, polkit
+  mediating the same grant — `deploy/systemd/jasper-control.service`), root
+  oneshots/CLIs hold the privilege directly, and `source_intent`'s
+  enable/disable is un-brokerable by the broker's own vocabulary rule. The
+  false "single mediated systemctl boundary" / "one place that privilege
+  survives" claim and the MANAGED_UNITS "union of every unit any client
+  touches" comment now say what actually happens ·
   ~~sound_setup 502-helper~~ **done**: the 24 identical log-and-502 blocks
   call one `_common.send_route_failure`; the `logger.exception` 502 sites
   (sound, sources, bluetooth) stay — plain-message logging, a different
@@ -178,8 +191,9 @@ already open)**
   [ADR-0167](adr/0167-each-transit-network-is-its-own-provider-module.md)**:
   transit/providers/ is the wizard-adapter layer (#2770); the top-level
   runtime clients are the documented design, and the citibike names collide ·
-  fold
-  jasper/measurement/ (confirmed non-colliding: it serves `/balance/`) ·
+  ~~fold jasper/measurement/~~ **DONE** — one consumer confirmed
+  (`/balance/`), so its two modules became `web/balance_level.py` +
+  `web/balance_volume_guard.py` and the package is deleted ·
   ~~split test_control_server along its own handler boundary~~ **DONE**: one
   module per `jasper/control/handlers/` mixin (system / volume / voice / aec /
   grouping) plus `tests/control_server_fixtures.py`; the original file keeps

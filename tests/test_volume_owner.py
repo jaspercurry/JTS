@@ -194,6 +194,9 @@ async def test_a_second_claim_of_one_kind_is_refused_not_stacked():
         (ClaimKind.SESSION_MEASUREMENT, float("nan")),
         (ClaimKind.SESSION_MEASUREMENT, float("inf")),
         (ClaimKind.SESSION_MEASUREMENT, "loud"),
+        # A bool is the one the shared field parser would take: it reads
+        # ``True`` as ``1.0``, and a POSITIVE level is the loud direction.
+        (ClaimKind.SESSION_MEASUREMENT, True),
     ],
 )
 async def test_a_level_the_owner_cannot_arbitrate_is_refused(kind, level):
@@ -444,6 +447,70 @@ async def test_the_owner_does_not_rewrite_a_level_the_fader_already_carries():
 
     assert fader.writes == []
     assert await owner.prove(claim) is None
+
+
+async def test_a_release_that_lands_where_the_fader_sits_writes_nothing():
+    """The other half of "arbitration is not churn": the RELEASE path.
+
+    The household level moving inside the duck window is the shape that gets
+    here — the voice duck re-declares it as part of its release, and the
+    give-back then lands exactly where the duck already put the fader, so
+    CamillaDSP is not asked to ramp 400 ms to where it already is.
+
+    The skip is decided on the settle's OWN fresh read, never on the earlier
+    give-back sample — see the foreign-write test below for what that
+    distinction is worth.
+    """
+    fader = _Fader()
+    owner = await _household(fader)
+    duck = await owner.acquire_duck(10.0)
+    assert fader.db == pytest.approx(HOUSEHOLD_DB - 10.0)
+    fader.writes.clear()
+
+    await owner.release(duck, household_level_db=HOUSEHOLD_DB - 10.0)
+
+    assert fader.writes == []
+    assert fader.db == pytest.approx(HOUSEHOLD_DB - 10.0)
+
+
+async def test_a_foreign_write_landing_mid_release_is_repaired_not_skipped():
+    """A release's two reads are NOT one question asked twice.
+
+    They are separated by a round-trip, and the fader is shared across
+    daemons. ``Ducker.restore`` clears the duck-active flag BEFORE awaiting
+    ``release``, so jasper-control's probe
+    (``control.volume_ops._make_duck_active_probe``) stops deferring and its
+    own CamillaDSP write can land while the give-back read is in flight.
+
+    The settle re-reads, sees the foreign value, and repairs. Deciding the
+    skip on the earlier sample instead leaves the speaker wherever the
+    foreign writer put it — here LOUDER than the level in effect, which is
+    the direction that matters.
+    """
+    fader = _Fader()
+    owner = await _household(fader)
+    duck = await owner.acquire_duck(10.0)
+    plain_get = fader.get
+    landed = False
+
+    async def racing_get():
+        nonlocal landed
+        answer = await plain_get()
+        if not landed:
+            # A foreign daemon writes between the sample and its return, so
+            # `answer` is stale the moment the caller sees it.
+            landed = True
+            fader.db = -5.0
+        return answer
+
+    fader.get = racing_get
+    try:
+        await owner.release(duck, household_level_db=HOUSEHOLD_DB - 10.0)
+    finally:
+        fader.get = plain_get
+
+    assert fader.writes != []
+    assert fader.db == pytest.approx(HOUSEHOLD_DB - 10.0)
 
 
 async def test_a_fader_that_drifted_off_the_level_is_repaired_not_skipped():
