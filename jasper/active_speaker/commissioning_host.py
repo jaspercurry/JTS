@@ -30,14 +30,10 @@ from jasper.output_topology import OutputTopology
 from .baseline_profile import topology_config_fingerprint
 from .commissioning_evidence import (
     CompleteCommissioningEvidence,
-    DelayPointEvidence,
-    DelayWalkEvidence,
     EvidenceKind,
-    RegionCommissioningEvidence,
     RegionEvidencePlan,
     RegionEvidenceTarget,
     RegionGeometryAttestation,
-    StationaryRegionEvidence,
     delay_point_target_fingerprint,
     evidence_attempt_target_id,
 )
@@ -484,10 +480,6 @@ class CommissioningEvidenceHost:
         self._lock = threading.RLock()
         self._prepared = False
         self._complete: CompleteCommissioningEvidence | None = None
-        self._stationary: dict[str, StationaryRegionEvidence] = {}
-        self._points: dict[str, DelayPointEvidence] = {}
-        self._walks: dict[str, DelayWalkEvidence] = {}
-        self._regions: dict[str, RegionCommissioningEvidence] = {}
 
     @property
     def run(self) -> CommissioningRunHandle:
