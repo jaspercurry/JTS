@@ -403,4 +403,627 @@ git grep -c "POSITION_EVIDENCE_KIND" -- jasper/       # expect the count to RISE
 git grep -n "854-line" -- jasper/                     # expect ZERO (2.6)
 ```
 
-*(sections W1-b … W1-d, PR slicing and traps land in the following commits)*
+---
+
+## 3. W1-b — the thirteen fields, at the destination
+
+### 3.1 The three builders, re-derived
+
+All in `jasper/active_speaker/crossover_v2/spatial.py`. `_take_identity`
+(`def :796`, keyword-only via the bare `*` at `:797`) returns **six** keys —
+`phase` `:825`, `index` `:826`, `attempt` `:827`, `take_id` `:828`,
+`session_id` `:829`, `wav_sha256` `:830` — and deliberately excludes the id key
+(`:813-816`), because cloud and entry say `position_id` while a pose says
+`pose_id`. Exactly three call sites, zero in tests: `:914`, `:1044`, `:1107`.
+
+**D11 — §1's record-gap table cites stale lines for two of three builders.**
+Its cloud column is correct; lateral is uniformly **+1** and entry is off by
+**−2**. Corrected at HEAD:
+
+| Engine field (`session.py`) | cloud (`:834`) | lateral (`:987`) | entry (`:1061`) |
+|---|---|---|---|
+| `session_id` `:693` | `:829` via identity | `:829` via identity | `:829` via identity |
+| `kind` `:694` | **collision** (§3.2) | collision | collision |
+| `baseline_record_id` `:695` | — | — | — |
+| `position_deg` `:698` | `:924` | **`:1050`** *(§1: `:1051`)* | — |
+| `position_axis` `:699` | `:925` | — | — |
+| `prompt` `:700` | `:918` | **`:1048`** *(§1: `:1049`)* | — |
+| `candidate_id` `:701` | — | — | — |
+| `regime` `:702` | — | **`:1053`** *(§1: `:1054`)*, hardcoded `LATERAL_POSE_REGIME = "per_driver"` `:947` | — |
+| `polarity` `:703` | — | — | — |
+| `graph_fingerprint` `:704` | — | **`:1055`** *(§1: `:1056`)* | **`:1119`** *(§1: `:1117`)* |
+| `level_db` `:705` | — | — | — |
+| `stimulus_dbfs` `:706` | — | — | — |
+| `incident` `:707` | — | — | — |
+
+§1's **conclusion is unchanged and correct**: lateral 5, cloud 4, entry 2, and
+six fields banked nowhere — `baseline_record_id`, `candidate_id`, `polarity`,
+`level_db`, `stimulus_dbfs`, `incident`. Only the citations moved.
+
+Two more §1 lines to correct while here: the `lateral_consumer` cite in the
+`kind`-collision note is **`:1054`** (§1 `:159` says `:1055`), and entry's curve
+arrays are **`:1121-1123`** — `freqs_hz` `:1121`, `magnitude_db` `:1122`,
+`excluded` `:1123` — where §1 `:204` says *"magnitude only (`spatial.py:1122-1124`)"*.
+
+### 3.2 The `kind` collision, and how to map it without lying
+
+The engine's `kind` is `spec.kind` ∈ `MEASURE_KINDS` = `("baseline",
+"candidate", "verify")` (`contracts.py:1433-1437`), validated by
+`MeasureSpec.__post_init__` (`measure_spec.py:236-239`). Today's builders emit
+`kind` nowhere; what they emit is `phase` (`_take_identity:825`), and the
+sidecar's `"kind"` (`web/…:3571`) is a fixed **record-type discriminator**
+(`POSITION_EVIDENCE_KIND`), a third meaning again.
+
+So three different things are called `kind` in reach of one record. §1 `:156-161`
+is right that a silent `phase → kind` map mislabels every record; here is why it
+is not even well-defined:
+
+- `PHASE_LATERAL` is a **per-driver** walk (`LATERAL_POSE_REGIME` `:947`). It is
+  a `baseline` or a `candidate` check **depending on which candidate was applied
+  under it** — #3130's own body says exactly this, and closing that gap is why
+  it put `graph_fingerprint` on the lateral take.
+- `PHASE_ENTRY_BASELINE` maps to `baseline` cleanly.
+- The cloud phases (`GROUP_PHASES`) split by which side of the apply they sit on.
+
+**The mapping rule.** Derive `kind` from `graph_fingerprint`, not from `phase`:
+a take whose `graph_fingerprint` equals the pre-apply applied-profile
+fingerprint is `baseline`; one taken under a candidate is `candidate`; a take in
+a post-apply verify phase is `verify`. `_entry_graph_fingerprint()`
+(`crossover_v2_flow.py:6999`, called at `:5063` for lateral) is the source
+already on the record.
+
+**Carry #3130's judgement call verbatim, because a later reader will want to
+"fix" it.** That `graph_fingerprint` is the **applied profile's
+`candidate_fingerprint`**, deliberately *not* the running-config hash a
+capture's `provenance.graph.fingerprint` carries. A pose plays through the
+transient routing graph that omits crossover, delay and linearization, so the
+running hash is **identical before and after an apply** and cannot separate two
+walks. The applied candidate can. Different namespaces; `capture_provenance.py`'s
+module docstring says so.
+
+Where `kind` genuinely cannot be resolved, **write the field and leave it
+empty** rather than guessing. `_record()`'s own precedent is
+`baseline_record_id`: `""` where the prior baselined no such pose, described at
+`session.py:685-691` as *"an honest fact about the capture, never a refusal to
+bank it."*
+
+### 3.3 Where the six never-banked fields come from
+
+| Field | Source at capture time | Note |
+|---|---|---|
+| `baseline_record_id` | `_baseline_for(spec, bearing, stimulus_dbfs)` `session.py:629` | resolved **per capture, by pose** (`session.py:679-684`). A bank-wide answer stamps the prior's last pose onto every capture — do not "simplify" it to one lookup |
+| `candidate_id` | `spec.candidate_id` (`measure_spec.py:233`, default `""`) | on the flow side, the applied candidate's fingerprint |
+| `polarity` | `spec.polarity` (`measure_spec.py:231`) | vocabulary owner is `program_analysis.polarity_label` |
+| `level_db` | `proven_level_db` — `_proven_level()` `session.py:607` | **the whole point.** `prove()` is re-checked against the declared level by `fader_matches` (`:625`), and `session.py:616-624` names the 8.712 dB incident as the reason |
+| `stimulus_dbfs` | the ladder rung, `MeasureSpec.level_ladder_dbfs` `:232` | moves the **stimulus**, never the claim (`measure_spec.py:217-223`) |
+| `incident` | `outcome.incident` from the play seam | `UNPROVEN_LEVEL` is set at `session.py:594-595` when the level did not prove |
+
+**D9 restated as a working fact.** §1 says `level_db` and `stimulus_dbfs`
+*"live only in the debug ring today"*. At HEAD they live in **neither** — those
+names do not occur in `capture_provenance.py` at all. The ring's nearest
+neighbours, all in `CaptureProvenance.to_dict` (`:117`, body `:119-134`):
+
+| Ring field | Source | Why it is not the engine's field |
+|---|---|---|
+| `main_volume_db` | `await cam.get_volume_db(best_effort=True)` (`:316-318`) | a **live fader read at retention time**, not the level the stimulus was admitted against |
+| `session_volume_db` | `volume_plan.measurement_volume_db` (`:334-340`) | the session's declared level — the closest analogue of `level_db`, and deliberately *not* a probe |
+| `stimulus.peak_dbfs` | `_stimulus_peak_dbfs(program)` `:201` = `max(segment.gain_db …)` | the program's peak, with session volume explicitly **not** folded in (`:213`) |
+
+So §1's conclusion is not just intact but **stronger**: on an ordinary household
+run the two fields the 8.712 dB incident is about are banked nowhere — and even
+with the ring enabled, what is banked is three adjacent quantities under
+different names, none of which is the proven level. A builder who greps for
+`stimulus_dbfs` in `capture_provenance.py` finds nothing and may conclude §1 was
+already satisfied. It was not.
+
+### 3.4 Two structural constraints on adding fields
+
+1. **The record is additively safe; the INDEX is not.** `read_lateral_take`
+   (`position_cycle.py:205`) narrows to `_TAKE_FIELDS` by comprehension
+   (`:250`), so extra record keys are ignored. But `read_position_cycle`
+   (`:351`) is **strict in both directions** — unknown keys `:365`, missing keys
+   `:368`, and per-take `set(take) != set(_TAKE_FIELDS)` at `:384`. **Adding a
+   name to `_TAKE_FIELDS` (`:118-119`) invalidates every previously written
+   index.** Since `read_position_cycle` and `takes_by_position` have zero
+   production callers (§4.4), the cost is test-only today — but say so in the PR
+   rather than discovering it.
+2. **`_take_identity`'s six keys are shared by all three builders.** A field
+   that belongs on every take goes there (one edit, three records); a
+   kind-specific field goes in the builder. `graph_fingerprint` is on two of
+   three builders and *not* in the identity block — #3130 chose the builder,
+   which is the precedent to follow.
+
+### 3.5 Test plan
+
+Extend `tests/test_crossover_v2_spatial.py` (which already pins these builders;
+`:623` pins `record["take_id"] == "entry_baseline_09_a02"`).
+
+One **parametrized** pin over all three builders — per AGENTS.md, one
+parametrized test beats an example cluster — asserting all thirteen engine field
+names are present. §1's bar (`:270-271`) says mutation-verify by dropping one
+field; do it **per builder**, because #3130 records that its first mutation
+anchor matched **two** sites (the same two lines exist in `entry_baseline_record`)
+and was caught only by the harness's count assertion. **Assert the match count
+before mutating.**
+
+Second pin: `kind` resolves through `MEASURE_KINDS` and a take under an unknown
+graph gets `""`, not a guess.
+
+---
+
+## 4. W1-c — the retention lift
+
+**Three sites in, three phases added, the ring out** (D6: not four sites).
+
+### 4.1 The boundary being lifted
+
+`_hand_to_retention` — `crossover_v2_flow.py:5256`, a method of
+`CrossoverV2Session` (`:2154`). Signature `:5256-5258`:
+
+```python
+def _hand_to_retention(
+    self, take_id: str, phase: str, result: Any, metadata: Mapping[str, Any],
+) -> bool:
+```
+
+Body `:5266-5278`: `retain_position is None → return False` (`:5266-5267`); the
+call (`:5269`); `except (OSError, RuntimeError, TypeError, ValueError)` → WARN
+`correction.crossover_v2_position_retain_failed` with `exc_info=True`
+(`:5270-5277`) → `return False`; `return True` (`:5278`).
+
+**The parameter is named `take_id` but two of three callers pass a position or
+pose id** — it is logged as `position_id=take_id` (`:5275`). Only site C passes
+a minted take id. See §4.5.
+
+The seam it guards: `V2FlowSeams.retain_position` (`:1515`),
+`Callable[[str, Any, Mapping[str, Any]], None] | None`, bound once in the tree
+at `web/correction_crossover_v2.py:5747-5749` inside `bind_v2_stage_seams`
+(`:5675`) to `bind_position_retention(evidence_store, relay_session_id, refs)`.
+
+### 4.2 The three sites
+
+| | Enclosing | Call | Return used? | Record builder | Called from |
+|---|---|---|---|---|---|
+| **A** | `_retain_lateral_pose` `:5047` | `:5056-5067` — **the entire body** | **no** | `lateral_pose_record` built **inline as the 4th argument** (`:5058-5066`); no local, no other consumer | `_consume_lateral_pose` `:4968`, at `:5032`, **outside** `self._close_lock` (opens `:5037`; comment `:5029-5031`) |
+| **B** | `_retain_cloud_position` `:5190` | `:5254` — the method's last statement | **no** | `cloud_position_record` → local `metadata` `:5227-5250`. **`metadata` has a second consumer:** written into `self._group_position_meta[phase][position.position_id]` at `:5251-5253` *before* the hand-off — which is why the build sits above the seam's early return (`:5202-5207`) | `_cloud_position_verdict` `:5112`, at `:5183`, **inside** `with self._close_lock:` (`:5182`) |
+| **C** | `_retain_entry_baseline` `:6970` | `:7020-7022` | **yes — the only one.** `stored` → `artifact_ref = take_id if stored else ""` (`:7023`) → `EntryBaseline.from_measurement(..., artifact_ref=artifact_ref)` (`:7026-7031`) | `entry_baseline_record` → local `metadata` `:7000-7018`; `fingerprint = self._entry_graph_fingerprint()` `:6999`; `take_id` read back off the record at `:7019` | `_consume_entry_baseline` `:6914`, at `:6936`, guarded by `if verdict.accepted and measured is not None:` `:6935` |
+
+**Three facts that shape the edit:**
+
+- **Only site C reads the `bool`.** The lifted seam must keep a way to say
+  *"stored / not stored"*, or `EntryBaseline.artifact_ref` silently becomes a
+  take id that points at nothing. This is the one place where fail-soft has an
+  observable consequence, and it is the thing to pin.
+- **Sites A and B are on opposite sides of `self._close_lock`.** A lift that
+  moves work across that boundary changes concurrency, and `:5029-5031` records
+  a deliberate decision to keep A outside it. **Do not "harmonise" them.**
+- **Site B's record is dual-purpose.** It is banked *and* stashed in
+  `_group_position_meta` for the group's own bookkeeping. Lifting the bank must
+  not take the stash with it.
+
+### 4.3 The exact edit shape
+
+**What moves:** the fail-soft `try/except/WARN/return False` of `:5266-5278`,
+into the destination seam.
+
+**What dies:** `_hand_to_retention` (`:5256-5278`, 23 lines) and the
+`V2FlowSeams.retain_position` field (`:1515`) once the last caller is gone.
+
+**What each call site becomes:** `self._records.bank(record)` — awaited, since
+the seam is async after W4-a — with A and B discarding the result and C keeping
+it:
+
+```python
+record_id = await self._records.bank(metadata)      # site C
+artifact_ref = record_id or ""                       # replaces :7023
+```
+
+`record_id` is `""`-on-failure only if the store fail-softs; per §2.5 it does
+not. **So the destination needs the fail-soft that `_hand_to_retention` is
+today** — the lift does not delete that boundary, it relocates it. Put it in
+the *binding* (where `bind_position_retention`'s docstring `:3511-3519` says the
+strictness belongs to the store and the fail-soft to the caller), not inside the
+store, or every other evidence-store caller loses the strictness it was built
+for.
+
+**Keep the WARN event name.** `correction.crossover_v2_position_retain_failed`
+(`:5272`) is a log-search vocabulary; renaming it while moving it makes the
+before/after unsearchable, and §8's content-verify step greps for exactly this
+kind of symbol.
+
+### 4.4 The three missing retention paths
+
+The structural fact, verified at the dispatch: **`result` — the capture object
+carrying `result.wav` — is never passed into any of the three.** In
+`consume_capture` (`:4183`, signature `:4183-4185`, ends `:4334`), the dispatch
+at `:4210-4227`:
+
+| Arm | Line | Gets `index`? | `attempt`? | `result`? |
+|---|---|---|---|---|
+| `_consume_check(analysis)` | `:4211` | no | no | **no** |
+| `_consume_measure(analysis)` | `:4213` | no | no | **no** |
+| `_consume_lateral_pose(index, attempt, analysis, result)` | `:4215` | yes | yes | yes |
+| `_consume_cloud_position(phase, index, attempt, analysis, result)` | `:4217-4219` | yes | yes | yes |
+| `_consume_entry_baseline(index, attempt, analysis, result)` | `:4225` | yes | yes | yes |
+| `_consume_verify(analysis, attempt=attempt)` | `:4227` | no | **yes** | **no** |
+
+The three banking arms thread `index` and `attempt` — the identity pair
+`take_id_for` needs. **CHECK and MEASURE have neither; VERIFY has `attempt`
+only.** That is the gap, and it is a *signature* gap before it is a retention
+gap.
+
+**Where each phase's data is at capture time:**
+
+| Phase | `def` | Body | What exists | The natural retention point |
+|---|---|---|---|---|
+| CHECK | `_consume_check` `:4638` | `:4638-4641` — four lines: `_check_verdict(analysis)`, `_safe_log_diag`, `return verdict` | `analysis`, `verdict`. **No WAV, no result, no provenance, no take id** | `_check_verdict` `:4643`, accept tail `:4677-4688`. `self._seams.publish_check(gain_plan, analysis.ambient_report or {})` at `:4687` already crosses a seam — **with the gain plan and ambient report only, no bytes.** Locals there: `gain_plan` `:4653`, `analysis` |
+| MEASURE | `_consume_measure` `:4690` | `:4690-4693`, same four-line shape | `analysis`, `verdict` | `_measure_verdict` `:4778`, deferring accept at `:4923-4925`. `self._measure_analysis = analysis` (`:4924`) is the only thing that survives the call — the reduced `ProgramAnalysis`, **not the WAV** |
+| VERIFY | `_consume_verify` `:7305`, signature `:7305-7307` (`attempt` **keyword-only**) | `:7308-7329` | `analysis`, `attempt`, `verdict` | `:7313` — `self._verify_analysis = analysis`, commented `:7310-7312` as *retained before grading* because the Full tier grades later *"from a call that cannot see this capture."* **That comment is the requirement statement for this work item** |
+
+**So banking these three requires, in order:**
+
+1. **Thread `index`, `attempt` and `result` into all three arms** (`:4211`,
+   `:4213`, `:4227`). Mechanical, and it is the whole reason this item is not
+   a one-liner per phase.
+2. **A take id for a phase with no position.** CHECK and MEASURE have no
+   prompted spot. `entry_baseline_record` already solved this shape:
+   `position_id=f"{PHASE_ENTRY_BASELINE}_{index:02d}"` (`:1108`) with a comment
+   (`:1113-1114`) that its position id **is** its take id. Follow it —
+   `f"{PHASE_CHECK}_{index:02d}"` — rather than inventing a second convention.
+3. **A record builder per phase**, or one parameterized builder. Three new
+   near-copies of `cloud_position_record` would be the third implementation of
+   one concern, which AGENTS.md's duplication rule forbids. **Extend
+   `_take_identity`'s users, do not clone them.**
+4. **`provenance.take()` must be carried, not moved** (obligation 4, §4.6).
+
+**A judgement to surface rather than settle here:** VERIFY's data at `:7313` is a
+reduced `ProgramAnalysis`, and CHECK's at `:4687` is a gain plan — neither is a
+capture record in `_record()`'s sense. Banking "a take" for these phases may mean
+banking the *capture* (bytes + identity, once `result` is threaded) or the
+*analysis* (what the phase actually produces). §1 says *"a CHECK, a MEASURE and a
+VERIFY capture each produce a banked take"* (`:281-282`), which reads as the
+former. **Confirm with the owner before building** — it is the difference between
+a mechanical thread-through and a new record shape.
+
+### 4.5 A defect the lift must resolve: the entry baseline's doubled take id
+
+Found while deriving §4.2, unpinned by any test, and the lift is where it dies.
+
+`take_id_for` (`spatial.py:779`, `return f"{position_id}_a{int(attempt):02d}"`
+`:793`) is minted **twice, independently**:
+
+1. inside the record — `_take_identity:828`, reaching the seam as
+   `record["take_id"]`;
+2. inside the closure — `web/…:3546`, `take_id_for(position_id, int(record.get("attempt") or 0))`.
+
+They agree only because `attempt` round-trips through `_take_identity`'s
+`"attempt"` key (`:827`). **For the entry baseline they do not agree.**
+`entry_baseline_record` sets `"position_id": identity["take_id"]` (`:1115`) —
+the one kind where the two coincide (`:1113-1114`) — and `_retain_entry_baseline`
+reads that take id back at `:7019` and passes it as the closure's `position_id`.
+The closure then re-mints:
+
+```
+record["take_id"]  = "entry_baseline_09_a01"
+closure take_id    = "entry_baseline_09_a01_a01"   # web/…:3546
+```
+
+So the artifact lands at `positions/entry_baseline_09_a01_a01.json` while the
+record inside it says `"take_id": "entry_baseline_09_a01"`, and
+`refs["position_artifacts"]` gets the **doubled** id (`web/…:3588`) beside the
+record's single one. `take_id_for`'s own docstring (`:788-792`) states the
+invariant this breaks: *"The seam and the record must name the same take or the
+bundle's sidecar path and the session's own evidence disagree."*
+
+**Blast radius, stated honestly:** the readers locate takes by **glob**, not by
+reconstructing a filename, so nothing is observed-broken today. What is broken
+is the join — the durable state's `position_artifacts[].take_id` disagrees with
+the artifact's own `take_id` — and W1-d's index is built on exactly that join
+(`path` and `session · kind · position · candidate`). The tests pin the single
+suffix at the builder altitude (`test_crossover_v2_spatial.py:623`) and pin a
+hand-made single-suffix filename in the reader
+(`test_crossover_v2_position_cycle.py:377`); **no test exercises the closure with
+an entry-baseline record**, which is why it survived.
+
+**The fix falls out of the lift for free:** the store mints its path from the
+record's own `take_id` (§2.3) instead of re-minting from a positional argument,
+and the second mint at `web/…:3546` dies with the closure. **Add a pin** — bank
+an entry-baseline record, assert the artifact path's stem equals
+`record["take_id"]` — because "it fell out for free" is exactly the kind of fix
+that gets un-fixed later.
+
+### 4.6 The #3076 obligations — quoted, and how the lift discharges each
+
+Quoted from §1 `:227-243`, which records them so they cannot be lost.
+
+> **1.** Build the three missing retention paths (CHECK / MEASURE / VERIFY takes)
+> **at the destination**, retaining into #3064's `take_id` convention.
+
+**Discharged by §4.4.** "At the destination" is load-bearing: the paths are built
+against the lifted seam, never added to `_hand_to_retention` first and migrated
+after. The `take_id` convention is `take_id_for` (`spatial.py:779`) — and §4.5 is
+the one place it is currently violated.
+
+> **2.** Flip the sidecar's **seven** readers — four via
+> `evidence_packet.RING_SIDECAR_GLOB` … and **three that glob flat `*.json`** …
+> fixing the globbers onto the one index as you flip them.
+
+**Carried, with the composition corrected (D7, D8).** Seven is right; it is
+**3 + 4**, not 4 + 3:
+
+| # | Reader | Enclosing | Keys it consumes |
+|---|---|---|---|
+| G1 | `evidence_packet.py:1246` | `_capture_snr_block` `:1191` | `jts_session_identity` (via `read_session_identity`, `attribution/session_identity.py:233`; sub-keys `scheme`/`session_id`/`aliases`), `diagnostic` — every key containing `"snr"` (`_DIAGNOSTIC_SNR_MARKER` `:350`), `wav_sha256`, `phase`. **Touches no WAV** |
+| G2 | `harmonic_evidence.py:603` | `_bind_measure_captures` `:582` | `phase` (gated `== PHASE_MEASURE`), `wav_sha256`, `jts_session_identity.session_id` (read as a Mapping at `:625`, **not** via `read_session_identity`), `setup_calibration_id` `:772`, `diagnostic` `:854` vs `FIDELITY_FIELDS` `:199` (5 fields), `diagnostic.glitch_detected` |
+| G3 | `feature_classifier.py:456` | `load_round_captures` `:414` | `phase`, `jts_session_identity.session_id`, **and the filename stem** — `sidecar.stem.split("_")[0]` `:487`, the microsecond stamp. Reads no `diagnostic` |
+| F1 | `audio_measurement/capture_integrity.py:193` | `_iter_sidecar_files` `:190` → `check_sidecar` `:147` | `capture_integrity{frames, encoded_frames, block_gaps, block_gap_frames, zero_run_count, truncated, capture_chain}` (must `== "alsa_s32le"`) and `frame_ledger{received_frames, declared_frames, encoded_frames, render_gaps, render_gap_frames, lost_at}` (`_frame_ledger_findings` `:123`) |
+| F2 | `scripts/harmonic-distortion-replay.py:260` | `bind_captures` `:252` | `wav_sha256` `:265`, `phase` `:274`, `setup_calibration_id` `:625`, `diagnostic` `:346` vs its **own** `FIDELITY_FIELDS` `:105` (**10** fields), `diagnostic.glitch_detected` `:305` |
+| F3 | `scripts/severed-twin-replay.py:240` | `bind_measure_capture` `:214` | `phase`, `diagnostic.{epsilon_ppm, predicted_ripple_db, alignment_confidence}` `:236` (the binding keys — requires a **unique** hit or `SystemExit`), `setup_calibration_id` `:331`, `diagnostic` `:382`/`:608` vs its `FIDELITY_FIELDS` `:74` (**19** fields) |
+| **F4** | **`scripts/derive-crossover-incident-fixture.py:138`** | `_measure_sidecar` `:121` | `diagnostic.{delay_us, alignment_confidence, predicted_ripple_db}` `:141-143`, then `epsilon_ppm`, `woofer_gate_floor_source`, `woofer_gate_window_ms`, `tweeter_snr_db`, `woofer_snr_db`, `woofer_validity_floor_hz` `:229-236`. **Returns the `diagnostic` sub-dict**, which is why `derive()` subscripts it flat |
+
+**The union any replacement must supply:** `phase`, `wav_sha256`,
+`jts_session_identity{scheme, session_id, aliases}`, `setup_calibration_id`,
+`diagnostic{…}`, `capture_integrity{…}`, `frame_ledger{…}`.
+
+**Three traps in that table:**
+
+- **Three `FIDELITY_FIELDS` definitions exist and they disagree** — 5
+  (`harmonic_evidence.py:199`), 10 (`harmonic-distortion-replay.py:105`), 19
+  (`severed-twin-replay.py:74`). Converging them is a duplication finding in its
+  own right; **do not silently pick one** while flipping readers.
+- **G3 parses the filename**, not just the JSON (`:487`). Any new naming scheme
+  must either preserve a leading stamp token or fix G3 in the same PR.
+- **F4 is a pinned frozen bank**, not a live path — it globs
+  `bundle/dsp_state/capture_dump_20260810/*_measure_*.json`. It depends on the
+  `{stamp}_{phase}_{device}` scheme, so it breaks on the **rename** as well as
+  the deletion. It is a fixture deriver, so the right answer may be to re-derive
+  the fixture once and freeze the result — **an owner call, not a builder's.**
+
+**The WAV re-pairing rule is two places, not three (D10):**
+`harmonic_evidence.py:613` and `feature_classifier.py:482`, both
+`sidecar.parent.parent / "wav" / f"{sidecar.stem}.wav"`. The other two are
+different rules — `severed-twin-replay.py:249` uses
+`sidecar_path.with_suffix(".wav")` (flat sibling, the **un-split** ring), and
+`harmonic-distortion-replay.py:266-271` binds by sha256 content across a
+separate `--captures` directory with no path derivation at all. **Three
+"replacements" for what is really three different bindings would be three new
+defects.**
+
+> **3.** **The sidecar dies in that same PR**, per ruling S5 — it is a proof
+> bracket, not a fallback.
+
+**Carried.** What dies, enumerated so nothing is left behind:
+
+- `_maybe_retain_capture` — `web/…:3223` (signature `:3223-3227`), its sole call
+  site `:3162-3172`, and `_prune_capture_dump` `:3179`.
+- The gate and its constants: `capture_dump_enabled` `:220` (body `:229`),
+  `XOVER_CAPTURE_DUMP_DIR` `:203` (`/var/lib/jasper/xover-capture-dump`),
+  `XOVER_CAPTURE_DUMP_ENABLED_MARKER` `:211` (`"ENABLED"`),
+  `XOVER_CAPTURE_DUMP_MAX_FILES = 90` `:216`,
+  `XOVER_CAPTURE_DUMP_MAX_BYTES = 300 MB` `:217`, applied at `:3351-3356`.
+- `RING_SIDECAR_GLOB` `evidence_packet.py:336` (`"**/sidecar/*.json"`) and its
+  `__all__` entry `:180`.
+- **The shell split, which is not Python** — `scripts/bank-crossover-round.sh`
+  **`:214-227`** (§1 `:246-250` says `:234-238`; corrected). It `tar`s the ring
+  off the Pi and `find … -maxdepth 1 -exec mv` splits `*.wav` into `dumps/wav/`
+  and `*.json` into `dumps/sidecar/`. That `-maxdepth 1` is **why
+  `RING_SIDECAR_GLOB` needs its `**/`**. Four more places in the same script
+  depend on the layout: the header doc `:46-49`, the exit-code contract
+  `:65-67`, the `python -m jasper.audio_measurement.capture_integrity
+  "$DEST/dumps/sidecar"` call `:235-237` whose `checker_rc` `:238` **becomes the
+  script's exit code**, and the summary line `:253`.
+
+**A stale reference to delete while here:** `harmonic_evidence.py:587` cites
+`:func:`~.round_views._dump_ring_captures`` — **that function does not exist
+anywhere in the tree.** Trivial, in scope, fix it inline.
+
+> **4.** `provenance.take()`'s single shot at the analyze seam is **plumbing to
+> carry, not a field move**: by retention time the routing graph is restored and
+> the fader may have moved.
+
+**Carried, and this is the part to review hardest** (§8 `:1116-1118`). Verified:
+
+```python
+def take(self) -> CaptureProvenance | None:          # capture_provenance.py:163
+    with self._lock:
+        pending, self._pending = self._pending, None
+    return pending
+```
+
+It is **single-shot and consuming** — an atomic swap under `self._lock` (`:156`).
+A second call with no intervening `record()` (`:159`) returns `None`, **not the
+previous capture's context**; the class docstring `:148-154` gives the reason:
+stale provenance on a forensic clip is worse than absent.
+
+**Production call sites: exactly one** —
+`web/correction_crossover_v2.py:3172`, as
+`provenance=provenance.take() if provenance is not None else None`, inside the
+`_maybe_retain_capture` call that obligation 3 deletes.
+
+So the lift must **re-home the single shot, not copy the fields**: whoever calls
+`take()` after the change is the only one who can, and calling it a second time
+anywhere yields `None`. Two consequences:
+
+- **The analyze seam is where the shot happens today.** `bind_production_analyze(meta=refs, provenance=provenance)`
+  (`web/…:5742`) holds the recorder; the values are live at analyze time and
+  **not** at retention time, which is obligation 4's whole point.
+- **Deleting `_maybe_retain_capture` deletes the only consumer.** If nothing new
+  calls `take()`, the recorder becomes a write-only object and the provenance is
+  silently lost — passing every test, because no test asserts a household run
+  banks provenance. **Pin the carry explicitly**, or this obligation discharges
+  itself into a hole.
+
+> **5.** The `ENABLED` gate over unconditional ~300 MB ring writes is an **owner
+> call**. Leave it as it is until his ruling lands.
+
+**Carried unchanged, and note it is now moot-if-3-lands**: obligation 3 deletes
+the gate along with the ring, so the owner's ruling is only needed if the ring
+survives. **Surface that to him rather than letting the deletion decide it.**
+
+### 4.7 One more thing the lift removes for free
+
+`consume_capture`'s `entry: Any = None` parameter (`:4184`) is **never
+referenced** in the body (`:4183-4334`) — zero uses. Two callers pass a real
+value: `web/correction_crossover_v2_relay.py:585` and
+`web/correction_crossover_v2_wired.py:607`. Per-capture provenance is recorded
+inside the analyze binding instead (`web/…:5742`).
+
+Dead parameter, three sites, in scope for a signature this PR already edits.
+**Verify no `getattr`/`**kwargs` reach before cutting** (AGENTS.md's dead-code
+rule), then delete it with its two call-site arguments.
+
+---
+
+## 5. W1-d — the 4j SQLite index
+
+**Blocked until W1-a and W1-c land** — #3130's own body says why, and #3130 is
+where the last input gap closed:
+
+> **4j itself stays blocked** and is not attempted here — there is no production
+> `RecordStore` implementation … and `_hand_to_retention` still has exactly three
+> call sites … so CHECK/MEASURE/VERIFY bank no take at all.
+
+Six columns, off `_record()`: **session · kind · position · candidate ·
+timestamp · path**. The last two are the store's to supply, *"since only it knows
+where it put the record and when"* (`session.py:667-670`).
+
+- **`path`** is `bank`'s return under §2.3's scheme — the id **is** the path, so
+  this column costs nothing extra.
+- **`timestamp`** is not on `_record()`. Two builders already carry
+  `captured_at` (cloud `:927`, lateral `:1056`, entry `:1120`) as an ISO-8601
+  string minted at `crossover_v2_flow.py:5064` — reuse it rather than stamping a
+  second clock at bank time, or a re-bank of identical bytes (§2.3, idempotent)
+  would change the timestamp and make the write non-idempotent after all.
+- **`kind`** is §3.2's mapping. It is the reason W1-d is downstream of W1-b as
+  well as of W1-a and W1-c.
+
+Model it on `jasper/wake_events.py` (925 lines) per §1 `:288-290`.
+**Rebuildable by rescanning; the banked files stay the SSOT**
+(`session.py:672-674`). Verification bar: delete the index file, rebuild by
+rescan, assert the same six columns.
+
+**And it inherits §4.5's defect.** The index joins `path` to the record's own
+identity; the doubled entry-baseline take id makes that join wrong for one of
+three kinds. If §4.5 is not fixed in W1-c, W1-d must not paper over it.
+
+---
+
+## 6. PR slicing, bars and tiers
+
+### 6.1 The slices
+
+**Five PRs, not four.** W1-c splits — §1 `:276-279` anticipates it and says how:
+split by *reader* (obligation 2) and keep obligations 1+3 together, because *"a
+sidecar that dies before its replacement writes is a data loss, and a sidecar
+that outlives it is the second-writer defect."*
+
+| PR | Item | Contents | Est. | Gated on |
+|---|---|---|---|---|
+| 1 | **W1-a** | `crossover_v2/record_store.py` + the `__init__.py` index entry + `tests/test_crossover_v2_record_store.py` + the two stale docstrings (§2.6) | ~300 | **W4-a** |
+| 2 | **W1-b** | the six fields + the `kind` mapping across three builders; the parametrized pin | ~250 | PR 1 |
+| 3 | **W1-c/1** | the three call sites lift + `_hand_to_retention` dies + §4.5's take-id fix + the dead `entry` param (§4.7) | ~250 | **W5-b**, PR 2 |
+| 4 | **W1-c/2** | the three missing phases: thread `index`/`attempt`/`result` through `:4211`/`:4213`/`:4227`, the builders, the `provenance.take()` carry | ~350 | PR 3 |
+| 5 | **W1-c/3** | the seven readers flipped + the ring and its shell split die, **in one PR** (S5) | ~350 | PR 4 |
+| 6 | **W1-d** | the SQLite index | ~200 | PR 5 |
+
+**Why obligations 1 and 3 land in different PRs here, when §1 says keep them
+together:** §1's rule is *"a sidecar that dies before its replacement writes is a
+data loss."* PR 4 **is** the replacement writing; PR 5 is the death. The
+ordering satisfies the rule — the sidecar outlives its replacement by exactly one
+PR, and §1's other failure mode ("a sidecar that outlives it is the
+second-writer defect") is a *steady-state* defect, not a one-merge window.
+**If the conductor would rather not hold that window open, merge 4 and 5 as a
+stack and land them together** — that is the tradeoff, stated rather than
+decided.
+
+### 6.2 Verification bar per PR
+
+Every "assert" below is a **mutation instruction**: break it, watch *only* the
+named pin fail, restore, re-run green — and check the un-mutated run is green,
+because a harness that fails silently in both directions reads as covered either
+way (§8 `:1156-1161`).
+
+| PR | Suites | Mutation targets | Content-grep for the post-merge check |
+|---|---|---|---|
+| 1 | `test_crossover_v2_record_store`, `test_engine_twin`, `test_crossover_v2_engine_skeleton`, `test_active_speaker_commissioning_evidence_store`, `test_crossover_v2_position_cycle` + every module importing `prior_bank` | §2.7's five | `git grep -c POSITION_EVIDENCE_KIND -- jasper/` rises by 1; `git grep -n "854-line" -- jasper/` = **0** |
+| 2 | `test_crossover_v2_spatial`, `test_crossover_v2_blend_prescription`, `test_crossover_v2_position_cycle`, `test_crossover_v2_stage_bridge` | drop each of the thirteen, **per builder**, asserting the anchor match count first (#3130's lesson) | all thirteen `_record()` names present in `spatial.py`; `git grep -c '"kind"' -- jasper/active_speaker/crossover_v2/spatial.py` |
+| 3 | every module referencing `crossover_v2_flow`, `lateral_pose_record`, `entry_baseline_record`, `read_lateral_take` | remove the fail-soft → site C's `artifact_ref` pin fails; re-mint the take id → §4.5's stem pin fails | **`git grep -c "_hand_to_retention\|retain_position" -- jasper/` = 0**; `entry` gone from `consume_capture`'s signature |
+| 4 | the above + `test_crossover_v2_round_wiring`, `test_correction_crossover_v2_endpoints` | drop the `provenance.take()` carry → the provenance pin fails (**build this pin first — nothing covers it today**) | a CHECK, a MEASURE and a VERIFY take each present in a round fixture |
+| 5 | all seven readers' suites + `test_docs_impact` | break each reader's key lookup one at a time | `git grep -c RING_SIDECAR_GLOB` = **0**; `git grep -c xover-capture-dump` = **0** across `jasper/`, `scripts/` **and** `deploy/`; `bank-crossover-round.sh` has no `dumps/sidecar` |
+| 6 | `test_crossover_v2_record_store` + the new index suite | delete the index, rebuild by rescan, assert the same six columns | the six column names present |
+
+**Wrap-safe sweeps for every grep above.** This tree wraps at ~79 columns, so a
+symbol and its qualifier routinely land on two lines — §8 `:1147-1151` records
+that a single-line grep for `set_volume_db(` is exactly what let
+`jasper/cli/seat_level.py:413` escape the wave-5 ledger. Join line pairs before
+matching, and **paste the count into the PR** whenever a check counts something.
+
+### 6.3 Review tier — judged against AGENTS.md, not inherited
+
+AGENTS.md's non-negotiable tier is a **closed list**: a diff touching the
+hearing clamps (`devices.volume_limit`, `CamillaController.set_volume_db`, the
+commissioning SPL stop), the XVF3800 brick hazard, secrets handling, deploy
+integrity, renderer ALSA resolution, silent deafness, paid tests, or
+`deploy/install.sh`.
+
+| PR | Tier | Honest reasoning |
+|---|---|---|
+| 1 | **default** | new module, two backends, no clamp, no fader write, no secret. §1 agrees |
+| 2 | **default** | data shape only |
+| 3 | **default** | **it touches `CrossoverV2Session`, and that is not by itself an adversarial trigger.** What the lift moves is a *write of evidence JSON* and its fail-soft. It writes no fader, computes no DSP, touches no secret and no `install.sh`. The concurrency question (`self._close_lock`, §4.2) is real and is the thing to review hardest — but "hard to review" is not the tier test, and treating it as one is the ceremony AGENTS.md's tiered policy replaced |
+| 4 | **default** | same, plus the `provenance.take()` carry — §8 `:1116-1118` already names it *"the part to review hardest"* |
+| 5 | **default** | deletion + reader flips. **One caveat worth stating:** it removes an observability surface (the ring) that AEC- and distortion-forensics scripts consume. That is not on the closed list, so it is not adversarial — but it *is* worth an explicit owner ack, because obligation 5's ENABLED ruling becomes moot when the gate is deleted (§4.6) |
+| 6 | **default** | mechanical, on a shipped pattern |
+
+**Nothing in W1 is adversarial tier.** The adversarial items in this DAG are
+W4-a, W4-c, W5-b and W5-c (§8 `:1108-1113`) — all fader-path — and W1 sits
+*downstream* of them precisely so it does not have to be.
+
+**One thing W1 must not quietly acquire:** if a slice ends up touching
+`SessionVolumePlan` or `_session_volume_io._set` (the wave-5 named exception
+that still writes the fader directly —
+`crossover-v2-engine-design.md:103-110`), **the tier changes and this table is
+void.** Say so in the PR rather than re-reading the table.
+
+---
+
+## 7. Traps this work will actually hit
+
+The five from §8 `:1128-1164` apply unchanged. These are the ones **specific to
+W1**, each with the evidence that it is real:
+
+1. **Confirm a call site by grepping the symbol, never by reading the cited
+   line.** D6 is the worked example: `crossover_v2_flow.py:6879` still exists,
+   still sits in a `try/except/WARN`, and still says *"Mirrors
+   `_retain_cloud_position`'s fail-soft boundary"* — and it is a **comment
+   about a different seam**. One grep (`self._seams.retain_position` → two hits,
+   both inside `_hand_to_retention`) settles in a second what reading the line
+   settles wrongly.
+2. **A matching total is not a matching set.** §1's "seven readers" is right and
+   both of its halves are wrong (D7 + D8). A count that reconciles is the
+   easiest thing in the world to stop checking.
+3. **Squash-ancestry.** `main` squash-merges, so `git merge-base --is-ancestor`
+   reports a landed branch as un-landed. Use `git cherry`; rebase with
+   `git rebase --onto`. This chain is six stacked PRs — the highest-exposure
+   shape there is. Wave 6d hit it twice in one walk.
+4. **The reap trap.** `_run_async`'s timeout path
+   (`web/correction_setup.py:1311-1327`) cancels the loop task, waits for the
+   drain, logs **CRITICAL** if it does not — **and then waits unbounded anyway**,
+   because *"a terminal response must never release measurement ownership while
+   its graph/volume finalizer can still mutate the speaker"* (`:1323-1326`).
+   W1-a's methods are `await`ed inside that bridge (D1). **The alarm is
+   observability, not permission to abandon cleanup** — a new cancel path
+   inherits the rule.
+5. **Subject-sweep, follow to assertion.** Do not sweep for the *subject*
+   ("retention", "sidecar") and stop at the first hit. Follow each to what
+   **asserts** on it: the ring's death (PR 5) reaches a **shell script** and a
+   **frozen fixture deriver** that no Python grep for `RING_SIDECAR_GLOB` finds
+   (F4, and `bank-crossover-round.sh:214-227`). §1 itself missed F4.
+6. **Validate a tree-scanning check against the merge result**, not your branch:
+   `git merge-tree --write-tree origin/main HEAD` (AGENTS.md:144). Two-dot diffs
+   render phantom removals in this shared repo — merge base for scope,
+   merge-tree for the net.
+7. **Re-derive every line number before you cut.** Every citation in this
+   document was true at `c253c3cf1`. §1's were true at `4a9e9f631`, and **six of
+   them had already moved** (D6–D11) — including one that changed a work item's
+   title. This document will rot the same way.
