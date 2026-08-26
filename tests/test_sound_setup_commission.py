@@ -940,6 +940,51 @@ def test_confirm_output_identity_audition_can_play_tweeter_before_driver_sequenc
     assert load_ramp_state()["confirmed_roles"] == []
 
 
+def test_identity_audition_request_cannot_skip_confirmed_driver_identity_gate(
+    monkeypatch,
+    tmp_path,
+):
+    """#2821: ``identity_audition`` is a client REQUEST, not the decision. The
+    woofer's physical identity is already confirmed, so a POST carrying the
+    flag for the woofer stays under the strict gate — and that gate still
+    refuses while the tweeter is unconfirmed."""
+    from jasper.output_topology import output_topology_mutation
+
+    controller = _FakeController("placeholder")
+    env = _web_commission_env(monkeypatch, tmp_path, controller)
+    # The tweeter is the only lane still awaiting its physical confirmation;
+    # the staged anchor agrees, so identity is the one gate left to answer.
+    with output_topology_mutation() as mutation:
+        mutation.save(_topology(tweeter_verified=False))
+    staged = json.loads(json.dumps(env["staged"]))
+    for target in staged["targets"]:
+        if target["role"] == "tweeter":
+            target["identity_verified"] = False
+    for module in ("staging", "startup_load"):
+        monkeypatch.setattr(
+            f"jasper.active_speaker.{module}.load_staged_startup_config",
+            lambda: staged,
+        )
+
+    payload = asyncio.run(
+        sound_setup._active_speaker_commission_load_payload(
+            {"group": "mono", "role": "woofer", "identity_audition": True},
+            camilla_factory=lambda: controller,
+        )
+    )
+
+    startup_preflight = payload["preflight"]["startup_preflight"]
+    assert startup_preflight["identity"]["physical_identity_required"] is True
+    gates = {
+        gate["id"]: gate["passed"]
+        for gate in startup_preflight["required_gates"]
+    }
+    assert gates["physical_identity_verified"] is False
+    assert payload["load"]["status"] == "blocked"
+    assert payload["load"]["loaded"] is False
+    assert load_commission_load_state()["status"] == "blocked"
+
+
 def test_commission_flow_uses_durable_driver_check_after_ramp_reset(
     monkeypatch,
     tmp_path,

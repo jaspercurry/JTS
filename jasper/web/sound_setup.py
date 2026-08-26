@@ -4140,6 +4140,43 @@ def _active_speaker_identity_audition_role_order_roles(
     return ordered_roles
 
 
+def _active_speaker_identity_audition_granted(
+    topology: OutputTopology,
+    *,
+    group: str,
+    role: str,
+    requested: bool,
+) -> bool:
+    """Decide server-side whether the weaker identity-audition mode applies.
+
+    A client may only REQUEST it; the saved topology decides. It is granted
+    only for an assigned driver whose physical identity is still unconfirmed —
+    the confirmation the strict gate demands cannot exist yet, and this
+    audition is how it is obtained. See #2821.
+    """
+
+    group_id = str(group or "").strip()
+    role_name = str(role or "").strip().lower()
+    granted = any(
+        channel.physical_output_index is not None and not channel.identity_verified
+        for speaker_group in topology.speaker_groups
+        if speaker_group.id == group_id
+        for channel in speaker_group.channels
+        if channel.role == role_name
+    )
+    if requested and not granted:
+        log_event(
+            logger,
+            "sound.active_speaker_commission",
+            action="identity_audition",
+            result="refused",
+            reason="physical_identity_already_confirmed",
+            group=group_id,
+            role=role_name,
+        )
+    return requested and granted
+
+
 async def _active_speaker_commission_load_payload(
     raw: dict[str, Any],
     *,
@@ -4162,8 +4199,12 @@ async def _active_speaker_commission_load_payload(
     group = str(raw.get("group") or "").strip()
     role = str(raw.get("role") or "").strip().lower()
     force = bool(raw.get("force"))
-    identity_audition = bool(raw.get("identity_audition"))
-    require_physical_identity = not identity_audition
+    require_physical_identity = not _active_speaker_identity_audition_granted(
+        load_output_topology(),
+        group=group,
+        role=role,
+        requested=bool(raw.get("identity_audition")),
+    )
     # Serialize against the other measurement flows (room correction / pair
     # balance / pair sync) — all play sweeps through the production graph, and
     # commissioning does not hold the measurement window, so this cooperative
@@ -4349,8 +4390,13 @@ async def _active_speaker_commission_ramp_step_payload(
     group = str(raw.get("group") or "").strip()
     role = str(raw.get("role") or "").strip().lower()
     identity_audition = bool(raw.get("identity_audition"))
-    require_physical_identity = not identity_audition
     topology = load_output_topology()
+    require_physical_identity = not _active_speaker_identity_audition_granted(
+        topology,
+        group=group,
+        role=role,
+        requested=identity_audition,
+    )
     staged = load_staged_startup_config()
     preset, crossover_preview = resolve_commission_inputs()
     cam = camilla_factory()
