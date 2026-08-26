@@ -17,7 +17,7 @@ from __future__ import annotations
 #   After a tool returns → Out of scope.
 #
 # Two design principles from that guide and the official "Using
-# realtime models" docs that we previously violated:
+# realtime models" docs:
 #
 #   1. POSITIVE framing for tool calls — "Call X when Y", not "Don't
 #      forget X". An earlier version of this prompt had ~15 "Do NOT"

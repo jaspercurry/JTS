@@ -315,8 +315,8 @@ ENV_CONTRACT_EXCEPTIONS: dict[str, str] = {
     "JASPER_OUTPUTD_CONTENT_LANE_WINDOW_SEC": "outputd failure helper streak window; script-only",
     "JASPER_OUTPUTD_CONTENT_LANE_PARK_AFTER": "outputd failure helper park bound; script-only",
     "JASPER_OUTPUTD_CONTENT_LANE_JOURNAL_LINES": "outputd failure helper journal-tail bound; script-only",
-    # The removed transport_pipe coupling's env keys (deleted 2026-07-11). The
-    # Rust local_content_pipe path was deleted with the coupling, so neither is
+    # The removed transport_pipe coupling's env keys. The Rust
+    # local_content_pipe path was deleted with the coupling, so neither is
     # Rust-read anymore. JASPER_FANIN_CAMILLA_PIPE survives ONLY in the
     # fanin_coupling removal docstring; JASPER_OUTPUTD_LOCAL_CONTENT_PIPE survives
     # as the reconciler's legacy migration-sweep UNSET target

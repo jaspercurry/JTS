@@ -603,11 +603,10 @@ MIXER_VOLUME_MAX = 60  # ALSA units; 0=-60 dB, 60=0 dB on this device
 # In chip-AEC mode, the bridge captures ch0/ch1 as fixed 150/210 ASR
 # beams instead and forwards the selected beam directly.
 #
-# Was previously channel 2 (raw mic 0). The switch was made on
-# 2026-05-15 after measuring that raw mic 0 has literally no chip
-# processing (verified by toggling chip NS/AGC and observing 0.4 dB
-# of variation on ch 2 vs 8+ dB on ch 0/1) — we were paying for the
-# chip's DSP and not using it. See HANDOFF-xvf3800.md §3.
+# NOT channel 2 (raw mic 0): that channel has literally no chip
+# processing — toggling chip NS/AGC moves it 0.4 dB against 8+ dB on
+# ch 0/1, so reading it pays for the chip's DSP without using it.
+# See HANDOFF-xvf3800.md §3.
 MIC_CHANNEL_INDEX = 1
 
 

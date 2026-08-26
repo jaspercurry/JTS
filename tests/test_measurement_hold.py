@@ -457,7 +457,7 @@ def test_the_release_line_reports_what_the_demotion_suppressed(control_server, c
 
 
 def test_a_declined_state_read_failure_is_a_502(control_server, monkeypatch):
-    """Nit: guard the decline path's asyncio.run like its sibling _get_volume.
+    """The decline path's asyncio.run is guarded like its sibling _get_volume.
 
     A read failure must not return 200 carrying a half-built payload.
     """

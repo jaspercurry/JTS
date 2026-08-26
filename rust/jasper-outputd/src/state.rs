@@ -2288,11 +2288,8 @@ mod tests {
         Config {
             sink_mode: SinkMode::Composite,
             // The armed composite shape: the ring endpoint, and NO content PCM.
-            // This used to name `outputd_active_content_capture`, the snd-aloop
-            // ACTIVE capture half — a PCM #2534 deleted, which #2285 P2 (A6)
-            // stopped the reconciler writing and `default_content_pcm` stopped
-            // guessing. A composite on the direct bridge now refuses at parse,
-            // so a composite that is running at all is a ring composite.
+            // A composite on the direct bridge refuses at parse, so a composite
+            // that is running at all is a ring composite.
             ring_active_endpoint: true,
             content_pcm: String::new(),
             content_channels: 4,
@@ -3167,7 +3164,7 @@ mod tests {
             r#""startup_empty_reads":4"#,
             r#""attach_resyncs":1"#,
             r#""writer_alive":false"#,
-            // Nit 4: the u64::MAX "never heartbeated" sentinel serializes as
+            // The u64::MAX "never heartbeated" sentinel serializes as
             // JSON null, not 18446744073709551615 (which exceeds JS safe-integer
             // range and would deserialize lossily in the /state dashboard).
             r#""writer_heartbeat_age_ms":null"#,
@@ -3680,10 +3677,9 @@ mod tests {
     fn every_dll_site_publishes_the_same_rate_diff_shape() {
         // Inc 4: every DLL instance publishes its loop state through the single
         // shared `rate_diff` writer, so /state and the doctor read every
-        // clock-domain boundary identically. One site remains — the DAC-clock
-        // observer — since the content-bridge rate controller was deleted with
-        // the `rate_match` bridge. The count assertion is what keeps a future
-        // DLL site from publishing a hand-rolled block instead of reusing
+        // clock-domain boundary identically. One site exists — the DAC-clock
+        // observer. The count assertion is what keeps a future DLL site
+        // from publishing a hand-rolled block instead of reusing
         // `push_dll_rate_diff`.
         let state = OutputdState::new(&test_config());
         let j = state.snapshot_json();

@@ -1083,8 +1083,8 @@ _render_outputd_cutover_configs() {
     # jasper.sound.camilla_yaml.render_flat_cutover_configs — the ONE writer of
     # these two files. The root reconciler (jasper-audio-hardware-reconcile) and
     # jasper-output-topology-reset call the same command, so the graph a box
-    # boots cannot depend on which writer ran last. It used to be an inline
-    # heredoc here, which is exactly how a second spelling gets born.
+    # boots cannot depend on which writer ran last. An inline heredoc here is
+    # exactly how a second spelling gets born.
     /opt/jasper/.venv/bin/jasper-sound render-flat-cutover
 }
 
@@ -2129,8 +2129,7 @@ run_doctor_summary() {
     #
     # Critical for catching the "silent productization gaps" — e.g. an
     # XVF chip on 6-ch firmware but with the ALSA mixer's ch2-5 muted,
-    # which used to be invisible until a wake-word test failed days
-    # later. Doctor flags it inline now.
+    # otherwise invisible until a wake-word test fails days later.
     if [[ ! -x /opt/jasper/.venv/bin/jasper-doctor ]]; then
         return 0
     fi

@@ -616,9 +616,8 @@ def outputd_grouping_env(
     so a solo speaker falls back to the underlying layers. Bonding and a
     lower-layer bridge choice coexist; neither can crash outputd.
 
-    (The incident's specific lower layer was a ``rate_match`` lab soak.
-    That bridge has since been deleted, but the pin is NOT vestigial: the
-    surviving ``shm_ring`` bridge trips the same fail-closed guard.)
+    The pin is NOT vestigial: the surviving ``shm_ring`` bridge trips the
+    same fail-closed guard.
     """
     route = expected_grouping_tts_route(cfg, active_endpoint=active_endpoint)
 

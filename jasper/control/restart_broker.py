@@ -79,8 +79,8 @@ logger = logging.getLogger(__name__)
 _SELF_UNIT = "jasper-control.service"
 
 # The broker socket. jasper-control declares RuntimeDirectory=jasper-control,
-# so /run/jasper-control exists owned by the unit's user (root in this PR;
-# jasper-control in the user-drop PR). Overridable for tests / headless runs.
+# so /run/jasper-control exists owned by the unit's user. Overridable for
+# tests / headless runs.
 DEFAULT_SOCKET_PATH = os.environ.get(
     "JASPER_RESTART_BROKER_SOCKET", "/run/jasper-control/restart.sock",
 )
@@ -182,8 +182,8 @@ START_ONLY_UNITS = frozenset({
 POLKIT_MANAGE_UNITS = MANAGED_UNITS | START_ONLY_UNITS
 
 # Service users permitted to call the broker (root is always permitted — the
-# still-root clients in this PR, and operator debugging). Resolved fresh per
-# request so a user created by a deploy works without restarting the broker.
+# still-root clients, and operator debugging). Resolved fresh per request so a
+# user created by a deploy works without restarting the broker.
 BROKER_CLIENT_USERS = (
     "jasper-control",
     "jasper-web",

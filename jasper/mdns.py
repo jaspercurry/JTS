@@ -5,14 +5,12 @@
 """One-shot mDNS-SD browse primitive — the single place JTS resolves a
 service type into the live set of instances on the LAN.
 
-This is a faithful extraction of the `AsyncZeroconf` browse + resolve +
-TXT/address parse that previously lived inline in
-`jasper/web/rooms_setup.py:_discover_speakers`. It is a *move*, not a
-rewrite: the browse/resolve/parse mechanics (IPv4-only zeroconf, the
-Added/Updated name collection, the `AsyncServiceInfo.async_request` with a
-3 s timeout, the `parsed_scoped_addresses()`/`parsed_addresses()` fallback,
-the UTF-8-with-replacement TXT decode) match the original byte-for-byte. The
-caller-specific bits stay with the caller:
+It owns the `AsyncZeroconf` browse + resolve + TXT/address parse mechanics
+(IPv4-only zeroconf, the Added/Updated name collection, the
+`AsyncServiceInfo.async_request` with a 3 s timeout, the
+`parsed_scoped_addresses()`/`parsed_addresses()` fallback, the
+UTF-8-with-replacement TXT decode). The caller-specific bits stay with the
+caller:
 
   - Display-label derivation (TXT `name=` vs SRV host vs stripped instance
     name) is rooms-display policy — it stays in `rooms_setup`.

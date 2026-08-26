@@ -318,11 +318,9 @@ def _post(url: str, form: dict) -> tuple[int, str, str | None]:
     req = urllib.request.Request(url, data=body, method="POST")
 
     def _maybe_append_flash(loc: str | None) -> str | None:
-        # Tests previously asserted that the flash message appeared in
-        # the Location header (because the wizard redirected to
-        # ./?msg=…). The flash now travels in jts_flash cookie; surface
-        # it after the location's `#` so the same string-contains
-        # assertions keep working.
+        # The flash travels in the jts_flash cookie, not the Location
+        # header; surface it after the location's `#` so string-contains
+        # assertions on the location still see it.
         for cookie in jar:
             if cookie.name == "jts_flash":
                 flash = urllib.parse.unquote(cookie.value or "")

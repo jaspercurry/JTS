@@ -15,8 +15,8 @@ literal values (``pending_signal_boundary``, ``controlled_pre_sweep``) across
 every ``.py``/``.js``/``.md``/``.yml``/``.json`` file found no reader anywhere
 outside this function's own writer — they were write-only.
 
-Adversarial review (gate on PR #2834) found the same dishonesty class in the
-remaining ``"method": "paired_signal_window_deconvolution"`` field: it is read
+The same dishonesty class reached the remaining ``"method":
+"paired_signal_window_deconvolution"`` field: it is read
 only inside ``if noise_domain == "deconvolved":`` branches
 (``driver_acoustics.py``'s two ``effective_noise_report.get("method")`` sites),
 the stub's ``domain`` is absent so ``unwrap_noise_report`` yields ``"raw"``, and

@@ -1921,13 +1921,11 @@ def build_crossover_sweep_spec(
     from the same table the per-entry screens are built from — because this
     builder must not grow a second description of a walk it does not own.
 
-    It used to be a ``Sequence[str]`` of every position, rendered as a second
-    ``ui_steps`` list. That was D7's presentation and #1941 withdrew it: a
-    ten-item enumeration under a 73-word placement block is the wall the
-    owner's 2026-07-30 field note describes, and a household cannot act on the
-    last prompted move while standing at the first. The intent it served — no
-    surprises — is kept by the sentence; the spoon-feeding is the per-entry
-    screens' job.
+    Deliberately ONE sentence, not a ``Sequence[str]`` of every position: a
+    ten-item enumeration under a 73-word placement block is a wall, and a
+    household cannot act on the last prompted move while standing at the first.
+    The intent — no surprises — is kept by the sentence; the spoon-feeding is
+    the per-entry screens' job.
 
     Empty (every non-cloud caller, and Express's 1-entry stage 2) renders
     nothing. Only meaningful alongside ``guided_captures``; ignored otherwise,

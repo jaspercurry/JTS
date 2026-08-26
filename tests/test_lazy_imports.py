@@ -540,10 +540,10 @@ def test_run_probe_runs_against_the_checkout_under_test(
 def test_importing_wake_has_no_openwakeword_side_effect() -> None:
     """jasper.wake must not touch sys.modules just by being imported.
 
-    The guard used to be a module-top `sys.modules` write in jasper/wake.py,
-    which meant jasper.vad was protected only because jasper-voice happened
-    to import jasper.wake first. The guard is now an explicit call at each
-    import site, so importing jasper.wake should install nothing.
+    The guard is an explicit call at each import site, NOT a module-top
+    `sys.modules` write in jasper/wake.py — that shape would protect jasper.vad
+    only when jasper-voice happened to import jasper.wake first. So importing
+    jasper.wake should install nothing.
     """
     probe = (
         "import sys\n"

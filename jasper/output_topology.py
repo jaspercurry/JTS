@@ -1909,12 +1909,12 @@ def resolve_output_layout(
         # The ACTIVE ring, unconditionally — there is no second legal endpoint
         # to choose between (OUTPUTD_LEGAL_ENDPOINT_DEVICES is one member).
         #
-        # This used to read `ring_active_endpoint_armed()` and fall back to the
-        # snd-aloop active lane, which made this chooser a FIXED POINT: the
-        # marker derives from the loaded graph and the graph's device derived
-        # from the marker, so no automated pass could move a box between
-        # transports — only a human passing `--endpoint`. Deleting that one
-        # branch is what makes the roleful path convergent rather than manual.
+        # Reading `ring_active_endpoint_armed()` here and falling back to the
+        # snd-aloop active lane would make this chooser a FIXED POINT: the
+        # marker derives from the loaded graph and the graph's device would
+        # derive from the marker, so no automated pass could move a box between
+        # transports — only a human passing `--endpoint`. Not reading the marker
+        # is what makes the roleful path convergent rather than manual.
         #
         # The marker itself SURVIVES and is unaffected: it is outputd's own
         # JASPER_OUTPUTD_ACTIVE_LANE biconditional, read by the Rust daemon and

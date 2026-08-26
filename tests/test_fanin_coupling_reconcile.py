@@ -253,8 +253,7 @@ def test_old_fifo_literal_failsafe_to_loopback(tmp_path):
 
 
 def test_no_apply_shm_ring_is_arm_direction(tmp_path):
-    # NIT 7: a --no-apply shm_ring write is an ARM (was mislabeled "disarm" because
-    # the check only compared against transport_pipe).
+    # A --no-apply shm_ring write is an ARM, not a disarm.
     fanin_env = tmp_path / "fanin.env"
     outputd_env = tmp_path / "outputd.env"
     calls, ro, rf, rc = _recorder()
@@ -1125,12 +1124,12 @@ def test_arm_shm_ring_camilla_failure_recovers_to_loopback(
 def test_arm_shm_ring_outputd_restart_failure_recovers_to_loopback(
     tmp_path, _ring_assets_present
 ):
-    # NIT 8: the ring-arm outputd-restart-failure rollback branch (the transport_pipe
-    # twin is tested; the ring twin was not). outputd fails to restart -> the arm
-    # never reaches fan-in/camilla; the env is rolled BACK to loopback + the ring
-    # keys cleared, so a later manual restart lands clean. (recovered is False here
-    # because the recovery's OWN outputd restart also fails — the daemon is down —
-    # but the persisted env is safely loopback, which is the load-bearing invariant.)
+    # The ring-arm outputd-restart-failure rollback branch. outputd fails to
+    # restart -> the arm never reaches fan-in/camilla; the env is rolled BACK to
+    # loopback + the ring keys cleared, so a later manual restart lands clean.
+    # (recovered is False here because the recovery's OWN outputd restart also
+    # fails — the daemon is down — but the persisted env is safely loopback,
+    # which is the load-bearing invariant.)
     fanin_env = _write(tmp_path / "fanin.env", "")
     outputd_env = _write(tmp_path / "outputd.env", "JASPER_OUTPUTD_PERIOD_FRAMES=128\n")
     calls, ro, rf, rc = _recorder(outputd_ok=False)
@@ -1156,7 +1155,7 @@ def test_arm_shm_ring_outputd_restart_failure_recovers_to_loopback(
 def test_arm_shm_ring_fanin_restart_failure_recovers_to_loopback(
     tmp_path, _ring_assets_present
 ):
-    # NIT 8: the ring-arm fanin-restart-failure rollback branch — outputd came up,
+    # The ring-arm fanin-restart-failure rollback branch — outputd came up,
     # fan-in failed. The env is rolled back to loopback + ring keys cleared.
     fanin_env = _write(tmp_path / "fanin.env", "")
     outputd_env = _write(tmp_path / "outputd.env", "JASPER_OUTPUTD_PERIOD_FRAMES=128\n")
@@ -2272,8 +2271,7 @@ def test_confirm_shm_ring_coherent_stays_lightweight(tmp_path, monkeypatch):
     # The other side of the CONFIRM-path fix: a COHERENT already-armed shm_ring box
     # must NOT bounce fan-in/outputd on every reconcile tick — only re-load camilla.
     # This pins that the escalation is gated on POSITIVE incoherence evidence, so a
-    # healthy box keeps the cheap confirm (the property the reviewer flagged as the
-    # regression risk of over-eagerly always running _arm_ring).
+    # healthy box keeps the cheap confirm rather than always running _arm_ring.
     import jasper.ring_assets as ra
 
     monkeypatch.setattr(

@@ -1119,7 +1119,7 @@ async def test_a_half_forwarded_device_block_is_refused_by_the_transport_gate(
     file, and this cannot see a field that never affects the two device names.
     The mutation below is deliberately of the shape the walk is blind to — the
     call site still names every field, and the capture is dropped downstream —
-    so a reviewer can see the two guards are not one guard twice.
+    so the two guards are demonstrably not one guard twice.
 
     The refusal is at the gate, not before the write. The old predicate could
     refuse ahead of the emit because it only had to look at a device name; a

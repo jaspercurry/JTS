@@ -35,14 +35,6 @@ daemons. One non-loopback coupling is supported:
     transition; it is acceptable on a deliberate operator change and it never
     strands Camilla on a config it cannot open.
 
-REMOVED 2026-07-11 — the ``transport_pipe`` coupling (a DAC-paced named-pipe path
-fan-in -> RawFile pipe -> CamillaDSP -> File pipe -> outputd) was a default-off
-lab transport for low latency, never selected by ``--auto``, hardware-demoted by
-the 16 KiB Pi page floor, and superseded by ``shm_ring``. Its ``_arm`` /
-activation-gate branches and the ``JASPER_OUTPUTD_LOCAL_CONTENT_PIPE`` env
-plumbing are gone. A persisted ``transport_pipe`` value now FAILS SAFE to loopback
-(see :func:`reconcile_auto`, which converges it loudly).
-
 SINGLE WRITER. This module is the sole writer of the topology keys it owns:
 ``JASPER_FANIN_CAMILLA_COUPLING`` in ``/var/lib/jasper/fanin.env`` and the Ring B
 bridge keys in ``/var/lib/jasper/outputd.env``. The order-preserving single-key
@@ -139,8 +131,8 @@ AUDIO_HARDWARE_RECONCILE_UNIT = "jasper-audio-hardware-reconcile.service"
 # armed.
 UNSUPPORTED_COUPLING_BLOCK_REASON = "coupling_unsupported_for_route"
 
-# Legacy env key of the REMOVED ``transport_pipe`` coupling (the Camilla -> outputd
-# File playback pipe outputd used to read). Retained ONLY so the loopback/shm_ring
+# Legacy env key of a deleted coupling (the Camilla -> outputd File playback
+# pipe outputd read under it). Retained ONLY so the loopback/shm_ring
 # ``_outputd_actions`` branches can UNSET a stale value off a migrating box's
 # outputd.env (nothing writes it anymore; a stale value is inert but swept for
 # cleanliness). Not vocabulary — a one-way migration sweep target.
@@ -1095,8 +1087,8 @@ def _reconcile_coupling_inner(
 ) -> CouplingResult:
     """Make the live fan-in->Camilla coupling match ``desired_raw``, in order.
 
-    ``desired_raw`` is normalized by :func:`resolve_coupling` (unknown/typo, or the
-    removed ``transport_pipe``, -> loopback, fail-safe). Writes the persisted env,
+    ``desired_raw`` is normalized by :func:`resolve_coupling` (unknown/typo or a
+    deleted token -> loopback, fail-safe). Writes the persisted env,
     then runs the direction's ordered daemon ops:
 
     - ARM (-> shm_ring): restart outputd, restart fan-in, then reconcile camilla.
@@ -1621,17 +1613,17 @@ def reconcile_auto(
             detail=usb_latency_failure,
             level=logging.ERROR,
         )
-    # MIGRATION — a persisted REMOVED coupling value (the deleted transport_pipe,
-    # or any typo) is NOT a valid operator choice; the mode the operator picked no
+    # MIGRATION — a persisted REMOVED coupling value (a deleted token, or any
+    # typo) is NOT a valid operator choice; the mode the operator picked no
     # longer exists. Converge the box to loopback (the fail-safe rung) LOUDLY,
     # IGNORING the operator marker, so a migrating box never silently keeps a
     # deleted mode. ``resolve_coupling`` already fails such a value safe to loopback
     # at read time; this rewrites fanin.env so the file stops lying, sweeps the
     # legacy outputd pipe key, and runs the ordered disarm so a box that really
-    # armed transport_pipe (CamillaDSP on a RawFile config that crash-loops without
-    # a pipe writer) is recovered. Runs BEFORE the operator short-circuit for
-    # exactly this reason. The doctor's ``check_fanin_coupling_value`` surfaces the
-    # same condition until this pass runs.
+    # armed the deleted transport is recovered. Runs BEFORE the operator
+    # short-circuit for exactly this reason. The doctor's
+    # ``check_fanin_coupling_value`` surfaces the same condition until this
+    # pass runs.
     persisted_raw = read_value(fanin_snapshot.text, COUPLING_ENV_VAR)
     persisted_coupling_removed = coupling_value_removed(persisted_raw)
     if persisted_coupling_removed:
@@ -2025,7 +2017,7 @@ def _block_unsupported_coupling(
     ``shm_ring`` on a grouping-enabled box whose outputd dac_content lane is
     armed. Forces fan-in loopback + clears every
     reconciler-owned outputd content-source key (Ring B, plus a sweep of the legacy
-    transport_pipe key), so a previously-armed shm_ring box recovers rather than
+    pipe key), so a previously-armed shm_ring box recovers rather than
     stranding one transport end. A force-disarm off a LIVE shm_ring bridge leaves
     the same suppressed content-buffer floor an ordinary disarm does, so the
     recovery `_disarm` gets the same gated ``do_kick_hardware`` (see
@@ -2041,7 +2033,7 @@ def _block_unsupported_coupling(
     fanin_action = RuntimeEnvAction("set", COUPLING_ENV_VAR, COUPLING_LOOPBACK)
     fanin_new_text, fanin_changed = _apply_action(fanin_snapshot.text, fanin_action)
     # Clear ALL reconciler-owned outputd content-source keys (Ring B + the legacy
-    # transport_pipe sweep) for the loopback fallback, so the block never leaves
+    # pipe-key sweep) for the loopback fallback, so the block never leaves
     # outputd on a stale content source that fan-in's loopback coupling no longer
     # feeds.
     outputd_new_text, outputd_changed = _apply_actions(
@@ -5028,7 +5020,7 @@ def _recover_to_loopback(
     except OSError:
         existing_outputd = ""
     # Clear EVERY reconciler-owned outputd content-source key (Ring B
-    # bridge/path/slots, plus the legacy transport_pipe sweep) so a failed ring
+    # bridge/path/slots, plus the legacy pipe-key sweep) so a failed ring
     # arm never leaves a stale JASPER_OUTPUTD_CONTENT_BRIDGE=shm_ring pointing
     # outputd at a ring nobody writes. _outputd_actions(loopback) is the single
     # source of that set.
@@ -5254,9 +5246,9 @@ def _outputd_actions(coupling: str, outputd_text: str) -> tuple[RuntimeEnvAction
       lane.
 
     Every branch also UNSETS the legacy ``JASPER_OUTPUTD_LOCAL_CONTENT_PIPE`` key
-    (the removed transport_pipe coupling's outputd content source) — a one-way
-    migration sweep so a box that once armed transport_pipe converges clean on its
-    next reconcile (nothing writes the key anymore).
+    (a deleted coupling's outputd content source) — a one-way migration sweep so
+    a box that once armed it converges clean on its next reconcile (nothing
+    writes the key anymore).
 
     **The ring PATH converges from the endpoint MARKER, it is not preserved.**
     outputd enforces a biconditional between the two — the active ring file may
@@ -5336,8 +5328,8 @@ def _sync_process_env_for_emit(
     persisted ``fanin.env`` (which we wrote BEFORE calling this). shm_ring's
     capture/playback devices come from the coupling constant, not the env, so the
     coupling key alone drives the emit; the outputd ring keys below keep the
-    in-process env coherent for any other reader. The legacy transport_pipe outputd
-    key is popped on every branch (migration sweep).
+    in-process env coherent for any other reader. The legacy pipe outputd key is
+    popped on every branch (migration sweep).
 
     The ring PATH is taken from :func:`_outputd_ring_path_for`, the same single
     derivation the persisted write uses, so the in-process env can never carry a

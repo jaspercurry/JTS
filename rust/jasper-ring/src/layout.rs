@@ -49,8 +49,8 @@ pub const SAMPLE_FORMAT_S32LE: u32 = 2;
 pub const S16LE_BYTES_PER_SAMPLE: usize = 2;
 
 /// Prototype floor / ceiling on `n_slots`: 2 (ping-pong) through 16. 3 is the
-/// documented degraded widening; the ceiling was raised 4 -> 16 on 2026-07-02
-/// so the ALSA playback buffer (`n_slots * period_frames`) can clear
+/// documented degraded widening; the ceiling is 16 so the ALSA playback
+/// buffer (`n_slots * period_frames`) can clear
 /// CamillaDSP's negotiated buffer size and its `target_level` (see
 /// `c/jts-ring-ioplug/jts_ring_shm.h` `JTS_RING_MAX_SLOTS` — kept in lockstep,
 /// and `MAX_SHM_RING_SLOTS` in the outputd config).
@@ -471,8 +471,8 @@ mod tests {
         }
         .validate_self()
         .is_ok());
-        // The raised ceiling accepts the full 2..=16 slot range (regression for
-        // the 4 -> 16 bump that gives camilla's playback buffer enough depth).
+        // The ceiling accepts the full 2..=16 slot range, which gives camilla's
+        // playback buffer enough depth.
         assert!(Geometry { n_slots: 4, ..base }.validate_self().is_ok());
         assert!(Geometry {
             n_slots: MAX_N_SLOTS,

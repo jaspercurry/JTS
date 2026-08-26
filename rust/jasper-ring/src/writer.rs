@@ -11,8 +11,8 @@
 //! `jts_ring` ALSA ioplug (C). The SHM contract v1 header, offsets, seqs,
 //! heartbeats, and epoch are byte-identical to Ring B (see the [`crate`] module
 //! doc); only the direction of the data flow and which process owns each seq
-//! differ. This module adds the production writer half to the crate, which
-//! previously shipped only the reader ([`crate::RingReader`]) plus a test-only
+//! differ. This module is the crate's production writer half, alongside the
+//! reader ([`crate::RingReader`]) and the test-only
 //! [`crate::TestRingWriter`].
 //!
 //! `RingWriter` implements the EXACT publish discipline the C writer

@@ -967,7 +967,7 @@ def test_relay_run_and_consume_failure_releases_window(monkeypatch):
     """A phone-relay sync capture that fails must release the held measurement
     window (renderers/voice come back) and surface an error on /sync/status,
     rather than hang until the 240 s SESSION_MAX_S cap with a silent stuck
-    'measuring' session. Pins the resilience fix from the adversarial review."""
+    'measuring' session."""
     import asyncio
 
     import jasper.capture_relay.session as relay_session

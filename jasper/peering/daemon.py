@@ -91,8 +91,7 @@ logger = logging.getLogger(__name__)
 # fail-open WIN in the same tick as (or ahead of) the real decision —
 # a race between a stale fail-open WIN and the real StartSession/
 # StandDown. The fixed margin guarantees the real decision always
-# wins that race even at the maximum window. (Previously a hardcoded
-# 0.5 s == the 500 ms clamp ceiling, leaving zero margin — DA-0020.)
+# wins that race even at the maximum window.
 ARBITRATE_RPC_MARGIN_SEC = 0.15
 ARBITRATE_RPC_TIMEOUT_SEC = MAX_ARB_WINDOW_MS / 1000.0 + ARBITRATE_RPC_MARGIN_SEC
 

@@ -45,7 +45,7 @@ def test_resolve_coupling_accepts_explicit_transports_case_insensitive():
 
 
 def test_resolve_coupling_removed_transport_pipe_fails_safe_to_loopback():
-    # transport_pipe was REMOVED 2026-07-11; a migrating box's persisted value
+    # transport_pipe is a removed coupling token; a migrating box's persisted value
     # must fail safe to loopback, never crash or silently keep a deleted mode.
     assert resolve_coupling("transport_pipe") == COUPLING_LOOPBACK
     assert resolve_coupling(" TRANSPORT_PIPE ") == COUPLING_LOOPBACK

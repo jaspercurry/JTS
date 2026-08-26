@@ -1478,7 +1478,7 @@ install_systemd_units() {
     # usbsink dtoverlay (staged but inert until the wizard opts in). The units reference
     # /usr/bin/snapserver and /usr/bin/snapclient (Trixie's `snapserver`
     # / `snapclient` apt packages); installing those is the grouping
-    # OPT-IN's job — now IMPLEMENTED (it used to be a comment with no code):
+    # OPT-IN's job:
     # the grouping reconciler apt-installs them the first time grouping is
     # enabled (jasper.multiroom.provision.ensure_snapcast_installed), surfacing
     # "Installing Snapcast…" in /rooms via /state.grouping.provision. So a solo
@@ -1694,7 +1694,7 @@ install_systemd_units() {
     rm -rf -- "${install_transaction_dir:?}"
 
     # Exercise both cgroup protection slices now as well as enabling them for
-    # boot. jts-mic.slice used to be merely copied despite carrying [Install].
+    # boot — both carry [Install], so a copy alone is not enough.
     systemctl enable --now jts-audio.slice jts-mic.slice
 
     # Hardware-gated USB management network: enable the composite gadget (first

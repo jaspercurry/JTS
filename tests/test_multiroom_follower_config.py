@@ -872,8 +872,9 @@ def test_restore_refuses_candidate_when_reproof_has_no_graph(
 
 
 def test_precheck_fails_closed_on_unreadable_topology(monkeypatch, tmp_path) -> None:
-    """Critical (adversarial review): the re-proof must use the STRICT topology
-    loader. A corrupt/unreadable topology.json (the filesystem-loss class) must
+    """The re-proof must use the STRICT topology loader.
+
+    A corrupt/unreadable topology.json (the filesystem-loss class) must
     make precheck REFUSE to bond — not fall through to an empty draft where a
     flat full-range graph would re-prove allowed and reach the tweeter."""
     topology = _dual_apple_topology()
@@ -895,9 +896,9 @@ def test_precheck_fails_closed_on_unreadable_topology(monkeypatch, tmp_path) -> 
 def test_restore_fails_closed_on_unreadable_topology_never_loads(
     monkeypatch, tmp_path,
 ) -> None:
-    """Critical (adversarial review): on an unreadable topology, restore must NOT
-    re-prove against a fail-soft empty draft (where a flat stash would pass) —
-    it loads NOTHING and leaves CamillaDSP on its current safe graph."""
+    """On an unreadable topology, restore must NOT re-prove against a fail-soft
+    empty draft (where a flat stash would pass) — it loads NOTHING and leaves
+    CamillaDSP on its current safe graph."""
     monkeypatch.setattr(fc, "FOLLOWER_CONFIG_PATH", str(tmp_path / "grouping_follower.yml"))
     monkeypatch.setattr(fc, "FOLLOWER_PRIOR_STASH", str(tmp_path / "stash.txt"))
     monkeypatch.setattr(dsp_apply_mod, "apply_dsp_config", _fake_apply_dsp_config())

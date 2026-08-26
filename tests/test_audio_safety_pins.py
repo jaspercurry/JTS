@@ -55,8 +55,8 @@ REMOVED_TTS_CEILING_SYMBOLS = (REMOVED_TTS_MAX_SYMBOL, REMOVED_TTS_CLAMP_SYMBOL)
 #
 #   APPLY the policy to samples (3). A ceiling reintroduced at an
 #   application site never touches a policy module, so covering only the
-#   definers left these open — PR #2355 adversarial review, note N4:
-#   "a reintroduced fixed ceiling there would evade the ban pin".
+#   definers would leave a reintroduced fixed ceiling free to evade the
+#   ban pin.
 #
 #   CARRY the gain command (1). outputd's TTS bridge held
 #   `fallback_gain_db: MAX_TTS_GAIN_DB` until 6304556a4 removed it, and

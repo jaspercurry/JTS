@@ -154,16 +154,9 @@ BLOB_PULL_TRANSIENT_GRACE_S = STATUS_POLL_TRANSIENT_GRACE_S
 # because D10 keeps the hold itself — a session built without a prior apply
 # still gets the honest deferral — but no new design may depend on it.
 #
-# The history below is why the number is 30 and not 900, and it describes a
-# ruling that has since been REVERSED; read it as archaeology, not as current
-# behaviour. Owner ruling (2026-07-20): the human mid-flow Apply gate is gone
-# — the session auto-applied the candidate itself, so this hold covered only
-# the auto-apply TRANSACTION's own latency (a CamillaDSP set-config + confirm
-# round trip, typically well under a few seconds), not a human reading a
-# candidate and deciding whether to tap Apply. The budget shrank from the prior
-# 900 s (sized for a human review) to 30 s. The 2026-07-28 ruling restored the
-# human decision and moved it OUT of the session entirely (the untimed review
-# interlude on jts.local), which is why nothing holds for an apply now. Anyone
+# The 30 s figure is STALE: it was sized for an in-session auto-apply
+# transaction that no shipped plan performs (the human decision now happens
+# out of session, in the untimed review interlude on jts.local). Anyone
 # reviving this budget re-derives it against whatever it would then be holding
 # for.
 REVIEW_HOLD_BUDGET_S = 30.0
@@ -1477,11 +1470,8 @@ def run_capture_plan(
     :class:`CaptureBeginDeferred` instead of :class:`CaptureBeginRefused` for
     a NON-terminal "not yet" — e.g. the v2 crossover session's heterogeneous
     plan parked between MEASURE and VERIFY while its own auto-apply is in
-    flight (jasper.active_speaker.crossover_v2_flow). Read that example as
-    archaeology: the 2026-07-20 ruling it rested on was superseded by two-stage
-    T3, which moved the apply out of the session entirely — see
-    :data:`REVIEW_HOLD_BUDGET_S`'s comment above for why no shipped plan
-    reaches it. The Pi posts a
+    flight (jasper.active_speaker.crossover_v2_flow). No shipped plan reaches
+    that example any more — see :data:`REVIEW_HOLD_BUDGET_S`. The Pi posts a
     ``capture_deferred`` host event and stays in ``awaiting_begin`` with the
     attempt budget untouched, so the phone may retry the IDENTICAL
     ``begin_capture {index, attempt}``; unlike a refusal this never ends the

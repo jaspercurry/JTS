@@ -271,10 +271,10 @@ def test_airplay_renderer_prefers_live_fanin_output_delay(tmp_path: Path):
 def test_airplay_renderer_adds_no_content_bridge_term(tmp_path: Path):
     """The offset is CamillaDSP + fan-in + DAC only.
 
-    The deleted `rate_match` bridge used to contribute a fourth term (its
-    target fill). A box that still carries the stale env must get the SAME
-    offset as one that does not — otherwise the renderer would be compensating
-    for a hold that no longer happens, pushing AirPlay audio early.
+    No content bridge contributes a fourth term. A box that still carries a
+    stale bridge env must get the SAME offset as one that does not — otherwise
+    the renderer would compensate for a hold that never happens, pushing
+    AirPlay audio early.
     """
     camilla = """
         devices:

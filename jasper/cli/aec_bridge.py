@@ -25,11 +25,10 @@ version). AEC3 includes a frequency-domain residual echo
 suppressor + drift-tolerant delay estimator and runs at ~3-8% of
 one Pi 5 core. See docs/HANDOFF-aec.md for the full investigation.
 
-JTS previously read raw mic 0 (channel 2) but switched to channel
-1 on 2026-05-15 after confirming via XMOS primary docs that
-channels 2-5 bypass every chip DSP stage (no BF, NS, AGC, HPF,
-not even MIC_GAIN). The canonical XVF3800 voice-assistant capture
-is channel 0/1 — see HANDOFF-xvf3800.md §3.
+JTS reads channel 1: per XMOS primary docs, channels 2-5 bypass
+every chip DSP stage (no BF, NS, AGC, HPF, not even MIC_GAIN), and
+the canonical XVF3800 voice-assistant capture is channel 0/1 —
+see HANDOFF-xvf3800.md §3.
 
 Topology:
 
@@ -264,14 +263,12 @@ OUTPUTD_REF_UDP_PORT = 9891
 # and diagnostics all consume outputd's final speaker monitor, so they
 # all see the same reference contract.
 REF_SOURCE = "outputd_udp"
-# Retired reference source (U4 / P7-1). The bridge used to be able to
-# read the summed snd-aloop tap (`pcm.jasper_ref`) directly; that path is
-# gone and the tap itself is deleted later in the same arc. A box whose
-# /etc/jasper/jasper.env still carries the retired value — written there by
-# a pre-P7-1 reconciler while the bridge was parked — converges on the next
-# `jasper-aec-reconcile` run, so the bridge warns and uses REF_SOURCE
-# rather than refusing to start: a hard failure here would leave
-# jasper-voice with an unfed UDP mic and no wake detection.
+# Retired reference source: the summed snd-aloop tap (`pcm.jasper_ref`), whose
+# path and tap are both deleted. A box whose /etc/jasper/jasper.env still
+# carries this value converges on the next `jasper-aec-reconcile` run, so the
+# bridge warns and uses REF_SOURCE rather than refusing to start: a hard
+# failure here would leave jasper-voice with an unfed UDP mic and no wake
+# detection.
 RETIRED_REF_SOURCE_ALSA = "alsa"
 OUT_PORT_AEC3_SWEEP = {
     variant.leg: variant.default_port

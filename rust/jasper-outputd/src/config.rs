@@ -56,8 +56,8 @@ pub enum ContentBridgeMode {
 /// `content_bridge_mode == ShmRing`). Slot frames are NOT a separate env: the
 /// ring's `period_frames` is always outputd's `period_frames`, one less drift
 /// axis. `n_slots` defaults to 2 (ping-pong); 3 is the documented degraded
-/// widening, 4..=16 is negotiation headroom. The ceiling was raised 4 -> 16 on
-/// 2026-07-02 because CamillaDSP's playback BufferManager needs an ALSA buffer
+/// widening, 4..=16 is negotiation headroom. The ceiling is 16 because
+/// CamillaDSP's playback BufferManager needs an ALSA buffer
 /// (== `n_slots * period_frames`) that clears both its negotiated size
 /// (next_pow2(3*chunksize)) and its `target_level`; at 4 slots the 512-frame
 /// buffer was below both and the rate controller wound up into stall flapping.
@@ -124,16 +124,12 @@ impl ContentBridgeMode {
 
 /// Every spelling the REMOVED `rate_match` content bridge answered to.
 ///
-/// The rate-matched lab bridge (an i16 windowed-sinc resampler between the
-/// snd-aloop content capture and the DAC-paced output loop) was deleted after
-/// it failed the 2026-07-02 USB tuning; `shm_ring` is the frame-bounded
-/// transport that replaced its diagnostic value. A migrating box may still
-/// carry one of these spellings in `/var/lib/jasper/outputd.env`, so the parser
-/// fails SAFE to [`ContentBridgeMode::Direct`] and says so loudly rather than
+/// The bridge itself is gone (git history holds it); `shm_ring` is the
+/// frame-bounded transport that replaced it. A migrating box may still carry
+/// one of these spellings in `/var/lib/jasper/outputd.env`, so the parser fails
+/// SAFE to [`ContentBridgeMode::Direct`] and says so loudly rather than
 /// bailing — a deleted knob must never turn a routine deploy into a parked
-/// final-output owner (a silent speaker). Mirrors the `transport_pipe`
-/// removal (2026-07-11), whose persisted value likewise fail-safes to the
-/// byte-identical-to-today transport.
+/// final-output owner (a silent speaker).
 ///
 /// This is NOT permission to run the bridge: the route-latency policy
 /// (`jasper.audio_runtime_plan._route_policy_errors`) still REFUSES any
@@ -844,8 +840,7 @@ impl Config {
         // biconditional would therefore park a roleful box the moment its
         // coupling fell back to loopback, and re-running the hardware
         // reconciler would re-derive the marker and keep it parked. That state
-        // used to be "the documented rollback"; #2285 P2 retired the rollback
-        // and it is now the PARK a roleful box reaches when it is unarmed, which
+        // IS the PARK a roleful box reaches when it is unarmed, which
         // makes the scoping matter more, not less — parking it here would bury
         // the one doctor check that names the state. The incoherent-pair bail
         // above stays mode-independent, because a broken writer is broken under
@@ -2201,10 +2196,10 @@ mod tests {
 
     #[test]
     fn the_removed_rate_match_bridge_fails_safe_to_direct_on_every_spelling() {
-        // Legacy-cleanup contract (mirrors the `transport_pipe` removal): a box
-        // migrating with a persisted `rate_match` value in outputd.env must come
-        // up on `direct`, NOT bail. Bailing is exit 78 (EX_CONFIG), which parks
-        // the final-output owner — a silent speaker caused by a stale env line.
+        // Legacy-cleanup contract: a box migrating with a persisted
+        // `rate_match` value in outputd.env must come up on `direct`, NOT bail.
+        // Bailing is exit 78 (EX_CONFIG), which parks the final-output owner —
+        // a silent speaker caused by a stale env line.
         let mut checked = 0usize;
         for &spelling in REMOVED_RATE_MATCH_BRIDGE_SPELLINGS {
             with_env(&[("JASPER_OUTPUTD_CONTENT_BRIDGE", Some(spelling))], || {
@@ -2442,9 +2437,9 @@ mod tests {
 
     #[test]
     fn shm_ring_rejects_out_of_range_slots() {
-        // 17 is one past the ceiling (raised 4 -> 16 on 2026-07-02 so the ALSA
-        // playback buffer clears CamillaDSP's target_level); 1 is below the
-        // floor; 0 trips the generic env_u32 > 0 guard.
+        // 17 is one past the ceiling (16, so the ALSA playback buffer clears
+        // CamillaDSP's target_level); 1 is below the floor; 0 trips the
+        // generic env_u32 > 0 guard.
         for slots in ["1", "17", "0"] {
             with_env(
                 &[
@@ -2466,8 +2461,8 @@ mod tests {
 
     #[test]
     fn shm_ring_accepts_deep_buffer_slot_counts() {
-        // Regression for the 4 -> 16 ceiling bump: the counts that give
-        // camilla's playback buffer real depth (>= target_level) must parse.
+        // The counts that give camilla's playback buffer real depth
+        // (>= target_level) must parse.
         for slots in ["4", "8", "12", "16"] {
             with_env(
                 &[

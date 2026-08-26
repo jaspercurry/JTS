@@ -24,14 +24,9 @@
 //!
 //! # Provenance
 //!
-//! The interpolation math (the sinc/window coefficients, the table layout, the
-//! per-frame interpolation, the `i16` rounding) was originally lifted verbatim
-//! from `jasper-outputd`'s `content_bridge.rs`. That module (the `rate_match`
-//! content bridge) was deleted in the P5c cleanup; `jasper-fanin`'s
-//! `lane_resampler.rs` is the crate's sole resampling-algorithm consumer now.
-//! This is a Rust-only primitive — there
-//! is no cross-language binding or contract test in this repo (a prior
-//! C++/usbsink mirror + Python contract test were cut; see
+//! `jasper-fanin`'s `lane_resampler.rs` is the crate's sole
+//! resampling-algorithm consumer. This is a Rust-only primitive — there is no
+//! cross-language binding or contract test in this repo (see
 //! docs/RESEARCH-pipewire-low-latency.md). Silent math drift is caught by the
 //! in-crate `golden_vector_is_stable` regression test instead.
 //!
@@ -1067,11 +1062,9 @@ pub fn resample_i16(input: &[i16], channels: usize, ratio: f64, table: &SincTabl
 /// The golden contract fixture: one canonical deterministic input and the
 /// ratios the in-crate golden test pins [`resample_i16`]'s output at.
 ///
-/// Formerly a CROSS-LANGUAGE fixture, agreeing with the C++/usbsink
-/// `RateResampler.resample_block` to ≤1 LSB. Both that mirror and the Python
-/// contract test that drove it were cut, and with one implementation left the
-/// tolerance had no reason to exist — `golden_vector_is_stable` now asserts
-/// exact equality, which is what makes it a tripwire rather than a formality.
+/// With one implementation in tree there is no tolerance to hide behind:
+/// `golden_vector_is_stable` asserts EXACT equality, which is what makes it a
+/// tripwire rather than a formality.
 ///
 /// This is the SINGLE definition of the fixture — the in-crate golden test and
 /// the `golden_vector` example both reference it, so the two can never silently
