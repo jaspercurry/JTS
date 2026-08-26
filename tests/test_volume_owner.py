@@ -664,6 +664,33 @@ async def test_prove_is_atomic_against_a_duck_landing_mid_read():
     assert not (ducked_now and result is not None)
 
 
+async def test_a_refused_household_level_on_release_leaves_the_claim_held():
+    """A release that refuses must refuse having done NOTHING.
+
+    ``household_level_db`` is validated inside the lock, and the ledger change
+    is not undone if it fails. Deleting the claim first and validating second
+    strands a ducked — quiet — speaker: the holder believes it released, its
+    own restore has no claim left to give back, and the attenuation stands
+    until some later arbitration happens to repair it.
+
+    The claim survives intact, so the holder's ordinary release still works.
+    """
+    fader = _Fader()
+    owner = await _household(fader)
+    duck = await owner.acquire_duck(10.0)
+    fader.writes.clear()
+
+    with pytest.raises(VolumeClaimRefused):
+        await owner.release(duck, household_level_db="loud")
+
+    assert owner.holds(duck)
+    assert fader.writes == []
+    assert fader.db == pytest.approx(HOUSEHOLD_DB - 10.0)
+
+    await owner.release(duck)
+    assert fader.db == pytest.approx(HOUSEHOLD_DB)
+
+
 async def test_release_is_idempotent_and_safe_against_nothing_held():
     fader = _Fader()
     owner = await _household(fader)
