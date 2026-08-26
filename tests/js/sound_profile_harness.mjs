@@ -8011,6 +8011,44 @@ async function testDesignConflictPreservesUnsavedSafetyEdits() {
   return { designConflictPreservesUnsavedSafetyEdits: true };
 }
 
+// One cabinet, one driver per dongle: woofer on child A, tweeter on child B.
+function crossChildTopology(warnings = []) {
+  const topology = activeStereoTwoWayTopologyPayload();
+  topology.speaker_groups = [topology.speaker_groups[0]];
+  topology.speaker_groups[0].channels[1].physical_output_index = 2;
+  topology.routing = {
+    mono_group_id: null,
+    main_left_group_id: "left",
+    main_right_group_id: null,
+    subwoofer_group_ids: [],
+  };
+  topology.hardware.child_devices = [
+    { child_id: "left_dac", physical_output_indexes: [0, 1] },
+    { child_id: "right_dac", physical_output_indexes: [2, 3] },
+  ];
+  topology.evaluation = { status: "valid", warnings };
+  return topology;
+}
+
+function crossChildVerdict(message, groupLabel = "Left cabinet") {
+  return [{
+    severity: "warning",
+    code: "speaker_group_spans_child_devices",
+    message,
+    group_id: "left",
+    group_label: groupLabel,
+    child_ids: ["left_dac", "right_dac"],
+  }];
+}
+
+async function crossChildMapStepHtml(topology) {
+  const harness = setupHarness(baseFetch({
+    "./output-topology": () => Promise.resolve(response(topology)),
+  }));
+  await loadAndSetActiveState(harness);
+  return outputStepBodyHtml(harness.elements.get("view-body").innerHTML, "map");
+}
+
 // A speaker whose drivers land on two child DACs of a composite output device.
 // output_topology.cross_child_group_verdicts names this as a WARNING and the
 // save is accepted, so the ONLY thing that tells the household is this notice —
@@ -8018,45 +8056,13 @@ async function testDesignConflictPreservesUnsavedSafetyEdits() {
 // still reports green. Both halves matter: it must appear when the backend
 // sends the verdict, and it must stay away when it does not.
 async function testCrossChildSpeakerGroupIsDisclosedInTheMapStep() {
-  const crossChildTopology = () => {
-    const topology = activeStereoTwoWayTopologyPayload();
-    // One cabinet, one driver per dongle: woofer on child A, tweeter on child B.
-    topology.speaker_groups = [topology.speaker_groups[0]];
-    topology.speaker_groups[0].channels[1].physical_output_index = 2;
-    topology.routing = {
-      mono_group_id: null,
-      main_left_group_id: "left",
-      main_right_group_id: null,
-      subwoofer_group_ids: [],
-    };
-    topology.hardware.child_devices = [
-      { child_id: "left_dac", physical_output_indexes: [0, 1] },
-      { child_id: "right_dac", physical_output_indexes: [2, 3] },
-    ];
-    return topology;
-  };
-
-  const withVerdict = crossChildTopology();
-  withVerdict.evaluation = {
-    status: "valid",
-    warnings: [{
-      severity: "warning",
-      code: "speaker_group_spans_child_devices",
-      message: "Left cabinet is split across DACs left_dac, right_dac; keep " +
-        "every driver of one speaker on one DAC so its crossover does not " +
-        "straddle two uncorrected clocks",
-      group_id: "left",
-      group_label: "Left cabinet",
-      child_ids: ["left_dac", "right_dac"],
-    }],
-  };
-  let harness = setupHarness(baseFetch({
-    "./output-topology": () => Promise.resolve(response(withVerdict)),
-  }));
-  await loadAndSetActiveState(harness);
-  const disclosed = outputStepBodyHtml(
-    harness.elements.get("view-body").innerHTML, "map"
-  );
+  const disclosed = await crossChildMapStepHtml(crossChildTopology(
+    crossChildVerdict(
+      "Left cabinet is split across DACs left_dac, right_dac; keep every " +
+      "driver of one speaker on one DAC so its crossover does not straddle " +
+      "two uncorrected clocks"
+    )
+  ));
   if (!disclosed || !disclosed.includes("One speaker is split across two DACs")) {
     fail("cross-child verdict should be disclosed in the Confirm outputs step",
       { disclosed });
@@ -8071,21 +8077,43 @@ async function testCrossChildSpeakerGroupIsDisclosedInTheMapStep() {
       { disclosed });
   }
 
-  const clean = crossChildTopology();
-  clean.evaluation = { status: "valid", warnings: [] };
-  harness = setupHarness(baseFetch({
-    "./output-topology": () => Promise.resolve(response(clean)),
-  }));
-  await loadAndSetActiveState(harness);
-  const quiet = outputStepBodyHtml(
-    harness.elements.get("view-body").innerHTML, "map"
-  );
+  const quiet = await crossChildMapStepHtml(crossChildTopology());
   if (!quiet) fail("control render should still produce a map step", { quiet });
   if (quiet.includes("One speaker is split across two DACs")) {
     fail("cross-child notice must not render without the backend verdict",
       { quiet });
   }
   return { crossChildSpeakerGroupIsDisclosedInTheMapStep: true };
+}
+
+// renderIssueList is the shared innerHTML sink for every verdict message the
+// backend sends, and the cross-child notice above quotes a household-TYPED
+// speaker-group name inside that message. Free text reaching innerHTML: the
+// list item must carry entities, never live markup, or renaming a speaker
+// group turns into stored XSS on the Confirm-outputs step.
+async function testIssueListEscapesUntrustedVerdictMessages() {
+  const hostile = '</li></ul><script>alert("1" & \'x\')</script>';
+  const escaped = "&lt;/li&gt;&lt;/ul&gt;&lt;script&gt;" +
+    "alert(&quot;1&quot; &amp; &#39;x&#39;)&lt;/script&gt;";
+  const disclosed = await crossChildMapStepHtml(
+    crossChildTopology(crossChildVerdict(hostile, hostile))
+  );
+  if (!disclosed) {
+    fail("a hostile verdict must still render the map step", { disclosed });
+  }
+  // One exact string, so dropping escapeHtml from the message slot fails here
+  // even if the surrounding <li> is rebuilt.
+  const item = '<li class="active-speaker-issue active-speaker-issue--warning">' +
+    escaped + "</li>";
+  if (!disclosed.includes(item)) {
+    fail("an untrusted verdict message must render as an escaped list item",
+      { disclosed });
+  }
+  if (disclosed.includes(hostile) || disclosed.includes("<script>")) {
+    fail("an untrusted verdict message must never reach innerHTML as markup",
+      { disclosed });
+  }
+  return { issueListEscapesUntrustedVerdictMessages: true };
 }
 
 const results = [];
@@ -8571,5 +8599,6 @@ results.push(await testSafetyLimitsDeepLinkOpensTheComponentStep());
 results.push(await testCombinedTestCardAgreesWithItsDisabledButton());
 results.push(await testFailedCombinedTestBannerCarriesTheRemedy());
 results.push(await testCrossChildSpeakerGroupIsDisclosedInTheMapStep());
+results.push(await testIssueListEscapesUntrustedVerdictMessages());
 
 console.log(JSON.stringify(Object.assign({ results }, liveTabResult)));
