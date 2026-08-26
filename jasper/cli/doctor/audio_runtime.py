@@ -1386,6 +1386,7 @@ def check_route_latency_evidence() -> CheckResult:
         f"duration_seconds={summary.get('duration_seconds')}, "
         f"certified={summary.get('certified_percentiles')}, "
         f"config_match={summary.get('config_match')}, "
+        f"artifact_hash={summary.get('route_config_hash')}, "
         f"issues={summary.get('issues')}, "
         f"artifact={summary.get('artifact_path')}"
     )
@@ -1416,11 +1417,9 @@ def check_route_latency_evidence() -> CheckResult:
             detail += f", live_issues={list(live_issues)}"
     if status == "pass":
         return CheckResult("route latency evidence", "ok", detail)
-    if status == "warn":
-        return CheckResult("route latency evidence", "warn", detail)
     return CheckResult(
         "route latency evidence",
-        "fail",
+        "warn" if status == "warn" else "fail",
         detail + "; Run route-latency validation for usb_low_latency_48k; "
         "p95 must be "
         f"<={ROUTE_LATENCY_P95_BUDGET_MS:g} ms with >=200 impulses over >=5 minutes, "

@@ -18,6 +18,13 @@ from .fanin.status import DIRECT_HEALTH_CAPTURING, DIRECT_HEALTH_IDLE
 
 ROUTE_LATENCY_P95_MIN_DURATION_SECONDS = 5 * 60
 ROUTE_LATENCY_P99_MIN_DURATION_SECONDS = 30 * 60
+ROUTE_LATENCY_RERUN_ACTION = "run_route_latency_validation"
+#: Codes about the PROOF's validity, not a measured breach; artifact staleness
+#: and clock skew arrive here as config_mismatch. Disclosed, never failed —
+#: ADR-0101.
+ROUTE_LATENCY_DISCLOSURE_ISSUES = frozenset(
+    {"config_mismatch", "p95_uncertified", "p99_uncertified"}
+)
 JsonValue = None | bool | int | float | str | list["JsonValue"] | dict[str, "JsonValue"]
 
 
@@ -100,6 +107,8 @@ def route_latency_gate_status(
         issues.append("p95_uncertified")
 
     if issues:
+        if all(issue in ROUTE_LATENCY_DISCLOSURE_ISSUES for issue in issues):
+            return "warn", ROUTE_LATENCY_RERUN_ACTION, certified, tuple(issues)
         return "fail", "fix_route_latency_before_claim", certified, tuple(issues)
 
     if p99_ms is None:

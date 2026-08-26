@@ -238,6 +238,31 @@ def test_route_latency_gate_status_pass_warn_fail_boundaries():
     assert issues == ("p99_spacing_unverified",)
 
 
+def test_route_latency_short_run_discloses_measured_in_budget_p95():
+    # ADR-0101: too few impulses to certify p95 is a statement about the RUN,
+    # not about the route. A measured-in-budget p95 discloses and keeps the
+    # claim; a measured breach on the same short run still fails.
+    status, recommendation, certified, issues = route_latency_gate_status(
+        p95_ms=38.0,
+        p99_ms=None,
+        sample_count=50,
+        duration_seconds=60,
+    )
+    assert status == "warn"
+    assert certified == ()
+    assert issues == ("p95_uncertified",)
+    assert recommendation == audio_validation.ROUTE_LATENCY_RERUN_ACTION
+
+    status, _rec, _certified, issues = route_latency_gate_status(
+        p95_ms=41.0,
+        p99_ms=None,
+        sample_count=50,
+        duration_seconds=60,
+    )
+    assert status == "fail"
+    assert "p95_exceeds_40ms" in issues
+
+
 def test_route_latency_issue_codes_follow_budget_constants(monkeypatch):
     route = audio_validation.audio_validation_route
     monkeypatch.setattr(route, "ROUTE_LATENCY_P95_BUDGET_MS", 37.5)
@@ -490,7 +515,9 @@ def test_route_live_state_issues_allows_only_explicit_idle_unlock_when_requested
     ) == ("live_fanin_resampler_mismatch:usbsink:target_fill_frames",)
 
 
-def test_assess_route_latency_artifact_fails_mismatched_hash(tmp_path):
+def test_assess_route_latency_artifact_discloses_mismatched_hash(tmp_path):
+    # ADR-0101: the route config moved under a passing proof. That is a
+    # disclosure naming both hashes, not a failed claim.
     artifact = make_route_latency_artifact(
         route_id="usb_low_latency_48k",
         source_id="usbsink",
@@ -507,12 +534,15 @@ def test_assess_route_latency_artifact_fails_mismatched_hash(tmp_path):
 
     summary = assess_route_latency_artifact(result, route_config_hash="new")
 
-    assert summary["status"] == "fail"
+    assert summary["status"] == "warn"
     assert summary["config_match"] is False
     assert "config_mismatch" in summary["issues"]
+    assert summary["route_config_hash"] == "old"
+    assert summary["expected_route_config_hash"] == "new"
+    assert summary["recommendation"] == audio_validation.ROUTE_LATENCY_RERUN_ACTION
 
 
-def test_assess_route_latency_artifact_fails_identity_mismatch(tmp_path):
+def test_assess_route_latency_artifact_discloses_identity_mismatch(tmp_path):
     artifact = make_route_latency_artifact(
         route_id="usb_low_latency_48k",
         source_id="usbsink",
@@ -551,7 +581,7 @@ def test_assess_route_latency_artifact_fails_identity_mismatch(tmp_path):
         },
     )
 
-    assert summary["status"] == "fail"
+    assert summary["status"] == "warn"
     assert summary["config_match"] is False
     assert "identity_mismatch:camilla_config_hash" in summary["issues"]
 
@@ -592,7 +622,22 @@ def test_assess_route_latency_artifact_rejects_missing_negotiated_buffer(tmp_pat
     )
 
 
-def test_route_latency_artifact_uses_fresh_24h_window(tmp_path):
+@pytest.mark.parametrize(
+    ("now", "expected_state", "expected_issue"),
+    [
+        (NOW + timedelta(hours=25), "stale", "artifact_stale"),
+        (NOW - timedelta(hours=1), "future", "artifact_from_future"),
+    ],
+)
+def test_route_latency_proof_validity_discloses_instead_of_failing(
+    tmp_path,
+    now,
+    expected_state,
+    expected_issue,
+):
+    # ADR-0101: the 24h window and the host clock are proof-validity facts. A
+    # measured-in-budget run that aged out or was stamped by a skewed clock
+    # discloses with its token and the rerun action; it does not fail.
     artifact = make_route_latency_artifact(
         route_id="usb_low_latency_48k",
         source_id="usbsink",
@@ -608,15 +653,16 @@ def test_route_latency_artifact_uses_fresh_24h_window(tmp_path):
     path = write_artifact(artifact, directory=tmp_path)
     result = load_artifact(
         path,
-        now=NOW + timedelta(hours=25),
+        now=now,
         max_age=audio_validation.ROUTE_LATENCY_STALE_AFTER,
     )
 
     summary = assess_route_latency_artifact(result, route_config_hash="same")
 
-    assert result.state == "stale"
-    assert summary["status"] == "fail"
-    assert "artifact_stale" in summary["issues"]
+    assert result.state == expected_state
+    assert summary["status"] == "warn"
+    assert expected_issue in summary["issues"]
+    assert summary["recommendation"] == audio_validation.ROUTE_LATENCY_RERUN_ACTION
 
 
 def test_assess_route_latency_artifact_preserves_route_health_anomaly(tmp_path):

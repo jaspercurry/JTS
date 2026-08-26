@@ -209,6 +209,7 @@ def make_artifact(
 
 from . import audio_validation_route as audio_validation_route
 from .audio_validation_route import (
+    ROUTE_LATENCY_RERUN_ACTION as ROUTE_LATENCY_RERUN_ACTION,
     _fanin_input_status as _fanin_input_status,
     _int_or_none as _int_or_none,
     _mapping_or_empty as _mapping_or_empty,
@@ -390,14 +391,15 @@ def assess_route_latency_artifact(
             )
         )
     )
-    if result.state != "loaded":
+    # ADR-0101: an aged-out or clock-skewed proof still ran, and reaches the
+    # gate above as config_mismatch, so its verdict is already a disclosing warn.
+    if result.state == "stale":
+        issues = tuple(dict.fromkeys((*issues, "artifact_stale")))
+    elif result.state == "future":
+        issues = tuple(dict.fromkeys((*issues, "artifact_from_future")))
+    elif result.state != "loaded":
         status = "fail"
-        if result.state == "stale":
-            issues = tuple(dict.fromkeys((*issues, "artifact_stale")))
-        elif result.state == "future":
-            issues = tuple(dict.fromkeys((*issues, "artifact_from_future")))
-        else:
-            issues = tuple(dict.fromkeys((*issues, result.state)))
+        issues = tuple(dict.fromkeys((*issues, result.state)))
     return {
         "state": result.state,
         "status": status,
