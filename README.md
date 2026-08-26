@@ -1223,14 +1223,10 @@ reference. Currently:
   narrative (near-field/null-depth measurement triad, Wave 1-3
   nine-state receipt lifecycle) is preserved as a historical appendix.
 - [`HANDOFF-distributed-active.md`](docs/HANDOFF-distributed-active.md) —
-  **Design-of-record (proposed 2026-06-20)** for running an active
-  speaker's driver-domain crossover (Layer A) as a wireless **follower**,
-  while the leader owns the program domain (room correction + preference
-  EQ) and streams the corrected stereo program. Owns the
-  distributed-active boundary the graph-carrier doc defers: the
-  CamillaDSP-re-entry follower engine, the role/capture contract, the
-  follower-409 narrowing, the local-vs-wireless subwoofer split, the
-  fail-closed/clock-domain safety story, and the safest-first slice plan.
+  Operational spine for an active speaker's Layer-A crossover across a
+  wireless pair (follower landed, leader's on-device bring-up owed);
+  decisions in ADR-0122–0126, June 2026 bring-up evidence in
+  [`historical/distributed-active-bringup-2026-06.md`](docs/historical/distributed-active-bringup-2026-06.md).
 - [`active-crossover-information-design.md`](docs/active-crossover-information-design.md)
   — **Product and architecture design of record** for the active crossover
   builder: first-class manual control, calibrated-microphone automatic tuning,
