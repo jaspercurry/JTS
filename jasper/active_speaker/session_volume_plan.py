@@ -864,10 +864,14 @@ class SessionVolumePlan:
         writing the marker (read-only or full ``/var/lib/jasper``), raised out
         of here with the plan still ``active``, ``_opened_this_process`` still
         true and ``measurement_volume_db`` intact — so :meth:`assert_ready`
-        passed and :meth:`hold_measurement_volume` would command the declared
-        volume onto a speaker sitting at the emergency floor. Measured at
-        −60.0 → −12.5: **+47.5 dB**. Clearing first means the very next reader,
-        including that hold, sees a plan that owns nothing.
+        passed and the plan still named the declared volume onto a speaker
+        sitting at the emergency floor. Measured at −60.0 → −12.5: **+47.5
+        dB**. Clearing first means the very next reader sees a plan that owns
+        nothing. The reader that could still WRITE that number is
+        :meth:`owned_measurement_volume_db_nowait`, which feeds the swap's
+        release reference; :meth:`hold_measurement_volume` no longer writes at
+        all, so through it the same stale answer now refuses a capture instead
+        of raising the fader.
 
         The persist is then guarded exactly as :meth:`_mark_unresolved` guards
         its own, and for the mirror-image reason. There the prior intent
@@ -968,7 +972,6 @@ class SessionVolumePlan:
 
     async def hold_measurement_volume(
         self,
-        set_main_volume_db: SetMainVolumeDb,
         get_main_volume_db: GetMainVolumeDb,
         *,
         context: str = "",
@@ -999,9 +1002,10 @@ class SessionVolumePlan:
         second owner.
 
         Raises :class:`~jasper.active_speaker.volume_latch.MeasurementFaderDrift`
-        when a drifted fader could not be repaired and re-proven — the caller
+        when the fader cannot be proven at the declared level — the caller
         refuses the capture rather than banking a measurement taken at an
-        unknown level.
+        unknown level. The hold does not write: :meth:`open` established the
+        level, and a second writer per stimulus is what wave 5 removes.
 
         **Under the restore lock**, which is the whole reason this lives on the
         plan rather than at the capture seam. ``_mark_unresolved`` copies
@@ -1024,7 +1028,7 @@ class SessionVolumePlan:
             if volume is None:
                 return None
             return await hold_fader_at(
-                volume, set_main_volume_db, get_main_volume_db, context=context,
+                volume, get_main_volume_db, context=context,
             )
 
     def _owned_volume_db_now(self) -> float | None:

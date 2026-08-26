@@ -125,8 +125,9 @@ async def _duck_release_target_db(
     off the declared level, which is the whole defect this parameter exists to
     remove. A crossover-v2 session holds the speaker at a volume its
     excitation-safety ledger admitted the program against; releasing to the
-    household level instead left every routed capture's fader wrong until the
-    per-stimulus hold repaired it.
+    household level instead left every routed capture's fader wrong at the
+    per-stimulus hold — which, since wave 5, refuses the capture rather than
+    writing the level back.
 
     **It is a reader rather than a number because the answer can change while
     the swap is in flight.** The bracket spans seconds, and a measurement

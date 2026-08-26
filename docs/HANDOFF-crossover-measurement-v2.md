@@ -1219,7 +1219,9 @@ nothing outside those was re-read.
 Last verified: 2026-08-24 (#2929 — the fader-hold block was re-read against the
 shipped code and CORRECTED, because #2925 had recorded the wrong mechanism for
 it: item 1's mechanism and its acceptance criterion (now two lines read
-together, `result=held` plus zero repair pairs), item 4's racing-writer bound
+together, `result=held` plus zero `result=disagreed` lines — wave 5 removed the
+hold's repair write, so what used to be a repair PAIR is now a single
+disagreement line before a refusal), item 4's racing-writer bound
 (neither shape is bounded; the second `min` operand is `current + |depth|`),
 the `measurement_volume_drift` row's closing clause, and the
 capture-provenance section's retention note. Every claim in them was written

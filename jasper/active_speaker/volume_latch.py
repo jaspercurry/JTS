@@ -22,8 +22,8 @@ only the fader primitives are genuinely shared:
 * :func:`read_fader_db` — the ONE "a usable number, or nothing" normalization.
 * :func:`set_and_confirm_volume` — set, then prove through a fresh readback.
 * :func:`hold_fader_at` — prove the fader still sits where a
-  measurement session declared it, repairing a drift and refusing when the
-  repair cannot be proven (issue #2925).
+  measurement session declared it, refusing the capture when it does not
+  (issue #2925). It reads; it never writes.
 
 **Why "hold" exists (#2925).** Setting a volume once is not the same as it
 STAYING set. A crossover-v2 stimulus is bracketed in a graph load/restore pair,
@@ -57,9 +57,10 @@ which is what identified the real writer. #2929 gives the swap an explicit
 release reference (the level the session plan owns), so the fader now lands on
 the declared volume by construction.
 
-That makes this hold a TRIPWIRE rather than a repair: in a healthy routed
-session it reads in tolerance and writes nothing. A ``repairing`` line is now
-an anomaly worth investigating, not the steady state.
+That is what let wave 5 make the hold a TRIPWIRE and nothing else: it reads,
+and it never writes. In a healthy routed session it reads in tolerance. A
+``disagreed`` line is an anomaly worth investigating, and the capture that
+follows it is refused rather than fought for.
 """
 
 from __future__ import annotations
@@ -104,7 +105,7 @@ class MeasurementFaderDrift(RuntimeError):
     """The main fader is not at the volume a measurement session declared.
 
     Raised by :func:`hold_fader_at` when a drifted fader could not be
-    repaired and re-proven. It is a REFUSAL, not a report: the caller must not
+    proven at the declared level. It is a REFUSAL, not a report: the caller must not
     emit the stimulus, because a capture taken at an unknown level is not a
     measurement and the excitation-safety ledger that admitted the program was
     computed against the declared volume, not this one.
@@ -197,13 +198,12 @@ async def set_and_confirm_volume(
 
 async def hold_fader_at(
     expected_db: float,
-    set_main_volume_db: SetMainVolumeDb,
     get_main_volume_db: GetMainVolumeDb,
     *,
     context: str = "",
     tolerance_db: float = READBACK_TOLERANCE_DB,
 ) -> float:
-    """Prove the fader is at ``expected_db``; repair one drift, then refuse.
+    """Prove the fader is at ``expected_db``, or refuse. It never writes.
 
     The per-stimulus half of the measurement-volume discipline (#2925 T1-1),
     and the ONE implementation both the routed MEASURE path and the summed
@@ -213,45 +213,33 @@ async def hold_fader_at(
     :meth:`~jasper.active_speaker.session_volume_plan.SessionVolumePlan.hold_measurement_volume`'s
     question, and that is what a capture path calls.
 
+    **It proves; it does not repair.** Establishing the measurement volume is
+    :meth:`~jasper.active_speaker.session_volume_plan.SessionVolumePlan.open`'s
+    job, done once per session with set-and-confirm. A per-stimulus repair here
+    was a SECOND writer moving the fader behind the session's back, which is
+    what wave 5 collapses; and since #2929's release reference lands each swap
+    on the declared level, the drift it used to paper over is largely gone.
+    What is left is a foreign writer moving the fader mid-session — and the
+    honest answer to that is to refuse the capture, not to fight for the fader.
+
     Order, all fail-closed:
 
     1. Read the live fader. An unreadable read is treated as a disagreement,
-       so it takes the repair branch rather than passing.
+       so it does not pass.
     2. Already within ``tolerance_db``: return it. The happy path costs one
-       read and writes nothing, so the hold cannot itself become a source of
-       volume churn.
-    3. Otherwise DISCLOSE at WARNING — naming what was read, what was expected
-       and the gap, or recording an empty reading when there was none. The
-       repair below would otherwise be silent, and a silently repaired fader is
-       how a whole campaign of stimuli can play at the wrong level without one
-       line of evidence. Then set-and-confirm ``expected_db`` and prove it
-       through a further INDEPENDENT read.
+       read and writes nothing.
+    3. Otherwise take a further INDEPENDENT read. A single failed or racing
+       round-trip is not a level that cannot be established, and this is also
+       what keeps ``observed_db`` a reading JTS actually took.
     4. Still not there: raise :class:`MeasurementFaderDrift`. The caller refuses
-       the capture rather than banking it. A read that failed once and answers
-       after the set HAS established the level, and is allowed through —
-       disclose, never force; the refusal is for a level that cannot be
-       established, not for one round-trip that missed.
+       the capture rather than banking it.
 
-    **What the refusal line does and does not tell a support read.**
-    ``observed_db`` is empty ONLY when the fader could not be read — that is
-    the one clean discriminator, and it is a real reading rather than an
-    inference because the proving re-read above is unconditional.
-    ``set_confirmed`` is the SET-AND-CONFIRM's verdict, not the setter's, so on
-    a refusal it is normally ``false`` and does NOT separate "the setter
-    refused" from "the setter reported success and the fader did not move";
-    those two share a line. It earns its place for the opposite case:
-    ``set_confirmed=true`` on a refusal means the repair WAS confirmed at the
-    target and the fader moved again before the proving read — something is
-    contending for it in real time, which is a different problem from either.
+    **What the refusal line tells a support read.** ``observed_db`` is empty
+    ONLY when the fader could not be read — that is the one clean
+    discriminator, and it is a real reading rather than an inference because
+    the proving re-read above is unconditional.
 
     Returns the proven fader reading.
-
-    ``expected_db`` is not range-checked here. It is a *target* this function
-    only ever moves the fader TO, and it is already bounded twice: unavoidably
-    by ``jasper.camilla``, which clamps every write to ``MAX_MAIN_VOLUME_DB``
-    (0.0 dB), and — for the one caller today — by ``SessionVolumePlan.open``,
-    which refuses a non-finite or positive measurement volume before there is
-    anything to hold. A third check here would be a third owner of one rule.
     """
 
     target = float(expected_db)
@@ -287,25 +275,19 @@ async def hold_fader_at(
         logger,
         "active_speaker.measurement_fader_drift",
         level=logging.WARNING,
-        result="repairing",
+        result="disagreed",
         context=context,
         expected_db=f"{target:.6f}",
         observed_db="" if observed is None else f"{observed:.6f}",
         delta_db="" if observed is None else f"{observed - target:.6f}",
         tolerance_db=f"{float(tolerance_db):.6f}",
     )
-    repaired = await set_and_confirm_volume(
-        target, set_main_volume_db, get_main_volume_db, tolerance_db=tolerance_db,
-    )
-    # UNCONDITIONAL, even when set-and-confirm reported failure. Two reasons,
-    # and the first is the one that matters: the refusal's ``observed_db`` is
-    # the only thing distinguishing "the fader read fine and would not move"
-    # from "the fader could not be read", and short-circuiting here reported
-    # the second for both — stating an observation JTS never made, which is
-    # the ``locate_failed`` #2085 class this whole change exists to close.
-    # Second, the PROOF is where the fader actually sits, not what the setter
-    # returned: if it is at the target anyway, the level is established. Costs
-    # one extra read only on the already-failing path.
+    # UNCONDITIONAL. The refusal's ``observed_db`` is the only thing
+    # distinguishing "the fader read fine and is at the wrong level" from "the
+    # fader could not be read", and reporting the first read's outcome for both
+    # states an observation JTS never made — the ``locate_failed`` #2085 class
+    # this whole discipline exists to close. It is also a second chance for a
+    # round-trip that failed or raced, so one missed read is not a refusal.
     proven = await read_fader_db(get_main_volume_db)
     if proven is None or not fader_matches(
         proven, target, tolerance_db=tolerance_db
@@ -318,7 +300,6 @@ async def hold_fader_at(
             context=context,
             expected_db=f"{target:.6f}",
             observed_db="" if proven is None else f"{proven:.6f}",
-            set_confirmed=repaired,
         )
         raise MeasurementFaderDrift(
             expected_db=target, observed_db=proven, context=context,
@@ -327,9 +308,10 @@ async def hold_fader_at(
         logger,
         "active_speaker.measurement_fader_drift",
         level=logging.WARNING,
-        result="repaired",
+        result="held",
         context=context,
         expected_db=f"{target:.6f}",
         observed_db=f"{proven:.6f}",
+        reread="true",
     )
     return proven

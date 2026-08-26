@@ -3090,6 +3090,31 @@ def _real_controller(client: _MinimalCamillaClient, tmp_path):
     return cam
 
 
+def test_the_swap_duck_is_deeper_than_the_reconciler_skip():
+    """The coupling between the two constants, stated AS an inequality.
+
+    `test_reconciler_leaves_a_graph_swap_duck_alone` below proves the
+    behaviour end to end, but a reader grepping either constant finds no
+    statement that they are related at all, and concludes NOT PINNED. This is
+    that statement.
+
+    The reason survives wave 5's reconciler question: the 1 Hz reconciler
+    (W3) is KEPT, because it is the only thing that walks a fader back after
+    `jasper-web` idle-exits holding a claim, and it retires only behind
+    durable short-lived-process claims (#3038). It is cross-process and takes
+    no DSP writer lock, so the ONLY thing keeping it from writing the fader
+    back up mid-swap is that the swap duck is deep enough to read as
+    somebody's duck.
+    """
+    from jasper import camilla as camilla_module
+    from jasper import volume_coordinator as coordinator_module
+
+    assert (
+        camilla_module.GRAPH_SWAP_DUCK_DB
+        > coordinator_module.RECONCILE_DUCK_SKIP_DB
+    )
+
+
 async def test_reconciler_leaves_a_graph_swap_duck_alone(tmp_path, monkeypatch):
     """The reconciler is cross-process and takes no DSP writer lock, so the
     bracket survives its 1 Hz tick only by riding `RECONCILE_DUCK_SKIP_DB`.

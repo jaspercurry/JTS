@@ -155,24 +155,21 @@ class _FakePlan:
         return None
 
     async def hold_measurement_volume(
-        self, set_main_volume_db: Any, get_main_volume_db: Any, *, context: str = "",
+        self, get_main_volume_db: Any, *, context: str = "",
     ) -> float | None:
         """The play path re-proves the declared volume per stimulus (#2925).
 
         Delegating to the real primitive rather than stubbing it keeps these
         provenance tests honest about what a capture's ``main_volume_db`` can
-        be: the fader has just been proven at the declared volume when this
-        record is observed.
+        be: a record only exists at all when the fader was proven at the
+        declared volume, because the hold refuses the capture otherwise.
         """
         from jasper.active_speaker.volume_latch import hold_fader_at
 
         if self.measurement_volume_db is None:
             return None
         return await hold_fader_at(
-            self.measurement_volume_db,
-            set_main_volume_db,
-            get_main_volume_db,
-            context=context,
+            self.measurement_volume_db, get_main_volume_db, context=context,
         )
 
 
@@ -536,20 +533,20 @@ def _reset_volume_plan():
 def test_retained_sidecar_carries_the_provenance_block(monkeypatch, tmp_path):
     """The night's fader and session volume ride the clip, not the journal.
 
-    The fader starts at the household −27.5 while the plan declares −20.0 —
-    the 2026-08-24 shape (#2925). The play path's hold repairs it BEFORE the
-    stimulus, so what the clip carries is the level the capture was actually
-    taken at, and the two fields agree because the hold made them agree.
+    The fader is at the declared −20.0, so the play path's hold PROVES it and
+    the capture happens. What the clip carries is the level the capture was
+    actually taken at, and the two fields agree because a capture that reached
+    retention is by construction one whose fader was proven — the hold refuses
+    rather than writing when it is not (#2925).
     """
-    cam = _FakeCam(volume_db=-27.5)
+    cam = _FakeCam(volume_db=-20.0)
     sidecar = _drive_one_capture(
         monkeypatch, tmp_path, phase=PHASE_CHECK, cam=cam,
     )
     assert sidecar is not None
     provenance = sidecar["provenance"]
-    assert cam.volume_writes == [-20.0], (
-        "the drifted fader must be re-asserted to the declared measurement "
-        "volume before any audio, not recorded as-found"
+    assert cam.volume_writes == [], (
+        "the hold proves the declared measurement volume; it never writes it"
     )
     assert provenance["main_volume_db"] == -20.0
     assert provenance["session_volume_db"] == -20.0
@@ -572,11 +569,15 @@ def test_two_captures_share_a_config_path_and_still_report_different_graphs(
     that did (or did not) perform the swap, so the two differ; the running
     graph's own fingerprint differs alongside it as corroboration.
     """
+    # Both faders sit at the declared measurement volume, so neither capture is
+    # refused by the play path's hold and both reach retention.
     routed = _drive_one_capture(
-        monkeypatch, tmp_path / "routed", phase=PHASE_CHECK, cam=_FakeCam(),
+        monkeypatch, tmp_path / "routed", phase=PHASE_CHECK,
+        cam=_FakeCam(volume_db=-20.0),
     )
     summed = _drive_one_capture(
-        monkeypatch, tmp_path / "summed", phase=PHASE_VERIFY, cam=_FakeCam(),
+        monkeypatch, tmp_path / "summed", phase=PHASE_VERIFY,
+        cam=_FakeCam(volume_db=-20.0),
     )
     assert routed is not None and summed is not None
 
