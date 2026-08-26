@@ -1,9 +1,15 @@
 # HANDOFF — NYC transit integrations
 
-Canonical reference for the runtime ownership and resilience contracts of
-the subway, Citi Bike, and Google Routes transit paths. The `/transit/`
-wizard owns their saved configuration; provider modules own discovery and
-client construction; runtime clients own live-data parsing and caching.
+Operational spine for the subway, Citi Bike, and Google Routes paths: who
+owns configuration, what each runtime client guarantees when its upstream
+misbehaves, and where the answer shapes live. The `/transit/` wizard owns
+saved configuration; provider modules own discovery and client construction;
+runtime clients own live-data parsing and caching.
+
+Design record (why GBFS, prior art, the add-another-network recipe, the
+deferred UX questions):
+[historical/citibike-transit-design-notes-2026-05.md](historical/citibike-transit-design-notes-2026-05.md).
+Per-network provider modules are [ADR-0167](adr/0167-each-transit-network-is-its-own-provider-module.md).
 
 ## NYC subway: primary API plus direct fallback
 
@@ -12,7 +18,8 @@ endpoint aggregates all seven MTA feeds and therefore sees rerouted trains.
 When that request fails, JTS polls the relevant public MTA GTFS-Realtime feed
 directly. The fallback deliberately sees only the configured station's
 CSV-documented lines; that reroute limitation is the documented degradation,
-not an accidental parser difference.
+not an accidental parser difference. The tool response reports
+`source="subwaynow"` or `source="mta-gtfs"`.
 
 The fallback parses standard GTFS-Realtime wire fields with
 `gtfs-realtime-bindings`. JTS defines only MTA extension field 1001's
@@ -23,361 +30,132 @@ MTA's established prefix-tolerant contract. JTS does not depend on
 `nyct-gtfs`: that package's stale generated bindings hard-pin the unsupported
 protobuf 4.25.3 runtime.
 
-The tool response reports `source="subwaynow"` or `source="mta-gtfs"`.
-`tests/test_subway.py` pins the fallback with a reduced recording of real MTA
-wire bytes, duplicate-trip identity coverage, stale-feed rejection, and
-primary-to-fallback behavior. The detailed response contract and feed-group
-map remain closest to their implementation in `jasper/subway.py` and
-`jasper/tools/subway.py`.
+The detailed response contract and feed-group map stay closest to their
+implementation, in `jasper.subway` and `jasper.tools.subway`.
 
 ## Citi Bike
 
-## What it does
+One voice tool, `get_citibike_status`, answers "what's the Citi Bike
+situation", "any e-bikes at Atlantic Avenue", "are there docks open near
+home". Responses split classic (pedal-only) from e-bikes — the distinction is
+operational: e-bikes need charge, are priced differently, and skip the hill.
+Open docks are one number; the split doesn't apply on return.
 
-One voice tool, `get_citibike_status`, that answers questions like:
+**The LLM-visible response shape is the docstring on
+`make_citibike_tools` in `jasper.tools.citibike`** — per-station fields,
+the omit-on-`ebike_only_mode` rule, and the voice answer style live there,
+next to the schema the model actually sees. Don't restate it here.
 
-- "What's the Citi Bike situation?"
-- "Any bikes at 9 Av?"
-- "Any e-bikes at Atlantic Avenue?"
-- "Are there docks open near home?"
-
-Responses split classic (pedal-only) bikes from e-bikes — a
-distinction that matters operationally (e-bikes need charge, are
-priced differently, and let users skip the BQE hill on a bad day).
-Open docks report as one number; the e-bike/classic split doesn't
-apply on return.
-
-Configuration lives in two env vars, both wizard-written into
-`/var/lib/jasper/transit.env`:
+Configuration, both wizard-written into `/var/lib/jasper/transit.env`:
 
 - `JASPER_CITIBIKE_STATIONS` — pipe-list of saved stations
-  (`id|label,id|label`), same shape as `JASPER_BUS_STOPS`. IDs are
-  GBFS station UUIDs from `gbfs.citibikenyc.com`.
-- `JASPER_CITIBIKE_EBIKE_ONLY` — household-wide flag. `"1"` →
-  voice answers omit classic-bike counts entirely; anything else
-  reports both. Per-station overrides were considered (a household
-  might only need e-bikes at the far station but accept classic at
-  the near one) and explicitly rejected for simplicity.
+  (`id|label,id|label`), same shape as `JASPER_BUS_STOPS`. IDs are GBFS
+  station UUIDs.
+- `JASPER_CITIBIKE_EBIKE_ONLY` — household-wide flag. `"1"` → voice answers
+  omit classic-bike counts entirely. There are deliberately no per-station
+  overrides.
+
+Per-station `status` semantics, which the voice answer leans on:
+
+- `"ok"` — `is_renting=1` and `is_installed=1`. Counts are honest.
+- `"offline"` — present in GBFS but not renting or not installed (kiosk in
+  maintenance, re-install pending). Counts may still be reported; the prompt
+  instructs the model to call the state out.
+- `"missing"` — the saved `station_id` no longer appears in GBFS at all.
+  Lyft retired it. Counts are zero, logged at WARN, and
+  `jasper-doctor`'s `check_citibike` surfaces the drift at boot.
+
+`is_returning=0` is treated as a non-event — it usually means "every dock is
+full", which the dock count already says.
+
+### Cache and stale-on-error
+
+Two feeds, two TTLs, both module-private to `jasper.citibike`
+(`INFO_TTL_SECONDS`, `STATUS_TTL_SECONDS`): station information is
+static-ish and cached for an hour; station status is live and cached for
+30 s, which catches every other GBFS publish while letting two tool calls
+inside one window share a fetch. Cache reads and writes are lock-guarded;
+**HTTP runs outside the lock**, so two concurrent callers may both fetch
+(harmless) rather than serializing every GBFS request behind one.
+
+When a fresh fetch fails (timeout, 5xx, network, JSON parse) and *any* cached
+entry exists for that URL — even past its TTL — `fetch_feed` returns the
+stale copy and logs `event=transit.citibike.fetch.stale` with the cache age.
+Only a failure with no cached entry raises `TransitError`, which the tool
+turns into `{error: ...}` for the model to speak verbatim. The age reaches
+the model as `last_reported_age_seconds`, and the prompt makes it preface
+old data with "as of N minutes ago". This is the same fail-soft posture the
+Home Assistant path takes.
+
+The GBFS timeout is tighter than the bus tool's because GBFS is CDN-served
+and consistently sub-500-ms: past that budget, falling through to cache gets
+the user a faster answer than waiting.
 
 ## Google Routes travel-time companion
 
-`get_travel_routes` answers destination ETA and directions questions
-like "how long will it take me to get to 30 Rock?" and "how can I get
-to JFK?". It is deliberately separate from the local arrival-board
-tools: subway/bus/Citi Bike answer "what is next at my configured
-stop"; Google Routes answers "how do I get from the saved speaker
-location to this destination?".
+`get_travel_routes` answers destination ETA and directions ("how long to 30
+Rock", "how do I get to JFK"). It is deliberately separate from the local
+arrival-board tools: subway/bus/Citi Bike answer "what is next at my
+configured stop"; Routes answers "how do I get from the saved speaker
+location to this destination".
 
 The `/transit/` wizard owns the setup surface:
 
-- origin: `JASPER_TRANSIT_LAT`, `JASPER_TRANSIT_LON`, and
+- origin: `JASPER_TRANSIT_LAT`, `JASPER_TRANSIT_LON`,
   `JASPER_TRANSIT_DISPLAY_NAME` in `/var/lib/jasper/transit.env`;
-- default mode: `JASPER_TRAVEL_DEFAULT_MODE` in
-  `/var/lib/jasper/transit.env` (`transit`, `drive`, `walk`, or
-  `bicycle`; voice wording overrides per call);
+- default mode: `JASPER_TRAVEL_DEFAULT_MODE` in the same file (`transit`,
+  `drive`, `walk`, `bicycle`; spoken wording overrides per call);
 - API key: `GOOGLE_ROUTES_API_KEY` in
   `/var/lib/jasper-secrets/google_routes.env` at mode `0640`.
 
-The Routes key is billable and never belongs in `transit.env`. The
-install migration moves stale `GOOGLE_ROUTES_API_KEY` copies from
-`/etc/jasper/jasper.env` or old transit files into the secrets
-compartment before stripping the broad copies.
+The Routes key is billable and never belongs in `transit.env`.
+`migrate_google_routes_key` in `deploy/lib/install/env-migrations.sh` moves
+stale copies out of `/etc/jasper/jasper.env` or old transit files into the
+secrets compartment before stripping the broad copies.
 
-## Why GBFS (and not something else)
+## Provider registration
 
-The General Bikeshare Feed Specification ([gbfs.org](https://gbfs.org/))
-is an open standard for shared mobility feeds maintained by
-[MobilityData](https://github.com/MobilityData/gbfs). Lyft operates
-Citi Bike and publishes GBFS at
-`gbfs.citibikenyc.com/gbfs/gbfs.json`. Properties that made it the
-right choice:
+Providers are grouped into `CityPack`s (`CITY_PACKS` in `jasper.transit`);
+the flat `REGISTRY` is *derived* from the packs, so the two never drift. A
+provider owns its own `env_keys` and `build_client`; `active_transit(env)`
+builds the clients the voice daemon registers tools against. Two contracts
+bind a new provider:
 
-- **No API key.** Public CDN. No registration, no rate limits beyond
-  what the CDN imposes, no approval delay (cf. MTA BusTime's ~30
-  min wait).
-- **Open standard with a registry.** Adding any other Lyft network
-  later (Capital Bikeshare DC, BIXI Montreal, BAY Wheels SF) is the
-  same shape under a different base URL — each becomes a separate
-  provider module under `jasper/transit/providers/`, not a parameter
-  on a generic "Lyft" provider.
-- **TTL contract.** GBFS publishes a `ttl` in the manifest (60 s
-  for Citi Bike); the spec encourages 30-s refresh on
-  `station_status.json`. Stable enough to cache in-process.
-
-What we don't use: Citi Bike's older `/stations/json` legacy
-endpoint (deprecated), Lyft's internal API (private), or any
-third-party aggregator (citybik.es is excellent but adds an
-intermediary we don't need).
-
-## Architecture in one paragraph
-
-`jasper/citibike.py` owns the GBFS data layer (sync fetcher with
-TTL cache + stale-on-error, runtime `CitiBikeClient`, dataclasses,
-the `parse_saved_stations` parser). `jasper/transit/providers/citibike.py`
-is the thin wizard adapter satisfying `TransitProvider` — same
-`fetch_feed` powers `find_stops_near`. `jasper/tools/citibike.py`
-wraps `CitiBikeClient.get_status` in `asyncio.to_thread` for the
-realtime LLM session; the tool factory short-circuits to `[]` when
-no stations are saved. `jasper/web/transit_setup.py` renders the
-multi-station picker + e-bike-only toggle and persists picks into
-`transit.env`.
+- every provider `env_key` must appear in `migrate_transit_config`'s literal
+  `keys=(...)` array in `deploy/lib/install/env-migrations.sh` — a contract
+  test enforces it (its only non-provider member is
+  `JASPER_TRAVEL_DEFAULT_MODE`);
+- the wizard drops providers whose nearest stop is farther than
+  `MAX_NEAREST_STOP_MILES` (`jasper/web/transit_setup.py`), so a generous
+  bounding box just renders a "no nearby stations" state at its edge. Citi
+  Bike's box (`CITIBIKE_BBOX`) covers the five boroughs, Jersey City, and
+  Hoboken.
 
 ## File map
 
-| File | Role |
+| Module | Role |
 |---|---|
-| [jasper/subway.py](../jasper/subway.py) | Subway Now client, direct MTA GTFS-Realtime parser, cache, and fallback policy |
-| [jasper/transit/providers/nyc_subway.py](../jasper/transit/providers/nyc_subway.py) | Subway provider config/discovery adapter |
-| [jasper/tools/subway.py](../jasper/tools/subway.py) | `get_subway_arrivals` tool and response contract |
-| [tests/test_subway.py](../tests/test_subway.py) | Primary/fallback behavior and recorded-wire parser coverage |
-| [jasper/citibike.py](../jasper/citibike.py) | GBFS fetcher (`fetch_feed`), TTL cache, `CitiBikeClient`, `StationStatus`, parsers |
-| [jasper/transit/providers/citibike.py](../jasper/transit/providers/citibike.py) | `_CitiBike` provider satisfying `TransitProvider`; owns the `JASPER_CITIBIKE_*` env keys (`env_keys` + `build_client`) and `find_stops_near` |
-| [jasper/tools/citibike.py](../jasper/tools/citibike.py) | `make_citibike_tools` factory; `get_citibike_status` async tool |
-| [jasper/google_routes.py](../jasper/google_routes.py) | Google Routes config parser, API client, response normalizer |
-| [jasper/tools/travel_routes.py](../jasper/tools/travel_routes.py) | `make_travel_routes_tools` factory; `get_travel_routes` async tool |
-| [jasper/web/transit_setup.py](../jasper/web/transit_setup.py) | `_citibike_card_html` wizard card + save-handler branch |
-| [jasper/transit/__init__.py](../jasper/transit/__init__.py) | `active_transit(env)` builds + owns the `CitiBikeClient` (via the provider), returned in `ActiveTransit` |
-| [jasper/voice_daemon.py](../jasper/voice_daemon.py) | calls `active_transit(os.environ)` + registers its tools; owns the system-prompt transit nudge |
-| [jasper/cli/doctor/](../jasper/cli/doctor/__init__.py) | `check_citibike` health probe (added in PR 4) |
-| [tests/test_citibike.py](../tests/test_citibike.py) | Unit tests for fetcher, cache, client |
-| [tests/test_tools_citibike.py](../tests/test_tools_citibike.py) | Tool-dispatch tests |
+| `jasper.subway` | Subway Now client, direct MTA GTFS-Realtime parser, cache, fallback policy |
+| `jasper.tools.subway` | `get_subway_arrivals` tool and its response contract |
+| `jasper.citibike` | GBFS `fetch_feed`, TTL cache, `CitiBikeClient`, `StationStatus`, `parse_saved_stations` |
+| `jasper.tools.citibike` | `make_citibike_tools`; `get_citibike_status` and the LLM-visible schema |
+| `jasper.google_routes` | Routes config parser, API client, response normalizer |
+| `jasper.tools.travel_routes` | `make_travel_routes_tools`; `get_travel_routes` |
+| `jasper.transit` | `CityPack`/`REGISTRY`; `active_transit(env)` builds and owns the clients |
+| `jasper.transit.providers.*` | Per-network config/discovery adapters satisfying `TransitProvider` |
+| `jasper/web/transit_setup.py` | `/transit/` wizard: station pickers, toggles, key handling |
+| `jasper/cli/doctor/integrations.py` | `check_citibike` saved-station drift probe |
 
-## Cache strategy
+Tests: `tests/test_subway.py` pins the primary→fallback behavior against
+recorded MTA wire bytes; `tests/test_citibike.py` and
+`tests/test_tools_citibike.py` pin the fetcher/cache/client and the tool
+dispatch.
 
-Two feeds, two TTLs:
+---
 
-| Feed | TTL | Why |
-|---|---|---|
-| `station_information.json` | 1 h | Static-ish: id/name/lat/lon/capacity. Lyft retires/adds maybe a handful per month. |
-| `station_status.json` | 30 s | Live bike/ebike/dock counts. GBFS publishes ≤ 60 s; 30 s catches every other publish while letting two tool calls within a window share one fetch. |
-
-Cache is **module-private** in `jasper.citibike` — not a new
-codebase-wide layer. If a third provider ever needs caching, promote
-to a shared helper at that point; don't pre-promote. Implementation:
-
-```python
-_FEED_CACHE: dict[str, _CacheEntry] = {}
-_FEED_LOCK = threading.Lock()
-```
-
-The lock guards cache reads/writes only; HTTP runs **outside the
-lock**. Two concurrent calls might both fetch (wasteful but
-harmless — both succeed, the second overwrites the cache entry).
-Holding the lock during HTTP would serialize all GBFS requests
-across all callers, which is worse than the duplicate-fetch edge
-case.
-
-### Stale-on-error
-
-When a fresh fetch fails (timeout, 5xx, network error, JSON parse
-error) AND any cached entry exists for the URL (even past its TTL),
-`fetch_feed` returns the stale copy and logs at WARN with the cache
-age. Only when fetch fails *and* no cached entry exists does it
-raise `TransitError`.
-
-This makes the voice tool degrade gracefully through a transient
-GBFS outage:
-
-- 0–30 s after a successful fetch: tool answers from cache, no I/O.
-- 30 s–N min after, with GBFS healthy: tool fetches fresh, answers.
-- During an outage: tool serves stale data, `last_reported_age_seconds`
-  reveals the age to the LLM, the LLM prefaces with "as of N minutes
-  ago…" (system prompt instructs this when age > 120 s).
-- During an outage with no cache (cold start): tool returns
-  `{error: "Citi Bike data is unavailable: ..."}`. The LLM speaks
-  the error verbatim.
-
-This is the same fail-soft posture HA uses (`OUTCOME_NETWORK` →
-`speech="I can't reach Home Assistant right now"`) and what the
-voice prompt expects from any tool.
-
-## Tool response contract
-
-The LLM-visible shape:
-
-```python
-{
-    "stations": [
-        {
-            "label": "9 Av & 41 St",
-            "station_id": "abc-uuid",
-            "ebikes": 3,
-            "docks": 25,
-            "classic_bikes": 5,   # OMITTED when ebike_only_mode=true
-            "status": "ok" | "offline" | "missing",
-            "last_reported_age_seconds": 23,
-        },
-        ...
-    ],
-    "ebike_only_mode": bool,    # household-wide flag echoed
-    "filter": "9 av",           # echoed back; empty if not passed
-    "no_match": bool,           # true iff filter excluded ALL saved stations
-}
-```
-
-Or on hard failure:
-
-```python
-{
-    "error": "Citi Bike data is unavailable: GBFS request failed: ...",
-}
-```
-
-Per-station status semantics:
-
-- `"ok"` — `is_renting=1` and `is_installed=1`. Counts are honest.
-- `"offline"` — present in GBFS but `is_renting=0` or
-  `is_installed=0` (kiosk in maintenance, post-Sandy-relocation
-  pending re-install). Counts may still be reported but the LLM
-  is instructed to call this out ("Atlantic is offline").
-- `"missing"` — saved `station_id` no longer appears in GBFS at
-  all. Lyft retired the station. Counts are zero. Logged at WARN
-  for the doctor to surface.
-
-`is_returning=0` is treated as a non-event — most often it means
-"every dock is full" not "this station refuses returns." The dock
-count goes to zero on its own when full; no need to surface a
-separate flag.
-
-## Resilience
-
-Five outcome buckets logged at `event=transit.citibike.fetch.*`:
-
-| Bucket | Trigger | What user sees |
-|---|---|---|
-| `ok` | 2xx + parseable JSON | Normal response |
-| `timeout` | `httpx.TimeoutException` (3 s budget) | Cache fallback or `{error}` |
-| `network` | Other `httpx.HTTPError` | Cache fallback or `{error}` |
-| `parse_error` | `ValueError` on `.json()` | Cache fallback or `{error}` |
-| `station_missing` | Saved id absent from GBFS | Per-station `status="missing"` |
-
-Timeout is tighter (3 s) than the bus tool's 4 s because GBFS is
-CDN-served and consistently sub-500-ms — if we're not getting a
-response inside 3 s, falling through to cache (or `{error}`) gets
-the user a faster answer than waiting another second.
-
-`station_missing` is not a hard error — other saved stations still
-return live data; only the missing one degrades. `jasper-doctor`'s
-`check_citibike` enumerates saved IDs against GBFS and surfaces
-drift at boot.
-
-## Geographic scope
-
-Bbox: `(40.62, -74.10, 40.83, -73.85)` — generous rectangle
-covering NYC's five boroughs, Jersey City, and Hoboken. The wizard
-double-checks by dropping providers whose nearest station is more
-than 5 miles away (the existing `MAX_NEAREST_STOP_MILES` guard), so
-over-coverage just means the picker renders a "no nearby stations"
-state for users at the bbox edge.
-
-If Lyft expands Citi Bike's footprint further, edit
-`CITIBIKE_BBOX` in `jasper/transit/providers/citibike.py`. If a
-**different** Lyft system gets a JTS user (Capital Bikeshare DC,
-BIXI Montreal, BAY Wheels SF), add a *new* provider module — same
-shape, different bbox + GBFS base URL. Don't generalize the
-existing module to multi-network: each city's user wants a
-provider that names their system specifically.
-
-## Prior art surveyed
-
-The pattern of "ask a voice device for nearby bike availability" is
-well-trodden:
-
-- **[Alexa "City Bike" skill](https://www.amazon.com/npci-City-Bike/dp/B01MU6BR5W)**
-  — NYC-specific, save-station model. Closest direct analog.
-- **[US Bike Share (VOGO Voice)](https://www.vogovoice.com/apps/bikeshare/)**
-  — Multi-city Alexa skill (70+ US bike-share systems) via GBFS.
-- **[Home Assistant CityBikes integration](https://www.home-assistant.io/integrations/citybikes/)**
-  — Sensor-per-station model, radius-based or explicit-list config.
-  Built on the citybik.es GBFS aggregator. Closest design-pattern
-  prior art for a non-voice consumer of the same data.
-- **[Raycast "Check Citi Bike Availability"](https://www.raycast.com/kcole93/check-citi-bike-availability)**
-  — Desktop extension with saved-stations UX.
-- **[kardolus/citi-bike-dock-tracker](https://github.com/kardolus/citi-bike-dock-tracker)**
-  — Go CLI hitting the same GBFS feeds. Reference implementation
-  for the JSON parsing.
-- **[citybikes/gbfs-api](https://github.com/citybikes/gbfs-api)**
-  — Reference Python GBFS client (we don't depend on it — adds a
-  layer for one provider).
-- **[citibike.live](https://citibike.live)** — Real-time web
-  tracker; great for visualising what GBFS exposes.
-
-JTS's contribution is the *voice* shape — first-class e-bike vs.
-classic split, household-wide e-bike-only preference, stale-on-error
-graceful degradation, integration with the existing transit-tool
-ergonomics (same wizard, same provider abstraction, same
-`{stop_id, label}` pipe-list config format).
-
-## Adding another bikeshare network
-
-A new Lyft GBFS network (or any GBFS network anywhere) is a fresh
-provider:
-
-1. Pick a stable slug (e.g. `capital_bikeshare`).
-2. New module `jasper/transit/providers/capital_bikeshare.py`. Copy
-   `citibike.py` as the starting point; change `GBFS_BASE`, `bbox`,
-   `id`, `label`, `help_url`. Decide whether to share the cache
-   helpers from `jasper.citibike` (yes if behavior is identical;
-   factor them into a `_gbfs.py` shared helper at that point).
-3. Add the provider to the matching `CityPack` in `CITY_PACKS` at
-   `jasper/transit/__init__.py`; the flat `REGISTRY` derives automatically.
-4. `elif p.id == "capital_bikeshare":` branch in
-   `jasper/web/transit_setup.py:_index_html`. Reuse the citibike
-   card if the UX is identical (likely is); just dispatch to
-   `_citibike_card_html(p, state)` with a different provider —
-   the card is provider-keyed only by `p.label` so it generalises
-   if the env keys do.
-5. New env keys in `migrate_transit_config`'s `keys=(...)` array
-   at `deploy/lib/install/env-migrations.sh`. A contract test requires that
-   literal array to contain every provider `env_key`; its only non-provider
-   member is Google Routes' `JASPER_TRAVEL_DEFAULT_MODE`.
-6. A `make_capital_bikeshare_tools` factory if you want a separate
-   tool surface, or extend `get_citibike_status` to take a network
-   arg if you want one tool per household for multiple networks. (I
-   lean toward separate tools — the LLM benefits from explicit tool
-   selection based on the question's city context.)
-
-The shared cache helper migration is a real refactor opportunity;
-flag it on the second provider, do it on the third.
-
-## Testing
-
-- `tests/test_citibike.py` — 51 unit tests for the fetcher (cache
-  hit/miss/expiry/stale-on-error/5xx/parse-error), parser
-  (round-trip + edge cases), runtime client (missing/offline/filter),
-  provider (bbox, sort, snapshot rendering).
-- `tests/test_tools_citibike.py` — 17 tool-dispatch tests (gating,
-  schema, station_label routing, ebike_only_mode toggling, no_match
-  semantics, TransitError → {error}, programming-error propagation).
-- `tests/voice_eval/regression/test_citibike.py` (PR 4) — paid
-  end-to-end against the live LLM provider. Two scenarios: general
-  status, station-specific. Pass^3, with bike-count reality
-  assertions ducking GBFS's minute-to-minute fluctuation (≥ 0
-  rather than exact match).
-
-## Open questions / future work
-
-- **Per-station e-bike-only override.** If the household needs
-  e-bikes-only at one station but accepts classic at another, the
-  current global flag is too coarse. Add a per-station checkbox
-  alongside the multi-select, store as `id|label|ebike_only,...`.
-  Defer until the global flag bites in practice.
-- **Walking time, not distance.** "1.4 mi" is information; "8
-  minutes walk" is decision-grade. Could call Open-Route Service
-  or OSRM at wizard render time. Adds a dep and a failure mode for
-  marginal UX gain — defer.
-- **Service alerts** (`system_alerts.json`). When Lyft posts a
-  service-disrupting alert affecting a saved station, surface it
-  in the voice answer. Free win — alerts feed exists, just not
-  hooked up.
-- **Multi-network UX.** When the household adds Capital Bikeshare
-  alongside Citi Bike (e.g., a DC traveller), should the voice
-  tool detect "which network does the user mean" automatically? At
-  one network, this question doesn't exist. At two+, we'd want
-  the provider to inject context (system name in the response) so
-  the LLM can disambiguate. Defer until two networks exist.
-
-Last verified: 2026-07-12 (provider registration and install-migration
-ownership re-checked against `jasper/transit/__init__.py` and
-`deploy/lib/install/env-migrations.sh`; Citi Bike remains provider-local, and
-Routes keeps its billable key in `/var/lib/jasper-secrets/google_routes.env`)
+Last verified: 2026-08-26 (env keys, `CITY_PACKS`/`REGISTRY` derivation,
+`MAX_NEAREST_STOP_MILES`, `CITIBIKE_BBOX`, the stale-on-error event names,
+`migrate_google_routes_key`, and `check_citibike`'s home in
+`jasper/cli/doctor/integrations.py` rechecked against the tree. The
+per-station response contract was removed from this doc as a duplicate of
+the tool docstring, which had drifted ahead of it.)

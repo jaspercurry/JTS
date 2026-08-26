@@ -945,6 +945,7 @@ code = [
 ]
 docs = [
   "docs/HANDOFF-transit-citibike.md",
+  "docs/adr/0167-each-transit-network-is-its-own-provider-module.md",
 ]
 requires_docs_when = [
   "Provider registry shape, setup wizard behavior, cache semantics, route/arrival answer shape, station drift handling, or API key requirements change.",

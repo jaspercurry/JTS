@@ -328,8 +328,8 @@ One line each; the doc is the canonical "read this before modifying".
   — the ARM64 build lane, bundle format, and reproducibility boundary
 - [`HANDOFF-homeassistant.md`](docs/HANDOFF-homeassistant.md) — smart-home
   delegation through Home Assistant's conversation API; `/ha/` wizard
-- [`HANDOFF-transit-citibike.md`](docs/HANDOFF-transit-citibike.md) — GBFS
-  bikeshare integration and its caching semantics
+- [`HANDOFF-transit-citibike.md`](docs/HANDOFF-transit-citibike.md) — subway,
+  Citi Bike, and Routes: config ownership, caching, and fallback contracts
 - [`HANDOFF-audible-feedback.md`](docs/HANDOFF-audible-feedback.md) —
   pre-rendered cues; start here when a failure path must not fall silent
 - [`HANDOFF-management-ui.md`](docs/HANDOFF-management-ui.md) — management-
