@@ -160,16 +160,103 @@ damage:
   as such: `max_effective_peak_dbfs` is optional, a value on the record is
   honoured verbatim rather than clamped to a class default, and it bounds the
   per-driver composed level rather than the un-segmented measurement volume
-  (row (h))
+  (row (h)). **A published protection slope is declared in the same sense and
+  is inside this bullet** — `TOPOLOGY_SLOPE_BELOW_DECLARED_REQUIREMENT`
+  (`crossover_v2/topology_prescription.py`) refuses a pinned order below the
+  slope the maker published, and it refuses nothing at all when the maker
+  published no slope. Said here because the bullet's own vocabulary named
+  bands and level-duration limits only, which left the tree's one published-
+  slope refusal reading as if it sat outside a closed list it belongs to
 - the commissioning level stop — `max_commissioning_level_db_spl`
   (`jasper/active_speaker/profile.py`)
 - firmware brick hazards, e.g. the XVF `SAVE_CONFIGURATION` ban
   (`jasper/cli/aec_tune.py`)
 
+**No reason code takes a graph off the speaker, and the registry's "hard
+stop" is not this list's.** `REASON_REGISTRY` (`crossover_v2/refusal_copy.py`)
+decides what the household is told and whether another attempt can help —
+nothing more. Its `TEMPLATE_HARD_STOP` screen and a `retry_budget` of `0` mean
+"no extra attempt can help", a statement about the condition, and they end an
+attempt or a session, never a graph that is already playing. What removes an
+applied graph is the restore path — `commissioning_apply.py`'s
+`_restore_failed_mutation_locked` / `restore_pending_candidate_apply` — driven
+by the adoption table on a measured delta (§3). Said here because the registry
+is the surface a reviewer reaches first, and two things wearing one name in
+one file is how it gets read as a list of stops. **A hard stop is a member of
+the list above and nothing else** — in the CLAMP / INTEGRITY / DISCLOSURE
+taxonomy ([ADR-0101](adr/0101-proven-once-disclose-on-change.md), §4a) those
+members are the CLAMPs, and `hard_stop` in the registry is a screen name.
+
 Everything else — geometry blindness, beaming priors, confidence
 heuristics, prediction-engine rankings — is **provenance**, not a gate: it
 rides with the data into the evidence packet for the prescriber (human or
 LLM) to weigh. It must never refuse an experiment on its own.
+
+### 4a. The integrity class — refusing a CLAIM
+
+The clamps are not the only refusals in the round path, and they are not the
+largest group. About **100 refusals protect the honesty of the evidence rather
+than the speaker**, against §4's **5 clamp mechanisms and their ~112
+enforcement points** (refusal census, 2026-08-25; the counts and their
+composition are in
+[`REFACTOR-TUNING-2026-08.md`](REFACTOR-TUNING-2026-08.md) §1). The class is
+named here because a review holding only §4 and §5 re-derives "is this
+safety?" from scratch every time, which is how a quality ceiling wore a
+refusal's costume as long as it did.
+
+**A dishonest measurement is worse than no measurement.** A refusal whose only
+cost is a re-measure, and whose alternative is banking a number that is not
+what it claims to be, is not a nanny.
+
+**The test, and it decides the class.** From
+[ADR-0002](adr/0002-measure-again-discriminator.md), which extracts the
+owner's 2026-08-03 ruling on #2087:
+
+> Before a check may stop a session, ask whether measuring again would
+> plausibly fix what it saw. Yes → it is a defect in the capture; refuse, and
+> still bank. No → it describes the room, the rig, or the result; disclose and
+> recommend, never block.
+
+**Six sub-kinds**, so a reviewer can place a new check without re-arguing the
+class: **provenance binding** (the thing measured is the thing named) ·
+**capture validity** (the capture is of the signal it claims) · **instrument
+reachability** (a number exists at all) · **position and ordering** (evidence
+lands on the slot it was taken for) · **restore anchoring** (a restore knows
+what it restores to) · **liveness** (the round ends rather than hanging).
+
+**Three rules the class carries.**
+
+1. **Its cost is a re-measure, never a withheld tune.** A refusal here that
+   also withholds an already-measured configuration has drifted into the
+   adoption table's job, and it is re-argued there.
+2. **It fails toward "unknown", never toward "bad".**
+   `delta_probe.VERDICT_UNAVAILABLE` is the pattern: "no evidence to refuse
+   on, and no permission granted either."
+3. **It banks what it refused, wherever a series is running** — §3's "every
+   round, kept or restored or refused, banks its measurement into the series
+   state." **Verified on the adoption path only**, and two things stand
+   against stating it absolutely. A **leveling pass has no series state and
+   banks nothing on purpose**: the seat-level ramp's refusal "always carries a
+   `reason` from the `REFUSE_*` set and persisted nothing", which is rule 2
+   working rather than a violation, and it is pinned that way. And the
+   **capture screens do not bank at round granularity**: `SCREEN_SNR_FLOOR`
+   puts full numbers in the journal and writes no evidence artifact, and
+   nothing pins that either way. The second is a gap disclosed, not licensed —
+   a screen that banks is the target.
+
+**The STOP-RELAXER pattern.** When a stop is *mostly* right, narrow it with a
+named, tested relaxer rather than deleting it or leaving it broad. Three
+production functions exist only to admit a state a stop would otherwise
+refuse, and each has live consumers:
+`setup_status.setup_blocked_only_by_in_sequence_anchor` (the one admitted
+blocked setup shape), `delta_probe.seam_rollback_deferral` (a seam rollback
+whose realized deviation points entirely quieter than commanded), and
+`revalidation.applied_profile_revalidation_satisfies_driver_target_proof`
+(first-time driver-target proof on an applied-profile edit). A census that
+greps for `raise` sees none of them, which is why they are named here. The
+pattern is **not** how the topology-staleness block was narrowed: §2's
+disclosure rule deleted that block outright, and a rotated topology
+fingerprint is a warning with a doctor line now, not a blocker.
 
 ### Known deviations at 2026-08-21, and where each stands
 
@@ -229,8 +316,8 @@ Scope of the 2026-08-22 verification: the deviation table above was re-derived
 against the tree — every row's named symbol grepped for a live producer — and
 rows (a), (c), and (d) closed; row (b) closed separately the same day (#2853)
 and its account is that PR's. The other sections were re-read and stand
-unchanged; the hard-stop list, the nanny test, and the pointers are numbered
-one higher since, unmoved.
+unchanged; the nanny test and the pointers are numbered one higher since,
+unmoved.
 
 Migration (2026-08-23, #2865): section 3 arrived from
 [`audio-commissioning-roadmap.md`](historical/audio-commissioning-roadmap.md)'s Ethos —
