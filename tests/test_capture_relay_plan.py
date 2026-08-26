@@ -60,6 +60,7 @@ from jasper.capture_relay.spec import (
     CapturePlanEntry,
     build_crossover_sweep_spec,
 )
+from tests._capture_relay_fake import relay_clock, stall_call
 
 _BINDING = "placement_abcdefghijklmnopqrstuv"
 
@@ -1529,39 +1530,6 @@ def test_deferred_begin_does_not_end_the_session_on_stop():
 # session, and a dead-session answer is still fatal on the first read.
 
 
-def _stalling_status(client, clock, *, stalls, stall_s, exc=None):
-    """Make the next ``stalls`` status polls behave like a stalled HTTP call.
-
-    Each one burns ``stall_s`` of the test clock (the way a real request that
-    times out does — the wall time is spent INSIDE the call, which is exactly
-    why the runner's grace is wall-clock rather than a retry count) and then
-    raises. Returns a counter dict so a test can prove how many polls were
-    actually attempted.
-    """
-    real_status = client.status
-    budget = {"left": stalls}
-    counts = {"stalled": 0, "ok": 0}
-
-    def status(*args, **kwargs):
-        if budget["left"] > 0:
-            budget["left"] -= 1
-            counts["stalled"] += 1
-            clock["t"] += stall_s
-            raise (exc if exc is not None else TimeoutError("relay stalled"))
-        counts["ok"] += 1
-        return real_status(*args, **kwargs)
-
-    client.status = status
-    return counts, budget
-
-
-def _walk_clock():
-    """A clock the RUNNER never advances on its own — only a stall or an
-    explicit tick moves it — so a test's wall-time claims are exact."""
-    clock = {"t": 0.0}
-    return clock, (lambda: clock["t"]), (lambda _s: None)
-
-
 def test_one_transient_status_stall_does_not_kill_a_live_session(caplog):
     """THE INCIDENT (issue #2083). A single 10 s stall on one status poll, in
     the middle of an otherwise healthy three-capture walk, must be survived —
@@ -1572,8 +1540,8 @@ def test_one_transient_status_stall_does_not_kill_a_live_session(caplog):
     authorize, on_armed, consume, authorized, _consumed = _plan_callbacks(
         backend, session
     )
-    clock, monotonic, sleep = _walk_clock()
-    counts, _budget = _stalling_status(client, clock, stalls=1, stall_s=10.0)
+    clock, monotonic, sleep = relay_clock()
+    counts = stall_call(client, clock, "status", stalls=1, stall_s=10.0)
 
     outcomes = run_capture_plan(
         client,
@@ -1609,7 +1577,7 @@ def test_transient_status_failures_reset_on_every_success():
     authorize, on_armed, consume, _authorized, _consumed = _plan_callbacks(
         backend, session
     )
-    clock, monotonic, sleep = _walk_clock()
+    clock, monotonic, sleep = relay_clock()
     real_status = client.status
     # Two separate one-poll outages, each burning MOST of the grace, separated
     # by healthy polls. Their combined 20 s dwarfs the 15 s window, so a runner
@@ -1662,7 +1630,7 @@ def test_a_flapping_relay_cannot_flood_the_journal(caplog):
     authorize, on_armed, consume, _authorized, _consumed = _plan_callbacks(
         backend, session
     )
-    clock, monotonic, sleep = _walk_clock()
+    clock, monotonic, sleep = relay_clock()
     real_status = client.status
     polls = {"n": 0}
     counts = {"stalled": 0}
@@ -1717,8 +1685,8 @@ def test_a_sustained_status_outage_still_ends_the_session(caplog):
     authorize, on_armed, consume, _authorized, _consumed = _plan_callbacks(
         backend, session
     )
-    clock, monotonic, sleep = _walk_clock()
-    counts, budget = _stalling_status(client, clock, stalls=99, stall_s=10.0)
+    clock, monotonic, sleep = relay_clock()
+    counts = stall_call(client, clock, "status", stalls=99, stall_s=10.0)
 
     with pytest.raises(TimeoutError):
         run_capture_plan(
@@ -1733,7 +1701,7 @@ def test_a_sustained_status_outage_still_ends_the_session(caplog):
     # Bounded: it gave up on the SECOND stall (10 s is inside the 15 s window,
     # 20 s is past it), nowhere near the 99 it was offered.
     assert counts["stalled"] == 2
-    assert budget["left"] == 97
+    assert counts["left"] == 97
     assert "capture_relay.status_poll_gave_up" in caplog.text
 
 
@@ -1749,9 +1717,14 @@ def test_a_dead_session_answer_is_never_retried():
     authorize, on_armed, consume, _authorized, _consumed = _plan_callbacks(
         backend, session
     )
-    clock, monotonic, sleep = _walk_clock()
-    counts, _budget = _stalling_status(
-        client, clock, stalls=99, stall_s=10.0, exc=RelayError("gone", 404)
+    clock, monotonic, sleep = relay_clock()
+    counts = stall_call(
+        client,
+        clock,
+        "status",
+        stalls=99,
+        stall_s=10.0,
+        exc=RelayError("gone", 404),
     )
 
     with pytest.raises(RelayError) as excinfo:
@@ -1767,29 +1740,6 @@ def test_a_dead_session_answer_is_never_retried():
     assert excinfo.value.status == 404
     assert counts["stalled"] == 1  # raised on the first, never re-polled
     assert clock["t"] == 10.0  # and burned no extra grace doing it
-
-
-def _stalling_pull_blob(client, clock, *, stalls, stall_s, exc=None):
-    """Stall the first ``stalls`` BLOB PULLS, then serve normally.
-
-    The field shape (issue #1650): the GET went out, the multi-megabyte body
-    never came back, and the socket timed out — so the clock really advances
-    by the request's whole budget on every stall."""
-    real_pull = client.pull_blob
-    budget = {"left": stalls}
-    counts = {"stalled": 0, "ok": 0}
-
-    def pull_blob(*args, **kwargs):
-        if budget["left"] > 0:
-            budget["left"] -= 1
-            counts["stalled"] += 1
-            clock["t"] += stall_s
-            raise (exc if exc is not None else TimeoutError("relay stalled"))
-        counts["ok"] += 1
-        return real_pull(*args, **kwargs)
-
-    client.pull_blob = pull_blob
-    return counts, budget
 
 
 def test_one_transient_blob_pull_stall_does_not_void_an_uploaded_capture(caplog):
@@ -1809,8 +1759,8 @@ def test_one_transient_blob_pull_stall_does_not_void_an_uploaded_capture(caplog)
     authorize, on_armed, consume, authorized, consumed = _plan_callbacks(
         backend, session
     )
-    clock, monotonic, sleep = _walk_clock()
-    counts, _budget = _stalling_pull_blob(client, clock, stalls=1, stall_s=10.0)
+    clock, monotonic, sleep = relay_clock()
+    counts = stall_call(client, clock, "pull_blob", stalls=1, stall_s=10.0)
 
     outcomes = run_capture_plan(
         client,
@@ -1853,7 +1803,7 @@ def test_a_sustained_blob_pull_outage_still_ends_the_session(caplog):
     authorize, on_armed, consume, _authorized, consumed = _plan_callbacks(
         backend, session
     )
-    clock, monotonic, sleep = _walk_clock()
+    clock, monotonic, sleep = relay_clock()
     real_status = client.status
     status_ok = {"n": 0}
 
@@ -1862,7 +1812,7 @@ def test_a_sustained_blob_pull_outage_still_ends_the_session(caplog):
         return real_status(*args, **kwargs)
 
     client.status = status
-    counts, budget = _stalling_pull_blob(client, clock, stalls=99, stall_s=10.0)
+    counts = stall_call(client, clock, "pull_blob", stalls=99, stall_s=10.0)
 
     with pytest.raises(TimeoutError):
         run_capture_plan(
@@ -1878,7 +1828,7 @@ def test_a_sustained_blob_pull_outage_still_ends_the_session(caplog):
     # 20 s is past it), nowhere near the 99 it was offered — and it did so
     # while the control plane was answering every single time.
     assert counts["stalled"] == 2
-    assert budget["left"] == 97
+    assert counts["left"] == 97
     assert status_ok["n"] > counts["stalled"]
     assert not consumed  # the capture was never analyzed, and we say so
     assert "capture_relay.blob_pull_gave_up" in caplog.text
@@ -1894,9 +1844,14 @@ def test_a_dead_session_answer_to_a_blob_pull_is_never_retried():
     authorize, on_armed, consume, _authorized, _consumed = _plan_callbacks(
         backend, session
     )
-    clock, monotonic, sleep = _walk_clock()
-    counts, _budget = _stalling_pull_blob(
-        client, clock, stalls=99, stall_s=10.0, exc=RelayError("gone", 410)
+    clock, monotonic, sleep = relay_clock()
+    counts = stall_call(
+        client,
+        clock,
+        "pull_blob",
+        stalls=99,
+        stall_s=10.0,
+        exc=RelayError("gone", 410),
     )
 
     with pytest.raises(RelayError) as excinfo:
@@ -1925,7 +1880,7 @@ def test_transient_blob_pull_failures_reset_on_every_successful_pull():
     authorize, on_armed, consume, _authorized, consumed = _plan_callbacks(
         backend, session
     )
-    clock, monotonic, sleep = _walk_clock()
+    clock, monotonic, sleep = relay_clock()
     real_pull = client.pull_blob
     # Two separate one-pull outages on DIFFERENT captures, each burning most of
     # the grace. Their combined 20 s dwarfs the 15 s window, so a runner that

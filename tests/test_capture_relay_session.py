@@ -26,6 +26,8 @@ from jasper.capture_relay.cues import (
     RELAY_UNREACHABLE_CUE_SLUG,
 )
 from jasper.capture_relay.session import (
+    BLOB_PULL_TRANSIENT_GRACE_S,
+    STATUS_POLL_TRANSIENT_GRACE_S,
     CaptureAborted,
     CaptureFailed,
     CapturePageIncompatible,
@@ -40,7 +42,7 @@ from jasper.capture_relay.session import (
 from jasper.capture_relay.spec import build_room_sweep_spec
 from jasper.capture_relay.spec import build_crossover_sweep_spec
 from tests._capture_relay_fake import CAPTURE_PAGE as _CAPTURE_PAGE
-from tests._capture_relay_fake import FakeRelayBackend
+from tests._capture_relay_fake import FakeRelayBackend, relay_clock, stall_call
 
 
 def _mint(backend):
@@ -443,7 +445,7 @@ def test_armed_without_upload_times_out_after_one_fresh_window(caplog):
     backend.phone_arm(session.session_id)  # armed, but never uploads
     armed_calls = []
 
-    ticks = iter([0.0, 1.0, 2.0, 3.0, 4.0, 5.0, 6.0])
+    _clock, monotonic, sleep = relay_clock(1.0)
 
     with pytest.raises(
         CaptureTimeout,
@@ -455,8 +457,8 @@ def test_armed_without_upload_times_out_after_one_fresh_window(caplog):
             on_armed=lambda: armed_calls.append(True),
             poll_interval_s=0.0,
             timeout_s=3.0,
-            sleep=lambda _s: None,
-            monotonic=lambda: next(ticks),
+            sleep=sleep,
+            monotonic=monotonic,
         )
     assert armed_calls == [True]
     assert "event=capture_relay.failed" in caplog.text
@@ -468,7 +470,7 @@ def test_phone_that_never_arms_remains_bounded_by_pre_arm_window(caplog):
     backend = FakeRelayBackend()
     client, session = _mint(backend)
     armed_calls = []
-    ticks = iter([0.0, 1.0, 2.0, 3.0])
+    _clock, monotonic, sleep = relay_clock(1.0)
 
     with pytest.raises(CaptureTimeout, match=r"phone never armed within 3s"):
         run_capture(
@@ -477,8 +479,8 @@ def test_phone_that_never_arms_remains_bounded_by_pre_arm_window(caplog):
             on_armed=lambda: armed_calls.append(True),
             poll_interval_s=0.0,
             timeout_s=3.0,
-            sleep=lambda _s: None,
-            monotonic=lambda: next(ticks),
+            sleep=sleep,
+            monotonic=monotonic,
         )
     assert armed_calls == []
     assert "event=capture_relay.failed" in caplog.text
@@ -505,17 +507,17 @@ def test_late_arm_gets_a_fresh_bounded_capture_window(monkeypatch):
     def on_armed():
         backend.phone_upload(session.session_id, session.content_key, wav)
 
-    # The original deadline expires on the arm poll.  A fresh window lets the
-    # next poll observe the upload; it remains bounded from that arm event.
-    ticks = iter([0.0, 1.0, 2.0, 3.0, 4.0])
+    # The original deadline expires exactly ON the arm poll.  A fresh window
+    # lets the next poll observe the upload; it stays bounded from that arm.
+    _clock, monotonic, sleep = relay_clock(1.5)
     result = run_capture(
         client,
         session,
         on_armed=on_armed,
         poll_interval_s=0.0,
         timeout_s=3.0,
-        sleep=lambda _s: None,
-        monotonic=lambda: next(ticks),
+        sleep=sleep,
+        monotonic=monotonic,
     )
 
     assert result.wav == wav
@@ -1023,7 +1025,7 @@ def test_play_cue_fires_on_timeout():
     client, session = _mint(backend)
     backend.phone_arm(session.session_id)  # armed but never uploads
     cues = []
-    ticks = iter([0.0, 1.0, 2.0, 3.0, 4.0])
+    _clock, monotonic, sleep = relay_clock(1.0)
     with pytest.raises(CaptureTimeout):
         run_capture(
             client,
@@ -1031,8 +1033,8 @@ def test_play_cue_fires_on_timeout():
             on_armed=lambda: None,
             poll_interval_s=0.0,
             timeout_s=2.0,
-            sleep=lambda _s: None,
-            monotonic=lambda: next(ticks),
+            sleep=sleep,
+            monotonic=monotonic,
             play_cue=cues.append,
         )
     # No-silent-failure: the speaker is told why (plan §12).
@@ -1063,8 +1065,10 @@ def test_play_cue_fires_on_integrity_failure():
 
 
 def test_relay_death_mid_poll_cues_unreachable_and_propagates():
-    # The relay 5xx's mid-poll -> client.status raises RelayError(503); run_capture
-    # cues measurement_relay_unreachable and re-raises (no un-cued escape).
+    # A relay that 5xx's on EVERY poll is an outage the status grace rides for
+    # its window and then gives up on: run_capture cues
+    # measurement_relay_unreachable and re-raises the original RelayError (no
+    # un-cued escape, and no infinite retry).
     def transport(method, url, headers, body):
         if url.endswith("/sessions"):  # registration succeeds
             return RelayResponse(201, {}, b'{"state":"pending"}')
@@ -1076,16 +1080,19 @@ def test_relay_death_mid_poll_cues_unreachable_and_propagates():
     )
     register_session(client, session)
     cues = []
-    with pytest.raises(RelayError):
+    _clock, monotonic, sleep = relay_clock(5.0)
+    with pytest.raises(RelayError) as excinfo:
         run_capture(
             client,
             session,
             on_armed=lambda: None,
             poll_interval_s=0.0,
             timeout_s=5.0,
-            sleep=lambda _s: None,
+            sleep=sleep,
+            monotonic=monotonic,
             play_cue=cues.append,
         )
+    assert excinfo.value.status == 503
     assert cues == [RELAY_UNREACHABLE_CUE_SLUG]
 
 
@@ -1108,6 +1115,138 @@ def test_cue_is_best_effort_and_never_masks_the_failure():
             sleep=lambda _s: None,
             play_cue=boom,
         )
+
+
+# --- transient relay outages, single-capture runner (issue #2453) -------------
+#
+# The runner behind room sweep / balance / sync polls status and then pulls the
+# blob, and both calls used to be bare here: one stalled request killed a live
+# measurement, and a stalled PULL destroyed a capture the household had already
+# uploaded. It now consumes the same tolerance the plan runner does. These pin
+# both halves of that promise — a transient outage is survived, a settled
+# "this session is dead" answer is still fatal on the FIRST read.
+
+
+@pytest.mark.parametrize("call", ("status", "pull_blob"))
+def test_one_transient_stall_does_not_void_a_single_capture(call, caplog):
+    """A 10 s stall on either relay call, inside the grace, is ridden out and
+    the capture still comes back — bit-identical, analyzed, not voided.
+
+    The lifecycle markers stay once-per-capture through the retry: ``ready``
+    means the phone's upload landed, and a re-pull of those same bytes does
+    not make it land again."""
+    caplog.set_level(logging.INFO, logger="jasper.capture_relay.session")
+    backend = FakeRelayBackend()
+    client, session = _mint(backend)
+    wav = b"RIFF" + bytes(range(256))
+    backend.phone_arm(session.session_id)
+    clock, monotonic, sleep = relay_clock()
+    counts = stall_call(client, clock, call, stalls=1, stall_s=10.0)
+
+    result = run_capture(
+        client,
+        session,
+        on_armed=lambda: backend.phone_upload(
+            session.session_id, session.content_key, wav
+        ),
+        poll_interval_s=0.0,
+        timeout_s=120.0,
+        sleep=sleep,
+        monotonic=monotonic,
+    )
+
+    assert result.wav == wav
+    # The stall really happened, and it really burned most of the window.
+    assert counts["stalled"] == 1
+    assert clock["t"] == 10.0 < min(
+        STATUS_POLL_TRANSIENT_GRACE_S, BLOB_PULL_TRANSIENT_GRACE_S
+    )
+    events = [
+        record.getMessage().split(" ", 1)[0] for record in caplog.records
+    ]
+    assert events.count("event=capture_relay.ready") == 1
+    assert events.count("event=capture_relay.armed") == 1
+
+
+@pytest.mark.parametrize("call", ("status", "pull_blob"))
+def test_a_dead_session_answer_is_never_retried_in_a_single_capture(call):
+    """The boundary the tolerance must not cross. 401/403/404/410 is the relay
+    stating a settled fact — the session is purged, the blob is gone — so it
+    stays fatal on the first read, with the same status the caller has always
+    classified on, and burns none of the grace re-asking."""
+    backend = FakeRelayBackend()
+    client, session = _mint(backend)
+    backend.phone_arm(session.session_id)
+    clock, monotonic, sleep = relay_clock()
+    counts = stall_call(
+        client,
+        clock,
+        call,
+        stalls=99,
+        stall_s=10.0,
+        exc=RelayError("gone", 410),
+    )
+
+    with pytest.raises(RelayError) as excinfo:
+        run_capture(
+            client,
+            session,
+            on_armed=lambda: backend.phone_upload(
+                session.session_id, session.content_key, b"RIFF unread"
+            ),
+            poll_interval_s=0.0,
+            timeout_s=120.0,
+            sleep=sleep,
+            monotonic=monotonic,
+        )
+
+    assert excinfo.value.status == 410
+    assert counts["stalled"] == 1  # raised on the first, never re-asked
+    assert clock["t"] == 10.0
+
+
+def test_a_sustained_blob_pull_outage_still_ends_a_single_capture():
+    """Tolerance, not infinite retry — and the reason the pull carries its OWN
+    outage anchor.
+
+    Every retry here is preceded by a status poll that SUCCEEDS, one line
+    above it in the same loop, so an anchor shared with the status grace would
+    be cleared on every pass and this session would retry until the
+    phone-inactivity deadline fired and blamed the household for an upload
+    they had already completed."""
+    backend = FakeRelayBackend()
+    client, session = _mint(backend)
+    backend.phone_arm(session.session_id)
+    clock, monotonic, sleep = relay_clock()
+    status_ok = {"n": 0}
+    real_status = client.status
+
+    def status(*args, **kwargs):
+        status_ok["n"] += 1
+        return real_status(*args, **kwargs)
+
+    client.status = status
+    counts = stall_call(client, clock, "pull_blob", stalls=99, stall_s=10.0)
+
+    with pytest.raises(TimeoutError):
+        run_capture(
+            client,
+            session,
+            on_armed=lambda: backend.phone_upload(
+                session.session_id, session.content_key, b"RIFF lost"
+            ),
+            poll_interval_s=0.0,
+            timeout_s=120.0,
+            sleep=sleep,
+            monotonic=monotonic,
+        )
+
+    # Bounded: it gave up on the SECOND stall (10 s is inside the 15 s window,
+    # 20 s is past it), nowhere near the 99 it was offered — and it did so
+    # while the control plane was answering every single time.
+    assert counts["stalled"] == 2
+    assert status_ok["n"] > counts["stalled"]
+    assert clock["t"] == 20.0 > BLOB_PULL_TRANSIENT_GRACE_S
 
 
 # --- which clock ran out (work order D8, issue #1807) -------------------------
