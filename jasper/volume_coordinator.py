@@ -2754,7 +2754,12 @@ async def _busctl_set_property(
 
 
 def install_env_canonical_target_provider() -> None:
-    """Register a canonical main_volume target built from this host's env.
+    """Register this process's canonical main_volume target AND its fader owner.
+
+    Both, from one call, because they answer the same process's question and a
+    process that had one without the other would be half-arbitrated. Every
+    existing call site gets the owner with no edit of its own, which is also
+    why the two cannot drift apart later.
 
     Every process that performs a CamillaDSP graph swap needs one. A swap's
     duck release lands at ``min(canonical, current + own depth)``; with no
@@ -2772,9 +2777,16 @@ def install_env_canonical_target_provider() -> None:
 
     A process that already owns a long-lived coordinator registers that
     coordinator's own :meth:`VolumeCoordinator.get_camilla_target_db` instead
-    (jasper-voice does). The rest call this: the coordinator is built per call
-    rather than held, because a release happens once per graph swap and a
-    socket-activated wizard has to stay light.
+    (jasper-voice does), and registers that coordinator's ``volume_owner`` as
+    the process owner rather than building a second. The rest call this: the
+    coordinator is built per call rather than held, because a release happens
+    once per graph swap and a socket-activated wizard has to stay light.
+
+    **The owner is held, not per call** — unlike the target reader above. It
+    carries the claim ledger, so a fresh one per call would be a fresh set of
+    claims and no arbitration at all. Its controller is lazy (``_ensure``
+    connects on first use), so holding one costs a wizard nothing until
+    something actually claims the fader.
 
     Which processes call it is pinned by
     ``tests/test_canonical_target_registration.py``.
@@ -2783,6 +2795,8 @@ def install_env_canonical_target_provider() -> None:
         primary_controller,
         set_canonical_target_db_provider,
     )
+
+    from .volume_owner import install_volume_owner
 
     async def canonical_target_db() -> float:
         from jasper.renderer import RendererClient
@@ -2809,3 +2823,14 @@ def install_env_canonical_target_provider() -> None:
             await coord.aclose()
 
     set_canonical_target_db_provider(canonical_target_db)
+
+    # Bound with best_effort=True: the owner's doors must report failure, not
+    # raise it (``volume_latch.FADER_IO_ERRORS`` states that contract, and
+    # ``CamillaUnavailable`` is deliberately not in it).
+    fader = primary_controller()
+    install_volume_owner(
+        VolumeOwner(
+            set_fader_db=lambda db: fader.set_volume_db(db, best_effort=True),
+            get_fader_db=lambda: fader.get_volume_db(best_effort=True),
+        )
+    )

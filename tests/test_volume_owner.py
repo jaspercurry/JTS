@@ -28,6 +28,8 @@ from jasper.volume_owner import (
     VolumeClaimRefused,
     VolumeOwner,
     duck_release_target_db,
+    install_volume_owner,
+    volume_owner,
 )
 
 HOUSEHOLD_DB = -21.212124
@@ -607,3 +609,56 @@ async def test_every_write_the_owner_makes_goes_through_the_injected_door():
         MEASUREMENT_DB,
         HOUSEHOLD_DB,
     ]
+
+
+# --- the process registration -----------------------------------------------
+
+
+def test_no_owner_is_registered_until_a_process_installs_one():
+    """``None`` is an honest answer, not a hole to plug.
+
+    A caller that gets it is somewhere no owner was installed; minting one on
+    the spot would make it the second, which is the arbitration failure this
+    whole wave deletes wearing a new name.
+    """
+    assert volume_owner() is None
+
+
+async def test_the_registration_replaces_rather_than_stacks():
+    """One process, one owner — the same rule the household level follows."""
+    # Also the leak check, and it is order-independent: whichever installing
+    # test runs second sees the first one's owner if the autouse fixture ever
+    # stops handing the process back the way it found it.
+    assert volume_owner() is None
+    first = _owner(_Fader())
+    second = _owner(_Fader())
+
+    install_volume_owner(first)
+    assert volume_owner() is first
+    install_volume_owner(second)
+    assert volume_owner() is second
+
+    install_volume_owner(None)
+    assert volume_owner() is None
+
+
+async def test_the_registered_owner_is_the_one_that_arbitrates():
+    """Registration hands back a live owner, not a copy of one.
+
+    The point of reaching for it at all is that a wizard's request handler and
+    whatever else claims the fader in that process land on ONE ledger.
+    """
+    assert volume_owner() is None
+    fader = _Fader()
+    install_volume_owner(await _household(fader))
+
+    reached = volume_owner()
+    assert reached is not None
+    claim = await reached.acquire_level(
+        ClaimKind.SESSION_MEASUREMENT, MEASUREMENT_DB,
+    )
+    assert volume_owner() is not None
+    assert volume_owner().declared_level_db() == MEASUREMENT_DB
+
+    await volume_owner().release(claim)
+    assert fader.db == pytest.approx(HOUSEHOLD_DB)

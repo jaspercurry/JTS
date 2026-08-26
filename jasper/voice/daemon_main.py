@@ -62,6 +62,7 @@ from ..voice.prompt import _build_system_instruction
 from ..voice.session import LiveConnection
 from ..volume_coordinator import VolumeCoordinator
 from ..volume_observers import VolumeObserver
+from ..volume_owner import install_volume_owner
 from ..volume_persistence import VolumePersistence
 from ..wake import WakeWordDetector
 from ..wake_events import WakeEventStore
@@ -783,6 +784,12 @@ async def run() -> None:
     # bracket — releases against the coordinator's canonical target so their
     # interleavings cannot strand the fader at a value one of them had ducked.
     set_canonical_target_db_provider(volume_coordinator.get_camilla_target_db)
+    # This daemon INJECTS its owner (Ducker and CueDuck take it as a
+    # constructor argument), so it needs no registration to work. It registers
+    # anyway, and registers the SAME instance: leaving `volume_owner()`
+    # answering None in a process that has an owner is precisely how a later
+    # caller ends up minting the second one.
+    install_volume_owner(volume_coordinator.volume_owner)
     # Built after the coordinator so restore follows the active output topology,
     # and so the Camilla duck shares the coordinator's fader owner rather than
     # writing beside it.

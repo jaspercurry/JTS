@@ -237,6 +237,30 @@ def _isolate_canonical_target_provider():
 
 
 @pytest.fixture(autouse=True)
+def _isolate_process_volume_owner():
+    """Reset the process-global fader owner around each test.
+
+    The sibling of the fixture above, for the same reason and the same
+    processes: ``install_env_canonical_target_provider`` registers both, so any
+    test that enters one of those daemons' ``main()`` installs a real owner for
+    the rest of that xdist worker. An owner is worse to inherit than a target
+    reader — it carries a CLAIM LEDGER, so a leaked one would let one test's
+    held claim decide what a later test's fader write is allowed to do.
+
+    Both sides matter, as above: clearing BEFORE stops a test inheriting an
+    owner, restoring AFTER stops it handing one forward.
+    """
+    from jasper import volume_owner
+
+    saved = volume_owner.volume_owner()
+    volume_owner.install_volume_owner(None)
+    try:
+        yield
+    finally:
+        volume_owner.install_volume_owner(saved)
+
+
+@pytest.fixture(autouse=True)
 def _isolate_capture_entry_anchor(tmp_path_factory, monkeypatch):
     """Point the automatic-capture entry stash at a per-test temp file.
 

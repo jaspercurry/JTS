@@ -160,3 +160,23 @@ def test_graph_swap_call_sites_stay_in_known_modules() -> None:
         "For an addition: name the daemon that hosts it and confirm that "
         "daemon appears in _ENTRY_POINTS above, then add the module here."
     )
+
+
+def test_the_env_registration_installs_the_process_fader_owner() -> None:
+    """One call registers BOTH, so the two cannot drift apart.
+
+    The AST tests above pin which daemons call the registrar. This pins what
+    the registrar does: a process that swaps the graph needs a canonical
+    target AND — now that the fader has one owner — an owner to arbitrate the
+    writers that have no coordinator to be injected from. Making it one call is
+    what keeps every existing call site correct with no edit of its own.
+    """
+    from jasper import camilla, volume_owner
+    from jasper.volume_coordinator import install_env_canonical_target_provider
+
+    assert volume_owner.volume_owner() is None
+
+    install_env_canonical_target_provider()
+
+    assert camilla._canonical_target_db_provider is not None
+    assert volume_owner.volume_owner() is not None
