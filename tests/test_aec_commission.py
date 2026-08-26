@@ -39,7 +39,9 @@ def _status(counter: int = 0) -> dict:
 
 
 class _FakeIO:
-    def __init__(self, *, fail_product: bool = False) -> None:
+    def __init__(
+        self, *, fail_product: bool = False, dac_id: str = "apple_usb_c_dongle"
+    ) -> None:
         plan = xvf3800.SQUARE_FIXED_150_210_PLAN
         self.hardware = aec_commission.Hardware(
             "xvf3800_legacy_square_6ch", "Array", plan
@@ -50,7 +52,7 @@ class _FakeIO:
             "a1f70651",
             plan.plan_id,
             xvf3800.chip_aec_fixed_profile_fingerprint(plan),
-            "apple_usb_c_dongle",
+            dac_id,
             "usb-serial:DWH53530FLL2FN3A3",
             "single:outputd_dac",
             "S16_LE",
@@ -238,6 +240,92 @@ def test_failed_evidence_preserves_old_artifact_and_restores_lifecycle(
     assert "volume_restored" in io.events
     assert io.events[-1] == "reconciled"
     assert not marker.exists()
+
+
+def _supported_xvf() -> xvf3800.RuntimeProfile:
+    return xvf3800.RuntimeProfile(
+        present=True,
+        variant=xvf3800.VARIANT_6CH,
+        alsa_card_name="Array",
+        capture_channels=6,
+        chip_beam_plan=xvf3800.SQUARE_FIXED_150_210_PLAN,
+        reason="",
+    )
+
+
+class _ProductionDetectIO(_FakeIO):
+    """`_FakeIO` wearing the production `detect`, so its refusals are real."""
+
+    def __init__(
+        self, *, dac_id: str = "apple_usb_c_dongle", env_dac_id: str | None = None
+    ) -> None:
+        super().__init__(dac_id=dac_id)
+        # Production reads one env value, but a fabricated identity's output_id
+        # may not be empty (AlignmentIdentity forbids it), so the unset case
+        # needs its own knob.
+        self.env_dac_id = dac_id if env_dac_id is None else env_dac_id
+
+    def detect(self):
+        runtime = aec_commission.SystemIO()
+        runtime.env = {"JASPER_AUDIO_DAC_ID": self.env_dac_id}
+        return runtime.detect()
+
+
+@pytest.mark.parametrize(
+    "dac_id, qualification",
+    [
+        ("apple_usb_c_dongle", "approved"),
+        ("hifiberry_dac8x_studio", "needs_calibration"),
+    ],
+)
+def test_a_registered_dac_commissions_and_the_record_carries_its_qualification(
+    tmp_path: Path, caplog, capsys, monkeypatch, dac_id: str, qualification: str
+) -> None:
+    # The doctor's own remedy for a parked box is this command, so refusing to
+    # run it on an unqualified DAC left the household with no exit (#2984). The
+    # run proceeds and the outcome carries the DAC's registry verdict instead.
+    caplog.set_level("INFO", logger="jasper.aec_commission")
+    monkeypatch.setattr(
+        aec_commission.xvf3800, "detect_runtime_profile", _supported_xvf
+    )
+
+    aec_commission.run_commissioning(
+        _ProductionDetectIO(dac_id=dac_id),
+        marker_path=tmp_path / "active",
+        artifact_path=tmp_path / "alignment.json",
+        effective_uid=0,
+    )
+
+    assert f"dac_qualification={qualification}" in caplog.text
+    # Named, not merely flagged: the operator has to learn WHICH profile made
+    # the alignment provisional, and only then.
+    assert (dac_id in capsys.readouterr().out) is (qualification != "approved")
+
+
+@pytest.mark.parametrize("dac_id", ["", "dac_nobody_has_codified"])
+def test_an_unregistered_dac_is_refused_before_anything_is_disturbed(
+    tmp_path: Path, monkeypatch, dac_id: str
+) -> None:
+    # Registry membership is not qualification. `output_hardware_key` refuses an
+    # unknown output edge outright — a deliberate don't-guess park — so the
+    # commissioner must refuse it too, and BEFORE the volume move, the service
+    # stop, and the XVF reset that would otherwise buy the same dead end.
+    monkeypatch.setattr(
+        aec_commission.xvf3800, "detect_runtime_profile", _supported_xvf
+    )
+    io = _ProductionDetectIO(env_dac_id=dac_id)
+    artifact_path = tmp_path / "alignment.json"
+
+    with pytest.raises(aec_commission.CommissioningError, match="registry"):
+        aec_commission.run_commissioning(
+            io,
+            marker_path=tmp_path / "active",
+            artifact_path=artifact_path,
+            effective_uid=0,
+        )
+
+    assert io.events == ["idle", "reconciled"]
+    assert not artifact_path.exists()
 
 
 def test_commissioning_requires_root_before_creating_marker(tmp_path: Path) -> None:
