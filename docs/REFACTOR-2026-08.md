@@ -158,8 +158,12 @@ program's wave 7h)**
       collapsed (historical entries one line)
 - [ ] .env.example: one-line comments; AEC knob table → pointer
 - [x] PULL_REQUEST_TEMPLATE: drop doc-impact ritual to match charter
-- [ ] doc-freshness / docs-impact CI → link check only (keep doc-map pruned
-      or fold)
+- [x] doc-freshness / docs-impact CI → link check only (keep doc-map pruned
+      or fold) — both PR-comment workflows and `scripts/doc-freshness.sh`
+      deleted; `docs-links.yml` + `scripts/docs-linkcheck.py` stay wired as
+      today. doc-map KEPT PRUNED, not folded: nothing load-bearing consumes
+      it beyond the retired bot, so the fold is *recommended* — it is a
+      shared seam (tuning-zone rows) and waits on the tuning program's ack
 
 **Wave 5 — structural convergence (opportunistic; only when the file is
 already open)**

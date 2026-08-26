@@ -184,9 +184,9 @@ def test_s0_sync_tools_route_to_distributed_active_docs():
 def test_doc_map_code_globs_match_at_least_one_tracked_file():
     """Stale-glob guard: a moved/renamed file leaves a code glob in
     doc-map.toml matching nothing, which silently un-routes the mapped
-    docs (the PR bot just stops mentioning them). Every code glob must
-    match at least one git-tracked file, using the same fnmatch
-    semantics scripts/docs-impact.py applies to changed paths."""
+    docs. Every code glob must match at least one git-tracked file, using
+    the same fnmatch semantics scripts/docs-impact.py applies to changed
+    paths."""
     import subprocess
 
     docs_impact = load_docs_impact()
