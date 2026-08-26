@@ -2911,12 +2911,15 @@ construction, because it shares the calibration's fate.
 They used to: the ceiling was `min(driver caps) − stimulus peak`, which made the
 tightest `level_duration_limits.max_effective_peak_dbfs` the operative volume
 ceiling and refused a 75 dB SPL seat target at 68.3 dB with ~30 dB of digital
-headroom unused. That field is protocol discipline rather than a published
-damage bound (row (h) in
-[`measurement-loop-doctrine.md`](measurement-loop-doctrine.md)), so the caps are
+headroom unused. Against THIS ceiling that field is protocol discipline rather
+than a published damage bound, so the caps are
 now DISCLOSED on `event=active_speaker.unsegmented_ceiling_bound` — each
 driver's cap, what its branch receives at the ceiling, and how far past its
-declared figure that lands — beside a ceiling that is headroom.
+declared figure that lands — beside a ceiling that is headroom. The same field
+still **sets and admits each driver's composed segment level**, and in that job
+it is a clamp: see
+[`measurement-loop-doctrine.md`](measurement-loop-doctrine.md) §4, item 3 —
+which is also where old `deviation (h)` citations resolve.
 
 **That ceiling has two forms, and which one applies depends on what can be
 known about the graph.** Given only the stimulus, every branch has to be assumed

@@ -23,7 +23,8 @@ list never covered either.
 Until that burn-down it raised ``correction_not_an_improvement`` — a forecast
 vetoing the measurement that would have settled the question, which is the
 authority model exactly inverted: "The LLM recommends; the measurement
-decides… they never veto an in-band experiment."  It fired in the
+decides.  Priors, confidence scores and rankings are advisory: they never veto
+an in-band experiment."  It fired in the
 field on 2026-08-22 against jts3's first prescribed-boost round
 (``improvement_db=-0.703`` against ``required_db=0.0``), and the log line one
 above it was this module's own estimator-consistency finding reporting the

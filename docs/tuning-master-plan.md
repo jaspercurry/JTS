@@ -62,10 +62,9 @@ executed under both.
    mechanism may be built (the workbench plan's "experiment workspace"
    mutation-owner claim is superseded — see Supersessions).
 6. **Safety is the closed hard-stop list; everything else informs.** Refusals
-   exist only for named component-damage mechanisms (the doctrine's list).
-   The doctrine's recorded deviations converge per tickets 2.3/2.7 and
-   ruling R8, and the doctrine's own deviation table is trued up as rows
-   close.
+   exist only for named component-damage mechanisms (the doctrine's list,
+   which is positively complete: five mechanisms and the enforcement families
+   under them). The burn-down converged per tickets 2.3/2.7 and ruling R8.
 7. **Handoff URLs derive from the speaker's hostname.** Tools that hand the
    human to the web UI print URLs built from `JASPER_HOSTNAME` /
    `Config.hostname` (speakers are `jts1.local`, `jts3.local`, … — never a
@@ -395,8 +394,7 @@ every deletion PR in this wave: run `bash scripts/tense-grep.sh --all`
 against a pre-cut baseline plus a subject sweep for the deleted thing's own
 vocabulary; update `docs/doc-map.toml` routing; update
 `crossover_v2/__init__`'s module docstring; amend
-`HANDOFF-crossover-measurement-v2.md`'s file-map rows; strike the doctrine's
-deviation rows as they close.
+`HANDOFF-crossover-measurement-v2.md`'s file-map rows.
 2.1 Layers-doc P2 amendment + pointer to this plan (lands with/after 2.2–2.4
     so prose states what is); also trues up the Measurement Program v2
     section's ×3 anchor-repeat count to the adopted ×4.
@@ -426,12 +424,10 @@ deviation rows as they close.
     compression-driver bring-up note ("must be measured with the final
     horn…") is relocated to the driver-safety notes by decision, not
     dropped. (S)
-2.7 Nanny burn-down, rescoped: deviation (a) is already closed at base
-    (#2805) — true up the doctrine's stale table row; (b) closes via 2.3;
-    (e) is **retained** by ruling R8; remaining burn-down = (c)
-    `REASON_CORRECTION_NOT_AN_IMPROVEMENT` and (d) the correction strategy
-    gates — (d) is Loop-C maintenance permitted under the R13 pin, not new
-    investment. (S each)
+2.7 Nanny burn-down, rescoped: **DONE.** Deviations (a)-(d) and (f)-(i) all
+    closed; (e) is **retained** by ruling R8. The doctrine no longer carries a
+    deviation table — its §4 clamp list is positively complete and carries a
+    letter→slug map for old citations. (S each)
 2.8 Legibility: `audio_measurement/__init__` and `crossover_v2/__init__`
     enumerate all their modules (the latter omits 12 today); artifact-kind
     namespacing for new writes + tolerant reader; the invariant-9 "arm"
