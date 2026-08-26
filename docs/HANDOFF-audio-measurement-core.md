@@ -336,11 +336,15 @@ restoration, and threads the verified playback-role handoff through the
 server-owned capture call. Legacy direct/browser summed routes remain
 intentionally refused before graph load; the recorder-only production relay
 now passes real WAV bytes and explicit fixed-axis acknowledgement into the typed
-host without accepting browser DSP policy. The `CommissioningEvidenceHost` and
-`SummedCaptureProducer` now own the server-derived region schedule, exact
+host without accepting browser DSP policy. The `CommissioningEvidenceHost` owns
+the server-derived region schedule, exact
 adjacent-output isolation, fresh generation/playback admission, bounded raw-WAV
 ingress, analysis/quality persistence, exact restoration, and lifecycle
-progression to `measured`. The complete normal/reverse/delay program stays bound
+progression to `measured`. `SummedCaptureProducer` was written to that contract
+and is **not wired**: `commissioning_service.py` composes
+`commissioning_isolated_producer` and never imports it, the host itself contains
+no reference to a producer, and outside its own module and test file the class
+has no reader. See "The gaps". The complete normal/reverse/delay program stays bound
 to one normalized applied baseline and microphone-calibration context, and every
 normal, reverse, and delay coordinate requires a distinct live-graph identity.
 Cleanup freshly proves the predecessor graph and path before restoring its
@@ -415,11 +419,12 @@ every post-apply raw, analysis-input, quality, generation-admission, and
 playback-admission identity and path across all required groups.
 
 The module performs no I/O, persistence, playback, scoring, graph mutation, or
-lifecycle transition. The separate typed internal host and producer now retain
-the run handle, reserve bounded attempts, build and freshly confirm each exact
-adjacent-pair graph under the writer lock, admit generation and playback,
-persist/reopen strict values only after exact restoration, and consume the
-bounded schedule and evaluator. Legacy direct/browser summed ingress remains
+lifecycle transition. The separate typed internal host retains
+the run handle, reserves bounded attempts, builds and freshly confirms each exact
+adjacent-pair graph under the writer lock, admits generation and playback,
+persists/reopens strict values only after exact restoration, and consumes the
+bounded schedule and evaluator. Its summed-side producer is written to the same
+contract but has no production caller — see "The gaps". Legacy direct/browser summed ingress remains
 pre-audio refused; the production `kind=summed` relay supplies recorder bytes
 and generation-specific signed geometry to that host (retired by W5b on
 2026-07-24 — see "The gaps" below; `kind=summed` is no longer a shipped
@@ -1980,8 +1985,13 @@ existing shared writer lock and exact graph/path/volume snapshot/restore seams;
 failure, cancellation, ambiguous retained-write, and restart recovery were
 checked with injected runtime ports. No hardware behavior was revalidated.
 Wave 1 excitation/evidence identities remain the shared substrate rather than
-feature policy. Production post-apply verification/receipt and Room authority
-are Active-owned and hardware-free verified. Crossover adapter
+feature policy. Room authority is Active-owned and hardware-free verified.
+Production post-apply verification and the eligibility receipt are Active-owned
+but **cannot execute**: #2362 removed the seam that wrote the post-apply repeats
+they read, so `_captures()` always returns empty, `_target_verification` bails,
+and `_receipt()` — the only writer of
+`commissioning-eligibility-receipt.json` — is unreachable until the lane is
+re-armed (#2202). See "The gaps". Crossover adapter
 volume-lease participation and measurement-flow admission ownership rechecked
 against correction, balance, sync, and the coordinator mutex. Same-day
 follow-up: the level solver's W2.2 clip-aware correction (unified signed
