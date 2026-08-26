@@ -74,18 +74,41 @@ maybe_reset() {
 }
 
 echo "event=apple_dongle.headphone_monitor.start configured_card=${CONFIGURED_CARD} control=${CONTROL}"
-declare -A last_by_card=()
+
+# bash 3.2 (macOS, where this is tested) has neither `mapfile` nor
+# `declare -A`, so per-card state lives in parallel indexed arrays. At most
+# two dongles are ever present, so a linear scan is the whole lookup.
+card_keys=()
+card_last=()
+card_unreadable=()
+
+# Index of card "$1", or non-zero when this card has not been seen yet.
+card_index() {
+    local i=0
+    while (( i < ${#card_keys[@]} )); do
+        if [[ "${card_keys[$i]}" == "$1" ]]; then
+            printf '%s' "$i"
+            return 0
+        fi
+        i=$(( i + 1 ))
+    done
+    return 1
+}
+
 absent_logged=0
-declare -A unreadable_by_card=()
 while true; do
-    mapfile -t cards < <(resolve_cards)
+    cards=()
+    while IFS= read -r line; do
+        cards+=("$line")
+    done < <(resolve_cards)
     if [[ "${#cards[@]}" -eq 0 ]]; then
         if [[ "$absent_logged" != "1" ]]; then
             echo "event=apple_dongle.headphone_monitor.absent configured_card=${CONFIGURED_CARD} control=${CONTROL}"
             absent_logged=1
         fi
-        last_by_card=()
-        unreadable_by_card=()
+        card_keys=()
+        card_last=()
+        card_unreadable=()
         sleep 5
         continue
     fi
@@ -93,22 +116,25 @@ while true; do
     absent_logged=0
     for card in "${cards[@]}"; do
         [[ -n "$card" ]] || continue
-        if [[ -z "${last_by_card[$card]+x}" ]]; then
+        if ! idx=$(card_index "$card"); then
             echo "event=apple_dongle.headphone_monitor.detected card=${card} control=${CONTROL}"
-            unreadable_by_card["$card"]=0
+            card_keys+=("$card")
+            card_last+=("")
+            card_unreadable+=(0)
+            idx=$(( ${#card_keys[@]} - 1 ))
         fi
 
         cur=$(read_state "$card")
         if [[ -z "$cur" ]]; then
-            if [[ "${unreadable_by_card[$card]:-0}" != "1" ]]; then
+            if [[ "${card_unreadable[$idx]}" != "1" ]]; then
                 echo "event=apple_dongle.headphone_monitor.unreadable card=${card} control=${CONTROL}"
-                unreadable_by_card["$card"]=1
+                card_unreadable[idx]=1
             fi
-            last_by_card["$card"]=""
+            card_last[idx]=""
             continue
         fi
-        unreadable_by_card["$card"]=0
-        last="${last_by_card[$card]:-}"
+        card_unreadable[idx]=0
+        last="${card_last[$idx]}"
         if [[ -n "$cur" && "$cur" != "$last" ]]; then
             if [[ -z "$last" ]]; then
                 echo "event=apple_dongle.headphone_monitor.state card=${card} control=${CONTROL} state=$(event_state "$cur") initial=1"
@@ -119,7 +145,7 @@ while true; do
                 echo "event=apple_dongle.headphone_monitor.change card=${card} control=${CONTROL} from=$(event_state "$last") to=$(event_state "$cur")"
                 maybe_reset "$card" "$cur"
             fi
-            last_by_card["$card"]="$cur"
+            card_last[idx]="$cur"
         fi
     done
     sleep 1
