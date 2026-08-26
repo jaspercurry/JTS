@@ -864,6 +864,11 @@ docs = [
   # the two god files dissolve. Scan it when a seam binding, the record store,
   # the analyze registry, or either god file's dissolution order changes.
   "docs/REFACTOR-CUTOVER-2026-08.md",
+  # Tier-7 scaffolding: the line-range concern inventory of
+  # jasper/active_speaker/crossover_v2_flow.py, with each concern's callers and
+  # the cutover work item that absorbs it. Scan it before cutting that file.
+  # Dies when tier 7 completes.
+  "docs/cutover-map-flow.md",
   # The one operational map for the v2 commission session and the tuning loop
   # over SSH: what v2 is, the capture flow, the tool menu, door refusal counts,
   # exit-code vocabularies, the graded round, and the debugging recipes. Scan it
