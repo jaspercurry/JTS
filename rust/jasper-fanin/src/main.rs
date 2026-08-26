@@ -32,7 +32,6 @@
 mod assistant_reference;
 mod config;
 mod host_clock;
-mod host_compliance;
 mod impulse_tap;
 mod json;
 mod lane_resampler;
@@ -345,9 +344,7 @@ fn run() -> Result<()> {
     // disabled block) so /state carries a definite host_clock from boot; the
     // thread updates it once per tick when armed.
     // The servo runs only when host-clock AND USB-direct are both armed
-    // (`host_clock_servo_armed` — the SINGLE source of truth the mixer's
-    // host-compliance prime gate also reads, so the prime and the servo can
-    // never disagree about whether the revalidating DLL is live).
+    // (`host_clock_servo_armed`).
     let host_clock_enabled_effective = config.host_clock_servo_armed();
     if config.host_clock_enabled && !host_clock_enabled_effective {
         // enabled + direct-off: inert, one warn, zero ctl writes. No process

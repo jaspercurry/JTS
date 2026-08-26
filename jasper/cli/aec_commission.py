@@ -42,6 +42,7 @@ from jasper.chip_aec_alignment import (
     read_capture,
     WINDOW_CENTER,
 )
+from jasper.chip_aec_policy import STATUS_APPROVED, static_dac_qualification
 from jasper.cli import aec_init
 from jasper.cli.aec_tune import _camilla_get_volume, _camilla_set_volume
 from jasper.env_load import merged_env_files
@@ -211,7 +212,13 @@ def _commission(io, artifact_path: Path) -> tuple[AlignmentArtifact, dict[str, A
             artifact = AlignmentArtifact(
                 identity, choice.sys_delay + queue_median, choice.sys_delay
             )
+            # Derived at publication, never banked into the artifact (which
+            # already records the DAC as identity.output_id): a verdict frozen
+            # here would keep disclosing a since-approved DAC — ADR-0101.
+            qualification = static_dac_qualification(identity.output_id)
             evidence: dict[str, Any] = {
+                "dac_id": qualification.dac_id,
+                "dac_qualification": qualification.status,
                 "sys_delay": choice.sys_delay,
                 "k_samples": artifact.k_samples,
                 "queue_median": queue_median,
@@ -277,6 +284,11 @@ def run_commissioning(
             f"SYS_DELAY={evidence['sys_delay']}, K={artifact.k_samples}, "
             f"lags={evidence['lags']}, suppression={evidence['beam_suppression_db']} dB"
         )
+        if evidence["dac_qualification"] != STATUS_APPROVED:
+            print(
+                "commissioned against an unqualified DAC profile "
+                f"({evidence['dac_id']}); treat the alignment as provisional"
+            )
         return artifact
     except BaseException as exc:  # noqa: BLE001
         primary = exc
@@ -351,7 +363,6 @@ class SystemIO:
 
     def detect(self) -> Hardware:
         profile = xvf3800.detect_runtime_profile()
-        dac = dac_registry.by_id(self.env.get("JASPER_AUDIO_DAC_ID", ""))
         if (
             not profile.present
             or profile.capture_channels != 6
@@ -359,8 +370,17 @@ class SystemIO:
             or profile.chip_beam_plan is None
         ):
             raise CommissioningError(f"unsupported XVF: {profile.reason}")
-        if dac is None or dac.chip_aec_qualification != "approved":
-            raise CommissioningError("output profile is not approved for chip AEC")
+        # Registry MEMBERSHIP, not qualification: an unqualified profile
+        # commissions and discloses (ADR-0101), but an unknown output edge is
+        # the don't-guess refusal `output_hardware_key` already makes — made
+        # here so it does not cost a service stop and an XVF reset first.
+        output_id = self.env.get("JASPER_AUDIO_DAC_ID", "").strip()
+        if dac_registry.by_id(output_id) is None:
+            raise CommissioningError(
+                f"output DAC {output_id or '<unset>'} is not in the DacProfile "
+                "registry; codify its profile (jasper/audio_hardware/dac.py, "
+                "docs/PROPOSAL-dac-profile-registry.md) before commissioning"
+            )
         return Hardware(profile.variant_id, profile.alsa_card_name, profile.chip_beam_plan)
 
     def prepare_volume(self) -> float:

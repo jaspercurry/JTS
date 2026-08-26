@@ -35,7 +35,7 @@
 //! - **Hand-built fixed STATUS shape.** `snapshot_json` keeps the stable object
 //!   shape allocation-light while all variable string values go through the
 //!   crate's one `serde_json`-backed string serializer. The dependency already
-//!   exists for `impulse_tap.rs` arm-body parsing and host-compliance records.
+//!   exists for `impulse_tap.rs` arm-body parsing.
 //!
 //! - **Shared atomic counters.** The mixer's `frames_written`,
 //!   per-input `frames_read`, `xrun_count` are already
@@ -900,67 +900,11 @@ impl StateServer {
                         r.decay_frozen_reason.load(Ordering::Relaxed),
                     ),
                 );
-                buf.push(',');
-                // prime_armed = a persisted compliance proof is live and waiting
-                // for this host to stream before it seeds the floor (#2533). With
-                // `compliance.flag_present=true` and this true, a ceiling
-                // `held_target_frames` is the CORRECT reading, not drift: the
-                // proof only touches the held target once frames actually flow.
-                push_kv_bool(
-                    buf,
-                    "prime_armed",
-                    r.decay_prime_armed.load(Ordering::Relaxed),
-                );
                 buf.push('}');
                 buf.push(',');
                 push_kv_u64(buf, "lock_count", r.lock_count.load(Ordering::Relaxed));
                 buf.push(',');
                 push_kv_u64(buf, "unlock_count", r.unlock_count.load(Ordering::Relaxed));
-                // OPTIONAL host-compliance persistence block (prime-at-floor).
-                // Rendered only when the DEFAULT-OFF feature is armed on this lane;
-                // absent otherwise (byte-identical STATUS shape). flag_present =
-                // a persisted proof is believed present; proved_at = its epoch-s
-                // timestamp (0 when absent); revoked_reason_last = the last revoke
-                // OR retained-strike reason ("" until one happens);
-                // consecutive_failures = the two-strike probe-fail counter (0 for a
-                // clean proof, 1 after a first spurious probe fail whose proof was
-                // retained; a 2nd fail deletes the proof so it never sits at ≥2).
-                if let Some(c) = &r.compliance {
-                    buf.push(',');
-                    buf.push_str(r#""compliance":{"#);
-                    push_kv_bool(buf, "flag_present", c.flag_present.load(Ordering::Relaxed));
-                    buf.push(',');
-                    push_kv_u64(
-                        buf,
-                        "proved_at",
-                        c.proved_at_epoch_s.load(Ordering::Relaxed),
-                    );
-                    buf.push(',');
-                    push_kv_str(
-                        buf,
-                        "revoked_reason_last",
-                        crate::host_compliance::revoke_reason_code_str(
-                            c.revoked_reason_last_code.load(Ordering::Relaxed),
-                        ),
-                    );
-                    buf.push(',');
-                    push_kv_u64(
-                        buf,
-                        "consecutive_failures",
-                        c.consecutive_failures.load(Ordering::Relaxed),
-                    );
-                    buf.push(',');
-                    // pending_writes = deferred proof writes the
-                    // `fanin-compliance-writer` thread has not finished (#2533).
-                    // Steady state 0; a stuck value means the filesystem is slow,
-                    // which no longer reaches the render thread.
-                    push_kv_u64(
-                        buf,
-                        "pending_writes",
-                        c.pending_writes.load(Ordering::Relaxed),
-                    );
-                    buf.push('}');
-                }
                 buf.push('}');
             }
             // OPTIONAL USB DIRECT block (C7). Rendered only on the direct lane
@@ -1490,10 +1434,6 @@ mod tests {
                         decay_active: Arc::new(AtomicBool::new(false)),
                         decay_floor_frames: 0,
                         decay_frozen_reason: Arc::new(AtomicU64::new(0)),
-                        decay_prime_armed: Arc::new(AtomicBool::new(false)),
-                        // No compliance persistence on this (non-direct) fixture
-                        // lane — the block is absent, matching a decay-off lane.
-                        compliance: None,
                     }),
                     // A lane that HAS been trimmed (fixture): 3 trims, 4608 frames
                     // dropped total, no request currently pending.
@@ -1566,16 +1506,6 @@ mod tests {
                         decay_active: Arc::new(AtomicBool::new(true)),
                         decay_floor_frames: 544,
                         decay_frozen_reason: Arc::new(AtomicU64::new(0)),
-                        decay_prime_armed: Arc::new(AtomicBool::new(false)),
-                        // Host-compliance persistence ARMED fixture: a proof is
-                        // present (proved_at set, no revoke yet, clean strike
-                        // counter), exercising the STATUS `compliance` block's
-                        // populated path.
-                        compliance: Some(crate::host_compliance::HostComplianceObservability::new(
-                            true,
-                            1_700_000_000,
-                            0,
-                        )),
                     }),
                     trim: Arc::new(TrimControl::test_fixture(0, 0, false)),
                     // The USB DIRECT (combo) lane starts unmuted; the mute-path
@@ -1782,7 +1712,9 @@ mod tests {
         // Every armed lane carries a decay block (inert when off). The airplay
         // fixture is not decaying: active:false, empty frozen_reason.
         assert!(
-            j.contains(r#""decay":{"enabled":false,"active":false,"floor_frames":0,"frozen_reason":"","prime_armed":false}"#),
+            j.contains(
+                r#""decay":{"enabled":false,"active":false,"floor_frames":0,"frozen_reason":""}"#
+            ),
             "missing inactive decay block on the airplay fixture: {j}"
         );
         // The direct fixture is ACTIVELY DECAYING: the held target (1024) sits
@@ -1796,7 +1728,9 @@ mod tests {
             "missing the direct fixture's live (decayed) held target: {j}"
         );
         assert!(
-            j.contains(r#""decay":{"enabled":true,"active":true,"floor_frames":544,"frozen_reason":"","prime_armed":false}"#),
+            j.contains(
+                r#""decay":{"enabled":true,"active":true,"floor_frames":544,"frozen_reason":""}"#
+            ),
             "missing active decay block on the direct fixture: {j}"
         );
         assert!(

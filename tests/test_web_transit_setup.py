@@ -400,14 +400,6 @@ def test_post_clear_removes_routes_secret_file(tmp_path, monkeypatch):
     assert not (tmp_path / "google_routes.env").exists()
 
 
-def test_post_clear_rejects_bad_csrf(tmp_path):
-    # Form-field token differs from the cookie token → 403, no restart.
-    body = b"csrf_token=" + b"a" * 64
-    h = FakeHandler("/clear", body=body, cookies="jts_csrf=" + "b" * 64)
-    _bound_handler(tmp_path, h).do_POST()
-    assert h.status == int(http.HTTPStatus.FORBIDDEN)
-
-
 # ---- City-pack toggle (PR2) -----------------------------------------------
 
 

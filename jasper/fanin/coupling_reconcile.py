@@ -4787,11 +4787,10 @@ def _disarm(
     )
 
 
-# Repeated CONFIRM failure on an ARMED ring escalates to recovery. The limit
-# mirrors fan-in's own two-strike ProbeFail precedent
-# (``host_compliance.rs``'s ``PROBE_FAIL_STRIKE_LIMIT``): one failure can be a
-# transient (CamillaDSP momentarily busy, a lost websocket), two consecutive
-# ones on a box whose audio is already down is evidence, not noise.
+# Repeated CONFIRM failure on an ARMED ring escalates to recovery. Two strikes,
+# not one: a single failure can be a transient (CamillaDSP momentarily busy, a
+# lost websocket), while two consecutive ones on a box whose audio is already
+# down is evidence, not noise.
 #
 # The reconciler is EVENT-DRIVEN (boot, deploy, a /sources/ toggle, an operator
 # start) — there is no timer — so strikes accumulate across events rather than
