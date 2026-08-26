@@ -71,6 +71,17 @@ class DacChipAecQualification:
     detail: str
 
 
+def permits_selection(*, auto_allowed: bool, testing_requested: bool) -> bool:
+    """The whole gate rule, for a caller holding a serialized gate.
+
+    ADR-0101: an uncodified DAC is a quality signal, not an admission gate, so
+    only the AUTOMATIC selection is gated — an explicit testing request arms
+    whatever the status and carries the gate's detail as its disclosure.
+    """
+
+    return auto_allowed or testing_requested
+
+
 @dataclass(frozen=True)
 class ChipAecGate:
     """Combined mic + DAC gate for the production chip-AEC path."""
@@ -80,31 +91,13 @@ class ChipAecGate:
     source: str
     detail: str
     auto_allowed: bool
-    arm_allowed: bool
-    trial_allowed: bool
     blockers: tuple[str, ...] = ()
 
-    @property
-    def permitted(self) -> bool:
-        return self.arm_allowed
-
-    @property
-    def production_allowed(self) -> bool:
-        return self.auto_allowed
-
-    @property
-    def testing_allowed(self) -> bool:
-        return self.trial_allowed
-
     def permits(self, *, testing_requested: bool) -> bool:
-        """Whether the selection in play may be armed.
+        """Whether the selection in play may be armed."""
 
-        An uncodified DAC is arm_allowed since ADR-0101, so the automatic
-        profile never picks it — only an explicit testing selection does.
-        """
-
-        return self.production_allowed or (
-            testing_requested and self.testing_allowed
+        return permits_selection(
+            auto_allowed=self.auto_allowed, testing_requested=testing_requested
         )
 
     @property
@@ -129,12 +122,7 @@ class ChipAecGate:
             "status": self.status,
             "source": self.source,
             "detail": self.detail,
-            "permitted": self.permitted,
             "auto_allowed": self.auto_allowed,
-            "arm_allowed": self.arm_allowed,
-            "trial_allowed": self.trial_allowed,
-            "production_allowed": self.production_allowed,
-            "testing_allowed": self.testing_allowed,
             "recommended_action": self.recommended_action,
             "blockers": list(self.blockers),
         }
@@ -279,8 +267,6 @@ def resolve_chip_aec_dac_gate(
             source=static.source,
             detail=static.detail,
             auto_allowed=True,
-            arm_allowed=True,
-            trial_allowed=True,
         )
 
     outputd_clock = _outputd_clock_evidence(outputd_status, outputd_error)
@@ -297,21 +283,14 @@ def resolve_chip_aec_dac_gate(
                 f"output DAC {static.dac_id}; {static.detail}{outputd_detail}"
             ),
             auto_allowed=False,
-            arm_allowed=True,
-            trial_allowed=True,
         )
 
-    # ADR-0101: an uncodified DAC is a quality signal, not an admission gate.
-    # `auto_allowed` stays False so nothing selects chip-AEC on its own, while
-    # an explicit request may arm and carry this detail as its disclosure.
     return ChipAecGate(
         dac_id=static.dac_id,
         status=STATUS_NEEDS_CALIBRATION,
         source=static.source,
         detail=f"{static.detail}{outputd_detail}",
         auto_allowed=False,
-        arm_allowed=True,
-        trial_allowed=True,
         blockers=(BLOCKER_DAC,),
     )
 
@@ -358,20 +337,14 @@ def gate_from_runtime_env(
     if status == STATUS_APPROVED:
         gate_status: ChipAecGateStatus = STATUS_APPROVED
         auto_allowed = True
-        arm_allowed = True
-        trial_allowed = True
         blockers: tuple[str, ...] = ()
     elif status in {STATUS_TESTING, "trial"}:
         gate_status = STATUS_TESTING
         auto_allowed = False
-        arm_allowed = True
-        trial_allowed = True
         blockers = ()
     else:
         gate_status = STATUS_NEEDS_CALIBRATION
         auto_allowed = False
-        arm_allowed = True
-        trial_allowed = True
         blockers = (BLOCKER_DAC,)
     return ChipAecGate(
         dac_id=gate_dac_id,
@@ -379,8 +352,6 @@ def gate_from_runtime_env(
         source=source,
         detail=detail,
         auto_allowed=auto_allowed,
-        arm_allowed=arm_allowed,
-        trial_allowed=trial_allowed,
         blockers=blockers,
     )
 
@@ -401,10 +372,10 @@ def combine_mic_availability(
     canonical vocabulary (``CHIP_AEC_BLOCKER_CODES``) — rather than the caller
     layering a parallel code scheme onto the serialized dict.
 
-    The DAC blocker is recomputed from the gate's allow-flags against the
-    *requested selection* (production, or testing when ``testing_requested``)
-    so the reported blockers match what would actually block arming that
-    selection; the gating logic itself is unchanged.
+    The DAC blocker is recomputed against the *requested selection*
+    (production, or testing when ``testing_requested``) so the reported
+    blockers match what would actually block arming that selection; the gating
+    logic itself is unchanged.
     """
 
     blockers: list[str] = []
@@ -418,7 +389,5 @@ def combine_mic_availability(
         source=gate.source,
         detail=gate.detail,
         auto_allowed=gate.auto_allowed,
-        arm_allowed=gate.arm_allowed,
-        trial_allowed=gate.trial_allowed,
         blockers=tuple(blockers),
     )

@@ -81,8 +81,6 @@ def test_shell_assignments_quote_values():
         source="registry",
         detail="operator's choice",
         auto_allowed=True,
-        arm_allowed=True,
-        trial_allowed=True,
     )
 
     output = chip_aec_policy._shell_assignments(gate, testing_requested=False)
@@ -102,8 +100,8 @@ def test_shell_permitted_answers_the_requested_selection(
 ) -> None:
     """The shell gets one boolean: may THIS selection arm chip-AEC?
 
-    An uncodified DAC is arm_allowed since ADR-0101, so the automatic profile
-    must read production_allowed or it would silently arm uncommissioned
+    ADR-0101 leaves an uncodified DAC armable, so the answer must follow the
+    selection or the automatic profile would silently arm uncommissioned
     hardware.
     """
     gate = ChipAecGate(
@@ -112,8 +110,6 @@ def test_shell_permitted_answers_the_requested_selection(
         source="static",
         detail="no codified timing",
         auto_allowed=False,
-        arm_allowed=True,
-        trial_allowed=True,
     )
 
     output = chip_aec_policy._shell_assignments(
@@ -131,8 +127,6 @@ def test_main_forwards_status_and_emits_shell_or_json(monkeypatch, capsys):
         source="registry",
         detail="ok",
         auto_allowed=True,
-        arm_allowed=True,
-        trial_allowed=True,
     )
     monkeypatch.setattr(
         chip_aec_policy,

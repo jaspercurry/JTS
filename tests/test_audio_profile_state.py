@@ -285,7 +285,6 @@ def test_testing_profile_uses_chip_aec_runtime_but_same_validation_profile():
         chip_available=True,
         chip_gate={
             "status": "testing",
-            "permitted": True,
             "auto_allowed": False,
             "detail": "operator validation",
         },
@@ -321,7 +320,6 @@ def test_a_disclosed_managed_xvf_reports_the_engine_it_is_actually_running():
         chip_gate={
             "status": "needs_calibration",
             "auto_allowed": False,
-            "arm_allowed": True,
             "detail": "no codified timing",
         },
     )
@@ -378,7 +376,6 @@ def test_an_explicit_custom_chip_leg_reads_as_chip_aec_on_an_uncodified_dac():
         chip_gate={
             "status": "needs_calibration",
             "auto_allowed": False,
-            "arm_allowed": True,
             "detail": "no codified timing",
         },
     )
@@ -416,7 +413,6 @@ def test_a_disclosed_custom_chip_leg_reports_its_beams_not_a_pending_reconcile()
         chip_gate={
             "status": "needs_calibration",
             "auto_allowed": False,
-            "arm_allowed": True,
             "detail": "no codified timing",
         },
     )
@@ -520,7 +516,6 @@ def test_an_unqualified_chip_path_discloses_while_an_engine_carries_wake():
         "status": "needs_calibration",
         "detail": "no codified timing",
         "auto_allowed": False,
-        "arm_allowed": True,
         "recommended_action": "use_software_aec3_or_enable_testing",
     }
     mic = MicProbe(xvf_present=False, capture_channels=2, recommended_channels=6)
@@ -625,7 +620,7 @@ def test_a_mic_the_bridge_is_not_using_stops_every_arm_claiming_its_chip_beam(
     ("chip_available", "chip_gate"),
     [
         (False, None),
-        (True, {"auto_allowed": False, "arm_allowed": False, "status": "unsupported"}),
+        (True, {"auto_allowed": False, "status": "unsupported"}),
     ],
     ids=["no_beam_plan", "dac_gate_refuses"],
 )

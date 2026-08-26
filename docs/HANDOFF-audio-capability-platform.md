@@ -33,7 +33,7 @@ Add capability fields to the owner below; do not build a parallel truth.
 | `jasper/mics/xvf3800.py` | The XVF3800 mic-family profile: USB identity, ALSA card name, firmware variants, mixer invariants, channel indices. |
 | `jasper/audio_hardware/dac.py` | The static, pure-data DAC profile registry, including `supports_active_crossover_commissioning` (base DAC8x only — the owning Active service also requires a two-way preset). Product-scope authority, not a substitute for live evidence. |
 | `jasper/output_hardware.py` + `deploy/bin/jasper-audio-hardware-reconcile` | Output-side runtime classification. The reconciler writes `/run/jasper-output-hardware/output_hardware.json` (observed output profile/card facts plus resolved `usb_data_role`: board topology, registered I²S overlays, desired/configured/active role, strict gadget and active management-transport availability, reason, reboot requirement). `/state`, `/sound/output-topology`, and doctor consume that artifact instead of re-deriving DAC semantics. |
-| `jasper/chip_aec_policy.py` | The DAC side of the chip-AEC gate: registry qualification (`approved_chip_aec_dac_ids()` derives `APPROVED_DAC_IDS` from every profile whose `chip_aec_qualification` is `approved` — no hard-coded pair list) plus optional live outputd `aec_clock` evidence. Resolves to three arms, and only `auto_allowed` is actually gated: `approved` ⇒ auto/arm/trial; `testing` and `needs_calibration` ⇒ `auto_allowed=False`, `arm_allowed=True`. The AEC reconciler writes the answer into `/etc/jasper/jasper.env`; `/aec`, `/state`, doctor, and audio-validation consume it. |
+| `jasper/chip_aec_policy.py` | The DAC side of the chip-AEC gate: registry qualification (`approved_chip_aec_dac_ids()` derives `APPROVED_DAC_IDS` from every profile whose `chip_aec_qualification` is `approved` — no hard-coded pair list) plus optional live outputd `aec_clock` evidence. `auto_allowed` is the only gated fact (`approved` ⇒ true; `testing` and `needs_calibration` ⇒ false), and `permits(testing_requested=)` is the one seam that answers whether a given selection may arm. The AEC reconciler writes the answer into `/etc/jasper/jasper.env`; `/aec`, `/state`, doctor, and audio-validation consume it. |
 | `jasper/audio_profile_state.py` | The shared read-only classifier for intent vs observed runtime truth. Feeds `/aec`, `/state.aec`, `/wake/` (via the `/aec` proxy), and doctor's "Audio profile" check, so every surface reports the same requested/active profile, session source, legs, and warnings. |
 | `deploy/bin/jasper-aec-reconcile` | Intent (`/var/lib/jasper/aec_mode.env`) → runtime env for voice, bridge, init, and outputd. Sole writer of concrete `JASPER_MIC_DEVICE*`. |
 | `jasper/cli/aec_init.py` | Volatile XVF3800 fixed-profile writes and read-back verification. Never resets the chip, never persists. |
@@ -90,7 +90,7 @@ five writes the full leg set; `custom` alone preserves the low-level booleans.
 |---|---|
 | `auto` | Fresh-install default. A managed XVF resolves to the commissioned fixed `xvf_chip_aec` path, or discloses and falls back (rule 3); non-XVF mics may resolve to software AEC3 or direct capture. |
 | `xvf_chip_aec` | The managed-XVF product path: fixed chip ASR beams, native outputd USB-IN reference, no double-AEC/raw/DTLN stacking. Requires supported hardware and commissioned alignment; without them it discloses rather than parks. |
-| `xvf_chip_aec_testing` | Operator testing label. It sets the gate's `testing` arm: `auto_allowed=False` (it never wins automatic selection) but `arm_allowed`/`trial_allowed` true, so an explicit request may arm an uncalibrated DAC and carry the detail as its disclosure. |
+| `xvf_chip_aec_testing` | Operator testing label. It sets the gate's `testing` arm: `auto_allowed=False`, so it never wins automatic selection, while `permits(testing_requested=True)` still arms an uncalibrated DAC and carries the detail as its disclosure. |
 | `xvf_software_aec3` | The software profile. Selectable for non-XVF mics — and the leg set the reconciler's own disclosure fallback applies on a managed XVF whose chip path cannot arm. |
 | `direct_mic` | Basic path with the AEC bridge disabled. Selectable for non-XVF mics, and the handover the disclosure fallback takes when no bridge can run (e.g. the 6-channel capture endpoint is not ready). |
 | `custom` | The sole expert/lab/corpus escape; `JASPER_WAKE_LEG_*` booleans own the leg set directly. |
@@ -270,6 +270,6 @@ still predated: chip-AEC-or-park became chip-AEC-or-disclose
 outside `{ready, disclosed_stale}`); `xvf_software_aec3` and `direct_mic` are
 no longer described as unselectable on a managed XVF — they are the leg sets
 the disclosure fallback applies; `xvf_chip_aec_testing` is `auto_allowed=False`
-but `arm_allowed=True`, not a blanket non-authority; and the doctor
+yet still explicitly armable, not a blanket non-authority; and the doctor
 passive-evidence clearance is keyed to registry gate status `approved`
 (`_chip_aec_passive_evidence_pair`), not to a hard-coded XVF3800 + DAC8x pair.)
