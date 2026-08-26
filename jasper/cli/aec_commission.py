@@ -8,7 +8,6 @@ from __future__ import annotations
 
 import argparse
 import logging
-import math
 import os
 import signal
 import subprocess
@@ -24,6 +23,7 @@ from typing import Any
 
 import numpy as np
 
+from jasper.active_speaker.volume_latch import fader_matches
 from jasper.atomic_io import atomic_write_json
 from jasper.audio_hardware import dac as dac_registry
 from jasper.audio_measurement.correction_lane import run_correction_play
@@ -388,9 +388,7 @@ class SystemIO:
         original = _camilla_get_volume()
         try:
             _camilla_set_volume(MEASUREMENT_VOLUME_DB)
-            if not math.isclose(
-                _camilla_get_volume(), MEASUREMENT_VOLUME_DB, abs_tol=0.05
-            ):
+            if not fader_matches(_camilla_get_volume(), MEASUREMENT_VOLUME_DB):
                 raise CommissioningError("commissioning volume did not verify")
         except BaseException:  # noqa: BLE001 - restore household volume on interrupt
             _camilla_set_volume(original)
@@ -398,7 +396,7 @@ class SystemIO:
         return original
 
     def restore_volume(self, original: float) -> None:
-        if not math.isclose(_camilla_get_volume(), original, abs_tol=0.05):
+        if not fader_matches(_camilla_get_volume(), original):
             _camilla_set_volume(original)
 
     def stop_services(self) -> None:

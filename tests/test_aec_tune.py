@@ -7,7 +7,6 @@
 import logging
 import math
 from pathlib import Path
-import signal
 import subprocess
 import sys
 import threading
@@ -420,14 +419,34 @@ def test_camilla_set_volume_requires_finite_matching_readback(monkeypatch) -> No
     client.disconnect.assert_called_once_with()
 
 
-def test_bounded_sync_operation_interrupts_a_wedged_client_call() -> None:
-    started = time.monotonic()
+def test_the_tune_cli_write_sees_the_zero_db_ceiling(monkeypatch) -> None:
+    """One hardware door, so the ceiling cannot be routed around.
 
-    with pytest.raises(TimeoutError, match="test operation timed out"):
-        with aec_tune._bounded_sync_operation("test operation", 0.01):
-            signal.pause()
+    This module used to build its own ``CamillaClient`` and call
+    ``set_main_volume`` directly, which meant its writes never reached
+    ``_coerce_main_volume_db`` — two doors for one clamp. What lands at the
+    hardware is now the clamped value, and the readback confirm then refuses
+    rather than reporting a level the speaker never played.
+    """
+    volume = SimpleNamespace(
+        set_main_volume=MagicMock(),
+        main_volume=MagicMock(return_value=0.0),
+    )
+    client = SimpleNamespace(
+        volume=volume,
+        connect=MagicMock(),
+        disconnect=MagicMock(),
+    )
+    monkeypatch.setitem(
+        sys.modules,
+        "camilladsp",
+        SimpleNamespace(CamillaClient=lambda _host, _port: client),
+    )
 
-    assert time.monotonic() - started < 1.0
+    with pytest.raises(aec_tune.CamillaVolumeError):
+        aec_tune._camilla_set_volume(6.0)
+
+    volume.set_main_volume.assert_called_once_with(0.0)
 
 
 def test_systemctl_state_stop_and_start_are_all_bounded(monkeypatch) -> None:
