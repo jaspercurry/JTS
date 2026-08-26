@@ -870,22 +870,38 @@ class _TeardownTurn:
         self.release_calls += 1
 
 
-async def _torn_down_mid_hold(*, manual: bool, chunks: int = 3) -> _TeardownTurn:
-    """Run the REAL `_end_turn_inner` on a turn where nothing else in the
-    end_input() gate is set — the mid-hold teardown shape."""
-    from jasper.voice_daemon import State, WakeLoop
+def _teardown_loop():
+    """A WakeLoop a caller can tear turns down on more than once, so a
+    per-daemon latch is observable across turns."""
+    from jasper.voice_daemon import WakeLoop
 
     wl = WakeLoop.for_tests()
-    wl._state = State.SESSION
     # Only read by the no-audio diagnostics below; `for_tests`' cfg stub
     # does not carry it because nothing else in that seam reaches them.
     wl._cfg.active_voice_model = "test-model"
+    return wl
+
+
+async def _torn_down_mid_hold(
+    *,
+    manual: bool,
+    chunks: int = 3,
+    input_ended: bool = False,
+    wl=None,
+) -> _TeardownTurn:
+    """Run the REAL `_end_turn_inner` on a turn where nothing else in the
+    end_input() gate is set — the mid-hold teardown shape."""
+    from jasper.voice_daemon import State
+
+    if wl is None:
+        wl = _teardown_loop()
+    wl._state = State.SESSION
     turn = _TeardownTurn(chunks=chunks)
     wl._turn = turn
     wl._bg_tasks = set()
     wl._wake_event_store = None
     wl._session_id = "sess-teardown"
-    wl._input_ended = False
+    wl._input_ended = input_ended
     wl._user_speech_seen = False
     wl._manual_endpoint_this_turn = manual
 
@@ -926,6 +942,29 @@ async def test_no_answer_on_a_wake_turn_still_says_recording_timeout(caplog):
 
     assert "RECORDING TIMEOUT" in caplog.text
     assert "HOLD TIMEOUT" not in caplog.text
+
+
+async def test_silent_response_warns_once_per_daemon_not_once_per_turn(caplog):
+    """#2228: this arm fired every turn while the warnings that name the
+    real cause are one-shot, so an operator whose journal window missed the
+    daemon's first turn saw only the repeating, cause-blind line. Latched
+    per daemon like `_barge_in_no_ref_warned` / `_warned_cues_unconfigured`.
+    """
+    wl = _teardown_loop()
+    with caplog.at_level(logging.WARNING, logger="jasper.voice_daemon"):
+        await _torn_down_mid_hold(manual=False, chunks=0, input_ended=True, wl=wl)
+        await _torn_down_mid_hold(manual=False, chunks=0, input_ended=True, wl=wl)
+
+    fired = [
+        record.message for record in caplog.records
+        if "event=turn.silent_response" in record.message
+    ]
+    assert len(fired) == 1
+    # Only what the site can observe. It cannot tell a provider fault from
+    # an idle-watchdog reap, so it carries fields, not a diagnosis.
+    assert "provider=test" in fired[0]
+    assert "endpointer=silero_aec" in fired[0]
+    assert "bytes_sent=4096" in fired[0]
 
 
 async def test_teardown_still_calls_end_input_on_a_button_turn():
