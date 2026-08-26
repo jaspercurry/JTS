@@ -233,7 +233,7 @@ re-proves the cap; the duplicated cut-only justification in
 `deploy/assets/correction/js/crossover/{chart,cloud}.js` (the per-curve
 reference rule there never depended on the sign, so only the premise moved);
 and a dated superseded note on
-[`flat-linearization-plan.md`](../flat-linearization-plan.md)'s S3 paragraph,
+[`linearization-campaign-2026-07.md`](linearization-campaign-2026-07.md)'s S3 paragraph,
 which still asks for the owner amendment that was granted 2026-07-27.
 
 **7. Collapse the driver low-limit to one declared owner (#2603).**

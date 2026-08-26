@@ -178,7 +178,10 @@ already open)**
   false "single mediated systemctl boundary" / "one place that privilege
   survives" claim and the MANAGED_UNITS "union of every unit any client
   touches" comment now say what actually happens ·
-  sound_setup 502-helper (after the volume-surface widening lifts) ·
+  ~~sound_setup 502-helper~~ **done**: the 24 identical log-and-502 blocks
+  call one `_common.send_route_failure`; the `logger.exception` 502 sites
+  (sound, sources, bluetooth) stay — plain-message logging, a different
+  concern ·
   ~~`git mv` subway/citibike/bus into transit/providers/~~ **superseded by
   [ADR-0167](adr/0167-each-transit-network-is-its-own-provider-module.md)**:
   transit/providers/ is the wizard-adapter layer (#2770); the top-level

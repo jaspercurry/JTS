@@ -2890,7 +2890,7 @@ async function testConcurrentReacquireCallsCoalesceToOneAcquireNoOrphan() {
 
 // ============================================================================
 // 28-37. The flow-simplification UX redesign (PR-U2,
-// docs/flat-linearization-flow-simplification-plan.md §§2.1-2.6): the
+// docs/historical/linearization-campaign-2026-07.md §§2.1-2.6): the
 // one-instruction-per-step grammar, voluntary retakes and their window, the
 // group-close confirm, and VERIFY's confirm-then-tone.
 // ============================================================================

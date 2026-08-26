@@ -904,7 +904,7 @@ reconciliation (#2105/#2108) — have landed.
 The canonical missions, exits, measurement/result contracts, issue
 disposition, dependency topology, anti-spiral rules, reviewer panel, and launch
 briefs live only in
-[`crossover-linearization-80-20-plan.md`](../crossover-linearization-80-20-plan.md).
+[`linearization-campaign-2026-07.md`](linearization-campaign-2026-07.md).
 This spine owns only status and order IDs:
 `R14 (complete) -> R15 -> fixed-2-kHz hardware checkpoint -> later re-gated rounds`.
 
@@ -986,7 +986,7 @@ them; that schedules the work, it does not adopt them into the program.
 ## CURRENT POSITION
 
 Update **this block** at the end of every round together with the
-[canonical campaign plan](../crossover-linearization-80-20-plan.md). Do not
+[canonical campaign plan](linearization-campaign-2026-07.md). Do not
 restate strategy in a handoff; move the marker here and point at it.
 
 ```
@@ -1116,7 +1116,7 @@ One writer per fact. Drift between these is a bug, not a style question.
 | **Strategy** — charter, rungs, sequencing | **this document** | handoffs, issues |
 | **Program ordering** — what supersedes what, what runs next | [`tuning-master-plan.md`](../tuning-master-plan.md) (since 2026-08-21) | this spine, handoffs, issues |
 | Campaign status/order — active round and dependency-ordered IDs | **this document** | handoffs, issues |
-| R14–R20 mission, territory, exit, and launch contract | [`crossover-linearization-80-20-plan.md`](../crossover-linearization-80-20-plan.md) | this spine, handoffs, issues |
+| R14–R20 mission, territory, exit, and launch contract | [`linearization-campaign-2026-07.md`](linearization-campaign-2026-07.md) | this spine, handoffs, issues |
 | Session state — where we are right now | the CURRENT POSITION block above | a handoff's prose |
 | Current session execution state and what just moved | `captures/NEXT-SESSION-PROMPT-*.md` (a **session brief**) | this document |
 | A single task: its defect, evidence, and fix | its **GitHub issue** | this document, handoffs |
@@ -1793,7 +1793,7 @@ unchanged.
 
 **Verification scope.** A **2026-08-04 planning/contract-repair pass** verified
 the R14–R20 status/order against
-[`crossover-linearization-80-20-plan.md`](../crossover-linearization-80-20-plan.md),
+[`linearization-campaign-2026-07.md`](linearization-campaign-2026-07.md),
 re-read the linked issue bodies/states, confirmed local `main` at
 `d742b37bec8293b72f1897194d9bf8e10b85cb08`, read-only verified the public
 `capture_page_build` at `20260803.4`, and read-only verified jts3's matching

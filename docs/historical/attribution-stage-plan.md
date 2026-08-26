@@ -1123,7 +1123,7 @@ ship; the later owner inherits the record and may extend it.
   do-not-re-litigate list), and that **"the fit stays anchored on the
   design-axis per-driver curves … the recorded trigger for revisiting is
   S3 closed-loop evidence, nothing else"**
-  ([`flat-linearization-productization-plan.md`](../flat-linearization-productization-plan.md),
+  ([`linearization-campaign-2026-07.md`](linearization-campaign-2026-07.md),
   interpretation call A and its risk register). That plan also records that
   an anchor-vs-cloud offset on surviving features is **expected**, bounded
   by the cloud's own `BandSpread` diagnostics, and **not a defect** — so an

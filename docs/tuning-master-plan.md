@@ -320,10 +320,17 @@ the ruling those banners point back to.
   package's shipped findings/promotion code is substrate for that join, not
   a parallel system.
 
-**Standing, compatible (no action):** the `flat-linearization-*` trio
-(foundational, absorbed into Loop B),
-`crossover-linearization-80-20-plan.md` (its R14–R20 record is historical
-truth; 2.4 names the R17 deliverable it retires), `gating-v2-plan.md`
+**Archived, not standing.** The five-file linearization family — the
+`flat-linearization-*` trio, the 80/20 revision and the integrity ladder —
+was listed here as “standing, compatible (no action)”. That framing was wrong
+by the time it was written: the trio was foundational and fully absorbed into
+Loop B, the 80/20 plan's R14–R20 record was already historical truth, and the
+integrity ladder's five items had all landed. Nothing was standing to be
+compatible with. All five collapsed into
+[`historical/linearization-campaign-2026-07.md`](historical/linearization-campaign-2026-07.md)
+in wave 7e; ticket 2.4 still names the R17 deliverable it retires.
+
+**Standing, compatible (no action):** `gating-v2-plan.md`
 (feeds the kernel), `HANDOFF-bass-extension-plan.md` (parked; converges at
 4.4),
 `room-correction-regime-plan.md` (parked under the Loop C pin),
