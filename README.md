@@ -239,8 +239,8 @@ One line each; the doc is the canonical "read this before modifying".
   `LiveConnection`/`LiveTurn` abstraction over Gemini/OpenAI/Grok
 - [`HANDOFF-prompting.md`](docs/HANDOFF-prompting.md) — voice prompting
   playbook; start here for `jasper/voice/prompt.py` or tool descriptions
-- [`HANDOFF-pricing-editor.md`](docs/HANDOFF-pricing-editor.md) — per-model
-  voice pricing, the `/voice/` rates editor, spend caps
+- [`HANDOFF-pricing-editor.md`](docs/HANDOFF-pricing-editor.md) — where
+  per-model rate data comes from and the `/voice/` rates editor
 - [`HANDOFF-barge-in.md`](docs/HANDOFF-barge-in.md) — assistant-speech
   barge-in plan and current-code gap analysis
 - [`HANDOFF-aec.md`](docs/HANDOFF-aec.md) — AEC architecture and operations
