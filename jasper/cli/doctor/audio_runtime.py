@@ -1342,6 +1342,7 @@ def check_route_latency_evidence() -> CheckResult:
         ROUTE_LATENCY_MIC_ID,
         ROUTE_LATENCY_P95_BUDGET_MS,
         ROUTE_LATENCY_PROFILE,
+        ROUTE_LATENCY_RERUN_ACTION,
         ROUTE_LATENCY_STALE_AFTER,
         artifact_directory,
         assess_route_latency_artifact,
@@ -1417,6 +1418,10 @@ def check_route_latency_evidence() -> CheckResult:
             detail += f", live_issues={list(live_issues)}"
     if status == "pass":
         return CheckResult("route latency evidence", "ok", detail)
+    if status == "warn" and summary.get("recommendation") != ROUTE_LATENCY_RERUN_ACTION:
+        # A p99-promotion recommendation is about evidence that is already
+        # valid; the re-run remedy below would misdirect it.
+        return CheckResult("route latency evidence", "warn", detail)
     return CheckResult(
         "route latency evidence",
         "warn" if status == "warn" else "fail",

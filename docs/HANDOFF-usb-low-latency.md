@@ -169,12 +169,18 @@ content buffer 1536 had zero new outputd content xruns/empty reads, zero outputd
 DAC xruns, zero fan-in output xruns, zero fan-in USB resampler relocks/unlocks/
 silence/overruns, and zero CamillaDSP warnings. Lower content-buffer probes at
 640, 768, 1024, and 1280 each produced a content-side xrun. This proves fallback
-stability, not route certification. Doctor must keep failing `route latency
-evidence` until a click/capture artifact certifies p95 <= 40 ms (tightened
-2026-07-11 to the certified electrical floor — see
-HANDOFF-usb-latency-measurement.md §1) with >=200 impulses over >=5 minutes;
-p99 promotion requires >=1000 impulses over >=30 minutes with jittered
-spacing and p99 <= 42 ms.
+stability, not route certification. Full certification needs a click/capture
+artifact showing p95 <= 40 ms (tightened 2026-07-11 to the certified
+electrical floor — see HANDOFF-usb-latency-measurement.md §1) with >=200
+impulses over >=5 minutes; p99 promotion requires >=1000 impulses over >=30
+minutes with jittered spacing and p99 <= 42 ms.
+
+Short of that, `route latency evidence` warns rather than fails (ADR-0101):
+a measured breach, an absent p95, a route-health anomaly, live-state
+mismatches and a missing negotiated-buffer binding are the fail cases; a run
+too short to certify, a config/identity change, and an aged-out or
+clock-skewed artifact disclose with their issue tokens and keep the claim
+running.
 
 The claiming route hard-fails on any `JASPER_OUTPUTD_CONTENT_BRIDGE` value
 other than `direct` or a coherent `shm_ring` pair. That includes the legacy

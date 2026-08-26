@@ -207,7 +207,7 @@ def test_route_latency_gate_status_pass_warn_fail_boundaries():
     assert certified == (95, 99)
     assert issues == ()
 
-    status, _rec, certified, issues = route_latency_gate_status(
+    status, recommendation, certified, issues = route_latency_gate_status(
         p95_ms=39.0,
         p99_ms=None,
         sample_count=200,
@@ -216,6 +216,9 @@ def test_route_latency_gate_status_pass_warn_fail_boundaries():
     assert status == "warn"
     assert certified == (95,)
     assert issues == ("p99_missing",)
+    # Promotion evidence, not proof validity: this recommendation is what keeps
+    # the p95 re-run remedy off an artifact that is already valid.
+    assert recommendation == "run_p99_promotion_validation"
 
     status, _rec, _certified, issues = route_latency_gate_status(
         p95_ms=41.0,
@@ -244,23 +247,66 @@ def test_route_latency_short_run_discloses_measured_in_budget_p95():
     # claim; a measured breach on the same short run still fails.
     status, recommendation, certified, issues = route_latency_gate_status(
         p95_ms=38.0,
-        p99_ms=None,
+        p99_ms=39.0,
         sample_count=50,
         duration_seconds=60,
     )
     assert status == "warn"
     assert certified == ()
-    assert issues == ("p95_uncertified",)
+    assert issues == ("p95_uncertified", "p99_uncertified")
     assert recommendation == audio_validation.ROUTE_LATENCY_RERUN_ACTION
 
     status, _rec, _certified, issues = route_latency_gate_status(
         p95_ms=41.0,
-        p99_ms=None,
+        p99_ms=39.0,
         sample_count=50,
         duration_seconds=60,
     )
     assert status == "fail"
     assert "p95_exceeds_40ms" in issues
+
+
+def test_route_latency_measured_tail_breach_survives_a_disclosure():
+    # A disclosure must never short-circuit a measurement leg: the certified
+    # p99 breach keeps its token and its own recommendation even when the
+    # proof's config binding has drifted.
+    status, recommendation, _certified, issues = route_latency_gate_status(
+        p95_ms=38.0,
+        p99_ms=500.0,
+        sample_count=1000,
+        duration_seconds=30 * 60,
+        jittered_impulse_spacing=True,
+        config_match=False,
+    )
+    assert status == "warn"
+    assert "p99_exceeds_42ms" in issues
+    assert "config_mismatch" in issues
+    assert recommendation == "reduce_tail_latency_before_promotion"
+
+    # The same breach under a proof-validity disclosure, and under a measured
+    # p95 breach that outranks both.
+    _status, _rec, _certified, issues = route_latency_gate_status(
+        p95_ms=38.0,
+        p99_ms=500.0,
+        sample_count=1000,
+        duration_seconds=30 * 60,
+        jittered_impulse_spacing=True,
+        proof_issues=("artifact_stale",),
+    )
+    assert "p99_exceeds_42ms" in issues
+    assert "artifact_stale" in issues
+
+    status, _rec, _certified, issues = route_latency_gate_status(
+        p95_ms=41.0,
+        p99_ms=500.0,
+        sample_count=1000,
+        duration_seconds=30 * 60,
+        jittered_impulse_spacing=True,
+        proof_issues=("artifact_stale",),
+    )
+    assert status == "fail"
+    assert "p95_exceeds_40ms" in issues
+    assert "p99_exceeds_42ms" in issues
 
 
 def test_route_latency_issue_codes_follow_budget_constants(monkeypatch):
@@ -587,12 +633,17 @@ def test_assess_route_latency_artifact_discloses_identity_mismatch(tmp_path):
 
 
 def test_assess_route_latency_artifact_rejects_missing_negotiated_buffer(tmp_path):
+    # The binding's presence is mandatory and is NOT a compatible warning
+    # (docs/HANDOFF-usb-low-latency.md). The artifact is stamped with a valid
+    # binding and then stripped of it, so the writer's co-stamped route-health
+    # issue is absent and only the assessor's own identity check can fail it.
     artifact = make_route_latency_artifact(
         route_id="usb_low_latency_48k",
         source_id="usbsink",
         dac_id="apple_usb_c_dongle",
         route_config_hash="same",
         fanin_direct_config={"period_frames": 256, "min_buffer_frames": 768},
+        fanin_direct_negotiated_buffer_frames=768,
         p95_ms=38.5,
         p99_ms=41.0,
         sample_count=1000,
@@ -601,6 +652,9 @@ def test_assess_route_latency_artifact_rejects_missing_negotiated_buffer(tmp_pat
         validated_at=NOW,
     )
     path = write_artifact(artifact, directory=tmp_path)
+    payload = json.loads(path.read_text(encoding="utf-8"))
+    payload["checks"]["identity"]["fanin_direct_negotiated_buffer_frames"] = None
+    path.write_text(json.dumps(payload), encoding="utf-8")
     result = load_artifact(path, now=NOW + timedelta(days=1))
 
     summary = assess_route_latency_artifact(
@@ -617,9 +671,11 @@ def test_assess_route_latency_artifact_rejects_missing_negotiated_buffer(tmp_pat
 
     assert summary["status"] == "fail"
     assert (
-        "identity_mismatch:fanin_direct_negotiated_buffer_frames"
+        "route_binding_missing:fanin_direct_negotiated_buffer_frames"
         in summary["issues"]
     )
+    assert "route_health_anomaly" not in summary["issues"]
+    assert summary["config_match"] is True
 
 
 @pytest.mark.parametrize(
@@ -637,7 +693,8 @@ def test_route_latency_proof_validity_discloses_instead_of_failing(
 ):
     # ADR-0101: the 24h window and the host clock are proof-validity facts. A
     # measured-in-budget run that aged out or was stamped by a skewed clock
-    # discloses with its token and the rerun action; it does not fail.
+    # discloses with its own token and the rerun action; it does not fail, and
+    # it does not claim a config change that never happened.
     artifact = make_route_latency_artifact(
         route_id="usb_low_latency_48k",
         source_id="usbsink",
@@ -663,6 +720,8 @@ def test_route_latency_proof_validity_discloses_instead_of_failing(
     assert summary["status"] == "warn"
     assert expected_issue in summary["issues"]
     assert summary["recommendation"] == audio_validation.ROUTE_LATENCY_RERUN_ACTION
+    assert summary["config_match"] is True
+    assert "config_mismatch" not in summary["issues"]
 
 
 def test_assess_route_latency_artifact_preserves_route_health_anomaly(tmp_path):

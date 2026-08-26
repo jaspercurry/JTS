@@ -19,11 +19,11 @@ from .fanin.status import DIRECT_HEALTH_CAPTURING, DIRECT_HEALTH_IDLE
 ROUTE_LATENCY_P95_MIN_DURATION_SECONDS = 5 * 60
 ROUTE_LATENCY_P99_MIN_DURATION_SECONDS = 30 * 60
 ROUTE_LATENCY_RERUN_ACTION = "run_route_latency_validation"
-#: Codes about the PROOF's validity, not a measured breach; artifact staleness
-#: and clock skew arrive here as config_mismatch. Disclosed, never failed —
-#: ADR-0101.
+#: Codes about the PROOF's validity, not the route's: config/identity drift, a
+#: run too short to certify p95, an aged-out or clock-skewed artifact.
+#: Disclosed, never failed — ADR-0101.
 ROUTE_LATENCY_DISCLOSURE_ISSUES = frozenset(
-    {"config_mismatch", "p95_uncertified", "p99_uncertified"}
+    {"config_mismatch", "p95_uncertified", "artifact_stale", "artifact_from_future"}
 )
 JsonValue = None | bool | int | float | str | list["JsonValue"] | dict[str, "JsonValue"]
 
@@ -86,15 +86,25 @@ def route_latency_gate_status(
     jittered_impulse_spacing: bool = False,
     config_match: bool = True,
     route_health_ok: bool = True,
+    proof_issues: tuple[str, ...] = (),
 ) -> tuple[str, str, tuple[int, ...], tuple[str, ...]]:
-    """Classify a route-latency artifact using the production gate."""
+    """Classify a route-latency artifact using the production gate.
+
+    ``proof_issues`` carries validity facts the caller observed about the
+    artifact itself (age, clock skew); they classify as disclosures.
+    """
 
     certified = certified_route_latency_percentiles(
         sample_count=sample_count,
         duration_seconds=duration_seconds,
         jittered_impulse_spacing=jittered_impulse_spacing,
     )
-    issues: list[str] = []
+    p95_breach = f"p95_exceeds_{ROUTE_LATENCY_P95_BUDGET_MS:g}ms"
+    p99_breach = f"p99_exceeds_{ROUTE_LATENCY_P99_BUDGET_MS:g}ms"
+
+    # Every leg runs before any verdict: a measured breach must never hide
+    # behind a disclosure that returned early.
+    issues: list[str] = list(proof_issues)
     if not config_match:
         issues.append("config_mismatch")
     if not route_health_ok:
@@ -102,33 +112,40 @@ def route_latency_gate_status(
     if p95_ms is None:
         issues.append("p95_missing")
     elif p95_ms > ROUTE_LATENCY_P95_BUDGET_MS:
-        issues.append(f"p95_exceeds_{ROUTE_LATENCY_P95_BUDGET_MS:g}ms")
+        issues.append(p95_breach)
     if 95 not in certified:
         issues.append("p95_uncertified")
-
-    if issues:
-        if all(issue in ROUTE_LATENCY_DISCLOSURE_ISSUES for issue in issues):
-            return "warn", ROUTE_LATENCY_RERUN_ACTION, certified, tuple(issues)
-        return "fail", "fix_route_latency_before_claim", certified, tuple(issues)
-
     if p99_ms is None:
-        return "warn", "run_p99_promotion_validation", certified, ("p99_missing",)
-    if 99 not in certified:
-        if (
-            _p99_sample_and_duration_sufficient(
+        issues.append("p99_missing")
+    elif 99 not in certified:
+        issues.append(
+            "p99_spacing_unverified"
+            if _p99_sample_and_duration_sufficient(
                 sample_count=sample_count,
                 duration_seconds=duration_seconds,
             )
             and not jittered_impulse_spacing
-        ):
-            return "warn", "run_p99_promotion_validation", certified, (
-                "p99_spacing_unverified",
-            )
-        return "warn", "run_p99_promotion_validation", certified, ("p99_uncertified",)
-    if p99_ms > ROUTE_LATENCY_P99_BUDGET_MS:
-        return "warn", "reduce_tail_latency_before_promotion", certified, (
-            f"p99_exceeds_{ROUTE_LATENCY_P99_BUDGET_MS:g}ms",
+            else "p99_uncertified"
         )
+    elif p99_ms > ROUTE_LATENCY_P99_BUDGET_MS:
+        issues.append(p99_breach)
+
+    if any(
+        issue in {"route_health_anomaly", "p95_missing", p95_breach}
+        for issue in issues
+    ):
+        return "fail", "fix_route_latency_before_claim", certified, tuple(issues)
+    if p99_breach in issues:
+        return (
+            "warn",
+            "reduce_tail_latency_before_promotion",
+            certified,
+            tuple(issues),
+        )
+    if any(issue in ROUTE_LATENCY_DISCLOSURE_ISSUES for issue in issues):
+        return "warn", ROUTE_LATENCY_RERUN_ACTION, certified, tuple(issues)
+    if issues:
+        return "warn", "run_p99_promotion_validation", certified, tuple(issues)
     return "pass", "usb_low_latency_route_promotable", certified, ()
 
 
