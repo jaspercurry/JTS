@@ -263,3 +263,224 @@ carries thirteen fields and **not one of the six inputs above**. It carries no
 So at HEAD, `TuningSession.analyze` can reach **zero** of the fifteen units'
 inputs from a banked record id. §3 of this brief is about that, and it is the
 reason W2 cannot be scheduled as if it were independent of W1.
+
+---
+
+## 2. The registry shape
+
+### 2.1 What `AnalyzeOutcome` must carry — and the third field it needs
+
+`AnalyzeOutcome` (`crossover_v2/session.py:194-217`) is two fields today:
+`results: Mapping[str, Any]` (`:216`) keyed by analysis name, and
+`disclosures: tuple[CapabilityStub, ...]` (`:217`). Two contract lines the
+registry inherits unchanged: `:203-208` and `:210-212` (hand a **copy**, not the
+dict still being filled).
+
+**Recommendation: add `skipped: tuple[AnalysisSkip, ...]`. Do not render a
+skipped unit as a `CapabilityStub`.** §2's W2-c says *"render each skipped unit
+as a `CapabilityStub`"*; four things at HEAD say that does not fit, and all four
+are mechanical rather than stylistic:
+
+1. **The message is hard-wired to "not implemented".** `_stub`
+   (`measure_spec.py:133`) composes `f"{row.capability} not implemented;
+   {banked}, {row.owed} pending {row.instrument}"` (`:154-157`). A unit that is
+   implemented and merely had no input in this bank is not "not implemented" —
+   rendering it that way makes the disclosure say the opposite of the truth.
+2. **`aborted()` raises on any code outside the table.**
+   `CapabilityStub.aborted` (`measure_spec.py:110`) does `_ROWS[self.code]` at
+   `:120`. `_ROWS` (`:159`) is four rows. A hand-built skip stub is a `KeyError`
+   waiting for the first spec that trips two stubs at once.
+3. **`STUB_CODES` would stop being countable.** `STUB_CODES = frozenset(_STUBS)`
+   (`:184`) is documented at `:181-183` as existing *"so a reader can count the
+   holes"*. Fifteen unit-skip codes in that set makes the count mean two things.
+4. **The merge rule is wrong for skips.** `_merge_disclosures`
+   (`session.py:95-120`) keys on `code` and **upgrades** `captured=False` to
+   `True` when a later entry banked evidence (`:118-119`). That semantics is
+   *"evidence is now waiting for an analysis nobody built"*. A unit skip has no
+   such upgrade — a bank either carries the input or does not.
+
+**Keep the two vocabularies apart, by their subject:**
+
+| | Subject | Type | Owner |
+|---|---|---|---|
+| `disclosures` | the ENGINE never built this analysis | `CapabilityStub` | `measure_spec._ROWS` — closed, 4 rows |
+| `skipped` | THIS BANK lacks the input this analysis needs | `AnalysisSkip` | the registry table — 15 rows |
+
+They meet in exactly two places, and both are informative rather than awkward:
+`NEAR_FIELD_SPLICE_NOT_IMPLEMENTED` (`measure_spec.py:78-79`, R-3) and
+`DISTORTION_VS_LEVEL_NOT_IMPLEMENTED` (`:84-86`, R-4) each say in as many words
+that the missing piece is an `analyze` consumer. Those are **table rows W2 does
+not add** — units 16 and 17, owed to a later wave. They stay `CapabilityStub`s
+until the row exists, and the row's arrival is what retires the stub.
+
+`AnalysisSkip` is two fields: `name` (the unit) and `missing` (the input's
+reason code). Nothing else — a message belongs to `refusal_copy`, which is
+already the repo's one household-wording owner, and a second sentence-composer
+here is the shape this refactor exists to remove.
+
+### 2.2 The reason vocabulary is already in the layer — generalize it
+
+`_verify_absolute_result` (`program_analysis.py:6952`) **already implements
+W2-c's whole contract** for unit 14:
+
+- three named codes — `ABSOLUTE_NO_FC`, `ABSOLUTE_NO_TARGET`,
+  `ABSOLUTE_NO_TRUSTED_BAND` (`:6947-6949`), with the comment at `:6944-6946`
+  saying they are named precisely because *a screen and a gate* read them;
+- returned as `{"not_evaluated": <code>}` at `:6977`, `:6980`, `:6987`, `:6990`
+  — the skip carries **which** input was missing, not merely that one was;
+- pinned by behavior at `tests/test_audio_measurement_program_analysis.py:7997`
+  (`test_absolute_claim_records_why_it_could_not_be_evaluated`) and `:8009`.
+
+The registry's skip vocabulary is a generalization of these three codes, not a
+new idiom. Two consequences for W2-a:
+
+- **Import the constants; never re-spell them.** Unit 14's gate returns
+  `ABSOLUTE_NO_FC` / `ABSOLUTE_NO_TARGET` by importing them from
+  `program_analysis`. `_verify_absolute_result` keeps its in-band return for its
+  existing consumer (`round_evidence.py:884`). Two readers, one vocabulary — the
+  `refusal_copy.REASON_REGISTRY` discipline (`:1307-1311`).
+- **Accept the one duplication this leaves, and name it.** The gate re-tests
+  conditions the function tests again internally. Removing that would mean
+  editing `_verify_absolute_result`, i.e. not a wholesale port. **Recommend:
+  leave it, and pin the two answers equal** — one property test asserting the
+  gate's code equals the dict's `not_evaluated` for every input. That is cheaper
+  than a lift and it catches the drift the lift would prevent.
+
+Also note the shape units 6 and 7 have *instead*: `_solve_gain_plan`
+(`:5935`) returns an empty solve when `pilots` is empty (`:5953-5956`), and
+`_estimate_drift` (`:2928`) returns `epsilon = 0.0` when the woofer has fewer
+than two occurrences (`:2957-2959`). **Neither says it could not answer.** That
+is the `_crossover_region_null_registry` defect (`verification.py:2294`,
+docstring `:2301-2313`) inside the layer W2 is registering — *"it did not return
+'unknown,' it was never asked"* — and it is the concrete win W2-c buys.
+
+### 2.3 Keyed how — not by `MEASURE_KINDS`
+
+**`MEASURE_KINDS` cannot key the registry.** Four vocabularies say "which
+analysis applies" at HEAD and no two agree:
+
+| Vocabulary | Where | n | What it describes |
+|---|---|---|---|
+| `PROGRAM_PHASES` | `audio_measurement/program.py:153-155` | 3 | what `analyze_program_capture` dispatches on (`:6114-6128`) |
+| `journey.PHASE_*` | `crossover_v2/journey.py:49-131` | 11 | the session state machine; 8 reach `program_for_phase` |
+| `MEASURE_KINDS` | `crossover_v2/contracts.py:1430-1437` | 3 | capture *parameterization*; the engine record's `kind` (`session.py:695`) |
+| `STIMULUS_KINDS` | `audio_measurement/program.py:162` | 3 | **what a capture actually contains** |
+
+`MEASURE_KIND_VERIFY == PROGRAM_PHASE_VERIFY == "verify"` **by spelling only**.
+There is no `check` kind, and `baseline` and `candidate` are both MEASURE-phase
+— so a `kind → phase` map is 3→2 and loses CHECK entirely. §1's record table
+already flags `kind` as a name collision; this is the operational cost of it.
+
+The journey→program collapse is the same trap one level up: `program_for_phase`
+(`programs.py:415-471`) answers 8 journey phases with **4 program objects** by
+identity, and every cloud position gets the `verify`-phase object (`:456-459`).
+`AnalyzeCapture`'s required keyword-only `phase` (`crossover_v2_flow.py:1447-1461`)
+exists *because* of that collapse — #1855, 32 of 45 mislabeled sidecars. **Keep
+`phase` non-defaulted**, as §2 says.
+
+**So key the gate on CONTENT.** `results` is keyed by unit `name`; the gate reads
+the program's segments and the priors:
+
+| Unit | Gate reads |
+|---|---|
+| 1 `frame_ledger`, 2 `anchor`, 3 `locations` | ⊤ |
+| 4 `ambient` | a segment id `AMBIENT_SEGMENT_ID` (`program.py:178`) |
+| 5 `pilots` | ≥1 segment of `KIND_PILOT` |
+| 6 `gain_plan` | 4 ∧ 5 |
+| 7 `drift` | a segment id `sweep_w` (hard literal, `program_analysis.py:2953-2954`) |
+| 8 `driver_responses` | ≥1 `KIND_SWEEP` segment carrying a `role` |
+| 9 `alignment`, 10 `candidate` | `sweep_w` ∧ `sweep_t` ∧ `priors.crossover_fc_hz` |
+| 11 `summed_response` | a `KIND_SUMMED_SWEEP` segment (`sweep_verify`) |
+| 12 `summed_ripple` | 11 ∧ `priors.crossover_fc_hz` |
+| 13 `verify_tracking` | 12 ∧ `priors.predicted_sum` |
+| 14 `verify_absolute` | 11 ∧ `crossover_fc_hz` ∧ `priors.configured_crossover_response_by_role` |
+| 15 `capture_integrity` | 11 ∧ 1 |
+
+**Trap in the seed.** `KIND_SILENCE` (`program.py:158`) and `KIND_COURTESY_TONE`
+(`:166`) are both deliberately **outside** `STIMULUS_KINDS`, with the courtesy
+tone's exclusion comment (`:167-169`) saying it must stay invisible to the
+locate and deconvolution machinery. A gate that iterates all segments rather
+than `STIMULUS_KINDS` members counts a courtesy tone as content.
+
+### 2.4 The table — `packs.py`'s shape, with one deviation
+
+Agreeing with §2: a **module-level literal tuple** in a new `crossover_v2/`
+module, walked by a function. No decorator, no entry point —
+`measure_spec.py:157-158` and `refusal_copy.py:788` both argue the
+one-place-to-add-a-row property explicitly, and no decorator registry exists
+anywhere in `jasper/`.
+
+| Element | Prior art | Note |
+|---|---|---|
+| `AnalysisUnit(name, run, gate)` frozen dataclass | `CapabilityPack` `tools/packs.py:131` | `gate` at `:147` |
+| `ANALYSIS_UNITS` module-level tuple | `TOOL_PACKS` `packs.py:281` | order load-bearing (9→10, 11→12→13) and pinned, per `packs.py:14` |
+| derived name set, never re-listed | `STUB_CODES` `measure_spec.py:184`; `refusal_copy.py:1307-1311` | `frozenset(u.name for u in ANALYSIS_UNITS)` |
+| per-unit `try/except` isolation | `register_packs` `packs.py:437-441` | a raising unit is **failed**, not skipped — `PackOutcome`'s docstring draws that line at `:170-183` |
+| one wire shape | `outcomes_to_state` `packs.py:187` | for `/state` and the evidence packet |
+
+**The one deviation: `gate` returns a reason string, not `bool`.**
+`packs.py`'s `gate: Callable[[Any], bool]` cannot carry *which* input was
+missing, and W2-c requires exactly that. A bool gate plus a parallel
+reason-lookup is two writers of one fact. Signature:
+`gate: Callable[[AnalysisInputs], str]`, where `""` means run and any other
+value is the skip code. In-layer precedent: §2.2's `_verify_absolute_result`.
+
+**Home: an in-layer import, not a sixth seam** — agreeing with §2 and its
+argument. `EngineSeams` (`session_seams.py:275`) has exactly five fields
+(`:299-303`); adding `analyze` would make the registry injectable, i.e.
+optional, which is the opposite of wholesale.
+
+### 2.5 "Replace the CALLER" — four call sites, and only one flips in W2
+
+The phrase invites the wrong reading. Naming all four, with what dies at each:
+
+**Site A — `TuningSession.analyze` (`session.py:428`). THIS is W2's caller.**
+
+- *Flips:* `results={}` (`:461`) → the walker over `ANALYSIS_UNITS`.
+- *Dies:* the `{}` literal; the docstring's *"Today it runs nothing"* paragraph
+  (`:439-443`); `AnalyzeOutcome`'s forward reference to wave 2 (`:203-208`).
+- *Does NOT die:* the prior-bank merge (`:461-462`), the disclosure half, and
+  the OWED note at `:453-457` about a missing "before" — that gap is §3's
+  recommender work, not W2's, and deleting the note would claim a fix W2 did
+  not make.
+- **Semantic flip, and a trap:** `:203-208` today says read an empty `results`
+  as *"nothing is wired to run yet"*. After W2 an empty `results` means **every
+  gate said no**. The sentence must be rewritten in the same PR that lands the
+  walker, or the contract line will say the opposite of the code.
+
+**Site B — `bind_production_analyze._analyze`
+(`web/correction_crossover_v2.py:3074-3179`). Does not flip in W2.** It is the
+flow's seam and the flow lives to W5/W7. But it **owns the input assembly W2
+needs**, and that is a scheduling fact, not a detail:
+
+| Input | Assembled at |
+|---|---|
+| `samples`, `rate` | `:3081` `_wav_bytes_to_samples(wav)` (defined `web/…:2935`) |
+| `calibration` | `:3084-3105`; `curve` at `:3099`, WARN + `meta` annotation at `:3109-3126` |
+| `priors.mic_tier` | `:3141` `dataclasses.replace(priors, mic_tier=mic_tier_for_model(...))` |
+| `capture_report` | `:3159` `getattr(result, "capture_integrity", None)` |
+
+**That assembly is in `jasper/web/` and `crossover_v2/` imports nothing from
+`jasper/web/`** (verified: zero hits at HEAD; the dependency runs the other way —
+224 `crossover_v2` references in that one web module). W2's walker cannot import
+it, and lifting it is a W1/W5 move. §3 is about what that leaves W2 able to do.
+
+**Site C — `consume_capture` (`crossover_v2_flow.py:4183`). Does not flip in W2.**
+Its two dispatches have different owners and different waves:
+
+- the **priors** dispatch (`:4190-4198`, six-way) is analysis input assembly —
+  it becomes the registry's gate input in W5;
+- the **consumer** dispatch (`:4210-4227` → `_consume_check` `:4211`,
+  `_consume_measure` `:4213`, `_consume_lateral_pose` `:4215`,
+  `_consume_cloud_position` `:4217`, `_consume_entry_baseline` `:4225`,
+  `_consume_verify` `:4227`) is **verdict and state-machine logic, not
+  analysis**. It dies in W7's dissolution. A W2 PR that touches it is out of
+  scope and will collide with W5/W7.
+
+**Site D — `harmonic_evidence._read_one_capture` (`:831`, call `:867`). Does not
+flip in W2, and is where units 16–17 will come from.** R-4's stub
+(`measure_spec.py:84-86`) says the missing piece is *"the `analyze` consumer that
+turns the set into a measured floor"*. The **per-capture** half of that consumer
+already exists here; what does not exist is the reduction **across ladder rungs**
+(`stimulus_dbfs`). When unit 16 lands, `read_round_harmonics` becomes its
+duplicate unless the same PR retires it. Record it now; do not build it in W2.
