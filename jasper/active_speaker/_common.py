@@ -45,6 +45,16 @@ from typing import Any
 REGION_FC_MATCH_TOLERANCE_HZ = 1e-6
 
 
+# Why the commissioning eligibility receipt did not vouch for the applied
+# automatic crossover.  Three distinguishable causes, three remedies: nothing
+# was ever minted, something moved under a receipt that was, or the bytes on
+# disk will not parse.  Room correction runs in all three (ADR-0019, ruling
+# S10) — these name what cannot be CLAIMED, never what is refused.
+ROOM_AUTHORITY_RECEIPT_ABSENT = "active_commissioning_receipt_absent"
+ROOM_AUTHORITY_RECEIPT_STALE = "active_commissioning_receipt_stale"
+ROOM_AUTHORITY_RECEIPT_MALFORMED = "active_commissioning_receipt_malformed"
+
+
 ACTIVE_CROSSOVER_ROLE_PAIRS: dict[str, tuple[tuple[str, str], ...]] = {
     "active_2_way": (("woofer", "tweeter"),),
     "active_3_way": (("woofer", "mid"), ("mid", "tweeter")),

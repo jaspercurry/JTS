@@ -2627,3 +2627,66 @@ def test_active_speaker_startup_hold_warns_on_a_stale_marker(monkeypatch, tmp_pa
     assert r.status == "warn"
     assert "stale staged-startup hold" in r.detail
     assert "rolled_back" in r.detail
+
+
+def test_check_room_correction_authority_registered_in_sync_checks():
+    assert "check_room_correction_authority" in _registered_check_names()
+
+
+@pytest.mark.parametrize(
+    "acoustic, expected_status",
+    [
+        pytest.param({"required": False}, "ok", id="no_authority_needed"),
+        pytest.param(
+            {"required": True, "allowed": True, "authority": "manual_applied_profile"},
+            "ok",
+            id="banked",
+        ),
+        pytest.param(
+            {
+                "required": True,
+                "allowed": False,
+                "authority": None,
+                "reason": "active_commissioning_receipt_stale",
+                "detail": "re-mint it when convenient",
+            },
+            "warn",
+            id="unproven_runs_anyway",
+        ),
+    ],
+)
+def test_room_correction_authority_warns_but_never_fails(
+    monkeypatch, acoustic, expected_status,
+):
+    """The doctor line is the only place an unproven room run is visible.
+
+    Ruling S10 stopped the receipt from refusing the run, so nothing else
+    tells a household that the result it just measured is not banked as
+    verified. WARN, never FAIL: nothing is broken and nothing is stopped.
+    """
+    from jasper.active_speaker import setup_status
+
+    monkeypatch.setattr(
+        setup_status,
+        "read_active_speaker_setup_status",
+        lambda **_kwargs: {"acoustic_commissioning": acoustic},
+    )
+
+    r = doctor.check_room_correction_authority()
+
+    assert r.status == expected_status
+
+
+def test_room_correction_authority_warns_when_setup_cannot_be_read(monkeypatch):
+    from jasper.active_speaker import setup_status
+
+    def _unreadable(**_kwargs):
+        raise OSError("secret filesystem detail")
+
+    monkeypatch.setattr(
+        setup_status, "read_active_speaker_setup_status", _unreadable
+    )
+
+    r = doctor.check_room_correction_authority()
+
+    assert r.status == "warn"

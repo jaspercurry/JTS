@@ -25,10 +25,10 @@ from __future__ import annotations
 import asyncio
 import io
 import json
+import logging
 import threading
 import urllib.error
 import urllib.request
-from http import HTTPStatus
 from pathlib import Path
 from types import MappingProxyType, SimpleNamespace
 
@@ -1093,12 +1093,6 @@ def test_room_readiness_rejects_unversioned_active_snapshot_authority(monkeypatc
             },
         },
     )
-    monkeypatch.setattr(
-        correction_setup,
-        "_reserve_start_slot",
-        lambda: pytest.fail("legacy Active authority must reject before reserve"),
-    )
-
     readiness = correction_setup._room_readiness()
 
     assert readiness.allowed is False
@@ -1113,10 +1107,6 @@ def test_room_readiness_rejects_unversioned_active_snapshot_authority(monkeypatc
         },
     }
     assert "historical B2b" not in str(readiness.blocker)
-
-    with pytest.raises(correction_setup.RoomRequestFailure) as exc_info:
-        correction_setup._handle_start(_DummyJsonHandler())
-    assert exc_info.value.status == HTTPStatus.SERVICE_UNAVAILABLE
 
 
 def test_room_readiness_accepts_versioned_manual_active_authority(monkeypatch):
@@ -1296,10 +1286,6 @@ def test_room_readiness_unknown_authority_is_retryable_unavailable(monkeypatch):
         "href": "/correction/crossover/",
     }
     assert "raw topology diagnostic" not in str(readiness.blocker)
-
-    with pytest.raises(correction_setup.RoomRequestFailure) as exc_info:
-        correction_setup._handle_start(_DummyJsonHandler())
-    assert exc_info.value.status == HTTPStatus.SERVICE_UNAVAILABLE
 
 
 def test_room_readiness_read_failure_has_bounded_retry(monkeypatch):
@@ -1990,6 +1976,56 @@ def test_start_defaults_to_configured_relay_before_session_admission(
     assert correction_setup._start_in_progress is False
 
 
+def test_start_keeps_an_unsafe_graph_refusal_typed_for_the_dispatcher(
+    monkeypatch,
+):
+    """An unsafe measurement baseline must not reach the household as a 500.
+
+    `CorrectionRuntimeSafetyError` subclasses `RuntimeError`, and `/start`'s
+    generic arm re-raised `RuntimeError(str(exc))` — flattening the type, so
+    the dispatcher's typed arm never fired and the request degraded to an
+    untyped error with generic retryable copy. That matters more now that
+    `/start` no longer refuses ahead of this point: this is the surface that
+    answers for an unready speaker.
+    """
+    from jasper.correction.runtime_safety import CorrectionRuntimeSafetyError
+    from jasper.web import correction_setup
+
+    monkeypatch.setattr(
+        correction_setup,
+        "_room_correction_readiness",
+        lambda: _READY_ROOM_CORRECTION_SETUP,
+    )
+    monkeypatch.setattr(correction_setup, "_start_in_progress", False)
+
+    async def restore_level_match_volume(_setter):
+        return True
+
+    monkeypatch.setattr(
+        correction_setup,
+        "_get_or_create_session",
+        lambda: SimpleNamespace(
+            restore_level_match_volume=restore_level_match_volume,
+        ),
+    )
+    monkeypatch.setattr(
+        correction_setup,
+        "_replace_session",
+        lambda **_kwargs: SimpleNamespace(browser_audio_report={"failed": False}),
+    )
+    monkeypatch.setattr(correction_setup, "_camilla", lambda: object())
+
+    def _unsafe(*_args, **_kwargs):
+        raise CorrectionRuntimeSafetyError("graph would be unsafe")
+
+    monkeypatch.setattr(correction_setup, "_load_measurement_baseline", _unsafe)
+
+    with pytest.raises(CorrectionRuntimeSafetyError):
+        correction_setup._handle_start(_DummyJsonHandler())
+
+    assert correction_setup._start_in_progress is False
+
+
 def test_start_rejects_explicit_relay_when_it_is_not_configured(monkeypatch):
     from jasper.capture_relay import correction_adapter
     from jasper.web import correction_setup
@@ -2039,97 +2075,89 @@ def test_start_handler_rejects_reserved_start_before_state_transition(monkeypatc
         correction_setup._clear_start_slot()
 
 
-def test_start_handler_rejects_uncommissioned_active_speaker_before_reservation(
-    monkeypatch,
+@pytest.mark.parametrize(
+    "readiness_payload, expected_reason",
+    [
+        pytest.param(
+            {
+                "active": True,
+                "room_correction_allowed": False,
+                "acoustic_commissioning": {
+                    "decision_schema_version": 1,
+                    "authority": None,
+                    "allowed": False,
+                    "status": "incomplete",
+                    "reason": "active_commissioning_receipt_absent",
+                    "detail": (
+                        "Finish the acoustic combined-crossover check before "
+                        "room correction."
+                    ),
+                    "setup_href": "/correction/crossover/",
+                },
+            },
+            "active_commissioning_receipt_absent",
+            id="uncommissioned_active",
+        ),
+        pytest.param(
+            {
+                "active": False,
+                "configured": False,
+                "room_correction_allowed": False,
+                "acoustic_commissioning": {
+                    "decision_schema_version": 1,
+                    "authority": None,
+                    "allowed": False,
+                    "status": "incomplete",
+                    "reason": "output_topology_unconfigured",
+                    "detail": "Choose and save a speaker layout first.",
+                    "setup_href": "/sound/setup/",
+                },
+            },
+            "output_topology_unconfigured",
+            id="unconfigured_layout",
+        ),
+    ],
+)
+def test_start_discloses_unproven_speaker_readiness_instead_of_refusing(
+    monkeypatch, caplog, readiness_payload, expected_reason,
 ):
+    """An un-vouched speaker decision no longer stops the measurement.
+
+    Ruling S10: outside the clamps, an unproven or stale fact discloses and
+    never stops the work. ``/start`` used to raise 409/503 here, so a speaker
+    that was playing fine could not be measured. It now reaches the session
+    reservation, and the disclosure the idle screen and ``/envelope`` publish
+    is still there for as long as it is true.
+    """
     from jasper.web import correction_setup
 
     monkeypatch.setattr(
-        correction_setup,
-        "_room_correction_readiness",
-        lambda: {
-            "active": True,
-            "room_correction_allowed": False,
-            "acoustic_commissioning": {
-                "decision_schema_version": 1,
-                "authority": None,
-                "allowed": False,
-                "status": "incomplete",
-                "reason": "active_summed_acoustic_evidence_incomplete",
-                "detail": (
-                    "Finish the acoustic combined-crossover check before room "
-                    "correction."
-                ),
-                "setup_href": "/correction/crossover/",
-            },
-        },
+        correction_setup, "_room_correction_readiness", lambda: readiness_payload
     )
-    monkeypatch.setattr(
-        correction_setup,
-        "_reserve_start_slot",
-        lambda: pytest.fail("readiness must reject before session reservation"),
-    )
+    reserved: list[str] = []
+
+    def _reserve() -> str:
+        # A blocking state ends the run at the reservation, which is one step
+        # past the gate under test — no sweep, no session.
+        reserved.append("reached")
+        return "measuring"
+
+    monkeypatch.setattr(correction_setup, "_reserve_start_slot", _reserve)
     monkeypatch.setattr(
         correction_setup,
         "_replace_session",
-        lambda **_kwargs: pytest.fail("readiness must reject before session creation"),
+        lambda **_kwargs: pytest.fail("the reservation must end this run"),
     )
 
-    with pytest.raises(correction_setup.RoomRequestFailure) as exc_info:
-        correction_setup._handle_start(_DummyJsonHandler())
+    with caplog.at_level(logging.WARNING):
+        with pytest.raises(correction_setup.RequestConflict) as exc_info:
+            correction_setup._handle_start(_DummyJsonHandler())
 
-    assert exc_info.value.status == HTTPStatus.CONFLICT
-    assert exc_info.value.failure == {
-        "code": "speaker_setup_incomplete",
-        "text": "Finish speaker setup first.",
-        "retryable": False,
-        "recovery_action": {
-            "label": "Open speaker setup",
-            "href": "/correction/crossover/",
-        },
-    }
-    assert "combined-crossover" not in str(exc_info.value.failure)
-
-
-def test_start_handler_rejects_unconfigured_speaker_before_reservation(
-    monkeypatch,
-):
-    """Room measurement cannot start before the household saves a layout."""
-    from jasper.web import correction_setup
-
-    monkeypatch.setattr(
-        correction_setup,
-        "_room_correction_readiness",
-        lambda: {
-            "active": False,
-            "configured": False,
-            "room_correction_allowed": False,
-            "acoustic_commissioning": {
-                "decision_schema_version": 1,
-                "authority": None,
-                "allowed": False,
-                "status": "incomplete",
-                "reason": "output_topology_unconfigured",
-                "detail": "Choose and save a speaker layout first.",
-                "setup_href": "/sound/setup/",
-            },
-        },
-    )
-    monkeypatch.setattr(
-        correction_setup,
-        "_reserve_start_slot",
-        lambda: pytest.fail("readiness must reject before session reservation"),
-    )
-
-    with pytest.raises(correction_setup.RoomRequestFailure) as exc_info:
-        correction_setup._handle_start(_DummyJsonHandler())
-
-    assert exc_info.value.status == HTTPStatus.CONFLICT
-    assert exc_info.value.failure["code"] == "speaker_setup_incomplete"
-    assert exc_info.value.failure["recovery_action"] == {
-        "label": "Open speaker setup",
-        "href": "/sound/setup/",
-    }
+    assert not isinstance(exc_info.value, correction_setup.RoomRequestFailure)
+    assert reserved == ["reached"]
+    assert "event=correction.start_unproven_speaker_readiness" in caplog.text
+    assert f"reason={expected_reason}" in caplog.text
+    assert correction_setup._room_readiness().blocker is not None
 
 
 def test_room_readiness_blocks_unconfigured_until_passive_layout_is_saved(
