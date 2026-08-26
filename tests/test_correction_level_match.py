@@ -550,6 +550,14 @@ def test_describe_ramp_refusal_unknown_code_falls_back_but_includes_the_code():
 
 
 def test_level_match_refused_str_is_the_homeowner_message():
+    """Hardware run 20: a measurement refusal's ``str(exc)`` is what reaches
+    the household when a caller falls back to the generic ``str(exc)`` path --
+    the phone's ``sweep_failed`` host event and the wizard's relay status line
+    (``jasper.web.correction_setup._relay_failure_message``) both do. So the
+    mapping from code to household copy must happen AT THE RAISE SITE: the
+    exception's own ``str`` is the mapped sentence, never a raw diagnostic.
+    """
+
     refusal = describe_ramp_refusal("agc_suspected")
     exc = LevelMatchRefused(refusal)
     assert str(exc) == refusal.user_message
@@ -1228,7 +1236,7 @@ async def test_session_ensure_and_restore_share_one_transition_lock(tmp_path):
     assert outcome.ramp.restored is True
 
 
-async def test_crossover_lease_restores_then_scopes_target_to_sweep_window():
+async def test_crossover_lease_restores_then_exposes_the_geometry_lock():
     from jasper.web.correction_crossover_backend import CrossoverLevelLease
 
     lease = CrossoverLevelLease()
@@ -1260,20 +1268,17 @@ async def test_crossover_lease_restores_then_scopes_target_to_sweep_window():
         "tone_frequency_hz": 250.0,
         "commissioning_gain_db": 0.0,
     }])
-    chain._vol = -27.0
-    assert await lease.acquire_driver_sweep_volume(
-        "mono", "woofer", chain.get_vol, chain.set_vol
-    ) is True
-    assert chain._vol == pytest.approx(outcome.ramp.locked_main_volume_db)
+    # The lock the run produced is readable per geometry afterwards, and
+    # reading it neither moves the volume nor undoes the restore.
+    assert lease.driver_sweep_locked_main_volume_db(
+        "mono", "woofer", capture_geometry="near_field"
+    ) == pytest.approx(outcome.ramp.locked_main_volume_db)
+    assert chain._vol == pytest.approx(-30.0)
     assert outcome.ramp.restored is True
-    assert (await lease.finish_sweep_volume(chain.set_vol, chain.get_vol)).value == (
-        "exact_restored"
-    )
-    assert chain._vol == pytest.approx(-27.0)
-    assert outcome.ramp.restored is True
+    assert lease.unresolved_volume_safety is None
 
 
-async def test_crossover_lease_accepts_and_reasserts_bounded_low_lock():
+async def test_crossover_lease_accepts_bounded_low_lock():
     from jasper.web.correction_crossover_backend import CrossoverLevelLease
 
     lease = CrossoverLevelLease()
@@ -1305,13 +1310,12 @@ async def test_crossover_lease_accepts_and_reasserts_bounded_low_lock():
     assert outcome.bounded_low_level is True
     assert outcome.ramp.restored is True
     assert chain._vol == pytest.approx(original)
-    assert await lease.acquire_driver_sweep_volume(
-        "mono", "woofer", chain.get_vol, chain.set_vol
-    ) is True
-    assert chain._vol == pytest.approx(cap)
-    assert (await lease.finish_sweep_volume(chain.set_vol, chain.get_vol)).value == (
-        "exact_restored"
-    )
+    # A bounded-low run still locks at the dynamic cap, and that lock is the
+    # value the ledger hands back -- acceptance is not a "no lock" outcome.
+    assert outcome.ramp.locked_main_volume_db == pytest.approx(cap)
+    assert lease.driver_sweep_locked_main_volume_db(
+        "mono", "woofer", capture_geometry="near_field"
+    ) == pytest.approx(cap)
     assert chain._vol == pytest.approx(original)
 
 

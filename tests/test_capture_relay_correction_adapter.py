@@ -2435,14 +2435,10 @@ def _refused_lease(*, correction_writes: int = 1):
     Builds on ``_completed_insufficient_lease`` (same fully-locked,
     ``ready=True`` shape the restart's ``continuing`` gate needs) and
     additionally marks the lease's own most recent solve as having refused
-    for this target -- exactly what a real ``_solve_driver_level`` call
-    leaves on ``self._solve_refusal`` right before ``LevelSolveRefused``
-    propagates (see ``test_refusal_surfaces_on_level_match_snapshot`` in
-    tests/test_correction_crossover_backend_level_solve.py). The correction
-    writes model set 1's insufficient finalization (#1555's own
-    "completed_insufficient" trigger); the refusal models set 2's solve --
-    now louder from that correction -- still coming up short against the
-    room.
+    for this target via ``self._solve_refusal``. The correction writes model
+    set 1's insufficient finalization (#1555's own "completed_insufficient"
+    trigger); the refusal models set 2's solve -- now louder from that
+    correction -- still coming up short against the room.
     """
 
     lease = _completed_insufficient_lease(correction_writes=correction_writes)

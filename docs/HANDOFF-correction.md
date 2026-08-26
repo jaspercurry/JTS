@@ -946,8 +946,9 @@ never redirected.
   `solve_level` call the non-exhausted path already ran) — previously it
   paired `level_solver.MIC_TARGET_PEAK_DBFS` (a dBFS mic-peak target) with a
   raw measured mic peak (also dBFS, not a dB SNR figure), a unit mismatch
-  flagged in #1552's review. See
-  `correction_crossover_backend._exhausted_refusal_snr_terms`.
+  flagged in #1552's review. The helper that carried it
+  (`_exhausted_refusal_snr_terms`) is deleted — the whole closed-loop
+  level-solve path had no production caller.
 
   The first JTS3 H2 attempt exposed and closed a comparison-validity bug:
   the migrated relay screen had weakened the canonical per-driver placement
