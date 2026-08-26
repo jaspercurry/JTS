@@ -19,9 +19,10 @@ because "unchanged" is a finding too.
 
 ## 0. Where this brief disagrees with §1
 
-Ten. Group A (D1–D5) are shape questions W1-a has to answer and §1 leaves
-partly open. Group B (D6–D10) are **counts that are wrong at HEAD** — and D6 is
-the one that changes a work item's title.
+Eleven. Group A (D1–D5) are shape questions W1-a has to answer and §1 leaves
+partly open. Group B (D6–D10) are **counts that are wrong at HEAD** — D6 is the
+one that changes a work item's title. **D11** is a citation block stale enough to
+need its own table, and it lives with its subject in §3.1.
 
 Every one was verified by reading the file, not by taking a prior document's
 word. Where §1 is right, this brief says so instead of re-asserting it as new.
@@ -44,7 +45,7 @@ word. Where §1 is right, this brief says so instead of re-asserting it as new.
 | **D7** | *"four via `evidence_packet.RING_SIDECAR_GLOB` (`evidence_packet`, `harmonic_evidence`, `feature_classifier`, `round_views`)"* (`:231-233`) | **THREE.** `round_views` contains **no `glob` call at all**. It reaches the ring *indirectly*, by passing `dump_ring_dir=` (`round_views.py:243`) into `build_crossover_evidence_packet` — i.e. through reader #1. Its `:55` is a docstring line | the three real readers are `evidence_packet.py:1246` (`_capture_snr_block` `:1191`), `harmonic_evidence.py:603` (`_bind_measure_captures` `:582`), `feature_classifier.py:456` (`load_round_captures` `:414`) |
 | **D8** | *"three that glob flat `*.json`"* (`:233-236`) | **FOUR.** The three named are right; a fourth is missed: `scripts/derive-crossover-incident-fixture.py:138` (`_measure_sidecar` `:121`), globbing `*_measure_*.json` over a **pinned frozen bank** of the flat ring | it depends on the `{stamp}_{phase}_{device}` filename scheme, so it breaks on the naming change as well as on the deletion |
 | — | *"**seven** readers"* (`:230`) | **seven** — 3 + 4 | the total survives; **both halves of it are wrong.** Do not let the matching total read as confirmation |
-| **D9** | *"`level_db` and `stimulus_dbfs` live only in the debug ring today, through `CaptureProvenance.to_dict` (`capture_provenance.py:117-134`)"* (`:162-164`) | **Neither name exists in that file** — zero occurrences. `to_dict` (`:117`, body `:119-134`) emits `main_volume_db`, `session_volume_db`, `graph{kind,config_path,fingerprint}`, `stimulus{program_id,phase,wav_sha256,peak_dbfs}` | §1's *conclusion* holds and is if anything understated (§4.3); its *field names* are the engine's, not the ring's, and a builder grepping for them finds nothing |
+| **D9** | *"`level_db` and `stimulus_dbfs` live only in the debug ring today, through `CaptureProvenance.to_dict` (`capture_provenance.py:117-134`)"* (`:162-164`) | **Neither name exists in that file** — zero occurrences. `to_dict` (`:117`, body `:119-134`) emits `main_volume_db`, `session_volume_db`, `graph{kind,config_path,fingerprint}`, `stimulus{program_id,phase,wav_sha256,peak_dbfs}` | §1's *conclusion* holds and is if anything understated (§3.3); its *field names* are the engine's, not the ring's, and a builder grepping for them finds nothing |
 | **D10** | *"three readers re-pair the WAV by `parent.parent / "wav" / stem` written out verbatim in three places"* (`:248-250`) | **TWO:** `harmonic_evidence.py:613`, `feature_classifier.py:482`. The other two pairings are **different rules** — `severed-twin-replay.py:249` uses `sidecar_path.with_suffix(".wav")` (flat sibling, the un-split ring), and `harmonic-distortion-replay.py:266-271` binds by sha256 content across a separate `--captures` directory with no path derivation at all | reader #1 (`_capture_snr_block`) never touches a WAV |
 
 **Two §1 numbers re-checked and unchanged at HEAD**, so the builder does not
@@ -63,7 +64,7 @@ both into it. What survived is a **comment** whose wording still matches.
 That is §8's *"re-derive the line numbers"* trap (`:1162-1164`) in its most
 expensive form: the cited line still exists and still says the quoted words, so a
 spot-check that reads the line without its enclosing block **confirms a false
-premise**. The rule it argues for is §7.1.
+premise**. The rule it argues for is §7's trap 1.
 
 **W1-c is three sites in, not four**, and §1 `:60-62`'s *"leaves a second writer
 behind"* hazard **does not exist** — the lift is smaller and safer than scheduled.
@@ -434,9 +435,10 @@ finds nothing and may conclude §1 was already satisfied. It was not.
    (`:351`) is **strict in both directions** — unknown keys `:365`, missing keys
    `:368`, and per-take `set(take) != set(_TAKE_FIELDS)` at `:384`. **Adding a
    name to `_TAKE_FIELDS` (`:118-119`) invalidates every previously written
-   index.** Since `read_position_cycle` and `takes_by_position` have zero
-   production callers (§4.4), the cost is test-only today — but say so in the PR
-   rather than discovering it.
+   index.** `read_position_cycle` (`:351`) and `takes_by_position` (`:392`) have
+   **zero production callers** at HEAD — only `tests/test_run_crossover_round.py`
+   and `tests/test_crossover_v2_position_cycle.py` — so the cost is test-only
+   today. Say so in the PR rather than discovering it.
 2. **`_take_identity`'s six keys are shared by all three builders.** A field
    that belongs on every take goes there (one edit, three records); a
    kind-specific field goes in the builder. `graph_fingerprint` is on two of
