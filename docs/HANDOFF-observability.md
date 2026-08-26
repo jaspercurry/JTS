@@ -177,12 +177,13 @@ window; this bites lab Pis first.
     (#2376). Only that detector's `errors` reach the parked wording.
   - **The override chain refines, it does not stack opinions.** A stopped
     CamillaDSP reaches `overall` (the signal path cannot see it: fan-in and
-    outputd both keep looping when the stage between them disappears, so
-    "Signal path clean" beside "DSP engine is not running" would be an
+    outputd both keep looping when the stage between them disappears, so a
+    clean-path headline beside a stopped-processing incident would be an
     affirmative wrong answer); `jasper-outputd` and `jasper-voice` are excluded
     because they park `inactive` **by design**. The undeclared-hardware
     override (#2812) runs last and replaces only the two generic outputd
-    headlines, requires both the reconciler's adoption gate and a genuine
+    shapes (`_UNDECLARED_OUTPUT_CODES`), requires both the reconciler's
+    adoption gate and a genuine
     declared-topology mismatch, and rewrites the matching `path.*` incident row
     with identical wording so history and headline cannot disagree.
   - Incident lifecycle lives in

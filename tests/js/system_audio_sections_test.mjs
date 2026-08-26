@@ -101,11 +101,11 @@ const unknownStreamText = strings(api.currentStreamBody({
   overall: {
     status: "unknown",
     headline: "Playback activity unavailable",
-    detail: "JTS could not read the mux's canonical source state.",
+    detail: "JTS cannot tell which source is playing right now.",
   },
 })).join(" | ");
 assert.match(unknownStreamText, /Playback activity unavailable/);
-assert.match(unknownStreamText, /canonical source state/);
+assert.match(unknownStreamText, /which source is playing/);
 assert.doesNotMatch(unknownStreamText, /No active stream/,
   "missing activity truth never renders as confident idle");
 
@@ -115,17 +115,16 @@ assert.doesNotMatch(unknownStreamText, /No active stream/,
 // nothing was wrong. Both now carry the backend's own parked sentence.
 const PARKED = {
   status: "issue",
-  headline: "Speaker is parked — audio cannot reach the drivers",
+  headline: "Sound cannot come out of the speaker",
   detail:
-    "post-DSP route disconnected: Camilla playback=" +
-    "'outputd_active_content_playback' requires outputd capture=" +
-    "'outputd_active_content_capture', got 'outputd_content_capture'. " +
-    "InnoMaker HiFi AMP Pro cannot drive an active speaker layout; choose a " +
-    "passive speaker layout at /sound/setup/",
+    "InnoMaker HiFi AMP Pro cannot drive an active speaker layout, so " +
+    "nothing can play. Choose a passive speaker layout at /sound/setup/ " +
+    "(passive sends full-range to every output; requires a built-in passive " +
+    "crossover) or attach an active-capable DAC.",
   active_source: null,
 };
 const parkedStreamText = strings(api.currentStreamBody({ overall: PARKED })).join(" | ");
-assert.match(parkedStreamText, /Speaker is parked/);
+assert.match(parkedStreamText, /Sound cannot come out/);
 assert.match(parkedStreamText, /\/sound\/setup\//);
 assert.doesNotMatch(parkedStreamText, /No active stream/,
   "a speaker that cannot reach its drivers never renders as confident idle");
@@ -136,7 +135,7 @@ assert.equal(parkedAlert.headline, PARKED.headline,
   "the alert carries the backend's sentence verbatim — it composes none of its own");
 const parkedAlertNode = api.outputAlertBody(parkedAlert);
 const parkedAlertText = strings(parkedAlertNode).join(" | ");
-assert.match(parkedAlertText, /Speaker is parked/);
+assert.match(parkedAlertText, /Sound cannot come out/);
 assert.match(parkedAlertText, /InnoMaker HiFi AMP Pro/);
 assert.match(parkedAlertText, /Needs attention/);
 assert.equal(parkedAlertNode.props.style["--tone"], "var(--status-danger)",

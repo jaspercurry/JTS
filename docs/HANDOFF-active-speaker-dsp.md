@@ -201,7 +201,8 @@ above; this is only the entry points:
   DAC that declares no active outputd lane, active commissioning cannot
   complete there),
   `/state.resilience.active_speaker_parked` carries the same pair, and
-  `/state.audio_health` keeps reporting "Speaker is parked".
+  `/state.audio_health` keeps reporting the parked shape
+  (`audio_health.PARKED_HEADLINE`).
 - **Re-commissioning a committed box: the reconcile must not restore the
   baseline over the staged anchor mid-load.** `load_protected_startup_config`
   writes the all-muted staged startup anchor to the durable statefile and then

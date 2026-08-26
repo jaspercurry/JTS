@@ -6,6 +6,7 @@ from __future__ import annotations
 
 import json
 import logging
+import re
 import threading
 import urllib.request
 from http.server import ThreadingHTTPServer
@@ -231,7 +232,7 @@ def test_usb_l2_degrades_latency_without_claiming_continuity_failed() -> None:
     assert health["overall"]["status"] == "warn"
     usb = next(source for source in health["sources"] if source["id"] == "usbsink")
     assert usb["headline"] == "Playing"
-    assert usb["detail"] == "Using the shared audio path."
+    assert usb["detail"] == "Playing through the speaker."
     assert usb["timing"]["headline"] == "Stable fallback · latency increased"
 
 
@@ -344,7 +345,6 @@ def test_failed_inactive_renderer_is_not_disguised_as_idle() -> None:
 # digital silence with every daemon "healthy". ``transport_coherence_errors``
 # already detected it for doctor; these pin that /state stops calling it ready.
 
-_PARKED_HEADLINE = "Speaker is parked — audio cannot reach the drivers"
 # #2285 P2 (A6) retired the snd-aloop ACTIVE lane's outputd capture PAIRING
 # along with the endpoint, so this shape no longer reports a capture MISMATCH —
 # there is no registered capture to mismatch against. The unpaired-device arm of
@@ -447,7 +447,7 @@ def _armed_active_transport_read(monkeypatch, tmp_path, **env_overrides):
 
 
 def test_armed_active_ring_is_not_reported_as_parked(monkeypatch, tmp_path) -> None:
-    """#2376: an armed roleful box must not be told its audio cannot reach the drivers.
+    """#2376: an armed roleful box must not be reported as parked.
 
     Observed on jts3 while audio was demonstrably playing: ``/state.audio_health``
     said "parked" with "transport plan is loopback but
@@ -472,8 +472,7 @@ def test_armed_active_ring_is_not_reported_as_parked(monkeypatch, tmp_path) -> N
 
     assert state["coherence_errors"] == []
     health = _compose(transport=state)
-    assert health["signal_path"]["headline"] != _PARKED_HEADLINE
-    assert health["overall"]["headline"] != _PARKED_HEADLINE
+    assert health["signal_path"]["code"] != "transport_parked"
 
 
 def test_armed_active_ring_reports_a_lagging_ring_path_as_the_arm_waypoint(
@@ -488,9 +487,9 @@ def test_armed_active_ring_reports_a_lagging_ring_path_as_the_arm_waypoint(
 
     The verdict is a NOTE, and the headline is deliberately not PARKED. A ring
     path lagging its marker is the first-arm waypoint: the path is the marker's
-    projection and the next pass of its single writer converges it, so telling a
-    household "audio cannot reach the drivers" would name a permanent fault where
-    there is a transient one. The window is not unobserved — the note rides this
+    projection and the next pass of its single writer converges it, so telling
+    a household its speaker cannot make sound would name a permanent fault
+    where there is a transient one. The window is not unobserved — the note rides this
     same surface verbatim, and outputd refusing to attach is separately loud.
     """
     from jasper.fanin_coupling import (
@@ -512,10 +511,10 @@ def test_armed_active_ring_reports_a_lagging_ring_path_as_the_arm_waypoint(
     assert DEFAULT_OUTPUTD_RING_PATH in note
     assert DEFAULT_OUTPUTD_ACTIVE_RING_PATH in note
 
-    # The note itself moves NOTHING on the card. Pinned as the exact headline
-    # rather than as "not parked": an inequality passes for every wrong headline
+    # The note itself moves NOTHING on the card. Pinned as the exact shape
+    # rather than as "not parked": an inequality passes for every wrong shape
     # too, including a regression that swapped one alarm for another.
-    assert _compose(transport=state)["signal_path"]["headline"] == "Signal path clean"
+    assert _compose(transport=state)["signal_path"]["code"] == "clean"
 
     # ...and THE REAL WAYPOINT STATE, which the read above does not model.
     # outputd refuses the crossed pair at startup and parks
@@ -530,9 +529,8 @@ def test_armed_active_ring_reports_a_lagging_ring_path_as_the_arm_waypoint(
         issues=[],
         sampled_at=1000.0,
     )
-    assert waypoint["signal_path"]["headline"] == "Final output unavailable"
-    assert waypoint["overall"]["headline"] == "Final output unavailable"
-    assert waypoint["signal_path"]["headline"] != _PARKED_HEADLINE
+    assert waypoint["signal_path"]["code"] == "output_absent"
+    assert waypoint["overall"]["headline"] == waypoint["signal_path"]["headline"]
 
 
 def test_audio_health_reads_the_coupling_doctor_reads(monkeypatch, tmp_path) -> None:
@@ -631,11 +629,12 @@ def test_transport_coherence_error_is_not_disguised_as_audio_is_ready() -> None:
     })
 
     assert health["signal_path"]["status"] == "issue"
-    assert health["signal_path"]["headline"] == _PARKED_HEADLINE
-    assert _ROUTE_DISCONNECTED in health["signal_path"]["detail"]
+    assert health["signal_path"]["code"] == "transport_parked"
     assert health["overall"]["status"] == "issue"
-    assert health["overall"]["headline"] == _PARKED_HEADLINE
-    assert health["overall"]["headline"] != "Audio is ready"
+    assert health["overall"]["headline"] == health["signal_path"]["headline"]
+    # The contradiction itself is operator evidence and stays off the card
+    # (#2472); doctor and the transport evidence keep it.
+    assert _ROUTE_DISCONNECTED not in health["signal_path"]["detail"]
 
 
 def test_parked_status_is_the_value_the_dashboard_alerts_on() -> None:
@@ -684,7 +683,7 @@ def test_parked_detail_names_the_dac_that_cannot_drive_an_active_layout() -> Non
     })
 
     detail = health["signal_path"]["detail"]
-    assert _ROUTE_DISCONNECTED in detail
+    assert health["signal_path"]["code"] == "transport_parked"
     assert "InnoMaker HiFi AMP Pro" in detail
     assert "/sound/setup/" in detail
     # Passive is not a free remedy: it sends full-range into every assigned
@@ -710,9 +709,7 @@ def test_live_output_failure_keeps_priority_over_the_parked_reason() -> None:
         },
     )
 
-    assert health["signal_path"]["headline"] == (
-        "Final audio output has stopped progressing"
-    )
+    assert health["signal_path"]["code"] == "output_stalled"
 
 
 def _output_hardware(
@@ -904,7 +901,7 @@ def test_setup_hint_does_not_fire_when_declared_already_matches_observed() -> No
         ),
     )
 
-    assert health["overall"]["headline"] == "Final output unavailable"
+    assert health["signal_path"]["code"] == "output_absent"
     assert health["overall"]["headline"] != audio_health.UNDECLARED_HARDWARE_HEADLINE
 
 
@@ -923,7 +920,7 @@ def test_missing_output_hardware_record_leaves_the_generic_message() -> None:
         output_topology_snapshot=_declared_topology(),
     )
 
-    assert health["overall"]["headline"] == "Final output unavailable"
+    assert health["signal_path"]["code"] == "output_absent"
 
 
 def test_missing_output_topology_leaves_the_generic_message() -> None:
@@ -940,7 +937,7 @@ def test_missing_output_topology_leaves_the_generic_message() -> None:
         output_topology_snapshot=None,
     )
 
-    assert health["overall"]["headline"] == "Final output unavailable"
+    assert health["signal_path"]["code"] == "output_absent"
 
 
 def test_unready_output_hardware_record_has_no_setup_hint() -> None:
@@ -971,7 +968,7 @@ def test_unready_output_hardware_record_has_no_setup_hint() -> None:
         output_topology_snapshot=_declared_topology(),
     )
 
-    assert health["overall"]["headline"] == "Final output unavailable"
+    assert health["signal_path"]["code"] == "output_absent"
 
 
 def test_healthy_outputd_suppresses_the_setup_hint_even_with_a_ready_record() -> None:
@@ -1011,9 +1008,7 @@ def test_setup_hint_yields_to_a_more_specific_live_output_issue() -> None:
         output_topology_snapshot=_declared_topology(),
     )
 
-    assert health["overall"]["headline"] == (
-        "Final audio output has stopped progressing"
-    )
+    assert health["signal_path"]["code"] == "output_stalled"
 
 
 def test_transport_state_pairs_the_route_error_with_the_dac_capability_reason(
@@ -1105,7 +1100,7 @@ def test_parked_graph_keeps_the_speaker_reported_as_parked(
     assert set(state) == set(audio_health._empty_transport())
 
     health = _compose(transport=state)
-    assert health["signal_path"]["headline"] == _PARKED_HEADLINE
+    assert health["signal_path"]["code"] == "transport_parked"
     assert health["overall"]["headline"] != "Audio is ready"
 
 
@@ -1142,7 +1137,7 @@ def test_unconfigured_parked_graph_names_the_layout_action(monkeypatch, tmp_path
         f"({UNCONFIGURED_PARKED_EXIT})"
     ]
     health = _compose(transport=state)
-    assert health["signal_path"]["headline"] == _PARKED_HEADLINE
+    assert health["signal_path"]["code"] == "transport_parked"
     assert health["overall"]["headline"] != "Audio is ready"
 
 
@@ -1377,8 +1372,7 @@ def test_cleanly_stopped_camilla_is_surfaced_as_a_path_issue() -> None:
     issue = issues[0]
     assert issue["severity"] == "issue"
     assert issue["scope"] == "path"
-    assert "jasper-camilla.service reports inactive/dead" in issue["detail"]
-    assert "jasper-camilla-recover" in issue["detail"]
+    assert issue["key"] == "path.camilla_stopped"
     # `AudioHealthSampler._tick` drops availability-impact issues whose
     # source_id is not the active source. A path-scoped continuity issue is
     # kept, which is what makes this reach `/state` and the /system audio card.
@@ -1395,7 +1389,7 @@ def test_failed_camilla_is_surfaced_by_the_same_issue() -> None:
     })
 
     assert len(issues) == 1
-    assert "reports failed/failed" in issues[0]["detail"]
+    assert issues[0]["key"] == "path.camilla_stopped"
 
 
 @pytest.mark.parametrize("active_state", ["active", "activating", "reloading"])
@@ -1466,22 +1460,20 @@ def test_stopped_camilla_is_not_reported_as_a_clean_signal_path() -> None:
     """The whole payload has to agree (#2163).
 
     Before this, `_signal_path` read only fan-in and outputd — neither of
-    which notices CamillaDSP leaving — so one response asserted BOTH
-    "Signal path clean" / "Audio is ready" AND a "DSP engine is not running"
+    which notices CamillaDSP leaving — so one response reported a clean path
+    and an idle "ready" overall while carrying its own stopped-processing
     incident. An affirmative wrong answer is worse than the silence the issue
     was filed against.
     """
     health = _compose_camilla(_CAMILLA_CLEAN_STOP)
 
     assert health["signal_path"]["status"] == "issue"
-    assert health["signal_path"]["headline"] == audio_health.STOPPED_DSP_HEADLINE
-    assert "nothing will play until it starts" in health["signal_path"]["detail"]
+    assert health["signal_path"]["code"] == "camilla_stopped"
 
     assert health["overall"]["status"] == "issue"
-    assert health["overall"]["headline"] == audio_health.STOPPED_DSP_HEADLINE
-    # The two phrases this response must never carry while the DSP is dead.
+    assert health["overall"]["headline"] == health["signal_path"]["headline"]
+    # The state this response must never claim while the DSP is dead.
     assert health["overall"]["headline"] != "Audio is ready"
-    assert health["signal_path"]["headline"] != "Signal path clean"
 
 
 def test_stopped_camilla_outranks_a_source_that_looks_like_it_is_playing() -> None:
@@ -1536,27 +1528,27 @@ def test_a_live_path_failure_still_outranks_a_stopped_camilla() -> None:
     )
 
     assert health["signal_path"]["status"] == "issue"
-    assert health["signal_path"]["headline"] == (
-        "Final audio output has stopped progressing"
-    )
+    assert health["signal_path"]["code"] == "output_stalled"
 
 
-def test_never_installed_camilla_reads_the_same_as_doctor() -> None:
+def test_never_installed_camilla_keeps_its_own_remedy() -> None:
     """One box must not get two different stories about the same unit.
 
-    doctor answers `not-found` with "systemd unit not installed. Re-run
-    install.sh."  Pointing the audio card at `journalctl -u jasper-camilla`
-    for a unit that does not exist would send an operator to a blank screen.
+    A never-installed unit is a distinct state from a stopped one and doctor
+    answers it with its own reinstall remedy, so the card must not offer the
+    restart that clears a merely-stopped unit — no restart installs a unit
+    that is not there.
     """
-    detail = _camilla_issues({
+    missing = _compose_camilla({
         "load_state": "not-found",
         "active_state": "inactive",
         "sub_state": "dead",
-    })[0]["detail"]
+    })["signal_path"]
+    stopped = _compose_camilla(_CAMILLA_CLEAN_STOP)["signal_path"]
 
-    assert "is not installed" in detail
-    assert "Re-run install.sh." in detail
-    assert "journalctl" not in detail
+    assert missing["code"] == "camilla_not_installed"
+    assert stopped["code"] == "camilla_stopped"
+    assert missing["detail"] != stopped["detail"]
 
 
 def test_usb_off_ignores_always_on_management_gadget() -> None:
@@ -1619,8 +1611,6 @@ def test_usb_off_with_active_audio_service_is_reported_as_drift() -> None:
     assert usb["state"] == "unavailable"
     assert usb["status"] == "issue"
     assert usb["headline"] == "USB Audio is running while Off"
-    assert "jasper-usbsink.service" in usb["detail"]
-    assert "jasper-usbgadget.service" not in usb["detail"]
 
     issues = audio_health._state_issues(
         _airplay(),
@@ -1658,7 +1648,6 @@ def test_usb_on_still_requires_its_management_gadget() -> None:
     assert usb["state"] == "unavailable"
     assert usb["status"] == "issue"
     assert usb["headline"] == "USB Audio unavailable"
-    assert "jasper-usbgadget.service reports failed" in usb["detail"]
 
     issues = audio_health._state_issues(
         _airplay(),
@@ -1699,7 +1688,33 @@ def test_required_pairing_agent_failure_degrades_bluetooth() -> None:
     )
     assert bluetooth["state"] == "unavailable"
     assert bluetooth["status"] == "issue"
-    assert "bt-agent.service reports failed" in bluetooth["detail"]
+    assert any(
+        issue["key"] == "bluetooth.service.bt-agent.service"
+        for issue in audio_health._state_issues(
+            _airplay(),
+            _outputd(),
+            {"status": "idle", "headline": "No source is playing", "detail": ""},
+            {"status": "idle"},
+            None,
+            {
+                "bluealsa-aplay.service": {
+                    "active_state": "active",
+                    "load_state": "loaded",
+                    "result": "success",
+                },
+                "bluealsa.service": {
+                    "active_state": "active",
+                    "load_state": "loaded",
+                    "result": "success",
+                },
+                "bt-agent.service": {
+                    "active_state": "failed",
+                    "load_state": "loaded",
+                    "result": "exit-code",
+                },
+            },
+        )
+    )
     assert health["overall"]["status"] == "idle"
 
 
@@ -1787,7 +1802,7 @@ def test_missing_mux_status_fails_closed_instead_of_guessing_playback() -> None:
     assert health["overall"] == {
         "status": "unknown",
         "headline": "Playback activity unavailable",
-        "detail": "JTS could not read the mux's canonical source state.",
+        "detail": audio_health.ACTIVITY_UNKNOWN_DETAIL,
         "active_source": None,
         "since": 1000.0,
     }
@@ -1867,12 +1882,9 @@ def test_stale_or_inactive_outputd_is_not_reported_clean() -> None:
         sampled_at=1000.0,
     )
 
-    assert (
-        stalled["signal_path"]["headline"]
-        == "Final audio output has stopped progressing"
-    )
+    assert stalled["signal_path"]["code"] == "output_stalled"
     assert stalled["overall"]["status"] == "issue"
-    assert inactive["signal_path"]["headline"] == "Final audio output is not active"
+    assert inactive["signal_path"]["code"] == "output_backend_inactive"
     assert inactive["overall"]["status"] == "issue"
 
 
@@ -1887,7 +1899,7 @@ def test_idle_tts_queue_pressure_is_visible_in_overall_health() -> None:
 
     assert health["signal_path"]["status"] == "warn"
     assert health["overall"]["status"] == "warn"
-    assert health["overall"]["headline"] == "Voice audio is delayed"
+    assert health["signal_path"]["code"] == "tts_queue_full"
 
 
 def test_usb_route_and_runtime_uncertainty_are_not_green() -> None:
@@ -1962,7 +1974,7 @@ def test_selected_source_without_a_fanin_lane_is_a_continuity_issue() -> None:
     )
 
     assert health["signal_path"]["status"] == "issue"
-    assert health["signal_path"]["headline"] == "Active audio input is unavailable"
+    assert health["signal_path"]["code"] == "input_absent"
 
 
 def test_usb_current_stream_is_presentation_ready_without_bitrate_inference() -> None:
@@ -1975,7 +1987,7 @@ def test_usb_current_stream_is_presentation_ready_without_bitrate_inference() ->
     assert stream["latency"]["summary"].endswith("ms · low latency stable")
     assert stream["latency"]["detail"] == ""
     assert [row["label"] for row in stream["latency"]["details"]] == [
-        "Fan-in output queue",
+        "Mixing queue",
         "DSP queue",
         "DAC presentation queue",
     ]
@@ -3049,7 +3061,7 @@ def test_confirmed_output_failure_outranks_mux_observability_gap() -> None:
     sampler._tick()
     health = sampler.snapshot()
 
-    assert health["signal_path"]["headline"] == "Final output unavailable"
+    assert health["signal_path"]["code"] == "output_absent"
     assert health["current_incident"]["key"] == "path.outputd_unavailable"
     assert any(
         issue["key"] == "monitor.mux_status_unavailable"
@@ -3109,7 +3121,7 @@ def test_output_hardware_probe_failure_is_fail_soft() -> None:
     health = sampler.snapshot()
 
     assert health is not None
-    assert health["overall"]["headline"] == "Final output unavailable"
+    assert health["signal_path"]["code"] == "output_absent"
 
 
 def test_output_topology_probe_failure_is_fail_soft() -> None:
@@ -3141,7 +3153,7 @@ def test_output_topology_probe_failure_is_fail_soft() -> None:
     assert health is not None
     # No cached topology yet (first tick, probe raised) -- fails toward the
     # pre-existing generic message rather than guessing a mismatch.
-    assert health["overall"]["headline"] == "Final output unavailable"
+    assert health["signal_path"]["code"] == "output_absent"
 
 
 def test_output_topology_probe_runs_on_the_slow_route_cadence_not_every_tick() -> None:
@@ -3776,3 +3788,355 @@ def test_state_keeps_working_when_audio_health_snapshot_raises(monkeypatch) -> N
         server.shutdown()
         server.server_close()
         thread.join(timeout=2)
+
+
+# --------------------------------------------------------------------------- #
+# Household register (#2472).
+#
+# Every sentence this module writes reaches the /system/ Audio card verbatim —
+# that is the one-writer discipline #2466 chose — so all of it is household
+# copy: what is wrong with the household's sound, and what they can do about
+# it. The operator half of each state keeps its own home: `jasper-doctor` for
+# unit names, systemd states and `journalctl` lines, and
+# `/state.audio_health.technical` for the raw counters this card is built from.
+# --------------------------------------------------------------------------- #
+
+# Vocabulary that means nothing to a household: JTS's own component and unit
+# names, the seams between them, and operator commands. `DSP`, `DAC` and `USB`
+# are deliberately NOT here — those are printed on the hardware a speaker owner
+# buys, unlike `fan-in` or `outputd`, which exist only inside this repo.
+_OPERATOR_VOCABULARY = re.compile(
+    r"(?i)(?:^|[^A-Za-z])("
+    r"fan-?in|outputd|camilladsp|dsp engine|mux|journalctl|systemctl|systemd|"
+    r"install\.sh|reconciler|renderer|watchdog|work-loop|backend|alsa|"
+    r"route plan|host-clock|signal path|shared audio path|"
+    r"jasper-[a-z-]+|[a-z][a-z0-9-]*\.service"
+    r")(?:[^A-Za-z]|$)"
+)
+
+# The payload keys whose values a household reads. `label` is in here because
+# the evidence breakdown rows ({"label", "value"}) render on this same card, so
+# a daemon name in a row label is as household-facing as one in a sentence.
+# `technical` is skipped wholesale: it is the raw evidence block, and naming
+# daemons is its whole job.
+_MESSAGE_FIELDS = frozenset({
+    "headline", "detail", "title", "summary", "observed", "likely_area", "label",
+})
+
+
+def _household_messages(payload, path: str = "") -> list[tuple[str, str]]:
+    """Every household-read sentence in a composed snapshot, with its path."""
+    found: list[tuple[str, str]] = []
+    if isinstance(payload, dict):
+        for key, value in payload.items():
+            if key == "technical":
+                continue
+            where = f"{path}.{key}" if path else str(key)
+            if key in _MESSAGE_FIELDS and isinstance(value, str):
+                found.append((where, value))
+            else:
+                found.extend(_household_messages(value, where))
+    elif isinstance(payload, list):
+        for index, item in enumerate(payload):
+            found.extend(_household_messages(item, f"{path}[{index}]"))
+    return found
+
+
+def _live_parks() -> tuple[dict, ...]:
+    """One ring-only `transport_park` verdict per park class (#3120).
+
+    Driven from that module's own `_PARK_CASES` table rather than a second
+    copy of it, so a fifth class added there is swept here without an edit —
+    and each class's operator detail and remedy get their own chance to leak
+    onto the household card.
+    """
+    from jasper.control import transport_park as transport_park_reader
+    from tests.test_transport_park import _PARK_CASES
+
+    return tuple(
+        transport_park_reader.snapshot(
+            case.values[0], case.values[1], ring_only=True
+        )
+        for case in _PARK_CASES
+    )
+
+
+def _household_shapes() -> dict[str, dict]:
+    """One composed snapshot per household-facing shape this module writes."""
+    playing = {"selected": "usbsink", "ladder": "l0_locked"}
+
+    def _mutated(mutate, **kwargs) -> dict:
+        airplay = _airplay(**kwargs)
+        mutate(airplay)
+        return airplay
+
+    def _fanin(airplay) -> dict:
+        return airplay["current"]["fanin"]
+
+    def _compose_with(airplay, **kwargs) -> dict:
+        kwargs.setdefault("outputd", _outputd())
+        kwargs.setdefault("route", _route())
+        return compose_audio_health(
+            airplay=airplay, issues=[], sampled_at=1000.0, **kwargs
+        )
+
+    def _second_tick(airplay_snapshots, outputd_snapshots) -> dict:
+        now = [1000.0]
+        outputd = list(outputd_snapshots)
+        sampler = AudioHealthSampler(
+            airplay_sampler=_FakeAirPlay(list(airplay_snapshots)),
+            outputd_probe=lambda: outputd.pop(0),
+            route_probe=_route,
+            time_fn=lambda: now[0],
+        )
+        sampler._tick()
+        now[0] += 5.0
+        sampler._tick()
+        return sampler.snapshot()
+
+    parked = {"coherence_errors": [_ROUTE_DISCONNECTED], "capability_gap": None}
+    # A REAL classifier verdict, not a hand-built one: the household sentence
+    # must hold for whatever `transport_park` actually returns (#3120).
+    live_park = _live_parks()[0]
+    failed_unit = {
+        "load_state": "loaded", "active_state": "failed", "result": "exit-code",
+    }
+    skipped_ping = _airplay()
+    skipped_ping["current"]["fanin"]["watchdog"]["pings_skipped"] = 1
+
+    return {
+        "clean": _compose_with(_airplay(**playing)),
+        "starting": _compose_with(
+            _mutated(lambda ap: ap["current"].pop("fanin"), warmup=True)
+        ),
+        # Same shape from the other warmup branch: outputd not up yet.
+        "starting_no_output": _compose_with(_airplay(warmup=True), outputd=None),
+        "path_unreported": _compose_with(
+            _mutated(lambda ap: ap["current"].pop("fanin"), **playing)
+        ),
+        "output_absent": _compose_with(_airplay(**playing), outputd=None),
+        "output_backend_inactive": _compose_with(
+            _airplay(**playing), outputd=_outputd(backend="none")
+        ),
+        "output_stalled": _compose_with(
+            _airplay(**playing), outputd=_outputd(progress_age_ms=30_000)
+        ),
+        "path_stalled": _compose_with(_mutated(
+            lambda ap: _fanin(ap)["watchdog"].update(last_progress_age_ms=60_000),
+            **playing,
+        )),
+        "input_absent": _compose_with(_mutated(
+            lambda ap: _fanin(ap)["inputs"]["usbsink"].update(present=False),
+            **playing,
+        )),
+        "input_broken": _compose_with(_mutated(
+            lambda ap: _fanin(ap)["inputs"]["usbsink"].update(health="broken"),
+            **playing,
+        )),
+        "input_stalled": _compose_with(_mutated(
+            lambda ap: _fanin(ap)["inputs"]["usbsink"].update(frames_per_sec=0.0),
+            **playing,
+        )),
+        "tts_queue_full": _compose_with(
+            _airplay(**playing), outputd=_outputd(tts_pending_frames=96_000)
+        ),
+        "activity_unknown": _compose_with(
+            _mutated(lambda ap: ap.pop("mux_status"), **playing)
+        ),
+        "camilla_stopped": _compose_camilla(_CAMILLA_CLEAN_STOP),
+        "camilla_not_installed": _compose_camilla({
+            "load_state": "not-found",
+            "active_state": "inactive",
+            "sub_state": "dead",
+        }),
+        "transport_parked": _compose(transport=parked),
+        "transport_unservable": _compose_with(
+            _airplay(**playing), transport_park=live_park
+        ),
+        "transport_parked_capability_gap": _compose(transport={
+            "coherence_errors": [_ROUTE_DISCONNECTED],
+            "capability_gap": {
+                "device_id": "innomaker_hifi_amp_pro",
+                "device_label": "InnoMaker HiFi AMP Pro",
+            },
+        }),
+        "undeclared_hardware": _compose_with(
+            _airplay(),
+            outputd=None,
+            output_hardware=_output_hardware(),
+            output_topology_snapshot=_declared_topology(),
+        ),
+        "service_failed": _compose(
+            service_states={"jasper-usbgadget.service": failed_unit},
+        ),
+        "off_drift": _compose(
+            service_states={"jasper-usbsink.service": {
+                "load_state": "loaded",
+                "active_state": "active",
+                "result": "success",
+            }},
+            source_intents={"usbsink": False},
+        ),
+        "source_not_running": _compose(
+            service_states={"jasper-usbsink.service": {
+                "load_state": "loaded",
+                "active_state": "inactive",
+                "result": "success",
+            }},
+        ),
+        "usb_latency_fallback": _compose(selected="usbsink", ladder="l2_fallback"),
+        "usb_clock_tracking_warn": _compose(selected="usbsink", ladder="l1_warn"),
+        "usb_clock_unavailable": _compose(selected="usbsink"),
+        "usb_route_unavailable": compose_audio_health(
+            airplay=_airplay(selected="usbsink", ladder="l0_locked"),
+            outputd=_outputd(),
+            route={"status": "unavailable", "low_latency_claim": False},
+            issues=[],
+            sampled_at=1000.0,
+        ),
+        "outputd_xrun_recovered": _second_tick(
+            [_airplay(), _airplay()], [_outputd(), _outputd(dac_xruns=2)]
+        ),
+        "fanin_watchdog_recovered": _second_tick(
+            [_airplay(), skipped_ping], [_outputd(), _outputd()]
+        ),
+        "clipping": _second_tick(
+            [_airplay(), _airplay()], [_outputd(), _outputd(clipped_samples=64)]
+        ),
+    }
+
+
+@pytest.mark.parametrize("shape", sorted(_household_shapes()))
+def test_every_household_sentence_stays_out_of_operator_register(shape: str) -> None:
+    """#2472: no sentence on the household's audio card names JTS's internals.
+
+    If this fails on copy you just wrote, the fix is the sentence — say what is
+    wrong with the household's sound and what they can do. The unit name, the
+    systemd state and the `journalctl` line belong in doctor, which fails on
+    the same facts and already carries all three.
+    """
+    offenders = {
+        where: text
+        for where, text in _household_messages(_household_shapes()[shape])
+        if _OPERATOR_VOCABULARY.search(text)
+    }
+    assert not offenders, (
+        f"operator vocabulary on the household audio card ({shape}): {offenders}"
+    )
+
+
+def test_the_household_shapes_cover_every_signal_path_code() -> None:
+    """The sweep above is only worth its keep if it reaches every shape.
+
+    Equality against `audio_health.SIGNAL_PATH_CODES` — the module's own
+    vocabulary, declared beside the branches that emit it — rather than a
+    literal kept here. A literal only fails when a shape is RENAMED or
+    RETIRED; this fails in both directions, so registering a new shape's code
+    (the one edit a new branch cannot skip and still be legible) is what makes
+    the sweep demand a fixture for it. What it cannot see is a branch that
+    emits a code it never registered — which is exactly why the vocabulary
+    lives in the module with the producers and not in this file.
+    """
+    swept = {
+        snapshot["signal_path"]["code"]
+        for snapshot in _household_shapes().values()
+    }
+    assert swept == audio_health.SIGNAL_PATH_CODES, (
+        "every signal-path shape must reach the household-register sweep: "
+        f"unswept={sorted(audio_health.SIGNAL_PATH_CODES - swept)} "
+        f"unregistered={sorted(swept - audio_health.SIGNAL_PATH_CODES)}"
+    )
+
+
+def _every_incident_row() -> list[dict]:
+    """Every row `_state_issues` can raise, over all of its branches.
+
+    The rows reach the same card as the sentences swept above but are built by
+    a second function, so they are swept from their own writer rather than
+    trusted to echo. Each signal-path shape is crossed with the service,
+    intent and latency states the other branches key on.
+    """
+    failed = {
+        "load_state": "loaded", "active_state": "failed", "result": "exit-code",
+    }
+    running = {
+        "load_state": "loaded", "active_state": "active", "result": "success",
+    }
+    service_states = {
+        "jasper-camilla.service": _CAMILLA_CLEAN_STOP,
+        "jasper-usbgadget.service": failed,
+        "jasper-usbsink.service": running,
+        "jasper-usbsink-volume.service": running,
+    }
+    latencies = (
+        {"status": "unknown", "runtime": {"raw_mode": "l2_fallback"}},
+        {"status": "ok", "runtime": {"raw_mode": "l1_warn"}},
+        {"status": "ok", "runtime": {"raw_mode": "disabled"}},
+    )
+    without_fanin = _airplay(selected="usbsink")
+    without_fanin["current"].pop("fanin")
+    parks = (None, *_live_parks())
+    rows: list[dict] = []
+    for snapshot in _household_shapes().values():
+        for airplay in (_airplay(selected="usbsink"), without_fanin):
+            for latency in latencies:
+                for intents in (None, {"usbsink": False}):
+                    for park in parks:
+                        rows.extend(audio_health._state_issues(
+                            airplay,
+                            None,
+                            snapshot["signal_path"],
+                            latency,
+                            "usbsink",
+                            service_states,
+                            intents,
+                            activity_unknown=True,
+                            undeclared_hardware=None,
+                            transport_park=park,
+                        ))
+    return rows
+
+
+def test_every_incident_row_stays_out_of_operator_register() -> None:
+    """#2472, for the incident rows: the same bar as the sentences above.
+
+    An audio incident is read by whoever opens the card, not by whoever can
+    read a unit file — the failing unit and its state stay in doctor, which
+    fails on the same facts.
+    """
+    rows = _every_incident_row()
+    offenders = {
+        row["key"]: text
+        for row in rows
+        for text in (row["title"], row["detail"])
+        if _OPERATOR_VOCABULARY.search(text)
+    }
+    assert not offenders, (
+        f"operator vocabulary in audio incident rows: {offenders}"
+    )
+    # The sweep is only worth its keep if it reached every row. A new row fails
+    # here until it is swept, rather than shipping unlinted. The unit names in
+    # the last three are KEYS — structured identifiers, never read as a
+    # sentence — which is exactly where a unit name is allowed to live.
+    assert {row["key"] for row in rows} == {
+        "monitor.mux_status_unavailable",
+        "path.transport_park.grouped_dac_content_lane",
+        "path.transport_park.mono_full_range",
+        "path.transport_park.passive_stereo_composite",
+        "path.transport_park.roleful_active_endpoint_unconverged",
+        "path.camilla_stopped",
+        "path.fanin_unavailable",
+        "path.fanin_watchdog_stale",
+        "path.outputd_backend_inactive",
+        "path.outputd_unavailable",
+        "path.outputd_watchdog_stale",
+        "path.tts_queue_full",
+        "usbsink.clock_tracking_warn",
+        "usbsink.host_clock_unavailable",
+        "usbsink.input_unavailable",
+        "usbsink.latency_fallback",
+        "usbsink.latency_state_unavailable",
+        "usbsink.service.jasper-usbgadget.service",
+        "usbsink.service.jasper-usbsink-volume.service.off_drift",
+        "usbsink.service.jasper-usbsink.service.off_drift",
+    }
