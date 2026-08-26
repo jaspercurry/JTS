@@ -704,14 +704,16 @@ three new defects.**
 - `RING_SIDECAR_GLOB` `evidence_packet.py:336` (`"**/sidecar/*.json"`) and its
   `__all__` entry `:180`.
 - **The shell split, which is not Python** — `scripts/bank-crossover-round.sh`
-  **`:214-227`** (§1 `:246-250` says `:234-238`; corrected). It `tar`s the ring
-  off the Pi and `find … -maxdepth 1 -exec mv` splits `*.wav` into `dumps/wav/`
-  and `*.json` into `dumps/sidecar/`. That `-maxdepth 1` is **why
-  `RING_SIDECAR_GLOB` needs its `**/`**. Four more places in the same script
-  depend on the layout: the header doc `:46-49`, the exit-code contract
-  `:65-67`, the `python -m jasper.audio_measurement.capture_integrity
-  "$DEST/dumps/sidecar"` call `:235-237` whose `checker_rc` `:238` **becomes the
-  script's exit code**, and the summary line `:253`.
+  **`:218-226`** (banner `:213-217`, echo `:227`). §1 `:246-250` cites
+  `:234-238`, which at HEAD is the integrity-check call, not the split —
+  **corrected.** The block `tar`s the ring off the Pi, then
+  `find … -maxdepth 1 -exec mv` splits `*.wav` into `dumps/wav/` and `*.json`
+  into `dumps/sidecar/`. That `-maxdepth 1` is **why `RING_SIDECAR_GLOB` needs
+  its `**/`**. Four more places in the same script depend on the layout: the
+  header doc `:46-47`, the exit-code contract `:65`, the
+  `python -m jasper.audio_measurement.capture_integrity "$DEST/dumps/sidecar"`
+  call `:235-237` whose exit code **becomes the script's**, and the summary
+  `:253`.
 
 **A stale reference to delete while here:** `harmonic_evidence.py:587` cites
 `:func:`~.round_views._dump_ring_captures`` — **that function does not exist
