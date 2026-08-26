@@ -34,7 +34,7 @@ proceeds.  Every number it computed still rides, in the same three places it
 always did: the :data:`EVENT_PREDICTION_GATE` journal line, the
 ``spec_report["comparison"]`` block the session stashes, and — through that
 stash — the durable ``verify_priors.predicted_spec`` the wire serves
-(``jasper.web.correction_crossover_v2._predicted_spec_prior``).  What the
+(:func:`.durable_state._predicted_spec_prior`).  What the
 burn-down removed is the refusal, not one field of the account.
 
 **This module DECIDES; it does not act.**  That split is the whole reason it

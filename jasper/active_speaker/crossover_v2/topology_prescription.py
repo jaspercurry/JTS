@@ -528,7 +528,7 @@ def _parse_prescription(
     missing or wrong ``kind``/``artifact_schema_version`` is a malformed
     document and refuses at the tap. ``True`` (the durable read-back,
     :func:`topology_prescription_from_mapping`, and
-    ``correction_crossover_v2.topology_prescription_prior_from_state``'s
+    :func:`.durable_state.topology_prescription_prior_from_state`'s
     ``verify_priors`` rehydration) judges a document THIS repository already
     wrote — ``verify_priors.topology_prescription`` is carried unconditionally
     across deploys, and predates this envelope by three days (#2662/#2773

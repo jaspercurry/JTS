@@ -381,7 +381,7 @@ def _parse_prescription(
     malformed document and refuses at the tap, exactly like every other field
     here. ``True`` (the durable read-back,
     :func:`alignment_prescription_from_mapping`, and
-    ``correction_crossover_v2.alignment_prescription_prior_from_state``'s
+    :func:`.durable_state.alignment_prescription_prior_from_state`'s
     ``verify_priors`` rehydration) judges a document THIS repository already
     wrote and persisted — and durable state on a live speaker predates this
     envelope: ``verify_priors.alignment_prescription`` has been carried
