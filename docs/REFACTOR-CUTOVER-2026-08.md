@@ -12,7 +12,10 @@
 > truth this plan builds on. Read a shape question there and a scheduling
 > question here.
 
-**STATUS — all eight sections VERIFIED-COMPLETE, re-derived at `4a9e9f631`.**
+**STATUS — all eight sections VERIFIED-COMPLETE, re-derived at `4a9e9f631`.
+§6's three open decisions are SETTLED-OR-BRIEFED and the citation question is
+answered, re-derived at `c253c3cf1`. Two things wait on the owner: 6.2's seam
+brief and Appendix A's one question.**
 
 | § | Section | Status |
 |---|---|---|
@@ -22,9 +25,10 @@
 | 3 | Recommender binding | VERIFIED-COMPLETE |
 | 4 | Seam colour reconciliation | VERIFIED-COMPLETE |
 | 5 | Front-end wiring | VERIFIED-COMPLETE |
-| 6 | God-file dissolution map | VERIFIED-COMPLETE |
+| 6 | God-file dissolution map | VERIFIED-COMPLETE · **6.1 RULED · 6.2 RULED + one OWNER-BRIEF · 6.3 RULED** |
 | 7 | Merge-order DAG + floor accounting | VERIFIED-COMPLETE |
 | 8 | Risks and tiers | VERIFIED-COMPLETE |
+| A | The "no-silent-failure" citations | **ANSWERED — one owner question** |
 
 ---
 
@@ -957,7 +961,7 @@ already moved to `crossover_v2/refusal_copy.py` (see the note at `:524-539`).
 | module charter | 1–107 | dies with the file (design doc owns it) |
 | imports / TYPE_CHECKING | 109–253 | dissolves |
 | **four re-export barrels** — phase vocabulary, fc-sweep, capture-plan/geometry/tiers, refusal copy | 255–630 | **delete.** Historical-name doors; #3076 already killed a fifth |
-| tuning constants + their essays | 631–877 | **NO HOME — needs a decision** (each constant to its consuming organ, or one `contracts` block) |
+| tuning constants + their essays | 631–877 | **RULED — 6.1.** Seven constants are passengers of the rows that hold their readers; one goes to `contracts.py`; the essays become ADRs |
 | pure helpers: alignment plausibility · capture integrity/SNR fields · VERIFY evidence/claims · SNR log fields | 878–1395 | §2 (they are analyses) |
 | `AnalyzeCapture` · `RecordModelError` · `V2FlowSeams` · `V2ConductorSnapshot` | 1428–1698 | `V2FlowSeams` → §5 (`EngineSeams` replaces it); `V2ConductorSnapshot` → §1 |
 | attempt-history serialization | 1699–1923 | §1 (`persist`/`read_state`) |
@@ -971,14 +975,14 @@ already moved to `crossover_v2/refusal_copy.py` (see the note at `:524-539`).
 | **relay callbacks** `authorize_begin` · `on_armed` · `consume_capture` | 3970–4626 | **§5** — this is what `measure()` replaces |
 | CHECK · MEASURE · lateral · cloud verdicts and retention | 4627–5279 | §1 (W1-c) + §2 |
 | cloud group close + speculative close | 5280–5766 | §2 + §5 |
-| **candidate build · publish · commit** | 5839–6334 | **NO ENGINE HOME — needs a decision.** Irreversible acts; the apply transaction is *"not a target. Ever."* Either a publish/commit organ or a thin surviving host module |
+| **candidate build · publish · commit** | 5839–6334 | **RULED + OWNER-BRIEF — 6.2.** 54% is pure compute with homes already; the commit half never applies; the open call is where the five publisher seams bind |
 | findings/evidence publishing + refusal | 6335–6728 | refusal → the organ; findings → §1 |
 | cloud pipeline runner (+ the inlined retention at `:6879`) | 6729–6913 | §2 + W1-c |
 | entry baseline | 6914–7048 | §1 |
 | the round, graded | 7049–7304 | §2 |
 | VERIFY verdict + attempt grading | 7305–7924 | §2 (`measure(kind=verify)` then `analyze`) |
 | delta probe | 7925–8355 | §2 |
-| **diagnostic logging** (four big per-phase emitters, feed no verdict) | 8356–8728 | **NO HOME — needs a decision**: delete, or become `analyze`'s journal |
+| **diagnostic logging** (four big per-phase emitters, feed no verdict) | 8356–8728 | **RULED — 6.3.** Neither: they are ADR-0143 plane-1 lines with 20 live pins, and they ride their verdicts into §2 |
 | gate/candidate/linearization helpers | 8729–8978 | organs |
 | production playback seams | 8979–9094 | §5 (`PlaybackTransaction` binding) |
 | session-volume lifecycle | 9095–9164 | §5 (W5-c) |
@@ -1013,6 +1017,347 @@ banner comments mark its own sections.
 | **apply transaction** (`handle_v2_apply`, 399 lines) | 6904–7360 | **STAYS.** Row 6's kept 1,185 lines |
 | delta-probe rollback · restore/Undo · apply-blocked tail | 7363–8088 | **stays** |
 
+### 6.1 RULED — the constants are passengers; the essays are the decision
+
+**Tier: CONDUCTOR.** Ruling S7 (`REFACTOR-TUNING-2026-08.md:1195-1204`) and R7
+(`:1630-1633`) already supply the mechanism, and a caller census removes the
+placement question. Nothing here is taste.
+
+**What the block IS.** `:631-877`, 247 lines, under a banner that still reads
+*"tuning constants (PROVISIONAL pending W6 bench validation)"* (`:632`). Fifteen
+names, and they are three unrelated things:
+
+- **Six re-export doors** — `GAIN_CAP_BACKOFF_DB` `:637`, `PILOT_LEVEL_DELTA_DB`
+  `:641`, `LOCATE_MIN_CONFIDENCE` `:644`, `VERIFY_TOLERANCE_DB` `:647`,
+  `courtesy_prelude_for_phase` `:869`, `CrossoverV2FlowError` `:875`. Each is
+  `X = _module.X` with a comment naming the owner. They are not constants; they
+  are the same thing row 3's barrels are, under a different banner — but they sit
+  in **this** range, not in `:255-630` (none of the fifteen names appears there),
+  so **this** row deletes them, on row 3's argument rather than in row 3's PR.
+  Two carry live warnings: `courtesy_prelude_for_phase`'s comment (`:864-868`)
+  says **nothing in this module reads it any more** and names the test that pins
+  the door — *"do not delete it as dead on an importer grep alone"* — and
+  `CrossoverV2FlowError` is the widest-used name in the block, raised at 13 sites
+  in this file and imported across `angle_capture.py`, `capture_plan.py`,
+  `web/correction_crossover_v2.py` and 13 test files **from `contracts.py`, its
+  real owner** (`contracts.py:121`).
+- **One function**, `verify_absolute_tolerance_db` `:650` (34 lines incl. its
+  docstring), which derives a tolerance from `flat_spec.SPEC_BANDS` `:677-683`.
+  That is an analysis, not a constant. It rides the pure-helper row
+  (`:878-1395` → §2), and its in-file readers `:1133`/`:1156` are in that row.
+- **Eight real definitions.** Below.
+
+**Every one of the eight has zero production readers outside this file** — one
+exception, and it is a script. Counted wrap-safe over `jasper/`, `scripts/`,
+`rust/`, `deploy/`, `tests/`:
+
+| Constant | def | In-file readers | Outside `crossover_v2_flow.py` | §6 row owning the reader |
+|---|---|---|---|---|
+| `CLIP_RETRY_BACKOFF_DB` | `:639` | `:4820` | none (prose only: `program_analysis.py:5806`) | 4627–5279 |
+| `MEASUREMENT_DISTANCE_M` | `:687` | `:2371` | none | **`__init__`** 2181–2957 |
+| `ALIGNMENT_CONFIDENCE_TRUST_FLOOR` | `:698` | `:4767 :4775 :4854` | none (prose: `durable_state.py:822`, `capture_dispatch.py:282`) | 4627–5279 |
+| `ALIGNMENT_DELAY_PLAUSIBILITY_MARGIN_MS` | `:711` | `:918 :942` (default args) | **`scripts/severed-twin-replay.py:302`** | 878–1395 |
+| `MEASURE_PREDICTED_RIPPLE_DISCLOSURE_DB` | `:767` | `:4724 :4731 :4849` | none (prose: `program_analysis.py:1589 :6823`) | 4627–5279 |
+| `VERIFY_PILOT_TRANSFER_STEP_CEILING_DB` | `:783` | `:7766 :7790 :7904 :7922` | none (prose: `refusal_copy.py:243`, `capture_dispatch.py:784 :810`) | 7305–7924 |
+| `VERIFY_REPEAT_FLOOR_DB` | `:848` | `:2863 :7642 :7650 :7658 :7683` | none | 7305–7924 |
+| `VERIFY_TERMINAL_OUTCOME_DETERMINISTIC` | `:857` | `:7845` | none | **`contracts.py`** |
+
+**So "each constant to its consuming organ" was never a decision — the consuming
+organ is this file.** Seven of the eight are **passengers**: they move in the PR
+that moves the row holding their reader, and §6's row should say so rather than
+reserve a choice nobody has to make. Six of the seven ride two rows (4627–5279
+and 7305–7924, both → §2); `MEASUREMENT_DISTANCE_M` rides `__init__`;
+`ALIGNMENT_DELAY_PLAUSIBILITY_MARGIN_MS` rides the pure helpers **and is the one
+that needs an importer rider** — `scripts/severed-twin-replay.py:302` imports it
+by name.
+
+**The eighth is the only real placement call, and `contracts.py` wins it for the
+reason it loses the other seven.** `VERIFY_TERMINAL_OUTCOME_DETERMINISTIC` is a
+**wire-contract slot value**, not a threshold: `capture_relay/session.py:2377`
+reads `terminal_outcome` as an opaque string and never branches on it, exactly as
+`:855-856` claims. `contracts.py` is already where that class of name lives —
+`MEASURE_KINDS :1433`, `POLARITIES :1451`, `POSITION_AXES :1456`, `ADOPTION_ROWS
+:1135`, `ATTEMPT_METRIC_VERIFY_MAX_NOTCH_EXCLUDED :1408`.
+
+**And the route is already cut and named.** `contracts.py:1374-1376` carries a
+banner reading literally *"constants the flow used to own"*, holding the three
+that already made the trip — `DEFAULT_CLOUD_MEASURE_POSITIONS :1398`,
+`VERIFY_TOLERANCE_DB :1402`, `ATTEMPT_METRIC_VERIFY_MAX_NOTCH_EXCLUDED :1408`.
+**All three are shared vocabulary**: `VERIFY_TOLERANCE_DB` is imported directly by
+`program_analysis.py` and `tests/test_active_speaker_delta_probe.py`, and a
+position count is read by the plan and the record alike. That is the membership
+test, and **the eight in this block fail it** — none has a reader outside this
+file. **The "one `contracts` block" option is wrong for the other seven** for the
+reason it is right for the eighth: parking a threshold read by exactly one
+analysis in the shared-vocabulary module separates the number from the only code
+that reads it — the god file's own defect, rebuilt at package scale.
+
+**One coupling the executor must not trip.** Five of the eight are named in
+`__all__` — `ALIGNMENT_CONFIDENCE_TRUST_FLOOR :9214`,
+`MEASURE_PREDICTED_RIPPLE_DISCLOSURE_DB :9215`,
+`VERIFY_PILOT_TRANSFER_STEP_CEILING_DB :9218`, `VERIFY_REPEAT_FLOOR_DB :9219`,
+`VERIFY_TERMINAL_OUTCOME_DETERMINISTIC :9220` — and **§6's row 3 schedules
+`__all__` for deletion first, in the deletion order's step 1.** Five passengers
+are listed in a manifest that is cut before their carriages move. Cut the names
+with the constants, not with the list.
+
+**Two of the eight have no pin at all.** `CLIP_RETRY_BACKOFF_DB` and
+`MEASUREMENT_DISTANCE_M` each have exactly one in-file reader and **no import
+anywhere in the tree — not production, not tests, not scripts** (the only other
+occurrences are prose). They move unobserved, so their move needs a pin written
+first, on wave 0d's rule: *"any row that comes back with no name gets a pin
+WRITTEN — before the old pin is deleted."*
+
+**The decision §6 actually reserved is the prose, and S7 already settled it.**
+Counted, not estimated: **185 comment lines + 26 docstring lines = 211 of the
+247**, against **17 lines of code** and 19 blank. It is not narration. Four
+classes:
+
+| Class | Instance | Disposition |
+|---|---|---|
+| measurement provenance with a named primary source | `VERIFY_REPEAT_FLOOR_DB`'s derivation from `captures/repeat-floor-20260731/README.md` (`:789-797`) | **ADR** |
+| a dated owner ruling | the ripple's *"converted from a refusal to a disclosure by owner ruling on 2026-08-03, issue #2087"* (`:713-714`); the trust floor's nanny-burn-down demotion (`:691-697`) | **ADR** |
+| an SSOT claim with a recurrence | *"This composition is OWNED here; cite this comment rather than re-quoting a count"* (`:720-721`) | **ADR**, then cited — never re-quoted |
+| a non-derivable maintainer trap | *"a maintainer must NOT 'tighten' this toward 0.17016 believing it moves safe-ward: it moves the other way"* (`:822-824`) | **stays a comment** |
+
+S7: a ruling that still binds the new engine and lives only in a docstring
+*"becomes an ADR in `docs/adr/`, and the docstring shrinks to `See ADR-NNNN`"* —
+range **ADR-0002–0099**, of which **0020–0099 are free at HEAD** (0001–0019 and
+0100+ are taken). R7 makes the extraction *"a prerequisite, not a nicety."* The
+precedent is already on `main`: **ADR-0010 was cut from two docstrings in this
+exact file** and says so (`0010-candidate-build-commits-nothing.md:19-23`).
+**No ADR owns any of the fifteen names today** — `docs/adr/` returns zero for all
+of them — so this is new record, not a duplicate one.
+
+**Shrink does not mean strip, and the tree already shows the size.** The two
+constants that made the trip to `contracts.py` **kept right-sized essays**:
+`DEFAULT_CLOUD_MEASURE_POSITIONS` carries 20 lines (`:1378-1397`, citing a dated
+adjudication and a *"treat it as a constant, never as a promise about accuracy"*
+caution), `VERIFY_TOLERANCE_DB` carries 3 (`:1399-1401`). S7 governs the
+**ruling-class** content — the dated decision, the corpus, the derivation — not
+every line above a `=`. What survives beside the constant is the trap plus a
+pointer; what leaves is the argument.
+
+**One essay is load-bearing in a way a reviewer will not guess.**
+`MEASURE_PREDICTED_RIPPLE_DISCLOSURE_DB`'s comment declares itself the single
+source for the 13-capture corpus composition **and names the incident that made
+it so** — *"issue #2015 traced a since-corrected 12-capture, two-chain
+restatement elsewhere to a copy that dropped the phone measure"* (`:721-723`).
+That is a ruling with a recorded recurrence. Deleting it into git history
+restores precisely the drift #2015 recorded, and re-typing it anywhere creates
+the second copy it exists to prevent.
+
+**Work item W6-a — extract the rulings; the constants then ride for free.** One
+**docs-only** PR: four ADRs (the trust floor's demotion · the ripple's #2087
+conversion *and* its corpus composition · G3's pilot-transfer evidence ·
+`VERIFY_REPEAT_FLOOR_DB`'s derivation with its `CLAIM_FLOOR_P95_MULTIPLE`
+second-spelling note at `:799-809`). No code moves. Each later row then carries
+its own constants and shrinks their comments to `See ADR-NNNN` plus the trap.
+**Plus two pins written for the two unobserved constants**, on wave 0d's rule.
+*Size:* 4 ADRs + 2 pins, **0 lines of production code touched.** *Independent —
+schedulable at tier 0*, and it is a **hard prerequisite** for rows 4627–5279,
+7305–7924 and `__init__`: none of them may cut prose before it lands. *Verification bar:* every
+deleted essay paragraph is quoted verbatim in exactly one ADR, and the surviving
+comment cites it — mutation-checked by grepping the tree for a second copy of the
+13-capture composition. *Tier:* mechanical (docs).
+
+**One stale-looking label, flagged not fixed.** The banner (`:632`) and five of
+the eight essays say *"PROVISIONAL pending W6 bench validation"*, while
+`crossover-measurement-productization-design.md:25` records **W1–W6 complete**
+(2026-07-19) and the trust floor's own text (`:693-695`) already cites a live
+bench datum that *"undercut it."* Either the label is spent or it names a bench
+that is not that W6. **A one-sentence question for whoever writes the ADRs — not
+the executor's to guess**, and not this pack's to answer.
+
+### 6.2 RULED, then OWNER-BRIEF — this block never applies, and 53% of it already has a home
+
+**The row conflated two different things, and the correction is checkable.** The
+range is `:5839-6334` — 496 lines, seven methods, **all seven internal to
+`CrossoverV2Session`**: zero callers in `web/correction_crossover_v2.py`, zero in
+`scripts/`, and the only entries are three sibling methods outside the range
+(`_measure_verdict` `:4948`, `_close_measure_cloud_candidate` `:5815`/`:5817`,
+`run_speculative_group_close` `:5647`).
+
+| Method | lines | What it is |
+|---|---:|---|
+| `_publish_measure_candidate` `:5839` | 45 | a **3-line body** (`:5880-5882`) under a 41-line docstring — the pre-rider compatibility door |
+| `_build_measure_candidate` `:5884` | 82 | **pure.** *"Commits NOTHING"* (`:5890`); zero `self._x =`, zero seam fires; returns `_SpeculativeClose` |
+| `_previous_graph_predicted_sum` `:5966` | 143 | **near-pure** model of the graph an apply would replace; one in-memory dedup flag `:6096` guarding one INFO line |
+| `_commanded_delta_for` `:6110` | 19 | **pure** |
+| `_declared_transfer_for` `:6130` | 19 | **pure**, and a `@staticmethod` — no `self` at all |
+| `commit_intervention_proposal` `:6150` | 104 | **the commit.** Seven session-state writes, then `publish_candidate` `:6251` and `_publish_level_frame_finding` `:6252` |
+| `_commit_measure_candidate` `:6254` | 81 | orchestration + one disclosure log; its only production caller route |
+
+**RULED (conductor) — 263 of the 496 lines are compute and §2 already owns
+them.** The four pure/near-pure methods are analyses by the same argument §6
+applies to the pure-helper row (`:878-1395`) and the delta probe (`:7925-8355`).
+They move with §2, not with a publish organ. `_publish_measure_candidate` is a
+door whose body is three lines; it dies with the callers that still take it
+(`:4948`, `:5817`). **That leaves 185 lines — `commit_intervention_proposal` plus
+`_commit_measure_candidate` — as the only thing needing a home.**
+
+**RULED (conductor) — "irreversible" here does not mean the apply transaction,
+and the row's citation borrowed the wrong authority.** *"Not a target. Ever."*
+is about `handle_v2_apply`, in all three places it is written:
+`REFACTOR-TUNING-2026-08.md:729` and `:121-123` (*"the one irreversible act and
+the only path that writes a live DSP graph"*), and `session_seams.py:44-45`.
+**None of the seven methods touches CamillaDSP, ALSA, or any apply path** —
+`_publish_measure_candidate`'s own docstring says *"nothing it returns triggers
+an apply"* (`:5848`), and ADR-0014 records the two separate human acts that stand
+between (*"the confirmation that makes a candidate real, and the POST that
+applies it"*). The two are structurally independent: `handle_v2_apply` never
+calls into `CrossoverV2Session`, and reaches this block's output only by reading
+`candidate.json` back out of the evidence store (`web/…:7027`, `:7040-7049`).
+**The irreversible acts in scope are one evidence-artifact write and a fire-once
+session guard** (`:6265` calls them *"the two irreversible acts"*), which is a
+much smaller thing than the row implies — and the reason they can be re-homed at
+all.
+
+**So the surviving question is not "where does this code live" but "what seam
+does it fire," and that one is real.** `V2FlowSeams` carries **five publishers**
+— `publish_check` `:1505`, `publish_candidate` `:1506`, `publish_cloud`,
+`publish_findings`, `publish_round_receipt` (`:1428-1698`). **`EngineSeams` has
+none**: its five fields are `graph`, `volume`, `records`, `play`, `recommend`
+(`session_seams.py:299-303`). The engine's `save` is not the answer and does not
+claim to be — it writes *"the session's own state"*, exactly the five keys
+`PriorBank.read` reads back (`session.py:481-511`). **A candidate publication has
+no landing in the engine's contract today.**
+
+**And §6 has an internal inconsistency here that the executor must not inherit.**
+The web-file table routes *"evidence store + publishers | 3364–3962"* — which is
+where all five publishers are actually bound (`bind_evidence_publishers:3392`,
+`bind_round_receipt:3456`, `bind_findings_publisher:3803`,
+`bind_cloud_publisher:3921`) — to **§1 (W1-a)**. But W1-a's own text (`:255-265`)
+scopes it to `bank` / `read` / `persist` / `read_state` and says nothing about a
+publisher. **One side of the same seam is assigned; the other is marked NO HOME.**
+Whichever way the brief below is answered, W1-a's scope line has to be edited to
+match, or the two tables stay in disagreement.
+
+---
+
+**OWNER-BRIEF — where do the five publisher seams bind?**
+
+*Context, plainly.* The engine talks to the outside world through exactly five
+injected slots. Writing a durable file is one of them (`records`). But the old
+flow had five *separate* slots for writing durable files, one per artifact kind,
+and two of the five are deliberately allowed to fail quietly while one of them —
+the candidate — must never fail quietly. When the old seam set is replaced by the
+new one, those five either fold into the one store or the store gains a sibling.
+**The boundary is one-writer-with-a-label versus two-writers-with-two-contracts.**
+
+*Recommendation: fold them into `RecordStore`, and keep fail-soft at the caller.*
+
+- **Cost of folding.** `bank`'s docstring and its twin pin (`tests/engine_twin.py:199-234`)
+  currently mean *one capture record*; carrying a candidate, a check, a cloud
+  result, a findings record and a round receipt widens that meaning, and the twin
+  and W1-a both grow. W1-a sits at tier 2 feeding the W5-b join, so the growth is
+  on the critical path.
+- **Cost of a sixth seam.** `EngineSeams` stops being five fields, which is the
+  number the design doc, `session_seams.py:275-297` and **all of §4** are written
+  against. §4's colour flip (W4-a) is the tier-1 gate every later item waits on;
+  changing the dataclass's shape in the same window is a merge collision with the
+  one item that cannot slip.
+- **Why fold wins.** The store already exists and is *under*-used — §1 records
+  that `read` and `read_state` have **no engine caller at all**. Five names for
+  "write a JSON artifact into `evidence/v1`" is the duplication the charter's
+  converge-or-open-an-issue default is about, and `kind` is already how this
+  engine discriminates records. The one real objection — that `publish_candidate`
+  is irreversible while `publish_findings`/`publish_cloud` are fail-soft by design
+  (`web/…:3636`, `:3832`) — **does not need a store feature**, because this repo
+  already puts fail-soft in a named wrapper rather than in the seam:
+  `_hand_to_retention` (`:5256`) is exactly that shape around `retain_position`.
+  Keep the store plain, keep the wrapper, and the distinction stays visible
+  instead of becoming a flag.
+
+*What the owner is actually deciding:* whether `RecordStore` is **the** engine's
+durable-write seam, or **a** durable-write seam. One sentence settles it, and the
+answer edits W1-a's scope line either way.
+
+### 6.3 RULED — the emitters are plane-1 observability; both offered options are wrong
+
+**Tier: CONDUCTOR.** Both branches of the row's either/or are refuted by
+something already written down; what is left is not a choice.
+
+**What the block IS.** `:8356-8728`, 373 lines — **250 code, 96 comment, 21
+docstring, 6 blank** (AST-classified, not eyeballed). Five defs, not four:
+
+| Def | lines | Event | Fields | Fires from |
+|---|---:|---|---:|---|
+| `_safe_log_diag` `:8363` | 25 | `…crossover_v2_diag_log_failed` (WARNING, failure path only) | 4 | the three `_consume_*` sites |
+| `_log_check_diag` `:8389` | 34 | `…crossover_v2_check_diag` | 18 | `_consume_check` `:4640` |
+| `_log_measure_level_solve` `:8424` | 45 | `…crossover_v2_measure_level_solve` | 12 | **`_log_check_diag` `:8422`** |
+| `_log_measure_diag` `:8470` | 154 | `…crossover_v2_measure_diag` | 41 | `_consume_measure` `:4692` |
+| `_log_verify_diag` `:8625` | 103 | `…crossover_v2_verify_diag` | 32 | `_consume_verify` `:7309` |
+
+The row's *"feed no verdict"* holds and is now pinned to the shape: all four are
+`-> None`, contain no valued `return`, are invoked as bare statements, and run
+**after** the verdict exists (`:4638-4641` is the pattern — compute, then log,
+then return). All four are **unconditional**: no debug flag, no verbosity gate,
+in the emitters or in the phase router (`:4207-4227`).
+
+**Delete is refuted by the charter and by an ADR.** AGENTS.md's Guards default
+makes observability the sanctioned response to a real incident — *"fix forward
+and add observability (`event=` log, `/state`, doctor)"* — and
+**ADR-0143** defines plane 1 as *"always-on, cheap, fixed-shape truth"* that
+expressly includes *"structured `event=` journal lines."* These four are exactly
+that, and ADR-0143 does not require a plane-1 line to also reach `/state` or
+doctor; the line itself is the membership. **103 structured fields would be the
+largest single observability deletion in either chunk**, and the 96 inline
+comment lines are dense per-field provenance — i.e. several of these fields exist
+*because* of an incident, which is the thing the default exists to keep.
+
+**They also have twenty live pins.** Zero production consumers — `jasper/cli/doctor/`,
+`scripts/`, `jasper/web/` and `/state` were each searched by event name and each
+returned nothing — but **19 test functions in `tests/test_crossover_v2_conductor.py`
+plus one in `tests/test_crossover_v2_verify_grading.py:544` assert on these
+lines**, including negative pins that a retired field must not reappear
+(`:8737-8741`) and a count pin that `measure_level_solve` fires exactly twice on
+accept and never on reject (`:6390`, `:6413`, `:6424`). *"Zero production
+consumers"* is a real finding; *"nothing consumes them"* would be false.
+
+**"Become `analyze`'s journal" is refuted by the type system.**
+`crossover_v2_flow.py` contains **zero references to `AnalyzeOutcome` or
+`TuningSession`** — the conductor runs its own parallel vocabulary
+(`ProgramAnalysis`, `PhaseVerdict`, `V2FlowSeams`). And `AnalyzeOutcome`
+(`session.py:195-215`) has exactly two fields, `results` and `disclosures`,
+neither a journal. So the option is not a re-home; it is *"invent a third
+`AnalyzeOutcome` field **and** wire the conductor to the engine"* — and wiring
+the conductor to the engine is **W5-b**, the tier-4 join node. A §6 row may not
+quietly acquire the plan's hardest item.
+
+**RULED: the emitters ride their verdicts, unchanged, as `log_event` calls.**
+They are not one concern; they are field extraction attached to three phase
+verdicts, and §6 already routes those verdicts — CHECK and MEASURE at
+`:4627-5279`, VERIFY at `:7305-7924`, both → §2. The emitters are the journal
+half of those same rows and move in those same PRs. **No new home, no deletion,
+no third `AnalyzeOutcome` field, and no row of its own in the deletion order.**
+
+**One sub-question is deferred, deliberately, to the item that can answer it.**
+Once §2's registry exists, the 103 hand-extracted fields and
+`AnalyzeOutcome.results` are reading the same objects, and one generic emitter
+walking `results` could replace four hand-rolled ones. That is a **W2-b** call
+made against a registry that exists, not a §6 homing decision made against one
+that does not. §6 should not pre-commit it, and W2-b's verification bar should
+mention it.
+
+**Two traps for whoever moves them.**
+
+- **`_log_measure_level_solve` is misnamed.** It fires from `_log_check_diag`
+  `:8422`, on the CHECK event — not from `_consume_measure`. Four emitters serve
+  **three** phases. An executor splitting the block by phase name will put it in
+  the wrong PR.
+- **Twenty pins match rendered log text.** The field *names* are a contract, so
+  these are defensible under the Tests default; the *mechanism* is substring
+  matching over `caplog`, so every emitter move churns them. Price that into the
+  §2 rows rather than discovering it mid-PR, and prefer converting a pin to the
+  structured record over re-spelling its substring.
+
+**And the 96 comment lines get 6.1's treatment.** The per-field provenance notes
+are the same content class as the tuning-constant essays — a field that exists
+because a specific run produced a specific wrong number is a ruling, not a
+comment. Ruling S7 applies unchanged: the ruling-class ones become ADRs before
+the row cuts prose; the unit-and-range ones stay.
+
 ### Deletion order
 
 1. **The four barrels + `__all__`** (`crossover_v2_flow` 255–630, 9166–9228) —
@@ -1025,7 +1370,9 @@ banner comments mark its own sections.
    retention sites go together.
 5. **Volume** (W5-c) — after the walk, because the claim's lifetime is the walk's.
 6. **The shell** — the accessors that lost their reader, `__init__`'s residue,
-   the diagnostic emitters, and whatever the two NO-HOME decisions settled.
+   and the commit pair once 6.2's brief is answered. **The diagnostic emitters
+   are not in this step** (6.3): they leave with their verdicts in the §2 rows,
+   which land before the shell is cut.
 
 ---
 
@@ -1162,3 +1509,110 @@ behind that door as its only caller, never as its exception
 - **Re-derive the line numbers.** Every `file:line` in this document was true at
   `4a9e9f631`. §0 exists because two of the numbers handed *to* this plan had
   already moved by two lines within a single merge. Re-derive before you cut.
+
+---
+
+## Appendix A — the "no-silent-failure" citations
+
+`REFACTOR-TUNING-2026-08.md:598-612` enumerated **10 live sites** attributing a
+*"no-silent-failure rule"* to the charter, found that no such rule exists, and
+left them alone rather than repoint them — because *"repointing them would widen
+a non-negotiable by prose edit, which is not a rider's authority."* That judgment
+was right and this appendix does not overturn it. It supplies what the flag was
+missing: **the sites are not one class, and the widening was only ever needed for
+one of the two.**
+
+### The premise, re-derived at `c253c3cf1`
+
+AGENTS.md's only match for `silent` is non-negotiable 6 (`:42-43`):
+
+> **No silent deafness:** a new code path that prevents wake response must play
+> a cue (`jasper/cues/registry.py`).
+
+**But the wording the citations use is not extinct — it moved.**
+`docs/extensibility.md:87-89` carries it live: *"**no silent failure → audible
+cue** for anything that blocks a response"*, restated at `:153-155` as a Feature
+obligation — *"no-silent-failure → audible cue (a proactive Feature that fails
+must speak)."* That file is on AGENTS.md's Map. **So the rule exists, under this
+wording, in a live doc — for the cue half only.**
+
+**The other half has never existed anywhere.** No charter text, at any revision,
+says a user-visible dead end must emit a greppable log line. That is the claim
+nine of the thirteen sites make. **Two different rules are wearing one name**,
+and that — not the missing heading — is why repointing them all to
+non-negotiable 6 would widen a closed list.
+
+### Per-site classification
+
+**(i) response-blocking, cue-shaped — repoint is honest.** These four are about
+the speaker going quiet, and non-negotiable 6 plus `extensibility.md:87-89` are
+their true owners.
+
+| Site | What it guards | Cue? |
+|---|---|---|
+| `jasper/wake_fusion.py:72` | `verify()`'s fail-open contract: *"must never make the speaker go deaf because verification was unsure."* Literally the wake path | no — it fails **open**, so the path that would prevent wake response is never taken. The stronger form of the same rule |
+| `tests/test_cue_registry_coverage.py:7` | the registry↔play-site correspondence pin — *"a phantom play … the speaker falls silent on exactly the failure the cue existed to announce"* | **yes — this file is non-negotiable 6's mechanism** |
+| `tests/test_cue_registry_coverage.py:66-67` (**wraps**) | the orphan-cue assert message, same pin | yes |
+| `tests/test_tools_diagnostic.py:153` | a voice-tool telemetry failure must not silently end the turn | response-blocking, not wake-blocking — `extensibility.md:88`'s *"anything that blocks a response"* is the exact fit |
+
+**(ii) observability disclosure — the citation is decorative.** All nine emit a
+structured `event=`/`/state` disclosure so an operator can grep why a control is
+disabled or a budget expired. **None touches wake response. None calls a cue.**
+Each sentence already states its own reason — the parenthetical adds an authority
+stamp, and the stamp is false.
+
+| # | Site | The dead end it discloses |
+|---|---|---|
+| 1 | `jasper/web/correction_crossover_v2.py:4962` ⚑ | Stage-2 preflight refused → a disabled Apply; WARNING line + `STAGE2_PREFLIGHT_KEY` |
+| 2 | `jasper/active_speaker/crossover_v2/accountability.py:666` ⚑ | `grade_prediction` → `None`; `EVENT_PREDICTION_UNGRADEABLE` with `why` separating the two causes |
+| 3 | `tests/test_correction_crossover_v2_endpoints.py:3457` ⚑ | pins #1 |
+| 4 | `tests/test_correction_crossover_v2_endpoints.py:8882` ⚑ | pins D8 — **which** budget expired (issue #1807) |
+| 5 | `tests/test_crossover_v2_conductor.py:8541` ⚑ (**wraps**) | pins #2 end-to-end |
+| 6 | `jasper/correction/autolevel.py:309` | a failed final `set_main_volume_db` can strand the speaker at measurement level; bare `logger.warning`, not `log_event` |
+| 7 | `tests/test_correction_autolevel.py:392` | pins #6 |
+| 8 | `docs/two-stage-commission-flow-plan.md:440` | decision **D4** — the design source for #2/#5 |
+| 9 | `docs/two-stage-commission-flow-plan.md:696` | decision **D8** — the design source for #4 |
+
+⚑ = in this plan's zone (five, matching the chunk-1 count).
+
+**(iii) exempt.** `docs/REVIEW-google-oss-readiness.md:109` cites `CLAUDE.md` for
+the same phrase, inside a doc whose own header (`:3-9`) calls it *"a
+point-in-time OSS-readiness assessment, not current operational truth."* Frozen
+primary sources are supposed to be stale — `REFACTOR-TUNING-2026-08.md:593-595`
+already rules exactly this way for the frozen capture banks. **Leave it.**
+
+### The count moved, and the mechanism is the usual one
+
+**13 live attributions across 9 files, not 10.** The chunk-1 sweep searched the
+hyphenated `no-silent-failure`; three more sites spell it *"no silent failure
+paths"* and one of those **wraps across a newline**
+(`test_cue_registry_coverage.py:66-67`). That is the fifth consecutive
+wrap-and-variant miss this campaign has recorded, and it is why §8's wrap-safe
+sweep trap is stated as a standing rule rather than an anecdote. **Treat 13 as a
+floor, not a total** — it is what one phrasing-variant sweep found, and a looser
+shape would only raise it.
+
+### One owner question
+
+**Nine sites claim the charter requires a greppable disclosure line for a
+user-visible dead end. It never has, in any revision. Do you want that written
+into the charter as a named default — or should those nine drop the attribution
+and keep the sentence, which already says why?**
+
+**Recommendation: drop the attribution; do not grow the charter.** AGENTS.md is
+176 lines against a ~220 cap, and its own Docs default (`:74-76`) says *"do not
+restate here … what another file owns."* Every one of the nine sentences is
+self-sufficient without the parenthetical — *"a disclosure nobody can grep for is
+not a disclosure"* needs no external authority — and where a durable why-pointer
+is wanted, the **issue number is the one that cannot rot**: D8 has #1807, D4 has
+its own decision id. The Comments default already sanctions exactly that shape
+(*"why-pointers (`See ADR-NNN`, an issue, a doc)"*), and a charter line restating
+what thirteen sites each already state is thirteen fresh drift sites.
+
+**If the answer is "drop":** the four class-(i) sites repoint to non-negotiable 6
+(or `extensibility.md:87-89`, which is closer for the two non-wake ones), the
+nine class-(ii) sites lose four words each, and **the closed list is not
+touched**. Riders in the wave that opens each file, per
+`REFACTOR-TUNING-2026-08.md:579` — never a standalone PR. Five of the nine are in
+this plan's zone; the other four and all four class-(i) sites belong to the
+parallel programs and travel with them.
