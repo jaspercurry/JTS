@@ -1638,6 +1638,67 @@ def test_crossover_envelope_surfaces_the_v2_relay_slot(monkeypatch):
         v2host.set_volume_plan_for_tests(None)
 
 
+def test_lease_volume_recovery_declares_through_the_owner(monkeypatch):
+    """W11 routed: the recovery's WRITE is the owner's, not a raw fader write.
+
+    The exact-then-emergency ladder stays the lease's — this pins only which
+    door it writes through, which is the whole of the routing claim.
+    """
+    import json
+
+    from jasper.web import correction_crossover_backend as crossover_backend
+    from jasper.volume_owner import VolumeOwner, install_volume_owner
+
+    monkeypatch.setattr(
+        correction_setup, "guard_mutating_request", lambda handler: True
+    )
+
+    declared: list[float] = []
+    live = {"db": -55.0}
+
+    async def _set(db: float) -> bool:
+        live["db"] = float(db)
+        declared.append(float(db))
+        return True
+
+    async def _get() -> float:
+        return live["db"]
+
+    install_volume_owner(VolumeOwner(set_fader_db=_set, get_fader_db=_get))
+
+    cam_writes: list[float] = []
+
+    class _Cam:
+        async def set_volume_db(self, db, best_effort=False):
+            cam_writes.append(db)
+            return True
+
+        async def get_volume_db(self, best_effort=False):
+            return live["db"]
+
+    monkeypatch.setattr(correction_setup, "_camilla", lambda: _Cam())
+
+    class _Lease:
+        unresolved_volume_safety = {"status": "unresolved"}
+
+        async def recover_unresolved_volume_safety(self, set_v, get_v):
+            # Exercise the injected door exactly as the real ladder's first
+            # rung does, then report what the lease reports.
+            assert await set_v(-21.0) is True
+            return crossover_backend.UnresolvedVolumeRecoveryResult.EXACT_RESTORED
+
+    monkeypatch.setattr(crossover_backend, "level_lease", lambda: _Lease())
+
+    resp = _drive("/crossover/recover-volume", method="POST", body=b"{}")
+    assert b"200" in resp.split(b"\r\n", 1)[0]
+    body = json.loads(resp.split(b"\r\n\r\n", 1)[1])
+    assert body["status"] == "recovered"
+
+    # The owner's door carried the write; nothing wrote the fader directly.
+    assert declared == [-21.0]
+    assert cam_writes == []
+
+
 def test_recover_volume_routes_to_the_v2_plan(monkeypatch):
     """Finding E2: when the v2 conductor owns the unresolved session volume, the
     recover-volume endpoint must drive SessionVolumePlan.recover_unresolved — the
