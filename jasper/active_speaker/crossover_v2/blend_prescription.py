@@ -564,8 +564,8 @@ class BlendPrescriptionRefused(ValueError):
     Carries a ``reason`` from :data:`BLEND_PRESCRIPTION_REFUSAL_REASONS` beside
     the human ``detail``, and — for the refusals a prescriber can act on — an
     ``evidence`` mapping saying what was actually measured. A model told only
-    "refused: boost_dip_not_stable" can guess; one told "3 of 4 testifying
-    positions saw the dip, 4 needed" can fix its own proposal.
+    "refused: filter_cut_too_deep" can guess; one told the depth and the
+    ceiling it passed can fix its own proposal.
     """
 
     def __init__(
