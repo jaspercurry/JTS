@@ -305,18 +305,25 @@ def promote_carve_outs(
 #: false twice over: no check adjudicates the placement any more (the summed
 #: capture measures it), and a disagreement cannot refuse anything.
 #:
-#: It asks for a re-measure rather than reporting an outcome, because that is
-#: what a suspect capture earns: the datum was never discarded, so there is no
-#: repair to offer — only better evidence to collect. It names no part of the
-#: speaker: §3.1's hardware-noun
+#: **It reports an outcome and asks for nothing** — ruling S8, and the third
+#: thing this sentence has had to stop claiming. The copy it replaced asked the
+#: household to re-run the room pass, on the reading that two cross-checks of
+#: one quantity had conflicted and better evidence would settle it. S8 says
+#: they were never reads of one quantity: one measures the level where the two
+#: ranges hand over, the other averages each range across its own span, and on
+#: a horn with a sloped response those legitimately part company by many dB.
+#: Re-measuring cannot close a gap that is a property of two definitions, so
+#: asking for it would send someone to do work that changes nothing.
+#:
+#: It names no part of the speaker: §3.1's hardware-noun
 #: prohibition is enforced by :class:`~jasper.attribution.findings.Finding`
 #: itself, so a future edit that reaches for "woofer" fails at construction
 #: rather than in front of a household.
 LEVEL_FRAME_HOUSEHOLD_COPY = (
-    "Two cross-checks of how this speaker's high and low ranges balance "
-    "disagreed with the measurement the tuning was set from. The tuning used "
-    "the measurement, so nothing was guessed at — but this room pass is worth "
-    "re-running when you have a few minutes."
+    "Two different ways of reading how this speaker's high and low ranges "
+    "balance came out apart from each other. They measure different things, "
+    "so that is expected here and neither one is wrong. The tuning was set "
+    "from the measurement either way — nothing to do."
 )
 
 #: The sentence for the OTHER condition this record can carry: the committed
@@ -373,7 +380,7 @@ def promote_level_frame_disagreement(
 
     **TWO conditions reach here, and the record's own ``reason`` says which.**
     The producer (:func:`~jasper.active_speaker.crossover_v2.accountability.
-    level_frame_record`) banks when the two per-driver ESTIMATORS disagree, when
+    level_frame_record`) banks when the two level DEFINITIONS differ, when
     the committed pair's REALIZED levels disagree, or both — and it writes one
     ``reason``, with the estimator condition winning when both fire. This
     function reads that field and nothing else to choose the household sentence
@@ -382,23 +389,30 @@ def promote_level_frame_disagreement(
     the same reason the paragraph below gives: that comparison is the gate's,
     and computing it twice is §3.1's forbidden second verdict. The consequence
     is deliberate and is the producer's stated ordering — when both fire the
-    household is told about the estimators, because two instruments that
-    disagree about the frame make the realized read downstream of a suspect
-    frame, and better evidence comes before acting on a setup value.
+    household is told about the level definitions. That precedence used to rest
+    on "a suspect frame makes the realized read untrustworthy, so collect better
+    evidence first"; ruling S8 removed that argument, because a definition gap
+    is expected rather than suspect. It rests instead on what the two sentences
+    ASK FOR: the definition sentence asks for nothing, so it cannot send anyone
+    to do the wrong work, while the realized sentence asks for a setup value to
+    be re-checked — and sending that request on a pass where the level frame is
+    also being read two different ways is how someone ends up adjusting a
+    sensitivity to chase a number that was never wrong.
 
-    **What the ESTIMATOR finding means (#2609).** The two per-driver estimates
-    — the trim solve's overlap-band average and the fit's core-band median — no
-    longer vote on anything. They are compared to EACH OTHER as a consistency
-    check
-    (:func:`jasper.active_speaker.crossover_v2.intervention.check_level_consistency`),
-    and a record reaches here when their relative placements of the pair sit
-    further APART than
-    :data:`~jasper.active_speaker.crossover_v2.intervention.LEVEL_ESTIMATOR_TOLERANCE_DB`.
-    There is no third measurement to hunt for: nothing adjudicates between them,
-    because the pair is anchored on the raw measured trim whatever they say.
-    That is a claim about the CAPTURE, not about the tuning: the same trims
-    shipped either way, and what the household is being
-    offered is a reason to re-measure.
+    **What the DEFINITION finding means (#2609, corrected by ruling S8).** The
+    two per-driver numbers — the trim solve's mirrored ±1-octave power average
+    and the fit's core-band median — no longer vote on anything, and S8 then
+    established that they were never reads of ONE quantity to compare. One is
+    the HANDOVER level (the level fact); the other is the PASSBAND estimate
+    (the starting estimate that sizes fixed attenuation). A record reaches here
+    when their relative placements sit further APART than
+    :data:`~jasper.active_speaker.crossover_v2.intervention.LEVEL_ESTIMATOR_TOLERANCE_DB`
+    — a DISCLOSURE TRIGGER, not an agreement bar
+    (:func:`jasper.active_speaker.crossover_v2.intervention.compare_level_definitions`).
+    There is no third measurement to hunt for and nothing to adjudicate: on a
+    horn with a sloped response the gap is expected, the pair is anchored on the
+    raw measured trim whatever the two say, and the same trims ship either way.
+    So the household is told what was seen and asked for nothing.
 
     **What it used to mean, and why the change is a narrowing.** Under the
     owner's 2026-07-30 ruling on #1866 this recorded that two estimators had
@@ -503,7 +517,7 @@ def promote_level_frame_disagreement(
             # `unsure` on both arms, for two DIFFERENT honest reasons rather
             # than one reason stretched over both.
             #
-            # ESTIMATOR arm: THAT the two estimators disagreed is measured;
+            # DEFINITION arm: THAT the two definitions differed is measured;
             # that the disagreement is a real inter-driver level error is not,
             # because the shipped gate's own residual produces this exact
             # signature on a healthy speaker — a pair identical by construction
@@ -532,22 +546,22 @@ def promote_level_frame_disagreement(
             # the evidence precisely so a reader can subtract the one
             # instrument-side contribution that is known and bounded.
             confidence=CONFIDENCE_UNSURE,
-            # M7 declares BOTH classes and the split is plan §4's: `eq` when a
-            # driver's level is genuinely low, `refit` "when the level error is
-            # upstream in the fit's own frame". The two arms land on opposite
-            # sides of exactly that line, which is why the declaration has two
-            # entries rather than one.
-            #
-            # ESTIMATOR -> `refit`: a disagreement BETWEEN two estimates of the
-            # frame is upstream of every trim derived from them by
-            # construction, so adding level cannot be the fix.
-            #
             # REALIZED -> `eq`: the frame is not in dispute (that is why this
             # reason won); what is measured is the committed pair sitting at
-            # levels that do not match, which is the first half of the split
+            # levels that do not match, which is plan §4 M7's first half
             # verbatim. Routing `refit` here would send a re-solve at a
             # measurement the re-solve already agrees with.
-            fix_class="eq" if realized_only else "refit",
+            #
+            # DEFINITION -> `document_as_physics`: this arm was `refit`, on the
+            # reading that a disagreement BETWEEN two estimates of one frame is
+            # upstream of every trim derived from them. Ruling S8 established
+            # they were never estimates of one quantity — the handover level
+            # and the passband average measure different things, and on a
+            # sloped horn they legitimately differ by many dB. There is nothing
+            # to re-solve, which is why this arm's household sentence reports
+            # the outcome and asks for nothing; the fix class has to say the
+            # same thing or the finding contradicts itself.
+            fix_class="eq" if realized_only else "document_as_physics",
             household_copy=(
                 REALIZED_LEVEL_HOUSEHOLD_COPY
                 if realized_only

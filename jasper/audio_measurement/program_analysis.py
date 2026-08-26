@@ -4682,6 +4682,34 @@ def solve_branch_trims(
 ) -> tuple[float, float, float, float]:
     """Level-match trims: each branch read on ITS OWN side of Fc.
 
+    **THIS IS THE LEVEL FACT** (ruling S8, from owner-commissioned prior-art
+    research). *"Level-matched"* means matched acoustic output through the
+    HANDOVER REGION: after the target filters, the two driver traces are equal
+    at Fc and each sits −6 dB against the summed target — the Linkwitz-Riley
+    unity condition, Rane/Bohn's *"amplitude response of each is −6 dB at
+    crossover"*, McCarthy's equal-level acoustic-crossover definition. The
+    linear-frequency power mean this function takes over the mirrored ±1-octave
+    halves IS that consensus statistic, so this is the one estimator the level
+    claim rests on.
+
+    **Passband-average sensitivity is NOT the level fact.**
+    :func:`~jasper.active_speaker.linearization_fit.driver_core_level_db` is
+    the STARTING ESTIMATE that sizes a horn's fixed attenuation; on a horn with
+    a sloped response the two conventions legitimately differ by many dB. That
+    difference is disclosed, never reconciled — see
+    :func:`~jasper.active_speaker.crossover_v2.intervention.
+    compare_level_definitions`.
+
+    Two constraints on the statistic, for the record. *Slope:* with LR4 the
+    sensitivity to level error concentrates AT Fc, so the ±1-octave matching
+    band is right and the null test carries the weight; a shallower crossover
+    would widen it toward ±1.5 octaves and let the broad sum carry it.
+    *Directivity (Toole):* where woofer beaming and horn directivity mismatch,
+    the on-axis, listening-window and power-response ratios differ and there is
+    **no single correct level** — which is why the axis these levels were read
+    on is stated rather than assumed
+    (``intervention.LEVEL_MATCH_AXIS``).
+
     Each ``*_span_hz`` is that branch's own validity span (default Fc ∓ 1
     octave); :func:`branch_level_bands_hz` turns the pair into the mirrored
     halves ``[Fc/ρ, Fc]`` (woofer) and ``[Fc, Fc·ρ]`` (tweeter). A branch is

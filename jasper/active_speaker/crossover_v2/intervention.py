@@ -132,7 +132,8 @@ __all__ = [
     "CloudFitTerms",
     "DriverEvidence",
     "JournalRecord",
-    "LEVEL_ESTIMATOR_SUSPECT_REASON",
+    "LEVEL_DEFINITIONS_DIFFER_REASON",
+    "LEVEL_MATCH_AXIS",
     "LEVEL_ESTIMATOR_TOLERANCE_DB",
     "LINEARIZATION_MIN_PAIRED_OCCURRENCES",
     "LINEARIZATION_TRIM_SANITY_MARGIN_DB",
@@ -146,7 +147,7 @@ __all__ = [
     "SummationFrame",
     "TrimDecision",
     "anchor_trims",
-    "check_level_consistency",
+    "compare_level_definitions",
     "compose_linearized_prediction",
     "compose_sigma_db",
     "decide_trim",
@@ -574,7 +575,7 @@ class LinearizationRequest:
     average each side of Fc BEFORE the ripple-optimal polish moves it. It used
     to be one of two voters arbitrated into the trim anchor; since the
     single-datum-owner migration it is an input to
-    :func:`check_level_consistency` and nothing else. It does not place the
+    :func:`compare_level_definitions` and nothing else. It does not place the
     pair, and it is not preferred over the fit's own core-level estimate — see
     that function for why neither is.
     """
@@ -699,42 +700,85 @@ class LinearizationRequest:
 # the level datum's one owner, its subordinate checks, and the anchor it places
 # --------------------------------------------------------------------------- #
 
-#: Why a capture was flagged: the two per-driver level estimates disagree.
+#: Why a record was banked: the two level DEFINITIONS differ by more than the
+#: disclosure trigger.
 #:
-#: The name says what is measured and nothing more. *level_estimators*: the two
-#: SUBORDINATE per-driver derivations — the trim solve's overlap-band average
-#: (``trim_band_average_db``) and the fit's own core-band median
-#: (``driver_core_level_db``). *disagree*: their relative placements of the
-#: pair sit further apart than :data:`LEVEL_ESTIMATOR_TOLERANCE_DB`.
+#: The name says what is measured and nothing more, and ruling S8 is what made
+#: the old name wrong. *level_definitions*: the HANDOVER level
+#: (:func:`~jasper.audio_measurement.program_analysis.solve_branch_trims`, a
+#: power-band average over the mirrored ±1-octave halves about Fc) and the
+#: PASSBAND estimate
+#: (:func:`~jasper.active_speaker.linearization_fit.driver_core_level_db`, a
+#: median over the driver's own core/radiating band). *differ*: their relative
+#: placements of the pair sit further apart than
+#: :data:`LEVEL_ESTIMATOR_TOLERANCE_DB`.
 #:
-#: **It flags a capture; it never changes a number.** The pair is anchored on
-#: the raw measured trim whatever this says — disclose and recommend, never
-#: discard the datum. What it earns the household is a RETRIABLE capture: a
-#: suspicion worth re-measuring, not a refusal.
-LEVEL_ESTIMATOR_SUSPECT_REASON = "level_estimators_disagree"
+#: **They never measured one quantity, so a gap is not a disagreement.**
+#: Different bands, different statistics. On a horn with a sloped response the
+#: two conventions legitimately part company by many dB — which is why S8 makes
+#: the handover level THE level fact and keeps the passband estimate in its own
+#: role, as the starting estimate that sizes the fixed attenuation. The gap is
+#: reported, never reconciled.
+#:
+#: A NEW literal rather than the old ``level_estimators_disagree`` reused, on
+#: the precedent :data:`REALIZED_LEVEL_SUSPECT_REASON` sets below: a durable
+#: state persisted before S8 carries that string meaning *"two reads of one
+#: quantity conflict — re-measure"*, and one word meaning that on one surface
+#: and *"two definitions of different quantities differ, as expected"* on
+#: another is the collision the one-vocabulary rule exists to prevent.
+LEVEL_DEFINITIONS_DIFFER_REASON = "level_definitions_differ"
 
-#: How far the two per-driver level estimates may sit apart before the capture
-#: is called suspect.
+#: WHICH AXIS the level fact was matched on.
+#:
+#: Toole's constraint, and the reason this is stated rather than assumed: where
+#: woofer beaming and horn directivity mismatch, the on-axis, listening-window
+#: and power-response ratios differ, and **there is no single correct level**.
+#: A tool that matched one of them and did not say which has published a number
+#: whose meaning the reader cannot recover. This is the same physics the
+#: campaign's own graphs page recorded as its beaming finding.
+#:
+#: The value is derived, not chosen: the level fact is computed from the MEASURE
+#: capture's per-driver responses, and MEASURE is a capture with no prompted
+#: move of its own — ``spatial._DESIGN_AXIS_GEOMETRY`` names every one of them
+#: (CHECK, MEASURE, the entry baseline, stage 2's anchor) a design-axis capture
+#: at ``degrees=0``, one mark distance out. So the match is ON AXIS, and it is
+#: neither the listening window nor the power response.
+#:
+#: It is a constant because today there is one answer. When an off-axis or
+#: power-averaged regime lands (S12's parameter surface names them), this
+#: becomes the field that carries which one ran — the shape does not change.
+LEVEL_MATCH_AXIS = "design_axis_0deg"
+
+#: How far the two level definitions may sit apart before the difference is
+#: DISCLOSED.
+#:
+#: **A disclosure trigger, not an agreement bar** — S8's distinction, and the
+#: one a reader will otherwise collapse. Nothing here decides whether a number
+#: is right; it decides when the gap is worth putting in front of someone.
 #:
 #: The same 3.0 dB the realized-level gate holds a shipped pair to
-#: (``REALIZED_LEVEL_MATCH_TOLERANCE_DB``), and deliberately so on three
-#: counts. It is the repo's existing answer to "how far apart may two reads of
-#: the same inter-driver relationship sit before that matters"; reusing it
-#: means the suspicion fires on exactly the population the deleted exclusion
-#: cliff used to fire on, so the change is legible in the corpus rather than
-#: confounded by a second threshold move; and — the reason a number too tight
-#: for a hard decision is right for a soft one — crossing it now costs a flag
-#: rather than a discarded datum, so the cost of being slightly wrong has
-#: changed from "ship a placement nobody measured" to "suggest a re-measure
-#: that was not needed".
+#: (``REALIZED_LEVEL_MATCH_TOLERANCE_DB``), and deliberately so: it is the
+#: repo's existing answer to "how far apart may two reads of the same
+#: inter-driver relationship sit before that matters", and reusing it means the
+#: disclosure fires on exactly the population the deleted exclusion cliff used
+#: to fire on, so the change is legible in the corpus rather than confounded by
+#: a second threshold move.
 #:
-#: One threshold, one owner. Nothing else in the level path holds a tolerance.
+#: **The OTHER tolerance in the recipe is a different question, and both
+#: stay.** ≤0.5 dB is the SETTING precision — how close the trim must land once
+#: the level fact is known — and it is already met by construction: the trim
+#: search steps at ``RIPPLE_TRIM_SEARCH_STEP_DB`` (0.1 dB), five times finer.
+#: It needs no constant of its own here, and this 3.0 must never be narrowed to
+#: it: they answer "when do we tell someone" and "how precisely do we set it".
+#:
+#: One disclosure trigger, one owner. Nothing else in the level path holds a
+#: tolerance.
 LEVEL_ESTIMATOR_TOLERANCE_DB = REALIZED_LEVEL_MATCH_TOLERANCE_DB
 
 #: Why a capture was flagged: the COMMITTED pair's two realized levels sit
 #: further apart than :data:`REALIZED_LEVEL_MATCH_TOLERANCE_DB`.
 #:
-#: The sibling of :data:`LEVEL_ESTIMATOR_SUSPECT_REASON`, in the same
+#: The sibling of :data:`LEVEL_DEFINITIONS_DIFFER_REASON`, in the same
 #: vocabulary and named by the same rule — what is measured, and nothing more.
 #: *realized_levels*: not two estimates of where the drivers sit, but where the
 #: pair that would ship actually lands. *disagree*: past the tolerance above.
@@ -752,38 +796,43 @@ REALIZED_LEVEL_SUSPECT_REASON = "realized_levels_disagree"
 
 @dataclass(frozen=True)
 class LevelConsistency:
-    """How far apart the two per-driver level estimates place the pair.
+    """How far apart the two level DEFINITIONS place the pair, and on which axis.
 
-    A suspicion, not a placement — and that distinction is the whole point of
+    A disclosure, not a placement — and that distinction is the whole point of
     the class. Its predecessor (``LevelFrameAdmission``) reported an
     ARBITRATION over the same two numbers: they voted, a 3.0 dB cliff decided
     whether their reconciliation was admitted, and crossing it zeroed every
-    per-role offset. On 2026-08-16 a disagreement that missed that cliff by
-    0.326 dB moved a tweeter +3.79 dB hotter than its own raw measurement
-    asked, and the round was rolled back for the overshoot that followed.
+    per-role offset. On 2026-08-16 a gap that missed that cliff by 0.326 dB
+    moved a tweeter +3.79 dB hotter than its own raw measurement asked, and the
+    round was rolled back for the overshoot that followed.
 
-    The comparison survived; the CONSEQUENCE did not. The pair is anchored on
-    the raw measured trim (:func:`anchor_trims`), so neither estimate places
-    anything and this verdict cannot move a number.
+    The comparison survived; the CONSEQUENCE did not, and ruling S8 then
+    corrected what the comparison MEANS. The pair is anchored on the raw
+    measured trim (:func:`anchor_trims`), so neither number places anything —
+    and the two were never estimates of one quantity to begin with, so a gap
+    between them is a fact about two definitions, not a fault in either.
 
-    ``None`` in place of this value means **one of the two estimates covered no
-    role**, so there was nothing to compare — a third state, and not a quiet
-    synonym for "the estimators agreed".
+    ``None`` in place of this value means **one of the two definitions covered
+    no role**, so there was nothing to report — a third state, and not a quiet
+    synonym for "they landed together".
     """
 
-    suspect: bool
-    """Did either estimator, on either role, sit past the tolerance?"""
+    differs: bool
+    """Did the gap, on either role, exceed the disclosure trigger?"""
 
     reason: str
-    """:data:`LEVEL_ESTIMATOR_SUSPECT_REASON` when suspect, ``""`` when not."""
+    """:data:`LEVEL_DEFINITIONS_DIFFER_REASON` when it differs, ``""`` when not."""
 
     tolerance_db: float
 
     worst_delta_db: float
-    """The largest single per-role gap between the two estimates, in dB."""
+    """The largest single per-role gap between the two definitions, in dB."""
 
     estimator_delta_db: Mapping[str, float]
-    """Per role: |overlap-band placement − core-median placement|, in dB."""
+    """Per role: |handover placement − passband placement|, in dB."""
+
+    matched_axis: str
+    """:data:`LEVEL_MATCH_AXIS` — WHICH axis these levels were read on."""
 
     def to_dict(self) -> dict[str, Any]:
         """This verdict as the JOURNAL's payload — its only caller.
@@ -795,8 +844,9 @@ class LevelConsistency:
         """
 
         return {
-            "suspect": bool(self.suspect),
+            "differs": bool(self.differs),
             "reason": self.reason,
+            "matched_axis": self.matched_axis,
             "tolerance_db": round(float(self.tolerance_db), 3),
             "worst_delta_db": round(float(self.worst_delta_db), 3),
             "estimator_delta_db": {
@@ -824,63 +874,71 @@ def _relative_placement_db(levels: Mapping[str, float]) -> dict[str, float]:
     return {role: float(value) - loudest for role, value in levels.items()}
 
 
-def check_level_consistency(
+def compare_level_definitions(
     *,
     trim_band_average_db: Mapping[str, float],
     core_proposal_db: Mapping[str, float],
     tolerance_db: float = LEVEL_ESTIMATOR_TOLERANCE_DB,
 ) -> LevelConsistency | None:
-    """Do the two per-driver level estimates agree? Advisory, never a placement.
+    """How far apart do the handover level and the passband estimate sit?
 
-    ``core_proposal_db`` is the fit's core-median estimate expressed as the
-    system-referred level each role's own passband proposes
-    (``core_level + trim``) — the same quantity the deleted shared level frame
-    solved on, so the estimator compared here is the one that used to vote.
+    **It reports a difference. It does not ask whether they agree** — ruling
+    S8, and the correction this function's predecessor
+    (``check_level_consistency``) needed. Those two numbers never measured one
+    quantity, so "do they agree" was a question neither of them answered:
 
-    **What changed is the CONSEQUENCE, not the comparison.** These two numbers
-    were compared before #2609 as well; the difference is that their
-    disagreement used to arbitrate the trim anchor through a 3.0 dB cliff, and
-    now it does nothing but bank a finding. The anchor is the raw measured trim
-    whatever this says (:func:`anchor_trims`), so a disagreement is a statement
-    about the CAPTURE — worth re-taking — and never about the pair that ships.
+    * ``trim_band_average_db`` is the HANDOVER level —
+      :func:`~jasper.audio_measurement.program_analysis.solve_branch_trims`'
+      power-band average over the mirrored ±1-octave halves about Fc. After the
+      target filters, the two traces are equal at Fc and each sits −6 dB against
+      the summed target; that is the Linkwitz-Riley unity condition, and S8
+      makes it **the** level fact.
+    * ``core_proposal_db`` is the PASSBAND estimate — the fit's core-band median
+      (:func:`~jasper.active_speaker.linearization_fit.driver_core_level_db`)
+      expressed as the system-referred level each role's own passband proposes
+      (``core_level + trim``). S8 demotes it and KEEPS it: it is the starting
+      estimate that sizes the horn's fixed attenuation.
 
-    **Neither estimator is preferred, and that is a ruling rather than a
-    hedge.** #2609 carries two owner comments pointing opposite ways on the
-    same numeric pair two rounds apart: the 2026-08-16 12:27 analysis found the
-    overlap-band estimate right and the core-median estimate 3.3–3.9 dB off and
-    proposed preferring the former; the 2026-08-17 conviction found the
-    measured outcome condemned the placement that estimate produced. What that
-    establishes is not that the other estimator wins — it is that **neither is
-    reliably right**, which is exactly why neither places the pair any more.
-    The comparison is symmetric and stays symmetric: it reports a distance, not
-    a winner.
+    Different bands, different statistics. **On a horn with a sloped response
+    they legitimately differ by many dB**, so the gap is surfaced with its
+    number and never reconciled — the research's own instruction. This is what
+    explains the 8.6 dB dispute rather than fixing it: two owner comments two
+    rounds apart that pointed opposite ways on the same numeric pair were each
+    right about a different quantity, and the "defect" was never in either
+    estimator — it was a comparator asking a question neither one answered.
 
-    Compared in a RELATIVE frame — each estimate referred to its own loudest
+    Neither number places anything either way. The pair is anchored on the raw
+    measured trim (:func:`anchor_trims`), so this cannot move a number; what it
+    can do is tell a reader that the two conventions parted company, by how
+    much, and — through :data:`LEVEL_MATCH_AXIS` — on which axis both were read.
+
+    Compared in a RELATIVE frame — each definition referred to its own loudest
     role — because the two carry different references and only their PLACEMENT
     of the pair is comparable.
 
-    Returns ``None`` when either estimate covers no role.
+    Returns ``None`` when either definition covers no role.
     """
 
     if not trim_band_average_db or not core_proposal_db:
         return None
     trim_rel = _relative_placement_db(trim_band_average_db)
     core_rel = _relative_placement_db(core_proposal_db)
-    # Only roles BOTH instruments read. A role one estimator skipped is not a
-    # disagreement.
+    # Only roles BOTH definitions cover. A role one of them skipped is not a
+    # difference.
     delta = {
         role: abs(trim_rel[role] - core_rel[role])
         for role in core_rel
         if role in trim_rel
     }
     worst = max(delta.values(), default=0.0)
-    suspect = worst > float(tolerance_db)
+    differs = worst > float(tolerance_db)
     return LevelConsistency(
-        suspect=suspect,
-        reason=LEVEL_ESTIMATOR_SUSPECT_REASON if suspect else "",
+        differs=differs,
+        reason=LEVEL_DEFINITIONS_DIFFER_REASON if differs else "",
         tolerance_db=float(tolerance_db),
         worst_delta_db=float(worst),
         estimator_delta_db=delta,
+        matched_axis=LEVEL_MATCH_AXIS,
     )
 
 
@@ -919,7 +977,7 @@ def anchor_trims(
     ``anchor_base_db`` is therefore the raw measured trim — the number the
     branch solve measured — so there is nothing left
     to arbitrate and no cliff to sit next to. The two per-driver estimators
-    became :func:`check_level_consistency`, which banks a finding, flags a
+    became :func:`compare_level_definitions`, which banks a finding, discloses a
     capture as retriable, and moves no number.
 
     **The non-positive normalize is unchanged, and is the hearing-safety
@@ -1282,7 +1340,7 @@ class LinearizationPlan:
     """The two per-driver level estimates, graded against each other.
 
     ``None`` when one of the two estimates covered no role. See
-    :func:`check_level_consistency`. It flags a capture as retriable; it never
+    :func:`compare_level_definitions`. It discloses a difference; it never
     moved this candidate's anchor and cannot.
     """
     linearized_predicted_sum: tuple[np.ndarray, np.ndarray]
@@ -1530,12 +1588,11 @@ def plan_linearization(
         role: float(level) + float(trim_band_estimate_db.get(role, 0.0))
         for role, level in core_levels_db.items()
     }
-    # The two estimates against each other. Symmetric, advisory, and unable
-    # to move a number — see :func:`check_level_consistency`. Where a 3.0 dB cliff
-    # used to zero the anchor's per-role offsets, crossing the same 3.0 dB now
-    # flags the capture retriable and the round proceeds on the raw measured
-    # trim.
-    level_consistency = check_level_consistency(
+    # The two DEFINITIONS against each other. Symmetric, disclosive, and unable
+    # to move a number — see :func:`compare_level_definitions`. Where a 3.0 dB
+    # cliff used to zero the anchor's per-role offsets, crossing the same 3.0 dB
+    # now discloses the gap and the round proceeds on the raw measured trim.
+    level_consistency = compare_level_definitions(
         trim_band_average_db=trim_band_estimate_db,
         core_proposal_db=core_proposal_db,
     )
@@ -1822,7 +1879,7 @@ def plan_linearization(
     # realized-level disclosure reads it as its own attribution.
     #
     # (The repo has met this conflation once already, at
-    # :func:`check_level_consistency`, whose own comment names a bound that was
+    # :func:`compare_level_definitions`, whose own comment names a bound that was
     # "DOUBLE the tolerance". Same shape, different seam.)
     #
     # **This LEVEL-MATCHES; it does not quieten. Read that before assuming a
@@ -2132,11 +2189,12 @@ def plan_linearization(
                 role: round(float(fits[role].target_level_db), 3)
                 for role in (woofer_role, tweeter_role)
             },
-            # What the two per-driver estimators made of each other. Neither
-            # moved ``anchored_trim_db`` and neither can — the anchor is the
-            # raw measured trim. ``None`` means one of them covered no role.
-            "level_estimator_suspect": (
-                None if level_consistency is None else level_consistency.suspect
+            # Whether the two level DEFINITIONS parted company past the
+            # disclosure trigger. Neither moved ``anchored_trim_db`` and
+            # neither can — the anchor is the raw measured trim. ``None``
+            # means one of them covered no role.
+            "level_definitions_differ": (
+                None if level_consistency is None else level_consistency.differs
             ),
             "level_estimator_worst_delta_db": (
                 None

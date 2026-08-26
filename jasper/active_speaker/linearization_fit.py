@@ -1432,21 +1432,29 @@ def driver_core_level_db(
     primary: DriverResponse, envelope: EnvelopeCurve,
     *, radiating_band_hz: tuple[float, float] | None = None,
 ) -> float | None:
-    """One driver's own passband level — a SUBORDINATE level estimate.
+    """One driver's own PASSBAND level — the starting estimate, not the level fact.
 
     It runs :func:`fit_driver_linearization`'s own resample → ladder-smooth →
     core-mask → median chain, and exists as a separate entry point because it
     is read across ALL drivers before any one of them is fitted.
 
+    **DEMOTED AND KEPT** (ruling S8). *"Level-matched"* means matched acoustic
+    output through the HANDOVER REGION, and the statistic that measures it is
+    :func:`~jasper.audio_measurement.program_analysis.solve_branch_trims`'
+    power mean over the mirrored ±1-octave halves about Fc. Passband-average
+    sensitivity is a different quantity: it is the starting estimate that sizes
+    a horn's fixed attenuation, and it keeps that job. On a horn with a sloped
+    response the two legitimately differ by many dB, so their gap is
+    **disclosed and never reconciled** —
+    :func:`~jasper.active_speaker.crossover_v2.intervention.
+    compare_level_definitions` reports the distance and the axis both were read
+    on.
+
     **It does not place the trim pair, and since #2609 nothing derived from it
     does.** The pair is anchored on the RAW MEASURED TRIM
     (:func:`~jasper.active_speaker.crossover_v2.intervention.anchor_trims`).
-    This number is one of the two per-driver estimates that
-    :func:`~jasper.active_speaker.crossover_v2.intervention.check_level_consistency`
-    compares against the other: agreement is reassurance, disagreement banks a
-    finding and flags the capture as retriable, and neither outcome changes the
-    anchor. The two-voter arbitration this used to feed — and the 3.0 dB cliff
-    it hung on — are deleted; see that function for why no estimator wins.
+    The two-voter arbitration this used to feed — and the 3.0 dB cliff it hung
+    on — are deleted.
 
     ``radiating_band_hz`` (#1929) narrows the median's band to where this
     driver's own crossover leaves it radiating —
@@ -1469,14 +1477,19 @@ def driver_core_level_db(
     as a passband one. On the 2026-07-30 JTS3 session (#1870) the woofer was
     declared to 4000 Hz against a 2000 Hz LR4, putting ~28% of its core bins
     an octave inside its own stopband and reading its level 3.4 dB away from
-    the trim solve's mirrored ±1-octave estimate of the same physical
-    quantity — past :data:`~jasper.active_speaker.crossover_v2.intervention.
+    the trim solve's mirrored ±1-octave read — past
+    :data:`~jasper.active_speaker.crossover_v2.intervention.
     LEVEL_ESTIMATOR_TOLERANCE_DB`, which then refused a healthy speaker. Two
     identical flat drivers behind a matched LR4 pair reproduce it at 9.4 dB.
-    (Crossing that tolerance no longer refuses anything — see
-    :func:`~jasper.active_speaker.crossover_v2.intervention.check_level_consistency`
-    — but the contamination this paragraph describes is still real and the band
-    is still the fix for it.)
+
+    **The 3.4 dB is stopband contamination and is a real defect in THIS
+    estimate; the residual gap after the band fix is not.** Those are two
+    different things, and S8 is what separates them: the two reads were never
+    of one physical quantity, so a remaining difference is the handover level
+    and the passband estimate answering different questions, not a fault to
+    hunt. The band bound removes the contamination; nothing removes the gap,
+    and nothing should. (Crossing that tolerance no longer refuses anything —
+    it discloses.)
 
     The contamination is specific to the rank statistic, so the fix is. The
     give-back (:attr:`LinearizationFit.correction_giveback_db`) is a

@@ -705,9 +705,10 @@ def _level_frame_record(**overrides: object) -> dict:
     record = {
         "f_lo_hz": 150.0,
         "f_hi_hz": 5844.7,
+        "level_match_axis": "design_axis_0deg",
         "estimator_worst_delta_db": 3.209,
         "estimator_tolerance_db": 3.0,
-        "reason": "level_estimators_disagree",
+        "reason": "level_definitions_differ",
         "realized_difference_db": -0.828,
         "realized_tolerance_db": 3.0,
         "realized_level_w_db": 0.213,
@@ -790,10 +791,15 @@ def test_a_realized_level_mismatch_is_promoted_as_its_own_condition() -> None:
     assert finding is not None
     assert finding.mechanism == MECHANISM_LEVEL_FRAME
     assert finding.fix_class == "eq"
-    # …and the estimator arm still routes the other way, so this is a branch
-    # and not a flip. Both classes are declared on M7 for exactly this reason.
-    assert _level_frame_finding().fix_class == "refit"
-    assert set(mechanism_spec(MECHANISM_LEVEL_FRAME).fix_classes) == {"eq", "refit"}
+    # …and the definition arm still routes the other way, so this is a branch
+    # and not a flip. All three classes are declared on M7: `eq` for this arm,
+    # `document_as_physics` for the definition gap S8 explained, and `refit`
+    # kept because §4 M7 declares it and a genuine upstream frame error can
+    # still occur — the definition gap just stopped being an instance of one.
+    assert _level_frame_finding().fix_class == "document_as_physics"
+    assert set(mechanism_spec(MECHANISM_LEVEL_FRAME).fix_classes) == {
+        "eq", "refit", "document_as_physics",
+    }
 
 
 def test_the_realized_household_copy_is_true_and_still_recommends() -> None:
@@ -934,7 +940,7 @@ def test_the_estimator_reason_still_owns_the_copy_when_both_conditions_fire(
     )
     assert finding is not None
     assert finding.household_copy == LEVEL_FRAME_HOUSEHOLD_COPY
-    assert finding.fix_class == "refit"
+    assert finding.fix_class == "document_as_physics"
     # Nothing is lost to the precedence: the realized numbers still ride.
     assert finding.evidence["realized_difference_db"] == -9.0
     assert finding.evidence["estimator_worst_delta_db"] == 3.209
@@ -946,16 +952,20 @@ def test_a_banked_frame_disagreement_becomes_an_m7_finding() -> None:
     banked rather than refused, and what is banked is an M7-class finding
     carrying the numbers.
 
-    ``refit``, not ``eq``, and that is §4 M7's own split — ``eq`` when a
-    driver's level is genuinely low, ``refit`` "when the level error is
-    upstream in the fit's own frame". A disagreement BETWEEN two estimates of
-    the frame is upstream of every trim derived from them by construction.
+    ``document_as_physics``, and NOT ``refit``. This arm routed ``refit``
+    while the two numbers were read as competing estimates of one frame, on
+    the argument that a disagreement between them is upstream of every trim
+    derived from them. Ruling S8 established they were never estimates of one
+    quantity — the handover level and the passband average measure different
+    things, and on a sloped horn they legitimately differ by many dB — so
+    there is nothing to re-solve. The routing has to agree with the household
+    sentence, which asks for nothing.
     """
 
     finding = _level_frame_finding()
     assert finding is not None
     assert finding.mechanism == MECHANISM_LEVEL_FRAME
-    assert finding.fix_class == "refit"
+    assert finding.fix_class == "document_as_physics"
     assert finding.band_hz == (150.0, 5844.7)
 
 
@@ -990,6 +1000,14 @@ def test_the_banked_finding_carries_all_three_instruments() -> None:
     # A high-pass branch radiates to infinity; ``None`` says so and survives
     # JSON, where ``inf`` does not.
     assert evidence["radiating_band_hi_hz_tweeter"] is None
+    # WHICH axis every level above was read on. Without it the numbers are
+    # unplaceable: on-axis, listening-window and power-response ratios differ
+    # wherever beaming and horn directivity mismatch, and there is no single
+    # correct level to assume (Toole). It rides unconditionally, so a reader of
+    # ANY banked level finding can recover the frame.
+    from jasper.active_speaker.crossover_v2.intervention import LEVEL_MATCH_AXIS
+
+    assert evidence["level_match_axis"] == LEVEL_MATCH_AXIS
     # The disagreement and its tolerance, both PREFIXED with the instrument
     # they belong to, plus the realized check — which passes on this record and
     # so is not why it was banked.
@@ -1013,7 +1031,7 @@ def test_the_banked_finding_says_what_the_session_did_about_it() -> None:
 
     evidence = _level_frame_finding().evidence
 
-    assert evidence["reason"] == "level_estimators_disagree"
+    assert evidence["reason"] == "level_definitions_differ"
     assert evidence["estimator_delta_db_tweeter"] == 3.209
     assert evidence["estimator_delta_db_woofer"] == 0.0
 
@@ -1119,7 +1137,7 @@ def test_the_banked_finding_re_decides_nothing() -> None:
     # promoter ever re-derived the realized verdict, this record — whose
     # realized error is 99 dB — would flip, and it must not.
     assert contradictory.household_copy == LEVEL_FRAME_HOUSEHOLD_COPY
-    assert contradictory.fix_class == "refit"
+    assert contradictory.fix_class == "document_as_physics"
     # …and symmetrically, a realized-only record whose realized error is INSIDE
     # tolerance still gets the realized treatment, because its reason says so.
     inside = _realized_only_finding(realized_difference_db=-0.1)
@@ -1170,7 +1188,7 @@ def test_m7_is_registered_with_no_detector_and_says_why() -> None:
 
     spec = mechanism_spec(MECHANISM_LEVEL_FRAME)
     assert spec.title == "Inter-driver level-frame error"
-    assert set(spec.fix_classes) == {"eq", "refit"}
+    assert set(spec.fix_classes) == {"eq", "refit", "document_as_physics"}
     assert spec.corpus_evidence_tier == "adjudicated"
     # The tier is the plan's stated EXTENSION (a known intervention applied
     # and the feature responding), not a §5 probe, and the citation says so

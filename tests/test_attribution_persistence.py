@@ -1105,7 +1105,7 @@ def test_the_banked_frame_finding_lands_in_the_bundle_and_reopens(
     assert findings is not None
     assert [f.mechanism for f in findings.findings] == ["M7"]
     finding = findings.findings[0]
-    assert finding.fix_class == "refit"
+    assert finding.fix_class == "document_as_physics"
     assert finding.confidence == "unsure"
     assert finding.band_hz == (150.0, 5844.7)
     # All three level instruments survived the hop.
@@ -1215,7 +1215,8 @@ def test_the_banked_finding_is_read_back_for_the_household_to_see(
     # reach them by accident.
     assert set(projected[0]) == {"household_copy", "at"}
     wire = json.dumps(projected)
-    for internal in ("M7", "refit", "unsure", "core_level_db_woofer", "3.276"):
+    for internal in ("M7", "document_as_physics", "unsure",
+                     "core_level_db_woofer", "3.276"):
         assert internal not in wire, f"{internal} crossed onto the household wire"
 
 

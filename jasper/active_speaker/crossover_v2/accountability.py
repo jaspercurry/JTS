@@ -74,7 +74,7 @@ module should own and are deliberately not:
   deleted rather than left unused — and so is that field, since deleting the
   last writer of a thing and keeping the thing is how a dead branch outlives
   the condition it described.  The finding vocabulary that replaced it is
-  owned where the verdicts are — :data:`~.intervention.LEVEL_ESTIMATOR_SUSPECT_REASON`
+  owned where the verdicts are — :data:`~.intervention.LEVEL_DEFINITIONS_DIFFER_REASON`
   and :data:`~.intervention.REALIZED_LEVEL_SUSPECT_REASON` — and is imported
   rather than passed, because a disclosure's reason is this gate's own word for
   what it measured and not the household's word for why it stopped.
@@ -96,7 +96,7 @@ from dataclasses import dataclass
 from typing import Any, Callable, Mapping
 
 from .candidates import LinearizationState
-from .intervention import REALIZED_LEVEL_SUSPECT_REASON
+from .intervention import LEVEL_MATCH_AXIS, REALIZED_LEVEL_SUSPECT_REASON
 
 __all__ = [
     "EVENT_LEVEL_ESTIMATOR_FINDING",
@@ -308,9 +308,9 @@ def level_frame_record(
     consistency = state.level_consistency
     cores = state.core_level_evidence
     realized = state.realized_level_match
-    estimators_suspect = consistency is not None and consistency.suspect
+    definitions_differ = consistency is not None and consistency.differs
     realized_suspect = realized is not None and not realized.matched
-    if not estimators_suspect and not realized_suspect:
+    if not definitions_differ and not realized_suspect:
         return None
     # The band this finding is ABOUT: the span the level reads were actually
     # taken over, unioned across roles. Deliberately the CORE bands and not the
@@ -336,7 +336,7 @@ def level_frame_record(
         band for role in cores
         if (band := cores[role].get("band_hz")) is not None
     ]
-    if not edges and realized is not None and not estimators_suspect:
+    if not edges and realized is not None and not definitions_differ:
         # The realized instrument's OWN spans — the mirrored half-bands about
         # Fc that its two levels were read on — for a record the REALIZED
         # condition is the reason for. Guarded on that rather than on the
@@ -354,6 +354,14 @@ def level_frame_record(
     record: dict[str, Any] = {
         "f_lo_hz": min(lo_edges),
         "f_hi_hz": max(hi_edges),
+        # WHICH axis every level on this record was read on. Toole: where
+        # woofer beaming and horn directivity mismatch, the on-axis,
+        # listening-window and power-response ratios differ and there is no
+        # single correct level — so a banked level that does not name its axis
+        # is a number a later reader cannot place. It rides unconditionally,
+        # like both instruments' numbers, because it describes the capture and
+        # not whichever condition happened to be the reason.
+        "level_match_axis": LEVEL_MATCH_AXIS,
     }
     # ONE reason field, and the estimator disagreement wins when both fire —
     # for the same reason its gate runs first below: it is the more specific
@@ -361,11 +369,11 @@ def level_frame_record(
     # BOTH sub-verdicts' numbers ride this record unconditionally; the field
     # says which one is why the record exists.
     #
-    # Spelled as the full condition rather than reusing ``estimators_suspect``
+    # Spelled as the full condition rather than reusing ``definitions_differ``
     # so the ``consistency is not None`` narrowing is expressed where the
     # attribute is read; a bare boolean carries the fact but not the type, and
     # this attribute access is the one place it matters.
-    if consistency is not None and consistency.suspect:
+    if consistency is not None and consistency.differs:
         record["reason"] = consistency.reason
     else:
         record["reason"] = REALIZED_LEVEL_SUSPECT_REASON
@@ -493,7 +501,7 @@ def assess_accountability(
     # shortfall round — 3.326 dB against a 3.0 dB bar, +3.79 dB of
     # unrequested tweeter level, and a rolled-back round. #2609's conviction
     # comment carries the full chain.
-    if state.level_consistency is not None and state.level_consistency.suspect:
+    if state.level_consistency is not None and state.level_consistency.differs:
         consistency = state.level_consistency
         realized = state.realized_level_match
         journal.append(GateRecord(
@@ -502,6 +510,11 @@ def assess_accountability(
                 "reason": consistency.reason,
                 "worst_delta_db": round(float(consistency.worst_delta_db), 3),
                 "tolerance_db": float(consistency.tolerance_db),
+                # WHICH axis both levels were read on. Toole: where beaming and
+                # horn directivity mismatch there is no single correct level, so
+                # a gap reported without its axis is a number a reader cannot
+                # place.
+                "matched_axis": consistency.matched_axis,
                 "core_level_db": dict(state.core_level_evidence),
                 "trim_band_average_db": {
                     k: round(float(v), 3)
@@ -526,11 +539,11 @@ def assess_accountability(
             },
             level=logging.WARNING,
         ))
-    # The one fact item 2's ledger borrows from this gate: were the two
-    # estimators that placed the drivers in disagreement when the forecast
-    # below was built? ``None`` when no consistency verdict exists at all,
-    # which is a third state and not a quiet "no". Same name and same tri-state
-    # as the giveback event's ``level_estimator_suspect``
+    # The one fact item 2's ledger borrows from this gate: had the two level
+    # definitions parted company past the disclosure trigger when the forecast
+    # below was built? ``None`` when no verdict exists at all, which is a third
+    # state and not a quiet "no". Same name and same tri-state
+    # as the giveback event's ``level_definitions_differ``
     # (:func:`~.intervention.plan_linearization`) on purpose — one vocabulary
     # per question, so a reader greps one field name across the round.
     # Deliberately the BOOLEAN and not the magnitude — ``worst_delta_db`` has
@@ -540,9 +553,9 @@ def assess_accountability(
     # two lines sat one after the other in the field journal, an 11.635 dB
     # disagreement and a -0.703 dB verdict computed on top of it, and nothing
     # in either line said they were about the same numbers.
-    estimators_suspect = (
+    definitions_differ = (
         None if state.level_consistency is None
-        else bool(state.level_consistency.suspect)
+        else bool(state.level_consistency.differs)
     )
 
     # --- item 1: the inter-driver realized level ---------------------
@@ -703,7 +716,7 @@ def assess_accountability(
                 "selected_rms_db": _rms(after),
                 "improvement_db": rounded,
                 "required_db": material_improvement_db,
-                "level_estimator_suspect": estimators_suspect,
+                "level_definitions_differ": definitions_differ,
             }
         journal.append(GateRecord(
             EVENT_PREDICTION_GATE,
@@ -716,7 +729,7 @@ def assess_accountability(
                 ),
                 "improvement_db": rounded,
                 "required_db": material_improvement_db,
-                "level_estimator_suspect": estimators_suspect,
+                "level_definitions_differ": definitions_differ,
             },
             level=level,
         ))

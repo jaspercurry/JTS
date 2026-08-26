@@ -64,22 +64,23 @@ def _match(*, matched, difference_db=0.2):
     )
 
 
-def _consistency(*, suspect, worst_delta_db=5.799):
-    """A :class:`LevelConsistency` verdict — suspect or agreed.
+def _consistency(*, differs, worst_delta_db=5.799):
+    """A :class:`LevelConsistency` verdict — the two definitions apart, or close.
 
-    Not a re-derivation of :func:`~.intervention.check_level_consistency` —
+    Not a re-derivation of :func:`~.intervention.compare_level_definitions` —
     these tests exercise how ``assess_accountability`` handles the verdict,
     not how the verdict itself is computed, so the fixture states its shape
     directly. ``None`` — "the session produced no verdict at all" — is a third
     state and is passed to :func:`_state` explicitly rather than spelled as
-    ``suspect=False``, which the ledger's tri-state flag distinguishes.
+    ``differs=False``, which the ledger's tri-state flag distinguishes.
     """
     return intervention.LevelConsistency(
-        suspect=suspect,
-        reason=intervention.LEVEL_ESTIMATOR_SUSPECT_REASON if suspect else "",
+        differs=differs,
+        reason=intervention.LEVEL_DEFINITIONS_DIFFER_REASON if differs else "",
         tolerance_db=TOLERANCE_DB,
-        worst_delta_db=worst_delta_db if suspect else 0.4,
-        estimator_delta_db={"woofer": worst_delta_db if suspect else 0.4},
+        worst_delta_db=worst_delta_db if differs else 0.4,
+        estimator_delta_db={"woofer": worst_delta_db if differs else 0.4},
+        matched_axis=intervention.LEVEL_MATCH_AXIS,
     )
 
 
@@ -87,7 +88,7 @@ _UNSET = object()
 
 
 def _state(
-    *, suspect=False, matched=True, linearized=("f", "m"), consistency=_UNSET,
+    *, differs=False, matched=True, linearized=("f", "m"), consistency=_UNSET,
     difference_db=_UNSET, polish_delta_db=None,
 ):
     return LinearizationState(
@@ -100,7 +101,7 @@ def _state(
         trim_band_estimate_db={"woofer": 0.1},
         polish_delta_db=dict(polish_delta_db or {}),
         level_consistency=(
-            _consistency(suspect=suspect) if consistency is _UNSET
+            _consistency(differs=differs) if consistency is _UNSET
             else consistency
         ),
         linearized_predicted_sum=linearized,
@@ -143,7 +144,7 @@ def _one(decision, event):
 # --------------------------------------------------------------------------- #
 #
 # There were two refusal arms here. The single-datum-owner migration (#2609)
-# deleted the level-consistency one: a suspect verdict banks a finding and
+# deleted the level-consistency one: a differing verdict banks a finding and
 # proceeds. The realized-level demotion (doctrine deviation (i)) took the last
 # one, for the same never-nanny reason plus a located cost of its own — see
 # ``test_a_mislevelled_pair_discloses_and_the_round_proceeds``.
@@ -179,7 +180,7 @@ def test_a_mislevelled_pair_discloses_and_the_round_proceeds():
     field it was carried on, which
     ``test_the_decision_carries_no_refusal_field_to_set`` pins.
     """
-    decision = _assess(_state(suspect=False, matched=False))
+    decision = _assess(_state(differs=False, matched=False))
 
     line = _one(decision, accountability.EVENT_LEVEL_MATCH_FINDING)
     assert line.level == logging.WARNING
@@ -209,7 +210,7 @@ def test_a_realized_disclosure_survives_a_fit_that_produced_no_core_bands():
     estimator condition has no such fallback and needs none: with no core
     median for any role there is nothing for it to have disagreed about.
     """
-    state = _state(suspect=False, matched=False)
+    state = _state(differs=False, matched=False)
     state = dataclasses.replace(state, core_level_evidence={})
 
     decision = _assess(state)
@@ -235,7 +236,7 @@ def test_the_realized_band_fallback_does_not_describe_an_estimator_finding():
     them. The realized NUMBERS ride an estimator record freely; the BAND is
     the one field that cannot be lent.
     """
-    state = _state(suspect=True, matched=False)
+    state = _state(differs=True, matched=False)
     state = dataclasses.replace(state, core_level_evidence={})
 
     decision = _assess(state)
@@ -284,7 +285,7 @@ def test_the_mislevelled_disclosure_names_the_polish_that_could_explain_it():
     here; the two assertions are deliberately on different surfaces.
     """
     decision = _assess(_state(
-        suspect=False, matched=False,
+        differs=False, matched=False,
         polish_delta_db={"woofer": 0.0, "tweeter": 1.25},
     ))
 
@@ -304,12 +305,21 @@ def test_an_estimator_disagreement_still_owns_the_reason_when_both_fire():
     it, exactly as its gate runs first. Nothing is lost — both sets of numbers
     ride the record either way, which is what this asserts.
     """
-    decision = _assess(_state(suspect=True, matched=False))
+    decision = _assess(_state(differs=True, matched=False))
 
-    assert decision.finding["reason"] == intervention.LEVEL_ESTIMATOR_SUSPECT_REASON
+    assert decision.finding["reason"] == intervention.LEVEL_DEFINITIONS_DIFFER_REASON
     # The realized numbers ride anyway, so the precedence costs no evidence.
     assert decision.finding["realized_difference_db"] == 9.0
     assert decision.finding["estimator_worst_delta_db"] is not None
+    # WHICH axis every level on this record was read on. Toole: where beaming
+    # and horn directivity mismatch there is no single correct level, so a
+    # banked level that does not name its axis cannot be placed by a later
+    # reader. It rides whichever condition is the reason — it describes the
+    # capture, not the verdict.
+    assert decision.finding["level_match_axis"] == intervention.LEVEL_MATCH_AXIS
+    assert _assess(_state(differs=False, matched=False)).finding[
+        "level_match_axis"
+    ] == intervention.LEVEL_MATCH_AXIS
     # Both journal lines fired, in emission order — the more specific
     # diagnosis first, which is the same precedence the reason field carries.
     # Asserted here because no arm returns early any more, so the ordering can
@@ -396,7 +406,7 @@ def test_asked_twice_it_answers_the_same_and_writes_nothing_between():
     second run a different answer — which is the ``_last_*`` failure mode
     #2291 exists to close, one layer up.
     """
-    state = _state(suspect=True, matched=True)
+    state = _state(differs=True, matched=True)
 
     first = _assess(state)
     second = _assess(state)
@@ -446,21 +456,21 @@ def test_a_distrusted_forecast_rides_WITH_the_prediction_it_produced():
     Two things now say it. The finding is banked rather than dropped — it used
     to be discarded whenever item 2 refused, which threw away the diagnosis of
     the forecast that did the refusing — and the ledger itself carries
-    ``level_estimator_suspect``, so a reader of the prediction line learns
+    ``level_definitions_differ``, so a reader of the prediction line learns
     the forecast's inputs were in dispute without correlating by session.
     The magnitude is deliberately NOT copied here: it has one owner, the
     finding and the estimator journal line above.
     """
     decision = _assess(
-        _state(suspect=True, matched=True),
+        _state(differs=True, matched=True),
         grade_prediction=lambda _sum: _report(False, rms_db=2.0),
     )
 
     assert decision.finding is not None
     assert decision.finding["estimator_worst_delta_db"] == 5.799
     ledger = decision.journal[-1]
-    assert ledger.fields["level_estimator_suspect"] is True
-    assert decision.spec_report["comparison"]["level_estimator_suspect"] is True
+    assert ledger.fields["level_definitions_differ"] is True
+    assert decision.spec_report["comparison"]["level_definitions_differ"] is True
 
 
 def test_an_undisputed_forecast_says_so_rather_than_staying_silent():
@@ -471,15 +481,15 @@ def test_an_undisputed_forecast_says_so_rather_than_staying_silent():
     consistency verdict at all. A single boolean would make a candidate built
     without a fit look like one whose estimators passed.
     """
-    agreed = _assess(_state(suspect=False))
-    assert agreed.journal[-1].fields["level_estimator_suspect"] is False
+    agreed = _assess(_state(differs=False))
+    assert agreed.journal[-1].fields["level_definitions_differ"] is False
 
     unverdicted = _assess(_state(consistency=None))
-    assert unverdicted.journal[-1].fields["level_estimator_suspect"] is None
+    assert unverdicted.journal[-1].fields["level_definitions_differ"] is None
 
 
 def test_the_journal_is_in_emission_order_estimator_finding_then_ledger():
-    decision = _assess(_state(suspect=True, matched=True))
+    decision = _assess(_state(differs=True, matched=True))
 
     assert [r.event for r in decision.journal] == [
         accountability.EVENT_LEVEL_ESTIMATOR_FINDING,
@@ -514,7 +524,7 @@ def test_the_gate_payload_keeps_containers_the_planner_record_would_flatten():
     """
     from jasper.active_speaker.crossover_v2.intervention import JournalRecord
 
-    decision = _assess(_state(suspect=True, matched=True))
+    decision = _assess(_state(differs=True, matched=True))
     payload = decision.journal[0].fields
 
     band = payload["core_level_db"]["woofer"]["band_hz"]
