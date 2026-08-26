@@ -72,6 +72,7 @@ import os
 import re
 import secrets
 import urllib.parse
+from collections.abc import Callable
 from http.server import BaseHTTPRequestHandler
 from typing import Any
 
@@ -1332,3 +1333,32 @@ def send_json_response(
     """Serialize a local payload and send the canonical JSON response."""
     body = json.dumps(payload).encode("utf-8")
     send_proxy_json(handler, body, status=status)
+
+
+def send_route_failure(
+    send_json: Callable[..., None],
+    exc: BaseException,
+    *,
+    logger: logging.Logger,
+    event: str,
+    **fields: Any,
+) -> None:
+    """Log a JSON route's failure as a structured error event, then answer
+    the canonical ``{"error": …}`` body with 502.
+
+    ``send_json`` is the handler's own JSON writer (``self._send_json``)
+    rather than ``send_json_response``, so whatever bookkeeping a wizard
+    wraps around the write still runs — the sound wizard records that a
+    response has started so its dispatch-level catch-all never writes a
+    second body. ``fields`` forwards extra structured fields to
+    ``log_event``; the caller keeps its own ``except`` clause, so which
+    exception types reach here stays a per-route decision."""
+    log_event(
+        logger,
+        event,
+        level=logging.ERROR,
+        exc_info=True,
+        result="error",
+        **fields,
+    )
+    send_json({"error": str(exc)}, status=502)

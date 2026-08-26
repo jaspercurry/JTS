@@ -4,7 +4,7 @@
 
 import pytest
 
-from jasper.measurement.volume_guard import (
+from jasper.web.balance_volume_guard import (
     VolumeGuardError,
     normalized_pair_volumes,
 )

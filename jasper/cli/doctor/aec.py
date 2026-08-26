@@ -448,6 +448,12 @@ def _running_aec_bridge_detail() -> str:
 
     return "running (software AEC3 enabled)"
 
+def _dfu_flash_remedy() -> str:
+    """`xvf3800.dfu_flash_command` owns the command text so no hint drifts from it."""
+    from ...mics import xvf3800
+    return ("BRINGUP.md 'XVF firmware: switch to 6-channel variant via DFU' has the "
+            f"procedure — in-system DFU, no Safe Mode entry: {xvf3800.dfu_flash_command()}")
+
 
 @doctor_check(order=45, group="aec")
 def check_aec_bridge_running() -> CheckResult:
@@ -499,11 +505,9 @@ def check_aec_bridge_running() -> CheckResult:
     if not is_6ch:
         return CheckResult(
             "AEC bridge service", "warn",
-            f"off — XVF chip is on {capture_ch}-channel firmware "
-            f"(need {xvf3800.RECOMMENDED_FIRMWARE.capture_channels}-ch). "
-            "DFU-flash per BRINGUP.md "
-            "'XVF firmware: switch to 6-channel variant via DFU', then: "
-            "sudo systemctl start jasper-aec-reconcile",
+            f"off — XVF chip is on {capture_ch}-channel firmware, not "
+            f"{xvf3800.RECOMMENDED_FIRMWARE.capture_channels}-ch. After flashing: "
+            f"sudo systemctl start jasper-aec-reconcile. {_dfu_flash_remedy()}",
         )
 
     # An alignment the reconciler could not apply no longer stops the bridge
@@ -1575,14 +1579,9 @@ def check_xvf_firmware_6ch() -> CheckResult:
     if capture_ch == target:
         return CheckResult("XVF firmware 6-ch", "ok",
                            f"capture is {target}-channel")
-    return CheckResult(
-        "XVF firmware 6-ch", "warn",
-        f"capture is {capture_ch}-channel — re-flash for software AEC. "
-        f"In-system DFU works while the chip is plugged in normally; "
-        f"BRINGUP.md 'XVF firmware: switch to 6-channel variant via DFU' "
-        f"has the full procedure. Headline: "
-        f"{xvf3800.dfu_flash_command()}",
-    )
+    return CheckResult("XVF firmware 6-ch", "warn",
+                       f"capture is {capture_ch}-channel — re-flash for "
+                       f"software AEC. {_dfu_flash_remedy()}")
 
 @doctor_check(order=56, group="aec", exclusive_group="audio-probe")
 def check_xvf_mixer_state() -> CheckResult:

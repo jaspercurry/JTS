@@ -385,15 +385,13 @@ Its own doctrine and cadence; start at the doctrine, not the plans.
   — product/architecture designs of record for the two builder surfaces
 - [`correction-journey-design.md`](docs/correction-journey-design.md) — the
   three-step Crossover → Room → Bass journey (design record)
-- [`flat-linearization-plan.md`](docs/flat-linearization-plan.md),
-  [`flat-linearization-productization-plan.md`](docs/flat-linearization-productization-plan.md),
-  [`flat-linearization-flow-simplification-plan.md`](docs/flat-linearization-flow-simplification-plan.md)
-  — the flat-linearization program: strategy, work order, flow simplification
+- [`historical/linearization-campaign-2026-07.md`](docs/historical/linearization-campaign-2026-07.md)
+  — the 2026-07 linearization campaign's archived decision record: the flat
+  spec, the six fundamentals, the non-goals, the boost ruling, and the
+  integrity ladder that production constants cite as provenance
 - [`gating-v2-plan.md`](docs/gating-v2-plan.md),
   [`room-correction-regime-plan.md`](docs/room-correction-regime-plan.md),
-  [`two-stage-commission-flow-plan.md`](docs/two-stage-commission-flow-plan.md),
-  [`crossover-linearization-80-20-plan.md`](docs/crossover-linearization-80-20-plan.md),
-  [`linearization-integrity-plan.md`](docs/linearization-integrity-plan.md)
+  [`two-stage-commission-flow-plan.md`](docs/two-stage-commission-flow-plan.md)
   — adopted work orders, each scoped to one campaign
 - [`crossover-measurement-productization-design.md`](docs/crossover-measurement-productization-design.md)
   — decision archaeology for the phone-mic measurement flow
@@ -450,7 +448,7 @@ Preserved for archaeology; **not** current operational truth.
   evidence that proved external-DAC chip AEC; use `HANDOFF-aec.md` instead
 - [`historical/chip-aec-dac-portability-2026-06.md`](docs/historical/chip-aec-dac-portability-2026-06.md)
   — clock-domain measurements and the rejected rate-matcher design
-- [`HANDOFF-volume-control-redesign.md`](docs/HANDOFF-volume-control-redesign.md)
+- [`historical/volume-control-redesign-2026-05.md`](docs/historical/volume-control-redesign-2026-05.md)
   — why AirPlay receiver-originated volume reflection did not work
 - [`RESEARCH-pipewire-low-latency.md`](docs/RESEARCH-pipewire-low-latency.md) —
   what PipeWire's source does, and the JTS verdict per technique

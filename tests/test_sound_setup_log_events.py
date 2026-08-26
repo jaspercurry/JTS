@@ -33,8 +33,40 @@ def _sound_event_calls() -> list[ast.Call]:
     return sorted(calls, key=lambda node: node.lineno)
 
 
+def _sound_route_failure_calls() -> list[ast.Call]:
+    """The route-failure events this file names but no longer renders itself.
+
+    ``send_route_failure`` is the shared owner of "log the failure, answer
+    502"; it fixes ``level=logging.ERROR`` and ``exc_info=True`` for every
+    caller, so each call site contributes one ERROR event under the name in
+    its ``event=`` keyword.
+    """
+    source = Path(sound_setup.__file__).read_text()
+    tree = ast.parse(source)
+    calls = [
+        node
+        for node in ast.walk(tree)
+        if isinstance(node, ast.Call)
+        and isinstance(node.func, ast.Name)
+        and node.func.id == "send_route_failure"
+    ]
+    return sorted(calls, key=lambda node: node.lineno)
+
+
+def _route_failure_event_name(call: ast.Call) -> str:
+    (name,) = [
+        keyword.value.value
+        for keyword in call.keywords
+        if keyword.arg == "event"
+        and isinstance(keyword.value, ast.Constant)
+        and isinstance(keyword.value.value, str)
+    ]
+    return name
+
+
 def test_sound_setup_migrates_the_complete_event_vocabulary():
     calls = _sound_event_calls()
+    route_failures = _sound_route_failure_calls()
 
     # 96 / 41. The topology transaction contributes one INFO completion event
     # under the existing sound.output_topology_reset name, and the same-shape
@@ -52,8 +84,14 @@ def test_sound_setup_migrates_the_complete_event_vocabulary():
     # The 97th call is the server-side identity-audition refusal (#2821) — an
     # INFO under the existing sound.active_speaker_commission name, so the
     # distinct-name count is unchanged.
-    assert len(calls) == 97
-    assert len({call.args[1].value for call in calls}) == 41
+    #
+    # The route-failure half of the vocabulary is emitted by the shared
+    # send_route_failure owner rather than rendered here; the totals span both
+    # so converging a call site can never quietly retire its event.
+    assert len(calls) + len(route_failures) == 97
+    names = {call.args[1].value for call in calls}
+    names |= {_route_failure_event_name(call) for call in route_failures}
+    assert len(names) == 41
 
     # The delegated half of the vocabulary: an event this file no longer emits
     # itself but still NAMES, handed to the shared owner. Without this the
@@ -70,6 +108,7 @@ def test_sound_setup_migrates_the_complete_event_vocabulary():
     assert "sound.active_speaker_summed_test" in delegated
 
     levels: Counter[str] = Counter()
+    levels["ERROR"] += len(route_failures)
     for call in calls:
         keywords = {keyword.arg: keyword.value for keyword in call.keywords}
         level = keywords.get("level")

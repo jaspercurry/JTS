@@ -108,7 +108,11 @@ _ENTRY_POINTS = {
 _GRAPH_SWAP_MODULES = {
     "jasper/active_speaker/commission_wiring.py",
     "jasper/active_speaker/commissioning_service.py",
-    "jasper/active_speaker/crossover_v2_flow.py",
+    # Wave 6b: the measurement swap moved OUT of ``crossover_v2_flow.py`` and
+    # into the session graph. Same daemon (jasper-correction-web, entry
+    # ``jasper/web/correction_crossover_v2.py`` below), same registration
+    # requirement — one module swapped for another, not a new host.
+    "jasper/active_speaker/crossover_v2/session_graph.py",
     "jasper/active_speaker/runtime_convergence.py",
     "jasper/active_speaker/web_commissioning.py",
     "jasper/bass_extension/__init__.py",

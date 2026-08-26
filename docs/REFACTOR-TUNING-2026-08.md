@@ -1646,7 +1646,7 @@ is written.
 | MS-4 | Stimuli enter pre-DSP — a renderer-lane ring, never the post-crossover active ring | `tests/test_ring_active_endpoint.py::test_both_rings_are_forbidden_test_pcm_targets` | named |
 | MS-5 | Every ring-naming emitter asks the width via `_assert_ring_playback_width` | `tests/test_ring_active_endpoint.py::test_the_width_refusal_actually_fires_through_an_emitter` | named |
 | MS-6 | No full-range graph on a roleful box | `tests/test_ring_active_endpoint.py::test_the_flat_lane_is_refused_on_a_roleful_box_so_its_ring_kwargs_cannot_stomp` | named |
-| MS-7 | The chip-AEC K is edge-bound — moved output geometry parks with `CommissionRequired` | `tests/test_aec_init.py::test_production_chip_profile_parks_when_final_edge_format_changes` | named |
+| MS-7 | A commissioned chip-AEC box whose final-edge geometry moved **applies its banked K and discloses** — it does not park (ADR-0101) | `tests/test_aec_init.py::test_a_commissioned_identity_that_moved_is_applied_and_disclosed` | re-pointed (wave 6b) |
 | MS-8 | A tone must fit its fan-in test lease | `tests/test_commission_tone_single_owner.py::test_commissioning_tone_fits_inside_mux_gate_lease` | named |
 | MS-9 | A secondary DSP instance fails closed to silence, never to a reboot | `tests/test_camilla_crossover_unit.py::test_unit_never_reboots_the_box` | named |
 | MS-10 | A blocked graph-repair leaves the statefile byte-for-byte untouched | `tests/test_camilla_crossover_guard_script.py::test_runtime_contract_blocked_leaves_statefile_untouched` | named |
@@ -1672,3 +1672,26 @@ wave.
 subprocess tool path, not an import, so a hard-coded
 `experiments/usb-turntable` path literal inside the engine is a review finding
 the AST walk cannot see. Stated in the test rather than plugged.
+
+**MS-7's row was corrected in wave 6b, and the invariant it stated was wrong.**
+The pin this table named — `test_production_chip_profile_parks_when_final_edge_format_changes` —
+does not exist at `HEAD`; the nearest surviving name,
+`test_production_chip_profile_parks_when_nothing_is_banked_or_shipped`
+(`tests/test_aec_init.py:224`), parks when **nothing is banked**, not when
+geometry moves. The real behaviour is the opposite of the row's claim, pinned by
+`test_a_commissioned_identity_that_moved_is_applied_and_disclosed` (`:287`),
+which is parametrized over `("output_format", "S32_LE")` — MS-7's own subject —
+and asserts `main() == 0` with the moved field named in the disclosure file.
+Its in-test words: *"hardware-class divergence — the loud kind, still not a
+park."*
+
+**So wave 6's R3 tripwire is answered NO**, and neither link in its chain
+exists. (1) `jasper/cli/aec_init.py:814-859` reads the final-edge geometry from
+outputd's STATUS socket and env only — the module contains zero CamillaDSP
+references, and outputd latches its DAC `hw_params` in a `OnceLock` at its own
+ALSA open (`rust/jasper-outputd/src/state.rs:567-568`) — so a transient
+`set_active_config_raw` graph is structurally invisible to it. (2) Even if
+geometry did move, `aec_init.py:1065-1081` applies the banked K and returns 0
+(`disclosed_stale`); `CommissionRequired` on a geometry field is reachable only
+for a box with **no** commissioned artifact. Making the measurement graph
+session-scoped therefore cannot park a chip-AEC box.

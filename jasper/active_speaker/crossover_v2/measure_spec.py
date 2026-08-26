@@ -118,65 +118,64 @@ class CapabilityStub:
         """
         if not self.captured:
             return self
-        return _stub(
-            self.code, _CAPABILITY[self.code], captured=False,
-            owed=_OWED[self.code], instrument=self.instrument,
-        )
+        return _stub(self.code, _ROWS[self.code], captured=False)
 
 
-def _stub(code: str, capability: str, *, captured: bool, owed: str,
-          instrument: str) -> CapabilityStub:
+@dataclass(frozen=True)
+class _StubRow:
+    """The four facts one hole is rendered from."""
+
+    capability: str
+    owed: str
+    instrument: str
+    captured: bool
+
+
+def _stub(code: str, row: _StubRow, *, captured: bool) -> CapabilityStub:
     """One stub in the wording shape ruling S12 fixes.
 
     The canonical example the ruling quotes renders from this function exactly,
     which is why the sentence is composed rather than stored: a second stub
     written by hand would drift out of the shape by its second line.
+
+    ``captured`` is a parameter rather than ``row.captured`` because
+    :meth:`CapabilityStub.aborted` re-renders a row as having captured nothing.
     """
     banked = "capture banked" if captured else "nothing captured"
     return CapabilityStub(
         code=code,
-        instrument=instrument,
+        instrument=row.instrument,
         captured=captured,
-        message=f"{capability} not implemented; {banked}, {owed} pending {instrument}",
+        message=(
+            f"{row.capability} not implemented; {banked}, "
+            f"{row.owed} pending {row.instrument}"
+        ),
     )
 
 
-#: What each hole is called in the sentence, and what it still owes. Kept as
-#: data so :meth:`CapabilityStub.aborted` can re-render a stub without a second
-#: copy of either phrase.
-_CAPABILITY = {
-    NEAR_FIELD_SPLICE_NOT_IMPLEMENTED: "near-field splice",
-    INVERTED_POLARITY_NOT_IMPLEMENTED: "inverted-polarity capture",
-    DISTORTION_VS_LEVEL_NOT_IMPLEMENTED: "distortion-vs-level sweep",
-    VERTICAL_AXIS_NOT_IMPLEMENTED: "vertical-axis walk",
-}
-_OWED = {
-    NEAR_FIELD_SPLICE_NOT_IMPLEMENTED: "splice",
-    INVERTED_POLARITY_NOT_IMPLEMENTED: "reverse-null",
-    DISTORTION_VS_LEVEL_NOT_IMPLEMENTED: "level ladder",
-    VERTICAL_AXIS_NOT_IMPLEMENTED: "pose prompts",
-}
-_INSTRUMENT = {
-    NEAR_FIELD_SPLICE_NOT_IMPLEMENTED: "R-3",
-    INVERTED_POLARITY_NOT_IMPLEMENTED: "R-1",
-    DISTORTION_VS_LEVEL_NOT_IMPLEMENTED: "R-4",
-    VERTICAL_AXIS_NOT_IMPLEMENTED: "R-5a",
-}
-_CAPTURED = {
-    NEAR_FIELD_SPLICE_NOT_IMPLEMENTED: True,
-    INVERTED_POLARITY_NOT_IMPLEMENTED: False,
-    DISTORTION_VS_LEVEL_NOT_IMPLEMENTED: True,
-    VERTICAL_AXIS_NOT_IMPLEMENTED: False,
+#: One row per named hole. Kept as data so :meth:`CapabilityStub.aborted` can
+#: re-render a stub without a second copy of any phrase — and so a fifth stub
+#: joins the engine's vocabulary by adding a row here and nowhere else.
+_ROWS: dict[str, _StubRow] = {
+    NEAR_FIELD_SPLICE_NOT_IMPLEMENTED: _StubRow(
+        "near-field splice", "splice", "R-3", captured=True,
+    ),
+    INVERTED_POLARITY_NOT_IMPLEMENTED: _StubRow(
+        "inverted-polarity capture", "reverse-null", "R-1", captured=False,
+    ),
+    DISTORTION_VS_LEVEL_NOT_IMPLEMENTED: _StubRow(
+        "distortion-vs-level sweep", "level ladder", "R-4", captured=True,
+    ),
+    VERTICAL_AXIS_NOT_IMPLEMENTED: _StubRow(
+        "vertical-axis walk", "pose prompts", "R-5a", captured=False,
+    ),
 }
 
 #: Built once at import. Each stub is a frozen value that depends on nothing
 #: but its code, so rebuilding one per ``measure`` call bought nothing.
 _STUBS = {
-    code: _stub(
-        code, _CAPABILITY[code], captured=_CAPTURED[code],
-        owed=_OWED[code], instrument=_INSTRUMENT[code],
-    )
-    for code in _CAPABILITY
+    code: _stub(code, row, captured=row.captured)
+    for code, row in _ROWS.items()
 }
 
 #: Every code :func:`stubbed_capabilities` can return, so a caller can CHECK a

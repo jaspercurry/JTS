@@ -4,14 +4,11 @@
 
 """The one owner of CamillaDSP's main fader — four ranked claim kinds.
 
-``docs/REFACTOR-TUNING-2026-08.md`` §3 wave 5 collapses **18
-production-reachable fader writers**, nine of which can interleave inside a
-single crossover-v2 measurement session with nothing arbitrating between them,
-into one owner exposing four claim kinds: **household · transient-duck ·
-session-measurement · commissioning**. This module is that owner. Wave 5b/5c
-route the writers into it; wave 6 wires
-:class:`~jasper.active_speaker.crossover_v2.session_seams.VolumeClaim` — the
-engine's session-measurement face — onto it.
+``docs/REFACTOR-TUNING-2026-08.md`` §3 collapses **18 production-reachable
+fader writers**, nine of which can interleave inside a single crossover-v2
+measurement session with nothing arbitrating between them, into one owner
+exposing four claim kinds: **household · transient-duck · session-measurement ·
+commissioning**. This module is that owner.
 
 **What "ranked" means, exactly.** Three of the four kinds declare a LEVEL: an
 absolute dB the fader should read. They are totally ordered — household <
@@ -37,8 +34,7 @@ second seat of truth.)
 **One confirm tolerance, and it is not minted here.**
 :data:`~jasper.active_speaker.volume_latch.READBACK_TOLERANCE_DB` via
 :func:`~jasper.active_speaker.volume_latch.fader_matches` is the repo's one
-*"do these two fader dB values agree?"* test. This module consumes it. Wave 5
-collapses the two independent ``0.05`` literals and the ``1e-6`` onto it.
+*"do these two fader dB values agree?"* test. This module consumes it.
 
 **The 0 dB ceiling is NOT this module's.** ``devices.volume_limit`` stays
 ``0.0`` and ``jasper.camilla._coerce_main_volume_db`` clamps every positive
@@ -67,9 +63,9 @@ anyway, so a holder that breaks the contract loses its claim rather than
 stranding one.
 
 **In-memory, per process.** Durable volume-safety state belongs to the claim
-holders that own it (wave 5d merges the three schemas). Cross-daemon ordering
-stays with the leases that already provide it. This owner arbitrates the
-writers inside one process, which is where all nine session collisions live.
+holders that own it. Cross-daemon ordering stays with the leases that already
+provide it. This owner arbitrates the writers inside one process, which is
+where all nine session collisions live.
 """
 
 from __future__ import annotations
@@ -77,7 +73,6 @@ from __future__ import annotations
 import asyncio
 import itertools
 import logging
-import math
 import time
 from dataclasses import dataclass
 from enum import Enum
@@ -90,6 +85,7 @@ from .active_speaker.volume_latch import (
     read_fader_db,
     set_and_confirm_volume,
 )
+from .json_fields import JsonFields
 from .log_event import log_event
 
 logger = logging.getLogger(__name__)
@@ -176,18 +172,30 @@ def duck_release_target_db(
     return min(float(reference_db), float(current_db) + abs(float(depth_db)))
 
 
+_JSON_FIELDS = JsonFields(VolumeClaimRefused)
+
+
 def _finite(value: Any, what: str) -> float:
+    """A finite dB number, or a refusal. A ``bool`` is not a level.
+
+    The numeric and finite rules are the repo's shared ones. The bool rule is
+    this module's own, and it is why the shared parser is not reached first:
+    ``JsonFields.finite_number`` reads ``True`` as ``1.0``, which would take a
+    caller's type mistake as a level — and a POSITIVE one, which the 0 dB
+    ceiling can never let the fader carry.
+    """
     if isinstance(value, bool):
         raise VolumeClaimRefused(f"{what} must be numeric, got {value!r}")
-    try:
-        number = float(value)
-    except (TypeError, ValueError) as exc:
-        raise VolumeClaimRefused(
-            f"{what} must be numeric, got {value!r}"
-        ) from exc
-    if not math.isfinite(number):
-        raise VolumeClaimRefused(f"{what} must be finite, got {value!r}")
-    return number
+    return _JSON_FIELDS.finite_number(value, what)
+
+
+def _fmt_db(value: float | None) -> str:
+    """A dB field for a log line, EMPTY when there is no number.
+
+    The empty string is the discriminator :meth:`VolumeOwner._disclose` names;
+    an absent number must never render as one.
+    """
+    return "" if value is None else f"{value:.6f}"
 
 
 class VolumeOwner:
@@ -332,7 +340,7 @@ class VolumeOwner:
                 "volume.household_declare_unconfirmed",
                 level=logging.WARNING,
                 declared_db=f"{target:.6f}",
-                previous_db="" if previous is None else f"{previous:.6f}",
+                previous_db=_fmt_db(previous),
             )
             return False
 
@@ -526,6 +534,14 @@ class VolumeOwner:
                     current_db=await self._read(),
                     depth_db=handle.depth_db or 0.0,
                 )
+            # This read and :meth:`_settle`'s are NOT one question asked
+            # twice. They are separated by a round-trip, and the fader is
+            # shared across daemons: ``Ducker.restore`` clears the duck-active
+            # flag BEFORE awaiting this release, so jasper-control's probe
+            # (``control.volume_ops._make_duck_active_probe``) stops deferring
+            # and may write CamillaDSP while the first read is in flight.
+            # Settling on the earlier sample would skip the repair and leave
+            # the foreign value standing.
             await self._settle(
                 settled, context=f"release:{handle.kind.value}",
             )
@@ -674,10 +690,8 @@ class VolumeOwner:
             "volume.claim_released_without_level",
             level=logging.WARNING,
             kind=handle.kind.value,
-            observed_db="" if observed is None else f"{observed:.6f}",
-            depth_db=(
-                "" if handle.depth_db is None else f"{handle.depth_db:.6f}"
-            ),
+            observed_db=_fmt_db(observed),
+            depth_db=_fmt_db(handle.depth_db),
         )
 
     def _disclose(
@@ -704,8 +718,8 @@ class VolumeOwner:
             level=logging.INFO if result == "held" else logging.WARNING,
             result=result,
             kind=handle.kind.value,
-            expected_db="" if expected is None else f"{expected:.6f}",
-            observed_db="" if observed is None else f"{observed:.6f}",
+            expected_db=_fmt_db(expected),
+            observed_db=_fmt_db(observed),
             tolerance_db=f"{READBACK_TOLERANCE_DB:.6f}",
         )
 
@@ -735,15 +749,10 @@ def install_volume_owner(owner: VolumeOwner | None) -> None:
     instances no coordinator ever sees."* The prior art is what makes this a
     shape rather than an exception.
 
-    **Stated plainly: this reverses a position #3010's body took.** That PR
-    argued for no registry at all, citing ``tests/conftest.py``'s
-    ``_isolate_canonical_target_provider`` docstring — *"``Ducker`` needs no
-    equivalent, it takes ``target_db_provider`` as a constructor argument."*
-    That reasoning is still right, and still only covers the daemon. Read
-    whole, the very existence of the fixture it quotes is the counter-example:
-    the repo already concluded that a process without a coordinator needs a
-    registration, and pays for it with an isolation fixture. This one does
-    too, in the same file.
+    A registration a process installs is one a test has to put back:
+    ``tests/conftest.py``'s ``_isolate_process_volume_owner`` is this owner's
+    half of the isolation ``_isolate_canonical_target_provider`` already does
+    for that provider.
 
     **The registration is THE owner for its process, not one of several.** A
     process that registers must not also construct a second owner, and a

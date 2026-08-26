@@ -2,11 +2,17 @@
 #
 # SPDX-License-Identifier: Apache-2.0
 
-"""Program playback orchestration (Wave 2 deliverable D).
+"""Program playback orchestration.
 
-Exercises play_program with a fake aplay/DSP boundary: config staged -> program
-played -> prior graph restored, restore still runs on playback failure, fresh
-re-admission gates playback, and the session-volume assertion gates the run.
+Exercises play_program with a fake aplay boundary: the session volume assertion
+and the fresh re-admission both gate playback, and the writer lock is held
+across the play so no other DSP writer can replace the measurement graph
+mid-capture.
+
+The graph load/restore bracket this used to own moved to
+``crossover_v2.session_graph.MeasurementSessionGraph`` (wave 6b) — its tests,
+including the restore-failure pins, live in
+``tests/test_crossover_v2_session_graph.py``.
 """
 from __future__ import annotations
 
@@ -18,18 +24,13 @@ import pytest
 
 from jasper.active_speaker.program_admission import ProgramAdmission, ProgramAdmissionRefusal
 from jasper.active_speaker.program_playback import (
-    ProgramGraphRestoreError,
-    ProgramPlaybackError,
     ProgramPlaybackRefused,
     play_program,
 )
 from jasper.active_speaker.session_volume_plan import SessionVolumePlanError
-from jasper.camilla import CamillaUnavailable
 from jasper.audio_measurement.excitation_admission import FrequencyBand
 from jasper.audio_measurement.playback import PlaybackResult
 from jasper.audio_measurement.program import RoleBand, build_measure_program
-
-ENTRY_PATH = "/etc/camilladsp/active_speaker_baseline.yml"
 
 
 def _program():
@@ -64,32 +65,11 @@ class FakePlan:
 
 
 class Boundary:
-    """Records the staging/playback/restore sequence for one play_program run."""
+    """Records the lock/playback sequence for one play_program run."""
 
-    def __init__(
-        self,
-        *,
-        entry_path=ENTRY_PATH,
-        load_ok=True,
-        play_ok=True,
-        restore_ok=True,
-        restore_raises=None,
-    ):
-        self.entry_path = entry_path
-        self.load_ok = load_ok
+    def __init__(self, *, play_ok=True):
         self.play_ok = play_ok
-        self.restore_ok = restore_ok
-        self.restore_raises = restore_raises
         self.order: list = []
-
-    async def read_current_config_path(self):
-        return self.entry_path
-
-    async def load_program_graph(self, yaml_text):
-        self.order.append(("load", yaml_text))
-        if not self.load_ok:
-            raise RuntimeError("camilla rejected the program graph")
-        return True
 
     async def play_wav(self):
         self.order.append("play")
@@ -98,12 +78,6 @@ class Boundary:
         return PlaybackResult(
             wav_path=Path("prog.wav"), alsa_device="correction_substream", returncode=0
         )
-
-    async def restore_graph(self, path):
-        self.order.append(("restore", path))
-        if self.restore_raises is not None:
-            raise self.restore_raises
-        return self.restore_ok
 
     @contextlib.asynccontextmanager
     async def writer_lock(self):
@@ -124,59 +98,39 @@ def _run(program, boundary, plan, *, admission=None):
     return asyncio.run(
         play_program(
             program,
-            program_graph_yaml="PROGRAM_YAML",
             session_volume_plan=plan,
             readmit=readmit,
-            read_current_config_path=boundary.read_current_config_path,
-            load_program_graph=boundary.load_program_graph,
-            restore_graph=boundary.restore_graph,
             play_wav=boundary.play_wav,
             writer_lock=boundary.writer_lock,
         )
     )
 
 
-def test_happy_path_stages_plays_then_restores():
+def test_happy_path_readmits_then_plays_under_the_lock():
     program = _program()
     boundary = Boundary()
     result = _run(program, boundary, FakePlan())
-    assert result.entry_config_path == ENTRY_PATH
+    assert boundary.order == ["readmit", "lock", "play", "unlock"]
     assert result.playback.returncode == 0
-    # readmit before the lock; inside the lock: load -> play -> restore -> unlock.
-    assert boundary.order == [
-        "readmit",
-        "lock",
-        ("load", "PROGRAM_YAML"),
-        "play",
-        ("restore", ENTRY_PATH),
-        "unlock",
-    ]
+    assert result.admission.allowed
 
 
-def test_restore_runs_on_playback_failure():
+def test_the_lock_is_released_when_playback_raises():
+    """The writer lock is what keeps another DSP writer off the graph during a
+    capture, so a failed play must still hand it back."""
     program = _program()
     boundary = Boundary(play_ok=False)
     with pytest.raises(RuntimeError, match="aplay failed"):
         _run(program, boundary, FakePlan())
-    # The prior graph is restored even though playback raised.
-    assert ("restore", ENTRY_PATH) in boundary.order
     assert boundary.order[-1] == "unlock"
 
 
-def test_restore_runs_on_load_failure():
-    program = _program()
-    boundary = Boundary(load_ok=False)
-    with pytest.raises(RuntimeError, match="rejected the program graph"):
-        _run(program, boundary, FakePlan())
-    assert ("restore", ENTRY_PATH) in boundary.order
-
-
-def test_refused_readmission_never_stages():
+def test_refused_readmission_never_takes_the_lock():
     program = _program()
     boundary = Boundary()
     with pytest.raises(ProgramPlaybackRefused):
         _run(program, boundary, FakePlan(), admission=_admission(program, allowed=False))
-    # No lock taken, nothing staged.
+    # No lock taken, nothing played.
     assert boundary.order == ["readmit"]
 
 
@@ -186,55 +140,3 @@ def test_session_volume_not_ready_blocks_before_readmit():
     with pytest.raises(SessionVolumePlanError):
         _run(program, boundary, FakePlan(ready=False))
     assert boundary.order == []  # assert_ready runs first, before readmit
-
-
-def test_missing_entry_config_refuses_before_loading():
-    program = _program()
-    boundary = Boundary(entry_path=None)
-    with pytest.raises(ProgramPlaybackError, match="no current DSP config"):
-        _run(program, boundary, FakePlan())
-    # Lock taken, but nothing loaded or played.
-    assert "load" not in [e[0] if isinstance(e, tuple) else e for e in boundary.order]
-
-
-def test_restore_failure_after_play_raises(caplog):
-    program = _program()
-    boundary = Boundary(restore_ok=False)
-    with caplog.at_level("INFO"):
-        with pytest.raises(ProgramGraphRestoreError):
-            _run(program, boundary, FakePlan())
-    # Play still happened and restore was attempted.
-    assert "play" in boundary.order
-    assert ("restore", ENTRY_PATH) in boundary.order
-    # N3: the end marker must say restore_failed, never a false "completed".
-    end_lines = [
-        r.getMessage()
-        for r in caplog.records
-        if "active_speaker.program_playback" in r.getMessage()
-        and "action=end" in r.getMessage()
-    ]
-    assert end_lines and all("result=restore_failed" in line for line in end_lines)
-    assert not any("result=completed" in line for line in end_lines)
-
-
-def test_an_unavailable_dsp_during_restore_never_escapes_the_finally(caplog):
-    """A CamillaDSP outage is the restore's likeliest failure, and it reports.
-
-    ``set_active_config_raw(best_effort=False)`` — the production restore seam —
-    raises ``CamillaUnavailable``, which is not an ``OSError`` subclass. Escaping
-    the ``finally`` would replace whatever error was already propagating and
-    skip the CRITICAL restore marker entirely, so the speaker would be left in
-    the program graph with nothing in the journal saying so.
-    """
-    program = _program()
-    boundary = Boundary(restore_raises=CamillaUnavailable("websocket closed"))
-    with caplog.at_level("INFO"):
-        with pytest.raises(ProgramGraphRestoreError):
-            _run(program, boundary, FakePlan())
-    assert ("restore", ENTRY_PATH) in boundary.order
-    restore_lines = [
-        r.getMessage()
-        for r in caplog.records
-        if "action=restore" in r.getMessage()
-    ]
-    assert restore_lines and all("result=failed" in line for line in restore_lines)

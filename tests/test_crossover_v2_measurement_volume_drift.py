@@ -678,6 +678,7 @@ def _drive(
     from jasper.active_speaker import camilla_yaml as camilla_yaml_mod
     from jasper.active_speaker import crossover_v2_flow as flow_mod
     from jasper.active_speaker import program_playback as playback_mod
+    from jasper.active_speaker.crossover_v2 import session_graph as session_graph_mod
     from jasper.audio_measurement import program as program_mod
     from jasper.correction import coordinator
 
@@ -688,6 +689,25 @@ def _drive(
         lambda *a, **k: "pipeline: []\n",
     )
 
+    # The session's measurement graph is stubbed out because these tests are
+    # about the FADER HOLD both playback paths share, not about the graph
+    # transport — which has its own suite
+    # (``tests/test_crossover_v2_session_graph.py``). Leaving it real would put
+    # the production DSP writer lock and a CamillaDSP swap inside a probe whose
+    # instrument is ``volume_writes``.
+    async def _no_install(self) -> str:
+        return "stub"
+
+    async def _no_restore(self) -> None:
+        return None
+
+    monkeypatch.setattr(
+        session_graph_mod.MeasurementSessionGraph, "install", _no_install
+    )
+    monkeypatch.setattr(
+        session_graph_mod.MeasurementSessionGraph, "restore", _no_restore
+    )
+
     async def _fake_aplay(bundle_dir, artifact, *, alsa_device=None, timeout_s=60.0):
         _emitted("summed")
         return SimpleNamespace(ok=True)
@@ -695,15 +715,6 @@ def _drive(
     monkeypatch.setattr(playback_mod, "verified_program_aplay", _fake_aplay)
 
     def _fake_seams(cam_arg, **kwargs):
-        async def read_current_config_path() -> str:
-            return await cam.get_config_file_path()
-
-        async def load_program_graph(yaml_text: str) -> bool:
-            return True
-
-        async def restore_graph(path: str) -> bool:
-            return True
-
         async def play_wav() -> Any:
             _emitted("routed")
             return SimpleNamespace(ok=True)
@@ -712,9 +723,6 @@ def _drive(
             return SimpleNamespace(allowed=True, refusals=())
 
         return {
-            "read_current_config_path": read_current_config_path,
-            "load_program_graph": load_program_graph,
-            "restore_graph": restore_graph,
             "play_wav": play_wav,
             "readmit": readmit,
             "writer_lock": lambda: _Window(),
@@ -938,16 +946,6 @@ def test_an_unready_plan_never_gets_its_fader_raised(monkeypatch, tmp_path, phas
 # --------------------------------------------------------------------------- #
 
 
-async def _noop_confirm(_cam, _yaml_text) -> None:
-    """The load seam's post-SetConfig readback proof, stubbed out.
-
-    These tests are about the release reference a swap carries, not about
-    graph confirmation — that is
-    ``test_bind_program_playback_seams_uses_inline_setconfig``'s subject.
-    """
-    return None
-
-
 def test_the_release_reference_is_the_plans_own_guarded_answer(tmp_path):
     """THE SAFETY GUARD ON THIS FIX.
 
@@ -977,141 +975,6 @@ def test_a_cleanly_closed_plan_offers_no_release_reference(tmp_path):
     asyncio.run(plan.close(fader.set, fader.get))
     assert plan.owned_measurement_volume_db_nowait() is None
 
-
-def test_both_program_swaps_carry_the_declared_release_reference(monkeypatch, tmp_path):
-    """The load AND the restore, not just the load.
-
-    Releasing the RESTORE swap to the household level would simply move the
-    drift one capture later: the next load reads its own entry snapshot from
-    wherever the restore left the fader, so the hold would be refusing from the
-    second capture onward. Both swaps are asserted here because fixing only the
-    obvious one looks green on a single-capture test.
-    """
-    from jasper.active_speaker import crossover_v2_flow as flow_mod
-
-    seen: list[tuple[str, float | None]] = []
-
-    class _SpyCam:
-        async def get_config_file_path(self, *, best_effort=False):
-            return str(tmp_path / "entry.yml")
-
-        async def set_active_config_raw(
-            self, config, *, best_effort=False, held_target_db=None,
-        ):
-            answer = None if held_target_db is None else held_target_db()
-            seen.append(("load" if "program" in config else "restore", answer))
-            return True
-
-    (tmp_path / "entry.yml").write_text("restore-me\n", encoding="utf-8")
-    monkeypatch.setattr(flow_mod, "confirm_graph_is_live", _noop_confirm)
-
-    def _owned() -> float:
-        return DECLARED_DB
-
-    seams = flow_mod.bind_program_playback_seams(
-        _SpyCam(),
-        bundle_dir=str(tmp_path),
-        artifact=SimpleNamespace(fingerprint="f"),
-        config_dir=str(tmp_path),
-        program=_program(),
-        wav_path=str(tmp_path / "p.wav"),
-        topology=object(),
-        safety_profile={},
-        role_targets={},
-        session_volume_db=DECLARED_DB,
-        held_target_db=_owned,
-    )
-
-    assert asyncio.run(seams["load_program_graph"]("program: graph\n")) is True
-    assert asyncio.run(seams["restore_graph"](str(tmp_path / "entry.yml"))) is True
-
-    assert seen == [("load", DECLARED_DB), ("restore", DECLARED_DB)]
-
-
-def test_a_drained_plan_stops_supplying_a_reference_mid_session(monkeypatch, tmp_path):
-    """Read FRESH per swap, never captured once at bind time.
-
-    A plan can drain mid-session (close, ceiling, a failed restore), and the
-    swap must notice rather than keep referencing a level nobody owns. This
-    pins the BETWEEN-swaps case; the drain that lands INSIDE one is
-    ``test_a_drain_completing_inside_the_swap_is_not_undone_by_the_release``,
-    and it is why the reader travels instead of its answer.
-    """
-    from jasper.active_speaker import crossover_v2_flow as flow_mod
-
-    seen: list[float | None] = []
-    owned: list[float | None] = [DECLARED_DB]
-
-    class _SpyCam:
-        async def get_config_file_path(self, *, best_effort=False):
-            return str(tmp_path / "entry.yml")
-
-        async def set_active_config_raw(
-            self, config, *, best_effort=False, held_target_db=None,
-        ):
-            seen.append(None if held_target_db is None else held_target_db())
-            return True
-
-    monkeypatch.setattr(flow_mod, "confirm_graph_is_live", _noop_confirm)
-
-    def _owned() -> float | None:
-        return owned[0]
-
-    seams = flow_mod.bind_program_playback_seams(
-        _SpyCam(),
-        bundle_dir=str(tmp_path),
-        artifact=SimpleNamespace(fingerprint="f"),
-        config_dir=str(tmp_path),
-        program=_program(),
-        wav_path=str(tmp_path / "p.wav"),
-        topology=object(),
-        safety_profile={},
-        role_targets={},
-        session_volume_db=DECLARED_DB,
-        held_target_db=_owned,
-    )
-
-    assert asyncio.run(seams["load_program_graph"]("program: graph\n")) is True
-    owned[0] = None  # the plan drains
-    assert asyncio.run(seams["load_program_graph"]("program: graph\n")) is True
-
-    assert seen == [DECLARED_DB, None]
-
-
-def test_no_reference_reader_leaves_every_swap_exactly_as_it_was(monkeypatch, tmp_path):
-    """``held_target_db`` is optional, and omitting it must not start passing
-    ``None`` in some new shape — it is the same call the seam always made."""
-    from jasper.active_speaker import crossover_v2_flow as flow_mod
-
-    seen: list[float | None] = []
-
-    class _SpyCam:
-        async def get_config_file_path(self, *, best_effort=False):
-            return str(tmp_path / "entry.yml")
-
-        async def set_active_config_raw(
-            self, config, *, best_effort=False, held_target_db=None,
-        ):
-            seen.append(None if held_target_db is None else held_target_db())
-            return True
-
-    monkeypatch.setattr(flow_mod, "confirm_graph_is_live", _noop_confirm)
-
-    seams = flow_mod.bind_program_playback_seams(
-        _SpyCam(),
-        bundle_dir=str(tmp_path),
-        artifact=SimpleNamespace(fingerprint="f"),
-        config_dir=str(tmp_path),
-        program=_program(),
-        wav_path=str(tmp_path / "p.wav"),
-        topology=object(),
-        safety_profile={},
-        role_targets={},
-        session_volume_db=DECLARED_DB,
-    )
-
-    assert asyncio.run(seams["load_program_graph"]("program: graph\n")) is True
-    assert seen == [None]
 
 
 class _FakeCamillaClient:

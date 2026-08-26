@@ -2,7 +2,7 @@
 
 > Owner-commissioned deep-research report #2, delivered 2026-07-25.
 > Preserved verbatim (primary source); the adopted synthesis lives in
-> [`flat-linearization-plan.md`](../../flat-linearization-plan.md)
+> [`linearization-campaign-2026-07.md`](../../historical/linearization-campaign-2026-07.md)
 > ("Adjudicated: single-point time-selection"), which wins where they
 > disagree. Commissioned to evaluate the owner's pulsed-sweep /
 > fast-sawtooth proposal against the measured τ≈0.31 ms boundary bounce,

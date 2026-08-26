@@ -1266,7 +1266,7 @@ never redirected.
   sign. Measured on the live JTS3 UMIK-2 file: mean +1.71 dB / max +1.84 dB
   of over-cut across 2.8–8 kHz, reversing to a mean −1.14 dB under-cut over
   11–16 kHz (one of the confirmed contributors in
-  `docs/linearization-integrity-plan.md`). `migrate_stored_sign_conventions`
+  `docs/historical/linearization-campaign-2026-07.md`). `migrate_stored_sign_conventions`
   repairs already-stored vendor records on every deploy: keyed on each
   record's own stored convention (so it can never double-negate a correct
   one), re-derived from the retained raw file, and never applied to a
@@ -2077,8 +2077,9 @@ POST /crossover/reset        scoped in-flow "start over": stops any active relay
 POST /crossover/v2/session   v2 conductor flow (W5a; the only crossover flow):
                              open STAGE 1's relay session. NOTE: R15 (#2106)
                              makes stage 1 CHECK→MEASURE only — it removes the
-                             pre-apply cloud; see crossover-linearization-80-20
-                             -plan.md. Everything below describes the pre-R15
+                             pre-apply cloud; see historical/linearization-
+                             campaign-2026-07.md. Everything below describes
+                             the pre-R15
                              shipped flow: CHECK→MEASURE→the
                              pre-apply cloud, and nothing after (10-entry
                              capture plan at the Full tier's shipped defaults,

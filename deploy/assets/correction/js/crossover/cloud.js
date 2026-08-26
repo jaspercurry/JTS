@@ -52,7 +52,7 @@ const EXPRESS_NO_AFTER_CURVE_TEXT =
 // renderCloud() again with the same or newer payload and draws normally.
 // This is a real, working self-heal, not the same mechanism as the room
 // page's retry, and is exactly the first-unhide path the HW product smoke
-// (docs/flat-linearization-productization-plan.md's PR-7 section) should
+// (docs/historical/linearization-campaign-2026-07.md's PR-7 section) should
 // eyeball on real hardware.
 let lastChart = null;
 

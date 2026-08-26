@@ -2,17 +2,13 @@
 #
 # SPDX-License-Identifier: Apache-2.0
 
-"""Privileged restart broker — the single mediated systemctl boundary (WS1 Phase 3).
+"""Privileged restart broker — the mediated systemctl door for non-root daemons.
 
-Background: jasper-web's ~13 wizard restart sites, jasper-mux's librespot
-recovery, and the room-correction renderer pause all shell out to
-``systemctl`` directly. That is only possible because every ``jasper-*``
-daemon runs as **root** — the structural gap WS1 closes. Phase 3 drops the
-Tier-A daemons to dedicated non-root service users; a non-root ``jasper-web``
-can no longer ``systemctl restart`` anything. This module is the one place
-that privilege survives: jasper-control (already the de-facto broker — nine
-privileged restart sites live in it) hosts a local UNIX-socket broker, and the
-clients ask *it* to perform a tightly-scoped restart on their behalf.
+The JTS service daemons (jasper-web's wizards, jasper-mux's librespot
+recovery, the wiim-remote adapter, and the rest) run as dedicated non-root
+service users, so they cannot ``systemctl`` anything themselves. jasper-control
+hosts this local UNIX-socket broker and performs a tightly-scoped unit action
+on their behalf.
 
 Why this is safe to centralise:
 
@@ -43,19 +39,28 @@ Why this is safe to centralise:
   with the peer uid/pid, verb, units, and reason. Nothing here is a secret, so
   the lines are safe to journal.
 
-Read-only probes (``is-active`` / ``is-enabled`` / ``show``) are deliberately
-NOT brokered: systemd lets any user run them, so callers keep doing those
-directly. Only state-changing verbs need the broker.
+NOT brokered, by design — this is the door for non-root *clients*, not the
+tree's only ``systemctl``. Direct calls elsewhere are the design, not drift:
 
-**Root fallback (the Phase-3 transition).** Until the daemons actually drop to
-non-root, the clients are still root and *could* ``systemctl`` directly. So
-:func:`manage_units` tries the broker first and, only if the broker is
-unreachable **and** the caller is still root (``os.geteuid() == 0``), falls
+- **Read-only probes** (``is-active`` / ``is-enabled`` / ``show``): systemd
+  lets any user run them, so callers query directly. Only state-changing verbs
+  need a broker.
+- **jasper-control's own supervisors and endpoints**: they already run as the
+  uid the broker would act as, so they call ``systemctl`` directly and polkit
+  mediates the same grant — see ``deploy/systemd/jasper-control.service``.
+- **Root oneshots and CLIs** (``deploy/bin/*``, the ``jasper-*-reconcile``
+  units, ``jasper.cli.*`` under sudo): they hold the privilege themselves and
+  are outside the client set. This is also where the un-brokerable verbs live —
+  ``jasper.source_intent`` runs ``enable``/``disable`` directly because the
+  non-root broker deliberately cannot (see the closed-vocabulary note above).
+  Such helpers may still call :func:`manage_units` for the allowlist and audit
+  trail; the root fallback below keeps them working when the broker is down.
+
+**Root fallback.** :func:`manage_units` tries the broker first and, only if the
+broker is unreachable **and** the caller is root (``os.geteuid() == 0``), falls
 back to a direct ``systemctl`` — logged LOUDLY (``event=restart_broker.
-fallback_direct``) so a silently-broken broker path is visible *before* the
-user drop removes the safety net. Once a client runs as a non-root service
-user, ``geteuid() != 0`` and the fallback is structurally impossible: the
-broker is the only path, exactly as intended.
+fallback_direct``) so a silently-broken broker path stays visible. A non-root
+client has no fallback: ``geteuid() != 0``, so the broker is its only path.
 
 Wire format mirrors the other JTS control sockets (voice/mux/peering): a single
 newline-delimited JSON request, a single newline-delimited JSON response.
@@ -85,13 +90,11 @@ DEFAULT_SOCKET_PATH = os.environ.get(
     "JASPER_RESTART_BROKER_SOCKET", "/run/jasper-control/restart.sock",
 )
 
-# SINGLE SOURCE OF TRUTH for the units the privileged restart surface may act
-# on. Union of every state-changing unit any client (jasper-web wizards,
-# jasper-mux librespot recovery, room-correction renderer pause) and
-# jasper-control's own supervisors/endpoints touch. The user-drop PR's polkit
-# rule grants the jasper-control user manage-units for exactly this set, so the
-# two never drift. Keep entries fully-qualified (".service"); the broker
-# normalizes bare names before checking.
+# SINGLE SOURCE OF TRUTH for the units the BROKER will act on — not a census of
+# every unit the daemons touch (see the not-brokered list in the module
+# docstring). The polkit rule grants the jasper-control user manage-units for
+# exactly this set, so the two never drift. Keep entries fully-qualified
+# (".service"); the broker normalizes bare names before checking.
 MANAGED_UNITS = frozenset({
     # Tier-A daemons (debug-restart, /speaker rename, /rooms, /voice, /spotify)
     "jasper-voice.service",

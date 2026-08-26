@@ -18,7 +18,11 @@ from jasper.audio_hardware import dac as dac_registry
 from jasper.audio_hardware.dac import DacProfile
 from jasper.dsp_apply import CamillaConfigValidationResult, ValidationStatus
 from jasper.output_hardware import DUAL_APPLE_USB_C_DAC_4CH_DEVICE_ID
-from jasper.output_topology import OUTPUT_TOPOLOGY_KIND, OutputTopology
+from jasper.output_topology import (
+    OUTPUT_TOPOLOGY_KIND,
+    OutputTopology,
+    set_channel_identity_verified,
+)
 
 
 def valid_camilla_config(path: str | Path) -> CamillaConfigValidationResult:
@@ -138,7 +142,7 @@ def mono_output_topology(
     if card_id is not None:
         hardware["card_id"] = card_id
 
-    return OutputTopology.from_mapping(
+    topology = OutputTopology.from_mapping(
         {
             "artifact_schema_version": 1,
             "kind": OUTPUT_TOPOLOGY_KIND,
@@ -150,6 +154,19 @@ def mono_output_topology(
             "routing": routing,
         }
     )
+    # A parsed mapping cannot carry an audition: `identity_verified` survives a
+    # save only where `set_channel_identity_verified` recorded it, so a bench
+    # box whose lanes are confirmed is built the way a real one is.
+    for group in topology.speaker_groups:
+        for channel in group.channels:
+            if channel.identity_verified:
+                topology = set_channel_identity_verified(
+                    topology,
+                    speaker_group_id=group.id,
+                    role=channel.role,
+                    identity_verified=True,
+                )
+    return topology
 
 
 def dual_apple_output_topology() -> OutputTopology:

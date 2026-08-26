@@ -2327,12 +2327,15 @@ def _crossover_v2_program_site(
     subset-forwarding class and the one that reached the DoD box.
 
     The REAL production binding, not a re-creation of its call: the whole point
-    is that this graph is what an armed jts3 would load. It is stopped at
-    ``play_program`` — the first thing downstream of the emit, and the one that
-    receives the finished graph — so the returned closure carries the exact text
-    on ``.emitted`` and nothing touches CamillaDSP or ALSA. Seam-binding still
-    runs, because that is production's own path and it makes no device-half
-    decision.
+    is that this graph is what an armed jts3 would load. **Re-pointed in wave
+    6b (PC-3)**: the emit moved out of the per-stimulus body and into the
+    session's one measurement graph, so this stops at
+    ``MeasurementSessionGraph.install`` — still the first thing downstream of
+    the emit, and still the one that receives the finished graph. The returned
+    closure carries the exact text on ``.emitted`` and nothing touches
+    CamillaDSP or ALSA. The guard follows the site rather than dying with it:
+    MS-1's blast radius GREW here, because a half-derived device block now
+    poisons every stimulus of the session instead of one.
 
     ``playback_device`` is overridable ONLY so a caller can drive the SAME site
     at the ALSA active lane as a control; a ring-specific claim proven without
@@ -2340,7 +2343,7 @@ def _crossover_v2_program_site(
     """
     import asyncio
 
-    from jasper.active_speaker import program_playback as playback_mod
+    from jasper.active_speaker.crossover_v2 import session_graph as session_graph_mod
     from jasper.active_speaker.crossover_v2.journey import PHASE_CHECK
     from jasper.audio_measurement import program as program_mod
     from jasper.correction import coordinator
@@ -2358,12 +2361,14 @@ def _crossover_v2_program_site(
 
     emitted: list[str] = []
 
-    async def _capture_graph(program, *, program_graph_yaml, **kwargs):
-        emitted.append(program_graph_yaml)
+    async def _capture_graph(self):
+        emitted.append(self.graph_yaml())
         raise _StopBeforeTransport("graph emitted; stop before the DSP transport")
 
     monkeypatch.setattr(coordinator, "measurement_window", lambda **kw: _NoWindow())
-    monkeypatch.setattr(playback_mod, "play_program", _capture_graph)
+    monkeypatch.setattr(
+        session_graph_mod.MeasurementSessionGraph, "install", _capture_graph
+    )
     monkeypatch.setattr(program_mod, "write_program_wav", lambda path, program: None)
     v2host.reset_session_measurement_pause_for_tests()
 
@@ -2598,7 +2603,13 @@ def test_every_emit_devices_field_reaches_the_emitter(tmp_path, monkeypatch):
         # walk had to stop being a family: this site lives in ``jasper.web``
         # and emits a DIFFERENT emitter, so nothing about the four entries
         # above could have covered it.
-        "bind_production_play(crossover_v2 CHECK/MEASURE)": (
+        #
+        # Wave 6b moved the emit from the per-stimulus body to the session's
+        # one measurement graph (PC-3). Same emitter, same forwarding, one call
+        # per session instead of one per capture — and a subset now poisons
+        # every stimulus rather than one, so the entry stays and gets stricter,
+        # not weaker.
+        "session measurement graph (crossover_v2 CHECK/MEASURE)": (
             _crossover_v2_program_site(topology, tmp_path / "v2", monkeypatch),
             "emit_active_speaker_program_config",
             RING_ACTIVE_PLAYBACK_DEVICE,

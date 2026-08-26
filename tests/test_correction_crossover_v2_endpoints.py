@@ -8298,13 +8298,23 @@ def test_gate_abort_between_plays_fails_the_next_play_by_name(monkeypatch):
 
 def _probe_bind_production_play_config_dir(monkeypatch, tmp_path) -> dict[str, Any]:
     """Drive ``bind_production_play`` far enough to observe the ``config_dir``
-    it threads into ``bind_program_playback_seams`` — short-circuiting via a
+    it threads into its two lock users — ``bind_program_playback_seams`` and,
+    since wave 6b, the session measurement graph — short-circuiting via a
     sentinel exception BEFORE any real DSP graph emission/playback, since this
     probe cares only about the config_dir plumbing (graph emission and
-    playback have their own coverage elsewhere)."""
+    playback have their own coverage elsewhere).
+
+    The graph's lock is captured through ``dsp_writer_lock`` itself rather than
+    assumed to match the seams': it is a SECOND lock user threaded from the
+    same resolved dir, and a probe that only watched the first would go green
+    on a graph locking somewhere else entirely."""
+    import contextlib
+
     from jasper.active_speaker import camilla_yaml as camilla_yaml_mod
     from jasper.active_speaker import crossover_v2_flow as flow_mod
+    from jasper.active_speaker.crossover_v2 import session_graph as session_graph_mod
     import jasper.audio_measurement.program as program_mod
+    import jasper.dsp_apply as dsp_apply_mod
 
     captured: dict[str, Any] = {}
 
@@ -8315,6 +8325,26 @@ def _probe_bind_production_play_config_dir(monkeypatch, tmp_path) -> dict[str, A
         captured["config_dir"] = kwargs["config_dir"]
         raise _ShortCircuit("captured config_dir — stop before the DSP plumbing")
 
+    @contextlib.asynccontextmanager
+    async def fake_dsp_writer_lock(config_dir, *, source, **_kwargs):
+        captured.setdefault("lock_dirs", []).append((source, str(config_dir)))
+        yield
+
+    async def _install_taking_only_the_lock(self) -> str:
+        # The real emit, where wave 6b put it — so the protection-threading pin
+        # below still watches the arguments that reach the emitter — but none
+        # of the CamillaDSP transport around it.
+        self.graph_yaml()
+        async with self._writer_lock():
+            pass
+        return "probe"
+
+    monkeypatch.setattr(dsp_apply_mod, "dsp_writer_lock", fake_dsp_writer_lock)
+    monkeypatch.setattr(
+        session_graph_mod.MeasurementSessionGraph,
+        "install",
+        _install_taking_only_the_lock,
+    )
     monkeypatch.setattr(
         flow_mod, "bind_program_playback_seams", fake_bind_program_playback_seams
     )
@@ -8363,8 +8393,14 @@ def test_bind_production_play_default_config_dir_matches_ssot(monkeypatch, tmp_p
     pin: if either side's default drifts away from the other, this fails."""
     from jasper.active_speaker.web_commissioning import DEFAULT_CAMILLA_CONFIG_DIR
 
-    resolved = _probe_bind_production_play_config_dir(monkeypatch, tmp_path)["config_dir"]
-    assert resolved == str(DEFAULT_CAMILLA_CONFIG_DIR)
+    captured = _probe_bind_production_play_config_dir(monkeypatch, tmp_path)
+    assert captured["config_dir"] == str(DEFAULT_CAMILLA_CONFIG_DIR)
+    # The session graph is the other lock user, and it locks the same dir under
+    # its own source name — so the two DSP writers this binding creates
+    # serialize against each other and against every sibling writer.
+    assert captured["lock_dirs"] == [
+        ("crossover_v2_session_graph", str(DEFAULT_CAMILLA_CONFIG_DIR)),
+    ]
 
 
 def test_bind_production_play_default_config_dir_lock_lands_under_var_lib_camilladsp(

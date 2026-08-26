@@ -485,45 +485,60 @@ def _software_aec3_engine(runtime: RuntimeAecEnv) -> _Engine:
     return "Software AEC3", "WebRTC AEC3 via :9876", legs, PROFILE_XVF_SOFTWARE_AEC3
 
 
-def _running_engine(
-    runtime: RuntimeAecEnv, mic: MicProbe, *, bridge_active: bool
+def _chip_engine(runtime: RuntimeAecEnv, profile: str) -> _Engine:
+    testing = profile == PROFILE_XVF_CHIP_AEC_TESTING
+    return (
+        "Chip-AEC testing" if testing else "Chip-AEC",
+        _chip_session_source(runtime),
+        _chip_wake_legs(runtime),
+        PROFILE_XVF_CHIP_AEC_TESTING if testing else PROFILE_XVF_CHIP_AEC,
+    )
+
+
+def _direct_mic_engine(runtime: RuntimeAecEnv) -> _Engine:
+    return (
+        "Direct mic",
+        mic_source_label(runtime.primary_device),
+        ["Direct mic"],
+        PROFILE_DIRECT_MIC,
+    )
+
+
+def _wake_engine(
+    runtime: RuntimeAecEnv,
+    mic: MicProbe,
+    *,
+    aec_auto: bool,
+    bridge_active: bool,
+    chip_claimable: bool,
+    chip_profile: str,
 ) -> _Engine | None:
     """The engine carrying the wake path right now, or None if none is.
 
-    ADR-0101 makes `disclosed_stale` a RUNNING state, so it may only be
-    claimed on the same live evidence the ready and software arms use: a chip
-    beam on the bridge's carrier, the bridge's own AEC3, or a real card.
+    The single answer for every arm that names one — ready, software, direct,
+    disclosed — so one box cannot report chip-AEC on one surface and AEC3 on
+    another from the same facts. ADR-0101 makes `disclosed_stale` a RUNNING
+    state, so it may only be claimed on the same live evidence the other arms
+    use: a chip beam on the bridge's carrier, the bridge's own AEC3, or a real
+    card.
     """
 
-    if (
-        runtime.chip_enabled
-        and bridge_active
-        and runtime.primary_device.startswith("udp:")
-    ):
-        return (
-            "Chip-AEC",
-            _chip_session_source(runtime),
-            _chip_wake_legs(runtime),
-            PROFILE_XVF_CHIP_AEC,
-        )
-    if bridge_active and (
-        runtime.primary_device.startswith("udp:") or runtime.raw_device
-    ):
+    if not aec_auto:
+        return _direct_mic_engine(runtime)
+    carrier = runtime.primary_device.startswith("udp:")
+    if chip_claimable and runtime.chip_enabled and bridge_active and carrier:
+        return _chip_engine(runtime, chip_profile)
+    if bridge_active and (carrier or runtime.raw_device):
         return _software_aec3_engine(runtime)
     if (
         runtime.primary_device
-        and not runtime.primary_device.startswith("udp:")
+        and not carrier
         # `Array` in both device keys is the never-configured default that
         # `_direct_mic_configured` rejects; a probed chip behind it is the
         # deliberate handover the reconciler makes with the bridge down.
         and (_direct_mic_configured(runtime) or mic.xvf_present)
     ):
-        return (
-            "Direct mic",
-            mic_source_label(runtime.primary_device),
-            ["Direct mic"],
-            PROFILE_DIRECT_MIC,
-        )
+        return _direct_mic_engine(runtime)
     return None
 
 
@@ -650,24 +665,6 @@ def build_audio_profile_status(
         if aec_device_mismatch else ""
     )
 
-    chip_runtime_active = bool(
-        requested_intent.mode == "auto"
-        and bridge_active
-        and chip_available
-        and gate_permitted
-        and not aec_device_mismatch
-        and runtime.chip_enabled
-        and runtime.primary_device.startswith("udp:")
-        and runtime.chip_aec_alignment_status == "ready"
-    )
-    software_runtime_active = bool(
-        requested_intent.mode == "auto"
-        and bridge_active
-        and not chip_runtime_active
-        and not aec_device_mismatch
-        and (runtime.primary_device.startswith("udp:") or runtime.raw_device)
-        and not managed_xvf
-    )
     hardware_requested = requested_profile in {
         PROFILE_XVF_CHIP_AEC,
         PROFILE_XVF_CHIP_AEC_TESTING,
@@ -677,26 +674,60 @@ def build_audio_profile_status(
     # honours on a custom profile. On any other selection the key is a
     # leftover describing a path nobody is running, and a disabled AEC mode
     # owns its own state, so neither may be classified from it.
+    alignment_owned = managed_xvf or custom_chip_leg
+    alignment_status = runtime.chip_aec_alignment_status
+    # A device mismatch means the bridge is not capturing the detected XVF, so
+    # what arrives cannot be this mic's chip beam. The beam plan and the DAC
+    # gate answer whether chip-AEC may arm, not what the bridge is carrying, so
+    # they gate the ready arm alone: a disclosed box keeps the armed chip legs
+    # the reconciler left running under its disclosure.
+    chip_claimable = bool(
+        not aec_device_mismatch
+        and (
+            (chip_available and gate_permitted and alignment_status == "ready")
+            or (alignment_owned and alignment_status == "disclosed_stale")
+        )
+    )
+    running_engine = _wake_engine(
+        runtime,
+        mic,
+        aec_auto=requested_intent.mode == "auto",
+        bridge_active=bridge_active,
+        chip_claimable=chip_claimable,
+        chip_profile=requested_profile,
+    )
+    running_profile = running_engine[3] if running_engine is not None else None
     disclosed_engine = (
-        _running_engine(runtime, mic, bridge_active=bridge_active)
-        if (managed_xvf or custom_chip_leg)
+        running_engine
+        if alignment_owned
         and requested_intent.mode == "auto"
-        and runtime.chip_aec_alignment_status == "disclosed_stale"
+        and alignment_status == "disclosed_stale"
+        else None
+    )
+    direct_engine = running_engine if requested_intent.mode != "auto" else None
+    chip_engine = (
+        running_engine
+        if alignment_status == "ready"
+        and running_profile in {PROFILE_XVF_CHIP_AEC, PROFILE_XVF_CHIP_AEC_TESTING}
+        else None
+    )
+    software_engine = (
+        running_engine
+        if running_profile == PROFILE_XVF_SOFTWARE_AEC3 and not managed_xvf
         else None
     )
 
     profile_action = ""
     if (
         managed_xvf
-        and runtime.chip_aec_alignment_status
-        and runtime.chip_aec_alignment_status
-        not in {"ready", "disclosed_stale"}
+        and alignment_status
+        and alignment_status not in {"ready", "disclosed_stale"}
     ):
         processing_mode = "Chip-AEC parked"
         session_source = "parked pending chip-AEC alignment"
         wake_legs: list[str] = []
         active_profile: str | None = None
-        profile_state = runtime.chip_aec_alignment_status
+        profile_state = alignment_status
         profile_reason = (
             runtime.chip_aec_alignment_reason
             or "Managed XVF chip-AEC alignment is not ready."
@@ -714,37 +745,26 @@ def build_audio_profile_status(
             or "Chip-AEC is not fully armed."
         )
         profile_action = runtime.chip_aec_alignment_action
-    elif requested_intent.mode != "auto":
-        processing_mode = "Direct mic"
-        session_source = mic_source_label(runtime.primary_device)
-        wake_legs = ["Direct mic"]
-        active_profile = PROFILE_DIRECT_MIC
+    elif direct_engine is not None:
+        processing_mode, session_source, wake_legs, active_profile = direct_engine
         profile_state = "disabled"
         profile_reason = "AEC mode is disabled."
-    elif chip_runtime_active:
-        processing_label = (
-            "Chip-AEC testing"
-            if requested_profile == PROFILE_XVF_CHIP_AEC_TESTING
-            else "Chip-AEC"
-        )
-        processing_mode = processing_label
-        session_source = _chip_session_source(runtime)
+    elif chip_engine is not None:
+        processing_mode, session_source, wake_legs, active_profile = chip_engine
         profile_state = "active"
-        active_profile = requested_profile
         profile_reason = (
             "Chip-AEC testing runtime env is applied."
-            if requested_profile == PROFILE_XVF_CHIP_AEC_TESTING
+            if active_profile == PROFILE_XVF_CHIP_AEC_TESTING
             else "Chip-AEC runtime env is applied."
         )
-        wake_legs = _chip_wake_legs(runtime)
     else:
-        if software_runtime_active:
+        if software_engine is not None:
             (
                 processing_mode,
                 session_source,
                 wake_legs,
                 active_profile,
-            ) = _software_aec3_engine(runtime)
+            ) = software_engine
         else:
             processing_mode = (
                 "Chip-AEC pending" if hardware_requested else "Software AEC3 pending"
@@ -794,7 +814,7 @@ def build_audio_profile_status(
                 "Hardware echo cancellation is selected; waiting for the "
                 "reconciler to apply and verify commissioned chip-AEC."
             )
-        elif software_runtime_active:
+        elif software_engine is not None:
             profile_state = "active"
             profile_reason = "Software AEC3 bridge is active."
         else:
@@ -824,7 +844,7 @@ def build_audio_profile_status(
         and chip_available
         and gate_permitted
         and bridge_active
-        and not chip_runtime_active
+        and chip_engine is None
     ):
         warnings.append(
             "Chip-AEC is selected but the reconciler has not applied it yet."
