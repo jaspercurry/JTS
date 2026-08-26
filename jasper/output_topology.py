@@ -2027,7 +2027,7 @@ def set_channel_identity_verified(
         return replace(
             channel,
             identity_verified=bool(identity_verified),
-            identity_verified_authorized=True,
+            identity_verified_authorized=bool(identity_verified),
         )
 
     return _update_speaker_channel(
@@ -2475,7 +2475,7 @@ def load_output_topology_snapshot(
 
 
 def _with_server_owned_identity(
-    topology: OutputTopology, recorded: OutputTopology
+    topology: OutputTopology, recorded: OutputTopology, target: Path
 ) -> OutputTopology:
     """Return `topology` carrying only identity evidence the server holds.
 
@@ -2518,7 +2518,9 @@ def _with_server_owned_identity(
     )
     if refused:
         logger.warning(
-            "event=output_topology.identity_claim_refused lanes=%d", refused
+            "event=output_topology.identity_claim_refused path=%s lanes=%d",
+            target,
+            refused,
         )
     return admitted
 
@@ -2538,7 +2540,8 @@ class OutputTopologyMutation:
         """Publish one topology and return its precomputed byte revision."""
 
         return save_output_topology(
-            _with_server_owned_identity(topology, self._recorded()), self.target
+            _with_server_owned_identity(topology, self._recorded(), self.target),
+            self.target,
         )
 
     def _recorded(self) -> OutputTopology:

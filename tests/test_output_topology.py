@@ -1444,11 +1444,24 @@ def test_mutation_save_returns_revision_without_post_write_read(
 
 
 @pytest.mark.parametrize(
-    ("recorded", "claimed", "stored"),
-    [(False, True, False), (True, True, True), (True, False, False)],
+    ("recorded", "claimed_group", "claimed_index", "claimed", "stored"),
+    [
+        (False, "mono", 0, True, False),
+        (True, "mono", 0, True, True),
+        (True, "mono", 0, False, False),
+        # The audition names one lane: neither re-pinning it to another output
+        # nor renaming its group carries the proof over.
+        (True, "mono", 1, True, False),
+        (True, "renamed", 0, True, False),
+    ],
 )
 def test_saved_channel_identity_is_server_owned(
-    tmp_path: Path, recorded: bool, claimed: bool, stored: bool
+    tmp_path: Path,
+    recorded: bool,
+    claimed_group: str,
+    claimed_index: int,
+    claimed: bool,
+    stored: bool,
 ) -> None:
     """A save payload may clear a lane's audition, never claim one."""
 
@@ -1468,7 +1481,14 @@ def test_saved_channel_identity_is_server_owned(
     with output_topology_mod.output_topology_mutation(path) as mutation:
         mutation.save(
             _topology(
-                groups=[_passive_main("mono", "mono", 0, identity_verified=claimed)]
+                groups=[
+                    _passive_main(
+                        claimed_group,
+                        "mono",
+                        claimed_index,
+                        identity_verified=claimed,
+                    )
+                ]
             )
         )
 
@@ -1477,6 +1497,26 @@ def test_saved_channel_identity_is_server_owned(
         for group in load_output_topology_snapshot(path).topology.speaker_groups
         for channel in group.channels
     ] == [stored]
+
+
+def test_channel_identity_authorization_cannot_arrive_in_a_payload() -> None:
+    """Only the server can mark a lane's audition, so no payload may say it."""
+
+    topology = _topology(groups=[{
+        "id": "mono",
+        "label": "Mono",
+        "kind": "mono",
+        "mode": "full_range_passive",
+        "channels": [{
+            "role": "full_range",
+            "physical_output_index": 0,
+            "identity_verified": True,
+            "identity_verified_authorized": True,
+        }],
+    }])
+    channel = topology.speaker_groups[0].channels[0]
+
+    assert channel.identity_verified_authorized is False
 
 
 def test_topology_publication_uses_durable_atomic_write(
