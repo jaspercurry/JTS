@@ -2,7 +2,7 @@
 
 > Owner-commissioned deep-research report, delivered 2026-07-25. Preserved
 > verbatim (primary source); the adopted synthesis lives in
-> [`flat-linearization-plan.md`](../../flat-linearization-plan.md), which
+> [`linearization-campaign-2026-07.md`](../../historical/linearization-campaign-2026-07.md), which
 > wins where they disagree. Known errata are listed in this directory's
 > [README](README.md).
 

@@ -108,7 +108,7 @@ relay and CamillaDSP, and the issue stays open until that run happens.
 > available for future Room work. R15 adds no durable anchor/schema/module.
 > After R15 comes a hardware checkpoint and then a fresh Gate 0; later round
 > labels are provisional, and the [canonical
-> plan](../crossover-linearization-80-20-plan.md) owns that contract. The deployed
+> plan](linearization-campaign-2026-07.md) owns that contract. The deployed
 > pre-R15 flow remains described below.
 #### Composing the configured-Fc path
 
@@ -811,7 +811,7 @@ layout at a smaller shape — (N=5, M=1), so stage 1 is 6 captures (index 1
 `M=1` means **no `cloud_verify`
 phase at all** — the done screen rides stage 2's VERIFY entry itself, and
 there is no post-apply cross-position claim (see
-[`flat-linearization-flow-simplification-plan.md`](../flat-linearization-flow-simplification-plan.md)
+[`linearization-campaign-2026-07.md`](linearization-campaign-2026-07.md)
 §1.3's degraded-claims table). `resolve_plan_shape` in
 `crossover_v2_flow.py` is the single place both counts are resolved from
 a tier id; `express_cloud_measure_positions()` derives the 5 (the
@@ -824,7 +824,7 @@ from — see "Positions are not curves" below).
 The two `cloud_*` phases are **position groups** (flat-linearization
 PR-3b): one phase spanning many capture indexes, one prompted mic move
 each. They exist because
-[`flat-linearization-plan.md`](../flat-linearization-plan.md) fundamental 1
+[`linearization-campaign-2026-07.md`](linearization-campaign-2026-07.md) fundamental 1
 makes the spatial cloud *the* measurement and demotes single-point
 capture to a diagnostic — spatial averaging is what removes early
 boundary interference that gating alone cannot. Read that doc for the
@@ -1165,7 +1165,7 @@ together. Design rationale:
   pre-apply cloud combines 8 curves and the post-apply cloud 5 — the 8 is
   why the default is 9 and not 8 (adjudication 3a). Compare
   those numbers, not the position counts, against
-  [`flat-linearization-plan.md`](../flat-linearization-plan.md)
+  [`linearization-campaign-2026-07.md`](linearization-campaign-2026-07.md)
   fundamental 1's "N≈8–12 gated sweeps".
 - **No new phone mechanism.** Prompts ride the shipped
   `CapturePlanEntry.screen` + `AUTO_ADVANCE_TAP`; the deployed capture

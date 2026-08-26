@@ -6,7 +6,7 @@
 linearization, fundamentals 1-2).
 
 ``combine_positions(captures) -> CombinedResponse`` is the pure-DSP core of
-docs/flat-linearization-plan.md's first two fundamentals: **spatial
+docs/historical/linearization-campaign-2026-07.md's first two fundamentals: **spatial
 multi-capture is THE measurement** (N gated sweeps at a cloud of mic
 positions, combined as a power average) and the **interference honesty
 screen** (power-mean-vs-median disagreement flags interference-dominated
@@ -1060,7 +1060,7 @@ class EchoDiagnostic:
         number that makes the S0 ground plane's 125-146 us proud-capsule
         arrivals *structurally* unreportable rather than merely unreported,
         and the reason the plan surfaces this floor instead of raising the
-        default lower edge (docs/flat-linearization-productization-plan.md,
+        default lower edge (docs/historical/linearization-campaign-2026-07.md,
         PR-2 item 4: disclosure over restriction).
 
         0.0 means "not computed": the only records carrying it are the ones
@@ -1886,7 +1886,7 @@ def detect_echo(
 ) -> EchoDiagnostic:
     """Detect a discrete early echo in one impulse response.
 
-    Implements docs/flat-linearization-plan.md fundamental 2's per-capture
+    Implements docs/historical/linearization-campaign-2026-07.md fundamental 2's per-capture
     half ("cepstral echo detection stamps tau/r diagnostics") and its
     guardrail: **detection only, no removal, ever**. Research artifact 01
     Question 3 establishes that cepstral removal is academic-only and fails
@@ -2923,7 +2923,7 @@ def combine_positions(
 ) -> CombinedResponse:
     """Combine a cloud of position captures into one direct-sound estimate.
 
-    Implements docs/flat-linearization-plan.md fundamentals 1-2. See the
+    Implements docs/historical/linearization-campaign-2026-07.md fundamentals 1-2. See the
     module docstring for the pipeline and — importantly — for the two
     complementary blind spots of the honesty screen and the geometry flag.
 

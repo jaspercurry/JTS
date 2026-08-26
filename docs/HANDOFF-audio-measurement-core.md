@@ -1767,7 +1767,7 @@ cut-only for want of evidence the plan never collects. The ruling permits boost
 there, on a named and accepted risk — a boost can land on a position-specific
 artifact an at-mark verification cannot detect — adjudicated by post-apply
 `VERIFY`, household listening, and retained Undo. The ruling's own text is the
-"Boost ruling" block in `docs/crossover-linearization-80-20-plan.md` §4.2.
+"Boost ruling" block in `docs/historical/linearization-campaign-2026-07.md` §4.2.
 
 What did NOT change is the case the retired condition was written for: a
 session that PLANNED a cloud and LOST it (`_cloud_fit_evidence` has two

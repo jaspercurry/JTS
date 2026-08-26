@@ -845,10 +845,13 @@ def _validate(
         )
     else:
         # `positional_evidence` is None because the packet is gone and inventing
-        # one would be the self-certifying read this module refuses to be: a
-        # boost tampered into the document therefore refuses on
-        # `insufficient_positional_evidence` before it ever reaches the route,
-        # which is the correct answer rather than a lucky one.
+        # one would be the self-certifying read this module refuses to be. A
+        # boost tampered into the document records no positional finding and
+        # then refuses at the ROUTE on `boost_route_unavailable` — the seam
+        # fact, retained by ruling R8, which is the correct answer here rather
+        # than a lucky one. It used to refuse one step earlier on the
+        # positional bar; the nanny burn-down demoted that bar to a finding,
+        # and the answer this module needs is unchanged either way.
         prescription = read_blend_prescription(
             read_prescription_bytes(payload),
             packet_fingerprint=envelope.get("packet_fingerprint"),
