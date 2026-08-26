@@ -940,31 +940,58 @@ def test_confirm_output_identity_audition_can_play_tweeter_before_driver_sequenc
     assert load_ramp_state()["confirmed_roles"] == []
 
 
-def test_identity_audition_request_cannot_skip_confirmed_driver_identity_gate(
+@pytest.mark.parametrize("role", ["tweeter", "woofer"])
+def test_identity_audition_is_granted_while_a_lane_is_still_unconfirmed(
     monkeypatch,
     tmp_path,
+    role,
 ):
-    """#2821: ``identity_audition`` is a client REQUEST, not the decision. The
-    woofer's physical identity is already confirmed, so a POST carrying the
-    flag for the woofer stays under the strict gate — and that gate still
-    refuses while the tweeter is unconfirmed."""
+    """#2821: the audition IS the household's confirm-output flow. While the
+    tweeter is unconfirmed the server grants it for that tweeter and for a
+    replay of the already-confirmed woofer alike — both arm and play under the
+    weaker mode, which is the shipped Play button's only path through here."""
     from jasper.output_topology import output_topology_mutation
 
     controller = _FakeController("placeholder")
     env = _web_commission_env(monkeypatch, tmp_path, controller)
-    # The tweeter is the only lane still awaiting its physical confirmation;
-    # the staged anchor agrees, so identity is the one gate left to answer.
     with output_topology_mutation() as mutation:
         mutation.save(_topology(tweeter_verified=False))
-    staged = json.loads(json.dumps(env["staged"]))
-    for target in staged["targets"]:
-        if target["role"] == "tweeter":
-            target["identity_verified"] = False
-    for module in ("staging", "startup_load"):
-        monkeypatch.setattr(
-            f"jasper.active_speaker.{module}.load_staged_startup_config",
-            lambda: staged,
+
+    payload = asyncio.run(
+        sound_setup._active_speaker_commission_load_payload(
+            {"group": "mono", "role": role, "identity_audition": True},
+            camilla_factory=lambda: controller,
         )
+    )
+
+    assert payload["load"]["status"] == "loaded"
+    identity = payload["preflight"]["startup_preflight"]["identity"]
+    assert identity["physical_identity_required"] is False
+
+    step = asyncio.run(
+        sound_setup._active_speaker_commission_ramp_step_payload(
+            {"group": "mono", "role": role, "identity_audition": True},
+            camilla_factory=lambda: controller,
+        )
+    )
+
+    assert step["status"] == "stepped"
+    assert step["tone_playback"]["audio_emitted"] is True
+    assert env["tone_calls"][0]["role"] == role
+
+
+def test_identity_audition_request_is_refused_once_every_lane_is_confirmed(
+    monkeypatch,
+    tmp_path,
+):
+    """#2821: ``identity_audition`` is a client REQUEST, not the decision. With
+    every assigned lane already confirmed there is no identity left to audition,
+    so a POST carrying the flag is refused the weaker mode and the arm proves
+    itself against the full startup-load evidence."""
+    from jasper.active_speaker.path_safety import STARTUP_LOAD_EVIDENCE_MODE
+
+    controller = _FakeController("placeholder")
+    _web_commission_env(monkeypatch, tmp_path, controller)
 
     payload = asyncio.run(
         sound_setup._active_speaker_commission_load_payload(
@@ -973,16 +1000,12 @@ def test_identity_audition_request_cannot_skip_confirmed_driver_identity_gate(
         )
     )
 
-    startup_preflight = payload["preflight"]["startup_preflight"]
-    assert startup_preflight["identity"]["physical_identity_required"] is True
-    gates = {
-        gate["id"]: gate["passed"]
-        for gate in startup_preflight["required_gates"]
-    }
-    assert gates["physical_identity_verified"] is False
-    assert payload["load"]["status"] == "blocked"
-    assert payload["load"]["loaded"] is False
-    assert load_commission_load_state()["status"] == "blocked"
+    identity = payload["preflight"]["startup_preflight"]["identity"]
+    assert identity["physical_identity_required"] is True
+    assert payload["load"]["status"] == "loaded"
+    evidence = json.loads((tmp_path / "path_safety.json").read_text(encoding="utf-8"))
+    assert evidence["evidence_mode"] == STARTUP_LOAD_EVIDENCE_MODE
+    assert evidence["provenance"]["physical_identity_required"] is True
 
 
 def test_commission_flow_uses_durable_driver_check_after_ramp_reset(
