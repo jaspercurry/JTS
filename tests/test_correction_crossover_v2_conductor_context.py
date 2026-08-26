@@ -219,9 +219,13 @@ def test_a_stale_baseline_topology_opens_the_session_and_says_so(
 
     A rotated `topology_config_fingerprint` used to make `setup.status`
     `blocked`, and this chokepoint refuses anything that is not `ready` — so
-    entering a `driver_style` label, metadata that changes nothing in the
-    compiled graph, refused the measure session outright. The session now
+    renaming a speaker group, a display-only string that reaches no clamp and
+    no emitted filter, refused the measure session outright. The session now
     opens and the fact is said once, here, rather than on every `/state` poll.
+
+    A declared fact that DOES gate still gates, one step downstream: this test
+    stops at `resolve_conductor_context`'s setup check, and the driver-safety
+    evaluation below it is untouched.
     """
     from jasper.active_speaker._common import BASELINE_TOPOLOGY_CHANGED
 

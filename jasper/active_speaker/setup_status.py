@@ -1029,13 +1029,22 @@ def read_active_speaker_setup_status(
         )
         # Topology staleness is deliberately NOT a readiness input (ruling
         # S10, ADR-0019). `topology_config_fingerprint` hashes the whole
-        # topology dict bar `pairing_intent`, so a `driver_style` label — pure
-        # metadata that changes nothing in the compiled graph — rotates it and
-        # used to take the box to `blocked`. The comparison could never tell a
-        # declared-cap change from a label change, so it was never the thing
-        # enforcing a cap: the paths that read declared caps
-        # (`resolve_driver_excitation_ceilings` and the driver-protection
-        # clamps) are untouched and still refuse on their own terms.
+        # topology dict bar `pairing_intent`, so display-only strings that
+        # reach no clamp and no emitted filter — `SpeakerChannel`'s
+        # `human_output_label`, a `SpeakerGroup`'s `label` — rotate it and
+        # used to take the box to `blocked`.
+        #
+        # This comparison is not where a cap is enforced, because it cannot
+        # see one: it hashes a dict and reports inequality. The declared facts
+        # that DO gate keep their own gates, one step downstream and each
+        # reading the field rather than the hash —
+        # `evaluate_driver_safety_profile` (`correction_crossover_v2.py`'s
+        # session-open gate) and `resolve_driver_excitation_ceilings`, plus
+        # the driver-protection clamps. `driver_style` is the worked example
+        # of a field that only LOOKS like metadata: it selects the tweeter's
+        # `min_highpass_hz` (`driver_protection.py`) and sits in the
+        # driver-safety target match (`driver_safety.py`), so editing it still
+        # refuses a session — correctly, at the safety gate, with a code.
         protected_ready = bool(
             isinstance(protected_profile, Mapping)
             and protected_profile.get("status") == "applied"
@@ -1129,6 +1138,13 @@ def read_active_speaker_setup_status(
                         "control or grouping"
                     ),
                 ))
+        # `config` is the CANDIDATE's, not the applied profile's, and a
+        # topology change no longer clears `protected_ready` — so a stale
+        # topology now suppresses this arm too. That is the intended reading
+        # of last-known-good: what is playing is the applied graph, whose own
+        # config file is checked above, and a candidate pointing at a file
+        # that was never written is a pending edit rather than a reason to
+        # mute the speaker.
         if (
             not protected_ready
             and config.get("path")

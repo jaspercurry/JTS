@@ -947,18 +947,31 @@ def test_receipt_denial_reason_reaches_the_room_decision_intact(
     assert isinstance(acoustic["detail"], str) and acoustic["detail"]
 
 
+@pytest.mark.parametrize(
+    "candidate_config_written",
+    [
+        pytest.param(True, id="candidate_config_on_disk"),
+        pytest.param(False, id="candidate_config_never_written"),
+    ],
+)
 def test_topology_change_since_the_applied_baseline_discloses_without_blocking(
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,
+    candidate_config_written: bool,
 ) -> None:
     """A rotated topology fingerprint is a notice, not a stop (wave 7j).
 
     `topology_config_fingerprint` hashes the whole topology dict bar
-    `pairing_intent`, so entering a `driver_style` label — metadata that
-    changes nothing in the compiled graph — used to take the box to
-    `blocked`/`safety_muted`, refuse volume and grouping, and refuse a v2
-    measure session. Ruling S10: playback stays on the applied graph,
-    measuring stays open, and the fact surfaces as a disclosure.
+    `pairing_intent`, so a display-only string that reaches no clamp and no
+    emitted filter — `human_output_label`, a speaker group's `label` — used
+    to take the box to `blocked`/`safety_muted`, refuse volume and grouping,
+    and refuse a v2 measure session. Ruling S10: playback stays on the applied
+    graph, measuring stays open, and the fact surfaces as a disclosure.
+
+    The `candidate_config_never_written` case pins the third arm this reaches:
+    the candidate-side `active_baseline_config_missing` blocker is suppressed
+    too, because a candidate pointing at a file nobody wrote is a pending
+    edit, not a reason to mute a speaker whose own applied config is present.
     """
     topology = _active_topology()
     _save_topology(monkeypatch, tmp_path, topology)
@@ -969,7 +982,10 @@ def test_topology_change_since_the_applied_baseline_discloses_without_blocking(
     # The freshly-built candidate no longer equals the applied one — which is
     # the whole shape of a topology edit, and the second gate the block held:
     # a stale `protected_ready` made the un-applied candidate a blocker too.
-    candidate = _candidate(status="draft", config_path=config_path)
+    candidate_config_path = (
+        config_path if candidate_config_written else tmp_path / "never_written.yml"
+    )
+    candidate = _candidate(status="draft", config_path=candidate_config_path)
     candidate["source"]["topology_fingerprint"] = "b" * 64
     monkeypatch.setattr(
         setup_mod, "build_baseline_profile_candidate", lambda *a, **k: candidate
