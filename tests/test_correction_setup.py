@@ -6249,3 +6249,115 @@ def test_a_level_match_restore_without_an_owner_reports_not_in_effect(caplog):
         "level_match_restore_owner_absent" in r.getMessage()
         for r in caplog.records
     )
+
+
+def test_the_autolevel_ramp_holds_one_claim_and_moves_it(monkeypatch):
+    """W10 routed: the ramp takes ONE session-measurement claim and MOVES it.
+
+    The point is what does NOT happen between steps. Release-then-reacquire
+    per step would settle to the household level on every release, so a ramp
+    climbing from -40 dB would strobe up to the listening level ~15 times with
+    a tone playing. One claim, releveled, never passes through it — asserted
+    here by watching every fader write the owner actually made.
+    """
+    import contextlib
+
+    from jasper.correction.autolevel import AutolevelData, AutolevelStatus
+    from jasper.volume_owner import volume_owner
+
+    writes: list[float] = []
+    owner = _install_recording_volume_owner(writes)
+    # A household level must EXIST for "never passes through it" to mean
+    # anything: without one a release settles to nothing and writes nothing,
+    # so the very strobe this pins would be invisible. -15.0 is loud, and the
+    # ramp below climbs from -40.0, so any release-per-step shows up at once.
+    asyncio.run(owner.declare_household_level_db(-15.0))
+    writes.clear()
+
+    from jasper.correction import coordinator as coordinator_module
+    from jasper.correction import playback as playback_module
+
+    monkeypatch.setattr(
+        coordinator_module,
+        "measurement_window",
+        lambda *a, **k: contextlib.nullcontext(),
+        raising=False,
+    )
+    monkeypatch.setattr(
+        playback_module, "_ensure_tone_wav",
+        lambda **kwargs: "/tmp/tone.wav", raising=False,
+    )
+
+    class _Player:
+        def __init__(self, _wav):
+            pass
+
+        async def play(self):
+            return None
+
+        def cancel(self):
+            return None
+
+    monkeypatch.setattr(
+        playback_module, "TonePlayer", _Player, raising=False
+    )
+
+    ramp = [-40.0, -39.0, -38.0, -37.0]
+
+    class _Sess:
+        def __init__(self):
+            from jasper.correction.session import SessionState
+
+            self.autolevel = AutolevelData(status=AutolevelStatus.IDLE)
+            self.state = SessionState.NEEDS_NOISE_CAPTURE
+            self.capture_transport = "local"
+            self.local_capture_setup_bound = True
+
+        async def reserve_autolevel_run(self):
+            return object()
+
+        async def release_autolevel_run_reservation(self, _token):
+            return None
+
+        async def run_autolevel(self, *, set_main_volume_db, **_kwargs):
+            for db in ramp:
+                await set_main_volume_db(db)
+            self.autolevel = AutolevelData(
+                status=AutolevelStatus.LOCKED,
+                original_main_volume_db=-15.0,
+                locked_main_volume_db=ramp[-1],
+            )
+
+    sess = _Sess()
+    monkeypatch.setattr(
+        correction_setup, "_get_or_create_session", lambda: sess
+    )
+    monkeypatch.setattr(correction_setup, "_camilla", lambda: _FakeCam())
+
+    correction_setup._handle_autolevel_start(None)
+
+    # Every write the owner made, in order — and nothing else wrote the fader.
+    assert writes == ramp
+    # One claim, still held at the locked level for the sweeps that follow.
+    assert correction_setup._AUTOLEVEL_CLAIM is not None
+    assert volume_owner().declared_level_db() == ramp[-1]
+
+    # ... and the settle-time restore releases it in one write.
+    sess.state = SessionState_APPLIED()
+    correction_setup._maybe_restore_main_volume(sess, _FakeCam())
+    assert correction_setup._AUTOLEVEL_CLAIM is None
+    assert writes[-1] == -15.0
+
+
+def SessionState_APPLIED():
+    from jasper.correction.session import SessionState
+
+    return SessionState.APPLIED
+
+
+class _FakeCam:
+    async def set_volume_db(self, db, best_effort=False):
+        raise AssertionError("the ramp must not write the fader directly")
+
+    async def get_volume_db(self, best_effort=False):
+        return -40.0
