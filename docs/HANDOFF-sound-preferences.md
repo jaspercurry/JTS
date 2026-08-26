@@ -1,1257 +1,399 @@
-# Handoff: Sound Preferences
+# HANDOFF — Sound preferences
 
-Current operational truth for the `/eq/` preference-EQ page, the
-`/sound/setup/` global-output and active-speaker setup page, and their shared
-`/sound/*` backend APIs.
+Operational truth for the `/eq/` preference-EQ page, the `/sound/setup/`
+global-output and speaker-setup page, and their shared `/sound/*` backend APIs.
 
-## Status
+Neighbouring owners — do not restate their content here:
+[HANDOFF-active-speaker-dsp.md](HANDOFF-active-speaker-dsp.md) (crossover/driver
+safety) · [HANDOFF-dsp-graph-carrier.md](HANDOFF-dsp-graph-carrier.md) (which
+configs can host an EQ write) ·
+[HANDOFF-speaker-output-reference.md](HANDOFF-speaker-output-reference.md)
+(outputd state) · [HANDOFF-volume.md](HANDOFF-volume.md) ·
+[the archive](historical/speaker-setup-and-shelf-q-2026-07.md) (the 2026-07
+shelf-slope defect and the step-by-step speaker-setup walkthrough).
 
-The `/eq/` wizard is the independent preference-tuning layer
-for users who want to shape the speaker without running room
-correction. It lets users apply stock sound curves, a five-band Simple
-EQ (Sub-bass / Bass / Mid / Presence / Treble), bounded advanced PEQ
-bands, and named custom profiles copied from any stock or edited draft.
-It is deliberately separate from measurement:
-
-- `/sound/room/` measures the room and emits room PEQs.
-- `/eq/` applies user preference shaping after those room PEQs.
-- The combined CamillaDSP config preserves ordering:
-  room-correction room-chain filters first, preference EQ second, final
-  `flat` terminator last. As of 2026-06-13, the room-chain segment may
-  also include gainless per-channel `Delay` filters for leader-owned
-  stereo-pair time-of-arrival calibration; that is correction/sync
-  calibration state, not a preference-EQ control. When a room measurement
-  applies *boosts* (the assertive strategy only — the cuts-only default has
-  none), a single `room_headroom` attenuator rides between the room filters
-  and the preference tail so the boosted bands cannot clip (see "Gain
-  staging — boosts boost" below).
-
-### Public routes and unchanged owners
-
-The public Sound navigation is split by user job without moving runtime
-ownership:
+## Routes and ownership
 
 | Route | Surface and owner |
 |---|---|
-| `/eq/` | Profiles, Simple EQ / PEQ, and Match Loudness. Rendered by the existing non-root `jasper.web.sound_setup` server. |
-| `/sound/setup/` | I²S HAT boot enablement, extra headroom, volume-floor calibration, output topology, and active-speaker commissioning. Rendered by the same Sound server. |
-| `/sound/crossover/` | **Active speaker** measurement and tuning. Backed by the existing correction service. |
-| `/sound/room/` | Room measurement and correction. Backed by the existing correction service. |
-| `/sound/bass/` | Bass measurement/status. Backed by the existing correction service. |
+| `/eq/` | Profiles, Simple EQ / PEQ, Match Loudness. Rendered by `jasper.web.sound_setup`. |
+| `/sound/setup/` | I²S HAT boot enablement, extra headroom, volume-floor calibration, output topology, active-speaker commissioning. Same server, different page mode. |
+| `/sound/crossover/`, `/sound/room/`, `/sound/bass/` | Active-speaker, room, and bass measurement. Backed by the correction service. |
 
-`/sound/` is navigation only: it redirects non-cacheably to
-`/sound/setup/`. Mutating requests are never redirected. The established
-`/correction/*` measurement URLs remain direct compatibility aliases rather
-than redirecting through the new paths. The split pages reuse the same Sound
-handlers, renderers, JSON state, static module, and ports; opening `/eq/` or
-`/sound/setup/` does not start or proxy through the heavier correction worker.
-The full and streambox nginx profiles spell out the same route map explicitly;
-there is no shared include layer.
+`/sound/` is navigation only: a non-cacheable redirect to `/sound/setup/`, and
+mutating requests are never redirected. The `/correction/*` measurement URLs stay
+direct compatibility aliases. The split pages reuse the same handlers, renderers,
+JSON state, static module, and ports, and **opening either does not start or
+proxy through the heavier correction worker**. The full and streambox nginx
+profiles spell out the same route map explicitly; there is no shared include
+layer. The `/sound/active-speaker/*` namespace is the commissioning API, not a
+measurement namespace; `jasper.web.active_speaker_flow`'s cooperative TTL-backed
+exclusion is the coordination boundary, and the page split added no cross-process
+lease or recovery state machine.
 
-The `/sound/active-speaker/*` namespace remains the commissioning API exactly
-as before, including Stop and cooperative abort routes. It is not a measurement
-namespace, and stale setup tabs retain control of an audible commissioning
-session across this navigation change.
-The existing `jasper.web.active_speaker_flow` cooperative, TTL-backed
-commissioning/measurement exclusion remains the coordination boundary; the
-page split adds no cross-process lease, journal, or recovery state machine.
-
-### I²S audio HAT boot control
-
-Sound Setup has one power-style **Enable I²S audio HAT** control for the
-supported InnoMaker HiFi AMP Pro. The label and boot overlay come from its
-`DacProfile`; browser logic does not own driver metadata. The persisted intent
-is `/var/lib/jasper/i2s_hat.env`; absence means **Auto / Off**. The control is
-available on full and Streambox installs on a recognized Pi; it is unavailable elsewhere. On a Zero-class Streambox, enabling it moves output from the shared USB host port to
-the HAT after restart and reserves that port for gadget mode. A powered micro-USB host
-cable can back-power a HAT-powered Pi; use a VBUS-isolated connection or disconnect it.
-See the canonical [USB role matrix](HANDOFF-usb-gadget.md#usb-data-role-policy).
-
-`POST /sound/i2s-hat` is a bounded, CSRF/Host-guarded JSON write. It saves the
-single desired fact, then synchronously starts the already-allowlisted
-`jasper-audio-hardware-reconcile.service` through the existing action broker.
-That root oneshot is the only boot-file writer. It composes the exact
-`dtoverlay=merus-amp` setting with its existing USB-role block and atomically
-replaces `config.txt`, preserving unrelated content or leaving the prior file
-untouched on validation/write failure. There is no pre-overlay HAT probe.
-
-The page separately shows saved intent and the existing output-hardware runtime
-observation. `/run/jasper-output-hardware/i2s-hat-reboot-required` exists only
-when that reconcile actually changed the managed HAT setting and runtime still
-disagrees. Agreement removes it; unrelated reconciles neither create nor clear
-a pending mismatch, and reboot clears it naturally. The message links to the
-existing System Restart control and confirmation flow. The card also warns to
-remove all power before fitting/removing the HAT, never power the Pi through the
-HAT and another power input simultaneously, never hot-plug, and start very low.
-
-While a speaker is an active bonded follower, `/eq/` is a delegated
-surface: the page shows a leader-owned notice and does not load the
-preference-EQ editor. Content-DSP mutation routes reject with HTTP 409
-instead of changing local sound state (`/sound/apply`, `/sound/audition`,
-`/sound/live-draft`, `/sound/settings`, `/sound/volume-floor/audition`,
-`/sound/volume-floor/stop`, and the profile-library writes).
-This is intentional: the leader renders content EQ, room correction, and
-volume shaping for the paired image. `/sound/setup/` keeps local output
-topology and active-speaker/driver-DSP commissioning available because
+**While a speaker is an active bonded follower, `/eq/` is a delegated surface**:
+the page shows a leader-owned notice and does not load the editor, and every
+content-DSP mutation route rejects with HTTP 409 — the leader renders content EQ,
+room correction, and volume shaping for the paired image. `/sound/setup/` keeps
+local output topology and active-speaker commissioning available, because
 crossover and driver protection belong to the box that owns the DAC path.
 
-The advanced parametric editor is intentionally touch-first: users
-adjust filter type, frequency, gain, and Q/width with controls while the
-graph keeps the single total-response curve visually dominant. Each
-enabled band is one dot anchored **on** that summed curve (the curve's
-own value at the band's frequency), so the dot sits on the line for every
-filter type — including shelves and cuts, whose response at the corner
-frequency is not the band's nominal gain. The graph draws exactly **one
-line** — the summed response — in every state. The expanded band is
-marked by its filled on-curve dot, a frequency guide line, and (for
-peaking filters) a translucent width region; it does **not** draw a
-second per-band response curve. Collapsed/non-selected bands are just the
-on-curve dot. Dragging points on the graph is deferred; the graph is a
-display surface, not the state authority.
+## The layering invariant
 
-Available band types (all CamillaDSP biquads): **Lowshelf**, **Peaking**,
-**Highshelf**, **Highpass**, **Lowpass**, **Notch**. The three cut/notch
-types carry no gain — the UI hides the Gain control, the model pins gain
-to 0, and the emitted YAML omits the gain term. Shelves hide the Width
-control (every shelf is drawn *and* emitted at the fixed Butterworth
-`SHELF_Q` = 1/√2, so the control would be inert — see "Shelf steepness"
-below). High/low-pass Q is
-capped at `CUT_MAX_Q` (1.4) in both the model and the slider, because a
-high-Q cut is a large resonant *boost* at the corner (a Q=8 highpass peaks
-~+18 dB) — surprising on a "pass" filter and a needless clipping source;
-Notch keeps the full Q range since it is meant to be surgical. Switching a
-band into high/low-pass snaps Q to Butterworth (0.707). The graph draws
-real RBJ-cookbook biquad magnitude evaluated at CamillaDSP's 48 kHz rate
-(`jasper/sound/profile.py` `_biquad_coeffs`, mirrored by
-`deploy/assets/sound-profile/js/eq-math.js`), so the line matches the
-speaker's actual output.
+`/sound/room/` measures the room and emits room PEQs; `/eq/` applies preference
+shaping **after** them. The combined CamillaDSP config preserves that order:
+room-chain filters first, preference EQ second, the `flat` terminator last, with
+a single `room_headroom` attenuator between them when a room measurement applied
+boosts. The room-chain segment may also carry gainless per-channel `Delay`
+filters for leader-owned stereo-pair time-of-arrival calibration — correction
+state, not a preference control.
 
-The Draft editor has two exclusive modes:
+**Do not merge room-correction target selection and preference EQ into one opaque
+layer.** They may share UI affordances; the DSP contract keeps them distinct, and
+an A/B bypass toggles only preference EQ.
 
-- **Simple** — five fixed-frequency gain sliders (Sub-bass 60 Hz,
-  Bass 150 Hz, Mid 1 kHz, Presence 4 kHz, Treble 10 kHz). Only gain is
-  editable per band; the slot table is `SIMPLE_BANDS`
-  (`jasper/sound/profile.py`) and is exposed to the UI via
-  `/state.limits.simple_bands`, so the page renders the columns from
-  data rather than hardcoding band labels.
-- **PEQ** — bounded parametric bands (a collapsible accordion) with
-  exact Hz entry plus a log-frequency slider for fast touch adjustment.
+### Gain staging
 
-Switching modes converts the draft rather than warning: PEQ → Simple
-snaps each Simple slot to the nearest enabled PEQ band by log-frequency
-(within ~1.2 octaves); Simple → PEQ turns each non-zero Simple band into
-a parametric band. This replaces the older Basic/Advanced "mixed
-profile" compatibility shim. Older 3-band profiles still load — the two
-new Simple bands (Sub-bass, Presence) default to 0 dB — but note the
-redesign moved the Bass centre (105 → 150 Hz) and the Treble shelf
-(4 k → 10 k), so a migrated profile's bass/treble values shape slightly
-different frequencies.
+A preference boost applies at unity —
+[ADR-0121](adr/0121-preference-boosts-boost-room-boosts-are-compensated.md). No
+automatic preamp is inserted for preference gain; the only global attenuation on
+that layer is the opt-in output trim, 0 by default. `devices.volume_limit: 0.0`
+stays the hard clip guard, so removing the old preamp cannot raise the ceiling —
+a large boost at high volume clips at 0 dBFS rather than duck the mix.
+Active-speaker baselines follow the same policy: preference bands ride at unity
+ahead of the split, while output trim and match-loudness attenuation fold into
+`active_baseline_headroom`.
 
-The **Saved** tab lists profiles in two sections:
+Room-correction boosts are the exception and are compensated automatically:
+`jasper.camilla_stereo_prefix.build_stereo_prefix` derives `room_headroom` from
+the sum of positive room-PEQ gains (an upper bound on the combined peak) and
+attenuates the whole signal by it; cuts-only correction emits none, keeping the
+config byte-identical. This is deliberately separate from `output_trim_db`,
+which compensates only the preference layer and is skipped on a flat profile —
+it would not protect room boosts on a household with no preference EQ set.
+`estimate_headroom_db` survives as the peak-boost **metric** doctor, `/state`,
+and the calibration advisor surface; it drives nothing.
 
-- **Presets** are generated from built-in curves: Flat, Harman-style,
-  and B&K-style. They are not persisted or editable, but can be opened
-  in Draft (pencil) and saved as a new custom profile.
-- **Your profiles** are custom profiles in
-  `/var/lib/jasper/sound_profiles.json`. Each row has edit (pencil) and
-  delete actions; the Draft footer adds Overwrite / Save as new /
-  Rename. Custom profile library edits do not touch CamillaDSP; ordinary
-  draft editing may separately update the live Draft through
-  `/sound/live-draft`.
+### Global output settings
 
-`SoundProfile` includes optional `profile_id` / `profile_name` metadata
-so the UI can distinguish "applied Flat" from "draft edited from Flat"
-without making the metadata part of the DSP math. Stock identities are
-`stock:<curve_id>`; custom identities are `custom_<12 hex chars>`.
-Deleting a custom library entry does not delete the currently applied
-DSP profile; it only removes that profile as a future draft template.
+Three settings, distinct from per-profile EQ, are owned by
+`/var/lib/jasper/sound_settings.json` (`jasper/sound/settings.py`) and fail soft
+to do-nothing defaults — a missing or corrupt file never alters the sound. It is
+`0640` and inherits the parent `jasper` group, so non-root `jasper-control`
+reads the same calibrated floor as the wizard.
 
-The top control is **Off / Saved / Draft**, and it is the live source:
+- **Match loudness** — turns each profile down by `loudness_compensation_db`, a
+  pink/K-weighted power average of the EQ response, **not** peak, so a narrow
+  +8 dB band compensates ~1 dB rather than 8. Anchored to attenuation (≥ 0), so
+  it can never cause clipping.
+- **Extra headroom** — a manual 0–12 dB clamped attenuation (`headroom_trim_db`)
+  for listeners running JTS at full digital volume into their own amplifier.
+- **Volume floor** — the dB value for the user-visible 1% point
+  (`volume_floor_db`, clamped −60..−10, default −50); 0% remains a hard
+  CamillaDSP mute. `/sound/setup/` can start a continuous 1 kHz calibration
+  tone, update it live as the slider moves, and stop it explicitly or on leave.
 
-- **Off** — preference EQ disabled (bypass) while preserving room
-  correction. Clicking Off durably applies a bypassed profile.
-- **Saved** — the saved-profile listening lane. Entering Saved
-  durably applies the currently selected saved profile; if there is no
-  remembered selection, it falls back to the Flat preset. Tapping a row
-  changes that remembered Saved selection and applies it immediately.
-- **Draft** — the editor. Dragging a control schedules a live Draft
-  update: the browser updates the graph immediately, coalesces audio
-  updates, and asks `/sound/live-draft` to upload a generated active
-  CamillaDSP config without changing the config file path or persisting
-  profile state. Each live request carries the current durable DSP write
-  epoch from `/var/lib/jasper/dsp_apply_state.json`; if a save or
-  room-correction apply wins the writer lock first, the stale live
-  request is skipped.
+The emitter applies one `output_trim_db = headroom_trim + (loudness compensation
+when match-loudness is on)` as the `sound_preamp` gain, and only when the active
+profile has filters — a flat profile cannot clip from EQ.
 
-Off and Saved are **durable** (they go through `/sound/apply`); Draft is
-a live, non-persistent preview until the footer Save commits it. The top
-tabs are therefore A/B/C listening controls, not passive navigation:
-Off bypasses, Saved resumes the saved reference profile, and Draft resumes
-the unsaved working profile. The browser treats those live-source changes
-as last-intent-wins: if a durable apply is already in flight, the newest
-Off/Saved/Draft intent is replayed after the apply returns, so quick A/B
-taps cannot leave the graph on one source while the speaker keeps playing
-another. The
-Draft footer adapts to origin: a new draft offers Save profile /
-Discard; editing a custom profile offers Overwrite / Save as new /
-Rename / Discard; editing a preset offers Save as new / Discard. Saving
-emits `sound_current.yml` and persists only after the CamillaDSP reload
-is confirmed.
+## The editor contract
 
-### Shelf steepness — one Butterworth Q, drawn and emitted
+The graph is **visualization only**; the canonical editable state is the bounded
+`SoundProfile` JSON model. It draws exactly **one line** — the summed response —
+in every state, with each enabled band as one dot anchored *on* that curve, so
+the dot sits on the line for every filter type including shelves and cuts, whose
+response at the corner is not the band's nominal gain; it never draws a second
+per-band curve. The line is real RBJ-cookbook biquad magnitude at CamillaDSP's
+48 kHz rate (`jasper/sound/profile.py` `_biquad_coeffs`, mirrored by
+`deploy/assets/sound-profile/js/eq-math.js`), so it matches the speaker.
 
-Every `Lowshelf`/`Highshelf` JTS emits — taste-EQ curve presets, Simple
-bands, Advanced bands, and the active speaker's Layer-1a linearization
-shelf / CD-horn backbone / trailing taper — is emitted at **one** constant,
-`jasper.camilla_config_contract.SHELF_Q` = 1/√2 (Butterworth), spelled into
+Band types are CamillaDSP biquads: Lowshelf, Peaking, Highshelf, Highpass,
+Lowpass, Notch. The three cut/notch types carry no gain — the UI hides Gain, the
+model pins it to 0, and the YAML omits the term. Shelves hide Width because
+every shelf is drawn *and* emitted at the fixed Butterworth Q. High/low-pass Q
+is capped at `CUT_MAX_Q` (1.4) in both the model and the slider, because a
+high-Q "pass" filter is a large resonant **boost** at the corner (a Q=8 highpass
+peaks ~+18 dB) — surprising, and a needless clipping source; Notch keeps the
+full range since it is meant to be surgical.
+
+**Shelf steepness is one constant, drawn and emitted.** Every `Lowshelf` /
+`Highshelf` JTS emits — curve presets, Simple bands, Advanced bands, and the
+active speaker's linearization shelf, CD-horn backbone, and trailing taper — is
+emitted at `jasper.camilla_config_contract.SHELF_Q` = 1/√2, spelled into
 CamillaDSP's shelf `q` field by the single choke point
 `jasper.camilla_stereo_prefix.emit_filter_spec`. That is the same Q every
-evaluator in the codebase draws a shelf at (`profile._biquad_coeffs`,
-`eq-math.js`, `linearization_fit._HIGHSHELF_Q`), so the preview curve, the
-fit's residual, and the speaker's output are the same curve.
+evaluator draws a shelf at (`profile._biquad_coeffs`, `eq-math.js`,
+`linearization_fit._HIGHSHELF_Q`), so the preview curve, the fit's residual, and
+the speaker's output are one curve. There is deliberately **no** per-band shelf
+steepness: no evaluator reads one, so a band-level value would describe a filter
+the system cannot see. `q` is emitted rather than `slope` because the emitted
+number is then literally the number the evaluators use, and unlike `slope` its
+meaning does not depend on the band's gain — the
+[defect that taught this](historical/speaker-setup-and-shelf-q-2026-07.md#the-shelf-slope-defect-fixed-2026-07-27).
 
-There is deliberately **no** per-band shelf steepness. None of the
-evaluators reads one, so a band-level value would describe a filter the
-system cannot see. If a per-band steepness is ever wanted, the model gains
-the parameter in the same change.
+**Off / Saved / Draft is the live source, not navigation.** Off durably applies a
+bypassed profile (preserving room correction); Saved durably applies the
+remembered saved profile, falling back to Flat; Draft is a live, non-persistent
+preview through `/sound/live-draft` until Save commits it. The browser treats
+source changes as last-intent-wins: with a durable apply in flight the newest
+intent is replayed after it returns, so quick A/B taps cannot leave the graph on
+one source while the speaker plays another.
 
-**The defect this replaced (fixed 2026-07-27, linearization-integrity
-PR-L2).** The emitter previously wrote `slope: 6.0`, on the documented-here
-belief that 6 dB/octave *was* Butterworth. It is not. CamillaDSP's advanced
-shelf takes `S = slope/12` and derives
+The Draft editor has two exclusive modes — **Simple** (five fixed-frequency gain
+sliders whose slot table is `SIMPLE_BANDS`, reaching the UI through
+`/state.limits.simple_bands` so columns render from data) and **PEQ** (bounded
+parametric bands) — and switching converts the draft rather than warning. Presets
+are generated from built-in curves: not persisted, not editable, but openable in
+Draft and saveable as new; custom profiles live in `sound_profiles.json`, and
+**deleting a library entry does not delete the applied DSP profile**. Band
+frequencies, the migration caveat, and the profile-identity metadata:
+[archive](historical/speaker-setup-and-shelf-q-2026-07.md#the-eq-editors-modes-presets-and-library).
 
-```
-Q = 1 / sqrt((A + 1/A) * (1/S - 1) + 2),   A = 10**(gain/40)
-```
+## Speaker setup
 
-so Butterworth is `S = 1`, i.e. **`slope: 12`** — pinned by CamillaDSP's own
-`lowshelf_slope_vs_q` test (`slope: 12.0` ≡ `q: FRAC_1_SQRT_2`). At
-`slope: 6` the realized Q depends on the shelf's *gain* and collapses:
-0.476 at −11 dB, where the realized curve missed the drawn/designed one by
-up to 1.7 dB. Because the fit's realization gate, residual, and VERIFY
-prediction all evaluated the Butterworth shelf, nothing in the loop could
-observe the error — it was found by measuring the speaker against a
-reference monitor. `q` is now emitted rather than `slope: 12` because the
-emitted number is then literally the number the evaluators use, and unlike
-`slope` its meaning does not depend on the band's gain.
+`/sound/setup/` is the **Speaker setup** entry point for active crossover
+commissioning: one walkthrough of collapsible task cards (layout → components →
+confirm outputs → combined test → validate and apply) with **exactly one step
+ever `active`**, the first unfinished step this speaker can still reach.
+`_derive_step_statuses` decides which step holds the baton and every message is
+chosen from that derived status, so a `todo` step cannot carry done-state copy
+and a waiting step names the rung that actually holds it. A full-range passive
+layout with no subwoofer reaches only the first three; the last two report
+`not_required` and say so rather than offer a test with no target.
 
-**What happens to an already-applied profile.** The fix is in the
-*emission*, not in any stored design: filter frequencies, gains and Qs
-persist unchanged in the sound profile and in the active speaker's
-immutable recomposition snapshot. So nothing changes until the next
-re-emission — and then the *same stored design* is realized at the Q it was
-always modelled at. Concretely:
+Four rules hold across the whole flow.
 
-- **`/eq/` taste EQ — changes on the next DEPLOY, with no user action.**
-  `install.sh` runs `jasper-sound reconcile-current-dsp` on every deploy;
-  `reconcile_sound_dsp_state` re-renders the graph and compares it to the
-  on-disk YAML with only the id header stripped, so `slope:` versus `q:`
-  makes them unequal → `status=reconciled` → the new graph is written *and*
-  loaded. (An earlier `/eq/` save/apply gets there first if one happens.)
-  Shelf bands move toward the curve the graph has always drawn, by an
-  amount that grows with the band's gain (peak deviation over 20 Hz–20 kHz):
-  the Harman-style and B&K-style tilt shelves 0.52 / 1.17 dB (they were the
-  only shelves carrying `slope: 3.0`), their bass shelves 0.60 / 0.45 dB,
-  and a Simple or Advanced shelf driven to the ±12 dB limit up to 1.87 dB.
-  Like every shelf change this is a *tilt* about the corner, not an offset:
-  the band above moves one way and the band below the other. A household
-  that voiced a profile by ear on an old build may want to re-touch it; the
-  graph it was voiced against did not move.
-- **Active speaker (the load-bearing case).** The next write of the
-  baseline graph — an Apply, or a recomposition triggered by saving room /
-  preference EQ — realizes the linearization shelves at their designed Q.
-  The 2026-07-27 JTS3 profile carried a **−11 dB Lowshelf at 4419 Hz**
-  (`as_tweeter_linearization_shelf`; the CD-horn backbone is a Lowshelf, not
-  a Highshelf). Its correction is antisymmetric about that corner:
-  **±1.70 dB, 3.40 dB peak-to-peak** — up to **+1.70 dB** above the corner
-  (+0.63…+1.70 dB across 5–12 kHz, +1.65 dB at 6912 Hz where `peak_2` sits)
-  and up to **−1.70 dB** below it (minimum near 2.5 kHz). So the tweeter
-  band gains up to 1.7 dB of its deficit back while the shoulder below the
-  corner comes down by as much. **This is the fix working**: the speaker
-  moves toward what the fit designed, not away from it. It is also not the
-  whole 7–11 dB deficit — the rest is tracked in
-  [linearization-integrity-plan.md](linearization-integrity-plan.md).
-- **The pre-existing drift guard fires, by design.** Until that re-emission
-  happens, a speaker still running an old-build graph will not match the
-  recomposed expectation, so
-  `setup_status._applied_layer_a_binding` reports `mismatch` and Room
-  correction is blocked with "The sound pipeline loaded on this speaker does
-  not match the applied manual profile. Apply that crossover again before
-  Room correction." That is the honest state — the loaded graph really is
-  not the one the applied profile now describes — and re-applying clears it.
-  The copy is deliberately cause-neutral: this drift comes from the emitter
-  changing under an untouched profile, not from anyone editing a crossover.
-- **Observable.** The write-time journal line carries the transition:
-  `journalctl -u jasper-control | grep event=active_speaker_baseline_config_written`
-  → `linearization_shelves=<n> shelf_q=0.7071068`. A graph written by an
-  older build has neither field. For the preference-EQ side the signal is the
-  deploy transcript itself: `event=sound.reconcile_current_dsp
-  result=reconciled` on a deploy that changed no profile means the render
-  moved, which on the first deploy after this change is the shelf-Q
-  re-emission. The live YAML is self-describing in both cases: a fixed
-  shelf reads `q: 0.7071068`, an old one `slope: 6.0000`.
+- **Editing does not play sound or touch live audio.**
+  `/sound/output-topology` reads and saves the whole `jasper.output_topology`
+  JSON model at `/var/lib/jasper/output_topology.json` and never rewrites ALSA,
+  reloads CamillaDSP, emits tones, or authorizes playback.
+- **A layout that cannot reach the drivers is refused, not persisted.** If it
+  needs a roleful graph but the topology's DAC profile declares no active outputd
+  lane, the wizard returns a blocker naming the DAC. Saving does kick
+  `jasper-audio-hardware-reconcile` (fire-and-forget, never failing the save),
+  and on a live commissioned box an invalidating edit flips the gate to passive
+  and parks output until re-commissioned — visible on the Status dashboard,
+  whose parked sentence has one writer (`_parked_signal` in
+  `jasper/control/audio_health.py`). `/sound/setup/` carries no parked banner.
+- **Saving the driver declaration is declaring it — there is no confirm step.**
+  Every save stamps the safety profile over the values it just wrote. That
+  ceremony was retired because the crossover-accept seam could not perform it:
+  accepting a measured crossover writes the declaration itself, which rotated
+  the fingerprint, cleared the confirmation, and then refused the very
+  measurement loop that produced the value. What still refuses a measurement is
+  a declaration JTS cannot use — `incomplete`, `stale`, or `malformed`, each
+  needing a different edit — surfaced as the `confirm-safety-limits` callout the
+  wizard's `program_profile_not_confirmed` stop deep-links to.
+- **Evidence is not permission.** Driver-check evidence is bound to the saved
+  physical target fingerprint, so a layout change makes old records
+  informational rather than ready-state proof; it is what the baseline compiler
+  needs, not playback authority. Marking channel identity is likewise operator
+  evidence, satisfying neither tweeter protection nor path-safety blockers.
 
-### Gain staging — boosts boost
+Step-by-step card behaviour — commission ramp, combined test, research prompt,
+reset — is in the
+[archive](historical/speaker-setup-and-shelf-q-2026-07.md#the-soundsetup-speaker-setup-walkthrough-step-by-step).
+Sound Setup also owns one power-style **Enable I²S audio HAT** control for the
+supported InnoMaker HiFi AMP Pro; label and boot overlay come from its
+`DacProfile`, and browser logic owns no driver metadata. Intent persists to
+`/var/lib/jasper/i2s_hat.env` (absence = Auto/Off). `POST /sound/i2s-hat` is a
+bounded, CSRF/Host-guarded JSON write that saves the one desired fact and starts
+the allowlisted `jasper-audio-hardware-reconcile.service` through the action
+broker — **that root oneshot is the only boot-file writer**, composing the
+overlay with its existing USB-role block and atomically replacing `config.txt`.
+There is no pre-overlay HAT probe, and
+`/run/jasper-output-hardware/i2s-hat-reboot-required` exists only when that
+reconcile changed the managed setting and runtime still disagrees. On a
+Zero-class Streambox, enabling it moves output from the shared USB host port to
+the HAT and reserves that port for gadget mode — see the canonical
+[USB role matrix](HANDOFF-usb-gadget.md#usb-data-role-policy). The card warns to
+remove all power before fitting or removing the HAT, never to power the Pi from
+two inputs at once, never to hot-plug, and to start very low.
 
-A preference boost applies at unity: a +N dB band raises only that band
-and leaves the rest of the spectrum untouched, the way a consumer EQ
-behaves. The generated config inserts **no** automatic preamp for
-preference boosts. The only global attenuation for the preference layer
-is an opt-in **output trim**, which is 0 by default, so the default is
-"boosts boost". The `devices.volume_limit: 0.0` master ceiling remains
-the hard clip guard, so removing the old preamp cannot raise the output
-ceiling — at high volume a large boost clips at 0 dBFS rather than
-ducking the whole mix.
+## Config ownership
 
-Active-speaker baselines follow the same preference policy: the EQ bands
-are inserted before the split/crossover path and ride at unity. Explicit
-output trim or match-loudness attenuation still folds into
-`active_baseline_headroom`; preference boosts do not.
-
-**Room-correction boosts are the exception — they are headroom-compensated
-automatically.** The assertive correction strategy (`cuts_only=False`) can
-emit room PEQs with up to +3 dB total boost. Unlike preference boosts,
-those bands cannot be left to clip: the shared stereo-prefix builder
-(`jasper.camilla_stereo_prefix.build_stereo_prefix`, which `emit_sound_config`
-calls) derives a `room_headroom` preamp from the worst-case additive room
-boost (the sum of positive room-PEQ gains, an upper bound on the combined peak) and
-attenuates the whole signal by it, so a corrected room boost can never
-exceed unity. Cuts-only correction (the safe/balanced default) has zero
-boost and emits no `room_headroom`, keeping the config byte-identical.
-This is deliberately separate from `output_trim_db`: that trim compensates
-only the preference layer and is skipped on a flat sound profile, so it
-would not protect room boosts on a household that has set no preference EQ.
-
-Three global output settings (distinct from per-profile EQ) are owned by the
-aggregate Sound settings file at
-`/var/lib/jasper/sound_settings.json` (`jasper/sound/settings.py`),
-fail-soft to the do-nothing defaults — a missing or corrupt file never
-alters the sound:
-
-- **Match loudness** — turns each profile down by its loudness-weighted
-  gain (`loudness_compensation_db`: a pink/K-weighted power average of the
-  EQ response, **not** peak, so a narrow +8 dB band compensates ~1 dB, not
-  8) so switching profiles compares tone, not volume. Anchored to
-  attenuation (≥ 0), so it can never cause clipping.
-- **Extra headroom** — a manual 0–12 dB digital attenuation
-  (`headroom_trim_db`, clamped) for listeners running JTS at full digital
-  volume into their own amplifier.
-- **Volume floor** — the dB value for the user-visible 1% volume point
-  (`volume_floor_db`, clamped to −60..−10 dB, default −50 dB). 0% remains
-  a hard CamillaDSP mute. The `/sound/setup/` control can start a
-  continuous 1% calibration tone, update that tone as the slider moves, and
-  stop it explicitly or on page leave. Reset floor saves the
-  default −50 dB floor through the same `/sound/settings` path.
-
-The emitter applies one `output_trim_db = headroom_trim + (loudness
-compensation when match-loudness is on)` as the `sound_preamp` gain, and
-only when the active profile actually has filters (a flat profile can't
-clip from EQ). `estimate_headroom_db` remains as the peak-boost *metric*
-surfaced by doctor / `control` `/state` / the calibration advisor; it no
-longer drives an auto-preamp.
-
-The `/sound/audition` endpoint and `sound_audition.yml` remain in the
-backend as a validated, non-persisting apply: it writes a separate
-`sound_audition.yml` through the same validation/rollback substrate as
-`/sound/apply`, without persisting the profile. The redesigned UI no
-longer drives it — editing previews through the faster `/sound/live-draft`
-path and commits through durable apply — but it is intentionally retained
-as the validated-preview surface for "propose, preview, then approve"
-AI helper flows. As of 2026-05-31,
-`jasper.calibration_agent.sound_actions` can opt into that exact backend
-for validated advisor `propose_preference_eq_audition` actions. The CLI
-flag is `jasper-calibration-agent --call-advisor --audition-sound` (or
-`--run-advisor-actions <path> --audition-sound` for offline response
-fixtures). This remains reversible: no profile persistence, no volume
-authority, and the action result reports the generated config basename
-rather than exposing raw filesystem paths.
-
-### Speaker setup entry point
-
-As of 2026-08-04, `/sound/setup/` is the **Speaker setup** entry
-point for active crossover commissioning. Opening it shows one primary
-**Active crossover setup** walkthrough, not a separate environment card. The
-walkthrough keeps one task card open at a time: choose speaker layout, add your
-components, confirm outputs and each driver, test the combined
-crossover, then save/apply the active profile. Editing layout and
-crossover-settings drafts does not play sound or touch live audio. Saving a
-layout uses the shared park -> commit -> runtime-converge transaction: explicit
-passive intent can load a safe recomposed graph, while unconfigured or
-incomplete active intent remains parked. Detected hardware is supporting
-context and the hardware refresh control is a small utility inside the layout
-step.
-
-The **Confirm outputs** card owns the guarded driver-check controls.
-The primary UI no longer refreshes the old backend checklist/grid or asks the
-user to understand environment, path-safety, staging, startup-load, or
-safe-session probes as separate steps. Active 2/3-way groups present one
-commission action at a time: **Play** prepares a continuous quiet tone, moves
-through a disabled preparing state while the backend opens the protected path,
-then becomes a red **Stop** button once JTS believes audio is active. The only
-positive result is driver-specific (**I hear woofer/tweeter/midrange**) and
-also promotes the output identity when the output had not yet been confirmed.
-The same card keeps DAC-channel assignment controls visible so the operator can
-fix a wrong output mapping in place. Internally,
-`/sound/active-speaker/commission-load` repairs missing software guards and
-loads the protected active graph, then
-`/sound/active-speaker/commission-ramp-step` raises only the selected driver in
-larger bounded guarded steps while the same cancellable tone keeps playing.
-Transient "raising" progress copy is not shown, so the card does not flap while
-audio is playing. The following **Test combined drivers** step is only the
-summed crossover check; it no longer duplicates individual driver
-commissioning. Passive/full-range layouts use the normal listening path rather
-than a separate direct-DAC driver-test card. The tone frequency is role-native
-where that improves operator
-recognition (woofer/subwoofer use normal low test tones), then bounded by the
-compiled active-speaker preset/crossover edges and tweeter-protection policy. If
-the safe limit is reached with no audible driver, the UI stops/re-mutes and tells the
-operator to check amp gain, wiring, and DAC output mapping. Driver-choice buttons
-also refresh a stale no-audio crossover preview when the current working setup
-can produce one. The level state is separate from normal listening volume.
-
-When the operator records a correct-driver result for that same target,
-`/sound/active-speaker/driver-measurement` persists target-specific
-driver-check evidence in
-`/var/lib/jasper/active_speaker_measurements.json`. That evidence is bound to
-the current saved physical target fingerprint, including DAC output assignment
-and identity confirmation, so changing the speaker layout makes old records
-informational rather than ready-state proof. Driver-check evidence is not
-normal playback permission; it is the durable proof needed before the active
-baseline compiler can proceed.
-
-Physical DAC lane assignment, speaker grouping, left/right
-swaps, active driver roles, passive speakers, and subwoofer outputs now have a
-no-audio backend contract:
-`/sound/output-topology` reads/saves the complete
-`jasper.output_topology` JSON model at
-`/var/lib/jasper/output_topology.json`. That model evaluates identity and
-tweeter-protection evidence but never rewrites ALSA, reloads CamillaDSP, emits
-tones, or authorizes playback; the audible safe-session path remains separate.
-A save is refused outright when the submitted layout needs a roleful graph and
-the topology's own DAC profile declares no active outputd lane
-(`supports_active_outputd_lane=False`): that pairing can never reach the
-drivers, so the wizard returns a blocker naming the DAC instead of persisting
-a layout the box would go silent under.
-The same `/sound/setup/` page renders a lightweight **Active crossover setup**
-surface over that endpoint as collapsible task cards: **Choose speaker
-layout**, **Add your components**, **Confirm outputs**, **Test combined
-drivers**, and **Validate and apply**.
-A full-range passive layout with no subwoofer reaches only the first three: it
-has no inter-driver crossover and no bass-management split, so the coordinator
-(`build_commissioning_view`) reports the last two steps `not_required` and the
-flow finishes at **Confirm outputs**. Those two cards then explain that they do
-not apply instead of offering a combined test with no target. The shape
-predicate is `output_topology.topology_is_subless_passive_mains`; its sibling —
-passive mains PLUS a sub — still compiles a (degenerate 1-way) active profile
-and keeps the full ladder.
-**Exactly one step is ever `active`** — the first unfinished step this speaker
-can still reach. Each step tells `build_commissioning_view` only whether it is
-finished and whether this shape will ever run it;
-`_derive_step_statuses` decides which one holds the baton, and every step
-message is chosen from that derived status so a `todo` step can never carry
-done-state copy. A waiting step names the rung that actually holds the baton
-(`_waiting_message`) rather than a fixed prerequisite — on a box with no saved
-layout the values rung reports "not needed", so copy hard-coded to it demanded
-work the card above had just called unnecessary. Steps after the live one are
-`todo`, and the combined-driver test's own action is disabled until both the
-values and the outputs are done — `jasper-web`'s staging refusal stays as the
-backstop behind it. Before 2026-08-06 each step decided "am I active?" alone, so
-a redrawn active 2-way that still carried confirmed outputs lit up the values
-step AND the combined test three rungs below it; the household pressed the test
-and the graph fail-closed on a stale staged config with no way forward.
-
-Combined-test failure copy is owned by `summed_test_failure_message` and grouped
-by the ACTION available to a household, not by the backend's cause: one code
-(`commission_startup_anchor_not_staged`) covers every staging blocker, and the
-sub-cause is not forwarded to the coordinator, so the copy routes ("go back to
-Add your components") without diagnosing ("the preview is stale") — issue #2184
-tracks plumbing the sub-code through. An unmapped blocker's own prose is
-sanitised (`_household_safe_reason`: absolute paths and exception classes
-stripped, backend vocabulary rejected outright) before it is shown, because that
-prose carries all three and the no-jargon guard in `tests/test_sound_setup.py`
-reads only the JS. The raw code still rides `combined_groups[].failure_code`, a
-structured field, so a new failure mode is loud without leaking onto the card.
-The layout card opens by default on page load. Explicit Next/manual-open
-actions use transient browser intent only; no persisted wizard-progress state
-exists. The UI keeps one card open at a time, prevents opening future
-prerequisite-gated cards, and lets users reopen earlier cards to edit them. The
-layout card starts with
-no-audio setup templates for mono/stereo passive, mono/stereo active 2-way, and
-mono/stereo active 3-way wiring, plus the subwoofer add-on; detected hardware is
-shown as supporting context rather than the primary call to action. Subwoofer is not a
-duplicated template family: the UI offers it as an optional add-on that composes
-with the current mono/stereo draft when an unused physical output is available,
-adds a `subwoofer` group, and records it in `routing.subwoofer_group_ids`.
-The route capability in `/sound/output-topology` deliberately separates
-physical DAC outputs from the active-speaker runtime route. A DAC8x topology can
-describe eight physical outputs, but active commissioning/apply is enabled only
-for a DAC profile that declares an outputd-owned active lane wide enough for the
-assigned outputs. Subwoofer add-ons count as real assigned DAC outputs; a layout
-that uses the next free output needs one more lane, and a sparse assignment needs
-lanes up to the highest assigned output.
-Saving a speaker-layout draft is a complete topology JSON
-replacement and only runs backend validation; it does not play sound or apply a
-DSP graph. It does start `jasper-audio-hardware-reconcile` (fire-and-forget,
-best-effort, never failing the save) so the runtime converges toward the newly
-declared intent instead of drifting until the next boot. That convergence is
-real: on a live box running a commissioned active graph, an edit that
-invalidates that graph flips the reconciler's gate from active to passive and
-bounces outputd, so output parks until the layout is re-commissioned or
-reverted. The household sees that on the Status dashboard, not here: the parked
-sentence has one writer (`_parked_signal` in
-[`jasper/control/audio_health.py`](../jasper/control/audio_health.py)) and the
-dashboard renders it as the Audio card at the top of `/system/` and in the
-current-stream card on `/system/audio/`. `/sound/setup/` itself carries no
-parked banner. A brief parked flash during the post-save reconcile window is
-possible and self-clears.
-The same payload carries a clock-domain report that records
-the current single final-output device assumption; aggregating multiple USB DACs
-is explicitly not enabled for product active-crossover playback yet. The
-confirm-outputs card shows a top-down speaker stack visual plus flat **DAC
-output assignments**. Each driver row has a channel selector; if there are
-exactly two physical outputs and two drivers in the group, choosing one output
-auto-fills the peer driver with the remaining output. Larger output sets
-require explicit unique choices. Saving the draft reruns backend validation,
-and the backend still rejects duplicate or missing physical-channel
-assignments. Each assigned driver row can also run a guarded quiet **Play**
-audition through the normal commissioning ramp in identity-audition mode. That
-mode lets the operator hear the physical driver before channel identity is
-confirmed, but it still requires the saved topology, staged protected config,
-software guards, path-safety evidence, calibration floor, Stop/session control,
-and CamillaDSP rollback gates. Marking or clearing identity evidence stores
-operator-confirmed physical channel identity in the topology contract; it is
-not playback permission and it does not satisfy tweeter protection or later
-path-safety blockers by itself.
-The bottom **Reset speaker setup** action is a recovery control. It stops any
-active-speaker tone/session, resets `/var/lib/jasper/output_topology.json` to an
-unconfigured zero-group draft, kicks audio-hardware reconcile, and clears the
-active-speaker setup/evidence JSON artifacts so stale staged configs,
-measurements, or baseline candidates cannot masquerade as current after the
-topology reset. Detected hardware is retained only as metadata. Reset does not
-infer passive intent, emit sound, or delete generated CamillaDSP YAML; audio
-stays parked until the household explicitly saves a layout.
-The component card stores a versioned working draft per physical output. Its
-default flow starts with one compact card for every independently amplified
-driver. Each card asks for make/model plus the physical choice the research
-assistant cannot infer: low-frequency drivers expose enclosure/acoustic loading,
-tweeters expose their topology-owned exact driver/loading type, and every driver
-can declare an optional in-line L-pad or resistor. One optional **Build notes**
-field follows the complete component list and captures any shared enclosure,
-passive-radiator, amplifier, mounting, or other whole-speaker context. There are
-no per-driver free-text configuration boxes. These values use the existing
-`manual_settings.drivers` owners except tweeter `driver_style`, which uses the
-existing `SpeakerChannel` owner and auto-saves through the output-topology
-writer. The page does not maintain a second component store. A passive
-one-driver layout receives a research-only physical target through
-`driver_research_targets`; measurement and commissioning remain restricted to
-independently amplified active drivers.
-
-After the component cards and Build notes, **Copy prompt** asks the server to generate one
-exact, fingerprinted request from the current topology, per-output models,
-visible safety context, cabinet facts, and build notes. The copied text embeds a
-compact *projection* of that request — target identities, models, driver style,
-and operator-declared context — not the whole object; the hardware inventory and
-physical output labels are server bookkeeping an assistant cannot use. It asks
-for exactly one fenced `json` block back, and asks only for fields something
-downstream reads (the parser still accepts the wider v2 schema, so a more
-verbose reply is not rejected). The operator pastes the assistant's reply —
-fence markers and surrounding prose are tolerated — and selects
-**Load information**. A compact proposed-crossover
-summary appears before a single collapsed **Advanced** editor. Advanced groups
-driver specifications, hard never-test-beyond frequency edges, the narrower
-measurement band, required high/low-pass cutoff and
-slope, cabinet geometry, level/duration limits, trim, crossover candidates,
-provenance, and unknowns. All editable values and research evidence are rendered
-as labeled sections directly inside Advanced; it contains no second-level
-disclosures.
-
-**Saving the declaration is declaring it — there is no confirm step.** Every
-save of the driver details stamps the safety profile over the values it just
-wrote, so an ordinary edit can no longer leave the speaker unmeasurable waiting
-on a second human click. That ceremony was retired because the crossover-accept
-seam could not perform it: accepting a measured crossover writes the Sound
-declaration itself, which rotated the fingerprint, cleared the confirmation, and
-then refused the very measurement loop that produced the value.
-
-What still refuses every crossover measurement is a declaration JTS cannot use —
-`incomplete` (blocking issues in the declared values), `stale` (the outputs
-moved underneath it), or `malformed` — and each needs a different edit before a
-save can succeed. Whenever
-`driver_safety_profile_evaluation.confirmed_and_current` is not `true`, the
-component card hoists a **Review the safety limits** callout to top level, above
-the component list, naming which state it is in and what to change (issue
-#1820). It carries no action button: the remedy is an edit plus the card's
-ordinary Save. Its DOM id, `confirm-safety-limits`, is the deep-link target the
-measurement wizard's `program_profile_not_confirmed` hard stop points at
-(`/sound/setup/#confirm-safety-limits`); the page opens the owning setup step
-and scrolls the callout into view rather than relying on fragment behaviour.
-
-The research prompt treats operator-declared physical installation choices as
-authoritative. The browser import boundary also refuses to replace enclosure
-kind, the topology-owned tweeter type, an explicit product-technology
-`driver_class`, or an operator-declared resistor pad; research can still fill
-missing product and safety values. Legacy per-driver `notes` values remain
-readable in the design/safety record but are not sent as invisible prompt
-context; the visible Build notes field is the only free-text build context.
-On load, an older v2 request/result fingerprint that included that hidden text
-is demoted while its normalized manual values and safety profile are preserved,
-so the next save cannot fail against an obsolete prompt contract. The bounded
-v2 response must echo that request and every physical target; additions,
-removals, or edits to the current request context make old research stale.
-Imported research remains
-advisory: it prefills visible fields and preserves bounded provenance/unknowns
-for review, while operator-edited targets stop displaying stale provenance. A
-routed local subwoofer remains owned by the subwoofer card's bass-management
-corner and is not required research for the active-main preview. The optional
-whole-speaker Build notes field is capped at 1000 characters. Research-produced
-per-driver safety summaries remain capped at 2048 characters; full reports
-belong outside the draft.
-Nothing in this flow applies filters, reloads CamillaDSP, or authorizes sound.
-Every save records the declaration time on the profile it just froze; a visible
-safety edit or topology change rotates the fingerprint and the next save
-re-freezes over it, and none of it grants playback authority. Saves use an
-optimistic revision. If another tab wins, the browser keeps local unsaved
-edits, adopts the fresh server revision, and asks the operator to review and
-save again instead of silently replacing their work.
-Choosing an active driver in **Confirm outputs** calls the commission
-route family: `commission-load`, `commission-ramp-step`,
-`commission-ramp-ack`, and `commission-ramp-abort`. The browser does not expose
-the protected staging/load/arm implementation steps as separate buttons or
-status grids. The saved topology does not make
-`outputd_active_content_playback` an audible test writer: that name is a
-daemon-owned CamillaDSP/outputd lane (its aloop PCM definition was deleted
-at P9-C — an armed roleful box now uses the ACTIVE ring instead — but the
-ban holds regardless, since the name still resolves in code and a
-rolled-back box still names it). Tweeter/high-frequency targets are not
-horn-specific: the backend auto-records a
-software-guarded bring-up request when no physical protection evidence is
-present, and the shared driver-test signal policy still enforces
-role-specific frequency caps and high-pass guards before the protected
-commission ramp can make a driver audible.
-
-Lower-level diagnostics still exist for tests and operator debugging:
-`/sound/active-speaker/commissioning-view` composes a no-audio setup
-view model from durable evidence, `/sound/active-speaker/stage-config` stages the
-protected startup candidate, `/sound/active-speaker/check-path-safety` writes
-the path-safety evidence, and `/sound/active-speaker/load-startup-config` loads
-the protected graph. The normal product UI does not require a user to understand
-or click those controls.
-The same walkthrough then opens **Validate and apply**. That card first runs a
-spoken combined-speaker test through
-`/sound/active-speaker/summed-test`; while that request is preparing/playing,
-the same CTA moves through **Preparing** into a red **Stop** state backed by
-`/sound/active-speaker/summed-test/stop`. The combined-test card has its own
-bounded test-level slider so low-sensitivity drivers can be raised from the safe
-floor without changing normal listening volume; while the loop is playing, the
-slider posts live level changes to `/sound/active-speaker/summed-test/level`.
-The backend reloads the protected all-drivers-live graph at the requested level
-only after CamillaDSP accepts the new graph, clamps absolute min/max bounds, and
-leaves the active loop metadata unchanged if the reload fails. **`duration_ms`
-is how long the test plays, and the request returns when it has.** The
-`start_combined_test` action the commissioning coordinator publishes carries
-`duration_ms: 12000`, so a client that replays that action — the browser, or an
-LLM driving the box over raw HTTP — gets a play that ends itself and a
-**completed** test whose record is `captured`. One connection is enough: the
-same client can POST the validation next without racing
-`active_summed_test_running`. Omitting `duration_ms` keeps the open-ended loop,
-which then continues until the operator stops it, presses **Sounds right**, or
-the backend watchdog expires it. Stopping early is still an incomplete test
-either way — a bounded play only removes the need for a second connection, it
-does not decide whether the crossover blends. The summed crossover validation
-POST at
-`/sound/active-speaker/summed-validation` must reference the latest audible
-combined-test record for that group: artifact-only, stale, stopped-before-audio,
-or watchdog-expired records cannot unlock the active profile. For the current
-product flow, an explicit operator listening result (`operator_listening_check`)
-can validate **Sounds right** when no browser microphone reading is captured.
-The `/sound/setup/` core flow no longer offers a phone-mic capture button;
-microphone-based level and delay work belongs in the HTTPS
-measurement/correction experience. After summed validation,
-`/sound/active-speaker/baseline-profile` compiles the saved topology, visible
-crossover settings, fresh crossover preview, driver-check evidence, and summed
-validation into
-`/var/lib/camilladsp/configs/active_speaker_baseline.yml` plus
-`/var/lib/jasper/active_speaker_baseline_profile.json`. Compile is still
-no-audio and does not load CamillaDSP. The UI exposes one final intent,
-**Save and apply**, through
-`/sound/active-speaker/baseline-profile/save-and-apply`. That backend-owned
-operation compiles, validates hardware apply support, applies through the shared
-DSP handoff, and reports one result. The product handoff is currently enabled
-only for the outputd-owned active output lane; unsupported hardware paths show
-clear apply-blocked copy and do not expose a fake save CTA that cannot make the
-profile active. After apply succeeds the UI can truthfully say this is now the
-active speaker profile.
-The guarded startup substrate still persists readable evidence at
-`/var/lib/jasper/active_speaker_staged_config.json` and
-`active_speaker_path_safety.json`. The loader treats saved path-safety evidence
-as stale if the topology, staged candidate, or rollback config path/hash changes
-after the check. A normal bounded JTS stereo profile can be the first-run
-rollback target because the staged muted/protected candidate owns driver
-protection before any tone can play; missing rollback files, unreadable rollback
-files, unknown/custom DSP, or rollback configs with unsafe positive gain still
-fail closed.
-The active-speaker runtime substrate starts in
-`jasper.active_speaker`, the physical topology substrate starts in
-`jasper.output_topology`, and the canonical safety/design plan lives in
-[`HANDOFF-active-speaker-dsp.md`](HANDOFF-active-speaker-dsp.md).
-The next `/sound/setup/` slice should exercise the lab-gated quiet woofer/mid path on
-hardware, then use the same driver-aware microphone loop for a protected
-high-frequency target.
-
-## Files
-
-- `jasper/active_speaker/` — import-cheap active-speaker preset,
-  channel-map, safety-envelope, baseline-profile schemas, and
-muted/protected startup-template YAML emission plus read-only
-environment reporting, safe-playback session state, preset-derived no-audio
-tone vocabulary, summed-crossover tone planning, bounded artifact rendering,
-an explicitly lab-gated `aplay` backend, and protected startup-config staging
-for the Epique/F110M mono cabinet. Per-driver product tests are owned by the
-protected commission ramp and shared driver-test signal policy; the obsolete
-readiness report and standalone per-driver topology planner are removed.
-Current scope is validation/template generation and
-status/session/plan/artifact/staging bookkeeping plus optional lab channel
-tests and a guarded startup-config load/rollback boundary. The staging writer
-is still no-load; only the startup-load route may reload the protected graph,
-and it still does not emit audio or authorize playback.
-- `jasper/output_topology.py` — import-cheap physical-output topology
-  contract for DAC lanes, speaker groups, passive/active modes, subwoofers,
-  identity verification, and tweeter-protection evidence. Current scope is
-  JSON load/save/evaluate plus the `/sound/setup/` Active crossover setup UI; it has no audio
-  side effects, hardware loading, or sound-emitting playback.
-- `jasper/sound/profile.py` — import-cheap persisted contract:
-  `SoundProfile`, stock curves, simple EQ, bounded parametric bands,
-  preview response, expanded-band overlays, the peak-boost `estimate_headroom_db`
-  metric, and `loudness_compensation_db` (the loudness-weighted gain the
-  opt-in match-loudness setting applies).
-- `jasper/sound/settings.py` — import-cheap global output settings
-  (`SoundSettings`: `headroom_trim_db`, `match_loudness`,
-  `volume_floor_db`) persisted to `/var/lib/jasper/sound_settings.json`,
-  fail-soft to the do-nothing defaults. The file is `0640` and inherits the
-  parent `jasper` group so non-root `jasper-control` uses the same calibrated
-  floor as the `/sound/setup/` wizard.
-- `jasper/sound/camilla_yaml.py` — CamillaDSP YAML emitter and
-  generated-config inspector. It must stay import-cheap; do not import
-  NumPy/SciPy here.
-- `jasper/dsp_apply.py` — import-cheap shared DSP apply substrate:
-  typed CamillaDSP validation, config reload, rollback, bounded
-  cancellation-safe writer-lock admission with a required feature identity,
-  compact last-result persistence, and the durable DSP write epoch used
-  to fence stale live updates.
-- `jasper/sound/runtime.py` — shared durable sound-profile runtime:
-  render/load/confirm/persist for `/sound/apply` + `/sound/audition`,
-  plus deploy/startup reconciliation of the generated current DSP cache
-  from saved sound intent.
-- `jasper/cli/sound.py` — operator/deploy CLI (`jasper-sound
-  reconcile-current-dsp`) for bounded, fail-open refresh of the currently
-  loaded JTS-owned sound graph after render semantics change.
-- `jasper/web/sound_setup.py` — `/eq/` and `/sound/setup/` page modes plus
-  `/state`, `/preview`, `/live-draft`, `/audition`, `/apply`, and `/settings`;
-  nginx selects the renderer mode and the server hands it to the existing
-  static module through the small `sound-page-data` JSON island. Durable apply
-  routes delegate to `jasper.sound.runtime`.
-- `jasper/camilla.py` — lazy pyCamillaDSP wrapper. Besides the durable
-  config-file loader, it owns the active-config upload/patch escape
-  hatches used by live audition surfaces so raw Camilla command names do
-  not leak into product code.
-- `jasper/camilla_config_contract.py` — shared import-cheap CamillaDSP
-  defaults and `PeqFilter` type used by generated config emitters.
-- `jasper/correction/session.py` — correction apply now emits through
-  the combined config path so a saved sound profile survives new room
-  correction applies.
-- `jasper/cli/doctor.py` and `jasper/control/server.py` — observability
-  surfaces for profile/config drift and current sound state.
-
-## Config Ownership
-
-CamillaDSP has one active config path, so composition is load-bearing.
-Do not add another writer that emits directly to CamillaDSP without
-going through the same room-plus-preference ordering. `/sound/live-draft`
-is the narrow exception: it emits the same combined room-plus-preference
-config shape as the durable path, but uploads it as an active config
-only. It must not persist profile state, write `sound_current.yml`,
-change the config file path, or bypass the same known-config guard. It
-still enters the shared DSP writer lock and checks the durable write
-epoch before touching audio.
-
-The generated saved sound filename is stable:
+CamillaDSP has one active config path, so composition is load-bearing. **Do not
+add another writer that emits directly to CamillaDSP without going through the
+same room-plus-preference ordering.** `/sound/live-draft` is the narrow
+exception: it emits the same combined shape but uploads it as an active config
+only, still entering the shared writer lock and checking the durable write epoch
+first.
 
 ```text
-/var/lib/camilladsp/configs/sound_current.yml
+/var/lib/jasper/sound_profile.json      # what preference profile is applied
+/var/lib/jasper/sound_profiles.json     # named custom profiles, draft templates
+/var/lib/jasper/sound_settings.json     # the three global output settings
+/var/lib/camilladsp/configs/sound_current.yml    # generated saved render
+/var/lib/camilladsp/configs/sound_audition.yml   # generated unsaved preview
 ```
 
-The generated unsaved audition filename is stable:
-
-```text
-/var/lib/camilladsp/configs/sound_audition.yml
-```
-
-The generated YAML is a cache, not the source of truth. Saved intent lives in
-`/var/lib/jasper/sound_profile.json` plus
-`/var/lib/jasper/sound_settings.json`. Deploy/startup may run
-`jasper-sound reconcile-current-dsp` after outputd/Camilla are ready to
-re-render a currently-loaded `sound_current.yml` from that saved intent, so
-fixes to the emitter take effect deliberately instead of waiting for a user to
-visit `/eq/`. The command is fail-open and bounded by install.sh; it skips
-unknown/custom graphs, non-hostable protected graphs, flat no-op profiles, and
-`sound_audition.yml` (an unsaved preview must not be promoted or rewritten by
-deploy).
-
-`sound_current.yml` is the canonical generated preference/correction render,
-not the config CamillaDSP is necessarily running; `/sound` saves and authorized
-topology convergence may replace it under the
-[saved-intent materialization contract](HANDOFF-dsp-graph-carrier.md).
-An active-speaker crossover **v2 apply does not update it** (#1605): v2 points
-CamillaDSP at a source-fingerprinted
-`active_speaker_baseline_candidate_<fp>.yml` and owns its own Layer-A SSOT
-(`active_speaker_baseline_profile.json`), so the two can legitimately diverge.
-Runtime truth is always whatever CamillaDSP's statefile reports, never a fixed
-filename.
+**The generated YAML is a cache, not the source of truth** — saved intent is the
+JSON, and `jasper-sound reconcile-current-dsp` re-renders from it at
+deploy/startup (below). `sound_current.yml` is the canonical generated render but
+**not necessarily the config CamillaDSP is running**: an active-speaker crossover
+v2 apply does not update it (#1605), pointing CamillaDSP at a
+source-fingerprinted `active_speaker_baseline_candidate_<fp>.yml` and owning its
+own Layer-A SSOT, so the two legitimately diverge. **Runtime truth is always
+whatever CamillaDSP's statefile reports, never a fixed filename.**
 
 `/sound/apply`, `/sound/audition`, and `/sound/live-draft` route the loaded
 config through the **graph carrier**
 ([HANDOFF-dsp-graph-carrier.md](HANDOFF-dsp-graph-carrier.md)), which preserves
-room PEQs from the configs it can host:
-
-- `/etc/camilladsp/outputd-cutover.yml` → no room PEQs.
-- `/var/lib/camilladsp/configs/correction_<session>_<ts>.yml` → extract
-  room PEQs.
-- `/var/lib/camilladsp/configs/sound_current.yml` → extract room PEQs.
-- `/var/lib/camilladsp/configs/sound_audition.yml` → extract room PEQs.
-- `/var/lib/camilladsp/configs/grouping_active_leader_bake.yml` → active-leader
-  program bake; extract room PEQs, but only while grouping state still resolves
-  to `File` → Snapcast FIFO with `enable_rate_adjust=false`.
-- A JTS-generated `sound_current.yml` whose content still proves `File` →
-  Snapcast FIFO is also routed through the program-bake carrier, but only as a
-  stale-marker recovery under a readable protected-tweeter topology. Generic
-  pipe configs such as passive `grouping_leader.yml` remain ordinary
-  sound/correction configs and are not re-stamped as active program bakes.
-
-Anything the carrier cannot host fails **closed** with a typed reason rather
-than being silently overwritten. An active-speaker crossover graph is
-recognized (by the same structural signal the runtime safety classifier
-uses — re-emitting it through the stereo template would drop the
-crossover/limiter/protective-HP) and refused with
-`reason_code="eq_on_active_not_wired"` unless it is a solo active baseline that
-can be recomposed through the active emitter. A program bake whose grouping
+room PEQs from the configs it can host. Anything it cannot host fails **closed**
+with a typed reason rather than being silently overwritten: an active-speaker
+crossover graph refuses with `eq_on_active_not_wired` unless it is a solo active
+baseline recomposable through the active emitter; a program bake whose grouping
 state no longer resolves to the pipe sink refuses with
-`program_bake_pipe_unavailable`; any other unrecognized config refuses with
-`unknown_config`. The refusal returns as an HTTP 200
-`{status:"blocked", reason_code, message}` body so the wizard renders an
-honest hint instead of a 502. See the design-of-record for the dispatcher and
-the program/driver-domain boundary.
+`program_bake_pipe_unavailable`; anything else, `unknown_config`. The refusal
+returns HTTP 200 `{status:"blocked", reason_code, message}` so the wizard renders
+an honest hint instead of a 502.
 
-The applied profile and named profile library are intentionally separate
-files:
+## Apply semantics
 
-```text
-/var/lib/jasper/sound_profile.json
-/var/lib/jasper/sound_profiles.json
-```
+Every route that reads the active config does so with `best_effort=False` and
+rejects unknown/custom graphs. `/sound/preview` touches neither CamillaDSP nor
+disk; `/sound/profiles/{save,rename,delete}` mutate only `sound_profiles.json`.
 
-`sound_profile.json` answers "what preference profile is currently
-applied?" `sound_profiles.json` answers "which named custom profiles can
-the user load as a draft?" This separation keeps Bypass / Applied /
-Draft and future AI proposals simple.
+`/sound/live-draft` requires the posted `dsp_write_epoch` from the latest
+`/sound/state`, enters the shared writer lock, **skips as stale if the durable
+epoch changed**, and uploads a combined config built in memory via
+`set_active_config_raw` — writing no file, changing no config path, mutating no
+apply state, persisting no profile. If upload is unavailable or CamillaDSP
+rejects it, it returns `live_status=unavailable` **without reloading anything**;
+explicit compare buttons remain the safe reload path.
 
-The primary user flow is: pick Off / a Saved profile, or open Draft to
-tune Simple or PEQ controls and Save. Library operations (Save as new,
-Overwrite, Rename, Delete) live on the Saved rows and in the Draft
-footer rather than a separate menu.
+`/sound/audition` emits `sound_audition.yml` atomically inside the apply lock,
+validates, loads, confirms, and rolls back on failure — without persisting
+`sound_profile.json`. The UI no longer drives it, but it is retained deliberately
+as the validated-preview surface for propose-preview-approve helper flows, which
+`jasper.calibration_agent.sound_actions` opts into.
 
-The page is built on the **canonical design system**: shared tokens,
-fonts, and component primitives live in `deploy/assets/app.css` (served
-static by nginx, linked via `jasper.web._common.canonical_page`). Sound-specific
-component styles live in the shared
-`deploy/assets/sound-profile/sound.css` asset; both `/eq/` and
-`/sound/setup/` link that same stylesheet through `canonical_page`. The
-original combined Sound page was the first wizard on this system; see AGENTS.md
-"Canonical design system" for the convention other wizards follow.
+`/sound/apply` ("Save to Speaker") emits `sound_current.yml` atomically inside
+the lock, runs `camilladsp --check` when available, loads through the websocket,
+confirms the active path, rolls back on failure, and **persists
+`sound_profile.json` only after a successful reload and confirmation**.
+`/sound/settings` shares **one module-local Sound-state transaction** with
+`/sound/apply`, so their durable writes and DSP emits cannot interleave and each
+fresh-reads what it needs inside it. Settings Save holds the boundary through
+source-aware volume reconciliation, then re-emits the active profile through the
+same durable runtime and asks the volume coordinator to re-apply
+`listening_level` when the active source is Camilla-master — so a saved floor
+affects the current source without unguarding push-mode handoffs. **The settings
+are saved before the re-apply**, so a failed reload still sticks.
 
-## Apply Semantics
+`jasper-sound reconcile-current-dsp` runs the same lock and transaction so
+emitter fixes take effect at deploy rather than waiting for someone to visit
+`/eq/`. It skips unknown/custom graphs, non-hostable protected graphs, flat
+no-op profiles, and `sound_audition.yml`, and three of its behaviours are worth
+knowing. **When the daemon is unreachable it falls back once to CamillaDSP's
+statefile** — the config the daemon opens next start — and carries the whole
+pass over that disk transport, naming the reader in its result line. That is a
+transport fallback, never a graph choice: the carrier still comes from the
+config the statefile names, so a roleful box re-emits its own roleful graph. (A
+`CamillaConfigRejected` is a daemon that answered and refused, not an absent one,
+and still raises.) **"Unchanged" compares saved intent against the config
+CamillaDSP is running**, whatever it is named — which lets a kept
+active-crossover candidate stay the running config across a deploy, since
+writing identical bytes under a second filename would move only the NAME and
+cost a measurement round its entry-graph identity (#2572). **And on a roleful
+box it re-emits through the playback endpoint the box is LIVE on**, not the one
+its applied snapshot recorded, so a deploy cannot return an ACTIVE-ring-armed
+speaker to the snd-aloop lane (endpoint derivation:
+[HANDOFF-audio-graph-consolidation.md](HANDOFF-audio-graph-consolidation.md)).
 
-`/sound/preview`:
-
-1. Parses and clamps the posted `SoundProfile`.
-2. Returns total and per-component response previews — real RBJ biquad
-   magnitude at 48 kHz, matching CamillaDSP's output (shelves are drawn
-   at the fixed Butterworth `SHELF_Q`, which is the `q` the emitter
-   writes — see "Shelf steepness").
-3. Does not touch CamillaDSP or disk.
-
-`/sound/profiles/save`, `/sound/profiles/rename`, and
-`/sound/profiles/delete`:
-
-1. Require the shared JSON CSRF header.
-2. Mutate only `/var/lib/jasper/sound_profiles.json`.
-3. Never load a CamillaDSP config and never change
-   `/var/lib/jasper/sound_profile.json`.
-4. Stamp custom profiles with their library identity metadata.
-5. Return the refreshed profile-library payload for the UI picker.
-
-`/sound/live-draft`:
-
-1. Parses and clamps the posted Draft `SoundProfile`.
-2. Computes the draft's output trim from the global sound settings (manual
-   headroom + loudness compensation when match-loudness is on; 0 by default,
-   so boosts apply at unity).
-3. Requires the posted `dsp_write_epoch` from the latest `/sound/state`.
-4. Enters the shared DSP writer lock.
-5. Skips the request as stale if the durable DSP write epoch changed.
-6. Reads the active CamillaDSP config path with `best_effort=False`.
-7. Rejects unknown/custom active configs.
-8. Extracts room PEQs from known JTS-generated configs.
-9. Emits a generated combined config in memory.
-10. Uploads that YAML through `CamillaController.set_active_config_raw`.
-11. Does **not** write `sound_audition.yml`, change the Camilla config
-   file path, mutate `/var/lib/jasper/dsp_apply_state.json`, or persist
-   `/var/lib/jasper/sound_profile.json`.
-12. Returns `live_status=unavailable` without reloading a config when the
-    controller does not expose active-config upload or CamillaDSP rejects
-    the live upload; explicit compare buttons remain the safe reload path.
-
-`/sound/audition`:
-
-1. Parses and clamps the posted draft/bypass `SoundProfile`.
-2. Computes the output trim from the global sound settings (same opt-in
-   headroom + match-loudness as the live-draft path; 0 by default).
-3. Reads the active CamillaDSP config path with `best_effort=False`.
-4. Rejects unknown/custom active configs.
-5. Emits `sound_audition.yml` atomically inside the DSP apply lock.
-6. Runs CamillaDSP validation when available.
-7. Loads the config through the CamillaDSP websocket.
-8. Confirms the active config path when CamillaDSP is reachable.
-9. Rolls back to the prior config path if reload/confirm fails.
-10. Does **not** persist `/var/lib/jasper/sound_profile.json`.
-
-`/sound/settings`:
-
-1. Requires the shared JSON CSRF header (route-checked before CSRF).
-2. Shares one module-local Sound-state transaction with `/sound/apply`.
-   Profile Apply fresh-reads saved settings inside it; Settings Save fresh-reads
-   the aggregate settings and saved profile. Their durable writes and DSP emits
-   cannot interleave, and Settings Save also holds the boundary through
-   source-aware volume reconciliation.
-3. Captures a coherent settings/profile/last-apply snapshot before release.
-   Response-only preview, curve, and profile-library rendering happens outside
-   the transaction from that snapshot.
-4. Filters to the three recognized aggregate fields (`headroom_trim_db`,
-   `match_loudness`, `volume_floor_db`), merges only the posted fields, clamps,
-   and durably saves the one `SoundSettings` file. This is the narrow split-page
-   lost-update guard; there is no second settings file.
-5. Re-emits the active saved profile through the same durable DSP runtime as
-   `/sound/apply`, so the new output trim takes effect immediately and persists
-   in `sound_current.yml`.
-6. Asks the source-aware volume coordinator to re-apply the current
-   `listening_level` to Camilla when the active source is Camilla-master, so a
-   saved `volume_floor_db` affects the current source without unguarding
-   Spotify/Bluetooth push-mode handoffs.
-7. Saves the settings **before** the re-apply/reconcile, so a failed DSP
-   reload or volume reconcile still sticks and takes effect on the next apply
-   or volume change.
-
-`/sound/volume-floor/audition`:
-
-1. Requires the shared JSON CSRF header (route-checked before CSRF).
-2. Merges the proposed `volume_floor_db` with the currently saved
-   `SoundSettings` without persisting it.
-3. Starts or updates a continuous 1 kHz calibration tone through
-   `correction_substream`, sets CamillaDSP `main_volume` to the proposed 1%
-   floor, and unmutes while the tone is active.
-4. Preserves the pre-tone Camilla volume/mute state for restore. If the user
-   was muted, restore mutes first and then puts the previous dB value back
-   underneath the mute.
-
-`/sound/volume-floor/stop`:
-
-1. Requires the shared JSON CSRF header (route-checked before CSRF).
-2. Stops the continuous floor-calibration tone and restores the pre-tone
-   Camilla volume/mute state. The browser calls this from the Stop button and
-   best-effort on `pagehide`; the backend also bounds tone playback with a
-   safety timeout.
-
-`/sound/apply` (`Save to Speaker` in the UI):
-
-1. Reads the active CamillaDSP config path with `best_effort=False`.
-2. Rejects unknown/custom active configs.
-3. Enters the shared sound runtime (`jasper.sound.runtime.load_profile_config`)
-   and DSP apply path (`jasper/dsp_apply.py`).
-4. Emits `sound_current.yml` atomically inside the DSP apply lock.
-5. Runs `camilladsp --check <config>` when the binary is available.
-   The config file is positional; `--check` is the validation flag.
-6. Loads the config through the CamillaDSP websocket.
-7. Confirms the active config path when CamillaDSP is reachable.
-8. Rolls back to the prior config path if reload/confirm/persist fails.
-9. Persists `/var/lib/jasper/sound_profile.json` only after a successful
-   reload and confirmation.
-
-`jasper-sound reconcile-current-dsp` (deploy/startup repair path):
-
-1. Loads the saved `SoundProfile` and `SoundSettings`.
-2. Enters the same DSP writer lock used by the Sound and correction mutation
-   paths.
-3. Reads the active CamillaDSP config path with `best_effort=False`. When the
-   daemon is unreachable, it falls back ONCE to CamillaDSP's statefile — the
-   config the daemon opens on its next start — and carries the rest of the pass
-   (dry run, apply, rollback, confirm) over that disk transport instead of
-   aborting. The result line names which reader answered as
-   `transport=websocket` or `transport=statefile`. This is a transport
-   fallback, never a graph choice: the carrier still comes from the config the
-   statefile already names, so a roleful box re-emits its own roleful graph and
-   graph SELECTION stays `jasper.active_speaker.runtime_contract`'s job (#2664).
-   A `CamillaConfigRejected` — a daemon that answered and refused the content —
-   is not an absent daemon and still raises.
-4. Skips `sound_audition.yml` so an unsaved preview stays reversible.
-5. Skips unknown/custom/non-hostable graphs with a structured reason instead
-   of overwriting them.
-6. Skips unchanged or flat no-op current graphs. "Unchanged" compares the saved
-   intent against the config CamillaDSP is **running**, whatever that config is
-   named — not only against `sound_current.yml`. This is what lets a kept
-   active-crossover candidate
-   (`active_speaker_baseline_candidate_<hash>.yml`) stay the running config
-   across a deploy: the active carrier recomposes it from the immutable applied
-   record, so the bytes are identical and there is nothing to refresh. Writing
-   them under a second filename would move only the NAME, which is enough to
-   displace the applied-profile record from the statefile and cost a
-   measurement round its entry-graph identity (#2572).
-7. Re-emits `sound_current.yml` through the same validation/reload/rollback
-   transaction as `/sound/apply`, but does not persist profile JSON.
-8. On a roleful (active-crossover) box, re-emits through the playback endpoint
-   the box is LIVE on rather than the one its immutable applied snapshot
-   recorded, so a deploy cannot return an ACTIVE-ring-armed speaker to the
-   snd-aloop lane. The endpoint derivation and why the graph outranks the
-   reconciler's marker live in
-   [HANDOFF-audio-graph-consolidation.md](HANDOFF-audio-graph-consolidation.md)
-   ("The ACTIVE-ring arm/rollback lifecycle").
-9. install.sh runs the CLI fail-open under an outer process timeout; a failed
-   reconcile leaves the current graph in place and does not gate install. Read
-   "legal" narrowly there: the statefile pointer is proved legal for the saved
-   TOPOLOGY, and that proof does not cover sample format
-   (`classify_camilla_config_text` reads playback device, channels, and
-   volume limit — never the format). A graph can therefore be legal and still
-   un-openable, which is what killed jts4 on 2026-08-17 when a width flip
-   stopped CamillaDSP before this pass and the pass then aborted on the refused
-   websocket. Step 3's statefile fallback is what closes that; a fail-open
-   reconcile is a degraded outcome to investigate, not a safe one.
-
-Normal topology convergence uses the same saved-intent render boundary without
-running the reconcile transaction: after an explicit passive layout authorizes
-the flat carrier, `materialise_saved_dsp_on_carrier` composes the saved profile,
-saved headroom trim, and compatible room PEQs into atomic `sound_current.yml`.
-The surrounding topology transaction owns graph locking, re-proof, and load.
-Reset does not enter this path: it commits zero speaker groups and stays parked.
-Any future passive-speaker linearization would join this composition only after
-explicit passive authorization; it is not an active crossover and must not
-grant flat-graph authority itself. The detailed contract lives in the
-[speaker-output reference](HANDOFF-speaker-output-reference.md#current-outputd-state).
-
-`/correction/apply`:
-
-1. Designs room PEQs from the measurement session.
-2. Loads the saved `SoundProfile`.
-3. Uses the same shared DSP apply path as `/sound/apply`, including
-   locked YAML emission, validation, reload, rollback, and last-result
-   persistence.
-4. Emits a combined config to the correction filename so current
-   correction status still works.
+**Read its "fail-open" narrowly.** install.sh runs it under an outer timeout and
+a failure leaves the current graph in place — but the statefile pointer is proved
+legal only for the saved TOPOLOGY (the classifier reads playback device,
+channels, and volume limit, never the sample format), so a graph can be legal and
+still un-openable. That is what killed jts4 on 2026-08-17. **A fail-open
+reconcile is a degraded outcome to investigate, not a safe one.**
+`/correction/apply` designs room PEQs, loads the saved profile, uses the same
+shared apply path, and emits a combined config to the correction filename.
 
 ## Observability
 
-`jasper-doctor` includes:
+`jasper-doctor` reports **current correction**, **sound profile** (saved profile,
+filter count, estimated headroom, the global settings, the effective trim, and a
+warning when a saved active profile is not reflected in a generated active
+config), and **DSP apply state** — where a rollback failure is a doctor failure.
+Live Draft deliberately writes no apply state, so it is observed through
+`event=sound.live_draft` and the `/eq/` status line instead, with
+live-unavailable warnings rate-limited so a broken environment cannot spam the
+journal while a slider is dragged.
 
-- `current correction` — recognizes correction configs plus
-  `sound_current.yml` / `sound_audition.yml` when room PEQs are present.
-- `sound profile` — reports saved profile, filter count, estimated
-  headroom, the global match-loudness / headroom settings, the effective
-  output trim, and warns when a saved active profile is not reflected in a
-  generated active config.
-- `DSP apply state` — reports the most recent DSP config apply result
-  from `/var/lib/jasper/dsp_apply_state.json`; rollback failure is a
-  doctor failure.
+**Deploy/startup reconciliation is the first place to look when a deploy did or
+did not refresh the audible profile.** It emits
+`event=sound.reconcile_current_dsp` for every outcome — `reconciled`,
+`unchanged reason=running_config_matches_intent`, or `skipped reason=<code>` —
+each carrying `transport=websocket` or `transport=statefile`, where a
+`statefile` line means CamillaDSP was down for that pass. The CLI's own
+fail-open `result=failed` line carries no `transport`, because no reader ever
+answered; `_print_reconcile` does not print the field either, so **read it in the
+journal, not the install transcript**. On the `unchanged` line, `current=` and
+`candidate=` differ exactly when a non-`sound_current.yml` graph was left in
+place.
 
-Live Draft updates intentionally do not write DSP apply state, so they
-are observed through `event=sound.live_draft` logs and the `/eq/`
-status line rather than doctor. Durable Save to Speaker remains the
-stateful operation doctor audits. Repeated live-unavailable warnings are
-rate-limited so a broken live-upload environment does not spam the
-journal while the user drags a slider.
-
-Deploy/startup reconciliation emits `event=sound.reconcile_current_dsp` for
-every outcome: `result=reconciled`,
-`result=unchanged reason=running_config_matches_intent`, or
-`result=skipped reason=<code>`. Every result line from the reconcile ITSELF also
-carries `transport=websocket` or `transport=statefile`, naming whether the
-running daemon or its statefile answered "which graph is loaded" — a `statefile`
-line means CamillaDSP was down for that pass. The CLI's own fail-open line
-(`result=failed`) has no `transport`: it is emitted by `jasper-sound` after the
-reconcile raised, so no reader ever answered. `_print_reconcile` does not print
-the field either, so read it in the journal rather than in the install
-transcript, which runs without `--json`. On the `unchanged` line, `current=` and
-`candidate=` name the running config and the file that was not written — they
-differ exactly when a non-`sound_current.yml` graph was deliberately left in
-place (see step 6 above). CLI fail-open failures emit the same event with
-`result=failed`, and install.sh prints the command output into the deploy
-transcript. This is the first place to look when a deploy did or did not refresh
-the audible sound profile.
-
-`/state` and `/sound/state` expose the saved sound profile plus the
-profile-library picker payload and latest DSP apply record. `/sound/state`
-additionally carries the global `sound_settings` and the effective
-`output_trim_db` for the current profile, so the page renders the
-match-loudness switch and headroom slider from server truth. The central
-`jasper-control` `/state.audio.sound` carries the same `match_loudness`,
-`headroom_trim_db`, and `output_trim_db` (and `jasper-doctor` prints them),
-so an operator can see why a profile sounds quieter or level-matched without
-opening the page. `/state` also includes the runtime Camilla config truth so
-dashboards do not confuse "profile desired" with "profile actually loaded":
-
-```json
-{
-  "audio": {
-    "sound": {
-      "enabled": true,
-      "curve_id": "flat",
-      "profile_id": "stock:flat",
-      "profile_name": "Flat",
-      "simple_eq": {"sub_bass_db": 0.0, "bass_db": 0.0, "mid_db": 0.0, "presence_db": 0.0, "treble_db": 0.0},
-      "parametric_band_count": 0,
-      "filter_count": 0,
-      "headroom_db": 0.0,
-      "updated_at": null,
-      "last_dsp_apply": {
-        "source": "sound",
-        "result": "success",
-        "active_config_path": "/var/lib/camilladsp/configs/sound_current.yml",
-        "candidate_config_path": "/var/lib/camilladsp/configs/sound_current.yml"
-      },
-      "runtime": {
-        "active_config_path": "/etc/camilladsp/outputd-cutover.yml",
-        "last_apply_config_path": "/var/lib/camilladsp/configs/sound_current.yml",
-        "matches_last_apply": false,
-        "state": "base",
-        "active": false,
-        "warning": "Desired sound profile is not the active CamillaDSP config."
-      },
-      "dsp_write_epoch": "<latest dsp apply op_id or none>"
-    }
-  }
-}
-```
-
-For `/state.audio.sound`, `enabled` remains the persisted preference.
-Use `runtime.active` / `runtime.state` to answer whether CamillaDSP is
-currently running the saved profile, the flat outputd base config, a
-custom config, or an unexpected mismatch.
-
-The correction status API also includes `last_dsp_apply` so a failed apply
-can be diagnosed without scraping journal logs.
+`/state.audio.sound` and `/sound/state` expose the saved profile, the library
+payload, and the latest apply record; `/sound/state` adds `sound_settings` and
+the effective `output_trim_db`, and `jasper-control` carries the same fields so
+an operator can see why a profile sounds quieter without opening the page.
+**`enabled` is the persisted preference; use `runtime.active` / `runtime.state`
+to answer whether CamillaDSP is actually running the saved profile**, the flat
+outputd base, a custom config, or a mismatch.
 
 ## Guardrails
 
-- Keep `/eq/` and `/sound/setup/` cheap to load. The combined `jasper-web`
+- Keep `/eq/` and `/sound/setup/` cheap to load: the combined `jasper-web`
   process must not import NumPy/SciPy on cold start or activate the correction
-  worker merely to render either page.
-- Keep `SoundSettings` aggregate. Split pages post only the fields they own;
-  `/sound/apply` and `/sound/settings` share one Sound-state transaction for
-  fresh reads, durable state, and DSP emit; Settings Save keeps volume
-  reconciliation inside it. Capture coherent snapshots before release, then
-  render response-only previews and library data outside the boundary.
-- Keep preference EQ bounded. The Simple EQ range is ±12 dB (matching
-  the slider UI; shared with the calibration advisor via
-  `SIMPLE_EQ_LIMIT_DB`) and advanced bands are capped. Boosts apply at
-  unity by default (no auto-preamp); only the opt-in output trim
-  (`headroom_trim_db` + match-loudness compensation) attenuates, and the
-  `devices.volume_limit: 0.0` ceiling stays the hard clip guard.
-- Do not merge room-correction target selection and preference EQ into
-  one opaque layer. They can share UI affordances later, but the DSP
-  contract must keep them distinct.
-- A/B bypass should toggle only preference EQ, not erase room
-  correction.
-- The graph is visualization only. The canonical editable state is the
-  bounded `SoundProfile` JSON model.
-- Simple and PEQ are exclusive modes; switching converts the draft
-  (PEQ → Simple snaps to the nearest slot; Simple → PEQ expands non-zero
-  bands). Older 3-band profiles still load, with Sub-bass / Presence
-  defaulting to 0 dB.
-- Named custom profiles are draft templates. Loading, renaming, saving,
-  or deleting one must not persist profile state unless the user saves to
-  the speaker. Editing or loading a draft may change live audio through
-  `/sound/live-draft`; that live draft remains intentionally non-durable.
-- Unsaved auditions must never persist profile state. They may leave
-  `sound_audition.yml` active until the user switches Bypass / Applied /
-  Draft or applies; that is expected and observable via the DSP apply
-  record. Deploy/startup reconcile must skip this path rather than
-  promoting it to `sound_current.yml`.
-- Live Draft must only touch the preference EQ layer of a known JTS
-  config. It must never change room PEQs, source routing, limiter,
-  crossover, or the `devices.volume_limit: 0.0` safety ceiling.
-- Live Draft requests must be coalesced client-side. Do not fire one
-  CamillaDSP upload per touch pixel.
-- Live Draft requests must include and verify the durable DSP write
-  epoch. A stale live request must be a no-op, not an older active
-  config upload after `Save to Speaker` or `/correction/apply`.
+  worker to render either page. `jasper/sound/{profile,settings,camilla_yaml}.py`,
+  `jasper/dsp_apply.py`, `jasper/output_topology.py`, and
+  `jasper/camilla_config_contract.py` are import-cheap and must stay so.
+- Keep `SoundSettings` aggregate. Split pages post only the fields they own; the
+  one shared Sound-state transaction is the lost-update guard, and there is no
+  second settings file. Capture a coherent snapshot before release, then render
+  previews and library data outside the boundary. Keep preference EQ bounded:
+  Simple EQ is ±12 dB (`SIMPLE_EQ_LIMIT_DB`, shared with the calibration
+  advisor) and advanced bands are capped.
+- Named custom profiles are draft templates, and unsaved auditions are previews:
+  neither may persist profile state unless the user saves to the speaker. An
+  audition may leave `sound_audition.yml` active until the user switches source
+  or applies — expected, observable in the apply record, and never promoted by
+  deploy reconcile.
+- Live Draft must touch only the preference layer of a known JTS config — never
+  room PEQs, source routing, the limiter, the crossover, or the
+  `volume_limit: 0.0` ceiling. It must be coalesced client-side (not one upload
+  per touch pixel) and must include and verify the durable write epoch, so a
+  stale request is a no-op rather than an older config landing after a save.
 
-## Future Work
+## Files
 
-- Browser/voice AI helper UI around the existing advisor harness: propose
-  bounded `SoundProfile` edits, audition them through `/sound/audition`,
-  compare against the listener's chosen baseline, then ask the user before
-  saving anything.
-- Optional profile export/import once we know what users want to share.
-- A clipping indicator (live on `/sound/setup/`, backed by a `/state` field from
-  CamillaDSP's clipped-sample counter, with doctor carrying the cumulative
-  count) so the opt-in headroom trim is guided rather than guessed.
-- Optional desktop-only draggable graph handles. Keep mobile/touch
-  controls as the primary path.
-- Optional voice-feedback loop using the existing Pi microphone path.
+`jasper/sound/` — `profile.py` (the `SoundProfile` contract, stock curves, Simple
+EQ, bounded bands, preview, `estimate_headroom_db`, `loudness_compensation_db`),
+`settings.py`, `camilla_yaml.py`, `runtime.py`; `jasper/cli/sound.py` is the CLI.
+`jasper/dsp_apply.py` is the shared apply substrate — typed validation, reload,
+rollback, bounded cancellation-safe writer-lock admission with a required feature
+identity, last-result persistence, and the durable write epoch.
+`jasper/camilla_config_contract.py` and `jasper/camilla_stereo_prefix.py` own the
+emitted vocabulary; `jasper/camilla.py` is the lazy pyCamillaDSP wrapper that
+also owns the active-config upload/patch escape hatches, so raw Camilla command
+names do not leak into product code. `jasper/web/sound_setup.py` serves both page
+modes and every `/sound/*` route through the `sound-page-data` JSON island;
+`jasper/output_topology.py` and `jasper/active_speaker/` own the topology
+contract and active-speaker runtime; `jasper/correction/session.py` emits through
+the combined config path so a saved profile survives a room-correction apply.
+Page assets: `deploy/assets/sound-profile/`.
 
-Verification scope (2026-08-15): the `outputd_active_content_playback`
-forbidden-test-writer note was corrected for P9-C, audio-graph
-consolidation #2285 — that PCM's aloop definition is deleted, and the ban
-now says so while staying in force. Prior 2026-08-05: Streambox I²S-HAT visibility/reconcile, USB-role safety, and `/sound/setup/` deploy ingress were rechecked. Prior 2026-08-04: PR-1 route/current-surface scope: `/eq/` and
-`/sound/setup/` page-mode ownership, bonded-follower delegation versus local
-commissioning, the fresh-read recognized-field `SoundSettings` merge and one
-lock through DSP/volume convergence, and full/streambox ingress were rechecked
-against `jasper.web.sound_setup`, the Sound ES module, nginx profiles, and
-the shared `/assets/sound-profile/sound.css` page asset. Focused hardware-free
-tests: 768 Sound/correction/landing tests passed with 28
-environment-dependent cases deselected, 173 unchanged commissioning/topology
-tests passed, and the Sound browser harness passed. No Pi, hardware, deploy, or
-reboot validation was performed. Prior 2026-07-28 (component-first speaker setup, one whole-speaker
-Build notes field, topology-owned tweeter type, research-only passive full-range
-target, flat collapsed Advanced editor, and responsive field layout verified against the browser module,
-driver-research contracts, targeted/full suites, and deployed JTS3 desktop
-and phone surfaces; prior 2026-07-27 shelf-steepness section added and the "slope is
-fixed at 6 dB/oct" claim corrected — emission now spells CamillaDSP's shelf
-`q` at the Butterworth `SHELF_Q`, checked against
-`jasper.camilla_stereo_prefix.emit_filter_spec`,
-`jasper.camilla_config_contract.SHELF_Q`, `jasper.sound.profile`, and
-CamillaDSP v4.1.3 `src/filters/biquad.rs`; prior
-2026-07-14 pass covered sound writer call sites checked against bounded,
-cancellation-safe shared admission; target-bound research, confirmation/revision behavior,
-active-speaker file inventory, and commission-ramp /
-summed-planner ownership checked after obsolete readiness removal; prior
-2026-06-25 pass covered active-leader program-bake carrier support
-for `/sound` and `/correction/start` on JTS5; active-crossover combined-test
-live-level route, pre-audio confirmation guard, backend watchdog, failed
-live-reload metadata guard, and backend-owned save/apply flow checked against
-`jasper.web.sound_setup`, `deploy/assets/sound-profile/js/main.js`, and the
-focused sound setup tests. Prior 2026-06-24 recheck covered deploy/startup
-sound-DSP reconciliation against `jasper.sound.runtime`, `jasper.cli.sound`,
-`deploy/install.sh`, and the focused reconcile/CLI/install tests;
-active-crossover `/sound/` flow checked against
-`deploy/assets/sound-profile/js/main.js`, `jasper.web.sound_setup`, and the
-focused sound setup tests for channel selectors, simplified driver/combined
-CTAs, cancellable combined-test Stop, bounded combined-level control, and the
-one-intent save/apply UI. Prior
-2026-06-22 recheck covered volume-floor global setting and continuous
-calibration-tone endpoints against `jasper.sound.settings`,
-`jasper.web.sound_setup`, and the `/sound/` static module; active-crossover
-driver-research note bounds against `jasper.active_speaker.design_draft`,
-and reset cleanup against `jasper.active_speaker.reset` plus the
-`/sound/` reset route. Prior 2026-06-19 recheck covered
-config-preservation/refusal updates for graph-carrier dispatch; see
-HANDOFF-dsp-graph-carrier.md. Prior recheck 2026-06-18 after the
-active-speaker UI / commission-ramp work.)
+**Future work:** a browser/voice helper UI around the existing advisor harness ·
+optional profile export/import · a clipping indicator backed by CamillaDSP's
+clipped-sample counter, so the headroom trim is guided rather than guessed ·
+optional desktop-only draggable graph handles, keeping touch primary.
 
-Last verified: 2026-08-15
+Last verified: 2026-08-26 (triage pass — `SHELF_Q`, `CUT_MAX_Q`,
+`SIMPLE_EQ_LIMIT_DB`, `SIMPLE_BANDS`, `emit_filter_spec`,
+`build_stereo_prefix`'s `room_headroom` / `sound_preamp`, the `SoundSettings`
+fields, `reconcile-current-dsp`, and every file-map path rechecked against their
+owning modules. The shelf-slope defect record, the editor's mode/preset detail,
+and the step-by-step speaker-setup walkthrough moved to
+`docs/historical/speaker-setup-and-shelf-q-2026-07.md`; the preference-gain
+policy became ADR-0121.)
