@@ -244,7 +244,7 @@ One line each; the doc is the canonical "read this before modifying".
 - [`HANDOFF-barge-in.md`](docs/HANDOFF-barge-in.md) — assistant-speech
   barge-in plan and current-code gap analysis
 - [`HANDOFF-aec.md`](docs/HANDOFF-aec.md) — AEC architecture and operations
-  (commissioned XVF chip AEC, lifecycle, software AEC3)
+  (chip-AEC commissioning, the disclosed AEC3 fallback, bridge lifecycle)
 - [`HANDOFF-enhanced-aec.md`](docs/HANDOFF-enhanced-aec.md) — optional
   vendored AEC3 v2: verified marker, background build, licensing boundary
 - [`HANDOFF-xvf3800.md`](docs/HANDOFF-xvf3800.md) — canonical XVF3800
@@ -448,8 +448,8 @@ Preserved for archaeology; **not** current operational truth.
   research inputs, one directory per study
 - [`CHIP-AEC-EXPERIMENT.md`](docs/CHIP-AEC-EXPERIMENT.md) — 2026-05/06 lab
   evidence that proved external-DAC chip AEC; use `HANDOFF-aec.md` instead
-- [`HANDOFF-chip-aec-portability.md`](docs/HANDOFF-chip-aec-portability.md) —
-  clock-domain measurements and the rejected rate-matcher design
+- [`historical/chip-aec-dac-portability-2026-06.md`](docs/historical/chip-aec-dac-portability-2026-06.md)
+  — clock-domain measurements and the rejected rate-matcher design
 - [`HANDOFF-volume-control-redesign.md`](docs/HANDOFF-volume-control-redesign.md)
   — why AirPlay receiver-originated volume reflection did not work
 - [`RESEARCH-pipewire-low-latency.md`](docs/RESEARCH-pipewire-low-latency.md) —

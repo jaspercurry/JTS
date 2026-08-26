@@ -1,4 +1,4 @@
-# Handoff: Chip-AEC DAC portability
+# Chip-AEC DAC portability (2026-06 design snapshot)
 
 > **Status: historical.** Snapshot from 2026-06-25, before measured
 > per-installation `SYS_DELAY` commissioning replaced this draft's dynamic
@@ -6,10 +6,11 @@
 > archaeology about clock-domain measurement and the rejected rate-matcher
 > design; its live-SRO gate, `xvf_chip_aec_testing`, and managed-XVF AEC3
 > fallback claims are not current product behavior. Read this for the design
-> history, not operational truth. Current XVF chip-or-park lifecycle,
-> fixed-profile commissioning, and output qualification live in
-> [HANDOFF-aec.md](HANDOFF-aec.md); hardware truth lives in
-> [HANDOFF-xvf3800.md](HANDOFF-xvf3800.md).
+> history, not operational truth. The current lifecycle — commissioning against
+> a fixed profile, and the ADR-0101 disposition where an unproven or moved
+> alignment runs software AEC3 and discloses rather than parking — lives in
+> [HANDOFF-aec.md](../HANDOFF-aec.md); hardware truth lives in
+> [HANDOFF-xvf3800.md](../HANDOFF-xvf3800.md).
 
 ## TL;DR — current state
 
@@ -187,7 +188,7 @@ arm production chip-AEC.
 
 **2. Calibration-artifact persistence + shippable profiles.** Record a DAC's
 measured verdict as a durable per-profile fact (mirror
-[`jasper/audio_validation.py`](../jasper/audio_validation.py)) keyed on stable
+[`jasper/audio_validation.py`](../../jasper/audio_validation.py)) keyed on stable
 DAC + mic + firmware identity, so it survives reboots *and* ships as
 "known-good" to other units/builders with the same hardware. This is what
 makes a once-validated DAC plug-and-play for everyone instead of re-measured
@@ -337,12 +338,12 @@ often "just works" means *chip-AEC* vs *fell back to software*.
 
 ## Pointers
 
-- Engine internals + software AEC3: [HANDOFF-aec.md](HANDOFF-aec.md)
-- XVF3800 chip control / firmware / mixer: [HANDOFF-xvf3800.md](HANDOFF-xvf3800.md)
-- Output owner + speaker-reference direction: [HANDOFF-speaker-output-reference.md](HANDOFF-speaker-output-reference.md)
-- Lab evidence (Option D, clock coherence): [CHIP-AEC-EXPERIMENT.md](CHIP-AEC-EXPERIMENT.md)
-- Diagnostic baseline / observability: [AEC-DIAG-01-baseline.md](AEC-DIAG-01-baseline.md), [AEC-DIAG-02-observability.md](AEC-DIAG-02-observability.md)
-- DAC registry: [`jasper/audio_hardware/dac.py`](../jasper/audio_hardware/dac.py); reconciler: [`deploy/bin/jasper-aec-reconcile`](../deploy/bin/jasper-aec-reconcile)
+- Engine internals + software AEC3: [HANDOFF-aec.md](../HANDOFF-aec.md)
+- XVF3800 chip control / firmware / mixer: [HANDOFF-xvf3800.md](../HANDOFF-xvf3800.md)
+- Output owner + speaker-reference direction: [HANDOFF-speaker-output-reference.md](../HANDOFF-speaker-output-reference.md)
+- Lab evidence (Option D, clock coherence): [CHIP-AEC-EXPERIMENT.md](../CHIP-AEC-EXPERIMENT.md)
+- Diagnostic baseline / observability: [AEC-DIAG-01-baseline.md](../AEC-DIAG-01-baseline.md), [AEC-DIAG-02-observability.md](../AEC-DIAG-02-observability.md)
+- DAC registry: [`jasper/audio_hardware/dac.py`](../../jasper/audio_hardware/dac.py); reconciler: [`deploy/bin/jasper-aec-reconcile`](../../deploy/bin/jasper-aec-reconcile)
 
 Last verified: 2026-07-30 (historical status and current-truth pointers
 checked; snapshot body intentionally not revalidated)

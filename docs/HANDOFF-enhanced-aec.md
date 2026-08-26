@@ -18,10 +18,14 @@ voice path, measure, and use software AEC without waiting several minutes for
 the vendored C++ build. Operators who need the deeper experimental AEC3 knobs
 can install the enhancement later from the `/system/` Software surface.
 
-Hardware chip AEC is a third path. When the applied input profile is
-`xvf_chip_aec` or `xvf_chip_aec_testing`, the optional software enhancement is
-reported as `not_needed`; the bridge remains the mic carrier but does not
-instantiate either software canceller.
+Hardware chip AEC is a third path, and the trigger is the **applied** profile,
+not the requested one. `not_needed` (and `engine="chip"`) is reported only while
+`/aec`'s `audio_profile.active` is `xvf_chip_aec` or `xvf_chip_aec_testing` —
+the chip path armed, the bridge carrying its beam, neither software canceller
+instantiated. A managed XVF running the ADR-0101 disclosed software-AEC3
+fallback publishes a software profile as `active`, so it reports the ordinary
+installable states: AEC3 is the engine carrying wake there, and the enhancement
+is exactly as relevant to it as on any non-XVF box.
 
 ## Sources of truth
 
@@ -139,27 +143,22 @@ Deploy and optional activation share one short critical-section lock:
   activating;
 - the multi-minute optional build never holds it.
 
-Deploy always kills an active optional oneshot's complete cgroup before
-changing source or the live venv, then asks systemd to stop the dead unit
-without waiting. It allows at most two seconds for the root-only package lock
-to drain; a surviving lock means an unmanaged root process—not the managed
-optional service—is concurrently mutating the native package, so deploy fails
-closed. The final manifest change retries the still-durable enhancement
-intent. Core install therefore never waits for optional compilation, overlaps
-an optional pip/build job, or trades update correctness for an optional
-capability.
+Deploy always kills an active optional oneshot's complete cgroup before changing
+source or the live venv, then asks systemd to stop the dead unit without
+waiting. It allows at most two seconds for the root-only package lock to drain;
+a surviving lock means an unmanaged root process — not the managed optional
+service — is concurrently mutating the native package, so deploy fails closed.
+Core install therefore never waits for optional compilation, overlaps an
+optional pip/build job, or trades update correctness for an optional capability.
 
-After `install.sh` publishes `/var/lib/jasper/build.txt` as its final
-successful mutation, `jasper-enhanced-aec-reconcile.path` uses `PathChanged=`
-to retry durable intent asynchronously. It deliberately does not use
-`PathExists=`, which would create a service/path restart loop. The installer
-service is also enabled for one idempotent attempt on each boot. If already
-current it returns immediately.
-
-Upgrades from the former mandatory-v2 behavior preserve user expectations:
-when an old `_aec3_v2` exists but no intent file does, the core installer
-migrates that implicit preference into durable opt-in intent. Runtime still
-uses v1 until the new marker/fingerprint/digest contract is satisfied.
+After `install.sh` publishes `/var/lib/jasper/build.txt` as its final successful
+mutation, `jasper-enhanced-aec-reconcile.path` uses `PathChanged=` to retry
+durable intent asynchronously. It deliberately does not use `PathExists=`, which
+would create a service/path restart loop. The installer service is also enabled
+for one idempotent attempt on each boot, returning immediately if already
+current. When an old `_aec3_v2` exists but no intent file does, the core
+installer migrates that implicit pre-opt-in preference into durable intent;
+runtime still uses v1 until the marker/fingerprint/digest contract is satisfied.
 
 ## Status contract
 
@@ -225,30 +224,24 @@ default-image surface; it is not a blanket binary-redistribution clearance.
 
 ## Verification
 
-Hardware-free contracts live in:
+Hardware-free contracts live in `tests/test_enhanced_aec.py` (state machine,
+fingerprint/digest gate, lazy native import, isolated build argv, source-change
+refusal, probe-before-marker, rollback) and `tests/test_enhanced_aec_systemd.py`
+(bounded root unit, boot/deploy retry, fail-soft enablement, shared containment
+helper, v1-only core deploy). The API/privilege, `/system/` surface, and
+advisory doctor health are pinned by the control-server, system-setup, and
+doctor-AEC suites; doctor treats the enhancement as **requested-only** — no
+request, a current install, a chip-AEC bypass, or a live background job is all
+healthy, and only requested failure or staleness warns.
 
-- `tests/test_enhanced_aec.py` — state machine, fingerprint/digest gate, lazy
-  native import, isolated build argv, source-change refusal, probe-before-marker,
-  and rollback;
-- `tests/test_enhanced_aec_systemd.py` — bounded root unit, boot/deploy retry,
-  fail-soft enablement, shared containment helper, and v1-only core deploy;
-- `tests/test_control_server.py`, `tests/test_control_aec_state.py`,
-  `tests/test_restart_broker.py`, and `tests/test_polkit_jasper_control.py` —
-  dedicated/token-gated API and narrow privilege allowlist;
-- `tests/test_system_setup.py` plus the system UI module tests — progressively
-  disclosed management surface and proxy contract.
-- `tests/test_doctor_aec.py` — requested-only advisory health: an absent request,
-  current install, chip-AEC bypass, or active background job is healthy;
-  requested failure/staleness remains a warning with `/system/` retry guidance.
+Not yet exercised on hardware, so do not call the feature production-proven
+until a Pi shows: a clean full install reaching usable v1 with no v2 build;
+opt-in surviving a browser refresh and completing while audio stays usable; v2
+selected after reconcile and surviving reboot; a deploy mid-build producing
+`stale` without activating old code and retrying after the manifest change; a
+forced build/probe failure leaving the bridge on v1; and the 1 GB path
+containing memory pressure and removing temporary build swap.
 
-Still validate on a Pi before calling the feature production-proven:
-
-1. clean full install reaches usable v1 without a v2 build;
-2. opt-in survives a browser refresh and completes while audio remains usable;
-3. v2 is selected after reconcile and survives reboot;
-4. a deploy during the build produces `stale`, never activates old code, and
-   retries after the final manifest change;
-5. forced build/probe failure leaves the bridge operating on v1; and
-6. the 1 GB path contains memory pressure and removes temporary build swap.
-
-Last verified: 2026-07-27
+Last verified: 2026-08-26 (triage pass — the `not_needed` trigger was corrected
+to the applied profile: a disclosed-stale XVF running software AEC3 reports the
+ordinary installable states, not `not_needed`.)
