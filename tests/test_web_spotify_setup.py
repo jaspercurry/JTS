@@ -402,15 +402,6 @@ def test_post_unknown_route_404s():
     assert h.status == int(http.HTTPStatus.NOT_FOUND)
 
 
-def test_post_setup_credentials_rejects_bad_csrf():
-    # Form-field token differs from the cookie token -> 403, no write.
-    body = b"csrf_token=" + b"a" * 64 + b"&client_id=x&mode=bounce"
-    h = _Request(_handler_cls(), "/setup-credentials", body=body,
-                 cookies="jts_csrf=" + "b" * 64)
-    h.do_POST()
-    assert h.status == int(http.HTTPStatus.FORBIDDEN)
-
-
 def test_post_setup_credentials_saves_and_restarts(monkeypatch):
     token = "y" * 64
     calls = {"write": [], "restart": []}

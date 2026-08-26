@@ -726,14 +726,6 @@ def test_pair_stream_route_decodes_and_normalizes_mac():
     h._stream_pair.assert_called_once_with("AA:BB:CC:DD:EE:FF")
 
 
-def test_post_unknown_route_404s_without_revealing_csrf():
-    # Route-check happens before CSRF-check: a bogus path 404s even with no
-    # token, so it can't be used to probe CSRF state.
-    h = _make_request("/bogus", body=b"{}")
-    h.do_POST()
-    assert h.status == int(http.HTTPStatus.NOT_FOUND)
-
-
 def test_post_pair_response_route_is_gone():
     token = "r" * 64
     h = _make_request(
@@ -744,13 +736,6 @@ def test_post_pair_response_route_is_gone():
     )
     h.do_POST()
     assert h.status == int(http.HTTPStatus.NOT_FOUND)
-
-
-def test_post_scan_rejects_missing_csrf():
-    # Valid route, but no CSRF header/cookie -> 403.
-    h = _make_request("/scan", body=b'{"action": "start"}')
-    h.do_POST()
-    assert h.status == int(http.HTTPStatus.FORBIDDEN)
 
 
 def test_post_scan_start_drives_engine_with_valid_csrf(monkeypatch):

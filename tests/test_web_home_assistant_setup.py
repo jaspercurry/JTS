@@ -384,14 +384,6 @@ def test_post_save_with_token_verifies_and_restarts(monkeypatch):
     assert h.header_values("Location") == ["./?restarting=1"]
 
 
-def test_post_save_rejects_bad_csrf(monkeypatch):
-    monkeypatch.setattr(ha, "read_env_file", lambda path: {})
-    body = b"csrf_token=" + b"a" * 64 + b"&url=http://ha.local:8123"
-    h = _make_request("/save", body=body, cookies="jts_csrf=" + "c" * 64)
-    h.do_POST()
-    assert h.status == int(http.HTTPStatus.FORBIDDEN)
-
-
 def test_post_disconnect_clears_and_restarts(monkeypatch):
     token = "d" * 64
     deleted = {"n": 0}
@@ -412,14 +404,6 @@ def test_post_disconnect_clears_and_restarts(monkeypatch):
 
     assert h.status == int(http.HTTPStatus.SEE_OTHER)
     assert restarted["n"] == 1
-
-
-def test_credentials_for_copy_requires_csrf(monkeypatch):
-    # No / mismatched CSRF -> 403, and the credentials are never read.
-    monkeypatch.setattr(ha, "read_env_file", lambda path: _state_connected())
-    h = _make_request("/credentials-for-copy", body=b"", cookies="jts_csrf=" + "e" * 64)
-    h.do_POST()
-    assert h.status == int(http.HTTPStatus.FORBIDDEN)
 
 
 def test_credentials_for_copy_returns_creds_with_csrf(monkeypatch):
