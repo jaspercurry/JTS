@@ -194,8 +194,11 @@ already open)**
   ~~fold jasper/measurement/~~ **DONE** — one consumer confirmed
   (`/balance/`), so its two modules became `web/balance_level.py` +
   `web/balance_volume_guard.py` and the package is deleted ·
-  split test_control_server along its own handler boundary (after the
-  widening lifts) · ~~point the 4 hand-rolled atomic writers at
+  ~~split test_control_server along its own handler boundary~~ **DONE**: one
+  module per `jasper/control/handlers/` mixin (system / volume / voice / aec /
+  grouping) plus `tests/control_server_fixtures.py`; the original file keeps
+  dispatch, guards, gating and follower forwarding ·
+  ~~point the 4 hand-rolled atomic writers at
   atomic_io~~ **DONE**: 3 of the 4 converged (output_hardware,
   assistant_loudness, audio_quality — modes unchanged at 0644, bytes
   identical); wifi_guardian_persistence stays hand-rolled and
