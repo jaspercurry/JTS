@@ -4075,6 +4075,72 @@ def check_outputd_content_lane_park() -> CheckResult:
     )
 
 
+@doctor_check(order=52.67, group="audio")
+def check_camilla_recover_park() -> CheckResult:
+    """The core DSP graph is not parked by jasper-camilla-recover.
+
+    ``deploy/bin/jasper-camilla-recover`` parks the graph — CamillaDSP
+    stopped out-of-band, every core-graph client already stopped — when its
+    one bounded recovery pass cannot bring it back (ADR-0175). That park is
+    TERMINAL for the boot by design: the handler stops re-entering so the box
+    holds a stable floor instead of stopping all eleven units again every
+    cooldown.
+
+    Severity is ``fail`` for the same reason the outputd park's is: a park
+    means the speaker emits NOTHING and no automatic path recovers it.
+
+    The record's own ``action=``/``re_arm=`` text is surfaced verbatim rather
+    than restated here — a second copy of that prose in Python is a
+    guaranteed drift site.
+    """
+    label = "camilla recovery park"
+
+    from ...control import camilla_recover_state
+
+    state = camilla_recover_state.snapshot()
+    status = state.get("status")
+
+    if status == "absent":
+        return CheckResult(
+            label, "ok", "no core-graph recovery park this boot"
+        )
+
+    if status == "unreadable":
+        return CheckResult(
+            label,
+            "warn",
+            f"recovery park record at {state.get('path')} exists but could "
+            f"not be read ({state.get('error')}) — a park cannot be ruled "
+            "out. Check journalctl -u jasper-camilla-recover.",
+        )
+
+    if status == "unintelligible":
+        return CheckResult(
+            label,
+            "warn",
+            f"recovery park record at {state.get('path')} is present but "
+            "carries no reason (a truncated write) — a park cannot be ruled "
+            "out from it. Check journalctl -u jasper-camilla-recover.",
+        )
+
+    parts = [
+        f"PARKED — the core DSP graph was stopped after a failed recovery "
+        f"({state.get('reason')})",
+    ]
+    parked_utc = state.get("parked_utc")
+    if parked_utc:
+        parts.append(f"at {parked_utc}")
+    for field, prefix in (
+        ("detail", ""),
+        ("action", "ACTION: "),
+        ("re_arm", "RE-ARM: "),
+    ):
+        value = state.get(field)
+        if value:
+            parts.append(f"{prefix}{value}")
+    return CheckResult(label, "fail", ". ".join(parts))
+
+
 # ---------------------------------------------------------------------------
 # The aloop-remnant guard (audio-graph consolidation #2285, P9-C).
 #
