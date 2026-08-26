@@ -5,6 +5,7 @@
 from __future__ import annotations
 
 import asyncio
+import hashlib
 from dataclasses import replace
 from types import SimpleNamespace
 
@@ -18,8 +19,21 @@ from jasper.active_speaker.runtime_contract import (
     NO_BASS_EXTENSION_PROFILE_SUMMARY,
     classify_camilla_graph as _classify_camilla_graph,
 )
+from jasper.audio_measurement.admitted_playback import (
+    bind_generated_excitation_wav,
+)
+from jasper.audio_measurement.evidence_identity import ArtifactIdentity
 from jasper.audio_measurement.excitation_admission import (
+    ExcitationLimits,
+    ExcitationRequest,
     FrequencyBand,
+    ProtectionEvidence,
+    admit_excitation,
+)
+from jasper.audio_measurement.excitation_artifacts import (
+    create_admission_authority,
+    persist_generation_admission,
+    readmit_and_persist_playback_admission,
 )
 from jasper.audio_measurement.null_walk import NullWalkSpec
 from jasper.output_topology import OutputTopology
@@ -759,3 +773,168 @@ def test_summed_excitation_uses_role_pair_ssot_not_channel_tuple_order(
             duration_s=0.8,
             excitation_plan_fingerprint=_HASH_D,
         )
+
+
+# --------------------------------------------------------------------------- #
+# AdmittedCaptureCallbackResult -- the excitation-admission binding a feature
+# hands back under the live lock. Every guard below is a way a capture could
+# claim an admission it was not played under.
+# --------------------------------------------------------------------------- #
+
+
+def _admitted_parts(tmp_path, *, bundle_id: str = "authority-session-1"):
+    """One real generation + playback + stimulus + evidence quadruple.
+
+    Built through the shipped persistence path rather than by hand: the guards
+    under test compare artifact FINGERPRINTS, and hand-rolled artifacts would
+    make those comparisons vacuously true.
+    """
+    limits = ExcitationLimits(
+        permitted_band=FrequencyBand(500, 10_000),
+        maximum_effective_peak_dbfs=-12,
+        maximum_duration_s=8,
+        maximum_repeat_count=3,
+        target_fingerprint="1" * 64,
+        safety_profile_fingerprint="2" * 64,
+        protection_requirement_fingerprint="3" * 64,
+        excitation_plan_fingerprint="4" * 64,
+    )
+
+    def evidence(proof: str) -> ProtectionEvidence:
+        return ProtectionEvidence(
+            target_fingerprint=limits.target_fingerprint,
+            safety_profile_fingerprint=limits.safety_profile_fingerprint,
+            protection_requirement_fingerprint=(
+                limits.protection_requirement_fingerprint
+            ),
+            authority_fingerprint=limits.fingerprint,
+            excitation_plan_fingerprint=limits.excitation_plan_fingerprint,
+            evidence_fingerprint=proof,
+            current=True,
+        )
+
+    authority = create_admission_authority(
+        tmp_path / bundle_id,
+        bundle_kind="jts_active_speaker_commissioning_authority",
+        bundle_id=bundle_id,
+    )
+    generation = persist_generation_admission(
+        authority,
+        admission_id="combined-main-repeat-1",
+        admission=admit_excitation(
+            ExcitationRequest(
+                band=FrequencyBand(1_000, 8_000),
+                effective_peak_dbfs=-18,
+                duration_s=4,
+                repeat_count=3,
+                target_fingerprint=limits.target_fingerprint,
+                safety_profile_fingerprint=limits.safety_profile_fingerprint,
+                authority_fingerprint=limits.fingerprint,
+                excitation_plan_fingerprint=limits.excitation_plan_fingerprint,
+            ),
+            limits,
+            protection_evidence=evidence("5" * 64),
+        ),
+    )
+    playback_evidence = evidence("6" * 64)
+    playback = readmit_and_persist_playback_admission(
+        authority,
+        generation,
+        current_limits=limits,
+        current_protection_evidence=playback_evidence,
+    ).artifact
+    wav = tmp_path / f"{bundle_id}-stimulus.wav"
+    wav.write_bytes(b"RIFF----WAVEfmt ")
+    stimulus = bind_generated_excitation_wav(
+        generation,
+        ArtifactIdentity(
+            bundle_kind="jts_active_speaker_commissioning",
+            bundle_id="evidence-session-1",
+            relative_path=wav.name,
+            sha256=hashlib.sha256(wav.read_bytes()).hexdigest(),
+            byte_size=wav.stat().st_size,
+        ),
+    )
+    return generation, playback, stimulus, playback_evidence
+
+
+def test_an_admitted_capture_result_round_trips_the_quadruple_it_was_given(
+    tmp_path,
+) -> None:
+    generation, playback, stimulus, evidence = _admitted_parts(tmp_path)
+
+    result = runtime.AdmittedCaptureCallbackResult(
+        generation=generation,
+        playback=playback,
+        stimulus=stimulus,
+        protection_evidence=evidence,
+        payload={"ordinal": 1},
+    )
+
+    assert result.generation is generation
+    assert result.playback is playback
+    assert result.stimulus is stimulus
+    assert result.protection_evidence is evidence
+    assert result.payload == {"ordinal": 1}
+    # The admission id is the generation's, not a second identity: it names the
+    # artifacts on disk this result claims to have been played under.
+    assert result.admission_id == generation.admission_id
+
+
+@pytest.mark.parametrize(
+    "break_it",
+    (
+        pytest.param(lambda p: {"generation": None}, id="generation_wrong_type"),
+        pytest.param(lambda p: {"playback": None}, id="playback_wrong_type"),
+        pytest.param(lambda p: {"stimulus": None}, id="stimulus_wrong_type"),
+        pytest.param(
+            lambda p: {"protection_evidence": None}, id="evidence_wrong_type",
+        ),
+        pytest.param(
+            lambda p: {"generation": p["other"][0]},
+            id="playback_retains_a_different_generation",
+        ),
+        pytest.param(
+            lambda p: {
+                "protection_evidence": replace(
+                    p["protection_evidence"], evidence_fingerprint="7" * 64,
+                )
+            },
+            id="playback_admitted_under_other_protection_evidence",
+        ),
+        pytest.param(
+            lambda p: {
+                "protection_evidence": replace(
+                    p["protection_evidence"], current=False,
+                )
+            },
+            id="protection_evidence_not_current",
+        ),
+        pytest.param(
+            lambda p: {"stimulus": p["other"][2]},
+            id="stimulus_bound_to_a_different_generation",
+        ),
+    ),
+)
+def test_an_admitted_capture_result_refuses_a_binding_that_does_not_agree(
+    tmp_path, break_it,
+) -> None:
+    """The assertion is the TYPE, not the sentence: two of these inputs trip
+    more than one guard, and which one speaks first is not a contract."""
+    generation, playback, stimulus, evidence = _admitted_parts(tmp_path)
+    fields = {
+        "generation": generation,
+        "playback": playback,
+        "stimulus": stimulus,
+        "protection_evidence": evidence,
+        "payload": None,
+    }
+    fields.update(
+        break_it({
+            **fields,
+            "other": _admitted_parts(tmp_path, bundle_id="authority-session-2"),
+        })
+    )
+
+    with pytest.raises(runtime.CommissioningRuntimeError):
+        runtime.AdmittedCaptureCallbackResult(**fields)
