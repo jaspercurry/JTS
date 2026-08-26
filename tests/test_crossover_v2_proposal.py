@@ -10,7 +10,7 @@ reads, which strategy it can honestly claim from the artifact it has, and what
 it does when a candidate cannot satisfy the contract.
 
 The receipt end of the same wiring is
-:mod:`tests.test_crossover_v2_round_wiring` section 6b, where it belongs,
+:mod:`tests.test_crossover_v2_round_wiring` section 3b, where it belongs,
 because that is a fact about a durable write and is driven through the real
 two-stage host.
 """
@@ -512,7 +512,7 @@ def test_a_proposal_fingerprint_and_a_candidate_fingerprint_are_the_same_shape()
     banked value tells a later reader which regime wrote it. That is why the
     receipt carries an explicit ``proposal_fingerprint_kind`` rather than a
     claimed format difference — see
-    ``tests/test_crossover_v2_round_wiring.py`` section 6b for the receipt end.
+    ``tests/test_crossover_v2_round_wiring.py`` section 3b for the receipt end.
     """
     candidate = _candidate(linearization_outcome="fitted")
     proposal = build_intervention_proposal(candidate)
