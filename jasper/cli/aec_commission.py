@@ -25,6 +25,7 @@ from typing import Any
 import numpy as np
 
 from jasper.atomic_io import atomic_write_json
+from jasper.audio_hardware import dac as dac_registry
 from jasper.audio_measurement.correction_lane import run_correction_play
 from jasper.chip_aec_alignment import (
     ARTIFACT_PATH,
@@ -369,6 +370,17 @@ class SystemIO:
             or profile.chip_beam_plan is None
         ):
             raise CommissioningError(f"unsupported XVF: {profile.reason}")
+        # Registry MEMBERSHIP, not qualification: an unqualified profile
+        # commissions and discloses (ADR-0101), but an unknown output edge is
+        # the don't-guess refusal `output_hardware_key` already makes — made
+        # here so it does not cost a service stop and an XVF reset first.
+        output_id = self.env.get("JASPER_AUDIO_DAC_ID", "").strip()
+        if dac_registry.by_id(output_id) is None:
+            raise CommissioningError(
+                f"output DAC {output_id or '<unset>'} is not in the DacProfile "
+                "registry; codify its profile (jasper/audio_hardware/dac.py, "
+                "docs/PROPOSAL-dac-profile-registry.md) before commissioning"
+            )
         return Hardware(profile.variant_id, profile.alsa_card_name, profile.chip_beam_plan)
 
     def prepare_volume(self) -> float:
