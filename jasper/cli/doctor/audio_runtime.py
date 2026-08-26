@@ -637,46 +637,37 @@ def check_fanin_service() -> CheckResult:
             "fail",
             "active but STATUS response missing output{}",
         )
-    from jasper.fanin.ring_health import read_persisted_coupling
-    from jasper.fanin_coupling import COUPLING_SHM_RING
-
-    coupling = read_persisted_coupling()
-    # The fan-in STATUS echoes its live coupling transport (state.rs
-    # push_kv_str("transport", ...)): "loopback" (default) or "shm_ring" (Ring A —
-    # with a "ring" observability block). Expect the STATUS to match the persisted
-    # intent so a coupling that failed to restart onto the box is caught.
-    expected_transport = {
-        COUPLING_SHM_RING: "shm_ring",
-    }.get(coupling, "loopback")
+    # The ring is the only transport a running fan-in can be on (ADR-0100): the
+    # daemon refuses any other declaration at config parse and parks at exit 78,
+    # so a LIVE STATUS can only come from a ring box. Expected is therefore a
+    # constant, NOT a mapping from the persisted file — deriving it from
+    # /var/lib/jasper/fanin.env would FAIL a healthy box whose key has not been
+    # written yet (coupling-auto runs After=jasper-fanin.service).
     actual_transport = output.get("transport")
-    if actual_transport != expected_transport:
+    if actual_transport != "shm_ring":
         return CheckResult(
             "jasper-fanin service",
             "fail",
             f"active but STATUS output.transport={actual_transport!r}; "
-            f"expected {expected_transport!r} for persisted coupling={coupling!r}. "
-            "Run jasper-fanin-coupling-reconcile to restart fan-in onto the "
-            "persisted topology.",
+            "expected 'shm_ring' — the SHM ring is fan-in's only transport "
+            "toward CamillaDSP. Check journalctl -u jasper-fanin for the "
+            "transport it actually opened.",
         )
-    if coupling == COUPLING_SHM_RING:
-        ring = output.get("ring")
-        if not isinstance(ring, dict):
-            return CheckResult(
-                "jasper-fanin service",
-                "fail",
-                "active but shm_ring STATUS is missing output.ring metrics — "
-                "fan-in is not actually writing Ring A. Run "
-                "jasper-fanin-coupling-reconcile shm_ring.",
-            )
+    ring = output.get("ring")
+    if not isinstance(ring, dict):
+        return CheckResult(
+            "jasper-fanin service",
+            "fail",
+            "active but STATUS is missing output.ring metrics — "
+            "fan-in is not actually writing Ring A. Check "
+            "journalctl -u jasper-fanin for event=fanin.ring.opened.",
+        )
 
     output_pcm = output.get("pcm")
     # output.pcm is a CONFIG echo (state.rs pushes self.output_pcm), not proof a
-    # PCM was opened. On a loopback-coupled box it is the real output device. On
-    # shm_ring it is vestigial: U4/P7-4 dropped the lane-7 aloop mirror, so fan-in
-    # opens no ALSA playback PCM at all there — the value is still reported
-    # because the Coupling::Loopback arm still needs it, and checking it keeps the
-    # loopback box honest. If a later phase stops configuring output_pcm on a ring
-    # box, this equality is what will fail first; scope it per-coupling then.
+    # PCM was opened: since ADR-0100 fan-in opens no ALSA playback device at all,
+    # and the field is parsed-never-opened. The equality still catches a
+    # /var/lib/jasper/fanin.env that drifted from the lane allocation.
     if output_pcm != _FANIN_EXPECTED_OUTPUT_PCM:
         return CheckResult(
             "jasper-fanin service",
@@ -1054,14 +1045,13 @@ def check_fanin_ring_stall() -> CheckResult:
     as long as the reader stays stuck, so it is the live/sustained signal;
     ``stuck_reader_drops`` climbs alongside it.
 
-    Skip-if-loopback: only the ``shm_ring`` coupling has a ring; the default
-    ``loopback`` coupling is timer-paced and structurally immune, so this reports
-    OK there (no ring block in STATUS). Reachability is owned by the
-    'jasper-fanin service' check — an unreadable STATUS reports OK here rather than
-    double-failing a down daemon.
+    Reachability is owned by the 'jasper-fanin service' check — an unreadable
+    STATUS, or one carrying no ring block, reports OK here rather than
+    double-failing a daemon that check already fails.
 
     Returns:
-      - ok when loopback, when the ring is draining normally, or STATUS unreachable
+      - ok when the ring is draining normally, when STATUS carries no ring
+        block, or when STATUS is unreachable
       - warn when a stall episode is CURRENTLY active, surfacing the stuck-reader
         vs no-reader drop split and the last stall duration.
     """
@@ -1082,12 +1072,15 @@ def check_fanin_ring_stall() -> CheckResult:
     output = data.get("output")
     ring = output.get("ring") if isinstance(output, dict) else None
     if not isinstance(ring, dict):
-        # loopback (or any non-ring topology): no ring, nothing can stall.
+        # A running fan-in always publishes a ring block (ADR-0100), so this is
+        # a STATUS-shape guard, not a topology branch: with no counters to read
+        # there is nothing to assess. The missing block itself is FAILed by the
+        # 'jasper-fanin service' check — one fact, one owner.
         return CheckResult(
             name,
             "ok",
-            "skipped — loopback coupling (no shm_ring ring; timer-paced, "
-            "stall-immune)",
+            "not assessed — STATUS carries no output.ring block; the "
+            "'jasper-fanin service' check owns that failure",
         )
 
     stuck = int(ring.get("stuck_reader_drops") or 0)
@@ -1784,6 +1777,12 @@ def _jts_ring_pcm_resolves(pcm: str, tool: str) -> tuple[bool, str]:
     safe: the ioplug free-runs (playback) or emits timer-paced silence
     (capture) rather than blocking (the lab resolvability-step contract).
 
+    NO PRODUCTION CALLER since ADR-0100 made the ring the only transport:
+    `check_ring_platform_assets` can no longer reach an inert box, so it checks
+    presence only. Kept because the -DPIC / arch-mismatch detection it provides
+    has no replacement, and re-gating it on "jasper-fanin is not active" is the
+    open follow-up. Delete it with its tests if that follow-up is declined.
+
     Leaves no residue: the ioplug open path is create-or-attach
     (O_RDWR|O_CREAT|O_EXCL), so probing an ABSENT ring CREATES the ring file.
     A doctor-created ring would (a) violate P1's inertness invariant ("no ring
@@ -2022,47 +2021,33 @@ def check_active_ring_path_projection() -> CheckResult:
 
 @doctor_check(order=51.8, group="audio", exclusive_group="audio-probe")
 def check_ring_platform_assets() -> CheckResult:
-    """Verify the jts_ring transport platform assets are present and the
-    ioplug actually dlopens.
+    """Verify the jts_ring transport platform assets are present.
 
     Three assets: the compiled ioplug .so, the conf.d PCM definitions
     (jasper.ring_assets.RING_CONF_PCMS), and the /dev/shm/jts-ring directory.
-    On a box whose coupling is ARMED they are load-bearing — CamillaDSP's
-    capture and post-DSP playback resolve through them — so what a missing or
-    broken asset COSTS is what this check's severity tracks.
+    They are ALWAYS load-bearing since ADR-0100 — the ring is the only fan-in →
+    CamillaDSP transport, so CamillaDSP's capture and post-DSP playback resolve
+    through them on every box.
 
     Statuses:
-      ok    — .so + conf.d + shm dir present, and (on an unarmed box) every PCM
-              open-probes cleanly.
-              CAVEAT: presence and the open-probe both pass on a STALE .so left
-              by a failed rebuild (the 2026-07-02 class) — it is structurally
-              valid, so it dlopens and registers. `check_ring_ioplug_provenance`
-              is the check that separates the two, by comparing the installer's
-              record against the plugin on disk. See ring-platform.sh.
-      warn  — an asset is MISSING while the ring is NOT armed. Loopback carries
-              audio in that state, so the box is degraded rather than broken and
-              the next deploy rebuilds.
-      fail  — an asset is missing while shm_ring IS armed (the armed graph
-              cannot resolve its ring devices), or the .so is installed but a
-              PCM fails to open — a bad registration / arch mismatch, e.g. the
-              -DPIC class. The EBUSY exception is called out below.
+      ok    — .so + conf.d + shm dir present.
+              CAVEAT: presence passes on a STALE .so left by a failed rebuild
+              (the 2026-07-02 class) — it is structurally valid, so it dlopens
+              and registers. `check_ring_ioplug_provenance` is the check that
+              separates the two, by comparing the installer's record against the
+              plugin on disk. See ring-platform.sh.
+      fail  — an asset is missing: the graph cannot resolve its ring devices,
+              and there is no second transport to fall back to.
 
-    Probe leaves no residue: it opens each device for 1 s against an absent
-    ring, exercising only the writer-dead / no-reader silence path (feeds or
-    discards silence). Because the ioplug open path is create-or-attach, the
-    probe would create the ring file; _jts_ring_pcm_resolves snapshots and
-    unlinks only what it created, so an unarmed box still carries no ring file
-    after a doctor run.
-
-    Armed-state aware: when a coupling is ARMED (the persisted
-    JASPER_FANIN_CAMILLA_COUPLING is shm_ring) the ring has a live reader/writer,
-    so the ioplug's SPSC guard EBUSYs the open-probe — which is NOT a defect. In
-    that state this check does NOT open-probe (the live ring must not be
-    disturbed); it verifies asset PRESENCE only and defers the "is the armed ring
-    coherent + alive" verdict to `check_fanin_coupling` (intent vs the loaded
-    config) and `check_ring_geometry_coherence` (env vs conf.d vs the on-disk
-    header). The open-probe path below runs only on an UNARMED box, where an
-    EBUSY genuinely would indicate a stray lab arm or a stuck ring.
+    PRESENCE ONLY, never an open-probe. The ring always has a live
+    reader/writer, so the ioplug's SPSC guard would EBUSY the probe — and the
+    live ring must not be disturbed. Deriving "is it armed?" from the persisted
+    JASPER_FANIN_CAMILLA_COUPLING is what made this check probe a live ring on a
+    box whose key had not been written yet (coupling-auto runs
+    After=jasper-fanin.service), so the answer is a constant now. The "is the
+    ring coherent + alive" verdict belongs to `check_fanin_coupling` (intent vs
+    the loaded config) and `check_ring_geometry_coherence` (env vs conf.d vs the
+    on-disk header).
     """
     label = "ring platform"
     # Pass the module-level constants (which tests monkeypatch, and which alias the
@@ -2074,24 +2059,15 @@ def check_ring_platform_assets() -> CheckResult:
     )
     missing = list(presence.missing())
 
-    # Is a ring coupling armed? Read the persisted intent (fail-safe to loopback).
-    try:
-        from jasper.fanin.ring_health import read_persisted_coupling
-        from jasper.fanin_coupling import COUPLING_SHM_RING
-
-        ring_armed = read_persisted_coupling() == COUPLING_SHM_RING
-    except (ImportError, OSError):
-        ring_armed = False
-
     if missing:
         # ONE VERDICT, because there is no inert phase left to be degraded into.
-        # This used to split on ``ring_armed``: a missing asset FAILED an armed
-        # box and merely WARNED an unarmed one, on the reasoning that "loopback
-        # still carries audio". ADR-0100 retired that route, so the unarmed
-        # branch claimed a transport the box does not have — a speaker emitting
-        # nothing, reported as degraded-but-playing. The verdict no longer turns
-        # on a persisted token at all: the ring is the only way this box makes
-        # sound, and an asset it needs is absent.
+        # This used to split on a persisted ``ring_armed`` token: a missing asset
+        # FAILED an armed box and merely WARNED an unarmed one, on the reasoning
+        # that "loopback still carries audio". ADR-0100 retired that route, so the
+        # unarmed branch claimed a transport the box does not have — a speaker
+        # emitting nothing, reported as degraded-but-playing. The verdict no
+        # longer turns on a persisted token at all: the ring is the only way this
+        # box makes sound, and an asset it needs is absent.
         return CheckResult(
             label,
             "fail",
@@ -2102,57 +2078,12 @@ def check_ring_platform_assets() -> CheckResult:
             "(bash scripts/deploy-to-pi.sh) to rebuild them.",
         )
 
-    if ring_armed:
-        # Assets present AND armed: do NOT open-probe (the live ring EBUSYs the
-        # SPSC guard — expected, not a defect). Report ok here; the coherence
-        # + liveness verdict belongs to `check_fanin_coupling` and
-        # `check_ring_geometry_coherence`.
-        return CheckResult(
-            label,
-            "ok",
-            "ioplug + conf.d + /dev/shm/jts-ring present; shm_ring ARMED "
-            "(open-probe skipped — live ring; see the 'fanin coupling' and "
-            "'ring geometry' checks)",
-        )
-
-    # All assets present AND inert — the .so being installed means it MUST dlopen
-    # and register; a failure to open is a genuine defect.
-    probe_failures: list[str] = []
-    for pcm, tool, _ring_basename in _JTS_RING_PCMS:
-        ok, detail = _jts_ring_pcm_resolves(pcm, tool)
-        if not ok:
-            probe_failures.append(f"{pcm}: {detail}")
-    if probe_failures:
-        # EBUSY is NOT a registration defect: on a box whose ring is already
-        # armed outside this check's view, the ring has a
-        # live foreign reader/writer, and the ioplug's SPSC guard refuses the
-        # probe with -EBUSY ("Device or resource busy"). The .so is fine — the
-        # ring is simply in use. A ring armed through the PRODUCT path never
-        # reaches here (the armed branch above returns before the probe), so an
-        # EBUSY at this point means a reader/writer the persisted coupling does
-        # not account for — a stray lab arm, or a stuck ring.
-        joined = "; ".join(probe_failures)
-        if re.search(r"resource busy|EBUSY|Device or resource busy", joined, re.I):
-            remediation = (
-                "ring is in use (a live reader/writer already owns it — e.g. a "
-                "lab arm) — not a registration defect; re-run with the ring "
-                "disarmed / camilla stopped to probe the .so."
-            )
-        else:
-            remediation = (
-                "Rebuild the ioplug (check -DPIC / arch); the .so is present but "
-                "ALSA can't use it."
-            )
-        return CheckResult(
-            label,
-            "fail",
-            f"ioplug .so installed but PCM open failed: {joined}. {remediation}",
-        )
     return CheckResult(
         label,
         "ok",
-        f"ioplug + conf.d + /dev/shm/jts-ring staged (inert); "
-        f"{', '.join(name for name, _tool, _ring in _JTS_RING_PCMS)} resolve",
+        "ioplug + conf.d + /dev/shm/jts-ring present "
+        "(open-probe skipped — live ring; see the 'fanin coupling' and "
+        "'ring geometry' checks)",
     )
 
 

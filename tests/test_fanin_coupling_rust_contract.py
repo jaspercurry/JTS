@@ -102,16 +102,31 @@ def test_coupling_selector_env_var_name_agrees():
     )
 
 
-def test_coupling_shm_ring_token_agrees():
-    # Ring A is the daemon's only transport (ADR-0100), so this key no longer
-    # SELECTS anything on the Rust side — but the token still has to agree, or a
-    # box the reconciler armed correctly would be refused at boot. The refusal
-    # half (anything else parks at exit 78) is pinned in-crate by
-    # `only_a_ring_declaration_or_none_is_served`.
+def test_rust_serves_the_undeclared_key_as_well_as_the_ring_token():
+    """The Rust ACCEPT-SET is ``None`` | ``""`` | ``shm_ring`` — all three.
+
+    Ring A is the daemon's only transport (ADR-0100), so this key no longer
+    SELECTS anything on the Rust side; it only has to serve what the fleet can
+    legitimately present and refuse the rest (that refusal half is pinned
+    behaviorally in-crate by `only_a_ring_declaration_or_none_is_served`).
+
+    UNSET is a first-class served state and this is the row that says so.
+    `coupling-auto` runs ``After=jasper-fanin.service``, so on a fresh or reset
+    box fan-in starts BEFORE the key is written. If Rust refused the undeclared
+    key, that box would park on every first boot; because it serves it, no
+    Python reader may map undeclared → loopback and derive a runtime
+    expectation from it (see ``resolve_coupling``'s docstring, and the doctor's
+    `_fanin_health_from_status`, which expects ``shm_ring`` unconditionally).
+
+    Shape-level on purpose: it complements the in-crate behavioral pin rather
+    than restating it, and what can drift across the language boundary is the
+    accept-set's MEMBERSHIP, which is what this reads.
+    """
     text = _config_rs_text()
-    assert f'Some("{COUPLING_SHM_RING}") => {{}}' in text, (
-        f"Rust must ACCEPT the {COUPLING_SHM_RING!r} token Python's "
-        "resolve_coupling emits"
+    assert f'None | Some("") | Some("{COUPLING_SHM_RING}") => {{}}' in text, (
+        "the Rust accept arm must serve the undeclared key (None), a cleared "
+        f"key (empty), and the {COUPLING_SHM_RING!r} token Python's "
+        "resolve_coupling emits — all three in one arm"
     )
 
 
