@@ -851,6 +851,31 @@ def test_apply_failed_seam_refuses_the_deferred_verify_hold():
     assert c.applied is False
 
 
+def test_an_implausible_delay_never_renders_mic_placement_advice():
+    """The copy separation the confidence demotion required (#2085's shape).
+
+    Both rungs shared ``low_alignment_confidence`` until the burn-down, so the
+    ONE sentence behind it — "Place the microphone about 1 m in front of the
+    speaker at tweeter height" — was rendered for a confidently-WRONG delay
+    too. That is the #2085 pathology exactly: a household whose microphone was
+    never the problem, told to move it. Demoting the confidence rung without
+    splitting the kinds would have left this rejection holding that sentence as
+    its only voice.
+
+    Pinned on the CONTENT, not on the code, because the defect was what the
+    household read. The physics sentence must name the delay and must not
+    instruct a mic move; and no live registry row may carry the retired code.
+    """
+    spec = REASON_REGISTRY["delay_implausible"]
+    household = f"{spec.message} {spec.banner}".lower()
+    assert "delay" in household
+    for mic_advice in ("place the microphone", "tweeter height", "1 m in front"):
+        assert mic_advice not in household, mic_advice
+    # The retired code is gone from the registry, so nothing can route back to
+    # the shared sentence.
+    assert "low_alignment_confidence" not in REASON_REGISTRY
+
+
 def test_low_alignment_confidence_accepts_and_banks_a_reservation():
     """The nanny burn-down, at the trust floor.
 
