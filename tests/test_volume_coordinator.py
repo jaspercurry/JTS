@@ -3193,7 +3193,7 @@ async def test_cue_and_graph_swap_interleave_back_to_the_canonical_target(
         coord.get_camilla_target_db,
     )
 
-    cue = camilla_module.CueDuck(cam, -25.0)
+    cue = camilla_module.CueDuck(coord.volume_owner, -25.0)
     bracket = cam._graph_mutation("test.swap")
     steps = {
         "B_enter": bracket.__aenter__,

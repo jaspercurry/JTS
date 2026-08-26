@@ -456,7 +456,9 @@ def test_the_duck_rides_the_same_lane_the_assistant_mixes_into(monkeypatch):
             GEMINI_API_KEY="AIzaSyTest",
             **{VOICE_TTS_SOCKET_ENV: socket, DUCK_TRANSPORT_ENV: transport},
         )
-        return build_ducker(cfg, object(), target_db_provider=target_db)
+        return build_ducker(
+            cfg, volume_owner=object(), target_db_provider=target_db,
+        )
 
     with pytest.raises(RuntimeError):
         ducker(FANIN_TTS_SOCKET, "camilla")

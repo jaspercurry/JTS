@@ -2279,8 +2279,9 @@ class WakeLoop:
                 except Exception as e:  # noqa: BLE001
                     logger.warning("dynamic text play failed: %s", e)
                 return played
-            if self._camilla is None:
-                # No camilla handle — degrade to unducked playback rather
+            owner = getattr(self._volume_coordinator, "volume_owner", None)
+            if owner is None:
+                # No fader owner — degrade to unducked playback rather
                 # than crash. The user hears the cue over un-ducked music
                 # which is loud but recoverable; better than silence.
                 try:
@@ -2288,7 +2289,7 @@ class WakeLoop:
                 except Exception as e:  # noqa: BLE001
                     logger.warning("dynamic text play failed: %s", e)
                     return False
-            cue_duck = CueDuck(self._camilla, self._cfg.duck_db)
+            cue_duck = CueDuck(owner, self._cfg.duck_db)
 
             async def _restore_cue_duck() -> None:
                 # Deliberately neutral context: CueDuck.__aexit__ only writes
