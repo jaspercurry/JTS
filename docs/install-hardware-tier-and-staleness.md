@@ -215,12 +215,22 @@ denominator would silently omit the one function that deletes anything.
 are superseded and do not reproduce — the same grep returned 24
 immediately before the #2285 deletion wave, and both functions in the set
 that removed files, `retire_audio_topology_switch` and
-`migrate_retired_source_state`, were among the ones that wave cut.) Every key-rewriting migration still guards
+`migrate_retired_source_state`, were among the ones that wave cut.) Every key-rewriting migration cited above still guarded
 on both "old key present?" *and* "new key already there?" (e.g.
 `migrate_transit_config`: `if [[ -f "${wizard_env}" ]] && grep -qE`;
-`migrate_control_host_bind_seed` only rewrites the *exact* `0.0.0.0`
-seed), so a box that predates even the old key degrades to a no-op, not a
+`migrate_control_host_bind_seed` only rewrote the *exact* `0.0.0.0`
+seed), so a box that predates even the old key degraded to a no-op, not a
 misfire.
+
+(2026-08-25 update: the fleet-migration gate cleared (owner-confirmed every
+live Pi past every candidate migration) and the one-shot relocation loops
+named above — `migrate_wake_legs_config`, `migrate_control_host_bind_seed`,
+`migrate_transit_config`, `migrate_weather_config`, `migrate_fanin_coupling`,
+and the grouping migration — were retired as unreachable; the same grep now
+returns **10**. The two still-live ongoing sweeps, `migrate_voice_keys_split`
+and `migrate_google_routes_key`, keep running every deploy. The point this
+section makes — migrations are convergent and skew cannot pile them up —
+still holds; only the roster and the count changed.)
 
 Skew does not multiply migration count or introduce ordering hazards.
 Residual: a box so old it predates a migration's recognized "old shape"
@@ -438,7 +448,10 @@ and a dedicated test pins that the guard does *not* fire during
 | No build step can starve/kill a live daemon | Diagnosed (staleness × low-RAM forces the OOM-prone rebuilds); containment is A. |
 | The whole flow is testable without owning every SKU | Test strategy above: synthetic-`/proc` decision matrix + cgroup smoke + canary. |
 
-Last verified: 2026-08-17 (migration/reconcile denominator recounted against
-the surviving set after the #2285 deletion wave; historical WebRTC-build
-recommendation reconciled with the shipped mandatory-v1 / optional-v2 split;
-broader tier/staleness analysis remains the 2026-06-21 design note)
+Last verified: 2026-08-25 (migration/reconcile denominator re-recounted to 10
+after the env-migrations retirement wave, REFACTOR-2026-08.md Wave 2, retired
+the six one-shot relocation loops named above; 2026-08-17 pass recounted
+against the surviving set after the #2285 deletion wave; historical
+WebRTC-build recommendation reconciled with the shipped mandatory-v1 /
+optional-v2 split; broader tier/staleness analysis remains the 2026-06-21
+design note)

@@ -137,11 +137,11 @@ CITY_PACKS: tuple[CityPack, ...] = (NYC_PACK,)
 def _derive_registry(packs: tuple[CityPack, ...]) -> tuple[TransitProvider, ...]:
     """Flatten packs → providers, rejecting duplicate provider ids.
 
-    Provider id is the lookup key for by_id(), the wizard's card dispatch, the
-    install-migration, and the gating reverse-lookup — a duplicate would
-    silently shadow (first-wins) and misroute every one of those. Fail LOUD at
-    import time on a developer mistake, mirroring the DAC registry's
-    dedupe guard, rather than shipping a silent shadow."""
+    Provider id is the lookup key for by_id(), the wizard's card dispatch, and
+    the gating reverse-lookup — a duplicate would silently shadow (first-wins)
+    and misroute every one of those. Fail LOUD at import time on a developer
+    mistake, mirroring the DAC registry's dedupe guard, rather than shipping
+    a silent shadow."""
     seen: set[str] = set()
     out: list[TransitProvider] = []
     for pack in packs:
@@ -150,7 +150,7 @@ def _derive_registry(packs: tuple[CityPack, ...]) -> tuple[TransitProvider, ...]
                 raise ValueError(
                     f"duplicate transit provider id {provider.id!r}: provider "
                     "ids must be unique across all city packs (they key by_id, "
-                    "the wizard card dispatch, install migration, and gating)."
+                    "the wizard card dispatch, and gating)."
                 )
             seen.add(provider.id)
             out.append(provider)
@@ -318,8 +318,8 @@ def covering(lat: float, lon: float) -> tuple[TransitProvider, ...]:
 
 def all_env_keys() -> tuple[str, ...]:
     """Every env variable owned by any registered provider, in stable
-    order. The wizard consumes this directly; the shell-owned installer
-    migration carries a literal superset pinned by a contract test."""
+    order. The wizard consumes this directly to write
+    /var/lib/jasper/transit.env; there is no separate installer copy."""
     seen: list[str] = []
     for p in REGISTRY:
         for k in p.env_keys:

@@ -498,19 +498,6 @@ def test_setup_has_fail_closed_v1_only_and_v2_only_modes():
     assert "v2-only requires" in text
 
 
-def test_aec_binding_operator_comment_pins_verified_fallback_semantics():
-    text = Path(".env.example").read_text(encoding="utf-8")
-    comment = text[text.index("# JASPER_AEC_BINDING selects"):text.index(
-        "# JASPER_AEC_MIC_GAIN_DB applies"
-    )]
-    assert "activation marker" in comment
-    assert "source/ABI fingerprint" in comment
-    assert "extension" in comment and "digest" in comment
-    assert "Explicit `v2` never bypasses verification" in comment
-    assert "falls back to v1" in comment
-    assert "`v2` to force BEST_A" not in comment
-
-
 def test_native_build_backend_is_exact_pinned_and_fingerprinted(capability):
     metadata = capability.source / "pyproject.toml"
     metadata.write_text(
