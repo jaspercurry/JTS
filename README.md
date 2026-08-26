@@ -253,8 +253,8 @@ One line each; the doc is the canonical "read this before modifying".
   workstream: sweeps, lever inventory, decision history
 - [`HANDOFF-mic-fusion-architecture.md`](docs/HANDOFF-mic-fusion-architecture.md)
   — pluggable-mic boundary and the leg-count-agnostic wake-fusion layer
-- [`HANDOFF-vad-experiments.md`](docs/HANDOFF-vad-experiments.md) — VAD /
-  mic-stream A/B matrix and why local Silero on the AEC stream wins
+- [`HANDOFF-vad-experiments.md`](docs/HANDOFF-vad-experiments.md) — what
+  endpoints a turn, why server VAD stays off, and the open raw-stream question
 - [`HANDOFF-wake-training-experiment.md`](docs/HANDOFF-wake-training-experiment.md)
   — custom per-leg wake-model training plan
 - [`HANDOFF-custom-wakeword-training.md`](docs/HANDOFF-custom-wakeword-training.md)
