@@ -713,6 +713,11 @@ chunk 2's §7 contains no producer item and the document never mentions 4g or 4h
 It is chunk-1 residual that neither chunk owns. §3 asks the licence question;
 who schedules the build is a different open question this brief does not answer.
 
+**The owner's queue is three items, not one.** #3151 settled chunk 2's §6
+decisions and left two things waiting on him — **6.2's seam brief** and
+**Appendix A's charter question**. §3's act 6 is the third. They are
+independent: none blocks another, and only act 6 touches hardware.
+
 ### The recommendation
 
 **Batch the three unrun acts into one bench evening** — same box, same deploy,
