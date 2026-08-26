@@ -119,8 +119,8 @@ the `/dev/snd` holder evidence and made a reachable Pi look killed.
 `/proc/asound/*/status`, parks likely graph owners, tries one bounded
 fanin→Camilla→outputd restart, kicks the AEC/grouping reconcilers, then leaves
 the unit parked (cooldown-gated, no reboot) if the graph still cannot converge.
-Doctor's `check_start_limit_action` surfaces drift if a distro update removes
-either the reboot directives or Camilla's handler.
+Doctor's `check_installed_settings_drift` surfaces drift if a distro update
+removes either the reboot directives or Camilla's handler.
 
 **T5.1 circuit breaker.** `StartLimitAction=reboot` alone is unbounded across
 boots — a *permanent* daemon failure would reboot the Pi every few minutes
@@ -172,7 +172,7 @@ controller, which the Pi 5 DTB disables
 ([raspberrypi/linux#5933](https://github.com/raspberrypi/linux/issues/5933)).
 
 **1a — `OOMScoreAdjust` ladder.** `jasper/_oom_adj.py` is the single source of
-truth, shared by doctor's `check_oom_score_adj` drift check and install.sh's
+truth, shared by doctor's `check_installed_settings_drift` and install.sh's
 live-write step, with the per-daemon rationale beside each value. It runs from
 `jasper-outputd` at −950 (the final DAC owner; killing it means silence) down
 through the restartable accessory daemons at −300, `ssh` at −250, and two
@@ -207,8 +207,10 @@ OOM-kill instead. The most direct fix for the wedge shape. If anything
 legitimate is killed under normal load, reduce to 500.
 
 **Stage-1 drift detection**, all fail-soft (warn, not fail):
-`check_oom_score_adj`, `check_zram_size_ratio` (WARN if zram > 60% of RAM),
-`check_mglru_min_ttl`, `check_sysctl_drift`, `check_memory_headroom`
+`check_installed_settings_drift` (one expected-value table naming each drifted
+setting individually — the OOM ladder both as the unit files carry it and as
+the live processes hold it, the restart policy, the vm.* sysctls, and MGLRU),
+`check_zram_size_ratio` (WARN if zram > 60% of RAM), `check_memory_headroom`
 (RAM-tier-aware: WARN below `max(100 MB, 10% × RAM)`, FAIL below
 `max(30 MB, 3% × RAM)`). Disk pressure is separate:
 `/state.resilience.disk` is the always-visible dashboard number, fail-soft to
