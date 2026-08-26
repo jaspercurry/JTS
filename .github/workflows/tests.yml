@@ -125,21 +125,10 @@ jobs:
         # anything the merge lane can, rather than curating a second
         # dependency subset that would drift.
         #
-        # A wedged apt mirror used to stall until the job ceiling (#2727), so
-        # every apt step here is bounded: `timeout` seconds per command, three
-        # attempts, worst case (3 x 2 x 45s + sleeps) inside timeout-minutes.
-        # Drop the retry if mirror hangs stop recurring.
-        timeout-minutes: 5
-        run: |
-          for attempt in 1 2 3; do
-            if sudo timeout 45 apt-get update \
-              && sudo timeout 45 apt-get install -y --no-install-recommends portaudio19-dev; then
-              exit 0
-            fi
-            echo "apt attempt ${attempt} failed" >&2
-            sleep 5
-          done
-          exit 1
+        # Bounded against apt-mirror hangs (#2727); the helper owns the retry
+        # budget its 6 minutes must cover.
+        timeout-minutes: 6
+        run: scripts/ci-apt-install.sh portaudio19-dev
 
       - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97  # v7.0.0
         with:
@@ -331,18 +320,9 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
 
       - name: System deps for sounddevice (portaudio)
-        # Bounded against apt-mirror hangs — see the docs lane's step (#2727).
-        timeout-minutes: 5
-        run: |
-          for attempt in 1 2 3; do
-            if sudo timeout 45 apt-get update \
-              && sudo timeout 45 apt-get install -y --no-install-recommends portaudio19-dev; then
-              exit 0
-            fi
-            echo "apt attempt ${attempt} failed" >&2
-            sleep 5
-          done
-          exit 1
+        # Bounded against apt-mirror hangs (#2727).
+        timeout-minutes: 6
+        run: scripts/ci-apt-install.sh portaudio19-dev
 
       - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97  # v7.0.0
         with:
@@ -489,18 +469,9 @@ jobs:
 
       - name: System deps for the ALSA crate
         if: steps.rust-needed.outputs.run == 'true'
-        # Bounded against apt-mirror hangs — see the docs lane's step (#2727).
-        timeout-minutes: 5
-        run: |
-          for attempt in 1 2 3; do
-            if sudo timeout 45 apt-get update \
-              && sudo timeout 45 apt-get install -y --no-install-recommends libasound2-dev; then
-              exit 0
-            fi
-            echo "apt attempt ${attempt} failed" >&2
-            sleep 5
-          done
-          exit 1
+        # Bounded against apt-mirror hangs (#2727).
+        timeout-minutes: 6
+        run: scripts/ci-apt-install.sh libasound2-dev
 
       - uses: Swatinem/rust-cache@e18b497796c12c097a38f9edb9d0641fb99eee32  # v2
         if: steps.rust-needed.outputs.run == 'true'
