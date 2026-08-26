@@ -2150,10 +2150,9 @@ def test_start_discloses_unproven_speaker_readiness_instead_of_refusing(
     )
 
     with caplog.at_level(logging.WARNING):
-        with pytest.raises(correction_setup.RequestConflict) as exc_info:
+        with pytest.raises(correction_setup.RequestConflict):
             correction_setup._handle_start(_DummyJsonHandler())
 
-    assert not isinstance(exc_info.value, correction_setup.RoomRequestFailure)
     assert reserved == ["reached"]
     assert "event=correction.start_unproven_speaker_readiness" in caplog.text
     assert f"reason={expected_reason}" in caplog.text

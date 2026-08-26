@@ -122,21 +122,6 @@ class RequestConflict(RuntimeError):
     """Client request conflicts with the current correction session state."""
 
 
-class RoomRequestFailure(RequestConflict):
-    """A rejected Room request with bounded homeowner presentation data."""
-
-    def __init__(
-        self,
-        diagnostic: str,
-        failure: Mapping[str, Any],
-        *,
-        status: HTTPStatus,
-    ) -> None:
-        super().__init__(diagnostic)
-        self.failure = dict(failure)
-        self.status = status
-
-
 class TuningSetupUnavailable(RequestConflict):
     """The optional tuning assistant has no configured model credential."""
 
@@ -7818,12 +7803,6 @@ def _make_handler(cfg: dict[str, Any]) -> type[BaseHTTPRequestHandler]:
                     from jasper.sound.graph_carrier import CarrierCannotHostEq
                     try:
                         self._send_json(_handle_start(self))
-                    except RoomRequestFailure as e:
-                        self._send_room_failure(
-                            e.failure,
-                            diagnostic=str(e),
-                            status=e.status,
-                        )
                     except (CorrectionRuntimeSafetyError, CarrierCannotHostEq) as e:
                         self._send_room_failure(
                             failures.public_failure(
@@ -8013,12 +7992,6 @@ def _make_handler(cfg: dict[str, Any]) -> type[BaseHTTPRequestHandler]:
                     from jasper.sound.graph_carrier import CarrierCannotHostEq
                     try:
                         self._send_json(_handle_apply(self))
-                    except RoomRequestFailure as e:
-                        self._send_room_failure(
-                            e.failure,
-                            diagnostic=str(e),
-                            status=e.status,
-                        )
                     except (CarrierCannotHostEq, CorrectionRuntimeSafetyError) as e:
                         self._send_client_error(
                             str(e),
@@ -8127,12 +8100,6 @@ def _make_handler(cfg: dict[str, Any]) -> type[BaseHTTPRequestHandler]:
                     from jasper.sound.graph_carrier import CarrierCannotHostEq
                     try:
                         self._send_json(_handle_propose_apply(self))
-                    except RoomRequestFailure as e:
-                        self._send_room_failure(
-                            e.failure,
-                            diagnostic=str(e),
-                            status=e.status,
-                        )
                     except BadRequest as e:
                         self._send_client_error(str(e))
                     except RequestConflict as e:
