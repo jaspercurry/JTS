@@ -51,6 +51,8 @@ from pathlib import Path
 
 import pytest
 
+from ._shell_corpus import shell_files
+
 _REPO = Path(__file__).resolve().parent.parent
 _DEPLOY = _REPO / "deploy"
 _DEPLOY_TO_PI = _REPO / "scripts" / "deploy-to-pi.sh"
@@ -502,46 +504,57 @@ def test_deploy_post_health_uses_lightweight_probe_on_low_memory_hosts():
     assert "/opt/jasper/.venv/bin/jasper-doctor" in body
 
 
+def test_deploy_verification_skipped_cleanly_under_interactive_sudo():
+    """The manifest read + doctor capture corrupt under `ssh -tt`, so they
+    must be guarded by the same passwordless-sudo gate as the identity and
+    direction guards — skipping with a notice rather than mis-verifying."""
+    text = _DEPLOY_TO_PI.read_text()
+    # The verify+surface calls live in the else-branch of a SUDO_INTERACTIVE
+    # check that prints a skip notice in the then-branch.
+    assert re.search(
+        r'if \[\[ "\$SUDO_INTERACTIVE" == "1" \]\]; then[\s\S]*?'
+        r'manifest \+ health checks skipped[\s\S]*?else[\s\S]*?'
+        r'verify_manifest_advanced[\s\S]*?surface_system_health[\s\S]*?fi',
+        text,
+    )
+
+
 # ----------------------------------------------------------------------
-# 5 — shell-dialect portability (the lanes execute this shell off-Pi)
+# 7 — shell-dialect portability (docstring invariant 5)
 # ----------------------------------------------------------------------
 
 # Two spellings each turned every macOS lane red regardless of the diff
 # under test: GNU-only `sed -i` (issue #3021) and bash-4 builtins (#3015,
 # reached once a test started executing deploy/bin helpers). Each has a
-# replacement that behaves identically under GNU/bash 5 on the Pi, so the
-# ban costs nothing there. Drop this guard if no lane ever executes deploy/
-# shell outside the Pi's dialect again.
+# replacement that behaves identically under GNU sed / bash 5 on the Pi, so
+# the ban costs nothing there. Drop this guard if no lane ever executes
+# deploy/ shell outside the Pi's dialect again.
 _NON_PORTABLE_SPELLINGS = (
     (
         "GNU-only in-place sed — BSD sed reads `-i`'s backup suffix as the "
         "NEXT ARGUMENT, so it parses the sed program as the suffix",
-        re.compile(r"\bsed\s+(?:-[a-zA-Z]+\s+)*(?:-i(?=[\s\\]|$)|--in-place)"),
-        "sed_inplace FILE EXPRESSION... (deploy/lib/jasper-sed-inplace.sh)",
+        # Scan sed's own argument run only (stop at a pipe/`;`/`&`), so a
+        # `grep -i` further down the line is not sed's; `-i` anywhere in that
+        # run counts, quoted-empty suffix (`-i''`) included, because the shell
+        # strips the quotes before sed ever sees them. `-i.bak` is the one
+        # accepted spelling.
+        re.compile(r"\bsed\b[^\n|;&]*?\s(?:-i(?=['\"]|[\s\\]|$)|--in-place)"),
+        "sed_inplace FILE EXPRESSION... from deploy/lib/jasper-sed-inplace.sh "
+        "— but only install-time shell can source it (install.sh reads it "
+        "from the deploy checkout; unlike its deploy/lib siblings it is NOT "
+        "installed to /usr/local/lib/jasper/). A deploy/bin script that runs "
+        "on the Pi must inline `sed -i.bak` + `rm -f` instead",
     ),
     (
         "bash-4-only builtin — macOS /bin/bash is 3.2",
-        re.compile(r"(?:^|[;&|(]\s*)(?:mapfile|readarray)\b|\bdeclare\s+-A\b"),
-        "a `while IFS= read -r` loop, or parallel indexed arrays",
+        re.compile(
+            r"\b(?:mapfile|readarray)\b"
+            r"|\b(?:declare|local|typeset)\s+-[A-Za-z]*A"
+        ),
+        "a `while IFS= read -r` loop, or parallel indexed arrays with a "
+        "linear scan (deploy/bin/jasper-headphone-monitor)",
     ),
 )
-
-
-def _deploy_shell_sources() -> list[Path]:
-    """Shell files under deploy/, selected by extension or shebang — the
-    discriminator the CI shell lane uses, so the two stay in step."""
-    sources: list[Path] = []
-    for path in sorted(_DEPLOY.rglob("*")):
-        if not path.is_file():
-            continue
-        with path.open("rb") as handle:
-            first = handle.readline(128)
-        if path.suffix != ".sh" and not (
-            first.startswith(b"#!") and b"sh" in first and b"python" not in first
-        ):
-            continue
-        sources.append(path)
-    return sources
 
 
 @pytest.mark.parametrize(
@@ -550,7 +563,7 @@ def _deploy_shell_sources() -> list[Path]:
     ids=("gnu-only-sed-inplace", "bash-4-only-builtins"),
 )
 def test_deploy_shell_stays_in_the_portable_dialect(reason, pattern, remedy):
-    sources = _deploy_shell_sources()
+    sources = shell_files("deploy")
     assert len(sources) >= 25, (
         f"shell-file selection collapsed to {len(sources)} files — the scan, "
         "not the tree, is what broke."
@@ -565,18 +578,3 @@ def test_deploy_shell_stays_in_the_portable_dialect(reason, pattern, remedy):
             if pattern.search(line):
                 offenders.append(f"{path.relative_to(_REPO)}:{lineno}")
     assert not offenders, f"{reason}: {offenders}. Use {remedy}."
-
-
-def test_deploy_verification_skipped_cleanly_under_interactive_sudo():
-    """The manifest read + doctor capture corrupt under `ssh -tt`, so they
-    must be guarded by the same passwordless-sudo gate as the identity and
-    direction guards — skipping with a notice rather than mis-verifying."""
-    text = _DEPLOY_TO_PI.read_text()
-    # The verify+surface calls live in the else-branch of a SUDO_INTERACTIVE
-    # check that prints a skip notice in the then-branch.
-    assert re.search(
-        r'if \[\[ "\$SUDO_INTERACTIVE" == "1" \]\]; then[\s\S]*?'
-        r'manifest \+ health checks skipped[\s\S]*?else[\s\S]*?'
-        r'verify_manifest_advanced[\s\S]*?surface_system_health[\s\S]*?fi',
-        text,
-    )
