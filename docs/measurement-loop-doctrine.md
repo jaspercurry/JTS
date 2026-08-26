@@ -36,8 +36,9 @@ anyone would understand: the engine's verbs *are* the loop's language.
   and rankings are advisory: they never veto an in-band experiment, and
   keep/rollback is decided by citing a measured delta, not a forecast.
 - **The owner rules** on taste and on which risk to accept.
-- **Hard stops exist only for a known component-damage mechanism** — never
-  for "this probably won't work" or "we haven't tried this before."
+- **Hard stops exist only for a known component-damage or hearing-safety
+  mechanism** — never for "this probably won't work" or "we haven't tried this
+  before."
 - **An unproven or stale fact discloses loudly and never stops the work.**
   Outside §4's clamps, staleness and unproven-ness are a doctor line, an
   `event=`, a UI hint — never a stop: last-known-good keeps playing and the
@@ -126,10 +127,11 @@ not a hard stop, whatever its name or its household screen says. The five
 expand to roughly **112 enforcement points** across the round path, because
 "the excitation ledger", "the output limiters" and "declared per-driver bands"
 are each families rather than single `raise` sites; that is why the list is
-short and the surface is not (refusal census, 2026-08-25; the counts and their
-composition are in
-[`REFACTOR-TUNING-2026-08.md`](REFACTOR-TUNING-2026-08.md) §1). Each guards a
-real component against damage, and nothing else on the bench may refuse.
+short and the surface is not (refusal census, 2026-08-25; the counts are in
+[`REFACTOR-TUNING-2026-08.md`](REFACTOR-TUNING-2026-08.md) §1, which declines
+to enumerate the 112 — the five items below are the composition, at family
+granularity). Each guards a real component — or the household's hearing —
+against damage, and nothing else on the bench may hard-stop.
 
 1. **The excitation ledger and the excitation safety plan**
    (`jasper/active_speaker/excitation_safety_plan.py`). The ledger admits a
@@ -137,12 +139,15 @@ real component against damage, and nothing else on the bench may refuse.
    any other fader position was never the one it admitted. Carried by the
    ledger's own excitation-identity and program-admission refusals and, at the
    moment of emission, by the per-stimulus fader hold
-   (`volume_latch.hold_fader_at` → `measurement_volume_drift`) and the session
-   volume plan (`session_volume_plan.py`). **The fail-closed half is the same
-   rule, not a second one**: the hold trips when the fader read and did not
-   agree, and equally when it could not be read at all, because a level that
-   cannot be established cannot be shown to be under the caps. It **proves and
-   never writes** — `SessionVolumePlan.open` sets the measurement volume once
+   (`volume_latch.hold_fader_at`), which **refuses `measurement_volume_drift`
+   rather than disclosing** because a fader above the declared volume drives
+   every branch past the declared level-duration limits this bullet exists to
+   enforce, and by the session volume plan (`session_volume_plan.py`). **The
+   fail-closed half is the same rule, not a second one**: the hold trips when
+   the fader read and did not agree, and equally when it could not be read at
+   all, because a level that cannot be established cannot be shown to be under
+   the caps. It **proves and never writes** —
+   `SessionVolumePlan.open` sets the measurement volume once
    per session, and a per-stimulus repair here would be a second writer moving
    the fader behind the session's back. It passes §5 because it refuses only
    what it cannot PROVE, after an independent second read, and every refusal
@@ -181,7 +186,7 @@ real component against damage, and nothing else on the bench may refuse.
    `mic_calibration_unavailable` (`audio_measurement/calibration.py` —
    "absolute SPL is never guessed"), `driver_cap_ceiling_underivable`, and the
    driver-floor confirmation pair.
-5. **Firmware brick hazards** — the XVF `SAVE_CONFIGURATION` ban
+5. **Firmware brick hazards** — e.g. the XVF `SAVE_CONFIGURATION` ban
    (`jasper/cli/aec_tune.py`).
 
 **One retention that is kept by ruling rather than by mechanism.** Blend's
@@ -207,8 +212,10 @@ by the adoption table on a measured delta (§3). Said here because the registry
 is the surface a reviewer reaches first, and two things wearing one name in
 one file is how it gets read as a list of stops. **A hard stop is a member of
 the list above and nothing else** — in the CLAMP / INTEGRITY / DISCLOSURE
-taxonomy ([ADR-0101](adr/0101-proven-once-disclose-on-change.md), §4a) those
-members are the CLAMPs, and `hard_stop` in the registry is a screen name.
+taxonomy ([`REFACTOR-TUNING-2026-08.md`](REFACTOR-TUNING-2026-08.md) §1 and
+[ADR-0002](adr/0002-measure-again-discriminator.md); the INTEGRITY class is
+§4a below) those members are the CLAMPs, and `hard_stop` in the registry is a
+screen name.
 
 Everything else — geometry blindness, beaming priors, confidence
 heuristics, prediction-engine rankings — is **provenance**, not a gate: it
@@ -217,17 +224,18 @@ LLM) to weigh. It must never refuse an experiment on its own.
 
 **What `deviation (a)`…`(i)` means, where a comment still says it.** This
 section used to carry a nine-row table of refusals that sat outside the list
-while they were burned down. Eight closed; the ninth is the retention above.
-The table is deleted because a positively complete list is what it was
-compensating for, and its record is in git history.
+while they were burned down. Eight closed; the ninth, row (e), is the
+retention above. **Closed did not always mean demoted** — rows (f) and (h)
+closed by being ADMITTED into the list above, and both still refuse. The table
+is deleted because a positively complete list is what it was compensating for,
+and its record is in git history.
 
 ### 4a. The integrity class — refusing a CLAIM
 
 The clamps are not the only refusals in the round path, and they are not the
 largest group. About **100 refusals protect the honesty of the evidence rather
 than the speaker**, against §4's **5 clamp mechanisms and their ~112
-enforcement points** (refusal census, 2026-08-25; the counts and their
-composition are in
+enforcement points** (refusal census, 2026-08-25; the counts are in
 [`REFACTOR-TUNING-2026-08.md`](REFACTOR-TUNING-2026-08.md) §1). The class is
 named here because a review holding only §4 and §5 re-derives "is this
 safety?" from scratch every time, which is how a quality ceiling wore a
@@ -292,8 +300,8 @@ fingerprint is a warning with a doctor line now, not a blocker.
 Before a review adds a new refusal, ask: **does this block a reversible
 experiment a scientist would run, on the theory it might not work?** If
 yes, it ships as an informational flag, never a gate. A refusal earns its
-place only by naming the component-damage mechanism it guards against —
-"seems risky" is not a mechanism.
+place only by naming the mechanism it guards against — component damage, or
+the household's hearing. "Seems risky" is not a mechanism.
 
 ## 6. Pointers
 
@@ -325,4 +333,6 @@ its ruling text re-read from that file, and the owner's 2026-08-22
 re-affirmation and intervention-granularity refinement quoted from #2865 and
 #2862, at writing time.
 
-Last verified: 2026-08-26
+Last verified: 2026-08-26 — §4's five clamps and §4a's named symbols were each
+grepped for a live producer at that day's `main`; §§1-3, 5 and 6 were re-read
+and stand.

@@ -176,7 +176,8 @@ One refusal still shapes what you can ask for, and it is about **boosts**:
 - **`boost_route_unavailable`** (blend): the summed blend stage refuses a
   positive gain and "is not a headroom term (opening it is a gain-structure
   change)"; a summed packet also "cannot say which driver a region's deficit
-  belongs to." Boosts go through the **driver** door instead.
+  belongs to." Boosts go through the **driver** door instead. **Retained by
+  ruling R8**, not a deviation to report — the doctrine's §4 states it.
 
 **A driver document may carry any filter the emitter can build — `Peaking`,
 `Highshelf`, `Lowshelf`.** A shelf must LEAD its role's chain, or (a `Highshelf`
@@ -224,8 +225,9 @@ EQ, trim, delay, and polarity — not the corner.
 five bullets, and it is stated there once — **positively complete**, so a
 refusal that is not one of the five or one of the enforcement families named
 under it is not a hard stop. Read it there; do not accept a sixth from
-anywhere. One that names no component-damage mechanism is a **deviation** to
-report, not a rule to obey.
+anywhere. One that names no component-damage or hearing-safety mechanism is a
+**deviation**: open an issue against the tuning program rather than obeying
+it, and say which of the five it was mistaken for.
 
 ## Exit codes
 
