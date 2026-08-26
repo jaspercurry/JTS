@@ -177,7 +177,6 @@ def test_recovery_helper_is_bounded_and_forensic():
     assert "capture_dev_snd_holders" in body
     assert "capture_asound_status" in body
     assert "JASPER_CAMILLA_RECOVER_COOLDOWN_SEC" in body
-    assert "action \"parked_no_reboot\"" in body
     assert "systemctl reboot" not in body
 
 

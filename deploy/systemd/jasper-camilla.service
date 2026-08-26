@@ -75,6 +75,12 @@ ExecStartPre=-/usr/local/sbin/jasper-camilla-pipe-guard
 ExecStart=/opt/camilladsp/camilladsp \
     -p 1234 -a 127.0.0.1 \
     --statefile /var/lib/camilladsp/outputd-statefile.yml
+# Retire jasper-camilla-recover's core-graph park (ADR-0175). The park record
+# is what makes the handler skip re-entry, so the thing that ends the park is
+# this unit starting again — an operator, a deploy, or a reboot. Best effort:
+# a park that outlives its cause would show a red doctor row on a box that is
+# playing. Path duplicated from jasper/control/camilla_recover_state.py.
+ExecStartPost=-/bin/rm -f /run/jasper-camilla-recover.state
 Restart=always
 RestartSec=2
 Nice=-10

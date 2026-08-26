@@ -1177,6 +1177,8 @@ code = [
   "jasper/control/airplay_health.py",
   "jasper/control/audio_health.py",
   "jasper/control/bootloop_guard_state.py",
+  "jasper/control/camilla_recover_state.py",
+  "jasper/control/park_record.py",
   "jasper/web/system_setup.py",
   "jasper/web/airplay_setup.py",
   "deploy/journald/**",
