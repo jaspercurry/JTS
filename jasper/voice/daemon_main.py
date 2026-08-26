@@ -90,8 +90,8 @@ def _active_model(cfg: Config) -> str:
     """Return the model name for the currently selected provider — used
     by startup-readiness logging and the silent-failure heuristic in
     `_end_turn` so journalctl shows the actual model in flight. Resolution
-    lives on `Config.active_voice_model` (shared with jasper-doctor); the
-    `<unknown:…>` sentinel keeps log lines legible for an unset provider."""
+    lives on `Config.active_voice_model`; the `<unknown:…>` sentinel keeps
+    log lines legible for an unset provider."""
     return cfg.active_voice_model or f"<unknown:{cfg.voice_provider}>"
 
 
