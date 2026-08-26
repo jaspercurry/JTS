@@ -12,7 +12,8 @@
 > truth this plan builds on. Read a shape question there and a scheduling
 > question here.
 
-**STATUS — all eight sections VERIFIED-COMPLETE, re-derived at `4a9e9f631`.**
+**STATUS — all eight sections VERIFIED-COMPLETE, re-derived at `4a9e9f631`.
+§6's three open decisions are SETTLED-OR-BRIEFED, re-derived at `c253c3cf1`.**
 
 | § | Section | Status |
 |---|---|---|
@@ -22,7 +23,7 @@
 | 3 | Recommender binding | VERIFIED-COMPLETE |
 | 4 | Seam colour reconciliation | VERIFIED-COMPLETE |
 | 5 | Front-end wiring | VERIFIED-COMPLETE |
-| 6 | God-file dissolution map | VERIFIED-COMPLETE |
+| 6 | God-file dissolution map | VERIFIED-COMPLETE · **6.1 RULED** |
 | 7 | Merge-order DAG + floor accounting | VERIFIED-COMPLETE |
 | 8 | Risks and tiers | VERIFIED-COMPLETE |
 
@@ -957,7 +958,7 @@ already moved to `crossover_v2/refusal_copy.py` (see the note at `:524-539`).
 | module charter | 1–107 | dies with the file (design doc owns it) |
 | imports / TYPE_CHECKING | 109–253 | dissolves |
 | **four re-export barrels** — phase vocabulary, fc-sweep, capture-plan/geometry/tiers, refusal copy | 255–630 | **delete.** Historical-name doors; #3076 already killed a fifth |
-| tuning constants + their essays | 631–877 | **NO HOME — needs a decision** (each constant to its consuming organ, or one `contracts` block) |
+| tuning constants + their essays | 631–877 | **RULED — 6.1.** Seven constants are passengers of the rows that hold their readers; one goes to `contracts.py`; the essays become ADRs |
 | pure helpers: alignment plausibility · capture integrity/SNR fields · VERIFY evidence/claims · SNR log fields | 878–1395 | §2 (they are analyses) |
 | `AnalyzeCapture` · `RecordModelError` · `V2FlowSeams` · `V2ConductorSnapshot` | 1428–1698 | `V2FlowSeams` → §5 (`EngineSeams` replaces it); `V2ConductorSnapshot` → §1 |
 | attempt-history serialization | 1699–1923 | §1 (`persist`/`read_state`) |
@@ -1012,6 +1013,114 @@ banner comments mark its own sections.
 | **the two preparers** (916 lines, near-duplicate twins) | 5944–6901 | §5 (W5-a) — the biggest de-dup win in either file |
 | **apply transaction** (`handle_v2_apply`, 399 lines) | 6904–7360 | **STAYS.** Row 6's kept 1,185 lines |
 | delta-probe rollback · restore/Undo · apply-blocked tail | 7363–8088 | **stays** |
+
+### 6.1 RULED — the constants are passengers; the essays are the decision
+
+**Tier: CONDUCTOR.** Ruling S7 (`REFACTOR-TUNING-2026-08.md:1195-1204`) and R7
+(`:1630-1633`) already supply the mechanism, and a caller census removes the
+placement question. Nothing here is taste.
+
+**What the block IS.** `:631-877`, 247 lines, under a banner that still reads
+*"tuning constants (PROVISIONAL pending W6 bench validation)"* (`:632`). Fifteen
+names, and they are three unrelated things:
+
+- **Six re-export doors** — `GAIN_CAP_BACKOFF_DB` `:637`, `PILOT_LEVEL_DELTA_DB`
+  `:641`, `LOCATE_MIN_CONFIDENCE` `:644`, `VERIFY_TOLERANCE_DB` `:647`,
+  `courtesy_prelude_for_phase` `:869`, `CrossoverV2FlowError` `:875`. Each is
+  `X = _module.X` with a comment naming the owner. They are not constants; they
+  are **row 3's barrels under a different banner** and they die with row 3. One
+  carries a live warning: `courtesy_prelude_for_phase`'s comment (`:864-868`)
+  says **nothing in this module reads it any more** and names the test that pins
+  the door — *"do not delete it as dead on an importer grep alone."*
+- **One function**, `verify_absolute_tolerance_db` `:650` (34 lines incl. its
+  docstring), which derives a tolerance from `flat_spec.SPEC_BANDS` `:677-683`.
+  That is an analysis, not a constant. It rides the pure-helper row
+  (`:878-1395` → §2), and its in-file readers `:1133`/`:1156` are in that row.
+- **Eight real definitions.** Below.
+
+**Every one of the eight has zero production readers outside this file** — one
+exception, and it is a script. Counted wrap-safe over `jasper/`, `scripts/`,
+`rust/`, `deploy/`, `tests/`:
+
+| Constant | def | In-file readers | Outside `crossover_v2_flow.py` | §6 row owning the reader |
+|---|---|---|---|---|
+| `CLIP_RETRY_BACKOFF_DB` | `:639` | `:4820` | none (prose only: `program_analysis.py:5806`) | 4627–5279 |
+| `MEASUREMENT_DISTANCE_M` | `:687` | `:2371` | none | **`__init__`** 2181–2957 |
+| `ALIGNMENT_CONFIDENCE_TRUST_FLOOR` | `:698` | `:4767 :4775 :4854` | none (prose: `durable_state.py:822`, `capture_dispatch.py:282`) | 4627–5279 |
+| `ALIGNMENT_DELAY_PLAUSIBILITY_MARGIN_MS` | `:711` | `:918 :942` (default args) | **`scripts/severed-twin-replay.py:302`** | 878–1395 |
+| `MEASURE_PREDICTED_RIPPLE_DISCLOSURE_DB` | `:767` | `:4724 :4731 :4849` | none (prose: `program_analysis.py:1589 :6823`) | 4627–5279 |
+| `VERIFY_PILOT_TRANSFER_STEP_CEILING_DB` | `:783` | `:7766 :7790 :7904 :7922` | none (prose: `refusal_copy.py:243`, `capture_dispatch.py:784 :810`) | 7305–7924 |
+| `VERIFY_REPEAT_FLOOR_DB` | `:848` | `:2863 :7642 :7650 :7658 :7683` | none | 7305–7924 |
+| `VERIFY_TERMINAL_OUTCOME_DETERMINISTIC` | `:857` | `:7845` | none | **`contracts.py`** |
+
+**So "each constant to its consuming organ" was never a decision — the consuming
+organ is this file.** Seven of the eight are **passengers**: they move in the PR
+that moves the row holding their reader, and §6's row should say so rather than
+reserve a choice nobody has to make. Six of the seven ride two rows (4627–5279
+and 7305–7924, both → §2); `MEASUREMENT_DISTANCE_M` rides `__init__`;
+`ALIGNMENT_DELAY_PLAUSIBILITY_MARGIN_MS` rides the pure helpers **and is the one
+that needs an importer rider** — `scripts/severed-twin-replay.py:302` imports it
+by name.
+
+**The eighth is the only real placement call, and `contracts.py` wins it for the
+reason it loses the other seven.** `VERIFY_TERMINAL_OUTCOME_DETERMINISTIC` is a
+**wire-contract slot value**, not a threshold: `capture_relay/session.py:2377`
+reads `terminal_outcome` as an opaque string and never branches on it, exactly as
+`:855-856` claims. `contracts.py` is already where that class of name lives —
+`MEASURE_KINDS :1433`, `POLARITIES :1451`, `POSITION_AXES :1456`, `ADOPTION_ROWS
+:1135`, `ATTEMPT_METRIC_VERIFY_MAX_NOTCH_EXCLUDED :1408`. **The "one `contracts`
+block" option is wrong for the other seven** for the same reason: that module
+holds vocabulary the wire and the record share, and a threshold read by exactly
+one analysis is not shared vocabulary. Parking it there separates the number from
+the only code that reads it — the god file's own defect, rebuilt at package
+scale.
+
+**The decision §6 actually reserved is the prose, and S7 already settled it.**
+~200 of the 247 lines are essay, and it is not narration. Four classes:
+
+| Class | Instance | Disposition |
+|---|---|---|
+| measurement provenance with a named primary source | `VERIFY_REPEAT_FLOOR_DB`'s derivation from `captures/repeat-floor-20260731/README.md` (`:789-797`) | **ADR** |
+| a dated owner ruling | the ripple's *"converted from a refusal to a disclosure by owner ruling on 2026-08-03, issue #2087"* (`:713-714`); the trust floor's nanny-burn-down demotion (`:691-697`) | **ADR** |
+| an SSOT claim with a recurrence | *"This composition is OWNED here; cite this comment rather than re-quoting a count"* (`:720-721`) | **ADR**, then cited — never re-quoted |
+| a non-derivable maintainer trap | *"a maintainer must NOT 'tighten' this toward 0.17016 believing it moves safe-ward: it moves the other way"* (`:822-824`) | **stays a comment** |
+
+S7: a ruling that still binds the new engine and lives only in a docstring
+*"becomes an ADR in `docs/adr/`, and the docstring shrinks to `See ADR-NNNN`"* —
+range **ADR-0002–0099**, of which **0020–0099 are free at HEAD** (0001–0019 and
+0100+ are taken). R7 makes the extraction *"a prerequisite, not a nicety."* The
+precedent is already on `main`: **ADR-0010 was cut from two docstrings in this
+exact file** and says so (`0010-candidate-build-commits-nothing.md:19-23`).
+
+**One essay is load-bearing in a way a reviewer will not guess.**
+`MEASURE_PREDICTED_RIPPLE_DISCLOSURE_DB`'s comment declares itself the single
+source for the 13-capture corpus composition **and names the incident that made
+it so** — *"issue #2015 traced a since-corrected 12-capture, two-chain
+restatement elsewhere to a copy that dropped the phone measure"* (`:721-723`).
+That is a ruling with a recorded recurrence. Deleting it into git history
+restores precisely the drift #2015 recorded, and re-typing it anywhere creates
+the second copy it exists to prevent.
+
+**Work item W6-a — extract the rulings; the constants then ride for free.** One
+**docs-only** PR: four ADRs (the trust floor's demotion · the ripple's #2087
+conversion *and* its corpus composition · G3's pilot-transfer evidence ·
+`VERIFY_REPEAT_FLOOR_DB`'s derivation with its `CLAIM_FLOOR_P95_MULTIPLE`
+second-spelling note at `:799-809`). No code moves. Each later row then carries
+its own constants and shrinks their comments to `See ADR-NNNN` plus the trap.
+*Size:* 4 ADRs, **0 lines of code touched.** *Independent — schedulable at
+tier 0*, and it is a **hard prerequisite** for rows 4627–5279, 7305–7924 and
+`__init__`: none of them may cut prose before it lands. *Verification bar:* every
+deleted essay paragraph is quoted verbatim in exactly one ADR, and the surviving
+comment cites it — mutation-checked by grepping the tree for a second copy of the
+13-capture composition. *Tier:* mechanical (docs).
+
+**One stale-looking label, flagged not fixed.** The banner (`:632`) and five of
+the eight essays say *"PROVISIONAL pending W6 bench validation"*, while
+`crossover-measurement-productization-design.md:25` records **W1–W6 complete**
+(2026-07-19) and the trust floor's own text (`:693-695`) already cites a live
+bench datum that *"undercut it."* Either the label is spent or it names a bench
+that is not that W6. **A one-sentence question for whoever writes the ADRs — not
+the executor's to guess**, and not this pack's to answer.
 
 ### Deletion order
 
