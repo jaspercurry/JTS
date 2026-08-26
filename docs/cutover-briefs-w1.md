@@ -34,7 +34,7 @@ word. Where §1 is right, this brief says so instead of re-asserting it as new.
 |---|---|---|---|
 | D1 | W1-a implements `bank` / `read` / `persist` / `read_state` (`:254-264`), stated in the sync colour the protocol carries today | §4's ruling — *"`RecordStore` is cut async before it is built"* (`:707-713`) — makes all four `async def` | **read §1 and §4 together.** The DAG (`:1044`) already gates `W1-a ◄── W4-a`, so this is a scheduling fact §1's item text simply does not repeat. **Build the four methods async.** §2 below writes the signatures out. |
 | D2 | `persist`/`read_state` land on `persist_conductor_state`'s shape (`web/…:2809`), *"wave 3's schema writer with no schema"* | The schema now exists. `build_conductor_state` (`durable_state.py:1025`) owns the whole document and *"touches no file"* (`:1038`); `ConductorState` (`:97`) carries `state` + `durable`. `persist_conductor_state` is `web/…:2809-2867` — **58 lines**, a write wrapper | **premise moved, in the executor's favour.** The pure builder W1-a needed is already extracted. `session_seams.py:215-216` still calls it *"an 854-line function"* — that docstring is stale; fix it in W1-a's PR (§2.6). |
-| D3 | *"One new module … over the `evidence/v1` layout `commissioning_evidence_store.py` already owns"* (`:255-257`) | The two pairs cannot share one backend. `bank` is **write-once** — `_write_once` raises `PATH_CONFLICT` when a path takes different bytes (`commissioning_evidence_store.py:666-675`). `persist` runs **once per consumed capture** (`save_v2_state`'s own docstring, `web/…:507-510`) and overwrites one file | **one module, two backends.** `bank`/`read` → the evidence store; `persist`/`read_state` → `save_v2_state`/`load_v2_state`. This is not a departure from §1's intent — `session_seams.py:255-260` already describes the persist half as *"the store this replaces overwrites its one file every persist"* — but §1's item text reads as one layout, and a builder who took it literally would hit `PATH_CONFLICT` on the second capture. |
+| D3 | *"One new module … over the `evidence/v1` layout `commissioning_evidence_store.py` already owns"* (`:255-257`) | The two pairs cannot share one backend. `bank` is **write-once** — `_write_once` raises `PATH_CONFLICT` when a path takes different bytes (`commissioning_evidence_store.py:666-675`). `persist` runs **once per consumed capture** (`save_v2_state`'s own docstring, `web/…:512-515`) and overwrites one file | **one module, two backends.** `bank`/`read` → the evidence store; `persist`/`read_state` → `save_v2_state`/`load_v2_state`. This is not a departure from §1's intent — `session_seams.py:255-260` already describes the persist half as *"the store this replaces overwrites its one file every persist"* — but §1's item text reads as one layout, and a builder who took it literally would hit `PATH_CONFLICT` on the second capture. |
 | D4 | W1-a's verification bar names bank/read/round-trip and the discriminator constant (`:261-263`) — no error contract | `SeamFailure` has **no production definition**: `tests/engine_twin.py:81` is the only one in the tree (`jasper/` has zero). The engine does not catch it — `session.py:598` calls `bank` bare | **gap, closed in §2.5.** The store's raise behaviour is unspecified by the protocol, and it is the one thing the twin *cannot* pin because its exception type is test-only. |
 | D5 | *"`read` and `read_state` have no engine caller"* (`:76-77`) | Holds, and is sharper: `PriorBank.read` (`prior_bank.py:115`) calls `store.read_state` at `:127` and `_baselines_by_pose` (`:151`) calls `store.read` at `:157` | **holds.** Named here because `PriorBank` is the *only* consumer, so it is the acceptance test for the read halves. |
 
@@ -218,7 +218,7 @@ Not the evidence store. The backend is the pair in `web/correction_crossover_v2.
 
 | | Symbol | Line | Behaviour that matters |
 |---|---|---|---|
-| write | `save_v2_state(state, *, durable=False)` | `:488` | atomic rename always; fsync only when `durable=True`. The rule (#2291) is at `:494-517`: durable where power loss would lose the rollback anchor or falsify a receipt, cheap everywhere else |
+| write | `save_v2_state(state, *, durable=False)` | `:488` | atomic rename always; fsync only when `durable=True`. The rule (#2291) is at `:497-518`: durable where power loss would lose the rollback anchor or falsify a receipt, cheap everywhere else |
 | read | `load_v2_state()` | `:465` | returns `None` for missing, malformed, wrong `kind`, or wrong `schema_version` (`:479-484`) — **never raises** |
 
 Path: `DEFAULT_V2_STATE_PATH = /var/lib/jasper/active_speaker_crossover_v2_state.json`
@@ -242,9 +242,9 @@ present — `session.py:502` engine-side, `built.state["session_id"]`
 (`web/…:2839`) host-side. No new field.
 
 **Do not add durability.** `persist` runs once per consumed capture, and
-`web/…:512-514` says an fsync per capture *"buys nothing that the next capture's
+`web/…:512-515` says an fsync per capture *"buys nothing that the next capture's
 write does not already redo"*. `durable=True` stays with the three writes
-`:496-517` enumerates; fsyncing every `persist` regresses a documented #2291
+`:497-510` enumerates; fsyncing every `persist` regresses a documented #2291
 decision.
 
 ### 2.5 The error contract — the gap §1's bar does not cover (D4)
