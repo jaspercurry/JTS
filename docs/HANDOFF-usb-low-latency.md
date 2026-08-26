@@ -10,8 +10,6 @@ Neighbouring owners — do not restate them here:
 measure, the current measured numbers, the per-stage breakdown, what a fresh
 install ships) · [HANDOFF-usbsink.md](HANDOFF-usbsink.md) (the USB source's data
 plane and observed state) ·
-[HANDOFF-audio-graph-consolidation.md](HANDOFF-audio-graph-consolidation.md)
-(program-wire width and the ring transport) ·
 [testing-tooling.md](testing-tooling.md#route-latency-clickcapture-harness) (the
 harness architecture). Decisions: the evidence gate is
 [ADR-0108](adr/0108-a-latency-claim-is-earned-by-a-measured-artifact.md), the
@@ -22,12 +20,11 @@ and the single-capture-pipeline rule is
 
 ## Current production route
 
-`usb_low_latency_48k` is the claiming profile. On a ring-eligible USB gadget box
-the product default is the shm-ring path, and `jasper-fanin` DIRECT-captures the
-gadget as the sole USB ingress. The capture is `S32_LE` at the gadget; whether
-fan-in narrows it follows the box's program wire
-(`Config::program_wire_is_wide`), whose format half defaults wide — so on a
-ring-armed box the gadget's `i32` reaches the summed write intact.
+`usb_low_latency_48k` is the claiming profile. `jasper-fanin` DIRECT-captures
+the gadget as the sole USB ingress. The capture is `S32_LE` at the gadget;
+whether fan-in narrows it follows the box's program wire
+(`Config::program_wire_is_wide`), which defaults wide — so the gadget's `i32`
+reaches the summed write intact.
 
 ```
 UAC2 gadget capture
@@ -58,82 +55,14 @@ measured steady numbers. jts.local runs `1536` as a box tuning. Both clear the
 resampler churn floor by a wide margin (`target + cushion >= minimum_safe_fill +
 period + 32` = 562 at the default geometry).
 
-`JASPER_OUTPUTD_CONTENT_BUFFER_FRAMES` has no place in the ring-coupled set:
-under `shm_ring` outputd reads Ring B directly and never opens an ALSA content
+`JASPER_OUTPUTD_CONTENT_BUFFER_FRAMES` has no place in the shipped set:
+outputd reads Ring B directly and never opens an ALSA content
 capture PCM, so the key's only consumer (`configure_pcm`) is skipped and
 `jasper.audio_runtime_plan` does not emit it. outputd's `/state` publishes the
 honest Ring B capacity in `content.ring.capacity_frames` next to a synthetic
 period-sized `content.buffer_frames`, and `jasper-doctor` validates ring
 geometry rather than mis-applying the ALSA `>= 2× period` jitter floor to the
 synthetic.
-
-**Disarm re-emits the direct-bridge floor, and does it without deafening wake.**
-When the coupling reconciler disarms a live `shm_ring` bridge back to `direct`
-(`_disarm` in
-[`jasper/fanin/coupling_reconcile.py`](../jasper/fanin/coupling_reconcile.py)),
-it kicks `jasper-audio-hardware-reconcile` afterwards so the direct-bridge floor
-(`1536`) re-emits promptly; without the kick the box would sit on outputd's
-larger compile-time default until the next udev/boot/deploy event, since that
-reconciler has no timer. The kicked pass classifies its restart by cause: a
-DAC-identity or asound-render change still takes the full path (blocking
-`systemctl stop jasper-voice`, then `--no-block` restarts of outputd and
-`jasper-aec-reconcile`), but a pass whose only committed delta is `outputd.env`
-takes `restart_outputd_only` — one `--no-block` outputd restart, no voice stop,
-no AEC kick. So a household `/sources/` USB toggle-off no longer costs ~10–15 s
-of wake deafness. Skipping the voice stop requires BOTH no DAC-identity change
-AND no asound render, so any uncertainty falls through to the full path.
-`_recover_to_loopback` (the arm-failure rollback) intentionally skips the kick: a
-just-failed box gets the larger fail-safe cushion and less daemon churn, and the
-floor re-emit waits for the next udev/boot/deploy event.
-
-## Loopback fallback floor
-
-The fan-in→Camilla loopback coupling is the fallback when the ring gates fail,
-the box is not ring-eligible, or an operator freezes the coupling
-(`JASPER_FANIN_COUPLING_CHOICE=operator`). USB ingress still uses fan-in DIRECT;
-there is no USB bridge fallback. The tuned Apple USB-C DAC floor below is the
-best hand-tuned set measured on jts.local — a reference, not the shipped code
-defaults:
-
-| Layer | jts.local tuned floor | Rejected lower setting |
-|---|---:|---|
-| fan-in input buffer | 4096 frames | 512/1024/2048/3072 failed lock/acquisition |
-| fan-in USB resampler | target 512 + cushion 1536 (held 2048) | held target 1920 and below relocked/silenced |
-| CamillaDSP | chunksize 256 / target 1536 | target 1024 caused playback xruns |
-| outputd | period 128 / DAC buffer 256 | 64/128 caused playback xruns |
-| outputd content capture | buffer 1536 | 640/768/1024/1280 caused content xruns |
-
-```text
-JASPER_FANIN_INPUT_BUFFER_FRAMES=4096
-JASPER_FANIN_INPUT_RESAMPLER_TARGET_FRAMES=512
-JASPER_FANIN_INPUT_RESAMPLER_WARMUP_CUSHION_FRAMES=1536
-JASPER_FANIN_INPUT_RESAMPLER_RING_FRAMES=4096
-JASPER_FANIN_INPUT_RESAMPLER_MAX_ADJUST_PPM=500
-JASPER_FANIN_OUTPUT_BUFFER_FRAMES=1024
-JASPER_CAMILLA_CHUNKSIZE=256
-JASPER_CAMILLA_TARGET_LEVEL=1536
-JASPER_OUTPUTD_PERIOD_FRAMES=128
-JASPER_OUTPUTD_DAC_BUFFER_FRAMES=256
-JASPER_OUTPUTD_CONTENT_BUFFER_FRAMES=1536
-JASPER_OUTPUTD_CONTENT_BRIDGE=direct
-JASPER_FANIN_CAMILLA_COUPLING=loopback
-```
-
-`JASPER_OUTPUTD_CONTENT_BUFFER_FRAMES=1536` is coupled to
-`JASPER_OUTPUTD_PERIOD_FRAMES=128`. If the DAC is transiently absent during USB
-re-enumeration, `jasper.audio_runtime_plan` suppresses the low-latency content
-buffer and leaves outputd on the conservative pair (`1024/4096`) until the
-profile floor is available again; `jasper-audio-hardware-reconcile` stages and
-validates the whole `outputd.env` candidate's buffer/period pairs before
-replacing the prior file, and `jasper-outputd-failure-reconcile` gives exit 78
-one bounded re-reconcile plus retry so a settled DAC self-heals instead of
-wedging silently.
-
-The claiming route hard-fails on any `JASPER_OUTPUTD_CONTENT_BRIDGE` value other
-than `direct` or a coherent `shm_ring` pair. The deleted `rate_match` lab
-transport fail-safes to `direct` at the daemon so a stale env line cannot park
-the final-output owner, but `audio_runtime_plan._route_policy_errors` compares
-the raw literal, so a box still carrying one reports an honest red claim.
 
 ## Earning the claim
 
@@ -221,7 +150,8 @@ unavailable, no crash).
 | `enabled` | **Armed (product default when USB is allowed).** Fan-in DIRECT-captures `hw:UAC2Gadget`; the oneshot marker proves bounded composition/card readiness. |
 | off (`disabled`) | **Disarmed → USB unavailable.** Fan-in's `usbsink` lane falls back to the idle aloop until an `--auto` pass re-arms it. Observable as fan-in lane `source:"lane"`. |
 
-Arming is derived, never hand-set. `jasper-fanin-coupling-reconcile --auto` is
+Arming is derived, never hand-set. The fan-in USB reconciler
+(`jasper.fanin.coupling_auto`) is
 the **single writer** of the three fan-in keys (`JASPER_FANIN_USB_DIRECT`,
 `JASPER_FANIN_HOST_CLOCK`, `JASPER_FANIN_RESAMPLER_CUSHION_DECAY`) into
 `/var/lib/jasper/fanin.env`. It runs at boot and deploy, is kicked live by the
@@ -231,19 +161,18 @@ effective gate is canonical USB intent **and** current local-source role
 permission, so a desired-On follower stays persisted On while its direct lane
 remains disarmed until unpark. Off a combo box the reconciler writes the
 explicit `disabled` value rather than unsetting — a stale `enabled` in
-`/etc/jasper/jasper.env` loads first and would otherwise win. To freeze the
-transport coupling for lab work, set `JASPER_FANIN_COUPLING_CHOICE=operator`.
+`/etc/jasper/jasper.env` loads first and would otherwise win.
 
-**A combo arm/disarm restart is CamillaDSP-coordinated.** On a live `shm_ring`
-coupling a bare fan-in restart used to SIGKILL CamillaDSP: camilladsp captures
+**A combo arm/disarm restart is CamillaDSP-coordinated.** A bare fan-in restart
+used to SIGKILL CamillaDSP: camilladsp captures
 Ring A through the `jts_ring_capture` ioplug, and when fan-in's ring writer
 detached, the capture reader busy-spun a core until camilladsp (`SCHED_FIFO`,
 `LimitRTTIME=200000` µs) hit the kernel `RLIMIT_RTTIME` hard SIGKILL ~213 ms
 later, cascading through `Restart=always` → start-limit → `OnFailure` → a full
-core-graph bounce. `coupling_reconcile._restart_fanin_coordinated` pauses
+core-graph bounce. The reconciler pauses
 CamillaDSP with a clean SIGTERM before the fan-in restart and resumes it after
 fan-in re-signals `READY=1` — mirroring the order `jasper-camilla-recover`
-already proves. Loopback keeps its plain restart (snd-aloop decouples the two).
+already proves.
 The root cause was also fixed underneath: `c/jts-ring-ioplug` now does its
 per-wake service work (timerfd drain plus wall-clock-paced silence arm) in
 `capture_service_tick()`, called from both `poll_revents` and the capture

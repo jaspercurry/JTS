@@ -28,29 +28,23 @@ single Apple, dual Apple, and DAC8x profiles the same TTS semantics.
 MUSIC chain (gets CamillaDSP processing)
     renderers / correction sweeps → private fan-in lanes
               → hw:Loopback,0,0..4 → snd-aloop → hw:Loopback,1,0..4
-              → jasper-fanin → hw:Loopback,0,7
               (a lane ARMED for ring ingress replaces its snd-aloop hop with
                a per-renderer SHM slot ring — /dev/shm/jts-ring/lane-<label>.ring,
                written by the renderer's own jts_ring ioplug and read by fan-in.
                Arming is per box and operator-explicit; the fleet default is
                unarmed, and an unarmed box runs the aloop path above.
                See HANDOFF-fan-in-daemon.md "Lane sources".)
-              → snd-aloop → pcm.jasper_capture (dsnoop on hw:Loopback,1,7)
-              → jasper-camilla (main_volume + filters)
-              → outputd_content_playback
-              → snd-aloop → outputd_content_capture
+              → jasper-fanin → Ring A (/dev/shm/jts-ring/program.ring)
+              → jasper-camilla (jts_ring_capture; main_volume + filters)
+              → Ring B (/dev/shm/jts-ring/content.ring), or the ACTIVE ring
+                (/dev/shm/jts-ring/active-content.ring) on a roleful box
               → jasper-outputd → outputd_dac → amp → speakers
 
 TTS / CUE chain (CROSSED OVER on every output profile)
     jasper-voice OutputdTtsPlayout → /run/jasper-fanin/tts.sock
                                    → jasper-fanin, mixed after program duck
                                    → jasper-camilla crossover/protection
-                                   → outputd_content_* (passive box), or the
-                                     ACTIVE ring on an armed roleful box — the
-                                     aloop outputd_active_content_* pair's PCM
-                                     defs were deleted at P9-C, so an
-                                     unarmed/rolled-back roleful box still
-                                     names it and outputd parks
+                                   → Ring B, or the ACTIVE ring on a roleful box
                                    → jasper-outputd final sink
                                    → selected DAC(s) → amps → drivers
 ```
@@ -70,44 +64,40 @@ voice while keeping outputd TTS unarmed. See
 [HANDOFF-distributed-active.md](HANDOFF-distributed-active.md) for the
 active-endpoint route.
 
-On ring-eligible stereo boxes, `jasper-outputd` normally reads Ring B:
-CamillaDSP writes the post-DSP stereo program to `jts_ring_playback`, and
-outputd consumes `/dev/shm/jts-ring/content.ring` one DAC-sized slot at a
-time. A roleful (active-crossover) box has a ring of its own — the ACTIVE
-ring, `jts_ring_active_playback` → `/dev/shm/jts-ring/active-content.ring`
-— carrying POST-crossover per-driver channels rather than a full-range
-stereo program. Reaching it the first time is an explicit
-`jasper-fanin-coupling-reconcile shm_ring`; since P6 the unattended pass
-also converges a roleful box that ALREADY carries a proven graph — a
-hardware-fingerprint-matched applied baseline, or the all-muted staged
-anchor (`ring_roleful_unattended_ready`) — and refuses, fail-closed, one
-that carries neither. Either way outputd admits it only when the hardware
-reconciler's `JASPER_OUTPUTD_RING_ACTIVE_ENDPOINT` marker says so. The role rides the
-device NAME because it cannot ride the width: on a 2-way speaker both
-rings are 2 channels. The legacy `direct` content capture lane remains
-the fail-safe path for ring-ineligible topologies, operator-frozen boxes,
-and every roleful box the unattended pass has not converged — which since
-#2285 P7 means one it REFUSES (no proven graph, a diverged applied record,
-a failing gate), not merely one nobody has typed the arm on. Those two
-are the whole vocabulary of `JASPER_OUTPUTD_CONTENT_BRIDGE`: a third value,
-`rate_match` (an outputd-owned bounded ring plus ppm-clamped rate matcher at
-this final content/DAC clock boundary), was **deleted** after it failed the
-2026-07-02 USB tuning. A persisted `rate_match` fail-safes to `direct`, and
-AirPlay latency rendering no longer carries a bridge term at all.
+The SHM slot ring is the only transport between fan-in, CamillaDSP, and
+outputd. `jasper-outputd` reads Ring B: CamillaDSP writes the post-DSP
+stereo program to `jts_ring_playback`, and outputd consumes
+`/dev/shm/jts-ring/content.ring` one DAC-sized slot at a time. A roleful
+(active-crossover) box has a ring of its own — the ACTIVE ring,
+`jts_ring_active_playback` → `/dev/shm/jts-ring/active-content.ring` —
+carrying POST-crossover per-driver channels rather than a full-range stereo
+program. The role rides the device NAME because it cannot ride the width:
+on a 2-way speaker both rings are 2 channels, so outputd admits the ACTIVE
+ring only when the hardware reconciler's
+`JASPER_OUTPUTD_RING_ACTIVE_ENDPOINT` marker says so. The snd-aloop
+loopback route between those three daemons, and the machinery that migrated
+a live box between the two, were retired under
+[ADR-0100](adr/0100-one-audio-transport.md).
+
+A topology the ring cannot serve does not degrade onto a second path — it
+parks loudly: doctor FAIL, `/state.resilience.transport_park`, and a
+household banner naming the shape and its tracked issue.
+`jasper/control/transport_park.py` is the single classifier all three
+surfaces read, so they cannot name different reasons for the same box. The
+shapes it names are a passive-stereo composite sink (#2982), an explicit
+mono full-range layout (#3117), a bonded member whose `dac_content`
+round-trip lane outputd refuses against the ring (#3118), and a roleful box
+whose ACTIVE endpoint marker has not converged (a recorded remedy rather
+than an open issue). Hard-park refusals that prevent guessing — a
+full-range program into a protected driver — are separate and survive:
+they are hearing safety, not transport arbitration.
 
 Each renderer has its own snd-aloop lane, and room-correction/test
-playback has a dedicated `correction_substream` lane. `jasper-fanin`
-sums those lanes; on ring-coupled boxes it writes Ring A for CamillaDSP
-and **nothing else**. The lossy lane-7 mirror it used to write alongside
-the ring lost its last in-tree reader at U4/P7-2 and was dropped at
-U4/P7-4, so on a ring-coupled box `hw:Loopback,0,7` has neither a writer
-nor a reader.
-(Its `pcm.jasper_ref` alias is shipped alongside but has no reader —
-see below.) On loopback fallback boxes, lane 7 is the program path:
-CamillaDSP still captures `pcm.jasper_capture` directly. Production AEC
-consumes outputd's post-Camilla speaker monitor. This replaced the
-short-lived renderer-side dmix (`jasper_renderer_mix`) after AirPlay
-testing showed dmix's per-write timing could drop WiFi-bursty RTP
+playback has a dedicated `correction_substream` lane. `jasper-fanin` sums
+those lanes and writes Ring A for CamillaDSP and **nothing else**.
+Production AEC consumes outputd's post-Camilla speaker monitor. This
+replaced the short-lived renderer-side dmix (`jasper_renderer_mix`) after
+AirPlay testing showed dmix's per-write timing could drop WiFi-bursty RTP
 packets.
 
 ## Manual source selection
@@ -195,11 +185,8 @@ mixer, a second output device, or a new volume model.
    `plug`. Current allocation (the pair allocation lives canonically in
    `deploy/modprobe.d/snd-aloop.conf`; `asoundrc.jasper`'s header
    cross-references it, and this list mirrors both): `0` Spotify, `1` AirPlay, `2`
-   Bluetooth, `3` USB sink, `4` correction/test, `5` UNALLOCATED
-   (formerly the outputd active-speaker content lane; its PCM defs
-   were deleted at P9-C once the ACTIVE ring became the roleful
-   transport), `6` outputd post-DSP content, `7` fan-in summed output. Do
-   not put a source on substream `6` or `7`. If you need another
+   Bluetooth, `3` USB sink, `4` correction/test, `5`–`7` UNALLOCATED (the
+   central hops those pairs used to carry are rings). If you need another
    production source lane, stop and redesign the topology rather than
    overloading snd-aloop.
 2. **Teach `jasper-fanin` about the lane.** The canonical lane list is
@@ -217,9 +204,8 @@ mixer, a second output device, or a new volume model.
    label stable: mux uses that label when it asks fan-in to pass one
    selected source lane.
 3. **Wire the source daemon to the alias.** Its systemd unit should
-   write to the alias, not to `jasper_capture`,
-   `outputd_content_*`, or raw `hw:Loopback,*` names. Renderer units
-   should order after
+   write to the alias, not to a ring PCM or a raw `hw:Loopback,*` name.
+   Renderer units should order after
    `jasper-fanin.service` and use the same hardening/resource patterns
    as the existing sources. If the source is optional, default it off
    and make the disabled state cost zero resident RAM.
@@ -307,7 +293,7 @@ pre-outputd topology is git history plus a redeploy of an older build.
 |------|----------------|-------|----------------------------|
 | CamillaDSP `main_volume` (listening level/source volume) | DSP, websocket port 1234 | yes | yes on pre-DSP fan-in; already upstream of passive outputd TTS |
 | fan-in program duck | `jasper-fanin` TTS socket | yes | no |
-| Source slider (iPhone, Spotify Connect, BT phone) | Renderer-side, before Loopback | yes | no |
+| Source slider (iPhone, Spotify Connect, BT phone) | Renderer-side, before the fan-in lane | yes | no |
 | Source amplitude (PCM data) | The WAV / TTS PCM buffer | yes | yes |
 | Assistant loudness matcher (auto) | jasper-fanin + provider profiles | n/a | yes |
 | Apple dongle Headphone | Hardware mixer | (pinned 100%) | (pinned 100%) |
@@ -605,8 +591,8 @@ ssh pi@jts.local 'sudo journalctl -u jasper-voice | grep "drain wait"'
 
 **Test the music chain** (volume-controlled): `aplay -D correction_substream file.wav`.
 Goes through CamillaDSP, so `main_volume` applies. On a box whose
-`correction` renderer-ingress lane is armed onto its SHM ring (U3/P6c —
-`jasper-audio-config renderer-lanes` reports it; the fleet default is
+`correction` renderer-ingress lane is armed onto its SHM ring
+(`jasper-audio-config renderer-lanes` reports it; the fleet default is
 unarmed), fan-in reads the ring instead of this alias, so use
 `aplay -D correction_ring_lane file.wav` there — the product's own
 measurement spawns pick the right one automatically
@@ -771,27 +757,16 @@ CamillaDSP multi-device output remains unsupported.
 ## AEC bridge implications
 
 The bridge receives outputd's speaker monitor over localhost UDP, and that
-is its only reference source — the `JASPER_AEC_REF_SOURCE=alsa` fallback
-that read `pcm.jasper_ref` was retired. `pcm.jasper_ref` now has no
-reader at all — U4/P7-3 retired the timing probe's
-`--jasper-capture-pcm`, the one consumer it briefly had left — and
-survives only as a shipped definition until P9-E deletes the aloop
-PCMs: a plug wrapper over
-`pcm.jasper_capture`, which is a dsnoop on the summed fan-in output
-`hw:Loopback,1,7` before CamillaDSP processing. Since U4/P7-4 that lane
-has a producer only under `loopback` coupling, where CamillaDSP reads it
-as the program path; a ring-coupled box writes it not at all. Nothing
-reads it there either: U4/P7-2 re-pointed `jasper-aec-tune`, the last
-RAW dsnoop consumer, at outputd's UDP monitor before P7-4 removed the
-writer. So:
+is its only reference source. There is no pre-DSP ALSA reference: the
+summed fan-in output reaches CamillaDSP over Ring A, which no diagnostic
+tap reads.
 
-- Production AEC now consumes outputd's 48 kHz stereo speaker monitor over
+- Production AEC consumes outputd's 48 kHz stereo speaker monitor over
   UDP. That reference includes renderer/content, TTS/cues, fan-in
   ducking/gain, CamillaDSP filters/crossover/protection, and outputd sink
   selection. It is the final software/electrical reference; no software
   reference can include DAC, amp, driver, or room acoustics except through
-  microphone observation. It is also the bridge's *only* reference: the
-  pre-DSP `pcm.jasper_ref` path is no longer selectable — see
+  microphone observation — see
   [HANDOFF-speaker-output-reference.md](HANDOFF-speaker-output-reference.md).
 - A 25 dB ducking step is a transient the AEC's adaptive filter has
   to re-converge through. The old remedy — move the tap downstream of
@@ -815,69 +790,10 @@ writer. So:
   source-aware dispatch.
 - [HANDOFF-voice-music-control.md](HANDOFF-voice-music-control.md) —
   voice tool transport routing.
-- [HANDOFF-aec.md](HANDOFF-aec.md) — why the AEC bridge taps pre-DSP.
+- [HANDOFF-aec.md](HANDOFF-aec.md) — the AEC bridge's reference contract.
 
 ---
 
-Last verified: 2026-08-15 (the TTS-chain diagram and the substream
-allocation table corrected for P9-C, audio-graph consolidation #2285:
-snd-aloop pair 5's PCM definitions — the outputd active-speaker content
-lane, previously mislabelled here as a "debug/monitor reserve" — were
-deleted once the ACTIVE ring became the roleful transport; verified against
-`deploy/modprobe.d/snd-aloop.conf`, where the pair allocation lives
-canonically, and its cross-reference in `deploy/alsa/asoundrc.jasper`; prior
-2026-08-11 pass: the assistant-gain debugging text re-verified against
-`jasper-tts-protocol`'s `decide_gain`/`sanitize_tts_gain_db` and
-`jasper/cli/doctor/audio_runtime.py`: the doctor asserted a fixed `[-60, 0]`
-clamp the engine stopped enforcing on 2026-07-01 and now asserts the
-per-decision contract instead, #2345; prior 2026-08-08 pass: DAC8x Studio routing corrected against the kernel —
-the Studio board has its own `hifiberry-studio-dac8x` overlay and machine
-driver, not the base board's, and the base profile's card-label regexes were
-narrowed to the one name its driver emits so Studio silicon no longer inherits
-the base row's `S32_LE` edge and approved chip-AEC status, #2250; the final-edge paragraph corrected twice the same
-day: the base HiFiBerry DAC8x now also declares an `S32_LE` edge alongside
-InnoMaker — wide-output-path PR-7, jts3 `aplay --dump-hw-params` hardware probe
-2026-08-07 — with DAC8x Studio's deliberate non-flip re-stated against the
-registry comment; and the Apple USB-C dongle now declares the packed `S24_3LE`
-edge — wide-output-path PR-8, jts.local `aplay -D hw:A -f S24_3LE` open-proof
-2026-08-08 — with the single-vs-composite split stated: the dual-Apple composite
-stays `S16_LE` because the paired sink refuses a packed-24 child edge, so the
-emitted format resolves by armed-profile id, not through `child_profile_ids`;
-prior 2026-08-07 pass: the InnoMaker S32 final-edge paragraph re-stated for outputd's i32 program spine — an S32 edge now converts nothing; prior 2026-08-05 pass: InnoMaker HiFi AMP Pro's final-edge `plug` deleted
-from `jasper-asound-render.sh`, PR-4 format-foundation — every registered
-single DAC profile, InnoMaker included, now renders `outputd_dac` as a raw
-`type hw` alias, and the S32_LE hardware-edge proof moved from the render's
-pinned slave to outputd's own client-edge readback). Prior 2026-08-04:
-InnoMaker final-edge format ownership — outputd
-requests the declared S32_LE itself and the plug converts nothing — and the
-then-current passive-only active-lane exclusion rechecked (since retired — the
-InnoMaker declares a width-2 active lane); atomic turn-start volume context and outputd's
-missing/rejected-context silence rule checked against both Rust consumers and
-the Python transport. Prior 2026-07-22: source-preemption ownership, AirPlay
-receiver-session cleanup ordering, compatibility fallback, and failure
-semantics rechecked against `jasper/mux.py` and mux contract tests. Prior
-2026-07-16: pre-DSP loudness ownership, stamped FIFO volume state, gentle-envelope offset learning, music-reference expiry, drained-before-end commit, and passive outputd scope checked against PR #1542; prior pass covered assistant reference priority, speaker-domain fallback compensation, persistence, and live volume adjustment; prior 2026-07-15 DAC8x/two-way automatic crossover-commissioning
-launch gate rechecked; source-lifecycle ownership and add-a-source
-integration points rechecked against `jasper.source_intent` and
-`jasper.local_sources`; prior 2026-07-07 ring/default path text rechecked against
-`jasper.fanin_coupling`, `jasper.fanin.coupling_auto`, and
-`jasper.fanin.coupling_reconcile`; prior 2026-07-01 assistant loudness
-safety text rechecked against
-`jasper.audio_io`, `jasper-tts-protocol`, and fan-in/outputd TTS gain tests;
-prior 2026-06-30 pass rechecked assistant output episode ownership
-against `jasper.voice.output_gate`, `jasper/voice_daemon.py`, and
-`tests/test_voice_output_gate.py`; active-crossover summed-test live level,
-audible-only validation evidence, backend watchdog, and backend-owned
-save/apply product handoff rechecked against `sound_setup.py`,
-`deploy/assets/sound-profile/js/main.js`, and the focused sound setup tests.
-Prior 2026-06-24 recheck covered active-endpoint and wireless-sub TTS route
-exceptions against
-`jasper.multiroom.tts_route.expected_grouping_tts_route`,
-`jasper.multiroom.reconcile.outputd_grouping_env`,
-`jasper.multiroom.reconcile.voice_grouping_env`, and
-`jasper.cli.doctor.grouping`; feedback-cue source profiles and standalone
-loudness context rechecked; active-speaker direct-DAC diagnostic route removed,
-dynamic route width, summed-test transient active graph, and outputd-only
-durable apply boundary rechecked against `playback_route.py`,
-`output_topology.py`, `sound_setup.py`, `playback.py`, `staging.py`,
-`baseline_profile.py`, and the active-lane `DacProfile` declarations)
+Last verified: 2026-08-26 against `deploy/alsa/asoundrc.jasper`,
+`deploy/alsa/conf.d/`, `deploy/modprobe.d/snd-aloop.conf`, and
+`jasper/control/transport_park.py`.

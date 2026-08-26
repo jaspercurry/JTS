@@ -476,11 +476,11 @@ host-adjacent, and renaming them would rewrite a durable shape for cosmetics.
     endpoint in one call (`active_emit_devices` in
     [`camilla_yaml.py`](../jasper/active_speaker/camilla_yaml.py)), capture lane
     and wire format and latency geometry together. A ring-armed speaker's
-    playback endpoint is not its snd-aloop one: naming only the sink would sweep
-    into the ring while CamillaDSP captured a lane nobody feeds — silence with
-    every daemon healthy. Which transports exist and how a box gets armed are
-    **not** this document's to state; the authority is
-    [`HANDOFF-audio-graph-consolidation.md`](HANDOFF-audio-graph-consolidation.md).
+    playback endpoint is the ACTIVE ring, not Ring B: naming only the sink would
+    sweep into one ring while CamillaDSP captured a lane nobody feeds — silence
+    with every daemon healthy. Which endpoint a roleful box resolves is **not**
+    this document's to state; the authority is
+    [`audio-paths.md`](audio-paths.md).
 14. **Every band a per-driver decision is graded over is clamped to the band that
     driver's own sweep excited.** `overlap_band_hz` does it for the GCC
     alignment, trim solve, ripple and VERIFY tracking; `branch_snr_band_hz` does

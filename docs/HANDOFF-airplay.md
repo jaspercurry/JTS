@@ -122,8 +122,8 @@ the true rate.
 `Player: packets out of sequence`, no downstream faults → verify
 `drift_tolerance_in_seconds = 0.002` (Pattern R). Historical snd-aloop/dmix path,
 tightly clustered lead times with the same 1:1 warnings → Pattern A3, after
-verifying `pcm.jasper_capture` on `hw:Loopback,1,7`, `shairport_substream` in
-the conf, and `jasper-fanin.service` active. shairport `Large
+verifying `shairport_substream` in
+the conf and `jasper-fanin.service` active. shairport `Large
 positive`/`Large negative` → Pattern B/C/D. Camilla short reads → Pattern A.
 Camilla underruns while shairport and short reads are zero → Pattern A2.
 `event=fanin.xrun source=input label=airplay` → Pattern A3's companion (confirm
@@ -340,16 +340,14 @@ preserving.
 ```
 AirPlay sender ──RTP + PTP over WiFi──▶ shairport-sync (AP2, source-built v4.3.7)
   → shairport_substream (snd-aloop)  or  shairport_ring_lane (SHM ring)
-  → jasper-fanin (sums every renderer/test lane) → hw:Loopback,0,7 → hw:Loopback,1,7
-  → pcm.jasper_capture (dsnoop on the summed substream @ 48 kHz S16_LE)
-  → CamillaDSP (enable_rate_adjust=true, target_level=2048, no resampler)
+  → jasper-fanin (sums every renderer/test lane) → Ring A
+  → CamillaDSP (jts_ring_capture)
   → jasper-outputd → outputd_dac → TPA3255 class-D amp + speakers
 ```
 
 Other renderers write to their own private fan-in lanes. `jasper-fanin` is the
-only renderer summing point; `pcm.jasper_capture` is a dsnoop reader and
-CamillaDSP is its only consumer (both former second readers moved to outputd's
-UDP speaker monitor). Music + TTS converge downstream inside `jasper-outputd`.
+only renderer summing point, and CamillaDSP is Ring A's only reader. Music + TTS
+converge downstream inside `jasper-outputd`.
 **The fundamental problem behind the historical sync-mode glitches:** shairport
 reads `snd_pcm_delay()` and assumes it measures DAC latency. On this chain it
 returns the renderer lane's ring fill — a function of the drain path, decoupled

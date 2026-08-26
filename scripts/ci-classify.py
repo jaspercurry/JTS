@@ -89,7 +89,6 @@ DOCS_TEST_FILES = (
     "tests/test_check_rust_script.py",
     "tests/test_ci_classifier.py",
     "tests/test_deep_audit_ledger.py",
-    "tests/test_docs_assistant_width_phrasing.py",
     "tests/test_docs_impact.py",
     "tests/test_docs_linkcheck.py",
     "tests/test_e0_capture_experiment.py",

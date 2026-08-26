@@ -477,17 +477,10 @@ Zero-class hardware, and 2.4 GHz Wi-Fi stay reliable inside 512 MB.
 Treat it as a measured role, not as a partial full install. The USB
 source is allowed on JTS4-style hardware for powered-splitter validation;
 the hardware result decides whether it remains part of the Zero-class
-streambox default. The coupling owner runs so that USB DIRECT can arm, and since #2285 it no
-longer holds fan-in↔Camilla on `loopback` for the profile's sake: the
-install-profile gate that did so was deleted, because refusing a whole box
-class stood in for the per-box proof the ring gates already make. A streambox
-now resolves `shm_ring` exactly when its OWN ring evidence checks out (assets,
-topology, ioplug capability, wire agreement, both geometry axes) and falls back
-to loopback + direct on any refusal, naming the gate. **This is the change a
-Zero-class bring-up should watch**: read `journalctl -u jasper-fanin-coupling-auto`
-for `event=fanin.coupling_reconcile result=auto_resolved` and its
-`detail="not ring-eligible (<gate>)"`,
-and check `jasper-doctor` after the first boot.
+streambox default. A streambox runs the same ring transport as every other
+box; a shape the ring cannot serve parks under its own name rather than
+playing degraded (`/state.resilience.transport_park`). Check `jasper-doctor`
+after the first boot.
 
 **Open question: active-crossover topology.** Any role that drives
 woofer/tweeter amps needs local driver DSP. That topology should install

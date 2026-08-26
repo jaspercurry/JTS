@@ -1220,7 +1220,7 @@ jts3 = DAC8x + real bi/tri-amp speaker + live drivers + phone mic
   box now reads the ring instead, and this env value is what an
   unarmed/rolled-back box still gets — opening it now fails and outputd
   parks. See
-  [HANDOFF-audio-graph-consolidation.md](../HANDOFF-audio-graph-consolidation.md).)*
+  [audio-paths.md](../audio-paths.md).)*
   The active content lane (snd-aloop substream 5) is raw
   `type hw` (card/device/subdevice only — the `hw` plugin rejects
   channels/rate/format; width is set by the openers and locked by snd-aloop),

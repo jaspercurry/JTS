@@ -11,9 +11,7 @@ Neighbouring owners — do not restate their content here:
 [HANDOFF-resilience.md](HANDOFF-resilience.md) (the cross-cutting resilience
 ladder) · [HANDOFF-aec.md](HANDOFF-aec.md) (mic/AEC reconciler internals) ·
 [HANDOFF-speaker-output-reference.md](HANDOFF-speaker-output-reference.md)
-(the output owner) ·
-[HANDOFF-audio-graph-consolidation.md](HANDOFF-audio-graph-consolidation.md)
-(ring arming and graph re-emit).
+(the output owner).
 
 The decisions behind this doc live in ADRs, not here:
 [ADR-0139](adr/0139-the-voice-input-gate-is-one-reconciler-owned-negative-marker.md)
@@ -282,7 +280,7 @@ profile-gated by
   never before the adapter it may start, so optional accessory state cannot
   wedge voice startup. `TimeoutStartSec=60` on the accessory reconciler bounds
   future blocking mistakes (grouping's own bound is 300 s because it may join a
-  pre-existing accessory and fan-in coupling activation before queuing fresh
+  pre-existing accessory and fan-in USB activation before queuing fresh
   post-role passes).
 - A paired-but-sleeping remote self-heals: a missing GATT report logs
   `event=wiim_remote_mic.not_ready` (throttled after the first) and retries.

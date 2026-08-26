@@ -63,7 +63,7 @@ Phone (BubbleUPnP / Windows "Play To" / any DLNA controller)
    ▼
 gmediarender ──GStreamer → alsasink──▶ pcm.dlna_substream  ← new private lane
    ▼ (snd-aloop)
-jasper-fanin (sums active lanes) → pcm.jasper_capture → CamillaDSP
+jasper-fanin (sums active lanes) → Ring A → CamillaDSP
    ▼
 jasper-outputd → DAC → amp → speakers
 ```

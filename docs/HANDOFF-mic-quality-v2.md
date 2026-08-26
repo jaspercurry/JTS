@@ -640,7 +640,7 @@ debug output).
 | step | effort | what |
 |---|---|---|
 | 1. Productionize BEST_A binding | 1.5 d | Vendor v2.1 statically in `jasper_aec3/`; promote `binding.cpp` from the spike. Setup.py builds v2.1 via meson as a subdirectory build. Apt deps in install.sh (meson, ninja). Env vars for all the new knobs. Cross-build for Pi 5 aarch64 (budget half day of build-env troubleshooting). |
-| 2. DTLN-aec bridge | 1.5 d | New `jasper-aec-bridge-dtln.service` mirroring the AEC3 bridge's supervision pattern (watchdog, restart, sd_notify). Reads from the same `pcm.jasper_capture` dsnoop + chip mic, runs onnxruntime inference on `dtln_aec_256_{1,2}.onnx`, emits on UDP `:9878`. Models hosted on a GitHub release attached to `jaspercurry/JTS`; install.sh fetches at deploy time (same pattern as `jarvis_v2.onnx`). |
+| 2. DTLN-aec bridge | 1.5 d | New `jasper-aec-bridge-dtln.service` mirroring the AEC3 bridge's supervision pattern (watchdog, restart, sd_notify). Reads from the same outputd speaker monitor + chip mic, runs onnxruntime inference on `dtln_aec_256_{1,2}.onnx`, emits on UDP `:9878`. Models hosted on a GitHub release attached to `jaspercurry/JTS`; install.sh fetches at deploy time (same pattern as `jarvis_v2.onnx`). |
 | 3. WakeLoop 3rd leg | 0.5 d | Extend `jasper/voice_daemon.py`'s existing dual-stream pattern to triple-stream. OR-gate across all 3 legs with shared 0.7 s refractory. Each leg has its own openWakeWord Model instance on the shared (16, 96) embedding — incremental cost is ~5 MB + ~0.5 ms of CPU per leg. |
 | 4. Schema + ring + capture | 0.5 d | ALTER migration for new columns. `_capture_ring_dtln` filled by the new bridge. `fired_legs` populated at fire time. `fetch-wake-events.sh` + audit scripts updated to handle 3 legs. |
 | 5. Deploy + validation | 0.5 d | Production deploy. Watch for ~1 hour to confirm wake-event capture works for all 3 legs, no crashes, telemetry rows looking sane. |
@@ -842,10 +842,10 @@ reference-conditions baseline (captured 2026-05-22) for evaluation.
 
 ### TTS reference routing — three fix approaches
 
-> **Topology note (updated 2026-05-26):** This section was written
+> **Topology note:** This section was written
 > against the pre-fan-in `/root/.asoundrc` topology. Current production
-> uses `/etc/asound.conf`; `pcm.jasper_capture` dsnoops fan-in's summed
-> music output on `hw:Loopback,1,7`. Treat the options below as decision
+> sums in `jasper-fanin` and carries the program to CamillaDSP over Ring A;
+> the AEC reference is outputd's speaker monitor. Treat the options below as decision
 > archaeology, not an implementation recipe. In particular, do not copy
 > TTS into a renderer input lane unless the design also prevents a
 > delayed duplicate from reaching the speakers through CamillaDSP.

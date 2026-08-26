@@ -500,10 +500,9 @@ The exact sample-inserting event is structurally silent. Compounding it,
 and never reads the partial/empty period counters, so a measurement that
 spans a fill passes its integrity check.
 
-The fill is periodic on this box, and the cadence + its clock-offset cause
-are owned by
-[HANDOFF-audio-graph-consolidation.md](../HANDOFF-audio-graph-consolidation.md)
-§G ("What `direct` mode costs today") — not restated here. What matters for
+The fill was periodic on this box: the content hop between CamillaDSP and
+outputd absorbed no clock offset, so it accumulated at the ~43 ppm
+crystal-vs-crystal rate until the capture ring drained. What matters for
 *this* doc: the last fill event before the 2026-07-27 session was 12:39:40
 and the next was due inside the failing capture's playback window. That is
 NOT proof for that capture — outputd restarted around the session (counter

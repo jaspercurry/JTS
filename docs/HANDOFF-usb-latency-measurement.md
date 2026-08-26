@@ -16,8 +16,8 @@ now further-improvement candidates. Same day, earlier: §1 gained the
 "Certification budget" cross-reference (then p95<=48ms/p99<=60ms); §7 gained
 "Documented leads (not scheduled)", "Rejected paths (do not re-chase)", and
 "Windows host validation (deferred)" subsections; claims re-verified against
-`rust/jasper-fanin/src/config.rs`, `mixer.rs`, `host_compliance.rs`, and
-`jasper/fanin/coupling_reconcile.py`. Prior 2026-07-07: jts.local live
+`rust/jasper-fanin/src/config.rs`, `mixer.rs`, and `host_compliance.rs`.
+Prior 2026-07-07: jts.local live
 probes, combo mux liveness patch, 2-slot ring geometry).
 
 ---
@@ -150,7 +150,7 @@ box converges to it on the next deploy. This section is the single reference for
 | Knob | Value | Home |
 |---|---|---|
 | Ring A slots (`JASPER_FANIN_RING_SLOTS`) | `2` | `config.rs` `env_u32(…, 2)`; `jasper/fanin_coupling.py` `DEFAULT_FANIN_RING_SLOTS`; `deploy/alsa/conf.d/60-jts-ring.conf` `n_slots`; all lockstep |
-| Ring A period | `128` frames | conf.d `period_frames`; ioplug fixed. fan-in creates Ring A with the compile-time `RING_SLOT_FRAMES` (`config.rs`, no env override), so `128` is the ONLY value the transport carries. `jasper-audio-hardware-reconcile` renders the conf.d from the active DAC's declared `LatencyFloor` **only when that floor is also `128`** (the Apple dongle's is) and refuses any other floor — such a DAC keeps loopback and still gets its floor's outputd geometry. Making the slot floor-derived is issue #2147 |
+| Ring A period | `128` frames | conf.d `period_frames`; ioplug fixed. fan-in creates Ring A with the compile-time `RING_SLOT_FRAMES` (`config.rs`, no env override), so `128` is the ONLY value the transport carries. `jasper-audio-hardware-reconcile` renders the conf.d from the active DAC's declared `LatencyFloor` **only when that floor is also `128`** (the Apple dongle's is) and refuses any other floor — such a DAC still gets its floor's outputd geometry. Making the slot floor-derived is issue #2147 |
 | Ring B slots (`JASPER_OUTPUTD_SHM_RING_SLOTS`) | `2` | outputd config default |
 | Camilla ring-emit chunksize | `128` | `RING_CAMILLA_CHUNKSIZE` (`fanin_coupling.py`), emitted by `emit_flat_ring_config` |
 | Camilla ring-emit target_level | `128` | `RING_CAMILLA_TARGET_LEVEL` |
@@ -167,35 +167,17 @@ fails CI with a named reason rather than crash-looping CamillaDSP on deploy.
 
 | Knob | Value | Home |
 |---|---|---|
-| `JASPER_FANIN_USB_DIRECT` | `enabled` | written to `fanin.env` by `jasper-fanin-coupling-reconcile --auto` when the gadget stack + usbsink intent are present |
+| `JASPER_FANIN_USB_DIRECT` | `enabled` | written to `fanin.env` by the fan-in USB reconciler when the gadget stack + usbsink intent are present |
 | `JASPER_FANIN_HOST_CLOCK` | `enabled` | same |
 | `JASPER_FANIN_RESAMPLER_CUSHION_DECAY` | `enabled` | same |
 | `JASPER_FANIN_RESAMPLER_CUSHION_DECAY_FLOOR_FRAMES` | `576` | `config.rs` `DEFAULT_CUSHION_DECAY_FLOOR_FRAMES` (the hardware-validated floor; clamped into `[544, ceiling]` — 544 = `max(target, minimum_safe_fill) + 32` at the default geometry) |
 | `JASPER_FANIN_INPUT_RESAMPLER_TARGET_FRAMES` | `512` | `config.rs` default |
 | `JASPER_FANIN_INPUT_RESAMPLER_MAX_ADJUST_PPM` | `500` | `config.rs` default |
-| `JASPER_FANIN_OUTPUT_BUFFER_FRAMES` | `1024` | `config.rs` default |
 
 Binary defaults for the three combo flags are **OFF**; the reconciler is the
 single writer and arms them only on a box that is both gadget-capable and has USB
-input enabled. Boxes without the gadget (jts3 HiFiBerry, jts5 dual-DAC) stay on
-loopback coupling — correctly ineligible, a no-op for the auto-pass.
-
-### How the install guarantees it
-
-- `deploy/install.sh` (`resolve_fanin_coupling_default`, ~line 1750): enables
-  `jasper-fanin-coupling-auto.service` and runs `jasper-fanin-coupling-reconcile
-  --auto --reason install` on **every deploy**.
-- `jasper-fanin-coupling-auto.service` re-runs the resolution at **boot**, so a
-  fresh flash converges on first boot with no operator step.
-- `.env.example` carries prose blocks for `JASPER_FANIN_RING_SLOTS`, the combo
-  flags, and the revert levers.
-
-### Reverting (if a box needs the old loopback path)
-
-Set an operator marker so the auto-pass never re-arms:
-`JASPER_FANIN_COUPLING_CHOICE=operator` + `JASPER_FANIN_CAMILLA_COUPLING=loopback`
-+ `JASPER_OUTPUTD_CONTENT_BRIDGE=direct`, and unset the three combo flags. The
-auto-pass respects an operator choice and will not override it across deploys.
+input enabled. A box without the gadget (jts3 HiFiBerry, jts5 dual-DAC) is
+correctly ineligible — a no-op for the auto-pass.
 
 ---
 
@@ -253,7 +235,6 @@ electrical method structurally cannot reach.
 The Scarlett also exposes playback endpoints — confirm the output stack ignored
 them and the dongle is still the output DAC:
 ```sh
-curl -s http://jts.local:8780/state | jq '.audio_graph.coupling'   # persisted:shm_ring, intent_coherent:true
 cat /run/jasper-output-hardware/output_hardware.json | jq '{profile,status}'  # apple_usb_c_dongle / ready
 ```
 The output-hardware reconciler correctly leaves the dongle as the profile with a
@@ -520,7 +501,7 @@ they're queued:
   **removing it saves zero latency.** It was never a latency item and this
   review should not be cited as motivation for it — the deletion is the
   consolidation arc's, on consumers-then-producer grounds. See
-  `docs/HANDOFF-audio-graph-consolidation.md`'s P7 row.
+  the AEC reference contract in `docs/HANDOFF-aec.md`.
 - **PipeWire / topology re-architecture** of the AEC or reference path.
   Standing constraint (AGENTS.md: swap the engine, not the topology; full
   rationale in `docs/HANDOFF-aec.md`). Nothing in this review produced

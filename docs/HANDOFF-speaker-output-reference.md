@@ -20,8 +20,6 @@ Neighbouring owners — do not restate them here:
 [HANDOFF-aec.md](HANDOFF-aec.md) (AEC engine and tuning) ·
 [HANDOFF-barge-in.md](HANDOFF-barge-in.md#implementation-plan) (per-provider
 truncation status) ·
-[HANDOFF-audio-graph-consolidation.md](HANDOFF-audio-graph-consolidation.md)
-(the rings, the ACTIVE-ring arm/rollback ladder, program-wire width) ·
 [HANDOFF-multiroom.md](HANDOFF-multiroom.md) (the bonded round-trip lane) ·
 [HANDOFF-hotplug-resilience.md](HANDOFF-hotplug-resilience.md) ·
 [HANDOFF-active-speaker-dsp.md](HANDOFF-active-speaker-dsp.md) (commissioning).
@@ -33,11 +31,11 @@ JTS has one final output owner:
 ```text
 MUSIC / CONTENT
   AirPlay / Spotify / Bluetooth / USB / correction
-    -> private snd-aloop lanes
+    -> private snd-aloop lanes (or a per-renderer ingress ring)
     -> jasper-fanin
-    -> pcm.jasper_capture
+    -> Ring A
     -> jasper-camilla
-    -> Ring B (low-latency route), or a paired ALSA playback/capture lane
+    -> Ring B, or the ACTIVE ring on a roleful box
     -> jasper-outputd
     -> dongle / amp / speaker
 
@@ -47,7 +45,7 @@ ASSISTANT AUDIO
     -> /run/jasper-fanin/tts.sock
     -> jasper-fanin, mixed after program duck
     -> jasper-camilla crossover/protection
-    -> Ring B (armed roleful box), or the passive outputd_content_* lane
+    -> Ring B, or the ACTIVE ring on a roleful box
     -> jasper-outputd final sink
     -> DAC(s) / amp(s) / speaker(s)
 ```
@@ -68,9 +66,8 @@ that boundary.
   (a *source*) and the bonded-member TTS socket, whose `jasper-tts-protocol`
   wire stays S16 and is widened at gain application in
   `assistant_source::read_period_into` rather than at enqueue, so a queued reply
-  does not double its resident bytes under `mlockall`. **Neither content-lane
-  transport is on that list:** the snd-aloop lane arrives at spine width
-  (`DEFAULT_PLAYBACK_FORMAT` = `S32_LE`), and so does the SHM ring — its wire is
+  does not double its resident bytes under `mlockall`. **The content lane is not
+  on that list:** the SHM ring arrives at spine width — its wire is
   resolved by `jasper.fanin_coupling.resolve_ring_wire`, which owns the rule and
   defaults wide. The ring reaches this hop narrow only under the operator
   rollback pin `JASPER_FANIN_RING_WIRE_FORMAT=S16_LE`, which is why the widening
@@ -142,12 +139,12 @@ worker/configuration fault reports `status=failed` rather than pretending a
 retry is pending. Playback readiness depends only on the physical sink.
 
 The complete fan-in → CamillaDSP → outputd transport is described once by
-`AudioRuntimePlan.TransportTopology`. For ALSA loopback the outputd capture PCM
-is **derived** from CamillaDSP's playback PCM by the paired endpoint registry,
-never chosen independently; the staged validator rejects a candidate that would
-connect an active Camilla writer to the passive outputd reader, and the doctor
-applies the same coherence check to the loaded graph and live STATUS (missing
-graph evidence is a warning, not false green health).
+`AudioRuntimePlan.TransportTopology`. Outputd's ring endpoint is **derived**
+from CamillaDSP's playback ring, never chosen independently; the staged
+validator rejects a candidate that would connect an active Camilla writer to a
+full-range outputd reader, and the doctor applies the same coherence check to
+the loaded graph and live STATUS (missing graph evidence is a warning, not
+false green health).
 
 ### Assistant audio
 
@@ -213,59 +210,39 @@ graph evidence is a warning, not false green health).
 
 ## The content lane
 
-- **`shm_ring` (product default on ring-eligible stereo boxes).** CamillaDSP
-  writes Ring B through `jts_ring_playback`; outputd reads
-  `/dev/shm/jts-ring/content.ring` one 128-frame slot per DAC period and never
-  opens an ALSA content capture PCM. STATUS `content.buffer_frames` is therefore
+- **Ring B.** CamillaDSP writes Ring B through `jts_ring_playback`; outputd
+  reads `/dev/shm/jts-ring/content.ring` one 128-frame slot per DAC period and
+  opens no ALSA content capture PCM. STATUS `content.buffer_frames` is therefore
   a synthetic period-sized stand-in (NOT a jitter buffer) and the true capacity
   is published honestly in `content.ring.capacity_frames`.
-  `jasper.audio_runtime_plan` does not emit
-  `JASPER_OUTPUTD_CONTENT_BUFFER_FRAMES` under this bridge.
-- **`direct` (legacy/fail-safe).** Reads `outputd_content_capture`, backed by
-  snd-aloop substream 6 (`hw:Loopback,1,6`), for ring-ineligible boxes,
-  operator-frozen boxes, and every roleful box not explicitly armed. There the
-  content buffer env is real.
 - **The ACTIVE ring and the allowlist that can park outputd.** A roleful
-  (active-crossover) box has a third ring, `jts_ring_active_playback` →
+  (active-crossover) box reads `jts_ring_active_playback` →
   `/dev/shm/jts-ring/active-content.ring`, carrying post-crossover per-driver
-  channels. Reaching it the first time is the three-step ladder documented in
-  [HANDOFF-audio-graph-consolidation.md](HANDOFF-audio-graph-consolidation.md).
-  What matters *here* is the refusal an operator will meet: under `shm_ring`,
-  `Config::from_env` enforces a **biconditional** — the active ring path may be
+  channels. The refusal an operator will meet: `Config::from_env` enforces a
+  **biconditional** — the active ring path may be
   read ONLY by an armed active endpoint, and an armed active endpoint may read
   ONLY that path. A crossed pair is a hard bail (outputd exits rather than
-  starts: a silent speaker with a parked unit). The check is scoped to
-  `shm_ring` deliberately, because under `direct` there is no ring to read and
-  an unscoped check would park the documented rollback. A second,
-  bridge-independent bail rejects `JASPER_OUTPUTD_RING_ACTIVE_ENDPOINT` set
+  starts: a silent speaker with a parked unit). A second bail rejects
+  `JASPER_OUTPUTD_RING_ACTIVE_ENDPOINT` set
   without `JASPER_OUTPUTD_ACTIVE_LANE` — one helper writes both from one
   decision, so an incoherent pair can only mean that writer is broken. The role
   rides the NAME, not the width: on a 2-way speaker both rings are 2 channels,
   so no channel-count test can tell them apart. The allowlist is positive
   equality against a named path constant, never a denylist.
-- **`rate_match` is removed.** `direct` and `shm_ring` are the whole vocabulary.
-  A persisted `rate_match` (or `ratematch` / `rate-matched` / `rate_matched`)
-  resolves to `direct` with an `event=outputd.content_bridge.removed_value`
-  WARN rather than bailing — a deleted knob must never turn a routine deploy
-  into exit 78 → a parked final-output owner → a silent speaker — and its three
-  tuning keys are inert. This is **not** permission to run it: the route-latency
-  policy compares the RAW literal, so a stale spelling still reports a red
-  `usb_low_latency_48k` claim rather than a silently downgraded green one. Any
-  other unrecognized value still fails loud.
 - **Multi-room round-trip lane** (`JASPER_OUTPUTD_DAC_CONTENT_FIFO`, inert until
   a bond activates it): a member feeds its DAC from the snapclient-written
-  raw-PCM FIFO instead of `outputd_content_capture`, picking a channel via
+  raw-PCM FIFO instead of the ring, picking a channel via
   `JASPER_OUTPUTD_DAC_CONTENT_CHANNEL`. `sub` mono-sums clip-safely then applies
   a 4th-order Linkwitz-Riley low-pass at `JASPER_OUTPUTD_DAC_CONTENT_SUB_HZ` —
   the one place outputd does spectral DSP, deliberately, because the
   dumb-follower lane bypasses CamillaDSP. `JASPER_OUTPUTD_DAC_CONTENT_HP_HZ` is
   the complementary mains high-pass. Both are fail-closed. The lane falls back
-  to the direct read whenever the FIFO starves, so the leader is never silenced;
-  unset is byte-identical to the direct path, and the reference still equals what
-  the DAC plays. Design and invariants:
-  [HANDOFF-multiroom.md](HANDOFF-multiroom.md) §4. Mutually exclusive with any
-  non-`direct` content bridge and with the dual-Apple sink (both fail loud at
-  startup).
+  to the ordinary content read whenever the FIFO starves, so the leader is never
+  silenced; unset is byte-identical to the ordinary path, and the reference
+  still equals what the DAC plays. Design and invariants:
+  [HANDOFF-multiroom.md](HANDOFF-multiroom.md) §4. Outputd refuses the lane
+  against the ring, so a bonded member that needs it parks under #3118; it is
+  also mutually exclusive with the dual-Apple sink (both fail loud at startup).
 
 ## Current outputd state
 
@@ -382,8 +359,7 @@ crossover.
 > `S32_LE` while the rolled-back emitters render `S16_LE`; on a raw **active**
 > lane whichever opener wins locks a width the other cannot serve. There is no
 > code fix — the actor is the OLD code, which cannot know about a key that
-> postdates it. **Passive/plug boxes are SAFE** (the `outputd_content_*` `plug`
-> converts). Pre-step for **active-lane** boxes before deploying a pre-flip
+> postdates it. Pre-step for **active-lane** boxes before deploying a pre-flip
 > commit:
 >
 > ```sh
@@ -419,9 +395,7 @@ crossover.
   failures end in `jasper-outputd-failure-reconcile` (stop plus a record at
   `/run/jasper-outputd-content-lane.state` naming the fix), spending 4 of the 5
   starts so `StartLimitAction=reboot` is never reached. The first failures still
-  restart, because on the PASSIVE lane that open is how outputd waits for
-  CamillaDSP's half of the snd-aloop pair; on the ACTIVE lane it is permanent, so
-  a roleful box that is not ring-armed parks here by design.
+  restart, because the ring attach is how outputd waits for CamillaDSP.
 - **A missing DAC parks rather than restart-loops.** Startup is gated by the
   reconciler-owned card: `fake` passes (it opens no ALSA), an empty card passes
   for composite/parked shapes, and an `alsa` backend whose card is missing from
@@ -498,19 +472,12 @@ it INSERTS `requested - frames` samples into the emitted timeline — audible as
 brief tear that displaces the rest of the program in time. Every fill emits
 `event=outputd.content_fill` with `source=partial|empty|eagain|xrun_recovered`,
 `frames_short`, and running counters, rate-limited to one line per second
-(overflow arrives as `suppressed=` on the next line). The fill is the EXPECTED
-steady state on `content_bridge=direct` — nothing absorbs the
-content-producer-vs-DAC offset there — so `jasper-doctor` deliberately does not
-warn on it; the measurement path gates on it through `runtime_integrity`'s
-`outputd_content_fill_increased`. That gate is **topology-agnostic by
-construction**: the run loop drives exactly one content source per box, so it
-reads the ALSA hop's `empty_periods`/`partial_periods` AND the ring's
-`empty_reads`/`startup_empty_reads`. Journal coverage is deliberately
-asymmetric — the ALSA hop emits `content_fill` because it had no other runtime
-surface, while the ring path stays journal-quiet, since it already publishes
-`writer_alive`, `occupancy`, and heartbeat age, and a dead writer makes EVERY
-period empty (a per-fill line there would be a sustained stream, not a
-diagnostic).
+(overflow arrives as `suppressed=` on the next line). The measurement path gates
+on it through `runtime_integrity`'s `outputd_content_fill_increased`, reading
+the ring's `empty_reads`/`startup_empty_reads`. The ring path is otherwise
+journal-quiet: it already publishes `writer_alive`, `occupancy`, and heartbeat
+age, and a dead writer makes EVERY period empty (a per-fill line there would be
+a sustained stream, not a diagnostic).
 
 The local control socket takes one newline-delimited command per connection,
 capped at 256 bytes and a two-second total monotonic deadline (not a resettable

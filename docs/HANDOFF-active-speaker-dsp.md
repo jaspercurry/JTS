@@ -410,7 +410,7 @@ implemented in `asoundrc.jasper`, and its raw `type hw` aloop substream
 ring became the roleful transport — corrected inline with pointer notes,
 same rationale as the 2026-07-27 entry above: correcting these entries is
 not a re-read of the doc, so `Last verified` stays unbumped. See
-[HANDOFF-audio-graph-consolidation.md](HANDOFF-audio-graph-consolidation.md).
+[audio-paths.md](audio-paths.md).
 
 Doc-shape fix (2026-08-25): the historical narrative this file used to carry as
 an appendix moved whole to

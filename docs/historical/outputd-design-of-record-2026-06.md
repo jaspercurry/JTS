@@ -163,7 +163,7 @@ PCM when this was written. P9-C deleted that pair's definitions once the
 ACTIVE ring became the roleful transport; an armed box now reads the ring
 instead, and this env value is what an unarmed/rolled-back box still gets —
 opening it now fails and outputd parks. See
-[HANDOFF-audio-graph-consolidation.md](../HANDOFF-audio-graph-consolidation.md).)*
+[audio-paths.md](../audio-paths.md).)*
 
 The `OutputTransportPlan` (`sink`, `transport_channels`, `channel_map`,
 `dac_pcms`, `clock_domain_contract`) is the **single env+`/state` truth**,
@@ -242,7 +242,7 @@ P9-C deleted that substream's PCM definitions once the ACTIVE ring became
 the roleful transport, so this whole raw-hw-aloop shape (including items 4-6
 below) is now the pre-arm/rolled-back state, not the armed one; an armed
 box's content instead crosses Ring B. See
-[HANDOFF-audio-graph-consolidation.md](../HANDOFF-audio-graph-consolidation.md)
+[audio-paths.md](../audio-paths.md)
 for current behavior.)*
 
 **4. One wide snd-aloop content substream — width on the substream, not more
@@ -261,7 +261,7 @@ make the active content lane **one substream at width N**, not to add substreams
   the conf. See the "Stage 2a landed" callout above. P9-C later deleted this
   substream pair's PCM definitions entirely once the ACTIVE ring became the
   roleful transport — see
-  [HANDOFF-audio-graph-consolidation.md](../HANDOFF-audio-graph-consolidation.md).)*
+  [audio-paths.md](../audio-paths.md).)*
 - **All format adaptation is explicit and owned by CamillaDSP; the active ALSA
   path fails closed on channel, rate, AND format mismatch.** Ban `type plug`
   (and `plughw:`, which is `plug`+`hw`) on the active path — use width-exact
@@ -1175,7 +1175,7 @@ re-touched since carries forward from its most recent entry below.
   are `__RATE_CONVERTER__`, `__OUTPUTD_DAC_PCM_BLOCK__`, and
   `__OUTPUTD_DAC_CTL_BLOCK__`); added pointer notes to the design-of-record
   sections that still describe the deleted raw-hw-aloop shape. See
-  [HANDOFF-audio-graph-consolidation.md](../HANDOFF-audio-graph-consolidation.md).
+  [audio-paths.md](../audio-paths.md).
 - **2026-08-15 (ring wire default → wide).** Re-verified only the width claims
   the SHM ring's default-format flip falsified, against
   `jasper.fanin_coupling.resolve_ring_wire_format` /
@@ -1192,7 +1192,7 @@ re-touched since carries forward from its most recent entry below.
   the design-of-record section drops the stale token for a pointer at the
   resolver. **Nothing else in this pass** — the DAC-edge table, the rollback
   runbook, barge-in, and multiroom stand as last verified.
-  Canonical: [HANDOFF-audio-graph-consolidation.md](../HANDOFF-audio-graph-consolidation.md).
+  Canonical: [audio-paths.md](../audio-paths.md).
 - **2026-08-20 (composite child-loss bullet — never-implemented resilience
   surface).** Re-verified only the "Composite child loss" bullet in the
   design-of-record Resilience list, which described a `sink.health()` pre-write

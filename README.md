@@ -75,18 +75,16 @@ Phone (AirPlay / Spotify Connect / BT)      Computer (USB audio)
                               │ sums active renderer/test lanes + TTS
                               │ applies program duck before TTS mix
                               ▼
-                       hw:Loopback,0,7        ← coupling=loopback
-                              │                 (a coupling=shm_ring box
-                              ▼ (loop)           writes Ring A here instead)
-                       pcm.jasper_capture
+                       Ring A (program.ring)
                               │
                               ▼
                     jasper-camilla (CamillaDSP, port 1234)
                     - main_volume (listening level / source volume)
                     - crossover / correction / protection profile
                               │
-                              ▼ (loop)
-                    outputd_content_playback → outputd_content_capture
+                              ▼
+                       Ring B (content.ring), or the ACTIVE ring
+                       (active-content.ring) on a roleful box
                               │
                               ▼
                     jasper-outputd (final output owner)
@@ -114,7 +112,7 @@ Phone (AirPlay / Spotify Connect / BT)      Computer (USB audio)
 ```
 
 `jasper-outputd` is the only normal writer to the physical DAC.
-`jasper-camilla` writes post-DSP content to a private loopback lane, and
+`jasper-camilla` writes post-DSP content to a private SHM slot ring, and
 `jasper-voice` sends assistant PCM over fan-in's local TTS socket.
 Wake/speech ducking happens in `jasper-fanin` **before** TTS is mixed, so
 CamillaDSP applies the same crossover, correction, and protection path to
@@ -272,9 +270,6 @@ One line each; the doc is the canonical "read this before modifying".
   snd-aloop lanes, the Rust summing daemon, buffer sizing
 - [`HANDOFF-speaker-output-reference.md`](docs/HANDOFF-speaker-output-reference.md)
   — the output owner, true speaker reference, and TTS playout ledger
-- [`HANDOFF-audio-graph-consolidation.md`](docs/HANDOFF-audio-graph-consolidation.md)
-  — campaign plan for one transport (SHM rings + `jts_ring`), per
-  [ADR-0100](docs/adr/0100-one-audio-transport.md)
 - [`HANDOFF-usb-low-latency.md`](docs/HANDOFF-usb-low-latency.md) — the
   shipped `usb_low_latency_48k` route and its doctor artifact gate
 - [`HANDOFF-usb-latency-measurement.md`](docs/HANDOFF-usb-latency-measurement.md)

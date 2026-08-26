@@ -70,7 +70,7 @@ resolves capture device + domain mode per current role:
 
 | Role | Capture | Layers emitted |
 |---|---|---|
-| Solo | `plug:jasper_capture` (fan-in) | B/C + A in one graph |
+| Solo | `jts_ring_capture` (Ring A, fan-in) | B/C + A in one graph |
 | Follower | the grouping ring (snapclient-fed) | **A only** (+ channel-select prefix; the leader baked B/C) |
 | Leader (active) | camilla#1: fan-in → B/C → pipe; camilla#2: the grouping ring → A | split across two instances |
 
@@ -78,8 +78,7 @@ The compile/apply seam (`build_baseline_profile_candidate`,
 `apply_baseline_profile`,
 [baseline_profile.py](../jasper/active_speaker/baseline_profile.py)) threads
 `capture_device` into `emit_active_speaker_baseline_config`; the default
-resolves to `plug:jasper_capture` on every non-ring box, keeping the solo
-baseline byte-identical. `recompose_baseline_yaml` — the program-domain
+resolves to Ring A on a solo box. `recompose_baseline_yaml` — the program-domain
 Layer-C re-emit — takes no capture parameter at all, because it only ever
 runs on the fan-in-fed program domain. `OutputTopology`
 ([output_topology.py](../jasper/output_topology.py)) carries a pure-data

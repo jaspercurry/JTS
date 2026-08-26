@@ -72,7 +72,7 @@ observed board model, the configured boot overlays registered by `DacProfile`,
 the active UDC role, and the observed output profile.
 `jasper-audio-hardware-reconcile` publishes the result as `usb_data_role` inside
 `/run/jasper-output-hardware/output_hardware.json`; the source coordinator,
-final source guard, fan-in coupling, Sources UI, and doctor consume it.
+final source guard, the fan-in USB reconciler, Sources UI, and doctor consume it.
 
 | Hardware | Configured output | Desired role | Gadget/network |
 |---|---|---|---|
