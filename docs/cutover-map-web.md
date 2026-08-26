@@ -8,8 +8,8 @@
 > engine's shape and [`REFACTOR-CUTOVER-2026-08.md`](REFACTOR-CUTOVER-2026-08.md)
 > owns the schedule and the work-item ids. This is a map, and only a map.
 
-Scope is this file. The twin, `jasper/active_speaker/crossover_v2_flow.py`, has
-its own map; this one names it only where a cut crosses between them.
+Scope is this file. The twin, `jasper/active_speaker/crossover_v2_flow.py`, is
+mapped separately; this one names it only where a cut crosses between them.
 
 ---
 
@@ -18,9 +18,9 @@ its own map; this one names it only where a cut crosses between them.
 ### How every number here was taken
 
 Ranges come from the file's own AST at `c253c3cf1`, not from a prior inventory.
-Prose is `tokenize` COMMENT tokens plus `ast.get_docstring` spans, deduplicated
-so a line is never counted twice. Callers were followed to their sites rather
-than inferred from an import list.
+Prose is `tokenize` COMMENT tokens unioned with every docstring span, so a line
+carrying both is never counted twice. Callers were followed to their sites
+rather than inferred from an import list.
 
 Run from the repo root. Prints `8088 lines; 3796 prose`:
 
@@ -63,7 +63,8 @@ map, so it is re-measured rather than cited:
 | zero CSRF / static assets / socket writes | `csrf\|_static\|send_header\|wfile` | **5, all false** — every hit is the substring `_static` inside `restore_anchor_static_prefix_refusal` (`:2057`, `:2059`, `:7646`, `:7701`, `:7787`) |
 
 **It is an orchestration host.** Routes are `correction_setup.py`'s
-`_dispatch_crossover` (`:7366`), reached from the funnel at `:8014`; the loop
+`_dispatch_crossover` (`:7366`), reached from the funnel at **`:8015`** — §5
+says `:8014`, and it drifted a line. The loop
 bridge is `_ensure_loop` (`:1275`) / `_run_async` (`:1292`). Every entry point
 below is a plain `def` that the dispatch chain calls, and every import of this
 module from `correction_setup.py` is **lazy, inside a function body** — there
@@ -109,8 +110,9 @@ module · `tests` = test suite only.
 
 **Disposition codes.** `→W*` absorbed by that plan work item · `SUPERSEDED` the
 engine module named already owns it · `KEEP` survives the dissolution, with
-where it lives · `NO HOME` no destination exists, with the ruling that leaves
-it homeless.
+where it lives · `LIFTS WHOLE` / `OWN MODULE` moves intact to a new file.
+There is deliberately no `NO HOME` row — see §4 for why this file has none,
+unlike its twin.
 
 | # | Lines | *n* | Concern — what it does | Called by | Disposition |
 |---|---|--:|---|---|---|
@@ -316,10 +318,11 @@ silently stops resetting half of what it claims to.
 
 Every one of these is a sync-thread → loop-thread hop, and each is where a
 `TuningSession` verb becomes awaitable under W4-a. Carry the plan's trap
-verbatim: `_run_async`'s timeout path
-(`correction_setup.py:1311-1327`) cancels the loop task, waits for the drain,
-logs **CRITICAL** if it does not arrive — **and then waits unbounded anyway**,
-because a terminal response must never release measurement ownership while a
+verbatim: `_run_async`'s timeout path (`correction_setup.py:1310-1328`, measured)
+cancels the loop task (`:1315`), waits `_RUN_ASYNC_CANCEL_DRAIN_TIMEOUT_S` for
+the drain (`:1316`), logs **CRITICAL** if it does not arrive (`:1317-1322`) —
+**and then calls a bare, unbounded `drained.wait()` at `:1327` anyway**, because
+a terminal response must never release measurement ownership while a
 graph/volume finalizer can still mutate the speaker. The alarm is
 observability, not permission to abandon cleanup.
 
@@ -386,7 +389,7 @@ over-converge and break the dispatch match.
 Rows D, E and Z (226 lines) cannot be scheduled until the owner rules on
 `XOVER_CAPTURE_DUMP_ENABLED_MARKER`. It is off by default and bounded both ways;
 the question is whether operator capture retention survives the cutover at all.
-**This is the only row in the file whose disposition waits on a person.**
+**These are the only rows in the file whose disposition waits on a person.**
 
 Minor: `:2579-2582` is four consecutive blank lines, immediately below row U's
 barrel — harmless, but two more than this tree's spacing, and a tell that
@@ -437,12 +440,13 @@ which is a schedule problem, not a homelessness one.
 | Kept, §7's own three ranges at HEAD | 1,380 |
 | **Remaining contribution from this file** | **≈−6,660 to −6,710** |
 
-**This is about 600 lines better than §7 booked.** §7 states *"≈2,000–2,400
-lines kept"*, giving a remaining contribution of ≈−5,700 to −6,100. That
-bracket comes from 2,108 = 1,185 + 726 + 197 — and the 1,185 is `:6904-8088`,
-which **already contains** the `:7363-8088` tail that the same sentence then
-adds a second time. The label `:6904-7360` beside it is 457 lines. Summing §7's
-three stated ranges honestly gives **1,380**.
+**That is 560 to 1,010 lines better than §7 booked**, depending which end of
+each bracket you take. §7 states *"≈2,000–2,400 lines kept"*, giving a remaining
+contribution of ≈−5,700 to −6,100. That bracket comes from
+2,108 = 1,185 + 726 + 197 — and the 1,185 is `:6904-8088`, which **already
+contains** the `:7363-8088` tail that the same sentence then adds a second time.
+The label `:6904-7360` beside it is 457 lines. Summing §7's three stated ranges
+honestly gives **1,380**.
 
 Do not re-quote §7's ≈2,000–2,400 for this file. Use 1,380–1,426, and re-take
 the count per wave with `scripts/right-size-report.sh` against the actual tree
@@ -456,5 +460,7 @@ loses ≈6,660, the tree loses ≈5,600. §7's floor counts the tree.
 
 ---
 
-*Measured at `c253c3cf1` on 2026-08-26. Re-derive before cutting: §6 drifted by
-two lines within a single merge once already, and this map will too.*
+*Measured at `c253c3cf1` on 2026-08-26. Re-derive before cutting. Drift is not
+hypothetical: the plan's §0 records two of its handed numbers moving within a
+single merge, and re-deriving for this map moved one more — the dispatch funnel
+from `:8014` to `:8015`. This map will drift the same way.*
