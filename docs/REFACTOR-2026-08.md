@@ -178,7 +178,12 @@ already open)**
   fold
   jasper/measurement/ (confirmed non-colliding: it serves `/balance/`) ·
   split test_control_server along its own handler boundary (after the
-  widening lifts) · point the 4 hand-rolled atomic writers at atomic_io
+  widening lifts) · ~~point the 4 hand-rolled atomic writers at
+  atomic_io~~ **DONE**: 3 of the 4 converged (output_hardware,
+  assistant_loudness, audio_quality — modes unchanged at 0644, bytes
+  identical); wifi_guardian_persistence stays hand-rolled and
+  allowlisted — its parent-dir fsync is fail-soft where
+  `durable=True` re-raises
 
 **Wave 6 — one audio transport ([ADR-0100](adr/0100-one-audio-transport.md))**
 - [ ] Delete the central loopback route + all transition machinery (~6–8K
