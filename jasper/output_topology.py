@@ -622,6 +622,14 @@ class SpeakerChannel:
     # builder falls back to ``DEFAULT_SUB_CROSSOVER_HZ``. Only meaningful on a
     # subwoofer channel; ``evaluate_output_topology`` range-checks it when set.
     crossover_fc_hz: float | None = None
+    # Provenance for ``identity_verified``, never serialized and never
+    # compared: True only on a channel :func:`set_channel_identity_verified`
+    # itself wrote. ``from_mapping`` cannot forge it, which is what lets
+    # :func:`_with_server_owned_identity` tell a real audition apart from a
+    # save payload that merely claims one.
+    identity_verified_authorized: bool = field(
+        default=False, compare=False, repr=False
+    )
 
     @classmethod
     def from_mapping(cls, raw: Any) -> "SpeakerChannel":
@@ -2004,7 +2012,11 @@ def set_channel_identity_verified(
     role: str,
     identity_verified: bool,
 ) -> OutputTopology:
-    """Return a copy with one channel's physical identity evidence updated."""
+    """Return a copy with one channel's physical identity evidence updated.
+
+    The sole writer of ``identity_verified``: only what this function marks
+    survives :func:`_with_server_owned_identity` on the way to disk.
+    """
 
     group_id = _require_id(speaker_group_id, "speaker_group_id")
     role_id = _enum(role, "role", SUPPORTED_ROLES)
@@ -2012,7 +2024,11 @@ def set_channel_identity_verified(
     def update(channel: SpeakerChannel) -> SpeakerChannel:
         if channel.physical_output_index is None and identity_verified:
             raise OutputTopologyError("cannot verify an unassigned physical output")
-        return replace(channel, identity_verified=bool(identity_verified))
+        return replace(
+            channel,
+            identity_verified=bool(identity_verified),
+            identity_verified_authorized=bool(identity_verified),
+        )
 
     return _update_speaker_channel(
         topology,
@@ -2458,6 +2474,57 @@ def load_output_topology_snapshot(
     return OutputTopologySnapshot(topology, revision)
 
 
+def _with_server_owned_identity(
+    topology: OutputTopology, recorded: OutputTopology, target: Path
+) -> OutputTopology:
+    """Return `topology` carrying only identity evidence the server holds.
+
+    ``identity_verified`` says a household member heard the right driver on
+    that lane, so a writer that is not :func:`set_channel_identity_verified`
+    may only carry the persisted record forward: its ``True`` survives where
+    ``recorded`` already holds one for the same group, role AND physical
+    output — re-pinning a lane retires the audition that named it. Clearing
+    stays open to every writer, so a re-pin's clear still lands.
+    """
+
+    verified = {
+        (group.id, channel.role, channel.physical_output_index)
+        for group in recorded.speaker_groups
+        for channel in group.channels
+        if channel.identity_verified
+    }
+    refused = 0
+
+    def admit(group_id: str, channel: SpeakerChannel) -> SpeakerChannel:
+        nonlocal refused
+        if not channel.identity_verified or channel.identity_verified_authorized:
+            return channel
+        if (group_id, channel.role, channel.physical_output_index) in verified:
+            return channel
+        refused += 1
+        return replace(channel, identity_verified=False)
+
+    admitted = replace(
+        topology,
+        speaker_groups=tuple(
+            replace(
+                group,
+                channels=tuple(
+                    admit(group.id, channel) for channel in group.channels
+                ),
+            )
+            for group in topology.speaker_groups
+        ),
+    )
+    if refused:
+        logger.warning(
+            "event=output_topology.identity_claim_refused path=%s lanes=%d",
+            target,
+            refused,
+        )
+    return admitted
+
+
 class OutputTopologyMutation:
     """One admitted read-modify-write transaction for saved topology intent."""
 
@@ -2472,7 +2539,19 @@ class OutputTopologyMutation:
     def save(self, topology: OutputTopology) -> str:
         """Publish one topology and return its precomputed byte revision."""
 
-        return save_output_topology(topology, self.target)
+        return save_output_topology(
+            _with_server_owned_identity(topology, self._recorded(), self.target),
+            self.target,
+        )
+
+    def _recorded(self) -> OutputTopology:
+        """The identity evidence this transaction may still carry forward."""
+
+        try:
+            return load_output_topology_strict(self.target)
+        except OutputTopologyError:
+            # Unreadable bytes prove no audition; the empty draft holds none.
+            return new_topology_draft()
 
 
 @contextmanager
