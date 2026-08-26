@@ -631,9 +631,11 @@ def test_a_hand_edited_document_is_caught_by_the_digest():
         (('"freq": 1400.0', '"freq": 14000.0'), "filter_outside_region"),
         # Past the Q ceiling.
         (('"q": 2.0', '"q": 12.0'), "filter_q_out_of_range"),
-        # A boost, which has no seam — and which cannot even reach the route
-        # here, because the packet is gone and its positional bar refuses first.
-        (('"gain": -1.2', '"gain": 1.2'), "insufficient_positional_evidence"),
+        # A boost, which has no seam. It reaches the ROUTE now: the positional
+        # bar that used to refuse first was demoted to a finding by the nanny
+        # burn-down, so `boost_route_unavailable` — retained by ruling R8 — is
+        # the only thing left refusing a blend boost.
+        (('"gain": -1.2', '"gain": 1.2'), "boost_route_unavailable"),
         # Reaching past "numbers into a fixed shape".
         (
             ('"rationale": "cut', '"volume_db": 3, "rationale": "cut'),

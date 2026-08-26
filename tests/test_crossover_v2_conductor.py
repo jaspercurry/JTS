@@ -851,11 +851,44 @@ def test_apply_failed_seam_refuses_the_deferred_verify_hold():
     assert c.applied is False
 
 
-def test_low_alignment_confidence_rejects_measure_before_building_candidate():
-    """Owner ruling (2026-07-20): the former review-screen nudge
-    (< ALIGNMENT_CONFIDENCE_TRUST_FLOOR) is now a hard MEASURE-phase gate —
-    no candidate is built or published, and the household gets guidance to
-    re-measure, never an "apply anyway?" question."""
+def test_an_implausible_delay_never_renders_mic_placement_advice():
+    """The copy separation the confidence demotion required (#2085's shape).
+
+    Both rungs shared ``low_alignment_confidence`` until the burn-down, so the
+    ONE sentence behind it — "Place the microphone about 1 m in front of the
+    speaker at tweeter height" — was rendered for a confidently-WRONG delay
+    too. That is the #2085 pathology exactly: a household whose microphone was
+    never the problem, told to move it. Demoting the confidence rung without
+    splitting the kinds would have left this rejection holding that sentence as
+    its only voice.
+
+    Pinned on the CONTENT, not on the code, because the defect was what the
+    household read. The physics sentence must name the delay and must not
+    instruct a mic move; and no live registry row may carry the retired code.
+    """
+    spec = REASON_REGISTRY["delay_implausible"]
+    household = f"{spec.message} {spec.banner}".lower()
+    assert "delay" in household
+    for mic_advice in ("place the microphone", "tweeter height", "1 m in front"):
+        assert mic_advice not in household, mic_advice
+    # The retired code is gone from the registry, so nothing can route back to
+    # the shared sentence.
+    assert "low_alignment_confidence" not in REASON_REGISTRY
+
+
+def test_low_alignment_confidence_accepts_and_banks_a_reservation():
+    """The nanny burn-down, at the trust floor.
+
+    It REFUSED here and spent a retry until then, on a number this module's own
+    comment called PROVISIONAL pending W6 bench validation. §4 names its exact
+    category as excluded — "confidence heuristics ... is provenance, not a
+    gate" — and the one live bench datum undercut it: two captures at ~0.677
+    confidence, one accepted and one refused 58 s apart, so confidence was
+    never the discriminator the reused reason code claimed it was.
+
+    Transformed rather than deleted, exactly as the ripple gate below was: the
+    threshold and its exclusive comparator are still pinned, and only the
+    consequence of crossing it changed."""
     fakes = FakeSeams()
     fakes.measure = lambda program: _measure_analysis(
         program,
@@ -864,33 +897,28 @@ def test_low_alignment_confidence_rejects_measure_before_building_candidate():
     c = _conductor(fakes)
     _run_phase(c, 1, 1)
     verdict = _run_phase(c, 2, 2)
-    assert verdict == {
-        "accepted": False,
-        "code": "low_alignment_confidence",
-        "template": "fix_and_retry",
-        "reason": REASON_REGISTRY["low_alignment_confidence"].message,
-        "banner": "",
-        "auto_retry": False,
-        # Every rejection carries the capture's pilot evidence since #2085 —
-        # here `None`, because this scenario's analysis states no pilot
-        # verdict. Kept in the exact-equality assertion rather than relaxed to
-        # a subset: the relay dict is the phone's contract, and a test that
-        # stops noticing new keys stops defending it.
-        "pilot_heard": None,
-        # The honest per-position count rides EVERY verdict (#2086 item 2).
-        "attempts": {
-            "used": 0, "allowed": 3, "left": 3,
-            "by_speaker": 0, "by_household": 0,
-        },
-    }
-    assert not fakes.published_candidates
-    assert c.candidate is None
-    assert c.current_phase == PHASE_MEASURE
+    assert verdict["accepted"] is True
+    # No reason code at all — the structural difference from the refusal this
+    # replaces, and the same shape the ripple disclosure asserts below.
+    assert not verdict.get("code")
+    # The candidate the refusal used to prevent now exists and is published.
+    assert fakes.published_candidates
+    assert c.candidate is not None
+    # The measured value rides WITH the floor it was judged against, so a later
+    # constant change cannot retro-caption a banked reservation.
+    reservation = c.measure_alignment_reservation
+    assert reservation is not None
+    assert reservation["confidence"] == pytest.approx(
+        ALIGNMENT_CONFIDENCE_TRUST_FLOOR - 0.1
+    )
+    assert reservation["trust_floor"] == ALIGNMENT_CONFIDENCE_TRUST_FLOOR
 
 
-def test_alignment_confidence_at_the_trust_floor_is_trusted():
-    """The floor is an exclusive lower bound (`<`, not `<=`) — exactly-at-floor
-    is trusted, matching the former nudge's own comparator."""
+def test_alignment_confidence_at_the_trust_floor_banks_nothing():
+    """The floor is still an exclusive lower bound (`<`, not `<=`).
+
+    Exactly-at-floor is trusted, so it reserves nothing — the boundary the
+    refusal used to be pinned at, kept on the disclosure."""
     fakes = FakeSeams()
     fakes.measure = lambda program: _measure_analysis(
         program,
@@ -901,6 +929,7 @@ def test_alignment_confidence_at_the_trust_floor_is_trusted():
     verdict = _run_phase(c, 2, 2)
     assert verdict["accepted"] is True
     assert verdict["candidate_fingerprint"] and "auto_apply" not in verdict
+    assert c.measure_alignment_reservation is None
 
 
 def test_no_alignment_estimate_skips_the_confidence_gate():
@@ -931,9 +960,14 @@ def test_implausible_delay_rejects_measure_even_at_high_confidence():
     lag — a real hardware failure mode, not a hypothetical one) must still
     be rejected when its magnitude falls outside the preset's declared
     ``delay_range_ms`` search bound (``_two_way_preset``'s [0.05, 0.30] ms =
-    [50, 300] us), reusing the low_alignment_confidence guidance rather than
-    auto-applying a physically implausible correction. A delay inside that
-    declared bound is unaffected."""
+    [50, 300] us) rather than auto-applying a physically implausible
+    correction. A delay inside that declared bound is unaffected.
+
+    **It has its own code since the confidence rung was demoted.** The two
+    shared ``low_alignment_confidence``, so this physics rejection rendered a
+    sentence about mic placement — the #2085 pathology, aimed at a household
+    whose microphone was never the problem. A physics fact and a prior are
+    different answers and now say different things."""
     fakes = FakeSeams()
     # High confidence (clears ALIGNMENT_CONFIDENCE_TRUST_FLOOR) but a
     # magnitude (631 us) more than double the declared 300 us upper bound —
@@ -945,7 +979,7 @@ def test_implausible_delay_rejects_measure_even_at_high_confidence():
     _run_phase(c, 1, 1)
     verdict = _run_phase(c, 2, 2)
     assert verdict["accepted"] is False
-    assert verdict["code"] == "low_alignment_confidence"
+    assert verdict["code"] == "delay_implausible"
     assert not fakes.published_candidates
     assert c.candidate is None
     assert c.current_phase == PHASE_MEASURE
@@ -6719,9 +6753,16 @@ def test_measure_diag_logs_full_numbers_on_glitch_rejection_too(caplog):
     assert 'guard=""' in caplog.text
 
 
-def test_measure_diag_logs_full_numbers_on_low_alignment_confidence_rejection(caplog):
+def test_measure_diag_logs_full_numbers_on_low_alignment_confidence(caplog):
+    """The numbers still ride the diag, on a capture that is now ACCEPTED.
+
+    Transformed with the demotion, the same way the ripple test below was: what
+    the capture measured is unchanged, and only the consequence moved. ``guard``
+    now names the disclosure, because its siblings name checks that REFUSED and
+    leaving a refusal's vocabulary on an accepting path would mislead exactly
+    the reader that field exists for."""
     caplog.set_level(logging.INFO, logger=_DIAG_LOGGER)
-    assert 0.55 < ALIGNMENT_CONFIDENCE_TRUST_FLOOR  # keep the fixture below the gate
+    assert 0.55 < ALIGNMENT_CONFIDENCE_TRUST_FLOOR  # keep the fixture below the floor
     fakes = FakeSeams()
     fakes.measure = lambda program: _measure_analysis(
         program, alignment=_alignment(confidence=0.55),
@@ -6729,18 +6770,16 @@ def test_measure_diag_logs_full_numbers_on_low_alignment_confidence_rejection(ca
     c = _conductor(fakes)
     _run_phase(c, 1, 1)
     verdict = _run_phase(c, 2, 2)
-    assert verdict["accepted"] is False
-    assert verdict["code"] == "low_alignment_confidence"
+    assert verdict["accepted"] is True
+    assert not verdict.get("code")
     assert "event=correction.crossover_v2_measure_diag" in caplog.text
     assert "alignment_confidence=0.55" in caplog.text
-    # ``analysis.candidate`` is populated by program_analysis's own
-    # ``_build_candidate`` before this ever reaches the conductor (real
-    # ``_analyze_measure`` always builds it) — so its ripple number is still
-    # available for the diagnostic even though THIS rejection means the
-    # conductor's own candidate is never built or published.
     assert "predicted_ripple_db=0.8" in caplog.text
-    # The pre-existing confidence-floor check, not G1 — guard stays empty.
-    assert 'guard=""' in caplog.text
+    assert "guard=alignment_confidence_disclosure" in caplog.text
+    # The dedicated event is the stable line to alert or count on — ``guard``
+    # is one field on a diagnostic that fires on every capture.
+    assert "event=correction.crossover_v2_alignment_confidence_disclosed" in caplog.text
+    assert "trust_floor=0.6" in caplog.text
 
 
 def test_measure_diag_logs_guard_field_on_ripple_disclosure(caplog):

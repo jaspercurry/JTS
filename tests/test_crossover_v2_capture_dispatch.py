@@ -62,7 +62,6 @@ def _measure(**overrides) -> tuple[cd.MeasureScreens, _Counter, _Counter]:
         linearity_ok=True,
         alignment_present=True,
         alignment_status_ok=True,
-        alignment_confidence_ok=True,
     )
     base.update(overrides)
     return (
@@ -305,45 +304,50 @@ def test_the_schedule_port_is_not_asked_when_a_rung_above_refuses():
 def test_the_plausibility_port_is_asked_only_of_a_resolved_trusted_estimate():
     """Fix 3's backstop is the last alignment rung, and only that.
 
-    A trims-only capture has no estimate; an unresolved or untrusted one is
-    already refused.  Asking anyway would call the preset-bound check on
-    alignments the shipped ladder never handed it.
+    A trims-only capture has no estimate and an unresolved one is already
+    refused.  Asking anyway would call the preset-bound check on alignments the
+    shipped ladder never handed it.  An UNTRUSTED estimate is no longer one of
+    those cases: the confidence rung was demoted to a disclosure, so a
+    low-confidence resolved estimate now reaches this port like any other.
     """
     for override in (
         {"alignment_present": False},
         {"alignment_status_ok": False},
-        {"alignment_confidence_ok": False},
     ):
         screens, _, plausible = _measure(**override)
         cd.measure_screens(screens, clip_retry_backoff_db=3.0)
         assert plausible.calls == 0, override
 
 
-def test_a_trims_only_capture_skips_all_three_alignment_rungs():
-    screens, _, _ = _measure(
-        alignment_present=False, alignment_status_ok=False, alignment_confidence_ok=False
-    )
+def test_a_trims_only_capture_skips_every_alignment_rung():
+    screens, _, _ = _measure(alignment_present=False, alignment_status_ok=False)
     assert cd.measure_screens(screens, clip_retry_backoff_db=3.0) is None
 
 
-def test_the_three_alignment_rungs_report_their_own_finding():
+def test_the_two_alignment_rungs_report_their_own_finding():
+    """One kind each, which is the split the confidence demotion required.
+
+    Both rungs shared ``low_alignment_confidence`` until the burn-down, so the
+    physics backstop rendered a sentence about mic placement. It has its own
+    kind now, and the household sentence behind it names the delay.
+    """
     screens, _, _ = _measure(alignment_status_ok=False)
     assert cd.measure_screens(screens, clip_retry_backoff_db=3.0) == cd.MeasureScreen(
         cd.SCREEN_ALIGNMENT_UNRESOLVED
     )
-    screens, _, _ = _measure(alignment_confidence_ok=False)
-    assert cd.measure_screens(screens, clip_retry_backoff_db=3.0) == cd.MeasureScreen(
-        cd.SCREEN_LOW_ALIGNMENT_CONFIDENCE
-    )
     screens, _, _ = _measure(_plausible=_Counter(False))
     assert cd.measure_screens(screens, clip_retry_backoff_db=3.0) == cd.MeasureScreen(
-        cd.SCREEN_LOW_ALIGNMENT_CONFIDENCE
+        cd.SCREEN_DELAY_IMPLAUSIBLE
     )
 
 
-def test_an_unresolved_alignment_is_reported_before_an_untrusted_one():
-    """Two findings, two household actions; the resolve verdict comes first."""
-    screens, _, _ = _measure(alignment_status_ok=False, alignment_confidence_ok=False)
+def test_an_unresolved_alignment_is_reported_before_an_implausible_delay():
+    """Two findings, two household actions; the resolve verdict comes first.
+
+    The backstop is asked only of a RESOLVED estimate, so an unresolved one
+    that would also fail it must still say ``alignment_unresolved``.
+    """
+    screens, _, _ = _measure(alignment_status_ok=False, _plausible=_Counter(False))
     assert cd.measure_screens(screens, clip_retry_backoff_db=3.0) == cd.MeasureScreen(
         cd.SCREEN_ALIGNMENT_UNRESOLVED
     )
