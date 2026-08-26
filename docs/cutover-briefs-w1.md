@@ -108,6 +108,20 @@ premise**. The rule it argues for is §7's trap 1.
 **W1-c is three sites in, not four**, and §1 `:64-66`'s *"leaves a second writer
 behind"* hazard **does not exist** — the lift is smaller and safer than scheduled.
 
+**The premise has already spread to two more documents, and this PR corrects
+both:** `cutover-map-flow.md:96` routed W1-c to *"the four retention sites"* and
+`:101` described `:6879` as *"retention inlined"*; `cutover-map-web.md:145`
+repeated the four-site claim and placed the phantom copy *"in the twin"* — which
+is a second error, since `crossover_v2_flow.py` is the god file, not
+`tests/engine_twin.py`. A routing cell that names a site the builder cannot find
+is worse than a stale line number, so those three cells are fixed here.
+
+**Three assertions in the plan itself are left standing, deliberately** —
+`REFACTOR-CUTOVER-2026-08.md:60`, `:221` and `:980`. The plan is the authority
+document and §0 is built to *record* premise movement rather than silently
+absorb it, so the correction belongs in its ledger, by its owner, not in a
+brief's PR. **They are listed here so that pass is one grep, not a re-derivation.**
+
 ---
 
 ## 1. What the four methods are called by, and what that fixes
