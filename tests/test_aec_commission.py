@@ -382,6 +382,11 @@ def test_emitting_a_class_entry_reads_the_artifact_and_commissions_nothing(
     # An unreadable artifact is a message, not a traceback.
     assert aec_commission.main(["--emit-class-entry", str(tmp_path / "absent")]) == 1
 
+    # An unset shell variable arrives as an empty path. That is still the
+    # harvest path: falling through to a commissioning run would stop the
+    # services and play sweeps at someone who asked to print a registry row.
+    assert aec_commission.main(["--emit-class-entry", ""]) == 1
+
 
 def test_reset_rejects_a_different_xvf_after_reenumeration(monkeypatch) -> None:
     class Device:

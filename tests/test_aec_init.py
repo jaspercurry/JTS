@@ -6,6 +6,7 @@ from __future__ import annotations
 
 import contextlib
 import json
+import logging
 import os
 import socket
 import subprocess
@@ -363,21 +364,81 @@ def test_a_fresh_install_on_a_shipped_hardware_class_arms_and_discloses(
 
 
 def test_a_fresh_install_on_an_unrecognized_hardware_class_still_parks(
-    monkeypatch, disclosure_file
+    monkeypatch, disclosure_file, caplog
 ) -> None:
     # The shipped row is for a different final-edge format, so it says nothing
     # about this box: no K to run from, and the commissioner is the answer.
+    # The park names the near-miss field, or a row one firmware flash away is
+    # indistinguishable from an empty table.
+    dev = _FakeXvfDevice()
+    _arm_chip_aec(
+        monkeypatch, dev, artifact=lambda: (_ for _ in ()).throw(ValueError("missing"))
+    )
+    row = _shipped_row(output_format="S32_LE")
+    monkeypatch.setattr(shipped_alignment, "REGISTRY", (row,))
+
+    with caplog.at_level(logging.ERROR, logger="jasper.aec_init"):
+        assert aec_init.main() == aec_init.COMMISSION_REQUIRED_EXIT
+
+    assert _write_map(dev)["SHF_BYPASS"] == [1]
+    assert not disclosure_file.exists()
+    assert row.divergence(_live_identity()) == ("output_format",)
+    assert "output_format" in caplog.text
+
+
+@pytest.mark.parametrize(
+    "raised, expected_exit",
+    [
+        # Nothing is banked either way, so a queue that will not settle leaves
+        # the disposition the absent artifact already had.
+        (aec_init.ChipInitError("queue never settled"), aec_init.COMMISSION_REQUIRED_EXIT),
+        # ...but an outputd that predates its own declaration keeps its own
+        # exit, so the reconciler names the ordering race and not the
+        # commissioner.
+        (aec_init.OutputdEnvStale("declaration not loaded"), aec_init.OUTPUTD_ENV_STALE_EXIT),
+    ],
+)
+def test_a_fresh_install_that_cannot_read_the_queue_keeps_its_own_exit(
+    monkeypatch, raised, expected_exit
+) -> None:
+    dev = _FakeXvfDevice()
+    _arm_chip_aec(
+        monkeypatch, dev, artifact=lambda: (_ for _ in ()).throw(ValueError("missing"))
+    )
+    monkeypatch.setattr(shipped_alignment, "REGISTRY", (_shipped_row(),))
+    monkeypatch.setattr(
+        aec_init,
+        "collect_reference_queue",
+        lambda _pcm: (_ for _ in ()).throw(raised),
+    )
+
+    assert aec_init.main() == expected_exit
+    assert _write_map(dev)["SHF_BYPASS"] == [1]
+
+
+def test_a_shipped_k_the_driver_cap_refuses_parks_instead_of_faulting(
+    monkeypatch,
+) -> None:
+    # Non-negotiable #2 still refuses the write. What changes is the
+    # disposition: this box has nothing banked, so it needs commissioning
+    # (exit 2, software AEC3) rather than an inspection of a healthy daemon.
     dev = _FakeXvfDevice()
     _arm_chip_aec(
         monkeypatch, dev, artifact=lambda: (_ for _ in ()).throw(ValueError("missing"))
     )
     monkeypatch.setattr(
-        shipped_alignment, "REGISTRY", (_shipped_row(output_format="S32_LE"),)
+        shipped_alignment,
+        "REGISTRY",
+        (
+            _shipped_row(
+                k_samples=283 + xvf3800.CHIP_AEC_SYS_DELAY_MAX + 1,
+                sys_delay=xvf3800.CHIP_AEC_SYS_DELAY_MAX,
+            ),
+        ),
     )
 
     assert aec_init.main() == aec_init.COMMISSION_REQUIRED_EXIT
     assert _write_map(dev)["SHF_BYPASS"] == [1]
-    assert not disclosure_file.exists()
 
 
 def test_a_commissioned_artifact_outranks_the_row_shipped_for_its_class(

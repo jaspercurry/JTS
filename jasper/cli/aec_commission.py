@@ -583,7 +583,11 @@ def main(argv: Sequence[str] | None = None) -> int:
         ),
     )
     args = parser.parse_args(argv)
-    if args.emit_class_entry:
+    # Presence, not truthiness: an unset shell variable makes the flag arrive
+    # as "", and falling through on that would start a full commissioning run
+    # (services stopped, audible sweeps, chip writes) for someone who asked to
+    # print a registry row.
+    if args.emit_class_entry is not None:
         return _emit_class_entry(Path(args.emit_class_entry))
     logging.basicConfig(
         level=logging.INFO, format="%(asctime)s aec-commission %(levelname)s %(message)s"

@@ -949,15 +949,30 @@ def shipped_class_alignment(
     Nothing is banked on this box, so every way this can fail lands on the
     disposition the absent artifact already had — commission required, which
     the reconciler discloses and runs software AEC3 for — never a fault.
+
+    A miss names the nearest row and the class fields it disagrees on: after a
+    firmware flash or a geometry change, "no shipped row" and "the row is one
+    field away" are the same park otherwise.
     """
 
     try:
-        entry = shipped_alignment.for_identity(build_identity(dev, plan, status))
+        live = build_identity(dev, plan, status)
     except ChipInitError as exc:
         raise CommissionRequired(absent) from exc
-    if entry is None:
+    entry = shipped_alignment.for_identity(live)
+    if entry is not None:
+        return entry
+    nearest = min(
+        shipped_alignment.REGISTRY,
+        key=lambda row: len(row.divergence(live)),
+        default=None,
+    )
+    if nearest is None:
         raise CommissionRequired(absent)
-    return entry
+    raise CommissionRequired(
+        f"{absent}; nearest shipped class {nearest.label} differs in "
+        + ", ".join(nearest.divergence(live))
+    )
 
 
 def publish_disclosure(reason: str, *, env: Mapping[str, str] | None = None) -> None:
@@ -1076,6 +1091,12 @@ def main() -> int:
                 delay = exc.delay
                 disclosed.append(str(exc))
             except ValueError as exc:
+                # A shipped K that will not resolve on this box (the driver cap
+                # refuses the delay, or the queue is unstable) leaves the same
+                # disposition its absent artifact already had — this box needs
+                # its own commissioning, not an inspection of a healthy daemon.
+                if absent is not None:
+                    raise CommissionRequired(f"{absent}; {exc}") from exc
                 raise ChipInitError(str(exc)) from exc
             apply_profile(dev, plan, delay, card=card)
             disclosure = "; ".join(disclosed)

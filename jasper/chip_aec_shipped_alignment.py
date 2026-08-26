@@ -50,6 +50,17 @@ class ShippedAlignment:
     def class_key(self) -> tuple[Any, ...]:
         return hardware_class_key(self.identity)
 
+    def divergence(self, identity: AlignmentIdentity) -> tuple[str, ...]:
+        """Return the class fields this row disagrees with a live box on."""
+
+        return tuple(
+            name
+            for name, value in zip(
+                HARDWARE_CLASS_IDENTITY_FIELDS, self.class_key, strict=True
+            )
+            if value != getattr(identity, name)
+        )
+
 
 # Harvested rows are pasted here.
 REGISTRY: tuple[ShippedAlignment, ...] = ()
