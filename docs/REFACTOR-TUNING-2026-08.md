@@ -887,6 +887,60 @@ clamp list, so 5a and 5c get a **real review**; the rest one pass.
 **Rollback:** `git revert`, per-writer — each 5b routing is independent. Per rule
 3 a routed writer's old path is deleted in its own PR, not left dual-writing.
 
+#### Wave 5 — CLOSED. The writer ledger, verified at HEAD.
+
+Every row below was checked by grep at the merge HEAD, not carried from the
+census. Where the plan's original disposition was wrong, the correction is
+stated rather than quietly replaced.
+
+| # | Writer | Final disposition |
+|---|---|---|
+| W1 | household level | **ROUTED** — `volume_coordinator.py` `declare_household_level_db` |
+| W2 | `Ducker` transient duck | **ROUTED** — `camilla.py` `acquire_duck` / `release` |
+| W3 | 1 Hz volume reconciler | **KEPT.** Cross-process post-idle-exit recovery, unreplaced. Retires behind #3038. Its `GRAPH_SWAP_DUCK_DB > RECONCILE_DUCK_SKIP_DB` coupling is now pinned *as an inequality*. |
+| W4 | `CueDuck` | **ROUTED** — `camilla.py` `acquire_duck` / `release(household_level_db=)` |
+| W5 | mux writer sites | **ROUTED via W1.** Verified: `mux.py` holds a `VolumeCoordinator` and writes through it; it has no fader call of its own, so it inherits W1's door. |
+| W6 | graph-swap duck | **NOT wave 5** — bound to the session graph, moves to wave 6 (`09 §PC-9`) |
+| W7 | crossover-v2 session-measurement write | **NAMED EXCEPTION.** `web/correction_crossover_v2._session_volume_io`'s `_set` (`:1238` at this merge; the symbol is the durable citation, the line is not — wave 3's merges moved it 11 lines while this ledger was in flight). Dies with wave 6's flow; deliberately not routed into a seam that is about to be deleted. |
+| W8 | `hold_fader_at`'s repair | **WRITE DELETED.** Prove-and-refuse kept, with all three disclosure items. |
+| W9 | *(plan row)* | **NO SURVIVING WRITER FOUND — stated, not assumed.** I could not identify a distinct W9 writer at HEAD, and `web_commissioning.py` contains no fader write at all. The enumerated-set check below is what actually closes this row: no unaccounted writer exists, so whatever W9 named is either already inside one of the named doors or gone. Recorded this way rather than given a mechanism I did not verify. |
+| W10 | autolevel ramp | **ROUTED** — one held `SESSION_MEASUREMENT` claim, moved by `relevel` |
+| W11 | unresolved-volume recovery | **ROUTED** — `declare_household_level_db` + the lease's own exact→emergency ladder |
+| W12 | measurement-session facade | **SPLIT, and the plan's row was wrong.** The autolevel family *is* a facade of W10. The level-match family **writes the fader itself** and routes as itself — one cross-request claim across the ramp, the before-sweep re-assertion, and the restore. |
+| W13 | settle-time household return | **ROUTED, not deleted.** See catch five. |
+| W14 | measurement volume guard | **ROUTED** — claim acquired at the calibration level, released with `household_level_db=` |
+| W15 | commissioning runtime port | **STOPPED, by ruling.** `commissioning_service.py:1336` is not a write — it is the `set_listening_volume_db` field of the `CommissioningRuntimePort` constructor. Since X2 landed, its **sole consumer** is `commissioning_runtime._restore`, beside the one surviving `1e-6` drift gate. Routing it would fire that gate on healthy *recorded-not-written* restores under a higher-ranked claim. The bracket keeps its port. |
+| W16 | `/sound/` floor-tone audition | **ROUTED** — `COMMISSIONING` claim, `relevel` on the slider |
+| W17 | `bass_extension_bench._CamillaFloor` | **DELETED** — never constructed |
+| W18 | `cli/aec_tune` | **ROUTED.** Its *ceiling* bypass had already closed; the remainder was the owner. Declares rather than claims, because `main()` brackets across two `asyncio.run` calls. |
+| W19 | chip-AEC `prepare_volume`/`restore_volume` | **ROUTED** — the plan's "uncounted 19th". It calls `aec_tune._camilla_set_volume`, so W18's routing carries it; `aec_commission.main()` gained the registration that makes it reachable. |
+| X1 | sweep-lease trio + closed-loop solver | **DELETED** — never ran in production |
+| X2 | summed-capture runtime | **DELETED** — no production caller |
+
+**The enumerated-set check, at HEAD.** `grep 'set_volume_db('` across `jasper/`,
+excluding the clamped door's own definition and the owner's bound doors, returns
+exactly three sites, each named above: `volume_coordinator.py:2068` (the
+coordinator door the owner is *built on*, not a competing writer),
+`commissioning_service.py:1336` (**W15**, ruled stopped), and
+`correction_crossover_v2._session_volume_io` (**W7**, the single named exception, dying
+with wave 6). **No unaccounted writer remains.**
+
+**Six catches, recorded because each was a census entry that read one way and
+behaved another.** W3 (reads deletable, is the only cross-process recovery) ·
+W7 (reads routable, dies with its flow) · W12 (reads facade, half of it writes)
+· W13 (reads dead, is the only happy-path restore) · W15 (reads writer, is the
+bracket) · and **`CrossoverLevelLease.run_level_match`, which this agent
+declared dead and was wrong about** — a bare-name grep answers *where an
+identifier appears*, never *what object an attribute is called on*, and a
+duck-typed `sess: Any` parameter breaks the chain. Only argument-tracing
+recovers it. `docs/REVIEW-deep-audit-2026-07-11.md` §476 is stale for the same
+reason.
+
+**Coordination R5 — the volume-surface widening EXPIRES with this wave**, on the
+checkable standard adopted 2026-08-26: the enumerated set holds only W7's named
+exception, W15's ruled stop, and the owner's own plumbing. The volume surface
+returns to the audit program's single-owner area 3.
+
 ### Wave 6 — One measurement graph per session. The swap and its duck go together.
 
 **Goal.** Make the owner's loop order affordable: mic moves outside, cheap config
