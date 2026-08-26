@@ -789,25 +789,21 @@ check that everything's still healthy after the manual steps.
 **Mic-side checks worth knowing about** (they pass silently when
 fine, surface the exact fix when not):
 
-- **XVF firmware 6-ch** — bridge can't run without 6-channel
-  firmware. If it warns, jump to the DFU section below.
-- **XVF mixer state** — kernel ALSA mixer can have ch2-5 muted
-  even when firmware is 6-ch (a trap on chips flashed 2-ch → 6-ch
-  mid-bringup). Reconciler self-heals; doctor flags drift.
+- **XVF firmware 6-ch** — the bridge can't run without it; if this
+  warns, jump to the DFU section below.
+- **XVF mixer state** — ch2-5 can be muted in the kernel ALSA mixer
+  even on 6-ch firmware. Reconciler self-heals; doctor flags drift.
 - **Audio profile** — read-only intent-vs-runtime truth from the same
-  classifier as `/aec` and `/state.aec`: requested profile, active
-  profile, session source, wake legs, and any pending/unavailable warning.
-- **AEC bridge service** — the bridge should be active whenever a mic
-  profile needs its UDP outputs. In software profiles it runs WebRTC
-  AEC3; in chip-AEC profiles it forwards the selected chip beam and
-  bypasses WebRTC AEC3.
-  - `ok (running (software AEC3 enabled))` — software profile active
-  - `ok (running (chip-AEC beam forwarding; WebRTC AEC3 bypassed; ...))`
-    — chip-AEC profile active
-  - `ok (disabled JASPER_AEC_MODE=disabled)` — explicit operator opt-out
-  - `warn (off — XVF on 2-channel firmware)` — gentle nudge to DFU-flash
-  - `warn (off — Array chip not present)` — XVF needs to be plugged in
-  - `fail` — conditions for AEC are met but bridge isn't running (real bug; paste the suggested commands)
+  classifier as `/aec` and `/state.aec`: requested profile, active profile,
+  session source, wake legs, and whatever `reason=`/`action=` the reconciler
+  disclosed. State table:
+  [Step 5](#step-5--bring-aec-online-reconcile-then-commission).
+- **AEC bridge service** — active whenever a mic profile needs its UDP
+  outputs. `ok` while it runs (software AEC3, or a chip beam forwarded with
+  WebRTC AEC3 bypassed) and under an explicit `JASPER_AEC_MODE` opt-out;
+  `warn` with no XVF plugged in, or one still on 2-channel firmware; `fail`
+  only when AEC should be on and the bridge isn't (a real bug — the row
+  names the commands).
 
 If you want to go deeper on any mic issue, the canonical reference
 is [docs/HANDOFF-xvf3800.md](docs/HANDOFF-xvf3800.md) and the
@@ -874,20 +870,23 @@ To remove the CA from an iPhone (e.g., decommissioning a speaker):
 ## Optional: AEC bridge on/off
 
 `install.sh` runs `jasper-aec-reconcile`, which converges the AEC stack
-against the mic it detects and clears stale UDP mic config when the
-Array is absent. The household control is the profile picker at
+against the mic it detects and clears stale UDP mic config when the XVF
+is absent. The household control is the profile picker at
 `http://jts.local/wake/`; to make the reconciler look again after a
-firmware flash, `sudo systemctl start jasper-aec-reconcile`.
+firmware flash, `sudo systemctl start jasper-aec-reconcile`. On a managed
+XVF that selection carries intent only: the reconciler arms chip AEC when
+the detected hardware can carry it and falls back to software AEC3 with a
+disclosure when it cannot. `JASPER_AUDIO_INPUT_PROFILE=custom` is the one
+way to pin legs by hand.
 
-The bridge→voice transport is UDP localhost since May 2026 (was
-a second snd-aloop card before that, retired for resilience —
-see [`docs/HANDOFF-resilience.md`](docs/HANDOFF-resilience.md)).
+The bridge→voice transport is UDP localhost; the resilience reasons
+are in [`docs/HANDOFF-resilience.md`](docs/HANDOFF-resilience.md).
 
-**Rollback key only — `JASPER_AEC_MODE`.** It predates the profile picker,
-and every managed profile branch overrides the key on each reconcile pass,
-so it is respected only under `JASPER_AUDIO_INPUT_PROFILE=custom`. `aec_mode.env` also carries
-`JASPER_AUDIO_INPUT_PROFILE` and the `JASPER_WAKE_LEG_*` keys, so edit the
-one key in place — overwriting the file with `tee` destroys the rest:
+**Rollback key only — `JASPER_AEC_MODE`.** Every managed profile branch
+overrides the key on each reconcile pass, so it is respected only under
+`custom`. `aec_mode.env` also carries `JASPER_AUDIO_INPUT_PROFILE` and the
+`JASPER_WAKE_LEG_*` keys, so edit the one key in place — overwriting the
+file with `tee` destroys the rest:
 
 ```sh
 sudo sed -i '/^JASPER_AEC_MODE=/d' /var/lib/jasper/aec_mode.env
@@ -952,7 +951,10 @@ The old `ua-io16-6ch-sqr` blob will enumerate and expose raw mics on
 a linear board, but its chip processed beams and DoA assume square
 geometry. Use it only for raw-channel-only diagnostics. For JTS wake
 and AEC tuning on the Flex LINEAR-4, flash the linear Flex blob and
-start retuning from `xvf_software_aec3` / raw-mic corpus legs.
+retune from the software AEC3 + raw-mic corpus legs the box falls back
+to on its own — on a managed XVF the profile picker carries intent
+only, capability picks the leg, and `xvf_software_aec3` is not offered
+to a mic with no production beam plan.
 
 **Before flashing, check the upstream directory for newer entries.**
 If a newer 6-channel variant exists, read its changelog/PR
@@ -981,12 +983,11 @@ the actual flash, then resets back to the normal audio device:
 `2886:001a` for the legacy square/circular firmware, `2886:0022`
 for Flex firmware.
 
-You may have read elsewhere (the Seeed wiki, older drafts of
-this doc, ESPHome examples) about putting the chip into "DFU
-mode" via a button combo. **That procedure is for Safe Mode
-recovery only** — used when the DataPartition is corrupted, e.g.
-after an unsafe `SAVE_CONFIGURATION` call has bricked normal boot.
-For a routine 2-ch → 6-ch firmware upgrade, no button combo is
+The button combo for "DFU mode" you may have read about elsewhere
+(the Seeed wiki, ESPHome examples) is **for Safe Mode recovery
+only** — used when the DataPartition is corrupted, e.g. after an
+unsafe `SAVE_CONFIGURATION` call has bricked normal boot. For a
+routine 2-ch → 6-ch firmware upgrade, no button combo is
 needed. **One exception:** a Flex / XIAO board that shipped in I2S
 mode was never a USB device, so its *first* USB flash does require
 Safe Mode entry (the BOOT button on those boards) — see the callout
@@ -1071,15 +1072,13 @@ sudo /opt/jasper/.venv/bin/python -m jasper.xvf.xvf_host BLD_MSG
 # Flex LINEAR-4 expects: ['ua-io16-6ch-lin']
 
 sudo /opt/jasper/.venv/bin/python -m jasper.xvf.xvf_host BLD_REPO_HASH
-# For v2.0.8 6chl as of 2026-05-15, expect hash:
+# v2.0.8 6chl (2026-05-15) reported:
 #   'a1f70651e992d6f0bcff655b26925d33999b9c2d'
-# For Flex LINEAR-4 v1.0.0 (jts5 hardware verification, 2026-06-19),
-# this reported:
+# Flex LINEAR-4 v1.0.0 (2026-06-19) reported:
 #   '4b339d00721937451ee487759c04e2acb3215793'
-# The current hash-pinned target is v1.0.1 (2026-06-29) — its
-# BLD_REPO_HASH has not yet been recorded from hardware. Newer
-# versions will report different hashes — that's fine, the value is
-# for change-detection, not validation.
+# The hash-pinned Flex target is now v1.0.1, whose hash has not been
+# recorded from hardware. A different hash is fine — the value is for
+# change-detection, not validation.
 ```
 
 #### Step 5 — bring AEC online (reconcile, then commission)
@@ -1088,18 +1087,25 @@ Two commands, in order. The reconciler picks up the new firmware, points
 voice's mic source at the AEC bridge's UDP output, and resets the kernel
 ALSA mixer to known-good values for the newly-exposed ch2-5 (the stale-mute
 trap — see "Why the reconciler step matters" below). `jasper-aec-commission`
-then measures and stores this box's chip-AEC alignment. Until it passes, the
-speaker still hears — on software AEC3 — and says so; chip AEC is the goal, not
-the price of admission.
+then measures and banks this box's chip-AEC alignment. Neither is a gate
+([ADR-0101](docs/adr/0101-proven-once-disclose-on-change.md)): until an
+alignment is banked the speaker still hears — software
+AEC3 on 6-channel firmware, the chip's plain capture on 2-channel — and
+discloses what chip AEC is missing. The stack parks only for a microphone
+that is physically absent, and for a unit that observably failed.
 
-On a fresh install, `deploy/install.sh` seeds `JASPER_MIC_DEVICE` from
-the detected card. On existing Pis, do not hand-pin
-`JASPER_AEC_MIC_DEVICE` when swapping between legacy square/circular
-(`Array`) and Flex LINEAR-4 (`L16K6Ch`) firmware. The reconciler derives
-that bridge mic from the detected XVF profile for selectable input
-profiles and writes the current card back to `/etc/jasper/jasper.env`.
-`JASPER_AUDIO_INPUT_PROFILE=custom` remains the escape hatch for a
-deliberately hand-pinned mic.
+On hardware whose class already ships a proof, a fresh install starts from
+that alignment and discloses it, so commissioning personalizes rather than
+enables. The shipped table is empty today; harvest a row off a commissioned
+box with `sudo jasper-aec-commission --emit-class-entry` and paste it into
+`jasper/chip_aec_shipped_alignment.py`. A per-unit artifact always wins.
+
+On a fresh install, `deploy/install.sh` seeds `JASPER_MIC_DEVICE` from the
+detected card. Do not hand-pin `JASPER_AEC_MIC_DEVICE` when swapping between
+legacy square/circular (`Array`) and Flex LINEAR-4 (`L16K6Ch`) firmware: for
+selectable profiles the reconciler derives that bridge mic from the detected
+XVF profile and writes the current card back to `/etc/jasper/jasper.env`.
+`custom` remains the escape hatch for a deliberately hand-pinned mic.
 
 ```sh
 sudo systemctl start jasper-aec-reconcile
@@ -1115,21 +1121,17 @@ Healthy box: every row "✓", with **Audio profile** reporting the chip-AEC
 profile (`xvf_chip_aec`) both requested and active, and **AEC bridge service**
 forwarding the chip beam with WebRTC AEC3 bypassed. Short of that, **Audio
 profile** reads `warn` and carries the reconciler's own `reason=` and
-`action=`. `disclosed_stale` below is a complaint, not an outage — the speaker
-is still hearing. `unavailable` means there is no microphone to hear with;
-`state=fault` is genuine breakage. Do what `action=` says, then re-read the
-rows:
+`action=`. Do what `action=` says, then re-read the rows:
 
 | Doctor says | What it means | What to do |
 |---|---|---|
-| `state=disclosed_stale` | The speaker is running — on chip AEC from a banked alignment, on software AEC3, or on the chip's plain capture — but chip AEC is not fully armed. `reason=` names why (a stale proof, an uncodified output DAC, no production beam plan, 2-channel firmware) | Whatever `action=` says (`sudo jasper-aec-commission`, or a DFU flash); the box keeps working until you get to it |
+| `state=disclosed_stale` | The speaker is running — on chip AEC from a banked alignment, on software AEC3, or on the chip's plain capture — but chip AEC is not fully armed. `reason=` names why (running on a shipped class proof, a proof measured on a sibling unit or on a since-changed edge, an uncodified output DAC, no production beam plan, 2-channel firmware) | Whatever `action=` says (`sudo jasper-aec-commission`, or a DFU flash); the box keeps working until you get to it |
 | `state=unavailable` | There is no usable capture device: no XVF present, or the only candidate is a measurement mic | Plug the microphone back in, then re-run the reconciler |
-| `state=fault` | A unit in the managed activation failed (`jasper-aec-init`, `jasper-aec-bridge`, or `jasper-outputd`) — genuine breakage, not a designed wait | Inspect the unit its `action=` names, then re-run the reconciler |
+| `state=fault` | A unit in the managed activation failed (`jasper-aec-init`, `jasper-aec-bridge`, or `jasper-outputd`) — observed breakage, not a designed wait | Inspect the unit its `action=` names, then re-run the reconciler |
 
 On Flex LINEAR-4 (`L16K6Ch` firmware), `state=disclosed_stale` on software AEC3
 is today's end state, not an operator error: chip AEC has no production beam
-plan for that variant yet. There is nothing to fix or re-run — an AEC path for
-Flex is future work.
+plan for that geometry yet, so there is nothing to re-run.
 
 #### Why the reconciler step matters
 
@@ -1145,9 +1147,8 @@ healthy, `/proc/asound/<card>/stream0` shows 6 channels, but
 The reconciler's `ensure_capture_mixer_open` resets the relevant
 controls to all-on / max-volume and runs `alsactl store` so the
 state survives reboot. `jasper-doctor`'s "XVF mixer state" check
-flags drift if anything sets them back. This is exactly the trap
-that consumed half a day on jts2's bringup in May 2026
-(`docs/HANDOFF-xvf3800.md` §7 has the full investigation).
+flags drift if anything sets them back; `docs/HANDOFF-xvf3800.md`
+§7 has the investigation this came out of.
 
 If the reconciler is unavailable for any reason and you need to
 fix the mixer state manually:
@@ -1177,7 +1178,6 @@ sudo alsactl store
 - **In-system DFU mechanism**: confirmed empirically via `lsusb -v -d 2886:001a` showing the Application Specific class 254 interface at alt 1 = "reSpeaker DFU Upgrade" while the chip is in normal audio runtime. Same descriptor visible on both jts and jts2 chips on 2026-05-15; jts5 Flex LINEAR-4 was flashed through the same normal-runtime DFU flow on 2026-06-19 and re-enumerated as `2886:0022`.
 - **Channel layout per firmware variant**: [Seeed wiki — Update Firmware section](https://wiki.seeedstudio.com/respeaker_xvf3800_introduction/#update-firmware), cross-verified against the `BLD_MSG` strings the chip itself reports.
 - **`SAVE_CONFIGURATION` brick hazard**: [upstream issue #8](https://github.com/respeaker/reSpeaker_XVF3800_USB_4MIC_ARRAY/issues/8) (still open as of this writing — treat the warning as applying to every firmware version we've shipped against).
-- **ALSA mixer mute trap after firmware flash**: discovered during the 2026-05-15 jts2 raw-mic-silence investigation; full root cause and resolution log in [HANDOFF-xvf3800.md](docs/HANDOFF-xvf3800.md) §7.
 
 **Never call XVF `SAVE_CONFIGURATION`** — known brick hazard on
 every firmware version we've tested (upstream issue above hasn't

@@ -501,7 +501,8 @@ def check_aec_bridge_running() -> CheckResult:
             "AEC bridge service", "warn",
             f"off — XVF chip is on {capture_ch}-channel firmware "
             f"(need {xvf3800.RECOMMENDED_FIRMWARE.capture_channels}-ch). "
-            "DFU-flash per BRINGUP.md Phase 2A.5, then: "
+            "DFU-flash per BRINGUP.md "
+            "'XVF firmware: switch to 6-channel variant via DFU', then: "
             "sudo systemctl start jasper-aec-reconcile",
         )
 
@@ -1578,7 +1579,8 @@ def check_xvf_firmware_6ch() -> CheckResult:
         "XVF firmware 6-ch", "warn",
         f"capture is {capture_ch}-channel — re-flash for software AEC. "
         f"In-system DFU works while the chip is plugged in normally; "
-        f"BRINGUP.md Phase 2A.5 has the full procedure. Headline: "
+        f"BRINGUP.md 'XVF firmware: switch to 6-channel variant via DFU' "
+        f"has the full procedure. Headline: "
         f"{xvf3800.dfu_flash_command()}",
     )
 
