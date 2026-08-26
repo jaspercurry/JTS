@@ -20,6 +20,11 @@ from jasper.camilla_config_contract import parse_camilla_devices_config
 from jasper.fanin_coupling import transport_label
 from jasper.output_topology import OutputTopologyError, load_output_topology_strict
 
+from ._common import (
+    ROOM_AUTHORITY_RECEIPT_ABSENT,
+    ROOM_AUTHORITY_RECEIPT_MALFORMED,
+    ROOM_AUTHORITY_RECEIPT_STALE,
+)
 from .baseline_profile import (
     active_layer_a_fingerprint,
     baseline_profile_state_path,
@@ -51,6 +56,25 @@ ROOM_AUTHORITY_MANUAL_APPLIED_PROFILE = "manual_applied_profile"
 ROOM_AUTHORITY_AUTOMATIC_COMMISSIONING_RECEIPT = (
     "automatic_commissioning_receipt"
 )
+
+_RECEIPT_DETAIL_DEFAULT = (
+    "Room correction is running on an automatic crossover that is not "
+    "receipt-backed, so this result will not be banked as verified. Finish "
+    "commissioning, or apply the current crossover as a manual profile."
+)
+_RECEIPT_DETAIL = {
+    ROOM_AUTHORITY_RECEIPT_ABSENT: _RECEIPT_DETAIL_DEFAULT,
+    ROOM_AUTHORITY_RECEIPT_STALE: (
+        "The commissioning proof no longer describes this speaker, so room "
+        "correction is running on the last-known-good crossover without "
+        "banking a verified result. Re-mint it when convenient."
+    ),
+    ROOM_AUTHORITY_RECEIPT_MALFORMED: (
+        "The commissioning proof on disk could not be read, so room "
+        "correction is running without banking a verified result. Re-run "
+        "commissioning to replace it."
+    ),
+}
 
 _STAGED_CONFIG_BASENAMES = {
     "active_speaker_staged_startup.yml",
@@ -287,15 +311,17 @@ def _acoustic_commissioning_status(
         detail = "The verified automatic crossover is ready for room correction."
     else:
         # An automatic applied snapshot remains playback authority, but it is
-        # not the receipt-backed commissioning authority Room requires.  Do
-        # not infer that receipt from mutable measurements or from the graph
+        # not the receipt-backed commissioning authority Room BANKS.  Do not
+        # infer that receipt from mutable measurements or from the graph
         # having been applied successfully; the strict receipt integration is
-        # a separate Active-owned authority chain.
-        reason = "active_automatic_commissioning_receipt_missing"
-        detail = (
-            "Finish receipt-backed automatic crossover commissioning, or "
-            "explicitly apply the current crossover as a manual profile."
+        # a separate Active-owned authority chain.  Room still runs — this
+        # names what may not be claimed, not what is refused (ruling S10).
+        reason = (
+            str(receipt_authority.get("reason") or ROOM_AUTHORITY_RECEIPT_ABSENT)
+            if tuning_owner == "automatic"
+            else ROOM_AUTHORITY_RECEIPT_ABSENT
         )
+        detail = _RECEIPT_DETAIL.get(reason, _RECEIPT_DETAIL_DEFAULT)
 
     allowed = reason is None
     return {
@@ -1166,7 +1192,7 @@ def read_active_speaker_setup_status(
     receipt_authority = {
         "allowed": False,
         "authority": "automatic_verified_receipt",
-        "reason": "active_commissioning_receipt_unavailable",
+        "reason": ROOM_AUTHORITY_RECEIPT_ABSENT,
         "receipt_fingerprint": None,
     }
     if applied_crossover.get("owner") == "automatic":

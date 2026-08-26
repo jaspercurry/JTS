@@ -24,6 +24,11 @@ from jasper.audio_measurement.evidence_identity import (
 )
 from jasper.log_event import log_event
 
+from ._common import (
+    ROOM_AUTHORITY_RECEIPT_ABSENT,
+    ROOM_AUTHORITY_RECEIPT_MALFORMED,
+    ROOM_AUTHORITY_RECEIPT_STALE,
+)
 from .commissioning_evidence_store import (
     EVIDENCE_ROOT,
     CommissioningEvidenceStore,
@@ -661,22 +666,46 @@ class CommissioningVerificationService:
         }
 
 
+def _deny(reason: str, cause: str) -> dict[str, Any]:
+    """One un-vouched receipt answer, disclosed loudly and never enforced.
+
+    Ruling S10: an unproven fact is a WARNING, not a stop. The caller records
+    that the automatic crossover is not receipt-backed — which keeps room
+    correction from CLAIMING the verified authority — and runs anyway.
+    """
+
+    log_event(
+        logger,
+        "active_speaker.commissioning_receipt_unvouched",
+        level=logging.WARNING,
+        reason=reason,
+        cause=cause,
+    )
+    return {
+        "allowed": False,
+        "authority": "automatic_verified_receipt",
+        "reason": reason,
+        "receipt_fingerprint": None,
+    }
+
+
 def read_commissioning_room_authority(
     topology: Any,
     *,
     run_state_path: str | Path = DEFAULT_STATE_PATH,
     sessions_root: str | Path | None = None,
 ) -> dict[str, Any]:
-    """Read Active's exact verified-receipt decision without claiming ownership."""
+    """Read Active's exact verified-receipt decision without claiming ownership.
+
+    The three denials are distinguishable on purpose. A receipt that was never
+    minted, one that no longer describes this speaker, and one whose bytes will
+    not parse have three different remedies, and a disclosure that cannot say
+    which of them happened is vague rather than loud. None of them stops room
+    correction — see :func:`_deny`.
+    """
 
     from .bundles import sessions_dir
 
-    unavailable = {
-        "allowed": False,
-        "authority": "automatic_verified_receipt",
-        "reason": "active_commissioning_receipt_unavailable",
-        "receipt_fingerprint": None,
-    }
     try:
         run_store = CommissioningRunStore(path=run_state_path)
         snapshot = run_store.snapshot()
@@ -685,7 +714,7 @@ def read_commissioning_room_authority(
             not isinstance(current, Mapping)
             or current.get("lifecycle_state") != "verified"
         ):
-            return unavailable
+            return _deny(ROOM_AUTHORITY_RECEIPT_ABSENT, "lifecycle is not verified")
         run = CommissioningRunHandle(
             session_id=str(current["session_id"]),
             session_fingerprint=str(current["session_fingerprint"]),
@@ -698,9 +727,16 @@ def read_commissioning_room_authority(
             root / run.session_id,
             expected_session_id=run.session_id,
         )
-        artifact = store.identify_artifact(
-            _artifact_relative_path(receipt_source_path(run))
-        )
+        try:
+            artifact = store.identify_artifact(
+                _artifact_relative_path(receipt_source_path(run))
+            )
+        except CommissioningEvidenceStoreError as exc:
+            if exc.code == CommissioningEvidenceStoreErrorCode.MISSING:
+                return _deny(
+                    ROOM_AUTHORITY_RECEIPT_ABSENT, "no receipt artifact for this run"
+                )
+            raise
         receipt = CommissioningEligibilityReceipt.from_mapping(
             store.reopen_json_artifact(artifact)
         )
@@ -719,7 +755,11 @@ def read_commissioning_room_authority(
             != receipt.applied_candidate.mutation_fingerprint
             or mutation.terminal_evidence_fingerprint is None
         ):
-            return unavailable
+            return _deny(
+                ROOM_AUTHORITY_RECEIPT_STALE,
+                "receipt does not describe the current topology, transition or "
+                "live mutation",
+            )
         return {
             "allowed": True,
             "authority": "automatic_verified_receipt",
@@ -727,5 +767,9 @@ def read_commissioning_room_authority(
             "receipt_fingerprint": receipt.fingerprint,
             "receipt_artifact_fingerprint": artifact.fingerprint,
         }
-    except (OSError, RuntimeError, TypeError, ValueError, KeyError):
-        return unavailable
+    except (OSError, RuntimeError, TypeError, ValueError, KeyError) as exc:
+        # Everything left is the receipt or its run record failing to read as
+        # what it claims to be: a strict-schema reject, a torn file, a run
+        # record missing a key. Naming the exception type is the whole point
+        # of narrowing the two structural causes out above it.
+        return _deny(ROOM_AUTHORITY_RECEIPT_MALFORMED, type(exc).__name__)

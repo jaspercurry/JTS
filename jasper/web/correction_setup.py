@@ -2550,11 +2550,18 @@ class _RoomReadiness:
     layer_a_identity: str | None = None
 
     @property
-    def authority_binding(self) -> tuple[bool, str, str | None] | None:
-        """Opaque Active decision that Room may carry and compare only."""
+    def authority_binding(self) -> tuple[bool | None, str | None, str | None]:
+        """Opaque Active decision that Room may carry and compare only.
 
-        if not self.allowed or self.active is None or self.authority is None:
-            return None
+        Total, including the denied answer. Active publishes no authority and
+        no Layer A identity when it cannot vouch, and under ruling S10 that is
+        a state Room runs in rather than refuses — so ``(True, None, None)``
+        is a real binding meaning "unproven", not an absent one. The writer
+        boundary still compares it: an authority that APPEARS or changes mid
+        run is drift either way, and a run that started unproven and is still
+        unproven has not moved.
+        """
+
         return (self.active, self.authority, self.layer_a_identity)
 
 
@@ -2709,7 +2716,7 @@ def _room_readiness() -> _RoomReadiness:
 
 async def _assert_room_authority_current(
     cam: Any,
-    expected: tuple[bool, str, str | None] | None,
+    expected: tuple[bool | None, str | None, str | None] | None,
 ) -> Mapping[str, Any]:
     """Revalidate the accepted Active identity at a DSP-writer boundary."""
 
@@ -2761,7 +2768,6 @@ def _handle_start(handler: BaseHTTPRequestHandler) -> dict[str, Any]:
     keeps the topology-owned speaker graph (crossovers, driver EQ, delays,
     gains, limiters) and strips only Layer B/C.
     """
-    from jasper.correction import failures
     from jasper.correction.session import (
         DEFAULT_REPEAT_MAIN_POSITION,
         DEFAULT_ROOM_POSITION_COUNT,
@@ -2776,27 +2782,22 @@ def _handle_start(handler: BaseHTTPRequestHandler) -> dict[str, Any]:
     )
     readiness = _room_readiness()
     if not readiness.allowed:
+        # Ruling S10: an unproven or stale speaker decision is a loud
+        # disclosure, never a stop. This used to raise 409/503 here, so a
+        # metadata edit or an unminted receipt could keep the household from
+        # measuring a speaker that was playing fine. What still holds is the
+        # other half — the run may not CLAIM the authority it could not read:
+        # `readiness.authority_binding` carries the un-vouched answer forward,
+        # and `_room_readiness().blocker` keeps surfacing on the idle screen
+        # and in `/envelope` for as long as it is true.
         log_event(
             logger,
-            "correction.start_rejected",
+            "correction.start_unproven_speaker_readiness",
             reason=readiness.reason,
+            code=str((readiness.blocker or {}).get("code") or ""),
             level=logging.WARNING,
         )
-        assert readiness.blocker is not None
-        status = (
-            HTTPStatus.SERVICE_UNAVAILABLE
-            if readiness.blocker.get("code")
-            == failures.SPEAKER_READINESS_UNAVAILABLE
-            else HTTPStatus.CONFLICT
-        )
-        raise RoomRequestFailure(
-            readiness.detail,
-            readiness.blocker,
-            status=status,
-        )
     authority_binding = readiness.authority_binding
-    if authority_binding is None:
-        raise RuntimeError("speaker readiness omitted its authority binding")
 
     body = _read_json_body(handler)
     blocking_state = _reserve_start_slot()
@@ -3158,7 +3159,7 @@ async def _load_measurement_baseline(
     sess: Any,
     cam: Any,
     *,
-    expected_authority_binding: tuple[bool, str, str | None],
+    expected_authority_binding: tuple[bool | None, str | None, str | None],
 ) -> dict[str, Any]:
     """Load a topology-preserving measurement graph for this correction run.
 

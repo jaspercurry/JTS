@@ -12,7 +12,9 @@ from types import SimpleNamespace
 import pytest
 import yaml
 
+import jasper.active_speaker._common as _common
 import jasper.active_speaker.setup_status as setup_mod
+from jasper.active_speaker import commissioning_verification
 from jasper.active_speaker.baseline_profile import (
     baseline_candidate_fingerprint,
     build_baseline_profile_candidate,
@@ -874,11 +876,75 @@ def test_applied_automatic_snapshot_requires_receipt_after_measurement_store_cle
     assert status["room_correction_allowed"] is False
     assert status["acoustic_commissioning"]["authority"] is None
     assert status["acoustic_commissioning"]["reason"] == (
-        "active_automatic_commissioning_receipt_missing"
+        _common.ROOM_AUTHORITY_RECEIPT_ABSENT
     )
     assert status["applied_crossover"]["valid"] is True
     assert status["applied_crossover"]["owner"] == "automatic"
     assert status["automatic_candidate"]["ready"] is False
+
+
+@pytest.mark.parametrize(
+    "receipt_reason",
+    [
+        _common.ROOM_AUTHORITY_RECEIPT_ABSENT,
+        _common.ROOM_AUTHORITY_RECEIPT_STALE,
+        _common.ROOM_AUTHORITY_RECEIPT_MALFORMED,
+    ],
+)
+def test_receipt_denial_reason_reaches_the_room_decision_intact(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+    receipt_reason: str,
+) -> None:
+    """Which denial it was survives the hop to the household surface.
+
+    All three used to collapse into one opaque code, so a doctor line could
+    say only "no receipt" — never whether nothing was ever minted, something
+    moved under one that was, or the bytes will not parse. Those have three
+    different remedies, and each carries its own detail.
+    """
+    topology = _active_topology()
+    _save_topology(monkeypatch, tmp_path, topology)
+    config_path = tmp_path / "active_speaker_baseline.yml"
+    automatic = _applied_acoustic_profile(config_path=config_path)
+    automatic["tuning_owner"] = "automatic"
+    automatic["recomposition_snapshot"]["tuning_owner"] = "automatic"
+    _write_applied_graph(topology, automatic, config_path)
+    monkeypatch.setattr(
+        setup_mod,
+        "build_baseline_profile_candidate",
+        lambda *a, **k: _candidate(status="applied", config_path=config_path),
+    )
+    monkeypatch.setattr(
+        setup_mod,
+        "load_measurement_state",
+        lambda _topology: {"summary": {}},
+    )
+    monkeypatch.setattr(
+        setup_mod,
+        "load_applied_baseline_profile_state",
+        lambda _path=None: automatic,
+    )
+    monkeypatch.setattr(
+        commissioning_verification,
+        "read_commissioning_room_authority",
+        lambda _topology: {
+            "allowed": False,
+            "authority": "automatic_verified_receipt",
+            "reason": receipt_reason,
+            "receipt_fingerprint": None,
+        },
+    )
+
+    acoustic = setup_mod.read_active_speaker_setup_status(
+        active_config_path=str(config_path),
+    )["acoustic_commissioning"]
+
+    assert acoustic["allowed"] is False
+    assert acoustic["authority"] is None
+    assert acoustic["receipt_fingerprint"] is None
+    assert acoustic["reason"] == receipt_reason
+    assert isinstance(acoustic["detail"], str) and acoustic["detail"]
 
 
 def test_verified_automatic_receipt_allows_room_with_loaded_layer_a(
