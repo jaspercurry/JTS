@@ -579,7 +579,22 @@ def _parse_env_file(text: str) -> dict[str, str]:
 
 
 def _resolved_jasper_voice_env() -> tuple[dict[str, str] | None, str]:
-    """Return jasper-voice's systemd-resolved environment, if available."""
+    """Return the environment jasper-voice actually starts with, or None.
+
+    ``systemctl show -p Environment`` reports a unit's inline ``Environment=``
+    directives ONLY — never the ``EnvironmentFile=`` layers where the
+    reconciler-owned grouping keys live (issue #2387). jasper-voice.service
+    layers ``grouping-voice.env`` LAST, so that file is overlaid here the same
+    way, read fresh rather than taken from this process's environment.
+
+    None means neither authority answered: systemctl was unreadable AND the
+    grouping file carried nothing.
+    """
+    from ...multiroom.reconcile import VOICE_GROUPING_ENV_FILE
+    from ...tts_routing import resolved_tts_routing_env
+
+    unit_env: dict[str, str] | None = None
+    error = ""
     try:
         proc = _run(
             [
@@ -589,11 +604,20 @@ def _resolved_jasper_voice_env() -> tuple[dict[str, str] | None, str]:
             timeout=3.0,
         )
     except (FileNotFoundError, subprocess.SubprocessError) as e:
-        return None, str(e)
-    if proc.returncode != 0:
-        detail = (proc.stderr or proc.stdout).strip()
-        return None, detail or f"systemctl exited {proc.returncode}"
-    return _parse_systemd_environment(proc.stdout), ""
+        error = str(e)
+    else:
+        if proc.returncode == 0:
+            unit_env = _parse_systemd_environment(proc.stdout)
+        else:
+            error = (proc.stderr or proc.stdout).strip() or (
+                f"systemctl exited {proc.returncode}"
+            )
+    resolved = resolved_tts_routing_env(
+        unit_env or {}, grouping_env_path=VOICE_GROUPING_ENV_FILE,
+    )
+    if unit_env is None and not resolved:
+        return None, error
+    return resolved, error
 
 
 @doctor_check(order=75.3, group="grouping")
@@ -866,8 +890,8 @@ def check_grouping_tts_lane() -> CheckResult:
     if voice_runtime_env is None:
         return CheckResult(
             label, "warn",
-            "bonded but could not read jasper-voice resolved env via "
-            f"`systemctl show -p Environment`: {voice_runtime_error}",
+            "bonded but could not resolve jasper-voice's env from its unit "
+            f"directives or {VOICE_GROUPING_ENV_FILE}: {voice_runtime_error}",
         )
 
     outputd_env: dict[str, str] = {}

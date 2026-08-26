@@ -12,6 +12,12 @@ import pytest
 
 from jasper.cli import doctor
 from jasper.multiroom.config import BondMember
+from jasper.multiroom.tts_route import VOICE_PARK_ENV
+from jasper.tts_routing import (
+    FANIN_TTS_SOCKET,
+    OUTPUTD_TTS_SOCKET,
+    VOICE_TTS_SOCKET_ENV,
+)
 
 from .doctor_test_support import _grouping_cfg, _registered_check_names
 
@@ -457,6 +463,44 @@ def test_check_grouping_pair_lock_warns(monkeypatch, dac_content, must_name):
     )
 
     r = doctor.check_grouping_pair_lock()
+
+    assert r.status == "warn"
+    assert must_name in r.detail
+
+
+@pytest.mark.parametrize(
+    "grouping_env_text, must_name",
+    [
+        (f"{VOICE_TTS_SOCKET_ENV}={OUTPUTD_TTS_SOCKET}\n", OUTPUTD_TTS_SOCKET),
+        (f"{VOICE_PARK_ENV}=1\n", VOICE_PARK_ENV),
+    ],
+    ids=["stale-socket-override", "stale-park-flag"],
+)
+def test_check_grouping_tts_lane_reads_the_environmentfile_authority(
+    monkeypatch, tmp_path, grouping_env_text, must_name
+):
+    """`systemctl show -p Environment` reports inline `Environment=` directives
+    only, so a solo box whose reconciler-owned grouping-voice.env still carries
+    a bonded override read green through both solo guards (#2387)."""
+    import jasper.multiroom.config as mr_config
+    import jasper.multiroom.reconcile as mr_reconcile
+
+    monkeypatch.setattr(mr_config, "load_config", lambda *a, **k: _grouping_cfg())
+    env_file = tmp_path / "grouping-voice.env"
+    env_file.write_text(grouping_env_text)
+    monkeypatch.setattr(mr_reconcile, "VOICE_GROUPING_ENV_FILE", str(env_file))
+    # The unit's inline directive is all the systemctl surface can ever see.
+    monkeypatch.setattr(
+        doctor.grouping,
+        "_run",
+        lambda *a, **k: SimpleNamespace(
+            returncode=0,
+            stdout=f"{VOICE_TTS_SOCKET_ENV}={FANIN_TTS_SOCKET}\n",
+            stderr="",
+        ),
+    )
+
+    r = doctor.check_grouping_tts_lane()
 
     assert r.status == "warn"
     assert must_name in r.detail
