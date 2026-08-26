@@ -336,6 +336,55 @@ class VolumeOwner:
             )
             return False
 
+    async def relevel(
+        self, handle: VolumeClaimHandle, level_db: float,
+    ) -> VolumeClaimHandle:
+        """Move a held LEVEL claim to a new level, in ONE settle.
+
+        The ``/sound/`` floor-tone audition is the shape that needs it: its
+        slider moves while the tone plays, so the claim outlives the level it
+        was taken at. Release-then-reacquire is audibly wrong there — the
+        release lands on the household level first, so the speaker jumps up
+        and back down between two floors.
+
+        Symmetric with the household claim, which a re-declaration replaces
+        rather than stacks; this is that rule for a ranked claim, and it is
+        why re-acquiring the same kind still raises rather than quietly
+        replacing. Returns the REPLACEMENT handle. The old one is spent, and
+        passing it to :meth:`release` afterwards is the usual no-op.
+
+        Fail-closed like :meth:`acquire_level`: a level that could not be
+        established leaves NO claim held and hands the fader back.
+        """
+        target = _finite(level_db, "level_db")
+        async with self._lock:
+            if self._claims.get(handle.token) != handle:
+                raise VolumeClaimRefused("that claim is no longer held")
+            if handle.level_db is None:
+                raise VolumeClaimRefused("a duck declares a depth, not a level")
+            del self._claims[handle.token]
+            moved = VolumeClaimHandle(
+                kind=handle.kind, token=next(self._tokens), level_db=target,
+            )
+            self._claims[moved.token] = moved
+            taken = False
+            try:
+                if self._top_level_claim() is not moved:
+                    taken = True
+                    return moved
+                if await self._apply(context=f"relevel:{handle.kind.value}"):
+                    taken = True
+                    return moved
+                raise VolumeClaimRefused(
+                    f"could not establish {target:.6f} dB for "
+                    f"{handle.kind.value}"
+                )
+            finally:
+                if not taken:
+                    await self._unwind(
+                        moved, context=f"relevel_failed:{handle.kind.value}",
+                    )
+
     async def acquire_duck(self, depth_db: float) -> VolumeClaimHandle:
         """Take ``depth_db`` of transient attenuation off the level in effect.
 

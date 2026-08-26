@@ -314,6 +314,32 @@ class FakeVolumeCamilla:
         return True
 
 
+def _install_floor_tone_owner(fake: FakeVolumeCamilla) -> None:
+    """Bind the process fader owner to this fake, as `jasper.web` binds the real one.
+
+    The audition's level control IS a COMMISSIONING claim now, so a test with
+    no owner registered exercises the degrade path instead of the subject. The
+    autouse `_isolate_process_volume_owner` fixture clears this again after
+    each test.
+    """
+    from jasper.volume_owner import VolumeOwner, install_volume_owner
+
+    async def _read() -> float:
+        return fake.db
+
+    async def _write(db: float) -> bool:
+        # best_effort=True is the owner's door contract, and it is now the
+        # posture for BOTH directions: the audition's start no longer depends
+        # on the setter raising, because an unconfirmable level refuses the
+        # claim outright — a stronger check than a write that was merely
+        # accepted. `jasper.web` binds the real door the same way.
+        return await fake.set_volume_db(db, best_effort=True)
+
+    install_volume_owner(
+        VolumeOwner(set_fader_db=_write, get_fader_db=_read)
+    )
+
+
 class BlockingVolumeCamilla(FakeVolumeCamilla):
     def __init__(
         self,
@@ -6970,6 +6996,7 @@ async def test_audition_volume_floor_holds_updates_and_restores_on_stop(
     monkeypatch.setenv("JASPER_VOLUME_FLOOR_TONE_DIR", str(tmp_path / "tones"))
     FakeVolumeFloorToneRunner.instances.clear()
     fake = FakeVolumeCamilla(db=-18.0, muted=True)
+    _install_floor_tone_owner(fake)
     session = sound_setup._VolumeFloorToneSession()
 
     payload = await sound_setup._audition_volume_floor(
@@ -6991,7 +7018,7 @@ async def test_audition_volume_floor_holds_updates_and_restores_on_stop(
     assert len(FakeVolumeFloorToneRunner.instances) == 1
     assert FakeVolumeFloorToneRunner.instances[0].started is True
     assert fake.events[0] == (
-        "volume", pytest.approx(percent_to_db(1, floor_db=-24.0)), False,
+        "volume", pytest.approx(percent_to_db(1, floor_db=-24.0)), True,
     )
     assert fake.events[1] == ("mute", False, False)
     assert fake.db == pytest.approx(-24.0)
@@ -7009,7 +7036,7 @@ async def test_audition_volume_floor_holds_updates_and_restores_on_stop(
     assert payload["volume_floor_db"] == -36.0
     assert len(FakeVolumeFloorToneRunner.instances) == 1
     assert fake.events[-2:] == [
-        ("volume", pytest.approx(percent_to_db(1, floor_db=-36.0)), False),
+        ("volume", pytest.approx(percent_to_db(1, floor_db=-36.0)), True),
         ("mute", False, False),
     ]
     assert fake.db == pytest.approx(-36.0)
@@ -7078,6 +7105,7 @@ async def test_volume_floor_stop_stops_runner_before_slow_update_restore(
     monkeypatch.setenv("JASPER_VOLUME_FLOOR_TONE_DIR", str(tmp_path / "tones"))
     FakeVolumeFloorToneRunner.instances.clear()
     fake = BlockingVolumeCamilla(block_on_volume_call=2)
+    _install_floor_tone_owner(fake)
     session = sound_setup._VolumeFloorToneSession()
 
     await sound_setup._audition_volume_floor(
