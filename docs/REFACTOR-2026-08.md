@@ -206,11 +206,15 @@ already open)**
       and discloses deviation. Mechanism only — the table ships empty until
       the owner harvests real values (`jasper-aec-commission
       --emit-class-entry`).
-- [ ] BRINGUP AEC section gets its second edit when the code flips (the
+- [x] BRINGUP AEC section gets its second edit when the code flips (the
       Wave 0 edit documents today's behavior). Fold in: doctor's stale
       "Phase 2A.5" pointers (jasper/cli/doctor/aec.py:507, :1598 — no such
       phase exists) and BRINGUP:~955's Flex retune pointer to
-      xvf_software_aec3 (intent-only on managed XVF).
+      xvf_software_aec3 (intent-only on managed XVF). — both doctor
+      pointers repointed at the DFU section's real title; the Flex pointer
+      now names the capability-picked AEC3 legs. One "Phase 2A.5" string
+      is left in deploy/bin/jasper-aec-reconcile (XVF_2CH_ACTION), outside
+      this row's file scope.
 - [x] Notify the tuning program: its topology-fingerprint parks (#2935
       class) are re-adjudicated under ADR-0101 in its doctrine wave — its
       zone, its mechanics. — notified via comment on #3006, 2026-08-26
