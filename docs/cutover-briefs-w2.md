@@ -484,3 +484,176 @@ turns the set into a measured floor"*. The **per-capture** half of that consumer
 already exists here; what does not exist is the reduction **across ladder rungs**
 (`stimulus_dbfs`). When unit 16 lands, `read_round_harmonics` becomes its
 duplicate unless the same PR retires it. Record it now; do not build it in W2.
+
+---
+
+## 3. Dependencies — what W2 needs from W1
+
+### 3.1 The twin does not sidestep the gap, and "wired-but-inert" is a fallback
+
+**No, the registry cannot land against `FakeRecords` first.** `FakeRecords`
+(`tests/engine_twin.py:199-234`) banks the same thirteen-field mappings the real
+store will (`_mint` `:181`, `read` `:216`). It carries no capture either, so
+wiring against it **reproduces** the input gap rather than deferring it.
+
+And a walker whose gates all answer "no input" for *structural* reasons is
+indistinguishable, at the wire, from a walker with an empty table. That is
+precisely the ambiguity `AnalyzeOutcome:203-208` forbids — *read an empty
+`results` as "nothing is wired to run yet", never as "everything ran and found
+nothing"*. Shipping the inert walker ships that ambiguity into production and
+then needs deleting. **No fallbacks: build new → prove → delete old in one
+wave.**
+
+### 3.2 Three things W2 needs; W1 plans one
+
+| Need | Status in §1's work items |
+|---|---|
+| (a) a banked record on **every** phase | **Planned.** W1-c obligation 1 — CHECK/MEASURE/VERIFY bank no take today (§1, `:219-223`) |
+| (b) a pointer **record → WAV** | **NOT PLANNED — a fourteenth field** |
+| (c) enough persisted state to rebuild `program` | **NOT PLANNED** |
+
+**(b) in detail.** The WAV path is **not derivable** from the take id:
+`capture_artifact_relpath` (`bundles.py:205`) appends `uuid.uuid4().hex` at
+`:219`, and its docstring `:208-212` says the caller mints the path *before* the
+write precisely so the record can carry it. Today's family-(a) record does carry
+it — `record["wav_path"] = wav_rel` (`web/correction_crossover_v2.py:3554`) and
+`record["wav_bytes"]` (`:3555`) — but only when `wav` is bytes (`:3548`).
+`TuningSession._record()` (`session.py:692-708`) carries **neither**. §1's
+record-gap table compares thirteen engine fields against three builders, so it
+structurally cannot see a field the engine does not have.
+
+Do not confuse this with W1-d's `path` column: that is where the store put the
+**record** (`session.py:667-670`), a different fact from where the capture went.
+`crossover_v2` has no `bundle_ref`/`artifact_path` concept at all — those live
+only on the legacy `measurement.py` / `commissioning_capture.py` records
+(verified: zero `bundle_ref` hits under `crossover_v2/`).
+
+**(c) in detail.** `save()`'s five keys (`session.py:501-510`) are `session_id`,
+`graph_fingerprint`, `measurement_level_db`, `record_ids`, `disclosures`. No
+program id, no gain plan. But the reconstruction is **already solved in-package**:
+`rebuild_measure_program` (`harmonic_evidence.py:359`) rebuilds the MEASURE
+program from `state["gain_plan_db"]` and `state["candidate"]["program_id"]`,
+brute-forces the two never-banked parameters (session volume, courtesy prelude),
+and accepts **only** on `program.program_id == want` (`:453`) — *"a
+reconstruction that cannot prove itself must not be read"* (`:364-367`). Its
+refusals are already `{"missing": "candidate.program_id"}` (`:411`) and
+`{"missing": "gain_plan_db.woofer/tweeter"}` (`:422`) — the same structured shape
+§2.2 recommends for the skip.
+
+**So W1-b owes `wav_path`, and `save()` owes the two fields
+`rebuild_measure_program` reads.** Both are small; neither is in the plan.
+
+### 3.3 Recommended slicing — and one disagreement with §2
+
+| # | PR | Lands | Depends on |
+|---|---|---|---|
+| 1 | **W2-d** — settle the count | the census script as a CI pin + widen `test_correction_boundary_ssot.py:175` to `crossover_v2` | nothing. **Schedulable first**, in parallel with all of W1 |
+| 2 | **W2-a** — the table | `AnalysisUnit`, `ANALYSIS_UNITS` (15 rows), gates, `AnalysisSkip`. **No caller** | W2-d for the name set's pin |
+| 3 | **W2-b + W2-c together** — the walker *and* its skip disclosure | `TuningSession.analyze` walks the table; `AnalyzeOutcome` gains `skipped` | W1-a, W1-b (incl. `wav_path`), W1-c, W4-a |
+
+**Disagreement with §2: do not ship W2-b before W2-c.** §2 lists them as separate
+items with c depending on b. A walker that skips **without saying why** is
+exactly the `_crossover_region_null_registry` defect (`verification.py:2301-2313`)
+the registry exists to remove — *"it did not return 'unknown,' it was never
+asked."* Shipping it for one merge window ships that defect deliberately. Under
+build-new → prove → delete-old-in-one-wave, the skip and its reason are **one
+behavior**, so they are one PR. Combined size ~270 lines, still under the
+400-line target.
+
+W2-a is **not** a fallback and does not violate the rule: it adds a data
+structure and its tests, runs nothing, and claims nothing. That is what §2's
+*"No caller yet"* already specifies.
+
+**Rejected option, recorded.** Giving `analyze` an inputs argument —
+`analyze(inputs: Sequence[AnalysisInputs])` — would unblock the whole registry
+against the twin today. Reject it: `analyze()` takes no arguments by contract
+(`session.py:428`) because a session's verb reads its *own* bank, and a second
+input path is a fallback that must later be deleted.
+
+### 3.4 What W2 must not do
+
+**Do not assemble analysis inputs inside `crossover_v2/`.** §2.5's Site-B table
+is the one decoder + calibration resolver + `mic_tier` + `capture_report`
+assembly in the tree, and it lives in `jasper/web/`. A second copy under
+`crossover_v2/` is two implementations of one concern. If W2 needs it before
+W5 lifts it, **lift it — do not copy it**, and lift it in W1's wave where the
+store already touches those paths.
+
+---
+
+## 4. Slicing, bars, tiers, symbols, traps
+
+### 4.1 Verification bar per PR
+
+Every bar is a behavior pin — types, codes, structured fields. Never source text,
+never log or error prose.
+
+| PR | Behavior pin | Watched-fail target (mutate, watch it go red) |
+|---|---|---|
+| W2-d | the census script's four class counts (3 / 1 / 1 / 20) and the 25-field total, asserted from a fresh `ast.parse`; `test_correction_boundary_ssot` covers `crossover_v2` | add a `ProgramAnalysis` field without a construction-site write → the "never written" list is non-empty → red. Add a `jasper/active_speaker/crossover_v2/x.py` importing `jasper.web` → boundary test red |
+| W2-a | every `name` unique; `ANALYSIS_NAMES` derived, not re-listed; **every gate total** — a property test over generated programs asserting no gate raises; unit 14's gate code `==` `_verify_absolute_result`'s `not_evaluated` for every input | re-list `ANALYSIS_NAMES` as a literal and drop a row → the derived-set pin red. Make one gate raise on an empty segment tuple → the totality property red |
+| W2-b+c | a bank missing one input kind produces **N−1** results and **one** `AnalysisSkip` whose `missing` names the input; a raising unit yields `failed`, not `skipped`; `results` is a copy (mutating it does not mutate the walker's dict) | **delete the gate on one unit and watch it raise instead of skip** (§2's own mutation). Return the live dict instead of a copy → the copy pin red. Swap `skipped` for `disclosures` → the four `measure_spec` pins red |
+
+Two bars that are **not** worth building, said so it is a decision rather than an
+omission: a golden-output pin on `ProgramAnalysis` (the layer ports whole — the
+existing `test_audio_measurement_program_analysis.py` suite, 75
+`analyze_program_capture` call sites, already pins it), and a per-unit timing
+budget (§2's journal-volume note is real but is an observability item, not a gate).
+
+### 4.2 Tiers
+
+All four items are **default tier — one `/code-review` pass**. None touches
+`devices.volume_limit`, `set_volume_db`, the SPL stop, the XVF, secrets, DSP math
+on the output path, or `deploy/install.sh`. W2 reads captures and writes a
+mapping; it emits no audio and changes no graph.
+
+One caveat: **W2-b+c changes what a session reports about its own evidence.** That
+is not a safety tier, but it is the diff to read hardest — an over-eager gate
+turns a real analysis into a silent skip, which is the failure mode this whole
+section exists to prevent.
+
+### 4.3 Content-grep symbols
+
+Grep these before writing; each has an owner that must be extended or consumed,
+never re-spelled.
+
+| Symbol | Owner |
+|---|---|
+| `STIMULUS_KINDS`, `KIND_PILOT`, `KIND_SWEEP`, `KIND_SUMMED_SWEEP`, `KIND_SILENCE`, `KIND_COURTESY_TONE`, `AMBIENT_SEGMENT_ID` | `audio_measurement/program.py:158-178` |
+| `PROGRAM_PHASES` | `audio_measurement/program.py:153` |
+| `MEASURE_KINDS`, `MEASURE_REGIMES`, `POLARITY_*` | `crossover_v2/contracts.py:1430-1450` |
+| `ABSOLUTE_NO_FC`, `ABSOLUTE_NO_TARGET`, `ABSOLUTE_NO_TRUSTED_BAND` | `program_analysis.py:6947-6949` |
+| `CapabilityStub`, `STUB_CODES`, `stubbed_capabilities`, `_ROWS` | `crossover_v2/measure_spec.py:88-315` |
+| `FIDELITY_FIELDS`, `FIDELITY_TOLERANCE`, `rebuild_measure_program` | `crossover_v2/harmonic_evidence.py:199-359` |
+| `CapabilityPack`, `PackOutcome`, `TOOL_PACKS`, `register_packs`, `outcomes_to_state` | `tools/packs.py:131-437` |
+| `REASON_REGISTRY` | `crossover_v2/refusal_copy.py:790` |
+| `polarity_label` / `polarity_sign_of` | `program_analysis.py:4215` / `:4220` — *"the ONE spelling of the map"* |
+
+### 4.4 Traps
+
+1. **The empty-`results` semantic flip.** `AnalyzeOutcome:203-208` must be
+   rewritten in the same PR as the walker, or the contract says the opposite of
+   the code (§2.5, Site A).
+2. **`phase` stays non-defaulted.** `crossover_v2_flow.py:1447-1461`. Dropping it
+   reintroduces #1855 — 32 of 45 mislabeled sidecars — silently.
+3. **Four vocabularies, no two equal.** `MEASURE_KIND_VERIFY` and
+   `PROGRAM_PHASE_VERIFY` are both `"verify"` **by spelling only** (§2.3). A
+   `kind → phase` map loses CHECK.
+4. **`CapabilityStub.aborted()` raises on an unknown code.**
+   `measure_spec.py:120`, `_ROWS[self.code]`. Never hand-build a stub.
+5. **Do not trim "unconsumed" fields.** All 25 have a live consumer; three of them
+   only outside `crossover_v2_flow.py` (§1.5a). The layer ports **whole**.
+6. **`harmonic_evidence.py:847-849` imports three private analysis symbols**
+   (`_estimate_drift`, `_global_offset`, `_locate_segments`), duplicated verbatim
+   at `scripts/harmonic-distortion-replay.py:339-341`. Any signature change to
+   units 2, 3 or 7's producers breaks a shipped console script with no type error.
+7. **`polarity_label(int(cand.seed_polarity_sign))` is written twice** —
+   `crossover_v2_flow.py:8538` and `crossover_v2/planning.py:337`. Not W2's to
+   fix; know it before adding a third.
+8. **The courtesy tone is not content.** A gate that walks all segments instead
+   of `STIMULUS_KINDS` members counts it (`program.py:166-169`).
+9. **`consume_capture` is not W2's caller.** Touching `:4210-4227` collides with
+   W5/W7 (§2.5, Site C).
+10. **The one shipped offline analyze reads a store that is off by default** —
+    `--dumps` is the `ENABLED`-gated ring (§1.5). Do not model W2's store read
+    on it, and do not assume a household run has anything there.
