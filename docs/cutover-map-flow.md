@@ -77,9 +77,9 @@ excluded), and it is the number the floor math should use — see §4.
 |---|---|--:|--:|---|---|---|
 | A | 1–107 | 107 | 0 | Module charter: the flow→organ direction, the two-stage journey, the tier arithmetic, the D1/D2 history | none (prose) | `DIES` — the design doc owns this |
 | B | 108–253 | 146 | 120 | Imports + `TYPE_CHECKING` block (6 deferred prescription/coordinator types) | internal | `DIES` with the code that reads them |
-| C | 254–630 | 377 | 165 | **Four "barrels" — but 133 names in three populations.** 23 pure re-exports with no importer anywhere; 60 pure re-exports with a live importer (26 prod, 34 test-only); **50 names this file actually reads** | 26 prod importers reach here (`angle_capture.py`, the web host, `crossover_envelope_v2.py`, `cli/doctor/correction.py`, 3 scripts) | **split.** 23 → `DIES` today. 60 → `W5-d` (repoint the importer at the organ, then delete the door). 50 → `KEEPER` until their reader moves; they are imports, not doors |
+| C | 254–630 | 377 | 165 | **Four "barrels" — but 133 names in three populations.** 23 pure re-exports with no importer anywhere; 60 pure re-exports with a live importer (26 prod, 34 test-only); **50 names this file actually reads** | 7 prod modules take the 26 door names: the web host (12), `angle_capture.py` (11), `crossover_envelope_v2.py` (4), `cli/doctor/correction.py`, `correction_crossover_v2_relay.py`, 2 scripts | **split.** 23 → `DIES` today. 60 → `W5-d` (repoint the importer at the organ, then delete the door). 50 → `KEEPER` until their reader moves; they are imports, not doors |
 | D | 631–877 | 247 | **21** | Tuning constants + their justification essays. 21 lines of code carrying 185 comment lines. Also holds `CrossoverV2FlowError` (:875) — a re-export of `_contracts.CrossoverV2FlowError` and **the most-imported name in the file, 11 files, 4 of them prod** | tests mostly; `severed-twin-replay.py` takes `ALIGNMENT_DELAY_PLAUSIBILITY_MARGIN_MS`; the error class is load-bearing | **NO HOME 1.** Move `CrossoverV2FlowError`'s door first and separately — it is a barrel entry misfiled in a constants band, and it gates four prod modules |
-| E | 878–1395 | 518 | 218 | Pure helpers, four clusters: alignment plausibility (:898–963), capture-integrity/SNR log fields (:970–1117), VERIFY evidence + claims + frame (:1123–1304), driver/pilot SNR fields (:1316–1393) | `alignment_delay_search_bounds_us` → web host (prod); the rest tests-only | **§2 / `W2-a`+`W2-b`** — these are analyses; they become registry units |
+| E | 878–1395 | 518 | 218 | Pure helpers, four clusters: alignment plausibility (:898–963), capture-integrity/SNR log fields (:970–1117), VERIFY evidence + claims + frame (:1123–1304), driver/pilot SNR fields (:1316–1393) | 4 prod-imported names: `alignment_delay_search_bounds_us` + `CLAIM_PASS`/`CLAIM_FAIL` → web host, `CLAIM_NO_PER_BRANCH_CAPTURE` → `crossover_envelope_v2.py`. The other ~19 are tests-only | `W2-a` + `W2-b` — these are analyses; they become registry units. The four `CLAIM_*` codes are vocabulary and should land wherever `W2-a`'s name table does |
 | F | 1396–1427 | 32 | **0** | A pure comment block: where the Layer-1a linearization policy went (`crossover_v2.intervention`) and where the deleted level tolerance went | none | `DIES` — 32 lines, zero code, a tombstone for two completed moves |
 | G | 1428–1698 | 271 | 78 | Seam protocols + snapshot: `AnalyzeCapture`, `RecordModelError`, `V2FlowSeams` (**17 fields**), `V2ConductorSnapshot` (**11 fields**) | web host binds `V2FlowSeams` at 5 sites; `V2ConductorSnapshot` + `AnalyzeCapture` prod | `W5-b` for `V2FlowSeams` → `EngineSeams` (`session_seams.py:275`); `W1-a` for `V2ConductorSnapshot` → `RecordStore` |
 | H | 1699–1878 | 180 | 102 | Attempt-history serialization: `attempt_history_from_state`, `attempt_record_from_verify`, two optional-coercers | `attempt_history_from_state` → web host (prod). `attempt_record_from_verify` is in `__all__` and imported by **nobody** | `W1-a` / `W1-b` (`persist`/`read_state`) |
@@ -197,16 +197,26 @@ consumer is the persistence serializer, not the host.**
 11 public members have no caller at all — not production, not tests, not the
 class itself:
 
-`attempt_history`¹ · `cloud_close_state` · `last_attempt_decision`¹ ·
+`attempt_history`¹ · `cloud_close_state`² · `last_attempt_decision`¹ ·
 `last_failure_pilot_heard` · `last_failure_rollback_anchor` ·
-`lateral_mark_return_drift_db`² · `measure_alignment_reservation` ·
+`lateral_mark_return_drift_db`³ · `measure_alignment_reservation` ·
 `measure_ripple_reservation` · `topology_prescription_record` ·
 `verify_tracking_curve` · `alignment_prescription_record`
 
-¹ read once by `V2ConductorSnapshot.to_dict` (`:1681–1694`) — they are snapshot
-inputs, so they follow band G into `W1-a`, not the deletion pile.
-² read once by `_close_lateral_walk` (`:5092`), which is itself in the paused
-lateral walk.
+² `cloud_close_state` **is** load-bearing after all: `snapshot()` reads it at
+`:3918`. It follows band Q, not the deletion pile.
+
+¹ **Do not delete these two on this evidence.** `V2ConductorSnapshot` has
+dataclass fields of the same names, and `snapshot()` fills them from the
+*private* `self._attempt_history` / `self._last_attempt_decision` (`:3919–3920`),
+not from these properties. So the property is unread — but every external
+mention of the name resolves to the snapshot field or to
+`attempt_history_from_state`, and a name-level scan cannot separate them.
+Confirm at the call site before cutting. This is the "don't trust names" trap
+in its exact shape: two live things and one dead thing sharing one spelling.
+
+³ read once by `_close_lateral_walk` (`:5092`), which is itself part of the
+lateral walk paused on 2026-08-18.
 
 The rest are read by `durable_state.py` and nothing else. **73 private members
 (3,335 lines) have no external reference of any kind** — that is the shell
