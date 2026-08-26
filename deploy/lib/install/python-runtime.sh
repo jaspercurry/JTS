@@ -399,7 +399,7 @@ PY
         echo
     fi
     seed_capture_relay_env
-    sed -i \
+    sed -i.bak \
         -e '/^JASPER_SPOTIFY_DEVICE_NAME=/d' \
         -e '/^JASPER_AIRPLAY_DEVICE_NAME=/d' \
         -e '/^SPOTIFY_CLIENT_ID=/d' \
@@ -407,6 +407,7 @@ PY
         -e '/^SPOTIFY_REDIRECT_URI=/d' \
         -e '/^SPOTIPY_REDIRECT_URI=/d' \
         "${ENV_DIR}/jasper.env"
+    rm -f "${ENV_DIR}/jasper.env.bak"
     migrate_wake_events_cap_seed
     if [[ -n "${OUTPUT_DAC_ID:-}" ]]; then
         sed -i.bak '/^JASPER_AUDIO_DAC_ID=/d' "${ENV_DIR}/jasper.env"
