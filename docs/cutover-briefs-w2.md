@@ -2,14 +2,206 @@
 
 > **This file dies when W2 lands.** It is an implementation brief for the four
 > work items of [`REFACTOR-CUTOVER-2026-08.md`](REFACTOR-CUTOVER-2026-08.md) §2,
-> not a durable reference. The last W2 PR deletes it. Nothing may cite it.
+> not a durable reference. The last W2 PR deletes it, and nothing may cite it —
+> a fact that belongs to the tree after W2 belongs in a docstring or an ADR,
+> never here.
 
-*Skeleton — sections land per push.*
+Re-derived at `c253c3cf1`. Every citation below was read at that commit.
+
+---
 
 ## 1. The analysis-unit enumeration
 
-## 2. The registry shape
+### 1.0 Two counts, and §2 conflates them
 
-## 3. Dependencies
+Plan §2's *PREMISE FAILED* block reproduces **79 modules** (35
+`jasper/audio_measurement/*.py` + 44 `jasper/active_speaker/crossover_v2/*.py`)
+and cannot reproduce **92 analysis units**. Both halves hold at HEAD — I re-ran
+the module count and got 35 / 44 / 79, and the flagged coincidence
+(`jasper/active_speaker/*.py` = 92) reproduces too.
 
-## 4. PR slicing, verification, tiers, traps
+**Recorded disagreement with §2's W2-d.** W2-d offers *"restate acceptance row
+3c's analysis claim against the pinnable 79"* as an alternative to enumerating
+92. It is not an alternative, because the two numbers answer different
+questions and neither substitutes for the other:
+
+- **79 is a boundary-membership count** — *which modules are in the truth
+  layer*. Its pin is an import test (`tests/test_correction_boundary_ssot.py:175`,
+  scoped to `jasper/audio_measurement` at `:187`). Widening that scope is
+  worthwhile and cheap, and W2-d should do it. It says nothing about the
+  registry.
+- **The registry's acceptance claim needs a UNIT count** — *how many named
+  analyses the table must hold*, because "wholesale" is a claim about coverage.
+  A row-count against a module-count is a category error; a registry with 15
+  rows over 79 modules is neither complete nor incomplete against that number.
+
+So W2-d ships **both**: the boundary widening (79, pinned) and the unit
+enumeration below (pinned by its own committed method). Do not let the
+boundary widening be read as having settled the coverage claim.
+
+### 1.1 The unit definition
+
+A registry unit exists to be **gated**. `AnalysisUnit(name, run, gate)` buys
+nothing over a bare function unless `gate` can answer `False` for a reason that
+is a property of the capture. So the unit is defined by its gate, not by its
+call graph:
+
+> **A unit is a maximal set of `ProgramAnalysis` fields that are present or
+> absent together over every `(program, capture, priors)` triple.**
+>
+> A field is **produced** — and so eligible for a unit — when its value at the
+> construction site is bound from a statement that reads the capture samples. A
+> field that copies an input parameter (**passthrough**), that re-reads another
+> field's value (**projection**), or that is a predicate over inputs alone, is
+> not produced and belongs to no unit.
+
+Two properties this buys, both load-bearing:
+
+- **Grouping is forced, not chosen.** `linearity_ok`, `channel_map_ok` and
+  `pilot_snr_ok` are total reductions of `pilots` (`:5541-5543`) — no capture
+  makes one present and another absent — so they are one unit with `pilots`,
+  not four rows. A four-row table would need three gates that can never differ,
+  and a gate that cannot answer `False` is the `_crossover_region_null_registry`
+  defect wearing a table.
+- **It is mechanically checkable at review time.** Splitting a unit obliges the
+  author to name a bank where one half runs and the other does not. That is the
+  same discipline `measure_spec._ROWS` (`:159`) enforces by construction.
+
+### 1.2 The method, committed
+
+Reproducible in one pass. Step 1 is fully mechanical; step 2 is a read of the
+guards, each cited, so a reviewer re-checks rather than re-derives.
+
+**Step 1 — the field census (script).** Parse
+`jasper/audio_measurement/program_analysis.py` with `ast`; collect
+`ProgramAnalysis` `AnnAssign` targets; collect every `ProgramAnalysis(...)`
+construction and every `replace(...)` whose keywords are *all* `ProgramAnalysis`
+fields; classify each keyword's value expression as passthrough (attribute of a
+call parameter), projection (attribute of a local bound from another field),
+or produced. Ship this as the W2-d pin so the census re-runs in CI rather than
+living in prose.
+
+At `c253c3cf1` it returns:
+
+| Class | n | Fields |
+|---|---|---|
+| passthrough | 3 | `phase` (`program.phase`), `program_id` (`program.program_id`), `mic_tier` (`priors.mic_tier`) |
+| projection | 1 | `glitch_detected` — `drift.glitch_detected` (`:6450` block) / `integrity.glitched` (`:7235` block); the field's own comment at `:1929-1934` calls it a one-bit projection with a single assignment site |
+| input predicate | 1 | `configured_path_composed` = `priors.configured_crossover_response_by_role is not None` |
+| **produced** | **20** | the rest |
+
+25 fields, all written at a construction site, none unwritten. The four
+construction sites are `analyze_program_capture:6134` (the shared `replace`),
+`_analyze_check:6160`, `_analyze_measure:6450`, `_analyze_verify:7235`.
+
+**Step 2 — group the 20 by gate.** Read each produced field's binding statement,
+then the guard that can make the statement not run or return no-evidence. Fields
+with identical guards merge.
+
+### 1.3 The table — 15 units over 20 produced fields
+
+`P` = the three-way phase dispatch (`analyze_program_capture:6114-6128`,
+`ValueError` at `:6128`). Everything in the *prologue* runs on all three.
+
+| # | Unit name | Fields | Binding site | What it computes | Gate (the input whose absence skips it) |
+|---|---|---|---|---|---|
+| 1 | `frame_ledger` | `frame_ledger` | `:6089` `reconcile_capture_frames` | phone-reported vs received frame accounting | ⊤ — runs on every capture. `capture_report=None` grades **not-evaluated**, not loss (`:6064-6072`) |
+| 2 | `anchor` | `anchor_ambiguous` | `:6110` `_global_offset` | did the timeline arbitration have one winner (#2644) | ⊤ |
+| 3 | `locations` | `locations` | `:6113` `_locate_segments` | per-segment found/offset/confidence | ⊤ |
+| 4 | `ambient` | `ambient_report` | `:6145` `_ambient_from_capture` | per-band room noise floor over the 12 s window | an `ambient` segment (`program.AMBIENT_SEGMENT_ID`, `program.py:178`) |
+| 5 | `pilots` | `pilots`, `linearity_ok`, `channel_map_ok`, `pilot_snr_ok` | `:6151-6158` (CHECK) / `_pilot_verdicts:5537-5543`, called `:6447`, `:7225` | per-role two-level behavioral linearity + channel map + in-band SNR | ≥1 pilot segment. A legacy program carries none and the three verdicts stay `None` (`_pilot_verdicts` docstring `:5517-5520`) |
+| 6 | `gain_plan` | `gain_plan` | `:6159` `_solve_gain_plan` | per-role digital gain to hit `target_capture_dbfs` | unit 5 + unit 4. **Total today** — no pilots yields empty `gains` silently (`:5953-5956`) |
+| 7 | `drift` | `drift` | `:6317` `_estimate_drift` | clock epsilon ppm + glitch bit from first-vs-last woofer sweep | a `sweep_w` segment (hard literal, `:2953-2954`). **Total today** — <2 occurrences yields `epsilon = 0.0` (`:2957-2959`) |
+| 8 | `driver_responses` | `driver_responses` | `:6349` `_driver_response` ×2 + `_repeat_driver_responses` | per-role gated magnitude/complex TF, SNR block, validity floor | ≥1 per-role sweep segment |
+| 9 | `alignment` | `alignment` | `:6383` `_estimate_alignment` | inter-branch polarity + delay from the two branch IRs | **both** branch sweeps + `priors.crossover_fc_hz` |
+| 10 | `candidate` | `candidate`, `predicted_sum` | `:6401` `_build_candidate` (one call, two returns) | the crossover candidate and its predicted applied sum | unit 9's gate. See 1.4 |
+| 11 | `summed_response` | `summed_response` | `:7030` `_driver_response("summed", …)` | gated TF of the one summed sweep | a `sweep_verify` segment |
+| 12 | `summed_ripple` | `summed_ripple_db` | `:7066` `_ripple_db` | peak-to-peak ripple across the overlap band | unit 11 + `priors.crossover_fc_hz` (`:7060`) |
+| 13 | `verify_tracking` | `verify_tracking`, `verify_tracking_curve` | `:7117` / `:7116` | measured-vs-predicted rms/max + the smoothed triple they reduce from | unit 12 + `priors.predicted_sum` (`:7067`) |
+| 14 | `verify_absolute` | `verify_absolute` | `:7241` `_verify_absolute_result:6952` | measured summed vs the candidate's own crossover target | unit 11 + `crossover_fc_hz` + `priors.configured_crossover_response_by_role` + a trusted band |
+| 15 | `capture_integrity` | `capture_integrity` | `:7232` `_verify_capture_integrity` | per-check heard / on-schedule / unclipped / frame-accounted | unit 11 + unit 1 |
+
+**20 produced fields → 15 units.** The count is the number of distinct gates,
+and it is reproducible: re-run the census script, then re-read the fifteen
+guards cited above.
+
+### 1.4 Where the grouping is a judgment call — three, all named
+
+Do not let these slide by silently; each is a row the executor may split, and
+splitting one obliges the author to name a bank that separates it.
+
+1. **9 and 10 share a gate today** and merge under the strict rule. Kept apart
+   here because `_build_candidate` additionally consumes unit 9's *output*
+   (`:6401` takes `alignment`) and because `alignment` is then rewritten from
+   the candidate at `:6412-6437`. That is a dependency edge, not a gate
+   difference. **If the registry has no dependency edges, merge them into one
+   14-unit table.** Recommend keeping 15 and giving `AnalysisUnit` no `requires`
+   field — the walker runs 9 then 10 in table order, which `packs.py:281` already
+   establishes as load-bearing and pinned.
+2. **6 and 5.** `gain_plan` never skips today; it degrades to an empty solve.
+   Its own unit because its gate is a *conjunction* (pilots **and** ambient) that
+   neither input's unit carries.
+3. **7 and 8.** `drift` and `driver_responses` both need sweeps but different
+   ones — drift needs a *repeat*, responses need a *role*. A near-field single-
+   driver capture (R-3) separates them, which is exactly the bank W2-c must
+   disclose against.
+
+### 1.5 Who calls the analysis layer today
+
+One production entry point, reached through one seam, from one flow method.
+
+- **`analyze_program_capture`** (`jasper/audio_measurement/program_analysis.py:6054`),
+  signature `(program, samples, sample_rate, *, calibration, geometry, priors,
+  capture_report)`. Two corrections §2 already records hold: the WAV arrives
+  **already decoded** as `(np.ndarray, int)`, and `capture_report` is a fourth
+  optional input.
+- **The one production call** is `_pa.analyze_program_capture(...)` at
+  `jasper/web/correction_crossover_v2.py:3144`, inside `_analyze` (`:3074`), the
+  closure `bind_production_analyze` (`:3037`) returns.
+- **The seam** is `V2FlowSeams.analyze`, typed `AnalyzeCapture` — a Protocol
+  (`jasper/active_speaker/crossover_v2_flow.py:1437`, `__call__` **`:1462-1470`**
+  — §2 cites `:1463-1471`, one line late at HEAD), field at `:1504`, the
+  required-keyword argument at `:1447-1461`, bound in the only product
+  `V2FlowSeams(...)` construction
+  (`jasper/web/correction_crossover_v2.py:5740`, `analyze=` at `:5742`).
+- **The one flow call** is `self._seams.analyze(program, result, priors,
+  self._geometry, phase=phase)` at `crossover_v2_flow.py:4207`, inside
+  `consume_capture` (`:4183`). §2 of this brief maps what surrounds it.
+- **The debug sidecar** calls `analysis_diagnostic_summary(analysis)`
+  (`program_analysis.py:7345`) at `web/correction_crossover_v2.py:3297`.
+- **The one direct layer call from the flow** is `polarity_label(...)`
+  (`program_analysis.py:4215`) at `crossover_v2_flow.py:8538`; everything else
+  the flow imports at `:237-249` is a type or a constant.
+
+**There is no CLI caller and no evidence-packet caller.** `analyze` is reached
+only through the wizard's flow today, which is why `TuningSession.analyze`'s
+offline promise (ruling S3, `session.py:431-436`) has no existing consumer to
+match.
+
+### 1.6 The input/output shapes, and the one that does not exist
+
+| Unit input | Where it comes from today | Shape |
+|---|---|---|
+| `program` | `crossover_v2_flow.program_for_phase(phase)` → `programs.program_for_phase:415` | `ExcitationProgram` — one of **four** composed objects, by identity (`:423-429`) |
+| `samples`, `sample_rate` | decoded from `CaptureResult`'s WAV inside the production binding | `(np.ndarray, int)`, rate-checked equal to `program.sample_rate_hz` (`:6084-6087`) |
+| `priors` | the **six-way** dispatch at `crossover_v2_flow.py:4190-4198` | `MeasurementPriors` (`program_analysis.py:1149`) |
+| `geometry` | `self._geometry` | `MeasurementGeometry` (`:1091`) |
+| `calibration` | resolved in the binding from the phone-reported setup/device | `CalibrationCurve \| None` |
+| `capture_report` | `CaptureResult.capture_integrity` | `Mapping \| None` |
+
+**Output** is one `ProgramAnalysis` (`:1852`) per capture. The registry's
+`results` is keyed by unit name, so the wire shape a unit returns is *the fields
+that unit owns*, not the whole dataclass — otherwise fifteen keys each hold the
+same 33.6 MB object.
+
+**And here is the gap W2 cannot paper over.** The engine's banked record
+(`TuningSession._record`, `crossover_v2/session.py:655`, returning at `:692-708`)
+carries thirteen fields and **not one of the six inputs above**. It carries no
+`phase`, no `program_id`, no WAV path, no sample rate. `PlaybackOutcome`
+(`crossover_v2/playback_transaction.py:106`) is two fields — `stage_reached` and
+`incident` — so the play seam never hands a capture back either. `RecordStore.read`
+(`session_seams.py:240`) returns that same thirteen-field mapping.
+
+So at HEAD, `TuningSession.analyze` can reach **zero** of the fifteen units'
+inputs from a banked record id. §3 of this brief is about that, and it is the
+reason W2 cannot be scheduled as if it were independent of W1.
