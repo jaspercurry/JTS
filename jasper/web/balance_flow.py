@@ -55,10 +55,10 @@ from http import HTTPStatus
 from typing import Any, Callable
 
 from ._common import JsonBodyError, read_json_object
+from .balance_level import DEFAULT_LOCK_FRAMES, MicLevelTracker
 
 from jasper.audio_measurement.correction_lane import exec_correction_play
 from jasper.log_event import log_event
-from jasper.measurement.level import DEFAULT_LOCK_FRAMES, MicLevelTracker
 
 logger = logging.getLogger("jasper.web.balance")
 
@@ -146,7 +146,7 @@ def _terminate_proc(proc: Any) -> None:
 
 
 def _volume_guard_context(hostname: str, members: dict):
-    from jasper.measurement.volume_guard import normalized_pair_volumes
+    from .balance_volume_guard import normalized_pair_volumes
 
     return normalized_pair_volumes(hostname=hostname, members=members)
 

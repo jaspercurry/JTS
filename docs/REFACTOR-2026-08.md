@@ -178,8 +178,9 @@ already open)**
   [ADR-0167](adr/0167-each-transit-network-is-its-own-provider-module.md)**:
   transit/providers/ is the wizard-adapter layer (#2770); the top-level
   runtime clients are the documented design, and the citibike names collide ·
-  fold
-  jasper/measurement/ (confirmed non-colliding: it serves `/balance/`) ·
+  ~~fold jasper/measurement/~~ **DONE** — one consumer confirmed
+  (`/balance/`), so its two modules became `web/balance_level.py` +
+  `web/balance_volume_guard.py` and the package is deleted ·
   split test_control_server along its own handler boundary (after the
   widening lifts) · ~~point the 4 hand-rolled atomic writers at
   atomic_io~~ **DONE**: 3 of the 4 converged (output_hardware,
