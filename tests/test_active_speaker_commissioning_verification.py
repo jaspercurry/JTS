@@ -1,0 +1,208 @@
+# SPDX-FileCopyrightText: 2026 Jasper Curry
+#
+# SPDX-License-Identifier: Apache-2.0
+
+"""The room-authority reader, driven against real on-disk evidence.
+
+Every other test of this reader monkeypatches it, so which branch a real
+receipt file lands in has never been pinned. That matters most for the branch
+this file was added with: a receipt an older JTS minted must read as its own
+disclosure, not as damaged bytes.
+"""
+
+from __future__ import annotations
+
+import json
+from pathlib import Path
+
+import pytest
+
+from jasper.active_speaker import _common
+from jasper.active_speaker.bundles import open_bundle
+from jasper.active_speaker.commissioning_evidence_store import (
+    CommissioningEvidenceStore,
+)
+from jasper.active_speaker.commissioning_lifecycle import CommissioningTransition
+from jasper.active_speaker.commissioning_receipt import (
+    RECEIPT_KIND,
+    RECEIPT_SCHEMA_VERSION,
+)
+from jasper.active_speaker.commissioning_run import (
+    CommissioningRunHandle,
+    CommissioningRunStore,
+)
+from jasper.active_speaker.commissioning_verification import (
+    _bundle_forensics,
+    read_commissioning_room_authority,
+    receipt_source_path,
+)
+from jasper.output_topology import OutputTopology
+from tests.active_speaker_fixtures import mono_output_topology
+
+# Reaching `verified` needs the whole ladder; the evidence fingerprints are
+# synthetic because `transition` correlates the handle, never the artifact.
+_LADDER = (
+    ("unconfigured", "protected", "protection_evidence"),
+    ("protected", "measured", "admitted_measurement_set"),
+    ("measured", "candidate_ready", "candidate_artifact"),
+    ("candidate_ready", "applied_unverified", "applied_candidate_proof"),
+    ("applied_unverified", "verified", "commissioning_eligibility_receipt"),
+)
+
+
+VerifiedRun = tuple[
+    OutputTopology, Path, Path, CommissioningEvidenceStore, CommissioningRunHandle
+]
+
+
+def _hash(char: str) -> str:
+    return char * 64
+
+
+@pytest.fixture
+def verified_run(tmp_path: Path) -> VerifiedRun:
+    topology = mono_output_topology(mode="active_2_way")
+    sessions_root = tmp_path / "sessions"
+    info = open_bundle(
+        topology,
+        calibration_id="verification-test-calibration",
+        sessions_dir=sessions_root,
+    )
+    assert info is not None
+    store = CommissioningEvidenceStore.open(
+        info["bundle_dir"], expected_session_id=info["session_id"]
+    )
+    run_state_path = tmp_path / "run.json"
+    run_store = CommissioningRunStore(path=run_state_path, owner_id="1" * 32)
+    run = run_store.start(
+        session_id=store.session_id,
+        session_fingerprint=_hash("a"),
+    )
+    for index, (from_state, to_state, evidence_kind) in enumerate(_LADDER):
+        assert run_store.transition(
+            run,
+            CommissioningTransition(
+                from_state=from_state,
+                to_state=to_state,
+                evidence_kind=evidence_kind,
+                evidence_fingerprint=_hash(f"{index}"),
+            ),
+        )
+    assert run_store.lifecycle_state(run) == "verified"
+    return topology, run_state_path, sessions_root, store, run
+
+
+def _authority(
+    topology: OutputTopology, run_state_path: Path, sessions_root: Path
+) -> dict[str, object]:
+    return read_commissioning_room_authority(
+        topology,
+        run_state_path=run_state_path,
+        sessions_root=sessions_root,
+    )
+
+
+def test_verified_lifecycle_without_a_receipt_reads_as_absent(
+    verified_run: VerifiedRun,
+) -> None:
+    topology, run_state_path, sessions_root, _store, _run = verified_run
+
+    result = _authority(topology, run_state_path, sessions_root)
+
+    assert result["allowed"] is False
+    assert result["reason"] == _common.ROOM_AUTHORITY_RECEIPT_ABSENT
+    assert result["receipt_fingerprint"] is None
+
+
+def test_a_receipt_an_older_jts_minted_reads_as_superseded_not_damaged(
+    verified_run: VerifiedRun,
+) -> None:
+    """The migration posture, stated as behavior.
+
+    A schema bump makes every older receipt unparseable by the strict reader,
+    and "unparseable" would otherwise reach the household as *malformed* —
+    copy that tells someone their evidence is damaged when in fact their JTS
+    grew a field. Nothing about the speaker changed, so nothing is refused
+    (ruling S10) and the remedy is one unhurried re-run.
+    """
+    topology, run_state_path, sessions_root, store, run = verified_run
+    store.publish_json_artifact(
+        receipt_source_path(run),
+        {
+            "schema_version": RECEIPT_SCHEMA_VERSION - 1,
+            "kind": RECEIPT_KIND,
+            "fingerprint": _hash("b"),
+        },
+    )
+
+    result = _authority(topology, run_state_path, sessions_root)
+
+    assert result["allowed"] is False
+    assert result["reason"] == _common.ROOM_AUTHORITY_RECEIPT_SUPERSEDED
+    assert result["receipt_fingerprint"] is None
+
+
+def test_bytes_that_are_not_a_receipt_still_read_as_malformed(
+    verified_run: VerifiedRun,
+) -> None:
+    """The superseded branch narrows malformed; it must not swallow it."""
+
+    topology, run_state_path, sessions_root, store, run = verified_run
+    store.publish_json_artifact(
+        receipt_source_path(run),
+        {"schema_version": RECEIPT_SCHEMA_VERSION, "kind": "something_else"},
+    )
+
+    result = _authority(topology, run_state_path, sessions_root)
+
+    assert result["allowed"] is False
+    assert result["reason"] == _common.ROOM_AUTHORITY_RECEIPT_MALFORMED
+
+
+def test_a_current_schema_receipt_that_will_not_parse_is_malformed(
+    verified_run: VerifiedRun,
+) -> None:
+    """A receipt claiming THIS schema is held to it — no leniency leak."""
+
+    topology, run_state_path, sessions_root, store, run = verified_run
+    store.publish_json_artifact(
+        receipt_source_path(run),
+        {
+            "schema_version": RECEIPT_SCHEMA_VERSION,
+            "kind": RECEIPT_KIND,
+            "fingerprint": _hash("c"),
+        },
+    )
+
+    result = _authority(topology, run_state_path, sessions_root)
+
+    assert result["allowed"] is False
+    assert result["reason"] == _common.ROOM_AUTHORITY_RECEIPT_MALFORMED
+
+
+def test_receipt_provenance_reads_the_bundle_forensics_it_records(
+    verified_run: VerifiedRun,
+) -> None:
+    """Pinned here rather than through the mint, which nothing can reach yet.
+
+    `_receipt()` is the receipt's only writer and needs three post-apply
+    repeats that nothing writes, so the one new step in it — reading the
+    session's own forensic fields — has no reachable caller to pin it through
+    until wave 4g's producer half lands.
+    """
+
+    _topology, _run_state_path, _sessions_root, store, _run = verified_run
+    recorded = json.loads((store.bundle_dir / "info.json").read_text())["fingerprints"]
+
+    assert _bundle_forensics(store.bundle_dir) == (
+        recorded["build_sha"] or None,
+        recorded["mic"]["calibration_id"] or None,
+        recorded["mic"]["calibration_sha256"] or None,
+    )
+    assert recorded["mic"]["calibration_id"] == "verification-test-calibration"
+
+
+def test_unreadable_bundle_forensics_never_stop_a_receipt(tmp_path: Path) -> None:
+    """Ruling S10: a forensic mirror that will not open is not a blocker."""
+
+    assert _bundle_forensics(tmp_path / "not-a-bundle") == (None, None, None)

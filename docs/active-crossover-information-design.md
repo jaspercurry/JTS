@@ -1346,7 +1346,7 @@ restoration; after playback admission has persisted, timeout, cancellation, or
 failure returns typed possible-audio authority and consumes the one-shot
 identity.
 
-Positive schema-v2 receipt validation treats every post-apply raw,
+Positive receipt validation treats every post-apply raw,
 analysis-input, quality, generation-admission, and playback-admission identity
 and relative path as one global namespace across all required speaker groups.
 Cross-target reuse is refused even when a colliding raw path names different
@@ -2315,7 +2315,7 @@ evaluator, exact candidate persistence/readback and `candidate_ready` review
 projection, explicit reviewed apply, compiler-ready measured corrections,
 writer-locked graph/path/volume readback, exact failure/cancellation/restart
 restore, retained-proof finalization, complete-plan replay
-guards, receipt schema-v2 one-shot roles, current-graph verification,
+guards, the receipt's one-shot roles, current-graph verification,
 receipt persistence, and Active-owned Room authority,
 and Room's versioned passive/solo-manual-applied admission boundary, explicit
 grouped-active unsupported result, and strict automatic-receipt separation

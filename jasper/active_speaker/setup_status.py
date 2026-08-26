@@ -25,6 +25,7 @@ from ._common import (
     ROOM_AUTHORITY_RECEIPT_ABSENT,
     ROOM_AUTHORITY_RECEIPT_MALFORMED,
     ROOM_AUTHORITY_RECEIPT_STALE,
+    ROOM_AUTHORITY_RECEIPT_SUPERSEDED,
 )
 from .baseline_profile import (
     active_layer_a_fingerprint,
@@ -74,6 +75,12 @@ _RECEIPT_DETAIL = {
         "The commissioning proof on disk could not be read, so room "
         "correction is running without banking a verified result. Re-run "
         "commissioning to replace it."
+    ),
+    ROOM_AUTHORITY_RECEIPT_SUPERSEDED: (
+        "This speaker's commissioning proof was minted before a JTS update "
+        "that records more about how a proof was taken, so room correction is "
+        "running without banking a verified result. Nothing is wrong with the "
+        "speaker. Re-run commissioning when convenient."
     ),
 }
 

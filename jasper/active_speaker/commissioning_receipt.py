@@ -20,6 +20,7 @@ sufficient.
 
 from __future__ import annotations
 
+import datetime
 import hashlib
 import json
 from dataclasses import dataclass, field
@@ -54,6 +55,16 @@ POST_APPLY_REQUIRED_REPEATS = 3
 POST_APPLY_VERIFICATION_ALGORITHM_ID = "jts_active_post_apply_target_verification"
 POST_APPLY_VERIFICATION_ALGORITHM_VERSION = "1"
 COMBINED_ACTIVE_GROUP_TARGET_PREFIX = "combined_active_group:"
+
+# Exported because the room-authority reader must recognize a receipt of an
+# EARLIER schema without parsing it — a superseded receipt is disclosed as its
+# own thing, not as unreadable bytes.  Re-spelling either value there would be
+# the drift site.
+RECEIPT_KIND = "jts_active_commissioning_eligibility_receipt"
+RECEIPT_SCHEMA_VERSION = 3
+# UTC, second resolution, always Z-suffixed.  Canonical because the value is
+# fingerprinted: two spellings of one instant would be two receipts.
+PROVEN_AT_FORMAT = "%Y-%m-%dT%H:%M:%SZ"
 
 MutationState: TypeAlias = Literal["not_attempted", "attempted", "applied", "unknown"]
 RollbackStatus: TypeAlias = Literal[
@@ -1381,6 +1392,186 @@ def _required_target_key(
 
 
 @dataclass(frozen=True)
+class CommissioningHardwareIdentity:
+    """The hardware a receipt's proof was taken on, as a portable key.
+
+    Ruling S10 consequence (2): proof travels with the PROJECT, not the box.
+    A household that has never commissioned may still be running hardware this
+    project has already proven, and comparing whole ``OutputTopology``
+    snapshots cannot answer that — those carry per-box detail. These four
+    values are what "same hardware" means for a post-apply proof: the speaker
+    the graph was proven on, and the microphone that measured it.
+
+    The mic pair is the half that is not otherwise on the receipt; the
+    topology pair is bound to :class:`RequiredTargetPlan`'s own identity by
+    the receipt so the key can never drift from the plan it describes.
+    """
+
+    topology_id: str
+    topology_fingerprint: str
+    mic_calibration_id: str | None
+    mic_calibration_sha256: str | None
+    fingerprint: str = field(init=False)
+
+    def __post_init__(self) -> None:
+        object.__setattr__(
+            self, "topology_id", _text(self.topology_id, field_name="topology_id")
+        )
+        object.__setattr__(
+            self,
+            "topology_fingerprint",
+            _sha256(self.topology_fingerprint, field_name="topology_fingerprint"),
+        )
+        object.__setattr__(
+            self,
+            "mic_calibration_id",
+            _optional_text(self.mic_calibration_id, field_name="mic_calibration_id"),
+        )
+        if self.mic_calibration_sha256 is not None:
+            object.__setattr__(
+                self,
+                "mic_calibration_sha256",
+                _sha256(
+                    self.mic_calibration_sha256, field_name="mic_calibration_sha256"
+                ),
+            )
+        object.__setattr__(self, "fingerprint", _fingerprint(self._core()))
+
+    def _core(self) -> dict[str, Any]:
+        return {
+            "schema_version": 1,
+            "kind": "jts_active_commissioning_hardware_identity",
+            "topology_id": self.topology_id,
+            "topology_fingerprint": self.topology_fingerprint,
+            "mic_calibration_id": self.mic_calibration_id,
+            "mic_calibration_sha256": self.mic_calibration_sha256,
+        }
+
+    def to_dict(self) -> dict[str, Any]:
+        return {**self._core(), "fingerprint": self.fingerprint}
+
+    @classmethod
+    def from_mapping(cls, raw: Any) -> "CommissioningHardwareIdentity":
+        value = _strict_serialized_object(
+            raw,
+            kind="jts_active_commissioning_hardware_identity",
+            fields=frozenset(
+                {
+                    "topology_id",
+                    "topology_fingerprint",
+                    "mic_calibration_id",
+                    "mic_calibration_sha256",
+                }
+            ),
+        )
+        result = cls(
+            topology_id=_raw(value, "topology_id"),
+            topology_fingerprint=_raw(value, "topology_fingerprint"),
+            mic_calibration_id=_raw(value, "mic_calibration_id"),
+            mic_calibration_sha256=_raw(value, "mic_calibration_sha256"),
+        )
+        _declared_fingerprint(value, result.fingerprint)
+        return result
+
+
+@dataclass(frozen=True)
+class CommissioningProofProvenance:
+    """When, on what build, from which bytes, and on what hardware.
+
+    Every field states a fact about the PAST. Nothing here is consulted to
+    decide whether the speaker may play or a session may measure — ruling S10
+    reserves that to the §4 clamps — and a receipt that carries provenance
+    grants no more authority than one that does not. It only lets the receipt
+    answer *"proven when, on what code, from which bytes, on what hardware"*
+    instead of asserting a bare verdict.
+
+    ``proven_by_build`` and the mic pair inside ``hardware_identity`` are
+    forensic and may be ``None``: ``bundles`` itself resolves both best-effort
+    (a dev checkout has no build manifest), and a proof that cannot name its
+    build is still a proof. A missing forensic field never blocks the mint.
+    """
+
+    proven_at: str
+    proven_by_build: str | None
+    capture_refs: tuple[ArtifactIdentity, ...]
+    hardware_identity: CommissioningHardwareIdentity
+    fingerprint: str = field(init=False)
+
+    def __post_init__(self) -> None:
+        proven_at = _text(self.proven_at, field_name="proven_at")
+        try:
+            datetime.datetime.strptime(proven_at, PROVEN_AT_FORMAT)
+        except ValueError as exc:
+            raise CommissioningReceiptError(
+                f"proven_at must be {PROVEN_AT_FORMAT!r} UTC: {exc}"
+            ) from exc
+        object.__setattr__(self, "proven_at", proven_at)
+        object.__setattr__(
+            self,
+            "proven_by_build",
+            _optional_text(self.proven_by_build, field_name="proven_by_build"),
+        )
+        if type(self.capture_refs) is not tuple or not self.capture_refs:
+            raise CommissioningReceiptError("capture_refs must be a non-empty tuple")
+        if any(
+            not isinstance(item, ArtifactIdentity) for item in self.capture_refs
+        ):
+            raise CommissioningReceiptError(
+                "capture_refs must contain ArtifactIdentity values"
+            )
+        if not isinstance(self.hardware_identity, CommissioningHardwareIdentity):
+            raise CommissioningReceiptError(
+                "hardware_identity must be CommissioningHardwareIdentity"
+            )
+        object.__setattr__(self, "fingerprint", _fingerprint(self._core()))
+
+    def _core(self) -> dict[str, Any]:
+        return {
+            "schema_version": 1,
+            "kind": "jts_active_commissioning_proof_provenance",
+            "proven_at": self.proven_at,
+            "proven_by_build": self.proven_by_build,
+            "capture_refs": [item.to_dict() for item in self.capture_refs],
+            "hardware_identity": self.hardware_identity.to_dict(),
+        }
+
+    def to_dict(self) -> dict[str, Any]:
+        return {**self._core(), "fingerprint": self.fingerprint}
+
+    @classmethod
+    def from_mapping(cls, raw: Any) -> "CommissioningProofProvenance":
+        value = _strict_serialized_object(
+            raw,
+            kind="jts_active_commissioning_proof_provenance",
+            fields=frozenset(
+                {
+                    "proven_at",
+                    "proven_by_build",
+                    "capture_refs",
+                    "hardware_identity",
+                }
+            ),
+        )
+        refs = value["capture_refs"]
+        if type(refs) is not list:
+            raise CommissioningReceiptError("capture_refs must be a list")
+        try:
+            identities = tuple(ArtifactIdentity.from_mapping(item) for item in refs)
+        except EvidenceIdentityError as exc:
+            raise CommissioningReceiptError(str(exc)) from exc
+        result = cls(
+            proven_at=_raw(value, "proven_at"),
+            proven_by_build=_raw(value, "proven_by_build"),
+            capture_refs=identities,
+            hardware_identity=CommissioningHardwareIdentity.from_mapping(
+                value["hardware_identity"]
+            ),
+        )
+        _declared_fingerprint(value, result.fingerprint)
+        return result
+
+
+@dataclass(frozen=True)
 class CommissioningEligibilityReceipt:
     """Positive authority: every exact topology target passed post-apply proof."""
 
@@ -1389,6 +1580,7 @@ class CommissioningEligibilityReceipt:
     commissioning_context_fingerprint: str
     post_apply_targets: tuple[PostApplyTargetVerification, ...]
     rollback: CommissioningRollbackEvidence
+    provenance: CommissioningProofProvenance
     fingerprint: str = field(init=False)
 
     def __post_init__(self) -> None:
@@ -1558,12 +1750,36 @@ class CommissioningEligibilityReceipt:
             raise CommissioningReceiptError(
                 "eligibility requires retained verified apply with rollback not required"
             )
+        if not isinstance(self.provenance, CommissioningProofProvenance):
+            raise CommissioningReceiptError(
+                "provenance must be CommissioningProofProvenance"
+            )
+        # Provenance is a flat INDEX into proof this receipt already carries
+        # nested, so it is only worth reading if it cannot say something the
+        # nested proof denies. Bind both halves to their sources: the refs to
+        # the exact raw bytes of every admitted capture, in receipt order, and
+        # the hardware key to the plan whose targets those captures proved.
+        if self.provenance.capture_refs != tuple(
+            proof.capture.raw_artifact for proof in all_admissions
+        ):
+            raise CommissioningReceiptError(
+                "capture_refs must index this receipt's admitted capture bytes"
+            )
+        if (
+            self.provenance.hardware_identity.topology_id
+            != self.target_plan.topology_id
+            or self.provenance.hardware_identity.topology_fingerprint
+            != self.target_plan.topology_fingerprint
+        ):
+            raise CommissioningReceiptError(
+                "hardware identity must equal the required target plan topology"
+            )
         object.__setattr__(self, "fingerprint", _fingerprint(self._core()))
 
     def _core(self) -> dict[str, Any]:
         return {
-            "schema_version": 2,
-            "kind": "jts_active_commissioning_eligibility_receipt",
+            "schema_version": RECEIPT_SCHEMA_VERSION,
+            "kind": RECEIPT_KIND,
             "target_plan": self.target_plan.to_dict(),
             "applied_candidate": self.applied_candidate.to_dict(),
             "commissioning_context_fingerprint": self.commissioning_context_fingerprint,
@@ -1571,6 +1787,7 @@ class CommissioningEligibilityReceipt:
                 target.to_dict() for target in self.post_apply_targets
             ],
             "rollback": self.rollback.to_dict(),
+            "provenance": self.provenance.to_dict(),
         }
 
     def to_dict(self) -> dict[str, Any]:
@@ -1580,7 +1797,7 @@ class CommissioningEligibilityReceipt:
     def from_mapping(cls, raw: Any) -> "CommissioningEligibilityReceipt":
         value = _strict_serialized_object(
             raw,
-            kind="jts_active_commissioning_eligibility_receipt",
+            kind=RECEIPT_KIND,
             fields=frozenset(
                 {
                     "target_plan",
@@ -1588,9 +1805,10 @@ class CommissioningEligibilityReceipt:
                     "commissioning_context_fingerprint",
                     "post_apply_targets",
                     "rollback",
+                    "provenance",
                 }
             ),
-            schema_version=2,
+            schema_version=RECEIPT_SCHEMA_VERSION,
         )
         targets = value["post_apply_targets"]
         if type(targets) is not list:
@@ -1607,6 +1825,7 @@ class CommissioningEligibilityReceipt:
                 PostApplyTargetVerification.from_mapping(item) for item in targets
             ),
             rollback=CommissioningRollbackEvidence.from_mapping(value["rollback"]),
+            provenance=CommissioningProofProvenance.from_mapping(value["provenance"]),
         )
         _declared_fingerprint(value, result.fingerprint)
         return result

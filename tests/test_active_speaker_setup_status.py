@@ -889,6 +889,7 @@ def test_applied_automatic_snapshot_requires_receipt_after_measurement_store_cle
         _common.ROOM_AUTHORITY_RECEIPT_ABSENT,
         _common.ROOM_AUTHORITY_RECEIPT_STALE,
         _common.ROOM_AUTHORITY_RECEIPT_MALFORMED,
+        _common.ROOM_AUTHORITY_RECEIPT_SUPERSEDED,
     ],
 )
 def test_receipt_denial_reason_reaches_the_room_decision_intact(
@@ -898,10 +899,11 @@ def test_receipt_denial_reason_reaches_the_room_decision_intact(
 ) -> None:
     """Which denial it was survives the hop to the household surface.
 
-    All three used to collapse into one opaque code, so a doctor line could
-    say only "no receipt" — never whether nothing was ever minted, something
-    moved under one that was, or the bytes will not parse. Those have three
-    different remedies, and each carries its own detail.
+    They used to collapse into one opaque code, so a doctor line could say
+    only "no receipt" — never whether nothing was ever minted, something moved
+    under one that was, an upgrade grew the schema past what an older mint
+    recorded, or the bytes will not parse. Those have different remedies, and
+    each carries its own detail.
     """
     topology = _active_topology()
     _save_topology(monkeypatch, tmp_path, topology)

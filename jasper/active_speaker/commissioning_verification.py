@@ -12,12 +12,14 @@ uses the production admitted recorder path for three fixed-axis repeats.
 
 from __future__ import annotations
 
+import datetime
 import logging
 import uuid
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, Literal, Mapping
 
+from jasper.audio_measurement.bundles import BundleError
 from jasper.audio_measurement.evidence_identity import (
     ArtifactIdentity,
     json_fingerprint,
@@ -28,6 +30,7 @@ from ._common import (
     ROOM_AUTHORITY_RECEIPT_ABSENT,
     ROOM_AUTHORITY_RECEIPT_MALFORMED,
     ROOM_AUTHORITY_RECEIPT_STALE,
+    ROOM_AUTHORITY_RECEIPT_SUPERSEDED,
 )
 from .commissioning_evidence_store import (
     EVIDENCE_ROOT,
@@ -40,9 +43,14 @@ from .commissioning_receipt import (
     POST_APPLY_REQUIRED_REPEATS,
     POST_APPLY_VERIFICATION_ALGORITHM_ID,
     POST_APPLY_VERIFICATION_ALGORITHM_VERSION,
+    PROVEN_AT_FORMAT,
+    RECEIPT_KIND,
+    RECEIPT_SCHEMA_VERSION,
     AdmittedCaptureProof,
     AppliedCandidateProof,
     CommissioningEligibilityReceipt,
+    CommissioningHardwareIdentity,
+    CommissioningProofProvenance,
     CommissioningRollbackEvidence,
     PostApplyTargetVerification,
     RequiredTargetPlan,
@@ -120,6 +128,39 @@ def receipt_source_path(run: CommissioningRunHandle) -> str:
 
 def _artifact_relative_path(source_path: str) -> str:
     return f"{EVIDENCE_ROOT}/artifacts/{source_path}"
+
+
+def _bundle_forensics(bundle_dir: Path) -> tuple[str | None, str | None, str | None]:
+    """``(build_sha, mic_calibration_id, mic_calibration_sha256)`` for a bundle.
+
+    ``bundles`` already resolves all three best-effort when it opens the
+    session — an install without a build manifest, or a calibration whose file
+    has moved, records ``None`` rather than failing. This reads them back with
+    the same posture: a bundle that will not parse yields three ``None``s, so
+    an unreadable forensic mirror can never stop a receipt that the strict
+    evidence chain has otherwise earned (ruling S10).
+    """
+
+    from .bundles import summarize_bundle
+
+    def _present(value: Any) -> str | None:
+        return value if isinstance(value, str) and value else None
+
+    try:
+        info = summarize_bundle(bundle_dir)
+    except (OSError, BundleError):
+        return None, None, None
+    fingerprints = info.get("fingerprints")
+    if not isinstance(fingerprints, Mapping):
+        return None, None, None
+    mic = fingerprints.get("mic")
+    if not isinstance(mic, Mapping):
+        mic = {}
+    return (
+        _present(fingerprints.get("build_sha")),
+        _present(mic.get("calibration_id")),
+        _present(mic.get("calibration_sha256")),
+    )
 
 
 @dataclass(frozen=True, slots=True)
@@ -518,12 +559,32 @@ class CommissioningVerificationService:
             ),
             predecessor_state=self.applied_candidate.predecessor_state,
         )
+        build_sha, calibration_id, calibration_sha = _bundle_forensics(
+            self.evidence_store.bundle_dir
+        )
         expected = CommissioningEligibilityReceipt(
             target_plan=self.target_plan,
             applied_candidate=self.applied_candidate,
             commissioning_context_fingerprint=self.context_fingerprint,
             post_apply_targets=targets,
             rollback=rollback,
+            provenance=CommissioningProofProvenance(
+                proven_at=datetime.datetime.now(datetime.timezone.utc).strftime(
+                    PROVEN_AT_FORMAT
+                ),
+                proven_by_build=build_sha,
+                capture_refs=tuple(
+                    proof.capture.raw_artifact
+                    for target in targets
+                    for proof in target.admitted_captures
+                ),
+                hardware_identity=CommissioningHardwareIdentity(
+                    topology_id=self.target_plan.topology_id,
+                    topology_fingerprint=self.target_plan.topology_fingerprint,
+                    mic_calibration_id=calibration_id,
+                    mic_calibration_sha256=calibration_sha,
+                ),
+            ),
         )
         artifact = self.evidence_store.publish_json_artifact(
             receipt_source_path(self.run), expected.to_dict()
@@ -697,10 +758,11 @@ def read_commissioning_room_authority(
 ) -> dict[str, Any]:
     """Read Active's exact verified-receipt decision without claiming ownership.
 
-    The three denials are distinguishable on purpose. A receipt that was never
-    minted, one that no longer describes this speaker, and one whose bytes will
-    not parse have three different remedies, and a disclosure that cannot say
-    which of them happened is vague rather than loud. None of them stops room
+    The four denials are distinguishable on purpose. A receipt that was never
+    minted, one that no longer describes this speaker, one an older JTS minted
+    to a schema that has since gained fields, and one whose bytes will not
+    parse have four different remedies, and a disclosure that cannot say which
+    of them happened is vague rather than loud. None of them stops room
     correction — see :func:`_deny`.
     """
 
@@ -737,9 +799,23 @@ def read_commissioning_room_authority(
                     ROOM_AUTHORITY_RECEIPT_ABSENT, "no receipt artifact for this run"
                 )
             raise
-        receipt = CommissioningEligibilityReceipt.from_mapping(
-            store.reopen_json_artifact(artifact)
-        )
+        payload = store.reopen_json_artifact(artifact)
+        # A receipt this JTS would have to grow fields to read is not corrupt
+        # and its household did nothing wrong: an upgrade moved the schema
+        # under a proof that was honestly minted. Naming that separately keeps
+        # "re-run commissioning once" from reading as "your evidence is
+        # damaged". Strict parsing is unchanged for the current version.
+        declared = payload.get("schema_version")
+        if (
+            payload.get("kind") == RECEIPT_KIND
+            and type(declared) is int
+            and declared < RECEIPT_SCHEMA_VERSION
+        ):
+            return _deny(
+                ROOM_AUTHORITY_RECEIPT_SUPERSEDED,
+                f"receipt schema {declared} predates {RECEIPT_SCHEMA_VERSION}",
+            )
+        receipt = CommissioningEligibilityReceipt.from_mapping(payload)
         transition = run_store.lifecycle_transition(run)
         mutation = run_store.current_live_mutation(run)
         if (
