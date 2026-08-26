@@ -5677,9 +5677,9 @@ def bind_production_play(
             asks. Without it the swap duck released to the canonical HOUSEHOLD
             target, which sits below the measurement volume and therefore won
             the release's ``min`` every time: every routed capture's fader
-            landed on the household level and the hold repaired it before the
-            stimulus. With it the release lands on the declared level by
-            construction and the hold reads in tolerance without writing.
+            landed on the household level, which the hold now REFUSES rather
+            than repairs. With it the release lands on the declared level by
+            construction and the hold reads in tolerance.
 
             Synchronous, and handed to the swap UNCALLED: the release asks it
             at the moment it lets go, so a drain that finishes mid-swap is seen
@@ -5701,9 +5701,9 @@ def bind_production_play(
             ``None`` means the plan holds no volume to prove; that is its
             question to answer, so this discloses and plays on.
             """
-            set_v, get_v = _session_volume_io(open_cam)
+            _, get_v = _session_volume_io(open_cam)
             held = await session_volume_plan().hold_measurement_volume(
-                set_v, get_v, context=f"capture:{phase}",
+                get_v, context=f"capture:{phase}",
             )
             if held is None:
                 log_event(

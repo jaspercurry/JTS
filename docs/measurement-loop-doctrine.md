@@ -124,11 +124,15 @@ damage:
   bullet's own mechanism restated at the moment of emission: a fader above the
   declared volume drives every branch past the declared level-duration limits
   this bullet exists to enforce. **It trips on two conditions, and the second
-  is the fail-closed half of the same rule** — the fader read and would not
-  hold, OR the fader could not be read at all, because a level that cannot be
-  established cannot be shown to be under the caps either. It passes the nanny
-  test below by repairing first and refusing only what it cannot prove, so no
-  runnable experiment is blocked (#2925; found the other way round — an
+  is the fail-closed half of the same rule** — the fader read and did not
+  agree, OR the fader could not be read at all, because a level that cannot be
+  established cannot be shown to be under the caps either. **It proves and
+  never writes** (wave 5): `SessionVolumePlan.open` establishes the
+  measurement volume once per session, and a per-stimulus repair here was a
+  second writer moving the fader behind the session's back. It passes the
+  nanny test below because it refuses only what it cannot PROVE, after an
+  independent second read — never a level it merely dislikes — and every
+  refusal names the reading it took (#2925; found the other way round — an
   overnight campaign measured 8.712 dB QUIET, with the ledger equally wrong in
   the direction that is loud)
 - the output limiters — `STARTUP_LIMITER_CLIP_LIMIT_DB` /
