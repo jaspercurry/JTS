@@ -203,7 +203,7 @@ chained-round paragraphs re-read against `crossover_v2.commanded` and
 `classify_delta_probe`; #2662 — the `driver_levels_disagree` row and the two
 level-estimator event paragraphs re-read against
 `intervention.plan_linearization`'s anchor block,
-`check_level_consistency`, `accountability`'s `EVENT_LEVEL_ESTIMATOR_FINDING`
+`compare_level_definitions`, `accountability`'s `EVENT_LEVEL_ESTIMATOR_FINDING`
 payload, and the `…_linearization_giveback` emit. All three named a level-datum
 owner the code does not have, through two symbols
 (`summed_level_reference_db`, `trim_band_delta_db`/`core_level_delta_db`) that
