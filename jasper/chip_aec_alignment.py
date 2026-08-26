@@ -16,7 +16,7 @@ import math
 import wave
 from dataclasses import asdict, dataclass
 from pathlib import Path
-from typing import TYPE_CHECKING, Mapping, Sequence
+from typing import TYPE_CHECKING, Any, Mapping, Sequence
 
 from jasper.atomic_io import read_regular_bytes_nofollow
 from jasper.mics import xvf3800
@@ -276,6 +276,33 @@ class AlignmentIdentity:
 # not worth refusing (ADR-0101).  Everything else describes the class the
 # alignment was measured against.
 PER_UNIT_IDENTITY_FIELDS = frozenset({"xvf_serial", "output_hardware_key"})
+HARDWARE_CLASS_IDENTITY_FIELDS = tuple(
+    name
+    for name in AlignmentIdentity.__dataclass_fields__
+    if name not in PER_UNIT_IDENTITY_FIELDS
+)
+
+
+def hardware_class_key(
+    identity: AlignmentIdentity | Mapping[str, Any],
+) -> tuple[Any, ...]:
+    """Return what an identity says about the hardware CLASS, in field order.
+
+    Two boxes sharing this key share everything K was measured against, so a
+    proof banked on one describes the other (ADR-0101).  A mapping — a shipped
+    registry row, which carries no per-unit fields — is held to
+    `AlignmentIdentity`'s own field rules by filling those two with a
+    placeholder that never leaves this call, so a malformed row fails where it
+    is declared rather than at boot.
+    """
+
+    if not isinstance(identity, AlignmentIdentity):
+        if set(identity) != set(HARDWARE_CLASS_IDENTITY_FIELDS):
+            raise ValueError("hardware class identity fields are incomplete")
+        fields: dict[str, Any] = dict.fromkeys(PER_UNIT_IDENTITY_FIELDS, "unkeyed")
+        fields.update(identity)
+        identity = AlignmentIdentity(**fields)
+    return tuple(getattr(identity, name) for name in HARDWARE_CLASS_IDENTITY_FIELDS)
 
 
 def identity_divergence(
@@ -294,6 +321,22 @@ def identity_divergence(
     )
 
 
+def validate_banked_delays(k_samples: int, sys_delay: int) -> None:
+    """Apply the rules a banked K/SYS_DELAY pair passes wherever it is banked.
+
+    ``CHIP_AEC_SYS_DELAY_MIN..MAX`` is the chip's DECLARED driver cap, so this
+    refuses rather than clamps — for a commissioned artifact, a superseded one,
+    and a shipped hardware-class default alike.
+    """
+
+    if type(k_samples) is not int or type(sys_delay) is not int:
+        raise ValueError("artifact K and SYS_DELAY must be integers")
+    if not (
+        xvf3800.CHIP_AEC_SYS_DELAY_MIN <= sys_delay <= xvf3800.CHIP_AEC_SYS_DELAY_MAX
+    ):
+        raise ValueError("artifact SYS_DELAY is out of range")
+
+
 @dataclass(frozen=True)
 class AlignmentArtifact:
     identity: AlignmentIdentity
@@ -308,14 +351,7 @@ class AlignmentArtifact:
     sys_delay: int
 
     def __post_init__(self) -> None:
-        if type(self.k_samples) is not int or type(self.sys_delay) is not int:
-            raise ValueError("artifact K and SYS_DELAY must be integers")
-        if not (
-            xvf3800.CHIP_AEC_SYS_DELAY_MIN
-            <= self.sys_delay
-            <= xvf3800.CHIP_AEC_SYS_DELAY_MAX
-        ):
-            raise ValueError("artifact SYS_DELAY is out of range")
+        validate_banked_delays(self.k_samples, self.sys_delay)
 
     def to_dict(self) -> dict[str, object]:
         return {
@@ -361,14 +397,7 @@ def artifact_from_dict(value: object) -> AlignmentArtifact:
         # ADR-0101: the schema moved, the measurement did not.  The identity is
         # deliberately NOT inspected — an older shape is expected here.
         k_samples, sys_delay = value["k_samples"], value["sys_delay"]
-        if (
-            type(k_samples) is not int
-            or type(sys_delay) is not int
-            or not xvf3800.CHIP_AEC_SYS_DELAY_MIN
-            <= sys_delay
-            <= xvf3800.CHIP_AEC_SYS_DELAY_MAX
-        ):
-            raise ValueError("alignment artifact schema is invalid")
+        validate_banked_delays(k_samples, sys_delay)
         raise ArtifactSchemaSuperseded(
             f"alignment artifact schema {schema} predates schema "
             f"{ARTIFACT_SCHEMA}, so its commissioned identity cannot be "

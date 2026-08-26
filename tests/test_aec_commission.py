@@ -4,13 +4,16 @@
 
 from __future__ import annotations
 
+import json
 import sys
 import types
 from pathlib import Path
 
 import pytest
 
+from jasper import chip_aec_shipped_alignment as shipped
 from jasper.chip_aec_alignment import (
+    AlignmentArtifact,
     AlignmentIdentity,
     MicTiming,
     ProductResult,
@@ -351,6 +354,38 @@ def test_help_exits_without_starting_commissioning(monkeypatch, capsys) -> None:
 
     assert raised.value.code == 0
     assert "usage: jasper-aec-commission" in capsys.readouterr().out
+
+
+def test_emitting_a_class_entry_reads_the_artifact_and_commissions_nothing(
+    monkeypatch, capsys, tmp_path: Path
+) -> None:
+    # The harvest step: it prints source the owner pastes into the shipped
+    # registry, and touches nothing else on the box it runs on.
+    monkeypatch.setattr(
+        aec_commission,
+        "run_commissioning",
+        lambda: pytest.fail("emitting a class entry must not commission"),
+    )
+    artifact = AlignmentArtifact(_FakeIO().live_identity, 245, -38)
+    path = tmp_path / "chip-aec-alignment.json"
+    path.write_text(json.dumps(artifact.to_dict()), encoding="utf-8")
+
+    assert aec_commission.main(["--emit-class-entry", str(path)]) == 0
+
+    row = eval(
+        capsys.readouterr().out, {"ShippedAlignment": shipped.ShippedAlignment}
+    )
+    assert (row.k_samples, row.sys_delay) == (245, -38)
+    monkeypatch.setattr(shipped, "REGISTRY", (row,))
+    assert shipped.for_identity(artifact.identity) is row
+
+    # An unreadable artifact is a message, not a traceback.
+    assert aec_commission.main(["--emit-class-entry", str(tmp_path / "absent")]) == 1
+
+    # An unset shell variable arrives as an empty path. That is still the
+    # harvest path: falling through to a commissioning run would stop the
+    # services and play sweeps at someone who asked to print a registry row.
+    assert aec_commission.main(["--emit-class-entry", ""]) == 1
 
 
 def test_reset_rejects_a_different_xvf_after_reenumeration(monkeypatch) -> None:

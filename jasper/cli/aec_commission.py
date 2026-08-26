@@ -38,11 +38,13 @@ from jasper.chip_aec_alignment import (
     analyze_timing,
     choose_delay,
     commissioning_stimulus,
+    load_artifact,
     median_samples,
     read_capture,
     WINDOW_CENTER,
 )
 from jasper.chip_aec_policy import STATUS_APPROVED, static_dac_qualification
+from jasper.chip_aec_shipped_alignment import render_entry
 from jasper.cli import aec_init
 from jasper.cli.aec_tune import _camilla_get_volume, _camilla_set_volume
 from jasper.env_load import merged_env_files
@@ -548,8 +550,43 @@ def _signal(signum: int, _frame: FrameType | None) -> None:
     raise CommissioningError(f"received signal {signum}")
 
 
+def _emit_class_entry(path: Path) -> int:
+    """Print this artifact as a shipped hardware-class row, and change nothing.
+
+    The harvest step behind `jasper.chip_aec_shipped_alignment`: one file read,
+    source to stdout, no chip, no network, no writes — so it runs off a copied
+    artifact on a laptop as readily as on the box that commissioned it.
+    """
+
+    try:
+        artifact = load_artifact(path)
+    except ValueError as exc:
+        print(f"jasper-aec-commission: {exc}", file=sys.stderr)
+        return 1
+    print(render_entry(artifact.identity, artifact.k_samples, artifact.sys_delay))
+    return 0
+
+
 def main(argv: Sequence[str] | None = None) -> int:
-    argparse.ArgumentParser(prog="jasper-aec-commission").parse_args(argv)
+    parser = argparse.ArgumentParser(prog="jasper-aec-commission")
+    parser.add_argument(
+        "--emit-class-entry",
+        nargs="?",
+        const=str(ARTIFACT_PATH),
+        metavar="ARTIFACT",
+        help=(
+            "read a commissioned alignment artifact (default: this box's) and "
+            "print it as a jasper.chip_aec_shipped_alignment registry entry, "
+            "then exit without commissioning anything"
+        ),
+    )
+    args = parser.parse_args(argv)
+    # Presence, not truthiness: an unset shell variable makes the flag arrive
+    # as "", and falling through on that would start a full commissioning run
+    # (services stopped, audible sweeps, chip writes) for someone who asked to
+    # print a registry row.
+    if args.emit_class_entry is not None:
+        return _emit_class_entry(Path(args.emit_class_entry))
     logging.basicConfig(
         level=logging.INFO, format="%(asctime)s aec-commission %(levelname)s %(message)s"
     )

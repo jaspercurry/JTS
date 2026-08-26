@@ -22,6 +22,7 @@ from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
 from typing import Any
 
+from jasper import chip_aec_shipped_alignment as shipped_alignment
 from jasper import output_hardware
 from jasper.audio_hardware import dac as dac_registry
 
@@ -940,6 +941,40 @@ def _find_device(xvf_host):
     raise ChipInitError("XVF3800 did not enumerate")
 
 
+def shipped_class_alignment(
+    dev, plan: xvf3800.ChipBeamPlan, status: Mapping[str, Any], *, absent: str
+) -> shipped_alignment.ShippedAlignment:
+    """Return the alignment shipped for this box's hardware class, or refuse.
+
+    Nothing is banked on this box, so every way this can fail lands on the
+    disposition the absent artifact already had — commission required, which
+    the reconciler discloses and runs software AEC3 for — never a fault.
+
+    A miss names the nearest row and the class fields it disagrees on: after a
+    firmware flash or a geometry change, "no shipped row" and "the row is one
+    field away" are the same park otherwise.
+    """
+
+    try:
+        live = build_identity(dev, plan, status)
+    except ChipInitError as exc:
+        raise CommissionRequired(absent) from exc
+    entry = shipped_alignment.for_identity(live)
+    if entry is not None:
+        return entry
+    nearest = min(
+        shipped_alignment.REGISTRY,
+        key=lambda row: len(row.divergence(live)),
+        default=None,
+    )
+    if nearest is None:
+        raise CommissionRequired(absent)
+    raise CommissionRequired(
+        f"{absent}; nearest shipped class {nearest.label} differs in "
+        + ", ".join(nearest.divergence(live))
+    )
+
+
 def publish_disclosure(reason: str, *, env: Mapping[str, str] | None = None) -> None:
     """Publish why this run's alignment is disclosed-stale, or clear it.
 
@@ -991,6 +1026,7 @@ def main() -> int:
             # jasper-aec-commission that clears them.
             disclosed: list[str] = []
             commissioned_identity: AlignmentIdentity | None = None
+            absent: str | None = None
             try:
                 artifact = load_artifact()
                 k_samples = artifact.k_samples
@@ -1001,13 +1037,32 @@ def main() -> int:
                 commissioned_sys_delay = exc.sys_delay
                 disclosed.append(str(exc))
             except (OSError, ValueError) as exc:
-                # No artifact at all: nothing banked to run from, and inventing
-                # a K would arm an alignment nobody measured. The shipped
-                # hardware-class default that lets this half disclose too is
-                # its own change — see #2984.
-                raise CommissionRequired(str(exc)) from exc
-            status, queue = collect_reference_queue(native_reference_pcm(card))
-            if commissioned_identity is not None:
+                # Nothing banked on this box. ADR-0101 (#2984): if the shipped
+                # table knows this hardware class, run from the proof measured
+                # on a sibling; otherwise there is no K to run from at all.
+                # Which one it is needs the live identity, so the verdict waits
+                # for STATUS — but an EMPTY table can match nothing, so it does
+                # not spend the queue budget discovering that.
+                if not shipped_alignment.REGISTRY:
+                    raise CommissionRequired(str(exc)) from exc
+                absent = str(exc)
+            try:
+                status, queue = collect_reference_queue(native_reference_pcm(card))
+            except ChipInitError as exc:
+                if absent is None or isinstance(exc, OutputdEnvStale):
+                    raise
+                # Nothing is banked either way, so a queue that will not settle
+                # leaves the disposition the absent artifact already had.
+                raise CommissionRequired(absent) from exc
+            if absent is not None:
+                shipped = shipped_class_alignment(dev, plan, status, absent=absent)
+                k_samples = shipped.k_samples
+                commissioned_sys_delay = shipped.sys_delay
+                disclosed.append(
+                    f"running on the shipped class alignment for {shipped.label}; "
+                    "run sudo jasper-aec-commission to personalize it to this unit"
+                )
+            elif commissioned_identity is not None:
                 changed = identity_divergence(
                     commissioned_identity, build_identity(dev, plan, status)
                 )
@@ -1036,6 +1091,12 @@ def main() -> int:
                 delay = exc.delay
                 disclosed.append(str(exc))
             except ValueError as exc:
+                # A shipped K that will not resolve on this box (the driver cap
+                # refuses the delay, or the queue is unstable) leaves the same
+                # disposition its absent artifact already had — this box needs
+                # its own commissioning, not an inspection of a healthy daemon.
+                if absent is not None:
+                    raise CommissionRequired(f"{absent}; {exc}") from exc
                 raise ChipInitError(str(exc)) from exc
             apply_profile(dev, plan, delay, card=card)
             disclosure = "; ".join(disclosed)

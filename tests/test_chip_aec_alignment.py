@@ -11,6 +11,7 @@ import numpy as np
 import pytest
 
 from jasper import chip_aec_alignment as alignment
+from jasper import chip_aec_shipped_alignment as shipped
 from jasper.capture_relay import alignment as relay_alignment
 from jasper.chip_aec_alignment import (
     AlignmentArtifact,
@@ -181,6 +182,87 @@ def test_the_driver_cap_is_checked_before_the_margin_it_makes_safe() -> None:
             commissioned_sys_delay=xvf3800.CHIP_AEC_SYS_DELAY_MIN,
         )
     assert not isinstance(refused.value, alignment.QueueMovedFromCommissioned)
+
+
+def _class_fields() -> dict[str, object]:
+    return {
+        name: getattr(_identity(), name)
+        for name in alignment.HARDWARE_CLASS_IDENTITY_FIELDS
+    }
+
+
+def test_the_class_key_is_the_identity_minus_the_unit_it_was_measured_on() -> None:
+    # What makes a proof transferable: the key is everything K was measured
+    # against, and nothing that names one physical box.
+    identity = _identity()
+    key = alignment.hardware_class_key(identity)
+    assert set(alignment.HARDWARE_CLASS_IDENTITY_FIELDS) == (
+        set(AlignmentIdentity.__dataclass_fields__)
+        - alignment.PER_UNIT_IDENTITY_FIELDS
+    )
+    for name in alignment.PER_UNIT_IDENTITY_FIELDS:
+        moved = replace(identity, **{name: "a-sibling-box"})
+        assert alignment.hardware_class_key(moved) == key
+    for name in alignment.HARDWARE_CLASS_IDENTITY_FIELDS:
+        current = getattr(identity, name)
+        moved = replace(
+            identity,
+            **{name: "moved" if isinstance(current, str) else current + 1},
+        )
+        assert alignment.hardware_class_key(moved) != key
+
+    # A shipped row carries the same fields as a mapping, and is held to the
+    # identity's own rules: nothing per-unit, nothing missing, no zero geometry.
+    assert alignment.hardware_class_key(_class_fields()) == key
+    for broken in (
+        _class_fields() | {"xvf_serial": identity.xvf_serial},
+        {name: value for name, value in _class_fields().items() if name != "beam_plan"},
+        _class_fields() | {"output_rate": 0},
+        _class_fields() | {"output_format": " "},
+    ):
+        with pytest.raises(ValueError):
+            alignment.hardware_class_key(broken)
+
+
+def test_a_shipped_row_meets_the_same_driver_cap_a_commissioned_one_does() -> None:
+    # Non-negotiable #2: CHIP_AEC_SYS_DELAY_MIN..MAX is the chip's declared
+    # cap. A shipped row is hand-pasted rather than measured here, so it fails
+    # where it is declared instead of reaching the chip.
+    row = shipped.ShippedAlignment(
+        label="lab", identity=_class_fields(), k_samples=245, sys_delay=-38
+    )
+    assert row.class_key == alignment.hardware_class_key(_identity())
+    for delay in (
+        xvf3800.CHIP_AEC_SYS_DELAY_MIN - 1,
+        xvf3800.CHIP_AEC_SYS_DELAY_MAX + 1,
+    ):
+        with pytest.raises(ValueError, match="out of range"):
+            replace(row, sys_delay=delay)
+    with pytest.raises(ValueError):
+        replace(row, label="  ")
+    with pytest.raises(ValueError):
+        replace(row, identity=_class_fields() | {"xvf_serial": "XVF3800-001"})
+    with pytest.raises(ValueError):
+        shipped._refuse_duplicate_classes((row, replace(row, label="other")))
+
+
+def test_a_harvested_entry_round_trips_into_the_registry_it_is_pasted_into(
+    monkeypatch,
+) -> None:
+    # The harvest helper's output is source: it has to parse, carry the same
+    # class key the artifact it came from does, and be found by the lookup.
+    artifact = AlignmentArtifact(_identity(), 245, -38)
+    rendered = shipped.render_entry(
+        artifact.identity, artifact.k_samples, artifact.sys_delay
+    )
+    row = eval(rendered, {"ShippedAlignment": shipped.ShippedAlignment})
+
+    assert (row.k_samples, row.sys_delay) == (245, -38)
+    assert row.label.strip()
+    monkeypatch.setattr(shipped, "REGISTRY", (row,))
+    # A sibling box — same class, different serial — is what the row is for.
+    assert shipped.for_identity(replace(_identity(), xvf_serial="sibling")) is row
+    assert shipped.for_identity(replace(_identity(), output_format="S32_LE")) is None
 
 
 def test_a_malformed_artifact_is_not_merely_a_superseded_one() -> None:

@@ -6,6 +6,7 @@ from __future__ import annotations
 
 import contextlib
 import json
+import logging
 import os
 import socket
 import subprocess
@@ -19,6 +20,7 @@ from pathlib import Path
 import pytest
 
 from jasper import chip_aec_alignment as alignment
+from jasper import chip_aec_shipped_alignment as shipped_alignment
 from jasper import output_hardware
 from jasper.chip_aec_alignment import AlignmentArtifact, AlignmentIdentity
 from jasper.cli import aec_init
@@ -219,9 +221,13 @@ def test_production_chip_profile_uses_chip_flag_and_delay(
     assert not disclosure_file.exists()
 
 
-def test_production_chip_profile_parks_when_commissioning_is_missing(
+def test_production_chip_profile_parks_when_nothing_is_banked_or_shipped(
     monkeypatch,
 ) -> None:
+    # No artifact and an empty shipped table: there is no K to run from, so the
+    # commissioner is still the answer — and the box does not spend the
+    # reference-queue budget discovering that a table with no rows cannot
+    # match it.
     dev = _FakeXvfDevice()
     _install_fake_xvf(monkeypatch, dev)
     monkeypatch.delenv("JASPER_AEC_CORPUS_CHIP_AEC_ENABLED", raising=False)
@@ -230,6 +236,12 @@ def test_production_chip_profile_parks_when_commissioning_is_missing(
         aec_init,
         "load_artifact",
         lambda: (_ for _ in ()).throw(ValueError("missing")),
+    )
+    monkeypatch.setattr(shipped_alignment, "REGISTRY", ())
+    monkeypatch.setattr(
+        aec_init,
+        "collect_reference_queue",
+        lambda _pcm: pytest.fail("collected the queue with nothing to match"),
     )
 
     assert aec_init.main() == aec_init.COMMISSION_REQUIRED_EXIT
@@ -310,6 +322,144 @@ def test_an_older_schema_artifact_arms_the_chip_from_the_k_it_banked(
     assert str(alignment.ARTIFACT_SCHEMA) in disclosure_file.read_text(
         encoding="utf-8"
     )
+
+
+def _shipped_row(
+    *, k_samples: int = 245, sys_delay: int = -38, **identity_overrides
+) -> shipped_alignment.ShippedAlignment:
+    identity = _live_identity()
+    fields = {
+        name: getattr(identity, name)
+        for name in alignment.HARDWARE_CLASS_IDENTITY_FIELDS
+    }
+    return shipped_alignment.ShippedAlignment(
+        label="lab class",
+        identity=fields | identity_overrides,
+        k_samples=k_samples,
+        sys_delay=sys_delay,
+    )
+
+
+def test_a_fresh_install_on_a_shipped_hardware_class_arms_and_discloses(
+    monkeypatch, disclosure_file
+) -> None:
+    # ADR-0101 / #2984 Q1: an XVF that is there gets chip AEC. A box that has
+    # never been commissioned runs from the proof its hardware class ships and
+    # discloses that it is doing so, instead of waiting deaf for a commission.
+    dev = _FakeXvfDevice()
+    _arm_chip_aec(
+        monkeypatch, dev, artifact=lambda: (_ for _ in ()).throw(ValueError("missing"))
+    )
+    row = _shipped_row()
+    monkeypatch.setattr(shipped_alignment, "REGISTRY", (row,))
+
+    assert aec_init.main() == 0
+
+    writes = _write_map(dev)
+    assert writes["SHF_BYPASS"] == [0]
+    assert writes["AUDIO_MGR_SYS_DELAY"] == [row.sys_delay]
+    disclosure = disclosure_file.read_text(encoding="utf-8")
+    assert row.label in disclosure
+    assert "jasper-aec-commission" in disclosure
+
+
+def test_a_fresh_install_on_an_unrecognized_hardware_class_still_parks(
+    monkeypatch, disclosure_file, caplog
+) -> None:
+    # The shipped row is for a different final-edge format, so it says nothing
+    # about this box: no K to run from, and the commissioner is the answer.
+    # The park names the near-miss field, or a row one firmware flash away is
+    # indistinguishable from an empty table.
+    dev = _FakeXvfDevice()
+    _arm_chip_aec(
+        monkeypatch, dev, artifact=lambda: (_ for _ in ()).throw(ValueError("missing"))
+    )
+    row = _shipped_row(output_format="S32_LE")
+    monkeypatch.setattr(shipped_alignment, "REGISTRY", (row,))
+
+    with caplog.at_level(logging.ERROR, logger="jasper.aec_init"):
+        assert aec_init.main() == aec_init.COMMISSION_REQUIRED_EXIT
+
+    assert _write_map(dev)["SHF_BYPASS"] == [1]
+    assert not disclosure_file.exists()
+    assert row.divergence(_live_identity()) == ("output_format",)
+    assert "output_format" in caplog.text
+
+
+@pytest.mark.parametrize(
+    "raised, expected_exit",
+    [
+        # Nothing is banked either way, so a queue that will not settle leaves
+        # the disposition the absent artifact already had.
+        (aec_init.ChipInitError("queue never settled"), aec_init.COMMISSION_REQUIRED_EXIT),
+        # ...but an outputd that predates its own declaration keeps its own
+        # exit, so the reconciler names the ordering race and not the
+        # commissioner.
+        (aec_init.OutputdEnvStale("declaration not loaded"), aec_init.OUTPUTD_ENV_STALE_EXIT),
+    ],
+)
+def test_a_fresh_install_that_cannot_read_the_queue_keeps_its_own_exit(
+    monkeypatch, raised, expected_exit
+) -> None:
+    dev = _FakeXvfDevice()
+    _arm_chip_aec(
+        monkeypatch, dev, artifact=lambda: (_ for _ in ()).throw(ValueError("missing"))
+    )
+    monkeypatch.setattr(shipped_alignment, "REGISTRY", (_shipped_row(),))
+    monkeypatch.setattr(
+        aec_init,
+        "collect_reference_queue",
+        lambda _pcm: (_ for _ in ()).throw(raised),
+    )
+
+    assert aec_init.main() == expected_exit
+    assert _write_map(dev)["SHF_BYPASS"] == [1]
+
+
+def test_a_shipped_k_the_driver_cap_refuses_parks_instead_of_faulting(
+    monkeypatch,
+) -> None:
+    # Non-negotiable #2 still refuses the write. What changes is the
+    # disposition: this box has nothing banked, so it needs commissioning
+    # (exit 2, software AEC3) rather than an inspection of a healthy daemon.
+    dev = _FakeXvfDevice()
+    _arm_chip_aec(
+        monkeypatch, dev, artifact=lambda: (_ for _ in ()).throw(ValueError("missing"))
+    )
+    monkeypatch.setattr(
+        shipped_alignment,
+        "REGISTRY",
+        (
+            _shipped_row(
+                k_samples=283 + xvf3800.CHIP_AEC_SYS_DELAY_MAX + 1,
+                sys_delay=xvf3800.CHIP_AEC_SYS_DELAY_MAX,
+            ),
+        ),
+    )
+
+    assert aec_init.main() == aec_init.COMMISSION_REQUIRED_EXIT
+    assert _write_map(dev)["SHF_BYPASS"] == [1]
+
+
+def test_a_commissioned_artifact_outranks_the_row_shipped_for_its_class(
+    monkeypatch, disclosure_file
+) -> None:
+    # Commissioning personalizes: once this unit has measured its own K, the
+    # class default is never consulted again.
+    dev = _FakeXvfDevice()
+    _arm_chip_aec(
+        monkeypatch,
+        dev,
+        artifact=lambda: AlignmentArtifact(_live_identity(), 245, -38),
+    )
+    monkeypatch.setattr(
+        shipped_alignment, "REGISTRY", (_shipped_row(k_samples=300, sys_delay=17),)
+    )
+
+    assert aec_init.main() == 0
+
+    assert _write_map(dev)["AUDIO_MGR_SYS_DELAY"] == [-38]
+    assert not disclosure_file.exists()
 
 
 def test_build_identity_binds_physical_xvf_and_usb_output() -> None:
