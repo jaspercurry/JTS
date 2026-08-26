@@ -242,7 +242,7 @@ class TuningSession:
     :meth:`open` and :meth:`close` — the second exists because a web front end's
     lifetime is a sequence of HTTP requests and cannot hold a ``with``.
 
-    Four declarations and five fields of state. The 102-attribute session this
+    Four declarations and six fields of state. The 102-attribute session this
     replaces is what happens when a class accumulates the answers instead of the
     seams.
 

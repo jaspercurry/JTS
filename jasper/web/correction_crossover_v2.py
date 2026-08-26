@@ -4095,23 +4095,6 @@ def bind_production_play(
             enable_rate_adjust=devices.enable_rate_adjust,
         )
 
-    def _held_measurement_volume_db() -> float | None:
-        """The declared level the graph swaps release to (#2929).
-
-        The SAME plan and the SAME guarded question ``_hold_fader`` asks.
-        Without it the swap duck released to the canonical HOUSEHOLD target,
-        which sits below the measurement volume and therefore won the release's
-        ``min`` every time: every routed capture's fader landed on the household
-        level, which the hold now REFUSES rather than repairs. With it the
-        release lands on the declared level by construction.
-
-        Synchronous, and handed to the swap UNCALLED: the release asks it at the
-        moment it lets go, so a drain that finishes mid-swap is seen rather than
-        overwritten. It rides the session graph's two swaps now instead of two
-        per stimulus; wave 6d retires the duck and 6e retires this reader.
-        """
-        return session_volume_plan().owned_measurement_volume_db_nowait()
-
     session_graph = MeasurementSessionGraph(
         emit=_emit_program_graph,
         cam_factory=camilla_factory,
@@ -4119,7 +4102,6 @@ def bind_production_play(
             resolved_config_dir, source="crossover_v2_session_graph"
         ),
         confirm_live=confirm_graph_is_live,
-        held_target_db=_held_measurement_volume_db,
     )
     register_session_measurement_graph(session_graph)
 

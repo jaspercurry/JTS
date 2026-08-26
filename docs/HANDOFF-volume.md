@@ -362,14 +362,17 @@ synchronous pycamilladsp client. Two of its constraints reach this surface:
   not an atomic protocol. A DSP transaction needing rollback must retain and
   restore its prior path; a transport timeout is not proof a mutation did or did
   not land.
-- Every websocket graph mutation runs inside a deep main-fader duck
-  (`_graph_mutation`). Its release algebra, `held_target_db` included, is
-  tuning-program owned:
-  **[ADR-0004](adr/0004-duck-release-algebra-and-reference.md) is authoritative
-  and this doc states nothing further about it.** The one fact this surface owns
-  is reconciler gate 4 — the duck rides `main_volume`, not `main_mute`, because
-  `maybe_reconcile_camilla` treats a mute as drift to correct while a deep drop
-  is left alone.
+- A websocket graph mutation that REPLACES the pipeline runs inside a deep
+  main-fader duck (`_graph_mutation`). Two callers opt out with `duck=False`
+  and keep only the writer lock: `patch_config`, which writes one declared
+  parameter of an already-running filter, and the crossover-v2 measurement
+  session graph, which installs once into a session that already holds the
+  fader and the measurement window. Its release algebra is tuning-program
+  owned: **[ADR-0004](adr/0004-duck-release-algebra-and-reference.md) is
+  authoritative and this doc states nothing further about it.** The one fact
+  this surface owns is reconciler gate 4 — the duck rides `main_volume`, not
+  `main_mute`, because `maybe_reconcile_camilla` treats a mute as drift to
+  correct while a deep drop is left alone.
 
 The canonical release target is per process: jasper-voice hands over its
 long-lived coordinator's `get_camilla_target_db`, and every other graph-swapping
