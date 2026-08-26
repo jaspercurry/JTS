@@ -137,10 +137,13 @@ against the mic, and emits cleaned mono over UDP localhost for
 forwards the selected hardware-AEC chip beam over that carrier.
 
 Management surfaces are stdlib HTTP wizards behind nginx, socket-activated
-so they cost nothing resident between admin sessions:
-`/voice/`, `/tools/`, `/sources/`, `/wake/`, `/wifi/`, `/transit/`, `/ha/`,
-`/eq/`, `/sound/`, `/speaker/`, `/rooms/`, `/spotify/`, `/bluetooth/`,
-`/system/`, `/chat/`. Reference: [`docs/HANDOFF-management-ui.md`](docs/HANDOFF-management-ui.md).
+so they cost nothing resident between admin sessions. `deploy/nginx-jasper.conf`
+is the authoritative route list; it covers setup (`/voice/`, `/tools/`,
+`/sources/`, `/wake/`, `/wifi/`, `/transit/`, `/ha/`, `/weather/`,
+`/speaker/`, `/rooms/`, `/spotify/`, `/bluetooth/`), sound (`/eq/`,
+`/sound/setup/`, `/sound/room/`, `/sound/crossover/`, `/sound/bass/`),
+and read-only dashboards (`/system/`, `/chat/`). Reference:
+[`docs/HANDOFF-management-ui.md`](docs/HANDOFF-management-ui.md).
 
 ---
 
@@ -158,7 +161,8 @@ jasper/            Product Python: daemons, wizards, CLIs, tool packs
   control/           jasper-control: /state, management + automation HTTP API
   cli/               jasper-doctor, jasper-aec-*, measurement CLIs
   fanin/ multiroom/ transit/ cues/ peering/ usbsink/ accessories/
-  active_speaker/ audio_measurement/ correction/ attribution/ sound/
+  sound/             CamillaDSP config emission and the graph carrier
+  active_speaker/ audio_measurement/ correction/ attribution/
                      The speaker tuning + measurement program
   mics/ xvf/ audio_hardware/  Mic families, XVF3800 control, DAC registry
   capture_relay/     Pi side of the phone-mic capture relay
