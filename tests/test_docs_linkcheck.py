@@ -123,7 +123,7 @@ def test_links_inside_fenced_code_are_ignored(tmp_path):
 def test_wrapped_link_text_is_checked(tmp_path, target, expected):
     """A link whose text wraps at the prose margin was invisible to the
     scanner, so its target went unvalidated — see issue #2442. The passing
-    case is the control: the failure mode was a checker that looked like one."""
+    case is the control."""
 
     docs_linkcheck = load_docs_linkcheck()
     docs_linkcheck.ROOT = tmp_path.resolve()

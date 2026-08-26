@@ -32,7 +32,7 @@ MARKDOWN_SUFFIXES = {".md", ".markdown"}
 # bounded. The two alternation branches are disjoint on their first character,
 # so matching stays linear — no catastrophic backtracking. See issue #2442.
 INLINE_LINK_RE = re.compile(r"!?\[(?:[^\]\n]|\n(?!\s*\n)){0,400}\]\(\s*(<[^>]*>|[^)\s]+)")
-REF_LINK_RE = re.compile(r"^\s{0,3}\[[^\]\n]+\]:\s*(<[^>]*>|[^\s]+)", re.M)
+REF_LINK_RE = re.compile(r"^[ \t]{0,3}\[[^\]\n]+\]:[ \t]*(<[^>]*>|[^\s]+)", re.M)
 HTML_LINK_RE = re.compile(r"""(?:href|src)\s*=\s*["']([^"'\n]+)["']""", re.I)
 HEADING_RE = re.compile(r"^(#{1,6})\s+(.+?)\s*#*\s*$")
 HTML_ANCHOR_RE = re.compile(r"""<(?:a|[^>]+)\s+[^>]*(?:id|name)=["']([^"']+)["']""", re.I)
