@@ -14,30 +14,20 @@ Re-derived at `c253c3cf1`. Every citation below was read at that commit.
 
 ### 1.0 Two counts, and §2 conflates them
 
-Plan §2's *PREMISE FAILED* block reproduces **79 modules** (35
-`jasper/audio_measurement/*.py` + 44 `jasper/active_speaker/crossover_v2/*.py`)
-and cannot reproduce **92 analysis units**. Both halves hold at HEAD — I re-ran
-the module count and got 35 / 44 / 79, and the flagged coincidence
-(`jasper/active_speaker/*.py` = 92) reproduces too.
+§2's *PREMISE FAILED* block holds at HEAD in both halves: **79 modules**
+reproduces (35 `audio_measurement` + 44 `crossover_v2`) and so does the flagged
+coincidence (`jasper/active_speaker/*.py` = 92); **92 analysis units** does not.
 
-**Recorded disagreement with §2's W2-d.** W2-d offers *"restate acceptance row
-3c's analysis claim against the pinnable 79"* as an alternative to enumerating
-92. It is not an alternative, because the two numbers answer different
-questions and neither substitutes for the other:
-
-- **79 is a boundary-membership count** — *which modules are in the truth
-  layer*. Its pin is an import test (`tests/test_correction_boundary_ssot.py:175`,
-  scoped to `jasper/audio_measurement` at `:187`). Widening that scope is
-  worthwhile and cheap, and W2-d should do it. It says nothing about the
-  registry.
-- **The registry's acceptance claim needs a UNIT count** — *how many named
-  analyses the table must hold*, because "wholesale" is a claim about coverage.
-  A row-count against a module-count is a category error; a registry with 15
-  rows over 79 modules is neither complete nor incomplete against that number.
-
-So W2-d ships **both**: the boundary widening (79, pinned) and the unit
-enumeration below (pinned by its own committed method). Do not let the
-boundary widening be read as having settled the coverage claim.
+**Recorded disagreement with §2's W2-d.** It offers *"restate acceptance row 3c's
+analysis claim against the pinnable 79"* as an **alternative** to enumerating 92.
+It is not one — the numbers answer different questions. **79 is
+boundary-membership** (*which modules are in the truth layer*), pinned by an
+import test (`tests/test_correction_boundary_ssot.py:175`, scoped to
+`jasper/audio_measurement` at `:187`); widening that scope is cheap and W2-d
+should do it, but it says nothing about the registry. **The registry's acceptance
+claim needs a UNIT count** (*how many named analyses the table holds*), because
+"wholesale" is a coverage claim. So W2-d ships **both**, and the boundary
+widening must not be read as having settled the coverage claim.
 
 ### 1.1 The unit definition
 
@@ -127,17 +117,16 @@ guards cited above.
 
 ### 1.4 Where the grouping is a judgment call — three, all named
 
-Do not let these slide by silently; each is a row the executor may split, and
-splitting one obliges the author to name a bank that separates it.
+Each is a row the executor may split, and splitting one obliges the author to
+name a bank that separates it.
 
 1. **9 and 10 share a gate today** and merge under the strict rule. Kept apart
-   here because `_build_candidate` additionally consumes unit 9's *output*
-   (`:6401` takes `alignment`) and because `alignment` is then rewritten from
-   the candidate at `:6412-6437`. That is a dependency edge, not a gate
-   difference. **If the registry has no dependency edges, merge them into one
-   14-unit table.** Recommend keeping 15 and giving `AnalysisUnit` no `requires`
-   field — the walker runs 9 then 10 in table order, which `packs.py:281` already
-   establishes as load-bearing and pinned.
+   because `_build_candidate` consumes unit 9's *output* (`:6401` takes
+   `alignment`, which is then rewritten from the candidate at `:6412-6437`) — a
+   dependency edge, not a gate difference. **A registry with no dependency edges
+   should merge them into one 14-unit table.** Recommend keeping 15 and giving
+   `AnalysisUnit` no `requires` field: the walker runs 9 then 10 in table order,
+   which `packs.py:281` already makes load-bearing and pinned.
 2. **6 and 5.** `gain_plan` never skips today; it degrades to an empty solve.
    Its own unit because its gate is a *conjunction* (pilots **and** ambient) that
    neither input's unit carries.
@@ -157,24 +146,17 @@ takes `(program, samples, sample_rate, *, calibration, geometry, priors,
 capture_report)`. §2's two corrections hold: the WAV arrives **already decoded**
 as `(np.ndarray, int)`, and `capture_report` is a fourth optional input.
 
-**Entry 1 — the wizard seam (live session).**
-
-- `_pa.analyze_program_capture(...)` at `jasper/web/correction_crossover_v2.py:3144`,
-  inside `_analyze` (`:3074`), the closure `bind_production_analyze` (`:3037`)
-  returns.
-- Seam: `V2FlowSeams.analyze`, typed `AnalyzeCapture` — a Protocol
-  (`crossover_v2_flow.py:1437`, `__call__` **`:1462-1470`**; §2 cites
-  `:1463-1471`, one line late at HEAD), field `:1504`, the required-keyword
-  argument `:1447-1461`. Bound in the only product `V2FlowSeams(...)`
-  construction (`web/correction_crossover_v2.py:5740`, `analyze=` at `:5742`).
-- One flow call: `self._seams.analyze(program, result, priors, self._geometry,
-  phase=phase)` at `crossover_v2_flow.py:4207`, inside `consume_capture`
-  (`:4183`).
-- Debug sidecar: `analysis_diagnostic_summary(analysis)`
-  (`program_analysis.py:7345`) at `web/correction_crossover_v2.py:3297`.
-- One direct layer call from the flow: `polarity_label(...)`
-  (`program_analysis.py:4215`) at `crossover_v2_flow.py:8538`; everything else
-  the flow imports at `:237-249` is a type or a constant.
+**Entry 1 — the wizard seam (live session).** Call at
+`web/correction_crossover_v2.py:3144`, inside `_analyze` (`:3074`), the closure
+`bind_production_analyze` (`:3037`) returns; bound at `:5742` in the only product
+`V2FlowSeams(...)` (`:5740`). Seam type `AnalyzeCapture` — a Protocol
+(`crossover_v2_flow.py:1437`, `__call__` **`:1462-1470`**; §2 cites `:1463-1471`,
+one line late at HEAD), field `:1504`, required-keyword argument `:1447-1461`.
+One flow call at `crossover_v2_flow.py:4207` inside `consume_capture` (`:4183`).
+Debug sidecar `analysis_diagnostic_summary` (`program_analysis.py:7345`) at
+`web/…:3297`. One direct layer call from the flow, `polarity_label`
+(`program_analysis.py:4215`) at `crossover_v2_flow.py:8538`; everything else the
+flow imports at `:237-249` is a type or a constant.
 
 **Entry 2 — `jasper-read-distortion` (OFFLINE, over banked captures).**
 
@@ -186,32 +168,29 @@ jasper/cli/read_distortion.py:211      read_round_harmonics(bundle, --dumps, --s
         → :873                               analysis_diagnostic_summary(analysis)
 ```
 
-Console script `jasper-read-distortion` (`pyproject.toml:205`). This matters to
-W2 for four reasons, each verified at HEAD:
+Console script `jasper-read-distortion` (`pyproject.toml:205`). Four things about
+it matter to W2, each verified at HEAD:
 
-1. **It is already the offline analyze ruling S3 describes**, and it predates
-   the engine. `TuningSession.analyze` is therefore the *second* offline
-   re-analysis path, not the first.
+1. **It is already the offline analyze ruling S3 describes**, and predates the
+   engine — `TuningSession.analyze` is the *second* such path, not the first.
 2. **It already gates on what the bank carries.** `_read_one_capture:859-865`
-   refuses a sidecar holding none of `FIDELITY_FIELDS` (`:199-204` — five names)
-   with an explicit *"nothing was validated"* reason, then compares replayed vs
-   banked at `FIDELITY_TOLERANCE` (`:211`). That is a bank-content gate with a
-   stated reason, shipped.
+   refuses a sidecar holding none of `FIDELITY_FIELDS` (`:199-204`) with an
+   explicit *"nothing was validated"* reason, then compares replayed vs banked at
+   `FIDELITY_TOLERANCE` (`:211`). A bank-content gate with a stated reason,
+   shipped.
 3. **It imports three PRIVATE analysis-layer symbols** — `_estimate_drift`,
-   `_global_offset`, `_locate_segments` (`:847-849`) — which are exactly units
-   7, 2 and 3 of the table above. A partial unit-level decomposition of the
-   layer already exists, outside the layer, undeclared. `scripts/harmonic-distortion-replay.py:335-344`
-   duplicates that import block verbatim.
+   `_global_offset`, `_locate_segments` (`:847-849`) — exactly units 7, 2 and 3
+   above. A partial unit decomposition already exists, outside the layer,
+   undeclared; `scripts/harmonic-distortion-replay.py:335-344` duplicates that
+   import block verbatim.
 4. **It reads the ring, not the bank.** `--dumps` (`read_distortion.py:102-105`)
-   is §1's sidecar family (c) — `/var/lib/jasper/xover-capture-dump`, behind an
-   `ENABLED` marker, **off by default**. So the one shipped offline analyze
-   reads a store an ordinary household run does not write.
+   is §1's sidecar family (c), behind an `ENABLED` marker, **off by default** —
+   a store an ordinary household run does not write.
 
-It also calls with `MeasurementGeometry()` and
-`MeasurementPriors(crossover_fc_hz=fc_hz)` (`:868-870`) — defaults for every
-input the wizard binding assembles. A second caller already proves the layer
-runs on defaults; what it cannot do is produce units 9, 10, 13 or 14, whose
-gates need priors it never supplies.
+It calls with `MeasurementGeometry()` and `MeasurementPriors(crossover_fc_hz=fc_hz)`
+(`:868-870`) — defaults for every input the wizard binding assembles. So a second
+caller already proves the layer runs on defaults; what it cannot produce is units
+9, 10, 13 or 14, whose gates need priors it never supplies.
 
 ### 1.5a Field consumption — §2's "18 of the 25" is understated
 
@@ -230,11 +209,10 @@ The three absent from the flow are consumed one hop away:
 `planning.ineligible_reason`, `planning.analysis_json` and the #2094 frame-ledger
 sidecar. Do not trim fields in W2 at all — the layer ports **whole**.
 
-Four more crossover_v2 modules read fields directly and so are downstream of any
-registry output shape: `capture_dispatch.py` (`:441`, `:443`, `:453`, `:538`,
-`:544`, `:579`, `:601`, `:772`, `:816`, `:890`), `spatial.py` (`:470`, `:472`,
-`:488`), `planning.py` (`:229`, `:314-322`, `:416`, `:917`), `round_evidence.py`
-(`:286-287`, `:746`, `:884`).
+Four more `crossover_v2` modules read fields directly and are therefore
+downstream of any registry output shape: `capture_dispatch.py` (10 reads),
+`spatial.py` (`:470`, `:472`, `:488`), `planning.py` (`:229`, `:314-322`, `:416`,
+`:917`), `round_evidence.py` (`:286-287`, `:746`, `:884`).
 
 ### 1.6 The input/output shapes, and the one that does not exist
 
@@ -282,22 +260,20 @@ as a `CapabilityStub`"*; four things at HEAD say that does not fit, and all four
 are mechanical rather than stylistic:
 
 1. **The message is hard-wired to "not implemented".** `_stub`
-   (`measure_spec.py:133`) composes `f"{row.capability} not implemented;
-   {banked}, {row.owed} pending {row.instrument}"` (`:154-157`). A unit that is
-   implemented and merely had no input in this bank is not "not implemented" —
-   rendering it that way makes the disclosure say the opposite of the truth.
+   (`measure_spec.py:133`) composes `f"{row.capability} not implemented; …"`
+   (`:154-157`). A unit that *is* implemented and merely had no input here is not
+   "not implemented" — the disclosure would say the opposite of the truth.
 2. **`aborted()` raises on any code outside the table.**
-   `CapabilityStub.aborted` (`measure_spec.py:110`) does `_ROWS[self.code]` at
-   `:120`. `_ROWS` (`:159`) is four rows. A hand-built skip stub is a `KeyError`
-   waiting for the first spec that trips two stubs at once.
-3. **`STUB_CODES` would stop being countable.** `STUB_CODES = frozenset(_STUBS)`
-   (`:184`) is documented at `:181-183` as existing *"so a reader can count the
-   holes"*. Fifteen unit-skip codes in that set makes the count mean two things.
+   `CapabilityStub.aborted` (`:110`) does `_ROWS[self.code]` at `:120`; `_ROWS`
+   (`:159`) is four rows. A hand-built skip stub is a `KeyError` waiting for the
+   first spec that trips two stubs at once.
+3. **`STUB_CODES` would stop being countable.** `frozenset(_STUBS)` (`:184`),
+   documented at `:181-183` as existing *"so a reader can count the holes"*.
 4. **The merge rule is wrong for skips.** `_merge_disclosures`
    (`session.py:95-120`) keys on `code` and **upgrades** `captured=False` to
-   `True` when a later entry banked evidence (`:118-119`). That semantics is
-   *"evidence is now waiting for an analysis nobody built"*. A unit skip has no
-   such upgrade — a bank either carries the input or does not.
+   `True` when a later entry banked evidence (`:118-119`) — *"evidence is now
+   waiting for an analysis nobody built"*. A skip has no such upgrade: a bank
+   either carries the input or does not.
 
 **Keep the two vocabularies apart, by their subject:**
 
