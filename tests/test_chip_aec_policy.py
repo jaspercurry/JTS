@@ -99,23 +99,39 @@ def test_runtime_env_gate_round_trips_reconciler_written_status():
     assert gate.detail == "operator validation"
 
 
-def test_runtime_env_gate_answers_only_the_selection_it_was_recorded_for():
-    """A record written for production cannot answer a testing request.
+@pytest.mark.parametrize("recorded_under_testing", ["0", "1"])
+@pytest.mark.parametrize("asking_for_testing", [False, True])
+def test_one_runtime_env_record_answers_whichever_selection_asks(
+    recorded_under_testing: str, asking_for_testing: bool,
+) -> None:
+    """The carry's semantics, which this reader used to refuse (#3073 item 4).
 
-    Serving it would report `needs_calibration` where the testing-aware
-    resolve says `testing`, so the caller must fall through and resolve.
+    deploy/bin/jasper-aec-reconcile's carry_chip_aec_dac_gate serves one record
+    to both selections. Refusing the cross-selection read sent the caller off
+    to re-derive a fresh static verdict, discarding whatever the reconciler had
+    actually applied — including a carried or revoked one.
+
+    The DAC is one the registry still approves, so a re-derivation permits it
+    for either selection: `permits(testing_requested=False) is False` here is
+    the revoked verdict surviving, which is the whole point of serving the
+    record instead of looking the DAC up again.
     """
-    recorded = {
-        "JASPER_AUDIO_DAC_ID": "mystery_usb_audio",
-        "JASPER_AEC_CHIP_AEC_DAC_ID": "mystery_usb_audio",
+    gate = gate_from_runtime_env({
+        "JASPER_AUDIO_DAC_ID": "hifiberry_dac8x",
+        "JASPER_AEC_CHIP_AEC_DAC_ID": "hifiberry_dac8x",
         "JASPER_AEC_CHIP_AEC_DAC_STATUS": "needs_calibration",
-        "JASPER_AEC_CHIP_AEC_TESTING_REQUESTED": "0",
-    }
+        "JASPER_AEC_CHIP_AEC_DAC_SOURCE": "runtime_env_carried",
+        "JASPER_AEC_CHIP_AEC_DAC_DETAIL": "carrying last verdict",
+        "JASPER_AEC_CHIP_AEC_TESTING_REQUESTED": recorded_under_testing,
+    })
 
-    assert gate_from_runtime_env(recorded, testing_requested=True) is None
-    assert gate_from_runtime_env(recorded, testing_requested=False) is not None
-    # No selection named: the record answers as written, as it always has.
-    assert gate_from_runtime_env(recorded) is not None
+    assert gate is not None
+    # The record's own verdict, not a re-derivation of it.
+    assert gate.status == STATUS_NEEDS_CALIBRATION
+    assert gate.source == "runtime_env_carried"
+    assert gate.detail == "carrying last verdict"
+    # Per-selection serving is permits(), the mapping the bash carry applies.
+    assert gate.permits(testing_requested=asking_for_testing) is asking_for_testing
 
 
 def test_runtime_env_gate_rejects_stale_dac_identity():

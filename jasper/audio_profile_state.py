@@ -77,10 +77,6 @@ class RuntimeAecEnv:
     dtln_enabled: bool = False
     chip_aec_150_device: str = ""
     chip_aec_210_device: str = ""
-    chip_aec_gate_dac_id: str = ""
-    chip_aec_gate_status: str = ""
-    chip_aec_gate_source: str = ""
-    chip_aec_gate_detail: str = ""
     chip_aec_alignment_status: str = ""
     chip_aec_alignment_reason: str = ""
     chip_aec_alignment_action: str = ""
@@ -312,25 +308,6 @@ def env_value(
     return default
 
 
-def env_value_any(
-    env: Mapping[str, str],
-    keys: tuple[str, ...],
-    default: str = "",
-    *,
-    process_env: Mapping[str, str] | None = None,
-) -> str:
-    """Read the first present key from env-file data, then process env."""
-
-    for key in keys:
-        if key in env:
-            return env[key]
-    if process_env is not None:
-        for key in keys:
-            if key in process_env:
-                return process_env[key]
-    return default
-
-
 def runtime_env_from_mapping(
     env: Mapping[str, str],
     *,
@@ -390,33 +367,6 @@ def runtime_env_from_mapping(
         chip_aec_210_device=env_value(
             env,
             "JASPER_MIC_DEVICE_CHIP_AEC_210",
-            "",
-            process_env=process_env,
-        ),
-        chip_aec_gate_dac_id=env_value_any(
-            env,
-            (
-                "JASPER_AEC_CHIP_AEC_DAC_ID",
-                "JASPER_AUDIO_DAC_ID",
-            ),
-            "",
-            process_env=process_env,
-        ),
-        chip_aec_gate_status=env_value_any(
-            env,
-            ("JASPER_AEC_CHIP_AEC_DAC_STATUS",),
-            "",
-            process_env=process_env,
-        ),
-        chip_aec_gate_source=env_value_any(
-            env,
-            ("JASPER_AEC_CHIP_AEC_DAC_SOURCE",),
-            "",
-            process_env=process_env,
-        ),
-        chip_aec_gate_detail=env_value_any(
-            env,
-            ("JASPER_AEC_CHIP_AEC_DAC_DETAIL",),
             "",
             process_env=process_env,
         ),
@@ -679,14 +629,9 @@ def build_audio_profile_status(
         PROFILE_XVF_CHIP_AEC,
         PROFILE_XVF_CHIP_AEC_TESTING,
     }
-    # The reconciler writes JASPER_AEC_CHIP_AEC_ALIGNMENT_* only on
-    # managed_xvf_policy_applies paths and stamps each write with the selection
-    # it was written under. A record whose stamp names another selection is a
-    # leftover describing a path nobody is running — on a custom profile the
-    # keys are never written OR cleared — so it reads as absent here. A legacy
-    # record carries no stamp; its only writers were managed selections, so it
-    # answers for those and for no custom profile, the same posture
-    # gate_from_runtime_env takes toward a DAC record predating its own stamp.
+    # Serving rule for both records: jasper.chip_aec_policy's module docstring.
+    # A legacy record carries no stamp; its only writers were managed
+    # selections, so it answers for those and for no custom profile.
     alignment_selection = normalize_audio_input_profile(
         runtime.chip_aec_alignment_selection, default=""
     )
