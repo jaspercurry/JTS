@@ -114,15 +114,16 @@ STATUS_POLL_WARN_BUDGET = 10
 # rather than a death — and it is the same object rather than a second literal
 # so the two can never drift apart.
 #
-# What is NOT shared is the ANCHOR, and that is the load-bearing half. The pull
-# runs inside the poll loop, one line after a status call that just SUCCEEDED,
-# so a run of failing pulls is interleaved with healthy status polls. Sharing
-# ``transient_since`` would let each of those successes clear the anchor and
-# the retry would never expire — a relay that answers ``/status`` but cannot
-# serve ``/blob`` would spin until the phone-inactivity deadline fired and
-# blamed the household for an upload they had already completed. A separate
-# anchor, cleared only by a pull that actually SUCCEEDS, bounds the retry at
-# this grace no matter how healthy the control plane looks.
+# What is NOT shared is the ANCHOR — each call gets its own _RelayCallGrace —
+# and that is the load-bearing half. The pull runs inside the poll loop, one
+# line after a status call that just SUCCEEDED, so a run of failing pulls is
+# interleaved with healthy status polls. Sharing one anchor would let each of
+# those successes clear it and the retry would never expire — a relay that
+# answers ``/status`` but cannot serve ``/blob`` would spin until the
+# phone-inactivity deadline fired and blamed the household for an upload they
+# had already completed. A separate anchor, cleared only by a pull that
+# actually SUCCEEDS, bounds the retry at this grace no matter how healthy the
+# control plane looks.
 #
 # Why re-pulling is sound at all: ``GET /sessions/:id/blob`` is a pure read of
 # stored bytes (``relay/src/worker.js`` — the Worker deletes a blob only on an
@@ -311,6 +312,106 @@ def is_transient_relay_failure(exc: BaseException) -> bool:
     if isinstance(exc, RelayError):
         return exc.status == 429 or exc.status >= 500
     return isinstance(exc, OSError)
+
+
+class _RelayCallGrace:
+    """One repeated relay call's wall-clock tolerance for transport outages.
+
+    The policy every polling runner consumes for its status poll and its blob
+    pull: a transient failure (:func:`is_transient_relay_failure`) is retried
+    while the CURRENT outage is inside ``grace_s``; anything else — and any
+    outage past the grace — re-raises the ORIGINAL exception, so callers
+    classify a real death exactly as they did before the tolerance existed
+    (``expired_time_budget`` reads its ``status``).
+
+    Each call site owns its OWN instance, never a shared one: a success on
+    either call would otherwise clear the other's anchor, and a relay that
+    answers ``/status`` but cannot serve ``/blob`` would spin forever. See
+    BLOB_PULL_TRANSIENT_GRACE_S.
+    """
+
+    def __init__(
+        self,
+        *,
+        grace_s: float,
+        transient_event: str,
+        gave_up_event: str,
+        monotonic: Callable[[], float],
+        warn_budget: int | None = None,
+    ) -> None:
+        self._grace_s = grace_s
+        self._transient_event = transient_event
+        self._gave_up_event = gave_up_event
+        self._monotonic = monotonic
+        # ``None`` = every toleration stays at WARNING; an int caps how many a
+        # session reports there before the rest drop to DEBUG (see
+        # STATUS_POLL_WARN_BUDGET for which calls need the cap and why).
+        self._warn_budget = warn_budget
+        self._stalled_since: float | None = None
+        self._tolerated_total = 0
+
+    def cleared(self) -> None:
+        """The call SUCCEEDED — whatever outage was running is over."""
+        self._stalled_since = None
+
+    def tolerate(self, exc: Exception, *, started: float, **context: Any) -> None:
+        """Return if ``exc`` may be retried, else re-raise it unchanged.
+
+        ``started`` is when the FAILING call began: a stalled request spends
+        its whole timeout inside itself, which is why the bound is wall-clock
+        rather than a retry count.
+        """
+        if not is_transient_relay_failure(exc):
+            raise exc
+        if self._stalled_since is None:
+            self._stalled_since = started
+        stalled_for_s = self._monotonic() - self._stalled_since
+        if stalled_for_s > self._grace_s:
+            log_event(
+                logger,
+                self._gave_up_event,
+                level=logging.WARNING,
+                fields=context,
+                stalled_for_s=round(stalled_for_s, 1),
+                tolerated_total=self._tolerated_total,
+                error=type(exc).__name__,
+            )
+            raise exc
+        self._tolerated_total += 1
+        log_event(
+            logger,
+            self._transient_event,
+            level=(
+                logging.WARNING
+                if self._warn_budget is None
+                or self._tolerated_total <= self._warn_budget
+                else logging.DEBUG
+            ),
+            fields=context,
+            stalled_for_s=round(stalled_for_s, 1),
+            grace_s=self._grace_s,
+            tolerated_total=self._tolerated_total,
+            error=type(exc).__name__,
+        )
+
+
+def _status_poll_grace(monotonic: Callable[[], float]) -> _RelayCallGrace:
+    return _RelayCallGrace(
+        grace_s=STATUS_POLL_TRANSIENT_GRACE_S,
+        transient_event="capture_relay.status_poll_transient",
+        gave_up_event="capture_relay.status_poll_gave_up",
+        monotonic=monotonic,
+        warn_budget=STATUS_POLL_WARN_BUDGET,
+    )
+
+
+def _blob_pull_grace(monotonic: Callable[[], float]) -> _RelayCallGrace:
+    return _RelayCallGrace(
+        grace_s=BLOB_PULL_TRANSIENT_GRACE_S,
+        transient_event="capture_relay.blob_pull_transient",
+        gave_up_event="capture_relay.blob_pull_gave_up",
+        monotonic=monotonic,
+    )
 
 
 class RelayCapacityUnavailable(ValueError):
@@ -1107,15 +1208,32 @@ def _poll_until_capture(
 
     deadline = monotonic() + timeout_s
     armed_fired = False
+    phase = "awaiting_arm"
     capture_device: dict | None = None
     capture_noise_floor: dict | None = None
     capture_setup: dict | None = None
     setup_tokens_seen: set[str] = set()
     page_compatible = False
     event_verifier = PhoneEventVerifier(session)
+    # Separate anchors on purpose: the pull runs one line below a status call
+    # that just succeeded (see BLOB_PULL_TRANSIENT_GRACE_S).
+    status_grace = _status_poll_grace(monotonic)
+    blob_grace = _blob_pull_grace(monotonic)
     while True:
         raise_if_stopped()
-        status = client.status(session.session_id, session.pull_token)
+        attempt_started = monotonic()
+        try:
+            status = client.status(session.session_id, session.pull_token)
+        except (OSError, RelayError) as exc:
+            status_grace.tolerate(
+                exc,
+                started=attempt_started,
+                session_id=session.session_id,
+                phase=phase,
+            )
+            sleep(poll_interval_s)
+            continue
+        status_grace.cleared()
         raise_if_stopped()
         status = _verify_phone_event(client, session, event_verifier, status)
         state = classify_status(status)
@@ -1160,6 +1278,7 @@ def _poll_until_capture(
             raise_if_stopped()
             _verify_acknowledgement_or_refuse(client, session, state)
             armed_fired = True
+            phase = "awaiting_upload"
             # The pre-arm wait is operator time: opening the trusted page,
             # selecting the microphone, and confirming placement.  Do not let
             # that consume the bounded acoustic/upload window.  Refresh the
@@ -1182,9 +1301,24 @@ def _poll_until_capture(
         if state.ready:
             raise_if_stopped()
             log_event(logger, "capture_relay.ready", session_id=session.session_id)
-            blob, header_integrity = client.pull_blob(
-                session.session_id, session.pull_token
-            )
+            pull_started = monotonic()
+            try:
+                blob, header_integrity = client.pull_blob(
+                    session.session_id, session.pull_token
+                )
+            except (OSError, RelayError) as exc:
+                # The capture is UPLOADED and safe on the relay; only our fetch
+                # of it failed. Giving up here is the one failure that voids
+                # work the household already did right, so a transient stall is
+                # re-pulled rather than fatal (issue #2453, mirroring #1650).
+                blob_grace.tolerate(
+                    exc,
+                    started=pull_started,
+                    session_id=session.session_id,
+                )
+                sleep(poll_interval_s)
+                continue
+            blob_grace.cleared()
             raise_if_stopped()
             integrity = state.integrity or header_integrity
             try:
@@ -1217,10 +1351,8 @@ def _poll_until_capture(
                 detail = (
                     f"phone never uploaded within {timeout_s:.0f}s after arming"
                 )
-                phase = "awaiting_upload"
             else:
                 detail = f"phone never armed within {timeout_s:.0f}s"
-                phase = "awaiting_arm"
             raise CaptureTimeout(
                 f"{detail} (session {session.session_id})",
                 phase=phase,
@@ -1720,67 +1852,25 @@ def _poll_capture_plan(
     deadline = monotonic() + (
         first_begin_timeout_s if first_begin_timeout_s is not None else timeout_s
     )
-    # When the current run of CONSECUTIVE status-poll transport failures began
-    # (``None`` while the relay is answering). Anchored at the start of the
-    # first failing call, and cleared by any success — see
-    # STATUS_POLL_TRANSIENT_GRACE_S for why the bound is wall-clock.
-    transient_since: float | None = None
-    # Every tolerated poll this SESSION, across outages — never reset, because
-    # bounding a flap is the whole point (see STATUS_POLL_WARN_BUDGET).
-    transient_total = 0
-    # The blob pull's OWN outage anchor (``None`` while pulls are succeeding),
-    # cleared only by a successful pull. Deliberately not the one above — see
-    # BLOB_PULL_TRANSIENT_GRACE_S for why sharing it would never expire.
-    blob_pull_stalled_since: float | None = None
+    # Separate anchors on purpose: the pull runs one line below a status call
+    # that just succeeded (see BLOB_PULL_TRANSIENT_GRACE_S).
+    status_grace = _status_poll_grace(monotonic)
+    blob_grace = _blob_pull_grace(monotonic)
     while True:
         raise_if_stopped()
         attempt_started = monotonic()
         try:
             status = client.status(session.session_id, session.pull_token)
         except (OSError, RelayError) as exc:
-            if not is_transient_relay_failure(exc):
-                raise
-            if transient_since is None:
-                transient_since = attempt_started
-            # Deliberately NOT named waited_s: the timeout path further down
-            # owns that name for a different quantity (which phone-inactivity
-            # budget was in force), and this is how long the RELAY has been
-            # unreachable.
-            stalled_for_s = monotonic() - transient_since
-            if stalled_for_s > STATUS_POLL_TRANSIENT_GRACE_S:
-                # Not an outage any more — a dead relay. Re-raise the ORIGINAL
-                # exception so the caller classifies this exactly as it always
-                # has (``expired_time_budget`` reads its ``status``).
-                log_event(
-                    logger,
-                    "capture_relay.status_poll_gave_up",
-                    level=logging.WARNING,
-                    session_id=session.session_id,
-                    phase=phase,
-                    stalled_for_s=round(stalled_for_s, 1),
-                    tolerated_total=transient_total,
-                    error=type(exc).__name__,
-                )
-                raise
-            transient_total += 1
-            log_event(
-                logger,
-                "capture_relay.status_poll_transient",
-                level=(
-                    logging.WARNING
-                    if transient_total <= STATUS_POLL_WARN_BUDGET
-                    else logging.DEBUG
-                ),
+            status_grace.tolerate(
+                exc,
+                started=attempt_started,
                 session_id=session.session_id,
                 phase=phase,
-                stalled_for_s=round(stalled_for_s, 1),
-                grace_s=STATUS_POLL_TRANSIENT_GRACE_S,
-                tolerated_total=transient_total,
-                error=type(exc).__name__,
             )
             sleep(poll_interval_s)
             continue
-        transient_since = None
+        status_grace.cleared()
         raise_if_stopped()
         status = _verify_phone_event(client, session, event_verifier, status)
         state = classify_status(status)
@@ -2173,42 +2263,17 @@ def _poll_capture_plan(
                     # that voids work the household already did right, so a
                     # transient stall is re-pulled rather than fatal
                     # (issue #1650). See BLOB_PULL_TRANSIENT_GRACE_S.
-                    if not is_transient_relay_failure(exc):
-                        raise
-                    if blob_pull_stalled_since is None:
-                        blob_pull_stalled_since = pull_started
-                    stalled_for_s = monotonic() - blob_pull_stalled_since
-                    if stalled_for_s > BLOB_PULL_TRANSIENT_GRACE_S:
-                        # Re-raise the ORIGINAL exception, so every caller
-                        # classifies this exactly as it did before the
-                        # tolerance existed.
-                        log_event(
-                            logger,
-                            "capture_relay.blob_pull_gave_up",
-                            level=logging.WARNING,
-                            session_id=session.session_id,
-                            index=index,
-                            attempt=attempt,
-                            capture_index=capture_index,
-                            stalled_for_s=round(stalled_for_s, 1),
-                            error=type(exc).__name__,
-                        )
-                        raise
-                    log_event(
-                        logger,
-                        "capture_relay.blob_pull_transient",
-                        level=logging.WARNING,
+                    blob_grace.tolerate(
+                        exc,
+                        started=pull_started,
                         session_id=session.session_id,
                         index=index,
                         attempt=attempt,
                         capture_index=capture_index,
-                        stalled_for_s=round(stalled_for_s, 1),
-                        grace_s=BLOB_PULL_TRANSIENT_GRACE_S,
-                        error=type(exc).__name__,
                     )
                     sleep(poll_interval_s)
                     continue
-                blob_pull_stalled_since = None
+                blob_grace.cleared()
                 raise_if_stopped()
                 integrity = (
                     _plan_blob_integrity(state, capture_index)
