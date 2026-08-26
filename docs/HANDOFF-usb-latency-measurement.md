@@ -329,15 +329,14 @@ curl -s -X POST http://jts.local:8780/source/select -H 'Content-Type: applicatio
 ```
 
 **Descend to the floor first.** Measure at the 576 floor for the numbers above.
-On a cold session (no live compliance proof) the lane starts at its acquisition
+Every session starts at the lane's acquisition
 ceiling (`target + warm-up cushion`: 512+1536 = **2048** on jts.local, which runs
 the `1536` cushion override — a fresh install's code-default `2048` cushion gives
 a 2560 ceiling; see §6) and descends over **~2.5 min** of continuous playback.
 Either play a long continuous-click WAV and poll fan-in STATUS until
 `held_target_frames == 576` before capturing, or accept that a short run
 measures the ceiling. Confirm the
-floor via STATUS: `held_target_frames: 576`, `decay.frozen_reason: at_floor` (or
-`prime_hold` when a proof is live).
+floor via STATUS: `held_target_frames: 576`, `decay.frozen_reason: at_floor`.
 
 ---
 

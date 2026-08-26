@@ -7,7 +7,7 @@
 //! Source of truth for defaults: `docs/HANDOFF-fan-in-daemon.md`
 //! "Configuration" section for the original knobs, plus
 //! `docs/HANDOFF-usb-low-latency.md` for the camilla_coupling/ring/
-//! cushion-decay/host-compliance/auto-trim/usb-direct/host-clock knobs
+//! cushion-decay/auto-trim/usb-direct/host-clock knobs
 //! (each field's own comment below points at the doc that actually
 //! documents it). If you change a default here, update the matching
 //! HANDOFF too — the doc is what operators read.
@@ -378,15 +378,6 @@ pub struct Config {
     /// `JASPER_FANIN_RESAMPLER_CUSHION_DECAY_INTERVAL_MS`.
     pub input_resampler_cushion_decay_interval_ms: u32,
 
-    /// Path to the host-compliance persistence record (the prime-at-floor
-    /// authority). A sibling of the xrun log under the fan-in state dir, which the
-    /// daemon already owns and writes (root, `ReadWritePaths=/var/lib/jasper`) —
-    /// no new privilege grant. Only CONSULTED when the cushion decay is armed
-    /// (persistence rides that flag; there is no separate top-level gate). Env:
-    /// `JASPER_FANIN_HOST_COMPLIANCE_PATH`. Default
-    /// `/var/lib/jasper/fanin/host_compliance.json`.
-    pub host_compliance_path: String,
-
     /// DEFAULT-OFF one-shot AUTO-TRIM (PoC standing-fill trim). When `true`, the
     /// mixer schedules ONE `TRIM` per armed resampler lane a couple seconds
     /// after that lane goes active, dropping the accumulated standing head-start
@@ -518,13 +509,9 @@ impl Config {
     /// capture to own the pitch ctl (`enabled` + direct-off is a fully-inert
     /// warn because no process owns direct gadget clock control). This is the
     /// SINGLE source of truth for that coupling: `main` derives the servo-spawn
-    /// gate (`host_clock_enabled_effective`) from it, and the mixer gates the
-    /// host-compliance PRIME-AT-FLOOR on it — the prime skips the cushion
-    /// descent on the strength of a prior session's compliance proof that ONLY
-    /// this servo (its l0/probe/two-strike revalidation) can re-verify, so
-    /// priming without the servo would hold the floor forever on stale evidence.
-    /// The runtime servo ALSO needs a live direct-lane resampler (signals
-    /// present); this is the config-level predicate both call sites share.
+    /// gate (`host_clock_enabled_effective`) from it. The runtime servo ALSO
+    /// needs a live direct-lane resampler (signals present); this is the
+    /// config-level predicate.
     pub fn host_clock_servo_armed(&self) -> bool {
         self.host_clock_enabled && self.usb_direct_enabled
     }
@@ -966,15 +953,6 @@ impl Config {
                 input_resampler_cushion_decay_interval_ms,
             );
         }
-        // The host-compliance persistence record path (prime-at-floor authority).
-        // No range/validation: a bad path simply fails the atomic write/read
-        // best-effort (logged, never fatal), degrading to today's always-descend
-        // behaviour.
-        let host_compliance_path = env_str(
-            "JASPER_FANIN_HOST_COMPLIANCE_PATH",
-            crate::host_compliance::DEFAULT_COMPLIANCE_PATH,
-        );
-
         // DEFAULT-OFF one-shot AUTO-TRIM (PoC standing-fill trim). Fail-safe:
         // only the exact literal `enabled` (case-insensitive) arms it; unset /
         // empty / anything else stays OFF (byte-identical to today).
@@ -1308,7 +1286,6 @@ impl Config {
             input_resampler_cushion_decay_floor_frames,
             input_resampler_cushion_decay_step_frames,
             input_resampler_cushion_decay_interval_ms,
-            host_compliance_path,
             auto_trim_enabled,
             usb_direct_enabled,
             usb_direct_device,
@@ -1580,12 +1557,6 @@ mod tests {
                     "default decay step demand {step_demand_ppm} ppm must stay inside the \
                      {} ppm cascade guard",
                     crate::mixer::CUSHION_DECAY_CASCADE_GUARD_PPM
-                );
-                // Host-compliance persistence path defaults under the fan-in state
-                // dir (sibling of the xrun log, already-owned write path).
-                assert_eq!(
-                    cfg.host_compliance_path,
-                    "/var/lib/jasper/fanin/host_compliance.json"
                 );
                 // One-shot AUTO-TRIM is DEFAULT-OFF (manual TRIM is the PoC
                 // path; auto is the opt-in convenience).
@@ -1903,11 +1874,8 @@ mod tests {
         // The servo-armed predicate is the AND of host-clock and USB-direct: the
         // servo can only own the pitch ctl when fan-in owns the gadget capture
         // (`enabled` + direct-off is a fully-inert warn). This is the SINGLE
-        // source of truth `main`'s servo-spawn gate AND the mixer's
-        // host-compliance prime gate share — a floor prime whose revalidating
-        // servo never runs would hold the floor forever on stale evidence (the
-        // #1161 ladder-inert regime). A mutation dropping either conjunct fails
-        // here.
+        // source of truth `main`'s servo-spawn gate reads. A mutation dropping
+        // either conjunct fails here.
         let cases = [
             (None, None, false),
             (Some("enabled"), None, false), // host-clock only → inert (no ctl owner)
