@@ -350,3 +350,162 @@ def check_camillagui_loopback() -> CheckResult:
     # as an IPv4 address that isn't actually listening.
     shown = ", ".join(f"{a}:{CAMILLAGUI_PORT}" for a in sorted(set(addresses)))
     return CheckResult(label, "ok", f"loopback-only ({shown})")
+
+
+# The socket-activated wizard family, by unit basename (both `<name>.service`
+# and `<name>.socket` derive from each entry). Canonical membership is the
+# installer's WIZARD_UNITS array (deploy/lib/install/systemd-units.sh), which
+# the install/enable/park sweeps iterate; tests/test_doctor_web.py pins this
+# tuple set-equal to it and to the shipped deploy/*.socket files, so a wizard
+# added there cannot silently drop out of this sweep.
+#
+# Profile-conditional members read as absent rather than needing a name of
+# their own: a streambox installs deploy/jasper-web-streambox.{service,socket}
+# AS jasper-web.{service,socket} (install_streambox_web_unit_files), and never
+# installs jasper-chat-web at all — for which `systemctl show` answers
+# ActiveState=inactive at rc=0, which this sweep reads as ok.
+WIZARD_UNITS = (
+    "jasper-web",
+    "jasper-bluetooth-web",
+    "jasper-correction-web",
+    "jasper-system-web",
+    "jasper-chat-web",
+)
+
+# systemd's own name for "I gave up starting the service this socket triggers",
+# as it appears in `systemctl show <socket> --property=Result`. This check
+# REPORTS it and does not gate on it — see the docstring for why that
+# distinction is load-bearing.
+_START_LIMIT_RESULT = "service-start-limit-hit"
+
+
+def _wizard_socket_state(unit: str) -> tuple[str, str]:
+    """``(ActiveState, finding)`` for one wizard's ``.socket``.
+
+    ``finding`` is empty when the listener is bound — including when the unit
+    is not installed on this profile, which ``systemctl show`` answers as
+    ``ActiveState=inactive`` / ``Result=success`` at rc=0 (measured on jts4)
+    rather than erroring. ``FileNotFoundError`` propagates so the caller can
+    skip the whole sweep once on a host with no ``systemctl``.
+    """
+    socket_unit = f"{unit}.socket"
+    show = _run(
+        ["systemctl", "show", socket_unit,
+         "--property=ActiveState", "--property=Result"]
+    )
+    state: dict[str, str] = {}
+    for line in show.stdout.splitlines():
+        key, sep, value = line.partition("=")
+        if sep:
+            state[key] = value.strip()
+    active = state.get("ActiveState", "")
+    if show.returncode != 0 or not active:
+        return "", (
+            f"could not read {socket_unit} state from systemctl "
+            f"(rc={show.returncode}, stdout={show.stdout.strip()[:120]!r}, "
+            f"stderr={show.stderr.strip()[:120]!r}) — a start-limited wizard "
+            "is indistinguishable from a healthy one until this reads"
+        )
+    if active != "failed":
+        return active, ""
+    result = state.get("Result", "") or "unknown"
+    cause = (
+        "its paired service exhausted StartLimitBurst"
+        if result == _START_LIMIT_RESULT
+        else "systemd reported the socket failed"
+    )
+    return active, (
+        f"{socket_unit} is failed (ActiveState=failed, Result={result}) — "
+        f"{cause}. Its listener is unbound, so the wizard refuses connections "
+        "and nothing brings it back on its own. Run `sudo systemctl "
+        f"reset-failed {socket_unit} {unit}.service && sudo systemctl start "
+        f"{socket_unit}`."
+    )
+
+
+@doctor_check(order=24.82, group="web")
+def check_wizard_socket_start_limits() -> CheckResult:
+    """A failed ``.socket`` is what a start-limited wizard looks like.
+
+    Every unit in :data:`WIZARD_UNITS` sets ``StartLimitBurst=20`` over
+    ``StartLimitIntervalSec=600`` with no ``StartLimitAction=`` (systemd's
+    default there: stop retrying and leave the unit ``failed``). Repeated
+    fail-closed startup refusals can exhaust that burst.
+
+    **What systemd does when they do — measured**, on lab Pi jts4 (systemd
+    257 / Debian Trixie) with transient units mirroring
+    ``deploy/jasper-correction-web.{service,socket}``, by the PR #2216
+    adversarial gate (cited, not re-measured here)::
+
+        <unit>.service: Start request repeated too quickly.
+        <unit>.service: Failed with result 'exit-code'.
+        <unit>.socket:  Failed with result 'service-start-limit-hit'.
+
+    The start-limit marker lands on the **socket**, which goes
+    ``ActiveState=failed`` and unbinds its listener — nginx then gets
+    ECONNREFUSED and the wizard is dead until an operator runs
+    ``reset-failed``. The **service** keeps its last real failure cause
+    (``exit-code``) and never reports ``start-limit-hit`` at all: the gate
+    sampled it at ~3 Hz across the whole transition, for 30 s after, and via
+    direct rapid ``systemctl start``, and saw that value zero times. An
+    earlier revision gated on the *service* being ``ActiveState=failed``
+    **and** ``Result=start-limit-hit``, so it printed ``ok`` over exactly the
+    outage it was added for (#2134 → #2216 blocker 1).
+
+    Predicate: the socket's ``ActiveState == "failed"``. That is the rule
+    :func:`jasper.cli.doctor.resilience.check_service_runtime_state` already
+    applies to the core daemons — reused rather than re-invented, and that
+    sweep deliberately excludes socket-activated wizards, which is why they
+    need this one (#2465). ``Result`` is *reported*, never gated on: besides
+    surviving a rename of the marker string, ``ActiveState`` is strictly
+    *broader* — a socket killed by ``trigger-limit-hit`` is just as unbound,
+    and a ``Result``-gated check would print ``ok`` over that whole class.
+
+    **Why the socket and not the service — measured**, by the #2216 delta
+    re-review on jts4, capturing systemd's D-Bus ``PropertiesChanged`` signals
+    (polling misses this). Across 17 ordinary ``Restart=on-failure`` retries::
+
+        service ActiveState: 99 "activating"  34 "failed"  2 "inactive"
+        service SubState:    34 "failed-before-auto-restart"
+        socket:              ActiveState=active  ActiveExitTimestampMonotonic=0
+
+    So the service passes through ``ActiveState=failed`` **34 times in 20
+    seconds** of routine retrying — reading it would false-``fail`` on every
+    one. The socket has no such window: ``ActiveExitTimestampMonotonic=0``
+    means systemd never recorded it leaving ``active`` at any duration.
+    Restarts and idle-exits are the service's business; the socket only
+    changes state when the listener genuinely goes away.
+
+    Deliberately ``ok``: the socket listening while the service idles between
+    sessions (the normal socket-activated lifecycle); a service crash-looping
+    *inside* its ``Restart=on-failure`` budget, which the socket rides out
+    still bound; and an absent unit on a profile that does not install it.
+
+    Known boundary, stated rather than papered over: a service start-limited
+    by direct ``systemctl start`` calls, before any connection has triggered
+    the socket, leaves the socket still bound and this check ``ok``. The first
+    inbound request propagates the marker to the socket, so the state
+    converges after one connection.
+
+    A read that fails — non-zero ``systemctl``, or output carrying no
+    ``ActiveState`` — is a ``fail``, never an ``ok``: "systemd says healthy"
+    and "I could not ask systemd" must not render identically (#2216
+    should-fix 2). ``systemctl`` missing outright is a dev host rather than a
+    speaker, and skips like every sibling.
+    """
+    label = "wizard socket start limits"
+    observed: list[str] = []
+    findings: list[str] = []
+    for unit in WIZARD_UNITS:
+        try:
+            active, finding = _wizard_socket_state(unit)
+        except FileNotFoundError:
+            return CheckResult(
+                label, "ok", "systemctl unavailable — skipped (not Linux?)"
+            )
+        observed.append(f"{unit}.socket={active or '?'}")
+        if finding:
+            findings.append(finding)
+    if findings:
+        return CheckResult(label, "fail", " ".join(findings))
+    return CheckResult(label, "ok", ", ".join(observed))
