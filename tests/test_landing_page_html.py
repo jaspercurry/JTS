@@ -25,7 +25,6 @@ from jasper.web import wifi_setup
 
 _REPO = Path(__file__).resolve().parent.parent
 _INDEX_PATH = _REPO / "deploy" / "index.html"
-_PREFLIGHT_PATH = _REPO / "deploy" / "correction-preflight.html"
 _NGINX_PATH = _REPO / "deploy" / "nginx-jasper.conf"
 _STREAMBOX_NGINX_PATH = _REPO / "deploy" / "nginx-jasper-streambox.conf"
 _INSTALL_PATH = _REPO / "deploy" / "install.sh"
@@ -40,10 +39,6 @@ def _index_html() -> str:
 
 def _app_css() -> str:
     return _APP_CSS_PATH.read_text(encoding="utf-8")
-
-
-def _preflight_html() -> str:
-    return _PREFLIGHT_PATH.read_text(encoding="utf-8")
 
 
 def _nginx_location_block(nginx: str, location: str) -> str:
@@ -503,81 +498,44 @@ def test_landing_exposes_complete_canonical_sound_navigation() -> None:
     assert "soundSection.style.display" not in pair_script
 
 
-def test_room_correction_preflight_switches_to_https() -> None:
-    html = _preflight_html()
+def test_no_household_journey_step_lands_on_the_self_signed_https_origin() -> None:
+    # Issue #2632 (owner directive): the cert-warning pre-explainer page and
+    # every automatic hop into the self-signed HTTPS origin are gone. The
+    # HTTPS listener itself stays for deliberate local-getUserMedia use.
+    assert not (_REPO / "deploy" / "correction-preflight.html").exists()
 
-    assert 'id="proceed" href="/correction/proceed?jts_cb=__APP_CSS_VERSION__"' in html
-    assert "OK, proceed" in html
-    assert "Your connection is not private" in html
-    assert "Show Details" in html
-    assert "Other JTS pages remain" not in html
-    assert "new URLSearchParams(window.location.search" in html
-    assert "new URL(requested, window.location.origin)" in html
-    assert "'/correction/crossover/': '/correction/crossover/'" in html
-    assert "Object.prototype.hasOwnProperty.call(allowed, path)" in html
-    assert "Date.now().toString(36)" in html
-    assert "url.searchParams.set('jts_cb', cacheToken)" in html
-    assert "current.protocol = 'https:'" in html
-    assert "if (current.port === '80') current.port = ''" in html
-    assert "proceed.href = withCacheBust(new URL(targetPath, httpsOrigin()))" in html
-    assert "window.location.hostname" not in html
-    assert "https://jts.local/correction/" not in html
+    install = _INSTALL_PATH.read_text(encoding="utf-8")
+    assert "rm -f /usr/share/jasper-web/correction-preflight.html" in install
+    assert "deploy/correction-preflight.html" not in install
 
+    correction_js = (
+        _REPO / "deploy" / "assets" / "correction" / "js" / "main.js"
+    ).read_text(encoding="utf-8")
+    assert "/proceed" not in correction_js
 
-def test_room_correction_preflight_rejects_normalized_path_escape() -> None:
-    html = _preflight_html()
-
-    assert "parsed.pathname" in html
-    assert "Object.prototype.hasOwnProperty.call(allowed, path)" in html
-    assert "/correction/../sound/" not in html
+    for path in (_NGINX_PATH, _STREAMBOX_NGINX_PATH):
+        nginx = path.read_text(encoding="utf-8")
+        http_nginx = nginx[: nginx.index("listen 443")]
+        assert "correction-preflight.html" not in nginx
+        assert "/correction/proceed" not in nginx
+        assert "/sound/proceed" not in nginx
+        # No plain-HTTP route may bounce a browser to https:// on this host.
+        assert "return 302 https://$host" not in http_nginx
 
 
-def test_room_correction_preflight_uses_canonical_design() -> None:
-    html = _preflight_html()
-
-    # Migrated onto the canonical design system (the static-page analog of
-    # canonical_page()): links the shared, SHA-busted stylesheet and uses
-    # the .app-header / .btn / .info-card vocabulary.
-    assert '/assets/app.css?v=__APP_CSS_VERSION__' in html
-    assert 'class="app-header"' in html
-    assert 'class="btn btn--primary"' in html
-    assert 'href="#icon-back"' in html
-    # The old hand-rolled look is gone: no Spotify-green buttons, no inline
-    # system-font stack (both now come from app.css).
-    assert "#1db954" not in html
-    assert "-apple-system" not in html
-
-
-def test_nginx_serves_correction_preflight_on_http_only() -> None:
+def test_nginx_serves_correction_over_plain_http() -> None:
     nginx = _NGINX_PATH.read_text(encoding="utf-8")
     http_nginx = nginx[:nginx.index("# HTTPS server block")]
     https_nginx = nginx[nginx.index("listen 443") :]
-    preflight_block = _nginx_location_block(nginx, "location = /correction/")
-    proceed_block = _nginx_location_block(nginx, "location = /correction/proceed")
-    room_block = _nginx_location_block(nginx, "location = /correction/proceed/room")
-    crossover_block = _nginx_location_block(
-        nginx,
-        "location = /correction/proceed/crossover",
-    )
-    bass_block = _nginx_location_block(nginx, "location = /correction/proceed/bass")
+    slash_block = _nginx_location_block(nginx, "location = /correction")
     http_proxy_block = _nginx_location_block(http_nginx, "location /correction/")
     https_block = _nginx_location_block(https_nginx, "location /correction/")
 
-    assert "location = /correction" in nginx
-    assert "return 302 /correction/;" in nginx
-    assert "try_files /correction-preflight.html =404;" in preflight_block
-    _assert_strong_no_cache(preflight_block)
-    assert "safe ?next=/correction/..." in nginx
-    assert "return 302 https://$host/correction/$is_args$args;" in proceed_block
-    assert "return 302 https://$host/correction/room/$is_args$args;" in room_block
-    assert (
-        "return 302 https://$host/correction/crossover/$is_args$args;"
-        in crossover_block
-    )
-    assert "return 302 https://$host/correction/bass/$is_args$args;" in bass_block
-    for block in (proceed_block, room_block, crossover_block, bass_block):
-        _assert_strong_no_cache(block)
-        assert "if ($request_method !~ ^(GET|HEAD)$) { return 405; }" in block
+    # Bare /correction normalizes to /correction/, which falls through to the
+    # plain-HTTP proxy — no static interception, no scheme change.
+    assert "return 302 /correction/;" in slash_block
+    _assert_strong_no_cache(slash_block)
+    assert "if ($request_method !~ ^(GET|HEAD)$) { return 405; }" in slash_block
     assert "proxy_pass http://127.0.0.1:8770/;" in http_proxy_block
     assert "client_max_body_size 32m;" in http_proxy_block
     assert "proxy_pass http://127.0.0.1:8770/;" in https_block
@@ -589,26 +547,16 @@ def test_nginx_serves_correction_preflight_on_http_only() -> None:
     assert "Strict-Transport-Security" not in nginx
 
 
-def test_streambox_nginx_serves_hostname_safe_correction_proceed() -> None:
+def test_streambox_nginx_matches_plain_http_correction_entry() -> None:
     nginx = _STREAMBOX_NGINX_PATH.read_text(encoding="utf-8")
-    preflight_block = _nginx_location_block(nginx, "location = /correction/")
-    proceed_block = _nginx_location_block(nginx, "location = /correction/proceed")
-    crossover_block = _nginx_location_block(
-        nginx,
-        "location = /correction/proceed/crossover",
-    )
+    slash_block = _nginx_location_block(nginx, "location = /correction")
+    http_nginx = nginx[: nginx.index("listen 443")]
+    proxy_block = _nginx_location_block(http_nginx, "location /correction/")
 
-    assert "try_files /correction-preflight.html =404;" in preflight_block
-    _assert_strong_no_cache(preflight_block)
-    assert "return 302 https://$host/correction/$is_args$args;" in proceed_block
-    assert (
-        "return 302 https://$host/correction/crossover/$is_args$args;"
-        in crossover_block
-    )
-    _assert_strong_no_cache(proceed_block)
-    _assert_strong_no_cache(crossover_block)
-    assert "if ($request_method !~ ^(GET|HEAD)$) { return 405; }" in proceed_block
-    assert "if ($request_method !~ ^(GET|HEAD)$) { return 405; }" in crossover_block
+    assert "return 302 /correction/;" in slash_block
+    _assert_strong_no_cache(slash_block)
+    assert "if ($request_method !~ ^(GET|HEAD)$) { return 405; }" in slash_block
+    assert "proxy_pass http://127.0.0.1:8770/;" in proxy_block
     https_nginx = nginx[nginx.index("listen 443") :]
     catchall_block = _nginx_location_block(https_nginx, "location /")
     _assert_strong_no_cache(catchall_block)
@@ -648,13 +596,6 @@ def test_both_nginx_profiles_have_canonical_sound_route_parity() -> None:
         assert "proxy_set_header X-JTS-Sound-Page eq;" in eq
         assert "proxy_set_header X-JTS-Sound-Page setup;" in setup
         assert "return 302" not in compat
-
-        canonical_proceed = _nginx_location_block(
-            http_nginx, "location = /sound/proceed/room"
-        )
-        assert "if ($request_method !~ ^(GET|HEAD)$) { return 405; }" in canonical_proceed
-        assert "return 302 https://$host/sound/room/$is_args$args;" in canonical_proceed
-        _assert_strong_no_cache(canonical_proceed)
 
         for public_slug, backend_slug in measurement_routes.items():
             location = f"location /sound/{public_slug}/"
@@ -735,36 +676,11 @@ def test_nginx_serves_sync_measurement_over_https() -> None:
     )
 
 
-def test_install_copies_correction_preflight_page() -> None:
-    install = _INSTALL_PATH.read_text(encoding="utf-8")
-
-    assert "deploy/correction-preflight.html" in install
-    assert "/usr/share/jasper-web/correction-preflight.html" in install
-
-
-def test_install_stamps_preflight_app_css_version() -> None:
-    # The preflight is static HTML linking the immutable app.css, so it
-    # carries the __APP_CSS_VERSION__ placeholder and install.sh must
-    # substitute it with the build SHA — exactly as it does for index.html.
-    install = _INSTALL_PATH.read_text(encoding="utf-8")
-    preflight = _preflight_html()
-
-    assert "/assets/app.css?v=__APP_CSS_VERSION__" in preflight
-    # Join bash `\`-continuations so the sed command and its target file
-    # collapse onto one logical line. This tolerates a one-line or a
-    # line-wrapped sed without coupling the test to install.sh's formatting.
-    joined = re.sub(r"\\\n\s*", " ", install)
-    assert any(
-        "sed" in line
-        and "__APP_CSS_VERSION__" in line
-        and "correction-preflight.html" in line
-        for line in joined.splitlines()
-    ), "install.sh must sed __APP_CSS_VERSION__ into correction-preflight.html"
-
-
 def test_install_prunes_retired_integrations_page() -> None:
     # The /integrations page was deleted; install.sh must remove the orphaned
     # file from previously-deployed Pis so it does not linger unreachable.
+    # (The retired correction preflight's prune is pinned by the #2632
+    # inventory guard above, which owns that artifact end to end.)
     install = _INSTALL_PATH.read_text(encoding="utf-8")
     assert "rm -f /usr/share/jasper-web/integrations.html" in install
 

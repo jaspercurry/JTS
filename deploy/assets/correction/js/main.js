@@ -1024,6 +1024,14 @@ import { renderRelayQr } from "/assets/shared/js/qr.js";
       if (e && e.name === 'OverconstrainedError') {
         jtsAlert('That microphone is no longer available (was it unplugged?). ' +
           'Tap “Refresh microphones”, reselect it, and try again.');
+      } else if (!window.isSecureContext) {
+        // Browsers withhold getUserMedia outside a secure context, so this is
+        // a scheme dead end, not a denied permission. Issue #3069 repoints
+        // this path at the session's capture link.
+        console.warn('microphone capture unavailable outside a secure context', e);
+        jtsAlert('This page is not a secure context, so the browser will not ' +
+          'give it the microphone. Measure with the capture link this page ' +
+          'mints, or reopen this page over HTTPS.');
       } else {
         console.warn('microphone permission unavailable', e);
         jtsAlert('Microphone access was not available. Check permission and try again.');
@@ -3615,18 +3623,14 @@ import { renderRelayQr } from "/assets/shared/js/qr.js";
   // Landing never asks for microphone permission. Local capture requests it
   // only after /start exposes the server-owned Allow microphone action; the
   // refresh control is likewise inside that post-Start setup section.
+  // No scheme upgrade here. The self-signed HTTPS origin is never entered by
+  // redirect (issue #2632): a native cert interstitial cannot be automated and
+  // is hostile household UX. Off the relay path on plain HTTP, local capture
+  // dead-ends in startMicCapture's catch; issue #3069 repoints it at the
+  // session's capture link.
   if (relayConfigured) {
     setRelayMode(true);
   } else {
-    var currentPath = currentPathname();
-    if (!window.isSecureContext && currentPath.indexOf('/correction/') === 0) {
-      window.location.href = '/correction/proceed/room';
-      return;
-    }
-    if (!window.isSecureContext && currentPath.indexOf('/sound/room/') === 0) {
-      window.location.href = '/sound/proceed/room';
-      return;
-    }
     setRelayMode(false);
     populateInputDevices();
   }
@@ -3635,8 +3639,6 @@ import { renderRelayQr } from "/assets/shared/js/qr.js";
   applyHouseholdMicPrefill();
   refreshCurrentCorrection();
   // Initial paint of the stepped-wizard chrome from the server envelope.
-  // (Both landing paths reach here; the plain-HTTP deep-link fallback above
-  // returns before this, so it never fires there.)
   envelopeRetryArmed = true;   // landing grants one retry credit
   refreshEnvelope();
 

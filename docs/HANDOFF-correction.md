@@ -29,12 +29,12 @@ adding a service:
 
 The canonical subflow pages remain directly reachable over plain HTTP, just as
 the existing `/correction/room/`, `/correction/crossover/`, and
-`/correction/bass/` paths are. The default phone-relay flow works there. When a
-same-origin local microphone is needed, the page uses the existing
-hostname-safe proceed handoff to the HTTPS version:
-`/sound/proceed/room` for the canonical page and
-`/correction/proceed/room` for the alias. Exact `/correction/` remains that
-static preflight entry. The correction worker
+`/correction/bass/` paths are. The default phone-relay flow works there. Since
+issue #2632 there is no handoff to the self-signed HTTPS origin: no household-
+or agent-facing step may land on a browser cert interstitial, so a
+same-origin local microphone is only available if someone opens the HTTPS
+listener deliberately. Exact `/correction/` is a plain-HTTP route like the
+rest. The correction worker
 remains the same socket-activated service on `127.0.0.1:8770`, and it still
 owns Room, crossover measurement, and Bass. `/correction/`, its subflows, and
 their existing child routes remain direct compatibility aliases; they are not
@@ -1051,8 +1051,7 @@ never redirected.
   capture. Room-relay completion pages (level, position sweep, and verify)
   retain the correction engine's compatibility return path,
   `/correction/room/`; the new public route does not rewrite relay specs.
-  Exact `/correction/` remains the legacy local-microphone preflight. Modern
-  Room sweep/verify links are signed
+  Modern Room sweep/verify links are signed
   capture-only specs: the Pi supplies position progress and verifies the
   realized microphone/calibration against the level-check identity before
   playback. Active crossover retains its own compact setup binding.
@@ -1155,18 +1154,9 @@ never redirected.
   or `/correction/bass/status` on the alias, both mapped to the correction
   backend's `GET /bass/status`,
   and points to the Room tab where the bass-region measurement lives. It
-  owns no corner control (the speaker layer owns the corner). The static
-  plain-HTTP preflight keeps its existing closed `/correction/*` allowlist; it
-  does not learn canonical Sound paths. Canonical Room reaches the same secure
-  local-browser-microphone fallback through nginx's hostname-safe
-  `/sound/proceed/room` handoff. Relay-backed Room/crossover pages stay on
-  ordinary HTTP. The compatibility preflight's Proceed button retains the
-  hostname-safe no-JS fallback. When JavaScript is available, it validates the
-  target against its closed correction-subflow allowlist and goes directly to
-  the final HTTPS compatibility URL, with a per-page-load `jts_cb` cache-bust
-  token. The nginx fallback redirects are temporary and carry strong no-cache
-  headers so non-default hostnames survive the scheme switch without teaching
-  mobile browsers a permanent rule or reusing a stale handoff URL.
+  owns no corner control (the speaker layer owns the corner). Canonical and
+  compatibility Room/crossover pages alike stay on ordinary HTTP; issue #2632
+  removed every automatic hop into the self-signed HTTPS origin.
 - ✅ **Bonded-follower delegation.** As of 2026-06-15, active bonded
   followers do not run local room-correction, balance, or sync
   measurement flows. `GET /sound/room/` (and its `/correction/` aliases),
@@ -1181,23 +1171,15 @@ never redirected.
   Self-signed cert + iOS trust dance documented; mic-permission
   page with `getSettings()` constraint verify lands at
   `https://jts.local/sound/room/` (the original `/correction/` path remains an alias).
-- ✅ **Phase 0.1 — HTTP preflight before HTTPS interstitial.**
-  Implemented 2026-05-28; hostname-safe proceed redirect added
-  2026-06-24; JS-enabled direct HTTPS handoff added 2026-06-26.
-  Exact `http://jts.local/correction/` remains the static preflight page that
-  explains the browser's self-signed-cert warning; canonical and compatibility
-  subflow pages are direct HTTP routes unless local browser-microphone capture
-  needs the secure handoff. The preflight allowlist remains limited to
-  `/correction/*`; canonical Room uses `/sound/proceed/room` instead. The
-  preflight's default OK button
-  targets the hostname-safe proceed fallback with a build-token query string;
-  JavaScript replaces that with a fresh `jts_cb` token on each preflight
-  page load and a direct HTTPS compatibility URL for the current host and
-  selected room, Active-speaker, or Bass path. Nginx keeps the fallback redirects temporary
-  and strongly non-cacheable,
-  so `jts3.local` and other configured hostnames do not depend on hard-coded
-  `jts.local` or sticky 308 state in Safari. The landing
-  page links to the HTTP preflight, and the HTTPS correction page's Home
+- ✅ **Phase 0.1 — HTTP preflight before HTTPS interstitial. RETIRED
+  (issue #2632).** The plain-HTTP preflight page, its `?next=/correction/...`
+  allowlist, its `jts_cb` cache-bust handoff, and nginx's
+  `/correction/proceed*` and `/sound/proceed/room` redirects have all been
+  deleted: no household- or agent-facing journey step may land on a browser's
+  native cert interstitial, which is un-automatable by design. Exact
+  `http://jts.local/correction/` is now an ordinary plain-HTTP route, the
+  microphone rides the relay's publicly trusted capture origin, and the HTTPS
+  listener is entered only deliberately. The HTTPS correction page's Home
   link points back to
   `http://jts.local/` so relative navigation does not inherit the
   HTTPS origin and hit the 443 catch-all. The 443 catch-all now
@@ -1828,9 +1810,9 @@ declaring the current Room flow hardware-validated.
 A measurement-and-correction loop that runs from a phone at the
 listening position. Start at `http://jts.local/sound/room/` (or the
 speaker's actual hostname, such as `http://jts3.local/sound/room/`),
-which supports the default phone-relay flow on plain HTTP. If the local
-same-origin microphone fallback is needed, the page uses the hostname-safe
-preflight/proceed handoff to its secure HTTPS counterpart.
+which supports the default phone-relay flow on plain HTTP. Nothing hands off
+to the self-signed HTTPS origin (issue #2632); the local same-origin
+microphone is only reachable by opening the HTTPS listener deliberately.
 Optionally pick a calibrated USB measurement mic, the speaker plays a
 sweep, the phone records it, the Pi designs a PEQ filter set,
 hot-reloads CamillaDSP, and the next song plays through the corrected
@@ -1872,7 +1854,7 @@ the rejected alternatives are recorded so we don't relitigate.
 **Decision:** Add `listen 443 ssl` server block to nginx with a
 private-CA-issued cert for `jts.local`, but keep the existing port-80
 server as the default navigation surface. `http://jts.local/correction/`
-serves a preflight page; only the measurement UI at
+is the navigation surface; only a deliberately opened measurement UI at
 `https://jts.local/correction/` runs over TLS. Document the iOS
 Settings → General → About → Certificate Trust Settings dance as a
 one-time onboarding step in [BRINGUP.md](../BRINGUP.md) Phase Z
@@ -1899,17 +1881,13 @@ loses the YouTube hook.
 - `install.sh` reissues `/etc/nginx/ssl/jts.local.{crt,key}` from
   that CA for the configured `JASPER_HOSTNAME`, its wildcard, the
   historical `jts.local`, and `127.0.0.1`.
-- Port 80 serves `http://jts.local/correction/` as a static preflight
-  page, `/correction/proceed[/room|/crossover|/bass]` as no-JS
-  `302` redirects to `https://$host/...`, and
-  `http://jts.local/jts-root-ca.crt` with `application/x-x509-ca-cert`.
-  The preflight HTML, fallback proceed redirects, and HTTPS catch-all
-  redirects use `no-store, no-cache, max-age=0, must-revalidate` plus
-  legacy `Pragma` / `Expires` headers. The Proceed link carries a
-  build-token fallback plus a JavaScript-generated `jts_cb` token; JS-enabled
-  browsers go directly to the final HTTPS measurement URL for the current
-  host, so a phone cannot keep an old hard-coded or wrong-scheme target after
-  deploy.
+- Port 80 proxies `http://jts.local/correction/` to the correction worker and
+  serves `http://jts.local/jts-root-ca.crt` with
+  `application/x-x509-ca-cert`. The trailing-slash normalizer and the HTTPS
+  catch-all redirects use `no-store, no-cache, max-age=0, must-revalidate`
+  plus legacy `Pragma` / `Expires` headers. Issue #2632 deleted the static
+  preflight page and the `/correction/proceed*` + `/sound/proceed/room`
+  scheme-upgrade redirects that used to sit here.
 - Port 443 proxies only `/correction/` to `127.0.0.1:8770` and serves
   `/assets/` statically. The measurement UI's canonical look links
   `/assets/app.css` + its ES module by absolute path; without an `/assets/`
@@ -1919,7 +1897,7 @@ loses the YouTube hook.
   [HANDOFF-management-ui.md](HANDOFF-management-ui.md) ("`/assets` is served
   on both the HTTP and HTTPS server blocks"). All other HTTPS paths redirect
   back to their HTTP equivalents.
-- README, BRINGUP, and this handoff document the trust/preflight flow.
+- README, BRINGUP, and this handoff document the CA trust flow.
   No HSTS header is configured.
 
 **Out of scope:** redirecting HTTP → HTTPS for existing routes.
@@ -1955,16 +1933,9 @@ coordinator code; we do the same here for the
 **Concrete shape (current):**
 ```
 HTTP port 80:
-GET  /correction/            static preflight explaining the HTTPS warning;
-                             OK button links to /correction/proceed, or
-                             /correction/proceed/<subflow> for safe
-                             ?next=/correction/... targets; JS validates the
-                             target and rewrites the link to the final HTTPS
-                             URL with a fresh jts_cb token
-GET  /correction/proceed     redirect to https://$host/correction/$is_args$args
-GET  /correction/proceed/room|crossover|bass
-                             redirect to the matching https://$host/correction/
-                             subflow, preserving query args
+GET  /correction             302 to /correction/ (trailing-slash normalizer)
+GET  /correction/            proxied to the correction worker over plain HTTP
+                             (no scheme upgrade — issue #2632)
 GET  /jts-root-ca.crt        download private root CA for iOS trust
 
 HTTPS port 443 after nginx strips /correction/:
@@ -2323,16 +2294,13 @@ stdlib and the latency budget allows it.
 ### Decision 3 — URL: `/correction/`, plus entry on the landing page
 
 **Decision:** `http://jts.local/correction/` is the user-facing entry
-route. It serves a static preflight page on port 80, then the
-measurement flow switches to `https://<current-host>/correction/`
-because browser microphone capture requires a secure context. The JS-enabled
-path goes directly to the final HTTPS URL after allowlist validation; the
-no-JS fallback uses nginx's `/correction/proceed` temporary redirect to
-`https://$host/...`. `$host` is important for non-default speakers such as
-`jts3.local`; the preflight must not hard-code `jts.local`. The nginx
-port-80 landing page at `/usr/share/jasper-web/index.html` links to the
-preflight instead of
-directly to HTTPS. The 443 catch-all redirects non-correction paths back
+route and stays on port 80 end to end. Browser microphone capture requires a
+secure context, so it happens on the relay's publicly trusted capture origin;
+issue #2632 removed the scheme upgrade into the self-signed HTTPS origin,
+because a browser's native cert interstitial cannot be automated and is
+hostile household UX. The nginx port-80 landing page at
+`/usr/share/jasper-web/index.html` links to the plain-HTTP route. The 443
+catch-all redirects non-correction paths back
 to HTTP with a temporary, non-cacheable redirect — the one exception is
 `/assets/`, served statically so the measurement UI's CSS/JS aren't
 mixed-content-blocked; it does not proxy any extra wizard upstreams over
@@ -2736,8 +2704,7 @@ Concrete changes:
   `location /correction/ { proxy_pass http://127.0.0.1:8770/; }`;
   `location /jts-root-ca.crt { ... }` on **port 80** (chicken-
   and-egg: user has to download CA before HTTPS works); serve
-  `http://jts.local/correction/` as the plain-HTTP preflight before
-  the HTTPS measurement UI.
+  `http://jts.local/correction/` from the same worker over plain HTTP.
 - `jasper/web/correction_setup.py`: minimal handler returning a
   static "Hello mic" page that requests `getUserMedia({audio: ...})`
   and shows a level meter via AudioWorklet.
@@ -3117,7 +3084,8 @@ These items can only be verified on real hardware. Deploy with
       activation is the liveness contract).
 - [ ] `jasper-doctor` reports `correction web`, `correction state
       dirs`, and `current correction` as ok/warn with no fail.
-- [ ] `curl http://jts.local/correction/` returns the preflight page.
+- [ ] `curl http://jts.local/correction/` returns the correction page over
+      plain HTTP (no `302` to `https://`).
 - [ ] `curl -k https://jts.local/correction/healthz` → `ok`.
 - [ ] `nginx -t` → ok.
 - [ ] The ready Room page shows **Measuring 6 positions with the flat
