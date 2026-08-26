@@ -48,7 +48,7 @@ only ever name a mechanism some shipped instrument already decided.
    interference nulls, so it never routes it.
 3. **The household sentence is copied, never rewritten.** The carve-out
    record's own ``reason`` is the shipped SSOT for what a household is told
-   about an excluded band (``crossover_v2_flow._carve_out_records`` composed
+   about an excluded band (``crossover_v2.spatial._carve_out_records`` composed
    with ``_null_classification_copy``). Minting a second sentence here would
    be the second computation of one verdict that §3.1 forbids — and would put
    the hardware-noun prohibition in two places instead of one.
@@ -97,7 +97,7 @@ PRODUCED_BY_LEVEL_FRAME = (
 )
 
 #: The one carve-out source that carries attributable evidence. Mirrors
-#: ``crossover_v2_flow.CARVE_OUT_SOURCE_IDENTIFIED_NULL``; the sibling
+#: ``crossover_v2.spatial.CARVE_OUT_SOURCE_IDENTIFIED_NULL``; the sibling
 #: ``position_screen`` source has no tau and no classification by
 #: construction, so it is skipped rather than promoted with invented fields.
 SOURCE_IDENTIFIED_NULL = "identified_null"

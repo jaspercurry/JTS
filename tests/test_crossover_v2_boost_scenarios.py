@@ -62,10 +62,10 @@ import numpy as np
 import pytest
 
 from jasper.active_speaker.branch_target import SIGNIFICANT_GAIN_DB
-from jasper.active_speaker.crossover_v2_flow import (
+from jasper.active_speaker.crossover_v2.verification import (
     ECHO_BAND_HF_REGIME_FLOOR_HZ,
-    assemble_cloud_group_result,
 )
+from jasper.active_speaker.crossover_v2_flow import assemble_cloud_group_result
 from jasper.active_speaker.linearization_fit import (
     LinearizationFilter,
     _boost_exclusion_verdicts,

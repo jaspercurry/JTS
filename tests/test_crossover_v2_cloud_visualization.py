@@ -17,7 +17,7 @@ re-test of what an earlier PR already pins:
   alone (review N-4).
 * **Hardware-noun discipline over PR-7's OWN authored copy** — the static
   legend/heading/provenance strings this PR wrote, as opposed to the carve-out
-  disclosure strings plan PR-6b's ``crossover_v2_flow.carve_outs_by_band``
+  disclosure strings plan PR-6b's ``crossover_v2.spatial.carve_outs_by_band``
   produces and already pins with its own
   ``test_carve_out_copy_names_no_hardware_and_no_room_furniture``
   (``tests/test_crossover_v2_cloud_pipeline.py``). Two different authors, two
@@ -176,7 +176,7 @@ def test_page_shell_carries_every_element_id_the_renderer_reads():
 
 def test_page_shells_own_authored_copy_is_hardware_blind():
     """The static strings THIS page renders (as opposed to the carve-out
-    disclosure PR-6b's crossover_v2_flow.carve_outs_by_band produces and
+    disclosure PR-6b's crossover_v2.spatial.carve_outs_by_band produces and
     already pins its own hardware-noun test against) must hold to the same
     rule: no speaker-part or room-furniture noun, ever."""
     html = render_page("jts.local").decode()

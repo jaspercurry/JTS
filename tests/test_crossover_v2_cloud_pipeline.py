@@ -35,13 +35,17 @@ from jasper.active_speaker.crossover_v2.journey import (
     PHASE_CLOUD_MEASURE,
     PHASE_CLOUD_VERIFY,
 )
-from jasper.active_speaker.crossover_v2_flow import (
+from jasper.active_speaker.crossover_v2.spatial import (
     CLOUD_CURVE_MAX_JSON_POINTS,
-    ECHO_BAND_HF_REGIME_FLOOR_HZ,
     _composed_swept_band_hz,
-    _derive_cloud_echo_band_hz,
     _geometry_guidance_copy,
     _min_clamped_echo_band_width_hz,
+)
+from jasper.active_speaker.crossover_v2.verification import (
+    ECHO_BAND_HF_REGIME_FLOOR_HZ,
+)
+from jasper.active_speaker.crossover_v2_flow import (
+    _derive_cloud_echo_band_hz,
     _per_band_flatness_log_field,
     assemble_cloud_group_result,
 )
@@ -920,7 +924,7 @@ def test_position_invariant_copy_never_claims_which_of_the_two_it_is():
     single session cannot separate "travels with the speaker" from "a fixed
     path in the room", so the copy names BOTH and names the experiment that
     would tell them apart. S0 separated them only by moving the speaker."""
-    from jasper.active_speaker.crossover_v2_flow import _null_classification_copy
+    from jasper.active_speaker.crossover_v2.spatial import _null_classification_copy
     from jasper.audio_measurement.interference_nulls import (
         CLASSIFICATION_INSUFFICIENT_EVIDENCE,
         CLASSIFICATION_POSITION_DEPENDENT,
@@ -945,7 +949,7 @@ def test_a_carve_out_appears_under_every_spec_band_it_actually_carves():
     from BOTH bands, so it is disclosed under both. Clipping its interval to a
     band edge would attach τ/r to a fragment of what was measured, so the
     interval stays the null's own."""
-    from jasper.active_speaker.crossover_v2_flow import carve_outs_by_band
+    from jasper.active_speaker.crossover_v2.spatial import carve_outs_by_band
 
     straddling = SimpleNamespace(nulls=[_fake_null(7800.0, 8200.0, 8000.0)])
     bands = carve_outs_by_band(_flat_report(), straddling, ())
@@ -962,7 +966,7 @@ def test_the_screen_and_the_registry_stay_separately_attributed():
     rows are NOT merged, because a merged interval loses which instrument found
     it — and "both flagged this" is a stronger statement than either alone.
     ``merged_excluded_bands_hz`` remains the merged view for counting."""
-    from jasper.active_speaker.crossover_v2_flow import carve_outs_by_band
+    from jasper.active_speaker.crossover_v2.spatial import carve_outs_by_band
 
     registry = SimpleNamespace(nulls=[_fake_null(9000.0, 9400.0, 9200.0)])
     # The screen interval deliberately OVERLAPS the registry's own.
@@ -983,7 +987,7 @@ def test_severing_the_registry_costs_the_carve_out_its_reason_of_record():
     """The "delete one input, the test must fail" property for the disclosure:
     without the registry the same band still loses bins to the screen, but the
     expert line — the τ/r that IS the reason of record — disappears entirely."""
-    from jasper.active_speaker.crossover_v2_flow import carve_outs_by_band
+    from jasper.active_speaker.crossover_v2.spatial import carve_outs_by_band
 
     registry = SimpleNamespace(nulls=[_fake_null(9000.0, 9400.0, 9200.0)])
     with_registry = next(
@@ -1055,7 +1059,7 @@ def test_a_carve_out_below_the_trusted_floor_is_listed_under_no_band():
     nominal ``f_lo_hz``. Driven through a hand-built spec report rather than
     the assembler, because the synthetic cloud's own screen does not happen to
     carve below 250 Hz — an argument that it cannot is not a guard."""
-    from jasper.active_speaker.crossover_v2_flow import carve_outs_by_band
+    from jasper.active_speaker.crossover_v2.spatial import carve_outs_by_band
     from jasper.active_speaker.flat_spec import BandResult, FlatSpecReport
 
     def _band(graded_lo_hz):

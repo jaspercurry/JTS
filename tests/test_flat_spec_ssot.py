@@ -39,11 +39,11 @@ from jasper.active_speaker.crossover_v2.journey import (
     PHASE_CLOUD_MEASURE,
     PHASE_CLOUD_VERIFY,
 )
-from jasper.active_speaker.crossover_v2_flow import (
-    assemble_cloud_group_result,
+from jasper.active_speaker.crossover_v2.spatial import (
     cloud_trusted_floor_hz,
     cloud_validity_floor_hz,
 )
+from jasper.active_speaker.crossover_v2_flow import assemble_cloud_group_result
 from jasper.active_speaker.flat_spec import (
     REFERENCE_BAND_HZ,
     SPEC_BANDS,

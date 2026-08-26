@@ -4666,7 +4666,7 @@ def test_realized_chart_lengths_stay_within_cap_for_both_curve_families():
     16384-point window's 8193-bin grid — so the bound is pinned as a
     property of the functions, not of one fixture that happens to clear it.
     """
-    from jasper.active_speaker.crossover_v2_flow import _decimate_curve_for_json
+    from jasper.active_speaker.crossover_v2.spatial import _decimate_curve_for_json
 
     for n_fft in (1 << 16, 1 << 14):
         freqs = np.fft.rfftfreq(n_fft, 1.0 / 48000.0)

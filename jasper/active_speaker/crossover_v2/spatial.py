@@ -60,25 +60,34 @@ from __future__ import annotations
 
 import math
 from dataclasses import dataclass
-from typing import TYPE_CHECKING, Any, Mapping, Sequence
+from typing import TYPE_CHECKING, Any, Callable, Mapping, Sequence
 
 import numpy as np
 
-from jasper.audio_measurement.program import KIND_SWEEP
+from jasper.audio_measurement.gating import TRUSTED_FLOOR_MULTIPLIER
+from jasper.audio_measurement.program import KIND_SWEEP, RoleBand
 from jasper.audio_measurement.program_analysis import INTEGRITY_CHECK_SWEEP_HEARD
 
 from .contracts import CaptureValidity
 from .journey import PHASE_ENTRY_BASELINE, PHASE_LATERAL
 from .round_evidence import MeasuredResponse, measured_response_from_analysis
-from .verification import evaluate_capture_validity
+from .verification import (
+    ECHO_BAND_HF_REGIME_FLOOR_HZ,
+    _crossover_region_null_registry,
+    _null_registry_to_dict,
+    evaluate_capture_validity,
+)
 
 if TYPE_CHECKING:  # pragma: no cover - typing only
     from jasper.audio_measurement.program_analysis import ProgramAnalysis
 
 __all__ = [
+    "CARVE_OUT_SOURCE_IDENTIFIED_NULL",
+    "CARVE_OUT_SOURCE_POSITION_SCREEN",
     "CLOUD_CLOSE_NONE",
     "CLOUD_CLOSE_AWAITING_CONFIRM",
     "CLOUD_CLOSE_RUNNING",
+    "CLOUD_CURVE_MAX_JSON_POINTS",
     "GEOMETRY_RETRY_POSITIONS",
     "LATERAL_EVIDENCE_BAND_HZ",
     "LATERAL_EVIDENCE_POINTS_PER_OCTAVE",
@@ -103,10 +112,15 @@ __all__ = [
     "GeometryRetake",
     "BoostExclusion",
     "CloudCombine",
+    "CloudGroupResult",
     "CloudVerdict",
     "LateralPose",
     "LateralPoseCurve",
+    "assemble_cloud_group_result",
+    "carve_outs_by_band",
     "cloud_position_capture",
+    "cloud_trusted_floor_hz",
+    "cloud_validity_floor_hz",
     "combine_cloud_positions",
     "cloud_geometry_verdict",
     "cloud_position_screens",
@@ -1436,3 +1450,1023 @@ def cloud_geometry_verdict(positions: Sequence[_CloudPosition]) -> CloudVerdict:
         _geometry_verdict_from_combined(result.combined, len(positions)),
         result.diagnostics,
     )
+
+
+# --------------------------------------------------------------------------- #
+# THE GROUP CLOSE — what a closed cloud is worth, once
+# --------------------------------------------------------------------------- #
+#
+# Everything above answers "is this ONE take evidence".  This section answers
+# the question the group close asks next: given every retained position, what
+# did the cloud measure, what did the honesty instruments carve out of it, and
+# what is the resulting spec verdict.  It lived in ``crossover_v2_flow`` until
+# wave 3 rank 2; it sits here because its inputs are this module's own
+# ``_CloudPosition`` group and :func:`combine_cloud_positions`' answer, and
+# splitting a reduction from the objects it reduces is what made the flow a god
+# file.
+#
+# **The "no household vocabulary" rule above is about REFUSALS and is intact.**
+# A screen still leaves as a kind from :data:`SCREEN_KINDS` and something else
+# maps it to household copy.  What this section carries is DISCLOSURE copy on a
+# group result — sentences about what an instrument carved out, which have no
+# refusal code to route through and no other owner; they arrived with
+# ``carve_outs_by_band`` and ``assemble_cloud_group_result``, which are their
+# only callers.
+
+# --------------------------------------------------------------------------- #
+# PR-4: contract-derived analysis bands + the live-flow honesty pipeline
+# --------------------------------------------------------------------------- #
+#
+# docs/flat-linearization-productization-plan.md, PR-4: "The echo/detector
+# band and PR-2's signal_band_hz derive from the declared contract: the
+# summed system's swept band (RoleBand.band as composed) for the passband;
+# the tweeter's usable_frequency_range_hz / measurement_band_hz for the upper
+# echo band -- replacing DEFAULT_ECHO_BAND_HZ's flat constant at the call
+# site." This section is that derivation, plus the single result-assembly
+# function issue #1742 item 4 asks for.
+
+# Cloud curves decimated for persistence (bundle cloud.json + the durable v2
+# state's compact cloud block) -- mirrors
+# jasper.web.correction_crossover_v2.MAX_PERSISTED_SUM_POINTS (512), which
+# this module cannot import without a circular dependency (that module
+# imports THIS one). Kept as an independent constant rather than a shared one
+# for that reason; if the two ever need to diverge, they now can.
+CLOUD_CURVE_MAX_JSON_POINTS = 512
+
+
+def _composed_swept_band_hz(roles: Sequence[RoleBand]) -> tuple[float, float]:
+    """The summed system's swept band -- the union of every declared
+    ``RoleBand.band`` -- PR-4's contract-derived ``signal_band_hz``.
+
+    No existing function composes across roles (each ``RoleBand.band`` is one
+    driver's own excitation-ceiling band, from
+    ``excitation_safety_plan.resolve_driver_excitation_ceilings``); this is
+    that composition, added here because it is session-owned wiring policy
+    (which roles participate in the passband), not a pure-DSP concern that
+    belongs in ``spatial_combine`` or ``program.py``.
+    """
+    lo = min(float(r.band.lower_hz) for r in roles)
+    hi = max(float(r.band.upper_hz) for r in roles)
+    return (lo, hi)
+
+
+@dataclass(frozen=True)
+class _CloudEchoBand:
+    """The echo/null analysis band the pipeline will APPLY, plus how it was
+    derived -- one value, so the band and its provenance cannot be carried
+    (or persisted) apart from each other.
+
+    ``band_hz`` is what the detector actually runs on. ``derived_lo_hz`` is
+    the lower edge the declared contract produced BEFORE the HF-regime clamp
+    (equal to ``band_hz[0]`` whenever no clamp happened), so a reader can
+    always tell a contract-derived band from a clamped one **without** the
+    journal -- the honesty rule issue #1763 turned into a requirement.
+    ``source`` names WHICH derivation path produced the band, because
+    "the module default" means something different when nothing was declared
+    than when a clamp could not produce a usable band:
+
+    * ``declared`` -- the tweeter's declared ``measurement_band_hz``,
+      possibly narrowed by the passband containment clamp, possibly raised
+      by the HF-regime clamp (``hf_regime_clamped`` tells which).
+    * ``undeclared_default`` -- no measurement band was threaded through, so
+      ``DEFAULT_ECHO_BAND_HZ`` stands in (pre-PR-4 behaviour, unchanged).
+    * ``clamp_degenerate_default`` -- the HF clamp would have left a band too
+      narrow for the detector to resolve anything in (see
+      :func:`_min_clamped_echo_band_width_hz`), so ``DEFAULT_ECHO_BAND_HZ``
+      stands in instead.
+    * ``passband_fallback`` -- the declared band sits entirely outside the
+      composed passband, so the passband itself stands in.
+
+    ``diagnostics`` carries the journal fields the flow emits, and is ``None``
+    on the ordinary path where there is nothing to say.  They travel as data
+    rather than as a log call because this module is side-effect-free (see the
+    module docstring); the event NAME and its level stay with the flow, which
+    picks them off ``source`` and ``hf_regime_clamped``.  Same shape as
+    :class:`BoostExclusion` and :class:`CloudCombine`, for the same reason.
+    """
+
+    band_hz: tuple[float, float]
+    source: str
+    hf_regime_clamped: bool
+    derived_lo_hz: float
+    diagnostics: dict[str, Any] | None = None
+
+    def disclosure(self) -> dict[str, Any]:
+        """The JSON-native provenance block the pipeline payload carries.
+
+        Deliberately does NOT repeat ``band_hz``: the payload already
+        publishes the applied band as ``echo_band_hz``, and two copies of one
+        pair is how they come to disagree.
+        """
+        return {
+            "source": self.source,
+            "hf_regime_clamped": self.hf_regime_clamped,
+            "derived_lo_hz": float(self.derived_lo_hz),
+            "floor_hz": ECHO_BAND_HF_REGIME_FLOOR_HZ,
+        }
+
+
+def _min_clamped_echo_band_width_hz() -> float:
+    """The narrowest band the HF-regime clamp may hand the detector, derived
+    from the DETECTOR's own constants rather than picked.
+
+    ``detect_echo``'s quefrency step is ``resolution_us = 1e6 / bandwidth``,
+    and two of its gates are multiples of that step: the searched window's
+    edge margin (``WINDOW_EDGE_MARGIN_STEPS``, one step above
+    ``search_us[0]``) and -- independently of the window --
+    ``assess_geometry``'s refusal to cluster any estimate whose ``tau_us``
+    is below ``GEOMETRY_MIN_RESOLUTION_STEPS * resolution_us``. The geometry
+    floor is the binding one, and once it reaches the TOP of the searched
+    window no delay the detector is allowed to look for can be clustered at
+    all, so the band cannot produce a geometry lock however good the room is:
+
+        GEOMETRY_MIN_RESOLUTION_STEPS * 1e6 / DEFAULT_ECHO_SEARCH_US[1]
+          = 3.0 * 1e6 / 800 us
+          = 3750 Hz
+
+    (The edge margin's own bound is 1.0 * 1e6 / (800 - 120) us => 1470 Hz,
+    i.e. slacker, which is why the geometry floor is the one to read.
+    ``DEFAULT_ECHO_SEARCH_US`` is the right window to read because this
+    program's ``combine_positions`` call passes no ``echo_search_us``, so the
+    default window is the one actually searched.)
+
+    This dominates the detector's other width constraint,
+    ``MIN_ECHO_BAND_BINS`` (16 bins of ``detect_echo``'s own FFT): that FFT
+    is floored at 4096 points, so at this program's 48 kHz the coarsest bin
+    spacing is 11.72 Hz and 16 bins need only 15 * 11.72 = 175.8 Hz -- 21x
+    narrower than the bound above. One rule is therefore enough: a band that
+    clears this floor clears the bin-count refusal too.
+
+    Derived rather than hard-coded so a change to either detector constant
+    moves this bound with it instead of leaving a stale literal behind.
+    """
+    from jasper.audio_measurement.spatial_combine import (
+        DEFAULT_ECHO_SEARCH_US,
+        GEOMETRY_MIN_RESOLUTION_STEPS,
+    )
+
+    return GEOMETRY_MIN_RESOLUTION_STEPS * 1e6 / float(DEFAULT_ECHO_SEARCH_US[1])
+
+
+def _derive_cloud_echo_band_hz(
+    signal_band_hz: tuple[float, float],
+    tweeter_measurement_band_hz: tuple[float, float] | None,
+) -> _CloudEchoBand:
+    """The contract-derived echo/null analysis band (PR-4): the tweeter's
+    declared ``measurement_band_hz``, replacing ``DEFAULT_ECHO_BAND_HZ``'s
+    flat constant at this call site -- returned WITH its provenance (see
+    :class:`_CloudEchoBand`).
+
+    Falls back to ``DEFAULT_ECHO_BAND_HZ`` when the tweeter's measurement
+    band was not threaded through (an older/incomplete confirmed profile) --
+    that constant is the module's own long-standing default, not a new
+    invention, and every existing corpus test that validated
+    ``identify_interference_nulls`` against the S0 corpus did so at exactly
+    this band (``S0_BAND_HZ`` in ``tests/test_interference_nulls.py``).
+
+    **Containment (inherited PR-2/PR-6a constraint):** clamped to sit INSIDE
+    ``signal_band_hz`` (the derived passband), never wider. A band that
+    neither contains nor sits clear of the analysis band leaves
+    ``detect_echo``'s signal-presence screen uncalibrated
+    (``spatial_combine.BAND_BELOW_PASSBAND_MARGIN_DB``'s docstring: "What is
+    NOT calibrated: a passband narrower than the analysis band, or
+    overlapping it"). Since ``signal_band_hz`` is the union of BOTH roles'
+    excitation bands (always at least as wide as one driver's own
+    measurement window in the ordinary 2-way case -- the woofer's lower edge
+    sits well below the tweeter's, and the tweeter's own excitation ceiling
+    upper edge is never narrower than its measurement band, per
+    ``resolve_driver_excitation_ceilings``'s "Band-edge asymmetry" rule),
+    this clamp is a no-op for every declared contract exercised by this
+    program's tests and only bites a genuinely malformed one.
+
+    **HF regime (issue #1763):** when the contained lower edge sits below
+    :data:`ECHO_BAND_HF_REGIME_FLOOR_HZ`, it is RAISED to that floor and the
+    clamp is disclosed -- the returned provenance, plus the WARNING event the
+    flow emits from ``diagnostics`` (slug suffix
+    ``cloud_echo_band_clamped_to_hf_regime``), so neither a journal reader nor
+    a payload reader has to infer it from the band alone. The contract's
+    upper edge is kept: the floor is a statement about where the detector's
+    calibrations hold, not about how wide the driver's window is. See
+    :data:`ECHO_BAND_HF_REGIME_FLOOR_HZ`'s own comment for the six-band
+    deficit table behind the number, and for why PR-4's disclose-and-proceed
+    design was replaced.
+
+    **When the clamp cannot produce a usable band** -- the surviving width
+    ``upper - floor`` is below :func:`_min_clamped_echo_band_width_hz` -- the
+    band falls back to ``DEFAULT_ECHO_BAND_HZ`` with its own disclosure
+    rather than to a stub the detector would refuse everything in. That trade
+    is stated rather than glossed: the default is NOT re-clamped into the
+    passband, so in this corner the band can sit outside a pathologically low
+    passband and leave the signal-presence screen's deficit statistic
+    uncalibrated. That is the lesser loss -- an uncontained band still runs
+    both estimators, whereas a band too narrow to resolve any delay in the
+    searched window makes every number downstream meaningless. It is also
+    unreachable from any plausible contract: it needs
+    ``min(declared_upper, passband_upper)`` below 7750 Hz, i.e. a "tweeter"
+    (or a whole 2-way system) that is not swept into the top three octaves --
+    the same malformed-contract family as the passband fallback below.
+    """
+    from jasper.audio_measurement.spatial_combine import DEFAULT_ECHO_BAND_HZ
+
+    declared = tweeter_measurement_band_hz is not None
+    band = tweeter_measurement_band_hz or DEFAULT_ECHO_BAND_HZ
+    lo = max(float(band[0]), float(signal_band_hz[0]))
+    hi = min(float(band[1]), float(signal_band_hz[1]))
+    if lo >= hi:
+        # A genuinely malformed declared contract -- the tweeter's own
+        # measurement band sits entirely outside the composed passband.
+        # Fall back to the passband itself rather than hand a caller an
+        # inverted/degenerate pair that would raise deep inside
+        # combine_positions with no context about why.
+        return _CloudEchoBand(
+            band_hz=(float(signal_band_hz[0]), float(signal_band_hz[1])),
+            source="passband_fallback",
+            hf_regime_clamped=False,
+            derived_lo_hz=lo,
+            diagnostics={
+                "declared_measurement_band_hz": list(band),
+                "signal_band_hz": list(signal_band_hz),
+            },
+        )
+    if lo < ECHO_BAND_HF_REGIME_FLOOR_HZ:
+        min_width_hz = _min_clamped_echo_band_width_hz()
+        if hi - ECHO_BAND_HF_REGIME_FLOOR_HZ < min_width_hz:
+            return _CloudEchoBand(
+                band_hz=(float(DEFAULT_ECHO_BAND_HZ[0]), float(DEFAULT_ECHO_BAND_HZ[1])),
+                source="clamp_degenerate_default",
+                hf_regime_clamped=False,
+                derived_lo_hz=lo,
+                diagnostics={
+                    "derived_lo_hz": lo, "upper_hz": hi,
+                    "floor_hz": ECHO_BAND_HF_REGIME_FLOOR_HZ,
+                    "min_width_hz": min_width_hz,
+                    "fallback_band_hz": list(DEFAULT_ECHO_BAND_HZ),
+                },
+            )
+        # ``clamped_lo_hz`` equals ``floor_hz`` by construction; both are
+        # logged so a journal reader does not have to know that to read the
+        # line.
+        return _CloudEchoBand(
+            band_hz=(ECHO_BAND_HF_REGIME_FLOOR_HZ, hi),
+            source="declared" if declared else "undeclared_default",
+            hf_regime_clamped=True,
+            derived_lo_hz=lo,
+            diagnostics={
+                "derived_lo_hz": lo,
+                "clamped_lo_hz": ECHO_BAND_HF_REGIME_FLOOR_HZ,
+                "floor_hz": ECHO_BAND_HF_REGIME_FLOOR_HZ, "upper_hz": hi,
+            },
+        )
+    return _CloudEchoBand(
+        band_hz=(lo, hi),
+        source="declared" if declared else "undeclared_default",
+        hf_regime_clamped=False,
+        derived_lo_hz=lo,
+    )
+
+
+def _decimate_curve_for_json(
+    freqs_hz: np.ndarray, magnitude_db: np.ndarray,
+) -> dict[str, list[float]]:
+    """Stride-decimate one combined curve to at most
+    :data:`CLOUD_CURVE_MAX_JSON_POINTS`, for disclosure only.
+
+    **No longer the same shape as ``_decimate_sum`` (issue #1858).** Before
+    that fix this mirrored ``jasper.web.correction_crossover_v2._decimate_sum``
+    exactly (floor-division stride, identity when already short enough) so
+    the two persisted curve payloads read the same way to a consumer.
+    ``_decimate_sum`` now block-averages instead, because its input
+    (``conductor.measure_predicted_sum``) is the RAW, unsmoothed prediction
+    and a stride over that aliases below ~500 Hz. This function's input,
+    ``combined.power_mean_spec_db``, has already been through
+    ``smooth_fractional_octave`` inside :func:`combine_positions` before it
+    ever reaches here, so a plain stride over an already-smoothed curve does
+    not reintroduce that failure mode -- the two callers start from
+    differently-prepared curves, which is why one still strides and the
+    other no longer does. ``freqs_hz`` and ``magnitude_db`` remain
+    identity-shaped (floor-division stride) either way.
+    """
+    n = len(freqs_hz)
+    step = max(1, n // CLOUD_CURVE_MAX_JSON_POINTS)
+    return {
+        "freqs_hz": [float(f) for f in freqs_hz[::step]],
+        "magnitude_db": [float(m) for m in magnitude_db[::step]],
+    }
+
+
+def _geometry_guidance_copy(geometry: Mapping[str, Any]) -> str:
+    """Plain-language "spread the mic further" guidance from a geometry
+    verdict dict (:func:`cloud_geometry_verdict`'s own shape) -- the
+    household-facing surface issue #1742 item 2 asked for. Recorded since
+    PR-3b (the durable v2 state's ``cloud`` block, ``GEOMETRY_RETRY_POSITIONS``'s
+    own comment). PR-4 carries this copy onto the envelope and `/state`
+    (`crossover_v2_status_block`'s compact projection); no household-facing
+    surface renders it yet (zero JS/asset changes in PR-4) -- PR-7 renders
+    it.
+
+    Softened, never suppressed, when ``thin_evidence`` -- and the softened
+    copy names the qualitative floor ("the bare minimum of positions"),
+    never a discrete number or a percentage, because thin_evidence is a
+    cliff at an exact confident-estimate count, not a gradient
+    (spatial_combine.GeometryLock's own docstring) -- naming the actual
+    count would read as a gradient the instrument does not claim. Empty
+    string when not locked -- nothing to say.
+    """
+    if not geometry.get("locked"):
+        return ""
+    if geometry.get("thin_evidence"):
+        return (
+            "The measured echo pattern looks the same at every microphone "
+            "position, but only the bare minimum of positions gave a "
+            "confident enough reading to tell. Spreading the microphone "
+            "further apart next time would make this more certain."
+        )
+    return (
+        "The measured echo pattern did not change between microphone "
+        "positions. Spreading the microphone further apart next time may "
+        "help JTS tell the speaker's own sound apart from the room's."
+    )
+
+
+# --------------------------------------------------------------------------- #
+# Carve-out disclosure (owner decision 1, 2026-07-25; plan PR-6b)
+#
+# The owner's decision of record: identified interference nulls are excluded
+# from spec evaluation AND from correction, the band's tolerance applies to the
+# SURVIVING envelope, and "the report discloses 'EQ cannot fill these' with the
+# numbers." ``evaluate_flat_spec`` already does the excluding -- the masked bins
+# leave both the reference level and every band's deviation. What it does not
+# do, and must not, is say WHY: it is a pure evaluator that takes a bool mask
+# and holds no product policy (its own module docstring). So the "why" is
+# assembled here, in the wiring layer that already holds the registry and the
+# spec report side by side, next to ``_geometry_guidance_copy`` -- the other
+# household-facing copy derived from a pipeline verdict.
+#
+# **This module owns the carve-out copy strings; PR-7 renders them.** One
+# owner, so a chart callout and the envelope's expert disclosure cannot say
+# different things about the same carved range.
+# --------------------------------------------------------------------------- #
+
+# Which honesty instrument carved a range. Snake_case and self-identifying,
+# mirroring the vocabulary rule interference_nulls.py states for its own slugs.
+CARVE_OUT_SOURCE_IDENTIFIED_NULL = "identified_null"
+CARVE_OUT_SOURCE_POSITION_SCREEN = "position_screen"
+
+
+def _format_carve_out_hz(hz: float) -> str:
+    """One frequency as household copy — kHz at and above 1 kHz, Hz below.
+
+    Deliberately NOT the ``f"{hz:.0f} Hz"`` form the envelope's flatness lines
+    use: those quote a single worst bin, while these copy strings list several
+    frequencies in one sentence, where five-digit Hz figures read as noise.
+    """
+    return f"{hz / 1000.0:.1f} kHz" if hz >= 1000.0 else f"{hz:.0f} Hz"
+
+
+def _join_carve_out_phrases(parts: Sequence[str]) -> str:
+    """``["a", "b", "c"]`` -> ``"a, b and c"``. No serial comma, matching the
+    house copy elsewhere in this flow."""
+    parts = tuple(parts)
+    if not parts:
+        return ""
+    if len(parts) == 1:
+        return parts[0]
+    return f"{', '.join(parts[:-1])} and {parts[-1]}"
+
+
+def _null_classification_copy(classification: str) -> str:
+    """The classification's own household sentence, or ``""`` for a
+    classification this copy does not cover.
+
+    **The ``position_invariant`` wording is load-bearing and pre-registered**
+    (plan PR-1's classification vocabulary, PR-7's callout copy): a single
+    session cannot separate "travels with the speaker" from "a path in the room
+    that did not change while measuring", and the output must not claim it can
+    — S0 separated them only by MOVING the speaker. So the copy names both and
+    names the experiment that would tell them apart.
+
+    No hardware noun appears here, in either branch. The classification is
+    evidence about how a null behaved across a mic cloud; it is not evidence
+    about what part of a speaker or room produced it, and naming one would be
+    the device-taxonomy guess this program forbids in shipped copy (the JTS3
+    rim-wave attribution is session knowledge, not measured general truth).
+    """
+    from jasper.audio_measurement.interference_nulls import (
+        CLASSIFICATION_POSITION_DEPENDENT,
+        CLASSIFICATION_POSITION_INVARIANT,
+    )
+
+    if classification == CLASSIFICATION_POSITION_INVARIANT:
+        return (
+            " It sat at the same frequencies at every microphone position — "
+            "consistent with something that travels with the speaker, or with "
+            "a path that did not change while measuring; moving the speaker "
+            "and measuring again would tell those apart."
+        )
+    if classification == CLASSIFICATION_POSITION_DEPENDENT:
+        return (
+            " It appeared at some microphone positions and not others, so "
+            "whatever causes it does not travel with the speaker."
+        )
+    return ""
+
+
+def _carve_out_records(
+    null_report: Any, screen_bands_hz: Sequence[Sequence[float]],
+) -> list[dict[str, Any]]:
+    """Every carved range, tagged with the instrument that carved it.
+
+    The two honesty instruments are listed SEPARATELY rather than merged: a
+    merged interval loses which instrument found it, and the registry's rows
+    are the only ones carrying τ/r — the exclusion *reason of record*. Ranges
+    from the two sources may overlap each other; that is reported as two rows
+    (one per instrument's own evidence), not silently collapsed, because "both
+    instruments flagged this" is a stronger statement than either alone.
+    ``merged_excluded_bands_hz`` remains the merged view for anyone counting.
+
+    A registry row's interval is the null's OWN ``f_lo_hz``/``f_hi_hz`` (its
+    half-depth width), unclipped to any spec band — τ and r describe the whole
+    null, so clipping the interval to a band edge would attach the numbers to a
+    fragment of what was measured.
+
+    Ordered by lower edge, then by source, so two rows starting at the same
+    frequency come out in a stable order rather than an input-order one.
+    """
+    records: list[dict[str, Any]] = []
+    for null in null_report.nulls:
+        records.append(
+            {
+                "f_lo_hz": float(null.f_lo_hz),
+                "f_hi_hz": float(null.f_hi_hz),
+                "source": CARVE_OUT_SOURCE_IDENTIFIED_NULL,
+                "f_center_hz": float(null.f_center_hz),
+                "n": int(null.n),
+                "tau_us": float(null.tau_us),
+                "r_time": float(null.r_time),
+                "r_freq": float(null.r_freq),
+                "depth_db": float(null.depth_db),
+                "classification": str(null.classification),
+                "reason": (
+                    "A delayed copy of the sound cancels this range, and EQ "
+                    "cannot fill a cancellation, so it is left out of "
+                    "correction and out of grading."
+                    + _null_classification_copy(str(null.classification))
+                ),
+            }
+        )
+    for band in screen_bands_hz:
+        records.append(
+            {
+                "f_lo_hz": float(band[0]),
+                "f_hi_hz": float(band[1]),
+                "source": CARVE_OUT_SOURCE_POSITION_SCREEN,
+                "reason": (
+                    "The microphone positions disagreed about this range much "
+                    "more than about the rest of the spectrum, so it reads as "
+                    "interference rather than the speaker's own response and "
+                    "is left out of correction and out of grading."
+                ),
+            }
+        )
+    records.sort(key=lambda record: (record["f_lo_hz"], record["source"]))
+    return records
+
+
+def _carve_out_disclosure_copy(records: Sequence[Mapping[str, Any]]) -> str:
+    """The band's household-facing headline — plain language, no τ/r.
+
+    ``""`` when nothing was carved in the band, mirroring
+    :func:`_geometry_guidance_copy`'s "empty string when not locked — nothing
+    to say" rule rather than rendering a "no interference found" sentence a
+    reader could mistake for a measurement.
+
+    The delay is quoted in **milliseconds** here because it is the one number
+    that makes the sentence mean something to a household ("a delayed copy
+    arrives 0.32 ms later"); τ stays in microseconds in the structured record,
+    which is the registry's own unit and the one owner of it.
+    """
+    nulls = [r for r in records if r["source"] == CARVE_OUT_SOURCE_IDENTIFIED_NULL]
+    screened = [r for r in records if r["source"] == CARVE_OUT_SOURCE_POSITION_SCREEN]
+    sentences: list[str] = []
+    if nulls:
+        where = _join_carve_out_phrases(
+            [_format_carve_out_hz(float(r["f_center_hz"])) for r in nulls]
+        )
+        # One ladder, one τ (IdentifiedNull.tau_us is "the same value on every
+        # rung of one report" — its own docstring), so the first row's delay
+        # describes them all.
+        delay_ms = float(nulls[0]["tau_us"]) / 1000.0
+        plural = len(nulls) > 1
+        sentences.append(
+            f"{'Interference nulls at' if plural else 'An interference null at'} "
+            f"{where} — a delayed copy of the sound arrives {delay_ms:.2f} ms "
+            f"later. EQ cannot fill {'these' if plural else 'this'}, so "
+            f"{'they are' if plural else 'it is'} left out of correction and "
+            "out of this band's grading."
+        )
+    if screened:
+        plural = len(screened) > 1
+        # "One range" rather than "1 range": this is prose, and the frequency
+        # figures are the numerals a reader should be counting in it.
+        count = f"{len(screened)}" if plural else "One"
+        subject = f"{count} {'further ' if nulls else ''}"
+        subject += "ranges are" if plural else "range is"
+        tail = (
+            "left out because the microphone positions disagreed about "
+            if nulls
+            else (
+                "left out of correction and out of this band's grading "
+                "because the microphone positions disagreed about "
+            )
+        )
+        sentences.append(
+            f"{subject} {tail}{'them' if plural else 'it'} too much to grade."
+        )
+    return " ".join(sentences)
+
+
+def _carve_out_expert_copy(records: Sequence[Mapping[str, Any]]) -> str:
+    """The expert-layer line — the same carve-outs WITH τ and r.
+
+    Separated from :func:`_carve_out_disclosure_copy` rather than folded into
+    it because the two registers have different readers and the plan puts τ/r
+    behind a disclosure ("τ/r vocabulary lives in an expert disclosure, not the
+    headline"). Both are produced here so a chart callout and the envelope's
+    ``<details>`` cannot drift into saying different things.
+
+    ``r`` is reported as the pair the registry actually holds — the
+    time-domain and frequency-domain estimates — rather than one averaged
+    figure, because their AGREEMENT is what admitted the null in the first
+    place, and an average would hide it.
+    """
+    nulls = [r for r in records if r["source"] == CARVE_OUT_SOURCE_IDENTIFIED_NULL]
+    if not nulls:
+        return ""
+    where = _join_carve_out_phrases(
+        [
+            f"{_format_carve_out_hz(float(r['f_center_hz']))} (rung {int(r['n'])}, "
+            f"{float(r['depth_db']):.1f} dB deep)"
+            for r in nulls
+        ]
+    )
+    first = nulls[0]
+    return (
+        f"carved out of grading: {where}; delay τ {float(first['tau_us']):.0f} µs, "
+        f"reflection ratio r {float(first['r_time']):.3f} measured in time / "
+        f"{float(first['r_freq']):.3f} implied by null depth"
+    )
+
+
+def carve_outs_by_band(
+    spec_report: Any,
+    null_report: Any,
+    screen_bands_hz: Sequence[Sequence[float]],
+) -> list[dict[str, Any]]:
+    """Per spec band: which ranges were carved out, why, and with what numbers.
+
+    Owner decision 1 (2026-07-25) in payload form. One entry per band of
+    ``spec_report``, **always all of them, in the report's own order**, so a
+    consumer can join to ``spec["bands"]`` by index or by ``band_hz`` and can
+    render "nothing carved here" without having to infer it from an absence.
+
+    A record is included in a band when its interval OVERLAPS the band's
+    ``[graded_lo_hz, f_hi_hz)`` span — the span actually graded, not the
+    nominal row — so a null straddling a band edge appears under both bands it
+    actually carves, and one sitting entirely below the session's trusted floor
+    appears under none, because it removed no bin any verdict was taken from.
+
+    **What this does NOT include: the gate's trusted-floor clamp.** Bins
+    below the group's ``trusted_floor_hz`` also leave the spec evaluation,
+    but they are not an interference verdict and are deliberately kept out of
+    the honesty instruments' own accounting — the same separation
+    ``_compact_cloud_status`` carries for exactly this reason. Since #2551
+    that separation is structural rather than a convention the reader has to
+    hold: the clamp raises each band's lower EDGE, so a sub-floor bin is not
+    in the band to be excluded FROM. A band's ``n_excluded`` is therefore
+    exactly what these records cover, and the floor shows up as the spec
+    report's ``graded_lo_hz`` beside the nominal ``band_hz`` here rather than
+    hiding inside a count.
+    """
+    records = _carve_out_records(null_report, screen_bands_hz)
+    out: list[dict[str, Any]] = []
+    for band in spec_report.bands:
+        f_lo, f_hi = float(band.f_lo_hz), float(band.f_hi_hz)
+        # Overlap is tested against the edge this band was GRADED from, not
+        # its nominal row: a null below the trusted floor carved nothing out
+        # of this band's grading, because those bins were never in it. That
+        # is what makes the equality claimed above ("n_excluded is exactly
+        # what these records cover") true rather than approximate. `band_hz`
+        # below stays the nominal pair, since it is the join key a consumer
+        # uses against ``spec["bands"]`` — which carries `graded_lo_hz`
+        # itself, so this payload does not copy it and cannot drift from it.
+        graded_lo = f_lo if band.graded_lo_hz is None else float(band.graded_lo_hz)
+        in_band = [
+            record
+            for record in records
+            if record["f_lo_hz"] < f_hi and record["f_hi_hz"] > graded_lo
+        ]
+        out.append(
+            {
+                "band_hz": [f_lo, f_hi],
+                "intervals": [dict(record) for record in in_band],
+                "disclosure": _carve_out_disclosure_copy(in_band),
+                "expert": _carve_out_expert_copy(in_band),
+            }
+        )
+    return out
+
+
+def cloud_validity_floor_hz(positions: Sequence[_CloudPosition]) -> float | None:
+    """The group's own gated validity floor — the WORST (highest) of its
+    positions' floors, or ``None`` when no position reported a usable one.
+
+    Why the worst rather than a mean or the anchor's: the combined curve is a
+    power mean ACROSS these positions, so a bin below any one position's
+    reflection-gate floor is contaminated in the average by that position's
+    truncated-window artifact (``gating.f_valid_floor_hz`` — the same
+    quantity ``_analyze_verify``'s tracking band already clamps up to, W6.9
+    forensics). Taking the highest floor is the only choice under which every
+    graded bin is inside every contributing capture's validity.
+
+    ``None`` (no position carried a finite, positive floor) means the lower
+    edge could not be verified — NOT that it is zero. Callers disclose it as
+    unknown and clamp nothing; see :func:`assemble_cloud_group_result`.
+    """
+    floors = [
+        float(getattr(p.response, "validity_floor_hz", None) or 0.0)
+        for p in positions
+    ]
+    usable = [f for f in floors if math.isfinite(f) and f > 0.0]
+    return max(usable) if usable else None
+
+
+def cloud_trusted_floor_hz(validity_floor_hz: float | None) -> float | None:
+    """The group's TRUSTED floor (``2.5/T``) from its validity floor
+    (``1/T``) — the number the flat spec is graded above (issue #2551).
+
+    ``1/T`` is where a reflection-free window of ``T`` has one full cycle of
+    resolution; ``2.5/T`` is where the gated magnitude is actually
+    trustworthy, and the E4 gate-stability sweep is why the distinction is
+    not academic — the 1-4 kHz band moved **2.1 dB** across 3/5/7/10 ms
+    gates purely because part of it sat below the shorter windows' trusted
+    floor, while everything above it held to <=0.006 dB
+    (:data:`~jasper.audio_measurement.gating.TRUSTED_FLOOR_MULTIPLIER`).
+    The gate's own delta probe already prices itself over this floor and
+    refuses to grade below it; before #2551 the spec evaluator did not, so
+    one capture was read by two graders against two honesty floors.
+
+    Derived rather than plumbed, deliberately. Both floors come from the
+    same window — ``f_trusted = 2.5 * f_valid`` exactly
+    (:func:`~jasper.audio_measurement.gating.f_trusted_floor_hz` is that
+    multiply) — and the multiplier is monotonic, so the trusted floor of the
+    group's WORST validity floor is the worst of the positions' trusted
+    floors. One input, one owner, and no caller that passes a validity floor
+    can forget to pass the trusted one and silently grade lower.
+
+    ``None`` in, ``None`` out; likewise for a non-finite or non-positive
+    floor, which is "no floor was established" and never "a floor of zero".
+    Callers clamp nothing then, and say so — see
+    :func:`assemble_cloud_group_result`.
+    """
+    if validity_floor_hz is None:
+        return None
+    floor = float(validity_floor_hz)
+    if not math.isfinite(floor) or floor <= 0.0:
+        return None
+    return TRUSTED_FLOOR_MULTIPLIER * floor
+
+
+@dataclass(frozen=True)
+class CloudGroupResult:
+    """:func:`assemble_cloud_group_result`'s payload, plus the line a failure earns.
+
+    ``diagnostics`` carries the journal fields the flow emits under
+    ``event=correction.crossover_v2_cloud_pipeline_failed``, and is ``None``
+    when there was nothing to say.  They travel as data rather than as a log
+    call because this module is side-effect-free (see the module docstring);
+    the event NAME stays with the flow, which owns it.  Same shape as
+    :class:`CloudCombine`, for the same reason.
+    """
+
+    result: dict[str, Any]
+    diagnostics: dict[str, Any] | None = None
+
+
+def assemble_cloud_group_result(
+    combined: Any,
+    *,
+    echo_band_hz: tuple[float, float],
+    echo_band_provenance: Mapping[str, Any] | None = None,
+    validity_floor_hz: float | None = None,
+    tier: str = "",
+    position_records: Sequence[Mapping[str, Any]] = (),
+    crossover_region_hz: tuple[float, float] | None = None,
+    graded_spec_sink: Callable[[Any], None] | None = None,
+) -> CloudGroupResult:
+    """The wiring contract (issue #1742 item 4) -- THE single function that
+    consumes the exclusion mask, ``geometry.locked``, and the null registry
+    TOGETHER. No other code in this program may read
+    ``combined.excluded``/``combined.geometry.locked`` and treat that as the
+    honesty verdict on its own; doing so is reading the mask alone, the hole
+    this item exists to close (see the plan doc's "Architecture" table: "the
+    mask alone is a hole").
+
+    Runs :func:`~jasper.audio_measurement.interference_nulls.identify_interference_nulls`
+    on ``combined`` at ``echo_band_hz``, unions its excluded bins with the
+    combiner's own power-vs-median screen (``combined.excluded``), and
+    evaluates :func:`~jasper.active_speaker.flat_spec.evaluate_flat_spec`
+    against the merged mask -- the plan's "merged honesty mask = screen ∪
+    identified nulls" line, made executable.
+
+    ``combined`` may be ``None`` (the group could not be combined at all --
+    :func:`combine_cloud_positions`'s own honest "unknown") or a
+    :class:`~jasper.audio_measurement.spatial_combine.CombinedResponse`.
+
+    **The spec-curve SSOT (plan PR-5).** The ``spec`` report this builds is
+    the ONE construction every spec-facing surface reads -- the flatness
+    gauge, the observe ledger's spec-facing summary, `/state`, and the
+    envelope all render ``flatness`` (:func:`~jasper.active_speaker.flat_spec.spec_flatness_gauge`
+    of that same report) rather than deriving a number of their own. Nothing
+    downstream re-evaluates the curve.
+
+    **The carve-out disclosure (plan PR-6b, owner decision 1).** ``carve_outs``
+    is :func:`carve_outs_by_band` of the SAME registry and the SAME spec report
+    — per band, which ranges left this band's grading, in plain language, with
+    τ/r behind an expert string. It is a third reading of one evaluation, never
+    a second one: the bins are already gone from ``spec`` by the time this runs,
+    and no verdict here can move. The tolerance table is untouched — the 8-16 kHz
+    row still reads ±2.5 dB, applied to whatever survives the carve-out (the
+    owner's decision was to disclose the carve-out, not to re-spec the band).
+
+    **``echo_band_provenance`` (issue #1763) is how a payload reader tells a
+    contract-derived band from a clamped one.** ``echo_band_hz`` publishes the
+    band the detector actually ran on, which is necessary but not sufficient:
+    a reader seeing ``[4000, 18000]`` cannot tell whether the driver declared
+    that window or whether the HF-regime clamp raised a declared 2 kHz edge
+    into it, and the difference is exactly the asterisk issue #1763 exists to
+    make visible. :meth:`_CloudEchoBand.disclosure` supplies the block (its
+    ``source`` / ``hf_regime_clamped`` / ``derived_lo_hz`` / ``floor_hz``);
+    the session passes it alongside the band it came from. ``None`` when a
+    caller did not state one — "not stated", never "not clamped", the same
+    unknown-vs-zero rule ``validity_floor_hz`` follows below.
+
+    **The spec is graded above the group's TRUSTED floor, not its validity
+    floor** (issue #2551). ``validity_floor_hz`` is the group's own gated
+    ``1/T`` (:func:`cloud_validity_floor_hz`); :func:`cloud_trusted_floor_hz`
+    turns it into the ``2.5/T`` the gate's delta probe already refuses to
+    grade below, and THAT is what
+    :func:`~jasper.active_speaker.flat_spec.evaluate_flat_spec` intersects
+    every band's lower edge with -- the reference band's included, since a
+    bin the gate cannot support must not be able to re-centre the target
+    either. Both floors are published: ``validity_floor_hz`` for provenance,
+    ``trusted_floor_hz`` as the number the verdicts were actually taken
+    above. Three properties this deliberately keeps:
+
+    * **The intersection is a band EDGE, not a mask entry.** A sub-floor bin
+      is not in the band at all, so ``spec.n_excluded`` stays exactly the
+      honesty instruments' own count (screen union identified nulls) and a
+      gate artifact can never inflate it. Which edge each band was graded
+      from is disclosed per band as ``graded_lo_hz``, delta-probe style, and
+      the report echoes ``trusted_floor_hz`` and the clamped
+      ``reference_band_hz`` on its face. ``merged_excluded_bands_hz`` is
+      likewise untouched: ``excluded_interval_count`` on `/state` remains the
+      "how much interference did we find" number.
+    * **A band left entirely below the floor is ``evaluable=False``, never
+      ``passed=False``.** There is no evidence there, which is not a
+      failure; ``graded_lo_hz >= f_hi_hz`` is the tell that distinguishes it
+      from a band the axis never reached.
+      :attr:`~jasper.active_speaker.flat_spec.FlatSpecReport.overall_passed`
+      still treats unevaluable as not-passed, so nothing is flattered by the
+      distinction.
+    * **A ``None`` floor clamps NOTHING and is reported as ``None``.** The
+      alternative -- withholding the whole gauge, which is what the retired
+      per-capture ``_flatness_tracking`` did when a capture had no floor --
+      would throw away the 2-16 kHz evidence over an unverified lower edge.
+
+    Regime, measured on the S0 main leg 2026-07-27, re-derived 2026-08-02
+    (#2045) and re-derived again for #2551: **all ten** of that session's
+    positions gate to a 142.857 Hz validity floor, i.e. a **357.14 Hz**
+    trusted floor, which sits ABOVE the spec table's 250 Hz edge and
+    therefore clamps 987 bins out of the low band. Before #2551 the
+    evaluator was handed the 142.857 Hz number instead, which sits below
+    250 Hz and changed no graded figure at all -- a clamp in name only, on a
+    corpus whose worst deviation bins were beneath the floor its own gate
+    disclosure printed. ``test_flat_spec_ssot`` pins both halves: that the
+    positions no longer collapse a gate, and what intersecting at the
+    trusted floor costs.
+
+    **Clamping is not free, and it moves the headline in the flattering
+    direction.** That is the mechanism's own behaviour and it is stated here
+    rather than discovered later; measured on the S0 corpus at a 1777.8 Hz
+    trusted floor supplied explicitly
+    (``test_flat_spec_ssot.CLAMP_TRUSTED_FLOOR_HZ``, pinned by
+    ``test_the_trusted_floor_clamp_costs_the_low_band``), clamping:
+
+    * moves **987 bins** out of the 250 Hz-2 kHz band;
+    * **re-centres the reference** -27.2386 -> -28.3062 dB (-1.0676 dB),
+      because the reference is a power mean over non-excluded 250 Hz-8 kHz
+      bins and the clamp removed the loud low end of it;
+    * moves the HEADLINE ``max_db`` -8.9389 -> -7.8713 dB, i.e. **+1.0676 dB
+      in the FLATTERING direction** -- exactly the reference shift, because
+      the worst bin (15999.7 Hz) survives the clamp, so its deviation moves
+      one-for-one with the reference. This is the first number the ledger
+      line prints and it moves FURTHER than the RMS does;
+    * takes the pooled RMS 3.8031 -> 3.1740 dB (-0.6291 dB);
+    * **flips the 250 Hz-2 kHz band verdict**, +4.2458 dB (fail) ->
+      -1.2146 dB (pass), since ``BandResult.passed`` is
+      ``abs(max_deviation_db) <= tolerance_db``. Overall stays False here
+      only because the other two bands still fail on their own.
+
+    Direction is **response-shape dependent, not a property of the clamp**:
+    on THIS corpus the removed region sat above the surviving reference, so
+    dropping it lowered the reference and flattered every surviving
+    deviation. A speaker whose sub-floor region is quiet would move the other
+    way. Do not generalize the sign.
+
+    None of that is the speaker improving -- it is the same speaker graded on
+    fewer bins, which is exactly what the gauge's ``n_bins`` exists to keep
+    visible (``ConvergenceResidual``'s own "a residual that fell because the
+    denominator shrank is not convergence" rule). Its sibling ``n_excluded``
+    reports a different thing and deliberately does not move here: the clamp
+    is an edge, not a mask entry. One short gate in a group is therefore
+    expensive by design, and the group takes the WORST position's floor.
+
+    **Deferred alternative, recorded rather than dismissed:** the honest
+    third option is per-position, per-bin validity masking INSIDE
+    ``combine_positions`` -- mask each position's contribution below that
+    position's OWN floor and combine the survivors, so nine good captures
+    keep contributing at 500 Hz instead of one bad one costing the band. It
+    is strictly better than a group-wide clamp and is out of scope here only
+    because it is a ``spatial_combine`` signature and estimator change (the
+    power mean would need per-bin weights), not a wiring one. Revisit
+    trigger: a real session where one short gate meaningfully shrinks the
+    graded band -- the S0 corpus is that evidence already now that the floor
+    is the trusted one (357.14 Hz clears the table's 250 Hz edge on every
+    position), so this is queued on measured grounds, not speculation.
+
+    **Fail-soft, named, not absolute** (S4 review finding, 2026-07-26 --
+    corrected from an earlier "any exception is caught" overclaim). Catches
+    exactly ``(ValueError, TypeError, IndexError, AttributeError)`` --
+    the documented raise surface of every function this calls
+    (:func:`~jasper.audio_measurement.interference_nulls.identify_interference_nulls`
+    and :func:`~jasper.active_speaker.flat_spec.evaluate_flat_spec` both
+    raise only ``ValueError`` on malformed input;
+    :func:`~jasper.audio_measurement.spatial_combine.merged_true_intervals`
+    raises ``ValueError`` via ``zip(strict=True)`` on a length mismatch or
+    ``IndexError`` on an out-of-bounds index; a malformed/incomplete
+    ``combined``-like object raises ``TypeError``/``AttributeError`` reading
+    its fields; :func:`carve_outs_by_band` adds no new family -- it reads
+    already-built records by keys it set itself, and its only external reads
+    are attribute lookups on the two reports and indexing/``float()`` on the
+    screen intervals, i.e. ``AttributeError``/``IndexError``/``TypeError``/
+    ``ValueError``). ``_run_cloud_pipeline`` relies on exactly this bounded set --
+    a downstream DSP failure inside it is diagnostic/disclosure machinery,
+    never a capture-accept gate, so this bounded family is caught and
+    reported as ``available: False`` rather than surfacing to the caller.
+    Any OTHER exception -- ``KeyError``/``RuntimeError``/``OSError`` (none
+    observed on this call surface today; would indicate a genuine bug in a
+    callee) or ``MemoryError``/``KeyboardInterrupt`` -- propagates
+    uncaught, by design: it should reach the caller rather than silently
+    become an honest-looking "unavailable".
+    """
+    if combined is None:
+        return CloudGroupResult({"available": False, "reason": "combine_failed"})
+    try:
+        from jasper.active_speaker.flat_spec import (
+            GradedSpec,
+            evaluate_flat_spec,
+            spec_flatness_gauge,
+        )
+        from jasper.audio_measurement.interference_nulls import (
+            identify_interference_nulls,
+        )
+        from jasper.attribution.position_evidence import position_evidence_block
+        from jasper.audio_measurement.spatial_combine import merged_true_intervals
+
+        null_report = identify_interference_nulls(combined, band_hz=echo_band_hz)
+        crossover_registry = _crossover_region_null_registry(
+            combined, echo_band_hz=echo_band_hz,
+            crossover_region_hz=crossover_region_hz,
+            identify=identify_interference_nulls,
+        )
+        merged_mask = np.asarray(combined.excluded, dtype=bool) | np.asarray(
+            null_report.excluded, dtype=bool
+        )
+        # NOTE: ``crossover_registry`` is deliberately absent from this union.
+        # See its builder for why classification there may never become
+        # gating.
+        # The mask handed to the evaluator is EXACTLY what the honesty
+        # instruments found. The gate's floor rides beside it as a band-edge
+        # intersection instead (#2551), so ``n_excluded`` cannot conflate an
+        # interference verdict with a short window — see this function's
+        # docstring.
+        trusted_floor_hz = cloud_trusted_floor_hz(validity_floor_hz)
+        spec_report = evaluate_flat_spec(
+            combined.freqs_hz, combined.power_mean_spec_db, merged_mask,
+            trusted_floor_hz=trusted_floor_hz,
+        )
+        # #2291/#2160: hand the LIVE report to a caller that needs the object
+        # rather than the serialized copy below. ``evaluate_spec`` reads
+        # ``overall_passed`` and each band's ``evaluable``/``passed``, which
+        # ``to_dict`` flattens away, and the round's spec verdict must be the
+        # SAME report this function already built — re-evaluating it from
+        # ``combined`` in the session would be a second owner of the merged
+        # honesty mask, which is exactly what this function exists to prevent.
+        # A sink rather than a second return value because every other caller
+        # (and every test) reads the dict, and widening the return type would
+        # change all of them to serve one consumer.
+        if graded_spec_sink is not None:
+            # The curve, the mask, and the verdict as ONE record: decision 10's
+            # blend correction reads all three, and this is the only place all
+            # three exist together. Handing them over separately would let a
+            # consumer pair a curve with a mask from a different evaluation.
+            graded_spec_sink(GradedSpec(
+                combined.freqs_hz, combined.power_mean_spec_db, merged_mask,
+                spec_report,
+            ))
+        geometry_dict = {
+            "locked": bool(combined.geometry.locked),
+            "reason": str(combined.geometry.reason),
+            "n_confident": int(combined.geometry.n_confident),
+            "n_positions": int(combined.geometry.n_positions),
+            "median_tau_us": float(combined.geometry.median_tau_us),
+            "clustered_fraction": float(combined.geometry.clustered_fraction),
+            "thin_evidence": bool(combined.geometry.thin_evidence),
+        }
+        return CloudGroupResult({
+            "available": True,
+            "geometry": geometry_dict,
+            "geometry_guidance": _geometry_guidance_copy(geometry_dict),
+            "screen_excluded_bands_hz": [
+                list(b) for b in combined.excluded_bands_hz
+            ],
+            "merged_excluded_bands_hz": [
+                list(b) for b in merged_true_intervals(combined.freqs_hz, merged_mask)
+            ],
+            "null_registry": _null_registry_to_dict(null_report),
+            # #1967/#1867: the crossover region, ASKED. Classification only —
+            # never unioned into any mask above. ``None`` when there is no
+            # committed crossover to name a region with, or when the gating
+            # band already reached it. See
+            # :func:`_crossover_region_null_registry`.
+            "null_registry_crossover_region": crossover_registry,
+            "spec": spec_report.to_dict(),
+            # PR-6b: owner decision 1's disclosure half — the SAME registry
+            # and the SAME spec report above, re-read per band as "what was
+            # carved out of this band's grading, and why". Not a second
+            # evaluation: `evaluate_flat_spec` already removed these bins, and
+            # nothing here can change a verdict.
+            "carve_outs": carve_outs_by_band(
+                spec_report, null_report, combined.excluded_bands_hz,
+            ),
+            # PR-5: the spec-facing gauge — a pure reduction of the SAME
+            # ``spec`` report above, carried here so no downstream surface
+            # has to (or may) derive its own. Byte-identical wherever it is
+            # rendered, because there is one number, copied.
+            "flatness": spec_flatness_gauge(spec_report).to_dict(),
+            "validity_floor_hz": (
+                float(validity_floor_hz)
+                if validity_floor_hz is not None and math.isfinite(validity_floor_hz)
+                else None
+            ),
+            # #2551: the floor the spec was actually graded above — 2.5x the
+            # one directly above, and the same number the gate's own delta
+            # probe prices itself over. Published beside its input rather
+            # than in place of it, so a reader can see both the window's
+            # resolution limit and its trust limit.
+            "trusted_floor_hz": trusted_floor_hz,
+            "echo_band_hz": list(echo_band_hz),
+            "echo_band_provenance": (
+                dict(echo_band_provenance)
+                if isinstance(echo_band_provenance, Mapping)
+                else None
+            ),
+            # WHICH INSTRUMENT measured this group (flow-simplification §1.2).
+            # ``None`` means unknown, never a guessed default — same
+            # discipline as ``echo_band_provenance`` directly above, and for
+            # the same reason: the two tiers make materially different claims,
+            # so a reader that cannot tell them apart must say so.
+            "tier": str(tier) or None,
+            "curve": _decimate_curve_for_json(
+                combined.freqs_hz, combined.power_mean_spec_db,
+            ),
+            # WO-1 (attribution plan §6, §11.1 A7): the MEMBERS behind every
+            # aggregate above. The combiner has computed each position's
+            # curve and echo diagnostic all along and this function used to
+            # drop them, which is why P2 — the position-variance classifier
+            # §5 calls a free probe — was not actually free, and why
+            # ``clustered_fraction`` was the summary of a distribution nobody
+            # could inspect. Serialization only: no new signal, no threshold,
+            # no verdict. Never raises (see ``position_evidence_block``), so
+            # it cannot turn a good group into a failed one.
+            "positions": position_evidence_block(
+                combined,
+                position_records=position_records,
+                validity_floor_hz=validity_floor_hz,
+            ),
+        })
+    except (ValueError, TypeError, IndexError, AttributeError) as exc:
+        return CloudGroupResult(
+            {"available": False, "reason": "pipeline_failed"},
+            {"error": str(exc)},
+        )
