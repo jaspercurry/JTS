@@ -10,7 +10,7 @@
 // Prints one JSON line of observations.
 //
 //   node tests/js/dialog_harness.mjs <path-to-dialog-source.js>
-import { readFileSync } from "node:fs";
+import { buildFunction } from "./_loader.mjs";
 
 // ---- minimal DOM shim: only what the dialog helpers actually touch ----
 const doc = { activeElement: null, createElement: (t) => makeEl(t), body: null };
@@ -53,11 +53,10 @@ function buttonsOf(root) {
 globalThis.document = doc;
 
 // ---- load the implementation (strip ESM `export` so one path loads both) ----
-const src = readFileSync(process.argv[2], "utf8").replace(/\bexport\s+/g, "");
-const { jtsConfirm, jtsAlert, jtsConfirmSubmit } = new Function(
-  src + "\nreturn { jtsConfirm, jtsAlert, " +
-  "jtsConfirmSubmit: (typeof jtsConfirmSubmit !== 'undefined' ? jtsConfirmSubmit : undefined) };",
-)();
+const { jtsConfirm, jtsAlert, jtsConfirmSubmit } = buildFunction(process.argv[2], {
+  rewrite: [[/\bexport\s+/g, ""]],
+  returns: ["jtsConfirm", "jtsAlert", { name: "jtsConfirmSubmit", optional: true }],
+})();
 
 const lastDialog = () => doc.body.children[doc.body.children.length - 1];
 const flush = () => new Promise((r) => setTimeout(r));

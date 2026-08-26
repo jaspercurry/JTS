@@ -22,26 +22,8 @@
 // Mirrors capture_plan_loop_test.mjs's strip-and-inject + DOM-stub harness.
 
 import assert from "node:assert/strict";
-import { readFileSync } from "node:fs";
-import { dirname, resolve } from "node:path";
-import { fileURLToPath } from "node:url";
+import { loadEsm, repoPath } from "./_loader.mjs";
 import { runTestFunctions } from "./run_test_functions.mjs";
-
-const here = dirname(fileURLToPath(import.meta.url));
-const raw = readFileSync(resolve(here, "../../capture-page/js/main.js"), "utf8");
-const withoutImports = raw
-  .replace(
-    /^import\s+\{[\s\S]*?\}\s+from\s+["'][^"']+["'];\s*/gm,
-    "",
-  )
-  .replace(/^import\s+[^;\n]+\s+from\s+["'][^"']+["'];\s*/gm, "")
-  .replace(
-    /^const PAGE_VERSION_URL = .*;$/m,
-    'const PAGE_VERSION_URL = new URL("https://capture.test/version.json");',
-  );
-if (/^import\s/m.test(withoutImports)) {
-  throw new Error("unhandled import in main.js — update the harness strip rule");
-}
 
 const injected = `
 const acceptedAcknowledgement = () => null;
@@ -93,12 +75,19 @@ const refreshBoundSetup = () => true;
 // cache-buster per load gives each behavioral test a fresh module (data:
 // URL imports are cached by exact URL).
 let loadCount = 0;
-async function loadModule() {
+function loadModule() {
   loadCount += 1;
-  const src = `${injected}${withoutImports}\n// cache-bust ${loadCount}`;
-  const dataUrl =
-    "data:text/javascript;base64," + Buffer.from(src, "utf8").toString("base64");
-  return import(dataUrl);
+  return loadEsm(repoPath("capture-page/js/main.js"), {
+    stripImports: true,
+    guardNoImports: true,
+    rewrite: [[
+      /^const PAGE_VERSION_URL = .*;$/m,
+      'const PAGE_VERSION_URL = new URL("https://capture.test/version.json");',
+    ]],
+    // The cache-bust comment's position doesn't matter (it's inert) — only
+    // prelude's given a hook to append to, so it rides at the front.
+    prelude: `${injected}// cache-bust ${loadCount}\n`,
+  });
 }
 
 // --- DOM stub (mirrors capture_plan_loop_test.mjs) ----------------------------

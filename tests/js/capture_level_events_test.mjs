@@ -16,25 +16,8 @@
 //   node tests/js/capture_level_events_test.mjs
 
 import assert from "node:assert/strict";
-import { readFileSync } from "node:fs";
-import { fileURLToPath } from "node:url";
-import { dirname, resolve } from "node:path";
+import { loadEsm, repoPath } from "./_loader.mjs";
 
-const here = dirname(fileURLToPath(import.meta.url));
-const modulePath = resolve(here, "../../capture-page/js/level-events.js");
-
-const raw = readFileSync(modulePath, "utf8");
-const rewritten = raw.replace(
-  /^import\s+\{[\s\S]*?\}\s+from\s+["'][^"']*measurement-audio\.js[^"']*["'];\s*/m,
-  "const rmsToDbfs = (rms) => { const v = Number(rms); return v > 0 ? 20 * Math.log10(v) : -120; };\n" +
-    "const delayMs = (ms) => new Promise((resolve) => setTimeout(resolve, ms));\n",
-);
-if (/^import\s/m.test(rewritten)) {
-  throw new Error("unhandled import in level-events.js — add a strip rule");
-}
-
-const dataUrl =
-  "data:text/javascript;base64," + Buffer.from(rewritten, "utf8").toString("base64");
 const {
   LevelStreamer,
   blockLevel,
@@ -45,7 +28,14 @@ const {
   rampEventFromStatus,
   retryableRelayStatusError,
   runLevelRampProtocol,
-} = await import(dataUrl);
+} = await loadEsm(repoPath("capture-page/js/level-events.js"), {
+  rewrite: [[
+    /^import\s+\{[\s\S]*?\}\s+from\s+["'][^"']*measurement-audio\.js[^"']*["'];\s*/m,
+    "const rmsToDbfs = (rms) => { const v = Number(rms); return v > 0 ? 20 * Math.log10(v) : -120; };\n" +
+      "const delayMs = (ms) => new Promise((resolve) => setTimeout(resolve, ms));\n",
+  ]],
+  guardNoImports: true,
+});
 
 let passed = 0;
 function ok() {

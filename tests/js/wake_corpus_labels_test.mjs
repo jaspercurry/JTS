@@ -2,12 +2,9 @@
 //
 // SPDX-License-Identifier: Apache-2.0
 
-import { readFileSync } from "node:fs";
+import { loadEsm } from "./_loader.mjs";
 
-const source = readFileSync(process.argv[2], "utf8");
-const moduleUrl = "data:text/javascript;base64," +
-  Buffer.from(source, "utf8").toString("base64");
-const { createLegLabels } = await import(moduleUrl);
+const { createLegLabels } = await loadEsm(process.argv[2]);
 
 function assert(condition, message) {
   if (!condition) throw new Error(message);

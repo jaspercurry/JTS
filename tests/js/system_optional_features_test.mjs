@@ -6,22 +6,18 @@
 // coupling this contract test to a browser DOM implementation.
 
 import assert from "node:assert/strict";
-import { readFileSync } from "node:fs";
+import { buildFunction } from "./_loader.mjs";
 
 const modulePath = process.argv[2];
 if (!modulePath) {
   throw new Error("usage: node system_optional_features_test.mjs <optional-features-card.js>");
 }
 
-const source = readFileSync(modulePath, "utf8")
-  .replace(/^import .*;\n/gm, "")
-  .replace(/^export /gm, "");
-assert.doesNotMatch(source, /^\s*import\s/m);
-
-const load = new Function(
-  source + "\nreturn { enhancedAecPresentation };",
-);
-const { enhancedAecPresentation } = load();
+const { enhancedAecPresentation } = buildFunction(modulePath, {
+  rewrite: [[/^import .*;\n/gm, ""], [/^export /gm, ""]],
+  guardNoImports: true,
+  returns: ["enhancedAecPresentation"],
+})();
 
 const states = [
   "not_installed", "installing", "installed", "stale",

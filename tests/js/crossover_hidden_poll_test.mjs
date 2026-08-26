@@ -9,25 +9,8 @@
 // listener must re-apply (not discard) the caller's last requested cadence.
 
 import assert from "node:assert/strict";
-import { readFileSync } from "node:fs";
-import { dirname, resolve } from "node:path";
-import { fileURLToPath } from "node:url";
-
-function element(id = "") {
-  return {
-    id,
-    children: [],
-    classList: { add() {}, remove() {}, toggle() {}, contains: () => false },
-    dataset: {},
-    disabled: false,
-    textContent: "",
-    href: "",
-    addEventListener() {},
-    append() {},
-    replaceChildren() {},
-    setAttribute() {},
-  };
-}
+import { aliasGlobals, loadEsm, repoPath } from "./_loader.mjs";
+import { installFixedDocument } from "./_dom.mjs";
 
 const ids = [
   "crossover-verdict",
@@ -44,17 +27,13 @@ const ids = [
   "crossover-relay-stop",
   "capture-status",
 ];
-const elements = new Map(ids.map((id) => [id, element(id)]));
 
 const visibilityListeners = [];
-globalThis.document = {
-  visibilityState: "visible",
+installFixedDocument(ids, {
   addEventListener(name, fn) {
     if (name === "visibilitychange") visibilityListeners.push(fn);
   },
-  createElement: (tag) => element(tag),
-  getElementById: (id) => elements.get(id),
-};
+});
 
 // A real timer registry (not a no-op stub) so delay values are observable.
 const timers = [];
@@ -77,26 +56,15 @@ globalThis.__postJSON = async () => ({});
 // in purely so the module (which imports it) loads without a real DOM.
 globalThis.__renderRelayQr = () => {};
 
-const here = dirname(fileURLToPath(import.meta.url));
-let source = readFileSync(
-  resolve(here, "../../deploy/assets/correction/js/crossover/main.js"),
-  "utf8",
+const { schedulePoll } = await loadEsm(
+  repoPath("deploy/assets/correction/js/crossover/main.js"),
+  {
+    rewrite: [[/^import\s+\{[^}]+\}\s+from\s+["'][^"']+["'];\s*\n?/gm, ""]],
+    prelude: aliasGlobals(["getJSON", "postJSON", "renderRelayQr"]),
+    truncateBefore: "\nrefresh().catch((error) => {",
+    exportNames: ["schedulePoll"],
+  },
 );
-source = source.replace(
-  /^import\s+\{[^}]+\}\s+from\s+["'][^"']+["'];\s*\n?/gm,
-  "",
-);
-source =
-  "const getJSON = globalThis.__getJSON; const postJSON = globalThis.__postJSON; " +
-  "const renderRelayQr = globalThis.__renderRelayQr;\n" + source;
-const bootStart = source.lastIndexOf("\nrefresh().catch((error) => {");
-if (bootStart < 0) throw new Error("crossover module boot call not found");
-source = source.slice(0, bootStart).concat(
-  "\nexport { schedulePoll };\n",
-);
-const dataUrl =
-  "data:text/javascript;base64," + Buffer.from(source, "utf8").toString("base64");
-const { schedulePoll } = await import(dataUrl);
 
 // --- visible: schedules at the caller's requested cadence -------------------
 schedulePoll(1500);

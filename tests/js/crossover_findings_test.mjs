@@ -16,55 +16,12 @@
 //   node tests/js/crossover_findings_test.mjs
 
 import assert from "node:assert/strict";
-import { readFileSync } from "node:fs";
-import { dirname, resolve } from "node:path";
-import { fileURLToPath } from "node:url";
+import { aliasGlobals, loadEsm, repoPath } from "./_loader.mjs";
+import { CROSSOVER_IDS, installFixedDocument } from "./_dom.mjs";
 
-function element(id = "") {
-  return {
-    id,
-    tag: id,
-    children: [],
-    classList: { add() {}, remove() {}, contains: () => false, toggle() {} },
-    dataset: {},
-    disabled: false,
-    textContent: "",
-    className: "",
-    hidden: false,
-    addEventListener() {},
-    append(...children) { this.children.push(...children); },
-    replaceChildren(...children) { this.children = children; },
-    setAttribute(key, value) { this[key] = String(value); },
-  };
-}
-
-const ids = [
-  "crossover-verdict",
-  "crossover-applied",
-  "crossover-start-over",
-  "crossover-steps",
-  "crossover-nudges",
-  "crossover-review",
-  "crossover-review-body",
-  "crossover-action",
-  "crossover-relay",
-  "crossover-relay-status",
-  "crossover-relay-link",
-  "crossover-relay-qr",
-  "crossover-relay-stop",
-  "capture-status",
-];
-const elements = new Map(ids.map((id) => [id, element(id)]));
-globalThis.document = {
-  visibilityState: "visible",
-  addEventListener() {},
-  createElement: (tag) => {
-    const node = element(tag);
-    node.tag = tag;
-    return node;
-  },
-  getElementById: (id) => elements.get(id),
-};
+// _dom.mjs's element() already sets `tag` to the id/tag it was built with,
+// so createElement needs no extra assignment on top of the default factory.
+const elements = installFixedDocument(CROSSOVER_IDS);
 globalThis.setTimeout = () => 1;
 globalThis.clearTimeout = () => {};
 
@@ -74,25 +31,16 @@ globalThis.__renderRelayQr = () => {};
 globalThis.__renderCloud = () => {};
 globalThis.__redrawCloudChart = () => {};
 
-const here = dirname(fileURLToPath(import.meta.url));
-let source = readFileSync(
-  resolve(here, "../../deploy/assets/correction/js/crossover/main.js"),
-  "utf8",
-);
-source = source.replace(
-  /^import\s+\{[^}]+\}\s+from\s+["'][^"']+["'];\s*\n?/gm,
-  "",
-);
-source =
-  "const getJSON = globalThis.__getJSON; const postJSON = globalThis.__postJSON; " +
-  "const renderRelayQr = globalThis.__renderRelayQr; " +
-  "const renderCloud = globalThis.__renderCloud; " +
-  "const redrawCloudChart = globalThis.__redrawCloudChart;\n" + source;
-const bootStart = source.lastIndexOf("\nrefresh().catch((error) => {");
-if (bootStart < 0) throw new Error("crossover module boot call not found");
-source = source.slice(0, bootStart).concat("\nexport { render };\n");
-const { render } = await import(
-  "data:text/javascript;base64," + Buffer.from(source, "utf8").toString("base64")
+const { render } = await loadEsm(
+  repoPath("deploy/assets/correction/js/crossover/main.js"),
+  {
+    rewrite: [[/^import\s+\{[^}]+\}\s+from\s+["'][^"']+["'];\s*\n?/gm, ""]],
+    prelude: aliasGlobals([
+      "getJSON", "postJSON", "renderRelayQr", "renderCloud", "redrawCloudChart",
+    ]),
+    truncateBefore: "\nrefresh().catch((error) => {",
+    exportNames: ["render"],
+  },
 );
 
 const baseEnvelope = {

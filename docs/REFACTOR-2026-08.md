@@ -143,7 +143,7 @@ program's wave 7h)**
 - [ ] doctor tests → one file per domain, verdict + stable remediation codes
       (keep aec_probe isolation tests verbatim)
 - [x] CSRF altitude collapse via test_web_wizard_conventions sweep
-- [ ] tests/js/_loader.mjs + _dom.mjs; convert the 12 strip-loader files
+- [x] tests/js/_loader.mjs + _dom.mjs; convert the 12 strip-loader files
 - [x] convert the two worst literal-welded wiring test files to executing
       their subjects; ban new source-text assertions (charter default)
 
