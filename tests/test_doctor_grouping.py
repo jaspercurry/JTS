@@ -12,6 +12,12 @@ import pytest
 
 from jasper.cli import doctor
 from jasper.multiroom.config import BondMember
+from jasper.multiroom.tts_route import VOICE_PARK_ENV
+from jasper.tts_routing import (
+    FANIN_TTS_SOCKET,
+    OUTPUTD_TTS_SOCKET,
+    VOICE_TTS_SOCKET_ENV,
+)
 
 from .doctor_test_support import _grouping_cfg, _registered_check_names
 
@@ -460,6 +466,69 @@ def test_check_grouping_pair_lock_warns(monkeypatch, dac_content, must_name):
 
     assert r.status == "warn"
     assert must_name in r.detail
+
+
+def _solo_tts_lane(monkeypatch, voice_env_path):
+    """Run the TTS-lane check on a solo box, with the systemctl surface
+    limited to the unit's inline `Environment=` directive — all it can ever
+    report, since it never reads `EnvironmentFile=` layers."""
+    import jasper.multiroom.config as mr_config
+    import jasper.multiroom.reconcile as mr_reconcile
+
+    monkeypatch.setattr(mr_config, "load_config", lambda *a, **k: _grouping_cfg())
+    monkeypatch.setattr(mr_reconcile, "VOICE_GROUPING_ENV_FILE", str(voice_env_path))
+    monkeypatch.setattr(
+        doctor.grouping,
+        "_run",
+        lambda *a, **k: SimpleNamespace(
+            returncode=0,
+            stdout=f"{VOICE_TTS_SOCKET_ENV}={FANIN_TTS_SOCKET}\n",
+            stderr="",
+        ),
+    )
+    return doctor.check_grouping_tts_lane()
+
+
+@pytest.mark.parametrize(
+    "grouping_env_text, must_name",
+    [
+        (f"{VOICE_TTS_SOCKET_ENV}={OUTPUTD_TTS_SOCKET}\n", OUTPUTD_TTS_SOCKET),
+        (f"{VOICE_PARK_ENV}=1\n", VOICE_PARK_ENV),
+        # Present-but-empty resolves to an empty socket path, which breaks
+        # playout exactly like a wrong one — key ABSENCE is the only no-drift.
+        (f"{VOICE_TTS_SOCKET_ENV}=\n", VOICE_TTS_SOCKET_ENV),
+    ],
+    ids=["stale-socket-override", "stale-park-flag", "present-but-empty-socket"],
+)
+def test_check_grouping_tts_lane_reads_the_environmentfile_authority(
+    monkeypatch, tmp_path, grouping_env_text, must_name
+):
+    """`systemctl show -p Environment` reports inline `Environment=` directives
+    only, so a solo box whose reconciler-owned grouping-voice.env still carries
+    a bonded override read green through both solo guards (#2387)."""
+    env_file = tmp_path / "grouping-voice.env"
+    env_file.write_text(grouping_env_text)
+
+    r = _solo_tts_lane(monkeypatch, env_file)
+
+    assert r.status == "warn"
+    assert must_name in r.detail
+
+
+def test_check_grouping_tts_lane_warns_when_the_authority_is_unreadable(
+    monkeypatch, tmp_path
+):
+    """An unreadable grouping-voice.env must not fail soft into the inline env:
+    that reprints the #2387 false green. A path that raises OSError on read
+    stands in for the deployed case (mode 600 root, doctor as jasper-control)
+    without depending on the test user's privileges."""
+    unreadable = tmp_path / "grouping-voice.env"
+    unreadable.mkdir()
+
+    r = _solo_tts_lane(monkeypatch, unreadable)
+
+    assert r.status == "warn"
+    assert str(unreadable) in r.detail
 
 
 @pytest.mark.parametrize(
