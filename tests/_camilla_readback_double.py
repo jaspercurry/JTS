@@ -49,8 +49,8 @@ different normalizations and refuses a graph that is in fact correct.
 The evidence for it is a read-only hardware probe, not a test: jts.local,
 CamillaDSP 4.1.3, 2026-08-05, which measured ``ReadConfig``'s output *exactly
 equal* to ``GetConfig``'s readback for identical content — recorded in
-``docs/HANDOFF-crossover-measurement-v2.md`` ("So CamillaDSP canonicalizes for
-us"). One box, one version, one day. Re-measure it rather than assume it after
+``docs/historical/crossover-measurement-v2-campaign-record.md``
+("So CamillaDSP canonicalizes for us"). One box, one version, one day. Re-measure it rather than assume it after
 a CamillaDSP upgrade; a fixture pair capturing ``ReadConfig`` alongside
 ``GetConfig`` would turn the premise into a pin, and is worth capturing on the
 next hardware pass.

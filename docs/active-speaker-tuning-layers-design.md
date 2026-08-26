@@ -7,7 +7,7 @@
 > architecture is decided; per-phase design details are decided during
 > implementation within these boundaries. Companion operational truth for
 > today's shipped flow stays in
-> [HANDOFF-crossover-measurement-v2.md](HANDOFF-crossover-measurement-v2.md).
+> [tuning-operator-runbook.md](tuning-operator-runbook.md).
 > **Instrument update (2026-07-25):** the speaker layer's measurement
 > instrument and the "top of the table" tolerances are concretized by
 > [flat-linearization-plan.md](flat-linearization-plan.md) (adopted): the
@@ -40,7 +40,7 @@
 > which unit — not who owns which correction. **The program is not built**;
 > where that section states shipped behavior it says so and cites the symbol.
 > Operational truth for the shipped flow stays
-> [HANDOFF-crossover-measurement-v2.md](HANDOFF-crossover-measurement-v2.md).
+> [tuning-operator-runbook.md](tuning-operator-runbook.md).
 > **The linearization pipeline (ratified 2026-08-19; no crossover parameter is
 > chosen by measurement today):** an eighth ruling adds decision 15 and one new
 > section,
@@ -65,7 +65,7 @@ prediction that shares the rolloff. The gap is a missing, nameable layer:
 band-averages inside the woofer's rolloff skirt (#1667, estimated ≈3.4 dB
 horn over-attenuation at the time — PR-L3's 2026-07-27 offline replay of the
 archived JTS3 captures measured the real figure at **10.9–13.1 dB** and fixed
-the frame at its source; see HANDOFF-crossover-measurement-v2.md), and the
+the frame at its source; see tuning-operator-runbook.md), and the
 apply transaction can activate without durably promoting (#1666).
 
 ## The five layers
@@ -309,7 +309,7 @@ crossover parameter by measurement today.**
 > the spatial cloud, took it from ~3 captures at one position to 16 across
 > a guided walk (the "one tap" counts below moved with it). Read the claims
 > here as scoped to Layer 1a's own footprint; the flow's shape lives in
-> [`HANDOFF-crossover-measurement-v2.md`](HANDOFF-crossover-measurement-v2.md).
+> [`tuning-operator-runbook.md`](tuning-operator-runbook.md).
 
 **The household UX does not change.** One commissioning flow, the same
 phone-tap ethos (set the mic, press Go, ~3 captures, fast honest verdicts):
@@ -742,7 +742,7 @@ here.
 > replaces — and every such claim says so in the sentence and names the symbol
 > it was read from. Read anything not marked that way as ratified plan.
 > Operational truth is
-> [HANDOFF-crossover-measurement-v2.md](HANDOFF-crossover-measurement-v2.md).
+> [tuning-operator-runbook.md](tuning-operator-runbook.md).
 > Sequencing, and what this reverses or supersedes, are at the end of this
 > section.
 
@@ -1002,7 +1002,7 @@ difference is the point:
 > result it names the dated evidence. Read everything else as ratified plan,
 > exactly as in Measurement Program v2 above. Operational truth for the shipped
 > flow stays
-> [HANDOFF-crossover-measurement-v2.md](HANDOFF-crossover-measurement-v2.md).
+> [tuning-operator-runbook.md](tuning-operator-runbook.md).
 
 ### The ruling
 
@@ -1713,7 +1713,7 @@ Phase 3 — **#1667** trim solve fix (landed 2026-07-24: the applied trim is
 now `solve_ripple_optimal_trim`'s minimum-ripple solve — seeded by and
 sanity-bounded ±6 dB against the band-average value, wired into both the
 raw candidate and the Layer 1a linearized re-solve; see
-HANDOFF-crossover-measurement-v2.md's trim-solve section. The
+historical/crossover-measurement-v2-campaign-record.md's trim-solve section. The
 linearized-path trim is correct only with the linearization filters
 emitted (PR-D); the two land together. JTS3 hardware re-verify against
 the listening ladder's ripple-optimal stop remains open) + re-verify.

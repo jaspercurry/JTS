@@ -8928,8 +8928,8 @@ async def confirm_graph_is_live(cam: Any, submitted_yaml: str) -> None:
     cannot — a readback is a default-filled, normalized SUPERSET — so
     ``ReadConfig`` canonicalizes first and STRICT equality still applies.
     Evidence, and what was NOT measured:
-    ``docs/HANDOFF-crossover-measurement-v2.md`` "Confirming a program graph
-    is live".
+    ``docs/historical/crossover-measurement-v2-campaign-record.md``,
+    "Confirming a program graph is live".
     """
     from jasper.camilla import CamillaConfigRejected
 

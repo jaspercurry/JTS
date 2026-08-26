@@ -330,7 +330,7 @@ order's plain reading and are recorded here rather than only in the code:
   2026-08-22 when #2758 widened the evaluation grid, and it can be wrong in the
   opposite direction — an older stamp reading SMALLER than today's charge. The
   full era table and the migration behaviour live in
-  [`docs/HANDOFF-crossover-measurement-v2.md`](HANDOFF-crossover-measurement-v2.md),
+  [`docs/historical/crossover-measurement-v2-campaign-record.md`](historical/crossover-measurement-v2-campaign-record.md),
   "Reading one from before the 2026-08-22 grid widening".)
 
 Named tolerances, with their derivations pinned by tests:

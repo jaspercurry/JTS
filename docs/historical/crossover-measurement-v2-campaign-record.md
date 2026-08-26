@@ -2,14 +2,15 @@
 
 > **Status: historical.** Almost everything below this heading is the v2
 > campaign's dated narrative — bench sessions, hardware results, and the
-> decision archaeology behind the spine above. Snapshots from
+> decision archaeology behind the live spine. Snapshots from
 > 2026-07-17 through 2026-08-11. Read it for "why is it like this," never for
 > current state: specific facts here (thresholds, env defaults, file
 > responsibilities, "what's working" lists) drift, and names that no longer
 > exist in the code — chiefly the `CrossoverV2Conductor` class, dissolved in
 > #2291 Phase 5c-iv — are kept where they are what the entry was about at the
-> time. Current operational truth is the spine above; the file map there is
-> the current shape.
+> time. Current operational truth is
+> [`tuning-operator-runbook.md`](../tuning-operator-runbook.md); the file map
+> there is the current shape.
 >
 > **Two sections are the exception, and this tag does not cover them:**
 > "[Failure taxonomy & debugging](#failure-taxonomy--debugging)" and
@@ -2659,8 +2660,8 @@ momentarily loaded Pi from a budget that no longer fits its work.
 ### Failure taxonomy & debugging
 
 > **Live reference — the historical tag above does not cover this section.**
-> The spine's "[Debugging — where to look
-> first](../HANDOFF-crossover-measurement-v2.md#debugging--where-to-look-first)"
+> The runbook's "[Debugging — where to look
+> first](../tuning-operator-runbook.md#debugging--where-to-look-first)"
 > delegates its deeper catalogs here,
 > and they are maintained against the code rather than frozen with the
 > campaign. Read that spine section first; it flags what in here is still
@@ -4552,8 +4553,8 @@ that same capture is 0.490 dB max (raw-to-raw is 0.606 dB).
 ### Gotchas — the W6 bug-class catalog (do not reintroduce)
 
 > **Live reference — the historical tag above does not cover this section.**
-> The spine's "[Debugging — where to look
-> first](../HANDOFF-crossover-measurement-v2.md#debugging--where-to-look-first)"
+> The runbook's "[Debugging — where to look
+> first](../tuning-operator-runbook.md#debugging--where-to-look-first)"
 > delegates its bug-class list here,
 > and "do not reintroduce" is a current instruction, not a campaign result.
 

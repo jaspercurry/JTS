@@ -8,7 +8,7 @@
 > and adds a closed loop; the layer architecture itself is
 > [active-speaker-tuning-layers-design.md](active-speaker-tuning-layers-design.md)
 > (unchanged, still canonical). Shipped-flow operational truth stays in
-> [HANDOFF-crossover-measurement-v2.md](HANDOFF-crossover-measurement-v2.md).
+> [tuning-operator-runbook.md](tuning-operator-runbook.md).
 > **Amended 2026-07-25** after the executed S0 studio session: the "S0
 > executed — results and the attribution correction" section below
 > supersedes the original comb-attribution evidence in "Evidence — why the
@@ -942,7 +942,7 @@ lulls so the echo lands in silence, excise, stitch"). Verdict, adopted:
 ## References
 
 Repo: [active-speaker-tuning-layers-design.md](active-speaker-tuning-layers-design.md),
-[HANDOFF-crossover-measurement-v2.md](HANDOFF-crossover-measurement-v2.md),
+[tuning-operator-runbook.md](tuning-operator-runbook.md),
 `jasper/audio_measurement/program.py` (`build_measure_program`,
 `build_verify_program`, `render_program_pcm`),
 `jasper/audio_measurement/program_analysis.py`,

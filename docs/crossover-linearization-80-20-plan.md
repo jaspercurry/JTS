@@ -16,7 +16,7 @@
 > Gate 0 ratified them as R18, R16, and R17 (§11).
 > This changes no current behavior by itself. Current shipped
 > behavior remains in
-> [HANDOFF-crossover-measurement-v2.md](HANDOFF-crossover-measurement-v2.md);
+> [tuning-operator-runbook.md](tuning-operator-runbook.md);
 > the layer architecture remains in
 > [active-speaker-tuning-layers-design.md](active-speaker-tuning-layers-design.md);
 > the program-wide round/status spine remains in
@@ -48,7 +48,7 @@ Later work requires the fixed-Fc checkpoint and a fresh Gate 0.
 
 | Fact | Owner |
 |---|---|
-| Shipped phase/state behavior and operator recovery | `HANDOFF-crossover-measurement-v2.md` |
+| Shipped phase/state behavior and operator recovery | `tuning-operator-runbook.md` |
 | Speaker/room/bass/preference layer boundaries | `active-speaker-tuning-layers-design.md` |
 | Why spatially gated measurements, exclusions, and power averages exist | `flat-linearization-plan.md` |
 | This revision's future measurement contracts, rounds, and issue disposition | **this document** |
@@ -487,7 +487,7 @@ the canonical disposition for this revision, not a copy of every issue body.
 | [#2098](https://github.com/jaspercurry/JTS/issues/2098) mark-only reported graded | Result scope SSOT | Closed 2026-08-08 by merged [#2242](https://github.com/jaspercurry/JTS/pull/2242) (`415b44e96`): one producer owns `scope` / `spatial` / `complete`, and doctor, `/state`, and the wizard read it without re-deriving. |
 | [#2191](https://github.com/jaspercurry/JTS/issues/2191) search-band validator vs #1654 | R19 PR-B territory | Closed 2026-08-07 by merged [#2194](https://github.com/jaspercurry/JTS/pull/2194) (`95306c910`): relaxed the HF-role search-band floor to the confirmed #1654 hard band, repaired the two stale test pins, and fixed the misleading `incomplete` copy. |
 | [#2160](https://github.com/jaspercurry/JTS/issues/2160) cloud flatness gauge gates nothing | Residual disclosure gap | Ruled grade-and-disclose, tier-scoped, never gate — [recorded on #2160](https://github.com/jaspercurry/JTS/issues/2160#issuecomment-5208109239) at R19 dispatch, and implemented by [#2242](https://github.com/jaspercurry/JTS/pull/2242). Deliberately **not** closed: the ruling's closing clause also asks that the checkpoint's geometry facts and the k-of-N sweep facts reach the same disclosure surface, and neither reached the grading surface. The two halves are not the same size — the geometry facts already reach `/state`, the wizard, and the cloud-pipeline doctor line via `_compact_cloud_status` and only miss the grading surface, whereas #2242's author records that the k-of-N facts were **never traced**. Re-scoped to that residual. |
-| [#2168](https://github.com/jaspercurry/JTS/issues/2168) commissioning peak ~430MB unbudgeted | Deferred platform capacity | Not fixed in R19 — [disposition recorded on #2168](https://github.com/jaspercurry/JTS/issues/2168#issuecomment-5208128454). The conditional resolved: [#2242](https://github.com/jaspercurry/JTS/pull/2242) did land the disclosure, in `HANDOFF-crossover-measurement-v2.md`'s boundaries/non-goals, with the measured ~400–430 MB peak and the word "unmeasured" — not "fine" — about 1 GB co-residency headroom. R20 recorded no further scrutiny, so the three candidate fixes carry to the platform backlog unscrutinized. |
+| [#2168](https://github.com/jaspercurry/JTS/issues/2168) commissioning peak ~430MB unbudgeted | Deferred platform capacity | Not fixed in R19 — [disposition recorded on #2168](https://github.com/jaspercurry/JTS/issues/2168#issuecomment-5208128454). The conditional resolved: [#2242](https://github.com/jaspercurry/JTS/pull/2242) did land the disclosure, in `tuning-operator-runbook.md`'s boundaries/non-goals, with the measured ~400–430 MB peak and the word "unmeasured" — not "fine" — about 1 GB co-residency headroom. R20 recorded no further scrutiny, so the three candidate fixes carry to the platform backlog unscrutinized. |
 | [#1784](https://github.com/jaspercurry/JTS/issues/1784) honest before/after | Report reuse | Existing reuse seam for deferred reporting; no new chart framework is authorized. |
 | [#1941](https://github.com/jaspercurry/JTS/issues/1941) guided measurement UX | Prompt/diagram line | Owns deferred pose prompts and diagrams; any reuse waits for fresh Gate 0. |
 | [#1877](https://github.com/jaspercurry/JTS/issues/1877) position-aware clouds | Closed product decision | Keep acoustic timing first and phone sensor fusion parked. No revival for v1. |

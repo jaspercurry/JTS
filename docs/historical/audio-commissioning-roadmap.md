@@ -37,7 +37,7 @@ architecture, or campaign state, all of which have owners:
 - **Campaign state, owed hardware slices, CURRENT POSITION** —
   [`HANDOFF-correction-revision-plan.md`](HANDOFF-correction-revision-plan.md)
 - **Commission flow architecture, grading, file map** —
-  [`HANDOFF-crossover-measurement-v2.md`](../HANDOFF-crossover-measurement-v2.md)
+  [`tuning-operator-runbook.md`](../tuning-operator-runbook.md)
 
 Where this doc and one of those disagree, the owning doc wins. Items here
 move to issues and PRs as they start; session-level detail (what a given
@@ -227,7 +227,7 @@ four returned **six more**, none of them on the hand list. Also trued up —
 `linearization_fit.py`'s module docstring and `fit_driver_linearization`'s own
 first line (both said "cut-only" while the same docstrings described the boost
 vocabulary below); this file's live-spine sibling
-[`HANDOFF-crossover-measurement-v2.md`](../HANDOFF-crossover-measurement-v2.md)
+[`tuning-operator-runbook.md`](../tuning-operator-runbook.md)
 invariant 11, which claimed the emitter re-proves a *non-positive gain* when it
 re-proves the cap; the duplicated cut-only justification in
 `deploy/assets/correction/js/crossover/{chart,cloud}.js` (the per-curve

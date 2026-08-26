@@ -172,7 +172,7 @@
 > > **no production caller** — only
 > > `tests/test_correction_crossover_backend_level_solve.py` reaches it. The
 > > shipped crossover measurement is the **v2 conductor**, owned by
-> > [HANDOFF-crossover-measurement-v2.md](../HANDOFF-crossover-measurement-v2.md).
+> > [tuning-operator-runbook.md](../tuning-operator-runbook.md).
 > > Left as a banner rather than rewritten because the replacement's
 > > persistence narrative (v2 stores through `persist_conductor_state`, not
 > > `active_speaker.measurement.record_driver_measurement`) is a larger scan
@@ -1123,7 +1123,7 @@ reference is a clip-proof mono sum of the driven lanes — no per-DAC L/R fold.
    `record_driver_capture` has no production caller. The shipped v2 conductor
    takes a different analysis path, so this target is not merely un-wired: it
    diverges from what runs. See the banner earlier in this doc,
-   [HANDOFF-crossover-measurement-v2.md](../HANDOFF-crossover-measurement-v2.md),
+   [tuning-operator-runbook.md](../tuning-operator-runbook.md),
    and #1882.
    Advance per driver; then run the
    combined-driver test, submit the summed relay leg

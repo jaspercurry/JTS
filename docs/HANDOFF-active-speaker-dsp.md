@@ -21,7 +21,7 @@ user journey, and delivery acceptance criteria are canonical in
 [active-crossover-information-design.md](active-crossover-information-design.md).
 The crossover *measurement* flow (how CHECK/MEASURE/APPLY/VERIFY
 actually run today) is canonical in
-[HANDOFF-crossover-measurement-v2.md](HANDOFF-crossover-measurement-v2.md).
+[tuning-operator-runbook.md](tuning-operator-runbook.md).
 The output *transport* (how a commissioned graph reaches the DAC) is
 canonical in
 [HANDOFF-speaker-output-reference.md](HANDOFF-speaker-output-reference.md).
@@ -65,7 +65,7 @@ this doc called "Layer A." Layer 1a is new: the fit engine landed
 fitted per-role filters (`linearization_fit.linearization_filters_by_role`)
 into the applied CamillaDSP graph — but the emitted curve is not yet
 hardware-validated.** Do not assume linearization has been confirmed
-audible; [HANDOFF-crossover-measurement-v2.md](HANDOFF-crossover-measurement-v2.md)
+audible; [tuning-operator-runbook.md](tuning-operator-runbook.md)
 "Current status" owns the emission's validation state, and the design
 doc's "Execution plan for the implementing session" owns phase status.
 Layers 3 and 4 (room correction, preference) are unchanged from before
@@ -92,7 +92,7 @@ Two web surfaces, two different jobs, run in sequence:
    applies crossover level/delay/polarity and linearization. **v2 is the only
    flow** —
    see
-   [HANDOFF-crossover-measurement-v2.md](HANDOFF-crossover-measurement-v2.md),
+   [tuning-operator-runbook.md](tuning-operator-runbook.md),
    canonical for this flow's file map and invariants. W5b (2026-07-24)
    deleted the legacy near-field/null-depth/gated-summed triad
    described at length in the investigation history, along with the
@@ -126,7 +126,7 @@ above; this is only the entry points:
 | [`jasper/active_speaker/baseline_profile.py`](../jasper/active_speaker/baseline_profile.py) | Compiles and applies the durable active-speaker baseline; owns the candidate/promote lifecycle below. |
 | [`jasper/active_speaker/staging.py`](../jasper/active_speaker/staging.py), [`startup_load.py`](../jasper/active_speaker/startup_load.py), [`commission_ramp.py`](../jasper/active_speaker/commission_ramp.py) | `/sound/setup/` topology-setup substrate: stage a muted graph, load it, run the per-driver by-ear ramp. |
 | [`jasper/active_speaker/runtime_contract.py`](../jasper/active_speaker/runtime_contract.py) | Classifies saved topology against the running/candidate CamillaDSP graph; the doctor's fail-closed authority. |
-| [`jasper/active_speaker/crossover_v2_flow.py`](../jasper/active_speaker/crossover_v2_flow.py), [`linearization_fit.py`](../jasper/active_speaker/linearization_fit.py), [`linearization_envelope.py`](../jasper/active_speaker/linearization_envelope.py) | The v2 conductor and the Layer 1a fit/envelope. Full map: [HANDOFF-crossover-measurement-v2.md](HANDOFF-crossover-measurement-v2.md) "File map". |
+| [`jasper/active_speaker/crossover_v2_flow.py`](../jasper/active_speaker/crossover_v2_flow.py), [`linearization_fit.py`](../jasper/active_speaker/linearization_fit.py), [`linearization_envelope.py`](../jasper/active_speaker/linearization_envelope.py) | The v2 conductor and the Layer 1a fit/envelope. Full map: [tuning-operator-runbook.md](tuning-operator-runbook.md) "File map". |
 | `jasper/active_speaker/commissioning_*.py`, [`driver_acoustics.py`](../jasper/active_speaker/driver_acoustics.py) | Substrate built for the deleted legacy Wave 1-3 nine-state receipt lifecycle. Not a selectable flow any more; parts still back v2 (`commissioning_run` → `correction_crossover_backend`, `driver_acoustics`'s sweep constants → `web_measurement.capture_sweep_meta`). |
 
 ### Key invariants
@@ -136,7 +136,7 @@ above; this is only the entry points:
   from declared sensitivities) and never the wrong frequency range
   (declared band behind a proven high-pass before any full-range
   content reaches a driver). Canonical statement:
-  [HANDOFF-crossover-measurement-v2.md](HANDOFF-crossover-measurement-v2.md)
+  [tuning-operator-runbook.md](tuning-operator-runbook.md)
   "Contracts & invariants". The investigation history's longer "Hard Safety Rules"
   and "Failure Modes To Keep Visible" lists are still true detail,
   just superseded as the primary framing.
@@ -360,7 +360,7 @@ curl -s http://jts.local/sound/crossover/status | jq   # v2 conductor status
 
 For crossover-measurement-specific debugging (capture retention,
 per-capture diagnostic events, failure taxonomy), see
-[HANDOFF-crossover-measurement-v2.md](HANDOFF-crossover-measurement-v2.md)
+[historical/crossover-measurement-v2-campaign-record.md](historical/crossover-measurement-v2-campaign-record.md)
 "Failure taxonomy & debugging". For general log/journal fetching, see
 [testing-tooling.md](testing-tooling.md) "Pi-side diagnostics" and
 AGENTS.md's evidence-first rule.
@@ -386,7 +386,7 @@ candidate-promote lifecycle (baseline_profile.build_baseline_profile_candidate
 / promote_applied_baseline_candidate), the doctor's baseline-canonical and
 runtime-graph checks (jasper/cli/doctor/audio.py), the jasper-active-speaker
 CLI and /sound/active-speaker/* route surface, and the cross-links into
-HANDOFF-crossover-measurement-v2.md, HANDOFF-speaker-output-reference.md, and
+tuning-operator-runbook.md, HANDOFF-speaker-output-reference.md, and
 active-speaker-tuning-layers-design.md. The investigation history is preserved
 verbatim as historical narrative and was not independently re-verified in
 this pass beyond the corrections called out in its own status note; treat its

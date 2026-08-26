@@ -266,7 +266,7 @@ seams re-threaded, the group's floor honoured
 (`predicted_sum`, `gate_window_ms`) the 1-entry path already does. (At
 plan time that list also carried the G3 pilot-transfer baseline; #1927
 made that reference session-scoped, so it now travels as dated history
-only — see `HANDOFF-crossover-measurement-v2.md`.)
+only — see `tuning-operator-runbook.md`.)
 
 **Capture arithmetic (corrected — an earlier draft said 11/6).** The
 Full plan is 16 entries: CHECK 1 + MEASURE 1 + `N−1` = 8 cloud-measure
@@ -278,7 +278,7 @@ cloud-verify (`DEFAULT_CLOUD_VERIFY_POSITIONS = 6`). So **stage 1 is
 *(Design-time arithmetic, kept as written. The shipped stage 1 has been
 smaller since R15 turned the pre-apply cloud off — today it is 3 captures at
 either tier. `tier_display_info()` is the derivation of record; see
-`HANDOFF-crossover-measurement-v2.md`.)*
+`tuning-operator-runbook.md`.)*
 
 **The split reduces the time-budget pressure; it does not resolve it —
 do not claim otherwise.** The number to compare is the *realized*

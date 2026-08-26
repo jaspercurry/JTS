@@ -5785,8 +5785,8 @@ def test_session_wall_clock_ceiling_scales_with_the_plan_and_is_capped():
     # own bare defaults (cloud_measure on, lateral/entry_baseline off) --
     # NOT the shipped Full tier's own stage 1, which runs cloud measure OFF
     # and #2291's entry baseline ON (no stage-1 plan builds the lateral group)
-    # for 9 captures and 2,520 s (see HANDOFF-crossover-measurement-v2.md "The
-    # capture flow" / "What it is" -- tier_display_info() is the derivation of
+    # for 9 captures and 2,520 s (see tuning-operator-runbook.md "The
+    # capture flow" / "What v2 is" -- tier_display_info() is the derivation of
     # record for that number).
     # The bare-defaults scenario below is 10 captures ⇒ 1800 + (10-3)*120 =
     # 2640 s. Both scenarios are HAND-WALKED shapes, which ride the 900 s relay
