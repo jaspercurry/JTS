@@ -19,11 +19,22 @@ What this module pins, in the order the evidence has to survive:
    comparability check can pass;
 3. **the accept rule** — an unusable capture records nothing, a usable one
    records a baseline stamped with the shared mark;
-4. **retention** — the accepted take reaches the evidence seam, and a failing
-   store never costs the household a retake;
+4. **retention** — the accepted take reaches the evidence seam, reads back
+   through the shipped reader into an EQUAL record, and a failing store never
+   costs the household a retake;
 5. **the bridge** — the record survives a real stage-1 persist, arrives at a
    real stage-2 conductor with its VALUES intact, is not erased by stage 2's
    own persist, and its absence reaches the capability journal.
+
+**Two copies, one of them durable** (fragment ``02``'s duplication #2, closed
+here). The flow state file is the ROUND's channel: ``verify_priors`` is rebuilt
+from the conductor on every persist, which is what lets a fresh measuring
+session write its own honest absence over a previous round's "before" — section
+5 pins that, and it is deliberate. The copy that OUTLIVES the round is the
+write-once retained take, which now carries the reduced curve and not only its
+scalars. Both are written from one ``MeasuredResponse`` at capture time, so
+neither is derived from the other and section 4's round trip is what keeps them
+one fact.
 
 Section 5's tests drive the REAL preparers through
 ``tests/test_crossover_v2_stage_bridge.py``'s harness.  That harness used to
@@ -37,12 +48,15 @@ suites co-run green in either order.
 from __future__ import annotations
 
 import dataclasses
+import json
+import tempfile
+from pathlib import Path
 from typing import Any
 
 import pytest
 
 from jasper.active_speaker import crossover_v2_flow as flow
-from jasper.active_speaker.crossover_v2 import journey
+from jasper.active_speaker.crossover_v2 import journey, position_cycle, priors
 from jasper.active_speaker.crossover_v2.round_evidence import EntryBaseline
 from jasper.active_speaker.crossover_v2.journey import (
     GROUP_PHASES,
@@ -124,6 +138,24 @@ def _baseline_only_conductor(fakes: FakeSeams, **kwargs):
         accepted_phases=(flow.PHASE_CHECK, flow.PHASE_MEASURE),
         **kwargs,
     )
+
+
+def _read_take(metadata: dict[str, Any]) -> dict[str, Any] | None:
+    """The retained take, through the SHIPPED reader and the real store envelope.
+
+    ``retain_position`` wraps a builder's record in ``schema_version`` + ``kind``
+    before it lands, so a test that handed the bare metadata to the reader would
+    prove nothing about the file the speaker actually writes — and the reader
+    filters on that ``kind``.
+    """
+    with tempfile.TemporaryDirectory() as directory:
+        path = Path(directory) / f"{metadata['take_id']}.json"
+        path.write_text(json.dumps({
+            "schema_version": 1,
+            "kind": position_cycle.POSITION_EVIDENCE_KIND,
+            **metadata,
+        }))
+        return position_cycle.read_entry_baseline_take(path)
 
 
 def _failed_integrity() -> CaptureIntegrity:
@@ -220,26 +252,31 @@ def test_the_entry_baseline_replays_the_verify_program_object_itself():
 def test_the_entry_baseline_gets_no_tracking_prior():
     """Nothing is applied yet, so there is no prediction to track.
 
-    ``_entry_baseline_priors`` withholds ``predicted_sum`` (and the candidate's
-    crossover transfers) for the reason ``_cloud_priors`` withholds them: a
+    ``entry_baseline_priors`` withholds ``predicted_sum`` (and the candidate's
+    crossover transfers) for the reason ``cloud_priors`` withholds them: a
     capture that cannot support a claim must not be handed the prior that
     invites one. Handing it MEASURE's prediction would grade the ENTRY graph
     against the CANDIDATE's model and report the whole intended correction as a
     realization error.
+
+    Asserted against the priors module that OWNS the rule rather than through
+    the flow's one-line delegation to it: the withholding is analysis-layer
+    behaviour and survives the flow whole, so a pin reaching through a private
+    conductor method would be pinning the delegation instead of the rule.
     """
-    fakes = FakeSeams()
-    conductor = _conductor(fakes, index_phase_map=_stage_1_map())
-    _run_phase(conductor, 1, 1)
-    _run_phase(conductor, 2, 1)
+    entry = priors.entry_baseline_priors(fc_hz=FC_HZ)
 
-    priors = conductor._entry_baseline_priors()
-
-    assert priors.predicted_sum is None
-    assert priors.configured_crossover_response_by_role is None
-    assert priors.configured_polarity_sign_by_role is None
+    assert entry.predicted_sum is None
+    assert entry.configured_crossover_response_by_role is None
+    assert entry.configured_polarity_sign_by_role is None
     # …and the one prior it DOES carry, so this is not passing on an
     # all-empty MeasurementPriors.
-    assert priors.crossover_fc_hz == FC_HZ
+    assert entry.crossover_fc_hz == FC_HZ
+    # The conductor reaches it and adds nothing of its own — which is what
+    # makes the assertion above a statement about the shipped path.
+    fakes = FakeSeams()
+    conductor = _conductor(fakes, index_phase_map=_stage_1_map())
+    assert conductor._entry_baseline_priors() == entry
 
 
 # --------------------------------------------------------------------------- #
@@ -299,13 +336,23 @@ def test_a_usable_capture_records_a_baseline_stamped_with_program_and_mark():
 # --------------------------------------------------------------------------- #
 
 
-def test_the_accepted_baseline_is_handed_to_the_retention_seam_once():
-    """``entry_baseline`` is not a group phase, so nothing retains it implicitly.
+def test_the_retained_take_rehydrates_into_the_record_the_round_holds():
+    """The seam, end to end: what the round grades, and what outlives it, agree.
 
-    The reuse is explicit in ``_retain_entry_baseline``; this pins that it
-    happens, once, with the three facts a later replay needs to know what it is
-    looking at — and that the take id lands on the record as its
-    ``artifact_ref``.
+    ``entry_baseline`` is not a group phase, so nothing retains it implicitly —
+    the reuse is explicit in ``_retain_entry_baseline``, and this pins that it
+    happens once. What it asserts is not a field list: the retained take is
+    read back through the SHIPPED reader and rehydrated through the SHIPPED
+    ``from_dict``, and the result must EQUAL the record the round is about to
+    grade against. Field-by-field agreement is implied by that and cannot pass
+    while a column is silently dropped.
+
+    This is fragment ``02``'s duplication #2 closed. The arrays used to reach
+    disk only through the flow state file, which ``persist_conductor_state``
+    rebuilds on every write, so a banked round's "before" stopped existing the
+    moment the next round persisted — and the receipt's digest (``n_bins``,
+    ``n_excluded``) was all that was left of it. The retained take is
+    write-once and keyed by ``take_id``.
     """
     retained: list[tuple[str, Any, dict[str, Any]]] = []
     fakes = FakeSeams()
@@ -326,10 +373,10 @@ def test_the_accepted_baseline_is_handed_to_the_retention_seam_once():
     assert len(retained) == 1
     position_id, _result, metadata = retained[0]
     assert metadata["phase"] == PHASE_ENTRY_BASELINE
-    assert metadata["program_id"] == conductor.measure_entry_baseline.program_id
-    assert metadata["reference_mark"] == REFERENCE_MARK_DESIGN_AXIS
-    assert metadata["graph_fingerprint"]
     assert conductor.measure_entry_baseline.artifact_ref == position_id
+    assert EntryBaseline.from_dict(
+        _read_take(metadata)
+    ) == conductor.measure_entry_baseline
 
 
 def test_a_failing_retention_store_does_not_cost_the_household_a_retake():
@@ -337,8 +384,11 @@ def test_a_failing_retention_store_does_not_cost_the_household_a_retake():
 
     Same guarantee ``_retain_cloud_position`` gives, stated for the phase that
     reuses it: a full disk must not turn an acoustically-good baseline into a
-    retake. The record is still banked — what is lost is only the pointer to
-    the stored bytes.
+    retake. The round still grades against its own "before" — that record is
+    held in memory and written to the flow state file, neither of which this
+    seam touches. What a failed store costs is the copy that would have
+    OUTLIVED the round, and the record says so by naming no artifact rather
+    than naming a take nobody wrote.
     """
     fakes = FakeSeams()
 
@@ -355,8 +405,6 @@ def test_a_failing_retention_store_does_not_cost_the_household_a_retake():
 
     assert outcome["accepted"] is True
     assert conductor.measure_entry_baseline is not None
-    # No artifact to point at, and the record says so rather than naming a
-    # take nobody stored.
     assert conductor.measure_entry_baseline.artifact_ref == ""
 
 

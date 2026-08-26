@@ -9426,6 +9426,13 @@ class CrossoverV2Session:
         gate: a full disk must not turn an acoustically-good baseline into a
         retake, and the reduced record (which is what the round actually
         grades) is banked whether or not any bytes were stored.
+
+        **The retained take carries the reduced CURVE, not only its scalars**
+        (fragment ``02`` duplication #2). The same arrays go into the flow
+        state file, which is what stage 2 reads inside this round; the take is
+        what survives it, because a take is write-once and the state file is
+        rewritten on every persist. Both are written from ``measured`` here, so
+        neither is a copy of the other.
         """
         fingerprint = self._entry_graph_fingerprint()
         metadata = _spatial.entry_baseline_record(
@@ -9436,6 +9443,9 @@ class CrossoverV2Session:
             reference_mark=measured.reference_mark,
             graph_fingerprint=fingerprint,
             captured_at=time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
+            freqs_hz=measured.curve.hz,
+            magnitude_db=measured.curve.db,
+            excluded=measured.excluded,
             validity_floor_hz=getattr(
                 analysis.summed_response, "validity_floor_hz", None
             ),

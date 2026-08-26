@@ -375,6 +375,20 @@ def test_a_position_take_id_is_qualified_by_the_attempt():
     assert record["position_id"] == "cloud_measure_03"
 
 
+def _entry_record(**overrides):
+    """One retained entry-baseline take, with only the field under test named."""
+    fields = {
+        "index": 9, "attempt": 1, "session_id": "sess", "program_id": "prog",
+        "reference_mark": flow.REFERENCE_MARK_DESIGN_AXIS,
+        "graph_fingerprint": "fp", "captured_at": "2026-08-11T00:00:00Z",
+        "freqs_hz": (200.0, 400.0), "magnitude_db": (-1.5, 0.5),
+        "excluded": (True, False),
+        "validity_floor_hz": 100.0, "gate_window_ms": 12.0,
+        "summed_ripple_db": 1.0, "glitch_detected": False, "wav_sha256": "abc",
+    }
+    return spatial.entry_baseline_record(**{**fields, **overrides})
+
+
 def test_an_entry_baseline_take_id_carries_index_and_attempt():
     """The same rule on the phase that is NOT a group member.
 
@@ -384,13 +398,7 @@ def test_an_entry_baseline_take_id_carries_index_and_attempt():
 
     Mutation-selected: dropping the attempt suffix left 21 tests green.
     """
-    record = spatial.entry_baseline_record(
-        index=9, attempt=2, session_id="sess", program_id="prog",
-        reference_mark=flow.REFERENCE_MARK_DESIGN_AXIS,
-        graph_fingerprint="fp", captured_at="2026-08-11T00:00:00Z",
-        validity_floor_hz=100.0, gate_window_ms=12.0, summed_ripple_db=1.0,
-        glitch_detected=False, wav_sha256="abc",
-    )
+    record = _entry_record(index=9, attempt=2)
 
     assert record["take_id"] == "entry_baseline_09_a02"
     assert record["position_id"] == record["take_id"]
@@ -403,17 +411,28 @@ def test_the_three_comparability_facts_ride_the_entry_record():
     and they are the whole reason this is a separate builder rather than a
     keyword on the position one.
     """
-    record = spatial.entry_baseline_record(
-        index=9, attempt=1, session_id="sess", program_id="prog-42",
-        reference_mark=flow.REFERENCE_MARK_DESIGN_AXIS,
-        graph_fingerprint="fp-entry", captured_at="2026-08-11T00:00:00Z",
-        validity_floor_hz=None, gate_window_ms=None, summed_ripple_db=None,
-        glitch_detected=False, wav_sha256=None,
-    )
+    record = _entry_record(program_id="prog-42", graph_fingerprint="fp-entry")
 
     assert record["program_id"] == "prog-42"
     assert record["reference_mark"] == flow.REFERENCE_MARK_DESIGN_AXIS
     assert record["graph_fingerprint"] == "fp-entry"
+
+
+def test_the_entry_records_curve_is_the_durable_copy_of_the_before():
+    """The arrays ride the write-once take, not only the rewritten state file.
+
+    Fragment ``02``'s duplication #2: the flow state file's ``verify_priors``
+    is rebuilt from the conductor on every persist, so before this the round's
+    "before" stopped existing the moment the next round persisted. The names
+    are ``EntryBaseline.from_dict``'s so one reader covers both.
+    """
+    record = _entry_record(
+        freqs_hz=(200.0, 400.0), magnitude_db=(-1.5, 0.5), excluded=(True, False),
+    )
+
+    assert record["freqs_hz"] == [200.0, 400.0]
+    assert record["magnitude_db"] == [-1.5, 0.5]
+    assert record["excluded"] == [True, False]
 
 
 # --------------------------------------------------------------------------- #

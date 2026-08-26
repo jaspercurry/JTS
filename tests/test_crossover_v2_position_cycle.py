@@ -22,6 +22,7 @@ from jasper.active_speaker.crossover_v2.position_cycle import (
     PositionCycleError,
     expand_angle_spec,
     position_cycle_document,
+    read_entry_baseline_take,
     read_position_cycle,
     staged_stops,
     takes_by_position,
@@ -29,6 +30,7 @@ from jasper.active_speaker.crossover_v2.position_cycle import (
 from jasper.active_speaker.crossover_v2.spatial import (
     LATERAL_POSE_REGIME,
     LateralPose,
+    entry_baseline_record,
     lateral_pose_record,
 )
 
@@ -279,6 +281,101 @@ def test_takes_from_two_relay_sessions_name_both_sources(tmp_path):
         f"bundle/sess-1/{_BANKED_ARTIFACTS}/relay-1/positions",
         f"bundle/sess-1/{_BANKED_ARTIFACTS}/relay-2/positions",
     ]
+
+
+# --------------------------------------------------------------------------- #
+# the round's "before" — the same directory, the other reader
+# --------------------------------------------------------------------------- #
+
+
+def _entry_take(tmp_path: Path, **overrides) -> Path:
+    """One banked entry-baseline sidecar, from the SPEAKER's own producer."""
+    fields = {
+        "index": 9, "attempt": 1, "session_id": "sess-1",
+        "program_id": "prog-entry", "reference_mark": "design_axis",
+        "graph_fingerprint": "fp-entry", "captured_at": "2026-08-11T00:00:00Z",
+        "freqs_hz": (200.0, 400.0), "magnitude_db": (-1.5, 0.5),
+        "excluded": (True, False),
+        "validity_floor_hz": 100.0, "gate_window_ms": 12.0,
+        "summed_ripple_db": 1.0, "glitch_detected": False,
+        "wav_sha256": "entry-sha",
+    }
+    record = entry_baseline_record(**{**fields, **overrides})
+    path = tmp_path / f"{record['take_id']}.json"
+    path.write_text(json.dumps({
+        "schema_version": 1, "kind": POSITION_EVIDENCE_KIND, **record,
+    }))
+    return path
+
+
+def test_the_before_reads_back_in_the_shape_its_record_type_rehydrates_from(
+    tmp_path,
+):
+    """The field names are ``EntryBaseline.from_dict``'s, so one reader covers both.
+
+    A reader that returned its own spelling would make every caller translate,
+    and the translation is where a dropped exclusion mask hides.
+    """
+    take = read_entry_baseline_take(_entry_take(tmp_path))
+
+    assert take == {
+        "program_id": "prog-entry",
+        "reference_mark": "design_axis",
+        "graph_fingerprint": "fp-entry",
+        "captured_at": "2026-08-11T00:00:00Z",
+        "freqs_hz": [200.0, 400.0],
+        "magnitude_db": [-1.5, 0.5],
+        "excluded": [True, False],
+        "artifact_ref": "entry_baseline_09_a01",
+    }
+
+
+def test_a_lateral_pose_is_never_read_as_the_round_s_before(tmp_path):
+    """Two record shapes in one directory, and each reader takes one.
+
+    ``retain_position`` serves the lateral walk, the cloud group and the entry
+    baseline into the same directory. Reading a per-driver pose as the summed
+    "before" would put the wrong capture on one side of a benefit comparison.
+    """
+    path = tmp_path / "pose.json"
+    path.write_text(json.dumps({
+        "schema_version": 1, "kind": POSITION_EVIDENCE_KIND, **_record(1, 0),
+    }))
+
+    assert read_entry_baseline_take(path) is None
+
+
+@pytest.mark.parametrize(
+    "missing", ["freqs_hz", "magnitude_db", "excluded"],
+)
+def test_a_take_banked_before_the_curve_rode_here_is_not_a_before(
+    tmp_path, missing,
+):
+    """A baseline-shaped record with no bins cannot answer what it is asked.
+
+    Rounds banked before the curve moved into the take carry the identity
+    fields and none of the arrays. Returning one half-filled would hand a
+    comparison a "before" with nothing to compare, which is worse than the
+    honest absence the caller already knows how to report.
+    """
+    path = _entry_take(tmp_path)
+    raw = json.loads(path.read_text())
+    del raw[missing]
+    path.write_text(json.dumps(raw))
+
+    assert read_entry_baseline_take(path) is None
+
+
+@pytest.mark.parametrize(
+    "written", ["{ truncated", json.dumps([1, 2, 3])],
+    ids=["truncated", "not-an-object"],
+)
+def test_an_unreadable_before_is_an_absence_rather_than_a_raise(tmp_path, written):
+    """One corrupt sidecar must not cost a reader the round it is looking at."""
+    path = tmp_path / "entry_baseline_09_a01.json"
+    path.write_text(written)
+
+    assert read_entry_baseline_take(path) is None
 
 
 # --------------------------------------------------------------------------- #
