@@ -1,45 +1,20 @@
 # HANDOFF — Multi-device peering
 
-When a household runs multiple JTS speakers on the same LAN, all of
-them hear the same "Hey Jarvis" and — without coordination — all of
-them answer at once. **Peering** is the coordination protocol that
-picks exactly one winner per wake event and suppresses the rest.
+When a household runs multiple JTS speakers on the same LAN, all of them hear
+the same "Hey Jarvis" and — without coordination — all of them answer at
+once. **Peering** picks exactly one winner per wake event and suppresses the
+rest. It is **off by default**; the user flips it on at
+`http://jts.local/rooms/`.
 
-This doc is the home base for the subsystem. Read it before
-modifying anything in `jasper/peering/` or the wake-handler
-integration in `jasper/voice_daemon.py`. It covers the multi-Pi
-case: N autonomous JTS speakers, each with its own mic and LLM
-session.
+Read this before modifying `jasper/peering/` or the wake-handler integration
+in `jasper/voice_daemon.py`. The two decisions behind the design are
+[ADR-0127](adr/0127-wake-arbitration-is-hubless-and-costs-a-solo-speaker-nothing.md)
+(hubless P2P with a deterministic pure ranking function; a solo speaker pays
+nothing) and
+[ADR-0128](adr/0128-peering-fails-open-so-arbitration-can-never-silence-a-speaker.md)
+(every arbitration failure resolves to WIN).
 
-If you're a fresh context window: skim §1–§3, then go to §5 for the
-day-1 operational picture. The rest is rationale.
-
----
-
-## 1. Goal and constraints
-
-What the user asked for, verbatim during design:
-
-- LAN-only, no cloud arbitration, no third-party service.
-- Lightweight enough to deploy multiple instances around a house.
-- **If only one device exists, nothing peering-related should
-  even run.** Single-Pi households pay zero CPU / RAM / network.
-- A binary toggle in the JTS.local UI that someone has to flip on
-  deliberately.
-- Losers play no sound. They lost.
-- "Primary speaker" is a *bias*, not a hard rule.
-- Session stickiness: once a peer wins a wake, it owns the
-  conversation until either silence/end or a fresh wake word
-  initiates new arbitration.
-- TTS reply through the winner's own speakers (not routed to a
-  designated primary).
-
-These are the constraints that shaped every architecture decision
-below.
-
----
-
-## 2. Architecture in one diagram
+## Architecture
 
 ```
    Pi A (room=living, primary=1)         Pi B (room=bedroom)
@@ -49,9 +24,8 @@ below.
    │   └─ _peer_arbitrate ──┐   │        │   └─ _peer_arbitrate ──┐   │
    │                        │   │        │                        │   │
    │  jasper-control        ▼   │        │  jasper-control        ▼   │
-   │   ├─ HTTP :8780 (existing) │        │   ├─ HTTP :8780 (existing) │
+   │   ├─ HTTP :8780            │        │   ├─ HTTP :8780            │
    │   └─ peering daemon ◀──┐   │        │   └─ peering daemon ◀──┐   │
-   │       (NEW)            │   │        │       (NEW)            │   │
    └────────────────────────┼───┘        └────────────────────────┼───┘
                             │ UDS /run/jasper-control/peering.sock│
                             ─────────────────────────────────────
@@ -66,195 +40,87 @@ below.
                               arbitration messages (cross-LAN)
 ```
 
-**Two transports, deliberately separated:**
+The peering daemon's multicast socket and state machine come up as soon as
+`mode=on`; the mDNS advertisement/browsing is what gates whether a sibling is
+ever actually seen. Multicast carries five JSON message types (`WAKE`,
+`CLAIM`, `HEART`, `END`, `HELLO`), max ~300 bytes each.
 
-- **mDNS-SD** answers "is anyone else on the network?" The peering
-  daemon's multicast socket and state machine come up as soon as
-  `mode=on` (see §9's resource table — the socket is bound whenever
-  peering is on); it's the mDNS advertisement/browsing that gates
-  whether a sibling is ever actually seen. Discovery is cheap, idempotent, and
-  uses the same Avahi daemon JTS already runs for `_jasper-control._tcp`.
-- **Multicast UDP** carries the actual arbitration messages
-  (`WAKE`, `CLAIM`, `HEART`, `END`, plus periodic `HELLO`). 5
-  message types, JSON-encoded, max ~300 bytes each.
-
-**Why P2P, not a hub?** The user wanted N=1 to be free and N≥2 to
-just work. A hub-and-spoke design with an arbitration server
-needs that server even when N=1. P2P with deterministic ranking
-(every peer applies the same pure function to the same multicast
-message set and reaches the same conclusion) means there's no
-leader to elect and no SPOF. The design follows the same broad
-deterministic-selection pattern used by commercial multi-speaker
-systems while remaining LAN-local and hubless.
-
----
-
-## 3. Module layout
+## Module layout
 
 Separated by I/O profile so each piece is independently testable.
 
 | File | Purity | What it does |
 |---|---|---|
-| [jasper/peering/config.py](../jasper/peering/config.py) | pure | `PeeringConfig` + env-file loader (`load_config`). Owns the `peer_id` idempotency, the on/off mode parsing, the room-name default derivation. |
-| [jasper/peering/rank.py](../jasper/peering/rank.py) | pure | `WakeReport` dataclass + `rank(reports)` — the deterministic winner-pick. Cascade of tiers (see §4). |
-| [jasper/peering/state.py](../jasper/peering/state.py) | pure | `PeeringStateMachine` — accepts `Event` instances, returns `Action` instances. No I/O. Five states: IDLE / CANDIDATE / WINNER / ACTIVE / SUPPRESSED. |
-| [jasper/peering/transport.py](../jasper/peering/transport.py) | I/O | Multicast UDP socket + JSON encode/decode of the 5 message types. `MulticastTransport` is an asyncio wrapper. |
-| [jasper/peering/avahi.py](../jasper/peering/avahi.py) | I/O | Renders `/etc/avahi/services/jasper-peer.service` from the template at `/etc/jasper/avahi-templates/`. Installs on `mode=on`, uninstalls on `mode=off`. |
-| [jasper/peering/discovery.py](../jasper/peering/discovery.py) | I/O | `AsyncZeroconf` wrapper for browsing `_jasper-peer._udp`. Lazy-imported so the zeroconf module doesn't load when peering is off. |
-| [jasper/peering/uds.py](../jasper/peering/uds.py) | I/O | Unix-socket server for voice → peering RPC. Mirrors the existing `voice.sock` newline-ASCII + JSON protocol. |
-| [jasper/peering/daemon.py](../jasper/peering/daemon.py) | I/O | The asyncio orchestrator. Wires discovery + transport + state + UDS together. Translates state-machine `Action`s into actual I/O. **No business logic** lives here — the logic is all in state.py. |
+| [config.py](../jasper/peering/config.py) | pure | `PeeringConfig` + env-file loader. Owns `peer_id` idempotency, mode parsing, room-name derivation, and every default/clamp below. |
+| [rank.py](../jasper/peering/rank.py) | pure | `WakeReport` + `rank(reports)` — the deterministic winner pick. Its module docstring owns the tier cascade and why each eps is what it is. |
+| [state.py](../jasper/peering/state.py) | pure | `PeeringStateMachine` — `Event` in, `Action` out, no I/O. Five states: IDLE / CANDIDATE / WINNER / ACTIVE / SUPPRESSED. |
+| [transport.py](../jasper/peering/transport.py) | I/O | Multicast UDP socket + JSON codec for the five message types. |
+| [avahi.py](../jasper/peering/avahi.py) | I/O | Renders `/etc/avahi/services/jasper-peer.service` from the template. Installs on `mode=on`, uninstalls on `mode=off`. |
+| [discovery.py](../jasper/peering/discovery.py) | I/O | `AsyncZeroconf` browse of `_jasper-peer._udp`. Lazy-imported so zeroconf never loads when peering is off. |
+| [uds.py](../jasper/peering/uds.py) | I/O | Unix-socket server for voice → peering RPC (the existing newline-ASCII + JSON protocol). |
+| [daemon.py](../jasper/peering/daemon.py) | I/O | asyncio orchestrator. Translates state-machine `Action`s into I/O. **No business logic** — that all lives in `state.py`. |
 
-**Integration points** (small, surgical changes outside the peering package):
+**Integration points** outside the package:
 
 | File | What it adds |
 |---|---|
-| [jasper/config.py](../jasper/config.py) | `Config.peering_enabled` (bool) + `Config.peering_uds_socket` (path). Read from `JASPER_PEERING` env. |
-| [jasper/voice_daemon.py](../jasper/voice_daemon.py) | New helpers: `_peer_arbitrate`, `_peering_send`, `_notify_peering_session_started/_ended`, `_wake_late_cancelled`, `_frame_rms_dbfs`. Restructured `_handle_wake_frame` to spawn `_arbitrate_acquire_drain` as a background task. |
-| [jasper/control/server.py](../jasper/control/server.py) | `start_peering_daemon_if_enabled()` — spawns a background thread with its own asyncio loop iff `JASPER_PEERING=on`. No-op when off. |
-| [jasper/cli/doctor/](../jasper/cli/doctor/__init__.py) | Two new checks: `check_peering_mode` (env-file sanity) and `check_peering_discovery` (sibling-peer count via `avahi-browse`). |
-| [jasper/web/rooms_setup.py](../jasper/web/rooms_setup.py) | Canonical user-facing peering toggle on `/rooms/`. `POST /peering` writes `/var/lib/jasper/peering.env` through `jasper.peering.config` and restarts both voice + control daemons. There is no `/peers/` page, redirect, socket, or page CSS. |
-| [deploy/avahi/jasper-peer.service.template](../deploy/avahi/jasper-peer.service.template) | mDNS service-file template with `__PEER_ID__` / `__ROOM__` / `__PRIMARY__` placeholders, rendered at runtime. |
-| [deploy/install.sh:install_peering_template()](../deploy/install.sh) | Installs the template, generates a stable `peer_id` UUID at `/var/lib/jasper/peer_id`. |
-| [deploy/systemd/jasper-voice.service](../deploy/systemd/jasper-voice.service) + [jasper-control.service](../deploy/systemd/jasper-control.service) | **Both** units must source `EnvironmentFile=-/var/lib/jasper/peering.env` so `JASPER_PEERING` reaches each daemon's `Config`. `jasper-control.service` must also grant `ReadWritePaths=/etc/avahi/services` because peering renders `/etc/avahi/services/jasper-peer.service` under `ProtectSystem=full`. Guarded by `tests/test_peering_plumbing.py` and `tests/test_control_systemd.py`. |
+| [config.py](../jasper/config.py) | `Config.peering_enabled` + `Config.peering_uds_socket`, from `JASPER_PEERING`. |
+| [voice_daemon.py](../jasper/voice_daemon.py) | `_peer_arbitrate`, `_peering_send`, `_notify_peering_session_started/_ended`, `_wake_late_cancelled`, `_frame_rms_dbfs`; `_handle_wake_frame` spawns `_arbitrate_acquire_drain` as a background task. |
+| [control/server.py](../jasper/control/server.py) | `start_peering_daemon_if_enabled()` — a background thread with its own asyncio loop iff `JASPER_PEERING=on`; no-op when off. |
+| [cli/doctor/](../jasper/cli/doctor/__init__.py) | `check_peering_mode` (env-file sanity) and `check_peering_discovery` (sibling count via `avahi-browse`). |
+| [web/rooms_setup.py](../jasper/web/rooms_setup.py) | The canonical toggle. `POST /peering` writes `/var/lib/jasper/peering.env` through `jasper.peering.config` and restarts voice + control. |
+| [deploy/avahi/jasper-peer.service.template](../deploy/avahi/jasper-peer.service.template) | mDNS service template with `__PEER_ID__` / `__ROOM__` / `__PRIMARY__`, rendered at runtime. |
+| [deploy/install.sh](../deploy/install.sh) | `install_peering_template()` — installs the template, generates the stable `peer_id` UUID. |
+| [jasper-voice.service](../deploy/systemd/jasper-voice.service) + [jasper-control.service](../deploy/systemd/jasper-control.service) | **Both** must source `EnvironmentFile=-/var/lib/jasper/peering.env` so `JASPER_PEERING` reaches each `Config`. `jasper-control.service` must also grant `ReadWritePaths=/etc/avahi/services`, because peering renders the advert under `ProtectSystem=full`. Guarded by `tests/test_peering_plumbing.py` + `tests/test_control_systemd.py`. |
 
----
+`/peers/` — a standalone wizard on port 8776 — is **deleted**: no route, no
+redirect, no socket, no page CSS. `/rooms/` is the only user-facing peering
+surface, and a stale bookmark should fail rather than keep a second surface
+alive.
 
-## 4. The ranking function — cascade of tiers
+## Wake event end-to-end
 
-`jasper/peering/rank.py:rank(reports) → peer_id`. Pure, deterministic.
-Every peer applies it to the same input set and gets the same answer.
-That's the safety property of the whole P2P design.
+Peering-on path, from "Hey Jarvis" to "winner answers". The only tuned number
+is the 150 ms arbitration window.
 
-Tiers, applied in order. Each tier filters the candidate pool. A
-single survivor returns immediately; multiple survivors fall through.
+1. openWakeWord fires on every Pi that heard the utterance. Each WakeLoop
+   computes its score, derives `can_serve` from spend cap + paused state,
+   sets `_acquiring` (the main mic loop now buffers frames into
+   `_acquire_buffer`, capped at 20 s), spawns `_arbitrate_acquire_drain` as a
+   background task, and **returns to draining new frames**.
+2. The background task checks `_wake_late_cancelled()` — user mute, or an
+   open room-correction window.
+3. `_peer_arbitrate()` makes the UDS call to `jasper-control`
+   (`ARBITRATE {score, snr, rms, can_serve}`). The daemon multicasts `WAKE`,
+   schedules the arbitration timer, collects peer `WAKE`s, and on expiry runs
+   `rank()` over the collected reports.
+4. **WIN** → the daemon multicasts `CLAIM` and returns `{result, epoch}`.
+   **LOSE** → the task logs `event=peering.wake.lost` and returns silently;
+   `finally` clears `_acquiring`, drops the buffer, and sets the refractory.
+5. On WIN: re-check the late-cancel gates, re-check the spend cap (playing
+   `cant_connect` if it now blocks), fire the chirp, `_begin_turn()` opens
+   the LLM session, `_notify_peering_session_started` puts the daemon into
+   heartbeat broadcast, and `_acquire_buffer` drains into the session in FIFO
+   order before live frames take over.
+6. On session end, `_end_turn` notifies peering, which multicasts `END`;
+   peers' SUPPRESSED state clears.
 
-| Tier | Signal | Tiebreaker eps |
-|---|---|---|
-| 1 | `can_serve=True` peers win over `can_serve=False` (paused / spend cap reached). If *no* peer can serve, the highest-confidence one wins anyway so exactly one peer plays the failure cue. | — |
-| 2 | openWakeWord confidence — top score defines the band. | within 0.05 of top |
-| 3 | Primary flag — if exactly one primary peer is in the confidence band, it wins. If multiple primaries, restrict to primaries. **This is the "bias" — it only kicks in within the band, not as an absolute override.** | — |
-| 4 | SNR (higher wins) | within 3 dB of top |
-| 5 | RMS in dBFS (higher wins) | exact |
-| 6 | Lowest `peer_id` UUID lexicographically. Final deterministic tiebreaker. | — |
+**Correctness properties that constrain edits here:**
 
-**Why confidence as the primary signal, not raw audio energy:** raw
-RMS varies by microphone gain, room noise, and reverberation.
-openWakeWord confidence is the closest available gain-invariant
-proximity signal. SNR and RMS therefore remain lower-priority
-tiebreakers instead of overriding a clearly stronger detection.
+- **The main mic loop never blocks on peering.** The arbitration round-trip
+  has a 500 ms hard ceiling and runs in its own task, so the loop keeps
+  iterating and the watchdog keeps being patted.
+- **Fail-open on every peering error** (ADR-0128) — missing UDS, timeout, or
+  a malformed response all return WIN.
+- **Late-cancel re-runs after arbitration**, because up to 500 ms passed.
+- **Losers stay silent**: no chirp on LOSE.
 
-**Why a band (eps), not a sort:** detection-time jitter on identical
-audio is ~0.03; a strict sort would let microsecond-scale CPU
-scheduling decide arbitration. The band absorbs that noise and
-defers to physical signals (SNR, RMS) only when scores are
-genuinely close.
+## The state machine
 
----
-
-## 5. Wake event end-to-end
-
-This is the path from "Hey Jarvis" to "winner answers" with peering
-on. Numbers are approximate; the only one that's actually tuned is
-the 150 ms arbitration window.
-
-```
-T+0    ┌──────────────────────────────────────────────────────────┐
-       │ openWakeWord fires on all Pis that heard the utterance.  │
-       │ Each Pi's WakeLoop:                                       │
-       │   1. detector.feed → score (e.g. 0.87)                    │
-       │   2. compute can_serve from spend_cap + paused state      │
-       │   3. set _acquiring=True; main mic loop now buffers frames│
-       │      into _acquire_buffer (cap 20s)                       │
-       │   4. spawn _arbitrate_acquire_drain as a bg task          │
-       │   5. main mic loop returns to draining new frames         │
-       └──────────────────────────────────────────────────────────┘
-                            │
-T+0    bg task: _arbitrate_acquire_drain
-                            │
-                            ▼
-T+~1   ┌──────────────────────────────────────────────────────────┐
-       │ _wake_late_cancelled() — abort if user muted or a room    │
-       │ correction window is open. (Same checks run again post-arb)│
-       └──────────────────────────────────────────────────────────┘
-                            │
-                            ▼
-T+~5   ┌──────────────────────────────────────────────────────────┐
-       │ _peer_arbitrate() — UDS call to jasper-control:            │
-       │   "ARBITRATE {score, snr, rms, can_serve}"                 │
-       │ Peering daemon broadcasts WAKE on multicast, schedules     │
-       │ a 150 ms arbitration timer, collects peer WAKEs, and       │
-       │ when the timer fires, runs rank() on collected reports.    │
-       └──────────────────────────────────────────────────────────┘
-                            │
-              ┌─────────────┴──────────────┐
-              │                            │
-            WIN                          LOSE
-              │                            │
-T+~155 ms     ▼                            ▼
-       ┌────────────────────┐   ┌────────────────────────────────┐
-       │ peering broadcasts │   │ Daemon returns {result:"LOSE"} │
-       │ CLAIM on multicast │   │ over UDS. _arbitrate_acquire   │
-       │ Returns {result:   │   │ _drain logs event=peering.wake │
-       │ "WIN", epoch}      │   │ .lost and returns silently.    │
-       └────────────────────┘   │ finally: _acquiring=False,     │
-                                │ buffer cleared, refractory set │
-T+~155                          └────────────────────────────────┘
-       ▼
-       ┌─────────────────────────────────────────────────────────┐
-       │ Re-check late-cancel gates                              │
-       │ Check spend_cap (now); if blocked → play cant_connect   │
-       │ Fire chirp (async task)                                 │
-       │ _begin_turn() — opens LLM session                        │
-       │ _notify_peering_session_started → daemon starts          │
-       │ broadcasting HEART every 1 s on multicast                │
-       │ Drain _acquire_buffer into the LLM session in FIFO       │
-       │ order → live frames flow normally from main mic loop     │
-       └─────────────────────────────────────────────────────────┘
-                            │
-                            ▼
-T+session  user speaks, LLM responds. Existing voice flow.
-                            │
-                            ▼
-T+session_end
-       ┌─────────────────────────────────────────────────────────┐
-       │ _end_turn:                                              │
-       │   _notify_peering_session_ended(reason)                 │
-       │   peering broadcasts END on multicast                   │
-       │   peers' SUPPRESSED state clears                        │
-       │   chirp off, duck restore, refractory set, state=WAKE   │
-       └─────────────────────────────────────────────────────────┘
-```
-
-**Critical correctness properties:**
-
-- **The main mic loop never blocks on peering.** `_arbitrate_acquire_drain`
-  runs as a separate asyncio task. While it's awaiting the UDS
-  round-trip (up to 500 ms hard ceiling), the main mic loop keeps
-  iterating, frames buffer into `_acquire_buffer`, and the watchdog
-  heartbeat keeps patting systemd.
-- **Fail-open on every peering error.** If the UDS doesn't exist
-  (peering daemon not running), the socket times out, or the
-  response is malformed → return "WIN". A wedged peering daemon
-  cannot silence the speaker. Every code path in
-  `_peer_arbitrate` returns "WIN" by default. See
-  [jasper/voice_daemon.py:_peering_send](../jasper/voice_daemon.py).
-- **Late-cancel after arbitration.** Between arb start and arb end
-  (up to 500 ms), the user could mute via a remote or kick off a room-
-  correction measurement. Both check again at `post_arb`.
-- **Losers stay silent.** No chirp on LOSE. The chirp moved from
-  "fires immediately on wake" to "fires only on WIN" — the only
-  user-visible change in solo mode is that gate-failure cues now
-  play *during* a brief acquiring-state window instead of before
-  it (acoustically equivalent; the cue plays through TtsPlayout
-  either way).
-
----
-
-## 6. The state machine
-
-`PeeringStateMachine` in [jasper/peering/state.py](../jasper/peering/state.py).
-Five states, pure event-driven. Returns `Action` values; the
-daemon translates them into I/O.
+[state.py](../jasper/peering/state.py), five states, pure and event-driven;
+the daemon translates the returned `Action`s into I/O. Tests
+([test_peering_state.py](../tests/test_peering_state.py)) drive synthetic
+event sequences — no sockets, no timers, no asyncio.
 
 ```
                        ┌─────────────────────────────────────┐
@@ -265,22 +131,22 @@ daemon translates them into I/O.
                           ▼                      ▼
                   ┌──────────────┐         ┌──────────────┐
                   │  CANDIDATE   │         │  SUPPRESSED  │
-                  │  collect 150ms│         │  (foreign    │
-                  │  WAKEs        │         │   session)   │
+                  │ collect 150ms│         │  (foreign    │
+                  │  WAKEs       │         │   session)   │
                   └──┬───────────┘         └──┬───────┬───┘
           window      │                       │       │
-          elapses     │                       │       │ HEART missed 2s
+          elapses     │                       │       │ HEART missed 2 s
         ┌─────────────┴───────────┐           │       │ OR END seen
         │                         │           │       ▼
         ▼                         ▼           │  (back to IDLE)
-   ┌─────────┐               ┌─────────┐     │
-   │ WINNER  │               │  LOSER  │     │ local wake above
-   │ (CLAIM) │               │ → IDLE  │     │ break_threshold (0.85)
-   └────┬────┘               └─────────┘     │
-        │                                    └──► CANDIDATE (contest)
+   ┌─────────┐               ┌─────────┐      │
+   │ WINNER  │               │  LOSER  │      │ local wake above
+   │ (CLAIM) │               │ → IDLE  │      │ break_threshold
+   └────┬────┘               └─────────┘      │
+        │                                     └──► CANDIDATE (contest)
         │ session opens (voice notifies)
         ▼
-   ┌─────────┐  HEART every 1s while in this state
+   ┌─────────┐  HEART every 1 s while in this state
    │ ACTIVE  │
    └────┬────┘
         │ session ends (silence detector, spend, user END)
@@ -288,73 +154,53 @@ daemon translates them into I/O.
     send END, → IDLE
 ```
 
-**Pure → easy to test.** All the state machine tests live in
-[tests/test_peering_state.py](../tests/test_peering_state.py) and
-drive transitions with synthetic event sequences. No sockets, no
-timers, no asyncio.
+**Heartbeat semantics.** A winner in ACTIVE multicasts `HEART` every 1 s;
+SUPPRESSED peers reset a 2 s timeout on each one. If the winner crashes
+mid-session the heartbeats stop, the timers fire, and the suppressed peers
+return to IDLE within ~2 s — the next wake picks a fresh winner with no
+double response.
 
-**Heartbeat semantics.** Once a winner enters ACTIVE, it broadcasts
-HEART every 1 s. SUPPRESSED peers reset a 2 s heartbeat-timeout
-timer on each HEART. If the winner crashes mid-session, the
-heartbeats stop, the SUPPRESSED peers' timers fire, and they
-return to IDLE within ~2 s. The user might hear their next "Hey
-Jarvis" pick a fresh winner with no double-response.
+**Stickiness.** A foreign session in flight keeps IDLE peers out of
+CANDIDATE on their own wakes *unless* the local score exceeds
+`break_threshold`, which breaks suppression and starts arbitration fresh. So
+the user can grab a different speaker by speaking directly to it, while a
+faint far-room false-fire cannot interrupt a live conversation.
 
-**Stickiness.** A foreign session in flight prevents IDLE peers
-from entering CANDIDATE on their own wake events — *unless* the
-local score exceeds `break_threshold` (default 0.85), in which
-case the SUPPRESSED state breaks and arbitration starts fresh.
-This is the "wake word resets stickiness" feature the user asked
-for: the user can grab a different speaker by speaking the wake
-word directly to it, but a far-away false-fire on a faint wake
-doesn't interrupt the active conversation.
+## Configuration
 
----
-
-## 7. Configuration
-
-| File | Default | Purpose |
+| Path | Default | Purpose |
 |---|---|---|
-| `/var/lib/jasper/peering.env` | (absent) | wizard-managed. Absent → `JASPER_PEERING=off` resolves. |
-| `/var/lib/jasper/peer_id` | UUID generated at install | stable per-Pi identity, persists across reboots and re-installs. **Never user-edited.** |
-| `/etc/jasper/avahi-templates/jasper-peer.service` | installed by `install.sh` | template with `__PEER_ID__` / `__ROOM__` / `__PRIMARY__` placeholders. |
-| `/etc/avahi/services/jasper-peer.service` | (absent until mode=on) | rendered file. **Its presence is what makes this Pi visible to siblings.** Written by `jasper-control` when peering starts; the unit's `ReadWritePaths` must include `/etc/avahi/services`. |
-| `/run/jasper-control/peering.sock` | runtime socket | `jasper-control` owns the server side. Keep this under `RuntimeDirectory=jasper-control`; the non-root service user cannot bind sockets under `/run/jasper`. |
+| `/var/lib/jasper/peering.env` | absent | wizard-managed. Absent → `JASPER_PEERING=off`. |
+| `/var/lib/jasper/peer_id` | UUID generated at install | stable per-Pi identity across reboots and re-installs. **Never user-edited.** |
+| `/etc/jasper/avahi-templates/jasper-peer.service` | installed by `install.sh` | the advert template. |
+| `/etc/avahi/services/jasper-peer.service` | absent until `mode=on` | the rendered advert. **Its presence is what makes this Pi visible to siblings.** Written by `jasper-control`, hence that unit's `ReadWritePaths`. |
+| `/run/jasper-control/peering.sock` | runtime | `jasper-control` owns the server side. Keep it under `RuntimeDirectory=jasper-control` — the non-root service user cannot bind under `/run/jasper`. |
 
-Env vars (all `JASPER_PEER*` namespace):
+Env vars, all parsed and clamped in
+[peering/config.py](../jasper/peering/config.py):
 
-- `JASPER_PEERING` — `off` (default) or `on`. Anything else parses
-  to `off` (fail-safe).
-- `JASPER_PEER_ROOM` — legacy peering-room label kept as a data
-  compatibility fallback. Defaults to derived-from-hostname (`jts-bedroom`
-  → `bedroom`; bare `jts` → `default`).
-- `JASPER_PEER_PRIMARY` — `1` if this Pi is the household primary;
-  small bias in ranking (see Tier 3 in §4).
-- `JASPER_PEER_ARB_WINDOW_MS` — arbitration collection window.
-  Default 150 ms, clamped to [50, 500].
-- `JASPER_PEER_BREAK_THRESHOLD` — local wake score required to
-  break suppression mid-session. Default 0.85, clamped to [0.5, 0.99].
+- `JASPER_PEERING` — `off` (default) or `on`; anything else parses to `off`.
+- `JASPER_PEER_PRIMARY` — `1` marks the household primary, a bias inside the
+  confidence band, never an absolute override.
+- `JASPER_PEER_ROOM` — legacy room label kept as a data-compatibility
+  fallback (derived from hostname: `jts-bedroom` → `bedroom`, bare `jts` →
+  `default`). The `/speaker/` identity page owns the room label in current
+  builds.
+- `JASPER_PEER_ARB_WINDOW_MS` — arbitration collection window, default 150,
+  clamped to [50, 500].
+- `JASPER_PEER_BREAK_THRESHOLD` — local score needed to break suppression
+  mid-session, default 0.85, clamped to [0.5, 0.99].
 
-The `/rooms/` Speakers page writes `JASPER_PEERING` and
-`JASPER_PEER_PRIMARY` through `POST /peering`; the `/speaker/` identity
-page owns the room label in current builds, with `JASPER_PEER_ROOM`
-kept as a legacy fallback. The latter two tuning vars are
-operator-managed (edit the env file by hand); web saves preserve them.
+`/rooms/` writes `JASPER_PEERING` and `JASPER_PEER_PRIMARY`; the two tuning
+vars are operator-managed by hand and web saves preserve them.
 
----
+## Operations
 
-## 8. Operations
+**Turning it on.** `http://jts.local/rooms/` → the Wake response card. Save
+triggers `systemctl --no-block restart jasper-voice jasper-control`; allow
+~3–5 s before peers see this Pi in their directory.
 
-### Turning peering on
-
-Visit `http://jts.local/rooms/`. The Wake response card has the peering
-toggle and primary checkbox. Save triggers `systemctl --no-block restart
-jasper-voice jasper-control` so both daemons pick up the new mode. Allow
-~3-5 s before peers see this Pi appear in their `/rooms/` directory.
-`/peers/` is intentionally not routed; stale bookmarks should fail rather
-than keeping a second peering surface alive.
-
-### Verifying
+**Verifying.**
 
 ```sh
 # Doctor shows mode + sibling count
@@ -367,251 +213,78 @@ sudo journalctl -u jasper-control -f | grep -E "event=peering"
 curl -s --unix-socket /run/jasper-control/peering.sock - <<< "STATUS"
 ```
 
-The doctor's two checks:
+`peering: mode` parses the env file — `ok` for both `off` and `on`, `warn`
+only on a malformed value (which resolves to `off` silently, and the operator
+probably wants to know). `peering: discovery` runs `avahi-browse -rt
+_jasper-peer._udp`, filters out our own id, and reports the sibling count.
 
-- **`peering: mode`** — parses `/var/lib/jasper/peering.env`. `ok`
-  for both `off` (default) and `on` (deliberate); `warn` only when
-  the file has a malformed value (e.g. `JASPER_PEERING=banana` →
-  silently resolves to `off`, but the operator probably wants to
-  know).
-- **`peering: discovery`** — runs `avahi-browse -rt _jasper-peer._udp`
-  and counts sibling peer_ids. Filters out our own. Reports `0
-  sibling peers visible (single-device mode)` when alone, or
-  `N sibling peer(s) visible: <list>` otherwise.
+**Two-Pi smoke test (the ship gate).** Toggle peering on at both; each should
+see the other within ~30 s; stand between them and ask a question; **exactly
+one** answers; `journalctl -u jasper-voice | grep peering` shows
+`event=peering.wake.won` on one and `event=peering.wake.lost` on the other,
+with both scores in the log lines.
 
-### Two-Pi smoke test (the actual ship gate)
+**Logging.** Every wake emits structured `event=peering.*` lines
+(`discovery.peer_seen`, `wake.won`, `wake.lost`,
+`session.heartbeat_missed`, `foreign.ended`);
+`scripts/jasper-trace.sh` filters journals down to `event=` lines.
 
-Once we have a second Pi:
+## Cost when off
 
-1. Toggle peering on at both via `/rooms/`.
-2. Each speaker should show the other peer within ~30 s.
-3. Stand between them. Say "Hey Jarvis, what time is it?"
-4. **Exactly one** should respond.
-5. `journalctl -u jasper-voice | grep peering` shows
-   `event=peering.wake.won` on one Pi and `event=peering.wake.lost`
-   on the other, with the winner's score and loser's score in the
-   log lines.
-
-### Logging
-
-Every wake event emits structured `event=peering.*` lines:
-
-```
-event=peering.discovery.peer_seen peer=<uuid> room=bedroom primary=0 addr=192.168.1.42
-event=wake.detected score=0.87 threshold=0.50
-event=peering.wake.won epoch=<uuid> reports=2
-event=peering.wake.lost epoch=<uuid> winner=<peer> winner_score=0.91 my_score=0.79
-event=peering.session.heartbeat_missed epoch=<uuid> peer=<peer> after_ms=2100
-event=peering.foreign.ended peer=<peer> reason=user_silence
-```
-
-`scripts/jasper-trace.sh` filters journals down to these `event=`
-lines for cross-daemon debugging.
-
----
-
-## 9. The "off-by-default" guarantee
-
-This is the most important UX property and the design constraint
-that shaped almost everything. When `JASPER_PEERING=off`:
-
-| Resource | When peering off | When peering on |
+| Resource | Peering off | Peering on |
 |---|---|---|
-| `jasper-control` peering thread | not started (`start_peering_daemon_if_enabled` returns early before importing anything) | started, owns its own asyncio loop |
-| zeroconf module | not imported | imported (lazy, ~5-8 MB Pss) |
+| `jasper-control` peering thread | not started (returns early, before importing anything) | started, owns its own asyncio loop |
+| zeroconf module | not imported | imported lazily (~5–8 MB Pss) |
 | Multicast UDP socket | not opened | bound to 239.192.0.1:5354 |
-| Avahi service file | not installed at `/etc/avahi/services/jasper-peer.service` | rendered from template, Avahi reloaded |
-| `voice_daemon._peer_arbitrate` | returns "WIN" immediately, no UDS call | UDS call to peering daemon, up to 500 ms |
-| `voice_daemon._notify_peering_session_*` | no-op (no I/O) | UDS call |
-| `voice_daemon._frame_rms_dbfs` (per wake) | still computed (~80 µs); negligible | same |
-| Wake handler restructure (`_arbitrate_acquire_drain`) | runs but every peering check short-circuits | full path |
+| Avahi service file | not installed | rendered from template, Avahi reloaded |
+| `_peer_arbitrate` | returns WIN immediately, no UDS call and no loop yield | UDS call, up to 500 ms |
+| `_notify_peering_session_*` | no-op | UDS call |
+| `_frame_rms_dbfs` (per wake) | still computed (~80 µs) | same |
+| `_arbitrate_acquire_drain` | runs, every peering check short-circuits | full path |
 
-Net cost for a single-Pi household with `JASPER_PEERING=off`: zero
-observable difference from before peering existed. The mic loop's
-behaviour is unchanged, the chirp timing is unchanged (peer_arbitrate
-returns synchronously without yielding to the loop when peering is
-disabled — verified by `test_peer_arbitrate_disabled_returns_win_without_io`).
+Net cost for a single-Pi household: no observable difference from before
+peering existed. Pinned by
+`test_peer_arbitrate_disabled_returns_win_without_io`.
 
----
+## Known gaps
 
-## 10. Open questions and what we didn't do
+- **The concurrent multi-waker race** — two speakers waking on the same
+  utterance each mint their own epoch, and convergence is best-effort, not
+  proven. See ADR-0127; no two-Pi hardware repro yet.
+- **SNR is never populated.** `_frame_rms_dbfs` sends RMS but `snr_db=None`
+  always — a real value needs a rolling noise-floor estimator we do not
+  track. With SNR uniformly absent the SNR tier is a no-op and ranking falls
+  through to RMS; usually the confidence band has already decided.
+- **Per-peer mic gain calibration** is unimplemented. Ranking assumes
+  openWakeWord confidence is gain-invariant, which holds well enough across
+  identical XVF3800 hardware but not across a mixed fleet.
+- **No tests on a real LAN.** Every test mocks the transports; the cross-LAN
+  multicast path has never been exercised on hardware.
+- **Multicast on consumer mesh networks** may be dropped or rate-limited,
+  with no unicast fallback wired up (ADR-0127).
 
-Documented honestly so future-you doesn't have to reverse-engineer
-the gaps.
+The dropped-`import` incident that took `jasper-web` down after the `/peers/`
+wizard landed is why [test_web_main_imports.py](../tests/test_web_main_imports.py)
+exists: it pins that every referenced `*_setup` module is imported, that
+`WIZARD_SPECS` has unique routes/env-vars/ports, and that `ruff --select=F821`
+is clean across the whole peering surface.
 
-**"Exactly one winner" holds for a single physical waker, not the
-concurrent multi-waker race.** README and §1's headline invariant —
-"picks exactly one winner per wake event" — is enforced by the state
-machine for the case the design targets: *one* speaker physically hears
-the wake, multicasts its WAKE, and the other N−1 speakers adopt that
-foreign epoch (they never local-waked) and concede when their arb
-window closes. That path is guarded green by
-`tests/test_peering_state.py::test_wake_propagation_picks_exactly_one_winner_and_suppresses_rest`.
-What is *not* guaranteed is the concurrent multi-waker race, where two
-or more speakers `_on_local_wake` on the same utterance near-
-simultaneously and each mints its own epoch. Convergence there is
-best-effort, not proven: the epoch-race dedup in `_on_peer_wake`
-(smaller-UUID-wins) and the WINNER→WINNER concede in `_on_peer_claim`
-usually collapse the duplicate epochs before either side goes ACTIVE,
-but nothing enforces that they always do so within the arb window. And
-once a peer reaches ACTIVE, the DA-0021 session-stickiness guard makes
-it deliberately *ignore* a foreign CLAIM (so an unrelated wake in
-another room can't tear down a live conversation) — which means two
-speakers that both crossed into ACTIVE would each keep their own
-session rather than one conceding. So a same-utterance double-wake can,
-in the worst-case timing, leave two speakers answering. Deferred: a
-real fix needs a deterministic tiebreak that binds *before* ACTIVE
-(e.g. a short mandatory claim-quiet-period, or folding near-simultaneous
-distinct epochs by wake-timestamp proximity). Tracked as an audit
-follow-up (`DA-0021` neighborhood); no two-Pi hardware repro yet.
+**External design references** consulted during the original research: Sonos
+US10181323 (confidence-broadcast arbitration), Apple AU2016410253B2 (P2P BLE
+arbitration), Amazon ICASSP 2022 (arXiv 2112.04914, end-to-end device
+arbitration), RFC 2365 (admin-scoped multicast — where 239.192.0.0/14 comes
+from), RFC 6762 (mDNS), python-zeroconf (browse-only; Avahi remains the only
+mDNS responder on the host).
 
-**Per-peer microphone gain calibration.** The ranking function
-assumes openWakeWord confidence is gain-invariant across mics.
-In practice it's *roughly* invariant for identical XVF3800
-hardware running identical firmware, which is what production
-JTS uses. Heterogeneous fleets (one XVF + one USB conference mic)
-would benefit from a per-peer calibration multiplier on the score
-before broadcasting. Deferred until we see real-world fleets with
-mixed hardware.
-
-**Stereo speaker echo divergence.** Single-reference linear AEC
-plus stereo speakers around a centered mic has a hard cancellation
-ceiling regardless of peering. Independent of this work; tracked
-in the in-progress mic test sequence (Tests 0/A/B/C from the AEC
-investigation).
-
-**TTS reply through the winner's speakers.** The user explicitly
-chose this UX. The alternative — route the LLM response audio
-through a designated primary speaker — would require streaming PCM
-between Pis, which is a much bigger architectural change and remains
-out of scope.
-
-**Live mode toggle without restart.** Currently the wizard restarts
-both jasper-voice and jasper-control via `systemctl restart
---no-block`. ~3 s of unavailability for the user. Live-toggle via
-SIGHUP is doable but requires both daemons to re-read peering.env
-on signal, plus the peering daemon to bring up / tear down its
-sockets and Avahi advertisement dynamically. Worth ~50 lines of
-extra plumbing only if the restart UX bothers a user.
-
-**SNR computation.** Voice daemon's `_frame_rms_dbfs` sends RMS in
-dBFS to the ranking function, but `snr_db=None` always — proper
-SNR needs a rolling noise-floor estimator we don't currently track.
-The ranking function falls through to RMS when SNR is missing.
-Mild precision loss in the SNR tiebreaker tier (Tier 4); usually
-the confidence band (Tier 2) already picks the winner.
-
-**No tests on a real LAN.** All unit + integration tests run on
-the laptop with mocked transports. A real two-Pi acceptance test
-needs hardware. The first deploy will be the first real validation
-of the cross-LAN multicast path.
-
-**Multicast on consumer mesh networks.** Some routers (notably
-eero, Google Wifi) drop or rate-limit multicast packets. We don't
-currently have a unicast-UDP fallback wired up — the design hooks
-are in `transport.py` but the per-peer multicast-health detector
-isn't implemented. Mentioned as a follow-up in PR #142's risk
-register. Watch for: peers visible in `/rooms/` (mDNS works) but
-no arbitration messages ever exchanged (multicast doesn't).
-
----
-
-## 11. Retired `/peers/` page and the lost-edit incident
-
-The original implementation had a standalone `/peers/` wizard on port
-8776. That page is now deleted: `/rooms/` owns the household "Speakers"
-surface, peering writes through `jasper.peering.config`, nginx has no
-`/peers/` redirect, and the web sockets no longer bind 8776.
-
-The historical incident is still worth recording because it produced the
-guard tests that protect the current wizard registry.
-
-**What happened:** PR #146 wired the `/peers/` wizard into
-`jasper/web/__main__.py`. Two required edits got dropped during the edit:
-adding the setup module import and adding the matching port variable. The
-wiring code that referenced both names landed; the declarations didn't.
-Python compiled the file fine because it doesn't resolve function-
-body names at module-load time. The bug only surfaced when systemd
-tried to start `jasper-web` post-deploy, at which point the socket-activated
-wizard process went down crash-looping.
-
-**Defense in depth, added afterward** ([tests/test_web_main_imports.py](../tests/test_web_main_imports.py)):
-
-- `test_every_referenced_setup_module_is_imported` — regex: every
-  `<name>_setup.X` in `__main__.py` requires `<name>_setup` in the
-  import tuple.
-- `test_wizard_registry_has_unique_routes_envs_and_ports` — the
-  declarative `WIZARD_SPECS` registry replaced the old hand-maintained
-  `<name>_port` locals this test used to check; it now asserts every
-  registered wizard has a unique route/env-var/port.
-- `test_peering_surface_has_no_undefined_names` — invokes `ruff
-  check --select=F821` over the whole peering surface
-  (`jasper/peering/`, `voice_daemon.py`, `rooms_setup.py`,
-  `__main__.py`, `control/server.py`, `cli/doctor/`). Catches
-  the general "name referenced but not defined" pattern.
-
-The pattern-specific tests catch the exact `__main__.py` shape;
-the ruff test catches the same bug class anywhere in the peering
-surface. Either test would have caught PR #146's bug pre-merge.
-
----
-
-## 12. References
-
-**Cross-references inside the codebase:**
-
-- [jasper/peering/__init__.py](../jasper/peering/__init__.py) —
-  module overview docstring + public exports.
-- [jasper/voice_daemon.py:_arbitrate_acquire_drain](../jasper/voice_daemon.py)
-  — the wake-handler integration point.
-- [jasper/web/rooms_setup.py](../jasper/web/rooms_setup.py) —
-  the `/rooms/` Speakers page and peering toggle.
-
-**External design references** (consulted during the original
-research):
-
-- Sonos US10181323 — confidence-broadcast arbitration patent
-- Apple AU2016410253B2 — peer-to-peer BLE arbitration for HomePod
-- Amazon ICASSP 2022 paper (arXiv 2112.04914) — "End-to-end Alexa
-  Device Arbitration"
-- RFC 2365 — Administratively Scoped IP Multicast (where
-  239.192.0.0/14 comes from)
-- RFC 6762 — Multicast DNS
-- python-zeroconf — the browse-only library we use; Avahi
-  remains the only mDNS responder on the host
-
-**PRs that shaped this subsystem:**
-
-- #142 — `peering: add multi-device wake arbitration plumbing (OFF by default)`
-- #146 — `peering: wire WakeLoop + add original peering wizard`
-- #148 — `web: restore missing peering wizard import + port var`
-  (the historical hotfix retrospective above)
-- #149 — `test: ruff F821 across the peering surface`
-
----
-
-## TL;DR for a fresh context window
-
-If you are a fresh Claude or LLM landing here:
-
-1. Peering is OFF by default. A solo speaker pays nothing.
-2. The user flips it on at `http://jts.local/rooms/`. Both
-   `jasper-voice` and `jasper-control` restart.
-3. With peering on, peers discover each other via mDNS-SD
-   (`_jasper-peer._udp`) and arbitrate every wake event over
-   multicast UDP. The winner answers; the losers stay silent.
-4. The ranking is a pure function ([rank.py](../jasper/peering/rank.py))
-   — every peer picks the same winner from the same multicast
-   message set. No leader, no consensus.
-5. Everything fails open. A wedged peering daemon cannot silence
-   the speaker; the voice daemon falls back to solo behaviour.
-6. To verify: `jasper-doctor` shows `peering: mode` + `peering:
-   discovery` lines; `journalctl -u jasper-voice | grep peering`
-   shows `event=peering.wake.won` / `event=peering.wake.lost`.
-Last verified: 2026-06-26 (JTS4 streambox peering enable re-verified:
-`/rooms/peering` writes `JASPER_PEERING=on`, `jasper-control` starts the
-peering daemon, the peering UDS lives under `/run/jasper-control` so the
-non-root control service can bind it, and `jasper-control.service` explicitly
-allows `/etc/avahi/services` writes for the peer advert under
-`ProtectSystem=full`. The retired `/peers/` page, redirect, port 8776 socket,
-and page CSS are deleted; `/rooms/` is the only user-facing peering surface.)
+Last verified: 2026-08-26 (spine trim: module layout, integration points,
+every default and clamp, the heartbeat interval/timeout and the fail-open
+paths re-read against `jasper/peering/{config,rank,state}.py`,
+`jasper/voice_daemon.py` and `tests/test_web_main_imports.py`. `snr_db` is
+confirmed still hard-coded `None` at the one call site, and `/peers/` is
+confirmed absent from `jasper/web/` and the nginx confs. The tier cascade and
+its eps rationale were deleted here rather than restated — `rank.py`'s module
+docstring owns them. Prior 2026-06-26: JTS4 streambox peering enable
+re-verified — `/rooms/peering` writes `JASPER_PEERING=on`, `jasper-control`
+starts the daemon, the UDS lives under `/run/jasper-control` so the non-root
+service can bind it, and `jasper-control.service` allows
+`/etc/avahi/services` writes under `ProtectSystem=full`.)

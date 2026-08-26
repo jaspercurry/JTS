@@ -639,12 +639,9 @@ reference. Currently:
   `jasper/voice/prompt.py` or any tool description in
   `jasper/tools/`.** Refreshed against provider docs 2026-05-23.
 - [`HANDOFF-peering.md`](docs/HANDOFF-peering.md) — Multi-Pi wake
-  arbitration. When a household runs multiple JTS speakers on the
-  same LAN, peering picks exactly one winner per wake event so they
-  don't all answer at once. Off by default; user flips it on at
-  `http://jts.local/rooms/`. P2P via mDNS-SD + multicast UDP, no
-  hub, no SPOF. **Start here for `jasper/peering/`, the wake-handler
-  restructure, or anything related to the `/rooms/` wake-response card.**
+  arbitration (off by default, hubless P2P over mDNS-SD + multicast UDP);
+  start here for `jasper/peering/`, the wake-handler restructure or the
+  `/rooms/` wake-response card, with the design decisions in ADR-0127–0128.
 - [`HANDOFF-multiroom.md`](docs/HANDOFF-multiroom.md) — **In-progress
   grouped playback.** Stereo-pair control/observability, the music
   dataplane, and member-local TTS are built and off by default; the
