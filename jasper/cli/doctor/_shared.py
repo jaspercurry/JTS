@@ -17,7 +17,7 @@ from. It holds, **verbatim from the original**
   secret-redacting ``_exception_detail``), unchanged so one
   crashing check still cannot abort the run;
 - ``_run`` (the subprocess wrapper) and ``_parse_env_file``;
-- ANSI colour constants and the chip-AEC passive constants;
+- ANSI colour constants and the chip-AEC passive check set;
 - the genuinely cross-cutting helpers used by more than one
   domain (``_sha256_file``, ``_meminfo_kb``,
   ``_systemctl_show_property``, ``_pid_of_unit``,
@@ -38,7 +38,6 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Awaitable, Callable
 from ...audio_hardware.dac import APPLE_USB_C_DONGLE_ID
-from ...audio_validation import DAC8X_DAC_ID
 from ...env_load import parse_env_file as _shared_parse_env_file
 
 GREEN = "\033[32m"
@@ -50,10 +49,6 @@ YELLOW = "\033[33m"
 BOLD = "\033[1m"
 
 RESET = "\033[0m"
-
-_KNOWN_CHIP_AEC_PASSIVE_HARDWARE = frozenset({
-    ("xvf3800", DAC8X_DAC_ID),
-})
 
 _CHIP_AEC_PASSIVE_REQUIRED_CHECKS = frozenset({
     "runtime_profile",

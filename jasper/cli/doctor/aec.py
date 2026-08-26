@@ -40,7 +40,6 @@ from ._registry import doctor_check
 from ._shared import (
     CheckResult,
     _CHIP_AEC_PASSIVE_REQUIRED_CHECKS,
-    _KNOWN_CHIP_AEC_PASSIVE_HARDWARE,
     _parked_as_bonded_follower,
     _loopback_playback_active,
     _run,
@@ -344,13 +343,15 @@ def _assess_audio_validation_summary(
         )
     if state == "current" and status == "pass":
         return CheckResult("Audio validation", "ok", detail)
-    if _known_supported_chip_aec_passive_ok(summary):
+    passive_pair = _chip_aec_passive_evidence_pair(summary)
+    if passive_pair is not None:
         return CheckResult(
             "Audio validation",
             "ok",
             detail
-            + "; known-supported xvf_chip_aec path passed passive hardware "
-            "validation; optional acoustic drift/delay probe not implemented/run",
+            + f"; mic={passive_pair[0]}/dac={passive_pair[1]} passed passive "
+            "hardware validation on an approved chip-AEC DAC; optional "
+            "acoustic drift/delay probe not implemented/run",
         )
     if recommendation in {"run_hardware_validation", "run_drift_delay_validation"}:
         command = "sudo jasper-audio-hw-validate --duration-seconds 10 --stdout"
@@ -362,36 +363,40 @@ def _assess_audio_validation_summary(
         detail + f"; advisory: consider `{command}` after chip-AEC is active",
     )
 
-def _known_supported_chip_aec_passive_ok(summary: dict[str, object]) -> bool:
-    """Return true when the current partial artifact is enough for operators.
+def _chip_aec_passive_evidence_pair(
+    summary: dict[str, object],
+) -> tuple[str, str] | None:
+    """Return the (mic, DAC) pair whose passive evidence clears the warn.
 
-    The artifact remains warn because no explicit acoustic drift/delay probe
-    exists yet. For the known-good reference path, clean passive hardware
-    evidence should not remain a product warning; for any other DAC path, the
-    drift/delay gate is still required before recommending chip-AEC.
+    The artifact stays partial because no acoustic drift/delay probe exists
+    yet. Clean passive evidence on a registry-approved DAC is enough to stop
+    warning (ADR-0101): the gate below already answers "is this hardware
+    known good", so no second hard-coded pair table is kept here. The caller
+    discloses the pair. Class-keyed shipped proofs (#2984 Wave 7 item 2) will
+    subsume this seat.
     """
 
     if str(summary.get("state") or "unknown") != "current":
-        return False
+        return None
     if str(summary.get("recommendation") or "none") != "run_drift_delay_validation":
-        return False
+        return None
     hardware = summary.get("hardware")
     if not isinstance(hardware, dict):
-        return False
+        return None
     mic_id = str(hardware.get("mic_id") or "unknown")
     dac_id = str(hardware.get("dac_id") or "unknown")
-    if (mic_id, dac_id) not in _KNOWN_CHIP_AEC_PASSIVE_HARDWARE:
-        return False
     gate = resolve_chip_aec_dac_gate(dac_id)
     if gate.status != STATUS_APPROVED:
-        return False
+        return None
     statuses = summary.get("check_statuses")
     if not isinstance(statuses, dict):
-        return False
-    return all(
+        return None
+    if not all(
         statuses.get(check_name) == "pass"
         for check_name in _CHIP_AEC_PASSIVE_REQUIRED_CHECKS
-    )
+    ):
+        return None
+    return mic_id, dac_id
 
 @doctor_check(order=47, group="aec")
 def check_audio_validation_readiness() -> CheckResult:
