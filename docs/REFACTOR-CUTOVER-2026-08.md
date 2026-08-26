@@ -18,7 +18,7 @@
 |---|---|---|
 | 0 | Premise re-derivation ledger | VERIFIED-COMPLETE |
 | 1 | RecordStore + the retention lift | VERIFIED-COMPLETE |
-| 2 | The analyze registry | STUB |
+| 2 | The analyze registry | VERIFIED-COMPLETE |
 | 3 | Recommender binding | VERIFIED-COMPLETE |
 | 4 | Seam colour reconciliation | VERIFIED-COMPLETE |
 | 5 | Front-end wiring | VERIFIED-COMPLETE |
@@ -298,7 +298,188 @@ rescan, assert the same six columns. *Tier:* default.
 
 ## 2. The analyze registry
 
-*STUB.*
+### What `analyze` must produce
+
+`AnalyzeOutcome` (`crossover_v2/session.py:194-215`): `results: Mapping[str, Any]`
+keyed by **analysis name**, and `disclosures: tuple[CapabilityStub, ...]`.
+`results={}` is hard-coded at `:461`. Two contract lines the registry inherits —
+`:203-208` (*read an empty `results` as "nothing is wired to run yet", never as
+"everything ran and found nothing"*) and `:210-212` (hand it a **copy**, not the
+dict still being filled).
+
+**There is no analysis-name vocabulary anywhere in the tree.** That vocabulary is
+the registry's first deliverable, not a detail of its second.
+
+### The layer, re-derived
+
+`analyze_program_capture` (`jasper/audio_measurement/program_analysis.py:6054`,
+returning `ProgramAnalysis` `:6063`) takes
+`(program, samples, sample_rate, *, calibration, geometry, priors, capture_report)`.
+Two corrections to the one-line summary the design doc carries: the WAV arrives
+**already decoded** as `(np.ndarray, int)`, and there is a **fourth optional
+input** — `capture_report`, the phone's own frame counters (`:6067-6073`).
+
+Inside, it is a three-way phase dispatch — `_analyze_check` `:6141`,
+`_analyze_measure` `:6310`, `_analyze_verify` `:7020`, `ValueError` on anything
+else `:6124`. **That dispatch is the closest thing to a registry the layer
+already has**, and the registry should read as its generalization rather than as
+a new mechanism beside it.
+
+`ProgramAnalysis` (`:1852`) is a frozen dataclass with **25 fields**, and field
+presence is phase-conditional and documented in-line at `:1864-1980`. **That
+per-field "which phase sets this" table is the de-facto input-kind gating that
+already exists** — it is the answer, written down in the wrong shape.
+
+**Purity, precisely:** file- and network-free (no `open`, `pathlib`, `requests`,
+`json`, `subprocess` in the imports at `:61-98`) but **not side-effect-free** —
+thirteen `log_event`/logger sites fire inside the call tree. A registry that runs
+N analyses per bank multiplies journal volume by N; budget for it.
+
+### PREMISE FAILED — the "92 analysis units" cannot be reproduced at HEAD
+
+The figure appears five times in the chunk-1 plan
+(`REFACTOR-TUNING-2026-08.md:117`, `:163`, `:164`, `:230`, `:277`) and is
+**never enumerated**. Its cited evidence base — fragments `00`–`11` under
+`captures/tuning-stack-inventory-2026-08/` — is gitignored (`.gitignore:40`) and
+absent from the tree, so it cannot be checked.
+
+Counted at HEAD by `ast.parse` over top-level nodes: **79** modules = 35
+(`jasper/audio_measurement/*.py`) + 44 (`jasper/active_speaker/crossover_v2/*.py`),
+which reproduces the plan's own *"62 of 79 in-product modules pure · 10 file
+readers · 7 live transport"* (`:164`) exactly. No definition of "unit" reaches 92:
+425 public top-level functions, 482 private, 253 classes, 87 functions in
+`program_analysis.py` alone, 25 `ProgramAnalysis` fields. One numeric
+coincidence, flagged as a coincidence: `jasper/active_speaker/*.py` has 92
+top-level modules — but that set includes `crossover_v2_flow.py`, a god file
+explicitly outside the truth layer.
+
+There is also **no in-repo pin on the 79-module membership**: the zero-upward-
+imports test `tests/test_correction_boundary_ssot.py:175` scopes to
+`jasper/audio_measurement` only (`:187`).
+
+**Disposition:** do not carry 92 forward unenumerated. Either restate the
+acceptance claim in terms of the 79 modules that *can* be pinned, or re-derive 92
+with a stated counting method inside the PR that first claims it.
+
+### Who calls analysis today
+
+**From `crossover_v2_flow.py`: exactly one call, and it goes through a seam.**
+`self._seams.analyze(program, result, priors, self._geometry, phase=phase)` at
+`:4207`, inside `consume_capture` (`:4183`), routed by phase to six consumers
+(dispatch `:4210-4227`). The flow then reads the result **by field** — 18 of the
+25 are consumed — and makes only one direct call into the layer,
+`polarity_label(...)` at `:8538`; everything else it imports at `:237-249` is a
+type or a constant.
+
+**From `web/correction_crossover_v2.py`: two, both in the binding.**
+`_pa.analyze_program_capture(...)` at `:3144` inside `_analyze` (`:3074`), the
+closure `bind_production_analyze` (`:3037`) returns — result goes to
+`_maybe_retain_capture` (`:3163`) and back to the flow (`:3175`); and
+`analysis_diagnostic_summary(analysis)` at `:3297`, for the debug sidecar only.
+
+**The seam:** `V2FlowSeams.analyze` (`crossover_v2_flow.py:1504`), one of six
+required fields, typed `AnalyzeCapture` — a **Protocol** (`:1437`), not a
+`Callable` alias, with `__call__` at `:1463-1471`. Bound in production at
+`web/…:5742`, in the only product `V2FlowSeams(...)` construction (`:5740`).
+
+**The one property a registry must not break:** `phase` is required and
+keyword-only *deliberately* (`:1447-1461`), so a refactor that drops it fails at
+the call rather than silently falling back to `program.phase` — the #1855
+mislabel, 32 of 45 retained sidecars. **Keep `phase` non-defaulted.**
+
+### Where the gating vocabulary would come from
+
+No analysis declares its inputs; every gate today is an ad-hoc `if x is None` at
+a call site. Four near-vocabularies exist, and only one is about capture content:
+
+- `MEASURE_KIND_*` (`contracts.py:1430-1437`) — capture *parameterization*
+  (baseline · candidate · verify), not analysis inputs.
+- `CapabilityStub` (`measure_spec.py:92`) — **the disclosure half, already
+  built.** Four codes (`:78`, `:81`, `:84`, `:88`), a `_ROWS` dict-literal
+  (`:159`), `STUB_CODES` derived not re-listed (`:184`), and
+  `stubbed_capabilities(spec)` (`:315`) — four `if`s on spec fields, total and
+  side-effect-free, called from `session.py:406`. **Two of the four codes say in
+  as many words that the missing piece is an `analyze` consumer** (`:78-79`
+  R-3's splice, `:84-86` R-4's distortion floor).
+- `MeasureSpec` (`:188`) — the parameters, not the content.
+- **`STIMULUS_KINDS`** (`audio_measurement/program.py:158-162` — silence · pilot
+  · sweep · summed-sweep) — the only existing vocabulary that describes **what a
+  capture actually contains**, and therefore the natural seed for the predicate.
+
+### Recommendation: model it on `tools/packs.py`, and keep it out of `EngineSeams`
+
+**Shape.** `jasper/tools/packs.py` is the closest prior art in the repo and it
+already carries the exact split this needs: `CapabilityPack` (`:131`, fields
+`:152-156`) has a `gate: Callable[[Any], bool]`; `PackOutcome` (`:159`) has
+`status ∈ {registered, skipped, failed}` and its docstring (`:164-181`)
+distinguishes **skipped** (gate returned `False` — *"Expected, not a fault"*)
+from **failed** (raised). That is `AnalyzeOutcome`'s not-run-versus-error split,
+already shipped. Registration is a module-level tuple literal (`TOOL_PACKS`
+`:281`, order load-bearing and pinned); iteration is `register_packs` (`:380`)
+with per-unit `try/except` isolation and `if not pack.gate(deps): … continue`
+(`:439-441`); `outcomes_to_state` (`:187`) is the one wire shape.
+
+Second-closest and in-package: `refusal_copy.REASON_REGISTRY` (`:790`), the
+repo's canonical *table-as-data, derived sets never re-listed* idiom
+(`:1307-1311`, `:1549-1551`) — the same one `STUB_CODES` uses. Minimal form:
+`jasper/cues/registry.py` (`CueDef` `:29`, `CUES` `:42`, `find` `:164`).
+
+**No decorator-based and no entry-point registration exists anywhere in
+`jasper/`.** Every registry here is a module-level literal walked by a function.
+A `@register_analysis` decorator would be a new idiom with no precedent, and it
+would break the one-place-to-add-a-row argument `measure_spec.py:157-158` and
+`refusal_copy.py:788` both make explicitly. **Use a literal table.**
+
+**Home: an in-layer import, not a sixth seam.** `EngineSeams` has no `analyze`
+field (`session_seams.py:298-302`) and `analyze()` is deliberately seam-free
+(`session.py:459-463`). Adding a seam would make the registry injectable —
+i.e. optional — which is the opposite of *wholesale*. The caller imports the
+table. That is what *"do not decouple the analysis layer, replace its caller"*
+(`session.py:440`) means operationally.
+
+**One failure mode to design against, by name.**
+`verification._crossover_region_null_registry` (`verification.py:2294`) is called
+a registry and is a single query function; its docstring (`:2301-2313`) records
+the defect the wholesale default exists to prevent — the detector *"did not
+return 'unknown,' it was **never asked** — its band excludes the region."* A
+gate that answers `False` for the wrong reason reproduces that exactly, which is
+why the skipped outcome must carry **which input was missing**, not just that one
+was.
+
+### Work items
+
+**W2-a — the name vocabulary and the table.** A new module under
+`crossover_v2/` holding `AnalysisUnit(name, run, gate)` and the literal tuple,
+with the gate predicate seeded from `STIMULUS_KINDS` + `MEASURE_KINDS` + the
+`ProgramAnalysis` per-field phase table (`:1864-1980`). **No caller yet** — this
+PR adds a table and its pins only.
+*Size:* ~280 lines. *Verification bar:* every unit's `name` unique; every `gate`
+total (a property test over generated banks asserting no gate raises); the
+derived name set is derived, not re-listed. *Tier:* default.
+
+**W2-b — the walker replaces `results={}`.** `TuningSession.analyze` iterates the
+table, runs each unit whose gate passes, and returns the results copy. Per-unit
+`try/except` isolation, `packs.py:439-441`'s shape.
+*Size:* ~150 lines. *Depends on:* W2-a, W1-a (the store's `read`, which is what
+makes `analyze` offline), W4-a (colour). *Verification bar:* a bank with one
+missing input kind produces N−1 results and one skip; mutation-verified by
+removing the gate and watching the unit raise instead of skip. *Tier:* default.
+
+**W2-c — the per-analysis not-run disclosure.** Render each skipped unit as a
+`CapabilityStub` in §1's wording — *"no distortion analysis: no
+distortion-vs-level capture in this session"* — carrying **which** input was
+missing. This is the item that closes the `_crossover_region_null_registry`
+failure mode.
+*Size:* ~120 lines. *Depends on:* W2-b. *Verification bar:* the disclosure names
+the missing input kind, asserted as a structured field and never as prose.
+*Tier:* default.
+
+**W2-d — settle the 92.** Either enumerate it with a committed counting method
+or restate acceptance row 3c's analysis claim against the pinnable 79. Ships as
+a docs edit to `REFACTOR-TUNING-2026-08.md` plus, if 79 is chosen, widening
+`test_correction_boundary_ssot.py:175` to cover `crossover_v2` so the membership
+has a pin at all.
+*Size:* ~60 lines. *Independent — schedulable first.* *Tier:* default.
 
 ---
 
