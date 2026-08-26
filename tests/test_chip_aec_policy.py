@@ -52,8 +52,7 @@ def test_the_dac_gate_classifies_and_permits_per_selection(
     """ADR-0101: the AUTOMATIC selection is the only one the DAC gates.
 
     An uncodified DAC refuses to be picked on its own yet still arms on an
-    explicit testing request, so `permits` is the whole gate — the retired
-    arm/trial flags said "yes" to every selection alike and could not be.
+    explicit testing request, so `permits` is the whole gate (#3073 item 3).
     """
     gate = resolve_chip_aec_dac_gate(dac_id, testing_requested=testing)
 

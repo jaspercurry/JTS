@@ -109,6 +109,24 @@ def _chip_aec_gate_for_status(
     ).to_dict()
 
 
+# The dac_reference fingerprint asks "which physical DAC, and what is its
+# commissioning verdict", so only these two gate keys may reach it. The rest
+# move for other causes: when its resolver is briefly down,
+# deploy/bin/jasper-aec-reconcile re-records an unchanged verdict as
+# source=runtime_env_carried with a note appended to detail, and detail embeds
+# outputd's live `chip_ref_sro_ppm=` estimate, which moves on nearly every pass
+# on a chip-AEC box (see that script's VOICE_IRRELEVANT_ENV_KEYS rationale);
+# auto_allowed/recommended_action/blockers are derived policy. Narrowing here
+# is structural: no future shape of to_dict() can perturb this digest.
+CHIP_GATE_IDENTITY_KEYS: tuple[str, ...] = ("dac_id", "status")
+
+
+def chip_gate_identity(gate: Mapping[str, Any]) -> dict[str, Any]:
+    """The identity-bearing slice of a serialized ChipAecGate."""
+
+    return {key: gate.get(key) for key in CHIP_GATE_IDENTITY_KEYS}
+
+
 # ---------------------------------------------------------------------------
 # Leg / profile vocabulary
 # ---------------------------------------------------------------------------
@@ -1951,7 +1969,7 @@ def _capture_plan_runtime_snapshot() -> dict[str, Any]:
         "audio_dac_id": system_env.get("JASPER_AUDIO_DAC_ID", "unknown"),
         "dac": dac_reference.get("dac"),
         "reference": dac_reference.get("reference"),
-        "chip_gate": chip_gate,
+        "chip_gate": chip_gate_identity(chip_gate),
     }
     return {
         # The builder may overlay its desired recorder-owned bridge env and

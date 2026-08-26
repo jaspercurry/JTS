@@ -1461,12 +1461,7 @@ def test_chip_aec_gate_recommended_action_reflects_mic_blocker():
 
 @pytest.mark.parametrize("dac_id", [_APPROVED_DAC_ID, _UNAPPROVED_DAC_ID])
 def test_chip_aec_gate_payload_answers_arming_only_where_it_varies(dac_id):
-    """`permitted`/`arm_allowed`/`trial_allowed` were true for every box.
-
-    A constant beside the selection-aware `available` read as a second,
-    contradicting verdict on the same JSON object (issue #3073 item 3), so the
-    payload now carries only keys a box can actually differ on.
-    """
+    """The payload carries only keys a box can actually differ on (#3073 item 3)."""
     payload = aec_endpoints._chip_aec_gate(
         {"JASPER_AUDIO_DAC_ID": dac_id},
         _gate_state(),
