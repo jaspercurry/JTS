@@ -227,8 +227,28 @@ section used to carry a nine-row table of refusals that sat outside the list
 while they were burned down. Eight closed; the ninth, row (e), is the
 retention above. **Closed did not always mean demoted** — rows (f) and (h)
 closed by being ADMITTED into the list above, and both still refuse. The table
-is deleted because a positively complete list is what it was compensating for,
-and its record is in git history.
+is deleted because a positively complete list is what it was compensating for;
+its rationale and its history are in git. What survives is the map, so a
+citation resolves without it:
+
+- **(a)** `BOOST_VERTICALLY_BLIND` — closed (#2805)
+- **(b)** `FC_REJECT_BEAMING` — closed (#2853)
+- **(c)** `REASON_CORRECTION_NOT_AN_IMPROVEMENT` — closed (2026-08-22)
+- **(d)** `_strategy_gates` score floors, `measurement_evidence_failure`'s
+  apply blocker — closed (2026-08-22)
+- **(e)** `BOOST_ROUTE_UNAVAILABLE` — **retained**, ruling R8; the sentence
+  above
+- **(f)** `TOPOLOGY_SLOPE_BELOW_DECLARED_REQUIREMENT` — closed by admission
+  into §4 (#2897); **still refuses**
+- **(g)** the driver door's classification bar —
+  `driver_feature_not_classified`, `driver_feature_not_cuttable`,
+  `driver_feature_not_boostable`, `driver_feature_depth_unavailable`,
+  `driver_boost_exceeds_feature_depth`, `driver_boost_unvouched` — closed
+  (#2863)
+- **(h)** `max_effective_peak_dbfs`'s un-segmented ceiling,
+  `max_effective_peak_above_code_policy` — closed by admission into §4
+  (2026-08-23); the **per-driver cap still refuses**
+- **(i)** `REASON_DRIVER_LEVELS_DISAGREE` — closed (#2937)
 
 ### 4a. The integrity class — refusing a CLAIM
 
