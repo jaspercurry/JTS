@@ -2284,6 +2284,72 @@ def test_position_retention_survives_a_retake_through_the_real_evidence_store(
     ).read_bytes() == b"wider-retake"
 
 
+def test_retained_position_is_recorded_in_the_bundle_it_was_written_into(
+    tmp_path,
+):
+    """A retained take is findable from the bundle's own metadata.
+
+    Before this, the seam wrote the WAV straight to the bundle-relative path
+    it minted and registered it nowhere: ``info.json`` reported
+    ``summed_captures: []`` and ``artifact_manifest.json`` listed only
+    ``info.json`` itself, so a bundle carrying tens of MB of real audio did
+    not describe any of it.
+
+    The oversize take is the second half of the pin: a real summed capture
+    runs past ``append_capture``'s external-source size guard, so the
+    recording route must be the one that does not apply it.
+    """
+    from jasper.active_speaker.bundles import MAX_CAPTURE_WAV_BYTES, open_bundle
+    from jasper.active_speaker.commissioning_evidence_store import (
+        CommissioningEvidenceStore,
+    )
+
+    from tests.active_speaker_fixtures import mono_output_topology
+
+    info = open_bundle(
+        mono_output_topology(mode="active_2_way"),
+        calibration_id="calibration-test",
+        sessions_dir=tmp_path / "sessions",
+    )
+    assert info is not None
+    bundle_dir = Path(info["bundle_dir"])
+    store = CommissioningEvidenceStore.open(
+        bundle_dir, expected_session_id=info["session_id"]
+    )
+    refs: dict = {}
+    retain = v2host.bind_position_retention(store, "cap_record_session", refs)
+
+    oversize = b"\x00" * (MAX_CAPTURE_WAV_BYTES + 1)
+    retain(
+        f"{PHASE_CLOUD_MEASURE}_04", CaptureResult(wav=oversize),
+        {"position_id": f"{PHASE_CLOUD_MEASURE}_04",
+         "phase": PHASE_CLOUD_MEASURE, "index": 4, "attempt": 4,
+         "wide": False, "role": "onax", "captured_at": 1.0,
+         "session_id": "cap_record_session", "prompt": "on the mark",
+         "gate_window_ms": 8.0, "validity_floor_hz": 140.0,
+         "gating_applied": True, "summed_ripple_db": 1.0,
+         "glitch_detected": False},
+    )
+
+    entries = json.loads((bundle_dir / "info.json").read_text())["summed_captures"]
+    assert len(entries) == 1
+    entry = entries[0]
+    assert entry["group"] == f"{PHASE_CLOUD_MEASURE}_04_a04"
+    assert (bundle_dir / entry["artifact_path"]).read_bytes() == oversize
+    assert (bundle_dir / entry["capture_json_path"]).is_file()
+
+    manifest = json.loads((bundle_dir / "artifact_manifest.json").read_text())
+    recorded = {
+        artifact["path"]: artifact for artifact in manifest["artifacts"]
+    }
+    assert entry["artifact_path"] in recorded
+    assert entry["capture_json_path"] in recorded
+    assert recorded[entry["artifact_path"]]["byte_size"] == len(oversize)
+    assert recorded[entry["artifact_path"]]["sha256"] == hashlib.sha256(
+        oversize
+    ).hexdigest()
+
+
 def test_cloud_publisher_writes_one_artifact_per_group_through_the_real_store(
     tmp_path,
 ):

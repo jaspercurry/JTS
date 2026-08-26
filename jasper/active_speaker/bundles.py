@@ -634,6 +634,24 @@ def _guarded_capture_source(
     return source
 
 
+def _record_capture_wav(bundle_dir: Path, rel_path: str) -> None:
+    """Enter one in-bundle capture WAV in the artifact manifest."""
+
+    record_artifact(
+        bundle_dir,
+        rel_path,
+        kind="capture_wav",
+        sensitivity="private_raw_audio",
+        recomputable=False,
+        generated_by="active_speaker.bundles",
+        bundle_schema_version=(
+            BUNDLE_SCHEMA_VERSION
+            if (bundle_dir / "info.json").exists()
+            else LEGACY_PARTIAL_BUNDLE_SCHEMA_VERSION
+        ),
+    )
+
+
 def _copy_wav_into_bundle(bundle_dir: Path, source: Path, rel_path: str) -> None:
     """Copy (never move) one WAV to ``bundle_dir / rel_path`` and record it.
 
@@ -655,54 +673,20 @@ def _copy_wav_into_bundle(bundle_dir: Path, source: Path, rel_path: str) -> None
             tmp.unlink()
         except FileNotFoundError:
             pass
-    record_artifact(
-        bundle_dir,
-        rel_path,
-        kind="capture_wav",
-        sensitivity="private_raw_audio",
-        recomputable=False,
-        generated_by="active_speaker.bundles",
-        bundle_schema_version=(
-            BUNDLE_SCHEMA_VERSION
-            if (bundle_dir / "info.json").exists()
-            else LEGACY_PARTIAL_BUNDLE_SCHEMA_VERSION
-        ),
-    )
+    _record_capture_wav(bundle_dir, rel_path)
 
 
-@_fail_soft("append_capture")
-def append_capture(
-    bundle_dir: Path,
-    *,
-    kind: str,
-    wav_source_path: Path | str,
-    payload: Mapping[str, Any],
-    relative_path: str | None = None,
-) -> dict[str, Any] | None:
-    """Copy one capture WAV into the bundle and record its compact entry.
+def _append_capture_entry(
+    bundle_dir: Path, *, kind: str, rel_path: str, payload: Mapping[str, Any]
+) -> dict[str, Any]:
+    """Write one capture's ``*.json`` sidecar and append its ``info.json`` entry.
 
-    ``payload`` is the dict a ``record_driver_acoustic_capture`` /
-    ``record_summed_acoustic_capture`` call returned (or a caller-enriched
-    superset of it — see :func:`_capture_group_role`). The full payload
-    (including the nested ``measurement`` record) is written verbatim as the
-    capture's ``*.json`` artifact; a compact entry (§4 of the design) is
-    appended to ``info.json``'s ``captures`` / ``summed_captures`` list.
-
-    Guards the source file's existence and size before copying; a missing
-    or oversized source WARNs and returns ``None`` without touching the
-    bundle.
+    Shared by the two placement routes — :func:`append_capture` copies the WAV
+    in first, :func:`register_capture` finds it already there — so one entry
+    shape serves both. Raises on failure; both callers are ``_fail_soft``.
     """
 
-    if kind not in {"driver", "summed"}:
-        raise BundleError(f"unsupported capture kind: {kind!r}")
-    source = _guarded_capture_source(bundle_dir, wav_source_path, op="append_capture")
-    if source is None:
-        return None
-
     group, role = _capture_group_role(payload)
-    rel_path = relative_path or capture_artifact_relpath(kind, group, role)
-    _copy_wav_into_bundle(bundle_dir, source, rel_path)
-
     json_rel = str(Path(rel_path).with_suffix(".json"))
     write_json_artifact(
         bundle_dir,
@@ -763,6 +747,69 @@ def append_capture(
         },
     )
     return entry
+
+
+@_fail_soft("register_capture")
+def register_capture(
+    bundle_dir: Path,
+    *,
+    kind: str,
+    relative_path: str,
+    payload: Mapping[str, Any],
+) -> dict[str, Any] | None:
+    """Record a capture WAV the caller already wrote into the bundle.
+
+    :func:`append_capture`'s sibling for the callers that mint the bundle
+    relpath with :func:`capture_artifact_relpath` and stream the bytes
+    straight to it — the crossover-v2 cloud-position seam. There is no
+    source file outside the bundle to copy or size-guard, so this skips both
+    and does only the recording half: the manifest entry for the WAV, the
+    ``*.json`` sidecar, and the compact ``info.json`` entry.
+    """
+
+    if kind not in {"driver", "summed"}:
+        raise BundleError(f"unsupported capture kind: {kind!r}")
+    _record_capture_wav(bundle_dir, relative_path)
+    return _append_capture_entry(
+        bundle_dir, kind=kind, rel_path=relative_path, payload=payload
+    )
+
+
+@_fail_soft("append_capture")
+def append_capture(
+    bundle_dir: Path,
+    *,
+    kind: str,
+    wav_source_path: Path | str,
+    payload: Mapping[str, Any],
+    relative_path: str | None = None,
+) -> dict[str, Any] | None:
+    """Copy one capture WAV into the bundle and record its compact entry.
+
+    ``payload`` is the dict a ``record_driver_acoustic_capture`` /
+    ``record_summed_acoustic_capture`` call returned (or a caller-enriched
+    superset of it — see :func:`_capture_group_role`). The full payload
+    (including the nested ``measurement`` record) is written verbatim as the
+    capture's ``*.json`` artifact; a compact entry (§4 of the design) is
+    appended to ``info.json``'s ``captures`` / ``summed_captures`` list.
+
+    Guards the source file's existence and size before copying; a missing
+    or oversized source WARNs and returns ``None`` without touching the
+    bundle.
+    """
+
+    if kind not in {"driver", "summed"}:
+        raise BundleError(f"unsupported capture kind: {kind!r}")
+    source = _guarded_capture_source(bundle_dir, wav_source_path, op="append_capture")
+    if source is None:
+        return None
+
+    group, role = _capture_group_role(payload)
+    rel_path = relative_path or capture_artifact_relpath(kind, group, role)
+    _copy_wav_into_bundle(bundle_dir, source, rel_path)
+    return _append_capture_entry(
+        bundle_dir, kind=kind, rel_path=rel_path, payload=payload
+    )
 
 
 @_fail_soft("append_repeat_capture")
