@@ -127,6 +127,8 @@ import re
 from pathlib import Path
 from typing import NamedTuple
 
+import pytest
+
 REPO = Path(__file__).resolve().parents[1]
 
 RUNTIME_CRATES = (
@@ -671,24 +673,32 @@ _PANIC_PAT = re.compile(
 _EXPECT_MSG_PAT = re.compile(r'\.expect\(\s*"((?:[^"\\]|\\.)*)"')
 _STRING_PAT = re.compile(r'"(?:[^"\\]|\\.)*"')
 _QUOTED_STRING_PAT = re.compile(r'"((?:[^"\\]|\\.)*)"')
+# A char literal, never a lifetime (issue #2274): both open with ``'``,
+# but only a char literal closes with one, so requiring a closing quote
+# after exactly one char or escape leaves ``<'a>`` / ``&'static`` /
+# ``'outer:`` untouched. ``\u{..}`` escapes are matched whole because
+# they carry braces of their own.
+_CHAR_PAT = re.compile(r"'(?:\\u\{[0-9a-fA-F_]+\}|\\.|[^'\\])'")
 
 
-def _strip_strings(line: str) -> str:
-    """Blank out string literals so brace counting and comment
-    detection aren't confused by braces / ``//`` inside strings."""
-    return _STRING_PAT.sub('""', line)
+def _strip_literals(line: str) -> str:
+    """Blank out char and string literals so brace counting and comment
+    detection aren't confused by braces / ``//`` / quotes inside them.
+    Char literals go first: a ``'"'`` would otherwise read as the start
+    of a string and blank the real code up to the next ``"``."""
+    return _STRING_PAT.sub('""', _CHAR_PAT.sub("''", line))
 
 
 def _strip_comments(line: str) -> str:
-    stripped = _strip_strings(line)
+    stripped = _strip_literals(line)
     idx = stripped.find("//")
     return stripped[:idx] if idx >= 0 else stripped
 
 
 def _cfg_test_spans(lines: list[str]) -> list[tuple[int, int]]:
     """0-based inclusive line spans of ``#[cfg(test)]``-attributed items
-    (modules and functions), found by brace counting with string
-    literals stripped."""
+    (modules and functions), found by brace counting with char and
+    string literals stripped."""
     spans: list[tuple[int, int]] = []
     i = 0
     while i < len(lines):
@@ -776,6 +786,71 @@ class _Findings(NamedTuple):
     seen_asserts: set[tuple[str, str]]
 
 
+def _scan_source(rel: str, lines: list[str]) -> _Findings:
+    """Classify one Rust source's panic-family constructs against the two
+    allowlists, skipping ``#[cfg(test)]`` code."""
+    violations: list[str] = []
+    seen_expects: set[tuple[str, str]] = set()
+    seen_asserts: set[tuple[str, str]] = set()
+    spans = _cfg_test_spans(lines)
+
+    def in_test(n: int) -> bool:
+        return any(a <= n <= b for a, b in spans)
+
+    for n, raw in enumerate(lines):
+        # Scanner soundness: every #[test] fn must sit inside a
+        # #[cfg(test)] span, or the classifier would mislabel
+        # its body as runtime code.
+        if "#[test]" in _strip_comments(raw) and not in_test(n):
+            violations.append(
+                f"{rel}:{n + 1}: #[test] outside a #[cfg(test)] "
+                "module — move it inside one (or teach this "
+                "scanner about the new shape)"
+            )
+            continue
+        code = _strip_comments(raw)
+        if not _PANIC_PAT.search(code) or in_test(n):
+            continue
+
+        # Every panic-family construct on the line is checked
+        # independently, not exclusively (issue #1718):
+        # a line combining an ALLOWLISTED .expect() with an
+        # UNREGISTERED assert used to short-circuit on the expect
+        # branch's `continue` before the assert branch ever ran,
+        # silently clearing the whole line. `accounted` only
+        # reaches True if every construct present resolves to a
+        # matched, allowlisted entry.
+        accounted = True
+
+        if _BARE_PANIC_PAT.search(code):
+            # .unwrap()/panic!/unreachable!/todo!/unimplemented! --
+            # the allowlist for these is intentionally empty (module
+            # docstring), so their presence alone always
+            # disqualifies the line, independent of whatever else is
+            # on it.
+            accounted = False
+
+        expect_match = _EXPECT_MSG_PAT.search(raw)
+        if expect_match:
+            expect_key = (rel, expect_match.group(1))
+            if expect_key in ALLOWED_EXPECTS:
+                seen_expects.add(expect_key)
+            else:
+                accounted = False
+
+        if _ASSERT_FAMILY_PAT.search(code):
+            statement = _statement_span(lines, n)
+            assert_key = (rel, _assert_key(statement))
+            if assert_key in ALLOWED_ASSERTS:
+                seen_asserts.add(assert_key)
+            else:
+                accounted = False
+
+        if not accounted:
+            violations.append(f"{rel}:{n + 1}: {raw.strip()}")
+    return _Findings(violations, seen_expects, seen_asserts)
+
+
 def _runtime_findings() -> _Findings:
     """Scan the runtime crates for panic-capable macros outside
     ``#[cfg(test)]`` code, classifying each hit against the two
@@ -788,64 +863,13 @@ def _runtime_findings() -> _Findings:
         # jasper-fanin/src/mixer/direct_capture.rs). A shallow glob silently
         # stopped enforcing this contract when code was split into a module.
         for path in sorted((REPO / "rust" / crate / "src").rglob("*.rs")):
-            rel = str(path.relative_to(REPO / "rust"))
-            lines = path.read_text().splitlines()
-            spans = _cfg_test_spans(lines)
-
-            def in_test(n: int) -> bool:
-                return any(a <= n <= b for a, b in spans)
-
-            for n, raw in enumerate(lines):
-                # Scanner soundness: every #[test] fn must sit inside a
-                # #[cfg(test)] span, or the classifier would mislabel
-                # its body as runtime code.
-                if "#[test]" in _strip_comments(raw) and not in_test(n):
-                    violations.append(
-                        f"{rel}:{n + 1}: #[test] outside a #[cfg(test)] "
-                        "module — move it inside one (or teach this "
-                        "scanner about the new shape)"
-                    )
-                    continue
-                code = _strip_comments(raw)
-                if not _PANIC_PAT.search(code) or in_test(n):
-                    continue
-
-                # Every panic-family construct on the line is checked
-                # independently, not exclusively (issue #1718):
-                # a line combining an ALLOWLISTED .expect() with an
-                # UNREGISTERED assert used to short-circuit on the expect
-                # branch's `continue` before the assert branch ever ran,
-                # silently clearing the whole line. `accounted` only
-                # reaches True if every construct present resolves to a
-                # matched, allowlisted entry.
-                accounted = True
-
-                if _BARE_PANIC_PAT.search(code):
-                    # .unwrap()/panic!/unreachable!/todo!/unimplemented! --
-                    # the allowlist for these is intentionally empty (module
-                    # docstring), so their presence alone always
-                    # disqualifies the line, independent of whatever else is
-                    # on it.
-                    accounted = False
-
-                expect_match = _EXPECT_MSG_PAT.search(raw)
-                if expect_match:
-                    expect_key = (rel, expect_match.group(1))
-                    if expect_key in ALLOWED_EXPECTS:
-                        seen_expects.add(expect_key)
-                    else:
-                        accounted = False
-
-                if _ASSERT_FAMILY_PAT.search(code):
-                    statement = _statement_span(lines, n)
-                    assert_key = (rel, _assert_key(statement))
-                    if assert_key in ALLOWED_ASSERTS:
-                        seen_asserts.add(assert_key)
-                    else:
-                        accounted = False
-
-                if not accounted:
-                    violations.append(f"{rel}:{n + 1}: {raw.strip()}")
+            found = _scan_source(
+                str(path.relative_to(REPO / "rust")),
+                path.read_text().splitlines(),
+            )
+            violations.extend(found.violations)
+            seen_expects |= found.seen_expects
+            seen_asserts |= found.seen_asserts
     return _Findings(violations, seen_expects, seen_asserts)
 
 
@@ -873,11 +897,68 @@ def test_bare_panic_pattern_covers_all_five_constructs() -> None:
     assert _BARE_PANIC_PAT.search(comment_line)
     assert _BARE_PANIC_PAT.search(string_line)
 
-    # _strip_comments is what _runtime_findings() calls before matching
-    # (it strips string literals internally, then truncates at `//`); once
-    # run through it, neither line reads as a panic to the scanner.
+    # _strip_comments is what _scan_source() calls before matching (it
+    # strips char and string literals internally, then truncates at
+    # `//`); once run through it, neither line reads as a panic.
     assert not _BARE_PANIC_PAT.search(_strip_comments(comment_line))
     assert not _BARE_PANIC_PAT.search(_strip_comments(string_line))
+
+
+# Issue #2274: each entry is one line of a #[cfg(test)] module body,
+# carrying a quote construct the brace counter used to misread. `'}'` ended
+# the module early, so the test code below it scanned as runtime (the PR
+# #2264 incident); `'{'` held it open past its closing brace, swallowing --
+# and silently un-guarding -- the runtime code below; a stripper that
+# paired lifetime quotes off against each other would eat the `{` between
+# `&'a str>` and `' '`; and a char literal holding a double quote opens a
+# phantom string unless char literals are stripped first.
+_SPAN_FIXTURE_LINES = {
+    "closing-brace-char": "    const CLOSE: char = '}';",
+    "opening-brace-char": "    const OPEN: char = '{';",
+    "lifetimes-and-char": (
+        "    fn words<'a>(s: &'a str) -> Vec<&'a str> "
+        "{ s.split(' ').collect() }"
+    ),
+    "double-quote-char": "    const Q: char = '\"'; const C: &str = \"}\";",
+}
+
+_SPAN_FIXTURE_TAIL = """\
+
+    #[test]
+    fn uses_the_construct() {
+        let v: Option<u32> = Some(1);
+        assert_eq!(v.unwrap(), 1);
+    }
+}
+
+pub fn boom(x: Option<u32>) -> u32 {
+    x.unwrap()
+}
+"""
+
+
+@pytest.mark.parametrize("fixture", sorted(_SPAN_FIXTURE_LINES))
+def test_quote_constructs_do_not_move_the_cfg_test_span(
+    fixture: str,
+) -> None:
+    """Brace counting must read code only: whatever quote construct a
+    ``#[cfg(test)]`` module's body holds, the span ends at that module's
+    own closing brace. So the runtime ``.unwrap()`` below it is the only
+    violation -- the test code above it is never flagged, and the runtime
+    code below it is never swallowed."""
+    lines = (
+        "#[cfg(test)]\nmod tests {\n"
+        + _SPAN_FIXTURE_LINES[fixture]
+        + "\n"
+        + _SPAN_FIXTURE_TAIL
+    ).splitlines()
+    runtime_unwrap = lines.index("    x.unwrap()") + 1
+
+    findings = _scan_source("fixture/src/lib.rs", lines)
+
+    assert [
+        int(v.split(":")[1]) for v in findings.violations
+    ] == [runtime_unwrap]
 
 
 def test_no_new_panics_in_rust_runtime_code() -> None:

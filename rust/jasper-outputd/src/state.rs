@@ -3697,16 +3697,9 @@ mod tests {
             .find(r#""rate_diff":{"#)
             .expect("a rate_diff block must be present");
         let block = &j[start..];
-        // A named const, not `'}'` and not a bare `"}"`. `'}'` would break
-        // tests/test_rust_runtime_panic_freedom.py, which brace-counts this file
-        // to find the `#[cfg(test)]` span and strips only double-quoted strings —
-        // a char literal there closes the span early and makes every later
-        // `#[test]` look like it escaped the module. A bare `"}"` instead trips
-        // clippy's `single_char_pattern` under `-D warnings`. The const satisfies
-        // both. Bounding matters: `"locked"` is also emitted by the enclosing
+        // Bounding matters: `"locked"` is also emitted by the enclosing
         // `dac_clock` block, so an unbounded scan could match outside rate_diff.
-        const CLOSE_BRACE: &str = "}";
-        let end = block.find(CLOSE_BRACE).expect("rate_diff block must close");
+        let end = block.find('}').expect("rate_diff block must close");
         let block = &block[..end];
         let mut cursor = 0usize;
         for key in [
