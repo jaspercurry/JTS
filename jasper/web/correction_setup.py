@@ -195,6 +195,27 @@ _RELAY_LEVEL_PUMP_MAX_BLOCK_S = (
 # reconnect contract. Keep the HTTP owner alive for the complete sequence.
 _CROSSOVER_VOLUME_RECOVERY_TIMEOUT_S = 45.0
 _RUN_ASYNC_CANCEL_DRAIN_TIMEOUT_S = _CROSSOVER_VOLUME_RECOVERY_TIMEOUT_S
+
+#: The session-measurement claim the autolevel ramp holds, from its first
+#: quiet write until the workflow settles at ``/apply`` or ``/reset``.
+#:
+#: It OUTLIVES the request that took it because the level does: the ramp locks
+#: a measurement level, the sweeps play at it, and only apply/reset returns the
+#: household its own. Module-scoped for the same reason ``_LEVEL_LEASE`` and
+#: ``session_volume_plan()`` are — this process serves one measurement session.
+#:
+#: **The failure mode is unchanged by routing, and is #3038's.** A process exit
+#: mid-session strands the claim exactly as it already stranded the fader; the
+#: claim makes that state legible in the owner's ledger rather than invisible.
+_AUTOLEVEL_CLAIM: Any = None
+
+
+def _take_autolevel_claim() -> Any:
+    """Hand back the held autolevel claim, clearing it. ``None`` when none."""
+
+    global _AUTOLEVEL_CLAIM
+    claim, _AUTOLEVEL_CLAIM = _AUTOLEVEL_CLAIM, None
+    return claim
 _ROOM_RELAY_RETURN_PATH = "/correction/room/"
 _SUMMED_CAPTURE_UNAVAILABLE_REASON = "active_summed_persisted_admission_unavailable"
 # Require a short rolling ambient window before the Pi starts the level tone.
@@ -3404,6 +3425,16 @@ def _handle_autolevel_start(
     previous_data = sess.autolevel
 
     cam = _camilla()
+    from jasper.volume_owner import ClaimKind, volume_owner
+
+    owner = volume_owner()
+    if owner is None:
+        log_event(
+            logger,
+            "correction.autolevel_owner_absent",
+            level=logging.CRITICAL,
+        )
+        raise RequestConflict("the speaker volume owner is not available")
 
     async def _run_autolevel() -> None:
         try:
@@ -3429,7 +3460,20 @@ def _handle_autolevel_start(
                     return float(v) if v is not None else 0.0
 
                 async def _set_vol(db: float) -> None:
-                    await cam.set_volume_db(db, best_effort=True)
+                    # W10 routed. The ramp's FIRST write is the quiet start
+                    # level, which is exactly when the claim should be taken;
+                    # every write after it MOVES that held claim rather than
+                    # re-taking one, so the fader never passes through the
+                    # household level between steps.
+                    global _AUTOLEVEL_CLAIM
+                    if _AUTOLEVEL_CLAIM is None:
+                        _AUTOLEVEL_CLAIM = await owner.acquire_level(
+                            ClaimKind.SESSION_MEASUREMENT, float(db)
+                        )
+                        return
+                    _AUTOLEVEL_CLAIM = await owner.relevel(
+                        _AUTOLEVEL_CLAIM, float(db)
+                    )
 
                 await sess.run_autolevel(
                     reservation_token=reserved,
@@ -3441,6 +3485,18 @@ def _handle_autolevel_start(
         except Exception as e:  # noqa: BLE001
             logger.exception("autolevel run failed: %s", e)
         finally:
+            # A run that did not end LOCKED/MAXED_OUT leaves no measurement
+            # level for the sweeps to play at, so its claim dies with it here
+            # rather than waiting for an apply/reset that may never come. A
+            # run that DID lock keeps the claim, because the level it locked is
+            # what the sweeps are about to use.
+            if sess.autolevel.status not in {
+                AutolevelStatus.LOCKED,
+                AutolevelStatus.MAXED_OUT,
+            }:
+                stranded = _take_autolevel_claim()
+                if stranded is not None:
+                    await owner.release(stranded)
             await sess.release_autolevel_run_reservation(reserved)
 
     reserved = _run_async(sess.reserve_autolevel_run(), timeout=2.0)
@@ -6386,15 +6442,32 @@ def _maybe_restore_main_volume(sess, cam) -> None:
         # Routed: the household level is DECLARED, not written. Under a
         # higher-ranked claim the declaration is recorded and lands when that
         # claim releases, instead of a blind write racing it.
-        in_effect = _run_async(
-            owner.declare_household_level_db(al.original_main_volume_db),
-            timeout=5.0,
-        )
+        #
+        # And when the ramp's own session-measurement claim is still held —
+        # the ordinary case, since the level it locked is what the sweeps
+        # played at — the release and the re-declaration are ONE call, so the
+        # fader lands on the household level in a single write instead of
+        # stepping through whatever was declared before it.
+        claim = _take_autolevel_claim()
+        if claim is not None:
+            _run_async(
+                owner.release(
+                    claim, household_level_db=al.original_main_volume_db
+                ),
+                timeout=5.0,
+            )
+            in_effect = True
+        else:
+            in_effect = _run_async(
+                owner.declare_household_level_db(al.original_main_volume_db),
+                timeout=5.0,
+            )
         log_event(
             logger,
             "correction.autolevel_restore_declared",
             level=logging.INFO if in_effect else logging.WARNING,
             to_db=f"{al.original_main_volume_db:.1f}",
+            released_claim=claim is not None,
             in_effect=in_effect,
         )
     except Exception:  # noqa: BLE001
