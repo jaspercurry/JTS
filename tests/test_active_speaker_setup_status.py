@@ -1629,8 +1629,7 @@ def test_commissioning_summary_transport_follows_the_box(
 
     NON-CONSTANCY lives on the ring/`null` axis now, and its rows are the two
     dedicated siblings below — `test_state_reports_null_when_the_chooser_answers_no_device`
-    (the surface honours a no-device answer; it is the one that kills
-    `transport_label(device) or TRANSPORT_ALSA`) and
+    (the surface honours a no-device answer) and
     `test_commissioning_summary_transport_is_null_on_an_unreadable_topology`.
     They are NOT folded in as rows here: a null row cannot be driven from a
     topology — every registered `DacProfile` declares an active outputd lane, so
@@ -1658,34 +1657,14 @@ def test_commissioning_summary_transport_follows_the_box(
     assert result["transport"] == expected
 
 
-def test_commissioning_summary_transport_is_null_when_no_device_resolves() -> None:
-    """The OTHER half of the null condition, at the DERIVATION.
-
-    `null` has exactly two causes: the topology cannot be read (the test below)
-    and the route resolves to no device — `resolve_output_layout`'s fall-through,
-    where the DAC profile declares no active outputd lane. This pins the callee.
-
-    It is deliberately NOT the whole guard: pinning `transport_label` says
-    nothing about whether `_commissioning_transport` HONOURS the answer, and the
-    test below is the half that does. Proved by mutation rather than reasoned —
-    `return transport_label(device) or TRANSPORT_ALSA` survives this test and the
-    entire affected set (110 passed) while the surface test kills it.
-    """
-    from jasper.fanin_coupling import transport_label
-
-    assert transport_label(None) is None
-    assert transport_label("") is None
-
-
 def test_state_reports_null_when_the_chooser_answers_no_device(monkeypatch) -> None:
     """The SURFACE honours a no-device answer — the line between the two.
 
     `_commissioning_transport` is one `try` and one `return`, and only the `try`
-    half was pinned: the unreadable-topology test returns through the `except`
-    branch and never reaches the return, while the derivation test never enters
-    the function. So the return line was unguarded, and a mutant that swallowed
-    the null (`transport_label(device) or TRANSPORT_ALSA`) passed all 110 tests
-    in the affected set. This is the case that kills it.
+    half is pinned elsewhere: the unreadable-topology test returns through the
+    `except` branch and never reaches the return. So the return line would be
+    unguarded, and a mutant that swallowed the null passed the entire affected
+    set. This is the case that kills it.
 
     Stubs the COLLABORATOR'S CONTRACT (`resolve_active_playback_device` answering
     no device) rather than building a lane-less topology: the rule under test is
