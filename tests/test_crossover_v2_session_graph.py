@@ -385,6 +385,77 @@ def test_no_reference_reader_leaves_every_swap_exactly_as_it_was(tmp_path):
     assert references == [None, None]
 
 
+def test_an_out_of_runner_drain_restores_the_graph_before_it_frees_isolation():
+    """B1: the drains that run when the session runner is GONE.
+
+    ``enforce_session_volume_ceiling_if_stale`` (the 1800 s wall-clock ceiling,
+    fired from the wizard poll thread), ``recover_session_volume`` (whose whole
+    premise is that the runner is gone) and
+    ``reconcile_session_volume_for_new_session`` all tail into
+    ``_release_pause_best_effort``. It released voice/mux isolation and left the
+    measurement graph installed — reachable only once the graph became
+    session-scoped, because the per-stimulus path restored inside its own
+    ``finally``.
+
+    Order matters as much as the fact: the graph must go back while the
+    measurement window still holds the household programme off, or the swap
+    lands under live audio.
+    """
+    from jasper.web import correction_crossover_v2 as v2host
+
+    order: list[str] = []
+
+    class _Graph:
+        installed = True
+
+        async def restore(self) -> None:
+            order.append("graph_restored")
+
+    async def _fake_release_pause() -> None:
+        order.append("pause_released")
+
+    def _run(coro, *, timeout=None):
+        return asyncio.run(coro)
+
+    original_release = v2host.release_session_measurement_pause
+    v2host.reset_session_measurement_pause_for_tests()
+    v2host.register_session_measurement_graph(_Graph())
+    try:
+        v2host.release_session_measurement_pause = _fake_release_pause  # type: ignore[assignment]
+        v2host._release_pause_best_effort(_run)
+    finally:
+        v2host.release_session_measurement_pause = original_release  # type: ignore[assignment]
+
+    assert order == ["graph_restored", "pause_released"]
+    # ...and the registry is cleared, so a later close/abandon arm does not
+    # restore a second time against whatever is running by then.
+    assert v2host._session_graph is None
+
+
+def test_registering_over_an_installed_graph_is_disclosed_not_refused(caplog):
+    """N7: observability, not a guard.
+
+    A new stage needs its graph, so this never blocks. But displacing one that
+    still holds an entry config means some drain did not run, and that is worth
+    seeing rather than inferring later from a speaker in the wrong graph.
+    """
+    from jasper.web import correction_crossover_v2 as v2host
+
+    class _Installed:
+        installed = True
+
+    class _Fresh:
+        installed = False
+
+    v2host.reset_session_measurement_pause_for_tests()
+    v2host.register_session_measurement_graph(_Installed())
+    with caplog.at_level(logging.WARNING, logger="jasper.web.correction_crossover_v2"):
+        v2host.register_session_measurement_graph(_Fresh())
+
+    assert "crossover_v2_session_graph_displaced" in caplog.text
+    v2host.reset_session_measurement_pause_for_tests()
+
+
 def test_patch_refuses_before_there_is_a_graph_to_patch(tmp_path):
     cam = FakeCam(entry_path=_entry(tmp_path))
     graph = _graph(cam, tmp_path=tmp_path)

@@ -1192,17 +1192,39 @@ _session_graph: Any = None
 
 
 def register_session_measurement_graph(graph: Any) -> None:
-    """Hand the drain paths the graph this stage will install."""
+    """Hand the drain paths the graph this stage will install.
+
+    A registration that displaces a graph still holding an entry config is not
+    refused — the new stage needs its graph and blocking it would be a guard
+    where a fact belongs — but it is a fact worth seeing, because it means some
+    drain path did not run before the next stage began. Logged, not gated.
+    """
     global _session_graph
+    outgoing = _session_graph
+    if outgoing is not None and outgoing is not graph and getattr(
+        outgoing, "installed", False
+    ):
+        log_event(
+            logger,
+            "correction.crossover_v2_session_graph_displaced",
+            level=logging.WARNING,
+        )
     _session_graph = graph
 
 
 async def release_session_measurement_graph() -> None:
     """Put the entry graph back (idempotent), then forget it.
 
-    Every drain path calls this; one that runs when nothing is installed — a
-    session that never played a routed stimulus, a crash-fresh process, a
-    second drain — is a safe no-op, because
+    **Two callers, and between them they cover every drain**: ``_volume_hooks``'s
+    close/abandon arms for a session the runner still owns, and
+    :func:`_release_pause_best_effort` for the three that run when it does not
+    (ceiling / recover / new-session reconcile). Both restore the graph BEFORE
+    releasing the measurement pause, so the swap never lands under a resumed
+    household programme.
+
+    A call that runs when nothing is installed — a session that never played a
+    routed stimulus, a crash-fresh process, a second drain — is a safe no-op,
+    because
     :meth:`~jasper.active_speaker.crossover_v2.session_graph.MeasurementSessionGraph.restore`
     is itself idempotent.
     """
@@ -1285,9 +1307,35 @@ def _session_volume_io(camilla_factory: Any) -> tuple[Callable[[float], Any], Ca
 
 
 def _release_pause_best_effort(run_async: Any) -> None:
-    """Release the session measurement pause from a drain that runs outside the
-    runner (recover / ceiling). Idempotent no-op when nothing is held (already
-    released, or a crash-fresh process that never entered it)."""
+    """Put the measurement graph back, then release the pause — for a drain
+    that runs OUTSIDE the runner (recover / ceiling / new-session reconcile).
+
+    Both halves, in this order, because these drains are the paths where the
+    runner is gone and nothing else will do it. The graph goes back FIRST,
+    while the measurement window still holds voice paused and music gated: once
+    the pause is released the household programme can resume, and a graph
+    restored after that would swap the pipeline under live audio — which is
+    also the precondition the measurement swap relies on being absent.
+
+    Idempotent both ways: a drain that runs when nothing is held — a session
+    that never played a routed stimulus, a crash-fresh process, a second drain
+    — is a safe no-op.
+    """
+    try:
+        run_async(
+            release_session_measurement_graph(),
+            timeout=_SESSION_VOLUME_DRAIN_TIMEOUT_S,
+        )
+    except (concurrent.futures.TimeoutError, OSError, RuntimeError, ValueError):
+        # Never at the pause's expense: a graph that will not come back must
+        # not strand voice paused and music gated on top of it.
+        log_event(
+            logger,
+            "correction.crossover_v2_session_graph_restore_failed",
+            level=logging.CRITICAL,
+            drain="out_of_runner",
+            exc_info=True,
+        )
     try:
         run_async(
             release_session_measurement_pause(),
@@ -5384,12 +5432,18 @@ def _volume_hooks(camilla_factory: Any, context: V2ConductorContext) -> V2Volume
     async def _put_the_graph_back() -> None:
         """Restore the entry graph before the volume closes, never at its cost.
 
-        BEFORE, because the restore's duck release reference is the level this
-        plan still owns (#2929) — after the close it would release against the
-        household target instead. NEVER AT ITS COST, because a graph that will
-        not come back must not stop the fader coming down: that would strand
-        the speaker in the measurement graph AND at measurement volume, which
-        is the worse of the two failures by a wide margin.
+        BEFORE, for two reasons that both point the same way. The restore's
+        duck release reference is the level this plan still owns (#2929), so
+        after the close it would release against the household target instead.
+        And the ``finally`` below releases the measurement pause: once that
+        goes, the household programme can resume, and a graph swapped after it
+        lands under live audio. Same ordering
+        :func:`_release_pause_best_effort` keeps for the out-of-runner drains.
+
+        NEVER AT ITS COST, because a graph that will not come back must not
+        stop the fader coming down: that would strand the speaker in the
+        measurement graph AND at measurement volume, which is the worse of the
+        two failures by a wide margin.
         """
         from jasper.active_speaker.crossover_v2.session_graph import SessionGraphError
 

@@ -91,6 +91,14 @@ class SessionGraph(Protocol):
     ``dataclasses.fields(ActiveEmitDevices)`` field must be derived from
     ``active_emit_devices(...)`` and forwarded — a subset poisons one stimulus
     today and every angle, retry and driver once the graph is session-scoped.
+
+    **These three verbs are declared synchronous and the real implementation is
+    not.** :class:`~.session_graph.MeasurementSessionGraph` is ``async``,
+    because the transport is CamillaDSP over a websocket and every production
+    caller is already on the event loop. Contract and idempotence match; only
+    the colour differs. Reconciling it belongs to the wave that wires
+    :class:`~.session.TuningSession` to a front end — all four seams here are
+    synchronous, so it is one decision for all of them, not one per seam.
     """
 
     def install(self) -> str:
