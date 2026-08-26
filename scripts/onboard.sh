@@ -255,6 +255,10 @@ if [[ "$ADOPT" == "1" ]]; then
     echo "==> ssh-copy-id ${PI_USER}@${HOST} (you'll be prompted for the password)"
     log_event adopt start "host=${HOST} user=${PI_USER}"
     if ! ssh-copy-id -o StrictHostKeyChecking=accept-new "${PI_USER}@${HOST}"; then
+        if ssh_host_key_changed_advice "${PI_USER}@${HOST}"; then
+            log_event adopt fail "reason=host_key_changed host=${HOST}"
+            exit 1
+        fi
         log_event adopt fail "ssh-copy-id_exited_nonzero"
         echo "onboard: ssh-copy-id failed (exit nonzero); cannot continue" >&2
         exit 1
@@ -265,9 +269,16 @@ fi
 
 echo "==> verify pubkey SSH"
 # BatchMode=yes disables interactive password prompts so we get a
-# fast deterministic failure if pubkey auth doesn't work.
-if ! ssh -o BatchMode=yes -o ConnectTimeout=5 -o StrictHostKeyChecking=accept-new \
-       "${PI_USER}@${HOST}" true 2>/dev/null; then
+# fast deterministic failure if pubkey auth doesn't work. ssh's stderr
+# is captured rather than discarded: it is the only place ssh says the
+# host key CHANGED rather than that auth failed (issue #2114).
+AUTH_ERR=""
+if ! AUTH_ERR="$(ssh -o BatchMode=yes -o ConnectTimeout=5 -o StrictHostKeyChecking=accept-new \
+       "${PI_USER}@${HOST}" true 2>&1 >/dev/null)"; then
+    if ssh_host_key_changed_advice "${PI_USER}@${HOST}" "$AUTH_ERR"; then
+        log_event auth fail "reason=host_key_changed host=${HOST}"
+        exit 1
+    fi
     cat <<EOF >&2
     pubkey auth failed
 

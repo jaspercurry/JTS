@@ -37,6 +37,19 @@ printf 'SSH' >> "$FAKE_LOG"
 for arg in "$@"; do printf ' %q' "$arg" >> "$FAKE_LOG"; done
 printf '\n' >> "$FAKE_LOG"
 
+# A re-imaged Pi answers on the same hostname with a new host key;
+# StrictHostKeyChecking=accept-new refuses it before authentication.
+if [[ "${FAKE_HOST_KEY_CHANGED:-0}" == "1" ]]; then
+  cat >&2 <<'BANNER'
+@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@
+@    WARNING: REMOTE HOST IDENTIFICATION HAS CHANGED!     @
+@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@
+IT IS POSSIBLE THAT SOMEONE IS DOING SOMETHING NASTY!
+Host key verification failed.
+BANNER
+  exit 255
+fi
+
 cmd="${*: -1}"
 case "$cmd" in
   'printf "%s\n" "$HOME"')
@@ -114,6 +127,16 @@ exit 0
 """
 
 
+# Logged, never functional: nothing in these scripts may edit the
+# operator's known_hosts for them.
+FAKE_SSH_KEYGEN = r"""#!/usr/bin/env bash
+printf 'SSH-KEYGEN' >> "$FAKE_LOG"
+for arg in "$@"; do printf ' %q' "$arg" >> "$FAKE_LOG"; done
+printf '\n' >> "$FAKE_LOG"
+exit 0
+"""
+
+
 @contextmanager
 def isolated_checkout(env_local: str | None, *, dirty: bool = False):
     """Clone a disposable checkout with independent state and index."""
@@ -166,6 +189,7 @@ class FakeRemote:
         self._write_executable(self.bin / "ssh", FAKE_SSH)
         self._write_executable(self.bin / "rsync", FAKE_RSYNC)
         self._write_executable(self.bin / "ping", FAKE_PING)
+        self._write_executable(self.bin / "ssh-keygen", FAKE_SSH_KEYGEN)
         test_case.addCleanup(lambda: shutil.rmtree(self.tmp, ignore_errors=True))
 
     @staticmethod
@@ -252,6 +276,7 @@ class LaptopOnboardingScriptsTest(unittest.TestCase):
         model: str,
         output_status: str,
         metadata_probes_fail: bool = False,
+        **env_overrides: str,
     ) -> subprocess.CompletedProcess[str]:
         home = fake.tmp / "home"
         ssh_dir = home / ".ssh"
@@ -265,6 +290,7 @@ class LaptopOnboardingScriptsTest(unittest.TestCase):
             FAKE_PI_MODEL=model,
             FAKE_OUTPUT_STATUS=output_status,
             FAKE_METADATA_PROBES_FAIL="1" if metadata_probes_fail else "0",
+            **env_overrides,
         )
         with isolated_checkout(None) as checkout:
             return subprocess.run(
@@ -406,6 +432,40 @@ class LaptopOnboardingScriptsTest(unittest.TestCase):
         self.assertNotIn("mkdir\\ -p", calls)
         self.assertNotIn("RSYNC", calls)
         self.assertNotIn("deploy/install.sh", calls)
+
+    def test_changed_host_key_names_the_manual_remedy_and_removes_nothing(self):
+        # A re-imaged Pi answers on the same hostname with a new host key,
+        # which accept-new refuses (issue #2114). Both operator scripts
+        # must surface the one-command fix and leave the removal — and so
+        # the trust decision — to the operator.
+        deploy_fake = FakeRemote(self)
+        deploy = self.run_deploy(
+            deploy_fake,
+            env_local=None,
+            PI_HOST="jts3.local",
+            PI_USER="pi",
+            JASPER_HOSTNAME="jts3.local",
+            FAKE_HOST_KEY_CHANGED="1",
+        )
+        self.assertNotEqual(deploy.returncode, 0, deploy.stdout + deploy.stderr)
+        self.assertIn("ssh-keygen -R jts3.local", deploy.stderr)
+        self.assertNotIn("SSH-KEYGEN", deploy_fake.calls())
+        self.assertNotIn("RSYNC", deploy_fake.calls())
+
+        onboard_fake = FakeRemote(self)
+        onboard = self.run_onboard(
+            onboard_fake,
+            profile="full",
+            model="Raspberry Pi 5 Model B Rev 1.0",
+            output_status="ready",
+            FAKE_HOST_KEY_CHANGED="1",
+        )
+        self.assertNotEqual(
+            onboard.returncode, 0, onboard.stdout + onboard.stderr
+        )
+        self.assertIn("ssh-keygen -R jts4.local", onboard.stderr)
+        self.assertIn("status=fail reason=host_key_changed", onboard.stdout)
+        self.assertNotIn("SSH-KEYGEN", onboard_fake.calls())
 
     def test_deploy_preserves_ssh_status_255_and_reports_unknown_outcome(self):
         fake = FakeRemote(self)

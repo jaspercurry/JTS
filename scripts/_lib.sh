@@ -576,3 +576,47 @@ ipv4_in_cidr() {
     fi
     (( (ip_int & mask) == (net_int & mask) ))
 }
+
+# ── Changed SSH host key (a re-imaged Pi) ────────────────────────────────
+#
+# Every laptop→Pi hop connects with StrictHostKeyChecking=accept-new,
+# which trusts a FIRST host key but refuses a CHANGED one — exactly what
+# re-imaging a Pi under the same hostname produces (issue #2114). ssh's
+# banner is security-correct but reads as a break-in alarm, and the
+# scripts on top of it then blamed pubkey auth, sending the operator
+# down the wrong ladder.
+#
+# Detection reads ssh's stderr, not its exit status: 255 covers every
+# transport failure. Removing the stale key stays the operator's call —
+# a changed host key is also what a machine-in-the-middle looks like,
+# and only they know whether the Pi was deliberately re-imaged.
+
+# ssh_host_key_changed_advice <ssh-target> [captured-ssh-stderr]
+# Print the one-command remediation and return 0 when a failed SSH to
+# <ssh-target> ([user@]host) was the changed-host-key refusal; return 1,
+# silently, for every other failure. Given no captured stderr, re-probe
+# the host in BatchMode to read the banner — for the callers whose ssh
+# writes it straight to the terminal.
+ssh_host_key_changed_advice() {
+    local target="$1" text="${2-}" host="${1##*@}"
+    if [[ $# -lt 2 ]]; then
+        text="$(ssh -o BatchMode=yes -o ConnectTimeout=5 \
+            -o StrictHostKeyChecking=accept-new "$target" true 2>&1 >/dev/null \
+            || true)"
+    fi
+    [[ "$text" == *"REMOTE HOST IDENTIFICATION HAS CHANGED"* ]] || return 1
+    cat >&2 <<EOF
+
+${host} presented a DIFFERENT SSH host key than the one this laptop
+recorded, so ssh refused to connect (accept-new trusts a first key,
+never a changed one). Re-imaging a Pi under the same hostname does
+exactly this.
+
+If you re-imaged or replaced this Pi, forget the old key and re-run:
+
+    ssh-keygen -R ${host}
+
+Nothing here removes it for you: a changed host key is also what a
+machine-in-the-middle looks like, so that decision is yours.
+EOF
+}

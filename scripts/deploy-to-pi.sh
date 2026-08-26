@@ -92,6 +92,12 @@ resolve_remote_repo_dir() {
         return 0
     fi
     if ! remote_home="$(ssh_remote 'printf "%s\n" "$HOME"')"; then
+        # First contact with the Pi, so this is where a re-image's
+        # changed host key surfaces — before the sudo, identity and
+        # direction preflights, none of which this touches.
+        if ssh_host_key_changed_advice "$SSH_TARGET"; then
+            exit 1
+        fi
         cat <<EOF >&2
 deploy-to-pi: pubkey SSH failed for ${SSH_TARGET}.
 
