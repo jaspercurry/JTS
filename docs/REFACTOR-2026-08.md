@@ -124,7 +124,10 @@ ack, never silence.
       (all boxes past every candidate; the Aug-22 gate SHA was the
       extraction commit, not new logic); owner ruling: no legacy-box-support
       code in-tree, stale boxes are fix-forward
-- [x] nginx: proxy-header snippet + merge streambox conf
+- [x] nginx: proxy-header snippet + merge streambox conf (merge half
+      REFUTED on re-verification: the confs diverge by 126 non-comment
+      lines — streambox deliberately omits 11 voice/assistant routes —
+      so only the snippet landed; do not re-attempt the merge)
 - [ ] wake-events WAV cap default 1 GiB → 128 MiB; move wake_training/ out of
       the shipped package
 
