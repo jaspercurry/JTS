@@ -48,7 +48,11 @@ def test_sound_setup_migrates_the_complete_event_vocabulary():
     # One additional event is delegated rather than emitted here: the shared
     # summed-test rollback owner receives sound.active_speaker_summed_test by
     # name. The separate assertion below keeps that handoff in this contract.
-    assert len(calls) == 96
+    #
+    # The 97th call is the server-side identity-audition refusal (#2821) — an
+    # INFO under the existing sound.active_speaker_commission name, so the
+    # distinct-name count is unchanged.
+    assert len(calls) == 97
     assert len({call.args[1].value for call in calls}) == 41
 
     # The delegated half of the vocabulary: an event this file no longer emits
@@ -85,7 +89,7 @@ def test_sound_setup_migrates_the_complete_event_vocabulary():
     # The reset and re-pin completions are the INFO calls of the topology
     # transaction; each also owns one ERROR branch in the POST dispatcher.
     # The warning count stays fixed.
-    assert levels == {"INFO": 56, "WARNING": 11, "ERROR": 29}
+    assert levels == {"INFO": 57, "WARNING": 11, "ERROR": 29}
 
 
 def test_every_bool_or_optional_percent_s_field_is_prerendered_as_text():
