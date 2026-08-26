@@ -34,7 +34,7 @@ shipped tool — the tool the criterion names errors on this round shape by desi
 (§1.6). (2) 7j demoted the topology block, but **`driver_style` is not
 metadata** and a second gate one step downstream is untouched, so "7j landed"
 does not mean "the box opens" (§1.4). (3) **Three of S11's five sanctioned acts
-are unrun**, and they batch into one bench evening in dependency order (§4.4).
+are unrun**, and they batch into one bench evening in dependency order (§4).
 
 ---
 
