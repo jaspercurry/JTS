@@ -422,8 +422,6 @@ class TurntableMover:
 # --------------------------------------------------------------------------- #
 
 #: The page that mints the correction backend's CSRF cookie + meta token pair.
-#: Bare ``/correction/`` is a static plain-HTTP preflight with no backend behind
-#: it, so it hands out neither.
 CSRF_PAGE_PATH = "/sound/crossover/"
 STATUS_PATH = "/correction/crossover/status"
 POSITION_READY_PATH = "/correction/crossover/v2/position-ready"

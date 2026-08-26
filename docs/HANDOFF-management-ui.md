@@ -191,27 +191,17 @@ behaviour at runtime via the grouping reconciler, not a separate frontend.)
 This keeps the frontend slimmed by capability while preserving one design
 system and one card vocabulary.
 
-### The plain-HTTP correction preflight is canonical too
+### `/correction/` is one plain-HTTP surface
 
-`/correction/` is two surfaces on one path: a static plain-HTTP preflight
-([`deploy/correction-preflight.html`](../deploy/correction-preflight.html))
-that explains the HTTPS switch, then the HTTPS measurement UI. The preflight
-is a **static** page (nginx `try_files`, no Python), so it can't call
-`canonical_page()`; instead it links `/assets/app.css?v=__APP_CSS_VERSION__`
-directly and `install.sh` stamps the build SHA into it exactly as it does for
-`deploy/index.html`. That's the static-page analog of the shell — same
-canonical `.app-header` / `.btn` / `.info-card` vocabulary, inlining only the
-one `#icon-back` sprite symbol it needs. Its Proceed button targets
-`/correction/proceed` with a build-token fallback query string; JavaScript
-replaces that with a fresh `jts_cb` token on each page load. Nginx temporarily
-redirects that to `https://$host/correction/` with `Cache-Control: no-store`
-and preserves query args, so non-default hostnames such as `jts3.local` do not
-depend on client-side JavaScript to survive the HTTP → HTTPS hop, and mobile
-browsers do not cache stale local hostname or scheme rules. Safe
-`?next=/correction/...` subflows become `/correction/proceed/<subflow>`, with
-the same temporary no-store redirect and query preservation.
-The canonical Room page uses nginx's `/sound/proceed/room` handoff instead;
-the static preflight's closed allowlist remains `/correction/*`.
+`/correction/` is a single plain-HTTP surface proxied to correction-web; bare
+`/correction` only normalizes the trailing slash. There is no static
+pre-explainer page and no scheme upgrade: per issue #2632 no household- or
+agent-facing journey step may land on the self-signed HTTPS origin, because a
+browser's native cert interstitial is un-automatable and hostile UX. The
+microphone rides the relay's publicly trusted capture origin. The HTTPS
+listener still exists for deliberate local-`getUserMedia` use (see
+[BRINGUP.md](../BRINGUP.md) for the one-time CA trust dance), but nothing
+redirects a browser into it.
 
 ### Archetype recipes
 

@@ -1640,7 +1640,6 @@ EOF
 
 install_management_static_assets() {
     local index_src="$1"
-    local include_correction_preflight="${2:-0}"
     local app_css_ver
 
     # Static landing page served at /. Plain HTML, no daemon — nginx
@@ -1708,45 +1707,30 @@ PYBAKE
     # manifest contract.
     install_web_assets
 
-    if [[ "${include_correction_preflight}" == "1" ]]; then
-        # Plain-HTTP preflight before the HTTPS-only room-correction UI.
-        # This gives the user context before the browser's self-signed-cert
-        # interstitial while keeping the entry point on the normal HTTP
-        # surface.
-        install -m 0644 \
-            "${REPO_DIR}/deploy/correction-preflight.html" \
-            /usr/share/jasper-web/correction-preflight.html
-        # Stamp the same app.css cache-bust version as the landing page —
-        # the preflight is static HTML and links /assets/app.css directly,
-        # so it needs the build-SHA query string to bust the immutable
-        # /assets cache.
-        sed -i "s/__APP_CSS_VERSION__/${app_css_ver}/g" \
-            /usr/share/jasper-web/correction-preflight.html
-    else
-        rm -f /usr/share/jasper-web/correction-preflight.html
-    fi
-
-    # Prune the retired /integrations page from prior installs. Its nginx
-    # route and install copy are gone (the landing page's inline Integrations
-    # section replaced it); remove the orphaned file so a previously-deployed
-    # Pi does not keep an unreachable page on disk.
+    # Prune retired static pages from prior installs. Their nginx routes and
+    # install copies are gone (the landing page's inline Integrations section
+    # replaced /integrations; the correction preflight's self-signed-HTTPS hop
+    # was removed per issue #2632); remove the orphaned files so a
+    # previously-deployed Pi does not keep unreachable pages on disk.
     rm -f /usr/share/jasper-web/integrations.html
+    rm -f /usr/share/jasper-web/correction-preflight.html
 }
 
 install_nginx_site() {
     # Standalone nginx site that reverse-proxies /spotify/ (multi-account
     # OAuth web flow) and /voice/ (voice-provider config wizard) on plain
-    # HTTP. /correction/ starts with
-    # a plain-HTTP preflight page, then the measurement UI switches to
-    # HTTPS. The legacy routes stay HTTP — Spotify's HTTPS requirement
-    # is satisfied by the GitHub Pages bounce, and there's no point
+    # HTTP. /correction/ is plain HTTP too: the mic rides the relay's publicly
+    # trusted capture origin, so no journey step redirects into the self-signed
+    # HTTPS origin (issue #2632). The legacy routes stay HTTP — Spotify's HTTPS
+    # requirement is satisfied by the GitHub Pages bounce, and there's no point
     # breaking working flows for one feature.
     #
-    # /correction/ requires HTTPS because getUserMedia needs a secure
-    # context. /google/ stays HTTP here; Google rejects mDNS redirect
-    # URIs, so it uses the same GitHub Pages bounce pattern as Spotify.
-    # The correction-only cert is provisioned by provision_correction_tls()
-    # before this function runs.
+    # The HTTPS listener remains for the local getUserMedia hubs (a secure
+    # context is required there) but is entered deliberately, never by
+    # redirect. /google/ stays HTTP here; Google rejects mDNS redirect URIs, so
+    # it uses the same GitHub Pages bounce pattern as Spotify. The
+    # correction-only cert is provisioned by provision_correction_tls() before
+    # this function runs.
     install -d -m 0755 /etc/nginx/snippets
     install -m 0644 \
         "${REPO_DIR}/deploy/nginx-proxy-headers.conf" \
@@ -1755,7 +1739,7 @@ install_nginx_site() {
         "${REPO_DIR}/deploy/nginx-jasper.conf" \
         /etc/nginx/sites-enabled/jasper.conf
 
-    install_management_static_assets "${REPO_DIR}/deploy/index.html" 1
+    install_management_static_assets "${REPO_DIR}/deploy/index.html"
 
     # Disable Debian's default site so it doesn't clash with our
     # default_server directives. nginx-light installs an enabled
@@ -1785,7 +1769,7 @@ install_streambox_nginx_site() {
         "${REPO_DIR}/deploy/nginx-jasper-streambox.conf" \
         /etc/nginx/sites-enabled/jasper.conf
 
-    install_management_static_assets "${REPO_DIR}/deploy/index.html" 1
+    install_management_static_assets "${REPO_DIR}/deploy/index.html"
     rm -f /etc/nginx/sites-enabled/default
 
     if nginx -t 2>/dev/null; then

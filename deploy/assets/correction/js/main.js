@@ -3615,18 +3615,13 @@ import { renderRelayQr } from "/assets/shared/js/qr.js";
   // Landing never asks for microphone permission. Local capture requests it
   // only after /start exposes the server-owned Allow microphone action; the
   // refresh control is likewise inside that post-Start setup section.
+  // No scheme upgrade here. The self-signed HTTPS origin is never entered by
+  // redirect (issue #2632): a native cert interstitial cannot be automated and
+  // is hostile household UX. Off the relay path on plain HTTP, micCaptureSupport
+  // refuses with its non_secure_context message instead.
   if (relayConfigured) {
     setRelayMode(true);
   } else {
-    var currentPath = currentPathname();
-    if (!window.isSecureContext && currentPath.indexOf('/correction/') === 0) {
-      window.location.href = '/correction/proceed/room';
-      return;
-    }
-    if (!window.isSecureContext && currentPath.indexOf('/sound/room/') === 0) {
-      window.location.href = '/sound/proceed/room';
-      return;
-    }
     setRelayMode(false);
     populateInputDevices();
   }
@@ -3635,8 +3630,6 @@ import { renderRelayQr } from "/assets/shared/js/qr.js";
   applyHouseholdMicPrefill();
   refreshCurrentCorrection();
   // Initial paint of the stepped-wizard chrome from the server envelope.
-  // (Both landing paths reach here; the plain-HTTP deep-link fallback above
-  // returns before this, so it never fires there.)
   envelopeRetryArmed = true;   // landing grants one retry credit
   refreshEnvelope();
 
