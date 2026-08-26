@@ -284,26 +284,15 @@ class VolumeOwner:
                 raise VolumeClaimConflict(
                     f"a {kind.value} level claim is already held"
                 )
-            handle = VolumeClaimHandle(
-                kind=kind, token=next(self._tokens), level_db=target,
-            )
-            self._claims[handle.token] = handle
-            taken = False
-            try:
-                if self._top_level_claim() is not handle:
-                    taken = True
-                    return handle
-                if await self._apply(context=f"acquire:{kind.value}"):
-                    taken = True
-                    return handle
-                raise VolumeClaimRefused(
+            return await self._take(
+                VolumeClaimHandle(
+                    kind=kind, token=next(self._tokens), level_db=target,
+                ),
+                kind=kind.value,
+                refusal=(
                     f"could not establish {target:.6f} dB for {kind.value}"
-                )
-            finally:
-                if not taken:
-                    await self._unwind(
-                        handle, context=f"acquire_failed:{kind.value}",
-                    )
+                ),
+            )
 
     async def declare_household_level_db(self, level_db: float) -> bool:
         """The standing claim: what the speaker plays at when nothing else has it.
@@ -324,9 +313,7 @@ class VolumeOwner:
         async with self._lock:
             previous = self.declared_level_db()
             handle = self._replace_household_claim(target)
-            if self._top_level_claim() is not handle:
-                return True
-            if await self._apply(context="declare:household"):
+            if await self._establish(handle, context="declare:household"):
                 return True
             # The prior household claim is already gone — "the household
             # level" is one fact and a declaration replaces it, never stacks.
@@ -387,10 +374,9 @@ class VolumeOwner:
             moved = VolumeClaimHandle(
                 kind=handle.kind, token=next(self._tokens), level_db=target,
             )
-            self._claims[moved.token] = moved
-            if self._top_level_claim() is not moved:
-                return moved
-            if await self._apply(context=f"relevel:{handle.kind.value}"):
+            if await self._establish(
+                moved, context=f"relevel:{handle.kind.value}",
+            ):
                 return moved
             # Put the ORIGINAL claim back, at its last confirmed level, and do
             # not touch the fader: the speaker is already at (or below) that
@@ -426,25 +412,62 @@ class VolumeOwner:
         """
         depth = abs(_finite(depth_db, "depth_db"))
         async with self._lock:
-            handle = VolumeClaimHandle(
-                kind=ClaimKind.TRANSIENT_DUCK,
-                token=next(self._tokens),
-                depth_db=depth,
+            return await self._take(
+                VolumeClaimHandle(
+                    kind=ClaimKind.TRANSIENT_DUCK,
+                    token=next(self._tokens),
+                    depth_db=depth,
+                ),
+                kind=ClaimKind.TRANSIENT_DUCK.value,
+                refusal=f"could not establish {depth:.6f} dB of attenuation",
             )
-            self._claims[handle.token] = handle
-            taken = False
-            try:
-                if not await self._apply(context="acquire:transient_duck"):
-                    raise VolumeClaimRefused(
-                        f"could not establish {depth:.6f} dB of attenuation"
-                    )
-                taken = True
-                return handle
-            finally:
-                if not taken:
-                    await self._unwind(
-                        handle, context="acquire_failed:transient_duck",
-                    )
+
+    async def _establish(
+        self, handle: VolumeClaimHandle, *, context: str,
+    ) -> bool:
+        """Seat ``handle`` and settle the fader on the new arbitration.
+
+        The one claim-taking skeleton behind all four verbs. Caller holds the
+        lock.
+
+        ``True`` does not mean *"wrote something"*. A level claim outranked by
+        a higher one is in effect the moment it is RECORDED, which is all it
+        asked for — and recording cannot fail, so such a claim is never
+        refused for a write it never wanted. That is the only thing separating
+        this branch from letting :meth:`_apply` re-derive the same target,
+        which is why it is the branch the tests pin.
+
+        The rank short-circuit is a LEVEL claim's alone: a duck declares no
+        level, never answers *"what level is in effect"*, and so always
+        composes — :meth:`_apply` writes nothing when no level is held anyway.
+
+        On failure the ledger KEEPS ``handle``. The callers give it back two
+        different ways, and :meth:`relevel`'s is not an unwind.
+        """
+        self._claims[handle.token] = handle
+        is_level = handle.level_db is not None
+        if is_level and self._top_level_claim() is not handle:
+            return True
+        return await self._apply(context=context)
+
+    async def _take(
+        self, handle: VolumeClaimHandle, *, kind: str, refusal: str,
+    ) -> VolumeClaimHandle:
+        """Establish a claim fail-CLOSED: what cannot be established is not held.
+
+        The ``taken`` flag guards a ``finally``, so :meth:`_unwind` runs on
+        EVERY exit that is not a completed take — the refusal raised here, a
+        cancellation, or a raise from the injected door.
+        """
+        taken = False
+        try:
+            taken = await self._establish(handle, context=f"acquire:{kind}")
+            if not taken:
+                raise VolumeClaimRefused(refusal)
+            return handle
+        finally:
+            if not taken:
+                await self._unwind(handle, context=f"acquire_failed:{kind}")
 
     async def _unwind(
         self, handle: VolumeClaimHandle, *, context: str,

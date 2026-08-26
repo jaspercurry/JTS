@@ -177,6 +177,32 @@ async def test_commissioning_outranks_a_live_measurement_claim():
     assert await owner.prove(measurement) is None
 
 
+async def test_a_claim_recorded_under_a_higher_one_is_held_without_writing():
+    """A claim that only asked to be RECORDED cannot fail to be established.
+
+    It never asked for the fader, so a fader that cannot be written must not
+    refuse it — the level it declares is what the higher claim's release will
+    land on, and losing it there is how a measurement ends at the wrong level.
+
+    This is the ONE thing that separates the rank short-circuit from letting
+    the settle re-derive the same target: the target is identical either way,
+    so only the failure path can tell them apart. The fader below is both
+    drifted AND unwritable, which is what makes the difference observable.
+    """
+    fader = _Fader()
+    owner = await _household(fader)
+    await owner.acquire_level(ClaimKind.COMMISSIONING, -6.0)
+    fader.db = -20.0
+    fader.accept = False
+    fader.writes.clear()
+
+    claim = await owner.acquire_level(ClaimKind.SESSION_MEASUREMENT, -12.0)
+
+    assert owner.holds(claim)
+    assert fader.writes == []
+    assert owner.declared_level_db() == -6.0
+
+
 async def test_a_second_claim_of_one_kind_is_refused_not_stacked():
     fader = _Fader()
     owner = await _household(fader)
