@@ -594,13 +594,20 @@ whose re-verification before any campaign is ours. Terms in §6 R5.
 > **letter map survives** (`measurement-loop-doctrine.md:224-248`) even though
 > S9 deleted the table above it, so the ~79 `deviation (a)`…`(i)` citations all
 > still resolve — the doc kept the map precisely so they would. One judgment
-> call is **left open for the owner rather than guessed**: seven live sites cite
-> an *"AGENTS.md no-silent-failure rule"* (e.g.
-> `jasper/web/correction_crossover_v2.py:4980`,
-> `jasper/active_speaker/crossover_v2/accountability.py:666`) — the charter has
-> no rule under that wording, and its nearest survivor, non-negotiable 6 **No
-> silent deafness**, is scoped to *wake-response cues*, not a wizard's disabled
-> Apply. Repointing them would widen a non-negotiable by prose edit.
+> call is **left open for the owner rather than guessed**, and it is enumerated
+> rather than estimated: **10 live sites** attribute a *"no-silent-failure rule"*
+> to the charter, **5 in this zone** —
+> `jasper/web/correction_crossover_v2.py:4962` ·
+> `jasper/active_speaker/crossover_v2/accountability.py:666` ·
+> `tests/test_correction_crossover_v2_endpoints.py:3457` and `:8882` ·
+> `tests/test_crossover_v2_conductor.py:8541` (wrap-only) — and **5 outside it**:
+> `jasper/wake_fusion.py:72` · `jasper/correction/autolevel.py:309` ·
+> `tests/test_correction_autolevel.py:392` ·
+> `docs/two-stage-commission-flow-plan.md:440` and `:696`. The charter has **no
+> rule under that wording**, and its nearest survivor, non-negotiable 6 **No
+> silent deafness**, is scoped to *wake-response cues* — not a wizard's disabled
+> Apply. Repointing them would **widen a non-negotiable by prose edit**, which is
+> not a rider's authority, so they are flagged and left alone.
 
 ### Wave 0 — Free the class-A suite. Zero design decisions.
 
