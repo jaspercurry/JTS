@@ -156,11 +156,14 @@ against damage, and nothing else on the bench may hard-stop.
    `STARTUP_LIMITER_CLIP_LIMIT_DB` / `BASELINE_LIMITER_CLIP_LIMIT_DB`
    (`jasper/active_speaker/camilla_yaml.py`) and `HARD_CEILING_DBFS`
    (`jasper/audio_measurement/ramp.py`). Carried by the CamillaDSP emit gates
-   and the field invariants guarding them — every one refuses *before* the
-   YAML leaves the emitter — by the same contract re-asked at load and deploy
-   (`runtime_contract.classify_camilla_graph`,
-   `safe_graph_for_current_topology`, `flat_program_graph_blocked_reason`), by
-   the path-safety tweeter-floor arms, and by the `SAFETY_*` verification
+   and the field invariants guarding them — including the config-side
+   `devices.volume_limit = 0.0` and the non-positive trim invariants, and every
+   one refusing *before* the YAML leaves the emitter — by the same contract
+   re-asked at load and deploy (`runtime_contract.classify_camilla_graph`,
+   `safe_graph_for_current_topology`, `flat_program_graph_blocked_reason`,
+   whose ~67 codes the census tallies separately so that one module cannot
+   dominate the ratio — the ~112 above excludes them), by the path-safety
+   tweeter-floor arms, and by the `SAFETY_*` verification
    findings that send a clipped or uncommanded-louder result to the restore
    path as `SafetyStatus.UNSAFE`.
 3. **Declared per-driver excitation bands and level-duration limits** —
