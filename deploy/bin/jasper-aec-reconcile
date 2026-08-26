@@ -499,16 +499,6 @@ unit_active_and_enabled() {
 # Every condition is something a skip would silently lose, and anything
 # unknown answers "restart": a false restart costs a few seconds of annoyance,
 # a false skip costs a deaf speaker until the next event.
-# The AEC stack's half of the same question: enable_start_aec blocking-restarts
-# jasper-aec-init and the bridge, a mic outage of its own, and bouncing the
-# bridge while leaving voice up would strand the daemon on a dead UDP carrier.
-# So the two are gated TOGETHER, and only an already-running stack may skip.
-aec_stack_bounce_can_be_skipped() {
-    unit_active_and_enabled jasper-aec-init.service \
-        && unit_active_and_enabled jasper-aec-bridge.service \
-        && voice_restart_can_be_skipped
-}
-
 voice_restart_can_be_skipped() {
     [[ "$VOICE_RESTART_NEEDED" == "0" ]] || return 1
     # A pass that would clear the park marker is UN-parking voice, which is
@@ -520,6 +510,16 @@ voice_restart_can_be_skipped() {
     voice_provider_configured || return 1
     voice_start_inputs_match_stamp || return 1
     unit_active_and_enabled jasper-voice.service || return 1
+}
+
+# The AEC stack's half of the same question. enable_start_aec blocking-restarts
+# jasper-aec-init and the bridge, a mic outage of its own, and bouncing the
+# bridge while leaving voice up would strand the daemon on a dead UDP carrier —
+# so the two are gated TOGETHER, and only an already-running stack may skip.
+aec_stack_bounce_can_be_skipped() {
+    unit_active_and_enabled jasper-aec-init.service \
+        && unit_active_and_enabled jasper-aec-bridge.service \
+        && voice_restart_can_be_skipped
 }
 
 write_mic_profile_env() {

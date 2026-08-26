@@ -961,14 +961,15 @@ def shipped_class_alignment(
         live = build_identity(dev, plan, status)
     except ChipInitError as exc:
         raise CommissionRequired(absent) from exc
-    # An exact class match is the row that diverges in nothing, so one walk of
-    # the registry answers both "does this box's class ship a proof?" and "which
-    # row is nearest?". The caller only reaches here with a non-empty REGISTRY.
-    scored = [(row, row.divergence(live)) for row in shipped_alignment.REGISTRY]
-    for row, changed in scored:
-        if not changed:
-            return row
-    nearest, changed = min(scored, key=lambda pair: len(pair[1]))
+    entry = shipped_alignment.for_identity(live)
+    if entry is not None:
+        return entry
+    # The caller only reaches here with a non-empty REGISTRY, and the divergence
+    # that ranks the rows is the same one the message names.
+    nearest, changed = min(
+        ((row, row.divergence(live)) for row in shipped_alignment.REGISTRY),
+        key=lambda pair: len(pair[1]),
+    )
     raise CommissionRequired(
         f"{absent}; nearest shipped class {nearest.label} differs in "
         + ", ".join(changed)
