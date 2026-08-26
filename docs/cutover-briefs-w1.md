@@ -174,84 +174,62 @@ before the implementation is the whole point.
 
 ### 2.3 `bank` / `read` — the evidence-store half
 
-**Follow the writer that already exists.** `retain_position`
-(`web/correction_crossover_v2.py:3529`, inside `bind_position_retention` `:3490`,
-bound at `:5747`) is the shipped answer to *"where does a crossover-v2 capture
-record land"*, and W1-a's job is to be that writer at the seam, not a second one.
-
-Its write is `web/…:3567-3574`:
+**Be the writer that already exists, not a second one.** `retain_position`
+(`web/correction_crossover_v2.py:3529`, in `bind_position_retention` `:3490`,
+bound `:5747`) writes at `:3567-3574`:
 
 ```python
 artifact = store.publish_json_artifact(
     f"crossover_v2/{relay_session_id}/positions/{take_id}.json",
-    {
-        "schema_version": 1,
-        "kind": "jts_crossover_v2_position_evidence",
-        "relay_session_id": relay_session_id,
-        **record,
-    },
+    {"schema_version": 1, "kind": "jts_crossover_v2_position_evidence",
+     "relay_session_id": relay_session_id, **record},
 )
 ```
 
-Four facts that follow, each load-bearing:
+Four load-bearing facts:
 
-- **The path is relative and the root is never spelled by the caller.**
-  `_artifact_path` (`commissioning_evidence_store.py:237-238`) prefixes
-  `{EVIDENCE_ROOT}/artifacts/`, and `EVIDENCE_ROOT = "evidence/v1"` is
-  `:71` — the tree's only definition. The store passes
-  `crossover_v2/{cap-id}/positions/{take_id}.json` and gets
-  `evidence/v1/artifacts/crossover_v2/{cap-id}/positions/{take_id}.json`.
-- **`{cap-id}` is the RELAY session id, not the bundle session id.**
-  `evidence_packet.py:220-223` says so; `v2_session_identity`
-  (`web/…:3597`) records the bundle id as canonical and the relay id as an
-  alias. **A store that mints its directory from `record["session_id"]` files
-  the record where `round_artifact_dir` does not look.**
-- **The write is idempotent for identical bytes and a refusal for different
-  ones.** `_write_once` `:666-683`: an existing path with equal payload
-  re-fsyncs the directory and returns the same identity; unequal payload raises
-  `PATH_CONFLICT` (`:671-675`). `retain_position`'s comment `:3532-3541` records
-  that this is why `take_id` carries `attempt`.
+- **The caller never spells the root.** `_artifact_path`
+  (`commissioning_evidence_store.py:237-238`) prefixes
+  `{EVIDENCE_ROOT}/artifacts/`; `EVIDENCE_ROOT = "evidence/v1"` `:71`, the
+  tree's only definition.
+- **`{cap-id}` is the RELAY session id, not the bundle id**
+  (`evidence_packet.py:220-223`; `v2_session_identity` `web/…:3597` makes the
+  bundle id canonical and the relay id an alias). **A store minting its
+  directory from `record["session_id"]` files the record where
+  `round_artifact_dir` does not look.**
+- **Idempotent for identical bytes, `PATH_CONFLICT` for different ones** —
+  `_write_once:666-683`, raise at `:671-675`. `retain_position:3532-3541`
+  records that this is why `take_id` carries `attempt`.
 - **`round_artifact_dir` fails closed on two round directories**
   (`evidence_packet.py:630-635`), globbing `_EVIDENCE_GLOB =
   "evidence/v1/artifacts/crossover_v2/*"` (`:224`). One bundle, one round dir.
 
-**The id scheme.** Mint `take_id_for(position_id, attempt)`
-(`spatial.py`, §3.3) as the take component and return the **store-relative
-record path** as the opaque id:
+**The id scheme: the store-relative record path**, take component minted by
+`take_id_for` (§3.1) — `crossover_v2/{relay_session_id}/positions/{take_id}.json`.
 
-```
-crossover_v2/{relay_session_id}/positions/{take_id}.json
-```
+**Path, not a counter,** because `read` resolves ids handed back from a
+*previous session's* `record_ids` (`prior_bank.py:157`). The twin's `rec-{n}`
+works only because it still holds `banked` in memory; a production store would
+have to rebuild the ordering by rescanning — a second index, which #3064
+forbids. A path is self-resolving and satisfies `session_seams.py:237`
+(*"return the id that finds it again"*) exactly.
 
-Why the path and not a counter: `read` has to resolve an id handed back from a
-*previous session's* persisted `record_ids` (`prior_bank.py:157`), and a
-1-based counter is only resolvable by a store that still holds the list that
-produced it. The twin can do that because it holds `banked` in memory; a
-production store cannot, and reconstructing the ordering from the directory to
-re-derive `rec-4` would be inventing a second index — exactly what #3064
-forbids. A path is self-resolving, and the engine's own contract
-(`session_seams.py:237`, *"return the id that finds it again"*) is satisfied
-exactly.
+**Still opaque in the sense the twin means it:** the *engine* never parses an
+id, and does not here — it travels `bank`'s return (`session.py:598`) →
+`_banked` (`:423`) → `record_ids` (`:500`) → `store.read`
+(`prior_bank.py:157`) untouched. Only the store reads it.
 
-**This does not violate the twin's "ids are opaque".** Opaque means the *engine*
-never parses one, and it does not — the id travels from `bank`'s return
-(`session.py:598`) to `_banked` (`:423`) to `record_ids` (`:500`) to
-`store.read` (`prior_bank.py:157`) untouched. Only the store reads it.
+**`read` returns `None`, never raises**, for an absent or unparseable path —
+`session_seams.py:241-245`: *"a missing record is a fact an offline `analyze`
+discloses, not an exception that strands the run."* Catch
+`CommissioningEvidenceStoreError` with code `MISSING`; the `_missing(error)`
+helper already exists at `commissioning_isolated_producer.py:90-91` —
+**reuse it, do not re-spell the comparison.**
 
-**`read`** resolves the id against the bundle and returns `None` — never raises —
-when the path is absent or unparseable. `session_seams.py:241-245` is explicit:
-*"a missing record is a fact an offline `analyze` discloses, not an exception
-that strands the run."* This means catching `CommissioningEvidenceStoreError`
-with code `MISSING` and returning `None`;
-`commissioning_isolated_producer.py:90-91` already has the `_missing(error)`
-helper for exactly this test — **reuse it rather than re-spelling the code
-comparison.**
-
-**Close the drift site while here (§1 `:115-119`).** The writer spells
-`"schema_version": 1` and `"kind": "jts_crossover_v2_position_evidence"` as bare
-literals at `web/…:3570-3571`, while the reader imports the same string as
-`POSITION_EVIDENCE_KIND` (`position_cycle.py:111`) and checks it at `:246`. The
-store imports the constant. §1's verification bar names this pin.
+**Close the drift site (§1 `:115-119`):** the writer spells `schema_version` and
+the kind as bare literals (`web/…:3570-3571`) while the reader imports
+`POSITION_EVIDENCE_KIND` (`position_cycle.py:111`, checked `:246`). The store
+imports the constant.
 
 ### 2.4 `persist` / `read_state` — the durable-state half (D2, D3)
 
@@ -273,79 +251,57 @@ Path: `DEFAULT_V2_STATE_PATH = /var/lib/jasper/active_speaker_crossover_v2_state
 build `:2833`, read the pre-write grade `:2842`, `save_v2_state` `:2846`,
 journal one transition `:2851-2866`.
 
-**The id scheme for state.** `read_state` must answer *"is the file still the
-one you named?"* — because the file is overwritten every persist, and
-`session_seams.py:255-260` makes *"the prior round's state is gone"* an ordinary
-outcome that returns `None` rather than refusing the round (ruling S10).
+**The id scheme for state: `state-{session_id}-{n}`**, `n` the persist counter
+within the session. `read_state` must answer *"is the file still the one you
+named?"* — the file is overwritten every persist, and `session_seams.py:255-260`
+makes *"the prior round's state is gone"* an ordinary `None`, never a refusal
+(ruling S10). So: load the file, return the document only when the handed id
+matches the id the document on disk would mint now. `session_id` is already
+present — `session.py:502` engine-side, `built.state["session_id"]`
+(`web/…:2839`) host-side. No new field.
 
-Mint the id from the identity the state already carries, so no new field is
-needed:
-
-```
-state-{session_id}-{n}
-```
-
-where `n` is the persist counter within this session. `read_state` loads the
-file, and returns the document only when the id it was handed matches the id the
-document on disk would mint now; otherwise `None`. `session_id` is already in
-the engine's persisted mapping (`session.py:502`) and is
-`built.state["session_id"]` on the host side (`web/…:2839`).
-
-**Do not add durability.** `persist` runs once per consumed capture
-(`web/…:512-514`), and the same passage says an fsync per capture *"buys nothing
-that the next capture's write does not already redo"*. `durable=True` stays with
-the three writes `:496-517` enumerates. A store that fsynced every `persist`
-would regress a documented #2291 decision.
+**Do not add durability.** `persist` runs once per consumed capture, and
+`web/…:512-514` says an fsync per capture *"buys nothing that the next capture's
+write does not already redo"*. `durable=True` stays with the three writes
+`:496-517` enumerates; fsyncing every `persist` regresses a documented #2291
+decision.
 
 ### 2.5 The error contract — the gap §1's bar does not cover (D4)
 
-`SeamFailure` is `tests/engine_twin.py:81` and **nowhere in `jasper/`**. So there
-is no production type for *"the world failed"* versus *"the engine refused"*, and
-the engine catches nothing around `bank` (`session.py:598` is a bare call).
+`SeamFailure` is `tests/engine_twin.py:81` and **nowhere in `jasper/`** — there
+is no production type separating *"the world failed"* from *"the engine
+refused"*, and the engine catches nothing around `bank` (`session.py:598` is a
+bare call).
 
-What each backend raises today:
+Backends raise: `publish_json_artifact` →
+`CommissioningEvidenceStoreError` (a `RuntimeError` with a `.code`:
+`PATH_CONFLICT`, `TOO_LARGE`, `TOTAL_TOO_LARGE`, `INSUFFICIENT_SPACE`,
+`PERSIST_FAILED`, `PERSIST_OUTCOME_UNKNOWN`, `MISSING`); `save_v2_state` →
+`OSError`.
 
-- `publish_json_artifact` → `CommissioningEvidenceStoreError`, a `RuntimeError`
-  subclass with a `.code` (`PATH_CONFLICT`, `TOO_LARGE`, `TOTAL_TOO_LARGE`,
-  `INSUFFICIENT_SPACE`, `PERSIST_FAILED`, `PERSIST_OUTCOME_UNKNOWN`, `MISSING`).
-  `bind_position_retention`'s docstring `:3511-3519` states the design: the store
-  is *deliberately strict* and **the fail-soft boundary lives one level up**.
-- `save_v2_state` → `OSError` from the atomic write.
+**Ruling for W1-a: let both propagate, unwrapped.** (1) It is the shipped
+decision — `bind_position_retention` *"does NOT swallow failures"* (`:3511`) so
+that *"the strictness the store was built for is preserved for every OTHER
+caller"* (`:3518-3519`). (2) The conductor's fail-soft is `_hand_to_retention`,
+and **W1-c** moves it, not W1-a. (3) Inventing a production `SeamFailure` here
+would put a new exception vocabulary in front of five seams on the strength of
+one; W4-a owns seam-wide shape.
 
-**The ruling for W1-a: let both propagate, unwrapped.** Three reasons, all
-already in the tree:
+**Open question for the owner, not for the builder:** whether the engine grows a
+fail-soft `bank` (incident on the record, walk continues) or keeps the raise.
+`session.py:594-597` already has the soft vocabulary — `UNPROVEN_LEVEL` as
+`incident`, `record_id` `""` — so it is one `except` away. It is a behaviour
+change, so W1-a does not make it.
 
-1. It is the shipped decision. `bind_position_retention` *"does NOT swallow
-   failures"* (`:3511`) precisely so *"the strictness the store was built for is
-   preserved for every OTHER caller"* (`:3518-3519`).
-2. The fail-soft boundary the conductor owns is `_hand_to_retention` (§3), and
-   W1-c is where it moves — not W1-a.
-3. Inventing a production `SeamFailure` in W1-a would put a new exception
-   vocabulary in front of five seams on the strength of one, and W4-a is the PR
-   that owns seam-wide shape.
+### 2.6 Two stale claims in the protocol docstring
 
-**Record it as an open question for the owner rather than deciding silently:**
-whether the engine grows a fail-soft `bank` (an incident on the record, the walk
-continues) or keeps the raise. Today `session.py:594-597` already has the
-vocabulary for the soft answer — `UNPROVEN_LEVEL` becomes `incident` and
-`record_id` stays `""` — so the soft path is one `except` away. It is a
-behaviour change, so it is not W1-a's to make.
-
-### 2.6 Two stale claims to true up in this PR
-
-Both are in the protocol docstring the store implements, and a wrong comment
-misleads the next agent more than a missing one:
-
-- `session_seams.py:215-216` — *"wave 3's `persist_conductor_state`, today an
-  854-line function that is a schema writer with no schema"*. At HEAD it is 58
-  lines and its schema is `durable_state.build_conductor_state` (D2).
-- `session_seams.py:212-213` — the bank half is described as *"wave 4's five
-  blocks — identity · place · stimulus-and-path · honesty · **the curve**"*.
-  `_record()` returns thirteen flat fields, not five blocks, and the curve is not
-  among them (§4). Either the blocks are the *destination* shape and the
-  docstring should say so, or it is describing a shape that does not exist.
-  **Flag rather than rewrite** — the blocks are W1-b's subject and the wording
-  may be deliberate.
+- `session_seams.py:215-216` — *"an 854-line function that is a schema writer
+  with no schema"*. **58 lines** at HEAD, schema in
+  `durable_state.build_conductor_state` (D2). **Fix in this PR.**
+- `session_seams.py:212-213` — the bank half as *"wave 4's five blocks —
+  identity · place · stimulus-and-path · honesty · the curve"*. `_record()`
+  returns thirteen flat fields and no curve. **Flag, do not rewrite** — the
+  blocks may be the intended destination shape (W1-b's subject).
 
 ### 2.7 Test plan
 
@@ -689,48 +645,38 @@ a mechanical thread-through and a new record shape.
 
 Found while deriving §4.2, unpinned by any test, and the lift is where it dies.
 
-`take_id_for` (`spatial.py:779`, `return f"{position_id}_a{int(attempt):02d}"`
-`:793`) is minted **twice, independently**:
-
-1. inside the record — `_take_identity:828`, reaching the seam as
-   `record["take_id"]`;
-2. inside the closure — `web/…:3546`, `take_id_for(position_id, int(record.get("attempt") or 0))`.
-
-They agree only because `attempt` round-trips through `_take_identity`'s
-`"attempt"` key (`:827`). **For the entry baseline they do not agree.**
-`entry_baseline_record` sets `"position_id": identity["take_id"]` (`:1115`) —
-the one kind where the two coincide (`:1113-1114`) — and `_retain_entry_baseline`
-reads that take id back at `:7019` and passes it as the closure's `position_id`.
-The closure then re-mints:
+`take_id_for` (`spatial.py:779`, body `:793`) is minted **twice,
+independently**: inside the record (`_take_identity:828` → `record["take_id"]`)
+and inside the closure (`web/…:3546`). They agree only because `attempt`
+round-trips through `_take_identity`'s `"attempt"` key (`:827`). **For the entry
+baseline they do not.** `entry_baseline_record` sets `"position_id":
+identity["take_id"]` (`:1115`, the one kind where the two coincide `:1113-1114`);
+`_retain_entry_baseline` reads that take id back (`:7019`) and passes it as the
+closure's `position_id`, which re-mints:
 
 ```
 record["take_id"]  = "entry_baseline_09_a01"
 closure take_id    = "entry_baseline_09_a01_a01"   # web/…:3546
 ```
 
-So the artifact lands at `positions/entry_baseline_09_a01_a01.json` while the
-record inside it says `"take_id": "entry_baseline_09_a01"`, and
-`refs["position_artifacts"]` gets the **doubled** id (`web/…:3588`) beside the
-record's single one. `take_id_for`'s own docstring (`:788-792`) states the
-invariant this breaks: *"The seam and the record must name the same take or the
+The artifact lands at `positions/entry_baseline_09_a01_a01.json` while the record
+inside says `entry_baseline_09_a01`, and `refs["position_artifacts"]` gets the
+**doubled** id (`web/…:3588`). `take_id_for`'s own docstring (`:788-792`) states
+the invariant broken: *"The seam and the record must name the same take or the
 bundle's sidecar path and the session's own evidence disagree."*
 
-**Blast radius, stated honestly:** the readers locate takes by **glob**, not by
-reconstructing a filename, so nothing is observed-broken today. What is broken
-is the join — the durable state's `position_artifacts[].take_id` disagrees with
-the artifact's own `take_id` — and W1-d's index is built on exactly that join
-(`path` and `session · kind · position · candidate`). The tests pin the single
-suffix at the builder altitude (`test_crossover_v2_spatial.py:623`) and pin a
-hand-made single-suffix filename in the reader
-(`test_crossover_v2_position_cycle.py:377`); **no test exercises the closure with
-an entry-baseline record**, which is why it survived.
+**Blast radius, honestly:** readers locate takes by **glob**, not by
+reconstructing filenames, so nothing is observed-broken today. What is broken is
+the **join** — `position_artifacts[].take_id` disagrees with the artifact's own
+— and W1-d's index is built on exactly that join. Tests pin the single suffix at
+the builder (`test_crossover_v2_spatial.py:623`) and a hand-made single-suffix
+filename at the reader (`test_crossover_v2_position_cycle.py:377`); **no test
+exercises the closure with an entry-baseline record**, which is why it survived.
 
-**The fix falls out of the lift for free:** the store mints its path from the
-record's own `take_id` (§2.3) instead of re-minting from a positional argument,
-and the second mint at `web/…:3546` dies with the closure. **Add a pin** — bank
-an entry-baseline record, assert the artifact path's stem equals
-`record["take_id"]` — because "it fell out for free" is exactly the kind of fix
-that gets un-fixed later.
+**The fix falls out of the lift:** the store mints its path from the record's own
+`take_id` (§2.3), and the second mint dies with the closure. **Add a pin
+anyway** — bank an entry-baseline record, assert the artifact path's stem equals
+`record["take_id"]` — because "it fell out for free" is what gets un-fixed later.
 
 ### 4.6 The #3076 obligations — quoted, and how the lift discharges each
 
@@ -821,56 +767,45 @@ anywhere in the tree.** Trivial, in scope, fix it inline.
 > carry, not a field move**: by retention time the routing graph is restored and
 > the fader may have moved.
 
-**Carried, and this is the part to review hardest** (§8 `:1116-1118`). Verified:
+**Carried, and this is the part to review hardest** (§8 `:1116-1118`).
+`take()` (`capture_provenance.py:163`) swaps `_pending` to `None` under
+`self._lock` (`:156`) and returns it — **single-shot and consuming.** A second
+call with no intervening `record()` (`:159`) returns `None`, **not the previous
+capture's context** (`:148-154`: stale provenance on a forensic clip is worse
+than absent).
 
-```python
-def take(self) -> CaptureProvenance | None:          # capture_provenance.py:163
-    with self._lock:
-        pending, self._pending = self._pending, None
-    return pending
-```
-
-It is **single-shot and consuming** — an atomic swap under `self._lock` (`:156`).
-A second call with no intervening `record()` (`:159`) returns `None`, **not the
-previous capture's context**; the class docstring `:148-154` gives the reason:
-stale provenance on a forensic clip is worse than absent.
-
-**Production call sites: exactly one** —
-`web/correction_crossover_v2.py:3172`, as
+**Production call sites: exactly one** — `web/…:3172`,
 `provenance=provenance.take() if provenance is not None else None`, inside the
-`_maybe_retain_capture` call that obligation 3 deletes.
+`_maybe_retain_capture` call obligation 3 deletes.
 
-So the lift must **re-home the single shot, not copy the fields**: whoever calls
-`take()` after the change is the only one who can, and calling it a second time
-anywhere yields `None`. Two consequences:
+So the lift must **re-home the single shot, not copy the fields.** Two
+consequences:
 
-- **The analyze seam is where the shot happens today.** `bind_production_analyze(meta=refs, provenance=provenance)`
-  (`web/…:5742`) holds the recorder; the values are live at analyze time and
-  **not** at retention time, which is obligation 4's whole point.
+- **The shot happens at the analyze seam today** —
+  `bind_production_analyze(meta=refs, provenance=provenance)` (`web/…:5742`).
+  The values are live at analyze time and **not** at retention time, which is
+  obligation 4's whole point.
 - **Deleting `_maybe_retain_capture` deletes the only consumer.** If nothing new
-  calls `take()`, the recorder becomes a write-only object and the provenance is
-  silently lost — passing every test, because no test asserts a household run
-  banks provenance. **Pin the carry explicitly**, or this obligation discharges
-  itself into a hole.
+  calls `take()`, the recorder becomes write-only and the provenance is silently
+  lost — **passing every test**, because none asserts a household run banks
+  provenance. **Pin the carry explicitly** or this obligation discharges itself
+  into a hole.
 
 > **5.** The `ENABLED` gate over unconditional ~300 MB ring writes is an **owner
 > call**. Leave it as it is until his ruling lands.
 
-**Carried unchanged, and note it is now moot-if-3-lands**: obligation 3 deletes
-the gate along with the ring, so the owner's ruling is only needed if the ring
-survives. **Surface that to him rather than letting the deletion decide it.**
+**Carried, and now moot-if-3-lands:** obligation 3 deletes the gate with the
+ring, so the ruling is only needed if the ring survives. **Surface that rather
+than letting the deletion decide it.**
 
 ### 4.7 One more thing the lift removes for free
 
-`consume_capture`'s `entry: Any = None` parameter (`:4184`) is **never
-referenced** in the body (`:4183-4334`) — zero uses. Two callers pass a real
-value: `web/correction_crossover_v2_relay.py:585` and
-`web/correction_crossover_v2_wired.py:607`. Per-capture provenance is recorded
-inside the analyze binding instead (`web/…:5742`).
-
-Dead parameter, three sites, in scope for a signature this PR already edits.
-**Verify no `getattr`/`**kwargs` reach before cutting** (AGENTS.md's dead-code
-rule), then delete it with its two call-site arguments.
+`consume_capture`'s `entry: Any = None` (`:4184`) is **never referenced** in the
+body (`:4183-4334`) — zero uses. Two callers pass a real value
+(`correction_crossover_v2_relay.py:585`, `…_wired.py:607`); provenance is
+recorded in the analyze binding instead (`web/…:5742`). Dead parameter, three
+sites, in a signature this PR already edits. **Verify no `getattr`/`**kwargs`
+reach before cutting**, then delete it with both call-site arguments.
 
 ---
 
