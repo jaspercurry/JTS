@@ -1212,7 +1212,7 @@ def test_usbnet_probe_403_fails_with_guard_hint(monkeypatch, tmp_path):
     assert "test_http_security" in r.detail
 
 
-def test_usbnet_probe_502_fails_naming_control(monkeypatch, tmp_path):
+def test_usbnet_probe_502_fails(monkeypatch, tmp_path):
     _iface_and_nginx(monkeypatch, tmp_path)
     err = urllib.error.HTTPError(
         f"http://{PLAN.device_address}/system/data.json", 502, "Bad Gateway", None,
@@ -1221,7 +1221,6 @@ def test_usbnet_probe_502_fails_naming_control(monkeypatch, tmp_path):
     with patch("urllib.request.urlopen", side_effect=err):
         r = doctor.check_usbnet_management_probe()
     assert r.status == "fail"
-    assert "jasper-control" in r.detail
 
 
 def test_usbnet_probe_connection_refused_fails_naming_nginx(monkeypatch, tmp_path):

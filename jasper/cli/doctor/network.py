@@ -923,7 +923,7 @@ def check_usbnet_management_probe() -> CheckResult:
     import urllib.error
     import urllib.request
 
-    from .web import NGINX_SITE
+    from .web import MANAGEMENT_502_HINT, NGINX_SITE
 
     label = "USB management network probe"
     if not _usbnet_iface_present():
@@ -977,7 +977,7 @@ def check_usbnet_management_probe() -> CheckResult:
             "and `journalctl -u jasper-control | grep event=http.reject`"
         )
     elif status == 502:
-        hint = " — nginx answered but jasper-control is unreachable"
+        hint = MANAGEMENT_502_HINT
     else:
         hint = ""
     return CheckResult(label, "fail", f"HTTP {status} ({detail}){hint}")
