@@ -198,10 +198,12 @@ already open)**
       each to run-and-disclose (doctor warn naming what changed + the exact
       re-commission command). Chip-AEC-or-park → chip-AEC-or-disclose.
       Parks stay only on the non-negotiables.
-- [ ] Hardware-class-keyed shipped proofs: commissioning artifacts bank
+- [x] Hardware-class-keyed shipped proofs: commissioning artifacts bank
       against hardware class (extend the DacProfile registry pattern); a
       fresh install on recognized hardware starts from the shipped profile
-      and discloses deviation.
+      and discloses deviation. Mechanism only — the table ships empty until
+      the owner harvests real values (`jasper-aec-commission
+      --emit-class-entry`).
 - [ ] BRINGUP AEC section gets its second edit when the code flips (the
       Wave 0 edit documents today's behavior). Fold in: doctor's stale
       "Phase 2A.5" pointers (jasper/cli/doctor/aec.py:507, :1598 — no such
