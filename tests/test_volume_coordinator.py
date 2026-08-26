@@ -42,6 +42,7 @@ from jasper.volume_coordinator import (
     spotify_percent_to_listening_level,
 )
 from jasper.volume_diagnostics import read_diagnostics
+from jasper.volume_owner import ClaimKind
 from jasper.volume_persistence import VolumePersistence, percent_to_db
 
 
@@ -2213,8 +2214,47 @@ async def test_reconcile_repairs_zero_percent_mute_drift(tmp_path):
 
     await coord.maybe_reconcile_camilla()
 
-    assert cam.set_calls[-1] == pytest.approx(percent_to_db(0))
+    # The fader already carried the floor, so the owner leaves it alone and
+    # only the mute is repaired — which is what this test is about.
+    assert cam._db == pytest.approx(percent_to_db(0))
     assert cam.mute_calls[-1] is True
+
+
+async def test_a_measurement_claim_outranks_a_household_volume_set(tmp_path):
+    """The household write is a CLAIM now, and it can be outranked.
+
+    A crossover-v2 session holds the fader at the level its excitation-safety
+    ledger admitted each program against. A volume twist landing inside that
+    session must not move the speaker out from under the stimulus — and must
+    not be thrown away either: it is what the fader lands on at release.
+    """
+    persistence = VolumePersistence(str(tmp_path / "speaker_volume.json"))
+    cam = _FakeCamilla(db=percent_to_db(40))
+    backend = _FakeBackend(active={})
+    coord = VolumeCoordinator(
+        camilla=cam, persistence=persistence, backend=backend,
+        spotify_router=None,
+    )
+    coord._level = 40
+    persistence.save_listening_level(40)
+    await coord._write_camilla_db_with_mute(
+        percent_to_db(40), context="test_seed",
+    )
+    claim = await coord.volume_owner.acquire_level(
+        ClaimKind.SESSION_MEASUREMENT, -12.5,
+    )
+    assert cam._db == pytest.approx(-12.5)
+    cam.set_calls.clear()
+
+    await coord.set_listening_level(70)
+
+    assert cam.set_calls == []
+    assert cam._db == pytest.approx(-12.5)
+    assert coord.get_listening_level() == 70
+
+    await coord.volume_owner.release(claim)
+
+    assert cam._db == pytest.approx(percent_to_db(70))
 
 
 async def test_reconcile_preserves_toggle_mute_restore_level(tmp_path):
@@ -2851,7 +2891,9 @@ async def test_observe_usbsink_same_level_repairs_mute_drift(tmp_path):
     await coord.observe_source_volume(Source.USBSINK, 0)
 
     assert coord.get_listening_level() == 0
-    assert cam.set_calls[-1] == pytest.approx(percent_to_db(0))
+    # Already at the floor, so the owner writes nothing and the repair is the
+    # mute — the point the docstring above makes.
+    assert cam._db == pytest.approx(percent_to_db(0))
     assert cam.mute_calls[-1] is True
 
 
