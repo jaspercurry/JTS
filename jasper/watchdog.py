@@ -47,6 +47,7 @@ import logging
 import os
 import threading
 import time
+from collections.abc import Callable
 from typing import Optional
 
 logger = logging.getLogger(__name__)
@@ -59,10 +60,13 @@ class Heartbeat:
         self,
         stale_threshold_sec: float = 5.0,
         interval_sec: float = 10.0,
+        *,
+        monotonic: Callable[[], float] = time.monotonic,
     ) -> None:
         self._stale_threshold = stale_threshold_sec
         self._interval = interval_sec
-        self._last_progress = time.monotonic()
+        self._monotonic = monotonic
+        self._last_progress = monotonic()
         self._stop = threading.Event()
         self._thread: Optional[threading.Thread] = None
         self._notifier = _make_notifier()
@@ -73,7 +77,7 @@ class Heartbeat:
 
     def bump(self) -> None:
         """Mark forward progress. Cheap; safe to call every frame."""
-        self._last_progress = time.monotonic()
+        self._last_progress = self._monotonic()
 
     def start(self) -> None:
         """Send `READY=1` and start the heartbeat thread.
@@ -107,7 +111,7 @@ class Heartbeat:
         # Tick on a fixed cadence; check progress sentinel each tick.
         # `Event.wait()` returns True if stop was set, False on timeout.
         while not self._stop.wait(self._interval):
-            since = time.monotonic() - self._last_progress
+            since = self._monotonic() - self._last_progress
             if since < self._stale_threshold:
                 try:
                     self._notifier.notify("WATCHDOG=1")
