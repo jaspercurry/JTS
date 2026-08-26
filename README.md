@@ -253,8 +253,8 @@ One line each; the doc is the canonical "read this before modifying".
   workstream: sweeps, lever inventory, decision history
 - [`HANDOFF-mic-fusion-architecture.md`](docs/HANDOFF-mic-fusion-architecture.md)
   — pluggable-mic boundary and the leg-count-agnostic wake-fusion layer
-- [`HANDOFF-vad-experiments.md`](docs/HANDOFF-vad-experiments.md) — VAD /
-  mic-stream A/B matrix and why local Silero on the AEC stream wins
+- [`HANDOFF-vad-experiments.md`](docs/HANDOFF-vad-experiments.md) — what
+  endpoints a turn, why server VAD stays off, and the open raw-stream question
 - [`HANDOFF-wake-training-experiment.md`](docs/HANDOFF-wake-training-experiment.md)
   — custom per-leg wake-model training plan
 - [`HANDOFF-custom-wakeword-training.md`](docs/HANDOFF-custom-wakeword-training.md)
@@ -285,7 +285,7 @@ One line each; the doc is the canonical "read this before modifying".
 - [`HANDOFF-source-lifecycle.md`](docs/HANDOFF-source-lifecycle.md) —
   persisted source intent vs effective state, boot/deploy convergence
 - [`HANDOFF-source-capabilities.md`](docs/HANDOFF-source-capabilities.md) —
-  planned provider/source capability boundary
+  the Sources contract: vocabulary, capability map, new-source checklist
 - [`HANDOFF-voice-music-control.md`](docs/HANDOFF-voice-music-control.md) —
   source-aware transport across AirPlay and Spotify Connect
 - [`HANDOFF-airplay.md`](docs/HANDOFF-airplay.md) — AirPlay glitch
