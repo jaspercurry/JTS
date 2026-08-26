@@ -810,11 +810,14 @@ reference. Currently:
   Smart-home integration. The speaker delegates "turn on the
   bedroom lights" / "good night" / household sentence triggers
   to whatever Home Assistant the user has on the LAN, via HA's
-  REST conversation API (not MCP — covered in the doc with
-  primary-source citations: HA's MCP server has no
-  `automation.trigger` tool, and sentence triggers only fire
-  through HA's conversation pipeline). Wizard at
-  `http://jts.local/ha/`. **Start here for
+  REST conversation API rather than MCP
+  ([ADR-0116](docs/adr/0116-smart-home-relays-through-has-conversation-api.md));
+  the confirmation gate on consequential actions is
+  [ADR-0117](docs/adr/0117-consequential-actions-confirm-only-inside-the-taint-window.md).
+  The 2026-05 surface comparison, wizard walkthrough, and release
+  smoke test are in
+  [`historical/home-assistant-integration-design-2026-05.md`](docs/historical/home-assistant-integration-design-2026-05.md).
+  Wizard at `http://jts.local/ha/`. **Start here for
   `jasper/home_assistant.py`, the `home_assistant` voice tool,
   or anything related to the `/ha/` wizard.**
 - [`HANDOFF-transit-citibike.md`](docs/HANDOFF-transit-citibike.md) —
@@ -839,17 +842,16 @@ reference. Currently:
   Volumio, Sonos SMAPI, etc. **Start here before any
   `jasper/apple_music/` work.**
 - [`HANDOFF-dlna.md`](docs/HANDOFF-dlna.md) — **Research / design
-  only, not yet implemented.** Design for DLNA/UPnP media input as
-  a network-only music source via gmrender-resurrect: why DLNA
-  rather than Google Cast (hardware-fused Cast auth no OSS project
-  has solved), the gmrender vs upmpdcli renderer analysis, the
-  Python state/preemption sidecar, and the decision records (GENA
-  eventing vs polling, Pause+disarm preemption, sidecar-owned
-  preempt proxy). The audio-path section is written against the
-  current per-source fan-in lane / `jasper-outputd` topology —
-  DLNA adds one private snd-aloop lane (pair 5, unallocated since
-  P9-C deleted the old active-content lane there). **Start here
-  before any `jasper/dlna/` work.**
+  only, not yet implemented.** DLNA/UPnP media input as a
+  network-only music source via gmrender-resurrect: why DLNA rather
+  than Google Cast ([ADR-0119](docs/adr/0119-dlna-is-the-phone-casting-surface.md)),
+  the scope and non-goals, the integration shape (private snd-aloop
+  lane, sidecar-owned preempt proxy, GENA eventing, camilla-master
+  volume), and the touch list a build would need. The full design
+  record — renderer analysis, component plan, install/systemd shape,
+  RAM budget, decision records, upmpdcli evaluation — is in
+  [`historical/dlna-design-2026-05.md`](docs/historical/dlna-design-2026-05.md).
+  **Start here before any `jasper/dlna/` work.**
 - [`HANDOFF-remote-updates.md`](docs/HANDOFF-remote-updates.md) —
   Research only, no implementation yet. Design space for an OTA
   "Check for updates" button on the management dashboard: option
@@ -880,15 +882,16 @@ reference. Currently:
 - [`HANDOFF-airplay.md`](docs/HANDOFF-airplay.md) — AirPlay
   glitch troubleshooting guide. **Start here if you hear audio
   artifacts on AirPlay.** Symptom → pattern decision flow, concrete
-  diagnostic recipes, per-pattern playbooks (with confirmed fixes for
-  the patterns we've seen), the source-cited first-principles
-  reference, what's been tried, and an escalation ladder for new
-  scenarios. Patterns currently fixed: CamillaDSP rate_adjust +
-  AsyncSinc oscillation (PR #75), shairport `resync_threshold`
-  misfire on snd-aloop fill (PR #83), renderer-side dmix buffer
-  invisible to shairport's latency model (PR #308), and the
-  WiFi-burst × dmix write-timing interaction fixed by the fan-in
-  topology (PR #329).
+  diagnostic recipes, per-pattern playbooks with confirmed fixes, the
+  shipped sync values and their evidence, and the dashboard health
+  vocabulary. Patterns currently fixed: SHM-ring out-of-date packet
+  drops (2 ms drift tolerance), CamillaDSP rate_adjust + AsyncSinc
+  oscillation (PR #75), shairport `resync_threshold` misfire on
+  snd-aloop fill (PR #83), and the WiFi-burst × dmix write-timing
+  interaction fixed by the fan-in topology (PR #329). Root-cause
+  derivations, source-cited shairport internals, the dead-end record,
+  and the escalation ladder live in
+  [`historical/airplay-glitch-investigation-2026-05.md`](docs/historical/airplay-glitch-investigation-2026-05.md).
 - [`HANDOFF-fan-in-daemon.md`](docs/HANDOFF-fan-in-daemon.md) —
   Production fan-in renderer topology: each renderer gets its own
   snd-aloop substream pair; the Rust `jasper-fanin` daemon sums the
@@ -1174,10 +1177,14 @@ reference. Currently:
 - [`HANDOFF-sound-preferences.md`](docs/HANDOFF-sound-preferences.md)
   — `/eq/` preference-EQ layer plus `/sound/setup/` global-output and
   active-speaker commissioning surface: Off / Saved / Draft live source,
-  stock curves, five-band Simple EQ + exclusive PEQ editing, named custom
-  profile library, room-correction composition order, generated config
-  ownership, durable apply + live-draft semantics, doctor and
-  `/state` observability, and the future AI boundary.
+  the editor contract, room-correction composition order, generated config
+  ownership, durable apply + live-draft semantics, and doctor / `/state`
+  observability. Preference boosts apply at unity while room boosts are
+  headroom-compensated
+  ([ADR-0121](docs/adr/0121-preference-boosts-boost-room-boosts-are-compensated.md));
+  the 2026-07 shelf-slope defect and the step-by-step speaker-setup
+  walkthrough are in
+  [`historical/speaker-setup-and-shelf-q-2026-07.md`](docs/historical/speaker-setup-and-shelf-q-2026-07.md).
 - [`HANDOFF-dsp-graph-carrier.md`](docs/HANDOFF-dsp-graph-carrier.md) —
   Design-of-record for composing preference EQ + room correction on top of
   ANY output topology (flat / active 1/2/3-way + sub / distributed
@@ -1271,10 +1278,13 @@ reference. Currently:
   Treat as source material; operational guidance lives in
   `HANDOFF-multiroom.md` and `dumb-endpoint-bringup.md`.
 - [`HANDOFF-management-ui.md`](docs/HANDOFF-management-ui.md) —
-  Current management-surface reference plus the remaining roadmap.
-  The canonical design system and tighter `jts.local` layout are
-  implemented; the first-run setup wizard and fuller conditional
-  guidance remain future phases.
+  Current management-surface reference: the canonical design system,
+  the restyle-in-place rules and archetype recipes, the typographic
+  grammar, the surface/port inventory, and the anti-patterns. The
+  one-frontend-per-profile rule is
+  [ADR-0120](docs/adr/0120-one-management-frontend-gated-by-capability.md);
+  the 2026-05 redesign proposal and its competitor/UX research are in
+  [`historical/management-ui-redesign-2026-05.md`](docs/historical/management-ui-redesign-2026-05.md).
 - [`design-language.md`](docs/design-language.md) — The **craft layer**
   under the management UI: the type ladder, three-tier text ramp, depth
   strategy, concentric radii, tabular numbers, touch-target floor,
