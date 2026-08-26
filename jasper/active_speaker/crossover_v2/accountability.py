@@ -96,7 +96,7 @@ from dataclasses import dataclass
 from typing import Any, Callable, Mapping
 
 from .candidates import LinearizationState
-from .intervention import REALIZED_LEVEL_SUSPECT_REASON
+from .intervention import LEVEL_MATCH_AXIS, REALIZED_LEVEL_SUSPECT_REASON
 
 __all__ = [
     "EVENT_LEVEL_ESTIMATOR_FINDING",
@@ -354,6 +354,14 @@ def level_frame_record(
     record: dict[str, Any] = {
         "f_lo_hz": min(lo_edges),
         "f_hi_hz": max(hi_edges),
+        # WHICH axis every level on this record was read on. Toole: where
+        # woofer beaming and horn directivity mismatch, the on-axis,
+        # listening-window and power-response ratios differ and there is no
+        # single correct level — so a banked level that does not name its axis
+        # is a number a later reader cannot place. It rides unconditionally,
+        # like both instruments' numbers, because it describes the capture and
+        # not whichever condition happened to be the reason.
+        "level_match_axis": LEVEL_MATCH_AXIS,
     }
     # ONE reason field, and the estimator disagreement wins when both fire —
     # for the same reason its gate runs first below: it is the more specific

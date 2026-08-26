@@ -705,6 +705,7 @@ def _level_frame_record(**overrides: object) -> dict:
     record = {
         "f_lo_hz": 150.0,
         "f_hi_hz": 5844.7,
+        "level_match_axis": "design_axis_0deg",
         "estimator_worst_delta_db": 3.209,
         "estimator_tolerance_db": 3.0,
         "reason": "level_definitions_differ",
@@ -990,6 +991,14 @@ def test_the_banked_finding_carries_all_three_instruments() -> None:
     # A high-pass branch radiates to infinity; ``None`` says so and survives
     # JSON, where ``inf`` does not.
     assert evidence["radiating_band_hi_hz_tweeter"] is None
+    # WHICH axis every level above was read on. Without it the numbers are
+    # unplaceable: on-axis, listening-window and power-response ratios differ
+    # wherever beaming and horn directivity mismatch, and there is no single
+    # correct level to assume (Toole). It rides unconditionally, so a reader of
+    # ANY banked level finding can recover the frame.
+    from jasper.active_speaker.crossover_v2.intervention import LEVEL_MATCH_AXIS
+
+    assert evidence["level_match_axis"] == LEVEL_MATCH_AXIS
     # The disagreement and its tolerance, both PREFIXED with the instrument
     # they belong to, plus the realized check — which passes on this record and
     # so is not why it was banked.

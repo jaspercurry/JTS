@@ -311,6 +311,15 @@ def test_an_estimator_disagreement_still_owns_the_reason_when_both_fire():
     # The realized numbers ride anyway, so the precedence costs no evidence.
     assert decision.finding["realized_difference_db"] == 9.0
     assert decision.finding["estimator_worst_delta_db"] is not None
+    # WHICH axis every level on this record was read on. Toole: where beaming
+    # and horn directivity mismatch there is no single correct level, so a
+    # banked level that does not name its axis cannot be placed by a later
+    # reader. It rides whichever condition is the reason — it describes the
+    # capture, not the verdict.
+    assert decision.finding["level_match_axis"] == intervention.LEVEL_MATCH_AXIS
+    assert _assess(_state(differs=False, matched=False)).finding[
+        "level_match_axis"
+    ] == intervention.LEVEL_MATCH_AXIS
     # Both journal lines fired, in emission order — the more specific
     # diagnosis first, which is the same precedence the reason field carries.
     # Asserted here because no arm returns early any more, so the ordering can
