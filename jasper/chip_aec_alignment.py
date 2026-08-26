@@ -350,11 +350,16 @@ def artifact_from_dict(value: object) -> AlignmentArtifact:
         raise ValueError("alignment artifact schema is invalid")
     if value["kind"] != ARTIFACT_KIND:
         raise ValueError("alignment artifact kind is unsupported")
-    identity = value["identity"]
-    fields = set(AlignmentIdentity.__dataclass_fields__)
-    if not isinstance(identity, Mapping):
-        raise ValueError("alignment artifact identity schema is invalid")
-    if value["schema"] != ARTIFACT_SCHEMA or set(identity) != fields:
+    schema = value["schema"]
+    if type(schema) is not int or schema > ARTIFACT_SCHEMA:
+        # Only an OLDER schema is a proof this build knows how to read.  A
+        # schema from the future is what a rollback leaves behind
+        # (JASPER_DEPLOY_ALLOW_DOWNGRADE), and applying a K whose meaning this
+        # build does not know is exactly what ADR-0101 does not license.
+        raise ValueError("alignment artifact schema is unsupported")
+    if schema < ARTIFACT_SCHEMA:
+        # ADR-0101: the schema moved, the measurement did not.  The identity is
+        # deliberately NOT inspected — an older shape is expected here.
         k_samples, sys_delay = value["k_samples"], value["sys_delay"]
         if (
             type(k_samples) is not int
@@ -365,12 +370,16 @@ def artifact_from_dict(value: object) -> AlignmentArtifact:
         ):
             raise ValueError("alignment artifact schema is invalid")
         raise ArtifactSchemaSuperseded(
-            f"alignment artifact schema {value['schema']!r} predates schema "
+            f"alignment artifact schema {schema} predates schema "
             f"{ARTIFACT_SCHEMA}, so its commissioned identity cannot be "
             "compared against this box",
             k_samples,
             sys_delay,
         )
+    identity = value["identity"]
+    fields = set(AlignmentIdentity.__dataclass_fields__)
+    if not isinstance(identity, Mapping) or set(identity) != fields:
+        raise ValueError("alignment artifact identity schema is invalid")
     return AlignmentArtifact(
         AlignmentIdentity(**{name: identity[name] for name in fields}),
         value["k_samples"],  # type: ignore[arg-type]

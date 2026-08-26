@@ -1602,11 +1602,18 @@ write_alignment_env() {
 
 # jasper-aec-init's one-line disclosure, or nothing when the alignment it
 # applied is fully ready. Bounded read: the file is /run text, not a contract.
+#
+# Apostrophes are STRIPPED, not quoted. This reason is the only free text this
+# script routes into $ENV_FILE, and deploy/lib/jasper-env-file.sh's header
+# forbids apostrophe-bearing values in a file systemd reads through
+# EnvironmentFile=: bash `source` and systemd's parser disagree on the '\''
+# idiom the writer would emit, so the daemons and this script would read
+# different values.
 alignment_disclosure() {
     local reason
     [[ -r "$ALIGNMENT_DISCLOSURE_FILE" ]] || return 1
     reason="$(head -n 1 -- "$ALIGNMENT_DISCLOSURE_FILE" 2>/dev/null \
-        | tr -d '\000' | cut -c1-400)"
+        | tr -d "\000'" | cut -c1-400)"
     [[ -n "$reason" ]] || return 1
     printf '%s\n' "$reason"
 }
@@ -1617,11 +1624,6 @@ alignment_disclosure() {
 disclose_stale_chip_aec() {
     local reason="$1" action="$2"
     write_alignment_env "disclosed_stale" "$reason" "$action"
-    LEG_RAW="1"
-    LEG_DTLN="0"
-    LEG_CHIP_AEC="0"
-    LEG_CHIP_AEC_150="0"
-    LEG_CHIP_AEC_210="0"
     write_leg_env "1" "1" "0" "0" "0" "0"
     restart_outputd_if_needed
     run_systemctl enable jasper-aec-init.service jasper-aec-bridge.service
@@ -1630,14 +1632,30 @@ disclose_stale_chip_aec() {
     # it on its bypass profile, so the chip stops holding a half-applied
     # alignment and the unit goes active for the bridge's ExecCondition.
     run_systemctl restart jasper-aec-init.service
-    if "$SYSTEMCTL" restart jasper-aec-bridge.service; then
+    run_systemctl restart jasper-aec-bridge.service
+    # `systemctl restart` exits 0 when an ExecCondition SKIPS the unit, so its
+    # status is not evidence anything is running — if the bypass init re-run
+    # above failed, the condition skips and the "restart" still succeeds. Ask
+    # the unit instead: only an ACTIVE bridge is writing udp:${AEC_UDP_PORT}.
+    if "$SYSTEMCTL" is-active --quiet jasper-aec-bridge.service; then
         # AEC3 now feeds the same udp:PORT carrier the chip beam did.
         log "chip-AEC disclosed stale: ${reason}; running software AEC3"
     else
-        # Nothing writes that carrier now, and jasper-voice bound to an unfed
+        # Nothing writes that carrier, and jasper-voice bound to an unfed
         # socket stalls into WatchdogSec=30s and StartLimitAction=reboot.
+        #
+        # Disable as well as stop, which is what park_managed_xvf's teardown
+        # bought and the direct-mic handover must not lose: the bridge's own
+        # Restart=on-failure/RestartSec=2 would otherwise retry an enabled
+        # failed unit past StartLimitBurst=4 into ITS StartLimitAction=reboot
+        # — and its ExecCondition now passes on disclosed_stale, so a later
+        # transient success would open the single-open XVF capture device
+        # jasper-voice is about to hold directly.
+        run_systemctl stop jasper-aec-bridge.service
+        run_systemctl disable jasper-aec-bridge.service
+        reset_failed_units jasper-aec-bridge.service
         set_env_var "$ENV_FILE" JASPER_MIC_DEVICE "$AEC_MIC_DEVICE"
-        log "chip-AEC disclosed stale: ${reason}; AEC bridge did not start, using direct mic ${AEC_MIC_DEVICE}"
+        log "chip-AEC disclosed stale: ${reason}; AEC bridge is not active, using direct mic ${AEC_MIC_DEVICE}"
     fi
     restart_voice
 }
@@ -1648,12 +1666,23 @@ activate_managed_chip_aec() {
     # jasper-aec-init, and only then brings voice back — the ~8 s of deafness
     # a measurement-mic hotplug cost on jts3. A pass that changed nothing would
     # re-derive the identical alignment it already verified, so skip the whole
-    # sequence when the stack it would rebuild is already up and already ready.
-    if [[ "${JASPER_AEC_CHIP_AEC_ALIGNMENT_STATUS:-}" == "ready" ]] \
+    # sequence when the stack it would rebuild is already up and settled.
+    #
+    # `disclosed_stale` with the chip ARMED is settled: aec-init applied the
+    # banked K and the bridge is carrying its beam, exactly as on a `ready`
+    # box, and that state is long-lived by design — re-bouncing it on every
+    # udev sound-card event, deploy and wizard save for as long as the
+    # disclosure stands is the deafness this gate exists to stop. The
+    # software-AEC3 fallback sub-state (chip NOT armed) is excluded on
+    # purpose: it keeps bouncing so the outputd ordering race that produced it
+    # can heal on a later pass.
+    if [[ "${JASPER_AEC_CHIP_AEC_ALIGNMENT_STATUS:-}" == "ready" \
+        || ( "${JASPER_AEC_CHIP_AEC_ALIGNMENT_STATUS:-}" == "disclosed_stale" \
+            && "${JASPER_AEC_CHIP_AEC_ENABLED:-0}" == "1" ) ]] \
         && unit_active_and_enabled jasper-aec-init.service \
         && unit_active_and_enabled jasper-aec-bridge.service \
         && voice_restart_can_be_skipped; then
-        log "event=aec_reconcile.chip_aec_bounce_skipped reason=no_voice_relevant_change alignment=ready profile=${AUDIO_INPUT_PROFILE:-unknown} mic=${CURRENT_MIC:-<unset>}"
+        log "event=aec_reconcile.chip_aec_bounce_skipped reason=no_voice_relevant_change alignment=${JASPER_AEC_CHIP_AEC_ALIGNMENT_STATUS:-unknown} profile=${AUDIO_INPUT_PROFILE:-unknown} mic=${CURRENT_MIC:-<unset>}"
         return 0
     fi
     # Past this point the sequence stops voice, so the restart_voice at the end

@@ -221,6 +221,25 @@ def test_artifact_is_strict_identity_plus_k_only() -> None:
         artifact_from_dict(unusable)
     assert not isinstance(invalid.value, alignment.ArtifactSchemaSuperseded)
 
+    # A schema from the FUTURE is what a rollback leaves behind
+    # (JASPER_DEPLOY_ALLOW_DOWNGRADE). This build cannot know what its K means,
+    # so it refuses rather than applying it under a false "predates" message —
+    # and a non-integer schema is not an ordering at all.
+    for schema in (alignment.ARTIFACT_SCHEMA + 1, "3", 3.0, None):
+        with pytest.raises(ValueError) as newer:
+            artifact_from_dict(artifact.to_dict() | {"schema": schema})
+        assert not isinstance(newer.value, alignment.ArtifactSchemaSuperseded)
+
+    # Same schema, mangled identity field-set: a shape this build DOES claim to
+    # read but cannot, so it stays a hard refusal too.
+    mangled = artifact.to_dict()
+    mangled["identity"] = {
+        name: v for name, v in mangled["identity"].items() if name != "output_format"
+    }
+    with pytest.raises(ValueError) as broken:
+        artifact_from_dict(mangled)
+    assert not isinstance(broken.value, alignment.ArtifactSchemaSuperseded)
+
     expanded = json.loads(json.dumps(artifact.to_dict()))
     expanded["timing_trials"] = [1, 2, 3]
     with pytest.raises(ValueError) as extra:

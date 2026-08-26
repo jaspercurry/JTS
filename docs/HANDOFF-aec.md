@@ -125,9 +125,11 @@ margin safe to disclose rather than park. It spans 320 frames against a
 The same disposition covers a commissioned identity that moved and an artifact
 from a superseded schema. Identity divergence is split by meaning: the fields
 in `PER_UNIT_IDENTITY_FIELDS` name this physical box, everything else names the
-hardware class `K` was measured against, and the disclosure says which. Only an
-ABSENT artifact still exits `2` — there is no banked `K` to run from, and the
-shipped hardware-class default that would close that half is #2984.
+hardware class `K` was measured against, and the disclosure says which. An
+artifact that is absent or unusable — unreadable, malformed, from a schema this
+build does not know, or banking a `sys_delay` outside the driver cap — still
+exits `2`: there is no `K` to run from, and the shipped hardware-class default
+that would close that half is #2984.
 
 ### The cross-transaction ordering guard
 

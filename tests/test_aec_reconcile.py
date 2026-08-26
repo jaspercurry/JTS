@@ -359,16 +359,31 @@ def test_reconcile_parks_when_final_outputd_restart_fails(
     assert VOICE_RESTART_CMD not in commands
 
 
-def _init_exit_systemctl(tmp_path: Path, status: int, *, bridge_starts: bool) -> Path:
-    fake = tmp_path / f"init-exit-{status}-systemctl"
+def _init_exit_systemctl(tmp_path: Path, status: int, *, bridge: str = "active") -> Path:
+    """A systemctl double whose jasper-aec-init restart exits `status`.
+
+    `bridge` picks how the AEC bridge behaves afterwards: it comes up
+    (`active`), its restart fails outright (`restart_fails`), or its restart
+    reports success because the unit's ExecCondition SKIPPED it (`skipped`) —
+    the case where a bare exit-status check would certify a bridge that is not
+    running.
+    """
+    assert bridge in {"active", "restart_fails", "skipped"}
+    fake = tmp_path / f"init-exit-{status}-{bridge}-systemctl"
     fake.write_text(
         "#!/usr/bin/env bash\n"
         "printf '%s\\n' \"$*\" >> \"$JASPER_SYSTEMCTL_LOG\"\n"
         "[[ \"$*\" == 'restart jasper-aec-init.service' ]] && exit 1\n"
         + (
+            "[[ \"$*\" == 'restart jasper-aec-bridge.service' ]] && exit 1\n"
+            if bridge == "restart_fails"
+            else ""
+        )
+        + (
             ""
-            if bridge_starts
-            else "[[ \"$*\" == 'restart jasper-aec-bridge.service' ]] && exit 1\n"
+            if bridge == "active"
+            else "[[ \"$*\" == 'is-active --quiet jasper-aec-bridge.service' ]]"
+            " && exit 3\n"
         )
         + f"[[ \"$1\" == 'show' ]] && {{ printf '{status}\\n'; exit 0; }}\n"
         "exit 0\n"
@@ -402,7 +417,7 @@ def test_an_unappliable_alignment_runs_software_aec3_and_discloses(
     env_file = _write_env(tmp_path, "Array")
     _write_mode(tmp_path)
     _write_card(tmp_path, channels=6)
-    fake = _init_exit_systemctl(tmp_path, status, bridge_starts=True)
+    fake = _init_exit_systemctl(tmp_path, status)
 
     result = _run_reconcile(
         tmp_path, "--reason", "test", extra_env={"JASPER_SYSTEMCTL": str(fake)}
@@ -425,17 +440,20 @@ def test_an_unappliable_alignment_runs_software_aec3_and_discloses(
     assert VOICE_RESTART_CMD in commands
 
 
-def test_a_disclosed_box_takes_the_direct_mic_when_the_bridge_will_not_start(
-    tmp_path: Path,
+@pytest.mark.parametrize("bridge", ["restart_fails", "skipped"])
+def test_a_disclosed_box_takes_the_direct_mic_when_the_bridge_is_not_active(
+    tmp_path: Path, bridge: str
 ) -> None:
     # Nothing writes udp:9876 without the bridge, and jasper-voice bound to an
     # unfed socket stalls into WatchdogSec=30s and the unit's
-    # StartLimitAction=reboot. The disclose path must leave a mic that works.
+    # StartLimitAction=reboot. Both shapes must reach the direct mic: a failed
+    # restart, and a restart that exits 0 because the ExecCondition SKIPPED the
+    # unit — `systemctl restart` cannot tell those apart, so the unit is asked.
     env_file = _write_env(tmp_path, "Array")
     _write_mode(tmp_path)
     _write_card(tmp_path, channels=6)
     fake = _init_exit_systemctl(
-        tmp_path, aec_init.COMMISSION_REQUIRED_EXIT, bridge_starts=False
+        tmp_path, aec_init.COMMISSION_REQUIRED_EXIT, bridge=bridge
     )
 
     result = _run_reconcile(
@@ -447,7 +465,17 @@ def test_a_disclosed_box_takes_the_direct_mic_when_the_bridge_will_not_start(
     assert "JASPER_AEC_CHIP_AEC_ALIGNMENT_STATUS=disclosed_stale" in body
     assert "JASPER_MIC_DEVICE=Array" in body
     assert not _marker(tmp_path).exists()
-    assert VOICE_RESTART_CMD in _systemctl_log(tmp_path)
+    commands = _systemctl_log(tmp_path)
+    assert VOICE_RESTART_CMD in commands
+    # An enabled+failed bridge would Restart=on-failure every 2 s into its own
+    # StartLimitAction=reboot, and a transient success would grab the
+    # single-open XVF capture device jasper-voice now holds. Stop AND disable.
+    lines = commands.splitlines()
+    assert "stop jasper-aec-bridge.service" in lines
+    assert "disable jasper-aec-bridge.service" in lines
+    assert lines.index("disable jasper-aec-bridge.service") < lines.index(
+        VOICE_RESTART_CMD
+    )
 
 
 def test_reconcile_discloses_an_applied_alignment_its_proof_no_longer_matches(
@@ -484,6 +512,36 @@ def test_reconcile_discloses_an_applied_alignment_its_proof_no_longer_matches(
     commands = _systemctl_log(tmp_path)
     assert "restart jasper-aec-bridge.service" in commands
     assert VOICE_RESTART_CMD in commands
+
+
+def test_a_disclosure_reason_reaches_the_env_file_without_apostrophes(
+    tmp_path: Path,
+) -> None:
+    # This reason is the only free text routed into $ENV_FILE, which systemd
+    # reads through EnvironmentFile=. deploy/lib/jasper-env-file.sh's '\''
+    # idiom for an embedded apostrophe is read differently by bash `source`
+    # and by systemd's parser, so the daemons and this script would disagree
+    # on the value. Strip them at the boundary instead.
+    env_file = _write_env(tmp_path, "Array")
+    _write_mode(tmp_path)
+    _write_card(tmp_path, channels=6)
+    disclosure = tmp_path / "alignment-disclosure"
+    disclosure.write_text("this box's proof moved\n")
+
+    result = _run_reconcile(
+        tmp_path,
+        "--reason",
+        "test",
+        extra_env={"JASPER_AEC_ALIGNMENT_DISCLOSURE_FILE": str(disclosure)},
+    )
+
+    assert result.returncode == 0, result.stderr
+    reason = _env_assignments(env_file)["JASPER_AEC_CHIP_AEC_ALIGNMENT_REASON"]
+    assert reason == "'this boxs proof moved'"
+    # And the file still round-trips through the reader every daemon uses.
+    assert "JASPER_AEC_CHIP_AEC_ALIGNMENT_STATUS=disclosed_stale" in (
+        env_file.read_text()
+    )
 
 
 def test_reconcile_branches_on_the_exit_codes_aec_init_actually_returns() -> None:
@@ -2441,37 +2499,48 @@ def _clear_systemctl_log(tmp_path: Path) -> None:
         log.unlink()
 
 
-def _armed_chip_aec_box(tmp_path: Path) -> None:
+def _armed_chip_aec_box(tmp_path: Path, alignment: str = "ready") -> None:
     """A commissioned chip-AEC speaker: 6-channel XVF, provider set, a
     verified install, and one reconcile pass already run so the env file, the
     alignment status, and the /run stamp all describe the running state.
 
     This is the state a measurement-mic hotplug arrives in, and the state in
-    which a second identical pass must change nothing.
+    which a second identical pass must change nothing. `alignment` picks which
+    armed state the baseline pass lands in — `disclosed_stale` is the same
+    stack with jasper-aec-init's disclosure standing.
     """
     _write_env(tmp_path, "Array")
     _write_mode(tmp_path)
     _write_card(tmp_path, channels=6)
     _write_manifest(tmp_path)
+    if alignment == "disclosed_stale":
+        (tmp_path / "alignment-disclosure").write_text(
+            "commissioned alignment was measured on a different unit (xvf_serial)\n"
+        )
     first = _run_reconcile(tmp_path, "--reason", "install")
     assert first.returncode == 0, first.stderr
     # Sanity: the baseline pass really did arm the chip-AEC path and restart
     # voice. Without this the "skipped" assertions below could pass against a
     # box that never armed anything.
     assert VOICE_RESTART_CMD in _systemctl_log(tmp_path), first.stderr
-    assert "JASPER_AEC_CHIP_AEC_ALIGNMENT_STATUS=ready" in (
-        (tmp_path / "jasper.env").read_text()
-    )
+    body = (tmp_path / "jasper.env").read_text()
+    assert f"JASPER_AEC_CHIP_AEC_ALIGNMENT_STATUS={alignment}" in body
+    assert "JASPER_AEC_CHIP_AEC_ENABLED=1" in body
     _clear_systemctl_log(tmp_path)
 
 
 # --- the guard: an unchanged pass leaves the voice path alone --------------
 
 
+@pytest.mark.parametrize("alignment", ["ready", "disclosed_stale"])
 def test_unchanged_pass_skips_the_voice_restart_and_the_chip_aec_bounce(
-    tmp_path: Path,
+    tmp_path: Path, alignment: str
 ) -> None:
-    _armed_chip_aec_box(tmp_path)
+    # `disclosed_stale` with the chip armed is as settled as `ready`, and it is
+    # long-lived by design — re-bouncing it on every udev sound-card event,
+    # deploy and wizard save for as long as the disclosure stands would spend
+    # ~8 s of deafness each time on a box where nothing changed.
+    _armed_chip_aec_box(tmp_path, alignment)
 
     result = _run_reconcile(tmp_path, "--reason", "systemd")
 
@@ -2483,6 +2552,32 @@ def test_unchanged_pass_skips_the_voice_restart_and_the_chip_aec_bounce(
     assert "restart jasper-aec-bridge.service" not in commands
     assert "event=aec_reconcile.chip_aec_bounce_skipped" in result.stderr
     assert "reason=no_voice_relevant_change" in result.stderr
+    assert f"alignment={alignment}" in result.stderr
+
+
+def test_a_software_fallback_disclosure_keeps_bouncing_so_the_race_can_heal(
+    tmp_path: Path,
+) -> None:
+    # The other disclosed sub-state: chip NOT armed because aec-init could not
+    # apply the alignment. That one must keep re-running the sequence, or the
+    # outputd ordering race (exit 3) it came from could never resolve.
+    _write_env(
+        tmp_path,
+        "Array",
+        extra=(
+            "JASPER_AEC_CHIP_AEC_ALIGNMENT_STATUS=disclosed_stale\n"
+            "JASPER_AEC_CHIP_AEC_ENABLED=0\n"
+        ),
+    )
+    _write_mode(tmp_path)
+    _write_card(tmp_path, channels=6)
+    _write_manifest(tmp_path)
+
+    result = _run_reconcile(tmp_path, "--reason", "systemd")
+
+    assert result.returncode == 0, result.stderr
+    assert "event=aec_reconcile.chip_aec_bounce_skipped" not in result.stderr
+    assert "restart jasper-aec-init.service" in _systemctl_log(tmp_path)
 
 
 def test_measurement_mic_hotplug_does_not_bounce_the_voice_assistant(
