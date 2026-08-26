@@ -552,7 +552,7 @@ def spatial_exclusion_limit(
     for the partial-coverage rule.
 
     The doctrine this encodes is one sentence of
-    docs/flat-linearization-plan.md's non-goals — "No EQ of
+    docs/historical/linearization-campaign-2026-07.md's non-goals — "No EQ of
     interference-flagged bins, ever; they are reported instead" — expressed
     as the only thing an envelope can say: zero permission. The fit then
     corrects the response *around* an identified null and never fills it.

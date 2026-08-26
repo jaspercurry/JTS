@@ -5,7 +5,7 @@
 """Contract tests for the spatial combiner + interference honesty screen.
 
 Five layers, per the plan's fundamentals 1-2
-(docs/flat-linearization-plan.md):
+(docs/historical/linearization-campaign-2026-07.md):
 
 A. **Synthetic ground truth** — the primary, hardware-free validation. A
    known smooth "true" response is contaminated with a comb from a discrete
@@ -3283,7 +3283,7 @@ def test_effective_floor_is_reported_on_every_record():
     window's real floor is ~191.4 us and not its stated 120 us. S0's ground
     plane made that concrete — its 125-146 us arrivals are *structurally*
     unreportable there — and the plan's answer is disclosure, not a higher
-    default (docs/flat-linearization-productization-plan.md PR-2 item 4).
+    default (docs/historical/linearization-campaign-2026-07.md PR-2 item 4).
 
     Asserted on a measurement, on three different refusal paths, and on the
     ``combine_positions`` raise path, because a consumer disclosing "arrivals

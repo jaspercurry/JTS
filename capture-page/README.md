@@ -64,7 +64,7 @@ bundle rather than forking it (single source of truth).
 
 Every page-owned screen of a v3 capture-plan session renders one grammar, in
 the same DOM slots each time (`renderStepScreen` in `js/main.js`;
-[`docs/flat-linearization-flow-simplification-plan.md`](../docs/flat-linearization-flow-simplification-plan.md)
+[`docs/historical/linearization-campaign-2026-07.md`](../docs/historical/linearization-campaign-2026-07.md)
 §2.1): a small **eyebrow** carrying the ONE counter (`screen.progress`, always
 server-derived), the **instruction** as the headline (`screen.title`), at most
 one supporting clause (`screen.body`), a single full-width **primary**, an

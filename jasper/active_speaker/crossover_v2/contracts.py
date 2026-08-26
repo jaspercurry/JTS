@@ -1387,12 +1387,12 @@ class RoundReceipt:
 # verdict rather than joined to the group.
 #
 # 9 is chosen so that ``N − 1`` = 8 CURVES, which is what
-# docs/flat-linearization-plan.md fundamental 1's "N≈8–12 gated sweeps" floor
+# docs/historical/linearization-campaign-2026-07.md fundamental 1's "N≈8–12 gated sweeps" floor
 # actually asks for (adjudication 3a, 2026-07-26: the first draft shipped 8
 # positions ⇒ 7 curves, meeting the floor in positions but not in the thing
 # that gets combined). Beyond that floor it is a WALL-CLOCK choice, not a
 # statistical optimum: S0's stability work (6-of-10 subsets,
-# docs/flat-linearization-plan.md "S0 executed") says more positions is
+# docs/historical/linearization-campaign-2026-07.md "S0 executed") says more positions is
 # strictly better, and the session-length ceiling is what stops us at 9. Treat
 # it as a constant, never as a promise about accuracy.
 DEFAULT_CLOUD_MEASURE_POSITIONS = 9

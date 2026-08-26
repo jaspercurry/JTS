@@ -1053,7 +1053,7 @@ def linearization_filters_by_role(
 # emitted into. On the 2026-07-28 JTS3 profile the two disagree by 5.6x —
 # 22.458 dB against a +4.00 dB realized peak — so the SAME correction discloses
 # an order-of-magnitude different level cost depending on which build stamped
-# it. ``docs/linearization-integrity-plan.md`` ("Cross-era disclosure") rules
+# it. ``docs/historical/linearization-campaign-2026-07.md`` ("Cross-era disclosure") rules
 # that the stamp is NOT re-derived on load, deliberately: it is a record of
 # what that graph was emitted with, and a recommission replaces it.
 #
