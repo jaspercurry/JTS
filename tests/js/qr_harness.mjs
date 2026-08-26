@@ -15,12 +15,9 @@
 //
 //   node tests/js/qr_harness.mjs deploy/assets/shared/js/qr.js
 
-import { readFileSync } from "node:fs";
-import { fileURLToPath } from "node:url";
-import { dirname, join } from "node:path";
+import { buildFunction, repoPath } from "./_loader.mjs";
 
-const root = join(dirname(fileURLToPath(import.meta.url)), "..", "..");
-const modulePath = process.argv[2] || join(root, "deploy/assets/shared/js/qr.js");
+const modulePath = process.argv[2] || repoPath("deploy/assets/shared/js/qr.js");
 
 // ---- minimal DOM stub — only what qr.js's renderRelayQr touches ----
 // className and classList share one underlying Set (as real DOM does) so a
@@ -86,10 +83,10 @@ globalThis.document = { createElement: (tag) => makeEl(tag) };
 // ---- load the real module (strip `export` so one Function-eval exposes it,
 // mirroring dialog_harness.mjs's technique — qr.js's exported surface is
 // three plain function declarations, so this is a lossless transform) ----
-const src = readFileSync(modulePath, "utf8").replace(/\bexport\s+/g, "");
-const { encodeQrMatrix, renderRelayQr, isDesktopViewport } = new Function(
-  src + "\nreturn { encodeQrMatrix, renderRelayQr, isDesktopViewport };",
-)();
+const { encodeQrMatrix, renderRelayQr, isDesktopViewport } = buildFunction(modulePath, {
+  rewrite: [[/\bexport\s+/g, ""]],
+  returns: ["encodeQrMatrix", "renderRelayQr", "isDesktopViewport"],
+})();
 
 let failures = 0;
 function fail(msg, context) {

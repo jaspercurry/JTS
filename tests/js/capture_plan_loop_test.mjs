@@ -25,9 +25,9 @@
 // would refuse it.
 
 import assert from "node:assert/strict";
-import { readFileSync } from "node:fs";
 import { dirname, resolve } from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
+import { loadEsm, repoPath } from "./_loader.mjs";
 
 import { RelayClient } from "../../capture-page/js/relay-client.js";
 // The household sentences the auto-retake renders (#2557 phase B), imported
@@ -83,26 +83,6 @@ assert.notEqual(
 const LEGACY_BARE_ABORT = new DOMException(
   "signal is aborted without reason.", "AbortError",
 );
-
-const here = dirname(fileURLToPath(import.meta.url));
-const raw = readFileSync(resolve(here, "../../capture-page/js/main.js"), "utf8");
-const withoutImports = raw
-  .replace(
-    /^import\s+\{[\s\S]*?\}\s+from\s+["'][^"']+["'];\s*/gm,
-    "",
-  )
-  .replace(/^import\s+[^;\n]+\s+from\s+["'][^"']+["'];\s*/gm, "")
-  .replace(
-    /^const PAGE_VERSION_URL = .*;$/m,
-    'const PAGE_VERSION_URL = new URL("https://capture.test/version.json");',
-  )
-  .replace(
-    "const CAPTURE_RESULT_WAIT_BUDGET_MS = 90000;",
-    "const CAPTURE_RESULT_WAIT_BUDGET_MS = 25;",
-  );
-if (/^import\s/m.test(withoutImports)) {
-  throw new Error("unhandled import in main.js — update the harness strip rule");
-}
 
 // --- Minimal-but-faithful-enough document stub (mirrors
 // capture_stop_and_ambient_countdown_test.mjs) --------------------------------
@@ -358,6 +338,7 @@ function makeRecorder() {
 // harness blind to the wire field it exists to carry. Absolute file: URL because
 // the module under test is loaded from a data: URL, where a relative specifier
 // has nothing to resolve against.
+const here = dirname(fileURLToPath(import.meta.url));
 const CAPTURE_INTEGRITY_URL = pathToFileURL(
   resolve(here, "../../capture-page/js/capture-integrity.js"),
 ).href;
@@ -466,11 +447,22 @@ const float32ToWavBlob = () => ({ async arrayBuffer() { return new Uint8Array([9
 const withinUploadCap = () => true;
 `;
 
-async function loadModule() {
-  const dataUrl =
-    "data:text/javascript;base64," +
-    Buffer.from(injected + withoutImports, "utf8").toString("base64");
-  return import(dataUrl);
+function loadModule() {
+  return loadEsm(repoPath("capture-page/js/main.js"), {
+    stripImports: true,
+    guardNoImports: true,
+    rewrite: [
+      [
+        /^const PAGE_VERSION_URL = .*;$/m,
+        'const PAGE_VERSION_URL = new URL("https://capture.test/version.json");',
+      ],
+      [
+        "const CAPTURE_RESULT_WAIT_BUDGET_MS = 90000;",
+        "const CAPTURE_RESULT_WAIT_BUDGET_MS = 25;",
+      ],
+    ],
+    prelude: injected,
+  });
 }
 
 // --- Fake relay: reacts to begin_capture/armed/putBlob like

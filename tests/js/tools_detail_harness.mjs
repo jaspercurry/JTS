@@ -10,11 +10,10 @@
 // The harness strips imports and the final load() call, then evaluates the
 // module against a tiny DOM surface. It intentionally covers only the prompt
 // editor controls; render.js has its own HTML/XSS harness.
-import { readFileSync } from "node:fs";
+import { buildFunction } from "./_loader.mjs";
 
 const actionsPath = process.argv[2];
 const detailPath = process.argv[3];
-const stripImports = (s) => s.replace(/^\s*import\s.*$/gm, "");
 
 function fail(message, extra = {}) {
   throw new Error(message + " " + JSON.stringify(extra));
@@ -85,17 +84,19 @@ const packDetail = () => "";
 const toolDetail = () => "";
 
 const current = makeEditor();
-const actionsSrc = stripImports(readFileSync(actionsPath, "utf8"))
-  .replace(/\bexport\s+/g, "");
-const src = actionsSrc + "\n" + stripImports(readFileSync(detailPath, "utf8"))
-  .replace(/\nload\(\);\s*$/m, "\n");
-const api = new Function(
-  "document", "CSS", "getJSON", "postJSON", "jtsAlert", "escapeHtml",
-  "packDetail", "toolDetail",
-  src + "\nreturn { onPromptClick, onPromptInput };",
-)(
-  document, CSS, getJSON, postJSON, jtsAlert, escapeHtml, packDetail, toolDetail,
-);
+const api = buildFunction(
+  [
+    { path: actionsPath, rewrite: [[/^\s*import\s.*$/gm, ""], [/\bexport\s+/g, ""]] },
+    { path: detailPath, rewrite: [[/^\s*import\s.*$/gm, ""], [/\nload\(\);\s*$/m, "\n"]] },
+  ],
+  {
+    params: [
+      "document", "CSS", "getJSON", "postJSON", "jtsAlert", "escapeHtml",
+      "packDetail", "toolDetail",
+    ],
+    returns: ["onPromptClick", "onPromptInput"],
+  },
+)(document, CSS, getJSON, postJSON, jtsAlert, escapeHtml, packDetail, toolDetail);
 
 await api.onPromptClick({ target: current.nodes['[data-action="edit-prompt"]'] });
 if (!current.view.hidden) fail("view should hide in edit mode");
