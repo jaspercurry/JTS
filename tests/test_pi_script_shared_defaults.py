@@ -200,10 +200,11 @@ def test_explicit_environment_target_works_from_any_cwd(
 
 
 @pytest.mark.parametrize("name", SCRIPT_NAMES)
-def test_checkout_env_local_target_has_shared_precedence(
+def test_explicit_environment_target_outranks_checkout_env_local(
     script_repo: tuple[Path, Path, Path],
     name: str,
 ) -> None:
+    """.env.local is the checkout's default target, not an override (#2689)."""
     result, calls = _run_script(
         script_repo,
         name,
@@ -212,8 +213,24 @@ def test_checkout_env_local_target_has_shared_precedence(
     )
 
     assert result.returncode == INVOCATIONS[name][1], result.stdout + result.stderr
+    assert "inherited-user@inherited.invalid" in calls
+    assert "checkout-user@checkout.invalid" not in calls
+
+
+@pytest.mark.parametrize("name", SCRIPT_NAMES)
+def test_checkout_env_local_target_is_the_shared_default(
+    script_repo: tuple[Path, Path, Path],
+    name: str,
+) -> None:
+    result, calls = _run_script(
+        script_repo,
+        name,
+        env_local="PI_HOST=checkout.invalid\nPI_USER=checkout-user\n",
+        inherited={},
+    )
+
+    assert result.returncode == INVOCATIONS[name][1], result.stdout + result.stderr
     assert "checkout-user@checkout.invalid" in calls
-    assert "inherited-user@inherited.invalid" not in calls
 
 
 @pytest.mark.parametrize("name", SCRIPT_NAMES)

@@ -159,7 +159,15 @@ target's peer_id into `.env.local` on first contact (`PI_PEER_ID=…`, TOFU) and
 after a collision rename or a re-image, `PI_HOST` can resolve to a different
 speaker than the checkout means. Deliberate re-image:
 `JTS_ACCEPT_NEW_IDENTITY=1 bash scripts/deploy-to-pi.sh`. `scripts/use` resets
-the recorded identity, since switching targets is a new TOFU. It requires
+the recorded identity, since switching targets is a new TOFU. The record
+describes the host `.env.local` names: a deploy you point at a *different*
+host (`PI_HOST=… bash scripts/deploy-to-pi.sh`) is TOFU-less by design — the
+guard is given no state file and skips with a printed notice, so a redirect
+can neither be blessed by nor overwrite the checkout's record. Naming the host
+the file already names is the checkout's own speaker and verifies normally,
+which is how `onboard.sh` and `rename-speaker.sh` — both of which write
+`.env.local` and then deploy with matching values — establish the record. It
+requires
 passwordless sudo: under the interactive-sudo fallback the guard skips with a
 printed notice, because `ssh -tt` merges the password prompt into the captured
 peer_id and verifying there would record garbage. Helper and outcome tokens:

@@ -24,9 +24,8 @@
 #   PYTHON=/path/to/python bash scripts/bank-crossover-round.sh <dest-dir>
 #
 # A caller-exported PI_HOST / PI_USER always wins over whatever
-# .env.local sets — captured before _lib.sh sources .env.local (which can
-# otherwise clobber it, see the comment at the top of the script body) and
-# re-applied after. <dest-dir> must not already exist non-empty: re-running
+# .env.local sets — scripts/_lib.sh owns that precedence for every
+# laptop-side script. <dest-dir> must not already exist non-empty: re-running
 # into a used directory is refused rather than silently truncating a prior
 # pull.
 #
@@ -73,20 +72,9 @@ set -uo pipefail
 DEST="${1:?usage: bank-crossover-round.sh <dest-dir>}"
 SINCE="${SINCE:-1 hour ago}"
 
-# B1: _lib.sh sources .env.local with `set -a` (plain assignments), which
-# unconditionally overwrites an already-exported PI_HOST/PI_USER — the
-# `${PI_HOST:-...}` fallback below it never gets a chance to prefer the
-# caller's value, because by then PI_HOST is already non-empty (issue
-# #2689, repo-wide; not fixed here). Capture the caller's explicit exports
-# now, before sourcing can clobber them, and re-apply below.
-_caller_pi_host="${PI_HOST:-}"
-_caller_pi_user="${PI_USER:-}"
-
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 # shellcheck disable=SC1091
 . "${SCRIPT_DIR}/_lib.sh"
-[[ -n "$_caller_pi_host" ]] && PI_HOST="$_caller_pi_host"
-[[ -n "$_caller_pi_user" ]] && PI_USER="$_caller_pi_user"
 # shellcheck disable=SC1091
 . "${SCRIPT_DIR}/_diagnostic_redaction.sh"
 

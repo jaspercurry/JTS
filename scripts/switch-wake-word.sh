@@ -21,9 +21,6 @@
 # To add a new model: add a `WakeModelEntry(...)` to REGISTRY in
 # jasper/wake_models.py and re-deploy. install.sh fetches non-bundled
 # `download_url`s into /var/lib/jasper/wake/ on the next install.
-#
-# Defaults: PI_HOST/PI_USER come from .env.local when present, then
-# PI_HOST falls back to JASPER_HOSTNAME and jts.local.
 
 set -euo pipefail
 

@@ -128,10 +128,9 @@ Usage::
 
 ``PI_HOST`` / ``PI_USER`` exported by the caller win over ``.env.local``, which
 wins over the ``jts.local`` default — the resolution is ``scripts/_lib.sh``'s
-own, with the caller's exports re-applied over it exactly as
-``bank-crossover-round.sh`` does (issue #2689), and the resolved host is named
-in the run trail. The same values are exported into the bank script, so both
-halves of a round can never target different speakers.
+own (issue #2689), and the resolved host is named in the run trail. The same
+values are exported into the bank script, so both halves of a round can never
+target different speakers.
 """
 
 from __future__ import annotations
@@ -363,12 +362,10 @@ def resolve_target(hostname_override: str | None = None,
                    trail: Trail | None = None) -> Target:
     """The speaker, with the caller's own exports winning.
 
-    ``_lib.sh`` sources ``.env.local`` with ``set -a``, which overwrites an
-    already-exported ``PI_HOST``/``PI_USER`` before its own ``${PI_HOST:-…}``
-    fallback can prefer the caller's (issue #2689, repo-wide). So the caller's
-    exports are read here FIRST and re-applied over whatever the library
-    resolved — the same fix, and the same order, as
-    ``bank-crossover-round.sh``.
+    ``_lib.sh`` owns that precedence (issue #2689). The caller's exports are
+    still read here so the trail can name WHERE each half came from, and so a
+    ``_lib.sh`` that could not run at all falls back to them rather than to
+    the default speaker.
     """
     caller_host = os.environ.get("PI_HOST") or ""
     caller_user = os.environ.get("PI_USER") or ""
@@ -418,17 +415,22 @@ def resolve_target(hostname_override: str | None = None,
                 return value, source
         return default, "the default"
 
-    host, host_source = _pick("", caller_host, lib_host, "jts.local")
+    # One record, the same way _lib.sh resolves it: a lone exported
+    # JASPER_HOSTNAME supplies the ssh target too, so it is YOUR export the
+    # target came from — not the .env.local the library happened to read.
+    host, host_source = _pick(
+        "", caller_host or caller_hostname, lib_host, "jts.local")
     user, user_source = _pick("", caller_user, lib_user, "pi")
     hostname, hostname_source = _pick(
         hostname_override or "", caller_hostname, lib_hostname, host)
+    if not (hostname_override or caller_hostname or lib_hostname):
+        # The name fell back to the ssh target itself — same value, same
+        # origin, so it is not a second source to disclose.
+        hostname_source = host_source
     if trail is not None:
-        # WHERE each half came from, because they are resolved independently
-        # and a split answer is legal: exporting only PI_HOST takes the ssh
-        # target from you and the speaker's NAME from .env.local, so a round
-        # can ssh to one speaker carrying another's Host header. Nothing here
-        # guesses which of the two is the one you meant — that is the
-        # operator's to know — but it must not be invisible.
+        # WHERE each half came from. Nothing here guesses which of the two
+        # is the one you meant — that is the operator's to know — but it
+        # must not be invisible.
         #
         # ``split`` compares SOURCES, not values, so it is true even when both
         # sources happen to name the same speaker. That over-warns on purpose:

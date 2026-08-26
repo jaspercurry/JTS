@@ -19,9 +19,6 @@
 #   bash scripts/switch-gemini-model.sh 3.1     # catalog's tested default
 #   bash scripts/switch-gemini-model.sh 2.5     # catalog's fallback
 #   bash scripts/switch-gemini-model.sh         # show current
-#
-# Defaults: PI_HOST/PI_USER come from .env.local when present, then
-# PI_HOST falls back to JASPER_HOSTNAME and jts.local.
 
 set -euo pipefail
 

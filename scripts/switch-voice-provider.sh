@@ -22,9 +22,6 @@
 # Usage:
 #   bash scripts/switch-voice-provider.sh <provider-id>
 #   bash scripts/switch-voice-provider.sh           # show current
-#
-# Defaults: PI_HOST/PI_USER come from .env.local when present, then
-# PI_HOST falls back to JASPER_HOSTNAME and jts.local.
 
 set -euo pipefail
 

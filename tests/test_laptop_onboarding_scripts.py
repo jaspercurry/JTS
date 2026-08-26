@@ -54,6 +54,13 @@ case "$cmd" in
   mkdir\ -p*)
     exit 0
     ;;
+  sudo*cat\ /var/lib/jasper/peer_id*)
+    # Each fake speaker owns a stable, distinct identity, so a deploy
+    # redirected to another host reads another host's peer_id.
+    for a in "$@"; do
+      case "$a" in *@*) printf 'peer-%s\n' "${a#*@}"; break ;; esac
+    done
+    ;;
   sudo\ -n\ cat\ /var/lib/jasper/build.txt*)
     printf 'fake-build\n'
     ;;
@@ -168,6 +175,10 @@ class FakeRemote:
 
     def env(self, **overrides: str) -> dict[str, str]:
         env = os.environ.copy()
+        # An explicitly-set targeting value outranks .env.local, so an
+        # ambient one would silently retarget every deploy driven here.
+        for key in ("PI_HOST", "PI_USER", "JASPER_HOSTNAME"):
+            env.pop(key, None)
         env.update(
             {
                 "PATH": f"{self.bin}{os.pathsep}{env['PATH']}",
@@ -564,6 +575,144 @@ class LaptopOnboardingScriptsTest(unittest.TestCase):
             ENV_LOCAL.read_bytes() if ENV_LOCAL.exists() else None
         )
         self.assertEqual(repo_state_after, repo_state_before)
+
+    def test_explicitly_set_targeting_outranks_env_local(self):
+        """The caller's target moves as one record; the checkout's never mixes.
+
+        Sourcing .env.local under `set -a` used to overwrite the PI_HOST an
+        operator passed on the command line, so a deploy aimed at one speaker
+        went to the checkout's usual one while the identity guard — reading
+        PI_PEER_ID from that same clobbered file — called it verified.
+        Per-key precedence leaves the other half of that hazard: the SSH
+        target taken from one source and the cert CN/SAN from the other
+        deploys to one speaker under another speaker's name.
+        """
+        env_local = textwrap.dedent(
+            """\
+            PI_HOST=jts3.local
+            PI_USER=pi
+            JASPER_HOSTNAME=jts3.local
+            """
+        )
+        callers = (
+            {
+                "PI_HOST": "jts9.local",
+                "PI_USER": "operator",
+                "JASPER_HOSTNAME": "jts9.local",
+            },
+            {"JASPER_HOSTNAME": "jts9.local"},
+            {"PI_HOST": "jts9.local"},
+        )
+        for caller in callers:
+            with self.subTest(**caller):
+                fake = FakeRemote(self)
+                result = self.run_deploy(fake, env_local=env_local, **caller)
+
+                calls = fake.calls()
+                self.assertEqual(
+                    result.returncode, 0, result.stdout + result.stderr
+                )
+                user = caller.get("PI_USER", "pi")
+                self.assertIn(f"{user}@jts9.local", calls)
+                self.assertIn("JASPER_HOSTNAME=jts9.local", calls)
+                self.assertNotIn("jts3.local", calls)
+
+    def test_a_caller_redirect_leaves_the_checkouts_identity_record_alone(self):
+        """A deploy you aimed elsewhere must not rewrite this checkout's TOFU.
+
+        The recorded peer_id describes the speaker `.env.local` names. Letting
+        a redirected deploy record the OTHER Pi's id — or re-record it under
+        JTS_ACCEPT_NEW_IDENTITY=1 — leaves the checkout still pointed at its
+        own speaker while claiming that speaker's identity is the other one,
+        so the next plain deploy aborts against the Pi it has always used.
+        """
+        env_local = textwrap.dedent(
+            """\
+            PI_HOST=jts.local
+            PI_USER=pi
+            JASPER_HOSTNAME=jts.local
+            """
+        )
+        with isolated_checkout(env_local) as checkout:
+            deploy = checkout / "scripts" / "deploy-to-pi.sh"
+            state = checkout / ".env.local"
+            before = state.read_bytes()
+
+            def run(**env_overrides: str) -> subprocess.CompletedProcess[str]:
+                return subprocess.run(
+                    ["bash", str(deploy)],
+                    cwd=checkout,
+                    env=FakeRemote(self).env(**env_overrides),
+                    capture_output=True,
+                    text=True,
+                    timeout=10,
+                )
+
+            # The checkout's own speaker records on first contact and
+            # verifies against that record on the next deploy...
+            for _ in range(2):
+                plain = run()
+                self.assertEqual(
+                    plain.returncode, 0, plain.stdout + plain.stderr
+                )
+            recorded = state.read_bytes()
+            self.assertIn("PI_PEER_ID=peer-jts.local", recorded.decode())
+            self.assertNotEqual(recorded, before)
+
+            # ...and with that record standing, a redirect neither reads
+            # nor rewrites it — including under the re-record override.
+            redirect = run(PI_HOST="jts2.local")
+            self.assertEqual(
+                redirect.returncode, 0, redirect.stdout + redirect.stderr
+            )
+            self.assertEqual(state.read_bytes(), recorded)
+
+            accepted = run(PI_HOST="jts2.local", JTS_ACCEPT_NEW_IDENTITY="1")
+            self.assertEqual(
+                accepted.returncode, 0, accepted.stdout + accepted.stderr
+            )
+            self.assertEqual(state.read_bytes(), recorded)
+
+    def test_naming_the_checkouts_own_host_still_records_and_verifies(self):
+        """The setup scripts' own shape: write .env.local, then deploy to it.
+
+        onboard.sh and rename-speaker.sh both call write_laptop_state and then
+        invoke deploy-to-pi.sh with PI_HOST/PI_USER/JASPER_HOSTNAME set to the
+        values they just wrote. Naming the host the file already names is the
+        checkout's own speaker, not a redirect, so it is how the record gets
+        established at all — and a plain `PI_HOST=<own host>` deploy is
+        verified rather than silently unguarded.
+        """
+        env_local = textwrap.dedent(
+            """\
+            PI_HOST=jts.local
+            PI_USER=pi
+            JASPER_HOSTNAME=jts.local
+            """
+        )
+        with isolated_checkout(env_local) as checkout:
+            deploy = checkout / "scripts" / "deploy-to-pi.sh"
+            state = checkout / ".env.local"
+
+            for _ in range(2):
+                onboard_shape = subprocess.run(
+                    ["bash", str(deploy)],
+                    cwd=checkout,
+                    env=FakeRemote(self).env(
+                        PI_HOST="jts.local",
+                        PI_USER="pi",
+                        JASPER_HOSTNAME="jts.local",
+                    ),
+                    capture_output=True,
+                    text=True,
+                    timeout=10,
+                )
+                self.assertEqual(
+                    onboard_shape.returncode,
+                    0,
+                    onboard_shape.stdout + onboard_shape.stderr,
+                )
+            self.assertIn("PI_PEER_ID=peer-jts.local", state.read_text())
 
     def test_lib_keeps_jasper_hostname_as_legacy_pi_host_fallback(self):
         env = os.environ.copy()

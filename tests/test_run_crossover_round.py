@@ -1353,15 +1353,16 @@ def test_the_speakers_own_name_is_the_host_header_and_the_walks_hostname(
     assert hosts and set(hosts) == {"jts9.local"}
 
 
-def test_a_split_identity_is_disclosed_with_where_each_half_came_from(
+def test_exporting_only_PI_HOST_keeps_both_halves_on_your_speaker(
     checkout, wizard, tmp_path
 ):
-    """Exporting only PI_HOST takes the two halves from different sources.
+    """The speaker's NAME follows the ssh target you named, not the checkout's.
 
-    The ssh target is then YOURS and the speaker's name is ``.env.local``'s, so
-    a round can ssh to one speaker carrying another's Host header -- the wizard
-    403s and the diagnosis lands on the wrong thing. Nothing here guesses which
-    half is right; the disclosure is the fix.
+    Taking the target from your export and the name from ``.env.local`` would
+    ssh to one speaker carrying another's Host header -- the wizard 403s and
+    the diagnosis lands on the wrong thing. ``_lib.sh`` hands the caller's
+    targeting over as one record (issue #2689), so there is no split left to
+    disclose here.
     """
     trail = tmp_path / "trail.jsonl"
     proc, _, _ = _run(
@@ -1375,7 +1376,50 @@ def test_a_split_identity_is_disclosed_with_where_each_half_came_from(
     row = _trail(trail)[0]
     assert row["step"] == "identity"
     assert (row["host"], row["host_from"]) == ("caller.invalid", "your export")
-    assert (row["hostname"], row["hostname_from"]) == ("checkout.invalid", ".env.local")
+    assert (row["hostname"], row["hostname_from"]) == ("caller.invalid", "your export")
+    assert row["split"] is False
+
+
+def test_exporting_only_JASPER_HOSTNAME_moves_the_ssh_target_with_it(
+    checkout, wizard, tmp_path
+):
+    """The legacy operator form names one speaker, and the trail says so.
+
+    ``_lib.sh`` promotes a lone JASPER_HOSTNAME to the ssh target as well, so
+    both halves are the caller's -- reporting the target as ``.env.local``'s
+    would name a source that contributed nothing, on a record with no split.
+    """
+    trail = tmp_path / "trail.jsonl"
+    proc, ssh_lines, _ = _run(
+        checkout, wizard,
+        ["--campaign", str(tmp_path / "camp"), "--label", "r1",
+         "--trail", str(trail), *MEASURE_ARGS],
+        JASPER_HOSTNAME="caller.invalid",
+    )
+
+    assert proc.returncode == 0, proc.stderr
+    assert all("@caller.invalid" in line for line in ssh_lines)
+    row = _trail(trail)[0]
+    assert (row["host"], row["host_from"]) == ("caller.invalid", "your export")
+    assert (row["hostname"], row["hostname_from"]) == ("caller.invalid", "your export")
+    assert row["split"] is False
+
+
+def test_a_hostname_override_against_the_checkouts_host_is_still_disclosed(
+    checkout, wizard, tmp_path
+):
+    """A genuine two-source identity stays visible: --hostname is only a name."""
+    trail = tmp_path / "trail.jsonl"
+    proc, _, _ = _run(
+        checkout, wizard,
+        ["--campaign", str(tmp_path / "camp"), "--label", "r1",
+         "--trail", str(trail), "--hostname", "jts9.local", *MEASURE_ARGS],
+    )
+
+    assert proc.returncode == 0, proc.stderr
+    row = _trail(trail)[0]
+    assert (row["host"], row["host_from"]) == ("checkout.invalid", ".env.local")
+    assert (row["hostname"], row["hostname_from"]) == ("jts9.local", "--hostname")
     assert row["split"] is True
 
 
