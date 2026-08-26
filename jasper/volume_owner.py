@@ -313,15 +313,7 @@ class VolumeOwner:
         target = _finite(level_db, "level_db")
         async with self._lock:
             previous = self.declared_level_db()
-            for token, claim in list(self._claims.items()):
-                if claim.kind is ClaimKind.HOUSEHOLD:
-                    del self._claims[token]
-            handle = VolumeClaimHandle(
-                kind=ClaimKind.HOUSEHOLD,
-                token=next(self._tokens),
-                level_db=target,
-            )
-            self._claims[handle.token] = handle
+            handle = self._replace_household_claim(target)
             if self._top_level_claim() is not handle:
                 return True
             if await self._apply(context="declare:household"):
@@ -347,8 +339,13 @@ class VolumeOwner:
 
         Ducks STACK: two holders that overlap take both depths, and each gives
         back only its own. A duck over no declared level writes nothing — there
-        is no level to attenuate — and the claim is still held, so its release
-        is still safe.
+        is no level to attenuate — and that is a held claim, not a refusal.
+
+        Fail-closed like :meth:`acquire_level`: an attenuation that could not
+        be established raises and leaves no claim held, so a holder never
+        believes it is ducking a speaker it did not move. ``Ducker`` depends on
+        exactly that — it must not latch when the write was skipped, or its
+        restore writes a level nothing ducked.
         """
         depth = abs(_finite(depth_db, "depth_db"))
         async with self._lock:
@@ -360,7 +357,10 @@ class VolumeOwner:
             self._claims[handle.token] = handle
             taken = False
             try:
-                await self._apply(context="acquire:transient_duck")
+                if not await self._apply(context="acquire:transient_duck"):
+                    raise VolumeClaimRefused(
+                        f"could not establish {depth:.6f} dB of attenuation"
+                    )
                 taken = True
                 return handle
             finally:
@@ -401,12 +401,26 @@ class VolumeOwner:
                 kind=handle.kind.value,
             )
 
-    async def release(self, handle: VolumeClaimHandle) -> None:
+    async def release(
+        self,
+        handle: VolumeClaimHandle,
+        *,
+        household_level_db: float | None = None,
+    ) -> None:
         """Give a claim back. Idempotent, and a no-op against nothing held.
 
         Called on every path out of a holder's lifetime, including after an
         acquire that raised and again if a first release raised — the same
         contract ``session_seams.VolumeClaim.release`` states.
+
+        ``household_level_db`` re-declares the standing level as PART of this
+        release, inside the same lock and before the single settle. A holder
+        whose reference can move while it holds — the voice duck reads the
+        coordinator's target fresh, because another daemon may have written it
+        — must land the new level in one write. Declaring first and releasing
+        second costs two, and the intermediate one is audible: a duck of 25 dB
+        over a level that moved by 2 dB would dip a further 25 dB before coming
+        back up. ``None`` leaves the standing level exactly as it was.
         """
         waited_from = time.monotonic()
         async with self._lock:
@@ -428,6 +442,10 @@ class VolumeOwner:
             if self._claims.get(handle.token) != handle:
                 return
             del self._claims[handle.token]
+            if household_level_db is not None:
+                self._replace_household_claim(
+                    _finite(household_level_db, "household_level_db")
+                )
             reference = self.declared_level_db()
             if reference is None:
                 await self._disclose_release_without_level(handle)
@@ -493,6 +511,23 @@ class VolumeOwner:
             return None
 
     # ---- internals --------------------------------------------------------
+
+    def _replace_household_claim(self, level_db: float) -> VolumeClaimHandle:
+        """Seat the standing level. Replaces, never stacks — it is one fact.
+
+        Caller holds the lock, and settles afterwards: this only moves the
+        claim, so a release can re-declare and settle in one write.
+        """
+        for token, claim in list(self._claims.items()):
+            if claim.kind is ClaimKind.HOUSEHOLD:
+                del self._claims[token]
+        handle = VolumeClaimHandle(
+            kind=ClaimKind.HOUSEHOLD,
+            token=next(self._tokens),
+            level_db=level_db,
+        )
+        self._claims[handle.token] = handle
+        return handle
 
     def _top_level_claim(self) -> VolumeClaimHandle | None:
         ranked = [
