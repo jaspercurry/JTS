@@ -365,9 +365,7 @@ membership shields the work loop from it.
 | One input substream silent/idle | Treat as silence; sum continues with remaining inputs | Mux enforces single-source; idle substreams are normal |
 | All input substreams silent | Output zeros to maintain ALSA frame timing | Idle state is normal; don't underrun the output |
 | One input substream xrun | Log `event=fanin.xrun input=N count=M`; recover via `snd_pcm_recover`; continue | snd_pcm convention |
-| Output substream xrun | Log `event=fanin.xrun output count=M`; recover; AEC bridge handles brief ref outage gracefully | The bridge's `claude/aec-bridge-ref-starvation-fix` carries the last ref instead of using silence fallback |
 | Unable to open any configured input PCM at startup | Exit 1, let systemd restart with backoff | Every configured input is a private snd-aloop lane that should exist after install; missing one means live topology drift |
-| Unable to open output PCM at startup | Exit 1, let systemd restart with backoff | Structural; the dedicated output substream MUST exist |
 | Work loop hang | Watchdog ping stops, systemd kills + restarts in ~2 s | The whole point of the heartbeat |
 | Repeated wedge (5 restarts in 5 min) | `StartLimitAction=reboot` triggers clean system reboot | Tier 5.1 protection |
 | Ring A geometry is unusable — a rejected `JASPER_FANIN_RING_WIRE_FORMAT` / `_RING_SLOTS` / slot-shearing period, or a ring file whose header geometry differs from the one the daemon builds | Exit 78 (EX_CONFIG); `RestartPreventExitStatus=78` PARKS the unit failed | **No restart repairs either shape**, so the restart ladder above would reboot the speaker in a loop. Remediation differs — see below |
@@ -551,12 +549,11 @@ project's `event=<subsystem>.<action> [key=value ...]` convention.
 | Event | When | Severity |
 |---|---|---|
 | `event=fanin.boot version=...` | process startup | INFO |
-| `event=fanin.config_loaded inputs=N output=... sample_rate=... period_frames=... input_buffer_frames=... output_buffer_frames=...` | parsed runtime config | INFO |
+| `event=fanin.config_loaded inputs=N output=... sample_rate=... period_frames=... input_buffer_frames=...` | parsed runtime config | INFO |
 | `event=fanin.input.opened label=airplay pcm=hw:Loopback,1,1 ...` | each input opened | INFO |
 | `event=fanin.ring.opened path=/dev/shm/jts-ring/program.ring ...` | Ring A attached | INFO |
 | `event=fanin.mixer.running inputs=N output_xruns=0` | work loop started | INFO |
 | `event=fanin.xrun source=input label=airplay count=N` | input overrun recovered | WARN |
-| `event=fanin.xrun source=output count=N frames_pending=M` | output underrun recovered | WARN |
 | `event=fanin.source_select selected=airplay` | mux selected one input lane (or `selected=auto` / `selected=none`) | INFO |
 | `event=fanin.assistant_loudness kind=... final_gain_db=... reason=...` | pre-DSP TTS/cue gain decision | INFO |
 | `event=fanin.watchdog.stale age_ms=X` | heartbeat thread skipped a ping (sentinel stale) | WARN |
@@ -570,13 +567,14 @@ pick them up alongside other subsystems' events; the verbs match the
 `shairport.*` / `wifi_guardian.*` / `aec_bridge.*` patterns documented
 elsewhere.
 
-**Ring stall self-recovery (issue #1524).** The `RingWriter` back-pressures the work loop while CamillaDSP
-drains the ring — that block is the pacer. If CamillaDSP wedges in Prepared
-(still polling, so its heartbeat looks live, but never calling `readi`, so
-`read_seq` never advances), the writer would otherwise wait forever per slot,
-running fan-in at ~1/9 real time and back-pressuring the input lanes until the
-correction-lane aplay times out at 12 s — with no fan-in-side signal (the 5 s
-progress watchdog never fires because `step()` keeps completing). The writer
+**Ring stall self-recovery (issue #1524).** The `RingWriter` back-pressures
+the work loop while CamillaDSP drains the ring — that block is the pacer. If
+CamillaDSP wedges in Prepared (still polling, so its heartbeat looks live, but
+never calling `readi`, so `read_seq` never advances), the writer would
+otherwise wait forever per slot, running fan-in at ~1/9 real time and
+back-pressuring the input lanes until the correction-lane aplay times out at
+12 s — with no fan-in-side signal (the 5 s progress watchdog never fires
+because `step()` keeps completing). The writer
 now DEMOTES such a reader once its `read_seq` has been frozen past
 `STUCK_READER_GRACE_NS` (1 s): it stops honoring the heartbeat and free-runs
 (drop-oldest), returning fan-in to real time and relieving the input

@@ -30,10 +30,6 @@ tokens, which is exactly what happened: the Python assistant-width predicate
 keyed on the token alone while ``Config::program_wire_is_wide`` had always
 required both halves.
 
-The third declaring end — the PROSE — is pinned in
-``tests/test_docs_assistant_width_phrasing.py`` rather than here, because that
-lane's environment is minimal and this file imports ``jasper``.
-
 Rust-source pins ``pytest.skip()`` when the sources are absent, mirroring
 ``tests/test_fanin_host_clock_contract.py``'s idiom.
 """
