@@ -19,12 +19,12 @@ import os
 import re
 import subprocess
 import sys
-import tempfile
 import time
 from dataclasses import dataclass, field, replace
 from pathlib import Path
 from typing import Any, Iterable, Mapping
 
+from .atomic_io import atomic_write_json
 from .audio_hardware.dac import (
     APPLE_USB_C_DONGLE,
     APPLE_USB_C_DONGLE_ID,
@@ -746,20 +746,7 @@ def current_usb_data_role(
 
 
 def write_state(state: OutputHardwareState, path: str | Path | None = None) -> None:
-    target = state_path(path)
-    target.parent.mkdir(parents=True, exist_ok=True)
-    data = json.dumps(state.to_dict(), indent=2, sort_keys=True) + "\n"
-    with tempfile.NamedTemporaryFile(
-        "w",
-        dir=target.parent,
-        prefix=f".{target.name}.",
-        suffix=".tmp",
-        delete=False,
-    ) as handle:
-        tmp_name = handle.name
-        handle.write(data)
-    os.chmod(tmp_name, 0o644)
-    os.replace(tmp_name, target)
+    atomic_write_json(state_path(path), state.to_dict(), mode=0o644)
 
 
 def _identity_tokens(raw: Any) -> tuple[tuple[str, str], ...]:

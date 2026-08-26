@@ -20,13 +20,13 @@ import json
 import logging
 import math
 import os
-import tempfile
 import threading
 from dataclasses import asdict, dataclass
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
+from .atomic_io import atomic_write_json
 from .log_event import log_event
 
 logger = logging.getLogger(__name__)
@@ -181,7 +181,9 @@ def _save_profile_unlocked(
         str(item.get("model", "")),
         str(item.get("voice", "")),
     ))
-    _write_payload({"version": PROFILE_VERSION, "profiles": profiles}, path)
+    atomic_write_json(
+        path, {"version": PROFILE_VERSION, "profiles": profiles}, mode=0o644,
+    )
 
 
 def update_profile_from_measurement(
@@ -497,30 +499,6 @@ def _load_payload(path: str | os.PathLike[str]) -> dict[str, Any]:
     if not isinstance(data.get("profiles"), list):
         data["profiles"] = []
     return data
-
-
-def _write_payload(payload: dict[str, Any], path: str | os.PathLike[str]) -> None:
-    dst = Path(path)
-    dst.parent.mkdir(parents=True, exist_ok=True)
-    body = json.dumps(payload, indent=2, sort_keys=True) + "\n"
-    fd, tmp_path = tempfile.mkstemp(
-        prefix=".assistant_loudness.",
-        suffix=".tmp",
-        dir=str(dst.parent),
-    )
-    try:
-        with os.fdopen(fd, "w", encoding="utf-8") as f:
-            f.write(body)
-        os.replace(tmp_path, dst)
-        try:
-            os.chmod(dst, 0o644)
-        except OSError:
-            pass
-    finally:
-        try:
-            os.unlink(tmp_path)
-        except FileNotFoundError:
-            pass
 
 
 def _profile_from_mapping(item: dict[str, Any]) -> AssistantLoudnessProfile | None:
