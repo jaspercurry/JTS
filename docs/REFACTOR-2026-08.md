@@ -171,8 +171,10 @@ already open)**
   swap-duck and the 1 Hz reconciler it coordinated with (its waves 5–6);
   no lease gets built · systemctl-through-broker or honest docstring ·
   sound_setup 502-helper (after the volume-surface widening lifts) ·
-  `git mv` subway/citibike/bus into transit/providers/ · fold
-  jasper/measurement/ (confirmed non-colliding: it serves `/balance/`) ·
+  `git mv` subway/citibike/bus into transit/providers/ ·
+  ~~fold jasper/measurement/~~ **DONE** — one consumer confirmed
+  (`/balance/`), so its two modules became `web/balance_level.py` +
+  `web/balance_volume_guard.py` and the package is deleted ·
   split test_control_server along its own handler boundary (after the
   widening lifts) · point the 4 hand-rolled atomic writers at atomic_io
 
