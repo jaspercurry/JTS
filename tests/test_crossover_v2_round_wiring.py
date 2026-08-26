@@ -580,7 +580,7 @@ def test_an_unproven_boost_with_a_valid_anchor_comes_back_off(monkeypatch):
     _install_applied_graph(monkeypatch, boosts=True)
     # No integrity record at all — genuinely UNUSABLE evidence, not merely an
     # unprovable benefit. VERIFY's own capture gate still accepts it (see
-    # tests/test_crossover_v2_conductor.py's
+    # tests/test_crossover_v2_verify_grading.py's
     # test_verify_without_an_integrity_record_is_not_refused_but_says_so);
     # only the round's evidence-trust axis refuses it.
     analysis = dataclasses.replace(

@@ -276,11 +276,9 @@ logger = logging.getLogger(__name__)
 # ``PRE_CLOUD_CAPTURE_PHASES`` records what a session ran before the position
 # groups shipped. None of those answers "where is this round".
 
-# The absolute VERIFY tracking error used by both the live attempts loop and
-# the offline repeat-floor replay. Lower is better: zero is the model's
-# prediction of perfect realization, while the analyzer's value is what the
-# applied speaker actually realized.
-ATTEMPT_METRIC_VERIFY_MAX_NOTCH_EXCLUDED = "max_db_notch_excluded"
+ATTEMPT_METRIC_VERIFY_MAX_NOTCH_EXCLUDED = (
+    _contracts.ATTEMPT_METRIC_VERIFY_MAX_NOTCH_EXCLUDED
+)
 
 ATTEMPT_INTEGRITY_UNAVAILABLE = "capture_integrity_unavailable"
 

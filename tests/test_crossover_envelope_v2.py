@@ -82,9 +82,17 @@ from jasper.active_speaker.crossover_v2.refusal_copy import (
     verify_inconclusive_cause,
     verify_inconclusive_message,
 )
-from jasper.active_speaker.crossover_v2_flow import (
-    ATTEMPT_METRIC_VERIFY_MAX_NOTCH_EXCLUDED,
+from jasper.active_speaker.crossover_v2.attempt_grading import (
     ATTEMPT_REASON_NO_FLOOR,
+)
+from jasper.active_speaker.crossover_v2.contracts import (
+    ATTEMPT_METRIC_VERIFY_MAX_NOTCH_EXCLUDED,
+)
+# The one flow-owned symbol this suite still reaches for, and deliberately: the
+# predicted-ripple disclosure is a MEASURE-phase threshold whose 20 lines of
+# frame-and-provenance rationale belong to whichever wave moves the MEASURE
+# region, not to the wave that lifts VERIFY.
+from jasper.active_speaker.crossover_v2_flow import (
     MEASURE_PREDICTED_RIPPLE_DISCLOSURE_DB,
 )
 from jasper.active_speaker.crossover_v2.verification import RESULT_VERIFIED_TARGET
