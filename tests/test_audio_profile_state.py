@@ -291,3 +291,92 @@ def test_testing_profile_uses_chip_aec_runtime_but_same_validation_profile():
     assert status["audio_profile"]["active"] == "xvf_chip_aec"
     assert status["audio_profile"]["validation_profile"] == "xvf_chip_aec"
     assert status["microphone"]["processing_mode"] == "Chip-AEC"
+
+
+def test_a_disclosed_managed_xvf_reports_the_engine_it_is_actually_running():
+    """ADR-0101: disclosed_stale is a RUNNING state, not a park.
+
+    The chip leg is not armed, but the 6-channel mic carries software AEC3 and
+    the wake path is up — reporting that as parked with no legs would describe
+    a hearing speaker as deaf.
+    """
+    status = build_audio_profile_status(
+        AecIntent(mode="auto", profile_selection="auto"),
+        RuntimeAecEnv(
+            primary_device="udp:9876",
+            raw_device="udp:9877",
+            chip_enabled=False,
+            chip_aec_alignment_status="disclosed_stale",
+            chip_aec_alignment_reason="output DAC has no codified chip-AEC calibration",
+            chip_aec_alignment_action="Run sudo jasper-aec-commission",
+        ),
+        MicProbe(xvf_present=True, capture_channels=6, recommended_channels=6),
+        bridge_active=True,
+        chip_available=True,
+        chip_gate={
+            "status": "needs_calibration",
+            "auto_allowed": False,
+            "arm_allowed": True,
+            "detail": "no codified timing",
+        },
+    )
+
+    profile = status["audio_profile"]
+    assert profile["state"] == "disclosed_stale"
+    assert profile["active"] == "xvf_software_aec3"
+    assert profile["reason"] == "output DAC has no codified chip-AEC calibration"
+    assert profile["action"] == "Run sudo jasper-aec-commission"
+    assert status["microphone"]["processing_mode"] == "Software AEC3"
+    assert status["microphone"]["wake_legs"]
+
+
+def test_a_disclosed_two_channel_xvf_reports_its_direct_mic():
+    status = build_audio_profile_status(
+        AecIntent(mode="auto", profile_selection="auto"),
+        RuntimeAecEnv(
+            primary_device="Array",
+            chip_enabled=False,
+            chip_aec_alignment_status="disclosed_stale",
+            chip_aec_alignment_reason=(
+                "echo cancellation unavailable until DFU flash to 6-channel firmware"
+            ),
+            chip_aec_alignment_action="Re-flash the XVF to 6-channel firmware",
+        ),
+        MicProbe(xvf_present=True, capture_channels=2, recommended_channels=6),
+        bridge_active=False,
+        chip_available=False,
+    )
+
+    profile = status["audio_profile"]
+    assert profile["state"] == "disclosed_stale"
+    assert profile["active"] == "direct_mic"
+    assert "DFU flash" in profile["reason"]
+    assert status["microphone"]["wake_legs"] == ["Direct mic"]
+
+
+def test_an_explicit_custom_chip_leg_reads_as_chip_aec_on_an_uncodified_dac():
+    """Site 11 honours the operator's leg, so the classifier must see it run.
+
+    Reading auto_allowed here would report a chip beam actually carrying :9876
+    as software AEC3.
+    """
+    status = build_audio_profile_status(
+        AecIntent(mode="auto", chip_aec_enabled=True, profile_selection="custom"),
+        RuntimeAecEnv(
+            primary_device="udp:9876",
+            chip_enabled=True,
+            chip_aec_alignment_status="ready",
+        ),
+        MicProbe(xvf_present=True, capture_channels=6, recommended_channels=6),
+        bridge_active=True,
+        chip_available=True,
+        chip_gate={
+            "status": "needs_calibration",
+            "auto_allowed": False,
+            "arm_allowed": True,
+            "detail": "no codified timing",
+        },
+    )
+
+    assert status["audio_profile"]["active"] == "xvf_chip_aec"
+    assert status["microphone"]["processing_mode"] == "Chip-AEC"

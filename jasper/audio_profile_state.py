@@ -650,7 +650,13 @@ def build_audio_profile_status(
             if applied_dtln_enabled:
                 wake_legs.append("DTLN")
             active_profile = PROFILE_XVF_SOFTWARE_AEC3
-        elif direct_mic_configured:
+        elif runtime.primary_device and not runtime.primary_device.startswith(
+            "udp:"
+        ):
+            # A card, not the bridge's carrier. _direct_mic_configured cannot
+            # answer here: its stale-default heuristic reads the deliberate
+            # handover (voice AND the bridge's mic both on the XVF card) as the
+            # value nobody chose — but the reconciler has just said it chose it.
             processing_mode = "Direct mic"
             session_source = mic_source_label(runtime.primary_device)
             wake_legs = ["Direct mic"]

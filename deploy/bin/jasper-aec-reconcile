@@ -686,20 +686,21 @@ carry_chip_aec_dac_gate() {
     # Selection-aware by construction: the record holds BOTH answers the policy
     # resolved for this DAC, so a production query and a testing query each read
     # their own, and neither is refused for having been recorded under the other.
-    if [[ "$testing" == "1" ]]; then
-        recorded="${JASPER_AEC_CHIP_AEC_DAC_TRIAL:-}"
+    # A record written before these keys existed reconstructs from `approved`,
+    # the only status either selection ever armed on — the same mapping
+    # jasper.chip_aec_policy.gate_from_runtime_env uses. Both are re-recorded,
+    # so a carried verdict does not decay over successive outage passes.
+    if [[ "${JASPER_AEC_CHIP_AEC_DAC_STATUS}" == "approved" ]]; then
+        recorded=1
     else
-        recorded="${JASPER_AEC_CHIP_AEC_DAC_AUTO:-}"
+        recorded=0
     fi
-    if [[ -n "$recorded" ]]; then
-        CHIP_AEC_DAC_GATE_OK="$(normalize_bool "$recorded")"
-    elif [[ "$JASPER_AEC_CHIP_AEC_DAC_STATUS" == "approved" ]]; then
-        # A record written before these keys existed. `approved` is the only
-        # status either selection ever armed on, so it reconstructs both — the
-        # same mapping jasper.chip_aec_policy.gate_from_runtime_env uses.
-        CHIP_AEC_DAC_GATE_OK=1
+    CHIP_AEC_DAC_GATE_AUTO="$(normalize_bool "${JASPER_AEC_CHIP_AEC_DAC_AUTO:-$recorded}")"
+    CHIP_AEC_DAC_GATE_TRIAL="$(normalize_bool "${JASPER_AEC_CHIP_AEC_DAC_TRIAL:-$recorded}")"
+    if [[ "$testing" == "1" ]]; then
+        CHIP_AEC_DAC_GATE_OK="$CHIP_AEC_DAC_GATE_TRIAL"
     else
-        CHIP_AEC_DAC_GATE_OK=0
+        CHIP_AEC_DAC_GATE_OK="$CHIP_AEC_DAC_GATE_AUTO"
     fi
     detail="${JASPER_AEC_CHIP_AEC_DAC_DETAIL:-}"
     # Idempotent across passes: a carried record is re-recorded each pass the

@@ -104,6 +104,25 @@ def test_runtime_env_gate_round_trips_reconciler_written_status():
     assert gate.detail == "operator validation"
 
 
+def test_runtime_env_gate_answers_only_the_selection_it_was_recorded_for():
+    """A record written for production cannot answer a testing request.
+
+    Serving it would report `needs_calibration` where the testing-aware
+    resolve says `testing`, so the caller must fall through and resolve.
+    """
+    recorded = {
+        "JASPER_AUDIO_DAC_ID": "mystery_usb_audio",
+        "JASPER_AEC_CHIP_AEC_DAC_ID": "mystery_usb_audio",
+        "JASPER_AEC_CHIP_AEC_DAC_STATUS": "needs_calibration",
+        "JASPER_AEC_CHIP_AEC_TESTING_REQUESTED": "0",
+    }
+
+    assert gate_from_runtime_env(recorded, testing_requested=True) is None
+    assert gate_from_runtime_env(recorded, testing_requested=False) is not None
+    # No selection named: the record answers as written, as it always has.
+    assert gate_from_runtime_env(recorded) is not None
+
+
 def test_runtime_env_gate_rejects_stale_dac_identity():
     gate = gate_from_runtime_env({
         "JASPER_AUDIO_DAC_ID": "hifiberry_dac8x_studio",

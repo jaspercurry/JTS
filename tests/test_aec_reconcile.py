@@ -1470,6 +1470,91 @@ def test_unevaluable_dac_gate_carries_the_last_resolved_verdict(
 
 
 @pytest.mark.parametrize(
+    "selection", ["auto", "xvf_chip_aec", "xvf_chip_aec_testing"]
+)
+def test_a_carried_verdict_answers_whichever_selection_asks(
+    tmp_path: Path, selection: str
+) -> None:
+    """The record holds both selections' answers, so neither is refused.
+
+    The managed path always queries the production gate, even under the
+    testing alias — a record keyed to one selection alone would leave the
+    other with no verdict to carry and drop the box on a resolver outage.
+    """
+    env_file = _write_env(
+        tmp_path, "Array", extra="JASPER_AUDIO_DAC_ID=apple_usb_c_dongle\n"
+    )
+    _write_profile_mode(tmp_path, selection)
+    _write_card(tmp_path, channels=6)
+
+    assert _run_reconcile(tmp_path, "--reason", "test").returncode == 0
+    broken_gate = _write_synthetic_xvf_resolver(
+        tmp_path,
+        "Array",
+        chip_beam_plan="xvf_square_fixed_150_210",
+        chip_aec_supported="1",
+        policy_exit=1,
+    )
+
+    result = _run_reconcile(
+        tmp_path,
+        "--reason",
+        "test",
+        extra_env={"JASPER_MIC_PROFILE_PYTHON": str(broken_gate)},
+    )
+
+    assert result.returncode == 0, result.stderr
+    body = env_file.read_text()
+    assert "carrying last verdict" in body
+    assert "JASPER_AEC_CHIP_AEC_ENABLED=1" in body
+    assert "JASPER_MIC_DEVICE=udp:9876" in body
+
+
+def test_a_record_written_before_the_verdict_keys_existed_still_carries(
+    tmp_path: Path,
+) -> None:
+    """First pass after an upgrade: the per-selection keys are not there yet.
+
+    Defaulting them to 0 would carry a commissioned box as approved-but-not-
+    permitted — the exact drop the carry exists to prevent — and then persist
+    that contradiction.
+    """
+    env_file = _write_env(
+        tmp_path,
+        "Array",
+        extra=(
+            "JASPER_AUDIO_DAC_ID=apple_usb_c_dongle\n"
+            "JASPER_AEC_CHIP_AEC_DAC_ID=apple_usb_c_dongle\n"
+            "JASPER_AEC_CHIP_AEC_DAC_STATUS=approved\n"
+            "JASPER_AEC_CHIP_AEC_DAC_SOURCE=static\n"
+            "JASPER_AEC_CHIP_AEC_DAC_DETAIL='approved for production chip-AEC'\n"
+        ),
+    )
+    _write_profile_mode(tmp_path, "auto")
+    _write_card(tmp_path, channels=6)
+    broken_gate = _write_synthetic_xvf_resolver(
+        tmp_path,
+        "Array",
+        chip_beam_plan="xvf_square_fixed_150_210",
+        chip_aec_supported="1",
+        policy_exit=1,
+    )
+
+    result = _run_reconcile(
+        tmp_path,
+        "--reason",
+        "test",
+        extra_env={"JASPER_MIC_PROFILE_PYTHON": str(broken_gate)},
+    )
+
+    assert result.returncode == 0, result.stderr
+    body = env_file.read_text()
+    assert "JASPER_AEC_CHIP_AEC_DAC_STATUS=approved" in body
+    assert "JASPER_AEC_CHIP_AEC_DAC_AUTO=1" in body
+    assert "JASPER_AEC_CHIP_AEC_ENABLED=1" in body
+
+
+@pytest.mark.parametrize(
     ("dac_id", "stderr_phrase"),
     [
         ("hifiberry_dac8x_studio", "HiFiBerry DAC8x Studio needs per-profile"),
