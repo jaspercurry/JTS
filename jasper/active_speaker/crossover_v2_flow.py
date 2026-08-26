@@ -5060,6 +5060,8 @@ class CrossoverV2Session:
                 position_deg=position_angle_deg(prompt),
                 lateral_consumer=self._lateral_consumer,
                 session_id=self.session_id,
+                graph_fingerprint=self._entry_graph_fingerprint(),
+                captured_at=time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
                 wav_sha256=_capture_wav_sha256(result),
             ),
         )

@@ -820,7 +820,9 @@ def _bank_lateral_walk(session: Path, degrees: list[int]) -> list[dict[str, Any]
         )
         record = lateral_pose_record(
             pose, position_deg=angle, lateral_consumer="forward_model",
-            session_id="relay-1", wav_sha256=f"pose-sha-{index}",
+            session_id="relay-1", graph_fingerprint="fp-applied",
+            captured_at="2026-08-26T00:00:00Z",
+            wav_sha256=f"pose-sha-{index}",
         )
         (positions / f"{record['take_id']}.json").write_text(json.dumps({
             "schema_version": 1,

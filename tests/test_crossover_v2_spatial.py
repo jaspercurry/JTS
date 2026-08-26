@@ -407,6 +407,7 @@ def test_all_three_take_builders_state_one_identity_under_one_vocabulary():
             role="offax", offset_cm=25.0, at_mark=False, curves=(),
         ),
         position_deg=-22, lateral_consumer="fc_selector", session_id="sess",
+        graph_fingerprint="fp-applied", captured_at="2026-08-26T00:00:00Z",
         wav_sha256="abc",
     )
     entry = _entry_record(index=3, attempt=7, session_id="sess", wav_sha256="abc")
@@ -424,6 +425,64 @@ def test_all_three_take_builders_state_one_identity_under_one_vocabulary():
     assert cloud["position_id"] == "cloud_measure_03"
     assert pose["pose_id"] == "lateral_03"
     assert "pose_id" not in cloud and "position_id" not in pose
+
+
+def _pose_record(**overrides):
+    """One retained lateral pose, with only the field under test named."""
+    fields = {
+        "position_deg": -22, "lateral_consumer": "fc_selector",
+        "session_id": "sess", "graph_fingerprint": "fp-applied",
+        "captured_at": "2026-08-26T00:00:00Z", "wav_sha256": "abc",
+    }
+    return spatial.lateral_pose_record(
+        spatial.LateralPose(
+            pose_id="lateral_03", index=3, attempt=7, prompt="step left",
+            role="offax", offset_cm=25.0, at_mark=False, curves=(),
+        ),
+        **{**fields, **overrides},
+    )
+
+
+def test_every_retained_take_kind_states_when_it_was_captured():
+    """``captured_at`` on all three builders, not on two of them.
+
+    A walk pose was the one retained take carrying no clock, so a banked round
+    could say WHERE each capture was taken and in what ORDER the walk served
+    them, but never WHEN. Sorting or windowing banked rounds by time had to
+    fall back on file mtime, which WO-0 measured actively misrouting.
+    """
+    cloud = spatial.cloud_position_record(
+        position_id="cloud_measure_03", phase=PHASE_CLOUD_MEASURE, index=3,
+        attempt=7, prompt="stand here", wide=False, role="onax",
+        geometry=spatial.PositionGeometry(
+            axis=spatial.POSITION_AXIS_HORIZONTAL, degrees=-7,
+            mark_distance_m=1.0,
+        ),
+        captured_at=1.0, session_id="sess", gate_window_ms=12.0,
+        gate_floor_source="reflection", gate_disclosure="a wall",
+        gate_moved_rms_db=2.59, gate_reflection_delay_ms=5.33,
+        validity_floor_hz=100.0, gating_applied=True, summed_ripple_db=1.0,
+        glitch_detected=False, wav_sha256="abc",
+    )
+
+    for record in (cloud, _pose_record(), _entry_record()):
+        assert record["captured_at"]
+
+
+def test_two_walks_at_one_pose_are_told_apart_by_the_applied_candidate():
+    """The pose identity cannot separate them; the graph fingerprint can.
+
+    A walk re-run at the same bearing under a different applied candidate mints
+    the SAME take id — the id is the pose plus the attempt, and neither moved.
+    Without this column the two records are indistinguishable, which is what
+    forced a reader wanting to know which graph a walk ran under to open the
+    capture-retention ring's sidecar instead of the take itself.
+    """
+    before = _pose_record(graph_fingerprint="fp-entry")
+    after = _pose_record(graph_fingerprint="fp-candidate")
+
+    assert before["take_id"] == after["take_id"]
+    assert before["graph_fingerprint"] != after["graph_fingerprint"]
 
 
 def test_a_banked_pose_curve_reconstructs_the_complex_transfer_function():
@@ -499,6 +558,7 @@ def test_the_pose_record_banks_one_curve_per_driver_it_measured():
             curves=(_curve("woofer"), _curve("tweeter")),
         ),
         position_deg=-22, lateral_consumer="fc_selector", session_id="sess",
+        graph_fingerprint="fp-applied", captured_at="2026-08-26T00:00:00Z",
         wav_sha256="abc",
     )
 
