@@ -1,736 +1,285 @@
-# Handoff: observability & debug-mode design
+# HANDOFF — observability and debug mode
 
-How JTS logging and diagnostic capture work today, the principle
-that keeps production diagnosable without turning it into a profiler,
-and where deeper resource characterization belongs. Read
-[HANDOFF-resilience.md](HANDOFF-resilience.md) first — this sits on
-top of that resilience ladder and does not restate it.
+How JTS logging and diagnostic capture work today: the always-on floor, the
+temporary verbosity toggle, and the bounded artifacts. Read
+[HANDOFF-resilience.md](HANDOFF-resilience.md) first — this sits on top of that
+ladder and does not restate it.
 
-> **Status: current-state reference + approved design.** The
-> "Current state" section is operational truth (verified
-> 2026-07-12). Tier A/B/C are built; Tier D was removed in review.
-> New observability work should preserve the three-plane boundary
-> below: cheap production truth, temporary debug verbosity, and
-> explicit bounded diagnostic artifacts.
+The shape is
+[ADR-0143](adr/0143-observability-has-three-planes-and-debug-verbosity-is-additive-only.md)
+(three planes; debug is additive only) and
+[ADR-0144](adr/0144-diagnostics-leave-the-box-over-ssh-not-over-the-lan.md)
+(no LAN diagnostics bundle). The May-2026 build record and cohort survey are in
+[`historical/observability-design-2026-05.md`](historical/observability-design-2026-05.md).
 
----
+## The `event=` spine
 
-## Current state (operational truth)
+Cross-daemon state changes emit `event=<name> key=val …` lines
+(`event=shairport.wedge_detected`, `event=system_supervisor.userspace_wedge`,
+`event=wifi_guardian.recreate_ok`, `event=duck`,
+`event=fanin.assistant_loudness`, …). `scripts/jasper-trace.sh` keys off them.
+They are the cheap, high-signal, always-on observability floor — keep them.
 
-**Three-plane boundary (load-bearing, verified 2026-07-12).**
-JTS intentionally separates:
+**Emit through `jasper.log_event.log_event`, never a hand-written f-string.**
+[`jasper/log_event.py`](../jasper/log_event.py) is the one renderer for the
+spine. It is byte-identical to a hand-written line for clean values, but it
+**logfmt-quotes/escapes** any value containing an ASCII space, `=`, a quote, a
+backslash, any ASCII control (C0 plus DEL), NEL, or U+2028/U+2029. Backslash,
+quote, newline, carriage return, and tab render as `\\`, `\"`, `\n`, `\r`,
+`\t`; remaining controls and separators as literal `\uXXXX`. An untrusted field
+(SSID, USB descriptor, Bluetooth/mDNS name, HA error body, free-text reason)
+therefore cannot corrupt the `key=val` parse or create a second physical
+journal line.
 
-1. **Production health:** always-on, cheap, fixed-shape truth:
-   `/healthz`, `/state`, `/system/snapshot`,
-   `jasper-doctor --json`, daemon STATUS sockets, and structured
-   `event=` journal lines. This plane may add low-cost fields such
-   as service `ActiveState`/`SubState`/`NRestarts`, outputd bridge
-   counters, output hardware observed-vs-active state, restart/failure
-   warnings, and installed wake-asset checks. It must not include raw
-   log bundles, PSS scans, profilers,
-   or long soak history.
-2. **Temporary debug verbosity:** the `/system` Debug card and
-   `/var/lib/jasper/debug.env` raise scoped daemon logging for a
-   TTL-bound session. It is additive only and auto-expires; it is not
-   a memory profiler.
-3. **Bounded diagnostics:** explicit operator commands produce
-   artifacts, then exit. Whole-system memory/CPU/journal
-   characterization lives in `jasper-system-soak`, normally launched
-   via `bash scripts/pi-system-soak.sh ...`, which in turn uses
-   `scripts/pi-run-diagnostic.sh` so systemd bounds memory/runtime and
-   gives the kernel an obvious diagnostic process to kill before
-   product daemons. A device-specific intermittent fault may instead use an
-   explicitly enabled, hard-capped RAM ring with deliberate artifact freezes;
-   USB gadget forensics is the concrete instance and remains separate from the
-   TTL log-level toggle. Its limits and retention live in
-   [HANDOFF-usb-gadget.md](HANDOFF-usb-gadget.md#opt-in-rolling-usb-forensics).
+Mechanics: `level=logging.WARNING` sets severity; `exc_info=True` attaches a
+traceback (the `logger.exception("event=…")` equivalent); a field whose name
+collides with a reserved param (chiefly `level`, the volume level) or is not a
+valid identifier (`from`) rides the explicit `fields={…}` mapping.
+`JASPER_LOG_JSON=1` switches on an opt-in JSON sink for machine consumers.
 
-This is the project rule that keeps observability from muddying the
-steady state: production gets truth, not lab equipment.
-
-**Logging is plain `logging.basicConfig(level=INFO)` per daemon.**
-Each long-running daemon (`jasper-voice`, `jasper-control`,
-`jasper-aec-bridge`, `jasper-mux`, the renderers, and profile-gated
-adapters such as `jasper-wiim-remote-mic`) calls `basicConfig` once at
-startup with a hardcoded `INFO` level and the format
-`%(asctime)s %(levelname)s %(name)s: %(message)s`. There is no
-shared logging module and no `dictConfig`. Beyond the
-per-subsystem **Debug card** (Tier B below) there is **no general
-runtime log-level knob**: `JASPER_LOG_LEVEL` reaches only one idle
-wizard (`jasper/web/speaker_setup.py`), not the daemons. The level
-is read once at startup — which is why the Debug card applies via a
-daemon restart (or, for `control`, in-process).
-
-**The spine is the structured `event=` line.** Cross-daemon state
-changes emit `event=<name> key=val …` lines (`event=shairport.wedge_detected`,
-`event=system_supervisor.userspace_wedge`, `event=wifi_guardian.recreate_ok`,
-`event=wifi_recover.no_active`, `event=duck`,
-`event=fanin.assistant_loudness`, …).
-`scripts/jasper-trace.sh` keys off them. They are the cheap,
-high-signal, always-on observability floor — keep them.
-
-**Emit them through `jasper.log_event.log_event`, not a hand-written
-f-string.** `log_event(logger, "<domain.action>", key=value, …)`
-([`jasper/log_event.py`](../jasper/log_event.py)) is the one renderer
-for the spine. It is byte-identical to the old hand-written line for
-clean values, but it **logfmt-quotes/escapes** any value containing an ASCII
-space, `=`, a quote, a backslash, any ASCII control (C0 plus DEL), NEL, or the
-Unicode line/paragraph separators U+2028/U+2029. Backslash, quote, newline,
-carriage return, and tab use `\\`, `\"`, `\n`, `\r`, and `\t`; the remaining controls
-and separators use literal `\uXXXX` sequences. An untrusted field (SSID, USB
-descriptor, Bluetooth/​mDNS name, HA error body, free-text reason) therefore
-cannot corrupt the `key=val` parse or create a second physical journal line.
-It also offers an opt-in JSON sink
-(`JASPER_LOG_JSON=1`) for machine consumers. Mechanics:
-`level=logging.WARNING` sets severity; `exc_info=True` attaches a
-traceback (the `logger.exception("event=…")` equivalent); a field whose
-name collides with a reserved param (chiefly `level`, the volume level)
-or isn't a valid identifier (`from`) rides the explicit `fields={…}`
-mapping. A conventions guard
+A conventions guard
 ([`tests/test_log_event_conventions.py`](../tests/test_log_event_conventions.py))
-fails CI on any new hand-written `logger.<level>("event=…")` call;
-its allowlist holds only active-zone files deferred to in-flight work.
+fails CI on any new hand-written `logger.<level>("event=…")` call. Its
+`DEFERRED_ACTIVE_ZONE` list — files left hand-written so the migration does not
+churn a parallel work-stream's edits — is the **authoritative inventory**; a
+staleness test fails CI if a listed file no longer has a hand-written line, so
+the list cannot silently rot. To finish one: migrate its calls using the
+fidelity rules (byte-identical for clean values; a legacy `%s` that can receive
+a bool or `None` → `str()` so its spelling stays `True`/`False`/`None`;
+`%r` → `repr()`; precision specs → pre-rendered f-strings; trailing prose → a
+`note=` field; a field named `level` → the `fields=` mapping), then delete that
+file's entry so the guard starts enforcing it.
 
-**Active-crossover commissioning lifecycle events (Slice 0).** The shipped
-crossover flow's `correction.crossover_*` events
-(`correction.crossover_driver_capture_sweep`, `correction.crossover_summed_capture`,
-`correction.crossover_relay_recorded`, and friends, all in
-[`jasper/web/correction_crossover_backend.py`](../jasper/web/correction_crossover_backend.py))
-are joined by a small set of session/apply lifecycle events extending the same
-namespace (design of record:
+Subsystem event catalogs live with their subsystem, not here — the
+active-crossover commissioning lifecycle names, their common fields, and the
+reserved-but-unemitted set are owned by
 [`active-crossover-information-design.md`](active-crossover-information-design.md)
-"Structured events"): `correction.crossover_session_started`
-([`jasper/active_speaker/measurement.py`](../jasper/active_speaker/measurement.py)'s
-`start_active_comparison_set`), `correction.crossover_capture_accepted` /
-`correction.crossover_capture_rejected`
-([`jasper/active_speaker/commissioning_capture.py`](../jasper/active_speaker/commissioning_capture.py)'s
-`record_driver_acoustic_capture` / `record_summed_acoustic_capture` — the
-shared chokepoint both the relay flow and `web_measurement` call), and
-`correction.crossover_apply_started` / `correction.crossover_apply_succeeded` /
-`correction.crossover_apply_rolled_back`
-([`jasper/active_speaker/baseline_profile.py`](../jasper/active_speaker/baseline_profile.py)'s
-`apply_baseline_profile` — `apply_rolled_back` is the one typed failure event
-name; there is no separate `apply_failed`). Common fields, included when
-available and omitted otherwise: `session`, `group`, `role`, `verdict`,
-`outcome`, `reason`, `snr_db`, `floor_hz`, `graph_fingerprint`,
-`candidate_fingerprint`, `applied_fingerprint`. Post-apply commissioning
-declares `correction.crossover_verification_passed` and
-`correction.crossover_verification_failed` in
-[`commissioning_verification.py`](../jasper/active_speaker/commissioning_verification.py),
-each emitted at most once with the exact run, target/applied authority, and
-receipt or failure artifact identity as relevant — but **neither can fire
-today**. Both branches need accumulated post-apply repeat captures, and the
-only writer of those captures was the commissioning-capture seam deleted in
-#2362; it had no production caller before that deletion either, so this pair
-was already unreachable rather than newly broken. Three more names are
-**reserved but never emitted yet** — declared in
-`commissioning_capture.RESERVED_CROSSOVER_EVENTS` with a docstring naming which
-future slice/phase emits each: `correction.crossover_proposal_ready` (Slice 3)
-and `correction.crossover_level_locked` /
-`_level_failed` (level locking already ships under
-`correction.crossover_driver_level_*` names; renaming it onto this namespace is
-a deliberate future migration, not something that happens silently). A static
-scan in
-[`tests/test_active_speaker_commissioning_capture.py`](../tests/test_active_speaker_commissioning_capture.py)
-pins that no call site emits a reserved name. The same slice also adds a small
-`commissioning` block to `/state.active_speaker_setup`
-(`jasper/active_speaker/setup_status.py`'s `commissioning_summary`) — phase,
-session/fingerprint ids, the newest capture's SNR/verdict/clipping, and the
-last failure code — for the household/operator summary described in the design
-doc's "Runtime surface"; detailed curves and bundle paths stay out of `/state`
-by design. [#2412](https://github.com/jaspercurry/JTS/issues/2412)'s Wave 4 adds
-one more key, `transport`. **Since [#2285](https://github.com/jaspercurry/JTS/issues/2285)'s
-P2 the production contract is single-transport: `ring` or `null`, never `alsa`**
-(post-seal correction 9). P2 deleted `resolve_output_layout` case 2's marker
-read, so the ACTIVE-endpoint marker takes no part in this derivation — spied
-across the roleful and passive fixtures, it is consulted zero times and both
-report `ring`. `null` still means the topology cannot be read or resolves to no
-device, and it is still **not** a rolefulness test: a passive box resolves the
-active outputd lane and reports `ring` like any other. What decides ring-vs-null
-is the DAC profile — `resolve_output_layout` names the ring when the profile
-declares an active outputd lane, and a box failing that condition is the
-`no device` case. `alsa` survives only for a non-ring device string, reachable
-here only through an explicit lab/CI override (`playback_device` or
-`JASPER_ACTIVE_SPEAKER_PLAYBACK_DEVICE`); `transport_label` keeps that branch and
-the `driver_commission_load` journal line still exercises both values, because it
-reports the device a load actually used. Why the key exists at all: before P2 a
-commissioning graph could name the ACTIVE lane and reach it over either snd-aloop
-or the ring while only one of those is fed by fan-in under `shm_ring`, so a
-device reported without its transport was a half-fact — P2 retired the snd-aloop
-half, and the key now records which transport a box is on rather than which of
-two it chose. It shares one derivation
-(`jasper.fanin_coupling.transport_label`) with the `transport=` field the same
-wave puts on the `driver_commission_prepared` and `driver_commission_load`
-journal lines, so the two surfaces cannot disagree about a device they both
-resolve the same way. That is a shared *derivation*, not an enforced one: the
-prepare path accepts a caller-supplied `playback_device=` override, and no
-production caller passes one today (call-site audit, PR #2643), so the agreement
-rests on that convention rather than on a guard in the API.
+"Structured events" and `commissioning_capture.RESERVED_CROSSOVER_EVENTS`.
 
-Lane D adds `correction.crossover_repeat_attempt` once per reserved attempt
-(including transport failures),
-`correction.crossover_repeats_aggregated` at the bounded decision, and
-`correction.crossover_repeat_aborted` when the single correction service's
-explicit startup claim retires an old owner's active set. A `ready` set is
-never guessed complete after a crash: it remains a no-more-audio/apply gate and
-the envelope asks for a fresh level-check context. Terminal attempt-four
-transport failures with two accepted captures emit
-`correction.crossover_repeats_finalized_after_transport_failure` and finalize
-at reduced confidence. Admission write failures emit
-`correction.crossover_repeat_persistence_failed`; the gate stays closed.
-Admission authority is the flocked, atomic
-`/var/lib/jasper/active_speaker_repeat_admission.json` state owned by
-`jasper.active_speaker.repeat_admission`; bundle `repeat_progress` is a
-best-effort forensic mirror and is never read to decide whether audio may play.
-The crossover envelope surfaces the latest rejection reason, worst-band SNR
-shortfall, clipping, or validity floor without copying curves into `/state`.
-Its count also comes from the durable ledger, so a failed relay attempt cannot
-make the page promise a fifth sweep that admission will refuse.
+## Logging shape
 
-**Former forward-wired fields — closed 2026-07-12.** The crossover lanes now
-produce the real shapes: `session` / `session_id` read
-`active_comparison_set.bundle_session_id`, and `snr_db` / `floor_hz` /
-`last_capture.snr_db` read
-`acoustic.snr.worst_relevant.estimated_snr_db` and
-`acoustic.gating.f_valid_floor_hz`. The fabricated top-level session-key
-assumption and all `FORWARD-WIRED(active-crossover)` markers were removed;
-real-shape tests pin the event and `/state` readers.
+Each long-running daemon (`jasper-voice`, `jasper-control`,
+`jasper-aec-bridge`, `jasper-mux`, the renderers, and profile-gated adapters
+such as `jasper-wiim-remote-mic`) calls `logging.basicConfig` once at startup
+with a hardcoded `INFO` level and the format
+`%(asctime)s %(levelname)s %(name)s: %(message)s`. There is no shared logging
+module and no `dictConfig`. Beyond the Debug card there is **no general runtime
+log-level knob**: `JASPER_LOG_LEVEL` reaches only one idle wizard
+(`jasper/web/speaker_setup.py`), not the daemons. The level is read once at
+startup, which is why the Debug card applies via a daemon restart (or, for
+control, in-process).
 
-**Remaining migration — 13 deferred active-zone files.** The migration is
-complete across the codebase *except* a small set of files an in-flight
-work-stream owns; those were left hand-written to avoid churning a parallel
-session's edits. **The authoritative, machine-checked list of what's left is
-`DEFERRED_ACTIVE_ZONE` in
-[`tests/test_log_event_conventions.py`](../tests/test_log_event_conventions.py)**
-— a staleness test fails CI if any listed file no longer has a hand-written
-`event=` line, so the list cannot silently rot. As of 2026-07-12 it is two
-clusters:
+### The heartbeat-vs-forensic split
 
-- **Active-crossover / sound UI work-stream** —
-  `jasper/active_speaker/{camilla_yaml,playback,staging,startup_load}.py`,
-  `jasper/output_topology.py`, and `jasper/sound/camilla_yaml.py`.
-  `jasper/web/sound_setup.py` completed its 92-site / 37-event-name migration;
-  the conventions guard now pins both zero violations and no replacement
-  active-zone exemption for that file.
-- **LLM tool surfaces** —
-  `jasper/tools/{__init__,audio,bus,citibike,diagnostic,home_assistant,packs}.py`.
-  Deferred with the rest of `jasper/tools/` (the voice-tool surface) to keep
-  the migration clear of prompt-adjacent files; the `event=` *log* lines there
-  are ordinary operational logs (not LLM-facing docstrings) and migrate
-  cleanly when picked up.
+The resilience layer is already disciplined about steady-state noise: the
+shairport and system supervisors log **nothing on the healthy path** (one
+`event=*.start` per boot, then silence until a failure); the Tier-1
+`Heartbeat.bump()` logs nothing per frame; the AEC reconciler, WiFi guardian,
+and WiFi recover timer are oneshot paths whose scripts emit no `event=` line on
+a healthy tick (systemd still records ~2 activation lines per tick, kept low by
+the ~3-min cadence).
 
-**To finish a deferred file:** migrate its `logger.<level>("event=…")` calls
-to `log_event(…)` using the fidelity rules above (byte-identical for clean
-values; a legacy `%s` that can receive a bool or `None`→`str()` so its spelling
-stays `True` / `False` / `None`; `%r`→`repr()`; precision specs→pre-rendered
-f-strings; trailing prose→a `note=` field; a field named `level`→the `fields=`
-mapping), then
-**delete that file's entry from `DEFERRED_ACTIVE_ZONE`** so the guard starts
-enforcing it. The owning work-stream lands first; this is a clean follow-up,
-not a blocker.
+Every recovery/decision line is WARNING or ERROR. That gives the split a debug
+toggle can rely on:
 
-**Persistent journald is deliberate, not an oversight.**
-`deploy/journald/50-jts-persistent-storage.conf` sets
-`Storage=persistent` capped at 500 MB so a watchdog reset's
-*previous-boot* logs survive — the whole point of Tier 5
-forensics (see [HANDOFF-resilience.md](HANDOFF-resilience.md)).
-Cost per that doc: ~30 MB/hr → ~270 GB/yr against ~100 TBW SD
-endurance — **not a flash-wear emergency.** (`SystemMaxUse` is a
-retention ceiling, not a write-rate knob — the bytes/day written are
-unchanged, so a larger cap adds disk, not wear.) Global journald
-`RateLimit*` settings stay at systemd defaults. Two external-log
-exceptions have narrow per-unit overrides: `jasper-camilla.service`
-(`LogRateLimitBurst=120` per 60 s) because CamillaDSP can emit an
-unstructured ALSA short-read WARN line many times per second when the capture
-graph is degraded, and `jasper-snapclient.service` (`LogRateLimitBurst=30`
-per 60 s) because an optional bonded follower logs a connection-refused loop
-while its leader is offline. In both cases journald still records the first
-burst and its native suppression summary, but a sustained external flood no
-longer consumes the persistent journal.
+- **Forensic — must always persist.** Every WARNING+/`event=` recovery,
+  probe-fail, wedge, restart/reboot decision, `stash_stale`/`recreate_*`, the
+  Tier-1 `heartbeat suppressed` breadcrumb, the bridge `BridgeStalled` warning.
+  You get **one shot** at these when a rare failure fires. Never suppress.
+- **Heartbeat / chatty — safe to quiet.** A small set of always-on INFO
+  emitters, below.
 
-**The 500 MB cap is also the retention window — forensics have a
-volume-dependent shelf life.** journald vacuums oldest-first at the
-cap, so heavy log volume silently eats the boot-time entries Tier 5
-forensics depend on. Observed 2026-06-11 on jts3 under lab-grade
-multiroom logging (under the earlier 200 MB cap): the journal sat at
-188 MB and the *current* boot's
-first surviving entry was ~5 h after boot — `event=bootloop_guard.ok`
-from 15 h earlier was already gone while the unit's exit status
-showed it had run fine. The 500 MB cap widens that window ~2.5× at
-the same log volume, but the failure mode is unchanged in principle.
-Before treating a missing journal line as
-"never happened," check `journalctl --list-boots` first-entry
-timestamps; `/state.resilience.*` and unit exit status are the
-durable surfaces. The household speaker's far lower volume keeps a
-much longer window — this bites lab Pis first.
-
-**The heartbeat-vs-forensic split — the load-bearing principle.**
-The resilience layer is *already* disciplined about steady-state
-noise:
-- the shairport + system supervisors log **nothing on the healthy
-  path** — one `event=*.start` per boot, then silence until a
-  failure (the `_tick` healthy branch returns without logging);
-- the Tier-1 `Heartbeat.bump()` logs nothing per frame;
-- the AEC reconciler, WiFi guardian, and WiFi recover timer are oneshot
-  paths — the recover timer's *script* emits no `event=` line on a healthy
-  tick (only manual runs or actual down-path recovery work log), though
-  systemd still records its ~2 activation lines per tick; the timer's
-  ~3-min cadence keeps that churn low.
-
-Every recovery/decision line is **WARNING or ERROR**. That gives a
-clean split a debug toggle can rely on:
-
-- **Forensic — must always persist:** every WARNING+/`event=`
-  recovery, probe-fail, wedge, restart/reboot decision,
-  `stash_stale`/`recreate_*`, the Tier-1 `heartbeat suppressed`
-  breadcrumb, the bridge `BridgeStalled` warning. You get **one
-  shot** at these when a rare failure fires. Never suppress.
-- **Heartbeat / chatty — safe to quiet:** a small set of always-on
-  INFO emitters. The known hotspots are below.
-
-**Steady-state verbosity hotspots** (from real Pi logs,
-music playing, ~110 lines/min combined):
+**Steady-state verbosity hotspots** (from real Pi logs, music playing,
+~110 lines/min combined):
 
 | Source | Volume | Control point | Note |
 |---|---|---|---|
 | shairport PTP anchors | ~40/min (55% of shairport output) | `log_verbosity = 2` in `deploy/shairport-sync.conf.template` | **Intentional** — open AP2 "Pattern E" hunt ([HANDOFF-airplay.md](HANDOFF-airplay.md)). Do **not** lower until that bug closes. |
-| AEC bridge `rms over` line | 1 / 5 s, always-on | the hardcoded `now - last_log > 5.0` gate in `aec_bridge.py`'s AEC loop | **Load-bearing** — `jasper-doctor`'s `_assess_aec_bridge_output` parses it from the journal, so demoting it blinds the AEC health check. Manage via Tier C, not demotion. |
+| AEC bridge `rms over` line | 1 / 5 s, always-on | the hardcoded `now - last_log > 5.0` gate in `aec_bridge.py`'s AEC loop | **Load-bearing** — `jasper-doctor` parses it from the journal continuously, so demoting it blinds the AEC health check. Manage via the flight recorder, not demotion. |
 
-The old voice-side `event=tts_gain.compute` hotspot is retired. Current
-assistant loudness observability is one `event=fanin.assistant_loudness`
-line per assistant/cue segment plus fan-in STATUS telemetry under
-`tts.assistant_loudness`, so it is load-bearing without being
-steady-state journal spam. The low-level `tts gain set` echo in
-`audio_io.py` remains DEBUG.
+Assistant loudness is one `event=fanin.assistant_loudness` line per
+assistant/cue segment plus fan-in `STATUS` telemetry under
+`tts.assistant_loudness` — load-bearing without being journal spam. The
+low-level `tts gain set` echo in `audio_io.py` is DEBUG.
 
-**Resilience state is observable without logs:**
-`curl -s http://jts.local:8780/state | jq .resilience` (`shairport`,
-`grouping_supervisor`, `system_supervisor`, `wifi_guardian`), the
-`jasper-doctor` checks, and the `event=*` journal lines. The doctor now
-includes a `supervisor runtime snapshots` line that reads the same
-`/state.resilience` snapshots and warns when a supervisor is kicking,
-rate-limited, or failing to converge. `/state.resilience.multiroom_cascade`
-is a bounded in-memory event ring sourced from persistent journald:
-`multiroom.reconcile.*`, `restart_broker.*`, and
-`grouping_supervisor.*` lines are classified into recent
-restart-cascade events so an operator can reconstruct "what restarted
-what, when" from `/state` without first digging through the journal. It
-is production truth, not a log bundle: small deque, fixed shape, a bounded
-startup lookback (15 minutes) into persistent journald, journal
-`occurred_at` timestamps preserved separately from sampler `observed_at`,
-and fail-soft to an empty/disabled/null snapshot. Note: the `/system/`
-dashboard does **not**
-render a resilience card today (the docs correctly never claim it does) —
-adding one is a natural extension of the debug card below.
+## Persistent journald and its retention window
 
-**Output hardware state is observable without probing audio streams:**
-`jasper-audio-hardware-reconcile` writes
-`/run/jasper-output-hardware/output_hardware.json` and logs
-`event=audio_hardware_reconcile.state_written` after each install/boot/udev
-convergence pass. `/state.audio.output_hardware`, `/sound/output-topology`,
-and `jasper-doctor` read that same artifact so output hardware diagnostics can
-distinguish the active runtime role from the best observed physical shape.
+`deploy/journald/50-jts-persistent-storage.conf` sets `Storage=persistent`
+capped at `SystemMaxUse=500M` so a watchdog reset's *previous-boot* logs
+survive — the whole point of Tier 5 forensics. Cost per
+[HANDOFF-resilience.md](HANDOFF-resilience.md): ~30 MB/hr → ~270 GB/yr against
+~100 TBW SD endurance, **not a flash-wear emergency**. `SystemMaxUse` is a
+retention ceiling, not a write-rate knob — a larger cap adds disk, not wear.
 
-**Audio health is one normalized, cached production surface.**
-[`jasper/control/audio_health.py`](../jasper/control/audio_health.py) composes
-the existing bounded AirPlay collector, a local outputd `STATUS` read, and a
-slow route/transport/artifact assessment into `/state.audio_health` and
-`/system/snapshot.audio_health`. The browser renders those conclusions; it
-does not run probes or classify raw counters. Production starts one
-`AudioHealthSampler` thread in place of the former standalone AirPlay sampler
-thread, so opening `/system/audio/` adds no resident worker and no probe work.
-The fast cadence is fixed-shape local UDS state; journal, MPRIS, Camilla, and
-route-artifact work stays on slower bounded cadences; the route check reads one
-atomic, route-specific latest pointer rather than scanning accumulated history
-(with one constant-work `latest.json` fallback for pre-upgrade evidence).
-Source readiness reuses the System sampler's cached 30-second systemd snapshot
-and the local-source registry's explicit health-unit set to distinguish Ready,
-Not running, and failed without treating pairing/advertising helpers as the
-renderer. The selected lane becomes a current stream only when
-`jasper-mux STATUS.sources[<id>].playing` agrees. Mux is the single owner of
-AirPlay, USB, Spotify, and Bluetooth activity predicates, so free-running
-silent lanes do not become fake sessions and audio health adds no duplicate
-per-source probe cadence. Missing or unreadable mux state fails closed as
-"Playback activity unavailable" and preserves an already-observed session;
-it is never presented as healthy idle. A broken post-DSP transport — CamillaDSP
-and outputd on different loopback lanes, so nothing reaches the drivers however
-healthy each daemon looks — is read on the slow cadence from the same
-`transport_coherence_report` detector `jasper-doctor` uses, on the same evidence
-(both statefiles, outputd's live capture PCM, and the persisted coupling), and
-reported as a parked signal path rather than "Audio is ready". The coupling is
-part of that evidence list because the detector takes a coupling TOKEN and
-derives the transport shape from it: handing it a transport SHAPE name instead
-read an armed ring box as loopback and called a playing speaker parked (#2376).
-Only that detector's `errors` reach the parked wording.
-The other intentional-silence case is the proven all-muted parked graph. Audio
-health reads that graph from the persisted Camilla statefile, and `/state`, the
-dashboard, and `jasper-doctor` surface its contract-owned next action. The
-fallback contract — including what counts as intentional silence versus a
-failure — is owned by the [speaker-output reference](HANDOFF-speaker-output-reference.md#current-outputd-state).
-Its `notes` — coherent-but-transient states, today the two rungs of the
-ACTIVE-ring arm ladder (the graph rung under a `loopback` plan, and the
-first-arm endpoint rung where the ring PATH still lags its marker) — are
-published as `coherence_notes` for whoever reads
-`/state` and deliberately do NOT trip the household card: they are rungs of an
-operator-only ladder the household cannot act on, so `jasper-doctor` is the loud
-surface (it warns on the graph rung; on the endpoint rung outputd refuses to
-attach the lagging pair, so the loud signal is the `jasper-outputd` check
-failing on a daemon that is not running, and the note is the explanation
-beside it). When the cause is a saved layout the
-DAC can never drive, the detail names the DAC and points at `/sound/setup/`,
-because no reconcile or restart can clear that one. A CamillaDSP that is simply
-*stopped* is read off the same cached systemd snapshot and reported the same
-way — as a signal-path issue that reaches `overall`, not merely an incident
-beside an otherwise green card. It has to be, because the signal path cannot
-see it any other way: that detector reads only fan-in and outputd, and both are
-built to keep looping when the stage between them disappears (fan-in's default
-`loopback` coupling is timer-paced, `shm_ring` free-run-drops an absent reader,
-outputd zero-fills its content lane), while both `last_progress_age_ms` counters
-time the work loop rather than audio moving. Left alone, one response would
-assert "Signal path clean" / "Audio is ready" beside its own "DSP engine is not
-running" — and an affirmative wrong answer is worse than the silence the gap was
-found as. `jasper-camilla.service` has no `Condition*` gate and no legitimate
-parked state, so a clean `inactive` — which `check_service_runtime_state` passes
-and the services table hides — is an issue rather than silence. A unit that is
-not installed at all gets doctor's remedy instead, so the two surfaces do not
-tell one operator two stories. Its neighbours are
-deliberately excluded, because `jasper-outputd` (missing-DAC `ExecCondition`)
-and `jasper-voice` (`voice-input-absent` marker) do park themselves `inactive`
-by design. A live fan-in or outputd failure still outranks the override, the
-same way it outranks a parked path. Audio health does not spawn a second
-`systemctl` cadence.
+Global journald `RateLimit*` settings stay at systemd defaults. Two external
+log sources have narrow per-unit overrides: `jasper-camilla.service`
+(`LogRateLimitBurst=120` per 60 s), because CamillaDSP emits an unstructured
+ALSA short-read WARN many times per second when the capture graph is degraded,
+and `jasper-snapclient.service` (`LogRateLimitBurst=30` per 60 s), because an
+optional bonded follower logs a connection-refused loop while its leader is
+offline. journald still records the first burst and its suppression summary.
 
-A fourth override, `_undeclared_hardware_signal` (#2812), refines rather than
-outranks: it only replaces `_signal_path`'s own two generic "outputd is not
-delivering audio" headlines (`outputd is None`, or a non-ALSA backend — the
-dual-Apple `action=park_until_active_graph` path keeps outputd's sockets alive
-on a `fake` backend rather than opening ALSA) with a household-actionable one
-naming the detected hardware and pointing at `/sound/setup/`, so it runs last
-in the chain and only claims ground neither `_stopped_dsp_signal` nor
-`_parked_signal` already claimed with a more specific diagnosis. It requires
-BOTH the reconciler's own adoption gate
-(`detected_hardware_adoption_precondition` — a known, non-blocked, usable
-profile) AND the DECLARED topology genuinely not matching what's attached
-(`declared_hardware_mismatch`, in `jasper/output_topology.py` — the same
-comparison `/sound/setup/`'s "Use detected hardware" affordance uses,
-published once and read by both surfaces so neither forks the rule). On a box
-that has never saved a topology at all — the primary case — the second
-conjunct is satisfied directly from `load_output_topology_snapshot`'s
-`revision == "missing"`, without ever calling `declared_hardware_mismatch`:
-that function has no way to see "undeclared" on its own, because a missing
-file's `new_topology_draft` fallback auto-seeds `hardware` FROM the observed
-record whenever it has outputs, which would otherwise read as a false match.
-The second conjunct is load-bearing: an already-declared, already-armed box
-hitting an ordinary outputd hiccup (a deploy's audio-graph bounce, a crash)
-must not be told to "finish setup" for a setup that already happened. Declared
-topology is read on the same slow `_route_interval` cadence as the
-route/transport check above, not every fast tick, because it changes only when
-a household explicitly saves a new layout. The matching `path.*` incident row
-(`path.outputd_unavailable` / `path.outputd_backend_inactive`) is refined with
-the identical wording whenever this override fires, computed once per tick and
-threaded into both, so the incident history and the live headline cannot
-present two different explanations of the same fact.
+**The cap is also the retention window, so forensics have a volume-dependent
+shelf life.** journald vacuums oldest-first: heavy log volume silently eats the
+boot-time entries Tier 5 forensics depend on. Observed 2026-06-11 on jts3 under
+lab-grade multiroom logging (at the earlier 200 MB cap) the journal sat at
+188 MB and the *current* boot's first surviving entry was ~5 h after boot —
+`event=bootloop_guard.ok` from 15 h earlier was already gone while the unit's
+exit status showed it had run fine. The 500 MB cap widens that window ~2.5× at
+the same volume; the failure mode is unchanged in principle. **Before treating
+a missing journal line as "never happened", check `journalctl --list-boots`
+first-entry timestamps** — `/state.resilience.*` and unit exit status are the
+durable surfaces. A household speaker's far lower volume keeps a much longer
+window; this bites lab Pis first.
 
-The contract separates playback continuity from timing. A USB `l2_fallback`
-is a latency warning while playback remains protected; `l0_locked` is runtime
-clock state, not an end-to-end measurement. Stale, missing, mismatched, or
-historical route artifacts remain technical evidence instead of creating a
-household warning. AirPlay synchronization remains source-specific rather than
-becoming a USB low-latency claim.
+## Production-plane surfaces
 
-`AudioHealthSampler` owns the current-stream projection and feeds observations
-to [`jasper/control/audio_incidents.py`](../jasper/control/audio_incidents.py),
-which owns the incident lifecycle, current-session rollup, and bounded store.
-Ongoing conditions cannot be evicted by recovered blips, recovered entries
-coalesce, and the browser shows at most five recent rows. A normalized,
-allowlisted freeze frame is captured only at an incident transition and
-persisted atomically in the bounded
-`/var/lib/jasper/audio_health_incidents.json` ring (20 records, 128 KiB read
-cap); corrupt, oversized, symlinked, or newer-schema input fails soft. The
-sampler does not write on ordinary 5-second observations. Known-inaudible
-Camilla short reads remain collapsed technical evidence unless an audible
-boundary also fails. The legacy `airplay_health` block is retained for existing
-consumers and deeper AirPlay forensics.
+- **Resilience without logs.** `curl -s http://jts.local:8780/state | jq
+  .resilience` (`shairport`, `grouping_supervisor`, `system_supervisor`,
+  `wifi_guardian`), plus the doctor's supervisor-snapshot check, which reads
+  the same snapshots and warns when a supervisor is kicking, rate-limited, or
+  failing to converge. `/state.resilience.multiroom_cascade` is a bounded
+  in-memory ring sourced from persistent journald (`multiroom.reconcile.*`,
+  `restart_broker.*`, `grouping_supervisor.*`), classified into recent
+  restart-cascade events so an operator can reconstruct "what restarted what,
+  when" from `/state`. It is production truth, not a log bundle: small deque,
+  fixed shape, a bounded 15-minute startup lookback, journal `occurred_at`
+  preserved separately from sampler `observed_at`, and fail-soft to an
+  empty/disabled/null snapshot.
+- **Output hardware without probing audio.**
+  `jasper-audio-hardware-reconcile` writes
+  `/run/jasper-output-hardware/output_hardware.json` and logs
+  `event=audio_hardware_reconcile.state_written` after each install/boot/udev
+  pass. `/state.audio.output_hardware`, `/sound/output-topology`, and
+  `jasper-doctor` all read that one artifact, so diagnostics can distinguish
+  the active runtime role from the best observed physical shape.
+- **Audio health** is one normalized, cached surface:
+  [`jasper/control/audio_health.py`](../jasper/control/audio_health.py)
+  composes the bounded AirPlay collector, a local outputd `STATUS` read, and a
+  slow route/transport/artifact assessment into `/state.audio_health` and
+  `/system/snapshot.audio_health`. Its household rendering is owned by
+  [HANDOFF-management-ui.md](HANDOFF-management-ui.md). Four rules keep it from
+  growing a second probe cadence or a second opinion, and are the ones to
+  preserve when editing it:
+  - **One sampler thread**, replacing the former standalone AirPlay sampler.
+    Opening `/system/audio/` adds no resident worker and no probe work. Fast
+    cadence is fixed-shape local UDS state; journal, MPRIS, Camilla, and
+    route-artifact work stays on slower bounded cadences.
+  - **Mux is the single owner of activity predicates** (AirPlay, USB, Spotify,
+    Bluetooth). A lane becomes a current stream only when
+    `jasper-mux STATUS.sources[<id>].playing` agrees, so free-running silent
+    lanes are not fake sessions. Missing or unreadable mux state **fails
+    closed** as "Playback activity unavailable" and preserves an
+    already-observed session; it is never presented as healthy idle.
+  - **The transport-coherence detector takes a coupling TOKEN**, not a
+    transport shape name, and derives the shape itself — handing it a shape
+    read an armed-ring box as loopback and called a playing speaker parked
+    (#2376). Only that detector's `errors` reach the parked wording.
+  - **The override chain refines, it does not stack opinions.** A stopped
+    CamillaDSP reaches `overall` (the signal path cannot see it: fan-in and
+    outputd both keep looping when the stage between them disappears, so
+    "Signal path clean" beside "DSP engine is not running" would be an
+    affirmative wrong answer); `jasper-outputd` and `jasper-voice` are excluded
+    because they park `inactive` **by design**. The undeclared-hardware
+    override (#2812) runs last and replaces only the two generic outputd
+    headlines, requires both the reconciler's adoption gate and a genuine
+    declared-topology mismatch, and rewrites the matching `path.*` incident row
+    with identical wording so history and headline cannot disagree.
+  - Incident lifecycle lives in
+    [`jasper/control/audio_incidents.py`](../jasper/control/audio_incidents.py):
+    ongoing conditions cannot be evicted by recovered blips, recovered entries
+    coalesce, the browser shows at most five rows, and freeze frames are
+    normalized/allowlisted and persisted atomically into a bounded
+    `/var/lib/jasper/audio_health_incidents.json` ring (20 records, 128 KiB
+    read cap) only at an incident transition. Corrupt, oversized, symlinked, or
+    newer-schema input fails soft.
 
----
+## The Debug card
 
-## Built tiers and removed surfaces
-
-**Design invariant (non-negotiable):** debug mode is **additive
-only**. It may *raise* verbosity; it must **never** lower a daemon
-below WARNING and **never** suppress the forensic `event=` lines
-the resilience layer depends on. There is no "quiet mode" that can
-silence WARN+. Same spine as the "no silent failure paths" rule in
-[AGENTS.md](../AGENTS.md).
-
-**Tier A — done (2026-05-30; rechecked 2026-06-01).** Code review
-found the redundant `tts gain set` echo in `audio_io.py`
-(`TtsPlayout.set_gain_db`) safe to demote to DEBUG. The AEC
-`rms over` line remains INFO because `jasper-doctor`
-(`_assess_aec_bridge_output`) parses it continuously. The old
-voice-side `event=tts_gain.compute` line was removed when assistant
-loudness ownership moved into the audio mix owner; its replacement,
-`event=fanin.assistant_loudness`, is lower-volume structured
-decision telemetry and remains INFO.
-
-**Tier B — done (2026-05-30; pending on-device verification).** A
-collapsed **Debug logging** card on `/system` expands to one
-checkbox per subsystem (**voice**, **aec**, **control** — the
-daemons with a clean `basicConfig` seam; shairport's config-file
-`log_verbosity` and mux's `--log-level` are a different mechanism,
-deferred). Each toggle raises that daemon's `jasper` logger to
-DEBUG. As built:
+A collapsed **Debug logging** card on `/system` expands to one checkbox per
+subsystem — **voice**, **aec**, **control**, the three daemons with a clean
+`basicConfig` seam. Each toggle raises that daemon's `jasper` logger to DEBUG.
 
 - **SSOT:** [`jasper/debug_mode.py`](../jasper/debug_mode.py) reads
-  `/var/lib/jasper/debug.env` fresh (pure resolver + `apply_for`,
-  daemon-side, no web import — mirrors `provider_state.py`). Each
-  daemon calls `apply_for("<id>")` right after `basicConfig`, so it
-  reads the file **directly** — no systemd `EnvironmentFile` or
-  install.sh seeding needed (a missing file resolves to a safe
-  "off").
+  `/var/lib/jasper/debug.env` fresh (pure resolver + `apply_for`, daemon-side,
+  no web import). Each daemon calls `apply_for("<id>")` right after
+  `basicConfig` and reads the file directly — no systemd `EnvironmentFile` and
+  no install.sh seeding; a missing file resolves to a safe "off". Adding a
+  subsystem is a row in `SUBSYSTEMS` plus an `apply_for` call.
 - **Write / restart / expiry:**
-  [`jasper/control/debug_control.py`](../jasper/control/debug_control.py)
-  lives in **jasper-control** (long-lived) — it *must*, because the
-  `/system` page server (:8772) idle-exits after 30 min and can't
-  own the auto-expiry timer. `set_debug` writes `debug.env`
-  atomically, then applies according to each subsystem's policy:
-  always-on daemons such as voice and AEC restart, and control applies
-  **in-process** (a self-restart would drop the request
-  + the timer). (WS1 Phase 3b-2: `jasper-control` runs as a non-root
-  user, so the `systemctl restart <unit>` this issues is now
-  **polkit-authorized** against the `MANAGED_UNITS` allowlist —
-  `jasper-voice`/`jasper-aec-bridge` are in it —
-  rather than a uid-0 bypass. See
-  [HANDOFF-privilege-separation.md](HANDOFF-privilege-separation.md).)
-- **Endpoints:** `GET`/`POST /debug` on jasper-control (:8780),
-  reachable from the card via a dedicated `location /debug` nginx
-  block (mirroring `/mic`, `/volume`); the card fetches the absolute
-  path. Also surfaced in `/state.debug`.
-- **Auto-expiry:** one shared TTL (2 h, re-armed per change). At
-  expiry **each daemon quiets itself in process** — `apply_for` arms a
-  per-process `threading.Timer` that drops that daemon's journal
-  handler back to INFO, **no restart** (so a forgotten session can't
-  blip wake while the household is mid-use). Control's in-process
-  toggle goes through the same `apply_for` path, so it self-quiets the
-  same way. A separate `threading.Timer` in control clears the
-  `debug.env` SSOT at expiry (so `/state` reads off + the next start
-  is clean); reconciled on control startup. The card shows a live
-  countdown.
-- **Additive-only**, floored at WARNING (the invariant) — the toggle
-  can only raise to DEBUG.
-- **UI:** self-contained
-  [`debug-card.js`](../deploy/assets/system-status/js/debug-card.js)
-  (own fetch + client-side countdown; `h()`-escaped; confirm before
-  the restart). install.sh ships it with the page's other `js/`.
+  [`jasper/control/debug_control.py`](../jasper/control/debug_control.py) lives
+  in jasper-control (long-lived) — it must, because the `/system` page server
+  (:8772) idle-exits after 30 min and cannot own the timer. `set_debug` writes
+  `debug.env` atomically, then applies per subsystem policy: always-on daemons
+  restart; control applies **in-process** (a self-restart would drop the
+  request and the timer). jasper-control runs non-root, so the restart it
+  issues is polkit-authorized against the `MANAGED_UNITS` allowlist — see
+  [HANDOFF-privilege-separation.md](HANDOFF-privilege-separation.md).
+- **Endpoints:** `GET`/`POST /debug` on jasper-control (:8780), reached from
+  the card via a dedicated `location /debug` nginx block (mirroring `/mic`,
+  `/volume`); also surfaced at `/state.debug`.
+- **Auto-expiry:** one shared TTL (2 h, re-armed per change), enforced twice.
+  Each daemon self-quiets in process — `apply_for` arms a `threading.Timer`
+  that drops its journal handler back to INFO with **no restart** — while a
+  separate timer in control clears the `debug.env` SSOT, reconciled on control
+  startup. The card shows a live countdown.
+- **Additive-only**, floored at WARNING (ADR-0143): the toggle can only raise.
+- **UI:** [`debug-card.js`](../deploy/assets/system-status/js/debug-card.js) —
+  own fetch, client-side countdown, `h()`-escaped, confirm before the restart.
 
-Restart-to-apply is the accepted MVP (a hot SIGHUP re-read is a
-possible follow-up — restarting a daemon to *start* debugging a live
-issue is mildly self-defeating, but the flight recorder, Tier C, is
-the real answer for the already-happened case). Backend is covered
-by `tests/test_debug_mode.py` + `tests/test_debug_control.py`.
-**Remaining: on-device verification** — the card renders client-side
-and its toggles trigger real daemon restarts, so after a deploy open
-`http://jts.local/system/`, toggle **voice**, and confirm
-`journalctl -u jasper-voice` shows DEBUG lines + the countdown and
-auto-quiet fire. USB input is not a debug subsystem: its readiness unit has no
-resident process; inspect fan-in STATUS and the usbsink doctor group instead.
-The separate USB gadget forensics card samples controller counters, not daemon
-logs, and therefore does not extend this Debug logging registry.
+USB input is **not** a debug subsystem: its readiness unit has no resident
+process; inspect fan-in `STATUS` and the usbsink doctor group instead. The USB
+gadget forensics card samples controller counters, not daemon logs, and does
+not extend this registry — its limits and retention are in
+[HANDOFF-usb-gadget.md](HANDOFF-usb-gadget.md#opt-in-rolling-usb-forensics).
 
-**Tier C — flight recorder (built 2026-05-30; pending on-device
-verification).** A bounded in-RAM verbose ring per daemon,
-dumped **only** on an anomaly. This is the real answer to the
-central tension: the intermittent bugs that matter most **already
-happened** before anyone could flip the Tier-B toggle, so capture
-the verbose window around every anomaly automatically.
+## The flight recorder
 
-*Mechanism — decouple the logger level from the journal level.* A
-small custom `logging.Handler` over a `deque` (stdlib `MemoryHandler`
-was evaluated but it flushes on capacity and routes through a target
-handler whose INFO level would drop the buffered DEBUG lines):
+[`jasper/flight_recorder.py`](../jasper/flight_recorder.py) keeps a bounded
+in-RAM verbose ring per daemon and dumps it **only** on an anomaly — the answer
+to the central tension, that the intermittent bugs which matter most already
+happened before anyone could flip a toggle.
 
-| Component | Level | Effect |
-|---|---|---|
-| `jasper` logger | DEBUG always | DEBUG records get *created* |
-| journal `StreamHandler` | INFO (DEBUG when the Tier-B toggle is on) | **journal volume unchanged** — DEBUG never hits the SD card |
-| `RingFlushHandler` (new) | DEBUG | buffers the last N DEBUG+ records in a `deque(maxlen=N)`; flushes only on WARNING+/explicit |
-
-```python
-class RingFlushHandler(logging.Handler):                   # level = DEBUG
-    def emit(self, record):
-        self.buffer.append(self.format(record))            # deque(maxlen=N) of STRINGS
-        if record.levelno >= logging.WARNING:              #   -> bounded RAM, no arg pinning
-            self.flush_buffer("auto:" + record.levelname.lower())
-    def flush_buffer(self, reason):                        # also called by dump()
-        ...  # write a tagged burst of the buffered lines, then clear
-```
-
-*Decisions (2026-05-30):*
-- **Dump target: journal burst.** On flush, re-emit the buffered
-  records into journald tagged `event=flightrec.dump`, right after
-  the triggering WARNING — reuses the 500 MB journald cap (retention)
-  + `fetch-pi-logs.sh`; DEBUG context lands in the same timeline as
-  the anomaly. `fetch-pi-logs.sh` also writes
+- **Shape:** the `jasper` logger sits at DEBUG always; the journal handler
+  stays at INFO (DEBUG while the Debug card is on), so journal volume is
+  unchanged; `RingFlushHandler` buffers the last N **formatted strings** and
+  flushes on WARNING+ or on demand.
+- **Triggers:** automatic on any WARNING/ERROR (which already covers supervisor
+  restart decisions, since those log ERROR), explicit `dump(reason)` from the
+  `flag_recent_issue` voice tool, and `systemctl kill -s USR1 <unit>` for an
+  operator. The SIGUSR1 handler is installed **unconditionally** so an
+  unhandled signal cannot terminate a daemon.
+- **Output:** a tagged burst re-emitted into journald as `event=flightrec.dump`
+  … `event=flightrec.dump.end`, right after the triggering WARNING, so DEBUG
+  context lands in the same timeline. `scripts/fetch-pi-logs.sh` also writes
   `log-noise-summary-latest.txt` with line counts and repeated-message
-  fingerprints so a noisy bundle can be triaged without adding runtime
-  machinery. (Target stays pluggable so dump-files can be added later.)
-- **Triggers:** automatic on any WARNING/ERROR (built into
-  `flushLevel`) — which already covers supervisor restart decisions
-  (`event=shairport.wedge_detected`, `event=system_supervisor.userspace_wedge`),
-  since those log ERROR — plus explicit `dump(reason)` from the
-  `flag_recent_issue` voice tool, and a manual `systemctl kill -s
-  USR1 <unit>` for an operator. (A doctor-fail auto-trigger was
-  considered and **dropped** in review: it sent SIGUSR1 to all three
-  daemons on every failing doctor run — high blast radius, low
-  marginal value over the WARNING auto-flush, and a daemon-kill
-  hazard if the handler were ever missing. The SIGUSR1 handler is
-  installed *unconditionally* so an unhandled signal can't terminate
-  a daemon.)
-- **Scope (v1):** voice + aec + control.
+  fingerprints, so a noisy bundle can be triaged without runtime machinery.
+- **Scope and cost:** voice + aec + control. `DEFAULT_CAPACITY = 1000` stores
+  formatted lines (~0.3 KB each) → ~0.3 MB/daemon, ~0.9 MB total, ~0.1 % of a
+  1 GB Pi. Off via `JASPER_FLIGHT_RECORDER=disabled`.
+- **CPU caveat.** Pinning the `jasper` logger at DEBUG means
+  `logger.isEnabledFor(DEBUG)` is always True for `jasper.*`, so the cheap-guard
+  idiom no longer short-circuits a per-frame `logger.debug(...)` on a hot audio
+  path. There is none today, and a comment at the `install()` site flags it —
+  **keep hot-loop logging coarser than DEBUG, or rate-limit it.**
 
-*Tier-B integration (done).* `apply_for` now also flips the journal
-*handler* level via `set_console_debug` (the logger is held at DEBUG
-by the recorder for the ring); same toggle behaviour, and the
-committed Tier-B tests still pass.
+The payoff is that new verbose instrumentation can live at DEBUG: quiet in the
+journal during healthy playback, still captured in RAM and dumped around
+related anomalies. Keep low-volume reconstructive `event=` decisions at INFO
+unless they become steady-state spam — and note the AEC `rms over` line must
+stay INFO, because the doctor reads it *continuously*, which a dump-on-anomaly
+model cannot serve.
 
-*The payoff (closes the Tier-A loop).* With the ring in place,
-future verbose instrumentation can live at DEBUG — quiet in the
-journal during healthy playback, but still captured in RAM and dumped
-around related anomalies. Keep low-volume, reconstructive
-`event=` decisions such as `event=fanin.assistant_loudness` at INFO
-unless they become steady-state spam.
-(The AEC `rms over` line still stays INFO — `jasper-doctor` reads it
-*continuously*, which a dump-on-anomaly model can't serve.)
-
-*Cost (measured).* The ring stores **formatted strings**, not
-`LogRecord` objects, so RAM is bounded by line length and never pins a
-large object passed as a log arg. At the default N=1000: ~0.3 MB/daemon,
-~0.9 MB across voice + aec + control — around 0.1% of a
-1 GB Pi. Tunable (capacity) and off-switchable
-(`JASPER_FLIGHT_RECORDER=disabled`). (An
-earlier draft stored `LogRecord` objects — ~1.3 MB/daemon and an
-unbounded tail if a hot DEBUG line logged a big object; the string store
-removed both.)
-
-*CPU caveat (hot paths).* Pinning the `jasper` logger at DEBUG means
-`logger.isEnabledFor(DEBUG)` is **always True** for `jasper.*` — so the
-usual cheap-guard idiom no longer short-circuits a per-frame
-`logger.debug(...)` on a hot audio path (it builds a record + a string
-every frame). There is none today (checked: `aec_bridge.py` and
-`voice_daemon.py` only log DEBUG on error/status-change paths; the former
-`usbsink/audio_bridge.py` was deleted in the USB dead-pipeline sweep), and a
-comment at the `install()` site flags
-it — keep hot-loop logging coarser than DEBUG or rate-limit it.
-
-*Honest grounding.* A small custom `logging.Handler` (stdlib
-`MemoryHandler` evaluated — see Mechanism) + the general pattern
-(Linux ftrace snapshot triggers, Android logd, OpenTelemetry
-tail-sampling, Rust `tracing-appender`) + the Pi cohort's
-RAM-logging consensus (DietPi RAMlog, log2ram). **No Pi-appliance in
-the comparable cohort ships a structured log flight-recorder** — it
-is sound-by-analogy, not cohort-corroborated. JTS already does this
-for *audio* (the wake-event 6 s pre/post rings); Tier C generalizes
-it to logs.
-
-*As built.* [`jasper/flight_recorder.py`](../jasper/flight_recorder.py)
-(`RingFlushHandler` + `install()` + `dump()` + a SIGUSR1 handler)
-wired into voice, AEC, and control startup;
-`debug_mode.apply_for` gained `set_console_debug` so the toggle moves
-the journal handler; explicit
-`dump()` from the `flag_recent_issue` voice tool, plus a manual
-`systemctl kill -s USR1 <unit>` for an operator (supervisor restarts
-auto-flush — they already log ERROR). The handler is installed
-unconditionally so an unhandled SIGUSR1 can't terminate a daemon. Off
-via `JASPER_FLIGHT_RECORDER=disabled`. Tests:
-`tests/test_flight_recorder.py` plus the flag-dump test in
-`test_tools_diagnostic.py`. **Remaining: on-device verification** —
-deploy, then confirm a WARNING produces an `event=flightrec.dump`
-burst in `journalctl`, and that "flag that" plus a manual
-`systemctl kill -s USR1 <unit>` each trigger one.
-
-**Tier D — considered and removed (2026-05-30).** A one-tap
-"Download diagnostics" button (GET `/diagnostics-bundle` →
-`pi-bundle.sh` tarball) was built, then removed in review. For a
-maintainer-operated household speaker it added little over the
-existing SSH flow (`scp pi@jts.local:/tmp/jasper-bundle-*.tar.gz`)
-while widening the surface: any LAN device behind the management
-guard could pull all logs + config in one shot, the redaction is
-*name-based* (misses inline secret **values** and non-secret-but-
-private fields — home coords, SSID, HA URL), and the flight recorder
-now puts more DEBUG into the journal that such a bundle would ship.
-`scripts/pi-bundle.sh` stays the SSH-only diagnostics path it always
-was; the `/system` "Run diagnostics" button (read-only
-`jasper-doctor`, no config/logs) stays. Revisit (with value-level
-redaction) only if JTS ships to households the maintainer can't SSH
-into.
-
----
-
-## Why this shape (cohort grounding, 2026-05-30)
-
-Validated against the comparable Raspberry Pi appliance/fleet
-cohort (Home Assistant OS, balenaOS, piCorePlayer, Volumio, moOde,
-OctoPrint, DietPi):
-
-- **(c) per-subsystem auto-expiring debug toggle and (d)
-  download-diagnostics are cohort-standard** — OctoPrint, Home
-  Assistant, Volumio, Sonos all ship them. JTS's auto-expiry is a
-  refinement over OctoPrint's "we just warn you it's on."
-- **(a) WARN+ floor in persistent journald + (b) chatty detail in
-  RAM** are reasonable and slightly *ahead* of the audio-hobbyist
-  tier (Volumio/moOde keep persistent logs too) — conditional on
-  actually doing the INFO→DEBUG/RAM demotion. The managed tier
-  (HA OS, balenaOS, piCorePlayer) keeps logging volatile via
-  read-only root.
-- **JTS is ahead of the cohort** on watchdog (hardware watchdog +
-  userspace-liveness supervisor — the gap Poettering's canonical
-  systemd-watchdog writeup says the hardware watchdog cannot
-  cover) and on memory resilience (OOMScoreAdjust / zram / MGLRU /
-  cgroups).
-
-**Out of scope here but flagged (separate workstream →
-[HANDOFF-resilience.md](HANDOFF-resilience.md)):** the cohort's
-primary durability answer to JTS's actual past incident
-(unclean-power ext4 corruption) is read-only/overlay root and/or a
-supercapacitor UPS HAT for graceful shutdown on power loss. JTS
-has neither. Not an observability decision, but the
-highest-leverage durability gap the research surfaced.
-
-Key sources: Home Assistant [logger](https://www.home-assistant.io/integrations/logger/)
-+ [diagnostics](https://www.home-assistant.io/integrations/diagnostics/);
-OctoPrint [logging plugin](https://docs.octoprint.org/en/main/bundledplugins/logging.html);
-kernel [ftrace snapshot](https://docs.kernel.org/trace/ftrace.html);
-[OTel tail-sampling](https://opentelemetry.io/blog/2022/tail-sampling/);
-piCorePlayer [RAM-root](https://docs.picoreplayer.org/faq/my_changes_disappeared/);
-HA OS [read-only partitions](https://developers.home-assistant.io/docs/operating-system/partition/);
-Poettering [systemd watchdog](http://0pointer.de/blog/projects/watchdog.html);
-Dzombak [reduce Pi SD writes](https://www.dzombak.com/blog/2024/04/pi-reliability-reduce-writes-to-your-sd-card/).
-
----
-
-Last verified: 2026-08-21 (the Audio alert card's override chain rechecked
-against `jasper/control/audio_health.py`: added the fourth writer,
-`_undeclared_hardware_signal` (#2812), its two-conjunct gate — read from
-`jasper.output_hardware.detected_hardware_adoption_precondition` plus, only
-when a topology was ever saved, `jasper.output_topology.declared_hardware_mismatch`,
-with a never-saved box instead satisfying the second conjunct directly from
-`load_output_topology_snapshot`'s `revision == "missing"` — its slow-cadence
-topology read, and its matching `path.*` incident-alignment fix).
-Prior 2026-07-22 (the three-member debug registry and USB gadget
-forensics' separate bounded-diagnostics boundary were rechecked against code,
-the root sampler, `/state`, and `/system/` cards).
-Prior 2026-07-15 (normalized audio-health ownership, cadence,
-current-stream/session projection, continuity-vs-timing semantics, bounded
-persistent incident lifecycle, and legacy AirPlay compatibility rechecked
-against `jasper/control/audio_health.py`,
-`jasper/control/audio_incidents.py`,
-`jasper/control/airplay_health.py`, `jasper/control/server.py`, and their
-contract tests). Prior full operational pass 2026-07-12 (structured event values with
-backslashes, every ASCII control, NEL, and Unicode line/paragraph separators
-rechecked against the one-physical-line logfmt and JSON contracts; the 13-file
-deferred inventory was cross-checked against the machine-enforced allowlist,
-including
-the completed 92-site / 37-name `sound_setup.py` migration; debug, flight
-recorder, journald, resilience `/state`, and bounded-diagnostics claims were
-re-read against their current owners; active-crossover forward-wired session,
-SNR, and validity-floor fields were closed against their real persisted shapes)
+Last verified: 2026-08-26 (triage pass — the three-plane boundary, the
+`log_event` quoting/JSON contract and its conventions guard, per-daemon
+`basicConfig`, the journald `Storage=persistent`/`SystemMaxUse=500M` conf and
+both per-unit `LogRateLimit*` overrides, the Debug card's three-subsystem
+registry and 2 h TTL, and the flight recorder's capacity, dump events, and
+disable switch all rechecked against their owning files. The active-crossover
+event catalog was deleted as a duplicate of
+`active-crossover-information-design.md` "Structured events"; the deferred
+log_event inventory now points at its machine-enforced list instead of copying
+it. Audio-health prose compressed to its invariants — the module and
+`HANDOFF-management-ui.md` own the rest. Tier A/B/C/D build record and cohort
+survey moved to `historical/observability-design-2026-05.md`; the decisions
+became ADR-0143 and ADR-0144.)
