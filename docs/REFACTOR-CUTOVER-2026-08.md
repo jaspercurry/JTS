@@ -13,7 +13,9 @@
 > question here.
 
 **STATUS — all eight sections VERIFIED-COMPLETE, re-derived at `4a9e9f631`.
-§6's three open decisions are SETTLED-OR-BRIEFED, re-derived at `c253c3cf1`.**
+§6's three open decisions are SETTLED-OR-BRIEFED and the citation question is
+answered, re-derived at `c253c3cf1`. Two things wait on the owner: 6.2's seam
+brief and Appendix A's one question.**
 
 | § | Section | Status |
 |---|---|---|
@@ -26,6 +28,7 @@
 | 6 | God-file dissolution map | VERIFIED-COMPLETE · **6.1 RULED · 6.2 RULED + one OWNER-BRIEF · 6.3 RULED** |
 | 7 | Merge-order DAG + floor accounting | VERIFIED-COMPLETE |
 | 8 | Risks and tiers | VERIFIED-COMPLETE |
+| A | The "no-silent-failure" citations | **ANSWERED — one owner question** |
 
 ---
 
@@ -1462,3 +1465,110 @@ behind that door as its only caller, never as its exception
 - **Re-derive the line numbers.** Every `file:line` in this document was true at
   `4a9e9f631`. §0 exists because two of the numbers handed *to* this plan had
   already moved by two lines within a single merge. Re-derive before you cut.
+
+---
+
+## Appendix A — the "no-silent-failure" citations
+
+`REFACTOR-TUNING-2026-08.md:598-612` enumerated **10 live sites** attributing a
+*"no-silent-failure rule"* to the charter, found that no such rule exists, and
+left them alone rather than repoint them — because *"repointing them would widen
+a non-negotiable by prose edit, which is not a rider's authority."* That judgment
+was right and this appendix does not overturn it. It supplies what the flag was
+missing: **the sites are not one class, and the widening was only ever needed for
+one of the two.**
+
+### The premise, re-derived at `c253c3cf1`
+
+AGENTS.md's only match for `silent` is non-negotiable 6 (`:42-43`):
+
+> **No silent deafness:** a new code path that prevents wake response must play
+> a cue (`jasper/cues/registry.py`).
+
+**But the wording the citations use is not extinct — it moved.**
+`docs/extensibility.md:87-89` carries it live: *"**no silent failure → audible
+cue** for anything that blocks a response"*, restated at `:153-155` as a Feature
+obligation — *"no-silent-failure → audible cue (a proactive Feature that fails
+must speak)."* That file is on AGENTS.md's Map. **So the rule exists, under this
+wording, in a live doc — for the cue half only.**
+
+**The other half has never existed anywhere.** No charter text, at any revision,
+says a user-visible dead end must emit a greppable log line. That is the claim
+nine of the thirteen sites make. **Two different rules are wearing one name**,
+and that — not the missing heading — is why repointing them all to
+non-negotiable 6 would widen a closed list.
+
+### Per-site classification
+
+**(i) response-blocking, cue-shaped — repoint is honest.** These four are about
+the speaker going quiet, and non-negotiable 6 plus `extensibility.md:87-89` are
+their true owners.
+
+| Site | What it guards | Cue? |
+|---|---|---|
+| `jasper/wake_fusion.py:72` | `verify()`'s fail-open contract: *"must never make the speaker go deaf because verification was unsure."* Literally the wake path | no — it fails **open**, so the path that would prevent wake response is never taken. The stronger form of the same rule |
+| `tests/test_cue_registry_coverage.py:7` | the registry↔play-site correspondence pin — *"a phantom play … the speaker falls silent on exactly the failure the cue existed to announce"* | **yes — this file is non-negotiable 6's mechanism** |
+| `tests/test_cue_registry_coverage.py:66-67` (**wraps**) | the orphan-cue assert message, same pin | yes |
+| `tests/test_tools_diagnostic.py:153` | a voice-tool telemetry failure must not silently end the turn | response-blocking, not wake-blocking — `extensibility.md:88`'s *"anything that blocks a response"* is the exact fit |
+
+**(ii) observability disclosure — the citation is decorative.** All nine emit a
+structured `event=`/`/state` disclosure so an operator can grep why a control is
+disabled or a budget expired. **None touches wake response. None calls a cue.**
+Each sentence already states its own reason — the parenthetical adds an authority
+stamp, and the stamp is false.
+
+| # | Site | The dead end it discloses |
+|---|---|---|
+| 1 | `jasper/web/correction_crossover_v2.py:4962` ⚑ | Stage-2 preflight refused → a disabled Apply; WARNING line + `STAGE2_PREFLIGHT_KEY` |
+| 2 | `jasper/active_speaker/crossover_v2/accountability.py:666` ⚑ | `grade_prediction` → `None`; `EVENT_PREDICTION_UNGRADEABLE` with `why` separating the two causes |
+| 3 | `tests/test_correction_crossover_v2_endpoints.py:3457` ⚑ | pins #1 |
+| 4 | `tests/test_correction_crossover_v2_endpoints.py:8882` ⚑ | pins D8 — **which** budget expired (issue #1807) |
+| 5 | `tests/test_crossover_v2_conductor.py:8541` ⚑ (**wraps**) | pins #2 end-to-end |
+| 6 | `jasper/correction/autolevel.py:309` | a failed final `set_main_volume_db` can strand the speaker at measurement level; bare `logger.warning`, not `log_event` |
+| 7 | `tests/test_correction_autolevel.py:392` | pins #6 |
+| 8 | `docs/two-stage-commission-flow-plan.md:440` | decision **D4** — the design source for #2/#5 |
+| 9 | `docs/two-stage-commission-flow-plan.md:696` | decision **D8** — the design source for #4 |
+
+⚑ = in this plan's zone (five, matching the chunk-1 count).
+
+**(iii) exempt.** `docs/REVIEW-google-oss-readiness.md:109` cites `CLAUDE.md` for
+the same phrase, inside a doc whose own header (`:3-9`) calls it *"a
+point-in-time OSS-readiness assessment, not current operational truth."* Frozen
+primary sources are supposed to be stale — `REFACTOR-TUNING-2026-08.md:593-595`
+already rules exactly this way for the frozen capture banks. **Leave it.**
+
+### The count moved, and the mechanism is the usual one
+
+**13 live attributions across 9 files, not 10.** The chunk-1 sweep searched the
+hyphenated `no-silent-failure`; three more sites spell it *"no silent failure
+paths"* and one of those **wraps across a newline**
+(`test_cue_registry_coverage.py:66-67`). That is the fifth consecutive
+wrap-and-variant miss this campaign has recorded, and it is why §8's wrap-safe
+sweep trap is stated as a standing rule rather than an anecdote. **Treat 13 as a
+floor, not a total** — it is what one phrasing-variant sweep found, and a looser
+shape would only raise it.
+
+### One owner question
+
+**Nine sites claim the charter requires a greppable disclosure line for a
+user-visible dead end. It never has, in any revision. Do you want that written
+into the charter as a named default — or should those nine drop the attribution
+and keep the sentence, which already says why?**
+
+**Recommendation: drop the attribution; do not grow the charter.** AGENTS.md is
+176 lines against a ~220 cap, and its own Docs default (`:74-76`) says *"do not
+restate here … what another file owns."* Every one of the nine sentences is
+self-sufficient without the parenthetical — *"a disclosure nobody can grep for is
+not a disclosure"* needs no external authority — and where a durable why-pointer
+is wanted, the **issue number is the one that cannot rot**: D8 has #1807, D4 has
+its own decision id. The Comments default already sanctions exactly that shape
+(*"why-pointers (`See ADR-NNN`, an issue, a doc)"*), and a charter line restating
+what thirteen sites each already state is thirteen fresh drift sites.
+
+**If the answer is "drop":** the four class-(i) sites repoint to non-negotiable 6
+(or `extensibility.md:87-89`, which is closer for the two non-wake ones), the
+nine class-(ii) sites lose four words each, and **the closed list is not
+touched**. Riders in the wave that opens each file, per
+`REFACTOR-TUNING-2026-08.md:579` — never a standalone PR. Five of the nine are in
+this plan's zone; the other four and all four class-(i) sites belong to the
+parallel programs and travel with them.
