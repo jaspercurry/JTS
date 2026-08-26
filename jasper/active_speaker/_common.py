@@ -46,13 +46,15 @@ REGION_FC_MATCH_TOLERANCE_HZ = 1e-6
 
 
 # Why the commissioning eligibility receipt did not vouch for the applied
-# automatic crossover.  Three distinguishable causes, three remedies: nothing
-# was ever minted, something moved under a receipt that was, or the bytes on
-# disk will not parse.  Room correction runs in all three (ADR-0019, ruling
-# S10) — these name what cannot be CLAIMED, never what is refused.
+# automatic crossover.  Four distinguishable causes, four remedies: nothing was
+# ever minted, something moved under a receipt that was, a JTS upgrade grew the
+# receipt schema past what an older mint recorded, or the bytes on disk will
+# not parse.  Room correction runs in all four (ADR-0019, ruling S10) — these
+# name what cannot be CLAIMED, never what is refused.
 ROOM_AUTHORITY_RECEIPT_ABSENT = "active_commissioning_receipt_absent"
 ROOM_AUTHORITY_RECEIPT_STALE = "active_commissioning_receipt_stale"
 ROOM_AUTHORITY_RECEIPT_MALFORMED = "active_commissioning_receipt_malformed"
+ROOM_AUTHORITY_RECEIPT_SUPERSEDED = "active_commissioning_receipt_superseded"
 
 
 # The saved topology no longer hashes to what the applied baseline was minted

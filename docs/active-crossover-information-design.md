@@ -1346,7 +1346,7 @@ restoration; after playback admission has persisted, timeout, cancellation, or
 failure returns typed possible-audio authority and consumes the one-shot
 identity.
 
-Positive schema-v2 receipt validation treats every post-apply raw,
+Positive receipt validation treats every post-apply raw,
 analysis-input, quality, generation-admission, and playback-admission identity
 and relative path as one global namespace across all required speaker groups.
 Cross-target reuse is refused even when a colliding raw path names different
@@ -1770,9 +1770,11 @@ rollback outcome bound to that same operation, mutation, and observed applied
 graph. A failed, restored, attempted, or unknown mutation cannot mint the
 positive receipt.
 
-The admitted-capture, post-apply-target, and eligibility-receipt containers are
-schema version 2. There is no schema-v1 migration; version 1 is rejected rather
-than guessed.
+The admitted-capture and post-apply-target containers are schema version 2. The
+eligibility receipt versions independently of them; its current version is
+`commissioning_receipt.RECEIPT_SCHEMA_VERSION`. No earlier version of any of
+the three is migrated — an older one is rejected rather than guessed, and for
+the receipt that rejection is a named disclosure, not a refusal to work.
 
 The Wave 1 transition and receipt values remain pure contracts. Wave 3 now
 persists the lifecycle's exact current-run identity in
@@ -2315,7 +2317,7 @@ evaluator, exact candidate persistence/readback and `candidate_ready` review
 projection, explicit reviewed apply, compiler-ready measured corrections,
 writer-locked graph/path/volume readback, exact failure/cancellation/restart
 restore, retained-proof finalization, complete-plan replay
-guards, receipt schema-v2 one-shot roles, current-graph verification,
+guards, the receipt's one-shot roles, current-graph verification,
 receipt persistence, and Active-owned Room authority,
 and Room's versioned passive/solo-manual-applied admission boundary, explicit
 grouped-active unsupported result, and strict automatic-receipt separation

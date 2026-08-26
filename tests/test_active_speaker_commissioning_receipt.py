@@ -16,9 +16,12 @@ from jasper.active_speaker.commissioning_receipt import (
     POST_APPLY_REQUIRED_REPEATS,
     POST_APPLY_VERIFICATION_ALGORITHM_ID,
     POST_APPLY_VERIFICATION_ALGORITHM_VERSION,
+    RECEIPT_SCHEMA_VERSION,
     AdmittedCaptureProof,
     AppliedCandidateProof,
     CommissioningEligibilityReceipt,
+    CommissioningHardwareIdentity,
+    CommissioningProofProvenance,
     CommissioningReceiptError,
     CommissioningRollbackEvidence,
     PostApplyTargetVerification,
@@ -359,6 +362,27 @@ def _target_verification(
     )
 
 
+def _provenance(
+    plan: RequiredTargetPlan,
+    targets: tuple[PostApplyTargetVerification, ...],
+) -> CommissioningProofProvenance:
+    return CommissioningProofProvenance(
+        proven_at="2026-08-26T09:41:12Z",
+        proven_by_build="9fcda9ee5",
+        capture_refs=tuple(
+            admitted.capture.raw_artifact
+            for target in targets
+            for admitted in target.admitted_captures
+        ),
+        hardware_identity=CommissioningHardwareIdentity(
+            topology_id=plan.topology_id,
+            topology_fingerprint=plan.topology_fingerprint,
+            mic_calibration_id="umik2-810-8494",
+            mic_calibration_sha256=_hash("a"),
+        ),
+    )
+
+
 def _receipt() -> CommissioningEligibilityReceipt:
     plan = _plan()
     proof = _proof(plan)
@@ -366,15 +390,17 @@ def _receipt() -> CommissioningEligibilityReceipt:
         target_plan=plan,
         applied_candidate=proof,
     )
+    targets = (
+        _target_verification(plan.targets[0], context=context, start=1),
+        _target_verification(plan.targets[1], context=context, start=4),
+    )
     return CommissioningEligibilityReceipt(
         target_plan=plan,
         applied_candidate=proof,
         commissioning_context_fingerprint=context,
-        post_apply_targets=(
-            _target_verification(plan.targets[0], context=context, start=1),
-            _target_verification(plan.targets[1], context=context, start=4),
-        ),
+        post_apply_targets=targets,
         rollback=_retained_rollback(proof),
+        provenance=_provenance(plan, targets),
     )
 
 
@@ -478,6 +504,7 @@ def test_omitting_real_right_stereo_target_cannot_unlock_room():
             commissioning_context_fingerprint=receipt.commissioning_context_fingerprint,
             post_apply_targets=(receipt.post_apply_targets[0],),
             rollback=receipt.rollback,
+            provenance=receipt.provenance,
         )
 
 
@@ -503,16 +530,18 @@ def test_retained_rollback_cannot_cross_apply_operations(changed_field: str) -> 
         applied_candidate=changed,
     )
 
+    targets = tuple(
+        _target_verification(target, context=context, start=1 + index * 3)
+        for index, target in enumerate(receipt.target_plan.targets)
+    )
     with pytest.raises(CommissioningReceiptError, match="retained verified apply"):
         CommissioningEligibilityReceipt(
             target_plan=receipt.target_plan,
             applied_candidate=changed,
             commissioning_context_fingerprint=context,
-            post_apply_targets=tuple(
-                _target_verification(target, context=context, start=1 + index * 3)
-                for index, target in enumerate(receipt.target_plan.targets)
-            ),
+            post_apply_targets=targets,
             rollback=receipt.rollback,
+            provenance=_provenance(receipt.target_plan, targets),
         )
 
 
@@ -1059,6 +1088,14 @@ def test_rollback_failure_codes_match_status_and_evidence_kind():
             lambda: _receipt().post_apply_targets[0].to_dict(),
             PostApplyTargetVerification.from_mapping,
         ),
+        (
+            lambda: _receipt().provenance.hardware_identity.to_dict(),
+            CommissioningHardwareIdentity.from_mapping,
+        ),
+        (
+            lambda: _receipt().provenance.to_dict(),
+            CommissioningProofProvenance.from_mapping,
+        ),
         (lambda: _receipt().to_dict(), CommissioningEligibilityReceipt.from_mapping),
     ],
 )
@@ -1098,17 +1135,111 @@ def test_admitted_capture_schema_rejects_missing_and_tampered_role_proof():
         AdmittedCaptureProof.from_mapping(tampered)
 
 
-def test_breaking_receipt_containers_require_schema_v2() -> None:
+def test_breaking_receipt_containers_require_their_current_schema() -> None:
     target_payload = _receipt().post_apply_targets[0].to_dict()
     receipt_payload = _receipt().to_dict()
 
     assert target_payload["schema_version"] == 2
-    assert receipt_payload["schema_version"] == 2
+    assert receipt_payload["schema_version"] == RECEIPT_SCHEMA_VERSION
 
     target_payload["schema_version"] = 1
     with pytest.raises(CommissioningReceiptError, match="unsupported"):
         PostApplyTargetVerification.from_mapping(target_payload)
 
-    receipt_payload["schema_version"] = 1
+    receipt_payload["schema_version"] = RECEIPT_SCHEMA_VERSION - 1
     with pytest.raises(CommissioningReceiptError, match="unsupported"):
         CommissioningEligibilityReceipt.from_mapping(receipt_payload)
+
+
+def test_receipt_provenance_round_trips_and_is_fingerprint_bound() -> None:
+    receipt = _receipt()
+    provenance = receipt.provenance
+
+    assert provenance.proven_at == "2026-08-26T09:41:12Z"
+    assert provenance.proven_by_build == "9fcda9ee5"
+    assert provenance.hardware_identity.mic_calibration_id == "umik2-810-8494"
+    assert len(provenance.capture_refs) == 2 * POST_APPLY_REQUIRED_REPEATS
+    assert CommissioningEligibilityReceipt.from_mapping(receipt.to_dict()) == receipt
+
+    tampered = copy.deepcopy(receipt.to_dict())
+    tampered["provenance"]["proven_by_build"] = "0000000ff"
+    with pytest.raises(CommissioningReceiptError, match="declared fingerprint"):
+        CommissioningEligibilityReceipt.from_mapping(tampered)
+
+
+@pytest.mark.parametrize(
+    "spelling",
+    ("2026-08-26 09:41:12", "2026-08-26T09:41:12+00:00", "2026-08-26T09:41:12.5Z"),
+    ids=("no-t", "offset-not-z", "sub-second"),
+)
+def test_proven_at_admits_exactly_one_utc_spelling(spelling: str) -> None:
+    receipt = _receipt()
+    with pytest.raises(CommissioningReceiptError, match="proven_at must be"):
+        replace(receipt.provenance, proven_at=spelling)
+
+
+def test_provenance_forensics_are_optional_but_the_proof_index_is_not() -> None:
+    receipt = _receipt()
+
+    # A dev checkout has no build manifest and a moved calibration file hashes
+    # to nothing; neither may stop a receipt the strict chain has earned.
+    bare = replace(
+        receipt.provenance,
+        proven_by_build=None,
+        hardware_identity=replace(
+            receipt.provenance.hardware_identity,
+            mic_calibration_id=None,
+            mic_calibration_sha256=None,
+        ),
+    )
+    assert replace(receipt, provenance=bare).provenance.proven_by_build is None
+
+    with pytest.raises(CommissioningReceiptError, match="capture_refs must be"):
+        replace(receipt.provenance, capture_refs=())
+
+
+def test_provenance_cannot_index_bytes_the_receipt_does_not_carry() -> None:
+    receipt = _receipt()
+    refs = receipt.provenance.capture_refs
+
+    with pytest.raises(CommissioningReceiptError, match="index this receipt"):
+        replace(
+            receipt,
+            provenance=replace(receipt.provenance, capture_refs=refs[:-1]),
+        )
+    with pytest.raises(CommissioningReceiptError, match="index this receipt"):
+        replace(
+            receipt,
+            provenance=replace(
+                receipt.provenance, capture_refs=(refs[1], refs[0], *refs[2:])
+            ),
+        )
+    with pytest.raises(CommissioningReceiptError, match="index this receipt"):
+        replace(
+            receipt,
+            provenance=replace(
+                receipt.provenance,
+                capture_refs=(*refs[:-1], _artifact("elsewhere.wav", "f")),
+            ),
+        )
+
+
+@pytest.mark.parametrize(
+    "change",
+    ({"topology_id": "other-topology"}, {"topology_fingerprint": _hash("b")}),
+    ids=("id", "fingerprint"),
+)
+def test_hardware_identity_cannot_name_another_speaker(
+    change: dict[str, str],
+) -> None:
+    receipt = _receipt()
+    with pytest.raises(CommissioningReceiptError, match="hardware identity"):
+        replace(
+            receipt,
+            provenance=replace(
+                receipt.provenance,
+                hardware_identity=replace(
+                    receipt.provenance.hardware_identity, **change
+                ),
+            ),
+        )

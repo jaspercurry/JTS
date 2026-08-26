@@ -134,9 +134,12 @@ measurement, playback, bundle, DSP, or Room-correction flows:
   service constructs, persists, and strictly reopens the eligibility receipt
   after all exact targets pass (retired by #2362 on 2026-08-22 — see "The gaps"
   below; nothing can produce a post-apply capture now).
-  The breaking admitted-capture shape and its post-apply/receipt containers are
-  all schema version 2; schema version 1 is intentionally rejected because no
-  schema-v2 is the only production receipt format.
+  The admitted-capture shape and the post-apply target container are schema
+  version 2; the receipt itself moves independently of them and its current
+  version is `commissioning_receipt.RECEIPT_SCHEMA_VERSION`. Every earlier
+  version is rejected on read — the room-authority reader names a superseded
+  receipt as its own disclosure rather than as unreadable bytes, and re-running
+  commissioning is the only migration.
 
 Existing fail-soft Active bundles remain forensic. Active setup status now
 exposes one explicit Room decision: manual applied snapshots retain their
@@ -414,9 +417,11 @@ operator-attested signed geometry seed, including when the attested value is
 zero. `CompleteCommissioningEvidence` requires one canonically ordered region
 per plan target and makes artifact roles/paths, admission ids, raw bytes, and
 durable attempts globally unique across a three-way or multiple groups.
-The schema-v2 eligibility receipt applies the same global-namespace rule to
+The eligibility receipt applies the same global-namespace rule to
 every post-apply raw, analysis-input, quality, generation-admission, and
-playback-admission identity and path across all required groups.
+playback-admission identity and path across all required groups, and records
+its own provenance — when the proof was taken, on what build, which capture
+bytes it indexes, and the speaker-plus-microphone identity it was taken on.
 
 The module performs no I/O, persistence, playback, scoring, graph mutation, or
 lifecycle transition. The separate typed internal host retains
@@ -1973,8 +1978,8 @@ recorder-only production summed relay checked hardware-free. Strict Active
 group-by-region normal/reverse/delay evidence
 values, typed run/attempt and geometry authority, the bounded low-frequency
 coarse-plus-refinement schedule and schedule-aware final evaluator,
-complete-plan replay guards, and receipt
-schema-v2 one-shot generation/playback roles were checked pure.
+complete-plan replay guards, and the receipt's
+one-shot generation/playback roles were checked pure.
 Durable bundle-backed Active run identity, startup owner claim,
 stale-callback refusal, and fail-closed crossover status were checked hardware-
 free. The strict write-once commissioning evidence store, exact typed reopen,
