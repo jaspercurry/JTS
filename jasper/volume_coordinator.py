@@ -65,6 +65,7 @@ from .log_event import log_event
 from .music_sources import SOURCE_TO_ACTIVE_KEY, Source, VolumeMode, volume_mode
 from . import volume_diagnostics
 from .bluealsa_probe import active_transport_path
+from .volume_owner import VolumeOwner
 from .volume_persistence import (
     VolumePersistence,
     db_to_percent,
@@ -288,6 +289,17 @@ class VolumeCoordinator:
         push_settle_sec: float = 0.75,
     ) -> None:
         self._camilla = camilla
+        # The one thing in this process that writes the main fader. The
+        # coordinator holds the HOUSEHOLD claim — the standing level the
+        # speaker plays at when nothing outranks it — and hands the same owner
+        # to the transient-duck holders, so a duck and a volume twist are
+        # arbitrated rather than racing. Bound through methods rather than
+        # captured bound methods so a test that replaces ``camilla``'s
+        # attributes is still seen.
+        self._volume_owner = VolumeOwner(
+            set_fader_db=self._write_fader_db,
+            get_fader_db=self._read_fader_db,
+        )
         self._persistence = persistence
         self._backend = backend
         # Multi-account Spotify router for Web API volume control.
@@ -2041,22 +2053,45 @@ class VolumeCoordinator:
         )
         return False
 
+    @property
+    def volume_owner(self) -> VolumeOwner:
+        """This process's fader owner, for the claim holders that share it.
+
+        Handed to a transient-duck holder rather than reached for globally:
+        the owner is instance state, exactly as ``Ducker``'s
+        ``target_db_provider`` already is, so a test never inherits one and a
+        second coordinator never silently arbitrates against the first's.
+        """
+        return self._volume_owner
+
+    async def _write_fader_db(self, db: float) -> bool:
+        return await self._camilla.set_volume_db(db, best_effort=True)
+
+    async def _read_fader_db(self) -> float | None:
+        return await self._camilla.get_volume_db(best_effort=True)
+
     async def _write_camilla_db_with_mute(
         self, db: float, *, context: str,
     ) -> bool:
+        """Land the household level, and the mute that goes with it.
+
+        The dB half is the owner's — this is the coordinator declaring the
+        HOUSEHOLD claim, and every fader write it makes goes through that one
+        arbiter. The mute half stays here: ``main_mute`` is a separate flag
+        with its own two writers, and folding it into a level claim would give
+        the owner a second question to answer.
+        """
         target_mute = self._main_mute_for_db(db)
         if target_mute:
             mute_ok = await self._set_camilla_main_mute(
                 True, context=context,
             )
-            _volume_ok = await self._camilla.set_volume_db(
-                db, best_effort=True,
-            )
+            _volume_ok = await self._volume_owner.declare_household_level_db(db)
             # Final content silence comes from main_mute. The dB floor is a
             # defense-in-depth fallback if the mute flag is later lost.
             return bool(mute_ok)
 
-        volume_ok = await self._camilla.set_volume_db(db, best_effort=True)
+        volume_ok = await self._volume_owner.declare_household_level_db(db)
         if not volume_ok:
             return False
         return await self._set_camilla_main_mute(False, context=context)
