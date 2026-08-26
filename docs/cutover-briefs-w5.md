@@ -310,6 +310,15 @@ owed, and by which item.
 | `play` | `program_playback.play_program` (`jasper/active_speaker/program_playback.py:118`), awaited in production today at `correction_crossover_v2.py:4314` inside `bind_production_play` | **exists**, and already `async`. What is owed is the `PlaybackTransaction.run` shape around it: the seam takes `spec / position_deg / prompt / level_db / stimulus_dbfs` (`playback_transaction.py:190-198`) where `play_program` takes a program plus the `bind_program_playback_seams` bundle (`crossover_v2_flow.py:9024`). That adapter is W5-b's, not W4-c's. |
 | `recommend` | the prescriber's `packet → propose → stage → status` path | **owed: W3-b.** §3 of the plan says do not re-extract it; bind to it. |
 
+**One open ruling can add a sixth row to that table.** The plan's §6.2
+OWNER-BRIEF (added by #3151) asks where `V2FlowSeams`'s five publishers bind, and
+recommends folding them into `RecordStore` **precisely so `EngineSeams` stays
+five fields** — the number `session_seams.py:275-303`, the design doc and all of
+§4 are written against. This brief assumes that recommendation carries. **If the
+owner rules the other way, §2.5 grows a `publish` row and W4-a's dataclass
+changes shape inside the tier-1 window it cannot slip.** Re-read §6.2 before
+cutting W5-b.
+
 **The construction belongs beside `bind_v2_stage_seams` (`:5675`), not inside a
 preparer.** That function is already the single owner of *"which callable
 implements each seam"* for the flow, its docstring says so in as many words, and
