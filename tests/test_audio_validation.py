@@ -1567,7 +1567,7 @@ def test_run_chip_aec_hardware_validation_refuses_inactive_without_force(monkeyp
     mode_env["JASPER_WAKE_LEG_CHIP_AEC"] = "0"
     system_env = dict(inputs["system_env"])
     system_env["JASPER_AEC_CHIP_AEC_ENABLED"] = "0"
-    system_env["JASPER_AEC_CHIP_AEC_ALIGNMENT_STATUS"] = "commission_required"
+    system_env["JASPER_AEC_CHIP_AEC_ALIGNMENT_STATUS"] = "disclosed_stale"
 
     monkeypatch.setattr(audio_validation, "_read_mode_env", lambda: mode_env)
     monkeypatch.setattr(audio_validation, "_read_system_env", lambda: system_env)
