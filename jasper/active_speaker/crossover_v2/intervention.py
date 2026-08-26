@@ -771,8 +771,10 @@ LEVEL_MATCH_AXIS = "design_axis_0deg"
 #: It needs no constant of its own here, and this 3.0 must never be narrowed to
 #: it: they answer "when do we tell someone" and "how precisely do we set it".
 #:
-#: One disclosure trigger, one owner. Nothing else in the level path holds a
-#: tolerance.
+#: One disclosure trigger, one owner — for THIS question. The other level
+#: comparator, ``baseline_profile._compare_level_sittings``, holds its own and
+#: is not a duplicate of this one: it compares two SITTINGS of the single
+#: handover definition, where this compares two definitions on one capture.
 LEVEL_ESTIMATOR_TOLERANCE_DB = REALIZED_LEVEL_MATCH_TOLERANCE_DB
 
 #: Why a capture was flagged: the COMMITTED pair's two realized levels sit

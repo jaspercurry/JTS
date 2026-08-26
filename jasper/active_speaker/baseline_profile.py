@@ -128,6 +128,25 @@ _SENSITIVITY_TRIM_EPS_DB = 0.05
 # gathering that corpus rather than nudging the number.
 MEASURED_VS_DATASHEET_TRIM_TOLERANCE_DB = 6.0
 
+# How far the crossover sweep and the level-match sitting may place one driver
+# apart before the gap is DISCLOSED. A disclosure trigger, never an agreement
+# bar and never a refusal (ruling S8): both sittings read THE level fact, so
+# this decides when a gap is worth saying, never which number is right.
+#
+# Same value as the refusal bar above, and the reuse is accounted for rather
+# than assumed, because only part of that derivation survives here: its ~2 dB
+# datasheet-spec and ~2 dB realized-pad terms are DATASHEET artifacts, absent
+# on a measured-vs-measured comparison. What survives is ~1.3 dB of frame
+# spread plus ~0.5 dB of linear-bin systematic; the remaining ~4 dB is headroom
+# for the term neither constant measures — two captures at different distances,
+# on different axes, in different sittings.
+#
+# Tightening toward that ~1.8 dB is a MEASUREMENT question, not a taste one: it
+# needs a corpus of speakers read both ways in one session. Until that exists
+# the wider trigger only discloses less often, the direction that cannot
+# mislead.
+LEVEL_SITTING_TOLERANCE_DB = MEASURED_VS_DATASHEET_TRIM_TOLERANCE_DB
+
 # Canonical per-parameter provenance vocabulary (SC-3). ``RECOMMENDED_START``
 # is reserved for future profile prefills; no code path in this module emits
 # it directly (it only appears via the gain-source migration map below).
@@ -468,9 +487,10 @@ def _measured_level_trims(
     """Per-role attenuation-only trim from the MEASURED overlap-band level deltas.
 
     For each adjacent-driver crossover, both drivers' near-field captures through
-    the production graph give their level in a band centred on the shared Fc; the
-    driver-to-driver delta is the relative sensitivity at the handoff (the −6 dB
-    Linkwitz-Riley shoulder cancels). We chain those deltas into a per-driver
+    the production graph give their level AT the shared Fc (a point, not a band
+    average — ``driver_acoustics._overlap_band_levels``); the driver-to-driver
+    delta is the relative sensitivity at the handoff (the −6 dB Linkwitz-Riley
+    shoulder cancels). We chain those deltas into a per-driver
     attenuation (quietest driver = reference, 0 dB), so the acoustic sum is level
     across every crossover — the MEASURED refinement of the datasheet sensitivity
     trim ``_derive_corrections`` otherwise seeds.
@@ -1762,70 +1782,87 @@ def measured_candidate_evidence_counts(candidate: Any) -> dict[str, int]:
     }
 
 
-def _estimator_cross_check(
+def _compare_level_sittings(
     preset: ActiveSpeakerPreset,
     measurements: Mapping[str, Any],
     candidate_trims_db: Mapping[str, float],
     crossover_preview: Mapping[str, Any] | None = None,
-) -> list[str]:
-    """Where the two level-match ESTIMATORS disagree, per role, as copy strings.
+) -> tuple[list[str], dict[str, Any]]:
+    """How far apart two SITTINGS place the same level fact, as copy strings.
 
-    PR-L4 item 3(b) / PR-L3 review finding N2. The repo carries two ways to
-    measure the same inter-driver level gap and never compared them:
+    **One definition, read twice** (ruling S8), which is what separates this
+    from its two siblings. "Level-matched" means matched acoustic output
+    through the handover region, and both numbers here answer exactly that:
 
-    * ``driver_acoustics``' point-at-Fc read (via
-      :func:`_measured_level_trims`) — at Fc both branches sit on their matched
-      -6 dB LR shoulder, so their delta IS the sensitivity delta, taken as a
-      single interpolated point;
-    * ``program_analysis.solve_branch_trims``' power-band average over each
-      branch's own half of Fc, which is what a v2 measured candidate carries.
+    * ``driver_acoustics._overlap_band_levels``' point-at-Fc read, reached via
+      :func:`_measured_level_trims` — at Fc both branches sit on their matched
+      −6 dB Linkwitz-Riley shoulder, so their delta is the sensitivity delta,
+      taken as a single interpolated point;
+    * ``program_analysis.solve_branch_trims``' power-band average over the
+      mirrored ±1-octave halves about Fc, which is what a v2 measured candidate
+      carries and which S8 makes THE level fact.
 
-    **Disclosed, not refused** — and the distinction is deliberate. Unlike item
-    3(a)'s measured-vs-datasheet check, whose two frames describe the SAME
-    capture against a physical model, these two estimators in practice read
-    DIFFERENT captures (whichever sitting the point-at-Fc reader accepted — a
-    banked base trim or the guided phone level match — and the crossover
-    MEASURE sweep are separate sittings, and the candidate branch below never
-    runs the point-at-Fc path itself). Mic placement moves between sittings, so a
-    disagreement here is weaker evidence than 3(a)'s and does not justify
-    refusing a candidate the realized-level assertion has already graded. It
-    justifies saying so.
+    Its two siblings ask something else. ``intervention``'s
+    :func:`~jasper.active_speaker.crossover_v2.intervention.compare_level_definitions`
+    reports the handover level against the PASSBAND estimate — two physical
+    questions on ONE capture; item 3(a)'s measured-vs-datasheet check grades
+    one capture against a physical model. Here the definition is shared and the
+    CAPTURE is not: the crossover MEASURE sweep and whichever sitting the
+    point-at-Fc reader accepted (a banked base trim or the guided phone level
+    match) are separate sittings, and the candidate branch below never runs the
+    point-at-Fc path itself.
 
-    Tolerance is :data:`MEASURED_VS_DATASHEET_TRIM_TOLERANCE_DB`, reused rather
-    than reinvented: this is the same "two independent estimates of one physical
-    quantity" question with a comparable error budget (~2 dB of estimator-frame
-    difference plus ~2-3 dB of between-sitting placement), and a second
-    weakly-grounded constant would be worse than one well-argued one. Empty list
-    when there is nothing to compare — the common case.
+    So a gap here is neither a fault nor a verdict on either number — the
+    sittings are taken at different distances and on different axes, which
+    ``intervention.LEVEL_MATCH_AXIS`` explains has no single correct answer.
+    ``frame`` therefore names both: the MEASURE sweep's axis is that constant,
+    while the other sitting's geometry is per-capture and can even be mixed
+    within one record, which that record discloses itself
+    (``driver_base_trim`` — ``mixed_geometry_group_ids``, ``geometry_claim``).
+    A level gap whose frames the reader cannot recover is unplaceable.
+
+    **Disclosed, never refused**, and nothing is asked for: the candidate's own
+    trim ships whatever this says, so there is no remediation to recommend.
+    ``notes`` is empty when nothing crosses
+    :data:`LEVEL_SITTING_TOLERANCE_DB`, the common case; ``frame`` rides
+    unconditionally because it describes the captures rather than whichever
+    condition was the reason.
     """
+    # Local, like this module's other cross-package reads: the axis constant is
+    # all that is wanted from crossover_v2, and importing it at module scope
+    # would pull that package into every baseline-profile import.
+    from .crossover_v2.intervention import LEVEL_MATCH_AXIS
+
+    frame: dict[str, Any] = {"crossover_sweep_axis": LEVEL_MATCH_AXIS}
     if not candidate_trims_db:
-        return []
+        return [], frame
     try:
-        point_trims, _meta = _measured_level_trims(
+        point_trims, point_meta = _measured_level_trims(
             preset, measurements, crossover_preview
         )
     except (AttributeError, KeyError, TypeError, ValueError) as exc:
         # The point-at-Fc reader is fail-closed by design and this is a
         # disclosure path; an unreadable measurements blob means "no second
-        # opinion available", never a failed profile build. Logged at WARNING
-        # like its sibling below, so a cross-check that silently stopped
-        # running is visible rather than indistinguishable from agreement.
+        # sitting available", never a failed profile build. Logged at WARNING
+        # like its sibling below, so a comparison that silently stopped running
+        # is visible rather than indistinguishable from two sittings agreeing.
         log_event(
-            logger, "baseline_profile.level_estimator_cross_check_unavailable",
+            logger, "baseline_profile.level_sitting_comparison_unavailable",
             level=logging.WARNING, error=f"{type(exc).__name__}: {exc}",
         )
-        return []
+        return [], frame
+    frame["level_match_sitting"] = point_meta.get("source")
     notes: list[str] = []
     for role in sorted(set(point_trims) & set(candidate_trims_db)):
-        disagreement_db = abs(point_trims[role] - candidate_trims_db[role])
-        if disagreement_db <= MEASURED_VS_DATASHEET_TRIM_TOLERANCE_DB:
+        gap_db = abs(point_trims[role] - candidate_trims_db[role])
+        if gap_db <= LEVEL_SITTING_TOLERANCE_DB:
             continue
         notes.append(
             f"{role} crossover sweep {candidate_trims_db[role]:.1f} dB vs "
             f"level match {point_trims[role]:.1f} dB "
-            f"({disagreement_db:.1f} dB apart)"
+            f"({gap_db:.1f} dB apart)"
         )
-    return notes
+    return notes, frame
 
 
 def _summed_validation_evidence_complete(summary: Mapping[str, Any]) -> bool:
@@ -2339,36 +2376,35 @@ def build_baseline_profile_candidate(
             for group in topology.speaker_groups
         )
         correction_issues: list[dict[str, str]] = []
-        # PR-L4 item 3(b): the ONLY place the repo's two level-match estimators
-        # can be read side by side (PR-L3 review finding N2). The candidate's
-        # trims come from `solve_branch_trims`' power-band average over each
-        # branch's own half of Fc; `_measured_level_trims` reads
-        # `driver_acoustics`' point-at-Fc interpolation of the same pair. Two
-        # different frames for one physical quantity, and until now nothing
-        # compared them.
-        estimator_notes = _estimator_cross_check(
+        # The ONLY place the repo's two SITTINGS of the level fact can be read
+        # side by side. Both answer one question — see
+        # `_compare_level_sittings` for why a gap between them is a property of
+        # two captures rather than a fault in either number.
+        sitting_notes, sitting_frame = _compare_level_sittings(
             preset,
             measurements,
             dict(measured_candidate.role_attenuations_db),
             crossover_preview,
         )
-        if estimator_notes:
+        if sitting_notes:
             correction_issues.append(_issue(
                 "warning",
-                "driver_level_estimator_disagreement",
+                "driver_level_sittings_differ",
                 (
-                    "the two ways JTS can measure the driver level gap disagree "
-                    "by more than "
-                    f"{MEASURED_VS_DATASHEET_TRIM_TOLERANCE_DB:.0f} dB ("
-                    + "; ".join(estimator_notes)
-                    + "); the crossover measurement's own value was used"
+                    "the crossover sweep and the level-match sitting place the "
+                    "driver level more than "
+                    f"{LEVEL_SITTING_TOLERANCE_DB:.0f} dB apart ("
+                    + "; ".join(sitting_notes)
+                    + "); they are separate captures on different axes reading "
+                    "one level fact, not two claims about one capture — the "
+                    "crossover measurement's own value was used"
                 ),
             ))
             log_event(
-                logger, "baseline_profile.level_estimator_disagreement",
+                logger, "baseline_profile.level_sittings_differ",
                 level=logging.WARNING,
-                tolerance_db=MEASURED_VS_DATASHEET_TRIM_TOLERANCE_DB,
-                detail="; ".join(estimator_notes),
+                tolerance_db=LEVEL_SITTING_TOLERANCE_DB,
+                detail="; ".join(sitting_notes),
             )
         correction_meta = {
             "sources": {role: "measured" for role in roles},
@@ -2380,7 +2416,8 @@ def build_baseline_profile_candidate(
                 "comparison": "strict_measured_candidate",
                 "incomparable_groups": [],
                 "applied": True,
-                "estimator_disagreements": list(estimator_notes),
+                "sitting_differences": list(sitting_notes),
+                "sitting_frame": sitting_frame,
             },
             "corrections_provenance": {
                 role: {
