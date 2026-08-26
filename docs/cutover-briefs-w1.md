@@ -2,8 +2,9 @@
 
 > **Scope.** The implementation-grade briefs for the cutover DAG's entry
 > items — `W1-a` (the production `RecordStore`), `W1-b` (the thirteen fields),
-> `W1-c` (the four-site retention lift) and `W1-d` (the 4j index) — as scheduled
-> by [`REFACTOR-CUTOVER-2026-08.md`](REFACTOR-CUTOVER-2026-08.md) §1 and §7.
+> `W1-c` (the retention lift — **three** sites, not §1's four: see D6) and
+> `W1-d` (the 4j index) — as scheduled by
+> [`REFACTOR-CUTOVER-2026-08.md`](REFACTOR-CUTOVER-2026-08.md) §1 and §7.
 >
 > **This document does not re-plan.** §1 owns *what* and *why*; this owns
 > *exactly where and in what order*, at a grain a builder executes without
