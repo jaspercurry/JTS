@@ -479,7 +479,7 @@ async def test_confirmation_silence_dismisses_without_model_commit(caplog):
     assert scheduler.read == []
     assert wl._research_window_active is False
     assert "RECORDING TIMEOUT" not in caplog.text
-    assert "SILENT RESPONSE" not in caplog.text
+    assert "event=turn.silent_response" not in caplog.text
 
 
 async def test_real_wake_during_confirmation_window_cancels_window_and_wins():

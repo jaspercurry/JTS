@@ -1297,6 +1297,10 @@ class WakeLoop:
         self._barge_in_ptt_warned: bool = False
         self._ptt_cap_warned: bool = False
         self._server_vad_ptt_warned: bool = False
+        # One-shot per daemon like the latches above: the zero-chunks arm
+        # observes that nothing came back, never why, so a per-turn repeat
+        # buries the one-shot warnings that do name a cause. See #2228.
+        self._silent_response_warned: bool = False
         self._barge_in_active: bool = False
         # Reconciliation kind for the active provider (resolved once — the
         # provider is fixed for the daemon's life; a switch restarts us).
@@ -5607,17 +5611,17 @@ class WakeLoop:
             ):
                 model = _active_model(self._cfg)
                 if self._input_ended:
-                    logger.warning(
-                        "SILENT RESPONSE: sent %d bytes of audio to %s "
-                        "and called end_input, but received 0 audio "
-                        "chunks back. Likely service-side: quota "
-                        "exhausted, billing not yet propagated to this "
-                        "model, or outage of %s. Non-realtime endpoints "
-                        "on the same provider may still work (separate "
-                        "quota bucket). Switch providers with "
-                        "switch-voice-provider.sh if this keeps happening.",
-                        bytes_sent, model, model,
-                    )
+                    if not self._silent_response_warned:
+                        self._silent_response_warned = True
+                        log_event(
+                            logger,
+                            "turn.silent_response",
+                            provider=self._cfg.voice_provider,
+                            model=model,
+                            bytes_sent=bytes_sent,
+                            endpointer=self._endpointer_label(),
+                            level=logging.WARNING,
+                        )
                 elif self._manual_endpoint_this_turn:
                     # Same shape as RECORDING TIMEOUT below, but that text
                     # names a silence detector and a wake fire, neither of
