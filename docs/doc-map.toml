@@ -1079,7 +1079,7 @@ safety = "design-only"
 code = [
   "PLAN.md",
   "docs/HANDOFF-apple-music.md",
-  "docs/HANDOFF-remote-updates.md",
+  "docs/adr/0145-remote-updates-stay-a-laptop-deploy.md",
   "docs/HANDOFF-source-capabilities.md",
   "jasper/apple_music/**",
   "jasper/tools/apple_music.py",
@@ -1091,7 +1091,7 @@ code = [
 docs = [
   "PLAN.md",
   "docs/HANDOFF-apple-music.md",
-  "docs/HANDOFF-remote-updates.md",
+  "docs/adr/0145-remote-updates-stay-a-laptop-deploy.md",
   "docs/HANDOFF-source-capabilities.md",
   "docs/HANDOFF-volume-control-redesign.md",
   "docs/HANDOFF-persistent-live-session.md",

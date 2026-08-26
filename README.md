@@ -305,13 +305,13 @@ One line each; the doc is the canonical "read this before modifying".
 - [`HANDOFF-resilience.md`](docs/HANDOFF-resilience.md) — the resilience
   ladder: watchdogs, memory pressure, reboot escalation, forensics
 - [`HANDOFF-hotplug-resilience.md`](docs/HANDOFF-hotplug-resilience.md) —
-  runtime mic/DAC attach-detach convergence with no redeploy
+  runtime mic/DAC/accessory attach-detach convergence with no redeploy
 - [`HANDOFF-tier5-watchdog-liveness.md`](docs/HANDOFF-tier5-watchdog-liveness.md)
-  — Tier 5 liveness: shipped T5.1/T5.2 and the deferred options
+  — why the kernel watchdog cannot see userspace, and the deferred dials
 - [`HANDOFF-runtime-memory.md`](docs/HANDOFF-runtime-memory.md) — **the RAM
   budget:** always-on footprint decisions and the remaining levers
-- [`HANDOFF-observability.md`](docs/HANDOFF-observability.md) — logging model,
-  debug-mode toggle, flight recorder, download-diagnostics
+- [`HANDOFF-observability.md`](docs/HANDOFF-observability.md) — the `event=`
+  spine, journald retention, the debug card, and the flight recorder
 - [`HANDOFF-privilege-separation.md`](docs/HANDOFF-privilege-separation.md) —
   threat model and the de-rooting ladder
 - [`HANDOFF-control-plane-auth.md`](docs/HANDOFF-control-plane-auth.md) —
@@ -340,8 +340,8 @@ One line each; the doc is the canonical "read this before modifying".
   only, no code yet)
 - [`HANDOFF-apple-music.md`](docs/HANDOFF-apple-music.md) — Apple Music
   feasibility and the chosen build path (research only)
-- [`HANDOFF-remote-updates.md`](docs/HANDOFF-remote-updates.md) — OTA update
-  option survey (research only)
+- [`adr/0145-remote-updates-stay-a-laptop-deploy.md`](docs/adr/0145-remote-updates-stay-a-laptop-deploy.md)
+  — why there is no OTA update button, and the shape if that changes
 - [`dumb-endpoint-bringup.md`](docs/dumb-endpoint-bringup.md) — Zero 2 W
   streambox lab runbook and the two-install-profile decision
 - [`docs/audio-paths.md`](docs/audio-paths.md) — the two ALSA paths, which

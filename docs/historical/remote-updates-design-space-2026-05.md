@@ -1,17 +1,20 @@
-# Remote software updates / CI deploy pipeline — design space
+# Remote software updates — design space (2026-05) — historical
 
-**Status (2026-05-15, updated 2026-07-11):** Design space for the
-"Check for updates" button, which is **not built**. Stage 1 of the
-recommended path — GitHub Actions CI — **has since shipped**
-(`.github/workflows/tests.yml`, #251, 2026-05-23; now pytest on
-the deployed interpreter (py3.13) with `ruff`/`mypy`, plus `shell`, `js`, and
-`rust` jobs and the doc-hygiene workflows). The remaining Stages 2–3
-(auto-release + the dashboard button) are still unbuilt research.
-This document captures the option space, the recommended staged
-build-out, the integration points already present in the codebase,
-and the open questions, so the work can be picked up coherently
-later. [PLAN.md](../PLAN.md)'s "Remote software updates / CI deploy
-pipeline" entry references this file.
+> **Status: historical.** The full option survey behind the "Check for
+> updates" button, frozen as written 2026-05-15 and last touched 2026-07-11.
+> The button was never built and the decision not to build it is
+> [ADR-0145](../adr/0145-remote-updates-stay-a-laptop-deploy.md), which also
+> records the shape to use if it is ever revisited. Stage 1 of the recommended
+> path — GitHub Actions CI — did ship (`.github/workflows/tests.yml`,
+> 2026-05-23); CONTRIBUTING.md is authoritative for what CI runs today, not
+> the Stage 1 description below. Nothing here is current operational truth:
+> the deploy path is `bash scripts/deploy-to-pi.sh` per AGENTS.md, and the
+> install transaction is
+> [HANDOFF-install-update-transaction.md](../HANDOFF-install-update-transaction.md).
+
+This document captures the option space, the recommended staged build-out, the
+integration points present in the codebase at the time, and the open questions,
+so the work can be picked up coherently later.
 
 The motivating user request:
 
@@ -30,7 +33,7 @@ the work is prioritised.
 
 ## Today's deploy flow + what's missing
 
-Per [CLAUDE.md](../CLAUDE.md) "Deploying code changes to the Pi", the
+Per [AGENTS.md](../../AGENTS.md) "Build, test, deploy", the
 only supported path is `bash scripts/deploy-to-pi.sh` from the
 developer laptop. The script:
 
@@ -94,7 +97,7 @@ engineering with real risks.
   developer.
 - Failure modes are scary: mid-update power cut, bad release breaks
   wake-word path, system-package install hangs on a stale apt
-  mirror. The [resilience ladder](HANDOFF-resilience.md) exists
+  mirror. The [resilience ladder](../HANDOFF-resilience.md) exists
   precisely because the speaker must keep responding to wake under
   reasonable abuse.
 - A "production speaker must be resilient and plug-and-play" rule
@@ -365,10 +368,10 @@ to a new `jasper-control` endpoint.
   the speaker for ~5 minutes. Continue?").
 - Per AGENTS.md's no-silent-deafness rule, a failed update
   must play an audio cue. Add a new entry to
-  [`jasper/cues/registry.py`](../jasper/cues/registry.py)
+  [`jasper/cues/registry.py`](../../jasper/cues/registry.py)
   (`update_failed_rolled_back`, "Update failed; the speaker rolled
   back to the previous version.") — see
-  [HANDOFF-audible-feedback.md](HANDOFF-audible-feedback.md) for
+  [HANDOFF-audible-feedback.md](../HANDOFF-audible-feedback.md) for
   the pattern.
 
 **Dependency / system-package updates.** `install.sh` handles these
@@ -389,7 +392,7 @@ the next implementer from re-discovering it):
   `JASPER_GIT_BRANCH`, `JASPER_INSTALL_AT`. Written **last**, only on
   a fully-successful install, so the manifest never claims a SHA the
   box isn't cleanly running (see
-  [HANDOFF-install-update-transaction.md](HANDOFF-install-update-transaction.md)).
+  [HANDOFF-install-update-transaction.md](../HANDOFF-install-update-transaction.md)).
   Already the source of truth for "current version".
 - **`jasper/web/system_setup.py`** — serves
   `http://jts.local/system/`. Software card shows Version (short
@@ -419,7 +422,7 @@ the next implementer from re-discovering it):
   the checked-out tag, set the same env vars before invoking
   `install.sh`.
 - **The cue pattern** (per
-  [HANDOFF-audible-feedback.md](HANDOFF-audible-feedback.md))
+  [HANDOFF-audible-feedback.md](../HANDOFF-audible-feedback.md))
   for audible failure feedback.
 - **`pyproject.toml`** — pip-editable install at `/opt/jasper`. Deps
   pinned (e.g. `google-genai`, `openai`, `scipy`). `[project.scripts]`
@@ -432,7 +435,7 @@ the next implementer from re-discovering it):
 
 ## Failure surface + rollback strategy
 
-> **Cross-reference:** [`install-update-resilience-plan.md`](install-update-resilience-plan.md)
+> **Cross-reference:** [`install-update-resilience-plan.md`](../install-update-resilience-plan.md)
 > (2026-06-21) covers overlapping install/update-resilience ground
 > grounded in a real production incident, and several of the failure
 > modes speculated about below have since been addressed in
@@ -473,10 +476,10 @@ The actually-hard part. The five failure modes worth designing for:
 all checks `ok` or `warn` (not `fail`). Secondary candidates worth
 considering: `sd_notify` watchdog READY signal from `jasper-voice`
 within N seconds (Tier 1 of the
-[resilience ladder](HANDOFF-resilience.md)); a deliberate "ping"
+[resilience ladder](../HANDOFF-resilience.md)); a deliberate "ping"
 endpoint that the updater can curl. Probably want some combination.
 
-**Audio cue on failure.** Per CLAUDE.md, every wake-blocking failure
+**Audio cue on failure.** Per AGENTS.md, every wake-blocking failure
 must trigger an audible cue. A failed update that rolls back is
 *not* wake-blocking (the speaker is back on the previous version
 and wake still works) — but a failed update that *also* fails to
@@ -516,7 +519,7 @@ Options, easiest to hardest:
 This document doesn't pick one. The decision should be made
 alongside the broader "dashboard auth model" question that's
 implicit in the
-[PLAN.md "Configuration web view / management dashboard"](../PLAN.md)
+[PLAN.md "Configuration web view / management dashboard"](../../PLAN.md)
 section.
 
 ---
@@ -625,8 +628,8 @@ GitHub-side mechanics:
   (unauthenticated, 60 req/hr/IP without a token).
 - `gh release create` for tag-and-publish in CI.
 
-Last verified: 2026-07-11 (corrected the stale "no CI" premise —
-`.github/workflows/tests.yml` shipped #251 2026-05-23, Stage 1 done —
-and re-verified LOC/anchors: system_setup.py migrated, install.sh
-`write_build_manifest` writes the manifest last, doctor is now a
-package; OTA button Stages 2–3 remain unbuilt research)
+Frozen 2026-08-26 with its 2026-07-11 content (which had corrected the stale
+"no CI" premise and re-verified the integration-point inventory). Later
+changes to CI lanes, the `/system` page, or `install.sh` are not reflected
+here and were not re-verified — read the current owners named in the header
+instead.

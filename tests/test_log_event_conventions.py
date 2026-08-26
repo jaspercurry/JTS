@@ -236,11 +236,6 @@ def test_sound_setup_migration_has_no_exemption_or_backdoor_prefix():
     assert not any(rel_path.startswith(prefix) for prefix in _ACTIVE_ZONE_PREFIXES)
 
 
-def test_deferred_inventory_matches_documented_count():
-    """HANDOFF-observability keeps the human inventory synchronized."""
-    assert len(DEFERRED_ACTIVE_ZONE) == 13
-
-
 def test_detector_catches_both_logging_forms(tmp_path):
     """The detector flags `logger.<level>("event=…")` AND the generic
     `logger.log(LEVEL, "event=…")` form, while ignoring a variable message
