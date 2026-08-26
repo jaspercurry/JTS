@@ -29,7 +29,7 @@ adjacent-driver deltas to a per-role attenuation is
 ``level_trim.attenuation_from_group_deltas``. Both already ship and both are
 already what the profile consumes; this module only banks their answer. Minting
 a third way to measure an inter-driver level gap is the defect
-``intervention.check_level_consistency`` and ``baseline_profile._estimator_cross_check``
+``intervention.compare_level_definitions`` and ``baseline_profile._estimator_cross_check``
 exist to disclose, and it is not reopened here.
 
 **Re-keying is a loud refusal, never a migration.** The record names the

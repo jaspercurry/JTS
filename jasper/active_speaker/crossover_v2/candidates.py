@@ -159,7 +159,7 @@ class LinearizationState:
     ``None`` on every non-planning outcome and whenever one of the two
     estimates covered no role — the "no verdict" state, and NOT a synonym for
     "the estimators agreed". See
-    :func:`~.intervention.check_level_consistency`. It flags a capture as
+    :func:`~.intervention.compare_level_definitions`. It discloses a difference as
     retriable and never moves a number.
     """
     linearized_predicted_sum: tuple[np.ndarray, np.ndarray] | None = None

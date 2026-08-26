@@ -9871,7 +9871,7 @@ def test_the_realized_level_assertion_still_fires_on_its_own_evidence(caplog):
     can do that.
 
     **Item 1's route in this harness is now the ONLY route.** The
-    level-consistency check (#2609's ``check_level_consistency``) compares the
+    level-consistency check (#2609's ``compare_level_definitions``) compares the
     two per-driver estimators and banks a finding; neither has a refusal arm
     now, so every session reaches the end with whatever the anchor computed and
     a disclosure beside it. (The ripple polish is not a route around it either
@@ -10176,7 +10176,7 @@ def test_an_ordinary_session_banks_no_estimator_finding():
         assert _run_phase(c, 2, 2)["accepted"] is True
     consistency = plans[-1].level_consistency
     assert consistency is not None, "both estimators cover a role here"
-    assert consistency.suspect is False
+    assert consistency.differs is False
     assert consistency.worst_delta_db < consistency.tolerance_db
     assert banked == []
 
