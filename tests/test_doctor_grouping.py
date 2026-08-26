@@ -3,26 +3,47 @@
 # SPDX-License-Identifier: Apache-2.0
 
 """Unit tests for the jasper-doctor grouping domain."""
+from __future__ import annotations
 
 import subprocess
 from types import SimpleNamespace
 
+import pytest
+
 from jasper.cli import doctor
+from jasper.multiroom.config import BondMember
 
+from .doctor_test_support import _grouping_cfg, _registered_check_names
 
-from .doctor_test_support import (
-    _grouping_cfg,
-    _registered_check_names,
+_LEADER = dict(enabled=True, role="leader", channel="left", bond_id="x")
+_FOLLOWER = dict(
+    enabled=True,
+    role="follower",
+    channel="right",
+    bond_id="living-room",
+    leader_addr="192.168.1.50",
 )
-
-# ----------------------------------------------------------------- grouping
+_SUB_FOLLOWER = dict(
+    enabled=True,
+    role="follower",
+    channel="sub",
+    bond_id="lr",
+    leader_addr="192.168.1.50",
+)
+_SUB_LEADER = dict(
+    enabled=True,
+    role="leader",
+    channel="left",
+    bond_id="lr",
+    roster=(BondMember(addr="192.168.1.60", name="Sub", channel="sub"),),
+)
 
 
 def _patch_grouping(monkeypatch, cfg, is_active_stdout=None, *, unit_states=None):
     """Stub the grouping check's IO. Prefer `unit_states` (a unit→state
     mapping; unlisted units default to "inactive") — the plan carries the
-    dumb-follower park/restore intents, so positional stdout lines are
-    brittle against the unit list growing."""
+    dumb-follower park/restore intents, so positional stdout lines are brittle
+    against the unit list growing."""
     import jasper.multiroom.config as mr_config
 
     monkeypatch.setattr(mr_config, "load_config", lambda *a, **k: cfg)
@@ -45,365 +66,260 @@ def _patch_grouping(monkeypatch, cfg, is_active_stdout=None, *, unit_states=None
     # §2, Increments 3–5), so a bonded leader honestly derives degraded.
 
 
-def test_check_grouping_off_is_ok(monkeypatch):
-    _patch_grouping(monkeypatch, _grouping_cfg(enabled=False), "")
-    r = doctor.check_grouping()
-    assert r.status == "ok"
-    assert "single-speaker" in r.detail
+# ------------------------------------------------------------ snapcast install
 
 
-def test_check_snapcast_off_skips(monkeypatch):
-    """Grouping off → snapcast deliberately not installed; skip (ok)."""
-    _patch_grouping(monkeypatch, _grouping_cfg(enabled=False), "")
-    monkeypatch.setattr("shutil.which", lambda name: None)
-    r = doctor.check_grouping_snapcast_installed()
-    assert r.status == "ok"
-    assert "grouping off" in r.detail
-
-
-def test_check_snapcast_present_is_ok(monkeypatch):
-    _patch_grouping(monkeypatch, _grouping_cfg(enabled=True, role="leader"), "")
-    monkeypatch.setattr("shutil.which", lambda name: f"/usr/bin/{name}")
-    r = doctor.check_grouping_snapcast_installed()
-    assert r.status == "ok"
-    assert "present" in r.detail
-
-
-def test_check_snapcast_missing_fails_with_remediation(monkeypatch):
-    """The JTS5 root state (2026-06-23): grouping enabled but the snapcast
-    binaries are still absent. Surface it as a FAIL carrying the install command,
-    so a failed or skipped provisioning step cannot stay invisible."""
-    _patch_grouping(monkeypatch, _grouping_cfg(enabled=True, role="leader"), "")
-    monkeypatch.setattr("shutil.which", lambda name: None)
-    r = doctor.check_grouping_snapcast_installed()
-    assert r.status == "fail"
-    assert "snapserver" in r.detail and "snapclient" in r.detail
-    assert "apt install" in r.detail
-
-
-# --- snapclient version drift — a live probe (bounded), never a record;
-# mirrors check_grouping_snapcast_installed's grouping-off skip.
-
-
-def test_check_snapcast_version_registered():
-    assert "check_grouping_snapcast_version" in _registered_check_names()
-
-
-def test_check_snapcast_version_off_skips(monkeypatch):
-    """Mirrors check_grouping_snapcast_installed's grouping-off skip — a
-    warn about a disabled subsystem's version is not actionable."""
-    _patch_grouping(monkeypatch, _grouping_cfg(enabled=False), "")
-    r = doctor.check_grouping_snapcast_version()
-    assert r.status == "ok"
-    assert "grouping off" in r.detail
-
-
-def test_check_snapcast_version_not_installed_skips(monkeypatch):
-    _patch_grouping(monkeypatch, _grouping_cfg(enabled=True, role="leader"), "")
-    monkeypatch.setattr("shutil.which", lambda name: None)
-    r = doctor.check_grouping_snapcast_version()
-    assert r.status == "ok"
-    assert "not installed" in r.detail
-
-
-def test_check_snapcast_version_probe_raises_skips(monkeypatch):
-    """The except limb: a probe that cannot even run (timeout, vanished
-    binary) skips (ok) rather than manufacturing a verdict."""
-    _patch_grouping(monkeypatch, _grouping_cfg(enabled=True, role="leader"), "")
-    monkeypatch.setattr("shutil.which", lambda name: f"/usr/bin/{name}")
-
-    def _raise(argv, **kw):
-        raise subprocess.TimeoutExpired(cmd="snapclient", timeout=5)
-
-    monkeypatch.setattr(doctor.grouping, "_run", _raise)
-    r = doctor.check_grouping_snapcast_version()
-    assert r.status == "ok"
-    assert "could not determine" in r.detail
-
-
-def test_check_snapcast_version_nonzero_exit_skips_with_useful_detail(monkeypatch):
-    """DSF-1: a non-zero exit (e.g. a partial-upgrade linker error) must
-    never reach the regex parse, even though the error text itself contains
-    a version-shaped token (a linked library's version, not snapclient's
-    own) — the mutation-killer for a future guard-drop. The linker error
-    lands in the doctor line, since that IS the useful fact here."""
-    _patch_grouping(monkeypatch, _grouping_cfg(enabled=True, role="leader"), "")
-    monkeypatch.setattr("shutil.which", lambda name: f"/usr/bin/{name}")
+@pytest.mark.parametrize(
+    "cfg_kwargs, installed, status, must_name",
+    [
+        # Grouping off means snapcast is deliberately not installed.
+        ({"enabled": False}, False, "ok", "grouping off"),
+        (_LEADER, True, "ok", "present"),
+        # The JTS5 root state (2026-06-23): grouping enabled, binaries still
+        # absent because provisioning failed or was skipped. The FAIL carries
+        # the install command so that cannot stay invisible.
+        (_LEADER, False, "fail", "apt install"),
+    ],
+    ids=["grouping-off", "present", "missing"],
+)
+def test_check_grouping_snapcast_installed_verdicts(
+    monkeypatch, cfg_kwargs, installed, status, must_name
+):
+    _patch_grouping(monkeypatch, _grouping_cfg(**cfg_kwargs), "")
     monkeypatch.setattr(
-        doctor.grouping, "_run",
-        lambda argv, **kw: SimpleNamespace(
-            returncode=127,
-            stdout="",
-            stderr=(
-                "snapclient: error while loading shared libraries: "
-                "libboost_program_options.so.1.83.0: cannot open shared "
-                "object file: No such file or directory"
+        "shutil.which", lambda name: f"/usr/bin/{name}" if installed else None
+    )
+
+    r = doctor.check_grouping_snapcast_installed()
+
+    assert r.status == status
+    assert must_name in r.detail
+
+
+# ------------------------------------------------------------ snapcast version
+#
+# A live probe (bounded), never a record. Drift warns for visibility rather
+# than failing: no apt pin exists to enforce VALIDATED_SNAPCAST_VERSION.
+
+
+def _probe(returncode=0, stdout="", stderr="", raises=None):
+    def run(argv, **kw):
+        if raises is not None:
+            raise raises
+        return SimpleNamespace(returncode=returncode, stdout=stdout, stderr=stderr)
+
+    return run
+
+
+_LINKER_ERROR = (
+    "snapclient: error while loading shared libraries: "
+    "libboost_program_options.so.1.83.0: cannot open shared object file: "
+    "No such file or directory"
+)
+
+
+@pytest.mark.parametrize(
+    "cfg_kwargs, installed, run, status, must_name, must_not_name",
+    [
+        ({"enabled": False}, False, None, "ok", "grouping off", ""),
+        (_LEADER, False, None, "ok", "not installed", ""),
+        # A probe that cannot even run (timeout, vanished binary) skips rather
+        # than manufacturing a verdict.
+        (
+            _LEADER,
+            True,
+            _probe(raises=subprocess.TimeoutExpired(cmd="snapclient", timeout=5)),
+            "ok",
+            "could not determine",
+            "",
+        ),
+        # DSF-1: a non-zero exit must never reach the regex parse even though
+        # the linker error itself carries a version-shaped token (a linked
+        # library's version, not snapclient's own).
+        (
+            _LEADER,
+            True,
+            _probe(returncode=127, stderr=_LINKER_ERROR),
+            "ok",
+            "libboost",
+            "differs from",
+        ),
+        (_LEADER, True, _probe(stdout="not a version\n"), "ok",
+         "could not determine", ""),
+        (_LEADER, True, _probe(stdout="snapclient v0.31.0\n"), "ok", "0.31.0", ""),
+        # The concatenation order is load-bearing: snapclient's real version
+        # rides stdout, but ALSA-lib can print its OWN version-shaped token to
+        # stderr, so stdout must win the parse.
+        (
+            _LEADER,
+            True,
+            _probe(
+                stdout="snapclient v0.31.0\n",
+                stderr="ALSA lib pcm.c:1234:(some_fn) something 9.9.9\n",
             ),
+            "ok",
+            "0.31.0",
+            "9.9.9",
         ),
-    )
-    r = doctor.check_grouping_snapcast_version()
-    assert r.status == "ok"
-    assert "127" in r.detail
-    assert "libboost" in r.detail
-    # Never fabricates a version comparison from the linker error's own
-    # version-shaped substring.
-    assert "differs from" not in r.detail
-
-
-def test_check_snapcast_version_unparseable_skips(monkeypatch):
-    """Output with no version-shaped token skips (ok) — never manufacture a
-    warning from a fact the probe could not determine."""
-    _patch_grouping(monkeypatch, _grouping_cfg(enabled=True, role="leader"), "")
-    monkeypatch.setattr("shutil.which", lambda name: f"/usr/bin/{name}")
+        (_LEADER, True, _probe(stdout="snapclient v0.32.1\n"), "warn", "0.32.1", ""),
+    ],
+    ids=[
+        "grouping-off",
+        "not-installed",
+        "probe-raises",
+        "nonzero-exit",
+        "unparseable",
+        "match",
+        "stdout-wins",
+        "drift",
+    ],
+)
+def test_check_grouping_snapcast_version_verdicts(
+    monkeypatch, cfg_kwargs, installed, run, status, must_name, must_not_name
+):
+    _patch_grouping(monkeypatch, _grouping_cfg(**cfg_kwargs), "")
     monkeypatch.setattr(
-        doctor.grouping, "_run",
-        lambda argv, **kw: SimpleNamespace(returncode=0, stdout="not a version\n", stderr=""),
+        "shutil.which", lambda name: f"/usr/bin/{name}" if installed else None
     )
+    if run is not None:
+        monkeypatch.setattr(doctor.grouping, "_run", run)
+
     r = doctor.check_grouping_snapcast_version()
-    assert r.status == "ok"
-    assert "could not determine" in r.detail
+
+    assert r.status == status
+    assert must_name in r.detail
+    if must_not_name:
+        assert must_not_name not in r.detail
 
 
-def test_check_snapcast_version_match_is_ok(monkeypatch):
-    _patch_grouping(monkeypatch, _grouping_cfg(enabled=True, role="leader"), "")
-    monkeypatch.setattr("shutil.which", lambda name: f"/usr/bin/{name}")
-    monkeypatch.setattr(
-        doctor.grouping, "_run",
-        lambda argv, **kw: SimpleNamespace(
-            returncode=0, stdout="snapclient v0.31.0\n", stderr="",
-        ),
-    )
-    r = doctor.check_grouping_snapcast_version()
-    assert r.status == "ok"
-    assert "0.31.0" in r.detail
+# --------------------------------------------------------- household credential
 
 
-def test_check_snapcast_version_stdout_wins_over_stderr(monkeypatch):
-    """The concatenation order is load-bearing: snapclient's real version
-    rides stdout, but ALSA-lib (or any other library snapclient links) can
-    print an unrelated runtime warning containing its OWN version-shaped
-    substring to stderr. stdout must win the parse."""
-    _patch_grouping(monkeypatch, _grouping_cfg(enabled=True, role="leader"), "")
-    monkeypatch.setattr("shutil.which", lambda name: f"/usr/bin/{name}")
-    monkeypatch.setattr(
-        doctor.grouping, "_run",
-        lambda argv, **kw: SimpleNamespace(
-            returncode=0,
-            stdout="snapclient v0.31.0\n",
-            stderr="ALSA lib pcm.c:1234:(some_fn) something 9.9.9\n",
-        ),
-    )
-    r = doctor.check_grouping_snapcast_version()
-    assert r.status == "ok"
-    assert "0.31.0" in r.detail
-    assert "9.9.9" not in r.detail
-
-
-def test_check_snapcast_version_mismatch_warns(monkeypatch):
-    """The drift case: an installed version that differs from
-    VALIDATED_SNAPCAST_VERSION warns (visibility), it does not fail — no
-    apt pin exists to enforce it."""
-    _patch_grouping(monkeypatch, _grouping_cfg(enabled=True, role="leader"), "")
-    monkeypatch.setattr("shutil.which", lambda name: f"/usr/bin/{name}")
-    monkeypatch.setattr(
-        doctor.grouping, "_run",
-        lambda argv, **kw: SimpleNamespace(
-            returncode=0, stdout="snapclient v0.32.1\n", stderr="",
-        ),
-    )
-    r = doctor.check_grouping_snapcast_version()
-    assert r.status == "warn"
-    assert "0.32.1" in r.detail and "0.31.0" in r.detail
-
-
-def test_check_household_credential_solo_is_ok(monkeypatch):
-    # Solo short-circuits before reading the secret file (a lone speaker needs
-    # no household credential).
-    _patch_grouping(monkeypatch, _grouping_cfg(enabled=False), "")
-    r = doctor.check_grouping_household_credential()
-    assert r.status == "ok"
-    assert "solo" in r.detail
-
-
-def test_check_household_credential_bonded_paired_ok(monkeypatch, tmp_path):
+@pytest.mark.parametrize(
+    "cfg_kwargs, secret_present, status, must_name",
+    [
+        # Solo short-circuits before reading the secret file.
+        ({"enabled": False}, False, "ok", "solo"),
+        (_LEADER, True, "ok", "present"),
+        # RECOVERY drift: bonded but the secret was lost, so /grouping/set is
+        # fail-safe-open and the doctor is the only place that loss is visible.
+        (_FOLLOWER, False, "warn", "household credential is missing"),
+    ],
+    ids=["solo", "bonded-paired", "bonded-unpaired"],
+)
+def test_check_grouping_household_credential_verdicts(
+    monkeypatch, tmp_path, cfg_kwargs, secret_present, status, must_name
+):
     import jasper.control.household_credential as hc
 
     secret = tmp_path / "household_secret"
-    secret.write_text("s\n")
+    if secret_present:
+        secret.write_text("s\n")
     monkeypatch.setattr(hc, "SECRET_FILE", str(secret))
-    _patch_grouping(
-        monkeypatch,
-        _grouping_cfg(enabled=True, role="leader", channel="left", bond_id="x"),
-        "",
-    )
+    _patch_grouping(monkeypatch, _grouping_cfg(**cfg_kwargs), "")
+
     r = doctor.check_grouping_household_credential()
-    assert r.status == "ok"
-    assert "present" in r.detail
 
-
-def test_check_household_credential_bonded_unpaired_warns(monkeypatch, tmp_path):
-    """RECOVERY drift: bonded but the secret was lost -> /grouping/set is
-    fail-safe-open; the doctor is the only place that loss is visible."""
-    import jasper.control.household_credential as hc
-
-    monkeypatch.setattr(hc, "SECRET_FILE", str(tmp_path / "absent"))
-    _patch_grouping(
-        monkeypatch,
-        _grouping_cfg(
-            enabled=True,
-            role="follower",
-            channel="right",
-            bond_id="x",
-            leader_addr="192.168.1.50",
-        ),
-        "",
-    )
-    r = doctor.check_grouping_household_credential()
-    assert r.status == "warn"
-    assert "household credential is missing" in r.detail
-    assert "/rooms" in r.detail
+    assert r.status == status
+    assert must_name in r.detail
 
 
 # --- camilla#2 endpoint-crossover unit (Stage B B1, INERT) ----------------
 
 
-def test_crossover_unit_check_registered():
-    assert "check_crossover_unit_installed" in _registered_check_names()
-
-
-def test_crossover_unit_solo_is_ok(monkeypatch):
-    # Not an active member -> skip before touching topology or systemd.
-    _patch_grouping(monkeypatch, _grouping_cfg(enabled=False), "")
-    r = doctor.check_crossover_unit_installed()
-    assert r.status == "ok"
-    assert "not an active bond leader" in r.detail
-
-
-def test_crossover_unit_follower_is_ok(monkeypatch):
-    # An ACTIVE follower is not the leader half of the pair; camilla#2 is the
-    # leader's instance, so a follower skips.
-    _patch_grouping(
-        monkeypatch,
-        _grouping_cfg(
-            enabled=True,
-            role="follower",
-            channel="right",
-            bond_id="x",
-            leader_addr="192.168.1.50",
-        ),
-        "",
-    )
-    r = doctor.check_crossover_unit_installed()
-    assert r.status == "ok"
-    assert "not an active bond leader" in r.detail
-
-
-def test_crossover_unit_passive_leader_is_ok(monkeypatch, tmp_path):
-    # A bonded LEADER whose output topology has NO roleful/protected outputs
-    # is a passive leader — it runs no per-driver crossover, so camilla#2 is
-    # n/a and the check skips with ok.
-    from jasper.output_topology import save_output_topology
-    from tests.test_active_speaker_runtime_contract import _topology
-
-    topology_path = tmp_path / "output_topology.json"
-    save_output_topology(_topology([]), path=topology_path)
-    monkeypatch.setenv("JASPER_OUTPUT_TOPOLOGY_PATH", str(topology_path))
-    _patch_grouping(
-        monkeypatch,
-        _grouping_cfg(enabled=True, role="leader", channel="left", bond_id="x"),
-        "",
-    )
-    r = doctor.check_crossover_unit_installed()
-    assert r.status == "ok"
-    assert "passive leader" in r.detail
-
-
 def _active_leader_topology(monkeypatch, tmp_path):
-    """Set up an ACTIVE-LEADER context: a roleful/protected output topology
-    plus a bonded-leader grouping config. Leaves `doctor.grouping._run`
-    patchable by the caller for the systemd probes."""
+    """An ACTIVE-LEADER context: a roleful/protected output topology plus a
+    bonded-leader grouping config. Leaves `doctor.grouping._run` patchable."""
+    import jasper.multiroom.config as mr_config
     from jasper.output_topology import save_output_topology
     from tests.test_active_speaker_runtime_contract import _active_topology
 
     topology_path = tmp_path / "output_topology.json"
     save_output_topology(_active_topology("mono", "active_2_way"), path=topology_path)
     monkeypatch.setenv("JASPER_OUTPUT_TOPOLOGY_PATH", str(topology_path))
-
-    import jasper.multiroom.config as mr_config
-
-    cfg = _grouping_cfg(enabled=True, role="leader", channel="left", bond_id="x")
-    monkeypatch.setattr(mr_config, "load_config", lambda *a, **k: cfg)
-
-
-def test_crossover_unit_active_leader_warns_when_missing(monkeypatch, tmp_path):
-    # Active leader but the unit is not installed (systemctl cat nonzero) ->
-    # a real gap the reconciler PR would have nothing to arm.
-    _active_leader_topology(monkeypatch, tmp_path)
-
-    def fake_run(argv, *a, **kw):
-        class R:
-            returncode = 1
-            stdout = ""
-            stderr = ""
-
-        return R()
-
-    monkeypatch.setattr(doctor.grouping, "_run", fake_run)
-    r = doctor.check_crossover_unit_installed()
-    assert r.status == "warn"
-    assert "jasper-camilla-crossover.service is not installed" in r.detail
-
-
-def test_crossover_unit_active_leader_ok_when_installed(monkeypatch, tmp_path):
-    # Active leader, unit installed (systemctl cat ok) and parseable
-    # (systemd-analyze verify ok) -> ok, and the message says INERT.
-    _active_leader_topology(monkeypatch, tmp_path)
-
-    def fake_run(argv, *a, **kw):
-        class R:
-            returncode = 0
-            stdout = ""
-            stderr = ""
-
-        return R()
-
-    monkeypatch.setattr(doctor.grouping, "_run", fake_run)
-    # Force the "systemd-analyze present" branch deterministically.
     monkeypatch.setattr(
-        doctor.grouping.shutil, "which", lambda _name: "/usr/bin/systemd-analyze"
+        mr_config, "load_config", lambda *a, **k: _grouping_cfg(**_LEADER)
     )
+
+
+@pytest.mark.parametrize(
+    "cfg_kwargs, status, must_name",
+    [
+        # Not an active member: skip before touching topology or systemd.
+        ({"enabled": False}, "ok", "not an active bond leader"),
+        # An ACTIVE follower is not the leader half of the pair; camilla#2 is
+        # the leader's instance.
+        (_FOLLOWER, "ok", "not an active bond leader"),
+    ],
+    ids=["solo", "follower"],
+)
+def test_check_crossover_unit_skips_when_not_an_active_leader(
+    monkeypatch, cfg_kwargs, status, must_name
+):
+    _patch_grouping(monkeypatch, _grouping_cfg(**cfg_kwargs), "")
+
     r = doctor.check_crossover_unit_installed()
+
+    assert r.status == status
+    assert must_name in r.detail
+
+
+def test_check_crossover_unit_skips_for_a_passive_leader(monkeypatch, tmp_path):
+    """A bonded LEADER whose topology has NO roleful/protected outputs runs no
+    per-driver crossover, so camilla#2 is n/a."""
+    from jasper.output_topology import save_output_topology
+    from tests.test_active_speaker_runtime_contract import _topology
+
+    topology_path = tmp_path / "output_topology.json"
+    save_output_topology(_topology([]), path=topology_path)
+    monkeypatch.setenv("JASPER_OUTPUT_TOPOLOGY_PATH", str(topology_path))
+    _patch_grouping(monkeypatch, _grouping_cfg(**_LEADER), "")
+
+    r = doctor.check_crossover_unit_installed()
+
     assert r.status == "ok"
-    assert "INERT" in r.detail
+    assert "passive leader" in r.detail
 
 
-def test_crossover_unit_active_leader_ok_without_systemd_analyze(monkeypatch, tmp_path):
-    # Active leader, unit installed, but systemd-analyze unavailable (dev box)
-    # -> ok with an explicit "parse unchecked" note; never a false warn.
+@pytest.mark.parametrize(
+    "returncode, systemd_analyze, status, must_name",
+    [
+        # `systemctl cat` nonzero: the unit is not installed, so the reconciler
+        # would have nothing to arm.
+        (1, "/usr/bin/systemd-analyze", "warn",
+         "jasper-camilla-crossover.service is not installed"),
+        (0, "/usr/bin/systemd-analyze", "ok", "INERT"),
+        # No systemd-analyze on a dev box: ok with an explicit note, never a
+        # false warn.
+        (0, None, "ok", "parse unchecked"),
+    ],
+    ids=["not-installed", "installed", "no-systemd-analyze"],
+)
+def test_check_crossover_unit_active_leader_verdicts(
+    monkeypatch, tmp_path, returncode, systemd_analyze, status, must_name
+):
     _active_leader_topology(monkeypatch, tmp_path)
+    monkeypatch.setattr(
+        doctor.grouping,
+        "_run",
+        lambda argv, *a, **kw: SimpleNamespace(
+            returncode=returncode, stdout="", stderr=""
+        ),
+    )
+    monkeypatch.setattr(doctor.grouping.shutil, "which", lambda _n: systemd_analyze)
 
-    def fake_run(argv, *a, **kw):
-        class R:
-            returncode = 0
-            stdout = ""
-            stderr = ""
-
-        return R()
-
-    monkeypatch.setattr(doctor.grouping, "_run", fake_run)
-    monkeypatch.setattr(doctor.grouping.shutil, "which", lambda _name: None)
     r = doctor.check_crossover_unit_installed()
-    assert r.status == "ok"
-    assert "parse unchecked" in r.detail
+
+    assert r.status == status
+    assert must_name in r.detail
 
 
 # --- local-vs-wireless sub coexistence (B3) -------------------------------
 
 
 def _set_local_sub_topology(monkeypatch, tmp_path, *, with_sub: bool):
-    """Persist a topology to a tmp path and point the loader at it. A
-    subwoofer topology carries routing.subwoofer_group_ids; the no-sub case
-    points at a missing file (loads as an empty draft → no subwoofer groups)."""
+    """A subwoofer topology carries routing.subwoofer_group_ids; the no-sub
+    case points at a missing file (an empty draft, so no subwoofer groups)."""
     topology_path = tmp_path / "output_topology.json"
     if with_sub:
         from jasper.output_topology import save_output_topology
@@ -413,105 +329,44 @@ def _set_local_sub_topology(monkeypatch, tmp_path, *, with_sub: bool):
     monkeypatch.setenv("JASPER_OUTPUT_TOPOLOGY_PATH", str(topology_path))
 
 
-def test_check_local_vs_wireless_sub_registered():
-    assert "check_grouping_local_vs_wireless_sub" in _registered_check_names()
+@pytest.mark.parametrize(
+    "local_sub, cfg_kwargs, status, must_name",
+    [
+        (False, {"enabled": False}, "ok", "no local or wireless sub"),
+        (True, {"enabled": False}, "ok", "local sub only"),
+        (False, _SUB_FOLLOWER, "ok", "wireless sub only"),
+        (False, _SUB_LEADER, "ok", "wireless sub only"),
+        # Two bass producers at one speaker.
+        (True, _SUB_FOLLOWER, "warn", "wireless sub follower"),
+        (True, _SUB_LEADER, "warn", "leads a bond with a wireless sub member"),
+    ],
+    ids=["neither", "local-only", "wireless-follower", "wireless-leader",
+         "both-follower", "both-leader"],
+)
+def test_check_grouping_local_vs_wireless_sub_verdicts(
+    monkeypatch, tmp_path, local_sub, cfg_kwargs, status, must_name
+):
+    _set_local_sub_topology(monkeypatch, tmp_path, with_sub=local_sub)
+    _patch_grouping(monkeypatch, _grouping_cfg(**cfg_kwargs), "")
+
+    r = doctor.check_grouping_local_vs_wireless_sub()
+
+    assert r.status == status
+    assert must_name in r.detail
+    if status == "warn":
+        assert "LOCAL sub" in r.detail
 
 
-def test_local_vs_wireless_sub_neither_is_ok(monkeypatch, tmp_path):
-    _set_local_sub_topology(monkeypatch, tmp_path, with_sub=False)
+# ------------------------------------------------------------- check_grouping
+
+
+def test_check_grouping_off_is_ok(monkeypatch):
     _patch_grouping(monkeypatch, _grouping_cfg(enabled=False), "")
-    r = doctor.check_grouping_local_vs_wireless_sub()
+
+    r = doctor.check_grouping()
+
     assert r.status == "ok"
-    assert "no local or wireless sub" in r.detail
-
-
-def test_local_vs_wireless_sub_local_only_is_ok(monkeypatch, tmp_path):
-    _set_local_sub_topology(monkeypatch, tmp_path, with_sub=True)
-    _patch_grouping(monkeypatch, _grouping_cfg(enabled=False), "")
-    r = doctor.check_grouping_local_vs_wireless_sub()
-    assert r.status == "ok"
-    assert "local sub only" in r.detail
-
-
-def test_local_vs_wireless_sub_wireless_follower_only_is_ok(monkeypatch, tmp_path):
-    _set_local_sub_topology(monkeypatch, tmp_path, with_sub=False)
-    _patch_grouping(
-        monkeypatch,
-        _grouping_cfg(
-            enabled=True,
-            role="follower",
-            channel="sub",
-            bond_id="lr",
-            leader_addr="192.168.1.50",
-        ),
-        "",
-    )
-    r = doctor.check_grouping_local_vs_wireless_sub()
-    assert r.status == "ok"
-    assert "wireless sub only" in r.detail
-
-
-def test_local_vs_wireless_sub_wireless_leader_only_is_ok(monkeypatch, tmp_path):
-    from jasper.multiroom.config import BondMember
-
-    _set_local_sub_topology(monkeypatch, tmp_path, with_sub=False)
-    _patch_grouping(
-        monkeypatch,
-        _grouping_cfg(
-            enabled=True,
-            role="leader",
-            channel="left",
-            bond_id="lr",
-            roster=(BondMember(addr="192.168.1.60", name="Sub", channel="sub"),),
-        ),
-        "",
-    )
-    r = doctor.check_grouping_local_vs_wireless_sub()
-    assert r.status == "ok"
-    assert "wireless sub only" in r.detail
-
-
-def test_local_vs_wireless_sub_both_follower_warns(monkeypatch, tmp_path):
-    # LOCAL sub topology AND this speaker is itself a wireless sub follower:
-    # two bass producers at one speaker — fail LOUD.
-    _set_local_sub_topology(monkeypatch, tmp_path, with_sub=True)
-    _patch_grouping(
-        monkeypatch,
-        _grouping_cfg(
-            enabled=True,
-            role="follower",
-            channel="sub",
-            bond_id="lr",
-            leader_addr="192.168.1.50",
-        ),
-        "",
-    )
-    r = doctor.check_grouping_local_vs_wireless_sub()
-    assert r.status == "warn"
-    assert "LOCAL sub" in r.detail
-    assert "wireless sub follower" in r.detail
-
-
-def test_local_vs_wireless_sub_both_leader_warns(monkeypatch, tmp_path):
-    # LOCAL sub topology AND this leader's bond roster has a sub member.
-    from jasper.multiroom.config import BondMember
-
-    _set_local_sub_topology(monkeypatch, tmp_path, with_sub=True)
-    _patch_grouping(
-        monkeypatch,
-        _grouping_cfg(
-            enabled=True,
-            role="leader",
-            channel="left",
-            bond_id="lr",
-            roster=(BondMember(addr="192.168.1.60", name="Sub", channel="sub"),),
-        ),
-        "",
-    )
-    r = doctor.check_grouping_local_vs_wireless_sub()
-    assert r.status == "warn"
-    assert "LOCAL sub" in r.detail
-    assert "leads a bond with a wireless sub member" in r.detail
+    assert "single-speaker" in r.detail
 
 
 def test_check_grouping_invalid_config_warns(monkeypatch):
@@ -522,7 +377,9 @@ def test_check_grouping_invalid_config_warns(monkeypatch):
         error="JASPER_GROUPING_BOND_ID is empty (grouping is on)",
     )
     _patch_grouping(monkeypatch, cfg, "")
+
     r = doctor.check_grouping()
+
     assert r.status == "warn"
     assert "BOND_ID" in r.detail
 
@@ -530,141 +387,89 @@ def test_check_grouping_invalid_config_warns(monkeypatch):
 def test_check_grouping_leader_reads_degraded_when_config_not_piped(
     monkeypatch, tmp_path
 ):
-    # Increment 5 honest state: even with both snap units active, if the
-    # leader's ACTIVE CamillaDSP config does not write the snapserver
-    # pipe (the bond apply did not land), the bond is silent — degraded,
-    # with the specific operator explanation. Pin the statefile to a
-    # missing path so a dev machine with real CamillaDSP state can't
-    # flip the result.
-    monkeypatch.setenv(
-        "JASPER_CAMILLA_STATEFILE",
-        str(tmp_path / "no-statefile.yml"),
-    )
-    cfg = _grouping_cfg(
-        enabled=True,
-        role="leader",
-        channel="left",
-        bond_id="living-room",
-    )
+    """Increment 5 honest state: with both snap units active but the leader's
+    ACTIVE CamillaDSP config not writing the snapserver pipe (the bond apply
+    did not land), the bond is silent."""
+    # Pin the statefile to a missing path so a dev machine with real CamillaDSP
+    # state cannot flip the result.
+    monkeypatch.setenv("JASPER_CAMILLA_STATEFILE", str(tmp_path / "absent.yml"))
     _patch_grouping(
         monkeypatch,
-        cfg,
+        _grouping_cfg(
+            enabled=True, role="leader", channel="left", bond_id="living-room"
+        ),
         unit_states={
             "jasper-snapserver.service": "active",
             "jasper-snapclient.service": "active",
         },
     )
+
     r = doctor.check_grouping()
+
     assert r.status == "warn"
     assert "does not write the snapserver pipe" in r.detail
     assert "jasper-grouping-reconcile" in r.detail
 
 
-def test_check_grouping_follower_unreachable_leader_warns(monkeypatch):
-    cfg = _grouping_cfg(
-        enabled=True,
-        role="follower",
-        channel="right",
-        bond_id="living-room",
-        leader_addr="192.168.1.50",
-    )
-    # snapclient failed => degraded, leader unreachable.
+@pytest.mark.parametrize(
+    "snapclient_state, status, must_name",
+    [
+        ("failed", "warn", "192.168.1.50"),
+        # A follower has no producer concept: with snapclient active it reads
+        # ok, and the missing leader-side producer can never degrade it. The
+        # parked source-resource stack reads inactive, which cannot degrade
+        # health either (only desired=start units can).
+        ("active", "ok", "follower connected"),
+    ],
+    ids=["unreachable-leader", "connected"],
+)
+def test_check_grouping_follower_verdicts(
+    monkeypatch, snapclient_state, status, must_name
+):
     _patch_grouping(
         monkeypatch,
-        cfg,
-        unit_states={
-            "jasper-snapclient.service": "failed",
-        },
+        _grouping_cfg(**_FOLLOWER),
+        unit_states={"jasper-snapclient.service": snapclient_state},
     )
+
     r = doctor.check_grouping()
-    assert r.status == "warn"
-    assert "follower not connected" in r.detail
-    assert "192.168.1.50" in r.detail
+
+    assert r.status == status
+    assert must_name in r.detail
 
 
-def test_check_grouping_connected_follower_is_ok(monkeypatch):
-    """A follower has no producer concept: with its snapclient active it
-    reads ok — the missing leader-side producer can never push a FOLLOWER
-    to degraded."""
-    cfg = _grouping_cfg(
-        enabled=True,
-        role="follower",
-        channel="right",
-        bond_id="living-room",
-        leader_addr="192.168.1.50",
-    )
-    # Connected follower (snapclient active) => ok; the parked source-resource
-    # stack reads inactive by default, which can never degrade health
-    # (only desired=start units can).
+@pytest.mark.parametrize(
+    "dac_content, must_name",
+    [
+        ({"enabled": True, "serving_fifo": True}, "clock lock is unobservable"),
+        ({"enabled": True, "serving_fifo": False}, "not serving FIFO bytes"),
+    ],
+    ids=["clock-unobservable", "fifo-not-serving"],
+)
+def test_check_grouping_pair_lock_warns(monkeypatch, dac_content, must_name):
     _patch_grouping(
         monkeypatch,
-        cfg,
-        unit_states={
-            "jasper-snapclient.service": "active",
-        },
-    )
-    r = doctor.check_grouping()
-    assert r.status == "ok"
-    assert "follower connected" in r.detail
-
-
-def test_check_grouping_pair_lock_registered():
-    assert "check_grouping_pair_lock" in _registered_check_names()
-
-
-def test_check_grouping_pair_lock_warns_when_clock_lock_unobservable(monkeypatch):
-    cfg = _grouping_cfg(
-        enabled=True,
-        role="follower",
-        channel="right",
-        bond_id="living-room",
-        leader_addr="192.168.1.50",
-    )
-    _patch_grouping(
-        monkeypatch,
-        cfg,
-        unit_states={
-            "jasper-snapclient.service": "active",
-        },
+        _grouping_cfg(**_FOLLOWER),
+        unit_states={"jasper-snapclient.service": "active"},
     )
     monkeypatch.setattr(
-        doctor.grouping,
-        "_read_outputd_status",
-        lambda: {
-            "dac_content": {"enabled": True, "serving_fifo": True},
-        },
+        doctor.grouping, "_read_outputd_status", lambda: {"dac_content": dac_content}
     )
 
     r = doctor.check_grouping_pair_lock()
 
     assert r.status == "warn"
-    assert "clock lock is unobservable" in r.detail
+    assert must_name in r.detail
 
 
-def test_check_grouping_pair_lock_warns_when_fifo_not_serving(monkeypatch):
-    cfg = _grouping_cfg(
-        enabled=True,
-        role="follower",
-        channel="right",
-        bond_id="living-room",
-        leader_addr="192.168.1.50",
-    )
-    _patch_grouping(
-        monkeypatch,
-        cfg,
-        unit_states={
-            "jasper-snapclient.service": "active",
-        },
-    )
-    monkeypatch.setattr(
-        doctor.grouping,
-        "_read_outputd_status",
-        lambda: {
-            "dac_content": {"enabled": True, "serving_fifo": False},
-        },
-    )
-
-    r = doctor.check_grouping_pair_lock()
-
-    assert r.status == "warn"
-    assert "not serving FIFO bytes" in r.detail
+@pytest.mark.parametrize(
+    "check_name",
+    [
+        "check_grouping_snapcast_version",
+        "check_crossover_unit_installed",
+        "check_grouping_local_vs_wireless_sub",
+        "check_grouping_pair_lock",
+    ],
+)
+def test_grouping_checks_are_registered(check_name):
+    assert check_name in _registered_check_names()

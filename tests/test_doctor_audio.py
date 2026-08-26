@@ -4,12 +4,21 @@
 
 """Unit tests for the jasper-doctor audio domain."""
 
+import grp
+import os
+import subprocess
 import sys
+import types
 from types import SimpleNamespace
 from unittest.mock import patch
 
+import pytest
 
+
+from jasper.camilla import CamillaUnavailable
 from jasper.cli import doctor
+from jasper.cli.doctor import audio
+from jasper.mic_presence import MicPresence
 from jasper.output_hardware import (
     APPLE_USB_C_DONGLE_DEVICE_ID,
     DUAL_APPLE_USB_C_DAC_4CH_DEVICE_ID,
@@ -711,150 +720,470 @@ def _sync_mode_state(*syncs):
     )
 
 
-def test_dac_sync_mode_skips_when_no_xvf_mic(monkeypatch):
+_I2S_STATE = OutputHardwareState(
+    profile_id="hifiberry_dac8x",
+    profile_label="HiFiBerry DAC8x",
+    status="ready",
+    physical_output_count=8,
+    child_devices=(
+        OutputCardFact(
+            card_id="DAC8x",
+            device_id="hifiberry_dac8x",
+            endpoint_sync=None,
+            has_playback=True,
+        ),
+    ),
+)
+
+
+def test_dac_sync_mode_skips_before_probing_when_no_xvf_mic(monkeypatch):
+    """Chip-AEC is moot without the mic, so the output probe must not run."""
     monkeypatch.setattr(doctor.audio.xvf3800, "is_present", lambda: False)
-    # Must short-circuit before reading output state when chip-AEC is moot.
     monkeypatch.setattr(
         doctor.audio,
         "_output_hardware_state_or_none",
         lambda: (_ for _ in ()).throw(AssertionError("must not probe")),
     )
-    result = doctor.check_dac_usb_sync_mode()
-    assert result.status == "ok"
-    assert "no XVF3800 mic present" in result.detail
+
+    assert doctor.check_dac_usb_sync_mode().status == "ok"
 
 
-def test_dac_sync_mode_ok_for_sync_apple_dongle(monkeypatch):
-    # Mirrors the real jts capture: Apple dongle reports (SYNC).
+@pytest.mark.parametrize(
+    "state, status, must_name",
+    [
+        (_sync_mode_state("SYNC"), "ok", "synchronous USB playback endpoint"),
+        (_sync_mode_state("ADAPTIVE"), "ok", "synchronous USB playback endpoint"),
+        (_sync_mode_state("ASYNC"), "warn", "async USB playback endpoint"),
+        # A HiFiBerry/I2S HAT is a known profile with no USB endpoint sync tag.
+        (_I2S_STATE, "ok", "I2S clock slave"),
+        (None, "warn", "output hardware state unavailable"),
+    ],
+    ids=["sync", "adaptive", "async", "i2s", "state-unavailable"],
+)
+def test_check_dac_usb_sync_mode_verdicts(monkeypatch, state, status, must_name):
     monkeypatch.setattr(doctor.audio.xvf3800, "is_present", lambda: True)
     monkeypatch.setattr(
-        doctor.audio,
-        "_output_hardware_state_or_none",
-        lambda: _sync_mode_state("SYNC"),
+        doctor.audio, "_output_hardware_state_or_none", lambda: state
     )
+
     result = doctor.check_dac_usb_sync_mode()
-    assert result.status == "ok"
-    assert "synchronous USB playback endpoint" in result.detail
-    # Advisory clock-coherence wording, not an enable/disable gate.
-    assert "clock-coherence observation only" in result.detail
-    assert "fixed DAC-profile qualification" in result.detail
+
+    assert result.status == status
+    assert must_name in result.detail
 
 
-def test_dac_sync_mode_ok_for_adaptive_endpoint(monkeypatch):
-    monkeypatch.setattr(doctor.audio.xvf3800, "is_present", lambda: True)
-    monkeypatch.setattr(
-        doctor.audio,
-        "_output_hardware_state_or_none",
-        lambda: _sync_mode_state("ADAPTIVE"),
-    )
-    result = doctor.check_dac_usb_sync_mode()
-    assert result.status == "ok"
-    assert "synchronous USB playback endpoint" in result.detail
-
-
-def test_dac_sync_mode_warns_fail_closed_for_async(monkeypatch):
+def test_check_dac_usb_sync_mode_stays_advisory_about_qualification(monkeypatch):
+    """Neither endpoint sync nor the diagnostic SRO verdict authorizes
+    production — the fixed DAC profile does."""
     monkeypatch.setattr(doctor.audio.xvf3800, "is_present", lambda: True)
     monkeypatch.setattr(
         doctor.audio,
         "_output_hardware_state_or_none",
         lambda: _sync_mode_state("ASYNC"),
     )
-    result = doctor.check_dac_usb_sync_mode()
+
+    assert (
+        "fixed DAC-profile qualification"
+        in doctor.check_dac_usb_sync_mode().detail
+    )
+
+
+# ============================== microphone coherence ==========================
+#
+# A confirmed-absent microphone must yield exactly one yellow `microphone`
+# headline and zero red failures: the downstream `mic ALSA card` and
+# `mic capture` checks defer to jasper.mic_presence instead of independently
+# re-probing ALSA and contradicting it. The reader itself is covered
+# hardware-free in tests/test_mic_presence.py.
+
+
+_CFG = types.SimpleNamespace(
+    mic_device="Array", mic_capture_rate=16000, mic_capture_channels=1
+)
+
+
+def _absent() -> MicPresence:
+    return MicPresence(present=False, reason="No supported XVF3800 ALSA card detected")
+
+
+def _present() -> MicPresence:
+    return MicPresence(present=True, is_xvf=True, alsa_card="Array", capture_channels=6)
+
+
+def _present_non_xvf() -> MicPresence:
+    # A custom/non-XVF mic is up: present, but no XVF enrichment.
+    return MicPresence(present=True)
+
+
+@pytest.fixture(autouse=True)
+def _not_bonded(monkeypatch: pytest.MonkeyPatch) -> None:
+    # Keep the bonded-follower short-circuit out of the way — we're exercising
+    # the mic-absence path specifically.
+    monkeypatch.setattr(audio, "_parked_as_bonded_follower", lambda: False)
+
+
+def test_headline_absent_is_one_yellow_flag(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(audio, "read_mic_presence", _absent)
+    r = audio.check_microphone()
+    assert r.name == "microphone"
+    assert r.status == "warn"  # the single flag — never a red fail
+    assert "input unavailable" in r.detail
+    assert "No supported XVF3800 ALSA card detected" in r.detail
+
+
+def test_headline_present_is_ok(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(audio, "read_mic_presence", _present)
+    r = audio.check_microphone()
+    assert r.status == "ok"
+    assert "present" in r.detail
+
+
+def test_headline_non_xvf_present_is_ok_not_absent(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """B1 guard at the headline: a present non-XVF mic must read as present,
+    never "not detected" (it has no XVF enrichment, but it IS a microphone)."""
+    monkeypatch.setattr(audio, "read_mic_presence", _present_non_xvf)
+    r = audio.check_microphone()
+    assert r.status == "ok"
+    assert "not detected" not in r.detail
+
+
+def test_card_and_capture_defer_when_absent(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(audio, "read_mic_presence", _absent)
+    card = audio.check_mic_card_matches_config(_CFG)
+    cap = audio.check_mic_capture(_CFG)
+    # Both defer to the headline — expected idle, never a red failure.
+    assert card.status == "ok"
+    assert "microphone" in card.detail
+    assert cap.status == "ok"
+
+
+def test_absent_mic_is_one_flag_zero_failures(monkeypatch: pytest.MonkeyPatch) -> None:
+    """The whole point of the cleanup: no mic == one warn, never a cascade."""
+    monkeypatch.setattr(audio, "read_mic_presence", _absent)
+    results = [
+        audio.check_microphone(),
+        audio.check_mic_card_matches_config(_CFG),
+        audio.check_mic_capture(_CFG),
+    ]
+    statuses = [r.status for r in results]
+    assert statuses.count("fail") == 0
+    assert statuses.count("warn") == 1
+
+
+# --- push-to-talk-only box (issue #2205) -------------------------------------
+
+def _push_to_talk_only() -> MicPresence:
+    """Gate open (a remote is paired), but no local mic to probe."""
+    return MicPresence(present=True, accessory_sources=("wiim_remote_2",))
+
+
+def test_push_to_talk_box_reads_as_advisory_not_failure(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The regression this PR must not ship: opening the gate for an accessory
+    makes the local-device checks actually probe, and on a box with no local mic
+    they would find nothing and go RED. A box whose only microphone is a paired
+    remote must not look broken."""
+    monkeypatch.setattr(audio, "read_mic_presence", _push_to_talk_only)
+    monkeypatch.setattr(
+        audio, "check_alsa_card",
+        lambda *a, **k: audio.CheckResult("mic ALSA card (Array)", "fail", "absent"),
+    )
+    card = audio.check_mic_card_matches_config(_CFG)
+    assert card.status == "warn"
+    assert "wiim_remote_2" in card.detail
+    # GATE state, not runtime state. The daemon half of issue #2205 has landed,
+    # so such a box can answer — but this check never looks at the daemon, so
+    # it still must not claim voice is running on the accessory.
+    assert "the voice-input gate is open for it" in card.detail
+    assert "#2205" in card.detail
+    assert "runs push-to-talk" not in card.detail
+    # The local finding is preserved, not swallowed.
+    assert "absent" in card.detail
+
+
+def test_push_to_talk_box_is_distinguishable_from_a_working_local_mic(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """An operator must be able to tell the two apart. The headline names the
+    accessory and never claims "present"; the local probe says which half is
+    actually there."""
+    monkeypatch.setattr(audio, "read_mic_presence", _push_to_talk_only)
+    headline = audio.check_microphone()
+    assert headline.status == "ok"
+    assert "push-to-talk accessory paired: wiim_remote_2" in headline.detail
+    assert not headline.detail.startswith("present")
+    # Never a present-tense claim about a daemon this check does not look at.
+    assert "runs" not in headline.detail
+
+    monkeypatch.setattr(audio, "read_mic_presence", _present)
+    assert "push-to-talk" not in audio.check_microphone().detail
+
+
+def test_soften_never_upgrades_a_passing_or_warning_result() -> None:
+    presence = _push_to_talk_only()
+    for status in ("ok", "warn"):
+        original = audio.CheckResult("mic capture", status, "detail")
+        assert audio._soften_for_push_to_talk(original, presence) is original
+
+
+def test_recorded_silence_stays_a_failure_even_with_an_accessory(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Scope guard on the softening: a mic that OPENS but records silence is a
+    present-and-broken local mic, not an absent one. Calling that
+    "no local microphone" would be a lie, and hiding it behind an accessory
+    would let a muted array go unnoticed."""
+    monkeypatch.setattr(audio, "read_mic_presence", _push_to_talk_only)
+    rec = types.SimpleNamespace()
+
+    class _FakeSd:
+        @staticmethod
+        def rec(*_a: object, **_k: object) -> object:
+            return rec
+
+    class _FakeNp:
+        @staticmethod
+        def abs(_x: object) -> object:
+            return types.SimpleNamespace(max=lambda: 0)
+
+    monkeypatch.setitem(__import__("sys").modules, "sounddevice", _FakeSd)
+    monkeypatch.setitem(__import__("sys").modules, "numpy", _FakeNp)
+    result = audio.check_mic_capture(_CFG)
+    assert result.status == "fail"
+    assert "recorded silence" in result.detail
+    assert "push-to-talk" not in result.detail
+
+
+def test_soften_leaves_failures_alone_without_an_accessory() -> None:
+    """No accessory means a missing local mic really is the whole story — the
+    existing red failure must survive untouched."""
+    original = audio.CheckResult("mic capture", "fail", "Array: no such device")
+    assert audio._soften_for_push_to_talk(original, _present_non_xvf()) is original
+
+
+# --- every softening CALL SITE softens, not just the function ----------------
+#
+# Testing `_soften_for_push_to_talk` directly proves the function behaves; it
+# says nothing about whether each place that should call it does. Two of the
+# three sites went unguarded for exactly that reason. `check_mic_capture`'s is
+# the expensive one: on a push-to-talk box the `_jasper_voice_active()`
+# short-circuit above it does not fire (voice exits 66), so a silent revert
+# there flips jasper-doctor from exit 0 to exit 1 on a correct speaker.
+
+def _drive_hw_shorthand_site(monkeypatch: pytest.MonkeyPatch):
+    """check_mic_card_matches_config, positional `hw:N,M` branch."""
+    monkeypatch.setattr(audio, "_check_arecord_l_card_device", lambda *a: False)
+    cfg = types.SimpleNamespace(
+        mic_device="hw:7,1", mic_capture_rate=16000, mic_capture_channels=1,
+    )
+    return audio.check_mic_card_matches_config(cfg)
+
+
+def _drive_card_name_site(monkeypatch: pytest.MonkeyPatch):
+    """check_mic_card_matches_config, named-card branch."""
+    monkeypatch.setattr(
+        audio, "check_alsa_card",
+        lambda *a, **k: audio.CheckResult("mic ALSA card (Array)", "fail", "absent"),
+    )
+    return audio.check_mic_card_matches_config(_CFG)
+
+
+def _drive_capture_open_failure_site(monkeypatch: pytest.MonkeyPatch):
+    """check_mic_capture, device-open-failure branch (the live one on a
+    push-to-talk box: voice is not holding the mic, it exited 66)."""
+    monkeypatch.setattr(audio, "_jasper_voice_active", lambda: False)
+
+    class _FakeSd:
+        @staticmethod
+        def rec(*_a: object, **_k: object) -> object:
+            raise OSError("no such device")
+
+    monkeypatch.setitem(sys.modules, "sounddevice", _FakeSd)
+    monkeypatch.setitem(sys.modules, "numpy", types.SimpleNamespace())
+    return audio.check_mic_capture(_CFG)
+
+
+@pytest.mark.parametrize(
+    "scenario",
+    [
+        _drive_hw_shorthand_site,
+        _drive_card_name_site,
+        _drive_capture_open_failure_site,
+    ],
+    ids=lambda fn: fn.__name__,
+)
+def test_every_soften_call_site_still_softens(
+    monkeypatch: pytest.MonkeyPatch, scenario
+) -> None:
+    monkeypatch.setattr(audio, "read_mic_presence", _push_to_talk_only)
+
+    result = scenario(monkeypatch)
+
     assert result.status == "warn"
-    assert "async USB playback endpoint" in result.detail
-    # Advisory only: neither endpoint sync nor the diagnostic SRO verdict
-    # authorizes production; the fixed DAC profile does.
-    assert "fixed DAC-profile qualification" in result.detail
+    assert "wiim_remote_2" in result.detail
+    assert "#2205" in result.detail
 
 
-def test_dac_sync_mode_na_for_i2s_dac(monkeypatch):
-    # HiFiBerry/I2S HAT: known DAC profile, no USB endpoint sync tag.
-    monkeypatch.setattr(doctor.audio.xvf3800, "is_present", lambda: True)
-    state = OutputHardwareState(
-        profile_id="hifiberry_dac8x",
-        profile_label="HiFiBerry DAC8x",
-        status="ready",
-        physical_output_count=8,
-        child_devices=(
-            OutputCardFact(
-                card_id="DAC8x",
-                device_id="hifiberry_dac8x",
-                endpoint_sync=None,
-                has_playback=True,
-            ),
+def _local_mic_and_accessory() -> MicPresence:
+    """A healthy non-XVF local mic on a box that ALSO has a remote paired."""
+    return MicPresence(present=True, accessory_sources=("wiim_remote_2",))
+
+
+def test_headline_stays_ok_when_a_working_local_mic_also_has_a_remote(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(audio, "read_mic_presence", _local_mic_and_accessory)
+
+    assert audio.check_microphone().status == "ok"
+
+
+# ------------------------------------------------ CamillaDSP config dir posture
+#
+# Pins the jts3 2026-07-06 incident: a deploy left /var/lib/camilladsp/configs
+# root-only (setgid kept, group-write stripped — mode 2755), so the non-root
+# jasper-web user could not atomically write the staged active-speaker config
+# and staging failed with PermissionError, surfacing to the household as
+# "could not load the silent active-speaker setup".
+
+
+def _own_group() -> str:
+    return grp.getgrgid(os.getgid()).gr_name
+
+
+@pytest.mark.parametrize(
+    "mode, group, status",
+    [
+        (0o2775, None, "ok"),
+        (0o2755, None, "fail"),  # the exact regression: group-write stripped
+        (0o2775, "jts-no-such-group-xyz", "fail"),
+        (None, None, "warn"),  # dir absent
+    ],
+    ids=["group-writable", "group-readonly", "wrong-group", "absent"],
+)
+def test_camilla_configs_writable_verdicts(tmp_path, mode, group, status):
+    d = tmp_path / "configs"
+    if mode is not None:
+        d.mkdir()
+        os.chmod(d, mode)
+
+    res = doctor.audio._camilla_configs_writable_result(
+        d, expected_group=group or _own_group()
+    )
+
+    assert res.status == status
+
+
+def test_camilla_configs_writable_targets_the_constant_dir(monkeypatch, tmp_path):
+    """The decorated check reads CAMILLA_CONFIGS_DIR, so the guard stays
+    pointed at the dir the deploy actually permissions."""
+    missing = tmp_path / "nope"
+    monkeypatch.setattr(doctor.audio, "CAMILLA_CONFIGS_DIR", missing)
+
+    res = doctor.audio.check_camilla_configs_writable()
+
+    assert res.status == "warn"
+    assert str(missing) in res.detail
+
+
+# ------------------------------------------------------- CamillaDSP websocket
+
+
+def _camilla_controller(monkeypatch, *, volume, clipped):
+    constructed: list[tuple[str, int]] = []
+
+    class Controller:
+        def __init__(self, host: str, port: int) -> None:
+            constructed.append((host, port))
+
+        async def get_volume_db(self):
+            if isinstance(volume, Exception):
+                raise volume
+            return volume
+
+        async def get_clipped_samples(self):
+            if isinstance(clipped, Exception):
+                raise clipped
+            return clipped
+
+        async def close(self):
+            pass
+
+    monkeypatch.setattr(doctor.audio, "CamillaController", Controller)
+    return constructed
+
+
+@pytest.mark.parametrize(
+    "volume, clipped, status, must_name",
+    [
+        (-12.5, 0, "ok", "volume=-12.5 dB clipped_samples=0"),
+        (CamillaUnavailable("operation exceeded 5.0s"), 0, "fail", "5.0s"),
+        # clipped_samples is optional: an unavailable status command must not
+        # sink the probe.
+        (
+            -18.0,
+            CamillaUnavailable("status command unavailable"),
+            "ok",
+            "volume=-18.0 dB clipped_samples=?",
         ),
-    )
-    monkeypatch.setattr(doctor.audio, "_output_hardware_state_or_none", lambda: state)
-    result = doctor.check_dac_usb_sync_mode()
+    ],
+    ids=["healthy", "timeout", "clipped-optional"],
+)
+async def test_check_camilla_websocket_verdicts(
+    monkeypatch, volume, clipped, status, must_name
+):
+    constructed = _camilla_controller(monkeypatch, volume=volume, clipped=clipped)
+    cfg = SimpleNamespace(camilla_host="127.0.0.1", camilla_port=1234)
+
+    result = await doctor.audio.check_camilla_websocket(cfg)
+
+    assert result.status == status
+    assert must_name in result.detail
+    assert constructed == [("127.0.0.1", 1234)]
+
+
+# ---------------------------------------------------- installed prerequisites
+
+def test_check_loopback_reports_present_card(monkeypatch) -> None:
+    def fake_run(cmd: list[str], timeout: float = 5.0) -> subprocess.CompletedProcess:
+        assert timeout == 5.0
+        assert cmd == ["aplay", "-L"]
+        return subprocess.CompletedProcess(
+            cmd,
+            0,
+            stdout="null\nhw:CARD=Loopback,DEV=0\n",
+            stderr="",
+        )
+
+    monkeypatch.setattr(audio, "_run", fake_run)
+
+    result = audio.check_loopback()
+
+    assert result.name == "snd-aloop"
     assert result.status == "ok"
-    assert "I2S clock slave" in result.detail
+    assert result.detail == "CARD=Loopback present"
 
 
-def test_dac_sync_mode_warns_when_state_unavailable(monkeypatch):
-    monkeypatch.setattr(doctor.audio.xvf3800, "is_present", lambda: True)
-    monkeypatch.setattr(doctor.audio, "_output_hardware_state_or_none", lambda: None)
-    result = doctor.check_dac_usb_sync_mode()
-    assert result.status == "warn"
-    assert "output hardware state unavailable" in result.detail
+def test_check_loopback_reports_missing_card_with_remediation(monkeypatch) -> None:
+    def fake_run(cmd: list[str], timeout: float = 5.0) -> subprocess.CompletedProcess:
+        assert timeout == 5.0
+        assert cmd == ["aplay", "-L"]
+        return subprocess.CompletedProcess(
+            cmd,
+            0,
+            stdout="null\ndefault\n",
+            stderr="",
+        )
 
+    monkeypatch.setattr(audio, "_run", fake_run)
 
-# --- G3: outputd xrun-rate WARN tier (audio-latency foundation) ---
+    result = audio.check_loopback()
 
-
-def _xrun_section(rate_per_hour, last_xrun_age_ms):
-    """Minimal outputd STATUS content/dac section for the xrun-rate helper."""
-    return {
-        "xrun_count": 0,
-        "xrun_rate_per_hour": rate_per_hour,
-        "last_xrun_age_ms": last_xrun_age_ms,
-    }
-
-
-def test_outputd_xrun_warning_none_when_no_recent_xrun():
-    """last_xrun_age_ms=null (no xrun ever) → never warn, regardless of rate."""
-    quiet = _xrun_section(rate_per_hour=0.0, last_xrun_age_ms=None)
-    assert doctor.audio_runtime._outputd_xrun_rate_warning(quiet, quiet) is None
-
-
-def test_outputd_xrun_warning_suppressed_for_stale_burst():
-    """A high all-time rate whose last xrun is OLD (a cleared deploy-time
-    burst) must NOT warn — the WARN is for a sustained, *current* problem."""
-    stale = _xrun_section(
-        rate_per_hour=50.0,
-        last_xrun_age_ms=doctor.audio_runtime._OUTPUTD_XRUN_RECENT_AGE_MS + 1,
+    assert result.name == "snd-aloop"
+    assert result.status == "fail"
+    assert result.detail == (
+        "Loopback device missing. `sudo modprobe snd-aloop` or check "
+        "/etc/modules-load.d/snd-aloop.conf"
     )
-    assert doctor.audio_runtime._outputd_xrun_rate_warning(stale, stale) is None
-
-
-def test_outputd_xrun_warning_suppressed_for_recent_single_blip():
-    """A recent xrun with a LOW sustained rate (one transient blip) must not
-    warn — only a rate at/above the threshold qualifies."""
-    blip = _xrun_section(
-        rate_per_hour=doctor.audio_runtime._OUTPUTD_XRUN_RATE_WARN_PER_HOUR - 0.1,
-        last_xrun_age_ms=1000,
-    )
-    assert doctor.audio_runtime._outputd_xrun_rate_warning(blip, blip) is None
-
-
-def test_outputd_xrun_warning_fires_on_recent_sustained_rate():
-    """Recent xrun AND a sustained rate at/above threshold → warn, naming the
-    offending lane and both fields."""
-    hot = _xrun_section(
-        rate_per_hour=doctor.audio_runtime._OUTPUTD_XRUN_RATE_WARN_PER_HOUR,
-        last_xrun_age_ms=2000,
-    )
-    quiet = _xrun_section(rate_per_hour=0.0, last_xrun_age_ms=None)
-    reason = doctor.audio_runtime._outputd_xrun_rate_warning(quiet, hot)
-    assert reason is not None
-    assert "dac" in reason
-    assert "xrun_rate_per_hour" in reason
-    assert "last_xrun_age_ms" in reason
-
-
-def test_outputd_xrun_warning_reports_worst_lane():
-    """When both lanes qualify, the higher-rate lane is reported."""
-    content = _xrun_section(rate_per_hour=8.0, last_xrun_age_ms=1000)
-    dac = _xrun_section(rate_per_hour=40.0, last_xrun_age_ms=1000)
-    reason = doctor.audio_runtime._outputd_xrun_rate_warning(content, dac)
-    assert reason is not None
-    assert reason.startswith("dac ")

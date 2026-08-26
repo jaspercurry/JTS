@@ -22,7 +22,11 @@ from __future__ import annotations
 import os
 from pathlib import Path
 
+import pytest
+
 from jasper.cli.doctor import privsep
+from jasper.cli.doctor.privsep import MANIFEST, OUT_OF_SCOPE_NONROOT_UNITS
+from tests.systemd_unit_helpers import value_for, values_for
 
 
 def _make(path: Path, mode: int) -> os.stat_result:
@@ -34,21 +38,28 @@ def _make(path: Path, mode: int) -> os.stat_result:
 # --------------------------------------------------------------------------- #
 # _process_can_read — POSIX owner/group/other precedence
 # --------------------------------------------------------------------------- #
-def test_process_can_read_owner_group_other(tmp_path: Path):
-    st = _make(tmp_path / "f", 0o640)
-    gid = st.st_gid
-    # Owner with read bit (owner path wins even when group lacks the bit).
-    assert privsep._process_can_read(st, st.st_uid, frozenset())
-    # Not owner, shares group, group-read set -> readable.
-    assert privsep._process_can_read(st, 999_999, frozenset({gid}))
-    # Not owner, does NOT share group, no other-read on 0640 -> NOT readable.
-    assert not privsep._process_can_read(st, 999_999, frozenset({777_777}))
-    # 0600: group member still can't read (no group bit).
-    st600 = _make(tmp_path / "g", 0o600)
-    assert not privsep._process_can_read(st600, 999_999, frozenset({st600.st_gid}))
-    # 0644: other-read lets a stranger read.
-    st644 = _make(tmp_path / "h", 0o644)
-    assert privsep._process_can_read(st644, 999_999, frozenset({777_777}))
+@pytest.mark.parametrize(
+    "mode, as_owner, shares_group, readable",
+    [
+        # Owner bits win even when the group lacks the read bit.
+        (0o640, True, False, True),
+        (0o640, False, True, True),
+        (0o640, False, False, False),
+        # 0600: a group member still cannot read.
+        (0o600, False, True, False),
+        # 0644: other-read lets a stranger read.
+        (0o644, False, False, True),
+    ],
+    ids=["owner", "group", "stranger-0640", "group-0600", "stranger-0644"],
+)
+def test_process_can_read_follows_posix_precedence(
+    tmp_path: Path, mode, as_owner, shares_group, readable
+):
+    st = _make(tmp_path / f"f{mode:o}{as_owner}{shares_group}", mode)
+    uid = st.st_uid if as_owner else 999_999
+    gids = frozenset({st.st_gid if shares_group else 777_777})
+
+    assert privsep._process_can_read(st, uid, gids) is readable
 
 
 # --------------------------------------------------------------------------- #
@@ -187,21 +198,24 @@ def test_household_secret_absent_is_ok(tmp_path, monkeypatch):
 # --------------------------------------------------------------------------- #
 # Integration: the decorated checks must be total (never crash) off the Pi.
 # --------------------------------------------------------------------------- #
-def test_decorated_checks_are_total_without_systemctl(monkeypatch):
-    """With systemctl unavailable every per-daemon check returns a skip-ok,
-    never raising — the doctor must stay total on a dev host."""
-    monkeypatch.setattr(privsep, "_unit_runtime_identity", lambda unit: None)
-    for fn in (
+@pytest.mark.parametrize(
+    "check",
+    [
         privsep.check_control_readable_inputs,
         privsep.check_web_readable_inputs,
         privsep.check_chat_web_readable_inputs,
         privsep.check_mux_readable_inputs,
         privsep.check_voice_readable_inputs,
         privsep.check_usbmic_readable_inputs,
-    ):
-        result = fn()
-        assert result.status == "ok"
-        assert "skipped" in result.detail
+    ],
+    ids=lambda fn: fn.__name__,
+)
+def test_decorated_checks_are_total_without_systemctl(monkeypatch, check):
+    """With systemctl unavailable every per-daemon check returns a skip-ok,
+    never raising — the doctor must stay total on a dev host."""
+    monkeypatch.setattr(privsep, "_unit_runtime_identity", lambda unit: None)
+
+    assert check().status == "ok"
 
 
 def test_wiim_remote_mic_has_a_decorated_manifest_check(monkeypatch):
@@ -256,3 +270,117 @@ def test_classify_warn_overflow_truncates(tmp_path: Path):
     )
     assert result.status == "warn"
     assert "(+3 more)" in result.detail
+
+
+# --------------------------------------------------------------------------- #
+# MANIFEST vs the committed systemd units
+#
+# MANIFEST hardcodes each non-root daemon's runtime identity and the files it
+# reads. The check resolves identity from the LIVE unit, so a unit edit that
+# desyncs the manifest would make it reason about the wrong identity.
+# --------------------------------------------------------------------------- #
+ROOT = Path(__file__).resolve().parents[1]
+
+# The non-root daemons whose read sets this privsep guard covers. Removing one from the
+# manifest should be a conscious edit, not a silent drop.
+_EXPECTED_MANIFEST_UNITS = frozenset(
+    {
+        "jasper-control",
+        "jasper-web",
+        "jasper-chat-web",
+        "jasper-correction-web",
+        "jasper-bluetooth-web",
+        "jasper-system-web",
+        "jasper-mux",
+        "jasper-voice",
+        "jasper-input",
+        "jasper-usbmic",
+        "jasper-wiim-remote-mic",
+    }
+)
+
+# The check only reasons about the single `jasper` group dimension, so every
+# declared read must live under a group-`jasper` state tree.
+_ALLOWED_PATH_PREFIXES = ("/var/lib/jasper/", "/var/lib/camilladsp/")
+
+
+def _unit_identity(unit_file: Path) -> tuple[str, str, frozenset[str]]:
+    """(User, Group, {SupplementaryGroups}) from a unit file. User/Group take the
+    last assignment (systemd's last-wins); SupplementaryGroups accumulate across
+    every line (systemd unions them)."""
+    unit_text = unit_file.read_text()
+    return (
+        value_for(unit_text, "User") or "",
+        value_for(unit_text, "Group") or "",
+        frozenset(values_for(unit_text, "SupplementaryGroups")),
+    )
+
+
+def test_manifest_covers_exactly_the_tier_a_daemons():
+    assert {s.unit for s in MANIFEST} == _EXPECTED_MANIFEST_UNITS
+
+
+def test_each_spec_identity_mirrors_its_unit_file():
+    for spec in MANIFEST:
+        unit_file = ROOT / spec.unit_file
+        assert unit_file.is_file(), f"{spec.unit}: unit file {spec.unit_file} missing"
+        user, group, supp = _unit_identity(unit_file)
+        assert spec.user == user, (
+            f"{spec.unit}: manifest User={spec.user!r} but {spec.unit_file} has "
+            f"User={user!r} — update privsep.MANIFEST to match the unit."
+        )
+        assert spec.group == group, (
+            f"{spec.unit}: manifest Group={spec.group!r} but unit has Group={group!r}"
+        )
+        assert frozenset(spec.supplementary_groups) == supp, (
+            f"{spec.unit}: manifest SupplementaryGroups="
+            f"{sorted(spec.supplementary_groups)} but unit has {sorted(supp)} — "
+            "update privsep.MANIFEST to match the unit."
+        )
+
+
+def test_every_nonroot_jasper_unit_is_classified():
+    """Enumerate every deploy unit declaring User=jasper-*; each must be in the
+    manifest or the explicit out-of-scope set. Catches a new non-root daemon
+    added without a scope decision."""
+    manifest_units = {s.unit for s in MANIFEST}
+    nonroot: dict[str, str] = {}
+    for unit_file in sorted(ROOT.glob("deploy/**/*.service")):
+        user, _, _ = _unit_identity(unit_file)
+        if user.startswith("jasper-"):
+            nonroot.setdefault(unit_file.stem, user)
+    assert nonroot, "no User=jasper-* units found — parser regression?"
+    unclassified = {
+        unit
+        for unit in nonroot
+        if unit not in manifest_units and unit not in OUT_OF_SCOPE_NONROOT_UNITS
+    }
+    assert not unclassified, (
+        f"non-root jasper unit(s) {sorted(unclassified)} are neither in "
+        "privsep.MANIFEST nor OUT_OF_SCOPE_NONROOT_UNITS. A new non-root daemon "
+        "must be classified: add its read-set to the manifest, or document it as "
+        "out-of-scope (e.g. a reconciler) in OUT_OF_SCOPE_NONROOT_UNITS."
+    )
+
+
+def test_manifest_paths_stay_in_group_jasper_trees():
+    for spec in MANIFEST:
+        for path in spec.paths:
+            assert path.startswith(_ALLOWED_PATH_PREFIXES), (
+                f"{spec.unit}: path {path} is outside the group-`jasper` trees "
+                f"{_ALLOWED_PATH_PREFIXES} this check is scoped to (secret "
+                "compartments are deliberately excluded)."
+            )
+
+
+def test_out_of_scope_units_are_real_and_nonroot():
+    """The out-of-scope allowlist must not rot: each entry must be a real deploy
+    unit that actually runs as a non-root jasper user."""
+    for unit in OUT_OF_SCOPE_NONROOT_UNITS:
+        matches = list(ROOT.glob(f"deploy/**/{unit}.service"))
+        assert matches, f"out-of-scope unit {unit} has no deploy unit file"
+        user, _, _ = _unit_identity(matches[0])
+        assert user.startswith("jasper-"), (
+            f"out-of-scope unit {unit} is not non-root (User={user!r}); remove it "
+            "from OUT_OF_SCOPE_NONROOT_UNITS."
+        )

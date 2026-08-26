@@ -16,6 +16,22 @@ from jasper.cli import doctor
 from jasper.output_hardware import (
     APPLE_USB_C_DONGLE_DEVICE_ID,
 )
+import os
+import re
+import struct
+import subprocess
+from types import SimpleNamespace
+from jasper.audio_hardware.dac import (
+    HIFIBERRY_DAC8X_STUDIO_ID,
+    LatencyFloor,
+    latency_floor_for,
+)
+from jasper.cli.doctor import audio_runtime
+from jasper.fanin_coupling import (
+    RING_ACTIVE_PLAYBACK_DEVICE,
+    RING_PLAYBACK_DEVICE,
+)
+from jasper.output_topology import OutputTopologyError
 
 from .active_speaker_fixtures import (
     PASSIVE_ONLY_DAC_ID,
@@ -2638,3 +2654,2862 @@ def test_armed_daemon_lane_never_fed_still_warns(monkeypatch):
     assert "spotify" in result.detail and "NEVER FED" in result.detail
     assert "librespot.service" in result.detail
     assert "correction:" not in result.detail  # no correction problem entry
+
+
+
+# ===========================================================================
+# check_aloop_registered_substreams — the snd-aloop remnant guard (#2285 P9-C)
+#
+# Every OPEN snd-aloop substream must have a purpose registered by one of the
+# constants that own the pair allocation; anything holding a substream with no
+# such purpose (pair 5, whose PCM definitions P9-C deleted) is a FAIL that
+# names the offender. The guard measures fan-in's lanes and outputd's passive
+# content lane only: grouping's bonded ingress rides jasper.multiroom
+# .grouping_ring's SHM ring and declares no aloop pair at all.
+# ===========================================================================
+
+_REPO_ROOT = Path(__file__).resolve().parents[1]
+_MODPROBE_CONF = _REPO_ROOT / "deploy" / "modprobe.d" / "snd-aloop.conf"
+_ASOUNDRC_JASPER = _REPO_ROOT / "deploy" / "alsa" / "asoundrc.jasper"
+
+_OPEN_STATUS = (
+    "state: RUNNING\n"
+    "owner_pid   : 4242\n"
+    "trigger_time: 10741.879940354\n"
+    "tstamp      : 0.000000000\n"
+    "delay       : 320\n"
+)
+
+
+def _make_card(tmp_path: Path, open_subs: dict[str, list[int]] | None = None) -> Path:
+    """Build a synthetic /proc/asound tree with an snd-aloop card.
+
+    ``open_subs`` maps a pcm dir (``pcm0p``/``pcm1c``/…) to the substream
+    indices that should read as open; every other substream reads ``closed``,
+    exactly as the kernel prints it.
+    """
+    open_subs = open_subs or {}
+    root = tmp_path / "asound"
+    card = root / audio_runtime._ALOOP_CARD_ID
+    for pcm_dir in audio_runtime._ALOOP_PCM_DIRS:
+        for pair in range(audio_runtime._ALOOP_SUBSTREAMS):
+            sub = card / pcm_dir / f"sub{pair}"
+            sub.mkdir(parents=True)
+            is_open = pair in open_subs.get(pcm_dir, [])
+            (sub / "status").write_text(
+                _OPEN_STATUS if is_open else "closed\n", encoding="utf-8"
+            )
+    return root
+
+
+@pytest.fixture()
+def proc_root(monkeypatch, tmp_path):
+    def _set(root: Path) -> None:
+        monkeypatch.setenv(audio_runtime._ALOOP_PROC_ROOT_ENV, str(root))
+
+    return _set
+
+
+# --------------------------------------------------------------------------
+# Verdicts
+# --------------------------------------------------------------------------
+
+def test_no_aloop_card_is_ok(proc_root, tmp_path):
+    """A box without snd-aloop has no remnant to police."""
+    empty = tmp_path / "asound"
+    empty.mkdir()
+    proc_root(empty)
+    result = audio_runtime.check_aloop_registered_substreams()
+    assert result.status == "ok"
+    assert "not loaded" in result.detail
+
+
+def test_all_closed_is_ok(proc_root, tmp_path):
+    proc_root(_make_card(tmp_path))
+    result = audio_runtime.check_aloop_registered_substreams()
+    assert result.status == "ok"
+    assert "no other pair currently open" in result.detail
+    # The remnant's size is REPORTED, not merely asserted — risk 5.1 in the
+    # design is "the remnant becomes permanent by silence".
+    assert "aloop remnant on pair 6" in result.detail
+    # …and it names the lane that still owns the pair, not a closed issue
+    # number (see test_check_text_names_the_remnants_remaining_owner).
+    assert "passive content lane" in result.detail
+
+
+def test_registered_open_pair_is_ok_jts4_shape(proc_root, tmp_path):
+    """THE FALSE-POSITIVE REGRESSION GUARD.
+
+    Observed on jts4, 2026-08-14: /proc/asound/Loopback/pcm1c/sub3 in
+    `state: RUNNING`, owner cgroup jasper-fanin.service — the usbsink lane's
+    idle-read fallback documented in deploy/modprobe.d/snd-aloop.conf. That
+    box is HEALTHY. If this check ever fails it, the check is wrong.
+    """
+    proc_root(_make_card(tmp_path, {"pcm1c": [3]}))
+    result = audio_runtime.check_aloop_registered_substreams()
+    assert result.status == "ok"
+    assert "[3]" in result.detail
+
+
+def test_content_pair_open_is_ok(proc_root, tmp_path):
+    """A box holding pair 6 is the remnant working as designed — that pair is
+    outputd's passive content lane."""
+    proc_root(_make_card(tmp_path, {"pcm0p": [6], "pcm1c": [6]}))
+    result = audio_runtime.check_aloop_registered_substreams()
+    assert result.status == "ok"
+    # Pair 6 IS the content pair, so it is never one of the "other" pairs.
+    assert "no other pair currently open" in result.detail
+
+
+@pytest.mark.parametrize("pcm_dir", ["pcm0p", "pcm0c", "pcm1p", "pcm1c"])
+def test_positive_control_foreign_substream_fails(proc_root, tmp_path, pcm_dir):
+    """POSITIVE CONTROL — a deliberately-opened foreign substream trips it.
+
+    Pair 5 is the foreign one: P9-C deleted its PCM definitions, so a holder
+    there resurrected a deleted lane. Parametrised across all four PCM
+    directions so a walker that only scanned the playback side would fail this.
+    """
+    proc_root(_make_card(tmp_path, {pcm_dir: [5]}))
+    result = audio_runtime.check_aloop_registered_substreams()
+    assert result.status == "fail"
+    assert f"{pcm_dir}/sub5" in result.detail
+    assert "no registered purpose" in result.detail
+
+
+def test_positive_control_names_the_offender(proc_root, tmp_path):
+    """The FAIL names the offender — the design asks for pid/process."""
+    proc_root(_make_card(tmp_path, {"pcm0p": [5]}))
+    result = audio_runtime.check_aloop_registered_substreams()
+    assert result.status == "fail"
+    assert "pid=4242" in result.detail
+    # And it tells the operator what to do about it.
+    assert "deploy-to-pi.sh" in result.detail
+
+
+def test_offender_detail_is_bounded(proc_root, tmp_path, monkeypatch):
+    """A pathological box cannot produce an unbounded doctor line.
+
+    The registered set is shrunk to the content pair alone, so every other pair
+    reads as an offender and the offender count (28) genuinely exceeds the cap.
+    An earlier version of this test opened only pair 5 across the four PCM dirs,
+    giving exactly 4 offenders against a cap of 4; `[:cap]` and `[:]` were then
+    indistinguishable and the bound was asserted but never proven.
+    """
+    monkeypatch.setattr(
+        audio_runtime,
+        "_derive_registered_pairs",
+        lambda: ({6: "outputd passive content lane"}, 6),
+    )
+    proc_root(
+        _make_card(
+            tmp_path,
+            {
+                pcm: [p for p in range(audio_runtime._ALOOP_SUBSTREAMS) if p != 6]
+                for pcm in audio_runtime._ALOOP_PCM_DIRS
+            },
+        )
+    )
+    result = audio_runtime.check_aloop_registered_substreams()
+    assert result.status == "fail"
+    cap = audio_runtime._ALOOP_OFFENDER_DETAIL_CAP
+    shown = result.detail.count("/sub")
+    assert shown <= cap, f"detail listed {shown} offenders, cap is {cap}"
+    # The truncation is DISCLOSED, not silent — an operator must not think
+    # four offenders is the whole story.
+    assert "more)" in result.detail
+
+
+def test_unreadable_proc_is_warn_not_fail(proc_root, tmp_path):
+    """FAIL-SOFT: 'I could not look' must never become 'something is wrong'.
+
+    Every status path is made a DIRECTORY, so read_text raises IsADirectoryError
+    (an OSError) without needing permission games that behave differently under
+    root in CI.
+    """
+    root = tmp_path / "asound"
+    card = root / audio_runtime._ALOOP_CARD_ID
+    for pcm_dir in audio_runtime._ALOOP_PCM_DIRS:
+        for pair in range(audio_runtime._ALOOP_SUBSTREAMS):
+            (card / pcm_dir / f"sub{pair}" / "status").mkdir(parents=True)
+    proc_root(root)
+    result = audio_runtime.check_aloop_registered_substreams()
+    assert result.status == "warn"
+    assert "could not be verified" in result.detail
+
+
+def test_missing_substreams_are_not_evidence(proc_root, tmp_path):
+    """A narrower snd-aloop is not a fault — absence is not an offender."""
+    root = tmp_path / "asound"
+    card = root / audio_runtime._ALOOP_CARD_ID
+    sub = card / "pcm0p" / "sub0"
+    sub.mkdir(parents=True)
+    (sub / "status").write_text("closed\n", encoding="utf-8")
+    proc_root(root)
+    result = audio_runtime.check_aloop_registered_substreams()
+    assert result.status == "ok"
+
+
+def test_check_never_raises_on_hostile_status(proc_root, tmp_path):
+    """A garbage/empty status file must not crash the doctor."""
+    root = _make_card(tmp_path)
+    card = root / audio_runtime._ALOOP_CARD_ID
+    (card / "pcm0p" / "sub0" / "status").write_text("", encoding="utf-8")
+    (card / "pcm0p" / "sub1" / "status").write_text(
+        "\x00\xff garbage", encoding="utf-8", errors="replace"
+    )
+    proc_root(root)
+    result = audio_runtime.check_aloop_registered_substreams()
+    assert result.status in {"ok", "warn", "fail"}
+
+
+# --------------------------------------------------------------------------
+# Contract pins: an owning constant must not name a pair the module never
+# creates, so a `pcm_substreams` reduction fails here instead of on a speaker
+# whose lane silently has no substream to open. That pin lives over the DERIVED
+# set (`test_registered_pairs_are_within_the_module_range` below), which reads
+# every owner of the allocation. It once had a second, narrower copy over the
+# grouping round-trip's own two constants; those are gone — the bonded ingress
+# rides `jasper.multiroom.grouping_ring`'s SHM ring and names no aloop pair.
+# --------------------------------------------------------------------------
+
+def _modprobe_substreams() -> int:
+    text = _MODPROBE_CONF.read_text(encoding="utf-8")
+    options = [
+        line for line in text.splitlines()
+        if line.strip().startswith("options snd-aloop")
+    ]
+    assert len(options) == 1, f"expected one options line, got {options!r}"
+    m = re.search(r"pcm_substreams=(\d+)", options[0])
+    assert m, f"no pcm_substreams= in {options[0]!r}"
+    return int(m.group(1))
+
+
+def test_walker_range_matches_modprobe_pcm_substreams():
+    """The walker must scan exactly the substreams the module creates."""
+    assert audio_runtime._ALOOP_SUBSTREAMS == _modprobe_substreams()
+
+
+
+
+def test_outputd_content_aloop_pcm_matches_asoundrc_slave():
+    """`_OUTPUTD_CONTENT_ALOOP_PCM` — pair 6's registration source since
+    design §6.1(a) — must name the same PCM asoundrc.jasper's
+    `pcm.outputd_content_playback` slave actually opens, or the doctor's
+    derivation and the shipped ALSA config drift apart silently.
+    """
+    text = audio_runtime._asound_non_comment_text(
+        _ASOUNDRC_JASPER.read_text(encoding="utf-8")
+    )
+    block = audio_runtime._asound_pcm_block(text, "outputd_content_playback")
+    assert block is not None
+    m = re.search(r'slave\s*\{\s*pcm\s+"([^"]+)"', block)
+    assert m, f"no slave pcm found in outputd_content_playback block: {block!r}"
+    assert m.group(1) == audio_runtime._OUTPUTD_CONTENT_ALOOP_PCM
+
+
+# --------------------------------------------------------------------------
+# Derivation — the registered set is READ from its owners, never restated
+# --------------------------------------------------------------------------
+
+#: The pairs that must be registered at this head, written as a LITERAL on
+#: purpose. Deriving this expectation from the same constants the production
+#: code derives from would make it move in lockstep with a regression — drop
+#: pair 0 from `_FANIN_EXPECTED_ALOOP_INPUTS` and a derived expectation drops
+#: it too, so nothing fails. A literal is what makes a source-constant
+#: deletion detectable.
+_EXPECTED_REGISTERED_PAIRS = (0, 1, 2, 3, 4, 6, 7)
+
+
+def test_derived_set_matches_the_expected_allocation():
+    """Dropping a pair from any owning constant changes this set.
+
+    Also the re-sourcing pin (design §6.1a): pair 6 derives from
+    `_OUTPUTD_CONTENT_ALOOP_PCM`, and `_EXPECTED_REGISTERED_PAIRS` is the same
+    literal it was before that move — the registered set is byte-identical
+    across it, and across the grouping ingress leaving snd-aloop entirely.
+
+    The re-sourcing's negative control — breaking the grouping round-trip's own
+    constant and watching the set stay identical — retired with the constant:
+    the reconciler names no aloop pair at all now, so nothing in the grouping
+    path can feed this derivation to begin with.
+    """
+    derived, content_pair = audio_runtime._derive_registered_pairs()
+    assert tuple(sorted(derived)) == _EXPECTED_REGISTERED_PAIRS
+    assert content_pair == 6
+
+
+@pytest.mark.parametrize("pair", _EXPECTED_REGISTERED_PAIRS)
+def test_every_registered_pair_open_is_ok(proc_root, tmp_path, pair):
+    """THE PER-ROW GUARD.
+
+    One case per registered pair, each opening that pair and requiring `ok`.
+    Dropping a pair from its owning constant makes that pair unregistered, and
+    this test then FAILs it — which is the whole point: an unregistered pair
+    that a real box holds open is a red doctor on healthy hardware.
+    """
+    proc_root(_make_card(tmp_path, {"pcm0p": [pair], "pcm1c": [pair]}))
+    result = audio_runtime.check_aloop_registered_substreams()
+    assert result.status == "ok", f"pair {pair} open read as {result.detail}"
+
+
+def test_content_pair_is_always_registered():
+    """Replaces the old 'content pair missing from the registry' warn branch.
+
+    That branch existed because a hand-maintained table could drift from its
+    source constant. The derived set inserts the content pair (pair 6) from
+    `_OUTPUTD_CONTENT_ALOOP_PCM` in the same function that returns it, so the
+    drift is now structurally impossible and the branch was deleted as
+    unreachable. This is the invariant that replaced it.
+    """
+    derived, content_pair = audio_runtime._derive_registered_pairs()
+    assert content_pair in derived
+
+
+def test_derivation_is_all_or_nothing_on_a_bad_input(monkeypatch):
+    """A partial derivation would SHRINK the set and red-doctor a healthy box,
+    so an unparseable source must return None (-> warn), never a subset."""
+    from jasper.cli.doctor import audio_runtime
+
+    monkeypatch.setattr(
+        audio_runtime,
+        "_FANIN_EXPECTED_ALOOP_INPUTS",
+        [("spotify", "hw:Loopback,1,0"), ("airplay", "not-a-pcm")],
+    )
+    assert audio_runtime._derive_registered_pairs() is None
+
+
+def test_derivation_rejects_a_non_loopback_card(monkeypatch):
+    from jasper.cli.doctor import audio_runtime
+
+    monkeypatch.setattr(
+        audio_runtime, "_FANIN_EXPECTED_OUTPUT_PCM", "hw:SomeOtherCard,0,7"
+    )
+    assert audio_runtime._derive_registered_pairs() is None
+
+
+def test_unparseable_content_pcm_constant_is_warn(proc_root, tmp_path, monkeypatch):
+    """Pair 6's source is `_OUTPUTD_CONTENT_ALOOP_PCM` now, not a grouping
+    constant — an unparseable value there, not in reconcile.py, is what
+    degrades the full check to warn."""
+    from jasper.cli.doctor import audio_runtime
+
+    monkeypatch.setattr(audio_runtime, "_OUTPUTD_CONTENT_ALOOP_PCM", "not-a-pcm")
+    proc_root(_make_card(tmp_path))
+    result = audio_runtime.check_aloop_registered_substreams()
+    assert result.status == "warn"
+    assert "could not derive" in result.detail
+
+
+def test_pair_five_is_not_registered():
+    """P9-C DELETED pair 5, so no owner names it any more; re-registering it
+    from any owning constant fails here — the deletion is what the guard
+    protects."""
+    derived, _ = audio_runtime._derive_registered_pairs()
+
+    assert 5 not in derived
+
+
+def test_registered_pairs_are_within_the_module_range():
+    substreams = _modprobe_substreams()
+    derived, _ = audio_runtime._derive_registered_pairs()
+    for pair in derived:
+        assert 0 <= pair < substreams, (
+            f"registered pair {pair} is outside pcm_substreams={substreams}"
+        )
+
+
+# ===========================================================================
+# fan-in coupling drift + the capture-type parser
+# ===========================================================================
+
+_RAWFILE_CFG = """\
+devices:
+  samplerate: 48000
+  capture:
+    type: RawFile
+    channels: 2
+    filename: "/run/jasper-fanin/camilla.pipe"
+    format: S32_LE
+  playback:
+    type: File
+    channels: 2
+    filename: "/run/jasper-outputd/content.pipe"
+    format: S16_LE
+filters:
+"""
+
+_ALSA_CFG = """\
+devices:
+  capture:
+    type: Alsa
+    channels: 2
+    device: "plug:jasper_capture"
+  playback:
+    type: File
+    channels: 2
+    filename: "/run/jasper-snapserver/snapfifo"
+filters:
+"""
+
+_ALSA_LOCAL_PIPE_CFG = _ALSA_CFG.replace(
+    "/run/jasper-snapserver/snapfifo",
+    "/run/jasper-outputd/content.pipe",
+)
+
+
+def test_capture_parser_reads_rawfile(tmp_path):
+    cfg = tmp_path / "c.yml"
+    cfg.write_text(_RAWFILE_CFG)
+    assert audio_runtime._loaded_capture_type(cfg) == "RawFile"
+    assert audio_runtime._loaded_playback_type(cfg) == "File"
+    assert (
+        audio_runtime._loaded_playback_filename(cfg)
+        == "/run/jasper-outputd/content.pipe"
+    )
+
+
+def test_capture_parser_reads_alsa_not_playback_file(tmp_path):
+    # The playback File sink must NOT be misread as the capture type.
+    cfg = tmp_path / "c.yml"
+    cfg.write_text(_ALSA_CFG)
+    assert audio_runtime._loaded_capture_type(cfg) == "Alsa"
+
+
+def test_capture_parser_none_when_absent(tmp_path):
+    assert audio_runtime._loaded_capture_type(tmp_path / "missing.yml") is None
+    cfg = tmp_path / "c.yml"
+    cfg.write_text("filters:\n  x: 1\n")
+    assert audio_runtime._loaded_capture_type(cfg) is None
+
+
+def _run_check(monkeypatch, *, coupling, cfg_text, tmp_path, outputd_env_text=""):
+    cfg = tmp_path / "sound_current.yml"
+    cfg.write_text(cfg_text)
+    outputd_env = tmp_path / "outputd.env"
+    outputd_env.write_text(outputd_env_text)
+    monkeypatch.setattr(
+        "jasper.audio_runtime_plan.DEFAULT_OUTPUTD_ENV_PATH", str(outputd_env)
+    )
+    monkeypatch.setattr(
+        "jasper.fanin.coupling_reconcile.read_persisted_coupling",
+        lambda *a, **k: coupling,
+    )
+    # _active_camilla_config_path returns (statefile, active_config_path|None) —
+    # mock the REAL tuple shape (a str-only mock masked a production TypeError).
+    monkeypatch.setattr(
+        audio_runtime, "_active_camilla_config_path", lambda: (cfg.parent, str(cfg))
+    )
+    return audio_runtime.check_fanin_coupling()
+
+
+def test_check_ok_when_loopback_matches_alsa(monkeypatch, tmp_path):
+    res = _run_check(monkeypatch, coupling="loopback", cfg_text=_ALSA_CFG, tmp_path=tmp_path)
+    assert res.status == "ok"
+
+
+def test_check_warns_on_loopback_capture_with_stale_local_file_playback(
+    monkeypatch, tmp_path
+):
+    res = _run_check(
+        monkeypatch,
+        coupling="loopback",
+        cfg_text=_ALSA_LOCAL_PIPE_CFG,
+        tmp_path=tmp_path,
+    )
+
+    assert res.status == "warn"
+    assert "non-Snapcast File sink" in res.detail
+
+
+def test_check_warns_on_dangerous_drift_loopback_intent_rawfile_loaded(
+    monkeypatch, tmp_path
+):
+    # The crash-loop precursor: env says loopback but the RawFile config is live.
+    res = _run_check(monkeypatch, coupling="loopback", cfg_text=_RAWFILE_CFG, tmp_path=tmp_path)
+    assert res.status == "warn"
+    assert "jasper-fanin-coupling-reconcile loopback" in res.detail
+
+
+def test_check_ok_when_no_loaded_capture(monkeypatch, tmp_path):
+    res = _run_check(
+        monkeypatch, coupling="loopback", cfg_text="filters:\n", tmp_path=tmp_path
+    )
+    assert res.status == "ok"
+
+
+# --- check_fanin_coupling_value: persisted coupling value must be recognized --
+
+
+def test_check_fanin_coupling_value_warns_on_removed_transport_pipe(monkeypatch, tmp_path):
+    # A migrating box carrying the REMOVED transport_pipe coupling (or a typo) must
+    # surface a warn until the reconciler converges it to loopback.
+    fanin_env = tmp_path / "fanin.env"
+    fanin_env.write_text("JASPER_FANIN_CAMILLA_COUPLING=transport_pipe\n")
+    monkeypatch.setattr(
+        "jasper.fanin.coupling_reconcile.FANIN_ENV_PATH", str(fanin_env)
+    )
+    res = audio_runtime.check_fanin_coupling_value()
+    assert res.status == "warn"
+    assert "transport_pipe" in res.detail
+    assert "removed" in res.detail
+
+
+def test_check_fanin_coupling_value_ok_on_recognized_coupling(monkeypatch, tmp_path):
+    fanin_env = tmp_path / "fanin.env"
+    fanin_env.write_text("JASPER_FANIN_CAMILLA_COUPLING=shm_ring\n")
+    monkeypatch.setattr(
+        "jasper.fanin.coupling_reconcile.FANIN_ENV_PATH", str(fanin_env)
+    )
+    res = audio_runtime.check_fanin_coupling_value()
+    assert res.status == "ok"
+
+
+# --- shm_ring coherence (Ring A + Ring B, P2) --------------------------------
+
+_RING_CFG = """\
+devices:
+  samplerate: 48000
+  capture:
+    type: Alsa
+    channels: 2
+    device: "jts_ring_capture"
+    format: S16_LE
+  playback:
+    type: Alsa
+    channels: 2
+    device: "jts_ring_playback"
+    format: S16_LE
+filters:
+"""
+
+_RING_BRIDGE_ENV = "JASPER_OUTPUTD_CONTENT_BRIDGE=shm_ring\n"
+
+
+def test_ring_ok_when_both_ends_ring_and_bridge_matches(monkeypatch, tmp_path):
+    res = _run_check(
+        monkeypatch,
+        coupling="shm_ring",
+        cfg_text=_RING_CFG,
+        tmp_path=tmp_path,
+        outputd_env_text=_RING_BRIDGE_ENV,
+    )
+    assert res.status == "ok"
+    assert "jts_ring_capture" in res.detail and "jts_ring_playback" in res.detail
+
+
+def test_ring_warns_on_partial_flip_bridge_missing(monkeypatch, tmp_path):
+    # shm_ring intent but outputd bridge is direct -> partial flip warning.
+    res = _run_check(
+        monkeypatch,
+        coupling="shm_ring",
+        cfg_text=_RING_CFG,
+        tmp_path=tmp_path,
+        outputd_env_text="",  # bridge defaults to direct
+    )
+    assert res.status == "warn"
+    assert "PARTIAL" in res.detail or "shm_ring" in res.detail
+
+
+def test_loopback_warns_on_stale_ring_bridge(monkeypatch, tmp_path):
+    # loopback intent but a stale shm_ring bridge remains -> partial flip warning.
+    res = _run_check(
+        monkeypatch,
+        coupling="loopback",
+        cfg_text=_ALSA_CFG,
+        tmp_path=tmp_path,
+        outputd_env_text=_RING_BRIDGE_ENV,
+    )
+    assert res.status == "warn"
+    assert "stale" in res.detail.lower() and "shm_ring" in res.detail
+
+
+def test_ring_warns_when_loaded_graph_reverted_to_loopback(monkeypatch, tmp_path):
+    # THE finding-5 revert: env pair is coherent but the loaded config is the
+    # loopback graph (a camilla restart re-seeded it) -> warn to re-arm.
+    res = _run_check(
+        monkeypatch,
+        coupling="shm_ring",
+        cfg_text=_ALSA_CFG,  # loopback capture device, NOT jts_ring_capture
+        tmp_path=tmp_path,
+        outputd_env_text=_RING_BRIDGE_ENV,
+    )
+    assert res.status == "warn"
+    assert "ring config" in res.detail or "jts_ring" in res.detail
+
+
+def test_loopback_warns_on_stale_ring_graph_with_clean_env(monkeypatch, tmp_path):
+    # SF5 (the disarm-direction mirror of finding-5): a disarm's camilla step
+    # FAILED, so the env pair reads clean (loopback intent, bridge=direct — the
+    # earlier stale-bridge check does NOT fire) but the LOADED graph still names the
+    # ring ioplug devices. CamillaDSP then captures a writer-dead Ring A (zero-fill
+    # silence) while the box reads doctor-GREEN on a type-only capture==Alsa check.
+    # The device-name check must catch this.
+    res = _run_check(
+        monkeypatch,
+        coupling="loopback",
+        cfg_text=_RING_CFG,  # stale ring devices, but capture.type is Alsa
+        tmp_path=tmp_path,
+        outputd_env_text="",  # bridge=direct -> env pair coherent with loopback
+    )
+    assert res.status == "warn"
+    assert "ring ioplug device" in res.detail
+    assert "jts_ring_capture" in res.detail
+    assert "jasper-fanin-coupling-reconcile loopback" in res.detail
+
+
+def test_loopback_ok_when_loaded_graph_is_plain_alsa(monkeypatch, tmp_path):
+    # The guard must not false-positive: a clean loopback box (plug:jasper_capture,
+    # snapfifo playback) stays OK.
+    res = _run_check(
+        monkeypatch,
+        coupling="loopback",
+        cfg_text=_ALSA_CFG,
+        tmp_path=tmp_path,
+        outputd_env_text="",
+    )
+    assert res.status == "ok"
+
+
+# --- D-list survey finding 1 / wide-output-path PR-1: playback format check --
+# Before this check, nothing read the CamillaDSP playback format back off a
+# live config — a half-flip (emitter regenerated against one
+# DEFAULT_PLAYBACK_FORMAT while the loaded file reflects another) was silent.
+
+_S16_PLAYBACK_CFG = """\
+devices:
+  samplerate: 48000
+  capture:
+    type: Alsa
+    channels: 2
+    device: "plug:jasper_capture"
+    format: S32_LE
+  playback:
+    type: Alsa
+    channels: 2
+    device: "outputd_content_playback"
+    format: S16_LE
+filters:
+"""
+
+_S32_PLAYBACK_CFG = """\
+devices:
+  samplerate: 48000
+  capture:
+    type: Alsa
+    channels: 2
+    device: "plug:jasper_capture"
+    format: S32_LE
+  playback:
+    type: Alsa
+    channels: 2
+    device: "outputd_content_playback"
+    format: S32_LE
+filters:
+"""
+
+
+def _run_format_check(monkeypatch, tmp_path, cfg_text):
+    cfg = tmp_path / "sound_current.yml"
+    cfg.write_text(cfg_text)
+    monkeypatch.setattr(
+        audio_runtime, "_active_camilla_config_path", lambda: (cfg.parent, str(cfg))
+    )
+    return audio_runtime.check_camilla_playback_format()
+
+
+def test_playback_format_ok_when_alsa_lane_matches_the_wide_default(
+    monkeypatch, tmp_path
+):
+    # Green on a flipped box: the ALSA content lane carries
+    # DEFAULT_PLAYBACK_FORMAT, S32_LE since PR-6.
+    res = _run_format_check(monkeypatch, tmp_path, _S32_PLAYBACK_CFG)
+    assert res.status == "ok"
+    assert "S32_LE" in res.detail
+
+
+def test_playback_format_fails_on_a_half_flipped_narrow_alsa_lane(
+    monkeypatch, tmp_path
+):
+    # Prove the check CAN STILL FAIL in the post-flip world (mutation rule): an
+    # ALSA lane config left at S16_LE after the flip is a half-flipped box — a
+    # stale generated file, or an emitter that regenerated against a different
+    # constant — and on the raw active lane it is what makes outputd's open fail
+    # rather than convert. Red doctor line instead of silence.
+    res = _run_format_check(monkeypatch, tmp_path, _S16_PLAYBACK_CFG)
+    assert res.status == "fail"
+    assert "S16_LE" in res.detail
+    assert "S32_LE" in res.detail
+    assert "DEFAULT_PLAYBACK_FORMAT" in res.detail
+
+
+def test_playback_format_ok_when_no_config_loaded(monkeypatch, tmp_path):
+    monkeypatch.setattr(
+        audio_runtime, "_active_camilla_config_path", lambda: (tmp_path, None)
+    )
+    res = audio_runtime.check_camilla_playback_format()
+    assert res.status == "ok"
+
+
+def test_playback_format_ok_when_config_has_no_format_field(monkeypatch, tmp_path):
+    res = _run_format_check(monkeypatch, tmp_path, "filters:\n")
+    assert res.status == "ok"
+
+
+# --- NIT1 (PR-1 gate review): the check is lane-aware, keyed on playback type -
+
+_S16_FILE_PLAYBACK_CFG = """\
+devices:
+  samplerate: 48000
+  capture:
+    type: Alsa
+    channels: 2
+    device: "plug:jasper_capture"
+    format: S32_LE
+  playback:
+    type: File
+    channels: 2
+    filename: "/run/jasper-snapserver/snapfifo"
+    format: S16_LE
+filters:
+"""
+
+_S32_FILE_PLAYBACK_CFG = """\
+devices:
+  samplerate: 48000
+  capture:
+    type: Alsa
+    channels: 2
+    device: "plug:jasper_capture"
+    format: S32_LE
+  playback:
+    type: File
+    channels: 2
+    filename: "/run/jasper-snapserver/snapfifo"
+    format: S32_LE
+filters:
+"""
+
+
+_S16_RING_PLAYBACK_CFG = """\
+devices:
+  samplerate: 48000
+  capture:
+    type: Alsa
+    channels: 2
+    device: "jts_ring_capture"
+    format: S16_LE
+  playback:
+    type: Alsa
+    channels: 2
+    device: "jts_ring_playback"
+    format: S16_LE
+filters:
+"""
+
+_S32_RING_PLAYBACK_CFG = _S16_RING_PLAYBACK_CFG.replace(
+    '    device: "jts_ring_playback"\n    format: S16_LE',
+    '    device: "jts_ring_playback"\n    format: S32_LE',
+)
+
+
+def _pin_ring_wire_narrow(monkeypatch, tmp_path):
+    """Pin this box's ring wire to the NARROW token via the operator lever.
+
+    ``JASPER_FANIN_RING_WIRE_FORMAT`` is the only way a box declares S16_LE
+    since the resolver's default went WIDE (PR #2601) — nothing else in the
+    repo writes it (``jasper.fanin_coupling.RING_WIRE_FORMAT_ENV_VAR``).
+    Isolated to a tmp ``fanin.env``, the FIRST file the resolver's chain reads,
+    so the pin neither leaks from nor needs the developer host's real
+    ``/var/lib/jasper/fanin.env``.
+    """
+    from jasper.fanin_coupling import RING_WIRE_FORMAT_ENV_VAR
+
+    fanin_env = tmp_path / "fanin.env"
+    fanin_env.write_text(f"{RING_WIRE_FORMAT_ENV_VAR}=S16_LE\n", encoding="utf-8")
+    monkeypatch.setattr(
+        "jasper.fanin.coupling_reconcile.FANIN_ENV_PATH", str(fanin_env)
+    )
+
+
+def test_playback_format_ok_for_an_armed_ring_pinned_narrow_on_an_otherwise_wide_box(
+    monkeypatch, tmp_path
+):
+    """AN ARMED RING IS ``type: Alsa`` — the File split alone does NOT cover it.
+
+    Its width comes from resolve_ring_wire through the coupling's own kwargs (the
+    PR-6 ring ruling), so a ring config at the ring's OWN resolved width is
+    HEALTHY even when the general lane wants something else. Keyed
+    on the ring's playback device, this must be green; keyed only on the File
+    type, it red-lines every armed-ring box — including the certified-latency USB
+    box, whose canary criterion is literally "doctor green" — with a remediation
+    that regenerates the identical config.
+
+    SINCE THE RING-WIRE DEFAULT FLIP, an UNDECLARED box's ring resolves S32_LE
+    too — the same value as ``DEFAULT_PLAYBACK_FORMAT`` — so the two lanes no
+    longer differ for free the way they did when narrow was the resolver's
+    default. ``_pin_ring_wire_narrow`` declares the operator lever
+    (``JASPER_FANIN_RING_WIRE_FORMAT=S16_LE``) so the ring resolves narrow
+    while the general (loopback) lane stays wide, recreating the
+    two-lanes-can-legitimately-differ shape this test exists to prove.
+    """
+    from jasper.camilla_config_contract import DEFAULT_PLAYBACK_FORMAT
+    from jasper.fanin_coupling import RING_PLAYBACK_DEVICE, resolve_ring_wire
+
+    _pin_ring_wire_narrow(monkeypatch, tmp_path)
+    assert resolve_ring_wire().sample_format != DEFAULT_PLAYBACK_FORMAT
+    assert RING_PLAYBACK_DEVICE in _S16_RING_PLAYBACK_CFG
+    res = _run_format_check(monkeypatch, tmp_path, _S16_RING_PLAYBACK_CFG)
+    assert res.status == "ok"
+    assert "S16_LE" in res.detail
+    assert "resolve_ring_wire" in res.detail
+
+
+def test_playback_format_fails_on_a_ring_config_that_drifted_wide(
+    monkeypatch, tmp_path
+):
+    """The ring split must not become "any ring device auto-passes": a config
+    declaring a width the box's resolved ring wire does not carry is a genuinely
+    broken box and stays red — even though S32 is what the loopback lane wants
+    (and, since the ring-wire default flip, what an UNDECLARED box's ring
+    resolves to as well), which is exactly the confusion the three-way split
+    has to get right.
+
+    This is the check that has to catch it, because the ring LAYOUT accepts both
+    S16LE and S32LE: a config drifted to the other one is inside the accept-set,
+    so the attach would not refuse it — the ends would simply be built to
+    different widths.
+
+    ``_pin_ring_wire_narrow`` declares this box's ring wire S16_LE (the
+    operator lever) so the S32_LE config below is a genuine drift again — on an
+    undeclared box the same config would simply match the new default and there
+    would be nothing here to catch.
+    """
+    _pin_ring_wire_narrow(monkeypatch, tmp_path)
+    res = _run_format_check(monkeypatch, tmp_path, _S32_RING_PLAYBACK_CFG)
+    assert res.status == "fail"
+    assert "S32_LE" in res.detail
+    assert "S16_LE" in res.detail
+    assert "resolve_ring_wire" in res.detail
+
+
+def test_playback_format_ok_for_file_sink_pinned_narrow_while_the_lane_is_wide(
+    monkeypatch, tmp_path
+):
+    # The bonded-leader pipe sink (and the active-speaker parked graph's
+    # /dev/null sink) are pinned to DEFAULT_PIPE_SINK_FORMAT independently of
+    # the general program lane (D4), so a File-type S16 config stays green while
+    # the ALSA lane is S32 — the two constants now genuinely differ, no
+    # monkeypatch needed. Without the lane split this would red-line every
+    # healthy pipe-sink leader and parked box.
+    from jasper.camilla_config_contract import (
+        DEFAULT_PIPE_SINK_FORMAT,
+        DEFAULT_PLAYBACK_FORMAT,
+    )
+
+    assert DEFAULT_PIPE_SINK_FORMAT != DEFAULT_PLAYBACK_FORMAT
+    res = _run_format_check(monkeypatch, tmp_path, _S16_FILE_PLAYBACK_CFG)
+    assert res.status == "ok"
+    assert "S16_LE" in res.detail
+
+
+def test_playback_format_fails_on_a_deliberately_wide_file_sink_config(
+    monkeypatch, tmp_path
+):
+    # The lane split must not become "any File type auto-passes": a File
+    # sink whose format has genuinely drifted off DEFAULT_PIPE_SINK_FORMAT
+    # (S32 here) still fails — even though S32 is what the ALSA lane wants,
+    # which is exactly the confusion the lane split has to get right.
+    res = _run_format_check(monkeypatch, tmp_path, _S32_FILE_PLAYBACK_CFG)
+    assert res.status == "fail"
+    assert "S32_LE" in res.detail
+    assert "S16_LE" in res.detail
+    assert "DEFAULT_PIPE_SINK_FORMAT" in res.detail
+
+
+_STALE_RING_CFG = """\
+devices:
+  capture:
+    type: Alsa
+    channels: 2
+    device: "jts_ring_capture"
+  playback:
+    type: Alsa
+    channels: 2
+    device: "jts_ring_active_playback"
+filters:
+"""
+
+
+def test_stale_ring_devices_under_loopback_send_a_roleful_box_up_the_ladder(
+    monkeypatch, tmp_path
+):
+    """A ROLEFUL box gets the ARM LADDER, not a reconcile that converges nothing.
+
+    This is the state PR #2514's residual describes: a ring-endpoint graph loaded
+    while the coupling has fallen back to loopback. The check's remedy used to be
+    `jasper-fanin-coupling-reconcile loopback` unconditionally — which on a
+    roleful box moves nothing and reports SUCCESS. `reconcile_current_dsp`
+    declines to host a transient active graph (`eq_on_active_not_wired` ->
+    status `skipped`), and `_reconcile_camilla` turns a `skipped` under a
+    non-shm_ring coupling into `True`. So the operator ran a command, was told it
+    worked, and the warn stayed.
+
+    The graph has to be moved by step 1 of the ladder. Asserted through the
+    classification-free half of the message — the command spelling — because
+    that is what an operator copies.
+
+    #2285 P2 turned the ladder around. It was the ROLLBACK ladder
+    (`baseline-reemit --endpoint aloop` -> reconcile -> `…-reconcile loopback`);
+    that first rung is now an argparse error and its destination is the PARK for
+    a roleful box, so the remedy converges FORWARD onto the ring instead. Both
+    halves are asserted — the ring rungs present, the retired ones absent — so a
+    partial re-point cannot pass.
+    """
+    monkeypatch.setattr(
+        audio_runtime, "_requires_roleful_graph", lambda: True)
+    res = _run_check(
+        monkeypatch,
+        coupling="loopback",
+        cfg_text=_STALE_RING_CFG,
+        tmp_path=tmp_path,
+    )
+    assert res.status == "warn"
+    assert "jts_ring_active_playback" in res.detail
+    assert "baseline-reemit --endpoint ring" in res.detail, res.detail
+    assert "jasper-audio-hardware-reconcile" in res.detail, res.detail
+    assert "jasper-fanin-coupling-reconcile shm_ring" in res.detail, res.detail
+    # The retired rungs are asserted ABSENT, not merely unasserted: a remedy
+    # naming a command argparse rejects, or naming the park as a destination,
+    # is worse than no remedy at all.
+    assert "--endpoint aloop" not in res.detail, res.detail
+    assert "jasper-fanin-coupling-reconcile loopback" not in res.detail, res.detail
+
+
+def test_stale_ring_devices_under_loopback_keep_the_plain_remedy_when_passive(
+    monkeypatch, tmp_path
+):
+    """CONTROL: a PASSIVE box keeps exactly the one-command remedy.
+
+    Without this the assertion above would also pass if the ladder text had been
+    appended unconditionally — and on a passive box the coupling reconciler
+    genuinely is the whole fix, so sending one up a three-rung active-speaker
+    ladder would be worse advice, not more of it.
+    """
+    monkeypatch.setattr(
+        audio_runtime, "_requires_roleful_graph", lambda: False)
+    res = _run_check(
+        monkeypatch,
+        coupling="loopback",
+        cfg_text=_STALE_RING_CFG,
+        tmp_path=tmp_path,
+    )
+    assert res.status == "warn"
+    assert "jasper-fanin-coupling-reconcile loopback" in res.detail
+    assert "baseline-reemit" not in res.detail, res.detail
+
+
+
+# ===========================================================================
+# check_ring_conf_floor_render
+#
+# Compares two facts, each read from its owner: the active DAC profile's
+# DECLARED LatencyFloor (the DAC registry) and the period_frames the ring
+# conf.d pins (the file). The ring slot IS one outputd DAC period, so a box
+# whose DAC declares a floor should have that floor rendered into its conf.d
+# by jasper-audio-hardware-reconcile. A DAC with no declared floor is ok by
+# RULE, not by luck — the shipped conf.d default stands.
+# ===========================================================================
+
+SHIPPED_RING_CONF = (
+    Path(__file__).resolve().parents[1]
+    / "deploy" / "alsa" / "conf.d" / "60-jts-ring.conf"
+)
+
+# A registered profile that declares NO LatencyFloor, so the no-floor branches
+# below exercise the real registry rather than a synthetic id. Asserted rather
+# than assumed: declaring a floor for this profile must fail THIS line, not
+# silently turn the two no-floor tests into vacuous passes against a branch
+# they no longer reach. (That is exactly what a declared DAC8x floor did to
+# them in R7a, when they were written against `hifiberry_dac8x`; the guard has
+# now caught it a SECOND time, when the InnoMaker HiFi AMP Pro declared jts4's
+# measured floor and this moved to the DAC8x Studio.)
+NO_FLOOR_DAC_ID = HIFIBERRY_DAC8X_STUDIO_ID
+assert latency_floor_for(NO_FLOOR_DAC_ID) is None, (
+    f"{NO_FLOOR_DAC_ID} now declares a latency floor; pick another floorless "
+    "profile for the no-floor doctor branches"
+)
+
+
+def _stage_floor_conf(monkeypatch, tmp_path, *, dac_id, conf_text=None):
+    conf = tmp_path / "60-jts-ring.conf"
+    if conf_text is None:
+        conf.write_bytes(SHIPPED_RING_CONF.read_bytes())
+    else:
+        conf.write_text(conf_text, encoding="utf-8")
+    monkeypatch.setattr(audio_runtime, "_JTS_RING_CONF_D", str(conf))
+    monkeypatch.setattr(
+        audio_runtime, "_active_audio_dac_id", lambda: dac_id)
+    return conf
+
+
+def _conf_text(period_frames):
+    return (
+        f"pcm.jts_ring_capture {{\n    period_frames {period_frames}\n"
+        "    n_slots 2\n}\n"
+        f"pcm.jts_ring_playback {{\n    period_frames {period_frames}\n"
+        "    n_slots 2\n}\n"
+    )
+
+
+def _synthetic_floor(period_frames):
+    return LatencyFloor(
+        camilla_chunksize=256,
+        camilla_target_level=1536,
+        outputd_period_frames=period_frames,
+        outputd_dac_buffer_frames=4 * period_frames,
+    )
+
+
+def test_ok_when_the_dac_declares_no_floor(monkeypatch, tmp_path):
+    # State 1: nothing to render — the shipped default stands by rule.
+    _stage_floor_conf(monkeypatch, tmp_path, dac_id=NO_FLOOR_DAC_ID)
+
+    result = audio_runtime.check_ring_conf_floor_render()
+
+    assert result.status == "ok"
+    assert "no latency floor" in result.detail
+    assert "shipped default" in result.detail
+
+
+def test_ok_when_the_conf_matches_the_declared_floor(monkeypatch, tmp_path):
+    # State 2: the golden Apple case — the declared floor IS the shipped 128.
+    _stage_floor_conf(monkeypatch, tmp_path, dac_id="apple_usb_c_dongle")
+
+    result = audio_runtime.check_ring_conf_floor_render()
+
+    assert result.status == "ok"
+    assert "128" in result.detail
+    assert "apple_usb_c_dongle" in result.detail
+
+
+def test_ok_when_the_floor_exceeds_the_fixed_ring_slot(monkeypatch, tmp_path):
+    # State 4, the product boundary: Ring A's slot is fan-in's COMPILE-TIME
+    # RING_SLOT_FRAMES, so a DAC whose floor is not exactly that never gets a
+    # rendered conf.d — shm_ring is simply unavailable on it until #2147.
+    # That is a documented boundary, NOT drift, so it reports ok.
+    from jasper.fanin_coupling import RING_SLOT_FRAMES
+
+    monkeypatch.setattr(
+        audio_runtime,
+        "latency_floor_for",
+        lambda _id: _synthetic_floor(2 * RING_SLOT_FRAMES),
+    )
+    _stage_floor_conf(monkeypatch, tmp_path, dac_id="hifiberry_dac8x")
+
+    result = audio_runtime.check_ring_conf_floor_render()
+
+    assert result.status == "ok"
+    # Honest: names both numbers, says what is unavailable and what still works.
+    assert str(2 * RING_SLOT_FRAMES) in result.detail
+    assert str(RING_SLOT_FRAMES) in result.detail
+    assert "shm_ring" in result.detail
+    assert "loopback" in result.detail.lower()
+    assert "#2147" in result.detail
+
+
+def test_warns_when_the_conf_diverges_from_the_declared_floor(
+    monkeypatch, tmp_path
+):
+    # State 5, real drift: the Apple dongle's floor IS renderable (it equals
+    # RING_SLOT_FRAMES) but this box's conf.d was never rendered to it. Warn,
+    # not fail — the conf.d is inert unless shm_ring is armed, and the coupling
+    # reconciler independently fail-closes to loopback on this mismatch.
+    _stage_floor_conf(
+        monkeypatch,
+        tmp_path,
+        dac_id="apple_usb_c_dongle",
+        conf_text=_conf_text(1024),
+    )
+
+    result = audio_runtime.check_ring_conf_floor_render()
+
+    assert result.status == "warn"
+    # Names BOTH numbers and the remedy, not a bare "mismatch".
+    assert "128" in result.detail
+    assert "1024" in result.detail
+    assert "jasper-audio-hardware-reconcile" in result.detail
+
+
+@pytest.mark.parametrize(
+    "conf_text",
+    [
+        # Torn: the two PCMs disagree, so there is no single geometry.
+        "pcm.jts_ring_capture {\n    period_frames 128\n}\n"
+        "pcm.jts_ring_playback {\n    period_frames 1024\n}\n",
+        # No period_frames line at all.
+        "pcm.jts_ring_capture { type jts_ring }\n",
+    ],
+)
+def test_warns_when_the_conf_period_is_indeterminate(
+    monkeypatch, tmp_path, conf_text
+):
+    _stage_floor_conf(
+        monkeypatch, tmp_path, dac_id="apple_usb_c_dongle", conf_text=conf_text
+    )
+
+    result = audio_runtime.check_ring_conf_floor_render()
+
+    assert result.status == "warn"
+    assert "no single period_frames" in result.detail
+    assert "redeploy" in result.detail
+
+
+def test_warns_when_the_conf_is_absent(monkeypatch, tmp_path):
+    monkeypatch.setattr(audio_runtime, "_JTS_RING_CONF_D", str(tmp_path / "missing.conf"))
+    monkeypatch.setattr(
+        audio_runtime, "_active_audio_dac_id", lambda: "apple_usb_c_dongle")
+
+    result = audio_runtime.check_ring_conf_floor_render()
+
+    assert result.status == "warn"
+    assert "absent or torn" in result.detail
+
+
+def test_check_is_registered_in_the_audio_doctor_group():
+    from jasper.cli.doctor import audio as audio_group
+
+    assert (
+        audio_group.check_ring_conf_floor_render
+        is audio_runtime.check_ring_conf_floor_render
+    )
+    assert "check_ring_conf_floor_render" in audio_group.__all__
+
+
+# --- #2294: a floor-blocked box must SAY it cannot ring -----------------------
+
+
+def test_no_floor_detail_names_both_routes_to_a_ring(monkeypatch, tmp_path):
+    """`ok` is right, silence was not (issue #2294) — and neither was the old text.
+
+    A DAC with no declared floor leaves outputd on its PACKAGED default period,
+    which is not the fixed ring slot, so the conf.d has nothing to render. The
+    conf.d is correct either way — hence `ok` — but the household's actual
+    question is "why is this box on loopback?", and before #2294 the answer
+    appeared on no surface.
+
+    The answer it then gave was wrong. It said shm_ring was "unavailable on this
+    box", which is a claim about outputd's RESOLVED period, and this check reads
+    only the DECLARED floor. The two diverge through the operator seam: jts4
+    (InnoMaker HiFi AMP Pro, floorless at the time) armed shm_ring on 2026-08-14
+    with JASPER_OUTPUTD_PERIOD_FRAMES / _DAC_BUFFER_FRAMES hand-set in
+    /etc/jasper/jasper.env. So the detail must name BOTH routes to a ring and
+    claim no impossibility.
+    """
+    from jasper.audio_runtime_plan import DEFAULT_OUTPUTD_PERIOD_FRAMES
+    from jasper.fanin_coupling import RING_SLOT_FRAMES
+
+    _stage_floor_conf(monkeypatch, tmp_path, dac_id=NO_FLOOR_DAC_ID)
+
+    result = audio_runtime.check_ring_conf_floor_render()
+
+    assert result.status == "ok"
+    assert str(DEFAULT_OUTPUTD_PERIOD_FRAMES) in result.detail
+    assert str(RING_SLOT_FRAMES) in result.detail
+    assert "#2147" in result.detail
+    # Route 1: the operator seam, named with the file that carries it.
+    assert "JASPER_OUTPUTD_PERIOD_FRAMES" in result.detail
+    assert "/etc/jasper/jasper.env" in result.detail
+    # Route 2: a declared floor.
+    assert "floor" in result.detail
+    # And NO impossibility claim, on a check that cannot see the resolved period.
+    assert "unavailable" not in result.detail
+
+
+def test_a_floor_above_the_slot_does_not_claim_ineligibility(monkeypatch, tmp_path):
+    """The same falsified claim lived in the floor-exceeds-slot branch.
+
+    A DAC declaring, say, a 256-frame floor gets no rendered conf.d either — but
+    an operator JASPER_OUTPUTD_PERIOD_FRAMES still outranks that floor and can
+    bring the resolved period back to the slot, exactly as it did on jts4. So
+    this branch may say the conf.d is not rendered and name the seam; it may not
+    say the ring is unavailable.
+    """
+    from jasper.fanin_coupling import RING_SLOT_FRAMES
+
+    monkeypatch.setattr(
+        audio_runtime,
+        "latency_floor_for",
+        lambda _id: _synthetic_floor(2 * RING_SLOT_FRAMES),
+    )
+    _stage_floor_conf(monkeypatch, tmp_path, dac_id="hifiberry_dac8x")
+
+    result = audio_runtime.check_ring_conf_floor_render()
+
+    assert result.status == "ok"
+    assert "unavailable" not in result.detail
+    assert "JASPER_OUTPUTD_PERIOD_FRAMES" in result.detail
+
+
+def test_a_matching_floor_does_not_claim_ineligibility(monkeypatch, tmp_path):
+    # The mirror of the above: a box that CAN ring must not be told it cannot.
+    _stage_floor_conf(monkeypatch, tmp_path, dac_id="apple_usb_c_dongle")
+
+    result = audio_runtime.check_ring_conf_floor_render()
+
+    assert result.status == "ok"
+    assert "unavailable" not in result.detail
+
+
+# --- `_requires_roleful_graph` fail-soft DIRECTION ----------------------------
+
+
+@pytest.mark.parametrize(
+    "exc",
+    [
+        # The real-world case first. It subclasses ValueError, so the bare
+        # ValueError below is the same except-arm — named separately because a
+        # reader should not have to know the hierarchy to see it is covered.
+        OutputTopologyError("topology has an unsupported shape"),
+        OSError("topology unreadable"),
+        ValueError("topology malformed"),
+    ],
+)
+def test_an_unreadable_topology_fails_soft_to_not_roleful(monkeypatch, tmp_path, exc):
+    """The documented direction, pinned — an unreadable topology asserts NOTHING.
+
+    ``_requires_roleful_graph`` only ever SOFTENS a message or adds an
+    eligibility sentence; it gates nothing, and every caller that acts on
+    rolefulness reads the fail-CLOSED loaders instead. So its ``except`` arm must
+    return False: a box whose topology cannot be read must keep the generic
+    wording rather than be told, on no evidence, that it is an active-crossover
+    box whose ring needs a proven graph before it can be armed. Failing soft to
+    True would print a
+    remediation ladder at every box with a torn topology file.
+
+    Asserted at BOTH surfaces — the helper's own answer and the detail string it
+    feeds — so flipping the arm cannot pass by only breaking the private half.
+    """
+    import jasper.output_topology as output_topology
+
+    def _raise(*_a, **_kw):
+        raise exc
+
+    monkeypatch.setattr(output_topology, "load_output_topology_strict", _raise)
+    _stage_floor_conf(monkeypatch, tmp_path, dac_id="apple_usb_c_dongle")
+
+    assert audio_runtime._requires_roleful_graph() is False
+    assert "ROLEFUL" not in audio_runtime.check_ring_conf_floor_render().detail
+
+
+def test_a_roleful_topology_is_reported_roleful(monkeypatch, tmp_path):
+    """The other direction, so the fail-soft pin cannot be satisfied by a stub.
+
+    Without this, ``return False`` unconditionally would pass the test above and
+    the helper would be pinned to a constant. This runs the real classifier over
+    a real roleful topology.
+    """
+    import jasper.output_topology as output_topology
+    from tests.test_active_speaker_runtime_contract import _active_topology
+
+    topology = _active_topology("mono", "active_2_way")
+    monkeypatch.setattr(
+        output_topology, "load_output_topology_strict", lambda *a, **kw: topology
+    )
+    _stage_floor_conf(monkeypatch, tmp_path, dac_id="apple_usb_c_dongle")
+
+    assert audio_runtime._requires_roleful_graph() is True
+    assert "ROLEFUL" in audio_runtime.check_ring_conf_floor_render().detail
+
+
+
+# ===========================================================================
+# check_ring_geometry_coherence
+#
+# Ring-A geometry must agree across three axes when shm_ring is armed:
+# fan-in's resolved JASPER_FANIN_RING_SLOTS through the systemd env chain, the
+# conf.d jts_ring_capture, and the on-disk program.ring header. Against the
+# header it compares every axis the ioplug attach compares (n_slots,
+# period_frames, sample_format, channels); a mismatch on any of them is the
+# 2026-07-05 crash-loop class (hw_params EINVAL + ioplug attach_fatal).
+# ===========================================================================
+
+def _write_conf(tmp_path, *, capture_n_slots=2):
+    conf = tmp_path / "60-jts-ring.conf"
+    conf.write_text(
+        f"pcm.jts_ring_capture {{\n    period_frames 128\n    n_slots {capture_n_slots}\n}}\n"
+        "pcm.jts_ring_playback {\n    period_frames 128\n    n_slots 2\n}\n",
+        encoding="utf-8",
+    )
+    return conf
+
+
+def _write_ring(
+    path,
+    *,
+    n_slots=2,
+    period_frames=128,
+    magic=0x4A52_494E,
+    rate=48000,
+    channels=2,
+    sample_format=1,  # SAMPLE_FORMAT_S16LE
+):
+    hdr = bytearray(128)
+    struct.pack_into("<I", hdr, 0, magic)
+    struct.pack_into("<I", hdr, 4, 1)  # version
+    struct.pack_into("<I", hdr, 8, rate)
+    struct.pack_into("<I", hdr, 12, channels)
+    struct.pack_into("<I", hdr, 16, sample_format)
+    struct.pack_into("<I", hdr, 20, period_frames)
+    struct.pack_into("<I", hdr, 24, n_slots)
+    path.write_bytes(bytes(hdr) + b"\x00" * 256)
+
+
+def _arm(monkeypatch):
+    monkeypatch.setattr(
+        "jasper.fanin.coupling_reconcile.read_persisted_coupling",
+        lambda *a, **k: "shm_ring",
+    )
+
+
+def _stage_ring_geometry(
+    monkeypatch,
+    tmp_path,
+    *,
+    fanin_env_text="",
+    jasper_env_text="",
+    capture_n_slots=2,
+):
+    conf = _write_conf(tmp_path, capture_n_slots=capture_n_slots)
+    fanin_env = tmp_path / "fanin.env"
+    jasper_env = tmp_path / "jasper.env"
+    fanin_env.write_text(fanin_env_text, encoding="utf-8")
+    jasper_env.write_text(jasper_env_text, encoding="utf-8")
+    program = tmp_path / "program.ring"
+    monkeypatch.setattr(audio_runtime.ring_assets, "RING_CONF_D", str(conf))
+    monkeypatch.setattr(audio_runtime, "_JTS_RING_CONF_D", str(conf))
+    monkeypatch.setattr(audio_runtime.ring_assets, "RING_A_PROGRAM_FILE", str(program))
+    monkeypatch.setattr(
+        "jasper.fanin.coupling_reconcile.FANIN_ENV_PATH", str(fanin_env)
+    )
+    monkeypatch.setattr(
+        "jasper.fanin.coupling_reconcile.JASPER_ENV_PATH", str(jasper_env)
+    )
+    return fanin_env, program
+
+
+def test_skips_cleanly_when_not_armed(monkeypatch, tmp_path):
+    # Default coupling (loopback) — the ring is inert, so a "mismatch" is not a live
+    # defect. Must report ok/skip regardless of env or conf.d values.
+    _stage_ring_geometry(monkeypatch, tmp_path, fanin_env_text="JASPER_FANIN_RING_SLOTS=8\n")
+    # No _arm(): read_persisted_coupling resolves loopback from the (empty) file.
+    res = audio_runtime.check_ring_geometry_coherence()
+    assert res.status == "ok"
+    assert "skipped" in res.detail
+    assert "not armed" in res.detail
+
+
+def test_ok_when_all_three_axes_agree(monkeypatch, tmp_path):
+    _arm(monkeypatch)
+    _fanin, program = _stage_ring_geometry(monkeypatch, tmp_path)
+    _write_ring(program)
+    res = audio_runtime.check_ring_geometry_coherence()
+    assert res.status == "ok", res.detail
+    assert "n_slots=2" in res.detail
+
+
+def test_ok_detail_reports_the_on_disk_wire(monkeypatch, tmp_path):
+    """The ok detail names the wire it compared, not just the slot geometry.
+
+    A reader that can see the whole header should say what it saw — otherwise
+    "the Python layer can see the wire" is true only inside tests.
+    """
+    _arm(monkeypatch)
+    _fanin, program = _stage_ring_geometry(monkeypatch, tmp_path)
+    _write_ring(program)
+    res = audio_runtime.check_ring_geometry_coherence()
+    assert res.status == "ok", res.detail
+    assert "S16_LE/2ch" in res.detail
+    assert "48000 Hz" in res.detail
+
+
+@pytest.mark.parametrize(
+    ("kwargs", "axis"),
+    [
+        ({"sample_format": 2}, "sample_format"),
+        ({"channels": 6}, "channels"),
+    ],
+)
+def test_fail_when_the_on_disk_wire_shears(monkeypatch, tmp_path, kwargs, axis):
+    """THE HOLE R5b CLOSED, and this test used to assert it stayed open.
+
+    Its earlier form wrote a 44.1 kHz / 6-channel / S32_LE header — a wire the
+    fleet does not run — and asserted ``ok``, because the wire axes were
+    REPORTED and compared nowhere. That is exactly the silent hole: a ring file
+    whose slots and period match while its format or channel count does not
+    passed every Python guard, and the first symptom would have been CamillaDSP
+    failing the ioplug attach and crash-looping. The inversion is deliberate.
+
+    ``rate`` is NOT in the parametrize list: the conf.d declares no rate, so
+    there is no expected value to compare against and the comparator skips that
+    axis rather than guessing. It stays reported.
+    """
+    _arm(monkeypatch)
+    _fanin, program = _stage_ring_geometry(monkeypatch, tmp_path)
+    _write_ring(program, **kwargs)
+    res = audio_runtime.check_ring_geometry_coherence()
+    assert res.status == "fail", res.detail
+    assert axis in res.detail
+    assert "jasper-fanin-coupling-reconcile" in res.detail
+
+
+def test_fail_when_env_disagrees_with_conf(monkeypatch, tmp_path):
+    # Default migration class: stale JASPER_FANIN_RING_SLOTS=8 vs conf.d's 2.
+    _arm(monkeypatch)
+    _fanin, program = _stage_ring_geometry(
+        monkeypatch, tmp_path, fanin_env_text="JASPER_FANIN_RING_SLOTS=8\n",
+    )
+    _write_ring(program, n_slots=8)
+    res = audio_runtime.check_ring_geometry_coherence()
+    assert res.status == "fail"
+    assert "2" in res.detail and "8" in res.detail
+    assert "crash-loop" in res.detail.lower()
+
+
+def test_fail_when_base_env_disagrees_with_conf(monkeypatch, tmp_path):
+    # The effective env chain is /etc/jasper/jasper.env, then fanin.env. A stale
+    # base-env value still controls the next fan-in start when fanin.env has no
+    # override, so doctor must not report the product default.
+    _arm(monkeypatch)
+    _fanin, program = _stage_ring_geometry(
+        monkeypatch,
+        tmp_path,
+        jasper_env_text="JASPER_FANIN_RING_SLOTS=8\n",
+    )
+    _write_ring(program, n_slots=8)
+    res = audio_runtime.check_ring_geometry_coherence()
+    assert res.status == "fail"
+    assert "2" in res.detail and "8" in res.detail
+    assert "crash-loop" in res.detail.lower()
+
+
+def test_ok_when_fanin_env_overrides_stale_base_env(monkeypatch, tmp_path):
+    # Later systemd EnvironmentFile wins. The reconciler's fix writes this exact
+    # fanin.env override to neutralize stale /etc/jasper/jasper.env residue.
+    _arm(monkeypatch)
+    _fanin, program = _stage_ring_geometry(
+        monkeypatch,
+        tmp_path,
+        fanin_env_text="JASPER_FANIN_RING_SLOTS=2\n",
+        jasper_env_text="JASPER_FANIN_RING_SLOTS=8\n",
+    )
+    _write_ring(program, n_slots=2)
+    res = audio_runtime.check_ring_geometry_coherence()
+    assert res.status == "ok", res.detail
+    assert "n_slots=2" in res.detail
+
+
+def test_fail_when_on_disk_ring_disagrees(monkeypatch, tmp_path):
+    # env + conf.d agree (both 2), but a stale on-disk ring carries 8 slots — the
+    # ioplug attach still fails. Caught as the third axis.
+    _arm(monkeypatch)
+    _fanin, program = _stage_ring_geometry(monkeypatch, tmp_path)
+    _write_ring(program, n_slots=8)
+    res = audio_runtime.check_ring_geometry_coherence()
+    assert res.status == "fail"
+    assert "on-disk" in res.detail.lower()
+    assert "2" in res.detail and "8" in res.detail
+
+
+def test_fail_when_on_disk_ring_period_disagrees(monkeypatch, tmp_path):
+    # Nit-7: env + conf.d + on-disk n_slots all agree (2), but the on-disk ring's
+    # period_frames is stale (256 vs conf.d 128). The ioplug attach still fails on
+    # the SECOND geometry axis — the slot-only check would miss it. Caught now.
+    _arm(monkeypatch)
+    _fanin, program = _stage_ring_geometry(monkeypatch, tmp_path)
+    _write_ring(program, period_frames=256)
+    res = audio_runtime.check_ring_geometry_coherence()
+    assert res.status == "fail"
+    assert "period_frames" in res.detail
+    assert "256" in res.detail and "128" in res.detail
+
+
+def test_ok_when_slots_and_period_both_agree(monkeypatch, tmp_path):
+    # The positive: n_slots AND period_frames coherent across env + conf.d + on-disk.
+    _arm(monkeypatch)
+    _fanin, program = _stage_ring_geometry(monkeypatch, tmp_path)
+    _write_ring(program, period_frames=128)
+    res = audio_runtime.check_ring_geometry_coherence()
+    assert res.status == "ok", res.detail
+    assert "period_frames=128" in res.detail
+
+
+def test_warn_when_ring_file_absent_but_env_conf_agree(monkeypatch, tmp_path):
+    # Armed, env + conf.d agree, but no valid on-disk ring yet (fan-in restarting).
+    # Not a hard failure — the next writer create will be coherent.
+    _arm(monkeypatch)
+    _stage_ring_geometry(monkeypatch, tmp_path)
+    # No _write_ring — the program.ring path does not exist.
+    res = audio_runtime.check_ring_geometry_coherence()
+    assert res.status == "warn"
+    assert "no valid ring header" in res.detail.lower()
+
+
+def test_fail_when_env_value_invalid(monkeypatch, tmp_path):
+    # An out-of-range JASPER_FANIN_RING_SLOTS is a hard failure while armed.
+    _arm(monkeypatch)
+    _stage_ring_geometry(
+        monkeypatch, tmp_path, fanin_env_text="JASPER_FANIN_RING_SLOTS=99\n",
+    )
+    res = audio_runtime.check_ring_geometry_coherence()
+    assert res.status == "fail"
+    assert "invalid" in res.detail.lower()
+
+
+# --- the outputd buffer-health check's RING-WIRE branches --------------------
+#
+# `_outputd_buffer_health` validates the shm_ring content geometry and then
+# compares the wire outputd ATTACHED to (published in its top-level `shm_ring`
+# block) against the wire this box's resolver answers. Those are two independent
+# sources, so a disagreement is a real shear — outputd reading a geometry nobody
+# declared — and it is a `fail`, not a detail line. Both axes are pinned because
+# they fail for different reasons and print different remedies.
+
+
+def _outputd_ring_status(*, fmt="S16_LE", channels=2, period=128, slots=2):
+    """A STATUS payload for an ATTACHED shm_ring outputd, per rust state.rs."""
+    return {
+        "content": {
+            "source": "shm_ring",
+            "buffer_frames": period,
+            "ring": {
+                "slots": slots,
+                "slot_frames": period,
+                "capacity_frames": slots * period,
+            },
+        },
+        "shm_ring": {
+            "enabled": True,
+            "attached": True,
+            "slots": slots,
+            "format": fmt,
+            "channels": channels,
+            "occupancy": 1,
+        },
+    }
+
+
+def _buffer_health(data, *, period=128):
+    return audio_runtime._outputd_buffer_health(
+        data,
+        data["content"],
+        ring_mode=True,
+        content_buffer=data["content"]["buffer_frames"],
+        dac_buffer=period * 4,
+        period_frames=period,
+    )
+
+
+def test_buffer_health_passes_when_the_attached_wire_matches():
+    """POSITIVE CONTROL. On the box's default (undeclared) wire the comparison
+    is silent, so the two failure pins below are proving a branch rather than a
+    broken happy path.
+
+    ``fmt="S32_LE"`` because the resolver's default went WIDE
+    (``jasper.fanin_coupling.resolve_ring_wire_format``): an undeclared box —
+    this test stubs neither the wire nor the env chain — now resolves S32_LE,
+    not the C ioplug's compiled-in S16_LE.
+    """
+    result = _buffer_health(_outputd_ring_status(fmt="S32_LE"))
+    assert isinstance(result, str), result
+    assert "shm_ring_wire=S32_LE/2ch" in result
+    assert "shm_ring_attached=True" in result
+
+
+def test_buffer_health_fails_on_an_attached_format_the_box_does_not_declare():
+    """outputd attached to a Ring B FORMAT nobody declared.
+
+    S16_LE is the mismatching token now: the resolver's default went WIDE, so
+    an undeclared box's wire IS S32_LE and S16_LE is what nobody declares.
+    """
+    result = _buffer_health(_outputd_ring_status(fmt="S16_LE"))
+    assert not isinstance(result, str), "a wire shear must be a CheckResult, not detail"
+    assert result.status == "fail"
+    assert "shm_ring.format='S16_LE'" in result.detail
+    assert "nobody declared" in result.detail
+    # The remedy must name the reconcile that CLEARS the mismatched file — a bare
+    # "redeploy" leaves the stale ring in place and the box parks again.
+    assert "jasper-fanin-coupling-reconcile shm_ring" in result.detail
+
+
+def test_buffer_health_fails_on_an_attached_channel_count_the_box_does_not_declare():
+    """The channels axis has teeth independently of the format axis.
+
+    ``fmt="S32_LE"`` pins the format to the box's default so that axis stays
+    silent — an unpinned S16_LE default would (now) ALSO mismatch the format
+    axis, and this test would no longer isolate the channels comparison.
+    """
+    result = _buffer_health(_outputd_ring_status(fmt="S32_LE", channels=6))
+    assert not isinstance(result, str)
+    assert result.status == "fail"
+    assert "shm_ring.channels=6" in result.detail
+    assert "nobody declared" in result.detail
+
+
+def test_buffer_health_skips_the_wire_comparison_before_attach():
+    """Only checked once ATTACHED.
+
+    Before the attach outputd publishes its own DECLARATION, which proves
+    nothing about a ring that does not exist yet. Comparing there would fail a
+    box that is merely starting up — and it would do so with the shear remedy,
+    sending an operator to clear a ring file that is not the problem.
+    """
+    data = _outputd_ring_status(fmt="S32_LE", channels=6)
+    data["shm_ring"]["attached"] = False
+    result = _buffer_health(data)
+    assert isinstance(result, str), result
+    assert "shm_ring_attached=False" in result
+
+
+def test_buffer_health_resolves_the_wire_with_the_boxs_topology(monkeypatch):
+    """The comparison asks the SAME question the reconciler's gates ask.
+
+    ``ring_b_channels`` is the one per-topology axis in the wire, so resolving it
+    without the topology answers the shipped stereo declaration and would report
+    a shear on a box whose Ring B legitimately carries a different width — the
+    doctor contradicting the reconciler that armed it.
+    """
+    import jasper.fanin.coupling_reconcile as cr
+    import jasper.fanin_coupling as fc
+
+    sentinel = object()
+    monkeypatch.setattr(cr, "load_topology_for_wire", lambda: sentinel)
+    seen: list[object] = []
+
+    def _resolve(topology=None):
+        seen.append(topology)
+        return fc.RingWire(
+            sample_format="S16_LE",
+            ring_a_channels=2,
+            ring_b_channels=6,
+            period_frames=128,
+        )
+
+    monkeypatch.setattr(fc, "resolve_ring_wire", _resolve)
+    # 6 channels is a SHEAR against the shipped resolver and a MATCH against this
+    # topology-derived one, so a passing result proves the topology was threaded.
+    result = _buffer_health(_outputd_ring_status(channels=6))
+    assert seen == [sentinel], "the buffer-health wire must be topology-resolved"
+    assert isinstance(result, str), result
+
+
+
+# ===========================================================================
+# check_ring_platform_assets
+#
+# The inert-phase contract: a MISSING asset is warn (loopback still carries
+# audio), an INSTALLED-but-unusable ioplug is fail. The check never touches a
+# live ring — the open probe is fully mocked.
+# ===========================================================================
+
+# A minimal but COMPLETE three-block conf.d: every PCM name resolves, and none
+# declares `format`/`channels`, so the ioplug's own absent-key defaults
+# (2ch/S16_LE) answer all three. Needed because the probe now reads its wire off
+# THIS text (`_jts_ring_probe_wire` sources `ring_conf_format`/
+# `ring_conf_channels`, not the resolver) — a stub declaring only
+# `jts_ring_capture` left `jts_ring_playback` indeterminate.
+_VALID_RING_CONF = (
+    "pcm.jts_ring_capture {\n"
+    "    type jts_ring\n"
+    '    path "/dev/shm/jts-ring/program.ring"\n'
+    "    period_frames 128\n"
+    "    n_slots 2\n"
+    "}\n"
+    "\n"
+    "pcm.jts_ring_playback {\n"
+    "    type jts_ring\n"
+    '    path "/dev/shm/jts-ring/content.ring"\n'
+    "    period_frames 128\n"
+    "    n_slots 2\n"
+    "}\n"
+    "\n"
+    # The ACTIVE ring block. The probe walks every PCM in _JTS_RING_PCMS, so a
+    # stub missing this one leaves it indeterminate exactly as a stub missing
+    # jts_ring_playback used to.
+    "pcm.jts_ring_active_playback {\n"
+    "    type jts_ring\n"
+    '    path "/dev/shm/jts-ring/active-content.ring"\n'
+    "    period_frames 128\n"
+    "    n_slots 2\n"
+    "}\n"
+)
+
+
+def _stage_ring_conf(monkeypatch, tmp_path, text=_VALID_RING_CONF):
+    """Point `_JTS_RING_CONF_D` at a tmp conf.d declaring every PCM block.
+
+    Standalone helper for the probe-mechanics tests below, which don't stage
+    the other P1 assets via `_stage_assets` but still need a readable conf.d
+    now that the probe's wire lookup reads one.
+    """
+    conf = tmp_path / "60-jts-ring.conf"
+    conf.write_text(text, encoding="utf-8")
+    monkeypatch.setattr(audio_runtime, "_JTS_RING_CONF_D", str(conf))
+    return conf
+
+
+def _stage_assets(monkeypatch, tmp_path, *, so=True, conf=True, shm=True):
+    """Point the module constants at tmp paths and create/omit each asset."""
+    plugin_dir = tmp_path / "alsa-lib"
+    plugin_dir.mkdir()
+    so_path = plugin_dir / audio_runtime._JTS_RING_IOPLUG_SO
+    if so:
+        so_path.write_bytes(b"\x7fELF fake so")
+    conf_path = tmp_path / "60-jts-ring.conf"
+    if conf:
+        conf_path.write_text(_VALID_RING_CONF, encoding="utf-8")
+    shm_dir = tmp_path / "jts-ring"
+    if shm:
+        shm_dir.mkdir()
+
+    monkeypatch.setattr(
+        audio_runtime, "_JTS_RING_ALSA_PLUGIN_DIR", str(plugin_dir))
+    monkeypatch.setattr(audio_runtime, "_JTS_RING_CONF_D", str(conf_path))
+    monkeypatch.setattr(
+        audio_runtime, "_JTS_RING_SHM_DIR", str(shm_dir))
+
+
+def _probes_ok(monkeypatch):
+    monkeypatch.setattr(
+        audio_runtime, "_jts_ring_pcm_resolves", lambda pcm, tool: (True, "resolved")
+    )
+
+
+def _probes_fail(monkeypatch, detail="undefined symbol: snd_dlsym_start"):
+    monkeypatch.setattr(
+        audio_runtime, "_jts_ring_pcm_resolves", lambda pcm, tool: (False, detail)
+    )
+
+
+# --- check_ring_platform_assets ---------------------------------------
+
+
+def test_ok_when_all_assets_present_and_probes_resolve(monkeypatch, tmp_path):
+    _stage_assets(monkeypatch, tmp_path)
+    _probes_ok(monkeypatch)
+    res = audio_runtime.check_ring_platform_assets()
+    assert res.status == "ok"
+    assert "inert" in res.detail
+    assert "jts_ring_capture" in res.detail and "jts_ring_playback" in res.detail
+
+
+def test_warn_when_so_missing(monkeypatch, tmp_path):
+    # Build failed / ring unavailable: inert phase => warn, not fail
+    # (loopback still carries audio).
+    _stage_assets(monkeypatch, tmp_path, so=False)
+    _probes_ok(monkeypatch)
+    res = audio_runtime.check_ring_platform_assets()
+    assert res.status == "warn"
+    assert "ioplug .so absent" in res.detail
+    assert "loopback still active" in res.detail
+    assert "redeploy" in res.detail.lower()
+
+
+def test_warn_when_conf_missing(monkeypatch, tmp_path):
+    _stage_assets(monkeypatch, tmp_path, conf=False)
+    _probes_ok(monkeypatch)
+    res = audio_runtime.check_ring_platform_assets()
+    assert res.status == "warn"
+    assert "conf.d absent" in res.detail
+
+
+def test_warn_when_shm_dir_missing(monkeypatch, tmp_path):
+    _stage_assets(monkeypatch, tmp_path, shm=False)
+    _probes_ok(monkeypatch)
+    res = audio_runtime.check_ring_platform_assets()
+    assert res.status == "warn"
+    assert "absent" in res.detail
+
+
+def test_warn_lists_every_missing_asset(monkeypatch, tmp_path):
+    _stage_assets(monkeypatch, tmp_path, so=False, conf=False, shm=False)
+    _probes_ok(monkeypatch)
+    res = audio_runtime.check_ring_platform_assets()
+    assert res.status == "warn"
+    assert "ioplug .so absent" in res.detail
+    assert "conf.d absent" in res.detail
+
+
+def test_missing_asset_does_not_run_the_open_probe(monkeypatch, tmp_path):
+    # Guard: when an asset is missing we must NOT open-probe (there is no
+    # working plugin to probe). A probe that raised here would prove it ran.
+    _stage_assets(monkeypatch, tmp_path, so=False)
+
+    def _boom(pcm, tool):  # pragma: no cover - must never be called
+        raise AssertionError("probe ran despite missing asset")
+
+    monkeypatch.setattr(
+        audio_runtime, "_jts_ring_pcm_resolves", _boom)
+    res = audio_runtime.check_ring_platform_assets()
+    assert res.status == "warn"
+
+
+def test_fail_when_so_present_but_pcm_open_fails(monkeypatch, tmp_path):
+    # The .so is installed but ALSA can't use it (bad registration / arch /
+    # -DPIC): a genuine defect that would break P2's arm => fail.
+    _stage_assets(monkeypatch, tmp_path)
+    _probes_fail(monkeypatch)
+    res = audio_runtime.check_ring_platform_assets()
+    assert res.status == "fail"
+    assert "PCM open failed" in res.detail
+    assert "snd_dlsym_start" in res.detail
+
+
+def test_fail_names_the_failing_pcm(monkeypatch, tmp_path):
+    _stage_assets(monkeypatch, tmp_path)
+
+    def _one_fails(pcm, tool):
+        if pcm == "jts_ring_playback":
+            return False, "Unknown PCM"
+        return True, "resolved"
+
+    monkeypatch.setattr(
+        audio_runtime, "_jts_ring_pcm_resolves", _one_fails)
+    res = audio_runtime.check_ring_platform_assets()
+    assert res.status == "fail"
+    assert "jts_ring_playback" in res.detail
+
+
+# --- _jts_ring_pcm_resolves (the open-probe helper) -------------------
+
+
+def test_probe_ok_on_zero_exit(monkeypatch, tmp_path):
+    _stage_ring_conf(monkeypatch, tmp_path)
+    monkeypatch.setattr(audio_runtime.shutil, "which", lambda t: f"/usr/bin/{t}")
+    monkeypatch.setattr(
+        audio_runtime, "_run",
+        lambda cmd, timeout=5.0: SimpleNamespace(returncode=0, stdout="", stderr=""),
+    )
+    ok, detail = audio_runtime._jts_ring_pcm_resolves("jts_ring_capture", "arecord")
+    assert ok is True and detail == "resolved"
+
+
+def test_probe_reports_stderr_on_nonzero_exit(monkeypatch, tmp_path):
+    _stage_ring_conf(monkeypatch, tmp_path)
+    monkeypatch.setattr(audio_runtime.shutil, "which", lambda t: f"/usr/bin/{t}")
+    monkeypatch.setattr(
+        audio_runtime, "_run",
+        lambda cmd, timeout=5.0: SimpleNamespace(
+            returncode=1, stdout="", stderr="ALSA lib: Unknown PCM jts_ring_playback"
+        ),
+    )
+    ok, detail = audio_runtime._jts_ring_pcm_resolves("jts_ring_playback", "aplay")
+    assert ok is False
+    assert "Unknown PCM" in detail
+
+
+def test_probe_fails_closed_when_tool_missing(monkeypatch):
+    monkeypatch.setattr(audio_runtime.shutil, "which", lambda t: None)
+    ok, detail = audio_runtime._jts_ring_pcm_resolves("jts_ring_capture", "arecord")
+    assert ok is False
+    assert "not found" in detail
+
+
+def test_probe_fails_closed_when_conf_wire_is_indeterminate(monkeypatch, tmp_path):
+    # No conf.d staged at all: `_JTS_RING_CONF_D` still points at its
+    # production default, which is unreadable in the test environment. The
+    # probe must refuse with a crisp reason rather than pass `None` to ALSA.
+    monkeypatch.setattr(audio_runtime.shutil, "which", lambda t: f"/usr/bin/{t}")
+    monkeypatch.setattr(audio_runtime, "_JTS_RING_CONF_D", str(tmp_path / "missing.conf"))
+
+    def _must_not_be_called(cmd, timeout=5.0):  # pragma: no cover - must never run
+        raise AssertionError("probe ran with an indeterminate wire")
+
+    monkeypatch.setattr(
+        audio_runtime, "_run", _must_not_be_called)
+    ok, detail = audio_runtime._jts_ring_pcm_resolves("jts_ring_capture", "arecord")
+    assert ok is False
+    assert "indeterminate" in detail
+
+
+def test_probe_reports_hang_on_timeout(monkeypatch, tmp_path):
+    _stage_ring_conf(monkeypatch, tmp_path)
+    monkeypatch.setattr(audio_runtime.shutil, "which", lambda t: f"/usr/bin/{t}")
+
+    def _timeout(cmd, timeout=5.0):
+        raise subprocess.TimeoutExpired(cmd, timeout)
+
+    monkeypatch.setattr(
+        audio_runtime, "_run", _timeout)
+    ok, detail = audio_runtime._jts_ring_pcm_resolves("jts_ring_playback", "aplay")
+    assert ok is False
+    assert "hung" in detail
+
+
+def test_probe_uses_devnull_for_capture_and_devzero_for_playback(monkeypatch, tmp_path):
+    _stage_ring_conf(monkeypatch, tmp_path)
+    monkeypatch.setattr(audio_runtime.shutil, "which", lambda t: f"/usr/bin/{t}")
+    seen = {}
+
+    def _capture_cmd(cmd, timeout=5.0):
+        seen["cmd"] = cmd
+        return SimpleNamespace(returncode=0, stdout="", stderr="")
+
+    monkeypatch.setattr(
+        audio_runtime, "_run", _capture_cmd)
+
+    audio_runtime._jts_ring_pcm_resolves("jts_ring_capture", "arecord")
+    assert seen["cmd"][0] == "arecord"
+    assert seen["cmd"][-1] == "/dev/null"
+
+    audio_runtime._jts_ring_pcm_resolves("jts_ring_playback", "aplay")
+    assert seen["cmd"][0] == "aplay"
+    assert seen["cmd"][-1] == "/dev/zero"
+
+
+# --- residue cleanup (Finding 1: probe must not create a ring file) ---
+
+
+def _probe_that_creates_the_ring(monkeypatch, tmp_path):
+    """Repoint the SHM dir at tmp and make the mocked probe CREATE the ring
+    file the ioplug's create-or-attach open would (O_CREAT|O_EXCL). Returns
+    the ring Paths keyed by PCM name — one per block in _JTS_RING_PCMS."""
+    shm_dir = tmp_path / "jts-ring"
+    shm_dir.mkdir(exist_ok=True)  # _stage_assets may have created it already
+    monkeypatch.setattr(
+        audio_runtime, "_JTS_RING_SHM_DIR", str(shm_dir))
+    # Re-stage the conf.d even when _stage_assets already did (same content,
+    # so this is a no-op then): the probe now reads its wire off the conf.d
+    # text, and the standalone callers below never call _stage_assets at all.
+    _stage_ring_conf(monkeypatch, tmp_path)
+    monkeypatch.setattr(audio_runtime.shutil, "which", lambda t: f"/usr/bin/{t}")
+
+    def _run_creates(cmd, timeout=5.0):
+        # cmd == [tool, "-D", pcm, ...]; emulate the ioplug's O_CREAT|O_EXCL
+        # open: create the ring only when absent, never truncate a file that
+        # is already there (a live ring the real ioplug would attach to).
+        pcm = cmd[2]
+        ring = audio_runtime._jts_ring_path_for(pcm)
+        if ring is not None and not os.path.exists(ring):
+            open(ring, "wb").close()
+        return SimpleNamespace(returncode=0, stdout="", stderr="")
+
+    monkeypatch.setattr(
+        audio_runtime, "_run", _run_creates)
+    # Derived from the module's own PCM table so a new ring cannot leave this
+    # helper silently covering a subset of what the probe actually opens.
+    return {
+        pcm: shm_dir / basename for pcm, _tool, basename in audio_runtime._JTS_RING_PCMS
+    }
+
+
+def test_probe_unlinks_a_ring_it_created(monkeypatch, tmp_path):
+    rings = _probe_that_creates_the_ring(monkeypatch, tmp_path)
+    ok, detail = audio_runtime._jts_ring_pcm_resolves("jts_ring_capture", "arecord")
+    assert ok is True and detail == "resolved"
+    # The probe created program.ring; residue cleanup must have removed it.
+    assert not rings["jts_ring_capture"].exists(), (
+        "probe left a ring file behind — violates P1 inertness"
+    )
+
+
+def test_full_check_leaves_no_ring_files(monkeypatch, tmp_path):
+    # End-to-end: all assets present, the (mocked) open probe creates EVERY ring
+    # file it opens, and after the check NONE of them exists on disk. Walking
+    # the probe's own results rather than naming two files is what keeps this an
+    # inertness proof for the whole set — including the ACTIVE ring, whose
+    # accidental creation would poison the first real arm exactly as Ring A's
+    # would.
+    #
+    # THREE is written out, not derived from the table under test. Comparing the
+    # probe's coverage against `len(_JTS_RING_PCMS)` made the assertion
+    # self-referential: deleting a ring from that table shrinks both sides
+    # together and the test stays green while a shipped PCM goes unprobed. The
+    # literal is the claim — a fourth ring must come here and say so.
+    _stage_assets(monkeypatch, tmp_path)
+    rings = _probe_that_creates_the_ring(monkeypatch, tmp_path)
+    res = audio_runtime.check_ring_platform_assets()
+    assert res.status == "ok", res.detail
+    assert len(rings) == 3, (
+        f"the ring conf.d ships three PCMs; the probe covered {sorted(rings)}"
+    )
+    for pcm, ring in rings.items():
+        assert not ring.exists(), f"{pcm} left {ring} behind — violates inertness"
+
+
+def test_probe_preserves_a_preexisting_live_ring(monkeypatch, tmp_path):
+    # A live armed ring pre-exists. The probe (which here would EBUSY on real
+    # hardware, but we mock a benign run) must NOT unlink it — only files the
+    # probe itself created are removed.
+    rings = _probe_that_creates_the_ring(monkeypatch, tmp_path)
+    live = rings["jts_ring_capture"]
+    live.write_bytes(b"live-armed-ring-magic")
+    audio_runtime._jts_ring_pcm_resolves("jts_ring_capture", "arecord")
+    assert live.exists(), "residue cleanup removed a pre-existing (live) ring"
+    assert live.read_bytes() == b"live-armed-ring-magic"
+
+
+def test_probe_unlinks_even_when_open_fails(monkeypatch, tmp_path):
+    # An ioplug can create the ring FILE and then fail the open (nonzero exit).
+    # The residue cleanup runs in a finally, so a failing probe still leaves
+    # no ring file behind.
+    shm_dir = tmp_path / "jts-ring"
+    shm_dir.mkdir()
+    monkeypatch.setattr(
+        audio_runtime, "_JTS_RING_SHM_DIR", str(shm_dir))
+    _stage_ring_conf(monkeypatch, tmp_path)
+    monkeypatch.setattr(audio_runtime.shutil, "which", lambda t: f"/usr/bin/{t}")
+    ring = shm_dir / "program.ring"
+
+    def _run_creates_then_fails(cmd, timeout=5.0):
+        ring.write_bytes(b"half-baked")
+        return SimpleNamespace(returncode=1, stdout="", stderr="some open error")
+
+    monkeypatch.setattr(
+        audio_runtime, "_run", _run_creates_then_fails)
+    ok, _ = audio_runtime._jts_ring_pcm_resolves("jts_ring_capture", "arecord")
+    assert ok is False
+    assert not ring.exists(), "residue left behind after a failed probe"
+
+
+def test_ebusy_probe_failure_reports_in_use_not_a_defect(monkeypatch, tmp_path):
+    # On a lab-armed box the probe fails with EBUSY (SPSC live-reader guard).
+    # The check must NOT tell the operator to rebuild the .so.
+    _stage_assets(monkeypatch, tmp_path)
+
+    def _busy(pcm, tool):
+        return False, "arecord: main:830: audio open error: Device or resource busy"
+
+    monkeypatch.setattr(
+        audio_runtime, "_jts_ring_pcm_resolves", _busy)
+    res = audio_runtime.check_ring_platform_assets()
+    assert res.status == "fail"
+    assert "in use" in res.detail
+    assert "-DPIC" not in res.detail  # no misleading rebuild advice
+    assert "not a registration defect" in res.detail
+
+
+def test_non_busy_probe_failure_still_advises_rebuild(monkeypatch, tmp_path):
+    # A genuine registration defect keeps the -DPIC / arch rebuild advice.
+    _stage_assets(monkeypatch, tmp_path)
+    _probes_fail(monkeypatch, "undefined symbol: snd_dlsym_start")
+    res = audio_runtime.check_ring_platform_assets()
+    assert res.status == "fail"
+    assert "-DPIC" in res.detail
+    assert "in use" not in res.detail
+
+
+# --- P2: armed-state aware ---------------------------------------------------
+
+
+def _arm_ring(monkeypatch):
+    monkeypatch.setattr(
+        "jasper.fanin.coupling_reconcile.read_persisted_coupling",
+        lambda *a, **k: "shm_ring",
+    )
+
+
+def test_armed_ring_with_assets_present_is_ok_and_skips_probe(monkeypatch, tmp_path):
+    # ARMED (shm_ring persisted) + assets present: do NOT open-probe (the live
+    # ring EBUSYs the SPSC guard); report ok and defer coherence to the coupling
+    # check. The probe hook is set to fail loudly so the test proves it is NOT run.
+    _stage_assets(monkeypatch, tmp_path)
+    _arm_ring(monkeypatch)
+
+    def _must_not_be_called(pcm, tool):
+        raise AssertionError("armed ring must not open-probe the live ring")
+
+    monkeypatch.setattr(
+        audio_runtime, "_jts_ring_pcm_resolves", _must_not_be_called)
+    res = audio_runtime.check_ring_platform_assets()
+    assert res.status == "ok"
+    assert "ARMED" in res.detail
+    assert "skipped" in res.detail
+
+
+def test_armed_ring_with_missing_asset_is_fail_not_warn(monkeypatch, tmp_path):
+    # ARMED but an asset is gone: the ring is load-bearing, so this is a hard
+    # failure (unlike the inert-phase warn).
+    _stage_assets(monkeypatch, tmp_path, so=False)
+    _arm_ring(monkeypatch)
+    res = audio_runtime.check_ring_platform_assets()
+    assert res.status == "fail"
+    assert "ARMED" in res.detail
+    assert "missing" in res.detail.lower()
+
+
+def test_inert_missing_asset_stays_warn(monkeypatch, tmp_path):
+    # Default (loopback) + a missing asset stays a warn — loopback still carries
+    # audio, so P1's inert-phase contract holds.
+    _stage_assets(monkeypatch, tmp_path, so=False)
+    # No _arm_ring: read_persisted_coupling returns loopback on the test box.
+    res = audio_runtime.check_ring_platform_assets()
+    assert res.status == "warn"
+    assert "inert" in res.detail
+
+
+# --- The open-probe asks for what the CONF.D DECLARES, never the resolver ----
+
+
+def test_probe_sources_the_conf_declared_wire_not_the_resolver(monkeypatch, tmp_path):
+    """The ioplug advertises EXACTLY the conf-declared format/channels as its
+    hardware constraint, so the probe must read `ring_conf_format` /
+    `ring_conf_channels` off THIS box's conf.d — never `resolve_ring_wire`.
+    The two answer different questions ("what does the file say" vs. "what
+    SHOULD this box declare") that are independently gated: conf rendering and
+    ring-coupling arm are separate gates, so a box can carry a per-box-rendered
+    Ring B conf.d while still sitting coupling-inert. Stage a conf.d rendered
+    wide (S32_LE, Ring B 6ch) and make the resolver explode if touched; the
+    probe argv must still follow the conf.d, per PCM."""
+    conf = tmp_path / "60-jts-ring.conf"
+    conf.write_text(
+        "pcm.jts_ring_capture {\n"
+        "    type jts_ring\n"
+        '    path "/dev/shm/jts-ring/program.ring"\n'
+        "    period_frames 128\n"
+        "    n_slots 2\n"
+        "    format S32_LE\n"
+        "}\n"
+        "\n"
+        "pcm.jts_ring_playback {\n"
+        "    type jts_ring\n"
+        '    path "/dev/shm/jts-ring/content.ring"\n'
+        "    period_frames 128\n"
+        "    n_slots 2\n"
+        "    format S32_LE\n"
+        "    channels 6\n"
+        "}\n",
+        encoding="utf-8",
+    )
+    monkeypatch.setattr(audio_runtime, "_JTS_RING_CONF_D", str(conf))
+    monkeypatch.setattr(audio_runtime.shutil, "which", lambda t: f"/usr/bin/{t}")
+
+    import jasper.fanin_coupling as fc
+
+    def _must_not_be_called(*a, **k):  # pragma: no cover - must never run
+        raise AssertionError(
+            "the probe must never consult resolve_ring_wire — its answer is "
+            "independently gated from what the conf.d actually declares"
+        )
+
+    monkeypatch.setattr(fc, "resolve_ring_wire", _must_not_be_called)
+
+    seen = {}
+
+    def _capture_cmd(cmd, timeout=5.0):
+        seen[cmd[2]] = cmd
+        return SimpleNamespace(returncode=0, stdout="", stderr="")
+
+    monkeypatch.setattr(
+        audio_runtime, "_run", _capture_cmd)
+
+    audio_runtime._jts_ring_pcm_resolves("jts_ring_capture", "arecord")
+    audio_runtime._jts_ring_pcm_resolves("jts_ring_playback", "aplay")
+
+    ring_a = seen["jts_ring_capture"]
+    ring_b = seen["jts_ring_playback"]
+    assert ring_a[ring_a.index("-f") + 1] == "S32_LE"
+    assert ring_b[ring_b.index("-f") + 1] == "S32_LE"
+    # Ring A declares no `channels` -> the ioplug default (2); Ring B's
+    # explicit `channels 6` line must be honored.
+    assert ring_a[ring_a.index("-c") + 1] == "2"
+    assert ring_b[ring_b.index("-c") + 1] == "6"
+
+
+def test_probe_asks_for_the_shipped_wire_today(monkeypatch, tmp_path):
+    """On the REAL shipped (never-rendered) conf.d, the probe asks for 2
+    channels / S32_LE.
+
+    THE FORMAT AXIS NO LONGER REACHES THIS VIA DORMANCY. Every block now
+    DECLARES ``format S32_LE`` EXPLICITLY (see
+    ``deploy/alsa/conf.d/60-jts-ring.conf``'s own "WIRE FORMAT" header comment)
+    — the probe reads a LITERAL in the file, not the ioplug's absent-key
+    default. The shipped file changed to spell the token because the
+    resolver's default went wide while the C ioplug's compiled-in default
+    (mirrored by ``jasper.ring_assets.RING_CONF_DEFAULT_FORMAT``) stayed
+    S16_LE: an omitted ``format`` key would now declare the OPPOSITE of what
+    every other end of the ring resolves. That same disagreement is what makes
+    the ioplug capability gate LIVE fleet-wide now (``ring_wire_caps_ready`` /
+    ``ring_ioplug_wire_supported``) rather than dormant — see
+    :data:`~jasper.ring_assets.RING_CONF_DEFAULT_FORMAT`'s own docstring.
+
+    THE CHANNELS AXIS IS UNCHANGED: no block declares ``channels``, so it
+    still answers via the ioplug's absent-key default (2), not a literal and
+    not the resolver.
+
+    Cross-checked against ``resolve_ring_wire``'s answer for the shipped
+    topology, which still coincides today — both land on S32_LE/2ch/2ch now —
+    a drift between the two independent policies would show up here as a
+    failing cross-check, not as the probe's own source."""
+    from jasper.fanin_coupling import resolve_ring_wire
+
+    shipped = (
+        Path(__file__).resolve().parents[1]
+        / "deploy" / "alsa" / "conf.d" / "60-jts-ring.conf"
+    )
+    conf = tmp_path / "60-jts-ring.conf"
+    conf.write_bytes(shipped.read_bytes())
+    monkeypatch.setattr(audio_runtime, "_JTS_RING_CONF_D", str(conf))
+
+    wire = resolve_ring_wire()
+    for pcm in ("jts_ring_capture", "jts_ring_playback"):
+        channels, sample_format = audio_runtime._jts_ring_probe_wire(pcm)
+        assert channels == 2
+        assert sample_format == "S32_LE"
+    assert (wire.sample_format, wire.ring_a_channels, wire.ring_b_channels) == (
+        "S32_LE",
+        2,
+        2,
+    )
+
+
+# --- the ring writer-lock exclusivity guard (audio-graph consolidation #2285,
+# --- P9-C). The C ioplug records the residual this closes verbatim: an flock's
+# --- identity is the PATHNAME, not the inode, so unlinking `<ring>.writer.lock`
+# --- while a writer holds it voids exclusivity SILENTLY and two live writers
+# --- proceed with no log line between them. The guard reads the KERNEL's view
+# --- (who holds an fd on the lock) because the shared header structurally
+# --- cannot answer: `writer_pid` is a single slot a second attach overwrites.
+#
+# --- These build a synthetic /proc so the shapes are deterministic and the
+# --- tests run on any host (macOS has no /proc at all). The same shapes were
+# --- observed end-to-end against real processes on a real Linux box; the PR
+# --- body carries that transcript.
+
+_SHM = "/dev/shm/jts-ring"
+_LOCK = f"{_SHM}/active-content.ring.writer.lock"
+
+
+def _fake_proc(tmp_path, holders, *, unreadable_pids=()):
+    """Build a /proc-shaped tree.
+
+    `holders` maps pid -> list of fd targets (a target ending in " (deleted)"
+    reproduces what the kernel shows for an fd on an unlinked file).
+    """
+    root = tmp_path / "proc"
+    root.mkdir(parents=True)
+    (root / "self").mkdir()  # a non-numeric entry, must be skipped
+    for pid, targets in holders.items():
+        fd_dir = root / str(pid) / "fd"
+        fd_dir.mkdir(parents=True)
+        for i, target in enumerate(targets):
+            os.symlink(target, fd_dir / str(i))
+    for pid in unreadable_pids:
+        fd_dir = root / str(pid) / "fd"
+        fd_dir.mkdir(parents=True)
+        fd_dir.chmod(0o000)
+    return root
+
+
+def _run_guard(monkeypatch, root):
+    monkeypatch.setattr(
+        audio_runtime, "_PROC_ROOT", str(root))
+    monkeypatch.setattr(
+        audio_runtime, "_WRITER_LOCK_CONFIRM_DELAY_SEC", 0.0)
+    return audio_runtime.check_ring_writer_lock_exclusivity()
+
+
+def test_writer_lock_guard_ok_with_one_writer(monkeypatch, tmp_path):
+    """NEGATIVE CONTROL: the normal armed box — one C writer holding one ring's
+    writer lock, plus the Rust reader's mapping of the ring FILE itself — is
+    `ok`. (Scanning maps for the ring file instead would call this a defect:
+    the reader mmaps the same file by design.)"""
+    root = _fake_proc(
+        tmp_path,
+        {
+            41: [_LOCK, "/dev/null", f"{_SHM}/active-content.ring"],
+            42: [f"{_SHM}/active-content.ring", "/dev/snd/pcmC0D0p"],
+        },
+    )
+
+    result = _run_guard(monkeypatch, root)
+
+    assert result.status == "ok"
+    assert "no ring has more than one live writer" in result.detail
+
+
+def test_writer_lock_guard_ok_when_nothing_holds_a_lock(monkeypatch, tmp_path):
+    """An unarmed box holds no writer lock at all — `ok`, not a false alarm."""
+    root = _fake_proc(tmp_path, {41: ["/dev/null"], 42: [f"{_SHM}/program.ring"]})
+
+    result = _run_guard(monkeypatch, root)
+
+    assert result.status == "ok"
+
+
+def test_writer_lock_guard_fails_on_two_live_writers(monkeypatch, tmp_path):
+    """POSITIVE CONTROL: the recorded residual. One incumbent holding the
+    UNLINKED inode plus a fresh writer on a re-created file at the same
+    pathname — two live writers, no log line between them — is `fail`, and the
+    detail names both pids and which one is orphaned."""
+    root = _fake_proc(
+        tmp_path,
+        {
+            41: [f"{_LOCK} (deleted)"],
+            42: [_LOCK],
+        },
+    )
+
+    result = _run_guard(monkeypatch, root)
+
+    assert result.status == "fail"
+    assert "TWO LIVE WRITERS" in result.detail
+    assert "pid 41 (lock file unlinked)" in result.detail
+    assert "pid 42" in result.detail
+    assert _LOCK in result.detail
+
+
+def test_writer_lock_guard_fails_on_two_writers_without_an_unlink(
+    monkeypatch, tmp_path
+):
+    """Two live holders of the SAME inode is equally a broken SPSC contract,
+    so the guard keys on holder COUNT, not on the deleted marker alone."""
+    root = _fake_proc(tmp_path, {41: [_LOCK], 42: [_LOCK]})
+
+    result = _run_guard(monkeypatch, root)
+
+    assert result.status == "fail"
+
+
+def test_writer_lock_guard_ignores_a_contender_that_gave_up(monkeypatch, tmp_path):
+    """`acquire_writer_lock` OPENS the lock file and only THEN spins on flock
+    for up to JTS_RING_OPEN_LOCK_WAIT_TIMEOUT_MS, so a healthy box legitimately
+    shows two fd holders for up to that long. Only pids present in BOTH samples
+    count: a contender that has gone by the confirm sample is not the defect."""
+    first = _fake_proc(tmp_path, {41: [_LOCK], 42: [_LOCK]})
+    second = _fake_proc(tmp_path / "after", {41: [_LOCK]})
+    seen = []
+
+    real = audio_runtime._ring_writer_lock_holders
+
+    def sampling(**kwargs):
+        seen.append(len(seen))
+        root = first if len(seen) == 1 else second
+        return real(proc_root=str(root), shm_dir=_SHM)
+
+    monkeypatch.setattr(
+        audio_runtime, "_ring_writer_lock_holders", sampling)
+    monkeypatch.setattr(
+        audio_runtime, "_PROC_ROOT", str(first))
+    monkeypatch.setattr(
+        audio_runtime, "_WRITER_LOCK_CONFIRM_DELAY_SEC", 0.0)
+
+    result = audio_runtime.check_ring_writer_lock_exclusivity()
+
+    assert len(seen) == 2, "a suspected two-writer read must be CONFIRMED"
+    assert result.status == "ok"
+
+
+def test_writer_lock_guard_warns_on_a_lone_orphaned_holder(monkeypatch, tmp_path):
+    """One writer whose lock file was unlinked out from under it: exclusivity
+    is ALREADY void (the next opener creates a fresh inode and is not
+    excluded), so warn before the second writer arrives."""
+    root = _fake_proc(tmp_path, {41: [f"{_LOCK} (deleted)"]})
+
+    result = _run_guard(monkeypatch, root)
+
+    assert result.status == "warn"
+    assert "UNLINKED" in result.detail
+    assert "pid 41" in result.detail
+
+
+def test_writer_lock_guard_warns_when_proc_is_partially_unreadable(
+    monkeypatch, tmp_path
+):
+    """A non-root sweep cannot read other users' /proc/<pid>/fd. That is a
+    BLIND SPOT, so the guard says so rather than reporting a clean bill."""
+    if os.geteuid() == 0:
+        pytest.skip("root can read every /proc/<pid>/fd")
+    root = _fake_proc(tmp_path, {41: ["/dev/null"]}, unreadable_pids=(77,))
+    try:
+        result = _run_guard(monkeypatch, root)
+    finally:
+        (root / "77" / "fd").chmod(0o755)
+
+    assert result.status == "warn"
+    assert "partially blind" in result.detail
+
+
+def test_writer_lock_guard_ignores_locks_outside_the_ring_dir(monkeypatch, tmp_path):
+    """Scoped to the ring tmpfs, and to the WRITER lock: some other subsystem's
+    `.writer.lock`, and the ring's own `.open.lock` (a transaction lock BOTH
+    C and Rust take), are none of this guard's business."""
+    root = _fake_proc(
+        tmp_path,
+        {
+            41: ["/var/lib/other/thing.writer.lock"],
+            42: ["/var/lib/other/thing.writer.lock"],
+            43: [f"{_SHM}/active-content.ring.open.lock"],
+            44: [f"{_SHM}/active-content.ring.open.lock"],
+        },
+    )
+
+    result = _run_guard(monkeypatch, root)
+
+    assert result.status == "ok"
+
+
+def test_writer_lock_guard_counts_one_pid_once(monkeypatch, tmp_path):
+    """A single writer with several fds on one lock is still ONE writer."""
+    root = _fake_proc(tmp_path, {41: [_LOCK, _LOCK, f"{_LOCK} (deleted)"]})
+
+    result = _run_guard(monkeypatch, root)
+
+    # Not a fail (one pid), but the unlinked fd still earns the warn.
+    assert result.status == "warn"
+
+
+
+# ===========================================================================
+# check_active_ring_split_transport (#2285 P2, design §10.3)
+#
+# The state under test: the loaded CamillaDSP graph names the ACTIVE ring
+# while the persisted coupling is loopback. Nothing consumes the ring, so the
+# speaker is silent while every daemon is healthy. Deleting the aloop ACTIVE
+# endpoint made that state QUIETER — it used to fail CamillaDSP's load and
+# park loudly. Each conjunct is pinned separately: a two-term conjunction
+# passes a single-conjunct test while still being wrong.
+# ===========================================================================
+
+SHM_RING = "shm_ring"
+LOOPBACK = "loopback"
+
+
+def _write_pair(tmp_path, name: str, playback_device: str | None):
+    """Write a real statefile + the CamillaDSP config it points at.
+
+    Returns the statefile path. ``playback_device=None`` writes a config with no
+    ``playback`` device key at all — the program-bake / parked shape an active
+    leader really keeps in its primary statefile.
+    """
+    config = tmp_path / f"{name}-config.yml"
+    playback = (
+        f"  playback:\n    type: Alsa\n    device: {playback_device}\n"
+        if playback_device
+        else "  playback:\n    type: File\n    filename: /dev/null\n"
+    )
+    config.write_text(
+        "devices:\n"
+        "  samplerate: 48000\n"
+        "  chunksize: 1024\n"
+        "  capture:\n    type: Alsa\n    device: jts_ring_capture\n"
+        + playback,
+        encoding="utf-8",
+    )
+    statefile = tmp_path / f"{name}-statefile.yml"
+    statefile.write_text(f"config_path: {config}\n", encoding="utf-8")
+    return statefile
+
+
+def _arrange(
+    monkeypatch,
+    tmp_path,
+    *,
+    coupling: str,
+    playback_device: str | None,
+    crossover_playback_device: str | None = None,
+    primary_config_missing: bool = False,
+) -> None:
+    """Put the box in one (coupling, loaded-graph-playback) combination.
+
+    REAL STATEFILES ON DISK, not stubs, and that is the point of this harness.
+    The check resolves its evidence through BOTH the primary and the camilla#2
+    crossover statefile (first recognized endpoint wins). Stubbing the resolved
+    device would let the two halves of that union drift apart without any test
+    noticing — which is exactly how the pre-#2285 gap between this check and
+    `check_outputd_service`'s transport note survived unseen.
+    """
+    monkeypatch.setattr(
+        "jasper.fanin.coupling_reconcile.read_persisted_coupling",
+        lambda: coupling,
+    )
+    primary = _write_pair(tmp_path, "primary", playback_device)
+    if primary_config_missing:
+        # The statefile parses but names a config that is gone — evidence
+        # carries an error string and the primary contributes nothing.
+        primary.write_text(
+            f"config_path: {tmp_path / 'deleted-config.yml'}\n", encoding="utf-8"
+        )
+    crossover = _write_pair(tmp_path, "crossover", crossover_playback_device)
+    monkeypatch.setattr(
+        audio_runtime, "_active_camilla_config_path", lambda: (str(primary), None)
+    )
+    monkeypatch.setattr(
+        "jasper.audio_runtime_plan.DEFAULT_CAMILLA2_STATEFILE_PATH", str(crossover)
+    )
+
+
+def test_the_split_state_fails_loudly(monkeypatch, tmp_path) -> None:
+    """graph@ring AND coupling=loopback is the silent split — it must FAIL."""
+    _arrange(monkeypatch, tmp_path, coupling=LOOPBACK, playback_device=RING_ACTIVE_PLAYBACK_DEVICE)
+
+    result = audio_runtime.check_active_ring_split_transport()
+
+    assert result.status == "fail", result
+    # The remedy must be the EXPLICIT ARM command (the §4.2 mode-split
+    # contract), not a rollback: there is no longer a rollback direction, and
+    # for a roleful box `loopback` is the park rather than a destination.
+    assert "jasper-fanin-coupling-reconcile shm_ring" in result.detail
+    assert "loopback" not in result.detail.split("Complete the arm:")[1]
+
+
+def test_the_known_mid_arm_transient_is_disclosed_to_the_operator(
+    monkeypatch, tmp_path
+) -> None:
+    """The arm ladder moves the graph first, so this can FAIL mid-ladder.
+
+    That is the ladder working. The detail has to say so, or an operator
+    running doctor during an arm reads a correct FAIL as a fault.
+    """
+    _arrange(monkeypatch, tmp_path, coupling=LOOPBACK, playback_device=RING_ACTIVE_PLAYBACK_DEVICE)
+
+    detail = audio_runtime.check_active_ring_split_transport().detail.lower()
+
+    assert "transient" in detail
+    assert "authoritative" in detail
+
+
+# --- Per-conjunct pins. A two-term conjunction passes a single-conjunct test
+# --- while still being wrong, so each term gets its own negative case.
+
+
+def test_conjunct_one_the_coupling_term_alone_does_not_fire(monkeypatch, tmp_path) -> None:
+    """coupling=loopback with a NON-ring graph is an ordinary loopback box."""
+    _arrange(monkeypatch, tmp_path, coupling=LOOPBACK, playback_device="outputd_content_playback")
+
+    assert audio_runtime.check_active_ring_split_transport().status == "ok"
+
+
+def test_conjunct_two_the_graph_term_alone_does_not_fire(monkeypatch, tmp_path) -> None:
+    """graph@ring with coupling=shm_ring is a correctly ARMED box."""
+    _arrange(
+        monkeypatch, tmp_path, coupling=SHM_RING,
+        playback_device=RING_ACTIVE_PLAYBACK_DEVICE,
+    )
+
+    assert audio_runtime.check_active_ring_split_transport().status == "ok"
+
+
+def test_the_stereo_ring_is_not_the_active_ring(monkeypatch, tmp_path) -> None:
+    """Only the ACTIVE ring is this check's subject.
+
+    A flat box's graph on the stereo ring under loopback is a different
+    condition owned by ``check_fanin_coupling``; claiming it here would report
+    one fault twice and send a flat box the roleful arm remedy.
+    """
+    _arrange(monkeypatch, tmp_path, coupling=LOOPBACK, playback_device=RING_PLAYBACK_DEVICE)
+
+    assert audio_runtime.check_active_ring_split_transport().status == "ok"
+
+
+@pytest.mark.parametrize("missing", [None, ""])
+def test_an_unreadable_graph_does_not_manufacture_a_fault(
+    monkeypatch, tmp_path, missing
+) -> None:
+    """No loaded playback device is no evidence — never a FAIL.
+
+    Fail-closed applies to arming, not to diagnosis: inventing a split from an
+    absent reading would make a fresh or non-JTS box report a silent speaker it
+    does not have.
+    """
+    _arrange(monkeypatch, tmp_path, coupling=LOOPBACK, playback_device=missing)
+
+    assert audio_runtime.check_active_ring_split_transport().status == "ok"
+
+
+# --- The union of BOTH statefiles (#2285 panel finding C1). These two shapes
+# --- were measured going quiet from every doctor surface: the folded-away
+# --- `check_outputd_service` transport note saw them (it read both statefiles),
+# --- and this check did not (it read only the primary). The de-duplication was
+# --- only correct once the survivor read what the deleted branch read.
+
+
+def test_a_program_bake_in_the_primary_does_not_hide_the_ring_in_camilla2(
+    monkeypatch, tmp_path
+) -> None:
+    """An active leader keeps a bake in the primary and its endpoint in camilla#2.
+
+    The primary's graph names no registered output endpoint at all (a File sink
+    — the program-bake / parked shape), so reading only the primary answers
+    "(none)" and the box reads healthy while camilla#2 writes the ACTIVE ring
+    under a loopback coupling: silent, with every daemon green.
+    """
+    _arrange(
+        monkeypatch,
+        tmp_path,
+        coupling=LOOPBACK,
+        playback_device=None,
+        crossover_playback_device=RING_ACTIVE_PLAYBACK_DEVICE,
+    )
+
+    result = audio_runtime.check_active_ring_split_transport()
+
+    assert result.status == "fail", result
+    assert "jasper-fanin-coupling-reconcile shm_ring" in result.detail
+
+
+def test_a_primary_statefile_pointing_at_a_deleted_config_does_not_hide_the_split(
+    monkeypatch, tmp_path
+) -> None:
+    """The primary parses but its config is gone — evidence errors, not absence.
+
+    The reader records "devices unavailable" for the primary and falls through
+    to camilla#2, which names the ACTIVE ring. Before the union this returned
+    the hardcoded `sound_current.yml` rescue's answer and went quiet.
+    """
+    _arrange(
+        monkeypatch,
+        tmp_path,
+        coupling=LOOPBACK,
+        playback_device=RING_ACTIVE_PLAYBACK_DEVICE,
+        crossover_playback_device=RING_ACTIVE_PLAYBACK_DEVICE,
+        primary_config_missing=True,
+    )
+
+    assert audio_runtime.check_active_ring_split_transport().status == "fail"
+
+
+def test_camilla2_evidence_still_respects_the_coupling_term(
+    monkeypatch, tmp_path
+) -> None:
+    """The union widens the GRAPH term only — the conjunction still holds.
+
+    Without this, widening the reader could have turned the check into a
+    one-term alarm that reds every correctly-armed box.
+    """
+    _arrange(
+        monkeypatch,
+        tmp_path,
+        coupling=SHM_RING,
+        playback_device=None,
+        crossover_playback_device=RING_ACTIVE_PLAYBACK_DEVICE,
+    )
+
+    assert audio_runtime.check_active_ring_split_transport().status == "ok"
+
+
+# ---------------------------------------------------------------------------
+# The ENDPOINT rung — check_active_ring_path_projection.
+#
+# The sibling above owns the graph rung and returns ok the moment the coupling
+# is `shm_ring`. These pin the other side of that partition: under the ring
+# coupling, the ring PATH lagging its endpoint MARKER.
+# ---------------------------------------------------------------------------
+
+
+def _arrange_projection(monkeypatch, tmp_path, *, coupling: str, env_lines: str):
+    """Put outputd.env and the persisted coupling on disk for the projection check.
+
+    A real file, not a stubbed mapping: the check reads persisted evidence
+    precisely BECAUSE outputd is not running in its target state, so what is
+    under test includes the read itself.
+    """
+    monkeypatch.setattr(
+        "jasper.fanin.coupling_reconcile.read_persisted_coupling",
+        lambda: coupling,
+    )
+    env = tmp_path / "outputd.env"
+    env.write_text(env_lines, encoding="utf-8")
+    monkeypatch.setattr(
+        "jasper.audio_runtime_plan.DEFAULT_OUTPUTD_ENV_PATH", str(env)
+    )
+
+
+@pytest.mark.parametrize(
+    "marker,carried,derived",
+    [
+        # The first-arm lag (jts.local, 2026-08-21): marker armed, path Ring B.
+        ("1", "/dev/shm/jts-ring/content.ring", "/dev/shm/jts-ring/active-content.ring"),
+        # The disarm lag: marker cleared, path still the active ring.
+        ("", "/dev/shm/jts-ring/active-content.ring", "/dev/shm/jts-ring/content.ring"),
+    ],
+)
+def test_a_ring_path_lagging_its_marker_fails_with_the_runnable_remedy(
+    monkeypatch, tmp_path, marker, carried, derived
+) -> None:
+    """The waypoint must produce a doctor line, and it must be actionable.
+
+    This is the state ``check_outputd_service`` structurally cannot report:
+    outputd refuses the crossed pair at startup, so that check returns its
+    systemd failure before ever reaching the transport comparison. Nothing owned
+    the finding, and the operator got "the unit is not running" with no cause.
+    """
+    _arrange_projection(
+        monkeypatch,
+        tmp_path,
+        coupling=SHM_RING,
+        env_lines=(
+            "JASPER_OUTPUTD_CONTENT_BRIDGE=shm_ring\n"
+            f"JASPER_OUTPUTD_RING_ACTIVE_ENDPOINT={marker}\n"
+            f"JASPER_OUTPUTD_SHM_RING_PATH={carried}\n"
+        ),
+    )
+
+    result = audio_runtime.check_active_ring_path_projection()
+
+    assert result.status == "fail", result
+    assert carried in result.detail
+    assert derived in result.detail
+    # Runnable, and the same pass the ladder's own next step runs.
+    assert "jasper-fanin-coupling-reconcile shm_ring" in result.detail
+
+
+def test_a_converged_ring_pair_is_ok(monkeypatch, tmp_path) -> None:
+    """The negative control: an armed box on the active ring must not red."""
+    _arrange_projection(
+        monkeypatch,
+        tmp_path,
+        coupling=SHM_RING,
+        env_lines=(
+            "JASPER_OUTPUTD_CONTENT_BRIDGE=shm_ring\n"
+            "JASPER_OUTPUTD_RING_ACTIVE_ENDPOINT=1\n"
+            "JASPER_OUTPUTD_SHM_RING_PATH=/dev/shm/jts-ring/active-content.ring\n"
+        ),
+    )
+
+    assert audio_runtime.check_active_ring_path_projection().status == "ok"
+
+
+def test_the_two_ladder_checks_partition_the_coupling_space(
+    monkeypatch, tmp_path
+) -> None:
+    """Neither rung is unowned, and neither is double-reported.
+
+    The split check returns ok as soon as the coupling is ``shm_ring``; the
+    projection check returns ok as soon as it is not. Pinning the handoff means a
+    later edit cannot leave a coupling value that both checks ignore — the gap
+    that let the endpoint rung go unowned in the first place.
+    """
+    _arrange_projection(
+        monkeypatch,
+        tmp_path,
+        coupling=LOOPBACK,
+        env_lines=(
+            "JASPER_OUTPUTD_RING_ACTIVE_ENDPOINT=1\n"
+            "JASPER_OUTPUTD_SHM_RING_PATH=/dev/shm/jts-ring/content.ring\n"
+        ),
+    )
+    # Under loopback outputd runs the `direct` bridge and never reads the ring
+    # path, so the projection check stands down — and the split check is the one
+    # that owns anything wrong on this side.
+    assert audio_runtime.check_active_ring_path_projection().status == "ok"
+
+    _arrange(monkeypatch, tmp_path, coupling=SHM_RING, playback_device=RING_PLAYBACK_DEVICE)
+    assert audio_runtime.check_active_ring_split_transport().status == "ok"
+
+
+# ===========================================================================
+# check_fanin_binary_installed
+# ===========================================================================
+
+def test_check_fanin_binary_installed_reports_missing(
+    monkeypatch,
+    tmp_path: Path,
+) -> None:
+    binary = tmp_path / "jasper-fanin"
+    monkeypatch.setattr(audio_runtime, "Path", lambda _path: binary)
+
+    result = audio_runtime.check_fanin_binary_installed()
+
+    assert result.name == "jasper-fanin binary"
+    assert result.status == "fail"
+    assert result.detail == (
+        f"{binary} missing. Re-run install.sh; check cargo build "
+        "output for compilation errors."
+    )
+
+
+def test_check_fanin_binary_installed_reports_nonexecutable(
+    monkeypatch,
+    tmp_path: Path,
+) -> None:
+    binary = tmp_path / "jasper-fanin"
+    binary.write_bytes(b"fan-in")
+    binary.chmod(0o644)
+    monkeypatch.setattr(audio_runtime, "Path", lambda _path: binary)
+
+    result = audio_runtime.check_fanin_binary_installed()
+
+    assert result.name == "jasper-fanin binary"
+    assert result.status == "fail"
+    assert result.detail == (
+        f"{binary} present but not executable. Run: sudo chmod +x {binary}"
+    )
+
+
+def test_check_fanin_binary_installed_reports_executable_size(
+    monkeypatch,
+    tmp_path: Path,
+) -> None:
+    binary = tmp_path / "jasper-fanin"
+    binary.write_bytes(b"x" * 2500)
+    binary.chmod(0o755)
+    monkeypatch.setattr(audio_runtime, "Path", lambda _path: binary)
+
+    result = audio_runtime.check_fanin_binary_installed()
+
+    assert result.name == "jasper-fanin binary"
+    assert result.status == "ok"
+    assert result.detail == f"{binary} (2 KB)"
+
+
+# ===========================================================================
+# _outputd_xrun_rate_warning — the outputd xrun-rate WARN tier
+# ===========================================================================
+
+def _xrun_section(rate_per_hour, last_xrun_age_ms):
+    """Minimal outputd STATUS content/dac section for the xrun-rate helper."""
+    return {
+        "xrun_count": 0,
+        "xrun_rate_per_hour": rate_per_hour,
+        "last_xrun_age_ms": last_xrun_age_ms,
+    }
+
+
+def test_outputd_xrun_warning_none_when_no_recent_xrun():
+    """last_xrun_age_ms=null (no xrun ever) → never warn, regardless of rate."""
+    quiet = _xrun_section(rate_per_hour=0.0, last_xrun_age_ms=None)
+    assert doctor.audio_runtime._outputd_xrun_rate_warning(quiet, quiet) is None
+
+
+def test_outputd_xrun_warning_suppressed_for_stale_burst():
+    """A high all-time rate whose last xrun is OLD (a cleared deploy-time
+    burst) must NOT warn — the WARN is for a sustained, *current* problem."""
+    stale = _xrun_section(
+        rate_per_hour=50.0,
+        last_xrun_age_ms=doctor.audio_runtime._OUTPUTD_XRUN_RECENT_AGE_MS + 1,
+    )
+    assert doctor.audio_runtime._outputd_xrun_rate_warning(stale, stale) is None
+
+
+def test_outputd_xrun_warning_suppressed_for_recent_single_blip():
+    """A recent xrun with a LOW sustained rate (one transient blip) must not
+    warn — only a rate at/above the threshold qualifies."""
+    blip = _xrun_section(
+        rate_per_hour=doctor.audio_runtime._OUTPUTD_XRUN_RATE_WARN_PER_HOUR - 0.1,
+        last_xrun_age_ms=1000,
+    )
+    assert doctor.audio_runtime._outputd_xrun_rate_warning(blip, blip) is None
+
+
+def test_outputd_xrun_warning_fires_on_recent_sustained_rate():
+    """Recent xrun AND a sustained rate at/above threshold → warn, naming the
+    offending lane and both fields."""
+    hot = _xrun_section(
+        rate_per_hour=doctor.audio_runtime._OUTPUTD_XRUN_RATE_WARN_PER_HOUR,
+        last_xrun_age_ms=2000,
+    )
+    quiet = _xrun_section(rate_per_hour=0.0, last_xrun_age_ms=None)
+    reason = doctor.audio_runtime._outputd_xrun_rate_warning(quiet, hot)
+    assert reason is not None
+    assert "dac" in reason
+    assert "xrun_rate_per_hour" in reason
+    assert "last_xrun_age_ms" in reason
+
+
+def test_outputd_xrun_warning_reports_worst_lane():
+    """When both lanes qualify, the higher-rate lane is reported."""
+    content = _xrun_section(rate_per_hour=8.0, last_xrun_age_ms=1000)
+    dac = _xrun_section(rate_per_hour=40.0, last_xrun_age_ms=1000)
+    reason = doctor.audio_runtime._outputd_xrun_rate_warning(content, dac)
+    assert reason is not None
+    assert reason.startswith("dac ")

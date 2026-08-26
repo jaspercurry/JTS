@@ -345,7 +345,7 @@ never the `0600` WiFi PSK in `wifi_guardian.env` — a blanket `chmod -R g+w`
 would have leaked it); and `jasper-doctor`'s `check_state_dir_group_writable`
 flags drift before it bites. Pinned by `tests/test_systemd_hardening.py` (the
 UMask contract), `tests/test_install_state_group_write.py` (the heal + the
-PSK-safety property), and `tests/test_doctor_state_files.py`.
+PSK-safety property), and `tests/test_doctor_env.py`.
 
 **Cross-daemon READS need a guard too — the `privsep` doctor group (2026-06-21).**
 The "rely on group read (`0640`+)" paragraph two above is the *contract*; this is
@@ -369,7 +369,7 @@ the M2M gate: a *present-but-unreadable* `household_secret` means `/grouping/set
 `household_credential.verify` has silently fail-safe-**opened** (it can't
 distinguish unreadable from "not paired") — a posture invisible to
 `grouping.check_grouping_household_credential`, which keys on `is_paired()`. The
-manifest is pinned to the units by `tests/test_doctor_privsep_manifest.py` (so it
+manifest is pinned to the units by `tests/test_doctor_privsep.py` (so it
 can't fall behind a unit edit or a new non-root daemon — each `User=jasper-*` unit
 must be in the manifest or the documented `OUT_OF_SCOPE_NONROOT_UNITS` reconciler
 set) and the read-logic by `tests/test_doctor_privsep.py` (`0600` fails, `0640`
@@ -876,9 +876,8 @@ a re-deploy heals an over-exposed key; the doctor FAILs on it until it does.
 
 Pinned by [`tests/test_doctor_secrets.py`](../tests/test_doctor_secrets.py)
 (hardware-free: 0640-correct PASSES, `o+r` / broad-group FAILs over-exposure,
-member-can't-read WARNs, FAIL outranks WARN, secret value never in output),
-[`tests/test_doctor_secrets_manifest.py`](../tests/test_doctor_secrets_manifest.py)
-(the member list mirrors the units' `SupplementaryGroups=`; no unit joins a
+member-can't-read WARNs, FAIL outranks WARN, secret value never in output, and
+the member list mirrors the units' `SupplementaryGroups=` so no unit joins a
 compartment group without membership), and the two re-tighten cases in
 [`tests/test_install_secrets_migration.py`](../tests/test_install_secrets_migration.py).
 

@@ -449,3 +449,89 @@ def test_methods_fail_soft_when_sqlite_connection_errors(tmp_path):
     assert store.prune(max_rows=1) == 0
     assert store.prune(older_than_ts="2026-06-19T20:00:00Z") == 0
     store.close()
+
+
+# --- /state.chat snapshot ------------------------------------------------
+#
+# state_aggregate publishes the store's summary on /state; it must resolve the
+# same settings the store itself reads.
+
+
+def test_conversation_history_state_reads_store_summary(monkeypatch, tmp_path):
+    from jasper.control import state_aggregate
+
+    db_path = tmp_path / "conversation_history.db"
+    settings_path = tmp_path / "conversation_history.env"
+    settings_path.write_text(
+        "\n".join([
+            f"{CAPTURE_ENABLED_ENV}=1",
+            f"{DB_PATH_ENV}={db_path}",
+            f"{RETENTION_DAYS_ENV}=30",
+        ])
+        + "\n",
+        encoding="utf-8",
+    )
+    monkeypatch.setenv("JASPER_CONVERSATION_HISTORY_FILE", str(settings_path))
+    store = ConversationStore(str(db_path))
+    assert store.add(
+        ConversationTurn(
+            id=make_turn_id("2026-06-19T20:15:00Z", 1),
+            ts_utc="2026-06-19T20:15:00Z",
+            provider="gemini",
+            user_text="hello",
+            assistant_text="hi",
+            tool_calls_json=None,
+            data_json=None,
+            session_id=1,
+        ),
+    )
+    store.close()
+
+    snap = state_aggregate._conversation_history_state()
+
+    assert snap is not None
+    assert snap["capture_enabled"] is True
+    assert snap["turn_count"] == 1
+    assert snap["last_write_age_seconds"] is not None
+    # max_rows is absent from the env file, so it resolves to the code
+    # default rather than disabling the row-count guard.
+    assert snap["retention"] == {"days": 30, "max_rows": DEFAULT_RETENTION_MAX_ROWS}
+
+
+def test_conversation_history_state_disabled_missing_db_is_not_unavailable(
+    monkeypatch, tmp_path,
+):
+    from jasper.control import state_aggregate
+
+    settings_path = tmp_path / "conversation_history.env"
+    settings_path.write_text(f"{CAPTURE_ENABLED_ENV}=0\n", encoding="utf-8")
+    monkeypatch.setenv("JASPER_CONVERSATION_HISTORY_FILE", str(settings_path))
+
+    # Neither retention var is set, so both bounds resolve to the code
+    # defaults that keep the store bounded out of the box.
+    assert state_aggregate._conversation_history_state() == {
+        "capture_enabled": False,
+        "turn_count": None,
+        "last_write_age_seconds": None,
+        "retention": {
+            "days": DEFAULT_RETENTION_DAYS,
+            "max_rows": DEFAULT_RETENTION_MAX_ROWS,
+        },
+    }
+
+
+def test_conversation_history_state_enabled_missing_db_is_null(
+    monkeypatch, tmp_path,
+):
+    from jasper.control import state_aggregate
+
+    db_path = tmp_path / "missing.db"
+    settings_path = tmp_path / "conversation_history.env"
+    settings_path.write_text(
+        f"{CAPTURE_ENABLED_ENV}=1\n{DB_PATH_ENV}={db_path}\n",
+        encoding="utf-8",
+    )
+    monkeypatch.setenv("JASPER_CONVERSATION_HISTORY_FILE", str(settings_path))
+
+    assert state_aggregate._conversation_history_state() is None
+    assert db_path.exists() is False

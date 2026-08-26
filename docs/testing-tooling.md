@@ -3271,7 +3271,7 @@ the mic feed in
 derivation it feeds in
 [`tests/test_active_speaker_session_volume_plan.py`](../tests/test_active_speaker_session_volume_plan.py),
 and the doctor line in
-[`tests/test_doctor_state_files.py`](../tests/test_doctor_state_files.py).
+[`tests/test_doctor_correction.py`](../tests/test_doctor_correction.py).
 
 ---
 

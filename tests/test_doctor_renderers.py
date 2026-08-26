@@ -4,17 +4,17 @@
 
 """Unit tests for the jasper-doctor renderers domain."""
 
+import json
 from pathlib import Path
 from types import SimpleNamespace
 
 import pytest
 
 from jasper.cli import doctor
+from jasper.cli.doctor.renderers import _classify_mux_mode
+from jasper.music_sources import MUSIC_SOURCES
 
-
-from .doctor_test_support import (
-    _grouping_cfg,
-)
+from .doctor_test_support import _grouping_cfg
 
 
 def _patch_shairport_conf(monkeypatch, conf_text: str, tmp_path: Path):
@@ -1169,3 +1169,48 @@ def test_resolver_surfaces_a_lanemap_vs_proc_disagreement(monkeypatch, tmp_path,
         "renderer_lane.device_disagreement" in r.getMessage()
         for r in caplog.records
     ), "the map-vs-running disagreement must be surfaced, not swallowed"
+
+
+# ---------------------------------------------------------------- mux mode
+#
+# The runtime reader is fail-open: missing/corrupt reads as "auto", which is
+# right at runtime but hides a dropped manual pin without this doctor line.
+
+
+@pytest.mark.parametrize(
+    "payload, status, must_name",
+    [
+        (None, "ok", "auto"),
+        ("{ not json", "warn", "mux_mode.json"),
+        (json.dumps({"mode": "auto"}), "ok", "auto"),
+        (
+            json.dumps({"mode": "manual", "selected_source": "betamax"}),
+            "warn",
+            "betamax",
+        ),
+    ],
+    ids=["absent", "corrupt", "auto", "unknown-source"],
+)
+def test_classify_mux_mode_verdicts(tmp_path, payload, status, must_name):
+    p = tmp_path / "mux_mode.json"
+    if payload is not None:
+        p.write_text(payload, encoding="utf-8")
+
+    res = _classify_mux_mode(p)
+
+    assert res.status == status
+    assert must_name in res.detail
+
+
+def test_classify_mux_mode_reports_a_valid_manual_pin(tmp_path):
+    source = next(iter(MUSIC_SOURCES))
+    p = tmp_path / "mux_mode.json"
+    p.write_text(
+        json.dumps({"mode": "manual", "selected_source": source.value}),
+        encoding="utf-8",
+    )
+
+    res = _classify_mux_mode(p)
+
+    assert res.status == "ok"
+    assert f"manual pin: {source.value}" in res.detail

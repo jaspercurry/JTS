@@ -2,132 +2,444 @@
 #
 # SPDX-License-Identifier: Apache-2.0
 
-"""Unit tests for the jasper-doctor web domain."""
+"""Unit tests for the jasper-doctor web domain.
 
+Verdicts plus the remediation targets a reader acts on (the missing path,
+the exposed address, the guard's error code). Detail prose is not pinned.
+"""
+from __future__ import annotations
+
+import io
+import subprocess
+import urllib.error
+from contextlib import contextmanager
 from pathlib import Path
+from unittest.mock import patch
 
+import pytest
 
+from jasper import tool_catalog_view
 from jasper.cli import doctor
-
-
-from .doctor_test_support import (
-    _registered_check_names,
+from jasper.cli.doctor import web as doctor_web
+from jasper.control import control_token
+from jasper.conversation_history import (
+    CAPTURE_ENABLED_ENV,
+    ConversationStore,
+    ConversationTurn,
+    DB_PATH_ENV,
+    make_turn_id,
 )
+from jasper.voice import provider_state
+
+from .doctor_test_support import _registered_check_names
+
+# ------------------------------------------------------- web design assets
 
 
-def test_web_design_assets_warns_when_manifest_missing(
-    monkeypatch,
-    tmp_path: Path,
-):
-    """No manifest = unverifiable tree — warn, never guess from a stale
-    built-in list (which could pass a partially-deployed tree as green)."""
+def _assets(tmp_path: Path, *, manifest=None, app_css=True, present=()) -> Path:
     assets = tmp_path / "assets"
     assets.mkdir(parents=True)
-    (assets / "app.css").write_text("/* css */")
-    monkeypatch.setenv("JASPER_WEB_SHARE_DIR", str(tmp_path))
-    r = doctor.check_web_design_assets()
-    assert r.status == "warn"
-    assert ".install-manifest" in r.detail
-    assert "redeploy" in r.detail
-
-
-def _manifest_fixture(tmp_path: Path, entries: list[str]) -> Path:
-    """Lay down app.css plus a manifest listing `entries`."""
-    assets = tmp_path / "assets"
-    assets.mkdir(parents=True)
-    (assets / "app.css").write_text("/* css */")
-    (assets / ".install-manifest").write_text("\n".join(entries) + "\n")
-    return assets
-
-
-def test_web_design_assets_verifies_every_manifest_entry(
-    monkeypatch,
-    tmp_path: Path,
-):
-    """With the installer-written manifest present, the check covers the
-    full installed tree — no hand list involved."""
-    assets = _manifest_fixture(
-        tmp_path, ["wifi/wifi.css", "wifi/js/main.js", "shared/js/escape.js"]
-    )
-    for rel in ("wifi/wifi.css", "wifi/js/main.js", "shared/js/escape.js"):
+    if app_css:
+        (assets / "app.css").write_text("/* css */")
+    if manifest is not None:
+        (assets / ".install-manifest").write_text("\n".join(manifest) + "\n")
+    for rel in present:
         target = assets / rel
         target.parent.mkdir(parents=True, exist_ok=True)
         target.write_text("// asset")
-    monkeypatch.setenv("JASPER_WEB_SHARE_DIR", str(tmp_path))
-    r = doctor.check_web_design_assets()
-    assert r.status == "ok"
-    assert "4 assets verified" in r.detail  # app.css + 3 manifest entries
-    assert ".install-manifest" in r.detail
+    return assets
 
 
-def test_web_design_assets_warns_on_missing_manifest_entry(
-    monkeypatch,
-    tmp_path: Path,
+@pytest.mark.parametrize(
+    "manifest, app_css, present, status, must_name",
+    [
+        # No manifest: the tree is unverifiable, so warn rather than pass a
+        # partial deploy from a stale built-in list.
+        (None, True, (), "warn", ".install-manifest"),
+        (
+            ["wifi/wifi.css", "wifi/js/main.js", "shared/js/escape.js"],
+            True,
+            ("wifi/wifi.css", "wifi/js/main.js", "shared/js/escape.js"),
+            "ok",
+            "4 assets verified",
+        ),
+        (
+            ["wake/js/main.js", "wake/wake.css"],
+            True,
+            ("wake/wake.css",),
+            "warn",
+            "wake/js/main.js",
+        ),
+        # Blank/comment/absolute/traversal manifest rows are dropped, so only
+        # app.css plus the one sane entry are counted.
+        (
+            ["", "# comment", "/etc/passwd", "a/../../escape", "voice/js/main.js"],
+            True,
+            ("voice/js/main.js",),
+            "ok",
+            "2 assets verified",
+        ),
+        (["voice/js/main.js"], False, ("voice/js/main.js",), "warn", "assets/app.css"),
+    ],
+    ids=["no-manifest", "all-present", "entry-missing", "malformed-rows", "no-app-css"],
+)
+def test_web_design_assets_verdicts(
+    monkeypatch, tmp_path: Path, manifest, app_css, present, status, must_name
 ):
-    assets = _manifest_fixture(tmp_path, ["wake/js/main.js", "wake/wake.css"])
-    (assets / "wake").mkdir(parents=True)
-    (assets / "wake" / "wake.css").write_text("/* css */")
-    # wake/js/main.js deliberately absent — the page would load blank.
+    _assets(tmp_path, manifest=manifest, app_css=app_css, present=present)
     monkeypatch.setenv("JASPER_WEB_SHARE_DIR", str(tmp_path))
-    r = doctor.check_web_design_assets()
-    assert r.status == "warn"
-    assert "wake/js/main.js" in r.detail
 
-
-def test_web_design_assets_ignores_malformed_manifest_lines(
-    monkeypatch,
-    tmp_path: Path,
-):
-    """One bad byte in the manifest must not distort the check."""
-    assets = _manifest_fixture(
-        tmp_path,
-        ["", "# comment", "/etc/passwd", "a/../../escape", "voice/js/main.js"],
-    )
-    (assets / "voice" / "js").mkdir(parents=True)
-    (assets / "voice" / "js" / "main.js").write_text("// module")
-    monkeypatch.setenv("JASPER_WEB_SHARE_DIR", str(tmp_path))
     r = doctor.check_web_design_assets()
-    assert r.status == "ok", r.detail
-    assert "2 assets verified" in r.detail  # app.css + the one sane entry
+
+    assert r.status == status
+    assert must_name in r.detail
 
 
 def test_web_design_assets_caps_the_missing_list(monkeypatch, tmp_path: Path):
     """A wiped asset tree warns with a bounded list, not journal spam."""
-    _manifest_fixture(tmp_path, [f"page{i}/js/main.js" for i in range(20)])
+    _assets(tmp_path, manifest=[f"page{i}/js/main.js" for i in range(20)])
     monkeypatch.setenv("JASPER_WEB_SHARE_DIR", str(tmp_path))
+
     r = doctor.check_web_design_assets()
+
     assert r.status == "warn"
     assert "(+8 more)" in r.detail
     assert r.detail.count("js/main.js") == 12
 
 
-def test_web_design_assets_warns_when_stylesheet_missing(
-    monkeypatch,
-    tmp_path: Path,
-):
-    """app.css is pinned explicitly even if a manifest omits it — it is
-    the design system itself."""
-    assets = tmp_path / "assets"
-    assets.mkdir(parents=True)
-    (assets / ".install-manifest").write_text("voice/js/main.js\n")
-    (assets / "voice" / "js").mkdir(parents=True)
-    (assets / "voice" / "js" / "main.js").write_text("// module")
-    # No app.css written — the design system can't load.
-    monkeypatch.setenv("JASPER_WEB_SHARE_DIR", str(tmp_path))
-    r = doctor.check_web_design_assets()
-    assert r.status == "warn"
-    assert "assets/app.css" in r.detail
-
-
-def test_web_design_assets_skips_when_not_installed(
-    monkeypatch,
-    tmp_path: Path,
-):
+def test_web_design_assets_skips_when_not_installed(monkeypatch, tmp_path: Path):
     monkeypatch.setenv("JASPER_WEB_SHARE_DIR", str(tmp_path / "nope"))
-    r = doctor.check_web_design_assets()
+
+    assert doctor.check_web_design_assets().status == "ok"
+
+
+# ------------------------------------------------- CamillaGUI socket bind
+#
+# camillagui.socket used to bind 0.0.0.0:5005 — an unauthenticated,
+# root-backed listener reachable from any LAN device (#2319). The unit file
+# itself is pinned by tests/test_camillagui_systemd.py; these read the LIVE
+# kernel bind via a mocked `ss` so a botched restart is caught, not masked.
+
+
+def _fake_ss(*lines: str, returncode: int = 0):
+    stdout = "\n".join(lines) + "\n" if lines else ""
+
+    def run(cmd, timeout=5.0):
+        return subprocess.CompletedProcess(
+            args=cmd, returncode=returncode, stdout=stdout, stderr=""
+        )
+
+    return run
+
+
+@pytest.mark.parametrize(
+    "rows, status, must_name",
+    [
+        (("LISTEN 0 128   127.0.0.1:5005   0.0.0.0:*",), "ok", "127.0.0.1:5005"),
+        (("LISTEN 0 128     0.0.0.0:5005   0.0.0.0:*",), "warn", "0.0.0.0:5005"),
+        # A loopback row alongside a wildcard one (mid-restart) still warns:
+        # "inspect only the first row" would pass this.
+        (
+            (
+                "LISTEN 0 128   127.0.0.1:5005   0.0.0.0:*",
+                "LISTEN 0 128     0.0.0.0:5005   0.0.0.0:*",
+            ),
+            "warn",
+            "0.0.0.0:5005",
+        ),
+        (("LISTEN 0 128        [::1]:5005      [::]:*",), "ok", "[::1]:5005"),
+        (("LISTEN 0 128         [::]:5005      [::]:*",), "warn", "[::]:5005"),
+        # Not listening at all — never installed, or administratively stopped.
+        # Neither is a live exposure.
+        ((), "ok", ""),
+        # Non-loopback listeners on OTHER ports must not trip the check.
+        (
+            (
+                "LISTEN 0 128   127.0.0.1:5006   0.0.0.0:*",
+                "LISTEN 0 128     0.0.0.0:8780   0.0.0.0:*",
+            ),
+            "ok",
+            "",
+        ),
+        # Malformed/short rows and non-LISTEN states must not crash the parser.
+        (("", "garbage", "ESTAB 0 0   127.0.0.1:5005   127.0.0.1:9"), "ok", ""),
+    ],
+    ids=[
+        "loopback",
+        "wildcard",
+        "both",
+        "ipv6-loopback",
+        "ipv6-wildcard",
+        "silent",
+        "other-ports",
+        "malformed",
+    ],
+)
+def test_camillagui_loopback_verdicts(monkeypatch, rows, status, must_name):
+    monkeypatch.setattr(doctor_web, "_run", _fake_ss(*rows))
+
+    r = doctor_web.check_camillagui_loopback()
+
+    assert r.status == status
+    # The bind address discriminates the two ok branches from one another:
+    # a misparsed "[::1]" would otherwise fall through to the silent branch.
+    assert must_name in r.detail
+
+
+@pytest.mark.parametrize(
+    "failure",
+    [
+        FileNotFoundError("ss not found"),
+        # PermissionError stands in for every plain OSError the narrower
+        # (SubprocessError, FileNotFoundError) clause would miss — including
+        # a fork failure (ENOMEM) under memory pressure.
+        PermissionError("ss not executable"),
+    ],
+    ids=["absent", "oserror"],
+)
+def test_camillagui_loopback_degrades_when_ss_unusable(monkeypatch, failure):
+    def raises(cmd, timeout=5.0):
+        raise failure
+
+    monkeypatch.setattr(doctor_web, "_run", raises)
+
+    assert doctor_web.check_camillagui_loopback().status == "warn"
+
+
+def test_camillagui_loopback_warns_when_ss_exits_nonzero(monkeypatch):
+    monkeypatch.setattr(doctor_web, "_run", _fake_ss(returncode=1))
+
+    assert doctor_web.check_camillagui_loopback().status == "warn"
+
+
+# --------------------------------------------------------- control token
+
+
+@pytest.mark.parametrize("present", [False, True], ids=["disabled", "enabled"])
+def test_control_token_posture_is_ok_and_never_echoes_the_secret(
+    monkeypatch, tmp_path, present
+):
+    secret = "super-secret-token-value-xyz"
+    path = tmp_path / "control_token"
+    if present:
+        path.write_text(secret + "\n")
+    monkeypatch.setattr(control_token, "TOKEN_FILE", str(path))
+
+    r = doctor_web.check_control_token()
+
     assert r.status == "ok"
-    assert "not installed" in r.detail
+    assert secret not in r.detail
+    assert secret not in r.name
 
 
-def test_web_design_assets_check_registered():
-    assert "check_web_design_assets" in _registered_check_names()
+# ----------------------------------------------------------- tool catalog
+
+
+@pytest.mark.parametrize(
+    "provider, summary, status",
+    [
+        ("", None, "ok"),
+        (
+            "gemini",
+            {
+                "catalog_present": False,
+                "count": 0,
+                "disabled": [],
+                "disabled_count": 0,
+                "pending": False,
+            },
+            "warn",
+        ),
+        (
+            "gemini",
+            {
+                "catalog_present": True,
+                "count": 28,
+                "disabled": ["get_weather"],
+                "disabled_count": 1,
+                "pending": True,
+            },
+            "ok",
+        ),
+    ],
+    ids=["no-provider", "catalog-absent", "catalog-present"],
+)
+def test_tool_catalog_verdicts(monkeypatch, provider, summary, status):
+    monkeypatch.setattr(provider_state, "read_active_provider", lambda: provider)
+    if summary is not None:
+        monkeypatch.setattr(tool_catalog_view, "summary", lambda: summary)
+
+    assert doctor_web.check_tool_catalog().status == status
+
+
+def test_tool_catalog_reports_counts_when_present(monkeypatch):
+    monkeypatch.setattr(provider_state, "read_active_provider", lambda: "gemini")
+    monkeypatch.setattr(
+        tool_catalog_view,
+        "summary",
+        lambda: {
+            "catalog_present": True,
+            "count": 28,
+            "disabled": ["get_weather"],
+            "disabled_count": 1,
+            "pending": True,
+        },
+    )
+
+    detail = doctor_web.check_tool_catalog().detail
+
+    assert "28 tools" in detail
+    assert "1 disabled" in detail
+
+
+# ---------------------------------------------------- management surface
+
+
+def _install_nginx_site(monkeypatch, tmp_path):
+    site = tmp_path / "jasper.conf"
+    site.write_text("# nginx site\n")
+    monkeypatch.setattr(doctor_web, "NGINX_SITE", site)
+
+
+@contextmanager
+def _urlopen_returns(status: int, body: bytes):
+    class _Resp:
+        def __init__(self):
+            self.status = status
+
+        def read(self, n=-1):
+            return body
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *a):
+            return False
+
+    with patch("urllib.request.urlopen", return_value=_Resp()) as m:
+        yield m
+
+
+def test_management_surface_skips_when_nginx_site_not_installed(
+    monkeypatch, tmp_path
+):
+    monkeypatch.setattr(doctor_web, "NGINX_SITE", tmp_path / "absent.conf")
+
+    assert doctor_web.check_management_surface().status == "ok"
+
+
+def test_management_surface_probes_as_the_speaker_hostname(monkeypatch, tmp_path):
+    _install_nginx_site(monkeypatch, tmp_path)
+    monkeypatch.setenv("JASPER_HOSTNAME", "jts3.local")
+
+    with _urlopen_returns(200, b"{}") as m:
+        r = doctor_web.check_management_surface()
+
+    assert r.status == "ok"
+    # Carrying the speaker hostname as Host is the whole point of the check.
+    assert m.call_args[0][0].get_header("Host") == "jts3.local"
+
+
+@pytest.mark.parametrize(
+    "failure, must_name",
+    [
+        (
+            urllib.error.HTTPError(
+                doctor_web.MANAGEMENT_PROBE_URL,
+                403,
+                "Forbidden",
+                None,
+                io.BytesIO(b'{"error": "host_not_allowed"}'),
+            ),
+            "host_not_allowed",
+        ),
+        (
+            urllib.error.HTTPError(
+                doctor_web.MANAGEMENT_PROBE_URL,
+                502,
+                "Bad Gateway",
+                None,
+                io.BytesIO(b'{"error": "jasper-control unreachable: ..."}'),
+            ),
+            "jasper-control",
+        ),
+        (urllib.error.URLError(ConnectionRefusedError(111, "refused")), "nginx"),
+    ],
+    ids=["host-guard", "control-down", "nginx-down"],
+)
+def test_management_surface_failures_name_the_responsible_hop(
+    monkeypatch, tmp_path, failure, must_name
+):
+    _install_nginx_site(monkeypatch, tmp_path)
+
+    with patch("urllib.request.urlopen", side_effect=failure):
+        r = doctor_web.check_management_surface()
+
+    assert r.status == "fail"
+    assert must_name in r.detail
+
+
+# ------------------------------------------------------ conversation history
+
+
+def _history_settings(monkeypatch, tmp_path, *, enabled: str, db_path=None) -> Path:
+    settings = tmp_path / "conversation_history.env"
+    body = f"{CAPTURE_ENABLED_ENV}={enabled}\n"
+    if db_path is not None:
+        body += f"{DB_PATH_ENV}={db_path}\n"
+    settings.write_text(body, encoding="utf-8")
+    monkeypatch.setenv("JASPER_CONVERSATION_HISTORY_FILE", str(settings))
+    return settings
+
+
+def test_conversation_history_skips_when_capture_disabled(monkeypatch, tmp_path):
+    _history_settings(monkeypatch, tmp_path, enabled="0")
+
+    assert doctor_web.check_conversation_history().status == "ok"
+
+
+def test_conversation_history_warns_when_enabled_db_missing(monkeypatch, tmp_path):
+    db_path = tmp_path / "missing.db"
+    _history_settings(monkeypatch, tmp_path, enabled="1", db_path=db_path)
+
+    r = doctor_web.check_conversation_history()
+
+    assert r.status == "warn"
+    assert str(db_path) in r.detail
+
+
+def test_conversation_history_ok_with_existing_db(monkeypatch, tmp_path):
+    db_path = tmp_path / "conversation_history.db"
+    _history_settings(monkeypatch, tmp_path, enabled="1", db_path=db_path)
+    store = ConversationStore(str(db_path))
+    store.add(
+        ConversationTurn(
+            id=make_turn_id("2026-06-19T20:15:00Z", 1),
+            ts_utc="2026-06-19T20:15:00Z",
+            provider="gemini",
+            user_text="hello",
+            assistant_text="hi",
+            tool_calls_json=None,
+            data_json=None,
+            session_id=1,
+        ),
+    )
+    store.close()
+
+    r = doctor_web.check_conversation_history()
+
+    assert r.status == "ok"
+    assert "1 turns" in r.detail
+
+
+# -------------------------------------------------------------- registry
+
+
+@pytest.mark.parametrize(
+    "check_name",
+    ["check_web_design_assets", "check_camillagui_loopback"],
+)
+def test_web_checks_are_registered_in_the_web_group(check_name):
+    assert check_name in _registered_check_names()
+    by_name = {c.func.__name__: c for c in doctor.registered_checks()}
+    assert by_name[check_name].group == "web"
