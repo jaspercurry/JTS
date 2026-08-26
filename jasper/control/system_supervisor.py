@@ -68,7 +68,7 @@ and restart `jasper-control`. Mirrors the
 
 Design rationale
 ----------------
-docs/HANDOFF-tier5-watchdog-liveness.md "Option A".
+See ADR-0146 (docs/adr/).
 """
 from __future__ import annotations
 
