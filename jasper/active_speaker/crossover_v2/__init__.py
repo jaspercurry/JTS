@@ -51,6 +51,9 @@ order — so this list is what exists, not a plan:
   planner request its own sections imply, and the emitted candidate.
 * :mod:`.admission` — one position's attempt ledger, and whether the next
   ``begin_capture`` may start on it.
+* :mod:`.capture_plan` — the walk this session will do, decided before anything
+  plays: how many positions, where they are, what the screen says at each, and
+  which program every capture index runs.
 * :mod:`.position_cycle` — N takes at ONE pose: how they are staged, and how
   they read back.
 * :mod:`.capture_dispatch` — which screens an anchor capture (CHECK, MEASURE,
