@@ -100,28 +100,20 @@ the id scheme has to not have.
 - `PriorBank.read(store, state_id)` — `prior_bank.py:115`; `store.read_state(state_id)` at `:127`.
 - `_baselines_by_pose` — `:151`; `store.read(record_id)` at `:157`, once per id in `record_ids`.
 
-### What `tests/engine_twin.py` pins about semantics
+### What `tests/engine_twin.py:199` (`FakeRecords`) pins
 
-`FakeRecords` — `tests/engine_twin.py:199`. Four things it fixes, and one it
-explicitly does not:
-
-1. **Ids are opaque strings the store mints, not paths.** `_mint` (`:181-186`)
-   returns `f"{prefix}-{len(into)}"` — `rec-1`, `state-1`; `_find` (`:189-196`)
-   resolves by regenerating the same string. **Nothing in the engine or in
-   `PriorBank` parses an id.** A production store may therefore make the id a
-   relative path, a fingerprint, or a take id — but it must not *require* a
-   caller to construct one.
-2. **`read` and `read_state` are implemented, not stubbed** (`:205-211`). The
-   twin's own docstring (`:200-208`) says why: they are what make `analyze` an
-   offline verb (ruling S3).
-3. **`bank` is the only method with a failure switch** — `bank_raises: bool`
-   (`:213`), raising `SeamFailure` at `:216`. `persist` has none. Read that as
-   the protocol's shape, not an oversight: see §2.5.
-4. **`read` of an unknown id returns `None`**, via `_find` falling off its loop
-   (`:196`). Not a raise.
-5. **`by_position` `:228` and `kinds` `:232` are twin-only conveniences**, and
-   their docstrings say so. A production store owes neither — and W1-d's index
-   is what replaces them, not a store method.
+1. **Ids are opaque strings the store mints.** `_mint` `:181-186` returns
+   `f"{prefix}-{len(into)}"`; `_find` `:189-196` resolves by regenerating it.
+   **Nothing in the engine or `PriorBank` parses an id** — so a path, a
+   fingerprint or a take id all qualify, provided no caller has to construct one.
+2. **`read`/`read_state` are implemented, not stubbed** (`:205-211`) — `:200-208`
+   says why: they make `analyze` an offline verb (ruling S3).
+3. **`bank` is the only method with a failure switch** — `bank_raises` `:213`,
+   raising `SeamFailure` `:216`. `persist` has none (see §2.5).
+4. **`read` of an unknown id returns `None`** (`_find` falls off its loop
+   `:196`), not a raise.
+5. **`by_position` `:228` and `kinds` `:232` are twin-only** and say so. A
+   production store owes neither — W1-d's index replaces them, not a method.
 
 ---
 
@@ -129,32 +121,23 @@ explicitly does not:
 
 ### 2.1 Where it lives
 
-**`jasper/active_speaker/crossover_v2/record_store.py`** — new module, inside the
-organ package beside the protocol it implements.
+**`jasper/active_speaker/crossover_v2/record_store.py`** — new module, beside
+the protocol it implements. **Not** `web/correction_crossover_v2.py`: that is the
+god file §6 dissolves, and a new 300-line concern landing there is the defect
+this refactor exists to undo.
 
-Two things the package layout requires, both easy to miss:
+**Add the `crossover_v2/__init__.py` entry in the same PR.** That file is the
+package's own index — every sibling has one (`:57` `position_cycle`, `:68`
+`evidence_packet`, `:87` `session_seams`, `:96` `prior_bank`) and
+`crossover-v2-engine-design.md:510-512` makes it the file map's delegate. A
+module absent from it is invisible to the next reader.
 
-- **`crossover_v2/__init__.py` is the package's own index** and every sibling has
-  an entry there (`:57` `position_cycle`, `:68` `evidence_packet`, `:87`
-  `session_seams`, `:96` `prior_bank`). `crossover-v2-engine-design.md:510-512`
-  makes that index the file map's delegate. **Add the entry in the same PR** —
-  a module absent from the index is invisible to the next reader.
-- The module imports `CommissioningEvidenceStore` from
-  `jasper/active_speaker/commissioning_evidence_store.py`, which is **outside**
-  the organ package. `bind_position_retention` handles the same edge with a
-  function-local import (`web/…:3519-3523`); follow whichever the module's own
-  import block already does rather than inventing a third convention.
-
-**Not** in `web/correction_crossover_v2.py`. That file is the god file §6
-dissolves; a new 300-line concern landing there is the exact defect this refactor
-exists to undo.
+`CommissioningEvidenceStore` lives **outside** the organ package.
+`bind_position_retention` handles that edge with a function-local import
+(`web/…:3519-3527`); follow the new module's own import block rather than
+inventing a third convention.
 
 ### 2.2 The four signatures, async (D1)
-
-W4-a flips the seam colour first, so the protocol these implement is already
-async when W1-a starts. §4 `:711-713` states the payoff in as many words: the
-store can `await asyncio.to_thread(...)` around its file I/O *"rather than
-blocking the event loop on every `bank`"*.
 
 ```python
 async def bank(self, record: Mapping[str, Any]) -> str: ...
@@ -163,14 +146,16 @@ async def persist(self, state: Mapping[str, Any]) -> str: ...
 async def read_state(self, state_id: str) -> Mapping[str, Any] | None: ...
 ```
 
-Every filesystem touch inside them goes through `asyncio.to_thread`. Both
-backends are blocking-by-construction: `publish_json_artifact` fsyncs
-(`commissioning_evidence_store.py:677`, `:690-701` measure free space), and
-`save_v2_state` optionally fsyncs (`web/…:488`).
+W4-a flips the colour first, so the protocol is already async when W1-a starts.
+§4 `:711-713`: the store can `await asyncio.to_thread(...)` around its file I/O
+*"rather than blocking the event loop on every `bank`"*. Every filesystem touch
+goes through `to_thread` — both backends block by construction
+(`publish_json_artifact` fsyncs, `commissioning_evidence_store.py:677`,
+`:690-701`; `save_v2_state` optionally fsyncs, `web/…:488`).
 
-**If W4-a has not landed when this is picked up, stop and say so** rather than
-building sync and converting. §4 `:707-710` is explicit that cutting the colour
-before the implementation is the whole point.
+**If W4-a has not landed, stop and say so** rather than building sync and
+converting — §4 `:707-710` is explicit that cutting the colour before the
+implementation is the point.
 
 ### 2.3 `bank` / `read` — the evidence-store half
 
@@ -333,31 +318,15 @@ harness failing silently in both directions reads as covered either way, so
 | the path is minted from `record["session_id"]` | P7 | P1 |
 | `bank` returns `""` | P1, P8 | P2 |
 
-The last one is the important one: it is the *"a useless id empties
-`record_ids`"* failure from §1, and P8 is the only pin that catches it at the
-altitude where it does damage.
+The last is the important one: it is §1's *"a useless id empties `record_ids`"*
+failure, and P8 is the only pin catching it where it does damage.
 
-**Reuse `FakeRecords`' own contract rather than re-writing it.** §1's bar
-(`:261-263`) says *"the twin's own contract run against the real store"*.
-Parametrize the round-trip pins over both implementations so the two cannot
-drift; where the real store needs a bundle, the twin needs nothing, so the
-fixture supplies one and the twin ignores it.
+**Reuse `FakeRecords`' contract, do not re-write it** — §1's bar (`:261-263`)
+says *"the twin's own contract run against the real store"*. Parametrize the
+round-trip pins over both implementations so they cannot drift; the fixture
+supplies a bundle and the twin ignores it.
 
-**Suites to run:** `tests/test_crossover_v2_record_store.py`,
-`tests/test_engine_twin.py`, `tests/test_crossover_v2_engine_skeleton.py`,
-`tests/test_crossover_v2_prior_bank.py` (if present — else every module
-importing `prior_bank`), `tests/test_active_speaker_commissioning_evidence_store.py`,
-`tests/test_crossover_v2_position_cycle.py`. Plus `mypy` on the new module and
-`ruff` on every touched file.
-
-**Content-grep for the conductor's post-merge check** (§8 `:1135-1138` — grep the
-merged tree, never trust the notification):
-
-```
-git grep -n "class .*RecordStore" -- jasper/          # expect the new impl
-git grep -c "POSITION_EVIDENCE_KIND" -- jasper/       # expect the count to RISE by 1
-git grep -n "854-line" -- jasper/                     # expect ZERO (2.6)
-```
+Suites and content-greps per PR: §6.2.
 
 ---
 
@@ -403,45 +372,38 @@ arrays are **`:1121-1123`** — `freqs_hz` `:1121`, `magnitude_db` `:1122`,
 
 ### 3.2 The `kind` collision, and how to map it without lying
 
-The engine's `kind` is `spec.kind` ∈ `MEASURE_KINDS` = `("baseline",
-"candidate", "verify")` (`contracts.py:1433-1437`), validated by
-`MeasureSpec.__post_init__` (`measure_spec.py:236-239`). Today's builders emit
-`kind` nowhere; what they emit is `phase` (`_take_identity:825`), and the
-sidecar's `"kind"` (`web/…:3571`) is a fixed **record-type discriminator**
-(`POSITION_EVIDENCE_KIND`), a third meaning again.
+**Three different things are called `kind` in reach of one record:** the
+engine's `spec.kind` ∈ `MEASURE_KINDS` (`contracts.py:1433-1437`, validated
+`measure_spec.py:236-239`); the builders' `phase` (`_take_identity:825`); and
+the sidecar's fixed record-type discriminator `POSITION_EVIDENCE_KIND`
+(`web/…:3571`).
 
-So three different things are called `kind` in reach of one record. §1 `:156-161`
-is right that a silent `phase → kind` map mislabels every record; here is why it
-is not even well-defined:
+§1 `:156-161` is right that a silent `phase → kind` map mislabels every record.
+It is worse than that — the map is **not well-defined**: `PHASE_LATERAL` is a
+per-driver walk (`LATERAL_POSE_REGIME` `:947`) that is a `baseline` **or** a
+`candidate` check depending on which candidate was applied under it (#3130's
+body says exactly this, and it is why that PR put `graph_fingerprint` on the
+lateral take). Only `PHASE_ENTRY_BASELINE` maps cleanly; the cloud phases
+(`GROUP_PHASES`) split by which side of the apply they sit on.
 
-- `PHASE_LATERAL` is a **per-driver** walk (`LATERAL_POSE_REGIME` `:947`). It is
-  a `baseline` or a `candidate` check **depending on which candidate was applied
-  under it** — #3130's own body says exactly this, and closing that gap is why
-  it put `graph_fingerprint` on the lateral take.
-- `PHASE_ENTRY_BASELINE` maps to `baseline` cleanly.
-- The cloud phases (`GROUP_PHASES`) split by which side of the apply they sit on.
+**The rule: derive `kind` from `graph_fingerprint`, never from `phase`.** Equal
+to the pre-apply applied-profile fingerprint → `baseline`; taken under a
+candidate → `candidate`; a post-apply verify phase → `verify`.
+`_entry_graph_fingerprint()` (`crossover_v2_flow.py:6999`, called `:5063` for
+lateral) is already the source on the record.
 
-**The mapping rule.** Derive `kind` from `graph_fingerprint`, not from `phase`:
-a take whose `graph_fingerprint` equals the pre-apply applied-profile
-fingerprint is `baseline`; one taken under a candidate is `candidate`; a take in
-a post-apply verify phase is `verify`. `_entry_graph_fingerprint()`
-(`crossover_v2_flow.py:6999`, called at `:5063` for lateral) is the source
-already on the record.
+**Carry #3130's judgement call verbatim — a later reader will want to "fix" it.**
+That `graph_fingerprint` is the **applied profile's `candidate_fingerprint`**,
+deliberately *not* the running-config hash `provenance.graph.fingerprint`
+carries. A pose plays through the transient routing graph that omits crossover,
+delay and linearization, so the running hash is **identical before and after an
+apply** and cannot separate two walks. The applied candidate can. Different
+namespaces — `capture_provenance.py`'s module docstring says so.
 
-**Carry #3130's judgement call verbatim, because a later reader will want to
-"fix" it.** That `graph_fingerprint` is the **applied profile's
-`candidate_fingerprint`**, deliberately *not* the running-config hash a
-capture's `provenance.graph.fingerprint` carries. A pose plays through the
-transient routing graph that omits crossover, delay and linearization, so the
-running hash is **identical before and after an apply** and cannot separate two
-walks. The applied candidate can. Different namespaces; `capture_provenance.py`'s
-module docstring says so.
-
-Where `kind` genuinely cannot be resolved, **write the field and leave it
-empty** rather than guessing. `_record()`'s own precedent is
-`baseline_record_id`: `""` where the prior baselined no such pose, described at
-`session.py:685-691` as *"an honest fact about the capture, never a refusal to
-bank it."*
+Where `kind` cannot be resolved, **write the field empty** rather than guessing.
+The precedent is `baseline_record_id`: `""` where the prior baselined no such
+pose, *"an honest fact about the capture, never a refusal to bank it"*
+(`session.py:685-691`).
 
 ### 3.3 Where the six never-banked fields come from
 
@@ -454,23 +416,21 @@ bank it."*
 | `stimulus_dbfs` | the ladder rung, `MeasureSpec.level_ladder_dbfs` `:232` | moves the **stimulus**, never the claim (`measure_spec.py:217-223`) |
 | `incident` | `outcome.incident` from the play seam | `UNPROVEN_LEVEL` is set at `session.py:594-595` when the level did not prove |
 
-**D9 restated as a working fact.** §1 says `level_db` and `stimulus_dbfs`
-*"live only in the debug ring today"*. At HEAD they live in **neither** — those
-names do not occur in `capture_provenance.py` at all. The ring's nearest
-neighbours, all in `CaptureProvenance.to_dict` (`:117`, body `:119-134`):
+**D9 as a working fact.** §1 says `level_db` and `stimulus_dbfs` *"live only in
+the debug ring today"*. They live in **neither** — those names do not occur in
+`capture_provenance.py` at all. The ring's nearest neighbours, in
+`CaptureProvenance.to_dict` (`:117`, body `:119-134`):
 
 | Ring field | Source | Why it is not the engine's field |
 |---|---|---|
-| `main_volume_db` | `await cam.get_volume_db(best_effort=True)` (`:316-318`) | a **live fader read at retention time**, not the level the stimulus was admitted against |
-| `session_volume_db` | `volume_plan.measurement_volume_db` (`:334-340`) | the session's declared level — the closest analogue of `level_db`, and deliberately *not* a probe |
-| `stimulus.peak_dbfs` | `_stimulus_peak_dbfs(program)` `:201` = `max(segment.gain_db …)` | the program's peak, with session volume explicitly **not** folded in (`:213`) |
+| `main_volume_db` | `await cam.get_volume_db(best_effort=True)` `:316-318` | a **live fader read at retention time**, not the level the stimulus was admitted against |
+| `session_volume_db` | `volume_plan.measurement_volume_db` `:334-340` | the session's declared level — closest analogue of `level_db`, and deliberately *not* a probe |
+| `stimulus.peak_dbfs` | `_stimulus_peak_dbfs` `:201` = `max(segment.gain_db …)` | the program's peak, session volume explicitly **not** folded in (`:213`) |
 
-So §1's conclusion is not just intact but **stronger**: on an ordinary household
-run the two fields the 8.712 dB incident is about are banked nowhere — and even
-with the ring enabled, what is banked is three adjacent quantities under
-different names, none of which is the proven level. A builder who greps for
-`stimulus_dbfs` in `capture_provenance.py` finds nothing and may conclude §1 was
-already satisfied. It was not.
+§1's conclusion is **stronger** than it states: even with the ring enabled, what
+is banked is three adjacent quantities under different names, none of which is
+the proven level. A builder who greps `stimulus_dbfs` in `capture_provenance.py`
+finds nothing and may conclude §1 was already satisfied. It was not.
 
 ### 3.4 Two structural constraints on adding fields
 
@@ -823,23 +783,31 @@ timestamp · path**. The last two are the store's to supply, *"since only it kno
 where it put the record and when"* (`session.py:667-670`).
 
 - **`path`** is `bank`'s return under §2.3's scheme — the id **is** the path, so
-  this column costs nothing extra.
-- **`timestamp`** is not on `_record()`. Two builders already carry
-  `captured_at` (cloud `:927`, lateral `:1056`, entry `:1120`) as an ISO-8601
-  string minted at `crossover_v2_flow.py:5064` — reuse it rather than stamping a
-  second clock at bank time, or a re-bank of identical bytes (§2.3, idempotent)
-  would change the timestamp and make the write non-idempotent after all.
-- **`kind`** is §3.2's mapping. It is the reason W1-d is downstream of W1-b as
+  the column costs nothing extra.
+- **`timestamp`** is not on `_record()`, and **the three builders disagree about
+  its type** — a trap worth the whole column:
+
+  | Builder | Declared | Value | Source |
+  |---|---|---|---|
+  | cloud | `captured_at: float` `:844` (emitted `:927`) | **Unix epoch float** | `time.time()` `crossover_v2_flow.py:5169` → `_CloudPosition.captured_at` (`:1342`) → `:5236` |
+  | lateral | `captured_at: str` `:994` (emitted `:1056`) | **ISO-8601 `%Y-%m-%dT%H:%M:%SZ`** | `crossover_v2_flow.py:5064` |
+  | entry | `captured_at: str` `:1069` (emitted `:1120`) | ISO-8601, same format | `crossover_v2_flow.py:7007` |
+
+  Normalize at the index, not at the builders — a builder change rewrites banked
+  records the store already wrote once. And **reuse `captured_at`; do not stamp a
+  second clock at bank time**, or a re-bank of identical bytes (§2.3, idempotent)
+  changes the timestamp and the write stops being idempotent.
+- **`kind`** is §3.2's mapping — the reason W1-d is downstream of **W1-b** as
   well as of W1-a and W1-c.
 
 Model it on `jasper/wake_events.py` (925 lines) per §1 `:288-290`.
 **Rebuildable by rescanning; the banked files stay the SSOT**
-(`session.py:672-674`). Verification bar: delete the index file, rebuild by
-rescan, assert the same six columns.
+(`session.py:672-674`). Bar: delete the index, rebuild by rescan, assert the
+same six columns.
 
-**And it inherits §4.5's defect.** The index joins `path` to the record's own
-identity; the doubled entry-baseline take id makes that join wrong for one of
-three kinds. If §4.5 is not fixed in W1-c, W1-d must not paper over it.
+**It inherits §4.5's defect.** The index joins `path` to the record's identity,
+and the doubled entry-baseline take id makes that join wrong for one of three
+kinds. If §4.5 is not fixed in W1-c, W1-d must not paper over it.
 
 ---
 
@@ -847,10 +815,11 @@ three kinds. If §4.5 is not fixed in W1-c, W1-d must not paper over it.
 
 ### 6.1 The slices
 
-**Five PRs, not four.** W1-c splits — §1 `:276-279` anticipates it and says how:
-split by *reader* (obligation 2) and keep obligations 1+3 together, because *"a
-sidecar that dies before its replacement writes is a data loss, and a sidecar
-that outlives it is the second-writer defect."*
+**Six PRs for four work items** — W1-c splits three ways. §1 `:276-279`
+anticipates the split and says how: split by *reader* (obligation 2), keeping
+obligations 1+3 together, because *"a sidecar that dies before its replacement
+writes is a data loss, and a sidecar that outlives it is the second-writer
+defect."*
 
 | PR | Item | Contents | Est. | Gated on |
 |---|---|---|---|---|
@@ -861,15 +830,13 @@ that outlives it is the second-writer defect."*
 | 5 | **W1-c/3** | the seven readers flipped + the ring and its shell split die, **in one PR** (S5) | ~350 | PR 4 |
 | 6 | **W1-d** | the SQLite index | ~200 | PR 5 |
 
-**Why obligations 1 and 3 land in different PRs here, when §1 says keep them
-together:** §1's rule is *"a sidecar that dies before its replacement writes is a
-data loss."* PR 4 **is** the replacement writing; PR 5 is the death. The
-ordering satisfies the rule — the sidecar outlives its replacement by exactly one
-PR, and §1's other failure mode ("a sidecar that outlives it is the
-second-writer defect") is a *steady-state* defect, not a one-merge window.
-**If the conductor would rather not hold that window open, merge 4 and 5 as a
-stack and land them together** — that is the tradeoff, stated rather than
-decided.
+**Why 1 and 3 land in different PRs when §1 says keep them together:** PR 4 **is**
+the replacement writing and PR 5 is the death, so the sidecar outlives its
+replacement by exactly one merge — the rule's *data-loss* direction is satisfied,
+and its other direction (*"a sidecar that outlives it is the second-writer
+defect"*) names a **steady state**, not a one-merge window. **If the conductor
+would rather not hold that window open, stack 4 and 5 and land them together.**
+Tradeoff stated, not decided.
 
 ### 6.2 Verification bar per PR
 
@@ -924,41 +891,31 @@ void.** Say so in the PR rather than re-reading the table.
 
 ## 7. Traps this work will actually hit
 
-The five from §8 `:1128-1164` apply unchanged. These are the ones **specific to
-W1**, each with the evidence that it is real:
+**All of §8 `:1128-1164` applies unchanged — read it, this does not restate it.**
+Three carry extra weight here: **squash-ancestry** (this is a six-PR stack, the
+highest-exposure shape there is — `git cherry`, `git rebase --onto`); **the reap
+trap** (`web/correction_setup.py:1311-1327` — W1-a's methods are `await`ed inside
+that bridge per D1, and its unbounded wait is *observability, not permission to
+abandon cleanup*); and **merge-tree validation** of any tree-scanning check.
+
+Four are **specific to W1**, each with the evidence that it is real:
 
 1. **Confirm a call site by grepping the symbol, never by reading the cited
    line.** D6 is the worked example: `crossover_v2_flow.py:6879` still exists,
    still sits in a `try/except/WARN`, and still says *"Mirrors
-   `_retain_cloud_position`'s fail-soft boundary"* — and it is a **comment
-   about a different seam**. One grep (`self._seams.retain_position` → two hits,
-   both inside `_hand_to_retention`) settles in a second what reading the line
-   settles wrongly.
+   `_retain_cloud_position`'s fail-soft boundary"* — and is a **comment about a
+   different seam**. One grep (`self._seams.retain_position` → two hits, both
+   inside `_hand_to_retention`) settles in a second what reading the line settles
+   wrongly.
 2. **A matching total is not a matching set.** §1's "seven readers" is right and
-   both of its halves are wrong (D7 + D8). A count that reconciles is the
-   easiest thing in the world to stop checking.
-3. **Squash-ancestry.** `main` squash-merges, so `git merge-base --is-ancestor`
-   reports a landed branch as un-landed. Use `git cherry`; rebase with
-   `git rebase --onto`. This chain is six stacked PRs — the highest-exposure
-   shape there is. Wave 6d hit it twice in one walk.
-4. **The reap trap.** `_run_async`'s timeout path
-   (`web/correction_setup.py:1311-1327`) cancels the loop task, waits for the
-   drain, logs **CRITICAL** if it does not — **and then waits unbounded anyway**,
-   because *"a terminal response must never release measurement ownership while
-   its graph/volume finalizer can still mutate the speaker"* (`:1323-1326`).
-   W1-a's methods are `await`ed inside that bridge (D1). **The alarm is
-   observability, not permission to abandon cleanup** — a new cancel path
-   inherits the rule.
-5. **Subject-sweep, follow to assertion.** Do not sweep for the *subject*
-   ("retention", "sidecar") and stop at the first hit. Follow each to what
-   **asserts** on it: the ring's death (PR 5) reaches a **shell script** and a
-   **frozen fixture deriver** that no Python grep for `RING_SIDECAR_GLOB` finds
-   (F4, and `bank-crossover-round.sh:214-227`). §1 itself missed F4.
-6. **Validate a tree-scanning check against the merge result**, not your branch:
-   `git merge-tree --write-tree origin/main HEAD` (AGENTS.md:144). Two-dot diffs
-   render phantom removals in this shared repo — merge base for scope,
-   merge-tree for the net.
-7. **Re-derive every line number before you cut.** Every citation in this
-   document was true at `c253c3cf1`. §1's were true at `4a9e9f631`, and **six of
-   them had already moved** (D6–D11) — including one that changed a work item's
-   title. This document will rot the same way.
+   both halves are wrong (D7 + D8). A count that reconciles is the easiest thing
+   in the world to stop checking.
+3. **Subject-sweep, follow to assertion.** Do not sweep for the *subject*
+   ("retention", "sidecar") and stop at the first hit. The ring's death (PR 5)
+   reaches a **shell script** and a **frozen fixture deriver** that no Python
+   grep for `RING_SIDECAR_GLOB` finds (F4, and `bank-crossover-round.sh:214-227`).
+   §1 itself missed F4.
+4. **Re-derive every line number before you cut.** Every citation here was true
+   at `c253c3cf1`; §1's were true at `4a9e9f631`, and **six had already moved**
+   (D6–D11) — one of them changing a work item's title. This document will rot
+   the same way.
