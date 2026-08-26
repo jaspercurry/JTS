@@ -2231,7 +2231,7 @@ async def test_the_unattended_mute_proof_gains_no_caller():
         # "this box may BOOT, because nothing can make a sound"
         "jasper/active_speaker/runtime_contract.py::_flat_output_terminally_muted",
         # "this box may ARM ITSELF onto the ring, for the same reason"
-        "jasper/fanin/coupling_reconcile.py::_anchor_is_all_muted",
+        "jasper/fanin/ring_health.py::_anchor_is_all_muted",
     }, callers
 
 

@@ -612,7 +612,7 @@ def _declared_wire(tmp_path, monkeypatch):
 
     isolate_base_jasper_env(tmp_path, monkeypatch)
     monkeypatch.setattr(
-        "jasper.fanin.coupling_reconcile.load_topology_for_wire", lambda: None
+        "jasper.fanin.ring_health.load_topology_for_wire", lambda: None
     )
 
     def declare(value: str | None) -> None:
@@ -651,9 +651,9 @@ def test_the_wire_is_resolved_through_the_arm_gates_own_two_calls(monkeypatch):
         return "RESOLVED-WIRE", ""
 
     monkeypatch.setattr(
-        "jasper.fanin.coupling_reconcile.load_topology_for_wire", lambda: topology
+        "jasper.fanin.ring_health.load_topology_for_wire", lambda: topology
     )
-    monkeypatch.setattr("jasper.fanin.coupling_reconcile.resolve_wire_for_gate", _spy)
+    monkeypatch.setattr("jasper.fanin.ring_health.resolve_wire_for_gate", _spy)
     assert audio._resolved_ring_wire() == "RESOLVED-WIRE"
     assert passed == [topology]
 

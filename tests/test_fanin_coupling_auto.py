@@ -59,6 +59,7 @@ def _isolate_base_jasper_env(tmp_path, monkeypatch):
     jasper_env = tmp_path / "jasper.env"
     jasper_env.write_text("", encoding="utf-8")
     monkeypatch.setattr(cr, "JASPER_ENV_PATH", str(jasper_env))
+    monkeypatch.setattr("jasper.fanin.ring_health.JASPER_ENV_PATH", str(jasper_env))
 
 
 # --------------------------------------------------------------------------

@@ -158,6 +158,7 @@ def _stage_box(
 
     from jasper.active_speaker.runtime_contract import write_camilla_statefile
     from jasper.fanin import coupling_reconcile as cr
+    from jasper.fanin import ring_health as rh
 
     configs = tmp_path / "configs"
     configs.mkdir(parents=True, exist_ok=True)
@@ -198,8 +199,11 @@ def _stage_box(
     )
     monkeypatch.setattr(cr, "JASPER_ENV_PATH", str(jasper_env))
     monkeypatch.setattr(cr, "FANIN_ENV_PATH", str(fanin_env))
+    monkeypatch.setattr(rh, "JASPER_ENV_PATH", str(jasper_env))
+    monkeypatch.setattr(rh, "FANIN_ENV_PATH", str(fanin_env))
 
     monkeypatch.setattr(cr, "load_topology_for_wire", _composite_active_2way)
+    monkeypatch.setattr(rh, "load_topology_for_wire", _composite_active_2way)
     return graph
 
 

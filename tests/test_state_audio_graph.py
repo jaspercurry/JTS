@@ -139,12 +139,12 @@ def test_audio_graph_state_aggregates_route_artifact_fanin_and_outputd(
 
 def test_coupling_state_loopback_default_is_coherent(monkeypatch):
     monkeypatch.setattr(
-        "jasper.fanin.coupling_reconcile.read_persisted_coupling",
+        "jasper.fanin.ring_health.read_persisted_coupling",
         lambda *a, **k: "loopback",
     )
     # No outputd.env -> content_bridge defaults to direct.
     monkeypatch.setattr(
-        "jasper.fanin.coupling_reconcile.OUTPUTD_ENV_PATH",
+        "jasper.fanin.ring_health.OUTPUTD_ENV_PATH",
         "/nonexistent/outputd.env",
     )
     block = state_aggregate._coupling_state(
@@ -160,11 +160,11 @@ def test_coupling_state_ring_armed_reports_coherent_pair(monkeypatch, tmp_path):
     outputd_env = tmp_path / "outputd.env"
     outputd_env.write_text("JASPER_OUTPUTD_CONTENT_BRIDGE=shm_ring\n")
     monkeypatch.setattr(
-        "jasper.fanin.coupling_reconcile.read_persisted_coupling",
+        "jasper.fanin.ring_health.read_persisted_coupling",
         lambda *a, **k: "shm_ring",
     )
     monkeypatch.setattr(
-        "jasper.fanin.coupling_reconcile.OUTPUTD_ENV_PATH", str(outputd_env)
+        "jasper.fanin.ring_health.OUTPUTD_ENV_PATH", str(outputd_env)
     )
     block = state_aggregate._coupling_state(
         fanin_status={"output": {"transport": "shm_ring", "ring": {}}}
@@ -226,11 +226,11 @@ def test_observed_ring_wire_reads_both_producers_real_status_shapes(monkeypatch,
     outputd_env = tmp_path / "outputd.env"
     outputd_env.write_text("JASPER_OUTPUTD_CONTENT_BRIDGE=shm_ring\n")
     monkeypatch.setattr(
-        "jasper.fanin.coupling_reconcile.read_persisted_coupling",
+        "jasper.fanin.ring_health.read_persisted_coupling",
         lambda *a, **k: "shm_ring",
     )
     monkeypatch.setattr(
-        "jasper.fanin.coupling_reconcile.OUTPUTD_ENV_PATH", str(outputd_env)
+        "jasper.fanin.ring_health.OUTPUTD_ENV_PATH", str(outputd_env)
     )
     block = state_aggregate._coupling_state(
         fanin_status=_FANIN_RING_STATUS, outputd_status=_OUTPUTD_RING_STATUS
@@ -307,11 +307,11 @@ def test_coupling_state_partial_flip_reports_incoherent(monkeypatch, tmp_path):
     outputd_env = tmp_path / "outputd.env"
     outputd_env.write_text("")  # bridge defaults to direct
     monkeypatch.setattr(
-        "jasper.fanin.coupling_reconcile.read_persisted_coupling",
+        "jasper.fanin.ring_health.read_persisted_coupling",
         lambda *a, **k: "shm_ring",
     )
     monkeypatch.setattr(
-        "jasper.fanin.coupling_reconcile.OUTPUTD_ENV_PATH", str(outputd_env)
+        "jasper.fanin.ring_health.OUTPUTD_ENV_PATH", str(outputd_env)
     )
     block = state_aggregate._coupling_state(fanin_status=None)
     assert block["persisted"] == "shm_ring"
@@ -327,7 +327,7 @@ def test_coupling_state_fail_soft_on_read_error(monkeypatch):
         raise OSError("boom")
 
     monkeypatch.setattr(
-        "jasper.fanin.coupling_reconcile.read_persisted_coupling", _boom
+        "jasper.fanin.ring_health.read_persisted_coupling", _boom
     )
     block = state_aggregate._coupling_state(fanin_status=None)
     assert block == {
@@ -350,14 +350,14 @@ def test_coupling_state_choice_reports_operator_marker(monkeypatch, tmp_path):
         "JASPER_FANIN_CAMILLA_COUPLING=loopback\n"
     )
     monkeypatch.setattr(
-        "jasper.fanin.coupling_reconcile.read_persisted_coupling",
+        "jasper.fanin.ring_health.read_persisted_coupling",
         lambda *a, **k: "loopback",
     )
     monkeypatch.setattr(
-        "jasper.fanin.coupling_reconcile.FANIN_ENV_PATH", str(fanin_env)
+        "jasper.fanin.ring_health.FANIN_ENV_PATH", str(fanin_env)
     )
     monkeypatch.setattr(
-        "jasper.fanin.coupling_reconcile.OUTPUTD_ENV_PATH",
+        "jasper.fanin.ring_health.OUTPUTD_ENV_PATH",
         str(tmp_path / "nope.env"),
     )
     block = state_aggregate._coupling_state(fanin_status=None)
@@ -369,14 +369,14 @@ def test_coupling_state_choice_defaults_to_auto(monkeypatch, tmp_path):
     fanin_env = tmp_path / "fanin.env"
     fanin_env.write_text("JASPER_FANIN_CAMILLA_COUPLING=shm_ring\n")
     monkeypatch.setattr(
-        "jasper.fanin.coupling_reconcile.read_persisted_coupling",
+        "jasper.fanin.ring_health.read_persisted_coupling",
         lambda *a, **k: "shm_ring",
     )
     monkeypatch.setattr(
-        "jasper.fanin.coupling_reconcile.FANIN_ENV_PATH", str(fanin_env)
+        "jasper.fanin.ring_health.FANIN_ENV_PATH", str(fanin_env)
     )
     monkeypatch.setattr(
-        "jasper.fanin.coupling_reconcile.OUTPUTD_ENV_PATH",
+        "jasper.fanin.ring_health.OUTPUTD_ENV_PATH",
         str(tmp_path / "nope.env"),
     )
     block = state_aggregate._coupling_state(fanin_status=None)
@@ -392,7 +392,7 @@ def _patch_coupling_reads(monkeypatch, tmp_path, *, armed=False):
     from jasper.fanin import coupling_auto as ca
 
     monkeypatch.setattr(
-        "jasper.fanin.coupling_reconcile.read_persisted_coupling",
+        "jasper.fanin.ring_health.read_persisted_coupling",
         lambda *a, **k: "loopback",
     )
     fanin_env = tmp_path / "fanin.env"
@@ -400,10 +400,10 @@ def _patch_coupling_reads(monkeypatch, tmp_path, *, armed=False):
         f"{ca.USB_DIRECT_ENV_VAR}={ca.USB_COMBO_ENABLED_VALUE}\n" if armed else ""
     )
     monkeypatch.setattr(
-        "jasper.fanin.coupling_reconcile.FANIN_ENV_PATH", str(fanin_env)
+        "jasper.fanin.ring_health.FANIN_ENV_PATH", str(fanin_env)
     )
     monkeypatch.setattr(
-        "jasper.fanin.coupling_reconcile.OUTPUTD_ENV_PATH",
+        "jasper.fanin.ring_health.OUTPUTD_ENV_PATH",
         str(tmp_path / "outputd.env"),
     )
 

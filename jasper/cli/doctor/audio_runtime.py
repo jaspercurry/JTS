@@ -637,7 +637,7 @@ def check_fanin_service() -> CheckResult:
             "fail",
             "active but STATUS response missing output{}",
         )
-    from jasper.fanin.coupling_reconcile import read_persisted_coupling
+    from jasper.fanin.ring_health import read_persisted_coupling
     from jasper.fanin_coupling import COUPLING_SHM_RING
 
     coupling = read_persisted_coupling()
@@ -1443,7 +1443,7 @@ def check_fanin_coupling_value() -> CheckResult:
     value until that pass runs so the operator knows the persisted file names a
     transport that no longer exists.
     """
-    from jasper.fanin.coupling_reconcile import FANIN_ENV_PATH
+    from jasper.fanin.ring_health import FANIN_ENV_PATH
     from jasper.fanin_coupling import COUPLING_ENV_VAR, coupling_value_removed
     from jasper.env_file import read_value
 
@@ -1508,7 +1508,7 @@ def check_fanin_coupling() -> CheckResult:
     ALSA/direct) that strands a ring. The fix is to re-run the ordered
     reconciler: ``jasper-fanin-coupling-reconcile <intent>``.
     """
-    from jasper.fanin.coupling_reconcile import read_persisted_coupling
+    from jasper.fanin.ring_health import read_persisted_coupling
     from jasper.fanin_coupling import (
         COUPLING_SHM_RING,
         OUTPUTD_CONTENT_BRIDGE_ENV_VAR,
@@ -1909,7 +1909,7 @@ def check_active_ring_split_transport() -> CheckResult:
         DEFAULT_CAMILLA2_STATEFILE_PATH,
         output_endpoint_evidence_from_statefiles,
     )
-    from jasper.fanin.coupling_reconcile import read_persisted_coupling
+    from jasper.fanin.ring_health import read_persisted_coupling
     from jasper.fanin_coupling import COUPLING_SHM_RING, RING_ACTIVE_PLAYBACK_DEVICE
 
     label = "active ring split transport"
@@ -1994,10 +1994,8 @@ def check_active_ring_path_projection() -> CheckResult:
     the same pass the ladder's own next step runs.
     """
     from jasper.audio_runtime_plan import DEFAULT_OUTPUTD_ENV_PATH
-    from jasper.fanin.coupling_reconcile import (
-        _outputd_ring_path_for,
-        read_persisted_coupling,
-    )
+    from jasper.fanin.coupling_reconcile import _outputd_ring_path_for
+    from jasper.fanin.ring_health import read_persisted_coupling
     from jasper.fanin_coupling import (
         COUPLING_SHM_RING,
         OUTPUTD_RING_PATH_ENV_VAR,
@@ -2092,7 +2090,7 @@ def check_ring_platform_assets() -> CheckResult:
 
     # Is a ring coupling armed? Read the persisted intent (fail-safe to loopback).
     try:
-        from jasper.fanin.coupling_reconcile import read_persisted_coupling
+        from jasper.fanin.ring_health import read_persisted_coupling
         from jasper.fanin_coupling import COUPLING_SHM_RING
 
         ring_armed = read_persisted_coupling() == COUPLING_SHM_RING
@@ -2190,7 +2188,7 @@ def _resolved_ring_wire():
     failure two reasons.
     """
     try:
-        from ...fanin.coupling_reconcile import (
+        from ...fanin.ring_health import (
             load_topology_for_wire,
             resolve_wire_for_gate,
         )
@@ -2612,7 +2610,7 @@ def check_ring_geometry_coherence() -> CheckResult:
     """
     label = "ring geometry"
     try:
-        from jasper.fanin.coupling_reconcile import (
+        from jasper.fanin.ring_health import (
             FANIN_ENV_PATH,
             read_persisted_coupling,
             resolve_effective_fanin_ring_slots,
@@ -3151,7 +3149,7 @@ def _outputd_buffer_health(
         # reports its own declaration, which proves nothing about a ring that
         # does not exist yet.
         if ring_attached and isinstance(shm_ring_block, dict):
-            from jasper.fanin.coupling_reconcile import load_topology_for_wire
+            from jasper.fanin.ring_health import load_topology_for_wire
             from jasper.fanin_coupling import (
                 resolve_ring_wire,
                 ring_active_endpoint_armed,
@@ -3277,7 +3275,7 @@ def _outputd_transport_health(
     expected_dac_pcm: str,
 ) -> tuple[str, str, str, bool] | CheckResult:
     """Validate coupling, endpoint coherence, PCMs, and reference ownership."""
-    from jasper.fanin.coupling_reconcile import read_persisted_coupling
+    from jasper.fanin.ring_health import read_persisted_coupling
     from jasper.fanin_coupling import COUPLING_SHM_RING
     from jasper.audio_runtime_plan import (
         DEFAULT_CAMILLA2_STATEFILE_PATH,

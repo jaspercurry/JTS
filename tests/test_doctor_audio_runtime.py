@@ -278,7 +278,7 @@ def _patch_fanin_systemctl(monkeypatch, *, enabled="enabled", active="active"):
 
     monkeypatch.setattr(doctor.audio_runtime, "_run", fake_run)
     monkeypatch.setattr(
-        "jasper.fanin.coupling_reconcile.read_persisted_coupling",
+        "jasper.fanin.ring_health.read_persisted_coupling",
         lambda: "loopback",
     )
 
@@ -609,7 +609,7 @@ def _patch_ring_coupled_box(
     env_path.write_text("\n".join(env_lines) + "\n", encoding="utf-8")
     monkeypatch.setenv("JASPER_OUTPUTD_ENV_FILE", str(env_path))
     monkeypatch.setattr(
-        "jasper.fanin.coupling_reconcile.read_persisted_coupling",
+        "jasper.fanin.ring_health.read_persisted_coupling",
         lambda: "shm_ring",
     )
     if active_endpoint:
@@ -824,7 +824,7 @@ def test_check_fanin_service_ok_with_expected_status(monkeypatch):
 def test_check_fanin_service_fails_on_live_transport_mismatch(monkeypatch):
     _patch_fanin_systemctl(monkeypatch)
     monkeypatch.setattr(
-        "jasper.fanin.coupling_reconcile.read_persisted_coupling",
+        "jasper.fanin.ring_health.read_persisted_coupling",
         lambda: "shm_ring",
     )
     _patch_fanin_status_socket(monkeypatch, _fanin_status_payload())
@@ -1103,7 +1103,7 @@ def test_the_arm_waypoint_is_reported_once_by_the_check_that_owns_it(
         "jasper.audio_runtime_plan.DEFAULT_CAMILLA2_STATEFILE_PATH", str(absent)
     )
     monkeypatch.setattr(
-        "jasper.fanin.coupling_reconcile.read_persisted_coupling",
+        "jasper.fanin.ring_health.read_persisted_coupling",
         lambda *a, **k: "loopback",
     )
     _patch_fanin_systemctl(monkeypatch)
@@ -1174,7 +1174,7 @@ def test_outputd_service_ok_with_shm_ring_content_source(monkeypatch, tmp_path):
     monkeypatch.setenv("JASPER_OUTPUTD_ENV_FILE", str(env_path))
     _patch_fanin_systemctl(monkeypatch)
     monkeypatch.setattr(
-        "jasper.fanin.coupling_reconcile.read_persisted_coupling",
+        "jasper.fanin.ring_health.read_persisted_coupling",
         lambda: "shm_ring",
     )
     _patch_fanin_status_socket(
@@ -1206,7 +1206,7 @@ def test_outputd_service_fails_shm_ring_missing_ring_geometry(monkeypatch, tmp_p
     monkeypatch.setenv("JASPER_OUTPUTD_ENV_FILE", str(env_path))
     _patch_fanin_systemctl(monkeypatch)
     monkeypatch.setattr(
-        "jasper.fanin.coupling_reconcile.read_persisted_coupling",
+        "jasper.fanin.ring_health.read_persisted_coupling",
         lambda: "shm_ring",
     )
     payload = json.loads(
@@ -1233,7 +1233,7 @@ def test_outputd_service_fails_shm_ring_slot_frames_mismatch(monkeypatch, tmp_pa
     monkeypatch.setenv("JASPER_OUTPUTD_ENV_FILE", str(env_path))
     _patch_fanin_systemctl(monkeypatch)
     monkeypatch.setattr(
-        "jasper.fanin.coupling_reconcile.read_persisted_coupling",
+        "jasper.fanin.ring_health.read_persisted_coupling",
         lambda: "shm_ring",
     )
     _patch_fanin_status_socket(
@@ -1260,7 +1260,7 @@ def test_outputd_service_fails_shm_ring_capacity_incoherent(monkeypatch, tmp_pat
     monkeypatch.setenv("JASPER_OUTPUTD_ENV_FILE", str(env_path))
     _patch_fanin_systemctl(monkeypatch)
     monkeypatch.setattr(
-        "jasper.fanin.coupling_reconcile.read_persisted_coupling",
+        "jasper.fanin.ring_health.read_persisted_coupling",
         lambda: "shm_ring",
     )
     _patch_fanin_status_socket(
@@ -1285,7 +1285,7 @@ def test_outputd_service_fails_on_coupling_content_source_mismatch(monkeypatch):
     restart) fails with the reconcile remedy."""
     _patch_fanin_systemctl(monkeypatch)
     monkeypatch.setattr(
-        "jasper.fanin.coupling_reconcile.read_persisted_coupling",
+        "jasper.fanin.ring_health.read_persisted_coupling",
         lambda: "shm_ring",
     )
     _patch_fanin_status_socket(
@@ -1303,7 +1303,7 @@ def test_outputd_service_fails_on_coupling_content_source_mismatch(monkeypatch):
 def test_outputd_service_fails_on_live_source_mismatch(monkeypatch):
     _patch_fanin_systemctl(monkeypatch)
     monkeypatch.setattr(
-        "jasper.fanin.coupling_reconcile.read_persisted_coupling",
+        "jasper.fanin.ring_health.read_persisted_coupling",
         lambda: "shm_ring",
     )
     _patch_fanin_status_socket(monkeypatch, _outputd_status_payload())
@@ -3091,7 +3091,7 @@ def _run_check(monkeypatch, *, coupling, cfg_text, tmp_path, outputd_env_text=""
         "jasper.audio_runtime_plan.DEFAULT_OUTPUTD_ENV_PATH", str(outputd_env)
     )
     monkeypatch.setattr(
-        "jasper.fanin.coupling_reconcile.read_persisted_coupling",
+        "jasper.fanin.ring_health.read_persisted_coupling",
         lambda *a, **k: coupling,
     )
     # _active_camilla_config_path returns (statefile, active_config_path|None) —
@@ -3146,7 +3146,7 @@ def test_check_fanin_coupling_value_warns_on_removed_transport_pipe(monkeypatch,
     fanin_env = tmp_path / "fanin.env"
     fanin_env.write_text("JASPER_FANIN_CAMILLA_COUPLING=transport_pipe\n")
     monkeypatch.setattr(
-        "jasper.fanin.coupling_reconcile.FANIN_ENV_PATH", str(fanin_env)
+        "jasper.fanin.ring_health.FANIN_ENV_PATH", str(fanin_env)
     )
     res = audio_runtime.check_fanin_coupling_value()
     assert res.status == "warn"
@@ -3158,7 +3158,7 @@ def test_check_fanin_coupling_value_ok_on_recognized_coupling(monkeypatch, tmp_p
     fanin_env = tmp_path / "fanin.env"
     fanin_env.write_text("JASPER_FANIN_CAMILLA_COUPLING=shm_ring\n")
     monkeypatch.setattr(
-        "jasper.fanin.coupling_reconcile.FANIN_ENV_PATH", str(fanin_env)
+        "jasper.fanin.ring_health.FANIN_ENV_PATH", str(fanin_env)
     )
     res = audio_runtime.check_fanin_coupling_value()
     assert res.status == "ok"
@@ -3426,6 +3426,9 @@ def _pin_ring_wire_narrow(monkeypatch, tmp_path):
 
     fanin_env = tmp_path / "fanin.env"
     fanin_env.write_text(f"{RING_WIRE_FORMAT_ENV_VAR}=S16_LE\n", encoding="utf-8")
+    monkeypatch.setattr(
+        "jasper.fanin.ring_health.FANIN_ENV_PATH", str(fanin_env)
+    )
     monkeypatch.setattr(
         "jasper.fanin.coupling_reconcile.FANIN_ENV_PATH", str(fanin_env)
     )
@@ -3966,7 +3969,7 @@ def _write_ring(
 
 def _arm(monkeypatch):
     monkeypatch.setattr(
-        "jasper.fanin.coupling_reconcile.read_persisted_coupling",
+        "jasper.fanin.ring_health.read_persisted_coupling",
         lambda *a, **k: "shm_ring",
     )
 
@@ -3989,10 +3992,10 @@ def _stage_ring_geometry(
     monkeypatch.setattr(audio_runtime, "_JTS_RING_CONF_D", str(conf))
     monkeypatch.setattr(audio_runtime.ring_assets, "RING_A_PROGRAM_FILE", str(program))
     monkeypatch.setattr(
-        "jasper.fanin.coupling_reconcile.FANIN_ENV_PATH", str(fanin_env)
+        "jasper.fanin.ring_health.FANIN_ENV_PATH", str(fanin_env)
     )
     monkeypatch.setattr(
-        "jasper.fanin.coupling_reconcile.JASPER_ENV_PATH", str(jasper_env)
+        "jasper.fanin.ring_health.JASPER_ENV_PATH", str(jasper_env)
     )
     return fanin_env, program
 
@@ -4279,10 +4282,12 @@ def test_buffer_health_resolves_the_wire_with_the_boxs_topology(monkeypatch):
     doctor contradicting the reconciler that armed it.
     """
     import jasper.fanin.coupling_reconcile as cr
+    import jasper.fanin.ring_health as rh
     import jasper.fanin_coupling as fc
 
     sentinel = object()
     monkeypatch.setattr(cr, "load_topology_for_wire", lambda: sentinel)
+    monkeypatch.setattr(rh, "load_topology_for_wire", lambda: sentinel)
     seen: list[object] = []
 
     def _resolve(topology=None):
@@ -4703,7 +4708,7 @@ def test_non_busy_probe_failure_still_advises_rebuild(monkeypatch, tmp_path):
 
 def _arm_ring(monkeypatch):
     monkeypatch.setattr(
-        "jasper.fanin.coupling_reconcile.read_persisted_coupling",
+        "jasper.fanin.ring_health.read_persisted_coupling",
         lambda *a, **k: "shm_ring",
     )
 
@@ -5119,7 +5124,7 @@ def _arrange(
     `check_outputd_service`'s transport note survived unseen.
     """
     monkeypatch.setattr(
-        "jasper.fanin.coupling_reconcile.read_persisted_coupling",
+        "jasper.fanin.ring_health.read_persisted_coupling",
         lambda: coupling,
     )
     primary = _write_pair(tmp_path, "primary", playback_device)
@@ -5304,7 +5309,7 @@ def _arrange_projection(monkeypatch, tmp_path, *, coupling: str, env_lines: str)
     under test includes the read itself.
     """
     monkeypatch.setattr(
-        "jasper.fanin.coupling_reconcile.read_persisted_coupling",
+        "jasper.fanin.ring_health.read_persisted_coupling",
         lambda: coupling,
     )
     env = tmp_path / "outputd.env"
