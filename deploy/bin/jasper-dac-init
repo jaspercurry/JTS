@@ -30,7 +30,11 @@ if [[ ! -r "$APPLE_DONGLE_LIB" ]] || ! source "$APPLE_DONGLE_LIB"; then
     exit 1
 fi
 
-mapfile -t CARDS < <(resolve_cards)
+# bash 3.2 (macOS, where this is tested) has no `mapfile`.
+CARDS=()
+while IFS= read -r CARD; do
+    CARDS+=("$CARD")
+done < <(resolve_cards)
 if [[ "${#CARDS[@]}" -eq 0 ]]; then
     echo "event=apple_dongle.dac_init.skip reason=not_detected configured_card=${CONFIGURED_CARD} control=${CONTROL}"
     exit 0
