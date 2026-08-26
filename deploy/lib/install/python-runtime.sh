@@ -153,8 +153,12 @@ seed_capture_relay_env() {
 # and the doctor's new smaller warn threshold would warn on it permanently.
 # Anchored on the full stale line so a deliberate non-default override
 # (any other value) survives untouched.
+# `-i` takes no separate suffix argument on BSD sed, which swallows the script
+# as the backup extension and then parses the FILE PATH as the program. Same
+# in-place-edit idiom as the JASPER_AUDIO_DAC_ID strip below.
 migrate_wake_events_cap_seed() {
-    sed -i '/^JASPER_WAKE_EVENTS_MAX_AUDIO_BYTES=1073741824$/d' "${ENV_DIR}/jasper.env"
+    sed -i.bak '/^JASPER_WAKE_EVENTS_MAX_AUDIO_BYTES=1073741824$/d' "${ENV_DIR}/jasper.env"
+    rm -f "${ENV_DIR}/jasper.env.bak"
 }
 
 install_jasper() {
