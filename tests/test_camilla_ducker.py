@@ -300,29 +300,39 @@ async def test_cue_plays_when_camilla_unreachable():
 
 
 # --- CueDuck -----------------------------------------------------
-# Snapshot-based duck for brief cue playback. Distinct contract from
-# Ducker: restores to the EXACT pre-duck value rather than reading
-# the coordinator's current canonical target. Right behavior for
-# cues (short, passive — user wasn't actively adjusting volume mid-
-# cue, so a coincidental shift in canonical target shouldn't change
-# where the music lands post-cue).
+# A transient-duck claim for brief cue playback. It differs from Ducker in
+# exactly one way now: Ducker re-declares the household level from its
+# provider as part of releasing, because the level it restores to can be
+# written by ANOTHER daemon while it holds. A cue is short and passive, so it
+# gives its depth back against the level already in effect.
+#
+# These docstrings used to say the release replays a pre-duck SNAPSHOT and
+# reads no target at all. That stopped being true in production the day
+# `daemon_main` started registering a canonical target provider — from then on
+# `_duck_release_target_db` released to `min(canonical, current + depth)`, and
+# only `tests/conftest.py`'s autouse `_isolate_canonical_target_provider`,
+# which nulls that provider, kept the old story alive HERE. The owner makes
+# the seam explicit instead of ambient: the reference is the household claim,
+# and these tests seed it exactly as the coordinator does.
 
 
-async def test_cueduck_restores_to_exact_pre_duck_value():
-    """Core contract: enter snapshots, exit writes that exact value.
-    No reference to any 'target provider' — what was, returns."""
+async def test_cueduck_gives_back_its_own_depth():
+    """Core contract: enter takes the depth, exit hands that depth back."""
     cam = _FakeCamilla(db=-14.0)  # user's listening level
     async with CueDuck(await _owner(cam, cam._db), duck_db=-10.0):
         assert cam._db == -24.0  # ducked
-    assert cam._db == -14.0      # exact restore
+    assert cam._db == -14.0      # the level in effect, back
 
 
-async def test_cueduck_restore_is_immune_to_coordinator_drift():
+async def test_cueduck_release_ignores_an_interloping_write():
     """Regression guard for the bug that motivated CueDuck: if any
-    other writer touches camilla during the duck window, the cue's
-    restore must still go to PRE-DUCK, not to whatever's there now.
-    `Ducker.restore` reads a live target on purpose; `CueDuck`
-    explicitly does not."""
+    other writer touches camilla during the duck window, that value
+    must not become the release target.
+
+    The reference is the household level the owner holds, not whatever the
+    fader happens to read — and `min(reference, current + depth)` bounds the
+    give-back by what this holder actually took, so an interloper can only
+    make the result quieter, never louder."""
     cam = _FakeCamilla(db=0.0)
     async with CueDuck(await _owner(cam, cam._db), duck_db=-25.0):
         # Simulate the volume_coordinator's source-aware logic
@@ -331,14 +341,13 @@ async def test_cueduck_restore_is_immune_to_coordinator_drift():
         # reconciliation, etc.).
         await cam.set_volume_db(-14.0)
         assert cam._db == -14.0
-    # Snapshot wins — music returns to the exact pre-duck level.
+    # The household claim wins — music returns to the level in effect.
     assert cam._db == 0.0
 
 
-async def test_cueduck_drops_by_duck_db_additive():
-    """Duck is additive (matches `Ducker.duck` so the perceived
-    attenuation is identical between long-turn and brief-cue paths
-    — same audible level drop)."""
+async def test_cueduck_drops_by_duck_db():
+    """The perceived attenuation is identical between the long-turn and
+    brief-cue paths — same audible level drop, one claim kind."""
     cam = _FakeCamilla(db=-6.0)
     async with CueDuck(await _owner(cam, cam._db), duck_db=-25.0):
         assert cam._db == -31.0
@@ -347,7 +356,7 @@ async def test_cueduck_drops_by_duck_db_additive():
 async def test_cueduck_restores_even_if_speak_raises():
     """The cue body running inside `async with` may raise (network
     blip, TTS empty response after retries, etc.). `__aexit__` must
-    still write the snapshot — otherwise music stays ducked."""
+    still release the claim — otherwise music stays ducked."""
     cam = _FakeCamilla(db=-10.0)
     with pytest.raises(RuntimeError, match="boom"):
         async with CueDuck(await _owner(cam, cam._db), duck_db=-25.0):
@@ -357,10 +366,10 @@ async def test_cueduck_restores_even_if_speak_raises():
 
 
 async def test_cueduck_skips_duck_when_camilla_unavailable():
-    """Camilla restarting at cue time → snapshot read returns None.
-    `__aenter__` skips the duck write (nothing to undo); `__aexit__`
-    short-circuits (no snapshot to restore to). Music plays unducked
-    over the cue rather than crashing the daemon."""
+    """Camilla restarting at cue time → the attenuation cannot be
+    established, so the claim is REFUSED rather than held. `__aenter__`
+    writes nothing and `__aexit__` has nothing to give back. Music plays
+    unducked over the cue rather than crashing the daemon."""
     cam = _FakeCamilla(db=-10.0)
     cam.unavailable = True
     async with CueDuck(await _owner(cam, cam._db), duck_db=-25.0):
@@ -370,7 +379,7 @@ async def test_cueduck_skips_duck_when_camilla_unavailable():
 
 async def test_cueduck_writes_no_unnecessary_volume_writes():
     """Sanity: a CueDuck round-trip writes exactly two values to
-    camilla (the duck delta, then the snapshot back). No spurious
+    camilla (the ducked target, then the level in effect). No spurious
     intermediate writes."""
     cam = _FakeCamilla(db=-7.5)
     async with CueDuck(await _owner(cam, cam._db), duck_db=-25.0):
