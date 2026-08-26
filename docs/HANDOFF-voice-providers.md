@@ -12,9 +12,9 @@ policy](adr/0160-the-model-catalog-is-curated-metadata-not-a-runtime-allow-list.
 · [pricing is data](adr/0161-an-unpriced-model-costs-zero-and-says-so.md)
 · [the idle anchor](adr/0162-the-pre-response-idle-anchor-stays-turn-open.md)
 · [provider env
-ownership](adr/0163-the-active-voice-provider-lives-in-one-file-and-unconfigured-parks.md)
+ownership](adr/0165-the-active-voice-provider-lives-in-one-file-and-unconfigured-parks.md)
 · [resumption
-handles](adr/0164-a-resumption-handle-is-dropped-on-the-first-failure.md).
+handles](adr/0166-a-resumption-handle-is-dropped-on-the-first-failure.md).
 The 2026-05 brief that scoped the persistent-session rework is archived at
 [historical/persistent-live-session-rework-2026-05.md](historical/persistent-live-session-rework-2026-05.md).
 
@@ -39,7 +39,7 @@ JASPER_VOICE_PROVIDER=grok     # grok-voice-think-fast-1.0
 `JASPER_VOICE_PROVIDER` lives in **exactly one file**:
 `/var/lib/jasper/voice_provider.env`. There is no fallback default, and an
 unconfigured speaker parks instead of crash-looping —
-[ADR-0163](adr/0163-the-active-voice-provider-lives-in-one-file-and-unconfigured-parks.md)
+[ADR-0165](adr/0165-the-active-voice-provider-lives-in-one-file-and-unconfigured-parks.md)
 carries the rule and its rationale. What that means in practice:
 
 - The `/voice/` wizard writes the file
@@ -232,7 +232,7 @@ shared primitives. Four behaviours a maintainer touching a session module
 should know:
 
 - **The resumption handle is dropped on the first failure of any kind**
-  ([ADR-0164](adr/0164-a-resumption-handle-is-dropped-on-the-first-failure.md)):
+  ([ADR-0166](adr/0166-a-resumption-handle-is-dropped-on-the-first-failure.md)):
   one turn of context continuity traded for never looping on a
   server-invalidated handle.
 - **Tight-retry-loop escalation.** A 5-deep `FailureFingerprint`

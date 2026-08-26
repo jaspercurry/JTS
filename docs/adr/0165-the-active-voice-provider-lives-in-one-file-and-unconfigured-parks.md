@@ -1,4 +1,4 @@
-# ADR-0163: The active voice provider lives in exactly one file, has no default, and an unconfigured speaker parks
+# ADR-0165: The active voice provider lives in exactly one file, has no default, and an unconfigured speaker parks
 
 - **Date:** 2026-08-26
 - **Status:** Accepted

@@ -38,7 +38,7 @@ Two properties follow, and both are the point:
 
 The one place a provider list *is* enforced is the fail-closed
 `voice_provider_ids` manifest read by the pre-daemon reconciler
-(ADR-0163) — that gates *provider IDs* at boot, not model IDs at runtime.
+(ADR-0165) — that gates *provider IDs* at boot, not model IDs at runtime.
 
 ## Consequences
 

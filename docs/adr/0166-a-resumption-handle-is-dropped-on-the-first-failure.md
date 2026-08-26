@@ -1,4 +1,4 @@
-# ADR-0164: A session-resumption handle is dropped on the first failure of any kind
+# ADR-0166: A session-resumption handle is dropped on the first failure of any kind
 
 - **Date:** 2026-08-26
 - **Status:** Accepted
