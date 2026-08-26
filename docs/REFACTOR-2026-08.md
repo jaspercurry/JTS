@@ -118,7 +118,7 @@ ack, never silence.
 - [ ] rust host-compliance/prime machinery (host_compliance.rs + mixer/lane
       branches + 36 contract assertions)
 - [ ] doctor never-fail consolidation (install-settings-drift family)
-- [ ] CI classifier shrink (~120-line path predicate + ~150-line tests)
+- [x] CI classifier shrink (~120-line path predicate + ~150-line tests)
 - [x] env-migrations retirement (GATE: owner confirms every live Pi deployed
       since the migrations ran) — gate cleared 2026-08-25: fleet verified
       (all boxes past every candidate; the Aug-22 gate SHA was the
