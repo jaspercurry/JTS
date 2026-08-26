@@ -1,328 +1,1621 @@
-# HANDOFF — Management UI
+# Management UI — redesign proposal + reference
 
-Canonical for the `jts.local` management surface: the design system every
-wizard renders through, the rules for migrating a page onto it, the surface
-inventory, and the anti-patterns worth resisting. Visual tokens and component
-styles are owned by [design-language.md](design-language.md) and
-`deploy/assets/app.css`; the 2026-05 redesign proposal and the competitor/UX
-research behind it are archived in
-[historical/management-ui-redesign-2026-05.md](historical/management-ui-redesign-2026-05.md).
+**Status:** Reference · created 2026-05-22 · refreshed 2026-08-04.
+Phase 1 IA/visual reshape implemented on 2026-05-28 in
+`deploy/index.html`; the 2026-05-28 polish pass adopted the static reference
+style, local Figtree/Outfit font assets, and a quieter one-column settings
+surface. On 2026-05-29 the first two **wizards** were ported to the canonical
+design system: `/eq/` and `/sound/setup/` (two modes rendered by
+[`jasper/web/sound_setup.py`](../jasper/web/sound_setup.py))
+and `/system/` ([`jasper/web/system_setup.py`](../jasper/web/system_setup.py)),
+both rendered via `canonical_page()` + `/assets/app.css`, with page behaviour
+delivered as static ES modules under `deploy/assets/<page>/js/` (no inline
+`<script>`). See the "Canonical design system" subsection of
+[AGENTS.md](../AGENTS.md) for the delivery convention. On 2026-05-30 a
+**restyle-in-place** foundation landed (shared `canonical_header` /
+`canonical_banner`, `app.css` form/banner/toggle vocabulary, shared `http.js`,
+dynamic `install.sh` asset copy) so the remaining server-rendered wizards can
+adopt the look without reinventing chrome; `/speaker/`
+([`jasper/web/speaker_setup.py`](../jasper/web/speaker_setup.py)) is the
+reference migration. On 2026-05-31 the remaining 16 wizard surfaces were
+migrated on main (`b38d643`), and `/correction/` preflight plus HTTPS
+asset-serving fixes followed (`c7da1db`). See "Restyle-in-place migration"
+below. Setup wizard, conditional prompts, and fuller row-state hydration
+remain future phases.
 
-## One frontend, gated by capability
+`/system/` and `/system/audio/` are two addressable views of one Status
+document. The segmented header keeps real links for direct navigation,
+modified clicks, and open-in-new-tab behavior, while ordinary clicks switch lazy,
+retained panels through the History API. One polling loop updates only the
+active panel from the latest cached snapshot, so changing views does not
+reload or flash the document and does not create a second sampler or poller.
+The System view's opt-in **USB forensics** card consumes that same snapshot and
+posts fixed toggle/capture/repair requests; the device-specific behavior and
+resource bounds remain canonical in
+[HANDOFF-usb-gadget.md](HANDOFF-usb-gadget.md#opt-in-rolling-usb-forensics).
 
-The Zero-class `streambox` and full-speaker profiles use **one** landing page,
-one design system, and one card vocabulary; differences are capability gates,
-never a second frontend —
-[ADR-0120](adr/0120-one-management-frontend-gated-by-capability.md).
-`jasper.install_profile.system_capabilities_for_profile` is the single source of
-truth (`local_sources`, `content_dsp`, `voice_brain`, `network_settings`,
-`speaker_settings`, `pair_management`, `developer_tools`), feeding both
-`jasper-control`'s `/system/snapshot.system_capabilities` and `install.sh`,
-which bakes the map into `deploy/index.html` at install time. The page applies
-it **synchronously at first paint**; `/system/data.json` refreshes live values
-only and never drives layout. Gates fail closed — every gated card ships
-`hidden`.
+The Zero-class `streambox` and full-speaker profiles use the same management
+UI instead of bespoke endpoint frontends: nginx serves
+[`deploy/index.html`](../deploy/index.html), `jasper-web` filters wizard
+routes by install role, and the landing page hides cards via
+`system_capabilities` (`local_sources`, `content_dsp`, `voice_brain`,
+`network_settings`, `speaker_settings`, `pair_management`,
+`developer_tools`). The former `endpoint` / `satellite` install tier is
+gone; those legacy tokens normalize to `streambox`.
+The shared frontend rule does **not** mean every profile keeps the same
+systemd activation surface. Full speakers install
+[`jasper-web.service`](../deploy/jasper-web.service) plus
+[`jasper-web.socket`](../deploy/jasper-web.socket), while streamboxes
+install [`jasper-web-streambox.service`](../deploy/jasper-web-streambox.service)
+and [`jasper-web-streambox.socket`](../deploy/jasper-web-streambox.socket)
+under the same runtime unit names. That keeps the browser experience DRY
+while ensuring streamboxes never bind voice/Google/wake/transit/weather
+wizard ports or source assistant-only env files.
+A box bonded as a multiroom follower behaves like the old "endpoint" at
+runtime — grouping lands its role/data plane, the source coordinator parks its
+renderer/source stack, and grouping derives the voice park flag — but that is
+a runtime role, not a separate install tier or frontend; it still
+serves the shared landing page gated by its (full or streambox) capabilities.
+The Zero-2-W streambox bring-up runbook is
+[`dumb-endpoint-bringup.md`](dumb-endpoint-bringup.md); this doc owns the
+shared frontend rule: profile differences are capability gates, not a second
+visual system.
 
-The shared frontend rule does **not** extend to systemd activation. Full
-speakers install `jasper-web.service` + `.socket`; streamboxes install
-`jasper-web-streambox.service` + `.socket` under the same runtime unit names, so
-a streambox never binds voice/wake/integration ports or sources assistant-only
-env files. A box bonded as a multiroom **follower** behaves like the old
-"endpoint" at runtime — grouping lands its role and data plane, the source
-coordinator parks its renderer stack, grouping derives the voice-park flag — but
-that is a runtime role, not an install tier; it still serves the shared page
-gated by its own capabilities. The legacy `endpoint` / `satellite` tokens
-normalise to `streambox`. Zero-2-W bring-up:
-[dumb-endpoint-bringup.md](dumb-endpoint-bringup.md).
+The first shared cross-page module is the confirm/alert dialog,
+[`deploy/assets/shared/js/dialog.js`](../deploy/assets/shared/js/dialog.js)
+(`jtsConfirm`/`jtsAlert`, Promise-based, styled by `.jts-dialog` in
+`app.css`). It replaces `window.confirm`/`alert`, which the browser can
+suppress ("prevent this page from creating more dialogs") — that suppression
+silently defeated `/system/`'s restart/reboot guards. Pages that need a
+confirm/alert import this shared module from their static ES module; `_common.py`
+does not ship a legacy inline dialog copy.
 
-## Rendering a page: the canonical system
+## Restyle-in-place migration (legacy → canonical)
 
-Every server-rendered wizard renders through `canonical_page()` +
-`/assets/app.css`, with behaviour delivered as static ES modules under
-`deploy/assets/<page>/js/` — **no inline `<script>`**. Shared primitives live in
-[`jasper/web/_common.py`](../jasper/web/_common.py):
+`/system/` and the two Sound page modes (`/eq/` and `/sound/setup/`) were
+built as client-side render targets. Most of
+the remaining ~15 wizards don't need that — they're plain server-rendered
+forms. The cheap path for them is a **restyle-in-place**: keep the
+server-rendered form and its POST request/response flow, swap only the
+document wrapper and the CSS classes, and move any inline `<script>` into an
+ES module. The shared foundation below lets a page do that **without
+reinventing chrome**. `/speaker/`
+([`jasper/web/speaker_setup.py`](../jasper/web/speaker_setup.py)) is the
+reference migration (2026-05-30).
+
+**The rule for a migrated page:** render with `canonical_page()`, build the
+body from the shared helpers, keep `csrf_field_html()` inside the `<form>`,
+preserve the existing routes + save handler + flash, and extract inline JS
+into `deploy/assets/<page>/js/main.js`. Reuse the shared layer; don't
+re-declare chrome that already exists.
+
+### Shared helpers in `_common.py`
 
 - **`canonical_header(title, *, back_href="/", back_label="Home",
-  right_html="")`** → the `.app-header` sticky bar. Single source of truth for
-  the back button (`#icon-back` sprite symbol), centred title, and an optional
-  right slot (default an empty `<span>` so the 3-column grid stays balanced).
-  `title`/`back_href`/`back_label` are escaped; **`right_html` is
-  caller-trusted** — escape untrusted strings before passing.
-- **`canonical_banner(message)`** → the `.banner` flash, with severity derived
-  from the string so the same message reads the same everywhere: contains
-  "error"/"fail" → `banner--danger`; starts with "saved"/"cleared" →
-  `banner--ok`; else `banner--info`. Blank → `""`, so it can drop into a body
+  right_html="")`** → the `.app-header` sticky top bar. Single source of truth
+  for the back button (`#icon-back` sprite symbol) + centred title + an
+  optional right-slot (`right_html`, default an empty `<span>` so the
+  3-column grid stays balanced). `title`/`back_href`/`back_label` are escaped;
+  `right_html` is caller-trusted (escape untrusted strings before passing).
+- **`canonical_banner(message)`** → the `.banner` flash. Same string → same
+  severity across canonical pages: contains "error"/"fail" → `banner--danger`;
+  starts with "saved"/"cleared" → `banner--ok`; else `banner--info`. Blank
+  message → `""`, so `canonical_banner(flash)` can drop into the body
   unconditionally.
-- **Switches reuse `toggle_html()`** — there is no canonical switch helper. The
-  `.toggle` CSS in `app.css` styles the same native-checkbox markup
-  `toggle_html()` already emits.
+- **Switches reuse `toggle_html()`** — the existing native-checkbox helper.
+  There is no canonical switch helper; the canonical `.toggle` CSS in
+  `app.css` styles the *same* markup `toggle_html()` emits.
 
-`app.css` carries the shared form vocabulary: `.field` (a labelled stack whose
-`<label>` is the EYEBROW tier), themed text inputs and `select`/`textarea`
-(the management UI intentionally suppresses browser focus outlines),
-`.form-actions`, `.form-hint`; `.banner` + its three tones, driven by the same
-`--status-*` tokens as the rest of the UI; and the `.toggle` / `.track`
-vocabulary with checked, `:disabled`, and `prefers-reduced-motion` states.
+### `app.css` form / banner / toggle vocabulary
 
-Two cross-page ES modules:
+New shared classes (added 2026-05-30; no existing rule or `:root` token value
+was changed):
 
-- [`shared/js/dialog.js`](../deploy/assets/shared/js/dialog.js) —
-  `jtsConfirm`/`jtsAlert`, Promise-based, styled by `.jts-dialog`. It replaces
-  `window.confirm`/`alert`, which the browser can suppress ("prevent this page
-  from creating more dialogs") — that suppression silently defeated `/system/`'s
-  restart and reboot guards. `_common.py` ships no legacy inline dialog copy.
-- [`shared/js/http.js`](../deploy/assets/shared/js/http.js) — `csrfHeaders`,
-  `jsonHeaders`, `getJSON`, `postJSON`, `postControlAction`. CSRF-aware fetch
-  helpers that read the token from the `<meta name="jts-csrf">` tag **at call
-  time**, so the cacheable module bakes in no secret. It also exports two 403
-  classifiers so a caller can tell one rejection from another:
-  `isControlTokenRequired(err)` (a JSON `control_token_required` body → prompt
-  for the token and retry once) and `isStaleSessionRejection(err)` (a non-JSON
-  403, which is what `reject_csrf`/`guard_mutating_host` answer with → show the
-  stale-page copy and reload). Import by absolute path
-  (`/assets/shared/js/http.js`).
+- **Form:** `.field` (a labelled field stack; its `<label>` is the EYEBROW
+  tier), themed text inputs (`input[type=text|email|password|number|search|
+  url]`, `select`, `textarea` — token borders/radii/fonts; the management UI
+  intentionally suppresses browser focus outlines), `.form-actions` (button
+  row), `.form-hint` (helper text, with `code` styling).
+- **Banner:** `.banner` + `.banner--ok` / `.banner--info` / `.banner--danger`,
+  tone driven by the same `--status-*` token vocabulary as the rest of the UI.
+- **Toggle:** the `.toggle` / `.toggle .track` / `.toggle input:checked +
+  .track` vocabulary, matching `toggle_html()`'s native-checkbox markup, with
+  checked / `:disabled` / `prefers-reduced-motion` states. The CSS
+  lives in `app.css`; `toggle_html()` only emits the markup.
 
-**Adding a page needs no `install.sh` edit.** The asset-copy step discovers
-every directory under `deploy/assets/` (each page slug plus `shared`; `fonts`
-are copied separately) and copies the same per-dir shape. This closed the silent
-404 where a new page's CSS/JS never reached the Pi. `jasper-doctor`'s
+### Shared `http.js` ES module
+
+[`deploy/assets/shared/js/http.js`](../deploy/assets/shared/js/http.js) is the
+second cross-page module (after `dialog.js`). Exports `csrfHeaders(headers)`,
+`jsonHeaders()`, `getJSON(path)`, `postJSON(path, body)`,
+`postControlAction(path)` — CSRF-aware fetch helpers that read the token from
+the `<meta name="jts-csrf">` tag at call time (so the cacheable module bakes in
+no secret), same `X-CSRF-Token` contract as the inline wizards — plus two 403
+classifiers a caller uses to tell one rejection from another:
+`isControlTokenRequired(err)` (a JSON `control_token_required` body → prompt
+for the token and retry once) and `isStaleSessionRejection(err)` (a 403 whose
+body is not JSON, which is what `reject_csrf`/`guard_mutating_host` answer with
+→ `postJSON` shows the stale-page copy and reloads, issue #1926). A migrated page imports it by absolute path
+(`/assets/shared/js/http.js`). `system-status/js/api.js` is now a thin
+re-export of `csrfHeaders`/`jsonHeaders`/`getJSON` from it (behaviour-identical;
+`postJSON` is new and imported from the shared module directly).
+
+### Dynamic asset copy (`install.sh`)
+
+The asset-copy step now discovers **every** directory under `deploy/assets/`
+(each page slug, plus `shared`; `fonts` excluded — copied separately) and
+copies the same per-dir shape (root `*.css`, then `js/*.js` if present).
+Migrating a new wizard therefore needs **no `install.sh` edit** — adding
+`deploy/assets/<page>/` is enough. This also closes the silent-404 failure
+mode where a new page's CSS/JS never reached the Pi. `jasper-doctor`'s
 `check_web_design_assets` keys off a fixed required-file list, so new shared
-modules do not trip a false warning.
+modules (like `http.js`) don't trip a false warning.
 
-**`/assets/` is served from both nginx server blocks.** The port-80 block is
-obvious; **the 443 block needs its own copy** because the correction measurement
-pages — served over HTTPS when `getUserMedia` needs a secure context — link
-`/assets/app.css` and their ES modules by absolute path. Without a 443
-`/assets/` location those subresources fall through to the HTTP-downgrade
-catch-all, redirect to `http://`, and are blocked as mixed content, leaving the
-measurement UI unstyled with dead mic-capture JS. Keep the two blocks' caching
-identical; `test_nginx_serves_assets_over_https_no_mixed_content` in
-[`tests/test_landing_page_html.py`](../tests/test_landing_page_html.py) pins it.
+### `/assets` is served on both the HTTP and HTTPS server blocks
 
-**The plain-HTTP correction preflight is canonical too.** `/correction/` is two
-surfaces on one path: a static preflight
+nginx serves `/assets/` (app.css immutable + SHA-busted, page ES modules
+`no-cache`/revalidated, fonts immutable) from `/usr/share/jasper-web` in
+**both** server blocks of
+[`deploy/nginx-jasper.conf`](../deploy/nginx-jasper.conf). The port-80 block
+is the obvious one; the **443 block needs its own copy** because
+the correction measurement pages — served over HTTPS when `getUserMedia`
+needs a secure context — link `/assets/app.css` and their ES modules by absolute
+path. Without a 443 `/assets/` location those subresource requests fall
+through to the HTTP-downgrade catch-all, redirect to `http://`, and browsers
+block them as mixed content — leaving the measurement UI unstyled and its JS
+(mic capture, sweep) dead. Keep the two blocks' caching identical; the
+regression test
+`test_nginx_serves_assets_over_https_no_mixed_content` in
+[`tests/test_landing_page_html.py`](../tests/test_landing_page_html.py) pins
+the 443 block.
+
+### Install-profile capability gating
+
+The shared landing page is one artifact for the two install profiles (full
+speakers and streamboxes). The capability map is the single source of truth:
+`jasper.install_profile.system_capabilities_for_profile`, derived purely from
+the profile — not frontend-local hardware guessing. One function feeds two
+consumers: `jasper-control`'s `/system/snapshot.system_capabilities` (runtime)
+and `install.sh`, which **bakes** the map into the landing page at install time
+(the `__JTS_CAPS_JSON__` placeholder becomes `var BAKED_CAPS = {…}`). The page
+applies `BAKED_CAPS` **synchronously at first paint**, so capability layout is
+correct with no network round-trip and survives any backend daemon being down;
+the `/system/data.json` poll refreshes live values only — it never drives
+layout. Capability gates fail closed: every gated card/row ships with `hidden`
+and is shown only when its capability is `true`. Full speakers expose voice,
+source, DSP, pair-management, network, speaker-name, and developer cards;
+streamboxes expose local source/DSP/pair-management/system/network/speaker
+surfaces but hide voice/wake/integration/developer cards. ("Endpoint" is no
+longer an install tier — a box bonded as a multiroom follower gets that
+behaviour at runtime via the grouping reconciler, not a separate frontend.)
+This keeps the frontend slimmed by capability while preserving one design
+system and one card vocabulary.
+
+### The plain-HTTP correction preflight is canonical too
+
+`/correction/` is two surfaces on one path: a static plain-HTTP preflight
 ([`deploy/correction-preflight.html`](../deploy/correction-preflight.html))
-explaining the HTTPS switch, then the HTTPS measurement UI. Being static (nginx
-`try_files`, no Python) it cannot call `canonical_page()`; it links
-`/assets/app.css?v=__APP_CSS_VERSION__` directly and `install.sh` stamps the
-build SHA exactly as it does for `deploy/index.html`, inlining only the one
-`#icon-back` sprite symbol it needs. Its Proceed button targets
-`/correction/proceed` with a build-token fallback query string that JavaScript
-replaces with a fresh `jts_cb` token per load; nginx temporarily redirects that
-to `https://$host/correction/` with `Cache-Control: no-store` and preserved
-query args, so non-default hostnames like `jts3.local` do not depend on
-client-side JS to survive the HTTP → HTTPS hop and mobile browsers cannot cache
-a stale hostname or scheme rule. The static preflight's allowlist stays closed
-to `/correction/*`; the canonical Room page uses nginx's `/sound/proceed/room`
-handoff instead.
-
-### Restyle-in-place: the rule for migrating a page
-
-`/system/` and the two Sound page modes were built as client-side render
-targets. Most wizards do not need that — they are plain server-rendered forms,
-and the cheap path is a **restyle-in-place**: keep the form and its POST
-request/response flow, swap only the document wrapper and CSS classes, move any
-inline `<script>` into an ES module. `/speaker/`
-([`jasper/web/speaker_setup.py`](../jasper/web/speaker_setup.py)) is the
-reference migration.
-
-Concretely: render with `canonical_page()`, build the body from the shared
-helpers, keep `csrf_field_html()` inside the `<form>`, preserve the existing
-routes, save handler, and flash, and extract inline JS to
-`deploy/assets/<page>/js/main.js`. **Reuse the shared layer; do not re-declare
-chrome that already exists.**
+that explains the HTTPS switch, then the HTTPS measurement UI. The preflight
+is a **static** page (nginx `try_files`, no Python), so it can't call
+`canonical_page()`; instead it links `/assets/app.css?v=__APP_CSS_VERSION__`
+directly and `install.sh` stamps the build SHA into it exactly as it does for
+`deploy/index.html`. That's the static-page analog of the shell — same
+canonical `.app-header` / `.btn` / `.info-card` vocabulary, inlining only the
+one `#icon-back` sprite symbol it needs. Its Proceed button targets
+`/correction/proceed` with a build-token fallback query string; JavaScript
+replaces that with a fresh `jts_cb` token on each page load. Nginx temporarily
+redirects that to `https://$host/correction/` with `Cache-Control: no-store`
+and preserves query args, so non-default hostnames such as `jts3.local` do not
+depend on client-side JavaScript to survive the HTTP → HTTPS hop, and mobile
+browsers do not cache stale local hostname or scheme rules. Safe
+`?next=/correction/...` subflows become `/correction/proceed/<subflow>`, with
+the same temporary no-store redirect and query preservation.
+The canonical Room page uses nginx's `/sound/proceed/room` handoff instead;
+the static preflight's closed allowlist remains `/correction/*`.
 
 ### Archetype recipes
 
-Each names the exact canonical classes; all wrap the body in
-`canonical_header(title)` + `canonical_banner(flash)` + `<main class="page">`.
+Concrete layouts for the wizards still to migrate. Each names the exact
+canonical classes; all wrap their body in `canonical_header(title)` +
+`canonical_banner(flash)` + `<main class="page">`.
 
-- **Settings form** (`/speaker/`, `/weather/`, `/airplay/`): one
-  `<form method="post" action="./save">` carrying `csrf_field_html()`; each
-  input a `.field` (EYEBROW `<label>` + themed control + `.form-hint`); close
-  with a `.form-actions` row holding a `.btn.btn--primary`. A destructive
-  secondary action is `.btn--ghost` or `.btn--danger` in the same row.
-- **Toggle list** (`/sources/`, `/wake/` advanced fusion): an `.info-card` (or
-  one per group) of "label + `toggle_html(...)`" rows laid out with
-  `.control-head`/flex; the checkbox POSTs or fetches via `postJSON`. One
-  `.section__title` per card; row labels stay EYEBROW.
-- **Integration card** (`/ha/`, `/google/`, `/spotify/`): one `.info-card` whose
-  body switches on connection state — not configured (a `.form-hint` explainer +
-  a primary "Find…"/"Connect"), connect/paste (a `.field` + a `.form-actions`
-  submit), connected (a `.deflist` of status rows + a `.badge` toned
-  `--status-ok` + a ghost disconnect). Soft-unlock and error notices use
-  `canonical_banner`.
+- **Settings form** (`/speaker/`, `/weather/`, `/airplay/`): inside
+  `<main class="page">`, one `<form method="post" action="./save">` carrying
+  `csrf_field_html()`; each input is a `.field` (EYEBROW `<label>` + themed
+  `input`/`select` + a `.form-hint`); close with a `.form-actions` row holding
+  a `.btn.btn--primary` submit. A destructive secondary action is a
+  `.btn.btn--ghost` or `.btn.btn--danger` in the same row.
+- **Toggle list** (`/sources/`, `/wake/` advanced fusion): an `.info-card`
+  (or one per group) containing rows of "label + `toggle_html(id,
+  checked=…)`" laid out with `.control-head` / flex; the checkbox POSTs (or
+  fetches via `postJSON` from `http.js`). One `.section__title` names each
+  card; row labels stay EYEBROW.
+- **Integration card** (`/ha/`, `/google/`, `/spotify/` — three states): a
+  single `.info-card` whose body switches on connection state. **Not
+  configured:** a `.form-hint` explainer + a `.btn.btn--primary` ("Find…" /
+  "Connect"). **Connect / paste token:** a `.field` for the URL/token + a
+  `.form-actions` submit. **Connected:** a `.deflist` of status rows
+  (name/version/agent) + a `.badge` (tone `--status-ok`) + a `.btn.btn--ghost`
+  disconnect. Use `canonical_banner` for the soft-unlock / error notices.
 - **Provider cards** (`/voice/`): a stack of `.info-card`s, one per provider,
-  each with a `.section__title`, a `.field` API-key input, and `.field`
-  `<select>`s for model and voice; one radio group at the top chooses the active
-  provider; one `.form-actions` submit saves all. Pricing goes in `.form-hint`.
+  each with a `.section__title` (provider name), a `.field` API-key input, and
+  `.field` `<select>`s for model + voice; a single radio group at the top
+  ("use this provider") chooses the active one; one `.form-actions` submit
+  saves all. Pricing/notes go in `.form-hint` / `.info-card__hint`.
 - **Scan + connect list** (`/wifi/`, `/bluetooth/`): a current-state
-  `.info-card` on top (`.deflist` + `.badge`); a ghost scan button that fetches
-  via `getJSON` and renders result rows; a "join by name" `.field` fallback
-  form; a collapsible saved list with per-row `.btn--danger` forget. **Escape
-  every device-provided name** before `innerHTML`, pass connect/forget targets
-  via escaped `data-*` plus a delegated handler (never inline JS), and confirm
-  destructive actions with `jtsConfirm(msg, {danger:true})`.
+  `.info-card` at top (`.deflist` + `.badge`); a scan `.btn.btn--ghost` that
+  fetches via `getJSON` and renders results as rows (each: escaped name +
+  signal/security + a connect `.btn`); a "join by name" `.field` fallback
+  `<form>`; a collapsible saved-list with per-row forget `.btn.btn--danger`.
+  **Escape every device-provided name** before `innerHTML`; pass connect/forget
+  targets via escaped `data-*` + a delegated handler, never inline JS;
+  confirm destructive actions with `jtsConfirm(msg, {danger:true})` from
+  `dialog.js`.
 
-### Typographic grammar (three tiers)
-
-Semantic levels use different *combinations* of type axes so hierarchy reads
-without parsing the words:
+**Typographic grammar (three tiers).** Different semantic levels use different
+*combinations* of type axes (size + weight + case + colour) so hierarchy reads
+without the user parsing the words. Applied on `/system/` (2026-05-30); follow
+it on future migrated pages:
 
 | Tier | Element | Style | Examples |
 |---|---|---|---|
-| Region header | labels a region with no card chrome | EYEBROW — `.eyebrow` (font-display, 11px, 600, uppercase, muted) | "Rooms" on `/`; "Per-service usage" on `/system/` |
-| Card title | names a contained panel | cased display — `.section__title` (font-display, 14px, 600, tracking-tight) | "Software", "Voice spend cap", "AirPlay" |
+| Region header | label for a region with no card chrome | EYEBROW — `.eyebrow` (font-display, 11px, 600, uppercase, muted) | "Rooms"/"Scenes" on `/`; "Per-service usage" on `/system/` |
+| Card title | the name of a contained panel | cased display — `.section__title` (font-display, 14px, 600, tracking-tight, foreground) | "Software", "Voice spend cap", "AirPlay" |
 | Row label | a field label inside a card | EYEBROW — `.deflist dt` | "Version", "Branch", "Uptime" |
-| Value | data / content | plain — `.deflist dd` (normal weight, `tabular-nums`) | "13a8d65-dirty", "4h ago" |
+| Value | data / content | plain — `.deflist dd` (normal weight, `tabular-nums`, foreground) | "13a8d65-dirty", "4h ago" |
 
-Uppercase plus tracking is a wayfinding tool — scan without reading — which
-suits region headers and field labels but fails for object names, because it
-strips the word-shape recognition that aids reading. Cased display names an
-object you read once to orient; values are content, so plain weight. **The
-consistency across pages is the grammar** (does this element label a region,
-name a card, or label a field?), not a shared class — which is why `/`'s eyebrow
-region headers and `/system/`'s cased card titles coexist correctly. Stat-tile
-labels ("MEMORY", "CPU USAGE") stay EYEBROW: they are field labels.
+Uppercase + tracking is a wayfinding tool — scan without reading — which suits
+region headers and field labels but fails for object names (it strips the
+word-shape recognition that aids reading). Cased display names an object you
+read once to orient; values are content, so plain weight. The consistency
+across pages is the *grammar* (does this element label a region, name a card, or
+label a field?), not a shared CSS class — which is why `/`'s eyebrow region
+headers and `/system/`'s cased card titles coexist correctly. Stat-tile labels
+("MEMORY", "CPU USAGE") stay EYEBROW — they're field labels.
 
-### Tracked follow-up — split `/sound/`'s JS (hardware-gated)
-
+**Tracked follow-up — split `/sound/`'s JS into modules (hardware-gated).**
 `/system/`'s behaviour is split into layered ES modules
-(`dom`/`format`/`charts`/`components`/`sections`/`views`/`api`/`actions`/`main`).
-`/sound/` is still mostly one module, relocated verbatim from the old inline
-`_SOUND_JS`. Two pure DOM-free pieces are carved out — RBJ biquad math
-([`eq-math.js`](../deploy/assets/sound-profile/js/eq-math.js), shared with a node
-parity check and mirrored in Python) and active-speaker vocabulary/step policy
+(`dom`/`format`/`charts`/`components`/`sections`/`views`/`api`/`actions`/
+`main`). `/sound/`'s render/state/IO logic is still mostly a single module —
+the EQ editor relocated verbatim from the old inline `_SOUND_JS`
+([`deploy/assets/sound-profile/js/main.js`](../deploy/assets/sound-profile/js/main.js)).
+Two pure, DOM-free pieces are carved out: RBJ biquad math
+([`eq-math.js`](../deploy/assets/sound-profile/js/eq-math.js)), shared with a
+node parity check and mirrored in Python, and active-speaker setup vocabulary /
+step-state policy
 ([`active-speaker-ui.js`](../deploy/assets/sound-profile/js/active-speaker-ui.js)).
-Splitting the rest was **deliberately deferred, not blind-refactored**: the
-editor's ~25 mutable state vars are woven through its math, `innerHTML`
-rendering, and live-draft IO, and the live-draft path coordinates rapid edits to
-CamillaDSP via debounce and sequence guards whose correctness *and audio effect*
-can only be verified on the Pi. Do it as a focused change with hardware in the
-loop (deploy → exercise Off/Saved/Draft, band add/drag/delete, live draft,
-save/rename → confirm audio and zero console errors), then merge.
+Splitting the rest to match (a shared `store` + `eq`/`views`/`io`) is planned but
+was **deliberately deferred, not blind-refactored**: the editor's ~25
+mutable state vars are woven through its math, `innerHTML` rendering, and
+the live-draft IO, and the live-draft path coordinates rapid edits →
+CamillaDSP via debounce + sequence guards whose correctness *and* audio
+effect can only be verified on the Pi. Do it as a focused change with the
+hardware in the loop (deploy → exercise Off/Saved/Draft, band
+add/drag/delete, live-draft, save/rename → confirm audio + zero console
+errors), then merge.
 
-## The surfaces
+A research-grounded plan for restructuring the `jts.local` management surface
+(today: volume/mic/source controls, 17 navigation rows on `/`, ~10 on
+`/system/`, 18 dedicated setup/debug surfaces, plus CamillaGUI) into a tighter,
+more navigable layout with a dismissible setup wizard for first-time
+configuration and a quieter settings-list visual system.
 
-`/` is static HTML under `deploy/`, served by nginx. Its rows are grouped into
-labelled `.eyebrow` sections — Sources, Sound, Assistant, Integrations, Network,
-System — with a top control card carrying the **volume slider**, **mic toggle**,
-and a lightweight **source selector** (the three "every visit" controls). The
-selector posts to `jasper-control`'s `/source/*` routes and is distinct from the
-`/sources/` on/off wizard. `deploy/index.html` is the source of truth for the
-exact rows. Integrations is an inline section; there is **no** `/integrations`
-page (removed 2026-05-31 with nothing linking to it).
+Read this before extending the management UI redesign. The proposal and the
+research that backs it both live here so you can re-justify design calls from
+first principles instead of from memory. The current-state snapshot was refreshed
+against `deploy/index.html`, `deploy/nginx-jasper.conf`,
+`jasper/web/__main__.py`, and live `http://jts.local/` on 2026-05-28, but
+re-inventory before implementation because this surface is still accruing
+cards.
 
-Lifecycle switches on `/sources/` represent persisted **desired** state, not a
-best-effort process probe; their status copy separately renders effective `on`,
-`off`, `degraded`, `parked`, or `unavailable`. The state and convergence
-contract is canonical in
-[HANDOFF-source-lifecycle.md](HANDOFF-source-lifecycle.md); only the
-presentation rule lives here.
+Implementation note (2026-05-28): §3 preserves the pre-Phase-1 inventory that
+motivated the redesign. The current branch replaces the old flat card stack
+with grouped settings rows while keeping the existing static landing-page
+deployment model and the proven volume/mic/source JavaScript. Font polish is
+served from local WOFF2 assets under `deploy/assets/fonts/`; do not reintroduce
+runtime Google Fonts requests.
 
-`/system/` and `/system/audio/` are two addressable views of one Status
-document. The segmented header keeps real links (`aria-current="page"`) so
-direct navigation, modified clicks, and open-in-new-tab work, while ordinary
-clicks switch lazy retained panels through the History API. **One** polling loop
-updates only the active panel from the latest cached `/system/data.json`
-snapshot, so changing views neither reloads the document nor creates a second
-sampler. The System view is the host/operator surface (an Audio alert card that
-appears only while `audio_health.overall.status` is `issue`, metric tiles,
-software, Home Assistant status, network, actions, diagnostics, per-service
-usage); the Audio view is the single household-facing audio-health surface. **The
-browser never authors health prose or infers health from raw counters** — it
-renders the normalized `/system/snapshot.audio_health` contract, each sentence of
-which has exactly one writer in
-[`jasper/control/audio_health.py`](../jasper/control/audio_health.py), and fails
-soft to an explicit unavailable card when the block is missing. The System view's
-opt-in USB forensics card consumes the same snapshot; its device behaviour and
-resource bounds are canonical in
-[HANDOFF-usb-gadget.md](HANDOFF-usb-gadget.md#opt-in-rolling-usb-forensics).
+---
 
-Wizard surfaces under `jasper/web/` are stdlib `http.server` modules, mostly
-socket-activated and LAN-only. Some run inside the combined `jasper-web`
-process; older or heavier surfaces (`/bluetooth/`, `/system/`, `/chat/`, the
-correction measurement routes) keep their own service/socket wrappers.
+## Contents
 
-| Path | Module | Port |
+1. [Why redesign](#1-why-redesign)
+2. [Grounding principles](#2-grounding-principles)
+3. [Current-state snapshot](#3-current-state-snapshot-as-of-2026-05-28)
+4. [Proposal A — Information architecture](#4-proposal-a--information-architecture)
+5. [Proposal B — Setup wizard](#5-proposal-b--setup-wizard)
+6. [Proposal C — Copy revision](#6-proposal-c--copy-revision)
+7. [What NOT to do](#7-what-not-to-do)
+8. [Phased rollout](#8-phased-rollout)
+9. [Open decisions](#9-open-decisions)
+10. [Research foundation](#10-research-foundation)
+11. [Appendix — when you're ready to build](#11-appendix--when-youre-ready-to-build)
+
+---
+
+## 1. Why redesign
+
+The landing page has accumulated past its happy density. Four things
+compound:
+
+- **Flat hierarchy.** 17 navigation cards on one screen, visually equal, sorted by
+  neither frequency nor topic. The user can't tell at a glance what's a
+  daily knob (volume) vs. an annual setup step (room correction).
+- **Verbose card copy.** Most descriptions run 1-2 sentences trying to
+  explain the destination. They belong *inside* the destination, not on the
+  index row. The current `Wake word ›`, `Transit ›`, and `Wake-word corpus
+  recorder ›` cards are examples of the page trying to teach everything at
+  once.
+- **Cards are the wrong primitive.** A settings home page wants compact rows:
+  icon, label, current state, chevron. Cards make every destination feel like
+  a feature promo.
+- **No setup gradient.** First-time and 50th-time visitors see the same
+  page. There's no "you have 2 things left to set up" affordance and no
+  linear path through the one-time stuff (voice provider, Spotify accounts,
+  location, room correction).
+
+What's *right* about today's page: the volume slider and mic toggle live on
+the index. Those stay. The source selector has also earned its place as a
+small "every visit" control. The rest of the load is ordering, naming, and
+showing state without long descriptions.
+
+---
+
+## 2. Grounding principles
+
+Each design call in the proposal traces back to one of these. They're
+explicit so future-you can re-derive decisions instead of memorising them.
+
+1. **State first, action second.** Admin pages live in a different
+   register than consumer apps — the user is administering a thing. Show
+   what *is*, then offer what to change. eero, UniFi, Synology, Plex all do
+   this. Today's landing page is all action, no state.
+
+2. **Two-and-a-half "every visit" controls; everything else is rare.**
+   Volume, mic mute, and source selection are daily. The other rows
+   are weekly-to-yearly. Privilege the daily, demote the rare.
+
+3. **Max two levels of disclosure.** Nielsen: "designs that go beyond 2
+   disclosure levels typically have low usability because users often get
+   lost when moving between the levels." `/` → `/wizard/` is the budget —
+   don't add a third tier.
+
+4. **The recurring mental model across audio admin is Sources / Sound /
+   Network / System.** Sonos, Roon, BluOS, WiiM, Plex, eero all converge on
+   this shape. Add **Assistant** as a JTS-specific 5th section and
+   **Accessories** as a 6th. Don't reinvent.
+
+5. **Setup is a wizard on the critical path; a checklist everywhere else.**
+   HomePod, Sonos, Stripe, Notion, GitHub all converge: linear flow until
+   the device is *usable*, then a deferrable list at a stable URL. "Maybe
+   later" / "Hide", never "Skip?".
+
+6. **Status text is a noun phrase, not a sentence.** GOV.UK: "Application
+   complete" not "Thank you for your application." For our rows:
+   `Voice · Gemini · Aoede` — not "The voice provider is currently set to
+   Gemini using the voice Aoede." Compresses the page by roughly half
+   without information loss.
+
+7. **Reversibility > discoverability for admin actions.** LAN-admin pages
+   that drop WiFi mid-session, restart voice, or flip AEC need to confirm.
+   Already done for Reboot; extend the model to anything destructive.
+
+8. **Color is semantic first, accent second.** The current green reads like
+   Spotify/success. Use a neutral palette with one quiet accent for
+   interactivity; reserve green/amber/red for status.
+
+9. **Performance is part of the design language.** The landing page remains
+   static HTML/CSS with tiny hydration for live controls and summaries. No
+   framework bundle, external font request, icon font, client router, animated
+   chart, or per-row polling loop belongs on `/`. Local cacheable WOFF2 fonts
+   are acceptable when their licenses are carried in-repo.
+
+10. **Reuse primitives without over-abstracting.** The web wizards already
+    have a shared primitive layer in `jasper/web/_common.py` for CSRF,
+    flash/redirect hygiene, shared toggles, response helpers, and common page
+    chrome. Keep that discipline during the redesign: if a row, control,
+    status badge, or save pattern appears repeatedly, give it a small shared
+    helper/class; if it appears once, keep it local. Avoid both copy-paste
+    drift and speculative frameworks.
+
+---
+
+## 3. Current-state snapshot (as of 2026-05-28)
+
+> ⚠ Re-verify this before building — new cards may have landed.
+> Source: `deploy/index.html`,
+> `deploy/nginx-jasper.conf`, `jasper/web/__main__.py`, live
+> `http://jts.local/` on 2026-05-28.
+
+### 3.1 Landing page `/` — grouped settings sections (re-verified 2026-05-31)
+
+Top control card: **Volume slider** (0-100%, drag/keyboard), **Mic toggle**
+(checked = listening), and a lightweight **Source selector** (Auto, AirPlay,
+Bluetooth, Spotify, USB). The selector posts to `jasper-control`'s
+`/source/*` routes and is distinct from the `/sources/` on/off wizard.
+The lifecycle switches on `/sources/` represent persisted **desired** state,
+not a best-effort process probe; their status copy separately renders
+effective `on`, `off`, `degraded`, `parked`, or `unavailable`. The Bluetooth
+Power switch on `/bluetooth/` writes that same desired state, while pairing
+mode and Scan remain gated by effective adapter power. Adapter read failures
+preserve the last truthful desired state while disabling controls; a bonded
+follower renders parked and the server rejects Bluetooth mutations with 409.
+The presentation rule is recorded here; the state and convergence contract is canonical in
+[HANDOFF-source-lifecycle.md](HANDOFF-source-lifecycle.md).
+
+Below it the rows are grouped into labelled sections (each heading an
+`.eyebrow` `group-title`). `deploy/index.html` is the source of truth for the
+exact rows; this is the structural snapshot (grouped, so it survives row
+reordering better than the prior flat enumeration):
+
+| Section | Rows — title → destination |
+|---|---|
+| **Sources** | Playback sources → `/sources/` · Spotify accounts → `/spotify/` · Bluetooth devices → `/bluetooth/` · AirPlay sync → `/airplay/` |
+| **Sound** | EQ → `/eq/` · Sound setup → `/sound/setup/` · Active speaker → `/sound/crossover/` · Room correction → `/sound/room/` · Bass → `/sound/bass/` |
+| **Assistant** | Voice → `/voice/` (provider, pricing, spend cap) · Voice assistant → `/wake/` (wake word, microphone) · Chat history → `/chat/` · Tools → `/tools/` |
+| **Integrations** | Weather → `/weather/` · Transit → `/transit/` · Google → `/google/` · Home Assistant → `/ha/` — an inline section; there is **no** separate `/integrations` page |
+| **Network** | Wi-Fi → `/wifi/` · Speakers / peering → `/rooms/` |
+| **System** | Status → `/system/` · Speaker name → `/speaker/` · Software → `/system/` · Developer tools (operator) → `/wake-corpus/` |
+
+### 3.2 `/system/` status dashboard — System and Audio views
+
+One socket-activated server owns both documents. A shared **Status** header
+uses the canonical segmented-navigation component for **System**
+(`/system/`) and **Audio** (`/system/audio/`); these are ordinary links with
+`aria-current="page"`, not client-side tab panels. Both views poll the same
+cached `/system/data.json` snapshot every 5 seconds and build their structure
+once, so polling does not reset controls, disclosure state, or text selection.
+
+**System** contains the host/operator view:
+
+- Status line (sampler health)
+- **Audio** — an alert card that exists only while
+  `audio_health.overall.status` is `issue`, i.e. while the signal path cannot
+  carry audio at all (a parked graph, a stopped DSP, a dead final-output
+  stage, or hardware the reconciler has detected and confirmed adoptable but
+  that isn't yet declared as the speaker's active output). It sits above the
+  metric tiles because a speaker that cannot play outranks every number below
+  it, and it renders before the metrics warm-up gate because it comes from a
+  different sampler. The browser decides only *whether* to show it, never
+  what it says: each sentence has exactly one writer, and the writers are
+  `_parked_signal`, `_stopped_dsp_signal`, `_undeclared_hardware_signal`
+  (#2812), and `_signal_path`'s seven issue shapes — all in
+  `jasper/control/audio_health.py`. `warn` / `unknown` deliberately stay off
+  the front page. Before #2381 the System view had no audio surface at all, so
+  a structurally-silent speaker looked exactly like an idle healthy one.
+- 6 metric tiles: Memory, Load, CPU, Temp, Fan (if present), Disk —
+  sparklines where history is useful. Memory also shows root cgroup-v2
+  total / anon / file / kernel / other buckets when the controller is
+  available.
+- Software (sha · branch · install date · uptime · voice provider), with a
+  closed **Optional features** disclosure. Enhanced echo cancellation lives
+  there—not on the landing page and not among the ordinary AEC controls on
+  `/wake/`. Opening the disclosure lazily reads the versioned
+  `/aec/enhanced-aec` control contract through `system_setup.py`; its install
+  button starts the background job and polls only while the disclosure is
+  open. The backend owns installation/chip-AEC truth. The browser only maps
+  its `not_installed|installing|installed|stale|failed|unavailable|not_needed`
+  states to product language, and keeps WebRTC/BEST_A vocabulary under
+  Technical details. A failed install keeps the ordinary summary reassuring
+  and actionable; its bounded compiler/download error tail is shown only
+  inside that technical disclosure.
+- Home Assistant connection status (including a "Checking" transient while
+  the child-process probe cache refreshes)
+- Network (RX / TX bytes since boot, throttle bits)
+- Actions (Restart voice / Restart audio / Reboot speaker / Power off)
+- Diagnostics (collapsible — runs `jasper-doctor`)
+- Debug logging and per-service usage (cgroup CPU + memory plus cached systemd
+  `ActiveState` / `SubState` / `NRestarts`; failed or repeatedly restarted
+  units surface even if their cgroup has disappeared)
+
+**Audio** is the single household-facing audio-health view:
+
+- a current-stream diagnostic card with the active source plus only the media,
+  processing, output, latency, signal, and reliability facts the runtime can
+  support honestly. Missing facts disappear; configured maxima and shared-path
+  sample rates are not presented as observed source bitrate or bit depth. With
+  no active source the card is empty — but "No active stream" is reserved for a
+  speaker that is genuinely idle-and-fine: when `overall.status` is `issue` or
+  `unknown` the card carries that verdict's own headline and detail instead
+  (#2381);
+- an optional current-issue card with impact, observed evidence, likely area,
+  recurrence, and elapsed time. Healthy playback does not get a redundant
+  "playing" status card;
+- a compact current-session roll-up of observed interruptions, degraded timing,
+  and time affected;
+- at most five non-duplicated recent incidents. Their relative timestamps update
+  locally between polls, recovered rows say how long the event lasted, and a
+  native disclosure exposes the bounded freeze-frame evidence captured at the
+  transition. The incident ring survives a control-service restart without
+  becoming an unbounded log or database;
+- compact readiness rows for the *other* AirPlay, Spotify, Bluetooth, and USB
+  Audio sources, derived from the canonical music-source registry. Cached
+  service state distinguishes Ready, Not running, Off, and a failed
+  source-critical service without treating ancillary helpers as renderers or
+  starting another systemd probe cadence. Canonical source intent owns the Off
+  state: expected inactive units are quiet, while an Off source with active
+  resources is an explicit drift issue;
+- collapsed technical evidence for raw fan-in/Camilla/outputd and historical
+  route-validation context; and
+- collapsed Audio conversion controls (Medium/Best ALSA rate-converter
+  preference).
+
+The browser does not infer health from raw counters or contain latency
+thresholds. It renders the normalized `/system/snapshot.audio_health`
+contract and fails soft to an explicit unavailable card if that block is
+missing. Playback continuity and timing are separate axes: a USB L2 fallback
+can protect clean playback while honestly reporting increased latency. L0 is a
+live receiver clock-mode fact, not an end-to-end measurement; stale, missing,
+or mismatched route-validation artifacts remain technical evidence and never
+become a household warning. AirPlay reports synchronization mode/corrections
+rather than a misleading numeric latency estimate.
+
+### 3.3 Web surfaces under `jasper/web/`
+
+19 stdlib-`http.server` setup/debug modules, mostly socket-activated and
+LAN-only. Some run inside the combined `jasper-web` process; older/heavier
+surfaces such as `/bluetooth/`, `/system/`, `/chat/`, and
+the correction measurement routes still have their own service/socket wrappers.
+
+| Path | Module | Port | Purpose |
+|---|---|---|---|
+| `/spotify/` | `spotify_setup.py` | 8765 | Per-household OAuth |
+| `/voice/` | `voice_setup.py` | 8767 | Provider + key + model + voice + per-model pricing + spend cap |
+| `/google/` | `google_setup.py` | 8768 | Calendar + Gmail OAuth |
+| `/bluetooth/` | `bluetooth_setup.py` | 8769 | Adapter + pairing |
+| `/sound/room/`, `/sound/crossover/`, `/sound/bass/` (`/correction/*` aliases) | `correction_setup.py` | 8770 | Room, active-speaker crossover, and Bass measurement/status; HTTPS only when local microphone capture needs it |
+| `/airplay/` | `airplay_setup.py` | 8771 | Sync mode |
+| `/system/`, `/system/audio/` | `system_setup.py` | 8772 | System and audio-health dashboard |
+| `/sources/` | `sources_setup.py` | 8773 | AirPlay/BT/Spotify/USB toggles |
+| `/wake/` | `wake_setup.py` | 8774 | Microphone, echo cancellation, wake word, sensitivity, advanced fusion |
+| `/wifi/` | `wifi_setup.py` | 8775 | NetworkManager wrapper |
+| `/transit/` | `transit_setup.py` | 8777 | Transit address + providers |
+| `/ha/` | `home_assistant_setup.py` | 8778 | Home Assistant connection |
+| `/weather/` | `weather_setup.py` | 8779 | Weather default |
+| `/wake-corpus/` | `wake_corpus_setup.py` | 8782 | Wake-word corpus recorder |
+| `/speaker/` | `speaker_setup.py` | 8783 | Speaker display name |
+| `/eq/`, `/sound/setup/` (`/sound/*` APIs) | `sound_setup.py` | 8784 | Profiles/EQ and local output, safety, topology, and active-speaker commissioning |
+| `/rooms/` | `rooms_setup.py` | 8785 | Speakers, pairing, wake-response peering |
+| `/tools/` | `tools_setup.py` | 8786 | Voice tool catalog |
+| `/chat/` | `chat_setup.py` | 8787 | Read-only conversation history |
+
+Static and external companion surfaces:
+
+- `/` is static HTML under `deploy/`.
+- CamillaGUI remains a separate external surface, but its socket binds
+  loopback-only since [#2319](https://github.com/jaspercurry/JTS/issues/2319)
+  (`127.0.0.1:5005`, was `0.0.0.0:5005`) — the unauthenticated, root-backed
+  GUI can author and live-apply CamillaDSP configs naming any device, so
+  it is no longer LAN-reachable. The landing page's Advanced DSP row was
+  removed in the same change (a household-facing link that always
+  connection-refuses is a silent failure); reach the GUI with
+  `ssh -L 5005:localhost:5005 <pi-host>` and browse
+  `http://localhost:5005/` from the laptop. `jasper-doctor`'s "CamillaGUI
+  socket bind" check pins the live posture.
+- `GET /volume`, `/mic`, `/source`, and `/grouping` (GET-only,
+  exact-match — the stereo-pair banner's read) are same-origin proxies
+  into `jasper-control`.
+
+### 3.4 What changed since the original proposal
+
+- **Transit landed** as `/transit/`, including address geocoding and
+  provider-specific cards. The old "future `/location/`" note is now a
+  consolidation opportunity, not a prerequisite.
+- **Weather landed** as `/weather/`, with its own default location/units.
+  It shares enough location semantics with Transit that a future Location
+  row should summarize both.
+- **Home Assistant landed** under `/ha/`, reached directly from the
+  landing page's Integrations section.
+- **Sound preferences are published under `/eq/`, while local output setup is
+  published under `/sound/setup/`;** this strengthens the case
+  for Sound as a top-level section.
+- **Speaker name landed** under `/speaker/`; the homepage title should use
+  this state and should not say `JTS speaker` (JTS already expands to
+  Jasper Tech Speaker).
+- **USB Audio Input landed** in `/sources/` and the landing-page source
+  selector.
+- **Wake-word corpus recorder landed** and should be treated as an
+  operator/developer tool, not a household settings row.
+
+---
+
+## 4. Proposal A — Information architecture
+
+### 4.1 The shape
+
+```
+HEADER / CONTROLS
+  JTS                                  (speaker display name)
+  Volume 68%      Microphone listening      Source Auto · AirPlay active
+
+SETUP BANNER (only when incomplete or user-pinned)
+  Finish setup - 4 of 7 complete        Continue        Hide
+
+Sources
+  Playback sources        AirPlay · Spotify · Bluetooth on
+  Spotify accounts        2 linked
+  Bluetooth devices       3 paired
+  AirPlay sync            Synced
+
+Assistant
+  Voice                   OpenAI · Marin
+  Microphone & wake       Jarvis · Chip AEC
+
+Integrations
+  Weather                 Sunset Park · F
+  Transit                 Nearby routes
+  Google                  Calendar · Gmail
+  Home Assistant          Not connected
+
+Sound
+  Sound profile           Flat · EQ on
+  Room correction         Off
+  Advanced DSP            CamillaGUI
+
+Network
+  Wi-Fi                   Verizon_4TQ9PN · strong
+  Peering                 Off
+
+System
+  Status                  CPU 8% · 52 C · disk OK
+  Software                a139580 · main
+  Diagnostics             Run doctor
+  Actions                 Restart · reboot · power off
+  Developer tools         Wake corpus recorder
+```
+
+### 4.2 Why this shape
+
+- **Six sections.** Sources / Sound / Assistant / Integrations / Network /
+  System. Still inside Miller's 7±2 with proper chunking.
+  Sources/Sound/Network/System is the universal audio-admin shape (Sonos,
+  Roon, BluOS, WiiM, Plex, eero). **Assistant** is the JTS-specific core:
+  how JTS listens and speaks. **Integrations** is the external-service layer:
+  weather, transit, Google, and Home Assistant. Supported Bluetooth
+  accessories are managed from the Bluetooth row under Sources.
+
+- **Use Assistant, not "Voice & Skills."** "Voice & Skills" is a bucket name
+  made from implementation pieces. "Skills" is also Alexa-specific language.
+  **Assistant** is the user-facing core: voice provider and wake detection.
+  External services are **Integrations**. This split keeps Voice from becoming
+  a junk drawer while avoiding an Alexa-style "skills marketplace" metaphor
+  JTS does not actually implement.
+
+- **State on each row.** Polaris microcopy patterns + UniFi/eero
+  state-first home view. User no longer has to click in just to check
+  what's set. Status is a noun phrase (`Gemini · Aoede`), not a sentence.
+
+- **Sound is its own section, not buried in System.** Room correction and
+  preference EQ are *configuration*, not *diagnostics*. CamillaGUI is advanced
+  DSP, but it still belongs under Sound.
+
+- **Kill the `/integrations` umbrella as a homepage row.** It conflated
+  Spotify Connect (a source) with Google account linking and Home Assistant
+  control (external services). Split: Spotify accounts under Sources; Google,
+  Home Assistant, Transit, and Weather under Integrations. *Done — the inline
+  section shipped and the static `/integrations` page was removed entirely on
+  2026-05-31.*
+
+- **No top-level "Now Playing".** Every consumer-audio product (Sonos,
+  HomePod) leads with playback; every *admin* product (Plex, UniFi,
+  Synology, eero) leads with state. JTS is admin. Phones already do
+  playback better. Optional small now-playing chip in the sticky header is
+  fine; making the whole page about it isn't.
+
+- **Sticky volume + mic.** Privacy literature + the private memory note
+  `feedback_silent_failure_unacceptable.md`:
+  mic state must be unambiguous. Sticky placement matches Sonos/HomePod
+  chrome.
+
+- **Identity at the top.** The H1 should be the speaker display name
+  (`JTS`, `Kitchen`, `Workshop`), not `JTS speaker`. JTS already expands to
+  Jasper Tech Speaker, so `JTS speaker` reads as "Jasper Tech Speaker
+  speaker." Drop the current "Manage your speaker." subhead unless it is
+  replaced by live state.
+
+- **Settings rows, not promo cards.** The homepage should look closer to
+  iOS Settings / router admin than a landing page: grouped rows, small icons,
+  one-line statuses, chevrons. Explanatory copy moves into destination pages.
+
+### 4.3 Cards that move
+
+| Today | New home | Why |
 |---|---|---|
-| `/spotify/` | `spotify_setup.py` | 8765 |
-| `/voice/` | `voice_setup.py` | 8767 |
-| `/google/` | `google_setup.py` | 8768 |
-| `/bluetooth/` | `bluetooth_setup.py` | 8769 |
-| `/sound/room/`, `/sound/crossover/`, `/sound/bass/` (`/correction/*` aliases) | `correction_setup.py` | 8770 |
-| `/airplay/` | `airplay_setup.py` | 8771 |
-| `/system/`, `/system/audio/` | `system_setup.py` | 8772 |
-| `/sources/` | `sources_setup.py` | 8773 |
-| `/wake/` | `wake_setup.py` | 8774 |
-| `/wifi/` | `wifi_setup.py` | 8775 |
-| `/transit/` | `transit_setup.py` | 8777 |
-| `/ha/` | `home_assistant_setup.py` | 8778 |
-| `/weather/` | `weather_setup.py` | 8779 |
-| `/wake-corpus/` | `wake_corpus_setup.py` | 8782 |
-| `/speaker/` | `speaker_setup.py` | 8783 |
-| `/eq/`, `/sound/setup/` (`/sound/*` APIs) | `sound_setup.py` | 8784 |
-| `/rooms/` | `rooms_setup.py` | 8785 |
-| `/tools/` | `tools_setup.py` | 8786 |
-| `/chat/` | `chat_setup.py` | 8787 |
+| Speaker name | Header identity + System/Network detail | Identity, not a section |
+| Sources | Sources › Playback sources | Canonical source toggles |
+| Spotify | Sources › Spotify accounts | Music-source account routing |
+| AirPlay sync mode | Sources › AirPlay sync | Sub-setting, not a section |
+| Bluetooth | Sources › Bluetooth devices | Multi-purpose, but one canonical BT home for now |
+| Voice provider | Assistant › Voice | The assistant's speech backend |
+| Wake word | Assistant › Microphone & wake | How the assistant starts listening |
+| Transit | Integrations › Transit | External data capability tied to location |
+| Weather | Integrations › Weather | External data capability tied to location |
+| Google | Integrations › Google | Calendar/Gmail account capability |
+| Home Assistant | Integrations › Home Assistant | Smart-home service capability |
+| Integrations | Split into Sources + Integrations | Removes one ambiguous layer |
+| Wake response | Speakers › Wake response | Lives with the speaker directory on `/rooms/` |
+| Accessories | Promoted to top-level Accessories | Input devices, not network |
+| Sound | Sound › Sound profile | Preference EQ and curves |
+| CamillaDSP | Sound › Advanced DSP | Configuration, not health |
+| Room correction | Sound › Room correction | Configuration, not health |
+| Wake-word corpus recorder | System › Developer tools | Operator/debug surface |
+| System | Stays; internal cards re-grouped | Dashboard is fine |
 
-`GET /volume`, `/mic`, `/source`, and `/grouping` are GET-only exact-match
-same-origin proxies into `jasper-control`. **CamillaGUI binds loopback-only**
-(`127.0.0.1:5005`, was `0.0.0.0:5005` — [#2319](https://github.com/jaspercurry/JTS/issues/2319)):
-the unauthenticated, root-backed GUI can author and live-apply CamillaDSP
-configs naming any device, so it is no longer LAN-reachable. The landing page's
-Advanced DSP row went with it, because a household-facing link that always
-connection-refuses is a silent failure. Reach it with
-`ssh -L 5005:localhost:5005 <pi-host>`; `jasper-doctor`'s "CamillaGUI socket
-bind" check pins the posture.
+**Bluetooth note.** The BT adapter is multi-purpose: source (phone → speaker
+audio) *and* accessory bus (volume knob, headphones paired to the speaker).
+Two valid presentations:
 
-## What NOT to do
+- **Option A** — One canonical Bluetooth card under Sources. Pairing flow
+  reachable from there. "Devices paired to this Bluetooth adapter" listed
+  inside.
+- **Option B** — Sources/Bluetooth covers source on-off; Accessories/Remotes
+  covers paired controllers. One adapter, two surfaces.
 
-Anti-patterns easy to default to that the 2026-05 research surfaced as mistakes.
+Lean A for simplicity in the first redesign: one Bluetooth row under Sources,
+with device type labels inside `/bluetooth/`. Revisit if paired controllers
+and audio devices become hard to distinguish in one list.
 
-1. **No tab bar.** Tabs suit ~3-5 equal-weight modes; this surface is
-   settings-dominant, so tabs would hide most of it. Vertical sections scroll.
-2. **Don't try to be the Sonos app.** This is an admin page (the Plex/eero
-   archetype), not a consumer remote. Phones already do play/skip/queue better.
-3. **Don't gate the page behind setup.** Even pre-setup, volume and mic mute
-   must work. Settings is a tool, not a gate.
-4. **Don't auto-show a setup wizard for returning users.** Persistent banner is
-   a light touch; auto-modal is friction. Once dismissed, stay dismissed.
-5. **Don't put state behind an extra click.** Showing `Gemini · Aoede` on the
-   row is the point. Clicking in to see a setting means the IA is wrong.
-6. **Don't merge `/system/` into `/`.** Different modes: `/` configures the
-   thing, `/system/` monitors and fixes it.
-7. **Don't add a third level of disclosure.** `/` → a wizard is the budget.
-   Wanting a sub-wizard or a tab inside a wizard means restructure instead.
-8. **Don't write descriptions on the index.** If a row needs 20 words, they
-   live on the destination. The index is for recognition, not learning.
-9. **Use "Assistant", not "Voice & Skills".** If service connections outgrow
-   that row, split to **Integrations**, not "Skills".
+Current implementation keeps the source switch on both `/sources/` and the
+device-focused `/bluetooth/` page, backed by one persisted intent. Do not let
+either page infer the switch from BlueZ `Powered`; temporary adapter failure is
+shown as desired-On/effective-degraded. See
+[HANDOFF-source-lifecycle.md](HANDOFF-source-lifecycle.md).
+
+### 4.4 The Now Playing question, resolved
+
+Don't make it a section. Optionally show it as a chip in the sticky header
+(`Now playing — Lady Gaga · Spotify`). Skip in v1 if uncertain. The full
+"now playing" UX belongs on phones; the management page's job is
+configuration + health.
+
+---
+
+## 5. Proposal B — Setup wizard
+
+### 5.1 Two surfaces, one source of truth
+
+1. **A linear wizard at `/setup/`** — walks through one-time configuration
+   in sequence.
+2. **A dismissible banner at the top of `/`** —
+   `Finish setup — 3 of 5 done · Continue ›` until the user finishes or
+   hides it.
+
+The Stripe / Notion / GitHub pattern. The wizard is for momentum; the
+banner is for re-entry. Stripe's docs explicitly call the banner out as
+ensuring "visibility and prompt timely action," with the checklist storing
+"the state of each checkbox" so users can return anytime.
+
+### 5.2 The steps
+
+```
+Critical path — speaker is much less useful without these:
+
+  1. Voice provider     Pick a backend + paste API key
+  2. Location           For weather, transit, sunrise/sunset, local context
+  3. Spotify            Link your account (cold-start "play X")
+
+Recommended:
+
+  4. Speaker name       Shown in AirPlay, Spotify, Bluetooth, USB
+  5. Microphone & wake  Default mic/AEC path works; choose wake phrase / tune
+  6. Room correction    ~5 min iPhone measurement
+  7. Sound profile      Flat default works; pick preference curve
+
+Conditional — only shown if the trigger fires:
+
+  8. Google             Calendar + Gmail for assistant answers
+  9. Home Assistant     Smart-home control
+ 10. Peering            Another JTS on the network? Pair them.
+ 11. USB input          Hardware supports gadget mode? Offer it.
+```
+
+Three items remain the critical path. The rest are recommended or conditional,
+which keeps setup honest: the speaker is usable before room correction,
+Home Assistant, or a remote. Order matches HomePod's / Sonos's "critical path
+then everything else" shape. Each step is an existing wizard where practical
+(`/voice/`, `/spotify/`, `/speaker/`, `/wake/`, `/sound/`) with a future
+`/location/` wrapper that coordinates the already-shipped `/weather/` and
+`/transit/` state.
+
+### 5.3 Behavior
+
+- **State**: `/var/lib/jasper/setup_state.json` (mode 0644, atomic write).
+  Schema: `{ dismissed_at: null | ISO, completed: [step_id...],
+  last_prompted_at: ISO }`. Each existing wizard's save handler appends to
+  `completed` and removes itself from the open-loop list.
+
+- **Banner copy**: `Finish setup — 3 of 5 done` — Zeigarnik open-loop
+  framing (incomplete tasks are remembered better and drive completion).
+
+- **Two buttons**: `Continue setup ›` and `Hide`. Hide sets `dismissed_at`
+  and never auto-re-surfaces. **Never "Skip?"** — NN/g and Medium's
+  onboarding research both flag the framing as making users overthink;
+  "Maybe later" / "Hide" are the validated alternatives.
+
+- **Always reachable at `/setup/`** from a small link in the page footer,
+  so dismissed users can come back.
+
+- **Re-prompt rule**: never re-show the whole banner after Hide. If a new
+  conditional item becomes relevant (second speaker
+  on LAN), surface that *one* item as a chip next to the relevant section
+  — not by un-hiding the banner.
+
+- **End state**: brief success ("Setup complete. You can revisit any of
+  this anytime."). Peak-end research says this final beat matters more than
+  any individual step. No confetti — wrong register for admin.
+
+### 5.4 What we explicitly don't do
+
+- **No percentage progress bar.** "3 of 5" is more honest than 60%. NN/g
+  and Apple HIG both flag false-progress percentages as a credibility risk.
+- **No blocking modal.** Banner is dismissible; the rest of the page is
+  fully functional underneath. Settings is a tool, not a gate.
+- **No re-prompting after dismissal.** Trust the user. Otherwise the
+  banner becomes the new annoying thing.
+- **No "you have N tasks" badge on individual cards.** Pollutes the daily
+  settings surface. The banner is the only nag.
+
+---
+
+## 6. Proposal C — Copy revision
+
+### 6.1 The pattern
+
+For each row on `/`:
+
+- **Icon**: small, familiar, decorative unless the label is hidden.
+- **Title**: noun phrase (the thing — "Voice", "Microphone & wake", "Peering")
+- **Status line**: current value, dot-separated where multi-part
+  (`Gemini · Aoede`, not "currently set to Gemini with voice Aoede")
+- **Chevron**: navigates to the dedicated wizard/page.
+- **No long description.** The destination explains itself.
+
+The long explainers don't disappear — they move to where they're useful.
+"Why peering" lives on `/rooms/`; "what AEC does" lives on the Echo
+cancellation section and the advanced fusion controls. The index doesn't need
+to teach; the destination does.
+
+### 6.2 Side-by-side
+
+| Today (verbose) | Proposed (terse) |
+|---|---|
+| **JTS speaker** / `Manage your speaker.` | **JTS** *(speaker display name; no redundant subhead)* |
+| **Wake word ›** — Pick which phrase wakes the speaker — "Jarvis", "Hey Jarvis", "Alexa", or "Hey Mycroft". New models can be added by updating `jasper/wake_models.py`. | **Microphone & wake** · Jarvis · Chip AEC |
+| **Wake response ›** — Off by default. When you have multiple JTS speakers on the same network, turn this on so only one responds to each wake word instead of all of them at once. | **Peering** · Off |
+| **Room correction ›** — Measure your room from your iPhone and apply correction filters to CamillaDSP. Browser will warn "Not Private" the first time — see the note below. | **Room correction** · Off |
+| **Voice provider ›** — Choose which real-time voice backend the speaker uses (Gemini, OpenAI, or Grok) and paste API keys. | **Voice** · OpenAI · Marin |
+| **AirPlay sync mode ›** — Synced (default — works for music, video A/V, and multi-room) or free-running (fallback for DAC-specific issues). | *(gone — sub-setting under Sources › AirPlay)* |
+| **Sources ›** — Turn each playback source (AirPlay, Bluetooth, Spotify Connect) on or off. | **Playback sources** · AirPlay · Spotify · Bluetooth |
+| **Transit ›** — Configure nearby subway and bus stops so you can ask "when's the next train?"... | **Transit** · 3 providers |
+| **Weather ›** — Set the default location and units for weather questions when you do not name a city. | **Weather** · Sunset Park · F |
+| **Wake-word corpus recorder ›** — Tooling / debug page... | **Wake corpus** · Developer tool *(under System, collapsed/advanced)* |
+
+### 6.3 Action button labels
+
+Today's `Restart voice` / `Restart audio` / `Reboot speaker` are already
+good — verbs lead, concrete-consequence confirms ("Wake-word will be
+unavailable for ~30 s"). Keep them. The cull is on prose-status areas —
+those compress to nouns.
+
+### 6.4 Visual system
+
+> **Craft-level rules moved.** The measurable ones — type ladder, text ramp,
+> depth, concentric radii, touch targets, tabular numbers, and motion — are now
+> owned by [docs/design-language.md](design-language.md). Where this section and
+> that file disagree, that file wins; the bullets below are the 2026-05 proposal
+> that preceded it, kept for the layout/performance guidance it still owns.
+
+This should feel like a modern settings surface, not a marketing page and not
+a 1990s directory. Recommended default:
+
+- **Layout**: single column on phones; 2-column section grid is acceptable on
+  desktop only if row order remains obvious. Sections are full-width bands or
+  grouped lists, not cards inside cards.
+- **Rows**: 44-52 px minimum height, icon at left, label, one-line status,
+  chevron. Two-line rows only when status genuinely needs it.
+- **Icons**: use small inline SVG icons (Lucide-style strokes are fine) with
+  visible text labels. Do not use an external icon font or CDN dependency.
+- **Color**: neutral surfaces and text first, one quiet accent for interactive
+  affordances. Green is reserved for healthy/on/success, amber for
+  setup-needed/warning, red for destructive/error. (~~likely deep blue or
+  blue-teal~~ — superseded 2026-07-31: the shipped accent is the oklch sage
+  `--primary`, and the palette is a ratified decision, not a recommendation.
+  See design-language.md §2.)
+- **Typography**: local Figtree and Outfit WOFF2 files with system fallbacks;
+  no external font requests. Sentence case. Tabular numbers for percentages,
+  temperatures, spend, and uptime.
+- **Motion**: short hover/focus transitions only; animate transform/opacity
+  when needed; respect `prefers-reduced-motion`.
+- **Performance**: no framework bundle, no runtime CSS-in-JS, no client-side
+  router, no charts on `/`, no per-row polling. Hydrate controls/status from
+  one or two existing JSON endpoints.
+
+---
+
+## 7. What NOT to do
+
+Anti-patterns to resist when building. Each one is something easy to
+default to that the research surfaced as a mistake.
+
+1. **Don't add a tab bar.** Tabs make sense for ~3-5 equal-weight modes
+   (Now Playing / Devices / Settings). JTS's surface is settings-dominant
+   — tabs would hide most of it. Vertical sections scroll fine.
+
+2. **Don't try to be the Sonos app.** We're an admin page (Plex/eero
+   archetype), not a consumer remote. Phones already do "play X" / "skip"
+   / "queue Y" better than a webpage on `jts.local`. Resist feature creep
+   toward consumer-app shape.
+
+3. **Don't gate the page behind setup.** Even pre-setup, volume and mic
+   mute must work. Settings is a tool, not a gate.
+
+4. **Don't auto-show the wizard for returning users.** Stripe's lesson:
+   persistent banner = light touch; auto-modal = friction. Once dismissed,
+   stay dismissed.
+
+5. **Don't put state behind an extra click.** Showing `Gemini · Aoede` on
+   the card is the entire point. If you find yourself making users click
+   in to see a setting, the IA is wrong.
+
+6. **Don't merge `/system/` into `/`.** They're different modes — `/` is
+   "configure this thing", `/system/` is "monitor / fix this thing".
+   UniFi keeps Settings and Insights as separate top-level surfaces for a
+   reason.
+
+7. **Don't add a third level of disclosure.** `/` → `/wizard/` is the
+   budget. If you find yourself wanting `/wizard/subwizard/` or a tab inside
+   a wizard, restructure instead. Nielsen: past 2 levels users get lost.
+
+8. **Don't write descriptions on the index.** If a card needs 20 words to
+   explain itself, the words live on the destination. The index is for
+   recognition (`Wake word · Jarvis`), not learning.
+
+9. **Don't call the section "Voice & Skills."** It reads like a leftover
+   drawer. Use **Assistant**. If service connections later outgrow that row,
+   split to **Integrations**, not **Skills**.
+
 10. **Don't use green as the brand accent.** Green already means healthy,
-    enabled, success, and Spotify. Keep semantic colours semantic.
-11. **Don't make icons carry meaning alone.** Wi-Fi, Bluetooth, source,
-    assistant, and integration icons are too ambiguous without text labels.
-12. **Don't spend Pi budget on polish nobody needs.** No framework bundle, no
-    runtime font request, no icon font, no client router, no animated gradients,
-    no live charts on `/`. Elegance comes from hierarchy, spacing, type, and
-    restraint. Local cacheable WOFF2 fonts with in-repo licences are fine.
+    enabled, success, and Spotify. Use a neutral UI with a separate accent;
+    keep semantic colors semantic.
 
-Three principles those rest on, kept because they are the ones people
-re-litigate: **state first, action second** (an admin page shows what *is*, then
-offers what to change); **status text is a noun phrase, not a sentence**
-(`Voice · Gemini · Aoede`, not "The voice provider is currently set to…"),
-which compresses the page by roughly half without information loss; and
-**reversibility beats discoverability** for admin actions — anything that drops
-WiFi, restarts voice, or flips AEC confirms first. The full ten, with sources,
-are in the
-[archive](historical/management-ui-redesign-2026-05.md#2-grounding-principles).
+11. **Don't make icons carry meaning alone.** Icons are scan anchors. Text
+    labels remain visible because Wi-Fi, Bluetooth, source, assistant, and
+    integration icons are too ambiguous alone.
 
-Last verified: 2026-08-26 (triage pass — `canonical_page` / `canonical_header` /
-`canonical_banner` / `toggle_html` / `csrf_field_html`, the two shared ES
-modules, `system_capabilities_for_profile`, `check_web_design_assets`,
-`test_nginx_serves_assets_over_https_no_mixed_content`, the preflight page, and
-the `eq-math.js` / `active-speaker-ui.js` split rechecked against their owning
-files. The 2026-05 redesign proposal, the pre-Phase-1 inventory, the phased
-rollout, the open decisions, and the competitor/UX research moved to
-`docs/historical/management-ui-redesign-2026-05.md`; the one-frontend rule
-became ADR-0120.)
+12. **Don't spend Pi budget on polish no one needs.** No React/Vue/Svelte app,
+    no external font request, no icon font, no animated gradients, no
+    blur-heavy glassmorphism, no live charts on the homepage. The elegance
+    should come from hierarchy, spacing, type, and restraint. Local WOFF2
+    fonts are fine when cacheable and licensed.
+
+---
+
+## 8. Phased rollout
+
+Each phase ships independently; the page improves with every merge. Order
+by "biggest visual win per hour of work."
+
+### Phase 1 — IA + visual reshape (1 PR)
+Replace the flat navigation cards on `/` with grouped settings rows:
+Sources / Sound / Assistant / Integrations / Network / Accessories / System.
+Apply terse copy, remove the `JTS speaker` redundancy, move the certificate
+note into the Room correction row/page, and put Wake corpus under
+System/Developer tools. Keep backend behavior unchanged; this is the static
+landing page, CSS, and static asset-serving path. As the rows take shape,
+factor only the repeated visual primitives: section headings, row layout,
+row icons, status chips, chevrons, and danger/action treatments.
+
+This delivers most of the visual win. Reversible if the grouping feels wrong.
+
+### Phase 2 — State on the rows (1 PR)
+Each row renders a noun-phrase status. Prefer existing sources:
+`/source/state`, `jasper-control`'s `/state`, and `/system/data.json`.
+Most state already exists: source selection, speaker name, voice, sound, Home
+Assistant, system/cloud metrics. Net new wiring should focus on
+weather/transit summaries and any missing wake/correction status.
+
+Add a `/location/` wrapper only if it truly reduces duplication between
+`/weather/` and `/transit/`. It should not block Phase 1.
+
+### Phase 3 — Setup wizard (1 PR)
+- `/setup/` linear flow that chains existing wizards.
+- `setup_state.json` server-side.
+- Banner on `/`.
+- Each existing wizard's save handler appends to `completed`.
+
+### Phase 4 — Conditional prompts (later, polish)
+- Detect second JTS on LAN → chip under Network.
+- Detect USB gadget-capable hardware → small chip under Sources.
+- These are nice-to-haves; ship 1-3 first.
+
+### Phase 5 — Consolidation (later)
+- Move AirPlay sync into `/sources/` or make `/airplay/` feel like a subpage.
+- `/integrations` removed entirely (2026-05-31) — the landing page's inline
+  Integrations section replaced it.
+- Consider `/location/` if weather/transit state keeps drifting.
+- Decide whether Wake corpus should require an explicit developer-mode link.
+
+---
+
+## 9. Open decisions
+
+Most major naming questions are now settled. The remaining decisions are
+implementation-detail scale.
+
+1. **Sticky vs. top-pinned volume + mic?** Implemented as top-pinned in the
+   first static redesign. Revisit sticky only if users repeatedly scroll away
+   from controls while making adjustments.
+
+2. **Exact accent color.** Current landing page uses a quiet sage/spruce
+   accent with semantic green reserved for listening/healthy states. Keep an
+   eye on the page reading too monochrome as other wizard pages adopt the
+   system.
+
+3. **Kill `/integrations` entirely, or keep as redirect?** *Resolved
+   (2026-05-31): removed entirely.* Nothing linked to it after the inline
+   Integrations section shipped, so it was deleted rather than kept as a
+   redirect. Spotify lives under Sources; Google/Home Assistant/Weather/Transit
+   live under the landing page's Integrations section.
+
+4. **Spotify Connect "service on/off" vs. "household accounts" — one row
+   or two?** Both under Sources/Spotify. Lean one row with two sub-states
+   (matches "max 2 levels" principle).
+
+5. **Bluetooth — Sources only, or Sources + Accessories?** Lean
+   Sources-only with a "Paired devices" list inside (Option A in §4.3).
+   Revisit if the device list grows.
+
+6. **Room correction under Sound or System?** Sound (it's about audio
+   output, not health). Card shows `Off — measure your room`; clicking
+   goes to the existing HTTPS `/correction/` surface.
+
+7. **Banner copy: "Finish setup" vs "Set up your speaker" vs "3 things
+   left"?** Zeigarnik favors open-loop framing. Start with `Finish setup —
+   3 of 5 done`; iterate if it feels off when seen live.
+
+8. **Now-playing chip in the sticky header — yes or no?** Lean **no** for
+   v1. Adds chrome on every page load; phones do it better. Easy to add
+   later if missed.
+
+9. **Where does the `/setup/` entry point live after the banner is
+   dismissed?** Lean small text link in the page footer
+   (`Run setup again →`). Also reachable from System if needed.
+
+---
+
+## 10. Research foundation
+
+What I read to inform the proposal, abridged. Re-verify before building —
+products evolve, especially Sonos/Google Home/Alexa apps.
+
+### A. IA / grouping in connected-audio products
+
+Across mature audio products, three top-level groupings recur with near-
+universal regularity: **(1) per-room/device settings**, **(2) system/account
+settings**, and **(3) sources/services**. Audio quality, voice assistants,
+and "about" tend to sit inside (1) or (2) rather than at the top level.
+
+**Sonos S2** splits explicitly into **System Settings** and **Room
+Settings**. System Settings exposes About My System, Network, AirPlay,
+Audio Compression, Date & Time, Parental Controls, Privacy & Security,
+System Name, System Updates, Voice Assistants, Transfer System Ownership,
+Forget Current System. The mental model is "system = the whole household;
+room = this speaker." — [Sonos Community: System Settings Introduction](https://en.community.sonos.com/the-new-sonos-app-229144/system-settings-introduction-6891769),
+[Sonos: Understanding the Network Details section](https://support.sonos.com/en-us/article/understanding-the-network-details-section-in-the-sonos-app).
+
+**Apple HomePod** in the Home app: speaker-detail page as a flat list —
+Room, Primary User, Reduce Bass, Personal Content, Hey Siri, Touch and
+Hold for Siri, Light/Sound When Using Siri, Language, Siri Voice, Wi-Fi,
+Accessibility, Doorbell Chime. Cross-device settings pulled up one level
+into **Home Settings**. — [Apple: Change HomePod settings](https://support.apple.com/guide/homepod/change-settings-apde6dc8093d/homepod),
+[Apple HIG: Settings](https://developer.apple.com/design/human-interface-guidelines/settings).
+
+**Google Home** uses four top-level tabs — **Favorites, Devices, Activity,
+Automations** — and pushes per-device settings into a sheet on the device
+itself. Architectural bet: settings is reached through the device, not
+through a global Settings menu. — [Google: What's new in Google Home](https://support.google.com/googlenest/answer/15962877).
+
+**Amazon Alexa** routes Echo device settings inside the device detail
+page; global app sidebar has **Devices, Routines, Music, More**. —
+[Amazon: Alexa+ Settings on Echo Devices with a Screen](https://www.amazon.com/gp/help/customer/display.html?nodeId=T19ngFXCz1hQLePzXr).
+
+**Home Assistant** (closest analogue to LAN-only admin): left sidebar with
+**Overview, Energy, Map, Logbook, History, Media, Settings**. Settings
+opens to **Devices & Services, Automations & Scenes, Areas & Zones,
+People, Add-ons, Dashboards, System, About**. Power-user bias; everything
+one click but nothing curated. — [HA dashboard sidebar](https://www.home-assistant.io/dashboards/sidebar/).
+
+**Roon** Settings is vertically tabbed: **General, Storage, Services,
+Audio, Library, Setup, Play Actions, Backups, Account, Extensions, About**.
+— [Roon: Audio Setup Basics](https://help.roonlabs.com/portal/en/kb/articles/audio-setup-basics).
+
+**Plex** Server Settings uses left sidebar with **Settings** (General,
+Remote Access, Library, Network, Transcoder, DLNA, Languages…) and
+separate **Manage** group (Libraries, Users & Sharing, Optimized
+Versions). Status/health is a third grouping. — [Plex: Customizing Plex Web](https://support.plex.tv/articles/customizing-plex-web/).
+
+**WiiM Home**: **Devices → Device Settings**, with subsections including
+**Sound** (EQ — graphic, parametric, per-source), **Network**, **Audio**,
+**System**. — [WiiM: Per-Source EQ guide](https://faq.wiimhome.com/en/support/solutions/articles/72000626485-how-to-use-per-source-eq-a-comprehensive-guide).
+
+**BluOS** (Bluesound) splits **Player Settings** from **Audio Settings**.
+Player covers Name, Room, WiFi, Alarms, Sleep Timer, IR Learning, Network,
+Local Shares; Audio covers format/output behaviour per model. —
+[BluOS: Navigating Player Settings](https://support.bluos.net/hc/en-us/articles/18062760334487).
+
+**UniFi Network**: single **Settings** menu with sections **WiFi,
+Networks, Internet, Routing, Security, Profiles, System**; distinct
+**Devices/Insights/Clients** trio at the top level. Split: "things to
+administer" (Settings) vs. "things to monitor" (Devices/Insights). —
+[Routerhax: UniFi Controller setup](https://routerhax.com/unifi-network-controller/).
+
+**Eero** is the cleanest: four-tab app — **Home, Devices, Activity,
+Settings** — Settings holds Network Management, WiFi Credentials, Guest
+Network, User Management, Software Updates, Appearance. —
+[eero: Settings tab](https://support.eero.com/hc/en-us/articles/360036384611).
+
+**Synology DSM**: windowed desktop in the browser with a single **Control
+Panel** application (Connectivity, File Sharing, System, Applications).
+Browser-as-OS metaphor lets one surface hold a lot of breadth without
+flattening it. — [Synology: Control Panel](https://kb.synology.com/en-af/DSM/help/DSM/AdminCenter/ControlPanel_desc?version=7).
+
+**Conclusion.** Sources, Sound/Audio, Network, About/System are
+near-universal top-level slots. Voice/Assistants is sometimes a peer
+(Sonos, Apple), sometimes buried (Roon). The strongest common shape:
+**Now Playing (or Devices) | Sources/Services | Sound | Network/System
+| About/Updates**. "Now Playing" is the *home*, not a settings section —
+every product separates **playback control** (always-visible chrome) from
+**settings**.
+
+### B. First-time-setup wizard patterns
+
+The dominant pattern across mature setup flows is **proximity-and-
+momentum**: short, mandatory critical path, then a deferrable list
+afterwards.
+
+**HomePod**: Bluetooth proximity starts automatic setup; Wi-Fi, Siri,
+Apple ID, Apple Music transfer from iPhone — no manual choices in the
+critical path. Progression is implicit, not a progress bar. — [Apple: Set
+up HomePod](https://support.apple.com/guide/homepod/set-up-homepod-apd779d9bb45/homepod).
+
+**Apple Watch**: same proximity trigger; short linear flow language →
+region → pair → tutorials for safety/cellular/gestures with explicit skip
+at each tutorial step. — [Tom's Guide: Apple Watch setup](https://www.tomsguide.com/wellness/smartwatches/new-to-apple-watch-heres-how-to-set-yours-up-like-a-pro).
+
+**Sonos**: Sonos's engineering team writes that "a short, forgettable
+setup is certainly preferable to a drawn-out misadventure in home
+networking, but on the Initial Configuration team, we believe your first
+impression of Sonos can and should be much more." Linear, single-step:
+power on → choose new/existing → sign in → detect speaker → assign room →
+Wi-Fi → name speaker → optional **Trueplay** room tuning. Trueplay is
+explicitly optional and deferrable. — [Sonos Tech Blog: New Wizards for
+Tomorrow's Setup](https://tech-blog.sonos.com/posts/new-wizards-for-tomorrows-setup/),
+[Sonos: Set up your Sonos One](https://support.sonos.com/en-us/article/set-up-your-sonos-one).
+
+**Stripe Dashboard**: canonical "persistent banner + checklist" pattern.
+The banner is "placed prominently in your application such as on the
+homepage of your dashboard to ensure visibility and prompt timely action."
+The account checklist "stores the state of each checkbox" so users "can
+refer back to this page at any time to see what you've completed so far."
+— [Stripe: Account checklist](https://docs.stripe.com/get-started/account/checklist),
+[Stripe: Onboard your connected account](https://docs.stripe.com/connect/saas/tasks/onboard).
+
+**Notion**: lightweight, fully-functional checklist embedded in the
+workspace itself — not a modal, a real page the user can edit;
+abandonment doesn't lose progress. — [Appcues: Notion's lightweight
+onboarding](https://goodux.appcues.com/blog/notions-lightweight-onboarding).
+
+**GitHub community-standards checklist**: prototypical "X/Y items
+complete." Maintainer sees missing files (README, License, Code of
+Conduct, Contributing, Issue templates, PR template) with inline "Add"
+button per item. No time pressure; checklist is a tool, not a gate. —
+[GitHub: community standards checklist](https://docs.github.com/en/communities/setting-up-your-project-for-healthy-contributions/about-community-profiles-for-public-repositories).
+
+**Specific design answers:**
+
+- **Progress disclosure**: Mix. Apple's flows disclose nothing — linear,
+  end is the signal. Sonos shows step-by-step cards. Stripe shows static
+  checked/unchecked, no percentage. Web SaaS (Linear, Notion, GitHub) lean
+  "X of Y" rather than %. NN/g warns against false progress: "Provide
+  approximate durations to set realistic expectations" rather than
+  misleading signals. — [NN/g: Smart-device app onboarding](https://www.nngroup.com/articles/smart-device-onboarding/).
+
+- **Mandatory vs deferrable**: Mandatory path = minimum to make the device
+  usable (power, network, identity, room name). Everything else
+  deferrable. Recommended deferral microcopy: **"Maybe later"** — not
+  "Skip" framed as a question (makes users overthink). — [Medium: Deferral
+  buttons in SaaS onboarding](https://riyajawandhiya.medium.com/deferral-button-in-saas-onboarding-how-ux-copy-of-these-buttons-can-reduce-the-churn-313ed7212f2b),
+  [NN/g: Onboarding — Skip it When Possible](https://www.nngroup.com/videos/onboarding-skip-it-when-possible/).
+
+- **Dismiss and return**: Stripe's persistent banner + checklist page at
+  stable URL is the most cited pattern. Notion treats checklist as a real
+  artifact. Loom makes onboarding "optional, collapsible, and restorable."
+  — [UX Design Institute: UX Onboarding Best Practices](https://www.uxdesigninstitute.com/blog/ux-onboarding-best-practices-guide/).
+
+- **One step vs whole checklist**: Wizards (linear, one step) during the
+  mandatory critical path; checklists (whole list visible) after. Jakob
+  Nielsen on progressive disclosure: "a variant in which users step
+  through a linear sequence of options, with a subset displayed at each
+  step. Wizards are the classic example." — [NN/g: Progressive
+  Disclosure](https://www.nngroup.com/articles/progressive-disclosure/).
+
+- **"You're done" moment**: Peak-end rule — the ending is
+  disproportionately what users remember. — [Laws of UX: Peak-End
+  Rule](https://lawsofux.com/peak-end-rule/). GOV.UK: "it's fine to say
+  'Application complete' rather than 'Thank you for your application.'"
+
+- **Re-prompt cadence**: Stripe shows banner until critical items
+  complete. Notion never re-prompts; checklist is opt-in. Best practice:
+  light-touch — re-prompt only when context changes (new device added, key
+  missing).
+
+### C. Behavioral / IA / UX principles
+
+The principles I lean on in the proposal:
+
+**1. Match the system to the user's mental model.** Don Norman: "the
+designer must ensure that the system image is consistent with and operates
+according to the proper conceptual model" — absent that, "people are
+likely to make up inappropriate ones." — [Norman, *Design of Everyday
+Things*, summary](https://www.sharritt.com/CISHCIExam/norman.html).
+
+**2. Information architecture is a language problem.** Abby Covert:
+"Information architecture (IA) is the way we arrange the parts of
+something to make it understandable as a whole. … most of the time, there
+is no right or wrong way to make sense of a mess. Instead, there are many
+ways to choose from." — [Covert, *How to Make Sense of Any
+Mess*](https://abbycovert.com/make-sense/).
+
+**3. Progressive disclosure beats up-front complexity.** Jakob Nielsen:
+"Initially, show users only a few of the most important options. Offer a
+larger set of specialized options upon request." Working ceiling: "designs
+that go beyond 2 disclosure levels typically have low usability because
+users often get lost when moving between the levels." — [NN/g: Progressive
+Disclosure](https://www.nngroup.com/articles/progressive-disclosure/).
+
+**4. Hick's Law: choice cost is real.** "The time it takes to make a
+decision increases with the number and complexity of choices." Cited
+examples include Apple TV Remote's deliberate physical simplicity and
+Slack's progressive onboarding. — [Laws of UX: Hick's
+Law](https://lawsofux.com/hicks-law/).
+
+**5. Miller's Law and chunking.** "The average person can only keep 7
+(plus or minus 2) items in their working memory" — applied to UI, this
+is a mandate to chunk, not a hard cap on menu items. Stéphanie Walter's
+caveat is worth holding: the rule is about short-term memory, not menu
+length. — [Laws of UX: Miller's Law](https://lawsofux.com/millers-law/),
+[Walter: Your menu doesn't need Miller's 7±2 rule](https://stephaniewalter.design/blog/your-menu-doesnt-need-millers-7-plus-minus-2-rule/).
+
+**6. Zeigarnik effect drives completion.** "People remember uncompleted or
+interrupted tasks better than those that have been completed" — and the
+goal-gradient hypothesis says effort accelerates as the goal nears.
+Progress visibility is the lever. — [Designzig: Zeigarnik
+Effect](https://designzig.com/zeigarnik-effect-in-ux-design/), [Designzig:
+Goal Gradient Effect](https://designzig.com/goal-gradient-effect-in-ux-design/).
+
+**7. Peak-end rule.** "People judge an experience largely based on how
+they felt at its peak and at its end, rather than the total sum or average
+of every moment of the experience." For setup flows, the ending state
+matters more than the steps. — [Laws of UX: Peak-End
+Rule](https://lawsofux.com/peak-end-rule/).
+
+**Method note.** Card sorting is the canonical way to validate IA against
+actual users' mental models — open or closed, moderated or unmoderated.
+"Generative research method most useful at the beginning stages of a
+project." If the household disagrees with the proposed groupings, do an
+open card sort with them. — [NN/g: Card
+Sorting](https://www.nngroup.com/articles/card-sorting-definition/).
+
+### D. Microcopy best practices
+
+**Brevity is the rule.** GOV.UK: "put the important words first and drop
+any unnecessary words. For instance, instead of 'This is the total cost',
+simply say 'Total cost.'" Error messages: "do not say 'You have entered
+the wrong password'. Say 'Wrong password'." And "no need to say 'sorry'
+in validation error messages." — [GOV.UK: Writing for user
+interfaces](https://www.gov.uk/service-manual/design/writing-for-user-interfaces).
+
+**Buttons lead with a verb.** Shopify Polaris: "Let visuals and icons do
+the talking wherever you can ('+' not '+ Add')" and "Be direct ('add
+apps' not 'you can add apps')." — [Polaris: product
+content](https://polaris-react.shopify.com/content/product-content). GOV.UK:
+"make the purpose of the link clear from the link text alone." "Submit" →
+"Send invite" is the canonical example for activation lift.
+
+**One voice, many tones.** Mailchimp: "You have the same voice all the
+time, but your tone changes." Default is informal, "but it's always more
+important to be clear than entertaining." Mailchimp explicitly bans
+exclamation points in failure messages. — [Mailchimp: Voice and
+Tone](https://styleguide.mailchimp.com/voice-and-tone/).
+
+**Status text is a noun, not a sentence.** GOV.UK: "it's fine to say
+'Application complete' rather than 'Thank you for your application.'"
+Applied to a settings row: "Voice provider is currently set to Gemini" →
+**"Voice · Gemini"** or **"Gemini"** under heading "Voice." Material
+Design: "Clarity is the single most important metric in UX writing. If a
+user has to read a sentence twice to understand it, the design has
+failed." — [Material: Content design](https://m3.material.io/foundations/content-design/overview).
+
+**Button vs. link.** Buttons cause action and change state; links
+navigate. GOV.UK and Polaris both treat misuse as a defect.
+
+**Explainer vs. assumed knowledge.** Polaris: "Only add content that's
+necessary for clarity… Find the shortest, clearest way to give merchants
+only the info they need to take action." Treat copy "like Jenga: remove
+everything possible before the experience breaks." Corollary: keep one
+explainer near complex settings (what AEC does); drop it everywhere else.
+
+### E. The "device admin page" archetype
+
+The key distinction is **agency**: a consumer app is something the user
+*uses*, an admin page is something the user *administers*. The user is in
+a different role — confident, deliberate, occasional, comfortable with
+technical labels. This shifts several defaults.
+
+UniFi, Synology DSM, eero, Plex, and Apple AirPort Utility all share the
+same archetype:
+
+1. **State-first, action-second.** The home view shows what *is* —
+   devices, status, health — not what to do. eero's Home tab "gives you a
+   clear view"; UniFi's Dashboard shows clients/uplinks/throughput;
+   Synology's "Information Center" shows hardware and connection state.
+   Plex puts "Status" as a sidebar group.
+
+2. **Settings is a destination, not a screen.** Synology models it as an
+   entire windowed app ("Control Panel"). UniFi treats Settings as one of
+   three top-level surfaces (Settings/Insights/Devices). Implication:
+   settings *deserves real estate*, and the home view shouldn't try to be
+   settings.
+
+3. **Power-user expectations.** Admin pages tolerate jargon ("VLAN,"
+   "DHCP," "transcoder," "AEC") that consumer apps would never use,
+   because the audience self-selected. UniFi exposes Networks (VLANs),
+   Profiles (RADIUS), Routing — all technical without apology. Trade-off:
+   terms should still be linkable (info icon, help tooltip) —
+   recognition over recall.
+
+4. **Local-only changes the security mental model.** LAN-only admin pages
+   don't need account/auth UI in the way Stripe or Notion do. The
+   dashboard chrome can omit "you" identity — the user is implicitly the
+   household admin.
+
+5. **Reversibility matters more than discoverability.** Admin actions
+   cause real-world effects (Wi-Fi drop, restart, brick). For a smart
+   speaker this maps to mic mute, Wi-Fi change, voice-provider switch —
+   actions that should confirm before firing. Today's two-stage reboot
+   confirm is exactly this pattern.
+
+6. **Single voice, no marketing.** Admin copy is more neutral and less
+   "branded" than consumer copy. Tone here is closer to "your boss" than
+   "your friend."
+
+### F. Synthesis — the strongest signals
+
+1. **Three top-level slots recur across every audio admin product worth
+   citing: Sources/Services, Sound, Network/System.** Voice/Assistant and
+   About/Updates are next-tier. Now Playing is the *home*, not a settings
+   section. The user's mental model is built around these chunks — fight it
+   at your peril.
+
+2. **The mandatory setup path is short and linear; everything else is a
+   checklist.** Critical-path-as-wizard, everything-else-as-persistent-
+   checklist. Wizard ends when the device is usable; checklist lives on a
+   stable URL the user can return to. Deferral copy is "Maybe later," not
+   "Skip?".
+
+3. **More than two levels of disclosure is a design smell.** Nielsen's
+   most actionable single constraint. With 17 navigation cards today, the
+   right move is to chunk into 6 top-level groups, max one drill-down inside
+   each.
+
+4. **Status text wants to be a noun phrase, not a sentence.** GOV.UK and
+   Polaris are aligned: `Voice · OpenAI`, not "The voice provider is
+   currently set to OpenAI." Compresses the page roughly in half without
+   information loss and makes it scannable.
+
+5. **An admin page is a different rhetorical register than a consumer
+   app.** State-first home (what is happening), settings as a real
+   destination, jargon allowed with tooltips, confirm-before-destructive.
+   UniFi, Synology, eero, Plex all behave this way; the smart-speaker
+   management page should too — closer to a router admin than to the
+   Sonos consumer app.
+
+### G. 2026-05-28 refresh — iOS Settings + compact row design
+
+This refresh was added after the page grew from 13 to 17 navigation cards and
+the user explicitly asked whether "Voice & Skills" was the right grouping. The
+answer: no. The best current name is **Assistant**.
+
+**iOS Settings patterns that transfer well:**
+
+- iOS groups by user mental model more than implementation: identity/account
+  at top; common connectivity near the top; device/system controls; privacy
+  and security; app-specific settings pushed lower. The JTS equivalent is:
+  identity/control header, then Sources, Assistant, Sound, Network,
+  Accessories, System. — [Apple: Find settings on iPhone](https://support.apple.com/en-ie/guide/iphone/iph079e1fe9d/ios),
+  [9to5Mac: iOS 18 Settings changes](https://9to5mac.com/2024/07/18/ios-18-settings-whats-new/)
+- Apple separates quick controls from durable settings. JTS should keep
+  Volume, Microphone, and Source selection pinned; everything else becomes
+  a grouped settings row. — [Apple: Control Center on iPhone](https://support.apple.com/en-gb/guide/iphone/iph59095ec58/ios)
+- Apple's HIG says too many settings make an experience less approachable and
+  harder to search; settings should affect the overall experience, while
+  task-specific controls should live near the task. That supports moving
+  AirPlay sync under Sources and Room correction under Sound. —
+  [Apple HIG: Settings](https://developer.apple.com/design/human-interface-guidelines/settings)
+- At the list level, iOS uses short labels, familiar icons, secondary values,
+  and disclosure. Explanation belongs on the destination screen, not the
+  first row. Apple's writing guidance and GOV.UK's UI writing guidance both
+  point in the same direction: brief, clear, front-loaded labels. —
+  [Apple HIG: Writing](https://developer.apple.com/design/human-interface-guidelines/writing),
+  [GOV.UK: Writing for user interfaces](https://www.gov.uk/service-manual/design/writing-for-user-interfaces)
+
+**Settings-list guidance from broader design systems:**
+
+- Material's settings pattern says important settings go first, section titles
+  should be specific, labels should be brief, and secondary text should show
+  current state rather than repeating the label. This is almost exactly the
+  JTS homepage problem. — [Material Design: Settings](https://m1.material.io/patterns/settings.html)
+- WCAG 2.2's target-size minimum is 24 by 24 CSS pixels; for a phone-opened
+  LAN settings page, rows should be closer to 44-52 px high so they feel easy
+  to tap. — [W3C: What's new in WCAG 2.2](https://www.w3.org/WAI/standards-guidelines/wcag/new-in-22/)
+- SVG is the right icon format here. Inline SVG avoids icon-font downloads,
+  can inherit CSS color, and can be marked `aria-hidden` when paired with a
+  visible label. — [web.dev: Icons](https://web.dev/learn/design/icons/)
+- JavaScript parsing/execution is render-blocking by default, and expensive
+  animations can jank. Keep `/` static; animate only small opacity/transform
+  changes when useful. — [MDN: JavaScript performance](https://developer.mozilla.org/en-US/docs/Learn_web_development/Extensions/Performance/JavaScript),
+  [MDN: Animation performance](https://developer.mozilla.org/en-US/docs/Web/Performance/Animation_performance_and_frame_rate)
+- Accent colors should not be reused for semantic meaning. If green means
+  success/on, it should not also be the house brand color. — [Atlassian Design:
+  Accent colors](https://atlassian.design/foundations/color-new/accents/)
+
+**What not to copy from iOS:**
+
+- Do not copy iOS's giant universal settings list. JTS is one device, not an
+  operating system.
+- Do not bury integrations under an "Apps" analogue. JTS integrations are
+  assistant/source capabilities, not installed apps.
+- Do not rely on search as the escape hatch. Occasional LAN users should be
+  able to scan the page without remembering the right term.
+- Do not create more top-level groups just because iOS can. The six-section
+  JTS shape is a feature.
+
+---
+
+## 11. Appendix — when you're ready to build
+
+Pre-flight checklist for future-you:
+
+- [ ] **Re-inventory `deploy/index.html`** — new rows may have landed
+      since the 2026-05-28 snapshot. Diff against §3.1 and update the
+      proposal sections if necessary.
+- [ ] **Re-inventory `jasper/web/*_setup.py`** — same. Check if new
+      wizards exist that need a home in the IA.
+- [ ] **Check `git worktree list` and `gh pr list --state open`** for
+      in-flight UI work that might conflict.
+- [ ] **Re-skim sections 10A and 10G** (competitor/iOS patterns) for any
+      product that's shipped a major IA change since 2026-05-28. Sonos in
+      particular tends to redesign their app every couple of years.
+- [ ] **Decide the open questions in §9** — write the answer next to each
+      one before opening the PR.
+- [ ] **Spend 30 minutes doing a card sort with the household** — open
+      sort, no predefined groups. If they cluster identically to §4.1,
+      ship. If not, the proposal is wrong about the mental model and
+      needs revision before code.
+- [ ] **Landing-page scope**: keep changes inside `deploy/index.html`,
+      local static assets, install copying, and nginx static serving unless
+      a row truly needs new state. Backend control behavior should remain
+      unchanged and easily reversible.
+- [ ] **Keep shared web primitives in view** — use `jasper/web/_common.py`
+      and `tests/test_web_wizard_conventions.py` as the guardrails when a
+      wizard changes. Prefer tiny shared helpers/classes for repeated controls
+      and states; keep one-off page layout local.
+
+Notes specific to JTS that the research doesn't cover:
+
+- **The mic toggle is a privacy promise**, not just a feature. Its visual
+  state must be unambiguous on every viewport (captured in the private
+  memory note `feedback_silent_failure_unacceptable.md`).
+  Don't bury it under a fold or behind a toggle whose state can be
+  misread.
+- **Web pages remain directly available over HTTP.** Correction measurement
+  pages use HTTPS only for the local-browser `getUserMedia` fallback; the
+  default phone-relay path remains on HTTP. Don't accidentally redirect the
+  whole page to HTTPS — that surfaces the self-signed cert warning. This comes from the
+  private memory note `feedback_jts_http_not_https.md`.
+- **State files live under `/var/lib/jasper/*.env`** with `EnvironmentFile=`
+  chaining in the systemd units (see [HANDOFF-voice-providers.md](HANDOFF-voice-providers.md)
+  for the canonical pattern). The new `setup_state.json` should follow:
+  atomic tempfile + rename, mode 0644 unless it carries secrets, fail-safe
+  default if unreadable.
+- **The `/state` aggregator on `jasper-control:8780`** fails soft per
+  section — wire status reads off it, not off individual daemons.
+
+Verification scope (2026-08-04): Sound IA/current-route scope: the six landing-page
+rows, `/eq/` and `/sound/setup/` page modes, canonical measurement navigation,
+direct correction aliases, and local-microphone HTTP/HTTPS handoff were
+rechecked against `deploy/index.html`, both nginx profiles, the Sound/correction
+renderers, 768 passing focused Sound/correction/landing tests, and the passing
+Sound browser harness. No on-device browser or Pi validation was performed.
+Prior 2026-07-27 (`/system/` Software optional-feature disclosure,
+lazy enhanced-AEC proxy/install contract, backend-owned chip-AEC state, and
+static ES-module state projection rechecked against
+`jasper/web/system_setup.py`, `deploy/assets/system-status/js/`, and
+`tests/test_system_setup.py`). Prior 2026-07-22 (USB forensics card composition, shared snapshot,
+fixed POST proxy, CSRF/control-token path, and canonical ES-module primitives
+rechecked). Prior 2026-07-15 (source-switch desired/effective/parked/unavailable
+presentation and follower mutation guard rechecked against `sources_setup.py`,
+`bluetooth_setup.py`, and their static ES modules; lifecycle behavior linked
+to HANDOFF-source-lifecycle.md. Also
+`/system/` and `/system/audio/` same-document Status navigation (including
+direct-link fallback and one shared poll loop),
+the normalized audio-health rendering boundary, and shared header-tab ownership
+rechecked against `jasper/web/system_setup.py`,
+`deploy/assets/system-status/js/`, `jasper/control/audio_health.py`, and
+`app.css`; the browser renders backend conclusions as current-stream facts,
+an optional current incident, a session roll-up, five recent freeze-frames, and
+compact other-source readiness; USB runtime mode stays separate from historical
+route evidence). Prior 2026-07-12: canonical toggle
+ownership and the no-focus-outline contract rechecked against `app.css` and the
+design-system guards; `/system/`
+memory tile now surfaces root
+cgroup-v2 memory buckets and the Home Assistant card handles the child-cache
+"Checking" state; rechecked against `jasper/control/system_metrics.py`,
+`jasper/control/ha_status_cache.py`, `jasper/control/server.py`, and
+`deploy/assets/system-status/js/sections.js`. Prior pass 2026-06-26:
+`/wake/` now presents microphone, echo cancellation, wake-word, and advanced
+fusion settings as separate concerns; verified against
+`jasper/web/wake_setup.py`, `deploy/assets/wake/js/main.js`, and
+`tests/test_web_wake_setup.py`. Prior pass 2026-06-25: correction
+preflight/proceed redirects and the HTTPS catch-all are temporary + no-store so
+iOS Safari does not cache stale local hostname or scheme rules; verified
+against `deploy/nginx-jasper.conf`, `deploy/nginx-jasper-streambox.conf`, and
+`tests/test_landing_page_html.py`. Prior pass 2026-06-21: `/chat/` is a
+dedicated socket-activated read-only conversation-history shell on port 8787,
+with `/data.json`, `/state.chat`, a doctor check, and a static ES-module
+paired-turn renderer. The Prompt 5 renderer is verified by static/pytest
+coverage; it still needs the PR's explicit on-device browser pass for render +
+filter behavior. Verified by `tests/test_chat_setup.py`,
+`tests/test_web_wizard_conventions.py`,
+`tests/test_web_design_system.py`, `tests/test_web_json_island.py`,
+`tests/test_chat_plumbing.py`, `tests/test_doctor_web.py`, and
+`tests/test_conversation_history.py`. Prior pass 2026-06-16:
+landing-page capability gating is now BAKED at
+install time — `install.sh` stamps `system_capabilities_for_profile` into the
+page and `applyCapabilities(BAKED_CAPS)` runs at first paint; the
+`/system/data.json` poll no longer drives layout. Verified by
+`tests/test_landing_page_html.py` + `tests/test_install_profile_tiers.py`.
+Prior pass 2026-06-14: `/sound/` now splits pure active-speaker setup
+vocabulary/step policy into `active-speaker-ui.js` while leaving render/IO in
+`main.js`; verified by `tests/test_sound_setup.py` and
+`tests/js/sound_profile_harness.mjs`. Prior pass 2026-06-14: `streambox` and
+satellite-only `endpoint` now use the shared landing page filtered by
+`system_capabilities`; streambox installs a profile-scoped `jasper-web`
+service/socket template and endpoint keeps a smaller nginx route set; verified
+by `tests/test_install_profile_tiers.py`, `tests/test_control_server.py`,
+`tests/test_web_main_imports.py`, and `tests/test_web_sources_setup.py`. Prior
+pass 2026-06-04: `/voice/` owns
+spend-cap status/settings and the
+`/system/` Cloud activity card was removed from the dashboard; verified by
+`tests/test_voice_setup.py`, `tests/test_system_setup.py`, and the static
+web design/convention tests. Prior pass 2026-06-02: `/system/` per-service
+table now surfaces cached systemd service lifecycle state/restarts alongside
+cgroup CPU/memory; prior
+pass 2026-05-31: all 16 remaining wizard surfaces landed on the
+canonical design system; correction plain-HTTP preflight migrated to the
+canonical look; `/assets` static-asset routing mirrored into the HTTPS (443)
+server block to fix the correction UI's mixed-content asset blocking; the
+dead, unlinked `/integrations` page removed entirely — guards in
+`tests/test_landing_page_html.py`. Prior pass 2026-05-30: restyle-in-place
+foundation + `/speaker/` reference migration: `canonical_header` /
+`canonical_banner` helpers, `app.css` form/banner/toggle vocabulary, shared
+`http.js`, dynamic `install.sh` asset copy, archetype recipes —
+`tests/test_web_common.py`, `tests/test_web_speaker_setup.py`, and the
+design-system / wizard-convention / main-import guards. Prior pass 2026-05-28:
+Phase 1 landing-page implementation, local font asset serving, integrations
+page, nginx route map, `jasper/web/__main__.py`, `/system/` dashboard, live
+`http://jts.local/`, and 2026-05-28 design/iOS research refresh)
+
+Last verified: 2026-08-21 (Audio alert card writer enumeration rechecked
+against `jasper/control/audio_health.py`: added `_undeclared_hardware_signal`
+(#2812) as the fourth writer)

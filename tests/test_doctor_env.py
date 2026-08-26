@@ -6,8 +6,12 @@
 
 from pathlib import Path
 
+import pytest
 
 from jasper.cli import doctor
+from jasper.cli.doctor.env import _classify_state_group_write
+
+from .doctor_test_support import _registered_check_names
 
 
 # ---------------------------------------------------------------- env loading
@@ -131,105 +135,6 @@ def test_load_env_files_shell_wins_over_files(monkeypatch, tmp_path: Path):
     assert os_environ_get("JASPER_VOICE_PROVIDER") == "openai"
 
 
-def test_check_service_runtime_state_fails_on_failed_unit(monkeypatch):
-    class FakeRun:
-        stdout = (
-            "Id=librespot.service\n"
-            "LoadState=loaded\n"
-            "ActiveState=failed\n"
-            "SubState=failed\n"
-            "Result=exit-code\n"
-            "NRestarts=5\n"
-        )
-
-    monkeypatch.setattr(doctor._shared, "_run", lambda *a, **kw: FakeRun())
-
-    r = doctor.check_service_runtime_state()
-
-    assert r.status == "fail"
-    assert "librespot.service state=failed/failed" in r.detail
-    assert "NRestarts=5" in r.detail
-
-
-def test_check_service_runtime_state_warns_on_restart_count(monkeypatch):
-    class FakeRun:
-        stdout = (
-            "Id=jasper-voice.service\n"
-            "LoadState=loaded\n"
-            "ActiveState=active\n"
-            "SubState=running\n"
-            "Result=success\n"
-            "NRestarts=2\n"
-        )
-
-    monkeypatch.setattr(doctor._shared, "_run", lambda *a, **kw: FakeRun())
-
-    r = doctor.check_service_runtime_state()
-
-    assert r.status == "warn"
-    assert "jasper-voice.service NRestarts=2" in r.detail
-
-
-def test_runtime_state_units_track_coupling_reconciler_oneshots():
-    """#1233 follow-up: a failed coupling-reconcile oneshot (e.g. an arm-abort —
-    env written, fan-in restart aborted because camilla would not stop) parks
-    the unit in `failed` with the evidence only in `systemctl --failed` + the
-    journal. The durable entry unit must be in the doctor's tracked set so state
-    surfaces in one-shot diagnostics."""
-    assert "jasper-fanin-coupling-auto.service" in doctor._RUNTIME_STATE_UNITS
-
-
-def test_check_service_runtime_state_fails_on_failed_coupling_oneshot(monkeypatch):
-    class FakeRun:
-        stdout = (
-            "Id=jasper-fanin-coupling-auto.service\n"
-            "LoadState=loaded\n"
-            "ActiveState=failed\n"
-            "SubState=failed\n"
-            "Result=exit-code\n"
-            "NRestarts=0\n"
-        )
-
-    monkeypatch.setattr(doctor._shared, "_run", lambda *a, **kw: FakeRun())
-
-    r = doctor.check_service_runtime_state()
-
-    assert r.status == "fail"
-    assert "jasper-fanin-coupling-auto.service state=failed/failed" in r.detail
-
-
-def test_check_service_runtime_state_ignores_in_flight_oneshot(monkeypatch):
-    """`activating` is a oneshot's NORMAL mid-run state (a reconcile pass in
-    flight), not the stuck-start instability it signals on long-running
-    daemons — a tick the doctor happens to race must not read as a failure,
-    while a daemon stuck in activating still does."""
-
-    class FakeRun:
-        stdout = (
-            "Id=jasper-fanin-coupling-auto.service\n"
-            "LoadState=loaded\n"
-            "ActiveState=activating\n"
-            "SubState=start\n"
-            "Result=success\n"
-            "NRestarts=0\n"
-            "\n"
-            "Id=jasper-fanin.service\n"
-            "LoadState=loaded\n"
-            "ActiveState=activating\n"
-            "SubState=start\n"
-            "Result=success\n"
-            "NRestarts=0\n"
-        )
-
-    monkeypatch.setattr(doctor._shared, "_run", lambda *a, **kw: FakeRun())
-
-    r = doctor.check_service_runtime_state()
-
-    assert r.status == "fail"
-    assert "jasper-fanin.service state=activating/start" in r.detail
-    assert "jasper-fanin-coupling-auto.service" not in r.detail
-
-
 def test_subprocess_env_with_fresh_files_overrides_stale_daemon_env(tmp_path: Path):
     """Long-lived daemons launching subprocesses need fresh wizard-file
     truth, not the process env captured when the daemon started."""
@@ -254,3 +159,52 @@ def os_environ_get(name: str) -> str | None:
     import os
 
     return os.environ.get(name)
+
+
+# -------------------------------------------- shared-state group-writability
+#
+# The whole /var/lib/jasper state tree is group-`jasper` writable so every
+# non-root daemon that writes it can. A file that regresses to group-read-only
+# is the readonly-DB outage condition.
+
+
+def _pretend_group_is_jasper(monkeypatch):
+    """CI has no `jasper` group; resolve every gid to it."""
+    import grp
+    import types
+
+    monkeypatch.setattr(
+        grp, "getgrgid", lambda _gid: types.SimpleNamespace(gr_name="jasper")
+    )
+
+
+def test_state_group_write_no_files_is_ok(tmp_path):
+    assert _classify_state_group_write(tmp_path / "usage.db").status == "ok"
+
+
+@pytest.mark.parametrize(
+    "name, mode, status",
+    [
+        ("usage.db", 0o660, "ok"),
+        ("usage.db", 0o644, "warn"),
+        # Readable by /chat but not writable by jasper-voice.
+        ("conversation_history.db", 0o640, "warn"),
+    ],
+    ids=["group-writable", "group-readonly", "history-group-readonly"],
+)
+def test_state_group_write_verdicts(monkeypatch, tmp_path, name, mode, status):
+    _pretend_group_is_jasper(monkeypatch)
+    target = tmp_path / name
+    target.write_text("x", encoding="utf-8")
+    target.chmod(mode)
+
+    res = _classify_state_group_write(tmp_path / "usage.db")
+
+    assert res.status == status
+    # A warn must name the offending file so the operator knows what to chmod.
+    if status == "warn":
+        assert name in res.detail
+
+
+def test_state_group_write_check_is_registered():
+    assert "check_state_dir_group_writable" in _registered_check_names()

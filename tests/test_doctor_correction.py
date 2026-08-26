@@ -8,6 +8,7 @@ import json
 import subprocess
 from pathlib import Path
 from types import SimpleNamespace
+from unittest.mock import patch
 
 import pytest
 
@@ -16,9 +17,7 @@ from jasper.correction import bundles
 
 from .correction_bundle_fixtures import write_golden_correction_bundle
 
-from .doctor_test_support import (
-    _registered_check_names,
-)
+from .doctor_test_support import _registered_check_names, _write_identity_env
 
 
 def test_check_correction_web_service_ok_when_socket_active(monkeypatch):
@@ -2628,6 +2627,149 @@ def test_active_speaker_startup_hold_warns_on_a_stale_marker(monkeypatch, tmp_pa
     assert "stale staged-startup hold" in r.detail
     assert "rolled_back" in r.detail
 
+
+# --- seat-SPL measurement reference -----------------------------------------
+
+
+def _bank(path, **overrides):
+    from jasper.active_speaker.seat_level_reference import (
+        SeatLevelTarget,
+        write_seat_level_reference,
+    )
+
+    payload = dict(
+        reference_volume_db=-17.25,
+        measured_db_spl=77.4,
+        target=SeatLevelTarget(target_db_spl=77.5, tolerance_db=2.5),
+        sensitivity={"sens_factor_db": -12.07, "serial": "8108494"},
+        max_main_volume_db=-30.0,
+        state_path=path,
+    )
+    payload.update(overrides)
+    return write_seat_level_reference(**payload)
+
+
+def test_seat_level_reference_absent_is_ok_not_a_warning(tmp_path):
+    # A box that never ran the leveling step is healthy: the session falls back
+    # to the codified reference and measures exactly as it always did.
+    result = doctor.correction._classify_seat_level_reference(tmp_path / "absent.json")
+    assert result.status == "ok"
+    assert "not measured" in result.detail
+    assert "-20 dB" in result.detail
+
+
+def test_seat_level_reference_reports_the_value_the_session_will_hold(tmp_path):
+    path = tmp_path / "ref.json"
+    _bank(path)
+    result = doctor.correction._classify_seat_level_reference(path)
+    assert result.status == "ok"
+    assert "-17.25 dB" in result.detail
+    assert "77.4 dB SPL" in result.detail
+    assert "8108494" in result.detail
+    assert "0d ago" in result.detail
+
+
+def test_seat_level_reference_present_but_unusable_warns(tmp_path):
+    """The reader falls back silently; the doctor must not.
+
+    An out-of-envelope value reads as absent at runtime — the speaker measures
+    at -20 dB and says nothing. That silence is the whole reason for this line.
+    """
+    path = tmp_path / "ref.json"
+    path.write_text(
+        json.dumps(
+            {
+                "kind": "jts_active_speaker_seat_level_reference",
+                "artifact_schema_version": 1,
+                "reference_volume_db": 3.0,
+            }
+        )
+    )
+    result = doctor.correction._classify_seat_level_reference(path)
+    assert result.status == "warn"
+    assert "unusable" in result.detail
+    assert "jasper-seat-level" in result.detail
+
+
+def test_seat_level_reference_unparseable_timestamp_still_reports_the_value(tmp_path):
+    path = tmp_path / "ref.json"
+    _bank(path)
+    raw = json.loads(path.read_text())
+    raw["updated_at"] = "not-a-date"
+    path.write_text(json.dumps(raw))
+    result = doctor.correction._classify_seat_level_reference(path)
+    assert result.status == "ok"
+    assert "-17.25 dB" in result.detail
+    assert "unparseable updated_at" in result.detail
+
+
+def test_seat_level_reference_check_is_registered():
+    assert "check_seat_level_reference" in _registered_check_names()
+
+
+# --------------------------------------------------- /correction/ TLS cert
+#
+# check_correction_cert_hostname compares the cert's SAN against the name the
+# speaker actually advertises, so a collision-renamed box stops serving a cert
+# nobody's browser will accept.
+
+
+def _with_cert(monkeypatch, tmp_path, exists=True):
+    cert = tmp_path / "jts.local.crt"
+    if exists:
+        cert.write_text("---")
+    real_path = doctor.correction.Path
+    monkeypatch.setattr(
+        doctor.correction,
+        "Path",
+        lambda p: cert if p == "/etc/nginx/ssl/jts.local.crt" else real_path(p),
+    )
+
+
+def _openssl_san(*names: str):
+    return SimpleNamespace(
+        returncode=0,
+        stdout=(
+            "X509v3 Subject Alternative Name:\n    "
+            + ", ".join(f"DNS:{n}" for n in names)
+            + "\n"
+        ),
+        stderr="",
+    )
+
+
+def test_cert_check_skips_without_a_cert(monkeypatch, tmp_path):
+    _with_cert(monkeypatch, tmp_path, exists=False)
+
+    assert doctor.correction.check_correction_cert_hostname().status == "ok"
+
+
+@pytest.mark.parametrize(
+    "advertised, san, status",
+    [
+        ("jts3.local", ("jts3.local", "*.jts3.local", "jts.local"), "ok"),
+        ("jts3-2.local", ("jts3.local", "*.jts3.local"), "warn"),
+    ],
+    ids=["san-covers", "san-misses"],
+)
+def test_cert_check_compares_the_san_to_the_advertised_name(
+    monkeypatch, tmp_path, advertised, san, status
+):
+    _with_cert(monkeypatch, tmp_path)
+    _write_identity_env(
+        tmp_path,
+        monkeypatch,
+        avahi=advertised,
+        collision="0" if status == "ok" else "1",
+        drift="0" if status == "ok" else "1",
+    )
+
+    with patch("subprocess.run", return_value=_openssl_san(*san)):
+        r = doctor.correction.check_correction_cert_hostname()
+
+    assert r.status == status
+    if status == "warn":
+        assert advertised in r.detail
 
 def test_check_room_correction_authority_registered_in_sync_checks():
     assert "check_room_correction_authority" in _registered_check_names()

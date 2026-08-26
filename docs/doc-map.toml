@@ -568,7 +568,7 @@ requires_docs_when = [
   "The host allowlist semantics, identity.env schema, collision/rename behavior, or the supported rename flow change.",
 ]
 verification = [
-  "pytest tests/test_http_security.py tests/test_identity_state.py tests/test_identity_reconcile_script.py tests/test_doctor_identity.py tests/test_lib_peer_identity.py",
+  "pytest tests/test_http_security.py tests/test_identity_state.py tests/test_identity_reconcile_script.py tests/test_doctor_network.py tests/test_lib_peer_identity.py",
 ]
 
 [[subsystem]]
@@ -780,7 +780,7 @@ requires_docs_when = [
   "The hardware-conditional USB NCM network function, its per-speaker address plan or generated NetworkManager/dnsmasq projections, the kill switch (`JASPER_USB_NETWORK`), the function truth table shared with USB audio, or the relationship to Raspberry Pi OS's own `rpi-usb-gadget` rescue feature changes.",
 ]
 verification = [
-  "pytest tests/test_usb_network_plan.py tests/test_install_usbgadget_migration.py tests/test_state_usb_network.py tests/test_doctor_usbnet.py tests/test_usbgadget_script.py tests/test_doctor_usbsink.py tests/test_control_server.py tests/test_http_security.py",
+  "pytest tests/test_usb_network_plan.py tests/test_install_usbgadget_migration.py tests/test_state_usb_network.py tests/test_doctor_network.py tests/test_usbgadget_script.py tests/test_doctor_usbsink.py tests/test_control_server.py tests/test_http_security.py",
 ]
 
 [[subsystem]]

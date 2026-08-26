@@ -140,7 +140,7 @@ ack, never silence.
 program's wave 7h)**
 - [x] delete 962 redundant asyncio markers — repo-wide, and FIRST: lands
       before the tuning program's first wave so its rebases stay clean
-- [ ] doctor tests → one file per domain, verdict + stable remediation codes
+- [x] doctor tests → one file per domain, verdict + stable remediation codes
       (keep aec_probe isolation tests verbatim)
 - [x] CSRF altitude collapse via test_web_wizard_conventions sweep
 - [x] tests/js/_loader.mjs + _dom.mjs; convert the 12 strip-loader files
