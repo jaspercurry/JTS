@@ -180,13 +180,19 @@ def _topology(
     return OutputTopology.from_mapping(raw)
 
 
-def _passive_main(group_id: str, kind: str, index: int) -> dict:
+def _passive_main(
+    group_id: str, kind: str, index: int, *, identity_verified: bool = False
+) -> dict:
     return {
         "id": group_id,
         "label": group_id.title(),
         "kind": kind,
         "mode": "full_range_passive",
-        "channels": [{"role": "full_range", "physical_output_index": index}],
+        "channels": [{
+            "role": "full_range",
+            "physical_output_index": index,
+            "identity_verified": identity_verified,
+        }],
     }
 
 
@@ -1435,6 +1441,42 @@ def test_mutation_save_returns_revision_without_post_write_read(
     data = path.read_bytes()
     assert revision == "sha256:" + hashlib.sha256(data).hexdigest()
     assert json.loads(data)["name"] == "Published once"
+
+
+@pytest.mark.parametrize(
+    ("recorded", "claimed", "stored"),
+    [(False, True, False), (True, True, True), (True, False, False)],
+)
+def test_saved_channel_identity_is_server_owned(
+    tmp_path: Path, recorded: bool, claimed: bool, stored: bool
+) -> None:
+    """A save payload may clear a lane's audition, never claim one."""
+
+    path = tmp_path / "output_topology.json"
+    save_output_topology(_topology(groups=[_passive_main("mono", "mono", 0)]), path)
+    if recorded:
+        with output_topology_mod.output_topology_mutation(path) as mutation:
+            mutation.save(
+                set_channel_identity_verified(
+                    mutation.snapshot().topology,
+                    speaker_group_id="mono",
+                    role="full_range",
+                    identity_verified=True,
+                )
+            )
+
+    with output_topology_mod.output_topology_mutation(path) as mutation:
+        mutation.save(
+            _topology(
+                groups=[_passive_main("mono", "mono", 0, identity_verified=claimed)]
+            )
+        )
+
+    assert [
+        channel.identity_verified
+        for group in load_output_topology_snapshot(path).topology.speaker_groups
+        for channel in group.channels
+    ] == [stored]
 
 
 def test_topology_publication_uses_durable_atomic_write(
