@@ -40,11 +40,12 @@ def test_static_approved_dac_allows_auto_and_production_chip_aec():
     assert gate.recommended_action == ACTION_USE_CHIP_AEC
 
 
-def test_unapproved_dac_falls_back_without_explicit_testing():
+def test_unapproved_dac_blocks_auto_selection_but_allows_explicit_arm():
+    """ADR-0101: an uncodified DAC is a quality signal, not an admission gate."""
     gate = resolve_chip_aec_dac_gate("mystery_usb_audio")
 
     assert gate.status == STATUS_NEEDS_CALIBRATION
-    assert gate.permitted is False
+    assert gate.permitted is True
     assert gate.auto_allowed is False
     assert gate.production_allowed is False
     assert gate.testing_allowed is True
@@ -72,7 +73,7 @@ def test_live_coherent_outputd_clock_is_diagnostic_not_authorization():
     )
 
     assert gate.status == STATUS_NEEDS_CALIBRATION
-    assert gate.permitted is False
+    assert gate.auto_allowed is False
     assert gate.source == "static"
     assert "verdict=coherent" in gate.detail
 
@@ -84,7 +85,7 @@ def test_compensable_outputd_clock_does_not_auto_arm():
     )
 
     assert gate.status == STATUS_NEEDS_CALIBRATION
-    assert gate.permitted is False
+    assert gate.auto_allowed is False
     assert "verdict=compensable" in gate.detail
 
 

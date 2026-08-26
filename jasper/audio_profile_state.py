@@ -501,14 +501,17 @@ def build_audio_profile_status(
     gate = dict(chip_gate or {})
     gate_auto_allowed = bool(gate.get("auto_allowed", chip_available))
     gate_arm_allowed = bool(gate.get("arm_allowed", chip_available))
-    gate_permitted = gate_arm_allowed
-    gate_detail = str(gate.get("detail") or "")
-    gate_status = str(gate.get("status") or "")
-    chip_allowed_for_selection = chip_available and (
+    # One question, asked once: does the gate allow the selection in play? An
+    # uncodified DAC is arm_allowed since ADR-0101, so only an explicit testing
+    # selection may read that flag — everything else needs auto_allowed.
+    gate_permitted = (
         gate_arm_allowed
         if selection == PROFILE_XVF_CHIP_AEC_TESTING
         else gate_auto_allowed
     )
+    gate_detail = str(gate.get("detail") or "")
+    gate_status = str(gate.get("status") or "")
+    chip_allowed_for_selection = chip_available and gate_permitted
     requested_intent = resolve_audio_input_intent(
         intent,
         chip_available=chip_allowed_for_selection,

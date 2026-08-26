@@ -40,6 +40,11 @@ VOICE_INPUT_ABSENT_MARKER="${JASPER_VOICE_INPUT_ABSENT_MARKER:-/var/lib/jasper/v
 # (DISCLOSURE_PATH) and is its only writer; this script is its only reader.
 ALIGNMENT_DISCLOSURE_FILE="${JASPER_AEC_ALIGNMENT_DISCLOSURE_FILE:-/run/jasper-aec-init/alignment-disclosure}"
 ALIGNMENT_RECOMMISSION_ACTION="Run sudo jasper-aec-commission"
+# A 2-channel XVF is still a microphone (ADR-0101): the box captures from it
+# directly and says what the flash would buy. Same remedy the doctor's
+# check_xvf_firmware_6ch names, in the same vocabulary.
+XVF_2CH_DISCLOSURE="echo cancellation unavailable until DFU flash to 6-channel firmware"
+XVF_2CH_ACTION="Re-flash the XVF to 6-channel firmware; BRINGUP.md Phase 2A.5 has the in-system DFU procedure"
 # install.sh's verified-install marker, and the /run record of which build the
 # last voice (re)start was made under. Read together they answer "is the
 # running jasper-voice already this build?".
@@ -324,7 +329,7 @@ VOICE_IRRELEVANT_ENV_KEYS="\
 JASPER_XVF_DISPLAY_NAME JASPER_XVF_REASON JASPER_XVF_RECOMMENDED_PROFILE \
 JASPER_AEC_CHIP_AEC_TESTING_REQUESTED JASPER_AEC_CHIP_AEC_DAC_ID \
 JASPER_AEC_CHIP_AEC_DAC_STATUS JASPER_AEC_CHIP_AEC_DAC_SOURCE \
-JASPER_AEC_CHIP_AEC_DAC_DETAIL \
+JASPER_AEC_CHIP_AEC_DAC_DETAIL JASPER_AEC_CHIP_AEC_DAC_PERMITTED \
 JASPER_AEC_CHIP_AEC_ALIGNMENT_STATUS JASPER_AEC_CHIP_AEC_ALIGNMENT_REASON \
 JASPER_AEC_CHIP_AEC_ALIGNMENT_ACTION"
 
@@ -663,6 +668,29 @@ CHIP_AEC_DAC_GATE_OK=0
 CHIP_AEC_DAC_GATE_STATUS="needs_calibration"
 CHIP_AEC_DAC_GATE_SOURCE="unresolved"
 CHIP_AEC_DAC_GATE_DETAIL=""
+CHIP_AEC_GATE_CARRY_NOTE="chip-AEC DAC gate could not be evaluated; carrying last verdict"
+
+# ADR-0101: a gate that could not be evaluated is unmeasured, not a "no". Carry
+# the verdict last resolved for the SAME DAC and selection — write_chip_aec_gate_env
+# records it for exactly this read — so a missing interpreter cannot drop a
+# commissioned box off chip-AEC. The identity/selection match mirrors
+# jasper.chip_aec_policy.gate_from_runtime_env.
+carry_chip_aec_dac_gate() {
+    local dac_id="$1" testing="$2" detail
+    [[ -n "${JASPER_AEC_CHIP_AEC_DAC_ID:-}" ]] || return 1
+    [[ -n "${JASPER_AEC_CHIP_AEC_DAC_STATUS:-}" ]] || return 1
+    [[ "$(normalize_output_dac_id "$JASPER_AEC_CHIP_AEC_DAC_ID")" == "$dac_id" ]] || return 1
+    [[ "$(normalize_bool "${JASPER_AEC_CHIP_AEC_TESTING_REQUESTED:-0}")" == "$testing" ]] || return 1
+    detail="${JASPER_AEC_CHIP_AEC_DAC_DETAIL:-}"
+    # Idempotent across passes: a carried record is re-recorded each pass the
+    # resolver stays down, so strip the note before re-appending it.
+    detail="${detail%"; ${CHIP_AEC_GATE_CARRY_NOTE}"}"
+    CHIP_AEC_DAC_GATE_OK="$(normalize_bool "${JASPER_AEC_CHIP_AEC_DAC_PERMITTED:-0}")"
+    CHIP_AEC_DAC_GATE_STATUS="$JASPER_AEC_CHIP_AEC_DAC_STATUS"
+    CHIP_AEC_DAC_GATE_SOURCE="runtime_env_carried"
+    CHIP_AEC_DAC_GATE_DETAIL="${detail:+${detail}; }${CHIP_AEC_GATE_CARRY_NOTE}"
+    log "chip-AEC DAC gate resolver unavailable for output_dac=${dac_id}; carrying last verdict status=${CHIP_AEC_DAC_GATE_STATUS} permitted=${CHIP_AEC_DAC_GATE_OK}"
+}
 
 refresh_chip_aec_dac_gate() {
     local dac_id testing payload args
@@ -679,7 +707,8 @@ refresh_chip_aec_dac_gate() {
     CHIP_AEC_DAC_GATE_SOURCE="policy_unavailable"
     CHIP_AEC_DAC_GATE_DETAIL=""
     if ! command -v "$MIC_PROFILE_PYTHON" >/dev/null 2>&1; then
-        CHIP_AEC_DAC_GATE_DETAIL="chip-AEC policy unavailable: python not found at ${MIC_PROFILE_PYTHON}"
+        carry_chip_aec_dac_gate "$dac_id" "$testing" \
+            || CHIP_AEC_DAC_GATE_DETAIL="chip-AEC policy unavailable: python not found at ${MIC_PROFILE_PYTHON}"
         return
     fi
     args=(-m jasper.cli.chip_aec_policy
@@ -690,7 +719,8 @@ refresh_chip_aec_dac_gate() {
         args+=(--testing-requested)
     fi
     if ! payload="$("$MIC_PROFILE_PYTHON" "${args[@]}")"; then
-        CHIP_AEC_DAC_GATE_DETAIL="chip-AEC policy resolver failed"
+        carry_chip_aec_dac_gate "$dac_id" "$testing" \
+            || CHIP_AEC_DAC_GATE_DETAIL="chip-AEC policy resolver failed"
         return
     fi
     # Output is produced by jasper.cli.chip_aec_policy with shlex.quote.
@@ -725,6 +755,8 @@ write_chip_aec_gate_env() {
     set_env_var "$ENV_FILE" JASPER_AEC_CHIP_AEC_DAC_STATUS "$CHIP_AEC_DAC_GATE_STATUS"
     set_env_var "$ENV_FILE" JASPER_AEC_CHIP_AEC_DAC_SOURCE "$CHIP_AEC_DAC_GATE_SOURCE"
     set_env_var "$ENV_FILE" JASPER_AEC_CHIP_AEC_DAC_DETAIL "$CHIP_AEC_DAC_GATE_DETAIL"
+    # The record carry_chip_aec_dac_gate reads back when the resolver is gone.
+    set_env_var "$ENV_FILE" JASPER_AEC_CHIP_AEC_DAC_PERMITTED "$CHIP_AEC_DAC_GATE_OK"
 }
 
 chip_aec_mic_supported() {
@@ -789,6 +821,8 @@ infer_audio_input_profile_from_mode_file() {
 apply_audio_input_profile() {
     local detail
     MANAGED_XVF_PARK_REASON=""
+    MANAGED_XVF_DISCLOSURE=""
+    MANAGED_XVF_DISCLOSURE_ACTION=""
     if managed_xvf_policy_applies; then
         AEC_MODE="auto"
         LEG_RAW="0"
@@ -802,14 +836,25 @@ apply_audio_input_profile() {
             LEG_CHIP_AEC="1"
             log_chip_aec_dac_gate_if_dynamic "$AUDIO_DAC_ID" "0"
         elif ! aec_ready "$AEC_MIC_DEVICE"; then
-            MANAGED_XVF_PARK_REASON="managed XVF requires supported 6-channel firmware"
+            # Not 6-channel. A present, voice-eligible card is still a mic, so
+            # it is captured directly and disclosed; only an absent card or a
+            # measurement-class instrument (protected driver) parks.
+            if voice_mic_present "$AEC_MIC_DEVICE"; then
+                MANAGED_XVF_DISCLOSURE="$XVF_2CH_DISCLOSURE"
+                MANAGED_XVF_DISCLOSURE_ACTION="$XVF_2CH_ACTION"
+            else
+                MANAGED_XVF_PARK_REASON="no usable managed XVF capture device present"
+            fi
         elif ! chip_aec_mic_supported; then
-            MANAGED_XVF_PARK_REASON="$(chip_aec_mic_detail)"
+            # No beam plan, or no codified DAC timing: the 6-channel mic still
+            # carries the software AEC3 leg the non-managed `auto` path uses.
+            LEG_RAW="1"
+            MANAGED_XVF_DISCLOSURE="$(chip_aec_mic_detail)"
+            MANAGED_XVF_DISCLOSURE_ACTION="$ALIGNMENT_RECOMMISSION_ACTION"
         else
-            MANAGED_XVF_PARK_REASON="$(chip_aec_dac_detail "$AUDIO_DAC_ID" "0")"
-        fi
-        if [[ -n "$MANAGED_XVF_PARK_REASON" ]]; then
-            log "managed XVF parked: ${MANAGED_XVF_PARK_REASON}; no AEC3/direct fallback"
+            LEG_RAW="1"
+            MANAGED_XVF_DISCLOSURE="$(chip_aec_dac_detail "$AUDIO_DAC_ID" "0")"
+            MANAGED_XVF_DISCLOSURE_ACTION="$ALIGNMENT_RECOMMISSION_ACTION"
         fi
         return
     fi
@@ -1579,8 +1624,8 @@ restart_voice() {
 
 park_managed_xvf() {
     # Deliberately NOT accessory-aware, unlike stop_voice. This path parks a
-    # microphone that IS attached but is not safely usable (wrong firmware,
-    # unapproved output DAC, a broken daemon underneath it), and it leaves
+    # box whose voice input is genuinely unusable — a broken daemon underneath
+    # the mic, or no eligible capture device at all — and it leaves
     # JASPER_MIC_DEVICE pointing at the AEC bridge's udp:PORT while
     # stop_disable_aec has just stopped that bridge. Starting voice here would
     # bind an unfed UDP socket, stall the wake loop, and hit WatchdogSec=30s in
@@ -1618,27 +1663,39 @@ alignment_disclosure() {
     printf '%s\n' "$reason"
 }
 
-# ADR-0101: an alignment that could not be applied leaves the box running and
-# complaining, never deaf. The chip beams are gone, so this falls back to the
-# software AEC3 leg the non-managed `auto` path already uses.
+# ADR-0101: a chip-AEC path that cannot be armed leaves the box running and
+# complaining, never deaf. It falls back to the best leg the mic can carry —
+# the software AEC3 leg the non-managed `auto` path already uses, or the chip's
+# plain capture when the bridge cannot run — and discloses what it lost.
 disclose_stale_chip_aec() {
     local reason="$1" action="$2"
+    local bridge_up=0
     write_alignment_env "disclosed_stale" "$reason" "$action"
-    write_leg_env "1" "1" "0" "0" "0" "0"
-    restart_outputd_if_needed
-    run_systemctl enable jasper-aec-init.service jasper-aec-bridge.service
-    reset_failed_units jasper-aec-init.service jasper-aec-bridge.service
-    # Re-run init under the software legs: JASPER_AEC_CHIP_AEC_ENABLED=0 puts
-    # it on its bypass profile, so the chip stops holding a half-applied
-    # alignment and the unit goes active for the bridge's ExecCondition.
-    run_systemctl restart jasper-aec-init.service
-    run_systemctl restart jasper-aec-bridge.service
-    # `systemctl restart` exits 0 when an ExecCondition SKIPS the unit, so its
-    # status is not evidence anything is running — if the bypass init re-run
-    # above failed, the condition skips and the "restart" still succeeds. Ask
-    # the unit instead: only an ACTIVE bridge is writing udp:${AEC_UDP_PORT}.
-    if "$SYSTEMCTL" is-active --quiet jasper-aec-bridge.service; then
+    # Software AEC3 reads the 6-channel capture endpoint; on anything else
+    # there is no bridge to run and the direct handover below is the only leg.
+    if aec_ready "$AEC_MIC_DEVICE"; then
+        write_leg_env "1" "1" "0" "0" "0" "0"
+        restart_outputd_if_needed
+        run_systemctl enable jasper-aec-init.service jasper-aec-bridge.service
+        reset_failed_units jasper-aec-init.service jasper-aec-bridge.service
+        # Re-run init under the software legs: JASPER_AEC_CHIP_AEC_ENABLED=0
+        # puts it on its bypass profile, so the chip stops holding a
+        # half-applied alignment and the unit goes active for the bridge's
+        # ExecCondition.
+        run_systemctl restart jasper-aec-init.service
+        run_systemctl restart jasper-aec-bridge.service
+        # `systemctl restart` exits 0 when an ExecCondition SKIPS the unit, so
+        # its status is not evidence anything is running — if the bypass init
+        # re-run above failed, the condition skips and the "restart" still
+        # succeeds. Ask the unit instead: only an ACTIVE bridge is writing
+        # udp:${AEC_UDP_PORT}.
+        if "$SYSTEMCTL" is-active --quiet jasper-aec-bridge.service; then
+            bridge_up=1
+        fi
+    fi
+    if [[ "$bridge_up" == "1" ]]; then
         # AEC3 now feeds the same udp:PORT carrier the chip beam did.
+        set_env_var "$ENV_FILE" JASPER_MIC_DEVICE "$UDP_DEVICE"
         log "chip-AEC disclosed stale: ${reason}; running software AEC3"
     else
         # Nothing writes that carrier, and jasper-voice bound to an unfed
@@ -1651,9 +1708,12 @@ disclose_stale_chip_aec() {
         # — and its ExecCondition now passes on disclosed_stale, so a later
         # transient success would open the single-open XVF capture device
         # jasper-voice is about to hold directly.
-        run_systemctl stop jasper-aec-bridge.service
-        run_systemctl disable jasper-aec-bridge.service
-        reset_failed_units jasper-aec-bridge.service
+        stop_disable_aec
+        # Nothing writes the UDP legs either, and a JASPER_MIC_DEVICE_RAW=udp:
+        # left from the attempt leaves voice's secondary UdpMicCapture spinning
+        # on a port nobody talks to.
+        write_leg_env "0" "0" "0" "0" "0" "0"
+        restart_outputd_if_needed
         set_env_var "$ENV_FILE" JASPER_MIC_DEVICE "$AEC_MIC_DEVICE"
         log "chip-AEC disclosed stale: ${reason}; AEC bridge is not active, using direct mic ${AEC_MIC_DEVICE}"
     fi
@@ -1938,10 +1998,11 @@ if [[ "$AUDIO_INPUT_PROFILE" == "custom" && "$LEG_CHIP_AEC" == "1" ]]; then
         LEG_CHIP_AEC_150="0"
         LEG_CHIP_AEC_210="0"
     elif ! chip_aec_dac_supported "$AUDIO_DAC_ID" "0"; then
-        log "custom chip-AEC leg requested but output_dac=${AUDIO_DAC_ID} is not approved for production chip-AEC: $(chip_aec_dac_detail "$AUDIO_DAC_ID" "0"); clearing chip-AEC leg"
-        LEG_CHIP_AEC="0"
-        LEG_CHIP_AEC_150="0"
-        LEG_CHIP_AEC_210="0"
+        # ADR-0101: DAC approval is a quality signal, not an admission gate, and
+        # this leg is an operator's explicit intent. Honour it; this line is the
+        # disclosure. The mic arm above stays a refusal — a mic with no beam
+        # plan cannot emit chip-AEC beams at all.
+        log "custom chip-AEC leg requested on output_dac=${AUDIO_DAC_ID}, which is not approved for production chip-AEC: $(chip_aec_dac_detail "$AUDIO_DAC_ID" "0"); honouring the explicit leg"
     fi
 fi
 refresh_chip_aec_dac_gate "$AUDIO_DAC_ID" "$CHIP_AEC_TESTING_REQUESTED"
@@ -1952,10 +2013,15 @@ if [[ "$CHECK_ONLY" == "1" ]]; then
         # applied, or the box has fallen back to software AEC3, and the bridge
         # carries either. Only `unavailable`/`fault` — and the transient
         # `checking` — keep the bridge out.
-        [[ "$LEG_CHIP_AEC" == "1" ]] \
-            && [[ "${JASPER_AEC_CHIP_AEC_ALIGNMENT_STATUS:-}" == "ready" \
+        if [[ "$LEG_CHIP_AEC" == "1" ]]; then
+            [[ "${JASPER_AEC_CHIP_AEC_ALIGNMENT_STATUS:-}" == "ready" \
                 || "${JASPER_AEC_CHIP_AEC_ALIGNMENT_STATUS:-}" == "disclosed_stale" ]] \
-            && "$SYSTEMCTL" is-active --quiet jasper-aec-init.service
+                && "$SYSTEMCTL" is-active --quiet jasper-aec-init.service
+            exit
+        fi
+        # No chip leg, but a 6-channel mic: the bridge carries software AEC3 on
+        # the same UDP carrier, which is what the disclose path hands voice.
+        [[ "$LEG_RAW" == "1" ]] && aec_ready "$AEC_MIC_DEVICE"
         exit
     fi
     if [[ "$AEC_MODE" == "auto" ]] && aec_ready "$AEC_MIC_DEVICE"; then
@@ -2012,14 +2078,22 @@ if managed_xvf_policy_applies; then
         ensure_capture_mixer_open "$AEC_MIC_DEVICE"
     fi
     if [[ "$LEG_CHIP_AEC" != "1" ]]; then
-        write_alignment_env \
-            "unavailable" \
-            "${MANAGED_XVF_PARK_REASON:-managed XVF chip-AEC is unavailable}" \
-            "Connect supported XVF firmware and an approved output profile"
-        stop_disable_aec
-        write_leg_env "0" "0" "0" "0" "0" "0"
-        restart_outputd_if_needed
-        park_managed_xvf "${MANAGED_XVF_PARK_REASON:-managed XVF chip-AEC is unavailable}"
+        if [[ -n "${MANAGED_XVF_PARK_REASON:-}" ]]; then
+            write_alignment_env \
+                "unavailable" \
+                "$MANAGED_XVF_PARK_REASON" \
+                "Connect a supported XVF microphone"
+            stop_disable_aec
+            write_leg_env "0" "0" "0" "0" "0" "0"
+            restart_outputd_if_needed
+            park_managed_xvf "$MANAGED_XVF_PARK_REASON"
+            exit 0
+        fi
+        # ADR-0101: the capability gate is a quality signal, not an admission
+        # gate — the mic is usable, so the box keeps hearing and discloses.
+        disclose_stale_chip_aec \
+            "${MANAGED_XVF_DISCLOSURE:-managed XVF chip-AEC is unavailable}" \
+            "${MANAGED_XVF_DISCLOSURE_ACTION:-$ALIGNMENT_RECOMMISSION_ACTION}"
         exit 0
     fi
     set_env_var "$ENV_FILE" JASPER_MIC_DEVICE "$UDP_DEVICE"

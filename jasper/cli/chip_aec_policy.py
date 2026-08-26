@@ -42,11 +42,18 @@ def _query_outputd_status(path: str, *, timeout: float = 1.0) -> tuple[dict[str,
     return payload, ""
 
 
-def _shell_assignments(gate) -> str:
+def _shell_assignments(gate, *, testing_requested: bool) -> str:
+    # The shell consumes one boolean per query: may THIS selection be armed?
+    # Same expression as jasper.control.aec_endpoints' `available`, so an
+    # uncodified DAC (arm_allowed since ADR-0101) still never gets picked by
+    # the automatic profile — only by an explicit testing selection.
+    permitted = gate.production_allowed or (
+        testing_requested and gate.testing_allowed
+    )
     values = {
         "JASPER_CHIP_AEC_DAC_GATE_DAC": gate.dac_id,
         "JASPER_CHIP_AEC_DAC_GATE_STATUS": gate.status,
-        "JASPER_CHIP_AEC_DAC_GATE_PERMITTED": "1" if gate.permitted else "0",
+        "JASPER_CHIP_AEC_DAC_GATE_PERMITTED": "1" if permitted else "0",
         "JASPER_CHIP_AEC_DAC_GATE_SOURCE": gate.source,
         "JASPER_CHIP_AEC_DAC_GATE_DETAIL": gate.detail,
     }
@@ -72,7 +79,7 @@ def main(argv: list[str] | None = None) -> int:
         outputd_error=outputd_error,
     )
     if args.shell_env:
-        print(_shell_assignments(gate))
+        print(_shell_assignments(gate, testing_requested=args.testing_requested))
     else:
         print(json.dumps(gate.to_dict(), sort_keys=True))
     return 0

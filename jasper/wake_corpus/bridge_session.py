@@ -233,11 +233,11 @@ _CAPTURE_PLAN_PROBE_ERRORS = (
 BRIDGE_UNIT = "jasper-aec-bridge.service"
 OUTPUTD_UNIT = "jasper-outputd.service"
 AEC_INIT_UNIT = "jasper-aec-init.service"
-# Owner of the chip-or-park decision and single writer of the daemon-facing mic
-# env. The recorder owns its corpus overrides and nothing else, so a corpus exit
-# that lands the box in a state only this reconciler can resolve hands off here
-# rather than deciding locally — same shape as jasper/accessories/reconcile.py's
-# VOICE_INPUT_GATE_UNIT.
+# Owner of the chip-AEC arming decision and single writer of the daemon-facing
+# mic env. The recorder owns its corpus overrides and nothing else, so a corpus
+# exit that lands the box in a state only this reconciler can resolve hands off
+# here rather than deciding locally — same shape as
+# jasper/accessories/reconcile.py's VOICE_INPUT_GATE_UNIT.
 AEC_RECONCILE_UNIT = "jasper-aec-reconcile.service"
 BRIDGE_RESTART_TIMEOUT_SEC = 30.0
 _UNIT_STATE_TIMEOUT_SEC = 1.5

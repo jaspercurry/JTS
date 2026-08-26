@@ -1088,9 +1088,9 @@ Two commands, in order. The reconciler picks up the new firmware, points
 voice's mic source at the AEC bridge's UDP output, and resets the kernel
 ALSA mixer to known-good values for the newly-exposed ch2-5 (the stale-mute
 trap — see "Why the reconciler step matters" below). `jasper-aec-commission`
-then measures and stores this box's chip-AEC alignment; until it passes, a
-detected XVF stays parked on purpose. The managed path is chip-AEC or park,
-never a silent fall back to software AEC3 or the direct mic.
+then measures and stores this box's chip-AEC alignment. Until it passes, the
+speaker still hears — on software AEC3 — and says so; chip AEC is the goal, not
+the price of admission.
 
 On a fresh install, `deploy/install.sh` seeds `JASPER_MIC_DEVICE` from
 the detected card. On existing Pis, do not hand-pin
@@ -1115,21 +1115,21 @@ Healthy box: every row "✓", with **Audio profile** reporting the chip-AEC
 profile (`xvf_chip_aec`) both requested and active, and **AEC bridge service**
 forwarding the chip beam with WebRTC AEC3 bypassed. Short of that, **Audio
 profile** reads `warn` and carries the reconciler's own `reason=` and
-`action=`. `disclosed_stale` below is the one state where the speaker is still
-hearing — it is a complaint, not an outage. `unavailable` means the hardware
-story needs attention (or, on Flex, is final — see below); `state=fault` is
-genuine breakage. Do what `action=` says, then re-read the rows:
+`action=`. `disclosed_stale` below is a complaint, not an outage — the speaker
+is still hearing. `unavailable` means there is no microphone to hear with;
+`state=fault` is genuine breakage. Do what `action=` says, then re-read the
+rows:
 
 | Doctor says | What it means | What to do |
 |---|---|---|
-| `state=disclosed_stale` | The speaker is running — on chip AEC from a banked alignment, or on software AEC3 — but the commissioning proof no longer describes this box. `reason=` names what moved | Whatever `action=` says (usually `sudo jasper-aec-commission`); the box keeps working until you get to it |
-| `state=unavailable` | Firmware, mic geometry, or output DAC isn't one chip-AEC supports | If this hardware should be supported, fix that and re-run the reconciler (Flex: see below) |
+| `state=disclosed_stale` | The speaker is running — on chip AEC from a banked alignment, on software AEC3, or on the chip's plain capture — but chip AEC is not fully armed. `reason=` names why (a stale proof, an uncodified output DAC, no production beam plan, 2-channel firmware) | Whatever `action=` says (`sudo jasper-aec-commission`, or a DFU flash); the box keeps working until you get to it |
+| `state=unavailable` | There is no usable capture device: no XVF present, or the only candidate is a measurement mic | Plug the microphone back in, then re-run the reconciler |
 | `state=fault` | A unit in the managed activation failed (`jasper-aec-init`, `jasper-aec-bridge`, or `jasper-outputd`) — genuine breakage, not a designed wait | Inspect the unit its `action=` names, then re-run the reconciler |
 
-On Flex LINEAR-4 (`L16K6Ch` firmware), `state=unavailable` is today's end
-state, not an operator error: chip AEC has no production beam plan for that
-variant yet, and `sudo jasper-aec-commission` refuses it. There is nothing
-to fix or re-run — an AEC path for Flex is future work.
+On Flex LINEAR-4 (`L16K6Ch` firmware), `state=disclosed_stale` on software AEC3
+is today's end state, not an operator error: chip AEC has no production beam
+plan for that variant yet. There is nothing to fix or re-run — an AEC path for
+Flex is future work.
 
 #### Why the reconciler step matters
 

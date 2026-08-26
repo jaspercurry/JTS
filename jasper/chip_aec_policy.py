@@ -290,13 +290,16 @@ def resolve_chip_aec_dac_gate(
             trial_allowed=True,
         )
 
+    # ADR-0101: an uncodified DAC is a quality signal, not an admission gate.
+    # `auto_allowed` stays False so nothing selects chip-AEC on its own, while
+    # an explicit request may arm and carry this detail as its disclosure.
     return ChipAecGate(
         dac_id=static.dac_id,
         status=STATUS_NEEDS_CALIBRATION,
         source=static.source,
         detail=f"{static.detail}{outputd_detail}",
         auto_allowed=False,
-        arm_allowed=False,
+        arm_allowed=True,
         trial_allowed=True,
         blockers=(BLOCKER_DAC,),
     )
@@ -344,7 +347,7 @@ def gate_from_runtime_env(env: Mapping[str, str]) -> ChipAecGate | None:
     else:
         gate_status = STATUS_NEEDS_CALIBRATION
         auto_allowed = False
-        arm_allowed = False
+        arm_allowed = True
         trial_allowed = True
         blockers = (BLOCKER_DAC,)
     if testing_requested and gate_status == STATUS_NEEDS_CALIBRATION:
