@@ -1747,6 +1747,10 @@ install_nginx_site() {
     # URIs, so it uses the same GitHub Pages bounce pattern as Spotify.
     # The correction-only cert is provisioned by provision_correction_tls()
     # before this function runs.
+    install -d -m 0755 /etc/nginx/snippets
+    install -m 0644 \
+        "${REPO_DIR}/deploy/nginx-proxy-headers.conf" \
+        /etc/nginx/snippets/jts-proxy-headers.conf
     install -m 0644 \
         "${REPO_DIR}/deploy/nginx-jasper.conf" \
         /etc/nginx/sites-enabled/jasper.conf
@@ -1773,6 +1777,10 @@ install_streambox_nginx_site() {
     # plus an nginx route set limited to local sources, DSP, grouping, and
     # system health. That keeps the frontend shared while omitting voice/wake
     # surfaces whose daemons are intentionally absent from this profile.
+    install -d -m 0755 /etc/nginx/snippets
+    install -m 0644 \
+        "${REPO_DIR}/deploy/nginx-proxy-headers.conf" \
+        /etc/nginx/snippets/jts-proxy-headers.conf
     install -m 0644 \
         "${REPO_DIR}/deploy/nginx-jasper-streambox.conf" \
         /etc/nginx/sites-enabled/jasper.conf

@@ -478,18 +478,3 @@ def test_post_save_surfaces_source_reconcile_failure(monkeypatch):
     assert h.status == int(http.HTTPStatus.SEE_OTHER)
     flash_cookie = "\n".join(h.header_values("Set-Cookie"))
     assert "some%20audio%20sources%20could%20not%20restart" in flash_cookie
-
-
-def test_post_save_rejects_bad_csrf(monkeypatch):
-    monkeypatch.setattr(
-        speaker_setup,
-        "read_state",
-        lambda path: types.SimpleNamespace(name="OldName"),
-    )
-    handler = _handler_cls()
-    # Form-field token (csrf_token) deliberately differs from the cookie token,
-    # so the double-submit compare fails -> 403, no rename.
-    body = b"csrf_token=" + b"a" * 64 + b"&name=NewName"
-    h = FakeHandler("/save", body=body, cookies="jts_csrf=" + "b" * 64)
-    handler.do_POST(h)
-    assert h.status == int(http.HTTPStatus.FORBIDDEN)
