@@ -248,10 +248,10 @@ reason W2 cannot be scheduled as if it were independent of W1.
 
 ### 2.1 What `AnalyzeOutcome` must carry — and the third field it needs
 
-`AnalyzeOutcome` (`crossover_v2/session.py:194-217`) is two fields today:
-`results: Mapping[str, Any]` (`:216`) keyed by analysis name, and
-`disclosures: tuple[CapabilityStub, ...]` (`:217`). Two contract lines the
-registry inherits unchanged: `:203-208` and `:210-212` (hand a **copy**, not the
+`AnalyzeOutcome` (`crossover_v2/session.py:194-215`) is two fields today:
+`results: Mapping[str, Any]` (`:214`) keyed by analysis name, and
+`disclosures: tuple[CapabilityStub, ...]` (`:215`). Two contract lines the
+registry inherits unchanged: `:202-207` and `:209-211` (hand a **copy**, not the
 dict still being filled).
 
 **Recommendation: add `skipped: tuple[AnalysisSkip, ...]`. Do not render a
@@ -260,11 +260,11 @@ as a `CapabilityStub`"*; four things at HEAD say that does not fit, and all four
 are mechanical rather than stylistic:
 
 1. **The message is hard-wired to "not implemented".** `_stub`
-   (`measure_spec.py:133`) composes `f"{row.capability} not implemented; …"`
+   (`measure_spec.py:134`) composes `f"{row.capability} not implemented; …"`
    (`:154-157`). A unit that *is* implemented and merely had no input here is not
    "not implemented" — the disclosure would say the opposite of the truth.
 2. **`aborted()` raises on any code outside the table.**
-   `CapabilityStub.aborted` (`:110`) does `_ROWS[self.code]` at `:120`; `_ROWS`
+   `CapabilityStub.aborted` (`:110`) does `_ROWS[self.code]` at `:121`; `_ROWS`
    (`:159`) is four rows. A hand-built skip stub is a `KeyError` waiting for the
    first spec that trips two stubs at once.
 3. **`STUB_CODES` would stop being countable.** `frozenset(_STUBS)` (`:184`),
@@ -391,7 +391,7 @@ anywhere in `jasper/`.
 | `AnalysisUnit(name, run, gate)` frozen dataclass | `CapabilityPack` `tools/packs.py:131` | `gate` at `:147` |
 | `ANALYSIS_UNITS` module-level tuple | `TOOL_PACKS` `packs.py:281` | order load-bearing (9→10, 11→12→13) and pinned, per `packs.py:14` |
 | derived name set, never re-listed | `STUB_CODES` `measure_spec.py:184`; `refusal_copy.py:1307-1311` | `frozenset(u.name for u in ANALYSIS_UNITS)` |
-| per-unit `try/except` isolation | `register_packs` `packs.py:437-441` | a raising unit is **failed**, not skipped — `PackOutcome`'s docstring draws that line at `:170-183` |
+| per-unit `try/except` isolation | `register_packs` `packs.py:436-441` | a raising unit is **failed**, not skipped — `PackOutcome`'s docstring draws that line at `:160-180` |
 | one wire shape | `outcomes_to_state` `packs.py:187` | for `/state` and the evidence packet |
 
 **The one deviation: `gate` returns a reason string, not `bool`.**
@@ -414,12 +414,12 @@ The phrase invites the wrong reading. Naming all four, with what dies at each:
 
 - *Flips:* `results={}` (`:461`) → the walker over `ANALYSIS_UNITS`.
 - *Dies:* the `{}` literal; the docstring's *"Today it runs nothing"* paragraph
-  (`:439-443`); `AnalyzeOutcome`'s forward reference to wave 2 (`:203-208`).
+  (`:439-443`); `AnalyzeOutcome`'s forward reference to wave 2 (`:202-207`).
 - *Does NOT die:* the prior-bank merge (`:461-462`), the disclosure half, and
   the OWED note at `:453-457` about a missing "before" — that gap is §3's
   recommender work, not W2's, and deleting the note would claim a fix W2 did
   not make.
-- **Semantic flip, and a trap:** `:203-208` today says read an empty `results`
+- **Semantic flip, and a trap:** `:202-207` today says read an empty `results`
   as *"nothing is wired to run yet"*. After W2 an empty `results` means **every
   gate said no**. The sentence must be rewritten in the same PR that lands the
   walker, or the contract line will say the opposite of the code.
@@ -474,7 +474,7 @@ wiring against it **reproduces** the input gap rather than deferring it.
 
 And a walker whose gates all answer "no input" for *structural* reasons is
 indistinguishable, at the wire, from a walker with an empty table. That is
-precisely the ambiguity `AnalyzeOutcome:203-208` forbids — *read an empty
+precisely the ambiguity `AnalyzeOutcome:202-207` forbids — *read an empty
 `results` as "nothing is wired to run yet", never as "everything ran and found
 nothing"*. Shipping the inert walker ships that ambiguity into production and
 then needs deleting. **No fallbacks: build new → prove → delete old in one
@@ -607,7 +607,7 @@ never re-spelled.
 
 ### 4.4 Traps
 
-1. **The empty-`results` semantic flip.** `AnalyzeOutcome:203-208` must be
+1. **The empty-`results` semantic flip.** `AnalyzeOutcome:202-207` must be
    rewritten in the same PR as the walker, or the contract says the opposite of
    the code (§2.5, Site A).
 2. **`phase` stays non-defaulted.** `crossover_v2_flow.py:1447-1461`. Dropping it
