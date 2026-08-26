@@ -1,712 +1,435 @@
 # HANDOFF — voice provider abstraction
 
-The voice loop runs against any of three real-time speech-to-speech APIs
-behind a single `JASPER_VOICE_PROVIDER` env var. This doc explains the
-architecture, the per-provider trade-offs, and the contract a future
-fourth backend would need to honour.
+The voice loop runs against any of three realtime speech-to-speech APIs
+behind a single `JASPER_VOICE_PROVIDER`. This doc owns the architecture, the
+per-provider trade-offs, and the contract a fourth backend must honour.
 
-## TL;DR
+Decisions with their rationale — read the one that covers what you are about
+to change: [no cross-provider
+failover](adr/0159-a-provider-failure-never-falls-back-to-another-provider.md)
+· [catalog
+policy](adr/0160-the-model-catalog-is-curated-metadata-not-a-runtime-allow-list.md)
+· [pricing is data](adr/0161-an-unpriced-model-costs-zero-and-says-so.md)
+· [the idle anchor](adr/0162-the-pre-response-idle-anchor-stays-turn-open.md)
+· [provider env
+ownership](adr/0163-the-active-voice-provider-lives-in-one-file-and-unconfigured-parks.md)
+· [resumption
+handles](adr/0164-a-resumption-handle-is-dropped-on-the-first-failure.md).
+The 2026-05 brief that scoped the persistent-session rework is archived at
+[historical/persistent-live-session-rework-2026-05.md](historical/persistent-live-session-rework-2026-05.md).
 
-Three ways to switch backends, any of them work:
+## Switching providers
+
+Three ways, any of them work:
 
 ```sh
-# 1. Web UI — open the speaker's web settings, paste keys, pick a
-#    provider in the radio group, hit save. The page is nginx-routed
-#    on the same host that serves /spotify/.
+# 1. Web UI: paste keys, pick a provider, save.
 http://jts.local/voice/
 
-# 2. Helper script (laptop → Pi over SSH):
+# 2. Helper script (laptop -> Pi over SSH):
 bash scripts/switch-voice-provider.sh openai
 
-# 3. Edit /var/lib/jasper/voice_provider.env directly on the Pi:
+# 3. Edit the wizard-owned env file on the Pi:
+#    /var/lib/jasper/voice_provider.env
 JASPER_VOICE_PROVIDER=gemini   # gemini-3.1-flash-live-preview
-JASPER_VOICE_PROVIDER=openai   # gpt-realtime-2 (released 2026-05-07)
+JASPER_VOICE_PROVIDER=openai   # gpt-realtime-2
 JASPER_VOICE_PROVIDER=grok     # grok-voice-think-fast-1.0
 ```
 
-`JASPER_VOICE_PROVIDER` lives in **exactly one file** since PR #166:
-`/var/lib/jasper/voice_provider.env`. The web UI writes it;
-`jasper-voice.service` sources it via `EnvironmentFile=`. `install.sh`
-actively migrates any stale value out of `/etc/jasper/jasper.env`
-on each run — having a default in BOTH led to stale-vs-runtime
-confusion. There is **no fallback default**: fresh installs leave
-the variable unset and `jasper-voice` refuses to start until the
-wizard writes one. Same pattern as `/spotify/` writes
-`spotify_credentials.env`. Implementation:
-[`jasper/web/voice_setup.py`](../jasper/web/voice_setup.py).
-As of 2026-06-02, the unconfigured state parks cleanly instead of
-consuming the service crash budget: `Config.from_env` raises
-`VoiceProviderNotConfigured`, `jasper-voice` exits with EX_CONFIG
-(`78`), and `jasper-voice.service` declares `SuccessExitStatus=78` +
-`RestartPreventExitStatus=78`. Real runtime crashes still use
-`Restart=on-failure` and the existing `StartLimitAction=reboot`
-resilience path.
+`JASPER_VOICE_PROVIDER` lives in **exactly one file**:
+`/var/lib/jasper/voice_provider.env`. There is no fallback default, and an
+unconfigured speaker parks instead of crash-looping —
+[ADR-0163](adr/0163-the-active-voice-provider-lives-in-one-file-and-unconfigured-parks.md)
+carries the rule and its rationale. What that means in practice:
 
-The pre-daemon AEC reconciler has one extra boot-safety contract:
-[`deploy/install.sh`](../deploy/install.sh) renders
-`/var/lib/jasper/voice_provider_ids` from
-`jasper.voice.catalog.provider_ids_manifest_text()` after the runtime
-venv is installed. [`deploy/bin/jasper-aec-reconcile`](../deploy/bin/jasper-aec-reconcile)
-then accepts `JASPER_VOICE_PROVIDER` only when it is an exact line in
-that shell-readable file. If the file is missing or stale, the
-reconciler parks `jasper-voice`; it never starts voice on an
-unconfigured or unrecognized provider. This file is only the provider
-ID allow-list projection — the active provider itself still lives only
-in `/var/lib/jasper/voice_provider.env`.
-
-Operator and diagnostic surfaces also consume the catalog rather than
-mirroring provider IDs in parallel: `scripts/switch-voice-provider.sh`
-reads the installed Pi runtime catalog for provider IDs, key env vars,
-and model env vars; `jasper-doctor` derives the active provider key
-check from the same catalog and verifies the generated
-`voice_provider_ids` file is present and in sync.
-As of 2026-07-12, `scripts/switch-gemini-model.sh` follows the same
-boundary: its stable `3.1` / `2.5` operator aliases resolve to model IDs
-from the installed Gemini catalog entry. It requires `3.1` to be the
-unique tested default and `2.5` to be the unique non-default fallback,
-and refuses to edit the effective wizard-owned selector file or restart
-voice when that catalog contract is missing, ambiguous, or malformed. A
-successful switch atomically updates `/var/lib/jasper/voice_provider.env`,
-restarts `jasper-voice`, and verifies the selected model in the new daemon's
-process environment.
-
-Display/aggregation surfaces that are not `jasper-voice` (e.g.
-`jasper-control`'s `/state` and the `/system/` dashboard) read the
-active provider through
-[`jasper/voice/provider_state.py`](../jasper/voice/provider_state.py)
-(`read_active_provider*`), which re-reads the file fresh — never
-`os.environ`, which is frozen at daemon start and only refreshed when
-`jasper-voice` restarts on a switch. Returns `""` (unconfigured) for an
-unset/invalid value, never a guessed default. As of 2026-06-11,
-diagnostics that need to explain why no usable provider was read use
-`read_active_provider_state()`, which distinguishes configured, unset,
-missing, unreadable, and invalid states so a permission-denied probe is
-not reported as first-time setup.
-
-The abstraction lives in [`jasper/voice/session.py`](../jasper/voice/session.py)
-as the `LiveConnection` and `LiveTurn` Protocols. WakeLoop in
-[`jasper/voice_daemon.py`](../jasper/voice_daemon.py) and the daemon
-composition in [`jasper/voice/daemon_main.py`](../jasper/voice/daemon_main.py)
-speak only to those interfaces; the per-provider adapters are:
-
-- [`jasper/voice/gemini_session.py`](../jasper/voice/gemini_session.py) — `GeminiLiveConnection`
-- [`jasper/voice/openai_session.py`](../jasper/voice/openai_session.py) — `OpenAIRealtimeConnection`
-- [`jasper/voice/grok_session.py`](../jasper/voice/grok_session.py) — `GrokRealtimeConnection` (subclass of the OpenAI adapter)
-
-Conversation-history capture is an optional turn capability, not a provider
-branch in WakeLoop. Providers that natively receive text transcripts expose
-`ConversationTranscriptTurn.user_transcript()` / `assistant_transcript()` on
-their turn objects; WakeLoop probes those methods at teardown and writes through
-the daemon-held `ConversationStore` only when the opt-in capture gate is
-enabled. Providers without native transcript support can either omit the
-capability and still satisfy `LiveTurn`, or expose
-`ConversationMetadataTurn.conversation_metadata()` for bounded, privacy-safe
-metadata such as "transcripts unavailable" and tool names; the `/chat/` page
-renders the missing side honestly.
-
-Daemon-initiated confirmation windows use the provider-neutral
-`LiveTurn.send_text_context()` hook. It adds a text-only routing instruction to
-an already-acquired turn without asking the provider to generate yet, so the
-normal user-audio VAD path still decides whether to commit input. The research
-ready yes/no window is the first caller.
-
-Wake-funnel response/tool telemetry is likewise composed below the provider
-adapters. The shared `_play_responses()` drain marks the first non-empty
-assistant PCM chunk; the host injects a narrow lifecycle observer into
-`ToolRegistry`, and the single `dispatch_tool()` seam marks registered-tool
-call/completion around execution. Observer calls are capped at 100 ms so
-telemetry cannot wedge speech or tool results. Adapters only parse/package
-provider wire formats. The full schema and bounded tool-funnel summary
-semantics live in [HANDOFF-wake-telemetry.md](HANDOFF-wake-telemetry.md).
-
-The single switch point is `_make_connection(cfg)` in
-[`jasper/voice/daemon_main.py`](../jasper/voice/daemon_main.py). Provider session
-preprocessing is resolved through
-[`jasper/voice/input_policy.py`](../jasper/voice/input_policy.py), which
-turns the applied mic/AEC runtime config into an input-audio contract
-before OpenAI/Grok wire-format fields are chosen.
+- The `/voice/` wizard writes the file
+  ([`jasper/web/voice_setup.py`](../jasper/web/voice_setup.py));
+  `jasper-voice.service` sources it via `EnvironmentFile=`; `install.sh`
+  migrates any stale value out of `/etc/jasper/jasper.env` on each run.
+- Unset → `Config.from_env` raises `VoiceProviderNotConfigured`,
+  `jasper-voice` exits `EX_CONFIG` (78), and the unit's
+  `SuccessExitStatus=78` + `RestartPreventExitStatus=78` keep that out of the
+  crash budget. Real crashes still use `Restart=on-failure` and the existing
+  `StartLimitAction=reboot` path.
+- The pre-daemon reconciler has its own fail-closed projection:
+  [`deploy/install.sh`](../deploy/install.sh) renders
+  `/var/lib/jasper/voice_provider_ids` from
+  `jasper.voice.catalog.provider_ids_manifest_text()`, and
+  [`deploy/bin/jasper-aec-reconcile`](../deploy/bin/jasper-aec-reconcile)
+  accepts a provider only when it is an exact line in that file. That file is
+  an allow-list projection, never a second home for the active value.
+- Operator and diagnostic surfaces consume the catalog rather than mirroring
+  provider IDs: `switch-voice-provider.sh` reads the installed runtime
+  catalog; `jasper-doctor` derives the key check from it and verifies
+  `voice_provider_ids` is in sync; `switch-gemini-model.sh` resolves its
+  `3.1` / `2.5` aliases from the Gemini catalog entry and refuses to act when
+  that contract is missing, ambiguous, or malformed.
+- Everything that is not `jasper-voice` (`/state`, the `/system/` dashboard)
+  reads through
+  [`jasper/voice/provider_state.py`](../jasper/voice/provider_state.py),
+  which re-reads the file fresh — never `os.environ`, frozen at daemon start.
+  It returns `""` for unset or invalid, never a guess;
+  `read_active_provider_state()` distinguishes configured / unset / missing /
+  unreadable / invalid so a permission-denied probe is not reported as
+  first-time setup.
 
 ## Model catalog policy
 
-The `/voice/` wizard reads its provider, model, voice, and
-provider-specific knob metadata from
-[`jasper/voice/catalog.py`](../jasper/voice/catalog.py). That file is
-the curated catalog: each visible model is labelled as `tested`,
-`fallback`, or `experimental` so operators can distinguish "this is
-the default we run" from "this exists as an escape hatch." Runtime
-`Config` also reads the provider model, voice, and extra-control
-defaults from the same catalog helpers; env overrides still win.
+[`jasper/voice/catalog.py`](../jasper/voice/catalog.py) is the curated
+catalog the `/voice/` wizard reads for provider, model, voice, and
+provider-specific knob metadata. Each visible model is labelled `tested`,
+`fallback`, or `experimental`. Runtime `Config` reads provider model, voice,
+and extra-control defaults from the same helpers; env overrides still win.
 
-The catalog is **not** a runtime allow-list. The provider adapters pass
-whatever `JASPER_<PROVIDER>_MODEL` string is configured through to the
-SDK, and the wizard preserves unknown configured values as custom
-experimental rows. This gives JTS the two properties we want:
+The catalog is **not** a runtime allow-list (ADR-0160): adapters pass
+whatever `JASPER_<PROVIDER>_MODEL` is configured through to the SDK, and the
+wizard preserves unknown values as custom experimental rows.
 
-- No silent latest: we do not automatically switch a speaker to a new
-  upstream model just because a provider released one.
-- No permanent lock-in: an operator can still type or script a newly
-  released model into the env file, and the next wizard save will not
-  erase it.
-
-The `/voice/` wizard also has a manual **Refresh available models**
-button per provider. It is deliberately not part of normal page render:
-network calls happen only when an operator clicks refresh and the
-provider has a configured API key. Discovery code lives in
+Every provider network call from `/voice/` is behind an explicit button.
+**Refresh available models** is the only discovery path — never on page
+render, and only with a configured key;
 [`jasper/voice/model_discovery.py`](../jasper/voice/model_discovery.py)
-and writes `/var/lib/jasper/voice_model_discovery.json` at mode 0600.
-The next page render reads that local cache and appends
-provider-discovered model IDs that are not in the curated catalog as
-`experimental; discovered` dropdown options.
-
-The same explicit-action rule applies to assistant loudness seeding:
-the wizard's **Save and Test** button writes
-`/var/lib/jasper/voice_provider.env`, then makes one bounded provider
-TTS request for `"This is me talking normally."`, measures it silently,
-stores the provider/model/voice loudness profile, and restarts
-`jasper-voice`. Plain **Save and restart voice** never calls a provider
-TTS API. Daemon-start seeding is off by default and only runs when an
-operator opts into `JASPER_ASSISTANT_LOUDNESS_AUTO_SEED=1`.
-
-Important invariants:
-
-- No page-load provider calls. The wizard stays fast and usable when
-  the Pi is offline or the provider is down.
-- No implicit paid calibration calls. Model refresh and voice-level
-  testing are operator-triggered buttons, and Save-and-Test is capped at
-  one provider synthesis attempt.
-- No auto-promotion. Catalog entries stay first; discovered models are
-  hints, not proof they are production-good on this speaker.
-- No surprise migration. Refresh never changes
-  `JASPER_<PROVIDER>_MODEL`; only an explicit Save with the selected
-  model updates the runtime env file.
-- Failed refreshes keep the last successful model list and record the
-  sanitized error in the cache for the UI. Error strings intentionally
-  avoid leaking API-key-bearing URLs.
+writes `/var/lib/jasper/voice_model_discovery.json` at mode 0600 and the next
+render appends unknown IDs as `experimental; discovered`. **Save and Test**
+makes exactly one bounded TTS request to seed the loudness profile; plain
+**Save and restart voice** never calls a provider TTS API, and daemon-start
+seeding is off unless `JASPER_ASSISTANT_LOUDNESS_AUTO_SEED=1`. The invariants
+behind those rules: no page-load provider calls · no implicit paid
+calibration calls · no auto-promotion of discovered models · refresh never
+changes `JASPER_<PROVIDER>_MODEL` · a failed refresh keeps the last
+successful list and records a sanitized error that never leaks key-bearing
+URLs.
 
 ## Why three, not one
 
-Each backend has a real strength and at least one real cost:
-
 | Provider | Strengths | Costs |
 |---|---|---|
-| **Gemini Live** (gemini-3.1-flash-live-preview / gemini-2.5-flash-native-audio) | Cheapest by ~5×; mature 24-language voice catalogue; session resumption (2 h handle); the existing Jasper deployment runs on it | Sequential tool calls only on 3.1; occasional silent-session-2 failures requiring a fall-back to `2.5-flash-native-audio-preview-12-2025`; 15-min audio cap on a single session |
-| **OpenAI Realtime** (gpt-realtime-2, GA 2026-05-07) | Reasoning levels (minimal/low/medium/high/xhigh); 128K context; multi-tool-at-once; image input; MCP; SIP; arguably tightest tool/instruction following | $32/$64/$0.40 per 1M tokens — about 5× Gemini per minute; 60-min hard session cap with NO resumption; PCM-input only at 24 kHz (we upsample 16 kHz mic) |
-| **xAI Grok** (grok-voice-think-fast-1.0) | Sub-second TTFA; flat $3/hour realtime billing (cheapest at sustained active chat); first-class web/x/file/MCP search built-ins; OpenAI-protocol-compatible so it rides the same adapter | Cost is active realtime duration, not tokens, so it's metered separately via `BillableActivityMeter` (token rows price to $0); idle warm WebSocket time is intentionally not counted because xAI's dashboard does not bill it like active conversation time; voice catalogue is disjoint from OpenAI's (eve / ara / rex / sal / leo); fewer guarantees on event-shape stability — xAI documents one rename today (`response.text.delta` → `response.output_text.delta`) and we normalise it in `grok_session.py` |
+| **Gemini Live** (gemini-3.1-flash-live-preview / 2.5-flash-native-audio) | Cheapest by ~5×; mature 24-language voice catalogue; session resumption (2 h handle); the existing deployment runs on it | Sequential tool calls only on 3.1; occasional silent-session failures needing the 2.5 fallback; 15-min audio cap on a single session |
+| **OpenAI Realtime** (gpt-realtime-2) | Reasoning levels; 128K context; multi-tool-at-once; image input; MCP; SIP; tightest tool/instruction following | ~5× Gemini per minute; 60-min hard session cap with NO resumption; PCM-input only at 24 kHz (we upsample the 16 kHz mic) |
+| **xAI Grok** (grok-voice-think-fast-1.0) | Sub-second TTFA; flat $/hour realtime billing (cheapest at sustained active chat); first-class web/x/file/MCP search built-ins; OpenAI-protocol-compatible so it rides the same adapter | Billed on active realtime duration, not tokens, so it is metered separately by `BillableActivityMeter`; voice catalogue disjoint from OpenAI's; fewer guarantees on event-shape stability (xAI documents one rename, normalised in `grok_session.py`) |
 
-Anthropic is **not** on the list. As of 2026-05-09 there is no public
-real-time speech-to-speech API from Anthropic — only push-to-talk Voice
-Mode in the consumer apps and dictation in Claude Code.
+Anthropic is not on the list: there is no public realtime
+speech-to-speech API to integrate.
 
 ## Architecture
 
 ```
-                    ┌───────────────────────────────────────────────┐
-                    │     jasper/voice_daemon.py + voice/*.py        │
-                    │  WakeLoop → acquire_turn → send_audio →        │
-                    │  end_input → audio_out → release               │
-                    └────────────────────┬──────────────────────────┘
-                                         │   speaks only to:
-                            ┌────────────▼─────────────┐
-                            │ jasper/voice/session.py  │
-                            │   LiveConnection (ABC)   │
-                            │   LiveTurn       (ABC)   │
-                            └────────────┬─────────────┘
-                                         │
-       ┌──────────────────┬──────────────┴──────────────┬─────────────────┐
-       │                  │                             │                 │
-       ▼                  ▼                             ▼                 ▼
-  GeminiLive        OpenAIRealtime              GrokRealtime         <future>
-  Connection         Connection                 Connection           …
-  (Google SDK)     (openai>=2.36 SDK)        (subclass +
-                                              base URL swap)
-       │                  │                             │
-       └──────┬───────────┘                             │
-              │                                         │
-              ▼                                         ▼
-     jasper/voice/_supervisor.py                Same module — Grok
-       FailureFingerprint                       inherits the supervisor
-       reconnect_backoff_delay                  unchanged.
-       ESCALATION_* constants
+  jasper/voice_daemon.py + voice/*.py
+  WakeLoop → acquire_turn → send_audio → end_input → audio_out → release
+                     │  speaks only to:
+       jasper/voice/session.py — LiveConnection (ABC), LiveTurn (ABC)
+                     │
+   ┌─────────────────┼──────────────────┬──────────────────┐
+   ▼                 ▼                  ▼                  ▼
+ GeminiLive     OpenAIRealtime     GrokRealtime         <future>
+ Connection      Connection         Connection
+ (Google SDK)    (openai SDK)   (subclass + base URL swap)
+   │                 │                  │
+   └───────── jasper/voice/_supervisor.py ─────────┘
+     FailureFingerprint · ESCALATION_* — shared primitives,
+     one supervisor loop per adapter (Grok inherits OpenAI's).
 ```
+
+The single switch point is `_make_connection(cfg)` in
+[`jasper/voice/daemon_main.py`](../jasper/voice/daemon_main.py). Session
+preprocessing is resolved through
+[`jasper/voice/input_policy.py`](../jasper/voice/input_policy.py), which
+turns the applied mic/AEC runtime config into an input-audio contract before
+OpenAI/Grok wire-format fields are chosen.
+
+Two capabilities compose *below* the provider branch rather than branching on
+provider name. **Conversation-history capture** is an optional turn
+capability: providers that receive text transcripts expose
+`ConversationTranscriptTurn.user_transcript()` / `assistant_transcript()`,
+which WakeLoop probes at teardown and writes through the daemon-held
+`ConversationStore` only when the opt-in gate is on; a provider without
+native transcripts may omit the capability or expose
+`ConversationMetadataTurn.conversation_metadata()` for bounded metadata, and
+`/chat/` renders the missing side honestly. **Wake-funnel response/tool
+telemetry** composes in the shared `_play_responses()` drain and the single
+`dispatch_tool()` seam, via a lifecycle observer injected into `ToolRegistry`
+and capped at 100 ms so telemetry cannot wedge speech
+([HANDOFF-wake-telemetry.md](HANDOFF-wake-telemetry.md)).
+
+Daemon-initiated confirmation windows use the provider-neutral
+`LiveTurn.send_text_context()` hook: it adds a text-only routing instruction
+to an already-acquired turn without asking the provider to generate, so the
+normal user-audio VAD path still decides whether to commit input.
 
 ### Shared between providers
 
-- **Reconnect supervisor primitives** (`_supervisor.py`): exponential
-  backoff with ±25% jitter, tight-retry-loop escalation cue at 5
-  consecutive identical failures (rate-limited to 1/hour). Used by
-  every adapter so the user-facing failure UX is consistent.
+- **Reconnect supervisor primitives** (`_supervisor.py`): failure-shape
+  fingerprints and tight-retry-loop escalation. The generic retry schedule
+  lives in `jasper.backoff`.
 - **Tool registry** ([`jasper/tools/__init__.py`](../jasper/tools/__init__.py)):
-  one tool definition, two serializers (`function_declarations()` for
-  Gemini, `openai_tools()` for OpenAI/Grok). Tools may opt in to a
-  subset of providers via `@tool(providers={"openai"})` — hidden tools
-  are filtered out of the per-provider declaration list, so a model
-  literally can't see what it can't call.
+  one tool definition, two serializers — `function_declarations()` for
+  Gemini, `openai_tools()` for OpenAI/Grok. A tool may opt into a subset of
+  providers via `@tool(providers={"openai"})`; hidden tools are filtered out
+  of the declaration list, so the model literally cannot see what it cannot
+  call.
 - **Audible feedback cues** ([`jasper/cues/registry.py`](../jasper/cues/registry.py)):
-  shared slugs (`spend_cap_reached`, `cant_connect`,
-  `cant_reach_cloud`, `research_failed`) cover provider-independent
-  failure modes. Cue text
-  is provider-agnostic by design — no "Google" or "Gemini" or
-  "OpenAI" mentions ever bake into the audio.
+  shared slugs cover provider-independent failure modes, and cue text never
+  names a backend.
 - **Spend-cap pricing** ([`jasper/usage.py`](../jasper/usage.py)):
-  `pricing_for_model(model_id, overrides=...)` returns a `Pricing`
-  snapshot **keyed by exact model ID** (there is no provider-level price);
-  `UsageStore` accepts it on construction and applies it at session-close
-  time. Default rates ship dated in `jasper/data/model_pricing.json`; the
-  `/voice` page edits per-model overrides (see
-  [HANDOFF-pricing-editor.md](HANDOFF-pricing-editor.md)). Switching
-  models/providers mid-day naturally aggregates — older sessions retain
-  whichever pricing was active when they closed. Four things worth knowing:
-  - **Unknown models are unpriced, not guessed.** A model in neither the
-    bundled defaults nor the override resolves to an all-zero `Pricing`
-    labelled `unpriced:<id>`; `jasper-voice` logs `event=pricing.unpriced`
-    and cost reads $0 until a rate is set. We never invent a number.
-  - **Per-turn usage is normalised.** OpenAI reports per-response token
-    deltas (summed within a turn); Gemini reports a counter cumulative
-    for the WebSocket's lifetime, so `GeminiLiveTurn` subtracts the
-    baseline captured at turn start. Each per-turn usage row therefore
-    holds that turn's tokens and `SUM()` across rows doesn't multi-count.
-  - **Time-billed providers (Grok) are metered by active turn time.**
-    Grok publishes a flat $/hour realtime rate, so its token rows price
-    to $0; `BillableActivityMeter` records billable activity intervals
-    when a voice turn is active and the spend queries fold that cost in.
-    Pre-fix idle-socket rows are tagged as legacy during schema self-heal
-    and ignored. The `/voice` spend-cap status card and cap therefore see
-    estimated Grok cost without charging idle warm WebSocket time. The xAI
-    dashboard remains the billing source of truth; JTS's local value is a
-    conservative circuit-breaker estimate.
-  - **Stored cost is a true estimate; the cap pads at read time.**
-    `SpendCap` multiplies the rolling spend by
-    `JASPER_DAILY_SPEND_CAP_SAFETY_MULTIPLIER` (default 1.25) so the
-    breaker stays conservative without inflating the displayed number.
-    `/voice` shows the rolling 24h true estimate, the padded comparison,
-    and the remaining headroom.
-  - **"Household spend" sums per-surface ledgers.** The cap and the
-    `/voice` card read `usage.py`'s `household_usage_reader`, which sums the
-    voice ledger (`usage.db`) and the P6 tuning-surface ledger
-    (`usage-tuning.db`, written solely by root `jasper-correction-web`). So a
-    voice session refuses once the tuning assistant's paid calls have exhausted
-    the shared daily cap. Definition + fail direction:
-    [HANDOFF-calibration-agent.md](HANDOFF-calibration-agent.md) "Cost discipline".
-  - **The cap is editable on `/voice`.** The form writes
-    `JASPER_DAILY_SPEND_CAP_USD` and
-    `JASPER_DAILY_SPEND_CAP_SAFETY_MULTIPLIER` into the wizard-owned
-    `/var/lib/jasper/voice_provider.env`, which is sourced after
-    `/etc/jasper/jasper.env`; a saved value there overrides the template
-    default without giving `jasper-web` write access to `/etc`.
-  - **Rate data remains separate from the cap.**
-    Bundled rates (`jasper/data/model_pricing.json`, dated) are defaults;
-    an optional `JASPER_PRICING_FILE` (`/var/lib/jasper/pricing.json`)
-    overlays them per model ID without a code change
-    (`load_pricing_overrides`).
+  `pricing_for_model(model_id, overrides=…)` returns a `Pricing` snapshot
+  keyed by exact model ID — there is no provider-level price, and an unknown
+  model is unpriced rather than guessed (ADR-0161). Rates ship dated as data;
+  the `/voice` editor and `JASPER_PRICING_FILE` overlay them
+  ([HANDOFF-pricing-editor.md](HANDOFF-pricing-editor.md)). Three
+  provider-shaped facts the adapters are responsible for: per-turn usage is
+  **normalised** (OpenAI reports per-response deltas, Gemini a counter
+  cumulative for the WebSocket's lifetime, so `GeminiLiveTurn` subtracts the
+  turn-start baseline and `SUM()` does not multi-count); **Grok is metered by
+  active turn time**, so its token rows price to $0, `BillableActivityMeter`
+  records billable intervals while a turn is active, and idle warm-socket
+  time is deliberately uncounted (xAI's dashboard stays the billing truth;
+  ours is a conservative circuit-breaker estimate); and the cap is a
+  **household** number that sums the voice and tuning ledgers, so a voice
+  session refuses once the tuning assistant has spent the shared daily budget
+  ([HANDOFF-calibration-agent.md](HANDOFF-calibration-agent.md) "Cost
+  discipline").
 
 ### Provider-specific in each adapter
 
-- **Wire format**. Gemini speaks Google's `BidiGenerateContent*`
-  envelopes; OpenAI/Grok speak OpenAI's `session.update` /
-  `input_audio_buffer.*` / `response.*` event grammar. Each adapter
+- **Wire format.** Gemini speaks `BidiGenerateContent*`; OpenAI/Grok speak
+  `session.update` / `input_audio_buffer.*` / `response.*`. Each adapter
   hides its protocol from the daemon.
-- **Audio rate**. Gemini accepts 16 kHz PCM directly (matches the XVF
-  chip's native rate). OpenAI/Grok accept ONLY 24 kHz on `audio/pcm`
-  — `openai_session.py` upsamples 16→24 kHz with `audioop.ratecv`
-  inside the turn's `send_audio` so the rest of the daemon stays at
-  16 kHz everywhere.
-- **Provider preprocessing policy**. OpenAI's input `noise_reduction`
-  is not a generic "smart speaker" default; it is a provider-side audio
-  transform on the stream OpenAI receives. `JASPER_OPENAI_NOISE_REDUCTION`
-  defaults to `auto`, resolved by `jasper/voice/input_policy.py` from
-  the effective input contract: already-processed profiles such as
-  `xvf_chip_aec` and `xvf_software_aec3` omit provider denoising,
-  raw direct mics use `far_field`, and explicit `off` / `near_field` /
-  `far_field` values remain operator overrides. Chip-AEC classification follows
-  the reconciler-applied base chip flag plus the primary/session UDP stream;
-  the optional 150/210 beam device vars do not need to be present. `jasper-voice` logs the
-  resolved policy as `event=voice.input_policy` and warns on suspicious
-  combinations such as explicit `far_field` on an already-processed
-  input stream.
-- **Manual VAD signalling**. Both Gemini and OpenAI run with manual
-  VAD, but the markers differ: Gemini sends `activity_start` /
-  `activity_end` realtime-input events; OpenAI sends
-  `input_audio_buffer.commit` followed by `response.create`. The
-  `LiveTurn.end_input()` method abstracts this — daemon code is
-  identical.
-- **Lifecycle**. Gemini's connection has a 15-min audio cap with a
-  2-hour resumption handle (`session_resumption_update.new_handle`).
-  OpenAI has a 60-min hard cap with no resumption. The `_supervisor`
-  primitives are shared, but the per-provider supervisor loops handle
-  these specifics differently — Gemini drops a stale handle on
-  certain failures, OpenAI just reconnects.
-- **Pricing**. See `Pricing` in `jasper/usage.py`.
-- **Server-side VAD capability**. OpenAI and Grok support mid-session
-  switching from manual VAD to `server_vad` via `session.update`, but
-  this is now an opt-in experiment, not the default production path.
-  Gemini does not — its `automatic_activity_detection` is fixed at
-  connect time (changeable only on session resume with a ~500-1000 ms
-  reconnect). The daemon's `_begin_turn` checks
-  `connection.supports_server_vad()` (a `LiveConnection` protocol
-  method) rather than branching on provider name. When
-  `JASPER_SERVER_VAD_ENABLED=1`, music is playing, and the provider
-  supports it, the daemon switches to `server_vad` with
-  `create_response: false` + `interrupt_response: false`, receives
-  `speech_started` / `speech_stopped` / `committed` events, and fires
-  `response.create` from the `_server_vad_response_trigger` background
-  task. Provider adapters that support this surface implement the public
-  `LiveConnection.set_turn_detection()` / `create_response_only()` hooks
-  and the public `LiveTurn.mark_server_vad()` /
-  `server_speech_started()` / `wait_for_server_eou()` hooks; the older
-  OpenAI private helper names are compatibility wrappers, not the daemon
-  contract. Manual VAD is restored on turn release. The switching is also
-  gated on the voice daemon's cheap content-activity observer. Production defaults
-  to local Silero (`JASPER_SERVER_VAD_ENABLED=0`) because the May 2026
-  A/B matrix found server VAD cut off real utterances and was prone to
-  wake-word interference; see `HANDOFF-vad-experiments.md`. Config:
-  `JASPER_SERVER_VAD_ENABLED`,
-  `JASPER_SERVER_VAD_THRESHOLD`, `JASPER_SERVER_VAD_SILENCE_MS`,
-  `JASPER_SERVER_VAD_PREFIX_MS`. Shadow VAD telemetry (a second Silero
-  instance on the raw stream, scoring every session frame as pure
-  observability) records to the `wake_events` DB alongside the active
-  endpointer's decision, for weekly corpus review.
+- **Audio rate.** Gemini accepts 16 kHz PCM directly (the XVF chip's native
+  rate). OpenAI/Grok accept only 24 kHz, so `openai_session.py` upsamples
+  inside the turn's `send_audio` and the rest of the daemon stays at 16 kHz.
+- **Provider preprocessing policy.** OpenAI's input `noise_reduction` is a
+  provider-side transform, not a generic smart-speaker default.
+  `JASPER_OPENAI_NOISE_REDUCTION` defaults to `auto`, resolved by
+  `input_policy.py` from the effective input contract: already-processed
+  profiles (`xvf_chip_aec`, `xvf_software_aec3`) omit provider denoising, raw
+  direct mics use `far_field`, and explicit values remain operator overrides.
+  The resolved policy logs as `event=voice.input_policy`, with a warning on
+  suspicious combinations such as explicit `far_field` on an
+  already-processed stream.
+- **Manual VAD signalling.** Both Gemini and OpenAI run manual VAD with
+  different markers — Gemini `activity_start`/`activity_end`, OpenAI
+  `input_audio_buffer.commit` then `response.create`. `LiveTurn.end_input()`
+  abstracts it; daemon code is identical.
+- **Lifecycle.** Gemini: 15-min audio cap with a 2-hour resumption handle
+  (`session_resumption_update.new_handle`). OpenAI: 60-min hard cap, no
+  resumption. The supervisor primitives are shared; the loops are not (see
+  Anti-patterns).
+- **Server-side VAD capability.** OpenAI and Grok support mid-session
+  switching to `server_vad`; Gemini's `automatic_activity_detection` is fixed
+  at connect time. `_begin_turn` checks `connection.supports_server_vad()`
+  rather than branching on provider name, and supporting adapters implement
+  the public `set_turn_detection()` / `create_response_only()` /
+  `mark_server_vad()` / `server_speech_started()` / `wait_for_server_eou()`
+  hooks. Production defaults to local Silero
+  (`JASPER_SERVER_VAD_ENABLED=0`) because the May 2026 A/B matrix found
+  server VAD cut off real utterances —
+  [HANDOFF-vad-experiments.md](HANDOFF-vad-experiments.md).
 
-## Provider Interruption Contract
+### Reconnect supervisor and idle context reset
 
-Verified against provider docs on 2026-06-09:
+Each adapter runs its own supervisor loop; `_supervisor.py` holds only the
+shared primitives. Four behaviours a maintainer touching a session module
+should know:
+
+- **The resumption handle is dropped on the first failure of any kind**
+  ([ADR-0164](adr/0164-a-resumption-handle-is-dropped-on-the-first-failure.md)):
+  one turn of context continuity traded for never looping on a
+  server-invalidated handle.
+- **Tight-retry-loop escalation.** A 5-deep `FailureFingerprint`
+  (exception type, close code, reason) ring buffer records the shape of each
+  reconnect failure and clears on success. When all five match, a
+  fire-and-forget callback plays the proactive `cant_reach_cloud` cue,
+  rate-limited to once per hour (`ESCALATION_*` in `_supervisor.py`; wired in
+  `daemon_main.py`'s `run()`). The supervisor never gives up — the user just
+  finds out audibly instead of silently.
+- **Backoff shift saturation.** The exponent saturates because the supervisor
+  retries forever and an unbounded `2 ** shift` overflows; the outer clamp
+  makes it a numeric safety bound only.
+- **Idle context reset is opt-in and off.**
+  `JASPER_OPENAI_CONTEXT_RESET_SEC` / `JASPER_GEMINI_CONTEXT_RESET_SEC` /
+  `JASPER_GROK_CONTEXT_RESET_SEC` all default to `0`, with the legacy
+  `JASPER_LIVE_CONTEXT_RESET_SEC` as a global fallback when set. It shipped
+  at 300 s on the theory that stale context bleeds across hours; the terse
+  system prompt makes that hypothetical while the costs are real — each reset
+  busts the OpenAI prompt cache and blocks the wake event for seconds. Set a
+  positive value only as a hedge if stale-context glitches actually appear.
+
+## Provider interruption contract
+
+Verified against provider docs 2026-06-09.
 
 | Provider | Native behavior | JTS adapter obligation |
 | --- | --- | --- |
-| OpenAI Realtime | VAD can detect user speech and cancel an in-progress response. WebRTC/SIP can automatically truncate unplayed output because the server owns the playback buffer. With WebSocket playback, the client must stop playback, measure what played, and send `conversation.item.truncate`; push-to-talk/manual paths also use `response.cancel` when needed. | Keep local TTS flush first. Use the final playout ledger's provider item id and `audio_played_ms` to send `conversation.item.truncate`; send `response.cancel` for explicit/manual cancellation paths. |
-| Gemini Live | `START_OF_ACTIVITY_INTERRUPTS` is the default `ActivityHandling`; start of user activity cuts off the model response. Gemini also reports interrupted server-content turns. | Treat Gemini interruption as provider-side generation state only. Still flush local TTS playback, because Gemini does not know JTS's DAC queue depth or final playout ledger. There is no OpenAI-style item truncation call to synthesize. |
-| xAI Grok Voice | xAI's voice API exposes OpenAI-style `server_vad`, `input_audio_buffer.speech_started/stopped`, `conversation.item.truncate`, and `response.cancel`; docs state VAD-mode interruptions are automatic and `response.cancel` is for manual cancel outside VAD. | Reuse the OpenAI adapter shape where event support is confirmed, but keep feature probes/provider overrides because xAI documents OpenAI-compatible shapes with provider-specific event-name differences. |
+| OpenAI Realtime | VAD can cancel an in-progress response; with WebSocket playback the client must stop playback, measure what played, and send `conversation.item.truncate`. `response.cancel` covers manual paths. | Local TTS flush first, then the playout ledger's item id + `audio_played_ms` drive `conversation.item.truncate`; `response.cancel` for explicit cancellation. |
+| Gemini Live | `START_OF_ACTIVITY_INTERRUPTS` is the default; start of user activity cuts off the response, and interrupted turns are reported. | Treat interruption as provider-side generation state only. Still flush local TTS — Gemini cannot see the DAC queue depth. No item-truncation call to synthesize. |
+| xAI Grok Voice | Exposes OpenAI-style `server_vad`, speech events, `conversation.item.truncate`, and `response.cancel`. | Reuse the OpenAI shape where event support is confirmed, keeping feature probes for xAI's provider-specific event-name differences. |
 
-Sources:
+The provider-neutral seam is **capability-based, not provider-name-based**,
+and lives on `LiveTurn` in
+[`jasper/voice/session.py`](../jasper/voice/session.py):
+`request_local_interrupt()` (local flush only — it never cancels or truncates
+the provider), `cancel_response(reason)`,
+`truncate_assistant_audio(provider_item_id, audio_played_ms)`, and the
+optional getattr-probed `drop_pending_audio()` for adapters with an internal
+playout buffer. Two adapter obligations are easy to get wrong: truncation is
+a **no-op plus WARN when played-ms is 0** (an out-of-range `audio_end_ms`
+errors server-side and desyncs context, so never truncate on
+bytes-received), and adapters must tolerate a missing provider item id —
+Gemini has none today. The packs themselves are owned by
+[HANDOFF-barge-in.md](HANDOFF-barge-in.md); the whole surface is default-OFF
+behind `JASPER_BARGE_IN_<PROVIDER>`.
 
-- OpenAI Realtime conversations — interruption/truncation and
-  push-to-talk WebSocket guidance:
-  <https://developers.openai.com/api/docs/guides/realtime-conversations#interruption-and-truncation>
-- Gemini Live WebSockets API reference — `ActivityHandling`,
-  `START_OF_ACTIVITY_INTERRUPTS`, and interrupted server-content turns:
-  <https://ai.google.dev/api/live#activityhandling>
-- xAI Voice API reference — Realtime client/server events, VAD speech
-  events, `conversation.item.truncate`, and `response.cancel`:
-  <https://docs.x.ai/developers/rest-api-reference/inference/voice>
+Which reconciliation a provider needs is a **declarative registry field**:
+`ProviderCatalogEntry.interrupt_reconcile` (`needs_client_truncate` for
+OpenAI, `server_self_truncates` for Gemini, `inherits` for Grok), with
+`resolve_interrupt_reconcile()` following the `inherits` edge so packs always
+read a concrete kind. The active kind is surfaced at runtime on
+`event=barge.detected` (`reconcile=`) and
+`/state.voice.barge_in.barge_in_reconcile`, so a durable barge-in is
+distinguishable from a cosmetic one. Pinned by
+`tests/test_voice_barge_in_contract.py` and `tests/test_voice_catalog.py`.
 
-The provider-neutral interface is capability-based, not
-provider-name-based:
-
-- `request_local_interrupt()` — **landed (PR-2)** on `LiveTurn`
-  (`jasper/voice/session.py`; implemented by the Gemini and OpenAI/Grok
-  adapters). It is the local-flush trigger only: it sets the turn's
-  interrupt event so `_play_responses` flushes audible TTS, and
-  deliberately does **not** cancel/truncate the provider. The daemon
-  drives it from in-session Silero VAD behind the default-OFF
-  `JASPER_BARGE_IN_<PROVIDER>` flag. The provider-cancel seam below
-  (`cancel_response` / `truncate_assistant_audio`) is now **wired for
-  OpenAI (PR-4)**: after the local flush, `_flush_for_interrupt` drives
-  `cancel_response` then `truncate_assistant_audio` with the flush ack's
-  played-ms. **Grok inherits that pack** (its paid verification is PR-6).
-  **Gemini's reconcile is finalised as a no-op (PR-5)**:
-  `server_self_truncates` has no client truncate/cancel call to make, and
-  JTS keeps Gemini on manual VAD + `NO_INTERRUPTION` even with barge-in
-  enabled, so the daemon's local gate is the sole interruption authority
-  (option (a) in [HANDOFF-barge-in.md](HANDOFF-barge-in.md) "Gemini pack";
-  pinned by `tests/test_gemini_barge_in.py`).
-- `cancel_response(reason)` for explicit local interruption/manual
-  cancellation.
-- `truncate_assistant_audio(provider_item_id, audio_played_ms)` for
-  providers that need conversation history aligned to WebSocket
-  playout.
-- `drop_pending_audio()` (returns the count dropped) for providers with an
-  internal playout buffer: after the local TTS flush, the spine drains the
-  adapter's queued-but-unwritten assistant audio so a burst-delivery provider
-  (OpenAI/Grok stream the whole response up front) does not replay the backlog
-  over the user — the local flush alone clears only the DAC ring. Optional
-  (getattr-probed); an adapter that streams without a buffer omits it.
-  Preserves any terminal end-of-audio sentinel so the consumer still ends.
-- Adapters must tolerate missing provider item ids. Gemini currently
-  has no OpenAI-style item id for audio truncation; OpenAI emits one and
-  JTS already carries it through the outputd-compatible TTS IPC used by
-  fan-in.
-- The active provider's reconciliation kind is surfaced at runtime — on
-  `event=barge.detected` (`reconcile=`) and
-  `/state.voice.barge_in.barge_in_reconcile` — so a durable barge-in
-  (`needs_client_truncate`: OpenAI/Grok cancel+truncate) is distinguishable
-  from a cosmetic one (`server_self_truncates`: Gemini no-ops the reconcile and
-  a real-time server may resume). This makes the registry's
-  `interrupt_reconcile` declaration load-bearing, not test-only metadata.
-
-This seam landed in code as of PR-3 (added **behaviour-neutral**):
-`LiveTurn.cancel_response()` / `LiveTurn.truncate_assistant_audio()` live in
-[`jasper/voice/session.py`](../jasper/voice/session.py). **PR-4 wired the
-OpenAI pack** (the reference): `cancel_response` → `response.cancel`
-(guarded to an in-progress response, so it can't trip the server's
-`response_cancel_not_active`), and `truncate_assistant_audio` →
-`conversation.item.truncate{content_index:0, audio_end_ms}` using the
-playout ledger's played-ms — a **no-op + WARN when that played-ms is 0**, so
-it never truncates on bytes-received (an out-of-range `audio_end_ms` errors
-server-side and desyncs context). Grok inherits it; Gemini keeps the no-op
-default (it self-truncates server-side). It stays default-OFF behind the
-per-provider flag, so no household behaviour changed.
-Which reconciliation a provider needs is a declarative registry field, not
-a provider-name branch: `ProviderCatalogEntry.interrupt_reconcile` in
-[`jasper/voice/catalog.py`](../jasper/voice/catalog.py)
-(`needs_client_truncate` for OpenAI, `server_self_truncates` for Gemini,
-`inherits` → OpenAI for Grok); `resolve_interrupt_reconcile()` follows the
-`inherits` edge so packs always read a concrete kind. The seam is pinned by
-`tests/test_voice_barge_in_contract.py` and the registry declaration by
-`tests/test_voice_catalog.py`.
-
-The cross-provider invariant is owned by
-[HANDOFF-speaker-output-reference.md](HANDOFF-speaker-output-reference.md#robust-barge-in-contract):
-provider cancel/truncate follows the local TTS flush and final
-playout-ledger acknowledgement.
+The cross-provider ordering invariant — provider cancel/truncate follows the
+local TTS flush and the final playout-ledger acknowledgement — is owned by
+[HANDOFF-speaker-output-reference.md](HANDOFF-speaker-output-reference.md#robust-barge-in-contract).
 
 ## Adding a fourth provider
 
-When a new real-time backend lands (a self-hostable Ultravox-class
-model, Mistral Voxtral, future Anthropic, etc.), the integration
-should be:
-
-1. New module `jasper/voice/<provider>_session.py` with a class
-   implementing `LiveConnection` (and a corresponding `LiveTurn`).
-   Route every model-issued tool call through
-   `jasper.tools.dispatch_tool(registry, name, args)` — it owns the
-   per-tool timeout (`tool.timeout`), the `{"error": …}` failure
-   shapes, scalar wrapping, provider-uniform timing logs, and the
-   host-injected lifecycle observer used by wake telemetry.
-   The adapter keeps only its wire-format parts: parsing the call's
-   args and packaging the returned payload. Do not re-inline the
-   dispatch body; all three existing adapters route through it
-   (Grok via the OpenAI subclass).
-2. New model entries (per model ID, with `as_of` bumped) in
+1. New module `jasper/voice/<provider>_session.py` implementing
+   `LiveConnection` and a `LiveTurn`. Route every model-issued tool call
+   through `jasper.tools.dispatch_tool(registry, name, args)` — it owns the
+   per-tool timeout, the `{"error": …}` shapes, scalar wrapping, timing logs,
+   and the wake-telemetry observer. Keep only wire-format parts in the
+   adapter; do not re-inline the dispatch body.
+2. New model entries (per model ID, `as_of` bumped) in
    `jasper/data/model_pricing.json`, plus `pricing_url` + `pricing_buckets`
-   on the provider's `ProviderCatalogEntry` (so the `/voice` editor and
-   research prompt show the right fields/page). (No code in
-   `jasper/usage.py` — pricing is data now.)
-3. New env-var block in `Config` (api key, model, voice, anything
-   provider-specific) with a sane default and an explicit
-   "required only when active provider" validation.
-4. New provider entry in `jasper/voice/catalog.py`, including model
-   status labels (`tested` / `fallback` / `experimental`), voice
-   choices for the `/voice/` wizard, an `interrupt_reconcile`
-   barge-in declaration (`needs_client_truncate` /
-   `server_self_truncates` / `inherits` + `interrupt_reconcile_base`),
-   and a `runtime_imports` declaration — the adapter module first, then
-   any third-party SDK the adapter imports *lazily* (inside a function
-   body). Both fields are required, no default. `runtime_imports` is
-   what `jasper-doctor`'s `check_provider_importable` imports to prove
-   the selected provider's code actually loads in the venv; an
-   undeclared lazy SDK makes that check pass on a box where the
-   provider cannot run. `tests/test_voice_provider_runtime_imports.py`
-   parses the real source and fails if either half drifts.
-5. No reconciler shell allow-list edit: `install.sh` emits
-   `/var/lib/jasper/voice_provider_ids` from the catalog, and
-   `jasper-aec-reconcile` reads that generated file. Keep the
-   fail-closed parking tests green so an unset, invalid, or missing-
-   manifest provider never starts voice.
-6. New branch in `_make_connection(cfg)` in `jasper/voice/daemon_main.py`.
-7. New contract test in `tests/test_<provider>_session.py` modeled on
-   `tests/test_openai_session.py`. Pin: connect → tool round-trip →
-   reconnect → manual-VAD payload shape → text-context injection does
-   not request generation → tool round advances the turn's idle anchor
-   (see "Idle anchor + tool rounds" below). Also add the adapter's turn
-   class to `tests/test_voice_barge_in_contract.py`'s `TURN_CLASSES` so
-   the barge-in seam (cancel / truncate) is covered.
-8. No provider-list edit in `scripts/switch-voice-provider.sh`: it
-   reads provider IDs, key env vars, and model env vars from the
-   installed runtime catalog on the Pi.
-9. New row in this doc's tradeoff table.
+   on the `ProviderCatalogEntry`. No code in `jasper/usage.py`.
+3. New env-var block in `Config` (key, model, voice, provider-specifics) with
+   an explicit "required only when active provider" validation.
+4. New entry in `jasper/voice/catalog.py`: model status labels, voice choices,
+   an `interrupt_reconcile` declaration (plus `interrupt_reconcile_base` when
+   it inherits), and `runtime_imports` — the adapter module first, then any
+   third-party SDK the adapter imports *lazily*. Both are required, no
+   default: `runtime_imports` is what `jasper-doctor` imports to prove the
+   provider's code loads in the venv, so an undeclared lazy SDK makes that
+   check pass on a box where the provider cannot run.
+   `tests/test_voice_provider_runtime_imports.py` parses the real source and
+   fails if either half drifts.
+5. No reconciler shell allow-list edit — `install.sh` emits
+   `voice_provider_ids` from the catalog. Keep the fail-closed parking tests
+   green.
+6. New branch in `_make_connection(cfg)`.
+7. New contract test modeled on `tests/test_openai_session.py`, pinning:
+   connect → tool round-trip → reconnect → manual-VAD payload shape →
+   text-context injection does not request generation → a tool round advances
+   the turn's idle anchor. Add the turn class to
+   `tests/test_voice_barge_in_contract.py`'s `TURN_CLASSES`.
+8. No provider-list edit in `scripts/switch-voice-provider.sh` — it reads the
+   installed runtime catalog. Add a row to this doc's trade-off table.
 
-If the wire format is OpenAI-Realtime-compatible (Grok pattern), most
-of step 1 is "subclass `OpenAIRealtimeConnection` and override
-`PROVIDER_NAME` / base URL / event-name normalisations". Otherwise, the
-Gemini adapter is the better template — it shows the full state
-machine, supervisor loop, idle context-reset, and tool dispatch in one
-place.
+If the wire format is OpenAI-Realtime-compatible (the Grok pattern), most of
+step 1 is subclassing `OpenAIRealtimeConnection` and overriding
+`PROVIDER_NAME`, base URL, and event-name normalisations. Otherwise the
+Gemini adapter is the better template — full state machine, supervisor loop,
+idle context reset, and tool dispatch in one place.
 
 ### Idle anchor + tool rounds
 
-The daemon's pre-response idle watchdog
-(`jasper/voice/turn_playback.py:_idle_watchdog`) reads `turn.last_activity_at()`
-and abandons the turn if `idle_for > JASPER_IDLE_TIMEOUT_SEC` *and* no
-audio has been received yet. The watchdog is protocol-agnostic — all
-adapters share this one timer.
-
-Once audio has started, the same watchdog switches to a response-stall
-cap: if the server has not signalled turn-complete and no new output
-chunk arrives for `JASPER_RESPONSE_STALL_TIMEOUT_SEC` (default 120 s),
-the daemon abandons the turn instead of holding the speaker in session
-forever. Active long responses are unaffected because each chunk refreshes
+The pre-response idle watchdog
+(`jasper/voice/turn_playback.py:_idle_watchdog`) reads
+`turn.last_activity_at()` and abandons the turn when `idle_for >
+JASPER_IDLE_TIMEOUT_SEC` (default 20) and no audio has arrived yet. It is
+protocol-agnostic — all adapters share this one timer. Once audio has
+started it switches to a response-stall cap:
+`JASPER_RESPONSE_STALL_TIMEOUT_SEC` (default 120) since the last output
+chunk, so a long active response is unaffected because each chunk refreshes
 `turn.last_chunk_at()`.
 
-That makes the turn class's idle anchor a cross-provider contract:
-**any event from the server that means "model is still working" must
-advance the anchor**, not just audio deltas and the final
-`response.done`. In particular, a tool-call response.done (or
-equivalent) starts a multi-second round trip (client → tool → response
-2) during which no audio arrives. Forget to reset and the watchdog
-fires mid-dispatch at small `JASPER_IDLE_TIMEOUT_SEC` (production runs
-20 s since PR #187 raised it from a 10 s override — see `jasper/config.py`
-and `.env.example`). Production hit this on 2026-05-21: a weather-tool turn ended
-~0.6 s after the tool result was sent, with the orphan-response
-warning logging 48 dropped audio tokens.
+That makes the turn class's idle anchor a **cross-provider contract: any
+server event meaning "the model is still working" must advance the anchor**,
+not just audio deltas and the final `response.done`. A tool-call
+`response.done` starts a multi-second round trip during which no audio
+arrives; forget to reset and the watchdog fires mid-dispatch. Production hit
+exactly this on 2026-05-21 — a weather-tool turn ended ~0.6 s after the tool
+result was sent, with the orphan-response warning logging 48 dropped audio
+tokens.
 
-Adapter wiring today:
-- **OpenAI** (`openai_session.py`): `OpenAIRealtimeTurn._note_activity()`
-  is called from the function_calls branch of `_handle_response_done`
-  and from `_on_response_done`. Grok inherits this path verbatim.
-- **Gemini** (`gemini_session.py`): `GeminiLiveTurn._note_activity()`
-  is called on tool_call arrival in `_on_response`, inside the
-  per-tool loop in `_handle_tool_call`, and once more after
-  `send_tool_response` lands. Mirrors OpenAI's coverage — every
-  tool-round milestone resets the anchor.
+Wiring today: `OpenAIRealtimeTurn._note_activity()` from the function-calls
+branch of `_handle_response_done` and from `_on_response_done` (Grok inherits
+it verbatim); `GeminiLiveTurn._note_activity()` on tool_call arrival, inside
+the per-tool loop, and again after `send_tool_response` lands. A new provider
+either exposes an equivalent and calls it on every tool-round server event,
+or documents why its wire format satisfies the anchor naturally.
 
-New providers should either expose a `_note_activity()` (or
-equivalent) and call it on every tool-round server event, or document
-why they don't need one (e.g. the wire format streams a heartbeat
-that satisfies the anchor naturally).
+**The anchor is turn-open, so the user's input phase spends the same budget
+as the model's first response** — `last_activity_at()` returns turn-start
+until the model speaks, and the model cannot speak until `end_input()`. Why
+`HARD_RECORDING_CAP_SEC` therefore cannot fire on a stock box, why
+push-to-talk derives its own bound instead, and the two degraded bands a low
+`JASPER_IDLE_TIMEOUT_SEC` walks into are
+[ADR-0162](adr/0162-the-pre-response-idle-anchor-stays-turn-open.md) — read it
+before touching either timer.
 
-**The anchor is turn-open, so the user's input phase spends the same
-budget as the model's first response.** `last_activity_at()` tracks
-*model* activity and returns the turn-start time until the model speaks
-— and the model cannot speak until `end_input()`. So the whole window
-from "turn opened" to "model's first chunk" must fit inside
-`JASPER_IDLE_TIMEOUT_SEC`, input included. Two consequences worth
-knowing before touching either timer:
-
-- `HARD_RECORDING_CAP_SEC` (30 s, `jasper/voice_daemon.py`) sits *above*
-  the 20 s default and so cannot fire on a stock box — for any
-  endpointer. A long single utterance loses its answer to the watchdog
-  first, and because `_end_turn` cancels `_play_responses` *before* it
-  calls `end_input()`, the user hears nothing rather than a short reply.
-- Push-to-talk turns therefore do **not** rely on that constant. They
-  derive their own bound from the same `idle_timeout_sec` the watchdog
-  uses (`WakeLoop._ptt_input_cap_sec`), leaving
-  `PTT_MODEL_FIRST_RESPONSE_ALLOWANCE_SEC` for the model to start
-  speaking, and log `event=manual_mic.hold_cap` when it fires. The
-  `PTT_MIN_INPUT_CAP_SEC` floor is a constant while the watchdog is not,
-  so a low enough `JASPER_IDLE_TIMEOUT_SEC` walks the watchdog down
-  through it. Two degraded bands, each warned once per daemon, both
-  naming the timeout that clears them in `needs_sec=`:
-
-  | `JASPER_IDLE_TIMEOUT_SEC` | what happens | event |
-  |---|---|---|
-  | ≥ 11 (incl. the shipped 20) | cap fires with the full allowance | — |
-  | 6–10 | cap fires first, but the model gets less than the allowance, so a **slow** first chunk loses the answer | `manual_mic.idle_timeout_too_low` |
-  | ≤ 5 | watchdog fires first; the cap is unreachable and **every** long hold loses its answer | `manual_mic.hold_cap_unreachable` |
-
-  The floor stands in both degraded bands — a usable button beats one
-  that closes mid-sentence — because the remedy is the operator's
-  timeout, not a shorter cap.
-
-  **The cap only bounds a button whose frames keep arriving.** It is
-  evaluated per frame in `_handle_manual_session_frame`, and a manual
-  source's `frames()` is an untimed queue read, so a BLE drop mid-hold
-  never reaches it. That turn is reaped by `_idle_watchdog` instead;
-  `_end_turn` still calls `end_input()` via its
-  `_manual_endpoint_this_turn` gate term, and the journal shows
-  `HOLD TIMEOUT`. Unchanged from before the bypass — noted because the
-  cap is easy to mistake for the net that catches it.
-
-Re-anchoring the pre-response timer on end-of-input (rather than
-turn-open) would make `HARD_RECORDING_CAP_SEC` meaningful again for
-every endpointer. That is a shared-machinery change across all three
-adapters and is **not** done; the push-to-talk derivation above is a
-local bound, not a fix for the anchor.
-
-**Push-to-talk turns refuse server VAD.** Server VAD is an *endpointer*:
-at `server_vad_silence_ms` (500 ms) the server declares end-of-utterance
-and the model answers. On a button turn that is the same defect local
-Silero had — a second writer of a boundary the button already owns —
-reached through a different writer, so `_begin_turn` refuses it and logs
-`event=server_vad.disabled_push_to_talk` (WARN, one-shot per daemon)
-rather than going quietly inert. The refusal is evaluated against the
-same three-part `want_server_vad` condition that would otherwise arm it
-(flag **and** provider support **and** music playing), so it can only
-claim to have blocked something that was genuinely on the table. Only
-reachable with `JASPER_SERVER_VAD_ENABLED=1`, which is off by default.
+**Push-to-talk turns refuse server VAD**, which is an *endpointer*: at
+`server_vad_silence_ms` the server declares end-of-utterance and the model
+answers, a second writer of a boundary the button already owns. `_begin_turn`
+refuses it and logs `event=server_vad.disabled_push_to_talk` (WARN, one-shot
+per daemon) rather than going quietly inert, evaluated against the same
+three-part condition that would otherwise arm it — flag *and* provider
+support *and* music playing — so it can only claim to have blocked something
+genuinely on the table.
 
 ### End-of-turn timing
 
-End-of-turn (the moment the daemon un-ducks music, fires the
-"done listening" chirp, and releases the turn) is anchored on
-`TtsPlayout.expected_drain_at()` — a sample-counted deadline that
-tracks when the last queued audio sample actually exits the OS
-audio stack, not when it leaves the inter-task queue. Both
-`jasper/voice/turn_playback.py`'s `_play_responses` (consumer) and
-`_idle_watchdog` (server-said-done
-path) consult this primitive, so timing is provider-agnostic and
-the two paths converge.
+End-of-turn — un-duck music, fire the "done listening" chirp, release the
+turn — is anchored on `TtsPlayout.expected_drain_at()`, a sample-counted
+deadline for when the last queued sample exits the OS audio stack, not when
+it leaves the inter-task queue. Both `_play_responses` and `_idle_watchdog`
+consult it, so timing is provider-agnostic and the two paths converge. New
+adapters get this for free; per-provider chunk pacing (OpenAI burst, Gemini
+realtime) needs no adapter change. Design and observability hooks:
+[audio-paths.md](audio-paths.md) "End-of-turn drain".
 
-New adapters get this for free — drain math lives below the
-provider abstraction. Per-provider chunk pacing (OpenAI burst,
-Gemini real-time) doesn't require any adapter changes. The full
-design + prior-art survey + observability hooks live in
-[audio-paths.md](audio-paths.md) under "End-of-turn drain".
-
-When a provider exposes a stable assistant audio item id, its
-`LiveTurn` should yield `AudioOutChunk` values from
-`audio_out_chunks()` with `provider_item_id` populated. OpenAI does
-this from `response.output_item.added.item.id`; Gemini currently has
-no equivalent and leaves the field empty. The voice daemon passes this
-identity through `OutputdTtsPlayout.write_segment()` so fan-in's
-flush acknowledgement can later drive provider-specific truncate or
-cancel calls.
+When a provider exposes a stable assistant audio item id, its `LiveTurn`
+should yield `AudioOutChunk` values from `audio_out_chunks()` with
+`provider_item_id` populated (OpenAI does, from
+`response.output_item.added.item.id`; Gemini has no equivalent). The daemon
+passes that identity through `OutputdTtsPlayout.write_segment()` so fan-in's
+flush acknowledgement can later drive provider-specific truncate or cancel.
 
 ## Anti-patterns
 
-These have all been surfaced and rejected in design reviews:
+Surfaced and rejected in design reviews:
 
-- **Don't auto-fall-back across providers**. If `gemini` errors,
-  the daemon plays `cant_reach_cloud` and stays on `gemini`. Cross-
-  provider auto-failover hides bugs (silent-session-2 on Gemini 3.x)
-  and surprises the user — different voice, different latency,
-  different conversational style mid-conversation.
-- **Don't add cue text per provider**. Cues are pre-rendered Gemini
-  TTS WAVs and never mention which backend is behind the failure. The
-  user cares that "I can't reach the cloud", not which cloud.
-- **Don't share the supervisor LOOP across providers**. The
-  primitives (backoff, fingerprint) are shared; the loop body differs
-  enough (handle drop on Gemini, no handle on OpenAI) that abstracting
-  it has consistently produced bigger diffs than two parallel loops.
-- **Don't make tools fully neutral by default**. The default is
-  visible-to-everyone, which is right for our subsystem-call tools.
-  If a future tool needs OpenAI's image input or Gemini's grounding,
-  tag it explicitly: `@tool(providers={"openai"})`. The model on
-  another provider then literally cannot see or call it — the safest
-  failure mode.
-- **Don't approximate end-of-turn from upstream signals** —
-  network-arrival timestamps, queue-dequeue stamps, fixed
-  post-response margins. The TtsPlayout drain primitive
-  (`expected_drain_at` / `wait_drained`) is the only correct anchor;
-  it accounts for the OS audio pipeline depth that upstream signals
-  can't see. PR #311 retired two such approximations
-  (`POST_RESPONSE_IDLE_TIMEOUT_SEC=0.5`, `TTS_ALSA_DRAIN_SEC=0.3`)
-  that were clipping the last word on burst-streamed responses.
+- **Don't auto-fall-back across providers.** A provider failure plays
+  `cant_reach_cloud` and stays put (ADR-0159).
+- **Don't add cue text per provider.** Cues never name which backend failed.
+- **Don't share the supervisor LOOP across providers.** The primitives are
+  shared; the loop bodies differ enough — handle drop on Gemini, no handle on
+  OpenAI — that abstracting them has consistently produced bigger diffs than
+  two parallel loops.
+- **Don't make tools fully neutral by default.** Visible-to-everyone is right
+  for subsystem-call tools; a tool needing one provider's exclusive
+  capability gets tagged explicitly, so the model elsewhere cannot see or
+  call it — the safest failure mode.
+- **Don't approximate end-of-turn from upstream signals** — network-arrival
+  timestamps, queue-dequeue stamps, fixed post-response margins. The
+  `TtsPlayout` drain primitive is the only correct anchor; two such
+  approximations were retired for clipping the last word on burst-streamed
+  responses.
 
 ## Related docs
 
-- [HANDOFF-persistent-live-session.md](HANDOFF-persistent-live-session.md) — Gemini-side reconnect supervisor + idle context reset
-- [HANDOFF-audible-feedback.md](HANDOFF-audible-feedback.md) — the cue subsystem, including the pre-rendered TTS used by all providers
-- [audio-paths.md](audio-paths.md) — how TTS enters fan-in before CamillaDSP and how assistant loudness matching works
+- [HANDOFF-audible-feedback.md](HANDOFF-audible-feedback.md) — the cue
+  subsystem, including the pre-rendered TTS used by all providers
+- [HANDOFF-prompting.md](HANDOFF-prompting.md) — the prompt and tool-
+  description surfaces these adapters serialize
+- [audio-paths.md](audio-paths.md) — how TTS enters fan-in before CamillaDSP,
+  and assistant loudness matching
 
-Last verified: 2026-07-27 (provider-neutral response/tool telemetry ownership
-rechecked against `jasper/voice/turn_playback.py`,
-`jasper/tools/__init__.py`, `jasper/voice/daemon_main.py`, and
-`jasper/voice_daemon.py`; prior 2026-07-12 pass: Gemini switcher
-catalog/effective-owner contract;
-prior 2026-07-06 pass verified that the cap + `/voice` card sum the voice ledger
-and the P6 tuning ledger via
-`usage.py`'s `household_usage_reader`, verified against `jasper/usage.py`,
-`jasper/voice/daemon_main.py`, and `jasper/web/voice_setup.py`; canonical
-definition lives in HANDOFF-calibration-agent.md. Prior pass 2026-06-30:
-chip-AEC input-policy classification rechecked
-against `jasper/voice/input_policy.py` and `tests/test_voice_input_policy.py`;
-base chip-AEC no longer depends on optional 150/210 wake-beam device vars.
-Prior pass 2026-06-24: time-billed Grok accounting re-verified against xAI's pricing/cost-tracking/Voice WebSocket docs plus `jasper/usage.py`, `jasper/voice/openai_session.py`, `jasper/voice/grok_session.py`, and `tests/test_grok_session.py`; barge-in interruption contract re-verified against `jasper/voice/session.py`, `jasper/voice/turn_playback.py`, and the adapters — added the `drop_pending_audio()` seam member and the `reconcile`/`barge_in_reconcile` observability after the integrated-review remediation; unconfigured-provider parking verified against `jasper/config.py`, `jasper/voice/daemon_main.py`, `jasper/voice_daemon.py`, `deploy/bin/jasper-aec-reconcile`, and `deploy/systemd/jasper-voice.service`; spend/usage accounting still matches current `jasper/usage.py`; `/voice` spend-cap status/settings verified by `tests/test_voice_setup.py`; OpenAI noise-reduction auto policy verified by `tests/test_voice_input_policy.py` and `tests/test_openai_session.py`; audio-path cross-reference updated for fan-in TTS; provider interruption docs rechecked for OpenAI Realtime, Gemini Live, and xAI Grok Voice; server-VAD public hook contract and response-stall cap rechecked against `jasper/voice/session.py`, `jasper/voice/openai_session.py`, `jasper/voice/turn_playback.py`, `jasper/voice_daemon.py`, and `tests/test_voice_daemon_defects.py`;
-barge-in capability seam: PR-3 landed it behaviour-neutral
-(`LiveTurn.cancel_response`/`truncate_assistant_audio` +
-`LiveConnection.supports_provider_vad` + catalog `interrupt_reconcile`);
-PR-4 wired the OpenAI/Grok pack to real `response.cancel` +
-`conversation.item.truncate` with the played-ms no-op-if-0 guard, driven
-by `turn_playback._flush_for_interrupt` — pinned by
-`tests/test_openai_session.py`, `tests/test_turn_playback_barge_in.py`, and
-`tests/test_voice_barge_in_contract.py`, registry by
-`tests/test_voice_catalog.py`)
+---
+
+Last verified: 2026-08-26 (every kept claim rechecked against `jasper/voice/`,
+`jasper/config.py`, `jasper/usage.py`, `jasper/voice_daemon.py`, and
+`deploy/`; the supervisor + idle-context-reset section was folded in from the
+archived 2026-05 rework brief and re-verified against the code)
