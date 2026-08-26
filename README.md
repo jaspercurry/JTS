@@ -449,7 +449,7 @@ deploy/
   nginx-jasper.conf             Main nginx site: HTTP wizards + HTTPS correction hub
 
 docs/                           Subsystem deep-dives ("HANDOFF" docs)
-  HANDOFF-wake-training-experiment.md  Primary active workstream: custom wake-model training
+  HANDOFF-wake-training-experiment.md  Custom per-leg wake-model training plan
   HANDOFF-custom-wakeword-training.md  Off-Pi custom wake model training/deploy workflow
   HANDOFF-wake-corpus-quality.md  Methodology for wake-corpus audio QA / artifact review
   HANDOFF-usb-mic-wake.md   Parked cheap-USB mic wake/AEC follow-up plan
@@ -702,17 +702,10 @@ reference. Currently:
   adding a second mic family, or moving corpus/onboarding modes into
   productized hardware setup.
 - [`HANDOFF-wake-training-experiment.md`](docs/HANDOFF-wake-training-experiment.md) —
-  **Current primary workstream (2026-05-26).** The forward-looking
-  plan for training a custom `jarvis_jts_*_v1` wake-word model
-  matched to the JTS audio chain, replacing the community
-  `jarvis_v2` model (published recall 26%). Sequenced phases
-  (−1 → 0 → 1 → 2 → 3), pre-committed failure criteria, five
-  explicit listening checkpoints. Capture tooling shipped end-to-
-  end via the browser recorder at http://jts.local/wake-corpus/
-  (PRs #303 → #323, plus the 2026-05-26 USB/ref/DTLN follow-up) with
-  a 4th `raw0` leg and corpus-only cheap USB mic/reference/DTLN legs
-  for future cheaper-mic experiments. Read this before working on wake-
-  word reliability, training data collection, or testing methodology.
+  Training custom per-leg wake models matched to the JTS audio chain (corpus
+  tooling shipped at `http://jts.local/wake-corpus/`, training not yet run);
+  decisions in ADR-0129–0131, May 2026 pilots in
+  [`historical/wake-corpus-pilots-2026-05.md`](docs/historical/wake-corpus-pilots-2026-05.md).
 - [`HANDOFF-custom-wakeword-training.md`](docs/HANDOFF-custom-wakeword-training.md) —
   Productization plan for converting JTS wake-corpus recordings into
   custom wake-word models trained off-Pi with LiveKit/openWakeWord-
