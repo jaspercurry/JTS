@@ -10,6 +10,7 @@ the exposed address, the guard's error code). Detail prose is not pinned.
 from __future__ import annotations
 
 import io
+import re
 import subprocess
 import urllib.error
 from contextlib import contextmanager
@@ -32,6 +33,8 @@ from jasper.conversation_history import (
 from jasper.voice import provider_state
 
 from .doctor_test_support import _registered_check_names
+
+ROOT = Path(__file__).resolve().parents[1]
 
 # ------------------------------------------------------- web design assets
 
@@ -432,12 +435,244 @@ def test_conversation_history_ok_with_existing_db(monkeypatch, tmp_path):
     assert "1 turns" in r.detail
 
 
+# ------------------------------------------- wizard socket start limits
+#
+# #2134/#2216 established the shape on jasper-correction-web; #2465 is the
+# rest of the family, which had no doctor coverage at all — a start-limited
+# wizard hung every socket connection while doctor read clean.
+#
+# `systemctl show` bodies below are the states MEASURED on lab Pi jts4
+# (systemd 257 / Debian Trixie) by the PR #2216 adversarial gate, driving
+# transient units that mirror deploy/jasper-correction-web.{service,socket} —
+# not hand-written states chosen to match an assumption, which is precisely
+# how the first revision of this check shipped blind to its own failure mode.
+
+def _installer_wizard_units() -> set[str]:
+    text = (ROOT / "deploy/lib/install/systemd-units.sh").read_text(
+        encoding="utf-8"
+    )
+    match = re.search(r"^WIZARD_UNITS=\(\n(.*?)^\)", text, re.M | re.S)
+    assert match, "WIZARD_UNITS array not found in systemd-units.sh"
+    return {line.strip() for line in match.group(1).splitlines() if line.strip()}
+
+
+# The family these tests demand coverage of, read from the installer rather
+# than from the constant under test: parametrizing over doctor_web.WIZARD_UNITS
+# would make narrowing that tuple DESELECT the cases instead of failing them,
+# so the sweep could be reverted to one wizard with every per-unit case still
+# green.
+_WIZARDS = sorted(_installer_wizard_units())
+
+_BOUND = "ActiveState=active\nResult=success\n"
+_START_LIMITED = "ActiveState=failed\nResult=service-start-limit-hit\n"
+# `systemctl show` on a unit that does not exist answers rc=0 with these.
+_NOT_INSTALLED = "ActiveState=inactive\nResult=success\n"
+
+
+def _socket_states(overrides=None, *, returncode=0, stderr=""):
+    """Fake ``_run`` serving a ``systemctl show`` body per wizard socket.
+
+    Every wizard socket is modelled, so a check that queries something
+    unmodelled fails loudly here instead of silently reading "". Queries are
+    asserted to be socket-side: reading the SERVICE is the #2216 blocker-1
+    regression (measured, the service enters ``ActiveState=failed`` 34 times
+    in 20 seconds of ordinary retrying while the socket never leaves
+    ``active``), so a revision that reaches for it fails here.
+    """
+    states = {f"{unit}.socket": _BOUND for unit in _WIZARDS}
+    for unit, body in (overrides or {}).items():
+        states[f"{unit}.socket"] = body
+
+    def fake_run(cmd, timeout=5.0):
+        assert cmd[:2] == ["systemctl", "show"], cmd
+        unit = cmd[2]
+        assert unit.endswith(".socket"), f"check read the service: {unit}"
+        assert unit in states, f"check queried an unmodelled unit: {unit}"
+        return subprocess.CompletedProcess(
+            cmd, returncode, stdout=states[unit], stderr=stderr,
+        )
+
+    return fake_run
+
+
+@pytest.mark.parametrize("unit", _WIZARDS)
+def test_start_limited_wizard_socket_fails_with_its_own_remedy(monkeypatch, unit):
+    """Each wizard's wedged socket is named, with the command that clears it.
+
+    Parametrized from the installer's family, so narrowing the sweep back to
+    jasper-correction-web FAILS the other four rather than deselecting them.
+    """
+    monkeypatch.setattr(
+        doctor_web, "_run", _socket_states({unit: _START_LIMITED}),
+    )
+
+    r = doctor_web.check_wizard_socket_start_limits()
+
+    assert r.status == "fail"
+    assert f"{unit}.socket" in r.detail
+    assert "Result=service-start-limit-hit" in r.detail
+    # reset-failed clears BOTH units' state; start rebinds the listener.
+    assert (
+        f"sudo systemctl reset-failed {unit}.socket {unit}.service && "
+        f"sudo systemctl start {unit}.socket" in r.detail
+    )
+
+
+@pytest.mark.parametrize("unit", _WIZARDS)
+def test_absent_wizard_unit_is_ok(monkeypatch, unit):
+    """A wizard the profile does not install is not a finding.
+
+    A streambox installs no jasper-chat-web, and takes its jasper-web pair
+    from deploy/jasper-web-streambox.* under the jasper-web name.
+    """
+    monkeypatch.setattr(
+        doctor_web, "_run", _socket_states({unit: _NOT_INSTALLED}),
+    )
+
+    assert doctor_web.check_wizard_socket_start_limits().status == "ok"
+
+
+@pytest.mark.parametrize(
+    "body, why",
+    [
+        (_BOUND, "listening, service idle-exited between sessions"),
+        ("ActiveState=activating\nResult=success\n", "socket still binding"),
+        (_NOT_INSTALLED, "not installed on this profile"),
+    ],
+)
+def test_healthy_wizard_sockets_are_ok(monkeypatch, body, why):
+    monkeypatch.setattr(
+        doctor_web, "_run", _socket_states({unit: body for unit in _WIZARDS}),
+    )
+
+    r = doctor_web.check_wizard_socket_start_limits()
+
+    assert r.status == "ok", why
+    assert "ActiveState=failed" not in r.detail
+
+
+def test_any_failed_wizard_socket_fails_not_just_the_start_limit_marker(
+    monkeypatch,
+):
+    """``Result`` is reported, never gated on.
+
+    #2216 nit 2: narrowing the predicate from ``ActiveState == "failed"`` to
+    one literal ``Result`` string is what created the original blind spot. A
+    socket killed by ``trigger-limit-hit`` is just as unbound.
+    """
+    monkeypatch.setattr(
+        doctor_web, "_run",
+        _socket_states({
+            "jasper-web": "ActiveState=failed\nResult=trigger-limit-hit\n",
+        }),
+    )
+
+    r = doctor_web.check_wizard_socket_start_limits()
+
+    assert r.status == "fail"
+    assert "Result=trigger-limit-hit" in r.detail
+
+
+@pytest.mark.parametrize(
+    "body, returncode, stderr, must_name",
+    [
+        # #2216 should-fix 2: an unreadable probe must not render as healthy.
+        ("", 1, "Failed to connect to bus", "Failed to connect to bus"),
+        # A non-zero systemctl is a failed read even when its body parses —
+        # otherwise the rc clause is dead weight behind the empty-state one.
+        (_BOUND, 1, "Failed to get properties: Connection timed out", "rc=1"),
+        # rc=0 with a body carrying no ActiveState is still a failed read.
+        ("Failed to get properties: Access denied\n", 0, "", "Access denied"),
+    ],
+    ids=["bus-down", "nonzero-yet-parses", "unparseable"],
+)
+def test_unreadable_wizard_socket_probe_fails(
+    monkeypatch, body, returncode, stderr, must_name,
+):
+    monkeypatch.setattr(
+        doctor_web, "_run",
+        _socket_states(
+            {unit: body for unit in _WIZARDS},
+            returncode=returncode, stderr=stderr,
+        ),
+    )
+
+    r = doctor_web.check_wizard_socket_start_limits()
+
+    assert r.status == "fail"
+    assert must_name in r.detail
+
+
+def test_one_timed_out_wizard_probe_still_reads_the_rest(monkeypatch):
+    """A wedged D-Bus hangs these reads — the sweep must survive the first one.
+
+    Uncaught, ``TimeoutExpired`` aborts into the harness's generic crashed-check
+    result and loses every per-unit finding, on exactly the failure this check
+    exists to diagnose.
+    """
+    hangs, wedged = _WIZARDS[0], _WIZARDS[1]
+    serve = _socket_states({wedged: _START_LIMITED})
+
+    def fake_run(cmd, timeout=5.0):
+        if cmd[2] == f"{hangs}.socket":
+            raise subprocess.TimeoutExpired(cmd, 5.0)
+        return serve(cmd, timeout=timeout)
+
+    monkeypatch.setattr(doctor_web, "_run", fake_run)
+
+    r = doctor_web.check_wizard_socket_start_limits()
+
+    assert r.status == "fail"
+    assert f"{hangs}.socket" in r.detail
+    # The finding the sweep would have lost by aborting on the timeout.
+    assert f"sudo systemctl reset-failed {wedged}.socket" in r.detail
+
+
+def test_wizard_socket_start_limits_skips_without_systemctl(monkeypatch):
+    """Dev host: no systemd to be unhealthy. Matches every sibling's wording."""
+
+    def raises(cmd, timeout=5.0):
+        raise FileNotFoundError("systemctl not found")
+
+    monkeypatch.setattr(doctor_web, "_run", raises)
+
+    r = doctor_web.check_wizard_socket_start_limits()
+
+    assert r.status == "ok"
+    assert "skipped" in r.detail
+
+
+def test_swept_units_match_the_installers_wizard_family():
+    """One source of truth: the installer's WIZARD_UNITS array.
+
+    A wizard added there — and therefore installed, enabled, and parked as one
+    — cannot silently drop out of this sweep.
+    """
+    assert set(doctor_web.WIZARD_UNITS) == _installer_wizard_units()
+
+
+def test_every_shipped_wizard_socket_is_swept():
+    """And a wizard socket shipped in deploy/ cannot skip the sweep either.
+
+    Named exemption: deploy/jasper-web-streambox.socket is installed AS
+    jasper-web.socket (install_streambox_web_unit_files), so it has no runtime
+    unit name of its own and is covered by the jasper-web entry.
+    """
+    shipped = {p.stem for p in (ROOT / "deploy").glob("jasper-*.socket")}
+
+    assert shipped - {"jasper-web-streambox"} == set(doctor_web.WIZARD_UNITS)
+
+
 # -------------------------------------------------------------- registry
 
 
 @pytest.mark.parametrize(
     "check_name",
-    ["check_web_design_assets", "check_camillagui_loopback"],
+    [
+        "check_web_design_assets",
+        "check_camillagui_loopback",
+        "check_wizard_socket_start_limits",
+    ],
 )
 def test_web_checks_are_registered_in_the_web_group(check_name):
     assert check_name in _registered_check_names()
