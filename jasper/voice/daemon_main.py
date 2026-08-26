@@ -11,7 +11,8 @@ import os
 import signal
 import sys
 from collections import deque
-from collections.abc import Iterable
+from collections.abc import Awaitable, Callable, Iterable
+from typing import Any
 
 from jasper.log_event import log_event
 
@@ -228,6 +229,23 @@ def _tts_ready_detail(cfg: Config) -> str:
             f"tts_socket={cfg.tts_outputd_socket}"
         )
     return f"tts_transport={cfg.tts_transport} unsupported=true"
+
+
+def build_ducker(
+    cfg: Config,
+    camilla: Any,
+    *,
+    target_db_provider: Callable[[], Awaitable[float]],
+) -> Ducker | FanInDucker:
+    """Pick the duck transport that matches where TTS enters the mix.
+
+    Production routes TTS/cues into fan-in ahead of CamillaDSP, so the duck
+    has to happen in fan-in too; Camilla main_volume would otherwise attenuate
+    the assistant along with the renderer program.
+    """
+    if cfg.duck_transport == "fanin":
+        return FanInDucker(cfg.tts_outputd_socket, cfg.duck_db)
+    return Ducker(camilla, cfg.duck_db, target_db_provider=target_db_provider)
 
 
 def _make_connection(
@@ -763,18 +781,12 @@ async def run() -> None:
     # bracket — releases against the coordinator's canonical target so their
     # interleavings cannot strand the fader at a value one of them had ducked.
     set_canonical_target_db_provider(volume_coordinator.get_camilla_target_db)
-    # Ducker built after the coordinator so restore follows the active
-    # output topology. Current production routes TTS/cues into fan-in
-    # before CamillaDSP, so ducking must also happen in fan-in; otherwise
-    # Camilla main_volume would attenuate assistant audio along with
-    # renderer/program audio.
-    if cfg.duck_transport == "fanin":
-        ducker = FanInDucker(cfg.tts_outputd_socket, cfg.duck_db)
-    else:
-        ducker = Ducker(
-            camilla, cfg.duck_db,
-            target_db_provider=volume_coordinator.get_camilla_target_db,
-        )
+    # Built after the coordinator so restore follows the active output topology.
+    ducker = build_ducker(
+        cfg,
+        camilla,
+        target_db_provider=volume_coordinator.get_camilla_target_db,
+    )
     try:
         target_level, restore_reason = await volume_coordinator.initialize(
             stale_after_sec=cfg.volume_regress_after_sec,

@@ -460,7 +460,6 @@ composite edge).
 
 | P | Row | Status (2026-08-10; ring rows re-dated inline) |
 |---|---|---|
-| P0 | fan-in host-compliance persistence | **DONE** — `rust/jasper-fanin/src/host_compliance.rs` |
 | P1 | Ring platform ship (inert) | **DONE** — `deploy/lib/install/ring-platform.sh`, `deploy/alsa/conf.d/60-jts-ring.conf`, `deploy/tmpfiles/jts-ring.conf` |
 | P2 | Ring citizenship | **DONE** — emitters, `coupling_reconcile` `shm_ring` mode, topology contract, statefile seeding, artifact binder, `/state`, doctor |
 | P3 | USB combo default-on where the gadget is present | **DONE** |

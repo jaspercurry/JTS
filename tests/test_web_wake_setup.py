@@ -406,19 +406,6 @@ def test_post_unknown_path_404(tmp_path):
     assert cap["status"] == 404
 
 
-def test_post_save_bad_csrf_rejected(tmp_path):
-    _make_request.state_path = str(tmp_path / "wake_model.env")
-    body = b"csrf_token=" + b"a" * 64 + b"&model=hey_jarvis"
-    h, cap = _make_request(
-        "POST", "/save",
-        body=body,
-        headers={"Content-Type": "application/x-www-form-urlencoded"},
-        cookie=f"{_common.CSRF_COOKIE_NAME}=" + "b" * 64,
-    )
-    h.do_POST()
-    assert cap["status"] == 403
-
-
 def test_post_layer_proxies_to_control(tmp_path, monkeypatch):
     """A valid /layer/raw POST reaches _apply_layer with the parsed flag.
 

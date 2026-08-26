@@ -909,7 +909,6 @@ class AirPlayHealthSampler:
                             "target_fill_frames",
                             "held_target_frames",
                             "decay",
-                            "compliance",
                         )
                         if key in resampler
                     }

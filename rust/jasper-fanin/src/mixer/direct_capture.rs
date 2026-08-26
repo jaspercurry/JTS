@@ -223,9 +223,8 @@ enum DirectOpenOutcome {
 /// 128-frame slots of cushion, so a device open that takes longer than ~2.7 ms
 /// costs a whole slot: CamillaDSP reads an empty Ring A (a 128-frame silence
 /// INSERTION) or fan-in free-run-drops a slot it could not publish in time (a
-/// 128-frame DELETION). Both signs were measured in the field, on builds with
-/// and without a host-compliance proof on disk — the common factor is a USB host
-/// attached and blocking device calls on the audio thread.
+/// 128-frame DELETION). Both signs were measured in the field — the common
+/// factor is a USB host attached and blocking device calls on the audio thread.
 ///
 /// The lane now hands opens and closes to a dedicated thread and keeps rendering
 /// silence until a handle comes back. One `Sender::send` and one `try_recv` per

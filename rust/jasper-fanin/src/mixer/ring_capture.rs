@@ -66,8 +66,8 @@
 //! 5.33 ms render period and two 128-frame slots of downstream cushion, the
 //! worst case was ~187 slots of audio — the #2533 defect class, on a path that
 //! needs no USB host to fire. [`RingAttacher`] moves it to a
-//! `fanin-ring-attacher` thread, the sibling of `fanin-compliance-writer` and
-//! `fanin-direct-opener`: the detached lane costs one non-blocking `try_recv`
+//! `fanin-ring-attacher` thread, the sibling of `fanin-direct-opener`: the
+//! detached lane costs one non-blocking `try_recv`
 //! per period and one non-blocking `send` per retry window, and keeps rendering
 //! silence until a reader comes back.
 //!
