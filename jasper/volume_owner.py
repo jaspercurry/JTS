@@ -101,6 +101,8 @@ __all__ = [
     "VolumeClaimRefused",
     "VolumeOwner",
     "duck_release_target_db",
+    "install_volume_owner",
+    "volume_owner",
 ]
 
 SetFaderDb = Callable[[float], Awaitable[Any]]
@@ -639,3 +641,59 @@ class VolumeOwner:
             observed_db="" if observed is None else f"{observed:.6f}",
             tolerance_db=f"{READBACK_TOLERANCE_DB:.6f}",
         )
+
+
+# ---------------------------------------------------------------------------
+# The process registration, for the processes that have nowhere to inject from
+# ---------------------------------------------------------------------------
+
+_process_owner: VolumeOwner | None = None
+
+
+def install_volume_owner(owner: VolumeOwner | None) -> None:
+    """Register this process's fader owner. ``None`` clears it.
+
+    **Two ways a holder reaches the owner, and the split is not new.** A
+    process that already builds a long-lived ``VolumeCoordinator`` hands that
+    coordinator's ``volume_owner`` straight to its holders — ``Ducker`` and
+    ``CueDuck`` take it as a constructor argument. A process that builds no
+    such coordinator has nothing to inject from: the ``/sound/`` floor-tone
+    audition, the crossover level lease and the measurement volume guard all
+    run inside socket-activated wizards whose request handlers are reached
+    from a router, not from a constructor they own.
+
+    This is the SAME split ``jasper.camilla.set_canonical_target_db_provider``
+    already draws, for the same processes, for the same reason — that function
+    exists because *"graph swaps run on ad-hoc ``primary_controller()``
+    instances no coordinator ever sees."* The prior art is what makes this a
+    shape rather than an exception.
+
+    **Stated plainly: this reverses a position #3010's body took.** That PR
+    argued for no registry at all, citing ``tests/conftest.py``'s
+    ``_isolate_canonical_target_provider`` docstring — *"``Ducker`` needs no
+    equivalent, it takes ``target_db_provider`` as a constructor argument."*
+    That reasoning is still right, and still only covers the daemon. Read
+    whole, the very existence of the fixture it quotes is the counter-example:
+    the repo already concluded that a process without a coordinator needs a
+    registration, and pays for it with an isolation fixture. This one does
+    too, in the same file.
+
+    **The registration is THE owner for its process, not one of several.** A
+    process that registers must not also construct a second owner, and a
+    process that injects registers the same instance it injects, so
+    :func:`volume_owner` never answers ``None`` where an owner exists. Two
+    owners over one fader is the arbitration failure this whole wave deletes,
+    wearing a new name.
+    """
+    global _process_owner
+    _process_owner = owner
+
+
+def volume_owner() -> VolumeOwner | None:
+    """This process's fader owner, or ``None`` where none was registered.
+
+    ``None`` is an honest answer, not a hole to plug: a caller that gets it is
+    running somewhere no owner was installed, and constructing one on the spot
+    would make it the second. Disclose and degrade — never mint.
+    """
+    return _process_owner
