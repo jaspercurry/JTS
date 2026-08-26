@@ -830,11 +830,17 @@ class CamillaController:
         measurement path) is today's canonical-target behaviour exactly.
 
         ``duck=False`` keeps the writer-lock serialization and drops the fader
-        bracket. Two callers take it, for the same reason stated two ways:
-        :meth:`patch_config`, which changes ONE declared parameter of a running
-        filter rather than replacing the pipeline, and the measurement session
-        graph through :meth:`set_active_config_raw`, whose graph is installed
-        once into a session that is already silent.
+        bracket. Two callers take it, for two different reasons:
+
+        * :meth:`patch_config` changes ONE declared parameter of a running
+          filter rather than replacing the pipeline, so there is no new graph
+          whose headroom could step. Its safety is a property of ITS CALLERS'
+          bounded edits, not of ``PatchConfig`` itself — a patch that rewrote a
+          whole filter chain would step like any swap.
+        * the measurement session graph, through
+          :meth:`set_active_config_raw`, installs once into a session that
+          already holds the fader and the measurement window, so nothing is
+          playing for a step to be loud against.
         """
         from jasper.dsp_apply import camilla_graph_mutation
 

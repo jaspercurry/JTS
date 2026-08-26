@@ -5432,13 +5432,14 @@ def _volume_hooks(camilla_factory: Any, context: V2ConductorContext) -> V2Volume
     async def _put_the_graph_back() -> None:
         """Restore the entry graph before the volume closes, never at its cost.
 
-        BEFORE, for two reasons that both point the same way. The restore's
-        duck release reference is the level this plan still owns (#2929), so
-        after the close it would release against the household target instead.
-        And the ``finally`` below releases the measurement pause: once that
-        goes, the household programme can resume, and a graph swapped after it
-        lands under live audio. Same ordering
-        :func:`_release_pause_best_effort` keeps for the out-of-runner drains.
+        BEFORE, and the reason is isolation rather than the fader. The restore
+        no longer ducks (wave 6d), so there is no release reference to land in
+        the right place — but the ``finally`` below releases the measurement
+        pause, and once that goes the household programme can resume. A graph
+        swapped after it lands under live audio, which is exactly the condition
+        an un-ducked swap is only safe in the absence of. Same ordering, for the
+        same reason, that :func:`_release_pause_best_effort` keeps for the three
+        out-of-runner drains.
 
         NEVER AT ITS COST, because a graph that will not come back must not
         stop the fader coming down: that would strand the speaker in the
