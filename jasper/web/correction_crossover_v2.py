@@ -1173,9 +1173,45 @@ def session_measurement_pause_held() -> bool:
 
 def reset_session_measurement_pause_for_tests() -> None:
     """Test seam: drop the held-window reference without an ``__aexit__``."""
-    global _session_pause_cm, _session_abort_target
+    global _session_pause_cm, _session_abort_target, _session_graph
     _session_pause_cm = None
     _session_abort_target = None
+    _session_graph = None
+
+
+# --------------------------------------------------------------------------- #
+# session-scoped measurement graph (wave 6b — installed once, not per stimulus)
+# --------------------------------------------------------------------------- #
+#
+# The same process-global shape the pause above uses, and for the same reason:
+# the thing is acquired deep inside a play and has to be released by every
+# drain path, none of which can see the play's closure. Registered by
+# ``bind_production_play`` when it builds the stage's graph; released by
+# ``_volume_hooks``'s close/abandon arms beside the pause.
+_session_graph: Any = None
+
+
+def register_session_measurement_graph(graph: Any) -> None:
+    """Hand the drain paths the graph this stage will install."""
+    global _session_graph
+    _session_graph = graph
+
+
+async def release_session_measurement_graph() -> None:
+    """Put the entry graph back (idempotent), then forget it.
+
+    Every drain path calls this; one that runs when nothing is installed — a
+    session that never played a routed stimulus, a crash-fresh process, a
+    second drain — is a safe no-op, because
+    :meth:`~jasper.active_speaker.crossover_v2.session_graph.MeasurementSessionGraph.restore`
+    is itself idempotent.
+    """
+    global _session_graph
+    graph = _session_graph
+    if graph is None:
+        return
+    _session_graph = None
+    await graph.restore()
 
 
 async def _play_under_session_pause(play_body: Callable[[], Any]) -> None:
@@ -3949,13 +3985,95 @@ def bind_production_play(
     ON-DEVICE: not exercised hardware-free; W6 validates acoustically.
     """
     from jasper.active_speaker.crossover_v2.programs import SUMMED_SWEEP_PHASES
-    from jasper.active_speaker.crossover_v2_flow import bind_program_playback_seams
+    from jasper.active_speaker.crossover_v2.session_graph import (
+        MeasurementSessionGraph,
+    )
+    from jasper.active_speaker.crossover_v2_flow import (
+        bind_program_playback_seams,
+        confirm_graph_is_live,
+    )
     from jasper.active_speaker.web_commissioning import DEFAULT_CAMILLA_CONFIG_DIR
     from jasper.audio_measurement.program import write_program_wav
+    from jasper.dsp_apply import dsp_writer_lock
 
     resolved_config_dir = (
         config_dir if config_dir is not None else str(DEFAULT_CAMILLA_CONFIG_DIR)
     )
+
+    def _emit_program_graph() -> str:
+        """The session's ONE measurement-graph emit.
+
+        Every argument here is a bind-time closure variable, which is the fact
+        that makes the graph session-scoped rather than per-stimulus: the old
+        per-capture site emitted these same bytes for every stimulus.
+
+        BOTH HALVES OF THE DEVICE BLOCK, DERIVED TOGETHER (issue #2450).
+        ``playback_device`` is already marker-aware — on an armed box
+        ``resolve_active_playback_device`` answers the ACTIVE RING — but naming
+        only the sink left the emitter to default its capture lane to the
+        snd-aloop tap, which under ``shm_ring`` fan-in has stopped feeding:
+        Stage 1's per-driver sweeps would excite the ring while CamillaDSP
+        captured a device nobody writes. Digital silence, every daemon healthy,
+        and no gate to catch it — the capture-channel check compares 2 == 2 and
+        the arm's width gate only holds ring-NAMED lanes to the wire.
+        ``active_emit_devices`` is the one place that answers for a ring PCM, so
+        this site asks it rather than learning the ring; on every unarmed box it
+        returns today's literals and this emit is byte-identical.
+
+        EVERY field it derives is forwarded. A subset is the same defect one
+        level up (#2343/#2359/#2363's family), which is why
+        ``test_every_emit_devices_field_reaches_the_emitter`` walks
+        ``dataclasses.fields`` at this site too — and it matters MORE at session
+        scope, where a half-derived block would poison every stimulus rather
+        than one.
+        """
+        from jasper.active_speaker.camilla_yaml import (
+            active_emit_devices,
+            emit_active_speaker_program_config,
+        )
+
+        devices = active_emit_devices(playback_device, topology=topology)
+        return emit_active_speaker_program_config(
+            preset,
+            role_channels=dict(role_channels),
+            playback_device=playback_device,
+            protection_sections_by_role=protection_sections_by_role,
+            capture_device=devices.capture_device,
+            capture_format=devices.capture_format,
+            playback_format=devices.playback_format,
+            chunksize=devices.chunksize,
+            target_level=devices.target_level,
+            queuelimit=devices.queuelimit,
+            enable_rate_adjust=devices.enable_rate_adjust,
+        )
+
+    def _held_measurement_volume_db() -> float | None:
+        """The declared level the graph swaps release to (#2929).
+
+        The SAME plan and the SAME guarded question ``_hold_fader`` asks.
+        Without it the swap duck released to the canonical HOUSEHOLD target,
+        which sits below the measurement volume and therefore won the release's
+        ``min`` every time: every routed capture's fader landed on the household
+        level, which the hold now REFUSES rather than repairs. With it the
+        release lands on the declared level by construction.
+
+        Synchronous, and handed to the swap UNCALLED: the release asks it at the
+        moment it lets go, so a drain that finishes mid-swap is seen rather than
+        overwritten. It rides the session graph's two swaps now instead of two
+        per stimulus; wave 6d retires the duck and 6e retires this reader.
+        """
+        return session_volume_plan().owned_measurement_volume_db_nowait()
+
+    session_graph = MeasurementSessionGraph(
+        emit=_emit_program_graph,
+        cam_factory=camilla_factory,
+        writer_lock=lambda: dsp_writer_lock(
+            resolved_config_dir, source="crossover_v2_session_graph"
+        ),
+        confirm_live=confirm_graph_is_live,
+        held_target_db=_held_measurement_volume_db,
+    )
+    register_session_measurement_graph(session_graph)
 
     def _play(phase: str, program: Any) -> None:
         bundle_dir = evidence_store.bundle_dir
@@ -4022,23 +4140,6 @@ def bind_production_play(
                 artifact=artifact, read_volume_plan=session_volume_plan,
             )
 
-        def _held_measurement_volume_db() -> float | None:
-            """The declared level the graph swaps release to (#2929).
-
-            The SAME plan and the SAME guarded question ``_hold_fader`` below
-            asks. Without it the swap duck released to the canonical HOUSEHOLD
-            target, which sits below the measurement volume and therefore won
-            the release's ``min`` every time: every routed capture's fader
-            landed on the household level, which the hold now REFUSES rather
-            than repairs. With it the release lands on the declared level by
-            construction and the hold reads in tolerance.
-
-            Synchronous, and handed to the swap UNCALLED: the release asks it
-            at the moment it lets go, so a drain that finishes mid-swap is seen
-            rather than overwritten.
-            """
-            return session_volume_plan().owned_measurement_volume_db_nowait()
-
         async def _hold_fader(open_cam: Callable[[], Any]) -> None:
             """Re-prove the session's measurement volume for THIS stimulus.
 
@@ -4095,6 +4196,12 @@ def bind_production_play(
                 # No load means the standing graph IS what this capture goes
                 # through — stated by the branch that skipped the load.
                 #
+                # A summed sweep measures the STANDING graph, so the session's
+                # measurement graph has to step aside rather than be shared.
+                # Restoring here (not per stimulus) is what keeps an all-routed
+                # walk at two swaps for the whole session and bounds a mixed one
+                # by its routed/summed transitions.
+                await release_session_measurement_graph()
                 # The hold runs FIRST and unconditionally, so the provenance
                 # record below observes a fader that was just proven.
                 await _hold_fader(camilla_factory)
@@ -4106,46 +4213,19 @@ def bind_production_play(
                     bundle_dir, artifact, timeout_s=60.0
                 )
                 return
-            from jasper.active_speaker.camilla_yaml import (
-                active_emit_devices,
-                emit_active_speaker_program_config,
-            )
             from jasper.active_speaker.program_playback import play_program
 
-            # BOTH HALVES OF THE DEVICE BLOCK, DERIVED TOGETHER (issue #2450).
-            # ``playback_device`` is already marker-aware — on an armed box
-            # ``resolve_active_playback_device`` answers the ACTIVE RING — but
-            # naming only the sink left the emitter to default its capture lane
-            # to the snd-aloop tap, which under ``shm_ring`` fan-in has stopped
-            # feeding: Stage 1's per-driver sweeps would excite the ring while
-            # CamillaDSP captured a device nobody writes. Digital silence, every
-            # daemon healthy, and no gate to catch it — the capture-channel
-            # check compares 2 == 2 and the arm's width gate only holds
-            # ring-NAMED lanes to the wire. ``active_emit_devices`` is the one
-            # place that answers for a ring PCM, so this site asks it rather
-            # than learning the ring; on every unarmed box it returns today's
-            # literals and this emit is byte-identical.
-            #
-            # EVERY field it derives is forwarded. A subset is the same defect
-            # one level up (#2343/#2359/#2363's family), which is why
-            # ``test_every_emit_devices_field_reaches_the_emitter`` walks
-            # ``dataclasses.fields`` at this site too.
-            devices = active_emit_devices(playback_device, topology=topology)
-            program_yaml = emit_active_speaker_program_config(
-                preset,
-                role_channels=dict(role_channels),
-                playback_device=playback_device,
-                protection_sections_by_role=protection_sections_by_role,
-                capture_device=devices.capture_device,
-                capture_format=devices.capture_format,
-                playback_format=devices.playback_format,
-                chunksize=devices.chunksize,
-                target_level=devices.target_level,
-                queuelimit=devices.queuelimit,
-                enable_rate_adjust=devices.enable_rate_adjust,
-            )
-            # Hoisted so the observation below rides the SAME controller the
-            # graph load went through, not a second one asking separately.
+            # Install-or-prove. One call covers the first routed stimulus and a
+            # graph some other DSP writer replaced underneath us: both mean "the
+            # running graph is not the one this session measures through", and
+            # the answer to both is to put it back (ruling S6's pipeline-health
+            # check, ruling S10's shape — repair and disclose, never refuse to
+            # play). A summed sweep between two routed stimuli lands here too,
+            # because it released the graph on its way past.
+            register_session_measurement_graph(session_graph)
+            await session_graph.install()
+            # Hoisted so the observation below rides the SAME controller, not a
+            # second one asking separately.
             cam = camilla_factory()
             seams = bind_program_playback_seams(
                 cam,
@@ -4159,13 +4239,12 @@ def bind_production_play(
                 role_targets=role_targets,
                 session_volume_db=session_volume_db,
                 declared_sensitivities=declared_sensitivities,
-                held_target_db=_held_measurement_volume_db,
             )
             if on_playback_started is not None:
                 # Wrap the seam rather than firing before ``play_program``: the
-                # readmission, writer-lock acquisition and program-graph load
-                # all happen inside it and all precede any sound. Firing here
-                # keeps the anchor at the WAV handoff for both playback shapes.
+                # readmission and writer-lock acquisition both happen inside it
+                # and both precede any sound. Firing here keeps the anchor at
+                # the WAV handoff for both playback shapes.
                 inner_play_wav = seams["play_wav"]
 
                 async def _play_wav_signalling() -> Any:
@@ -4175,11 +4254,12 @@ def bind_production_play(
                 seams["play_wav"] = _play_wav_signalling
             if observing:
                 # OUTSIDE the signalling wrapper, so the phase-ladder anchor
-                # stays adjacent to the WAV handoff. INSIDE ``play_program``,
-                # because that is the only point at which the routing graph is
-                # loaded: read one step earlier and ``get_active_config_raw``
-                # still answers the applied graph — the exact misreading this
-                # block exists to prevent.
+                # stays adjacent to the WAV handoff. Still INSIDE
+                # ``play_program`` even though the graph is installed earlier
+                # now: what this records is what the capture PLAYED through, so
+                # it belongs next to the WAV handoff rather than next to the
+                # install — and ``get_active_config_raw`` answers the
+                # measurement graph at both points.
                 pre_provenance_play_wav = seams["play_wav"]
 
                 async def _play_wav_observed() -> Any:
@@ -4189,8 +4269,8 @@ def bind_production_play(
                 seams["play_wav"] = _play_wav_observed
             # OUTERMOST, and unconditional (#2925 — ``hold_measurement_volume``
             # states the mechanism). Wrapping ``play_wav`` is what puts the hold
-            # where the fix has to be: INSIDE the writer lock, AFTER
-            # ``load_program_graph``, BEFORE any audio. Outside the provenance
+            # where the fix has to be: INSIDE the writer lock, AFTER the graph
+            # is proven installed, BEFORE any audio. Outside the provenance
             # wrapper so the recorded fader is one that was proven, and outside
             # the signalling wrapper so the phone's phase-ladder anchor still
             # fires adjacent to the WAV handoff and never for a refused capture.
@@ -4203,7 +4283,6 @@ def bind_production_play(
             seams["play_wav"] = _play_wav_volume_held
             await play_program(
                 program,
-                program_graph_yaml=program_yaml,
                 session_volume_plan=session_volume_plan(),
                 **seams,
             )
@@ -5302,14 +5381,38 @@ def _volume_hooks(camilla_factory: Any, context: V2ConductorContext) -> V2Volume
                 await release_session_measurement_pause()
         return opened
 
+    async def _put_the_graph_back() -> None:
+        """Restore the entry graph before the volume closes, never at its cost.
+
+        BEFORE, because the restore's duck release reference is the level this
+        plan still owns (#2929) — after the close it would release against the
+        household target instead. NEVER AT ITS COST, because a graph that will
+        not come back must not stop the fader coming down: that would strand
+        the speaker in the measurement graph AND at measurement volume, which
+        is the worse of the two failures by a wide margin.
+        """
+        from jasper.active_speaker.crossover_v2.session_graph import SessionGraphError
+
+        try:
+            await release_session_measurement_graph()
+        except (SessionGraphError, OSError, RuntimeError, TimeoutError, ValueError):
+            log_event(
+                logger,
+                "correction.crossover_v2_session_graph_restore_failed",
+                level=logging.CRITICAL,
+                exc_info=True,
+            )
+
     async def _close() -> Any:
         try:
+            await _put_the_graph_back()
             return await plan.close(_set, _get)
         finally:
             await release_session_measurement_pause()
 
     async def _abandon() -> Any:
         try:
+            await _put_the_graph_back()
             return await plan.abandon(_set, _get)
         finally:
             await release_session_measurement_pause()

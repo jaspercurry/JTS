@@ -5533,10 +5533,19 @@ def test_a_consent_walk_must_say_which_captures_announce():
     )
 
 
-def test_bind_program_playback_seams_uses_inline_setconfig(tmp_path):
-    """The production seams keep the statefile boot anchor untouched: load and
-    restore both ride ``set_active_config_raw`` (SetConfig), never
-    ``set_config_file_path`` — the crash-recovery-MUTED invariant."""
+def test_bind_program_playback_seams_is_the_play_transaction_and_confirms_strictly(
+    tmp_path,
+):
+    """What the binding still owns after wave 6b, and what it hands off.
+
+    The graph seams moved to ``MeasurementSessionGraph``; the SetConfig
+    transport claim they carried — load and restore ride
+    ``set_active_config_raw``, never ``set_config_file_path``, so the statefile
+    boot anchor stays put and a crash mid-session reboots onto the staged
+    anchor — moved with them and is pinned in
+    ``tests/test_crossover_v2_session_graph.py``. ``confirm_graph_is_live``
+    stayed here, so its strictness is still pinned here.
+    """
     from jasper.active_speaker.crossover_v2_flow import bind_program_playback_seams
     from jasper.camilla import CamillaConfigRejected
 
@@ -5605,23 +5614,21 @@ def test_bind_program_playback_seams_uses_inline_setconfig(tmp_path):
         role_targets={},
         session_volume_db=SESSION_VOLUME_DB,
     )
-    assert set(seams) == {
-        "read_current_config_path", "load_program_graph", "restore_graph",
-        "play_wav", "readmit", "writer_lock",
-    }
-    assert asyncio.run(seams["read_current_config_path"]()) == str(entry)
-    # Default-fill tolerance: the submitted text carries none of the keys the
-    # readback will have, and the load is still CONFIRMED.
-    assert asyncio.run(seams["load_program_graph"]("program: graph\n")) is True
-    assert asyncio.run(seams["restore_graph"](str(entry))) is True
-    assert calls == [
-        ("get_path", False),
-        ("set_raw", "program: graph\n", False, None),
-        ("get_raw", False),
-        ("set_raw", "prior: graph\n", False, None),
-    ]
+    # The count IS the claim, and wave 6b shrank it: the three graph seams
+    # moved to ``MeasurementSessionGraph``, which installs one graph per session
+    # instead of swapping one in and out per stimulus. What is left here is the
+    # play transaction proper.
+    assert set(seams) == {"play_wav", "readmit", "writer_lock"}
+
     from jasper.active_speaker.program_playback import ProgramPlaybackError
 
+    # ``confirm_graph_is_live`` did NOT move — the session graph calls it, and
+    # its strictness is the same three claims it always made.
+    #
+    # Default-fill tolerance: the readback is a normalized SUPERSET of the
+    # submitted text, and a load is still CONFIRMED.
+    cam.live = "program: graph\n"
+    asyncio.run(flow.confirm_graph_is_live(cam, "program: graph\n"))
     # A genuinely different graph is still rejected — the check is strict
     # equality of normalized fingerprints, not a subset comparison.
     cam.live = "different: graph\n"
@@ -5635,7 +5642,7 @@ def test_bind_program_playback_seams_uses_inline_setconfig(tmp_path):
     # A submitted config camilla itself refuses is a NAMED refusal, distinct
     # from a mismatch, so hardware triage can tell the two apart.
     with pytest.raises(ProgramPlaybackError, match="normalization failed"):
-        asyncio.run(seams["load_program_graph"]("!!not-yaml\n"))
+        asyncio.run(flow.confirm_graph_is_live(cam, "!!not-yaml\n"))
 
 
 def test_v2_session_spec_is_a_valid_protocol_3_crossover_spec():

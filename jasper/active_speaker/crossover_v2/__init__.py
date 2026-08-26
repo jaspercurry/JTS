@@ -86,6 +86,9 @@ call and neither extends:
   ``measure`` · ``analyze`` · ``recommend`` · ``save`` over them.
 * :mod:`.session_seams` — what that session needs from outside itself: the
   session graph, the volume claim, the record store, and the play transaction.
+* :mod:`.session_graph` — the graph seam filled: one measurement graph installed
+  once per session and proven before each stimulus, instead of a config swap and
+  a duck around every capture.
 * :mod:`.playback_transaction` — ready → admit → lock → play → restore, a named
   boundary INSIDE ``measure`` rather than a fifth verb.
 * :mod:`.measure_spec` — what one ``measure`` asks for, and the named stubs for

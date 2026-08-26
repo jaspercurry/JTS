@@ -431,6 +431,7 @@ def _drive_one_capture(
     """
     from jasper.active_speaker import camilla_yaml as camilla_yaml_mod
     from jasper.active_speaker import crossover_v2_flow as flow_mod
+    from jasper.active_speaker.crossover_v2 import session_graph as session_graph_mod
     from jasper.active_speaker import program_playback as playback_mod
     from jasper.audio_measurement import program as program_mod
     from jasper.audio_measurement import program_analysis as pa_mod
@@ -453,20 +454,22 @@ def _drive_one_capture(
 
     monkeypatch.setattr(playback_mod, "verified_program_aplay", _fake_aplay)
 
+    # What SetConfig does on the real daemon: the running graph changes, the
+    # persisted config path does NOT. Wave 6b moved that swap out of the play
+    # seams and into the session graph, so the model moved with it — this pair
+    # is the whole reason ``graph.kind`` exists, and stubbing it away would
+    # leave the two-captures-one-path test asserting nothing.
+    async def _install(self) -> str:
+        cam.active_raw = ROUTING_GRAPH_YAML
+        return "probe"
+
+    async def _restore(self) -> None:
+        cam.active_raw = APPLIED_GRAPH_YAML
+
+    monkeypatch.setattr(session_graph_mod.MeasurementSessionGraph, "install", _install)
+    monkeypatch.setattr(session_graph_mod.MeasurementSessionGraph, "restore", _restore)
+
     def _fake_seams(cam_arg, **kwargs):
-        async def read_current_config_path() -> str | None:
-            return cam.config_path
-
-        async def load_program_graph(yaml_text: str) -> bool:
-            # What SetConfig does on the real daemon: the running graph
-            # changes, the persisted config path does NOT.
-            cam.active_raw = yaml_text
-            return True
-
-        async def restore_graph(path: str) -> bool:
-            cam.active_raw = APPLIED_GRAPH_YAML
-            return True
-
         async def play_wav() -> Any:
             return SimpleNamespace(ok=True)
 
@@ -474,9 +477,6 @@ def _drive_one_capture(
             return SimpleNamespace(allowed=True, refusals=())
 
         return {
-            "read_current_config_path": read_current_config_path,
-            "load_program_graph": load_program_graph,
-            "restore_graph": restore_graph,
             "play_wav": play_wav,
             "readmit": readmit,
             "writer_lock": lambda: _FakeWindow(),
