@@ -587,9 +587,9 @@ operator is in the loop.
   sourced reasons our prompt is above-norm are instruction-following
   dilution on Gemini 3 and per-turn cost — an adherence/cost win, not
   a resumption fix, and a paid voice-eval-validated change that can
-  regress tool-calling. Full treatment + citations:
-  `docs/HANDOFF-prompting.md` § "Length and structure are inversely
-  valued."
+  regress tool-calling. Decision:
+  [ADR-0156](docs/adr/0156-the-gemini-system-instruction-token-ceiling-is-folklore.md);
+  citations: `docs/historical/prompting-audit-2026-05.md`.
 - **`SetVolume`, not `Reload`, for ducking.** Reload reparses YAML
   and glitches audio mid-stream.
 - **Idle billing on Gemini Live**: don't keep the session open
