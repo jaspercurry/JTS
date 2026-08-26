@@ -2660,8 +2660,8 @@ momentarily loaded Pi from a budget that no longer fits its work.
 ### Failure taxonomy & debugging
 
 > **Live reference — the historical tag above does not cover this section.**
-> The spine's "[Debugging — where to look
-> first](../HANDOFF-crossover-measurement-v2.md#debugging--where-to-look-first)"
+> The runbook's "[Debugging — where to look
+> first](../tuning-operator-runbook.md#debugging--where-to-look-first)"
 > delegates its deeper catalogs here,
 > and they are maintained against the code rather than frozen with the
 > campaign. Read that spine section first; it flags what in here is still
@@ -4553,8 +4553,8 @@ that same capture is 0.490 dB max (raw-to-raw is 0.606 dB).
 ### Gotchas — the W6 bug-class catalog (do not reintroduce)
 
 > **Live reference — the historical tag above does not cover this section.**
-> The spine's "[Debugging — where to look
-> first](../HANDOFF-crossover-measurement-v2.md#debugging--where-to-look-first)"
+> The runbook's "[Debugging — where to look
+> first](../tuning-operator-runbook.md#debugging--where-to-look-first)"
 > delegates its bug-class list here,
 > and "do not reintroduce" is a current instruction, not a campaign result.
 
