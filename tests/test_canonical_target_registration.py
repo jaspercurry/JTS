@@ -2,7 +2,9 @@
 #
 # SPDX-License-Identifier: Apache-2.0
 
-"""Each daemon named below registers a canonical main_volume target.
+"""Each daemon named below registers a canonical main_volume target, and
+since wave 5b the process fader OWNER with it —
+``install_env_canonical_target_provider`` installs both from one call.
 
 `CamillaController._graph_mutation` ducks the main fader across a swap and
 releases it to ``min(canonical, current + own depth)``. With no canonical
@@ -16,6 +18,13 @@ for that one swap (#2929; only the crossover-v2 measurement path does). That
 does not weaken this guard: those same processes still perform ordinary swaps,
 and a measurement plan that has drained supplies no reference at all — so
 every daemon below still needs its registration.
+
+**Two reasons now live in this table.** Every row but the last is here
+because its daemon SWAPS the graph and its swap duck needs a canonical
+release target. `jasper/cli/aec_tune.py` is here because it WRITES the
+fader and wave 5b routed those writes through the process owner, which
+the same call registers. A future reader trimming this table by asking
+'does this daemon swap?' would delete that row and break the CLI.
 
 This is a lost-edit guard in the sense of `test_web_main_imports.py`: the
 registration is one line at the top of a daemon's `main()`, deleting it
@@ -77,6 +86,13 @@ _ENTRY_POINTS = {
     # set below sees nothing new when a caller like this one is added; only
     # this table catches it.
     "jasper/cli/active_speaker.py": "main",
+    # `jasper-aec-tune` — the ONE entry here that registers for the OWNER
+    # rather than for a graph swap: it ducks the main fader for its noise
+    # test and restores it after, and wave 5b routed both writes through
+    # `volume_owner()`. Without the registration `volume_owner()` answers
+    # None and `_camilla_set_volume` refuses, so this row is load-bearing
+    # for a different reason than every row above it.
+    "jasper/cli/aec_tune.py": "main",
 }
 
 # Modules holding a call to one of `CamillaController`'s four graph mutators.

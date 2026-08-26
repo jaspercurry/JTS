@@ -396,6 +396,27 @@ def test_active_mode_rejects_nonfinite_current_volume_before_side_effects(
     popen.assert_not_called()
 
 
+def _own_the_tune_fader():
+    """Install the process fader owner over the tree's clamped Camilla door.
+
+    `_camilla_set_volume` declares through the owner since wave 5b, and
+    `aec_tune.main()` registers one. These tests drive the helper directly, so
+    they install the same shape the registration does: doors bound to
+    `primary_controller()`, which is where `_coerce_main_volume_db` lives —
+    so the ceiling this file pins is still reached through the door under test.
+    """
+    from jasper.camilla import primary_controller
+    from jasper.volume_owner import VolumeOwner, install_volume_owner
+
+    fader = primary_controller()
+    install_volume_owner(
+        VolumeOwner(
+            set_fader_db=lambda db: fader.set_volume_db(db, best_effort=True),
+            get_fader_db=lambda: fader.get_volume_db(best_effort=True),
+        )
+    )
+
+
 def test_camilla_set_volume_requires_finite_matching_readback(monkeypatch) -> None:
     volume = SimpleNamespace(
         set_main_volume=MagicMock(),
@@ -411,6 +432,7 @@ def test_camilla_set_volume_requires_finite_matching_readback(monkeypatch) -> No
         "camilladsp",
         SimpleNamespace(CamillaClient=lambda _host, _port: client),
     )
+    _own_the_tune_fader()
 
     with pytest.raises(aec_tune.CamillaVolumeError, match="not finite"):
         aec_tune._camilla_set_volume(-20.0)
@@ -442,6 +464,7 @@ def test_the_tune_cli_write_sees_the_zero_db_ceiling(monkeypatch) -> None:
         "camilladsp",
         SimpleNamespace(CamillaClient=lambda _host, _port: client),
     )
+    _own_the_tune_fader()
 
     with pytest.raises(aec_tune.CamillaVolumeError):
         aec_tune._camilla_set_volume(6.0)
