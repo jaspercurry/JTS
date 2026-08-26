@@ -192,12 +192,14 @@ already open)**
 - [x] File the composite-on-ring tracked issue — #2982.
 
 **Wave 7 — proven once, disclose on change ([ADR-0101](adr/0101-proven-once-disclose-on-change.md))**
-- [ ] Recommission-gate demotion sweep (this campaign's zone: voice / mic /
+- [x] Recommission-gate demotion sweep (this campaign's zone: voice / mic /
       AEC / audio_validation): inventory every park or refusal triggered by
       staleness or unproven-ness rather than observed breakage; convert
       each to run-and-disclose (doctor warn naming what changed + the exact
       re-commission command). Chip-AEC-or-park → chip-AEC-or-disclose.
-      Parks stay only on the non-negotiables.
+      Parks stay only on the non-negotiables. — inventory #2984; all 21
+      launchable sites converted across #3001, #3002, #3003, #3012, #3018,
+      #3028 and the status-vocabulary PR (sites 18-19).
 - [x] Hardware-class-keyed shipped proofs: commissioning artifacts bank
       against hardware class (extend the DacProfile registry pattern); a
       fresh install on recognized hardware starts from the shipped profile

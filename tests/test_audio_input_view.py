@@ -139,13 +139,14 @@ def test_absent_mic_preserves_hidden_testing_profile_as_hardware_choice() -> Non
     assert sum(choice["selected"] for choice in view["echo"]["choices"]) == 1
 
 
-def test_xvf_without_chip_plan_is_visibly_parked_without_software_fallback() -> None:
+def test_xvf_without_chip_plan_reads_as_running_aec3_with_the_chip_choice_shut() -> None:
     status = _base_status()
     status["audio_profile"] = {
         "selection": "auto",
-        "requested": "xvf_software_aec3",
+        "requested": "xvf_chip_aec",
         "active": "xvf_software_aec3",
-        "state": "active",
+        "state": "disclosed_stale",
+        "reason": "mic has no validated production chip-AEC beam plan",
         "action": "Run sudo jasper-aec-commission",
     }
     status["chip_aec_gate"] = {
@@ -182,7 +183,10 @@ def test_xvf_without_chip_plan_is_visibly_parked_without_software_fallback() -> 
 
     assert view["mic"]["kind"] == "xvf3800"
     assert view["mic"]["chip_aec_capable"] is False
-    assert view["echo"]["mode"] == "hardware_chip_aec_pending"
+    # ADR-0101: the managed XVF is hearing through AEC3, so the headline names
+    # that engine instead of waiting on a chip path nothing is applying.
+    assert view["echo"]["mode"] == "software_aec3"
+    assert view["echo"]["state"] == "disclosed_stale"
     hardware = _choice(view, "xvf_chip_aec")
     assert hardware["visible"] is True
     assert hardware["enabled"] is False
@@ -192,6 +196,33 @@ def test_xvf_without_chip_plan_is_visibly_parked_without_software_fallback() -> 
     assert _choice(view, "auto")["selected"] is True
     assert view["echo"]["action"] == "Run sudo jasper-aec-commission"
     assert view["advanced"] == {}
+
+
+def test_a_disclosed_direct_mic_xvf_reads_as_running_without_bridge_streams() -> None:
+    status = _base_status()
+    status["bridge_active"] = False
+    status["audio_profile"] = {
+        "selection": "auto",
+        "requested": "xvf_chip_aec",
+        "active": "direct_mic",
+        "state": "disclosed_stale",
+        "reason": "echo cancellation unavailable until DFU flash to 6-channel firmware",
+        "action": "Re-flash the XVF to 6-channel firmware",
+    }
+    status["microphone"].update({
+        "processing_mode": "Direct mic",
+        "wake_legs": ["Direct mic"],
+        "firmware": {"state": "warn", "label": "2-channel firmware"},
+    })
+
+    view = build_microphone_settings_view(status)
+
+    assert view["echo"]["mode"] == "direct_mic"
+    assert view["echo"]["state"] == "disclosed_stale"
+    assert view["echo"]["action"] == "Re-flash the XVF to 6-channel firmware"
+    assert all(
+        toggle["enabled"] is False for toggle in view["fusion"]["toggles"]
+    )
 
 
 def test_direct_mic_view_keeps_no_aec_danger_choice_visible() -> None:

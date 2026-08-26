@@ -255,18 +255,21 @@ def _echo_view(
         mode = "hardware_chip_aec"
         title = "Using microphone hardware echo cancellation"
         detail = "The XVF3800 chip is producing the voice stream; software AEC3 is bypassed."
-    elif software_active and not managed_xvf:
+    elif software_active:
         mode = "software_aec3"
         title = "Using software echo cancellation"
         detail = reason or "WebRTC AEC3 is processing the microphone stream."
-    elif chip_selected:
-        mode = "hardware_chip_aec_pending"
-        title = "Hardware echo cancellation is selected"
-        detail = reason or "Waiting for the reconciler to apply the hardware AEC path."
     elif direct_active:
         mode = "direct_mic"
         title = "Using direct microphone input"
-        detail = "No echo cancellation bridge is active."
+        detail = reason or "No echo cancellation bridge is active."
+    elif chip_selected:
+        # Only a box with no engine on the wake path is still waiting for one:
+        # a managed XVF running a disclosed AEC3 or direct-mic fallback has
+        # settled (ADR-0101), and its disclosure rides reason/action.
+        mode = "hardware_chip_aec_pending"
+        title = "Hardware echo cancellation is selected"
+        detail = reason or "Waiting for the reconciler to apply the hardware AEC path."
     else:
         mode = "pending"
         title = "Microphone input is changing"

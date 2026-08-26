@@ -103,14 +103,15 @@ def test_chip_aec_extra_wake_beams_are_runtime_owned():
 
 
 def test_managed_xvf_parks_instead_of_reporting_software_fallback():
+    """A kept park (ADR-0101: observed breakage) still reports no engine."""
     status = build_audio_profile_status(
         AecIntent(mode="auto", chip_aec_enabled=True),
         RuntimeAecEnv(
             primary_device="udp:9876",
             chip_enabled=False,
-            chip_aec_alignment_status="commission_required",
-            chip_aec_alignment_reason="alignment is absent",
-            chip_aec_alignment_action="Run sudo jasper-aec-commission",
+            chip_aec_alignment_status="fault",
+            chip_aec_alignment_reason="chip-AEC bridge failed after alignment reapply",
+            chip_aec_alignment_action="Inspect jasper-aec-bridge, then run the reconciler",
         ),
         MicProbe(xvf_present=True, capture_channels=6, recommended_channels=6),
         bridge_active=True,
@@ -119,8 +120,10 @@ def test_managed_xvf_parks_instead_of_reporting_software_fallback():
 
     assert status["audio_profile"]["requested"] == "xvf_chip_aec"
     assert status["audio_profile"]["active"] is None
-    assert status["audio_profile"]["state"] == "commission_required"
-    assert status["audio_profile"]["action"] == "Run sudo jasper-aec-commission"
+    assert status["audio_profile"]["state"] == "fault"
+    assert status["audio_profile"]["action"] == (
+        "Inspect jasper-aec-bridge, then run the reconciler"
+    )
     assert status["microphone"]["processing_mode"] == "Chip-AEC parked"
     assert "AEC3" not in status["microphone"]["processing_mode"]
 
@@ -380,3 +383,169 @@ def test_an_explicit_custom_chip_leg_reads_as_chip_aec_on_an_uncodified_dac():
 
     assert status["audio_profile"]["active"] == "xvf_chip_aec"
     assert status["microphone"]["processing_mode"] == "Chip-AEC"
+
+
+def test_a_disclosed_custom_chip_leg_reports_its_beams_not_a_pending_reconcile():
+    """The reconciler settled this box; only its proof went stale (ADR-0101).
+
+    A custom profile is the one selection the reconciler lets an operator arm
+    the chip on by hand, so its disclosure has to read as running too — the
+    managed-only arm reported an armed chip beam as software AEC3 still
+    waiting for a reconcile that had already finished.
+    """
+    status = build_audio_profile_status(
+        AecIntent(
+            mode="auto",
+            chip_aec_enabled=True,
+            chip_aec_210_enabled=True,
+            profile_selection="custom",
+        ),
+        RuntimeAecEnv(
+            primary_device="udp:9876",
+            chip_enabled=True,
+            chip_aec_210_device="udp:9888",
+            chip_aec_alignment_status="disclosed_stale",
+            chip_aec_alignment_reason="output DAC has no codified chip-AEC calibration",
+            chip_aec_alignment_action="Run sudo jasper-aec-commission",
+        ),
+        MicProbe(xvf_present=True, capture_channels=6, recommended_channels=6),
+        bridge_active=True,
+        chip_available=True,
+        chip_gate={
+            "status": "needs_calibration",
+            "auto_allowed": False,
+            "arm_allowed": True,
+            "detail": "no codified timing",
+        },
+    )
+
+    profile = status["audio_profile"]
+    assert profile["state"] == "disclosed_stale"
+    assert profile["active"] == "xvf_chip_aec"
+    assert profile["action"] == "Run sudo jasper-aec-commission"
+    assert status["microphone"]["processing_mode"] == "Chip-AEC"
+    assert status["microphone"]["wake_legs"] == ["Primary chip beam", "Chip AEC 210"]
+
+
+def test_a_leftover_alignment_key_cannot_classify_a_selection_it_never_described():
+    """The reconciler writes that key only on chip-arming paths.
+
+    It is not written or cleared for auto on a mic-less box, for an explicitly
+    AEC-free direct mic, or for a custom profile whose chip leg is off, so a
+    leftover value there describes a path nobody is running: claiming an
+    engine from it reports a deaf box as hearing, and a deliberately AEC-free
+    box as permanently disclosed.
+    """
+    leftover = {
+        "chip_aec_alignment_status": "disclosed_stale",
+        "chip_aec_alignment_reason": "output DAC has no codified chip-AEC calibration",
+        "chip_aec_alignment_action": "Run sudo jasper-aec-commission",
+    }
+    mic_less = build_audio_profile_status(
+        AecIntent(mode="auto", profile_selection="auto"),
+        RuntimeAecEnv(**leftover),
+        MicProbe(xvf_present=False, capture_channels=None),
+        bridge_active=False,
+        chip_available=False,
+    )
+    aec_off = build_audio_profile_status(
+        AecIntent(mode="off", profile_selection="direct_mic"),
+        RuntimeAecEnv(primary_device="hw:CARD=Device", **leftover),
+        MicProbe(xvf_present=False, capture_channels=2, recommended_channels=6),
+        bridge_active=False,
+        chip_available=False,
+    )
+    software_custom = build_audio_profile_status(
+        AecIntent(mode="auto", raw_enabled=True, profile_selection="custom"),
+        RuntimeAecEnv(primary_device="udp:9876", raw_device="udp:9877", **leftover),
+        MicProbe(xvf_present=True, capture_channels=6, recommended_channels=6),
+        bridge_active=True,
+        chip_available=True,
+    )
+
+    assert mic_less["audio_profile"]["state"] == "waiting_bridge"
+    assert mic_less["audio_profile"]["active"] is None
+    assert mic_less["microphone"]["wake_legs"] == []
+    assert aec_off["audio_profile"]["state"] == "disabled"
+    assert software_custom["audio_profile"]["state"] == "active"
+    assert software_custom["audio_profile"]["active"] == "xvf_software_aec3"
+
+
+def test_a_disclosed_box_with_no_live_engine_waits_instead_of_claiming_one():
+    """A disclosure names a running engine or it is not a disclosure.
+
+    Two boxes with nothing on the wake path to name: the bridge died under a
+    managed XVF, and an operator's custom chip leg is disclosed on a box with
+    no capture device at all, whose mic keys still hold the never-configured
+    `Array` default. Both report the pending state the base arms already
+    report, not `disclosed_stale` with no legs.
+    """
+    disclosed = {
+        "chip_aec_alignment_status": "disclosed_stale",
+        "chip_aec_alignment_reason": "output DAC has no codified chip-AEC calibration",
+        "chip_aec_alignment_action": "Run sudo jasper-aec-commission",
+    }
+    bridge_down = build_audio_profile_status(
+        AecIntent(mode="auto", profile_selection="auto"),
+        RuntimeAecEnv(primary_device="udp:9876", **disclosed),
+        MicProbe(xvf_present=True, capture_channels=6, recommended_channels=6),
+        bridge_active=False,
+        chip_available=True,
+    )
+    no_capture_device = build_audio_profile_status(
+        AecIntent(mode="auto", chip_aec_enabled=True, profile_selection="custom"),
+        RuntimeAecEnv(**disclosed),
+        MicProbe(xvf_present=False, capture_channels=None),
+        bridge_active=False,
+        chip_available=False,
+    )
+
+    for status in (bridge_down, no_capture_device):
+        assert status["audio_profile"]["state"] == "waiting_bridge"
+        assert status["audio_profile"]["active"] is None
+        assert status["microphone"]["wake_legs"] == []
+
+
+def test_an_unqualified_chip_path_discloses_while_an_engine_carries_wake():
+    """ADR-0101: refuse only a box with nothing on the wake path.
+
+    The output DAC has no codified chip-AEC timing, so chip-AEC cannot arm on
+    its own — but AEC3 is carrying wake, which is a disclosure carrying the
+    commissioner, not the `unavailable` a box with no engine at all reports.
+    The gate answers in action codes; `action` is operator text.
+    """
+    gate = {
+        "status": "needs_calibration",
+        "detail": "no codified timing",
+        "auto_allowed": False,
+        "arm_allowed": True,
+        "recommended_action": "use_software_aec3_or_enable_testing",
+    }
+    mic = MicProbe(xvf_present=False, capture_channels=2, recommended_channels=6)
+    intent = AecIntent(
+        mode="auto", chip_aec_enabled=True, profile_selection="xvf_chip_aec"
+    )
+    running = build_audio_profile_status(
+        intent,
+        RuntimeAecEnv(primary_device="udp:9876", raw_device="udp:9877"),
+        mic,
+        bridge_active=True,
+        chip_available=True,
+        chip_gate=gate,
+    )
+    stopped = build_audio_profile_status(
+        intent,
+        RuntimeAecEnv(primary_device=""),
+        mic,
+        bridge_active=True,
+        chip_available=True,
+        chip_gate=gate,
+    )
+
+    assert running["audio_profile"]["state"] == "disclosed_stale"
+    assert running["audio_profile"]["active"] == "xvf_software_aec3"
+    assert running["audio_profile"]["reason"] == "no codified timing"
+    assert running["audio_profile"]["action"] == "Run sudo jasper-aec-commission"
+    assert stopped["audio_profile"]["state"] == "unavailable"
+    assert stopped["audio_profile"]["active"] is None
+    assert stopped["audio_profile"]["action"] == ""
