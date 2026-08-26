@@ -93,6 +93,13 @@ _ENTRY_POINTS = {
     # None and `_camilla_set_volume` refuses, so this row is load-bearing
     # for a different reason than every row above it.
     "jasper/cli/aec_tune.py": "main",
+    # `jasper-aec-commission` — the second owner-reason row, and the one that
+    # shows why the reason matters: it swaps nothing, but its
+    # `prepare_volume`/`restore_volume` pair writes the fader through
+    # `aec_tune._camilla_set_volume`, so it needs the same registration. This
+    # is the plan's "uncounted 19th writer" (§3 wave 5), routed by the same
+    # change that routed W18 and reachable only because it registers here.
+    "jasper/cli/aec_commission.py": "main",
 }
 
 # Modules holding a call to one of `CamillaController`'s four graph mutators.

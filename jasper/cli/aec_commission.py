@@ -580,6 +580,14 @@ def main(argv: Sequence[str] | None = None) -> int:
     logging.basicConfig(
         level=logging.INFO, format="%(asctime)s aec-commission %(levelname)s %(message)s"
     )
+    # `prepare_volume`/`restore_volume` write the main fader through
+    # `aec_tune._camilla_set_volume`, which declares through the process owner
+    # since wave 5b. Registered AFTER the `--emit-class-entry` early exit: that
+    # path prints a registry row and touches no hardware, so it should not
+    # build a Camilla controller. See tests/test_canonical_target_registration.py.
+    from jasper.volume_coordinator import install_env_canonical_target_provider
+
+    install_env_canonical_target_provider()
     handlers = {
         signum: signal.signal(signum, _signal) for signum in (signal.SIGTERM, signal.SIGHUP)
     }
