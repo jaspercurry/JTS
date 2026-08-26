@@ -1,59 +1,42 @@
-# Handoff: Cheap USB Mic Wake/AEC Follow-Up
+# Cheap USB mic wake/AEC — parked follow-up
 
-This is the parking-lot note for the cheap USB mic path. The XVF AEC3
-edge-family sweep is settled enough that the wake-corpus recorder can
-now run USB-fed AEC3 sweep variants, but USB production work remains
-separate from the main XVF wake path until the delay/alignment questions
-below are answered.
+The parking-lot note for the cheap USB mic path. **Parked, not
+abandoned:** a generic USB mic matters for open-source accessibility and
+BOM reduction, and this is the next hardware-accessibility track once the
+XVF profile and corpus instrumentation are stable. Production input
+selection is profile-first — `auto` resolves to the XVF chip-AEC profile
+only when the detected mic profile has a validated chip beam plan, and
+falls back otherwise.
 
-**Current priority (2026-06-04): not the next active build.** The
-generic USB mic path remains strategically important for open-source
-accessibility and BOM reduction, but the active product path now uses
-profile-first input selection: `auto` resolves to the XVF chip-AEC
-profile only when the detected XVF mic profile has a validated chip beam
-plan and falls back when that profile is unavailable. Do not treat this
-file as an abandoned thread; treat it
-as the next hardware-accessibility track after the current XVF profile
-and corpus instrumentation are stable.
+## Current state
 
-## Current State
-
-- The wake-corpus recorder can capture `usb_raw`, `usb_webrtc`, and
-  `ref` alongside the XVF legs. The 2026-05-29 chip-AEC comparison
-  profile enables `usb_raw` and `usb_webrtc` by default so the cheap mic
-  stays in the same-utterance comparison set while XVF chip AEC is under
-  evaluation.
-- New recorder-created AEC3 sweep sessions set
-  `JASPER_AEC_CORPUS_AEC3_SWEEP_SOURCE=usb`, so the stable
-  `aec3_variant_1`-`aec3_variant_3` slots are fed from `usb_raw`
-  while the XVF `on` leg remains available as the same-utterance
-  reference.
-- Outside sweep mode, `usb_webrtc` is the chosen USB WebRTC AEC3
-  profile: edge-combo tuning with `stream_delay_ms=80`.
-- The built-in USB sweep remains a pilot-only stream-delay comparison:
-  when enabled, `usb_webrtc` is edge-combo WebRTC AEC3 at 40 ms, and
-  the variant slots use the same tuning at 80, 120, and 160 ms.
-- `usb_raw` is 16 kHz mono int16, resampled from the USB mic's native
-  capture rate. JTS does not apply software AGC before saving it.
-- `usb_webrtc` runs the cheap USB mic through the same WebRTC AEC3
-  binding/config family as the XVF `on` leg, using the shared speaker
-  reference stream. The current corpus profile is edge-combo tuning at
-  an 80 ms delay hint.
-- Pilot clips suggest `usb_raw` can sound good to a human, while
-  `usb_webrtc` can underperform both by ear and by wake score.
-- Latest same-utterance USB AEC3 + DTLN session
-  (`20260528T184424Z-d205`) showed the USB stack is useful as corpus
-  evidence but not ready as the main production path: `usb_webrtc` hit
-  11/27, `usb_dtln` hit 2/27, and `usb_raw + usb_webrtc + usb_dtln`
-  unioned to 13/27. A separate offline waveform mix of
-  `usb_webrtc + usb_dtln` reached 14/27 on that session, but added only
-  one clip over the full original-leg union.
-- Production support for a generic USB mic is **not shipped**. The
-  current bridge still imports XVF-specific profile constants for the
-  primary production capture path, while the USB legs remain
-  corpus-only experiment streams. Phase 2 in
-  `HANDOFF-mic-fusion-architecture.md` is the intended path to make a
-  USB mic a first-class production profile.
+- **USB legs are corpus-only.** Production support for a generic USB mic
+  is not shipped: the bridge still imports XVF-specific profile
+  constants for the primary production capture path. Phase 2 in
+  [HANDOFF-mic-fusion-architecture.md](HANDOFF-mic-fusion-architecture.md)
+  is the intended route to a first-class USB production profile.
+- The recorder captures `usb_raw`, `usb_webrtc` and `ref` alongside the
+  XVF legs; the chip-AEC comparison profile enables `usb_raw` and
+  `usb_webrtc` by default so the cheap mic stays in the same-utterance
+  comparison set. `usb_dtln` is an optional resource-sensitive toggle.
+- `usb_raw` is 16 kHz mono int16 resampled from the mic's native rate,
+  with no JTS software AGC applied before saving.
+- `usb_webrtc` runs the USB mic through the same WebRTC AEC3
+  binding/config family as the XVF `on` leg against the shared speaker
+  reference. Its production corpus tuning is edge-combo at
+  `stream_delay_ms=80` (`usb_webrtc/aec3_edge_combo_80` in the bridge).
+- Recorder-created AEC3 sweep sessions set
+  `JASPER_AEC_CORPUS_AEC3_SWEEP_SOURCE=usb` (`jasper/aec_sweep.py`), so
+  the `aec3_variant_1..3` slots are fed from `usb_raw` while the XVF `on`
+  leg stays available as the same-utterance reference. That sweep is
+  pilot-only: `usb_webrtc` drops to 40 ms and the variant slots take 80 /
+  120 / 160 ms.
+- Pilot clips suggest `usb_raw` can sound good to a human while
+  `usb_webrtc` underperforms both by ear and by wake score. The measured
+  USB session numbers are in
+  [historical/wake-corpus-pilots-2026-05.md](historical/wake-corpus-pilots-2026-05.md);
+  the read is that the USB stack is useful corpus evidence and not close
+  to a production path.
 
 ## Leading Hypotheses
 
@@ -96,12 +79,9 @@ Run these on same-session clips that include `ref`, `off` or `raw0`,
    The first quick probe suggested timing matters, but offline AEC3
    without live pre-roll/state did not clearly beat the saved live
    output, so treat it as directional evidence only.
-2. **USB AEC3 + DTLN corpus mode.** The first pass completed
-   2026-05-28: `usb_raw`, `usb_webrtc` at edge-combo 80 ms,
-   `usb_dtln`, `ref`, and XVF control legs in the same utterance.
-   The 2026-05-29 chip-AEC comparison profile keeps `usb_raw` and
-   `usb_webrtc` in the main comparison set; `usb_dtln` remains an
-   optional resource-sensitive toggle. Keep collecting USB legs in
+2. **USB AEC3 + DTLN corpus mode.** Already run once (2026-05-28):
+   `usb_raw`, `usb_webrtc` at edge-combo 80 ms, `usb_dtln`, `ref` and
+   XVF control legs in the same utterance. Keep collecting USB legs in
    the gold corpus, but do not let USB tuning block XVF model training.
 3. **Hardware processing check.** Confirm the USB mic's hardware AGC
    and capture gain state before each test session. Record the state in
@@ -127,10 +107,12 @@ Run these on same-session clips that include `ref`, `off` or `raw0`,
 - Keep the reference capture as-is unless the measurement proves the
   reference itself is inadequate.
 - Do not promote waveform-mixed USB outputs without hard-negative
-  validation; the first mix result is interesting but not decisive.
+  validation (ADR-0136).
 
-Last verified: 2026-06-19 (re-read against the geometry-aware
-profile-first input policy: USB legs remain corpus-only; pluggable USB
-production support remains a deliberate Phase 2 follow-up after the XVF
-profile stabilizes, not abandoned work. Wake-corpus USB capture controls
-are toggles.)
+Last verified: 2026-08-26 (USB leg tokens rechecked against
+`jasper/wake_legs.py`; the sweep-source env var against
+`jasper/aec_sweep.py`; the edge-combo-80 corpus tuning and
+`_usb_mic_thread` against `jasper/cli/aec_bridge.py`. USB legs remain
+corpus-only and USB production support remains a deliberate Phase 2
+follow-up, not abandoned work. The 2026-05-28 session numbers moved to
+historical/wake-corpus-pilots-2026-05.md, which already held them.)
