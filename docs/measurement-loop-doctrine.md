@@ -2,14 +2,17 @@
 
 > **Status: canonical doctrine, ratified by the owner 2026-08-21.** Governs
 > how an LLM drives the crossover-v2 / correction measurement loop — what it
-> may try, what stops it, and who decides. States the ruling once; other
-> docs point here rather than restating it.
+> may try, what stops it, and who decides. States the ruling once; other docs
+> point here rather than restating it.
 
-The owner's goal: an LLM that can recommend its own experiments, measure
-them, and grade them against what came back — the way a scientist works, not
-a call-center script reading rules off a card. Rules exist only where a
-mistake would damage hardware. Everything else is the LLM's and the
-household's judgment call, made on data.
+The owner's goal: an LLM that recommends its own experiments, measures them,
+and grades them against what came back — the way a scientist works, not a
+call-center script reading rules off a card. Rules exist only where a mistake
+would damage hardware; everything else is the LLM's and the household's
+judgment call, made on data. Operational pointers — the round runner, the
+prescription doors, the evidence packet, the per-position and republish
+controls — live in
+[`tuning-operator-runbook.md`](tuning-operator-runbook.md), not here.
 
 ## 1. The loop
 
@@ -17,17 +20,16 @@ household's judgment call, made on data.
 anyone would understand: the engine's verbs *are* the loop's language.
 
 - **measure** — a round runs and banks its evidence. Baseline, re-measure and
-  candidate-check are the same verb with different arguments, not three
-  things. A candidate that is cheap, safe, and reversible is measured without
-  ceremony, and every mic movement gathers the maximum information it can
-  support, not the minimum that answers one question.
+  candidate-check are the same verb with different arguments, not three things.
+  A candidate that is cheap, safe, and reversible is measured without ceremony,
+  and every mic movement gathers the maximum information it can support, not
+  the minimum that answers one question.
 - **analyze** — the evidence is read: what the capture says, and what this
   session did not separate.
-- **recommend** — pre-registered expectations are stated and the next thing
-  to try is named. Proposing, prescribing and recommending are one act; a
-  final call is that same act with more information behind it.
-- **loop** — checking that a recommendation held is measuring again. A worse
-  round is a gradient sample, not a stop (§3).
+- **recommend** — pre-registered expectations are stated and the next thing to
+  try is named. Proposing, prescribing and recommending are one act; a final
+  call is that same act with more information behind it.
+- **loop** — checking that a recommendation held is measuring again (§3).
 - **save** — the result is banked.
 
 ## 2. The authority model
@@ -42,26 +44,25 @@ anyone would understand: the engine's verbs *are* the loop's language.
 - **An unproven or stale fact discloses loudly and never stops the work.**
   Outside §4's clamps, staleness and unproven-ness are a doctor line, an
   `event=`, a UI hint — never a stop: last-known-good keeps playing and the
-  session keeps measuring. Hardware this project has commissioned once ships
-  as known-good, so a household that owns it does not re-commission it. What
-  may still refuse is a **claim** — a fact that cannot be proven is not
-  banked — and refusing to claim is a different act from refusing to work.
-  The repo-wide form of this rule lives in the governance charter
-  ([AGENTS.md](../AGENTS.md)).
+  session keeps measuring. Hardware this project has commissioned once ships as
+  known-good, so a household that owns it does not re-commission it. What may
+  still refuse is a **claim** — a fact that cannot be proven is not banked —
+  and refusing to claim is a different act from refusing to work. The repo-wide
+  form lives in the governance charter ([AGENTS.md](../AGENTS.md)).
 
 ## 3. The guiding principle — least-bad measured, honed in bites
 
 Owner-ratified 2026-08-14 as the commissioning program's ethos, extended
-2026-08-16, and re-affirmed 2026-08-22: *"least bad is still the overall
-guiding principle"* (#2865). Migrated here from
-[`audio-commissioning-roadmap.md`](historical/audio-commissioning-roadmap.md), which is
-historical and keeps its original text as archaeology; this section is the
-live home, and it is the file production code cites.
+2026-08-16, and re-affirmed 2026-08-22: *"least bad is still the overall guiding
+principle"* (#2865). This is the live home and
+the file production code cites;
+[`audio-commissioning-roadmap.md`](historical/audio-commissioning-roadmap.md)
+is historical and keeps its original text as archaeology.
 
 **Tinker-first, never-nanny.** A partially-working speaker beats one aired out
 by an error. The system always adopts the best configuration available given
-current evidence. Imperfect-but-best-known is the bar — a defect that degrades
-a claim does not withhold the tune that claim describes.
+current evidence: imperfect-but-best-known is the bar, and a defect that
+degrades a claim does not withhold the tune that claim describes.
 
 **Restore and rollback are reserved for measured regression.** Every defect
 outside the closed hard-stop list (§4) **discloses and recommends a next
@@ -71,50 +72,48 @@ measured regression is a bug against this principle.
 **Least-bad measured, honed in bites.** The target of an intervention cycle is
 the least bad **measured** configuration, not a match to the prediction — a
 realized result will likely never perfectly match what the model commanded. So
-a series gets a few bites at that apple: up to three rounds to hone, which the
-owner may extend to four (#2602 owns the cap).
-
-Realized-versus-predicted mismatch is a **learning signal**, never by itself a
-reason to retreat. The bites exist to separate what is in our control to fix —
-model and accounting defects, which get fixed — from what is not — driver and
-room physics, which get commanded for the achievable instead — and then to land
-somewhere better than we started.
+a series gets up to three rounds to hone, which the owner may extend to four
+(#2602 owns the cap). Realized-versus-predicted mismatch is a **learning
+signal**, never by itself a reason to retreat: the bites separate what is in
+our control to fix — model and accounting defects, which get fixed — from what
+is not — driver and room physics, which get commanded for the achievable
+instead — and then to land somewhere better than we started.
 
 Two decisions the machinery must not conflate. **What plays** is always the
 least-bad measured configuration, so a round that measures worse than the
 previous state restores that state: that restore is this principle working, not
-a violation of it. **Whether the series learns and continues** has one answer
-every time — it does. A worse round is a gradient sample, not a stop. Every
-round, kept or restored or refused, banks its measurement into the series state
-so the next bite is commanded from it. Only the round budget, the plateau, and
-the safety class end a series; rollback ends one only for the safety class or
-for genuine corruption — an unmeasured or integrity-lost state the model cannot
-reason about. **The safety class is §4's closed list**, stated there once.
-
-So the rule a verdict class is held to: measured no-worse than the previous
-state → keep, bank, continue; measured worse → restore the playing
-configuration, bank, continue. A class that retreats from a measured-acceptable
-state on realized ≠ commanded alone is a bug against this principle.
+a violation of it. So the rule a verdict class is held to: measured no-worse
+than the previous state → keep, bank, continue; measured worse → restore the
+playing configuration, bank, continue. A class that retreats from a
+measured-acceptable state on realized ≠ commanded alone is a bug against this
+principle. **Whether the series learns and continues** has one
+answer every time — it does. A worse round is a gradient sample, not a stop.
+Every round, kept or restored or refused, banks its measurement into the series
+state so the next bite is commanded from it. Only the round budget, the
+plateau, and the safety class end a series; rollback ends one only for the
+safety class or for genuine corruption — an unmeasured or integrity-lost state
+the model cannot reason about. **The safety class is §4's closed list**, stated
+there once.
 
 **Probabilistic posture, 80/20 execution.** Per-frequency graded evidence —
 support counts, confidence margins, tapered authority — beats a binary
-per-session verdict. The implementation is **deterministic decision tables
-fed by graded evidence**, extending the envelope min-composition pattern the
-code already uses. No Bayesian machinery, no inference engine.
+per-session verdict. The implementation is **deterministic decision tables fed
+by graded evidence**, extending the envelope min-composition pattern the code
+already uses. No Bayesian machinery, no inference engine.
 
 **Investment split.** The measurement substrate gets foundation-grade
-investment, because wrong measurements poison every layer downstream of
-them. Intervention layers get the 80/20 lens. When those two pull against
-each other, the substrate wins.
+investment, because wrong measurements poison every layer downstream of them.
+Intervention layers get the 80/20 lens. When those two pull against each other,
+the substrate wins.
 
 **Selection is intervention-granular, not only candidate-granular.** Owner
 refinement, 2026-08-22 (#2862): *"if one intervention was really good but
 another was bad but the entire candidate was worse, there is still a least bad
 part that we may want to use in a future config."* A candidate that loses as a
-unit can still carry an intervention whose measured evidence stands, so a record
-must keep intervention identity distinct from candidate identity — otherwise a
-measured-good intervention dies with its carrier and its evidence is re-earned
-from scratch. The per-feature record join (ticket 1.10 in
+unit can still carry an intervention whose measured evidence stands, so a
+record must keep intervention identity distinct from candidate identity —
+otherwise a measured-good intervention dies with its carrier and its evidence
+is re-earned from scratch. The per-feature record join (ticket 1.10 in
 [`tuning-master-plan.md`](tuning-master-plan.md)) is the substrate; the grading
 rules for "this intervention was good inside a losing candidate" are design
 work, not settled doctrine.
@@ -127,52 +126,50 @@ not a hard stop, whatever its name or its household screen says. The five
 expand to roughly **112 enforcement points** across the round path, because
 "the excitation ledger", "the output limiters" and "declared per-driver bands"
 are each families rather than single `raise` sites; that is why the list is
-short and the surface is not (refusal census, 2026-08-25; the counts are in
+short and the surface is not (refusal census, 2026-08-25; counts in
 [`REFACTOR-TUNING-2026-08.md`](REFACTOR-TUNING-2026-08.md) §1, which declines
-to enumerate the 112 — the five items below are the composition, at family
+to enumerate the 112 — the five below are the composition, at family
 granularity). Each guards a real component — or the household's hearing —
 against damage, and nothing else on the bench may hard-stop.
 
 1. **The excitation ledger and the excitation safety plan**
    (`jasper/active_speaker/excitation_safety_plan.py`). The ledger admits a
-   program **against the DECLARED session volume**, so a stimulus emitted at
-   any other fader position was never the one it admitted. Carried by the
-   ledger's own excitation-identity and program-admission refusals and, at the
-   moment of emission, by the per-stimulus fader hold
-   (`volume_latch.hold_fader_at`), which **refuses `measurement_volume_drift`
-   rather than disclosing** because a fader above the declared volume drives
-   every branch past the declared level-duration limits this bullet exists to
-   enforce, and by the session volume plan (`session_volume_plan.py`). **The
-   fail-closed half is the same rule, not a second one**: the hold trips when
-   the fader read and did not agree, and equally when it could not be read at
-   all, because a level that cannot be established cannot be shown to be under
-   the caps. It **proves and never writes** —
-   `SessionVolumePlan.open` sets the measurement volume once
-   per session, and a per-stimulus repair here would be a second writer moving
-   the fader behind the session's back. It passes §5 because it refuses only
-   what it cannot PROVE, after an independent second read, and every refusal
-   names the reading it took (#2925).
+   program **against the DECLARED session volume**, so a stimulus emitted at any
+   other fader position was never the one it admitted. Carried by the ledger's
+   own excitation-identity and program-admission refusals; by the session volume
+   plan (`session_volume_plan.py`); and at the moment of emission by the
+   per-stimulus fader hold (`volume_latch.hold_fader_at`), which **refuses
+   `measurement_volume_drift` rather than disclosing** because a fader above the
+   declared volume drives every branch past the declared level-duration limits
+   this bullet exists to enforce. **The fail-closed half is the same rule, not a
+   second one**: the hold trips when the fader read and did not agree, and
+   equally when it could not be read at all, because a level that cannot be
+   established cannot be shown to be under the caps. It **proves and never
+   writes** — `SessionVolumePlan.open` sets the measurement volume once per
+   session, and a per-stimulus repair would be a second writer moving the fader
+   behind the session's back. It passes §5 because it refuses only what it
+   cannot PROVE, after an independent second read, and every refusal names the
+   reading it took (#2925).
 2. **The output limiters and the volume rail** —
    `STARTUP_LIMITER_CLIP_LIMIT_DB` / `BASELINE_LIMITER_CLIP_LIMIT_DB`
    (`jasper/active_speaker/camilla_yaml.py`) and `HARD_CEILING_DBFS`
-   (`jasper/audio_measurement/ramp.py`). Carried by the CamillaDSP emit gates
-   and the field invariants guarding them — including the config-side
-   `devices.volume_limit = 0.0` and the non-positive trim invariants, and every
-   one refusing *before* the YAML leaves the emitter — by the same contract
-   re-asked at load and deploy (`runtime_contract.classify_camilla_graph`,
-   `safe_graph_for_current_topology`, `flat_program_graph_blocked_reason`,
-   whose ~67 codes the census tallies separately so that one module cannot
-   dominate the ratio — the ~112 above excludes them), by the path-safety
-   tweeter-floor arms, and by the `SAFETY_*` verification
-   findings that send a clipped or uncommanded-louder result to the restore
-   path as `SafetyStatus.UNSAFE`.
+   (`jasper/audio_measurement/ramp.py`). Carried by the CamillaDSP emit gates and
+   the field invariants guarding them — including the config-side
+   `devices.volume_limit = 0.0` and the non-positive trim invariants, every one
+   refusing *before* the YAML leaves the emitter — by the same contract re-asked
+   at load and deploy (`runtime_contract.classify_camilla_graph`,
+   `safe_graph_for_current_topology`, `flat_program_graph_blocked_reason`, whose
+   ~67 codes the census tallies separately so one module cannot dominate the
+   ratio — the ~112 above excludes them), by the path-safety tweeter-floor arms,
+   and by the `SAFETY_*` verification findings that send a clipped or
+   uncommanded-louder result to the restore path as `SafetyStatus.UNSAFE`.
 3. **Declared per-driver excitation bands and level-duration limits** —
    `permitted_band` / `level_duration_limits` in `excitation_safety_plan.py`.
-   **Declared** is the load-bearing word: `max_effective_peak_dbfs` is
-   optional, a value on the record is honoured verbatim rather than clamped to
-   a class default, and it bounds the per-driver composed level rather than
-   the un-segmented measurement volume. **A published protection slope is
-   declared in the same sense** — `TOPOLOGY_SLOPE_BELOW_DECLARED_REQUIREMENT`
+   **Declared** is the load-bearing word: `max_effective_peak_dbfs` is optional,
+   a value on the record is honoured verbatim rather than clamped to a class
+   default, and it bounds the per-driver composed level rather than the
+   un-segmented measurement volume. **A published protection slope is declared
+   in the same sense** — `TOPOLOGY_SLOPE_BELOW_DECLARED_REQUIREMENT`
    (`crossover_v2/topology_prescription.py`) refuses a pinned order below the
    slope the maker published, and refuses nothing at all when the maker
    published no slope. Also carried by the topology fc edges and
@@ -180,12 +177,12 @@ against damage, and nothing else on the bench may hard-stop.
    `driver_safety.validate_research_low_limit_plausibility`, because an
    implausible protection corner is a tweeter-damage mechanism.
 4. **The commissioning level stop** — `max_commissioning_level_db_spl`
-   (`jasper/active_speaker/profile.py`). Carried by the seat-level
-   SPL / clip / ceiling refusals, checked on *every* sample before the median
+   (`jasper/active_speaker/profile.py`). Carried by the seat-level SPL / clip /
+   ceiling refusals, checked on *every* sample before the median
    (`cli/seat_level.py`, `seat_level_ramp.py`), and by the stage-5 ramp and
    audible-policy blockers (`commission_ramp.py`, `audible_policy.py`). The
-   clamps that **cannot be proven to hold** sit here on the same footing as
-   the fader hold above and refuse for that reason alone:
+   clamps that **cannot be proven to hold** sit here on the same footing as the
+   fader hold above and refuse for that reason alone:
    `mic_calibration_unavailable` (`audio_measurement/calibration.py` —
    "absolute SPL is never guessed"), `driver_cap_ceiling_underivable`, and the
    driver-floor confirmation pair.
@@ -197,57 +194,54 @@ against damage, and nothing else on the bench may hard-stop.
 boost class outright, and ruling R8 in
 [`tuning-master-plan.md`](tuning-master-plan.md) keeps it: *"Blend's
 `BOOST_ROUTE_UNAVAILABLE` stays for its two recorded reasons (blend is not a
-headroom term; a summed capture cannot attribute a deficit to a driver)."*
-That is a stated limit of the instrument rather than a prior about the
-outcome — the blend stage is emitted under
-`camilla_yaml.MAX_BLEND_CORRECTION_GAIN_DB = 0.0`, so it has no headroom to
-spend — and boosts go through the driver door instead.
+headroom term; a summed capture cannot attribute a deficit to a driver)."* That
+is a stated limit of the instrument rather than a prior about the outcome — the
+blend stage is emitted under `camilla_yaml.MAX_BLEND_CORRECTION_GAIN_DB = 0.0`,
+so it has no headroom to spend — and boosts go through the driver door instead.
 
-**No reason code takes a graph off the speaker, and the registry's "hard
-stop" is not this list's.** `REASON_REGISTRY` (`crossover_v2/refusal_copy.py`)
-decides what the household is told and whether another attempt can help —
-nothing more. Its `TEMPLATE_HARD_STOP` screen and a `retry_budget` of `0` mean
-"no extra attempt can help", a statement about the condition, and they end an
-attempt or a session, never a graph that is already playing. What removes an
-applied graph is the restore path — `commissioning_apply.py`'s
-`_restore_failed_mutation_locked` / `restore_pending_candidate_apply` — driven
-by the adoption table on a measured delta (§3). Said here because the registry
-is the surface a reviewer reaches first, and two things wearing one name in
-one file is how it gets read as a list of stops. **A hard stop is a member of
-the list above and nothing else** — in the CLAMP / INTEGRITY / DISCLOSURE
-taxonomy ([`REFACTOR-TUNING-2026-08.md`](REFACTOR-TUNING-2026-08.md) §1 and
-[ADR-0002](adr/0002-measure-again-discriminator.md); the INTEGRITY class is
-§4a below) those members are the CLAMPs, and `hard_stop` in the registry is a
-screen name.
+**No reason code takes a graph off the speaker, and the registry's "hard stop"
+is not this list's.** `REASON_REGISTRY` (`crossover_v2/refusal_copy.py`) decides
+what the household is told and whether another attempt can help — nothing more.
+Its `TEMPLATE_HARD_STOP` screen and a `retry_budget` of `0` mean "no extra
+attempt can help", a statement about the condition, and they end an attempt or a
+session, never a graph that is already playing. What removes an applied graph is
+the restore path — `commissioning_apply.py`'s
+`_restore_failed_mutation_locked` / `restore_pending_candidate_apply` — driven by
+the adoption table on a measured delta (§3). Said here because the registry is
+the surface a reviewer reaches first, and two things wearing one name in one
+file is how it gets read as a list of stops. **A hard stop is a member of the
+list above and nothing else** — in the CLAMP / INTEGRITY / DISCLOSURE taxonomy
+([`REFACTOR-TUNING-2026-08.md`](REFACTOR-TUNING-2026-08.md) §1 and
+[ADR-0002](adr/0002-measure-again-discriminator.md); the INTEGRITY class is §4a
+below) those members are the CLAMPs, and `hard_stop` in the registry is a screen
+name.
 
-Everything else — geometry blindness, beaming priors, confidence
-heuristics, prediction-engine rankings — is **provenance**, not a gate: it
-rides with the data into the evidence packet for the prescriber (human or
-LLM) to weigh. It must never refuse an experiment on its own.
+Everything else — geometry blindness, beaming priors, confidence heuristics,
+prediction-engine rankings — is **provenance**, not a gate: it rides with the
+data into the evidence packet for the prescriber (human or LLM) to weigh. It
+must never refuse an experiment on its own.
 
 **What `deviation (a)`…`(i)` means, where a comment still says it.** This
 section used to carry a nine-row table of refusals that sat outside the list
-while they were burned down. Eight closed; the ninth, row (e), is the
-retention above. **Closed did not always mean demoted** — rows (f) and (h)
-closed by being ADMITTED into the list above, and both still refuse. The table
-is deleted because a positively complete list is what it was compensating for;
-its rationale and its history are in git. What survives is the map, so a
-citation resolves without it:
+while they were burned down. Eight closed; the ninth, row (e), is the retention
+above. **Closed did not always mean demoted** — rows (f) and (h) closed by being
+ADMITTED into the list above, and both still refuse. The table is deleted
+because a positively complete list is what it was compensating for; its
+rationale and its history are in git. What survives is the map, so a citation
+resolves without it:
 
 - **(a)** `BOOST_VERTICALLY_BLIND` — closed (#2805)
 - **(b)** `FC_REJECT_BEAMING` — closed (#2853)
 - **(c)** `REASON_CORRECTION_NOT_AN_IMPROVEMENT` — closed (2026-08-22)
-- **(d)** `_strategy_gates` score floors, `measurement_evidence_failure`'s
-  apply blocker — closed (2026-08-22)
-- **(e)** `BOOST_ROUTE_UNAVAILABLE` — **retained**, ruling R8; the sentence
-  above
-- **(f)** `TOPOLOGY_SLOPE_BELOW_DECLARED_REQUIREMENT` — closed by admission
-  into §4 (#2897); **still refuses**
+- **(d)** `_strategy_gates` score floors, `measurement_evidence_failure`'s apply
+  blocker — closed (2026-08-22)
+- **(e)** `BOOST_ROUTE_UNAVAILABLE` — **retained**, ruling R8; the sentence above
+- **(f)** `TOPOLOGY_SLOPE_BELOW_DECLARED_REQUIREMENT` — closed by admission into
+  §4 (#2897); **still refuses**
 - **(g)** the driver door's classification bar —
   `driver_feature_not_classified`, `driver_feature_not_cuttable`,
   `driver_feature_not_boostable`, `driver_feature_depth_unavailable`,
-  `driver_boost_exceeds_feature_depth`, `driver_boost_unvouched` — closed
-  (#2863)
+  `driver_boost_exceeds_feature_depth`, `driver_boost_unvouched` — closed (#2863)
 - **(h)** `max_effective_peak_dbfs`'s un-segmented ceiling,
   `max_effective_peak_above_code_policy` — closed by admission into §4
   (2026-08-23); the **per-driver cap still refuses**
@@ -257,20 +251,20 @@ citation resolves without it:
 
 The clamps are not the only refusals in the round path, and they are not the
 largest group. About **100 refusals protect the honesty of the evidence rather
-than the speaker**, against §4's **5 clamp mechanisms and their ~112
-enforcement points** (refusal census, 2026-08-25; the counts are in
+than the speaker**, against §4's **5 clamp mechanisms and their ~112 enforcement
+points** (refusal census, 2026-08-25; counts in
 [`REFACTOR-TUNING-2026-08.md`](REFACTOR-TUNING-2026-08.md) §1). The class is
-named here because a review holding only §4 and §5 re-derives "is this
-safety?" from scratch every time, which is how a quality ceiling wore a
-refusal's costume as long as it did.
+named here because a review holding only §4 and §5 re-derives "is this safety?"
+from scratch every time, which is how a quality ceiling wore a refusal's costume
+as long as it did.
 
 **A dishonest measurement is worse than no measurement.** A refusal whose only
-cost is a re-measure, and whose alternative is banking a number that is not
-what it claims to be, is not a nanny.
+cost is a re-measure, and whose alternative is banking a number that is not what
+it claims to be, is not a nanny.
 
 **The test, and it decides the class.** From
-[ADR-0002](adr/0002-measure-again-discriminator.md), which extracts the
-owner's 2026-08-03 ruling on #2087:
+[ADR-0002](adr/0002-measure-again-discriminator.md), which extracts the owner's
+2026-08-03 ruling on #2087:
 
 > Before a check may stop a session, ask whether measuring again would
 > plausibly fix what it saw. Yes → it is a defect in the capture; refuse, and
@@ -286,76 +280,54 @@ what it restores to) · **liveness** (the round ends rather than hanging).
 
 **Three rules the class carries.**
 
-1. **Its cost is a re-measure, never a withheld tune.** A refusal here that
-   also withholds an already-measured configuration has drifted into the
-   adoption table's job, and it is re-argued there.
+1. **Its cost is a re-measure, never a withheld tune.** A refusal here that also
+   withholds an already-measured configuration has drifted into the adoption
+   table's job, and it is re-argued there.
 2. **It fails toward "unknown", never toward "bad".**
-   `delta_probe.VERDICT_UNAVAILABLE` is the pattern: "no evidence to refuse
-   on, and no permission granted either."
+   `delta_probe.VERDICT_UNAVAILABLE` is the pattern: "no evidence to refuse on,
+   and no permission granted either."
 3. **It banks what it refused, wherever a series is running** — §3's "every
    round, kept or restored or refused, banks its measurement into the series
-   state." **Verified on the adoption path only**, and two things stand
-   against stating it absolutely. A **leveling pass has no series state and
-   banks nothing on purpose**: the seat-level ramp's refusal "always carries a
+   state." **Verified on the adoption path only**, and two things stand against
+   stating it absolutely. A **leveling pass has no series state and banks
+   nothing on purpose**: the seat-level ramp's refusal "always carries a
    `reason` from the `REFUSE_*` set and persisted nothing", which is rule 2
-   working rather than a violation, and it is pinned that way. And the
-   **capture screens do not bank at round granularity**: `SCREEN_SNR_FLOOR`
-   puts full numbers in the journal and writes no evidence artifact, and
-   nothing pins that either way. The second is a gap disclosed, not licensed —
-   a screen that banks is the target.
+   working rather than a violation, and it is pinned that way. And the **capture
+   screens do not bank at round granularity**: `SCREEN_SNR_FLOOR` puts full
+   numbers in the journal and writes no evidence artifact, and nothing pins that
+   either way. The second is a gap disclosed, not licensed — a screen that banks
+   is the target.
 
 **The STOP-RELAXER pattern.** When a stop is *mostly* right, narrow it with a
 named, tested relaxer rather than deleting it or leaving it broad. Three
-production functions exist only to admit a state a stop would otherwise
-refuse, and each has live consumers:
+production functions exist only to admit a state a stop would otherwise refuse,
+and each has live consumers:
 `setup_status.setup_blocked_only_by_in_sequence_anchor` (the one admitted
 blocked setup shape), `delta_probe.seam_rollback_deferral` (a seam rollback
 whose realized deviation points entirely quieter than commanded), and
 `revalidation.applied_profile_revalidation_satisfies_driver_target_proof`
-(first-time driver-target proof on an applied-profile edit). A census that
-greps for `raise` sees none of them, which is why they are named here. The
-pattern is **not** how the topology-staleness block was narrowed: §2's
-disclosure rule deleted that block outright, and a rotated topology
-fingerprint is a warning with a doctor line now, not a blocker.
+(first-time driver-target proof on an applied-profile edit). A census that greps
+for `raise` sees none of them, which is why they are named here. The pattern is
+**not** how the topology-staleness block was narrowed: §2's disclosure rule
+deleted that block outright, and a rotated topology fingerprint is a warning
+with a doctor line now, not a blocker.
 
 ## 5. The nanny test
 
 Before a review adds a new refusal, ask: **does this block a reversible
-experiment a scientist would run, on the theory it might not work?** If
-yes, it ships as an informational flag, never a gate. A refusal earns its
-place only by naming the mechanism it guards against — component damage, or
-the household's hearing. "Seems risky" is not a mechanism.
-
-## 6. Pointers
-
-- Round runner (the loop's home; measure and apply are two separate,
-  fingerprint-named steps): `scripts/run-crossover-round.py`.
-- Prescription doors (alignment, topology, blend, driver) —
-  `jasper-crossover-prescriber` (`packet` / `propose` / `stage`; its fourth
-  verb `status` orients rather than prescribes) plus the
-  session-open request body; cataloged in
-  [`testing-tooling.md`](testing-tooling.md#crossover-prescriber-harness).
-- Evidence packet — one document per round a reader (human or LLM) can
-  answer from: `jasper/active_speaker/crossover_v2/evidence_packet.py`.
-- More than one capture per mic position, so one mic movement answers more
-  questions (§1, `measure`) — `--per-position N` on the round runner above,
-  plus the derived `position_cycle.json` that says which pose each take was
-  measured at. Multiple DSP *configs* per position has a door but no wiring:
-  `POST /crossover/v2/republish` makes a banked candidate the live one by its
-  own fingerprint, so republish-then-apply reaches a named prior config
-  between takes. The open part is sequencing — holding a pose's next capture
-  until the apply has landed — which is a design to write rather than a
-  refusal to remove. The `awaiting_apply` hold is explicitly not the seam for
-  it (its own vocabulary says "no new design may depend on it").
+experiment a scientist would run, on the theory it might not work?** If yes, it
+ships as an informational flag, never a gate. A refusal earns its place only by
+naming the mechanism it guards against — component damage, or the household's
+hearing. "Seems risky" is not a mechanism.
 
 ---
 
 Migration (2026-08-23, #2865): section 3 arrived from
-[`audio-commissioning-roadmap.md`](historical/audio-commissioning-roadmap.md)'s Ethos —
-its ruling text re-read from that file, and the owner's 2026-08-22
+[`audio-commissioning-roadmap.md`](historical/audio-commissioning-roadmap.md)'s
+Ethos — its ruling text re-read from that file, and the owner's 2026-08-22
 re-affirmation and intervention-granularity refinement quoted from #2865 and
 #2862, at writing time.
 
 Last verified: 2026-08-26 — §4's five clamps and §4a's named symbols were each
-grepped for a live producer at that day's `main`; §§1-3, 5 and 6 were re-read
-and stand.
+grepped for a live producer at that day's `main`; §§1-3 and 5 were re-read and
+stand.
