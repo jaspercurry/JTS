@@ -860,6 +860,10 @@ docs = [
   # coordination boundary it shares with docs/REFACTOR-2026-08.md's program.
   "docs/REFACTOR-TUNING-2026-08.md",
   "docs/REFACTOR-COORDINATION-2026-08.md",
+  # Chunk 2 of that refactor: the cutover, where the engine takes the calls and
+  # the two god files dissolve. Scan it when a seam binding, the record store,
+  # the analyze registry, or either god file's dissolution order changes.
+  "docs/REFACTOR-CUTOVER-2026-08.md",
   # The one operational map for the v2 commission session and the tuning loop
   # over SSH: what v2 is, the capture flow, the tool menu, door refusal counts,
   # exit-code vocabularies, the graded round, and the debugging recipes. Scan it
