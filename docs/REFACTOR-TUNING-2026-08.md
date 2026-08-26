@@ -592,9 +592,11 @@ whose re-verification before any campaign is ours. Terms in §6 R5.
 > which is the mechanism behind every false "already fixed" verdict here. Join
 > line pairs before matching. **Not in scope and not a defect:** the doctrine's
 > **letter map survives** (`measurement-loop-doctrine.md:224-248`) even though
-> S9 deleted the table above it, so the ~79 `deviation (a)`…`(i)` citations all
-> still resolve — the doc kept the map precisely so they would. One judgment
-> call is **left open for the owner rather than guessed**, and it is enumerated
+> S9 deleted the table above it, so those citations all still resolve — the doc
+> kept the map precisely so they would. Counted as a **floor, not an estimate**:
+> **at least 75 live sites across 26 files** match a strict wrap-safe
+> `deviation (a)`…`(i)` grep; looser citation shapes would only raise it. One
+> judgment call is **left open for the owner rather than guessed**, and it is enumerated
 > rather than estimated: **10 live sites** attribute a *"no-silent-failure rule"*
 > to the charter, **5 in this zone** —
 > `jasper/web/correction_crossover_v2.py:4962` ·
