@@ -357,8 +357,10 @@ Its own doctrine and cadence; start at the doctrine, not the plans.
   declared-design executor, linearization tournaments, LLM operator
 - [`tuning-operator-runbook.md`](docs/tuning-operator-runbook.md) — the one
   operational map: what the `/sound/crossover/` commission session is, how to
-  drive a round over SSH, what the doors refuse, and the contracts a refactor
-  must preserve
+  drive a round over SSH, and what the doors refuse
+- [`crossover-v2-engine-design.md`](docs/crossover-v2-engine-design.md) — the
+  engine's architecture: the session, its seams, the file map, and the contracts
+  a refactor must preserve
 - [`HANDOFF-active-speaker-dsp.md`](docs/HANDOFF-active-speaker-dsp.md) —
   active-speaker DSP commissioning, baseline lifecycle, safety invariants
 - [`HANDOFF-bass-extension-plan.md`](docs/HANDOFF-bass-extension-plan.md) —

@@ -4,10 +4,11 @@
 > the conductor flow exists and the alternatives it rejected. Waves
 > W1–W6 are complete (PRs #1578–#1604); the v2 flow is hardware-validated
 > on JTS3 + UMIK-2 and the `JASPER_CROSSOVER_FLOW` default flipped to
-> `v2` on 2026-07-19. **Current operational truth — how to run it, the
-> file map, invariants, the failure taxonomy, and the W6 bug catalog —
-> now lives in
-> [tuning-operator-runbook.md](tuning-operator-runbook.md).**
+> `v2` on 2026-07-19. **Current operational truth — how to run it, the failure
+> taxonomy, and the W6 bug catalog — now lives in
+> [tuning-operator-runbook.md](tuning-operator-runbook.md); the file map and
+> invariants live in
+> [crossover-v2-engine-design.md](crossover-v2-engine-design.md).**
 > Read this doc for the decision archaeology; read the HANDOFF for what
 > the flow does today. W5b (2026-07-24) deleted the legacy flow and the
 > `JASPER_CROSSOVER_FLOW` selector — v2 is the only flow now.

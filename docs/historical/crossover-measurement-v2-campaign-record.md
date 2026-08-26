@@ -9,8 +9,9 @@
 > exist in the code — chiefly the `CrossoverV2Conductor` class, dissolved in
 > #2291 Phase 5c-iv — are kept where they are what the entry was about at the
 > time. Current operational truth is
-> [`tuning-operator-runbook.md`](../tuning-operator-runbook.md); the file map
-> there is the current shape.
+> [`tuning-operator-runbook.md`](../tuning-operator-runbook.md), and the file
+> map in [`crossover-v2-engine-design.md`](../crossover-v2-engine-design.md) is
+> the current shape.
 >
 > **Two sections are the exception, and this tag does not cover them:**
 > "[Failure taxonomy & debugging](#failure-taxonomy--debugging)" and
@@ -3003,7 +3004,8 @@ exceedance run from 0.575 to 0.307 octaves, under the width rule.
 
 Unlike the tracking check, this comparison is **not** level-offset-invariant —
 a level shortfall is one of the things it classifies — so it takes the apply
-boundary's declared move (`expected_offset_db`, invariant 10a) and removes it
+boundary's declared move (`expected_offset_db`,
+[invariant 10a](../crossover-v2-engine-design.md)) and removes it
 before classifying. What survives is measured where the correction commanded
 nothing and reported as `residual_offset_db`; a material, sufficient residual
 is the `level_mismatch` verdict, which is a finding, not a rollback.
@@ -4591,7 +4593,8 @@ no retries-as-bodge). Treat these as regression fences.
    **superseded by an isolation ratio on 2026-08-21** — see gotcha #25, which
    is why the additive form had to go. The target-band floor is unchanged.
 7. **The −65 dB tweeter cap is a relic** (#1595). The HF measurement
-   ceiling is derived from sensitivity (invariant 1/2 above); the old
+   ceiling is derived from sensitivity (invariants 1–2 in
+   [`crossover-v2-engine-design.md`](../crossover-v2-engine-design.md)); the old
    seed read near-inaudible (27 dB in-band SNR) on the DE250. Since
    2026-08-23 the research ask no longer emits it and the field is
    optional, so a profile saved from here on says the same thing by

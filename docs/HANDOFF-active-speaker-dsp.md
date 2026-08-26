@@ -92,7 +92,7 @@ Two web surfaces, two different jobs, run in sequence:
    applies crossover level/delay/polarity and linearization. **v2 is the only
    flow** —
    see
-   [tuning-operator-runbook.md](tuning-operator-runbook.md),
+   [crossover-v2-engine-design.md](crossover-v2-engine-design.md),
    canonical for this flow's file map and invariants. W5b (2026-07-24)
    deleted the legacy near-field/null-depth/gated-summed triad
    described at length in the investigation history, along with the
@@ -126,7 +126,7 @@ above; this is only the entry points:
 | [`jasper/active_speaker/baseline_profile.py`](../jasper/active_speaker/baseline_profile.py) | Compiles and applies the durable active-speaker baseline; owns the candidate/promote lifecycle below. |
 | [`jasper/active_speaker/staging.py`](../jasper/active_speaker/staging.py), [`startup_load.py`](../jasper/active_speaker/startup_load.py), [`commission_ramp.py`](../jasper/active_speaker/commission_ramp.py) | `/sound/setup/` topology-setup substrate: stage a muted graph, load it, run the per-driver by-ear ramp. |
 | [`jasper/active_speaker/runtime_contract.py`](../jasper/active_speaker/runtime_contract.py) | Classifies saved topology against the running/candidate CamillaDSP graph; the doctor's fail-closed authority. |
-| [`jasper/active_speaker/crossover_v2_flow.py`](../jasper/active_speaker/crossover_v2_flow.py), [`linearization_fit.py`](../jasper/active_speaker/linearization_fit.py), [`linearization_envelope.py`](../jasper/active_speaker/linearization_envelope.py) | The v2 conductor and the Layer 1a fit/envelope. Full map: [tuning-operator-runbook.md](tuning-operator-runbook.md) "File map". |
+| [`jasper/active_speaker/crossover_v2_flow.py`](../jasper/active_speaker/crossover_v2_flow.py), [`linearization_fit.py`](../jasper/active_speaker/linearization_fit.py), [`linearization_envelope.py`](../jasper/active_speaker/linearization_envelope.py) | The v2 conductor and the Layer 1a fit/envelope. Full map: [crossover-v2-engine-design.md](crossover-v2-engine-design.md) "File map". |
 | `jasper/active_speaker/commissioning_*.py`, [`driver_acoustics.py`](../jasper/active_speaker/driver_acoustics.py) | Substrate built for the deleted legacy Wave 1-3 nine-state receipt lifecycle. Not a selectable flow any more; parts still back v2 (`commissioning_run` → `correction_crossover_backend`, `driver_acoustics`'s sweep constants → `web_measurement.capture_sweep_meta`). |
 
 ### Key invariants
@@ -136,7 +136,7 @@ above; this is only the entry points:
   from declared sensitivities) and never the wrong frequency range
   (declared band behind a proven high-pass before any full-range
   content reaches a driver). Canonical statement:
-  [tuning-operator-runbook.md](tuning-operator-runbook.md)
+  [crossover-v2-engine-design.md](crossover-v2-engine-design.md)
   "Contracts & invariants". The investigation history's longer "Hard Safety Rules"
   and "Failure Modes To Keep Visible" lists are still true detail,
   just superseded as the primary framing.
