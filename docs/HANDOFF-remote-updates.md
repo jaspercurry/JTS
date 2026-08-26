@@ -293,8 +293,7 @@ CI-lane section is the authoritative description):
     (`scripts/check-js-syntax.sh` + browser-module harnesses), and a
     pinned-toolchain `rust` job (Rustfmt, Clippy `-D warnings`,
     `cargo test`).
-  - The doc-hygiene workflows (`docs-impact.yml`, `docs-links.yml`,
-    `doc-freshness.yml`).
+  - The doc-hygiene workflow (`docs-links.yml`).
 - **Not in CI today.** The `jasper_aec3` pybind11 binding is still
   built on the Pi, not on the runner — a Stage-1 extension worth doing
   if release artifacts want prebuilt binaries (verify Trixie's
