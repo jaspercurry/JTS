@@ -77,7 +77,7 @@ well; four things moved.
 1. **§6's table starts at line 189. Lines 1–188 are unmapped** — 188 lines of
    docstring, imports and a re-export block that is itself a barrel (row B).
 2. **There is a fifth re-export barrel, in this file, and no §6 row covers it**
-   — `:2559-2578`, twenty names re-bound off `durable_state` under their
+   — `:2559-2578`, sixteen names re-bound off `durable_state` under their
    historical names (row U). §6's deletion order step 1 kills four barrels in
    the twin; this is the fifth and it is the same shape.
 3. **§7's kept-lines figure double-counts.** `:6904-7360` is **457** lines, not
@@ -115,12 +115,12 @@ it homeless.
 | # | Lines | *n* | Concern — what it does | Called by | Disposition |
 |---|---|--:|---|---|---|
 | **A** | 1–43 | 43 | SPDX header + module docstring. Describes the file as the host between the v2 POST routes and the pure conductor. | — | **KEEP**, shrunk. The surviving apply host needs ~8 lines of it; the other 35 describe organs that will have left. |
-| **B** | 44–161 | 118 | Imports, and a **re-export barrel** inside them: 8 names re-exported with PEP 484 `X as X` redundant-alias form (`journey` `:77-80`, `relay` `:157-159`) that this module names but never calls. The comment at `:63-71` records the cost: the eager `crossover_v2` import pulls `branch_chain` and numpy, taking import time **0.05 s → 0.34 s**. | `journey`/`round_anchor`/`refusal_copy`/`capture_source`/`verification` names reached through here by `setup`, `relay`, `wired`, tests | **SUPERSEDED** — every re-exported name already lives in a `crossover_v2/*` organ. Repoint importers at the organ and the barrel goes. Precedent in-file: `:150-155` records three such names already deleted once no external caller arrived. |
+| **B** | 44–161 | 118 | Imports, and a **re-export barrel** inside them: 6 names re-exported with PEP 484 `X as X` redundant-alias form (3 from `journey` at `:77`, `:78`, `:80`; 3 from `relay` at `:157-159`) that this module names but never calls. The comment at `:63-71` records the cost: the eager `crossover_v2` import pulls `branch_chain` and numpy, taking import time **0.05 s → 0.34 s**. | `journey`/`round_anchor`/`refusal_copy`/`capture_source`/`verification` names reached through here by `setup`, `relay`, `wired`, tests | **SUPERSEDED** — every re-exported name already lives in a `crossover_v2/*` organ. Repoint importers at the organ and the barrel goes. Precedent in-file: `:150-155` records three such names already deleted once no external caller arrived. |
 | **C** | 162–188 | 27 | `logger`; durable-state schema constants (`STATE_SCHEMA_VERSION`, `STATE_KIND`, `DEFAULT_V2_STATE_PATH`); the two relay-kind labels; two more `durable_state` re-exports (`:186-187`). | setup, tests | **SPLIT** — schema constants →W1-a with the store; relay-kind labels →W5-a with the preparers; `:186-187` join row U's barrel. |
 | **D** | 189–219 | 31 | Operator capture-dump retention: dir, `ENABLED` marker filename, ring caps (90 files / 300 MB). 26 of 31 lines are the justifying essay. | in-file | **→W1-c**, gated on the owner's `ENABLED` ruling. |
 | **E** | 220–229 | 10 | `capture_dump_enabled` — is operator retention switched on right now. | in-file (row Z) | **→W1-c** |
 | **F** | 230–236 | 7 | `_state_lock` (RLock), `_state_path_override`, `_volume_plan_lock`, `_volume_plan` — four of the file's seven module-level mutables. | in-file | **→W5** with the singletons they guard. **Move as one unit** — see §3. |
-| **G** | 237–447 | 211 | Refusal / error taxonomy: `CrossoverV2Refused`, `CrossoverV2LocalSeamError`, `refusal_next_action`, `classify_program_failure` (§5.10 reason codes), `refused_from_flow_error`, `profile_refusal_code`. | setup `:1010`, `:7394`, `:7536` | **SUPERSEDED** → `crossover_v2/refusal_copy.py` (1,609 lines, 66 public names, already the home of the `REASON_*` codes this row imports at `:118-122`). A clean leaf; no seam involved. |
+| **G** | 237–447 | 211 | Refusal / error taxonomy: `CrossoverV2Refused`, `CrossoverV2LocalSeamError`, `refusal_next_action`, `classify_program_failure` (§5.10 reason codes), `refused_from_flow_error`, `profile_refusal_code`. | setup `:1010`, `:7394`, `:7536` | **SUPERSEDED** → `crossover_v2/refusal_copy.py` (1,609 lines; 12 public functions/classes and 51 public constants, already the home of the `REASON_*` codes this row imports at `:118-122`). A clean leaf; no seam involved. |
 | **H** | 448–577 | 130 | Durable JSON state file I/O: path resolution, `load_v2_state`, `save_v2_state` (fsync decision), `_update_current_review`, `clear_v2_state`, `set_state_path_for_tests`. | xflow `:272`, setup, tests | **→W1-a** (`RecordStore`). The *document* already lives in `crossover_v2/durable_state.py`; what is here is the **file** — path, envelope, atomic write, durability verdict (`:2550-2555` says exactly this). |
 | **I** | 578–1012 | 435 | Journey-state observers: `reset_v2_journey_state`, `observe_apply_success` (137 L), `observe_restore` (131 L), `observe_review_decline`, `review_declined`, model-error snapshot/record. 246 lines prose. | xflow `:219`, `:272`; setup | **→W5** + `crossover_v2/journey.py` (597 L). The transitions are journey facts; the persistence half rides W1-a. |
 | **J** | 1013–1071 | 59 | Three conductor seams reading the durable state: `_applied_gate`, `_applied_offset_gate`, `_apply_failure_gate`. | in-file (row AK binds them) | **→W1-a** — they are reads of the record store wearing a seam. |
@@ -134,7 +134,7 @@ it homeless.
 | **R** | 1793–1993 | 201 | Status projection, part 2: `CHART_CURVE_MAX_JSON_POINTS = 256`, `_decimate_curve_for_chart`, `_chart_cloud_status`, `_prediction_status`. | in-file (row S) | **LIFTS WHOLE**, same module as Q. |
 | **S** | 1994–2165 | 172 | `crossover_v2_status_block()` — **the file's one read entry point**, and `_household_findings_status`. Embedded as `payload["crossover_v2"]` at `backend:2097-2104`; that is what feeds the human's `/correction/crossover` page. | **backend `:2097`** | **LIFTS WHOLE.** Deletion-order step 2 — the earliest large win, nothing depends on it landing first. |
 | **T** | 2166–2545 | 380 | Post-apply grading: the grade/scope/spatial vocabularies (`GRADE_*`, 13 constants), `_spatial_grade`, `_post_apply_grade` (296 L) — *"was the correction now ON the speaker ever checked after it landed?"* | in-file (row S) | **→§2** (the analyze registry). It is an analysis, and it is the largest single analysis in the file. |
-| **U** | 2546–2582 | 37 | **The fifth barrel.** 20 names re-bound off `durable_state` under historical names (`:2559-2578`), because *"`prepare_v2_verify` reaches them as module globals and the stage-bridge suite names them off this module"* (`:2557-2558`). **Five have zero in-file uses** — `_candidate_summary`, `_decimate_delta`, `_decimate_verify_measured`, `_delta_probe_summary`, `verify_measured_curve_from_state` — they are pure re-exports for the test suite. | in-file (15 of 20); tests (all 20) | **SUPERSEDED** → `crossover_v2/durable_state.py` (1,869 L). Deletable the moment W5-a converges the preparers and the tests are repointed. Not in §6's table. |
+| **U** | 2546–2582 | 37 | **The fifth barrel.** 16 names re-bound off `durable_state` under historical names (`:2559-2578`), because *"`prepare_v2_verify` reaches them as module globals and the stage-bridge suite names them off this module"* (`:2557-2558`). **Five have zero in-file uses**, and **two of those five have no consumer anywhere** — see below. | in-file (11 of 16); tests | **SUPERSEDED** → `crossover_v2/durable_state.py` (1,869 L). Two lines deletable **today**; the rest the moment W5-a converges the preparers and the tests are repointed. Not in §6's table. |
 | **V** | 2583–2806 | 224 | Staged-prescription / angle-walk intake: `_take_staged_prescription`, `_take_staged_angle_walk`, `_fc_hz_label`. | in-file (rows AM, AN) | **→W3-b** (recommender binding). |
 | **W** | 2807–2929 | 123 | Conductor persistence, write side: `persist_conductor_state`, `_persist_terminal_failure`. | in-file (rows AM, AN) | **→W1-a**. This is what `TuningSession.save()` replaces. |
 | **X** | 2930–3035 | 106 | Calibration resolution: `_wav_bytes_to_samples`, `resolve_relay_calibration`, `default_setup_calibration_for_v2`, `_setup_calibration_observation`. | in-file (row Y); named in `setup` prose `:2352`, `:3762`, `:3921` | **→W2-b** |
@@ -201,10 +201,10 @@ through it, ordered so that each step shrinks the next one's diff.
    §6's step 2. One importer (`backend:2097`), no seam, no I/O beyond
    `load_v2_state`. Nothing must land first. Start here.
 2. **Rows U, B, AI — the barrels and the pointer essays (536 lines).**
-   §6's step 1 applied to this file's own fifth barrel. Row U's 20 names go the
+   §6's step 1 applied to this file's own fifth barrel. Row U's 16 names go the
    moment W5-a converges the preparers and the test suite is repointed at
    `durable_state`; five of them already have zero in-file consumers today. Row
-   B's 8 `X as X` re-exports go when their importers point at the organs — and
+   B's 6 `X as X` re-exports go when their importers point at the organs — and
    that also pays back the **0.29 s import cost** the comment at `:63-71`
    records.
 3. **Row G — the refusal taxonomy (211 lines) → `refusal_copy.py`.**
@@ -342,9 +342,22 @@ the interface half. The safety-critical half is row AH.
 
 Row U's own comment (`:2557-2558`) says the barrel exists because
 `prepare_v2_verify` reaches those names as module globals **and the stage-bridge
-suite names them off this module**. Five of the twenty have no in-file consumer
-at all — they exist purely so a test can write
-`correction_crossover_v2._candidate_summary`. Row B's `X as X` block carries
+suite names them off this module**. Five of the sixteen have no in-file consumer
+at all; three of those five exist purely so a test can reach them through this
+module:
+
+| Barrel line | Name | Who still reaches it *through this module* |
+|---|---|---|
+| `:2563` | `_candidate_summary` | `tests/test_crossover_v2_conductor.py:10094`, `:10115`, `:10132` |
+| `:2566` | `verify_measured_curve_from_state` | `tests/test_crossover_v2_stage_bridge.py` — 5 sites, `:1193`–`:1364` |
+| `:2561` | `_decimate_delta` | `tests/test_crossover_v2_stage_bridge.py:1759`, `:1779` |
+| `:2562` | `_decimate_verify_measured` | **nobody.** `tests/test_active_speaker_crossover_v2_round_views.py:284-286` imports it from `durable_state` directly. |
+| `:2565` | `_delta_probe_summary` | **nobody.** Its only other mention in the tree is a comment at `tests/test_crossover_envelope_v2.py:1079`. |
+
+**`:2562` and `:2565` are two orphan lines deletable today**, no repointing,
+no work item — a free two-line down-payment on step 2.
+
+Row B's `X as X` block carries
 the same note at `:146-148`: *"this HOST calls `build_v2_run_and_consume`,
 `relay_link_ttl_s`, and `PlaybackStartSignal` through these bindings, so
 patching them on this module reaches the preparers."*
