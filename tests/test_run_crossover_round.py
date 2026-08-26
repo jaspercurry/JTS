@@ -1379,6 +1379,31 @@ def test_exporting_only_PI_HOST_keeps_both_halves_on_your_speaker(
     assert row["split"] is False
 
 
+def test_exporting_only_JASPER_HOSTNAME_moves_the_ssh_target_with_it(
+    checkout, wizard, tmp_path
+):
+    """The legacy operator form names one speaker, and the trail says so.
+
+    ``_lib.sh`` promotes a lone JASPER_HOSTNAME to the ssh target as well, so
+    both halves are the caller's -- reporting the target as ``.env.local``'s
+    would name a source that contributed nothing, on a record with no split.
+    """
+    trail = tmp_path / "trail.jsonl"
+    proc, ssh_lines, _ = _run(
+        checkout, wizard,
+        ["--campaign", str(tmp_path / "camp"), "--label", "r1",
+         "--trail", str(trail), *MEASURE_ARGS],
+        JASPER_HOSTNAME="caller.invalid",
+    )
+
+    assert proc.returncode == 0, proc.stderr
+    assert all("@caller.invalid" in line for line in ssh_lines)
+    row = _trail(trail)[0]
+    assert (row["host"], row["host_from"]) == ("caller.invalid", "your export")
+    assert (row["hostname"], row["hostname_from"]) == ("caller.invalid", "your export")
+    assert row["split"] is False
+
+
 def test_a_hostname_override_against_the_checkouts_host_is_still_disclosed(
     checkout, wizard, tmp_path
 ):

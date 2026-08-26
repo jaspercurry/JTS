@@ -415,7 +415,11 @@ def resolve_target(hostname_override: str | None = None,
                 return value, source
         return default, "the default"
 
-    host, host_source = _pick("", caller_host, lib_host, "jts.local")
+    # One record, the same way _lib.sh resolves it: a lone exported
+    # JASPER_HOSTNAME supplies the ssh target too, so it is YOUR export the
+    # target came from — not the .env.local the library happened to read.
+    host, host_source = _pick(
+        "", caller_host or caller_hostname, lib_host, "jts.local")
     user, user_source = _pick("", caller_user, lib_user, "pi")
     hostname, hostname_source = _pick(
         hostname_override or "", caller_hostname, lib_hostname, host)
@@ -424,12 +428,9 @@ def resolve_target(hostname_override: str | None = None,
         # origin, so it is not a second source to disclose.
         hostname_source = host_source
     if trail is not None:
-        # WHERE each half came from, because they are resolved independently
-        # and a split answer is legal: exporting only PI_HOST takes the ssh
-        # target from you and the speaker's NAME from .env.local, so a round
-        # can ssh to one speaker carrying another's Host header. Nothing here
-        # guesses which of the two is the one you meant — that is the
-        # operator's to know — but it must not be invisible.
+        # WHERE each half came from. Nothing here guesses which of the two
+        # is the one you meant — that is the operator's to know — but it
+        # must not be invisible.
         #
         # ``split`` compares SOURCES, not values, so it is true even when both
         # sources happen to name the same speaker. That over-warns on purpose:

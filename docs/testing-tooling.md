@@ -1770,14 +1770,10 @@ artifact below is written with a plain `>` redirect.
 The first thing written, before any Pi round-trip, is `provenance.json`
 — the host and user actually banked, a UTC timestamp, and this script's
 own commit — so a banked tree always names its own source even if every
-pull below it fails. This is also where an explicit `PI_HOST=` /
-`PI_USER=` override is guaranteed to win: `_lib.sh` sources `.env.local`
-with `set -a`, which can otherwise silently overwrite an
-already-exported `PI_HOST` before the `${PI_HOST:-jts.local}` fallback
-ever runs (repo-wide, tracked as #2689) — this script captures the
-caller's export before sourcing `_lib.sh` and re-applies it after, so
+pull below it fails. It records the target `scripts/_lib.sh` resolved,
+whose targeting contract (stated in that file) makes an explicit
 `PI_HOST=jts3.local bash scripts/bank-crossover-round.sh <dest-dir>`
-reliably banks jts3 even when `.env.local` points somewhere else.
+bank jts3 even when `.env.local` points somewhere else.
 
 It then pulls the newest session bundle, the crossover-v2 flow state, the
 design draft, a bounded journal window (the four units a round speaks
@@ -2739,21 +2735,16 @@ refused/blocked/failed, `11` the named fingerprint is not the live candidate
 (nothing was sent). Each carries its deciding value on the phase line and in
 the `--trail` JSONL.
 
-**Which speaker — and both halves of the answer.** The ssh target and the
-speaker's *name* resolve independently, so exporting only `PI_HOST` takes the
-first from you and the second from `.env.local`: a round can then ssh to one
-speaker carrying another's `Host:` header, which the management-host guard
-403s. The runner discloses the pair and where each half came from (the
-`identity` trail row), and a 403 on the open names the mismatch as a possible
-cause with both values — it does not guess which one you meant. `--hostname`
-sets the name explicitly.
-
-An exported `PI_HOST`/`PI_USER` wins over `.env.local`,
-which wins over the `jts.local` default — `scripts/_lib.sh`'s own resolution
-with the caller's exports re-applied over it (the
-[#2689](https://github.com/jaspercurry/JTS/issues/2689) shape). The resolved
-host is named in the trail and exported into the bank, so one round can never
-measure one Pi and bank another.
+**Which speaker — and both halves of the answer.** The target is
+`scripts/_lib.sh`'s, resolved by the targeting contract stated in that file.
+`--hostname` overrides the speaker's *name* alone, which is the one way the
+ssh target and the name can still come from different places: a round then
+ssh's to one speaker carrying another's `Host:` header, which the
+management-host guard 403s. The runner discloses the pair and where each half
+came from (the `identity` trail row), and a 403 on the open names the mismatch
+as a possible cause with both values — it does not guess which one you meant.
+The resolved host is named in the trail and exported into the bank, so one
+round can never measure one Pi and bank another.
 
 ---
 

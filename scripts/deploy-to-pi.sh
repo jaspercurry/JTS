@@ -608,9 +608,18 @@ if [[ "${SKIP_INSTALL:-}" != "1" ]]; then
         echo "      the peer_id cleanly — enable passwordless sudo for"
         echo "      identity-verified deploys, see BRINGUP Phase 2.5)"
     else
+        # The recorded peer_id describes the speaker .env.local names, so
+        # it is only comparable when THIS deploy is aimed there. Give the
+        # guard no state file for a caller-targeted one: recording a
+        # redirect's peer_id would make the checkout's next plain deploy
+        # abort against its own Pi. See _lib.sh's targeting contract.
+        identity_env_file="${REPO_ROOT}/.env.local"
+        if [[ "${JTS_TARGET_FROM:-}" == "caller" ]]; then
+            identity_env_file=""
+        fi
         remote_peer_id="$(run_remote_sudo 'cat /var/lib/jasper/peer_id 2>/dev/null' 2>/dev/null || true)"
         identity_outcome="$(verify_or_record_peer_id \
-            "$remote_peer_id" "${REPO_ROOT}/.env.local" \
+            "$remote_peer_id" "$identity_env_file" \
             "${JTS_ACCEPT_NEW_IDENTITY:-}")" || {
             echo "─────────────────────────────────────────────────────────────" >&2
             echo " DEPLOY ABORTED: ${PI_HOST} is not the speaker this checkout" >&2
@@ -630,7 +639,13 @@ if [[ "${SKIP_INSTALL:-}" != "1" ]]; then
             recorded)   echo "    speaker identity: recorded peer_id (first contact)" ;;
             rerecorded) echo "    speaker identity: re-recorded peer_id (accepted new)" ;;
             match)      echo "    speaker identity: verified" ;;
-            *)          : ;;  # unavailable / no_state_file — nothing to verify against
+            no_state_file)
+                if [[ "${JTS_TARGET_FROM:-}" == "caller" ]]; then
+                    echo "    speaker identity: skipped (you named this target,"
+                    echo "      so this checkout has no recorded identity for it)"
+                fi
+                ;;
+            *)          : ;;  # unavailable — the Pi has no peer_id to compare
         esac
     fi
 
