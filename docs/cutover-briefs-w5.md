@@ -162,7 +162,340 @@ way W5-d re-tenses `:252-268`. See §6.
 
 ## 2. The wiring map
 
+Every line below was re-derived at `c253c3cf1`. Where it differs from §5 of the
+plan, the difference is flagged **[≠plan]** and explained in §6.
+
+### 2.1 The chain, corrected
+
+| Layer | Where |
+|---|---|
+| nginx | `deploy/nginx-jasper.conf:463` — `location /correction/` → `127.0.0.1:8770` |
+| transport | `ThreadingHTTPServer` + `BaseHTTPRequestHandler`, `web/correction_setup.py:61` |
+| handlers | `do_GET` `:7809`, `do_POST` `:7984` — **both plain `def`**, and the only two |
+| funnel | `:8014` `if path.startswith("/crossover/")` → `:8015` `self._dispatch_crossover(path)` **[≠plan: the call is `:8015`; `:8014` is the guard]** |
+| dispatch | `_dispatch_crossover` `:7366`, a flat chain of twelve `if path …: … return` arms, no `elif` |
+| loop bridge | `_ensure_loop` `:1275` (thread `jasper-correction-loop`), `_run_async` `:1292`, `_run_graph_mutation` `:1331` |
+| walk | `_run_relay_capture` `:1037`, fired fire-and-forget at `:1153` |
+| host module | `web/correction_crossover_v2.py` — **zero** routes, zero HTML/CSS/JS, zero CSRF (all three greps return 0) |
+
+**The twelve routes**, with line numbers, because the post-merge check in §5
+counts them: `/crossover/v2/session`+`/crossover/v2/verify` `:7369` (one arm,
+one set), `position-ready` `:7433`, `complete` `:7469`, `retake` `:7488`,
+`apply` `:7506`, `republish` `:7565`, `restore` `:7582`, `decline` `:7605`, and
+four nested arms — `recover-volume` `:7637`, `relay-cancel` `:7757`, `reset`
+`:7761`, `level-match` `:7766`.
+
+**The bridge lives in `correction_setup.py`, and the host module receives it as
+an argument. [≠plan]** `_run_async(` has **34 call sites in
+`correction_setup.py`** (plus its own def at `:1292`). `correction_crossover_v2.py`
+has **zero** — what it has is the injected `run_async` parameter, called at
+**nine** sites: `:1325`, `:1340`, `:1369`, `:1411`, `:1448`, `:4336`, `:7274`,
+`:7883`, `:7938`. The plan's *"ten sites, e.g. `correction_crossover_v2.py:7274`,
+`:7883`"* names the right two examples under the wrong symbol and one too many.
+The injection point is a single line: `correction_setup.py:6345`
+`run_async=_run_async`.
+
+That matters to W5-b for one reason: **the bridge is a seam of the flow already**,
+so the async flip does not have to invent a way to remove it — it removes an
+argument that is already parameterised, at one call site.
+
+### 2.2 The session registry, corrected
+
+`correction_setup.py` holds the registry; the host module does not.
+`_session_lock` `:133`, `_relay_position_gate` `:149`,
+`_relay_complete_request` `:154`, `_relay_retake_request` `:160`.
+
+**[≠plan]** The plan attributes both the write and the clear to
+`_set_relay_capture`. There are two functions:
+
+- **`_begin_relay_capture`** (`:706`) **writes** the four slots at `:719-731`,
+  under the lock, refusing when a capture is already in flight (`:722-726`).
+- **`_set_relay_capture`** (`:614`) **clears** them at `:615-623` when the value
+  is `None` or the status left `_RELAY_IN_FLIGHT_STATUSES`.
+
+The distinction is load-bearing for W5-b: the *refusal* that makes "one session
+at a time" true lives in the writer, not the clearer, and a cutover that moved
+only the clearer would drop the mutual exclusion.
+
+### 2.3 One handler serves both stages — and it already carries the stage flag
+
+This is the finding that resizes W5-a.
+
+```
+correction_setup.py:6308  def _handle_crossover_v2_relay(handler, *, verify_only: bool, idle_hold=no_hold)
+                   :6314    """POST /crossover/v2/session | /crossover/v2/verify (Wave 5a)."""
+                   :6341    prepare = v2host.prepare_v2_verify if verify_only else v2host.prepare_v2_session
+                   :6342    prepared = prepare(raw, status=status, run_async=_run_async, camilla_factory=_camilla)
+                   :6358    kind = RelayCaptureKind(label=…, open=…, run_and_consume=…, request_stop=…,
+                                                    position_gate=…, local=wired,
+                                                    request_complete=…, request_retake=…)
+                   :6369    return {"relay": _run_relay_capture(kind, relay_base, return_url=…, idle_hold=…)}
+```
+
+**`:6341` is the whole of W5-a's "stage argument".** The plan describes W5-a as
+*"fold the two into one preparer plus a stage argument"*; the caller already
+computes that argument (`verify_only`) and already selects on it at one line.
+W5-a is therefore **pushing an existing boolean one frame down**, not
+introducing a discriminator — a materially smaller and lower-risk change than
+the plan's ~380/+120 framing implies. Its real work is reconciling the two
+bodies, and there is exactly one asymmetry in their seam binding to reconcile
+(next paragraph).
+
+**`V2PreparedSession` (`correction_crossover_v2.py:5355`) is the lifecycle
+interface, and it has eight fields**: `label`, `open`, `run_and_consume`,
+`request_stop`, `position_gate`, `capture_source`, `request_complete`,
+`request_retake`. Seven of them are adapted straight into `RelayCaptureKind`
+(`correction_setup.py:834`) at `:6358-6367`; `capture_source` is consumed at
+`:6357` to decide whether a relay origin is required. **This dataclass, not
+`CrossoverV2Session`, is what the dispatch layer actually sees** — so it is the
+type W5-b must keep producing, byte-for-byte in field values, if the endpoint
+suite is to pass unedited.
+
+### 2.4 The two preparers, and where `TuningSession` goes
+
+| | stage 1 | stage 2 |
+|---|---|---|
+| def | `prepare_v2_session` `:5944` | `prepare_v2_verify` `:6520` |
+| body | `:5944-6477` (**534 lines**) | `:6520-6901` (**382 lines**) |
+| lazy import of `CrossoverV2Session` | `:6002` | `:6557` |
+| construction | `CrossoverV2Session.hydrate(…)` `:6357` | `CrossoverV2Session(…)` `:6785` |
+| seam binding | `bind_v2_stage_seams(…)` `:6369-6379` | `:6801-6812` **[≠plan: `:6801`, not `:6800`]** |
+| holder | `holder: dict[str, Any] = {}` `:6258` | `:6711` |
+| filled | `holder["run"] = _build_source_run(…)` `:6432` | `:6856` |
+| drained | `async def _run(client, pi_session)` `:6448-6449` | `:6872-6873` |
+| returns | `V2PreparedSession(` `:6455` | `:6879` |
+
+**The one asymmetry in the seam binding**, which W5-a must decide rather than
+diff away: stage 1 passes `publish_check=publish_check` and stage 2 passes
+`publish_check=_publish_check` — a different callable under an
+underscore-prefixed name. Every other kwarg in the two eleven-line calls is
+identical. **[≠plan]** The plan calls these *"the same `bind_v2_stage_seams`
+call shape"*; they are the same shape with one substituted binding, and a fold
+that misses it silently swaps stage 2's check publisher.
+
+**Where `TuningSession` slots in.** `_open()` — the nested closure inside each
+preparer that builds the conductor — is the construction point, and the
+session's lifetime is the `_run()` coroutine's. The mapping:
+
+| `TuningSession` | What it replaces today |
+|---|---|
+| `open()` | `register_session_measurement_graph(session_graph)` (`correction_crossover_v2.py:4106`, from inside `bind_production_play` `:3965`) **plus** `_volume_hooks`'s `_open` arm (`:5399`), which is `acquire_session_measurement_pause()` then `await plan.open(context.session_volume_db, _set, _get)` (`:5408`) |
+| `measure(spec)` | the consume/retain walk driven through `holder["run"]` (`:6432` / `:6856`, awaited `:6449` / `:6873`) |
+| `save()` | `persist_conductor_state(conductor, failure_code=None, evidence=refs)` `:6431` (def `:2809`) |
+| `close()` / abandon | `_volume_hooks`'s `_close` `:5443` and `_abandon` `:5450`, each of which is `_put_the_graph_back()` (`:5414` → `release_session_measurement_graph()` `:1215`) then `plan.close/abandon(_set, _get)` (`:5446` / `:5453`) then `release_session_measurement_pause()` in a `finally` |
+| `analyze()` | nothing yet — `bind_production_analyze` (`:3037`) is the flow's per-capture analyze seam, not the session-wide verb (§2 of the plan) |
+| `recommend()` | nothing yet — unbound (§3 of the plan) |
+
+**One deletion W5-b unlocks that the plan does not name.** The session graph is
+held in a **module global** — `_session_graph`, written by
+`register_session_measurement_graph` (`:1213`, from `bind_production_play` at
+`:4106`) and cleared by `release_session_measurement_graph` (`:1215`). Once the
+graph is `seams.graph` on a session object whose lifetime is the run coroutine's,
+that global and its displacement warning (`:1204-1211`) have no reason to exist.
+Its docstring already reads as a lifetime workaround: *"Two callers, and between
+them they cover every drain."*
+
+### 2.5 The five seam bindings at construction
+
+What W5-b writes at the converged `_open()`. Each row says what exists, what is
+owed, and by which item.
+
+| Seam | Bind to | State at HEAD |
+|---|---|---|
+| `graph` | `MeasurementSessionGraph(emit=_emit_program_graph, cam_factory=camilla_factory, writer_lock=…, confirm_live=confirm_graph_is_live)` — constructed today at `correction_crossover_v2.py:4098` | **exists.** Already `async` (`session_graph.py:135/176/190`), so it satisfies the seam directly after W4-a with no adapter. Move the construction out of `bind_production_play` and stop registering the global. |
+| `volume` | the handle-holding adapter over `VolumeOwner` — `acquire_level` `volume_owner.py:261`, `prove` `:582`, `release` `:504` | **owed: W4-c.** The owner's API is handle-carrying and the seam's is handle-free; §3.2 has the mapping. |
+| `records` | the `RecordStore` implementation | **owed: W1-a.** No production `def bank(` exists — the only three in the tree are `session_seams.py:236` (the Protocol), `tests/engine_twin.py:214` and `tests/test_crossover_v2_engine_skeleton.py:133`. |
+| `play` | `program_playback.play_program` (`jasper/active_speaker/program_playback.py:118`), awaited in production today at `correction_crossover_v2.py:4314` inside `bind_production_play` | **exists**, and already `async`. What is owed is the `PlaybackTransaction.run` shape around it: the seam takes `spec / position_deg / prompt / level_db / stimulus_dbfs` (`playback_transaction.py:190-198`) where `play_program` takes a program plus the `bind_program_playback_seams` bundle (`crossover_v2_flow.py:9024`). That adapter is W5-b's, not W4-c's. |
+| `recommend` | the prescriber's `packet → propose → stage → status` path | **owed: W3-b.** §3 of the plan says do not re-extract it; bind to it. |
+
+**The construction belongs beside `bind_v2_stage_seams` (`:5675`), not inside a
+preparer.** That function is already the single owner of *"which callable
+implements each seam"* for the flow, its docstring says so in as many words, and
+it already logs the stage's capability declaration. `V2FlowSeams`
+(`crossover_v2_flow.py:1500`) has **17 fields** (`:1503-1606`); `EngineSeams` has
+five. Putting the second binder anywhere else re-creates the *"two call sites
+free to disagree"* problem that binder exists to have solved — and the two
+binders coexist for the whole cutover, because the apply/rollback half of
+`V2FlowSeams` never moves (§3 of the plan: *"not a target. Ever."*).
+
 ## 3. W7's dissolution
+
+Authorities: the wave-5 W-ledger's W7 row
+(`REFACTOR-TUNING-2026-08.md:937`) and ADR-0004's constraint set. The ledger
+calls W7 *"the single named exception … dies with wave 6's flow; deliberately
+not routed into a seam that is about to be deleted."* This section says what it
+dies into.
+
+### 3.1 The write door, exactly
+
+`_session_volume_io` (`web/correction_crossover_v2.py:1289`, body `:1289-1306`,
+**18 lines**) returns `(_set, _get)`:
+
+```
+:1294  async def _set(db: float) -> bool:
+:1296      return await camilla_factory().set_volume_db(db, best_effort=False)
+:1297  except CamillaUnavailable as exc:
+:1298      raise RuntimeError("CamillaDSP is unavailable") from exc
+```
+
+**[≠plan]** The callee is `camilla_factory().set_volume_db(...)`, not
+`CamillaController.set_volume_db` named directly — the factory is injected. The
+chain past it is as the plan says: `jasper/camilla.py:684` → clamp through
+`_coerce_main_volume_db` (`:141-160`) → `c.volume.set_main_volume` (`:695`). No
+coordinator, no owner. That is the whole exception.
+
+**Five call sites, four of them writers:**
+
+| Site | Caller | Thread | What it drives |
+|---|---|---|---|
+| `:1367` | `enforce_session_volume_ceiling_if_stale` (`:1348`) | **handler**, via `run_async(…, timeout=15.0)` at `:1369` | `plan.enforce_ceiling(set_v, get_v)` |
+| `:1409` | the recover-volume path | **handler**, via `run_async` at `:1411` | `plan.recover_unresolved(set_v, get_v)` |
+| `:1446` | `reconcile_session_volume_for_new_session` | **handler**, via `run_async` at `:1448` | `plan.abandon(set_v, get_v, reason="stale_session_reset")` |
+| `:4187` | a capture-time hold | — | **read-only**: `_, get_v = …`, feeding `hold_measurement_volume(get_v, …)` at `:4188` (def `session_volume_plan.py:972`). `_set` is discarded. |
+| `:5397` | `_volume_hooks` (`:5390`) | **loop** — awaited directly | `plan.open` `:5408`, `plan.close` `:5446`, `plan.abandon` `:5453` |
+
+**The split across thread populations is the finding the plan does not draw, and
+it changes W5-c's shape.** Three of the four writers are **handler-thread**
+callers that bridge through `run_async`; the fourth is the **loop-thread**
+session. That is the same two-population split §1's ADR turns on, and it means
+W5-c is not one substitution repeated four times.
+
+### 3.2 The owner mapping — three calls, one adapter
+
+`VolumeOwner`'s API is **handle-carrying**; the seam's is **handle-free**. The
+adapter W4-c builds holds the handle between calls:
+
+| `VolumeClaim` (`session_seams.py`) | `VolumeOwner` (`volume_owner.py`) | Notes |
+|---|---|---|
+| `acquire(level_db)` `:162` | `acquire_level(ClaimKind.SESSION_MEASUREMENT, level_db) -> VolumeClaimHandle` `:261` | Fail-closed: an unconfirmable write raises `VolumeClaimRefused` and **leaves no claim held** (`:266-268`). The seam contracts that `release` is still safe after a raised acquire — satisfied, because there is nothing to give back. |
+| `prove() -> float \| None` `:171` | `prove(handle) -> float \| None` `:582` | Already the seam's exact semantics, including preemption: `:617-618` sets `result = "preempted"` and `:627` returns `None`. `None` for released, preempted, ducked-over, unreadable, or disagreeing (`:591-594`). |
+| `release()` `:198` | `release(handle, *, household_level_db=None)` `:504` | Idempotent and safe against nothing-held by construction: `:542-543` `if self._claims.get(handle.token) != handle: return`. The owner's docstring cites `session_seams.VolumeClaim.release` **by name** at `:514`. |
+
+`VolumeClaimHandle` (`:143-155`) is a frozen dataclass of `kind` / `token` /
+`level_db` / `depth_db`, opaque by intent — so the adapter's only state is one
+`handle: VolumeClaimHandle | None`.
+
+**One precision the plan's "four ranked claim kinds" glosses.** `ClaimKind`
+(`:116-122`) has four members, but `_LEVEL_RANK` (`:128-132`) ranks **three** —
+the transient duck is deliberately absent because *"it declares an attenuation,
+not a level"*. `SESSION_MEASUREMENT` ranks 1, between `HOUSEHOLD` (0) and
+`COMMISSIONING` (2). A session claim is therefore preemptible by commissioning,
+which is exactly why `prove()` is called once per stimulus rather than once per
+spec.
+
+**The 0 dB ceiling is untouched, and provably so.** `volume_owner.py:39-45`
+states the owner *"sits BEHIND that door as its only caller, never as its
+exception"*, and the clamp itself is `camilla.py:154`
+`clamped = max(MIN_MAIN_VOLUME_DB, min(MAX_MAIN_VOLUME_DB, value))`. Nothing in
+W5-c goes near either.
+
+### 3.3 What survives, what dissolves — and the plan's split is two-way where the code is three-way
+
+`SessionVolumePlan` (`session_volume_plan.py:667`) **owns no CamillaDSP** — its
+own docstring says so at `:670`, and every mutating method takes the
+`(set, get)` callables as *parameters*:
+
+```
+:906   async def open(self, measurement_volume_db, set_main_volume_db, get_main_volume_db) -> SessionVolumeOpenResult
+:1109  async def close(self, set_main_volume_db, get_main_volume_db, *, reason="session_closed")
+:1121  async def abandon(self, set_main_volume_db, get_main_volume_db, *, reason="session_abandoned")
+:1133  async def enforce_ceiling(self, set_main_volume_db, get_main_volume_db, now=None)
+:1153  async def recover_unresolved(self, set_main_volume_db, get_main_volume_db)
+```
+
+All five are **already `async`**, which matters: after W4-a the `VolumeClaim`
+substitution is colour-compatible with no bridge anywhere.
+
+**DISSOLVES — the fader writes.** Swapping the injected door for a `VolumeClaim`
+needs no internal restructure, exactly as the plan says.
+
+**SURVIVES — the durable restore latch, and here is why the owner cannot take
+it.** `VolumeOwner` is explicitly **in-memory and per-process**: *"Durable
+volume-safety state belongs to the claim holders that own it"* (`:65-68`). Five
+pieces, and the reason each stays:
+
+1. **The persisted `_State`** (`:589-596`: `status` / `reason` / `opened_at` /
+   `wall_clock_ceiling_s` / `measurement_volume_db` / `original_main_volume_db`)
+   at `/var/lib/jasper/active_speaker_crossover_session_volume.json`
+   (`:109-111`), `SCHEMA_VERSION = 1` (`:80`). **Cannot move:** the owner has no
+   disk at all, and giving it one would make it the second durable
+   volume-safety store.
+2. **`original_main_volume_db`, persisted before the first fader mutation.**
+   Snapshotted in `open` at `:932-935`, built into the state at `:937-944`, and
+   written at `:946` under the comment `# Write BEFORE the first mutation.`
+   (`:945`). **Cannot move:** the owner learns the household level from the
+   coordinator, not from a snapshot taken at this session's open — and the whole
+   point is surviving a crash between the snapshot and the write.
+3. **`_drain_restore`'s exact→emergency ladder** (`:1056-1107`; candidates built
+   at `:1076-1081`; `_mark_unresolved("session_volume_restore_unconfirmed")` at
+   `:1100`; `SessionVolumeRestoreResult.FAILED` at `:1107`). **Cannot move:**
+   `release()` restores the next-ranked level outright and has no second
+   candidate. There is no owner call that means *"try the exact original, and if
+   the hardware will not confirm it, take the emergency floor, and if neither
+   confirms, latch."*
+4. **`needs_recovery`'s two branches** (`:744-748`): a latched `unresolved`
+   state, **or** a durably `active` state this process did not open. **Cannot
+   move:** the second branch is crash/restart hydration by definition, and
+   `volume_owner()` answers `None` in a process that never installed one
+   (`:799-806`).
+5. **The wall-clock ceiling** — `DEFAULT_WALL_CLOCK_CEILING_S = 1800.0` (`:87`)
+   under `MAX_WALL_CLOCK_CEILING_S = 3600.0` (`:96`), enforced by timestamp
+   rather than by process restart (`:1067-1068`). **Cannot move:** it is a
+   property of the walked-away human, not of a claim.
+
+**[≠plan] The plan's W5-c deletes `(set, get)` from all five methods and hands
+the plan a `VolumeClaim` instead. Two of the five cannot take one.**
+`enforce_ceiling` and `recover_unresolved` run precisely when **no session is
+open and often no claim was ever taken in this process** — the ceiling fires on
+envelope build against a stale session, and recovery fires after a restart. A
+`VolumeClaim` is a handle over an in-memory per-process owner; after a crash
+there is no handle to release through. So the honest split is three-way:
+
+| Method | Door after W5-c |
+|---|---|
+| `open` / `close` | **`VolumeClaim`.** Session-scoped, claim in hand. `acquire(level_db)` at open, `release()` at close. Clean. |
+| `abandon` | **both.** Session-scoped from `_volume_hooks._abandon` (`:5450`, claim held) *and* process-scoped from `reconcile_session_volume_for_new_session` (`:1446`, no session, no claim). |
+| `enforce_ceiling` / `recover_unresolved` | **not a `VolumeClaim`.** Route them the way the ledger already ruled W11 (unresolved-volume recovery): `VolumeOwner.declare_household_level_db` (`volume_owner.py:297`) plus the plan's own exact→emergency ladder. That is the same answer for the same shape, and it keeps one story rather than two. |
+
+Deciding this in the brief rather than in the PR is the point: an executor who
+takes W5-c's sentence literally writes a `VolumeClaim` parameter onto
+`recover_unresolved` and then discovers at the first crash-recovery test that
+there is nothing to hand it.
+
+**[≠plan] `SessionVolumePlan` has a second consumer, outside crossover-v2
+entirely.** `jasper/active_speaker/seat_level_ramp.py` builds its **own** plan
+with its own state path, sets its own ceiling
+(`plan.set_wall_clock_ceiling_s(watchdog_s + 60.0)`, `:1571` — *"a killed
+leveling pass should surface far sooner than a measurement session's 30-minute
+walked-away window"*), and calls `plan.open(start_db, set_main_volume_db,
+get_main_volume_db)` at `:1573` and `plan.close(…, reason="seat_level_complete")`
+at `:1689`. The god file adds two more: `crossover_v2_flow.py:9150` (`open`) and
+`:9163` (`abandon`, the session-death hook). **Five production call sites across
+three files**, where the plan's W5-c reads as though `correction_crossover_v2.py`
+were the only one. `seat_level_ramp` is ledger row W10 and already holds a
+`SESSION_MEASUREMENT` claim of its own, so it can mint the `VolumeClaim` W5-c
+asks for — but it has no `TuningSession`, and a W5-c scoped to the wizard breaks
+it at import time.
+
+### 3.4 The one ordering invariant that must not be lost
+
+`_clear_resolved` (`:858`) drops the in-memory intent **before** persisting.
+Its docstring (`:859-891`) records both halves:
+
+- **The measured hazard of the other order, at `:868`: `−60.0 → −12.5` = +47.5
+  dB.** Persist-first left a drain that had already confirmed its volume on the
+  hardware, then met an `OSError` writing the marker, raising out with the plan
+  still `active` — so `assert_ready` passed and the plan named the declared
+  volume onto a speaker sitting at the emergency floor.
+- **The mirror-image persist guard from `:875`**, which is why the persist is
+  guarded exactly as `_mark_unresolved` guards its own: a surviving intent makes
+  a restart offer recovery for a volume already restored, and the re-drain moves
+  the fader **up** to the household snapshot, never to the measurement level.
+
+**[≠plan]** The plan cites the docstring as `:862-880`; it opens at `:859` and
+closes at `:891`, and the mirror-image paragraph runs past `:880`. The source
+uses Unicode `−` and `→`, so a grep for `-60.0 ->` finds nothing — a wrap-safe
+sweep is not enough here; the glyphs differ too.
 
 ## 4. PR slicing, verification bars, tiers
 
