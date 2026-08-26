@@ -402,22 +402,23 @@ a call site. Four near-vocabularies exist, and only one is about capture content
   as many words that the missing piece is an `analyze` consumer** (`:78-79`
   R-3's splice, `:84-86` R-4's distortion floor).
 - `MeasureSpec` (`:188`) — the parameters, not the content.
-- **`STIMULUS_KINDS`** (`audio_measurement/program.py:158-162` — silence · pilot
-  · sweep · summed-sweep) — the only existing vocabulary that describes **what a
-  capture actually contains**, and therefore the natural seed for the predicate.
+- **`STIMULUS_KINDS`** (`audio_measurement/program.py:162` — pilot · sweep ·
+  summed-sweep; `KIND_SILENCE` `:158` is deliberately **outside** the set) — the
+  only existing vocabulary that describes **what a capture actually contains**,
+  and therefore the natural seed for the predicate.
 
 ### Recommendation: model it on `tools/packs.py`, and keep it out of `EngineSeams`
 
 **Shape.** `jasper/tools/packs.py` is the closest prior art in the repo and it
-already carries the exact split this needs: `CapabilityPack` (`:131`, fields
-`:152-156`) has a `gate: Callable[[Any], bool]`; `PackOutcome` (`:159`) has
-`status ∈ {registered, skipped, failed}` and its docstring (`:164-181`)
+already carries the exact split this needs: `CapabilityPack` (`:131`) has
+`gate: Callable[[Any], bool] = lambda _d: True` (`:147`); `PackOutcome` (`:159`)
+has `status` — `"registered" | "skipped" | "failed"` (`:182`) — and its docstring
 distinguishes **skipped** (gate returned `False` — *"Expected, not a fault"*)
 from **failed** (raised). That is `AnalyzeOutcome`'s not-run-versus-error split,
 already shipped. Registration is a module-level tuple literal (`TOOL_PACKS`
-`:281`, order load-bearing and pinned); iteration is `register_packs` (`:380`)
-with per-unit `try/except` isolation and `if not pack.gate(deps): … continue`
-(`:439-441`); `outcomes_to_state` (`:187`) is the one wire shape.
+`:281`, order load-bearing per `:14` and pinned); iteration is `register_packs`
+(`:380`) with per-unit `try/except` isolation and `if not pack.gate(deps):`
+(`:437`); `outcomes_to_state` (`:187`) is the one wire shape.
 
 Second-closest and in-package: `refusal_copy.REASON_REGISTRY` (`:790`), the
 repo's canonical *table-as-data, derived sets never re-listed* idiom
