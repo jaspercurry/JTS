@@ -795,11 +795,21 @@ def test_a_drifted_fader_refuses_the_capture_before_any_audio(
 
 @pytest.mark.parametrize("phase", [PHASE_CHECK, PHASE_VERIFY])
 def test_an_undrifted_capture_still_plays(monkeypatch, tmp_path, phase):
-    """The happy path is untouched: no write, no refusal, audio emitted."""
+    """The happy path is untouched: no write, no refusal, audio emitted.
+
+    This is also what proves the ``on_emit`` sampler the refusal tests rely on
+    is LIVE — an empty ``seen_at_emit`` over there is only evidence if a
+    capture that does emit fills it (#2198).
+    """
+    seen_at_emit: list[float] = []
     cam = _StubCam(volume_db=DECLARED_DB)
-    played = _drive(monkeypatch, tmp_path, phase=phase, cam=cam, plan=_Plan())
+    played = _drive(
+        monkeypatch, tmp_path, phase=phase, cam=cam, plan=_Plan(),
+        on_emit=lambda: seen_at_emit.append(cam.volume_db),
+    )
     assert played
     assert cam.volume_writes == []
+    assert seen_at_emit == [DECLARED_DB]
 
 
 @pytest.mark.parametrize("phase", [PHASE_CHECK, PHASE_VERIFY])
