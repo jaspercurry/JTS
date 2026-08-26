@@ -1668,3 +1668,37 @@ def check_room_correction_authority() -> CheckResult:
         f"room correction runs unproven ({acoustic.get('reason')}): "
         f"{acoustic.get('detail')}",
     )
+
+
+@doctor_check(order=31.8, group="audio", label="active speaker setup notices")
+def check_active_speaker_setup_notices() -> CheckResult:
+    """The standing home for setup facts that no longer stop anything.
+
+    Ruling S10 and ADR-0019 turn staleness and unproven-ness into loud
+    disclosures rather than blocks — a topology fingerprint that rotated on a
+    metadata edit being the worked example (wave 7j). Nothing else renders a
+    non-blocker setup issue, so without this line the demotion would be a
+    silent one. Blockers keep their own surfaces (`/state`, the landing page,
+    the volume and grouping refusals) and are deliberately not repeated here.
+    """
+
+    from ...active_speaker.setup_status import read_active_speaker_setup_status
+
+    label = "active speaker setup notices"
+    try:
+        status = read_active_speaker_setup_status()
+    except (OSError, RuntimeError, TypeError, ValueError, KeyError) as exc:
+        return CheckResult(label, "warn", f"could not read speaker setup: {exc}")
+    issues = status.get("issues")
+    notices = [
+        issue for issue in (issues if isinstance(issues, list) else [])
+        if isinstance(issue, dict) and issue.get("severity") != "blocker"
+    ]
+    if not notices:
+        return CheckResult(label, "ok", "no standing speaker setup notices")
+    return CheckResult(
+        label, "warn",
+        "; ".join(
+            f"{issue.get('code')}: {issue.get('message')}" for issue in notices
+        ),
+    )

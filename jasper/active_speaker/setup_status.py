@@ -21,6 +21,7 @@ from jasper.fanin_coupling import transport_label
 from jasper.output_topology import OutputTopologyError, load_output_topology_strict
 
 from ._common import (
+    BASELINE_TOPOLOGY_CHANGED,
     ROOM_AUTHORITY_RECEIPT_ABSENT,
     ROOM_AUTHORITY_RECEIPT_MALFORMED,
     ROOM_AUTHORITY_RECEIPT_STALE,
@@ -1026,11 +1027,28 @@ def read_active_speaker_setup_status(
             and current_topology_fingerprint
             and protected_topology_fingerprint != current_topology_fingerprint
         )
+        # Topology staleness is deliberately NOT a readiness input (ruling
+        # S10, ADR-0019). `topology_config_fingerprint` hashes the whole
+        # topology dict bar `pairing_intent`, so display-only strings that
+        # reach no clamp and no emitted filter — `SpeakerChannel`'s
+        # `human_output_label`, a `SpeakerGroup`'s `label` — rotate it and
+        # used to take the box to `blocked`.
+        #
+        # This comparison is not where a cap is enforced, because it cannot
+        # see one: it hashes a dict and reports inequality. The declared facts
+        # that DO gate keep their own gates, one step downstream and each
+        # reading the field rather than the hash —
+        # `evaluate_driver_safety_profile` (`correction_crossover_v2.py`'s
+        # session-open gate) and `resolve_driver_excitation_ceilings`, plus
+        # the driver-protection clamps. `driver_style` is the worked example
+        # of a field that only LOOKS like metadata: it selects the tweeter's
+        # `min_highpass_hz` (`driver_protection.py`) and sits in the
+        # driver-safety target match (`driver_safety.py`), so editing it still
+        # refuses a session — correctly, at the safety gate, with a code.
         protected_ready = bool(
             isinstance(protected_profile, Mapping)
             and protected_profile.get("status") == "applied"
             and protected_config_exists
-            and protected_topology_current
         )
         protected_snapshot = (
             protected_profile.get("recomposition_snapshot")
@@ -1087,7 +1105,7 @@ def read_active_speaker_setup_status(
             )
         )
 
-        if not protected_ready and isinstance(protected_profile, Mapping):
+        if isinstance(protected_profile, Mapping):
             if not protected_config_exists:
                 issues.append(_issue(
                     "blocker",
@@ -1096,11 +1114,11 @@ def read_active_speaker_setup_status(
                 ))
             elif not protected_topology_current:
                 issues.append(_issue(
-                    "blocker",
-                    "active_baseline_topology_changed",
+                    "warning",
+                    BASELINE_TOPOLOGY_CHANGED,
                     (
-                        "saved output topology no longer matches the applied "
-                        "active speaker baseline"
+                        "topology changed since the applied baseline; re-mint "
+                        "when convenient"
                     ),
                 ))
 
@@ -1120,6 +1138,13 @@ def read_active_speaker_setup_status(
                         "control or grouping"
                     ),
                 ))
+        # `config` is the CANDIDATE's, not the applied profile's, and a
+        # topology change no longer clears `protected_ready` — so a stale
+        # topology now suppresses this arm too. That is the intended reading
+        # of last-known-good: what is playing is the applied graph, whose own
+        # config file is checked above, and a candidate pointing at a file
+        # that was never written is a pending edit rather than a reason to
+        # mute the speaker.
         if (
             not protected_ready
             and config.get("path")
@@ -1182,11 +1207,17 @@ def read_active_speaker_setup_status(
     if profile_summary is not None:
         profile_summary["automatic_candidate"] = automatic_candidate
 
-    blocked = any(issue["severity"] == "blocker" for issue in issues)
-    setup_reason = issues[0]["code"] if issues else None
+    # A blocker outranks a notice for the headline no matter which was
+    # appended first: the list carries both severities now, and a household
+    # told "re-mint when convenient" while the box is actually blocked is
+    # being told the wrong thing to do.
+    blockers = [issue for issue in issues if issue["severity"] == "blocker"]
+    blocked = bool(blockers)
+    headline = blockers or issues
+    setup_reason = headline[0]["code"] if headline else None
     detail = (
-        issues[0]["message"]
-        if issues
+        headline[0]["message"]
+        if headline
         else "active speaker baseline is applied and output control is ready"
     )
     receipt_authority = {

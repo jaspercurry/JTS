@@ -947,6 +947,108 @@ def test_receipt_denial_reason_reaches_the_room_decision_intact(
     assert isinstance(acoustic["detail"], str) and acoustic["detail"]
 
 
+@pytest.mark.parametrize(
+    "candidate_config_written",
+    [
+        pytest.param(True, id="candidate_config_on_disk"),
+        pytest.param(False, id="candidate_config_never_written"),
+    ],
+)
+def test_topology_change_since_the_applied_baseline_discloses_without_blocking(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+    candidate_config_written: bool,
+) -> None:
+    """A rotated topology fingerprint is a notice, not a stop (wave 7j).
+
+    `topology_config_fingerprint` hashes the whole topology dict bar
+    `pairing_intent`, so a display-only string that reaches no clamp and no
+    emitted filter — `human_output_label`, a speaker group's `label` — used
+    to take the box to `blocked`/`safety_muted`, refuse volume and grouping,
+    and refuse a v2 measure session. Ruling S10: playback stays on the applied
+    graph, measuring stays open, and the fact surfaces as a disclosure.
+
+    The `candidate_config_never_written` case pins the third arm this reaches:
+    the candidate-side `active_baseline_config_missing` blocker is suppressed
+    too, because a candidate pointing at a file nobody wrote is a pending
+    edit, not a reason to mute a speaker whose own applied config is present.
+    """
+    topology = _active_topology()
+    _save_topology(monkeypatch, tmp_path, topology)
+    config_path = tmp_path / "active_speaker_baseline.yml"
+    applied = _applied_acoustic_profile(config_path=config_path)
+    applied["source"]["topology_fingerprint"] = "a" * 64
+    _write_applied_graph(topology, applied, config_path)
+    # The freshly-built candidate no longer equals the applied one — which is
+    # the whole shape of a topology edit, and the second gate the block held:
+    # a stale `protected_ready` made the un-applied candidate a blocker too.
+    candidate_config_path = (
+        config_path if candidate_config_written else tmp_path / "never_written.yml"
+    )
+    candidate = _candidate(status="draft", config_path=candidate_config_path)
+    candidate["source"]["topology_fingerprint"] = "b" * 64
+    monkeypatch.setattr(
+        setup_mod, "build_baseline_profile_candidate", lambda *a, **k: candidate
+    )
+    monkeypatch.setattr(
+        setup_mod, "load_applied_baseline_profile_state", lambda _path=None: applied
+    )
+
+    status = setup_mod.read_active_speaker_setup_status(
+        active_config_path=str(config_path),
+    )
+
+    assert status["status"] == "ready"
+    assert status["safety_muted"] is False
+    assert status["volume_allowed"] is True
+    assert status["grouping_allowed"] is True
+    assert [issue["code"] for issue in status["issues"]] == [
+        _common.BASELINE_TOPOLOGY_CHANGED
+    ]
+    assert [issue["severity"] for issue in status["issues"]] == ["warning"]
+    assert status["protected_profile"]["topology_current"] is False
+
+
+def test_a_blocker_outranks_a_notice_for_the_setup_headline(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    """`reason`/`detail` must name what is stopping the box, not what is not.
+
+    The issue list carries two severities now, and the topology notice is
+    appended before every later blocker.
+    """
+    topology = _active_topology()
+    _save_topology(monkeypatch, tmp_path, topology)
+    config_path = tmp_path / "active_speaker_baseline.yml"
+    applied = _applied_acoustic_profile(config_path=config_path)
+    applied["source"]["topology_fingerprint"] = "a" * 64
+    _write_applied_graph(topology, applied, config_path)
+    # Config file still on disk, so the notice's arm is reached; the baseline
+    # itself is not applied, so a real blocker lands after it.
+    applied["status"] = "draft"
+    candidate = _candidate(status="draft", config_path=config_path)
+    candidate["source"]["topology_fingerprint"] = "b" * 64
+    monkeypatch.setattr(
+        setup_mod, "build_baseline_profile_candidate", lambda *a, **k: candidate
+    )
+    monkeypatch.setattr(
+        setup_mod, "load_applied_baseline_profile_state", lambda _path=None: applied
+    )
+
+    status = setup_mod.read_active_speaker_setup_status(
+        active_config_path=str(config_path),
+    )
+
+    assert status["status"] == "blocked"
+    severities = {issue["severity"] for issue in status["issues"]}
+    assert severities == {"warning", "blocker"}
+    assert status["reason"] != _common.BASELINE_TOPOLOGY_CHANGED
+    blockers = [i for i in status["issues"] if i["severity"] == "blocker"]
+    assert status["reason"] == blockers[0]["code"]
+    assert status["detail"] == blockers[0]["message"]
+
+
 def test_verified_automatic_receipt_allows_room_with_loaded_layer_a(
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,

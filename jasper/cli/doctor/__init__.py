@@ -163,6 +163,7 @@ from .audio import (
     check_active_speaker_baseline_canonical,
     check_active_speaker_startup_hold,
     check_room_correction_authority,
+    check_active_speaker_setup_notices,
 )
 from . import wake as wake
 from .wake import (
@@ -509,6 +510,7 @@ __all__ = [
     "check_active_speaker_baseline_canonical",
     "check_active_speaker_startup_hold",
     "check_room_correction_authority",
+    "check_active_speaker_setup_notices",
     "check_openwakeword_model",
     "_voice_wake_legs_runtime",
     "_assess_wake_legs",
