@@ -3842,6 +3842,25 @@ def _household_messages(payload, path: str = "") -> list[tuple[str, str]]:
     return found
 
 
+def _live_parks() -> tuple[dict, ...]:
+    """One ring-only `transport_park` verdict per park class (#3120).
+
+    Driven from that module's own `_PARK_CASES` table rather than a second
+    copy of it, so a fifth class added there is swept here without an edit —
+    and each class's operator detail and remedy get their own chance to leak
+    onto the household card.
+    """
+    from jasper.control import transport_park as transport_park_reader
+    from tests.test_transport_park import _PARK_CASES
+
+    return tuple(
+        transport_park_reader.snapshot(
+            case.values[0], case.values[1], ring_only=True
+        )
+        for case in _PARK_CASES
+    )
+
+
 def _household_shapes() -> dict[str, dict]:
     """One composed snapshot per household-facing shape this module writes."""
     playing = {"selected": "usbsink", "ladder": "l0_locked"}
@@ -3876,6 +3895,9 @@ def _household_shapes() -> dict[str, dict]:
         return sampler.snapshot()
 
     parked = {"coherence_errors": [_ROUTE_DISCONNECTED], "capability_gap": None}
+    # A REAL classifier verdict, not a hand-built one: the household sentence
+    # must hold for whatever `transport_park` actually returns (#3120).
+    live_park = _live_parks()[0]
     failed_unit = {
         "load_state": "loaded", "active_state": "failed", "result": "exit-code",
     }
@@ -3928,6 +3950,9 @@ def _household_shapes() -> dict[str, dict]:
             "sub_state": "dead",
         }),
         "transport_parked": _compose(transport=parked),
+        "transport_unservable": _compose_with(
+            _airplay(**playing), transport_park=live_park
+        ),
         "transport_parked_capability_gap": _compose(transport={
             "coherence_errors": [_ROUTE_DISCONNECTED],
             "capability_gap": {
@@ -4050,22 +4075,25 @@ def _every_incident_row() -> list[dict]:
     )
     without_fanin = _airplay(selected="usbsink")
     without_fanin["current"].pop("fanin")
+    parks = (None, *_live_parks())
     rows: list[dict] = []
     for snapshot in _household_shapes().values():
         for airplay in (_airplay(selected="usbsink"), without_fanin):
             for latency in latencies:
                 for intents in (None, {"usbsink": False}):
-                    rows.extend(audio_health._state_issues(
-                        airplay,
-                        None,
-                        snapshot["signal_path"],
-                        latency,
-                        "usbsink",
-                        service_states,
-                        intents,
-                        activity_unknown=True,
-                        undeclared_hardware=None,
-                    ))
+                    for park in parks:
+                        rows.extend(audio_health._state_issues(
+                            airplay,
+                            None,
+                            snapshot["signal_path"],
+                            latency,
+                            "usbsink",
+                            service_states,
+                            intents,
+                            activity_unknown=True,
+                            undeclared_hardware=None,
+                            transport_park=park,
+                        ))
     return rows
 
 
@@ -4092,6 +4120,10 @@ def test_every_incident_row_stays_out_of_operator_register() -> None:
     # sentence — which is exactly where a unit name is allowed to live.
     assert {row["key"] for row in rows} == {
         "monitor.mux_status_unavailable",
+        "path.transport_park.grouped_dac_content_lane",
+        "path.transport_park.mono_full_range",
+        "path.transport_park.passive_stereo_composite",
+        "path.transport_park.roleful_active_endpoint_unconverged",
         "path.camilla_stopped",
         "path.fanin_unavailable",
         "path.fanin_watchdog_stale",

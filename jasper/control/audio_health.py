@@ -79,6 +79,17 @@ DIAGNOSTICS_REMEDY = "Run diagnostics if sound doesn't come back."
 # a speaker that is silent either way.
 PARKED_HEADLINE = "Sound cannot come out of the speaker"
 
+# ...and the sentence under it, for every park whose cause the household
+# cannot be told anything more useful about. Both detectors and the
+# `path.transport_park.*` incident rows share it: which class parked the box,
+# which endpoint disagreed, and the operator's one-command remedy are carried
+# by `/state.resilience.transport_park` and doctor's `check_ring_transport_park`,
+# which reads the same verdict.
+PARKED_DETAIL = (
+    "The speaker's audio setup does not fit together, so nothing can play. "
+    f"Check the speaker layout at /sound/setup/. {DIAGNOSTICS_REMEDY}"
+)
+
 # The one household-facing sentence for a stopped CamillaDSP (#2163). Written
 # once and read by both surfaces it has to agree on: the `path.camilla_stopped`
 # incident title and the signal-path headline that carries it into `overall`.
@@ -120,6 +131,7 @@ SIGNAL_PATH_CODES = frozenset({
     "path_unreported",
     "starting",
     "transport_parked",
+    "transport_unservable",
     "tts_queue_full",
     "undeclared_hardware",
 })
@@ -627,10 +639,7 @@ def _parked_signal(route: Mapping[str, Any]) -> dict[str, Any] | None:
             "crossover) or attach an active-capable DAC."
         )
     else:
-        detail = (
-            "The speaker's audio setup does not fit together, so nothing can "
-            f"play. Check the speaker layout at /sound/setup/. {DIAGNOSTICS_REMEDY}"
-        )
+        detail = PARKED_DETAIL
     return {
         "code": "transport_parked",
         "status": "issue",
@@ -653,23 +662,23 @@ def _transport_park_signal(
     wrong way.
 
     Presentation only, exactly like :func:`_parked_signal`: the incident rows
-    :func:`_state_issues` writes from the same snapshot carry the per-class
-    detail and its tracked issue.
+    :func:`_state_issues` writes from the same snapshot keep one row per park
+    class, named by its key.
+
+    The classifier's own ``detail`` is deliberately NOT spliced in here. It is
+    written for doctor and ``/state.resilience.transport_park`` and reads like
+    it ("Ring B", the endpoint marker, the dac_content lane) — operator
+    evidence, which is the register #2472 took off this card.
     """
     state = _mapping(transport_park)
     if state.get("status") != "parked":
         return None
-    details = [
-        str(park.get("detail"))
-        for park in state.get("parks") or []
-        if isinstance(park, Mapping) and park.get("detail")
-    ]
-    detail = (
-        f"The single audio transport cannot serve this speaker: {details[0]}."
-        if details
-        else "The single audio transport cannot serve this speaker's layout."
-    )
-    return {"status": "issue", "headline": PARKED_HEADLINE, "detail": detail}
+    return {
+        "code": "transport_unservable",
+        "status": "issue",
+        "headline": PARKED_HEADLINE,
+        "detail": PARKED_DETAIL,
+    }
 
 
 def _stopped_dsp_signal(
@@ -1216,21 +1225,18 @@ def _state_issues(
         for park in park_state.get("parks") or []:
             if not isinstance(park, Mapping):
                 continue
+            # The park CLASS rides the key, where an identifier belongs; the
+            # classifier's operator detail, its tracked issue and the
+            # one-command remedy stay in doctor and
+            # `/state.resilience.transport_park`, which read the same verdict.
             park_class = str(park.get("park_class"))
-            detail = str(park.get("detail") or "")
-            tracked = park.get("issue")
-            remedy = park.get("remedy")
-            if remedy:
-                detail = f"{detail}. Run: {remedy}"
-            elif tracked:
-                detail = f"{detail}. Tracked as {tracked}"
             issues.append(_issue(
                 f"path.transport_park.{park_class}",
                 scope="path",
                 impact="continuity",
                 severity="issue",
                 title=PARKED_HEADLINE,
-                detail=detail,
+                detail=PARKED_DETAIL,
             ))
     warmup = bool(airplay.get("warmup_active"))
     current = _mapping(airplay.get("current"))
@@ -1492,8 +1498,8 @@ def _camilla_stopped(raw_state: Any) -> tuple[str, str] | None:
 
 
 # The one household-facing sentence for a source whose renderer has failed.
-# Which unit failed and how is doctor's per-renderer checks and
-# `/state.services`; the household is told what it can do instead.
+# Which unit failed and how is doctor's per-renderer checks; the household is
+# told what it can do instead.
 SOURCE_UNAVAILABLE_DETAIL = (
     f"JTS could not start this source. {RESTART_REMEDY} {DIAGNOSTICS_REMEDY}"
 )
