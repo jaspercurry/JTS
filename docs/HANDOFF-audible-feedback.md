@@ -1,26 +1,34 @@
 # Audible failure feedback
 
-When the speaker can't fulfill a wake-word request — daily spend cap
-hit, voice backend unreachable, or any future wake-blocking failure
-mode — it plays a short pre-rendered audio cue instead of falling
-silent. Silence in a living room with no admin access is unfixable
-from the user's perspective; repetition beats silence.
+> **Status: operational.** Canonical reference for the cue subsystem: what
+> exists, how to add a cue, where the cached files live. This doc sits under
+> **non-negotiable #6 — no silent deafness**: a new code path that prevents
+> wake response must play a cue (`jasper/cues/registry.py`). Decisions:
+> [ADR-0153](adr/0153-failure-cues-are-pre-rendered-and-content-addressed-never-streamed.md)
+> (pre-rendered, content-addressed, never streamed),
+> [ADR-0154](adr/0154-reactive-cues-never-cool-down-proactive-cues-are-rate-limited.md)
+> (the two cooldown policies).
+
+When the speaker can't fulfill a wake-word request — daily spend cap hit, voice
+backend unreachable, or any future wake-blocking failure mode — it plays a short
+pre-rendered audio cue instead of falling silent. Silence in a living room with
+no admin access is unfixable from the user's perspective; repetition beats
+silence.
 
 Cues come in two flavours, distinguished by what triggers them:
 
-- **Reactive cues** fire when a wake event hits a wake-blocking
-  state. The user pressed the proverbial doorbell; we're saying
-  "I heard you, but I can't do this right now."
-- **Proactive cues** fire from background supervisors when
-  something's wrong even if the user hasn't tried to use the
-  speaker. The supervisor saw a sustained failure (e.g., 5
-  consecutive identical reconnect errors) and tells the user
-  "the speaker is broken, please check on me." Rate-limited so a
-  long outage doesn't spam the room.
+- **Reactive cues** fire when a wake event hits a wake-blocking state. The user
+  pressed the proverbial doorbell; we're saying "I heard you, but I can't do
+  this right now."
+- **Proactive cues** fire from background supervisors when something's wrong
+  even if the user hasn't tried to use the speaker — a sustained failure the
+  supervisor saw, telling the user "the speaker is broken, please check on me."
 
-This document is the canonical reference for the cue subsystem: what
-exists, how to add a new cue (reactive or proactive), where the
-cached files live, and why the design is the way it is.
+All cue logic lives in `jasper/cues/`: `registry.py` (the `CueDef` list),
+`generator.py` (render + hash), `manager.py` (cache + `play`), `cli.py`, and
+`factory.py` (picks the TTS backend to match the box's voice provider). Baked
+WAVs land in `/var/lib/jasper/sounds/` and play through the ordinary
+`TtsPlayout` chain — ducking, volume, and the rest.
 
 ## Generated feedback sounds
 
@@ -77,10 +85,10 @@ listening-level-derived silence target when the room is quiet.
 
 ## Duck and output ownership through the physical tail
 
-Writing a cue or dynamic announcement is not the end of playback: accepted
-PCM may still be queued in fan-in/outputd or the device buffer. WakeLoop keeps
-both the duck and the exact `AssistantOutputGate` episode until
-`wait_tts_drained_owned` reaches that physical drain boundary. This applies to
+Writing a cue or dynamic announcement is not the end of playback: accepted PCM
+may still be queued in fan-in/outputd or the device buffer. WakeLoop keeps both
+the duck and the exact `AssistantOutputGate` episode until
+`wait_tts_drained_owned` reaches that physical drain boundary — for
 reactive/admin cues in `WakeLoop._play_cue_owned` and proactive dynamic text in
 `WakeLoop._play_dynamic_text`.
 
@@ -96,134 +104,64 @@ reported to the caller. This prevents already-accepted speech from becoming
 audible after music has been restored or after a room-correction
 `MEASURE_PAUSE` reply has treated assistant output as idle.
 
----
-
-## Architecture at a glance
-
-```
-                              Gemini TTS
-                              (one-shot,
-                               not Live API)
-                                    │
-                                    ▼
-       ┌──────────────────┐    ┌──────────┐    ┌─────────────────┐
-       │ jasper/cues/     │    │ /var/lib/│    │ TtsPlayout      │
-       │   registry.py    │───▶│  jasper/ │───▶│ (existing audio │
-       │   generator.py   │    │  sounds/ │    │  chain — duck-  │
-       │   manager.py     │◀───┤  *.wav   │    │  ing, vol, etc.)│
-       │   cli.py         │    └──────────┘    └─────────────────┘
-       └──────────────────┘         ▲                    ▲
-              ▲                     │                    │
-              │ play(slug)          │                    │
-       ┌──────┴───────────────────────────────────────────┐
-       │                jasper.voice_daemon                │
-       │  Reactive (wake-driven, via WakeLoop._play_cue):  │
-       │  - on wake during spend-cap → cues.play(...)      │
-       │  - on wake during reconnect → cues.play(...)      │
-       │  - on turn-begin failure   → cues.play(...)       │
-       │                                                   │
-       │  Proactive supervisor cues (via                   │
-       │  WakeLoop.play_supervisor_cue — skips if assistant│
-       │  output is active to avoid garbling TtsPlayout):  │
-       │  - on N identical reconnect failures              │
-       │    → connection.set_failure_escalation_cb(...)    │
-       │                                                   │
-       │  Proactive announcement cues (via WakeLoop's       │
-       │  owning path, with path-specific etiquette):       │
-       │  - async research job failure → _play_cue(...)     │
-       └───────────────────────────────────────────────────┘
-```
-
-All cue logic lives in `jasper/cues/`. Adding new cues means
-editing one file (`registry.py`) and wiring either
-`cues.play("<slug>")` (for reactive paths from inside WakeLoop) or
-the relevant background/proactive owner (for example a supervisor
-escalation callback or the research announcement path). See "Adding
-a new cue" below for both patterns.
-
----
-
 ## What's in the registry today
 
 | slug | trigger | when it plays | template |
 |---|---|---|---|
 | `spend_cap_reached` | reactive | wake during spend-cap-tripped state | "Hey, I've reached today's spend cap. Visit `{hostname}` to manage." |
 | `cant_connect` | reactive | wake while the voice backend is paused (reconnect/backoff), or the connection drops into paused/failed mid-turn-open | "Hey, sorry, I can't connect right now. I'll keep trying." |
-| `internal_error` | reactive | turn-open hits an unexpected local/internal error (e.g. a failed state write) while the connection looks healthy — NOT a connectivity problem (the 2026-06-19 incident) | "Sorry, something went wrong on my end. Please try again." |
-| `research_failed` | proactive | async research job fails or is interrupted by daemon restart; rate-limited to once per hour | "Sorry, I couldn't finish that research. Please ask me again." |
-| `cant_reach_cloud` | proactive | supervisor sees 5 consecutive identical reconnect failures (~30 s on the default backoff schedule); rate-limited to once per hour | "Heads up — I'm having trouble reaching the cloud and I'll keep trying. You might want to check on me at `{hostname}`." |
-| `measurement_relay_unreachable` | proactive | phone-mic capture relay: Pi cannot reach the cloud relay to run a new measurement (`jasper/capture_relay`, `RELAY_UNREACHABLE_CUE_SLUG`) | "I couldn't reach the measurement service. New measurements need internet, but anything already set up still works." |
-| `measurement_failed` | proactive | phone-mic capture relay: a started measurement can't be used — phone timeout, decrypt/integrity failure, stimulus alignment failure, or phone aborted (`jasper/capture_relay`, `MEASUREMENT_FAILED_CUE_SLUG`) | "Sorry, that measurement didn't work. Visit `{hostname}` to try again." |
-| `no_room_microphone` | reactive | a source-less session start on a speaker with no always-listening microphone — its only voice input is a paired push-to-talk remote (`jasper/voice_daemon.py`, `NO_ROOM_MIC_CUE_SLUG`, issue #2205). Without it that request ducked the music, chirped, forwarded zero bytes, and died to the idle watchdog in total silence | "I don't have a microphone of my own. Hold the button on your remote to talk to me." |
+| `internal_error` | reactive | turn-open hits an unexpected local/internal error (e.g. a failed state write) while the connection looks healthy — NOT a connectivity problem | "Sorry, something went wrong on my end. Please try again." |
+| `no_room_microphone` | reactive | a source-less session start on a speaker with no always-listening microphone — its only voice input is a paired push-to-talk remote (`NO_ROOM_MIC_CUE_SLUG`). Without it that request ducked the music, chirped, forwarded zero bytes, and died to the idle watchdog in total silence | "I don't have a microphone of my own. Hold the button on your remote to talk to me." |
+| `cant_reach_cloud` | proactive | supervisor sees 5 consecutive identical reconnect failures (~30 s on the default backoff schedule) | "Heads up — I'm having trouble reaching the cloud and I'll keep trying. You might want to check on me at `{hostname}`." |
+| `research_failed` | proactive | async research job fails or is interrupted by daemon restart | "Sorry, I couldn't finish that research. Please ask me again." |
+| `measurement_relay_unreachable` | proactive | phone-mic capture relay: Pi cannot reach the cloud relay to run a new measurement (`RELAY_UNREACHABLE_CUE_SLUG`) | "I couldn't reach the measurement service. New measurements need internet, but anything already set up still works." |
+| `measurement_failed` | proactive | phone-mic capture relay: a started measurement can't be used — phone timeout, decrypt/integrity failure, stimulus alignment failure, or phone aborted (`MEASUREMENT_FAILED_CUE_SLUG`) | "Sorry, that measurement didn't work. Visit `{hostname}` to try again." |
 
-Cues are **provider-agnostic** — they don't say "Google" or
-"Gemini". The voice backend is replaceable; baking provider names
-into audio files would mislead users post-switch.
+Cues are **provider-agnostic** — they don't say "Google" or "Gemini". The voice
+backend is replaceable; baking provider names into audio files would mislead
+users post-switch. `tests/test_cue_registry_coverage.py` enforces this.
 
-Cues do **not** announce recovery ("you're back online"). The user
-hears recovery directly when the next wake gets a normal response.
+Cues do **not** announce recovery ("you're back online"). The user hears
+recovery directly when the next wake gets a normal response.
 
-**Reactive cues have no cooldown across wakes**. If the user wakes
-the speaker ten times during a failure, they hear the same cue ten
-times. That's intentional — the alternative (mute after first cue,
-silence on subsequent wakes) is what we're explicitly trying to
-avoid.
-
-**Proactive cues ARE rate-limited** because they fire without a
-user-initiated event. Without rate-limiting, a sustained outage
-would replay "I can't reach the cloud" every backoff cycle, which is
-the spam pattern proactive cues are supposed to eliminate. One per
-hour balances "the user gets to know" with "the room isn't yelled
-at." Rate state is per-supervisor (in-memory; resets on daemon
-restart), so a fresh boot during a sustained outage will fire the
-cue once.
-
----
+**Reactive cues have no cooldown across wakes; proactive cues are rate-limited
+to once per hour, per supervisor** — see
+[ADR-0154](adr/0154-reactive-cues-never-cool-down-proactive-cues-are-rate-limited.md).
 
 ## Cache lifecycle
 
-Each cue's audio is content-addressed. The file path is:
+Each cue's audio is content-addressed at
+`/var/lib/jasper/sounds/<slug>-<8charhash>.wav`. The hash covers
+`GENERATOR_VERSION`, the backend's actual synthesis model, the voice, the WAV
+format, and the rendered text (the template after `{hostname}` substitution from
+`JASPER_MANAGEMENT_URL`) — `cue_hash()` in `jasper/cues/generator.py` owns the
+exact input ordering.
 
-```
-/var/lib/jasper/sounds/<slug>-<8charhash>.wav
-```
-
-The hash is `sha256(GENERATOR_VERSION + model + voice + WAV format + rendered_text)[:8]` —
-see `cue_hash()` in `jasper/cues/generator.py` for the exact input
-ordering. "Rendered text" is the template after `{hostname}`
-substitution (from `JASPER_MANAGEMENT_URL`).
-
-**Auto-invalidation**: change anything that affects the hash, the
-expected filename changes, the manager looks for the new name,
-doesn't find it, regenerates. Stale files are pruned at write time.
-
-Concretely:
+**Auto-invalidation**: change anything that affects the hash and the expected
+filename changes; the manager looks for the new name, doesn't find it, and
+regenerates. Stale files are pruned at write time.
 
 | change | regenerates? |
 |---|---|
 | edit a template in `registry.py` | yes (next startup) |
 | change `JASPER_MANAGEMENT_URL` | yes (next startup) |
-| change `JASPER_GEMINI_VOICE` | yes (next startup) |
+| change the voice provider (`JASPER_VOICE_PROVIDER`) or its configured voice | yes (next startup) |
 | bump `GENERATOR_VERSION` in `generator.py` | yes (next startup) |
-| Gemini's TTS model silently improves | no — run `jasper-cues regenerate --force` |
+| the provider's TTS model silently improves | no — run `jasper-cues regenerate --force` |
 
 **Generation triggers**, in order of priority:
 
-1. **Install time** — `deploy/install.sh` runs `jasper-cues regenerate`
-   after the daemon is set up. If the install machine has no
-   internet, this fails with a warning and the install continues.
-2. **Daemon startup** — `jasper-voice` schedules a non-blocking
-   background task that calls `AudioCueManager.regenerate()`. Failure
-   logs a warning; the daemon comes up regardless.
-3. **Manual** — `jasper-cues regenerate` on the Pi. See CLI
-   reference below.
+1. **Install time** — `deploy/install.sh` runs `jasper-cues regenerate` after
+   the daemon is set up. No internet on the install machine warns and continues.
+2. **Daemon startup** — `jasper-voice` schedules a non-blocking background task
+   calling `AudioCueManager.regenerate()`. Failure logs a warning; the daemon
+   comes up regardless.
+3. **Manual** — `jasper-cues regenerate` on the Pi.
 
-A cache miss at play time falls back to ANY existing
-`<slug>-*.wav` (stale > silent). If even that's missing, the
-manager logs a warning and `play()` returns False — back to the
-original silent-failure UX, but visible in `journalctl -u jasper-voice`.
-
----
+A cache miss at play time falls back to ANY existing `<slug>-*.wav` (stale >
+silent). If even that's missing, the manager logs a warning and `play()` returns
+False — back to the original silent-failure UX, but visible in
+`journalctl -u jasper-voice`.
 
 ## CLI reference
 
@@ -236,124 +174,60 @@ sudo systemctl stop jasper-voice  # avoid concurrent regen
 sudo -E /opt/jasper/.venv/bin/jasper-cues regenerate
 sudo systemctl start jasper-voice
 
-# Re-render every cue, even cached ones (use after a TTS model
-# upgrade or content tweak you want to hear).
+# Re-render every cue, even cached ones (after a TTS model upgrade or a
+# content tweak you want to hear). Add --cue <slug> for just one.
 sudo -E /opt/jasper/.venv/bin/jasper-cues regenerate --force
 
-# Just one cue.
-sudo -E /opt/jasper/.venv/bin/jasper-cues regenerate --cue spend_cap_reached
-
-# Play a cue through jasper-control's /cue/play endpoint to preview
-# phrasing (routes through the running daemon, not a local TtsPlayout).
+# Play a cue through jasper-control's /cue/play endpoint to preview phrasing
+# (routes through the running daemon, not a local TtsPlayout).
 sudo -E /opt/jasper/.venv/bin/jasper-cues play spend_cap_reached
 ```
 
-The `-E` to sudo preserves the env vars the CLI needs
-(`JASPER_MANAGEMENT_URL`, `JASPER_GEMINI_VOICE`, etc.). Or source
-`/etc/jasper/jasper.env` first.
+`sudo -E` preserves the env vars the CLI needs (`JASPER_MANAGEMENT_URL`, the
+provider settings); or source `/etc/jasper/jasper.env` first.
 
-Exit codes (stable so install.sh can read them):
-- `0` — ok
-- `1` — `list` found missing files
-- `2` — bad arg / unknown slug
-- `3` — no TTS backend available (missing API key)
-- `4` — unexpected failure
-
----
+Exit codes are stable so `install.sh` can read them: `0` ok, `1` `list` found
+missing files, `2` bad arg / unknown slug, `3` no TTS backend available (missing
+API key), `4` unexpected failure.
 
 ## Adding a new cue
 
-1. **Append a `CueDef` to `jasper/cues/registry.py`**:
+1. **Append a `CueDef` to `jasper/cues/registry.py`** with `slug`, `template`,
+   and a `description` naming the failure path it covers. Keep messages
+   provider-agnostic (no Google / Gemini / OpenAI), short (under 12 seconds at
+   normal speech rate), and use `{hostname}` rather than typing a hostname —
+   installs may run on a different one.
 
-   ```python
-   CueDef(
-       slug="mic_dropped",
-       template=(
-           "Hey, sorry, the microphone went away. "
-           "Try unplugging and reconnecting it."
-       ),
-       description=(
-           "Played when MicCapture's read loop sees the USB device "
-           "disappear and can't reopen it."
-       ),
-   ),
-   ```
+2. **Wire the failure path**, and the wiring depends on the flavour:
 
-   - Keep messages **provider-agnostic** (don't mention Google /
-     Gemini / OpenAI / etc).
-   - Keep them **short** (under 12 seconds at normal speech rate).
-   - Use `{hostname}` if you want to point at the management
-     dashboard. Don't manually type "jts.local" — installs may run
-     on a different hostname.
+   - **Reactive** (fires from inside a wake handler): `await
+     self._play_cue("<slug>")` directly from `WakeLoop`. It ducks music, plays
+     the WAV, restores, and swallows exceptions. The wake/turn-begin handlers in
+     `jasper/voice_daemon.py` show the pattern.
+   - **Proactive** (fires from a background supervisor with no active wake):
+     expose a `set_*_cb(callback)` on the subsystem and have it call
+     `WakeLoop.play_supervisor_cue("<slug>")`. That public method does the same
+     duck-play-restore but **skips when any assistant output episode is active**,
+     so a supervisor can't garble an in-progress reply by layering a second WAV
+     onto the single TTS stream. The `set_failure_escalation_cb` →
+     `play_supervisor_cue` wiring in `jasper/voice/daemon_main.py`'s `run()` is
+     the canonical example. **Rate-limit at the supervisor** —
+     `play_supervisor_cue` does not.
 
-2. **Wire the failure path** to play the cue. The right wiring
-   depends on whether the cue is reactive or proactive:
+3. **Bake the audio**: restart `jasper-voice` (startup regen catches the new
+   cue) or run `jasper-cues regenerate`.
 
-   - **Reactive** (fires from inside a wake handler): call
-     `await self._play_cue("<slug>")` directly from `WakeLoop`.
-     `_play_cue` ducks music, plays the WAV, restores, and
-     swallows exceptions. The wake/turn-begin handlers in
-     `voice_daemon.py` show the pattern.
-   - **Proactive** (fires from a background supervisor with no
-     active wake): expose a `set_*_cb(callback)` method on the
-     subsystem and have it call back into
-     `WakeLoop.play_supervisor_cue("<slug>")`. That public method
-     does the same duck-play-restore as `_play_cue` but **skips
-     when any assistant output episode is active** so the supervisor
-     can't garble an in-progress reply, dynamic announcement, or cue
-     by trying to layer a second WAV onto the single TTS stream. The
-     `GeminiLiveConnection.set_failure_escalation_cb` →
-     `WakeLoop.play_supervisor_cue` wiring in
-     `jasper/voice/daemon_main.py`'s `run()` is the canonical
-     example. Don't forget to rate-limit at the
-     supervisor — `play_supervisor_cue` itself doesn't.
+4. **Optionally** add a test in `tests/test_cues_*.py` exercising the failure
+   path through to the `play()` call. `tests/test_cue_registry_coverage.py`
+   already enforces the no-provider-name rule and registry coverage.
 
-3. **Bake the audio**. Either restart `jasper-voice` (its startup
-   regen catches the new cue) or run `jasper-cues regenerate`
-   manually.
-
-4. **(Optional)** Add a test in `tests/test_cues_*.py` that
-   exercises the failure path → `play()` call. The
-   no-provider-name rule is enforced by `test_cues_are_provider_agnostic`
-   automatically.
-
----
-
-## Why this design
-
-**Why one TTS provider for cues + Live, not separate?** Same voice
-across everything Jarvis says. If we used (say) Google Cloud TTS
-for cues and Gemini Live for conversations, the voice would
-audibly switch mid-interaction.
-
-**Why cache at all? Why not stream TTS at play time?** Two reasons.
-First, the most important cue is "we can't connect to the voice
-backend" — and at play time, the voice backend is exactly what's
-unreachable. Second, the latency hit (1-3 seconds for one-shot
-TTS) would feel broken when the cue is supposed to be a quick
-"hey, I can't help right now" reply.
-
-**Why content-addressable hashes instead of mtime tracking?** Mtime
-gets the cache invalidation question wrong all the time
-(timezone changes, filesystem clock drift, manual file copies).
-Content addressing is unambiguous: the filename IS the contract.
-
-**Why prune stale files at write time, not lazily?** Disk on a Pi
-isn't huge. Accumulating one stale file per template/hostname/voice
-permutation forever isn't catastrophic, but the `<slug>-*` listing
-gets ugly fast. Pruning is cheap and keeps the directory readable.
-
-**Why is regeneration sync (not async)?** The underlying TTS HTTP
-call is blocking. Async-wrapping it is `asyncio.to_thread(...)` at
-call time, which the daemon's startup hook does. The CLI runs
-sync directly. Simpler than introducing an async client.
-
-**Why doesn't the daemon REQUIRE cues to start?** A working
-speaker without cues is still better than a dead speaker with
-cues. If TTS regen fails (no network at boot, bad API key, quota),
-the daemon comes up anyway and degrades gracefully — silent
-failures on the affected paths, but every other path works.
-
----
-
-Last verified: 2026-08-15 (scoped: only the "Generated feedback sounds" earcon-bake-width paragraph was re-verified, against `jasper.fanin_coupling.assistant_wire_is_wide` and `jasper.audio_io.tts_wire_is_wide` after the ring wire's default format went wide — the earcon width no longer needs a per-box declaration, only the `shm_ring` coupling; accepted-PCM duck/output ownership was last re-verified 2026-08-08 for both `FanInDucker` and local-outputd `CueDuck`; registry table re-diffed on 2026-08-07 for the `no_room_microphone` row; the remaining sections retain their 2026-07-11 verification)
+Last verified: 2026-08-26 (all eight registry slugs and their reactive/proactive
+split rechecked against `jasper/cues/registry.py`; the hash inputs and
+`GENERATOR_VERSION` against `jasper/cues/generator.py`; the provider-aware
+backend selection against `jasper/cues/factory.py` — cue TTS is no longer
+Gemini-only, so the cache table's voice row now names the provider setting; CLI
+exit codes against `jasper/cues/cli.py`; the supervisor wiring against
+`jasper/voice/daemon_main.py`). Prior 2026-08-15 (the earcon bake-width
+paragraph, left verbatim above, against `jasper.fanin_coupling.assistant_wire_is_wide`).
+Prior 2026-08-08 (accepted-PCM duck/output ownership for both `FanInDucker` and
+local-outputd `CueDuck`).
