@@ -6202,3 +6202,50 @@ def test_e2e_reset_safety_refusal_returns_422(monkeypatch):
     finally:
         server.shutdown()
         server.server_close()
+
+
+def test_the_level_match_restores_share_one_owner_door():
+    """W12's level-match half, routed as itself.
+
+    Six restore sites answered one question — give the household its level
+    back — and each bound its own raw ``cam.set_volume_db(..., best_effort=
+    False)``. They now share ``_household_level_door()``, so the flag is the
+    owner's contract once rather than six per-site decisions that can drift.
+    """
+    from jasper.volume_owner import VolumeOwner, install_volume_owner
+
+    written: list[float] = []
+
+    async def _set(db: float) -> bool:
+        written.append(float(db))
+        return True
+
+    async def _get() -> float:
+        return written[-1] if written else 0.0
+
+    install_volume_owner(
+        VolumeOwner(set_fader_db=_set, get_fader_db=_get)
+    )
+
+    door = correction_setup._household_level_door()
+    assert asyncio.run(door(-19.5)) is True
+    assert written == [-19.5]
+
+
+def test_a_level_match_restore_without_an_owner_reports_not_in_effect(caplog):
+    """An absent owner is a registration defect, so it is LOUD and it is not
+    silently swallowed — but it must not mint a second owner either. The door
+    reports "not in effect", which every caller already treats as a failed
+    restore."""
+    from jasper.volume_owner import install_volume_owner
+
+    install_volume_owner(None)
+    door = correction_setup._household_level_door()
+
+    with caplog.at_level(logging.CRITICAL):
+        assert asyncio.run(door(-19.5)) is False
+
+    assert any(
+        "level_match_restore_owner_absent" in r.getMessage()
+        for r in caplog.records
+    )

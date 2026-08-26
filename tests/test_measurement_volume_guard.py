@@ -13,14 +13,36 @@ from jasper.measurement.volume_guard import (
 class FakeCamilla:
     def __init__(self, initial_db=-31.5):
         self.initial_db = initial_db
+        self.current_db = initial_db
         self.sets = []
 
     async def get_volume_db(self, **_kwargs):
-        return self.initial_db
+        return self.current_db
 
     async def set_volume_db(self, db, **_kwargs):
         self.sets.append(float(db))
+        self.current_db = float(db)
         return True
+
+
+def _own_the_fader(camilla):
+    """Install the process fader owner over this fake, and return it.
+
+    The guard's calibration level is a session-measurement CLAIM now, so its
+    writes arrive through the owner's doors rather than the caller's Camilla
+    handle. Binding those doors to the SAME fake keeps ``camilla.sets`` the
+    record of what actually reached the fader, which is what these tests have
+    always asserted — the sequence is unchanged by routing, and that is the
+    point being pinned.
+    """
+    from jasper.volume_owner import VolumeOwner, install_volume_owner
+
+    owner = VolumeOwner(
+        set_fader_db=lambda db: camilla.set_volume_db(db),
+        get_fader_db=lambda: camilla.get_volume_db(),
+    )
+    install_volume_owner(owner)
+    return owner
 
 
 def _members():
@@ -86,6 +108,7 @@ async def test_normalized_pair_volumes_restores_camilla_and_snapcast(
     )
 
     camilla = FakeCamilla()
+    _own_the_fader(camilla)
     async with normalized_pair_volumes(
         hostname="jts.local",
         members=_members(),
@@ -147,6 +170,7 @@ async def test_normalized_pair_volumes_restores_after_partial_snapcast_failure(
     monkeypatch.setattr(snapcast_rpc, "set_client_volume", set_client_volume)
 
     camilla = FakeCamilla()
+    _own_the_fader(camilla)
     with pytest.raises(VolumeGuardError, match="could not set snapcast volume"):
         async with normalized_pair_volumes(
             hostname="jts.local",
@@ -206,6 +230,7 @@ async def test_restore_attempts_all_clients_when_a_middle_client_fails(
     monkeypatch.setattr(snapcast_rpc, "set_client_volume", set_client_volume)
 
     camilla = FakeCamilla()
+    _own_the_fader(camilla)
     # The finally swallows restore errors (a failed restore must not mask the
     # measurement result), so no exception propagates out of the guard.
     with caplog.at_level(logging.ERROR):

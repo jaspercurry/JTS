@@ -262,8 +262,23 @@ async def normalized_pair_volumes(
     cam = camilla or _camilla()
     snapshot = await _snapshot(hostname=hostname, members=members, camilla=cam)
     normalized = False
+    # W14 routed. This is the owner's designed shape rather than a pair of
+    # writes: the calibration level is a session-measurement CLAIM, and the
+    # restore is that claim's release re-declaring the household level, so the
+    # fader lands once instead of stepping through whatever was declared in
+    # between. The snapcast half is a different mixer and stays as it is.
+    from jasper.volume_owner import ClaimKind, volume_owner
+
+    owner = volume_owner()
+    if owner is None:
+        raise RuntimeError(
+            "the speaker volume owner is not registered in this process"
+        )
+    claim = None
     try:
-        await cam.set_volume_db(calibration_main_volume_db, best_effort=False)
+        claim = await owner.acquire_level(
+            ClaimKind.SESSION_MEASUREMENT, float(calibration_main_volume_db)
+        )
         await _set_snapcast_snapshot(
             snapshot.snapcast_clients,
             percent=calibration_snapcast_percent,
@@ -295,7 +310,10 @@ async def normalized_pair_volumes(
         except (OSError, RuntimeError, TimeoutError, ValueError) as e:
             restore_errors.append(f"snapcast:{e}")
         try:
-            await cam.set_volume_db(snapshot.main_volume_db, best_effort=False)
+            if claim is not None:
+                await owner.release(
+                    claim, household_level_db=float(snapshot.main_volume_db)
+                )
         except (OSError, RuntimeError, TimeoutError, ValueError) as e:
             restore_errors.append(f"camilla:{e}")
         level = logging.ERROR if restore_errors else logging.INFO
