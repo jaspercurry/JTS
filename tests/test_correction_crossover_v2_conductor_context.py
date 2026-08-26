@@ -26,6 +26,7 @@ whatever attribute the test author set on it.
 
 from __future__ import annotations
 
+import logging
 from typing import Any
 
 import pytest
@@ -209,6 +210,39 @@ def test_resolves_real_playback_device_from_a_verified_topology(monkeypatch):
     assert context.playback_device
     assert isinstance(context.playback_device, str)
     assert context.topology is topo
+
+
+def test_a_stale_baseline_topology_opens_the_session_and_says_so(
+    monkeypatch, caplog,
+):
+    """Wave 7j: the topology-staleness block becomes a disclosure.
+
+    A rotated `topology_config_fingerprint` used to make `setup.status`
+    `blocked`, and this chokepoint refuses anything that is not `ready` — so
+    entering a `driver_style` label, metadata that changes nothing in the
+    compiled graph, refused the measure session outright. The session now
+    opens and the fact is said once, here, rather than on every `/state` poll.
+    """
+    from jasper.active_speaker._common import BASELINE_TOPOLOGY_CHANGED
+
+    topo = _topology(HIFIBERRY_DAC8X.id, 8, card_id="DAC8")
+    _patch_topology(monkeypatch, topo)
+    status = _status()
+    status["setup"] = {
+        "status": "ready",
+        "issues": [{
+            "severity": "warning",
+            "code": BASELINE_TOPOLOGY_CHANGED,
+            "message": "topology changed since the applied baseline",
+        }],
+    }
+
+    with caplog.at_level(logging.WARNING):
+        context = v2host.resolve_conductor_context(status)
+
+    assert context.topology is topo
+    assert "event=correction.crossover_v2_baseline_topology_stale" in caplog.text
+    assert f"code={BASELINE_TOPOLOGY_CHANGED}" in caplog.text
 
 
 def test_refuses_when_the_layout_has_no_resolvable_playback_route(monkeypatch):

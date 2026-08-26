@@ -55,6 +55,12 @@ ROOM_AUTHORITY_RECEIPT_STALE = "active_commissioning_receipt_stale"
 ROOM_AUTHORITY_RECEIPT_MALFORMED = "active_commissioning_receipt_malformed"
 
 
+# The saved topology no longer hashes to what the applied baseline was minted
+# against.  A DISCLOSURE, not a blocker (ruling S10, ADR-0019): playback stays
+# on the applied graph and measuring stays open.
+BASELINE_TOPOLOGY_CHANGED = "active_baseline_topology_changed"
+
+
 ACTIVE_CROSSOVER_ROLE_PAIRS: dict[str, tuple[tuple[str, str], ...]] = {
     "active_2_way": (("woofer", "tweeter"),),
     "active_3_way": (("woofer", "mid"), ("mid", "tweeter")),

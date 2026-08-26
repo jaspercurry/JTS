@@ -6193,6 +6193,7 @@ def resolve_conductor_context(status: Mapping[str, Any]) -> V2ConductorContext:
     """
     from jasper.active_speaker.commission_wiring import resolve_capture_preset
     from jasper.active_speaker.crossover_v2.refusal_copy import REASON_REGISTRY
+    from jasper.active_speaker._common import BASELINE_TOPOLOGY_CHANGED
     from jasper.active_speaker.crossover_v2_flow import derive_session_volume_db
     from jasper.active_speaker.design_draft import (
         declared_effective_driver_sensitivities,
@@ -6217,6 +6218,21 @@ def resolve_conductor_context(status: Mapping[str, Any]) -> V2ConductorContext:
     if not isinstance(setup, Mapping) or setup.get("status") != "ready":
         raise CrossoverV2Refused(
             "protected speaker setup is not ready; finish it before measuring"
+        )
+    # The one loud line 7j buys. A rotated topology fingerprint used to make
+    # `setup.status` `blocked` and refuse this session outright; it is now a
+    # notice, and this is the moment it is worth saying — once per session
+    # open, not on every `/state` poll.
+    if any(
+        isinstance(issue, Mapping)
+        and issue.get("code") == BASELINE_TOPOLOGY_CHANGED
+        for issue in (setup.get("issues") or ())
+    ):
+        log_event(
+            logger,
+            "correction.crossover_v2_baseline_topology_stale",
+            level=logging.WARNING,
+            code=BASELINE_TOPOLOGY_CHANGED,
         )
     topology = load_output_topology()
     # Ensure a ready crossover preview BEFORE resolving the capture preset —

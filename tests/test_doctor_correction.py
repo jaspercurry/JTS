@@ -2690,3 +2690,50 @@ def test_room_correction_authority_warns_when_setup_cannot_be_read(monkeypatch):
     r = doctor.check_room_correction_authority()
 
     assert r.status == "warn"
+
+
+def test_check_active_speaker_setup_notices_registered_in_sync_checks():
+    assert "check_active_speaker_setup_notices" in _registered_check_names()
+
+
+@pytest.mark.parametrize(
+    "issues, expected_status",
+    [
+        pytest.param([], "ok", id="nothing_standing"),
+        pytest.param(
+            [{"severity": "blocker", "code": "x", "message": "m"}],
+            "ok",
+            id="blockers_have_their_own_surfaces",
+        ),
+        pytest.param(
+            [{
+                "severity": "warning",
+                "code": "active_baseline_topology_changed",
+                "message": "topology changed since the applied baseline",
+            }],
+            "warn",
+            id="topology_notice",
+        ),
+    ],
+)
+def test_active_speaker_setup_notices_renders_only_non_blockers(
+    monkeypatch, issues, expected_status,
+):
+    """Wave 7j's disclosure would otherwise be invisible.
+
+    Nothing else in the tree renders a non-blocker setup issue, so demoting
+    the topology block without this line would have been a silent deletion.
+    """
+    from jasper.active_speaker import setup_status
+
+    monkeypatch.setattr(
+        setup_status,
+        "read_active_speaker_setup_status",
+        lambda **_kwargs: {"issues": issues},
+    )
+
+    r = doctor.check_active_speaker_setup_notices()
+
+    assert r.status == expected_status
+    if expected_status == "warn":
+        assert issues[0]["code"] in r.detail
