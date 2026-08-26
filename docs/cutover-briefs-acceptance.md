@@ -81,29 +81,22 @@ Three numbers, three different facts, and they are routinely blurred:
 | **16/16** | **8 routed captures per round × 2 rounds.** Per round: `capture:check` 1 · `capture:measure` 1 · `capture:lateral` 5 · `capture:entry_baseline` 1. Every line reads `expected_db=-8.000000 observed_db=-8.000000 delta_db=0.000000 tolerance_db=0.050000` | `run-log.md:1396-1409` |
 | **0 glitched** | zero `repairing` / `repaired` / `refused` events in either round's journal window | same |
 
-The row's own framing matters as much as the numbers: it is *"an
-instrument-validation act, not a measurement campaign"* (S11), and §5's
-preamble scopes it as **a development gate on merging a wave, never a runtime
-gate on the speaker** (`:1285-1288`).
-
-**And row 9 is not a whole-engine proof.** The plan says so itself twice: *"the
-proving ground exercises none of these"* — the failure-branch pins, refusals,
-races, cancellation, retry, stall recovery (`:542`, ruling S7 at `:1244`). A
-green r1/r2 says the happy path measures the same. It says nothing about the
-paths S7 licensed default-aggressive deletion around.
+It is *"an instrument-validation act, not a measurement campaign"* (S11), and
+§5's preamble scopes it as **a development gate on merging a wave, never a
+runtime gate on the speaker** (`:1285-1288`). It is also **not a whole-engine
+proof** — *"the proving ground exercises none of these"*: failure-branch pins,
+refusals, races, cancellation, retry, stall recovery (`:542`, S7 at `:1244`).
 
 ### 1.2 What the row does NOT demand — the like-for-like carve
 
 The **per-driver reproduction rides the session measurement graph, not the
-applied production graph** (`:1555-1565`). `PHASE_CHECK`, `PHASE_MEASURE`,
-`PHASE_LATERAL` are exactly the phases that pay the swap today and ride the
-session graph after wave 6. So **applying a candidate to jts3 cannot move the
-numbers row 9 is measured against.**
-
-One comparison IS applied-graph-dependent and gets a note, not a prohibition:
-the **entry-baseline summed capture**. Compare it against the same applied
-graph as the original, **or disclose the delta** (row 9's own text, §6 R4 at
-`:1567-1570`).
+applied production graph** (`:1555-1565`) — `PHASE_CHECK`, `PHASE_MEASURE` and
+`PHASE_LATERAL` are the phases that pay the swap today and ride the session
+graph after wave 6. **So applying a candidate to jts3 cannot move the numbers
+row 9 is measured against.** One comparison IS applied-graph-dependent and gets
+a note, not a prohibition: the **entry-baseline summed capture** — compare it
+against the same applied graph as the original, **or disclose the delta**
+(`:1567-1570`).
 
 ### 1.3 Where the baselines live, and what a round is
 
@@ -146,12 +139,10 @@ frame, −8.00 dB, is identical**."*
 ### 1.4 The 7j notice, and how the re-mint clears it
 
 **The box is deliberately non-measurable right now, and this is the state row 9
-must clear.** Its end-state probe (`run-log.md:2013-2038`) — the same probe
-S11 cites as the definition of the standing park — records the last row as:
-
-| Probe | Value | Expected |
-|---|---|---|
-| Protected setup | **`blocked` / `active_baseline_topology_changed`** | *the accepted staleness* |
+must clear.** Its end-state probe (`run-log.md:2013-2038`) — the same probe S11
+cites as the definition of the standing park — records the last row as
+**`blocked` / `active_baseline_topology_changed`**, marked *"the accepted
+staleness."*
 
 **Cause, proved on the box, not inferred** (`run-log.md:493-505`).
 `driver_style` is **topology-owned** — `build_driver_safety_profile` reads it
@@ -228,32 +219,23 @@ artifact; three callers reach it — `_apply_baseline_profile_locked` (`:3874`),
 > speaker setup first."* A re-emit is gated **by** the staleness it looks like it
 > would fix.
 
-**The campaign's own words are the primary source for the obligation**
-(`run-log.md:1985-1993`):
-
-> **The box is deliberately left non-measurable until the next campaign
-> re-mints and applies.** A session that wants to measure must clear this
-> first…
-
-**and the rest of that sentence is SUPERSEDED — do not follow it.** The
-run-log continues *"…and must not clear it by applying `55dee33aa48a`"*, on the
-grounds that the bare candidate carries `measured_group_ids: []` and would wipe
-the winner's blend correction, tweeter linearization and level trim. **Owner
-ruling §6 R4, 2026-08-25, overrules exactly that** (`:1539-1553`):
-
-> *"who cares if it wipes out a tournament winner? We don't care about the
-> tournament winner. In general, we should apply stuff to jts3 when we have
-> something we need to test."*
-
-R4 adds the safety framing that makes it safe to obey: this is a **QUALITY**
-unknown, never a safety one — MS-13's `_assert_program_graph_proven` refuses to
-return a program graph whose tweeter output lacks the high-pass and the
-soft-clip limiter together, structurally, on every compiled graph. *"Never
-apply it because it is unproven"* is the nanny class S10 abolished.
-
-**So: clear it however is convenient.** The prohibition in the run-log's
-closing section is the older authority and a fresh session reading only that
-file will follow it and lose an hour.
+**The obligation's primary source is the campaign itself**
+(`run-log.md:1985-1993`): *"**The box is deliberately left non-measurable until
+the next campaign re-mints and applies.** A session that wants to measure must
+clear this first…"* — **and the rest of that sentence is SUPERSEDED.** It
+continues *"…and must not clear it by applying `55dee33aa48a`"*, because the
+bare candidate carries `measured_group_ids: []` and would wipe the winner's
+blend correction, tweeter linearization and level trim. **Owner ruling §6 R4,
+2026-08-25, overrules exactly that** (`:1539-1553`): *"who cares if it wipes out
+a tournament winner? We don't care about the tournament winner. In general, we
+should apply stuff to jts3 when we have something we need to test."* R4 supplies
+the framing that makes it safe to obey — this is a **QUALITY** unknown, never a
+safety one, because MS-13's `_assert_program_graph_proven` refuses structurally
+to return a program graph whose tweeter output lacks the high-pass and the
+soft-clip limiter together. *"Never apply it because it is unproven"* is the
+nanny class S10 abolished. **So: clear it however is convenient.** A fresh
+session reading only the run-log will follow the older authority and lose an
+hour.
 
 ### 1.5 The bench procedure
 
@@ -285,8 +267,8 @@ licensed; nothing around it is.
 **Re-mint the baseline (§1.4).** There is **no CLI for this** —
 `jasper-active-speaker` exposes `startup-template`, `path-audit`, `path-probe`,
 `environment-probe`, `runtime-safe-graph`, `baseline-reemit`, `commission-load`,
-`commission-rollback` and `ramp {step,ack,status,abort}`
-(`jasper/cli/active_speaker.py:1420-1795`) and none of them mints. The surface
+`commission-rollback` and `commission-ramp {step,ack,status,abort}`
+(`jasper/cli/active_speaker.py:1420-1789`) and none of them mints. The surface
 is the sound wizard, port **8784** (`jasper/web/sound_setup.py:6230`; nginx
 proxies `/sound/setup/`), and it is a **two-POST fingerprint handshake**:
 
@@ -681,126 +663,85 @@ the campaign era.
 
 ## 4. The chunk-3 order
 
-### 4.1 Row 9 does NOT wait for the cutover — and the plan says why twice
-
-Two independent arguments, both from the plan's own text:
+**Row 9 does not wait for the cutover; row 10 waits on all of it.** Two
+arguments from the plan's own text, then the honest caveat.
 
 **(a) Row 9 is a per-wave merge gate, not an end gate.** §5's preamble
-(`:1285-1288`) is explicit that these are *"development gates on merging a wave,
-not runtime gates on the speaker."* §3's standing sequence (`:496-503`) assigns
-it per wave: waves that alter *"what the box actually does (4, 5, 6) take the
-acceptance run"*; waves that move code without changing measurement behaviour
-(0, 2, 3, 7, 8) prove with the class-A suite. Waves 4 and 5 name it in their
-**Verify** blocks (`:849`, `:917`) as due *before the wave closes*.
+(`:1285-1288`): *"development gates on merging a wave, not runtime gates on the
+speaker."* §3's standing sequence (`:496-503`) assigns it per wave — waves that
+alter *"what the box actually does (4, 5, 6) take the acceptance run"*; waves
+0, 2, 3, 7, 8 prove with the class-A suite. Waves 4 and 5 name it in **Verify**
+(`:849`, `:917`) as due *before the wave closes*.
 
-**(b) Row 9 is applied-graph-independent, which is a structural fact, not a
-convenience.** §6 R4 (`:1555-1565`): the per-driver reproduction — *"the core of
-acceptance row 9 and of the 0.37 dB noise floor"* — rides the session
-**measurement** graph, not the applied production graph. So the state of the
-engine's *bindings* does not move the numbers row 9 is measured against. Only
-the entry-baseline summed capture is applied-graph-dependent, and that gets the
-like-for-like note, not a wait.
+**(b) Row 9 is applied-graph-independent by structure, not by convenience** —
+§6 R4 (`:1555-1565`), §1.2 above. The engine's *bindings* cannot move the
+numbers it is measured against.
 
-**Row 10 is the opposite, and unambiguously so.** It opens *"only after every
-row above closes"* (`:1303`). Rows 4, 5 and 6 are the god-file targets, and
-**those are chunk 2's own deliverables** — `crossover_v2_flow.py` → ≈1,500,
-`CrossoverV2Session` dissolved into its four destinations (chunk 2 §6 names
-`__init__:2181-2957` as dissolving *"into acceptance row 5's four
-destinations"*), `web/correction_crossover_v2.py` down to the apply transaction
-plus route wiring. **Row 10 waits on the full cutover. There is no reading in
-which it does not.**
+**Row 10 is the opposite and unambiguously so:** *"only after every row above
+closes"* (`:1303`), and rows 4, 5 and 6 are the god-file targets — **chunk 2's
+own deliverables** (its §6 names `__init__:2181-2957` as dissolving *"into
+acceptance row 5's four destinations"*). **Row 10 waits on the full cutover.**
 
-### 4.2 The honest part: the plan's schedule has already been overtaken
-
-Saying only 4.1 would be misleading. Three facts at HEAD:
-
-| Fact | Evidence |
-|---|---|
-| **Wave 5 is CLOSED**, and its Verify block demanded the acceptance run *before the wave closes* | ledger at `:923`; Verify at `:917` |
-| **Wave 6d/6e/6f have merged** (`f6a6c56f3`, `5da40b9e2`, `b9738bf67`), and 6d's own body set the bar it did not clear: *"**Not merged.** This is the staging point: it wants the adversarial pass, and the no-pop check on jts3 is the evidence that licenses it"* | PR #3111 |
-| **S11 act 5 was explicitly deferred** — PR #3006: *"The on-box verification (S11 sanctioned act 5) is **deferred**"*, because jts3 was running a build that is not an ancestor of `origin/main` | PR #3006 |
-
-**So three of S11's five sanctioned acts are unrun: 1 (row 9), 2 (the no-pop
-check), and 5 (7j's demotion verification).** No record of any of them exists in
-`captures/`.
-
-This is not a violation to litigate — it is the predictable result of a rule the
-plan itself flagged as the conductor's own scoping. `:501-503`, verbatim:
-
-> *That split is the conductor's scoping of the rule, not the owner's words —
-> say so, and let the owner collapse it if he meant a hardware run every time.*
-
-The owner's actual words in S11 read the other way: *"We'll get that done and
-then we'll start measuring on hardware once everything's landed to flush out
-issues."* That is **one hardware session at the end**, not one per wave.
-Execution has followed the owner's sentence rather than the conductor's split.
-**Recording it as such is the honest disposition; re-litigating closed waves is
-not.**
-
-### 4.3 What must land before acceptance can run
+**The honest caveat: the plan's per-wave schedule has already been overtaken.**
+Wave 5 is CLOSED (`:923`) though its Verify demanded the run first; waves
+6d/6e/6f merged (`f6a6c56f3`, `5da40b9e2`, `b9738bf67`) though 6d's own body set
+a bar it did not clear — *"**Not merged.** … the no-pop check on jts3 is the
+evidence that licenses it"*; and PR #3006 deferred act 5 outright. **So three of
+S11's five acts are unrun — 1 (row 9), 2 (no-pop), 5 (7j's verification) — and
+no record of any exists in `captures/`.** This is not a violation to litigate.
+The plan flagged its own split as *"the conductor's scoping of the rule, not the
+owner's words — say so, and let the owner collapse it if he meant a hardware run
+every time"* (`:501-503`), and the owner's sentence reads the other way: *"We'll
+get that done and then we'll start measuring on hardware once everything's
+landed."* Execution followed the owner.
 
 | Gate | Blocks row 9? | Blocks row 10? |
 |---|---|---|
-| The cutover (chunk 2, W1–W5) | **No** — §4.1(a) and (b) | **Yes** — rows 4, 5, 6 are its deliverables |
-| 7j on the deployed build | **Yes, practically** — without it, or without the re-mint, the session does not open (§1.4) | yes, transitively |
-| The re-mint on jts3 | **Yes** — §1.4, §1.5 | yes, transitively |
+| The cutover (chunk 2, W1–W5) | **No** — (a) and (b) | **Yes** — rows 4, 5, 6 are its deliverables |
+| 7j on the deployed build, then the re-mint | **Yes** — without both, no session opens (§1.4) | transitively |
 | The 4g/4h producer build + a sanctioned act 6 | **No** — nothing in rows 1–10 depends on it (§3.4) | **No** |
-| Chunk 2's two open acceptance questions (below) | **No** — both are counting/claim questions, not measurements | **Yes** — they are rows 3 and 3c |
+| Chunk 2's two open acceptance questions | **No** — claim/counting, not measurement | **Yes** — they are rows 3 and 3c |
 
-**Chunk 2 raised two acceptance items this brief inherits and does not own.**
-Row 3's *"`DriverResponse` banked"* is *"satisfied in spirit for one of three
-kinds and unsatisfied for two"* — lateral banks a curve with phase, entry banks
-magnitude only, cloud banks no curve at all — and chunk 2 says to **record it as
-an open acceptance question, not as done**. And row 3c's analysis claim rests on
-a "92 analysis units" figure that **cannot be reproduced at HEAD**; chunk 2's
-W2-d either enumerates it with a committed counting method or restates the claim
-against the pinnable 79. Both are docs work on `REFACTOR-TUNING-2026-08.md`,
-both are scheduled in chunk 2's tier 0, and **neither touches a microphone.**
+**Two items this brief inherits and does not own.** Chunk 2 found row 3's
+*"`DriverResponse` banked"* *"satisfied in spirit for one of three kinds and
+unsatisfied for two"* and says to record it as an **open acceptance question**;
+and row 3c's "92 analysis units" **cannot be reproduced at HEAD**, so chunk 2's
+W2-d either enumerates it with a committed method or restates the claim against
+the pinnable 79. Both are docs work, both are in chunk 2's tier 0, **neither
+touches a microphone.** Separately: **the 4g/4h producer build is on no DAG** —
+chunk 2's §7 contains no producer item and the document never mentions 4g or 4h.
+It is chunk-1 residual that neither chunk owns. §3 asks the licence question;
+who schedules the build is a different open question this brief does not answer.
 
-**One scheduling gap worth naming: the 4g/4h producer build is on no DAG.**
-Chunk 2's merge-order DAG (§7) contains no producer item, and grep finds no
-`4g`, `4h` or producer row anywhere in that document. It is chunk-1 residual
-work that chunk 2 did not inherit and chunk 1 did not close. §3's amendment is
-the licence question; **who schedules the build is a separate open question and
-this brief does not answer it.**
+### The recommendation
 
-### 4.4 The recommendation
-
-**Batch the three unrun acts into one bench evening.** They all need jts3, they
-all need the same deploy, and their natural order is a dependency chain rather
-than a list:
+**Batch the three unrun acts into one bench evening** — same box, same deploy,
+and their order is a dependency chain rather than a list:
 
 ```
-deploy (scripts/deploy-to-pi.sh, PI_HOST=jts3.local)
-  └─ ACT 5   7j's demotion verification
-     │       a metadata edit no longer blocks a measure session;
-     │       the doctor line appears. This is also gap 3's
-     │       determination — it tells you which gate the box is behind.
+deploy (bash scripts/deploy-to-pi.sh, PI_HOST=jts3.local)
+  └─ ACT 5   7j's demotion verification — a metadata edit no longer blocks a
+     │       measure session, and the doctor line appears. This is also gap 3's
+     │       determination: it tells you which gate the box is behind.
      └─ re-mint (§1.5)
-        └─ ACT 1   row 9, round r1
-           │       └─ ACT 2   the no-pop check, INSIDE r1's open
-           │                  measurement window — fader parked,
-           │                  recorder running, listen
-           └─ ACT 1   row 9, round r2 (no re-level between rounds)
+        └─ ACT 1  row 9, round r1
+           │      └─ ACT 2  the no-pop check, INSIDE r1's open measurement
+           │                window — fader parked, recorder running, listen
+           └─ ACT 1  row 9, round r2 (no re-level between rounds)
               └─ the standing park
 ```
 
-Act 5 must come first because it is what tells you whether the session will open
-at all. Act 2 is a listening check *inside* an open measurement window, which
-row 9's r1 already provides — running it standalone would mean opening a session
-twice for one answer. That is one evening for three acts instead of three.
+Act 5 first because it says whether the session opens at all. Act 2 needs an
+open measurement window and r1 already provides one — running it standalone
+means opening a session twice for one answer. One evening for three acts.
 
-**Then gate the next box-behaviour change on row 9's result.** §3's own rule —
-*waves that alter what the box actually does take the acceptance run* — now
-points at chunk 2's join node, **W5-b (`TuningSession` in production)**, and at
-**W1-c (the retention lift)**, which change how the box measures and what it
-banks. Those are the changes row 9 was written to gate.
+**Then gate the next box-behaviour change on row 9's result.** §3's own rule
+now points at chunk 2's join node **W5-b (`TuningSession` in production)** and
+at **W1-c (the retention lift)** — the items that change how the box measures
+and what it banks. **Row 10 opens when the cutover finishes and rows 1–8 read
+true**, beginning with R-1 (§2).
 
-**Row 10 opens when the cutover finishes and rows 1–8 read true**, and it opens
-with R-1, per §2.
-
-**One thing the evening does not settle.** The proving ground exercises no
-failure branch — no refusals, races, cancellation, retry or stall recovery
-(`:542`, ruling S7). A green row 9 licenses the happy path and nothing else. If
-the cutover's deletions are to be trusted past that line, it is the class-A
-suite and the invariant→pin table that carry the weight, not the microphone.
+**What the evening does not settle.** The proving ground exercises no failure
+branch (`:542`, S7). A green row 9 licenses the happy path and nothing else; past
+that line it is the class-A suite and the invariant→pin table that carry the
+weight, not the microphone.
