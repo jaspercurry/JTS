@@ -36,6 +36,19 @@ class SystemRoutes(ControlHandlerMixin):
                         camilla_port=self._camilla_port,
                         voice_socket_path=self._voice_socket_path,
                         ha_status_snapshot=self._ha_status_cache.snapshot,
+                        # One tick's transport-park verdict for the whole
+                        # payload: `resilience.transport_park` and the
+                        # `audio_health` rows attached below are then the same
+                        # observation, not two reads minutes apart. getattr,
+                        # because a sampler that cannot answer must degrade to
+                        # the aggregator's own fresh read — /state keeps
+                        # working when the health sampler does not, and that
+                        # contract is older than this field.
+                        transport_park_snapshot=getattr(
+                            self._audio_health_sampler,
+                            "transport_park_snapshot",
+                            None,
+                        ),
                     )
                 ),
             )

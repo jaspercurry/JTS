@@ -426,6 +426,13 @@ impl Config {
         // — bailing there would refuse to start the very topology this campaign
         // is converging boxes onto.
         //
+        // WHAT REACHES THIS ARM is the PASSIVE composite: a roleful composite's
+        // post-crossover program rides the ACTIVE ring, so it resolves
+        // `ShmRing` above. The passive dual-DAC shape resolves neither ring,
+        // which under one-audio-transport (ADR-0100 / ADR-0178) is a named
+        // park rather than a lane to re-arm — hence a tracked issue and no
+        // command.
+        //
         // Failing HERE rather than at the open is the whole point: a
         // `Config::from_env` error exits 78 (EX_CONFIG) before any ALSA device
         // is touched, so the box parks immediately with the reason named
@@ -436,13 +443,15 @@ impl Config {
             (SinkMode::Composite, ContentBridgeMode::Direct) => {
                 if env_str("JASPER_OUTPUTD_CONTENT_PCM", "").trim().is_empty() {
                     anyhow::bail!(
-                        "JASPER_OUTPUTD_CONTENT_PCM must be set explicitly on a \
-                         composite sink using the direct content bridge: the \
-                         snd-aloop ACTIVE lane it used to default to was deleted \
-                         (#2534) and the ACTIVE ring is the one legal ACTIVE \
-                         endpoint. Arm the ring \
-                         (jasper-fanin-coupling-reconcile shm_ring), or name a \
-                         content PCM this box actually defines."
+                        "PARKED: a passive composite (dual-DAC) sink has no \
+                         transport. The snd-aloop ACTIVE lane this arm used to \
+                         default to was deleted (#2534), and the shm_ring \
+                         transport carries a composite only for a ROLEFUL \
+                         layout, whose post-crossover program rides the ACTIVE \
+                         ring. Composite-on-ring for the passive shape is \
+                         tracked as #2982; until it lands this box stays \
+                         parked. A lab box may name its own content PCM in \
+                         JASPER_OUTPUTD_CONTENT_PCM."
                     );
                 }
                 ""
@@ -1811,9 +1820,9 @@ mod tests {
                 );
                 let msg = format!("{err:#}");
                 assert!(msg.contains("JASPER_OUTPUTD_CONTENT_PCM"), "{msg}");
-                // The remedy must point FORWARD at the arm; there is no
-                // rollback endpoint left to send an operator to.
-                assert!(msg.contains("shm_ring"), "{msg}");
+                // ADR-0178: the passive composite is a NAMED PARK carrying its
+                // tracked rebuild issue, not a lane an operator can re-arm.
+                assert!(msg.contains("#2982"), "{msg}");
             },
         );
     }

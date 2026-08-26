@@ -577,10 +577,14 @@ def test_outputd_dual_apple_sink_is_fail_closed_and_final_sink_only():
     assert "SinkMode::Composite" in config_rs
     assert '"composite" | "dual_apple"' in config_rs
     assert "JASPER_OUTPUTD_DUAL_DAC_A_PCM" in config_rs
-    # A composite on the direct bridge is a parse-time refusal; the deleted
-    # snd-aloop ACTIVE capture half must not come back as a default, and the
-    # ring arm must stay exempt or an armed composite cannot start.
-    assert "must be set explicitly on a \\" in config_rs
+    # A composite on the direct bridge is a parse-time refusal. The refusal
+    # ITSELF is owned by config.rs's
+    # `a_composite_sink_on_the_direct_bridge_refuses_an_undeclared_content_pcm`,
+    # which calls `Config::from_env` and reads the error — the right altitude,
+    # and the reason there is no mirror of its wording here. What is pinned
+    # here is what that test cannot see: the deleted snd-aloop ACTIVE capture
+    # half must not come back as a default, and the ring arm must stay exempt
+    # or an armed composite cannot start.
     assert '(SinkMode::Composite, ContentBridgeMode::ShmRing) => ""' in config_rs
     assert '"outputd_active_content_capture"' not in _non_comment_rust(config_rs)
     assert "dual_apple_requires_pre_dsp_tts" not in main_rs

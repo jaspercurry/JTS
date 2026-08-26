@@ -1632,11 +1632,15 @@ def check_fanin_coupling() -> CheckResult:
         # exactly this state and is not broken. What the detail owes the operator
         # is the command that finishes it.
         if roleful:
+            # The first two steps are the SAME ladder the transport-park check
+            # records, composed from its constant rather than respelled, so the
+            # two surfaces cannot prescribe different things to the same
+            # operator while both live. Only the third step is this check's own.
+            from ...control.transport_park import ACTIVE_ENDPOINT_REMEDY
+
             recovery = (
-                "the ACTIVE-ring ladder, in order: sudo /opt/jasper/.venv/bin/"
-                "jasper-active-speaker baseline-reemit --endpoint ring && sudo "
-                "systemctl start jasper-audio-hardware-reconcile && sudo "
-                "/opt/jasper/.venv/bin/jasper-fanin-coupling-reconcile shm_ring"
+                f"the ACTIVE-ring ladder, in order: {ACTIVE_ENDPOINT_REMEDY} && "
+                "sudo /opt/jasper/.venv/bin/jasper-fanin-coupling-reconcile shm_ring"
             )
         else:
             recovery = (
@@ -4139,6 +4143,87 @@ def check_camilla_recover_park() -> CheckResult:
         if value:
             parts.append(f"{prefix}{value}")
     return CheckResult(label, "fail", ". ".join(parts))
+
+
+@doctor_check(order=52.68, group="audio")
+def check_ring_transport_park() -> CheckResult:
+    """No topology this box declares is one the ring cannot serve (ADR-0178).
+
+    ADR-0100 makes ``shm_ring`` the only central transport; ADR-0178 names the
+    four shapes it cannot carry and the tracked issue each waits on. Severity
+    follows whether the loopback route still exists:
+
+    * ring-only and parked — the speaker emits NOTHING and no automatic path
+      recovers it, which is the ``fail`` definition the rest of the doctor
+      uses for a park;
+    * loopback still legal — ``warn``. The box plays today; the disclosure is
+      the inventory of what the transport deletion will park, named issue by
+      issue so the operator can clear them before it lands, not after.
+
+    The classification, the issue numbers and the remedy text all come from
+    ``jasper.control.transport_park`` — the same reader
+    ``/state.resilience.transport_park`` and the household audio card use, so
+    the three surfaces cannot name different issues for the same box.
+    """
+    label = "ring transport parks"
+
+    from ...control import transport_park
+
+    state = transport_park.snapshot()
+    status = state.get("status")
+
+    if status == "unavailable":
+        return CheckResult(
+            label,
+            "warn",
+            "the saved output topology or outputd's env could not be read "
+            f"({state.get('error')}) — a transport park cannot be ruled out.",
+        )
+
+    if status == "ok":
+        # The honest claim, not "the ring can serve this box": a box with no
+        # ring geometry that no class names lands in `unclassified` below, and
+        # this sentence must not have already told the operator it was fine.
+        return CheckResult(
+            label, "ok", "this box is in none of the four named transport parks"
+        )
+
+    if status == "unclassified":
+        return CheckResult(
+            label,
+            "warn",
+            "this box's declared topology resolves no ring geometry of either "
+            "kind, and none of the four named parks describes it — so it is "
+            "neither servable by the single transport nor tracked by an issue "
+            "yet. Report the saved layout (/sound/setup/) so it can be named.",
+        )
+
+    parks = state.get("parks") or []
+    named = []
+    for park in parks:
+        part = f"{park.get('park_class')} ({park.get('detail')})"
+        issue = park.get("issue")
+        if issue:
+            part = f"{part}. TRACKED: {issue}"
+        remedy = park.get("remedy")
+        if remedy:
+            part = f"{part}. REMEDY: {remedy}"
+        named.append(part)
+
+    if status == "parked":
+        return CheckResult(
+            label,
+            "fail",
+            "PARKED — no ring serves this box, so it emits nothing: "
+            + "; ".join(named),
+        )
+    return CheckResult(
+        label,
+        "warn",
+        "this box plays on the loopback route today, but the ring cannot "
+        "serve it — it parks when the loopback route is deleted: "
+        + "; ".join(named),
+    )
 
 
 # ---------------------------------------------------------------------------
