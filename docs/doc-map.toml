@@ -887,6 +887,10 @@ docs = [
   # the analysis-unit enumeration, the registry table shape, the caller flip
   # sites, and the PR slicing. Dies when W2 lands.
   "docs/cutover-briefs-w2.md",
+  # Implementation-grade briefs for the cutover DAG's entry items (W1-a..d):
+  # the production RecordStore and the retention lift. Scan it when the record
+  # store's shape, the retention call sites, or the sidecar's readers change.
+  "docs/cutover-briefs-w1.md",
   # The one operational map for the v2 commission session and the tuning loop
   # over SSH: what v2 is, the capture flow, the tool menu, door refusal counts,
   # exit-code vocabularies, the graded round, and the debugging recipes. Scan it
