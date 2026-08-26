@@ -1031,7 +1031,7 @@ import { renderRelayQr } from "/assets/shared/js/qr.js";
         console.warn('microphone capture unavailable outside a secure context', e);
         jtsAlert('This page is not a secure context, so the browser will not ' +
           'give it the microphone. Measure with the capture link this page ' +
-          'mints for your phone, or reopen this page over HTTPS.');
+          'mints, or reopen this page over HTTPS.');
       } else {
         console.warn('microphone permission unavailable', e);
         jtsAlert('Microphone access was not available. Check permission and try again.');
