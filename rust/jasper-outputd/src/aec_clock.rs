@@ -65,7 +65,7 @@
 /// Below this absolute ppm a locked estimate is treated as clock-coherent;
 /// the chip reference needs no compensation. (Layer-1 verdict threshold.)
 /// PROVISIONAL: validate/tune per DAC profile on hardware (JTS3 HiFiBerry
-/// first). See docs/HANDOFF-chip-aec-portability.md.
+/// first). See docs/historical/chip-aec-dac-portability-2026-06.md.
 pub const SRO_COHERENT_PPM: f64 = 5.0;
 
 /// Ring capacity. At one sample per ~second this is a ~32 s window — long

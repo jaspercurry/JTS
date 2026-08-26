@@ -8,7 +8,9 @@ Constraint: no production reference retiming, no delay line, no alternate produc
 > also carries an `aec_clock` block — a Layer-0 sample-rate-offset (SRO) drift
 > estimate + verdict + latency budget built on the timing fields below (#826),
 > plus the chip-ref **observe mode** that arms it for measurement (#832).
-> Canonical reference: [HANDOFF-chip-aec-portability.md](HANDOFF-chip-aec-portability.md).
+> Canonical reference: [HANDOFF-aec.md](HANDOFF-aec.md); the 2026-06 portability
+> design those fields were built for is
+> [historical/chip-aec-dac-portability-2026-06.md](historical/chip-aec-dac-portability-2026-06.md).
 
 ## Summary
 
