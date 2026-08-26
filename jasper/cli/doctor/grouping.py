@@ -587,11 +587,15 @@ def _resolved_jasper_voice_env() -> tuple[dict[str, str] | None, str]:
     layers ``grouping-voice.env`` LAST, so that file is overlaid here the same
     way, read fresh rather than taken from this process's environment.
 
-    None means neither authority answered: systemctl was unreadable AND the
-    grouping file carried nothing.
+    None means no authority answered: the grouping file exists but cannot be
+    read, or systemctl was unreadable AND the file carried nothing. The
+    fail-soft readers (``parse_env_file``, ``resolved_tts_routing_env``) are
+    deliberately not used here — they collapse an unreadable file into ``{}``,
+    which is the same false green as #2387 wearing a different hat, and a
+    doctor that cannot read its authority must say so.
     """
+    from ...env_load import read_env_file_state
     from ...multiroom.reconcile import VOICE_GROUPING_ENV_FILE
-    from ...tts_routing import resolved_tts_routing_env
 
     unit_env: dict[str, str] | None = None
     error = ""
@@ -612,9 +616,11 @@ def _resolved_jasper_voice_env() -> tuple[dict[str, str] | None, str]:
             error = (proc.stderr or proc.stdout).strip() or (
                 f"systemctl exited {proc.returncode}"
             )
-    resolved = resolved_tts_routing_env(
-        unit_env or {}, grouping_env_path=VOICE_GROUPING_ENV_FILE,
-    )
+    grouping = read_env_file_state(VOICE_GROUPING_ENV_FILE)
+    if grouping.status == "unreadable":
+        return None, f"{VOICE_GROUPING_ENV_FILE}: {grouping.error}"
+    # The unit layers this file LAST, so it wins over the inline directives.
+    resolved = {**(unit_env or {}), **grouping.values}
     if unit_env is None and not resolved:
         return None, error
     return resolved, error
@@ -861,20 +867,30 @@ def check_grouping_tts_lane() -> CheckResult:
         and voice_runtime_env.get(VOICE_PARK_ENV, "") == "1"
     )
 
+    # Ahead of the solo/bonded split: every guard below reads this env, so an
+    # unresolvable authority must never render as a clean verdict (#2387).
+    if voice_runtime_env is None:
+        return CheckResult(
+            label, "warn",
+            "could not resolve jasper-voice's env from its unit directives "
+            f"or {VOICE_GROUPING_ENV_FILE} ({voice_runtime_error}) — the "
+            "grouped-voice guards cannot run",
+        )
+
     if not active:
         # Solo must resolve to fan-in. With grouping-voice.env layered last,
         # stale bonded overrides can target an unarmed socket or leave voice
-        # parked after unbond.
+        # parked after unbond. A PRESENT-but-empty key is drift too: systemd
+        # resolves it to an empty socket path, which breaks TTS playout.
         if (
-            voice_runtime_env is not None
-            and voice_socket
+            VOICE_TTS_SOCKET_ENV in voice_runtime_env
             and voice_socket != FANIN_TTS_SOCKET
         ):
             return CheckResult(
                 label, "warn",
                 f"solo but jasper-voice runtime env resolves "
-                f"{VOICE_TTS_SOCKET_ENV} to {voice_socket} instead of "
-                f"{FANIN_TTS_SOCKET} — assistant voice targets an "
+                f"{VOICE_TTS_SOCKET_ENV} to {voice_socket or '(unset)'} "
+                f"instead of {FANIN_TTS_SOCKET} — assistant voice targets an "
                 "un-armed socket; run "
                 "jasper-grouping-reconcile",
             )
@@ -886,13 +902,6 @@ def check_grouping_tts_lane() -> CheckResult:
                 "jasper-grouping-reconcile",
             )
         return CheckResult(label, "ok", route.ok_detail)
-
-    if voice_runtime_env is None:
-        return CheckResult(
-            label, "warn",
-            "bonded but could not resolve jasper-voice's env from its unit "
-            f"directives or {VOICE_GROUPING_ENV_FILE}: {voice_runtime_error}",
-        )
 
     outputd_env: dict[str, str] = {}
     outputd_path = Path(OUTPUTD_GROUPING_ENV_FILE)
