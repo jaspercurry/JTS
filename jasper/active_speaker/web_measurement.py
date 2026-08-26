@@ -393,10 +393,11 @@ def driver_analysis_input_evidence(
 ) -> dict[str, Any]:
     """Return the lossless replay contract stored beside a driver WAV.
 
-    ``acoustic.fr_curve`` is intentionally peak-normalized for display. LF
-    splice analysis must instead replay the immutable raw WAV with the exact
-    generated sweep, calibrated amplitude, and played-level ledger captured
-    here. The calibration snapshot contains no serial or vendor URL.
+    LF splice analysis replays the immutable raw WAV with the exact generated
+    sweep, calibrated amplitude, and played-level ledger captured here — the
+    stored ``acoustic`` block carries verdicts and band levels, never a
+    response curve to read amplitudes off. The calibration snapshot contains
+    no serial or vendor URL.
     """
 
     curve_to_dict = getattr(calibration_curve, "to_dict", None)
@@ -404,7 +405,6 @@ def driver_analysis_input_evidence(
     return {
         "schema_version": 1,
         "response_amplitude": "recompute_from_raw_wav",
-        "display_fr_curve_peak_normalized": True,
         "sweep_meta": dict(sweep_meta),
         "excitation": dict(excitation or {}),
         "calibration": (
