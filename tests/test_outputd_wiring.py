@@ -9,6 +9,7 @@ import os
 import re
 import shlex
 import subprocess
+import time
 from pathlib import Path
 
 import pytest
@@ -239,20 +240,43 @@ APPLE_DONGLE_LISTING = "hw:CARD=AppleA,DEV=0\n    USB-C to 3.5mm Headphone Jack\
 NO_APPLE_DONGLE_LISTING = "hw:CARD=Other,DEV=0\n  Other DAC\n"
 
 
-def _apple_dongle_bin(tmp_path: Path, cards: str) -> tuple[Path, Path]:
-    """A fake `aplay -L` listing plus an `amixer` that records its argv."""
+def _apple_dongle_bin(tmp_path: Path, cards: str) -> tuple[Path, Path, Path]:
+    """A fake `aplay -L` listing that records every card probe, plus an
+    `amixer` that records its argv."""
     bin_dir = tmp_path / f"bin{sum(1 for _ in tmp_path.iterdir())}"
     bin_dir.mkdir()
     log = bin_dir / "amixer.log"  # absent until amixer is actually invoked
+    probes = bin_dir / "aplay.log"  # one line per card probe the helper runs
     (bin_dir / "aplay").write_text(
-        f"#!/usr/bin/env bash\nprintf '%s' {shlex.quote(cards)}\n"
+        "#!/usr/bin/env bash\n"
+        f'printf "probe\\n" >> "{probes}"\n'
+        f"printf '%s' {shlex.quote(cards)}\n"
     )
     (bin_dir / "amixer").write_text(
         f'#!/usr/bin/env bash\nprintf "%s\\n" "$*" >> "{log}"\n'
     )
     for name in ("aplay", "amixer"):
         (bin_dir / name).chmod(0o755)
-    return bin_dir, log
+    return bin_dir, log, probes
+
+
+def _polled_on_or_exited(
+    monitor: subprocess.Popen[bytes], probes: Path
+) -> int | None:
+    """Block until the monitor probes for cards a SECOND time (it polled on) or
+    returns (it did not), whichever comes first: None for a poll, else the exit
+    code. Both outcomes are the monitor's own observable transitions, so this
+    verdict does not move with machine load. The ceiling is only a hang
+    backstop -- never a timing assertion (#3092)."""
+    deadline = time.monotonic() + 120.0
+    while time.monotonic() < deadline:
+        if probes.exists() and probes.read_text().count("probe") >= 2:
+            return None
+        code = monitor.poll()
+        if code is not None:
+            return code
+        time.sleep(0.02)
+    raise AssertionError("monitor neither probed a second time nor exited")
 
 
 def test_apple_dongle_dac_init_resolves_its_card_at_runtime(tmp_path):
@@ -262,11 +286,14 @@ def test_apple_dongle_dac_init_resolves_its_card_at_runtime(tmp_path):
     Bare too: `CONFIGURED_CARD="${1:-auto}"` makes a missing argument the same
     run, which is what a hand invocation gets."""
     def pinned(cards: str, argv: list[str]) -> list[str]:
-        bin_dir, log = _apple_dongle_bin(tmp_path, cards)
+        bin_dir, log, _ = _apple_dongle_bin(tmp_path, cards)
+        # The wait is the one-shot's own exit; pyproject's pytest-timeout is
+        # the hang backstop. A per-call ceiling here would be a timing
+        # assertion, and load crosses it (#3092).
         result = subprocess.run(
             ["/bin/bash", str(REPO / "deploy" / "bin" / "jasper-dac-init"), *argv],
             env={"PATH": f"{bin_dir}:/usr/bin:/bin"},
-            capture_output=True, text=True, timeout=10,
+            capture_output=True, text=True,
         )
         assert result.returncode == 0, result.stderr
         return log.read_text().splitlines() if log.exists() else []
@@ -291,7 +318,7 @@ def test_apple_dongle_headphone_monitor_keeps_polling_when_the_dongle_is_absent(
     """The monitor is enabled on boxes whose dongle comes and goes, so an absent
     dongle must be a poll, never an exit: any exit walks `Restart=on-failure`
     into `StartLimitBurst` and parks the unit with nothing left to revive it."""
-    bin_dir, log = _apple_dongle_bin(tmp_path, NO_APPLE_DONGLE_LISTING)
+    bin_dir, log, probes = _apple_dongle_bin(tmp_path, NO_APPLE_DONGLE_LISTING)
     monitor = subprocess.Popen(
         [
             "/bin/bash",
@@ -303,11 +330,7 @@ def test_apple_dongle_headphone_monitor_keeps_polling_when_the_dongle_is_absent(
         stderr=subprocess.DEVNULL,
     )
     try:
-        # The absent branch sleeps 5 s between passes, so a return inside this
-        # window is a return rather than a poll.
-        exited = monitor.wait(timeout=2)
-    except subprocess.TimeoutExpired:
-        exited = None
+        exited = _polled_on_or_exited(monitor, probes)
     finally:
         monitor.kill()
         monitor.wait()
