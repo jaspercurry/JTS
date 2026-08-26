@@ -9,7 +9,8 @@ verdict, and it is **not XVF-specific**: it selects whatever local input is
 usable — the XVF3800 ``Array``, the ``L16K6Ch`` variant, or a custom
 ``JASPER_MIC_DEVICE`` such as a UMIK-2 — and maintains one generic gate marker
 accordingly (``/var/lib/jasper/voice-input-absent``: created when no safe,
-usable input exists, including a managed XVF parked for commissioning; see
+usable input exists — a managed XVF short of chip AEC keeps hearing and
+discloses instead (ADR-0101); see
 ``jasper.voice.input_presence`` and ``deploy/bin/jasper-aec-reconcile``).
 
 The verdict is an OR over two independently-owned inputs, because a paired

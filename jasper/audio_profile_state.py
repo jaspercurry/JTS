@@ -501,22 +501,28 @@ def build_audio_profile_status(
     gate = dict(chip_gate or {})
     gate_auto_allowed = bool(gate.get("auto_allowed", chip_available))
     gate_arm_allowed = bool(gate.get("arm_allowed", chip_available))
-    gate_permitted = gate_arm_allowed
+    # One question, asked once: does the gate allow the selection in play? An
+    # uncodified DAC is arm_allowed since ADR-0101, so only an EXPLICIT arm may
+    # read that flag — the testing selection, and a custom profile whose chip
+    # leg the operator set by hand, which the reconciler honours. Everything
+    # automatic needs auto_allowed.
+    explicitly_armed = selection == PROFILE_XVF_CHIP_AEC_TESTING or (
+        selection == PROFILE_CUSTOM and intent.chip_aec_enabled
+    )
+    gate_permitted = gate_arm_allowed if explicitly_armed else gate_auto_allowed
     gate_detail = str(gate.get("detail") or "")
     gate_status = str(gate.get("status") or "")
-    chip_allowed_for_selection = chip_available and (
-        gate_arm_allowed
-        if selection == PROFILE_XVF_CHIP_AEC_TESTING
-        else gate_auto_allowed
-    )
+    chip_allowed_for_selection = chip_available and gate_permitted
     requested_intent = resolve_audio_input_intent(
         intent,
         chip_available=chip_allowed_for_selection,
     )
     managed_xvf = mic.xvf_present and selection != PROFILE_CUSTOM
     if managed_xvf:
-        # Product policy is chip-AEC-or-park. Preserve the stored selection for
-        # diagnosis, but never describe AEC3/direct as the resolved XVF path.
+        # Chip-AEC is what a managed XVF REQUESTS, whatever it ends up running:
+        # preserve the stored selection for diagnosis and keep the request
+        # honest, so a disclosed fallback reads as chip-AEC-not-armed rather
+        # than as a different profile having been asked for.
         requested_intent = AecIntent(
             mode="auto",
             chip_aec_enabled=True,
@@ -602,7 +608,8 @@ def build_audio_profile_status(
     if (
         managed_xvf
         and runtime.chip_aec_alignment_status
-        and runtime.chip_aec_alignment_status != "ready"
+        and runtime.chip_aec_alignment_status
+        not in {"ready", "disclosed_stale"}
     ):
         processing_mode = "Chip-AEC parked"
         session_source = "parked pending chip-AEC alignment"
@@ -612,6 +619,57 @@ def build_audio_profile_status(
         profile_reason = (
             runtime.chip_aec_alignment_reason
             or "Managed XVF chip-AEC alignment is not ready."
+        )
+        profile_action = runtime.chip_aec_alignment_action
+    elif managed_xvf and runtime.chip_aec_alignment_status == "disclosed_stale":
+        # ADR-0101: disclosed_stale is a RUNNING state. Name the engine that is
+        # actually carrying the wake path — the banked chip alignment, the
+        # software AEC3 fallback, or the chip's plain capture — and let the
+        # reconciler's own reason/action say what chip-AEC lost.
+        if (
+            runtime.chip_enabled
+            and bridge_active
+            and runtime.primary_device.startswith("udp:")
+        ):
+            processing_mode = "Chip-AEC"
+            session_source = (
+                "Chip AEC 210 beam via :9876"
+                if runtime.chip_primary_leg == "chip_aec_210"
+                else "Chip AEC 150 beam via :9876"
+            )
+            wake_legs = ["Primary chip beam"]
+            active_profile = PROFILE_XVF_CHIP_AEC
+        elif bridge_active and (
+            runtime.primary_device.startswith("udp:") or runtime.raw_device
+        ):
+            processing_mode = "Software AEC3"
+            session_source = "WebRTC AEC3 via :9876"
+            wake_legs = ["AEC3"]
+            if applied_raw_enabled:
+                wake_legs.append("Chip-direct raw")
+            if applied_dtln_enabled:
+                wake_legs.append("DTLN")
+            active_profile = PROFILE_XVF_SOFTWARE_AEC3
+        elif runtime.primary_device and not runtime.primary_device.startswith(
+            "udp:"
+        ):
+            # A card, not the bridge's carrier. _direct_mic_configured cannot
+            # answer here: its stale-default heuristic reads the deliberate
+            # handover (voice AND the bridge's mic both on the XVF card) as the
+            # value nobody chose — but the reconciler has just said it chose it.
+            processing_mode = "Direct mic"
+            session_source = mic_source_label(runtime.primary_device)
+            wake_legs = ["Direct mic"]
+            active_profile = PROFILE_DIRECT_MIC
+        else:
+            processing_mode = "Chip-AEC pending"
+            session_source = "waiting for AEC runtime"
+            wake_legs = []
+            active_profile = None
+        profile_state = "disclosed_stale"
+        profile_reason = (
+            runtime.chip_aec_alignment_reason
+            or "Chip-AEC is not fully armed."
         )
         profile_action = runtime.chip_aec_alignment_action
     elif requested_intent.mode != "auto":

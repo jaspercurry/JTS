@@ -1098,7 +1098,10 @@ def _chip_aec_dac_support_check(dac: Mapping[str, JsonValue]) -> dict[str, JsonV
         "id": dac_id,
         "status": gate.status,
         "source": gate.source,
-        "permitted": gate.permitted,
+        # This check asks about PRODUCTION approval, which is what it passes or
+        # fails on; an uncodified DAC is arm_allowed since ADR-0101, so
+        # recording that flag here would contradict the verdict beside it.
+        "permitted": gate.production_allowed,
         "recommended_action": gate.recommended_action,
         "card": dac.get("card"),
         "pcm": dac.get("pcm"),

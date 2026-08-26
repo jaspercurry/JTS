@@ -98,10 +98,10 @@ def _chip_aec_gate_for_status(
         default=infer_audio_input_profile(intent),
     )
     testing_requested = selection == PROFILE_XVF_CHIP_AEC_TESTING
-    runtime_gate = gate_from_runtime_env(system_env)
-    if runtime_gate is not None and (
-        not testing_requested or runtime_gate.arm_allowed
-    ):
+    runtime_gate = gate_from_runtime_env(
+        system_env, testing_requested=testing_requested
+    )
+    if runtime_gate is not None:
         return runtime_gate.to_dict()
     return resolve_chip_aec_dac_gate(
         system_env.get("JASPER_AUDIO_DAC_ID", "unknown"),
@@ -233,11 +233,11 @@ _CAPTURE_PLAN_PROBE_ERRORS = (
 BRIDGE_UNIT = "jasper-aec-bridge.service"
 OUTPUTD_UNIT = "jasper-outputd.service"
 AEC_INIT_UNIT = "jasper-aec-init.service"
-# Owner of the chip-or-park decision and single writer of the daemon-facing mic
-# env. The recorder owns its corpus overrides and nothing else, so a corpus exit
-# that lands the box in a state only this reconciler can resolve hands off here
-# rather than deciding locally — same shape as jasper/accessories/reconcile.py's
-# VOICE_INPUT_GATE_UNIT.
+# Owner of the chip-AEC arming decision and single writer of the daemon-facing
+# mic env. The recorder owns its corpus overrides and nothing else, so a corpus
+# exit that lands the box in a state only this reconciler can resolve hands off
+# here rather than deciding locally — same shape as
+# jasper/accessories/reconcile.py's VOICE_INPUT_GATE_UNIT.
 AEC_RECONCILE_UNIT = "jasper-aec-reconcile.service"
 BRIDGE_RESTART_TIMEOUT_SEC = 30.0
 _UNIT_STATE_TIMEOUT_SEC = 1.5

@@ -116,7 +116,7 @@ The foundation is partly built:
 - `jasper/chip_aec_policy.py` classifies static DAC qualification and
   optional live outputd `aec_clock` evidence. Its legacy testing vocabulary
   is status only: for a managed XVF, neither a testing label nor a software/
-  direct profile request bypasses commissioned chip-or-park policy. The AEC
+  direct profile request promotes a DAC to production chip AEC. The AEC
   reconciler writes that answer into `/etc/jasper/jasper.env`; `/aec`,
   `/state`, `jasper-doctor`, and audio-validation checks consume it.
 - `jasper/voice/input_policy.py` is the first provider-facing consumer

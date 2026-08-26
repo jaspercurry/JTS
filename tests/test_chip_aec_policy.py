@@ -40,11 +40,12 @@ def test_static_approved_dac_allows_auto_and_production_chip_aec():
     assert gate.recommended_action == ACTION_USE_CHIP_AEC
 
 
-def test_unapproved_dac_falls_back_without_explicit_testing():
+def test_unapproved_dac_blocks_auto_selection_but_allows_explicit_arm():
+    """ADR-0101: an uncodified DAC is a quality signal, not an admission gate."""
     gate = resolve_chip_aec_dac_gate("mystery_usb_audio")
 
     assert gate.status == STATUS_NEEDS_CALIBRATION
-    assert gate.permitted is False
+    assert gate.permitted is True
     assert gate.auto_allowed is False
     assert gate.production_allowed is False
     assert gate.testing_allowed is True
@@ -72,7 +73,7 @@ def test_live_coherent_outputd_clock_is_diagnostic_not_authorization():
     )
 
     assert gate.status == STATUS_NEEDS_CALIBRATION
-    assert gate.permitted is False
+    assert gate.auto_allowed is False
     assert gate.source == "static"
     assert "verdict=coherent" in gate.detail
 
@@ -84,7 +85,7 @@ def test_compensable_outputd_clock_does_not_auto_arm():
     )
 
     assert gate.status == STATUS_NEEDS_CALIBRATION
-    assert gate.permitted is False
+    assert gate.auto_allowed is False
     assert "verdict=compensable" in gate.detail
 
 
@@ -101,6 +102,25 @@ def test_runtime_env_gate_round_trips_reconciler_written_status():
     assert gate.permitted is True
     assert gate.auto_allowed is False
     assert gate.detail == "operator validation"
+
+
+def test_runtime_env_gate_answers_only_the_selection_it_was_recorded_for():
+    """A record written for production cannot answer a testing request.
+
+    Serving it would report `needs_calibration` where the testing-aware
+    resolve says `testing`, so the caller must fall through and resolve.
+    """
+    recorded = {
+        "JASPER_AUDIO_DAC_ID": "mystery_usb_audio",
+        "JASPER_AEC_CHIP_AEC_DAC_ID": "mystery_usb_audio",
+        "JASPER_AEC_CHIP_AEC_DAC_STATUS": "needs_calibration",
+        "JASPER_AEC_CHIP_AEC_TESTING_REQUESTED": "0",
+    }
+
+    assert gate_from_runtime_env(recorded, testing_requested=True) is None
+    assert gate_from_runtime_env(recorded, testing_requested=False) is not None
+    # No selection named: the record answers as written, as it always has.
+    assert gate_from_runtime_env(recorded) is not None
 
 
 def test_runtime_env_gate_rejects_stale_dac_identity():

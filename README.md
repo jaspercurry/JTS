@@ -485,9 +485,10 @@ installation passes `sudo jasper-aec-commission` — `auto` resolves to the
 chip-AEC profile: `jasper-outputd` fans the final speaker buffer out to the
 XVF3800 USB-IN reference, the chip emits its fixed AEC beams, and the bridge
 forwards the selected beam to `jasper-voice` with WebRTC AEC3 bypassed. If
-the hardware or stored alignment is unavailable, the managed XVF parks with
-an action rather than silently falling back. Software AEC3 remains the
-normal path for non-XVF microphones.
+chip-AEC cannot be armed, the managed XVF keeps hearing on the best leg its
+mic can carry and discloses the reason and action rather than parking or
+falling back silently. Software AEC3 remains the normal path for non-XVF
+microphones.
 
 The chip's beamforming, noise suppression, and AGC run either way; the rule
 is not to double-process, so chip-AEC profiles do not also arm software

@@ -9,6 +9,8 @@ from __future__ import annotations
 import json
 from types import SimpleNamespace
 
+import pytest
+
 from jasper.cli import chip_aec_policy
 
 
@@ -85,11 +87,43 @@ def test_shell_assignments_quote_values():
         recommended_action="keep current",
     )
 
-    output = chip_aec_policy._shell_assignments(gate)
+    output = chip_aec_policy._shell_assignments(gate, testing_requested=False)
 
     assert "JASPER_CHIP_AEC_DAC_GATE_DAC='a dac'" in output
     assert "JASPER_CHIP_AEC_DAC_GATE_DETAIL='operator'\"'\"'s choice'" in output
     assert "JASPER_CHIP_AEC_DAC_GATE_PERMITTED=1" in output
+
+
+@pytest.mark.parametrize(
+    ("testing_requested", "expected"),
+    [(False, "0"), (True, "1")],
+)
+def test_shell_permitted_answers_the_requested_selection(
+    testing_requested: bool,
+    expected: str,
+) -> None:
+    """The shell gets one boolean: may THIS selection arm chip-AEC?
+
+    An uncodified DAC is arm_allowed since ADR-0101, so the automatic profile
+    must read production_allowed or it would silently arm uncommissioned
+    hardware.
+    """
+    gate = SimpleNamespace(
+        dac_id="mystery_usb_audio",
+        status="needs_calibration",
+        permitted=True,
+        auto_allowed=False,
+        production_allowed=False,
+        testing_allowed=True,
+        source="static",
+        detail="no codified timing",
+    )
+
+    output = chip_aec_policy._shell_assignments(
+        gate, testing_requested=testing_requested
+    )
+
+    assert f"JASPER_CHIP_AEC_DAC_GATE_PERMITTED={expected}" in output
 
 
 def test_main_forwards_status_and_emits_shell_or_json(monkeypatch, capsys):

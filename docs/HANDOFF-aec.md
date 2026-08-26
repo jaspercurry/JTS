@@ -24,10 +24,13 @@ bridge bugs, the REF_GAIN trap, the rejected options).
 ## Managed XVF invariant
 
 A detected XVF3800 in any reconciler-managed profile is a chip-AEC product: it
-either runs a commissioned, verified `xvf_chip_aec` path or voice remains
-visibly parked with an action. It never silently becomes software AEC3 or a
-direct microphone. WebRTC AEC3 remains supported for non-XVF microphones and the
-explicit `custom` lab route.
+runs a commissioned, verified `xvf_chip_aec` path whenever it can. When it
+cannot — no codified DAC timing, no production beam plan, 2-channel firmware —
+it keeps hearing on the best leg the mic can carry (software AEC3, or the
+chip's plain capture below 6 channels) and publishes `disclosed_stale` with the
+reason and the action (ADR-0101). It never falls back SILENTLY, and voice parks
+only when there is no usable capture device at all. WebRTC AEC3 remains
+supported for non-XVF microphones and the explicit `custom` lab route.
 
 `jasper/mics/xvf3800.py` owns one fixed production profile — gains, HPF, ASR
 mode, emphasis, fixed 150°/210° gated beams, muxing, and bypass/arm sequence are
@@ -71,10 +74,8 @@ physical USB-output serial or I²S profile/card identity, the final-edge sample
 format outputd NEGOTIATED and reports as `dac.format`, and negotiated output
 geometry) plus `K` and the commissioned `sys_delay`. Adding a field to that
 identity force-recommissions the fleet by design — existing artifacts fail the
-check, `jasper-aec-init` parks the managed-XVF stack (`jasper-voice` stopped and
-gated off by the reboot-surviving `/var/lib/jasper/voice-input-absent`), and a
-human runs `sudo jasper-aec-commission` at the speaker, whose own reconcile
-cleanup unparks voice. See
+check, so `jasper-aec-init` applies the banked K and discloses what moved until
+a human runs `sudo jasper-aec-commission` at the speaker. See
 [ADR-0106](adr/0106-a-verification-artifact-is-never-migrated-in-place.md).
 
 ## The K lifecycle
@@ -187,9 +188,9 @@ leaving wake-word on an unfed UDP socket.
 `/var/lib/jasper/aec_mode.env`; active fields (`mode`, `bridge_role`,
 `software_aec3`, `legs`, `audio_profile.active`, and `/wake/`'s `mic_settings`)
 come from the reconciler-applied `/etc/jasper/jasper.env` snapshot. A managed
-XVF rejected by the mic/DAC/alignment gates reports a parked chip profile and
-action, never an active AEC3/direct fallback. If runtime env is stale during a
-mic-card change, `/aec.bridge_role` reports `pending`. **Status surfaces must
+XVF whose chip path the mic/DAC/alignment gates cannot arm reports the fallback
+it is actually running plus the reason and action. If runtime env is stale
+during a mic-card change, `/aec.bridge_role` reports `pending`. **Status surfaces must
 not infer the active engine from saved profile intent or bridge service state.**
 
 ## The bridge
@@ -343,7 +344,8 @@ XMOS's shipped smart-speaker default; it nulls 2–3 of openWakeWord's 32 mel bi
 
 ## Software AEC3 tuning — non-XVF and custom routes only
 
-Managed XVFs never enter this path; they park per the invariant above.
+A managed XVF enters this path only as the disclosed fallback per the invariant
+above — never as its selected profile.
 
 | Knob | Value | Where | Why |
 |---|---|---|---|
