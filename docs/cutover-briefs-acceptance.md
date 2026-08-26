@@ -543,3 +543,128 @@ that file.
   parameter, no `analyze` function that does not exist — two built models
   wanting their first caller, and a longer angle list. If the campaign wants an
   early win that is not R-1, it is this one.
+
+---
+
+## 3. The S11 amendment for the producer build
+
+> **THIS SECTION DRAFTS. IT DOES NOT ENACT.** S11's licence is closed at five
+> acts and only the owner may widen it. What follows is amendment text written
+> to be signed or refused, plus the cost of the act it would authorise, so the
+> ruling is made with the bill in view. **Until the owner adds it, the producer
+> cannot be proven and must not be run.**
+
+### 3.1 Why the existing five acts do not cover it
+
+Wave 4g is the producer path, not the deletion path, because ruling S2 settled
+#2202 as *fix*. Its blocker is not wiring — the plan's three greps say so, and
+**all three re-verify at HEAD (`c253c3cf1`)**:
+
+| 4g's claim | Re-derived at HEAD |
+|---|---|
+| `SummedCaptureProducer` is a runtime orphan | **holds.** Every reference is in `tests/test_active_speaker_commissioning_capture_producer.py` |
+| `RawCaptureTransport` has exactly two references — its own definition and its own constructor parameter — and no production implementation | **holds exactly.** `commissioning_capture_producer.py:222` (the alias) and `:420` (the ctor param). Nothing else in the tree |
+| `jts_active_driver_capture_admission_handoff` is the only `ADMISSION_HANDOFF_KIND`; there is no summed sibling | **holds.** `commissioning_admission.py:93`, used at `:210` and `:255` |
+| `publish_complete_commissioning_evidence` has zero production callers (three test sites only) | **holds.** Definition at `commissioning_evidence_store.py:1160`; the three callers are all in `tests/` |
+| No production `CommissioningTransition` emits `to_state="measured"` | **holds.** Two sites in the tree, both in `tests/test_active_speaker_commissioning_service.py` |
+| The eligibility receipt has a production reader that denies on every call | **holds.** `read_commissioning_room_authority` (`commissioning_verification.py:753`), reached from `setup_status.py:1238-1240` |
+
+So the re-arm is **a new build against the relay in the live lane's promoter
+shape** — and the relay is the phone-mic capture path, a deliberately separate
+trust boundary. That is why it needs a phone and a speaker, and why no amount of
+unit testing finishes it: the thing being proven is that a summed capture
+crosses a trust boundary, gets admitted, gets promoted, mints an
+`ArtifactIdentity`, and comes back out of the reader.
+
+**Act 4 is adjacent and is NOT this.** S11 act 4 is the #2202 **scoping hour**,
+and §6 R8 is explicit that it is *"scoping, not commissioning"* — an hour on the
+box to answer the design question *"what should the receipt say?"*, before wave
+4 books an estimate. It authorises looking. It does not authorise a run.
+
+And S11 says **"NO commissioning"** in terms. The producer proof is a
+commissioning run. It is excluded by name, and 4g's own text concedes it:
+*"which S11 excludes until a commissioning run is added to the sanctioned five
+explicitly."*
+
+### 3.2 The draft amendment — for owner sign-off
+
+> **(6) The commissioning producer proof.** *One* commissioning run on jts3,
+> for the sole purpose of proving that the re-armed summed-capture producer
+> writes the evidence its readers are waiting for. **It is an
+> instrument-validation act, not a commissioning of the speaker** — the run's
+> product is a receipt and a `complete.json`, never a tuning change.
+>
+> **Scope, and nothing outside it.** One speaker (jts3), one phone through the
+> capture relay, one region. Permitted: capture, admit, promote, publish the
+> `AdmittedCaptureProof` envelope, emit the `protected → measured` transition,
+> write `runs/{run_id}/complete.json`, mint the eligibility receipt. **Not
+> permitted: applying any candidate the run produces, any EQ or crossover change
+> to the speaker's sound, a second region, a second speaker, or a retry loop.**
+> A failed run ends and is reported; it is not re-attempted the same night.
+>
+> **Evidence required — five things, and the act closes only when all five
+> read true.** (a) `capture_post_apply`'s proof is **published**, and
+> `_reopen_capture` parses it with `AdmittedCaptureProof.from_mapping` and
+> reaches every child through `reopen_artifact(identity)` — never by
+> reconstructing a path. (b) A production `CommissioningTransition` emits
+> `to_state="measured"`, which no site in the tree does today. (c)
+> `publish_complete_commissioning_evidence` runs from production, and
+> `commissioning_host.status()` **polls without raising** — the warning 4h says
+> travels. (d) `read_commissioning_room_authority` returns something other than
+> a denial, and the code it returns is named. (e) The bench ends with the
+> standing park.
+>
+> **Bound.** One run. If the producer needs a second attempt, that is a second
+> act and comes back for a second sanction. **The receipt RECORDS and never
+> FORBIDS** (ruling S10): a receipt that cannot be produced leaves the lane
+> working and says so loudly, so a failed act blocks nothing — it costs an
+> evening and a report. **This act does not open acceptance row 10** and grants
+> no tuning licence; the five acts plus this one remain the whole list.
+
+### 3.3 What the proof procedure would cost
+
+So the ruling is made with the bill visible, not just the wording.
+
+**Before the bench, and this is the larger half.** The act is worthless until
+the build exists, and the build is not a small one:
+
+- **A production `RawCaptureTransport` implementation.** None exists. Nothing
+  outside the producer's own test file has ever built a `RawCaptureResult`.
+- **A summed admission handoff.** Production's only admitted-capture door is the
+  **driver** relay door (`record_driver_capture` →
+  `promote_isolated_driver_capture`). A summed sibling must be built; the v2
+  cloud-position captures cannot be borrowed, because that lane uses
+  `program_admission`, which mints **no `ArtifactIdentity`, no generation
+  artifact, no playback artifact** — promoting one would mean fabricating the
+  admission the receipt requires.
+- **One missing write, and only one.** The post-apply prefixes are *not* in
+  conflict and must not be "reconciled": the producer's
+  `post-apply/{attempt_id}/{issuance_id}/{ordinal}` locates the three CHILD
+  artifacts; the reader's `post-apply/{target_fingerprint}/repeat-{ordinal}.json`
+  locates the proof ENVELOPE. Renaming either would be a no-op for the reader
+  and would break the producer's own tests.
+- **4h's `complete.json` writer rides along.** It cannot ship ahead of the
+  transport without becoming the orphan class #3045 deleted.
+- **A design answer, not just code.** §6 R8: wiring a producer means deciding
+  what the eligibility receipt should *say*, which is a commissioning-eligibility
+  design question. **That is act 4's job and act 4 should run first.**
+
+**The bench evening itself.** Deploy via `scripts/deploy-to-pi.sh`; confirm the
+SHA and a clean `jasper-doctor`; a phone on the capture relay; one region
+captured and promoted; the five evidence checks in §3.2; the standing park. Call
+it one evening, assuming the build is already merged and green.
+
+**Quiet-hours note.** This act plays audible stimuli. It is daytime work or it
+asks first.
+
+### 3.4 If the owner refuses
+
+Refusal is a coherent answer and the plan already survives it. 4g's producer
+half simply does not land during the refactor; the withdrawn −2,089-line
+deletion stays withdrawn (it is already booked that way in the net-lines table
+and §6 R8); the lane keeps working and keeps disclosing, exactly as S10
+requires — since #3005 and #3029 a receipt that cannot be produced leaves the
+lane working and says so loudly. **Nothing in acceptance rows 1–10 depends on
+the producer.** The cost of refusing is that `read_commissioning_room_authority`
+goes on denying, and 4h's six production readers go on being unreachable, until
+the campaign era.
