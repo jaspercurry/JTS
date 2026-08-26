@@ -384,20 +384,38 @@ def test_an_explicit_custom_chip_leg_reads_as_chip_aec_on_an_uncodified_dac():
     assert status["microphone"]["processing_mode"] == "Chip-AEC"
 
 
-def test_a_disclosed_custom_chip_leg_reports_its_beams_not_a_pending_reconcile():
-    """The reconciler settled this box; only its proof went stale (ADR-0101).
+@pytest.mark.parametrize(
+    ("selection", "stamp", "state", "action"),
+    [
+        # The reconciler writes the record only on managed selections and never
+        # clears it on a custom profile, so what a hand-armed custom box holds
+        # is a leftover: stamped for the managed selection that wrote it, or
+        # predating the stamp entirely. Neither may hand this box a verdict.
+        ("custom", "xvf_chip_aec", "active", ""),
+        ("custom", "", "active", ""),
+        # The selection the record was written for still classifies, and a
+        # legacy record answers for the managed selections that alone could
+        # have written it.
+        ("xvf_chip_aec", "xvf_chip_aec", "disclosed_stale", "Run sudo jasper-aec-commission"),
+        ("xvf_chip_aec", "", "disclosed_stale", "Run sudo jasper-aec-commission"),
+    ],
+)
+def test_an_alignment_record_classifies_only_the_selection_it_was_written_for(
+    selection: str, stamp: str, state: str, action: str,
+) -> None:
+    """One owner for the rule, and it is the stamp (issue #3073 item 1).
 
-    A custom profile is the one selection the reconciler lets an operator arm
-    the chip on by hand, so its disclosure has to read as running too — the
-    managed-only arm reported an armed chip beam as software AEC3 still
-    waiting for a reconcile that had already finished.
+    The engine half is the kill-test: dropping a leftover verdict must not
+    cost the box the chip beam it is demonstrably running, and the
+    uncodified-DAC disclosure the leftover used to carry still reaches the
+    payload from the gate that actually authored it.
     """
     status = build_audio_profile_status(
         AecIntent(
             mode="auto",
             chip_aec_enabled=True,
             chip_aec_210_enabled=True,
-            profile_selection="custom",
+            profile_selection=selection,
         ),
         RuntimeAecEnv(
             primary_device="udp:9876",
@@ -406,6 +424,7 @@ def test_a_disclosed_custom_chip_leg_reports_its_beams_not_a_pending_reconcile()
             chip_aec_alignment_status="disclosed_stale",
             chip_aec_alignment_reason="output DAC has no codified chip-AEC calibration",
             chip_aec_alignment_action="Run sudo jasper-aec-commission",
+            chip_aec_alignment_selection=stamp,
         ),
         MicProbe(xvf_present=True, capture_channels=6, recommended_channels=6),
         bridge_active=True,
@@ -418,9 +437,10 @@ def test_a_disclosed_custom_chip_leg_reports_its_beams_not_a_pending_reconcile()
     )
 
     profile = status["audio_profile"]
-    assert profile["state"] == "disclosed_stale"
+    assert profile["state"] == state
+    assert profile["action"] == action
+    assert profile["chip_aec_gate"]["status"] == "needs_calibration"
     assert profile["active"] == "xvf_chip_aec"
-    assert profile["action"] == "Run sudo jasper-aec-commission"
     assert status["microphone"]["processing_mode"] == "Chip-AEC"
     assert status["microphone"]["wake_legs"] == ["Primary chip beam", "Chip AEC 210"]
 

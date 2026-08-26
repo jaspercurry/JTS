@@ -84,6 +84,7 @@ class RuntimeAecEnv:
     chip_aec_alignment_status: str = ""
     chip_aec_alignment_reason: str = ""
     chip_aec_alignment_action: str = ""
+    chip_aec_alignment_selection: str = ""
 
 
 @dataclass(frozen=True)
@@ -437,6 +438,12 @@ def runtime_env_from_mapping(
             "",
             process_env=process_env,
         ),
+        chip_aec_alignment_selection=env_value(
+            env,
+            "JASPER_AEC_CHIP_AEC_ALIGNMENT_SELECTION",
+            "",
+            process_env=process_env,
+        ),
     )
 
 
@@ -672,13 +679,28 @@ def build_audio_profile_status(
         PROFILE_XVF_CHIP_AEC,
         PROFILE_XVF_CHIP_AEC_TESTING,
     }
-    # The reconciler writes and clears JASPER_AEC_CHIP_AEC_ALIGNMENT_* only on
-    # the paths that arm the chip: a managed XVF, or the explicit chip leg it
-    # honours on a custom profile. On any other selection the key is a
-    # leftover describing a path nobody is running, and a disabled AEC mode
-    # owns its own state, so neither may be classified from it.
-    alignment_owned = managed_xvf or custom_chip_leg
-    alignment_status = runtime.chip_aec_alignment_status
+    # The reconciler writes JASPER_AEC_CHIP_AEC_ALIGNMENT_* only on
+    # managed_xvf_policy_applies paths and stamps each write with the selection
+    # it was written under. A record whose stamp names another selection is a
+    # leftover describing a path nobody is running — on a custom profile the
+    # keys are never written OR cleared — so it reads as absent here. A legacy
+    # record carries no stamp; its only writers were managed selections, so it
+    # answers for those and for no custom profile, the same posture
+    # gate_from_runtime_env takes toward a DAC record predating its own stamp.
+    alignment_selection = normalize_audio_input_profile(
+        runtime.chip_aec_alignment_selection, default=""
+    )
+    alignment_owned = (
+        alignment_selection == selection
+        if alignment_selection
+        else selection != PROFILE_CUSTOM
+    )
+    alignment_status = runtime.chip_aec_alignment_status if alignment_owned else ""
+    # Absent is not "blocked": with no verdict published for this selection the
+    # chip arms on the live evidence _wake_engine checks — the operator's leg
+    # and a beam actually on the carrier — rather than on a record about
+    # someone else's path.
+    alignment_permits_chip = alignment_status == "ready" or not alignment_owned
     # A device mismatch means the bridge is not capturing the detected XVF, so
     # what arrives cannot be this mic's chip beam. The beam plan and the DAC
     # gate answer whether chip-AEC may arm, not what the bridge is carrying, so
@@ -687,8 +709,8 @@ def build_audio_profile_status(
     chip_claimable = bool(
         not aec_device_mismatch
         and (
-            (chip_available and gate_permitted and alignment_status == "ready")
-            or (alignment_owned and alignment_status == "disclosed_stale")
+            (chip_available and gate_permitted and alignment_permits_chip)
+            or alignment_status == "disclosed_stale"
         )
     )
     running_engine = _wake_engine(
@@ -702,15 +724,14 @@ def build_audio_profile_status(
     running_profile = running_engine[3] if running_engine is not None else None
     disclosed_engine = (
         running_engine
-        if alignment_owned
-        and requested_intent.mode == "auto"
+        if requested_intent.mode == "auto"
         and alignment_status == "disclosed_stale"
         else None
     )
     direct_engine = running_engine if requested_intent.mode != "auto" else None
     chip_engine = (
         running_engine
-        if alignment_status == "ready"
+        if alignment_permits_chip
         and running_profile in {PROFILE_XVF_CHIP_AEC, PROFILE_XVF_CHIP_AEC_TESTING}
         else None
     )

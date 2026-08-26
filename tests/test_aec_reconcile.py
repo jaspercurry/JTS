@@ -358,6 +358,58 @@ def test_reconcile_enables_udp_aec_when_array_is_6_channel(tmp_path: Path) -> No
     )
 
 
+@pytest.mark.parametrize(
+    "selection", ["auto", "xvf_chip_aec", "xvf_chip_aec_testing"]
+)
+def test_the_alignment_record_names_the_selection_it_was_written_under(
+    tmp_path: Path, selection: str
+) -> None:
+    """Every write site is guarded on a non-custom profile, and stamps it.
+
+    The stamp is what lets the consumer in jasper.audio_profile_state tell a
+    live verdict from one the last managed pass left behind.
+    """
+    env_file = _write_env(tmp_path, "Array")
+    _write_profile_mode(tmp_path, selection)
+    _write_card(tmp_path, channels=6)
+
+    assert _run_reconcile(tmp_path, "--reason", "test").returncode == 0
+
+    body = env_file.read_text()
+    assert f"JASPER_AEC_CHIP_AEC_ALIGNMENT_SELECTION={selection}" in body
+    assert "JASPER_AEC_CHIP_AEC_ALIGNMENT_STATUS=" in body
+
+
+def test_a_custom_pass_neither_writes_nor_clears_an_inherited_record(
+    tmp_path: Path,
+) -> None:
+    """The property the reading rule rests on, not just half of it.
+
+    A custom profile writing nothing is only the first half: it does not clear
+    or rewrite the record it inherits either, which is exactly how a leftover
+    outlives the selection that produced it — and why the stamp, rather than
+    the record's presence, has to be what tells the two apart.
+    """
+    seeded = (
+        "JASPER_AEC_CHIP_AEC_ALIGNMENT_STATUS=disclosed_stale\n"
+        "JASPER_AEC_CHIP_AEC_ALIGNMENT_REASON='output DAC has no codified timing'\n"
+        "JASPER_AEC_CHIP_AEC_ALIGNMENT_ACTION='Run sudo jasper-aec-commission'\n"
+        "JASPER_AEC_CHIP_AEC_ALIGNMENT_SELECTION=xvf_chip_aec\n"
+    )
+    env_file = _write_env(tmp_path, "Array", extra=seeded)
+    _write_profile_mode(tmp_path, "custom")
+    _write_card(tmp_path, channels=6)
+
+    assert _run_reconcile(tmp_path, "--reason", "test").returncode == 0
+
+    surviving = [
+        line
+        for line in env_file.read_text().splitlines()
+        if line.startswith("JASPER_AEC_CHIP_AEC_ALIGNMENT_")
+    ]
+    assert surviving == seeded.splitlines()
+
+
 def test_reconcile_parks_when_final_outputd_restart_fails(
     tmp_path: Path,
 ) -> None:
