@@ -327,8 +327,8 @@ def test_a_predicted_worse_correction_proceeds_and_discloses_its_numbers():
 
     Item 2 used to refuse here under ``correction_not_an_improvement``. It was
     a forecast vetoing the measurement that would have settled the question,
-    which the doctrine's authority model forbids: "Predictions and heuristics
-    PROPOSE… They never veto an in-band experiment. Measurements DISPOSE."
+    which the doctrine's authority model forbids: "The LLM recommends; the
+    measurement decides… they never veto an in-band experiment."
     Tonight's shape exactly: the linearized model grades WORSE than its own
     pre-fit baseline, so ``improvement_db`` is negative against a bar it
     cannot meet.

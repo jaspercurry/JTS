@@ -5,33 +5,48 @@
 > may try, what stops it, and who decides. States the ruling once; other
 > docs point here rather than restating it.
 
-The owner's goal: an LLM that can propose, run, and grade its own
-experiments against real measurements — the way a scientist works, not a
-call-center script reading rules off a card. Rules exist only where a
+The owner's goal: an LLM that can recommend its own experiments, measure
+them, and grade them against what came back — the way a scientist works, not
+a call-center script reading rules off a card. Rules exist only where a
 mistake would damage hardware. Everything else is the LLM's and the
 household's judgment call, made on data.
 
 ## 1. The loop
 
-1. **Measure** — a round runs and banks its evidence.
-2. **Propose** — the LLM reads the evidence, states pre-registered
-   expectations, and proposes candidates to test next.
-3. **Run** — a candidate that is cheap, safe, and reversible runs without
-   ceremony.
-4. **Collect** — every mic movement gathers the maximum information it can
-   support, not the minimum that answers one question.
-5. **Recommend** — the LLM makes a final call from the gathered evidence.
-6. **Confirm** — one more measurement round checks the recommendation held.
+**measure → analyze → recommend → loop → save.** One vocabulary, in words
+anyone would understand: the engine's verbs *are* the loop's language.
+
+- **measure** — a round runs and banks its evidence. Baseline, re-measure and
+  candidate-check are the same verb with different arguments, not three
+  things. A candidate that is cheap, safe, and reversible is measured without
+  ceremony, and every mic movement gathers the maximum information it can
+  support, not the minimum that answers one question.
+- **analyze** — the evidence is read: what the capture says, and what this
+  session did not separate.
+- **recommend** — pre-registered expectations are stated and the next thing
+  to try is named. Proposing, prescribing and recommending are one act; a
+  final call is that same act with more information behind it.
+- **loop** — checking that a recommendation held is measuring again. A worse
+  round is a gradient sample, not a stop (§3).
+- **save** — the result is banked.
 
 ## 2. The authority model
 
-- **Predictions and heuristics PROPOSE.** Priors, confidence scores, and
-  rankings are advisory. They never veto an in-band experiment.
-- **Measurements DISPOSE.** Keep/rollback is decided by citing a measured
-  delta, not a forecast.
+- **The LLM recommends; the measurement decides.** Priors, confidence scores
+  and rankings are advisory: they never veto an in-band experiment, and
+  keep/rollback is decided by citing a measured delta, not a forecast.
 - **The owner rules** on taste and on which risk to accept.
 - **Hard stops exist only for a known component-damage mechanism** — never
   for "this probably won't work" or "we haven't tried this before."
+- **An unproven or stale fact discloses loudly and never stops the work.**
+  Outside §4's clamps, staleness and unproven-ness are a doctor line, an
+  `event=`, a UI hint — never a stop: last-known-good keeps playing and the
+  session keeps measuring. Hardware this project has commissioned once ships
+  as known-good, so a household that owns it does not re-commission it. What
+  may still refuse is a **claim** — a fact that cannot be proven is not
+  banked — and refusing to claim is a different act from refusing to work.
+  The repo-wide form of this rule lives in the governance charter
+  ([AGENTS.md](../AGENTS.md)).
 
 ## 3. The guiding principle — least-bad measured, honed in bites
 
@@ -198,7 +213,7 @@ place only by naming the component-damage mechanism it guards against —
 - Evidence packet — one document per round a reader (human or LLM) can
   answer from: `jasper/active_speaker/crossover_v2/evidence_packet.py`.
 - More than one capture per mic position, so one mic movement answers more
-  questions (§1.4) — `--per-position N` on the round runner above, plus the
+  questions (§1, `measure`) — `--per-position N` on the round runner above, plus the
   derived `position_cycle.json` that says which pose each take was measured
   at. Multiple DSP *configs* per position has a door but no wiring:
   `POST /crossover/v2/republish` makes a banked candidate the live one by its

@@ -21,8 +21,8 @@ so prose never leads code. The operator-facing companion,
 `docs/llm-operator-runbook.md`, is Wave 1 work.
 
 Authority model and method are **not restated here**: the loop's rules live in
-[measurement-loop-doctrine.md](measurement-loop-doctrine.md) (propose/dispose,
-the guiding principle — least-bad measured, honed in bites — the closed
+[measurement-loop-doctrine.md](measurement-loop-doctrine.md) (the authority
+model, the guiding principle — least-bad measured, honed in bites — the closed
 hard-stop list, the nanny test) and the execution method lives in
 AGENTS.md ("The standing multi-agent method": conductor, adversarial gate to
 0 blockers / 0 should-fixes, the owner's values). Every ticket below is
@@ -42,7 +42,7 @@ executed under both.
    corner (the R21 "apply-vertical" candidate is cancelled — see
    Supersessions). Exploration of corner variations happens as offline
    *simulated evaluation* over banked solo captures, at zero capture cost.
-3. **Predictions propose, measurements dispose.** Arithmetic predictions
+3. **The LLM recommends; the measurement decides.** Arithmetic predictions
    (the transfer function of a staged filter set, the complex sum of measured
    solos) are kept as instruments — every tournament candidate carries a
    pre-registered expected delta. Heuristic rankings and machine "goodness"

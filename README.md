@@ -351,8 +351,8 @@ One line each; the doc is the canonical "read this before modifying".
 Its own doctrine and cadence; start at the doctrine, not the plans.
 
 - [`measurement-loop-doctrine.md`](docs/measurement-loop-doctrine.md) —
-  **canonical doctrine:** the measure → propose → confirm loop, the
-  propose/dispose authority model, the ethos rulings, the hard-stop list
+  **canonical doctrine:** the measure → analyze → recommend → loop → save
+  cycle, the authority model, the ethos rulings, the hard-stop list
 - [`tuning-master-plan.md`](docs/tuning-master-plan.md) — ratified plan:
   declared-design executor, linearization tournaments, LLM operator
 - [`llm-operator-runbook.md`](docs/llm-operator-runbook.md) — operational map
