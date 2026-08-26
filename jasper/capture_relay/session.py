@@ -1208,6 +1208,7 @@ def _poll_until_capture(
 
     deadline = monotonic() + timeout_s
     armed_fired = False
+    ready_fired = False
     phase = "awaiting_arm"
     capture_device: dict | None = None
     capture_noise_floor: dict | None = None
@@ -1300,7 +1301,14 @@ def _poll_until_capture(
 
         if state.ready:
             raise_if_stopped()
-            log_event(logger, "capture_relay.ready", session_id=session.session_id)
+            if not ready_fired:
+                # Once per capture, like ``armed`` — the marker means "the
+                # phone's upload landed", and a tolerated pull retry does not
+                # make that happen again.
+                ready_fired = True
+                log_event(
+                    logger, "capture_relay.ready", session_id=session.session_id
+                )
             pull_started = monotonic()
             try:
                 blob, header_integrity = client.pull_blob(

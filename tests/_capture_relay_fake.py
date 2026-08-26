@@ -26,6 +26,61 @@ CAPTURE_PAGE = {
 }
 
 
+def relay_clock(step_s: float = 0.0) -> tuple[dict[str, float], Any, Any]:
+    """A clock a capture runner cannot advance merely by READING it.
+
+    Time moves only where it really passes: ``step_s`` per poll the runner
+    sleeps through, plus whatever a stalled call burns inside itself (see
+    :func:`stall_call`). That keeps a test's wall-time claims exact and
+    independent of how many times the runner happens to read the clock — the
+    only reason to prefer it over a scripted list of ticks.
+
+    Returns the mutable clock (so a stall can charge it), its reader, and the
+    ``sleep`` to hand the runner.
+    """
+    clock = {"t": 0.0}
+
+    def sleep(_s: float) -> None:
+        clock["t"] += step_s
+
+    return clock, (lambda: clock["t"]), sleep
+
+
+def stall_call(
+    client: Any,
+    clock: dict[str, float],
+    method: str,
+    *,
+    stalls: int,
+    stall_s: float,
+    exc: BaseException | None = None,
+) -> dict[str, int]:
+    """Make the first ``stalls`` calls to ``client.<method>`` stall, then serve.
+
+    The field shape of a relay outage (issues #2083, #1650, #2453): the request
+    went out, the body never came back, and the socket timed out — so each
+    stall really burns ``stall_s`` of ``clock`` INSIDE the call, which is why
+    the runners' grace is wall-clock rather than a retry count.
+
+    Returns a counter dict: ``stalled`` is how many calls actually stalled, and
+    ``left`` how many of the offered stalls were never reached — the number
+    that proves a runner gave up while the outage was still going.
+    """
+    real = getattr(client, method)
+    counts = {"stalled": 0, "left": stalls}
+
+    def stalling(*args: Any, **kwargs: Any) -> Any:
+        if counts["left"] > 0:
+            counts["left"] -= 1
+            counts["stalled"] += 1
+            clock["t"] += stall_s
+            raise (exc if exc is not None else TimeoutError("relay stalled"))
+        return real(*args, **kwargs)
+
+    setattr(client, method, stalling)
+    return counts
+
+
 class FakeRelayBackend:
     """In-memory transport mirroring the Worker's Pi-facing endpoints."""
 

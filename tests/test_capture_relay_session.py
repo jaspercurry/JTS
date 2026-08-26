@@ -42,7 +42,7 @@ from jasper.capture_relay.session import (
 from jasper.capture_relay.spec import build_room_sweep_spec
 from jasper.capture_relay.spec import build_crossover_sweep_spec
 from tests._capture_relay_fake import CAPTURE_PAGE as _CAPTURE_PAGE
-from tests._capture_relay_fake import FakeRelayBackend
+from tests._capture_relay_fake import FakeRelayBackend, relay_clock, stall_call
 
 
 def _mint(backend):
@@ -54,47 +54,6 @@ def _mint(backend):
     register_session(client, session)
     backend.bind_phone(session)
     return client, session
-
-
-def _test_clock(step_s=0.0):
-    """A clock the runner cannot advance merely by READING it.
-
-    Time moves only where it really passes: ``step_s`` per poll the runner
-    sleeps through, plus whatever a stalled call burns inside itself. That
-    keeps a test's wall-time claims exact and independent of how many times
-    the runner happens to read the clock. Returns the mutable clock (so a
-    stall can charge it), its reader, and the sleep.
-    """
-    clock = {"t": 0.0}
-
-    def sleep(_s):
-        clock["t"] += step_s
-
-    return clock, (lambda: clock["t"]), sleep
-
-
-def _stall(client, clock, method, *, stalls, stall_s, exc=None):
-    """Make the first ``stalls`` calls to ``client.<method>`` stall, then serve.
-
-    Each stall burns ``stall_s`` of the clock the way a request that times out
-    does — the wall time is spent INSIDE the call, which is why the runner's
-    grace is wall-clock rather than a retry count. Returns a counter so a test
-    can prove how many calls were actually attempted.
-    """
-    real = getattr(client, method)
-    budget = {"left": stalls}
-    counts = {"stalled": 0}
-
-    def stalling(*args, **kwargs):
-        if budget["left"] > 0:
-            budget["left"] -= 1
-            counts["stalled"] += 1
-            clock["t"] += stall_s
-            raise (exc if exc is not None else TimeoutError("relay stalled"))
-        return real(*args, **kwargs)
-
-    setattr(client, method, stalling)
-    return counts
 
 
 # --- tap link + registration --------------------------------------------------
@@ -486,7 +445,7 @@ def test_armed_without_upload_times_out_after_one_fresh_window(caplog):
     backend.phone_arm(session.session_id)  # armed, but never uploads
     armed_calls = []
 
-    _clock, monotonic, sleep = _test_clock(1.0)
+    _clock, monotonic, sleep = relay_clock(1.0)
 
     with pytest.raises(
         CaptureTimeout,
@@ -511,7 +470,7 @@ def test_phone_that_never_arms_remains_bounded_by_pre_arm_window(caplog):
     backend = FakeRelayBackend()
     client, session = _mint(backend)
     armed_calls = []
-    _clock, monotonic, sleep = _test_clock(1.0)
+    _clock, monotonic, sleep = relay_clock(1.0)
 
     with pytest.raises(CaptureTimeout, match=r"phone never armed within 3s"):
         run_capture(
@@ -550,7 +509,7 @@ def test_late_arm_gets_a_fresh_bounded_capture_window(monkeypatch):
 
     # The original deadline expires exactly ON the arm poll.  A fresh window
     # lets the next poll observe the upload; it stays bounded from that arm.
-    _clock, monotonic, sleep = _test_clock(1.5)
+    _clock, monotonic, sleep = relay_clock(1.5)
     result = run_capture(
         client,
         session,
@@ -1066,7 +1025,7 @@ def test_play_cue_fires_on_timeout():
     client, session = _mint(backend)
     backend.phone_arm(session.session_id)  # armed but never uploads
     cues = []
-    _clock, monotonic, sleep = _test_clock(1.0)
+    _clock, monotonic, sleep = relay_clock(1.0)
     with pytest.raises(CaptureTimeout):
         run_capture(
             client,
@@ -1121,7 +1080,7 @@ def test_relay_death_mid_poll_cues_unreachable_and_propagates():
     )
     register_session(client, session)
     cues = []
-    _clock, monotonic, sleep = _test_clock(5.0)
+    _clock, monotonic, sleep = relay_clock(5.0)
     with pytest.raises(RelayError) as excinfo:
         run_capture(
             client,
@@ -1169,15 +1128,20 @@ def test_cue_is_best_effort_and_never_masks_the_failure():
 
 
 @pytest.mark.parametrize("call", ("status", "pull_blob"))
-def test_one_transient_stall_does_not_void_a_single_capture(call):
+def test_one_transient_stall_does_not_void_a_single_capture(call, caplog):
     """A 10 s stall on either relay call, inside the grace, is ridden out and
-    the capture still comes back — bit-identical, analyzed, not voided."""
+    the capture still comes back — bit-identical, analyzed, not voided.
+
+    The lifecycle markers stay once-per-capture through the retry: ``ready``
+    means the phone's upload landed, and a re-pull of those same bytes does
+    not make it land again."""
+    caplog.set_level(logging.INFO, logger="jasper.capture_relay.session")
     backend = FakeRelayBackend()
     client, session = _mint(backend)
     wav = b"RIFF" + bytes(range(256))
     backend.phone_arm(session.session_id)
-    clock, monotonic, sleep = _test_clock()
-    counts = _stall(client, clock, call, stalls=1, stall_s=10.0)
+    clock, monotonic, sleep = relay_clock()
+    counts = stall_call(client, clock, call, stalls=1, stall_s=10.0)
 
     result = run_capture(
         client,
@@ -1197,6 +1161,11 @@ def test_one_transient_stall_does_not_void_a_single_capture(call):
     assert clock["t"] == 10.0 < min(
         STATUS_POLL_TRANSIENT_GRACE_S, BLOB_PULL_TRANSIENT_GRACE_S
     )
+    events = [
+        record.getMessage().split(" ", 1)[0] for record in caplog.records
+    ]
+    assert events.count("event=capture_relay.ready") == 1
+    assert events.count("event=capture_relay.armed") == 1
 
 
 @pytest.mark.parametrize("call", ("status", "pull_blob"))
@@ -1208,8 +1177,8 @@ def test_a_dead_session_answer_is_never_retried_in_a_single_capture(call):
     backend = FakeRelayBackend()
     client, session = _mint(backend)
     backend.phone_arm(session.session_id)
-    clock, monotonic, sleep = _test_clock()
-    counts = _stall(
+    clock, monotonic, sleep = relay_clock()
+    counts = stall_call(
         client,
         clock,
         call,
@@ -1248,7 +1217,7 @@ def test_a_sustained_blob_pull_outage_still_ends_a_single_capture():
     backend = FakeRelayBackend()
     client, session = _mint(backend)
     backend.phone_arm(session.session_id)
-    clock, monotonic, sleep = _test_clock()
+    clock, monotonic, sleep = relay_clock()
     status_ok = {"n": 0}
     real_status = client.status
 
@@ -1257,7 +1226,7 @@ def test_a_sustained_blob_pull_outage_still_ends_a_single_capture():
         return real_status(*args, **kwargs)
 
     client.status = status
-    counts = _stall(client, clock, "pull_blob", stalls=99, stall_s=10.0)
+    counts = stall_call(client, clock, "pull_blob", stalls=99, stall_s=10.0)
 
     with pytest.raises(TimeoutError):
         run_capture(
