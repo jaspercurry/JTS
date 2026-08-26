@@ -117,6 +117,7 @@ __all__ = [
     "entry_baseline_screens",
     "group_position_floor",
     "geometry_retake",
+    "take_id_for",
     "cloud_position_record",
     "lateral_pose_record",
     "entry_baseline_record",
@@ -760,6 +761,61 @@ class PositionGeometry:
             )
 
 
+def take_id_for(position_id: str, attempt: int) -> str:
+    """One take's id, as every builder AND the storage seam spell it.
+
+    A geometry retake reuses the position id — same prompted spot, measured
+    again from further out — so the id alone does not identify a take
+    (attribution plan §6's "accepted-attempt <-> position mapping"). Zero-padded
+    so a lexical sort of the bundle is also a chronological one.
+
+    Written here once: this expression stood in all three builders below and a
+    fourth time at ``correction_crossover_v2.bind_position_retention``, and four
+    copies of an index convention is four places for it to drift. The seam and
+    the record must name the same take or the bundle's sidecar path and the
+    session's own evidence disagree.
+    """
+    return f"{position_id}_a{int(attempt):02d}"
+
+
+def _take_identity(
+    *,
+    position_id: str,
+    phase: str,
+    index: int,
+    attempt: int,
+    session_id: str,
+    wav_sha256: str | None,
+) -> dict[str, Any]:
+    """The identity block every retained take carries, whatever kind it is.
+
+    The COMMON CORE of the three builders below. What each of them adds on top
+    is its own — a graded seat and a walk pose are different captures and their
+    grading columns are never meaningful for each other
+    (see :func:`lateral_pose_record`) — so this is a shared core plus a
+    role-tagged extension, never one shape with half its columns null.
+
+    Deliberately NOT emitted here: the id key itself. A cloud position and an
+    entry baseline call it ``position_id``, a pose calls it ``pose_id``, and
+    collapsing those two words would be minting one vocabulary for two
+    questions.
+
+    ``wav_sha256`` is the capture's content digest — the VERIFIER for a replay,
+    never the index (§6's rule that "content hashing stays the verifier; it must
+    stop being the index"). Recorded whether or not any store retained the
+    bytes, because it is what lets a laptop-side WAV be matched back to this
+    take at all.
+    """
+    return {
+        "phase": phase,
+        "index": index,
+        "attempt": attempt,
+        "take_id": take_id_for(position_id, attempt),
+        "session_id": session_id,
+        "wav_sha256": wav_sha256,
+    }
+
+
 def cloud_position_record(
     *,
     position_id: str,
@@ -822,11 +878,9 @@ def cloud_position_record(
     :attr:`~jasper.audio_measurement.gate_disclosure.GateDisclosure.reflection_delay_ms`
     for why the absolute time is meaningless to a reader.
 
-    ``wav_sha256`` is the capture's content digest — the VERIFIER for a replay,
-    never the index (§6's rule that "content hashing stays the verifier; it must
-    stop being the index").  Recorded whether or not any store retained the
-    bytes, because it is what lets a laptop-side WAV be matched back to this
-    take at all.
+    The identity half — phase, index, attempt, ``take_id``, ``session_id`` and
+    the ``wav_sha256`` verifier — is :func:`_take_identity`, shared with the
+    other two builders.
 
     ``geometry`` is WHERE the microphone was, as fields rather than as English
     (owner ruling, 2026-08-24).  Until it existed this record carried no
@@ -842,10 +896,10 @@ def cloud_position_record(
     """
     return {
         "position_id": position_id,
-        "phase": phase,
-        "index": index,
-        "attempt": attempt,
-        "take_id": f"{position_id}_a{int(attempt):02d}",
+        **_take_identity(
+            position_id=position_id, phase=phase, index=index, attempt=attempt,
+            session_id=session_id, wav_sha256=wav_sha256,
+        ),
         "prompt": prompt,
         "wide": wide,
         # The position's named question (attribution-stage plan §5's promotion
@@ -856,7 +910,6 @@ def cloud_position_record(
         "position_axis": geometry.axis,
         "mark_distance_m": geometry.mark_distance_m,
         "captured_at": captured_at,
-        "session_id": session_id,
         "gate_window_ms": gate_window_ms,
         "gate_floor_source": gate_floor_source,
         "gate_disclosure": gate_disclosure,
@@ -866,7 +919,6 @@ def cloud_position_record(
         "gating_applied": gating_applied,
         "summed_ripple_db": summed_ripple_db,
         "glitch_detected": glitch_detected,
-        "wav_sha256": wav_sha256,
     }
 
 
@@ -907,10 +959,10 @@ def lateral_pose_record(
     """
     return {
         "pose_id": pose.pose_id,
-        "phase": PHASE_LATERAL,
-        "index": pose.index,
-        "attempt": pose.attempt,
-        "take_id": f"{pose.pose_id}_a{int(pose.attempt):02d}",
+        **_take_identity(
+            position_id=pose.pose_id, phase=PHASE_LATERAL, index=pose.index,
+            attempt=pose.attempt, session_id=session_id, wav_sha256=wav_sha256,
+        ),
         "prompt": pose.prompt,
         "role": pose.role,
         "position_deg": int(position_deg),
@@ -918,8 +970,6 @@ def lateral_pose_record(
         "at_mark": bool(pose.at_mark),
         "regime": LATERAL_POSE_REGIME,
         "lateral_consumer": lateral_consumer,
-        "session_id": session_id,
-        "wav_sha256": wav_sha256,
     }
 
 
@@ -969,14 +1019,16 @@ def entry_baseline_record(
     reader covers both — see
     :func:`~.position_cycle.read_entry_baseline_take`.
     """
-    take_id = f"{PHASE_ENTRY_BASELINE}_{index:02d}_a{int(attempt):02d}"
+    identity = _take_identity(
+        position_id=f"{PHASE_ENTRY_BASELINE}_{index:02d}",
+        phase=PHASE_ENTRY_BASELINE, index=index, attempt=attempt,
+        session_id=session_id, wav_sha256=wav_sha256,
+    )
     return {
-        "position_id": take_id,
-        "phase": PHASE_ENTRY_BASELINE,
-        "index": index,
-        "attempt": attempt,
-        "take_id": take_id,
-        "session_id": session_id,
+        # The entry baseline has no prompted spot of its own, so its position
+        # id IS its take id — the one kind where the two coincide.
+        "position_id": identity["take_id"],
+        **identity,
         "program_id": program_id,
         "reference_mark": reference_mark,
         "graph_fingerprint": graph_fingerprint,
@@ -988,7 +1040,6 @@ def entry_baseline_record(
         "gate_window_ms": gate_window_ms,
         "summed_ripple_db": summed_ripple_db,
         "glitch_detected": glitch_detected,
-        "wav_sha256": wav_sha256,
     }
 
 

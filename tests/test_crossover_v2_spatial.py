@@ -24,6 +24,8 @@ The mutation table, with the suite that caught each, is in the PR.
 
 from __future__ import annotations
 
+from types import SimpleNamespace
+
 import pytest
 
 from jasper.active_speaker import crossover_v2_flow as flow
@@ -373,6 +375,84 @@ def test_a_position_take_id_is_qualified_by_the_attempt():
 
     assert record["take_id"] == "cloud_measure_03_a07"
     assert record["position_id"] == "cloud_measure_03"
+
+
+def test_all_three_take_builders_state_one_identity_under_one_vocabulary():
+    """The common core, asserted as a SET rather than key by key.
+
+    A cloud position, a walk pose and an entry baseline are different captures
+    and their grading columns are never meaningful for each other — but the six
+    facts that say WHICH take this is are the same question three times, and a
+    reader that had to spell them differently per kind is the duplication row 4b
+    names. Adding a fourth builder that spells one of these its own way turns
+    this red.
+    """
+    core = {"phase", "index", "attempt", "take_id", "session_id", "wav_sha256"}
+    cloud = spatial.cloud_position_record(
+        position_id="cloud_measure_03", phase=PHASE_CLOUD_MEASURE, index=3,
+        attempt=7, prompt="stand here", wide=False, role="onax",
+        geometry=spatial.PositionGeometry(
+            axis=spatial.POSITION_AXIS_HORIZONTAL, degrees=-7,
+            mark_distance_m=1.0,
+        ),
+        captured_at=1.0, session_id="sess", gate_window_ms=12.0,
+        gate_floor_source="reflection", gate_disclosure="a wall",
+        gate_moved_rms_db=2.59, gate_reflection_delay_ms=5.33,
+        validity_floor_hz=100.0, gating_applied=True, summed_ripple_db=1.0,
+        glitch_detected=False, wav_sha256="abc",
+    )
+    pose = spatial.lateral_pose_record(
+        spatial.LateralPose(
+            pose_id="lateral_03", index=3, attempt=7, prompt="step left",
+            role="offax", offset_cm=25.0, at_mark=False, curves=(),
+        ),
+        position_deg=-22, lateral_consumer="fc_selector", session_id="sess",
+        wav_sha256="abc",
+    )
+    entry = _entry_record(index=3, attempt=7, session_id="sess", wav_sha256="abc")
+
+    for record in (cloud, pose, entry):
+        assert core <= set(record)
+        assert record["attempt"] == 7
+        assert record["session_id"] == "sess"
+        assert record["wav_sha256"] == "abc"
+        # The verifier is not the index: a take id is derivable from the id and
+        # the attempt, and never from the digest.
+        assert record["wav_sha256"] not in record["take_id"]
+    # Each kind keeps its OWN word for the place it names, which is the
+    # role-tagged extension the common core sits under.
+    assert cloud["position_id"] == "cloud_measure_03"
+    assert pose["pose_id"] == "lateral_03"
+    assert "pose_id" not in cloud and "position_id" not in pose
+
+
+def test_the_storage_seam_and_the_builders_mint_the_same_take_id():
+    """One index convention, spelled once.
+
+    The seam names the bundle path and the builder names the record inside it;
+    when the two spelled the convention separately, a change to one silently
+    made the sidecar's path and its contents disagree about which take it was.
+    """
+    from jasper.web import correction_crossover_v2 as v2host
+
+    minted: list[str] = []
+
+    class _Store:
+        bundle_dir = "/nonexistent"
+        session_id = "sess"
+
+        def publish_json_artifact(self, path, payload):
+            minted.append(path)
+            return SimpleNamespace(fingerprint="fp")
+
+    seam = v2host.bind_position_retention(_Store(), "relay", {})
+    seam("cloud_measure_03", SimpleNamespace(wav=None), {"attempt": 7})
+
+    assert minted == [
+        f"crossover_v2/relay/positions/"
+        f"{spatial.take_id_for('cloud_measure_03', 7)}.json"
+    ]
+    assert spatial.take_id_for("cloud_measure_03", 7) == "cloud_measure_03_a07"
 
 
 def _entry_record(**overrides):
