@@ -22,8 +22,8 @@ list never covered either.
 **Item 2 stopped refusing (docs/measurement-loop-doctrine.md deviation (c)).**
 Until that burn-down it raised ``correction_not_an_improvement`` — a forecast
 vetoing the measurement that would have settled the question, which is the
-authority model exactly inverted: "Predictions and heuristics PROPOSE… They
-never veto an in-band experiment.  Measurements DISPOSE."  It fired in the
+authority model exactly inverted: "The LLM recommends; the measurement
+decides… they never veto an in-band experiment."  It fired in the
 field on 2026-08-22 against jts3's first prescribed-boost round
 (``improvement_db=-0.703`` against ``required_db=0.0``), and the log line one
 above it was this module's own estimator-consistency finding reporting the
@@ -761,8 +761,8 @@ def assess_accountability(
     # The forecast says worse, and says so at WARNING — loud enough to grep
     # for, and not ERROR, because nothing failed: a model that expects a
     # candidate to measure worse is a prediction, and under the doctrine's
-    # authority model a prediction proposes. What settles it is the round this
-    # no longer stops.
+    # authority model a prediction only recommends. What decides is the round
+    # this no longer stops.
     return _settle(
         LEDGER_NOT_AN_IMPROVEMENT, before=before, improvement_db=improvement_db,
         level=logging.WARNING,

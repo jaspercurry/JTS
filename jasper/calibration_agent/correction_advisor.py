@@ -660,9 +660,9 @@ def _advisor_packet_for_model(context: dict[str, Any]) -> dict[str, Any]:
 
     It no longer hand-writes an ``advisor_policy`` permission list. That
     list existed only to satisfy a per-action veto in ``response.py``;
-    with the veto gone (``docs/measurement-loop-doctrine.md`` — heuristics
-    propose, measurements dispose) what bounds a proposal is the strategy
-    caps below, then simulate / acceptance / confirm / apply.
+    with the veto gone (``docs/measurement-loop-doctrine.md`` — a heuristic
+    recommends, the measurement decides) what bounds a proposal is the
+    strategy caps below, then simulate / acceptance / confirm / apply.
     """
     packet = dict(context)
     # response._correction_bounds reads advisor_context["correction"]["strategy_bounds"].

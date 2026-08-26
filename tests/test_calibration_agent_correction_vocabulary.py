@@ -232,9 +232,9 @@ def test_policy_reasons_ride_out_as_provenance_never_veto():
     A packet whose advisory catalog records a concern about this action no
     longer refuses it: the in-bounds proposal validates, and the concern
     rides out on the action as ``policy_advisories`` for the model and the
-    household to weigh (``docs/measurement-loop-doctrine.md`` — heuristics
-    propose, the downstream simulate/acceptance/confirm/apply gates
-    dispose).
+    household to weigh (``docs/measurement-loop-doctrine.md`` — a heuristic
+    recommends, the downstream simulate/acceptance/confirm/apply gates
+    decide).
     """
     ctx = _ctx()
     ctx["advisor_policy"] = {

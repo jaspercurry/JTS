@@ -2178,8 +2178,8 @@ def test_a_prescription_predicted_to_worsen_is_banked_and_measured_anyway(
     narrow cut helps, but it CAN settle that a proposal makes the prediction
     worse, and spending the household's speaker on that is worth refusing
     before measuring." That is the exact argument
-    ``docs/measurement-loop-doctrine.md`` overrules — a prediction proposes and
-    a measurement disposes — and on 2026-08-22 this refusal, in this shape,
+    ``docs/measurement-loop-doctrine.md`` overrules — a prediction recommends
+    and the measurement decides — and on 2026-08-22 this refusal, in this shape,
     stopped jts3's first prescribed-boost round at ``improvement_db=-0.703``
     one line after the same gate disclosed its own level estimators 11.635 dB
     apart. A model that cannot trust its inputs has not settled anything.

@@ -31,8 +31,8 @@ and it is the shipped instrument for two of stage P3's rules
   :func:`_check_classification` reading :mod:`.feature_classification`: every
   filter no verdict vouches for is counted onto the receipt and onto the
   propose/stage report, and none of them is refused.  Owner ruling, 2026-08-23
-  — the vouch is a prediction about whether a filter will help, and predictions
-  propose while measurements dispose.
+  — the vouch is a prediction about whether a filter will help, and a
+  prediction recommends while the measurement decides.
 * **rule 3, per-driver placement** — "a per-driver defect gets a per-driver
   filter in that branch — Layer 1a's existing per-role stage — and the shared
   stage is reserved for genuinely system-level shaping."  Enforced here as the
@@ -1555,8 +1555,8 @@ def _check_classification(
     Returns ``(the vouching basis in filter order, the count of filters with no
     vouching verdict)``. **It refuses nothing**, and that is ruling 2026-08-23:
     the vouch is a prediction about whether a filter will help, and
-    ``docs/measurement-loop-doctrine.md`` §2 gives a prediction the power to
-    propose and never to dispose. A filter inside this gate's caps and bands
+    ``docs/measurement-loop-doctrine.md`` §2 lets a prediction recommend and
+    never decide. A filter inside this gate's caps and bands
     spends nothing the household can hear more of, so §4's closed list has no
     component-damage mechanism to name for it; §3 rules that every defect
     outside that list "discloses and recommends a next action. It never

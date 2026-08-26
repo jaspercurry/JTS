@@ -30,8 +30,8 @@ They are not advice.
   lab arm). You hand the human a URL; you do not simulate their walk.
 - **The owner rules** on taste and on which risk to accept.
 
-And the authority rule underneath all four: **predictions propose,
-measurements dispose.** Keep/rollback cites a measured delta, never a forecast.
+And the authority rule underneath all four: **the LLM recommends; the
+measurement decides.** Keep/rollback cites a measured delta, never a forecast.
 Heuristic rankings and machine "goodness" scores do not exist in this system —
 if you find one, it is provenance, not a verdict.
 
@@ -169,7 +169,7 @@ bar's — `driver_feature_not_classified`, `driver_feature_not_cuttable`,
 `driver_boost_exceeds_feature_depth`, and `driver_boost_unvouched`. The owner
 ruled that a candidate inside the caps may be tested; the vouch is a prediction
 about whether a filter will help, so it now DISCLOSES (see below) and the round
-disposes.
+decides.
 
 One refusal still shapes what you can ask for, and it is about **boosts**:
 
@@ -409,7 +409,7 @@ excess-group-delay group (`excursion_us`, `nbhd_sd_us`, `p2p_us`,
 | Broadband H2/H3 rise; present only at the higher drive level | rattle, or clipping / compression |
 
 Every row is a hypothesis to test, not a finding to report. State it as one and
-let the next measurement dispose of it; a heuristic never vetoes an experiment.
+let the next measurement decide it; a heuristic never vetoes an experiment.
 
 ### Evidence the record does not carry yet
 
