@@ -55,7 +55,6 @@ from jasper.audio_measurement.null_walk import (
     NullWalkError,
     NullWalkSpec,
 )
-from jasper.dsp_apply import DEFAULT_DSP_WRITER_LOCK_TIMEOUT_S
 from jasper.output_topology import OutputTopology
 
 from .camilla_yaml import STARTUP_MUTE_GAIN_DB
@@ -75,8 +74,6 @@ from .test_signal_plan import (
 )
 
 logger = logging.getLogger(__name__)
-
-DEFAULT_SUMMED_RUNTIME_LOCK_TIMEOUT_S = DEFAULT_DSP_WRITER_LOCK_TIMEOUT_S
 
 T = TypeVar("T")
 SummedGraphKind: TypeAlias = Literal["normal", "reverse", "delay"]
