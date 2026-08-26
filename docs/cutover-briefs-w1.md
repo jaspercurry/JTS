@@ -11,19 +11,26 @@
 > re-deriving. Where a derivation here disagrees with §1, the disagreement is
 > recorded in the ledger below rather than papered over.
 
-Every `file:line` here was re-derived at **`c253c3cf1`** (`main` at
-`docs/REFACTOR-CUTOVER-2026-08.md`'s own merge, #3143). §1's numbers were taken
-one merge earlier at `4a9e9f631`; where they still hold this document says so,
-because "unchanged" is a finding too.
+Every `file:line` into the **source tree** was re-derived at **`8c6a33d37`**;
+every citation into **`REFACTOR-CUTOVER-2026-08.md`** is to that same commit.
+§1's own numbers were taken at `4a9e9f631`, and where they still hold this
+document says so — "unchanged" is a finding too.
+
+**The plan moved twice under this brief in one day** (#3143 → #3151 → #3147):
+§0–§6 shifted **+4** and §7–§8 shifted **+347**, and #3151 opened a decision that
+changes W1-a's scope (D12). Every plan citation here was re-verified against its
+target's text after the shift, not arithmetic-adjusted. **Re-verify again before
+cutting** — §7's trap 4 is not rhetorical.
 
 ---
 
 ## 0. Where this brief disagrees with §1
 
-Eleven. Group A (D1–D5) are shape questions W1-a has to answer and §1 leaves
+Twelve. Group A (D1–D5) are shape questions W1-a has to answer and §1 leaves
 partly open. Group B (D6–D10) are **counts that are wrong at HEAD** — D6 is the
 one that changes a work item's title. **D11** is a citation block stale enough to
-need its own table, and it lives with its subject in §3.1.
+need its own table, and it lives with its subject in §3.1. **D12 is an open owner
+decision that lands on W1-a's scope** — read it before starting.
 
 Every one was verified by reading the file, not by taking a prior document's
 word. Where §1 is right, this brief says so instead of re-asserting it as new.
@@ -32,22 +39,53 @@ word. Where §1 is right, this brief says so instead of re-asserting it as new.
 
 | # | §1 says | At HEAD | Disposition |
 |---|---|---|---|
-| D1 | W1-a implements `bank` / `read` / `persist` / `read_state` (`:254-264`), stated in the sync colour the protocol carries today | §4's ruling — *"`RecordStore` is cut async before it is built"* (`:707-713`) — makes all four `async def` | **read §1 and §4 together.** The DAG (`:1044`) already gates `W1-a ◄── W4-a`, so this is a scheduling fact §1's item text simply does not repeat. **Build the four methods async.** §2 below writes the signatures out. |
+| D1 | W1-a implements `bank` / `read` / `persist` / `read_state` (`:258-268`), stated in the sync colour the protocol carries today | §4's ruling — *"`RecordStore` is cut async before it is built"* (`:711-717`) — makes all four `async def` | **read §1 and §4 together.** The DAG (`:1391`) already gates `W1-a ◄── W4-a`, so this is a scheduling fact §1's item text simply does not repeat. **Build the four methods async.** §2 below writes the signatures out. |
 | D2 | `persist`/`read_state` land on `persist_conductor_state`'s shape (`web/…:2809`), *"wave 3's schema writer with no schema"* | The schema now exists. `build_conductor_state` (`durable_state.py:1025`) owns the whole document and *"touches no file"* (`:1038`); `ConductorState` (`:97`) carries `state` + `durable`. `persist_conductor_state` is `web/…:2809-2867` — **58 lines**, a write wrapper | **premise moved, in the executor's favour.** The pure builder W1-a needed is already extracted. `session_seams.py:215-216` still calls it *"an 854-line function"* — that docstring is stale; fix it in W1-a's PR (§2.6). |
-| D3 | *"One new module … over the `evidence/v1` layout `commissioning_evidence_store.py` already owns"* (`:255-257`) | The two pairs cannot share one backend. `bank` is **write-once** — `_write_once` raises `PATH_CONFLICT` when a path takes different bytes (`commissioning_evidence_store.py:666-675`). `persist` runs **once per consumed capture** (`save_v2_state`'s own docstring, `web/…:512-515`) and overwrites one file | **one module, two backends.** `bank`/`read` → the evidence store; `persist`/`read_state` → `save_v2_state`/`load_v2_state`. This is not a departure from §1's intent — `session_seams.py:255-260` already describes the persist half as *"the store this replaces overwrites its one file every persist"* — but §1's item text reads as one layout, and a builder who took it literally would hit `PATH_CONFLICT` on the second capture. |
-| D4 | W1-a's verification bar names bank/read/round-trip and the discriminator constant (`:261-263`) — no error contract | `SeamFailure` has **no production definition**: `tests/engine_twin.py:81` is the only one in the tree (`jasper/` has zero). The engine does not catch it — `session.py:598` calls `bank` bare | **gap, closed in §2.5.** The store's raise behaviour is unspecified by the protocol, and it is the one thing the twin *cannot* pin because its exception type is test-only. |
-| D5 | *"`read` and `read_state` have no engine caller"* (`:76-77`) | Holds, and is sharper: `PriorBank.read` (`prior_bank.py:115`) calls `store.read_state` at `:127` and `_baselines_by_pose` (`:151`) calls `store.read` at `:157` | **holds.** Named here because `PriorBank` is the *only* consumer, so it is the acceptance test for the read halves. |
+| D3 | *"One new module … over the `evidence/v1` layout `commissioning_evidence_store.py` already owns"* (`:259-261`) | The two pairs cannot share one backend. `bank` is **write-once** — `_write_once` raises `PATH_CONFLICT` when a path takes different bytes (`commissioning_evidence_store.py:666-675`). `persist` runs **once per consumed capture** (`save_v2_state`'s own docstring, `web/…:512-515`) and overwrites one file | **one module, two backends.** `bank`/`read` → the evidence store; `persist`/`read_state` → `save_v2_state`/`load_v2_state`. This is not a departure from §1's intent — `session_seams.py:255-260` already describes the persist half as *"the store this replaces overwrites its one file every persist"* — but §1's item text reads as one layout, and a builder who took it literally would hit `PATH_CONFLICT` on the second capture. |
+| D4 | W1-a's verification bar names bank/read/round-trip and the discriminator constant (`:265-267`) — no error contract | `SeamFailure` has **no production definition**: `tests/engine_twin.py:81` is the only one in the tree (`jasper/` has zero). The engine does not catch it — `session.py:598` calls `bank` bare | **gap, closed in §2.5.** The store's raise behaviour is unspecified by the protocol, and it is the one thing the twin *cannot* pin because its exception type is test-only. |
+| D5 | *"`read` and `read_state` have no engine caller"* (`:80-81`) | Holds, and is sharper: `PriorBank.read` (`prior_bank.py:115`) calls `store.read_state` at `:127` and `_baselines_by_pose` (`:151`) calls `store.read` at `:157` | **holds.** Named here because `PriorBank` is the *only* consumer, so it is the acceptance test for the read halves. |
 
 ### Group B — the counts
 
 | # | §1 says | At HEAD | Evidence |
 |---|---|---|---|
-| **D6** | **The retention lift is FOUR sites**: the three `_hand_to_retention` call sites plus an *"inlined copy"* of the same try/except/WARN/return-`False` shape at `crossover_v2_flow.py:6879` inside `_run_cloud_pipeline`, *"with a comment saying it mirrors `_retain_cloud_position`'s fail-soft boundary"*. §0 `:55-62` calls this *"one structural finding the handed brief did not carry"*; §1 `:216-217` repeats it; W1-c's title is *"four sites in"* | **THREE sites. There is no fourth, and no second writer.** `crossover_v2_flow.py:6879` is a **comment**, not code — it sits inside the `except` arm of a `publish_cloud` call (`:6873-6888`) and reads *"Mirrors `_retain_cloud_position`'s fail-soft boundary"*. Different seam, different arity (`(phase, group_result)` vs `(take_id, result, metadata)`), different event (`…_cloud_publish_failed` vs `…_position_retain_failed`), and it has an `else:` arm mutating `_group_cloud_published` (`:6887-6888`) instead of returning `bool` | **`self._seams.retain_position` appears exactly twice in the entire 9,228-line file** — `:5266` (the `None` check) and `:5269` (the call), both inside `_hand_to_retention`. `_hand_to_retention` has exactly three call sites: `:5056`, `:5254`, `:7020`. The file says so itself at `:6980`: *"`retain_position` is reused rather than duplicated"* |
-| **D7** | *"four via `evidence_packet.RING_SIDECAR_GLOB` (`evidence_packet`, `harmonic_evidence`, `feature_classifier`, `round_views`)"* (`:231-233`) | **THREE.** `round_views` contains **no `glob` call at all**. It reaches the ring *indirectly*, by passing `dump_ring_dir=` (`round_views.py:243`) into `build_crossover_evidence_packet` — i.e. through reader #1. Its `:55` is a docstring line | the three real readers are `evidence_packet.py:1246` (`_capture_snr_block` `:1191`), `harmonic_evidence.py:603` (`_bind_measure_captures` `:582`), `feature_classifier.py:456` (`load_round_captures` `:414`) |
-| **D8** | *"three that glob flat `*.json`"* (`:233-236`) | **FOUR.** The three named are right; a fourth is missed: `scripts/derive-crossover-incident-fixture.py:138` (`_measure_sidecar` `:121`), globbing `*_measure_*.json` over a **pinned frozen bank** of the flat ring | it depends on the `{stamp}_{phase}_{device}` filename scheme, so it breaks on the naming change as well as on the deletion |
-| — | *"**seven** readers"* (`:230`) | **seven** — 3 + 4 | the total survives; **both halves of it are wrong.** Do not let the matching total read as confirmation |
-| **D9** | *"`level_db` and `stimulus_dbfs` live only in the debug ring today, through `CaptureProvenance.to_dict` (`capture_provenance.py:117-134`)"* (`:162-164`) | **Neither name exists in that file** — zero occurrences. `to_dict` (`:117`, body `:119-134`) emits `main_volume_db`, `session_volume_db`, `graph{kind,config_path,fingerprint}`, `stimulus{program_id,phase,wav_sha256,peak_dbfs}` | §1's *conclusion* holds and is if anything understated (§3.3); its *field names* are the engine's, not the ring's, and a builder grepping for them finds nothing |
-| **D10** | *"three readers re-pair the WAV by `parent.parent / "wav" / stem` written out verbatim in three places"* (`:248-250`) | **TWO:** `harmonic_evidence.py:613`, `feature_classifier.py:482`. The other two pairings are **different rules** — `severed-twin-replay.py:249` uses `sidecar_path.with_suffix(".wav")` (flat sibling, the un-split ring), and `harmonic-distortion-replay.py:266-271` binds by sha256 content across a separate `--captures` directory with no path derivation at all | reader #1 (`_capture_snr_block`) never touches a WAV |
+| **D6** | **The retention lift is FOUR sites**: the three `_hand_to_retention` call sites plus an *"inlined copy"* of the same try/except/WARN/return-`False` shape at `crossover_v2_flow.py:6879` inside `_run_cloud_pipeline`, *"with a comment saying it mirrors `_retain_cloud_position`'s fail-soft boundary"*. §0 `:59-66` calls this *"one structural finding the handed brief did not carry"*; §1 `:220-221` repeats it; W1-c's title is *"four sites in"* | **THREE sites. There is no fourth, and no second writer.** `crossover_v2_flow.py:6879` is a **comment**, not code — it sits inside the `except` arm of a `publish_cloud` call (`:6873-6888`) and reads *"Mirrors `_retain_cloud_position`'s fail-soft boundary"*. Different seam, different arity (`(phase, group_result)` vs `(take_id, result, metadata)`), different event (`…_cloud_publish_failed` vs `…_position_retain_failed`), and it has an `else:` arm mutating `_group_cloud_published` (`:6887-6888`) instead of returning `bool` | **`self._seams.retain_position` appears exactly twice in the entire 9,228-line file** — `:5266` (the `None` check) and `:5269` (the call), both inside `_hand_to_retention`. `_hand_to_retention` has exactly three call sites: `:5056`, `:5254`, `:7020`. The file says so itself at `:6980`: *"`retain_position` is reused rather than duplicated"* |
+| **D7** | *"four via `evidence_packet.RING_SIDECAR_GLOB` (`evidence_packet`, `harmonic_evidence`, `feature_classifier`, `round_views`)"* (`:235-237`) | **THREE.** `round_views` contains **no `glob` call at all**. It reaches the ring *indirectly*, by passing `dump_ring_dir=` (`round_views.py:243`) into `build_crossover_evidence_packet` — i.e. through reader #1. Its `:55` is a docstring line | the three real readers are `evidence_packet.py:1246` (`_capture_snr_block` `:1191`), `harmonic_evidence.py:603` (`_bind_measure_captures` `:582`), `feature_classifier.py:456` (`load_round_captures` `:414`) |
+| **D8** | *"three that glob flat `*.json`"* (`:237-240`) | **FOUR.** The three named are right; a fourth is missed: `scripts/derive-crossover-incident-fixture.py:138` (`_measure_sidecar` `:121`), globbing `*_measure_*.json` over a **pinned frozen bank** of the flat ring | it depends on the `{stamp}_{phase}_{device}` filename scheme, so it breaks on the naming change as well as on the deletion |
+| — | *"**seven** readers"* (`:234`) | **seven** — 3 + 4 | the total survives; **both halves of it are wrong.** Do not let the matching total read as confirmation |
+| **D9** | *"`level_db` and `stimulus_dbfs` live only in the debug ring today, through `CaptureProvenance.to_dict` (`capture_provenance.py:117-134`)"* (`:166-168`) | **Neither name exists in that file** — zero occurrences. `to_dict` (`:117`, body `:119-134`) emits `main_volume_db`, `session_volume_db`, `graph{kind,config_path,fingerprint}`, `stimulus{program_id,phase,wav_sha256,peak_dbfs}` | §1's *conclusion* holds and is if anything understated (§3.3); its *field names* are the engine's, not the ring's, and a builder grepping for them finds nothing |
+| **D10** | *"three readers re-pair the WAV by `parent.parent / "wav" / stem` written out verbatim in three places"* (`:252-254`) | **TWO:** `harmonic_evidence.py:613`, `feature_classifier.py:482`. The other two pairings are **different rules** — `severed-twin-replay.py:249` uses `sidecar_path.with_suffix(".wav")` (flat sibling, the un-split ring), and `harmonic-distortion-replay.py:266-271` binds by sha256 content across a separate `--captures` directory with no path derivation at all | reader #1 (`_capture_snr_block`) never touches a WAV |
+
+### D12 — an OPEN owner decision changes W1-a's scope
+
+Landed by #3151 while this brief was being written: **§6.2's owner-brief
+(`:1238-1274`) asks whether the five `V2FlowSeams` publishers fold into
+`RecordStore`.** It matters here because it edits W1-a's scope line either way,
+and because §1 and §6 currently **disagree**: §6's web-file table routes
+*"evidence store + publishers | 3364–3962"* — all five bindings
+(`bind_evidence_publishers:3392`, `bind_round_receipt:3456`,
+`bind_findings_publisher:3803`, `bind_cloud_publisher:3921`) — to **W1-a**,
+while W1-a's own text scopes it to the four protocol methods and says nothing
+about a publisher (`:1226-1234`).
+
+**Do not start W1-a until this is answered.** If the owner folds, `bank` widens
+from *one capture record* to five artifact kinds, and `tests/engine_twin.py:199-234`
+and this brief's §2 both grow. The plan's recommendation is **fold** (`:1248`),
+and it sits on W1-a's critical path at tier 2, feeding the W5-b join.
+
+**Two things this brief already settled that the fold-brief agrees with**, so
+they hold under either answer:
+
+- *"Keep the store plain, keep the wrapper"* (`:1269`) — the fold-brief reaches
+  §2.5's conclusion independently, citing `_hand_to_retention` as the shape:
+  strictness in the store, fail-soft in a named wrapper at the caller.
+- `read` / `read_state` having **no engine caller** is cited as the argument
+  *for* folding (`:1260-1261`) — D5's fact, used the other way round.
+
+**One tension to carry:** the fold-brief says *keep the wrapper*, and W1-c
+**deletes** `_hand_to_retention`. Both are right — what survives is the wrapper's
+**shape at the new binding** (§4.3), not the function. Do not let *"keep the
+wrapper"* be read as *"do not lift"*.
 
 **Two §1 numbers re-checked and unchanged at HEAD**, so the builder does not
 re-derive them: `MEASURE_KINDS` is `contracts.py:1433-1437`; `_record()`'s
@@ -62,12 +100,12 @@ two — in `_retain_cloud_position` and in `_retain_entry_baseline` — and comm
 `27f13a4e4` (#2753, 2026-08-20) introduced `_hand_to_retention` and collapsed
 both into it. What survived is a **comment** whose wording still matches.
 
-That is §8's *"re-derive the line numbers"* trap (`:1162-1164`) in its most
+That is §8's *"re-derive the line numbers"* trap (`:1509-1511`) in its most
 expensive form: the cited line still exists and still says the quoted words, so a
 spot-check that reads the line without its enclosing block **confirms a false
 premise**. The rule it argues for is §7's trap 1.
 
-**W1-c is three sites in, not four**, and §1 `:60-62`'s *"leaves a second writer
+**W1-c is three sites in, not four**, and §1 `:64-66`'s *"leaves a second writer
 behind"* hazard **does not exist** — the lift is smaller and safer than scheduled.
 
 ---
@@ -143,14 +181,14 @@ async def read_state(self, state_id: str) -> Mapping[str, Any] | None: ...
 ```
 
 W4-a flips the colour first, so the protocol is already async when W1-a starts.
-§4 `:711-713`: the store can `await asyncio.to_thread(...)` around its file I/O
+§4 `:715-717`: the store can `await asyncio.to_thread(...)` around its file I/O
 *"rather than blocking the event loop on every `bank`"*. Every filesystem touch
 goes through `to_thread` — both backends block by construction
 (`publish_json_artifact` fsyncs, `commissioning_evidence_store.py:677`,
 `:690-701`; `save_v2_state` optionally fsyncs, `web/…:488`).
 
 **If W4-a has not landed, stop and say so** rather than building sync and
-converting — §4 `:707-710` is explicit that cutting the colour before the
+converting — §4 `:711-714` is explicit that cutting the colour before the
 implementation is the point.
 
 ### 2.3 `bank` / `read` — the evidence-store half
@@ -207,7 +245,7 @@ discloses, not an exception that strands the run."* Catch
 helper already exists at `commissioning_isolated_producer.py:90-91` —
 **reuse it, do not re-spell the comparison.**
 
-**Close the drift site (§1 `:115-119`):** the writer spells `schema_version` and
+**Close the drift site (§1 `:119-123`):** the writer spells `schema_version` and
 the kind as bare literals (`web/…:3570-3571`) while the reader imports
 `POSITION_EVIDENCE_KIND` (`position_cycle.py:111`, checked `:246`). The store
 imports the constant.
@@ -302,7 +340,7 @@ New file: `tests/test_crossover_v2_record_store.py`.
 | P8 | `PriorBank.read` rebuilds over a real store | the acceptance test — bank a walk, `persist`, drop the session, `PriorBank.read(store, state_id)` returns the baselines (D5) |
 
 **Watched-fail list** — break it, watch *only* the named pin fail, restore,
-re-run green. AGENTS.md's mutation rule, and §8 `:1156-1161`'s warning that a
+re-run green. AGENTS.md's mutation rule, and §8 `:1503-1508`'s warning that a
 harness failing silently in both directions reads as covered either way, so
 **assert the un-mutated run is green too**:
 
@@ -317,7 +355,7 @@ harness failing silently in both directions reads as covered either way, so
 The last is the important one: it is §1's *"a useless id empties `record_ids`"*
 failure, and P8 is the only pin catching it where it does damage.
 
-**Reuse `FakeRecords`' contract, do not re-write it** — §1's bar (`:261-263`)
+**Reuse `FakeRecords`' contract, do not re-write it** — §1's bar (`:265-267`)
 says *"the twin's own contract run against the real store"*. Parametrize the
 round-trip pins over both implementations so they cannot drift; the fixture
 supplies a bundle and the twin ignores it.
@@ -362,9 +400,9 @@ six fields banked nowhere — `baseline_record_id`, `candidate_id`, `polarity`,
 `level_db`, `stimulus_dbfs`, `incident`. Only the citations moved.
 
 Two more §1 lines to correct while here: the `lateral_consumer` cite in the
-`kind`-collision note is **`:1054`** (§1 `:159` says `:1055`), and entry's curve
+`kind`-collision note is **`:1054`** (§1 `:164` says `:1055`), and entry's curve
 arrays are **`:1121-1123`** — `freqs_hz` `:1121`, `magnitude_db` `:1122`,
-`excluded` `:1123` — where §1 `:204` says *"magnitude only (`spatial.py:1122-1124`)"*.
+`excluded` `:1123` — where §1 `:208` says *"magnitude only (`spatial.py:1122-1124`)"*.
 
 ### 3.2 The `kind` collision, and how to map it without lying
 
@@ -374,7 +412,7 @@ engine's `spec.kind` ∈ `MEASURE_KINDS` (`contracts.py:1433-1437`, validated
 the sidecar's fixed record-type discriminator `POSITION_EVIDENCE_KIND`
 (`web/…:3571`).
 
-§1 `:156-161` is right that a silent `phase → kind` map mislabels every record.
+§1 `:160-165` is right that a silent `phase → kind` map mislabels every record.
 It is worse than that — the map is **not well-defined**: `PHASE_LATERAL` is a
 per-driver walk (`LATERAL_POSE_REGIME` `:947`) that is a `baseline` **or** a
 `candidate` check depending on which candidate was applied under it (#3130's
@@ -453,7 +491,7 @@ Extend `tests/test_crossover_v2_spatial.py` (which already pins these builders;
 
 One **parametrized** pin over all three builders — per AGENTS.md, one
 parametrized test beats an example cluster — asserting all thirteen engine field
-names are present. §1's bar (`:270-271`) says mutation-verify by dropping one
+names are present. §1's bar (`:274-275`) says mutation-verify by dropping one
 field; do it **per builder**, because #3130 records that its first mutation
 anchor matched **two** sites (the same two lines exist in `entry_baseline_record`)
 and was caught only by the harness's count assertion. **Assert the match count
@@ -594,7 +632,7 @@ reduced `ProgramAnalysis`, and CHECK's at `:4687` is a gain plan — neither is 
 capture record in `_record()`'s sense. Banking "a take" for these phases may mean
 banking the *capture* (bytes + identity, once `result` is threaded) or the
 *analysis* (what the phase actually produces). §1 says *"a CHECK, a MEASURE and a
-VERIFY capture each produce a banked take"* (`:281-282`), which reads as the
+VERIFY capture each produce a banked take"* (`:285-286`), which reads as the
 former. **Confirm with the owner before building** — it is the difference between
 a mechanical thread-through and a new record shape.
 
@@ -637,7 +675,7 @@ anyway** — bank an entry-baseline record, assert the artifact path's stem equa
 
 ### 4.6 The #3076 obligations — quoted, and how the lift discharges each
 
-Quoted from §1 `:227-243`, which records them so they cannot be lost.
+Quoted from §1 `:231-247`, which records them so they cannot be lost.
 
 > **1.** Build the three missing retention paths (CHECK / MEASURE / VERIFY takes)
 > **at the destination**, retaining into #3064's `take_id` convention.
@@ -704,7 +742,7 @@ three new defects.**
 - `RING_SIDECAR_GLOB` `evidence_packet.py:336` (`"**/sidecar/*.json"`) and its
   `__all__` entry `:180`.
 - **The shell split, which is not Python** — `scripts/bank-crossover-round.sh`
-  **`:218-226`** (banner `:213-217`, echo `:227`). §1 `:246-250` cites
+  **`:218-226`** (banner `:213-217`, echo `:227`). §1 `:250-254` cites
   `:234-238`, which at HEAD is the integrity-check call, not the split —
   **corrected.** The block `tar`s the ring off the Pi, then
   `find … -maxdepth 1 -exec mv` splits `*.wav` into `dumps/wav/` and `*.json`
@@ -723,7 +761,7 @@ anywhere in the tree.** Trivial, in scope, fix it inline.
 > carry, not a field move**: by retention time the routing graph is restored and
 > the fader may have moved.
 
-**Carried, and this is the part to review hardest** (§8 `:1116-1118`).
+**Carried, and this is the part to review hardest** (§8 `:1463-1465`).
 `take()` (`capture_provenance.py:163`) swaps `_pending` to `None` under
 `self._lock` (`:156`) and returns it — **single-shot and consuming.** A second
 call with no intervening `record()` (`:159`) returns `None`, **not the previous
@@ -796,7 +834,7 @@ where it put the record and when"* (`session.py:667-670`).
 - **`kind`** is §3.2's mapping — the reason W1-d is downstream of **W1-b** as
   well as of W1-a and W1-c.
 
-Model it on `jasper/wake_events.py` (925 lines) per §1 `:288-290`.
+Model it on `jasper/wake_events.py` (925 lines) per §1 `:292-294`.
 **Rebuildable by rescanning; the banked files stay the SSOT**
 (`session.py:672-674`). Bar: delete the index, rebuild by rescan, assert the
 same six columns.
@@ -811,7 +849,7 @@ kinds. If §4.5 is not fixed in W1-c, W1-d must not paper over it.
 
 ### 6.1 The slices
 
-**Six PRs for four work items** — W1-c splits three ways. §1 `:276-279`
+**Six PRs for four work items** — W1-c splits three ways. §1 `:280-283`
 anticipates the split and says how: split by *reader* (obligation 2), keeping
 obligations 1+3 together, because *"a sidecar that dies before its replacement
 writes is a data loss, and a sidecar that outlives it is the second-writer
@@ -839,7 +877,7 @@ Tradeoff stated, not decided.
 Every "assert" below is a **mutation instruction**: break it, watch *only* the
 named pin fail, restore, re-run green — and check the un-mutated run is green,
 because a harness that fails silently in both directions reads as covered either
-way (§8 `:1156-1161`).
+way (§8 `:1503-1508`).
 
 | PR | Suites | Mutation targets | Content-grep for the post-merge check |
 |---|---|---|---|
@@ -850,7 +888,7 @@ way (§8 `:1156-1161`).
 | 5 | all seven readers' suites + `test_docs_impact` | break each reader's key lookup one at a time | `git grep -c RING_SIDECAR_GLOB` = **0**; `git grep -c xover-capture-dump` = **0** across `jasper/`, `scripts/` **and** `deploy/`; `bank-crossover-round.sh` has no `dumps/sidecar` |
 | 6 | `test_crossover_v2_record_store` + the new index suite | delete the index, rebuild by rescan, assert the same six columns | the six column names present |
 
-**Every grep above must be wrap-safe** (§8 `:1147-1151`) — join line pairs before
+**Every grep above must be wrap-safe** (§8 `:1494-1498`) — join line pairs before
 matching, and **paste the count into the PR**.
 
 ### 6.3 Review tier — judged against AGENTS.md, not inherited
@@ -864,12 +902,12 @@ paid tests, `deploy/install.sh`.
 | 1 | **default** | new module, two backends, no clamp, no fader write, no secret. §1 agrees |
 | 2 | **default** | data shape only |
 | 3 | **default** | **it touches `CrossoverV2Session`, and that is not by itself an adversarial trigger.** What the lift moves is a *write of evidence JSON* and its fail-soft. It writes no fader, computes no DSP, touches no secret and no `install.sh`. The concurrency question (`self._close_lock`, §4.2) is real and is the thing to review hardest — but "hard to review" is not the tier test, and treating it as one is the ceremony AGENTS.md's tiered policy replaced |
-| 4 | **default** | same, plus the `provenance.take()` carry — §8 `:1116-1118` already names it *"the part to review hardest"* |
+| 4 | **default** | same, plus the `provenance.take()` carry — §8 `:1463-1465` already names it *"the part to review hardest"* |
 | 5 | **default** | deletion + reader flips. **One caveat worth stating:** it removes an observability surface (the ring) that AEC- and distortion-forensics scripts consume. That is not on the closed list, so it is not adversarial — but it *is* worth an explicit owner ack, because obligation 5's ENABLED ruling becomes moot when the gate is deleted (§4.6) |
 | 6 | **default** | mechanical, on a shipped pattern |
 
 **Nothing in W1 is adversarial tier.** The adversarial items in this DAG are
-W4-a, W4-c, W5-b and W5-c (§8 `:1108-1113`) — all fader-path — and W1 sits
+W4-a, W4-c, W5-b and W5-c (§8 `:1455-1460`) — all fader-path — and W1 sits
 *downstream* of them precisely so it does not have to be.
 
 **One thing W1 must not quietly acquire:** if a slice ends up touching
@@ -882,7 +920,7 @@ void.** Say so in the PR rather than re-reading the table.
 
 ## 7. Traps this work will actually hit
 
-**All of §8 `:1128-1164` applies unchanged — read it, this does not restate it.**
+**All of §8 `:1475-1511` applies unchanged — read it, this does not restate it.**
 Three carry extra weight here: **squash-ancestry** (this is a six-PR stack, the
 highest-exposure shape there is — `git cherry`, `git rebase --onto`); **the reap
 trap** (`web/correction_setup.py:1311-1327` — W1-a's methods are `await`ed inside
