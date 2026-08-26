@@ -45,6 +45,7 @@ from jasper.active_speaker.crossover_preview import (
     build_crossover_preview,
     crossover_preview_fingerprint,
 )
+from jasper.active_speaker.crossover_v2.intervention import LEVEL_MATCH_AXIS
 from jasper.active_speaker.design_draft import DRIVER_RESEARCH_KIND, build_design_draft
 from jasper.active_speaker.measurement import (
     load_measurement_state,
@@ -3612,17 +3613,17 @@ def test_measured_trim_far_from_the_datasheet_is_refused_with_both_numbers(
     assert "event=baseline_profile.level_frame_disagreement" in caplog.text
 
 
-def test_the_two_level_estimators_are_cross_checked_and_disclosed(
+def test_the_two_level_sittings_are_compared_and_disclosed(
     tmp_path: Path, caplog,
 ) -> None:
-    """PR-L4 item 3(b) / PR-L3 review N2: the point-at-Fc reader and the
-    band-average solve finally get compared.
+    """Ruling S8: two SITTINGS of one level fact are compared, and the gap is
+    disclosed with the frames it was taken in.
 
-    A v2 measured candidate carries ``solve_branch_trims``' band average; the
-    saved phone level-match captures carry ``driver_acoustics``' point-at-Fc
-    read of the same pair. Disclosed rather than refused — see
-    ``_estimator_cross_check`` for why between-sitting placement makes this
-    weaker evidence than item 3(a)'s.
+    A v2 measured candidate carries ``solve_branch_trims``' power-band average
+    over the mirrored halves about Fc; the saved phone level-match captures
+    carry ``driver_acoustics``' point-at-Fc read of the same handover
+    condition. One definition, two captures — so the finding names both
+    sittings rather than declaring either number wrong.
     """
     caplog.set_level(logging.WARNING, logger="jasper.active_speaker.baseline_profile")
     topology = _dual_apple_topology()
@@ -3660,14 +3661,18 @@ def test_the_two_level_estimators_are_cross_checked_and_disclosed(
         validate=_valid_config,
     )
 
-    notes = payload["level_match"]["estimator_disagreements"]
+    notes = payload["level_match"]["sitting_differences"]
     assert notes and "13.0 dB apart" in notes[0]
     assert "crossover sweep -25.0 dB" in notes[0]
     assert "level match -12.0 dB" in notes[0]
-    assert "driver_level_estimator_disagreement" in {
+    assert "driver_level_sittings_differ" in {
         issue["code"] for issue in payload["issues"]
     }
-    assert "event=baseline_profile.level_estimator_disagreement" in caplog.text
+    assert "event=baseline_profile.level_sittings_differ" in caplog.text
+    # The gap is unplaceable without its frames, so both sittings are named.
+    frame = payload["level_match"]["sitting_frame"]
+    assert frame["crossover_sweep_axis"] == LEVEL_MATCH_AXIS
+    assert frame["level_match_sitting"] == "guided_captures"
     # Disclosed, NOT refused: the candidate's own trim still ships.
     assert payload["corrections"]["tweeter"]["gain_db"] == pytest.approx(-25.0)
 

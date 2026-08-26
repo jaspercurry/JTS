@@ -93,22 +93,15 @@ PRESENT_MIN_SEPARATION_DB = 0.0  # in-band must be at least as strong as out
 OUT_OF_BAND_SEPARATION_DB = -3.0  # clearly more energy outside the band
 DEFAULT_NULL_THRESHOLD_DB = DRIVER.null_threshold_db  # deep crossover null = "present"
 
-# Overlap-band level, read by both measured level-match paths: the guided
-# phone captures (L1) and the headless `jasper-driver-trim` base trim. For a
-# per-driver near-field
-# capture taken THROUGH the production crossover, the level each driver produces
-# in a band centred on a shared crossover Fc is the physically-correct quantity
-# to level-match: both adjacent drivers are rolling off symmetrically there
-# (Linkwitz-Riley), so the matched −6 dB shoulder bias cancels in the
-# driver-to-driver delta, leaving the relative driver sensitivity at Fc — exactly
-# what makes the acoustic sum flat across the handoff. We average the deconvolved
-# magnitude over one octave centred (geometrically) on Fc:
-# ``[Fc / OVERLAP_BAND_RATIO, Fc * OVERLAP_BAND_RATIO]``.
+# The CONFIDENCE NEIGHBOURHOOD around each crossover Fc, geometrically centred:
+# ``[Fc / OVERLAP_BAND_RATIO, Fc * OVERLAP_BAND_RATIO]``. Nothing is averaged
+# across it — the level is read AT Fc (see :func:`_overlap_band_levels`); this
+# band only has to hold enough bins, and is the window the SNR verdict spans.
 OVERLAP_BAND_RATIO = 2.0 ** 0.5  # half-octave each side → one octave total
-# A band needs at least this many FFT bins for a stable mean. Below this (a very
-# low Fc on a short sweep) the overlap reading is marked unusable and the trim
-# math fails closed to the datasheet sensitivity trim. Aliased from the shared
-# DRIVER profile (value unchanged).
+# Below this many FFT bins in that neighbourhood (a very low Fc on a short
+# sweep) the reading is too sparsely resolved to interpolate through, so it is
+# marked unusable and the trim math fails closed to the datasheet sensitivity
+# trim. Aliased from the shared DRIVER profile (value unchanged).
 OVERLAP_MIN_BINS = DRIVER.overlap_min_bins
 
 DRIVER_ACOUSTIC_KIND = "jts_active_speaker_driver_acoustics"
@@ -784,7 +777,26 @@ def _overlap_band_levels(
     validity_floor_hz: float | None = None,
     validity_floor_known: bool = True,
 ) -> tuple[dict[str, Any], ...]:
-    """Mean deconvolved magnitude in a one-octave band centred on each Fc.
+    """The deconvolved magnitude AT each crossover Fc, with its confidence band.
+
+    **A view of THE level fact, not a second definition of it** (ruling S8).
+    "Level-matched" means matched acoustic output through the HANDOVER REGION:
+    after the target filters both branches sit on their matched −6 dB
+    Linkwitz-Riley shoulder at Fc, so the driver-to-driver delta there is their
+    relative sensitivity.
+    :func:`~jasper.audio_measurement.program_analysis.solve_branch_trims` reads
+    that one condition as a power mean over the mirrored ±1-octave halves; this
+    reads it at the single frequency where the condition is defined. One
+    definition, two sittings — the distance between them is what
+    ``baseline_profile._compare_level_sittings`` discloses.
+
+    ``level_db`` is therefore a POINT: ``mag_db`` interpolated at ``fc`` off the
+    1/24-octave-smoothed magnitude, which is where the log-symmetric averaging
+    happens. It is **not** a mean over ``[lo_hz, hi_hz]`` — a linear-bin band
+    mean would skew a sloped response, the lower driver rolling off while the
+    upper climbs. ``[lo_hz, hi_hz]`` is the confidence NEIGHBOURHOOD that must
+    hold enough bins, and the window the SNR verdict is taken over; nothing is
+    averaged across it.
 
     Returns one entry per crossover ``Fc`` (``{fc_hz, lo_hz, hi_hz, level_db,
     bins, usable, snr_verdict, above_validity_floor, near_validity_floor}``).
@@ -848,14 +860,6 @@ def _overlap_band_levels(
             bins = int(np.count_nonzero(mask))
             in_range = bool(freqs[0] <= fc <= freqs[-1])
             if in_range:
-                # Level AT fc from the 1/24-octave-smoothed magnitude. At the
-                # crossover both adjacent drivers sit at their matched −6 dB
-                # shoulder, so the driver-to-driver delta is exactly their
-                # relative sensitivity. Taken as a point (not a linear-bin band
-                # mean, which would skew a sloped response — the lower driver
-                # rolls off while the upper rises); the smoothing is the
-                # log-symmetric SNR averaging, and the [lo, hi] octave is the
-                # confidence neighbourhood that must hold enough bins.
                 level_db = float(np.interp(fc, freqs, mag_db))
         above = None if not validity_floor_known else floor is None or fc >= floor
         near = bool(

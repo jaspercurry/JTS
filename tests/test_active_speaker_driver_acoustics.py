@@ -347,6 +347,35 @@ def test_overlap_band_level_recorded_for_crossover_fc(tmp_path):
     assert result.to_dict()["overlap_levels"][0]["fc_hz"] == 2000.0
 
 
+def test_overlap_level_is_read_at_fc_not_averaged_across_the_band(tmp_path):
+    """``level_db`` is the magnitude AT Fc, not a mean over ``[lo_hz, hi_hz]``.
+
+    Ruling S8 rests on it: the level fact is the handover condition, and both
+    branches sit on their matched −6 dB Linkwitz-Riley shoulder at Fc. A
+    ``firwin`` low-pass cut at Fc puts its own −6 dB point exactly there, so
+    reading one capture at a flat in-passband Fc and again at the cutoff must
+    recover that −6 dB — and only a point read does.
+
+    The same capture's linear-bin mean over ``[Fc/√2, Fc·√2]`` lands ~24 dB
+    down instead: the band's upper half is wider in linear frequency AND deep
+    in the stopband, which is exactly the skew that makes a band average the
+    wrong statistic for a sloped response.
+    """
+    sig, meta = _reference_sweep()
+    fc = 2000.0
+    ir = firwin(1023, fc, fs=SR).astype(np.float64)
+    path = _write_capture(
+        tmp_path, "woofer.wav", fftconvolve(sig.astype(np.float64), ir)
+    )
+
+    result = da.analyze_driver_capture(
+        path, meta, passband_hz=(40.0, fc), overlap_fcs=(500.0, fc)
+    )
+    levels = {entry["fc_hz"]: entry["level_db"] for entry in result.overlap_levels}
+    assert all(entry["usable"] is True for entry in result.overlap_levels)
+    assert levels[fc] - levels[500.0] == pytest.approx(-6.0, abs=1.0)
+
+
 def test_overlap_band_delta_recovers_relative_driver_level(tmp_path):
     """The overlap-band delta between a low-passed woofer and a high-passed
     tweeter (sharing one Fc) recovers their relative level — the basis for the

@@ -23,14 +23,14 @@ Ownership, deliberately narrow:
   datasheet estimate.
 
 **No estimator lives here.** The per-driver level is
-``driver_acoustics._overlap_band_levels``' mean deconvolved magnitude over the
-one-octave band log-symmetric about the declared Fc, and the chain from
-adjacent-driver deltas to a per-role attenuation is
-``level_trim.attenuation_from_group_deltas``. Both already ship and both are
-already what the profile consumes; this module only banks their answer. Minting
-a third way to measure an inter-driver level gap is the defect
-``intervention.compare_level_definitions`` and ``baseline_profile._estimator_cross_check``
-exist to disclose, and it is not reopened here.
+``driver_acoustics._overlap_band_levels``' deconvolved magnitude read AT the
+declared Fc — a point, not a band average — and the chain from adjacent-driver
+deltas to a per-role attenuation is ``level_trim.attenuation_from_group_deltas``.
+Both already ship and both are already what the profile consumes; this module
+only banks their answer. Minting another way to measure an inter-driver level
+gap is the defect ``intervention.compare_level_definitions`` and
+``baseline_profile._compare_level_sittings`` exist to disclose, and it is not
+reopened here.
 
 **Re-keying is a loud refusal, never a migration.** The record names the
 declaration it was measured against (the crossover preview's own fingerprint).
