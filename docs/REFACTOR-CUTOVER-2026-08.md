@@ -12,7 +12,7 @@
 > truth this plan builds on. Read a shape question there and a scheduling
 > question here.
 
-**STATUS — updated every push.**
+**STATUS — all eight sections VERIFIED-COMPLETE at `5da40b9e2`.**
 
 | § | Section | Status |
 |---|---|---|
@@ -22,9 +22,9 @@
 | 3 | Recommender binding | VERIFIED-COMPLETE |
 | 4 | Seam colour reconciliation | VERIFIED-COMPLETE |
 | 5 | Front-end wiring | VERIFIED-COMPLETE |
-| 6 | God-file dissolution map | STUB |
-| 7 | Merge-order DAG + floor accounting | STUB |
-| 8 | Risks and tiers | STUB |
+| 6 | God-file dissolution map | VERIFIED-COMPLETE |
+| 7 | Merge-order DAG + floor accounting | VERIFIED-COMPLETE |
+| 8 | Risks and tiers | VERIFIED-COMPLETE |
 
 ---
 
@@ -936,12 +936,225 @@ hits in `jasper/`; the widened grep's own output pasted into the PR.
 
 ## 6. God-file dissolution map
 
-*STUB.*
+Coarser than §§1–5 by design: a reliable map, not a line-by-line audit. Line
+ranges are approximate and will drift as items land — re-derive before cutting.
+
+### `jasper/active_speaker/crossover_v2_flow.py` — 9,228 lines
+
+`CrossoverV2Session` is `:2154-8978` — **6,825 lines, 74% of the file**, 158
+methods (43 of them `@property`), with a **777-line `__init__`** at `:2181-2957`.
+Roughly 53% of the file is prose: ~2,381 docstring lines and 2,483 comment lines,
+almost all *justification essays* attached to constants and to `__init__` field
+declarations. Refusal copy and UI strings are **not** here — that vocabulary
+already moved to `crossover_v2/refusal_copy.py` (see the note at `:524-539`).
+
+| Concern | ≈ lines | Absorbed by |
+|---|---|---|
+| module charter | 1–107 | dies with the file (design doc owns it) |
+| imports / TYPE_CHECKING | 109–253 | dissolves |
+| **four re-export barrels** — phase vocabulary, fc-sweep, capture-plan/geometry/tiers, refusal copy | 255–630 | **delete.** Historical-name doors; #3076 already killed a fifth |
+| tuning constants + their essays | 631–877 | **NO HOME — needs a decision** (each constant to its consuming organ, or one `contracts` block) |
+| pure helpers: alignment plausibility · capture integrity/SNR fields · VERIFY evidence/claims · SNR log fields | 878–1395 | §2 (they are analyses) |
+| `AnalyzeCapture` · `RecordModelError` · `V2FlowSeams` · `V2ConductorSnapshot` | 1428–1698 | `V2FlowSeams` → §5 (`EngineSeams` replaces it); `V2ConductorSnapshot` → §1 |
+| attempt-history serialization | 1699–1923 | §1 (`persist`/`read_state`) |
+| cloud combine (emitting half) · candidate-build shims | 1879–2153 | §2 |
+| **`__init__`** | 2181–2957 | dissolves into acceptance row 5's four destinations |
+| program composition · priors per phase | 2959–3197 | `crossover_v2/programs.py`; the parameterization is `MeasureSpec`'s |
+| journey delegation | 3198–3211 | already delegating; deletes |
+| **43 read-only accessors** | 3212–3742 | **re-triage.** Row 4 keeps 402 lines of these as the host adapter — but §5 replaces the host, so the ones the status block reads become `MeasureOutcome`/`AnalyzeOutcome` fields and the rest die |
+| UI prompt payload building | 3743–3865 | `MeasureSpec.pose_prompts` + the record's `prompt` |
+| lifecycle + `snapshot`/`hydrate` | 3866–3969 | §1 |
+| **relay callbacks** `authorize_begin` · `on_armed` · `consume_capture` | 3970–4626 | **§5** — this is what `measure()` replaces |
+| CHECK · MEASURE · lateral · cloud verdicts and retention | 4627–5279 | §1 (W1-c) + §2 |
+| cloud group close + speculative close | 5280–5766 | §2 + §5 |
+| **candidate build · publish · commit** | 5839–6334 | **NO ENGINE HOME — needs a decision.** Irreversible acts; the apply transaction is *"not a target. Ever."* Either a publish/commit organ or a thin surviving host module |
+| findings/evidence publishing + refusal | 6335–6728 | refusal → the organ; findings → §1 |
+| cloud pipeline runner (+ the inlined retention at `:6879`) | 6729–6913 | §2 + W1-c |
+| entry baseline | 6914–7048 | §1 |
+| the round, graded | 7049–7304 | §2 |
+| VERIFY verdict + attempt grading | 7305–7924 | §2 (`measure(kind=verify)` then `analyze`) |
+| delta probe | 7925–8355 | §2 |
+| **diagnostic logging** (four big per-phase emitters, feed no verdict) | 8356–8728 | **NO HOME — needs a decision**: delete, or become `analyze`'s journal |
+| gate/candidate/linearization helpers | 8729–8978 | organs |
+| production playback seams | 8979–9094 | §5 (`PlaybackTransaction` binding) |
+| session-volume lifecycle | 9095–9164 | §5 (W5-c) |
+| `__all__` (63 names) | 9166–9228 | dies with the barrels |
+
+### `jasper/web/correction_crossover_v2.py` — 8,088 lines
+
+Not a page: zero routes, zero HTML, zero CSRF (§0, §5). ~47% prose. Sixteen
+banner comments mark its own sections.
+
+| Concern | ≈ lines | Absorbed by |
+|---|---|---|
+| capture-dump retention config (+ impl at 3179–3361) | 189–229 | dies with W1-c, gated on the owner's `ENABLED` ruling |
+| refusal / error taxonomy | 238–446 | clean leaf → `crossover_v2/refusal_copy.py` |
+| durable JSON state I/O | 449–576 | §1 |
+| journey-state observers | 579–1070 | §5 + `crossover_v2/journey.py` |
+| **process-global volume / pause / graph singletons** | 1073–1459 | §5 (W5-b, W5-c). **Four module-level mutables** (`:235`, `:1126`, `:1127`, `:1191`) — move them together or they race |
+| **JSON status projection** (`crossover_v2_status_block` `:1995`) | 1462–2164 | **the cleanest large slice**: pure read-side, no I/O beyond `load_v2_state`. Lifts whole to its own module |
+| post-apply grading (`_post_apply_grade`, 296 lines) | 2167–2543 | §2 |
+| staged-prescription / angle-walk intake | 2583–2805 | §3 (W3-b) |
+| conductor persistence (write side) | 2809–2927 | §1 |
+| capture/analyze seam binding + calibration | 2935–3361 | §2 (W2-b) + W1-c |
+| evidence store + publishers | 3364–3962 | §1 (W1-a) |
+| `bind_production_play` (374 lines, 6 nested `async def`) | 3965–4338 | §5 |
+| volume hooks + group close | 4341–4433, 5390–5457 | §5 — **one concern split 1,000 lines apart** |
+| conductor context resolution | 4436–4989 | §5 |
+| **`PositionGate`** (280 lines) | 4992–5351 | **cleanest extractable class**; own module. Its one URL string (`:5069`) duplicates `arm_walk.py:427` — converge them |
+| `V2PreparedSession` | 5355–5387 | §5 (W5-a) |
+| applied-graph / rollback-anchor introspection | 5476–5672 | **stays** (apply-adjacent) |
+| stage-seam binding · capture-source resolution | 5675–5941 | §5 |
+| **the two preparers** (916 lines, near-duplicate twins) | 5944–6901 | §5 (W5-a) — the biggest de-dup win in either file |
+| **apply transaction** (`handle_v2_apply`, 399 lines) | 6904–7360 | **STAYS.** Row 6's kept 1,185 lines |
+| delta-probe rollback · restore/Undo · apply-blocked tail | 7363–8088 | **stays** |
+
+### Deletion order
+
+1. **The four barrels + `__all__`** (`crossover_v2_flow` 255–630, 9166–9228) —
+   zero dependencies, and every later diff gets smaller once importers point at
+   the organs.
+2. **The status projection** (`web` 1462–2164) — lifts whole, no seam involved.
+3. **The two preparers converge** (W5-a) — the precondition for one construction
+   site.
+4. **The walk lifts** (W5-b, then W1-c) — `consume_capture` and the four
+   retention sites go together.
+5. **Volume** (W5-c) — after the walk, because the claim's lifetime is the walk's.
+6. **The shell** — the accessors that lost their reader, `__init__`'s residue,
+   the diagnostic emitters, and whatever the two NO-HOME decisions settled.
+
+---
 
 ## 7. Merge-order DAG + floor accounting
 
-*STUB.*
+### The DAG
+
+```
+tier 0 (independent — start these now, in parallel)
+  W5-d  orphans + stale docs        W2-d  settle the 92
+  W3-a  prescriber status door      W2-a  analysis table (no caller)
+  W5-a  preparers converge
+
+tier 1   W4-a  seam colour flip  ──►  W4-b  twin follows
+
+tier 2   W1-a  RecordStore  ◄── W4-a        W4-c  VolumeClaim  ◄── W4-a
+
+tier 3   W1-b  the 13 fields  ◄── W1-a
+         W2-b  the walker     ◄── W2-a, W1-a, W4-a
+         W3-b  recommender adapter ◄── W1-a, W3-a, W4-a
+
+tier 4   W5-b  TuningSession in production   ◄── W4-a W4-c W1-a W3-b W2-b W5-a
+         ▲ THE JOIN NODE — everything above must land first
+
+tier 5   W1-c  retention lift  ◄── W5-b, W1-b
+         W5-c  volume plan sheds its doors ◄── W5-b, W4-c
+         W2-c  per-analysis disclosures ◄── W2-b
+
+tier 6   W1-d  the 4j SQLite index ◄── W1-a, W1-c
+
+tier 7   §6's dissolution PRs ◄── W5-b, W1-c
+```
+
+**Two scheduling facts.** W5-b is a single-point join: five items must land
+before it, and nothing after it can start. And tier 0 is five genuinely
+independent items — that is the parallelism budget for the first round, and
+`W5-a` is the long pole in it.
+
+### Floor accounting
+
+The chunk-1 floor is **−90,000** (`REFACTOR-TUNING-2026-08.md:1368`), against a
+deletion subtotal of −93,702 and ~+2,000 of adds, reserving 1,702.
+
+**What is countable on the two god files, at HEAD:**
+
+| File | Row-4/6 baseline | HEAD | Banked | Target | Remaining |
+|---|---:|---:|---:|---:|---:|
+| `crossover_v2_flow.py` | 13,459 | 9,228 | **−4,231** | ≈1,500 | **≈−7,730** |
+| `web/correction_crossover_v2.py` | 9,563 | 8,088 | **−1,475** | *no explicit target* | see below |
+| **both** | 23,022 | 17,316 | **−5,706** | | |
+
+Row 6 has no target in the chunk-1 evidence base and this plan does not invent
+one. What §6 *can* say is which concerns stay: the apply transaction (1,185
+lines, `:6904-7360`), the delta-probe rollback, restore/Undo and the apply-blocked
+tail (`:7363-8088`), plus the applied-graph introspection (`:5476-5672`). That is
+**≈2,000–2,400 lines kept**, so the web file's remaining contribution is
+**≈−5,700 to −6,100** — stated as a derived bracket, not a target.
+
+**So this plan's own two files contribute ≈−13,400 to −13,800 of what remains.**
+The balance of the floor is chunk-1's, not this document's: class C+D test
+deletion (−29,300, file-grained), census-zone prose (−30,000) and the
+test-docstring residual (−15,000), per the net-lines table at `:1356-1368`.
+
+**Do not re-quote those three rows as though this plan verified them.** Two live
+caveats travel with them (`:1388-1398`): the 29,300 is **file-grained** while
+ruling S7 made deletion **function-grained**, so it moves in both directions; and
+the count is to be re-taken per wave against the actual tree via
+`scripts/right-size-report.sh`, not hand-counted. **This plan re-derived only the
+two god-file rows above** — the ones its own items are responsible for.
+
+---
 
 ## 8. Risks and tiers
 
-*STUB.*
+### Review tier per work item
+
+**Adversarial** (per [AGENTS.md](../AGENTS.md): the clamps, DSP math on the
+output path, secrets, or `deploy/install.sh`):
+
+| Item | Why |
+|---|---|
+| **W4-a** seam colour flip | rewrites the fader **release** path into an awaitable one; the `asyncio.shield` is load-bearing |
+| **W4-c** `VolumeClaim` adapter | the first production implementation of a fader claim |
+| **W5-b** `TuningSession` in production | the first production path through that claim |
+| **W5-c** `SessionVolumePlan` sheds its doors | the walked-away guarantee and the exact→emergency restore ladder |
+
+**Default single review pass:** W1-a, W1-b, W1-c, W1-d, W2-a, W2-b, W2-c, W3-a,
+W3-b, W5-a. W1-c is the largest and the one to review hardest —
+`provenance.take()`'s single shot (§1, obligation 4) is plumbing, not a field
+move.
+
+**Mechanical, author judgment plus a sanity look:** W4-b (the twin follows the
+colour), W2-d (docs), and the tier-0 half of W5-d (docs + the widened grep).
+
+**Nothing here touches `deploy/install.sh`, secrets, or the SPL stop.** The
+`devices.volume_limit = 0.0` ceiling is untouched by every item: the owner sits
+behind that door as its only caller, never as its exception
+(`jasper/volume_owner.py:39-45`).
+
+### Traps the executors must carry
+
+- **Squash-ancestry.** `main` squash-merges, so `git merge-base --is-ancestor`
+  reports a landed branch as un-landed. Use `git cherry`, and rebase with
+  `git rebase --onto` rather than a plain rebase, or you will replay work that
+  already merged. Wave 6d hit this twice in one walk (delete-of-modified, then
+  add/add).
+- **Content-verify a landed check; never trust the notification.** Every wave-6
+  disposition says *"content-verified on main"* for a reason. Grep the merged
+  tree for the symbol you claimed to add or delete. `#3137`'s disposition is the
+  shape: *"held_target_db count on main in `jasper/` is ZERO."*
+- **The reap trap.** `_run_async`'s timeout path (`web/correction_setup.py:1311-1327`)
+  cancels the loop task, waits `_RUN_ASYNC_CANCEL_DRAIN_TIMEOUT_S` for it to
+  drain, logs **CRITICAL** if it does not — and then **waits unbounded anyway**,
+  because *"a terminal response must never release measurement ownership while
+  its graph/volume finalizer can still mutate the speaker"* (`:1323-1326`). W4-a
+  makes the four verbs awaitable and therefore cancellable; any new cancel path
+  inherits that rule. **The alarm is observability, not permission to abandon
+  cleanup.**
+- **Wrap-safe sweeps.** This tree wraps source at ~79 columns, so a symbol and
+  its qualifier routinely land on two lines. A single-line grep for
+  `set_volume_db(` is what let `jasper/cli/seat_level.py:413` escape the wave-5
+  ledger (§5). Join line pairs before matching, and when a check counts
+  something, paste the count into the PR.
+- **Validate a tree-scanning check against the merge result**, not your branch:
+  `git merge-tree --write-tree origin/main HEAD` (AGENTS.md:144). Two-dot diffs
+  render phantom removals in this shared repo — use the merge base for scope and
+  merge-tree for the net.
+- **Do not report a property you have not tried to break.** Every guard claim in
+  this plan's verification bars is a *mutation* instruction: break the thing,
+  watch the named pin fail, restore, re-run green. A pin that stays green under
+  its own mutation is not covering what you think — and a mutation harness that
+  fails silently in **both** directions reads as covered either way, so check
+  that the un-mutated run is green too.
+- **Re-derive the line numbers.** Every `file:line` in this document was true at
+  `5da40b9e2`. §0 exists because two of the numbers handed *to* this plan had
+  already moved by two lines within a single merge. Re-derive before you cut.
