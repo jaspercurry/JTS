@@ -351,9 +351,18 @@ async def test_all_graph_mutations_enter_the_lowest_admission_context(
     assert fake.reload_count == 2
 
 
-async def test_every_graph_mutation_is_bracketed_by_a_duck(tmp_path: Path) -> None:
+async def test_every_pipeline_replacement_is_bracketed_by_a_duck(
+    tmp_path: Path,
+) -> None:
     """The headroom gain can move tens of dB across a swap at an unchanged
-    volume; each mutation must duck the fader before it and restore after."""
+    volume; each mutation that REPLACES the pipeline must duck the fader
+    before it and restore after.
+
+    ``patch_config`` is deliberately absent and is pinned separately below:
+    it writes one declared parameter of an already-running filter, so there is
+    no new graph whose headroom could step. Its exclusion is the claim, so it
+    gets its own assertion rather than a silent gap in this one.
+    """
     fake = _FakeClient()
     duck = -camilla_module.GRAPH_SWAP_DUCK_DB
 
@@ -366,12 +375,28 @@ async def test_every_graph_mutation_is_bracketed_by_a_duck(tmp_path: Path) -> No
     assert fake.ops == [f"vol={duck:g}", "set_active_raw", "vol=0"]
 
     fake.ops.clear()
-    assert await cam.patch_config({"filters": {"gain": {"type": "Gain"}}})
-    assert fake.ops == [f"vol={duck:g}", "query:PatchConfig", "vol=0"]
-
-    fake.ops.clear()
     assert await cam.reload()
     assert fake.ops == [f"vol={duck:g}", "reload", "vol=0"]
+
+
+async def test_patch_config_is_serialized_but_never_ducked(tmp_path: Path) -> None:
+    """A filter-parameter patch touches the fader zero times.
+
+    Its one production caller is the per-speaker balance trim
+    (``multiroom.runtime_balance.apply_local_trim``), where a 40 dB fade plus
+    ``MAIN_VOLUME_RAMP_SETTLE_S`` muted the speaker for half a second on every
+    slider nudge. The writer lock is NOT dropped with it —
+    ``test_all_graph_mutations_enter_the_lowest_admission_context`` still
+    requires this method to enter the admission context, because a patch does
+    mutate the running graph and must serialize against every other DSP writer.
+    """
+    fake = _FakeClient()
+    cam = _controller(fake, tmp_path)
+
+    assert await cam.patch_config({"filters": {"gain": {"type": "Gain"}}})
+
+    assert fake.ops == ["query:PatchConfig"]
+    assert not [op for op in fake.ops if op.startswith("vol=")]
 
 
 async def test_graph_swap_never_touches_main_mute(tmp_path: Path) -> None:
@@ -508,9 +533,13 @@ async def test_a_swap_without_a_declared_target_is_unchanged(
 ) -> None:
     """Every OTHER graph swap in the tree keeps today's behaviour exactly.
 
-    `set_config_file_path` / `patch_config` / `reload` never grew the
-    parameter, and `set_active_config_raw` defaulting it to None must release
-    to canonical like its three siblings.
+    `set_config_file_path` / `reload` never grew the parameter, and
+    `set_active_config_raw` defaulting it to None must release to canonical
+    like its siblings.
+
+    `patch_config` left this loop when it stopped ducking — it has no release
+    to land anywhere, which is pinned by
+    `test_patch_config_is_serialized_but_never_ducked` rather than dropped.
     """
     async def household() -> float:
         return -21.212121
@@ -520,7 +549,6 @@ async def test_a_swap_without_a_declared_target_is_unchanged(
     for mutate in (
         lambda cam: cam.set_config_file_path(str(tmp_path / "c.yml")),
         lambda cam: cam.set_active_config_raw("---\nfilters: {}\n"),
-        lambda cam: cam.patch_config({"filters": {}}),
         lambda cam: cam.reload(),
     ):
         fake = _FakeClient()

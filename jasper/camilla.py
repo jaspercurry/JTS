@@ -1051,6 +1051,17 @@ class CamillaController:
         its client exposes the underlying ``query`` call. Keeping that
         escape hatch here prevents raw websocket command names from
         spreading through product code.
+
+        **Serialized but NOT ducked.** The swap duck exists because replacing
+        the pipeline can move the graph's own gain by tens of dB at an
+        unchanged volume — the headroom a boosted correction carried vanishes
+        with it. A patch does not replace anything: it writes one declared
+        parameter of a filter that is already running, so the step is the
+        caller's own bounded edit rather than an emergent property of a new
+        graph. Paying a 40 dB fade and ``MAIN_VOLUME_RAMP_SETTLE_S`` for that
+        made the balance slider mute the speaker for half a second per nudge.
+        The writer lock stays: a patch still mutates the running graph and must
+        serialize against every other DSP writer.
         """
         if not isinstance(patch, dict) or not patch:
             if best_effort:
@@ -1059,7 +1070,7 @@ class CamillaController:
             raise ValueError("patch must be a non-empty mapping")
 
         try:
-            async with self._graph_mutation("camilla.patch_config"):
+            async with self._graph_mutation("camilla.patch_config", duck=False):
                 await self._call(lambda c: c.query("PatchConfig", arg=patch))
                 return True
         except CamillaUnavailable as e:
