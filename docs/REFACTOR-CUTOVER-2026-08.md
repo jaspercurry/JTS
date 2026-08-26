@@ -1031,10 +1031,16 @@ names, and they are three unrelated things:
   `:641`, `LOCATE_MIN_CONFIDENCE` `:644`, `VERIFY_TOLERANCE_DB` `:647`,
   `courtesy_prelude_for_phase` `:869`, `CrossoverV2FlowError` `:875`. Each is
   `X = _module.X` with a comment naming the owner. They are not constants; they
-  are **row 3's barrels under a different banner** and they die with row 3. One
-  carries a live warning: `courtesy_prelude_for_phase`'s comment (`:864-868`)
+  are the same thing row 3's barrels are, under a different banner — but they sit
+  in **this** range, not in `:255-630` (none of the fifteen names appears there),
+  so **this** row deletes them, on row 3's argument rather than in row 3's PR.
+  Two carry live warnings: `courtesy_prelude_for_phase`'s comment (`:864-868`)
   says **nothing in this module reads it any more** and names the test that pins
-  the door — *"do not delete it as dead on an importer grep alone."*
+  the door — *"do not delete it as dead on an importer grep alone"* — and
+  `CrossoverV2FlowError` is the widest-used name in the block, raised at 13 sites
+  in this file and imported across `angle_capture.py`, `capture_plan.py`,
+  `web/correction_crossover_v2.py` and 13 test files **from `contracts.py`, its
+  real owner** (`contracts.py:121`).
 - **One function**, `verify_absolute_tolerance_db` `:650` (34 lines incl. its
   docstring), which derives a tolerance from `flat_spec.SPEC_BANDS` `:677-683`.
   That is an analysis, not a constant. It rides the pure-helper row
@@ -1071,15 +1077,41 @@ reason it loses the other seven.** `VERIFY_TERMINAL_OUTCOME_DETERMINISTIC` is a
 reads `terminal_outcome` as an opaque string and never branches on it, exactly as
 `:855-856` claims. `contracts.py` is already where that class of name lives —
 `MEASURE_KINDS :1433`, `POLARITIES :1451`, `POSITION_AXES :1456`, `ADOPTION_ROWS
-:1135`, `ATTEMPT_METRIC_VERIFY_MAX_NOTCH_EXCLUDED :1408`. **The "one `contracts`
-block" option is wrong for the other seven** for the same reason: that module
-holds vocabulary the wire and the record share, and a threshold read by exactly
-one analysis is not shared vocabulary. Parking it there separates the number from
-the only code that reads it — the god file's own defect, rebuilt at package
-scale.
+:1135`, `ATTEMPT_METRIC_VERIFY_MAX_NOTCH_EXCLUDED :1408`.
+
+**And the route is already cut and named.** `contracts.py:1374-1376` carries a
+banner reading literally *"constants the flow used to own"*, holding the three
+that already made the trip — `DEFAULT_CLOUD_MEASURE_POSITIONS :1398`,
+`VERIFY_TOLERANCE_DB :1402`, `ATTEMPT_METRIC_VERIFY_MAX_NOTCH_EXCLUDED :1408`.
+**All three are shared vocabulary**: `VERIFY_TOLERANCE_DB` is imported directly by
+`program_analysis.py` and `tests/test_active_speaker_delta_probe.py`, and a
+position count is read by the plan and the record alike. That is the membership
+test, and **the eight in this block fail it** — none has a reader outside this
+file. **The "one `contracts` block" option is wrong for the other seven** for the
+reason it is right for the eighth: parking a threshold read by exactly one
+analysis in the shared-vocabulary module separates the number from the only code
+that reads it — the god file's own defect, rebuilt at package scale.
+
+**One coupling the executor must not trip.** Five of the eight are named in
+`__all__` — `ALIGNMENT_CONFIDENCE_TRUST_FLOOR :9214`,
+`MEASURE_PREDICTED_RIPPLE_DISCLOSURE_DB :9215`,
+`VERIFY_PILOT_TRANSFER_STEP_CEILING_DB :9218`, `VERIFY_REPEAT_FLOOR_DB :9219`,
+`VERIFY_TERMINAL_OUTCOME_DETERMINISTIC :9220` — and **§6's row 3 schedules
+`__all__` for deletion first, in the deletion order's step 1.** Five passengers
+are listed in a manifest that is cut before their carriages move. Cut the names
+with the constants, not with the list.
+
+**Two of the eight have no pin at all.** `CLIP_RETRY_BACKOFF_DB` and
+`MEASUREMENT_DISTANCE_M` each have exactly one in-file reader and **no import
+anywhere in the tree — not production, not tests, not scripts** (the only other
+occurrences are prose). They move unobserved, so their move needs a pin written
+first, on wave 0d's rule: *"any row that comes back with no name gets a pin
+WRITTEN — before the old pin is deleted."*
 
 **The decision §6 actually reserved is the prose, and S7 already settled it.**
-~200 of the 247 lines are essay, and it is not narration. Four classes:
+Counted, not estimated: **185 comment lines + 26 docstring lines = 211 of the
+247**, against **17 lines of code** and 19 blank. It is not narration. Four
+classes:
 
 | Class | Instance | Disposition |
 |---|---|---|
@@ -1094,6 +1126,17 @@ range **ADR-0002–0099**, of which **0020–0099 are free at HEAD** (0001–001
 0100+ are taken). R7 makes the extraction *"a prerequisite, not a nicety."* The
 precedent is already on `main`: **ADR-0010 was cut from two docstrings in this
 exact file** and says so (`0010-candidate-build-commits-nothing.md:19-23`).
+**No ADR owns any of the fifteen names today** — `docs/adr/` returns zero for all
+of them — so this is new record, not a duplicate one.
+
+**Shrink does not mean strip, and the tree already shows the size.** The two
+constants that made the trip to `contracts.py` **kept right-sized essays**:
+`DEFAULT_CLOUD_MEASURE_POSITIONS` carries 20 lines (`:1378-1397`, citing a dated
+adjudication and a *"treat it as a constant, never as a promise about accuracy"*
+caution), `VERIFY_TOLERANCE_DB` carries 3 (`:1399-1401`). S7 governs the
+**ruling-class** content — the dated decision, the corpus, the derivation — not
+every line above a `=`. What survives beside the constant is the trap plus a
+pointer; what leaves is the argument.
 
 **One essay is load-bearing in a way a reviewer will not guess.**
 `MEASURE_PREDICTED_RIPPLE_DISCLOSURE_DB`'s comment declares itself the single
@@ -1110,9 +1153,10 @@ conversion *and* its corpus composition · G3's pilot-transfer evidence ·
 `VERIFY_REPEAT_FLOOR_DB`'s derivation with its `CLAIM_FLOOR_P95_MULTIPLE`
 second-spelling note at `:799-809`). No code moves. Each later row then carries
 its own constants and shrinks their comments to `See ADR-NNNN` plus the trap.
-*Size:* 4 ADRs, **0 lines of code touched.** *Independent — schedulable at
-tier 0*, and it is a **hard prerequisite** for rows 4627–5279, 7305–7924 and
-`__init__`: none of them may cut prose before it lands. *Verification bar:* every
+**Plus two pins written for the two unobserved constants**, on wave 0d's rule.
+*Size:* 4 ADRs + 2 pins, **0 lines of production code touched.** *Independent —
+schedulable at tier 0*, and it is a **hard prerequisite** for rows 4627–5279,
+7305–7924 and `__init__`: none of them may cut prose before it lands. *Verification bar:* every
 deleted essay paragraph is quoted verbatim in exactly one ADR, and the surviving
 comment cites it — mutation-checked by grepping the tree for a second copy of the
 13-capture composition. *Tier:* mechanical (docs).
