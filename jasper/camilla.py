@@ -1055,11 +1055,24 @@ class CamillaController:
         **Serialized but NOT ducked.** The swap duck exists because replacing
         the pipeline can move the graph's own gain by tens of dB at an
         unchanged volume — the headroom a boosted correction carried vanishes
-        with it. A patch does not replace anything: it writes one declared
-        parameter of a filter that is already running, so the step is the
-        caller's own bounded edit rather than an emergent property of a new
-        graph. Paying a 40 dB fade and ``MAIN_VOLUME_RAMP_SETTLE_S`` for that
-        made the balance slider mute the speaker for half a second per nudge.
+        with it. A patch does not replace anything: it writes declared
+        parameters of filters that are already running.
+
+        **That safety is a property of TODAY'S CALLERS, not of ``PatchConfig``.**
+        A patch that rewrote a whole filter chain would step like any swap.
+        Both shipped callers are bounded, and differently:
+
+        * ``multiroom.runtime_balance.apply_local_trim`` — the per-speaker
+          balance trim, clamped to ``TRIM_DB_MIN``…``TRIM_DB_MAX`` (−24…0 dB,
+          attenuation only). Paying a 40 dB fade and
+          ``MAIN_VOLUME_RAMP_SETTLE_S`` for it muted the speaker for half a
+          second per slider nudge.
+        * ``bass_extension.bench.activation.temporary_bass_activation``,
+          reached from the shipped ``jasper-bass-extension-bench`` console
+          script — one limiter ``clip_limit``, and it has already faded to
+          floor and proved it (``to_floor`` + ``assert_at_floor``) before it
+          patches, so the duck was redundant there rather than protective.
+
         The writer lock stays: a patch still mutates the running graph and must
         serialize against every other DSP writer.
         """

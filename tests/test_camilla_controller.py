@@ -382,10 +382,15 @@ async def test_every_pipeline_replacement_is_bracketed_by_a_duck(
 async def test_patch_config_is_serialized_but_never_ducked(tmp_path: Path) -> None:
     """A filter-parameter patch touches the fader zero times.
 
-    Its one production caller is the per-speaker balance trim
-    (``multiroom.runtime_balance.apply_local_trim``), where a 40 dB fade plus
+    Two shipped callers, both bounded. ``multiroom.runtime_balance.apply_local_trim``
+    is the per-speaker balance trim, where a 40 dB fade plus
     ``MAIN_VOLUME_RAMP_SETTLE_S`` muted the speaker for half a second on every
-    slider nudge. The writer lock is NOT dropped with it —
+    slider nudge. ``bass_extension.bench.activation.temporary_bass_activation``
+    — reached from the shipped ``jasper-bass-extension-bench`` console script —
+    patches one limiter ``clip_limit`` and has already faded to floor and
+    proved it first, so the duck was redundant there rather than protective.
+
+    The writer lock is NOT dropped with it —
     ``test_all_graph_mutations_enter_the_lowest_admission_context`` still
     requires this method to enter the admission context, because a patch does
     mutate the running graph and must serialize against every other DSP writer.
