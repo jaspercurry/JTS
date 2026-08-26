@@ -4141,6 +4141,74 @@ def check_camilla_recover_park() -> CheckResult:
     return CheckResult(label, "fail", ". ".join(parts))
 
 
+@doctor_check(order=52.68, group="audio")
+def check_ring_transport_park() -> CheckResult:
+    """No topology this box declares is one the ring cannot serve (ADR-0178).
+
+    ADR-0100 makes ``shm_ring`` the only central transport; ADR-0178 names the
+    four shapes it cannot carry and the tracked issue each waits on. Severity
+    follows whether the loopback route still exists:
+
+    * ring-only and parked — the speaker emits NOTHING and no automatic path
+      recovers it, which is the ``fail`` definition the rest of the doctor
+      uses for a park;
+    * loopback still legal — ``warn``. The box plays today; the disclosure is
+      the inventory of what the transport deletion will park, named issue by
+      issue so the operator can clear them before it lands, not after.
+
+    The classification, the issue numbers and the remedy text all come from
+    ``jasper.control.transport_park`` — the same reader
+    ``/state.resilience.transport_park`` and the household audio card use, so
+    the three surfaces cannot name different issues for the same box.
+    """
+    label = "ring transport parks"
+
+    from ...control import transport_park
+
+    state = transport_park.snapshot()
+    status = state.get("status")
+
+    if status == "unavailable":
+        return CheckResult(
+            label,
+            "warn",
+            "the saved output topology or outputd's env could not be read "
+            f"({state.get('error')}) — a transport park cannot be ruled out.",
+        )
+
+    if status == "ok":
+        return CheckResult(
+            label, "ok", "the ring can serve this box's declared topology"
+        )
+
+    parks = state.get("parks") or []
+    named = []
+    for park in parks:
+        part = f"{park.get('park_class')} ({park.get('detail')})"
+        issue = park.get("issue")
+        if issue:
+            part = f"{part}. TRACKED: {issue}"
+        remedy = park.get("remedy")
+        if remedy:
+            part = f"{part}. REMEDY: {remedy}"
+        named.append(part)
+
+    if status == "parked":
+        return CheckResult(
+            label,
+            "fail",
+            "PARKED — no ring serves this box, so it emits nothing: "
+            + "; ".join(named),
+        )
+    return CheckResult(
+        label,
+        "warn",
+        "this box plays on the loopback route today, but the ring cannot "
+        "serve it — it parks when the loopback route is deleted: "
+        + "; ".join(named),
+    )
+
+
 # ---------------------------------------------------------------------------
 # The aloop-remnant guard (audio-graph consolidation #2285, P9-C).
 #

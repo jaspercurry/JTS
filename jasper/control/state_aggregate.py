@@ -62,6 +62,7 @@ from . import (
     mpris,
     shairport_supervisor,
     system_supervisor,
+    transport_park,
     wifi_guardian_state,
 )
 from .aec_endpoints import _aec_full_status
@@ -1429,6 +1430,18 @@ async def _get_state(
             # jasper-doctor's check_camilla_recover_park uses, so the two
             # surfaces cannot disagree.
             "camilla_recover": camilla_recover_state.snapshot(),
+            # The four named parks of the one-audio-transport rule
+            # (ADR-0178): topologies and runtime pins the shm_ring transport
+            # cannot serve, each carrying its tracked rebuild issue or its
+            # one-command remedy. status="parked" means the ring is the only
+            # transport and none serves this box — it emits NOTHING;
+            # status="pending" means it still plays on the loopback route but
+            # parks when that route is deleted. Fresh topology + outputd env
+            # read per call (this daemon is never restarted when a bond forms
+            # or a reconciler rewrites outputd.env). Same reader
+            # jasper-doctor's check_ring_transport_park and the household
+            # audio card use, so the three surfaces cannot disagree.
+            "transport_park": transport_park.snapshot(),
             # Bounded after-the-fact timeline for multiroom restart cascades:
             # existing event=multiroom.reconcile.*, restart_broker.*, and
             # grouping_supervisor.* journal lines, scanned into a tiny ring so

@@ -60,6 +60,12 @@ OUTPUTD_STALE_MS = 3000
 # broken: CamillaDSP and outputd are on different loopback lanes, so nothing
 # reaches the drivers however healthy each daemon looks. Doctor phrases its own
 # operator remedy; this is the only writer of the /state wording.
+#
+# TWO detectors carry it, for the same household fact through different
+# evidence: :func:`_parked_signal` (a live transport contradiction) and
+# :func:`_transport_park_signal` (one of ADR-0178's four shapes the ring
+# cannot serve). One sentence, so a household cannot be told two things about
+# a speaker that is silent either way.
 PARKED_HEADLINE = "Speaker is parked — audio cannot reach the drivers"
 
 # The one household-facing sentence for a stopped CamillaDSP (#2163). Written
@@ -565,6 +571,39 @@ def _parked_signal(route: Mapping[str, Any]) -> dict[str, Any] | None:
     return {"status": "issue", "headline": PARKED_HEADLINE, "detail": detail}
 
 
+def _transport_park_signal(
+    transport_park: Mapping[str, Any] | None,
+) -> dict[str, Any] | None:
+    """Return the signal path for a LIVE transport park, or ``None``.
+
+    Only ``status="parked"`` reaches the household: that is the ring-only
+    state where no transport serves this box and it emits nothing. A
+    ``"pending"`` verdict — the box is in one of ADR-0178's four classes but
+    the loopback route still carries it — is an OPERATOR fact and stops at
+    jasper-doctor and ``/state``. Telling a household its playing speaker is
+    parked would be the confusion ADR-0100 exists to prevent, pointed the
+    wrong way.
+
+    Presentation only, exactly like :func:`_parked_signal`: the incident rows
+    :func:`_state_issues` writes from the same snapshot carry the per-class
+    detail and its tracked issue.
+    """
+    state = _mapping(transport_park)
+    if state.get("status") != "parked":
+        return None
+    details = [
+        str(park.get("detail"))
+        for park in state.get("parks") or []
+        if isinstance(park, Mapping) and park.get("detail")
+    ]
+    detail = (
+        f"The single audio transport cannot serve this speaker: {details[0]}."
+        if details
+        else "The single audio transport cannot serve this speaker's layout."
+    )
+    return {"status": "issue", "headline": PARKED_HEADLINE, "detail": detail}
+
+
 def _stopped_dsp_signal(
     airplay: Mapping[str, Any],
     service_states: Mapping[str, Any] | None,
@@ -1067,8 +1106,36 @@ def _state_issues(
     *,
     activity_unknown: bool = False,
     undeclared_hardware: Mapping[str, Any] | None = None,
+    transport_park: Mapping[str, Any] | None = None,
 ) -> list[dict[str, Any]]:
     issues: list[dict[str, Any]] = []
+    # ADR-0178's named transport parks, one row per class so the household
+    # card and the operator both see EVERY tracked issue this box waits on
+    # rather than a first-match verdict. Ahead of the live-daemon rows and
+    # outside the warmup gate: a park is structural, it is true at boot, and
+    # a restart never clears it. Only a LIVE park (ring-only) is a household
+    # incident — see :func:`_transport_park_signal`.
+    park_state = _mapping(transport_park)
+    if park_state.get("status") == "parked":
+        for park in park_state.get("parks") or []:
+            if not isinstance(park, Mapping):
+                continue
+            park_class = str(park.get("park_class") or "unknown")
+            detail = str(park.get("detail") or "")
+            tracked = park.get("issue")
+            remedy = park.get("remedy")
+            if remedy:
+                detail = f"{detail}. Run: {remedy}"
+            elif tracked:
+                detail = f"{detail}. Tracked as {tracked}"
+            issues.append(_issue(
+                f"path.transport_park.{park_class}",
+                scope="path",
+                impact="continuity",
+                severity="issue",
+                title=PARKED_HEADLINE,
+                detail=detail,
+            ))
     warmup = bool(airplay.get("warmup_active"))
     current = _mapping(airplay.get("current"))
     fanin = current.get("fanin")
@@ -1858,6 +1925,7 @@ def compose_audio_health(
     mux_status: Mapping[str, Any] | None = None,
     output_hardware: Any = None,
     output_topology_snapshot: Any = None,
+    transport_park: Mapping[str, Any] | None = None,
 ) -> dict[str, Any]:
     """Compose the public, presentation-ready audio-health contract.
 
@@ -1869,6 +1937,12 @@ def compose_audio_health(
     snapshot, not the bare topology; see :func:`_undeclared_hardware_signal`
     for why. Both typed loosely because this module imports those layers
     lazily (same convention as ``topology`` in :func:`_transport_state`).
+
+    ``transport_park`` is ``jasper.control.transport_park.snapshot()`` (or
+    ``None`` before the sampler's first slow-cadence read), passed in rather
+    than read here for the same reason ``undeclared_hardware`` is computed by
+    the caller: the incident rows and this headline must be the same tick's
+    verdict, and the read is a file read that belongs on the slow cadence.
     """
     ap = _mapping(airplay)
     route_state = _mapping(route)
@@ -1894,6 +1968,14 @@ def compose_audio_health(
         # persistent and fixed by changing the layout, while a stalled daemon
         # is happening now and has its own remedy.
         signal_path = parked
+    transport_parked = _transport_park_signal(transport_park)
+    if transport_parked is not None and signal_path.get("status") != "issue":
+        # Last of the three "the box cannot emit at all" detectors, and the
+        # most structural: a live coherence contradiction or a stopped daemon
+        # names something an operator can act on THIS boot, while a transport
+        # park is cleared only by rebuilding the topology on the ring. Same
+        # `!= "issue"` guard, so neither of those is displaced.
+        signal_path = transport_parked
     undeclared_hardware = _undeclared_hardware_signal(
         output_hardware, output_topology_snapshot
     )
@@ -2135,6 +2217,7 @@ class AudioHealthSampler:
         # (topology + revision), not a bare topology -- see
         # `_undeclared_hardware_signal`'s docstring for why revision matters.
         self._output_topology_snapshot: Any = None
+        self._transport_park: dict[str, Any] | None = None
         self._service_states: dict[str, dict[str, Any]] = {}
         self._snapshot: dict[str, Any] | None = None
         self._last_route_sample_at = 0.0
@@ -2293,6 +2376,15 @@ class AudioHealthSampler:
                 # Keep the previously cached snapshot: a transient read
                 # failure on a box that already had a good read a moment ago
                 # should not blank the declared side of the B1/B2 comparison.
+            # ADR-0178's transport parks ride the SLOW cadence with the
+            # topology read they classify: both change only when a reconciler
+            # or a bond rewrites a file, and its own snapshot() is fail-soft,
+            # so a bad read lands as status="unavailable" rather than raising.
+            # Imported here, not at module scope, so the name cannot shadow
+            # the `transport_park` PARAMETER the composers below take.
+            from . import transport_park as transport_park_reader
+
+            self._transport_park = transport_park_reader.snapshot()
             self._last_route_sample_at = now
 
         active_source = _active_source(airplay, mux_status)
@@ -2352,6 +2444,7 @@ class AudioHealthSampler:
             intents,
             activity_unknown=activity_unknown,
             undeclared_hardware=undeclared_hardware,
+            transport_park=self._transport_park,
         )
         tracked_state_issues = [
             issue for issue in state_issues
@@ -2419,6 +2512,7 @@ class AudioHealthSampler:
                 mux_status=mux_status,
                 output_hardware=output_hardware,
                 output_topology_snapshot=self._output_topology_snapshot,
+                transport_park=self._transport_park,
             )
 
     def _record_point(
