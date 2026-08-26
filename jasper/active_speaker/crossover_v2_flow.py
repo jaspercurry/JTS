@@ -423,6 +423,12 @@ from jasper.active_speaker.crossover_v2.intervention import (
 # Re-bound here under their historical names because that is where the session
 # below, the endpoints suite, the conductor suite and the relay spec name them.
 # A name, not a second route: there is one implementation, in the module above.
+#
+# **These doors are READ-ONLY**, on the same terms as the fc_sweep block above.
+# A ``monkeypatch.setattr(flow, "<name>", …)`` rebinds THIS module's name and
+# nothing the moved code reads, so the patch is vacuous while looking applied.
+# Two suites had to be repointed at :mod:`~.crossover_v2.capture_plan` when this
+# region moved for exactly that reason; patch the owning module instead.
 AUTO_ADVANCE_COUNTDOWN = _plan.AUTO_ADVANCE_COUNTDOWN
 AUTO_ADVANCE_COUNTDOWN_S = _plan.AUTO_ADVANCE_COUNTDOWN_S
 AUTO_ADVANCE_ON_APPLY = _plan.AUTO_ADVANCE_ON_APPLY
@@ -854,7 +860,12 @@ VERIFY_TERMINAL_OUTCOME_DETERMINISTIC = "verify_result_is_deterministic"
 # owns it and states why it has no switch, why the prelude announces a SESSION
 # rather than a capture, and why both the phone's duration budget and the actual
 # playback must read the SAME rule (#2291 Phase 5a-ii). The two capture-plan
-# builders in this module are the other pair of readers.
+# builders that used to read it here moved to
+# :mod:`~jasper.active_speaker.crossover_v2.capture_plan` in wave 3 rank 4 and
+# import it from the owner, so **nothing in this module reads this name any
+# more**. It survives as a door, pinned by
+# ``test_crossover_v2_programs.test_the_flow_re_exports_resolve_to_the_one_definition``
+# — do not delete it as dead on an importer grep alone.
 courtesy_prelude_for_phase = _programs.courtesy_prelude_for_phase
 
 

@@ -65,11 +65,13 @@ SWEPT_SURFACES: tuple[str, ...] = (
     # Cluster 1 — wizard verdict lines (the §5.10 reason registry and the
     # screen envelopes that render its verdicts).
     "jasper/active_speaker/crossover_v2_flow.py",
-    # The group close's household copy — the geometry guidance, the null
-    # classification sentences, and the carve-out disclosure — moved here in
-    # wave 3 rank 2. Without this row the sweep would still pass and would
-    # cover none of it.
+    # Two homes for household copy wave 3 moved OUT of the flow above. Without
+    # these rows the sweep would still pass and would cover neither: the group
+    # close's geometry guidance, null-classification sentences and carve-out
+    # disclosure, and the prompt table — the largest single block of household
+    # copy this flow has.
     "jasper/active_speaker/crossover_v2/spatial.py",
+    "jasper/active_speaker/crossover_v2/capture_plan.py",
     "jasper/active_speaker/crossover_v2/intervention.py",
     # Not verdict copy -- swept because it is the closed-vocabulary SOURCE of
     # the mic-trust tier keys (MIC_TIERS, _SIGMA_TOLERABLE_DB,

@@ -139,8 +139,8 @@ def _constant_from_source(path: str, name: str) -> int:
     """Read an int constant textually.
 
     These tests deliberately do NOT import ``jasper.capture_relay`` (a broken
-    ``cryptography``/``_cffi_backend`` blocks it in some CI containers), and
-    ``crossover_v2_flow`` is read the same way for symmetry.
+    ``cryptography``/``_cffi_backend`` blocks it in some CI containers), and the
+    v2 plan budget is read the same way for symmetry.
     """
     source = Path(path).read_text(encoding="utf-8")
     match = re.search(rf"^{name}\s*=\s*(\d+)", source, re.MULTILINE)
@@ -174,7 +174,8 @@ def test_max_reservations_fits_every_budget_the_attempt_number_must_pass():
     upward — only these inequalities bind it.
     """
     flow_budget = _constant_from_source(
-        "jasper/active_speaker/crossover_v2_flow.py", "CAPTURE_PLAN_MAX_ATTEMPTS"
+        "jasper/active_speaker/crossover_v2/capture_plan.py",
+        "CAPTURE_PLAN_MAX_ATTEMPTS",
     )
     transport_ceiling = _constant_from_source(
         "jasper/capture_relay/spec.py", "MAX_CAPTURE_PLAN_ATTEMPTS"
