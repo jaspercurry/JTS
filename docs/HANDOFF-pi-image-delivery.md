@@ -33,23 +33,18 @@ forking JTS installation logic.
 
 ## Product Goal
 
-For the first public setup video, the intended flow is:
+Write a card in Raspberry Pi Imager with **Use Custom**, enter hostname /
+Wi-Fi / user / SSH there, boot, and reach `http://<hostname>.local/` with core
+playback, setup, and measurement ready — then configure secrets and optional
+integrations in the browser.
 
-1. Download one versioned `.img.xz`.
-2. Select **Use Custom** in Raspberry Pi Imager.
-3. Enter hostname, Wi-Fi, user, and SSH settings in Imager.
-4. Write the card and boot the Pi.
-5. Reach `http://<hostname>.local/` within a few minutes, with core playback,
-   setup, and measurement surfaces ready.
-6. Configure secrets and optional integrations in the browser.
+The first image targets the **Pi 5 full-speaker profile**. The same arm64
+artifacts may serve other 64-bit Pis, but a Pi Zero 2 W streambox image has
+different product capabilities and needs its own boot-time evidence before it
+is advertised.
 
-The first image should target the **Pi 5 full-speaker profile**. The same
-arm64 artifacts may serve other 64-bit Pis, but a Pi Zero 2 W streambox image
-has different product capabilities and needs its own boot-time evidence before
-it is advertised.
-
-“A few minutes” is a release gate to measure, not a promise inferred from build
-steps. The first image candidate should target:
+"A few minutes" is a gate to measure, not a promise inferred from build steps.
+The first image candidate must hit:
 
 - no Rust, C, or WebRTC v2 compilation before the management UI is useful;
 - no update from a mutable branch during first boot;
@@ -59,25 +54,11 @@ steps. The first image candidate should target:
 ## The Architectural Rule
 
 **The image is a cached, versioned input to the installer; it is not a second
-installer.**
-
-`deploy/install.sh`, its libraries, reconcilers, registries, and migrations
-remain the single owners of runtime layout and host configuration. An image
-builder may:
-
-- start from a pinned Raspberry Pi OS Lite arm64 base;
-- preload verified release artifacts, package caches, and the JTS source
-  snapshot;
-- arrange for the existing installer to run in an image-build or first-boot
-  mode;
-- seed a versioned release manifest.
-
-It must not carry a parallel list of services, paths, environment keys, or
-post-install steps. If image creation needs a new primitive, add that primitive
-to the normal installer and call it from both paths.
-
-This keeps a fast-moving `main` survivable: normal developer deploys, a fresh
-stock-OS install, and a custom image all converge through the same code.
+installer** — `deploy/install.sh` and its libraries, reconcilers, registries,
+and migrations stay the single owners of runtime layout and host
+configuration. What an image builder may and may not do, why, and the
+no-baked-secrets and never-boot-from-`main` constraints that fall out of it:
+[ADR-0164](adr/0164-a-pi-image-is-a-cached-versioned-input-to-the-installer-not-a-second-installer.md).
 
 ## What Belongs in Which Layer
 
@@ -113,52 +94,34 @@ policy.
 
 ## Redistribution Boundary
 
-Non-commercial distribution is still distribution. It may make owner outreach
-unnecessary as a practical matter, but it does not waive license conditions.
+Non-commercial distribution is still distribution: it does not waive license
+conditions, and automating a download is not a bypass. Three rules decide what
+may go in:
 
-A bootstrap image narrows the work; it does not erase it:
+- **[`../LICENSE-third-party.md`](../LICENSE-third-party.md) is the status
+  register.** The image release gate reads it; do not re-derive conclusions
+  here or in the builder.
+- **JTS distributes the base image, every file embedded in it, and anything
+  hosted in a JTS release.** Bytes a device fetches directly from Debian,
+  Raspberry Pi, or an upstream are that publisher's, but JTS still owes terms
+  on its own wrapper, modifications, and presentation.
+- **Uncleared or opaque components stay absent or user-initiated** from their
+  canonical source until their terms are understood.
 
-- JTS distributes the base image and every file embedded in it.
-- JTS distributes any artifact or source archive hosted in a JTS release.
-- When a device fetches directly from Debian, Raspberry Pi, or an upstream
-  project, that publisher supplies those bytes; JTS still must obey relevant
-  terms in its own wrapper, modifications, and presentation.
-- Automating a download is not a license bypass. Opaque firmware or another
-  uncleared component should remain absent or user-initiated from its canonical
-  source until its terms are understood.
-
-For permissively licensed dependencies, the normal solution is preserving
-copyright and license notices, not asking every repository owner for
-permission. Copyleft components can also be redistributable, but may require
-corresponding source, build scripts, relinking rights, or other exact
-obligations. `LICENSE-third-party.md` is the status register; the image release
-gate reads it rather than recreating conclusions here.
-
-The first-party arm64 bundle intentionally certifies only its own contents. It
-does **not** clear CamillaDSP, librespot/raspotify, shairport-sync, nqptp,
-CamillaGUI, models, firmware, Debian packages, or a future whole image.
+The first-party arm64 bundle certifies only its own contents. It does **not**
+clear CamillaDSP, librespot/raspotify, shairport-sync, nqptp, CamillaGUI,
+models, firmware, Debian packages, or a future whole image.
 
 ## Release Model for a Fast-Moving Codebase
 
-`main` is a development stream. An image is an immutable release.
-
-- Never make first boot clone or install the current tip of `main`.
-- Build from an exact commit and record the full SHA.
-- Give the image version and JTS application version separate identities.
-- Record the base-image URL/version/hash, artifact bundle hash, package
-  inventory, notice-bundle hash, image-builder version, and build time.
-- Publish only after promotion; a green workflow artifact is not automatically
-  a public release.
-- Let day-to-day Pi development continue through `deploy-to-pi.sh`. Do not
-  rebuild an OS image for every merge.
-- Check for application updates only after the speaker has reached core value.
-  Applying an update should be an explicit, observable transaction, not hidden
-  inside the first boot.
-
-A reasonable early cadence is a manually promoted image for a setup-video or
-milestone release, then a rebuild when a material security/base-OS fix or a
-meaningful onboarding improvement warrants it. Usage can justify automation
-later.
+`main` is a development stream; an image is an immutable release, built from an
+exact commit ([ADR-0164](adr/0164-a-pi-image-is-a-cached-versioned-input-to-the-installer-not-a-second-installer.md)).
+Operationally that means: a green workflow artifact is not automatically a
+public release — publish only after promotion; day-to-day Pi development stays
+on `deploy-to-pi.sh`; and the early cadence is one manually promoted image per
+setup-video or milestone, rebuilt when a material security/base-OS fix or a
+meaningful onboarding improvement warrants it. Automation waits for usage to
+justify it.
 
 ## First-Boot Transaction
 
@@ -228,11 +191,11 @@ Do not call an image public-ready until all of these are evidence-backed:
 
 ## Implementation Order
 
-1. **Artifact + optional-feature foundation (this slice).** Produce and verify
-   first-party arm64 bundles, let `install.sh` transactionally consume an
-   explicitly staged commit-matched bundle, and make enhanced AEC optional,
+1. ~~**Artifact + optional-feature foundation.**~~ Done: first-party arm64
+   bundles build and verify, `install.sh` transactionally consumes an
+   explicitly staged commit-matched bundle, and enhanced AEC is optional,
    observable, and backgrounded.
-2. **Measure the release-shaped install.** Record timing for every major
+2. **Measure the release-shaped install.** ← next Record timing for every major
    install/first-boot phase on the supported Pi and storage pair so each
    preloading choice is evidence-driven. Define the pinned local release
    manifest that supplies source identity and bundle digests when no `.git`
@@ -260,4 +223,9 @@ Do not call an image public-ready until all of these are evidence-backed:
 These are future scale tools, not prerequisites for a simple first public
 setup.
 
-Last verified: 2026-07-27
+Last verified: 2026-08-26 (Current State re-confirmed against the tree — no
+image builder, no `.img.xz`, no first-boot service exists yet; the stock-OS +
+`scripts/onboard.sh` path and the arm64 bundle seam in
+`deploy/lib/install/first-party-runtime.sh` are what actually ships, so step 1
+of the Implementation Order is marked done and everything below it remains
+unbuilt plan)

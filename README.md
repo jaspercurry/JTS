@@ -451,8 +451,6 @@ Preserved for archaeology; **not** current operational truth.
   evidence that proved external-DAC chip AEC; use `HANDOFF-aec.md` instead
 - [`HANDOFF-chip-aec-portability.md`](docs/HANDOFF-chip-aec-portability.md) —
   clock-domain measurements and the rejected rate-matcher design
-- [`HANDOFF-canonical-ui-migration.md`](docs/HANDOFF-canonical-ui-migration.md)
-  — the completed design-system migration of all wizards
 - [`HANDOFF-volume-control-redesign.md`](docs/HANDOFF-volume-control-redesign.md)
   — why AirPlay receiver-originated volume reflection did not work
 - [`RESEARCH-pipewire-low-latency.md`](docs/RESEARCH-pipewire-low-latency.md) —
