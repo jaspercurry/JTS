@@ -60,8 +60,8 @@ OUTPUTD_STALE_MS = 3000
 # what is wrong with the household's sound and what they can do about it, never
 # a daemon name, a unit, a systemd state, or a command (#2472). The operator
 # half of each state already has a home — `jasper-doctor` carries the unit
-# names and `journalctl` lines, and `/state.audio.technical` carries the raw
-# counters — so nothing is lost by keeping them off the front page. The two
+# names and `journalctl` lines, and `/state.audio_health.technical` carries the
+# raw counters — so nothing is lost by keeping them off the front page. The two
 # remedies named below are the buttons that sit on the same /system/ page as
 # this card.
 RESTART_REMEDY = "Try Restart audio."
@@ -95,9 +95,34 @@ _OUTPUT_ABSENT_DETAIL = (
 )
 PATH_UNREPORTED_TITLE = "Sound status unavailable"
 PATH_UNREPORTED_DETAIL = (
-    "JTS cannot tell whether sound is reaching the speaker. If music is "
-    "missing, try Restart audio."
+    "JTS cannot tell whether sound is reaching the speaker right now, so "
+    f"music may be missing. {RESTART_REMEDY}"
 )
+
+# The closed vocabulary of signal-path shape codes — every `code` any
+# signal-path producer emits (`_signal_path` and the three overrides
+# `compose_audio_health` layers on it). A new shape registers itself HERE,
+# beside the branch that emits it, and that is what makes
+# `test_the_household_shapes_cover_every_signal_path_code` fail until the new
+# shape is added to the household-register sweep as well.
+SIGNAL_PATH_CODES = frozenset({
+    "activity_unknown",
+    "camilla_not_installed",
+    "camilla_stopped",
+    "clean",
+    "input_absent",
+    "input_broken",
+    "input_stalled",
+    "output_absent",
+    "output_backend_inactive",
+    "output_stalled",
+    "path_stalled",
+    "path_unreported",
+    "starting",
+    "transport_parked",
+    "tts_queue_full",
+    "undeclared_hardware",
+})
 
 # The two `_signal_path` codes that mean "outputd is not delivering audio, for
 # a reason `_signal_path` cannot see": outputd never started at all (its
@@ -396,9 +421,9 @@ def _read_transport_state(plan: Any) -> dict[str, Any]:
     if evidence.devices is None or not evidence.endpoint_recognized:
         # One unrecognized endpoint is NOT "coherence unknown": the PARKED graph
         # (#2135) writes to a File sink on purpose, because the saved roleful
-        # layout has no staged startup graph yet. That is precisely "audio
-        # cannot reach the drivers", so it must not read as ready just because
-        # the graph declines to name an outputd lane.
+        # layout has no staged startup graph yet. That is precisely the parked
+        # state, so it must not read as ready just because the graph declines
+        # to name an outputd lane.
         return _parked_graph_transport() or _empty_transport()
     # outputd.env is read here because the plan carries decisions, not the
     # generated env it was built from.
@@ -577,9 +602,9 @@ def _parked_signal(route: Mapping[str, Any]) -> dict[str, Any] | None:
     host the saved layout at all, the detail names the DAC and where the
     household fixes it — because no reconcile or restart can clear that one.
     Otherwise it says only what the household can act on: the contradiction
-    itself is operator evidence, and it stays where operators read it —
-    ``/state.audio.route.transport.coherence_errors`` and doctor's
-    transport-coherence check, which prints every error with its remedy.
+    itself is operator evidence and stays where operators read it — doctor's
+    transport-coherence check, which fails on the same fact and prints every
+    error with its remedy.
 
     Presentation only: :class:`AudioHealthSampler` deliberately feeds
     :func:`_state_issues` the raw signal path, so a warn-level issue keeps its
@@ -662,8 +687,8 @@ def _stopped_dsp_signal(
     This keeps the final output loop alive"), and BOTH `last_progress_age_ms`
     counters time the work loop's iteration, not audio actually moving.  So a
     dead CamillaDSP leaves every input to `_signal_path` healthy while the
-    speaker emits nothing — `overall` would otherwise read "Audio is playing ·
-    signal path clean" next to its own "DSP engine is not running" incident.
+    speaker emits nothing — `overall` would otherwise report a clean path and
+    a playing source next to its own :data:`STOPPED_DSP_HEADLINE` incident.
 
     Presentation only, exactly like :func:`_parked_signal`:
     :class:`AudioHealthSampler` feeds :func:`_state_issues` the raw signal
@@ -801,7 +826,7 @@ def _signal_path(
     if outputd is None:
         if warmup:
             return {
-                "code": "starting_output",
+                "code": "starting",
                 "status": "idle",
                 "headline": "Audio is starting",
                 "detail": "Sound will be ready in a moment.",
@@ -2727,9 +2752,14 @@ class AudioHealthSampler:
                         impact="continuity",
                         severity="issue",
                         title="Sound recovered after a brief pause",
+                        # No number in the sentence: `skipped_delta` counts
+                        # watchdog ticks missed, i.e. how LONG one stall
+                        # lasted, not how many stalls there were. It rides the
+                        # structured `count` field below, where it is read as
+                        # what it is.
                         detail=(
-                            f"Sound stopped moving through the speaker "
-                            f"{skipped_delta} time(s) and resumed."
+                            "Sound stopped moving through the speaker briefly "
+                            "and resumed."
                         ),
                     ),
                     now,

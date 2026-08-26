@@ -447,7 +447,7 @@ def _armed_active_transport_read(monkeypatch, tmp_path, **env_overrides):
 
 
 def test_armed_active_ring_is_not_reported_as_parked(monkeypatch, tmp_path) -> None:
-    """#2376: an armed roleful box must not be told its audio cannot reach the drivers.
+    """#2376: an armed roleful box must not be reported as parked.
 
     Observed on jts3 while audio was demonstrably playing: ``/state.audio_health``
     said "parked" with "transport plan is loopback but
@@ -487,9 +487,9 @@ def test_armed_active_ring_reports_a_lagging_ring_path_as_the_arm_waypoint(
 
     The verdict is a NOTE, and the headline is deliberately not PARKED. A ring
     path lagging its marker is the first-arm waypoint: the path is the marker's
-    projection and the next pass of its single writer converges it, so telling a
-    household "audio cannot reach the drivers" would name a permanent fault where
-    there is a transient one. The window is not unobserved — the note rides this
+    projection and the next pass of its single writer converges it, so telling
+    a household its speaker cannot make sound would name a permanent fault
+    where there is a transient one. The window is not unobserved — the note rides this
     same surface verbatim, and outputd refusing to attach is separately loud.
     """
     from jasper.fanin_coupling import (
@@ -3798,7 +3798,7 @@ def test_state_keeps_working_when_audio_health_snapshot_raises(monkeypatch) -> N
 # copy: what is wrong with the household's sound, and what they can do about
 # it. The operator half of each state keeps its own home: `jasper-doctor` for
 # unit names, systemd states and `journalctl` lines, and
-# `/state.audio.technical` for the raw counters this card is derived from.
+# `/state.audio_health.technical` for the raw counters this card is built from.
 # --------------------------------------------------------------------------- #
 
 # Vocabulary that means nothing to a household: JTS's own component and unit
@@ -3814,11 +3814,13 @@ _OPERATOR_VOCABULARY = re.compile(
     r")(?:[^A-Za-z]|$)"
 )
 
-# The payload keys whose values are sentences a household reads. `technical` is
-# skipped wholesale: it is the raw evidence block, and naming daemons is its
-# whole job.
+# The payload keys whose values a household reads. `label` is in here because
+# the evidence breakdown rows ({"label", "value"}) render on this same card, so
+# a daemon name in a row label is as household-facing as one in a sentence.
+# `technical` is skipped wholesale: it is the raw evidence block, and naming
+# daemons is its whole job.
 _MESSAGE_FIELDS = frozenset({
-    "headline", "detail", "title", "summary", "observed", "likely_area",
+    "headline", "detail", "title", "summary", "observed", "likely_area", "label",
 })
 
 
@@ -3885,7 +3887,8 @@ def _household_shapes() -> dict[str, dict]:
         "starting": _compose_with(
             _mutated(lambda ap: ap["current"].pop("fanin"), warmup=True)
         ),
-        "starting_output": _compose_with(_airplay(warmup=True), outputd=None),
+        # Same shape from the other warmup branch: outputd not up yet.
+        "starting_no_output": _compose_with(_airplay(warmup=True), outputd=None),
         "path_unreported": _compose_with(
             _mutated(lambda ap: ap["current"].pop("fanin"), **playing)
         ),
@@ -4000,33 +4003,24 @@ def test_every_household_sentence_stays_out_of_operator_register(shape: str) -> 
 def test_the_household_shapes_cover_every_signal_path_code() -> None:
     """The sweep above is only worth its keep if it reaches every shape.
 
-    Pins the cover set against the codes `_signal_path` and its three
-    overrides actually emit, so a new shape fails here until it is swept
-    rather than shipping unlinted.
+    Equality against `audio_health.SIGNAL_PATH_CODES` — the module's own
+    vocabulary, declared beside the branches that emit it — rather than a
+    literal kept here. A literal only fails when a shape is RENAMED or
+    RETIRED; this fails in both directions, so registering a new shape's code
+    (the one edit a new branch cannot skip and still be legible) is what makes
+    the sweep demand a fixture for it. What it cannot see is a branch that
+    emits a code it never registered — which is exactly why the vocabulary
+    lives in the module with the producers and not in this file.
     """
     swept = {
         snapshot["signal_path"]["code"]
         for snapshot in _household_shapes().values()
     }
-    assert swept == {
-        "activity_unknown",
-        "camilla_not_installed",
-        "camilla_stopped",
-        "clean",
-        "input_absent",
-        "input_broken",
-        "input_stalled",
-        "output_absent",
-        "output_backend_inactive",
-        "output_stalled",
-        "path_stalled",
-        "path_unreported",
-        "starting",
-        "starting_output",
-        "transport_parked",
-        "tts_queue_full",
-        "undeclared_hardware",
-    }
+    assert swept == audio_health.SIGNAL_PATH_CODES, (
+        "every signal-path shape must reach the household-register sweep: "
+        f"unswept={sorted(audio_health.SIGNAL_PATH_CODES - swept)} "
+        f"unregistered={sorted(swept - audio_health.SIGNAL_PATH_CODES)}"
+    )
 
 
 def _every_incident_row() -> list[dict]:
@@ -4079,8 +4073,8 @@ def test_every_incident_row_stays_out_of_operator_register() -> None:
     """#2472, for the incident rows: the same bar as the sentences above.
 
     An audio incident is read by whoever opens the card, not by whoever can
-    read a unit file — the failing unit and its state stay in doctor and in
-    `/state.services`.
+    read a unit file — the failing unit and its state stay in doctor, which
+    fails on the same facts.
     """
     rows = _every_incident_row()
     offenders = {
