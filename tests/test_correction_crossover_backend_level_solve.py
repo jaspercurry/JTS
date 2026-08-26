@@ -170,113 +170,6 @@ async def _volume_ports(start_db: float):
     return current, get_main_volume_db, set_main_volume_db
 
 
-async def test_driver_sweep_reasserts_solved_volume_not_raw_lock(monkeypatch):
-    topology, profile, targets = _safety_profile_and_targets()
-    _patch_solve_environment(monkeypatch, topology, profile)
-
-    lease = CrossoverLevelLease()
-    _configure_lease(lease, targets)
-    lease._outcomes["near_field_driver:mono:woofer"] = _ramp_outcome(
-        locked=-20.0, gain_map_db=1.9, cap_db=-3.0, noise_floor_dbfs=-42.3
-    )
-    current, get_v, set_v = await _volume_ports(-27.0)
-
-    acquired = await lease.acquire_driver_sweep_volume("mono", "woofer", get_v, set_v)
-    assert acquired is True
-    # The solved level clears >=26 dB worst-band SNR against this ambient
-    # with plenty of headroom (regression-shaped inputs) -- the reasserted
-    # volume must NOT be the raw -20.0 dB lock.
-    assert current["value"] != pytest.approx(-20.0)
-    assert current["value"] <= 0.0
-
-
-async def test_refused_solve_raises_and_preserves_the_lock(monkeypatch):
-    topology, profile, targets = _safety_profile_and_targets()
-    _patch_solve_environment(monkeypatch, topology, profile)
-
-    lease = CrossoverLevelLease()
-    _configure_lease(lease, targets)
-    # Extremely insensitive chain + loud room: unreachable even at max
-    # levers -- REFUSAL, not a best-effort SolvedLevel.
-    lease._outcomes["near_field_driver:mono:tweeter"] = _ramp_outcome(
-        locked=-3.0, gain_map_db=-60.0, cap_db=-3.0, noise_floor_dbfs=-20.0
-    )
-    _, get_v, set_v = await _volume_ports(-27.0)
-
-    with pytest.raises(LevelSolveRefused):
-        await lease.acquire_driver_sweep_volume("mono", "tweeter", get_v, set_v)
-
-    # The refusal must not have touched the driver's level lock.
-    assert "near_field_driver:mono:tweeter" in lease._outcomes
-    assert (
-        lease._outcomes["near_field_driver:mono:tweeter"].ramp.locked_main_volume_db
-        == -3.0
-    )
-    # And must not have started a volume transition (no tone plays).
-    assert lease.sweep_volume_active is False
-
-
-async def test_refusal_surfaces_on_level_match_snapshot(monkeypatch):
-    topology, profile, targets = _safety_profile_and_targets()
-    _patch_solve_environment(monkeypatch, topology, profile)
-
-    lease = CrossoverLevelLease()
-    _configure_lease(lease, targets)
-    lease._outcomes["near_field_driver:mono:tweeter"] = _ramp_outcome(
-        locked=-3.0, gain_map_db=-60.0, cap_db=-3.0, noise_floor_dbfs=-20.0
-    )
-    _, get_v, set_v = await _volume_ports(-27.0)
-
-    with pytest.raises(LevelSolveRefused):
-        await lease.acquire_driver_sweep_volume("mono", "tweeter", get_v, set_v)
-
-    refusal = lease.level_match_snapshot()["solve_refusal"]
-    assert refusal is not None
-    assert refusal["code"] == "room_too_noisy_for_safe_measurement"
-    assert refusal["role"] == "tweeter"
-
-
-async def test_level_solve_refused_str_is_the_mapped_household_copy(monkeypatch):
-    """W2.4 (hardware run 20): ``str(LevelSolveRefused(...))`` used to be the
-    raw diagnostic string ``"level_solve_refused code=... band=...Hz"`` --
-    the exact text that leaked to the household on TWO unmigrated surfaces:
-    the phone's ``sweep_failed`` host event
-    (``jasper.web.correction_crossover_flow``'s ``error=str(exc)``) and the
-    wizard's relay status line
-    (``jasper.web.correction_setup._relay_failure_message``'s generic
-    ``str(exc)`` fallback). ``str(exc)`` must instead be EXACTLY the same
-    mapped sentence the envelope renders
-    (``jasper.active_speaker.crossover_envelope.describe_level_solve_refusal``)
-    -- one code -> copy mapping, never a raw code/band string on any
-    household surface."""
-
-    from jasper.active_speaker.crossover_envelope import (
-        describe_level_solve_refusal,
-    )
-
-    topology, profile, targets = _safety_profile_and_targets()
-    _patch_solve_environment(monkeypatch, topology, profile)
-
-    lease = CrossoverLevelLease()
-    _configure_lease(lease, targets)
-    lease._outcomes["near_field_driver:mono:tweeter"] = _ramp_outcome(
-        locked=-3.0, gain_map_db=-60.0, cap_db=-3.0, noise_floor_dbfs=-20.0
-    )
-    _, get_v, set_v = await _volume_ports(-27.0)
-
-    with pytest.raises(LevelSolveRefused) as excinfo:
-        await lease.acquire_driver_sweep_volume("mono", "tweeter", get_v, set_v)
-
-    message = str(excinfo.value)
-    assert "level_solve_refused" not in message
-    assert "code=" not in message
-    assert "band=" not in message
-    assert message == describe_level_solve_refusal(excinfo.value.refusal.to_dict())
-    # Sanity: this IS the household-facing "too high to measure reliably"
-    # room_too_noisy copy, not a generic/empty fallback.
-    assert "too high to measure reliably at safe levels" in message
-
-
 def test_refusal_pending_predicate_across_the_three_stored_states():
     """W2.4 pin on the between-set restart's clear/preserve decision.
 
@@ -342,56 +235,6 @@ def test_refusal_pending_predicate_across_the_three_stored_states():
     )
     assert lease._solve_refusal is None
     assert lease._target_refusal_pending(target_id) is False
-
-
-async def test_solve_falls_back_to_raw_lock_when_ceilings_unresolvable(monkeypatch):
-    """No driver-safety profile confirmed -- the solve cannot resolve
-    ceilings, so the pre-W2.1 raw-lock reassert behavior is preserved."""
-
-    topology, _profile, targets = _safety_profile_and_targets()
-
-    import jasper.output_topology as output_topology_mod
-    from jasper.active_speaker import design_draft as design_draft_mod
-
-    monkeypatch.setattr(output_topology_mod, "load_output_topology", lambda: topology)
-    monkeypatch.setattr(
-        design_draft_mod,
-        "load_design_draft",
-        lambda *args, **kwargs: {},  # no driver_safety_profile
-    )
-
-    lease = CrossoverLevelLease()
-    _configure_lease(lease, targets)
-    lease._outcomes["near_field_driver:mono:woofer"] = _ramp_outcome(
-        locked=-20.0, gain_map_db=1.9, cap_db=-3.0, noise_floor_dbfs=-42.3
-    )
-    current, get_v, set_v = await _volume_ports(-27.0)
-
-    acquired = await lease.acquire_driver_sweep_volume("mono", "woofer", get_v, set_v)
-    assert acquired is True
-    assert current["value"] == pytest.approx(-20.0)
-
-
-async def test_missing_gain_map_falls_back_to_raw_lock(monkeypatch):
-    """A test double (or legacy in-memory outcome) without gain_map_db must
-    degrade to the raw lock, not crash."""
-
-    topology, profile, targets = _safety_profile_and_targets()
-    _patch_solve_environment(monkeypatch, topology, profile)
-
-    lease = CrossoverLevelLease()
-    _configure_lease(lease, targets)
-    lease._outcomes["near_field_driver:mono:woofer"] = SimpleNamespace(
-        ramp=SimpleNamespace(
-            state=RampState.LOCKED,
-            locked_main_volume_db=-20.0,
-        )
-    )
-    current, get_v, set_v = await _volume_ports(-27.0)
-
-    acquired = await lease.acquire_driver_sweep_volume("mono", "woofer", get_v, set_v)
-    assert acquired is True
-    assert current["value"] == pytest.approx(-20.0)
 
 
 def test_solve_correction_snr_shortfall_stacks_and_bounds_at_two_writes(monkeypatch):
@@ -913,60 +756,6 @@ async def test_fresh_ramp_lock_persists_that_targets_escalation(monkeypatch):
     assert corrected_total == pytest.approx(baseline_total + 5.0)
 
 
-async def test_solve_runs_once_per_sweep_and_reads_consume_it(monkeypatch):
-    """N1: _acquire_sweep_volume computes and stores the SolvedLevel; the
-    excitation-ledger and gain-override reads consume the stored result --
-    exactly ONE solve (and one measurement.level_solved event) per sweep."""
-
-    topology, profile, targets = _safety_profile_and_targets()
-    _patch_solve_environment(monkeypatch, topology, profile)
-
-    lease = CrossoverLevelLease()
-    _configure_lease(lease, targets)
-    lease._outcomes["near_field_driver:mono:woofer"] = _ramp_outcome(
-        locked=-20.0, gain_map_db=1.9, cap_db=-3.0, noise_floor_dbfs=-42.3
-    )
-    solve_calls = {"count": 0}
-    real_solve = lease._solve_driver_level
-
-    def counting_solve(*args, **kwargs):
-        solve_calls["count"] += 1
-        return real_solve(*args, **kwargs)
-
-    monkeypatch.setattr(lease, "_solve_driver_level", counting_solve)
-    current, get_v, set_v = await _volume_ports(-27.0)
-
-    acquired = await lease.acquire_driver_sweep_volume("mono", "woofer", get_v, set_v)
-    assert acquired is True
-    reasserted = current["value"]
-
-    ledger = lease.driver_sweep_locked_main_volume_db(
-        "mono", "woofer", capture_geometry="near_field"
-    )
-    override = lease.solved_commissioning_gain_db(
-        "mono", "woofer", capture_geometry="near_field"
-    )
-
-    assert solve_calls["count"] == 1
-    assert ledger == pytest.approx(reasserted)
-    assert override is not None
-    stored = lease._active_sweep_solve
-    assert stored is not None
-    assert override == pytest.approx(stored[3].commissioning_gain_db)
-
-    # The stored solve is scoped to the sweep window: finishing the sweep
-    # clears it, and the ledger read falls back to the raw ramp lock.
-    await lease.finish_sweep_volume(set_v, get_v)
-    assert lease._active_sweep_solve is None
-    assert lease.solved_commissioning_gain_db(
-        "mono", "woofer", capture_geometry="near_field"
-    ) is None
-    assert lease.driver_sweep_locked_main_volume_db(
-        "mono", "woofer", capture_geometry="near_field"
-    ) == pytest.approx(-20.0)
-    assert solve_calls["count"] == 1
-
-
 def test_record_driver_capture_escalates_on_measured_shortfall(monkeypatch):
     """Sweep 1's OWN measured verdict misses despite the solve predicting a
     safe level -- the wrapper escalates the lease's ambient assumption by
@@ -1412,3 +1201,44 @@ def test_record_driver_capture_terminal_refusal_persists_correction_state(
 
     assert lease._solve_adjustment_db == {"mono:woofer": pytest.approx(4.7)}
     assert lease._solve_correction_writes == {"mono:woofer": 1}
+
+
+def test_level_solve_refused_str_is_the_mapped_household_copy():
+    """W2.4 (hardware run 20, 2026-07-17, jts3): ``str(LevelSolveRefused(...))``
+    used to be the raw diagnostic ``"level_solve_refused code=... band=...Hz"``
+    -- the exact text that leaked to the household on TWO unmigrated surfaces:
+    the phone's ``sweep_failed`` host event
+    (``jasper.web.correction_crossover_flow``'s ``error=str(exc)``) and the
+    wizard's relay status line
+    (``jasper.web.correction_setup._relay_failure_message``'s generic
+    ``str(exc)`` fallback). ``str(exc)`` must instead be EXACTLY the mapped
+    sentence the envelope renders -- one code -> copy mapping, never a raw
+    code/band string on any household surface.
+
+    RE-POINTED, not deleted. This pin used to reach the exception through
+    ``acquire_driver_sweep_volume``, which is gone with the rest of the
+    never-reachable W2.1 sweep-lease path. The leak it guards is a property of
+    the exception's own rendering, so it is pinned by constructing the refusal
+    directly and nothing about the incident goes unwatched.
+    """
+    from jasper.active_speaker.crossover_envelope import (
+        describe_level_solve_refusal,
+    )
+    from jasper.audio_measurement.level_solver import LevelSolveRefusal
+
+    refusal = LevelSolveRefusal(
+        code="room_too_noisy_for_safe_measurement",
+        failing_band_hz=(200.0, 400.0),
+        required_db=-6.0,
+        available_db=-18.0,
+    )
+
+    message = str(LevelSolveRefused(refusal))
+
+    assert "level_solve_refused" not in message
+    assert "code=" not in message
+    assert "band=" not in message
+    assert message == describe_level_solve_refusal(refusal.to_dict())
+    # Sanity: this IS the household-facing "too high to measure reliably"
+    # room_too_noisy copy, not a generic/empty fallback.
+    assert "too high to measure reliably at safe levels" in message
