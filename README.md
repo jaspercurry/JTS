@@ -707,12 +707,12 @@ reference. Currently:
   decisions in ADR-0129–0131, May 2026 pilots in
   [`historical/wake-corpus-pilots-2026-05.md`](docs/historical/wake-corpus-pilots-2026-05.md).
 - [`HANDOFF-custom-wakeword-training.md`](docs/HANDOFF-custom-wakeword-training.md) —
-  Productization plan for converting JTS wake-corpus recordings into
-  custom wake-word models trained off-Pi with LiveKit/openWakeWord-
-  compatible tooling, then evaluated, thresholded, and deployed back
-  into the existing JTS multi-leg fusion runtime. Read this before
-  building corpus export, feature extraction, cloud training, model
-  registry, shadow-mode, or one-click training UX.
+  The off-Pi data-prep chain that turns wake-corpus recordings into a model
+  the existing runtime can load: the frozen runtime contract, the five
+  hash-bound prep stages and their guard rails, the corpus data model, and
+  the evaluation gates. Decisions in ADR-0129/0131/0137/0138; the 2026-07
+  productization plan in
+  [`historical/custom-wakeword-productization-plan-2026-07.md`](docs/historical/custom-wakeword-productization-plan-2026-07.md).
 - [`HANDOFF-wake-corpus-quality.md`](docs/HANDOFF-wake-corpus-quality.md) —
   Methodology for programmatic audio-quality review of the deliberate wake
   corpus: recorder legs and session metadata, the deterministic/diagnostic/
