@@ -389,9 +389,15 @@ def promote_level_frame_disagreement(
     the same reason the paragraph below gives: that comparison is the gate's,
     and computing it twice is §3.1's forbidden second verdict. The consequence
     is deliberate and is the producer's stated ordering — when both fire the
-    household is told about the estimators, because two instruments that
-    disagree about the frame make the realized read downstream of a suspect
-    frame, and better evidence comes before acting on a setup value.
+    household is told about the level definitions. That precedence used to rest
+    on "a suspect frame makes the realized read untrustworthy, so collect better
+    evidence first"; ruling S8 removed that argument, because a definition gap
+    is expected rather than suspect. It rests instead on what the two sentences
+    ASK FOR: the definition sentence asks for nothing, so it cannot send anyone
+    to do the wrong work, while the realized sentence asks for a setup value to
+    be re-checked — and sending that request on a pass where the level frame is
+    also being read two different ways is how someone ends up adjusting a
+    sensitivity to chase a number that was never wrong.
 
     **What the DEFINITION finding means (#2609, corrected by ruling S8).** The
     two per-driver numbers — the trim solve's mirrored ±1-octave power average
@@ -540,22 +546,22 @@ def promote_level_frame_disagreement(
             # the evidence precisely so a reader can subtract the one
             # instrument-side contribution that is known and bounded.
             confidence=CONFIDENCE_UNSURE,
-            # M7 declares BOTH classes and the split is plan §4's: `eq` when a
-            # driver's level is genuinely low, `refit` "when the level error is
-            # upstream in the fit's own frame". The two arms land on opposite
-            # sides of exactly that line, which is why the declaration has two
-            # entries rather than one.
-            #
-            # ESTIMATOR -> `refit`: a disagreement BETWEEN two estimates of the
-            # frame is upstream of every trim derived from them by
-            # construction, so adding level cannot be the fix.
-            #
             # REALIZED -> `eq`: the frame is not in dispute (that is why this
             # reason won); what is measured is the committed pair sitting at
-            # levels that do not match, which is the first half of the split
+            # levels that do not match, which is plan §4 M7's first half
             # verbatim. Routing `refit` here would send a re-solve at a
             # measurement the re-solve already agrees with.
-            fix_class="eq" if realized_only else "refit",
+            #
+            # DEFINITION -> `document_as_physics`: this arm was `refit`, on the
+            # reading that a disagreement BETWEEN two estimates of one frame is
+            # upstream of every trim derived from them. Ruling S8 established
+            # they were never estimates of one quantity — the handover level
+            # and the passband average measure different things, and on a
+            # sloped horn they legitimately differ by many dB. There is nothing
+            # to re-solve, which is why this arm's household sentence reports
+            # the outcome and asks for nothing; the fix class has to say the
+            # same thing or the finding contradicts itself.
+            fix_class="eq" if realized_only else "document_as_physics",
             household_copy=(
                 REALIZED_LEVEL_HOUSEHOLD_COPY
                 if realized_only

@@ -198,18 +198,30 @@ _SEED: tuple[MechanismSpec, ...] = (
         id=MECHANISM_LEVEL_FRAME,
         title="Inter-driver level-frame error",
         # Plan §4 M7: "`eq` (level) — and `refit` when the level error is
-        # upstream in the fit's own frame". Both are real, a finding picks one,
-        # and the frame-gate site now produces BOTH — one per condition it can
-        # bank, which is why this declaration needs two entries rather than
-        # one. `refit` for a disagreement BETWEEN two estimates of the frame,
-        # which is by construction upstream of any trim derived from them, so
-        # adding level cannot be the answer. `eq` for the committed pair's
-        # REALIZED levels landing apart, which is the first half of the split
-        # verbatim — the frame is not in dispute there. Until doctrine
-        # deviation (i) demoted that second condition from a refusal it had no
-        # finding at all, which is why this comment used to say the site
-        # produced only `refit`. Both routes pinned by test.
-        fix_classes=("eq", "refit"),
+        # upstream in the fit's own frame". The frame-gate site banks two
+        # conditions, and ruling S8 turned one of them into a third route.
+        #
+        # `eq` — the committed pair's REALIZED levels landing apart. The first
+        # half of the split verbatim; the frame is not in dispute there. Until
+        # doctrine deviation (i) demoted that condition from a refusal it had
+        # no finding at all.
+        #
+        # `document_as_physics` — the two level DEFINITIONS differing. This was
+        # `refit`, on the reading that a disagreement BETWEEN two estimates of
+        # one frame is upstream of every trim derived from them. S8 established
+        # that they were never estimates of one quantity: the handover level
+        # and the passband average measure different things, and on a horn with
+        # a sloped response they legitimately differ by many dB. A re-solve
+        # cannot close a gap that is a property of two definitions, so routing
+        # `refit` would send someone to do work that changes nothing — and
+        # would contradict this finding's own household sentence, which now
+        # reports the outcome and asks for nothing.
+        #
+        # `refit` stays DECLARED because §4 M7 declares it and the mechanism
+        # can still carry a genuine upstream frame error; what changed is that
+        # the definition gap is no longer an instance of one. All routes pinned
+        # by test.
+        fix_classes=("eq", "refit", "document_as_physics"),
         # **A gap, declared as one — no §5 probe DECIDES M7 today.** This
         # field's contract is the strong one ("the probe that would decide
         # this mechanism when a finding is unsure"), and neither entry below
