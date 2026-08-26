@@ -49,6 +49,18 @@ def _print_text_summary(payload: dict[str, Any]) -> None:
             f"generated_fir={'yes' if fir.get('ready_for_generated_fir') else 'no'}, "
             f"staged={fir.get('staged_fir_count', 0)}"
         )
+    banked = payload.get("banked_responses") or []
+    if banked:
+        print(f"Banked responses: {len(banked)}")
+        for row in banked:
+            curve = row.get("analysis_curve") or {}
+            extent = (
+                f"{curve['freq_count']} bins, "
+                f"{curve['f_min_hz']}-{curve['f_max_hz']} Hz"
+                if "freq_count" in curve
+                else str(curve.get("unavailable"))
+            )
+            print(f"  {row.get('stem')} ({row.get('capture_kind')}): {extent}")
     recompute = payload.get("recompute")
     if recompute:
         print(
@@ -62,6 +74,18 @@ def _print_text_summary(payload: dict[str, Any]) -> None:
                 "Stored average delta: "
                 f"rms={delta['rms_db']} dB, max={delta['max_abs_db']} dB"
             )
+        for capture_delta in recompute.get("banked_capture_deltas") or []:
+            if "rms_db" in capture_delta:
+                print(
+                    f"  {capture_delta['stem']} vs banked: "
+                    f"rms={capture_delta['rms_db']} dB, "
+                    f"max={capture_delta['max_abs_db']} dB"
+                )
+            else:
+                print(
+                    f"  {capture_delta['stem']} vs banked: "
+                    f"{capture_delta['unavailable']}"
+                )
     issues = payload.get("issues") or []
     if issues:
         print("Issues:")

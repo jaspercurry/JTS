@@ -136,6 +136,82 @@ def fir_readiness(bundle_dir: Path) -> dict[str, Any]:
     }
 
 
+def _banked_response(bundle_dir: Path, stem: str) -> dict[str, Any] | None:
+    """One capture's banked ``analysis/{stem}_response.json``, or ``None``."""
+    return _read_json(bundle_dir / "analysis" / f"{stem}_response.json")
+
+
+def _banked_analysis_curve(
+    payload: dict[str, Any],
+) -> tuple[np.ndarray, np.ndarray] | None:
+    """``(freqs_hz, magnitude_db)`` off a banked response, or ``None``.
+
+    The banked ``analysis_curve`` is the SAME quantity ``recompute`` derives:
+    log-resampled, mic-calibrated, band-normalized — its own
+    ``normalization`` field says so. That is what makes it a comparand rather
+    than a second opinion about a different number.
+    """
+    curve = payload.get("analysis_curve")
+    if not isinstance(curve, dict):
+        return None
+    freqs = np.asarray(curve.get("freqs_hz") or [], dtype=float)
+    magnitude = np.asarray(curve.get("magnitude_db") or [], dtype=float)
+    if freqs.ndim != 1 or freqs.shape != magnitude.shape or freqs.size == 0:
+        return None
+    return freqs, magnitude
+
+
+def banked_response_facts(bundle_dir: Path) -> list[dict[str, Any]]:
+    """Every banked capture's response facts, WITHOUT re-deconvolving.
+
+    ``correction/replay_artifacts.py`` writes these so *"operators, future FIR
+    tools, and the calibration-agent evidence packet can inspect impulse and
+    response facts without re-running deconvolution for every report"* — and
+    until this function nothing in the tree opened one. The artifacts were
+    written, hashed into the manifest, and never read.
+
+    Returns one row per ``analysis/*_response.json``, sorted by stem. Each row
+    is identity plus the direct-arrival and deconvolution facts the writer
+    already banked, plus the curve's extent — never the arrays themselves,
+    which is what keeps this cheap enough for the default inspect path.
+    """
+    analysis_dir = bundle_dir / "analysis"
+    if not analysis_dir.exists():
+        return []
+    rows: list[dict[str, Any]] = []
+    for path in sorted(analysis_dir.glob("*_response.json")):
+        payload = _read_json(path)
+        if not payload:
+            continue
+        row: dict[str, Any] = {
+            "stem": path.name[: -len("_response.json")],
+            "artifact_path": path.relative_to(bundle_dir).as_posix(),
+            "artifact_schema_version": payload.get("artifact_schema_version"),
+            "capture_kind": payload.get("capture_kind"),
+            "position_index": payload.get("position_index"),
+            "source_capture_path": payload.get("source_capture_path"),
+            "impulse_response_path": payload.get("impulse_response_path"),
+            "sample_rate": payload.get("sample_rate"),
+            "direct_arrival": payload.get("direct_arrival"),
+            "deconvolution": payload.get("deconvolution"),
+        }
+        curve = _banked_analysis_curve(payload)
+        if curve is None:
+            row["analysis_curve"] = {"unavailable": "no banked analysis curve"}
+        else:
+            freqs, _magnitude = curve
+            row["analysis_curve"] = {
+                "freq_count": int(freqs.shape[0]),
+                "f_min_hz": round(float(freqs[0]), 4),
+                "f_max_hz": round(float(freqs[-1]), 4),
+                "calibration_applied": (payload["analysis_curve"]
+                                        .get("calibration_applied")),
+                "normalization": payload["analysis_curve"].get("normalization"),
+            }
+        rows.append(row)
+    return rows
+
+
 def _raw_capture_paths(bundle_dir: Path) -> list[Path]:
     capture_dir = bundle_dir / "captures"
     paths = sorted(capture_dir.glob("p*.wav")) if capture_dir.exists() else []
@@ -220,6 +296,7 @@ def inspect_bundle(
         ),
         "fir_readiness": fir_readiness(bundle_dir),
         "exports_available": exportable_artifacts(bundle_dir),
+        "banked_responses": banked_response_facts(bundle_dir),
     }
     if recompute:
         out["recompute"] = recompute_bundle_summary(bundle_dir)
@@ -237,8 +314,40 @@ def _curve_diff_metrics(
     }
 
 
+def _banked_capture_delta(
+    bundle_dir: Path,
+    stem: str,
+    freqs: np.ndarray,
+    recomputed_db: np.ndarray,
+) -> dict[str, Any]:
+    """This capture's replay against the curve the analysis banked for it."""
+    payload = _banked_response(bundle_dir, stem)
+    if not payload:
+        return {"stem": stem, "unavailable": "no banked response artifact"}
+    curve = _banked_analysis_curve(payload)
+    if curve is None:
+        return {"stem": stem, "unavailable": "no banked analysis curve"}
+    banked_freqs, banked_db = curve
+    if banked_freqs.shape != freqs.shape or banked_db.shape != recomputed_db.shape:
+        return {
+            "stem": stem,
+            "unavailable": "banked and recomputed curve shapes differ",
+        }
+    return {"stem": stem, **_curve_diff_metrics(banked_db, recomputed_db)}
+
+
 def recompute_bundle_summary(bundle_dir: Path) -> dict[str, Any]:
-    """Replay raw captures into smoothed position curves and compare stored data."""
+    """Replay raw captures into smoothed position curves and compare stored data.
+
+    The replay stays on the RAW WAVs deliberately, and this is the one place in
+    the room stack where that is the right answer: an integrity check that read
+    the banked curve instead of deriving one would compare a number to itself
+    and report ``rms_db: 0.0`` forever. What the banked curves buy here is a
+    sharper comparand — :func:`_banked_capture_delta` grades each capture
+    against the curve its own analysis banked, so a drift is attributed to
+    ``p2`` rather than only to the spatial average. Reading those facts WITHOUT
+    a replay is :func:`banked_response_facts`, on the default inspect path.
+    """
     bundle_dir = bundle_dir.resolve()
     info = _read_json(bundle_dir / "info.json")
     if not info:
@@ -253,6 +362,7 @@ def recompute_bundle_summary(bundle_dir: Path) -> dict[str, Any]:
     cal_curve = _load_bundle_calibration(bundle_dir)
 
     position_magnitudes: list[np.ndarray] = []
+    banked_deltas: list[dict[str, Any]] = []
     freqs: np.ndarray | None = None
     for capture_path in capture_paths:
         ir, sample_rate = interop.impulse_response_from_capture(
@@ -272,6 +382,13 @@ def recompute_bundle_summary(bundle_dir: Path) -> dict[str, Any]:
         if freqs is None:
             freqs = log_freqs
         position_magnitudes.append(log_mag)
+        # The capture WAV and its replay artifact share a stem by
+        # construction: `replay_artifacts.capture_stem` names a measurement
+        # position `p{index}`, which is the same name the capture was written
+        # under.
+        banked_deltas.append(
+            _banked_capture_delta(bundle_dir, capture_path.stem, log_freqs, log_mag)
+        )
 
     if freqs is None:
         raise BundleToolError("no recomputed frequency grid")
@@ -281,6 +398,7 @@ def recompute_bundle_summary(bundle_dir: Path) -> dict[str, Any]:
         "freq_count": int(freqs.shape[0]),
         "f_min_hz": round(float(freqs[0]), 4),
         "f_max_hz": round(float(freqs[-1]), 4),
+        "banked_capture_deltas": banked_deltas,
     }
 
     stored_position = _read_json(bundle_dir / "position_analysis.json")

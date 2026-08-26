@@ -83,6 +83,64 @@ async def test_bundle_inspect_recompute_and_export(tmp_path: Path):
     )
 
 
+async def test_banked_responses_are_read_back_without_a_replay(tmp_path: Path):
+    """The artifact the analysis banked is what `inspect_bundle` reports.
+
+    Proved by mutating the banked file and reading the mutation back: a
+    value that could not have come from deconvolving the WAV is the only
+    way to show the bytes are being opened rather than re-derived.
+    """
+    sess = await _complete_one_position_bundle(tmp_path)
+    response_path = sess.bundle_dir / "analysis" / "p0_response.json"
+    payload = json.loads(response_path.read_text())
+    payload["direct_arrival"] = {"marker": "read-from-disk"}
+    response_path.write_text(json.dumps(payload))
+
+    rows = bundle_tools.banked_response_facts(sess.bundle_dir)
+
+    assert [row["stem"] for row in rows] == ["p0"]
+    row = rows[0]
+    assert row["artifact_path"] == "analysis/p0_response.json"
+    assert row["capture_kind"] == "measurement"
+    assert row["position_index"] == 0
+    assert row["direct_arrival"] == {"marker": "read-from-disk"}
+    assert row["analysis_curve"]["freq_count"] > 0
+    assert row["analysis_curve"]["f_min_hz"] < row["analysis_curve"]["f_max_hz"]
+    assert bundle_tools.inspect_bundle(sess.bundle_dir)["banked_responses"] == rows
+
+
+async def test_the_replay_grades_each_capture_against_its_banked_curve(
+    tmp_path: Path,
+):
+    """A drift is attributed to a capture, not only to the average."""
+    sess = await _complete_one_position_bundle(tmp_path)
+
+    honest = bundle_tools.recompute_bundle_summary(sess.bundle_dir)
+    assert [d["stem"] for d in honest["banked_capture_deltas"]] == ["p0"]
+    assert honest["banked_capture_deltas"][0]["max_abs_db"] < 0.01
+
+    response_path = sess.bundle_dir / "analysis" / "p0_response.json"
+    payload = json.loads(response_path.read_text())
+    payload["analysis_curve"]["magnitude_db"] = [
+        db + 6.0 for db in payload["analysis_curve"]["magnitude_db"]
+    ]
+    response_path.write_text(json.dumps(payload))
+
+    drifted = bundle_tools.recompute_bundle_summary(sess.bundle_dir)
+    assert drifted["banked_capture_deltas"][0]["max_abs_db"] == pytest.approx(
+        6.0, abs=1e-3,
+    )
+    # The spatial-average check is unaffected: it reads a different artifact,
+    # which is what keeps the two answers independent.
+    assert drifted["stored_average_delta"]["rms_db"] < 0.01
+
+    response_path.unlink()
+    absent = bundle_tools.recompute_bundle_summary(sess.bundle_dir)
+    assert absent["banked_capture_deltas"] == [
+        {"stem": "p0", "unavailable": "no banked response artifact"}
+    ]
+
+
 def test_bundle_export_refuses_empty_bundle(tmp_path: Path):
     bundle_dir = tmp_path / "empty-session"
     bundle_dir.mkdir()
