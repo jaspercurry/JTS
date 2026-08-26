@@ -182,9 +182,11 @@ class FakeVolume:
 class FakeRecords:
     """The record slot: an in-memory bank that reads back.
 
-    :meth:`read` is what makes ``analyze`` an offline verb (ruling S3), so the
-    twin implements it rather than stubbing it — a test can bank a walk, drop
-    the session, and re-read every record by id.
+    :meth:`read` and :meth:`read_state` are what make ``analyze`` an offline
+    verb (ruling S3), so the twin implements both rather than stubbing them — a
+    test can bank a walk, ``save`` it, drop the session, and rebuild a
+    :class:`~jasper.active_speaker.crossover_v2.prior_bank.PriorBank` over the
+    result, which is how a candidate-check test states its "before".
     """
 
     banked: list[Mapping[str, Any]] = field(default_factory=list)
@@ -206,6 +208,12 @@ class FakeRecords:
     def persist(self, state: Mapping[str, Any]) -> str:
         self.persisted.append(dict(state))
         return f"state-{len(self.persisted)}"
+
+    def read_state(self, state_id: str) -> Mapping[str, Any] | None:
+        for index, state in enumerate(self.persisted, start=1):
+            if state_id == f"state-{index}":
+                return state
+        return None
 
     def by_position(self, position_deg: int | None) -> list[Mapping[str, Any]]:
         """Every banked record taken at one pose, in bank order."""
