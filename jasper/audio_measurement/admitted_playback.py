@@ -197,16 +197,20 @@ PLAYBACK_READMISSION_REFUSED_MESSAGE = (
 )
 """What a household is told when a stale-graph re-admission refusal fires.
 
-Owned here, beside :class:`PlaybackAdmissionRefused`, because THREE surfaces
-say it (#1832): ``web_commissioning``'s driver-capture sweep,
-``commissioning_runtime``'s summed capture, and
+Owned here, beside :class:`PlaybackAdmissionRefused`, because TWO surfaces
+say it (#1832): ``web_commissioning``'s driver-capture sweep and
 ``commissioning_admission``'s generation refusal — which is a different
 exception type (``ActiveCommissioningAdmissionError``) but deliberately the
 same sentence, because it is the same family of cause (an identity or a
 protection proof went stale between preparing and admitting) and so names the
-same action. A household sentence with three authors is a drift in waiting,
-and "these two say the same thing" written as two literals is a claim no test
-can check.
+same action. A household sentence with more than one author is a drift in
+waiting, and "these two say the same thing" written as two literals is a
+claim no test can check.
+
+``commissioning_runtime``'s summed capture was the third, and is gone with
+the summed-capture runtime it lived in — the leak this constant contains is
+manufactured by a generic ``{type}: {exc}`` formatter, so the rule binds any
+NEW boundary that surfaces this exception, not just the two here.
 
 NOT the exception's own message: ``str(PlaybackAdmissionRefused(...))`` stays
 the slug join, which is the right thing for the journal and the wrong thing
