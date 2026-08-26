@@ -5,12 +5,9 @@
 //! jasper-fanin — JTS renderer fan-in daemon.
 //!
 //! Reads N snd-aloop substream pairs (one per music renderer), sums
-//! them sample-wise, and hands the result to CamillaDSP over whichever
-//! transport the box's coupling selects: the dedicated "summed music"
-//! substream CamillaDSP dsnoops on (`loopback`), or Ring A (`shm_ring`,
-//! which since U4/P7-4 writes no aloop lane at all). (The AEC bridge
-//! used to read the aloop tap too; since U4/P7-1 its only reference is
-//! outputd's UDP speaker monitor.) This is
+//! them sample-wise, and publishes the result to CamillaDSP over Ring A,
+//! the SPSC shared-memory ring that is this daemon's only transport
+//! toward the DSP (ADR-0100). No ALSA playback PCM is opened. This is
 //! the production renderer topology; the old renderer-side dmix path
 //! was retired after AirPlay burst testing exposed timing drops.
 //!

@@ -65,7 +65,7 @@ use jasper_ring::{Geometry, PublishOutcome, RingWriter, SAMPLE_FORMAT_S32LE};
 // the ALSA owner and avoids a local metric copy.
 use jasper_resampler::{rms_dbfs_i16, RMS_DBFS_FLOOR};
 
-use crate::config::{Config, Coupling, RingWireFormat, RING_SLOT_FRAMES};
+use crate::config::{Config, RingWireFormat, RING_SLOT_FRAMES};
 use crate::impulse_tap::{ImpulseDetector, TapConfig, TapEvent, TapState};
 use crate::lane_resampler::{LaneResampler, LaneResamplerObservability};
 use crate::tts::{TtsInput, TtsMixer};
@@ -81,23 +81,15 @@ pub use ring_capture::RingLaneObservability;
 /// `jasper_capture` dsnoop it reads through. Not configurable.
 pub const CHANNELS: u32 = 2;
 
-/// PCM sample format for this daemon's snd-aloop lanes — the per-renderer
-/// capture inputs, and the summed program write to `hw:Loopback,0,7` on a
-/// `loopback`-coupled box. A `shm_ring` box does not use this format for its
-/// program at all: it publishes the ring's own wire (`ring_wire_format`) and,
-/// since U4/P7-4, writes no aloop lane.
+/// PCM sample format for this daemon's snd-aloop capture lanes — the
+/// per-renderer inputs. The program this daemon publishes does not use this
+/// format at all: it carries the ring's own wire (`ring_wire_format`), and no
+/// aloop lane is written.
 ///
-/// THE WRITER'S HALF OF A THREE-PLACE FACT, and until U2 PR-3 the only one of
-/// the three with no test at all. `pcm.jasper_capture`'s dsnoop slave and the
-/// doctor's `check_fanin_asound_wiring` pin must name this same format.
+/// `pcm.jasper_capture`'s dsnoop slave and the doctor's
+/// `check_fanin_asound_wiring` pin must name this same format.
 /// `tests/test_aloop_program_lane_width.py` pins the set, so moving this is a
 /// same-commit change to all three rather than a daemon-local edit.
-///
-/// It was a FOUR-place fact until U4/P7-2. `jasper/cli/aec_tune.py` opened the
-/// dsnoop RAW, and a raw open does not convert — it was the one reader that
-/// could not absorb a widening. It reads outputd's UDP speaker monitor now, so
-/// the only surviving consumer, CamillaDSP, reaches this lane through the
-/// `plug:` wrapper and is format-tolerant by construction.
 ///
 /// Narrow here is a JTS DECLARATION, not an snd-aloop limit — the **post-DSP
 /// content lane role** runs `S32_LE` on every box, on a substream pair
@@ -106,12 +98,14 @@ pub const CHANNELS: u32 = 2;
 /// round-trip, which opens the raw device at `S16_LE`
 /// (`jasper.multiroom.reconcile`), so the bare device name proves nothing in
 /// either direction. The per-box program-width capability is the RING's
-/// (`ring_wire_format` + the `shm_ring` coupling); this lane is owned by
-/// P7/P9, which re-point its consumers and remove snd-aloop rather than widen
-/// it.
+/// (`ring_wire_format`); this lane is owned by P7/P9, which re-point its
+/// consumers and remove snd-aloop rather than widen it.
 pub const FORMAT: Format = Format::S16LE;
 
-/// Sentinel for "no ALSA playback delay sample has landed yet".
+/// Sentinel for "no ALSA playback delay sample has landed", which since
+/// ADR-0100 is every period: this daemon opens no playback PCM to sample. It
+/// renders `/state.output.snd_pcm_delay_frames` as `null`, which is what the
+/// AirPlay latency derivation already reads on a ring box.
 pub const OUTPUT_DELAY_UNAVAILABLE: u64 = u64::MAX;
 
 /// Per-input catch-up target, in WHOLE periods. The fill we want a lane's
@@ -608,29 +602,15 @@ fn auto_trim_decision(
     }
 }
 
-/// The final-output transport. `Alsa` writes the snd-aloop substream and is
-/// paced by the blocking ALSA `writei` — byte-identical to the pre-coupling
-/// daemon. `Ring` is the Ring A SPSC SHM ring writer, which the coupling
-/// reconciler resolves as the default on a ring-eligible box; CamillaDSP reads
-/// it via a capture-direction ioplug. Each is the sole timing owner of the
-/// fan-in work loop in its mode; only one is ever active.
-enum Output {
-    Alsa(PCM),
-    /// The SPSC SHM ring writer. The blocking ring publish (bounded, on a
-    /// full-ring-with-live-reader) is the pacer. `RingOutput` owns the per-step
-    /// slot fan-out and the reader-absent self-pacing. This arm opens NO ALSA
-    /// PCM: the ring is the whole output (U4/P7-4 dropped the lossy aloop mirror
-    /// that used to shadow it, so on a ring-coupled box nothing writes
-    /// `hw:Loopback,0,7` at all). Boxed so this variant does not bloat every
-    /// `Output` (clippy `large_enum_variant`) — one alloc at construction,
-    /// deref-transparent after.
-    Ring(Box<RingOutput>),
-}
-
-/// The Ring A output: the SPSC ring writer, its shared observability counters,
-/// and the derived self-pacing period (used only when the reader is absent —
-/// one period's sleep per dropped publish so a readerless ring does not
-/// hot-spin the loop).
+/// The Ring A output — the daemon's ONLY final-output transport (ADR-0100): the
+/// SPSC ring writer, its shared observability counters, and the derived
+/// self-pacing period (used only when the reader is absent — one period's sleep
+/// per dropped publish so a readerless ring does not hot-spin the loop).
+///
+/// The blocking ring publish (bounded, on a full-ring-with-live-reader) is the
+/// sole timing owner of the fan-in work loop. NO ALSA playback PCM is opened:
+/// the ring is the whole output, and CamillaDSP reads it via a
+/// capture-direction ioplug.
 struct RingOutput {
     writer: RingWriter,
     counters: RingCounters,
@@ -823,7 +803,7 @@ pub(crate) fn program_width_disagreement(audit: ProgramWidthAudit) -> Option<any
 
 pub struct Mixer {
     inputs: Vec<Input>,
-    output: Output,
+    output: RingOutput,
     /// The numeric scale this run's program sum carries, resolved ONCE from the
     /// box's wire (see [`ProgramWidth`]). Every stage between a lane's read and
     /// the summed write consults this one value rather than re-deriving the
@@ -844,7 +824,7 @@ pub struct Mixer {
     /// wide sum, so no scale change happens here — the promotion already
     /// happened at each lane's sum entry.) EMPTY (and therefore zero heap) on
     /// every other path — a `Vec` with no capacity does not allocate — so a
-    /// loopback box and a narrow-ring box carry no new allocation at all.
+    /// narrow-ring box carries no new allocation at all.
     ///
     /// Bytes rather than `Vec<i32>` because the wire is explicitly
     /// LITTLE-endian: `to_le_bytes` states that, where reinterpreting an `i32`
@@ -857,10 +837,14 @@ pub struct Mixer {
     /// Cumulative output frames written since startup. Surfaced via
     /// the STATUS endpoint.
     pub frames_written: Arc<AtomicU64>,
-    /// Cumulative output xrun events.
+    /// Cumulative output xrun events. Pinned at 0 since ADR-0100 — an SHM ring
+    /// has no xrun; a wedged reader shows up in the ring's own stall counters.
     pub output_xrun_count: Arc<AtomicU64>,
-    /// Last observed ALSA playback delay for the primary output PCM.
-    /// `OUTPUT_DELAY_UNAVAILABLE` until the first successful sample.
+    /// Last observed ALSA playback delay for the output PCM. Pinned at
+    /// [`OUTPUT_DELAY_UNAVAILABLE`] since ADR-0100 — there is no playback PCM to
+    /// sample. Both stay in STATUS because live Python readers
+    /// (`jasper.control.airplay_health`, the AirPlay latency derivation) already
+    /// read them through their absent/zero shape on a ring box.
     pub output_delay_frames: Arc<AtomicU64>,
     /// Selected input index. -1 means auto/mix all active inputs;
     /// -2 means pass no renderer lanes; non-negative means pass only
@@ -889,10 +873,9 @@ pub struct Mixer {
     program_duck_attack_step: f32,
     /// Per-frame linear-gain increment while releasing UP toward 1.0.
     program_duck_release_step: f32,
-    /// Coupling transport echo, cloned for the STATUS endpoint. Under `Loopback`
-    /// (the default) STATUS reports `transport=loopback` with no ring block —
-    /// byte-identical to the pre-coupling snapshot.
-    pub coupling: CouplingObservability,
+    /// Ring A's shared counters and attached-header echo, cloned for the STATUS
+    /// endpoint.
+    pub ring_observability: RingObservability,
     /// DEFAULT-OFF one-shot AUTO-TRIM (`JASPER_FANIN_AUTO_TRIM=enabled`). When
     /// set, the work loop schedules ONE trim per lane ~`AUTO_TRIM_DELAY_SECONDS`
     /// after that lane transitions idle→active, latched via
@@ -944,16 +927,6 @@ struct AutoTrimLaneState {
     /// one-shot trim fires once `frames_read - active_since >= delay_frames`.
     /// `None` while the lane is idle (nothing active to delay from).
     active_since: Option<u64>,
-}
-
-/// Coupling transport echo + the shared observability block for the STATUS
-/// endpoint. Under `Loopback` (default), `ring` is `None` and STATUS reports
-/// only `transport:"loopback"`. Under `shm_ring`, `ring` carries the ring
-/// counters.
-#[derive(Clone)]
-pub struct CouplingObservability {
-    pub transport: &'static str,
-    pub ring: Option<RingObservability>,
 }
 
 /// The live SPSC ring counters the mixer step updates each period (from the
@@ -1571,106 +1544,67 @@ impl Mixer {
             );
         }
 
-        // Final-output transport. Loopback opens the ALSA snd-aloop substream;
-        // ShmRing (Ring A) publishes an SPSC ping-pong SHM ring CamillaDSP
-        // reads via an ioplug. Exactly one is active.
-        let (output, coupling) = match config.camilla_coupling {
-            Coupling::Loopback => {
-                let pcm = open_output(&config.output_pcm, config)
-                    .with_context(|| format!("opening output PCM {}", config.output_pcm))?;
-                info!(
-                    "event=fanin.output.opened transport=alsa pcm={} period_frames={} buffer_frames={}",
-                    config.output_pcm, config.period_frames, config.output_buffer_frames,
-                );
-                (
-                    Output::Alsa(pcm),
-                    CouplingObservability {
-                        transport: "loopback",
-                        ring: None,
-                    },
-                )
-            }
-            Coupling::ShmRing => {
-                // Ring A. Create-or-attach the SPSC ring as the WRITER.
-                // Geometry: the configured wire format / 2ch / 48k, slot = 128
-                // frames pinned (the outputd DAC-period contract; period_frames
-                // % 128 == 0 was validated at config parse), n_slots =
-                // ring_slots. A geometry mismatch against an already-created
-                // ring is a config-class fault: it is tagged so main() exits 78
-                // (EX_CONFIG) and the unit parks
-                // (RestartPreventExitStatus=78) instead of climbing the restart
-                // burst into StartLimitAction=reboot. Everything else this open
-                // can fail with is TRANSIENT and keeps the restart ladder — see
-                // `ring_open_error_is_config_class`.
-                let geometry = Geometry {
-                    rate: config.sample_rate,
-                    channels: CHANNELS,
-                    sample_format: config.ring_wire_format.sample_format_id(),
-                    period_frames: RING_SLOT_FRAMES,
-                    n_slots: config.ring_slots,
-                };
-                let writer = RingWriter::create_or_attach(&config.ring_path, geometry)
-                    .map_err(|e| {
-                        ring_open_error(&config.ring_path, config.ring_wire_format.as_str(), e)
-                    })
-                    .with_context(|| {
-                        format!("opening fan-in→camilla SHM ring {}", config.ring_path)
-                    })?;
-                // NOTHING else is opened here. This arm used to also open
-                // `config.output_pcm` as a lossy aloop MIRROR, shadowing every
-                // published period onto `hw:Loopback,0,7` so the dsnoop taps
-                // stayed live on a ring-coupled box. U4/P7-4 dropped it once
-                // those taps moved off the dsnoop: the ring IS the program path
-                // here, and a second writer of a lane nobody reads is a hop that
-                // costs a period's work and an ALSA handle to keep a fiction
-                // alive. `config.output_pcm` survives for the `Coupling::Loopback`
-                // arm above, which is the only remaining opener.
-                let counters = RingCounters::new();
-                let self_pace_period_ns =
-                    (config.period_frames as u64) * 1_000_000_000 / (config.sample_rate as u64);
-                // The wire this ring OBSERVABLY carries, read back from the
-                // header the writer attached against — not echoed from config.
-                // On a create it equals the requested geometry; on an attach it
-                // is the geometry that survived the field-by-field compare.
-                // Either way it is what the reader on the other end sees.
-                let attached = writer.geometry();
-                let wire_format = ring_wire_format_label(attached.sample_format);
-                info!(
-                    "event=fanin.ring.opened path={} slots={} slot_frames={} period_frames={} slots_per_step={} wire_format={} channels={}",
-                    config.ring_path,
-                    config.ring_slots,
-                    RING_SLOT_FRAMES,
-                    config.period_frames,
-                    config.period_frames / RING_SLOT_FRAMES,
-                    wire_format,
-                    attached.channels,
-                );
-                let observability = RingObservability {
-                    path: config.ring_path.clone(),
-                    slots: config.ring_slots,
-                    wire_format,
-                    channels: attached.channels,
-                    occupancy: Arc::clone(&counters.occupancy),
-                    published: Arc::clone(&counters.published),
-                    full_waits: Arc::clone(&counters.full_waits),
-                    stuck_reader_drops: Arc::clone(&counters.stuck_reader_drops),
-                    drop_no_reader: Arc::clone(&counters.drop_no_reader),
-                    stall_active: Arc::clone(&counters.stall_active),
-                    last_stall_ms: Arc::clone(&counters.last_stall_ms),
-                };
-                (
-                    Output::Ring(Box::new(RingOutput {
-                        writer,
-                        counters,
-                        self_pace_period_ns,
-                        stall: RingStallTracker::new(),
-                    })),
-                    CouplingObservability {
-                        transport: "shm_ring",
-                        ring: Some(observability),
-                    },
-                )
-            }
+        // Ring A — the only final-output transport (ADR-0100). Create-or-attach
+        // the SPSC ring as the WRITER. Geometry: the configured wire format /
+        // 2ch / 48k, slot = 128 frames pinned (the outputd DAC-period contract;
+        // period_frames % 128 == 0 was validated at config parse), n_slots =
+        // ring_slots. A geometry mismatch against an already-created ring is a
+        // config-class fault: it is tagged so main() exits 78 (EX_CONFIG) and the
+        // unit parks (RestartPreventExitStatus=78) instead of climbing the
+        // restart burst into StartLimitAction=reboot. Everything else this open
+        // can fail with is TRANSIENT and keeps the restart ladder — see
+        // `ring_open_error_is_config_class`.
+        let geometry = Geometry {
+            rate: config.sample_rate,
+            channels: CHANNELS,
+            sample_format: config.ring_wire_format.sample_format_id(),
+            period_frames: RING_SLOT_FRAMES,
+            n_slots: config.ring_slots,
+        };
+        let writer = RingWriter::create_or_attach(&config.ring_path, geometry)
+            .map_err(|e| ring_open_error(&config.ring_path, config.ring_wire_format.as_str(), e))
+            .with_context(|| format!("opening fan-in→camilla SHM ring {}", config.ring_path))?;
+        // NOTHING else is opened. The ring IS the program path: no ALSA playback
+        // PCM is opened or fed, so nothing writes `config.output_pcm` — that
+        // field survives only as the STATUS echo of the configured value.
+        let counters = RingCounters::new();
+        let self_pace_period_ns =
+            (config.period_frames as u64) * 1_000_000_000 / (config.sample_rate as u64);
+        // The wire this ring OBSERVABLY carries, read back from the header the
+        // writer attached against — not echoed from config. On a create it equals
+        // the requested geometry; on an attach it is the geometry that survived
+        // the field-by-field compare. Either way it is what the reader on the
+        // other end sees.
+        let attached = writer.geometry();
+        let wire_format = ring_wire_format_label(attached.sample_format);
+        info!(
+            "event=fanin.ring.opened path={} slots={} slot_frames={} period_frames={} slots_per_step={} wire_format={} channels={}",
+            config.ring_path,
+            config.ring_slots,
+            RING_SLOT_FRAMES,
+            config.period_frames,
+            config.period_frames / RING_SLOT_FRAMES,
+            wire_format,
+            attached.channels,
+        );
+        let ring_observability = RingObservability {
+            path: config.ring_path.clone(),
+            slots: config.ring_slots,
+            wire_format,
+            channels: attached.channels,
+            occupancy: Arc::clone(&counters.occupancy),
+            published: Arc::clone(&counters.published),
+            full_waits: Arc::clone(&counters.full_waits),
+            stuck_reader_drops: Arc::clone(&counters.stuck_reader_drops),
+            drop_no_reader: Arc::clone(&counters.drop_no_reader),
+            stall_active: Arc::clone(&counters.stall_active),
+            last_stall_ms: Arc::clone(&counters.last_stall_ms),
+        };
+        let output = RingOutput {
+            writer,
+            counters,
+            self_pace_period_ns,
+            stall: RingStallTracker::new(),
         };
 
         let input_count = inputs.len();
@@ -1702,18 +1636,16 @@ impl Mixer {
             tap_sender,
         );
         // The wide Ring A payload is allocated ONCE here, and only for a ring
-        // whose attached header says S32LE. Every other path gets an empty Vec
-        // (no allocation, no per-period work), which is what keeps a narrow or
-        // loopback box byte-identical.
-        let ring_wide_payload = match &output {
-            Output::Ring(ring) if ring.wire_is_wide() => {
-                vec![0u8; period_samples * WIDE_BYTES_PER_SAMPLE]
-            }
-            _ => Vec::new(),
+        // whose attached header says S32LE. A narrow ring gets an empty Vec (no
+        // allocation, no per-period work).
+        let output_is_wide = output.wire_is_wide();
+        let ring_wide_payload = if output_is_wide {
+            vec![0u8; period_samples * WIDE_BYTES_PER_SAMPLE]
+        } else {
+            Vec::new()
         };
         // FAIL CLOSED on a width disagreement, across BOTH axes (see
         // `program_width_disagreement`).
-        let output_is_wide = matches!(&output, Output::Ring(ring) if ring.wire_is_wide());
         let any_lane_is_wide = inputs.iter().any(|i| !i.read_buf_wide.is_empty());
         if let Some(error) = program_width_disagreement(ProgramWidthAudit {
             declared: program_width,
@@ -1746,7 +1678,7 @@ impl Mixer {
                 config.tts_duck_release_ms,
                 config.sample_rate,
             ),
-            coupling,
+            ring_observability,
             auto_trim_enabled: config.auto_trim_enabled,
             auto_trim_delay_frames,
             auto_trim_lane_state: vec![AutoTrimLaneState::default(); input_count],
@@ -1870,30 +1802,9 @@ impl Mixer {
     /// Transient errors (xruns) are handled inside `step()` without
     /// escalation.
     pub fn run(&mut self, shutdown: &AtomicBool, heartbeat: &Heartbeat) -> Result<()> {
-        // Prime + start is ALSA-specific. The SHM ring transport has no kernel
-        // ring to prime and no PREPARED→RUNNING transition; it publishes into
-        // the SPSC ring inside step() and paces on the ring.
-        if let Output::Alsa(pcm) = &self.output {
-            // Prime the output: write one period of zeros so the kernel
-            // ring is non-empty when CamillaDSP starts reading.
-            // Without this prime, the first writei could see -EPIPE
-            // (underrun) before any data has been queued.
-            self.output_buf.fill(0);
-            write_output(
-                pcm,
-                &self.output_buf,
-                &self.output_xrun_count,
-                &self.xrun_tx,
-            )?;
-
-            // Start the output stream now that it's primed. (PCM::new
-            // with the default access creates the stream in PREPARED state;
-            // explicit start() puts it in RUNNING.)
-            if pcm.state() != State::Running {
-                pcm.start().context("starting output PCM")?;
-            }
-        }
-
+        // No prime + start: the SHM ring transport has no kernel ring to prime
+        // and no PREPARED→RUNNING transition; it publishes into the SPSC ring
+        // inside step() and paces on the ring.
         info!(
             "event=fanin.mixer.running inputs={} output_xruns=0",
             self.inputs.len(),
@@ -2095,57 +2006,38 @@ impl Mixer {
         // 4. Clamp the sum -> i16 output.
         saturate_to_i16(&self.sum_buf, &mut self.output_buf, self.program_width);
 
-        // 5. Write to output (blocks; paces the loop). Dispatch on transport:
-        //    - Alsa: blocking writei, returns when the loopback ring has room
-        //      (DAC-paced via the dsnoop consumer). Counts every period.
-        //    - Ring: publish period_frames/128 slots into the SHM ring. The
-        //      blocking-on-full publish (bounded, live reader) is the pacer;
-        //      reader-absent self-paces (one period's sleep per dropped publish)
-        //      so a readerless ring never hot-spins. The mixed sum_buf (post-duck,
-        //      post-TTS) is what enters — TTS/duck ride along with zero special
-        //      handling. The ring publish is this arm's ONLY write: no ALSA PCM
-        //      is opened or fed on a ring-coupled box (U4/P7-4).
-        match &mut self.output {
-            Output::Alsa(pcm) => {
-                write_output(
-                    pcm,
-                    &self.output_buf,
-                    &self.output_xrun_count,
-                    &self.xrun_tx,
-                )?;
-                store_output_delay(pcm, &self.output_delay_frames);
-                self.frames_written
-                    .fetch_add(self.period_frames as u64, Ordering::Relaxed);
-            }
-            Output::Ring(ring) => {
-                // S32LE wire only: build the wide slot payload from the SAME
-                // post-duck post-TTS sum_buf. NO scale change happens here —
-                // the `<< 16` that used to left-justify at this point now
-                // happens per lane, in `mix_into`'s Wide arm, which is the site
-                // a scale bug would be introduced at. All that is left here is
-                // the i64→i32 saturation and the explicit little-endian order.
-                // The ring's own attached header is the ONE predicate here — the
-                // same `wire_is_wide()` that decides which payload
-                // `write_ring_period` publishes — so the fill and the publish
-                // cannot disagree about the wire.
-                if ring.wire_is_wide() {
-                    fill_wide_ring_payload(&self.sum_buf, &mut self.ring_wide_payload);
-                }
-                // Count only frames that actually ENTERED the ring — a
-                // fully-dropped period (reader absent / stuck) adds nothing. The
-                // stuck_reader_drops / drop_no_reader split disambiguates, so the
-                // top-line counter stays honest rather than optimistic. (`ring`
-                // deref-coerces &mut Box<RingOutput> → &mut RingOutput.)
-                let published_frames = write_ring_period(
-                    ring,
-                    &self.output_buf,
-                    &self.ring_wide_payload,
-                    self.period_frames,
-                );
-                self.frames_written
-                    .fetch_add(published_frames as u64, Ordering::Relaxed);
-            }
+        // 5. Publish period_frames/128 slots into the SHM ring (blocks; paces the
+        //    loop). The blocking-on-full publish (bounded, live reader) is the
+        //    pacer; reader-absent self-paces (one period's sleep per dropped
+        //    publish) so a readerless ring never hot-spins. The mixed sum_buf
+        //    (post-duck, post-TTS) is what enters — TTS/duck ride along with zero
+        //    special handling. The ring publish is the daemon's ONLY write: no
+        //    ALSA playback PCM is opened or fed.
+        //
+        //    S32LE wire only: build the wide slot payload from the SAME post-duck
+        //    post-TTS sum_buf. NO scale change happens here — the `<< 16` that
+        //    used to left-justify at this point now happens per lane, in
+        //    `mix_into`'s Wide arm, which is the site a scale bug would be
+        //    introduced at. All that is left here is the i64→i32 saturation and
+        //    the explicit little-endian order. The ring's own attached header is
+        //    the ONE predicate here — the same `wire_is_wide()` that decides which
+        //    payload `write_ring_period` publishes — so the fill and the publish
+        //    cannot disagree about the wire.
+        if self.output.wire_is_wide() {
+            fill_wide_ring_payload(&self.sum_buf, &mut self.ring_wide_payload);
         }
+        // Count only frames that actually ENTERED the ring — a fully-dropped
+        // period (reader absent / stuck) adds nothing. The stuck_reader_drops /
+        // drop_no_reader split disambiguates, so the top-line counter stays
+        // honest rather than optimistic.
+        let published_frames = write_ring_period(
+            &mut self.output,
+            &self.output_buf,
+            &self.ring_wide_payload,
+            self.period_frames,
+        );
+        self.frames_written
+            .fetch_add(published_frames as u64, Ordering::Relaxed);
         Ok(())
     }
 
@@ -2364,12 +2256,6 @@ fn write_ring_period(
     // Frames that actually entered the ring this period — the caller counts only
     // these toward `frames_written` (a fully-dropped period returns 0).
     published_slots * RING_SLOT_FRAMES
-}
-
-fn store_output_delay(pcm: &PCM, delay_frames: &AtomicU64) {
-    if let Ok(delay) = pcm.delay() {
-        delay_frames.store(delay.max(0) as u64, Ordering::Relaxed);
-    }
 }
 
 impl Input {
@@ -3236,17 +3122,6 @@ fn errno_of(e: &alsa::Error) -> i32 {
     e.errno()
 }
 
-fn open_output(pcm_name: &str, config: &Config) -> Result<PCM> {
-    // Blocking. The blocking writei() is what paces the work loop —
-    // it returns when the kernel has consumed enough of the output
-    // ring to make room for the next period.
-    let pcm = PCM::new(pcm_name, Direction::Playback, false)
-        .with_context(|| format!("opening playback PCM {}", pcm_name))?;
-    configure_pcm(&pcm, config, config.output_buffer_frames)
-        .with_context(|| format!("configuring playback PCM {}", pcm_name))?;
-    Ok(pcm)
-}
-
 fn configure_pcm(pcm: &PCM, config: &Config, buffer_frames: u32) -> Result<()> {
     // HwParams must be dropped before pcm.hw_params() is called.
     // The alsa-rs API: build the params, install them, drop the
@@ -3828,70 +3703,6 @@ fn read_into_resampler_and_render(
         }
     };
     Ok(real_frames)
-}
-
-/// Write a full period to the output. Retries on transient xrun via
-/// `try_recover`; propagates structural errors.
-fn write_output(
-    pcm: &PCM,
-    buf: &[i16],
-    xrun_counter: &Arc<AtomicU64>,
-    xrun_tx: &Sender<XrunEvent>,
-) -> Result<()> {
-    let io = pcm.io_i16().context("getting i16 IO handle for output")?;
-    let frames_total = buf.len() / (CHANNELS as usize);
-    let mut frames_done = 0;
-    // Limit recovery attempts per period to avoid an infinite loop
-    // if the device is structurally broken.
-    let mut recoveries = 0;
-    const MAX_RECOVERIES_PER_PERIOD: u32 = 3;
-
-    while frames_done < frames_total {
-        let offset = frames_done * (CHANNELS as usize);
-        match io.writei(&buf[offset..]) {
-            Ok(n) => {
-                frames_done += n;
-                if n == 0 {
-                    // Defensive: a zero-frame write that didn't error
-                    // would spin. Treat as transient and back off
-                    // one iteration via a recovery attempt.
-                    recoveries += 1;
-                    if recoveries > MAX_RECOVERIES_PER_PERIOD {
-                        anyhow::bail!("output writei returned 0 frames repeatedly");
-                    }
-                }
-            }
-            Err(e) => {
-                let errno = e.errno();
-                if errno == libc::EPIPE || errno == libc::ESTRPIPE {
-                    let count = xrun_counter.fetch_add(1, Ordering::Relaxed) + 1;
-                    let pending = frames_total - frames_done;
-                    warn!(
-                        "event=fanin.xrun source=output count={} frames_pending={}",
-                        count, pending,
-                    );
-                    let _ = xrun_tx.send(XrunEvent {
-                        source: XrunSource::Output,
-                        label: "output".to_string(),
-                        frames: pending as u32,
-                        count,
-                    });
-                    pcm.try_recover(e, true).context("recovering output xrun")?;
-                    recoveries += 1;
-                    if recoveries > MAX_RECOVERIES_PER_PERIOD {
-                        anyhow::bail!(
-                            "output xrun recovery exceeded {} attempts in one period",
-                            MAX_RECOVERIES_PER_PERIOD,
-                        );
-                    }
-                    // Loop continues; retry the write from `frames_done`.
-                } else {
-                    return Err(e).context("writing to output PCM");
-                }
-            }
-        }
-    }
-    Ok(())
 }
 
 #[cfg(test)]
