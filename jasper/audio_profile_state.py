@@ -19,7 +19,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import Any, Mapping
 
-from .chip_aec_policy import STATUS_TESTING
+from .chip_aec_policy import ACTION_USE_SOFTWARE_OR_TEST, STATUS_TESTING
 
 
 PROFILE_AUTO = "auto"
@@ -28,6 +28,13 @@ PROFILE_XVF_CHIP_AEC_TESTING = "xvf_chip_aec_testing"
 PROFILE_XVF_SOFTWARE_AEC3 = "xvf_software_aec3"
 PROFILE_DIRECT_MIC = "direct_mic"
 PROFILE_CUSTOM = "custom"
+
+# `action` is operator text rendered verbatim by /wake/ and the doctor, while
+# the chip gate answers in action CODES, which chip_aec_policy's contract keeps
+# out of human-facing fields. Only the uncodified-DAC code has a command behind
+# it — the one the reconciler pairs with its own disclosure of that same
+# condition; every other code is said by `reason` instead.
+_GATE_ACTION_TEXT = {ACTION_USE_SOFTWARE_OR_TEST: "Run sudo jasper-aec-commission"}
 
 CONCRETE_PROFILES = (
     PROFILE_XVF_CHIP_AEC,
@@ -472,6 +479,61 @@ def _chip_wake_legs(runtime: RuntimeAecEnv) -> list[str]:
     return legs
 
 
+# processing_mode, session_source, wake_legs, active profile.
+_Engine = tuple[str, str, list[str], str]
+
+
+def _software_aec3_engine(runtime: RuntimeAecEnv) -> _Engine:
+    legs = ["AEC3"]
+    if runtime.raw_device:
+        legs.append("Chip-direct raw")
+    if runtime.dtln_enabled or runtime.dtln_device:
+        legs.append("DTLN")
+    return "Software AEC3", "WebRTC AEC3 via :9876", legs, PROFILE_XVF_SOFTWARE_AEC3
+
+
+def _running_engine(
+    runtime: RuntimeAecEnv, mic: MicProbe, *, bridge_active: bool
+) -> _Engine | None:
+    """The engine carrying the wake path right now, or None if none is.
+
+    ADR-0101 makes `disclosed_stale` a RUNNING state, so it may only be
+    claimed on the same live evidence the ready and software arms use: a chip
+    beam on the bridge's carrier, the bridge's own AEC3, or a real card.
+    """
+
+    if (
+        runtime.chip_enabled
+        and bridge_active
+        and runtime.primary_device.startswith("udp:")
+    ):
+        return (
+            "Chip-AEC",
+            _chip_session_source(runtime),
+            _chip_wake_legs(runtime),
+            PROFILE_XVF_CHIP_AEC,
+        )
+    if bridge_active and (
+        runtime.primary_device.startswith("udp:") or runtime.raw_device
+    ):
+        return _software_aec3_engine(runtime)
+    if (
+        runtime.primary_device
+        and not runtime.primary_device.startswith("udp:")
+        # `Array` in both device keys is the never-configured default that
+        # `_direct_mic_configured` rejects; a probed chip behind it is the
+        # deliberate handover the reconciler makes with the bridge down.
+        and (_direct_mic_configured(runtime) or mic.xvf_present)
+    ):
+        return (
+            "Direct mic",
+            mic_source_label(runtime.primary_device),
+            ["Direct mic"],
+            PROFILE_DIRECT_MIC,
+        )
+    return None
+
+
 def _firmware_status(mic: MicProbe) -> dict[str, Any]:
     if mic.capture_channels is None:
         return {
@@ -523,8 +585,9 @@ def build_audio_profile_status(
     # read that flag — the testing selection, and a custom profile whose chip
     # leg the operator set by hand, which the reconciler honours. Everything
     # automatic needs auto_allowed.
-    explicitly_armed = selection == PROFILE_XVF_CHIP_AEC_TESTING or (
-        selection == PROFILE_CUSTOM and intent.chip_aec_enabled
+    custom_chip_leg = selection == PROFILE_CUSTOM and intent.chip_aec_enabled
+    explicitly_armed = (
+        selection == PROFILE_XVF_CHIP_AEC_TESTING or custom_chip_leg
     )
     gate_permitted = gate_arm_allowed if explicitly_armed else gate_auto_allowed
     gate_detail = str(gate.get("detail") or "")
@@ -606,8 +669,6 @@ def build_audio_profile_status(
         and runtime.primary_device.startswith("udp:")
         and runtime.chip_aec_alignment_status == "ready"
     )
-    applied_raw_enabled = bool(runtime.raw_device)
-    applied_dtln_enabled = bool(runtime.dtln_enabled or runtime.dtln_device)
     software_runtime_active = bool(
         requested_intent.mode == "auto"
         and bridge_active
@@ -620,6 +681,18 @@ def build_audio_profile_status(
         PROFILE_XVF_CHIP_AEC,
         PROFILE_XVF_CHIP_AEC_TESTING,
     }
+    # The reconciler writes and clears JASPER_AEC_CHIP_AEC_ALIGNMENT_* only on
+    # the paths that arm the chip: a managed XVF, or the explicit chip leg it
+    # honours on a custom profile. On any other selection the key is a
+    # leftover describing a path nobody is running, and a disabled AEC mode
+    # owns its own state, so neither may be classified from it.
+    disclosed_engine = (
+        _running_engine(runtime, mic, bridge_active=bridge_active)
+        if (managed_xvf or custom_chip_leg)
+        and requested_intent.mode == "auto"
+        and runtime.chip_aec_alignment_status == "disclosed_stale"
+        else None
+    )
 
     profile_action = ""
     if (
@@ -630,57 +703,20 @@ def build_audio_profile_status(
     ):
         processing_mode = "Chip-AEC parked"
         session_source = "parked pending chip-AEC alignment"
-        wake_legs = []
-        active_profile = None
+        wake_legs: list[str] = []
+        active_profile: str | None = None
         profile_state = runtime.chip_aec_alignment_status
         profile_reason = (
             runtime.chip_aec_alignment_reason
             or "Managed XVF chip-AEC alignment is not ready."
         )
         profile_action = runtime.chip_aec_alignment_action
-    elif runtime.chip_aec_alignment_status == "disclosed_stale":
-        # ADR-0101: disclosed_stale is a RUNNING state, on every selection —
-        # the reconciler honours an operator's explicit chip leg on a custom
-        # profile too. Name the engine that is actually carrying the wake path
-        # — the banked chip alignment, the software AEC3 fallback, or the
-        # chip's plain capture — and let the reconciler's own reason/action say
-        # what chip-AEC lost.
-        if (
-            runtime.chip_enabled
-            and bridge_active
-            and runtime.primary_device.startswith("udp:")
-        ):
-            processing_mode = "Chip-AEC"
-            session_source = _chip_session_source(runtime)
-            wake_legs = _chip_wake_legs(runtime)
-            active_profile = PROFILE_XVF_CHIP_AEC
-        elif bridge_active and (
-            runtime.primary_device.startswith("udp:") or runtime.raw_device
-        ):
-            processing_mode = "Software AEC3"
-            session_source = "WebRTC AEC3 via :9876"
-            wake_legs = ["AEC3"]
-            if applied_raw_enabled:
-                wake_legs.append("Chip-direct raw")
-            if applied_dtln_enabled:
-                wake_legs.append("DTLN")
-            active_profile = PROFILE_XVF_SOFTWARE_AEC3
-        elif runtime.primary_device and not runtime.primary_device.startswith(
-            "udp:"
-        ):
-            # A card, not the bridge's carrier. _direct_mic_configured cannot
-            # answer here: its stale-default heuristic reads the deliberate
-            # handover (voice AND the bridge's mic both on the XVF card) as the
-            # value nobody chose — but the reconciler has just said it chose it.
-            processing_mode = "Direct mic"
-            session_source = mic_source_label(runtime.primary_device)
-            wake_legs = ["Direct mic"]
-            active_profile = PROFILE_DIRECT_MIC
-        else:
-            processing_mode = "Chip-AEC pending"
-            session_source = "waiting for AEC runtime"
-            wake_legs = []
-            active_profile = None
+    elif disclosed_engine is not None:
+        # ADR-0101: disclosed_stale is a RUNNING state — name the engine the
+        # wake path actually has, and let the reconciler's own reason/action
+        # say what chip-AEC lost. A disclosed box with no live engine keeps
+        # the pending/waiting arms below: it is not running anything to claim.
+        processing_mode, session_source, wake_legs, active_profile = disclosed_engine
         profile_state = "disclosed_stale"
         profile_reason = (
             runtime.chip_aec_alignment_reason
@@ -712,14 +748,12 @@ def build_audio_profile_status(
         wake_legs = _chip_wake_legs(runtime)
     else:
         if software_runtime_active:
-            processing_mode = "Software AEC3"
-            session_source = "WebRTC AEC3 via :9876"
-            wake_legs = ["AEC3"]
-            if applied_raw_enabled:
-                wake_legs.append("Chip-direct raw")
-            if applied_dtln_enabled:
-                wake_legs.append("DTLN")
-            active_profile = PROFILE_XVF_SOFTWARE_AEC3
+            (
+                processing_mode,
+                session_source,
+                wake_legs,
+                active_profile,
+            ) = _software_aec3_engine(runtime)
         else:
             processing_mode = (
                 "Chip-AEC pending" if hardware_requested else "Software AEC3 pending"
@@ -739,8 +773,7 @@ def build_audio_profile_status(
         elif hardware_requested and not (chip_available and gate_permitted):
             # ADR-0101: unproven chip-AEC is a disclosure on a box that is
             # hearing and a refusal only on one that is not, so the state
-            # follows the engine the wake path actually has. The gate's own
-            # recommended_action code carries what would qualify chip-AEC.
+            # follows the engine the wake path actually has.
             profile_reason = (
                 "Chip-AEC needs a validated XVF3800 chip beam plan for "
                 "the detected mic geometry."
@@ -751,7 +784,9 @@ def build_audio_profile_status(
                 profile_state = "unavailable"
             else:
                 profile_state = "disclosed_stale"
-                profile_action = str(gate.get("recommended_action") or "")
+                profile_action = _GATE_ACTION_TEXT.get(
+                    str(gate.get("recommended_action") or ""), ""
+                )
         elif hardware_requested:
             profile_state = "pending"
             profile_reason = (

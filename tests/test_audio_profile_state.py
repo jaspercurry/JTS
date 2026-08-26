@@ -427,18 +427,99 @@ def test_a_disclosed_custom_chip_leg_reports_its_beams_not_a_pending_reconcile()
     assert status["microphone"]["wake_legs"] == ["Primary chip beam", "Chip AEC 210"]
 
 
+def test_a_leftover_alignment_key_cannot_classify_a_selection_it_never_described():
+    """The reconciler writes that key only on chip-arming paths.
+
+    It is not written or cleared for auto on a mic-less box, for an explicitly
+    AEC-free direct mic, or for a custom profile whose chip leg is off, so a
+    leftover value there describes a path nobody is running: claiming an
+    engine from it reports a deaf box as hearing, and a deliberately AEC-free
+    box as permanently disclosed.
+    """
+    leftover = {
+        "chip_aec_alignment_status": "disclosed_stale",
+        "chip_aec_alignment_reason": "output DAC has no codified chip-AEC calibration",
+        "chip_aec_alignment_action": "Run sudo jasper-aec-commission",
+    }
+    mic_less = build_audio_profile_status(
+        AecIntent(mode="auto", profile_selection="auto"),
+        RuntimeAecEnv(**leftover),
+        MicProbe(xvf_present=False, capture_channels=None),
+        bridge_active=False,
+        chip_available=False,
+    )
+    aec_off = build_audio_profile_status(
+        AecIntent(mode="off", profile_selection="direct_mic"),
+        RuntimeAecEnv(primary_device="hw:CARD=Device", **leftover),
+        MicProbe(xvf_present=False, capture_channels=2, recommended_channels=6),
+        bridge_active=False,
+        chip_available=False,
+    )
+    software_custom = build_audio_profile_status(
+        AecIntent(mode="auto", raw_enabled=True, profile_selection="custom"),
+        RuntimeAecEnv(primary_device="udp:9876", raw_device="udp:9877", **leftover),
+        MicProbe(xvf_present=True, capture_channels=6, recommended_channels=6),
+        bridge_active=True,
+        chip_available=True,
+    )
+
+    assert mic_less["audio_profile"]["state"] == "waiting_bridge"
+    assert mic_less["audio_profile"]["active"] is None
+    assert mic_less["microphone"]["wake_legs"] == []
+    assert aec_off["audio_profile"]["state"] == "disabled"
+    assert software_custom["audio_profile"]["state"] == "active"
+    assert software_custom["audio_profile"]["active"] == "xvf_software_aec3"
+
+
+def test_a_disclosed_box_with_no_live_engine_waits_instead_of_claiming_one():
+    """A disclosure names a running engine or it is not a disclosure.
+
+    Two boxes with nothing on the wake path to name: the bridge died under a
+    managed XVF, and an operator's custom chip leg is disclosed on a box with
+    no capture device at all, whose mic keys still hold the never-configured
+    `Array` default. Both report the pending state the base arms already
+    report, not `disclosed_stale` with no legs.
+    """
+    disclosed = {
+        "chip_aec_alignment_status": "disclosed_stale",
+        "chip_aec_alignment_reason": "output DAC has no codified chip-AEC calibration",
+        "chip_aec_alignment_action": "Run sudo jasper-aec-commission",
+    }
+    bridge_down = build_audio_profile_status(
+        AecIntent(mode="auto", profile_selection="auto"),
+        RuntimeAecEnv(primary_device="udp:9876", **disclosed),
+        MicProbe(xvf_present=True, capture_channels=6, recommended_channels=6),
+        bridge_active=False,
+        chip_available=True,
+    )
+    no_capture_device = build_audio_profile_status(
+        AecIntent(mode="auto", chip_aec_enabled=True, profile_selection="custom"),
+        RuntimeAecEnv(**disclosed),
+        MicProbe(xvf_present=False, capture_channels=None),
+        bridge_active=False,
+        chip_available=False,
+    )
+
+    for status in (bridge_down, no_capture_device):
+        assert status["audio_profile"]["state"] == "waiting_bridge"
+        assert status["audio_profile"]["active"] is None
+        assert status["microphone"]["wake_legs"] == []
+
+
 def test_an_unqualified_chip_path_discloses_while_an_engine_carries_wake():
     """ADR-0101: refuse only a box with nothing on the wake path.
 
-    The mic has no validated chip beam plan, so chip-AEC cannot arm — but AEC3
-    is carrying wake, which is a disclosure with the gate's own action, not the
-    `unavailable` a box with no engine at all reports.
+    The output DAC has no codified chip-AEC timing, so chip-AEC cannot arm on
+    its own — but AEC3 is carrying wake, which is a disclosure carrying the
+    commissioner, not the `unavailable` a box with no engine at all reports.
+    The gate answers in action codes; `action` is operator text.
     """
     gate = {
-        "status": "approved",
-        "auto_allowed": True,
+        "status": "needs_calibration",
+        "detail": "no codified timing",
+        "auto_allowed": False,
         "arm_allowed": True,
-        "recommended_action": "fix_mic_profile_before_chip_aec",
+        "recommended_action": "use_software_aec3_or_enable_testing",
     }
     mic = MicProbe(xvf_present=False, capture_channels=2, recommended_channels=6)
     intent = AecIntent(
@@ -449,20 +530,22 @@ def test_an_unqualified_chip_path_discloses_while_an_engine_carries_wake():
         RuntimeAecEnv(primary_device="udp:9876", raw_device="udp:9877"),
         mic,
         bridge_active=True,
-        chip_available=False,
+        chip_available=True,
         chip_gate=gate,
     )
     stopped = build_audio_profile_status(
         intent,
-        RuntimeAecEnv(),
+        RuntimeAecEnv(primary_device=""),
         mic,
         bridge_active=True,
-        chip_available=False,
+        chip_available=True,
         chip_gate=gate,
     )
 
     assert running["audio_profile"]["state"] == "disclosed_stale"
     assert running["audio_profile"]["active"] == "xvf_software_aec3"
-    assert running["audio_profile"]["action"] == "fix_mic_profile_before_chip_aec"
+    assert running["audio_profile"]["reason"] == "no codified timing"
+    assert running["audio_profile"]["action"] == "Run sudo jasper-aec-commission"
     assert stopped["audio_profile"]["state"] == "unavailable"
     assert stopped["audio_profile"]["active"] is None
+    assert stopped["audio_profile"]["action"] == ""

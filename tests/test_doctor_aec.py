@@ -1562,9 +1562,13 @@ def test_audio_profile_doctor_check_warns_when_runtime_env_pending(monkeypatch):
             "JASPER_MIC_DEVICE": "udp:9876",
             "JASPER_AEC_MIC_DEVICE": "Array",
             "JASPER_AEC_CHIP_AEC_ENABLED": "0",
-            "JASPER_AEC_CHIP_AEC_ALIGNMENT_STATUS": "commission_required",
-            "JASPER_AEC_CHIP_AEC_ALIGNMENT_REASON": "alignment artifact is missing",
-            "JASPER_AEC_CHIP_AEC_ALIGNMENT_ACTION": "Run sudo jasper-aec-commission",
+            "JASPER_AEC_CHIP_AEC_ALIGNMENT_STATUS": "fault",
+            "JASPER_AEC_CHIP_AEC_ALIGNMENT_REASON": (
+                "chip-AEC bridge failed after alignment reapply"
+            ),
+            "JASPER_AEC_CHIP_AEC_ALIGNMENT_ACTION": (
+                "Inspect jasper-aec-bridge, then run the reconciler"
+            ),
             "JASPER_MIC_DEVICE_CHIP_AEC_150": "",
             "JASPER_MIC_DEVICE_CHIP_AEC_210": "",
         },
@@ -1581,8 +1585,10 @@ def test_audio_profile_doctor_check_warns_when_runtime_env_pending(monkeypatch):
 
     assert result.status == "warn"
     assert "active=none" in result.detail
-    assert "alignment artifact is missing" in result.detail
-    assert "action=Run sudo jasper-aec-commission" in result.detail
+    assert "chip-AEC bridge failed after alignment reapply" in result.detail
+    assert (
+        "action=Inspect jasper-aec-bridge, then run the reconciler" in result.detail
+    )
 
 
 def test_audio_profile_doctor_check_names_stale_saved_aec_card(monkeypatch):
