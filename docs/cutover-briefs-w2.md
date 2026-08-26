@@ -294,6 +294,15 @@ reason code). Nothing else — a message belongs to `refusal_copy`, which is
 already the repo's one household-wording owner, and a second sentence-composer
 here is the shape this refactor exists to remove.
 
+**Not in conflict with §6.3's "no third `AnalyzeOutcome` field."** That ruling
+(landed in #3151) refutes turning the four diagnostic emitters into `analyze`'s
+journal, on the ground that doing so would mean *"invent a third `AnalyzeOutcome`
+field **and** wire the conductor to the engine"* — i.e. a §6 row quietly
+acquiring W5-b. This field is neither: it is W2-c's own deliverable, named in
+§2's work items, carrying the not-run disclosure and nothing else. **No journal,
+no conductor wiring.** If W2-c is built as a third field, §6.3's sentence should
+be narrowed to *"no third field for the emitters"* in the same PR.
+
 ### 2.2 The reason vocabulary is already in the layer — generalize it
 
 `_verify_absolute_result` (`program_analysis.py:6952`) **already implements
@@ -450,8 +459,9 @@ Its two dispatches have different owners and different waves:
   `_consume_measure` `:4213`, `_consume_lateral_pose` `:4215`,
   `_consume_cloud_position` `:4217`, `_consume_entry_baseline` `:4225`,
   `_consume_verify` `:4227`) is **verdict and state-machine logic, not
-  analysis**. It dies in W7's dissolution. A W2 PR that touches it is out of
-  scope and will collide with W5/W7.
+  analysis**. §6 routes those verdict blocks (`:4627-5279`, `:7305-7924`) — and,
+  per §6.3, their diagnostic emitters with them — in its **own** dissolution
+  rows. A W2 PR that touches them is out of scope and will collide with §6.
 
 **Site D — `harmonic_evidence._read_one_capture` (`:831`, call `:867`). Does not
 flip in W2, and is where units 16–17 will come from.** R-4's stub
