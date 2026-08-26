@@ -2,6 +2,8 @@
 #
 # SPDX-License-Identifier: Apache-2.0
 
+import pytest
+
 from jasper.chip_aec_policy import (
     ACTION_RUN_TESTING_AND_VALIDATE,
     ACTION_USE_CHIP_AEC,
@@ -29,41 +31,35 @@ def _outputd_status(verdict: str, estimator_status: str = "locked") -> dict:
     }
 
 
-def test_static_approved_dac_allows_auto_and_production_chip_aec():
-    gate = resolve_chip_aec_dac_gate("hifiberry_dac8x")
+@pytest.mark.parametrize(
+    ("dac_id", "testing", "status", "auto_allowed", "action", "permits"),
+    [
+        ("hifiberry_dac8x", False, STATUS_APPROVED, True,
+         ACTION_USE_CHIP_AEC, True),
+        ("hifiberry_dac8x", True, STATUS_APPROVED, True,
+         ACTION_USE_CHIP_AEC, True),
+        ("mystery_usb_audio", False, STATUS_NEEDS_CALIBRATION, False,
+         ACTION_USE_SOFTWARE_OR_TEST, False),
+        ("mystery_usb_audio", True, STATUS_TESTING, False,
+         ACTION_RUN_TESTING_AND_VALIDATE, True),
+    ],
+    ids=["approved_auto", "approved_testing", "uncodified_auto",
+         "uncodified_testing"],
+)
+def test_the_dac_gate_classifies_and_permits_per_selection(
+    dac_id, testing, status, auto_allowed, action, permits,
+):
+    """ADR-0101: the AUTOMATIC selection is the only one the DAC gates.
 
-    assert gate.status == STATUS_APPROVED
-    assert gate.permitted is True
-    assert gate.auto_allowed is True
-    assert gate.production_allowed is True
-    assert gate.testing_allowed is True
-    assert gate.recommended_action == ACTION_USE_CHIP_AEC
+    An uncodified DAC refuses to be picked on its own yet still arms on an
+    explicit testing request, so `permits` is the whole gate (#3073 item 3).
+    """
+    gate = resolve_chip_aec_dac_gate(dac_id, testing_requested=testing)
 
-
-def test_unapproved_dac_blocks_auto_selection_but_allows_explicit_arm():
-    """ADR-0101: an uncodified DAC is a quality signal, not an admission gate."""
-    gate = resolve_chip_aec_dac_gate("mystery_usb_audio")
-
-    assert gate.status == STATUS_NEEDS_CALIBRATION
-    assert gate.permitted is True
-    assert gate.auto_allowed is False
-    assert gate.production_allowed is False
-    assert gate.testing_allowed is True
-    assert gate.recommended_action == ACTION_USE_SOFTWARE_OR_TEST
-
-
-def test_explicit_testing_arms_unapproved_dac_without_auto_promotion():
-    gate = resolve_chip_aec_dac_gate(
-        "mystery_usb_audio",
-        testing_requested=True,
-    )
-
-    assert gate.status == STATUS_TESTING
-    assert gate.permitted is True
-    assert gate.auto_allowed is False
-    assert gate.production_allowed is False
-    assert gate.testing_allowed is True
-    assert gate.recommended_action == ACTION_RUN_TESTING_AND_VALIDATE
+    assert gate.status == status
+    assert gate.auto_allowed is auto_allowed
+    assert gate.recommended_action == action
+    assert gate.permits(testing_requested=testing) is permits
 
 
 def test_live_coherent_outputd_clock_is_diagnostic_not_authorization():
@@ -99,7 +95,6 @@ def test_runtime_env_gate_round_trips_reconciler_written_status():
     })
 
     assert gate.status == STATUS_TESTING
-    assert gate.permitted is True
     assert gate.auto_allowed is False
     assert gate.detail == "operator validation"
 

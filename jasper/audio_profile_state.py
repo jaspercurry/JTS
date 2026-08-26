@@ -19,7 +19,9 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import Any, Mapping
 
-from .chip_aec_policy import ACTION_USE_SOFTWARE_OR_TEST, STATUS_TESTING
+from .chip_aec_policy import (
+    ACTION_USE_SOFTWARE_OR_TEST, STATUS_TESTING, permits_selection,
+)
 
 
 PROFILE_AUTO = "auto"
@@ -587,15 +589,16 @@ def build_audio_profile_status(
     )
     gate = dict(chip_gate or {})
     gate_auto_allowed = bool(gate.get("auto_allowed", chip_available))
-    gate_arm_allowed = bool(gate.get("arm_allowed", chip_available))
-    # ADR-0101: an uncodified DAC is arm_allowed, so only an EXPLICIT arm may
-    # read that flag — the testing selection, or a custom profile whose chip leg
-    # the operator set by hand and the reconciler honours.
+    # The two selections that arm chip-AEC by hand rather than by policy: the
+    # testing profile, and a custom profile whose chip leg the operator set and
+    # the reconciler honours. `permits_selection` owns what that buys them.
     custom_chip_leg = selection == PROFILE_CUSTOM and intent.chip_aec_enabled
     explicitly_armed = (
         selection == PROFILE_XVF_CHIP_AEC_TESTING or custom_chip_leg
     )
-    gate_permitted = gate_arm_allowed if explicitly_armed else gate_auto_allowed
+    gate_permitted = permits_selection(
+        auto_allowed=gate_auto_allowed, testing_requested=explicitly_armed
+    )
     gate_detail = str(gate.get("detail") or "")
     gate_status = str(gate.get("status") or "")
     chip_allowed_for_selection = chip_available and gate_permitted

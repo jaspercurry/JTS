@@ -17,6 +17,7 @@ from pathlib import Path
 import numpy as np
 import pytest
 
+from jasper.chip_aec_policy import ChipAecGate
 from jasper.wake_corpus import bridge_session
 from jasper.web import wake_corpus_setup
 
@@ -570,6 +571,67 @@ def test_chip_capture_plan_id_is_stable_across_its_own_env_apply(backend) -> Non
 
     assert observed["plan_id"] == planned["plan_id"]
     assert observed["fingerprints"] == planned["fingerprints"]
+
+
+# The serialized chip-AEC gate is a hash input: it rides
+# dac_reference_fingerprint_source, whose digest becomes the stored plan's
+# dac_reference fingerprint and, through it, the plan id. A session resumed
+# after that digest moved is refused, so only facts that outlive a reconcile
+# pass may reach it.
+_BASE_GATE = ChipAecGate(
+    dac_id="hifiberry_dac8x",
+    status="approved",
+    source="static",
+    detail="HiFiBerry DAC8x is approved for production chip-AEC",
+    auto_allowed=True,
+).to_dict()
+
+
+def _gate(**overrides: object) -> dict[str, object]:
+    return {**_BASE_GATE, **overrides}
+
+
+def _dac_reference_digest(gate: dict[str, object]) -> str:
+    return bridge_session.fingerprint_mapping({
+        "audio_dac_id": "hifiberry_dac8x",
+        "dac": {"pcm": "outputd_dac", "backend": "alsa"},
+        "reference": {"source": "outputd_udp"},
+        "chip_gate": bridge_session.chip_gate_identity(gate),
+    })
+
+
+@pytest.mark.parametrize(
+    "gate, same_digest",
+    [
+        # The reconciler's carry — same box, same verdict, resolver briefly
+        # down — and the live outputd clock estimate it embeds in detail.
+        (_gate(source="runtime_env_carried"), True),
+        (_gate(detail="approved; outputd aec_clock chip_ref_sro_ppm=1.7"), True),
+        # Derived policy, including permits-shaped booleans a later reshape
+        # could add back.
+        (_gate(auto_allowed=False), True),
+        (_gate(recommended_action="fix_mic_profile_before_chip_aec"), True),
+        (_gate(blockers=["dac"]), True),
+        (_gate(permits_production=True, permits_testing=False), True),
+        ({k: v for k, v in _BASE_GATE.items() if k != "auto_allowed"}, True),
+        # Identity still moves it, so the subset is not hashing a constant.
+        (_gate(dac_id="mystery_usb_audio"), False),
+        (_gate(status="needs_calibration"), False),
+    ],
+    ids=[
+        "carried_source", "live_clock_detail", "auto_allowed",
+        "recommended_action", "blockers", "permits_shaped_keys", "dropped_key",
+        "other_dac", "other_verdict",
+    ],
+)
+def test_dac_reference_digest_tracks_only_dac_identity_and_verdict(
+    gate, same_digest,
+) -> None:
+    """Only the physical DAC and its commissioning verdict may move the digest."""
+
+    unchanged = _dac_reference_digest(gate) == _dac_reference_digest(_BASE_GATE)
+
+    assert unchanged is same_digest
 
 
 def test_validate_active_capture_plan_refuses_missing_promised_leg(

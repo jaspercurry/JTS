@@ -1221,7 +1221,8 @@ def test_chip_aec_readiness_requires_calibrated_output_dac():
         == "needs_calibration"
     )
     # The record cannot contradict the verdict beside it: this check asks about
-    # production approval, and an uncodified DAC is arm_allowed under ADR-0101.
+    # production approval, which an uncodified DAC fails even though ADR-0101
+    # still lets an explicit testing request arm it.
     assert artifact.checks["dac_support"]["observed"]["permitted"] is False
     assert "needs per-profile chip-AEC" in artifact.checks["dac_support"]["summary"]
     assert artifact.recommendation == "calibrate_output_dac_before_chip_aec"

@@ -523,9 +523,11 @@ def _chip_aec_gate(
     payload = gate.to_dict()
     payload["mic_available"] = mic_available
     payload["production_available"] = bool(
-        mic_available and gate.production_allowed
+        mic_available and gate.permits(testing_requested=False)
     )
-    payload["testing_available"] = bool(mic_available and gate.testing_allowed)
+    payload["testing_available"] = bool(
+        mic_available and gate.permits(testing_requested=True)
+    )
     payload["available"] = bool(
         mic_available and gate.permits(testing_requested=testing_requested)
     )
