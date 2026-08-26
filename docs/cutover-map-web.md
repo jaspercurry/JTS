@@ -94,6 +94,16 @@ well; four things moved.
 
 Everything else in §6's web-file table reproduced within a line or two.
 
+**One structural fact neither §5 nor §6 carries, and it changes the blast
+radius:** the production caller surface is **39 names across 8 modules**, not
+the handful the dispatch chain suggests. Three of the eight are outside the
+`/correction` web tier entirely — `correction_crossover_v2_republish.py`
+(which reaches **four private names**), `jasper/cli/doctor/correction.py`, and
+`scripts/run-crossover-round.py`. A caller census done by grepping the
+`v2host.` alias finds none of them, because they bind the host to `_host`, take
+it as a function parameter, or import symbols directly. Enumerate by import
+*statement*; see the table at the end of §1.
+
 ---
 
 ## 1. Concern inventory
@@ -104,9 +114,9 @@ missing, which is what makes §4's arithmetic checkable.
 
 **Caller codes.** `setup` = `jasper/web/correction_setup.py` · `backend` =
 `correction_crossover_backend.py` · `xflow` = `correction_crossover_flow.py` ·
-`relay` / `wired` = `correction_crossover_v2_relay.py` /
-`correction_crossover_v2_wired.py` · `in-file` = no consumer outside this
-module · `tests` = test suite only.
+`relay` / `wired` / `republish` = `correction_crossover_v2_relay.py` /
+`_wired.py` / `_republish.py` · `doctor` = `jasper/cli/doctor/correction.py` ·
+`in-file` = no consumer outside this module · `tests` = test suite only.
 
 **Disposition codes.** `→W*` absorbed by that plan work item · `SUPERSEDED` the
 engine module named already owns it · `KEEP` survives the dissolution, with
@@ -121,9 +131,9 @@ unlike its twin.
 | **C** | 162–188 | 27 | `logger`; durable-state schema constants (`STATE_SCHEMA_VERSION`, `STATE_KIND`, `DEFAULT_V2_STATE_PATH`); the two relay-kind labels; two more `durable_state` re-exports (`:186-187`). | setup, tests | **SPLIT** — schema constants →W1-a with the store; relay-kind labels →W5-a with the preparers; `:186-187` join row U's barrel. |
 | **D** | 189–219 | 31 | Operator capture-dump retention: dir, `ENABLED` marker filename, ring caps (90 files / 300 MB). 26 of 31 lines are the justifying essay. | in-file | **→W1-c**, gated on the owner's `ENABLED` ruling. |
 | **E** | 220–229 | 10 | `capture_dump_enabled` — is operator retention switched on right now. | in-file (row Z) | **→W1-c** |
-| **F** | 230–236 | 7 | `_state_lock` (RLock), `_state_path_override`, `_volume_plan_lock`, `_volume_plan` — four of the file's seven module-level mutables. | in-file | **→W5** with the singletons they guard. **Move as one unit** — see §3. |
-| **G** | 237–447 | 211 | Refusal / error taxonomy: `CrossoverV2Refused`, `CrossoverV2LocalSeamError`, `refusal_next_action`, `classify_program_failure` (§5.10 reason codes), `refused_from_flow_error`, `profile_refusal_code`. | setup `:1010`, `:7394`, `:7536` | **SUPERSEDED** → `crossover_v2/refusal_copy.py` (1,609 lines; 12 public functions/classes and 51 public constants, already the home of the `REASON_*` codes this row imports at `:118-122`). A clean leaf; no seam involved. |
-| **H** | 448–577 | 130 | Durable JSON state file I/O: path resolution, `load_v2_state`, `save_v2_state` (fsync decision), `_update_current_review`, `clear_v2_state`, `set_state_path_for_tests`. | xflow `:272`, setup, tests | **→W1-a** (`RecordStore`). The *document* already lives in `crossover_v2/durable_state.py`; what is here is the **file** — path, envelope, atomic write, durability verdict (`:2550-2555` says exactly this). |
+| **F** | 230–236 | 7 | `_state_lock` (RLock), `_state_path_override`, `_volume_plan_lock`, `_volume_plan` — four of the file's seven module-level mutables. | in-file; **republish `:205`** holds `_state_lock` | **→W5** with the singletons they guard. **Move as one unit** — see §3. |
+| **G** | 237–447 | 211 | Refusal / error taxonomy: `CrossoverV2Refused`, `CrossoverV2LocalSeamError`, `refusal_next_action`, `classify_program_failure` (§5.10 reason codes), `refused_from_flow_error`, `profile_refusal_code`. | setup `:1010`, `:7394`, `:7536`; **relay `:574`, `:587`, `:978`; wired `:580`, `:609`, `:871`; republish `:60`** | **SUPERSEDED** → `crossover_v2/refusal_copy.py` (1,609 lines; 12 public functions/classes and 51 public constants, already the home of the `REASON_*` codes this row imports at `:118-122`). A clean leaf; no seam involved. |
+| **H** | 448–577 | 130 | Durable JSON state file I/O: path resolution, `load_v2_state`, `save_v2_state` (fsync decision), `_update_current_review`, `clear_v2_state`, `set_state_path_for_tests`. | xflow `:272`; **republish `:206`, `:269`** (and `_state_lock` at `:205`); tests | **→W1-a** (`RecordStore`). The *document* already lives in `crossover_v2/durable_state.py`; what is here is the **file** — path, envelope, atomic write, durability verdict (`:2550-2555` says exactly this). |
 | **I** | 578–1012 | 435 | Journey-state observers: `reset_v2_journey_state`, `observe_apply_success` (137 L), `observe_restore` (131 L), `observe_review_decline`, `review_declined`, model-error snapshot/record. 246 lines prose. | xflow `:219`, `:272`; setup | **→W5** + `crossover_v2/journey.py` (597 L). The transitions are journey facts; the persistence half rides W1-a. |
 | **J** | 1013–1071 | 59 | Three conductor seams reading the durable state: `_applied_gate`, `_applied_offset_gate`, `_apply_failure_gate`. | in-file (row AK binds them) | **→W1-a** — they are reads of the record store wearing a seam. |
 | **K** | 1072–1098 | 27 | `session_volume_plan()` — the one durable-state-backed `SessionVolumePlan` this process owns, double-checked under `_volume_plan_lock`; plus its test setter. | in-file, tests | **→W5-c** |
@@ -134,20 +144,20 @@ unlike its twin.
 | **P** | 1347–1461 | 115 | Out-of-runner volume drains: `enforce_session_volume_ceiling_if_stale` (lazy 1800 s ceiling — W6.1 found it had zero callers so it never existed at runtime), `v2_volume_recovery_active`, `recover_session_volume`, `reconcile_session_volume_for_new_session`. | setup `:685`, `:7648`, `:7649`; in-file `:6039` | **→W5-c** |
 | **Q** | 1462–1792 | 331 | Status projection, part 1: `_phase_from_state` (102 L), `_provenance_note`, `_compact_cloud_status` (180 L). Pure read-side. 211 lines prose — 64%. | in-file (row S) | **LIFTS WHOLE** to its own module. §6 calls rows Q+R+S *"the cleanest large slice"*: no I/O beyond `load_v2_state`, no seam. |
 | **R** | 1793–1993 | 201 | Status projection, part 2: `CHART_CURVE_MAX_JSON_POINTS = 256`, `_decimate_curve_for_chart`, `_chart_cloud_status`, `_prediction_status`. | in-file (row S) | **LIFTS WHOLE**, same module as Q. |
-| **S** | 1994–2165 | 172 | `crossover_v2_status_block()` — **the file's one read entry point**, and `_household_findings_status`. Embedded as `payload["crossover_v2"]` at `backend:2097-2104`; that is what feeds the human's `/correction/crossover` page. | **backend `:2097`** | **LIFTS WHOLE.** Deletion-order step 2 — the earliest large win, nothing depends on it landing first. |
-| **T** | 2166–2545 | 380 | Post-apply grading: the grade/scope/spatial vocabularies (`GRADE_*`, 13 constants), `_spatial_grade`, `_post_apply_grade` (296 L) — *"was the correction now ON the speaker ever checked after it landed?"* | in-file (row S) | **→§2** (the analyze registry). It is an analysis, and it is the largest single analysis in the file. |
-| **U** | 2546–2582 | 37 | **The fifth barrel.** 16 names re-bound off `durable_state` under historical names (`:2559-2578`), because *"`prepare_v2_verify` reaches them as module globals and the stage-bridge suite names them off this module"* (`:2557-2558`). **Five have zero in-file uses**, and **two of those five have no consumer anywhere** — see below. | in-file (11 of 16); tests | **SUPERSEDED** → `crossover_v2/durable_state.py` (1,869 L). Two lines deletable **today**; the rest the moment W5-a converges the preparers and the tests are repointed. Not in §6's table. |
+| **S** | 1994–2165 | 172 | `crossover_v2_status_block()` — **the file's one read entry point**, and `_household_findings_status`. Embedded as `payload["crossover_v2"]` at `backend:2097-2104`; that is what feeds the human's `/correction/crossover` page. | **backend `:2097`; doctor `:596`, `:717`** | **LIFTS WHOLE.** Deletion-order step 2 — the earliest large win, nothing depends on it landing first. |
+| **T** | 2166–2545 | 380 | Post-apply grading: the grade/scope/spatial vocabularies (`GRADE_*`, 13 constants), `_spatial_grade`, `_post_apply_grade` (296 L) — *"was the correction now ON the speaker ever checked after it landed?"* | in-file (row S); **`jasper/cli/doctor/correction.py:703-713` imports all nine `GRADE_*`** | **→§2** (the analyze registry). It is an analysis, and it is the largest single analysis in the file. |
+| **U** | 2546–2582 | 37 | **The fifth barrel.** 16 names re-bound off `durable_state` under historical names (`:2559-2578`), because *"`prepare_v2_verify` reaches them as module globals and the stage-bridge suite names them off this module"* (`:2557-2558`). **Five have zero in-file uses**, and **two of those five have no consumer anywhere** — see below. | in-file (11 of 16); **republish `:182` reaches `_candidate_summary`**; tests | **SUPERSEDED** → `crossover_v2/durable_state.py` (1,869 L). Two lines deletable **today**; the rest the moment W5-a converges the preparers and the tests are repointed. Not in §6's table. |
 | **V** | 2583–2806 | 224 | Staged-prescription / angle-walk intake: `_take_staged_prescription`, `_take_staged_angle_walk`, `_fc_hz_label`. | in-file (rows AM, AN) | **→W3-b** (recommender binding). |
-| **W** | 2807–2929 | 123 | Conductor persistence, write side: `persist_conductor_state`, `_persist_terminal_failure`. | in-file (rows AM, AN) | **→W1-a**. This is what `TuningSession.save()` replaces. |
+| **W** | 2807–2929 | 123 | Conductor persistence, write side: `persist_conductor_state`, `_persist_terminal_failure`. | in-file (rows AM, AN); **relay `:589`, `:875`, `:954`, `:994`, `:1005`; wired `:611`, `:862`, `:883`, `:888`** | **→W1-a**. This is what `TuningSession.save()` replaces. |
 | **X** | 2930–3035 | 106 | Calibration resolution: `_wav_bytes_to_samples`, `resolve_relay_calibration`, `default_setup_calibration_for_v2`, `_setup_calibration_observation`. | in-file (row Y); named in `setup` prose `:2352`, `:3762`, `:3921` | **→W2-b** |
 | **Y** | 3036–3177 | 142 | `bind_production_analyze` — the real `analyze` seam, `CaptureResult` → `analyze_program_capture`, with the 101-line `_analyze` closure. | in-file (row AK) | **→W2-b** — this is the registry's production entry. |
 | **Z** | 3178–3362 | 185 | Capture-dump retention, implementation: `_prune_capture_dump` (oldest-first, bounded by count **and** bytes), `_maybe_retain_capture`. | in-file (row Y) | **→W1-c**, gated on the same `ENABLED` ruling as row D. |
 | **AA** | 3363–3963 | 601 | Evidence store + publishers — the file's largest concern: `open_v2_evidence_store`, `bind_evidence_publishers`, `bind_round_receipt`, `bind_position_retention`, `v2_session_identity`, `_publish_findings`, `_bank_household_findings`, `bind_findings_publisher`, `bind_cloud_publisher`. | in-file (row AK) | **→W1-a** (`RecordStore`). Note the cross-file dependency: §0 of the plan found retention is **four** sites, not three, and the fourth is inlined in the twin at `crossover_v2_flow.py:6879`. Lift both or leave a second writer. |
 | **AB** | 3964–4340 | 377 | `bind_production_play` — the real `play` seam. 9 nested functions, 6 of them `async`. Contains `_hold_fader` (`:4173`), the 5th `_session_volume_io` site, which **discards `_set`** and re-proves the measurement volume per stimulus (`:4187`); and `run_async(_emit())` at `:4336`, a sync→async bridge fired from inside a play. | in-file (row AK) | **→W5-b** — `PlaybackTransaction` binding. |
-| **AC** | 4341–4435 | 95 | What the host hands the capture provider: `V2VolumeHooks` (frozen dataclass of three async callables), `drive_group_close`, `_start_speculative_group_close`. | relay, wired (**`TYPE_CHECKING` only**) | **→W5-b**. §6 flags this as *"one concern split 1,000 lines apart"* from row AH — correct, and the split is the interface half here, the implementation half there. |
+| **AC** | 4341–4435 | 95 | What the host hands the capture provider: `V2VolumeHooks` (frozen dataclass of three async callables), `drive_group_close`, `_start_speculative_group_close`. | relay `:411`→`:450`, `:616`; wired `:418`→`:619`, `:790` — **runtime**. Only `V2VolumeHooks` itself is `TYPE_CHECKING` | **→W5-b**. §6 flags this as *"one concern split 1,000 lines apart"* from row AH — correct, and the split is the interface half here, the implementation half there. |
 | **AD** | 4436–4850 | 415 | Conductor context resolution: `V2ConductorContext`, `ensure_crossover_preview_ready`, per-role driver class / radiating diameter resolvers, `resolve_conductor_context` (210 L) — preset/bands/caps/targets/volume from live status + topology. | in-file (rows AM, AN) | **→W5-b** — becomes `EngineSeams` construction input. |
 | **AE** | 4851–4991 | 141 | `attach_stage2_preflight` — the stage-2 openability predicate for the REVIEW screen (D3). 92 lines prose. | **xflow `:160`** | **→W5-b** |
-| **AF** | 4992–5352 | 361 | `PositionGate` (280 L, 6 methods) plus its banner and 8 constants, incl. `POSITION_READY_ENDPOINT` (`:5069`). Holds a gated session's begin until the angle reached is reported. | relay, wired (**`TYPE_CHECKING` only**), tests | **OWN MODULE** — §6 calls it *"cleanest extractable class"* and it is, because its only two importers take it as a type annotation, not a runtime dependency. Converge `:5069` with `arm_walk.py:427` while there (§3). |
+| **AF** | 4992–5352 | 361 | `PositionGate` (280 L, 6 methods) plus its banner and 8 constants, incl. `POSITION_READY_ENDPOINT` (`:5069`). Holds a gated session's begin until the angle reached is reported. | the class: relay `:49`, wired `:97` — **`TYPE_CHECKING` only**. But `POSITION_GATE_TERMINAL_CODES` is read at runtime by relay `:889`. tests | **OWN MODULE** — §6 calls it *"cleanest extractable class"* and the **class** is: both importers take it as a type annotation. The **row** is not quite as clean, because `POSITION_GATE_TERMINAL_CODES` is a runtime dependency of `relay:889`; move it with the class and repoint that one line. Converge `:5069` with `arm_walk.py:427` while there (§3). |
 | **AG** | 5353–5388 | 36 | `V2PreparedSession` — what the dispatch needs to host one session. | **setup `:6356`** (`.capture_source`), `:6342` (the return) | **→W5-a** |
 | **AH** | 5389–5459 | 71 | `_volume_hooks` — the in-runner drains. `_open` acquires the pause **before** the volume and releases it in a `finally` if the open did not take; `_put_the_graph_back` restores the graph **before** the pause release in both `_close` (`:5443`) and `_abandon` (`:5450`). **Safety ordering sites 2 and 3 of 3.** | in-file (rows AM, AN) | **→W5-c**, ordering preserved. See §3. |
 | **AI** | 5460–5475 | 16 | Stage-capabilities banner — 15 of 16 lines are the essay recording that the declarations moved to `journey` in #2291 Phase 4. | — | **SUPERSEDED** — pure pointer at a completed move. Delete with row B. |
@@ -155,42 +165,71 @@ unlike its twin.
 | **AK** | 5674–5784 | 111 | `bind_v2_stage_seams` — builds one stage's `V2FlowSeams` and journals what it opened with. **The convergence point**: rows J, Y, AA, AB, AQ all arrive here. | in-file (rows AM, AN) | **→W5-b** — `EngineSeams` replaces `V2FlowSeams`. This is the file's single most consequential line-range for the cutover. |
 | **AL** | 5785–5942 | 158 | Capture-source resolution and run building: `_resolve_prepare_capture_source`, `_hand_released_plan_shape`, `_mint_source_session`, `_build_source_run`. | in-file (rows AM, AN) | **→W5-a** — shared tail of both preparers; converges with them. |
 | **AM** | 5943–6518 | 576 | `prepare_v2_session` (534 L) + the three `VERIFY_STAGE_*` constants + `_verify_plan_shape`. Stage-1 preparer: gate, build the conductor, hand the walk to the capture source. Holds the conductor in a bare `holder: dict[str, Any]` at `:6258`, filled `:6432`, drained by `_run` at `:6448`. | **setup `:6341`** | **→W5-a**, then W5-b. |
-| **AN** | 6519–6903 | 385 | `prepare_v2_verify` (382 L) — the near-duplicate twin. Same `_open`/`_run`/`holder` shape (`:6711`, `:6856`, `:6872`), same `bind_v2_stage_seams` call shape, same `_build_source_run` tail. | **setup `:6341`** | **→W5-a.** Rows AL+AM+AN = **1,119 lines**, the biggest de-duplication win in either god file. |
+| **AN** | 6519–6903 | 385 | `prepare_v2_verify` (382 L) — the near-duplicate twin. Same `_open`/`_run`/`holder` shape (`:6711`, `:6856`, `:6872`), same `bind_v2_stage_seams` call shape, same `_build_source_run` tail. | **setup `:6341`**; `VERIFY_STAGE_*` also by **`scripts/run-crossover-round.py:188`, the file's one top-level production import** | **→W5-a.** Rows AL+AM+AN = **1,119 lines**, the biggest de-duplication win in either god file. |
 | **AO** | 6904–6960 | 57 | Apply banner + `_assert_stage_2_can_open` — refuse an apply this speaker could not then verify (D3). | in-file (row AP) | **KEEP** |
 | **AP** | 6961–7361 | 401 | `handle_v2_apply` — the apply transaction. | **setup `:6390`** | **KEEP.** This is §6's *"NO ENGINE HOME"* ruling resolved in this file's favour: the apply transaction is *"not a target. Ever."*, and its two options were a publish/commit organ **or a thin surviving host module**. This file is that host. |
 | **AQ** | 7362–7462 | 101 | `bind_delta_probe_rollback` — the conductor's `rollback` seam; calls `handle_v2_restore` at `:7428`. | in-file (row AK) | **KEEP** — it is the apply transaction's inverse and reaches into row AT. |
-| **AR** | 7463–7620 | 158 | Sound-declaration Undo: the four `DECLARATION_*` codes, `_parse_sound_declaration_undo`, `_crossover_label`, `_restore_sound_declaration`. | in-file (row AT) | **KEEP** |
+| **AR** | 7463–7620 | 158 | Sound-declaration Undo: the four `DECLARATION_*` codes, `_parse_sound_declaration_undo`, `_crossover_label`, `_restore_sound_declaration`. | in-file (row AT); **republish `:169`, `:171`** reach `_crossover_label` | **KEEP** |
 | **AS** | 7621–7831 | 211 | Rollback-anchor refusal vocabulary: five `ANCHOR_*` codes, `RollbackAnchorRefusal`, `restore_anchor_static_prefix_refusal`, `rollback_anchor_refusal` (146 L). | in-file (rows S, AT) | **KEEP** |
 | **AT** | 7832–7972 | 141 | `handle_v2_restore` — the v2-aware Undo. | **setup `:6421`**; in-file `:7428` | **KEEP** |
 | **AU** | 7973–8088 | 116 | Apply-blocked tail: `_restore_refusal_code`, `_blocking_apply_issue`, `_dsp_apply_is_known_inactive`, `_persist_apply_blocked`, `_reopen_candidate_artifact`. | in-file (rows AP, AT) | **KEEP** |
 
 ### The whole production caller surface, in one place
 
-Nine names, five modules. That is the entire outside-world dependency on 8,088
-lines — every one of them a lazy in-function import.
+**39 names across 8 modules.** Enumerated by matching import *statements* — not
+by grepping an alias prefix, which misses the four modules that bind the host
+to a local name (`_host`) or take it as a parameter:
 
-| Caller | Line | Name(s) reached |
-|---|---|---|
-| `correction_setup.py` | 685 | `enforce_session_volume_ceiling_if_stale` |
-| | 1010 | `CrossoverV2LocalSeamError`, `classify_program_failure` |
-| | 6341 | `prepare_v2_session`, `prepare_v2_verify` |
-| | 6356 | `SOURCE_WIRED` *(re-export, row B)* |
-| | 6390 | `handle_v2_apply` |
-| | 6421 | `handle_v2_restore` |
-| | 7394 | `refusal_next_action` |
-| | 7536 | `CrossoverV2Refused` |
-| | 7648–7649 | `v2_volume_recovery_active`, `recover_session_volume` |
-| `correction_crossover_backend.py` | 2097 | `crossover_v2_status_block` |
-| `correction_crossover_flow.py` | 160 | `attach_stage2_preflight` |
-| | 219 | `reset_v2_journey_state` |
-| | 272 | `load_v2_state`, `observe_review_decline` |
-| `correction_crossover_v2_relay.py` | 49 | `PositionGate`, `V2VolumeHooks` — **`TYPE_CHECKING` only** |
-| `correction_crossover_v2_wired.py` | 97 | `PositionGate`, `V2VolumeHooks` — **`TYPE_CHECKING` only** |
+```
+grep -rnE "^\s*(from [a-z_.]*correction_crossover_v2 import|from jasper\.web import correction_crossover_v2($| )|from \. import correction_crossover_v2($| as )|import jasper\.web\.correction_crossover_v2($| ))" \
+  jasper/ scripts/ deploy/ relay/ experiments/ --include="*.py" \
+  | grep -v '^jasper/web/correction_crossover_v2.py:'
+```
 
-**The consequence for sequencing:** the two capture providers have *no runtime
-edge* to this module. They receive `PositionGate` and `V2VolumeHooks` as
-parameters and name them only in annotations. Extracting row AF costs two
-import-line edits, not a dependency negotiation.
+*(The `($| )` / `($| as )` tails are load-bearing: without them the pattern also
+matches the `correction_crossover_v2_relay`, `_wired` and `_republish` siblings
+and over-counts. It returns **20** import sites.)*
+
+| Caller | Import site | Name(s) reached | Use sites |
+|---|---|---|---|
+| `correction_setup.py` | 1010 | `CrossoverV2LocalSeamError`, `classify_program_failure` | 1029, 1031 |
+| | 6419 (`v2host`) | `prepare_v2_session`, `prepare_v2_verify`, `SOURCE_WIRED`, `handle_v2_apply`, `handle_v2_restore` | 6341, 6356, 6390, 6421 |
+| | 7394 | `refusal_next_action` | 7399 |
+| | 7536 | `CrossoverV2Refused` | 7539 |
+| | 7646 | `v2_volume_recovery_active`, `recover_session_volume` | 7648–7649 |
+| | 7858, 7876 | `enforce_session_volume_ceiling_if_stale` | **685, indirectly** — both routes pass the module object into `_enforce_session_volume_ceiling(v2host)` (`:665`), which makes the call |
+| `correction_crossover_v2_relay.py` | 49 (`TYPE_CHECKING`) | `PositionGate`, `V2VolumeHooks` | 310, 307 — annotations only |
+| | **411 (`_host`, runtime)** | `drive_group_close`, `CrossoverV2LocalSeamError`, `persist_conductor_state`, `_start_speculative_group_close`, `_persist_terminal_failure`, `POSITION_GATE_TERMINAL_CODES`, `classify_program_failure` | 450, 574, 587, 589, 616, 875, 889, 954, 978, 994, 1005 |
+| `correction_crossover_v2_wired.py` | 97 (`TYPE_CHECKING`) | `PositionGate`, `V2VolumeHooks` | 321, 314 — annotations only |
+| | **418 (`_host`, runtime)** | same set minus `POSITION_GATE_TERMINAL_CODES` | 580, 609, 611, 619, 790, 862, 871, 883, 888 |
+| `correction_crossover_v2_republish.py` | **58, 131 (`_host`)** | `CrossoverV2Refused`, **`_crossover_label`**, **`_candidate_summary`**, **`_state_lock`**, `load_v2_state`, `save_v2_state` | 60, 169, 171, 182, 205, 206, 269 |
+| `correction_crossover_backend.py` | 2097 | `crossover_v2_status_block` | 2099 |
+| `correction_crossover_flow.py` | 160 / 219 / 272 | `attach_stage2_preflight`, `reset_v2_journey_state`, `load_v2_state`, `observe_review_decline` | 169, 221, 277, 301 |
+| `jasper/cli/doctor/correction.py` | 593, 703 | `crossover_v2_status_block` + **all nine `GRADE_*` constants** | 596, 717, 758–819 |
+| `scripts/run-crossover-round.py` | **188 — top-level** | `VERIFY_STAGE_KEY`, `VERIFY_STAGE_POST_APPLY` | 877 |
+
+**Four consequences for sequencing.**
+
+1. **`correction_crossover_v2_republish.py` reaches four *private* names** —
+   `_crossover_label`, `_candidate_summary`, `_state_lock`, and the pair of
+   state readers. Rows AR, U, F and H therefore cannot move without moving
+   republish's reach with them. This is the tightest coupling in the file and
+   the easiest to miss, because nothing about a leading underscore suggests a
+   cross-module consumer.
+2. **The two providers *do* have a runtime edge**, at `relay:411` and
+   `wired:418` — 20 call sites between them, into rows G, W and AC. Only
+   `PositionGate` and `V2VolumeHooks` themselves are annotation-only. So row AF
+   (the class) is still cheap to extract, but `POSITION_GATE_TERMINAL_CODES`
+   (`:5059`) travels with it and **is** read at runtime by `relay:889`.
+3. **The grade vocabulary has a consumer outside the web tier entirely** —
+   `jasper-doctor` imports all nine `GRADE_*` constants. Row T's move to §2 is
+   not a web-internal refactor; it repoints a CLI diagnostic.
+4. **`scripts/run-crossover-round.py:188` is the only unconditional
+   module-level production import of this module anywhere.** Of the 20 import
+   sites, 17 are function-local and 2 more (`relay:49`, `wired:97`) sit at
+   module level but under `if TYPE_CHECKING:`. That one unguarded import is
+   what makes row B's 0.29 s numpy cost unavoidable for that script — and it
+   is the only place a module-scope import cycle could ever bite.
 
 ---
 
@@ -222,8 +261,10 @@ through it, ordered so that each step shrinks the next one's diff.
    **The three ordering sites in §3 must survive this step intact.**
 7. **Rows D, E, Z — capture-dump retention (W1-c).** Gated on the owner's
    `ENABLED` ruling; schedulable any time after that ruling exists.
-8. **Row AF — `PositionGate` to its own module.** Cheap at any point (two
-   `TYPE_CHECKING` lines); do it when convenient, not on the critical path.
+8. **Row AF — `PositionGate` to its own module.** Cheap at any point: two
+   `TYPE_CHECKING` lines for the class plus one runtime line for
+   `POSITION_GATE_TERMINAL_CODES` (`relay:889`). Do it when convenient, not on
+   the critical path.
 9. **Row A — the docstring is rewritten last**, describing what actually
    remains rather than what used to.
 
@@ -346,19 +387,24 @@ the interface half. The safety-critical half is row AH.
 Row U's own comment (`:2557-2558`) says the barrel exists because
 `prepare_v2_verify` reaches those names as module globals **and the stage-bridge
 suite names them off this module**. Five of the sixteen have no in-file consumer
-at all; three of those five exist purely so a test can reach them through this
-module:
+at all — but "no in-file consumer" is not "no consumer", and the difference
+matters per line:
 
-| Barrel line | Name | Who still reaches it *through this module* |
+| Barrel line | Name | Who reaches it *through this module* |
 |---|---|---|
-| `:2563` | `_candidate_summary` | `tests/test_crossover_v2_conductor.py:10094`, `:10115`, `:10132` |
+| `:2563` | `_candidate_summary` | **`correction_crossover_v2_republish.py:182` — production.** Plus `tests/test_crossover_v2_conductor.py:10094`, `:10115`, `:10132`. |
 | `:2566` | `verify_measured_curve_from_state` | `tests/test_crossover_v2_stage_bridge.py` — 5 sites, `:1193`–`:1364` |
 | `:2561` | `_decimate_delta` | `tests/test_crossover_v2_stage_bridge.py:1759`, `:1779` |
 | `:2562` | `_decimate_verify_measured` | **nobody.** `tests/test_active_speaker_crossover_v2_round_views.py:284-286` imports it from `durable_state` directly. |
 | `:2565` | `_delta_probe_summary` | **nobody.** Its only other mention in the tree is a comment at `tests/test_crossover_envelope_v2.py:1079`. |
 
 **`:2562` and `:2565` are two orphan lines deletable today**, no repointing,
-no work item — a free two-line down-payment on step 2.
+no work item — a free two-line down-payment on step 2. **`:2563` is the
+opposite** and is the trap in this row: a private, underscored name that reads
+as internal but carries a live production consumer in another module. Deleting
+the barrel without repointing `republish:182` breaks the republish path, and no
+test will tell you, because the tests reach the same name through the same
+door.
 
 Row B's `X as X` block carries
 the same note at `:146-148`: *"this HOST calls `build_v2_run_and_consume`,
