@@ -218,6 +218,71 @@ def _take_autolevel_claim() -> Any:
     return claim
 
 
+#: The level-match session-measurement claim: taken by the ramp's first write,
+#: moved by every write after it, re-asserted before each sweep, and released
+#: by the restore that gives the household its level back.
+#:
+#: It OUTLIVES the request that took it for the same reason ``_AUTOLEVEL_CLAIM``
+#: does — the domain forces the lifetime. The ramp locks a measurement level,
+#: later sweeps play at it across separate requests, and only the restore ends
+#: it. Module-scoped follows this file's own idiom (``_LEVEL_LEASE``,
+#: ``session_volume_plan()``), and a process exit mid-journey strands the claim
+#: exactly as it already stranded the fader — #3038's pre-existing class made
+#: legible in the owner's ledger, not a new failure mode.
+_LEVEL_MATCH_CLAIM: Any = None
+
+
+async def _assert_level_match_level(db: float) -> bool:
+    """Take the level-match claim, or MOVE it — never a second one.
+
+    The ramp's first write acquires; every write after it, and every
+    before-sweep re-assertion, relevels the held claim. Release-then-reacquire
+    would settle to the household level between steps, which is the loud
+    direction with a tone playing.
+
+    Returns whether the level is established, because that is what
+    ``ensure_level_match_volume`` and the ramp both already branch on. A
+    refusal — including a ``VolumeClaimConflict`` from a measurement claim
+    another journey still holds — is disclosed and answered ``False`` rather
+    than raised, so the existing "could not establish" paths carry it.
+    """
+
+    global _LEVEL_MATCH_CLAIM
+    from jasper.volume_owner import (
+        ClaimKind,
+        VolumeClaimRefused,
+        volume_owner,
+    )
+
+    owner = volume_owner()
+    if owner is None:
+        log_event(
+            logger,
+            "correction.level_match_owner_absent",
+            level=logging.CRITICAL,
+        )
+        return False
+    try:
+        if _LEVEL_MATCH_CLAIM is None:
+            _LEVEL_MATCH_CLAIM = await owner.acquire_level(
+                ClaimKind.SESSION_MEASUREMENT, float(db)
+            )
+        else:
+            _LEVEL_MATCH_CLAIM = await owner.relevel(
+                _LEVEL_MATCH_CLAIM, float(db)
+            )
+    except VolumeClaimRefused as exc:
+        log_event(
+            logger,
+            "correction.level_match_level_refused",
+            level=logging.ERROR,
+            to_db=f"{float(db):.1f}",
+            reason=type(exc).__name__,
+        )
+        return False
+    return True
+
+
 def _household_level_door() -> Any:
     """The owner's household-level door, for the level-match restores.
 
@@ -227,6 +292,12 @@ def _household_level_door() -> Any:
     doors carry that contract once (bound ``best_effort=True`` at
     registration), which is the actual win: the flag stops being a per-site
     decision that can drift.
+
+    It is also where the level-match measurement claim ENDS. When the ramp's
+    claim is still held — the ordinary case, since the level it locked is what
+    the sweeps played at — the release and the re-declaration are ONE call, so
+    the fader lands on the household level in a single write instead of
+    stepping through whatever was declared before it.
 
     A missing owner is a registration defect — ``web/__main__.main`` installs
     one before serving — so this discloses at CRITICAL and hands back a door
@@ -239,7 +310,16 @@ def _household_level_door() -> Any:
 
     owner = volume_owner()
     if owner is not None:
-        return owner.declare_household_level_db
+
+        async def _return_household(db: float) -> bool:
+            global _LEVEL_MATCH_CLAIM
+            claim, _LEVEL_MATCH_CLAIM = _LEVEL_MATCH_CLAIM, None
+            if claim is not None:
+                await owner.release(claim, household_level_db=float(db))
+                return True
+            return await owner.declare_household_level_db(float(db))
+
+        return _return_household
 
     async def _no_owner(_db: float) -> bool:
         log_event(
@@ -2037,7 +2117,7 @@ def _run_relay_measurement_sweep(
 
         async with coordinator.measurement_window():
             if not await sess.ensure_level_match_volume(
-                lambda db: cam.set_volume_db(db, best_effort=False)
+                _assert_level_match_level
             ):
                 raise RuntimeError(
                     "the saved measurement level is unavailable; run the level "
@@ -4615,7 +4695,7 @@ def _handle_relay_verify(handler: BaseHTTPRequestHandler) -> dict[str, Any]:
 
             async with coordinator.measurement_window():
                 if not await sess.ensure_level_match_volume(
-                    lambda db: cam.set_volume_db(db, best_effort=False)
+                    _assert_level_match_level
                 ):
                     raise RuntimeError(
                         "the verification level is no longer active; run the "
@@ -5182,13 +5262,12 @@ async def _run_relay_level_match(
                     return float(value)
 
                 async def _set_volume(db: float) -> None:
-                    try:
-                        applied = await cam.set_volume_db(db, best_effort=False)
-                    except CamillaUnavailable as exc:
-                        raise RuntimeError(
-                            "CamillaDSP is unavailable during crossover leveling"
-                        ) from exc
-                    if applied is False:
+                    # The ramp's writes ARE the level-match claim: the first
+                    # takes it, the rest move it. The owner's doors do not
+                    # raise (FADER_IO_ERRORS), so the CamillaUnavailable arm
+                    # this replaced has no counterpart -- a level that cannot
+                    # be established comes back as False.
+                    if not await _assert_level_match_level(db):
                         raise RuntimeError(
                             "CamillaDSP rejected the measurement volume"
                         )

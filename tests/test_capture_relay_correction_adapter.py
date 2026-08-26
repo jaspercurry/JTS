@@ -703,6 +703,29 @@ def test_relay_repeat_sweep_uses_repeat_state_machine_and_progress(monkeypatch):
     ]
 
 
+def _own_the_relay_fader(cam):
+    """Install the process fader owner over this test's Camilla double.
+
+    The crossover level-match ramp holds a session-measurement CLAIM since
+    wave 5b, so its writes arrive through the owner's doors rather than
+    through `correction_setup._camilla()`. Binding those doors to the SAME
+    double keeps the double the record of what reached the fader.
+
+    `tests/conftest.py`'s `_isolate_process_volume_owner` clears the
+    registration after each test, so this needs no teardown.
+    """
+    from jasper.web import correction_setup
+    from jasper.volume_owner import VolumeOwner, install_volume_owner
+
+    correction_setup._LEVEL_MATCH_CLAIM = None
+    install_volume_owner(
+        VolumeOwner(
+            set_fader_db=lambda db: cam.set_volume_db(db, best_effort=True),
+            get_fader_db=lambda: cam.get_volume_db(best_effort=True),
+        )
+    )
+
+
 @pytest.mark.parametrize(
     ("post_ramp_mismatch", "commit_allowed"),
     ((False, True), (True, True), (False, False)),
@@ -801,12 +824,15 @@ async def test_relay_level_adapter_samples_ambient_before_strict_volume_write(
     writes = []
 
     class Cam:
+        def __init__(self):
+            self.db = -32.0
+
         async def get_volume_db(self, *, best_effort):
-            assert best_effort is False
-            return -32.0
+            return self.db
 
         async def set_volume_db(self, db, *, best_effort):
             writes.append((db, best_effort))
+            self.db = float(db)
             return True
 
     class Tone:
@@ -820,7 +846,9 @@ async def test_relay_level_adapter_samples_ambient_before_strict_volume_write(
     async def window():
         yield
 
-    monkeypatch.setattr(correction_setup, "_camilla", lambda: Cam())
+    cam = Cam()
+    monkeypatch.setattr(correction_setup, "_camilla", lambda: cam)
+    _own_the_relay_fader(cam)
     monkeypatch.setattr(coordinator, "measurement_window", window)
     tone_kwargs = {}
 
@@ -882,7 +910,10 @@ async def test_relay_level_adapter_samples_ambient_before_strict_volume_write(
         assert sess.input_device is None
     else:
         assert sess.input_device["label"] == "USB measurement mic"
-    assert writes == [(-41.0, False)]
+    # best_effort is the OWNER's contract now, not this call site's: its
+    # doors report failure instead of raising (volume_latch.FADER_IO_ERRORS),
+    # and the ramp turns a False answer into its own refusal.
+    assert writes == [(-41.0, True)]
     from jasper.audio_measurement.excitation import (
         AUTOMATIC_MEASUREMENT_STIMULUS_PEAK_DBFS,
     )
@@ -966,10 +997,14 @@ class _BoundLevelMatchHarness:
         from jasper.web import correction_setup
 
         class Cam:
+            def __init__(self):
+                self.db = -32.0
+
             async def get_volume_db(self, *, best_effort):
-                return -32.0
+                return self.db
 
             async def set_volume_db(self, db, *, best_effort):
+                self.db = float(db)
                 return True
 
         class Tone:
@@ -983,7 +1018,9 @@ class _BoundLevelMatchHarness:
         async def window():
             yield
 
-        monkeypatch.setattr(correction_setup, "_camilla", lambda: Cam())
+        cam = Cam()
+        monkeypatch.setattr(correction_setup, "_camilla", lambda: cam)
+        _own_the_relay_fader(cam)
         monkeypatch.setattr(coordinator, "measurement_window", window)
         monkeypatch.setattr(playback, "_ensure_tone_wav", lambda **_k: "tone.wav")
         monkeypatch.setattr(playback, "TonePlayer", lambda _path: Tone())

@@ -6361,3 +6361,78 @@ class _FakeCam:
 
     async def get_volume_db(self, best_effort=False):
         return -40.0
+
+
+def test_the_level_match_claim_is_taken_once_moved_and_released():
+    """W12's level-match half as ONE cross-request claim.
+
+    Three writers share it — the ramp's own setter, the before-sweep
+    re-assertion, and the restore that ends it. Taken once, MOVED after, and
+    released by the restore in a single write.
+
+    A household level is declared first on purpose: without one a release
+    settles to nothing and writes nothing, so a release-per-step regression
+    would be invisible and the mutant would pass clean. With one, any
+    reacquire strobes through -15.0 and the sequence assertion catches it.
+    """
+    from jasper.volume_owner import VolumeOwner, install_volume_owner
+
+    written: list[float] = []
+    live = {"db": 0.0}
+
+    async def _set(db: float) -> bool:
+        live["db"] = float(db)
+        written.append(float(db))
+        return True
+
+    async def _get() -> float:
+        return live["db"]
+
+    owner = VolumeOwner(set_fader_db=_set, get_fader_db=_get)
+    install_volume_owner(owner)
+    asyncio.run(owner.declare_household_level_db(-15.0))
+    written.clear()
+    correction_setup._LEVEL_MATCH_CLAIM = None
+
+    async def _drive() -> None:
+        for db in (-40.0, -39.0, -38.0):
+            assert await correction_setup._assert_level_match_level(db) is True
+        assert await correction_setup._assert_level_match_level(-38.0) is True
+        assert await correction_setup._household_level_door()(-15.0) is True
+
+    asyncio.run(_drive())
+
+    # The re-assertion at the level already held writes NOTHING: every
+    # settle reads first, so arbitration is not churn. That is the owner's
+    # property, and routing inherits it instead of re-sending the level.
+    assert written == [-40.0, -39.0, -38.0, -15.0]
+    assert correction_setup._LEVEL_MATCH_CLAIM is None
+    assert owner.declared_level_db() == -15.0
+
+
+def test_a_refused_level_match_level_is_answered_not_raised():
+    """`ensure_level_match_volume` and the ramp both branch on the answer, so a
+    claim that cannot be established comes back False. A conflict with a
+    measurement claim another journey still holds takes the same path."""
+    from jasper.volume_owner import (
+        ClaimKind,
+        VolumeOwner,
+        install_volume_owner,
+    )
+
+    live = {"db": 0.0}
+
+    async def _set(db: float) -> bool:
+        live["db"] = float(db)
+        return True
+
+    async def _get() -> float:
+        return live["db"]
+
+    owner = VolumeOwner(set_fader_db=_set, get_fader_db=_get)
+    install_volume_owner(owner)
+    correction_setup._LEVEL_MATCH_CLAIM = None
+    asyncio.run(owner.acquire_level(ClaimKind.SESSION_MEASUREMENT, -30.0))
+
+    assert asyncio.run(correction_setup._assert_level_match_level(-20.0)) is False
+    assert correction_setup._LEVEL_MATCH_CLAIM is None

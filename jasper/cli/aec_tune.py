@@ -303,13 +303,19 @@ def _camilla_get_volume() -> float:
 
 
 def _camilla_set_volume(db: float) -> None:
-    """Set the main fader through the tree's one clamped door.
+    """Declare the main fader's level through the tree's one owner.
 
-    ``CamillaController.set_volume_db`` runs every write through
-    ``_coerce_main_volume_db``, so this path now sees the 0 dB ceiling that
-    ``devices.volume_limit`` states in the config. It did not before: this
-    module built its own ``CamillaClient`` and wrote ``set_main_volume``
-    directly, which made two hardware doors out of one clamp.
+    ``CamillaController.set_volume_db`` already ran every write through
+    ``_coerce_main_volume_db``, so this path has seen the 0 dB ceiling since
+    the two hardware doors became one. W18's remainder was the OWNER: this
+    module still wrote the fader beside the arbiter rather than through it.
+
+    A DECLARATION rather than a claim, and the reason is this process's shape.
+    ``main()`` brackets a duck and a restore across two separate
+    ``asyncio.run`` calls, so a claim held between them would outlive the loop
+    it was taken on. Nothing else writes the fader in a one-shot CLI, so there
+    is nothing to arbitrate against — what routing buys here is the single
+    door and its ``best_effort`` contract, not ranking.
 
     Still fail-closed on the readback, and the clamp makes that stricter
     rather than looser — a request above the ceiling lands at the ceiling and
@@ -319,11 +325,25 @@ def _camilla_set_volume(db: float) -> None:
     if not math.isfinite(db):
         raise CamillaVolumeError(f"refusing non-finite Camilla volume: {db!r}")
 
-    async def write(controller: CamillaController) -> float | None:
-        await controller.set_volume_db(db)
+    from jasper.volume_owner import volume_owner
+
+    owner = volume_owner()
+    if owner is None:
+        raise CamillaVolumeError(
+            "the speaker volume owner is not registered in this process"
+        )
+
+    async def read_back(controller: CamillaController) -> float | None:
         return await controller.get_volume_db()
 
-    actual = asyncio.run(_with_controller(write))
+    async def write() -> float | None:
+        # The write is the owner's; the readback stays a direct read, because
+        # a read is not a writer and this function's contract is to name the
+        # exact number it saw.
+        await owner.declare_household_level_db(db)
+        return await _with_controller(read_back)
+
+    actual = asyncio.run(write())
     if actual is None or not math.isfinite(actual):
         raise CamillaVolumeError(
             f"Camilla volume readback is not finite after setting {db:.2f} dB"
@@ -838,6 +858,13 @@ def main() -> int:
         level=logging.INFO,
         format="%(asctime)s aec-tune %(levelname)s %(message)s",
     )
+    # This CLI ducks and restores the main fader, so it needs the process
+    # owner those writes go through. Registered here for the OWNER rather than
+    # for a graph swap — see tests/test_canonical_target_registration.py, whose
+    # table now carries both reasons.
+    from jasper.volume_coordinator import install_env_canonical_target_provider
+
+    install_env_canonical_target_provider()
     status = 1
     services_to_restore: list[str] = []
     restore_volume: float | None = None
