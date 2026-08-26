@@ -55,7 +55,7 @@ from typing import Any, Callable, Iterable, Mapping
 from .contracts import DESIGN_AXIS_DEG, POSITION_AXIS_VERTICAL
 from .measure_spec import CapabilityStub, MeasureSpec, stubbed_capabilities
 from .playback_transaction import PlaybackOutcome
-from .prior_bank import PriorBank
+from .prior_bank import CapturePose, PriorBank
 from .session_seams import EngineSeams
 
 __all__ = [
@@ -443,11 +443,20 @@ class TuningSession:
         half: the capability holes this session hit, reported rather than
         skipped.
 
-        **A prior bank's holes are reported too, and first.** A round's evidence
-        is both sides of it, so a "before" that was never captured is a hole in
-        what this session can claim even though this session did not hit it.
-        Prior first because it happened first; a hole both sides hit is named
-        once, and the side that banked a capture for it wins.
+        **A prior bank's own disclosures are reported too, and first.** They are
+        the capability holes the PRIOR session hit, re-rendered in this build's
+        wording, because a round's evidence is both sides of it. Prior first
+        because it happened first; a hole both sides hit is named once, and the
+        side that banked a capture for it wins.
+
+        **OWED, and not built here: a MISSING "before" is not disclosed.** A
+        session with no prior, or a capture whose pose the prior never
+        baselined, reports nothing about it — the record says so in its empty
+        ``baseline_record_id`` and this verb stays silent. That disclosure
+        belongs with the verdict analysis that would consume the comparand, and
+        it lands in the wave that builds it. Naming a missing input is §1's
+        rule; this method does not keep it yet, and says so rather than
+        implying it does.
         """
         prior = self.prior.disclosures if self.prior is not None else ()
         return AnalyzeOutcome(
@@ -479,14 +488,12 @@ class TuningSession:
         would be a way to lose it. This verb writes the session-level state that
         accounts for them.
 
-        **What it writes is exactly what :meth:`~.prior_bank.PriorBank.read`
-        reads back**, which is the whole reason a later session can grade
-        against this one. Two of the keys are shaped by that round trip: a
-        disclosure is written as its code AND whether the capture happened,
-        because those are two different facts to the analysis that reads the
-        bank; and ``prior_state_id`` chains this session to the bank it
-        measured against, so a round's evidence is walkable from either end
-        without a second index.
+        **The five keys it writes are exactly what
+        :meth:`~.prior_bank.PriorBank.read` reads back**, which is the whole
+        reason a later session can grade against this one. One of them is
+        shaped by that round trip: a disclosure is written as its code AND
+        whether the capture happened, because those are two different facts to
+        the analysis that reads the bank.
 
         The prior's own disclosures are NOT copied in. This state says what
         THIS session disclosed; what the round as a whole cannot claim is
@@ -498,7 +505,6 @@ class TuningSession:
             "graph_fingerprint": self._graph_fingerprint,
             "measurement_level_db": self.measurement_level_db,
             "record_ids": ids,
-            "prior_state_id": self.prior.state_id if self.prior else "",
             "disclosures": tuple(
                 {"code": stub.code, "captured": stub.captured}
                 for stub in self._disclosures
@@ -630,6 +636,21 @@ class TuningSession:
             return None
         return float(reading)
 
+    def _baseline_for(
+        self,
+        spec: MeasureSpec,
+        bearing: int | None,
+        stimulus_dbfs: float | None,
+    ) -> str:
+        """The prior's "before" at this capture's own pose, or ``""``."""
+        if self.prior is None:
+            return ""
+        return self.prior.baseline_for(CapturePose(
+            position_axis=spec.position_axis,
+            position_deg=bearing,
+            stimulus_dbfs=stimulus_dbfs,
+        ))
+
     def _disclose(self, stubs: tuple[CapabilityStub, ...]) -> None:
         """Add each hole this session hit, once — see :func:`_merge_disclosures`."""
         self._disclosures[:] = _merge_disclosures([*self._disclosures, *stubs])
@@ -664,20 +685,25 @@ class TuningSession:
         single source of truth and the index stays rebuildable by rescanning
         them.
 
-        ``baseline_record_id`` is the "before" this capture is meant to be
+        ``baseline_record_id`` is the "before" THIS capture is meant to be
         compared against, named on the record rather than left for a reader to
         infer. It is what makes a verdict re-computable offline forever
         (ruling S3): a capture that carries its own comparand needs one hop to
         grade, where a capture that only carried its session id would need the
         reader to find that session's state first and re-derive the pairing.
-        ``""`` for a session with no prior, which is an honest fact about the
-        capture and never a refusal to bank it.
+
+        Resolved **per capture, by pose** — the prior's baseline at this
+        bearing, on this axis, at this ladder rung. One walk is many poses, so a
+        bank-wide answer would stamp the prior's last pose onto every capture
+        and hand the verdict a comparand measured somewhere else. ``""`` where
+        the prior baselined no such pose, and ``""`` for a session with no
+        prior: an honest fact about the capture, never a refusal to bank it.
         """
         return {
             "session_id": self.session_id,
             "kind": spec.kind,
-            "baseline_record_id": (
-                self.prior.baseline_record_id if self.prior else ""
+            "baseline_record_id": self._baseline_for(
+                spec, bearing, stimulus_dbfs,
             ),
             "position_deg": bearing,
             "position_axis": spec.position_axis,

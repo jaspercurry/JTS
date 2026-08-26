@@ -13,8 +13,9 @@ already discloses, is designed there."*
 **The shape, in one sentence: a prior bank is ``save``'s inverse.**
 :meth:`~.session.TuningSession.save` writes five keys — session id, declared
 level, graph fingerprint, banked record ids, disclosures — and this reads
-exactly those five back, plus the one fact derived from them that a
-candidate-check needs: **which banked record is the "before".**
+exactly those five back, plus the one thing derived from them that a
+candidate check needs: **which banked record is the "before" AT THIS POSE.**
+Per pose and never per bank — see :class:`CapturePose`.
 
 **Why a session cannot just be re-opened.** A tuning round crosses a process
 boundary and an irreversible act: stage 1 measures the entry baseline
@@ -50,40 +51,64 @@ from .measure_spec import CapabilityStub, stub_for_code
 if TYPE_CHECKING:  # pragma: no cover - typing only
     from .session_seams import RecordStore
 
-__all__ = ["PriorBank"]
+__all__ = ["CapturePose", "PriorBank", "pose_of"]
+
+
+@dataclass(frozen=True)
+class CapturePose:
+    """WHERE a capture was taken and at WHAT stimulus level.
+
+    The three banked facts that decide whether two captures are of the same
+    thing, so a before and an after can be paired. Not a place on its own: a
+    level ladder measures one bearing at several stimulus levels, and pairing
+    across rungs would difference a quiet capture against a loud one.
+
+    A value rather than three arguments because the match IS an equality — a
+    pose either is this one or is not — and three hand-compared fields is where
+    a fourth one gets forgotten.
+    """
+
+    position_axis: str
+    position_deg: int | None
+    stimulus_dbfs: float | None
 
 
 @dataclass(frozen=True)
 class PriorBank:
-    """One previous session's banked evidence, and the store that holds it.
+    """One previous session's banked evidence, read back as a value.
 
     Constructed by :meth:`read` and never by hand: the fields are what a
     ``save`` wrote, so minting one from literals would assert a bank exists
-    that does not.
+    that does not. Nothing here holds the store — the whole bank is read in one
+    pass at construction, so a bank cannot answer differently twice.
 
-    ``baseline_record_id`` is the LAST record of kind
-    :data:`~.contracts.MEASURE_KIND_BASELINE` in the bank, and ``""`` when the
-    bank holds none. Last rather than first, because the entry baseline's whole
-    justification is *"immediately before apply"* — every capture that followed
-    it would be room, microphone and household drift landing inside the
-    before→after bracket — so the baseline nearest the end of the session is
-    the one nearest the act being graded.
+    ``baselines`` maps each :class:`CapturePose` the prior measured a baseline
+    at to that baseline's record id, and :meth:`baseline_for` is the only way
+    in. **Per POSE, never per bank:** a prior that walked three poses in one
+    ``measure`` call banked three "befores", and a single bank-wide answer would
+    stamp the last pose's baseline onto a capture taken somewhere else — a
+    verdict differencing +30° against −30° and calling the difference the
+    correction. The same holds across a level ladder's rungs.
 
-    ``measurement_level_db`` and ``graph_fingerprint`` are carried because a
-    before→after claim is only as good as the drive level and the graph
-    matching on both sides — ruling S8's *"same drive voltage, nothing touched
-    between measurements"* and ``entry_baseline_record``'s own *"a before→after
-    claim is only as good as those three matching on both sides."* This type
-    reports them; comparing them is ``analyze``'s.
+    Later wins when one pose was measured twice: a retake supersedes the attempt
+    it followed, and the baseline nearest the act being graded is the one
+    *"immediately before apply"* means.
+
+    ``measurement_level_db`` is carried because ruling S8's recipe turns on it —
+    *"same drive voltage across every per-driver measurement, no gain touched
+    between them"* — so a before and an after taken at different declared levels
+    are not comparable. ``graph_fingerprint`` is provenance, and deliberately
+    NOT a comparability field: the two sides of a round are measured through
+    different graphs, because applying one is the act being graded. This type
+    reports both; deciding what to do about a level that differs is ``analyze``'s.
     """
 
-    store: "RecordStore"
     state_id: str
     session_id: str
     measurement_level_db: float | None
     graph_fingerprint: str
     record_ids: tuple[str, ...]
-    baseline_record_id: str
+    baselines: Mapping[CapturePose, str]
     disclosures: tuple[CapabilityStub, ...]
 
     @classmethod
@@ -93,51 +118,58 @@ class PriorBank:
         ``None`` rather than a raise, for the reason
         :meth:`~.session_seams.RecordStore.read` gives: a missing prior is a
         fact a session discloses, not an exception that strands a household
-        whose only remaining move is the round being refused (ruling S10). A
-        state id that no longer resolves, and a state written by a build before
-        this key shipped, are the same answer.
+        whose only remaining move is the round being refused (ruling S10).
 
-        The baseline is resolved here rather than on demand so that one
-        constructed bank is one consistent reading. It scans from the END
-        backwards and stops at the first baseline-kind record, which is one
-        store read in the ordinary case.
+        Every banked record is read once, here, so the pose index is one
+        consistent reading of one bank and a walk costs no store reads per
+        capture.
         """
         state = store.read_state(state_id)
         if state is None:
             return None
         record_ids = _texts(state.get("record_ids"))
         return cls(
-            store=store,
             state_id=state_id,
             session_id=str(state.get("session_id") or ""),
             measurement_level_db=_number(state.get("measurement_level_db")),
             graph_fingerprint=str(state.get("graph_fingerprint") or ""),
             record_ids=record_ids,
-            baseline_record_id=_last_of_kind(
-                store, record_ids, MEASURE_KIND_BASELINE,
-            ),
+            baselines=_baselines_by_pose(store, record_ids),
             disclosures=_disclosures(state.get("disclosures")),
         )
 
-    def baseline(self) -> Mapping[str, Any] | None:
-        """The banked "before" record, or ``None`` when the bank holds none.
+    def baseline_for(self, pose: CapturePose) -> str:
+        """The id of the "before" taken at THIS pose, or ``""`` for none.
 
-        The read half of the verify seam's middle argument —
-        ``(applied_candidate, entry_baseline, capture) → verdict``.
+        ``""`` is an honest answer and never a refusal: a prior that measured
+        two of this session's three poses leaves the third capture saying it has
+        no comparand, which is what it has.
         """
-        if not self.baseline_record_id:
-            return None
-        return self.store.read(self.baseline_record_id)
+        return self.baselines.get(pose, "")
 
 
-def _last_of_kind(
-    store: "RecordStore", record_ids: tuple[str, ...], kind: str,
-) -> str:
-    for record_id in reversed(record_ids):
+def _baselines_by_pose(
+    store: "RecordStore", record_ids: tuple[str, ...],
+) -> Mapping[CapturePose, str]:
+    """Each pose the prior baselined, against the LAST id that baselined it."""
+    found: dict[CapturePose, str] = {}
+    for record_id in record_ids:
         record = store.read(record_id)
-        if record is not None and record.get("kind") == kind:
-            return record_id
-    return ""
+        if record is None or record.get("kind") != MEASURE_KIND_BASELINE:
+            continue
+        found[pose_of(record)] = record_id
+    return found
+
+
+def pose_of(record: Mapping[str, Any]) -> CapturePose:
+    """One banked record's pose, read off the fields it already carries."""
+    degrees = record.get("position_deg")
+    level = record.get("stimulus_dbfs")
+    return CapturePose(
+        position_axis=str(record.get("position_axis") or ""),
+        position_deg=None if degrees is None else int(degrees),
+        stimulus_dbfs=None if level is None else float(level),
+    )
 
 
 def _texts(value: Any) -> tuple[str, ...]:

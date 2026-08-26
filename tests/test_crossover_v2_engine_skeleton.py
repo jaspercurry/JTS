@@ -47,7 +47,7 @@ from jasper.active_speaker.crossover_v2.measure_spec import (
     stub_for_code,
     stubbed_capabilities,
 )
-from jasper.active_speaker.crossover_v2.prior_bank import PriorBank
+from jasper.active_speaker.crossover_v2.prior_bank import CapturePose, PriorBank
 from jasper.active_speaker.crossover_v2.playback_transaction import (
     PLAYBACK_STAGES,
     STAGE_ADMIT,
@@ -932,24 +932,32 @@ def test_save_persists_the_session_state_over_the_records_measure_banked():
 # --------------------------------------------------------------------------- #
 
 
-def _banked(records: _Records, *specs: MeasureSpec) -> str:
-    """Run a whole session over ``records`` and return the state id it saved."""
+def _banked(records: _Records, *specs: MeasureSpec) -> tuple[str, TuningSession]:
+    """Run a whole session over ``records``; return its state id and the session."""
     session, _parts = _session(records=records)
     with session:
         for spec in specs:
             session.measure(spec)
-    return session.save().state_id
+    return session.save().state_id, session
+
+
+def _pose(record: Mapping[str, Any]) -> CapturePose:
+    return CapturePose(
+        position_axis=record["position_axis"],
+        position_deg=record["position_deg"],
+        stimulus_dbfs=record["stimulus_dbfs"],
+    )
 
 
 def test_a_prior_bank_is_exactly_what_save_wrote_read_back_again():
     """The round trip, which is the type's whole contract.
 
-    Every key ``save`` writes is asserted against the value the session held,
-    not against a literal, so this cannot pass by agreeing with a constant the
-    writer never produced.
+    Every field is asserted against the session that wrote it or against the
+    store's own record list — never against a literal — so this cannot pass by
+    agreeing with a constant the writer never produced.
     """
     records = _Records()
-    state_id = _banked(
+    state_id, wrote = _banked(
         records,
         MeasureSpec(kind=MEASURE_KIND_BASELINE, regime=REGIME_NEAR_FIELD),
         MeasureSpec(kind=MEASURE_KIND_BASELINE, positions=(22,)),
@@ -959,10 +967,11 @@ def test_a_prior_bank_is_exactly_what_save_wrote_read_back_again():
 
     assert bank is not None
     assert bank.state_id == state_id
-    assert bank.session_id == "s1"
-    assert bank.measurement_level_db == -20.0
-    assert bank.graph_fingerprint == "graph-abc"
-    assert bank.record_ids == ("rec-1", "rec-2")
+    assert bank.session_id == wrote.session_id
+    assert bank.measurement_level_db == wrote.measurement_level_db
+    assert bank.graph_fingerprint == wrote.graph_fingerprint
+    assert bank.record_ids == wrote.banked_record_ids
+    assert bank.disclosures == wrote.analyze().disclosures
     assert bank.disclosures == (
         stub_for_code(NEAR_FIELD_SPLICE_NOT_IMPLEMENTED, captured=True),
     )
@@ -977,38 +986,107 @@ def test_a_state_id_the_store_cannot_resolve_reads_as_no_prior():
     assert PriorBank.read(_Records(), "state-99") is None
 
 
-def test_the_before_is_the_last_baseline_the_prior_session_banked():
-    """Position, not membership — the entry baseline's whole justification.
+def test_a_pose_measured_twice_resolves_to_the_later_baseline():
+    """A retake supersedes the attempt it followed.
 
-    "Immediately before apply" is what makes the before→after bracket honest;
-    a bank that picked the FIRST baseline would grade against a curve with a
-    whole session of room, microphone and household drift after it.
+    "Immediately before apply" is what makes the before→after bracket honest,
+    so when one pose carries two baselines the nearer one wins. This is a
+    tiebreak WITHIN a pose and never across poses — see the walk below.
     """
     records = _Records()
-    state_id = _banked(
+    state_id, _wrote = _banked(
         records,
-        MeasureSpec(kind=MEASURE_KIND_BASELINE, positions=(-22,)),
-        MeasureSpec(kind=MEASURE_KIND_CANDIDATE),
+        MeasureSpec(kind=MEASURE_KIND_BASELINE, positions=(22,)),
+        MeasureSpec(kind=MEASURE_KIND_CANDIDATE, positions=(22,)),
         MeasureSpec(kind=MEASURE_KIND_BASELINE, positions=(22,)),
     )
 
     bank = PriorBank.read(records, state_id)
 
     assert bank is not None
-    assert bank.baseline_record_id == "rec-3"
-    assert bank.baseline()["position_deg"] == 22
+    assert bank.baseline_for(_pose(records.banked[0])) == "rec-3"
 
 
-def test_a_bank_with_no_baseline_names_none_rather_than_guessing():
-    """A round with no "before" says so; it does not promote a candidate."""
+def test_a_pose_the_prior_never_baselined_has_no_before():
+    """A round with no comparable "before" says so; it does not promote one.
+
+    Neither a candidate capture at the same pose nor a baseline at a different
+    one is this capture's comparand.
+    """
     records = _Records()
-    state_id = _banked(records, MeasureSpec(kind=MEASURE_KIND_CANDIDATE))
+    state_id, _wrote = _banked(
+        records,
+        MeasureSpec(kind=MEASURE_KIND_CANDIDATE, positions=(22,)),
+        MeasureSpec(kind=MEASURE_KIND_BASELINE, positions=(-22,)),
+    )
 
     bank = PriorBank.read(records, state_id)
 
     assert bank is not None
-    assert bank.baseline_record_id == ""
-    assert bank.baseline() is None
+    assert bank.baseline_for(_pose(records.banked[0])) == ""
+
+
+def test_each_capture_of_one_walk_names_the_before_taken_at_ITS_pose():
+    """The whole reason the comparand is resolved per capture and not per bank.
+
+    A prior that walked three poses in ONE ``measure`` call banked three
+    "befores". A bank-wide answer would stamp the LAST pose's baseline onto
+    every capture — so a verify at −22° would be differenced against a baseline
+    measured at +22°, and the verdict would report the room's off-axis
+    behaviour as the correction's effect.
+    """
+    records = _Records()
+    prior_id, _wrote = _banked(records, MeasureSpec(
+        kind=MEASURE_KIND_BASELINE, positions=(-22, 0, 22),
+    ))
+    before_at = {r["position_deg"]: f"rec-{i}"
+                 for i, r in enumerate(records.banked, start=1)}
+    assert len(before_at) == 3
+
+    session, parts = _session(
+        records=records, prior=PriorBank.read(records, prior_id),
+    )
+    with session:
+        session.measure(MeasureSpec(
+            kind=MEASURE_KIND_VERIFY, positions=(-22, 0, 22), candidate_id="c1",
+        ))
+
+    after = parts["records"].banked[3:]
+    assert [r["position_deg"] for r in after] == [-22, 0, 22]
+    assert [r["baseline_record_id"] for r in after] == [
+        before_at[-22], before_at[0], before_at[22],
+    ]
+
+
+def test_each_rung_of_a_ladder_names_the_before_taken_at_ITS_rung():
+    """The same rule on the axis a level ladder moves along.
+
+    One bearing, several stimulus levels. Pairing across rungs would difference
+    a quiet capture against a loud one and call the difference a correction —
+    which is why the rung is part of the pose rather than a field the match
+    ignores.
+    """
+    records = _Records()
+    prior_id, _wrote = _banked(records, MeasureSpec(
+        kind=MEASURE_KIND_BASELINE, level_ladder_dbfs=(-20.0, -12.0),
+    ))
+    before_at = {r["stimulus_dbfs"]: f"rec-{i}"
+                 for i, r in enumerate(records.banked, start=1)}
+    assert len(before_at) == 2
+
+    session, parts = _session(
+        records=records, prior=PriorBank.read(records, prior_id),
+    )
+    with session:
+        session.measure(MeasureSpec(
+            kind=MEASURE_KIND_VERIFY, level_ladder_dbfs=(-20.0, -12.0),
+        ))
+
+    after = parts["records"].banked[2:]
+    assert [r["stimulus_dbfs"] for r in after] == [-20.0, -12.0]
+    assert [r["baseline_record_id"] for r in after] == [
+        before_at[-20.0], before_at[-12.0],
+    ]
 
 
 def test_every_capture_names_the_before_it_will_be_graded_against():
@@ -1020,7 +1098,7 @@ def test_every_capture_names_the_before_it_will_be_graded_against():
     the pairing rather than reading it.
     """
     records = _Records()
-    prior_id = _banked(records, MeasureSpec(kind=MEASURE_KIND_BASELINE))
+    prior_id, _wrote = _banked(records, MeasureSpec(kind=MEASURE_KIND_BASELINE))
     bank = PriorBank.read(records, prior_id)
 
     session, parts = _session(prior=bank)
@@ -1028,7 +1106,7 @@ def test_every_capture_names_the_before_it_will_be_graded_against():
         session.measure(MeasureSpec(kind=MEASURE_KIND_VERIFY, candidate_id="c1"))
 
     banked = parts["records"].banked[0]
-    assert banked["baseline_record_id"] == bank.baseline_record_id == "rec-1"
+    assert banked["baseline_record_id"] == "rec-1"
     assert banked["candidate_id"] == "c1"
 
 
@@ -1054,7 +1132,7 @@ def test_analyze_reports_the_priors_holes_before_its_own_and_each_once():
     sessions tripped over it.
     """
     records = _Records()
-    prior_id = _banked(
+    prior_id, _wrote = _banked(
         records,
         MeasureSpec(kind=MEASURE_KIND_BASELINE, position_axis=POSITION_AXIS_VERTICAL),
         MeasureSpec(kind=MEASURE_KIND_BASELINE, regime=REGIME_NEAR_FIELD),
@@ -1082,7 +1160,7 @@ def test_a_hole_the_prior_could_not_capture_is_upgraded_when_this_session_does()
     there is.
     """
     records = _Records()
-    prior_id = _banked(records, MeasureSpec(
+    prior_id, _wrote = _banked(records, MeasureSpec(
         kind=MEASURE_KIND_BASELINE,
         regime=REGIME_NEAR_FIELD,
         position_axis=POSITION_AXIS_VERTICAL,
@@ -1125,28 +1203,6 @@ def test_a_banked_disclosure_this_build_cannot_describe_is_dropped(disclosures):
     state_id = records.persist({"record_ids": (), "disclosures": disclosures})
 
     assert PriorBank.read(records, state_id).disclosures == ()
-
-
-def test_save_chains_this_session_to_the_bank_it_measured_against():
-    """Walkable from either end, without a second index.
-
-    The prior's own disclosures are deliberately NOT copied forward: this state
-    says what THIS session disclosed, and what the round cannot claim is
-    ``analyze``'s answer over both banks.
-    """
-    records = _Records()
-    prior_id = _banked(records, MeasureSpec(
-        kind=MEASURE_KIND_BASELINE, regime=REGIME_NEAR_FIELD,
-    ))
-
-    session, _parts = _session(records=records, prior=PriorBank.read(records, prior_id))
-    with session:
-        session.measure(MeasureSpec(kind=MEASURE_KIND_VERIFY))
-    state_id = session.save().state_id
-
-    state = records.read_state(state_id)
-    assert state["prior_state_id"] == prior_id
-    assert state["disclosures"] == ()
 
 
 # --------------------------------------------------------------------------- #
