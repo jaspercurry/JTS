@@ -461,7 +461,7 @@ docs/                           Subsystem deep-dives ("HANDOFF" docs)
   HANDOFF-hotplug-resilience.md  Runtime mic/DAC attach-detach convergence (no crash-loop)
   HANDOFF-speaker-output-reference.md  Chosen output-owner / true speaker-reference direction
   HANDOFF-chip-aec-portability.md  DAC-portable chip-AEC: clock-recovery design + roadmap
-  HANDOFF-wake-telemetry.md     Triple-stream wake + per-event SQLite + funnel
+  HANDOFF-wake-telemetry.md     Wake-event store: schema, funnel, audio ring
   HANDOFF-xvf3800.md            Canonical reference for the XVF3800 mic
   HANDOFF-airplay.md       AirPlay glitch troubleshooting guide
   HANDOFF-apple-music.md   Apple Music integration research + plan (no code yet)
@@ -752,13 +752,12 @@ reference. Currently:
   a true `speaker_output_reference`, owns TTS/cue playout accounting,
   and enables robust barge-in during assistant speech.
 - [`HANDOFF-wake-telemetry.md`](docs/HANDOFF-wake-telemetry.md) —
-  Triple-stream wake-word detection (AEC ON + AEC OFF + DTLN, OR-gated)
-  plus SQLite-backed per-event telemetry with audio capture and
-  funnel tracking through to LLM response / tool call. Replaces
-  the synthetic phone-track wake-rate methodology with real
-  production-attempt data. Read for the schema, the per-PR
-  staging plan, and the design decisions (no real-time labelling,
-  no "I just said Jarvis" button, OR-gate fires immediately).
+  Operational spine for the wake-event store: what a fire records, the
+  funnel stages, the schema families and the rules for adding a column or
+  a leg, the 128 MiB audio ring and its derived doctor watchdog, and the
+  laptop-side corpus tooling. Decisions in ADR-0132–0134; the 2026-05 build
+  narrative in
+  [`historical/wake-telemetry-build-2026-05.md`](docs/historical/wake-telemetry-build-2026-05.md).
 - [`HANDOFF-xvf3800.md`](docs/HANDOFF-xvf3800.md) — Canonical
   reference for the Seeed ReSpeaker XVF3800 (USB UA) microphone:
   hardware identity, firmware variants, full parameter space, DFU
