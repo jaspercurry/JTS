@@ -19,6 +19,7 @@ source/role; the session plan carries an ``opened_at`` + wall-clock ceiling), so
 only the fader primitives are genuinely shared:
 
 * :func:`fader_matches` — the ONE "do these two fader dB values agree?" test.
+* :func:`read_fader_db` — the ONE "a usable number, or nothing" normalization.
 * :func:`set_and_confirm_volume` — set, then prove through a fresh readback.
 * :func:`hold_fader_at` — prove the fader still sits where a
   measurement session declared it, repairing a drift and refusing when the
@@ -84,10 +85,19 @@ EMERGENCY_MEASUREMENT_VOLUME_DB = -60.0
 SetMainVolumeDb = Callable[[float], Awaitable[Any]]
 GetMainVolumeDb = Callable[[], Awaitable[Any]]
 
-#: Errors a fader read/write is allowed to fail with. Named rather than blind:
-#: ``CamillaController`` already closes its own surface, and the callers wrap
-#: ``CamillaUnavailable`` into ``RuntimeError`` before it reaches here.
-_FADER_IO_ERRORS = (OSError, RuntimeError, TimeoutError, ValueError)
+#: Errors a fader read/write is allowed to fail with. Named rather than blind.
+#:
+#: **The door contract this states.** Every consumer here — and
+#: :class:`jasper.volume_owner.VolumeOwner`, which shares it rather than
+#: keeping a second copy — takes its setter and getter by injection, and those
+#: callables must report failure rather than raise a transport error of their
+#: own. In practice that means binding ``CamillaController``'s methods with
+#: ``best_effort=True``, which returns ``False``/``None`` instead of raising
+#: ``CamillaUnavailable``; that class is deliberately NOT in this tuple, and
+#: nothing in the tree wraps it into a ``RuntimeError`` on the way here.
+#: Naming ``CamillaUnavailable`` would mean importing ``jasper.camilla``, which
+#: both this leaf and the owner are imported BY.
+FADER_IO_ERRORS = (OSError, RuntimeError, TimeoutError, ValueError)
 
 
 class MeasurementFaderDrift(RuntimeError):
@@ -119,6 +129,24 @@ class MeasurementFaderDrift(RuntimeError):
         self.expected_db = float(expected_db)
         self.observed_db = None if observed_db is None else float(observed_db)
         self.context = context
+
+
+async def read_fader_db(get_main_volume_db: GetMainVolumeDb) -> float | None:
+    """One live read, normalized to "a usable number, or nothing".
+
+    The ONE place a fader reading is turned into ``float | None``, so
+    "could not read" has a single spelling. A ``None``, a bool, a non-numeric
+    or a non-finite reading all normalize to ``None``, and so does a raise from
+    :data:`FADER_IO_ERRORS` — every consumer here is fail-closed and an
+    unreadable fader must never render as a value.
+    """
+    try:
+        value = await get_main_volume_db()
+    except FADER_IO_ERRORS:
+        return None
+    if isinstance(value, bool) or not isinstance(value, (int, float)):
+        return None
+    return float(value) if math.isfinite(float(value)) else None
 
 
 def fader_matches(
@@ -162,7 +190,7 @@ async def set_and_confirm_volume(
         if applied is False:
             return False
         observed = await get_main_volume_db()
-    except _FADER_IO_ERRORS:
+    except FADER_IO_ERRORS:
         return False
     return fader_matches(observed, target_db, tolerance_db=tolerance_db)
 
@@ -228,17 +256,7 @@ async def hold_fader_at(
 
     target = float(expected_db)
 
-    async def _read() -> float | None:
-        """One live read, normalized to "a usable number, or nothing"."""
-        try:
-            value = await get_main_volume_db()
-        except _FADER_IO_ERRORS:
-            return None
-        if isinstance(value, bool) or not isinstance(value, (int, float)):
-            return None
-        return float(value) if math.isfinite(float(value)) else None
-
-    observed = await _read()
+    observed = await read_fader_db(get_main_volume_db)
     if observed is not None and fader_matches(
         observed, target, tolerance_db=tolerance_db
     ):
@@ -288,7 +306,7 @@ async def hold_fader_at(
     # Second, the PROOF is where the fader actually sits, not what the setter
     # returned: if it is at the target anyway, the level is established. Costs
     # one extra read only on the already-failing path.
-    proven = await _read()
+    proven = await read_fader_db(get_main_volume_db)
     if proven is None or not fader_matches(
         proven, target, tolerance_db=tolerance_db
     ):

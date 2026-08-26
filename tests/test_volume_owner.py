@@ -15,6 +15,8 @@ fader only through the injected door, so that clamp cannot be routed around.
 
 from __future__ import annotations
 
+import asyncio
+import contextlib
 import logging
 
 import pytest
@@ -32,6 +34,17 @@ HOUSEHOLD_DB = -21.212124
 MEASUREMENT_DB = -12.5
 
 
+class _DoorRaised(Exception):
+    """A door that raises something the fail-closed set does not name.
+
+    ``CamillaUnavailable`` is exactly this shape: an ``Exception`` outside
+    :data:`~jasper.active_speaker.volume_latch.FADER_IO_ERRORS`, which
+    ``set_and_confirm_volume`` therefore does not swallow. Holders are
+    contracted to bind ``best_effort=True`` doors so it never escapes; this is
+    what happens when one does not.
+    """
+
+
 class _Fader:
     """A fader that remembers every write, and can refuse or lie."""
 
@@ -43,9 +56,12 @@ class _Fader:
         self.ceiling: float | None = None
         self.readable = True
         self.raise_on_read = False
+        self.raise_on_write = False
 
     async def set(self, db: float) -> bool:
         self.writes.append(float(db))
+        if self.raise_on_write:
+            raise _DoorRaised("door is not best-effort bound")
         if not self.accept:
             return False
         if not self.lies:
@@ -61,7 +77,13 @@ class _Fader:
 
 
 def _owner(fader: _Fader) -> VolumeOwner:
-    return VolumeOwner(set_fader_db=fader.set, get_fader_db=fader.get)
+    # Looked up at CALL time, not captured: a test that swaps a door mid-flight
+    # must actually be swapping the door the owner uses. Production binds the
+    # same way, through the coordinator's own methods.
+    return VolumeOwner(
+        set_fader_db=lambda db: fader.set(db),
+        get_fader_db=lambda: fader.get(),
+    )
 
 
 async def _household(fader: _Fader) -> VolumeOwner:
@@ -460,6 +482,91 @@ async def test_a_refused_claim_hands_the_fader_back_instead_of_stranding_it():
 
     assert fader.db == HOUSEHOLD_DB
     assert owner.declared_level_db() == HOUSEHOLD_DB
+
+
+@pytest.mark.parametrize("taking", ["level", "duck"])
+async def test_a_door_that_raises_leaves_no_claim_stranded_in_the_ledger(
+    taking,
+):
+    """B1. A raise from the injected door must not leave a claim held.
+
+    The ledger entry goes in before the fader is touched, so an escape between
+    those two — the shape a door that raises instead of reporting produces —
+    used to leave a claim nobody holds. Every later arbitration then answered
+    against a level with no owner: the next duck would ride the dead claim's
+    level, and its release would land there rather than on the household one.
+    """
+    fader = _Fader()
+    owner = await _household(fader)
+    fader.raise_on_write = True
+
+    with pytest.raises(_DoorRaised):
+        if taking == "level":
+            await owner.acquire_level(
+                ClaimKind.SESSION_MEASUREMENT, MEASUREMENT_DB,
+            )
+        else:
+            await owner.acquire_duck(40.0)
+
+    assert owner.declared_level_db() == HOUSEHOLD_DB
+    assert owner.duck_depth_db() == 0.0
+
+    # ...and the ledger is not merely reported clean, it BEHAVES clean: a
+    # later duck cycle rides the household level and gives it back.
+    fader.raise_on_write = False
+    fader.db = HOUSEHOLD_DB
+    duck = await owner.acquire_duck(10.0)
+    assert fader.db == pytest.approx(HOUSEHOLD_DB - 10.0)
+    await owner.release(duck)
+    assert fader.db == pytest.approx(HOUSEHOLD_DB)
+
+
+async def test_prove_is_atomic_against_a_duck_landing_mid_read():
+    """B2. The read and the verdict are one decision, under the owner's lock.
+
+    The read is an await. Without the lock a duck acquired while it was in
+    flight lands between the reading and the verdict, and ``prove`` then passes
+    a PRE-duck number that agrees with the declared level while the speaker
+    plays ducked — a proven level the speaker never had, which is the whole
+    thing MS-14 refuses.
+
+    The getter below captures its answer BEFORE yielding, so the reading is
+    deliberately stale by the time the verdict runs. Under the lock the duck
+    cannot land at all; without it, it does.
+    """
+    fader = _Fader()
+    owner = await _household(fader)
+    claim = await owner.acquire_level(
+        ClaimKind.SESSION_MEASUREMENT, MEASUREMENT_DB,
+    )
+    raced: list[asyncio.Task] = []
+    plain_get = fader.get
+
+    async def racing_get():
+        answer = await plain_get()
+        if not raced:
+            raced.append(asyncio.create_task(owner.acquire_duck(40.0)))
+            # Run the duck as far as it can get. Under the lock it blocks on
+            # the first await and these yields cost nothing; without the lock
+            # it finishes, and `answer` is stale by the time it is judged.
+            for _ in range(200):
+                if raced[0].done():
+                    break
+                await asyncio.sleep(0)
+        return answer
+
+    fader.get = racing_get
+    try:
+        result = await owner.prove(claim)
+        ducked_now = owner.duck_depth_db() > 0.0
+    finally:
+        fader.get = plain_get
+        for task in raced:
+            task.cancel()
+            with contextlib.suppress(asyncio.CancelledError):
+                await task
+
+    assert not (ducked_now and result is not None)
 
 
 async def test_release_is_idempotent_and_safe_against_nothing_held():

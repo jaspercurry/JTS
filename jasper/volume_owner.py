@@ -48,22 +48,23 @@ would make the rule harder to read, not safer. The owner refuses only
 *non-finite* numbers, which is arithmetic integrity (a NaN would poison the
 ``min`` below), not a safety clamp.
 
-**The release algebra is ADR-0004's**, including the part that is easy to get
-backwards: a duck gives back its own attenuation and nothing else
-(``min(reference, current + depth)``), while a *level* claim's release restores
-the next level outright. Clamping a level release against the live fader would
-strand the speaker at the level being given up. The reference is read
-synchronously at release time, from live claim state — ADR-0004 constraint 3,
-which a design that resolved references eagerly would reintroduce as a defect
-under a new name.
+**The release algebra is ADR-0004's** — see that ADR for all three constraints
+and the defects that bought them. The one thing not stated there, because it
+only arises once claims are ranked: a *level* claim's release restores the next
+level OUTRIGHT, while only a duck gives back its own attenuation.
 
-**Every settle reads first.** Arbitration re-derives the whole target on every
-claim change, so a write that lands where the fader already sits has to cost
-nothing — CamillaDSP ramps each one over 400 ms. Reading first also makes the
-write a TRIPWIRE: a target that reads back wrong is disclosed where it happens.
-That pair is what lets wave 5e delete the 1 Hz drift reconciler rather than
-replace it, and it is the same shape
-:func:`~jasper.active_speaker.volume_latch.hold_fader_at` already uses.
+**Every settle reads first** — the shape
+:func:`~jasper.active_speaker.volume_latch.hold_fader_at` already uses, and the
+reasons are its. Here it also means arbitration is not churn: re-deriving the
+whole target on every claim change would otherwise repeat writes CamillaDSP
+ramps over 400 ms.
+
+**Doors are injected and must not raise.** The setter and getter are the
+holder's to bind, and the contract is
+:data:`~jasper.active_speaker.volume_latch.FADER_IO_ERRORS`'s: report failure,
+never raise a transport error. A claim's ledger entry unwinds on ANY escape
+anyway, so a holder that breaks the contract loses its claim rather than
+stranding one.
 
 **In-memory, per process.** Durable volume-safety state belongs to the claim
 holders that own it (wave 5d merges the three schemas). Cross-daemon ordering
@@ -77,11 +78,18 @@ import asyncio
 import itertools
 import logging
 import math
+import time
 from dataclasses import dataclass
 from enum import Enum
 from typing import Any, Awaitable, Callable
 
-from .active_speaker.volume_latch import READBACK_TOLERANCE_DB, fader_matches
+from .active_speaker.volume_latch import (
+    FADER_IO_ERRORS,
+    READBACK_TOLERANCE_DB,
+    fader_matches,
+    read_fader_db,
+    set_and_confirm_volume,
+)
 from .log_event import log_event
 
 logger = logging.getLogger(__name__)
@@ -98,10 +106,13 @@ __all__ = [
 SetFaderDb = Callable[[float], Awaitable[Any]]
 GetFaderDb = Callable[[], Awaitable[Any]]
 
-#: Errors a fader read/write is allowed to fail with. Named rather than blind,
-#: exactly as ``volume_latch`` names them: the controller already closes its
-#: own surface and callers wrap ``CamillaUnavailable`` before it reaches here.
-_FADER_IO_ERRORS = (OSError, RuntimeError, TimeoutError, ValueError)
+#: A release that waited longer than this for the owner's lock is disclosed.
+#: A duck release runs inside a shielded ``finally`` and a stranded duck is a
+#: silent speaker, so a long wait is worth a line even though it is correct.
+#: **Removal condition:** delete this when no owner operation can hold the lock
+#: across a fader round-trip — today an acquire can, bounded by
+#: ``CamillaController``'s 5 s attempt budget and its one retry.
+RELEASE_WAIT_DISCLOSE_S = 1.0
 
 
 class ClaimKind(Enum):
@@ -151,12 +162,8 @@ def duck_release_target_db(
 ) -> float:
     """Where a releasing DUCK lands the fader — ADR-0004's algebra.
 
-    ``min(reference, current + depth)``: give back this holder's own
-    attenuation and nothing else, and never end above the level that should be
-    in effect. Both halves are load-bearing and their failure modes are
-    opposite — replaying an entry snapshot strands the fader when holders
-    interleave, and a bare relative give-back clamps to 0 dB (loud) when the
-    level changes inside the window.
+    ``min(reference, current + depth)``. Both halves are load-bearing; the ADR
+    records why, and the two opposite failure modes each one closes.
 
     An unreadable fader falls back to the reference: the level that should be
     in effect is still known, and it is never louder than the relative
@@ -185,11 +192,16 @@ class VolumeOwner:
     """Every fader write in this process, arbitrated by rank.
 
     Constructed with the write door and the read door as injected coroutines —
-    in production ``CamillaController.set_volume_db`` and ``.get_volume_db``,
-    so every write this owner makes passes ``_coerce_main_volume_db``'s clamp.
-    Injection rather than a controller import keeps the owner free of
-    ``jasper.camilla``'s import graph and makes a test double a peer of
+    in production ``CamillaController.set_volume_db`` and ``.get_volume_db``
+    bound with ``best_effort=True``, so every write passes
+    ``_coerce_main_volume_db``'s clamp and no transport error escapes into the
+    arbitration. Injection rather than a controller import keeps the owner free
+    of ``jasper.camilla``'s import graph and makes a test double a peer of
     production rather than a mock of it.
+
+    There is no tolerance knob. ``READBACK_TOLERANCE_DB`` is the repo's one
+    confirm tolerance and this wave's whole point is that it stays one; a
+    per-instance override would be a second answer waiting for a caller.
     """
 
     def __init__(
@@ -197,11 +209,9 @@ class VolumeOwner:
         *,
         set_fader_db: SetFaderDb,
         get_fader_db: GetFaderDb,
-        tolerance_db: float = READBACK_TOLERANCE_DB,
     ) -> None:
         self._set_fader_db = set_fader_db
         self._get_fader_db = get_fader_db
-        self._tolerance_db = float(tolerance_db)
         self._claims: dict[int, VolumeClaimHandle] = {}
         self._tokens = itertools.count(1)
         self._lock = asyncio.Lock()
@@ -268,19 +278,22 @@ class VolumeOwner:
                 kind=kind, token=next(self._tokens), level_db=target,
             )
             self._claims[handle.token] = handle
-            if self._top_level_claim() is not handle:
-                return handle
-            if not await self._apply(context=f"acquire:{kind.value}"):
-                # Give the claim back BEFORE settling, so the fader returns to
-                # the level that was in effect rather than being stranded on a
-                # target this claim could not establish. The caller holds
-                # nothing, so its own release cannot do this for it.
-                del self._claims[handle.token]
-                await self._apply(context=f"acquire_failed:{kind.value}")
+            taken = False
+            try:
+                if self._top_level_claim() is not handle:
+                    taken = True
+                    return handle
+                if await self._apply(context=f"acquire:{kind.value}"):
+                    taken = True
+                    return handle
                 raise VolumeClaimRefused(
                     f"could not establish {target:.6f} dB for {kind.value}"
                 )
-            return handle
+            finally:
+                if not taken:
+                    await self._unwind(
+                        handle, context=f"acquire_failed:{kind.value}",
+                    )
 
     async def declare_household_level_db(self, level_db: float) -> bool:
         """The standing claim: what the speaker plays at when nothing else has it.
@@ -299,6 +312,7 @@ class VolumeOwner:
         """
         target = _finite(level_db, "level_db")
         async with self._lock:
+            previous = self.declared_level_db()
             for token, claim in list(self._claims.items()):
                 if claim.kind is ClaimKind.HOUSEHOLD:
                     del self._claims[token]
@@ -310,7 +324,23 @@ class VolumeOwner:
             self._claims[handle.token] = handle
             if self._top_level_claim() is not handle:
                 return True
-            return await self._apply(context="declare:household")
+            if await self._apply(context="declare:household"):
+                return True
+            # The prior household claim is already gone — "the household
+            # level" is one fact and a declaration replaces it, never stacks.
+            # So on an unconfirmable write the owner names a level the fader
+            # does not carry, and the next release lands on the NEW one.
+            # Disclose rather than roll back: the declaration is the caller's
+            # intent, and restoring a level nobody asked for would be the
+            # quieter mistake, not the smaller one.
+            log_event(
+                logger,
+                "volume.household_declare_unconfirmed",
+                level=logging.WARNING,
+                declared_db=f"{target:.6f}",
+                previous_db="" if previous is None else f"{previous:.6f}",
+            )
+            return False
 
     async def acquire_duck(self, depth_db: float) -> VolumeClaimHandle:
         """Take ``depth_db`` of transient attenuation off the level in effect.
@@ -328,8 +358,48 @@ class VolumeOwner:
                 depth_db=depth,
             )
             self._claims[handle.token] = handle
-            await self._apply(context="acquire:transient_duck")
-            return handle
+            taken = False
+            try:
+                await self._apply(context="acquire:transient_duck")
+                taken = True
+                return handle
+            finally:
+                if not taken:
+                    await self._unwind(
+                        handle, context="acquire_failed:transient_duck",
+                    )
+
+    async def _unwind(
+        self, handle: VolumeClaimHandle, *, context: str,
+    ) -> None:
+        """Take a half-taken claim out of the ledger and hand the fader back.
+
+        Reached from a ``finally`` guarded by a success flag, so it runs on
+        EVERY exit an acquire did not complete — a refusal, a cancellation, or
+        a raise from the injected door. That last one is the contract violation
+        this owner cannot prevent: ``CamillaUnavailable`` is not in
+        :data:`~jasper.active_speaker.volume_latch.FADER_IO_ERRORS` and naming
+        it would mean importing ``jasper.camilla``, which imports this module.
+        Without the unwind it would leave a claim held by nobody, and every
+        later arbitration would answer against a level no holder owns. The pop
+        is synchronous and cannot fail, so the ledger is correct before
+        anything is awaited.
+
+        The fader hand-back is best-effort by design: if it is cancelled or the
+        door raises again, the ledger is already right and the next claim
+        settles. It must never mask the exception being unwound.
+        """
+        self._claims.pop(handle.token, None)
+        try:
+            await self._apply(context=context)
+        except FADER_IO_ERRORS:
+            log_event(
+                logger,
+                "volume.claim_unwind_incomplete",
+                level=logging.WARNING,
+                context=context,
+                kind=handle.kind.value,
+            )
 
     async def release(self, handle: VolumeClaimHandle) -> None:
         """Give a claim back. Idempotent, and a no-op against nothing held.
@@ -338,12 +408,29 @@ class VolumeOwner:
         acquire that raised and again if a first release raised — the same
         contract ``session_seams.VolumeClaim.release`` states.
         """
+        waited_from = time.monotonic()
         async with self._lock:
+            waited_s = time.monotonic() - waited_from
+            if waited_s > RELEASE_WAIT_DISCLOSE_S:
+                # ONE arbiter is the wave's whole thesis, so a release waits
+                # for the lock rather than taking a fast path around it — a
+                # lock-free own-depth give-back would be the second writer
+                # this owner exists to delete. What that costs is disclosed
+                # instead of hidden: a duck release runs inside a shielded
+                # `finally`, and a stranded duck is a silent speaker.
+                log_event(
+                    logger,
+                    "volume.claim_release_waited",
+                    level=logging.WARNING,
+                    kind=handle.kind.value,
+                    waited_s=f"{waited_s:.3f}",
+                )
             if self._claims.get(handle.token) != handle:
                 return
             del self._claims[handle.token]
             reference = self.declared_level_db()
             if reference is None:
+                await self._disclose_release_without_level(handle)
                 return
             settled = reference - self.duck_depth_db()
             if handle.kind is ClaimKind.TRANSIENT_DUCK:
@@ -379,22 +466,31 @@ class VolumeOwner:
         line: short-circuiting a refusal ahead of the read would report "the
         fader could not be read" for cases where it was never asked, stating an
         observation JTS never made (#2085).
+
+        **Under the owner's lock, for the whole body.** The read is an await,
+        and without the lock a duck acquired while it was in flight would land
+        between the reading and the verdict — the verdict would then pass a
+        PRE-duck number that agrees with the level, while the speaker plays
+        ducked. That is a proven level the speaker never had, which is exactly
+        what MS-14 exists to refuse. Holding the lock makes the read and the
+        arbitration one decision.
         """
-        expected = handle.level_db
-        observed = await self._read()
-        if expected is None or not self.holds(handle):
-            result = "unheld"
-        elif self._top_level_claim() is not handle:
-            result = "preempted"
-        elif not fader_matches(
-            observed, expected, tolerance_db=self._tolerance_db,
-        ):
-            result = "refused"
-        else:
-            self._disclose(handle, result="held", observed=observed)
-            return observed
-        self._disclose(handle, result=result, observed=observed)
-        return None
+        async with self._lock:
+            expected = handle.level_db
+            observed = await self._read()
+            if expected is None or self._claims.get(handle.token) != handle:
+                result = "unheld"
+            elif self._top_level_claim() is not handle:
+                result = "preempted"
+            elif not fader_matches(
+                observed, expected, tolerance_db=READBACK_TOLERANCE_DB,
+            ):
+                result = "refused"
+            else:
+                self._disclose(handle, result="held", observed=observed)
+                return observed
+            self._disclose(handle, result=result, observed=observed)
+            return None
 
     # ---- internals --------------------------------------------------------
 
@@ -418,37 +514,32 @@ class VolumeOwner:
     async def _settle(self, target_db: float, *, context: str) -> bool:
         """Put the fader on ``target_db`` and prove it, writing only if needed.
 
-        READ, then write only on disagreement, then prove through a further
-        independent read — the same shape
-        :func:`~jasper.active_speaker.volume_latch.hold_fader_at` already uses,
-        and for the same two reasons.
+        READ, then delegate to
+        :func:`~jasper.active_speaker.volume_latch.set_and_confirm_volume` —
+        the pre-read is the only part
+        :func:`~jasper.active_speaker.volume_latch.hold_fader_at`'s shape adds,
+        and it earns two things.
 
-        **The pre-read is why arbitration is not churn.** Every claim change
-        re-derives the whole target, so a household level re-declared under a
-        held duck, or a release that lands where the fader already sits, would
-        otherwise repeat a write CamillaDSP ramps over 400 ms. Reading first
-        makes those free and keeps the audible behaviour identical to the
-        single write each writer performs today.
+        **Arbitration is not churn.** Every claim change re-derives the whole
+        target, so a household level re-declared under a held duck, or a
+        release landing where the fader already sits, would otherwise repeat a
+        write CamillaDSP ramps over 400 ms.
 
-        **And it is why the write is a tripwire.** A target that reads back
-        wrong is disclosed at the moment it happens, which is what lets wave 5e
-        DELETE the 1 Hz drift reconciler rather than replace it: with one
-        owner, drift is an alarm at the write boundary instead of something a
-        cross-process patrol silently corrects a second later. The pre-read
-        repairs a fader that drifted off a level nobody re-declared, so
-        skipping the write never means skipping the check.
+        **And drift is repaired, not patrolled for.** The pre-read puts back a
+        fader that drifted off a level nobody re-declared, so skipping a
+        redundant write never means skipping the check — which is what lets
+        wave 5e DELETE the 1 Hz reconciler rather than replace it.
         """
         target = float(target_db)
         if fader_matches(
-            await self._read(), target, tolerance_db=self._tolerance_db,
+            await self._read(), target, tolerance_db=READBACK_TOLERANCE_DB,
         ):
             return True
-        try:
-            applied = await self._set_fader_db(target)
-        except _FADER_IO_ERRORS:
-            applied = False
-        confirmed = applied is not False and fader_matches(
-            await self._read(), target, tolerance_db=self._tolerance_db,
+        confirmed = await set_and_confirm_volume(
+            target,
+            self._set_fader_db,
+            self._get_fader_db,
+            tolerance_db=READBACK_TOLERANCE_DB,
         )
         if not confirmed:
             log_event(
@@ -461,14 +552,29 @@ class VolumeOwner:
         return confirmed
 
     async def _read(self) -> float | None:
-        """One live read, normalized to "a usable number, or nothing"."""
-        try:
-            value = await self._get_fader_db()
-        except _FADER_IO_ERRORS:
-            return None
-        if isinstance(value, bool) or not isinstance(value, (int, float)):
-            return None
-        return float(value) if math.isfinite(float(value)) else None
+        return await read_fader_db(self._get_fader_db)
+
+    async def _disclose_release_without_level(
+        self, handle: VolumeClaimHandle,
+    ) -> None:
+        """A claim came back and nothing declares where the fader belongs.
+
+        The owner writes nothing here — with no level claim it has no target,
+        and inventing one would be the nanny move. But silence is how a fader
+        parked far from anything stays unnoticed, so state the reading and the
+        depth that was just given up and let a support read judge it.
+        """
+        observed = await self._read()
+        log_event(
+            logger,
+            "volume.claim_released_without_level",
+            level=logging.WARNING,
+            kind=handle.kind.value,
+            observed_db="" if observed is None else f"{observed:.6f}",
+            depth_db=(
+                "" if handle.depth_db is None else f"{handle.depth_db:.6f}"
+            ),
+        )
 
     def _disclose(
         self,
@@ -496,5 +602,5 @@ class VolumeOwner:
             kind=handle.kind.value,
             expected_db="" if expected is None else f"{expected:.6f}",
             observed_db="" if observed is None else f"{observed:.6f}",
-            tolerance_db=f"{self._tolerance_db:.6f}",
+            tolerance_db=f"{READBACK_TOLERANCE_DB:.6f}",
         )
