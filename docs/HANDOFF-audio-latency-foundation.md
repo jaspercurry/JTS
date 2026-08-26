@@ -112,8 +112,8 @@ background, but cannot gate DAC playback. This does not change the consolidation
 direction: Ring A + Ring B remain the product path and loopback remains a
 coherent fallback that can later be deleted as one topology variant.
 
-The route-specific productization and legacy cleanup plan lives in
-[HANDOFF-usb-low-latency.md](HANDOFF-usb-low-latency.md#productization-plan).
+The route's own settings, evidence gate, and legacy-path status live in
+[HANDOFF-usb-low-latency.md](HANDOFF-usb-low-latency.md).
 Keep this file as the clock-domain architecture reference; do not duplicate the
 USB route gates here.
 

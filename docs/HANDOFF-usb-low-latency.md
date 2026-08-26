@@ -1,51 +1,43 @@
 # Handoff: USB-in low latency — production `usb_low_latency_48k`
 
-Current operational truth for the first production low-latency USB route.
-The shipped route is **not** the old lean-FIFO bypass plan: it keeps USB in
-the shared fan-in/Camilla/outputd protection path and earns any low-latency
-claim only through measured route-latency evidence.
+Operational truth for the USB-in route: the shipped topology, the settings that
+are coupled to each other, how the route earns its low-latency claim, and the
+combo arming/host-clock machinery around it. The route keeps USB inside the
+shared fan-in → CamillaDSP → outputd protection path; it is not a bypass.
 
-> **Measuring it?** The measurement method (electrical `:9891` + analog
-> Scarlett-loopback), the current hardware-measured numbers (~55.5 ms full
-> chain), the per-stage breakdown, and the productized-settings reference table
-> live in [HANDOFF-usb-latency-measurement.md](HANDOFF-usb-latency-measurement.md).
-> This doc owns the *route design + evidence gate*; that doc owns *how to measure
-> and what a fresh install ships*.
+Neighbouring owners — do not restate them here:
+[HANDOFF-usb-latency-measurement.md](HANDOFF-usb-latency-measurement.md) (how to
+measure, the current measured numbers, the per-stage breakdown, what a fresh
+install ships) · [HANDOFF-usbsink.md](HANDOFF-usbsink.md) (the USB source's data
+plane and observed state) ·
+[HANDOFF-audio-graph-consolidation.md](HANDOFF-audio-graph-consolidation.md)
+(program-wire width and the ring transport) ·
+[testing-tooling.md](testing-tooling.md#route-latency-clickcapture-harness) (the
+harness architecture). Decisions: the evidence gate is
+[ADR-0108](adr/0108-a-latency-claim-is-earned-by-a-measured-artifact.md), the
+host-clock observable is
+[ADR-0109](adr/0109-the-combo-host-clock-servo-observes-resampler-correction.md),
+and the single-capture-pipeline rule is
+[ADR-0107](adr/0107-usb-gadget-audio-has-one-capture-pipeline.md).
 
-## Current Production Route (2026-07-14)
+## Current production route
 
-`usb_low_latency_48k` is the claiming profile. On a ring-eligible USB gadget
-box, the product default is the shm-ring path. Since the aloop solo capture
-path was deleted (2026-07-10), `jasper-fanin` DIRECT-captures the gadget as the
-sole USB ingress — no `jasper-usbsink-audio` bridge hop, no `usbsink_substream`. The capture is `S32_LE` at the gadget either way; whether
-fan-in narrows it depends on the box's program wire
-(`Config::program_wire_is_wide`), whose format half has defaulted WIDE since
-2026-08-15 — so on a ring-armed box the gadget's `i32` now reaches the summed
-write intact. Canonical:
-[HANDOFF-audio-graph-consolidation.md](HANDOFF-audio-graph-consolidation.md).
+`usb_low_latency_48k` is the claiming profile. On a ring-eligible USB gadget box
+the product default is the shm-ring path, and `jasper-fanin` DIRECT-captures the
+gadget as the sole USB ingress. The capture is `S32_LE` at the gadget; whether
+fan-in narrows it follows the box's program wire
+(`Config::program_wire_is_wide`), whose format half defaults wide — so on a
+ring-armed box the gadget's `i32` reaches the summed write intact.
 
 ```
 UAC2 gadget capture
-  → jasper-fanin DIRECT capture (hw:UAC2Gadget, period 256 / buffer 768; S32_LE straight through on a wide program wire, S32_LE→S16_LE high-word truncation on a narrow one)
-  → jasper-fanin USB input resampler (target 512 + warm-up cushion 2048, ring 4096)
+  → jasper-fanin DIRECT capture (hw:UAC2Gadget, period 256 / buffer 768)
+  → jasper-fanin USB input resampler (target 512 + warm-up cushion, ring 4096)
   → Ring A program.ring (jts_ring_capture, 2 slots × 128 frames)
   → CamillaDSP protection/correction (chunk 128 / target 128 / queue 1, rate_adjust off)
   → Ring B content.ring (jts_ring_playback, 2 slots × 128 frames)
   → outputd final DAC owner + final-speaker reference
 ```
-
-The warm-up cushion above is the **shipped code default** (2048 frames;
-`JASPER_FANIN_INPUT_RESAMPLER_WARMUP_CUSHION_FRAMES` /
-`config.rs` `env_u32(…, 2048)`). It is the acquisition ceiling the held target
-starts at and — with cushion decay armed — descends *from* toward the 576 floor,
-so it shapes only cold-start descent/underrun margin, **not** the steady-state
-floor or the measured steady numbers. jts.local runs `1536` as a box tuning
-(held target 512+1536 = 2048; the 2026-07-07 ~55.5 ms measurement was taken at
-that override) — documented in
-[HANDOFF-usb-latency-measurement.md](HANDOFF-usb-latency-measurement.md) §6.
-Both 2048 and 1536 clear the resampler churn floor by a wide margin
-(`target + cushion >= minimum_safe_fill + period + 32` = 562 at the default
-geometry; 2560 and 2048 held respectively).
 
 Ring-coupled geometry is one coherent set; do not change one value without the
 others:
@@ -53,90 +45,63 @@ others:
 | Axis | Product default | Latency / reason |
 |---|---:|---|
 | Ring A `jts_ring_capture` | 2 slots × 128 frames | ≈5.3 ms at 48 kHz |
-| Old Ring A placeholder | 8 slots × 128 frames | ≈21.3 ms, always paid under the blocking-writer handshake |
 | CamillaDSP ring emit | chunk 128 / target 128 / queue 1 | chunk is one slot; target is one chunk |
-| CamillaDSP ring `rate_adjust` | off | one-clock blocking chain; the rate-adjust-on Ring A+B lesson packed queues and measured ≈194 ms |
-| Ring B `jts_ring_playback` | 2 slots × 128 frames | already minimal; unchanged |
+| CamillaDSP ring `rate_adjust` | off | one-clock blocking chain; rate-adjust on Ring A+B packed the queues and measured ≈194 ms |
+| Ring B `jts_ring_playback` | 2 slots × 128 frames | already minimal |
 
-The outputd content-buffer env has no place in this ring-coupled set: under
-`shm_ring` outputd reads Ring B directly and never opens an ALSA content capture
-PCM, so `JASPER_OUTPUTD_CONTENT_BUFFER_FRAMES` is architecturally inert (its only
-consumer, `configure_pcm`, is skipped). `jasper.audio_runtime_plan` therefore does
-**not** emit it under the ring bridge — the reconciler unsets the key and outputd
-uses its compile-time default. When the coupling reconciler later disarms a live
-shm_ring bridge back to `direct` (`_disarm` in
+The shipped warm-up cushion default is **2048** frames
+(`JASPER_FANIN_INPUT_RESAMPLER_WARMUP_CUSHION_FRAMES`). It is the acquisition
+ceiling the held target starts at and, with cushion decay armed, descends from
+toward the 576-frame floor (`DEFAULT_CUSHION_DECAY_FLOOR_FRAMES`), so it shapes
+cold-start descent and underrun margin — **not** the steady-state floor or the
+measured steady numbers. jts.local runs `1536` as a box tuning. Both clear the
+resampler churn floor by a wide margin (`target + cushion >= minimum_safe_fill +
+period + 32` = 562 at the default geometry).
+
+`JASPER_OUTPUTD_CONTENT_BUFFER_FRAMES` has no place in the ring-coupled set:
+under `shm_ring` outputd reads Ring B directly and never opens an ALSA content
+capture PCM, so the key's only consumer (`configure_pcm`) is skipped and
+`jasper.audio_runtime_plan` does not emit it. outputd's `/state` publishes the
+honest Ring B capacity in `content.ring.capacity_frames` next to a synthetic
+period-sized `content.buffer_frames`, and `jasper-doctor` validates ring
+geometry rather than mis-applying the ALSA `>= 2× period` jitter floor to the
+synthetic.
+
+**Disarm re-emits the direct-bridge floor, and does it without deafening wake.**
+When the coupling reconciler disarms a live `shm_ring` bridge back to `direct`
+(`_disarm` in
 [`jasper/fanin/coupling_reconcile.py`](../jasper/fanin/coupling_reconcile.py)),
-it kicks `jasper-audio-hardware-reconcile` after the ordered disarm so the
-direct-bridge floor (`1536`) re-emits promptly — without the kick the box would
-sit on outputd's larger compile-default content buffer (fail-safe, but
-route-incoherent) until the next udev/boot/deploy/outputd-failure event, since
-that reconciler has no timer.
+it kicks `jasper-audio-hardware-reconcile` afterwards so the direct-bridge floor
+(`1536`) re-emits promptly; without the kick the box would sit on outputd's
+larger compile-time default until the next udev/boot/deploy event, since that
+reconciler has no timer. The kicked pass classifies its restart by cause: a
+DAC-identity or asound-render change still takes the full path (blocking
+`systemctl stop jasper-voice`, then `--no-block` restarts of outputd and
+`jasper-aec-reconcile`), but a pass whose only committed delta is `outputd.env`
+takes `restart_outputd_only` — one `--no-block` outputd restart, no voice stop,
+no AEC kick. So a household `/sources/` USB toggle-off no longer costs ~10–15 s
+of wake deafness. Skipping the voice stop requires BOTH no DAC-identity change
+AND no asound render, so any uncertainty falls through to the full path.
+`_recover_to_loopback` (the arm-failure rollback) intentionally skips the kick: a
+just-failed box gets the larger fail-safe cushion and less daemon churn, and the
+floor re-emit waits for the next udev/boot/deploy event.
 
-**Wake-preserving floor re-emit (#1257, fixed):** the kicked reconciler
-pass's only committed delta on this path is outputd.env (the floor re-emit).
-`jasper-audio-hardware-reconcile` now classifies its restart by cause. A
-DAC-identity or asound-render change still takes the full path
-(`restart_audio_if_needed`: a blocking `systemctl stop jasper-voice`, then
-`--no-block restart jasper-outputd` and `--no-block restart
-jasper-aec-reconcile`) because that class can move the mic/input profile; but
-a change whose only committed delta is outputd.env — no DAC-identity, no
-asound render — takes `restart_outputd_only`, a single `--no-block restart
-jasper-outputd` with **no** voice stop and **no** aec-reconcile kick. So a
-shm_ring→direct disarm — including a household `/sources/` USB toggle-off —
-no longer costs the ~10-15 s of wake deafness it used to; wake detection
-stays up across the outputd bounce. (Sound because outputd is the UDP sender
-to the bridge's `:9891` reference receiver, the tap is invariant stereo, the
-bridge is a bound receiver that survives an outputd bounce, and jasper-voice
-depends on outputd only softly via `Wants=`/`After=`.) Before #1257 every
-outputd.env change paid the voice stop identically, a cost the original
-PR #1251 did not disclose. The disarm path still double-bounces outputd:
-`_disarm`'s own blocking restart lands first, then the kicked pass's
-`--no-block` outputd-only restart lands again seconds later — inherent to
-single-writer floor ownership (the hardware reconciler is the only writer of
-the floor key). The fail-safe direction is preserved: skipping the voice stop
-requires BOTH no DAC-identity change AND no asound render, so any uncertainty
-falls through to the full path. `_recover_to_loopback` (the ARM-failure
-rollback path) is the one shm_ring→direct transition that intentionally skips
-the kick — a just-failed box gets the larger fail-safe cushion and less
-daemon churn instead, and the floor re-emit simply waits for the next
-udev/boot/deploy event on that path.
+## Loopback fallback floor
 
-outputd's `/state` publishes the honest Ring B
-capacity in `content.ring.capacity_frames` (`n_slots × slot_frames`) next to a
-synthetic period-sized `content.buffer_frames`, and `jasper-doctor` validates that
-ring geometry rather than the ALSA `>= 2× period` jitter floor. The `1536` content
-buffer in the loopback-fallback env block below is a real, consumed value **only**
-on the `direct` bridge, where outputd does open the content capture PCM.
-
-Measured reconstruction on jts.local: the 8-slot/deep-queue shipped default was
-≈90-95 ms e2e, while the validated 2-slot Ring A plus chunk 128 / target 128 /
-queue 1 product shape is ≈48.8 ms e2e. The 2026-07-06 primed product-path run
-measured 54.3 ms tap→ref with chunk 128 / target 128 / queue 1; the earlier
-40 ms-descent PoC measured 35.4 ms tap→ref. The 2026-07-11 promotion cert then
-measured p50 36.35 / p95 37.93 / p99 38.29 ms at the electrical `:9891` plane
-(1094 impulses, 32.6 min — see HANDOFF-usb-latency-measurement.md §1), clearing
-the gate. On the strength of that run the p95/p99 cert budget was tightened
-48/60 → 40/42 ms. Because the budget rides `route_config_hash`, that tightening
-invalidates the just-passed artifact's `config_match`, so doctor reads
-`config_mismatch` until ONE fresh re-cert run against 40/42 — its measured
-numbers clear the new gate with margin.
-
-The fan-in→Camilla loopback coupling remains the fallback when the ring gates
-fail, the box is not ring-eligible, or an operator freezes the coupling. USB
-ingress still uses fan-in DIRECT; there is no USB bridge fallback. Its tuned Apple USB-C DAC
-floor (the best values measured on jts.local — a hand-tuned reference, not the
-shipped code defaults; note the resampler warm-up cushion here is jts.local's
-`1536` box tuning, whereas the shipped default is `2048`) remains:
+The fan-in→Camilla loopback coupling is the fallback when the ring gates fail,
+the box is not ring-eligible, or an operator freezes the coupling
+(`JASPER_FANIN_COUPLING_CHOICE=operator`). USB ingress still uses fan-in DIRECT;
+there is no USB bridge fallback. The tuned Apple USB-C DAC floor below is the
+best hand-tuned set measured on jts.local — a reference, not the shipped code
+defaults:
 
 | Layer | jts.local tuned floor | Rejected lower setting |
 |---|---:|---|
 | fan-in input buffer | 4096 frames | 512/1024/2048/3072 failed lock/acquisition |
-| fan-in USB resampler | target 512 + cushion 1536 (held target 2048) — code default cushion is 2048 | held target 1920 and below relocked/silenced |
-| CamillaDSP | chunksize 256 / target 1536 | target 1024 caused bridge playback xruns |
-| outputd | period 128 / DAC buffer 256 | 64/128 caused bridge playback xruns |
+| fan-in USB resampler | target 512 + cushion 1536 (held 2048) | held target 1920 and below relocked/silenced |
+| CamillaDSP | chunksize 256 / target 1536 | target 1024 caused playback xruns |
+| outputd | period 128 / DAC buffer 256 | 64/128 caused playback xruns |
 | outputd content capture | buffer 1536 | 640/768/1024/1280 caused content xruns |
-
-Best values to keep for the Apple USB-C DAC loopback fallback:
 
 ```text
 JASPER_FANIN_INPUT_BUFFER_FRAMES=4096
@@ -154,81 +119,43 @@ JASPER_OUTPUTD_CONTENT_BRIDGE=direct
 JASPER_FANIN_CAMILLA_COUPLING=loopback
 ```
 
-`JASPER_OUTPUTD_CONTENT_BUFFER_FRAMES=1536` is coupled to the Apple floor's
+`JASPER_OUTPUTD_CONTENT_BUFFER_FRAMES=1536` is coupled to
 `JASPER_OUTPUTD_PERIOD_FRAMES=128`. If the DAC is transiently absent during USB
-re-enumeration, `jasper.audio_runtime_plan` suppresses that low-latency content
-buffer and leaves outputd on the coherent conservative pair (`1024/4096`) until
-the profile floor is available again. `jasper-audio-hardware-reconcile` stages
-and validates the whole `outputd.env` candidate's outputd buffer/period pairs
-(content and DAC buffers) before replacing the prior file, and
-`jasper-outputd-failure-reconcile` gives exit 78 one bounded re-reconcile +
-retry so a settled DAC can self-heal instead of wedging silently.
+re-enumeration, `jasper.audio_runtime_plan` suppresses the low-latency content
+buffer and leaves outputd on the conservative pair (`1024/4096`) until the
+profile floor is available again; `jasper-audio-hardware-reconcile` stages and
+validates the whole `outputd.env` candidate's buffer/period pairs before
+replacing the prior file, and `jasper-outputd-failure-reconcile` gives exit 78
+one bounded re-reconcile plus retry so a settled DAC self-heals instead of
+wedging silently.
 
-Clean fallback evidence: a 5-minute jts.local steady-state sample with outputd
-content buffer 1536 had zero new outputd content xruns/empty reads, zero outputd
-DAC xruns, zero fan-in output xruns, zero fan-in USB resampler relocks/unlocks/
-silence/overruns, and zero CamillaDSP warnings. Lower content-buffer probes at
-640, 768, 1024, and 1280 each produced a content-side xrun. This proves fallback
-stability, not route certification. Doctor must keep failing `route latency
-evidence` until a click/capture artifact certifies p95 <= 40 ms (tightened
-2026-07-11 to the certified electrical floor — see
-HANDOFF-usb-latency-measurement.md §1) with >=200 impulses over >=5 minutes;
-p99 promotion requires >=1000 impulses over >=30 minutes with jittered
-spacing and p99 <= 42 ms.
+The claiming route hard-fails on any `JASPER_OUTPUTD_CONTENT_BRIDGE` value other
+than `direct` or a coherent `shm_ring` pair. The deleted `rate_match` lab
+transport fail-safes to `direct` at the daemon so a stale env line cannot park
+the final-output owner, but `audio_runtime_plan._route_policy_errors` compares
+the raw literal, so a box still carrying one reports an honest red claim.
 
-The claiming route hard-fails on any `JASPER_OUTPUTD_CONTENT_BRIDGE` value
-other than `direct` or a coherent `shm_ring` pair. That includes the legacy
-`rate_match` lab transport, which was **deleted** — outputd now fail-safes a
-persisted `rate_match` spelling to `direct` so a stale env line cannot park the
-final-output owner, but the route policy compares the RAW literal
-(`audio_runtime_plan._route_policy_errors`), so a box still carrying one reports
-an honest red claim instead of a silently-downgraded green one. (The
-`JASPER_FANIN_CAMILLA_COUPLING=transport_pipe` coupling was removed 2026-07-11
-on the same fail-safe-plus-refuse pattern.)
+## Earning the claim
 
-The artifact writer is `sudo /opt/jasper/.venv/bin/jasper-route-latency-artifact`.
-It does **not** measure audio by itself; the click-in/capture-back harness that
-produces real per-impulse latencies (JSON/CSV/text, milliseconds) or aggregate
-p95/p99 metrics is `jasper-route-latency-harness` (source:
-`jasper/cli/route_latency_harness.py` + `jasper/route_latency/`) — see
-[`docs/testing-tooling.md` "Route-latency click/capture harness"](testing-tooling.md#route-latency-clickcapture-harness)
-for the architecture and the end-to-end quick/promotion walkthrough below.
-Run the artifact writer with `sudo` on the Pi because it must read root-owned
-runtime env files and write `/var/lib/jasper/audio-validation/*.json`. The writer
-binds the measured numbers to the live `jasper.audio_runtime_plan` route identity
-and updates both the general `latest.json` pointer and the route-specific
-`latest-route-latency.json` pointer. Always-on health reads only the scoped
-pointer, with a one-file `latest.json` compatibility fallback when the scoped
-pointer is absent after upgrade, so its work stays constant as timestamped
-evidence accumulates. Raw sample inputs are recorded with source path, byte
-count, and SHA-256 of the parsed file. Aggregate-only inputs require
-`--harness-id` so the artifact cannot anonymously certify externally computed
-percentiles.
+Doctor fails the low-latency claim until a route-latency artifact certifies it —
+the rule, its gates, and what invalidates an artifact are
+[ADR-0108](adr/0108-a-latency-claim-is-earned-by-a-measured-artifact.md).
+Operationally:
 
-**End-to-end quick gate** (generates the samples file the artifact writer
-needs, using `jasper-route-latency-harness`; see
-[`docs/testing-tooling.md` "Route-latency click/capture harness"](testing-tooling.md#route-latency-clickcapture-harness)
-for the full architecture):
-
-Invoke both CLIs by their absolute venv path (`/opt/jasper/.venv/bin/...`) —
-under `sudo` the venv `bin/` is not on `secure_path`, so a bare command name
-won't resolve. (The harness's own `--invoke-artifact` passthrough resolves the
-sibling artifact writer automatically once the harness itself is launched this
-way.)
+`jasper-route-latency-harness` (source: `jasper/cli/route_latency_harness.py` +
+`jasper/route_latency/`) produces the click-in/capture-back samples;
+`sudo /opt/jasper/.venv/bin/jasper-route-latency-artifact` binds them to the live
+route identity and writes `/var/lib/jasper/audio-validation/`. Invoke both by
+absolute venv path — under `sudo` the venv `bin/` is not on `secure_path`.
 
 ```sh
-# 1. Generate the click-track WAV + schedule.
+# 1. Generate the click-track WAV + schedule (use `promotion` for the p99 gate).
 /opt/jasper/.venv/bin/jasper-route-latency-harness generate quick --out-dir /tmp/route-latency
 
-# 2. On the Pi: arm the tap, capture the mic for the schedule's duration
-#    while the WAV plays on the host at a modest, comfortable volume
-#    (start very quiet — CamillaDSP's volume_limit stays the 0 dB
-#    ceiling), then analyze and shell out to the artifact writer. `run`
-#    loads the schedule directly, so it needs no --duration-seconds /
-#    --impulse-spacing-jittered flags (those exist only on `analyze`,
-#    which has no schedule file to read them from). --confirm-route-health-ok
-#    is the harness's OWN flag — read the printed health-delta report first;
-#    it is never inferred automatically:
+# 2. On the Pi: arm the tap, play the WAV on the host at a modest volume
+#    (start very quiet — CamillaDSP's volume_limit stays the 0 dB ceiling),
+#    then analyze and shell out to the artifact writer. `run` reads duration
+#    and jitteredness off the schedule; those flags exist only on `analyze`.
 sudo /opt/jasper/.venv/bin/jasper-route-latency-harness run \
   /tmp/route-latency/quick-schedule.json \
   --out-dir /tmp/route-latency \
@@ -236,16 +163,7 @@ sudo /opt/jasper/.venv/bin/jasper-route-latency-harness run \
   --confirm-route-health-ok
 ```
 
-`run` defaults to `--tap-transport auto`. Since the aloop solo path (and its
-bridge `:8781` tap) were deleted (2026-07-10), the fan-in DIRECT-capture tap is
-the sole ingress, so `auto` always resolves to `fanin` — see "Harness support
-(`--tap-transport`)" under "Impulse tap moves to fan-in (C4)" below. It prints
-the chosen tap first, e.g.
-`tap transport=fanin path=/run/jasper-fanin/impulse-tap.jsonl (...)`.
-
-Or drive `jasper-route-latency-artifact` directly once a samples file already
-exists (equivalent to what `--invoke-artifact` above shells out to, once the
-health deltas justify `--route-health-ok` on THAT CLI):
+Or drive the artifact writer directly once a samples file exists:
 
 ```sh
 sudo /opt/jasper/.venv/bin/jasper-route-latency-artifact \
@@ -255,1714 +173,242 @@ sudo /opt/jasper/.venv/bin/jasper-route-latency-artifact \
   --route-health-ok
 ```
 
-**End-to-end promotion gate** (`generate promotion` instead of `quick`; `run`
-reads jitteredness straight off the loaded schedule, so no
-`--impulse-spacing-jittered` flag is needed here — see `analyze`'s own
-example below for where that flag lives):
-
-```sh
-/opt/jasper/.venv/bin/jasper-route-latency-harness generate promotion --out-dir /tmp/route-latency
-sudo /opt/jasper/.venv/bin/jasper-route-latency-harness run \
-  /tmp/route-latency/promotion-schedule.json \
-  --out-dir /tmp/route-latency \
-  --measurement-id RUN_ID \
-  --invoke-artifact \
-  --confirm-route-health-ok \
-  --require-pass
-```
-
-or the artifact writer alone, once a samples file exists:
-
-```sh
-sudo /opt/jasper/.venv/bin/jasper-route-latency-artifact \
-  --samples /tmp/route-latency/latency-samples.json \
-  --duration-seconds 1800 \
-  --impulse-spacing-jittered \
-  --harness-id jts-click-capture-v1 \
-  --measurement-id RUN_ID \
-  --route-health-ok \
-  --require-pass
-```
-
-Only pass `--route-health-ok` when the same measurement window had complete,
+Only declare `--route-health-ok` when the same measurement window had complete,
 clean fan-in/outputd telemetry: both live surfaces and the expected USB DIRECT
-lane/counter shape must be present, with no fan-in USB resampler
-unlock/silence/overrun and no outputd/fan-in xruns. The retired standalone
-bridge has no live telemetry; fan-in is the route-health authority. Without
-that declaration, the artifact records
-`route_health_anomaly` and doctor rejects the low-latency claim. With the
-declaration, the artifact writer and doctor still compare the live fan-in
-DIRECT period/negotiated-buffer state and USB resampler lock/target state
-against the route identity. The artifact writer is intentionally strict mid-stream: an unlocked
-resampler fails artifact creation. Doctor evaluates stored certification in the
-box's steady state: when fan-in explicitly reports the direct lane
-`health:"idle"`, `locked:false` is expected and does not invalidate the artifact;
-capturing, broken, or unknown lane health remains strict. Static identity,
-including the configured resampler target, must still match while idle.
-The route hash currently uses `ROUTE_CONFIG_HASH_SCHEMA_VERSION = 4`; changing
-that schema or any hashed active-route input invalidates older certification
-artifacts and requires one new measured run. The artifact also records the
-exact live `fanin_direct_negotiated_buffer_frames` observed during that run.
-Presence is mandatory, and doctor compares that stored result with the current
-fan-in direct lane: a runtime negotiation change (for example 768 to 1024)
-invalidates the certification even when all configured targets and the route
-hash are otherwise unchanged. Regenerate pre-schema-4 or negotiated-buffer-
-mismatched evidence; do not treat it as a compatible warning.
-`jasper-route-latency-harness analyze` prints exactly this delta (every
-nonzero fan-in/outputd counter change across the measurement
-window) and states whether the declaration *would* be justified — it never
-asserts `--route-health-ok` on the operator's behalf; read the printed
-deltas and decide.
+lane/counter shape present, with no fan-in USB resampler unlock/silence/overrun
+and no outputd/fan-in xruns. `analyze` prints exactly that delta — every nonzero
+fan-in/outputd counter change across the window — and states whether the
+declaration *would* be justified; it never asserts it for you. The artifact
+writer is strict mid-stream (an unlocked resampler fails artifact creation);
+doctor is topology-aware in steady state (an explicitly `health:"idle"` direct
+lane may read `locked:false`, but capturing/broken/unknown stays strict, and
+static identity must match while idle).
 
-## USB DIRECT (combo mode) — delete the bridge hop + aloop cable (P3: DEFAULT-ON on gadget boxes)
+`run` defaults to `--tap-transport auto`, which always resolves to the fan-in
+tap — the only ingress — and prints its choice first
+(`tap transport=fanin path=/run/jasper-fanin/impulse-tap.jsonl (...)`).
 
-> **Default status (P3 default-flip, landed).** The USB combo is now the SHIPPED
-> DEFAULT — but only on a box that BOTH (a) has the hardware-resolved gadget
-> capability available (a boot overlay alone is not sufficient on a shared-port
-> Zero) AND (b) has USB Audio Input turned ON
-> by the household (the canonical USB key in
-> `/var/lib/jasper/source_intent.env`; `jasper-usbsink.service` enablement is
-> derived from it). The reconciler pass
-> `jasper-fanin-coupling-reconcile --auto` (run by
-> `jasper-fanin-coupling-auto.service` at boot + deploy, **and kicked live by the
-> shared source coordinator after an actual USB lifecycle change** so a fresh
-> enable arms the combo this session instead of only after the next reboot;
-> grouping also kicks it after a follower/solo role apply). The effective gate is
-> canonical USB intent **and** current local-source role permission, so a
-> desired-On follower stays persisted On while its direct lane remains disarmed
-> until unpark. The reconciler is the SINGLE writer of
-> the three fan-in keys (`JASPER_FANIN_USB_DIRECT` +
-> `JASPER_FANIN_HOST_CLOCK` + `JASPER_FANIN_RESAMPLER_CUSHION_DECAY` = `enabled`)
-> into `/var/lib/jasper/fanin.env`. No separate USB audio bridge or capture-mode
-> overlay exists.
-> Off a combo box it writes the EXPLICIT fan-in off value
-> (`JASPER_FANIN_USB_DIRECT=disabled`, not unset — a stale `enabled` in
-> `/etc/jasper/jasper.env` loads first and would otherwise win); disarming that way
-> leaves USB audio unavailable (there is no aloop solo capture to fall back to). The
-> prose below still describes
-> HOW the combo works and its safety matrix; where it says "DEFAULT-OFF / hand-armed"
-> read that as the pre-P3 posture. **To revert:** set
-> `JASPER_FANIN_COUPLING_CHOICE=operator` to freeze the transport coupling (see
-> `.env.example`). USB direct/combo keys remain derived from canonical USB source
-> intent and hardware/role availability, so household Off still disarms capture. The floor
-> default is now the validated **576** (`DEFAULT_CUSHION_DECAY_FLOOR_FRAMES`) so a
-> combo-armed default constructs.
+## USB DIRECT (combo mode)
 
-`JASPER_FANIN_USB_DIRECT=enabled` removes the retired usbsink **bridge hop + the
-snd-aloop cable** (~25 ms measured) from the USB path:
-fan-in captures `hw:UAC2Gadget` **directly**, feeding the SAME per-input
-`LaneResampler` the aloop path used. Whether it narrows S32→S16 itself follows
-the box's program wire (see the Current Production Route above): it does on a
-narrow one, and passes the gadget's `i32` through on a wide one. The bridge process was
-deleted; `jasper-usbsink.service` is now only a process-free readiness marker,
-so the DSP /
-crossover / correction / protection chain downstream of fan-in is unchanged. The
-one deliberate exception is source arbitration + renderer-state truth — see the
-arbitration caveat below the flag matrix.
-
-```
-UAC2 gadget capture
-  → jasper-fanin DIRECT capture (hw:UAC2Gadget, period 256/buffer 768; narrows S32_LE→S16 only on a narrow program wire — see the route above)
-  → jasper-fanin USB input resampler (same target/cushion/ring)  ← bridge hop + aloop cable GONE
-  → fan-in output → CamillaDSP → outputd  (unchanged)
-```
-
-The one live arming literal is `JASPER_FANIN_USB_DIRECT=enabled`; anything else
-fails safe to the idle aloop
-lane (`hw:Loopback,1,3`, unwritten → USB unavailable, no crash). The old bridge
-never promotes to a capture fallback.
-
-#### Combo re-arm is CamillaDSP-coordinated (RTTIME-SIGKILL fix)
-
-A combo arm/disarm (the `/sources/` USB toggle, and the runtime-fallback disarm)
-whose coupling does not move takes the reconciler's confirm path and then forces a
-bare **fan-in restart** so the new combo takes effect. On a live ring/pipe coupling
-(`shm_ring`) that bare restart was collaterally **SIGKILLing
-CamillaDSP**: camilladsp captures Ring A through the `jts_ring_capture` ioplug, and
-when fan-in's ring *writer* detaches the ioplug capture reader busy-spins ~100% of a
-core; camilladsp (`SCHED_FIFO`, `LimitRTTIME=200000` us in
-`jasper-camilla.service`) then hits the kernel `RLIMIT_RTTIME` hard SIGKILL
-~213 ms later → `Restart=always` start-limit → `OnFailure=jasper-camilla-recover`
-→ a full core-graph bounce (confirmed on jts.local by four timing fingerprints incl.
-a controlled repro). `jasper.fanin.coupling_reconcile._restart_fanin_coordinated`
-fixes this by **pausing CamillaDSP with a clean SIGTERM before** the fan-in restart
-and **resuming it after** fan-in is back up (the `Type=notify` blocking broker
-restart returns only once fan-in re-signals `READY=1`, so its ring writer is
-re-attached) — mirroring the fan-in → camilla order `deploy/bin/jasper-camilla-recover`
-already proves works. camilladsp then exits cleanly on SIGTERM: no start-limit, no
-OnFailure, no core-graph bounce — one intentional brief camilla restart replacing
-the kill cascade. Loopback keeps its plain restart (snd-aloop decouples the two).
-This uses the existing broker/polkit grants (`jasper-camilla.service` is already a
-`MANAGED_UNITS` member; `manage-units` covers stop/start) — no new grant.
-The AEC bridge is deliberately only soft-ordered after CamillaDSP, so this
-pause does not stop voice's UDP mic producer; the canonical lifecycle contract
-lives in [HANDOFF-aec.md](HANDOFF-aec.md).
-
-**Coordination scope.** All DELIBERATE Python-side fan-in restarts are
-coordinated: today that is `reconcile_auto`'s own auto USB-combo restart
-(`_restart_fanin_coordinated`). The public out-of-module entry point,
-`coupling_reconcile.coordinated_fanin_restart`, was itself deleted in P5c —
-its sole caller, the adaptive output-buffer arm
-(`jasper.fanin.buffer_reconcile`, behind `JASPER_FANIN_ADAPTIVE_BUFFER`), had
-already been deleted, and the wrapper's remaining behavior (ok-flattening on
-a resume failure) had no consumer left to justify keeping it.
-
-**Root cause fixed (2026-07-11) — the ring-ioplug capture reader now paces
-through writer absence.** The busy-spin's mechanism was NOT the SHM ring: strace
-of the live capture thread showed camilladsp's ALSA backend raw-polls the
-ioplug's poll descriptor and never calls `snd_pcm_poll_descriptors_revents`, so
-the plugin's repeating timerfd was never drained (every poll returned instantly)
-and the writer-dead silence was never armed — the whole pacing design lived in a
-callback this consumer never invokes. `c/jts-ring-ioplug/pcm_jts_ring.c` now
-does the per-wake service work (timerfd drain + wall-clock-paced silence arm) in
-`capture_service_tick()`, called from BOTH `poll_revents` and the capture
-`pointer` callback (every consumer calls `pointer` via `snd_pcm_avail_update`),
-serves an armed silence period as a delivery commitment (never discarded — the
-old discard minted permanent phantom `avail`, the poll-less spin state), bounds
-out-of-range occupancy in every avail path, **self-heals an out-of-range
-occupancy on the per-wake tick** (a reader that stalled past the 2 s liveness
-window while the writer free-ran — e.g. an operator `gdb`/`SIGSTOP` on camilla —
-would otherwise sit permanently silent, since at `avail == 0` alsa-lib never
-calls `transfer` and only `consume` resynced; `reader_resyncs` counts it), and
-carries a bounded starvation nap in `transfer` as defense in depth
-(`starved_naps` in the capture close log; ~0 in steady state, a handful only
-across a recovery transient). Validated on jts.local 2026-07-11: six uncoordinated
-`systemctl restart jasper-fanin` plus one `kill -9` under a live camilla — zero
-RTTIME kills (previously one kill per restart), paced silence confirmed
-(`silence_periods` > 0 at close for the first time; the `arecord` cold-probe
-records 3 s in ~3.5 s wall — the intentionally-slow safe direction). An
-uncoordinated fan-in death now degrades to ≤2 s of capture silence (heartbeat
-staleness window on a crash; immediate on a clean stop) instead of a camilla
-kill cascade — the coordinated restart above remains preferred for deliberate
-restarts because it avoids even that gap being spliced mid-stream.
-
-### Flag matrix (C6)
-
-> **Post-deletion (2026-07-14):** the bridge process is gone and the usbsink
-> systemd unit is a process-free readiness marker. The only live audio axis is
-> `JASPER_FANIN_USB_DIRECT`. The
-> old off/off "bridge bridges gadget→aloop" lane (and its byte-identical
-> fallback) is gone; there is no aloop solo capture anymore.
+`JASPER_FANIN_USB_DIRECT=enabled` is the one live arming literal; anything else
+fails safe to the idle aloop lane (`hw:Loopback,1,3`, unwritten → USB
+unavailable, no crash).
 
 | `FANIN_USB_DIRECT` | Result |
 |---|---|
-| `enabled` | **Armed (product default when USB is allowed).** Fan-in DIRECT-captures `hw:UAC2Gadget`; the oneshot marker proves bounded composition/card readiness. This is the sole USB pipeline. |
-| off (`disabled`) | **Disarmed → USB unavailable.** Fan-in's `usbsink` lane falls back to the idle aloop (`hw:Loopback,1,3`), which nobody writes → USB source is SILENT until an `--auto` pass re-arms direct capture. No crash; observable as fan-in lane `source:"lane"`. |
+| `enabled` | **Armed (product default when USB is allowed).** Fan-in DIRECT-captures `hw:UAC2Gadget`; the oneshot marker proves bounded composition/card readiness. |
+| off (`disabled`) | **Disarmed → USB unavailable.** Fan-in's `usbsink` lane falls back to the idle aloop until an `--auto` pass re-arms it. Observable as fan-in lane `source:"lane"`. |
 
-**Visibility gap — now CLOSED (DIRECT-lane truth).** There is no bridge
-`state.json`. The system derives USB liveness directly from fan-in's identity-
-bound DIRECT lane:
+Arming is derived, never hand-set. `jasper-fanin-coupling-reconcile --auto` is
+the **single writer** of the three fan-in keys (`JASPER_FANIN_USB_DIRECT`,
+`JASPER_FANIN_HOST_CLOCK`, `JASPER_FANIN_RESAMPLER_CUSHION_DECAY`) into
+`/var/lib/jasper/fanin.env`. It runs at boot and deploy, is kicked live by the
+source coordinator after a USB lifecycle change (so a fresh enable arms this
+session, not next reboot), and is kicked by grouping after a role apply. The
+effective gate is canonical USB intent **and** current local-source role
+permission, so a desired-On follower stays persisted On while its direct lane
+remains disarmed until unpark. Off a combo box the reconciler writes the
+explicit `disabled` value rather than unsetting — a stale `enabled` in
+`/etc/jasper/jasper.env` loads first and would otherwise win. To freeze the
+transport coupling for lab work, set `JASPER_FANIN_COUPLING_CHOICE=operator`.
 
-- **Mux DOES see USB streaming.** fan-in samples the DIRECT lane's existing
-  liveness counter at 20 Hz off the audio thread, publishes
-  `direct.streaming`, and sends an edge-only `NOTIFY usbsink` wake hint to mux.
-  Start detection is roughly 0–50 ms; 2 s of flat samples clears streaming.
-  `Mux._usbsink_playing` reads that published state, with
-  `usbsink_direct_frames_read` + `step_combo_liveness` retained as the
-  rolling-upgrade fallback for older fan-in STATUS shapes. There is **no
-  audio-level gate** (the old `rms_dbfs > −60` combo silence gate was removed
-  2026-07-17; see `docs/HANDOFF-usbsink.md` §3.3 "Uniform
-  latest-start-wins" and the `jasper.mux` module docstring). USB's confirmed
-  inactive→active frame-flow edge now participates in the same source-neutral
-  latest-start-wins policy as AirPlay/Spotify/Bluetooth. That means faint real
-  audio plays and newly started computer audio can preempt an active cast in
-  Auto. A persistent source pin prevents automatic switching; disabling USB
-  Audio Input removes it from arbitration. `USBSINK_PLAYING_RMS_DBFS`
-  (`jasper/source_state.py`) survives as the `/state` level readout only;
-  `test_usbsink_playing_rms_contract.py` pins that mux does NOT gate arbitration
-  on it.
-- **`/state.renderers.usbsink` reports the truth.** The projection derives
-  `playing` / `rms_dbfs` from the same fan-in DIRECT-lane level. See
-  `docs/HANDOFF-usbsink.md` §4.4 / §4.9.
+**A combo arm/disarm restart is CamillaDSP-coordinated.** On a live `shm_ring`
+coupling a bare fan-in restart used to SIGKILL CamillaDSP: camilladsp captures
+Ring A through the `jts_ring_capture` ioplug, and when fan-in's ring writer
+detached, the capture reader busy-spun a core until camilladsp (`SCHED_FIFO`,
+`LimitRTTIME=200000` µs) hit the kernel `RLIMIT_RTTIME` hard SIGKILL ~213 ms
+later, cascading through `Restart=always` → start-limit → `OnFailure` → a full
+core-graph bounce. `coupling_reconcile._restart_fanin_coordinated` pauses
+CamillaDSP with a clean SIGTERM before the fan-in restart and resumes it after
+fan-in re-signals `READY=1` — mirroring the order `jasper-camilla-recover`
+already proves. Loopback keeps its plain restart (snd-aloop decouples the two).
+The root cause was also fixed underneath: `c/jts-ring-ioplug` now does its
+per-wake service work (timerfd drain plus wall-clock-paced silence arm) in
+`capture_service_tick()`, called from both `poll_revents` and the capture
+`pointer` callback, because camilladsp's ALSA backend raw-polls the descriptor
+and never calls `snd_pcm_poll_descriptors_revents`. An uncoordinated fan-in
+death now degrades to ≤2 s of capture silence instead of a kill cascade.
 
-**Arbitration mechanism — now fan-in-native (combo).** mux has
-single-SELECTed the winner lane on every auto-mode reconciliation since the
-source-selection hardening (`414adcd0`, 2026-05-27):
-`_reassert_auto_winner` re-sends `SELECT <winner>` on native alerts and on the
-fixed 1 Hz lost-alert patrol, the sum-all `AUTO` command (`Mux._fanin_auto`)
-has zero production callers, and the mixer boots at `selected_input_index=-2`
-(NONE — nothing sums but the correction/test lane). The DIRECT usbsink lane
-passes the exact same per-lane `input_selected`/`lane_mix_contributes` gate as
-every other lane, with no USB-specific exemption (pinned by
-`lane_mix_contributes_selection_only_when_unmuted` in `mixer.rs`). So a
-non-winner USB lane has never actually layered under a winner in auto mode —
-the SELECT gate already excluded it from the sum before this PR existed.
-What the fanin-native preempt PR adds is a separate, explicit silencing
-primitive: on a combo box mux now also sends `MUTE`/`UNMUTE usbsink` over
-fan-in's existing control socket (the same channel as SELECT), and fan-in
-drops the direct lane's contribution at its **mix stage**, independent of
-selection/routing policy. Today that makes it **defense-in-depth** — a
-silencing signal that doesn't ride on SELECT's side effects, with its own
-transition-logged observability (`event=fanin.lane_mute`,
-`/state.renderers.usbsink.muted`) — layered on top of an exclusion that was
-already structurally sound. Crucially the mute is applied at the SUM only:
-the direct lane keeps reporting its pre-mute `frames_read` / `rms_dbfs`, so
-the published `direct.streaming` state still sees a muted-but-streaming host as
-active (no
-mute→"stopped"→release flap; pinned by
-`lane_mix_contributes_mute_overrides_selection`). **Since 2026-07-10 the `:8781`
-preempt path is deleted** (with the aloop solo capture): every box is
-direct-capture, so fan-in `MUTE`/`UNMUTE` is now the **load-bearing**
-arbitration primitive — the only preempt transport left, rather than a
-belt-and-suspenders layer over SELECT. On a
-combo box, `JASPER_USBSINK_PREEMPT=disabled` skips the `MUTE` call, but the
-losing USB lane still stays excluded from the sum by the SELECT gate — no
-audible layering is expected even with the escape hatch active. The
-visibility half of the old gap was already closed (above); the mechanism half
-was never actually open — this section now describes hardening, not a fix
-for real layering.
+**Arbitration is fan-in-native.** Mux single-`SELECT`s the winner lane on every
+auto-mode reconciliation, and the DIRECT usbsink lane passes the same per-lane
+`input_selected`/`lane_mix_contributes` gate as every other lane — a non-winner
+USB lane has never layered under a winner. On top of that, mux sends
+`MUTE`/`UNMUTE usbsink` over fan-in's control socket, and fan-in drops the
+lane's contribution at the **mix stage** only: the lane keeps reporting pre-mute
+`frames_read`/`rms_dbfs`, so a muted-but-streaming host still reads as active
+(no mute → "stopped" → release flap). Since the `:8781` preempt path was
+deleted this is the only preempt transport left.
+`JASPER_USBSINK_PREEMPT=disabled` skips the `MUTE` call; the SELECT gate still
+excludes the losing lane from the sum.
 
-### Host-slaved USB clock in combo mode (fan-in owns the ctl)
+Mux sees USB streaming from fan-in's own DIRECT-lane liveness: fan-in samples
+the counter at 20 Hz off the audio thread, publishes `direct.streaming`, and
+sends an edge-only `NOTIFY usbsink` wake hint. Start detection is ~0–50 ms; 2 s
+of flat samples clears it. There is **no audio-level gate** — USB's frame-flow
+edge participates in the same source-neutral latest-start-wins policy as every
+other source (`USBSINK_PLAYING_RMS_DBFS` survives as a `/state` level readout
+only, pinned by `tests/test_usbsink_playing_rms_contract.py`).
 
-The Stage 1 host-slaved USB clock (steer the gadget's `Capture Pitch 1000000`
-ctl so the host tracks the DAC clock, closing the standing rate offset at its
-source) follows the invariant *the daemon that owns the gadget capture owns the
-pitch ctl*. Since the aloop solo path was deleted (2026-07-10) there is only one
-owner:
+## Host-slaved USB clock in combo mode
 
-- **combo (USB DIRECT) mode — the only mode** — fan-in owns the capture, so a
-  dedicated `fanin-host-clock` thread drives it: `JASPER_FANIN_HOST_CLOCK=enabled`.
-- ~~**solo (aloop) mode**~~ — deleted with the bridge's `host_clock.rs`,
-  `JASPER_USBSINK_HOST_CLOCK`, and the `check_usbsink_host_clock` doctor check.
-  The "Host-slaved USB clock (Stage 1)" section below is archaeology of it.
-
-Both ran the **same** shared ladder/probe/servo (`rust/jasper-host-clock`,
-one servo core; the per-daemon differences were the `event=` log prefix —
-`usbsink_audio` vs `fanin` — which `JASPER_*` keys each parsed, and the
-**observable mode** below). Combo mode pins the DIRECT lane's resampler fill at
-target, removing the free-running drift wander (the ~9 ms gap measured
-below). The setpoint is the resampler's HELD target
-(`JASPER_FANIN_INPUT_RESAMPLER_TARGET_FRAMES +
-JASPER_FANIN_INPUT_RESAMPLER_WARMUP_CUSHION_FRAMES`) — one setpoint shared with
-the inner rate controller, so the outer loop never fights the inner integrator
-(the ≥10× bandwidth separation of the cascade is derived in the
-`jasper-host-clock` module docstring).
-
-#### Observable mode — fill slope (solo) vs resampler correction (combo)
-
-The one servo core runs on **two different observables**, chosen by a TYPED
-`ObsMode` on the shared `HostClockConfig` (never inferred): the deleted usbsink
-solo passed `ObsMode::Fill`; fan-in combo (the survivor) passes
-`ObsMode::Correction`. This is the fix for the hardware-diagnosed combo-mode
-defect (jts.local 2026-07-03).
-
-- **`Fill` (usbsink solo, aloop).** No rate-matching stage sits between the
-  gadget ring and playback, so the gadget FILL slope is a faithful readout of the
-  host-vs-DAC rate error. The probe reads the fill-slope response to the pitch
-  step; the L0 servo drives `fill − target → 0`. **Unchanged** from the original
-  servo.
-- **`Correction` (fan-in combo, USB DIRECT).** The lane resampler (±500 ppm
-  authority) sits between the gadget ring and the mix and ABSORBS host-clock
-  drift to hold its fill at the held target — so the fill observable is
-  structurally dead: the resampler flattens the slope the probe wants to measure
-  and pins the fill by its OWN action, not by the pitch commands. On jts.local
-  the fill-based post-lock probe reliably failed (`response_ratio=-0.88`) and the
-  ladder parked in `l2_fallback`; even a prior `l0_locked` had a dead fill-error
-  signal (fill sat ~500 pinned BY THE RESAMPLER). In combo mode the honest
-  observable is the resampler's OWN live correction ppm (its `ratio_milli_ppm`
-  gauge, the same atomic STATUS reads — single source of truth, owned by the
-  resampler on the mixer thread, threaded into `Obs.correction_ppm`). The probe
-  reads how far the resampler's mean correction MOVES between the neutral baseline
-  window and the step window; the L0 servo drives `correction_ppm → 0`. When the
-  correction is ~0 sustained the host is truly slaved to the DAC, the resampler is
-  idle, and the fill rides the resampler's held target for free.
-
-  **The `Correction` outer control law is a PURE INTEGRAL, not the `Fill`-mode
-  DLL** (`CORRECTION_INTEGRAL_GAIN` in `jasper-host-clock`). This is the structural
-  correction the observable choice demanded (staff review of PR #1144): the two
-  modes present the outer loop DIFFERENT plants. `Fill`-mode's plant is an
-  INTEGRATOR (a pitch command sets the gadget-fill *slope*), so the DLL's own
-  integrators plus that plant integrator is the well-behaved cascade. `Correction`-
-  mode's plant is near-UNITY DC gain through the inner resampler's lag (a ppm
-  command becomes, after the inner `RateController` settles, ~the same ppm of
-  correction — ppm→ppm, no integrator). Driving that unity-gain-plus-lag plant with
-  the `Fill`-tuned third-order DLL puts loop gain > 1 past 180° of phase, so it
-  limit-cycles — verified against the REAL inner controller (a compliant Mac at
-  +20 ppm crystal railed correction ±460 ppm on a ~21 s period). A single slow
-  integrator around a near-unity plant is unconditionally stable at a small gain;
-  the feed-forward seed (`−baseline_correction`) carries the DC crystal cancel and
-  the integrator only trims the residual. Anti-windup is conditional integration
-  (skip the step when the total command is railed and this step would push it
-  further into the rail). The servo-sim tests close the ladder against
-  `jasper_resampler::RateController` (built exactly as `lane_resampler` does), so
-  they measure the composite loop's ACTUAL dynamics and pin that it converges
-  without oscillating across the crystal / lag / noise / 3600 s matrix.
-
-  **The `Correction` probe uses a longer step window and an adaptive step
-  direction** (`CORRECTION_PROBE_STEP_SECS`, `CORRECTION_PROBE_FLIP_DEADBAND_PPM`)
-  because the inner-loop observable is slower than the fill slope and bounded by
-  the resampler's ±500 ppm authority. A 6 s step reads a compliant host only
-  partway through the inner loop's slew (a −250 ppm crystal measured
-  `response_ratio ≈ +0.16` — a false FAIL), so `Correction` holds the step for
-  15 s. And a fixed `+probe_ppm` step against a host already near a rail (e.g.
-  +450 ppm crystal) pushes a compliant host past the +500 clamp so the observable
-  can't show the full response (`+0.19` — another false FAIL); so `Correction`
-  steps AWAY from the nearer rail (down when the baseline correction is strongly
-  positive, up when strongly negative), and normalizes the verdict by the SIGNED
-  step. A non-compliant host's natural crystal drift runs OPPOSITE the away-from-
-  rail step, so it reads a clearly negative ratio and still fails. `Fill` mode is
-  unchanged (always `+probe_ppm`, `probe_step_secs`, hardware-validated at 6 s).
-
-Both observables share the same sign property, so the feed-forward seed is
-byte-identical across modes: a compliant host commanded a `+step` moves the
-observable `+step` (fill climbs in `Fill`; the resampler must consume faster to
-hold fill, so its correction ppm rises in `Correction`), giving
-`response_ratio ≈ +1`; a host that ignores the step moves it ~0, giving `≈ 0`
-(same `>= 0.5` pass band, same demotion). The neutral baseline value is the host's
-natural excess rate, cancelled by the `-baseline_obs` feed-forward. STATUS
-surfaces the mode as `host_clock.obs_mode` (`"fill"`/`"correction"`) and the live
-correction as `host_clock.correction_ppm` (additive; 0 in `Fill` mode), so the
-combo L0 end-state (`correction_ppm → ~0` at `l0_locked`) is directly observable.
-The `dll` block in the STATUS fragment reads idle in `Correction` mode — the DLL
-is not the controller there, so its `err_frames`/`locked` are diagnostic zeros,
-not a live signal.
-
-#### `HOST_CLOCK × USB_DIRECT` flag matrix (fan-in)
+The host-slaved clock steers the gadget's `Capture Pitch 1000000` ctl so the
+host tracks the DAC clock. The invariant is *the daemon that owns the gadget
+capture owns the pitch ctl*, and since the aloop solo path was deleted there is
+exactly one owner: fan-in, on a dedicated `fanin-host-clock` thread, behind
+`JASPER_FANIN_HOST_CLOCK=enabled`. The servo core is the shared
+`rust/jasper-host-clock` crate; its observable is the resampler's own correction
+ppm and its outer law is a single slow integrator — rationale and the rejected
+DLL are
+[ADR-0109](adr/0109-the-combo-host-clock-servo-observes-resampler-correction.md).
+The setpoint is the resampler's HELD target
+(`…_TARGET_FRAMES + …_WARMUP_CUSHION_FRAMES`), shared with the inner rate
+controller so the loops do not fight; the bandwidth-separation derivation lives
+in the crate's module docstring.
 
 | `FANIN_HOST_CLOCK` | `FANIN_USB_DIRECT` | Result |
 |---|---|---|
-| off (default) | any | **Inert.** No `fanin-host-clock` thread; `/state` fan-in `host_clock.enabled=false`. |
-| `enabled` | `enabled` | **Combo target.** fan-in owns the gadget capture and steers `Capture Pitch`; per-session probe → L0 pins the DIRECT lane fill at target. `/state.audio_graph.fanin.host_clock` carries the ladder/DLL/probe block. |
-| `enabled` | off | **Inert, warned.** One `event=fanin.host_clock.noop reason=usb_direct_off`; zero ctl writes ever (fan-in owns the ctl only when it owns the direct capture). No thread spawned. |
-| `enabled` | `enabled`, but no direct-lane resampler | **Inert, warned.** One `event=fanin.host_clock.noop reason=no_direct_resampler` (resampler construction fell back to none — fail-soft). No thread. |
+| off (default) | any | **Inert.** No thread; `/state` fan-in `host_clock.enabled=false`. |
+| `enabled` | `enabled` | **Combo target.** Per-session probe → L0 pins the DIRECT lane fill at target. `/state.audio_graph.fanin.host_clock` carries the ladder/probe block. |
+| `enabled` | off | **Inert, warned.** One `event=fanin.host_clock.noop reason=usb_direct_off`; zero ctl writes. |
+| `enabled` | `enabled`, no direct-lane resampler | **Inert, warned.** `reason=no_direct_resampler` (fail-soft). |
 
-> **Post-deletion (2026-07-14).** The usbsink unit is a process-free readiness
-> marker: it never opens `hw:UAC2Gadget` or the pitch ctl and has no
-> `ExecStopPost` pitch-neutralize belt. Fan-in is the
-> sole owner of the gadget + its pitch ctl in combo mode, and the only unit that
-> carries a neutralize belt. The two-owner framing below is now archaeology.
+`jasper-fanin.service` carries the `ExecStopPost` pitch-neutralize belt for
+SIGKILL/OOM/watchdog aborts, gated on **both** flags so it never fires on a
+part-rolled-back box where fan-in is not the writer. The usbsink readiness
+marker owns no ctl and carries no belt.
 
-**Neutrality belt-and-braces — fan-in is the sole pitch-ctl owner.** In combo mode
-fan-in owns `hw:UAC2Gadget` and drives the host-clock ladder, so it carries an
-`ExecStopPost` that resets the pitch to `1000000` on SIGKILL / OOM / watchdog abort.
-It **gates on being the current owner** so it never fires on a box where it is NOT
-the writer (which would leave a stale command); the usbsink daemon carries no belt
-because it never writes the ctl.
+**Ladder:** `DISABLED → PROBING (await-lock → baseline → step → optional
+retry_wait) → L0_LOCKED ↔ L1_WARN`, with terminal evidence falling to
+`L2_FALLBACK`. Compliance is re-measured on every `(host_connected && playing)`
+edge, because the host OS or application can change between sessions; there is
+no periodic probe loop. A response under half the commanded step is ambiguous
+once — attempt 1 neutralizes into a fixed 10 s `retry_wait`, and only attempt 2
+can produce terminal `L2_FALLBACK`. Terminal causes are
+`probe_noncompliant`, `lost_authority` (sustained saturated command plus adverse
+slope mid-stream), and the infrastructure-class `actuator_unavailable`, which may
+recover on the same stream; the first two latch until an idle boundary or a new
+capture generation. `L1_WARN` is locked-but-watch, functionally identical to L0.
 
-| Unit | Belt gate | Fires when… |
-|---|---|---|
-| `jasper-fanin.service` | `$JASPER_FANIN_HOST_CLOCK = enabled` **AND** `$JASPER_FANIN_USB_DIRECT = enabled` | fan-in owns the ctl (combo mode) |
-| `jasper-usbsink.service` | none | process-free readiness marker never owns the ctl |
+**The probe waits for lock before baselining.** A session begins the instant
+audio flows, but the lane is then still filling (the resampler's held target
+ramps 0 → target, the gadget ring primes), and baselining there measures the
+warm-up ramp as if it were host clock drift — diagnosed on jts.local, where a 4 s
+baseline read `baseline_slope_ppm=1460.6` and the run fell to `l2_fallback` for
+the whole stream, with earlier "passes" being the same contamination landing
+inside the pass band. So the probe opens holding neutral in **await-lock** and
+does not baseline until the lane reports locked and that lock has held for a 2 s
+settle. An un-lock mid-measurement discards it and restarts the wait without
+spending an attempt — a warm-up re-entry is not a compliance failure.
+`host_clock.probe.waiting_for_lock` is true only during a live session's wait;
+the journal marks it with `event=fanin.host_clock_probe_wait`, the baseline start
+with `…_probe_start`, and a session that ends still waiting with
+`result=await_lock_ended` (distinct from `result=aborted`, which means a real
+measurement was cut short).
 
-- **fan-in's belt requires BOTH flags** (F2): fan-in owns the ctl only when
-  `HOST_CLOCK` **and** `USB_DIRECT` are enabled (it resolves
-  `host_clock_enabled && !usb_direct_off` and issues zero ctl writes with only
-  `HOST_CLOCK` set — `noop reason=usb_direct_off`). Gating on `HOST_CLOCK` alone
-  would fire the belt on a part-rolled-back combo box (unset `USB_DIRECT`, left
-  `HOST_CLOCK=enabled`).
-- **usbsink is fully hands-off** (F1, now structural): the process-free marker
-  opens no ctl and has no host clock. A stop/start of the marker
-  never touches fan-in's live combo command — there is no belt and no actuator to
-  stomp it. (Historically, before the solo path was removed, usbsink DID drive the
-  pitch and needed its own `STANDBY != 1`-gated belt; that is the archaeology the
-  table row above marks removed.)
-
-Combo host-clock telemetry:
+**Soak falsifier.** `fill_variance`, `fill_slope_ppm`, and `correction_ppm` are
+published every enabled tick so a soak can detect a cascade limit cycle — a
+fighting cascade shows periodic correction ppm even though L0's target is
+`correction → 0`. Watch all three before trusting a long-term L0 lock; the
+remediation is to lower `CORRECTION_INTEGRAL_GAIN`, or leave the feature off.
+Post-lock cushion decay gates on the servo's own signals (`ladder_l0`, plus a
+`|commanded_ppm| > 400` freeze guard), and a settled L0 sits at a small steady
+command with correction relaxed to ~0, well inside the guard.
 
 ```sh
 curl -s http://jts.local:8780/state | jq .audio_graph.fanin.host_clock
 ```
 
-### Capture/control generations and actuator self-heal
-
-The direct PCM and the pitch control are one logical actuator generation but
-remain thread-confined: the mixer thread owns capture and publishes its existing
-monotonic `direct.opens` counter as `capture_generation`; the `fanin-host-clock`
-thread owns the concrete `!Send` ALSA ctl handle and every pitch write. No ALSA
-handle crosses a thread boundary and the render loop does no lifecycle I/O.
-
-`L0_LOCKED` is trustworthy only while `capture_generation == control_generation`
-and the actuator is ready. A capture reopen invalidates the old ctl generation
-even if writes to that handle still report success. The host-clock thread then:
-
-1. best-effort neutralizes and drops the old handle;
-2. opens a fresh ctl against the rebuilt card;
-3. forces neutral on the new handle; and
-4. only then publishes the new `control_generation` as ready.
-
-Open, forced-neutral, or later pitch-write failure leaves the actuator unready,
-increments the corresponding counter, and retries opening at a fixed 1 Hz while
-capture exists. This is infrastructure unavailability, not evidence that the
-host ignores feedback: the controller holds neutral in `L2_FALLBACK` with
-`fallback_reason="actuator_unavailable"`, consumes no probe attempt, and
-automatically re-probes the same active stream when the matching control
-generation becomes ready. A host-caused terminal L2 remains latched for the
-stream; only an idle boundary or a genuinely new capture generation re-arms it.
-
-Every normal exit, idle edge, generation replacement, retry transition, and L2
-entry commands neutral. The systemd `ExecStopPost` belt remains the SIGKILL/OOM
-backstop. Successful write readback is diagnostic only; generation equality and
-the forced-neutral lifecycle are the correctness boundary.
-
-Stable transition logs are `event=fanin.host_clock_control_refresh_requested`,
-`..._control_refresh_succeeded`, `..._control_open_failure`,
-`..._control_neutral_failure`, `..._pitch_write_failure`, and
-`..._generation_mismatch`. Open/write failures are rate-limited; counters remain
-cumulative in STATUS.
-
-**Retry constant and 2026-07-13 hardware evidence.** `PROBE_RETRY_SETTLE_SECS=10`
-and `MAX_PROBE_ATTEMPTS=2` are fixed code constants, not environment knobs. On
-jts.local the rebuilt ctl was openable/neutral in 1–2 s, while the inner
-resampler correction needed roughly 10 s to leave the post-restart rail; 10 s is
-therefore the smallest measured whole-plant recovery interval with margin, and a
-single retry bounds total disturbance. A canonical deploy caught a dead capture
-handle and an old-ctl neutral write failing `ENODEV`; capture/control both advanced
-to generation 2 and attempt 1 passed (`response_ratio=1.115`). A coordinated
-active-stream fan-in restart reproduced the target false-fail signature exactly:
-attempt 1 saw baseline=step=−500 ppm (`response_ratio=0`), stayed nonterminal in
-`retry_wait`, then attempt 2 passed at 3.206 and returned to L0. A live gadget
-rebuild advanced direct `opens` 1→2 and control 1→2, then attempt 1 passed at
-0.963 without a fan-in restart. The independent control-node-negative test could
-not create "capture alive, ctl absent": ALSA needs that node to resolve the named
-`hw:UAC2Gadget` PCM, so the reversible outage correctly produced capture
-generation 0 and an unavailable-actuator doctor warning instead. Active-stream
-unavailable/recovery remains pinned by the fake actuator lifecycle tests; do not
-add a production fault-injection knob to manufacture it.
-
-### Per-session probe and the await-lock gate
-
-**Per-session probe rationale**: the host OS or the playing application can
-change between sessions (a Mac unplugged and a Windows box plugged in later;
-an app that opens the endpoint in a mode that pins the rate). Compliance is
-therefore re-measured on every `(host_connected && playing)` edge rather than
-trusted once at boot — a probe commands a bounded step (default +300 ppm for
-a 4 s baseline + 15 s step window in the surviving `Correction` mode) and
-measures the observable's response (the
-fill-slope in `Fill` mode, the resampler-correction mean in `Correction` mode —
-see "Observable mode" above). A response under half the commanded step is
-ambiguous once: attempt 1 neutralizes and enters a fixed 10 s `retry_wait`; only
-attempt 2 may produce terminal `L2_FALLBACK` without entering `L0_LOCKED`.
-Lifecycle failures abort a measurement without consuming an attempt.
-
-**The probe does NOT baseline at the session edge — it waits for the lane to
-leave its warmup ramp first.** A session begins the instant audio starts
-flowing, but at that instant the lane is still filling: the fan-in resampler's
-held target ramps from empty (0 → held target) and the gadget ring primes.
-Baselining THEN measures that one-time warmup fill ramp as if it were the
-host's natural rate slope — hardware-diagnosed on jts.local 2026-07-03, where
-the 4 s baseline read `baseline_slope_ppm=1460.6` (the ramp, not clock drift),
-the step then read `step_slope_ppm=-1397.6`, `response_ratio=-9.5` ⇒
-`probe_fail` ⇒ `l2_fallback` for the whole stream. Prior "passes" (ratios 0.78,
-2.97) were the same contamination landing luckily inside the pass band. So the
-probe now opens in an **await-lock** wait, commanding neutral, and does not
-begin the baseline until the lane reports LOCKED AND that lock has held
-continuously for a 2 s settle. LOCKED is the fan-in resampler's `locked_state`
-(`build_obs` in `rust/jasper-fanin/src/host_clock.rs` feeds it to the shared
-ladder as both `playing` and `locked`): the fan-in warmup ramp is a genuine
-0 → held-target fill climb that must complete before baselining, so a live
-lock signal is the right gate. (The deleted usbsink solo adapter instead
-mapped LOCKED to bare `playing` — a settle-only wait, deliberately not a
-fill-level gate, since nothing steered its gadget ring toward target while
-the probe held neutral; removed with the aloop solo path, 2026-07-10.)
-
-If the lane un-locks mid-baseline (or mid-step), the in-flight measurement is
-discarded and the wait restarts — a warmup re-entry is not a compliance
-failure, so this does not demote to L2.
-`/state.…​.host_clock.probe.waiting_for_lock` is `true` only while a LIVE
-session's probe is holding in await-lock (it is `false` between sessions — the
-ladder rests in `probing`/await-lock while idle, but `session_active` gates the
-flag so an enabled-but-idle box does not read as an active-session claim). The
-journal marks the wait with `event=<prefix>.host_clock_probe_wait
-reason=await_lock|lock_lost` and the actual baseline start with
-`event=<prefix>.host_clock_probe_start`. A session that ends while still in
-await-lock (never baselined) logs `event=<prefix>.host_clock_probe_result
-result=await_lock_ended` — distinct from `result=aborted`, which is reserved
-for a real baseline/step measurement cut short.
-
-### Ladder states
-
-`DISABLED -> PROBING (await-lock -> baseline -> step -> optional retry_wait) ->
-L0_LOCKED <-> L1_WARN`, with terminal evidence falling to `L2_FALLBACK`. The
-**await-lock** sub-phase holds neutral from the session rising edge until the
-lane leaves its warmup ramp (locked for the 2 s settle), so the baseline measures
-clock drift rather than the fill ramp; lock loss in any later measurement phase
-returns to await-lock without spending an attempt. The first completed failed
-measurement is `last_attempt_result="retryable_fail"`, keeps `final_result`
-unset, holds neutral for the fixed 10 s recovery interval, then performs exactly
-one more attempt. There is no periodic probe loop.
-
-Terminal host evidence reports `fallback_reason="probe_noncompliant"` after the
-second failed attempt or `"lost_authority"` after a sustained saturated-command
-+ adverse-slope condition mid-stream. Those causes stay latched until an idle
-boundary or a new capture generation. `"actuator_unavailable"` is the distinct
-infrastructure L2 described above and may recover on the same stream. `L1_WARN`
-is a locked-but-watch state with no functional difference from `L0_LOCKED`
-beyond doctor/telemetry surfacing.
-
-### Cascade soak falsifier and cushion-decay interaction (combo)
-
-**The falsifier**: `fill_variance` (EW variance of the gadget fill) and
-`fill_slope_ppm` are published on every enabled tick precisely so a soak can
-detect a cascade limit-cycle — a two-controller oscillation shows up as periodic
-fill variance the counters make visible. In combo (`Correction`) mode
-`correction_ppm` is the additional limit-cycle tell: a fighting cascade shows
-periodic correction ppm even though the servo's L0 target is `correction → 0`.
-Watch all three across a soak before trusting L0 lock long-term; if any shows
-periodicity, the remediation is mode-specific — widen the bandwidth separation in
-`Fill` mode, LOWER `CORRECTION_INTEGRAL_GAIN` in `Correction` mode, or leave the
-feature off.
-
-**Cascade interaction with cushion decay (holds under the integral law).** The
-DEFAULT-OFF post-lock cushion decay gates on the servo's REVERSE signals —
-`ladder_l0` (decay only steps while `l0_locked`) and `commanded_milli_ppm` (the
-`|commanded_ppm| > 400` cascade-stability freeze guard). Both signals keep their
-exact meaning under the correction-observable servo: `commanded_ppm` is still the
-pitch command (same units, same ±1000 clamp), so the 400-ppm guard still freezes
-decay while the servo is working hard, and the stability gate still reads `l0`
-exactly as before. With the pure-integral `Correction` law a settled L0 genuinely
-sits at a small, STEADY `commanded_ppm` (the feed-forward that cancels the crystal
-offset) with the correction relaxed to ~0 — verified against the real inner loop
-across the crystal/lag/noise/3600 s matrix, NOT the limit cycle the earlier DLL
-law produced — so it is well inside the guard and decay proceeds normally once the
-post-lock warm-up window elapses. (Under the pre-fix DLL law this paragraph was
-false: the composite loop railed `commanded_ppm` ±350 ppm on a ~21 s period, so
-the freeze guard flapped twice per cycle and decay never advanced.)
-
 ### Cross-platform conditions
 
-- **macOS**: honors asynchronous feedback well — the gold path for this
-  feature.
-- **Windows** (`usbaudio2.sys`): honors feedback dynamically but with a
-  ~163 ppm reaction deadband, and IGNORES commanded values outside roughly
-  nominal ±1 sample/interval — hence the servo's ±1000 ppm total-command clamp
-  (`MAX_BIAS_PPM` in the shared `jasper-host-clock` crate; derivation in the
-  Stage-1 "Mechanism" archaeology below) sits
-  inside that validity window with margin, not at the wider hardware range.
-  That same deadband floors `JASPER_FANIN_HOST_CLOCK_PROBE_PPM` at 200
-  (config-rejected below that — the deleted usbsink-solo
-  `JASPER_USBSINK_HOST_CLOCK_PROBE_PPM` sibling carried the identical
-  floor): a probe at or under ~163 ppm would measure
-  near-zero response on a compliant Windows host and falsely fail every
-  session. Even the default 300 leaves modest margin against a full-deadband
-  subtraction ((300−163)/300 ≈ 0.46 vs the 0.5 pass ratio), so a Windows lab
-  box that demotes spuriously should raise `PROBE_PPM` toward 500–600. Windows
-  validation is deferred (macOS is the shipping-gold target); this is the
-  caveat to keep in mind when it happens.
-- Both react slowly, which is why the outer loop's bandwidth must stay this
-  low rather than matching the inner loop's.
+macOS honors asynchronous feedback well and is the shipping-gold target.
+**Windows is unvalidated, and one constant depends on it:** `usbaudio2.sys`
+honors feedback dynamically but with a ~163 ppm reaction deadband, and ignores
+commanded values outside roughly nominal ±1 sample/interval — which is why the
+servo's total-command clamp (`MAX_BIAS_PPM`, ±1000 ppm) sits inside that
+validity window rather than at the wider hardware range, and why
+`JASPER_FANIN_HOST_CLOCK_PROBE_PPM` is config-rejected below 200. Even the
+default 300 leaves modest margin against a full-deadband subtraction
+((300−163)/300 ≈ 0.46 against the 0.5 pass ratio), so a Windows lab box that
+demotes spuriously should raise it toward 500–600. Both platforms react slowly,
+which is why the outer loop's bandwidth stays low.
 
-**First Windows session — ordered discovery checklist.** Nothing above has
-been measured against a real Windows box: every constant here (the ~163 ppm
-deadband, the ±1000 ppm `MAX_BIAS_PPM` window, the `PROBE_PPM` floor) is
-research-sourced (Microsoft Q&A / community reports), and all settle/churn
-tuning was validated only against one +600 ppm Mac. Each item below gates the
-next, so a first session should work through them in order and capture
-artifacts rather than try to certify pass/fail in one pass:
+Every Windows-aware constant is research-sourced and tuned only against one
++600 ppm Mac, so a first Windows session is **discovery with captured
+artifacts, not certification**. Work these in order, each gating the next:
 
-1. **Enumeration.** Does the composite NCM+UAC2 gadget enumerate as UAC2 on
-   `usbaudio2.sys` at all, versus "device cannot be started"
-   ([raspberrypi/linux#4587](https://github.com/raspberrypi/linux/issues/4587)
-   reports that failure for a similar `f_uac2` gadget)? Does Windows' alt-setting
-   negotiation hit the dwc2 endpoint budget that
-   [HANDOFF-usb-gadget.md](HANDOFF-usb-gadget.md) "dwc2 endpoint capacity"
-   flags as unverified on BCM2712? Capture a USBView/descriptor dump as the
-   session artifact.
-2. **Feedback endpoint compliance.** Confirm the descriptor Windows sees
-   carries the 16.16 feedback format at `bInterval=1` and the
-   `wMaxPacketSize` `usbaudio2.sys` enforces.
-3. **Compliance probe.** Does the default `PROBE_PPM=300` pass real
-   `usbaudio2.sys` feedback behavior above the ~163 ppm deadband, or does it
-   need the 500–600 mitigation already noted above?
-4. **Clock envelope.** Measure the actual box's crystal offset/jitter and
-   confirm the settle/lock logic (tuned on the +600 ppm Mac) converges; log
-   host-clock events for the whole session.
-5. **Volume.** Does Windows map its slider onto the UAC2 feature unit so
-   `jasper/usbsink/volume_bridge.py`'s `PCM Capture Volume` polling observes
-   it?
+1. **Enumeration** — does the composite NCM+UAC2 gadget enumerate as UAC2 on
+   `usbaudio2.sys` at all, and does alt-setting negotiation hit the dwc2
+   endpoint budget [HANDOFF-usb-gadget.md](HANDOFF-usb-gadget.md) flags as
+   unverified on BCM2712? Capture a descriptor dump.
+2. **Feedback endpoint** — confirm the descriptor Windows sees carries the
+   16.16 feedback format at `bInterval=1` and the `wMaxPacketSize`
+   `usbaudio2.sys` enforces.
+3. **Compliance probe** — does `PROBE_PPM=300` clear the deadband, or is the
+   500–600 mitigation needed?
+4. **Clock envelope** — measure the box's crystal offset/jitter and confirm the
+   ladder converges; log host-clock events for the whole session.
+5. **Volume** — does Windows map its slider onto the UAC2 feature unit so
+   `jasper/usbsink/volume_bridge.py`'s `PCM Capture Volume` polling sees it?
 
-Treat the session as discovery with captured artifacts (descriptor dump,
-host-clock event log) — not certification. Cross-linked
-from [HANDOFF-usb-latency-measurement.md](HANDOFF-usb-latency-measurement.md)
-§7 "Windows host validation (deferred)"; this section is the single source of
-truth for the checklist.
+## Capture generation and self-heal
 
-### Observability
+The direct PCM and the pitch ctl are one logical actuator generation but stay
+thread-confined: the mixer thread owns capture and publishes `direct.opens`; the
+host-clock thread reads that edge and neutralizes/drops/reopens/force-neutrals,
+publishing a matching control generation. This holds even when the stale
+handle's next write looks successful.
 
-- Fan-in STATUS (`/run/jasper-fanin/control.sock` `STATUS`, surfaced on `/state`):
-  every input gains `"source":"lane"|"direct"`; the direct lane also gains
-  `"direct":{"device","present","health","opens","retries","reopen_pending","reopens","card_gen_reopens"}`.
-  `health` is the coarse capture classification for fan-in's local recovery —
-  `"capturing"` (present + flowing), `"idle"` (no host / attached-but-silent /
-  (re)opening — never a failure), or `"broken"` (the flowing→dead zombie signature)
-  — see **"Runtime capture recovery — local and non-destructive"** in
-  [HANDOFF-usbsink.md](HANDOFF-usbsink.md). The `health` and reopen-counter fields
-  are observability only; they never withdraw UAC2 or disarm direct capture.
-  The lane's frames/xruns ride the existing `frames_read`/`xrun_count`; its
-  rate-lock rides the existing `resampler{}` block. `reopens` is the ZOMBIE-handle
-  forced-reopen counter (C): a growing value means the flowing→dead zero-avail latch
-  caught a gadget rebuild — the handle had been feeding the lane, then `avail_update`
-  returned exactly 0 for ~2 s (UDC rebind / gadget restart **while a stream was
-  flowing**) — and the lane self-healed the deaf `Ok(0)`-forever capture handle
-  instead of needing a manual fan-in restart. `card_gen_reopens` is its twin (C,
-  defect 2026-07-06): the same self-heal but for a rebuild caught by the ~1 s
-  `snd_pcm_status` **liveness probe** finding the open handle dead (ioctl `-ENODEV`
-  / `State::Disconnected`) while `avail_update`'s frozen mmap still returned `Ok(0)`
-  — the signal that fast path structurally cannot raise, and the one that catches
-  the routine post-deploy window (fan-in restarts, its fresh handle is idle, then a
-  gadget rebuild before the next playback) where no frame ever flowed. The two
-  counters record **which signal caught** a rebuild, not a clean live-vs-idle
-  partition: which fires first for a given rebuild is timing-dependent (the ~1 s
-  probe cadence is shorter than the ~2 s zero-avail threshold, so a rebuild under a
-  live stream is usually caught by the probe first).
-- `host_clock.actuator` reports `ready`, `capture_generation`,
-  `control_generation`, cumulative `refreshes` / `open_failures` /
-  `write_failures`, and best-effort `readback_ctl_value`. `host_clock.probe`
-  reports `phase`, `attempt`, `max_attempts`, last-attempt result/ratio, final
-  result/ratio, lifetime `retries`, and `waiting_for_lock`; the legacy
-  `last_result`/`response_ratio` pair remains additive compatibility telemetry and
-  carries only the final verdict. `host_clock.fallback_reason` is null outside L2
-  and otherwise one of `probe_noncompliant`, `lost_authority`, or
-  `actuator_unavailable`.
-- The flat `USB host clock` doctor check warns on an unavailable/mismatched
-  actuator or persistent L2 and names the exact cause and generations. A bounded
-  probe or `retry_wait` with a ready matching actuator is recovery, not a warning.
-- `/state.renderers.usbsink.host_connected` reads kernel UDC truth through the
-  import-light `jasper.usbgadget` helper (`/sys/class/udc/*/state == configured`);
-  activity/level/mute come from the identity-bound fan-in DIRECT lane. There is
-  no bridge STATUS/state file.
-- Transition logs: `event=fanin.usb_direct.present` / `.absent` (one line per
-  presence change, device + errno + cumulative retries), `event=fanin.usb_direct.armed`
-  at config load.
-- **Every gadget open and close runs on the `fanin-direct-opener` thread, never in
-  the render loop (#2533).** The lane queues a retire+open request and keeps
-  rendering silence until a handle comes back; `direct.reopen_pending` is `true`
-  while one is outstanding. This covers all three recovery paths (device loss,
-  zombie handle, card generation) AND the `Absent` retry, which used to attempt a
-  full `snd_pcm_open` inside the period budget every ~2 s for as long as the gadget
-  was unattachable. The budget is `period_frames / 48 kHz` (5.33 ms at the shipped
-  256) and both Ring A and Ring B hold two 128-frame slots, so a block over ~2.7 ms
-  costs exactly one slot of audio — a silence insertion when CamillaDSP reads an
-  empty Ring A, a deletion when fan-in cannot publish in time. Both signs were
-  measured in the field; fan-in's ring-stall detector has a 1 s floor and cannot
-  see them. A spawn failure at construction logs
-  `event=fanin.usb_direct.opener_unavailable` and leaves the lane without reopen
-  self-heal (silence) rather than restoring the inline open.
-  `event=fanin.usb_direct.reopen reason=zombie_handle` fires when a Present handle
-  that had been feeding the lane goes deaf — `avail_update()` returns exactly 0 for
-  ~2 s **after** frames had flowed on that handle (the gadget was rebuilt underneath
-  it, no errno) — and the lane force-closes + re-opens the capture. The
-  **flowing→dead** gate (`frames_flowed_since_open`, added 2026-07-05) is
-  load-bearing: an ordinary attached-but-silent host streams `avail≈0` drains
-  indefinitely with no gadget rebuild (see "attached-idle drains record `avail≈0`"
-  below), and firing on raw zero-avail alone would churn a reopen every ~2 s of idle
-  on a Mac-wired box — journal spam plus a `reopens` counter that no longer means
-  "gadget rebuilt underneath." Because a fresh reopen clears the latch, a reopen
-  that lands back on a still-zombie gadget does not immediately re-fire; `reopens`
-  counts one increment per real rebuild.
-- `event=fanin.usb_direct.reopen reason=card_generation` (C, defect 2026-07-06) is
-  the THIRD signal, orthogonal to the flowing→dead latch. On a ~1 s housekeeping
-  cadence (a `snd_pcm_status` ioctl is a real syscall, kept off the per-period hot
-  path) the drain issues ONE STATUS ioctl on the open capture handle. When the UAC2
-  gadget FUNCTION is rebuilt underneath that handle (a UDC rebind / gadget
-  restart), the kernel runs `snd_card_disconnect`, which swaps the stale file's
-  fops to the shutdown set — so `snd_pcm_status` (a real `SNDRV_PCM_IOCTL_STATUS`
-  ioctl, never served from the mmap'd control page) deterministically returns
-  `-ENODEV` or reports `State::Disconnected`. That is precisely why `avail_update`
-  is blind to the zombie: it reads the frozen mmap status page and keeps returning
-  `Ok(0)`. Issuing one real syscall per second closes the gap **by kernel
-  contract** — no procfs inode semantics, no dcache dependence. It fires
-  **regardless of whether a frame ever flowed**, closing the gap the flowing→dead
-  latch cannot: a fan-in restart followed by a gadget rebuild before the next
-  playback (the routine post-deploy window) leaves the fresh handle deaf with
-  `frames_flowed_since_open=false`, so `reason=zombie_handle` can never trip but
-  `reason=card_generation` does within ~1 s. It **cannot** false-fire on an
-  attached-idle host — that host keeps the capture stream in a live state
-  (`Prepared`/`Running`), so the probe reports a live state and stays quiet no
-  matter how long the host sits silent (which is exactly why the probe needs no
-  frames-flowed gate where the raw zero-avail trip did — an idle host cannot make a
-  live handle report `Disconnected`). Precedence: an `avail_update` errno (ENODEV on
-  a clean unplug) is classified as a device loss and parks **before** the probe
-  runs, so a hard unplug takes the errno path; the probe re-runs against the live
-  reopened handle each tick (no captured baseline to re-arm or stale), so
-  `card_gen_reopens` counts one per real rebuild. **On-device obligation:** this
-  premise (STATUS ioctl trips across a real rebuild while `avail_update` stays
-  `Ok(0)`) is kernel behavior no unit test can pin — confirm `card_gen_reopens`
-  ticks across a gadget-function restart on jts.local, and that the box self-heals
-  (no manual fan-in restart). `direct.opens` is also the capture-generation signal
-  consumed by the host-clock thread. The mixer never touches the ctl handle; the
-  generation edge tells the owning thread to neutralize/drop/reopen/force-neutral
-  and publish a matching control generation. This remains correct even if the old
-  handle's next write appears successful. On the measured jts.local rebuild the
-  stale neutral write failed `ENODEV`, capture advanced 1→2, control advanced 1→2,
-  and the same stream re-probed to L0 without restarting fan-in.
+Two reopen counters name two different rebuild signatures, and both are
+self-heals rather than failures:
 
-### Impulse tap moves to fan-in (C4)
+- `reopens` — the flowing→dead **zombie latch**: the handle had been feeding the
+  lane, then `avail_update` returned exactly 0 for ~2 s (a UDC rebind or gadget
+  restart *while a stream was flowing*).
+- `card_gen_reopens` — the ~1 s `snd_pcm_status` **liveness probe** finding the
+  open handle dead (`-ENODEV` / `State::Disconnected`) while `avail_update`'s
+  frozen mmap still returns `Ok(0)`. It fires regardless of whether a frame ever
+  flowed, which is the gap the latch structurally cannot cover: a fan-in restart
+  followed by a gadget rebuild before the next playback leaves a fresh handle
+  deaf with no frames ever flowed. It cannot false-fire on an attached-idle
+  host, whose capture stream stays in a live state. An `avail_update` errno (a
+  clean unplug's `ENODEV`) is classified as device loss and parks *before* the
+  probe runs.
 
-In direct mode the certified route's ingress is fan-in's `hw:UAC2Gadget`
-capture, so the impulse tap is **relocated into fan-in** (ported from the retired
-bridge with the same JSONL schema, detector, and arm validation).
-It runs inline in the direct read over the converted S16 slice, before the
-resampler. **The bridge's own tap is DELETED** (2026-07-10, with the bridge
-`:8781` listener), so the fan-in JSONL is the ONLY ingress evidence.
+**On-device obligation:** the premise — a STATUS ioctl trips across a real
+rebuild while `avail_update` stays `Ok(0)` — is kernel behaviour no unit test can
+pin. Confirm `card_gen_reopens` ticks across a gadget-function restart on
+jts.local and that the box self-heals without a manual fan-in restart.
 
-- Path: `/run/jasper-fanin/impulse-tap.jsonl` (the JSONL schema is unchanged:
-  `{"monotonic_ns","frame_index","ring_fill_frames","peak"}`).
-- Arm/disarm are **control-socket verbs** (not HTTP): `TAP_ARM {json}` /
-  `TAP_DISARM` on `/run/jasper-fanin/control.sock`. STATUS gains a top-level
-  `"tap":{armed,events_written,events_dropped,threshold,refractory_ms,max_events,auto_disarm_at_epoch_ms,path}`.
+## Impulse tap (fan-in)
 
-**Harness support (`--tap-transport`).** The harness arms this tap natively —
-`run` / `capture` / `arm` / `disarm` default to `--tap-transport auto`. Since the
-aloop solo path and its bridge `:8781` tap were deleted (2026-07-10), the fan-in
-DIRECT-capture tap is the only ingress, so `auto` always resolves to the fan-in
-tap (there is no usbsink bridge tap to fall back to). This measures the shipping
-route on any gadget box **with no extra flags**, closing the earlier gap where
-`auto` could arm the retired bridge's never-firing tap and record zero
-detections. `run`
-prints the chosen ingress up front
-(`tap transport=fanin path=/run/jasper-fanin/impulse-tap.jsonl (...)`). Force the
-fan-in tap explicitly with `--tap-transport fanin` (fan-in socket overridable via
-`--tap-socket`, default `/run/jasper-fanin/control.sock`). The combo-box tap
-target is pinned to the fan-in `DEFAULT_TAP_PATH` by
-`tests/test_route_latency_tap_transport.py`. Selection lives in
-`jasper/route_latency/tap_transport.py`; the fan-in UDS client is
-`FaninTapClient` in `jasper/route_latency/tap_client.py`.
-
-The raw control verbs still work for a manual arm/disarm — the harness's fan-in
-transport speaks exactly these (`analyze --tap-events` reads any JSONL path):
+The certified route's ingress is fan-in's `hw:UAC2Gadget` capture, so the impulse
+tap runs inline in the direct read, before the resampler, and writes
+`/run/jasper-fanin/impulse-tap.jsonl`
+(`{"monotonic_ns","frame_index","ring_fill_frames","peak"}`). Arm and disarm are
+control-socket verbs, not HTTP; STATUS gains a top-level `tap` block
+(`armed`, `events_written`, `events_dropped`, `threshold`, `refractory_ms`,
+`max_events`, `auto_disarm_at_epoch_ms`, `path`). The harness arms it natively —
+the raw verbs are for a manual run:
 
 ```sh
-# Manual arm/disarm (equivalent to what `--tap-transport fanin` does):
 printf 'TAP_ARM {"threshold":0.2,"refractory_ms":250}\n' \
   | socat - UNIX-CONNECT:/run/jasper-fanin/control.sock
 printf 'TAP_DISARM\n' | socat - UNIX-CONNECT:/run/jasper-fanin/control.sock
-
-# Analyze against the fan-in JSONL directly (if you armed by hand):
-python -m jasper.cli.route_latency_harness analyze \
-  --tap-events /run/jasper-fanin/impulse-tap.jsonl \
-  --mic-detections <capture>.jsonl <other args as today>
 ```
 
-### Status (PoC bar)
-
-Correct + observable + flag-gated default-off; **hardware-validated on
-jts.local 2026-07-02** (Apple dongle, electrical `:9891` reference mode).
-Conversion parity with the bridge is by construction (both consume
-`jasper_resampler::s32_high_word_to_s16`, pinned by an identical sign-boundary
-vector in all three crates) — a 2026-07-02 statement, and doubly dated now: the
-bridge was deleted, and on a wide program wire the direct lane calls no
-narrowing at all (see the Current Production Route). The direct open uses the bridge's proven envelope
-(S32LE/2ch/48k, period 256, buffer-near 768). Gadget absence/unplug is
-silent-idle with a bounded ~2 s reopen retry (period-counted, never a daemon
-error). Hardening (deploy wiring, doctor surface, wizard toggle) comes next.
-
-### Final state — 2026-07-03 overnight productization (where we landed and why)
-
-> **Superseded for current numbers — delta explained.** The measured-floor
-> table below (34.71 / 36.18 / 36.97 ms tap→ref) is a 2026-07-03 snapshot of
-> the pre-productization **lab recipe** (resampler target 256 + cushion 256 =
-> held 512, host-clock DLL and cushion-decay OFF, free-running), kept here for
-> history.
-> [HANDOFF-usb-latency-measurement.md](HANDOFF-usb-latency-measurement.md) is
-> the single source of truth for the *current* measured latency (2-slot ring
-> geometry, combo mux liveness patch) — its 2026-07-07 tap→`:9891` p50 is
-> **40.73** ms. That ~6 ms delta is not a regression or a measurement-point
-> difference (both runs share ring geometry and the `:9891` tap): it's the
-> deliberate operating-point change shipped in PR #1173 (commit `50d167e1`,
-> "combo becomes default"), which raised the resampler to target 512 with a
-> 576-frame cushion-decay floor and armed the host-clock DLL + decay — the
-> churn-safe default the 256+256 lab geometry could not sustain (see the
-> 2026-07 unlock-counter diagnosis below). See that doc's §1 for the full
-> accounting. Read this section for the productization narrative, not for
-> today's numbers.
-
-**Everything below is merged to main** as the reviewed PR train #1137 (jasper-host-clock
-crate) → #1138 (fan-in USB-DIRECT platform + DLL + jasper-ring + usbsink standby) →
-#1139 (ring consumers: ioplug + outputd reader + lab tooling, EXPERIMENTAL) → #1140
-(drain-dwell instrumentation + tunable gadget period) → #1141 (cushion decay,
-default-off) → #1142 (probe lock-gate). Every PR passed a separate adversarial staff
-review with zero unresolved Blockers/Should-fixes before merge. All features are
-**default-off**; a box that opts into nothing is byte-identical to the pre-train build
-(hardware-verified on jts3: default-off main, doctor clean, AirPlay pass).
-
-**Final measured floor** (jts.local, Apple USB-C dongle, electrical `:9891` reference,
-final settings = USB DIRECT + rings 2-slot + camilla chunk 128/queuelimit 1/target 128 +
-resampler target 256 / cushion **≥ 306** (held **≥ 562**), host-clock and decay OFF —
-see "why" below). A diagnostic
-unlock-counter burst (~295 in one 2-min window) occurred mid-20-min-run with zero
-measured effect (all impulses in the window matched; percentiles tight). **Now
-diagnosed and guarded (2026-07):** the burst is an HONEST count of real
-lock→silence→relock cycles caused by the *lab* resampler geometry — a held target of
-256+256 = 512 sits only `512 − 256(period) − 274(minimum_safe_fill) = −18` frames
-of headroom below the underfill-unlock threshold after each render, so ordinary USB
-delivery coalescing (the `max_avail≈516`, 2-period drain-entry signature) unlocks
-the lane every burst; relock is ~1 period, so it is diagnostic-visible but
-measurably harmless. The counter is not double-counting (one increment per genuine
-unlock event). The production defaults (held 2560) have ~2030 frames of margin and
-are immune. A fail-loud config guard now rejects a churny `target+cushion` geometry
-when the resampler is armed (`STATIC_CUSHION_JITTER_MARGIN_FRAMES` in
-`rust/jasper-fanin/src/config.rs` — the static-cushion sibling of the decay-floor
-guard), so this knob-set cannot ship silently again.
-
-> **The guard shipped and stands.** `Config::from_env` `bail!`s at startup for
-> period 256 / ±500 ppm whenever the armed held target is below **562**
-> (`minimum_safe_fill 274 + period 256 + jitter margin 32`). It is fail-LOUD by
-> design, and `jasper-fanin.service` carries `Restart=on-failure` +
-> `StartLimitAction=reboot`, so an under-sized geometry reboot-loops the box with
-> the remedy visible only in the journal between reboots — which is why the
-> shipped defaults (held 2560) sit ~2030 frames clear of it.
->
-> The 256+256 lab recipe this callout was originally written against (a
-> `TARGET_FRAMES=256` + `WARMUP_CUSHION_FRAMES=256` → held 512 geometry, below
-> the floor) is **no longer documented or shipped anywhere in the tree**. If you
-> hand-tune the pair, the minimum passing geometry at period 256 / ±500 ppm is
-> held ≥ 562: keep `TARGET_FRAMES=256` and raise
-> `JASPER_FANIN_INPUT_RESAMPLER_WARMUP_CUSHION_FRAMES` to **≥ 306** (or raise
-> `TARGET_FRAMES` so target+cushion ≥ 562), OR lower `MAX_ADJUST_PPM` /
-> `PERIOD_FRAMES` — and do it **before** deploying, not after. Same
-> fail-loud-at-boot class as the decay-floor guard.
-
-| run | measured p50/p95/p99 | end-to-end p50/p95/p99 |
-|---|---|---|
-| 5-min (160/160, unlocks 4, 0 overruns) | 34.99 / 36.13 / 37.21 | 46.1 / 47.2 / 48.3 |
-| **20-min FINAL (640/640, 100 %, zero USB-lane xruns)** | **34.71 / 36.18 / 36.97** | **45.8 / 47.3 / 48.1** |
-
-End-to-end = measured span + 1.2 ms gadget dwell (delta-windowed drain-entry evidence,
-#1140 instrumentation; replaces the earlier conservative 3.9) + 9.9 ms DAC-side delay
-(probe: 477 fr = 256-fr ring + ~220-fr snd-usb-audio URB queue on the dongle).
-
-**Lever outcomes (systematic, each hardware-gated):**
-- *Gadget drain dwell*: H2 confirmed — true frame-dwell ≈ 1.2 ms (accounting win, −2.7 on
-  the honest number). Period-64 variant REFUTED (entry backlog doubled + xrun storm —
-  URB-cadence class). Instrumentation is permanent (`drain_avail` in STATUS).
-- *DAC-side trim*: REFUTED both halves. outputd period is graph-quantum-coupled (period
-  64 → Ring B slot mismatch → camilla EINVAL, fail-closed park verified); the dongle is a
-  FULL-SPEED device (192-byte/1 ms packets) with `lowlatency=Y` already active — the
-  ~4.6 ms URB queue is FS transport physics. I2S/HAT outputs never pay this term
-  (equivalent graph there ≈ −4.6 ms).
-- *Cushion decay (the ~5 ms lever)*: built, reviewed, merged default-off (#1141). Its
-  engagement was blocked by a diagnosed ladder design gap: with the lane resampler
-  locked, its inner controller absorbs the probe's pitch step, so the fill-based
-  post-lock probe (#1142) reliably failed (ratio −0.88) and the ladder never reached l0.
-  **Fixed by the combo-mode observable redesign** (#1144): combo mode now runs
-  `ObsMode::Correction` — the probe and L0 servo observe the resampler's OWN correction
-  ppm (its `ratio_milli_ppm` gauge threaded into `Obs.correction_ppm`), not the dead
-  fill slope. The `Correction` outer control law is a PURE INTEGRAL
-  (`CORRECTION_INTEGRAL_GAIN`), not the `Fill`-mode DLL — the observable choice changed
-  the plant from an integrator to a near-unity-gain one, and the `Fill`-tuned DLL
-  limit-cycles against it (staff review of PR #1144 caught this by composing the real
-  crates; fixed in the same branch). The probe also uses a longer step window and steps
-  away from the nearer inner-authority rail so a compliant host at any crystal offset
-  (including near ±500 ppm) passes. Servo-sim tests close the ladder against the REAL
-  `jasper_resampler::RateController` (built as `lane_resampler` does), pinning that the
-  probe passes compliant / fails non-compliant AND that L0 converges without a limit
-  cycle across the crystal/lag/noise/3600 s matrix. On-hardware validation
-  (STATUS `host_clock.obs_mode=correction`, `correction_ppm → ~0` at `l0_locked`, no
-  periodic `correction_ppm` in a soak) is still owed before decay is re-armed and
-  re-measured.
-  A second observation — arming decay (even frozen) *appeared* to raise unlock churn
-  (16/115 vs 0-5 baseline) — was **diagnosed as NOT an armed-path bug** (2026-07).
-  A cross-mode sim (drain→render→tick_decay, faithful to `mixer::step`) proves an
-  ARMED+frozen(`not_l0`) decay is BIT-IDENTICAL to disabled over the same delivery
-  trace (unlocks/locks/held/silence/output **and a per-period FNV checksum of the
-  rendered PCM** all equal), and the code path confirms it: `tick_decay` with
-  `dll_l0=false` snaps the held target back to the ceiling every tick, so the
-  setpoint never differs from the disabled path — mechanically inert. The 16-vs-115
-  spread is the same environmental USB-coalescing variance that moves the
-  default-path counter (1 ↔ ~295); correlating it with the decay env was coincidental
-  at n=2. Pinned by
-  `armed_frozen_decay_is_bit_identical_to_disabled_over_the_same_trace` in
-  `rust/jasper-fanin/src/lane_resampler.rs`. The pin's trace has two regimes: an
-  initial coalescing-churn window (keeps the identity non-vacuous — `disabled` really
-  unlocks) followed by a long clean **locked** tail with `dll_l0=false` throughout.
-  The tail is load-bearing: it is the only regime where `stable_periods` accrues past
-  the ~1875-period warm-up window, so deleting the `not_l0` snap-back makes the armed
-  run decay `held` down over the tail while the shipped code holds it at the ceiling —
-  a divergence the churn window alone can NOT catch (every unlock resets
-  `stable_periods`, so decay could never step there regardless). The churn itself is
-  the static-cushion geometry issue guarded above, not the decay code.
-- *Why host-clock is OFF in final settings*: the fill-based probe could not pass in
-  combo mode, so its probe steps perturbed each session start for zero benefit; the
-  resampler alone (±500 ppm) carries stability, proven across 5-min and 20-min runs
-  free-running. The correction-observable redesign (#1144) removes the "cannot pass
-  its own probe" blocker; host-clock stays OFF by default pending the on-hardware
-  validation and decay re-measurement above.
-
-**Fleet validation (2026-07-03):** AirPlay PASS on jts3 (HiFiBerry), jts4 (Pi Zero 2 W
-streambox), jts5 (post-deploy; pre-deploy receiver was wedged — reset cleared it), and
-jts.local (after a shairport AP2-wedge reset — the known Tier-3 class). Spotify PASS on
-jts.local (router `start_playback` → librespot) and jts3 (`transfer_playback`). Snapcast:
-no bond configured fleet-wide — nothing to regress.
-
-**Perceptual context (why we stopped here):** ITU-R BT.1359 audio-lag detectability is
-−125 ms; the floor sits ~2.6× below it. Between ~46 and the theoretical-report's 20 ms,
-no supported use case changes state (live-monitoring needs ≤10–15 ms, unreachable on any
-variant of this product). Remaining engineered headroom if ever needed: probe redesign +
-decay (−3..5), HAT output profile (−4.6).
-
-### Measured results — 2026-07-02 descent campaign (jts.local, Apple dongle)
-
-Full ring graph (fan-in → Ring A → CamillaDSP → Ring B → outputd) + USB DIRECT
-combo mode + queuelimit 1 + both rings at 2 slots + DAC 128/256. Click impulses
-via the Mac gadget lane; span = fan-in ingress tap → outputd `:9891` reference
-tap; ALL-IN adds probe-measured gadget dwell (+3.9 ms, mean avail ~186 f) and
-DAC delay (+9.9 ms, mean ~477 f = 256-frame ring + USB URB queue).
-
-| config | measured p50/p95 (ms) | end-to-end p50/p95 (ms) |
-|---|---|---|
-| pre-campaign baseline (aloop chain) | 173.6 / 181.5 | ~187 / ~195 |
-| host-slaved + cushion (certified) | 139.3 / 156.7 | ~153 / ~170 |
-| full ring graph, chunk 128, 4-slot | 70.1 / 73.5 | 83.7 / 87.1 |
-| + USB DIRECT (bridge deleted from path) | 45.1 / 46.8 | 58.7 / 60.5 |
-| **+ both rings 2-slot (floor, 1-min)** | **35.4 / 36.7** | **≈49 / ≈50** |
-| **floor, 5-min confirmation (159 impulses)** | **34.8 / 36.8 / p99 37.1** | **≈48.6 / ≈50.6** |
-| floor + fan-in host-clock DLL live (1-min) | 34.6 / 36.8 | ≈48.4 / ≈50.6 |
-| **floor + DLL, 5-min closing run (160/160, 100 %)** | **35.0 / 36.6 / p99 37.2** | **≈48.8 / ≈50.4** |
-
-First 5-min confirmation: 99.4 % match, zero xruns, zero problem journal
-lines, resampler locked throughout with the gadget **free-running** (bridge
-standby had the DLL off — the gap that motivated the fan-in relocation below).
-Closing 5-min run (DLL relocated into fan-in, `JASPER_FANIN_HOST_CLOCK=enabled`):
-100 % match; probe passed and the ladder ran `l0_locked` with fill pinned near
-setpoint, then **demoted to `l2_fallback` at a stream-restart transient and the
-floor held anyway** — the fail-safe posture works, and at cushion 256 the lane
-resampler's ±500 ppm authority alone carries 5-minute stability. Cushion 128
-*under* the DLL locks (85 unlocks vs 15,513 free-run) but regresses latency
-(+1.9 ms p50): lock churn re-primes fill above setpoint. **The config floor is
-final at cushion 256**; shrinking the resampler pool needs post-lock
-cushion-decay product work in `lane_resampler`, with the DLL holding the
-decayed target.
-
-Refuted knobs (each a clean 1-min negative): resampler cushion 128/128 (lock
-never holds — the 256 floor is lock-hold hysteresis, not aloop burstiness);
-CamillaDSP `target_level` 384→256 (no effect under queuelimit 1); chunk-64 slot
-geometry as config (`RING_SLOT_FRAMES = 128` is a compile-time constant).
-
-The remaining latency to a 40 ms end-to-end target is located, all product code.
-Note the host-clock DLL relocation into fan-in is **already shipped** (it landed
-with the fan-in platform / combo change, not remaining work): the "floor + DLL"
-rows in the table above measured ≈0 ms delta versus the free-running floor — the
-DLL's win is removing the standby drift *wander* (fill no longer walks ~500 f off
-the 256 target across a 5-min window), not a step reduction in the steady-state
-floor. The real remaining levers are:
-
-1. **Resampler post-lock cushion decay** (`lane_resampler`): shrink the resampler
-   pool below the cushion lock-hold floor by decaying the held target *after* the
-   DLL locks, with the DLL holding the decayed target so lock churn does not
-   re-prime fill above setpoint (the cushion-128-under-DLL run locked but
-   regressed +1.9 ms p50 without decay). Est. −2.7..5.3 ms. **Shipped
-   (DEFAULT-OFF, still lab-only, awaiting the hardware dial-in below):**
-   `CushionDecay` (a pure, render-period-clocked state machine in
-   [`lane_resampler.rs`](../rust/jasper-fanin/src/lane_resampler.rs)) lowers the
-   held target from the acquisition ceiling (`target + warmup cushion`) toward a
-   floor, ONE `_DECAY_STEP_FRAMES` step every `_DECAY_INTERVAL_MS`, but ONLY while
-   the lane is locked AND the host-clock DLL ladder is `l0_locked` AND a 10 s
-   stability window has passed AND `|commanded_ppm| ≤ 400` (the cascade guard). It
-   SNAPS BACK to the ceiling in one tick on any unlock / DLL demotion / stream
-   stop (a raised setpoint refills naturally — no glitch). The DLL setpoint tracks
-   the resampler's LIVE held target via a single shared `held_target_frames`
-   gauge (single source of truth — the servo thread re-pins `set_target_fill_frames`
-   from it each tick, so the two controllers can never disagree). Env (all
-   default-off / current-behaviour): `JASPER_FANIN_RESAMPLER_CUSHION_DECAY=enabled`
-   plus `_DECAY_FLOOR_FRAMES` (default and min = `max(target, minimum_safe_fill) +
-   32`, max the ceiling), `_DECAY_STEP_FRAMES` (16, range 1..=64),
-   `_DECAY_INTERVAL_MS` (1000, range 250..=10000), all fail-loud-validated when
-   armed. STATUS surfaces `inputs[].resampler.held_target_frames` (live) and
-   `inputs[].resampler.decay{active,floor_frames,frozen_reason}`. Requires the
-   host-clock DLL armed (decay gates on `l0_locked`), so it only engages in USB
-   DIRECT combo mode.
-
-   **The floor cannot descend onto the physical unlock threshold.** The lane
-   underfill-unlocks the instant the cursor-relative fill drops below
-   `minimum_safe_fill_frames = ceil(period × max_ratio) + kernel_radius + 1` (=
-   274 at period 256 / ±500 ppm) — the same threshold the render loop's underfill
-   gate uses (shared `jasper_resampler::minimum_safe_fill_frames`). A held target
-   at/below that value is churn-by-construction: ordinary per-period fill jitter
-   crosses it and the lane thrashes (audible gap → snap-back → relock → 10 s
-   warm-up → re-descend, on repeat). So the floor's lower bound is
-   `max(target, minimum_safe_fill) + 32`, not the bare `target + 32` — for a small
-   base target `target + 32` alone can land below the physical floor. Config
-   validation rejects a churny floor fail-loud when armed; `DecayParams::build`
-   also clamps defensively as belt-and-braces.
-
-   **Hardware dial-in protocol (owed):** with the DLL locked (`l0_locked` in
-   `/state`), arm decay with defaults and run 1-min playback windows watching
-   `held_target_frames` descend from the ceiling toward ~`target+32` and the
-   route-latency harness confirming the fill/latency drop (expect ~−3.5 ms at the
-   default floor). Then try a lower/tighter floor ONLY if unlock_count stays 0
-   during the steady window. Finish with a 5-min run on the best floor: WAV-loop
-   restarts are natural stream stops (fill must re-prime at the ceiling and
-   re-decay each loop with no lock churn); if loop restarts thrash the decay,
-   raise `CUSHION_DECAY_STABILITY_MS`. Failure mode = revert the env flag (the
-   default path is byte-identical to today).
-
-   **Two cascade-guard observations to expect during dial-in** (both honest /
-   conservative — no code change owed, but watch for them via
-   `decay.frozen_reason="cascade"` in STATUS):
-   - The cascade guard only *pauses* decay; it never escalates. A sustained
-     `|commanded_ppm| > 400` excursion that stays L0 (not railed, so no L2
-     demotion / snap-back) holds the *current* held target indefinitely — the only
-     escalation below the guard is the audible underfill unlock. If a run parks at
-     `frozen_reason="cascade"` and the latency win stalls, the DLL is steering hard
-     at that setpoint; investigate the host clock offset rather than lowering the
-     floor.
-   - `commanded_ppm` includes the probe's feed-forward seed, so a host whose
-     natural clock offset exceeds ~400 ppm (still legal — the DLL's L1 warn is
-     2500 ppm) sits *permanently* above the cascade guard and decay never engages
-     there (`frozen_reason="cascade"` from the first stable tick). That is the
-     correct conservative behaviour (a large steady bias means the fill is not
-     truly calm), but it means the decay win is host-clock-dependent: verify the
-     observed host sits well inside ±400 ppm before concluding decay is broken.
-2. Gadget drain cadence: standing avail ~186 f → ~64 f (~2.6 ms). **Lever-2
-   instrumentation + knob shipped (default-preserving, still lab-only):**
-   `drain_direct_capture` now records the drain-ENTRY `avail` into a since-boot
-   `DrainStats` (count/sum/max + a fixed 6-bucket 64-frame-step histogram,
-   boundaries `[0,64,128,192,256,320,+]`), surfaced additively in STATUS at
-   `inputs[].direct.drain_avail{count,mean,max,hist}` and logged every 2048
-   drains as `event=fanin.direct.drain_stats`. The gadget OPEN period is now
-   tunable via `JASPER_FANIN_USB_DIRECT_PERIOD_FRAMES` (default 256 =
-   byte-identical to today; fail-loud range 32..=1024). The capture buffer stays
-   DEEP regardless (`resolve_direct_buffer_frames`: ≥ 3 periods AND ≥ 768 frames,
-   period-aligned) — a small period rides a deep buffer, NOT the refuted shallow
-   2-period URB-headroom failure.
-
-   **Read the stats as WINDOW DELTAS, not the raw lifetime `mean`.** `drain_stats`
-   is since-boot cumulative, and one drain is sampled *every* render cycle the
-   gadget PCM is open — including while the host is attached but silent (Mac
-   wired, nothing playing). Those attached-idle drains record `avail≈0` into
-   bucket 0 and into the `sum`/`count` denominator, so the lifetime `mean`
-   **understates the real playback dwell in proportion to idle time**. On
-   jts.local (Mac wired 24/7) a 10-min idle before a 1-min playback run buries
-   ~11k playback samples under ~112k zeros → STATUS `mean` reads ≈17 f even if the
-   true playback dwell is unchanged at ~186 f. Do NOT read the lifetime `mean`
-   directly. Instead poll STATUS twice — once immediately before the playback
-   window, once immediately after — and compute the window mean from the deltas:
-   `Δsum/Δcount`, with the `Δhist` bucket deltas as the window's distribution.
-   `count`/`sum`/`hist` are proper monotonic counters, so the bracketed deltas
-   isolate the playback dwell from idle zeros. (An attached-idle `avail≈0` sample
-   *during playback* is itself the H1 quantization signal — the recording is
-   correct; only the lifetime aggregate is diluted.)
-
-   On-hardware decision rules (all reads are window deltas per the note above):
-   - **H1 (period granularity):** set `=64`, run ≥1 min of playback bracketed by
-     two STATUS polls, and look at the WINDOW mean (`Δsum/Δcount`) and `Δhist`. If
-     the window mean drops toward ~64 f (and the `Δhist` distribution de-quantizes
-     off the 0/256 bimodal) **with zero new capture xruns**
-     (`event=fanin.xrun … usb_direct lane`), the pointer-granularity hypothesis
-     holds — keep 64. Any new capture xruns → revert (`unset`, back to 256).
-   - **H2 (drain-phase artifact):** if the WINDOW mean (`Δsum/Δcount` across the
-     playback bracket, NOT the idle-diluted lifetime mean) is already ~64 f
-     (0..128) while the older probe read ~186, the standing dwell was a probe
-     sampling artifact, not real latency ahead of the tap — the honest fix is
-     accounting (this instrumentation IS the evidence), not a period change.
-3. DAC URB queue: `delay` ~477 f against a 256-frame ring (~2–3 ms in
-   snd-usb-audio queueing).
-
-## Host-slaved USB clock (Stage 1)
-
-> **Reframed 2026-07-11 — the live shared-crate servo docs moved up; this
-> section is now genuinely archaeology of the deleted usbsink-solo
-> `Fill`-mode daemon.** The host-clock behavior that is STILL LIVE — the
-> per-session probe + await-lock gate, the ladder states, the cross-platform
-> host conditions, and the soak falsifier / cushion-decay cascade interaction —
-> is shared-crate
-> (`rust/jasper-host-clock`) behavior fan-in consumes in combo mode, so it was
-> RELOCATED up into the combo section ("USB DIRECT (combo mode)"). Live
-> behavior must not be single-sourced under an archaeology header (the
-> single-source-of-truth rule), and those subsections were describing the
-> surviving combo servo, not the deleted one. What remains BELOW is the deleted
-> `jasper-usbsink-audio` solo host clock — `host_clock.rs`,
-> `JASPER_USBSINK_HOST_CLOCK*`, the `Capture Pitch 1000000` `Fill`-mode ladder,
-> the `jasper-usbsink.service` `ExecStopPost` pitch-neutralize belt, the
-> `/state.audio_graph.rust_bridge.host_clock` telemetry, and the
-> `check_usbsink_host_clock` doctor check — all deleted 2026-07-10 with the
-> aloop solo capture path. It is kept for its mechanism, cascade tuning, and
-> enabling/state/tunable surfaces because the `Fill`-vs-`Correction`
-> control-theory contrast still explains why the surviving combo servo uses a
-> pure integral. The SURVIVING host clock is the combo/fan-in one
-> (`JASPER_FANIN_HOST_CLOCK`, `rust/jasper-fanin/src/host_clock.rs` + the shared
-> `jasper-host-clock` crate, `ObsMode::Correction`, surfaced at
-> `/state.audio_graph.fanin.host_clock`) — see "Host-slaved USB clock in combo
-> mode (fan-in owns the ctl)" above.
-
-Default-**OFF** mechanism + telemetry + evidence, landed alongside the Stage 0
-click/capture harness above. It commands the HOST's USB audio clock instead of
-only reconciling the offset in software on our side — a structurally different
-lever from the fan-in USB input resampler, which absorbs the same standing
-rate offset in the digital domain. The usbsink `host_clock.rs` module that once
-held this derivation was deleted with the aloop solo path (2026-07-10); the
-authoritative derivation now lives in the shared crate
-[`rust/jasper-host-clock/src/lib.rs`](../rust/jasper-host-clock/src/lib.rs),
-which fan-in consumes for the surviving combo-mode servo. The live operational
-surfaces of that shared servo — the per-session probe / await-lock gate, the
-ladder states, the cross-platform host conditions, and the soak falsifier /
-cushion-decay interaction — now live
-in the combo section above ("USB DIRECT (combo mode)"); what remains here is the
-deleted `Fill`-mode variant's mechanism and control-theory, kept as archaeology.
-
-### Mechanism
-
-The Pi's UAC2 gadget already exposes a writable ALSA control on the capture
-device — `"Capture Pitch 1000000"`, iface=PCM, numid=1 — that both macOS and
-Windows honor dynamically as an asynchronous-feedback pitch command (verified
-live on jts.local, kernel 6.12.75: range `750000..1005000`, `fb_max=5`,
-`c_sync=async`, `req_number=2`). Writing a value above/below `1000000`
-(identity) tells the host to run its USB audio clock faster/slower.
-
-Stage 1 closes a delay-locked loop over that control:
-
-- **Error signal**: gadget capture ring fill (frames) minus a target,
-  computed from the *existing* `SharedState` atomics — the audio thread is
-  untouched, no new capture/playback code path.
-- **Control loop**: `jasper_clock::Dll` (the same PipeWire-`spa_dll` port
-  `jasper-fanin`'s lane resampler and `jasper-outputd`'s reference clock use),
-  ticked at a fixed 1 Hz on the state-publisher thread (not the audio thread).
-- **Actuator**: an ALSA ctl write to `"Capture Pitch 1000000"`, rate-limited
-  to <=1 Hz and only when the commanded change is >=10 ppm (no ctl spam), and
-  clamped to <sup>±</sup>1000 ppm total (feed-forward + DLL trim combined) —
-  independent of the wider hardware range above. The ctl handle lives ONLY on
-  the state-publisher thread: single writer by construction, the audio thread
-  and the preempt listener never touch it. The element is resolved by its
-  `(iface=PCM, name)` tuple, **never by numid** — numid 1 is a `u_audio.c`
-  registration-order artifact, not ABI, so pinning it could silently retarget
-  a future kernel's write (e.g. onto `PCM Capture Volume`); matching by name
-  keeps the daemon path aligned with the unit's name-based `ExecStopPost`.
-
-### Two controllers in cascade — the defense
-
-With the feature enabled, the fan-in `lane_resampler` (fast inner loop,
-`rust/jasper-fanin/src/lane_resampler.rs`) and the outer pitch loop both
-discipline the same chain. JTS has a documented oscillation failure class when
-two rate controllers fight (the CamillaDSP `rate_adjust` + `AsyncSinc` incident,
-above). This is a legitimate CASCADE instead — a fast inner loop absorbing
-residual + jitter, a slow outer loop removing the standing offset at its source
-(the host). **The two modes defend against a fighting cascade with DIFFERENT
-outer control laws**, because they present the outer loop different plants:
-
-- **`Fill` mode (usbsink solo) — the DLL, defended by bandwidth separation.**
-  The plant is an integrator (a pitch command sets the gadget-fill *slope*), so a
-  slow DLL is the right outer law, and the defense is bandwidth separation derived
-  from the actual inner-loop constant, not asserted:
-  - **Inner loop**: `RateController::with_max_resync` → `DllConfig::for_rate(256,
-    48000)`, updated once per rendered period (≈5.33 ms). Adaptive bandwidth
-    clamped to `[BW_MIN, BW_MAX] = [0.016, 0.128] Hz`. Locked floor **0.016 Hz**,
-    acquiring maximum **0.128 Hz**.
-  - **Outer loop**: `DllConfig{period:4800, rate:48000, initial_bw:BW_MIN,
-    bw_retune_period:0}` ticked at exactly 1 Hz, retune disabled so the number is
-    fixed and testable. Effective bandwidth = `0.016 × (4800/48000) / 1s =
-    0.0016 Hz`.
-  - **Separation**: 10× below the inner loop's locked floor, 80× below its
-    acquiring maximum — ≥10× in every inner-loop state.
-- **`Correction` mode (fan-in combo) — a pure integral, NOT the DLL.** The plant
-  is near-UNITY DC gain through the inner loop's lag (ppm→ppm, no integrator), and
-  a third-order DLL against that plant limit-cycles regardless of its bandwidth —
-  bandwidth separation is the wrong defense here. The outer law is a single slow
-  integrator (`CORRECTION_INTEGRAL_GAIN`, chosen a factor of ~5 below the measured
-  ring threshold against the real inner controller); one integrator around a near-
-  unity plant is unconditionally stable at that gain. See the mode's control-law
-  discussion in the mode-selection section above, and the servo-sim tests that
-  close the ladder against the real `RateController`.
-
-The slow settle is deliberate: PipeWire's docs warn UAC2 pitch control oscillates
-at a normal DLL bandwidth. In both modes the per-session probe's neutral baseline
-phase measures the raw host offset and seeds the commanded bias with
-`-baseline_obs` on entering `L0_LOCKED` (feed-forward), so coarse correction is
-immediate and the slow outer law only trims the residual.
-
-### Pitch neutrality — the safety invariant
-
-> **Removed 2026-07-10 (archaeology).** This whole four-layer usbsink pitch-
-> neutrality scheme was DELETED with the aloop solo path — the standby-only
-> usbsink daemon opens no ctl and has no host clock, so it has no startup/exit
-> neutralize, no ladder, and no `ExecStopPost` belt. The surviving neutrality
-> invariant is fan-in's alone (combo mode; see "Neutrality belt-and-braces —
-> fan-in is the sole pitch-ctl owner" above). The text below describes the
-> deleted solo behavior for historical context only.
-
-A host must never be left slaved to a stale command by a crashed or stopped
-daemon. Enforced in four layers, all gated on usbsink OWNING the ctl
-(`owns_host_clock_ctl()` = `!audio_standby` — in combo standby fan-in owns it,
-and usbsink stays fully hands-off; F1): (1) a startup neutralize
-write when the ctl opens, even with the feature disabled — heals a crashed
-predecessor; (2) the state-publisher's exit path resets to neutral on clean
-exit, SIGTERM/SIGINT, and audio-thread error (main sets the shared shutdown
-flag before joining); (3) every ladder transition into `L2_FALLBACK` or an
-idle boundary force-writes neutral; (4) belt-and-braces
-`ExecStopPost=-/usr/bin/amixer -c ${JASPER_USBSINK_MIXER_CARD} cset
-iface=PCM,name='Capture Pitch 1000000' 1000000` in
-[`deploy/systemd/jasper-usbsink.service`](../deploy/systemd/jasper-usbsink.service)
-covers SIGKILL / OOM-kill / watchdog abort, which layer (2) structurally
-cannot reach (the card is expanded from `JASPER_USBSINK_MIXER_CARD`, packaged
-default `UAC2Gadget`, so an operator card override redirects this line too; the
-belt itself is gated on `STANDBY != 1` so it doesn't stomp fan-in's combo
-command either). In SOLO mode all four apply regardless of
-`JASPER_USBSINK_HOST_CLOCK` — a stale non-neutral value could only exist if the
-feature had been enabled and the daemon then died uncleanly. In combo standby
-usbsink writes the ctl at NO layer: fan-in is the sole owner, so usbsink
-neutralizing at all would reset fan-in's live command behind its back.
-
-### Enabling on a lab box
-
-> **Removed 2026-07-10 (archaeology).** These are the DELETED usbsink-solo
-> daemon's enable/tunable surfaces — `JASPER_USBSINK_HOST_CLOCK*` no longer
-> parses anywhere. To enable the surviving combo servo, set
-> `JASPER_FANIN_HOST_CLOCK=enabled` (see the `HOST_CLOCK × USB_DIRECT` flag
-> matrix in the combo section above).
-
-```sh
-printf 'JASPER_USBSINK_HOST_CLOCK=enabled\n' | sudo tee -a /etc/jasper/jasper.env
-sudo systemctl restart jasper-usbsink
-```
-
-Tunables (each documented in `.env.example` with the full range/rationale):
-`JASPER_USBSINK_HOST_CLOCK_TARGET_FILL_FRAMES` (default 384 ≈ 8 ms),
-`JASPER_USBSINK_HOST_CLOCK_PROBE_PPM` (default 300),
-`JASPER_USBSINK_HOST_CLOCK_PROBE_SECONDS` (default 6, step phase; a fixed 4 s
-baseline phase always runs first, itself gated behind a fixed 2 s lock-settle
-wait — see "The probe does NOT baseline at the session edge" above). The servo
-clamp (±1000 ppm), write epsilon/cadence (10 ppm / <=1 Hz), tick interval
-(1 Hz), and the 2 s lock-settle are fixed Rust constants, not env-tunable —
-see `host_clock.rs`'s pinned-constants block.
-
-### What evidence `/state` gives
-
-> **Removed 2026-07-10 (archaeology).** `/state.audio_graph.rust_bridge.host_clock`
-> and the `check_usbsink_host_clock` doctor check were deleted with the solo
-> path; the live combo telemetry is `/state.audio_graph.fanin.host_clock` (see
-> "Combo host-clock telemetry" in the combo section above).
-
-```sh
-curl -s http://jts.local:8780/state | jq .audio_graph.rust_bridge.host_clock
-```
-
-null on a pre-Stage-1 build or unreadable state file; otherwise:
-
-```json
-{
-  "enabled": true,
-  "ladder": "l0_locked",
-  "pitch_ppm_commanded": -42.5,
-  "fill_frames": 380,
-  "fill_slope_ppm": 1.2,
-  "fill_variance": 4.0,
-  "dll": {"err_frames": -4.0, "locked": true},
-  "probe": {"last_result": "pass", "response_ratio": 0.91, "waiting_for_lock": false},
-  "demotions": 0,
-  "transitions": 2,
-  "last_transition_reason": "probe_pass"
-}
-```
-
-`dll.locked` is diagnostic only (expected `false` under the 256-frame fill
-quantization at this tick rate) — the ladder (`ladder` field) is the lock
-authority a consumer should read. `jasper-doctor`'s `check_usbsink_host_clock`
-skips when the feature is disabled or the block is absent, warns on
-`l2_fallback` (with `last_transition_reason` + lifetime `demotions`) and
-`l1_warn`, and otherwise reports the live `ladder`/`pitch_ppm`/`fill` numbers.
-`event=usbsink_audio.host_clock_*` journal lines (probe start/result, every
-ladder transition, pitch resets, saturation) give the per-event trace; there
-is no per-tick log spam.
-
-### Explicit non-goals for this stage
-
-Does not shrink the `lane_resampler` warm-up cushion, does not bypass or
-modify `lane_resampler`, does not touch fan-in / outputd / CamillaDSP.
-Cushion shrink is a separate, measurement-gated follow-up once L0 lock has
-been soaked and evidenced on hardware.
-
-## Productization Plan
-
-The current stable loopback path is the fallback floor, not the final
-low-latency architecture. Productization means keeping the protection/correction
-invariant while replacing measured latency bottlenecks with frame-bounded,
-observable clock-domain crossings.
-
-1. **Ship the stable fallback without a low-latency pass.** Keep
-   `usb_low_latency_48k` route policy, Rust USB bridge, fan-in USB resampler,
-   CamillaDSP, and outputd final reference wired as above. Doctor must continue
-   to fail the low-latency claim until measured route evidence exists.
-2. **Build the real measurement harness.** DONE — `jasper-route-latency-harness`
-   (source: `jasper/cli/route_latency_harness.py` + `jasper/route_latency/`) is
-   the click-in/capture-back producer `jasper-route-latency-artifact` binds
-   samples to the live route identity from. Its `quick`/`promotion` presets are
-   sized directly off the certification gates with margin (quick: 240 impulses
-   over 6 minutes for p95 <= 40 ms — tightened 2026-07-11 to the certified
-   electrical floor, see HANDOFF-usb-latency-measurement.md §1; promotion:
-   1200 jittered impulses over 36 minutes for p99 <= 42 ms). Note the preset
-   impulse counts/durations are sized off sample-count and duration floors,
-   not the ms budget, so they are unaffected by that tightening. See
-   [`docs/testing-tooling.md` "Route-latency click/capture harness"](testing-tooling.md#route-latency-clickcapture-harness)
-   for the architecture and the quick/promotion walkthroughs above. **Cert
-   landed:** the 2026-07-11 promotion run on jts.local produced a real pass
-   artifact at the electrical `:9891` plane (p50 36.35 / p95 37.93 / p99 38.29
-   ms, 1094 impulses / 32.6 min), so the harness is now hardware-proven, not
-   just unit-tested against synthetic evidence (`tests/test_route_latency_harness.py`
-   includes a clock-drift injection test). **Still owed:** ONE fresh re-cert run
-   against the tightened 40/42 budget — the budget rides `route_config_hash`, so
-   tightening it makes the just-passed artifact read `config_mismatch`; the
-   measured numbers clear the new gate with margin.
-3. **Replace the bottleneck, not the DAC owner.** The current loopback graph
-   cannot meet 40 ms because the USB resampler held target alone is ~42.7 ms.
-   The next architecture step is a frame-bounded transport at one or both
-   ALSA-loopback boundaries. Preserve these contracts:
-   - outputd remains the sole physical DAC owner and final-reference publisher;
-   - CamillaDSP remains in the protection/correction path;
-   - TTS/cues still enter the same protected graph and are included in the final
-     reference;
-   - every foreign clock has one explicit rate matcher, surfaced in `/state`.
-4. **Keep source claims honest.** USB can have a low-latency profile because it is
-   wired and local. AirPlay, Spotify, Bluetooth, DLNA, and future network sources
-   stay buffered and observable; they must not inherit USB's route claim. Their
-   `/state` surfaces should report fill/target/lock/ppm/xruns, not pretend to be
-   5 ms clients.
-5. **Keep DAC support declaration-driven.** A new DAC earns low-latency defaults
-   through `DacProfile.latency_floor` plus hardware evidence. Unknown DACs stay on
-   conservative defaults. Composite DACs need their own clock/child-identity
-   contract before they can claim this route.
-6. **Make AEC a profile contract, not a footnote.** The final AEC reference is
-   outputd's post-Camilla/post-protection electrical signal. Any bit-perfect or
-   bypass profile must explicitly declare AEC degraded/unsupported unless it
-   proves final-reference truth. Software AEC must align mic-clock capture to the
-   outputd/DAC reference domain; chip AEC needs a hardware profile that proves the
-   chip reference is coherent with the actual speaker output.
-7. **Promote only with evidence.** A route can move from fallback to production
-   low-latency only after quick validation, promotion validation, and a 24-hour
-   soak with no sustained USB resampler unlocks, no ring rails, no DLL clamp or
-   resync storm, and no outputd/fan-in xruns.
-
-## Legacy Cleanup Plan
-
-Remove legacy only after the replacement is live, measured, and covered by
-doctor/state/tests. Until then, keep old paths default-off or historical so the
-speaker remains recoverable.
-
-| Legacy path | Status | Cleanup trigger |
-|---|---|---|
-| Python/PortAudio and Rust `jasper-usbsink-audio` bridges | **DELETED** (USB dead-pipeline sweep) — fan-in DIRECT capture is the sole USB ingress; only the host-volume observer in `volume_bridge.py` survives | done |
-| lean FIFO USB-only route (`JASPER_LEAN_LANE`, `USBSINK_OUTPUT_MODE=fifo`, lean RawFile capture) | **DELETED** (USB dead-pipeline sweep) — it was reachable only through the deleted Python bridge (the Rust daemon has no fifo mode) | done |
-| `transport_pipe` fan-in↔Camilla dual FIFO coupling | **DELETED** (2026-07-11) — the shm_ring SHM-ring pair replaced its diagnostic value as the frame-bounded low-latency default; fan-in Output::Fifo + outputd local_content_pipe + the reconciler arm/gate branches + the JASPER_FANIN_CAMILLA_PIPE/JASPER_OUTPUTD_LOCAL_CONTENT_PIPE env keys are gone | done |
-| outputd `rate_match` content bridge for USB | **DELETED** — rejected for this route (produced content xruns/EAGAIN/partials in tuning), then removed along with `content_bridge.rs`, its three `_RING_FRAMES`/`_TARGET_FRAMES`/`_MAX_ADJUST_PPM` knobs, the reconciler's S16 format narrowing, and the AirPlay latency term. A persisted spelling fail-safes to `direct`; the route policy still refuses it | done |
-| adaptive fan-in output-buffer shrink (`JASPER_FANIN_ADAPTIVE_BUFFER`, `JASPER_FANIN_ADAPTIVE_SHRUNK_FRAMES`) | **DELETED** — the opt-in mux-driven shrink never passed an on-device soak; `jasper/fanin/buffer_reconcile.py`, mux's `_settle_adaptive_buffer` ladder and its `/state.fanin_output_buffer` block, and the runtime-plan source-route policy are gone. The packaged `jasper-fanin.service` 1024 default is now the only writer of the output buffer | done |
-| stale low-latency prose and component estimates | Historical context only | Compress into dated appendices as product docs converge on measured route artifacts |
-
-Before deleting any path, add a guard test that the production
-`usb_low_latency_48k` route no longer emits or accepts its env knobs, and run a
-Pi-side doctor pass to prove the fallback route still recovers.
-
-## Historical Lean-FIFO Plan
-
-## The latency problem (measured, shared/fan-in path)
-
-Before the Rust bridge plus fan-in input resampler, USB routed through the shared
-mixer had a steady-state Mac→DAC budget measured around **~70–100 ms, and
-variable**. Contributors:
-
-| Stage | Latency | Note |
-|---|---|---|
-| usbsink lane snd-aloop ring | **5–75 ms (sawtooth)** | the catch-up lets a free-running lane fill 1→14 periods before resyncing (`CATCHUP_HIGH_WATER_PERIODS=14`); measured at 43 ms mid-soak |
-| usbsink→fan-in snd-aloop hop | ~one ring | first loopback |
-| fan-in→CamillaDSP snd-aloop hop | ~one ring | second loopback (current `loopback` coupling) |
-| CamillaDSP chunksize | ~5–20 ms | depends on the active chunksize |
-| jasper-outputd DAC buffer | **~64 ms shipped default** | `snd_pcm_delay`, buffer/period 3072/1024 (the conservative global default); the Apple-dongle codified floor is 256/128 ≈ 10 ms |
-
-Two structural costs dominate: the **catch-up sawtooth** (a drop-control tradeoff —
-the high-water of 14 periods is sized to never false-trigger a healthy AirPlay
-burst+stall, so it inherently buffers up to ~75 ms on the USB lane) and the **two
-snd-aloop hops**. Neither is cheaply removable on the shared path.
-
-## The Former USB-only Answer: the lean-fifo path
-
-> **Removed (USB dead-pipeline sweep).** The lean-FIFO lane described below was
-> **deleted** — its only delivery path was the (also-deleted) Python bridge, and
-> the Rust `jasper-usbsink-audio` daemon never had a `fifo` output mode, so the
-> lane was unarmable on a production box. The text below is archaeology: the
-> `mux._enter_lean`/`_leave_lean`, `output_mode_reconcile.py`,
-> `stage_lean_capture_config`/`apply_lean_capture_config`, `lean_capture_kwargs`,
-> and `JASPER_LEAN_LANE` symbols it names no longer exist.
-
-This was historical/deferred and never a production route.
-When USB is the *sole* active source, it could route through the (now-removed)
-lean lane instead of the mixer:
-
-```
-usbsink (OUTPUT_MODE=fifo) → /run/jasper-usbsink/lean.pipe → CamillaDSP RawFile-capture
-   (enable_rate_adjust + AsyncSinc) → jasper-outputd → DAC
-```
-
-This **deletes both snd-aloop hops AND the catch-up sawtooth**: CamillaDSP's async
-resampler becomes the rate-correcting consumer disciplined by the real DAC clock, so
-the pipe sits at a small fixed fill (no sawtooth, no drift overflow). Estimated
-budget: CamillaDSP chunksize (~5 ms) + a small fifo + outputd DAC (~15–21 ms) ≈
-**<40 ms achievable**, stable.
-
-Tradeoff: the lean lane **bypasses the fan-in mixer**, so it is SOLO-only — AirPlay/
-Spotify/BT/TTS don't mix while it's armed. The mux ladder switches solo↔shared.
-
-## Historical Lean-FIFO Worklist (Superseded)
-
-This list records the old solo-lane plan for archaeology. It is not the current
-productionization sequence; use [Productization Plan](#productization-plan)
-above for current work.
-
-1. **Arm the lean lane through the mux ladder, not raw env.** DONE: mux now
-   computes one shared source-route decision from
-   `jasper.audio_runtime_plan.decide_source_low_latency_route`; the lean lane
-   (`JASPER_LEAN_LANE=enabled`) and adaptive fan-in buffer consume that same
-   USB-solo verdict, and `jasper.audio_runtime_plan.low_latency_feature_flags`
-   is the single parser for both opt-in gates. Validate the live switch
-   end-to-end and the TTS-while-solo handoff before default-on.
-2. **Drive the camilla side via the existing lean-config path** (`jasper/usbsink/
-   output_mode_reconcile.py` + the plan-owned `lean_capture_kwargs` RawFile
-   capture shape — RawFile, not File; the jts5 fix). Confirm `--check` valid
-   and no crash-loop.
-3. **Tune the buffer floors to the DAC's real floor.** DONE (the #27 codification, landed
-   2026-06-28). The DAC's stable buffer floor is now DATA on its `DacProfile`
-   (`jasper/audio_hardware/dac.py`: the `LatencyFloor` dataclass + the optional
-   `latency_floor` field), so a new DAC is declaration-only and zero per-user config.
-   The shipped *global* default stays conservative — CamillaDSP chunk 1024 / target 2048,
-   outputd period 1024 / dac_buffer 3072 (~64 ms) — and any DAC with no declared floor
-   keeps it (non-breaking). The **Apple-dongle profile** declares the measured floor
-   CamillaDSP chunk 256 / target 1536, outputd period 128 / dac_buffer 256 (≈ 10 ms),
-   after the 2026-07-01 jts.local tuning pass rejected Camilla target 1024 and
-   outputd period 64 / dac_buffer 128 due USB bridge playback xruns. The floor is
-   a CamillaDSP (chunksize, target_level) PAIR — target must be ≥ 4x chunk so the resampler
-   has fill headroom (chunk 256 → target 1536 on the Apple profile), enforced in
-   `LatencyFloor.__post_init__`.
-   Two consumers read the floor, each on its own path:
-   - **The Python CamillaDSP config emitters** (`jasper/sound/camilla_yaml.py` +
-     `jasper/active_speaker/camilla_yaml.py`) resolve the floor *directly from the
-     active output DAC profile* — `resolve_camilla_chunksize` /
-     `resolve_camilla_target_level` read the resolved output-hardware state
-     (`/run/jasper-output-hardware/output_hardware.json`, the SAME state the
-     reconciler / `jasper.output_hardware` use to pick a profile id) and look up that
-     profile's `LatencyFloor`. This is env-independent on purpose: it reaches EVERY
-     live generation path — `install.sh`'s `runtime-safe-graph`, the
-     `jasper-camilla` ExecStartPre statefile guards, and `jasper-control`'s sound /
-     active-speaker generation — none of which load `outputd.env`. Precedence is
-     `max(JASPER_CAMILLA_CHUNKSIZE`/`_TARGET_LEVEL`, active profile floor) >
-     global default: operator env may raise latency above the floor, but stale /
-     over-aggressive below-floor env is clamped back to the profile floor. A state
-     file that is absent or unreadable simply keeps the global default (a fresh box
-     before the reconciler's first write is non-breaking, never an unloadable config).
-   - **jasper-outputd (Rust)** reads `JASPER_OUTPUTD_PERIOD_FRAMES` /
-     `_DAC_BUFFER_FRAMES`, which `jasper-audio-hardware-reconcile` emits from the
-     active profile via `latency_floor_for(...)` into the wizard-owned `outputd.env`
-     (mirroring the `JASPER_OUTPUTD_ACTIVE_CHANNELS` write). It also mirrors the two
-     CamillaDSP keys there for observability. **Operator override precedence:** the
-     outputd unit loads `jasper.env` BEFORE `outputd.env`, so when an operator sets a
-     floor key in `jasper.env` the reconciler must *remove* that key from
-     `outputd.env` entirely — writing it empty would override the operator's value
-     with empty (and Rust would fall back to its hardcoded default, silently
-     discarding the tune). The reconciler drops the key (via `jasper_env_file_unset`)
-     so the operator's earlier-loaded value wins. A DAC with no declared floor likewise
-     drops the keys so a stale floor from a previously-attached DAC cannot linger.
-   DEFERRED: tier-aware chunksize (Pi 5 low / Pi Zero safe) and an install-time xrun
-   auto-sweep — not yet built.
-4. **Historical measurement target:** Mac→USB solo was aiming for <60 ms,
-   ideally <40 ms, plus sustained-play and transition soak. The current route
-   target is stricter and artifact-based: p95 <= 40 ms, promotion p99 <= 60 ms.
-5. **Historical cross-platform reliability:** repeat the solo lean-fifo
-   measurement on Windows + a second DAC only if this solo profile is revived.
-
-## The shared-path alternative: per-input resampler (DEFAULT-OFF, first cut)
-
-The lean-fifo above is SOLO-only. The *one-path* answer keeps USB in the
-shared fan-in mixer but removes the catch-up sawtooth on that lane by
-reconciling the host rate to the DAC clock at the fan-in **input edge** — a
-per-input windowed-sinc resampler, DLL-steered to the DAC clock
-(`rust/jasper-fanin/src/lane_resampler.rs`, composing the shared
-`jasper-resampler` `AudioRing`/`SincTable`/`RateController`, the same crate
-`content_bridge` uses). Moving reconciliation here also leaves CamillaDSP
-DAC-paced without `rate_adjust` on the clockless USB input — dissolving the
-underrun class that `rate_adjust` produced on-device. It is **DEFAULT-OFF**
-behind `JASPER_FANIN_INPUT_RESAMPLER=enabled` (see HANDOFF-fan-in-daemon.md
-"Per-input adaptive resampler") and is a **first cut owing on-device
-real-time validation** — drop-free under sustained USB play + transitions,
-latency below the catch-up sawtooth, lock stability, soak. It removes one
-snd-aloop hop's worth of sawtooth but NOT the second snd-aloop hop or the
-DAC buffer, so its floor is higher than the lean-fifo's; the eventual goal is
-to make it good enough to delete the lean lane (the "converge to one path"
-step), but that is gated on this validation.
-
-## Why not just lower the catch-up high-water?
-Lowering `CATCHUP_HIGH_WATER_PERIODS` would shrink the shared-path sawtooth but
-re-introduce false-triggers on healthy AirPlay burst+stall transients (~12.4-period
-peak) — trading latency for drops on every source. The lean-fifo gets low latency
-*without* that tradeoff because it removes the sawtooth mechanism entirely.
-
-Last verified: 2026-08-15 for the DIRECT lane's capture WIDTH, in a separate
-pass after the ring wire's default sample format flipped narrow → wide: three
-sites stated the S32→S16 high-word truncation as unconditional, but it is
-gated on `Config::program_wire_is_wide` (`lane_wants_spine_buffer` →
-`direct_capture::push_capture_chunk`), whose format half now defaults wide —
-re-derived against `rust/jasper-fanin/src/{mixer,mixer/direct_capture}.rs` and
-`jasper.fanin_coupling.resolve_ring_wire_format`. Nothing else in that pass;
-no box was probed. Prior 2026-08-15 for the host-compliance prime and the
-direct lane's
-device-open lifecycle ONLY (#2533): the prime is now ARMED at build/session
-boundaries and ENGAGED by the lane's first frames, and every proof write, revoke,
-gadget `snd_pcm_open` and `snd_pcm_close` moved off the render thread onto the
-`fanin-compliance-writer` / `fanin-direct-opener` threads; the "Prime-at-floor",
-per-session callout, and Observability sections were rewritten against
-`rust/jasper-fanin/src/{lane_resampler,host_compliance,mixer,mixer/direct_capture}.rs`.
-The rest of this file was NOT re-verified in that pass and keeps its prior date.
-Prior 2026-07-23 (the coordinated combo restart's soft AEC-bridge
-lifecycle boundary was rechecked against the #1264 hardware failure and
-HANDOFF-aec.md; direct-health and reopen fields were rechecked as
-fan-in recovery observability only, with no health-driven USB lifecycle action;
-the retired Rust bridge/state surface was removed;
-USB-toggle trigger ownership rechecked against
-`jasper.source_intent`; `/sources/` now requests intent and the shared source
-coordinator kicks coupling only after a real USB transition. See
-HANDOFF-source-lifecycle.md. Also 2026-07-23: #1257 landed — a change whose
-only committed delta is outputd.env (the floor re-emit) now bounces
-jasper-outputd alone via `restart_outputd_only` instead of stopping
-jasper-voice, so a `/sources/` USB toggle-off no longer deafens wake for
-~10-15 s; truthed the "Wake-preserving floor re-emit" paragraph above and the
-`_disarm` docstring in `jasper/fanin/coupling_reconcile.py`. Prior 2026-07-13 re-verified the host-clock capture/control generation
-lifecycle, bounded same-stream retry, explicit fallback causes, compliance
-actions, STATUS/doctor contract, canonical deploy, coordinated restart, and live
-gadget rebuild on jts.local; also re-verified the route artifact/doctor live-state
-contract against `jasper/audio_validation.py`, `jasper/cli/doctor/audio.py`, and
-fan-in's canonical `direct.health` idle/capturing/broken classifier; doctor now
-tolerates only the activity-dependent idle unlock while artifact creation stays
-strict and static target identity still matches). Prior 2026-07-11: recorded the
-2026-07-11 promotion cert result in
-"Current Production Route" and "Productization Plan", tightened the cert-gate
-mentions from p95<=48/p99<=60 to the certified p95<=40/p99<=42 ms budget, and
-noted the config_mismatch re-cert requirement; re-verified against
-`jasper/audio_runtime_plan.py` / `jasper/audio_validation.py`. Left the
-superseded "Historical Lean-FIFO Worklist" (p95<=40/p99<=60 line) untouched per
-the doc-freshness convention. Same day, earlier: fix-forward from the #1251
-post-merge audit: truthed the "Current Production Route" disarm-kick paragraph
-above with the voice-stop cost, the outputd double-bounce, and the
-`_recover_to_loopback` no-kick exception; cross-referenced issue #1257. Same
-day, earlier: de-staled
-the await-lock LOCKED-mapping passage in
-"The probe does NOT baseline at the session edge": its "two daemons map LOCKED
-differently" bullets still presented the deleted usbsink-solo settle-only
-(`playing`) gate as a live parallel branch to fan-in's `locked_state` — missed
-by the 2026-07-10 deletion sweep; now combo-only prose with a deleted-solo
-note. Same day, earlier: updated the "certification gates" mentions in
-"Current Production Route" and "Productization Plan" from the retired
-p95<=40ms budget to the honest, recalibrated p95<=48ms budget in
-`jasper/audio_runtime_plan.py`; no other claims in this doc rechecked this
-pass. Same day, earlier: added the first-Windows-session ordered discovery
-checklist to "Cross-platform conditions", cross-linked from
-HANDOFF-usb-latency-measurement.md §7 — re-confirmed `MAX_BIAS_PPM`/the
-~163 ppm deadband in `rust/jasper-host-clock/src/lib.rs`, the `PROBE_PPM`
-200..=800 range in `rust/jasper-fanin/src/config.rs`, `RevalidationTracker` in
-`rust/jasper-fanin/src/host_compliance.rs`, and the dwc2 endpoint-capacity gap
-already flagged in HANDOFF-usb-gadget.md. Prior 2026-07-10: aloop solo USB
-capture path DELETED — `jasper-fanin`
-DIRECT-captures `hw:UAC2Gadget` as the sole USB ingress; the
-`jasper-usbsink-audio` bridge is standby-only. Removed with it: the bridge
-`:8781` preempt/tap listener, the bridge's solo `Fill`-mode host clock
-(`JASPER_USBSINK_HOST_CLOCK*`, `rust/jasper-usbsink-audio/src/host_clock.rs`, the
-`ExecStopPost` pitch belt, `/state.audio_graph.rust_bridge.host_clock`, and
-`check_usbsink_host_clock`), and the `usbsink_substream` write alias. Updated the
-Current Production Route ingress, the STANDBY/USB_DIRECT flag matrix (STANDBY now
-always `1`), the `--tap-transport` prose (`auto` == fan-in, the only ingress),
-the combo host-clock "one home per mode" + fan-in flag matrix + neutrality-belt
-notes, and added a removed-callout atop the Stage-1 (bridge) host-clock section.
-The surviving combo host clock (`JASPER_FANIN_HOST_CLOCK`, `jasper-fanin`
-`Correction` mode) is unchanged. Prior 2026-07-10: "Arbitration mechanism"
-section corrected — auto
-mode has single-SELECTed the winner since `414adcd0` (2026-05-27), which
-already excluded a non-winner USB lane from fan-in's sum with no exemption for
-the DIRECT lane, so a genuinely multi-source gadget box never actually layered
-USB under a new winner. The fanin-native preempt PR's `MUTE`/`UNMUTE usbsink`
-over fan-in's control socket (pre-mute telemetry preserved) is real,
-independent, transition-logged silencing — defense-in-depth today, and it
-becomes the load-bearing arbitration primitive once the :8781/aloop solo path
-is deleted. The earlier combo silence gate had already closed the visibility
-half (per-lane `rms_dbfs` + combo liveness gated at `-60` dBFS). Prior recheck
-2026-07-06: `outputd.env` config-shear guard rechecked against
-content and DAC buffer/period validation in `jasper.audio_runtime_plan`,
-`jasper.cli.audio_config validate-outputd-env`,
-`deploy/bin/jasper-audio-hardware-reconcile`, and
-`deploy/bin/jasper-outputd-failure-reconcile`; prior hardware evidence remains
-from 2026-07-03: 20-minute final run at the merged floor, 640/640
-impulses, e2e p50 45.8 / p95 47.3 / p99 48.1 ms; fleet AirPlay/Spotify pass).
-Ladder "Observable mode" + "Two controllers in cascade" sections re-verified
-2026-07-03 against the correction-observable redesign AND its staff-review fix
-(`ObsMode::Fill`/`Correction`, `Obs.correction_ppm`, the pure-integral
-`Correction` outer law `CORRECTION_INTEGRAL_GAIN`, the longer/adaptive-direction
-`Correction` probe, `host_clock.obs_mode`/`correction_ppm` STATUS) on branch
-`latency/combo-servo-correction`; servo-sim now closes against the real
-`jasper_resampler::RateController`. Combo on-hardware validation still owed.
-2048, CamillaDSP 256/1536, outputd 128/256, outputd content buffer 1536, and
-direct ALSA loopback coupling. `jasper-route-latency-harness` — the
-click-in/capture-back producer this doc previously described as missing — now
-exists (`jasper/cli/route_latency_harness.py` + `jasper/route_latency/`,
-hardware-free pytest including a clock-drift injection test) and
-`sudo /opt/jasper/.venv/bin/jasper-route-latency-artifact` binds its output to
-the live route identity. Neither has yet produced a real on-device artifact
-from an actual click-track playback against jts.local's XVF3800, so doctor
-correctly continues to fail the low-latency claim until that run happens.
-The Stage 1 host-slaved USB clock mechanism/ladder/telemetry
-(`rust/jasper-usbsink-audio/src/host_clock.rs`, default-OFF via
-`JASPER_USBSINK_HOST_CLOCK`) landed the same day with hardware-free
-pytest/cargo coverage on both sides of the state.json contract; on-device
-compliance-probe validation against jts.local's Apple dongle host is a
-separate, not-yet-run task.)
-
-The **probe false-fail hardening** that landed 2026-07-03 against the jts.local
-floor-primed rail (a two-strike probe fail, floor-prime seating, and the
-prime-aware `NotL0` hold) was deleted 2026-08-25 with the host-compliance
-persistence it protected: a session can no longer start at the decay floor, so
-the ceiling-scale held target that railed the probe is the only state there is
-and the descent it belongs to is the normal one. The `jasper-host-clock` crate
-tests for the settle/probe composition are unaffected and still run
-(`correction_probe_settle_accrues_at_the_rail`,
-`beyond_authority_railed_host_probes_pass_then_fail`).
-
-**Unrailed-settle guard REMOVED (jts.local 2026-07-05).** The CORRECTION-mode
-rail guard added 2026-07-03 (`settle_regime_ok` refusing to accrue the AwaitLock
-settle window while `|correction_mean| >= 450`) was falsified on hardware and
-removed; `settle_regime_ok` reverts to `obs.locked` in both modes. **Deadlock
-class — beyond-authority host.** jts.local's Mac host runs ~+600 ppm fast,
-BEYOND the lane resampler's ±500 ppm inner authority. With the servo holding
-NEUTRAL pitch during AwaitLock (by design), the correction rails at +500
-STEADY-STATE and cannot leave the rail without the servo's pitch help — but the
-servo (probe → l0 → TRIM) waits on the probe, the probe waits on the guard, and
-the guard waits on the unrail that only the pitch can produce. Two consecutive
-sessions sat in `ProbePhase::AwaitLock` for the full 6+ min session:
-`event=fanin.host_clock_probe_wait reason=await_lock` at session start, then
-NOTHING until `event=fanin.host_clock_probe_result result=await_lock_ended` at
-stream stop; `correction_mean_ppm` pinned 500.0, `pitch_ppm_commanded` 0.0,
-decay frozen `not_l0`. One earlier session escaped
-only by racing the correction ramp-up (settle accrued while correction was still
-climbing through <450 after a fresh daemon start), then probed FROM A RAILED
-BASELINE — `baseline_obs_ppm=500.0, step_obs_ppm=258.0, response_ratio=0.807`
-PASS — proving the probe math works from the rail. **Why removal, not bounding.**
-(1) The transient the guard was built for — the floor-primed `NotL0` snap-back
-rail (above) — cannot occur: the floor prime that produced it was deleted
-2026-08-25. (2) #1144's step-AWAY-from-the-rail
-already makes a railed baseline measurable (the 0.807 pass is the hardware
-proof). (3) A STEADY-STATE clipped rail is fail-biased, never pass-biased: a
-stationary clipped baseline UNDERSTATES demand, so a truly non-compliant host
-reads `baseline 500 → step 500 → ratio 0 → FAIL` — for a stationary rail, removing
-the guard cannot create a false PASS. (The one exception is a DECAYING transient
-rail, whose observable slews toward the step direction as it decays and can INFLATE
-the ratio — but that class the 450 guard never closed either, since a slow decay
-keeps moving through the step window after the smoothed correction drops below 450;
-it is closed by root-fixing transient causes per (1), not by the settle gate.) (4) A steady
-railed correction is indistinguishable from a beyond-authority host, which is
-exactly the host the servo exists to serve; probing is measurement, not
-commitment. Pinned by `correction_probe_settle_accrues_at_the_rail`
-(railed-but-locked leaves AwaitLock and reaches a verdict, no deadlock) and
-`beyond_authority_railed_host_probes_pass_then_fail` (a +600 ppm host: compliant
-PASSES from the rail via the away-from-rail step, non-compliant FAILS —
-fail-bias) in the `jasper-host-clock` crate.
-
-**Fast stop→start "obs-dead" re-observation (jts.local 2026-07-05, 22:07 EDT) —
-same deadlock, INVESTIGATED not re-fixed.** A separate hardware note observed
-a ~0-1 s gap between a stream stop and a new stream start leaving the ladder "in
-AwaitLock for the entire next session with dead observation (correction_ppm 0.0,
-dll locked=false) while the lane itself was locked and railing; no session_start
-transition fired." This is NOT a distinct session-edge re-arm bug — it is a
-composition of the SAME beyond-authority rail deadlock above (note the "pre-rail-
-guard-removal" timestamp): (1) the ladder was stuck in AwaitLock because the
-correction railed at +500 under the neutral AwaitLock pitch (the deadlock), and
-(2) "no session_start" is a CONSEQUENCE — across a sub-second stop→start the
-resampler never lost lock, so `playing` (= resampler locked) never went false at
-a 1 Hz tick, so no session falling edge and no fresh `begin_probe`; that is
-CORRECT behaviour (an uninterrupted session must not re-probe), and it was only
-pathological because the session it stayed in was the deadlocked AwaitLock one.
-With `settle_regime_ok == obs.locked` (#1167) the railing session leaves AwaitLock
-and reaches a verdict on its own, and a genuine stop→start (lock actually dropped)
-re-arms the probe cleanly. Pinned by
-`defect_f_fast_stop_start_does_not_deadlock_await_lock` in the `jasper-host-clock`
-crate (a railing +600 ppm host reaches a verdict; a sub-second stop→start re-arms
-a LIVE probe wait — never dead-in-AwaitLock). No code changed for this note.
+Selection lives in `jasper/route_latency/tap_transport.py`; the fan-in UDS client
+is `FaninTapClient` in `jasper/route_latency/tap_client.py`.
+
+## Observability
+
+Fan-in STATUS (`STATUS` on `/run/jasper-fanin/control.sock`, surfaced on
+`/state.audio_graph.fanin`): every input carries `"source":"lane"|"direct"`, and
+the direct lane adds
+`"direct":{"device","present","health","opens","retries","reopen_pending","reopens","card_gen_reopens"}`.
+`health` is the coarse classification driving fan-in's own recovery —
+`"capturing"`, `"idle"` (no host, attached-but-silent, or reopening — never a
+failure), or `"broken"` (the zombie signature). **These fields are observability
+only: they never withdraw UAC2 or disarm direct capture.** Frames and xruns ride
+the existing `frames_read`/`xrun_count`; rate lock rides the existing
+`resampler{}` block; the host-clock ladder rides `host_clock{}` with `obs_mode`
+and `correction_ppm`.

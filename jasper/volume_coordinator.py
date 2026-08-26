@@ -1068,8 +1068,8 @@ class VolumeCoordinator:
                 # IDLE and USBSINK both land here. USBSINK is
                 # camilla-master like AirPlay; we don't write back
                 # to the gadget's mixer (the host's slider is
-                # observed-only — see observe_source_volume above
-                # and HANDOFF-usbsink.md §3.2).
+                # observed-only — see observe_source_volume above and
+                # historical/usbsink-implementation-appendix.md §3.2).
                 await self._set_camilla(level)
         finally:
             if persist:

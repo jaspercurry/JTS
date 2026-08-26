@@ -17,9 +17,9 @@ jasper-control's /volume/set endpoint with
 source="usbsink". The endpoint routes through
 VolumeCoordinator.observe_source_volume(), which goes through echo
 prevention — so a remote twist that triggered an outbound write to the
-gadget mixer (we don't actually do this, see HANDOFF-usbsink.md §3.2
-"Why no outbound write back to the host") wouldn't bounce back as a
-phantom user-side change.
+gadget mixer (we don't actually do this — see
+docs/historical/usbsink-implementation-appendix.md §3.2 "Why no outbound
+write back to the host") wouldn't bounce back as a phantom user-side change.
 
 Polling vs event-driven. The naive choice would be pyalsaaudio's
 event API + asyncio.add_reader on the mixer FD. We picked polling
