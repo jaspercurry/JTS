@@ -386,7 +386,9 @@ def _wizard_socket_state(unit: str) -> tuple[str, str]:
     is not installed on this profile, which ``systemctl show`` answers as
     ``ActiveState=inactive`` / ``Result=success`` at rc=0 (measured on jts4)
     rather than erroring. ``FileNotFoundError`` propagates so the caller can
-    skip the whole sweep once on a host with no ``systemctl``.
+    skip the whole sweep once on a host with no ``systemctl``;
+    ``TimeoutExpired`` propagates so it can be charged to this one unit and
+    the remaining wizards still get read.
     """
     socket_unit = f"{unit}.socket"
     show = _run(
@@ -487,11 +489,14 @@ def check_wizard_socket_start_limits() -> CheckResult:
     inbound request propagates the marker to the socket, so the state
     converges after one connection.
 
-    A read that fails — non-zero ``systemctl``, or output carrying no
-    ``ActiveState`` — is a ``fail``, never an ``ok``: "systemd says healthy"
-    and "I could not ask systemd" must not render identically (#2216
-    should-fix 2). ``systemctl`` missing outright is a dev host rather than a
-    speaker, and skips like every sibling.
+    A read that fails — non-zero ``systemctl``, output carrying no
+    ``ActiveState``, or a probe that times out — is a ``fail``, never an
+    ``ok``: "systemd says healthy" and "I could not ask systemd" must not
+    render identically (#2216 should-fix 2). A timeout is charged to its own
+    unit rather than aborting the sweep: a wedged D-Bus can hang every one of
+    these reads, and the whole point of the sweep is to still name the
+    wizards it did manage to read. ``systemctl`` missing outright is a dev
+    host rather than a speaker, and skips like every sibling.
     """
     label = "wizard socket start limits"
     observed: list[str] = []
@@ -503,9 +508,17 @@ def check_wizard_socket_start_limits() -> CheckResult:
             return CheckResult(
                 label, "ok", "systemctl unavailable — skipped (not Linux?)"
             )
-        observed.append(f"{unit}.socket={active or '?'}")
+        except subprocess.TimeoutExpired as e:
+            findings.append(
+                f"timed out reading {unit}.socket state from systemctl "
+                f"({e}) — a start-limited wizard is indistinguishable from a "
+                "healthy one until this reads"
+            )
+            continue
         if finding:
             findings.append(finding)
+        else:
+            observed.append(f"{unit}.socket={active}")
     if findings:
         return CheckResult(label, "fail", " ".join(findings))
     return CheckResult(label, "ok", ", ".join(observed))

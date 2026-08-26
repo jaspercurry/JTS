@@ -447,6 +447,22 @@ def test_conversation_history_ok_with_existing_db(monkeypatch, tmp_path):
 # not hand-written states chosen to match an assumption, which is precisely
 # how the first revision of this check shipped blind to its own failure mode.
 
+def _installer_wizard_units() -> set[str]:
+    text = (ROOT / "deploy/lib/install/systemd-units.sh").read_text(
+        encoding="utf-8"
+    )
+    match = re.search(r"^WIZARD_UNITS=\(\n(.*?)^\)", text, re.M | re.S)
+    assert match, "WIZARD_UNITS array not found in systemd-units.sh"
+    return {line.strip() for line in match.group(1).splitlines() if line.strip()}
+
+
+# The family these tests demand coverage of, read from the installer rather
+# than from the constant under test: parametrizing over doctor_web.WIZARD_UNITS
+# would make narrowing that tuple DESELECT the cases instead of failing them,
+# so the sweep could be reverted to one wizard with every per-unit case still
+# green.
+_WIZARDS = sorted(_installer_wizard_units())
+
 _BOUND = "ActiveState=active\nResult=success\n"
 _START_LIMITED = "ActiveState=failed\nResult=service-start-limit-hit\n"
 # `systemctl show` on a unit that does not exist answers rc=0 with these.
@@ -463,7 +479,7 @@ def _socket_states(overrides=None, *, returncode=0, stderr=""):
     in 20 seconds of ordinary retrying while the socket never leaves
     ``active``), so a revision that reaches for it fails here.
     """
-    states = {f"{unit}.socket": _BOUND for unit in doctor_web.WIZARD_UNITS}
+    states = {f"{unit}.socket": _BOUND for unit in _WIZARDS}
     for unit, body in (overrides or {}).items():
         states[f"{unit}.socket"] = body
 
@@ -479,12 +495,12 @@ def _socket_states(overrides=None, *, returncode=0, stderr=""):
     return fake_run
 
 
-@pytest.mark.parametrize("unit", doctor_web.WIZARD_UNITS)
+@pytest.mark.parametrize("unit", _WIZARDS)
 def test_start_limited_wizard_socket_fails_with_its_own_remedy(monkeypatch, unit):
     """Each wizard's wedged socket is named, with the command that clears it.
 
-    Killing the generalization (narrowing the sweep back to
-    jasper-correction-web) fails every other unit here.
+    Parametrized from the installer's family, so narrowing the sweep back to
+    jasper-correction-web FAILS the other four rather than deselecting them.
     """
     monkeypatch.setattr(
         doctor_web, "_run", _socket_states({unit: _START_LIMITED}),
@@ -502,7 +518,7 @@ def test_start_limited_wizard_socket_fails_with_its_own_remedy(monkeypatch, unit
     )
 
 
-@pytest.mark.parametrize("unit", doctor_web.WIZARD_UNITS)
+@pytest.mark.parametrize("unit", _WIZARDS)
 def test_absent_wizard_unit_is_ok(monkeypatch, unit):
     """A wizard the profile does not install is not a finding.
 
@@ -526,8 +542,7 @@ def test_absent_wizard_unit_is_ok(monkeypatch, unit):
 )
 def test_healthy_wizard_sockets_are_ok(monkeypatch, body, why):
     monkeypatch.setattr(
-        doctor_web, "_run",
-        _socket_states({unit: body for unit in doctor_web.WIZARD_UNITS}),
+        doctor_web, "_run", _socket_states({unit: body for unit in _WIZARDS}),
     )
 
     r = doctor_web.check_wizard_socket_start_limits()
@@ -577,7 +592,7 @@ def test_unreadable_wizard_socket_probe_fails(
     monkeypatch.setattr(
         doctor_web, "_run",
         _socket_states(
-            {unit: body for unit in doctor_web.WIZARD_UNITS},
+            {unit: body for unit in _WIZARDS},
             returncode=returncode, stderr=stderr,
         ),
     )
@@ -586,6 +601,31 @@ def test_unreadable_wizard_socket_probe_fails(
 
     assert r.status == "fail"
     assert must_name in r.detail
+
+
+def test_one_timed_out_wizard_probe_still_reads_the_rest(monkeypatch):
+    """A wedged D-Bus hangs these reads — the sweep must survive the first one.
+
+    Uncaught, ``TimeoutExpired`` aborts into the harness's generic crashed-check
+    result and loses every per-unit finding, on exactly the failure this check
+    exists to diagnose.
+    """
+    hangs, wedged = _WIZARDS[0], _WIZARDS[1]
+    serve = _socket_states({wedged: _START_LIMITED})
+
+    def fake_run(cmd, timeout=5.0):
+        if cmd[2] == f"{hangs}.socket":
+            raise subprocess.TimeoutExpired(cmd, 5.0)
+        return serve(cmd, timeout=timeout)
+
+    monkeypatch.setattr(doctor_web, "_run", fake_run)
+
+    r = doctor_web.check_wizard_socket_start_limits()
+
+    assert r.status == "fail"
+    assert f"{hangs}.socket" in r.detail
+    # The finding the sweep would have lost by aborting on the timeout.
+    assert f"sudo systemctl reset-failed {wedged}.socket" in r.detail
 
 
 def test_wizard_socket_start_limits_skips_without_systemctl(monkeypatch):
@@ -600,15 +640,6 @@ def test_wizard_socket_start_limits_skips_without_systemctl(monkeypatch):
 
     assert r.status == "ok"
     assert "skipped" in r.detail
-
-
-def _installer_wizard_units() -> set[str]:
-    text = (ROOT / "deploy/lib/install/systemd-units.sh").read_text(
-        encoding="utf-8"
-    )
-    match = re.search(r"^WIZARD_UNITS=\(\n(.*?)^\)", text, re.M | re.S)
-    assert match, "WIZARD_UNITS array not found in systemd-units.sh"
-    return {line.strip() for line in match.group(1).splitlines() if line.strip()}
 
 
 def test_swept_units_match_the_installers_wizard_family():
