@@ -38,6 +38,7 @@ from types import SimpleNamespace
 import pytest
 
 from jasper.active_speaker import crossover_v2_flow as flow
+from jasper.active_speaker.crossover_v2 import capture_plan
 from jasper.active_speaker.crossover_envelope_v2 import (
     _TIER_CLAIMS,
     _TIER_LABELS,
@@ -235,7 +236,9 @@ def test_remotes_stage_1_n_states_the_assumption_that_makes_it_safe(monkeypatch)
     rows at that N. Flipping the flag back on must trip a NAMED refusal that
     says what to do, not an incidental raise from the angle helper."""
     assert flow.remote_cloud_measure_positions() == flow.DEFAULT_CLOUD_MEASURE_POSITIONS
-    monkeypatch.setattr(flow, "STAGE1_INCLUDES_CLOUD_MEASURE", True)
+    # The flag and the function that reads it both live in
+    # ``crossover_v2.capture_plan``; the flow only re-exports the name.
+    monkeypatch.setattr(capture_plan, "STAGE1_INCLUDES_CLOUD_MEASURE", True)
     with pytest.raises(CrossoverV2FlowError, match="cannot walk a pre-apply cloud"):
         flow.remote_cloud_measure_positions()
     # The refusal names the fix, not just the symptom.

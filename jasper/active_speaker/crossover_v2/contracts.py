@@ -72,6 +72,7 @@ __all__ = [
     "CandidateFcDisagreementError",
     "CaptureValidity",
     "CrossoverV2ContractError",
+    "CrossoverV2FlowError",
     "DEFAULT_CLOUD_MEASURE_POSITIONS",
     "DESIGN_AXIS_DEG",
     "EvidenceTrust",
@@ -115,6 +116,16 @@ __all__ = [
 #: "the blend record is absent for this round" — the two are different facts
 #: and only the version can separate them.
 SCHEMA_VERSION = 2
+
+
+class CrossoverV2FlowError(RuntimeError):
+    """The v2 session could not form a safe phase transition.
+
+    Here rather than in the flow because two modules raise it and neither may
+    import the other: :mod:`.capture_plan` refuses a plan that cannot fit, and
+    the flow refuses a transition. ``angle_capture_spool.AngleRequestRefused``
+    subclasses it, which is what lets one ``except`` clause cover both.
+    """
 
 
 class CrossoverV2ContractError(ValueError):

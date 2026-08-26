@@ -36,6 +36,7 @@ import pytest
 import yaml
 
 from jasper.active_speaker import crossover_v2_flow as flow
+from jasper.active_speaker.crossover_v2 import capture_plan
 from jasper.active_speaker.crossover_v2 import refusal_copy
 from jasper.active_speaker.crossover_v2 import accountability
 from jasper.active_speaker.crossover_v2 import intervention as iv
@@ -1490,8 +1491,10 @@ def test_the_tier_chooser_quotes_the_stage_1_the_session_actually_runs():
     # The degraded fallback answers with the SAME numbers, so a failure in the
     # memoized build cannot quietly restore the cloud-inclusive figures.
     with pytest.MonkeyPatch.context() as mp:
+        # The memo lives with ``tier_display_info`` in ``crossover_v2.capture_plan``;
+        # patching the flow's re-export would rebind a name nothing reads.
         mp.setattr(
-            flow, "_tier_display_info_cached",
+            capture_plan, "_tier_display_info_cached",
             lambda: (_ for _ in ()).throw(ValueError("forced")),
         )
         degraded = flow.tier_display_info()
