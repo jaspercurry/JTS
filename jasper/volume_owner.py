@@ -541,11 +541,19 @@ class VolumeOwner:
                 )
             if self._claims.get(handle.token) != handle:
                 return
+            # Validated BEFORE the ledger changes: a refusal here must leave
+            # the caller still holding its claim. Validating after the `del`
+            # strands a ducked speaker — the holder believes it released, and
+            # its own restore has no claim left to give the attenuation back.
+            # After the held-check, though, so an idempotent no-op release
+            # stays a no-op rather than starting to raise.
+            household = (
+                None if household_level_db is None
+                else _finite(household_level_db, "household_level_db")
+            )
             del self._claims[handle.token]
-            if household_level_db is not None:
-                self._replace_household_claim(
-                    _finite(household_level_db, "household_level_db")
-                )
+            if household is not None:
+                self._replace_household_claim(household)
             reference = self.declared_level_db()
             if reference is None:
                 await self._disclose_release_without_level(handle)
