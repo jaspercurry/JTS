@@ -917,7 +917,7 @@ def test_capture_plan_accepts_the_multi_position_capacity_the_choreography_needs
     """A plan larger than the pre-raise ceiling of 8 validates up to the new cap.
 
     The regime pinned here is the ENTRY count PR-3b's choreography needs
-    (docs/flat-linearization-productization-plan.md § PR-3b: 21 entries at the
+    (docs/historical/linearization-campaign-2026-07.md § PR-3b: 21 entries at the
     documented maxima) plus the retake budget that shares `max_attempts` — not
     an arbitrary large number.
     """

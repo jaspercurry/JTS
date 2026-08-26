@@ -9534,7 +9534,7 @@ def test_boost_is_refused_when_the_cloud_verdict_never_reached_the_envelope():
 def test_boost_is_granted_on_the_driver_only_path_that_plans_no_cloud():
     """**The owner's boost ruling** (#2106, 2026-08-05), on the path it is
     about — recorded in the "Boost ruling" block of
-    ``docs/crossover-linearization-80-20-plan.md`` §4.2.
+    ``docs/historical/linearization-campaign-2026-07.md`` §4.2.
 
     R15 took the pre-apply cloud out of stage 1 (``STAGE1_INCLUDES_CLOUD_
     MEASURE``), so a driver-only session has no cloud verdict to wait for. The

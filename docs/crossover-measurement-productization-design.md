@@ -208,7 +208,7 @@ adds phase — the high-credibility view for a crossover product).
 > numbers is restated here. Current operational truth:
 > [`tuning-operator-runbook.md`](tuning-operator-runbook.md)
 > "The capture flow" / "What it is"; why the cloud is necessary at all:
-> [`flat-linearization-plan.md`](flat-linearization-plan.md) fundamental 1.
+> [`linearization-campaign-2026-07.md`](historical/linearization-campaign-2026-07.md) fundamental 1.
 
 One mic position for the whole session: **~1 m on the listening axis**
 (tweeter height, facing the speaker; picture on the placement screen). The

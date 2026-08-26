@@ -7,8 +7,9 @@
 // deploy/assets/correction/js/crossover/cloud.js). The chart's own pixel
 // output is out of reach for this harness (no browser, no canvas — see the
 // module's chart.js sibling; CI cannot see pixels, so that verification is
-// still owed to the HW product smoke — docs/flat-linearization-
-// productization-plan.md's PR-7 section, NOT done here or anywhere else in
+// still owed to the HW product smoke —
+// docs/historical/linearization-campaign-2026-07.md's PR-7 section, NOT done
+// here or anywhere else in
 // this branch). This file pins everything that IS a DOM assertion: the
 // exact server-owned copy strings (including the "cannot classify
 // source-fixed vs room-fixed from one session" phrasing) reach the page

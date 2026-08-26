@@ -2834,7 +2834,7 @@ def test_out_of_band_content_does_not_reach_the_solve():
     # band, so the CORE band went uncorrected and the measured give-back
     # collapsed with it — 2.15 dB below what the bounded solve returns on the
     # same fixture. When this was written that number was also the trim's anchor
-    # term, which is why docs/linearization-integrity-plan.md's #2523 bullet
+    # term, which is why docs/historical/linearization-campaign-2026-07.md's #2523 bullet
     # calls it an emitted trim rather than a report. The anchor has since moved
     # to ``branch_level_bands_hz`` and this is now the audible-band disclosure —
     # but the solve defect it measures is unchanged.

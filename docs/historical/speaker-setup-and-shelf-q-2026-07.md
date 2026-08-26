@@ -72,7 +72,7 @@ always modelled at. Concretely:
   corner comes down by as much. **This is the fix working**: the speaker
   moves toward what the fit designed, not away from it. It is also not the
   whole 7–11 dB deficit — the rest is tracked in
-  [linearization-integrity-plan.md](../linearization-integrity-plan.md).
+  [linearization-campaign-2026-07.md](linearization-campaign-2026-07.md).
 - **The pre-existing drift guard fires, by design.** Until that re-emission
   happens, a speaker still running an old-build graph will not match the
   recomposed expectation, so

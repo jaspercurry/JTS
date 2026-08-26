@@ -35,7 +35,7 @@ closed loop exists (it does not), but because `spec_flatness_gauge` pools the
 gauge's RMS through it rather than owning a second pooling rule. Check the
 current call graph rather than trusting this sentence.
 
-See docs/flat-linearization-plan.md, section "The spec -- what 'flat' means
+See docs/historical/linearization-campaign-2026-07.md, section "The spec -- what 'flat' means
 here," for the adopted definition this module implements: reference = power
 mean over 250 Hz-8 kHz (non-excluded bins only), deviation = curve -
 reference, evaluated per band at the tolerances in :data:`SPEC_BANDS`, with
@@ -92,7 +92,7 @@ import numpy as np
 from jasper.audio_measurement.room_boundary import GATED_SPEC_LOWER_EDGE_HZ
 from jasper.audio_measurement.spatial_combine import merged_true_intervals
 
-# The adopted spec table -- docs/flat-linearization-plan.md, "The spec --
+# The adopted spec table -- docs/historical/linearization-campaign-2026-07.md, "The spec --
 # what 'flat' means here." Each entry is (f_lo_hz, f_hi_hz, tolerance_db);
 # band membership is f_lo <= f < f_hi (inclusive-lower, exclusive-upper --
 # see `evaluate_flat_spec`'s docstring for why and where this matters at
@@ -527,7 +527,7 @@ def evaluate_flat_spec(
     trusted_floor_hz: float | None = None,
 ) -> FlatSpecReport:
     """Evaluate the flat-linearization spec against one combined, 1/3-oct-
-    smoothed magnitude curve (docs/flat-linearization-plan.md, "The spec --
+    smoothed magnitude curve (docs/historical/linearization-campaign-2026-07.md, "The spec --
     what 'flat' means here").
 
     Args:

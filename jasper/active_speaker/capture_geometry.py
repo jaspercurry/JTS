@@ -30,7 +30,7 @@ SUMMED_PLACEMENT_POLICY_ID = "summed_reference_axis_v1"
 REFERENCE_AXIS_DRIVER_PLACEMENT_POLICY_ID = "driver_reference_axis_v1"
 # A THIRD summed policy, and deliberately its own id rather than a reworded
 # ``summed_reference_axis_v1``: the guided spatial cloud
-# (docs/flat-linearization-plan.md fundamental 1) asks the household for the
+# (docs/historical/linearization-campaign-2026-07.md fundamental 1) asks the household for the
 # OPPOSITE whole-session promise. The stationary policy promises the mic does
 # not move between captures; this one promises the mic starts on the reference
 # axis, moves only when prompted, and holds still for the duration of each
