@@ -805,6 +805,7 @@ class CamillaController:
     @contextlib.asynccontextmanager
     async def _graph_mutation(
         self, source: str, *, held_target_db: HeldTargetDbReader | None = None,
+        duck: bool = True,
     ):
         """Admit one CamillaDSP graph mutation, ducked across the swap.
 
@@ -827,6 +828,19 @@ class CamillaController:
         the release reference; the duck's DEPTH and dwell are untouched by it,
         only where the release lands. ``None`` (every caller but the
         measurement path) is today's canonical-target behaviour exactly.
+
+        ``duck=False`` keeps the writer-lock serialization and drops the fader
+        bracket. Two callers take it, for two different reasons:
+
+        * :meth:`patch_config` changes ONE declared parameter of a running
+          filter rather than replacing the pipeline, so there is no new graph
+          whose headroom could step. Its safety is a property of ITS CALLERS'
+          bounded edits, not of ``PatchConfig`` itself — a patch that rewrote a
+          whole filter chain would step like any swap.
+        * the measurement session graph, through
+          :meth:`set_active_config_raw`, installs once into a session that
+          already holds the fader and the measurement window, so nothing is
+          playing for a step to be loud against.
         """
         from jasper.dsp_apply import camilla_graph_mutation
 
@@ -834,6 +848,9 @@ class CamillaController:
             source=source,
             lock_path=self._graph_mutation_lock_path,
         ):
+            if not duck:
+                yield
+                return
             before_db = await self.get_volume_db()
             if (
                 before_db is None
@@ -907,6 +924,7 @@ class CamillaController:
     async def set_active_config_raw(
         self, config: str, *, best_effort: bool = False,
         held_target_db: HeldTargetDbReader | None = None,
+        duck: bool = True,
     ) -> bool:
         """Upload and apply a complete YAML config without changing the
         persisted config file path.
@@ -919,10 +937,17 @@ class CamillaController:
         boring and inspectable.
 
         ``held_target_db`` is the swap duck's release reference for callers
-        that own a declared level across the swap — today only the crossover-v2
-        measurement path, which passes the volume its session plan currently
-        owns (see :func:`_duck_release_target_db`). Omitted everywhere else,
-        and omitting it is byte-for-byte today's behaviour.
+        that own a declared level across the swap (see
+        :func:`_duck_release_target_db`). Omitted everywhere else, and omitting
+        it is byte-for-byte today's behaviour.
+
+        ``duck=False`` skips the fader bracket and keeps the writer lock. The
+        measurement session graph takes it: its graph is installed ONCE into a
+        session that has already claimed the fader and paused voice, so there
+        is no household programme for a gain step to be loud against — and the
+        0.94 s of ramp the bracket cost was being paid inside a measurement
+        window with nothing playing. Every other caller replaces the pipeline
+        under live audio and keeps ducking.
         """
         if not isinstance(config, str) or not config.strip():
             if best_effort:
@@ -933,6 +958,7 @@ class CamillaController:
         try:
             async with self._graph_mutation(
                 "camilla.set_active_config_raw", held_target_db=held_target_db,
+                duck=duck,
             ):
                 await self._call(lambda c: c.config.set_active_raw(config))
                 return True

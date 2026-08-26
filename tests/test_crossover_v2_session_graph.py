@@ -34,14 +34,20 @@ class FakeCam:
         self.load_ok = load_ok
         self.load_raises = load_raises
         self.ops: list = []
+        self.ducked: list[bool] = []
         self.live: str | None = None
 
     async def get_config_file_path(self, *, best_effort=False):
         self.ops.append("get_path")
         return self.entry_path
 
-    async def set_active_config_raw(self, text, *, best_effort=False, held_target_db=None):
-        self.ops.append(("set_raw", text, None if held_target_db is None else held_target_db()))
+    async def set_active_config_raw(
+        self, text, *, best_effort=False, held_target_db=None, duck=True,
+    ):
+        self.ops.append(
+            ("set_raw", text, None if held_target_db is None else held_target_db())
+        )
+        self.ducked.append(duck)
         if self.load_raises is not None:
             raise self.load_raises
         if not self.load_ok:
@@ -198,6 +204,28 @@ def test_no_entry_config_refuses_before_loading_anything(tmp_path):
     assert not [op for op in cam.ops if isinstance(op, tuple) and op[0] == "set_raw"]
 
 
+def test_neither_swap_ducks_the_fader(tmp_path):
+    """Wave 6d: the measurement-swap duck goes.
+
+    The 40 dB / ``MAIN_VOLUME_RAMP_SETTLE_S`` bracket exists because replacing
+    the pipeline under live household audio can step the graph's own gain by
+    tens of dB at an unchanged volume. Neither condition holds for this graph:
+    the session already claimed the fader at its declared measurement level and
+    holds the measurement window, so nothing is playing for a step to be loud
+    against — the ramp was 0.94 s per swapping stimulus spent on silence.
+
+    Scope is the MEASUREMENT path only. ``/sound/`` and ``/correction/`` apply
+    keep their duck; ``test_camilla_controller.py`` pins that they still do.
+    """
+    cam = FakeCam(entry_path=_entry(tmp_path))
+    graph = _graph(cam, tmp_path=tmp_path)
+
+    asyncio.run(graph.install())
+    asyncio.run(graph.restore())
+
+    assert cam.ducked == [False, False]
+
+
 def test_both_swaps_ride_setconfig_and_never_repoint_the_statefile(tmp_path):
     """The crash-recovery-MUTED invariant, moved here with the swap it guards.
 
@@ -215,10 +243,13 @@ def test_both_swaps_ride_setconfig_and_never_repoint_the_statefile(tmp_path):
             calls.append("set_config_file_path")
             return True
 
-        async def set_active_config_raw(self, text, *, best_effort=False, held_target_db=None):
+        async def set_active_config_raw(
+            self, text, *, best_effort=False, held_target_db=None, duck=True,
+        ):
             calls.append("set_active_config_raw")
             return await super().set_active_config_raw(
-                text, best_effort=best_effort, held_target_db=held_target_db
+                text, best_effort=best_effort, held_target_db=held_target_db,
+                duck=duck,
             )
 
     cam = _RecordingCam(entry_path=_entry(tmp_path))
@@ -330,59 +361,6 @@ def test_a_failed_restore_does_not_leave_the_session_owning_a_graph(tmp_path):
     cam.load_raises = None
     asyncio.run(graph.restore())  # no second raise
 
-
-def test_the_declared_level_rides_both_swaps(tmp_path):
-    """#2929: the release reference travels with the load AND the restore.
-
-    Releasing the restore swap to the household level would move the drift to
-    the next capture rather than remove it. Wave 6d retires the duck and 6e
-    retires this reader; until then the session's two swaps carry it exactly as
-    the per-stimulus pair did.
-    """
-    cam = FakeCam(entry_path=_entry(tmp_path))
-    graph = _graph(cam, tmp_path=tmp_path, held=lambda: -20.0)
-    asyncio.run(graph.install())
-    asyncio.run(graph.restore())
-
-    references = [op[2] for op in cam.ops if isinstance(op, tuple) and op[0] == "set_raw"]
-    assert references == [-20.0, -20.0]
-
-
-def test_a_drained_plan_stops_supplying_a_reference_mid_session(tmp_path):
-    """ADR-0004 constraint 3: the READER travels, not its answer.
-
-    The session's two swaps are seconds apart at minimum and a whole session
-    apart at most, and a peer task can drain the plan in between. A reference
-    resolved when the graph was built would put back a level whose owner had
-    already given it up; asked at release time, a drained plan answers ``None``
-    and the release takes the canonical household target instead.
-    """
-    cam = FakeCam(entry_path=_entry(tmp_path))
-    owned: list[float | None] = [-20.0]
-    graph = _graph(cam, tmp_path=tmp_path, held=lambda: owned[0])
-
-    asyncio.run(graph.install())
-    owned[0] = None  # the plan drained between the install and the drain
-    asyncio.run(graph.restore())
-
-    references = [op[2] for op in cam.ops if isinstance(op, tuple) and op[0] == "set_raw"]
-    assert references == [-20.0, None]
-
-
-def test_no_reference_reader_leaves_every_swap_exactly_as_it_was(tmp_path):
-    """Omitting it must not start passing ``None`` in some new shape.
-
-    Every non-measurement swap in the tree omits the reader, and the release
-    they take is unchanged by this class existing.
-    """
-    cam = FakeCam(entry_path=_entry(tmp_path))
-    graph = _graph(cam, tmp_path=tmp_path, held=None)
-
-    asyncio.run(graph.install())
-    asyncio.run(graph.restore())
-
-    references = [op[2] for op in cam.ops if isinstance(op, tuple) and op[0] == "set_raw"]
-    assert references == [None, None]
 
 
 def test_an_out_of_runner_drain_restores_the_graph_before_it_frees_isolation():
