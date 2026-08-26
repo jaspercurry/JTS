@@ -2767,13 +2767,10 @@ def install_env_canonical_target_provider() -> None:
     voice cue may already have ducked, and the fader strands tens of dB quiet
     inside the band `maybe_reconcile_camilla` refuses to heal.
 
-    One caller supplies its own reference instead: a crossover-v2 measurement
-    swap passes the level its session plan owns as ``held_target_db``, which
-    REPLACES the canonical target for that swap (#2929 — a measurement volume
-    is louder than the household level, so canonical won that ``min`` and
-    pulled every routed capture off its declared level). Registering here is
-    still required: the same process's non-measurement swaps use canonical,
-    and a drained plan supplies nothing.
+    Every swap that ducks now uses the canonical target, with no exception. The
+    crossover-v2 measurement swap used to supply its own reference (#2929);
+    wave 6d stopped that swap ducking at all, so there is no release left for a
+    session-owned level to steer.
 
     A process that already owns a long-lived coordinator registers that
     coordinator's own :meth:`VolumeCoordinator.get_camilla_target_db` instead

@@ -75,7 +75,6 @@ EmitYaml = Callable[[], str]
 CamFactory = Callable[[], Any]
 WriterLock = Callable[[], AbstractAsyncContextManager]
 ConfirmLive = Callable[[Any, str], Awaitable[None]]
-HeldTargetDb = Callable[[], float | None]
 
 
 class SessionGraphError(RuntimeError):
@@ -108,13 +107,11 @@ class MeasurementSessionGraph:
         cam_factory: CamFactory,
         writer_lock: WriterLock,
         confirm_live: ConfirmLive,
-        held_target_db: HeldTargetDb | None = None,
     ) -> None:
         self._emit = emit
         self._cam_factory = cam_factory
         self._writer_lock = writer_lock
         self._confirm_live = confirm_live
-        self._held_target_db = held_target_db
         self._yaml: str | None = None
         self._entry_config_path: str | None = None
 
@@ -215,10 +212,7 @@ class MeasurementSessionGraph:
         async def _put_back() -> bool:
             async with self._writer_lock():
                 return await cam.set_active_config_raw(
-                    _read_text(entry),
-                    best_effort=False,
-                    held_target_db=self._held_target_db,
-                    duck=False,
+                    _read_text(entry), best_effort=False, duck=False,
                 )
 
         took_effect, raise_message = await attempt_graph_restore(_put_back)
@@ -270,8 +264,7 @@ class MeasurementSessionGraph:
 
     async def _load(self, cam: Any, yaml_text: str) -> None:
         loaded = await cam.set_active_config_raw(
-            yaml_text, best_effort=False, held_target_db=self._held_target_db,
-            duck=False,
+            yaml_text, best_effort=False, duck=False,
         )
         if not loaded:
             raise SessionGraphError("the measurement graph load was not confirmed")

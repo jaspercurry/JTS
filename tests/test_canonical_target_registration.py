@@ -13,11 +13,10 @@ interleaved `CueDuck` may already have ducked — and the fader strands tens of
 dB quiet inside the band `maybe_reconcile_camilla` deliberately refuses to
 heal.
 
-A swap MAY pass its own ``held_target_db`` reference, which replaces canonical
-for that one swap (#2929; only the crossover-v2 measurement path does). That
-does not weaken this guard: those same processes still perform ordinary swaps,
-and a measurement plan that has drained supplies no reference at all — so
-every daemon below still needs its registration.
+Every swap that ducks uses the canonical target, with no exception. The
+crossover-v2 measurement path used to declare its own reference (#2929); wave
+6d stopped that swap ducking, and 6e removed the parameter — so this guard now
+covers every ducking swap in the tree rather than all-but-one.
 
 **Two reasons now live in this table.** Every row but the last is here
 because its daemon SWAPS the graph and its swap duck needs a canonical

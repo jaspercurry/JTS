@@ -5609,12 +5609,8 @@ def test_bind_program_playback_seams_is_the_play_transaction_and_confirms_strict
             calls.append(("get_path", best_effort))
             return str(tmp_path / "entry.yml")
 
-        async def set_active_config_raw(
-            self, text, *, best_effort, held_target_db=None,
-        ):
-            # ``held_target_db`` is the swap duck's release reference (#2929);
-            # this test binds no reader, so both swaps must pass None.
-            calls.append(("set_raw", text, best_effort, held_target_db))
+        async def set_active_config_raw(self, text, *, best_effort, duck=True):
+            calls.append(("set_raw", text, best_effort))
             self.live = text
             return True
 

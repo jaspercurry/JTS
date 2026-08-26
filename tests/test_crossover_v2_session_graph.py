@@ -41,12 +41,8 @@ class FakeCam:
         self.ops.append("get_path")
         return self.entry_path
 
-    async def set_active_config_raw(
-        self, text, *, best_effort=False, held_target_db=None, duck=True,
-    ):
-        self.ops.append(
-            ("set_raw", text, None if held_target_db is None else held_target_db())
-        )
+    async def set_active_config_raw(self, text, *, best_effort=False, duck=True):
+        self.ops.append(("set_raw", text))
         self.ducked.append(duck)
         if self.load_raises is not None:
             raise self.load_raises
@@ -60,7 +56,7 @@ class FakeCam:
         return True
 
 
-def _graph(cam, *, tmp_path, held=None, emits=None):
+def _graph(cam, *, tmp_path, emits=None):
     emitted = emits if emits is not None else []
 
     def _emit() -> str:
@@ -84,7 +80,6 @@ def _graph(cam, *, tmp_path, held=None, emits=None):
         cam_factory=lambda: cam,
         writer_lock=_lock,
         confirm_live=_confirm,
-        held_target_db=held,
     )
     graph.emitted = emitted  # type: ignore[attr-defined]
     return graph
@@ -244,12 +239,11 @@ def test_both_swaps_ride_setconfig_and_never_repoint_the_statefile(tmp_path):
             return True
 
         async def set_active_config_raw(
-            self, text, *, best_effort=False, held_target_db=None, duck=True,
+            self, text, *, best_effort=False, duck=True,
         ):
             calls.append("set_active_config_raw")
             return await super().set_active_config_raw(
-                text, best_effort=best_effort, held_target_db=held_target_db,
-                duck=duck,
+                text, best_effort=best_effort, duck=duck,
             )
 
     cam = _RecordingCam(entry_path=_entry(tmp_path))
