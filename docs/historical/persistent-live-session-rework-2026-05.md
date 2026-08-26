@@ -1,17 +1,15 @@
-# Handoff: persistent-single Gemini Live session rework
+# Persistent-single Gemini Live session rework (2026-05) — historical
 
-> **Status: historical.** Snapshot from 2026-05-05 when the
-> persistent-single Gemini Live rework was being scoped — the
-> original session-pickup brief written for the engineer who did
-> the rework. Preserved for primary-source archaeology (why the
-> per-turn architecture was rejected, what the silent-failure
-> shape looked like, the May-2026 prior-art table) — specific
-> facts (env defaults, file paths, line numbers, "what's working"
-> lists) have drifted and the AGENTS.md touched-subsystem rule
-> does NOT apply to this doc. Current operational truth for the
-> voice loop lives in [HANDOFF-voice-providers.md](HANDOFF-voice-providers.md);
-> the architectural decision rationale this doc captures has
-> since been ported into that doc's "Architecture" section.
+> **Status: historical.** The session-pickup brief written on 2026-05-05 for
+> the engineer who did the persistent-single Gemini Live rework. Kept for
+> primary-source archaeology: why the per-turn architecture was rejected,
+> what the silent-failure shape looked like, and the May-2026 prior-art
+> table. Everything specific — env defaults, file paths, commit hashes,
+> "what's working" lists, the Pi access notes — describes that date and has
+> drifted since; do not treat any of it as current. Current operational
+> truth for the voice loop, including the reconnect supervisor and the idle
+> context-reset policy this brief scoped, is
+> [HANDOFF-voice-providers.md](../HANDOFF-voice-providers.md).
 
 You're picking up an in-progress voice-assistant project (JTS = "Jasper Smart Speaker"). The hardware bring-up is **done and working**. The voice-loop integration with Gemini Live is **partially working but unreliable**. Your job is to do one focused architectural rework that fixes the reliability problem.
 
@@ -32,7 +30,7 @@ All recent work is on that branch (latest commit: `6a60b08`). `main` is stale. P
 - **Wake word**: openWakeWord + Silero VAD running locally on Pi, listens for "Hey Jarvis".
 - **Audio I/O plumbing**: `jasper.audio_io.MicCapture` (16 kHz mono int16 frames from XVF3800) and `TtsPlayout` (24 kHz mono PCM from Gemini → 48 kHz dmix on dongle) both fully tested.
 - **Tool calls**: weather, subway, time, audio control (volume/duck/etc), Spotify, source-aware transport — all work when Gemini actually responds.
-- **TTS gain**: `JASPER_TTS_GAIN_DB=-8` attenuates Gemini's PCM peaks so voice doesn't dominate music. (Historical snapshot from this handoff. Today there is no such env var: `jasper-fanin` matches assistant loudness to measured content using provider/model/voice profiles. See [audio-paths.md](audio-paths.md) "Assistant Loudness Matching".)
+- **TTS gain**: `JASPER_TTS_GAIN_DB=-8` attenuates Gemini's PCM peaks so voice doesn't dominate music. (Historical snapshot from this handoff. Today there is no such env var: `jasper-fanin` matches assistant loudness to measured content using provider/model/voice profiles. See [audio-paths.md](../audio-paths.md) "Assistant Loudness Matching".)
 - **Voice pinning**: Aoede prebuilt voice via `speech_config` so style is consistent across sessions.
 - **Time injection**: current local time is added to system instruction at session start.
 - **Logging**: per-session timing (`session connect done in Xms`, `first audio chunk from Gemini in Yms`, tool-call elapsed, payload preview truncated to 240 chars), bytes-sent / chunks-received counters, structured `SILENT FAILURE` warning when sent>0 and received==0.
@@ -141,7 +139,7 @@ Per the [research summary above](#why-the-current-architecture-is-wrong-the-rewo
 The original rework above was scope-bounded; subsequent reliability hardening lives on top of it. The pieces a future maintainer working on `gemini_session.py` should know about:
 
 - **Always-drop the resumption handle on first failure** (PR #4). The supervisor used to keep the cached handle and only drop it on a 409. A 1008 close with reason `"BidiGenerateContent session expired"` looked like nothing-special to the dispatch — same handle, same retry, server rejected forever. One overnight wedge hit 798 same-error retries before manual intervention. Now the handle is dropped on the first failure of any kind; cost is one turn of context continuity, payoff is no infinite loops on server-invalidated handles.
-- **Tight-retry-loop detector** (PR #6, [test_supervisor_escalation.py](../tests/test_supervisor_escalation.py)). A 5-deep `_FailureFingerprint(exc_type, close_code, reason)` ring buffer in `GeminiLiveConnection` records the shape of each reconnect failure (cleared on successful reconnect). When all 5 entries are identical, a fire-and-forget callback plays the proactive `cant_reach_cloud` cue, rate-limited to once per hour. The supervisor never gives up — that's still the policy — but the user finds out audibly instead of silently. Wire-up is in `jasper/voice/daemon_main.py`'s `run()`: `connection.set_failure_escalation_cb(wake_loop.play_supervisor_cue)`. See [docs/HANDOFF-audible-feedback.md](HANDOFF-audible-feedback.md) for the cue-side architecture.
+- **Tight-retry-loop detector** (PR #6, [test_supervisor_escalation.py](../../tests/test_supervisor_escalation.py)). A 5-deep `_FailureFingerprint(exc_type, close_code, reason)` ring buffer in `GeminiLiveConnection` records the shape of each reconnect failure (cleared on successful reconnect). When all 5 entries are identical, a fire-and-forget callback plays the proactive `cant_reach_cloud` cue, rate-limited to once per hour. The supervisor never gives up — that's still the policy — but the user finds out audibly instead of silently. Wire-up is in `jasper/voice/daemon_main.py`'s `run()`: `connection.set_failure_escalation_cb(wake_loop.play_supervisor_cue)`. See [HANDOFF-audible-feedback.md](../HANDOFF-audible-feedback.md) for the cue-side architecture.
 - **Backoff shift saturation**: `_reconnect_backoff_delay` saturates `2 ** shift` at `2 ** 32` because the supervisor retries forever and `float(2 ** 1024)` overflows. Outer `min(...)` clamps to `RECONNECT_MAX_BACKOFF_SEC` anyway, so the saturation is purely a numeric safety bound for long outages.
 - **Voice / control daemons survive a camilla restart blip** (PR #5). Not a `gemini_session.py` change, but worth knowing as context: `jasper-voice.service` and `jasper-control.service` use `Wants=jasper-camilla.service` (not `Requires=`), and CamillaController exposes `best_effort=True` on every public method so duck/restore become no-ops during a 2 s camilla outage instead of cascading. The proactive cue path also goes through this graceful-degradation surface, so the cue plays even if camilla is down at the moment the supervisor decides to escalate.
 

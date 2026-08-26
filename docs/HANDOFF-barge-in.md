@@ -172,7 +172,7 @@ the pack contents (implementation-affecting facts only) are:
   *sent*, not what JTS *played* (unfixable via API → keep the local
   playback buffer short). The current `NO_INTERRUPTION` + manual-VAD
   choice is deliberate (see
-  [HANDOFF-persistent-live-session.md](HANDOFF-persistent-live-session.md));
+  [historical/persistent-live-session-rework-2026-05.md](historical/persistent-live-session-rework-2026-05.md));
   barge-in must revisit it: either leave server VAD on and just obey
   `interrupted`, or stay manual-VAD and drive the flush purely from the
   local gate (cleaner single authority, no double-VAD).
@@ -306,7 +306,7 @@ hardware measurement that might say "chip-AEC only").
   **canonical** output-side barge-in contract, playout ledger, fan-in flush.
 - [HANDOFF-voice-providers.md](HANDOFF-voice-providers.md) — **canonical**
   provider interruption matrix + capability interface + source URLs.
-- [HANDOFF-persistent-live-session.md](HANDOFF-persistent-live-session.md) —
+- [historical/persistent-live-session-rework-2026-05.md](historical/persistent-live-session-rework-2026-05.md) —
   why manual VAD / `automatic_activity_detection.disabled` / `NO_INTERRUPTION`
   are used today (the decision barge-in revisits for Gemini).
 - [HANDOFF-vad-experiments.md](HANDOFF-vad-experiments.md) — local-Silero-on-AEC
@@ -409,7 +409,7 @@ typical levels. The whole defense is that 0.06 gap.
    voice providers (Gemini Live, OpenAI Realtime, Grok) run with
    `automatic_activity_detection.disabled = true` via the
    manual-VAD path (see
-   [HANDOFF-persistent-live-session.md](HANDOFF-persistent-live-session.md)).
+   [historical/persistent-live-session-rework-2026-05.md](historical/persistent-live-session-rework-2026-05.md)).
    The server can't tell its own TTS from user speech, so
    re-enabling auto-VAD with the current mic substrate would
    bring back the self-interrupt loop the manual-VAD path was
@@ -1121,7 +1121,7 @@ Internal cross-references (for the next reader):
 - [HANDOFF-resilience.md](HANDOFF-resilience.md) — the resilience
   ladder, the snd-aloop wedge story, the PipeWire-exclusion
   framing (and its specific scope).
-- [HANDOFF-persistent-live-session.md](HANDOFF-persistent-live-session.md)
+- [historical/persistent-live-session-rework-2026-05.md](historical/persistent-live-session-rework-2026-05.md)
   — why manual VAD is used today, the
   `automatic_activity_detection.disabled` decision, the
   NO_INTERRUPTION history.
