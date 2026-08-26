@@ -154,7 +154,7 @@ program's wave 7h)**
 - [ ] HANDOFF triage, one PR per batch: each doc → keep-trimmed (<400-line
       operational spine) / decisions → ADR / appendix → docs/historical/ /
       delete. Census-zone docs belong to the local agent.
-- [ ] README rebuild: repo-layout tree with all top-level dirs; atlas
+- [x] README rebuild: repo-layout tree with all top-level dirs; atlas
       collapsed (historical entries one line)
 - [x] .env.example: one-line comments; AEC knob table → pointer
 - [x] PULL_REQUEST_TEMPLATE: drop doc-impact ritual to match charter
@@ -207,9 +207,9 @@ already open)**
       "Phase 2A.5" pointers (jasper/cli/doctor/aec.py:507, :1598 — no such
       phase exists) and BRINGUP:~955's Flex retune pointer to
       xvf_software_aec3 (intent-only on managed XVF).
-- [ ] Notify the tuning program: its topology-fingerprint parks (#2935
+- [x] Notify the tuning program: its topology-fingerprint parks (#2935
       class) are re-adjudicated under ADR-0101 in its doctrine wave — its
-      zone, its mechanics.
+      zone, its mechanics. — notified via comment on #3006, 2026-08-26
 
 **Owner-decision gates (blocked until answered)**
 - [ ] #1738: wire or delete bass-extension bench half (decision + execution
