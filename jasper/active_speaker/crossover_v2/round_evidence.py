@@ -350,6 +350,16 @@ class EntryBaseline:
     because the receipt's whole job is to let a *later* round bind the
     currently-active profile as its own entry graph: a baseline curve with no
     record of which graph produced it cannot do that.
+
+    **The flow state file's copy is the ROUND's channel, not the durable one.**
+    ``verify_priors`` is rebuilt from the conductor on every persist, so those
+    arrays live exactly as long as the round does — and a fresh measuring
+    session writing its own honest absence over them is deliberate, not a leak.
+    The copy that outlives the round is the write-once retained take
+    (``spatial.entry_baseline_record``), read back by
+    :func:`~.position_cycle.read_entry_baseline_take` into this same shape.
+    Both are written from one ``MeasuredResponse`` at capture time; neither is
+    derived from the other.
     """
 
     program_id: str

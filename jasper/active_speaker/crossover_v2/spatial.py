@@ -932,6 +932,9 @@ def entry_baseline_record(
     reference_mark: str,
     graph_fingerprint: str,
     captured_at: str,
+    freqs_hz: Sequence[float],
+    magnitude_db: Sequence[float],
+    excluded: Sequence[bool],
     validity_floor_hz: float | None,
     gate_window_ms: float | None,
     summed_ripple_db: float | None,
@@ -939,7 +942,7 @@ def entry_baseline_record(
     wav_sha256: str | None,
 ) -> dict[str, Any]:
     """The entry baseline's retained record — a cloud position's shape, minus
-    the group.
+    the group, plus the curve.
 
     Structurally a cloud-position record: same take-id convention, same
     gate/ripple/digest scalars, handed to the same retention seam so an entry
@@ -954,6 +957,17 @@ def entry_baseline_record(
     (``program_id``), WHERE it was played from (``reference_mark``), and WHICH
     graph it went through (``graph_fingerprint``).  A before→after claim is only
     as good as those three matching on both sides.
+
+    **The reduced curve rides here, and that is what makes this the DURABLE
+    copy** (fragment ``02``'s duplication #2, plan row 2a).  It is bounded at
+    ``round_evidence.BENEFIT_CURVE_MAX_BINS`` upstream, so a take carries a few
+    KB of JSON beside a WAV.  A retained take is write-once and keyed by
+    ``take_id``; the flow state file that also holds these arrays is rewritten
+    on every persist, which is why a banked round could never be re-graded once
+    the next round started.  Same three arrays as
+    ``round_evidence.EntryBaseline.to_dict``, under the same names, so one
+    reader covers both — see
+    :func:`~.position_cycle.read_entry_baseline_take`.
     """
     take_id = f"{PHASE_ENTRY_BASELINE}_{index:02d}_a{int(attempt):02d}"
     return {
@@ -967,6 +981,9 @@ def entry_baseline_record(
         "reference_mark": reference_mark,
         "graph_fingerprint": graph_fingerprint,
         "captured_at": captured_at,
+        "freqs_hz": [float(hz) for hz in freqs_hz],
+        "magnitude_db": [float(db) for db in magnitude_db],
+        "excluded": [bool(flag) for flag in excluded],
         "validity_floor_hz": validity_floor_hz,
         "gate_window_ms": gate_window_ms,
         "summed_ripple_db": summed_ripple_db,

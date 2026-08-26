@@ -143,7 +143,7 @@ from jasper.audio_measurement.evidence_identity import (
 # It is a plain float in a stdlib-only module, so this costs no cycle.
 from jasper.audio_measurement.null_walk import DEFAULT_SOUND_SPEED_M_S
 
-from .journey import PHASE_LATERAL
+from .journey import PHASE_ENTRY_BASELINE, PHASE_LATERAL
 # The MODULE, not the function: ``position_cycle`` owns the accept rule, and
 # resolving it through the module on every call is what makes that ownership
 # real rather than a copy taken once at import. A gate round proved the
@@ -1122,6 +1122,68 @@ def _lateral_poses_block(round_dir: Path) -> dict[str, Any]:
             "included — which is a different set from the conductor's live "
             "lateral_poses, where a retake replaces the attempt it supersedes "
             "and only the latest per index survives"
+        ),
+    }
+
+
+def _entry_baseline_block(round_dir: Path) -> dict[str, Any]:
+    """The round's measured "before", read from the take that banked it.
+
+    The receipt already names this capture — ``n_bins``, ``n_excluded``, the
+    program id — and deliberately carries no curve, because a receipt is
+    *"identities, not payloads."* Until the curve rode the retained take, the
+    receipt's digest was the only thing about the before that outlived the
+    round: the arrays lived in the flow state file, which the next persist
+    rewrites. So a banked round could name its before and never re-grade it.
+
+    This block is the curve itself, from
+    :func:`~.position_cycle.read_entry_baseline_take` — the same directory and
+    the same accept-rule shape as ``lateral_poses``, on the phase that is not a
+    group member. With it, ``verification.evaluate_benefit`` can be re-run over
+    a banked round by an analysis that did not exist when it was captured,
+    which is what makes ruling S3's offline promise keepable.
+
+    A round with no readable take is a fact this block reports, exactly as its
+    neighbours do: the round ran no entry baseline, its capture was refused, or
+    evidence retention failed at take time — retention is fail-soft and never
+    costs the household a retake, so a missing take is not a defect here.
+    """
+    directory = round_dir / _POSITIONS_SUBDIR
+    takes = [
+        take
+        for take in (
+            position_cycle.read_entry_baseline_take(path)
+            for path in sorted(directory.glob("*.json"))
+        )
+        if take is not None
+    ]
+    if not takes:
+        return {
+            "available": False,
+            "status": "not_evaluated",
+            "reason": (
+                f"this round banked no {PHASE_ENTRY_BASELINE} take record under "
+                f"{_POSITIONS_SUBDIR}/ — it ran no entry baseline, its capture "
+                "was refused, or evidence retention failed at take time"
+            ),
+        }
+    # The last accepted take is the "before": the entry baseline is captured at
+    # the mark IMMEDIATELY before the household applies, and a retake supersedes
+    # the attempt it followed. Sorting by take_id orders by index then attempt,
+    # because the id is built from both in that order.
+    take = max(takes, key=lambda t: str(t.get("artifact_ref") or ""))
+    return {
+        "available": True,
+        **take,
+        "n_bins": len(take["freqs_hz"]),
+        "n_excluded": sum(1 for flag in take["excluded"] if flag),
+        "source": f"{_POSITIONS_SUBDIR}/<take_id>.json",
+        "note": (
+            "the summed capture taken at the design-axis mark immediately "
+            "before this round's apply. It is the durable copy: the flow state "
+            "file holds the same arrays only until the next persist rewrites "
+            "them. Comparable to a post-apply capture only when program_id, "
+            "reference_mark and graph_fingerprint match on both sides"
         ),
     }
 
@@ -2486,6 +2548,7 @@ def build_crossover_evidence_packet(
     classification = _classification_block(classification_raw, classification_reason)
     harmonics = _harmonics_block(harmonics_raw, harmonics_reason)
     lateral_poses = _lateral_poses_block(round_dir)
+    entry_baseline = _entry_baseline_block(round_dir)
 
     capture_snr = _capture_snr_block(dump_ring_dir, info_raw.get("session_id"))
 
@@ -2570,6 +2633,9 @@ def build_crossover_evidence_packet(
         # pose and a cloud position are different captures that share only a
         # take-id convention.
         "lateral_poses": lateral_poses,
+        # The round's measured "before", beside the after rather than inside the
+        # receipt: the receipt carries identities, this carries the curve.
+        "entry_baseline": entry_baseline,
         "capture_snr": capture_snr,
         "honesty_mask": {
             "merged_excluded_bands_hz": cloud.get("merged_excluded_bands_hz"),
