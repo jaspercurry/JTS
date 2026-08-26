@@ -578,6 +578,37 @@ whose re-verification before any campaign is ours. Terms in §6 R5.
 
 **Citation riders — fix them in the wave that touches the file, never alone.** The governance charter deleted the old AGENTS.md section headings, so roughly **42 quoted-name citation sites now dangle repo-wide** — invisible to link checkers, because they cite a heading by name rather than by link. **Our zone's share, verified by grep at `origin/main`:** `jasper/web/correction_crossover_v2.py` · `jasper/audio_measurement/correction_lane.py` · `tests/test_active_speaker_design_draft.py` · `docs/HANDOFF-active-speaker-dsp.md` · `docs/testing-tooling.md` (**2 sites**) · `scripts/tuning-llm-live-check.py`. Each gets its citation repointed **by the wave that already opens that file — a one-line rider, noted in the PR body. Never a standalone PR**, which would be churn for its own sake and exactly the ceremony the charter's Review policy cuts. Two dispositions that are not riders: `tests/test_docs_handoff_freshness.py`'s citation **dies with the file in 7h**, and the frozen banks' citations (`correction-ux-wave3/`, `bass-extension-waves/`) **stay frozen** per 7f's fencing — they are primary sources and are supposed to be stale. The **other ~30 sites belong to the parallel programs and are out of scope**; stated so nobody reads our six as the whole set.
 
+> **CLOSED at wave 8, and the six-file list above is spent.** `91a50fc56`
+> (#2948) repointed 43 sites across 38 files and took **all six** of ours. What
+> the AGENTS.md-shaped sweep could not see is the residue: a citation may route
+> through **`CLAUDE.md`**, which is now a ten-line `@AGENTS.md` shim with **zero
+> sections**, so a quoted section name there dangles exactly the same way and
+> matches no `AGENTS.md` grep. Our zone held **two**, both in
+> `docs/testing-tooling.md` (`:1096` → the Evidence-first default, `:3325` →
+> non-negotiable 7), fixed in wave 8's docs PR. Repo-wide at HEAD: **29 live
+> quoted-name citations, 28 dangling, 27 of them the parallel programs'** — the
+> "~30" above holds. **Sweep discipline, five-for-five this campaign: 13 of the
+> 29 live sites WRAP ACROSS A NEWLINE** and are invisible to single-line grep,
+> which is the mechanism behind every false "already fixed" verdict here. Join
+> line pairs before matching. **Not in scope and not a defect:** the doctrine's
+> **letter map survives** (`measurement-loop-doctrine.md:224-248`) even though
+> S9 deleted the table above it, so the ~79 `deviation (a)`…`(i)` citations all
+> still resolve — the doc kept the map precisely so they would. One judgment
+> call is **left open for the owner rather than guessed**, and it is enumerated
+> rather than estimated: **10 live sites** attribute a *"no-silent-failure rule"*
+> to the charter, **5 in this zone** —
+> `jasper/web/correction_crossover_v2.py:4962` ·
+> `jasper/active_speaker/crossover_v2/accountability.py:666` ·
+> `tests/test_correction_crossover_v2_endpoints.py:3457` and `:8882` ·
+> `tests/test_crossover_v2_conductor.py:8541` (wrap-only) — and **5 outside it**:
+> `jasper/wake_fusion.py:72` · `jasper/correction/autolevel.py:309` ·
+> `tests/test_correction_autolevel.py:392` ·
+> `docs/two-stage-commission-flow-plan.md:440` and `:696`. The charter has **no
+> rule under that wording**, and its nearest survivor, non-negotiable 6 **No
+> silent deafness**, is scoped to *wake-response cues* — not a wizard's disabled
+> Apply. Repointing them would **widen a non-negotiable by prose edit**, which is
+> not a rider's authority, so they are flagged and left alone.
+
 ### Wave 0 — Free the class-A suite. Zero design decisions.
 
 **Goal.** Make 149 test files portable and cut god-file-to-god-file coupling in
@@ -1053,6 +1084,75 @@ docs and guards get author plus a sanity look — except 7b, which **is** the cl
 list and gets a real review. **Rollback:** per-PR revert; `docs/historical/` moves
 are `git mv`.
 
+#### Wave 7 — CLOSED. The doc ledger, verified at HEAD.
+
+Every number below was measured at the merge HEAD, not carried from the row that
+booked it. Two rows did not reach their line target; in both the target lost to
+content the wave itself had ruled non-negotiable, and that is recorded as the
+outcome rather than the number quietly restated.
+
+| Row | Landed | Where |
+|---|---|---|
+| 7a0 | **DONE** | `1748db0e8` (#3056) |
+| 7a + 7d | **DONE** | `625bd75e0` (#3058) — one commit, both rows |
+| 7b | **DONE on substance, NET-ZERO on lines** | `95b27355b` (#3060). The table went and §4's clamp list became positively complete. Its `255 → ≈150` count was never this row's to hit: 7b landed **361 → 361**, a near-even rewrite |
+| 7c | **DONE** | `5217b218e` (#3085) — three demoted, the fourth refuted |
+| 7e | **DONE, four parts** | `ae305dea2` (#3083) · `0e0da9f97` (#3086) · `031bfd360` (#3113) · `39233aaab` (#3131) |
+| 7f | **DONE, two parts** | `b25216fff` (#2979) · `0e0da9f97` (#3086) |
+| 7g | **DONE** | `72da802b6` (#2981) — `docs/calibration-agent/` is gone from `docs/` |
+| 7h | **DONE on outcome, NOT on mechanism** | `359acd9d1` (#2977) — see below |
+| 7j | **DONE** | `b56ea4257` (#3006) |
+| 7k | **DONE** | `772f8c8cb` (#2943) — already flagged here as dispatched separately |
+
+**Attribution warning for anyone re-checking this table.** 7f (part), 7g, 7h and
+7k landed **before the "wave 7" commit-subject convention started** — they are
+#2943, #2977, #2979 and #2981, all below the #3056 mark. A ledger built by
+grepping subjects for `wave 7` under-reports by four rows.
+
+**The doctrine did not reach ≈150, and its own floor is why.**
+`docs/measurement-loop-doctrine.md` is **333** lines. §4's body is **129** and
+its nested `### 4a` is **65** — **194** lines that are the closed clamp list plus
+the integrity class, i.e. exactly the content ruling **S9** made *positively
+complete*. 194 alone exceeds 150, so the target became unreachable the moment S9
+chose completeness over brevity. **Content outranked the number; the number is
+the one that gives.** Two corrections a re-checker will otherwise trip on: the
+trim ran **361 → 333** (`031bfd360`, #3113, wave 7e-2), not 255 → 333 — waves
+7a0/7a/7d grew the file by 106 lines first — and `031bfd360`'s own message says
+"361 → 329" and quotes 63/192, all **pre-restoration** figures from before the
+same PR's later commit. HEAD measures 333 / 65 / 194. Note also that §4a is a
+subsection *inside* §4, so "129 + 65" partitions §4's 194; it is not two siblings
+summed.
+
+**The runbook did not reach ≤600, and the split is why.**
+`docs/tuning-operator-runbook.md` is **1037** lines. Two sections — *The capture
+flow* (240) and *Reading the per-feature evidence* (201) — are **441** lines,
+42.5% of the file, and both are unambiguously operational. Everything else sums
+to **596**, so reaching 600 means deleting essentially one of those two whole.
+The only place that content could go is the engine design doc, which would
+**invert the very split 7e exists to create**. The runbook keeps it.
+
+**The three authored docs, counted at HEAD:** doctrine **333** + runbook **1037**
++ `docs/crossover-v2-engine-design.md` **565** = **1935**, against the ≈1,550
+target. The engine design doc is the row that beat its bar, by 235 lines. One
+correction to 7e's own wording: `llm-operator-runbook.md` (673) and
+`HANDOFF-crossover-measurement-v2.md` (1,288) were **deleted outright**, not
+archived — only a distillation reached `docs/historical/`.
+
+**7h's outcome landed; its instruction did not.** `test_lint_contracts.py` is
+**577** lines at HEAD, down from **2,164** (the row says 2,159 — off by five).
+But **`MAX_LINES_BY_PATH` was not deleted.** It was *repurposed* into the row's
+own prescribed replacement: an eight-entry un-ratcheted ceiling table at round
+numbers, carrying its own removal condition. A ledger claiming the constant is
+gone is checkable and false. The four named guard deletions all did land.
+
+**One backlog item removed as false.** The runbook's bare `(invariant 2)` — at
+**:76**, not :75 — **RESOLVES**: `docs/tuning-master-plan.md`'s *Product
+invariants*, item 2 (*"Executor, not hunter"*), which the master plan cites by
+the same number at its own `:300`. Recorded because the failure mode is
+reproducible: **two numbered invariant lists exist in this doc set** — the master
+plan's Product invariants and this plan's MS-1…MS-17 — and resolving the runbook
+against MS-2 (*Both ends move together*) yields a confident false negative.
+
 ### Wave 8 — Census-zone prose and test discipline.
 
 **Goal.** Take the work the audit priced and handed over.
@@ -1108,6 +1208,16 @@ The four rulings `00 §R5` names — the #2087 discriminator, the PR-L4 review B
 frame argument, `_duck_release_target_db`'s three design constraints, the
 `fader_db` asymmetric-record-point reasoning — are the first ADRs, and they are
 written **before** the code that carries them moves, not after.
+
+> **ALREADY CLOSED — the four landed ahead of this wave, exactly as instructed.**
+> `docs/adr/0002-measure-again-discriminator.md` ·
+> `0003-prediction-gate-frame.md` · `0004-duck-release-algebra-and-reference.md`
+> · `0005-fader-bound-asymmetric-record-point.md`. Our range now runs to
+> **ADR-0019**. The mechanism proved itself on the way: wave 6e deleted
+> `_duck_release_target_db`'s held branch and **ADR-0004's bound-never-inverts
+> invariant did not die with it** — it lives in the ranked owner, pinned there.
+> That is what "extract the rulings before the code moves" was for. Nothing owed
+> here; do not re-write these.
 
 **Verify.** Class-A green; class-B and class-C suites green or deleted on
 purpose. **Gate:** mechanical — author plus a sanity look. **Rollback:** per-PR.
