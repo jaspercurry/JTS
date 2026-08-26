@@ -44,6 +44,8 @@ recorded rather than silently corrected.
 | R-1 cites `docs/attribution-stage-plan.md:349` (`:1350`) | that file is at **`docs/historical/attribution-stage-plan.md`** since #2979 (`b25216fff`). The *content* holds — the M1 row still reads *"Reverse-null (P1) **and** design-axis/vertical-offset (P5) — both **required**"* | **path stale, claim intact.** §2 R-1. |
 | Wave 7k (the guide's stale Adoptions header) is owed | **DONE.** `crossover-design-guide-deep-research-2026-08-19.md:1-45` now states the split explicitly and names the live slope-blind gates | **closed.** |
 | The report's bar reads *"anything smaller than about 0.4 dB is noise, not a result"* (`:1302`) | source is *"any future **'improvement'** smaller than about 0.4 dB is noise, not a result"* (`report/derived/page.py:246-250`) | **paraphrase, not quote.** The plan renders it inside quote marks. Substance identical; the word `improvement` scopes it to deltas, which matters when someone points it at an absolute. |
+| Row 7j: *"entering `driver_style` — **metadata** — rotates `topology_config_fingerprint`"* (`:1063`) | **`driver_style` is not metadata.** 7j's own rider `62c5402f3` records review R1 refuting it: it selects the tweeter's `min_highpass_hz` and sits in the **role-independent** driver-safety target match. HEAD's comment says so at `setup_status.py:1050-1054` | **STALE, and consequential.** The topology block died; a second gate did not. §1.4, gap 3. |
+| S11 act 5 (7j's demotion verification) is available to lean on | **never run.** PR #3006: *"The on-box verification (S11 sanctioned act 5) is **deferred**"* — jts3 was running a non-ancestor build | **OPEN.** §4. |
 | Wave 6d landed with the no-pop check as its licensing evidence | 6d **merged** at `f6a6c56f3` (#3111). Its own body says *"**Not merged.** This is the staging point: it wants the adversarial pass, and the no-pop check on jts3 is the evidence that licenses it"* — and **no no-pop record exists** in `captures/` | **OPEN, and it is not row 9's problem to fix.** §4. |
 
 **One structural finding the brief was not handed.** Row 9's pass/fail number
@@ -165,19 +167,61 @@ round: open FAILED path=/correction/crossover/v2/session http=400
 round finished: open_failed (rc 4)
 ```
 
-**Wave 7j demotes this block** (`:1063`, ADR-0019's closing paragraph names it):
-playback continues on the applied graph, measuring continues, and the fact
-becomes *"one loud `event=` plus a doctor line"*. The narrow carve is a
-**declared-CAP change that makes the currently-applied graph exceed the new
-limit**; metadata never gates. **7j is DONE** — `b56ea4257` (#3006), per the
-wave-7 ledger at `:1106`.
+**Wave 7j demoted this block, and it is DONE** — `b56ea4257` (#3006), wave-7
+ledger at `:1106`. At HEAD the code is unambiguous:
 
-**How the re-mint clears the notice.** Once 7j has demoted the block, what
-remains is a *disclosure* comparing the applied baseline's stored topology
-fingerprint against the live one. Re-minting and applying a baseline compiled
-against the current topology makes the two equal, and the disclosure stops
-firing. **That is the mechanism; the campaign's own words are the primary
-source for the obligation** (`run-log.md:1985-1993`):
+| Piece | At HEAD |
+|---|---|
+| The constant | `jasper/active_speaker/_common.py:58-63` — `BASELINE_TOPOLOGY_CHANGED = "active_baseline_topology_changed"`, commented *"A DISCLOSURE, not a blocker (ruling S10, ADR-0019)"* |
+| The severity | `setup_status.py:1115-1130` emits it as **`"warning"`**, never `"blocker"` |
+| The doctor line | `topology changed since the applied baseline; re-mint when convenient` — rendered by `jasper/cli/doctor/audio.py:1673-1704`, check label **`active speaker setup notices`**, WARN, never fails the run |
+| The `event=` | **`correction.crossover_v2_baseline_topology_stale`**, WARNING, `code=active_baseline_topology_changed` — `jasper/web/correction_crossover_v2.py:4683-4697`, **once per v2 session open**, not per `/state` poll |
+| Readiness | `protected_ready` no longer reads `protected_topology_current` (`setup_status.py:1037-1059`); `blocked = bool(blockers)` counts blocker-severity only (`:1221-1222`), so `safety_muted`, `volume_allowed` and `grouping_allowed` all stay clean under a lone warning |
+
+**The comparison that drives it** (`setup_status.py:1026-1036`): the applied
+profile's frozen `source.topology_fingerprint` against a live recompute of
+`topology_config_fingerprint(topology)`. That function hashes **the whole
+topology dict minus `pairing_intent`** (`baseline_profile.py:241-247`) — its
+docstring says "only fields that determine emitted DSP config", which is
+aspirational. Fail-open: an empty fingerprint on either side fires nothing.
+
+> **THE PLAN'S 7j ROW IS STALE ON ONE WORD, and it is the word that matters
+> here.** `:1063` says *"entering `driver_style` — **metadata** — rotates
+> `topology_config_fingerprint`"*. **`driver_style` is not metadata**, and 7j's
+> own rider commit `62c5402f3` says so after review R1 refuted the original
+> claim: it selects the tweeter's `min_highpass_hz`
+> (`driver_protection.py:142-144`) and sits in the driver-safety target match
+> (`driver_safety.py:3184-3196`), which is **role-independent — it fires for a
+> woofer's `driver_style` too**. The fields that genuinely reach no clamp and no
+> emitted filter are `SpeakerChannel.human_output_label` and a `SpeakerGroup`'s
+> `label`. HEAD's own comment states it correctly at `setup_status.py:1050-1054`.
+>
+> **Consequence for row 9, and it is the sharpest thing in this brief:** after
+> 7j the topology notice no longer stops a session — but
+> `evaluate_driver_safety_profile` still can, **one gate downstream**, at
+> `correction_crossover_v2.py:4715`, immediately after the 7j event fires, with
+> `driver_safety_profile_target_mismatch`. Budgeting row 9 as "7j landed, so the
+> box opens" is wrong. See gap 3.
+
+**How the re-mint clears the notice.** Applying a baseline re-stamps
+`source.topology_fingerprint` from the **live** topology
+(`baseline_profile.py:418-431`, copied into the immutable
+`recomposition_snapshot` at `:2804-2807`), so the two sides of §1.4's
+comparison equalise. `persist_applied_baseline_profile`
+(`baseline_profile.py:3299-3373`) is the **only** writer of the applied
+artifact; three callers reach it — `_apply_baseline_profile_locked` (`:3874`),
+`restore_applied_baseline_profile` (`:4075`), and `commissioning_apply.py:764`.
+
+> **`jasper-active-speaker baseline-reemit` is the WRONG VERB — it refuses under
+> exactly this condition.** It routes through `recompose_applied_baseline_yaml`
+> → `applied_baseline_hardware_match` (`baseline_profile.py:2903-2916`), which
+> returns a **blocker**, `applied_baseline_snapshot_topology_stale`: *"the
+> applied active-speaker profile belongs to a different output topology; reapply
+> speaker setup first."* A re-emit is gated **by** the staleness it looks like it
+> would fix.
+
+**The campaign's own words are the primary source for the obligation**
+(`run-log.md:1985-1993`):
 
 > **The box is deliberately left non-measurable until the next campaign
 > re-mints and applies.** A session that wants to measure must clear this
@@ -230,16 +274,39 @@ licensed; nothing around it is.
       worktree is a different SHA, *"and a laptop-side dry-run would have been a
       claim about a different build."*
 
-**Clear the topology staleness (§1.4).**
+**Re-mint the baseline (§1.4).** There is **no CLI for this** —
+`jasper-active-speaker` exposes `startup-template`, `path-audit`, `path-probe`,
+`environment-probe`, `runtime-safe-graph`, `baseline-reemit`, `commission-load`,
+`commission-rollback` and `ramp {step,ack,status,abort}`
+(`jasper/cli/active_speaker.py:1420-1795`) and none of them mints. The surface
+is the sound wizard, port **8784** (`jasper/web/sound_setup.py:6230`; nginx
+proxies `/sound/setup/`), and it is a **two-POST fingerprint handshake**:
 
-- [ ] Re-mint and apply a baseline against the current topology (declaration
-      revision 22, woofer `driver_style = cone_driver`). Per R4, applying the
-      bare candidate is permitted — the tournament winner is not precious and
-      is recoverable from the banked artifacts.
-- [ ] Confirm the protected setup reads `ready`, not
-      `active_baseline_topology_changed`. **This is the actual gate** —
-      `/correction/crossover/v2/session` returns `http=400` otherwise and the
-      runner exits `rc 4`.
+- [ ] `POST /sound/setup/active-speaker/baseline-profile` — compiles the
+      candidate with `write=True` (`sound_setup.py:5783-5786`). Read
+      `candidate_fingerprint` out of the response.
+- [ ] `POST /sound/setup/active-speaker/baseline-profile/apply` with
+      `{"expected_candidate_fingerprint": "<that>"}` — handler
+      `_active_speaker_baseline_profile_apply_payload`
+      (`sound_setup.py:5174-5228`), which calls `apply_baseline_profile` →
+      `persist_applied_baseline_profile`. A mismatched fingerprint returns
+      `status: "blocked"` / `baseline_candidate_fingerprint_mismatch`
+      (`:5260-5283`). **This endpoint has zero JS callers — it is HTTP-only.**
+      The UI's only wired button is `save-and-apply`
+      (`deploy/assets/sound-profile/js/main.js:7438`), which does the same
+      apply plus commissioning cleanup.
+- [ ] Per R4, applying the bare candidate is permitted — the tournament winner
+      is not precious and is recoverable from the banked artifacts.
+- [ ] **Verify the re-mint took, two ways.** `jasper-doctor`'s
+      `active speaker setup notices` line flips WARN → `ok` /
+      `no standing speaker setup notices`. And `/state`'s
+      `active_speaker_setup.protected_profile.topology_current` flips
+      `False` → `True` (`setup_status.py:1082`, `:1278`).
+- [ ] **Then check the gate one step downstream** — the driver-safety target
+      match (`driver_safety.py:3184-3196`). If a v2 session still refuses, the
+      code will be `driver_safety_profile_target_mismatch`, not the topology
+      one, and the fix is to re-confirm the driver-safety profile against
+      declaration revision 22. See gap 3.
 - [ ] Record which graph is applied. §1.2: the entry-baseline summed capture is
       the one comparison that needs it, and the original ran against
       `candidate_7ac9583f15eb.yml`, sha `dcc90dabdc03adc9…`.
@@ -369,14 +436,40 @@ Consequence for row 9: **the acceptance bar's instrument is a bespoke HTML
 report, not a CLI.** Anyone budgeting row 9 as "run the runner twice, run the
 tool" is budgeting a tool that will error.
 
-**Gap 3 — how much of the re-mint is a *procedure* is undetermined from
-paper.** §1.4 establishes what the notice is, what rotates it, and that a
-re-mint-and-apply clears it. What paper does **not** settle is the exact
-operator surface at HEAD after 7j: which page, endpoint or CLI mints and
-applies a measured baseline in one step, and whether the v2 seam the campaign
-spotted — `accepted_sound_declaration_change` / `accepted_sound_revision` /
-`sound_declaration_undo` — is now the intended path. The original session
-declined to explore it, correctly: *"hunting for a bypass around a refusal is
-exactly what the standing rule forbids."* **Determine this at the box in the
-first ten minutes of the run, not by reading more.** It is the one checklist
-line above that is written as an outcome rather than a command.
+**Gap 3 — WHICH gate the box is actually sitting behind is not determinable
+from paper.** The re-mint *surface* is settled (the two-POST handshake above);
+this gap is narrower and sharper. Two independent gates read `driver_style`,
+and only one of them is 7j's subject:
+
+| Gate | Code | 7j's effect |
+|---|---|---|
+| Topology staleness | `active_baseline_topology_changed` | **demoted to a warning.** No longer blocks |
+| Driver-safety target match (`driver_safety.py:3184-3196`, hit at `correction_crossover_v2.py:4715`) | `driver_safety_profile_target_mismatch` | **untouched — this is 7j's declared carve** |
+
+The campaign entered `driver_style` through *"the same owning two-step"* and
+left the declaration at **revision 22, `confirmed` / `confirmed_and_current:
+true`**, which *may* mean the safety profile already matches and only the
+topology notice stands. The end-state probe was taken on a build predating 7j,
+so it cannot distinguish the two. **Nothing in paper resolves it** — one
+`jasper-doctor` run and one attempted session open on the re-deployed box will,
+in under five minutes. Budget for the possibility that the re-mint alone is not
+enough and the driver-safety profile needs re-confirming too.
+
+*One thing NOT to do while resolving it:* the v2 state carries
+`accepted_sound_declaration_change` / `accepted_sound_revision` /
+`sound_declaration_undo`, which look like a seam for accepting a declaration
+change without recompiling. The original session declined to explore it and was
+right: *"hunting for a bypass around a refusal is exactly what the standing rule
+forbids."*
+
+### 1.7 One stale doc this brief will not edit
+
+`docs/REFACTOR-2026-08.md:279-284` still instructs deploying *"**never
+jts3**, which is the measurement bench holding a deliberate
+`blocked/active_baseline_topology_changed` state (applying the bare
+`55dee33aa48a` candidate would destroy the tournament winner's corrections)"*.
+Both halves are dead: owner ruling R4 overrules the prohibition, and after 7j
+`active_baseline_topology_changed` **cannot produce `blocked` at all** — it is
+a `warning`. That file is the audit program's single-owner planning authority
+(§6 R5's boundary table), so this brief flags it rather than editing across the
+boundary. It wants one line from whoever owns that doc.
