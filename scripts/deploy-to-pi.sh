@@ -608,13 +608,16 @@ if [[ "${SKIP_INSTALL:-}" != "1" ]]; then
         echo "      the peer_id cleanly — enable passwordless sudo for"
         echo "      identity-verified deploys, see BRINGUP Phase 2.5)"
     else
-        # The recorded peer_id describes the speaker .env.local names, so
-        # it is only comparable when THIS deploy is aimed there. Give the
-        # guard no state file for a caller-targeted one: recording a
-        # redirect's peer_id would make the checkout's next plain deploy
-        # abort against its own Pi. See _lib.sh's targeting contract.
+        # The recorded peer_id describes the host .env.local names, so it
+        # is only comparable when THIS deploy is aimed there — naming that
+        # same host yourself still verifies and records. A caller naming a
+        # DIFFERENT host is a redirect the record says nothing about:
+        # give the guard no state file, or recording the redirect's
+        # peer_id makes the checkout's next plain deploy abort against its
+        # own Pi. See _lib.sh's targeting contract.
         identity_env_file="${REPO_ROOT}/.env.local"
-        if [[ "${JTS_TARGET_FROM:-}" == "caller" ]]; then
+        if [[ "${JTS_TARGET_FROM:-}" == "caller" \
+            && "$PI_HOST" != "${JTS_TARGET_FILE_HOST:-}" ]]; then
             identity_env_file=""
         fi
         remote_peer_id="$(run_remote_sudo 'cat /var/lib/jasper/peer_id 2>/dev/null' 2>/dev/null || true)"
@@ -640,9 +643,9 @@ if [[ "${SKIP_INSTALL:-}" != "1" ]]; then
             rerecorded) echo "    speaker identity: re-recorded peer_id (accepted new)" ;;
             match)      echo "    speaker identity: verified" ;;
             no_state_file)
-                if [[ "${JTS_TARGET_FROM:-}" == "caller" ]]; then
-                    echo "    speaker identity: skipped (you named this target,"
-                    echo "      so this checkout has no recorded identity for it)"
+                if [[ -z "$identity_env_file" && -f "${REPO_ROOT}/.env.local" ]]; then
+                    echo "    speaker identity: skipped (you named this target;"
+                    echo "      the recorded identity describes .env.local's speaker)"
                 fi
                 ;;
             *)          : ;;  # unavailable — the Pi has no peer_id to compare

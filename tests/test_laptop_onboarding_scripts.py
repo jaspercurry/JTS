@@ -648,24 +648,69 @@ class LaptopOnboardingScriptsTest(unittest.TestCase):
                     timeout=10,
                 )
 
+            # The checkout's own speaker records on first contact and
+            # verifies against that record on the next deploy...
+            for _ in range(2):
+                plain = run()
+                self.assertEqual(
+                    plain.returncode, 0, plain.stdout + plain.stderr
+                )
+            recorded = state.read_bytes()
+            self.assertIn("PI_PEER_ID=peer-jts.local", recorded.decode())
+            self.assertNotEqual(recorded, before)
+
+            # ...and with that record standing, a redirect neither reads
+            # nor rewrites it — including under the re-record override.
             redirect = run(PI_HOST="jts2.local")
             self.assertEqual(
                 redirect.returncode, 0, redirect.stdout + redirect.stderr
             )
-            self.assertEqual(state.read_bytes(), before)
+            self.assertEqual(state.read_bytes(), recorded)
 
             accepted = run(PI_HOST="jts2.local", JTS_ACCEPT_NEW_IDENTITY="1")
             self.assertEqual(
                 accepted.returncode, 0, accepted.stdout + accepted.stderr
             )
-            self.assertEqual(state.read_bytes(), before)
+            self.assertEqual(state.read_bytes(), recorded)
 
-            # ...and the checkout's own speaker still records on first
-            # contact and verifies against that record on the next deploy.
+    def test_naming_the_checkouts_own_host_still_records_and_verifies(self):
+        """The setup scripts' own shape: write .env.local, then deploy to it.
+
+        onboard.sh and rename-speaker.sh both call write_laptop_state and then
+        invoke deploy-to-pi.sh with PI_HOST/PI_USER/JASPER_HOSTNAME set to the
+        values they just wrote. Naming the host the file already names is the
+        checkout's own speaker, not a redirect, so it is how the record gets
+        established at all — and a plain `PI_HOST=<own host>` deploy is
+        verified rather than silently unguarded.
+        """
+        env_local = textwrap.dedent(
+            """\
+            PI_HOST=jts.local
+            PI_USER=pi
+            JASPER_HOSTNAME=jts.local
+            """
+        )
+        with isolated_checkout(env_local) as checkout:
+            deploy = checkout / "scripts" / "deploy-to-pi.sh"
+            state = checkout / ".env.local"
+
             for _ in range(2):
-                plain = run()
+                onboard_shape = subprocess.run(
+                    ["bash", str(deploy)],
+                    cwd=checkout,
+                    env=FakeRemote(self).env(
+                        PI_HOST="jts.local",
+                        PI_USER="pi",
+                        JASPER_HOSTNAME="jts.local",
+                    ),
+                    capture_output=True,
+                    text=True,
+                    timeout=10,
+                )
                 self.assertEqual(
-                    plain.returncode, 0, plain.stdout + plain.stderr
+                    onboard_shape.returncode,
+                    0,
+                    onboard_shape.stdout + onboard_shape.stderr,
                 )
             self.assertIn("PI_PEER_ID=peer-jts.local", state.read_text())
 

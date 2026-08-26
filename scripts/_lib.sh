@@ -7,8 +7,9 @@
 #
 #   . "$(dirname "$0")/_lib.sh"
 #
-# After sourcing, REPO_ROOT, PI_HOST, PI_USER, JTS_TARGET_FROM and
-# optional JASPER_HOSTNAME are exported and safe to use throughout.
+# After sourcing, REPO_ROOT, PI_HOST, PI_USER, JTS_TARGET_FROM,
+# JTS_TARGET_FILE_HOST and optional JASPER_HOSTNAME are exported and
+# safe to use throughout.
 #
 # Responsibilities:
 #   1. Resolve REPO_ROOT from the script's own location (so scripts
@@ -49,11 +50,17 @@ REPO_ROOT="$(cd "${SCRIPT_DIR}/.." && pwd)"
 # no better — transport from one source and identity from the other
 # deploys to one speaker under another speaker's name.
 #
+# JTS_TARGET_FILE_HOST carries the file's own host (empty when it names
+# none) so a caller target can be told apart from a REDIRECT.
+#
 # Non-negotiable #4: the TOFU peer_id recorded in `.env.local` describes
-# the `file` target only. Against a `caller` target there is nothing to
-# compare to, so the identity guard can only skip or refuse — never
-# verify — and deploy-to-pi.sh must neither read nor write that record
-# for one, or a redirect's peer_id corrupts the checkout's own.
+# the host that file names. A caller naming that same host is still the
+# checkout's own speaker, so it verifies and records normally — that is
+# how onboard.sh and rename-speaker.sh, which write the file and then
+# deploy with matching values, establish the record at all. A caller
+# naming a DIFFERENT host is a redirect: nothing in the record describes
+# it, so deploy-to-pi.sh gives the guard no state file — reading it
+# would bless the wrong Pi, writing it would corrupt the checkout's own.
 #
 # The temporaries are prefixed because this file is sourced INTO other
 # scripts, whose own variables must survive it.
@@ -61,12 +68,18 @@ _jts_lib_caller_host="${PI_HOST:-}"
 _jts_lib_caller_hostname="${JASPER_HOSTNAME:-}"
 _jts_lib_caller_user="${PI_USER:-}"
 
+# PI_HOST is cleared first so what survives the source is the FILE's
+# answer alone — otherwise a caller's value looks like the file's when
+# the file names no host, and JTS_TARGET_FILE_HOST below would report a
+# match that nothing in the file supports.
+unset PI_HOST
 if [[ -f "${REPO_ROOT}/.env.local" ]]; then
     set -a
     # shellcheck disable=SC1091
     . "${REPO_ROOT}/.env.local"
     set +a
 fi
+export JTS_TARGET_FILE_HOST="${PI_HOST:-}"
 
 if [[ -n "$_jts_lib_caller_host" || -n "$_jts_lib_caller_hostname" ]]; then
     export JTS_TARGET_FROM=caller
