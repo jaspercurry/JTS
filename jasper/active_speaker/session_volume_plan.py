@@ -35,9 +35,9 @@ lease does not:
   whole session" is the intent; whether the fader actually stayed there is a
   separate fact, and the graph swap around each stimulus used to answer no —
   its duck released to the household level rather than the declared one
-  (#2929, fixed at the swap via
-  :meth:`SessionVolumePlan.owned_measurement_volume_db_nowait`). A
-  per-step lease never needed this because it re-set the volume every step.
+  (#2929; wave 6d then stopped the measurement swap ducking at all, and the
+  bound that defect broke lives in :func:`jasper.volume_owner.duck_release_target_db`).
+  A per-step lease never needed this because it re-set the volume every step.
   The re-proof stays as the tripwire that would catch the next such writer.
 
 The fixed measurement volume is not hard-coded: :func:`session_measurement_volume_db`
@@ -867,11 +867,10 @@ class SessionVolumePlan:
         passed and the plan still named the declared volume onto a speaker
         sitting at the emergency floor. Measured at −60.0 → −12.5: **+47.5
         dB**. Clearing first means the very next reader sees a plan that owns
-        nothing. The reader that could still WRITE that number is
-        :meth:`owned_measurement_volume_db_nowait`, which feeds the swap's
-        release reference; :meth:`hold_measurement_volume` no longer writes at
-        all, so through it the same stale answer now refuses a capture instead
-        of raising the fader.
+        nothing. No reader can still WRITE that number:
+        :meth:`hold_measurement_volume` is the last one and no longer writes at
+        all, so through it the same stale answer refuses a capture instead of
+        raising the fader.
 
         The persist is then guarded exactly as :meth:`_mark_unresolved` guards
         its own, and for the mirror-image reason. There the prior intent
@@ -986,12 +985,11 @@ class SessionVolumePlan:
         this plan had confirmed. So a capture path asks HERE, per stimulus,
         rather than trusting :meth:`open`.
 
-        #2929 removed that writer at its source: the swap now takes
-        :meth:`owned_measurement_volume_db_nowait` as its release reference, so a
-        healthy routed capture reads in tolerance and this method writes
-        nothing. It stays as the tripwire — the declared volume is still
-        re-proven per stimulus, and a repair now means something genuinely
-        moved the fader.
+        #2929 removed that writer at its source, and wave 6d then stopped the
+        measurement swap ducking at all — so a healthy routed capture reads in
+        tolerance and this method writes nothing. It stays as the tripwire —
+        the declared volume is still re-proven per stimulus, and a repair now
+        means something genuinely moved the fader.
 
         Returns the proven fader reading, or ``None`` when this plan does not
         currently own a volume to hold — nothing open, latched ``unresolved``,
@@ -1035,8 +1033,7 @@ class SessionVolumePlan:
         """The volume this plan OWNS as of this instant, or ``None``.
 
         The one guarded answer to "may this session command a volume right
-        now?", so :meth:`hold_measurement_volume` and
-        :meth:`owned_measurement_volume_db_nowait` cannot drift apart. Reading
+        now?", asked by :meth:`hold_measurement_volume`. Reading
         ``measurement_volume_db`` directly instead is the +47.5 dB hazard
         :meth:`_clear_resolved` documents: ``_mark_unresolved`` copies that
         field forward, so a plan whose restore could not be confirmed still
@@ -1045,9 +1042,8 @@ class SessionVolumePlan:
         Synchronous, and every read it makes is synchronous, so on one event
         loop it cannot observe a half-applied drain: the drains mutate this
         state with no ``await`` between dropping the intent and recording it.
-        Its two callers establish "no drain is mid-flight" differently — the
-        hold HOLDS ``_restore_lock``; the nowait reader PEEKS it — and that
-        difference is the whole of what separates them.
+        Its caller establishes "no drain is mid-flight" by HOLDING
+        ``_restore_lock`` across the read.
         """
         try:
             self.assert_ready()
@@ -1056,39 +1052,6 @@ class SessionVolumePlan:
         state = self._state
         # Unreachable via assert_ready; fail closed anyway.
         return None if state is None else state.measurement_volume_db
-
-    def owned_measurement_volume_db_nowait(self) -> float | None:
-        """The volume this plan owns, asked WITHOUT waiting for the lock.
-
-        The crossover-v2 graph swaps ask this as the duck's release reference
-        (issue #2929) so the fader lands on the declared measurement volume by
-        construction instead of on the household level — which is what made the
-        per-stimulus hold repair on every routed capture rather than merely
-        watch.
-
-        **Synchronous and non-blocking on purpose, and that is load-bearing
-        twice.** It is called from inside the swap's shielded ``finally``, where
-        awaiting a lock could strand a ducked (silent) speaker behind a wedged
-        drain. And it is called THERE — at the moment of release — rather than
-        resolved to a number before the swap, because the bracket spans seconds:
-        the gate panel measured a wall-clock-ceiling drain completing inside it
-        (reachable at the remote's own ~1.5 s ``/crossover/status`` poll
-        cadence), reporting a confirmed restore, and then being UNDONE by a
-        release still carrying the pre-swap answer — the household's volume put
-        back up by up to +13.21 dB with no owner left to take it down.
-
-        A drain holding the lock reads as ``None``, which is the fail-safe
-        answer rather than a guess: the swap then releases to the canonical
-        household target exactly as every non-measurement swap does. ``None``
-        equally whenever this plan owns no volume — nothing open, latched
-        ``unresolved``, crash-hydrated, or past its wall-clock ceiling.
-        """
-        if self._restore_lock.locked():
-            # A drain is mid-flight. Its outcome is not knowable from here
-            # without waiting for it, and the level it is moving toward is the
-            # household's, not this session's — so decline to reference one.
-            return None
-        return self._owned_volume_db_now()
 
     async def _drain_restore(
         self,

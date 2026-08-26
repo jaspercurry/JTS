@@ -5517,11 +5517,11 @@ class CrossoverV2Session:
             # a second seam that restored the graph itself and returned a
             # refusal code, ending the session BEFORE ``run_round`` — so a
             # rollback class wrote no receipt at all, and the adoption table
-            # never saw the evidence. The ethos's fifth principle makes that
-            # unacceptable ("every round, kept or restored or refused, banks
-            # its measurement into the series state"), and the seam was also a
-            # second owner of "restore the previous graph" beside
-            # ``coordinator._run_round_restore``.
+            # never saw the evidence. The ethos's "least-bad measured, honed
+            # in bites" ruling makes that unacceptable ("every round, kept or
+            # restored or refused, banks its measurement into the series
+            # state"), and the seam was also a second owner of "restore the
+            # previous graph" beside ``coordinator._run_round_restore``.
             #
             # Both are gone. The probe's verdict now reaches
             # ``evaluate_round_quality``, the same three classes restore

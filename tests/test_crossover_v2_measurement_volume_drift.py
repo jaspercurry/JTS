@@ -941,41 +941,6 @@ def test_an_unready_plan_never_gets_its_fader_raised(monkeypatch, tmp_path, phas
     assert cam.volume_db == HOUSEHOLD_DB
 
 
-# --------------------------------------------------------------------------- #
-# the fix: the swap releases to the declared level BY CONSTRUCTION (#2929)
-# --------------------------------------------------------------------------- #
-
-
-def test_the_release_reference_is_the_plans_own_guarded_answer(tmp_path):
-    """THE SAFETY GUARD ON THIS FIX.
-
-    The reference the swap releases to is the same guarded question the hold
-    asks, not the raw ``measurement_volume_db`` field — because
-    ``_mark_unresolved`` copies that field forward, so a plan whose restore
-    could not be confirmed still REPORTS the declared volume while owning
-    nothing. Reading it unguarded would let a graph swap raise the fader back
-    up on a speaker its session had just left at the emergency floor. Every
-    state that makes the hold answer ``None`` must make this answer ``None``
-    too, or the two disagree about who owns the fader.
-    """
-    plan, _fader_io = _open_plan(tmp_path)
-    assert plan.owned_measurement_volume_db_nowait() == DECLARED_DB
-
-    stuck = _fader(value=-5.0, sticks=False)
-    asyncio.run(plan.close(stuck.set, stuck.get))
-    assert plan.needs_recovery
-    assert plan.measurement_volume_db == DECLARED_DB  # the field still says it
-    assert plan.owned_measurement_volume_db_nowait() is None
-
-
-def test_a_cleanly_closed_plan_offers_no_release_reference(tmp_path):
-    """After a clean close the household owns the fader again, so a later swap
-    must fall back to the canonical target rather than the measurement one."""
-    plan, fader = _open_plan(tmp_path)
-    asyncio.run(plan.close(fader.set, fader.get))
-    assert plan.owned_measurement_volume_db_nowait() is None
-
-
 
 class _FakeCamillaClient:
     """CamillaDSP as it actually behaves (#2929).

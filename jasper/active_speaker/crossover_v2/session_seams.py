@@ -27,7 +27,7 @@ test double is a peer of production rather than a mock of it.
 
 **Structural, and deliberately not ``@runtime_checkable``** — see
 :class:`~.playback_transaction.PlaybackTransaction` for the rule, which applies
-to all four seams: ``isinstance`` against a Protocol compares method NAMES
+to every Protocol seam: ``isinstance`` against a Protocol compares method NAMES
 only, so it would buy confidence it cannot deliver. Method bodies raise
 :class:`NotImplementedError` so a partial explicit subclass fails loudly.
 
@@ -97,8 +97,9 @@ class SessionGraph(Protocol):
     because the transport is CamillaDSP over a websocket and every production
     caller is already on the event loop. Contract and idempotence match; only
     the colour differs. Reconciling it belongs to the wave that wires
-    :class:`~.session.TuningSession` to a front end — all four seams here are
-    synchronous, so it is one decision for all of them, not one per seam.
+    :class:`~.session.TuningSession` to a front end — all five seams are
+    declared synchronous, so it is one decision for all of them, not one per
+    seam.
     """
 
     def install(self) -> str:
