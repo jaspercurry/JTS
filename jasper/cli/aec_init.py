@@ -35,9 +35,12 @@ from jasper.audio_hardware import dac as dac_registry
 # EnvironmentFile= line.
 from jasper.audio_runtime_plan import DEFAULT_OUTPUTD_ENV_PATH
 from jasper.chip_aec_alignment import (
+    PER_UNIT_IDENTITY_FIELDS,
     QUEUE_MAX_MEDIAN_DRIFT,
     AlignmentIdentity,
+    ArtifactSchemaSuperseded,
     QueueMovedFromCommissioned,
+    identity_divergence,
     load_artifact,
     median_samples,
     queue_median_drift,
@@ -51,6 +54,11 @@ from jasper.route_latency.status_socket import OUTPUTD_STATUS_SOCKET, read_statu
 
 logger = logging.getLogger("jasper.aec_init")
 COMMISSION_REQUIRED_EXIT = 2
+# Where an applied-but-disclosed alignment leaves its reason for
+# jasper-aec-reconcile, which owns the household-facing status vocabulary. One
+# line of text, no schema; absent means the alignment is fully ready. The
+# reconciler pairs it with the fixed jasper-aec-commission action (ADR-0101).
+DISCLOSURE_PATH = "/run/jasper-aec-init/alignment-disclosure"
 # Kept in step with the `init_status` branch in jasper-aec-reconcile's
 # activate_managed_chip_aec by tests/test_aec_reconcile.py.
 OUTPUTD_ENV_STALE_EXIT = 3
@@ -932,6 +940,28 @@ def _find_device(xvf_host):
     raise ChipInitError("XVF3800 did not enumerate")
 
 
+def publish_disclosure(reason: str, *, env: Mapping[str, str] | None = None) -> None:
+    """Publish why this run's alignment is disclosed-stale, or clear it.
+
+    Best-effort: the profile is applied and the box is hearing by the time this
+    runs, so a failed ``/run`` write must not turn a disclosure back into a
+    park.  `main` calls it exactly once per successful run, so the file cannot
+    outlive the condition it names.
+    """
+
+    source = os.environ if env is None else env
+    path = source.get("JASPER_AEC_ALIGNMENT_DISCLOSURE_FILE") or DISCLOSURE_PATH
+    try:
+        if not reason:
+            os.unlink(path)
+            return
+        os.makedirs(os.path.dirname(path), exist_ok=True)
+        with open(path, "w", encoding="utf-8") as handle:
+            handle.write(" ".join(reason.split()) + "\n")
+    except OSError:
+        pass
+
+
 def main() -> int:
     logging.basicConfig(level=logging.INFO, format="%(asctime)s aec-init %(levelname)s %(message)s")
     corpus = _truthy("JASPER_AEC_CORPUS_CHIP_AEC_ENABLED")
@@ -943,6 +973,7 @@ def main() -> int:
         else "lab_bypass"
     )
     dev = None
+    disclosure = ""
     try:
         from jasper.xvf import xvf_host
 
@@ -954,41 +985,76 @@ def main() -> int:
                 raise ChipInitError(
                     "detected XVF has no validated production beam plan"
                 )
+            # ADR-0101: a proof that stopped describing this box is applied and
+            # disclosed, not parked. Each `disclosed` entry names what moved;
+            # the reconciler publishes them as `disclosed_stale` alongside the
+            # jasper-aec-commission that clears them.
+            disclosed: list[str] = []
+            commissioned_identity: AlignmentIdentity | None = None
             try:
                 artifact = load_artifact()
+                k_samples = artifact.k_samples
+                commissioned_sys_delay = artifact.sys_delay
+                commissioned_identity = artifact.identity
+            except ArtifactSchemaSuperseded as exc:
+                k_samples = exc.k_samples
+                commissioned_sys_delay = exc.sys_delay
+                disclosed.append(str(exc))
             except (OSError, ValueError) as exc:
+                # No artifact at all: nothing banked to run from, and inventing
+                # a K would arm an alignment nobody measured. The shipped
+                # hardware-class default that lets this half disclose too is
+                # its own change — see #2984.
                 raise CommissionRequired(str(exc)) from exc
             status, queue = collect_reference_queue(native_reference_pcm(card))
-            identity = build_identity(dev, plan, status)
-            if artifact.identity != identity:
-                raise CommissionRequired("artifact identity does not match live hardware")
+            if commissioned_identity is not None:
+                changed = identity_divergence(
+                    commissioned_identity, build_identity(dev, plan, status)
+                )
+                if changed:
+                    # K is a property of the hardware CLASS, so a proof
+                    # measured on a sibling unit still describes this box;
+                    # anything else moved the edge K was measured against.
+                    disclosed.append(
+                        (
+                            "commissioned alignment was measured on a different unit"
+                            if set(changed) <= PER_UNIT_IDENTITY_FIELDS
+                            else "commissioned alignment no longer matches this "
+                            "hardware class"
+                        )
+                        + f" ({', '.join(changed)})"
+                    )
             try:
                 delay = runtime_sys_delay(
-                    artifact.k_samples,
-                    queue,
-                    commissioned_sys_delay=artifact.sys_delay,
+                    k_samples, queue, commissioned_sys_delay=commissioned_sys_delay
                 )
             except QueueMovedFromCommissioned as exc:
-                # Not a fault to inspect: the live reference queue no longer
-                # sits where it did when this artifact was measured, so the
-                # artifact does not describe this box any more. That is the
-                # recommission case, and it is already a recoverable park —
-                # sending the household at "inspect jasper-aec-init and
-                # outputd" would be sending them at a healthy daemon.
-                raise CommissionRequired(str(exc)) from exc
+                # Nothing is broken: the live reference queue simply no longer
+                # sits where it did when K was measured. The delay it carries
+                # has already cleared the chip's declared SYS_DELAY range, so
+                # apply it and say how far it moved.
+                delay = exc.delay
+                disclosed.append(str(exc))
             except ValueError as exc:
                 raise ChipInitError(str(exc)) from exc
             apply_profile(dev, plan, delay, card=card)
+            disclosure = "; ".join(disclosed)
+            applied: dict[str, Any] = {
+                "outcome": "disclosed_stale" if disclosure else "ready",
+                "sys_delay": delay,
+                "commissioned_sys_delay": commissioned_sys_delay,
+                "k_samples": k_samples,
+                "queue_median": median_samples(queue),
+                "queue_spread": max(queue) - min(queue),
+                "queue_samples": len(queue),
+            }
+            if disclosure:
+                applied["reason"] = disclosure
             log_event(
                 logger,
                 "chip_aec_init",
-                outcome="ready",
-                sys_delay=delay,
-                commissioned_sys_delay=artifact.sys_delay,
-                k_samples=artifact.k_samples,
-                queue_median=median_samples(queue),
-                queue_spread=max(queue) - min(queue),
-                queue_samples=len(queue),
+                fields=applied,
+                level=logging.WARNING if disclosure else logging.INFO,
             )
         elif mode == "corpus":
             plan = xvf3800.chip_beam_plan_from_env(os.environ)
@@ -1009,6 +1075,7 @@ def main() -> int:
             # Only explicit custom/lab routing reaches this path.
             apply_bypass_profile(dev, card=card)
             log_event(logger, "chip_aec_init", outcome="bypassed", mode=mode)
+        publish_disclosure(disclosure)
         return 0
     except OutputdEnvStale as exc:
         # Distinct from a fault: nothing is broken, the output declaration just

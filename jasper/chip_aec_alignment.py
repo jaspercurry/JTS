@@ -164,11 +164,15 @@ class QueueMovedFromCommissioned(ValueError):
     """The live queue median no longer sits where the artifact measured it.
 
     A distinct type because the disposition is distinct: nothing is broken, the
-    artifact simply stopped describing this box, so the box needs
-    recommissioning rather than an operator inspecting a healthy daemon.  A
-    subclass of ValueError so a caller that only knows the old contract still
-    catches it.
+    artifact simply stopped describing this box.  ``delay`` is the resolved
+    SYS_DELAY, which has already passed the chip's own range check, so a caller
+    may apply it and disclose (ADR-0101) rather than stop.  A subclass of
+    ValueError so a caller that only knows the old contract still catches it.
     """
+
+    def __init__(self, message: str, delay: int) -> None:
+        super().__init__(message)
+        self.delay = delay
 
 
 def runtime_sys_delay(
@@ -188,8 +192,14 @@ def runtime_sys_delay(
     commissioner's verified alignment and what boot applies.  ``choose_delay``
     reserves ``MIN_EDGE_MARGIN`` frames of causal-window margin on both edges,
     so that is exactly how far the live median may have moved before the
-    projected first peak leaves the window commissioning proved.  Past it, park
-    loudly rather than apply a delay nobody measured.
+    projected first peak leaves the window commissioning proved.  Past it,
+    `QueueMovedFromCommissioned` hands the delay out for a caller that
+    discloses rather than one that stops.
+
+    The chip's declared ``CHIP_AEC_SYS_DELAY_MIN..MAX`` range is checked FIRST
+    and still refuses outright: it is the driver cap, nothing may be written
+    outside it, and checking it ahead of the margin is what makes the margin
+    safe to demote to a disclosure.
     """
 
     if type(k_samples) is not int or type(commissioned_sys_delay) is not int:
@@ -199,15 +209,16 @@ def runtime_sys_delay(
     if not queue_window_is_stable(values):
         raise ValueError("chip-reference queue is unstable")
     delay = k_samples - queue
+    if not xvf3800.CHIP_AEC_SYS_DELAY_MIN <= delay <= xvf3800.CHIP_AEC_SYS_DELAY_MAX:
+        raise ValueError(f"runtime SYS_DELAY {delay} is out of range")
     moved = delay - commissioned_sys_delay
     if abs(moved) > MIN_EDGE_MARGIN:
         raise QueueMovedFromCommissioned(
             f"live reference queue median has moved {moved:+d} frames from the "
             f"commissioned window (limit {MIN_EDGE_MARGIN}); SYS_DELAY {delay} "
-            "is outside the causal margin commissioning reserved"
+            "is outside the causal margin commissioning reserved",
+            delay,
         )
-    if not xvf3800.CHIP_AEC_SYS_DELAY_MIN <= delay <= xvf3800.CHIP_AEC_SYS_DELAY_MAX:
-        raise ValueError(f"runtime SYS_DELAY {delay} is out of range")
     return delay
 
 
@@ -225,14 +236,10 @@ class AlignmentIdentity:
     # the installed ``hw_params`` (outputd STATUS ``dac.format``).  That is the
     # hardware edge on a raw ``hw:`` device; through an ALSA ``plug`` it is not,
     # because a plug installs the client's own request client-side and converts
-    # on the slave side.  A commissioned ``K`` is only valid for
-    # the electrical edge it was measured against, so moving the edge — a DAC
-    # swap, or the registry re-declaring one — MUST invalidate the artifact
-    # rather than degrade quietly.  Adding this field also invalidates every
-    # artifact commissioned before it existed: ``artifact_from_dict``'s
-    # exact-field-set check rejects the old shape, so those boxes park with
-    # ``CommissionRequired`` until one recommissioning run.  That one-time
-    # forced recommission is the designed behavior, not a regression.
+    # on the slave side.  A commissioned ``K`` is only valid for the electrical
+    # edge it was measured against, so moving the edge — a DAC swap, or the
+    # registry re-declaring one — is hardware-class divergence, which
+    # `identity_divergence` names as the loud kind.
     output_format: str
     output_rate: int
     output_channels: int
@@ -261,6 +268,30 @@ class AlignmentIdentity:
         )
         if any(type(value) is not int or value <= 0 for value in numbers):
             raise ValueError("alignment identity geometry must be positive integers")
+
+
+# The identity fields that name THIS physical box rather than its hardware
+# class.  K is a property of the class, so a box whose only divergence is here
+# is running a proof measured on a sibling of itself — worth saying out loud,
+# not worth refusing (ADR-0101).  Everything else describes the class the
+# alignment was measured against.
+PER_UNIT_IDENTITY_FIELDS = frozenset({"xvf_serial", "output_hardware_key"})
+
+
+def identity_divergence(
+    commissioned: AlignmentIdentity, live: AlignmentIdentity
+) -> tuple[str, ...]:
+    """Return the identity fields that differ, in declaration order.
+
+    The names are what a household needs to see, so they travel rather than a
+    verdict; a caller splits them against `PER_UNIT_IDENTITY_FIELDS`.
+    """
+
+    return tuple(
+        name
+        for name in AlignmentIdentity.__dataclass_fields__
+        if getattr(commissioned, name) != getattr(live, name)
+    )
 
 
 @dataclass(frozen=True)
@@ -296,17 +327,50 @@ class AlignmentArtifact:
         }
 
 
+class ArtifactSchemaSuperseded(ValueError):
+    """The artifact predates the current schema but still banks a usable K.
+
+    ADR-0101: the schema moved, the measurement did not, so boot applies the
+    banked values and discloses rather than parking on a version number.  They
+    have passed the same integer and driver-cap checks `AlignmentArtifact`
+    applies.  A subclass of ValueError so a caller that only knows the old
+    contract still treats it as a bad artifact.
+    """
+
+    def __init__(self, message: str, k_samples: int, sys_delay: int) -> None:
+        super().__init__(message)
+        self.k_samples = k_samples
+        self.sys_delay = sys_delay
+
+
 def artifact_from_dict(value: object) -> AlignmentArtifact:
     if not isinstance(value, Mapping) or set(value) != {
         "kind", "schema", "identity", "k_samples", "sys_delay"
     }:
         raise ValueError("alignment artifact schema is invalid")
-    if value["kind"] != ARTIFACT_KIND or value["schema"] != ARTIFACT_SCHEMA:
-        raise ValueError("alignment artifact kind/version is unsupported")
+    if value["kind"] != ARTIFACT_KIND:
+        raise ValueError("alignment artifact kind is unsupported")
     identity = value["identity"]
     fields = set(AlignmentIdentity.__dataclass_fields__)
-    if not isinstance(identity, Mapping) or set(identity) != fields:
+    if not isinstance(identity, Mapping):
         raise ValueError("alignment artifact identity schema is invalid")
+    if value["schema"] != ARTIFACT_SCHEMA or set(identity) != fields:
+        k_samples, sys_delay = value["k_samples"], value["sys_delay"]
+        if (
+            type(k_samples) is not int
+            or type(sys_delay) is not int
+            or not xvf3800.CHIP_AEC_SYS_DELAY_MIN
+            <= sys_delay
+            <= xvf3800.CHIP_AEC_SYS_DELAY_MAX
+        ):
+            raise ValueError("alignment artifact schema is invalid")
+        raise ArtifactSchemaSuperseded(
+            f"alignment artifact schema {value['schema']!r} predates schema "
+            f"{ARTIFACT_SCHEMA}, so its commissioned identity cannot be "
+            "compared against this box",
+            k_samples,
+            sys_delay,
+        )
     return AlignmentArtifact(
         AlignmentIdentity(**{name: identity[name] for name in fields}),
         value["k_samples"],  # type: ignore[arg-type]

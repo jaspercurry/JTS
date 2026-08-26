@@ -127,6 +127,12 @@ def _run_reconcile(
             "JASPER_VOICE_INPUT_ABSENT_MARKER": str(
                 tmp_path / "voice-input-absent"
             ),
+            # jasper-aec-init's disclosure hand-off. Absent by default, so
+            # every pass reads "the alignment is fully ready" unless a test
+            # writes one; never the host's real /run copy.
+            "JASPER_AEC_ALIGNMENT_DISCLOSURE_FILE": str(
+                tmp_path / "alignment-disclosure"
+            ),
             # Same reason: accessory_mic_present shells to
             # `jasper.accessories.mic_env`, which reads the REAL
             # /var/lib/jasper/accessory-mics.env unless redirected. Point it at
@@ -353,60 +359,50 @@ def test_reconcile_parks_when_final_outputd_restart_fails(
     assert VOICE_RESTART_CMD not in commands
 
 
-def test_reconcile_keeps_native_writer_and_parks_when_commissioning_is_required(
-    tmp_path: Path,
-) -> None:
-    env_file = _write_env(tmp_path, "Array")
-    _write_mode(tmp_path)
-    _write_card(tmp_path, channels=6)
-    fake = tmp_path / "commission-required-systemctl"
+def _init_exit_systemctl(tmp_path: Path, status: int, *, bridge_starts: bool) -> Path:
+    fake = tmp_path / f"init-exit-{status}-systemctl"
     fake.write_text(
         "#!/usr/bin/env bash\n"
         "printf '%s\\n' \"$*\" >> \"$JASPER_SYSTEMCTL_LOG\"\n"
         "[[ \"$*\" == 'restart jasper-aec-init.service' ]] && exit 1\n"
-        "[[ \"$1\" == 'show' ]] && { printf '2\\n'; exit 0; }\n"
+        + (
+            ""
+            if bridge_starts
+            else "[[ \"$*\" == 'restart jasper-aec-bridge.service' ]] && exit 1\n"
+        )
+        + f"[[ \"$1\" == 'show' ]] && {{ printf '{status}\\n'; exit 0; }}\n"
         "exit 0\n"
     )
     fake.chmod(0o755)
-
-    result = _run_reconcile(
-        tmp_path,
-        "--reason",
-        "test",
-        extra_env={"JASPER_SYSTEMCTL": str(fake)},
-    )
-
-    assert result.returncode == 0, result.stderr
-    body = env_file.read_text()
-    assert "JASPER_AEC_CHIP_AEC_ALIGNMENT_STATUS=commission_required" in body
-    assert "JASPER_AEC_CHIP_AEC_ALIGNMENT_ACTION='Run sudo jasper-aec-commission'" in body
-    assert "JASPER_OUTPUTD_CHIP_REF_PCM=hw:CARD=Array,DEV=0" in body
-    assert "JASPER_OUTPUTD_REFERENCE_UDP_TARGET=''" in body
-    assert _marker(tmp_path).exists()
-    commands = _systemctl_log(tmp_path)
-    assert "restart jasper-aec-bridge.service" not in commands
-    assert VOICE_RESTART_CMD not in commands
+    return fake
 
 
-def test_reconcile_defers_without_commissioning_when_outputd_predates_its_env(
-    tmp_path: Path,
+@pytest.mark.parametrize(
+    "status, action",
+    [
+        (
+            aec_init.COMMISSION_REQUIRED_EXIT,
+            "JASPER_AEC_CHIP_AEC_ALIGNMENT_ACTION='Run sudo jasper-aec-commission'",
+        ),
+        # The ordering race is not a moved artifact, so it must NOT send the
+        # household to the two-minute commissioner.
+        (
+            aec_init.OUTPUTD_ENV_STALE_EXIT,
+            "JASPER_AEC_CHIP_AEC_ALIGNMENT_ACTION='Wait for jasper-outputd to "
+            "restart, then run the reconciler'",
+        ),
+    ],
+)
+def test_an_unappliable_alignment_runs_software_aec3_and_discloses(
+    tmp_path: Path, status: int, action: str
 ) -> None:
-    # aec-init's OUTPUTD_ENV_STALE_EXIT: the live outputd has not loaded
-    # /var/lib/jasper/outputd.env, so its STATUS describes an edge nobody is
-    # running. That is an ordering race, not a moved artifact — it must NOT send
-    # the household to the two-minute commissioner.
+    # ADR-0101: neither exit code says anything observably broke, so the box
+    # keeps hearing on the software AEC3 leg and carries the reason/action to
+    # the doctor and /state instead of going silently deaf.
     env_file = _write_env(tmp_path, "Array")
     _write_mode(tmp_path)
     _write_card(tmp_path, channels=6)
-    fake = tmp_path / "outputd-stale-systemctl"
-    fake.write_text(
-        "#!/usr/bin/env bash\n"
-        "printf '%s\\n' \"$*\" >> \"$JASPER_SYSTEMCTL_LOG\"\n"
-        "[[ \"$*\" == 'restart jasper-aec-init.service' ]] && exit 1\n"
-        f"[[ \"$1\" == 'show' ]] && {{ printf '{aec_init.OUTPUTD_ENV_STALE_EXIT}\\n'; exit 0; }}\n"
-        "exit 0\n"
-    )
-    fake.chmod(0o755)
+    fake = _init_exit_systemctl(tmp_path, status, bridge_starts=True)
 
     result = _run_reconcile(
         tmp_path, "--reason", "test", extra_env={"JASPER_SYSTEMCTL": str(fake)}
@@ -414,18 +410,80 @@ def test_reconcile_defers_without_commissioning_when_outputd_predates_its_env(
 
     assert result.returncode == 0, result.stderr
     body = env_file.read_text()
-    assert "JASPER_AEC_CHIP_AEC_ALIGNMENT_STATUS=deferred" in body
-    assert "jasper-aec-commission" not in body
-    assert (
-        "JASPER_AEC_CHIP_AEC_ALIGNMENT_ACTION='Wait for jasper-outputd to "
-        "restart, then run the reconciler'"
-    ) in body
-    # Native reference writer stays configured so the next pass can sample it.
-    assert "JASPER_OUTPUTD_CHIP_REF_PCM=hw:CARD=Array,DEV=0" in body
-    assert _marker(tmp_path).exists()
+    assert "JASPER_AEC_CHIP_AEC_ALIGNMENT_STATUS=disclosed_stale" in body
+    assert action in body
+    # The software-AEC3 leg shape: chip beams off, the raw leg and outputd's
+    # far-end reference on, and the bridge's own UDP carrier still the mic.
+    assert "JASPER_AEC_CHIP_AEC_ENABLED=0" in body
+    assert "JASPER_MIC_DEVICE_RAW=udp:9877" in body
+    assert "JASPER_OUTPUTD_REFERENCE_UDP_TARGET=127.0.0.1:9891" in body
+    assert "JASPER_MIC_DEVICE=udp:9876" in body
+    # Voice comes back, and the gate that would have kept it off is cleared.
+    assert not _marker(tmp_path).exists()
     commands = _systemctl_log(tmp_path)
-    assert "restart jasper-aec-bridge.service" not in commands
-    assert VOICE_RESTART_CMD not in commands
+    assert "restart jasper-aec-bridge.service" in commands
+    assert VOICE_RESTART_CMD in commands
+
+
+def test_a_disclosed_box_takes_the_direct_mic_when_the_bridge_will_not_start(
+    tmp_path: Path,
+) -> None:
+    # Nothing writes udp:9876 without the bridge, and jasper-voice bound to an
+    # unfed socket stalls into WatchdogSec=30s and the unit's
+    # StartLimitAction=reboot. The disclose path must leave a mic that works.
+    env_file = _write_env(tmp_path, "Array")
+    _write_mode(tmp_path)
+    _write_card(tmp_path, channels=6)
+    fake = _init_exit_systemctl(
+        tmp_path, aec_init.COMMISSION_REQUIRED_EXIT, bridge_starts=False
+    )
+
+    result = _run_reconcile(
+        tmp_path, "--reason", "test", extra_env={"JASPER_SYSTEMCTL": str(fake)}
+    )
+
+    assert result.returncode == 0, result.stderr
+    body = env_file.read_text()
+    assert "JASPER_AEC_CHIP_AEC_ALIGNMENT_STATUS=disclosed_stale" in body
+    assert "JASPER_MIC_DEVICE=Array" in body
+    assert not _marker(tmp_path).exists()
+    assert VOICE_RESTART_CMD in _systemctl_log(tmp_path)
+
+
+def test_reconcile_discloses_an_applied_alignment_its_proof_no_longer_matches(
+    tmp_path: Path,
+) -> None:
+    # jasper-aec-init armed the chip from the banked K and left its one-line
+    # reason behind; the reconciler publishes that verbatim as `disclosed_stale`
+    # with the commissioner as the action, and the stack stays up.
+    env_file = _write_env(tmp_path, "Array")
+    _write_mode(tmp_path)
+    _write_card(tmp_path, channels=6)
+    disclosure = tmp_path / "alignment-disclosure"
+    disclosure.write_text("commissioned alignment was measured on a different unit\n")
+
+    result = _run_reconcile(
+        tmp_path,
+        "--reason",
+        "test",
+        extra_env={"JASPER_AEC_ALIGNMENT_DISCLOSURE_FILE": str(disclosure)},
+    )
+
+    assert result.returncode == 0, result.stderr
+    body = env_file.read_text()
+    assert "JASPER_AEC_CHIP_AEC_ALIGNMENT_STATUS=disclosed_stale" in body
+    assert (
+        "JASPER_AEC_CHIP_AEC_ALIGNMENT_REASON='commissioned alignment was "
+        "measured on a different unit'"
+    ) in body
+    assert "JASPER_AEC_CHIP_AEC_ALIGNMENT_ACTION='Run sudo jasper-aec-commission'" in body
+    # Chip-AEC is armed and carrying the mic, exactly as a `ready` box would be.
+    assert "JASPER_AEC_CHIP_AEC_ENABLED=1" in body
+    assert "JASPER_MIC_DEVICE=udp:9876" in body
+    assert not _marker(tmp_path).exists()
+    commands = _systemctl_log(tmp_path)
+    assert "restart jasper-aec-bridge.service" in commands
+    assert VOICE_RESTART_CMD in commands
 
 
 def test_reconcile_branches_on_the_exit_codes_aec_init_actually_returns() -> None:
@@ -979,6 +1037,35 @@ def test_check_aec_ready_reflects_mode_and_firmware(tmp_path: Path) -> None:
     (tmp_path / "aec_mode.env").write_text("JASPER_AEC_MODE=auto\n")
     (tmp_path / "asound" / "Array" / "stream0").write_text("Capture:\n  Channels: 2\n")
     assert _run_reconcile(tmp_path, "--check-aec-ready").returncode == 1
+
+
+@pytest.mark.parametrize(
+    "status, expected",
+    [
+        ("ready", 0),
+        ("disclosed_stale", 0),
+        ("checking", 1),
+        ("unavailable", 1),
+        ("fault", 1),
+        ("", 1),
+    ],
+)
+def test_the_bridge_execcondition_admits_every_running_alignment(
+    tmp_path: Path, status: str, expected: int
+) -> None:
+    # ADR-0101: `disclosed_stale` is a box that IS hearing — on the banked chip
+    # alignment or on software AEC3 — and the bridge carries its audio either
+    # way, so it must start. Only a refusal, a fault, or the mid-bounce
+    # `checking` keeps it out.
+    _write_env(
+        tmp_path,
+        "Array",
+        extra=f"JASPER_AEC_CHIP_AEC_ALIGNMENT_STATUS={status}\n",
+    )
+    _write_profile_mode(tmp_path, "auto")
+    _write_card(tmp_path, channels=6)
+
+    assert _run_reconcile(tmp_path, "--check-aec-ready").returncode == expected
 
 
 # ---------- Wake-detection leg mapping ------------------------------------
