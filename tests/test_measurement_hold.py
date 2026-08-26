@@ -52,7 +52,7 @@ from jasper.correction.coordinator import (
 )
 
 from tests._async_wait import wait_signalled
-from tests.test_control_server import FakeCoordinator
+from tests.control_server_fixtures import FakeCoordinator
 
 
 class Clock:

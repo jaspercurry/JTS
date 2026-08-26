@@ -177,8 +177,11 @@ already open)**
   runtime clients are the documented design, and the citibike names collide ·
   fold
   jasper/measurement/ (confirmed non-colliding: it serves `/balance/`) ·
-  split test_control_server along its own handler boundary (after the
-  widening lifts) · point the 4 hand-rolled atomic writers at atomic_io
+  ~~split test_control_server along its own handler boundary~~ **DONE**: one
+  module per `jasper/control/handlers/` mixin (system / volume / voice / aec /
+  grouping) plus `tests/control_server_fixtures.py`; the original file keeps
+  dispatch, guards, gating and follower forwarding · point the 4 hand-rolled
+  atomic writers at atomic_io
 
 **Wave 6 — one audio transport ([ADR-0100](adr/0100-one-audio-transport.md))**
 - [ ] Delete the central loopback route + all transition machinery (~6–8K
