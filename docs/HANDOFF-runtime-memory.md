@@ -1,119 +1,61 @@
-# Handoff: runtime memory investigation
+# Handoff: runtime memory on the 1 GB Pi
 
-This handoff records the current memory-reduction work for the always-on
-speaker runtime. It is not a replacement for the subsystem docs; it links the
-RAM-specific decisions that cross wake/AEC, the system dashboard, and Home
-Assistant status.
+Where always-on RAM goes, what already shrank it, and what is left. The
+per-daemon cap question is [ADR-0104](adr/0104-per-daemon-memory-caps-stay-deferred.md);
+this doc is the runtime side of it.
 
-## Shipped current state
+## What already shrank
 
-### 1. Chip-AEC default opens one wake detector
+- **One wake detector per applied channel.** A selected audio-input profile
+  writes its whole leg set, so `xvf_chip_aec` runs the primary chip beam only
+  (`JASPER_MIC_DEVICE=udp:9876`) instead of three Silero/openWakeWord
+  instances. The fixed 150°/210° beams (`udp:9887` / `udp:9888`) exist only
+  under `custom`, via `JASPER_WAKE_LEG_CHIP_AEC_150` /
+  `JASPER_WAKE_LEG_CHIP_AEC_210` —
+  [ADR-0170](adr/0170-a-selectable-audio-input-profile-owns-its-whole-wake-leg-set.md).
+- **Home Assistant status probes out of process.** `jasper-control` keeps only
+  the small JSON status dict; the import graph lives in a short-lived
+  `jasper.control.ha_probe_child` —
+  [ADR-0171](adr/0171-rarely-viewed-dashboard-probes-run-in-short-lived-child-processes.md).
+- **Memory attribution on `/system/`.** The sampler reads root cgroup-v2
+  accounting when the controller is enabled (`memory.current` for the total,
+  `memory.stat` for anon / file / kernel / other) alongside the per-service
+  cgroup figures, so anonymous daemon RSS is separable from page cache when the
+  box looks tight (`jasper/control/system_metrics.py`).
 
-The `xvf_chip_aec` profile now treats the XVF3800's primary/session chip-AEC
-beam as the default wake input. That path feeds `JASPER_MIC_DEVICE=udp:9876`
-and one wake leg (`on` / "Primary chip beam").
+## What is left, in leverage order
 
-The extra XVF beams are advanced custom opt-ins:
-
-- `JASPER_WAKE_LEG_CHIP_AEC_150=1` exposes `JASPER_MIC_DEVICE_CHIP_AEC_150`
-  on `udp:9887`.
-- `JASPER_WAKE_LEG_CHIP_AEC_210=1` exposes `JASPER_MIC_DEVICE_CHIP_AEC_210`
-  on `udp:9888`.
-
-Selectable profiles (`auto`, `xvf_chip_aec`, `xvf_chip_aec_testing`,
-`xvf_software_aec3`, `direct_mic`) reset those optional beam toggles to `0`.
-Only the `custom` profile preserves them. This keeps a chip-AEC install from
-silently running three Silero/openWakeWord instances after the profile says it
-is using hardware echo cancellation.
-
-The active wake channels are tied to reconciler-applied audio processing
-channels:
-
-- The reconciler is the only writer of concrete `JASPER_MIC_DEVICE*` values.
-- `/aec` and `/wake/` render optional channel availability from applied runtime
-  state, not from front-end guesses.
-- `jasper-aec-bridge` only emits optional chip UDP streams when the matching
-  runtime device env exists.
-- Doctor and validation fail on unexpected extra wake legs, so hidden resource
-  burn is caught instead of normalized.
-
-### 2. Home Assistant status no longer probes in-process
-
-`jasper-control` now owns a small `HomeAssistantStatusCache` for both
-`/state.home_assistant` and the `/system/snapshot` card. The cache starts a
-short-lived child process (`python -m jasper.control.ha_probe_child`) when
-status is stale. The child imports `jasper.home_assistant`, reads the wizard
-env file, runs the existing async probe, prints JSON, then exits.
-
-The parent process keeps only the small JSON status dict. A stale dashboard
-or state read returns immediately with `checking=true` (or stale cached
-status) while one background refresh runs. Failures are bounded by the child
-timeout and logged as `event=ha.status_probe_failed`.
-
-### 3. Dashboard memory attribution is more useful
-
-The system sampler now reads root cgroup-v2 memory accounting when available:
-
-- `memory.current` -> total cgroup memory
-- `memory.stat` -> anon / file / kernel / other buckets
-
-`/system/` shows the breakdown on the Memory tile. Per-service cgroup memory
-still comes from the existing service inventory. The new root breakdown helps
-separate anonymous daemon RSS from page cache and kernel accounting when a
-1 GB Pi looks tight.
-
-## Remaining big RAM options
-
-1. **Voice provider import/client laziness (deferred P4).** The voice runtime
-   still has the biggest potential import/client graph win. Do this behind the
-   existing `LiveConnection` provider registry, not by adding provider branches
-   in `voice_daemon.py`.
-
-2. **Park follower voice brains.** Multiroom followers that are not accepting
-   local wake events should not keep a full voice provider client resident.
-   This needs a product decision around local wake availability and audible
-   failure cues before implementation.
-
-3. **Wake model lifecycle by channel.** The wake stack should keep one loaded
-   model instance per active audio-processing channel, and no instance for a
-   channel the reconciler did not apply. The chip-AEC profile change closes the
-   immediate leak; a future cleanup could make the lifecycle contract explicit
-   in the wake loop itself.
-
-4. **System-dashboard probe isolation.** HA was the obvious retained import
-   graph. The Audio status view deliberately does not add another daemon or
-   sampler loop: `AudioHealthSampler` replaces the former AirPlay sampler
-   thread, reuses that collector inline, caches outputd state, and keeps route
-validation on a slow cadence. Renderer readiness consumes the existing
-System sampler's cached 30-second service-state snapshot rather than adding
-a second `systemctl` cadence. Similar child-process isolation may be
-worthwhile for other rarely viewed dashboard probes only if measurements
-show meaningful RSS retained in `jasper-control`.
-
-   The opt-in USB gadget forensics sampler is intentionally outside that
-   always-on dashboard path: it has no process while disabled, keeps a 512 KiB
-   timeline in `/run` while enabled, and carries a 32 MiB systemd ceiling. See
+1. **Voice provider import/client laziness.** The largest remaining import
+   graph. Do it behind the `LiveConnection` provider registry, not by adding
+   provider branches in `voice_daemon.py`.
+2. **Park follower voice brains.** A multiroom follower not accepting local
+   wake events should not hold a resident provider client. Blocked on a product
+   decision about local wake availability and its failure cue, not on code.
+3. **Wake model lifecycle in the wake loop.** ADR-0170 closes the leak at the
+   profile boundary; making the loop itself refuse to hold a model for a channel
+   the reconciler did not apply would make the contract structural.
+4. **Further probe isolation.** Only where a measurement shows meaningful RSS
+   retained in `jasper-control` — see ADR-0171 for when this shape is and is not
+   the right answer. The opt-in USB gadget forensics sampler is deliberately
+   outside the always-on path (no process while disabled, 512 KiB `/run`
+   timeline, 32 MiB ceiling while enabled):
    [HANDOFF-usb-gadget.md](HANDOFF-usb-gadget.md#opt-in-rolling-usb-forensics).
+5. **Tighter systemd limits.** Sizing needs a Pi 5 1 GB soak against the
+   dashboard's root and per-service figures, never dev-machine RSS. The trigger
+   list is ADR-0104's.
 
-5. **Memory cgroup soak before tighter limits.** The dashboard can now expose
-   root and service memory. Use a Pi 5 1 GB soak to size any future
-   `MemoryHigh=` / `MemoryMax=` changes; do not guess from dev-machine RSS.
+## Pins
 
-## Validation pointers
-
-- Wake/AEC contract: `tests/test_aec_reconcile.py`,
+- Wake/AEC leg contract: `tests/test_aec_reconcile.py`,
   `tests/test_aec_bridge_stall.py`, `tests/test_control_aec_state.py`,
   `tests/test_audio_validation.py`, `tests/test_doctor_aec.py`.
-- HA cache contract: `tests/test_ha_status_cache.py`,
-  `tests/test_control_server.py`.
+- HA status cache: `tests/test_ha_status_cache.py`, `tests/test_control_server.py`.
 - Dashboard memory breakdown: `tests/test_system_metrics.py`.
 
-Last verified: 2026-07-22 (opt-in USB forensics' disabled-zero-process and
-enabled memory-ceiling contracts rechecked against its systemd units and RAM
-timeline). Prior 2026-07-14 (Audio status sampler ownership and bounded cadence
-rechecked against `jasper/control/audio_health.py` and
-`jasper/control/server.py`). Prior 2026-06-30 (`xvf_chip_aec` one-detector default rechecked
-against `jasper/audio_profile_state.py`, `deploy/bin/jasper-aec-reconcile`,
-`jasper/cli/aec_bridge.py`, `/aec`, `/wake/`, doctor, and validation tests;
-HA child cache rechecked against `jasper/control/ha_status_cache.py`,
-`jasper/control/ha_probe_child.py`, `/state`, and `/system/snapshot` tests).
+Last verified: 2026-08-26 (triage pass — profile leg-set resets and the
+`custom`-only exception rechecked against `jasper/audio_profile_state.py` and
+`deploy/bin/jasper-aec-reconcile`; the 9876/9887/9888 carriers against
+`jasper/cli/aec_bridge.py`; the HA child cache against
+`jasper/control/ha_status_cache.py` and `jasper/control/ha_probe_child.py`; the
+root cgroup buckets against `jasper/control/system_metrics.py`; every pin file
+confirmed present.)

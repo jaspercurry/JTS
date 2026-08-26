@@ -266,7 +266,8 @@ One line each; the doc is the canonical "read this before modifying".
 - [`HANDOFF-usb-mic-wake.md`](docs/HANDOFF-usb-mic-wake.md) — cheap-USB-mic
   wake follow-up
 - [`HANDOFF-audio-capability-platform.md`](docs/HANDOFF-audio-capability-platform.md)
-  — turning mic/AEC/DAC facts into a hardware-capability platform
+  — who owns which mic/AEC/DAC fact, the profile vocabulary, validation
+  artifacts
 - [`HANDOFF-fan-in-daemon.md`](docs/HANDOFF-fan-in-daemon.md) — per-renderer
   snd-aloop lanes, the Rust summing daemon, buffer sizing
 - [`HANDOFF-speaker-output-reference.md`](docs/HANDOFF-speaker-output-reference.md)
