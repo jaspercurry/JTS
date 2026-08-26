@@ -62,11 +62,12 @@ never redirected.
   2 only, and `crossover_v2_flow.tier_display_info()` derives both, so read
   it rather than a number written down here (flow-simplification PR-U1,
   both tiers first-class in the wizard's tier chooser). Its canonical operational
-  truth — how to run it, the file
-  map, invariants, failure taxonomy, session-state paths, and the W6 bug
-  catalog — lives in
-  [tuning-operator-runbook.md](tuning-operator-runbook.md);
-  this doc does not restate it. The **legacy per-driver crossover flow was
+  truth — how to run it, the failure taxonomy, session-state paths, and the W6
+  bug catalog — lives in
+  [tuning-operator-runbook.md](tuning-operator-runbook.md), and the file map and
+  invariants live in
+  [crossover-v2-engine-design.md](crossover-v2-engine-design.md);
+  this doc does not restate either. The **legacy per-driver crossover flow was
   removed in W5b (2026-07-24)** — the per-driver envelope, its measurement
   handlers, and the `JASPER_CROSSOVER_FLOW` selector are gone; v2 is the only
   flow. Some shared per-driver measurement machinery below (level-match

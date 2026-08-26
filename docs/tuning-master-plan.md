@@ -337,8 +337,9 @@ in wave 7e; ticket 2.4 still names the R17 deliverable it retires.
 `crossover-measurement-productization-design.md`,
 `two-stage-commission-flow-plan.md`, the information-design docs, and the
 operational HANDOFFs. `tuning-operator-runbook.md` stays the
-operational canon; its file-map rows for `fc_sweep.py`/`fc_selector.py` are
-amended by the Wave-2 deletion PRs that make them false.
+operational canon and `crossover-v2-engine-design.md` carries the file map. The
+Wave-2 deletion PRs landed: `fc_selector.py` is gone and `fc_sweep`'s sweep half
+with it, so the file map carries no rows for them to amend.
 
 ## Work breakdown
 
@@ -401,7 +402,7 @@ every deletion PR in this wave: run `bash scripts/tense-grep.sh --all`
 against a pre-cut baseline plus a subject sweep for the deleted thing's own
 vocabulary; update `docs/doc-map.toml` routing; update
 `crossover_v2/__init__`'s module docstring; amend
-`tuning-operator-runbook.md`'s file-map rows.
+`crossover-v2-engine-design.md`'s file-map rows.
 2.1 Layers-doc P2 amendment + pointer to this plan (lands with/after 2.2–2.4
     so prose states what is); also trues up the Measurement Program v2
     section's ×3 anchor-repeat count to the adopted ×4.
