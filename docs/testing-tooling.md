@@ -1093,8 +1093,8 @@ mic analysis was possible. Pass the actual tone frequency and policy thresholds
 to the capture command when they differ from its defaults; those values are
 stored in the manifest and consumed by the analyzer rather than re-guessed.
 
-See [CLAUDE.md](../CLAUDE.md) "Debugging — fetch evidence before
-guessing" for the canonical recipes.
+See [AGENTS.md](../AGENTS.md)'s Evidence-first default for the canonical
+recipes.
 
 ---
 
@@ -3322,7 +3322,7 @@ the right tool, give a sensible answer), not wake accuracy or audio
 quality.
 
 Read [`tests/voice_eval/README.md`](../tests/voice_eval/README.md)
-and [CLAUDE.md](../CLAUDE.md) "Voice-eval cost discipline" **before
+and [AGENTS.md](../AGENTS.md)'s paid-tests non-negotiable **before
 running anything**. Never wrap `harness.ask()` in retry loops; never
 auto-rerun on flake; announce cost before each invocation.
 
