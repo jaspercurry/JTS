@@ -195,6 +195,40 @@ _RELAY_LEVEL_PUMP_MAX_BLOCK_S = (
 # reconnect contract. Keep the HTTP owner alive for the complete sequence.
 _CROSSOVER_VOLUME_RECOVERY_TIMEOUT_S = 45.0
 _RUN_ASYNC_CANCEL_DRAIN_TIMEOUT_S = _CROSSOVER_VOLUME_RECOVERY_TIMEOUT_S
+def _household_level_door() -> Any:
+    """The owner's household-level door, for the level-match restores.
+
+    Every level-match restore answers one question — *give the household its
+    level back* — so they share one door rather than each binding a raw
+    ``cam.set_volume_db`` with its own ``best_effort`` choice. The owner's
+    doors carry that contract once (bound ``best_effort=True`` at
+    registration), which is the actual win: the flag stops being a per-site
+    decision that can drift.
+
+    A missing owner is a registration defect — ``web/__main__.main`` installs
+    one before serving — so this discloses at CRITICAL and hands back a door
+    that reports "not in effect" rather than minting a second owner. Every
+    caller already treats that answer as a failed restore, so the existing
+    disclosure path carries it.
+    """
+
+    from jasper.volume_owner import volume_owner
+
+    owner = volume_owner()
+    if owner is not None:
+        return owner.declare_household_level_db
+
+    async def _no_owner(_db: float) -> bool:
+        log_event(
+            logger,
+            "correction.level_match_restore_owner_absent",
+            level=logging.CRITICAL,
+        )
+        return False
+
+    return _no_owner
+
+
 _ROOM_RELAY_RETURN_PATH = "/correction/room/"
 _SUMMED_CAPTURE_UNAVAILABLE_REASON = "active_summed_persisted_admission_unavailable"
 # Require a short rolling ambient window before the Pi starts the level tone.
@@ -2002,9 +2036,7 @@ def _run_relay_measurement_sweep(
                 # The renderers resume when measurement_window exits. Restore
                 # the household listening volume before that boundary, on every
                 # success and failure path.
-                await sess.restore_level_match_volume(
-                    lambda db: cam.set_volume_db(db, best_effort=False)
-                )
+                await sess.restore_level_match_volume(_household_level_door())
 
     try:
         _run_async(
@@ -2904,9 +2936,7 @@ def _handle_start(handler: BaseHTTPRequestHandler) -> dict[str, Any]:
         cam = _camilla()
         prior_session = _get_or_create_session()
         _run_async(
-            prior_session.restore_level_match_volume(
-                lambda db: cam.set_volume_db(db, best_effort=False)
-            ),
+            prior_session.restore_level_match_volume(_household_level_door()),
             timeout=5.0,
         )
         sess = _replace_session(
@@ -4448,9 +4478,7 @@ def _handle_relay_capture(handler: BaseHTTPRequestHandler) -> dict[str, Any]:
             )
         finally:
             # Idempotent backstop for failures before the armed/sweep window.
-            await sess.restore_level_match_volume(
-                lambda db: _camilla().set_volume_db(db, best_effort=False)
-            )
+            await sess.restore_level_match_volume(_household_level_door())
 
     kind = RelayCaptureKind(
         label="room_repeat" if is_repeat else "room_sweep",
@@ -4561,9 +4589,7 @@ def _handle_relay_verify(handler: BaseHTTPRequestHandler) -> dict[str, Any]:
                         },
                     )
                 finally:
-                    await sess.restore_level_match_volume(
-                        lambda db: cam.set_volume_db(db, best_effort=False)
-                    )
+                    await sess.restore_level_match_volume(_household_level_door())
 
         def _on_armed(state: Any) -> None:
             try:
@@ -4630,9 +4656,7 @@ def _handle_relay_verify(handler: BaseHTTPRequestHandler) -> dict[str, Any]:
                 await asyncio.to_thread(purge, client, pi_session)
             except (OSError, RuntimeError, ValueError):
                 logger.debug("verify relay purge failed", exc_info=True)
-            await sess.restore_level_match_volume(
-                lambda db: cam.set_volume_db(db, best_effort=False)
-            )
+            await sess.restore_level_match_volume(_household_level_door())
 
     relay = _run_relay_capture(
         RelayCaptureKind(
@@ -5156,9 +5180,7 @@ async def _run_relay_level_match(
         if mismatch is not None:
             restore_level_match = getattr(sess, "restore_level_match_volume", None)
             if callable(restore_level_match):
-                await restore_level_match(
-                    lambda db: cam.set_volume_db(db, best_effort=False)
-                )
+                await restore_level_match(_household_level_door())
             raise ValueError(mismatch)
         if begin_commit is not None and not begin_commit():
             raise CaptureStopped("capture stopped")
