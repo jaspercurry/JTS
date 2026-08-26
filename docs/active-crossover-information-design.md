@@ -909,16 +909,16 @@ used; `correction.crossover_level_context_invalidated` names the preserved
 and cleared (`cleared_refused_targets`) targets on every between-set
 restart.
 
-The household-facing copy for a level-solve refusal is one code → sentence
-mapping (`describe_level_solve_refusal`, in
-`jasper.active_speaker.crossover_envelope`), and the raise site
-(`LevelSolveRefused` in `jasper.web.correction_crossover_backend`) builds
-its own `str(exc)` from that SAME mapping — mirroring
-`jasper.correction.level_match.LevelMatchRefused` — so a caller that only
-does `str(exc)` (the phone's `sweep_failed` host event, the wizard's
-generic relay-failure fallback) can never render the raw
-`"level_solve_refused code=... band=...Hz"` diagnostic string to the
-household; both surfaces showed exactly that string, in red, before this
+**Superseded — the level-solve refusal no longer exists.** Its raise site
+(`LevelSolveRefused`) and its copy mapping (`describe_level_solve_refusal`)
+were deleted with the closed-loop level solver, which never reached
+production: the sweep-volume lease that alone invoked it had no production
+caller. The rule the pair established survives and still binds
+`jasper.correction.level_match.LevelMatchRefused`: a refusal type reaching
+`correction_setup._relay_failure_message` owes household copy at its RAISE
+site, or `str(exc)` leaks a raw `code=... band=...` diagnostic onto the
+phone's `sweep_failed` host event and the wizard's relay status line —
+both surfaces showed exactly that string, in red, before hardware run 20's
 fix. The envelope also no longer renders the generic
 `crossover_repeat_rejected` nudge (built from the durable repeat ledger's
 last-result entry, independent of the eventual screen) alongside the
@@ -2348,7 +2348,9 @@ survived the restart the refusal screen's own action offered, and the
 next solve replayed the identical preserved adjustment against a freshly
 re-measured room, refusing again in seconds with no tone played. The same
 fix made `LevelSolveRefused`'s `str(exc)` the mapped household copy
-instead of the raw `code=... band=...` diagnostic string (closing a leak
+instead of the raw `code=... band=...` diagnostic string (that class is
+since deleted — see the superseded note above; the raise-site rule it set
+still binds `LevelMatchRefused`) (closing a leak
 onto both the phone's `sweep_failed` host event and the wizard's relay
 status line), and scoped the stale `crossover_repeat_rejected` nudge out
 of the `level_solve_refused` screen. Checked against the current
