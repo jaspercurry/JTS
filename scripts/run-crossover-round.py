@@ -711,11 +711,11 @@ def bank(dest: Path, *, since: str, target: Target, trail: Trail) -> int:
 def bank_position_cycle(dest: Path, *, staged: int, trail: Trail) -> None:
     """Derive ``position_cycle.json`` from the round that was just banked.
 
-    AFTER the bank, and not merely for ``summarise_candidate``'s reason: the
-    input IS the bank. The bundle the bank untarred carries one record per
-    accepted take, each stamped by the speaker with the bearing the microphone
-    was actually at, and this projects them into one sorted index at the round
-    root. Nothing here writes a fact of its own — see
+    AFTER the bank, because the input IS the bank: the bundle the bank
+    untarred carries one record per accepted take, each stamped by the speaker
+    with the bearing the microphone was actually at, and this projects them
+    into one sorted index at the round root. Nothing here writes a fact of its
+    own — see
     ``position_cycle.position_cycle_document``.
 
     ``staged`` is how many stops the walk was staged with. It is reported
@@ -743,13 +743,19 @@ def bank_position_cycle(dest: Path, *, staged: int, trail: Trail) -> None:
     )
 
 
-def summarise_candidate(wizard: Wizard, dest: Path, trail: Trail) -> str:
-    """Print the live candidate and bank it beside the round it came from.
+def summarise_candidate(wizard: Wizard, trail: Trail) -> str:
+    """Print the live candidate the round just produced.
 
     Every scalar the candidate block carries is printed, sorted — never a
     hand-picked subset, which would silently stop showing a number the flow
-    started publishing. Written AFTER the bank: the bank refuses a destination
-    that already has something in it.
+    started publishing.
+
+    It is not written beside the round: the bank already carries the
+    speaker's own write-once ``candidate.json`` under
+    ``bundle/<id>/evidence/v1/artifacts/crossover_v2/<sid>/``, and a second
+    copy at the round root answered no question the first could not. It had
+    no reader, and it made ``severed-twin-replay``'s ``rglob`` match a file
+    with none of the siblings that tool needs.
     """
     block = wizard.v2_block()
     candidate = block.get("candidate")
@@ -757,15 +763,7 @@ def summarise_candidate(wizard: Wizard, dest: Path, trail: Trail) -> str:
         trail.emit("candidate", ok=False, detail="no candidate is published yet")
         return ""
     fingerprint = str(candidate["fingerprint"])
-    path = dest / "candidate.json"
-    try:
-        path.write_text(json.dumps(dict(candidate), indent=2, sort_keys=True) + "\n")
-        banked: str | bool = str(path)
-    except OSError as exc:
-        banked = False
-        print(f"round: candidate could not be banked: {exc}", file=sys.stderr)
-    trail.emit("candidate", fingerprint=fingerprint, phase=block.get("phase"),
-               banked=banked)
+    trail.emit("candidate", fingerprint=fingerprint, phase=block.get("phase"))
     print(f"\n=== candidate {fingerprint} ===")
     for key in sorted(candidate):
         if key == "fingerprint":
@@ -1003,7 +1001,7 @@ def run_round(args: argparse.Namespace, target: Target, wizard: Wizard,
             staged=staged_stops(expand_angle_spec(args.angles, args.per_position)),
             trail=trail,
         )
-    summarise_candidate(wizard, dest, trail)
+    summarise_candidate(wizard, trail)
     return EXIT_OK
 
 

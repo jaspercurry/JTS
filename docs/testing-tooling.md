@@ -1783,17 +1783,14 @@ It then pulls the newest session bundle, the crossover-v2 flow state, the
 design draft, a bounded journal window (the four units a round speaks
 through: `jasper-correction-web`, `jasper-control`, `jasper-camilla`,
 `jasper-outputd`), a power re-check (`vcgencmd get_throttled` plus
-under-voltage grep counts), the round's own prediction fields lifted out
-of the flow state before the next round overwrites them
-(`verify_priors.predicted_sum` / `verify_priors.predicted_spec` / etc.;
-a round banked before ticket 2.4 also carries an `fc_selection` that no current
-build **on the speaker** writes or reads — this laptop-side script still
-snapshots it, deliberately, and so does the incident-fixture tool), and the
-dump-ring captures
+under-voltage grep counts), and the dump-ring captures
 (`XOVER_CAPTURE_DUMP_DIR`, root-owned on the Pi — split into `dumps/wav/`
 and `dumps/sidecar/`). Every pull is best-effort and independently
 reported to stderr, and a per-artifact status summary prints at the end
-regardless of outcome.
+regardless of outcome. The round's prediction fields are not lifted into a
+separate file: `state.json` is itself pulled into the bank, so the copy that
+existed to rescue them from the next round's overwrite had nothing left to
+rescue, and nothing ever opened it.
 
 Before comparing LEVELS across banked sidecars, read each one's
 `provenance` block — the live fader, the held session volume, and which DSP
@@ -2613,8 +2610,9 @@ wired stage's held set, which is the case it exists for.
 **The apply gate is why the file exists.** The chained scripts had none, and a
 round applied a candidate nobody had sanctioned — one measured round, lost. So
 a measurement run NEVER applies: it ends with the candidate's fingerprint and
-its numbers printed on stdout and banked as `<campaign>/<label>/candidate.json`,
-and stops. Applying is a second invocation that must NAME the fingerprint, and
+its numbers printed on stdout — the speaker's own write-once copy is already in
+the bank under `bundle/<id>/evidence/v1/artifacts/crossover_v2/<sid>/` — and
+stops. Applying is a second invocation that must NAME the fingerprint, and
 the runner re-reads the live candidate and refuses **before any POST leaves the
 laptop** when the two differ (the envelope GET that reads the live candidate is
 the one request it does make — the promise is about what it never SENDS) (`rc 11`, and

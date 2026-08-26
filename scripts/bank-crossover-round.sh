@@ -44,10 +44,6 @@
 #   journal/<unit>.log      journal window for the units that speak during a
 #                           round, plus journal/combined.log
 #   power.txt               vcgencmd get_throttled + under-voltage grep counts
-#   prediction.json         the round's own verify_priors.predicted_sum /
-#                           verify_priors.predicted_spec / fc_selection / etc.,
-#                           copied out of state.json before the next round
-#                           overwrites them
 #   dumps/wav/*.wav         dump-ring captures (XOVER_CAPTURE_DUMP_DIR),
 #   dumps/sidecar/*.json    split by extension — root-owned on the Pi, so this
 #                           step needs sudo; empty when the operator never
@@ -243,65 +239,9 @@ dumps_status="wav=$n_wav, sidecar=$n_sidecar"
 echo "dumps -> $DEST/dumps ($dumps_status)" >&2
 
 # --------------------------------------------------------------------- #
-# 7. Prediction snapshot — copied out of state.json before the next round
-#    overwrites verify_priors.predicted_sum / verify_priors.predicted_spec /
-#    fc_selection / etc. Pure local read; no second Pi round-trip.
-# --------------------------------------------------------------------- #
-"$PYTHON" - "$DEST/state.json" "$DEST/prediction.json" 1>&2 <<'PY'
-import json
-import sys
-from pathlib import Path
-
-state_path, out_path = Path(sys.argv[1]), Path(sys.argv[2])
-
-# ``fc_selection`` is LEGACY-TOLERANT, deliberately kept: the corner selector
-# that wrote it is retired (docs/tuning-master-plan.md ticket 2.4) and no
-# current round banks one, but a bank taken off a speaker whose last round
-# predates that still carries it and is worth snapshotting. The extraction is a
-# walk-and-match over whatever keys exist, so an absent key contributes nothing
-# and raises nothing — it simply yields one fewer path.
-PREDICTION_KEYS = (
-    "predicted_sum", "predicted_spec", "expected_post_apply_offset_db",
-    "commanded_delta", "gain_plan_db", "fc_selection", "candidate",
-)
-
-
-def walk(node, path=""):
-    if isinstance(node, dict):
-        for k, v in node.items():
-            p = f"{path}.{k}" if path else k
-            yield p, v
-            yield from walk(v, p)
-    elif isinstance(node, list):
-        for i, v in enumerate(node):
-            yield from walk(v, f"{path}[{i}]")
-
-
-if not state_path.exists() or state_path.stat().st_size == 0:
-    print("prediction: skipped (no state.json pulled)")
-    raise SystemExit(0)
-
-state = json.loads(state_path.read_text())
-found = {}
-for path, value in walk(state):
-    leaf = path.split(".")[-1].split("[")[0]
-    if leaf in PREDICTION_KEYS:
-        found[path] = value
-
-out_path.write_text(json.dumps({
-    "source_state": str(state_path),
-    "prediction_paths_found": sorted(found.keys()),
-    "prediction": found,
-}, indent=1, sort_keys=True))
-print(f"prediction -> {out_path} ({len(found)} paths found)")
-if not found:
-    print("  NOTE: no prediction fields found in state.json")
-PY
-
-# --------------------------------------------------------------------- #
-# 8. Capture-integrity over the dump-ring sidecars. Its own 0/1/2 contract
+# 7. Capture-integrity over the dump-ring sidecars. Its own 0/1/2 contract
 #    is unaffected by anything below — the bank-level exit-3 override
-#    (step 9) can still supersede it.
+#    (step 8) can still supersede it.
 # --------------------------------------------------------------------- #
 echo "" >&2
 echo "=== capture integrity (dumps/sidecar) ===" >&2
@@ -310,7 +250,7 @@ PYTHONPATH="${REPO_ROOT}:${PYTHONPATH:-}" "$PYTHON" \
 checker_rc=$?
 
 # --------------------------------------------------------------------- #
-# 9. Per-artifact summary, then the final verdict. A bank that never
+# 8. Per-artifact summary, then the final verdict. A bank that never
 #    pulled its own round identity (bundle and/or flow state) is not a
 #    bank, no matter how clean the dump-ring is — exit 3 overrides
 #    whatever the checker said. Otherwise this script's exit code IS the
