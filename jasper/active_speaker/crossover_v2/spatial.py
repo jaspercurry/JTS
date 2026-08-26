@@ -990,15 +990,33 @@ def lateral_pose_record(
     position_deg: int,
     lateral_consumer: str,
     session_id: str,
+    graph_fingerprint: str,
+    captured_at: str,
     wav_sha256: str | None,
 ) -> dict[str, Any]:
     """One retained lateral pose, as the evidence bundle's sidecar carries it.
 
-    Takes: the accepted :class:`LateralPose`, plus the four facts it does not
+    Takes: the accepted :class:`LateralPose`, plus the six facts it does not
     carry.  ``position_deg`` is the SIGNED whole-degree bearing (negative LEFT
     of the design axis), derived by the flow's ``position_angle_deg`` and
     stated here rather than re-derived.  ``lateral_consumer`` is one of
     :data:`~.journey.LATERAL_CONSUMERS`.
+
+    ``graph_fingerprint`` is WHICH CANDIDATE WAS APPLIED while this pose was
+    taken, in :func:`~.coordinator.entry_graph_fingerprint`'s namespace (the
+    applied profile record's ``candidate_fingerprint``, or
+    :data:`~.contracts.ENTRY_GRAPH_FINGERPRINT_UNKNOWN`).  Deliberately NOT the
+    running-config hash a capture's ``provenance.graph.fingerprint`` carries:
+    a pose is a ``per_driver`` capture, played through the transient routing
+    graph that omits crossover, delay and linearization, so the running hash is
+    the SAME before and after a candidate is applied and cannot tell two walks
+    apart.  The applied candidate can, which is what makes a banked walk
+    classifiable as a baseline or a candidate check without reading the
+    capture-retention ring.
+
+    ``captured_at`` is minted at retention, not carried on the pose, for the
+    reason :func:`entry_baseline_record` mints its own: a
+    :class:`LateralPose` holds no clock.
 
     Guarantees: WHERE the microphone was (``position_deg`` + ``offset_cm`` +
     ``at_mark``), WHAT played (``regime``), WHO the walk was for
@@ -1034,6 +1052,8 @@ def lateral_pose_record(
         "at_mark": bool(pose.at_mark),
         "regime": LATERAL_POSE_REGIME,
         "lateral_consumer": lateral_consumer,
+        "graph_fingerprint": graph_fingerprint,
+        "captured_at": captured_at,
         "curves": [pose_curve_record(curve) for curve in pose.curves],
     }
 

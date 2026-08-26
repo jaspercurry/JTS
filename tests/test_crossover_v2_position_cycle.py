@@ -118,7 +118,9 @@ def _record(index: int, position_deg: int, *, attempt: int = 1) -> dict:
     )
     return lateral_pose_record(
         pose, position_deg=position_deg, lateral_consumer="forward_model",
-        session_id="sess-1", wav_sha256=f"sha-{index}-{attempt}",
+        session_id="sess-1", graph_fingerprint="fp-applied",
+        captured_at="2026-08-26T00:00:00Z",
+        wav_sha256=f"sha-{index}-{attempt}",
     )
 
 
