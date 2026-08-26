@@ -5157,6 +5157,31 @@ def _volume_recording_cam(restored):
     return _FakeCam()
 
 
+def _install_recording_volume_owner(written):
+    """Install a process fader owner whose door records what it writes.
+
+    The autolevel restore DECLARES its level through the owner rather than
+    writing the fader, so a test that watches the Camilla double sees nothing.
+    `tests/conftest.py`'s `_isolate_process_volume_owner` clears the
+    registration after each test, so this needs no teardown of its own.
+    """
+    from jasper.volume_owner import VolumeOwner, install_volume_owner
+
+    live = {"db": 0.0}
+
+    async def _set(db: float) -> bool:
+        live["db"] = float(db)
+        written.append(float(db))
+        return True
+
+    async def _get() -> float:
+        return live["db"]
+
+    owner = VolumeOwner(set_fader_db=_set, get_fader_db=_get)
+    install_volume_owner(owner)
+    return owner
+
+
 async def test_ready_reset_restores_exact_pre_measurement_graph():
     from jasper.correction.session import SessionState
 
@@ -5606,6 +5631,7 @@ async def test_failed_room_reversal_preserves_newer_active_graph(
 
 def test_apply_restores_listening_volume_when_apply_raises(monkeypatch):
     restored: list[float] = []
+    _install_recording_volume_owner(restored)
     sess = _locked_autolevel_session("apply", original=-20.0)
     monkeypatch.setattr(correction_setup, "_get_or_create_session", lambda: sess)
     monkeypatch.setattr(
@@ -5750,6 +5776,7 @@ def test_apply_rejects_layer_a_change_inside_writer_boundary(monkeypatch):
 
 def test_reset_restores_listening_volume_when_reset_raises(monkeypatch, tmp_path):
     restored: list[float] = []
+    _install_recording_volume_owner(restored)
     sess = _locked_autolevel_session(
         "reset",
         original=-18.0,
@@ -6052,6 +6079,7 @@ def test_maybe_restore_runs_once_the_workflow_has_settled():
         SessionState.FAILED,
     ):
         restored: list[float] = []
+        _install_recording_volume_owner(restored)
         sess = types.SimpleNamespace(
             state=settled,
             autolevel=AutolevelData(
@@ -6062,6 +6090,44 @@ def test_maybe_restore_runs_once_the_workflow_has_settled():
             sess, _volume_recording_cam(restored)
         )
         assert restored == [-20.0], settled
+
+
+def test_the_apply_path_restore_is_not_gated_on_the_controllers_one_shot_latch():
+    """THE HAPPY-PATH RESTORE, which nothing pinned before wave 5b-3b.
+
+    On a clean run — autolevel, sweep, ``/apply`` succeeds, session APPLIED —
+    this handler is the ONLY thing that returns the household to its level.
+    ``AutolevelController.restore_listening_volume_if_ramped`` does not cover
+    it twice: it is reached only from ``session.py``'s failure arm and its
+    post-VERIFIED arm, neither of which is on the apply path.
+
+    And it could not be trusted even where it does run. It sets
+    ``al.restored = True`` BEFORE its await and swallows the write's failure,
+    so a restore that never reached the fader still reads as done. That is why
+    this handler is the RETRY and must never learn to skip on that flag —
+    which is exactly what a future "idempotence" tidy-up would try to add.
+    """
+    from jasper.correction.session import (
+        AutolevelData,
+        AutolevelStatus,
+        SessionState,
+    )
+
+    declared: list[float] = []
+    _install_recording_volume_owner(declared)
+    sess = types.SimpleNamespace(
+        state=SessionState.APPLIED,
+        autolevel=AutolevelData(
+            status=AutolevelStatus.LOCKED,
+            original_main_volume_db=-20.0,
+            # The controller latched, then lost its write.
+            restored=True,
+        ),
+    )
+
+    correction_setup._maybe_restore_main_volume(sess, _volume_recording_cam([]))
+
+    assert declared == [-20.0]
 
 
 def test_needs_noise_capture_offers_cancel_in_ui():

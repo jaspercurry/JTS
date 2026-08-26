@@ -6324,13 +6324,26 @@ def _maybe_restore_main_volume(sess, cam) -> None:
     # loudly and is better than swallowing the real error.
     try:
         from jasper.correction.session import AutolevelStatus, SessionState
+        from jasper.volume_owner import volume_owner
+
+        owner = volume_owner()
+        if owner is None:
+            # This process registers one at startup (``web/__main__.main``),
+            # so None is a registration defect rather than a state to handle.
+            # Loud and skipped: minting a second owner here would be the
+            # arbitration failure wave 5 exists to delete, and there is no
+            # second write path to fall back to by design.
+            log_event(
+                logger,
+                "correction.autolevel_restore_owner_absent",
+                level=logging.CRITICAL,
+            )
+            return
 
         restore_level_match = getattr(sess, "restore_level_match_volume", None)
         if callable(restore_level_match):
             async def _restore_level_match() -> bool:
-                return await restore_level_match(
-                    lambda db: cam.set_volume_db(db, best_effort=False)
-                )
+                return await restore_level_match(owner.declare_household_level_db)
 
             if _run_async(_restore_level_match(), timeout=5.0):
                 logger.info(
@@ -6362,15 +6375,27 @@ def _maybe_restore_main_volume(sess, cam) -> None:
         }:
             return
 
-        async def _restore() -> None:
-            await cam.set_volume_db(
-                al.original_main_volume_db, best_effort=True
-            )
-
-        _run_async(_restore(), timeout=5.0)
-        logger.info(
-            "restored main_volume to %.1f dB after autolevel workflow",
-            al.original_main_volume_db,
+        # THE happy-path restore. The autolevel controller's own
+        # `restore_listening_volume_if_ramped` is called only from
+        # `session.py`'s `_fail` and its post-VERIFIED arm, neither of which is
+        # on the apply path, and it latches `restored` BEFORE its await, so it
+        # is one-shot even when its write fails. This is the retry, and on a
+        # clean autolevel -> sweep -> /apply run it is the only thing that
+        # returns the household to its level.
+        #
+        # Routed: the household level is DECLARED, not written. Under a
+        # higher-ranked claim the declaration is recorded and lands when that
+        # claim releases, instead of a blind write racing it.
+        in_effect = _run_async(
+            owner.declare_household_level_db(al.original_main_volume_db),
+            timeout=5.0,
+        )
+        log_event(
+            logger,
+            "correction.autolevel_restore_declared",
+            level=logging.INFO if in_effect else logging.WARNING,
+            to_db=f"{al.original_main_volume_db:.1f}",
+            in_effect=in_effect,
         )
     except Exception:  # noqa: BLE001
         logger.exception(
@@ -7475,14 +7500,34 @@ def _make_handler(cfg: dict[str, Any]) -> type[BaseHTTPRequestHandler]:
                         )
                         return
                     cam = _camilla()
+                    from jasper.volume_owner import volume_owner
 
+                    recovery_owner = volume_owner()
+                    if recovery_owner is None:
+                        log_event(
+                            logger,
+                            "correction.crossover_level_volume_recovery_owner_absent",
+                            level=logging.CRITICAL,
+                        )
+                        self._send_json(
+                            {
+                                "status": "refused",
+                                "reason": "crossover_volume_recovery_unavailable",
+                                "next_step": "Restart the speaker, then retry.",
+                            },
+                            status=HTTPStatus.SERVICE_UNAVAILABLE,
+                        )
+                        return
+
+                    # Routed: the recovery DECLARES the household level rather
+                    # than writing the fader itself. The lease keeps its
+                    # exact-then-emergency ladder and still proves each rung
+                    # through its own readback below, which is what makes a
+                    # declaration that was merely RECORDED under a higher-ranked
+                    # claim read as "not yet safe" instead of clearing the
+                    # durable intent early.
                     async def _set_recovery_volume(db: float) -> bool:
-                        try:
-                            return await cam.set_volume_db(db, best_effort=False)
-                        except CamillaUnavailable as exc:
-                            raise RuntimeError(
-                                "CamillaDSP is unavailable during volume recovery"
-                            ) from exc
+                        return await recovery_owner.declare_household_level_db(db)
 
                     async def _get_recovery_volume() -> float:
                         try:
