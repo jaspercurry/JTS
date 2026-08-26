@@ -60,8 +60,8 @@ DOCS_PROSE_FILES = frozenset((
     "README.md",
     "SECURITY.md",
 ))
-# Data for a non-blocking informational PR comment, so it rides the docs lane;
-# the lane runs docs-impact.py --validate-only, which is what constrains it.
+# Prose routing data, so it rides the docs lane; the lane runs
+# docs-impact.py --validate-only, which is what constrains it.
 DOCS_ROUTING_MAP = "docs/doc-map.toml"
 # Bundle members whose document read tests/test_ci_classifier.py's AST
 # discovery structurally cannot see: a generic `rglob("*")` sweep, or a read
@@ -99,7 +99,6 @@ DOCS_TEST_FILES = (
     "tests/test_prepare_wake_livekit_smoke.py",
     "tests/test_prepare_wake_training_workdir.py",
     "tests/test_run_wake_training_phase0.py",
-    "tests/test_script_help_excludes_spdx.py",
     "tests/test_system_supervisor.py",
     "tests/test_tool_failure_contract_doc.py",
     "tests/test_usb_turntable_experiment.py",

@@ -209,6 +209,7 @@ def make_artifact(
 
 from . import audio_validation_route as audio_validation_route
 from .audio_validation_route import (
+    ROUTE_LATENCY_RERUN_ACTION as ROUTE_LATENCY_RERUN_ACTION,
     _fanin_input_status as _fanin_input_status,
     _int_or_none as _int_or_none,
     _mapping_or_empty as _mapping_or_empty,
@@ -334,6 +335,7 @@ def assess_route_latency_artifact(
     observed_hash = str(identity.get("route_config_hash") or "")
     expected = dict(expected_identity or {"route_config_hash": route_config_hash})
     identity_issues = _route_identity_mismatches(identity, expected)
+    binding_issues: tuple[str, ...] = ()
     if _mapping_or_empty(expected.get("fanin_direct_config")):
         negotiated_buffer_frames = _int_or_none(
             identity.get("fanin_direct_negotiated_buffer_frames")
@@ -342,14 +344,8 @@ def assess_route_latency_artifact(
             negotiated_buffer_frames is None
             or negotiated_buffer_frames <= 0
         ):
-            identity_issues = tuple(
-                dict.fromkeys(
-                    (
-                        *identity_issues,
-                        "identity_mismatch:"
-                        "fanin_direct_negotiated_buffer_frames",
-                    )
-                )
+            binding_issues = (
+                "route_binding_missing:fanin_direct_negotiated_buffer_frames",
             )
     config_match = observed_hash == route_config_hash and not identity_issues
     artifact_issues = _string_issues(checks.get("issues"))
@@ -372,32 +368,39 @@ def assess_route_latency_artifact(
     p95_ms = float(p95_raw) if isinstance(p95_raw, (int, float)) else None
     p99_ms = float(p99_raw) if isinstance(p99_raw, (int, float)) else None
     jittered_impulse_spacing = bool(checks.get("impulse_spacing_jittered", False))
+    proof_issues = {
+        "stale": ("artifact_stale",),
+        "future": ("artifact_from_future",),
+    }.get(result.state, ())
     status, recommendation, certified, issues = route_latency_gate_status(
         p95_ms=p95_ms,
         p99_ms=p99_ms,
         sample_count=sample_count,
         duration_seconds=duration_seconds,
         jittered_impulse_spacing=jittered_impulse_spacing,
-        config_match=config_match and result.state == "loaded",
+        config_match=config_match,
         route_health_ok=route_health_ok,
+        proof_issues=proof_issues,
     )
     issues = tuple(
         dict.fromkeys(
             (
                 *issues,
                 *identity_issues,
+                *binding_issues,
                 *route_artifact_health_issues,
             )
         )
     )
-    if result.state != "loaded":
+    if binding_issues:
+        # Presence is mandatory, never a compatible warning — the artifact does
+        # not bind the run to a negotiated buffer at all
+        # (docs/HANDOFF-usb-low-latency.md).
         status = "fail"
-        if result.state == "stale":
-            issues = tuple(dict.fromkeys((*issues, "artifact_stale")))
-        elif result.state == "future":
-            issues = tuple(dict.fromkeys((*issues, "artifact_from_future")))
-        else:
-            issues = tuple(dict.fromkeys((*issues, result.state)))
+        recommendation = "fix_route_latency_before_claim"
+    if result.state not in {"loaded", "stale", "future"}:
+        status = "fail"
+        issues = tuple(dict.fromkeys((*issues, result.state)))
     return {
         "state": result.state,
         "status": status,

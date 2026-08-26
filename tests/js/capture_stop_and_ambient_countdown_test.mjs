@@ -23,26 +23,8 @@
 // Mirrors capture_host_stop_lifecycle_test.mjs's import-stripping harness.
 
 import assert from "node:assert/strict";
-import { readFileSync } from "node:fs";
-import { dirname, resolve } from "node:path";
-import { fileURLToPath } from "node:url";
+import { loadEsm, repoPath } from "./_loader.mjs";
 import { runTestFunctions } from "./run_test_functions.mjs";
-
-const here = dirname(fileURLToPath(import.meta.url));
-const raw = readFileSync(resolve(here, "../../capture-page/js/main.js"), "utf8");
-const withoutImports = raw
-  .replace(
-    /^import\s+\{[\s\S]*?\}\s+from\s+["'][^"']+["'];\s*/gm,
-    "",
-  )
-  .replace(/^import\s+[^;\n]+\s+from\s+["'][^"']+["'];\s*/gm, "")
-  .replace(
-    /^const PAGE_VERSION_URL = .*;$/m,
-    'const PAGE_VERSION_URL = new URL("https://capture.test/version.json");',
-  );
-if (/^import\s/m.test(withoutImports)) {
-  throw new Error("unhandled import in main.js — update the harness strip rule");
-}
 
 // --- Minimal-but-faithful-enough document stub -------------------------------
 // Real element tree: setting textContent stores a string (never parses
@@ -190,11 +172,16 @@ function makeRecorder() {
   };
 }
 
-async function loadModule() {
-  const dataUrl =
-    "data:text/javascript;base64," +
-    Buffer.from(injected + withoutImports, "utf8").toString("base64");
-  return import(dataUrl);
+function loadModule() {
+  return loadEsm(repoPath("capture-page/js/main.js"), {
+    stripImports: true,
+    guardNoImports: true,
+    rewrite: [[
+      /^const PAGE_VERSION_URL = .*;$/m,
+      'const PAGE_VERSION_URL = new URL("https://capture.test/version.json");',
+    ]],
+    prelude: injected,
+  });
 }
 
 let passed = 0;

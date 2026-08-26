@@ -17,8 +17,7 @@
 #   sudo bash scripts/journal-review.sh --since '24 hours ago'
 #   sudo bash scripts/journal-review.sh --json             # machine-readable
 #
-# Contract (mirrors scripts/doc-freshness.sh's "informational, never a
-# gate" posture):
+# Contract (informational, never a gate):
 #   - READ-ONLY. No config write, no restart, no systemctl mutation.
 #   - ALWAYS exits 0 — this is a digest, not a health gate.
 #   - The ONLY persistent write is its own state file

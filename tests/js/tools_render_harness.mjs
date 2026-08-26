@@ -14,20 +14,23 @@
 // render.js `import`s escapeHtml by absolute URL (node can't resolve that), so
 // we inline escape.js ahead of it and strip the import/export keywords — the
 // same "load the ESM source via new Function" trick dialog_harness.mjs uses.
-import { readFileSync } from "node:fs";
+import { buildFunction } from "./_loader.mjs";
 
 // Drop `export { a as b };` re-export lines wholesale; strip the `export`
 // keyword off declarations. (A bare `export ` strip would leave an invalid
 // `{ a as b };` block from escape.js's escapeAttr alias.)
-const stripExports = (s) =>
-  s.replace(/^\s*export\s*\{[^}]*\}\s*;?\s*$/gm, "")
-   .replace(/\bexport\s+(?=function|const|let|class)/g, "");
-const stripImports = (s) => s.replace(/^\s*import\s.*$/gm, "");
+const stripExports = [
+  [/^\s*export\s*\{[^}]*\}\s*;?\s*$/gm, ""],
+  [/\bexport\s+(?=function|const|let|class)/g, ""],
+];
+const stripImports = [/^\s*import\s.*$/gm, ""];
 
-const escapeSrc = stripExports(readFileSync(process.argv[2], "utf8"));
-const renderSrc = stripExports(stripImports(readFileSync(process.argv[3], "utf8")));
-const { toolRow, toolDetail, toolList } = new Function(
-  escapeSrc + "\n" + renderSrc + "\nreturn { toolRow, toolDetail, toolList };",
+const { toolRow, toolDetail, toolList } = buildFunction(
+  [
+    { path: process.argv[2], rewrite: stripExports },
+    { path: process.argv[3], rewrite: [stripImports, ...stripExports] },
+  ],
+  { returns: ["toolRow", "toolDetail", "toolList"] },
 )();
 globalThis.location = new URL("http://jts.local/tools/pack/spotify/");
 

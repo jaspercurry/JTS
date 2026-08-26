@@ -26,7 +26,7 @@ Per-wake-event flow:
                               + `outcome_detail` fields.
   5. Retention sweep        — on every audio attach, total dir size is
                               checked; oldest WAVs deleted oldest-
-                              first until under the 1 GiB cap.
+                              first until under the 128 MiB cap.
                               DB rows are kept forever — only the
                               audio_*_path columns get a `'rolled_off'`
                               sentinel.
@@ -40,8 +40,8 @@ are CPU-bound but short (~1ms each); we do NOT wrap them in
 SQLite's busy-handler covers the contention case.
 
 File I/O is the exception: WAV writes (up to 5 × ~190 KB per event)
-and the retention sweep's directory scan (~5k files at the 1 GB cap)
-run via `asyncio.to_thread` — on a busy SD card those stall for long
+and the retention sweep's directory scan (~600 files at the 128 MiB
+cap) run via `asyncio.to_thread` — on a busy SD card those stall for long
 enough to glitch the mic loop sharing the event loop. The sweep also
 keeps a running directory-size estimate between sweeps so the
 every-attach common case is O(1); the full scan only happens when the
@@ -80,8 +80,9 @@ CAPTURE_POST_SEC = 2.0
 # Retention cap — total bytes of WAV files in the directory. DB rows
 # (and their referenced sentinel paths) survive forever; only audio
 # gets pruned. At roughly 575 KB/event for the normal three-leg capture,
-# this holds about 1740 events ≈ 5-7 weeks at typical use.
-DEFAULT_MAX_AUDIO_BYTES = 1024 * 1024 * 1024  # 1 GiB
+# this holds about 230 events ≈ 4-8 days at typical use — right-sized
+# for the Pi's small SD card and 1 GB RAM budget.
+DEFAULT_MAX_AUDIO_BYTES = 128 * 1024 * 1024  # 128 MiB
 
 # Sentinel written into audio_*_path when retention deletes the WAV.
 # Queries can filter `audio_on_path != 'rolled_off' AND IS NOT NULL`
@@ -806,8 +807,8 @@ class WakeEventStore:
         Called after every `attach_audio`. Bounded cost: between
         sweeps the directory size is tracked incrementally
         (`_audio_bytes_estimate`), so the common under-cap case is a
-        single comparison — no per-attach stat walk over ~5k files at
-        the 1 GB cap. The full scan-and-prune (first call of a
+        single comparison — no per-attach stat walk over ~600 files at
+        the 128 MiB cap. The full scan-and-prune (first call of a
         process, or estimate over cap) runs on a worker thread and
         re-seeds the estimate from real stat data, so estimate drift
         (an operator rm, an external archive) self-corrects on the

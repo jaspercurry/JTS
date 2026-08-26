@@ -116,10 +116,7 @@ jobs:
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
         with:
-          # docs-linkcheck diffs base...head to find changed Markdown, and
-          # tests/test_script_help_excludes_spdx.py shells out to
-          # `doc-freshness.sh 90 --all`, which uses `git log` for per-file
-          # dates when a doc has no `Last verified:` footer.
+          # docs-linkcheck diffs base...head to find changed Markdown.
           fetch-depth: 0
 
       - name: System deps for sounddevice (portaudio)

@@ -30,6 +30,9 @@ from .voice.input_policy import (
     normalize_openai_noise_reduction,
     validate_openai_noise_reduction,
 )
+from .wake_events import (
+    DEFAULT_MAX_AUDIO_BYTES as DEFAULT_WAKE_EVENTS_MAX_AUDIO_BYTES,
+)
 
 
 class VoiceProviderNotConfigured(RuntimeError):
@@ -640,15 +643,11 @@ class Config:
                 "JASPER_WAKE_EVENTS_DIR",
                 "/var/lib/jasper/wake-events",
             ),
-            # 1 GB default. Each event captures 3 WAVs (one per leg:
-            # AEC ON, AEC OFF, DTLN) at ~192 KB each = ~576 KB/event.
-            # 1 GB ≈ 1740 events; at ~30-50 events/day that's ~5-7
-            # weeks of retention. Was 500 MB pre-triple-stream (one
-            # WAV per event); bumped to 1 GB on 2026-05-23 with the
-            # third-leg capture so retention stays in the same ballpark.
+            # Default sourced from wake_events.DEFAULT_MAX_AUDIO_BYTES —
+            # see that module for the retention-cap sizing rationale.
             wake_events_max_audio_bytes=_env_int(
                 "JASPER_WAKE_EVENTS_MAX_AUDIO_BYTES",
-                1024 * 1024 * 1024,
+                DEFAULT_WAKE_EVENTS_MAX_AUDIO_BYTES,
             ),
             # JASPER_TTS_DEVICE: legacy PortAudio device name retained
             # for pre-outputd archaeology. Current runtime rejects the

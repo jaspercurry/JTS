@@ -17,43 +17,14 @@
 //   node tests/js/crossover_cloud_callouts_test.mjs
 
 import assert from "node:assert/strict";
-import { readFileSync } from "node:fs";
-import { dirname, resolve } from "node:path";
-import { fileURLToPath } from "node:url";
-
+import { loadEsm, repoPath } from "./_loader.mjs";
 // A minimal, real-enough fake DOM: document.createElement returns a FRESH
 // node each call (unlike the fixed getElementById map other crossover
 // harnesses use), because renderCallouts() builds new nodes per carve-out
 // row via plain document.createElement + textContent (this module
 // deliberately does not use the shared h() builder — see cloud.js's own
 // header comment for why).
-class FakeElement {
-  constructor(tag) {
-    this.tag = tag;
-    this.className = "";
-    this._textContent = "";
-    this.children = [];
-    this.hidden = false;
-    this.dataset = {};
-    this.attributes = {};
-  }
-  get textContent() { return this._textContent; }
-  set textContent(value) {
-    this._textContent = String(value);
-    this.children = [];
-  }
-  appendChild(child) { this.children.push(child); return child; }
-  replaceChildren(...nodes) { this.children = nodes; }
-  addEventListener() {}
-  // #2152: the section's aria-label is part of the honesty claim (it is what
-  // a screen reader announces in place of the heading), so the fake has to
-  // support the real DOM call that sets it.
-  setAttribute(name, value) { this.attributes[name] = String(value); }
-  getAttribute(name) {
-    return Object.prototype.hasOwnProperty.call(this.attributes, name)
-      ? this.attributes[name] : null;
-  }
-}
+import { FakeElement } from "./_dom.mjs";
 
 function fixedElement(id) {
   return new FakeElement(id);
@@ -91,19 +62,13 @@ globalThis.__drawCloudChart = (canvas, payload) => {
   lastChartPayload = payload;
 };
 
-const here = dirname(fileURLToPath(import.meta.url));
-let source = readFileSync(
-  resolve(here, "../../deploy/assets/correction/js/crossover/cloud.js"),
-  "utf8",
+const { renderCloud } = await loadEsm(
+  repoPath("deploy/assets/correction/js/crossover/cloud.js"),
+  {
+    rewrite: [[/^import\s+\{[^}]+\}\s+from\s+["'][^"']+["'];\s*\n?/gm, ""]],
+    prelude: "const drawCloudChart = globalThis.__drawCloudChart;\n",
+  },
 );
-source = source.replace(
-  /^import\s+\{[^}]+\}\s+from\s+["'][^"']+["'];\s*\n?/gm,
-  "",
-);
-source = `const drawCloudChart = globalThis.__drawCloudChart;\n${source}`;
-const dataUrl =
-  "data:text/javascript;base64," + Buffer.from(source, "utf8").toString("base64");
-const { renderCloud } = await import(dataUrl);
 
 let passed = 0;
 function check(condition, message) {

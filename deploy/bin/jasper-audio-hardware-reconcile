@@ -1443,8 +1443,9 @@ restart_audio_if_needed() {
     # previous output geometry and final-edge format. Correctness does not
     # depend on winning that race: require_outputd_env_loaded in
     # jasper/cli/aec_init.py refuses to certify a STATUS older than
-    # $OUTPUTD_ENV_FILE and exits 3, which the aec reconciler reports as the
-    # "deferred" alignment disposition.
+    # $OUTPUTD_ENV_FILE and exits 3, on which the aec reconciler drops the box
+    # to software AEC3 and publishes "disclosed_stale" — it keeps hearing, and
+    # a later pass re-arms the chip once outputd has restarted (ADR-0101).
     "$SYSTEMCTL" --no-block restart jasper-outputd.service 2>/dev/null || true
     if [[ "$install_profile" == "full" ]]; then "$SYSTEMCTL" --no-block restart jasper-aec-reconcile.service 2>/dev/null || true; fi
     log_event "audio_restarted" "output_dac_id=${OUTPUT_DAC_ID} output_dac_card=${OUTPUT_DAC_CARD} brain_restarted=$([[ "$install_profile" == "full" ]] && printf 1 || printf 0) install_profile=$(jasper_asound_log_token "${install_profile:0:32}")"

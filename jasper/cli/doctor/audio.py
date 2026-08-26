@@ -1633,3 +1633,38 @@ def check_active_speaker_startup_hold() -> CheckResult:
         "restoring the saved baseline. Roll back the startup load from "
         "http://jts.local/sound/ or reboot to clear it (/run is tmpfs).",
     )
+
+
+@doctor_check(order=31.7, group="audio", label="room correction authority")
+def check_room_correction_authority() -> CheckResult:
+    """Room correction runs unproven — this is the line that says so.
+
+    Ruling S10 and ADR-0019: an unminted, stale or unreadable commissioning
+    receipt no longer refuses a room-correction run. The run proceeds on the
+    applied crossover and simply does not bank a verified result, which means
+    the only place a household can learn the difference is here. WARN, never
+    FAIL: nothing is broken, and nothing is stopped.
+    """
+
+    from ...active_speaker.setup_status import read_active_speaker_setup_status
+
+    label = "room correction authority"
+    try:
+        status = read_active_speaker_setup_status()
+    except (OSError, RuntimeError, TypeError, ValueError, KeyError) as exc:
+        return CheckResult(label, "warn", f"could not read speaker setup: {exc}")
+    acoustic = status.get("acoustic_commissioning")
+    if not isinstance(acoustic, dict):
+        return CheckResult(label, "warn", "speaker setup published no room decision")
+    if acoustic.get("required") is not True:
+        return CheckResult(label, "ok", "room correction needs no speaker authority")
+    if acoustic.get("allowed") is True:
+        return CheckResult(
+            label, "ok",
+            f"room correction is banked under {acoustic.get('authority')}",
+        )
+    return CheckResult(
+        label, "warn",
+        f"room correction runs unproven ({acoustic.get('reason')}): "
+        f"{acoustic.get('detail')}",
+    )

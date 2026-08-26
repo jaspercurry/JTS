@@ -7,25 +7,7 @@
 // block still closes the recorder that owns the mic graph.
 
 import assert from "node:assert/strict";
-import { readFileSync } from "node:fs";
-import { dirname, resolve } from "node:path";
-import { fileURLToPath } from "node:url";
-
-const here = dirname(fileURLToPath(import.meta.url));
-const raw = readFileSync(resolve(here, "../../capture-page/js/main.js"), "utf8");
-const withoutImports = raw
-  .replace(
-    /^import\s+\{[\s\S]*?\}\s+from\s+["'][^"']+["'];\s*/gm,
-    "",
-  )
-  .replace(/^import\s+[^;\n]+\s+from\s+["'][^"']+["'];\s*/gm, "")
-  .replace(
-    /^const PAGE_VERSION_URL = .*;$/m,
-    'const PAGE_VERSION_URL = new URL("https://capture.test/version.json");',
-  );
-if (/^import\s/m.test(withoutImports)) {
-  throw new Error("unhandled import in main.js — update the harness strip rule");
-}
+import { loadEsm, repoPath } from "./_loader.mjs";
 
 const recorder = {
   capturedChannelCount: 1,
@@ -90,10 +72,15 @@ globalThis.document = {
     return statusEl;
   },
 };
-const dataUrl =
-  "data:text/javascript;base64," +
-  Buffer.from(injected + withoutImports, "utf8").toString("base64");
-const { onStart } = await import(dataUrl);
+const { onStart } = await loadEsm(repoPath("capture-page/js/main.js"), {
+  stripImports: true,
+  guardNoImports: true,
+  rewrite: [[
+    /^const PAGE_VERSION_URL = .*;$/m,
+    'const PAGE_VERSION_URL = new URL("https://capture.test/version.json");',
+  ]],
+  prelude: injected,
+});
 
 const posted = [];
 await onStart({

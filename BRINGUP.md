@@ -1115,15 +1115,14 @@ Healthy box: every row "✓", with **Audio profile** reporting the chip-AEC
 profile (`xvf_chip_aec`) both requested and active, and **AEC bridge service**
 forwarding the chip beam with WebRTC AEC3 bypassed. Short of that, **Audio
 profile** reads `warn` and carries the reconciler's own `reason=` and
-`action=`. The first two states below are designed waits — the system is
-waiting on you, not broken. `unavailable` means the hardware story needs
-attention (or, on Flex, is final — see below); `state=fault` is genuine
-breakage, not a wait. Do what `action=` says, then re-read the rows:
+`action=`. `disclosed_stale` below is the one state where the speaker is still
+hearing — it is a complaint, not an outage. `unavailable` means the hardware
+story needs attention (or, on Flex, is final — see below); `state=fault` is
+genuine breakage. Do what `action=` says, then re-read the rows:
 
 | Doctor says | What it means | What to do |
 |---|---|---|
-| `state=commission_required` | No stored alignment matches this hardware + output identity | `sudo jasper-aec-commission` |
-| `state=deferred` | `jasper-outputd` hasn't loaded the current output declaration | Wait for it to restart, then re-run the reconciler |
+| `state=disclosed_stale` | The speaker is running — on chip AEC from a banked alignment, or on software AEC3 — but the commissioning proof no longer describes this box. `reason=` names what moved | Whatever `action=` says (usually `sudo jasper-aec-commission`); the box keeps working until you get to it |
 | `state=unavailable` | Firmware, mic geometry, or output DAC isn't one chip-AEC supports | If this hardware should be supported, fix that and re-run the reconciler (Flex: see below) |
 | `state=fault` | A unit in the managed activation failed (`jasper-aec-init`, `jasper-aec-bridge`, or `jasper-outputd`) — genuine breakage, not a designed wait | Inspect the unit its `action=` names, then re-run the reconciler |
 

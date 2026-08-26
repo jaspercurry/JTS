@@ -4,18 +4,18 @@
 #
 # SPDX-License-Identifier: Apache-2.0
 
-"""Report documentation that a PR should consider based on changed files.
+"""Validate docs/doc-map.toml, and look up the docs a changed file routes to.
 
-The map is intentionally advisory: a hit means "scan this canonical doc
-and either update it or explain why it is unaffected." A map/schema error is
-real, though, because stale routing is worse than no routing.
+``--validate-only`` is the CI half: a map/schema error is real, because stale
+routing is worse than no routing. The lookup half is an operator convenience —
+a hit means "scan this canonical doc and either update it or explain why it is
+unaffected", never a gate.
 """
 
 from __future__ import annotations
 
 import argparse
 import fnmatch
-import json
 import subprocess
 import sys
 import tomllib
@@ -186,93 +186,18 @@ def pattern_matches(pattern: str, path: str) -> bool:
     return fnmatch.fnmatchcase(path, pattern)
 
 
-def matching_patterns(patterns: tuple[str, ...], path: str) -> tuple[str, ...]:
-    return tuple(pattern for pattern in patterns if pattern_matches(pattern, path))
-
-
 def impact_report(
     subsystems: tuple[Subsystem, ...], changed_files: tuple[str, ...]
 ) -> list[dict]:
-    report: list[dict] = []
-    for subsystem in subsystems:
-        matched_files = []
-        matched_patterns: set[str] = set()
-        for changed in changed_files:
-            patterns = matching_patterns(subsystem.code, changed)
-            if patterns:
-                matched_files.append(changed)
-                matched_patterns.update(patterns)
-        if not matched_files:
-            continue
-        docs_touched = tuple(doc for doc in subsystem.docs if doc in changed_files)
-        report.append(
-            {
-                "id": subsystem.id,
-                "title": subsystem.title,
-                "safety": subsystem.safety,
-                "matched_files": tuple(sorted(set(matched_files))),
-                "matched_patterns": tuple(sorted(matched_patterns)),
-                "docs": subsystem.docs,
-                "docs_touched": docs_touched,
-                "requires_docs_when": subsystem.requires_docs_when,
-                "verification": subsystem.verification,
-            }
+    return [
+        {"id": subsystem.id, "safety": subsystem.safety, "docs": subsystem.docs}
+        for subsystem in subsystems
+        if any(
+            pattern_matches(pattern, changed)
+            for pattern in subsystem.code
+            for changed in changed_files
         )
-    return report
-
-
-def render_markdown(report: list[dict], changed_files: tuple[str, ...]) -> str:
-    if not report:
-        return "\n".join(
-            [
-                "<!-- docs-impact-bot -->",
-                "## Docs impact: no mapped subsystem docs",
-                "",
-                "No changed files matched `docs/doc-map.toml`. If this PR still changes",
-                "operator-visible behavior, update the canonical docs manually.",
-            ]
-        )
-
-    lines = [
-        "<!-- docs-impact-bot -->",
-        f"## Docs impact: {len(report)} mapped subsystem(s)",
-        "",
-        "This is informational and non-blocking. For each mapped subsystem, scan",
-        "the listed canonical docs and either update them or note why they are",
-        "unaffected in the PR description.",
-        "",
     ]
-    for item in report:
-        touched = set(item["docs_touched"])
-        lines.extend(
-            [
-                f"### {item['title']} (`{item['id']}`)",
-                "",
-                f"- Safety class: `{item['safety']}`",
-                "- Changed files:",
-            ]
-        )
-        for changed in item["matched_files"]:
-            lines.append(f"  - `{changed}`")
-        lines.append("- Canonical docs to scan:")
-        for doc in item["docs"]:
-            suffix = " (changed in this PR)" if doc in touched else ""
-            lines.append(f"  - `{doc}`{suffix}")
-        lines.append("- Docs usually matter when:")
-        for rule in item["requires_docs_when"]:
-            lines.append(f"  - {rule}")
-        if item["verification"]:
-            lines.append("- Suggested verification:")
-            for command in item["verification"]:
-                lines.append(f"  - `{command}`")
-        lines.append("")
-    lines.extend(
-        [
-            "Changed-file count: "
-            f"{len(changed_files)}. Map source: `docs/doc-map.toml`.",
-        ]
-    )
-    return "\n".join(lines)
 
 
 def render_text(report: list[dict]) -> str:
@@ -295,11 +220,6 @@ def main(argv: list[str] | None = None) -> int:
         action="append",
         default=[],
         help="repo-relative changed file; may be repeated",
-    )
-    parser.add_argument(
-        "--format",
-        choices=("markdown", "text", "json", "count"),
-        default="text",
     )
     parser.add_argument(
         "--validate-only",
@@ -329,15 +249,7 @@ def main(argv: list[str] | None = None) -> int:
         if not changed_files:
             changed_files = changed_files_from_git(args.base, args.head)
 
-        report = impact_report(subsystems, changed_files)
-        if args.format == "count":
-            print(len(report))
-        elif args.format == "json":
-            print(json.dumps({"changed_files": changed_files, "impact": report}, indent=2))
-        elif args.format == "markdown":
-            print(render_markdown(report, changed_files))
-        else:
-            print(render_text(report))
+        print(render_text(impact_report(subsystems, changed_files)))
         return 0
     except (OSError, ValueError, subprocess.CalledProcessError) as exc:
         print(f"docs-impact: {exc}", file=sys.stderr)

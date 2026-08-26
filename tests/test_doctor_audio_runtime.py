@@ -5,6 +5,7 @@
 """Unit tests for the jasper-doctor audio-runtime domain."""
 
 import json
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from unittest.mock import Mock
 
@@ -1671,6 +1672,64 @@ def test_route_latency_live_state_rejects_changed_negotiated_direct_buffer(
     )
 
     assert "live_fanin_direct_mismatch:usbsink:negotiated_buffer_frames" in issues
+
+
+def test_route_latency_evidence_warns_on_aged_out_in_budget_proof(
+    monkeypatch,
+    tmp_path,
+):
+    # ADR-0101: doctor inherits the assessor's disclosing warn for a proof the
+    # 24h window aged out. Its own fails (plan errors, live issues) are pinned
+    # by the neighbouring tests and stay fail.
+    plan = audio_runtime_plan.build_audio_runtime_plan(
+        base_env={
+            audio_runtime_plan.AUDIO_ROUTE_PROFILE_KEY: (
+                audio_runtime_plan.ROUTE_USB_LOW_LATENCY_48K
+            )
+        },
+        profile_id=APPLE_USB_C_DONGLE_DEVICE_ID,
+        route_mode="solo",
+    )
+    identity = plan.route_latency_identity()
+    artifact = audio_validation.make_route_latency_artifact(
+        route_id=audio_runtime_plan.ROUTE_USB_LOW_LATENCY_48K,
+        source_id="usbsink",
+        dac_id=APPLE_USB_C_DONGLE_DEVICE_ID,
+        route_config_hash=plan.route_config_hash,
+        camilla_config_hash=str(identity["camilla_config_hash"]),
+        fanin_direct_config=identity["fanin_direct_config"],
+        fanin_direct_negotiated_buffer_frames=768,
+        fanin_resampler_config=identity["fanin_resampler_config"],
+        outputd_config=identity["outputd_config"],
+        uac2_gadget_attrs=identity["uac2_gadget_attrs"],
+        p95_ms=38.0,
+        p99_ms=41.0,
+        sample_count=1000,
+        duration_seconds=30 * 60,
+        impulse_spacing_jittered=True,
+        validated_at=(
+            datetime.now(timezone.utc)
+            - audio_validation.ROUTE_LATENCY_STALE_AFTER
+            - timedelta(hours=1)
+        ),
+    )
+    audio_validation.write_artifact(artifact, directory=tmp_path)
+    monkeypatch.setattr(
+        audio_runtime_plan,
+        "build_audio_runtime_plan_from_system",
+        lambda: plan,
+    )
+    monkeypatch.setattr(
+        doctor.audio_runtime,
+        "_route_live_state_issues_for_doctor",
+        lambda observed_plan, **_kwargs: (),
+    )
+    monkeypatch.setenv("JASPER_AUDIO_VALIDATION_DIR", str(tmp_path))
+
+    r = doctor.check_route_latency_evidence()
+
+    assert r.status == "warn"
+    assert "artifact_stale" in r.detail
 
 
 def test_route_latency_evidence_fails_live_state_mismatch(

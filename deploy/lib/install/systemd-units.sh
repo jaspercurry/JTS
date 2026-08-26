@@ -721,7 +721,7 @@ install_nginx_recovery_dropin() {
     # nginx is the package-owned management front door. This drop-in gives it
     # Restart=always + OOMScoreAdjust=-450 so a transient OOM cannot leave
     # http://<speaker>.local dark until someone SSHes in. Both install profiles
-    # must call this: jasper-doctor's check_oom_score_adj expects -450 on nginx
+    # must call this: the doctor's installed-settings drift check expects -450 on nginx
     # regardless of profile, and without Restart=always an OOM-killed nginx
     # stays down.
     install -d -m 0755 "${SYSTEMD_DIR}/nginx.service.d"

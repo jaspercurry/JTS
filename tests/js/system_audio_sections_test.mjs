@@ -7,15 +7,10 @@
 // browser dependency; layout remains covered by the static CSS guards.
 
 import assert from "node:assert/strict";
-import { readFileSync } from "node:fs";
+import { buildFunction } from "./_loader.mjs";
 
 const modulePath = process.argv[2];
 if (!modulePath) throw new Error("usage: node system_audio_sections_test.mjs <audio-sections.js>");
-
-const source = readFileSync(modulePath, "utf8")
-  .replace(/^import[\s\S]*?;\n/gm, "")
-  .replace(/^export /gm, "");
-assert.doesNotMatch(source, /^\s*(?:import|export)\s/m);
 
 function flatten(items) {
   return items.flatMap((item) => Array.isArray(item) ? flatten(item) : [item]);
@@ -35,13 +30,17 @@ const defList = (rows) => h("deflist", null,
   rows.map(([label, value]) => h("row", null, label, value)));
 const fmtEpochAgo = (at) => `${Math.max(0, 1000 - Number(at))}s ago`;
 
-const AsyncFunction = Object.getPrototypeOf(async function () {}).constructor;
-const run = new AsyncFunction("h", "badge", "defList", "fmtEpochAgo", `${source}\nreturn {
-  currentStreamBody, recentIncidents, issuesBody,
-  otherSources, sourcesBody, refreshRelativeTimes,
-  outputAlert, outputAlertBody,
-};`);
-const api = await run(h, badge, defList, fmtEpochAgo);
+const api = await buildFunction(modulePath, {
+  rewrite: [[/^import[\s\S]*?;\n/gm, ""], [/^export /gm, ""]],
+  guardNoImports: true,
+  async: true,
+  params: ["h", "badge", "defList", "fmtEpochAgo"],
+  returns: [
+    "currentStreamBody", "recentIncidents", "issuesBody",
+    "otherSources", "sourcesBody", "refreshRelativeTimes",
+    "outputAlert", "outputAlertBody",
+  ],
+})(h, badge, defList, fmtEpochAgo);
 
 function strings(node) {
   if (node == null) return [];

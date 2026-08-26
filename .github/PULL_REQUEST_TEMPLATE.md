@@ -1,9 +1,7 @@
 ## Summary
 
 (1-3 sentences on what changes and why. Focus on the why — the diff
-shows the what. `docs-impact.yml` will comment with any canonical docs
-this PR's changed files map to in `docs/doc-map.toml` — update those
-inline if they've gone stale.)
+shows the what.)
 
 ## Test plan
 

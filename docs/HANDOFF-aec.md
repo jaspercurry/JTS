@@ -114,10 +114,22 @@ numbers — that is the check working.
 and the commissioned one IS the difference between the two windows' medians —
 the only error term between the alignment the commissioner verified and what
 boot applies. `choose_delay` reserves `MIN_EDGE_MARGIN` frames on both
-causal-window edges, so that is the bound; past it `jasper-aec-init` parks with
-the numbers as **commission_required**, because the artifact stopped describing
-the box. The chip's own −64..256 range spans 320 frames against a 39-frame
-causal window and was never a substitute for this.
+causal-window edges, so that is the bound; past it `jasper-aec-init` still
+applies the delay and discloses it with the numbers as **disclosed_stale**
+(ADR-0101) — the artifact stopped describing the box, but nothing broke. The
+chip's own −64..256 range is checked FIRST and still refuses outright: it is
+the declared driver cap, and checking it ahead of the margin is what makes the
+margin safe to disclose rather than park. It spans 320 frames against a
+39-frame causal window and was never a substitute for the margin.
+
+The same disposition covers a commissioned identity that moved and an artifact
+from a superseded schema. Identity divergence is split by meaning: the fields
+in `PER_UNIT_IDENTITY_FIELDS` name this physical box, everything else names the
+hardware class `K` was measured against, and the disclosure says which. An
+artifact that is absent or unusable — unreadable, malformed, from a schema this
+build does not know, or banking a `sys_delay` outside the driver cap — still
+exits `2`: there is no `K` to run from, and the shipped hardware-class default
+that would close that half is #2984.
 
 ### The cross-transaction ordering guard
 
@@ -135,10 +147,10 @@ final-edge format.
 `require_outputd_env_loaded` (`jasper/cli/aec_init.py`) closes that: before
 sampling any STATUS it compares outputd's `ExecMainStartTimestamp` against the
 env file's mtime, waits a bounded 10 s for a queued restart, then exits `3`
-rather than certify a stale edge. That is the `deferred` disposition — an
-ordering race, not a moved artifact — so it deliberately does **not** ask for a
-recommission, and doctor reports it as an intentional park on the
-`AEC bridge service` row rather than a bridge failure.
+rather than certify a stale edge. That is an ordering race, not a moved
+artifact, so the reconciler deliberately does **not** ask for a recommission:
+it runs software AEC3, publishes `disclosed_stale` with "wait for
+jasper-outputd to restart", and the box keeps hearing.
 
 Three details of that comparison are easy to get wrong. **Both stamps must be
 the same clock**: comparing a CLOCK_REALTIME age against a CLOCK_MONOTONIC age
@@ -158,12 +170,14 @@ because a guard that silently does not run looks identical to one that passed.
 
 ## Reconciler and status
 
-`jasper-aec-reconcile` owns the lifecycle. While uncommissioned it keeps the
-native reference writer active but parks the bridge and voice; once silent
-reapply/readback succeeds it starts both. Ordinary lifecycle handling never
+`jasper-aec-reconcile` owns the lifecycle. An alignment it cannot apply drops
+the box to software AEC3 rather than parking it, and `disclose_stale_chip_aec`
+normalises `JASPER_MIC_DEVICE` off the chip's UDP carrier whenever the bridge
+does not come up — voice on an unfed socket stalls into `WatchdogSec=30s` and
+the unit's `StartLimitAction=reboot`. Ordinary lifecycle handling never
 plays audio, resets the chip, searches parameters, rewrites the artifact,
 starts a timer, or runs a servo. `/aec`, `/state`, and `jasper-doctor` expose
-`ready`, `commission_required`, `deferred`, `unavailable`, or `fault` with the
+`ready`, `disclosed_stale`, `unavailable`, or `fault` with the
 reconciler-provided reason/action. If the XVF is absent after a previous
 AEC-enabled boot, the reconciler clears the stale
 `JASPER_MIC_DEVICE=udp:9876`, disables the bridge, and stops voice instead of
