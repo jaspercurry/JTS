@@ -2,6 +2,8 @@
 #
 # SPDX-License-Identifier: Apache-2.0
 
+import pytest
+
 from jasper.audio_profile_state import (
     AecIntent,
     MicProbe,
@@ -549,3 +551,133 @@ def test_an_unqualified_chip_path_discloses_while_an_engine_carries_wake():
     assert stopped["audio_profile"]["state"] == "unavailable"
     assert stopped["audio_profile"]["active"] is None
     assert stopped["audio_profile"]["action"] == ""
+
+
+def _chip_box(
+    *,
+    aec_device: str,
+    alignment_status: str,
+    chip_available: bool = True,
+    chip_gate: dict | None = None,
+) -> dict:
+    return build_audio_profile_status(
+        AecIntent(mode="auto", profile_selection="xvf_chip_aec"),
+        RuntimeAecEnv(
+            primary_device="udp:9876",
+            aec_device=aec_device,
+            chip_enabled=True,
+            chip_aec_alignment_status=alignment_status,
+            chip_aec_alignment_reason="chip-AEC alignment lost its proof",
+        ),
+        MicProbe(
+            xvf_present=True,
+            capture_channels=6,
+            recommended_channels=6,
+            alsa_card_name="XVF3800",
+        ),
+        bridge_active=True,
+        chip_available=chip_available,
+        chip_gate=chip_gate,
+    )
+
+
+@pytest.mark.parametrize(
+    ("alignment_status", "aligned_state", "mismatched_active", "mismatched_state",
+     "mismatched_mode"),
+    [
+        ("ready", "active", None, "pending", "Chip-AEC pending"),
+        (
+            "disclosed_stale",
+            "disclosed_stale",
+            "xvf_software_aec3",
+            "disclosed_stale",
+            "Software AEC3",
+        ),
+    ],
+)
+def test_a_mic_the_bridge_is_not_using_stops_every_arm_claiming_its_chip_beam(
+    alignment_status,
+    aligned_state,
+    mismatched_active,
+    mismatched_state,
+    mismatched_mode,
+):
+    """One resolver answers which engine carries wake, so no arm can dissent.
+
+    A configured AEC mic that is not the detected XVF card means what arrives
+    cannot be this chip's beam. The ready arm already refused it while the
+    disclosed arm named chip-AEC from the same facts (issue #3073 item 2), so
+    one box answered two ways depending only on which arm reported.
+    """
+    aligned = _chip_box(aec_device="XVF3800", alignment_status=alignment_status)
+    mismatched = _chip_box(aec_device="OtherCard", alignment_status=alignment_status)
+
+    assert aligned["audio_profile"]["active"] == "xvf_chip_aec"
+    assert aligned["audio_profile"]["state"] == aligned_state
+    assert aligned["microphone"]["processing_mode"] == "Chip-AEC"
+
+    assert mismatched["audio_profile"]["active"] == mismatched_active
+    assert mismatched["audio_profile"]["state"] == mismatched_state
+    assert mismatched["microphone"]["processing_mode"] == mismatched_mode
+
+
+@pytest.mark.parametrize(
+    ("chip_available", "chip_gate"),
+    [
+        (False, None),
+        (True, {"auto_allowed": False, "arm_allowed": False, "status": "unsupported"}),
+    ],
+    ids=["no_beam_plan", "dac_gate_refuses"],
+)
+def test_the_ready_arm_claims_no_chip_beam_it_was_never_allowed_to_arm(
+    chip_available,
+    chip_gate,
+):
+    """Arming policy gates the ready arm, whatever the runtime env applied.
+
+    Every live fact says chip: the leg is enabled, the bridge is up on the
+    carrier and the mic matches. Only the beam plan and the DAC gate say this
+    box may not arm chip-AEC on its own, and `active` follows them.
+    """
+    status = _chip_box(
+        aec_device="XVF3800",
+        alignment_status="ready",
+        chip_available=chip_available,
+        chip_gate=chip_gate,
+    )
+
+    assert status["audio_profile"]["active"] is None
+    assert status["audio_profile"]["state"] == "unavailable"
+    assert status["microphone"]["processing_mode"] == "Chip-AEC pending"
+    assert status["microphone"]["wake_legs"] == []
+
+
+def test_a_chip_engine_is_never_stamped_with_a_profile_it_is_not_running():
+    """The engine named and the profile stamped are one resolver's answer.
+
+    The chip beam is on the carrier under a custom selection whose stored
+    intent has no chip leg, so the arm took its profile from the selection
+    and reported a Chip-AEC engine running the software profile — one
+    payload answering itself two ways (issue #3073 item 2).
+    """
+    status = build_audio_profile_status(
+        AecIntent(mode="auto", raw_enabled=True, profile_selection="custom"),
+        RuntimeAecEnv(
+            primary_device="udp:9876",
+            aec_device="XVF3800",
+            chip_enabled=True,
+            chip_aec_alignment_status="ready",
+        ),
+        MicProbe(
+            xvf_present=True,
+            capture_channels=6,
+            recommended_channels=6,
+            alsa_card_name="XVF3800",
+        ),
+        bridge_active=True,
+        chip_available=True,
+    )
+
+    assert status["microphone"]["processing_mode"] == "Chip-AEC"
+    assert status["audio_profile"]["active"] == "xvf_chip_aec"
+    assert status["microphone"]["wake_legs"] == ["Primary chip beam"]
