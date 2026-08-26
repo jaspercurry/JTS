@@ -990,12 +990,30 @@ def test_wake_events_storage_warns_over_threshold(tmp_path):
 
 
 def test_wake_events_storage_ok_below_default_threshold(tmp_path):
-    """A healthy ring (well under the 1.3 GiB default) never warns."""
+    """A healthy ring (well under the default cap-plus-allowance) never warns."""
     wake = tmp_path / "wake-events"
     wake.mkdir()
     (wake / "clip.wav").write_bytes(b"0" * 1024)
     with patch.dict(os.environ, {
         "JASPER_WAKE_EVENTS_DIR": str(wake),
+    }):
+        os.environ.pop("JASPER_WAKE_EVENTS_STORAGE_WARN_BYTES", None)
+        r = doctor.check_wake_events_storage()
+    assert r.status == "ok"
+
+
+def test_wake_events_storage_warn_threshold_scales_with_configured_cap(tmp_path):
+    """A Pi that deliberately overrides the audio cap gets a warn threshold
+    scaled to that cap, not a fixed default sized for the 128 MiB default —
+    otherwise a healthy, deliberately-larger ring would warn forever."""
+    wake = tmp_path / "wake-events"
+    wake.mkdir()
+    with open(wake / "clip.wav", "wb") as f:
+        f.truncate(600 * 1024 * 1024)  # above a 128 MiB-scaled default,
+                                        # below a 1 GiB-scaled one
+    with patch.dict(os.environ, {
+        "JASPER_WAKE_EVENTS_DIR": str(wake),
+        "JASPER_WAKE_EVENTS_MAX_AUDIO_BYTES": "1073741824",  # 1 GiB override
     }):
         os.environ.pop("JASPER_WAKE_EVENTS_STORAGE_WARN_BYTES", None)
         r = doctor.check_wake_events_storage()

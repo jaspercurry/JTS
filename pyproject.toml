@@ -417,7 +417,6 @@ module = [
     "jasper.volume_diagnostics",
     "jasper.wake_corpus.bridge_session",
     "jasper.wake_corpus.recording_backend",
-    "jasper.wake_training.feature_bank",
     "jasper.weather",
     "jasper.web.__main__",
     "jasper.web._common",

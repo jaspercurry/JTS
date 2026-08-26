@@ -1109,8 +1109,8 @@ async def test_retention_under_cap_skips_directory_scan_after_seed(
     store: WakeEventStore, monkeypatch,
 ):
     """After the first sweep seeds the size estimate, under-cap
-    attaches must not stat-walk the directory again (~5k files at the
-    1 GB cap)."""
+    attaches must not stat-walk the directory again (~600 files at the
+    128 MiB cap)."""
 
     async def _attach(eid: str) -> None:
         await store.begin_event(

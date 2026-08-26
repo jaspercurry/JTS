@@ -172,6 +172,15 @@ while IFS= read -r changed; do
       add_test_if_present "tests/test_build_wake_negative_feature_bank.py"
       add_test_if_present "tests/test_wake_training_feature_bank.py"
       ;;
+    wake_training/*)
+      # wake_training/ lives outside jasper/ (laptop-side training tooling,
+      # not shipped) so the jasper/*/*.py arm below never sees it — without
+      # this arm an edit here selects zero tests, same failure mode the
+      # rust/ and experiments/*/* arms exist to close.
+      add_test_if_present "tests/test_build_wake_feature_bank.py"
+      add_test_if_present "tests/test_build_wake_negative_feature_bank.py"
+      add_test_if_present "tests/test_wake_training_feature_bank.py"
+      ;;
     tests/voice_eval/*)
       ;;
     jasper/*/*.py)

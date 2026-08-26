@@ -133,7 +133,7 @@ ack, never silence.
       REFUTED on re-verification: the confs diverge by 126 non-comment
       lines — streambox deliberately omits 11 voice/assistant routes —
       so only the snippet landed; do not re-attempt the merge)
-- [ ] wake-events WAV cap default 1 GiB → 128 MiB; move wake_training/ out of
+- [x] wake-events WAV cap default 1 GiB → 128 MiB; move wake_training/ out of
       the shipped package
 
 **Wave 3 — test right-sizing (~13–18K; lint-contracts ceded to the tuning

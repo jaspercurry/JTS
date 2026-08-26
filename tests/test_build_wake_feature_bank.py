@@ -12,7 +12,7 @@ from pathlib import Path
 
 import numpy as np
 
-from jasper.wake_training import feature_bank as shared_features
+from wake_training import feature_bank as shared_features
 from tests.wake_feature_bank_fixtures import (
     FakeExtractor,
     write_bundle as _write_bundle,

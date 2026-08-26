@@ -26,6 +26,9 @@ import subprocess
 from pathlib import Path
 from ...install_profile import is_streambox_install_profile, read_install_profile
 from ...memory_policy import memory_headroom_thresholds
+from ...wake_events import (
+    DEFAULT_MAX_AUDIO_BYTES as _DEFAULT_WAKE_EVENTS_MAX_AUDIO_BYTES,
+)
 from ._registry import doctor_check
 from ._shared import (
     CheckResult,
@@ -480,7 +483,11 @@ def _storage_check(
 
 
 _DEFAULT_CORRECTION_STORAGE_WARN_BYTES = 512 * 1024 * 1024  # 512 MiB
-_DEFAULT_WAKE_EVENTS_STORAGE_WARN_BYTES = 1300 * 1024 * 1024  # 1.3 GiB
+# Headroom above the *configured* audio cap for the SQLite DB (grows
+# forever, ~9 MB/year) plus any transient overshoot before a sweep catches
+# up. A fixed allowance, not a fixed threshold, so it stays meaningful
+# whatever the cap is set to (default or a deliberate override).
+_WAKE_EVENTS_DB_ALLOWANCE_BYTES = 300 * 1024 * 1024  # 300 MiB
 
 
 def _storage_warn_bytes(knob: str, default: int) -> int:
@@ -535,24 +542,30 @@ def check_wake_events_storage() -> CheckResult:
     """Read-only size warning for the wake-event corpus directory.
 
     The wake-event telemetry ring caps its WAV storage at
-    JASPER_WAKE_EVENTS_MAX_AUDIO_BYTES (1 GiB default) and rolls
+    JASPER_WAKE_EVENTS_MAX_AUDIO_BYTES (128 MiB default) and rolls
     oldest-first, so steady-state size is bounded — but the SQLite DB and
     any transient overshoot above the audio cap still live on the same SD
     card. This surfaces the on-disk total so an operator can catch a ring
     that has drifted well past its audio cap (a sign the reaper is wedged
     or the cap was raised and forgotten). Read-only — the ring owns its
-    own oldest-first eviction. Threshold via
-    JASPER_WAKE_EVENTS_STORAGE_WARN_BYTES (default 1.3 GiB, comfortably
-    above the 1 GiB audio cap so a healthy ring never warns)."""
+    own oldest-first eviction. Threshold via JASPER_WAKE_EVENTS_STORAGE_WARN_BYTES,
+    defaulting to the *configured* audio cap (JASPER_WAKE_EVENTS_MAX_AUDIO_BYTES,
+    env override respected) plus a fixed DB/overshoot allowance — so a Pi
+    that deliberately keeps a larger cap doesn't get spurious warnings,
+    and a healthy ring never warns."""
     wake_dir = Path(
         os.environ.get("JASPER_WAKE_EVENTS_DIR", "/var/lib/jasper/wake-events")
+    )
+    configured_cap = _storage_warn_bytes(
+        "JASPER_WAKE_EVENTS_MAX_AUDIO_BYTES",
+        _DEFAULT_WAKE_EVENTS_MAX_AUDIO_BYTES,
     )
     return _storage_check(
         label="wake-events storage",
         path=wake_dir,
         warn_bytes=_storage_warn_bytes(
             "JASPER_WAKE_EVENTS_STORAGE_WARN_BYTES",
-            _DEFAULT_WAKE_EVENTS_STORAGE_WARN_BYTES,
+            configured_cap + _WAKE_EVENTS_DB_ALLOWANCE_BYTES,
         ),
         knob="JASPER_WAKE_EVENTS_STORAGE_WARN_BYTES",
         note=(
