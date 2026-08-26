@@ -465,9 +465,9 @@ Implemented shape:
    file hash, parsed point count, orientation, and normalized sign
    convention.
 3. Parse calibration files into one internal shape:
-   `frequency_hz[]`, `correction_db[]`, optional `phase_deg[]`, and
-   explicit sign convention. Provider adapters own vendor quirks; the
-   DSP code only sees the normalized additive correction.
+   `frequency_hz[]`, `correction_db[]`, and explicit sign convention. A
+   vendor phase column is read past rather than kept. Provider adapters own
+   vendor quirks; the DSP code only sees the normalized additive correction.
 4. Apply the correction before target normalization / PEQ design so
    every downstream visualization, bundle, and agent tool is looking
    at calibrated measurement data.

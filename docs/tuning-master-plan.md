@@ -258,8 +258,9 @@ revisited when evidence demands it.
   self-test; a shape-variation probe adds little over it.
 - **Ground-plane and two-distance regimes; air absorption modeling.**
 - **Calibration phase application and incidence-aware math**: the cal
-  file's phase column is parsed but never applied (this ledger entry is the
-  record, and `CalibrationCurve.phase_deg` carries the in-file note);
+  file's phase column is read past and never kept — `CalibrationCurve`
+  carries magnitude only, because `apply_calibration_curve` is a real-dB
+  correction with no complex path to feed. This ledger entry is the record;
   orientation routes the vendor fetch only.
 - **Bespoke mechanism detectors** (port resonance, cone breakup, room mode,
   panel resonance, rattle/impulsive defects, amplifier-clipping

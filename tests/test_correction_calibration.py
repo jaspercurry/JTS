@@ -34,10 +34,16 @@ SAMPLE_CAL = """# freq correction phase
 
 
 def test_parse_calibration_text_accepts_common_curve_shape():
+    """A vendor phase column is read past, not kept: the correction is
+    magnitude-only, so a third column must neither reach the curve nor
+    stop the two columns that do."""
     curve = calibration.parse_calibration_text(SAMPLE_CAL)
     assert curve.freqs_hz == [20.0, 100.0, 1000.0, 20000.0]
     assert curve.correction_db == [-2.0, 0.5, 1.5, -1.0]
-    assert curve.phase_deg == [0.0, 12.0, 20.0, 0.0]
+    assert curve.to_dict() == {
+        "freqs_hz": [20.0, 100.0, 1000.0, 20000.0],
+        "correction_db": [-2.0, 0.5, 1.5, -1.0],
+    }
 
 
 def test_parse_calibration_text_can_invert_response_curve():
@@ -72,13 +78,14 @@ def test_calibration_curve_from_dict_is_strict_persisted_boundary():
     valid = {
         "freqs_hz": [20, 1000.0],
         "correction_db": [-1, 2.0],
+        # A record stored before the phase column was dropped still loads:
+        # unknown keys are metadata this boundary reads past.
         "phase_deg": [0, 10.0],
         "future_metadata": "allowed",
     }
     assert calibration.CalibrationCurve.from_dict(valid).to_dict() == {
         "freqs_hz": [20.0, 1000.0],
         "correction_db": [-1.0, 2.0],
-        "phase_deg": [0.0, 10.0],
     }
     for payload in (
         {**valid, "freqs_hz": [20.0, 20.0]},
@@ -87,7 +94,6 @@ def test_calibration_curve_from_dict_is_strict_persisted_boundary():
         {**valid, "freqs_hz": [20.0, "1000"]},
         {**valid, "correction_db": [-1.0]},
         {**valid, "correction_db": [False, 1.0]},
-        {**valid, "phase_deg": [0.0]},
     ):
         with pytest.raises(ValueError):
             calibration.CalibrationCurve.from_dict(payload)
@@ -1053,16 +1059,18 @@ def test_migration_on_an_empty_store_is_a_no_op(tmp_path: Path):
     assert counts["scanned"] == 0
 
 
-def test_migration_preserves_phase_through_both_repair_paths(tmp_path: Path):
-    """Only the gain column flips. `parse_calibration_text` passes phase
-    through unchanged under both conventions, so the negate fallback must not
-    negate it either — otherwise the two paths would disagree."""
+def test_migration_repairs_a_three_column_file_the_same_way_on_both_paths(
+    tmp_path: Path,
+) -> None:
+    """The re-derive path and the negate fallback must land the same curve.
+    A vendor file's third column is read past on both, so a record repaired
+    from raw text and one repaired from the stored curve alone agree."""
     three_column = "20 -1 5\n1000 0 -10\n20000 2 30\n"
 
     for drop_raw in (False, True):
         root = tmp_path / f"raw_dropped_{drop_raw}"
         record = _store_wrong_convention_vendor_record(root, text=three_column)
-        assert record.curve.phase_deg == [5.0, -10.0, 30.0]
+        assert record.curve.freqs_hz == [20.0, 1000.0, 20000.0]
         if drop_raw:
             Path(record.raw_path).unlink()
 
@@ -1073,7 +1081,7 @@ def test_migration_preserves_phase_through_both_repair_paths(tmp_path: Path):
             record.calibration_id, root=root,
         )
         assert fixed.curve.correction_db == pytest.approx([1.0, 0.0, -2.0])
-        assert fixed.curve.phase_deg == [5.0, -10.0, 30.0]
+        assert fixed.curve.freqs_hz == [20.0, 1000.0, 20000.0]
 
 
 def test_migration_write_is_atomic_and_preserves_owner_and_mode(tmp_path: Path):
