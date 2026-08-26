@@ -1,608 +1,264 @@
-# HANDOFF - Wake-corpus audio quality audit
+# Wake-corpus audio quality — operational spine
 
-> **Current operational truth as of 2026-06-09.** This doc is the
-> canonical methodology for programmatic quality analysis of deliberate
-> wake-corpus WAVs captured by the browser recorder at
-> `http://jts.local/wake-corpus/`.
->
-> Read this before building or expanding a wake-corpus quality analyzer.
-> Read [`HANDOFF-wake-training-experiment.md`](HANDOFF-wake-training-experiment.md)
-> for the recording protocol and training plan. Read
-> [`testing-tooling.md`](testing-tooling.md) to avoid duplicating an
-> existing measurement tool.
+Methodology for programmatic quality analysis of the deliberate wake-corpus
+WAVs captured by the browser recorder at `http://jts.local/wake-corpus/`. Read
+this before building or extending a corpus quality analyzer.
 
----
+The governing decisions are **ADR-0135** (the analyzer ranks clips for human
+review and never rejects one; deterministic metrics first, neural predictors
+advisory, cross-leg coincidence as arbiter) and **ADR-0136** (waveform fusion
+must beat score fusion across sessions and hard negatives before it is a
+candidate). The 2026-05→07 build record — phased plan, AEC3 sweep-slot
+retargeting, metadata-contract growth, the one fusion result — is
+[historical/wake-corpus-quality-methodology-2026-05.md](historical/wake-corpus-quality-methodology-2026-05.md).
 
-## TL;DR
+## What exists today
 
-**The shipped audit is intentionally basic.** `scripts/audit-wake-corpus.sh`
-answers "did the corpus record what we think it recorded?" It checks
-metadata, expected legs, coverage, WAV format, duration, RMS, and peak.
-It is not a deep audio-quality analyzer.
+| Tool | Does |
+|---|---|
+| `scripts/audit-wake-corpus.sh` | Deliberately basic: "did the corpus record what we think it recorded?" — metadata, expected legs, coverage, WAV format, duration, RMS, peak. |
+| `scripts/analyze-wake-corpus-quality.sh` (→ `scripts/_analyze_wake_corpus_quality.py`) | The deterministic analyzer. Laptop-side pass over an rsynced corpus emitting `metrics.csv` / `cross_leg.csv` / `events.json` / `summary.md`; Tier A + selected Tier B; LPC-residual + cross-leg confirmation of transients. Fixtures: `tests/test_analyze_wake_corpus_quality.py`. |
+| `scripts/_waveform_fusion_experiment.py` | Offline-only hypothesis harness (ADR-0136). |
+| `scripts/export-wake-corpus-bundle.sh`, `scripts/build-wake-feature-bank.sh` | **Training dataset assembly, not QA.** Run after the audit; do not fold their semantics into the quality analyzer. |
 
-**Training export is separate.** `scripts/export-wake-corpus-bundle.sh`
-turns audited browser-recorder sessions into a hashed, split, training-
-oriented bundle for
-[`HANDOFF-custom-wakeword-training.md`](HANDOFF-custom-wakeword-training.md).
-`scripts/build-wake-feature-bank.sh` then turns that bundle into
-openWakeWord-compatible real-positive feature arrays. These should run after
-the fast audit. Do not fold export or feature-bank semantics into this quality
-analyzer; this doc owns artifact review, not training dataset assembly.
+HTML review packages and the neural (Tier C) metrics have not been built.
 
-**Quality analysis starts with deterministic signal metrics.** For 1-3 s
-wake-word clips, trust sample-domain and frame-domain facts first:
-exact clipping, near-clipping, flat-top runs, DC offset, RMS, crest
-factor, spectral flatness, high-band energy, Nyquist-edge energy, local
-MAD transient candidates, and LPC residual outliers.
+## Scope
 
-**Cross-leg comparison is the superpower.** JTS captures simultaneous
-legs for the same utterance: XVF-derived raw/WebRTC-AEC/DTLN/raw0,
-optional AEC3 sweep variants, optional cheap-USB raw/WebRTC-AEC/DTLN,
-and reference. A suspicious event that exists only in one processed leg
-means something very different from an event that appears at the same
-aligned timestamp in every mic leg.
+Covers deliberate recordings under `/var/lib/jasper/enrollment_positives/` on
+the Pi and `./data/enrollment_positives/` after rsync: Jarvis positives in
+Session A and held-out Session B, hard negatives from the same recorder,
+per-utterance per-leg WAV QA, and diagnosis of tearing, clipping, AGC pumping,
+limiting, dropouts, high-band roughness and AEC/NS artifacts.
 
-**MOS-style neural predictors are advisory only.** SQUIM, DNSMOS, NISQA,
-UTMOS, SRMR, and related no-reference metrics can help rank clips, but
-absolute scores on 1-3 s wake-word audio are fragile. Use them as soft
-relative signals after deterministic metrics and human listening.
+Not this doc: production wake-event telemetry
+([HANDOFF-wake-telemetry.md](HANDOFF-wake-telemetry.md)); wake-model scoring
+([testing-tooling.md](testing-tooling.md)); AEC topology
+([HANDOFF-aec.md](HANDOFF-aec.md)); the recording protocol and training plan
+([HANDOFF-wake-training-experiment.md](HANDOFF-wake-training-experiment.md)).
+The `ref` leg is a playback reference for AEC experiments and alignment — it is
+**not** a clean recording of Jasper's voice, and must never be treated as a
+clean-speech target.
 
-**Do not run heavy quality models on the Pi.** The 1 GB Raspberry Pi path
-should stay light: recording, metadata, basic health checks, and maybe
-cheap deterministic metrics. Neural quality models and review packages
-belong on the laptop/offline side after rsync.
+## Recorder legs
 
-**The output is a review queue, not an auto-reject oracle.** The analyzer
-should sort clips by suspicion, explain why, and generate review packages
-that make it easy for Jasper to listen and inspect. It should not silently
-delete or exclude clips from training.
+The analyzer must be leg-aware; never collapse WAVs into a flat pile. Tokens
+are frozen on-disk keys owned by `jasper/wake_legs.py`.
 
-**Waveform fusion is an offline hypothesis test.** The experimental
-`scripts/_waveform_fusion_experiment.py` harness can align/mix paired
-same-utterance legs such as `on + dtln` or `usb_webrtc + usb_dtln` and
-score the generated WAVs. Use it to test whether a mixed waveform adds
-evidence over score fusion; do not treat it as a production-quality
-enhancement chain without hard-negative and multi-session validation.
-
----
-
-## 1. Scope
-
-This doc covers deliberate wake-corpus recordings under
-`/var/lib/jasper/enrollment_positives/` on the Pi and
-`./data/enrollment_positives/` after rsync.
-
-It is for:
-
-- Jarvis positives in Session A and held-out Session B.
-- Hard negatives recorded through the same browser recorder.
-- Per-utterance, per-leg WAV QA.
-- Diagnosing artifacts such as tearing, clipping, AGC pumping, limiter
-  behavior, dropouts, rough high-band distortion, and AEC/NS artifacts.
-- Producing human-review packages that combine metrics, plots, and audio.
-- Offline research experiments that compare same-utterance leg fusion
-  strategies, as long as the output is reviewed against ordinary
-  score/decision fusion and hard negatives.
-
-It is not for:
-
-- Production wake-event telemetry. That lives in
-  [`HANDOFF-wake-telemetry.md`](HANDOFF-wake-telemetry.md).
-- Wake-model scoring. Use the offline wake-word scoring tools described
-  in [`testing-tooling.md`](testing-tooling.md).
-- Changing the AEC topology. Architecture constraints still live in
-  [`AGENTS.md`](../AGENTS.md) and [`HANDOFF-aec.md`](HANDOFF-aec.md).
-- Treating the speaker-reference leg as clean speech. The reference leg
-  is the playback reference consumed by AEC experiments, not a clean
-  target recording of Jasper's voice.
-
----
-
-## 2. Recorder Legs
-
-The analyzer must be leg-aware. Do not collapse all WAVs into a flat pile.
-
-| Leg | Meaning | Production wake input? | Notes |
-|---|---|---:|---|
-| `aec` / WebRTC AEC | XVF mic path after software WebRTC AEC3 | Yes | Label clearly as WebRTC AEC, not just "WebRTC". |
-| `raw` / chip-direct | XVF chip-direct stream used by the current raw wake leg | Yes | This is the useful XVF raw-ish production leg. |
-| `dtln` | XVF path through the DTLN neural AEC leg | Yes when enabled in production | High resource cost; useful as corpus data when enabled. |
-| `raw0` | Truly raw XVF mic 0 / chip channel 2, no chip DSP and no software AEC | No | Corpus-only future-proofing for cheap-mic portability work. |
-| `chip_aec_150` | XVF on-chip AEC ASR output with fixed gated 150° beam | Yes when chip-AEC mode is enabled | Production hardware-AEC wake leg and corpus comparison leg. Keep explicit because it may duplicate `aec` when the primary production stream is repointed to the selected chip beam. |
-| `chip_aec_210` | XVF on-chip AEC ASR output with fixed gated 210° beam | Yes when chip-AEC mode is enabled | Production hardware-AEC wake leg and corpus comparison leg. Keep paired with 150° because mic orientation changes can swap the winner. |
-| `xvf_raw0_webrtc_aec3` | Truly raw XVF mic 0 through software WebRTC AEC3 | No | Same raw channel as `raw0`, processed with the current software AEC3 baseline for chip-vs-software comparison. |
-| `xvf_raw0_dtln` | Truly raw XVF mic 0 through DTLN | No | Optional and resource-sensitive; useful when comparing neural AEC against chip AEC and WebRTC AEC3. |
-| `usb_raw` | Cheap USB mic capture with no JTS software processing | No | Watch hardware AGC/limiter state carefully. |
-| `usb_webrtc` | Cheap USB mic through software WebRTC AEC | No | Corpus-only experiment for lower-cost mic paths. |
-| `usb_dtln` | Cheap USB mic through DTLN | No | Optional and resource-sensitive. |
-| `ref` | Speaker playback reference | No | Use for AEC/post-hoc experiments and alignment; chip-AEC comparison sessions include it even when cheap USB mic legs are off. List last in playback UI. |
-| `aec3_variant_1` | Corpus-only parallel WebRTC AEC3 slot 1 | No | Stable slot; current label/knobs live in session metadata and `/var/lib/jasper/aec3_sweep_variants.json` when overridden. `aec3_sweep_source` says whether this slot was XVF-fed or USB-fed. |
-| `aec3_variant_2` | Corpus-only parallel WebRTC AEC3 slot 2 | No | Stable slot; current label/knobs live in session metadata and `/var/lib/jasper/aec3_sweep_variants.json` when overridden. `aec3_sweep_source` says whether this slot was XVF-fed or USB-fed. |
-| `aec3_variant_3` | Corpus-only parallel WebRTC AEC3 slot 3 | No | Stable slot; current label/knobs live in session metadata and `/var/lib/jasper/aec3_sweep_variants.json` when overridden. `aec3_sweep_source` says whether this slot was XVF-fed or USB-fed. |
-
-Leg names in future metadata should stay stable and explicit. For AEC3
-sweeps, the machine-readable names are intentionally generic stable
-slots because the hypothesis changes often; the session sidecar's
-`aec3_sweep_source`, `aec3_sweep_variants`, and `aec3_sweep_config.hash`
-are the source of truth for the actual input mic and knobs behind each
-slot. As of 2026-05-28, new recorder-created sweep sessions default
-these slots to the cheap USB mic while retaining the XVF `on` leg as
-the comparison reference. The current built-in USB pilot labels
-`usb_webrtc` as the 40 ms edge-combo delay-hint baseline and the three
-variant slots as 80/120/160 ms delay hints; older sessions without the
-source field were XVF-fed.
-
-As of 2026-05-29, the chip-AEC comparison profile uses explicit leg
-names instead of generic sweep slots for the fixed XVF hardware-AEC
-outputs and raw0-derived software legs. Analyze `chip_aec_150` and
-`chip_aec_210` separately; do not average them away, because orientation
-and room geometry are exactly what this profile is meant to reveal.
-
-As of 2026-06-01, new recorder sidecars add
-`metadata_schema_version=2` plus `audio_context` at session level and
-per clip. Prefer that metadata over filename heuristics when deciding
-what a clip represents. The context includes the production audio
-profile classification, AEC intent/runtime env, XVF3800 mic identity and
-firmware channel state, selected leg details from `jasper/wake_legs.py`,
-outputd/DAC/reference env, and optional validation-artifact status.
-As of 2026-07-09, sidecars store a canonical `capture_plan` at session
-level and per clip. Prefer `capture_plan.legs` for source
-interpretation because it explicitly records the layered graph:
-physical mic, native stream, source channel, software/hardware
-transform, required bridge outputs/env, wake/corpus role, coarse
-resource load, expected UDP legs, `plan_id`, and mic/DAC/reference
-fingerprints. Clip metadata also stores `capture_plan_id` and the
-clip-start conformance result. Quality tools should use the stored plan
-to decide which legs were promised, then use `capture_health` plus
-`capture_plan_conformance` to distinguish a deliberate absent leg from
-a compromised recording. The frozen `on` token remains the primary
-`:9876` carrier; use `capture_plan.legs` to distinguish WebRTC AEC3
-from the selected chip-AEC primary beam. Older sessions without
-`audio_context` or `capture_plan.plan_id` remain valid historical data;
-quality tools should display the absence but not fail the corpus because
-of it.
-
----
-
-## 3. Metric Tiers
-
-### Tier A: Compute Always
-
-These are cheap, deterministic, and reliable on 1-3 s mono 16 kHz int16
-clips.
-
-| Metric | What it catches | First threshold, tune from data |
+| Leg token | Meaning | Production wake input? |
 |---|---|---|
-| Peak dBFS | Too-hot recordings | Warn above -1 dBFS; exact full-scale samples are critical. |
-| True peak dBTP | Inter-sample clipping risk | Warn above -1 dBTP if implemented offline. |
-| Exact clip count | Digital clipping | Any `-32768` or `32767` sample is critical. |
-| Near-clip count | Limiter/overload near rails | Track samples within 0.5, 1, and 3 dB of full scale. |
-| Flat-top runs | Hard clip or limiter ceiling | Runs >= 3 samples are suspicious; >= 6 severe. |
-| RMS and gated RMS | Too quiet / too hot speech | Use VAD-gated speech RMS where available. |
-| Crest factor | Compression, limiter, impulses | Low crest suggests compression/clip; very high crest suggests impulse. |
-| DC offset | Bad coupling, biased frontend | Warn around `abs(mean / full_scale) > 0.001`. |
-| Dropout / silence spans | Stream stalls, packet loss | Flag zero or near-zero runs inconsistent with normal speech. |
-| Repeated-sample runs | USB/buffer glitch | Flag repeated non-zero samples across several frames. |
-| Local MAD on sample delta | Candidate tears/clicks | Candidate generator only; confirm before escalating. |
+| `on` | XVF mic after software WebRTC AEC3 (label it WebRTC AEC, not just "WebRTC") | yes |
+| `off` | XVF chip-direct stream — the raw-ish production leg | yes |
+| `dtln` | XVF path through the DTLN neural AEC | yes when enabled |
+| `chip_aec_150` / `chip_aec_210` | XVF on-chip AEC ASR output, fixed gated 150°/210° beams | yes in chip-AEC mode |
+| `raw0` | Truly raw XVF mic 0 / chip channel 2 — no chip DSP, no software AEC | no |
+| `xvf_raw0_webrtc_aec3` / `xvf_raw0_dtln` | `raw0` through software AEC3 / DTLN, for chip-vs-software comparison | no |
+| `usb_raw` / `usb_webrtc` / `usb_dtln` | Cheap USB mic, unprocessed / WebRTC AEC / DTLN | no |
+| `ref` | Speaker playback reference. List last in any playback UI | no |
+| `aec3_variant_1..3` | Corpus-only parallel AEC3 sweep slots (`jasper/aec_sweep.py`) | no |
 
-### Tier B: Diagnostic Metrics
+Two things follow:
 
-These are still deterministic, but interpretation needs context.
+- **`chip_aec_150` and `chip_aec_210` are analyzed separately** — never
+  averaged. Orientation and room geometry are exactly what pairing them
+  reveals. Keep them explicit even when `chip_aec_150` duplicates `on`, which
+  happens when the primary stream is repointed to the selected chip beam.
+- **The sweep slots are stable names for an unstable hypothesis.** What a slot
+  meant in a given session lives in that session's sidecar
+  (`aec3_sweep_source`, `aec3_sweep_variants`, `aec3_sweep_config.hash`), not
+  in any doc. Read it; never infer a slot's meaning from its number.
 
-| Metric | What it catches | Notes |
+### Reading session metadata
+
+Prefer stored metadata over filename heuristics, in this order:
+
+1. `capture_plan.legs` — the canonical layered graph (physical mic, native
+   stream, source channel, software/hardware transform, required bridge
+   outputs/env, wake/corpus role, coarse resource load, expected UDP legs,
+   `plan_id`, mic/DAC/reference fingerprints). Clips also carry
+   `capture_plan_id` and a clip-start conformance result.
+2. `audio_context.corpus.selected_legs` / `.leg_details`.
+3. Legacy `enabled_legs` / `files` maps, for old sessions.
+
+Use `capture_health` + `capture_plan_conformance` to tell a **deliberately
+absent** leg from a **compromised** recording. Sessions predating
+`audio_context` or `capture_plan.plan_id` remain valid data: display the
+absence, never fail the corpus over it.
+
+## Metric tiers
+
+### Tier A — always computed
+
+Cheap, deterministic, reliable on 1-3 s mono 16 kHz int16 clips.
+
+| Metric | Catches | First threshold, tune from data |
 |---|---|---|
-| Spectral flatness | Whitened/noisy speech, musical noise | Aggregate p50/p90 over VAD-active frames. |
-| Spectral centroid / rolloff | Muffled, harsh, or aliased audio | Short clips can be phoneme-biased; compare legs. |
-| High-band energy ratio | Sibilant harshness, clipping harmonics | Compare against local baseline and sibling legs. |
-| Nyquist-edge energy | Bad resampling or alias artifacts | Watch 7.2-8 kHz on 16 kHz audio. |
-| Spectral flux | Frame-to-frame discontinuity | Useful with LPC residual for tear confirmation. |
-| LPC residual outliers | Speech-inconsistent clicks/tears | Prefer over raw derivative thresholds for speech. |
-| RMS envelope FFT | AGC pumping / breathing | Look for coherent 1-10 Hz gain movement. |
-| Crest-vs-RMS correlation | AGC/limiter behavior | Negative correlation suggests gain riding. |
-| Cross-leg alignment | Clock drift and event coincidence | GCC-PHAT first; sliding alignment for USB drift if needed. |
+| Peak dBFS | Hot recordings | warn above -1 dBFS |
+| True peak dBTP | Inter-sample clipping risk | warn above -1 dBTP (offline only) |
+| Exact clip count | Digital clipping | any `-32768`/`32767` sample is critical |
+| Near-clip count | Limiter/overload near the rails | sample mass within 0.5, 1, 3 dB of FS |
+| Flat-top runs | Hard clip or limiter ceiling | ≥ 3 samples suspicious, ≥ 6 severe |
+| RMS + gated RMS | Too quiet / too hot speech | prefer VAD-gated speech RMS |
+| Crest factor | Compression, limiting, impulses | low ⇒ compression/clip; very high ⇒ impulse |
+| DC offset | Bad coupling, biased frontend | warn above `abs(mean/FS) > 0.001` |
+| Dropout / silence spans | Stream stalls, packet loss | zero-runs inconsistent with speech |
+| Repeated-sample runs | USB/buffer glitch | repeated non-zero samples across frames |
+| Local MAD on sample delta | Tear/click candidates | **candidate generator only** |
 
-### Tier C: Advisory Neural / Perceptual Metrics
+### Tier B — diagnostic, needs context
 
-These are optional and offline-only. They should never be the only reason
-a clip is rejected.
+Spectral flatness (p50/p90 over VAD-active frames); spectral centroid/rolloff
+(phoneme-biased on short clips — compare legs); high-band energy ratio;
+Nyquist-edge energy (7.2-8 kHz, catches bad resampling/aliasing); spectral flux;
+LPC residual outliers (prefer over raw derivative thresholds on speech); RMS
+envelope FFT for AGC pumping (coherent 1-10 Hz gain movement);
+crest-vs-RMS correlation (negative ⇒ gain riding); cross-leg alignment
+(GCC-PHAT first, sliding alignment if USB drift shows).
 
-| Metric | Why use it | Caveat |
-|---|---|---|
-| TorchAudio SQUIM objective | Native 16 kHz reference-less estimates of STOI/PESQ/SI-SDR | Best first neural candidate, but still high variance on very short clips. |
-| DNSMOS / DNSMOS P.835 | Useful relative speech/noise/overall ranking | Short clips are repeated to the model window; absolute MOS is biased. |
-| NISQA | Multi-dimensional MOS including discontinuity/coloration/loudness | Training domain is longer, often 48 kHz speech; 1-3 s wake clips are out-of-domain. |
-| SRMR / SRMRnorm | Reverberation and modulation structure | Designed for longer speech; useful mainly as a relative feature. |
-| UTMOS / MOSNet | Additional MOS sanity check | More TTS-oriented; lowest priority for this corpus. |
+### Tier C — advisory, offline only
 
----
+SQUIM objective is the best first candidate (native 16 kHz, reference-less
+STOI/PESQ/SI-SDR estimates, still high-variance on very short clips). DNSMOS /
+P.835 give usable *relative* ranking but repeat short clips to fill their model
+window, which biases absolute MOS and can amplify periodic artifacts. NISQA,
+SRMR, UTMOS/MOSNet are out-of-domain for 1-3 s wake clips — relative features
+at best. None of these may be the sole reason a clip is flagged (ADR-0135).
 
-## 4. Tear / Click Detection
+## Detecting the specific failures
 
-"Tear" here means a short, broadband, unphysical discontinuity: USB
-underrun, DMA glitch, buffer repeat/drop, or a processing frame-boundary
-artifact. Plosives and fricatives can look similar in raw samples, so
-single-threshold derivative checks are not enough.
+### Tears and clicks
 
-Recommended pipeline:
+A "tear" is a short, broadband, unphysical discontinuity: USB underrun, DMA
+glitch, buffer repeat/drop, or a processing frame-boundary artifact. Plosives
+and fricatives look similar in raw samples, so a single derivative threshold is
+not enough.
 
-1. Generate candidates with local MAD/Hampel-style outlier detection on
-   first derivative (`delta x`) and optionally second derivative.
-2. Confirm candidates with LPC prediction residual outliers on short
-   speech frames. Use order 10-12 as the starting point for 16 kHz speech.
-3. Require spectral-flux or high-band-energy corroboration for major
-   flags.
-4. Suppress false positives with duration and context:
-   - single-sample or few-sample impulses are more suspicious than
-     10-50 ms consonant evolution;
-   - unvoiced consonants should not be treated as digital tears by
-     default;
-   - repeated events every 10, 20, or 30 ms suggest frame-boundary or
-     processing artifacts.
-5. Use cross-leg coincidence as the final arbiter:
-   - present in all mic legs at the same aligned time: probably speech or
-     room event;
-   - present only in `usb_raw`: likely USB mic/hardware path;
-   - present only in `usb_webrtc`: likely WebRTC processing artifact;
-   - present only in `dtln` or `usb_dtln`: likely neural AEC artifact.
+1. Generate candidates with local MAD/Hampel outlier detection on `delta x`
+   (optionally the second derivative too).
+2. Confirm with LPC prediction residual outliers on short speech frames —
+   order 10-12 for 16 kHz speech.
+3. Require spectral-flux or high-band corroboration before a major flag.
+4. Suppress by duration and context: single-sample impulses are more suspicious
+   than 10-50 ms consonant evolution; unvoiced consonants are not tears by
+   default; events recurring every 10/20/30 ms are frame-boundary artifacts.
+5. Arbitrate by cross-leg coincidence — all mic legs at the same aligned time
+   ⇒ speech or a room event; `usb_raw` only ⇒ USB hardware path;
+   `usb_webrtc` only ⇒ WebRTC processing; `dtln`/`usb_dtln` only ⇒ neural AEC.
 
-The first implementation can emit candidate timestamps and confidence
-instead of pretending the labels are perfect.
+Emitting candidate timestamps with confidence beats pretending the labels are
+exact.
 
----
+### Clipping and overload
 
-## 5. Clipping And Overload
+Digital clipping is easy (count exact full-scale samples). Analog frontend
+overload, firmware AGC or firmware limiting on the cheap USB mic can distort
+well before int16 full scale, so detect both: exact FS count; near-clip mass at
+0.5/1/3 dB; flat-top run length at exact-LSB and near-peak tolerances; peak
+histogram concentration around a target level; crest-factor collapse;
+asymmetric positive/negative peaks; DC offset; high-band bursts at near-peak
+events. Report analog overload as **"saturation suspected"** — reserve "digital
+clipping" for clips with actual full-scale samples.
 
-Digital clipping is easy: count exact full-scale samples. The cheap USB
-mic concern is harder because analog frontend overload, firmware AGC, or
-firmware limiting may distort the signal before it reaches int16 full
-scale.
+### AGC and limiting
 
-Detect both:
+USB firmware controls are not always truthful: verify with audio even when AGC
+is toggled off through ALSA. Per clip — 10 ms RMS envelope retained at 100 Hz;
+crest factor in 250 ms windows; correlation between windowed RMS and crest;
+pause noise floor before/after speech where pauses exist; envelope modulation
+spectrum (coherent 1-10 Hz peaks); peak distribution across the session's
+utterances. Across paired captures — USB raw against XVF chip-direct for the
+same utterance, and AGC-on vs AGC-off sessions only when environment and music
+level were controlled. Record the ALSA control state in the report, but **audio
+evidence wins over control labels**.
 
-- exact full-scale sample count;
-- near-clip mass at 0.5, 1, and 3 dB below full scale;
-- flat-top run length with both exact-LSB and near-peak tolerances;
-- peak histogram concentration around a target level;
-- crest-factor collapse;
-- asymmetric positive/negative peak behavior;
-- DC offset;
-- high-band burst around near-peak events.
+### Spectral framing defaults
 
-Analog overload should be represented as "saturation suspected," not
-"digital clipping," unless exact full-scale samples are present.
+One consistent policy unless data proves otherwise: 16 kHz; 25 ms / 400-sample
+frame; 10 ms / 160-sample hop; Hann; 512-bin FFT; aggregates at p10/p50/p90/p95
+/max plus event-local values; high band 3-7.5 kHz; Nyquist edge 7.2-8 kHz (or
+the top 5 % of bins). Do not overfit one global spectral threshold — a
+one-syllable "Jarvis" can be dominated by its /j/, /r/, /v/ or /s/ region
+depending on pronunciation. Cross-leg deltas and event-local spikes are more
+actionable than absolute values.
 
----
+### Cross-leg analysis
 
-## 6. AGC / Limiter Detection
+A first-class object in the output, not a post-hoc join:
 
-The cheap USB mic may expose hardware AGC. Even when AGC is toggled off
-through ALSA, verify with audio because USB firmware controls are not
-always truthful.
+1. Group by session/utterance metadata (above), never by filename guessing.
+2. Resample only if needed — the corpus target is 16 kHz mono int16.
+3. Align sibling legs with GCC-PHAT or normalized cross-correlation; report lag
+   and alignment confidence per pair.
+4. Build an event-coincidence matrix over transient candidates.
+5. Compute per-metric deltas from baseline legs: `on - off`, `dtln - off`,
+   `usb_webrtc - usb_raw`, `usb_dtln - usb_raw`.
+6. Flag processed-leg regressions by corpus-relative percentile.
 
-Per clip:
+ERLE is only meaningful in far-end-only windows where the reference is active
+and Jasper is not speaking — a wake utterance carries near-end speech, so ERLE
+across it is not a measurement. USB and XVF clocks drift: if full-clip
+alignment is weak, use sliding-window alignment and report the drift instead of
+forcing one lag.
 
-- compute a 10 ms RMS envelope, then downsample/retain it at 100 Hz;
-- compute crest factor in 250 ms windows;
-- measure correlation between windowed RMS and crest factor;
-- estimate pause noise floor before and after speech if pauses exist;
-- compute envelope modulation spectrum and look for coherent 1-10 Hz
-  peaks;
-- compare peak distribution across utterances in the same session.
+## Output
 
-Across paired captures:
-
-- compare USB raw against XVF raw/chip-direct for the same utterance;
-- compare AGC-on and AGC-off sessions only when environment and music
-  level are reasonably controlled;
-- treat the 2026-05-27 AGC-off pilot as a useful clue, not as final
-  proof, because music level and session context changed.
-
-The analyzer should record the ALSA control state in its report whenever
-available, but audio evidence wins over control labels.
-
----
-
-## 7. Spectral Analysis Defaults
-
-Use one consistent framing policy unless data proves otherwise:
-
-- sample rate: 16 kHz;
-- frame: 25 ms / 400 samples;
-- hop: 10 ms / 160 samples;
-- window: Hann;
-- FFT: 512 bins;
-- spectral aggregates: p10, p50, p90, p95, max, and event-local values;
-- high band: start with 3-7.5 kHz;
-- Nyquist edge: start with 7.2-8 kHz or top 5% of FFT bins.
-
-Do not overfit one global spectral threshold. A one-syllable "Jarvis"
-clip can be dominated by the /j/, /r/, /v/, or /s/ region depending on
-pronunciation and timing. Cross-leg deltas and event-local spikes are
-more actionable than single absolute values.
-
----
-
-## 8. Cross-Leg Analysis
-
-Cross-leg analysis should be a first-class object in the JSON output.
-
-Minimum plan:
-
-1. Group files by utterance/session metadata, not filename guessing.
-   Prefer `capture_plan.legs` when present, then
-   `audio_context.corpus.selected_legs` and
-   `audio_context.corpus.leg_details`; fall back to legacy
-   `enabled_legs` / `files` maps for old sessions.
-2. Resample only if needed; the corpus target is 16 kHz mono int16.
-3. Align sibling legs with GCC-PHAT or normalized cross-correlation.
-4. Report lag and alignment confidence per leg pair.
-5. Build an event-coincidence matrix for transient candidates.
-6. Compute per-metric deltas from baseline legs:
-   - `usb_webrtc - usb_raw`;
-   - `usb_dtln - usb_raw`;
-   - `aec - raw`;
-   - `dtln - raw`.
-7. Mark processed-leg regressions where processed output is worse than
-   the baseline leg by corpus-relative percentile.
-
-For AEC-specific metrics, ERLE is only meaningful in far-end-only windows
-where the speaker reference is active and Jasper is not speaking. A wake
-utterance with near-end speech is not a clean ERLE measurement.
-
-USB and XVF clocks may drift. If full-clip alignment is weak, use sliding
-window alignment and report drift rather than forcing a single lag.
-
----
-
-## 9. Scoring And Output
-
-Avoid one magic "quality score." Use a sortable suspicion model with
-explanations.
-
-Recommended top-level fields:
+No single magic quality score — a sortable suspicion model with explanations:
 
 ```json
 {
-  "session_id": "20260527T...",
-  "utterance_id": "0003",
-  "condition": "music",
-  "distance": "far",
+  "session_id": "20260527T...", "utterance_id": "0003",
+  "condition": "music", "distance": "far",
   "legs": {
     "usb_raw": {
-      "duration_s": 1.42,
-      "peak_dbfs": -3.1,
-      "rms_dbfs": -28.4,
-      "crest_db": 25.3,
-      "critical": [],
-      "major": ["transient_candidate"],
-      "minor": ["agc_suspect"],
-      "events": [
-        {"t_s": 0.618, "kind": "lpc_residual", "confidence": 0.71}
-      ]
+      "duration_s": 1.42, "peak_dbfs": -3.1, "rms_dbfs": -28.4, "crest_db": 25.3,
+      "critical": [], "major": ["transient_candidate"], "minor": ["agc_suspect"],
+      "events": [{"t_s": 0.618, "kind": "lpc_residual", "confidence": 0.71}]
     }
   },
-  "cross_leg": {
-    "alignment": {},
-    "event_coincidence": {},
-    "processed_regressions": []
-  },
+  "cross_leg": {"alignment": {}, "event_coincidence": {}, "processed_regressions": []},
   "review_priority": 87,
   "review_reasons": ["usb_raw transient candidate not present in XVF legs"]
 }
 ```
 
-Sorting should be by critical count, major count, suspicion score, and
-confidence. Normalize event counts per second so short and long clips are
-comparable.
+Sort by critical count, then major count, then suspicion score, then
+confidence. Normalize event counts per second so short and long clips compare.
 
----
+A review package, when one is built, is an HTML page per session or
+high-priority subset: per-utterance metadata; one audio player per leg in
+stable order with `ref` last; compact waveform with event markers; spectrogram;
+RMS envelope overlay for AGC inspection; the peak/RMS/crest/clip/flat-top
+summary; the cross-leg event matrix; direct WAV links. Tier C metrics belong
+here — visible, contextual, and marked advisory.
 
-## 10. Review Packages
+## Known pitfalls
 
-The most useful deliverable is an HTML review package per session or per
-high-priority subset.
-
-Each utterance row should include:
-
-- metadata: session, condition, distance, label, utterance id;
-- one audio player per leg, in stable order with `ref` last;
-- compact waveform per leg with event markers;
-- spectrogram or mel spectrogram per leg;
-- RMS envelope overlay for AGC inspection;
-- peak/RMS/crest/clip/flat-top summary;
-- cross-leg event matrix;
-- direct links to the WAV files.
-
-This is where neural metrics belong if enabled: visible, contextual, and
-clearly marked as advisory.
-
----
-
-## 11. Implementation Plan
-
-**Status (2026-06-07): Phase 0 + Phase 1 shipped, plus Phase 2's cross-leg
-analysis.** The deterministic first-pass analyzer is
-[`scripts/analyze-wake-corpus-quality.sh`](../scripts/analyze-wake-corpus-quality.sh)
-(→ `scripts/_analyze_wake_corpus_quality.py`): a laptop-side pass over an
-rsynced corpus that emits `metrics.csv` / `cross_leg.csv` / `events.json` /
-`summary.md`, computes the Tier A + selected Tier B metrics, and confirms
-transient damage via LPC residual + cross-leg coincidence. Synthetic detector
-fixtures live in `tests/test_analyze_wake_corpus_quality.py`. The HTML review
-packages (rest of Phase 2) and the neural/AGC work (Phases 3-4) remain future.
-
-Phase 0 ✅ — methodology promoted into tests and fixtures.
-
-- Add synthetic fixtures for hard clipping, soft clipping, isolated
-  click, click burst, dropout, repeated samples, DC offset, AGC pumping,
-  pure fricative negative, plosive negative, aliasing, and processed-leg-
-  only artifact.
-- Lock expected detector behavior before running on the real corpus.
-
-Phase 1 ✅ — deterministic analyzer (shipped; see status above).
-
-- Build a laptop-side script that reads `data/enrollment_positives/`.
-- Emit JSON and CSV.
-- Compute Tier A and selected Tier B metrics.
-- Keep dependencies small: Python stdlib WAV reading plus numpy/scipy is
-  the right first shape.
-
-Phase 2 (cross-leg analysis ✅, HTML review pending): cross-leg analyzer and HTML review.
-
-- Group utterances by metadata.
-- Align sibling legs.
-- Build event coincidence tables and processed-minus-baseline deltas.
-- Generate review packages with audio players and plots.
-
-Phase 3: optional neural metrics.
-
-- Add SQUIM objective first.
-- Add DNSMOS only with the short-clip loop/repetition caveat in output.
-- Add NISQA/UTMOS only if they change decisions in listening review.
-- Pin model versions and checksums.
-
-Phase 4: USB AGC characterization.
-
-- Run a controlled AGC-on/off experiment if the USB mic exposes a real
-  toggle.
-- Tune AGC thresholds from paired data.
-- Record final threshold changes in this doc or a small thresholds file
-  referenced from this doc.
-
----
-
-## 12. Known Pitfalls
-
-- Integrated LUFS and Loudness Range are unstable on 1-3 s clips. Prefer
-  momentary or percentile loudness if loudness is needed.
-- DNSMOS repeating short clips to fit its model window can amplify
-  periodic artifacts and bias the score.
-- NISQA and UTMOS are useful research tools, but their training domains
-  do not match short wake-word corpus clips cleanly.
+- Integrated LUFS and Loudness Range are unstable on 1-3 s clips — use
+  momentary or percentile loudness if loudness is needed at all.
 - Sample-delta click detectors false-positive on plosives and fricatives
-  unless confirmed with LPC residual, spectral context, and cross-leg
-  coincidence.
+  without LPC, spectral and cross-leg confirmation.
 - The reference leg is not clean speech.
-- AEC metrics require the right acoustic segment. Do not compute ERLE
-  across Jasper saying "Jarvis" and call it meaningful.
-- A polished score is dangerous if it hides localized artifacts. A single
-  click can matter more than a good average MOS.
-- A waveform mix that improves recall on positives can still be the wrong
-  answer if it destroys per-leg diversity, loses clips that score fusion
-  catches, or raises hard-negative false accepts.
+- ERLE computed across a wake utterance is meaningless.
+- A polished aggregate score hides localized damage; one click can outweigh a
+  good average MOS.
 
----
+## Reading list
 
-## 13. Waveform Fusion Experiment
+ITU-R BS.1770 and EBU R 128 / Tech 3341 for loudness and true peak. FFmpeg
+`ebur128` / `astats` / `volumedetect` / `silencedetect` for fast sanity checks.
+SciPy signal for resampling, filtering, peak finding and robust statistics;
+librosa for STFT, flatness, centroid, rolloff, flux, MFCC and LPC helpers.
+Essentia's ClickDetector / LPC declicking lineage, with Vaseghi (*Advanced
+Digital Signal Processing and Noise Reduction*) and Godsill & Rayner (*Digital
+Audio Restoration*) for the AR/LPC click models. For Tier C: TorchAudio SQUIM,
+Microsoft DNSMOS / DNSMOS P.835 (`microsoft/DNS-Challenge`), NISQA
+(`gabrielmittag/NISQA`), and WADA-SNR or SRMR if relative SNR/reverberation
+comparisons become useful.
 
-`scripts/_waveform_fusion_experiment.py` is the current offline harness
-for testing whether aligned AEC3/DTLN waveform mixes are useful. It:
-
-- reads local recorder metadata under `enrollment_positives/metadata`;
-- pairs same-utterance legs, defaulting to `on + dtln` and
-  `usb_webrtc + usb_dtln`;
-- sweeps delays, weights, and normalization modes;
-- writes generated WAVs and CSV/Markdown summaries under
-  `captures/waveform-fusion/<session>/`;
-- optionally scores originals and mixes with an openWakeWord ONNX model;
-- explicitly compares mixed-waveform hits against same-pair max-score /
-  OR fusion.
-
-The decision bar is intentionally high: a mixed waveform must beat
-score-level fusion across multiple sessions and hard negatives before it
-is worth considering as a live or training leg. A single-session recall
-gain is evidence to investigate, not a production recommendation.
-
-First 2026-05-28 result on session `20260528T184424Z-d205`: best XVF
-mix (`on + dtln`, RMS-matched, `dtln` delayed +10 ms, 50/50) hit 20/27
-as a single waveform and added one new clip over the original all-leg
-union. Best USB mix (`usb_webrtc + usb_dtln`, native levels,
-`usb_dtln` delayed +20 ms, 50/50) hit 14/27 and also only added that
-same clip over the full original union. Net read: promising research
-candidate; score/decision fusion remains the default architecture.
-
----
-
-## 14. Source Notes
-
-Primary sources and official implementation docs to prefer when extending
-this work:
-
-- ITU-R BS.1770 for loudness and true-peak measurement.
-- EBU R 128 and EBU Tech 3341 for loudness/true-peak practice.
-- FFmpeg `ebur128`, `astats`, `volumedetect`, and `silencedetect`
-  filters for fast sanity checks.
-- SciPy signal docs for resampling, filtering, peak finding, and robust
-  statistics primitives.
-- librosa feature docs for STFT, spectral flatness, centroid, rolloff,
-  flux, MFCCs, and LPC helpers.
-- Essentia ClickDetector / LPC-based declicking lineage for impulsive
-  artifact detection.
-- Vaseghi, *Advanced Digital Signal Processing and Noise Reduction*, and
-  Godsill/Rayner, *Digital Audio Restoration*, for AR/LPC click models.
-- Microsoft DNSMOS / DNSMOS P.835 papers and `microsoft/DNS-Challenge`
-  implementation.
-- Gabriel Mittag's NISQA paper and `gabrielmittag/NISQA` implementation.
-- TorchAudio SQUIM paper and official TorchAudio tutorial.
-- Kim and Stern's WADA-SNR paper if WADA-SNR becomes useful for relative
-  corpus comparisons.
-- Falk et al. SRMR work if reverberation/modulation metrics become useful.
-
-The local research reports reviewed on 2026-05-27 are good seed material,
-but this HANDOFF is now the repo-facing source of truth. If the research
-and this doc diverge, update this doc or add a dated appendix here.
-
----
-
-## Change Log
-
-- **2026-06-07 (v15):** The deterministic first-pass analyzer shipped —
-  `scripts/analyze-wake-corpus-quality.sh` (§11 Phase 0 + Phase 1, plus
-  Phase 2's cross-leg deltas/alignment). Methodology unchanged; this records
-  that the offline tool now exists.
-- **2026-06-04 (v14):** Added the `capture_plan` metadata contract:
-  per-session/per-clip physical mic, native stream, source channel,
-  transform, role, bridge requirements, and resource-load interpretation.
-- **2026-06-02 (v13):** Clarified chip-AEC corpus profile semantics:
-  `ref` remains part of the profile; cheap USB mic legs are optional and
-  should not be expected when no USB mic is connected.
-- **2026-06-01 (v12):** Added the `audio_context` metadata contract:
-  production profile truth, mic firmware/channel state, DAC/reference
-  validation status when available, and selected-leg details should guide
-  corpus grouping; older sessions remain accepted.
-- **2026-05-29 (v10):** Added chip-AEC comparison profile legs
-  (`chip_aec_150`, `chip_aec_210`, `xvf_raw0_webrtc_aec3`,
-  `xvf_raw0_dtln`) to the leg-aware quality-analysis contract.
-- **2026-05-28 (v9):** Added waveform-fusion experiment guidance and
-  first-session result. The script is offline-only and must be judged
-  against score/decision fusion plus hard negatives.
-- **2026-05-28 (v8):** AEC3 sweep slots are now source-aware. New
-  recorder-created sweep sessions default to USB-fed stream-delay
-  variants and metadata records `aec3_sweep_source`; older sessions
-  without that field remain XVF-fed.
-- **2026-05-28 (v7):** Added runtime-configured AEC3 sweep slots
-  (`aec3_variant_1`..`3`) so labels/knobs can change without full
-  deploys while metadata records the exact config hash.
-- **2026-05-27 (v6):** Retargeted corpus-only AEC3 sweep legs to
-  isolate dominant-near-end detection effects (`hf_slow_only`,
-  `edge_combo`, `gentle_dnd`).
-- **2026-05-27 (v5):** Retargeted corpus-only AEC3 sweep legs to
-  keep `hf_relaxed` and `slow_attack` while adding the combined
-  `edge_combo` variant.
-- **2026-05-27 (v4):** Retargeted corpus-only AEC3 sweep legs to
-  edge-preservation under far+music (`hf_relaxed`, `nearend_fast`,
-  `slow_attack`).
-- **2026-05-27 (v3):** Retargeted corpus-only AEC3 sweep legs to the
-  HF-preservation 2×2 (`hf_relaxed`, `hf_mask_upstream`,
-  `hf_wide_open`).
-- **2026-05-27 (v2):** Added corpus-only AEC3 sweep legs to the
-  leg-aware quality-analysis contract.
-- **2026-05-27 (v1):** Initial methodology doc for deterministic and
-  advisory quality analysis of short wake-corpus clips, including tear,
-  clipping, AGC, spectral, cross-leg, scoring, and review-package plans.
-
-Last verified: 2026-07-09 (v18 - rechecked the wake-corpus
-capture-plan metadata/conformance contract against the recorder and
-bridge stats. Prior v17 pass rechecked the corpus export and feature-bank
-handoff; quality analyzer still owns review/QA, while training dataset
-assembly lives in scripts/export-wake-corpus-bundle.sh,
-scripts/build-wake-feature-bank.sh, and HANDOFF-custom-wakeword-training.md.)
+Last verified: 2026-08-26 (leg tokens rechecked against `jasper/wake_legs.py`;
+sweep slots against `jasper/aec_sweep.py`; the shipped-tool table against
+`scripts/analyze-wake-corpus-quality.sh`,
+`scripts/_analyze_wake_corpus_quality.py` and
+`tests/test_analyze_wake_corpus_quality.py`; the metadata contract against
+`jasper/web/wake_corpus_setup.py`. Metric-tier and detector methodology is
+prescriptive guidance, unchanged from the 2026-07-09 pass.)
