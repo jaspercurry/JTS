@@ -4,6 +4,7 @@
 
 from __future__ import annotations
 
+import asyncio
 from dataclasses import replace
 from types import SimpleNamespace
 
@@ -11,14 +12,18 @@ import pytest
 import yaml
 
 from jasper.active_speaker import commissioning_runtime as runtime
-
-
 from jasper.active_speaker.baseline_profile import topology_config_fingerprint
+from jasper.active_speaker.runtime_contract import (
+    GRAPH_GUARDED_COMMISSIONING,
+    NO_BASS_EXTENSION_PROFILE_SUMMARY,
+    classify_camilla_graph as _classify_camilla_graph,
+)
 from jasper.audio_measurement.excitation_admission import (
     FrequencyBand,
 )
 from jasper.audio_measurement.null_walk import NullWalkSpec
 from jasper.output_topology import OutputTopology
+from tests._async_wait import wait_signalled
 from tests.active_speaker_fixtures import mono_output_topology
 from tests.test_active_speaker_runtime_contract import (
     _active_baseline_yaml,
@@ -26,16 +31,71 @@ from tests.test_active_speaker_runtime_contract import (
 )
 
 
+def classify_camilla_graph(*args, **kwargs):
+    kwargs.setdefault("bass_profile_summary", NO_BASS_EXTENSION_PROFILE_SUMMARY)
+    return _classify_camilla_graph(*args, **kwargs)
+
+
 _HASH_A = "a" * 64
 _HASH_B = "b" * 64
-_HASH_C = "c" * 64
 _HASH_D = "d" * 64
-_HASH_E = "e" * 64
 _TOPOLOGY = mono_output_topology()
 
 
 def _raw(graph: dict) -> str:
     return yaml.safe_dump(graph, sort_keys=False)
+
+
+def _regained(raw: str) -> str:
+    """One exactly-identifiable graph mutation, for predecessor-vs-live tests."""
+
+    graph = yaml.safe_load(raw)
+    graph["filters"]["as_woofer_baseline_gain"]["parameters"]["gain"] = -9.0
+    return _raw(graph)
+
+
+class FakePort:
+    """In-memory DSP double that echoes the applied graph back verbatim.
+
+    Real CamillaDSP default-fills its readback instead
+    (``tests/_camilla_readback_double.py``); the exact-restore proofs below
+    only need the echo.
+    """
+
+    def __init__(self) -> None:
+        self.raw = _active_baseline_yaml("mono", 2)
+        self.path = "/etc/camilladsp/applied.yml"
+        self.volume = -28.0
+
+    async def read_active_raw(self) -> str:
+        return self.raw
+
+    async def canonicalize_raw(self, raw: str) -> str:
+        return raw
+
+    async def apply_active_raw(self, raw: str) -> bool:
+        self.raw = raw
+        return True
+
+    async def read_config_path(self) -> str:
+        return self.path
+
+    async def read_volume(self) -> float:
+        return self.volume
+
+    async def set_volume(self, value: float) -> bool:
+        self.volume = value
+        return True
+
+    def port(self) -> runtime.CommissioningRuntimePort:
+        return runtime.CommissioningRuntimePort(
+            read_active_raw=self.read_active_raw,
+            apply_active_raw=self.apply_active_raw,
+            read_config_path=self.read_config_path,
+            read_listening_volume_db=self.read_volume,
+            set_listening_volume_db=self.set_volume,
+            canonicalize_raw=self.canonicalize_raw,
+        )
 
 
 def _request(
@@ -74,6 +134,51 @@ def _request(
     return runtime.SummedGraphRequest(**values)
 
 
+def _candidate(request: runtime.SummedGraphRequest, topology) -> dict:
+    binding = runtime._topology_binding(request, topology)
+    return runtime._stationary_candidate(
+        request, runtime._normal_graph(request, binding), binding
+    )
+
+
+def _commissioning_lanes(graph: dict) -> list[tuple[dict, dict, dict]]:
+    lanes: list[tuple[dict, dict, dict]] = []
+    for step in graph["pipeline"]:
+        names = step.get("names", [])
+        scoped = [
+            name
+            for name in names
+            if isinstance(name, str) and name.startswith("as_commission_")
+        ]
+        if not scoped:
+            continue
+        delay_name = next(name for name in scoped if name.endswith("_delay"))
+        identity_name = next(name for name in scoped if name.endswith("_identity"))
+        lanes.append(
+            (
+                step,
+                graph["filters"][delay_name]["parameters"],
+                graph["filters"][identity_name]["parameters"],
+            )
+        )
+    return lanes
+
+
+@pytest.mark.parametrize("kind", ["normal", "reverse", "delay"])
+def test_every_summed_candidate_caps_volume_at_the_measurement_level(
+    kind: runtime.SummedGraphKind,
+) -> None:
+    request = _request(kind)
+    inherited = yaml.safe_load(request.normal_active_raw)["devices"]["volume_limit"]
+    assert inherited > -32.0, "the cap, not the inherited ceiling, must be what binds"
+
+    normal = runtime._normal_graph(
+        request, runtime._topology_binding(request, _TOPOLOGY)
+    )
+
+    assert normal["devices"]["volume_limit"] == -32.0
+
+
 def test_summed_candidate_does_not_relax_a_quieter_inherited_volume_limit() -> None:
     request = _request()
     graph = yaml.safe_load(request.normal_active_raw)
@@ -86,6 +191,317 @@ def test_summed_candidate_does_not_relax_a_quieter_inherited_volume_limit() -> N
     )
 
     assert normal["devices"]["volume_limit"] == -40.0
+
+
+def test_reverse_adds_only_upper_scoped_inversion_lane() -> None:
+    request = _request("reverse")
+    binding = runtime._topology_binding(request, _TOPOLOGY)
+    normal = runtime._normal_graph(request, binding)
+
+    candidate = runtime._stationary_candidate(request, normal, binding)
+
+    assert _commissioning_lanes(normal) == []
+    assert (
+        candidate["filters"]["as_tweeter_baseline_gain"]
+        == normal["filters"]["as_tweeter_baseline_gain"]
+    )
+    lanes = _commissioning_lanes(candidate)
+    assert len(lanes) == 1
+    step, delay, identity = lanes[0]
+    assert step["channels"] == [1]
+    assert delay == {"delay": 0.0, "unit": "ms"}
+    assert identity == {"gain": 0.0, "inverted": True, "mute": False}
+
+
+@pytest.mark.parametrize(
+    ("way_count", "upper_role", "lower_channel", "upper_channel"),
+    [
+        (2, "tweeter", 0, 1),
+        (2, "tweeter", 2, 3),
+        (3, "mid", 0, 1),
+        (3, "mid", 3, 4),
+    ],
+)
+def test_stereo_reverse_is_scoped_to_one_group(
+    way_count: int,
+    upper_role: str,
+    lower_channel: int,
+    upper_channel: int,
+) -> None:
+    topology = _active_topology("stereo", f"active_{way_count}_way")
+    request = _request(
+        "reverse",
+        topology=topology,
+        normal_active_raw=_active_baseline_yaml("stereo", way_count),
+        lower_role="woofer",
+        upper_role=upper_role,
+        lower_channels=(lower_channel,),
+        upper_channels=(upper_channel,),
+    )
+
+    lanes = _commissioning_lanes(_candidate(request, topology))
+
+    assert len(lanes) == 1
+    step, delay, identity = lanes[0]
+    assert step["channels"] == [upper_channel]
+    assert delay["delay"] == 0.0
+    assert identity["inverted"] is True
+
+
+def test_three_way_candidate_mutes_sibling_and_other_speaker_outputs() -> None:
+    topology = _active_topology("stereo", "active_3_way")
+    baseline_raw = _active_baseline_yaml("stereo", 3)
+    request = _request(
+        topology=topology,
+        normal_active_raw=baseline_raw,
+        lower_role="mid",
+        upper_role="tweeter",
+        lower_channels=(1,),
+        upper_channels=(2,),
+    )
+
+    candidate = _candidate(request, topology)
+
+    mute_states = {
+        index: candidate["filters"][f"as_out{index}_commission_mute"]["parameters"][
+            "mute"
+        ]
+        for index in range(6)
+    }
+    assert mute_states == {0: True, 1: False, 2: False, 3: True, 4: True, 5: True}
+    assert candidate["pipeline"][-6:] == [
+        {
+            "type": "Filter",
+            "channels": [index],
+            "names": [f"as_out{index}_commission_mute"],
+        }
+        for index in range(6)
+    ]
+    # The composer/classifier seam: the mute tail this module emits is what the
+    # host recognises as a guarded commissioning graph. The classifier's own
+    # verdict detail is pinned in tests/test_active_speaker_runtime_contract.py.
+    safety = classify_camilla_graph(
+        topology=topology,
+        text=runtime._dump_graph(
+            candidate, source_header=runtime._source_header(baseline_raw)
+        ),
+    )
+    assert safety.allowed is True
+    assert safety.classification == GRAPH_GUARDED_COMMISSIONING
+
+
+@pytest.mark.parametrize("delay_ms", [-0.1, 20.1])
+def test_normal_graph_refuses_delay_outside_shared_ceiling(delay_ms: float) -> None:
+    graph = yaml.safe_load(_request().normal_active_raw)
+    graph["filters"]["as_woofer_delay"]["parameters"]["delay"] = delay_ms
+    request = replace(_request(), normal_active_raw=_raw(graph))
+
+    with pytest.raises(runtime.CommissioningRuntimeError):
+        runtime._normal_graph(
+            request, runtime._topology_binding(request, _TOPOLOGY)
+        )
+
+
+@pytest.mark.parametrize("layout", ["mono", "stereo"])
+def test_normal_graph_refuses_unsafe_non_target_driver_delay(layout: str) -> None:
+    topology = _active_topology(layout, "active_3_way")
+    graph = yaml.safe_load(_active_baseline_yaml(layout, 3))
+    graph["filters"]["as_woofer_delay"]["parameters"]["delay"] = 25.0
+    request = _request(
+        topology=topology,
+        normal_active_raw=_raw(graph),
+        lower_role="mid",
+        upper_role="tweeter",
+        lower_channels=(1,),
+        upper_channels=(2,),
+    )
+
+    with pytest.raises(runtime.CommissioningRuntimeError):
+        runtime._normal_graph(
+            request, runtime._topology_binding(request, topology)
+        )
+
+
+def test_delay_walk_refuses_without_headroom_above_emitter_baseline() -> None:
+    original_raw = _request("delay").normal_active_raw
+    graph = yaml.safe_load(original_raw)
+    graph["filters"]["as_woofer_delay"]["parameters"]["delay"] = 19.9
+    graph["filters"]["as_tweeter_delay"]["parameters"]["delay"] = 19.9
+    source = next(
+        line for line in original_raw.splitlines() if line.startswith("# Source:")
+    )
+    request = replace(
+        _request("delay"), normal_active_raw=f"{source}\n{_raw(graph)}"
+    )
+
+    with pytest.raises(runtime.CommissioningRuntimeError):
+        runtime._normal_graph(
+            request, runtime._topology_binding(request, _TOPOLOGY)
+        )
+
+    # Both baselines are inside the per-role 0-20 ms bound, so the refusal above
+    # is the walk's headroom rule and not that bound: the same walk from a
+    # zero-delay baseline is admitted.
+    admitted = _request("delay")
+    runtime._normal_graph(
+        admitted, runtime._topology_binding(admitted, _TOPOLOGY)
+    )
+
+
+@pytest.mark.parametrize(
+    ("filter_name", "definition"),
+    [
+        (
+            "as_commission_forged_delay",
+            {"type": "Delay", "parameters": {"delay": 1.0, "unit": "ms"}},
+        ),
+        (
+            "as_out0_commission_mute",
+            {
+                "type": "Gain",
+                "parameters": {"gain": 0.0, "inverted": False, "mute": False},
+            },
+        ),
+    ],
+    ids=["runtime_lane", "output_mute"],
+)
+def test_normal_graph_refuses_caller_supplied_runtime_lane_or_mute(
+    filter_name: str,
+    definition: dict,
+) -> None:
+    base = _request().normal_active_raw
+    graph = yaml.safe_load(base)
+    graph["filters"][filter_name] = definition
+    graph["pipeline"].append(
+        {"type": "Filter", "channels": [0], "names": [filter_name]}
+    )
+    source = next(line for line in base.splitlines() if line.startswith("# Source:"))
+    request = replace(_request(), normal_active_raw=f"{source}\n{_raw(graph)}")
+
+    with pytest.raises(runtime.CommissioningRuntimeError):
+        runtime._normal_graph(
+            request, runtime._topology_binding(request, _TOPOLOGY)
+        )
+
+
+@pytest.mark.parametrize(
+    ("lower_role", "upper_role", "lower_channels", "upper_channels"),
+    [
+        ("woofer", "tweeter", (0,), (2,)),
+        ("woofer", "mid", (0,), (4,)),
+    ],
+    ids=["non_adjacent", "cross_group"],
+)
+def test_binding_refuses_non_adjacent_or_cross_group_roles(
+    lower_role: str,
+    upper_role: str,
+    lower_channels: tuple[int, ...],
+    upper_channels: tuple[int, ...],
+) -> None:
+    topology = _active_topology("stereo", "active_3_way")
+    request = _request(
+        topology=topology,
+        normal_active_raw=_active_baseline_yaml("stereo", 3),
+        lower_role=lower_role,
+        upper_role=upper_role,
+        lower_channels=lower_channels,
+        upper_channels=upper_channels,
+    )
+
+    with pytest.raises(runtime.CommissioningRuntimeError):
+        runtime._topology_binding(request, topology)
+
+
+async def test_restore_continues_after_one_adapter_raises() -> None:
+    fake = FakePort()
+    base = fake.port()
+    predecessor = await runtime.snapshot_exact_dsp_state(base)
+    fake.raw = _regained(fake.raw)
+    fake.volume = -32.0
+    events: list[str] = []
+
+    async def apply_active_raw(_raw_text: str) -> bool:
+        raise RuntimeError("restore graph transport failed")
+
+    async def set_volume(value: float) -> bool:
+        events.append("volume")
+        return await fake.set_volume(value)
+
+    async def read_active_raw() -> str:
+        events.append("graph_readback")
+        return await fake.read_active_raw()
+
+    async def read_config_path() -> str:
+        events.append("path_readback")
+        return await fake.read_config_path()
+
+    async def read_volume() -> float:
+        events.append("volume_readback")
+        return await fake.read_volume()
+
+    port = replace(
+        base,
+        apply_active_raw=apply_active_raw,
+        read_active_raw=read_active_raw,
+        read_config_path=read_config_path,
+        read_listening_volume_db=read_volume,
+        set_listening_volume_db=set_volume,
+    )
+
+    with pytest.raises(runtime.CommissioningRuntimeError):
+        await runtime.restore_exact_dsp_state_locked(port, predecessor)
+
+    # The raise does not abort the transaction: graph and path are still read
+    # back, and the unproved graph stops the volume write rather than the
+    # exception doing it.
+    assert events == ["graph_readback", "path_readback"]
+    assert fake.volume == -32.0
+
+
+async def test_cancellation_during_restore_continues_remaining_cleanup() -> None:
+    fake = FakePort()
+    base = fake.port()
+    predecessor = await runtime.snapshot_exact_dsp_state(base)
+    fake.raw = _regained(fake.raw)
+    fake.volume = -32.0
+    restore_started = asyncio.Event()
+    events: list[str] = []
+
+    async def apply_active_raw(raw_text: str) -> bool:
+        restore_started.set()
+        await asyncio.Event().wait()
+        return await fake.apply_active_raw(raw_text)
+
+    async def set_volume(value: float) -> bool:
+        events.append("volume")
+        return await fake.set_volume(value)
+
+    async def read_config_path() -> str:
+        events.append("path_readback")
+        return await fake.read_config_path()
+
+    async def read_volume() -> float:
+        events.append("volume_readback")
+        return await fake.read_volume()
+
+    port = replace(
+        base,
+        apply_active_raw=apply_active_raw,
+        read_config_path=read_config_path,
+        read_listening_volume_db=read_volume,
+        set_listening_volume_db=set_volume,
+    )
+    task = asyncio.create_task(
+        runtime.restore_exact_dsp_state_locked(port, predecessor)
+    )
+    await wait_signalled(restore_started, "restore apply began", producer=task)
+    task.cancel()
+
+    with pytest.raises(runtime.CommissioningRuntimeError):
+        await task
+
+    assert events == ["path_readback"]
+    assert fake.volume == -32.0
 
 
 def test_two_driver_profile_composition_intersects_existing_limits(
