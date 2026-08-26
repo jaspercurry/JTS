@@ -1291,11 +1291,12 @@ def _replace_session(
 # server-owned GET /envelope contract controls whole-page membership and
 # order; the browser has no parallel screen-to-section policy.
 #
-# getUserMedia requires a secure context; /correction/ is served over
-# HTTPS with the speaker's local certificate. The back link is an absolute
-# http://<host>/ so the Home affordance lands on the plain-HTTP dashboard
-# rather than trying HTTPS on /. Page-specific styling lives in
-# /assets/correction/correction.css.
+# getUserMedia requires a secure context, which the relay's publicly trusted
+# capture origin supplies; /correction/ itself is plain HTTP and never
+# redirects into the speaker's self-signed origin (issue #2632). The back link
+# is an absolute http://<host>/ so the Home affordance lands on the plain-HTTP
+# dashboard even when this page was opened over HTTPS by hand. Page-specific
+# styling lives in /assets/correction/correction.css.
 
 
 _PAGE_BODY = """

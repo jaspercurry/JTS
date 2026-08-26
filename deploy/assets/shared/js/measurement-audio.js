@@ -26,14 +26,14 @@ export function micCaptureSupport(env = globalThis) {
     return {
       ok: false,
       reason: 'non_secure_context',
-      message: 'Microphone capture needs HTTPS. Use the measurement link this page mints, then try again.',
+      message: 'Microphone capture needs HTTPS. Open this measurement page through the secure correction link, then try again.',
     };
   }
   if (!nav || !nav.mediaDevices || typeof nav.mediaDevices.getUserMedia !== 'function') {
     return {
       ok: false,
       reason: 'media_devices_unavailable',
-      message: 'This browser does not expose microphone capture here. Use Safari or Chrome on the measurement page.',
+      message: 'This browser does not expose microphone capture here. Use Safari or Chrome on the secure correction page.',
     };
   }
   const AudioContextCtor = win && (win.AudioContext || win.webkitAudioContext);

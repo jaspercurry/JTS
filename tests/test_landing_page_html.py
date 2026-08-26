@@ -676,13 +676,13 @@ def test_nginx_serves_sync_measurement_over_https() -> None:
     )
 
 
-def test_install_prunes_retired_static_pages() -> None:
-    # /integrations and the correction preflight were deleted; install.sh must
-    # remove the orphaned files from previously-deployed Pis so they do not
-    # linger unreachable (and, for the preflight, still reachable).
+def test_install_prunes_retired_integrations_page() -> None:
+    # The /integrations page was deleted; install.sh must remove the orphaned
+    # file from previously-deployed Pis so it does not linger unreachable.
+    # (The retired correction preflight's prune is pinned by the #2632
+    # inventory guard above, which owns that artifact end to end.)
     install = _INSTALL_PATH.read_text(encoding="utf-8")
     assert "rm -f /usr/share/jasper-web/integrations.html" in install
-    assert "rm -f /usr/share/jasper-web/correction-preflight.html" in install
 
 
 def test_install_copies_landing_page_font_assets() -> None:

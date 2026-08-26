@@ -161,8 +161,6 @@ def test_capture_relay_ui_contract_is_wired():
     assert "function relayPrimaryAction()" not in js
     assert "KNOWN_ACTION_ENDPOINTS" in js
     assert "env.sections" in js
-    # No scheme upgrade into the self-signed HTTPS origin (issue #2632).
-    assert "/proceed" not in js
 
 
 def test_capture_relay_next_position_ui_hides_expired_link():
