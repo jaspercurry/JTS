@@ -128,10 +128,9 @@ Usage::
 
 ``PI_HOST`` / ``PI_USER`` exported by the caller win over ``.env.local``, which
 wins over the ``jts.local`` default — the resolution is ``scripts/_lib.sh``'s
-own, with the caller's exports re-applied over it exactly as
-``bank-crossover-round.sh`` does (issue #2689), and the resolved host is named
-in the run trail. The same values are exported into the bank script, so both
-halves of a round can never target different speakers.
+own (issue #2689), and the resolved host is named in the run trail. The same
+values are exported into the bank script, so both halves of a round can never
+target different speakers.
 """
 
 from __future__ import annotations
@@ -363,12 +362,10 @@ def resolve_target(hostname_override: str | None = None,
                    trail: Trail | None = None) -> Target:
     """The speaker, with the caller's own exports winning.
 
-    ``_lib.sh`` sources ``.env.local`` with ``set -a``, which overwrites an
-    already-exported ``PI_HOST``/``PI_USER`` before its own ``${PI_HOST:-…}``
-    fallback can prefer the caller's (issue #2689, repo-wide). So the caller's
-    exports are read here FIRST and re-applied over whatever the library
-    resolved — the same fix, and the same order, as
-    ``bank-crossover-round.sh``.
+    ``_lib.sh`` owns that precedence (issue #2689). The caller's exports are
+    still read here so the trail can name WHERE each half came from, and so a
+    ``_lib.sh`` that could not run at all falls back to them rather than to
+    the default speaker.
     """
     caller_host = os.environ.get("PI_HOST") or ""
     caller_user = os.environ.get("PI_USER") or ""
@@ -422,6 +419,10 @@ def resolve_target(hostname_override: str | None = None,
     user, user_source = _pick("", caller_user, lib_user, "pi")
     hostname, hostname_source = _pick(
         hostname_override or "", caller_hostname, lib_hostname, host)
+    if not (hostname_override or caller_hostname or lib_hostname):
+        # The name fell back to the ssh target itself — same value, same
+        # origin, so it is not a second source to disclose.
+        hostname_source = host_source
     if trail is not None:
         # WHERE each half came from, because they are resolved independently
         # and a split answer is legal: exporting only PI_HOST takes the ssh

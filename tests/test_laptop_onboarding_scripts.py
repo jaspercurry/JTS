@@ -168,6 +168,10 @@ class FakeRemote:
 
     def env(self, **overrides: str) -> dict[str, str]:
         env = os.environ.copy()
+        # An explicitly-set targeting value outranks .env.local, so an
+        # ambient one would silently retarget every deploy driven here.
+        for key in ("PI_HOST", "PI_USER", "JASPER_HOSTNAME"):
+            env.pop(key, None)
         env.update(
             {
                 "PATH": f"{self.bin}{os.pathsep}{env['PATH']}",
@@ -566,14 +570,16 @@ class LaptopOnboardingScriptsTest(unittest.TestCase):
         self.assertEqual(repo_state_after, repo_state_before)
 
     def test_explicitly_set_targeting_outranks_env_local(self):
-        """.env.local is the checkout's default target, never an override.
+        """The caller's target moves as one record; the checkout's never mixes.
 
-        Sourcing it under `set -a` used to overwrite the PI_HOST an operator
-        passed on the command line, so a deploy aimed at one speaker went to
-        the checkout's usual one while the identity guard — reading
+        Sourcing .env.local under `set -a` used to overwrite the PI_HOST an
+        operator passed on the command line, so a deploy aimed at one speaker
+        went to the checkout's usual one while the identity guard — reading
         PI_PEER_ID from that same clobbered file — called it verified.
+        Per-key precedence leaves the other half of that hazard: the SSH
+        target taken from one source and the cert CN/SAN from the other
+        deploys to one speaker under another speaker's name.
         """
-        fake = FakeRemote(self)
         env_local = textwrap.dedent(
             """\
             PI_HOST=jts3.local
@@ -581,19 +587,28 @@ class LaptopOnboardingScriptsTest(unittest.TestCase):
             JASPER_HOSTNAME=jts3.local
             """
         )
-        result = self.run_deploy(
-            fake,
-            env_local=env_local,
-            PI_HOST="jts9.local",
-            PI_USER="operator",
-            JASPER_HOSTNAME="jts9.local",
+        callers = (
+            {
+                "PI_HOST": "jts9.local",
+                "PI_USER": "operator",
+                "JASPER_HOSTNAME": "jts9.local",
+            },
+            {"JASPER_HOSTNAME": "jts9.local"},
+            {"PI_HOST": "jts9.local"},
         )
+        for caller in callers:
+            with self.subTest(**caller):
+                fake = FakeRemote(self)
+                result = self.run_deploy(fake, env_local=env_local, **caller)
 
-        calls = fake.calls()
-        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
-        self.assertIn("operator@jts9.local", calls)
-        self.assertIn("JASPER_HOSTNAME=jts9.local", calls)
-        self.assertNotIn("jts3.local", calls)
+                calls = fake.calls()
+                self.assertEqual(
+                    result.returncode, 0, result.stdout + result.stderr
+                )
+                user = caller.get("PI_USER", "pi")
+                self.assertIn(f"{user}@jts9.local", calls)
+                self.assertIn("JASPER_HOSTNAME=jts9.local", calls)
+                self.assertNotIn("jts3.local", calls)
 
     def test_lib_keeps_jasper_hostname_as_legacy_pi_host_fallback(self):
         env = os.environ.copy()

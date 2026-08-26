@@ -24,6 +24,7 @@ would not be caught by anything that only asserts "not zero".
 
 from __future__ import annotations
 
+import os
 import subprocess
 from pathlib import Path
 
@@ -31,12 +32,15 @@ ROOT = Path(__file__).resolve().parents[1]
 SCRIPT = ROOT / "scripts" / "bank-crossover-round.sh"
 
 
-def _run(*args: str) -> subprocess.CompletedProcess[str]:
+def _run(
+    *args: str, env: dict[str, str] | None = None
+) -> subprocess.CompletedProcess[str]:
     return subprocess.run(
         ["bash", str(SCRIPT), *args],
         capture_output=True,
         text=True,
         timeout=30,
+        env=env,
     )
 
 
@@ -58,6 +62,24 @@ def test_refuses_a_non_empty_dest_dir_with_the_literal_exit_code_four(tmp_path):
 
     # A refused run must not touch what was already in the directory.
     assert (dest / "state.json").read_text() == "{}"
+
+
+def test_sourcing_the_shared_lib_survives_a_pre_set_pi_host(tmp_path):
+    """scripts/_lib.sh is sourced INTO this script's own namespace.
+
+    This script runs under `set -u`, so any name the library leaves unset
+    out from under it is an unbound-variable exit 1 -- and 1 is precisely
+    the capture-integrity checker's benign "nothing to check" verdict, so
+    a caller banks nothing and reads it as success. Reaching the exit-4
+    refusal above proves the source completed.
+    """
+    dest = tmp_path / "already-banked"
+    dest.mkdir()
+    (dest / "state.json").write_text("{}")
+
+    proc = _run(str(dest), env={**os.environ, "PI_HOST": "jts9.local"})
+
+    assert proc.returncode == 4
 
 
 def test_non_empty_dest_dir_refusal_is_distinct_from_a_missing_argument():

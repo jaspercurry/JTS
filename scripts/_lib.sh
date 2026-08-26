@@ -19,11 +19,9 @@
 #      keep working regardless of the caller's cwd).
 #   2. Source .env.local if present — this is where scripts/onboard.sh
 #      persists PI_HOST/PI_USER for a checkout. Gitignored.
-#   3. Apply the SSH-target precedence chain — a non-empty PI_HOST /
-#      PI_USER / JASPER_HOSTNAME already in the environment outranks
-#      .env.local, which is only this checkout's default; then
-#      JASPER_HOSTNAME as a compatibility fallback for PI_HOST in older
-#      operator scripts/docs; jts.local is the final default.
+#   3. Apply the targeting precedence contract stated below — the
+#      caller's PI_HOST/JASPER_HOSTNAME pair outranks .env.local, which
+#      is only this checkout's default; jts.local is the final default.
 #   4. Resolve the repository Python for laptop-side wrappers with one
 #      canonical precedence contract.
 #
@@ -34,16 +32,29 @@
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 REPO_ROOT="$(cd "${SCRIPT_DIR}/.." && pwd)"
 
-# .env.local is this checkout's DEFAULT target, never an override: its
-# plain `PI_HOST=` assignments would otherwise clobber a `PI_HOST=…
-# bash scripts/…` the operator typed, and a deploy aimed at one speaker
-# lands on another while the identity guard — reading PI_PEER_ID from
-# that same file — calls it verified (issue #2689). Capture the
-# explicitly-set targeting values here and re-apply them after the
-# `set -a` source, which exports every other key of the file as-is.
-_caller_pi_host="${PI_HOST:-}"
-_caller_pi_user="${PI_USER:-}"
-_caller_jasper_hostname="${JASPER_HOSTNAME:-}"
+# Targeting precedence contract (issue #2689). `.env.local` is sourced
+# under `set -a`, so its plain assignments would otherwise clobber a
+# `PI_HOST=… bash scripts/…` the operator typed: the deploy lands on
+# another speaker while the identity guard — reading PI_PEER_ID from
+# that same file — calls it verified. Per-KEY precedence does not fix
+# it either, because taking transport from one source and cert identity
+# from the other deploys to one speaker under another's name.
+#
+#   PI_HOST + JASPER_HOSTNAME  move as ONE record. If the caller set
+#     either, the pair is the CALLER'S alone: a lone JASPER_HOSTNAME
+#     also supplies PI_HOST (the legacy operator form), and a lone
+#     PI_HOST leaves JASPER_HOSTNAME unset so the identity resolves
+#     from that same host, never from the file. Otherwise the file's
+#     pair, then jts.local.
+#   PI_USER  is a login, not an identity: caller, then file, then pi.
+#
+# Non-negotiable #4: a caller-targeted deploy reaches the peer-id guard
+# as a coherent pair, so a redirect aborts instead of being blessed.
+# The temporaries are prefixed because this file is sourced INTO other
+# scripts, whose own variables must survive it.
+_jts_lib_caller_host="${PI_HOST:-}"
+_jts_lib_caller_hostname="${JASPER_HOSTNAME:-}"
+_jts_lib_caller_user="${PI_USER:-}"
 
 if [[ -f "${REPO_ROOT}/.env.local" ]]; then
     set -a
@@ -52,16 +63,18 @@ if [[ -f "${REPO_ROOT}/.env.local" ]]; then
     set +a
 fi
 
-if [[ -n "$_caller_pi_host" ]]; then
-    export PI_HOST="$_caller_pi_host"
+if [[ -n "$_jts_lib_caller_host" || -n "$_jts_lib_caller_hostname" ]]; then
+    export PI_HOST="${_jts_lib_caller_host:-$_jts_lib_caller_hostname}"
+    if [[ -n "$_jts_lib_caller_hostname" ]]; then
+        export JASPER_HOSTNAME="$_jts_lib_caller_hostname"
+    else
+        unset JASPER_HOSTNAME
+    fi
 fi
-if [[ -n "$_caller_pi_user" ]]; then
-    export PI_USER="$_caller_pi_user"
+if [[ -n "$_jts_lib_caller_user" ]]; then
+    export PI_USER="$_jts_lib_caller_user"
 fi
-if [[ -n "$_caller_jasper_hostname" ]]; then
-    export JASPER_HOSTNAME="$_caller_jasper_hostname"
-fi
-unset _caller_pi_host _caller_pi_user _caller_jasper_hostname
+unset _jts_lib_caller_host _jts_lib_caller_hostname _jts_lib_caller_user
 
 # Compatibility fallback chain. The legacy form (used by every script in
 # scripts/ before this lib existed) is:
