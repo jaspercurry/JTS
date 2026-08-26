@@ -15,13 +15,15 @@ A per-unit artifact, once commissioned, always wins over a row here.
 """
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import Any, Mapping, Sequence
 
 from jasper.chip_aec_alignment import (
     HARDWARE_CLASS_IDENTITY_FIELDS,
     AlignmentIdentity,
+    hardware_class_identity,
     hardware_class_key,
+    identity_divergence,
     validate_banked_delays,
 )
 
@@ -37,28 +39,28 @@ class ShippedAlignment:
     identity: Mapping[str, Any]
     k_samples: int
     sys_delay: int
+    # Derived from `identity` where the row is validated, so a lookup over the
+    # registry does not rebuild them per row. Out of == and repr: they say
+    # nothing `identity` does not.
+    class_identity: AlignmentIdentity = field(init=False, repr=False, compare=False)
+    class_key: tuple[Any, ...] = field(init=False, repr=False, compare=False)
 
     def __post_init__(self) -> None:
         if not self.label.strip():
             raise ValueError("shipped alignment label is required")
-        # The same driver-cap and integer rules a commissioned artifact passes:
-        # an out-of-cap row fails at import, never at the chip.
         validate_banked_delays(self.k_samples, self.sys_delay)
-        hardware_class_key(self.identity)
-
-    @property
-    def class_key(self) -> tuple[Any, ...]:
-        return hardware_class_key(self.identity)
+        object.__setattr__(
+            self, "class_identity", hardware_class_identity(self.identity)
+        )
+        object.__setattr__(
+            self, "class_key", hardware_class_key(self.class_identity)
+        )
 
     def divergence(self, identity: AlignmentIdentity) -> tuple[str, ...]:
         """Return the class fields this row disagrees with a live box on."""
 
-        return tuple(
-            name
-            for name, value in zip(
-                HARDWARE_CLASS_IDENTITY_FIELDS, self.class_key, strict=True
-            )
-            if value != getattr(identity, name)
+        return identity_divergence(
+            self.class_identity, identity, fields=HARDWARE_CLASS_IDENTITY_FIELDS
         )
 
 
@@ -72,8 +74,7 @@ def _refuse_duplicate_classes(entries: Sequence[ShippedAlignment]) -> None:
     Checked at import, where the DAC profile registry refuses a duplicate id.
     """
 
-    keys = [entry.class_key for entry in entries]
-    if len(set(keys)) != len(keys):
+    if len({entry.class_key for entry in entries}) != len(entries):
         raise ValueError("two shipped alignment rows share one hardware class")
 
 

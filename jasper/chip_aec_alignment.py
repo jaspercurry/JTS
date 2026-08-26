@@ -209,8 +209,7 @@ def runtime_sys_delay(
     if not queue_window_is_stable(values):
         raise ValueError("chip-reference queue is unstable")
     delay = k_samples - queue
-    if not xvf3800.CHIP_AEC_SYS_DELAY_MIN <= delay <= xvf3800.CHIP_AEC_SYS_DELAY_MAX:
-        raise ValueError(f"runtime SYS_DELAY {delay} is out of range")
+    validate_banked_delays(k_samples, delay)
     moved = delay - commissioned_sys_delay
     if abs(moved) > MIN_EDGE_MARGIN:
         raise QueueMovedFromCommissioned(
@@ -283,40 +282,58 @@ HARDWARE_CLASS_IDENTITY_FIELDS = tuple(
 )
 
 
+def hardware_class_identity(
+    identity: AlignmentIdentity | Mapping[str, Any],
+) -> AlignmentIdentity:
+    """Return an identity carrying only what names the hardware CLASS.
+
+    A mapping — a shipped registry row, which carries no per-unit fields — is
+    held to `AlignmentIdentity`'s own field rules by filling those two with a
+    placeholder, so a malformed row fails where it is declared rather than at
+    boot.  The placeholder is why the per-unit fields of the result mean
+    nothing; only `HARDWARE_CLASS_IDENTITY_FIELDS` may be read off it.
+    """
+
+    if isinstance(identity, AlignmentIdentity):
+        return identity
+    if set(identity) != set(HARDWARE_CLASS_IDENTITY_FIELDS):
+        raise ValueError("hardware class identity fields are incomplete")
+    fields: dict[str, Any] = dict.fromkeys(PER_UNIT_IDENTITY_FIELDS, "unkeyed")
+    fields.update(identity)
+    return AlignmentIdentity(**fields)
+
+
 def hardware_class_key(
     identity: AlignmentIdentity | Mapping[str, Any],
 ) -> tuple[Any, ...]:
     """Return what an identity says about the hardware CLASS, in field order.
 
     Two boxes sharing this key share everything K was measured against, so a
-    proof banked on one describes the other (ADR-0101).  A mapping — a shipped
-    registry row, which carries no per-unit fields — is held to
-    `AlignmentIdentity`'s own field rules by filling those two with a
-    placeholder that never leaves this call, so a malformed row fails where it
-    is declared rather than at boot.
+    proof banked on one describes the other (ADR-0101).
     """
 
-    if not isinstance(identity, AlignmentIdentity):
-        if set(identity) != set(HARDWARE_CLASS_IDENTITY_FIELDS):
-            raise ValueError("hardware class identity fields are incomplete")
-        fields: dict[str, Any] = dict.fromkeys(PER_UNIT_IDENTITY_FIELDS, "unkeyed")
-        fields.update(identity)
-        identity = AlignmentIdentity(**fields)
-    return tuple(getattr(identity, name) for name in HARDWARE_CLASS_IDENTITY_FIELDS)
+    resolved = hardware_class_identity(identity)
+    return tuple(getattr(resolved, name) for name in HARDWARE_CLASS_IDENTITY_FIELDS)
 
 
 def identity_divergence(
-    commissioned: AlignmentIdentity, live: AlignmentIdentity
+    commissioned: AlignmentIdentity,
+    live: AlignmentIdentity,
+    *,
+    fields: Sequence[str] = tuple(AlignmentIdentity.__dataclass_fields__),
 ) -> tuple[str, ...]:
     """Return the identity fields that differ, in declaration order.
 
     The names are what a household needs to see, so they travel rather than a
-    verdict; a caller splits them against `PER_UNIT_IDENTITY_FIELDS`.
+    verdict; a caller splits them against `PER_UNIT_IDENTITY_FIELDS`.  ``fields``
+    narrows the walk — a shipped class row compares only
+    `HARDWARE_CLASS_IDENTITY_FIELDS`, because its per-unit fields are the
+    placeholder `hardware_class_identity` filled in.
     """
 
     return tuple(
         name
-        for name in AlignmentIdentity.__dataclass_fields__
+        for name in fields
         if getattr(commissioned, name) != getattr(live, name)
     )
 

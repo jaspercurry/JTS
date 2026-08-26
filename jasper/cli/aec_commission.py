@@ -558,11 +558,7 @@ def _emit_class_entry(path: Path) -> int:
     artifact on a laptop as readily as on the box that commissioned it.
     """
 
-    try:
-        artifact = load_artifact(path)
-    except ValueError as exc:
-        print(f"jasper-aec-commission: {exc}", file=sys.stderr)
-        return 1
+    artifact = load_artifact(path)
     print(render_entry(artifact.identity, artifact.k_samples, artifact.sys_delay))
     return 0
 
@@ -581,12 +577,6 @@ def main(argv: Sequence[str] | None = None) -> int:
         ),
     )
     args = parser.parse_args(argv)
-    # Presence, not truthiness: an unset shell variable makes the flag arrive
-    # as "", and falling through on that would start a full commissioning run
-    # (services stopped, audible sweeps, chip writes) for someone who asked to
-    # print a registry row.
-    if args.emit_class_entry is not None:
-        return _emit_class_entry(Path(args.emit_class_entry))
     logging.basicConfig(
         level=logging.INFO, format="%(asctime)s aec-commission %(levelname)s %(message)s"
     )
@@ -594,6 +584,12 @@ def main(argv: Sequence[str] | None = None) -> int:
         signum: signal.signal(signum, _signal) for signum in (signal.SIGTERM, signal.SIGHUP)
     }
     try:
+        # Presence, not truthiness: an unset shell variable makes the flag
+        # arrive as "", and falling through on that would start a full
+        # commissioning run (services stopped, audible sweeps, chip writes) for
+        # someone who asked to print a registry row.
+        if args.emit_class_entry is not None:
+            return _emit_class_entry(Path(args.emit_class_entry))
         run_commissioning()
         return 0
     except (OSError, ValueError, RuntimeError, subprocess.SubprocessError, KeyboardInterrupt) as exc:

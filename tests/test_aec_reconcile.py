@@ -1510,14 +1510,13 @@ def test_a_carried_verdict_answers_whichever_selection_asks(
     assert "JASPER_MIC_DEVICE=udp:9876" in body
 
 
-def test_a_record_written_before_the_verdict_keys_existed_still_carries(
+def test_a_status_only_record_still_carries(
     tmp_path: Path,
 ) -> None:
-    """First pass after an upgrade: the per-selection keys are not there yet.
+    """The status IS the verdict: `approved` is what the automatic profile arms on.
 
-    Defaulting them to 0 would carry a commissioned box as approved-but-not-
-    permitted — the exact drop the carry exists to prevent — and then persist
-    that contradiction.
+    Reading a carried record as not-permitted would be the exact drop the carry
+    exists to prevent, and would then persist that contradiction.
     """
     env_file = _write_env(
         tmp_path,
@@ -1550,7 +1549,7 @@ def test_a_record_written_before_the_verdict_keys_existed_still_carries(
     assert result.returncode == 0, result.stderr
     body = env_file.read_text()
     assert "JASPER_AEC_CHIP_AEC_DAC_STATUS=approved" in body
-    assert "JASPER_AEC_CHIP_AEC_DAC_AUTO=1" in body
+    assert "JASPER_AEC_CHIP_AEC_DAC_SOURCE=runtime_env_carried" in body
     assert "JASPER_AEC_CHIP_AEC_ENABLED=1" in body
 
 

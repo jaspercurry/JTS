@@ -96,6 +96,17 @@ class ChipAecGate:
     def testing_allowed(self) -> bool:
         return self.trial_allowed
 
+    def permits(self, *, testing_requested: bool) -> bool:
+        """Whether the selection in play may be armed.
+
+        An uncodified DAC is arm_allowed since ADR-0101, so the automatic
+        profile never picks it — only an explicit testing selection does.
+        """
+
+        return self.production_allowed or (
+            testing_requested and self.testing_allowed
+        )
+
     @property
     def recommended_action(self) -> str:
         # A missing/unvalidated mic beam plan blocks chip-AEC outright, so it
@@ -362,8 +373,6 @@ def gate_from_runtime_env(
         arm_allowed = True
         trial_allowed = True
         blockers = (BLOCKER_DAC,)
-    if recorded_testing and gate_status == STATUS_NEEDS_CALIBRATION:
-        trial_allowed = True
     return ChipAecGate(
         dac_id=gate_dac_id,
         status=gate_status,
@@ -401,10 +410,7 @@ def combine_mic_availability(
     blockers: list[str] = []
     if not mic_available:
         blockers.append(BLOCKER_MIC)
-    dac_available_for_selection = gate.production_allowed or (
-        testing_requested and gate.testing_allowed
-    )
-    if not dac_available_for_selection:
+    if not gate.permits(testing_requested=testing_requested):
         blockers.append(BLOCKER_DAC)
     return ChipAecGate(
         dac_id=gate.dac_id,
