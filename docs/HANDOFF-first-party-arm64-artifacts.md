@@ -259,4 +259,14 @@ python3 scripts/docs-linkcheck.py \
 These are explicit promotion gates, not reasons to put compilation back on
 the first boot path.
 
-Last verified: 2026-07-27
+Last verified: 2026-08-26 (kept whole — every claim re-checked and still true:
+the workflow is `workflow_dispatch`-only on `ubuntu-24.04-arm` in a
+digest-pinned `debian:trixie-*-slim` container, uploads a 14-day review
+artifact and creates no release; `artifacts.toml` still declares the target
+triple/ELF class/interpreter/`allowed_needed`/`required_symbols`/build
+commands/install paths/modes and the Cargo license allowlist; the builder and
+verifier flags, `BUILD-INFO.schema.json`,
+`tests/test_first_party_arm64_release.py`, and the
+`JASPER_FIRST_PARTY_RUNTIME_BUNDLE` seam in
+`deploy/lib/install/first-party-runtime.sh` — including the
+`first-party-runtime-superseded/` retirement path — all match)

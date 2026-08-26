@@ -453,8 +453,6 @@ Preserved for archaeology; **not** current operational truth.
   clock-domain measurements and the rejected rate-matcher design
 - [`HANDOFF-persistent-live-session.md`](docs/HANDOFF-persistent-live-session.md)
   — 2026-05 session-pickup brief for the persistent-Live rework
-- [`HANDOFF-canonical-ui-migration.md`](docs/HANDOFF-canonical-ui-migration.md)
-  — the completed design-system migration of all wizards
 - [`HANDOFF-volume-control-redesign.md`](docs/HANDOFF-volume-control-redesign.md)
   — why AirPlay receiver-originated volume reflection did not work
 - [`RESEARCH-pipewire-low-latency.md`](docs/RESEARCH-pipewire-low-latency.md) —

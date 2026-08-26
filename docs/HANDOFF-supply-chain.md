@@ -94,15 +94,14 @@ mirrors and verifies each archive with `sha256sum -c` before unpacking.
 The mirrored bytes were downloaded from the upstream pinned commit archive
 URLs and SHA-256 verified against `deploy/provenance.toml` before upload:
 
-- `nqptp-c925f27c1fd1.tar.gz` mirrors upstream
-  `https://github.com/mikebrady/nqptp/archive/c925f27c1fd12e4033ac477e5a405969b0b0260b.tar.gz`;
-  SHA-256 `d2c2fe5d2574d447a817b1585e82c38f4c98774dac8284e5a3f17e188a3a75f9`.
-- `shairport-sync-0b1c4391ffd3.tar.gz` mirrors upstream
-  `https://github.com/mikebrady/shairport-sync/archive/0b1c4391ffd398e7b145eb4b98416261380adeea.tar.gz`;
-  SHA-256 `7ef3a6ba1cbd67bb200f018ddcd3e8dbe40da98b3c1776aee6c7b832632c6865`.
-- `webrtc-audio-processing-846fe90a289f.tar.gz` mirrors upstream
-  `https://gitlab.freedesktop.org/pulseaudio/webrtc-audio-processing/-/archive/846fe90a289f58b7c9303a635142aa2c7caa93e5/webrtc-audio-processing-846fe90a289f58b7c9303a635142aa2c7caa93e5.tar.gz`;
-  SHA-256 `ddf4e540b9f4291e140cc2ab4560f3eb4fce07ef6212a94d980843bfbf9a4588`.
+- `nqptp-c925f27c1fd1.tar.gz`
+- `shairport-sync-0b1c4391ffd3.tar.gz`
+- `webrtc-audio-processing-846fe90a289f.tar.gz`
+
+Each mirror's upstream commit-archive URL and SHA-256 live in
+`deploy/provenance.toml` as `upstream_url` / `upstream_resolved_url` /
+`sha256`; `check-provenance.py` fails if `install.sh`'s copy of a hash drifts
+from the manifest, so the manifest is the single place to read or change them.
 
 CamillaDSP `v4.1.3`, Raspotify `0.48.1`, and CamillaGUI `4.1.0`
 already consume upstream release assets rather than auto-generated commit
@@ -221,42 +220,20 @@ When adding or changing a network fetch:
 6. If the fetch is a known gap that cannot be pinned yet, add a
    `[[surface]]` entry with `status = "accepted-gap"` and explain why.
 
-## Staff-Level Review Notes
+## Out of Scope
 
-This slice intentionally does not attempt a full SBOM, Nix-style
-hermetic build, or distro snapshot. That would be too large for the
-current project shape and would slow the Pi bring-up path. The value
-here is smaller and concrete: the artifacts JTS downloads directly are
-now visible, mostly immutable, and checked before use.
+This policy is deliberately not a full SBOM, a Nix-style hermetic build, or a
+distro snapshot. What it buys is narrower and concrete: the artifacts JTS
+downloads directly are visible, mostly immutable, and checked before use.
 
-The openWakeWord package-helper gap is closed without changing the
-operator-facing wake model strings. The `/wake/` picker can still save
-stock names like `hey_jarvis`, while install now stages the exact ONNX
-package-resource files those names resolve to and verifies their hashes.
-The active/fallback stock model is treated as runtime-critical; inactive
-stock options are optional so a transient upstream download failure does
-not block unrelated deploys.
+Nor does it fingerprint or force-reinstall renderer binaries that are *already*
+on a box — the fleet is two operator-owned development speakers, so provenance
+is enforced on fresh installs and rebuilds only. Distributing images or
+supporting third-party speakers would need a migration/check path that records
+or rebuilds already-installed `librespot`, `nqptp`, `shairport-sync`, and
+CamillaGUI bits; until then that path would be machinery guarding nothing.
 
-Python install determinism now has explicit artifacts for the places that
-need them today: `uv.lock` for local contributor and GitHub Actions
-environments, and `deploy/constraints-pi.txt` for Pi deploys. Future work
-should focus on hash verification/mirroring for Python artifacts, not on
-pretending an x86_64 CI/developer lock and an arm64 appliance resolve are
-interchangeable.
-
-The 2026-06-01 install-productization slice removed the base install's
-direct `git` fetches for `nqptp`, `shairport-sync`,
-`webrtc-audio-processing`, and `pycamilladsp`. The 2026-06-12
-source-mirroring slice moved the three install.sh source-build archives
-to byte-exact JTS release assets while retaining upstream commit archive
-URLs as provenance.
-
-For the current private fleet, this slice is intentionally fresh/rebuild
-focused. Existing installed renderer binaries are not fingerprinted and
-forced through reinstall because there are only two known speakers and
-both are operator-owned development boxes. If we ever distribute images
-or support third-party speakers, add a migration/check path that records
-or rebuilds already-installed `librespot`, `nqptp`, `shairport-sync`,
-and CamillaGUI bits.
-
-Last verified: 2026-07-27
+Last verified: 2026-08-26 (versions, mirror filenames, checker surfaces, and
+the uv.lock / constraints-pi.txt split re-checked against
+`deploy/provenance.toml`, `deploy/install.sh`, and
+`scripts/check-provenance.py`)

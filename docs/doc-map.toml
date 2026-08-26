@@ -1236,7 +1236,6 @@ code = [
 ]
 docs = [
   "docs/HANDOFF-management-ui.md",
-  "docs/HANDOFF-canonical-ui-migration.md",
   "docs/design-language.md",
 ]
 requires_docs_when = [
