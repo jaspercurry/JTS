@@ -90,8 +90,8 @@ awaitable cleanup.
 **Every release path completes before cancellation propagates.** The two
 release sites — `_release_slots` (`:537-553`) and
 `_release_both_after_failed_open` (`:515-535`) — use the shape this repo already
-ships in twenty-six places, whose reference form is
-`jasper/web/correction_crossover_v2_wired.py:822-838`: start the cleanup as a
+ships in twenty-five places, whose reference form is
+`jasper/web/correction_crossover_v2_wired.py:821-840`: start the cleanup as a
 task, `await asyncio.shield(task)`, and on `CancelledError` **await the task to
 completion before re-raising**, tolerating a repeat cancel. A bare
 `await asyncio.shield(coro)` is not this decision — it detaches the release and
@@ -173,14 +173,14 @@ plan, the difference is flagged **[≠plan]** and explained in §6.
 | transport | `ThreadingHTTPServer` + `BaseHTTPRequestHandler`, `web/correction_setup.py:61` |
 | handlers | `do_GET` `:7809`, `do_POST` `:7984` — **both plain `def`**, and the only two |
 | funnel | `:8014` `if path.startswith("/crossover/")` → `:8015` `self._dispatch_crossover(path)` **[≠plan: the call is `:8015`; `:8014` is the guard]** |
-| dispatch | `_dispatch_crossover` `:7366`, a flat chain of twelve `if path …: … return` arms, no `elif` |
+| dispatch | `_dispatch_crossover` `:7366`, a flat chain of **twelve** `if path …: … return` arms over **thirteen** route strings, no `elif` |
 | loop bridge | `_ensure_loop` `:1275` (thread `jasper-correction-loop`), `_run_async` `:1292`, `_run_graph_mutation` `:1331` |
 | walk | `_run_relay_capture` `:1037`, fired fire-and-forget at `:1153` |
 | host module | `web/correction_crossover_v2.py` — **zero** routes, zero HTML/CSS/JS, zero CSRF (all three greps return 0) |
 
-**The twelve routes**, with line numbers, because the post-merge check in §5
-counts them: `/crossover/v2/session`+`/crossover/v2/verify` `:7369` (one arm,
-one set), `position-ready` `:7433`, `complete` `:7469`, `retake` `:7488`,
+**The twelve arms**, with line numbers, because the post-merge check in §5
+counts them: `/crossover/v2/session`+`/crossover/v2/verify` `:7369` (**one arm,
+two routes** — `if path in {…}`), `position-ready` `:7433`, `complete` `:7469`, `retake` `:7488`,
 `apply` `:7506`, `republish` `:7565`, `restore` `:7582`, `decline` `:7605`, and
 four nested arms — `recover-volume` `:7637`, `relay-cancel` `:7757`, `reset`
 `:7761`, `level-match` `:7766`.
@@ -499,6 +499,241 @@ sweep is not enough here; the glyphs differ too.
 
 ## 4. PR slicing, verification bars, tiers
 
+Six PRs. Sizes are re-estimated against what §2 and §3 found, not copied.
+
+| PR | Scope | Size | Tier |
+|---|---|---|---|
+| **W4-a** colour flip | `session_seams.py` (12 declarations) · `playback_transaction.py:190` · `session.py` (10 seam sites, 4 verbs, `:332-351`, `_attach_cleanup_failure` `:73-92`, both release paths) · re-tense `crossover-v2-engine-design.md:81-89` · land the ADR | ~270 | **adversarial** |
+| **W4-b** twin follows | `tests/engine_twin.py` (**418**, not 419) · `test_engine_twin.py` (401) · `test_crossover_v2_engine_skeleton.py` (1,267). `engine_declarations.py` (93) is untouched — it imports nothing and declares constants | ~200 | mechanical |
+| **W4-c** `VolumeClaim` adapter | one handle-holding class over `acquire_level` / `prove` / `release` | ~90 | **default** (demoted — §6) |
+| **W5-a** preparers converge | push `verify_only` one frame down; reconcile the `publish_check` asymmetry | ~250 net | default |
+| **W5-b** `TuningSession` in production | build `EngineSeams` beside `bind_v2_stage_seams`; delete the two `holder` dicts and the `_session_graph` global | ~350 | **adversarial** |
+| **W5-c** plan sheds its doors | three-way split (§3.3), five call sites across three files | ~350 | **adversarial** |
+| **W5-d** stale docs + grep | engine-design `:252-268` only; the widened grep | ~25 | docs |
+
+**Verification bars, as mutations. Every one names the pin that must fail.**
+
+- **W4-a.** mypy clean is the backstop the N6 disposition named — but mypy passes
+  a bare shield too, so it is not the bar. The bar is: *a `close()` cancelled
+  mid-`volume.release()` still releases **both** slots **in order**.* **Mutate:**
+  replace the `except CancelledError: await task; raise` arm with a bare
+  `await asyncio.shield(coro)` and watch that pin alone fail. A bare shield
+  detaches the release, so the graph restore in the `finally` races it — the
+  order `_release_slots`'s docstring promises (`:538`, *"in reverse order of
+  taking"*) is what breaks, and a pin that only asserts "both were called"
+  stays green under the mutation and is therefore not covering this.
+- **W4-a, second bar.** *A cancelled cleanup does not replace the primary
+  exception.* `_attach_cleanup_failure` catches `except Exception`
+  (`session.py:90`), which does not catch `CancelledError`. **Mutate:** remove
+  the shield from `_release_both_after_failed_open` and assert the `open()`
+  failure still propagates as itself rather than as `CancelledError`.
+- **W4-b.** The existing engine tests pass **with no assertion edited**. An
+  assertion that had to change means the flip changed behaviour.
+- **W4-c.** Three pins: acquire-raised-then-release (no claim held, release is a
+  no-op — mutate by removing the `:542-543` guard's equivalent in the adapter);
+  double-release; prove-after-preemption returns `None` (drive it by taking a
+  `COMMISSIONING` claim, rank 2, over the session's rank 1).
+- **W5-a.** `tests/test_correction_crossover_v2_endpoints.py` (**13,171 lines**)
+  passes with no assertion edited, and both stages produce a `V2PreparedSession`
+  with the same eight field values. **Mutate:** swap stage 2's
+  `publish_check=_publish_check` for stage 1's `publish_check` and confirm a pin
+  catches it — if none does, that asymmetry is unpinned and W5-a must add one
+  before it folds the two bodies.
+- **W5-b.** One end-to-end pin driving a whole session through the real
+  converged preparer against twin seams. Plus the engine-internal enforcement
+  pin (`session_seams.py:295-296`), which now has a front end to point at.
+- **W5-c.** Four drain paths (`close` / `abandon` / `enforce_ceiling` /
+  `recover_unresolved`) land the fader on `original_main_volume_db`; one for the
+  emergency fall-through; one for the `_clear_resolved`-before-persist order —
+  **mutate by swapping the two statements and watching that pin alone fail.**
+  Plus one that `seat_level_ramp.py:1573`/`:1689` still open and close.
+- **W5-d.** Paste the widened grep's own output into the PR (§5.2 has today's).
+
+**On the tiers.** Four of the plan's five calls hold and one does not; the
+reasoning is in §6. Where a call is arguable, note that AGENTS.md's
+non-negotiable list is **closed** — clamps, DSP math on the output path,
+secrets, `deploy/install.sh` — and none of these six items touches a clamp.
+W4-a, W5-b and W5-c are kept at adversarial not because the list names them but
+because each one's failure mode is a fader nobody holds, which is the shape
+`correction_setup.py:1323-1326` already treats as fail-closed. That is a stated
+reason, not a ceremony, and it is the standard to argue against if you want the
+tier lowered.
+
 ## 5. Content-greps for the post-merge check
 
+Run these **against the merge result** (`git merge-tree --write-tree origin/main
+HEAD`), not the branch. Paste each count into the PR.
+
+### 5.1 Per-item
+
+| After | Command (from repo root) | Expect |
+|---|---|---|
+| W4-a | `grep -c "async def" jasper/active_speaker/crossover_v2/session_seams.py` | ≥ 10 (today: 0) |
+| W4-a | `grep -n "asyncio.shield" jasper/active_speaker/crossover_v2/session.py` | 2 sites |
+| W4-a | `grep -rn "held_target_db" docs/crossover-v2-engine-design.md` | the `:252-268` hits re-tensed |
+| W4-c | `grep -rn "acquire_level(" jasper/ \| grep -v volume_owner.py` | **5** (today: **4** — see §6, the owner already has takers) |
+| W5-a | `grep -rn "prepare_v2_verify" jasper/` | 0 (today: **28**, of which one is the def at `correction_crossover_v2.py:6520`, one the selector at `correction_setup.py:6341`, the rest prose) |
+| W5-b | `grep -rn "TuningSession(\|EngineSeams(" jasper/` | ≥ 1 (today: **0** — production constructs neither) |
+| W5-b | `grep -n "_session_graph\b" jasper/web/correction_crossover_v2.py` | 0 (today: declared `:1191`, written `:1212`, cleared `:1179` / `:1235`, read `:1203` / `:1232`, plus `global` at `:1176` / `:1202` / `:1231`. Four further hits — `:1209`, `:1334`, `:4102`, `:5438` — are log-event names and a `source=` string, and stay) |
+| W5-b | `grep -n "holder\[" jasper/web/correction_crossover_v2.py` | 0 (today: `:6432`, `:6449`, `:6856`, `:6873`) |
+| W5-c | `grep -n "_session_volume_io" jasper/web/correction_crossover_v2.py` | def + the one read-only site (today: def + 5) |
+| W5-c | `grep -rn "set_main_volume_db=\|get_main_volume_db=" jasper/active_speaker/session_volume_plan.py` | the latch's internals only |
+
+**One grep that lies, so read it rather than counting it.** `grep -rn "def bank("`
+returns four hits, not three: the Protocol (`session_seams.py:236`), two test
+doubles (`tests/engine_twin.py:214`, `tests/test_crossover_v2_engine_skeleton.py:133`)
+— and `tests/test_crossover_v2_candidate_republish.py:60`, which is a **pytest
+fixture named `bank`** and not a `RecordStore` at all. A count of `def bank(`
+therefore reads as "one production implementation exists" the moment W1-a lands
+and the fixture is still there.
+
+### 5.2 The enumerated-set check, widened and re-run
+
+The ledger's grep (`REFACTOR-TUNING-2026-08.md:953-959`) uses a trailing paren
+and structurally cannot see a bare bound-method reference. Widened:
+
+```
+grep -rn "set_volume_db" jasper/
+```
+
+**17 hits at `c253c3cf1`**, and the classification is the answer, not the count:
+
+- **the clamped door and its own internal callers** — `camilla.py:684` (def),
+  `:741` (`adjust_volume_db`), `:810` / `:827` (the graph-swap duck and its
+  release);
+- **the owner's bound doors** — `volume_coordinator.py:2068`, and `:2830`
+  (`set_fader_db=lambda db: fader.set_volume_db(db, best_effort=True)`, inside
+  the `install_volume_owner(VolumeOwner(...))` call);
+- **W15, ruled stopped** — `commissioning_service.py:1336`;
+- **W7, the named exception this brief dissolves** —
+  `correction_crossover_v2.py:1296`;
+- **the reference the paren-grep could not see** — `cli/seat_level.py:413`
+  `set_main_volume_db=cam.set_volume_db,`. A separate CLI process with no
+  `install_volume_owner`, so `volume_owner()` answers `None` there
+  (`volume_owner.py:799-806`) and nothing is unsafe. **Say that, rather than
+  resting the claim on a grep that cannot find it.**
+- **seven prose mentions** — `camilla.py:457`, `:700` (a log format string),
+  `volume_owner.py:205`, `seat_level_ramp.py:1336`, `session_seams.py:158`,
+  `correction_setup.py:291`, `cli/aec_tune.py:308`,
+  `audio_measurement/level_solver.py:32`.
+
+**The enumerated set holds after widening.** W5-c removes the W7 row from it.
+
+### 5.3 Traps
+
+- **Squash-ancestry.** `main` squash-merges, so `git merge-base --is-ancestor`
+  reports a landed branch as un-landed. Use `git cherry`; rebase with
+  `git rebase --onto`.
+- **The reap trap, and it is coupled to W4-a's shield.** `_run_async`'s timeout
+  path (`correction_setup.py:1310-1328`) cancels the loop task, waits
+  `_RUN_ASYNC_CANCEL_DRAIN_TIMEOUT_S` (**45.0 s**, `:197`, aliased from
+  `_CROSSOVER_VOLUME_RECOVERY_TIMEOUT_S` `:196`), logs **CRITICAL**, then waits
+  **unbounded** — *"a terminal response must never release measurement ownership
+  while its graph/volume finalizer can still mutate the speaker"* (`:1323-1326`).
+  The gate it opens is `drained.set()` in `_tracked`'s `finally` (`:1304-1305`).
+  **A bare `await asyncio.shield(coro)` defeats this**: the outer coroutine
+  raises immediately, `_tracked` unwinds, `drained` fires — while the detached
+  release is still running. The fail-closed promise is only kept if the cleanup
+  is awaited to completion before the `CancelledError` propagates. **The alarm
+  is observability, not permission to abandon cleanup.**
+- **Sweep the subject, then follow every hit to the assertion it makes.**
+  `held_target_db` has **10 doc hits**; exactly **one** of them
+  (`crossover-v2-engine-design.md:252-268`) asserts the parameter is live.
+  `adr/0004:101-106` says the opposite in as many words, and five of the ten are
+  the cutover plan's own record of the finding. A subject sweep that stops at
+  the count reports a two-doc problem where there is a one-doc problem — which
+  is exactly what happened (§6).
+- **Wrap-safe *and* glyph-safe.** This tree wraps at ~79 columns, so join line
+  pairs before matching. And `session_volume_plan.py:868` writes `−60.0 → −12.5`
+  with U+2212 and U+2192 — an ASCII grep for `-60.0 ->` finds nothing.
+- **Validate a tree-scanning check against the merge result**, never the branch:
+  `git merge-tree --write-tree origin/main HEAD` (AGENTS.md). Two-dot diffs
+  render phantom removals in this shared repo.
+- **Re-derive every line number before you cut.** Every `file:line` here was
+  true at `c253c3cf1`. Two of the plan's had already moved by one or two lines
+  within a single merge, and three pointed at the wrong file.
+
 ## 6. Disagreements with the plan, recorded
+
+Everything marked **[≠plan]** inline, plus two rulings. Nothing here is papered
+over; each is a place an executor following §4/§5 literally would go wrong.
+
+| # | Where | The plan says | At `c253c3cf1` |
+|---|---|---|---|
+| 1 | §2.1 | `_dispatch_crossover` reached from `:8014` | `:8014` is the guard; the call is `:8015` |
+| 2 | §2.1 | the short endpoints bridge with `_run_async`, *"ten sites, e.g. `correction_crossover_v2.py:7274`, `:7883`"* | `_run_async` has **zero** hits in that file. The two examples are real, under the injected `run_async` parameter, and there are **nine** of them. `_run_async` itself lives in `correction_setup.py` with 34 call sites |
+| 3 | §2.2 | the four relay slots are *"written by `_set_relay_capture` `:719-731` and cleared at `:615-623`"* | two functions: `_begin_relay_capture` (`:706`) writes at `:719-731` and owns the in-flight **refusal**; `_set_relay_capture` (`:614`) clears at `:615-623` |
+| 4 | §2.4 | stage 2's `bind_v2_stage_seams` call is `:6800-6811`, *"the same call shape"* as stage 1's | `:6801-6812`, and it is **not** the same shape: stage 2 passes `publish_check=_publish_check` |
+| 5 | §2.4 | teardown includes `_release_pause_best_effort` (`:1309`) and `release_session_measurement_graph` (`:1215`), listed among `correction_setup.py` symbols | both live in `correction_crossover_v2.py`; `correction_setup.py` has **zero** hits for either |
+| 6 | §3.1 | `_set` calls `CamillaController.set_volume_db` | it calls `camilla_factory().set_volume_db(...)` — the controller is injected |
+| 7 | §3.4 | `_clear_resolved`'s docstring is `:862-880` | `:859-891`; the mirror-image paragraph runs past `:880` |
+| 8 | §4 | `tests/engine_twin.py` is 419 lines | 418 |
+
+**Ruling A — W5-d's ADR half should be dropped, not executed.** The plan says
+`adr/0004:101-106` *"still describes `held_target_db` as live plumbing"* and
+that *"the fix is a superseding note."* Those lines say the opposite: *"Scope
+note, so the next reader does not mistake this for still-live plumbing: the
+specific `held_target_db` parameter goes dead on the measurement path once the
+engine installs one session-scoped graph and stops swapping per candidate."* The
+scope note came true. An ADR is a dated record and reads as of its date; a
+superseding ADR minted because a correct forecast was fulfilled is ceremony, and
+AGENTS.md's *"a guard claiming safety that is not on the list is a nanny"* is
+the same instinct one level over. **W5-d keeps only the engine-design half
+(`crossover-v2-engine-design.md:252-268`, which really does say *"read this
+parameter as live plumbing … until 6e lands"*) and the widened grep — §5.2
+already carries that grep's output, so W5-d is ~25 lines, not 60.**
+*(Separately visible and deliberately not acted on: ADR-0004's own citations
+`jasper/camilla.py:96-141` no longer match HEAD — `_duck_release_target_db` is
+now at `:85-130`. The directory is immutable; a superseding ADR to fix line
+numbers would be worse than the drift.)*
+
+**Ruling B — W4-c demotes from adversarial to default, and the premise under it
+is wrong.** The plan's reason is *"the first production implementation of a
+fader claim."* **It is the fifth consumer of one that already ships.**
+`acquire_level(` has four production call sites outside the owner today —
+`correction_setup.py:267` (level-match), `:3583` (autolevel),
+`sound_setup.py:1474` (commissioning floor tone), `balance_volume_guard.py:279`
+(the measurement-volume guard) — and **three of them already take
+`ClaimKind.SESSION_MEASUREMENT`**, the very kind W4-c's adapter takes
+(`correction_setup.py:268`, `:3584`, `balance_volume_guard.py:280`). The owner
+already clamps behind `camilla.py`'s door (`volume_owner.py:39-45`), already
+contracts idempotent release (`:542-543`) and preemption-safe `prove`
+(`:617-627`), and cites `session_seams.VolumeClaim.release` **by name** at
+`:514`. W4-c is a ~90-line box holding one `VolumeClaimHandle` between three
+calls; it touches no clamp and no DSP math, and a second review pass buys
+nothing its three pins do not. By the same evidence **W5-b is not *"the first
+production path through the volume claim"*** either — it is the first through
+*the seam*. W5-b nonetheless **stays adversarial**, as do W4-a and W5-c: each of
+those three really can leave a fader nobody holds, which is the stated standard
+in §4.
+
+*(A consequence worth carrying into W5-b rather than discovering: the session's
+claim shares rank 1 with three existing takers. Two `SESSION_MEASUREMENT`
+holders can therefore coexist in one process, which is exactly why `prove()` is
+contracted per stimulus and not per spec.)*
+
+**Two places the plan is right and stronger than it argues.**
+
+1. **Option B does not hang for 60 s — it wedges permanently.** §4's refutation
+   stops at *"hangs until the 60 s timeout fires and cancels."* Traced through
+   `_run_async`: a loop-thread caller blocks the loop on `fut.result(...)`, so
+   `_tracked` never runs, so `drained` never sets, so the reap's unbounded
+   `drained.wait()` (`:1327`) blocks the same loop forever. And
+   `_run_graph_mutation` (`:1331`) passes `timeout=None`, so a seam bridging
+   through it deadlocks with no alarm at all. §1's ADR states it this way.
+2. **The shield has house prior art, and the plan's wording would miss it.**
+   Twenty-five `asyncio.shield` sites ship in `jasper/`. The reference form is
+   `correction_crossover_v2_wired.py:821-840` — create the task, shield it, and
+   on `CancelledError` **loop** until it is done, tolerating a repeat cancel —
+   with `bass_extension/bench/activation.py:291-298` as the short version
+   (`ensure_future` · `shield` · `except CancelledError: await; raise`). *"Shield
+   the two releases"* read literally produces a bare `await asyncio.shield(coro)`,
+   which is a different and weaker thing (§5.3's reap trap). §1's ADR names the
+   idiom rather than the function.
+
+**One thing this brief did not settle.** W5-c's three-way split (§3.3) sends
+`enforce_ceiling` and `recover_unresolved` through
+`VolumeOwner.declare_household_level_db` (`volume_owner.py:297`), by analogy
+with the ledger's W11 ruling. That analogy was checked against the ledger row,
+**not** against a crash-recovery run on hardware. The executor should treat it
+as the recommended route and the first thing to disprove.
