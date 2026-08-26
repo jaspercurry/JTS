@@ -56,7 +56,8 @@ import time
 from collections.abc import Callable
 from dataclasses import dataclass
 
-from .config import GroupingConfig, is_active_leader
+from . import config
+from .config import GroupingConfig
 
 # --- shairport / AP2 contract constants ---
 # All cross-checked against the live shairport-sync binary's format strings
@@ -290,12 +291,10 @@ def bonded_airplay_latency_snapshot(
     surface can never claim "applicable" when the offset is not armed (or
     vice versa).
     """
-    from .config import load_config
-
-    load = config_loader or load_config
+    load = config_loader or config.load_config
     try:
         cfg = load()
-        if not is_active_leader(cfg):
+        if not config.is_active_leader(cfg):
             return {"applicable": False}
         read = frames_reader or cached_notified_frames
         fit = assess_fit(cfg.buffer_ms, read())

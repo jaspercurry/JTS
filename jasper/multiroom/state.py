@@ -44,7 +44,8 @@ import subprocess
 from typing import Any, Callable
 
 from ..ring_assets import RingFlowState, ring_flow_state
-from .config import GROUPING_ENV_FILE, GroupingConfig, load_config
+from . import config
+from .config import GROUPING_ENV_FILE, GroupingConfig
 from .effective_role import read_effective_role_status
 from .grouping_ring import GROUPING_RING_FILE, GROUPING_RING_PCM
 from .reconcile import (
@@ -691,7 +692,7 @@ def read_grouping_state(
     injectable for tests; production uses :func:`read_unit_active_states`,
     :func:`active_leader_pipe_path` and :func:`_read_grouping_ring_state`.
     """
-    cfg = load_config(path)
+    cfg = config.load_config(path)
     subwoofer_present = (
         cfg.subwoofer_present
         or cfg.channel == "sub"

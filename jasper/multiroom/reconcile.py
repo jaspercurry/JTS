@@ -56,14 +56,8 @@ from ..source_intent import (
     RECONCILE_SYSTEMD_TIMEOUT_SECONDS as SOURCE_RECONCILE_SYSTEMD_TIMEOUT_SECONDS,
 )
 from ..source_intent import RECONCILE_UNIT as SOURCE_INTENT_RECONCILE_UNIT
-from .config import (
-    GroupingConfig,
-    bond_has_subwoofer,
-    is_active_leader,
-    is_active_member,
-    load_config,
-    local_sources_parked,
-)
+from . import config
+from .config import GroupingConfig
 from .effective_role import (
     FOLLOWER_STATUS_FILE,
     grouping_request_fingerprint,
@@ -650,7 +644,7 @@ def outputd_grouping_env(
                 # Empty = unset to outputd's env_f32 (default 0.0).
                 OUTPUTD_DAC_CONTENT_TRIM_ENV: "",
             }
-        sub_present = bond_has_subwoofer(cfg)
+        sub_present = config.bond_has_subwoofer(cfg)
         # The wireless-sub mains high-pass corner, applied in THIS (dumb-member)
         # lane. Reached only for a passive single-DAC main (active endpoints
         # returned above with this cleared — the §6 precedence). The corner is
@@ -791,7 +785,7 @@ def airplay_grouping_env(cfg: GroupingConfig) -> dict[str, str]:
     acoustically calibrated alongside snapclient --latency.
     jasper-apply-airplay-mode ADDS this to the solo-derived offset.
     """
-    if is_active_leader(cfg):
+    if config.is_active_leader(cfg):
         return {AIRPLAY_BONDED_EXTRA_DELAY_ENV: f"{cfg.buffer_ms / 1000:.6f}"}
     return {}
 
@@ -894,7 +888,7 @@ def box_dac_content_lane_armed(cfg: GroupingConfig) -> bool:
     unreadable topology cannot separate a dumb member (lane armed) from an active
     endpoint (lane cleared), so the rule is asked with the shape that arms it.
     """
-    if not is_active_member(cfg):
+    if not config.is_active_member(cfg):
         return False
     active_box_state, flat_output_allowed = _output_topology_state()
     if active_box_state is None:
@@ -1850,11 +1844,11 @@ def main(argv: list[str] | None = None) -> int:
 
     install_env_canonical_target_provider()
 
-    cfg = load_config()
+    cfg = config.load_config()
     requested_cfg = cfg
     prior_role_status = read_effective_role_status(FOLLOWER_STATUS_FILE)
     transitioning_from_parked_role = (
-        not local_sources_parked(requested_cfg)
+        not config.local_sources_parked(requested_cfg)
         and prior_role_status.get("local_sources_allowed") is False
     )
     decision = plan(cfg)
@@ -1904,7 +1898,7 @@ def main(argv: list[str] | None = None) -> int:
         nonlocal refused_follower_fallback, rc
 
         cfg = replace(cfg, enabled=False)
-        refused_follower_fallback = local_sources_parked(requested_cfg)
+        refused_follower_fallback = config.local_sources_parked(requested_cfg)
         decision = plan(cfg)
         active = False
         active_leader = False
@@ -1929,7 +1923,7 @@ def main(argv: list[str] | None = None) -> int:
             blocked_reason=endpoint_block_reason,
             requested_cfg=requested_cfg,
             local_sources_allowed=(
-                not local_sources_parked(cfg) and not transitioning_from_parked_role
+                not config.local_sources_parked(cfg) and not transitioning_from_parked_role
             ),
             path=FOLLOWER_STATUS_FILE,
         )
@@ -2083,7 +2077,7 @@ def main(argv: list[str] | None = None) -> int:
             blocked_reason=reason,
             requested_cfg=requested_cfg,
             local_sources_allowed=(
-                not local_sources_parked(cfg) and not transitioning_from_parked_role
+                not config.local_sources_parked(cfg) and not transitioning_from_parked_role
             ),
             path=FOLLOWER_STATUS_FILE,
         )
@@ -2125,7 +2119,7 @@ def main(argv: list[str] | None = None) -> int:
         blocked_reason=status_block_reason,
         requested_cfg=requested_cfg,
         local_sources_allowed=(
-            not local_sources_parked(cfg)
+            not config.local_sources_parked(cfg)
             and not refused_follower_fallback
             and not transitioning_from_parked_role
         ),
@@ -2359,7 +2353,7 @@ def main(argv: list[str] | None = None) -> int:
     # reaches here on the bonded->solo transition (airplay_changed). One
     # restart, only on a real offset change — never on the steady-state
     # solo reconcile.
-    is_bonded_follower = local_sources_parked(cfg)
+    is_bonded_follower = config.local_sources_parked(cfg)
     airplay_refresh_ok = True
     if airplay_changed and airplay_ok and not is_bonded_follower:
         # AirPlay may be household-Off.  A plain restart ignores unit
@@ -2576,7 +2570,7 @@ def main(argv: list[str] | None = None) -> int:
                             blocked_reason=endpoint_block_reason,
                             requested_cfg=requested_cfg,
                             local_sources_allowed=(
-                                not local_sources_parked(cfg)
+                                not config.local_sources_parked(cfg)
                                 and not transitioning_from_parked_role
                             ),
                             path=FOLLOWER_STATUS_FILE,

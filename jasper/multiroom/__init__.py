@@ -49,10 +49,29 @@ here.
 """
 from __future__ import annotations
 
-from .config import GroupingConfig, is_enabled, load_config
+from typing import Any
 
+from . import config
+from .config import GroupingConfig
+
+# Convention for every module in this package: resolve config *callables*
+# through the `config` module at call time (``config.load_config(...)``),
+# never via ``from .config import load_config``. A from-import binds the
+# value at import time, so a test monkeypatching
+# ``jasper.multiroom.config.load_config`` neither reaches the captured
+# binding nor undoes it at teardown (#1270, #1678). Constants and types
+# (``GROUPING_ENV_FILE``, ``GroupingConfig``) are immutable — import those
+# directly.
 __all__ = [
     "GroupingConfig",
     "is_enabled",
     "load_config",
 ]
+
+_CONFIG_CALLABLES = frozenset({"is_enabled", "load_config"})
+
+
+def __getattr__(name: str) -> Any:
+    if name in _CONFIG_CALLABLES:
+        return getattr(config, name)
+    raise AttributeError(f"module {__name__!r} has no attribute {name!r}")
