@@ -62,10 +62,9 @@ executed under both.
    mechanism may be built (the workbench plan's "experiment workspace"
    mutation-owner claim is superseded — see Supersessions).
 6. **Safety is the closed hard-stop list; everything else informs.** Refusals
-   exist only for named component-damage mechanisms (the doctrine's list).
-   The doctrine's recorded deviations converge per tickets 2.3/2.7 and
-   ruling R8, and the doctrine's own deviation table is trued up as rows
-   close.
+   exist only for named component-damage mechanisms (the doctrine's list,
+   which is positively complete: five mechanisms and the enforcement families
+   under them). The burn-down converged per tickets 2.3/2.7 and ruling R8.
 7. **Handoff URLs derive from the speaker's hostname.** Tools that hand the
    human to the web UI print URLs built from `JASPER_HOSTNAME` /
    `Config.hostname` (speakers are `jts1.local`, `jts3.local`, … — never a

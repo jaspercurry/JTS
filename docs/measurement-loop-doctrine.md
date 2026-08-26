@@ -88,10 +88,7 @@ round, kept or restored or refused, banks its measurement into the series state
 so the next bite is commanded from it. Only the round budget, the plateau, and
 the safety class end a series; rollback ends one only for the safety class or
 for genuine corruption — an unmeasured or integrity-lost state the model cannot
-reason about. **The safety class is §4's closed list**, which is stated there
-once and is the enumeration to read: the ethos that ruled this named the class
-as driver protection, hearing safety, and the clipping/volume ceiling, and that
-naming is its own gloss, not a second list to hold §4 to.
+reason about. **The safety class is §4's closed list**, stated there once.
 
 So the rule a verdict class is held to: measured no-worse than the previous
 state → keep, bank, continue; measured worse → restore the playing
@@ -123,54 +120,80 @@ work, not settled doctrine.
 
 ## 4. The hard-stop enumeration (closed list)
 
-This is the ruling the tree converges to, not a snapshot of its current
-refusal surface — known deviations at this doc's date are tracked below,
-never silently treated as more hard stops. The only refusals a scientist
-accepts from the bench, because each guards a real component against
-damage:
+**Five mechanisms, and this list is positively complete.** A refusal that is
+not one of the five — or one of the enforcement families named under it — is
+not a hard stop, whatever its name or its household screen says. The five
+expand to roughly **112 enforcement points** across the round path, because
+"the excitation ledger", "the output limiters" and "declared per-driver bands"
+are each families rather than single `raise` sites; that is why the list is
+short and the surface is not (refusal census, 2026-08-25; the counts and their
+composition are in
+[`REFACTOR-TUNING-2026-08.md`](REFACTOR-TUNING-2026-08.md) §1). Each guards a
+real component against damage, and nothing else on the bench may refuse.
 
-- the excitation ledger and the excitation safety plan
-  (`jasper/active_speaker/excitation_safety_plan.py`). **The ledger admits a
-  program against the DECLARED session volume**, so a stimulus emitted at any
-  other fader position was never the one it admitted — which is why the
-  per-stimulus fader hold
-  (`jasper/active_speaker/volume_latch.py`, `hold_fader_at`) refuses
-  `measurement_volume_drift` rather than disclosing. Not a new gate but this
-  bullet's own mechanism restated at the moment of emission: a fader above the
-  declared volume drives every branch past the declared level-duration limits
-  this bullet exists to enforce. **It trips on two conditions, and the second
-  is the fail-closed half of the same rule** — the fader read and did not
-  agree, OR the fader could not be read at all, because a level that cannot be
-  established cannot be shown to be under the caps either. **It proves and
-  never writes** (wave 5): `SessionVolumePlan.open` establishes the
-  measurement volume once per session, and a per-stimulus repair here was a
-  second writer moving the fader behind the session's back. It passes the
-  nanny test below because it refuses only what it cannot PROVE, after an
-  independent second read — never a level it merely dislikes — and every
-  refusal names the reading it took (#2925; found the other way round — an
-  overnight campaign measured 8.712 dB QUIET, with the ledger equally wrong in
-  the direction that is loud)
-- the output limiters — `STARTUP_LIMITER_CLIP_LIMIT_DB` /
-  `BASELINE_LIMITER_CLIP_LIMIT_DB` in
-  `jasper/active_speaker/camilla_yaml.py` — and the volume /
-  `HARD_CEILING_DBFS` rail (`jasper/audio_measurement/ramp.py`)
-- declared per-driver excitation bands and level-duration limits —
-  `permitted_band` / `level_duration_limits` in `excitation_safety_plan.py`.
-  **Declared** is the load-bearing word, and since 2026-08-23 it is enforced
-  as such: `max_effective_peak_dbfs` is optional, a value on the record is
-  honoured verbatim rather than clamped to a class default, and it bounds the
-  per-driver composed level rather than the un-segmented measurement volume
-  (row (h)). **A published protection slope is declared in the same sense and
-  is inside this bullet** — `TOPOLOGY_SLOPE_BELOW_DECLARED_REQUIREMENT`
-  (`crossover_v2/topology_prescription.py`) refuses a pinned order below the
-  slope the maker published, and it refuses nothing at all when the maker
-  published no slope. Said here because the bullet's own vocabulary named
-  bands and level-duration limits only, which left the tree's one published-
-  slope refusal reading as if it sat outside a closed list it belongs to
-- the commissioning level stop — `max_commissioning_level_db_spl`
-  (`jasper/active_speaker/profile.py`)
-- firmware brick hazards, e.g. the XVF `SAVE_CONFIGURATION` ban
-  (`jasper/cli/aec_tune.py`)
+1. **The excitation ledger and the excitation safety plan**
+   (`jasper/active_speaker/excitation_safety_plan.py`). The ledger admits a
+   program **against the DECLARED session volume**, so a stimulus emitted at
+   any other fader position was never the one it admitted. Carried by the
+   ledger's own excitation-identity and program-admission refusals and, at the
+   moment of emission, by the per-stimulus fader hold
+   (`volume_latch.hold_fader_at` → `measurement_volume_drift`) and the session
+   volume plan (`session_volume_plan.py`). **The fail-closed half is the same
+   rule, not a second one**: the hold trips when the fader read and did not
+   agree, and equally when it could not be read at all, because a level that
+   cannot be established cannot be shown to be under the caps. It **proves and
+   never writes** — `SessionVolumePlan.open` sets the measurement volume once
+   per session, and a per-stimulus repair here would be a second writer moving
+   the fader behind the session's back. It passes §5 because it refuses only
+   what it cannot PROVE, after an independent second read, and every refusal
+   names the reading it took (#2925).
+2. **The output limiters and the volume rail** —
+   `STARTUP_LIMITER_CLIP_LIMIT_DB` / `BASELINE_LIMITER_CLIP_LIMIT_DB`
+   (`jasper/active_speaker/camilla_yaml.py`) and `HARD_CEILING_DBFS`
+   (`jasper/audio_measurement/ramp.py`). Carried by the CamillaDSP emit gates
+   and the field invariants guarding them — every one refuses *before* the
+   YAML leaves the emitter — by the same contract re-asked at load and deploy
+   (`runtime_contract.classify_camilla_graph`,
+   `safe_graph_for_current_topology`, `flat_program_graph_blocked_reason`), by
+   the path-safety tweeter-floor arms, and by the `SAFETY_*` verification
+   findings that send a clipped or uncommanded-louder result to the restore
+   path as `SafetyStatus.UNSAFE`.
+3. **Declared per-driver excitation bands and level-duration limits** —
+   `permitted_band` / `level_duration_limits` in `excitation_safety_plan.py`.
+   **Declared** is the load-bearing word: `max_effective_peak_dbfs` is
+   optional, a value on the record is honoured verbatim rather than clamped to
+   a class default, and it bounds the per-driver composed level rather than
+   the un-segmented measurement volume. **A published protection slope is
+   declared in the same sense** — `TOPOLOGY_SLOPE_BELOW_DECLARED_REQUIREMENT`
+   (`crossover_v2/topology_prescription.py`) refuses a pinned order below the
+   slope the maker published, and refuses nothing at all when the maker
+   published no slope. Also carried by the topology fc edges and
+   `FILTER_OUTSIDE_PASSBAND` (`crossover_v2/driver_prescription.py`), and by
+   `driver_safety.validate_research_low_limit_plausibility`, because an
+   implausible protection corner is a tweeter-damage mechanism.
+4. **The commissioning level stop** — `max_commissioning_level_db_spl`
+   (`jasper/active_speaker/profile.py`). Carried by the seat-level
+   SPL / clip / ceiling refusals, checked on *every* sample before the median
+   (`cli/seat_level.py`, `seat_level_ramp.py`), and by the stage-5 ramp and
+   audible-policy blockers (`commission_ramp.py`, `audible_policy.py`). The
+   clamps that **cannot be proven to hold** sit here on the same footing as
+   the fader hold above and refuse for that reason alone:
+   `mic_calibration_unavailable` (`audio_measurement/calibration.py` —
+   "absolute SPL is never guessed"), `driver_cap_ceiling_underivable`, and the
+   driver-floor confirmation pair.
+5. **Firmware brick hazards** — the XVF `SAVE_CONFIGURATION` ban
+   (`jasper/cli/aec_tune.py`).
+
+**One retention that is kept by ruling rather than by mechanism.** Blend's
+`BOOST_ROUTE_UNAVAILABLE` (`crossover_v2/blend_prescription.py`) refuses the
+boost class outright, and ruling R8 in
+[`tuning-master-plan.md`](tuning-master-plan.md) keeps it: *"Blend's
+`BOOST_ROUTE_UNAVAILABLE` stays for its two recorded reasons (blend is not a
+headroom term; a summed capture cannot attribute a deficit to a driver)."*
+That is a stated limit of the instrument rather than a prior about the
+outcome — the blend stage is emitted under
+`camilla_yaml.MAX_BLEND_CORRECTION_GAIN_DB = 0.0`, so it has no headroom to
+spend — and boosts go through the driver door instead.
 
 **No reason code takes a graph off the speaker, and the registry's "hard
 stop" is not this list's.** `REASON_REGISTRY` (`crossover_v2/refusal_copy.py`)
@@ -191,6 +214,12 @@ Everything else — geometry blindness, beaming priors, confidence
 heuristics, prediction-engine rankings — is **provenance**, not a gate: it
 rides with the data into the evidence packet for the prescriber (human or
 LLM) to weigh. It must never refuse an experiment on its own.
+
+**What `deviation (a)`…`(i)` means, where a comment still says it.** This
+section used to carry a nine-row table of refusals that sat outside the list
+while they were burned down. Eight closed; the ninth is the retention above.
+The table is deleted because a positively complete list is what it was
+compensating for, and its record is in git history.
 
 ### 4a. The integrity class — refusing a CLAIM
 
@@ -258,28 +287,6 @@ pattern is **not** how the topology-staleness block was narrowed: §2's
 disclosure rule deleted that block outright, and a rotated topology
 fingerprint is a warning with a doctor line now, not a blocker.
 
-### Known deviations at 2026-08-21, and where each stands
-
-Five tested refusals sat outside the list above when this doc was ratified,
-none naming a component-damage mechanism; a sixth, a seventh, an eighth, and a
-ninth were found afterwards and are carried here on the same terms. **Eight are
-now closed and one is retained by ruling, so this table tracks nothing
-outstanding.** Rows are
-struck as they close and a struck row stays, so a reader meeting one of these
-names in an old round or an old commit can tell it was retired on purpose:
-
-| # | refusal | file | status |
-|---|---|---|---|
-| ~~a~~ | ~~`BOOST_VERTICALLY_BLIND`~~ | `jasper/active_speaker/crossover_v2/driver_prescription.py` | **CLOSED** — removed in #2805; a boost admitted on a horizontal capture now owes a measurement, not a plane |
-| ~~b~~ | ~~`FC_REJECT_BEAMING` clamps the Fc grid against a prior #1675 rules "guidance, never refuses"~~ | — | **CLOSED 2026-08-21.** The refusal only ever bound the corner hunt's proposal grid, and the hunt was deleted with `fc_sweep`'s sweep half (plan ticket 2.3). No admissibility bound reads the ka onset now; it rides the receipt as provenance, which is what section 4 asked for. |
-| ~~c~~ | ~~`REASON_CORRECTION_NOT_AN_IMPROVEMENT`~~ — refused on predicted-vs-predicted, no measurement in the loop | `jasper/active_speaker/crossover_v2/accountability.py`, `jasper/active_speaker/crossover_v2_flow.py` | **CLOSED** — it vetoed jts3's first prescribed-boost round on 2026-08-22 (`improvement_db=-0.703`, one line after disclosing its own inputs 11.635 dB apart); the forecast now banks `LEDGER_NOT_AN_IMPROVEMENT` and the round proceeds |
-| ~~d~~ | ~~`_strategy_gates` score floors~~; ~~`measurement_evidence_failure`'s fail-severity apply blocker~~ | `jasper/correction/confidence.py`, `jasper/correction/failures.py` | **CLOSED** — the score floors' only veto (`response._policy_allows`) went in #2808 and every remaining reader was already disclosure; the apply blocker is deleted, and a `fail`-severity finding now reaches the household as a `warn` nudge |
-| e | `prescription_route` refuses the boost class outright | `jasper/active_speaker/crossover_v2/blend_prescription.py` | **RETAINED by ruling R8** (`docs/tuning-master-plan.md`): "Blend's `BOOST_ROUTE_UNAVAILABLE` stays for its two recorded reasons (blend is not a headroom term; a summed capture cannot attribute a deficit to a driver)" — a stated limit of the instrument, not a prior about the outcome |
-| ~~f~~ | ~~`TOPOLOGY_SLOPE_BELOW_DECLARED_REQUIREMENT` refused a pinned order against a code floor while calling it "declared"~~ | `jasper/active_speaker/crossover_v2/topology_prescription.py` | **CLOSED 2026-08-23** — found after ratification. The gate read `required_protection_filters[highpass].minimum_slope_db_per_octave`, which is `max(published, PROTECTION_SLOPE_FLOOR_DB_PER_OCTAVE)`, so jts3's DE250 — B&C publish "1.6 kHz — 12 dB/oct. or higher" — had a 2400 Hz order-2 pin refused "below the protected driver's declared minimum of 24 dB/octave". The owner ruled: "If it was in the safe overall envelope, it's safe to test." The refusal survives but now compares the PUBLISHED condition only, which makes it a declared-value refusal rather than a class floor and puts it inside section 4 on the same footing as the declared excitation bands; a maker who publishes nothing gets no slope refusal at all, and the 24 dB/octave commissioning figure discloses on the receipt (`recommended_slope_db_per_octave`) beside the design page's existing `tweeter_slope_below_recommended_floor` warning ([#2897](https://github.com/jaspercurry/JTS/pull/2897)) |
-| ~~g~~ | ~~the driver door's classification bar~~ — ~~`driver_feature_not_classified`~~, ~~`driver_feature_not_cuttable`~~, ~~`driver_feature_not_boostable`~~, ~~`driver_feature_depth_unavailable`~~, ~~`driver_boost_exceeds_feature_depth`~~, ~~`driver_boost_unvouched`~~ | `jasper/active_speaker/crossover_v2/driver_prescription.py` | **CLOSED 2026-08-23.** Not in the table when it was ratified — a seventh deviation, found by its cost: a role whose incumbent carried a Lowshelf could never keep it, because nothing vouches for a filter the fit engine placed, so naming the role always deleted the shelf ([#2863](https://github.com/jaspercurry/JTS/issues/2863)). The vouch is a prediction about whether a filter will help, so it now discloses `unvouched_filters` on the propose/stage report and refuses nothing. The caps that bound what a filter COSTS are untouched |
-| ~~h~~ | ~~`level_duration_limits.max_effective_peak_dbfs` bounded the un-segmented measurement VOLUME~~, and ~~`max_effective_peak_above_code_policy`~~ refused a declared level against a class default | `jasper/active_speaker/session_volume_plan.py`, `jasper/active_speaker/driver_safety.py` | **CLOSED 2026-08-23** — found after ratification, an eighth deviation, by its cost. `jasper-seat-level --target-db-spl 75` refused `spl_target_unreachable` at 68.3 dB SPL on the new-horn box: the ceiling was `min(driver caps) − stimulus peak`, and the binding cap was the tweeter's, derived from a woofer figure the research ask itself had told the assistant to send. The ask's own words for that object are "measurement-protocol discipline, not datasheet facts", so no term in the chain named a damage mechanism, and ~30 dB of digital headroom sat unused. The owner ruled: "It's a fixed-gain amp — we do ALL volume via software... No limit unless we have no headroom to give." The un-segmented ceiling is now full scale less the binding branch peak and DISCLOSES each declared cap it drives past on `event=active_speaker.unsegmented_ceiling_bound`; the save-time refusal is deleted and the field is optional. The per-driver cap keeps its other job — setting and admitting each driver's composed segment level, where it is level-MATCHING rather than a ceiling — so it stays inside section 4 above on the declared-value footing |
-| ~~i~~ | ~~`REASON_DRIVER_LEVELS_DISAGREE`~~ — the realized-level gate refused a round on a QUALITY measure | `jasper/active_speaker/crossover_v2/accountability.py`, `jasper/active_speaker/crossover_v2/refusal_copy.py`, `jasper/audio_measurement/program_analysis.py` | **CLOSED 2026-08-24** — found after ratification, a ninth deviation, by its cost. It graded inter-driver tonal balance and named no damage mechanism, so section 4 never covered it. Its located cost was a **guaranteed refusal**: the number it grades IS the MEASURE ripple polish's trim excursion (`difference_db == polish_delta_db[tweeter] − polish_delta_db[woofer]` — the give-back is a per-role constant, so each role's excursion passes straight through and the pair's error is their difference; the woofer term is 0.0 in the shipped program, which polishes only the tweeter trim, so it reduces to the tweeter's, and that reduced form verified 8-for-8 against the banked campaign), and the polish was ADMITTED out to `RIPPLE_TRIM_SANITY_MARGIN_DB` (6.0 dB) while this gate REFUSED past `REALIZED_LEVEL_MATCH_TOLERANCE_DB` (3.0). Every polish landing in that 3.0-6.0 dB dead band produced a round the session was then certain to refuse, on two thresholds neither of which had measured anything; jts3's polish landed at 3.9 dB and was refused, where the campaign it was compared against had lived at 1.5-1.9. Both halves are fixed together: the polish admission is now COUPLED to this gate's tolerance, so the dead band closes by construction and a rejected polish falls back to the band-average trim with the excursion disclosed; and the gate itself banks `event=…_level_match_finding` plus a level-frame finding carrying `polish_delta_db_*`, and the round proceeds. Section 3's other half is met in the same change: the finding carries the recommendation the deleted refusal made — re-check each range's entered sensitivity and any resistor pad, then measure again — and keeps that refusal's tense ("would not end up level"), since the levels are read off the fit's MODEL of the emission and not off a capture of an apply that has not happened. What went is the stop, not the next action. The absolute rails that bound loudness are untouched and are elsewhere — non-positive trim clamps, the output limiters, `devices.volume_limit`, and the commissioning SPL stop |
-
 ## 5. The nanny test
 
 Before a review adds a new refusal, ask: **does this block a reversible
@@ -300,9 +307,9 @@ place only by naming the component-damage mechanism it guards against —
 - Evidence packet — one document per round a reader (human or LLM) can
   answer from: `jasper/active_speaker/crossover_v2/evidence_packet.py`.
 - More than one capture per mic position, so one mic movement answers more
-  questions (§1, `measure`) — `--per-position N` on the round runner above, plus the
-  derived `position_cycle.json` that says which pose each take was measured
-  at. Multiple DSP *configs* per position has a door but no wiring:
+  questions (§1, `measure`) — `--per-position N` on the round runner above,
+  plus the derived `position_cycle.json` that says which pose each take was
+  measured at. Multiple DSP *configs* per position has a door but no wiring:
   `POST /crossover/v2/republish` makes a banked candidate the live one by its
   own fingerprint, so republish-then-apply reaches a named prior config
   between takes. The open part is sequencing — holding a pose's next capture
@@ -312,50 +319,10 @@ place only by naming the component-damage mechanism it guards against —
 
 ---
 
-Scope of the 2026-08-22 verification: the deviation table above was re-derived
-against the tree — every row's named symbol grepped for a live producer — and
-rows (a), (c), and (d) closed; row (b) closed separately the same day (#2853)
-and its account is that PR's. The other sections were re-read and stand
-unchanged; the nanny test and the pointers are numbered one higher since,
-unmoved.
-
 Migration (2026-08-23, #2865): section 3 arrived from
 [`audio-commissioning-roadmap.md`](historical/audio-commissioning-roadmap.md)'s Ethos —
 its ruling text re-read from that file, and the owner's 2026-08-22
 re-affirmation and intervention-granularity refinement quoted from #2865 and
 #2862, at writing time.
 
-Row (f) was added and closed on 2026-08-23 (#2897), and only that row: the
-rest of the table and the sections around it were not re-derived that day.
-
-Row (g) was added and closed the same day, also on its own: every one of its
-six slugs was grepped for a live producer and none remains. Rows (a)-(e) were
-not re-derived that day either; their account is the 2026-08-22 pass above.
-Sections 1-6 were re-read and stand unchanged. So the date below records rows
-(f) and (g) and nothing else.
-
-Row (h) was added and closed the same day, on its own again, and the section 4
-bullet it qualifies was re-derived with it: `max_effective_peak_above_code_policy`
-was grepped for a live producer and none remains, and
-`unsegmented_stimulus_ceiling_db`'s one production caller
-(`jasper/cli/seat_level.py`) was read against the new derivation. No other row
-and no other bullet was re-derived that day.
-
-Row (i) was added and closed on 2026-08-24, on its own, and its fix round
-re-derived three more things the same day: `M7`'s `fix_classes` declaration in
-`jasper/attribution/mechanisms.py` (both `eq` and `refit` are declared, which is
-what lets the realized-only case route the first), the deleted refusal sentence
-read back off `origin/main`'s `refusal_copy.py` so the recommendation could be
-carried rather than paraphrased, and `findings.py`'s hardware-noun list, which
-is why that sentence is reworded rather than pasted. What was re-derived when
-the row was written: `REASON_DRIVER_LEVELS_DISAGREE` was grepped for a live
-producer and none remains (its registry row is deleted with it), the
-`difference_db == polish_delta_db[tweeter] − polish_delta_db[woofer]` identity
-was re-read at the two sites that produce each side (`intervention.plan_linearization`'s anchor block
-and `program_analysis._build_candidate`'s polish), and the two constants named
-in the row were read at their definitions. Section 3's disclose-and-recommend
-rule and section 5's nanny test were re-read as the authority for the
-demotion; section 4's list was re-read to confirm it never carried this gate,
-and no bullet in it changed. No other row was re-derived that day.
-
-Last verified: 2026-08-24
+Last verified: 2026-08-26
