@@ -292,7 +292,7 @@ the campaign's own dated narrative is
 [`crossover-measurement-v2-campaign-record.md`](crossover-measurement-v2-campaign-record.md)'s.
 One ruling from it is live.
 
-### §4.2 — the boost ruling (owner, 2026-08-05)
+### §4.2 — the "Boost ruling" (owner, 2026-08-05)
 
 > The R15 driver-only path permits boost when post-apply `VERIFY` runs;
 > `allow_boost` must no longer additionally require a pre-apply cloud. What that
@@ -331,8 +331,8 @@ accountability assertions, PR-L5 the doctrine amendment and the delta probe.
 The defect was located and two rival candidates were **refuted**:
 `_aligned_branch_tf` and `_driver_response` return byte-identical transfer
 functions, and **the CHECK gain-plan skew is fully divided out by the
-deconvolution — which also makes the trim-vs-fit frame comparison invariant to
-the drive gain.** The real mechanism: `overlap_band_hz` clamps the shared band's
+deconvolution — which also makes the trim-vs-fit frame comparison
+invariant to the drive gain.** The real mechanism: `overlap_band_hz` clamps the shared band's
 lower edge UP to the tweeter's sweep floor — Fc on this speaker — leaving
 `[Fc, 2Fc]`, entirely inside the woofer's crossover skirt: **+10.59 dB of
 closed-form bias on an ideal LR4 pair with two equal-sensitivity drivers**,

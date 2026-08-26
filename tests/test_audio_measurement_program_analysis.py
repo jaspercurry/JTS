@@ -7367,7 +7367,7 @@ def test_build_candidate_admits_a_polish_the_level_gate_can_grade(
 # at different digital levels without biasing the measurement.
 #
 # That invariance is load-bearing and, until this test, asserted only in prose
-# — canonically in docs/historical/crossover-measurement-v2-campaign-record.md gotcha 22, which
+# — canonically in docs/historical/crossover-measurement-v2-campaign-record.md gotcha #22, which
 # traced it while solving MEASURE's level per driver (#1825): the reading that
 # looked like a drive delta was a sensitivity delta, precisely because the
 # drive divides out. (docs/historical/linearization-campaign-2026-07.md:95-96 states the
