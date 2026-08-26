@@ -455,6 +455,23 @@ def _direct_mic_configured(runtime: RuntimeAecEnv) -> bool:
     )
 
 
+def _chip_session_source(runtime: RuntimeAecEnv) -> str:
+    return (
+        "Chip AEC 210 beam via :9876"
+        if runtime.chip_primary_leg == "chip_aec_210"
+        else "Chip AEC 150 beam via :9876"
+    )
+
+
+def _chip_wake_legs(runtime: RuntimeAecEnv) -> list[str]:
+    legs = ["Primary chip beam"]
+    if runtime.chip_aec_150_device:
+        legs.append("Chip AEC 150")
+    if runtime.chip_aec_210_device:
+        legs.append("Chip AEC 210")
+    return legs
+
+
 def _firmware_status(mic: MicProbe) -> dict[str, Any]:
     if mic.capture_channels is None:
         return {
@@ -621,23 +638,21 @@ def build_audio_profile_status(
             or "Managed XVF chip-AEC alignment is not ready."
         )
         profile_action = runtime.chip_aec_alignment_action
-    elif managed_xvf and runtime.chip_aec_alignment_status == "disclosed_stale":
-        # ADR-0101: disclosed_stale is a RUNNING state. Name the engine that is
-        # actually carrying the wake path — the banked chip alignment, the
-        # software AEC3 fallback, or the chip's plain capture — and let the
-        # reconciler's own reason/action say what chip-AEC lost.
+    elif runtime.chip_aec_alignment_status == "disclosed_stale":
+        # ADR-0101: disclosed_stale is a RUNNING state, on every selection —
+        # the reconciler honours an operator's explicit chip leg on a custom
+        # profile too. Name the engine that is actually carrying the wake path
+        # — the banked chip alignment, the software AEC3 fallback, or the
+        # chip's plain capture — and let the reconciler's own reason/action say
+        # what chip-AEC lost.
         if (
             runtime.chip_enabled
             and bridge_active
             and runtime.primary_device.startswith("udp:")
         ):
             processing_mode = "Chip-AEC"
-            session_source = (
-                "Chip AEC 210 beam via :9876"
-                if runtime.chip_primary_leg == "chip_aec_210"
-                else "Chip AEC 150 beam via :9876"
-            )
-            wake_legs = ["Primary chip beam"]
+            session_source = _chip_session_source(runtime)
+            wake_legs = _chip_wake_legs(runtime)
             active_profile = PROFILE_XVF_CHIP_AEC
         elif bridge_active and (
             runtime.primary_device.startswith("udp:") or runtime.raw_device
@@ -686,11 +701,7 @@ def build_audio_profile_status(
             else "Chip-AEC"
         )
         processing_mode = processing_label
-        session_source = (
-            "Chip AEC 210 beam via :9876"
-            if runtime.chip_primary_leg == "chip_aec_210"
-            else "Chip AEC 150 beam via :9876"
-        )
+        session_source = _chip_session_source(runtime)
         profile_state = "active"
         active_profile = requested_profile
         profile_reason = (
@@ -698,11 +709,7 @@ def build_audio_profile_status(
             if requested_profile == PROFILE_XVF_CHIP_AEC_TESTING
             else "Chip-AEC runtime env is applied."
         )
-        wake_legs = ["Primary chip beam"]
-        if runtime.chip_aec_150_device:
-            wake_legs.append("Chip AEC 150")
-        if runtime.chip_aec_210_device:
-            wake_legs.append("Chip AEC 210")
+        wake_legs = _chip_wake_legs(runtime)
     else:
         if software_runtime_active:
             processing_mode = "Software AEC3"
@@ -729,19 +736,22 @@ def build_audio_profile_status(
         elif not bridge_active:
             profile_state = "waiting_bridge"
             profile_reason = "AEC bridge is not active yet."
-        elif hardware_requested and not chip_available:
-            profile_state = "unavailable"
+        elif hardware_requested and not (chip_available and gate_permitted):
+            # ADR-0101: unproven chip-AEC is a disclosure on a box that is
+            # hearing and a refusal only on one that is not, so the state
+            # follows the engine the wake path actually has. The gate's own
+            # recommended_action code carries what would qualify chip-AEC.
             profile_reason = (
                 "Chip-AEC needs a validated XVF3800 chip beam plan for "
                 "the detected mic geometry."
+                if not chip_available
+                else gate_detail or "Chip-AEC is not permitted for this output DAC."
             )
-        elif hardware_requested and not gate_permitted:
-            profile_state = "unavailable"
-            profile_reason = (
-                gate_detail
-                if gate_detail
-                else "Chip-AEC is not permitted for this output DAC."
-            )
+            if active_profile is None:
+                profile_state = "unavailable"
+            else:
+                profile_state = "disclosed_stale"
+                profile_action = str(gate.get("recommended_action") or "")
         elif hardware_requested:
             profile_state = "pending"
             profile_reason = (
