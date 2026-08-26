@@ -23,7 +23,7 @@
 | 3 | Recommender binding | VERIFIED-COMPLETE |
 | 4 | Seam colour reconciliation | VERIFIED-COMPLETE |
 | 5 | Front-end wiring | VERIFIED-COMPLETE |
-| 6 | God-file dissolution map | VERIFIED-COMPLETE · **6.1 RULED** |
+| 6 | God-file dissolution map | VERIFIED-COMPLETE · **6.1 RULED · 6.2 RULED + one OWNER-BRIEF · 6.3 RULED** |
 | 7 | Merge-order DAG + floor accounting | VERIFIED-COMPLETE |
 | 8 | Risks and tiers | VERIFIED-COMPLETE |
 
@@ -972,14 +972,14 @@ already moved to `crossover_v2/refusal_copy.py` (see the note at `:524-539`).
 | **relay callbacks** `authorize_begin` · `on_armed` · `consume_capture` | 3970–4626 | **§5** — this is what `measure()` replaces |
 | CHECK · MEASURE · lateral · cloud verdicts and retention | 4627–5279 | §1 (W1-c) + §2 |
 | cloud group close + speculative close | 5280–5766 | §2 + §5 |
-| **candidate build · publish · commit** | 5839–6334 | **NO ENGINE HOME — needs a decision.** Irreversible acts; the apply transaction is *"not a target. Ever."* Either a publish/commit organ or a thin surviving host module |
+| **candidate build · publish · commit** | 5839–6334 | **RULED + OWNER-BRIEF — 6.2.** 54% is pure compute with homes already; the commit half never applies; the open call is where the five publisher seams bind |
 | findings/evidence publishing + refusal | 6335–6728 | refusal → the organ; findings → §1 |
 | cloud pipeline runner (+ the inlined retention at `:6879`) | 6729–6913 | §2 + W1-c |
 | entry baseline | 6914–7048 | §1 |
 | the round, graded | 7049–7304 | §2 |
 | VERIFY verdict + attempt grading | 7305–7924 | §2 (`measure(kind=verify)` then `analyze`) |
 | delta probe | 7925–8355 | §2 |
-| **diagnostic logging** (four big per-phase emitters, feed no verdict) | 8356–8728 | **NO HOME — needs a decision**: delete, or become `analyze`'s journal |
+| **diagnostic logging** (four big per-phase emitters, feed no verdict) | 8356–8728 | **RULED — 6.3.** Neither: they are ADR-0143 plane-1 lines with 20 live pins, and they ride their verdicts into §2 |
 | gate/candidate/linearization helpers | 8729–8978 | organs |
 | production playback seams | 8979–9094 | §5 (`PlaybackTransaction` binding) |
 | session-volume lifecycle | 9095–9164 | §5 (W5-c) |
@@ -1122,6 +1122,195 @@ bench datum that *"undercut it."* Either the label is spent or it names a bench
 that is not that W6. **A one-sentence question for whoever writes the ADRs — not
 the executor's to guess**, and not this pack's to answer.
 
+### 6.2 RULED, then OWNER-BRIEF — this block never applies, and 53% of it already has a home
+
+**The row conflated two different things, and the correction is checkable.** The
+range is `:5839-6334` — 496 lines, seven methods, **all seven internal to
+`CrossoverV2Session`**: zero callers in `web/correction_crossover_v2.py`, zero in
+`scripts/`, and the only entries are three sibling methods outside the range
+(`_measure_verdict` `:4948`, `_close_measure_cloud_candidate` `:5815`/`:5817`,
+`run_speculative_group_close` `:5647`).
+
+| Method | lines | What it is |
+|---|---:|---|
+| `_publish_measure_candidate` `:5839` | 45 | a **3-line body** (`:5880-5882`) under a 41-line docstring — the pre-rider compatibility door |
+| `_build_measure_candidate` `:5884` | 82 | **pure.** *"Commits NOTHING"* (`:5890`); zero `self._x =`, zero seam fires; returns `_SpeculativeClose` |
+| `_previous_graph_predicted_sum` `:5966` | 143 | **near-pure** model of the graph an apply would replace; one in-memory dedup flag `:6096` guarding one INFO line |
+| `_commanded_delta_for` `:6110` | 19 | **pure** |
+| `_declared_transfer_for` `:6130` | 19 | **pure**, and a `@staticmethod` — no `self` at all |
+| `commit_intervention_proposal` `:6150` | 104 | **the commit.** Seven session-state writes, then `publish_candidate` `:6251` and `_publish_level_frame_finding` `:6252` |
+| `_commit_measure_candidate` `:6254` | 81 | orchestration + one disclosure log; its only production caller route |
+
+**RULED (conductor) — 263 of the 496 lines are compute and §2 already owns
+them.** The four pure/near-pure methods are analyses by the same argument §6
+applies to the pure-helper row (`:878-1395`) and the delta probe (`:7925-8355`).
+They move with §2, not with a publish organ. `_publish_measure_candidate` is a
+door whose body is three lines; it dies with the callers that still take it
+(`:4948`, `:5817`). **That leaves 185 lines — `commit_intervention_proposal` plus
+`_commit_measure_candidate` — as the only thing needing a home.**
+
+**RULED (conductor) — "irreversible" here does not mean the apply transaction,
+and the row's citation borrowed the wrong authority.** *"Not a target. Ever."*
+is about `handle_v2_apply`, in all three places it is written:
+`REFACTOR-TUNING-2026-08.md:729` and `:121-123` (*"the one irreversible act and
+the only path that writes a live DSP graph"*), and `session_seams.py:44-45`.
+**None of the seven methods touches CamillaDSP, ALSA, or any apply path** —
+`_publish_measure_candidate`'s own docstring says *"nothing it returns triggers
+an apply"* (`:5848`), and ADR-0014 records the two separate human acts that stand
+between (*"the confirmation that makes a candidate real, and the POST that
+applies it"*). The two are structurally independent: `handle_v2_apply` never
+calls into `CrossoverV2Session`, and reaches this block's output only by reading
+`candidate.json` back out of the evidence store (`web/…:7027`, `:7040-7049`).
+**The irreversible acts in scope are one evidence-artifact write and a fire-once
+session guard** (`:6265` calls them *"the two irreversible acts"*), which is a
+much smaller thing than the row implies — and the reason they can be re-homed at
+all.
+
+**So the surviving question is not "where does this code live" but "what seam
+does it fire," and that one is real.** `V2FlowSeams` carries **five publishers**
+— `publish_check` `:1505`, `publish_candidate` `:1506`, `publish_cloud`,
+`publish_findings`, `publish_round_receipt` (`:1428-1698`). **`EngineSeams` has
+none**: its five fields are `graph`, `volume`, `records`, `play`, `recommend`
+(`session_seams.py:299-303`). The engine's `save` is not the answer and does not
+claim to be — it writes *"the session's own state"*, exactly the five keys
+`PriorBank.read` reads back (`session.py:481-511`). **A candidate publication has
+no landing in the engine's contract today.**
+
+**And §6 has an internal inconsistency here that the executor must not inherit.**
+The web-file table routes *"evidence store + publishers | 3364–3962"* — which is
+where all five publishers are actually bound (`bind_evidence_publishers:3392`,
+`bind_round_receipt:3456`, `bind_findings_publisher:3803`,
+`bind_cloud_publisher:3921`) — to **§1 (W1-a)**. But W1-a's own text (`:255-265`)
+scopes it to `bank` / `read` / `persist` / `read_state` and says nothing about a
+publisher. **One side of the same seam is assigned; the other is marked NO HOME.**
+Whichever way the brief below is answered, W1-a's scope line has to be edited to
+match, or the two tables stay in disagreement.
+
+---
+
+**OWNER-BRIEF — where do the five publisher seams bind?**
+
+*Context, plainly.* The engine talks to the outside world through exactly five
+injected slots. Writing a durable file is one of them (`records`). But the old
+flow had five *separate* slots for writing durable files, one per artifact kind,
+and two of the five are deliberately allowed to fail quietly while one of them —
+the candidate — must never fail quietly. When the old seam set is replaced by the
+new one, those five either fold into the one store or the store gains a sibling.
+**The boundary is one-writer-with-a-label versus two-writers-with-two-contracts.**
+
+*Recommendation: fold them into `RecordStore`, and keep fail-soft at the caller.*
+
+- **Cost of folding.** `bank`'s docstring and its twin pin (`tests/engine_twin.py:199-234`)
+  currently mean *one capture record*; carrying a candidate, a check, a cloud
+  result, a findings record and a round receipt widens that meaning, and the twin
+  and W1-a both grow. W1-a sits at tier 2 feeding the W5-b join, so the growth is
+  on the critical path.
+- **Cost of a sixth seam.** `EngineSeams` stops being five fields, which is the
+  number the design doc, `session_seams.py:275-297` and **all of §4** are written
+  against. §4's colour flip (W4-a) is the tier-1 gate every later item waits on;
+  changing the dataclass's shape in the same window is a merge collision with the
+  one item that cannot slip.
+- **Why fold wins.** The store already exists and is *under*-used — §1 records
+  that `read` and `read_state` have **no engine caller at all**. Five names for
+  "write a JSON artifact into `evidence/v1`" is the duplication the charter's
+  converge-or-open-an-issue default is about, and `kind` is already how this
+  engine discriminates records. The one real objection — that `publish_candidate`
+  is irreversible while `publish_findings`/`publish_cloud` are fail-soft by design
+  (`web/…:3636`, `:3832`) — **does not need a store feature**, because this repo
+  already puts fail-soft in a named wrapper rather than in the seam:
+  `_hand_to_retention` (`:5256`) is exactly that shape around `retain_position`.
+  Keep the store plain, keep the wrapper, and the distinction stays visible
+  instead of becoming a flag.
+
+*What the owner is actually deciding:* whether `RecordStore` is **the** engine's
+durable-write seam, or **a** durable-write seam. One sentence settles it, and the
+answer edits W1-a's scope line either way.
+
+### 6.3 RULED — the emitters are plane-1 observability; both offered options are wrong
+
+**Tier: CONDUCTOR.** Both branches of the row's either/or are refuted by
+something already written down; what is left is not a choice.
+
+**What the block IS.** `:8356-8728`, 373 lines — **250 code, 96 comment, 21
+docstring, 6 blank** (AST-classified, not eyeballed). Five defs, not four:
+
+| Def | lines | Event | Fields | Fires from |
+|---|---:|---|---:|---|
+| `_safe_log_diag` `:8363` | 25 | `…crossover_v2_diag_log_failed` (WARNING, failure path only) | 4 | the three `_consume_*` sites |
+| `_log_check_diag` `:8389` | 34 | `…crossover_v2_check_diag` | 18 | `_consume_check` `:4640` |
+| `_log_measure_level_solve` `:8424` | 45 | `…crossover_v2_measure_level_solve` | 12 | **`_log_check_diag` `:8422`** |
+| `_log_measure_diag` `:8470` | 154 | `…crossover_v2_measure_diag` | 41 | `_consume_measure` `:4692` |
+| `_log_verify_diag` `:8625` | 103 | `…crossover_v2_verify_diag` | 32 | `_consume_verify` `:7309` |
+
+The row's *"feed no verdict"* holds and is now pinned to the shape: all four are
+`-> None`, contain no valued `return`, are invoked as bare statements, and run
+**after** the verdict exists (`:4638-4641` is the pattern — compute, then log,
+then return). All four are **unconditional**: no debug flag, no verbosity gate,
+in the emitters or in the phase router (`:4207-4227`).
+
+**Delete is refuted by the charter and by an ADR.** AGENTS.md's Guards default
+makes observability the sanctioned response to a real incident — *"fix forward
+and add observability (`event=` log, `/state`, doctor)"* — and
+**ADR-0143** defines plane 1 as *"always-on, cheap, fixed-shape truth"* that
+expressly includes *"structured `event=` journal lines."* These four are exactly
+that, and ADR-0143 does not require a plane-1 line to also reach `/state` or
+doctor; the line itself is the membership. **103 structured fields would be the
+largest single observability deletion in either chunk**, and the 96 inline
+comment lines are dense per-field provenance — i.e. several of these fields exist
+*because* of an incident, which is the thing the default exists to keep.
+
+**They also have twenty live pins.** Zero production consumers — `jasper/cli/doctor/`,
+`scripts/`, `jasper/web/` and `/state` were each searched by event name and each
+returned nothing — but **19 test functions in `tests/test_crossover_v2_conductor.py`
+plus one in `tests/test_crossover_v2_verify_grading.py:544` assert on these
+lines**, including negative pins that a retired field must not reappear
+(`:8737-8741`) and a count pin that `measure_level_solve` fires exactly twice on
+accept and never on reject (`:6390`, `:6413`, `:6424`). *"Zero production
+consumers"* is a real finding; *"nothing consumes them"* would be false.
+
+**"Become `analyze`'s journal" is refuted by the type system.**
+`crossover_v2_flow.py` contains **zero references to `AnalyzeOutcome` or
+`TuningSession`** — the conductor runs its own parallel vocabulary
+(`ProgramAnalysis`, `PhaseVerdict`, `V2FlowSeams`). And `AnalyzeOutcome`
+(`session.py:195-215`) has exactly two fields, `results` and `disclosures`,
+neither a journal. So the option is not a re-home; it is *"invent a third
+`AnalyzeOutcome` field **and** wire the conductor to the engine"* — and wiring
+the conductor to the engine is **W5-b**, the tier-4 join node. A §6 row may not
+quietly acquire the plan's hardest item.
+
+**RULED: the emitters ride their verdicts, unchanged, as `log_event` calls.**
+They are not one concern; they are field extraction attached to three phase
+verdicts, and §6 already routes those verdicts — CHECK and MEASURE at
+`:4627-5279`, VERIFY at `:7305-7924`, both → §2. The emitters are the journal
+half of those same rows and move in those same PRs. **No new home, no deletion,
+no third `AnalyzeOutcome` field, and no row of its own in the deletion order.**
+
+**One sub-question is deferred, deliberately, to the item that can answer it.**
+Once §2's registry exists, the 103 hand-extracted fields and
+`AnalyzeOutcome.results` are reading the same objects, and one generic emitter
+walking `results` could replace four hand-rolled ones. That is a **W2-b** call
+made against a registry that exists, not a §6 homing decision made against one
+that does not. §6 should not pre-commit it, and W2-b's verification bar should
+mention it.
+
+**Two traps for whoever moves them.**
+
+- **`_log_measure_level_solve` is misnamed.** It fires from `_log_check_diag`
+  `:8422`, on the CHECK event — not from `_consume_measure`. Four emitters serve
+  **three** phases. An executor splitting the block by phase name will put it in
+  the wrong PR.
+- **Twenty pins match rendered log text.** The field *names* are a contract, so
+  these are defensible under the Tests default; the *mechanism* is substring
+  matching over `caplog`, so every emitter move churns them. Price that into the
+  §2 rows rather than discovering it mid-PR, and prefer converting a pin to the
+  structured record over re-spelling its substring.
+
+**And the 96 comment lines get 6.1's treatment.** The per-field provenance notes
+are the same content class as the tuning-constant essays — a field that exists
+because a specific run produced a specific wrong number is a ruling, not a
+comment. Ruling S7 applies unchanged: the ruling-class ones become ADRs before
+the row cuts prose; the unit-and-range ones stay.
+
 ### Deletion order
 
 1. **The four barrels + `__all__`** (`crossover_v2_flow` 255–630, 9166–9228) —
@@ -1134,7 +1323,9 @@ the executor's to guess**, and not this pack's to answer.
    retention sites go together.
 5. **Volume** (W5-c) — after the walk, because the claim's lifetime is the walk's.
 6. **The shell** — the accessors that lost their reader, `__init__`'s residue,
-   the diagnostic emitters, and whatever the two NO-HOME decisions settled.
+   and the commit pair once 6.2's brief is answered. **The diagnostic emitters
+   are not in this step** (6.3): they leave with their verdicts in the §2 rows,
+   which land before the shell is cut.
 
 ---
 
