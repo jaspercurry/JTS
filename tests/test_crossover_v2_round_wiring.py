@@ -15,10 +15,7 @@ household's speaker.
 Every pin here is driven through the production host rather than by calling a
 pure function, because every defect this phase can still ship is a wiring
 defect. ``decide_adoption`` returning ``restore`` is worth nothing if the seam
-it depends on was bound on the other stage, if the anchor predicate answers a
-different question than Undo refuses on, or if the restore runs twice and the
-second refusal tells a household their correction is still applied when it is
-not.
+it depends on was bound on the other stage.
 
 What is pinned, in the order a round meets it:
 
@@ -27,19 +24,23 @@ What is pinned, in the order a round meets it:
 2. **the round grades the capture the session ENDED on** — a rejected VERIFY
    keeps its own code, burns nothing, and writes no receipt, and the retry that
    lands clean is graded normally;
-3. **exactly-once restore**, asserted on the sentence the household READS;
-4. **``rollback_available`` is BOTH-AND** — all four seam x anchor combinations;
-5. **one owner for the anchor rule** — each refusal code is a refusal Undo
-   really makes;
-6. **the receipt** — where it lands, that it is fingerprinted, that it reads
+3. **the receipt** — where it lands, that it is fingerprinted, that it reads
    back identical;
-7. **a receipt-write failure costs no verdict**;
-8. **the model-error store banks the TRACKING number**, not the ledger's grade;
-9. **durability, both directions** — the anchor writes fsync, an ordinary
-   conductor persist does not.
+4. **a receipt-write failure costs no verdict**;
+5. **the model-error store banks the TRACKING number**, not the ledger's grade;
+6. **durability, both directions** — the anchor writes fsync, an ordinary
+   conductor persist does not;
+7. **every round banks its receipt.**
+
+**Undo lives next door.** The restore/undo/anchor pins moved to
+``tests/test_crossover_v2_undo_and_anchor.py`` — their subject is the
+apply/rollback transaction, which ``docs/REFACTOR-TUNING-2026-08.md`` §3 marks
+*"not a target. Ever."*, and it must not sit inside a suite the strangler
+dissolves.
 
 This module drives the REAL preparers through
-``tests/test_crossover_v2_stage_bridge.py``'s harness.  That harness used to
+:mod:`tests.crossover_v2_round_harness` over
+``tests/test_crossover_v2_stage_bridge.py``'s seams.  That harness used to
 leak fakes into any module that first imported them inside its patched window
 (issue #2312), so this file carried a warning not to share a pytest process
 with ``tests/test_correction_crossover_v2_endpoints.py``.  #2312 is fixed — the
@@ -73,17 +74,12 @@ from jasper.active_speaker.crossover_v2.refusal_copy import (
     DELTA_PROBE_REASON_BY_VERDICT,
     correction_rollback_failed_message,
 )
-from jasper.active_speaker.crossover_envelope_v2 import build_crossover_envelope_v2
 from jasper.active_speaker.crossover_v2 import coordinator
 from jasper.active_speaker.crossover_v2.contracts import (
     ADOPTION_ROW_KEEP_ITERATING,
     AdoptionDecision,
     AdoptionOutcome,
     IterationHeadroom,
-)
-from jasper.active_speaker.crossover_v2.round_evidence import (
-    EntryBaseline,
-    measured_response_from_analysis,
 )
 from jasper.active_speaker.crossover_v2.contracts import (
     EvidenceTrust,
@@ -113,23 +109,29 @@ from jasper.active_speaker.crossover_v2.refusal_copy import (
     REASON_CORRECTION_MEASURED_REGRESSION,
     REASON_CORRECTION_ROLLBACK_FAILED,
     REASON_CORRECTION_UNPROVEN_BOOST,
-    REASON_REGISTRY,
     REASON_VERIFY_OUT_OF_TOLERANCE,
 )
 from jasper.active_speaker.crossover_v2_flow import (
     ATTEMPT_METRIC_VERIFY_MAX_NOTCH_EXCLUDED,
-    REFERENCE_MARK_DESIGN_AXIS,
 )
 from jasper.audio_measurement.evidence_identity import json_fingerprint
 from jasper.web import correction_crossover_v2 as v2host
 
-# The conductor module's analysis fixtures: the shape the production analyzer
-# emits for one summed VERIFY sweep. Imported rather than re-implemented so
-# there is one definition of "what a VERIFY capture looks like" — the same
-# reason ``tests/test_crossover_v2_entry_baseline.py`` imports them.
-from tests.crossover_v2_fixtures import (
-    _in_room_summed_db,
-    _verify_analysis,
+# The round harness: one staging of "a real stage 2, post-apply, with a
+# comparable before". Shared with ``tests/test_crossover_v2_undo_and_anchor.py``
+# through a module that is a fixture library rather than a test file, so
+# neither suite depends on the other's collection.
+from tests.crossover_v2_round_harness import (
+    _bg_run_async,
+    _consume_verify,
+    _household_sentence,
+    _install_applied_graph,
+    _install_entry_baseline,
+    _post_apply_analysis,
+    _restored_ok,
+    _restoring_stage_2,
+    _seed_round_state,
+    _tracking_curve_change_from_entry,
 )
 
 # The stage-bridge harness: one definition of "what a real preparer needs
@@ -139,13 +141,11 @@ from tests.crossover_v2_fixtures import (
 # idiom for "this module-level name is deliberate", and it says so without
 # spending a lint suppression against the repo's frozen noqa budget.
 from tests.test_crossover_v2_stage_bridge import (
-    _COMMANDED_FREQS_HZ,
     _MINTED_RELAY_SESSION_ID,
     _flow_seams,
     _isolated_v2_state as _isolated_v2_state,
     _open_prepared,
     _production_host_seams as _production_host_seams,
-    _seed_applied_stage_1_state,
     _status,
 )
 
@@ -169,159 +169,14 @@ def _hydrated_series_position(conductor: Any) -> Any:
     return conductor._series_position
 
 
-def _install_entry_baseline(conductor: Any, *, scale: float) -> EntryBaseline:
-    """Give a stage-2 conductor the "before" stage 1 would have handed it.
-
-    Production rehydrates this from the durable bridge key, and
-    ``tests/test_crossover_v2_entry_baseline.py`` owns that path. What a ROUND
-    test needs is a baseline that is genuinely *comparable* with the post-apply
-    capture it will be differenced against — same program id, same grid, same
-    mark — and the only way to get that is to build it from THIS conductor's own
-    ``_verify_program``, which does not exist until the conductor does. A
-    seeded state file cannot: it would have to guess the program id the
-    conductor is about to compose, and a lookalike grades
-    ``incomparable_program`` instead of grading the speaker.
-
-    ``scale`` multiplies the fixture's in-room deviation, so a scale ABOVE the
-    post-apply capture's is a speaker that measurably improved and one below it
-    is a measured regression. Higher deviation is worse.
-    """
-    measured = measured_response_from_analysis(
-        _verify_analysis(
-            conductor.program_for_phase(flow.PHASE_VERIFY), summed_db=_in_room_summed_db() * scale,
-        ),
-        reference_mark=REFERENCE_MARK_DESIGN_AXIS,
-    )
-    assert measured is not None
-    baseline = EntryBaseline.from_measurement(
-        measured,
-        graph_fingerprint="fp-entry-graph",
-        captured_at="2026-08-10T00:00:00Z",
-        artifact_ref="entry_baseline_09_a01",
-    )
-    conductor._measure_entry_baseline = baseline
-    return baseline
 
 
-def _tracking_curve_change_from_entry(
-    conductor: Any, *, change_db: float, louder_spike_db: float | None = None,
-) -> tuple:
-    """A post-apply tracking curve that missed by ``change_db``, both ways.
-
-    ``(freqs, measured, predicted)`` for ``verify_tracking_curve``, built so the
-    delta probe's TWO readings of the miss agree and are both flat ``change_db``:
-
-        measured_post − predicted_post                   (the model's departure)
-        (measured_post − measured_pre) − commanded       (the anchored excess)
-
-    which needs ``predicted_post == measured_pre + commanded`` — the statement
-    that the applied graph's prediction IS the entry measurement plus what the
-    apply commands, i.e. a model that was right about the speaker going in.
-
-    Since series-2 D1 the two directional findings are differenced against the
-    pre-apply capture, so a fixture claiming "the speaker came out 2 dB quieter
-    than it was asked for" has to say that about **two captures of one speaker**.
-    Stating it against a flat model curve alone — which is what these fixtures
-    did while the finding was ``realized − commanded`` — leaves the direction to
-    whatever shape the entry baseline happens to carry, and that shape is the
-    fixture's BENEFIT knob, not its direction knob. Production reads one entry
-    baseline for both, so a fixture that decouples them is testing a wiring the
-    speaker does not have.
-
-    ``louder_spike_db`` adds that much at ONE bin. It is what separates a
-    ``model_error`` the #2559 deferral does not spare from a hearing hazard, and
-    the separation is the structured-run rule: one bin is enough for
-    ``realized_louder_than_commanded`` (unstructured, so the lenience is
-    withheld) and far too narrow for ``boost_over_declared_bound`` (which needs
-    a 1/3-octave run before it will call anything a hazard). A fixture that
-    wants the probe's rollback CLASS to take the graph off — rather than the
-    safety axis, which outranks it — has to sit in exactly that gap.
-
-    Requires ``_install_entry_baseline`` to have run.
-    """
-    import numpy as np
-
-    freqs = np.asarray(_COMMANDED_FREQS_HZ, dtype=float)
-    baseline = conductor.measure_entry_baseline
-    assert baseline is not None, "install the entry baseline first"
-    measured_pre = np.interp(
-        freqs,
-        np.asarray(baseline.curve.hz, dtype=float),
-        np.asarray(baseline.curve.db, dtype=float),
-    )
-    commanded = conductor.measure_commanded_delta
-    assert commanded is not None, "the commanded axis is what change_db is relative to"
-    commanded_db = np.interp(
-        freqs,
-        np.asarray(commanded[0], dtype=float),
-        np.asarray(commanded[1], dtype=float),
-    )
-    predicted = measured_pre + commanded_db
-    measured = predicted + change_db
-    if louder_spike_db is not None:
-        measured = measured.copy()
-        measured[len(measured) // 2] += louder_spike_db
-    return (freqs, measured, predicted)
 
 
-def _install_applied_graph(monkeypatch, *, boosts: bool) -> None:
-    """Put a real applied profile on the speaker — boosted, or cut-only.
-
-    **The input the PRODUCTION predicate reads, not an injection into the
-    conductor.** An earlier version of this helper assigned
-    ``conductor._candidate`` directly, and that is exactly how #2318's
-    fail-closed cell stayed green over dead code: stage 2 builds a fresh
-    conductor with no ``candidate=`` ctor parameter, so the production read was
-    always ``None`` and ``boosted`` was always ``False``, while the suite
-    supplied by hand the one thing the shipped path never has.
-
-    So this sets the applied-profile SSOT instead, and every link after it is
-    production: ``_applied_graph_boosts`` → ``profile_linearization`` (which
-    prefers the recomposition snapshot) → ``camilla_yaml.linearization_has_boost``.
-    Stubbing the loader is unavoidable — there is no profile on disk in a
-    hardware-free test — but it is the boundary of the system, not a step
-    inside the rule under test.
-
-    The mapping is the REDUCED ``{role: [filter_dict, ...]}`` shape a frozen
-    profile actually carries, deliberately not the unreduced candidate shape:
-    passing the latter through ``linearization_filters_by_role`` would be a
-    silent ``{}``, which reads as "this graph boosts nothing".
-    """
-    gain_db = 3.0 if boosts else -3.0
-    monkeypatch.setattr(
-        baseline_profile_mod,
-        "load_applied_baseline_profile_state",
-        lambda *a, **k: {
-            "candidate_fingerprint": "fp-live-graph",
-            "recomposition_snapshot": {
-                "linearization": {"woofer": [{"gain": gain_db}]},
-            },
-        },
-    )
 
 
-def _post_apply_analysis(conductor: Any, *, scale: float = 1.0, max_db: float = 0.9):
-    """One post-apply VERIFY analysis on this conductor's own program.
-
-    ``max_db`` drives BOTH the flow's tracking gate and the realization verdict
-    (they read the same ``max_db_notch_excluded``), so a value inside
-    ``VERIFY_TOLERANCE_DB`` is an accepted capture with a MATCHED realization.
-    """
-    return _verify_analysis(
-        conductor.program_for_phase(flow.PHASE_VERIFY),
-        max_db=max_db,
-        summed_db=_in_room_summed_db() * scale,
-    )
 
 
-def _consume_verify(conductor: Any, analysis: Any, *, attempt: int = 1) -> Any:
-    """Drive the production VERIFY trigger site.
-
-    ``_consume_verify`` is where the Express tier grades its round, and it is
-    the real entry point the relay runner calls — not a test-only shim. Reached
-    directly because the runner in between is a thread and a websocket.
-    """
-    return conductor._consume_verify(analysis, attempt=attempt)
 
 
 def _round_receipt_json(store: Any, relay_session_id: str) -> dict[str, Any]:
@@ -351,25 +206,6 @@ def _round_receipt_json(store: Any, relay_session_id: str) -> dict[str, Any]:
 # --------------------------------------------------------------------------- #
 
 
-def _seed_round_state(*, anchor: bool = True) -> dict[str, Any]:
-    """The durable state a household reaches stage 2 with, post-apply.
-
-    ``anchor`` decides whether an Undo target exists. The stashed profile
-    carries no ``source.topology_fingerprint``, which the shipped predicate
-    allows through (a stash that predates the fingerprint is validated by the
-    restore path itself) — so this is a genuinely valid anchor, not one that
-    passes by skipping a check nobody could satisfy here.
-    """
-    state = _seed_applied_stage_1_state()
-    # The seeded entry baseline sits on a five-point grid of its own, which
-    # cannot be compared with a real capture. Rounds in this module install a
-    # comparable one on the conductor; drop the placeholder so a test that
-    # forgets is INDETERMINATE rather than quietly graded against a stranger.
-    state["verify_priors"]["entry_baseline"] = None
-    if anchor:
-        state["pre_apply_profile"] = {"candidate_fingerprint": "fp-previous"}
-    v2host.save_v2_state(state)
-    return state
 
 
 @pytest.fixture
@@ -405,23 +241,8 @@ def real_bundle(monkeypatch, tmp_path):
     return store
 
 
-async def _restored_ok(*_args: Any, **_kwargs: Any) -> dict[str, Any]:
-    """The DSP half of Undo, stubbed — and ONLY that half.
-
-    Everything else on the restore path runs for real: the anchor predicate,
-    the refusal, ``observe_restore``'s durable clear, and therefore the
-    non-idempotence a second Undo meets. That is what makes the exactly-once
-    pin below discriminating — a once-guard removed from
-    ``bind_delta_probe_rollback`` really does produce the false
-    "still applied" sentence, because the second call really does refuse.
-    """
-    return {"status": "restored"}
 
 
-def _bg_run_async(coro: Any, *, timeout: Any = None) -> Any:
-    import asyncio
-
-    return asyncio.run(coro)
 
 
 def _bare_conductor() -> Any:
@@ -447,31 +268,6 @@ def _bare_conductor() -> Any:
     )
 
 
-def _restoring_stage_2(monkeypatch) -> tuple[Any, list[int]]:
-    """A real stage 2 whose rollback seam can actually complete a restore.
-
-    ``tests/test_crossover_v2_stage_bridge.py``'s ``_stage_2`` passes
-    ``run_async=None`` / ``camilla_factory=None``, which is right for a module
-    about what crosses the bridge and wrong here: with them the rollback seam
-    raises before it reaches ``handle_v2_restore``, and every adoption restore
-    would read as a failed one. This binds the real endpoint behind a stubbed
-    DSP leg, and returns a counter of how many times that leg actually ran.
-    """
-    attempts: list[int] = []
-
-    async def _counted(*args: Any, **kwargs: Any) -> dict[str, Any]:
-        attempts.append(1)
-        return await _restored_ok(*args, **kwargs)
-
-    monkeypatch.setattr(
-        baseline_profile_mod, "restore_applied_baseline_profile", _counted,
-    )
-    prepared = v2host.prepare_v2_verify(
-        {}, status=_status(), run_async=_bg_run_async,
-        camilla_factory=lambda: SimpleNamespace(),
-    )
-    conductor, _state = _open_prepared(monkeypatch, prepared)
-    return conductor, attempts
 
 
 # --------------------------------------------------------------------------- #
@@ -892,385 +688,9 @@ def test_the_retry_after_a_rejected_verify_is_the_capture_that_gets_graded(
     assert attempts == []
 
 
-# --------------------------------------------------------------------------- #
-# 3. exactly-once restore, pinned on the COPY
-# --------------------------------------------------------------------------- #
-
-
-def _household_sentence(conductor: Any, code: str) -> str:
-    """The verdict text the wizard renders, through the production envelope.
-
-    Not the reason code: the code is an internal identity, and the regression
-    that matters is a household reading "the new tuning is STILL APPLIED" about
-    a speaker that has already been put back. So the assertion has to reach the
-    string on the screen.
-    """
-    v2host.persist_conductor_state(conductor, failure_code=code)
-    envelope = build_crossover_envelope_v2({
-        "active": True,
-        "setup": {"active": True, "status": "ready"},
-        "crossover_v2": v2host.crossover_v2_status_block(),
-    })
-    return str(envelope["verdict_text"])
-
-
-def test_two_restore_triggers_run_one_undo_and_keep_the_honest_sentence(
-    monkeypatch,
-):
-    """ONE owner, one Undo — and the source proves there is no second.
-
-    Both the round's adoption path and the delta probe's own seam used to ask
-    this host to put the previous sound back, and ``handle_v2_restore`` is NOT
-    idempotent: a successful restore flips ``applied`` off, so a second call
-    refuses with "nothing is applied to undo". The second asker read that
-    refusal as a FAILED rollback and re-labelled its verdict
-    ``correction_rollback_failed`` — whose household copy says the correction is
-    still applied. It is not. That false sentence about their own speaker was
-    the defect, and a once-guarded closure was the mitigation.
-
-    **The second owner is now deleted** (the fifth-principle routing): the
-    probe reports and ``coordinator._run_round_restore`` is the only caller of
-    the rollback seam. So this pins the property the once-guard was standing in
-    for — one restore per session — plus the structural fact that makes it hold
-    without a guard at all.
-    """
-
-    _seed_round_state()
-    conductor, attempts = _restoring_stage_2(monkeypatch)
-    _install_entry_baseline(conductor, scale=0.4)
-    _install_applied_graph(monkeypatch, boosts=False)
-
-    # The round's adoption path, on a measured regression.
-    first = _consume_verify(conductor, _post_apply_analysis(conductor))
-    assert first.code == REASON_CORRECTION_MEASURED_REGRESSION
-    sentence = _household_sentence(conductor, first.code)
-    still_applied = REASON_REGISTRY[REASON_CORRECTION_ROLLBACK_FAILED].message
-    assert "STILL APPLIED" not in sentence
-    assert sentence != still_applied
-
-    # A second capture in the same session, carrying a probe verdict that used
-    # to fire the seam's own immediate rollback: 2 dB LOUDER than the applied
-    # filters commanded, across the whole band. Nothing restores a second time.
-    _consume_verify(
-        conductor,
-        dataclasses.replace(
-            _post_apply_analysis(conductor),
-            verify_tracking_curve=_tracking_curve_change_from_entry(
-                conductor, change_db=-2.0, louder_spike_db=+4.0,
-            ),
-        ),
-        attempt=2,
-    )
-
-    assert conductor.delta_probe is not None
-    assert conductor.delta_probe.rollback is True, (
-        "the probe still MEASURES a rollback class — what moved is who acts"
-    )
-    # ONE Undo, not two.
-    assert attempts == [1]
-
-    # …and there is no second caller left to grow one back. Source-level
-    # because that is the actual invariant: a behavioural pin would pass again
-    # the moment someone re-added a seam behind a different guard.
-    source = Path(flow.__file__).read_text(encoding="utf-8")
-    assert "self._seams.rollback(" not in source, (
-        "the flow must not call the rollback seam directly — restoring is "
-        "coordinator._run_round_restore's, and a second owner is how the "
-        "false STILL-APPLIED sentence came back last time"
-    )
-    assert "the previous sound has been put back" in sentence
-
-
-def test_the_first_restore_outcome_is_what_a_later_asker_is_handed(monkeypatch):
-    """The control: the guard REMEMBERS, it does not merely suppress.
-
-    A guard that returned ``False`` on every repeat would satisfy "one Undo"
-    and still produce the false sentence. This pins the remembering half
-    directly on the seam both owners share.
-    """
-    _seed_round_state()
-    conductor, attempts = _restoring_stage_2(monkeypatch)
-    rollback = _flow_seams(conductor).rollback
-
-    assert rollback("first") is True
-    assert rollback("second") is True
-    assert rollback("third") is True
-    assert attempts == [1]
-
-
-def test_a_refused_first_restore_is_also_remembered_verbatim(monkeypatch, caplog):
-    """…and in the other direction, which is the one that must stay loud.
-
-    A first attempt that could NOT restore must keep answering "not restored",
-    so the household keeps getting the "still applied" sentence and the Undo
-    button. A guard that cached only successes would let a later asker retry
-    into a different answer about the same speaker.
-
-    The return values alone cannot see this — a re-attempted Undo on a speaker
-    with no anchor refuses identically every time, so ``False`` twice is what a
-    MISSING guard produces too (a mutation removing the memo left an earlier
-    version of this test green). What separates them is whether the endpoint
-    was entered a second time, and the seam already says so in the journal: one
-    ``restore_refused`` for the real attempt, then ``restore_repeat`` for every
-    asker handed the remembered answer.
-    """
-    _seed_round_state(anchor=False)  # nothing stashed to go back to
-    conductor, attempts = _restoring_stage_2(monkeypatch)
-    rollback = _flow_seams(conductor).rollback
-
-    with caplog.at_level("INFO", logger="jasper.web.correction_crossover_v2"):
-        assert rollback("first") is False
-        assert rollback("second") is False
-    assert attempts == []
-
-    lines = [record.getMessage() for record in caplog.records]
-    refused = [
-        line for line in lines
-        if "event=correction.crossover_v2_delta_probe_restore_refused" in line
-    ]
-    repeats = [
-        line for line in lines
-        if "event=correction.crossover_v2_delta_probe_restore_repeat" in line
-    ]
-    assert len(refused) == 1
-    assert len(repeats) == 1
-    assert "restored=false" in repeats[0]
-
 
 # --------------------------------------------------------------------------- #
-# 4. rollback_available is BOTH-AND
-# --------------------------------------------------------------------------- #
-
-
-@pytest.mark.parametrize(
-    ("seam_bound", "anchor", "expected"),
-    [
-        (True, True, True),
-        (True, False, False),
-        (False, True, False),
-        (False, False, False),
-    ],
-    ids=["seam+anchor", "seam-only", "anchor-only", "neither"],
-)
-def test_rollback_available_needs_both_the_seam_and_the_anchor(
-    seam_bound, anchor, expected,
-):
-    """All four combinations, because each single-half rule is wrong differently.
-
-    Seam-only says yes on a speaker whose durable state carries no
-    ``pre_apply_profile``: the round would issue a restore instruction Undo then
-    refuses, and the household would be told the old sound was coming back when
-    nothing could bring it. Anchor-only ignores that a caller may have no
-    rollback binding at all. Pinning only the true corner, or only one false
-    one, would leave an ``or`` in place of the ``and`` looking correct.
-
-    Asked of the rule's OWNER (#2291 Phase 5 moved it to the coordinator), and
-    of a port set rather than a conductor. That the production conductor hands
-    the coordinator these two seams is a different claim, pinned end-to-end by
-    :func:`test_a_round_reaches_every_one_of_its_five_seams` and by the restore
-    outcomes above it.
-    """
-    ports = coordinator.RoundPorts(
-        rollback=(lambda _cause: True) if seam_bound else None,
-        rollback_available=lambda: anchor,
-    )
-
-    assert coordinator.rollback_available(ports, session_id="cap_x") is expected
-
-
-def test_an_anchor_seam_that_raises_fails_closed():
-    """"We could not confirm an anchor" is not "there is one".
-
-    The cost of the wrong answer is a restore instruction nothing can carry
-    out, which surfaces as ``recovery_required`` anyway — one round later and
-    less honestly.
-    """
-
-    def _explode() -> bool:
-        raise RuntimeError("the durable state is unreadable")
-
-    ports = coordinator.RoundPorts(
-        rollback=lambda _cause: True, rollback_available=_explode,
-    )
-
-    assert coordinator.rollback_available(ports, session_id="cap_x") is False
-
-
-@pytest.mark.parametrize(
-    ("seam", "expected", "why"),
-    [
-        (None, True, "no seam bound at all"),
-        (lambda: (_ for _ in ()).throw(RuntimeError("unreadable")), True,
-         "the seam raised"),
-        (lambda: False, False, "the seam answered cut-only"),
-        (lambda: True, True, "the seam answered boosted"),
-    ],
-    ids=["unbound", "raises", "cut-only", "boosted"],
-)
-def test_an_unreadable_boost_reads_as_boosted(seam, expected, why):
-    """``boosted`` fails CLOSED, on both of the two ways it can go unanswered.
-
-    ``boosted`` is what routes an unprovable round to a restore rather than to
-    "ask the household" (#2318's fail-closed cell), so the wrong default leaves
-    a driver being driven on evidence nobody has. The two unanswerable shapes —
-    no seam, and a seam that raised — are the ones no end-to-end round reaches,
-    because the production host always binds it and the applied-profile SSOT
-    always answers; a mutation flipping either default survived the whole
-    round suite before this pin existed.
-    """
-    ports = coordinator.RoundPorts(applied_boosts=seam)
-
-    assert coordinator.applied_boosts(ports, session_id="cap_x") is expected, why
-
-
-def test_a_round_reaches_every_one_of_its_five_seams(monkeypatch):
-    """The conductor→coordinator port mapping, pinned as reach rather than identity.
-
-    #2291 Phase 5 moved the round's sequencing behind
-    :func:`~jasper.active_speaker.crossover_v2.coordinator.run_round`, which is
-    handed a narrowed :class:`RoundPorts` instead of the conductor's seams. That
-    narrowing is a place two names can be crossed, and most crossings would
-    still pass the outcome tests above: a swapped pair usually raises inside a
-    guard and fails closed, which several rows here expect anyway.
-
-    So this asserts the weaker fact that no single-outcome test implies — that
-    ONE round reaches all five — on a restoring round, the only shape in which
-    every seam is live. Comparing the port objects instead would pin the
-    assignment and not the call, and the call is what a round is.
-    """
-    seen: list[str] = []
-    _seed_round_state()
-    conductor, _attempts = _restoring_stage_2(monkeypatch)
-    # A baseline FLATTER than the post-apply capture — the graph made the
-    # speaker measurably worse — so the table says restore and the rollback
-    # seam is live. Every other adoption row leaves at least one seam untouched.
-    _install_entry_baseline(conductor, scale=0.5)
-    _install_applied_graph(monkeypatch, boosts=False)
-    bound = _flow_seams(conductor)
-
-    def _recorded(name: str, seam: Any) -> Any:
-        def _call(*args: Any, **kwargs: Any) -> Any:
-            seen.append(name)
-            return seam(*args, **kwargs)
-        return _call
-
-    conductor._seams = dataclasses.replace(
-        bound,
-        **{
-            name: _recorded(name, getattr(bound, name))
-            for name in (
-                "rollback", "rollback_available", "applied_boosts",
-                "entry_graph_fingerprint", "publish_round_receipt",
-            )
-        },
-    )
-
-    _consume_verify(conductor, _post_apply_analysis(conductor))
-
-    assert set(seen) == {
-        "rollback", "rollback_available", "applied_boosts",
-        "entry_graph_fingerprint", "publish_round_receipt",
-    }
-
-
-# --------------------------------------------------------------------------- #
-# 5. rollback_anchor_refusal has ONE owner
-# --------------------------------------------------------------------------- #
-
-
-def _topology_mismatched_state() -> dict[str, Any]:
-    state = _seed_round_state()
-    state["pre_apply_profile"] = {
-        "candidate_fingerprint": "fp-previous",
-        "source": {"topology_fingerprint": "a-fingerprint-from-another-speaker"},
-    }
-    v2host.save_v2_state(state)
-    return state
-
-
-@pytest.mark.parametrize(
-    ("build_state", "code"),
-    [
-        (lambda: _seed_round_state(anchor=False), v2host.ANCHOR_NO_PRE_APPLY_PROFILE),
-        (_topology_mismatched_state, v2host.ANCHOR_TOPOLOGY_CHANGED),
-    ],
-    ids=["no-pre-apply-profile", "topology-changed"],
-)
-def test_each_anchor_refusal_is_a_refusal_undo_really_makes(
-    monkeypatch, build_state, code,
-):
-    """One predicate, two readers — pinned by making both readers answer.
-
-    ``handle_v2_restore`` raises on these preconditions and the round's
-    ``rollback_available`` seam asks about them before committing to a restore.
-    If they were two transcriptions, a round could promise a restore Undo then
-    refuses. So each case asserts the SAME state produces the named refusal
-    code, a capability answer of "no", and an endpoint that actually declines
-    with that refusal's own sentence.
-    """
-    monkeypatch.setattr(
-        baseline_profile_mod, "restore_applied_baseline_profile", _restored_ok,
-    )
-    state = build_state()
-
-    refusal = v2host.rollback_anchor_refusal(state)
-
-    assert refusal is not None
-    assert refusal.code == code
-    assert v2host._rollback_anchor_available() is False
-    with pytest.raises(v2host.CrossoverV2Refused) as excinfo:
-        v2host.handle_v2_restore(_bg_run_async, lambda: SimpleNamespace())
-    assert str(excinfo.value) == refusal.message
-
-
-def test_the_not_applied_precondition_is_the_same_one_undo_refuses_on(monkeypatch):
-    """The third precondition, separated because it has no anchor to build.
-
-    "Nothing is applied" is reached by state that never applied AND by state a
-    successful Undo has just cleared, which is why it must stay a refusal
-    rather than a special case of the two above.
-    """
-    monkeypatch.setattr(
-        baseline_profile_mod, "restore_applied_baseline_profile", _restored_ok,
-    )
-    state = _seed_round_state()
-    state["applied"] = False
-    v2host.save_v2_state(state)
-
-    refusal = v2host.rollback_anchor_refusal(state)
-
-    assert refusal is not None
-    assert refusal.code == v2host.ANCHOR_NOT_APPLIED
-    assert v2host._rollback_anchor_available() is False
-    with pytest.raises(v2host.CrossoverV2Refused) as excinfo:
-        v2host.handle_v2_restore(_bg_run_async, lambda: SimpleNamespace())
-    assert str(excinfo.value) == refusal.message
-
-
-def test_a_valid_anchor_lets_the_endpoint_through(monkeypatch):
-    """The positive control the three refusals need.
-
-    Without it, a predicate that refused unconditionally would satisfy every
-    pin above — and would take Undo away from every household.
-    """
-    monkeypatch.setattr(
-        baseline_profile_mod, "restore_applied_baseline_profile", _restored_ok,
-    )
-    _seed_round_state()
-
-    assert v2host.rollback_anchor_refusal(v2host.load_v2_state()) is None
-    assert v2host._rollback_anchor_available() is True
-
-    payload = v2host.handle_v2_restore(_bg_run_async, lambda: SimpleNamespace())
-
-    assert payload["status"] == "restored"
-    # …and the anchor is gone afterwards, which is what makes a second Undo
-    # refuse and the once-guard load-bearing.
-    assert v2host._rollback_anchor_available() is False
-
-
-# --------------------------------------------------------------------------- #
-# 6. the receipt
+# 3. the receipt
 # --------------------------------------------------------------------------- #
 
 
@@ -1438,7 +858,7 @@ def test_the_receipt_records_what_the_round_DID_not_only_what_it_decided(
 
 
 # --------------------------------------------------------------------------- #
-# 6b. #2392 — WHICH identity the receipt's proposal fingerprint is
+# 3b. #2392 — WHICH identity the receipt's proposal fingerprint is
 # --------------------------------------------------------------------------- #
 #
 # The migration story, driven through the real two-stage host rather than
@@ -1626,7 +1046,7 @@ def test_the_receipt_is_written_exactly_once_with_the_payload_that_was_graded(
 
 
 # --------------------------------------------------------------------------- #
-# 7. a receipt-write failure does not lose the verdict
+# 4. a receipt-write failure does not lose the verdict
 # --------------------------------------------------------------------------- #
 
 
@@ -1767,7 +1187,7 @@ def test_the_fire_once_guard_holds_against_a_second_grade_on_one_trigger(
 
 
 # --------------------------------------------------------------------------- #
-# 8. the model-error store banks the TRACKING number
+# 5. the model-error store banks the TRACKING number
 # --------------------------------------------------------------------------- #
 
 
@@ -1817,7 +1237,7 @@ def test_the_model_error_store_banks_the_tracking_number_not_the_ledger_grade(
 
 
 # --------------------------------------------------------------------------- #
-# 9. durability, both directions
+# 6. durability, both directions
 # --------------------------------------------------------------------------- #
 
 
@@ -2731,7 +2151,7 @@ def test_the_status_block_forwards_the_receipt_to_the_screen():
 
 
 # --------------------------------------------------------------------------- #
-# 9. every round banks its receipt (the ethos's fifth principle)
+# 7. every round banks its receipt (the ethos's fifth principle)
 #
 # A direct ``run_round`` harness rather than the conductor fixtures above:
 # these are properties of the COORDINATOR — which arms bank, what the identity
