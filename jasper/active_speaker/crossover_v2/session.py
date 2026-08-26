@@ -52,6 +52,7 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from typing import Any, Callable, Iterable, Mapping
 
+from ..volume_latch import fader_matches
 from .contracts import DESIGN_AXIS_DEG, POSITION_AXIS_VERTICAL
 from .measure_spec import CapabilityStub, MeasureSpec, stubbed_capabilities
 from .playback_transaction import PlaybackOutcome
@@ -343,9 +344,6 @@ class TuningSession:
         something is already in flight the close failure is attached to it and
         the original goes on. With nothing in flight, a close failure IS the
         failure and propagates normally.
-
-        With nothing in flight, a close failure IS the failure and propagates
-        normally.
         """
         if exc_value is None:
             self.close()
@@ -591,25 +589,19 @@ class TuningSession:
             level_db=self.measurement_level_db,
             stimulus_dbfs=stimulus_dbfs,
         )
-        if not outcome.played:
-            return StimulusOutcome(
-                position_deg=bearing, stimulus_dbfs=stimulus_dbfs,
-                level_db=proven_level_db, record_id="",
-                incident=outcome.incident,
-            )
-        if proven_level_db is None:
-            return StimulusOutcome(
-                position_deg=bearing, stimulus_dbfs=stimulus_dbfs,
-                level_db=None, record_id="",
-                incident=outcome.incident or UNPROVEN_LEVEL,
-            )
-        record_id = self.seams.records.bank(self._record(
-            spec, bearing, prompt, stimulus_dbfs, outcome, proven_level_db,
-        ))
+        record_id = ""
+        incident = outcome.incident
+        if outcome.played:
+            if proven_level_db is None:
+                incident = incident or UNPROVEN_LEVEL
+            else:
+                record_id = self.seams.records.bank(self._record(
+                    spec, bearing, prompt, stimulus_dbfs, outcome,
+                    proven_level_db,
+                ))
         return StimulusOutcome(
             position_deg=bearing, stimulus_dbfs=stimulus_dbfs,
-            level_db=proven_level_db, record_id=record_id,
-            incident=outcome.incident,
+            level_db=proven_level_db, record_id=record_id, incident=incident,
         )
 
     def _proven_level(self) -> float | None:
@@ -629,8 +621,6 @@ class TuningSession:
         already declares. Banking the level is then banking ONE number that
         both the stimulus and the record agree on.
         """
-        from jasper.active_speaker.volume_latch import fader_matches
-
         reading = self.seams.volume.prove()
         if reading is None or not fader_matches(reading, self.measurement_level_db):
             return None

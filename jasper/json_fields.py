@@ -23,7 +23,7 @@ _SAFE_ID_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_.:-]{0,79}$")
 class JsonFields:
     """Parse common JSON field shapes using a domain-owned error type."""
 
-    error_type: type[ValueError]
+    error_type: type[Exception]
     length_limit_separator: str = ""
 
     def mapping(self, raw: Any, field_name: str) -> Mapping[str, Any]:
