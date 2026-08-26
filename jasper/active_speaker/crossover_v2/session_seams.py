@@ -199,23 +199,24 @@ class VolumeClaim(Protocol):
 class RecordStore(Protocol):
     """Where this session's evidence lands — the one shape, one writer.
 
-    Three calls, because the plan has three: :meth:`bank` takes ONE capture
-    record (wave 4's five blocks — identity · place · stimulus-and-path ·
-    honesty · **the curve**), :meth:`read` fetches one back by id, and
-    :meth:`persist` takes the session's own durable state (wave 3's
-    ``persist_conductor_state``, today an 854-line function that is *"a schema
-    writer with no schema"*).
+    Two pairs, because the store holds two things and each must come back out:
+    :meth:`bank` / :meth:`read` for ONE capture record (wave 4's five blocks —
+    identity · place · stimulus-and-path · honesty · **the curve**), and
+    :meth:`persist` / :meth:`read_state` for the session's own durable state
+    (wave 3's ``persist_conductor_state``, today an 854-line function that is
+    *"a schema writer with no schema"*).
 
-    **:meth:`read` is what makes ``analyze`` an offline verb.** Ruling S3: a
+    **The read halves are what make ``analyze`` an offline verb.** Ruling S3: a
     banked session can be re-analyzed by any analysis that did not exist when it
     was captured, which is the whole return on banking ``DriverResponse`` with
     its phase instead of re-deriving it from WAVs. A store that could only be
     written to would make that a promise nothing could keep.
 
-    **Rebuilding a session over a previous bank is wave 2's first decision**,
-    not this wave's. What ships here is the read door an offline ``analyze``
-    needs; who constructs the session around an existing bank, and how it
-    re-learns what that bank already discloses, is designed there.
+    **Rebuilding a session over a previous bank is
+    :class:`~.prior_bank.PriorBank`**, and it needs both read halves: the state
+    to learn which records a previous session banked and what it disclosed, and
+    the record read to fetch the "before" back. That is why :meth:`read_state`
+    exists rather than :meth:`persist` being write-only.
 
     **An integrity refusal still banks.** The discriminator is #2087's: would
     measuring again plausibly fix it? Yes, and the capture is a defect that is
@@ -237,6 +238,17 @@ class RecordStore(Protocol):
 
     def persist(self, state: Mapping[str, Any]) -> str:
         """Write the session's durable state; return the id that finds it."""
+        raise NotImplementedError
+
+    def read_state(self, state_id: str) -> Mapping[str, Any] | None:
+        """One persisted session state by id, or ``None`` when there is none.
+
+        ``None`` for :meth:`read`'s reason and for one more: a state id may
+        outlive the state it named. The store this replaces overwrites its one
+        file every persist, so *"the prior round's state is gone"* is an
+        ordinary outcome, and a session that raised on it would refuse the
+        round rather than disclose the missing "before" (ruling S10).
+        """
         raise NotImplementedError
 
 

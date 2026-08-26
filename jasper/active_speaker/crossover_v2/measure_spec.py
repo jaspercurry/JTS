@@ -69,6 +69,7 @@ __all__ = [
     "VERTICAL_AXIS_NOT_IMPLEMENTED",
     "CapabilityStub",
     "MeasureSpec",
+    "stub_for_code",
     "stubbed_capabilities",
 ]
 
@@ -286,6 +287,30 @@ class MeasureSpec:
                 degrees=bearing,
                 mark_distance_m=MARK_DISTANCE_M,
             )
+
+
+def stub_for_code(code: str, *, captured: bool) -> CapabilityStub | None:
+    """One stub named by its code, or ``None`` when this build has no such hole.
+
+    What :class:`~.prior_bank.PriorBank` re-renders a *banked* disclosure with:
+    a session persists the code and whether the capture happened, and the
+    sentence is composed here rather than stored, so a bank read by a later
+    build gets that build's wording for the same hole.
+
+    ``captured`` is not decoration. A near-field spec that ran alone banked its
+    capture; the same spec aborted by a sibling stub banked nothing, and
+    ``analyze`` treats the two differently — one has evidence waiting for the
+    analysis that will read it and one has none. Passing the flag back in is
+    how that survives the round trip.
+
+    ``None`` for an unknown code, because a hole a later build named is one
+    this build cannot describe, and inventing a sentence for it would be the
+    dishonest half of ruling S12.
+    """
+    stub = _STUBS.get(code)
+    if stub is None:
+        return None
+    return stub if captured else stub.aborted()
 
 
 def stubbed_capabilities(spec: MeasureSpec) -> tuple[CapabilityStub, ...]:

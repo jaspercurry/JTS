@@ -18,8 +18,10 @@ there is one implementation and no VERIFY. What today's code calls VERIFY is
 ``measure`` with :data:`~.contracts.MEASURE_KIND_VERIFY` plus ``analyze``.
 
 **One session, one lifetime, one thread.** A session opens once and closes
-once; it is not re-openable, because rebuilding a session over an existing bank
-is wave 2's first decision and a re-openable session would prejudge it. The
+once; it is not re-openable. Measuring against a previous session's evidence is
+a different act with a different type — :class:`~.prior_bank.PriorBank`, handed
+in at construction — because the two sides of a round sit on two graphs with an
+irreversible apply between them. The
 verbs hold no lock and are not safe to call concurrently on one instance — the
 walk they drive is a sequence of prompted captures, one at a time, and a lock
 would be machinery ahead of a caller that wants it. Two sessions in two threads
@@ -48,11 +50,12 @@ engine replaces. A third spelling of either would read as the same thing.
 from __future__ import annotations
 
 from dataclasses import dataclass, field
-from typing import Any, Callable, Mapping
+from typing import Any, Callable, Iterable, Mapping
 
 from .contracts import DESIGN_AXIS_DEG, POSITION_AXIS_VERTICAL
 from .measure_spec import CapabilityStub, MeasureSpec, stubbed_capabilities
 from .playback_transaction import PlaybackOutcome
+from .prior_bank import CapturePose, PriorBank
 from .session_seams import EngineSeams
 
 __all__ = [
@@ -86,6 +89,34 @@ def _attach_cleanup_failure(
     except Exception as cleanup_exc:  # noqa: BLE001 - see the docstring
         if primary.__context__ is None:
             primary.__context__ = cleanup_exc
+
+
+def _merge_disclosures(
+    stubs: "Iterable[CapabilityStub]",
+) -> list[CapabilityStub]:
+    """Each hole once, in the order it was first hit, keeping the best news.
+
+    A hole reported as having captured nothing is UPGRADED when a later entry
+    for the same code did bank a capture — otherwise a session whose first
+    near-field spec was aborted by a sibling stub would keep saying there is no
+    evidence waiting, long after a second spec put some in the bank. The
+    reverse never happens: a hole that has banked evidence does not stop having
+    it.
+
+    One implementation, used for both the merges the engine does: the running
+    one a session accumulates over its own specs, and the read-time one
+    ``analyze`` does across a prior bank and this session.
+    """
+    at: dict[str, int] = {}
+    merged: list[CapabilityStub] = []
+    for stub in stubs:
+        index = at.get(stub.code)
+        if index is None:
+            at[stub.code] = len(merged)
+            merged.append(stub)
+        elif stub.captured and not merged[index].captured:
+            merged[index] = stub
+    return merged
 
 
 class SessionStateError(RuntimeError):
@@ -204,12 +235,13 @@ class TuningSession:
     """One session's lifetimes and the four verbs over them.
 
     Construct with an identity, the injected :class:`~.session_seams.EngineSeams`,
-    and the ONE declared level every stimulus in this session plays at. Use it
-    as a context manager, or call :meth:`open` and :meth:`close` — the second
-    exists because a web front end's lifetime is a sequence of HTTP requests and
-    cannot hold a ``with``.
+    the ONE declared level every stimulus in this session plays at, and — for a
+    session that grades against a previous one — that session's
+    :class:`~.prior_bank.PriorBank`. Use it as a context manager, or call
+    :meth:`open` and :meth:`close` — the second exists because a web front end's
+    lifetime is a sequence of HTTP requests and cannot hold a ``with``.
 
-    Three declarations and five fields of state. The 102-attribute session this
+    Four declarations and five fields of state. The 102-attribute session this
     replaces is what happens when a class accumulates the answers instead of the
     seams.
 
@@ -225,6 +257,11 @@ class TuningSession:
     #: voltage across every per-driver measurement; no gain is touched between
     #: them."* A level ladder moves the stimulus, never this.
     measurement_level_db: float
+    #: The previous session's bank this one measures against, or ``None`` for a
+    #: session with no "before" — a first-ever round, or a baseline session that
+    #: is itself the before. Read-only: a session banks into its own store and
+    #: never into a prior one. See :class:`~.prior_bank.PriorBank`.
+    prior: PriorBank | None = None
 
     _graph_installed: bool = field(default=False, init=False)
     _volume_held: bool = field(default=False, init=False)
@@ -254,9 +291,9 @@ class TuningSession:
         session's, and the id every record carries is the key that says so.
 
         **Not re-openable.** A session that has been closed is spent, and
-        opening it again raises. Rebuilding a session over an existing bank is
-        wave 2's first decision; a re-open that quietly worked would answer it
-        here by accident.
+        opening it again raises. A second session over the first one's evidence
+        is :class:`~.prior_bank.PriorBank`, and it reads that bank rather than
+        re-entering it.
         """
         if self._spent:
             raise SessionStateError(
@@ -405,8 +442,27 @@ class TuningSession:
         the analysis layer, replace its caller.* What ships now is the honest
         half: the capability holes this session hit, reported rather than
         skipped.
+
+        **A prior bank's own disclosures are reported too, and first.** They are
+        the capability holes the PRIOR session hit, re-rendered in this build's
+        wording, because a round's evidence is both sides of it. Prior first
+        because it happened first; a hole both sides hit is named once, and the
+        side that banked a capture for it wins.
+
+        **OWED, and not built here: a MISSING "before" is not disclosed.** A
+        session with no prior, or a capture whose pose the prior never
+        baselined, reports nothing about it — the record says so in its empty
+        ``baseline_record_id`` and this verb stays silent. That disclosure
+        belongs with the verdict analysis that would consume the comparand, and
+        it lands in the wave that builds it. Naming a missing input is §1's
+        rule; this method does not keep it yet, and says so rather than
+        implying it does.
         """
-        return AnalyzeOutcome(results={}, disclosures=tuple(self._disclosures))
+        prior = self.prior.disclosures if self.prior is not None else ()
+        return AnalyzeOutcome(
+            results={},
+            disclosures=tuple(_merge_disclosures([*prior, *self._disclosures])),
+        )
 
     def recommend(self) -> RecommendOutcome:
         """Ask the prescriber what to do about everything banked so far.
@@ -431,6 +487,17 @@ class TuningSession:
         capture is evidence the moment it exists, and holding it until a save
         would be a way to lose it. This verb writes the session-level state that
         accounts for them.
+
+        **The five keys it writes are exactly what
+        :meth:`~.prior_bank.PriorBank.read` reads back**, which is the whole
+        reason a later session can grade against this one. One of them is
+        shaped by that round trip: a disclosure is written as its code AND
+        whether the capture happened, because those are two different facts to
+        the analysis that reads the bank.
+
+        The prior's own disclosures are NOT copied in. This state says what
+        THIS session disclosed; what the round as a whole cannot claim is
+        :meth:`analyze`'s answer, composed at read time from both banks.
         """
         ids = tuple(self._banked)
         state_id = self.seams.records.persist({
@@ -438,7 +505,10 @@ class TuningSession:
             "graph_fingerprint": self._graph_fingerprint,
             "measurement_level_db": self.measurement_level_db,
             "record_ids": ids,
-            "disclosures": tuple(stub.code for stub in self._disclosures),
+            "disclosures": tuple(
+                {"code": stub.code, "captured": stub.captured}
+                for stub in self._disclosures
+            ),
         })
         return SaveOutcome(state_id=state_id, record_ids=ids)
 
@@ -566,24 +636,24 @@ class TuningSession:
             return None
         return float(reading)
 
-    def _disclose(self, stubs: tuple[CapabilityStub, ...]) -> None:
-        """Add each hole once, keeping the order it was first hit in.
+    def _baseline_for(
+        self,
+        spec: MeasureSpec,
+        bearing: int | None,
+        stimulus_dbfs: float | None,
+    ) -> str:
+        """The prior's "before" at this capture's own pose, or ``""``."""
+        if self.prior is None:
+            return ""
+        return self.prior.baseline_for(CapturePose(
+            position_axis=spec.position_axis,
+            position_deg=bearing,
+            stimulus_dbfs=stimulus_dbfs,
+        ))
 
-        A hole already disclosed as having captured nothing is UPGRADED when a
-        later call does bank a capture for it — otherwise a session whose first
-        near-field spec was aborted by a sibling stub would keep telling
-        ``analyze`` there is no evidence waiting, long after a second spec put
-        some in the bank. The reverse never happens: a hole that has banked
-        evidence does not stop having it.
-        """
-        at = {stub.code: index for index, stub in enumerate(self._disclosures)}
-        for stub in stubs:
-            index = at.get(stub.code)
-            if index is None:
-                at[stub.code] = len(self._disclosures)
-                self._disclosures.append(stub)
-            elif stub.captured and not self._disclosures[index].captured:
-                self._disclosures[index] = stub
+    def _disclose(self, stubs: tuple[CapabilityStub, ...]) -> None:
+        """Add each hole this session hit, once — see :func:`_merge_disclosures`."""
+        self._disclosures[:] = _merge_disclosures([*self._disclosures, *stubs])
 
     def _require_open(self) -> None:
         if not self.is_open:
@@ -614,10 +684,27 @@ class TuningSession:
         curve, and nothing here is a second store — the banked files stay the
         single source of truth and the index stays rebuildable by rescanning
         them.
+
+        ``baseline_record_id`` is the "before" THIS capture is meant to be
+        compared against, named on the record rather than left for a reader to
+        infer. It is what makes a verdict re-computable offline forever
+        (ruling S3): a capture that carries its own comparand needs one hop to
+        grade, where a capture that only carried its session id would need the
+        reader to find that session's state first and re-derive the pairing.
+
+        Resolved **per capture, by pose** — the prior's baseline at this
+        bearing, on this axis, at this ladder rung. One walk is many poses, so a
+        bank-wide answer would stamp the prior's last pose onto every capture
+        and hand the verdict a comparand measured somewhere else. ``""`` where
+        the prior baselined no such pose, and ``""`` for a session with no
+        prior: an honest fact about the capture, never a refusal to bank it.
         """
         return {
             "session_id": self.session_id,
             "kind": spec.kind,
+            "baseline_record_id": self._baseline_for(
+                spec, bearing, stimulus_dbfs,
+            ),
             "position_deg": bearing,
             "position_axis": spec.position_axis,
             "prompt": prompt,
