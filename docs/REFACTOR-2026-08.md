@@ -53,7 +53,12 @@ HANDOFF still claims it live); ~30K prose lines in code; ~25K test-docstring
 / fixture-dedup lines; the `crossover_v2_flow.py` (13,459 lines) split its
 own ratchet kept deferring; `jasper/bass_extension/` parked-half decision
 rides issue #1738 (cloud defers it to the local agent since the package is
-in its zone).
+in its zone). A read-only scout also flagged, unverified and for the local
+agent's own triage, five census-zone suites with high `read_text` density:
+`test_active_speaker_baseline_profile.py`,
+`test_correction_crossover_v2_endpoints.py`,
+`test_correction_status_and_bundles.py`,
+`test_active_speaker_runtime_contract.py`, `test_correction_setup.py`.
 
 **Rules of engagement:** small single-concern PRs; `git fetch` before start
 and before push; neither session edits the other's zone — if a change
@@ -139,7 +144,7 @@ program's wave 7h)**
       (keep aec_probe isolation tests verbatim)
 - [x] CSRF altitude collapse via test_web_wizard_conventions sweep
 - [ ] tests/js/_loader.mjs + _dom.mjs; convert the 12 strip-loader files
-- [ ] convert the two worst literal-welded wiring test files to executing
+- [x] convert the two worst literal-welded wiring test files to executing
       their subjects; ban new source-text assertions (charter default)
 
 **Wave 4 — prose & docs (~10–20K in code + docs restructure)**

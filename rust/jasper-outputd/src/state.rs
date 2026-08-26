@@ -2564,6 +2564,122 @@ mod tests {
         );
     }
 
+    /// Every JSON key the STATUS payload exposes, at any nesting depth.
+    fn snapshot_key_names(state: &OutputdState) -> std::collections::BTreeSet<String> {
+        fn walk(value: &serde_json::Value, names: &mut std::collections::BTreeSet<String>) {
+            match value {
+                serde_json::Value::Object(fields) => {
+                    for (name, child) in fields {
+                        names.insert(name.clone());
+                        walk(child, names);
+                    }
+                }
+                serde_json::Value::Array(items) => {
+                    for item in items {
+                        walk(item, names);
+                    }
+                }
+                _ => {}
+            }
+        }
+
+        let mut names = std::collections::BTreeSet::new();
+        walk(&parse_snapshot_json(&state.snapshot_json()), &mut names);
+        names
+    }
+
+    #[test]
+    fn snapshot_json_emits_every_key_the_python_status_consumers_read() {
+        // jasper/audio_validation.py and jasper/cli/doctor/audio_runtime.py read
+        // STATUS through fail-soft `.get()` chains, so a renamed key never throws
+        // — it degrades to null and quietly blanks a check. Built on the box shape
+        // that emits every optional block (chip-reference writer armed and
+        // observing, UDP reference target set) so no key is missing merely because
+        // its section was not reached.
+        let cfg = Config {
+            chip_ref_pcm: Some("plughw:CARD=Array,DEV=0".to_string()),
+            chip_ref_observe: true,
+            reference_udp_target: Some("127.0.0.1:9891".to_string()),
+            ..test_config()
+        };
+        let state = OutputdState::new(&cfg);
+        state.mark_chip_ref_writer_active(true);
+        state.mark_chip_ref_write(ChipRefWrite {
+            frames_written: 320,
+            delay_frames: Some(400),
+            reference_sequence: Some(1),
+            ..ChipRefWrite::default()
+        });
+
+        let names = snapshot_key_names(&state);
+        for key in [
+            "backend",
+            "sink_mode",
+            "content",
+            "dac",
+            "pcm",
+            "sample_rate",
+            "period_frames",
+            "buffer_frames",
+            "frames_written",
+            "xrun_count",
+            "reference_outputs",
+            "speaker_reference_source",
+            "speaker_reference_active",
+            "speaker_reference_channels",
+            "udp_target",
+            "chip_ref_pcm",
+            "chip_ref_sample_rate",
+            "chip_ref_period_frames",
+            "chip_ref_buffer_frames",
+            "chip_ref_writer",
+            "desired",
+            "enabled",
+            "active",
+            "status",
+            "open_error_count",
+            "retry_count",
+            "queue_depth_periods",
+            "queued_frames",
+            "write_underrun_count",
+            "write_xrun_count",
+            "write_recovery_count",
+            "write_error_count",
+            "dropped_periods_due_to_full_queue",
+            "dropped_periods_due_to_disconnected_writer",
+            "dropped_periods_while_unavailable",
+            "last_write_age_ms",
+            "last_enqueued_reference_sequence",
+            "last_written_reference_sequence",
+            "reference_sequence_lag",
+            "recent_writes",
+            "recent_writes_capacity",
+            "age_ms",
+            "snd_pcm_delay_frames",
+            "snd_pcm_delay_ms",
+            "snd_pcm_delay_sample_age_ms",
+            "diagnostic_tee_path",
+            "diagnostic_tee_active",
+            "diagnostic_tee_open_error_count",
+            "diagnostic_tee_write_error_count",
+            "aec_clock",
+            "chip_ref_sro_ppm",
+            "sro_estimator_status",
+            "verdict",
+            "verdict_reason",
+            "observe",
+            "latency",
+            "dac_presentation_ms",
+            "playback_queue_ms",
+            "chip_ref_queue_ms",
+        ] {
+            assert!(
+                names.contains(key),
+                "outputd STATUS no longer emits {key:?}; emitted {names:?}"
+            );
+        }
+    }
+
     #[test]
     fn snapshot_json_echoes_the_declared_dac_edge_format_before_the_sink_opens() {
         // The chip-AEC alignment identity reads dac.format out of STATUS, so a
