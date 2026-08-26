@@ -126,37 +126,6 @@ def main(argv: Sequence[str] | None = None) -> int:
     return _run_live(args, manifest, target_ids)
 
 
-class _CamillaFloor:
-    """The ``FloorControl`` the activation seam fades to before every mutation.
-
-    ``SAFE_FLOOR_DB`` reuses ``jasper.volume_curve.DEFAULT_VOLUME_FLOOR_DB`` —
-    the existing main-volume curve's own floor (also
-    ``jasper.audio_measurement.ramp.MeasurementRamp.start_db``'s coarse-ramp
-    starting point) — rather than inventing a new "safe" constant.
-    """
-
-    def __init__(self, controller: object) -> None:
-        self._controller = controller
-
-    async def to_floor(self) -> None:
-        from jasper.volume_curve import DEFAULT_VOLUME_FLOOR_DB
-
-        await self._controller.set_volume_db(DEFAULT_VOLUME_FLOOR_DB)  # type: ignore[attr-defined]
-
-    async def assert_at_floor(self) -> None:
-        from jasper.volume_curve import DEFAULT_VOLUME_FLOOR_DB
-
-        reading = await self._controller.get_volume_and_mute()  # type: ignore[attr-defined]
-        if reading is None:
-            raise RuntimeError("could not confirm the safe floor: camilla unreachable")
-        volume_db, _muted = reading
-        if volume_db > DEFAULT_VOLUME_FLOOR_DB:
-            raise RuntimeError(
-                f"main volume {volume_db:.1f} dB is above the safe floor "
-                f"{DEFAULT_VOLUME_FLOOR_DB:.1f} dB — refusing to mutate"
-            )
-
-
 def _run_live(args: argparse.Namespace, manifest: CampaignManifest, target_ids: Sequence[str]) -> int:
     """Run the on-device campaign under operator supervision, Stop-able by Ctrl-C.
 
