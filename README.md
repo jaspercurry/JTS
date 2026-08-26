@@ -714,11 +714,12 @@ reference. Currently:
   building corpus export, feature extraction, cloud training, model
   registry, shadow-mode, or one-click training UX.
 - [`HANDOFF-wake-corpus-quality.md`](docs/HANDOFF-wake-corpus-quality.md) —
-  Current methodology for programmatic audio-quality review of the
-  deliberate wake corpus: deterministic artifact metrics, tear/click
-  detection, clipping and AGC diagnostics, cross-leg comparison, scoring
-  schema, and human review packages. Read this before building or
-  expanding wake-corpus quality analyzers.
+  Methodology for programmatic audio-quality review of the deliberate wake
+  corpus: recorder legs and session metadata, the deterministic/diagnostic/
+  advisory metric tiers, tear-click and clipping and AGC detection, cross-leg
+  comparison, and the output schema. Decisions in ADR-0135–0136; the
+  2026-05→07 build record in
+  [`historical/wake-corpus-quality-methodology-2026-05.md`](docs/historical/wake-corpus-quality-methodology-2026-05.md).
 - [`HANDOFF-usb-mic-wake.md`](docs/HANDOFF-usb-mic-wake.md) —
   Parked follow-up for making the cheap USB mic path competitive after
   the XVF3800 AEC tuning round is settled: delay/alignment hypotheses,
