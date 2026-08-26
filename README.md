@@ -355,10 +355,10 @@ Its own doctrine and cadence; start at the doctrine, not the plans.
   cycle, the authority model, the ethos rulings, the hard-stop list
 - [`tuning-master-plan.md`](docs/tuning-master-plan.md) — ratified plan:
   declared-design executor, linearization tournaments, LLM operator
-- [`llm-operator-runbook.md`](docs/llm-operator-runbook.md) — operational map
-  for the LLM operator driving the loop over SSH
-- [`HANDOFF-crossover-measurement-v2.md`](docs/HANDOFF-crossover-measurement-v2.md)
-  — operational canon for the `/sound/crossover/` commission session
+- [`tuning-operator-runbook.md`](docs/tuning-operator-runbook.md) — the one
+  operational map: what the `/sound/crossover/` commission session is, how to
+  drive a round over SSH, what the doors refuse, and the contracts a refactor
+  must preserve
 - [`HANDOFF-active-speaker-dsp.md`](docs/HANDOFF-active-speaker-dsp.md) —
   active-speaker DSP commissioning, baseline lifecycle, safety invariants
 - [`HANDOFF-bass-extension-plan.md`](docs/HANDOFF-bass-extension-plan.md) —

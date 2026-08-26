@@ -2,14 +2,15 @@
 
 > **Status: historical.** Almost everything below this heading is the v2
 > campaign's dated narrative — bench sessions, hardware results, and the
-> decision archaeology behind the spine above. Snapshots from
+> decision archaeology behind the live spine. Snapshots from
 > 2026-07-17 through 2026-08-11. Read it for "why is it like this," never for
 > current state: specific facts here (thresholds, env defaults, file
 > responsibilities, "what's working" lists) drift, and names that no longer
 > exist in the code — chiefly the `CrossoverV2Conductor` class, dissolved in
 > #2291 Phase 5c-iv — are kept where they are what the entry was about at the
-> time. Current operational truth is the spine above; the file map there is
-> the current shape.
+> time. Current operational truth is
+> [`tuning-operator-runbook.md`](../tuning-operator-runbook.md); the file map
+> there is the current shape.
 >
 > **Two sections are the exception, and this tag does not cover them:**
 > "[Failure taxonomy & debugging](#failure-taxonomy--debugging)" and

@@ -368,8 +368,14 @@ def test_the_build_refuses_rather_than_publishing_without_the_shared_helper(tmp_
 
 # The published state of capture-page/js/**, paired with the build stamp it
 # ships under. See the test below for why a digest rather than a rule.
+#
+# The digest moved without the stamps, which is the decision this guard exists
+# to force: the only change was a comment repointing a doc citation, so the
+# bundle's behaviour is byte-for-byte what a warm-cache phone already runs and
+# there is nothing to invalidate. A change that alters behaviour still owes the
+# stamp bumps capture-page/README.md's publish step 1 describes.
 _CAPTURE_PAGE_JS_DIGEST = (
-    "a679819fbedaa4217108ece2d5ee90338395e9c168f7e3f8639399369b87b0db"
+    "31d9539e7c34f8ef04c950a3c82579bcae6782643504251276348638136feffd"
 )
 _CAPTURE_PAGE_JS_DIGEST_BUILD = "20260818.1"
 

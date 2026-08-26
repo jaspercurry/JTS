@@ -6,7 +6,7 @@ flat-linearization program, after the 16-capture cloud instrument shipped
 reviewed design; the PR ladder at the bottom executes it. Parent plan:
 [`flat-linearization-plan.md`](flat-linearization-plan.md); shipped
 instrument: [`flat-linearization-productization-plan.md`](flat-linearization-productization-plan.md);
-operational reference: [`HANDOFF-crossover-measurement-v2.md`](HANDOFF-crossover-measurement-v2.md).
+operational reference: [`tuning-operator-runbook.md`](tuning-operator-runbook.md).
 
 > **Successor campaign (2026-08-04; not shipped):**
 > [crossover-linearization-80-20-plan.md](crossover-linearization-80-20-plan.md)
@@ -25,7 +25,7 @@ operational reference: [`HANDOFF-crossover-measurement-v2.md`](HANDOFF-crossover
 2. **Fewer measurements — an express tier.** ~3–4 positions with honestly
    degraded claims. Full commission (then a 16-capture instrument; the
    count has since moved with the two-stage commission split — see
-   [`HANDOFF-crossover-measurement-v2.md`](HANDOFF-crossover-measurement-v2.md)
+   [`tuning-operator-runbook.md`](tuning-operator-runbook.md)
    for current tier counts) remains for first-run / precision work.
 3. Express sessions should land well under 5 minutes (full walk today is
    ~10–15 min wall clock).
@@ -619,7 +619,7 @@ reaches them.
 - **PR-U3 — wizard + docs (Sonnet).** Envelope tier picker with
   history-based recommendation; express done/verify disclosure copy;
   chart + callouts handle the absent post-apply cloud; `/state` tier
-  surfacing; `HANDOFF-crossover-measurement-v2.md` (session walk,
+  surfacing; `tuning-operator-runbook.md` (session walk,
   counts, prompt copy section); productization-plan annotation (this
   phase supersedes its UX surface, not its instrument) **plus its
   stale "N = 8 cloud-measure positions" line
@@ -628,7 +628,7 @@ reaches them.
   `docs/flat-linearization-plan.md` (§0); the stale `"Spot 4 of 8"`
   comment in `jasper/active_speaker/crossover_envelope_v2.py`; and the
   capture-count "16"s that read false once two tiers exist —
-  enumerated by the review, they span `HANDOFF-crossover-measurement-v2.md`
+  enumerated by the review, they span `tuning-operator-runbook.md`
   (~7 sites), `HANDOFF-correction.md` (2), `correction-journey-design.md`
   (1), `crossover-measurement-productization-design.md` (1), plus the
   narrative "16"s in `crossover_v2_flow.py` docstrings,

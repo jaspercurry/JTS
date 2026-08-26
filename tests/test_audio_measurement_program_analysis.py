@@ -660,8 +660,8 @@ def test_the_live_checkpoint_declarations_compose():
     # that analog value, and sags further as the floor rises: ON-GRID, 1.31052
     # at this 1600 Hz floor and 1.30859 at the 2000 Hz floor #1654 replaced.
     # Say which floor AND which basis: the same K solved CONTINUOUSLY at
-    # exactly 1600 Hz is 1.31053 (the figure HANDOFF-crossover-measurement-v2
-    # quotes), because the grid edge bin is 1602.54 Hz, not 1600.
+    # exactly 1600 Hz is 1.31053 (the figure the crossover-measurement-v2
+    # campaign record quotes), because the grid edge bin is 1602.54 Hz, not 1600.
     # Both solved against the shipped response on the analysis grid: |P| at the
     # 1602.54 Hz edge bin hits the -12 dB floor at corner = 2100.15 Hz (it was
     # 2618.47 Hz before the sweep widened, which is why every row here moved).
@@ -7367,7 +7367,7 @@ def test_build_candidate_admits_a_polish_the_level_gate_can_grade(
 # at different digital levels without biasing the measurement.
 #
 # That invariance is load-bearing and, until this test, asserted only in prose
-# — canonically in docs/HANDOFF-crossover-measurement-v2.md gotcha 22, which
+# — canonically in docs/historical/crossover-measurement-v2-campaign-record.md gotcha 22, which
 # traced it while solving MEASURE's level per driver (#1825): the reading that
 # looked like a drive delta was a sensitivity delta, precisely because the
 # drive divides out. (docs/linearization-integrity-plan.md:95-96 states the

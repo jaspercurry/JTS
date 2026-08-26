@@ -24,7 +24,7 @@
 > the spec-flatness gauge). The tier capture counts moved again after
 > flow-simplification shipped, with the two-stage commission split
 > (#2400 — re-verified 2026-08-13); current counts are in
-> [`HANDOFF-crossover-measurement-v2.md`](HANDOFF-crossover-measurement-v2.md)
+> [`tuning-operator-runbook.md`](tuning-operator-runbook.md)
 > "What it is", not restated here. Read that plan for the current UX;
 > read this doc for the instrument it still accurately describes.
 
@@ -175,7 +175,7 @@ is one function, not two kept in lockstep.
   + "The six fundamentals" + "Adjudicated" + "Non-goals"; memory
   `MEMORY.md` (esp. `reference_adversarial_review_prompt`,
   `project_flat_linearization_program`); the file map in
-  `HANDOFF-crossover-measurement-v2.md` before any W2/W3/W4 PR.
+  `tuning-operator-runbook.md` before any W2/W3/W4 PR.
 - **Per PR:** branch from freshly-fetched `origin/main`
   (`git merge-base --is-ancestor origin/main HEAD` must pass before
   first edit); implement; `scripts/test-fast` locally; corpus tests
@@ -525,7 +525,7 @@ parameterized `index_phase_map` (already used by `prepare_v2_verify`'s
   `DEFAULT_CLOUD_VERIFY_POSITIONS`, `crossover_v2_flow.py` — N counts the
   MEASURE anchor plus 8 prompted positions, which is why the default is 9
   and not 8). The "Position groups" section that used to be cited here now
-  sits inside `HANDOFF-crossover-measurement-v2.md`'s tagged-historical
+  sits inside `tuning-operator-runbook.md`'s tagged-historical
   appendix — a shipped stage 1 no longer walks a pre-apply cloud at all. For
   the walk that ships, read that doc's live-spine "The capture flow" and
   "What it is". One geometry-locked retry loop: when
@@ -844,7 +844,7 @@ callouts on this branch (payload, ES modules, copy, tests)."
 ### PR-8 — Docs + parity closeout
 **Tier: Sonnet. Size: ~200–400 lines docs diff.**
 
-- `HANDOFF-crossover-measurement-v2.md`: position groups, cloud
+- `tuning-operator-runbook.md`: position groups, cloud
   phases, new payloads, budget scaling, retention change — per the
   touched-subsystem rule (each earlier PR already scanned; this PR
   sweeps for drift across the set).
