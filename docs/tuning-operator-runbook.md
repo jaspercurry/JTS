@@ -85,9 +85,13 @@ The session, end to end, from an SSH shell. Every step is an
 artifact-dependency refusal; there is no workflow engine to fight, so a step
 that refuses is telling you which artifact is missing.
 
+The four doors (alignment, topology, blend, driver) are cataloged in
+[`testing-tooling.md`](testing-tooling.md#crossover-prescriber-harness).
+
 1. **Orient.** `jasper-crossover-prescriber status` — declared / banked /
    staged / applied state and the possible next actions, read from the same
-   builders the doors read.
+   builders the doors read. `status` orients rather than prescribes: it is the
+   fourth verb, not a door.
 2. **Read the round.** `jasper-crossover-prescriber packet` → one versioned JSON
    document per banked round (`--compact` to drop indentation, `--json` to
    suppress the human summary on stderr). This is the evidence surface; it is a
@@ -501,7 +505,13 @@ it for the next session; `plan` resolves and prints without writing, `stage`
 writes, `withdraw` clears) and the **poses**
 (`scripts/run-crossover-round.py --per-position N` takes N captures at one pose;
 which pose each take was measured at is derived from the bank into
-`position_cycle.json`). **Verify** is a stage of the round runner, hitting
+`position_cycle.json`). Multiple DSP *configs* per position has a door but no
+wiring: republish-then-apply reaches a named prior config between takes, and
+the open part is sequencing — holding a pose's next capture until the apply has
+landed. That is a design to write, not a refusal to remove, and the
+`awaiting_apply` hold is explicitly not the seam for it (its own vocabulary says
+"no new design may depend on it"). **Verify** is a stage of the round runner,
+hitting
 `POST /crossover/v2/verify`. Where it is headed: named, versioned pose lists as
 data (`baseline` / `tournament` / `verify` / `spot`), selected through a staged
 request with bounded parameters — never free-form geometry you invent. Pose
@@ -631,7 +641,9 @@ the quarantine before you meet the text. Household prose is a different
 population and does not reach you at all
 (`privacy.household_prose_excluded` stays `True`). Where this sits in the
 packet's information model — reality, intent, context — is recorded once, in
-`evidence_packet`'s own module docstring.
+the module docstring of
+`jasper/active_speaker/crossover_v2/evidence_packet.py`, which builds the one
+document per round a reader (human or LLM) can answer from.
 
 `CARRIERS` inside the block is the live list of the three carriers, with the
 source path and cap for each. Only **`build_notes`** (the wizard's one free-text
