@@ -1051,6 +1051,30 @@ class CamillaController:
         its client exposes the underlying ``query`` call. Keeping that
         escape hatch here prevents raw websocket command names from
         spreading through product code.
+
+        **Serialized but NOT ducked.** The swap duck exists because replacing
+        the pipeline can move the graph's own gain by tens of dB at an
+        unchanged volume — the headroom a boosted correction carried vanishes
+        with it. A patch does not replace anything: it writes declared
+        parameters of filters that are already running.
+
+        **That safety is a property of TODAY'S CALLERS, not of ``PatchConfig``.**
+        A patch that rewrote a whole filter chain would step like any swap.
+        Both shipped callers are bounded, and differently:
+
+        * ``multiroom.runtime_balance.apply_local_trim`` — the per-speaker
+          balance trim, clamped to ``TRIM_DB_MIN``…``TRIM_DB_MAX`` (−24…0 dB,
+          attenuation only). Paying a 40 dB fade and
+          ``MAIN_VOLUME_RAMP_SETTLE_S`` for it muted the speaker for half a
+          second per slider nudge.
+        * ``bass_extension.bench.activation.temporary_bass_activation``,
+          reached from the shipped ``jasper-bass-extension-bench`` console
+          script — one limiter ``clip_limit``, and it has already faded to
+          floor and proved it (``to_floor`` + ``assert_at_floor``) before it
+          patches, so the duck was redundant there rather than protective.
+
+        The writer lock stays: a patch still mutates the running graph and must
+        serialize against every other DSP writer.
         """
         if not isinstance(patch, dict) or not patch:
             if best_effort:
@@ -1059,7 +1083,7 @@ class CamillaController:
             raise ValueError("patch must be a non-empty mapping")
 
         try:
-            async with self._graph_mutation("camilla.patch_config"):
+            async with self._graph_mutation("camilla.patch_config", duck=False):
                 await self._call(lambda c: c.query("PatchConfig", arg=patch))
                 return True
         except CamillaUnavailable as e:
