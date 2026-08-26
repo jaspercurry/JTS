@@ -507,13 +507,11 @@ def _chip_aec_gate(
     )
     testing_requested = selection == PROFILE_XVF_CHIP_AEC_TESTING
     runtime_gate = (
-        gate_from_runtime_env(env)
+        gate_from_runtime_env(env, testing_requested=testing_requested)
         if env.get("JASPER_AEC_CHIP_AEC_DAC_STATUS")
         else None
     )
-    if runtime_gate is not None and (
-        not testing_requested or runtime_gate.arm_allowed
-    ):
+    if runtime_gate is not None:
         dac_gate = runtime_gate
     else:
         dac_gate = resolve_chip_aec_dac_gate(

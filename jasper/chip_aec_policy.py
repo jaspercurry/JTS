@@ -305,8 +305,18 @@ def resolve_chip_aec_dac_gate(
     )
 
 
-def gate_from_runtime_env(env: Mapping[str, str]) -> ChipAecGate | None:
-    """Reconstruct the reconciler-applied DAC gate from jasper.env."""
+def gate_from_runtime_env(
+    env: Mapping[str, str],
+    *,
+    testing_requested: bool | None = None,
+) -> ChipAecGate | None:
+    """Reconstruct the reconciler-applied DAC gate from jasper.env.
+
+    The record answers the selection it was written for. Pass
+    ``testing_requested`` to have a record written under the other selection
+    reported as absent, so the caller resolves the gate fresh rather than
+    serving an answer to a question nobody asked.
+    """
 
     status = str(
         env.get("JASPER_AEC_CHIP_AEC_DAC_STATUS")
@@ -329,9 +339,11 @@ def gate_from_runtime_env(env: Mapping[str, str]) -> ChipAecGate | None:
         env.get("JASPER_AEC_CHIP_AEC_DAC_DETAIL")
         or ""
     )
-    testing_requested = str(
+    recorded_testing = str(
         env.get("JASPER_AEC_CHIP_AEC_TESTING_REQUESTED") or "0"
     ).strip().lower() in {"1", "true", "yes", "on"}
+    if testing_requested is not None and testing_requested != recorded_testing:
+        return None
     if status == STATUS_APPROVED:
         gate_status: ChipAecGateStatus = STATUS_APPROVED
         auto_allowed = True
@@ -350,7 +362,7 @@ def gate_from_runtime_env(env: Mapping[str, str]) -> ChipAecGate | None:
         arm_allowed = True
         trial_allowed = True
         blockers = (BLOCKER_DAC,)
-    if testing_requested and gate_status == STATUS_NEEDS_CALIBRATION:
+    if recorded_testing and gate_status == STATUS_NEEDS_CALIBRATION:
         trial_allowed = True
     return ChipAecGate(
         dac_id=gate_dac_id,

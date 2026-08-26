@@ -329,7 +329,8 @@ VOICE_IRRELEVANT_ENV_KEYS="\
 JASPER_XVF_DISPLAY_NAME JASPER_XVF_REASON JASPER_XVF_RECOMMENDED_PROFILE \
 JASPER_AEC_CHIP_AEC_TESTING_REQUESTED JASPER_AEC_CHIP_AEC_DAC_ID \
 JASPER_AEC_CHIP_AEC_DAC_STATUS JASPER_AEC_CHIP_AEC_DAC_SOURCE \
-JASPER_AEC_CHIP_AEC_DAC_DETAIL JASPER_AEC_CHIP_AEC_DAC_PERMITTED \
+JASPER_AEC_CHIP_AEC_DAC_DETAIL JASPER_AEC_CHIP_AEC_DAC_AUTO \
+JASPER_AEC_CHIP_AEC_DAC_TRIAL \
 JASPER_AEC_CHIP_AEC_ALIGNMENT_STATUS JASPER_AEC_CHIP_AEC_ALIGNMENT_REASON \
 JASPER_AEC_CHIP_AEC_ALIGNMENT_ACTION"
 
@@ -665,6 +666,8 @@ normalize_output_dac_id() {
 CHIP_AEC_DAC_GATE_DAC=""
 CHIP_AEC_DAC_GATE_TESTING=""
 CHIP_AEC_DAC_GATE_OK=0
+CHIP_AEC_DAC_GATE_AUTO=0
+CHIP_AEC_DAC_GATE_TRIAL=0
 CHIP_AEC_DAC_GATE_STATUS="needs_calibration"
 CHIP_AEC_DAC_GATE_SOURCE="unresolved"
 CHIP_AEC_DAC_GATE_DETAIL=""
@@ -676,16 +679,32 @@ CHIP_AEC_GATE_CARRY_NOTE="chip-AEC DAC gate could not be evaluated; carrying las
 # commissioned box off chip-AEC. The identity/selection match mirrors
 # jasper.chip_aec_policy.gate_from_runtime_env.
 carry_chip_aec_dac_gate() {
-    local dac_id="$1" testing="$2" detail
+    local dac_id="$1" testing="$2" detail recorded
     [[ -n "${JASPER_AEC_CHIP_AEC_DAC_ID:-}" ]] || return 1
     [[ -n "${JASPER_AEC_CHIP_AEC_DAC_STATUS:-}" ]] || return 1
     [[ "$(normalize_output_dac_id "$JASPER_AEC_CHIP_AEC_DAC_ID")" == "$dac_id" ]] || return 1
-    [[ "$(normalize_bool "${JASPER_AEC_CHIP_AEC_TESTING_REQUESTED:-0}")" == "$testing" ]] || return 1
+    # Selection-aware by construction: the record holds BOTH answers the policy
+    # resolved for this DAC, so a production query and a testing query each read
+    # their own, and neither is refused for having been recorded under the other.
+    if [[ "$testing" == "1" ]]; then
+        recorded="${JASPER_AEC_CHIP_AEC_DAC_TRIAL:-}"
+    else
+        recorded="${JASPER_AEC_CHIP_AEC_DAC_AUTO:-}"
+    fi
+    if [[ -n "$recorded" ]]; then
+        CHIP_AEC_DAC_GATE_OK="$(normalize_bool "$recorded")"
+    elif [[ "$JASPER_AEC_CHIP_AEC_DAC_STATUS" == "approved" ]]; then
+        # A record written before these keys existed. `approved` is the only
+        # status either selection ever armed on, so it reconstructs both — the
+        # same mapping jasper.chip_aec_policy.gate_from_runtime_env uses.
+        CHIP_AEC_DAC_GATE_OK=1
+    else
+        CHIP_AEC_DAC_GATE_OK=0
+    fi
     detail="${JASPER_AEC_CHIP_AEC_DAC_DETAIL:-}"
     # Idempotent across passes: a carried record is re-recorded each pass the
     # resolver stays down, so strip the note before re-appending it.
     detail="${detail%"; ${CHIP_AEC_GATE_CARRY_NOTE}"}"
-    CHIP_AEC_DAC_GATE_OK="$(normalize_bool "${JASPER_AEC_CHIP_AEC_DAC_PERMITTED:-0}")"
     CHIP_AEC_DAC_GATE_STATUS="$JASPER_AEC_CHIP_AEC_DAC_STATUS"
     CHIP_AEC_DAC_GATE_SOURCE="runtime_env_carried"
     CHIP_AEC_DAC_GATE_DETAIL="${detail:+${detail}; }${CHIP_AEC_GATE_CARRY_NOTE}"
@@ -703,6 +722,8 @@ refresh_chip_aec_dac_gate() {
     CHIP_AEC_DAC_GATE_DAC="$dac_id"
     CHIP_AEC_DAC_GATE_TESTING="$testing"
     CHIP_AEC_DAC_GATE_OK=0
+    CHIP_AEC_DAC_GATE_AUTO=0
+    CHIP_AEC_DAC_GATE_TRIAL=0
     CHIP_AEC_DAC_GATE_STATUS="needs_calibration"
     CHIP_AEC_DAC_GATE_SOURCE="policy_unavailable"
     CHIP_AEC_DAC_GATE_DETAIL=""
@@ -727,6 +748,10 @@ refresh_chip_aec_dac_gate() {
     eval "$payload"
     CHIP_AEC_DAC_GATE_DAC="${JASPER_CHIP_AEC_DAC_GATE_DAC:-$dac_id}"
     CHIP_AEC_DAC_GATE_OK="${JASPER_CHIP_AEC_DAC_GATE_PERMITTED:-0}"
+    # Both selections' answers from the one resolve, so write_chip_aec_gate_env
+    # can record a verdict carry_chip_aec_dac_gate reads back for either.
+    CHIP_AEC_DAC_GATE_AUTO="${JASPER_CHIP_AEC_DAC_GATE_AUTO:-0}"
+    CHIP_AEC_DAC_GATE_TRIAL="${JASPER_CHIP_AEC_DAC_GATE_TRIAL:-0}"
     CHIP_AEC_DAC_GATE_STATUS="${JASPER_CHIP_AEC_DAC_GATE_STATUS:-needs_calibration}"
     CHIP_AEC_DAC_GATE_SOURCE="${JASPER_CHIP_AEC_DAC_GATE_SOURCE:-unknown}"
     CHIP_AEC_DAC_GATE_DETAIL="${JASPER_CHIP_AEC_DAC_GATE_DETAIL:-}"
@@ -755,8 +780,10 @@ write_chip_aec_gate_env() {
     set_env_var "$ENV_FILE" JASPER_AEC_CHIP_AEC_DAC_STATUS "$CHIP_AEC_DAC_GATE_STATUS"
     set_env_var "$ENV_FILE" JASPER_AEC_CHIP_AEC_DAC_SOURCE "$CHIP_AEC_DAC_GATE_SOURCE"
     set_env_var "$ENV_FILE" JASPER_AEC_CHIP_AEC_DAC_DETAIL "$CHIP_AEC_DAC_GATE_DETAIL"
-    # The record carry_chip_aec_dac_gate reads back when the resolver is gone.
-    set_env_var "$ENV_FILE" JASPER_AEC_CHIP_AEC_DAC_PERMITTED "$CHIP_AEC_DAC_GATE_OK"
+    # The record carry_chip_aec_dac_gate reads back when the resolver is gone —
+    # one per selection, because "permitted" alone depends on which was asked.
+    set_env_var "$ENV_FILE" JASPER_AEC_CHIP_AEC_DAC_AUTO "$CHIP_AEC_DAC_GATE_AUTO"
+    set_env_var "$ENV_FILE" JASPER_AEC_CHIP_AEC_DAC_TRIAL "$CHIP_AEC_DAC_GATE_TRIAL"
 }
 
 chip_aec_mic_supported() {
@@ -1676,14 +1703,20 @@ disclose_stale_chip_aec() {
     if aec_ready "$AEC_MIC_DEVICE"; then
         write_leg_env "1" "1" "0" "0" "0" "0"
         restart_outputd_if_needed
-        run_systemctl enable jasper-aec-init.service jasper-aec-bridge.service
-        reset_failed_units jasper-aec-init.service jasper-aec-bridge.service
-        # Re-run init under the software legs: JASPER_AEC_CHIP_AEC_ENABLED=0
-        # puts it on its bypass profile, so the chip stops holding a
-        # half-applied alignment and the unit goes active for the bridge's
-        # ExecCondition.
-        run_systemctl restart jasper-aec-init.service
-        run_systemctl restart jasper-aec-bridge.service
+        # enable_start_aec blocking-restarts init and the bridge — a mic outage
+        # of its own, and it re-runs init under JASPER_AEC_CHIP_AEC_ENABLED=0
+        # (its bypass profile) so the chip stops holding a half-applied
+        # alignment. A disclosure is LONG-LIVED by design, so paying that on
+        # every udev event, deploy and wizard save for as long as it stands is
+        # the deafness the gate exists to stop. Same gate, and the same
+        # bridge-and-voice-together reasoning, as the software-AEC3 path below.
+        if unit_active_and_enabled jasper-aec-init.service \
+            && unit_active_and_enabled jasper-aec-bridge.service \
+            && voice_restart_can_be_skipped; then
+            log "event=aec_reconcile.disclosed_bounce_skipped reason=no_voice_relevant_change alignment=disclosed_stale profile=${AUDIO_INPUT_PROFILE:-unknown}"
+        else
+            enable_start_aec
+        fi
         # `systemctl restart` exits 0 when an ExecCondition SKIPS the unit, so
         # its status is not evidence anything is running — if the bypass init
         # re-run above failed, the condition skips and the "restart" still

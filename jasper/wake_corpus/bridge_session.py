@@ -98,10 +98,10 @@ def _chip_aec_gate_for_status(
         default=infer_audio_input_profile(intent),
     )
     testing_requested = selection == PROFILE_XVF_CHIP_AEC_TESTING
-    runtime_gate = gate_from_runtime_env(system_env)
-    if runtime_gate is not None and (
-        not testing_requested or runtime_gate.arm_allowed
-    ):
+    runtime_gate = gate_from_runtime_env(
+        system_env, testing_requested=testing_requested
+    )
+    if runtime_gate is not None:
         return runtime_gate.to_dict()
     return resolve_chip_aec_dac_gate(
         system_env.get("JASPER_AUDIO_DAC_ID", "unknown"),

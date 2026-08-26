@@ -2698,6 +2698,40 @@ def test_a_software_fallback_disclosure_keeps_bouncing_so_the_race_can_heal(
     assert "restart jasper-aec-init.service" in _systemctl_log(tmp_path)
 
 
+def test_a_settled_disclosed_aec3_box_re_arms_nothing_on_an_unchanged_pass(
+    tmp_path: Path,
+) -> None:
+    """The disclosed AEC3 fallback is a STEADY state, not a retry.
+
+    An uncodified DAC (or a mic with no beam plan) never becomes codified by
+    re-running the sequence, so re-arming on every udev event, deploy and
+    wizard save would re-program the chip and drop the AEC3 carrier forever.
+    """
+    _write_env(tmp_path, "Array", extra="JASPER_AUDIO_DAC_ID=mystery_usb_audio\n")
+    _write_mode(tmp_path)
+    _write_card(tmp_path, channels=6)
+    _write_manifest(tmp_path)
+
+    first = _run_reconcile(tmp_path, "--reason", "install")
+    assert first.returncode == 0, first.stderr
+    body = (tmp_path / "jasper.env").read_text()
+    assert "JASPER_AEC_CHIP_AEC_ALIGNMENT_STATUS=disclosed_stale" in body
+    assert "JASPER_MIC_DEVICE=udp:9876" in body
+    assert VOICE_RESTART_CMD in _systemctl_log(tmp_path), first.stderr
+    _clear_systemctl_log(tmp_path)
+
+    second = _run_reconcile(tmp_path, "--reason", "systemd")
+
+    assert second.returncode == 0, second.stderr
+    commands = _systemctl_log(tmp_path)
+    assert "restart jasper-aec-init.service" not in commands
+    assert "restart jasper-aec-bridge.service" not in commands
+    assert VOICE_RESTART_CMD not in commands
+    assert "event=aec_reconcile.disclosed_bounce_skipped" in second.stderr
+    # And the box is still the hearing one the first pass produced.
+    assert (tmp_path / "jasper.env").read_text() == body
+
+
 def test_measurement_mic_hotplug_does_not_bounce_the_voice_assistant(
     tmp_path: Path,
 ) -> None:

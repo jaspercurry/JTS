@@ -54,6 +54,10 @@ def _shell_assignments(gate, *, testing_requested: bool) -> str:
         "JASPER_CHIP_AEC_DAC_GATE_DAC": gate.dac_id,
         "JASPER_CHIP_AEC_DAC_GATE_STATUS": gate.status,
         "JASPER_CHIP_AEC_DAC_GATE_PERMITTED": "1" if permitted else "0",
+        # Both selections' answers, so a caller that records this verdict can
+        # replay it for either without asking again.
+        "JASPER_CHIP_AEC_DAC_GATE_AUTO": "1" if gate.production_allowed else "0",
+        "JASPER_CHIP_AEC_DAC_GATE_TRIAL": "1" if gate.testing_allowed else "0",
         "JASPER_CHIP_AEC_DAC_GATE_SOURCE": gate.source,
         "JASPER_CHIP_AEC_DAC_GATE_DETAIL": gate.detail,
     }
