@@ -7,8 +7,18 @@ it: the product framing, the conceptual vocabulary that was never built as
 written, the Phase 0 duplication audit, the phased plan, and the UI direction.
 
 **None of this is current truth.** What shipped is in
-`docs/HANDOFF-audio-capability-platform.md`; the managed-XVF policy is
-[ADR-0175](../adr/0175-a-managed-xvf-is-chip-aec-or-parked.md).
+`docs/HANDOFF-audio-capability-platform.md`.
+
+**Superseded in particular:** this plan repeatedly frames the managed-XVF
+disposition as "chip-AEC or an actionable park" and treats software AEC3 and
+direct-mic as things a managed XVF must never fall back to.
+[ADR-0101](../adr/0101-proven-once-disclose-on-change.md) reversed that on
+2026-08-26 — chip-AEC-or-park became chip-AEC-or-**disclose**. A managed XVF
+whose chip path cannot be armed now runs the software AEC3 leg (or direct-mic
+where no bridge can run) and publishes `disclosed_stale` with a reason and a
+re-commission action; parking is reserved for absent/unsupported hardware and
+`fault`. Read every "park" and "fallback is forbidden" sentence below as the
+2026-06 intent, not as policy.
 
 ## The product framing
 
