@@ -5520,9 +5520,8 @@ class CrossoverV2Session:
             # never saw the evidence. The ethos's "least-bad measured, honed
             # in bites" ruling makes that unacceptable ("every round, kept or
             # restored or refused, banks its measurement into the series
-            # state"), and the seam was also a
-            # second owner of "restore the previous graph" beside
-            # ``coordinator._run_round_restore``.
+            # state"), and the seam was also a second owner of "restore the
+            # previous graph" beside ``coordinator._run_round_restore``.
             #
             # Both are gone. The probe's verdict now reaches
             # ``evaluate_round_quality``, the same three classes restore
