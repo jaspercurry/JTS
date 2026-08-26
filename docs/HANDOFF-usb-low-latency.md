@@ -137,9 +137,30 @@ the raw literal, so a box still carrying one reports an honest red claim.
 
 ## Earning the claim
 
-Doctor fails the low-latency claim until a route-latency artifact certifies it —
-the rule, its gates, and what invalidates an artifact are
+A low-latency claim is earned by a measured route-latency artifact, never by
+configuration — the rule and its gates are
 [ADR-0108](adr/0108-a-latency-claim-is-earned-by-a-measured-artifact.md).
+Certification needs p95 ≤ 40 ms over ≥ 200 impulses / ≥ 5 minutes; p99
+promotion needs ≥ 1000 jittered impulses over ≥ 30 minutes with p99 ≤ 42 ms.
+
+**Short of that, the gate discloses rather than parks (ADR-0101).**
+`route_latency_gate_status` runs every leg before it classifies once, so a
+measured breach can never hide behind a disclosure:
+
+- **fail** (`fix_route_latency_before_claim`) — no artifact at all, a measured
+  `p95_exceeds_40ms`, an absent p95, `route_health_anomaly` or any `live_*`
+  mismatch, and `route_binding_missing:fanin_direct_negotiated_buffer_frames`
+  (presence of that binding is mandatory, never a compatible warning).
+- **disclose** (warn, `run_route_latency_validation`) — facts about the
+  *proof's* validity rather than the route's: `config_mismatch`,
+  `p95_uncertified`, `artifact_stale`, `artifact_from_future`. Every issue
+  token is preserved so a consumer still sees WHAT is stale, and the claim
+  keeps running.
+- **warn on the promotion ladder** — `p99_exceeds_42ms` gets
+  `reduce_tail_latency_before_promotion`; `p99_missing` /
+  `p99_uncertified` / `p99_spacing_unverified` get
+  `run_p99_promotion_validation`.
+
 Operationally:
 
 `jasper-route-latency-harness` (source: `jasper/cli/route_latency_harness.py` +
@@ -181,8 +202,9 @@ fan-in/outputd counter change across the window — and states whether the
 declaration *would* be justified; it never asserts it for you. The artifact
 writer is strict mid-stream (an unlocked resampler fails artifact creation);
 doctor is topology-aware in steady state (an explicitly `health:"idle"` direct
-lane may read `locked:false`, but capturing/broken/unknown stays strict, and
-static identity must match while idle).
+lane may read `locked:false`, but capturing/broken/unknown stays strict). A
+static-identity change while idle is a disclosure, not a failure — see the
+gate table above.
 
 `run` defaults to `--tap-transport auto`, which always resolves to the fan-in
 tap — the only ingress — and prints its choice first

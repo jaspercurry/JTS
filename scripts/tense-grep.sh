@@ -119,8 +119,7 @@ if (( all_mode )); then
     # (true of both GNU and BSD grep, and observable from the `-H`
     # prefix on every line), so a single pass suffices — no per-file
     # re-grep, no associative array (bash 3.2 on macOS has neither
-    # `mapfile` nor `declare -A`; see the portability note in
-    # doc-freshness.sh for the same constraint). `files[]` itself comes
+    # `mapfile` nor `declare -A`). `files[]` itself comes
     # from `git ls-files`, which is already path-sorted, so groups land
     # in the same order run to run — what makes a before/after baseline
     # diff meaningful (see the header comment's Phase-F use case).

@@ -622,6 +622,41 @@ def test_spotify_wizard_owned_values_are_not_seeded_into_jasper_env():
     assert "/^SPOTIPY_REDIRECT_URI=/d" in install_sh
 
 
+@pytest.mark.parametrize(
+    ("seeded_value", "expected_line"),
+    [
+        ("1073741824", None),  # exact pre-PR frozen-seed default: migrated away
+        ("268435456", "JASPER_WAKE_EVENTS_MAX_AUDIO_BYTES=268435456"),
+    ],
+    ids=("stale-default-stripped", "deliberate-override-preserved"),
+)
+def test_migrate_wake_events_cap_seed(
+    tmp_path: Path, seeded_value: str, expected_line: str | None,
+) -> None:
+    """The pre-PR frozen seed's exact stale value migrates away (line
+    removed, `_env_int` falls back to the new code default); any other
+    operator-set value survives untouched."""
+    env_dir = tmp_path / "etc"
+    env_dir.mkdir(parents=True, exist_ok=True)
+    (env_dir / "jasper.env").write_text(
+        "JASPER_HOSTNAME=jts.local\n"
+        f"JASPER_WAKE_EVENTS_MAX_AUDIO_BYTES={seeded_value}\n"
+    )
+
+    proc = _run_install_helper("migrate_wake_events_cap_seed", tmp_path)
+    assert proc.returncode == 0, proc.stderr
+
+    lines = (env_dir / "jasper.env").read_text().splitlines()
+    assert "JASPER_HOSTNAME=jts.local" in lines
+    if expected_line is None:
+        assert not any(
+            line.startswith("JASPER_WAKE_EVENTS_MAX_AUDIO_BYTES=")
+            for line in lines
+        )
+    else:
+        assert expected_line in lines
+
+
 def test_mic_device_candidates_are_template_owned_for_fresh_install():
     """The install-time seed must not duplicate hot-swap mic candidates."""
     env_example = _ENV_EXAMPLE.read_text(encoding="utf-8")

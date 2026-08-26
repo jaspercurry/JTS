@@ -202,18 +202,13 @@ from .integrations import (
     check_home_assistant,
     check_citibike,
 )
+from . import drift as drift
+from .drift import check_installed_settings_drift
 from . import memory as memory
 from .memory import (
     check_ram,
     check_memory_headroom,
     check_zram_size_ratio,
-    check_mglru_min_ttl,
-    _JTS_SYSCTL_CONF,
-    _SysctlConf,
-    _parse_jts_sysctl_conf,
-    check_sysctl_drift,
-    _EXPECTED_OOM_ADJ,
-    check_oom_score_adj,
     check_cgroup_memory_enabled,
     _AUDIO_PATH_UNITS,
     _AUDIO_VMSWAP_WARN_KB,
@@ -231,9 +226,7 @@ from .memory import (
 )
 from . import resilience as resilience
 from .resilience import (
-    _EXPECTED_START_LIMIT_POLICY,
     _classify_supervisor_snapshots,
-    check_start_limit_action,
     check_service_runtime_state,
     check_supervisor_runtime_snapshots,
     check_bootloop_guard,
@@ -434,6 +427,7 @@ __all__ = [
     "wake",
     "renderers",
     "integrations",
+    "drift",
     "memory",
     "resilience",
     "aec",
@@ -544,16 +538,10 @@ __all__ = [
     "check_google_routes",
     "check_home_assistant",
     "check_citibike",
+    "check_installed_settings_drift",
     "check_ram",
     "check_memory_headroom",
     "check_zram_size_ratio",
-    "check_mglru_min_ttl",
-    "_JTS_SYSCTL_CONF",
-    "_SysctlConf",
-    "_parse_jts_sysctl_conf",
-    "check_sysctl_drift",
-    "_EXPECTED_OOM_ADJ",
-    "check_oom_score_adj",
     "check_cgroup_memory_enabled",
     "_AUDIO_PATH_UNITS",
     "_AUDIO_VMSWAP_WARN_KB",
@@ -568,9 +556,7 @@ __all__ = [
     "check_correction_storage",
     "check_wake_events_storage",
     "check_journald_persistence",
-    "_EXPECTED_START_LIMIT_POLICY",
     "_classify_supervisor_snapshots",
-    "check_start_limit_action",
     "check_service_runtime_state",
     "check_supervisor_runtime_snapshots",
     "check_bootloop_guard",

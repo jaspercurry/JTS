@@ -5084,8 +5084,14 @@ def bind_position_retention(
     continues so a full disk cannot turn an acoustically-good position into a
     retake. Keeping the boundary there rather than here means the strictness the
     store was built for is preserved for every OTHER caller.
+    ``bundles.register_capture`` is the one exception and it is not this
+    function's to make: every public write in that module fail-softs, so a
+    bundle record that cannot be written WARNs and the position still stands.
     """
-    from jasper.active_speaker.bundles import capture_artifact_relpath
+    from jasper.active_speaker.bundles import (
+        capture_artifact_relpath,
+        register_capture,
+    )
 
     def retain_position(
         position_id: str, result: Any, metadata: Mapping[str, Any]
@@ -5104,12 +5110,24 @@ def bind_position_retention(
         take_id = f"{position_id}_a{attempt:02d}"
         wav_rel = ""
         if isinstance(wav, (bytes, bytearray)):
+            bundle_dir = Path(store.bundle_dir)
             wav_rel = capture_artifact_relpath("summed", take_id, None)
-            wav_path = Path(store.bundle_dir) / wav_rel
+            wav_path = bundle_dir / wav_rel
             wav_path.parent.mkdir(parents=True, exist_ok=True)
             wav_path.write_bytes(bytes(wav))
             record["wav_path"] = wav_rel
             record["wav_bytes"] = len(wav)
+            # Placing the bytes is not recording them: without this the WAV is
+            # in the bundle but in neither `info.json`'s `summed_captures` nor
+            # `artifact_manifest.json`, so the bundle does not describe the
+            # audio it carries. The take id is the group — it is already what
+            # `capture_artifact_relpath` above named the file by.
+            register_capture(
+                bundle_dir,
+                kind="summed",
+                relative_path=wav_rel,
+                payload={**record, "speaker_group_id": take_id},
+            )
         artifact = store.publish_json_artifact(
             f"crossover_v2/{relay_session_id}/positions/{take_id}.json",
             {

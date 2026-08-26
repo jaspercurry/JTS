@@ -122,7 +122,7 @@ ack, never silence.
 **Wave 2 — over-engineering (~9–12K)**
 - [x] rust host-compliance/prime machinery (host_compliance.rs + mixer/lane
       branches + 36 contract assertions)
-- [ ] doctor never-fail consolidation (install-settings-drift family)
+- [x] doctor never-fail consolidation (install-settings-drift family)
 - [x] CI classifier shrink (~120-line path predicate + ~150-line tests)
 - [x] env-migrations retirement (GATE: owner confirms every live Pi deployed
       since the migrations ran) — gate cleared 2026-08-25: fleet verified
@@ -133,7 +133,7 @@ ack, never silence.
       REFUTED on re-verification: the confs diverge by 126 non-comment
       lines — streambox deliberately omits 11 voice/assistant routes —
       so only the snippet landed; do not re-attempt the merge)
-- [ ] wake-events WAV cap default 1 GiB → 128 MiB; move wake_training/ out of
+- [x] wake-events WAV cap default 1 GiB → 128 MiB; move wake_training/ out of
       the shipped package
 
 **Wave 3 — test right-sizing (~13–18K; lint-contracts ceded to the tuning
@@ -143,7 +143,7 @@ program's wave 7h)**
 - [ ] doctor tests → one file per domain, verdict + stable remediation codes
       (keep aec_probe isolation tests verbatim)
 - [x] CSRF altitude collapse via test_web_wizard_conventions sweep
-- [ ] tests/js/_loader.mjs + _dom.mjs; convert the 12 strip-loader files
+- [x] tests/js/_loader.mjs + _dom.mjs; convert the 12 strip-loader files
 - [x] convert the two worst literal-welded wiring test files to executing
       their subjects; ban new source-text assertions (charter default)
 
@@ -158,8 +158,12 @@ program's wave 7h)**
       collapsed (historical entries one line)
 - [ ] .env.example: one-line comments; AEC knob table → pointer
 - [x] PULL_REQUEST_TEMPLATE: drop doc-impact ritual to match charter
-- [ ] doc-freshness / docs-impact CI → link check only (keep doc-map pruned
-      or fold)
+- [x] doc-freshness / docs-impact CI → link check only (keep doc-map pruned
+      or fold) — both PR-comment workflows and `scripts/doc-freshness.sh`
+      deleted; `docs-links.yml` + `scripts/docs-linkcheck.py` stay wired as
+      today. doc-map KEPT PRUNED, not folded: nothing load-bearing consumes
+      it beyond the retired bot, so the fold is *recommended* — it is a
+      shared seam (tuning-zone rows) and waits on the tuning program's ack
 
 **Wave 5 — structural convergence (opportunistic; only when the file is
 already open)**

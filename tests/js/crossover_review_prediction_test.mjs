@@ -22,9 +22,8 @@
 //   node tests/js/crossover_review_prediction_test.mjs
 
 import assert from "node:assert/strict";
-import { readFileSync } from "node:fs";
-import { dirname, resolve } from "node:path";
-import { fileURLToPath } from "node:url";
+import { loadEsm, repoPath } from "./_loader.mjs";
+import { FakeElement } from "./_dom.mjs";
 
 let passed = 0;
 function check(condition, message, context) {
@@ -32,42 +31,9 @@ function check(condition, message, context) {
   passed += 1;
 }
 
-const here = dirname(fileURLToPath(import.meta.url));
-
-function loadModule(relativePath, prelude = "") {
-  let source = readFileSync(resolve(here, relativePath), "utf8");
-  source = source.replace(
-    /^import\s+\{[^}]+\}\s+from\s+["'][^"']+["'];\s*\n?/gm,
-    "",
-  );
-  source = `${prelude}${source}`;
-  return import(
-    "data:text/javascript;base64," + Buffer.from(source, "utf8").toString("base64")
-  );
-}
-
 // --------------------------------------------------------------------------
 // Part 1 — cloud.js: what reaches the chart
 // --------------------------------------------------------------------------
-
-class FakeElement {
-  constructor(tag) {
-    this.tag = tag;
-    this.className = "";
-    this._textContent = "";
-    this.children = [];
-    this.hidden = false;
-    this.dataset = {};
-  }
-  get textContent() { return this._textContent; }
-  set textContent(value) {
-    this._textContent = String(value);
-    this.children = [];
-  }
-  appendChild(child) { this.children.push(child); return child; }
-  replaceChildren(...nodes) { this.children = nodes; }
-  addEventListener() {}
-}
 
 globalThis.document = { createElement: (tag) => new FakeElement(tag) };
 
@@ -88,9 +54,12 @@ const els = {
 let lastChartPayload = null;
 globalThis.__drawCloudChart = (canvas, payload) => { lastChartPayload = payload; };
 
-const { renderCloud } = await loadModule(
-  "../../deploy/assets/correction/js/crossover/cloud.js",
-  "const drawCloudChart = globalThis.__drawCloudChart;\n",
+const { renderCloud } = await loadEsm(
+  repoPath("deploy/assets/correction/js/crossover/cloud.js"),
+  {
+    rewrite: [[/^import\s+\{[^}]+\}\s+from\s+["'][^"']+["'];\s*\n?/gm, ""]],
+    prelude: "const drawCloudChart = globalThis.__drawCloudChart;\n",
+  },
 );
 
 const CLOUD_MEASURE = "cloud_measure";
@@ -255,8 +224,9 @@ globalThis.getComputedStyle = () => ({
 });
 globalThis.window = { devicePixelRatio: 1 };
 
-const { drawCloudChart } = await loadModule(
-  "../../deploy/assets/correction/js/crossover/chart.js",
+const { drawCloudChart } = await loadEsm(
+  repoPath("deploy/assets/correction/js/crossover/chart.js"),
+  { rewrite: [[/^import\s+\{[^}]+\}\s+from\s+["'][^"']+["'];\s*\n?/gm, ""]] },
 );
 
 function drawWith(payload) {

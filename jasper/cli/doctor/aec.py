@@ -444,14 +444,6 @@ def _running_aec_bridge_detail() -> str:
     return "running (software AEC3 enabled)"
 
 
-# Alignment dispositions in which jasper-aec-reconcile parked the bridge
-# deliberately, so the doctor row is a `warn` carrying the reconciler's own
-# reason/action rather than a `fail` blaming jasper-aec-bridge. Keep in step with
-# write_alignment_env in deploy/bin/jasper-aec-reconcile and with the list in
-# docs/HANDOFF-aec.md; tests/test_doctor_aec.py pins both members.
-_INTENTIONAL_PARKS = frozenset({"commission_required", "deferred"})
-
-
 @doctor_check(order=45, group="aec")
 def check_aec_bridge_running() -> CheckResult:
     """jasper-aec-bridge runs WebRTC AEC3 echo cancellation on the XVF
@@ -508,25 +500,11 @@ def check_aec_bridge_running() -> CheckResult:
             "sudo systemctl start jasper-aec-reconcile",
         )
 
-    profile = _audio_profile_status_for_doctor(bridge_active=False).get(
-        "audio_profile", {}
-    )
-    # Dispositions where the reconciler parked the bridge ON PURPOSE. Reporting
-    # these as `fail` would name the wrong subsystem and hand out a remedy that
-    # cannot help: `deferred` means the live outputd has not loaded
-    # /var/lib/jasper/outputd.env yet, so `journalctl -u jasper-aec-bridge` is
-    # empty of anything relevant and restarting the reconciler just re-defers.
-    # The reason/action pair is the reconciler's, so surface it verbatim rather
-    # than second-guessing it here.
-    if isinstance(profile, dict) and profile.get("state") in _INTENTIONAL_PARKS:
-        detail = str(profile.get("reason") or "chip-AEC commissioning required")
-        action = str(profile.get("action") or "Run sudo jasper-aec-commission")
-        return CheckResult(
-            "AEC bridge service",
-            "warn",
-            f"intentionally parked — {detail}; {action}",
-        )
-
+    # An alignment the reconciler could not apply no longer stops the bridge
+    # (ADR-0101) — it runs software AEC3 and discloses — so a bridge that is
+    # down here is a bridge that failed, and the remedy below names it. The
+    # disclosure itself reaches the operator through check_audio_profile_runtime,
+    # which carries the reconciler's reason/action verbatim in every state.
     return CheckResult(
         "AEC bridge service", "fail",
         f"is-active='{is_active}', is-enabled='{is_enabled}'. "

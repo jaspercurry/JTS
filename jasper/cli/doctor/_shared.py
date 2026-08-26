@@ -265,8 +265,8 @@ def _pid_of_unit(unit: str) -> int | None:
     isn't running, or if systemctl isn't available (dev host).
 
     Used only when a caller wants just one PID. The batch caller
-    `check_oom_score_adj` uses `_systemctl_show_property` directly
-    to avoid N subprocess invocations for N units."""
+    `check_installed_settings_drift` uses `_systemctl_show_property`
+    directly to avoid N subprocess invocations for N units."""
     try:
         out = _run(
             ["systemctl", "show", "-p", "MainPID", "--value", f"{unit}.service"],
@@ -284,8 +284,8 @@ def _systemctl_show_property(prop: str, units: list[str]) -> list[str] | None:
         list of values (length == len(units)), OR None if systemctl
         is unavailable (dev host).
 
-    Why this matters: before the batch, check_oom_score_adj called
-    `systemctl show` once per (property × daemon) — a dozen-plus
+    Why this matters: unbatched, the installed-settings drift check would
+    call `systemctl show` once per (property × daemon) — a dozen-plus
     subprocess invocations per doctor run. Batched, it's one invocation
     per property (LoadState, MainPID, OOMScoreAdjust), a large
     constant-factor win on the Pi.
@@ -336,18 +336,22 @@ def _installed_units(units: list[str]) -> set[str] | None:
     broken (``error`` / ``bad-setting``) is intentionally KEPT so its
     drift still surfaces rather than being silently hidden.
 
-    Returns ``None`` if systemctl is unavailable (dev host), so callers
-    can fall through to their existing "skipped" path.
+    Returns ``None`` if systemctl cannot answer — absent (dev host), or
+    present but returning nothing (no D-Bus, a host not booted with
+    systemd, a non-zero exit). Both are "unknown", not "everything is
+    installed": treating an empty answer as installed would read every
+    unit's directive as its systemd default and fabricate drift on all of
+    them. Callers fall through to their existing "skipped" path.
 
-    Why: drift checks (OOM score, StartLimitAction) verify a PROPERTY of
-    a unit. A unit a profile never installs — e.g. the voice/AEC stack on
-    a streambox — has no property to drift, and ``systemctl show`` reports
-    its directives as defaults, which would read as false drift. Callers
-    filter their expected set to this set so the check stays correct on
-    every install profile without hard-coding which units each tier runs.
+    Why: drift checks verify a PROPERTY of a unit. A unit a profile never
+    installs — e.g. the voice/AEC stack on a streambox — has no property
+    to drift, and ``systemctl show`` reports its directives as defaults,
+    which would read as false drift. Callers filter their expected set to
+    this set so the check stays correct on every install profile without
+    hard-coding which units each tier runs.
     """
     load_states = _systemctl_show_property("LoadState", units)
-    if load_states is None:
+    if load_states is None or not any(s.strip() for s in load_states):
         return None
     return {
         u for u, state in zip(units, load_states)

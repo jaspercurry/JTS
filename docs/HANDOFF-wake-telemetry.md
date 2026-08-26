@@ -30,7 +30,7 @@ loop with **production telemetry on real attempts**:
 - Every wake event persists to SQLite with both per-leg peak
   scores, the funnel timestamps through to tool completion, the
   music/provider context, and pointers to the captured WAVs.
-- Audio captures retained in a 1 GB ring buffer; DB rows kept
+- Audio captures retained in a 128 MiB ring buffer; DB rows kept
   forever for long-baseline funnel stats.
 
 Companion docs:
@@ -301,11 +301,10 @@ The `fired_legs` column generalizes to include wake-model
 identification too — `"jasper_v1@aec_on,jarvis_v2@dtln"` etc. The
 shape isn't fixed yet; finalize when implementing.
 
-**Audio ring sizing**: the production default is a 1 GB cap
-(`JASPER_WAKE_EVENTS_MAX_AUDIO_BYTES=1073741824`), sized for 3+ streams
-per event (~5-7 weeks at 30-50 events/day with triple-stream). Override
-via the same env var. Pi 5 has plenty of disk (39 GB free per CLAUDE.md
-debug dump).
+**Audio ring sizing**: the production default is a 128 MiB cap
+(`JASPER_WAKE_EVENTS_MAX_AUDIO_BYTES=134217728`), right-sized for the
+product Pi's small SD card (~4-8 days at 30-50 events/day with
+triple-stream). Override via the same env var.
 
 ---
 
@@ -327,7 +326,7 @@ debug dump).
 ```
 
 **Retention split:**
-- **Audio WAVs** — 1 GB ring buffer, oldest-first deletion. At
+- **Audio WAVs** — 128 MiB ring buffer, oldest-first deletion. At
   ~192 KB per captured leg, two-leg events are ~400 KB and chip-AEC
   mode with `on` + two chip-beam files is ~575 KB. Five-leg review
   captures approach ~1 MB/event. The retention sweep runs after each
@@ -462,7 +461,7 @@ threshold fires the wake.
 - Retention sweep: runs after each wake-fire's audio attach (no
   separate hourly timer), off the event loop, gated by a running
   size estimate (full stat-scan only when the estimate crosses the
-  cap); if over 1 GB, deletes oldest WAVs (NOT the DB rows) until
+  cap); if over 128 MiB, deletes oldest WAVs (NOT the DB rows) until
   under cap, marks deleted rows in DB.
 
 **Files touched:**
@@ -629,7 +628,7 @@ here so future sessions don't relitigate them without new evidence.
    regardless of floor — the model produces no signal at all on
    them. Catching those needs option G (retraining), not lower
    floors.
-3. **DB kept forever; audio in a 1 GB ring buffer.** Long-term
+3. **DB kept forever; audio in a 128 MiB ring buffer.** Long-term
    funnel stats survive even after audio rolls off. Funnel queries
    degrade gracefully when audio is gone.
 4. **No "I just said Jarvis" button / no rolling mic buffer for
@@ -657,7 +656,7 @@ here so future sessions don't relitigate them without new evidence.
 - **User-reported miss button** (per decision 4).
 - **Audio compression** (FLAC). Could 2× the retention horizon but
   adds a CPU cost per write and a dependency. Trivial to add later
-  if 1 GB / 5-7 weeks isn't enough.
+  if 128 MiB / 4-8 days isn't enough.
 
 ---
 
@@ -665,7 +664,7 @@ here so future sessions don't relitigate them without new evidence.
 
 **Disk safety.** PR 3's retention loop is the only safeguard
 against the speaker filling its SD card with WAVs. The cap is
-hard (1 GB), swept after each wake-fire's audio attach (no hourly
+hard (128 MiB), swept after each wake-fire's audio attach (no hourly
 timer), deletes oldest-first.
 `jasper-doctor` adds a check: directory size + count of audio
 files, warning if either exceeds expected bounds. Loss-of-write is
@@ -697,7 +696,7 @@ the geometry-aware XVF profile resolver; retention/off-loop language was
 rechecked 2026-06-10 against `jasper/wake_events.py`: WAV writes and
 `_retention_sweep` run via `asyncio.to_thread`, gated by the running
 `_audio_bytes_estimate`, and the sweep still runs from the audio-attach
-path with no hourly timer; audio ring-buffer cap still matches the 1 GB
+path with no hourly timer; audio ring-buffer cap now matches the 128 MiB
 production default,
-`JASPER_WAKE_EVENTS_MAX_AUDIO_BYTES=1073741824`. Prior
+`JASPER_WAKE_EVENTS_MAX_AUDIO_BYTES=134217728`. Prior
 schema/file-layout checks still apply.)

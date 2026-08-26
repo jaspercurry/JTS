@@ -16,36 +16,27 @@
 // Pi parser and its cross-language bridge test).
 
 import assert from "node:assert/strict";
-import { readFileSync } from "node:fs";
-import { fileURLToPath } from "node:url";
-import { dirname, resolve } from "node:path";
+import { loadEsm, repoPath } from "./_loader.mjs";
 import { runTestFunctions } from "./run_test_functions.mjs";
 
-const here = dirname(fileURLToPath(import.meta.url));
-const modulePath = resolve(here, "../../capture-page/js/ambient-stats.js");
-
-const raw = readFileSync(modulePath, "utf8");
-const rewritten = raw
-  .replace(
-    /^import\s+\{[\s\S]*?\}\s+from\s+["'][^"']*measurement-audio\.js[^"']*["'];\s*/m,
-    "const rmsToDbfs = (rms) => { const v = Number(rms); return v > 0 ? 20 * Math.log10(v) : -120; };\n",
-  )
-  .replace(
-    /^import\s+\{[\s\S]*?\}\s+from\s+["'][^"']*level-events\.js[^"']*["'];\s*/m,
-    "const CLIP_ABS_THRESHOLD = 0.999;\n",
-  );
-if (/^import\s/m.test(rewritten)) {
-  throw new Error("unhandled import in ambient-stats.js — add a strip rule");
-}
-
-const dataUrl =
-  "data:text/javascript;base64," + Buffer.from(rewritten, "utf8").toString("base64");
 const {
   AMBIENT_STATS_SCHEMA_VERSION,
   AMBIENT_STATS_MAX_BANDS,
   computeOctaveBandStats,
   buildAmbientStatsEvent,
-} = await import(dataUrl);
+} = await loadEsm(repoPath("capture-page/js/ambient-stats.js"), {
+  rewrite: [
+    [
+      /^import\s+\{[\s\S]*?\}\s+from\s+["'][^"']*measurement-audio\.js[^"']*["'];\s*/m,
+      "const rmsToDbfs = (rms) => { const v = Number(rms); return v > 0 ? 20 * Math.log10(v) : -120; };\n",
+    ],
+    [
+      /^import\s+\{[\s\S]*?\}\s+from\s+["'][^"']*level-events\.js[^"']*["'];\s*/m,
+      "const CLIP_ABS_THRESHOLD = 0.999;\n",
+    ],
+  ],
+  guardNoImports: true,
+});
 
 let passed = 0;
 function ok() {

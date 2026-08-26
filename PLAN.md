@@ -471,9 +471,9 @@ Four layers, no new daemons, ~10 MB resident cost:
   recently-accessed pages from reclaim, forces OOM-kill over
   zram thrash.
 
-Drift detection: 6 new doctor checks
-(`check_memory_headroom`, `check_zram_size_ratio`, `check_mglru_min_ttl`,
-`check_sysctl_drift`, `check_oom_score_adj`, `check_start_limit_action`).
+Drift detection: `check_memory_headroom`, `check_zram_size_ratio`, and
+`check_installed_settings_drift` (the table-driven check covering the
+vm.* sysctls, MGLRU, the OOM ladder, and the restart policy).
 
 ### T5.1 — `StartLimitAction=reboot` (shipped PR #286)
 

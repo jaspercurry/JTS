@@ -3,7 +3,8 @@
 # This file is a routing layer, not a second architecture spec. It maps
 # high-risk code areas to the canonical docs future humans and agents should
 # scan when those areas change. Keep entries coarse; false positives are okay
-# because the PR comment is informational and non-blocking.
+# because the lookup is advisory (`scripts/docs-impact.py --changed-file …`),
+# never a gate. CI validates the map; it does not enforce it.
 
 [document_classes]
 # Intentionally present top-level docs that are not canonical subsystem
@@ -97,9 +98,7 @@ code = [
   "README.md",
   "CONTRIBUTING.md",
   ".github/PULL_REQUEST_TEMPLATE.md",
-  ".github/workflows/doc-*.yml",
   ".github/workflows/docs-*.yml",
-  "scripts/doc-freshness.sh",
   "scripts/docs-impact.py",
   "scripts/docs-linkcheck.py",
   "scripts/tense-grep.sh",
@@ -116,12 +115,11 @@ docs = [
   "docs/DEEP-AUDIT-PLAYBOOK.md",
 ]
 requires_docs_when = [
-  "The documentation paradigm, README atlas, agent context loading, PR documentation-impact workflow, freshness checks, or docs routing map changes.",
+  "The documentation paradigm, README atlas, agent context loading, the docs CI link check, or the docs routing map changes.",
 ]
 verification = [
   "python3 scripts/docs-impact.py --validate-only",
   "python3 scripts/docs-linkcheck.py --changed-file README.md",
-  "bash scripts/doc-freshness.sh 90 --all",
 ]
 
 [[subsystem]]
@@ -199,7 +197,6 @@ requires_docs_when = [
   "The build-manifest gating, deploy post-install verification (manifest-advanced gate, jasper-doctor health surfacing), or OOM-collateral surfacing change (see HANDOFF-install-update-transaction.md).",
 ]
 verification = [
-  "bash scripts/doc-freshness.sh 90 --all",
   "python3 scripts/check-provenance.py when build/install fetches or direct URL dependencies changed",
 ]
 
@@ -429,14 +426,14 @@ code = [
   # voice_daemon.py hosts WakeLoop, so wake-internals changes here should
   # route to the wake docs. It's also in voice-runtime-and-providers and is
   # high-churn, so this intentionally accepts false positives on non-wake
-  # edits (the docs-impact bot is informational/non-blocking — see header).
+  # edits (the lookup is advisory — see header).
   "jasper/voice_daemon.py",
   "jasper/wake.py",
   "jasper/openwakeword_guard.py",
   "jasper/wake_models.py",
   "jasper/wake_events.py",
   "jasper/wake_ports.py",
-  "jasper/wake_training/**",
+  "wake_training/**",
   "jasper/web/wake_setup.py",
   "jasper/web/wake_corpus_setup.py",
   "jasper/wake_corpus/**",
@@ -928,9 +925,6 @@ requires_docs_when = [
   "A diagnostic/capture/audit script is added, removed, renamed, or changes its output contract.",
   "The first-line diagnostic path for broken speakers changes.",
 ]
-verification = [
-  "bash scripts/doc-freshness.sh 90 --all",
-]
 
 [[subsystem]]
 id = "transit-and-citibike"
@@ -1108,9 +1102,6 @@ requires_docs_when = [
   "A roadmap item becomes implementation work, a future integration lands, or a historical transition brief is superseded by shipped behavior.",
   "The tool-platform vision, trust-gradient phasing, or the first-version tool-modularization plan changes.",
 ]
-verification = [
-  "bash scripts/doc-freshness.sh 90 --all",
-]
 
 [[subsystem]]
 id = "security-oss-and-maintainer-backlog"
@@ -1169,7 +1160,6 @@ requires_docs_when = [
 ]
 verification = [
   "python3 scripts/check-provenance.py when dependency or build inputs changed",
-  "bash scripts/doc-freshness.sh 90 --all",
 ]
 
 [[subsystem]]

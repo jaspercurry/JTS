@@ -31,6 +31,14 @@ _IMPORTED_FIXTURES = (_short_sock_path_fixture,)
 ROOT = Path(__file__).resolve().parents[1]
 
 
+@pytest.fixture(autouse=True)
+def disclosure_file(tmp_path, monkeypatch) -> Path:
+    """Keep `publish_disclosure` off the host's /run for every test here."""
+    path = tmp_path / "alignment-disclosure"
+    monkeypatch.setenv("JASPER_AEC_ALIGNMENT_DISCLOSURE_FILE", str(path))
+    return path
+
+
 class _Closeable:
     def __init__(self) -> None:
         self.closed = False
@@ -158,7 +166,9 @@ def test_corpus_profile_applies_and_verifies_expected_chip_routes(monkeypatch) -
     assert dev.dev.closed is True
 
 
-def test_production_chip_profile_uses_chip_flag_and_delay(monkeypatch) -> None:
+def test_production_chip_profile_uses_chip_flag_and_delay(
+    monkeypatch, disclosure_file
+) -> None:
     dev = _FakeXvfDevice()
     _install_fake_xvf(monkeypatch, dev)
     _stub_amixer(monkeypatch)
@@ -204,6 +214,9 @@ def test_production_chip_profile_uses_chip_flag_and_delay(monkeypatch) -> None:
     assert writes["AUDIO_MGR_OP_L"] == [7, 0]
     assert writes["AUDIO_MGR_OP_R"] == [7, 1]
     assert dev.dev.closed is True
+    # An alignment that matched has nothing to disclose, so the reconciler is
+    # left to publish `ready`.
+    assert not disclosure_file.exists()
 
 
 def test_production_chip_profile_parks_when_commissioning_is_missing(
@@ -223,101 +236,80 @@ def test_production_chip_profile_parks_when_commissioning_is_missing(
     assert _write_map(dev)["SHF_BYPASS"] == [1]
 
 
-def test_production_chip_profile_parks_on_physical_output_change(monkeypatch) -> None:
-    dev = _FakeXvfDevice()
-    _install_fake_xvf(monkeypatch, dev)
-    monkeypatch.delenv("JASPER_AEC_CORPUS_CHIP_AEC_ENABLED", raising=False)
-    monkeypatch.setenv("JASPER_AEC_CHIP_AEC_ENABLED", "1")
+def _live_identity() -> AlignmentIdentity:
     plan = xvf3800.SQUARE_FIXED_150_210_PLAN
-    identity = AlignmentIdentity(
+    return AlignmentIdentity(
         "xvf3800_legacy_square_6ch", "XVF3800-001", "firmware", plan.plan_id,
         xvf3800.chip_aec_fixed_profile_fingerprint(plan),
         "apple_usb_c_dongle", "usb-serial:DWH53530FLL2FN3A3",
         "single:outputd_dac", "S16_LE", 48_000, 2, 128, 384,
     )
-    monkeypatch.setattr(
-        aec_init, "load_artifact",
-        lambda: AlignmentArtifact(
-            replace(identity, output_hardware_key="usb-serial:replacement"), 245, -38
-        ),
-    )
+
+
+def _arm_chip_aec(monkeypatch, dev, *, artifact, live=None) -> None:
+    _install_fake_xvf(monkeypatch, dev)
+    _stub_amixer(monkeypatch)
+    monkeypatch.delenv("JASPER_AEC_CORPUS_CHIP_AEC_ENABLED", raising=False)
+    monkeypatch.setenv("JASPER_AEC_CHIP_AEC_ENABLED", "1")
+    monkeypatch.setattr(aec_init, "load_artifact", artifact)
     monkeypatch.setattr(
         aec_init, "collect_reference_queue",
         lambda _pcm: ({"reference_outputs": {}}, (283,) * 8),
     )
     monkeypatch.setattr(
-        aec_init, "build_identity", lambda *_args, **_kwargs: identity
+        aec_init, "build_identity",
+        lambda *_a, **_k: _live_identity() if live is None else live,
     )
 
-    assert aec_init.main() == aec_init.COMMISSION_REQUIRED_EXIT
-    assert _write_map(dev) == {"SHF_BYPASS": [1]}
 
-
-def test_production_chip_profile_parks_on_physical_xvf_change(monkeypatch) -> None:
-    dev = _FakeXvfDevice()
-    _install_fake_xvf(monkeypatch, dev)
-    monkeypatch.delenv("JASPER_AEC_CORPUS_CHIP_AEC_ENABLED", raising=False)
-    monkeypatch.setenv("JASPER_AEC_CHIP_AEC_ENABLED", "1")
-    plan = xvf3800.SQUARE_FIXED_150_210_PLAN
-    identity = AlignmentIdentity(
-        "xvf3800_legacy_square_6ch", "XVF3800-001", "firmware", plan.plan_id,
-        xvf3800.chip_aec_fixed_profile_fingerprint(plan),
-        "apple_usb_c_dongle", "usb-serial:DWH53530FLL2FN3A3",
-        "single:outputd_dac", "S16_LE", 48_000, 2, 128, 384,
-    )
-    monkeypatch.setattr(
-        aec_init, "load_artifact",
-        lambda: AlignmentArtifact(replace(identity, xvf_serial="replacement"), 245, -38),
-    )
-    monkeypatch.setattr(
-        aec_init,
-        "collect_reference_queue",
-        lambda _pcm: ({"reference_outputs": {}}, (283,) * 8),
-    )
-    monkeypatch.setattr(
-        aec_init, "build_identity", lambda *_args, **_kwargs: identity
-    )
-
-    assert aec_init.main() == aec_init.COMMISSION_REQUIRED_EXIT
-    assert _write_map(dev) == {"SHF_BYPASS": [1]}
-
-
-def test_production_chip_profile_parks_when_final_edge_format_changes(
-    monkeypatch,
+@pytest.mark.parametrize(
+    "moved_field, value",
+    [
+        ("xvf_serial", "replacement"),
+        ("output_hardware_key", "usb-serial:replacement"),
+        # The final-edge format is the electrical edge K was measured against,
+        # so it is hardware-class divergence — the loud kind, still not a park.
+        ("output_format", "S32_LE"),
+    ],
+)
+def test_a_commissioned_identity_that_moved_is_applied_and_disclosed(
+    monkeypatch, disclosure_file, moved_field, value
 ) -> None:
-    # The commissioned K is only valid for the electrical edge it was measured
-    # against, so a moved final-edge format must invalidate the artifact the
-    # same way a swapped DAC or XVF does. Exercised through main() so this pins
-    # the real CommissionRequired path, not a re-implementation of equality.
+    # ADR-0101: the proof stopped describing this box, nothing observably
+    # broke. The banked K is applied and the chip armed; what the household
+    # gets is a disclosure naming the field, not a deaf speaker.
     dev = _FakeXvfDevice()
-    _install_fake_xvf(monkeypatch, dev)
-    monkeypatch.delenv("JASPER_AEC_CORPUS_CHIP_AEC_ENABLED", raising=False)
-    monkeypatch.setenv("JASPER_AEC_CHIP_AEC_ENABLED", "1")
-    plan = xvf3800.SQUARE_FIXED_150_210_PLAN
-    identity = AlignmentIdentity(
-        "xvf3800_legacy_square_6ch", "XVF3800-001", "firmware", plan.plan_id,
-        xvf3800.chip_aec_fixed_profile_fingerprint(plan),
-        "apple_usb_c_dongle", "usb-serial:DWH53530FLL2FN3A3",
-        "single:outputd_dac", "S16_LE", 48_000, 2, 128, 384,
-    )
-    commissioned = replace(identity, output_format="S32_LE")
-    # Format is the ONLY difference — everything else still matches live.
-    assert commissioned != identity
-    assert replace(commissioned, output_format="S16_LE") == identity
-    monkeypatch.setattr(
-        aec_init, "load_artifact", lambda: AlignmentArtifact(commissioned, 245, -38)
-    )
-    monkeypatch.setattr(
-        aec_init,
-        "collect_reference_queue",
-        lambda _pcm: ({"reference_outputs": {}}, (283,) * 8),
-    )
-    monkeypatch.setattr(
-        aec_init, "build_identity", lambda *_args, **_kwargs: identity
+    commissioned = replace(_live_identity(), **{moved_field: value})
+    _arm_chip_aec(
+        monkeypatch, dev, artifact=lambda: AlignmentArtifact(commissioned, 245, -38)
     )
 
-    assert aec_init.main() == aec_init.COMMISSION_REQUIRED_EXIT
-    assert _write_map(dev) == {"SHF_BYPASS": [1]}
+    assert aec_init.main() == 0
+
+    writes = _write_map(dev)
+    assert writes["SHF_BYPASS"] == [0]
+    assert writes["AUDIO_MGR_SYS_DELAY"] == [-38]
+    assert moved_field in disclosure_file.read_text(encoding="utf-8")
+
+
+def test_an_older_schema_artifact_arms_the_chip_from_the_k_it_banked(
+    monkeypatch, disclosure_file, tmp_path
+) -> None:
+    # A schema bump moved the artifact's shape, not the quantity it measured,
+    # so boot runs from the banked K and discloses that it could not compare
+    # the commissioned identity.
+    banked = AlignmentArtifact(_live_identity(), 245, -38).to_dict() | {"schema": 1}
+    path = tmp_path / "chip-aec-alignment.json"
+    path.write_text(json.dumps(banked), encoding="utf-8")
+    dev = _FakeXvfDevice()
+    _arm_chip_aec(monkeypatch, dev, artifact=lambda: alignment.load_artifact(path))
+
+    assert aec_init.main() == 0
+
+    assert _write_map(dev)["AUDIO_MGR_SYS_DELAY"] == [-38]
+    assert str(alignment.ARTIFACT_SCHEMA) in disclosure_file.read_text(
+        encoding="utf-8"
+    )
 
 
 def test_build_identity_binds_physical_xvf_and_usb_output() -> None:
@@ -1718,45 +1710,30 @@ def test_a_spread_past_the_horizon_names_the_ceiling_not_a_shortfall(
     assert "held" not in reason, "a closable shortfall would misattribute this"
 
 
-def test_a_boot_gate_trip_asks_for_recommissioning_not_an_inspection(
-    monkeypatch, caplog
+def test_a_queue_that_moved_past_the_margin_is_applied_and_disclosed(
+    monkeypatch, disclosure_file
 ) -> None:
-    # The artifact stopped describing this box; nothing is broken. Routing that
-    # to the generic fault bucket would send a household at a healthy daemon,
-    # and the commission_required park is already the recoverable one.
+    # The live queue left the window K was measured against; nothing is broken,
+    # and the delay it resolves has already cleared the chip's declared
+    # SYS_DELAY range. Apply it, arm the chip, and say how far it moved.
     dev = _FakeXvfDevice()
-    _install_fake_xvf(monkeypatch, dev)
-    monkeypatch.delenv("JASPER_AEC_CORPUS_CHIP_AEC_ENABLED", raising=False)
-    monkeypatch.setenv("JASPER_AEC_CHIP_AEC_ENABLED", "1")
-    plan = xvf3800.SQUARE_FIXED_150_210_PLAN
-    identity = AlignmentIdentity(
-        "xvf3800_legacy_square_6ch", "XVF3800-001", "firmware", plan.plan_id,
-        xvf3800.chip_aec_fixed_profile_fingerprint(plan),
-        "apple_usb_c_dongle", "usb-serial:DWH53530FLL2FN3A3",
-        "single:outputd_dac", "S16_LE", 48_000, 2, 128, 384,
-    )
-    # Commissioned at -38; the live queue resolves one frame past the bound.
-    monkeypatch.setattr(
-        aec_init,
-        "load_artifact",
-        lambda: AlignmentArtifact(
-            identity, 245, -38 - alignment.MIN_EDGE_MARGIN - 1
+    # Commissioned at -47; the live queue resolves one frame past the bound.
+    _arm_chip_aec(
+        monkeypatch, dev,
+        artifact=lambda: AlignmentArtifact(
+            _live_identity(), 245, -38 - alignment.MIN_EDGE_MARGIN - 1
         ),
     )
-    monkeypatch.setattr(
-        aec_init, "collect_reference_queue",
-        lambda _pcm: ({"reference_outputs": {}}, (283,) * 8),
+
+    assert aec_init.main() == 0
+
+    writes = _write_map(dev)
+    assert writes["SHF_BYPASS"] == [0]
+    assert writes["AUDIO_MGR_SYS_DELAY"] == [-38]
+    assert f"{alignment.MIN_EDGE_MARGIN + 1:+d} frames" in disclosure_file.read_text(
+        encoding="utf-8"
     )
-    monkeypatch.setattr(aec_init, "build_identity", lambda *_a, **_k: identity)
-    caplog.set_level("ERROR", logger="jasper.aec_init")
 
-    assert aec_init.main() == aec_init.COMMISSION_REQUIRED_EXIT
-
-    assert _write_map(dev)["SHF_BYPASS"] == [1]
-    assert "outcome=parked" in caplog.text
-    assert "jasper-aec-commission" in caplog.text
-    assert "inspect" not in caplog.text
-    assert "has moved" in caplog.text
 
 def test_the_load_bearing_queue_literals_are_what_the_derivations_assume() -> None:
     # Both are load-bearing and both are invisible to fixtures built FROM them.

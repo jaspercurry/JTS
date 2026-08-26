@@ -293,18 +293,20 @@ def test_usb_terminal_fallback_outranks_raised_recovery_buffer() -> None:
 
 
 def test_stale_artifact_is_technical_evidence_not_a_household_warning() -> None:
+    # ADR-0101: staleness reaches the card as the assessor's disclosing warn,
+    # which reads as partial evidence — never as a household alarm.
     health = _compose(
         selected="usbsink",
         ladder="l0_locked",
-        artifact_status="fail",
+        artifact_status="warn",
     )
 
     assert health["latency"]["runtime"]["mode"] == "lowest_latency"
-    assert health["latency"]["verification"]["status"] == "unverified"
+    assert health["latency"]["verification"]["status"] == "partial"
     assert health["latency"]["status"] == "ok"
     assert health["latency"]["headline"] == "Low latency · stable"
     assert health["overall"]["status"] == "ok"
-    assert health["technical"]["route_verification"]["status"] == "unverified"
+    assert health["technical"]["route_verification"]["status"] == "partial"
 
 
 def test_airplay_sync_stays_source_specific_not_a_latency_claim() -> None:

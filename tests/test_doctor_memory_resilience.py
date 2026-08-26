@@ -2,13 +2,12 @@
 #
 # SPDX-License-Identifier: Apache-2.0
 
-"""Coverage for the 5 doctor checks added by Stage 1 of the
-memory-resilience plan (docs/HANDOFF-resilience.md).
+"""Coverage for the memory-resilience doctor checks
+(docs/HANDOFF-resilience.md).
 
-These are drift detectors — they verify the configs installed by
-`migrate_memory_resilience` (in deploy/lib/install/memory-resilience.sh,
-sourced by deploy/install.sh) are actually
-applied at runtime. The check functions all read kernel
+They verify the configs installed by `migrate_memory_resilience` (in
+deploy/lib/install/memory-resilience.sh, sourced by deploy/install.sh)
+are actually applied at runtime. The check functions all read kernel
 interfaces (/proc, /sys, /sys/fs/cgroup), so we mock those.
 
 The bar: each check should (a) work on Linux where the paths
@@ -22,8 +21,10 @@ import os
 from pathlib import Path
 from unittest.mock import MagicMock, patch
 
+import pytest
 
 from jasper.cli import doctor
+from jasper.cli.doctor import drift as doctor_drift
 from jasper.cli.doctor import memory as doctor_memory
 from jasper.conversation_history import (
     CAPTURE_ENABLED_ENV,
@@ -267,251 +268,7 @@ def test_zram_size_no_zram_device():
     assert "rpi-swap not active" in r.detail
 
 
-# --- check_mglru_min_ttl -------------------------------------------------
-
-
-def test_mglru_min_ttl_correct():
-    fake_exists = MagicMock(return_value=True)
-    fake_read = MagicMock(return_value="1000\n")
-    with patch("pathlib.Path.exists", fake_exists), \
-         patch("pathlib.Path.read_text", fake_read):
-        r = doctor.check_mglru_min_ttl()
-    assert r.status == "ok"
-    assert "1000 ms" in r.detail
-
-
-def test_mglru_min_ttl_default_zero_warns():
-    """The kernel default is 0 (disabled). Warn — Stage 1 should be 1000."""
-    fake_exists = MagicMock(return_value=True)
-    fake_read = MagicMock(return_value="0\n")
-    with patch("pathlib.Path.exists", fake_exists), \
-         patch("pathlib.Path.read_text", fake_read):
-        r = doctor.check_mglru_min_ttl()
-    assert r.status == "warn"
-    assert "thrash prevention disabled" in r.detail
-
-
-def test_mglru_min_ttl_no_kernel_support_is_ok():
-    """Kernel < 6.1 doesn't have MGLRU — tmpfiles config is a no-op,
-    and the doctor should report ok (not warn), so the operator
-    knows this is expected on older kernels."""
-    fake_exists = MagicMock(return_value=False)
-    with patch("pathlib.Path.exists", fake_exists):
-        r = doctor.check_mglru_min_ttl()
-    assert r.status == "ok"
-    assert "lacks MGLRU" in r.detail
-
-
-# --- check_sysctl_drift --------------------------------------------------
-
-
-# Helper: the doctor now reads expected values from
-# /etc/sysctl.d/99-jts-vm.conf, so tests need to mock both that
-# file's read AND the /proc/sys/vm/<key> reads.
-
-_FAKE_INSTALLED_CONF = """\
-# JTS sysctl conf as written by install.sh
-vm.swappiness = 100
-vm.page-cluster = 0
-vm.watermark_scale_factor = 125
-vm.watermark_boost_factor = 0
-vm.min_free_kbytes = 20296
-vm.dirty_background_ratio = 2
-vm.dirty_ratio = 10
-vm.vfs_cache_pressure = 200
-vm.overcommit_memory = 0
-"""
-
-
-def _make_sysctl_drift_mocks(installed_conf: str, live_values: dict[str, str]):
-    """Returns (path_exists_fn, path_read_text_fn) suitable for the
-    `patch("pathlib.Path.exists" / "read_text", ...)` pattern. The
-    exists fn returns True for both the conf file AND for any
-    /proc/sys/vm/<key> path that the live_values dict mentions."""
-    def fake_exists(self):
-        s = str(self)
-        if s == "/etc/sysctl.d/99-jts-vm.conf":
-            return True
-        if s.startswith("/proc/sys/vm/"):
-            key = s.rsplit("/", 1)[-1]
-            return key in live_values
-        return False
-
-    def fake_read(self):
-        s = str(self)
-        if s == "/etc/sysctl.d/99-jts-vm.conf":
-            return installed_conf
-        if s.startswith("/proc/sys/vm/"):
-            key = s.rsplit("/", 1)[-1]
-            return live_values.get(key, "?") + "\n"
-        return ""
-
-    return fake_exists, fake_read
-
-
-def test_sysctl_drift_warns_when_jts_conf_missing():
-    """Dev host or pre-install: /etc/sysctl.d/99-jts-vm.conf
-    doesn't exist — should warn (not silently report ok)."""
-    with patch("pathlib.Path.exists", lambda self: False):
-        r = doctor.check_sysctl_drift()
-    assert r.status == "warn"
-    assert "missing" in r.detail or "re-run install.sh" in r.detail
-
-
-def test_sysctl_drift_detects_swappiness_off_default():
-    """Conf says 100, live is 60 (stock default) — should warn."""
-    fake_exists, fake_read = _make_sysctl_drift_mocks(
-        _FAKE_INSTALLED_CONF,
-        {  # stock defaults — none match the conf
-            "swappiness": "60",
-            "page-cluster": "3",
-            "min_free_kbytes": "16384",
-            "vfs_cache_pressure": "100",
-            "watermark_scale_factor": "10",
-            "watermark_boost_factor": "15000",
-            "dirty_background_ratio": "10",
-            "dirty_ratio": "20",
-            "overcommit_memory": "0",
-        },
-    )
-    with patch("pathlib.Path.exists", fake_exists), \
-         patch("pathlib.Path.read_text", fake_read):
-        r = doctor.check_sysctl_drift()
-    assert r.status == "warn"
-    assert "swappiness=60" in r.detail or "vm.swappiness" in r.detail
-
-
-def test_sysctl_drift_ok_when_values_match():
-    """Conf and live agree — happy path."""
-    fake_exists, fake_read = _make_sysctl_drift_mocks(
-        _FAKE_INSTALLED_CONF,
-        {
-            "swappiness": "100",
-            "page-cluster": "0",
-            "watermark_scale_factor": "125",
-            "watermark_boost_factor": "0",
-            "min_free_kbytes": "20296",  # matches conf's RAM-aware value
-            "dirty_background_ratio": "2",
-            "dirty_ratio": "10",
-            "vfs_cache_pressure": "200",
-            "overcommit_memory": "0",
-        },
-    )
-    with patch("pathlib.Path.exists", fake_exists), \
-         patch("pathlib.Path.read_text", fake_read):
-        r = doctor.check_sysctl_drift()
-    assert r.status == "ok"
-
-
-def test_sysctl_drift_uses_installed_min_free_kbytes_value():
-    """The whole point of PR1.7: RAM-aware min_free_kbytes shouldn't
-    trigger drift just because it's not the old hardcoded 32768.
-    A 1 GB Pi installs ~20296 kB; a 4 GB Pi installs ~81920. Both
-    are 'correct' for their hardware. Doctor reads the installed
-    conf to know what to expect."""
-    # Simulate a 4 GB Pi install where min_free_kbytes was computed
-    # to 81920 (2% of 4 GB).
-    conf_4gb = _FAKE_INSTALLED_CONF.replace(
-        "vm.min_free_kbytes = 20296",
-        "vm.min_free_kbytes = 81920",
-    )
-    fake_exists, fake_read = _make_sysctl_drift_mocks(
-        conf_4gb,
-        {
-            "swappiness": "100",
-            "page-cluster": "0",
-            "watermark_scale_factor": "125",
-            "watermark_boost_factor": "0",
-            "min_free_kbytes": "81920",  # matches the 4 GB-specific value
-            "dirty_background_ratio": "2",
-            "dirty_ratio": "10",
-            "vfs_cache_pressure": "200",
-            "overcommit_memory": "0",
-        },
-    )
-    with patch("pathlib.Path.exists", fake_exists), \
-         patch("pathlib.Path.read_text", fake_read):
-        r = doctor.check_sysctl_drift()
-    assert r.status == "ok"
-
-
-def test_sysctl_drift_warns_on_unsubstituted_template_placeholder():
-    """Defensive: if install.sh's sed step failed, the conf file
-    contains the literal '__VM_MIN_FREE_KBYTES__' placeholder. The
-    kernel will silently use its default for that knob (NOT what we
-    wanted). Doctor must surface this — silent "ok" would hide a
-    real config-broken state."""
-    conf_broken = _FAKE_INSTALLED_CONF.replace(
-        "vm.min_free_kbytes = 20296",
-        "vm.min_free_kbytes = __VM_MIN_FREE_KBYTES__",
-    )
-    fake_exists, fake_read = _make_sysctl_drift_mocks(
-        conf_broken,
-        {
-            "swappiness": "100",
-            "page-cluster": "0",
-            "watermark_scale_factor": "125",
-            "watermark_boost_factor": "0",
-            "min_free_kbytes": "16384",
-            "dirty_background_ratio": "2",
-            "dirty_ratio": "10",
-            "vfs_cache_pressure": "200",
-            "overcommit_memory": "0",
-        },
-    )
-    with patch("pathlib.Path.exists", fake_exists), \
-         patch("pathlib.Path.read_text", fake_read):
-        r = doctor.check_sysctl_drift()
-    assert r.status == "warn"
-    assert "placeholder" in r.detail
-    assert "min_free_kbytes" in r.detail
-    # And the actionable hint
-    assert "re-run install.sh" in r.detail
-
-
-# --- check_oom_score_adj -------------------------------------------------
-
-
-_PID_MAP = {
-    "jasper-outputd": "1001",
-    "jasper-camilla": "1002",
-    "jasper-fanin": "1003",
-    "jasper-aec-bridge": "1004",
-    "jasper-control": "1005",
-    "jasper-voice": "1007",
-    "jasper-camilla-crossover": "1008",
-    "nginx": "1009",
-    "jasper-mux": "1010",
-    "jasper-input": "1011",
-    "jasper-wiim-remote-mic": "1012",
-    "jasper-snapclient": "1013",
-    "jasper-snapserver": "1014",
-    "ssh": "1015",
-    "jasper-usbsink-volume": "1016",
-    "jasper-usbmic": "1017",
-    # Optional compiler unit is installed but normally inactive.
-    "jasper-enhanced-aec-install": "0",
-}
-
-_EXPECTED_CONFIG = {
-    "jasper-outputd": "-950",
-    "jasper-camilla": "-900",
-    "jasper-fanin": "-800",
-    "jasper-aec-bridge": "-700",
-    "jasper-control": "-600",
-    "jasper-voice": "-500",
-    "jasper-camilla-crossover": "-500",
-    "nginx": "-450",
-    "jasper-mux": "-300",
-    "jasper-input": "-300",
-    "jasper-wiim-remote-mic": "-300",
-    "jasper-snapclient": "-300",
-    "jasper-snapserver": "-300",
-    "ssh": "-250",
-    "jasper-usbsink-volume": "100",
-    "jasper-usbmic": "-300",
-    "jasper-enhanced-aec-install": "900",
-}
+# --- check_installed_settings_drift ---------------------------------------
 
 
 def _make_systemctl_show_run(
@@ -520,7 +277,11 @@ def _make_systemctl_show_run(
     defaults: dict[str, str],
     load_map: dict[str, str] | None = None,
 ):
-    """Build the shared batched ``systemctl show --value`` wire double."""
+    """Double for the batched ``systemctl show --value`` wire format.
+
+    Real systemctl separates per-unit values with a blank line (``\n\n``)
+    when several units are requested with ``--value``.
+    """
 
     def fake_run(cmd, **kwargs):
         prop = cmd[3]
@@ -538,246 +299,330 @@ def _make_systemctl_show_run(
     return fake_run
 
 
-def _make_oom_run(pid_map, config_map, load_map=None):
-    """Build a `_run` mock for check_oom_score_adj's BATCHED systemctl
-    calls (LoadState, MainPID, OOMScoreAdjust). Real wire format: when
-    called with multiple units AND --value, systemctl uses `\\n\\n`
-    (blank line) between values — NOT a single newline. Reproduce that
-    here so tests catch regressions in the parser.
+_OOM_WANT = doctor_drift._UNIT_DIRECTIVES["OOMScoreAdjust"]
+_ACTION_WANT = doctor_drift._UNIT_DIRECTIVES["StartLimitAction"]
+_ON_FAILURE_WANT = doctor_drift._UNIT_DIRECTIVES["OnFailure"]
 
-      `systemctl show -p MainPID --value u1 u2 u3` →
-        "1234\\n\\n5678\\n\\n9012\\n"
+# Every table unit running, one pid each, so the live half has something to
+# read. Unit i gets pid 1000+i.
+_PID_MAP = {unit: str(1000 + i) for i, unit in enumerate(sorted(_OOM_WANT))}
+_LIVE_OK = {_PID_MAP[unit]: want for unit, want in _OOM_WANT.items()}
 
-    `load_map` overrides LoadState per unit (default: every unit
-    "loaded", i.e. installed). Pass "not-found"/"masked" to simulate a
-    profile that doesn't install a unit (e.g. streambox + voice/AEC).
+
+def _healthy_systemd_run(**overrides):
+    """A systemctl double where every table row matches, then apply overrides.
+
+    ``overrides`` accepts ``oom=``, ``actions=``, ``on_failure=``, ``pids=``
+    and ``load_map=`` partial maps merged over the healthy baseline.
     """
     return _make_systemctl_show_run(
-        {"MainPID": pid_map, "OOMScoreAdjust": config_map},
-        defaults={"MainPID": "0", "OOMScoreAdjust": "0"},
-        load_map=load_map,
+        {
+            "OOMScoreAdjust": {**_OOM_WANT, **overrides.get("oom", {})},
+            "StartLimitAction": {**_ACTION_WANT, **overrides.get("actions", {})},
+            "OnFailure": {**_ON_FAILURE_WANT, **overrides.get("on_failure", {})},
+            "MainPID": {**_PID_MAP, **overrides.get("pids", {})},
+        },
+        defaults={
+            "OOMScoreAdjust": "0",
+            "StartLimitAction": "none",
+            "OnFailure": "",
+            "MainPID": "0",
+        },
+        load_map=overrides.get("load_map"),
     )
 
 
-def test_oom_score_adj_skips_units_not_installed_on_streambox():
-    """A streambox does not install the voice/AEC stack; those units are
-    LoadState=not-found and must NOT be reported as OOM drift (the
-    full-speaker EXPECTED map applies only to units this profile runs)."""
-    absent = {
-        "jasper-voice": "not-found",
-        "jasper-aec-bridge": "not-found",
-        "jasper-input": "not-found",
-        "jasper-wiim-remote-mic": "not-found",
-    }
-    # Absent units default to 0 (would be drift if not skipped); present
-    # units match expected and have no live process drift.
-    config = dict(_EXPECTED_CONFIG)
-    pid_map = dict(_PID_MAP)
-    for u in absent:
-        config[u] = "0"
-        pid_map[u] = "0"
+def _systemd_drift(live=None, **overrides):
+    """Run the systemd drift source against a doubled host."""
+    live = _LIVE_OK if live is None else {**_LIVE_OK, **live}
 
     def fake_read(self):
-        pid_str = str(self).split("/")[2]
-        return _LIVE_OK.get(pid_str, "0") + "\n"
+        return live.get(str(self).split("/")[2], "0") + "\n"
 
     with patch.object(doctor._shared, "_run",
-                      side_effect=_make_oom_run(pid_map, config, absent)), \
+                      side_effect=_healthy_systemd_run(**overrides)), \
          patch("pathlib.Path.read_text", fake_read):
-        r = doctor.check_oom_score_adj()
-
-    assert r.status == "ok", r.detail
-    for unit in absent:
-        assert unit not in r.detail
-    # The remaining 12 running processes and inactive optional compiler unit
-    # are still verified against their configured policy.
-    assert "12 running processes match policy" in r.detail
-    assert "jasper-enhanced-aec-install" in r.detail
+        return doctor_drift._systemd_drift()
 
 
-def test_oom_score_adj_warns_on_present_drift_with_others_absent():
-    """Mixed profile: the installed-unit filter must not swallow REAL drift
-    on a present unit. Streambox (voice/AEC/input/WiiM absent) + a present,
-    config-drifted jasper-mux → warn naming only the present unit."""
-    absent = {
-        "jasper-voice": "not-found",
-        "jasper-aec-bridge": "not-found",
-        "jasper-input": "not-found",
-        "jasper-wiim-remote-mic": "not-found",
-    }
-    config = dict(_EXPECTED_CONFIG)
-    pid_map = dict(_PID_MAP)
-    for u in absent:
-        config[u] = "0"
-        pid_map[u] = "0"
-    config["jasper-mux"] = "0"   # present unit drifted (want -300)
+def test_systemd_settings_match_when_host_is_healthy():
+    items, checked, notes = _systemd_drift()
+    assert items == []
+    assert checked > len(_OOM_WANT)
+    assert notes == []
+
+
+@pytest.mark.parametrize(
+    "overrides, item, got, want",
+    [
+        ({"oom": {"jasper-camilla": "0"}},
+         "jasper-camilla OOMScoreAdjust", "0", _OOM_WANT["jasper-camilla"]),
+        ({"actions": {"jasper-voice": "reboot-force"}},
+         "jasper-voice StartLimitAction", "reboot-force", "reboot"),
+        ({"actions": {"jasper-camilla": "reboot"}},
+         "jasper-camilla StartLimitAction", "reboot", "none"),
+        ({"on_failure": {"jasper-camilla": ""}},
+         "jasper-camilla OnFailure", "none",
+         _ON_FAILURE_WANT["jasper-camilla"]),
+    ],
+)
+def test_each_drifted_unit_directive_is_named_individually(
+    overrides, item, got, want,
+):
+    items, _, _ = _systemd_drift(**overrides)
+    assert [(d.item, d.got, d.want) for d in items] == [(item, got, want)]
+
+
+def test_on_failure_matches_as_list_membership():
+    """systemd reports OnFailure as a space-separated unit list."""
+    handler = _ON_FAILURE_WANT["jasper-camilla"]
+    items, _, _ = _systemd_drift(
+        on_failure={"jasper-camilla": f"other.service {handler}"},
+    )
+    assert items == []
+
+
+def test_units_this_profile_does_not_install_are_not_drift():
+    """A streambox omits the voice/AEC stack; absent units report systemd's
+    own defaults, which must not read as drift — while a present, drifted
+    unit still does."""
+    absent = ("jasper-voice", "jasper-aec-bridge")
+    items, _, _ = _systemd_drift(
+        oom={"jasper-mux": "0", **{u: "0" for u in absent}},
+        actions={u: "none" for u in absent},
+        load_map={u: "not-found" for u in absent},
+    )
+    assert [d.item for d in items] == ["jasper-mux OOMScoreAdjust"]
+
+
+def test_live_oom_drift_is_named_apart_from_unit_file_drift():
+    """A correct unit file with a stale running process is a different
+    finding with a different remedy, so both are named."""
+    unit_ok_live_drifted = _systemd_drift(
+        live={_PID_MAP["jasper-camilla"]: "0"},
+    )[0]
+    assert [(d.item, d.got) for d in unit_ok_live_drifted] == [
+        ("jasper-camilla oom_score_adj (live)", "0"),
+    ]
+
+    both = _systemd_drift(
+        oom={"jasper-camilla": "0"},
+        live={_PID_MAP["jasper-camilla"]: "0"},
+    )[0]
+    # The unit file is wrong, so its live value is not re-reported.
+    assert [d.item for d in both] == ["jasper-camilla OOMScoreAdjust"]
+    assert unit_ok_live_drifted[0].fix != both[0].fix
+
+
+def test_openssh_listener_self_protection_is_not_live_drift():
+    """OpenSSH keeps its privileged listener at -1000 whatever the unit
+    says; the unit-file value is authoritative for ssh."""
+    items, _, _ = _systemd_drift(live={_PID_MAP["ssh"]: "-1000"})
+    assert items == []
+
+
+def test_stopped_units_are_reported_as_skipped_not_drift():
+    healthy_checked = _systemd_drift()[1]
+    items, checked, notes = _systemd_drift(pids={"jasper-voice": "0"})
+    assert items == []
+    assert checked == healthy_checked - 1
+    assert notes
+
+
+@pytest.mark.parametrize("stdout", [None, "", "\n\n\n\n"])
+def test_systemd_drift_skips_when_systemctl_cannot_answer(stdout):
+    """Absent systemctl, and a present one answering nothing (no D-Bus, not
+    booted with systemd, non-zero exit), are both unknown — not "every unit
+    is installed at its systemd default", which fabricates drift on all."""
+    def fake_run(cmd, **kwargs):
+        if stdout is None:
+            raise FileNotFoundError("systemctl not found")
+        result = MagicMock()
+        result.stdout = stdout
+        return result
+
+    with patch.object(doctor._shared, "_run", side_effect=fake_run):
+        items, checked, notes = doctor_drift._systemd_drift()
+    assert (items, checked) == ([], 0)
+    assert notes
+
+
+def test_unparseable_directive_value_is_disclosed_not_swallowed():
+    items, _, notes = _systemd_drift(oom={"jasper-camilla": "not-a-number"})
+    assert items == []
+    assert notes
+
+
+def test_degraded_directive_read_is_skipped_never_a_silent_pass():
+    """A malformed batch read (length mismatch → None) must not be read as
+    'no drift' on that directive."""
+    healthy_checked = _systemd_drift()[1]
+    healthy = _healthy_systemd_run()
+
+    def fake_run(cmd, **kwargs):
+        if cmd[3] != "StartLimitAction":
+            return healthy(cmd, **kwargs)
+        units = [c.rsplit(".", 1)[0] for c in cmd[5:]]
+        result = MagicMock()
+        result.stdout = "\n\n".join(["reboot"] * (len(units) - 1)) + "\n"
+        return result
 
     def fake_read(self):
-        pid_str = str(self).split("/")[2]
-        return _LIVE_OK.get(pid_str, "0") + "\n"
+        return _LIVE_OK.get(str(self).split("/")[2], "0") + "\n"
 
-    with patch.object(doctor._shared, "_run",
-                      side_effect=_make_oom_run(pid_map, config, absent)), \
+    with patch.object(doctor._shared, "_run", side_effect=fake_run), \
          patch("pathlib.Path.read_text", fake_read):
-        r = doctor.check_oom_score_adj()
-
-    assert r.status == "warn"
-    assert "jasper-mux unit=0 (want -300)" in r.detail
-    for unit in absent:
-        assert unit not in r.detail
-
-
-_LIVE_OK = {
-    "1001": "-950", "1002": "-900", "1003": "-800",
-    "1004": "-700", "1005": "-600",
-    "1007": "-500", "1008": "-500", "1009": "-450",
-    "1010": "-300", "1011": "-300", "1012": "-300",
-    "1013": "-300", "1014": "-300",
-    "1015": "-250",   # ssh recovery path, still killable
-    "1016": "100",
-    "1017": "-300",
-}
+        items, checked, notes = doctor_drift._systemd_drift()
+    # The unreadable directive contributes neither drift nor a match, and the
+    # skip is disclosed rather than swallowed.
+    assert items == []
+    assert checked == healthy_checked - len(_ACTION_WANT)
+    assert notes
 
 
-def test_oom_score_adj_all_match():
-    """All critical daemons running with both unit-file and live
-    values matching expected. Includes ssh as the recovery path, but
-    with moderate protection so SSH-launched diagnostics are killable."""
-    def fake_read(self):
-        pid_str = str(self).split("/")[2]
-        return _LIVE_OK.get(pid_str, "0") + "\n"
-
-    with patch.object(doctor._shared, "_run",
-                      side_effect=_make_oom_run(_PID_MAP, _EXPECTED_CONFIG)), \
-         patch("pathlib.Path.read_text", fake_read):
-        r = doctor.check_oom_score_adj()
-    assert r.status == "ok"
-    assert "16 running processes match policy" in r.detail
-    assert "jasper-enhanced-aec-install" in r.detail
+_INSTALLED_SYSCTL_CONF = """\
+# JTS sysctl conf as written by install.sh
+vm.swappiness = 100
+vm.min_free_kbytes = 20296
+"""
 
 
-def test_oom_score_adj_warns_if_sshd_drifts():
-    """sshd dropped to default 0. This is still worth surfacing because
-    the configured recovery-path bias was lost, even though sshd is
-    intentionally no longer immortal."""
-    def fake_read(self):
-        pid_str = str(self).split("/")[2]
-        live = dict(_LIVE_OK)
-        live["1015"] = "0"  # sshd drifted to default
-        return live.get(pid_str, "0") + "\n"
-
-    # Also reflect the drift in the unit file's configured value, so
-    # this surfaces as the more-serious "UNIT FILE drift" message.
-    drifted_config = dict(_EXPECTED_CONFIG)
-    drifted_config["ssh"] = "0"
-    with patch.object(doctor._shared, "_run",
-                      side_effect=_make_oom_run(_PID_MAP, drifted_config)), \
-         patch("pathlib.Path.read_text", fake_read):
-        r = doctor.check_oom_score_adj()
-    assert r.status == "warn"
-    assert "ssh" in r.detail
+def _sysctl_drift(tmp_path, monkeypatch, conf, live):
+    conf_path = tmp_path / "99-jts-vm.conf"
+    if conf is not None:
+        conf_path.write_text(conf)
+    proc_vm = tmp_path / "vm"
+    proc_vm.mkdir()
+    for key, value in live.items():
+        (proc_vm / key).write_text(value + "\n")
+    monkeypatch.setattr(doctor_drift, "_JTS_SYSCTL_CONF", conf_path)
+    monkeypatch.setattr(doctor_drift, "_PROC_SYS_VM", proc_vm)
+    return doctor_drift._sysctl_drift()
 
 
-def test_oom_score_adj_ignores_openssh_listener_self_protection():
-    """OpenSSH may keep the root listener at -1000 while sessions inherit
-    the unit's -250. If the unit file is correct, do not warn on the
-    listener's live value."""
-    def fake_read(self):
-        pid_str = str(self).split("/")[2]
-        live = dict(_LIVE_OK)
-        live["1015"] = "-1000"
-        return live.get(pid_str, "0") + "\n"
-
-    with patch.object(doctor._shared, "_run",
-                      side_effect=_make_oom_run(_PID_MAP, _EXPECTED_CONFIG)), \
-         patch("pathlib.Path.read_text", fake_read):
-        r = doctor.check_oom_score_adj()
-
-    assert r.status == "ok"
-    assert "ssh live=-1000" not in r.detail
+def test_sysctl_expectations_come_from_the_installed_conf(tmp_path, monkeypatch):
+    """install.sh computes vm.min_free_kbytes per-Pi (2% of RAM), so the
+    conf — not a hardcoded number — is the expectation."""
+    items, checked, _ = _sysctl_drift(
+        tmp_path, monkeypatch, _INSTALLED_SYSCTL_CONF,
+        {"swappiness": "100", "min_free_kbytes": "20296"},
+    )
+    assert (items, checked) == ([], 2)
 
 
-def test_oom_score_adj_live_drift_only():
-    """jasper-camilla was started before the new unit landed but
-    the unit file IS correct — live-only drift, fixable by restart."""
-    def fake_read(self):
-        pid_str = str(self).split("/")[2]
-        live = dict(_LIVE_OK)
-        live["1002"] = "0"  # jasper-camilla drifted live to 0
-        return live.get(pid_str, "0") + "\n"
-
-    with patch.object(doctor._shared, "_run",
-                      side_effect=_make_oom_run(_PID_MAP, _EXPECTED_CONFIG)), \
-         patch("pathlib.Path.read_text", fake_read):
-        r = doctor.check_oom_score_adj()
-    assert r.status == "warn"
-    assert "live-process drift" in r.detail
-    assert "jasper-camilla live=0" in r.detail
-    assert "next restart" in r.detail  # actionable hint
+def test_sysctl_drift_names_the_diverged_knob(tmp_path, monkeypatch):
+    items, _, _ = _sysctl_drift(
+        tmp_path, monkeypatch, _INSTALLED_SYSCTL_CONF,
+        {"swappiness": "60", "min_free_kbytes": "20296"},
+    )
+    assert [(d.item, d.got, d.want) for d in items] == [
+        ("vm.swappiness", "60", "100"),
+    ]
 
 
-def test_oom_score_adj_unit_file_drift_is_more_serious():
-    """The .service file itself doesn't have OOMScoreAdjust= (manual
-    edit / install.sh hasn't been re-run after a regression). This
-    is more serious than live-only drift because next restart won't
-    fix it — the unit file is the source of truth."""
-    # Live processes happen to show the correct value (the running
-    # processes were started before the unit-file got broken).
-    def fake_read(self):
-        pid_str = str(self).split("/")[2]
-        return _LIVE_OK.get(pid_str, "0") + "\n"
-
-    # But the unit file says 0 for jasper-camilla — a regression
-    # we'd otherwise miss until next restart.
-    drifted_config = dict(_EXPECTED_CONFIG)
-    drifted_config["jasper-camilla"] = "0"
-    with patch.object(doctor._shared, "_run",
-                      side_effect=_make_oom_run(_PID_MAP, drifted_config)), \
-         patch("pathlib.Path.read_text", fake_read):
-        r = doctor.check_oom_score_adj()
-    assert r.status == "warn"
-    assert "UNIT FILE drift" in r.detail
-    assert "jasper-camilla unit=0" in r.detail
-    assert "next restart won't fix" in r.detail
+def test_knob_this_kernel_does_not_expose_is_not_drift(tmp_path, monkeypatch):
+    items, checked, _ = _sysctl_drift(
+        tmp_path, monkeypatch, _INSTALLED_SYSCTL_CONF, {"swappiness": "100"},
+    )
+    assert (items, checked) == ([], 1)
 
 
-def test_oom_score_adj_unit_drift_takes_precedence_over_live_drift():
-    """If BOTH kinds of drift exist, surface the unit-file one
-    (it's the more dangerous shape)."""
-    def fake_read(self):
-        pid_str = str(self).split("/")[2]
-        live = dict(_LIVE_OK)
-        live["1002"] = "0"  # live also wrong for jasper-camilla
-        return live.get(pid_str, "0") + "\n"
+def test_unsubstituted_template_placeholder_is_drift(tmp_path, monkeypatch):
+    """install.sh's sed step failed, so the kernel kept its own default."""
+    items, _, _ = _sysctl_drift(
+        tmp_path, monkeypatch,
+        _INSTALLED_SYSCTL_CONF.replace("20296", "__VM_MIN_FREE_KBYTES__"),
+        {"swappiness": "100", "min_free_kbytes": "16384"},
+    )
+    assert [d.item for d in items] == ["vm.min_free_kbytes"]
 
-    drifted_config = dict(_EXPECTED_CONFIG)
-    drifted_config["jasper-camilla"] = "0"
-    with patch.object(doctor._shared, "_run",
-                      side_effect=_make_oom_run(_PID_MAP, drifted_config)), \
-         patch("pathlib.Path.read_text", fake_read):
-        r = doctor.check_oom_score_adj()
-    assert r.status == "warn"
-    assert "UNIT FILE drift" in r.detail  # not "live-process drift"
+
+@pytest.mark.parametrize("conf", [None, "# nothing installed here\n"])
+def test_missing_or_empty_sysctl_conf_is_drift(tmp_path, monkeypatch, conf):
+    items, _, _ = _sysctl_drift(tmp_path, monkeypatch, conf, {})
+    assert len(items) == 1
+
+
+@pytest.mark.parametrize(
+    "live, expect_drift", [("1000", False), ("250", False), ("0", True)],
+)
+def test_mglru_only_the_kernel_default_is_drift(
+    tmp_path, monkeypatch, live, expect_drift,
+):
+    """A non-zero value that is not ours is an operator override, not drift."""
+    knob = tmp_path / "min_ttl_ms"
+    knob.write_text(live + "\n")
+    monkeypatch.setattr(doctor_drift, "_MGLRU_MIN_TTL", knob)
+    items, checked, notes = doctor_drift._mglru_drift()
+    assert (bool(items), checked, notes) == (expect_drift, 1, [])
+
+
+def test_mglru_absent_on_kernels_without_it(tmp_path, monkeypatch):
+    monkeypatch.setattr(doctor_drift, "_MGLRU_MIN_TTL", tmp_path / "absent")
+    items, checked, notes = doctor_drift._mglru_drift()
+    assert (items, checked) == ([], 0)
+    assert notes
+
+
+def test_mglru_read_failure_is_disclosed_not_reported_as_drift(
+    tmp_path, monkeypatch,
+):
+    """Re-running tmpfiles cannot fix a knob we could not read, so a read
+    failure must not carry that remedy."""
+    knob = tmp_path / "min_ttl_ms"
+    knob.write_text("1000\n")
+    monkeypatch.setattr(doctor_drift, "_MGLRU_MIN_TTL", knob)
+
+    def boom(self, *a, **kw):
+        raise OSError("EACCES")
+
+    monkeypatch.setattr(Path, "read_text", boom)
+    items, checked, notes = doctor_drift._mglru_drift()
+    assert (items, checked) == ([], 0)
+    assert notes
+
+
+def test_the_check_aggregates_every_source(monkeypatch):
+    """The registered check must reach all three readers — a dropped source
+    is a whole class of drift going unreported."""
+    captured = {}
+
+    def source(item, checked, note):
+        return lambda: (
+            [doctor_drift.DriftItem(item, "got", "want", "fix")], checked, [note],
+        )
+
+    monkeypatch.setattr(doctor_drift, "_systemd_drift", source("a", 1, "n1"))
+    monkeypatch.setattr(doctor_drift, "_sysctl_drift", source("b", 2, "n2"))
+    monkeypatch.setattr(doctor_drift, "_mglru_drift", source("c", 4, "n3"))
+    monkeypatch.setattr(
+        doctor_drift, "_classify_drift",
+        lambda drift, checked, notes: captured.update(
+            drift=drift, checked=checked, notes=notes,
+        ),
+    )
+
+    doctor_drift.check_installed_settings_drift()
+
+    assert [d.item for d in captured["drift"]] == ["a", "b", "c"]
+    assert captured["checked"] == 7
+    assert captured["notes"] == ["n1", "n2", "n3"]
+
+
+def test_drift_verdict_is_warn_only_when_something_drifted():
+    assert doctor_drift._classify_drift([], 12, []).status == "ok"
+    drifted = doctor_drift._classify_drift(
+        [doctor_drift.DriftItem("vm.swappiness", "60", "100", "fix")], 12, [],
+    )
+    assert drifted.status == "warn"
+    assert "vm.swappiness" in drifted.detail
 
 
 def test_systemctl_show_property_parses_double_newline_separator():
-    """Regression test for the wire-format bug discovered on jts2.local
-    post-cleanup-deploy (2026-05-24): when called with multiple units
-    AND --value, systemctl emits values separated by \\n\\n (blank
-    line), NOT a single \\n.
-
-    Pre-fix: parser split on \\n and got 2N-1 elements for N units,
-    triggered the "len mismatch → return None" fallback, and
-    check_oom_score_adj reported "systemctl unavailable — skipped
-    (not Linux?)" on a real Pi. Bad UX.
-
-    This test pins the parser to the actual wire format so the
-    failure cannot recur silently. Verified directly via
-    `systemctl show -p MainPID --value u1 u2 | cat -A` on the Pi."""
-    # Mock that emits the real systemctl format
+    """`systemctl show -p X --value u1 u2` separates values with a blank
+    line, not a single newline (verified on the Pi)."""
     def fake_run(cmd, **kwargs):
         result = MagicMock()
-        # Real format: value1\n\nvalue2\n\nvalue3\n
         result.stdout = "1001\n\n1002\n\n1003\n"
         return result
 
@@ -785,12 +630,10 @@ def test_systemctl_show_property_parses_double_newline_separator():
         result = doctor._systemctl_show_property(
             "MainPID", ["unit-a", "unit-b", "unit-c"],
         )
-    # Must return 3 values (one per unit), NOT None / 5 / 6.
     assert result == ["1001", "1002", "1003"]
 
 
 def test_systemctl_show_property_handles_single_unit():
-    """Single unit still works — separator is just `\\n` then."""
     def fake_run(cmd, **kwargs):
         result = MagicMock()
         result.stdout = "1234\n"
@@ -802,251 +645,17 @@ def test_systemctl_show_property_handles_single_unit():
 
 
 def test_systemctl_show_property_handles_empty_values():
-    """All units returned empty (e.g. all not-running) — still
-    produces N entries, NOT len mismatch."""
     def fake_run(cmd, **kwargs):
         result = MagicMock()
-        result.stdout = "\n\n\n\n\n"  # 3 empty values
+        result.stdout = "\n\n\n\n\n"
         return result
 
     with patch.object(doctor._shared, "_run", side_effect=fake_run):
         result = doctor._systemctl_show_property(
             "MainPID", ["unit-a", "unit-b", "unit-c"],
         )
-    # All-empty is unusual but should still be 3 entries.
     assert result is not None
     assert len(result) == 3
-
-
-# --- check_start_limit_action (critical restart policy) ------------------
-
-
-def _make_start_limit_action_run(
-    actions: dict[str, str],
-    load_map=None,
-    on_failure: dict[str, str] | None = None,
-):
-    """Build a `_run` mock for check_start_limit_action's BATCHED
-    systemctl calls — `-p LoadState` (the installed-unit filter) and
-    policy properties such as `-p StartLimitAction` / `-p OnFailure` —
-    each over `u1 u2 ...`. They all go through
-    `_systemctl_show_property` (i.e. `_shared._run`), so tests patch that
-    one namespace. `load_map` overrides LoadState per unit (default:
-    every unit "loaded")."""
-    return _make_systemctl_show_run(
-        {
-            "StartLimitAction": actions,
-            "OnFailure": on_failure or {},
-        },
-        defaults={"StartLimitAction": "none", "OnFailure": ""},
-        load_map=load_map,
-    )
-
-
-def test_start_limit_action_policy_all_set():
-    """Happy path: reboot ladder units reboot; Camilla uses recovery."""
-    actions = {
-        "jasper-outputd": "reboot",
-        "jasper-camilla": "none",
-        "jasper-aec-bridge": "reboot",
-        "jasper-voice": "reboot",
-        "jasper-control": "reboot",
-    }
-    on_failure = {"jasper-camilla": "jasper-camilla-recover.service"}
-    with patch.object(doctor._shared, "_run",
-                      side_effect=_make_start_limit_action_run(
-                          actions,
-                          on_failure=on_failure,
-                      )):
-        r = doctor.check_start_limit_action()
-    assert r.status == "ok"
-    assert "5 installed critical daemons" in r.detail
-
-
-def test_start_limit_action_drift_one_unit_lost_directive():
-    """A Debian/RPi-OS update edited jasper-control's unit and removed
-    the directive — should warn and name the unit."""
-    actions = {
-        "jasper-outputd": "reboot",
-        "jasper-camilla": "none",
-        "jasper-aec-bridge": "reboot",
-        "jasper-voice": "reboot",
-        "jasper-control": "none",   # drifted to default
-    }
-    on_failure = {"jasper-camilla": "jasper-camilla-recover.service"}
-    with patch.object(doctor._shared, "_run",
-                      side_effect=_make_start_limit_action_run(
-                          actions,
-                          on_failure=on_failure,
-                      )):
-        r = doctor.check_start_limit_action()
-    assert r.status == "warn"
-    assert "critical restart policy drift" in r.detail
-    assert "jasper-control" in r.detail
-    assert "want reboot" in r.detail
-
-
-def test_start_limit_action_drift_wrong_action():
-    """Someone set StartLimitAction=reboot-force on jasper-voice — wrong
-    on a 1 GB Pi (dirty zram pages would skip sync)."""
-    actions = {
-        "jasper-outputd": "reboot",
-        "jasper-camilla": "none",
-        "jasper-aec-bridge": "reboot",
-        "jasper-voice": "reboot-force",   # wrong shape
-        "jasper-control": "reboot",
-    }
-    on_failure = {"jasper-camilla": "jasper-camilla-recover.service"}
-    with patch.object(doctor._shared, "_run",
-                      side_effect=_make_start_limit_action_run(
-                          actions,
-                          on_failure=on_failure,
-                      )):
-        r = doctor.check_start_limit_action()
-    assert r.status == "warn"
-    assert "jasper-voice=reboot-force" in r.detail
-
-
-def test_start_limit_action_warns_when_camilla_recovery_handler_drifts():
-    """Camilla must stay out of the raw reboot ladder AND keep OnFailure."""
-    actions = {
-        "jasper-outputd": "reboot",
-        "jasper-camilla": "none",
-        "jasper-aec-bridge": "reboot",
-        "jasper-voice": "reboot",
-        "jasper-control": "reboot",
-    }
-    with patch.object(doctor._shared, "_run",
-                      side_effect=_make_start_limit_action_run(actions)):
-        r = doctor.check_start_limit_action()
-    assert r.status == "warn"
-    assert "jasper-camilla OnFailure=none" in r.detail
-    assert "jasper-camilla-recover.service" in r.detail
-
-
-def test_start_limit_action_warns_when_camilla_reverts_to_raw_reboot():
-    """The JTS5 failure class needs forensics/recovery, not blind reboot."""
-    actions = {
-        "jasper-outputd": "reboot",
-        "jasper-camilla": "reboot",
-        "jasper-aec-bridge": "reboot",
-        "jasper-voice": "reboot",
-        "jasper-control": "reboot",
-    }
-    on_failure = {"jasper-camilla": "jasper-camilla-recover.service"}
-    with patch.object(doctor._shared, "_run",
-                      side_effect=_make_start_limit_action_run(
-                          actions,
-                          on_failure=on_failure,
-                      )):
-        r = doctor.check_start_limit_action()
-    assert r.status == "warn"
-    assert "jasper-camilla=reboot (want none)" in r.detail
-
-
-def test_start_limit_action_skips_units_not_installed_on_streambox():
-    """A streambox does not install jasper-voice/jasper-aec-bridge; those
-    units are LoadState=not-found and must NOT count as escalation drift
-    even though they report StartLimitAction=none."""
-    actions = {
-        "jasper-outputd": "reboot",
-        "jasper-camilla": "none",
-        "jasper-control": "reboot",
-        "jasper-aec-bridge": "none",   # absent → must be ignored
-        "jasper-voice": "none",        # absent → must be ignored
-    }
-    load_map = {"jasper-aec-bridge": "not-found", "jasper-voice": "not-found"}
-    on_failure = {"jasper-camilla": "jasper-camilla-recover.service"}
-    with patch.object(doctor._shared, "_run",
-                      side_effect=_make_start_limit_action_run(
-                          actions,
-                          load_map,
-                          on_failure=on_failure,
-                      )):
-        r = doctor.check_start_limit_action()
-    assert r.status == "ok", r.detail
-    assert "jasper-voice" not in r.detail
-    assert "jasper-aec-bridge" not in r.detail
-    assert "3 installed critical daemons" in r.detail
-
-
-def test_start_limit_action_warns_on_present_drift_with_others_absent():
-    """Mixed profile: the installed-unit filter must not swallow REAL drift
-    on a present unit. Streambox (voice/AEC absent) + a present, drifted
-    jasper-control → warn naming only the present unit."""
-    actions = {
-        "jasper-outputd": "reboot",
-        "jasper-camilla": "none",
-        "jasper-control": "none",      # present + drifted → must warn
-        "jasper-aec-bridge": "none",   # absent → ignored
-        "jasper-voice": "none",        # absent → ignored
-    }
-    load_map = {"jasper-aec-bridge": "not-found", "jasper-voice": "not-found"}
-    on_failure = {"jasper-camilla": "jasper-camilla-recover.service"}
-    with patch.object(doctor._shared, "_run",
-                      side_effect=_make_start_limit_action_run(
-                          actions,
-                          load_map,
-                          on_failure=on_failure,
-                      )):
-        r = doctor.check_start_limit_action()
-    assert r.status == "warn"
-    assert "jasper-control=none" in r.detail
-    assert "jasper-voice" not in r.detail
-    assert "jasper-aec-bridge" not in r.detail
-
-
-def test_start_limit_action_skips_on_dev_host():
-    """Dev host without systemctl — should skip cleanly rather than crash
-    or false-warn. The installed-unit LoadState filter is the first
-    systemctl call; its failure short-circuits to a clean skip."""
-    def fake_run(cmd, **kwargs):
-        raise FileNotFoundError("systemctl not found")
-
-    with patch.object(doctor._shared, "_run", side_effect=fake_run):
-        r = doctor.check_start_limit_action()
-    assert r.status == "ok"
-    assert "skipped" in r.detail
-
-
-def test_start_limit_action_skips_when_directive_read_degrades():
-    """Safety contract: if the StartLimitAction batch read returns a
-    malformed shape (so _systemctl_show_property → None) AFTER the
-    installed-unit filter already succeeded, degrade to a clean skip —
-    never a false 'ok' that would hide real escalation drift."""
-    def fake_run(cmd, **kwargs):
-        units = [c.rsplit(".", 1)[0] for c in cmd[5:]]
-        result = MagicMock()
-        if cmd[3] == "LoadState":
-            result.stdout = "\n\n".join("loaded" for _ in units) + "\n"
-        elif cmd[3] == "StartLimitAction":
-            # StartLimitAction: one fewer value → length mismatch → None
-            result.stdout = "\n\n".join(["reboot"] * (len(units) - 1)) + "\n"
-        else:
-            result.stdout = "\n\n".join(
-                "jasper-camilla-recover.service" for _ in units
-            ) + "\n"
-        return result
-
-    with patch.object(doctor._shared, "_run", side_effect=fake_run):
-        r = doctor.check_start_limit_action()
-    assert r.status == "ok"
-    assert "skipped" in r.detail
-
-
-def test_oom_score_adj_no_systemctl_is_ok():
-    """Dev host without systemctl — the batched `_systemctl_show_property`
-    returns None, and check_oom_score_adj fast-fails to a skip
-    (rather than reporting N "not running" units). The post-cleanup
-    behavior is cleaner: one "skipped — not Linux?" instead of per-
-    unit noise."""
-    def fake_run(cmd, **kwargs):
-        raise FileNotFoundError("systemctl not found")
-
-    with patch.object(doctor._shared, "_run", side_effect=fake_run):
-        r = doctor.check_oom_score_adj()
-    assert r.status == "ok"
-    assert "systemctl unavailable" in r.detail
 
 
 # --- Stage 2 audio-slice checks ------------------------------------------
@@ -1381,12 +990,30 @@ def test_wake_events_storage_warns_over_threshold(tmp_path):
 
 
 def test_wake_events_storage_ok_below_default_threshold(tmp_path):
-    """A healthy ring (well under the 1.3 GiB default) never warns."""
+    """A healthy ring (well under the default cap-plus-allowance) never warns."""
     wake = tmp_path / "wake-events"
     wake.mkdir()
     (wake / "clip.wav").write_bytes(b"0" * 1024)
     with patch.dict(os.environ, {
         "JASPER_WAKE_EVENTS_DIR": str(wake),
+    }):
+        os.environ.pop("JASPER_WAKE_EVENTS_STORAGE_WARN_BYTES", None)
+        r = doctor.check_wake_events_storage()
+    assert r.status == "ok"
+
+
+def test_wake_events_storage_warn_threshold_scales_with_configured_cap(tmp_path):
+    """A Pi that deliberately overrides the audio cap gets a warn threshold
+    scaled to that cap, not a fixed default sized for the 128 MiB default —
+    otherwise a healthy, deliberately-larger ring would warn forever."""
+    wake = tmp_path / "wake-events"
+    wake.mkdir()
+    with open(wake / "clip.wav", "wb") as f:
+        f.truncate(600 * 1024 * 1024)  # above a 128 MiB-scaled default,
+                                        # below a 1 GiB-scaled one
+    with patch.dict(os.environ, {
+        "JASPER_WAKE_EVENTS_DIR": str(wake),
+        "JASPER_WAKE_EVENTS_MAX_AUDIO_BYTES": "1073741824",  # 1 GiB override
     }):
         os.environ.pop("JASPER_WAKE_EVENTS_STORAGE_WARN_BYTES", None)
         r = doctor.check_wake_events_storage()

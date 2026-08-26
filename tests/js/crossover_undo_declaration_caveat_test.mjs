@@ -24,38 +24,8 @@
 //      does not swallow the sibling message it sits beside.
 
 import assert from "node:assert/strict";
-import { readFileSync } from "node:fs";
-import { dirname, resolve } from "node:path";
-import { fileURLToPath } from "node:url";
-
-function element(id = "") {
-  const node = {
-    id,
-    children: [],
-    classList: { add() {}, remove() {}, contains: () => false, toggle() {} },
-    dataset: {},
-    disabled: false,
-    hidden: false,
-    className: "",
-    _text: "",
-    addEventListener() {},
-    append(...children) { this.children.push(...children); },
-    replaceChildren(...children) { this.children = children; this._text = ""; },
-    setAttribute(key, value) { this[key] = String(value); },
-  };
-  Object.defineProperty(node, "textContent", {
-    get() {
-      return this.children.length
-        ? this.children.map((child) => child.textContent || "").join("")
-        : this._text;
-    },
-    set(value) {
-      this._text = value == null ? "" : String(value);
-      this.children = [];
-    },
-  });
-  return node;
-}
+import { aliasGlobals, loadEsm, repoPath } from "./_loader.mjs";
+import { elementWithLiveText as element, installFixedDocument } from "./_dom.mjs";
 
 const ids = [
   "crossover-verdict",
@@ -83,14 +53,10 @@ const ids = [
   "crossover-relay-stop",
   "capture-status",
 ];
-const elements = new Map(ids.map((id) => [id, element(id)]));
-globalThis.document = {
-  visibilityState: "visible",
-  addEventListener() {},
-  createElement: (tag) => element(tag),
+const elements = installFixedDocument(ids, {
+  factory: element,
   createTextNode: (text) => ({ nodeType: 3, textContent: String(text) }),
-  getElementById: (id) => elements.get(id),
-};
+});
 globalThis.setTimeout = () => 1;
 globalThis.clearTimeout = () => {};
 globalThis.window = { addEventListener() {} };
@@ -117,29 +83,17 @@ globalThis.__redrawCloudChart = () => {};
 let postResponse = { ...baseEnvelope };
 globalThis.__postJSON = async () => postResponse;
 
-const here = dirname(fileURLToPath(import.meta.url));
-let source = readFileSync(
-  resolve(here, "../../deploy/assets/correction/js/crossover/main.js"),
-  "utf8",
+const { render, runAction } = await loadEsm(
+  repoPath("deploy/assets/correction/js/crossover/main.js"),
+  {
+    rewrite: [[/^import\s+\{[^}]+\}\s+from\s+["'][^"']+["'];\s*\n?/gm, ""]],
+    prelude: aliasGlobals([
+      "getJSON", "postJSON", "renderRelayQr", "jtsConfirm", "renderCloud", "redrawCloudChart",
+    ]),
+    truncateBefore: "\nrefresh().catch((error) => {",
+    exportNames: ["render", "runAction"],
+  },
 );
-source = source.replace(
-  /^import\s+\{[^}]+\}\s+from\s+["'][^"']+["'];\s*\n?/gm,
-  "",
-);
-source =
-  "const getJSON = globalThis.__getJSON; const postJSON = globalThis.__postJSON; " +
-  "const renderRelayQr = globalThis.__renderRelayQr; " +
-  "const jtsConfirm = globalThis.__jtsConfirm; " +
-  "const renderCloud = globalThis.__renderCloud; " +
-  "const redrawCloudChart = globalThis.__redrawCloudChart;\n" + source;
-const bootStart = source.lastIndexOf("\nrefresh().catch((error) => {");
-if (bootStart < 0) throw new Error("crossover module boot call not found");
-source = source.slice(0, bootStart).concat(
-  "\nexport { render, runAction };\n",
-);
-const dataUrl =
-  "data:text/javascript;base64," + Buffer.from(source, "utf8").toString("base64");
-const { render, runAction } = await import(dataUrl);
 
 const statusEl = elements.get("capture-status");
 render({ ...baseEnvelope });
