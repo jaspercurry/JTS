@@ -153,12 +153,9 @@ seed_capture_relay_env() {
 # and the doctor's new smaller warn threshold would warn on it permanently.
 # Anchored on the full stale line so a deliberate non-default override
 # (any other value) survives untouched.
-# `-i` takes no separate suffix argument on BSD sed, which swallows the script
-# as the backup extension and then parses the FILE PATH as the program. Same
-# in-place-edit idiom as the JASPER_AUDIO_DAC_ID strip below.
 migrate_wake_events_cap_seed() {
-    sed -i.bak '/^JASPER_WAKE_EVENTS_MAX_AUDIO_BYTES=1073741824$/d' "${ENV_DIR}/jasper.env"
-    rm -f "${ENV_DIR}/jasper.env.bak"
+    sed_inplace "${ENV_DIR}/jasper.env" \
+        '/^JASPER_WAKE_EVENTS_MAX_AUDIO_BYTES=1073741824$/d'
 }
 
 install_jasper() {
@@ -399,7 +396,7 @@ PY
         echo
     fi
     seed_capture_relay_env
-    sed -i.bak \
+    sed_inplace "${ENV_DIR}/jasper.env" \
         -e '/^JASPER_SPOTIFY_DEVICE_NAME=/d' \
         -e '/^JASPER_AIRPLAY_DEVICE_NAME=/d' \
         -e '/^SPOTIFY_CLIENT_ID=/d' \
@@ -407,13 +404,10 @@ PY
         -e '/^SPOTIFY_REDIRECT_URI=/d' \
         -e '/^SPOTIPY_REDIRECT_URI=/d' \
         -e '/^JASPER_AEC_CHIP_AEC_DAC_AUTO=/d' \
-        -e '/^JASPER_AEC_CHIP_AEC_DAC_TRIAL=/d' \
-        "${ENV_DIR}/jasper.env"
-    rm -f "${ENV_DIR}/jasper.env.bak"
+        -e '/^JASPER_AEC_CHIP_AEC_DAC_TRIAL=/d'
     migrate_wake_events_cap_seed
     if [[ -n "${OUTPUT_DAC_ID:-}" ]]; then
-        sed -i.bak '/^JASPER_AUDIO_DAC_ID=/d' "${ENV_DIR}/jasper.env"
-        rm -f "${ENV_DIR}/jasper.env.bak"
+        sed_inplace "${ENV_DIR}/jasper.env" '/^JASPER_AUDIO_DAC_ID=/d'
         printf 'JASPER_AUDIO_DAC_ID=%s\n' "${OUTPUT_DAC_ID}" >> "${ENV_DIR}/jasper.env"
         chmod 0640 "${ENV_DIR}/jasper.env"
         echo "  audio DAC id: ${OUTPUT_DAC_ID}"

@@ -4,9 +4,10 @@
 
 """Deploy-domain wiring guards — pin the install/systemd/nginx promises.
 
-Four structural invariants in the deploy/ tree that were previously
+Five structural invariants in the deploy/ tree that were previously
 prose-only (AGENTS.md, unit-file comments, PR #118 post-mortem) and
-that fail silently on the Pi when violated:
+that, when violated, fail where no reviewer is looking — silently on
+the Pi (1-4) or as a whole red lane on the laptop (5):
 
 1. **Orphan-artifact guard (two-sided).** Every shipped systemd unit,
    drop-in, udev rule, and helper script under deploy/ must be
@@ -37,11 +38,18 @@ that fail silently on the Pi when violated:
    one side of the port contract moved without the other). Intentional
    one-sided ports live in explicit allowlists that fail when stale,
    so the lists only shrink.
+
+5. **Shell-dialect portability.** deploy/ shell targets the Pi, but the
+   hardware-free suites execute it on the developer's laptop, where macOS
+   supplies BSD sed and bash 3.2. GNU-only and bash-4-only spellings turn
+   every local lane red regardless of the diff under test.
 """
 from __future__ import annotations
 
 import re
 from pathlib import Path
+
+import pytest
 
 _REPO = Path(__file__).resolve().parent.parent
 _DEPLOY = _REPO / "deploy"
@@ -492,6 +500,71 @@ def test_deploy_post_health_uses_lightweight_probe_on_low_memory_hosts():
     assert "1200000" in body
     assert "jasper-deploy-health" in body
     assert "/opt/jasper/.venv/bin/jasper-doctor" in body
+
+
+# ----------------------------------------------------------------------
+# 5 — shell-dialect portability (the lanes execute this shell off-Pi)
+# ----------------------------------------------------------------------
+
+# Two spellings each turned every macOS lane red regardless of the diff
+# under test: GNU-only `sed -i` (issue #3021) and bash-4 builtins (#3015,
+# reached once a test started executing deploy/bin helpers). Each has a
+# replacement that behaves identically under GNU/bash 5 on the Pi, so the
+# ban costs nothing there. Drop this guard if no lane ever executes deploy/
+# shell outside the Pi's dialect again.
+_NON_PORTABLE_SPELLINGS = (
+    (
+        "GNU-only in-place sed — BSD sed reads `-i`'s backup suffix as the "
+        "NEXT ARGUMENT, so it parses the sed program as the suffix",
+        re.compile(r"\bsed\s+(?:-[a-zA-Z]+\s+)*(?:-i(?=[\s\\]|$)|--in-place)"),
+        "sed_inplace FILE EXPRESSION... (deploy/lib/jasper-sed-inplace.sh)",
+    ),
+    (
+        "bash-4-only builtin — macOS /bin/bash is 3.2",
+        re.compile(r"(?:^|[;&|(]\s*)(?:mapfile|readarray)\b|\bdeclare\s+-A\b"),
+        "a `while IFS= read -r` loop, or parallel indexed arrays",
+    ),
+)
+
+
+def _deploy_shell_sources() -> list[Path]:
+    """Shell files under deploy/, selected by extension or shebang — the
+    discriminator the CI shell lane uses, so the two stay in step."""
+    sources: list[Path] = []
+    for path in sorted(_DEPLOY.rglob("*")):
+        if not path.is_file():
+            continue
+        with path.open("rb") as handle:
+            first = handle.readline(128)
+        if path.suffix != ".sh" and not (
+            first.startswith(b"#!") and b"sh" in first and b"python" not in first
+        ):
+            continue
+        sources.append(path)
+    return sources
+
+
+@pytest.mark.parametrize(
+    ("reason", "pattern", "remedy"),
+    _NON_PORTABLE_SPELLINGS,
+    ids=("gnu-only-sed-inplace", "bash-4-only-builtins"),
+)
+def test_deploy_shell_stays_in_the_portable_dialect(reason, pattern, remedy):
+    sources = _deploy_shell_sources()
+    assert len(sources) >= 25, (
+        f"shell-file selection collapsed to {len(sources)} files — the scan, "
+        "not the tree, is what broke."
+    )
+
+    offenders = []
+    for path in sources:
+        lines = path.read_text(encoding="utf-8").splitlines()
+        for lineno, line in enumerate(lines, start=1):
+            if line.lstrip().startswith("#"):
+                continue
+            if pattern.search(line):
+                offenders.append(f"{path.relative_to(_REPO)}:{lineno}")
+    assert not offenders, f"{reason}: {offenders}. Use {remedy}."
 
 
 def test_deploy_verification_skipped_cleanly_under_interactive_sudo():
