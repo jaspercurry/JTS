@@ -157,7 +157,7 @@ class PlaybackTransaction(Protocol):
     **Structural, and deliberately not ``@runtime_checkable``.** A runtime
     ``isinstance`` against a Protocol compares METHOD NAMES only — an object
     with a ``run`` of the wrong signature passes — so the check would buy
-    confidence it cannot deliver. The four engine seams are satisfied by shape,
+    confidence it cannot deliver. The five engine seams are satisfied by shape,
     checked by mypy and by the call actually working, and none of them is
     guarded by ``isinstance``. Their method bodies raise
     :class:`NotImplementedError` so a partial explicit subclass fails loudly

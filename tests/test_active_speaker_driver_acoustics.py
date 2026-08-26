@@ -1088,32 +1088,43 @@ def _mock_gate_at_fixed_floor(monkeypatch, floor_hz: float):
 def test_reference_axis_excludes_below_floor_bins_from_in_band_and_overlap(
     tmp_path, monkeypatch
 ):
-    """A fixed floor above the driver's passband floor but below its
-    ceiling: in_band/out_of_band means shift because the effective lower
-    edge moves from ANALYSIS_LO_HZ up to the floor, an overlap entry whose
-    fc sits below the floor is marked unusable + above_validity_floor=False,
-    and one above the floor is untouched (same level_db as a near_field
-    bake of the SAME capture, since the mock leaves the IR unwindowed)."""
+    """A fixed floor above the driver's passband floor but below its ceiling:
+    the in-band mean shifts because the effective lower edge moves from
+    ANALYSIS_LO_HZ up to the floor, an overlap entry whose fc sits below the
+    floor is marked unusable + above_validity_floor=False, and one above the
+    floor is untouched — same level_db as a near_field bake of the SAME
+    capture, since the mock leaves the IR unwindowed."""
     sig, meta = _reference_sweep()
     ir = firwin(1023, 400, fs=SR).astype(np.float64)
     captured = fftconvolve(sig.astype(np.float64), ir)
     path = _write_capture(tmp_path, "woofer.wav", captured)
 
-    # Noise well below every canonical band's captured level -> a confident
-    # "ok" magnitude-class verdict.
-    noise = [
-        {"band_id": band_id, "band_hz": [lo, hi], "level_dbfs": -100.0}
-        for band_id, lo, hi in snr_policy.CROSSOVER_SNR_BANDS_HZ
-    ]
-    result = da.analyze_driver_capture(
-        path, meta, passband_hz=(40.0, 400.0), noise_band_report=noise,
+    near = da.analyze_driver_capture(
+        path, meta, passband_hz=(40.0, 400.0), overlap_fcs=(100.0, 300.0),
+        capture_geometry="near_field",
     )
-    assert result.snr is not None
-    assert result.snr["decision_class"] == "magnitude"
-    assert result.snr["verdict"] == "ok"
-    assert result.snr["relevant_hz"] == [40.0, 400.0]
-    # The verdict/present logic is unaffected by adding noise evidence.
-    assert result.verdict == "present"
+    _mock_gate_at_fixed_floor(monkeypatch, 150.0)  # 40 < 150 < 400
+    result = da.analyze_driver_capture(
+        path, meta, passband_hz=(40.0, 400.0), overlap_fcs=(100.0, 300.0),
+        capture_geometry="reference_axis",
+    )
+    assert result.gating["applied"] is True
+    assert result.gating["f_valid_floor_hz"] == 150.0
+    # The floor drops the 40-150 Hz bins the near_field bake counted, so the
+    # in-band mean is a mean over a different set — the exclusion is visible
+    # in the aggregate, not only in the per-entry flags.
+    assert result.in_band_db != pytest.approx(near.in_band_db)
+
+    below, above = result.overlap_levels
+    assert below["fc_hz"] == 100.0
+    assert below["above_validity_floor"] is False
+    assert below["usable"] is False
+    assert above["fc_hz"] == 300.0
+    assert above["above_validity_floor"] is True
+    assert above["usable"] is True
+    # Untouched: the mock reports a floor without windowing, so an entry that
+    # clears the floor reads the identical magnitude the exempt bake read.
+    assert above["level_db"] == pytest.approx(near.overlap_levels[1]["level_db"])
 
 
 def test_overlap_band_marked_unusable_when_snr_insufficient(tmp_path):
@@ -1151,22 +1162,22 @@ def test_reference_axis_near_validity_floor_advisory_does_not_exclude(
     captured = fftconvolve(sig.astype(np.float64), ir)
     path = _write_capture(tmp_path, "woofer.wav", captured)
 
-    mid_dbfs = next(
-        b["level_dbfs"]
-        for b in da._capture_band_levels(path)
-        if b["band_id"] == "mid"
-    )
-    # 5 dB SNR: real evidence, well below snr_warn_db (20) -> insufficient.
-    noise = [{"band_id": "mid", "band_hz": [1000.0, 4000.0], "level_dbfs": mid_dbfs - 5.0}]
+    _mock_gate_at_fixed_floor(monkeypatch, 1000.0)  # advisory band [1000, 1250)
     result = da.analyze_driver_capture(
-        path, meta, passband_hz=(40.0, 2000.0), overlap_fcs=(2000.0,),
-        noise_band_report=noise,
+        path, meta, passband_hz=(40.0, 2000.0),
+        overlap_fcs=(900.0, 1100.0, 1400.0),
+        capture_geometry="reference_axis",
     )
-    entry = result.overlap_levels[0]
-    assert entry["snr_verdict"] == "insufficient"
-    # An insufficient SNR verdict fails the overlap-band reading closed, same
-    # as a silent/clipped/too-few-bins capture would.
-    assert entry["usable"] is False
+    excluded, advisory, clear = result.overlap_levels
+    # Below the floor: the hard exclusion, and the only one.
+    assert (excluded["above_validity_floor"], excluded["usable"]) == (False, False)
+    # Inside the advisory band: FLAGGED, still usable.
+    assert advisory["near_validity_floor"] is True
+    assert advisory["above_validity_floor"] is True
+    assert advisory["usable"] is True
+    # Above the advisory band: not even flagged.
+    assert clear["near_validity_floor"] is False
+    assert clear["usable"] is True
 
 
 def test_overlap_band_usable_when_snr_reduced_not_insufficient(tmp_path):

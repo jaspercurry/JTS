@@ -395,8 +395,11 @@ def takes_by_position(document: Mapping[str, Any]) -> dict[int, tuple[str, ...]]
     The split a comparison reads: every take measured at one bearing, in walk
     order, so per-take curves at that pose can be put beside each other. What
     DISTINGUISHES those takes — a different applied graph, or nothing at all —
-    is not this document's to say; the retained capture's own
-    ``provenance.graph.fingerprint`` is.
+    is the take's own banked ``graph_fingerprint`` — WHICH CANDIDATE WAS
+    APPLIED, per :func:`~.spatial.lateral_pose_record`. NOT the capture's
+    ``provenance.graph.fingerprint``: a per-driver take plays through the
+    transient routing graph, whose running hash is identical before and after
+    an apply.
     """
     grouped: dict[int, list[str]] = {}
     for take in document["takes"]:
