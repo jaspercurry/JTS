@@ -681,17 +681,17 @@ CHIP_AEC_DAC_GATE_DETAIL=""
 CHIP_AEC_GATE_CARRY_NOTE="chip-AEC DAC gate could not be evaluated; carrying last verdict"
 
 # ADR-0101: a gate that could not be evaluated is unmeasured, not a "no". Carry
-# the verdict last resolved for the SAME DAC and selection — write_chip_aec_gate_env
-# records it for exactly this read — so a missing interpreter cannot drop a
-# commissioned box off chip-AEC. The identity/selection match mirrors
-# jasper.chip_aec_policy.gate_from_runtime_env.
+# the verdict last resolved for the SAME DAC — write_chip_aec_gate_env records
+# it for exactly this read — so a missing interpreter cannot drop a
+# commissioned box off chip-AEC. An absent id or status, or a different DAC,
+# withholds the record — never the selection; jasper.chip_aec_policy's module
+# docstring owns the rule.
 carry_chip_aec_dac_gate() {
     local dac_id="$1" testing="$2" detail
     [[ -n "${JASPER_AEC_CHIP_AEC_DAC_ID:-}" ]] || return 1
     [[ -n "${JASPER_AEC_CHIP_AEC_DAC_STATUS:-}" ]] || return 1
     [[ "$(normalize_output_dac_id "$JASPER_AEC_CHIP_AEC_DAC_ID")" == "$dac_id" ]] || return 1
-    # Selection-aware by construction, and the same mapping
-    # jasper.chip_aec_policy.gate_from_runtime_env applies to the same record:
+    # One record, both selections — ChipAecGate.permits is this same mapping:
     # `approved` is the only status the automatic profile arms on, while a
     # testing selection may arm any status.
     if [[ "${JASPER_AEC_CHIP_AEC_DAC_STATUS}" == "approved" || "$testing" == "1" ]]; then
@@ -1655,7 +1655,8 @@ park_managed_xvf() {
 # inherit it from managed_xvf_policy_applies — so a custom profile never writes
 # these keys AND never clears them, and the stamp is never `custom`. That is
 # what leaves a leftover for a consumer with no stamp to check.
-# jasper.audio_profile_state owns the reading rule.
+# jasper.chip_aec_policy's module docstring owns the reading rule, for this
+# record and the DAC one alike; jasper.audio_profile_state applies it here.
 write_alignment_env() {
     set_env_var "$ENV_FILE" JASPER_AEC_CHIP_AEC_ALIGNMENT_STATUS "$1"
     set_env_var "$ENV_FILE" JASPER_AEC_CHIP_AEC_ALIGNMENT_REASON "$2"

@@ -98,9 +98,7 @@ def _chip_aec_gate_for_status(
         default=infer_audio_input_profile(intent),
     )
     testing_requested = selection == PROFILE_XVF_CHIP_AEC_TESTING
-    runtime_gate = gate_from_runtime_env(
-        system_env, testing_requested=testing_requested
-    )
+    runtime_gate = gate_from_runtime_env(system_env)
     if runtime_gate is not None:
         return runtime_gate.to_dict()
     return resolve_chip_aec_dac_gate(

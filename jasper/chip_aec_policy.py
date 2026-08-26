@@ -9,6 +9,31 @@ talk to outputd, read env files, or write service config. Callers pass in
 the hardware facts they already observed; this module classifies whether
 the XVF3800 chip-AEC path may be armed automatically, explicitly, or only
 as an operator testing run.
+
+Reconciler records, their stamps, and who may read them.
+``deploy/bin/jasper-aec-reconcile`` writes two records and stamps each with
+what produced it. A stamp is AUTHORSHIP: it says what wrote the record, and
+does not by itself decide who may read it. The serving policy decides that,
+and the two records differ because their staleness differs:
+
+* The DAC gate (``JASPER_AEC_CHIP_AEC_DAC_*``, stamped with the DAC identity
+  it was resolved for and, in ``JASPER_AEC_CHIP_AEC_TESTING_REQUESTED``, the
+  selection it was resolved under) serves EVERY selection. The PERMISSION is
+  what the output hardware owns: ``auto_allowed`` round-trips and
+  ``ChipAecGate.permits`` turns it into the per-selection answer. The
+  descriptive fields do not — ``status``, ``source``, ``detail`` and the
+  ``recommended_action`` derived from them still carry the selection the
+  record was resolved under, and operator surfaces branch on them. Only a
+  missing status, or an identity mismatch, withholds the record; never the
+  selection. A served record beats a fresh registry lookup in BOTH
+  directions: it withdraws a permission the registry would still grant (a
+  revoked verdict) and grants one the registry has since demoted. Agreeing
+  with what the reconciler actually armed is the point.
+* The alignment record (``JASPER_AEC_CHIP_AEC_ALIGNMENT_*``, stamped with the
+  selection it was written under; read by ``jasper.audio_profile_state``)
+  serves ONLY the selection its stamp names. The reconciler writes it on
+  managed-XVF paths alone and never clears it on a custom profile, so a
+  record read under any other selection is a leftover, not a verdict.
 """
 from __future__ import annotations
 
@@ -295,17 +320,14 @@ def resolve_chip_aec_dac_gate(
     )
 
 
-def gate_from_runtime_env(
-    env: Mapping[str, str],
-    *,
-    testing_requested: bool | None = None,
-) -> ChipAecGate | None:
+def gate_from_runtime_env(env: Mapping[str, str]) -> ChipAecGate | None:
     """Reconstruct the reconciler-applied DAC gate from jasper.env.
 
-    The record answers the selection it was written for. Pass
-    ``testing_requested`` to have a record written under the other selection
-    reported as absent, so the caller resolves the gate fresh rather than
-    serving an answer to a question nobody asked.
+    Served to whichever selection asks — see the module docstring for why this
+    record crosses selections and the alignment record does not. The caller
+    turns the verdict into a per-selection answer with ``ChipAecGate.permits``,
+    which is the mapping the reconciler's ``carry_chip_aec_dac_gate`` applies
+    to this same record.
     """
 
     status = str(
@@ -329,11 +351,6 @@ def gate_from_runtime_env(
         env.get("JASPER_AEC_CHIP_AEC_DAC_DETAIL")
         or ""
     )
-    recorded_testing = str(
-        env.get("JASPER_AEC_CHIP_AEC_TESTING_REQUESTED") or "0"
-    ).strip().lower() in {"1", "true", "yes", "on"}
-    if testing_requested is not None and testing_requested != recorded_testing:
-        return None
     if status == STATUS_APPROVED:
         gate_status: ChipAecGateStatus = STATUS_APPROVED
         auto_allowed = True
