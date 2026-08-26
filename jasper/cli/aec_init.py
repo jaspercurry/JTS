@@ -976,6 +976,114 @@ def shipped_class_alignment(
     )
 
 
+@dataclass(frozen=True)
+class BankedAlignment:
+    """The banked proof one run resolved, and what it discloses about it.
+
+    ``commissioned_sys_delay`` is the delay banked alongside K — by this unit's
+    own artifact or by the row shipped for its hardware class.  ``sys_delay`` is
+    what the live reference queue resolves that K to, and is what the chip is
+    written with.
+    """
+
+    k_samples: int
+    commissioned_sys_delay: int
+    sys_delay: int
+    queue: tuple[int, ...]
+    disclosures: tuple[str, ...]
+
+
+def resolve_banked_alignment(
+    dev, plan: xvf3800.ChipBeamPlan, *, card: str
+) -> BankedAlignment:
+    """Resolve the K this run applies, against the live native-reference queue.
+
+    ADR-0101: a proof that stopped describing this box is applied and disclosed,
+    not parked. Each disclosure names what moved; the reconciler publishes them
+    as `disclosed_stale` alongside the jasper-aec-commission that clears them.
+
+    Raises:
+        CommissionRequired: this box has no banked K it can run from.
+    """
+
+    disclosed: list[str] = []
+    commissioned_identity: AlignmentIdentity | None = None
+    absent: str | None = None
+    try:
+        artifact = load_artifact()
+        k_samples = artifact.k_samples
+        commissioned_sys_delay = artifact.sys_delay
+        commissioned_identity = artifact.identity
+    except ArtifactSchemaSuperseded as exc:
+        k_samples = exc.k_samples
+        commissioned_sys_delay = exc.sys_delay
+        disclosed.append(str(exc))
+    except (OSError, ValueError) as exc:
+        # Nothing banked on this box. ADR-0101 (#2984): if the shipped table
+        # knows this hardware class, run from the proof measured on a sibling;
+        # otherwise there is no K to run from at all. Which one it is needs the
+        # live identity, so the verdict waits for STATUS — but an EMPTY table can
+        # match nothing, so it does not spend the queue budget discovering that.
+        if not shipped_alignment.REGISTRY:
+            raise CommissionRequired(str(exc)) from exc
+        absent = str(exc)
+    try:
+        status, queue = collect_reference_queue(native_reference_pcm(card))
+    except ChipInitError as exc:
+        if absent is None or isinstance(exc, OutputdEnvStale):
+            raise
+        # Nothing is banked either way, so a queue that will not settle leaves
+        # the disposition the absent artifact already had.
+        raise CommissionRequired(absent) from exc
+    if absent is not None:
+        shipped = shipped_class_alignment(dev, plan, status, absent=absent)
+        k_samples = shipped.k_samples
+        commissioned_sys_delay = shipped.sys_delay
+        disclosed.append(
+            f"running on the shipped class alignment for {shipped.label}; "
+            "run sudo jasper-aec-commission to personalize it to this unit"
+        )
+    elif commissioned_identity is not None:
+        changed = identity_divergence(
+            commissioned_identity, build_identity(dev, plan, status)
+        )
+        if changed:
+            # K is a property of the hardware CLASS, so a proof measured on a
+            # sibling unit still describes this box; anything else moved the
+            # edge K was measured against.
+            disclosed.append(
+                (
+                    "commissioned alignment was measured on a different unit"
+                    if set(changed) <= PER_UNIT_IDENTITY_FIELDS
+                    else "commissioned alignment no longer matches this "
+                    "hardware class"
+                )
+                + f" ({', '.join(changed)})"
+            )
+    try:
+        delay = runtime_sys_delay(
+            k_samples, queue, commissioned_sys_delay=commissioned_sys_delay
+        )
+    except QueueMovedFromCommissioned as exc:
+        # Nothing is broken: the live reference queue simply no longer sits
+        # where it did when K was measured. The delay it carries has already
+        # cleared the chip's declared SYS_DELAY range, so apply it and say how
+        # far it moved.
+        delay = exc.delay
+        disclosed.append(str(exc))
+    except ValueError as exc:
+        # A shipped K that will not resolve on this box (the driver cap refuses
+        # the delay, or the queue is unstable) leaves the same disposition its
+        # absent artifact already had — this box needs its own commissioning,
+        # not an inspection of a healthy daemon.
+        if absent is not None:
+            raise CommissionRequired(f"{absent}; {exc}") from exc
+        raise ChipInitError(str(exc)) from exc
+    return BankedAlignment(
+        k_samples, commissioned_sys_delay, delay, queue, tuple(disclosed)
+    )
+
+
 def publish_disclosure(reason: str, *, env: Mapping[str, str] | None = None) -> None:
     """Publish why this run's alignment is disclosed-stale, or clear it.
 
@@ -1025,97 +1133,20 @@ def main() -> int:
                 raise ChipInitError(
                     "detected XVF has no validated production beam plan"
                 )
-            # ADR-0101: a proof that stopped describing this box is applied and
-            # disclosed, not parked. Each `disclosed` entry names what moved;
-            # the reconciler publishes them as `disclosed_stale` alongside the
-            # jasper-aec-commission that clears them.
-            disclosed: list[str] = []
-            commissioned_identity: AlignmentIdentity | None = None
-            absent: str | None = None
-            try:
-                artifact = load_artifact()
-                k_samples = artifact.k_samples
-                commissioned_sys_delay = artifact.sys_delay
-                commissioned_identity = artifact.identity
-            except ArtifactSchemaSuperseded as exc:
-                k_samples = exc.k_samples
-                commissioned_sys_delay = exc.sys_delay
-                disclosed.append(str(exc))
-            except (OSError, ValueError) as exc:
-                # Nothing banked on this box. ADR-0101 (#2984): if the shipped
-                # table knows this hardware class, run from the proof measured
-                # on a sibling; otherwise there is no K to run from at all.
-                # Which one it is needs the live identity, so the verdict waits
-                # for STATUS — but an EMPTY table can match nothing, so it does
-                # not spend the queue budget discovering that.
-                if not shipped_alignment.REGISTRY:
-                    raise CommissionRequired(str(exc)) from exc
-                absent = str(exc)
-            try:
-                status, queue = collect_reference_queue(native_reference_pcm(card))
-            except ChipInitError as exc:
-                if absent is None or isinstance(exc, OutputdEnvStale):
-                    raise
-                # Nothing is banked either way, so a queue that will not settle
-                # leaves the disposition the absent artifact already had.
-                raise CommissionRequired(absent) from exc
-            if absent is not None:
-                shipped = shipped_class_alignment(dev, plan, status, absent=absent)
-                k_samples = shipped.k_samples
-                commissioned_sys_delay = shipped.sys_delay
-                disclosed.append(
-                    f"running on the shipped class alignment for {shipped.label}; "
-                    "run sudo jasper-aec-commission to personalize it to this unit"
-                )
-            elif commissioned_identity is not None:
-                changed = identity_divergence(
-                    commissioned_identity, build_identity(dev, plan, status)
-                )
-                if changed:
-                    # K is a property of the hardware CLASS, so a proof
-                    # measured on a sibling unit still describes this box;
-                    # anything else moved the edge K was measured against.
-                    disclosed.append(
-                        (
-                            "commissioned alignment was measured on a different unit"
-                            if set(changed) <= PER_UNIT_IDENTITY_FIELDS
-                            else "commissioned alignment no longer matches this "
-                            "hardware class"
-                        )
-                        + f" ({', '.join(changed)})"
-                    )
-            try:
-                delay = runtime_sys_delay(
-                    k_samples, queue, commissioned_sys_delay=commissioned_sys_delay
-                )
-            except QueueMovedFromCommissioned as exc:
-                # Nothing is broken: the live reference queue simply no longer
-                # sits where it did when K was measured. The delay it carries
-                # has already cleared the chip's declared SYS_DELAY range, so
-                # apply it and say how far it moved.
-                delay = exc.delay
-                disclosed.append(str(exc))
-            except ValueError as exc:
-                # A shipped K that will not resolve on this box (the driver cap
-                # refuses the delay, or the queue is unstable) leaves the same
-                # disposition its absent artifact already had — this box needs
-                # its own commissioning, not an inspection of a healthy daemon.
-                if absent is not None:
-                    raise CommissionRequired(f"{absent}; {exc}") from exc
-                raise ChipInitError(str(exc)) from exc
-            apply_profile(dev, plan, delay, card=card)
-            disclosure = "; ".join(disclosed)
+            banked = resolve_banked_alignment(dev, plan, card=card)
+            apply_profile(dev, plan, banked.sys_delay, card=card)
+            disclosure = "; ".join(banked.disclosures)
             log_event(
                 logger,
                 "chip_aec_init",
                 level=logging.WARNING if disclosure else logging.INFO,
                 outcome="disclosed_stale" if disclosure else "ready",
-                sys_delay=delay,
-                commissioned_sys_delay=commissioned_sys_delay,
-                k_samples=k_samples,
-                queue_median=median_samples(queue),
-                queue_spread=max(queue) - min(queue),
-                queue_samples=len(queue),
+                sys_delay=banked.sys_delay,
+                commissioned_sys_delay=banked.commissioned_sys_delay,
+                k_samples=banked.k_samples,
+                queue_median=median_samples(banked.queue),
+                queue_spread=max(banked.queue) - min(banked.queue),
+                queue_samples=len(banked.queue),
                 **({"reason": disclosure} if disclosure else {}),
             )
         elif mode == "corpus":
