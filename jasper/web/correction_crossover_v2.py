@@ -5092,6 +5092,7 @@ def bind_position_retention(
         capture_artifact_relpath,
         register_capture,
     )
+    from jasper.active_speaker.crossover_v2.spatial import take_id_for
 
     def retain_position(
         position_id: str, result: Any, metadata: Mapping[str, Any]
@@ -5106,8 +5107,11 @@ def bind_position_retention(
         # in the cloud. Qualify by attempt: every take gets its own sidecar,
         # the superseded one stays on disk as the honest walk record, and the
         # conductor's `group_position_takes` names which attempt survived.
+        #
+        # Minted through the builders' own function, never re-spelled here: the
+        # sidecar path and the record inside it must name the same take.
         attempt = int(record.get("attempt") or 0)
-        take_id = f"{position_id}_a{attempt:02d}"
+        take_id = take_id_for(position_id, attempt)
         wav_rel = ""
         if isinstance(wav, (bytes, bytearray)):
             bundle_dir = Path(store.bundle_dir)
