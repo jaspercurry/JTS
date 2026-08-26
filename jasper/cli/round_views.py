@@ -38,7 +38,6 @@ from __future__ import annotations
 
 import argparse
 import json
-import struct
 import sys
 from pathlib import Path
 from typing import Any, Sequence
@@ -60,27 +59,22 @@ EXIT_ERROR = 1
 
 #: A banked round directory is operator-pulled evidence, not a validated
 #: input — the documented failure shapes it can hand back are broader than
-#: the product module's own typed :class:`RoundViewsError`: a HEADER-
-#: truncated dump-ring WAV (cut inside the RIFF/fmt chunk) raises
-#: ``struct.error`` from ``scipy.io.wavfile.read``'s chunk unpacking — NOT
-#: ``ValueError`` — while a WAV truncated only early enough to fail the
-#: "is this a RIFF file at all" check raises ``ValueError`` (verified by
-#: hand: cutting a real WAV at 20/30/40 bytes raises ``struct.error``, at
-#: 10 bytes raises ``ValueError``). A DATA-truncated WAV (a complete header,
-#: fewer sample bytes than declared) raises NOTHING — ``wavfile.read``
-#: returns the short array with a ``WavFileWarning``, so that silent
-#: shape is real but is not this tuple's job: catching an exception that
-#: was never raised is not how it is caught, and a truncated-but-parseable
-#: capture's byte-accounting is the wired capture chain's own
-#: ``capture_integrity``/``frame_ledger`` fields to catch, not this CLI's.
-#: A malformed evidence document can be missing a key (``KeyError``) or
-#: hold the wrong type at one (``TypeError``), and any of the files this
-#: tool reads can simply not exist or not be readable (``OSError``). Every
-#: one of these is "the round is unreadable", exactly what exit 1 already
-#: means — this tuple is what makes that the ACTUAL behaviour instead of
-#: an unhandled traceback the first time a real, imperfect round hits it.
+#: the product module's own typed :class:`RoundViewsError`. A malformed
+#: evidence document can be missing a key (``KeyError``), hold the wrong type
+#: at one (``TypeError``), or not parse at all (``ValueError``, which
+#: ``json.JSONDecodeError`` subclasses); and any of the files this tool reads
+#: can simply not exist or not be readable (``OSError``). Every one of these
+#: is "the round is unreadable", exactly what exit 1 already means — this
+#: tuple is what makes that the ACTUAL behaviour instead of an unhandled
+#: traceback the first time a real, imperfect round hits it.
+#:
+#: ``struct.error`` was here for one reader that no longer exists: a
+#: header-truncated dump-ring WAV raised it out of ``scipy.io.wavfile.read``
+#: while ``verify_pose_curve`` still deconvolved raw ring bytes. That view
+#: reads the round's banked curve now, no code on this path opens a WAV, and
+#: catching an exception nothing can raise is not how it is caught.
 _ROUND_READ_ERRORS: tuple[type[Exception], ...] = (
-    RoundViewsError, OSError, EOFError, ValueError, KeyError, TypeError, struct.error,
+    RoundViewsError, OSError, EOFError, ValueError, KeyError, TypeError,
 )
 
 
@@ -134,7 +128,6 @@ def _cmd_per_seat(args: argparse.Namespace) -> int:
         "norm_band_hz": [args.norm_lo, args.norm_hi],
         "verify_pose": {
             "included": verify.curve is not None,
-            "n_captures": verify.n_captures,
             "reason": verify.reason,
         },
         "seats": [

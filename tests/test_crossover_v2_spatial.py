@@ -426,6 +426,86 @@ def test_all_three_take_builders_state_one_identity_under_one_vocabulary():
     assert "pose_id" not in cloud and "position_id" not in pose
 
 
+def test_a_banked_pose_curve_reconstructs_the_complex_transfer_function():
+    """Ruling S3's whole point, as arithmetic: PHASE survives the bank.
+
+    ``complex_tf`` had no serializer, so every offline re-analysis re-derived
+    phase from the WAVs and the forward model could not run from the bank at
+    all.  The pin is the round trip — magnitude and phase back to the complex
+    value the transform produced — because a record that banked magnitude and
+    a zero, or magnitude and an unwrapped view of the phase, would look
+    perfectly well-formed and answer a different question.
+
+    The fixture's phases are deliberately spread outside (-pi, pi] so a
+    reconstruction that agreed only on the principal branch fails here.
+    """
+    import numpy as np
+
+    freqs = np.array([100.0, 1000.0, 5000.0, 12000.0])
+    tf = np.array([0.5, 2.0, 0.25, 1.0]) * np.exp(
+        1j * np.array([0.3, 3.0, -2.9, 4.2])
+    )
+    record = spatial.pose_curve_record(
+        spatial.LateralPoseCurve(
+            role="woofer", freqs_hz=freqs, complex_tf=tf, band_hz=(80.0, 14000.0),
+        )
+    )
+
+    assert record["role"] == "woofer"
+    assert record["band_hz"] == [80.0, 14000.0]
+    assert record["freqs_hz"] == [100.0, 1000.0, 5000.0, 12000.0]
+
+    rebuilt = 10.0 ** (np.asarray(record["magnitude_db"]) / 20.0) * np.exp(
+        1j * np.radians(np.asarray(record["phase_deg"]))
+    )
+    assert np.allclose(rebuilt, tf)
+
+
+def test_a_banked_pose_curve_floors_a_deep_null_instead_of_banking_minus_infinity():
+    """A bin that cancelled to exactly zero is not JSON as ``-inf``.
+
+    Same 1e-12 floor, at the same place in the arithmetic, that
+    ``magnitude_response`` applies for the same reason.
+    """
+    import numpy as np
+
+    record = spatial.pose_curve_record(
+        spatial.LateralPoseCurve(
+            role="tweeter",
+            freqs_hz=np.array([1000.0]),
+            complex_tf=np.array([0.0 + 0.0j]),
+            band_hz=(1500.0, 20000.0),
+        )
+    )
+
+    assert np.isfinite(record["magnitude_db"]).all()
+
+
+def test_the_pose_record_banks_one_curve_per_driver_it_measured():
+    """The pose's OWN curves ride its record — not a re-derivation, and not a
+    count the walk bookkeeping supplied separately."""
+    import numpy as np
+
+    def _curve(role: str) -> spatial.LateralPoseCurve:
+        return spatial.LateralPoseCurve(
+            role=role, freqs_hz=np.array([1000.0]),
+            complex_tf=np.array([1.0 + 0.0j]), band_hz=(80.0, 20000.0),
+        )
+
+    record = spatial.lateral_pose_record(
+        spatial.LateralPose(
+            pose_id="lateral_03", index=3, attempt=7, prompt="step left",
+            role="offax", offset_cm=25.0, at_mark=False,
+            curves=(_curve("woofer"), _curve("tweeter")),
+        ),
+        position_deg=-22, lateral_consumer="fc_selector", session_id="sess",
+        wav_sha256="abc",
+    )
+
+    assert [c["role"] for c in record["curves"]] == ["woofer", "tweeter"]
+    assert all("phase_deg" in c for c in record["curves"])
+
+
 def test_the_storage_seam_and_the_builders_mint_the_same_take_id():
     """One index convention, spelled once.
 

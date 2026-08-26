@@ -31,13 +31,16 @@ from the seam that already owns it:
   because grading a position against a SUBSTITUTED per-position reference is
   exactly the one thing the public function has no parameter for; that
   private coupling is load-bearing there and nowhere else in this module.
-* :mod:`~jasper.audio_measurement.deconv` (``deconvolve``,
-  ``magnitude_response``), :mod:`~jasper.audio_measurement.gating`
-  (``gate_impulse_response``, the reflection-detecting gate — NOT the
-  campaign's fixed 7 ms Hann window), and
-  :mod:`~jasper.audio_measurement.analysis` (``smooth_fractional_octave``)
-  are the only DSP this module performs itself, and only for the one curve a
-  round's bundle does not already carry pre-computed: the VERIFY pose.
+* :mod:`~jasper.active_speaker.crossover_v2.durable_state` reads the round's
+  banked VERIFY curve (this module never parses ``verify_priors`` by hand).
+
+**This module performs no DSP of its own.** It did, in one place: the VERIFY
+pose was the one curve a round did not carry pre-computed, so
+:func:`verify_pose_curve` deconvolved, gated, smoothed and resampled its raw
+dump-ring bytes. Ruling S3 banked the curve, so the re-derivation is gone and
+the only transform left anywhere here is the ``fraction=1`` residual
+:func:`~jasper.audio_measurement.analysis.smooth_fractional_octave` call
+:func:`agreement_table` takes through the product's own seam.
 
 **Input shape**: a *banked round directory*, the tree
 ``scripts/bank-crossover-round.sh <dest-dir>`` produces —
@@ -103,17 +106,14 @@ from jasper.active_speaker.flat_spec_views import (
     _exclusion_mask,
     _pool,
 )
+from jasper.active_speaker.crossover_v2.durable_state import (
+    verify_measured_curve_from_state,
+)
 from jasper.active_speaker.crossover_v2.evidence_packet import (
     CrossoverEvidencePacketError,
-    RING_SIDECAR_GLOB,
-    _EVIDENCE_GLOB,
     build_crossover_evidence_packet,
-    round_program_dir,
 )
 from jasper.audio_measurement.analysis import smooth_fractional_octave
-from jasper.audio_measurement.deconv import deconvolve, magnitude_response
-from jasper.audio_measurement.gating import gate_impulse_response
-from jasper.audio_measurement.sweep import read_wav_mono
 
 __all__ = [
     "AGREEMENT_DISSENT_MAX",
@@ -152,6 +152,13 @@ VERIFY_POSITION_ID = "verify"
 #: see :func:`agreement_table` for why a generalisation is the wrong port.
 AGREEMENT_TESTIFY_MIN = 3
 AGREEMENT_DISSENT_MAX = 1
+
+#: The flow state file ``bank-crossover-round.sh`` drops beside the bundle.
+#: Spelled ONCE because two readers here now need it — :func:`load_banked_round`
+#: hands it to the packet builder, :func:`verify_pose_curve` reads its banked
+#: VERIFY curve — and this module has already paid, once (#2796), for a
+#: location fact it spelled in two places and then changed in one.
+_STATE_FILENAME = "state.json"
 
 
 class RoundViewsError(ValueError):
@@ -225,7 +232,7 @@ def load_banked_round(round_dir: Path) -> BankedRound:
     """
     round_dir = Path(round_dir)
     session_dir = _bundle_session_dir(round_dir)
-    state_path = round_dir / "state.json"
+    state_path = round_dir / _STATE_FILENAME
     draft_path = round_dir / "design-draft.json"
     ring_dir = round_dir / "dumps"
     try:
@@ -494,135 +501,75 @@ def frozen_reference_grade(baseline: BankedRound, target: BankedRound) -> Frozen
 @dataclass(frozen=True)
 class VerifyPoseResult:
     """The VERIFY-phase (on-axis, zero-degree by definition of the phase)
-    capture, deconvolved against its own program and put on the round's
-    ``curve_grid_hz`` — or the reason it could not be.
+    capture's MEASURED curve, read off the round's own banked state and put on
+    the round's ``curve_grid_hz`` — or the reason it could not be.
 
-    ``curve`` is ``None`` exactly when ``reason`` is non-empty. Never
-    raises: a round banked without dump-ring captures enabled, or with no
-    VERIFY-phase capture in the ring, is a normal, expected shape (dump-ring
-    retention is opt-in), not an error.
+    ``curve`` is ``None`` exactly when ``reason`` is non-empty. Never raises: a
+    round banked before the curve was persisted, or one banked without its
+    ``state.json``, is a normal, expected shape, not an error.
     """
 
     curve: PositionCurve | None
-    n_captures: int
     reason: str
 
 
-def _dump_ring_captures(round_dir: Path, *, phase: str) -> list[tuple[Path, Path]]:
-    """``(wav_path, sidecar_path)`` pairs whose sidecar reports ``phase``.
+def verify_pose_curve(banked: BankedRound) -> VerifyPoseResult:
+    """The VERIFY pose's measured curve, READ rather than re-derived.
 
-    Finds sidecars from the ring ROOT through
-    :data:`~.evidence_packet.RING_SIDECAR_GLOB`, and takes each WAV from its
-    OWN sidecar's sibling ``wav/`` rather than from one directory computed
-    once — the same rule
-    :func:`~.feature_classifier.load_round_captures` uses.
+    This used to deconvolve every ``verify``-tagged dump-ring capture against
+    its banked program, gate it, smooth it at the positions' own fraction and
+    resample the result — the one place a *reading* module performed DSP, and
+    it did so only because the curve it wanted was not banked anywhere.
 
-    That is not a tidy-up. This function used to spell ``dumps/sidecar`` with
-    a flat glob while :func:`load_banked_round` above passes the ring root, so
-    on a REAL nested ring (``dumps/{final,night-all,phase7}/sidecar/``) the
-    packet found captures here and this function found none — one module, two
-    answers about one directory. The constant's docstring is what says a
-    location fact has one owner, and this module has already paid this bug
-    class once (#2796).
+    It is banked now. ``verify_priors.verify_measured`` holds the very pair the
+    delta probe graded (``(freqs_hz, measured_db, predicted_db)``, #2522), so
+    this reads the measured half through
+    :func:`~.durable_state.verify_measured_curve_from_state` — the product's
+    own reader for that key, not a second parse of it — and interpolates it
+    onto the round's shared grid. That is the whole function: one hop from a
+    banked number to a comparable one.
+
+    **Two consequences of reading instead of re-deriving, stated rather than
+    buried.** The banked curve is block-averaged in dB to
+    :data:`~.durable_state.MAX_PERSISTED_SUM_POINTS`, not smoothed at a
+    fractional-octave width, so :attr:`PositionCurve.smoothing_fraction` is
+    reported as ``0`` — this module's own spelling for *not attested*
+    (:func:`load_banked_round` reads the same ``0`` for a round that banked no
+    fraction). Nothing consumes that attestation for THIS curve:
+    :func:`per_seat_curves` and :func:`agreement_table` read only
+    ``magnitude_db``, and the graded views run over ``banked.positions``. And a
+    round that banked no VERIFY curve now says so through ``reason`` instead of
+    silently re-deriving one from raw bytes that may no longer be there.
     """
-    ring_dir = round_dir / "dumps"
-    if not ring_dir.is_dir():
-        return []
-    pairs: list[tuple[Path, Path]] = []
-    for sidecar_path in sorted(ring_dir.glob(RING_SIDECAR_GLOB)):
-        try:
-            doc = json.loads(sidecar_path.read_text())
-        except (OSError, UnicodeDecodeError, json.JSONDecodeError):
-            continue
-        if not isinstance(doc, dict) or doc.get("phase") != phase:
-            continue
-        wav_path = sidecar_path.parent.parent / "wav" / (sidecar_path.stem + ".wav")
-        if wav_path.is_file():
-            pairs.append((wav_path, sidecar_path))
-    return pairs
-
-
-def _find_program_wav(session_dir: Path, *, phase: str) -> Path | None:
-    """The banked ``{phase}_program.wav``, wherever
-    :func:`~.evidence_packet.round_program_dir` resolves it for THIS relay —
-    beside the JSON receipts, or the sibling ``crossover_v2/<relay>/``
-    directory every real banked round actually uses. Sharing that one rule
-    with :mod:`jasper.cli.classify_features` is load-bearing: before it was
-    adopted here, this always checked the receipts location alone, which the
-    product has never once written a program WAV into (issue found reviewing
-    #2796) — every verify-pose and agreement view built on this returned
-    "no {phase}_program.wav banked" on every real bundle.
-    """
-    for relay_dir in sorted(session_dir.glob(_EVIDENCE_GLOB)):
-        candidate = round_program_dir(session_dir, relay_dir, (phase,)) / f"{phase}_program.wav"
-        if candidate.is_file():
-            return candidate
-    return None
-
-
-def verify_pose_curve(
-    banked: BankedRound, *, phase: str = "verify", smoothing_fraction: int | None = None
-) -> VerifyPoseResult:
-    """Deconvolve every ``phase``-tagged dump-ring capture against its own
-    banked program, gate, smooth, and resample onto ``banked.curve_grid_hz``.
-
-    Multiple captures are averaged in dB (matching the campaign tool's own
-    per-seat averaging). ``smoothing_fraction`` defaults to the POSITIONS'
-    own fraction (``banked.positions[i].smoothing_fraction`` — every
-    position shares one, read off the packet's ``curve_grid`` in
-    :func:`load_banked_round`), NOT ``banked.report.smoothing_fraction``.
-    The two are not the same number: the report's fraction is what the
-    COMBINED, spatially-averaged curve was smoothed at, while the cloud
-    smooths each MEMBER position finer before combining (1/6 vs 1/3 octave
-    on a real corpus, per :class:`~jasper.active_speaker.flat_spec_views.PositionCurve`'s
-    own docstring). This view compares the VERIFY pose against the member
-    positions, not the combined curve, so it must match their fraction —
-    using the report's coarser one measured as a 1.03 dB comparison
-    artifact on a real banked round: the VERIFY curve read smoother than
-    every position it was being compared to for no acoustic reason at all.
-    """
-    program_path = _find_program_wav(banked.session_dir, phase=phase)
-    if program_path is None:
-        return VerifyPoseResult(None, 0, f"no {phase}_program.wav banked in the round's bundle")
-    captures = _dump_ring_captures(banked.round_dir, phase=phase)
-    if not captures:
+    state_path = banked.round_dir / _STATE_FILENAME
+    if not state_path.is_file():
+        return VerifyPoseResult(None, f"no {_STATE_FILENAME} banked beside the bundle")
+    try:
+        state = json.loads(state_path.read_text())
+    except (OSError, UnicodeDecodeError, json.JSONDecodeError) as exc:
+        return VerifyPoseResult(None, f"{_STATE_FILENAME} is unreadable: {type(exc).__name__}")
+    if not isinstance(state, Mapping):
+        return VerifyPoseResult(None, f"{_STATE_FILENAME} is not a JSON object")
+    triple = verify_measured_curve_from_state(state)
+    if triple is None:
         return VerifyPoseResult(
-            None, 0, f"no dump-ring capture tagged phase={phase!r} under dumps/"
+            None, "the round's state banked no verify_priors.verify_measured curve"
         )
-    fraction = smoothing_fraction if smoothing_fraction is not None else banked.positions[0].smoothing_fraction
-    if fraction <= 0:
-        fraction = 12
-
-    program, program_sr = read_wav_mono(program_path)
+    freqs_hz, measured_db, _predicted_db = triple
     grid = np.asarray(banked.curve_grid_hz, dtype=float)
-    curves = []
-    for wav_path, _sidecar_path in captures:
-        captured, sr = read_wav_mono(wav_path)
-        if sr != program_sr:
-            continue
-        ir = deconvolve(captured, program, sr)
-        gated_ir, _fragment = gate_impulse_response(ir, sr)
-        freqs_lin, mag_db_lin = magnitude_response(gated_ir, sr)
-        mag_smoothed = smooth_fractional_octave(freqs_lin, mag_db_lin, fraction=fraction)
-        curves.append(np.interp(grid, freqs_lin, mag_smoothed))
-    if not curves:
-        return VerifyPoseResult(
-            None, 0, f"every phase={phase!r} capture's sample rate disagreed with its program"
-        )
-    averaged = np.mean(np.vstack(curves), axis=0)
     curve = PositionCurve(
         position_id=VERIFY_POSITION_ID,
         role=VERIFY_ROLE,
         freqs_hz=grid,
-        magnitude_db=averaged,
-        smoothing_fraction=fraction,
+        magnitude_db=np.interp(grid, freqs_hz, measured_db),
+        smoothing_fraction=0,
         # The VERIFY phase measures the confirmed on-axis listening position
         # by definition of the phase — this is not an angle recovered from a
         # walk log (none exists for this pose), it is what the phase means.
         degrees=0.0,
         take_id="",
     )
-    return VerifyPoseResult(curve, len(curves), "")
+    return VerifyPoseResult(curve, "")
 
 
 # --------------------------------------------------------------------------- #
@@ -906,10 +853,9 @@ def _detrend(grid: np.ndarray, curve_db: np.ndarray) -> np.ndarray:
     should compare verdicts (which feature, which sign, roughly what size),
     never subtract one table's cell from the other's. Reusing the product
     seam here — rather than porting the campaign's exact arithmetic — is the
-    deliberate choice: one owner of "1-octave window average" across this
-    module (:func:`verify_pose_curve` already depends on the SAME function
-    for its own smoothing) beats a second, bespoke implementation of the
-    same idea that could drift from it.
+    deliberate choice: taking "1-octave window average" from the seam that
+    owns it beats a second, bespoke implementation of the same idea that
+    could drift from it. This is now the only call to it in the module.
     """
     return curve_db - smooth_fractional_octave(grid, curve_db, fraction=1)
 
