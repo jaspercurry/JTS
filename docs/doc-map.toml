@@ -396,7 +396,6 @@ docs = [
   # exit-66 park + the cross-component convergence model).
   "docs/HANDOFF-hotplug-resilience.md",
   "docs/HANDOFF-vad-experiments.md",
-  "docs/HANDOFF-persistent-live-session.md",
   # Canonical doc for the tool-platform boundary (packs, catalog, dispatch,
   # the /tools/ wizard). The core tool code globbed above must route here so a
   # pack-walk / catalog / wizard change surfaces the living plan for review.
@@ -1094,7 +1093,6 @@ docs = [
   "docs/adr/0145-remote-updates-stay-a-laptop-deploy.md",
   "docs/HANDOFF-source-capabilities.md",
   "docs/HANDOFF-volume-control-redesign.md",
-  "docs/HANDOFF-persistent-live-session.md",
   "docs/PROPOSAL-dac-profile-registry.md",
   "docs/tool-platform-plan.md",
 ]
