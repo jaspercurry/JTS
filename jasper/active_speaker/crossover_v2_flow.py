@@ -9032,25 +9032,13 @@ def bind_program_playback_seams(
     role_targets: Mapping[str, str],
     session_volume_db: float,
     declared_sensitivities: Mapping[str, float] | None = None,
-    held_target_db: Callable[[], float | None] | None = None,
     timeout_s: float = 60.0,
 ) -> dict[str, Any]:
-    """The real CamillaController-backed seams for :func:`play_program` (W2's
-    open wiring question, answered here).
+    """The real CamillaController-backed seams for :func:`play_program`.
 
-    Returns the keyword mapping ``play_program(program, program_graph_yaml=...,
+    Returns the keyword mapping ``play_program(program,
     session_volume_plan=..., **bind_program_playback_seams(...))`` consumes:
 
-    * ``read_current_config_path`` — ``cam.get_config_file_path`` (the persisted
-      statefile boot anchor, the restore target).
-    * ``load_program_graph`` — INLINE ``cam.set_active_config_raw`` (CamillaDSP
-      ``SetConfig``): applies, then confirms by fresh semantic readback without repointing the
-      statefile, preserving the crash-recovery-MUTED structural invariant
-      exactly as :func:`jasper.active_speaker.commission_wiring.commission_load_config`
-      documents. A crash mid-program reboots onto the staged anchor, never the
-      program graph.
-    * ``restore_graph`` — reads the entry config path's bytes and re-applies
-      them inline (same SetConfig transport; the statefile stays untouched).
     * ``play_wav`` — the verified-WAV source
       (:func:`jasper.active_speaker.program_playback.verified_program_aplay`):
       sha256-bound bytes through the stable-fd aplay path to
@@ -9058,53 +9046,22 @@ def bind_program_playback_seams(
     * ``readmit`` — :func:`jasper.active_speaker.program_admission.readmit_program_from_wav`
       from a FRESH byte readback (the play-time gate).
     * ``writer_lock`` — :func:`jasper.dsp_apply.dsp_writer_lock` on the shared
-      generated-config dir, so the program load/restore serializes with every
-      other DSP writer.
+      generated-config dir, held across the play so no other DSP writer can
+      replace the measurement graph mid-capture.
 
-    ``held_target_db`` is an OPTIONAL synchronous, non-blocking reader of the
-    volume the session plan currently owns
-    (:meth:`~jasper.active_speaker.session_volume_plan.SessionVolumePlan.owned_measurement_volume_db_nowait`).
-    BOTH swaps hand it to ``set_active_config_raw`` as the duck's release
-    reference (issue #2929), so the fader lands on the declared measurement
-    volume by construction. The restore swap needs it as much as the load does:
-    releasing that one to the household level would simply move the drift to
-    the NEXT capture's load, which reads its own entry snapshot from wherever
-    the restore left the fader.
-
-    The READER travels, not its answer. A duck bracket spans seconds, and the
-    plan can drain inside one — so a number resolved here would be stale by the
-    release and would put back a level the session had just given up (the gate
-    panel measured +13.21 dB against a completed household drain). Asked at
-    release time instead, a drained plan answers ``None`` and the swap takes
-    the canonical household release with no further coordination.
-
-    NOT hardware-validated yet — W6 exercises this binding end-to-end on JTS3;
-    until then it is the single place the real transport is named, and every
-    orchestration test injects fakes instead.
+    **The graph seams left this binding.** ``read_current_config_path``,
+    ``load_program_graph`` and ``restore_graph`` existed to swap the program
+    graph in and out around every stimulus;
+    :class:`~.crossover_v2.session_graph.MeasurementSessionGraph` now installs
+    it once per session and proves it before each one, so their per-stimulus
+    transport — two ``SetConfig`` calls, two ducks and the readback that
+    confirmed each — is gone rather than moved. ``confirm_graph_is_live`` is
+    still the proof; the session graph is what calls it.
     """
-    from pathlib import Path
-
     from jasper.dsp_apply import dsp_writer_lock
 
     from .program_admission import readmit_program_from_wav
-    from .program_playback import ProgramPlaybackError, verified_program_aplay
-
-    async def _read_current_config_path() -> str | None:
-        return await cam.get_config_file_path(best_effort=False)
-
-    async def _load_program_graph(program_graph_yaml: str) -> bool:
-        if not await cam.set_active_config_raw(
-            program_graph_yaml, best_effort=False, held_target_db=held_target_db,
-        ):
-            raise ProgramPlaybackError("program graph load was not confirmed")
-        await confirm_graph_is_live(cam, program_graph_yaml)
-        return True
-
-    async def _restore_graph(entry_config_path: str) -> bool:
-        text = Path(entry_config_path).read_text(encoding="utf-8")
-        return await cam.set_active_config_raw(
-            text, best_effort=False, held_target_db=held_target_db,
-        )
+    from .program_playback import verified_program_aplay
 
     async def _play_wav() -> Any:
         return await verified_program_aplay(bundle_dir, artifact, timeout_s=timeout_s)
@@ -9125,9 +9082,6 @@ def bind_program_playback_seams(
         )
 
     return {
-        "read_current_config_path": _read_current_config_path,
-        "load_program_graph": _load_program_graph,
-        "restore_graph": _restore_graph,
         "play_wav": _play_wav,
         "readmit": _readmit,
         "writer_lock": lambda: dsp_writer_lock(
