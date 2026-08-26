@@ -39,7 +39,9 @@ def _status(counter: int = 0) -> dict:
 
 
 class _FakeIO:
-    def __init__(self, *, fail_product: bool = False) -> None:
+    def __init__(
+        self, *, fail_product: bool = False, dac_id: str = "apple_usb_c_dongle"
+    ) -> None:
         plan = xvf3800.SQUARE_FIXED_150_210_PLAN
         self.hardware = aec_commission.Hardware(
             "xvf3800_legacy_square_6ch", "Array", plan
@@ -50,7 +52,7 @@ class _FakeIO:
             "a1f70651",
             plan.plan_id,
             xvf3800.chip_aec_fixed_profile_fingerprint(plan),
-            "apple_usb_c_dongle",
+            dac_id,
             "usb-serial:DWH53530FLL2FN3A3",
             "single:outputd_dac",
             "S16_LE",
@@ -238,6 +240,51 @@ def test_failed_evidence_preserves_old_artifact_and_restores_lifecycle(
     assert "volume_restored" in io.events
     assert io.events[-1] == "reconciled"
     assert not marker.exists()
+
+
+@pytest.mark.parametrize(
+    "dac_id, qualification",
+    [
+        ("apple_usb_c_dongle", "approved"),
+        ("hifiberry_dac8x_studio", "needs_calibration"),
+        ("dac_nobody_has_codified", "needs_calibration"),
+    ],
+)
+def test_commissioning_runs_on_any_dac_and_discloses_its_qualification(
+    tmp_path: Path, caplog, capsys, monkeypatch, dac_id: str, qualification: str
+) -> None:
+    # The doctor's own remedy for a parked box is this command, so refusing to
+    # run it on an unqualified DAC left the household with no exit (#2984). The
+    # run proceeds and the outcome carries the DAC's registry verdict instead.
+    caplog.set_level("INFO", logger="jasper.aec_commission")
+    monkeypatch.setattr(
+        aec_commission.xvf3800,
+        "detect_runtime_profile",
+        lambda: xvf3800.RuntimeProfile(
+            present=True,
+            variant=xvf3800.VARIANT_6CH,
+            alsa_card_name="Array",
+            capture_channels=6,
+            chip_beam_plan=xvf3800.SQUARE_FIXED_150_210_PLAN,
+            reason="",
+        ),
+    )
+    runtime = aec_commission.SystemIO()
+    runtime.env = {"JASPER_AUDIO_DAC_ID": dac_id}
+
+    assert runtime.detect().plan is xvf3800.SQUARE_FIXED_150_210_PLAN
+
+    aec_commission.run_commissioning(
+        _FakeIO(dac_id=dac_id),
+        marker_path=tmp_path / "active",
+        artifact_path=tmp_path / "alignment.json",
+        effective_uid=0,
+    )
+
+    assert f"dac_qualification={qualification}" in caplog.text
+    # Named, not merely flagged: the operator has to learn WHICH profile made
+    # the alignment provisional, and only then.
+    assert (dac_id in capsys.readouterr().out) is (qualification != "approved")
 
 
 def test_commissioning_requires_root_before_creating_marker(tmp_path: Path) -> None:
