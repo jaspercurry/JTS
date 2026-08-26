@@ -171,7 +171,11 @@ already open)**
   swap-duck and the 1 Hz reconciler it coordinated with (its waves 5–6);
   no lease gets built · systemctl-through-broker or honest docstring ·
   sound_setup 502-helper (after the volume-surface widening lifts) ·
-  `git mv` subway/citibike/bus into transit/providers/ · fold
+  ~~`git mv` subway/citibike/bus into transit/providers/~~ **superseded by
+  [ADR-0167](adr/0167-each-transit-network-is-its-own-provider-module.md)**:
+  transit/providers/ is the wizard-adapter layer (#2770); the top-level
+  runtime clients are the documented design, and the citibike names collide ·
+  fold
   jasper/measurement/ (confirmed non-colliding: it serves `/balance/`) ·
   split test_control_server along its own handler boundary (after the
   widening lifts) · point the 4 hand-rolled atomic writers at atomic_io
