@@ -565,6 +565,36 @@ class LaptopOnboardingScriptsTest(unittest.TestCase):
         )
         self.assertEqual(repo_state_after, repo_state_before)
 
+    def test_explicitly_set_targeting_outranks_env_local(self):
+        """.env.local is the checkout's default target, never an override.
+
+        Sourcing it under `set -a` used to overwrite the PI_HOST an operator
+        passed on the command line, so a deploy aimed at one speaker went to
+        the checkout's usual one while the identity guard — reading
+        PI_PEER_ID from that same clobbered file — called it verified.
+        """
+        fake = FakeRemote(self)
+        env_local = textwrap.dedent(
+            """\
+            PI_HOST=jts3.local
+            PI_USER=pi
+            JASPER_HOSTNAME=jts3.local
+            """
+        )
+        result = self.run_deploy(
+            fake,
+            env_local=env_local,
+            PI_HOST="jts9.local",
+            PI_USER="operator",
+            JASPER_HOSTNAME="jts9.local",
+        )
+
+        calls = fake.calls()
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        self.assertIn("operator@jts9.local", calls)
+        self.assertIn("JASPER_HOSTNAME=jts9.local", calls)
+        self.assertNotIn("jts3.local", calls)
+
     def test_lib_keeps_jasper_hostname_as_legacy_pi_host_fallback(self):
         env = os.environ.copy()
         env.pop("PI_HOST", None)

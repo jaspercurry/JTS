@@ -19,10 +19,11 @@
 #      keep working regardless of the caller's cwd).
 #   2. Source .env.local if present — this is where scripts/onboard.sh
 #      persists PI_HOST/PI_USER for a checkout. Gitignored.
-#   3. Apply the SSH-target fallback chain — PI_HOST in .env.local
-#      wins; JASPER_HOSTNAME from the calling shell is kept only as a
-#      compatibility fallback for older operator scripts/docs; jts.local
-#      is the final default.
+#   3. Apply the SSH-target precedence chain — a non-empty PI_HOST /
+#      PI_USER / JASPER_HOSTNAME already in the environment outranks
+#      .env.local, which is only this checkout's default; then
+#      JASPER_HOSTNAME as a compatibility fallback for PI_HOST in older
+#      operator scripts/docs; jts.local is the final default.
 #   4. Resolve the repository Python for laptop-side wrappers with one
 #      canonical precedence contract.
 #
@@ -33,15 +34,34 @@
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 REPO_ROOT="$(cd "${SCRIPT_DIR}/.." && pwd)"
 
-# .env.local is sourced with `set -a` so its KEY=value lines get
-# exported into the environment for subsequent commands and child
-# processes. Don't fail if absent — many scripts work fine without it.
+# .env.local is this checkout's DEFAULT target, never an override: its
+# plain `PI_HOST=` assignments would otherwise clobber a `PI_HOST=…
+# bash scripts/…` the operator typed, and a deploy aimed at one speaker
+# lands on another while the identity guard — reading PI_PEER_ID from
+# that same file — calls it verified (issue #2689). Capture the
+# explicitly-set targeting values here and re-apply them after the
+# `set -a` source, which exports every other key of the file as-is.
+_caller_pi_host="${PI_HOST:-}"
+_caller_pi_user="${PI_USER:-}"
+_caller_jasper_hostname="${JASPER_HOSTNAME:-}"
+
 if [[ -f "${REPO_ROOT}/.env.local" ]]; then
     set -a
     # shellcheck disable=SC1091
     . "${REPO_ROOT}/.env.local"
     set +a
 fi
+
+if [[ -n "$_caller_pi_host" ]]; then
+    export PI_HOST="$_caller_pi_host"
+fi
+if [[ -n "$_caller_pi_user" ]]; then
+    export PI_USER="$_caller_pi_user"
+fi
+if [[ -n "$_caller_jasper_hostname" ]]; then
+    export JASPER_HOSTNAME="$_caller_jasper_hostname"
+fi
+unset _caller_pi_host _caller_pi_user _caller_jasper_hostname
 
 # Compatibility fallback chain. The legacy form (used by every script in
 # scripts/ before this lib existed) is:
