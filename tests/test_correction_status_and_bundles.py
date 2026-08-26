@@ -921,9 +921,11 @@ async def test_design_writes_result_json(tmp_path: Path, monkeypatch):
     )
     assert "feature_flags" in position_analysis
     assert result["position_analysis"]["bands"] == position_analysis["bands"]
-    assert result["design_report"]["position_report"]["artifact_path"] == (
-        "position_analysis.json"
-    )
+    # One question, one key: the owner and the view agree without the reader
+    # having to know which shape it is holding.
+    assert position_analysis["position_count"] == 1
+    assert result["position_analysis"]["position_count"] == 1
+    assert "position_report" not in result["design_report"]
     manifest = bundles.read_artifact_manifest(sess.bundle_dir)
     manifest_paths = {artifact["path"] for artifact in manifest["artifacts"]}
     runtime_artifact = next(

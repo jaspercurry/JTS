@@ -279,6 +279,16 @@ def _load_or_build_acoustic_quality(
 def _position_summary(
     position_analysis: dict[str, Any] | None,
 ) -> dict[str, Any]:
+    """Summarize either view of the per-seat spread — see
+    :meth:`~.artifacts.SessionArtifacts.write_position_analysis_json`.
+
+    ``position_count`` is the one question this asks, and both views now
+    answer it under that key. The ``len(positions)`` clause is the bridge for
+    a bundle banked before the artifact spelled it; it is the only fallback
+    left, where there used to be a four-way ``or`` over ``position_count`` /
+    ``positions`` / ``bands`` / ``chart`` guarding an ``available`` key that
+    no writer in the tree has ever set.
+    """
     if not isinstance(position_analysis, dict):
         return {"available": False, "reason": "position_analysis.json unavailable"}
     position_count = position_analysis.get("position_count")
@@ -286,20 +296,12 @@ def _position_summary(
         positions = position_analysis.get("positions")
         if isinstance(positions, list):
             position_count = len(positions)
-    available = position_analysis.get("available")
-    if available is None:
-        available = bool(
-            position_count
-            or position_analysis.get("positions")
-            or position_analysis.get("bands")
-            or position_analysis.get("chart")
-        )
     flags = [
         f for f in position_analysis.get("feature_flags") or []
         if isinstance(f, dict)
     ]
     return {
-        "available": bool(available),
+        "available": bool(position_count),
         "position_count": position_count,
         "feature_flag_count": len(flags),
         "feature_flags": flags[:6],

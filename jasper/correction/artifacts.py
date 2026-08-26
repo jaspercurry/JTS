@@ -496,6 +496,18 @@ class SessionArtifacts:
         )
 
     def write_position_analysis_json(self) -> None:
+        """One owner, two views of the per-seat spread.
+
+        The OWNER is ``position_analysis.json``: every seat's curve, the
+        spatial average, and the per-bin spread. The VIEW is
+        ``s.position_analysis``, mirrored into ``info.json`` and
+        ``result.json`` — a lossy min/max envelope plus the band verdicts, for
+        readers that must not carry N full curves.
+
+        There used to be a third shape on ``design_report["position_report"]``
+        with a strict subset of the view's own keys and no reader outside one
+        test. A third statement of one fact is a third thing to keep in step.
+        """
         s = self._session
         bundle = self.ensure_bundle_dir()
         if (
@@ -549,6 +561,11 @@ class SessionArtifacts:
             # `safe` session's bundle states [25, 250], not the `balanced`
             # [20, 350] its frozen config used to claim (issue #1797).
             "correction_band_hz": list(s.correction_band_hz),
+            # Spelled here as well as on the summary view below: a reader
+            # holding either shape must be able to ask "how many seats" with
+            # ONE key. Without it every reader had to fall back to
+            # `len(positions)`, which only the artifact has.
+            "position_count": len(s.position_magnitudes),
             "freqs_hz": round_list(freqs),
             "positions": [
                 {
@@ -602,14 +619,6 @@ class SessionArtifacts:
             "bands": position_report["bands"],
             "feature_flags": position_report["feature_flags"],
         }
-        if s.design_report is not None:
-            s.design_report["position_report"] = {
-                "artifact_path": "position_analysis.json",
-                "artifact_schema_version": 1,
-                "position_count": len(s.position_magnitudes),
-                "bands": position_report["bands"],
-                "feature_flags": position_report["feature_flags"],
-            }
 
     def copy_applied_yaml(self) -> None:
         s = self._session
