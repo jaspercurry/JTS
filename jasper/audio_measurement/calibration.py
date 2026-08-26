@@ -101,15 +101,11 @@ def supported_model_options() -> tuple[dict[str, Any], ...]:
 class CalibrationCurve:
     freqs_hz: list[float]
     correction_db: list[float]
-    # Parsed and stored but never applied — `apply_calibration_curve` is
-    # magnitude-only; a deliberate skip in docs/tuning-master-plan.md.
-    phase_deg: list[float] | None = None
 
     def to_dict(self) -> dict[str, Any]:
         return {
             "freqs_hz": self.freqs_hz,
             "correction_db": self.correction_db,
-            "phase_deg": self.phase_deg,
         }
 
     @classmethod
@@ -142,12 +138,7 @@ class CalibrationCurve:
             raise ValueError(
                 "calibration curve frequencies must be positive and strictly increasing"
             )
-        phase = None
-        if data.get("phase_deg") is not None:
-            phase = numeric_array("phase_deg")
-            if len(phase) != len(freqs):
-                raise ValueError("calibration curve phase must match frequency length")
-        return cls(freqs_hz=freqs, correction_db=correction, phase_deg=phase)
+        return cls(freqs_hz=freqs, correction_db=correction)
 
 
 @dataclass(frozen=True)
@@ -278,7 +269,9 @@ def parse_calibration_text(
     """Parse a broad REW/HouseCurve-style calibration text file.
 
     Accepted rows start with a numeric frequency and contain at least
-    frequency + dB. A third numeric column is treated as phase degrees.
+    frequency + dB. Any further columns are ignored: a vendor phase column
+    is read past rather than kept, because the correction this curve feeds
+    is magnitude-only (see :func:`apply_calibration_curve`).
 
     ``sign_convention``:
       - ``correction`` means the second column is already the dB value
@@ -291,7 +284,7 @@ def parse_calibration_text(
             "sign_convention must be 'correction' or 'response'"
         )
 
-    rows: list[tuple[float, float, float | None]] = []
+    rows: list[tuple[float, float]] = []
     for raw_line in text.splitlines():
         line = raw_line.strip()
         if not line:
@@ -304,21 +297,18 @@ def parse_calibration_text(
         try:
             freq = float(nums[0])
             gain = float(nums[1])
-            phase = float(nums[2]) if len(nums) >= 3 else None
         except ValueError:
             continue
         if not np.isfinite(freq) or not np.isfinite(gain) or freq <= 0:
             continue
-        if phase is not None and not np.isfinite(phase):
-            phase = None
         correction = -gain if sign_convention == "response" else gain
-        rows.append((freq, correction, phase))
+        rows.append((freq, correction))
 
     if len(rows) < 2:
         raise ValueError("calibration file must contain at least 2 rows")
 
     rows.sort(key=lambda r: r[0])
-    deduped: list[tuple[float, float, float | None]] = []
+    deduped: list[tuple[float, float]] = []
     for row in rows:
         if deduped and abs(row[0] - deduped[-1][0]) < 1e-9:
             deduped[-1] = row
@@ -327,16 +317,9 @@ def parse_calibration_text(
     if len(deduped) < 2:
         raise ValueError("calibration file must contain at least 2 frequencies")
 
-    phase_values = [r[2] for r in deduped]
-    phase = (
-        [float(p) if p is not None else 0.0 for p in phase_values]
-        if any(p is not None for p in phase_values)
-        else None
-    )
     return CalibrationCurve(
         freqs_hz=[float(r[0]) for r in deduped],
         correction_db=[float(r[1]) for r in deduped],
-        phase_deg=phase,
     )
 
 
@@ -1218,11 +1201,6 @@ def migrate_stored_sign_conventions(
                 curve = CalibrationCurve(
                     freqs_hz=list(stored_curve.freqs_hz),
                     correction_db=[-db for db in stored_curve.correction_db],
-                    phase_deg=(
-                        list(stored_curve.phase_deg)
-                        if stored_curve.phase_deg is not None
-                        else None
-                    ),
                 )
                 method = "negated"
         except (ValueError, TypeError):
