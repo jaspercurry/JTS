@@ -4,6 +4,8 @@
 
 from __future__ import annotations
 
+import pytest
+
 from jasper.camilla_config_contract import PeqFilter
 from jasper.sound.camilla_yaml import (
     emit_sound_config,
@@ -739,6 +741,143 @@ def test_stereo_and_unconfigured_topologies_render_byte_identical_flat_config():
     assert "commission_mute" not in baseline
     assert _pipeline_names(baseline, 0) == "names: [flat]"
     assert _pipeline_names(baseline, 1) == "names: [flat]"
+
+
+def _unconfigured_draft():
+    from jasper.output_topology import new_topology_draft
+
+    return new_topology_draft()
+
+
+def _composite_mono_topology():
+    """A mono cabinet on a dual-Apple composite sink.
+
+    outputd fans the program across the child DACs, so Camilla channel *i* is
+    not physical output *i*. This is the shape a fold would actively break.
+    """
+    from jasper.output_topology import OutputTopology
+
+    return OutputTopology.from_mapping({
+        "artifact_schema_version": 1,
+        "kind": "jts_output_topology",
+        "topology_id": "dual-mono",
+        "name": "Mono on a composite sink",
+        "status": "verified",
+        "hardware": {
+            "device_id": "dual_apple_usb_c_dac_4ch",
+            "device_label": "Dual Apple",
+            "physical_output_count": 4,
+            "child_devices": [
+                {"child_id": "a", "device_id": "apple_usb_c_dongle",
+                 "device_label": "Apple A", "physical_output_indexes": [0, 1]},
+                {"child_id": "b", "device_id": "apple_usb_c_dongle",
+                 "device_label": "Apple B", "physical_output_indexes": [2, 3]},
+            ],
+        },
+        "speaker_groups": [{
+            "id": "main", "label": "Main speaker", "kind": "mono",
+            "mode": "full_range_passive",
+            "channels": [{"role": "full_range", "physical_output_index": 0}],
+        }],
+        "routing": {"mono_group_id": "main"},
+    })
+
+
+def _master_gain_mapping(doc) -> dict[int, list[dict]]:
+    mixer = doc["mixers"]["master_gain"]
+    assert mixer["channels"] == {"in": 2, "out": 2}
+    return {entry["dest"]: entry["sources"] for entry in mixer["mapping"]}
+
+
+def _channel_filter_names(doc, channel: int) -> list[str]:
+    for step in doc["pipeline"]:
+        if step.get("type") == "Filter" and step.get("channels") == [channel]:
+            return step["names"]
+    raise AssertionError(f"no Filter step for channel {channel}")
+
+
+@pytest.mark.parametrize(
+    ("make_topology", "fold_output"),
+    [
+        pytest.param(lambda: _mono_topology(0), 0, id="mono-on-output-0"),
+        pytest.param(lambda: _mono_topology(1), 1, id="mono-on-output-1"),
+        pytest.param(_stereo_topology, None, id="stereo"),
+        pytest.param(_unconfigured_draft, None, id="unconfigured-draft"),
+        pytest.param(_composite_mono_topology, None, id="mono-on-composite-sink"),
+    ],
+)
+def test_master_gain_folds_both_program_channels_only_onto_a_declared_mono_output(
+    make_topology, fold_output
+):
+    """One full-range speaker on a 2-channel amp must hear the WHOLE program.
+
+    An identity mixer drops the program's right channel into the output a mono
+    topology never declared, so the box plays half the record. The fold sums
+    both channels onto the one declared output at the clip-safe
+    ``MONO_SUM_GAIN_DB``, and ONLY for an explicit mono layout whose
+    channel-to-output mapping is proven index-wise — a composite sink fans the
+    program inside outputd, so folding there breaks a working multi-DAC box.
+    """
+    import yaml as yaml_lib
+
+    from jasper.active_speaker.camilla_yaml import output_commission_mute_name
+    from jasper.camilla_emit import MONO_SUM_GAIN_DB
+    from jasper.sound.camilla_yaml import emit_flat_outputd_cutover_config
+
+    doc = yaml_lib.safe_load(
+        emit_flat_outputd_cutover_config(topology=make_topology())
+    )
+
+    # Non-negotiable on every shape: the master fader can never boost.
+    assert doc["devices"]["volume_limit"] == 0.0
+    # Capture and playback stay at the DAC's real stereo width. The fold lives
+    # in the graph; the device is never narrowed.
+    assert doc["devices"]["capture"]["channels"] == 2
+    assert doc["devices"]["playback"]["channels"] == 2
+
+    mapping = _master_gain_mapping(doc)
+    assert sorted(mapping) == [0, 1]
+    for dest, sources in mapping.items():
+        if dest == fold_output:
+            assert [source["channel"] for source in sources] == [0, 1]
+            assert [source["gain"] for source in sources] == [
+                pytest.approx(MONO_SUM_GAIN_DB, abs=1e-4)
+            ] * 2
+            assert [source["inverted"] for source in sources] == [False, False]
+        else:
+            assert sources == [{"channel": dest, "gain": 0, "inverted": False}]
+
+    # The fold's other half: the unclaimed output stays terminally hard muted.
+    # Folding without it would sum the program onto the claimed output AND
+    # leave raw program on one the topology never declared.
+    for channel in (0, 1):
+        names = _channel_filter_names(doc, channel)
+        expect_muted = fold_output is not None and channel != fold_output
+        mute_name = output_commission_mute_name(channel)
+        assert (names[-1] == mute_name) is expect_muted
+        if expect_muted:
+            assert doc["filters"][mute_name]["parameters"]["mute"] is True
+
+
+def test_mono_fold_is_refused_when_it_would_leave_an_output_live():
+    """The fold and the complement mute are two halves of one answer.
+
+    Either half alone emits program on an output the topology does not assign,
+    so the emitter refuses rather than shipping a graph nobody meant.
+    """
+    from jasper.sound.camilla_yaml import FLAT_GRAPH_WIDTH
+
+    # Fold with no mute at all: channel 1 stays live on an undeclared output.
+    with pytest.raises(ValueError):
+        emit_sound_config(SoundProfile(enabled=False), mono_fold_output=0)
+    # An out-of-width destination needs no guard of its own: it leaves an
+    # in-width channel unmuted and trips the same one.
+    with pytest.raises(ValueError):
+        emit_sound_config(
+            SoundProfile(enabled=False),
+            muted_outputs=[0],
+            mono_fold_output=FLAT_GRAPH_WIDTH,
+        )
 
 
 def test_composite_sink_is_never_index_muted():

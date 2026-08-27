@@ -428,6 +428,57 @@ def test_stereo_host_hosts_eq_under_full_range_topology(tmp_path, monkeypatch):
     assert isinstance(result, ReemitResult)
 
 
+@pytest.mark.parametrize("carrier_kind", sorted(_STEREO_HOST_KINDS))
+@pytest.mark.parametrize("assigned", [0, 1])
+def test_stereo_host_reemit_folds_mono_program_onto_the_declared_output(
+    carrier_kind, assigned, tmp_path, monkeypatch
+):
+    """Saving preference EQ must not un-fold a mono box's graph.
+
+    The boot cutover folds L+R onto the single declared output. This live
+    re-emit is the OTHER writer of the same file family, so if it dropped the
+    fold the first ``/sound/`` save would silently leave the speaker playing
+    half the record — and, on the deploy path, overwrite the width-matched
+    cutover the statefile guard just approved.
+    """
+    from jasper.active_speaker.camilla_yaml import output_commission_mute_name
+    from jasper.camilla_emit import MONO_SUM_GAIN_DB
+    from tests.test_active_speaker_runtime_contract import _full_range_mono_on
+
+    _persist_topology(_full_range_mono_on(assigned), tmp_path, monkeypatch)
+    config_dir = tmp_path / "configs"
+    config_dir.mkdir()
+    if carrier_kind == "base_flat":
+        path = BASE_CONFIG_PATH
+    else:
+        path = config_dir / "sound_current.yml"
+        path.write_text(_flat_yaml())
+
+    carrier = carrier_for_loaded_config(str(path), config_dir=config_dir)
+    assert carrier.kind == carrier_kind
+    assert carrier.can_host_eq is True
+    result = carrier.reemit(SoundProfile(enabled=False), member_kwargs={})
+
+    doc = yaml.safe_load(result.yaml)
+    mapping = {
+        entry["dest"]: entry["sources"]
+        for entry in doc["mixers"]["master_gain"]["mapping"]
+    }
+    # Both program channels reach the declared output at the clip-safe sum.
+    assert [source["channel"] for source in mapping[assigned]] == [0, 1]
+    assert [source["gain"] for source in mapping[assigned]] == [
+        pytest.approx(MONO_SUM_GAIN_DB, abs=1e-4)
+    ] * 2
+    # The undeclared output keeps its identity route and its terminal mute.
+    complement = 1 - assigned
+    assert mapping[complement] == [
+        {"channel": complement, "gain": 0, "inverted": False}
+    ]
+    mute = output_commission_mute_name(complement)
+    assert doc["filters"][mute]["parameters"]["mute"] is True
+    assert doc["devices"]["volume_limit"] == 0.0
+
+
 def test_program_bake_carrier_hosts_eq_via_pipe_under_active_topology(
     tmp_path,
     monkeypatch,

@@ -85,8 +85,8 @@ def _cmd_render_flat_cutover(args: argparse.Namespace) -> int:
     jasper-audio-hardware-reconcile, and jasper-output-topology-reset — so the
     file a box boots cannot depend on which of them ran last. Write-on-change,
     and the graph is width-matched to the saved output topology (a mono layout
-    gets its unclaimed channel hard muted; see
-    jasper.active_speaker.runtime_contract.flat_graph_muted_outputs).
+    gets its unclaimed channel hard muted and both program channels folded onto
+    the one it claims; see jasper.sound.camilla_yaml.flat_graph_channel_plan).
     """
 
     from jasper.camilla_config_contract import parse_camilla_devices_config
