@@ -16,7 +16,7 @@
 # lands `failed`, doctor-visible) on contention.
 [Unit]
 Description=Converge the fan-in ring coupling + resolve the USB combo
-Documentation=file:/opt/jasper/docs/HANDOFF-audio-graph-consolidation.md
+Documentation=file:/opt/jasper/docs/audio-paths.md
 # This oneshot has no automatic Restart= loop. Every source transaction asks it
 # to converge, so deliberate rapid toggles must not hit systemd's default
 # successful-start rate limit.
