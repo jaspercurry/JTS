@@ -102,6 +102,30 @@ def _left_only() -> OutputTopology:
     )
 
 
+def _mono_awaiting_its_output() -> OutputTopology:
+    """A mono layout that still resolves NO ring — the class's live trigger.
+
+    A CLEAN mono box is ring-eligible now, so what still reaches this class is
+    a mono contract carrying ISSUES: here a full-range channel with no physical
+    output yet. The class stays defined and stays exercised; what changed is
+    which mono boxes trip it.
+    """
+    from tests.test_active_speaker_runtime_contract import _topology
+
+    return _topology(
+        [
+            {
+                "id": "mono",
+                "label": "Mono speaker",
+                "kind": "mono",
+                "mode": "full_range_passive",
+                "channels": [{"role": "full_range"}],
+            }
+        ],
+        {"mono_group_id": "mono"},
+    )
+
+
 def _composite_subwoofer_only() -> OutputTopology:
     """A ROLEFUL composite whose ACTIVE ring width does not resolve.
 
@@ -153,7 +177,7 @@ _PARK_CASES = (
         id="passive_stereo_composite",
     ),
     pytest.param(
-        _full_range_mono(),
+        _mono_awaiting_its_output(),
         {},
         PARK_MONO_FULL_RANGE,
         "#3117",
@@ -256,6 +280,45 @@ def test_a_roleful_non_composite_shape_is_not_the_mono_park():
     parks = transport_park.classify(_subwoofer_topology(), {})
     assert PARK_MONO_FULL_RANGE not in _classes(parks)
     assert parks == ()
+
+
+def test_a_clean_passive_mono_box_is_ring_eligible_and_does_not_park():
+    """The flip. A mono cabinet rides the same 2-channel Ring B every passive
+    box does — its mono-ness is the CamillaDSP graph's fold plus hard mute,
+    downstream of every ring end — so nothing about it is unresolved and no
+    class names it. The CLASS itself stays defined; retirement is a separate
+    change, after hardware verification."""
+    from jasper.active_speaker.runtime_contract import (
+        RING_STEREO_PROGRAM_CHANNELS,
+        ring_channels_for_topology,
+        topology_supports_shm_ring,
+    )
+
+    topology = _full_range_mono()
+
+    assert ring_channels_for_topology(topology) == RING_STEREO_PROGRAM_CHANNELS
+    assert topology_supports_shm_ring(topology) is True
+    assert transport_park.classify(topology, {}) == ()
+
+
+@pytest.mark.parametrize("ring_only", [True, False])
+def test_snapshot_separates_clean_mono_from_mono_with_issues(ring_only: bool):
+    """The status pair the operator surfaces read. A clean mono box is `ok` on
+    both transports; one still awaiting its physical output is `pending` while
+    loopback carries it and `parked` once the ring is the only route."""
+    clean = transport_park.snapshot(_full_range_mono(), {}, ring_only=ring_only)
+    assert clean["status"] == "ok"
+    assert clean["parked"] is False
+    assert clean["parks"] == []
+
+    unassigned = transport_park.snapshot(
+        _mono_awaiting_its_output(), {}, ring_only=ring_only
+    )
+    assert unassigned["status"] == ("parked" if ring_only else "pending")
+    assert unassigned["parked"] is ring_only
+    assert PARK_MONO_FULL_RANGE in {
+        park["park_class"] for park in unassigned["parks"]
+    }
 
 
 def test_active_crossover_mono_does_not_park_as_mono_full_range():
@@ -372,7 +435,7 @@ def test_a_box_in_two_classes_reports_both():
     """A bonded mono speaker waits on #3117 AND #3118; a first-match verdict
     would hide one of them from the operator who has to clear both."""
     parks = transport_park.classify(
-        _full_range_mono(), {_FIFO_ENV: "/run/x.fifo"}
+        _mono_awaiting_its_output(), {_FIFO_ENV: "/run/x.fifo"}
     )
     assert _classes(parks) == {PARK_MONO_FULL_RANGE, PARK_GROUPED_DAC_CONTENT_LANE}
 
@@ -573,7 +636,7 @@ def test_a_pending_park_reaches_no_household_surface(
 def test_a_live_park_takes_the_household_headline():
     from jasper.control.audio_health import PARKED_HEADLINE, _transport_park_signal
 
-    state = transport_park.snapshot(_full_range_mono(), {}, ring_only=True)
+    state = transport_park.snapshot(_mono_awaiting_its_output(), {}, ring_only=True)
     signal = _transport_park_signal(state)
     assert signal is not None
     assert signal["status"] == "issue"

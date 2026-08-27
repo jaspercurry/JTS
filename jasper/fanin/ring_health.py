@@ -1420,7 +1420,9 @@ def ring_topology_ready(*, strict_unreadable: bool = False) -> tuple[bool, str]:
             )
         return True, f"topology unreadable ({exc}); deferring to outputd's own guard"
     if topology_supports_shm_ring(topology):
-        return True, "topology is ring-eligible (declared passive stereo single sink)"
+        return True, (
+            "topology is ring-eligible (declared passive full-range single sink)"
+        )
     if classify_output_contract(topology).classification == CONTRACT_UNCONFIGURED:
         return False, (
             "no speaker layout is configured; save a passive stereo layout "
