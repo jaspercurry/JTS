@@ -293,14 +293,6 @@ ENV_CONTRACT_EXCEPTIONS: dict[str, str] = {
     # shell helper PROBES STATUS; they do not move either daemon's bind socket.
     "JASPER_FANIN_STATUS_SOCKET": "AirPlay helper probe path, not a fanin knob",
     "JASPER_OUTPUTD_STATUS_SOCKET": "AirPlay helper probe path, not an outputd knob",
-    # The P3/P4 default-flip OPERATOR-CHOICE marker (jasper.fanin.coupling_auto /
-    # coupling_reconcile). Python-only by design: it gates the --auto reconciler
-    # pass (present=operator-frozen → no-op), NOT anything the Rust fan-in daemon
-    # reads. The Rust daemon reads only JASPER_FANIN_CAMILLA_COUPLING (the resolved
-    # transport); the marker is purely the reconciler's own revert lever, so it must
-    # never appear in the Rust surface. Absence-vs-present semantics, mirrors
-    # JASPER_TRANSIT_CITIES.
-    "JASPER_FANIN_COUPLING_CHOICE": "P3/P4 operator-choice marker; reconciler-only revert lever, not Rust-read",
     # outputd failure-reconcile helper state. These tune the one-shot marker that
     # bounds EX_CONFIG=78 self-heal retries; they are consumed only by
     # deploy/bin/jasper-outputd-failure-reconcile, not by the Rust daemon.

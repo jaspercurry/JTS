@@ -760,8 +760,8 @@ def test_auto_stale_ring_slots_self_heals_and_keeps_ring(tmp_path, monkeypatch):
     outputd.write_text(_armed_outputd_env())
     _persist_ring_eligible_topology(tmp_path, monkeypatch)
 
-    # Uses the REAL slot heal so the wiring is exercised end to end; only the
-    # /dev/shm sweep beside it is stubbed out.
+    # Uses the REAL slot heal so the wiring is exercised end to end; what is
+    # stubbed is the /dev/shm sweep beside it and the conf.d the heal reads.
     monkeypatch.setattr(
         cr, "_delete_stale_ring_files", lambda reason, fanin_text="": False
     )
