@@ -401,6 +401,9 @@ def build_v2_wired_run_and_consume(
             REASON_REGISTRY,
             REASON_SESSION_CEILING_EXPIRED,
         )
+        from jasper.active_speaker.crossover_v2.session_graph import (
+            SessionGraphError,
+        )
         from jasper.active_speaker.session_volume_plan import SessionVolumePlanError
         from jasper.capture_relay.session import (
             CaptureBeginDeferred,
@@ -800,7 +803,9 @@ def build_v2_wired_run_and_consume(
 
         try:
             opened = await volume.open()
-        except (SessionVolumePlanError, MeasurementWindowError) as exc:
+        except (
+            SessionVolumePlanError, MeasurementWindowError, SessionGraphError,
+        ) as exc:
             log_event(
                 logger,
                 "correction.crossover_v2_volume_open_failed",

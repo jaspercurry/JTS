@@ -167,6 +167,23 @@ def test_live_model_error_binding_reports_identity_conflict_to_conductor():
     ) is False
 
 
+class _NoGraphSession:
+    """A tuning session that holds no graph, for the pause-lifecycle tests.
+
+    ``_volume_hooks`` opens the session after the plan confirms and closes it
+    where the graph used to go back. These tests are about the PAUSE, not the
+    graph, so the session they pass takes and gives back nothing — which is
+    also the real no-op shape for a session that never played a routed
+    stimulus.
+    """
+
+    async def open(self) -> None:
+        return None
+
+    async def close(self) -> None:
+        return None
+
+
 class _FakeVolCam:
     """A CamillaController stand-in for the session-volume drains."""
 
@@ -7970,7 +7987,9 @@ def test_volume_hooks_hold_pause_from_open_to_every_drain(monkeypatch):
         cam = _FakeVolCam(-15.0)
 
         async def scenario():
-            hooks = v2host._volume_hooks(lambda: cam, _Ctx())
+            hooks = v2host._volume_hooks(
+                lambda: cam, _Ctx(), tuning=_NoGraphSession(),
+            )
             opened = await hooks.open()
             assert opened is SessionVolumeOpenResult.OPENED
             assert cam.vol == -20.0
@@ -7983,6 +8002,61 @@ def test_volume_hooks_hold_pause_from_open_to_every_drain(monkeypatch):
         asyncio.run(scenario())
         assert log == ["enter", "exit"], drain
         v2host.set_volume_plan_for_tests(None)
+
+
+def test_the_graph_goes_back_before_the_fader_does(monkeypatch):
+    """A derived safety property, pinned because it is no longer an accident.
+
+    Before this wave the order was implicit in ``_put_the_graph_back``'s
+    position in one function's statement list. Now the graph restore is the
+    SESSION's and the fader restore is the plan's, so nothing but this pin
+    stops a later edit inverting them — and inverted, the household level lands
+    through a still-installed measurement graph, which is the condition an
+    un-ducked swap is only safe in the absence of.
+
+    Both halves write into one log, so the assertion is an order and not two
+    independent facts.
+    """
+    from jasper.active_speaker.session_volume_plan import SessionVolumePlan
+
+    order: list[str] = []
+
+    class _LoggingSession:
+        async def open(self) -> None:
+            return None
+
+        async def close(self) -> None:
+            order.append("graph")
+
+    class _LoggingCam(_FakeVolCam):
+        async def set_volume_db(self, db: float, best_effort: bool = False) -> bool:
+            order.append("fader")
+            return await super().set_volume_db(db, best_effort=best_effort)
+
+    _patch_measurement_window(monkeypatch, [])
+    v2host.reset_session_measurement_pause_for_tests()
+    v2host.set_volume_plan_for_tests(SessionVolumePlan())
+
+    class _Ctx:
+        session_volume_db = -20.0
+
+    cam = _LoggingCam(-15.0)
+
+    async def scenario():
+        hooks = v2host._volume_hooks(
+            lambda: cam, _Ctx(), tuning=_LoggingSession(),
+        )
+        await hooks.open()
+        order.clear()  # the open's own fader write is not what this pins
+        await hooks.close()
+
+    asyncio.run(scenario())
+    v2host.set_volume_plan_for_tests(None)
+
+    assert order and order[0] == "graph", (
+        f"the fader was restored before the graph went back: {order}"
+    )
+    assert "fader" in order, "anti-vacuity: the drain really did write the fader"
 
 
 def test_volume_hooks_release_pause_when_open_does_not_confirm(monkeypatch):
@@ -8002,7 +8076,7 @@ def test_volume_hooks_release_pause_when_open_does_not_confirm(monkeypatch):
         session_volume_db = -20.0
 
     async def scenario():
-        hooks = v2host._volume_hooks(lambda: _FakeVolCam(-15.0), _Ctx())
+        hooks = v2host._volume_hooks(lambda: _FakeVolCam(-15.0), _Ctx(), tuning=_NoGraphSession())
         result = await hooks.open()
         assert result == "failed"
         assert not v2host.session_measurement_pause_held()
@@ -8128,7 +8202,7 @@ def _real_hooks_scaffold(monkeypatch):
     class _Ctx:
         session_volume_db = -20.0
 
-    hooks = v2host._volume_hooks(lambda: cam, _Ctx())
+    hooks = v2host._volume_hooks(lambda: cam, _Ctx(), tuning=_NoGraphSession())
     return hooks, plan, cam, log
 
 

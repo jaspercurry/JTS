@@ -100,6 +100,7 @@ if TYPE_CHECKING:  # pragma: no cover - typing only
     from .measure_spec import MeasureSpec
 
 __all__ = [
+    "BELOW_READY_INCIDENTS",
     "STIMULUS_ADMISSION_REFUSED",
     "STIMULUS_LEVEL_NOT_READY",
     "STIMULUS_NOT_COMPOSED",
@@ -121,6 +122,19 @@ STIMULUS_PLAY_FAILED = "program_play_failed"
 #: ``play_program`` was never called. The disclosed gap's OTHER below-``ready``
 #: incident — ``ready`` is reported for the same missing-rung reason.
 STIMULUS_NOT_COMPOSED = "program_not_composed"
+
+#: The disclosed gap, as DATA rather than as four paragraphs: the incidents
+#: reported at ``ready`` where ``ready`` did not actually complete. Every other
+#: ``ready`` outcome means ready genuinely completed and a later stage did not
+#: — :data:`STIMULUS_ADMISSION_REFUSED` is the one such arm today.
+#:
+#: A set rather than prose because the prose already lost count once: the gap
+#: paragraph called one of these *"the one place"* while the other was
+#: overstating too. A third arm now has to join this set to pass its pin.
+BELOW_READY_INCIDENTS = frozenset({
+    STIMULUS_LEVEL_NOT_READY,
+    STIMULUS_NOT_COMPOSED,
+})
 
 
 @dataclass(frozen=True)

@@ -2,7 +2,15 @@
 #
 # SPDX-License-Identifier: Apache-2.0
 
-"""The session's fader claim, filled — the handle the seam does not carry.
+"""The session's fader claim, filled — twice, for one wave only.
+
+**Two implementations, and exactly one is ever bound.**
+:class:`MeasurementVolumeClaim` is the destination: a real ranked claim on
+:class:`~jasper.volume_owner.VolumeOwner`. :class:`PlanHeldVolumeClaim` is the
+interim, bound while ``SessionVolumePlan`` still owns the fader through its own
+door — it takes no claim and proves what the plan holds. W5-c swaps the binding
+and deletes the plan's doors in one PR, so no commit boundary has two writers
+on this fader. The rest of this docstring describes the destination.
 
 :class:`~.session_seams.VolumeClaim` is handle-**free**: ``acquire`` / ``prove``
 / ``release`` pass nothing between them, because a session holds ONE claim for
@@ -32,9 +40,13 @@ stimulus it refuses exactly the capture that lost the fader, and nothing else.
 
 from __future__ import annotations
 
-from ...volume_owner import ClaimKind, VolumeClaimHandle, VolumeOwner
+from typing import Any, Callable
 
-__all__ = ["MeasurementVolumeClaim"]
+from ...volume_owner import ClaimKind, VolumeClaimHandle, VolumeOwner
+from ..session_volume_plan import SessionVolumePlanError
+from ..volume_latch import fader_matches
+
+__all__ = ["MeasurementVolumeClaim", "PlanHeldVolumeClaim"]
 
 
 class MeasurementVolumeClaim:
@@ -89,3 +101,95 @@ class MeasurementVolumeClaim:
             return
         await self._owner.release(self._handle)
         self._handle = None
+
+
+class PlanHeldVolumeClaim:
+    """The INTERIM claim: ``SessionVolumePlan`` holds the fader, this proves it.
+
+    **REMOVAL CONDITION, and this is not a fallback.** W5-c swaps this for
+    :class:`MeasurementVolumeClaim` in the SAME PR that deletes
+    ``SessionVolumePlan``'s fader doors (``_session_volume_io._set`` and its
+    consuming call sites). The two implementations are never both bound: the
+    seam lands now, the AUTHORITY moves when the old door dies. That is the
+    strangler proper — at no commit boundary do two writers hold this fader.
+
+    **Why the real claim is not bound yet, and it is not a coexistence
+    annoyance.** The two authorities restore to different definitions. The
+    owner's ``release`` lands the fader on the CURRENT next-ranked level — the
+    household claim as it stands at release time. The plan's drain restores the
+    ORIGINAL snapshot it took before its first mutation, through the
+    exact→emergency ladder, and latches when neither confirms. A household
+    level that moved during the session therefore makes the two restores
+    disagree about where the fader belongs, with no defined ordering between
+    them. Binding both would put that divergence on the speaker for a whole
+    wave.
+
+    **What this does NOT do.** It takes no claim, writes no fader, and restores
+    nothing. Everything it asserts, it read.
+    """
+
+    def __init__(
+        self, plan: Any, read_fader_db: Callable[[], Any],
+    ) -> None:
+        self._plan = plan
+        self._read_fader_db = read_fader_db
+
+    async def acquire(self, level_db: float) -> None:
+        """Verify the plan already holds this session open at this level.
+
+        Two readable facts, checked rather than trusted. ``assert_ready`` is
+        the plan's own open/confirmed/inside-the-ceiling assertion — the same
+        one ``play_program`` acquires before every stimulus — and it raises
+        when the level is not actually in effect, which is the fail-closed
+        answer this seam's caller already handles.
+
+        The declared level must also be the one this session was constructed
+        for. A session measuring at a level the plan never opened is the *five
+        overlapping notions of "the level"* defect the one-declared-level rule
+        exists to delete, and it is cheaper to refuse here than to discover it
+        in a banked record.
+        """
+        self._plan.assert_ready()
+        declared = self._plan.measurement_volume_db
+        if declared is None or not fader_matches(declared, level_db):
+            raise SessionVolumePlanError(
+                "the session volume plan is open at "
+                f"{declared!r} dB, not the declared {level_db} dB"
+            )
+
+    async def prove(self) -> float | None:
+        """The fader reading, but only when it agrees with the declared level.
+
+        A REAL check and deliberately not a pass-through: the 8.712 dB honesty
+        gate has to hold through this window too, or ``measure`` banks records
+        stamped with a level the speaker was not playing at. The comparison is
+        :func:`~jasper.active_speaker.volume_latch.fader_matches` at the repo's
+        one confirm tolerance, against the level the PLAN declares — which is
+        the authority this wave — and the session then re-checks the answer
+        against its own declared level. Two gates, one number.
+
+        ``None`` for every way the level can fail to be in effect here: the
+        plan holds none, the fader could not be read, or the two disagree.
+        """
+        declared = self._plan.measurement_volume_db
+        if declared is None:
+            return None
+        reading = await self._read_fader_db()
+        if reading is None or not fader_matches(reading, declared):
+            return None
+        return float(reading)
+
+    async def release(self) -> None:
+        """A DISCLOSED no-op: the plan's drain owns restore this wave.
+
+        Not an oversight and not a silent one. ``_volume_hooks``'s ``_close``
+        and ``_abandon`` arms already run the plan's exact→emergency ladder
+        with its durable latch on every path out of the session, and a second
+        give-back here would be the double-restore this whole option exists to
+        avoid — two authorities landing the fader on two different definitions
+        of "where it belongs".
+
+        Idempotent and safe against nothing-held by construction: it holds
+        nothing.
+        """
+        return None
