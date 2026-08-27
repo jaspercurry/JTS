@@ -206,18 +206,24 @@ already open)**
   `durable=True` re-raises
 
 **Wave 6 — one audio transport ([ADR-0100](adr/0100-one-audio-transport.md))**
-- [ ] Delete the central loopback route + all transition machinery (~6–8K
+- [x] Delete the central loopback route + all transition machinery (~6–8K
       incl. tests and the 24 two-route docs): arm/disarm/recovery ladders,
       ring-confirm strikes, transport arbitration in coupling_reconcile /
       fanin_coupling / audio_runtime_plan, Rust transport branches, aloop
       confs. Keep the hard-park refusals (safety, not fallback). Composite
       (the dual-DAC box) parks loudly with the tracked issue number; jts3 is
       NOT that box (owner-confirmed), so nothing gates on the bench.
-- [ ] Do NOT pre-fix the ring arming convergence bug — its habitat is the
+      — complete 2026-08-27: 13 slices + 5a merged (#3120 #3139 #3153 #3158
+      #3159 #3179 #3180 #3168 #3167 #3154 #3182 #3155 #3181 and #3172);
+      hard-park refusals kept, all exit-78/exit-66 shapes pinned.
+- [x] Do NOT pre-fix the ring arming convergence bug — its habitat is the
       deleted ceremony (owner ruling). A surviving defect presents as a
-      named park with `event=` logs; fix forward then.
-- [ ] GATES: tuning program's explicit ack (ring = its measurement
+      named park with `event=` logs; fix forward then. — honored; the
+      ceremony is deleted, no pre-fix landed.
+- [x] GATES: tuning program's explicit ack (ring = its measurement
       transport) + the 5-case stereo tap re-run after the fanin diff.
+      — both satisfied on #3116: ack 2026-08-26, comparison verdict PASS
+      2026-08-27 (all peaks reproduce the banked run at +0.000000 dB).
 - [x] File the composite-on-ring tracked issue — #2982.
 
 **Wave 7 — proven once, disclose on change ([ADR-0101](adr/0101-proven-once-disclose-on-change.md))**
