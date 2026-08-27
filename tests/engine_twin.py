@@ -45,9 +45,9 @@ importers actually used it for:
 
 from __future__ import annotations
 
-from contextlib import contextmanager
+from contextlib import asynccontextmanager
 from dataclasses import dataclass, field, replace
-from typing import Any, Iterator, Mapping, Sequence
+from typing import Any, AsyncIterator, Mapping, Sequence
 
 from jasper.active_speaker.crossover_v2.measure_spec import MeasureSpec
 from jasper.active_speaker.crossover_v2.playback_transaction import (
@@ -122,16 +122,16 @@ class FakeGraph:
     install_raises: bool = False
     restore_raises: bool = False
 
-    def install(self) -> str:
+    async def install(self) -> str:
         self.installs += 1
         if self.install_raises:
             raise GraphInstallFailed("twin graph install failed")
         return self.fingerprint
 
-    def patch(self, changes: Mapping[str, Any]) -> None:
+    async def patch(self, changes: Mapping[str, Any]) -> None:
         self.patches.append(dict(changes))
 
-    def restore(self) -> None:
+    async def restore(self) -> None:
         self.restores += 1
         if self.restore_raises:
             raise SeamFailure("twin graph restore failed")
@@ -156,18 +156,18 @@ class FakeVolume:
     acquire_raises: bool = False
     release_raises: bool = False
 
-    def acquire(self, level_db: float) -> None:
+    async def acquire(self, level_db: float) -> None:
         self.acquired.append(level_db)
         if self.acquire_raises:
             raise SeamFailure("twin volume acquire failed")
 
-    def prove(self) -> float | None:
+    async def prove(self) -> float | None:
         index, self.proves = self.proves, self.proves + 1
         if index < len(self.readings):
             return self.readings[index]
         return self.proven_db
 
-    def release(self) -> None:
+    async def release(self) -> None:
         self.releases += 1
         if self.release_raises:
             raise SeamFailure("twin volume release failed")
@@ -211,18 +211,18 @@ class FakeRecords:
     persisted: list[Mapping[str, Any]] = field(default_factory=list)
     bank_raises: bool = False
 
-    def bank(self, record: Mapping[str, Any]) -> str:
+    async def bank(self, record: Mapping[str, Any]) -> str:
         if self.bank_raises:
             raise SeamFailure("twin record bank failed")
         return _mint("rec", self.banked, record)
 
-    def read(self, record_id: str) -> Mapping[str, Any] | None:
+    async def read(self, record_id: str) -> Mapping[str, Any] | None:
         return _find("rec", self.banked, record_id)
 
-    def persist(self, state: Mapping[str, Any]) -> str:
+    async def persist(self, state: Mapping[str, Any]) -> str:
         return _mint("state", self.persisted, state)
 
-    def read_state(self, state_id: str) -> Mapping[str, Any] | None:
+    async def read_state(self, state_id: str) -> Mapping[str, Any] | None:
         return _find("state", self.persisted, state_id)
 
     def by_position(self, position_deg: int | None) -> list[Mapping[str, Any]]:
@@ -259,7 +259,7 @@ class FakePlay:
     script: list[PlayScript] = field(default_factory=list)
     calls: list[dict[str, Any]] = field(default_factory=list)
 
-    def run(
+    async def run(
         self,
         *,
         spec: MeasureSpec,
@@ -307,7 +307,7 @@ class FakeRecommender:
     answer: Mapping[str, Any] = field(default_factory=dict)
     asked: list[tuple[str, ...]] = field(default_factory=list)
 
-    def __call__(self, record_ids: Sequence[str]) -> Mapping[str, Any]:
+    async def __call__(self, record_ids: Sequence[str]) -> Mapping[str, Any]:
         ids = tuple(record_ids)
         self.asked.append(ids)
         return dict(self.answer) if self.answer else {"records": len(ids)}
@@ -388,31 +388,31 @@ def tuning_session(
     return session, fakes
 
 
-@contextmanager
-def open_session(
+@asynccontextmanager
+async def open_session(
     seams: FakeSeams | None = None, **kwargs: Any,
-) -> Iterator[tuple[TuningSession, FakeSeams]]:
+) -> AsyncIterator[tuple[TuningSession, FakeSeams]]:
     """:func:`tuning_session`, opened and guaranteed closed::
 
-        with open_session() as (session, fakes):
-            session.measure(spec)
+        async with open_session() as (session, fakes):
+            await session.measure(spec)
 
     A context manager rather than a bare generator, deliberately: a generator
-    handed out with ``next()`` is closed by the garbage collector the moment
+    handed out with ``anext()`` is closed by the garbage collector the moment
     the caller drops it, which runs the ``finally`` below and hands the test a
     SPENT session that refuses to measure. The failure is confusing enough
     that offering the shape at all would be a trap.
 
-    Works as a ``pytest`` fixture body unchanged — ``@contextmanager`` wraps a
-    generator, and ``pytest`` takes the generator form too.
+    Works as a ``pytest`` fixture body unchanged — ``@asynccontextmanager``
+    wraps an async generator, and ``pytest`` takes that form too.
 
     The close is in a ``finally`` because a session that dies holding its claim
     leaves the speaker at a measurement level nobody chose — the thing the
     engine spends a ``finally`` on, and the thing a test harness must not undo.
     """
     session, fakes = tuning_session(seams, **kwargs)
-    session.open()
+    await session.open()
     try:
         yield session, fakes
     finally:
-        session.close()
+        await session.close()

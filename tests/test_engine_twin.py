@@ -85,9 +85,9 @@ def _walk(kind: str = MEASURE_KIND_BASELINE, **kwargs) -> MeasureSpec:
 # --------------------------------------------------------------------------- #
 
 
-def test_uc1_a_default_twin_walks_a_session_end_to_end():
-    with open_session() as (session, fakes):
-        outcome = session.measure(_walk())
+async def test_uc1_a_default_twin_walks_a_session_end_to_end():
+    async with open_session() as (session, fakes):
+        outcome = await session.measure(_walk())
 
     assert fakes.play.bearings == list(decl.WALK_DEG)
     assert len(outcome.record_ids) == len(decl.WALK_DEG)
@@ -96,15 +96,15 @@ def test_uc1_a_default_twin_walks_a_session_end_to_end():
     assert {r["level_db"] for r in fakes.banked} == {decl.SESSION_VOLUME_DB}
 
 
-def test_uc1_the_twin_drives_all_four_verbs():
+async def test_uc1_the_twin_drives_all_four_verbs():
     """The whole surface in one test, because the whole surface is the point:
     a harness that could only reach ``measure`` would not replace a fixture
     whose importers also persist, re-read and prescribe."""
-    with open_session() as (session, fakes):
-        measured = session.measure(_walk(MEASURE_KIND_CANDIDATE))
-        analyzed = session.analyze()
-        recommended = session.recommend()
-        saved = session.save()
+    async with open_session() as (session, fakes):
+        measured = await session.measure(_walk(MEASURE_KIND_CANDIDATE))
+        analyzed = await session.analyze()
+        recommended = await session.recommend()
+        saved = await session.save()
 
     assert measured.record_ids == recommended.record_ids == saved.record_ids
     assert analyzed.disclosures == ()
@@ -112,9 +112,9 @@ def test_uc1_the_twin_drives_all_four_verbs():
     assert fakes.records.persisted[0]["session_id"] == decl.SESSION_ID
 
 
-def test_uc1_a_ladder_is_position_times_rung():
-    with open_session() as (session, fakes):
-        outcome = session.measure(_walk(level_ladder_dbfs=decl.LADDER_DBFS))
+async def test_uc1_a_ladder_is_position_times_rung():
+    async with open_session() as (session, fakes):
+        outcome = await session.measure(_walk(level_ladder_dbfs=decl.LADDER_DBFS))
 
     expected = len(decl.WALK_DEG) * len(decl.LADDER_DBFS)
     assert len(outcome.stimuli) == expected
@@ -123,7 +123,7 @@ def test_uc1_a_ladder_is_position_times_rung():
     assert fakes.volume.acquired == [decl.SESSION_VOLUME_DB]
 
 
-def test_uc1_the_session_is_handed_back_closed_so_the_test_owns_the_lifetime():
+async def test_uc1_the_session_is_handed_back_closed_so_the_test_owns_the_lifetime():
     """``tuning_session`` is the un-opened door; half these tests are ABOUT
     opening, so the harness must not have done it already."""
     session, fakes = tuning_session()
@@ -131,7 +131,7 @@ def test_uc1_the_session_is_handed_back_closed_so_the_test_owns_the_lifetime():
     assert not session.is_open
     assert fakes.graph.installs == 0
     with pytest.raises(SessionStateError):
-        session.measure(_walk())
+        await session.measure(_walk())
 
 
 # --------------------------------------------------------------------------- #
@@ -139,12 +139,12 @@ def test_uc1_the_session_is_handed_back_closed_so_the_test_owns_the_lifetime():
 # --------------------------------------------------------------------------- #
 
 
-def test_uc2_a_fader_that_cannot_be_proven_refuses_only_its_own_stimulus():
+async def test_uc2_a_fader_that_cannot_be_proven_refuses_only_its_own_stimulus():
     """MS-14 in ruling S10's shape, expressed as a sequence of readings —
     because the fact that matters is a claim preempted MID-WALK."""
     volume = FakeVolume(readings=[decl.SESSION_VOLUME_DB, None])
-    with open_session(FakeSeams(volume=volume)) as (session, fakes):
-        outcome = session.measure(_walk())
+    async with open_session(FakeSeams(volume=volume)) as (session, fakes):
+        outcome = await session.measure(_walk())
 
     assert volume.proves == len(decl.WALK_DEG)
     assert [s.banked for s in outcome.stimuli] == [True, False, True]
@@ -152,39 +152,39 @@ def test_uc2_a_fader_that_cannot_be_proven_refuses_only_its_own_stimulus():
     assert len(fakes.banked) == 2, "the walk went on past the unproven rung"
 
 
-def test_uc2_a_transaction_that_never_played_banks_nothing_and_says_why():
+async def test_uc2_a_transaction_that_never_played_banks_nothing_and_says_why():
     play = FakePlay(script=[
         (STAGE_RESTORE, ""),
         (STAGE_ADMIT, "relay_timeout"),
         (STAGE_RESTORE, ""),
     ])
-    with open_session(FakeSeams(play=play)) as (session, fakes):
-        outcome = session.measure(_walk())
+    async with open_session(FakeSeams(play=play)) as (session, fakes):
+        outcome = await session.measure(_walk())
 
     assert [s.incident for s in outcome.stimuli] == ["", "relay_timeout", ""]
     assert len(fakes.banked) == 2
 
 
-def test_uc2_an_install_that_fails_leaves_nothing_held():
+async def test_uc2_an_install_that_fails_leaves_nothing_held():
     session, fakes = tuning_session(FakeSeams(graph=FakeGraph(install_raises=True)))
 
     with pytest.raises(GraphInstallFailed):
-        session.open()
+        await session.open()
 
     assert fakes.graph.restores == 1
     assert not fakes.volume.held
     assert not session.is_open
 
 
-def test_uc2_a_release_that_fails_is_retried_by_the_next_close():
+async def test_uc2_a_release_that_fails_is_retried_by_the_next_close():
     volume = FakeVolume(release_raises=True)
     session, _ = tuning_session(FakeSeams(volume=volume))
-    session.open()
+    await session.open()
 
     with pytest.raises(SeamFailure):
-        session.close()
+        await session.close()
     volume.release_raises = False
-    session.close()
+    await session.close()
 
     assert volume.releases == 2
     assert not session.is_open
@@ -214,18 +214,18 @@ def test_uc3_dataclasses_replace_works_on_the_bundle_too():
     assert swapped.volume is base.volume
 
 
-def test_uc3_two_sessions_can_share_one_record_store():
+async def test_uc3_two_sessions_can_share_one_record_store():
     """A store outliving a session is what a campaign's bank IS, so the twin
     must not tie one to the other."""
     shared = FakeRecords()
 
-    with open_session(FakeSeams(records=shared)) as (first, _):
-        first.measure(MeasureSpec(kind=MEASURE_KIND_BASELINE))
+    async with open_session(FakeSeams(records=shared)) as (first, _):
+        await first.measure(MeasureSpec(kind=MEASURE_KIND_BASELINE))
 
-    with open_session(
+    async with open_session(
         FakeSeams(records=shared), session_id="twin-session-2",
     ) as (second, _):
-        second.measure(MeasureSpec(kind=MEASURE_KIND_CANDIDATE))
+        await second.measure(MeasureSpec(kind=MEASURE_KIND_CANDIDATE))
 
     assert shared.kinds() == [MEASURE_KIND_BASELINE, MEASURE_KIND_CANDIDATE]
     assert {r["session_id"] for r in shared.banked} == {
@@ -284,26 +284,26 @@ def test_uc4_the_declarations_are_internally_consistent():
 # --------------------------------------------------------------------------- #
 
 
-def test_uc5_every_banked_record_reads_back_by_its_id():
+async def test_uc5_every_banked_record_reads_back_by_its_id():
     """Ruling S3's return: a banked session is re-analyzable offline, forever.
     The twin implements ``read`` rather than stubbing it, so a test can prove
     the door works instead of assuming it."""
-    with open_session() as (session, fakes):
-        outcome = session.measure(_walk())
+    async with open_session() as (session, fakes):
+        outcome = await session.measure(_walk())
 
-    read_back = [fakes.records.read(rid) for rid in outcome.record_ids]
+    read_back = [await fakes.records.read(rid) for rid in outcome.record_ids]
 
     assert [r["position_deg"] for r in read_back] == list(decl.WALK_DEG)
-    assert fakes.records.read("rec-999") is None
+    assert await fakes.records.read("rec-999") is None
 
 
-def test_uc5_the_bank_outlives_the_session_that_wrote_it():
+async def test_uc5_the_bank_outlives_the_session_that_wrote_it():
     fakes = FakeSeams()
-    with open_session(fakes) as (session, _):
-        outcome = session.measure(_walk())
+    async with open_session(fakes) as (session, _):
+        outcome = await session.measure(_walk())
 
     assert not session.is_open
-    assert fakes.records.read(outcome.record_ids[0]) is not None
+    assert await fakes.records.read(outcome.record_ids[0]) is not None
     assert len(fakes.records.by_position(0)) == 1
 
 
@@ -315,13 +315,13 @@ def test_uc5_the_bank_outlives_the_session_that_wrote_it():
 # --------------------------------------------------------------------------- #
 
 
-def test_uc6_playback_can_differ_by_kind():
+async def test_uc6_playback_can_differ_by_kind():
     play = FakePlay(by_kind={MEASURE_KIND_VERIFY: (STAGE_ADMIT, "relay_timeout")})
     fakes = FakeSeams(play=play)
 
-    with open_session(fakes) as (session, _):
-        baseline = session.measure(MeasureSpec(kind=MEASURE_KIND_BASELINE))
-        verify = session.measure(MeasureSpec(kind=MEASURE_KIND_VERIFY))
+    async with open_session(fakes) as (session, _):
+        baseline = await session.measure(MeasureSpec(kind=MEASURE_KIND_BASELINE))
+        verify = await session.measure(MeasureSpec(kind=MEASURE_KIND_VERIFY))
 
     assert baseline.record_ids != ()
     assert verify.record_ids == ()
@@ -331,11 +331,11 @@ def test_uc6_playback_can_differ_by_kind():
 @pytest.mark.parametrize(
     "kind", [MEASURE_KIND_BASELINE, MEASURE_KIND_CANDIDATE, MEASURE_KIND_VERIFY],
 )
-def test_uc6_every_kind_is_the_same_verb_through_the_twin(kind: str):
+async def test_uc6_every_kind_is_the_same_verb_through_the_twin(kind: str):
     """Ruling S1's *"measuring is measuring"*, checked at the harness: the
     three differ by an argument and by nothing in the setup."""
-    with open_session() as (session, fakes):
-        outcome = session.measure(MeasureSpec(kind=kind))
+    async with open_session() as (session, fakes):
+        outcome = await session.measure(MeasureSpec(kind=kind))
 
     assert len(outcome.record_ids) == 1
     assert fakes.records.kinds() == [kind]
