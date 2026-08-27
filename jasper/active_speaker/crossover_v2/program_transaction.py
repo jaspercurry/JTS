@@ -43,14 +43,21 @@ a return value or an exception type, never a default.
              whole of what it has to put back.
 ===========  ====================================================================
 
-**DISCLOSED GAP — the ladder has no rung below ``ready``.** A box whose
-measurement volume is not ready never completed ``ready``, and
-:data:`~.playback_transaction.PLAYBACK_STAGES` has nothing lower to say so.
-That case is reported as ``ready`` with the incident
-:data:`STIMULUS_LEVEL_NOT_READY`, which is the one place the stage alone
-overstates what happened — named here rather than left for a reader to
-discover. The incident is the load-bearing field there, and ``played`` is
-``False`` either way, so nothing banks on the overstatement.
+**DISCLOSED GAP — the ladder has no rung below ``ready``, and TWO arms need
+one.** :data:`~.playback_transaction.PLAYBACK_STAGES` starts at ``ready``, so a
+failure that lands before ``ready`` completed has no stage that says so. Both
+such arms report ``ready``, and both overstate what happened:
+
+* :data:`STIMULUS_LEVEL_NOT_READY` — the measurement volume was not open,
+  confirmed and fresh, so ``assert_ready()`` refused and ``ready`` never
+  completed.
+* :data:`STIMULUS_NOT_COMPOSED` — the host could not assemble a program, so
+  ``play_program`` was never called and ``ready`` was never even attempted.
+
+The incident is the load-bearing field in both, and ``played`` is ``False``
+either way, so nothing banks on either overstatement. Named here as a pair
+rather than left for a reader to find the second one: an honesty map that
+undercounts its own gaps is the defect this adapter exists to refuse.
 
 **This adapter mints no ``wav_path``, and that is not an omission.** Playing
 and capturing are two seams: what the microphone heard arrives through
@@ -102,14 +109,17 @@ __all__ = [
 ]
 
 #: The measurement volume was not open/confirmed/fresh, so nothing was played.
-#: The incident that carries the disclosed gap above — ``ready`` is reported
-#: because the ladder has no lower rung, and this says what really happened.
+#: One of the two below-``ready`` incidents the disclosed gap above pairs:
+#: ``ready`` is reported because the ladder has no lower rung, and this says
+#: what really happened.
 STIMULUS_LEVEL_NOT_READY = "session_level_not_ready"
 #: Fresh re-admission refused the program before any audio (MS-4's gate).
 STIMULUS_ADMISSION_REFUSED = "program_admission_refused"
 #: The program was admitted and the lock taken, and the emission failed.
 STIMULUS_PLAY_FAILED = "program_play_failed"
-#: The host could not assemble a program for this stimulus at all.
+#: The host could not assemble a program for this stimulus at all, so
+#: ``play_program`` was never called. The disclosed gap's OTHER below-``ready``
+#: incident — ``ready`` is reported for the same missing-rung reason.
 STIMULUS_NOT_COMPOSED = "program_not_composed"
 
 
@@ -174,6 +184,8 @@ class ProgramPlaybackTransaction:
             # rendered stimulus could not be written, or the parameters do not
             # describe a program. Anything else is a mis-bound host, which the
             # seam keeps raising for.
+            # One of the disclosed gap's two below-`ready` arms: `play_program`
+            # was never called, so `ready` was never even attempted.
             return PlaybackOutcome(
                 stage_reached=STAGE_READY, incident=STIMULUS_NOT_COMPOSED,
             )
@@ -185,8 +197,9 @@ class ProgramPlaybackTransaction:
                 **dict(prepared.seams),
             )
         except SessionVolumePlanError:
-            # The disclosed gap: `ready` never completed, and the ladder has
-            # no rung that says so. The incident is what carries the truth.
+            # The disclosed gap's other below-`ready` arm: `assert_ready()`
+            # refused, so `ready` never completed and the ladder has no rung
+            # that says so. The incident is what carries the truth.
             return PlaybackOutcome(
                 stage_reached=STAGE_READY, incident=STIMULUS_LEVEL_NOT_READY,
             )

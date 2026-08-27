@@ -190,10 +190,11 @@ async def test_a_failed_emission_reports_lock_because_it_got_past_admission():
 
 
 async def test_a_box_that_was_never_ready_says_so_in_the_incident():
-    """The disclosed gap: the ladder has no rung below ``ready``.
+    """The disclosed gap, arm one of two: no rung exists below ``ready``.
 
     The stage alone overstates what happened, so the incident is what carries
     the truth — and ``played`` is False either way, so nothing banks on it.
+    The other arm is the compose failure pinned below.
     """
     seams = _Seams()
 
@@ -206,7 +207,12 @@ async def test_a_box_that_was_never_ready_says_so_in_the_incident():
 
 
 async def test_a_host_that_cannot_compose_a_program_is_an_incident_not_a_raise():
-    """A transaction that raised would strand the session and lose the walk."""
+    """A transaction that raised would strand the session and lose the walk.
+
+    The disclosed gap's other below-``ready`` arm: ``play_program`` is never
+    called here, so ``ready`` is not merely incomplete — it is never attempted,
+    and ``ready`` is reported for the same missing-rung reason.
+    """
     outcome = await _run(_transaction(compose_raises=True))
 
     assert outcome.stage_reached == STAGE_READY
