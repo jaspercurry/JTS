@@ -75,6 +75,20 @@ _CARD_RE = re.compile(r"^hw:CARD=([^,\s]+),DEV=(\d+)")
 
 
 def normalize_output_device_id(raw: str | None) -> str:
+    """Canonical device id for ``raw``. ``None`` / blank becomes ``unknown``.
+
+    The type guard enforces the annotation for the callers that hand this raw
+    artifact JSON — ``OutputHardware.from_mapping`` and
+    ``OutputChildDevice.from_mapping`` — where a truthy non-string reached
+    ``.strip()`` and raised ``AttributeError``, escaping the schema's typed
+    contract. ``ValueError`` so the topology loaders normalise it like any
+    other malformed field. This module's own callers pre-coerce with ``_text``.
+    """
+
+    if raw is not None and not isinstance(raw, str):
+        raise ValueError(
+            f"output device id must be a string, got {type(raw).__name__}"
+        )
     value = (raw or "").strip().strip("'\"").lower().replace("-", "_")
     if value == DUAL_APPLE_LEGACY_ACTIVE_DEVICE_ID:
         return DUAL_APPLE_USB_C_DAC_4CH_DEVICE_ID

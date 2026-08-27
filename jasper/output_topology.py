@@ -2466,7 +2466,7 @@ def load_output_topology_snapshot(
         raise OutputTopologyError(
             f"output topology {target} is not valid JSON: {exc}"
         ) from exc
-    except OutputTopologyError as exc:
+    except ValueError as exc:
         raise OutputTopologyError(
             f"output topology {target} is invalid: {exc}"
         ) from exc
@@ -2610,7 +2610,16 @@ def load_output_topology_strict(path: str | Path | None = None) -> OutputTopolog
         raise OutputTopologyError(
             f"output topology {target} is not valid JSON: {exc}"
         ) from exc
-    except OutputTopologyError as exc:
+    except ValueError as exc:
+        # `OutputTopologyError` IS a ValueError, so the domain error still lands
+        # here unchanged. Catching the BASE is what makes this function's
+        # documented contract — every malformed artifact leaves as one typed
+        # error — true of the whole parse instead of only the fields that happen
+        # to raise the subclass. A field validated by a helper that predates
+        # `JsonFields` raises the plain base, and before this such a field
+        # escaped the fail-closed handling of every caller that authorizes a
+        # runtime graph. The snapshot loader above carries the same widening for
+        # the same reason.
         raise OutputTopologyError(
             f"output topology {target} is invalid: {exc}"
         ) from exc
