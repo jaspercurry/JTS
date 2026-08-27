@@ -448,19 +448,8 @@ ALLOWED_ASSERTS: dict[tuple[str, str], str] = {
     ): (
         "pop_period's own doc comment states the exact contract "
         "(\"out.len() * 2 == period_bytes\"); its only real caller is this "
-        "file's own try_fill_period, which always sizes the buffer from "
+        "file's own FifoReader::fill, which always sizes the buffer from "
         "the same period_bytes field."
-    ),
-    (
-        "jasper-outputd/src/dac_content.rs",
-        "policy granted FIFO serve without a staged period",
-    ): (
-        "Same fail-closed trap pattern as ChannelPick::Sub above: the "
-        "comment at the call site says \"Structurally impossible ... but "
-        "on a reboot-on-fail daemon an invariant break must degrade to a "
-        "clean direct-path period — never a stale-buffer glitch,\" and the "
-        "code right after the debug_assert! does exactly that (returns "
-        "false to signal degrade-to-direct-path)."
     ),
     (
         "jasper-outputd/src/ledger.rs",

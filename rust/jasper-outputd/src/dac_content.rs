@@ -2,47 +2,51 @@
 //
 // SPDX-License-Identifier: Apache-2.0
 
-//! Optional DAC-content FIFO source — the multi-room round-trip lane
-//! (Increment 3 of docs/HANDOFF-multiroom.md §2 "Canonical signal flow").
+//! The DAC-content return lane — a grouping LEADER's round-trip ingress.
 //!
-//! On a grouping LEADER, the music the DAC plays must come back from the
-//! sync engine (leader's localhost snapclient `--player file:<FIFO>`), so
-//! the leader is sample-locked with its followers. snd-aloop substreams
-//! are exhausted (8/8), so that lane is a raw-PCM FIFO, not a loopback —
-//! which also dodges the documented snd_pcm_delay-lies-on-snd-aloop trap.
-//! This module is the READER side: `DacContentSource` feeds the DAC loop
-//! one period at a time from the FIFO.
+//! On a grouping LEADER the music the DAC plays must come back OUT of the
+//! sync engine, so the leader is sample-locked with its followers: the
+//! leader's own localhost snapclient re-plays the bond's shared stereo, and
+//! this module reads it one DAC period at a time. Without it a leader plays
+//! its program ahead of every follower.
 //!
-//! ## The two contracts this module exists to keep
+//! ## Two transports, one at a time
 //!
-//! **Solo-impact contract:** the source is constructed only when
-//! `JASPER_OUTPUTD_DAC_CONTENT_FIFO` is set. Unset ⇒ this module does not
-//! run at all — no open, no syscalls, no per-period work; the DAC loop is
-//! byte-identical to today.
+//! - **Ring** (`Reader::Ring`) — snapclient writes the SHM ring
+//!   `jasper::multiroom::dac_content_ring` names, through the C ioplug, and
+//!   this module attaches as its reader. The ONE transport (ADR-0100); the
+//!   lane's destination.
+//! - **FIFO** (`Reader::Fifo`) — the lane's original raw-PCM FIFO
+//!   (snapclient `--player file:<FIFO>`). Retained, unarmed, until the ring
+//!   arm is verified on metal; its deletion is its own change.
 //!
-//! **inv-B (never-silent leader):** a starving FIFO must NOT silence the
-//! leader's own music. `try_fill_period` returns `false` the moment a
-//! full period is not available, and the caller (the DAC loop) reads the
-//! DIRECT content PCM for that period instead — zero periods of silence,
-//! at the cost of a bounded content jump (the direct path is ~one playout
-//! buffer ahead of the round-trip; "a momentarily-unsynced pair beats a
-//! silent leader"). Returning to the FIFO is DAMPED (`RECOVERY_*` below)
-//! so a flapping writer cannot oscillate the DAC between two time-offset
-//! copies of the program every other period. Health is self-reported on
-//! the STATUS surface (`DacContentMetrics` → the `dac_content` block) —
-//! daemon truth, never a Python mirror of env intent (the removed
-//! `SNAPFIFO_PRODUCER_WIRED` lesson).
+//! Exactly one is constructed, from exactly one env
+//! (`Config::from_env` refuses both together). Neither declared ⇒ this
+//! module does not run at all: no open, no syscalls, no per-period work.
+//!
+//! ## Starvation is SILENCE (owner ruling D4)
+//!
+//! A period the lane cannot fill is emitted as silence and counted
+//! (`DacContentMetrics::starved_periods`); there is no last-good replay and
+//! no fallback source. The lane IS the content source on an armed box, so
+//! there is nothing to fall back TO — the direct content PCM this lane once
+//! fell back to went away with the snd-aloop route (ADR-0100), which left
+//! the old damped-recovery policy reaching a caller that parks. Health is
+//! self-reported on the STATUS surface (`DacContentMetrics` → the
+//! `dac_content` block) — daemon truth, never a Python mirror of env intent
+//! (the removed `SNAPFIFO_PRODUCER_WIRED` lesson).
 //!
 //! ## Timing
 //!
-//! All FIFO I/O is non-blocking and happens on the DAC loop thread; the
-//! DAC write remains the sole pacer (inv-1). Worst case per period is one
-//! `open(2)` attempt (FIFO missing) or a few bounded `read(2)` calls —
-//! never a blocking wait on the producer.
+//! All I/O is non-blocking and happens on the DAC loop thread; the DAC write
+//! remains the sole pacer (inv-1). Worst case per period is one `open(2)`
+//! attempt (FIFO missing) or a few bounded `read(2)` calls on the FIFO arm,
+//! and one try-consume on the ring arm — never a blocking wait on the
+//! producer.
 //!
 //! ## Channel pick
 //!
-//! The FIFO carries the bond's SHARED stereo program (L = leader-seat
+//! The lane carries the bond's SHARED stereo program (L = leader-seat
 //! corrected, R = follower-seat corrected). A stereo-pair leader plays
 //! only ITS channel, and — unlike a follower, whose snapclient plays
 //! through an ALSA `ttable` plug — this lane has no ALSA hop to do the
@@ -50,26 +54,23 @@
 //! (docs/HANDOFF-multiroom.md §4): `left`/`right` duplicate that program
 //! channel onto both DAC channels; `mono` averages (the clip-safe L+R sum
 //! at −6.02 dB, matching `jasper.camilla_emit.MONO_SUM_GAIN_DB`); `stereo`
-//! is passthrough.
-//!
-//! **The pick applies to FIFO periods ONLY — a deliberate decision, not
-//! an oversight.** The pick is a property of the shared-STREAM format
-//! (which program channel this speaker takes from the bond's stereo
-//! stream); inv-B fallback periods play the DIRECT content lane, which
-//! carries this speaker's own already-correct local format. Increment 5
-//! owns the contract for what feeds that lane on a bonded member; if it
-//! ever feeds the shared-stream format there instead, the pick moves
-//! with that decision.
+//! is passthrough. Both transports carry the same shared-stream format, so
+//! the pick is applied identically on either — and it is applied to a
+//! STARVED (silent) period too, so the `Sub` low-pass and the mains
+//! high-pass keep decaying through an outage instead of resuming from
+//! frozen state.
 
 use std::io;
 use std::os::fd::RawFd;
 
+use anyhow::Result;
 use jasper_tts_protocol::loudness::Biquad;
 
-use crate::types::ProgramSample;
+use crate::shm_ring_source::ShmRingSource;
+use crate::types::{ProgramSample, SampleFormat};
 
-/// Sample rate of the round-trip lane. Pinned to the SNAPFIFO stream
-/// format (48000:16:2) — the FIFO never carries any other rate, so the
+/// Sample rate of the round-trip lane. Pinned to the snapclient stream
+/// format (48000:16:2) — neither transport carries any other rate, so the
 /// sub low-pass / mains high-pass coefficients can be precomputed
 /// against this constant.
 pub const SUB_SAMPLE_RATE_HZ: f64 = 48_000.0;
@@ -196,17 +197,10 @@ impl Lr4HighPass {
 /// lane can accumulate if the producer briefly outpaces the DAC
 /// (~170 ms at 1024-frame periods); overflow drops the OLDEST whole
 /// periods so alignment is preserved and the lane stays current.
+///
+/// FIFO arm only — the ring's depth is its `n_slots`, a property of the
+/// mapping both ends agreed on at attach.
 pub const MAX_STAGED_PERIODS: usize = 8;
-
-/// Recovery hysteresis: how many periods must be staged for the FIFO to
-/// count as "ready" again after a fallback…
-pub const RECOVERY_READY_PERIODS: usize = 2;
-
-/// …and for how many CONSECUTIVE DAC periods it must stay ready before
-/// we switch back. Together ≈ 210 ms of demonstrated producer health at
-/// 1024-frame periods — one clean transition out and one back per real
-/// event, never per-period flapping between two time-offset copies.
-pub const RECOVERY_STREAK_PERIODS: u32 = 10;
 
 /// Which channel of the shared stereo program this speaker plays.
 ///
@@ -416,14 +410,15 @@ impl PeriodAssembler {
     }
 
     /// Pop one period into `out`, widening the wire's S16 samples onto the
-    /// program spine. Returns false when a full period is not staged.
+    /// program spine. Returns false when a full period is not staged (leaving
+    /// `out` untouched — the caller owns the silence).
     /// `out.len() * 2 == period_bytes`.
     ///
     /// The FIFO itself stays **S16 by contract** (D8): the producer is
     /// snapclient, an external process on a documented `48000:16:2` wire, so
     /// `period_bytes` remains 2 bytes per sample and this is an S16 INGRESS into
     /// the spine — the same widen the ALSA content lane performs, at a different
-    /// door.
+    /// door, and the same width the ring arm's wire carries for the same reason.
     fn pop_period(&mut self, out: &mut [ProgramSample]) -> bool {
         debug_assert_eq!(out.len() * 2, self.period_bytes);
         if self.staging.len() < self.period_bytes {
@@ -440,270 +435,80 @@ impl PeriodAssembler {
     }
 }
 
-/// Pure fallback policy: WHICH source serves this period, with damped
-/// recovery. Mode transitions are single events per real producer
-/// outage, never per-period oscillation (see `RECOVERY_*`).
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum Mode {
-    Fifo,
-    Fallback,
-}
-
-#[derive(Debug)]
-struct FallbackPolicy {
-    mode: Mode,
-    ready_streak: u32,
-    /// True once the FIFO has served at least once. The FIRST entry into
-    /// `Mode::Fifo` is an ENGAGEMENT (nothing was lost), not a recovery —
-    /// keeping `recoveries` == completed outage cycles, symmetric with
-    /// `fallback_transitions` (operator clarity: recoveries can never
-    /// exceed transitions).
-    engaged: bool,
-    fallback_transitions: u64,
-    recoveries: u64,
-}
-
-impl FallbackPolicy {
-    fn new() -> Self {
-        // Start in Fallback: serve the direct path until the producer
-        // DEMONSTRATES health (the same damped criterion as recovery).
-        // A leader whose producer never starts therefore plays direct
-        // from the first period — configured-but-dry is never silent.
-        Self {
-            mode: Mode::Fallback,
-            ready_streak: 0,
-            engaged: false,
-            fallback_transitions: 0,
-            recoveries: 0,
-        }
-    }
-
-    /// Decide for one period given how many periods are staged.
-    /// Returns true when the FIFO should serve this period.
-    fn serve_from_fifo(&mut self, staged_periods: usize) -> bool {
-        match self.mode {
-            Mode::Fifo => {
-                if staged_periods >= 1 {
-                    true
-                } else {
-                    // Immediate fallback: zero periods of silence (inv-B).
-                    self.mode = Mode::Fallback;
-                    self.ready_streak = 0;
-                    self.fallback_transitions += 1;
-                    false
-                }
-            }
-            Mode::Fallback => {
-                if staged_periods >= RECOVERY_READY_PERIODS {
-                    self.ready_streak += 1;
-                    if self.ready_streak >= RECOVERY_STREAK_PERIODS {
-                        self.mode = Mode::Fifo;
-                        if self.engaged {
-                            self.recoveries += 1;
-                        }
-                        self.engaged = true;
-                        return true;
-                    }
-                } else {
-                    self.ready_streak = 0;
-                }
-                false
-            }
-        }
-    }
-}
-
 /// Counters + gauges for the STATUS `dac_content` block. Plain data —
 /// `OutputdState::mark_dac_content` copies it into atomics.
-#[derive(Debug, Clone, Copy, Default)]
+#[derive(Debug, Clone, Copy)]
 pub struct DacContentMetrics {
-    /// True when the FIFO is currently serving the DAC (false = the
-    /// inv-B direct fallback is serving, including the never-started
-    /// producer case).
+    /// True when the lane filled the LAST period with real audio.
+    ///
+    /// **The name is the wire's, and it is load-bearing.** Python reads
+    /// `dac_content.serving_fifo` for the pair-lock verdict
+    /// (`jasper.multiroom.state`, `jasper.control.grouping_supervisor`), where
+    /// it means "bytes are flowing" and explicitly NOT "sample lock proven".
+    /// That meaning holds unchanged on the ring arm, so the field keeps its
+    /// name across the transport change rather than breaking those readers;
+    /// the `fifo` vocabulary leaves this lane when the FIFO arm does.
+    ///
+    /// It is now a per-period fact rather than a damped mode: under D4 there
+    /// is no mode to be in, so a poll landing on a starved period honestly
+    /// reports false. `starved_periods` carries the cumulative truth.
     pub serving_fifo: bool,
+    /// Periods the lane filled with real audio.
     pub fifo_periods: u64,
-    pub fallback_periods: u64,
-    /// FIFO→fallback transitions (each is one real producer outage).
-    pub fallback_transitions: u64,
-    /// Damped fallback→FIFO recoveries.
-    pub recoveries: u64,
+    /// Periods the lane could not fill and emitted as SILENCE (D4). The
+    /// counter is the whole visibility budget for an outage: there is no
+    /// fallback source and no replay, so this is what climbing means.
+    pub starved_periods: u64,
     /// Periods currently staged (gauge; healthy steady state ≈ 1–2).
+    /// FIFO arm only — 0 on the ring, whose queue is the mapping itself.
     pub staged_periods: u64,
     /// Oldest-period drops from staging overflow (producer outpacing
-    /// the DAC — should stay 0 with a sane producer).
+    /// the DAC — should stay 0 with a sane producer). FIFO arm only.
     pub overflow_dropped_periods: u64,
+    /// FIFO arm only: the ring attaches once at startup or refuses loudly.
     pub open_failures: u64,
     pub read_failures: u64,
 }
 
-/// The DAC-content FIFO source. One instance per daemon, owned by the
-/// DAC loop; all I/O non-blocking on that thread.
-pub struct DacContentSource {
+/// The lane's raw-PCM FIFO transport — snapclient `--player file:<FIFO>`.
+///
+/// Retained until the ring arm is verified on metal. All I/O is non-blocking
+/// on the DAC loop thread.
+struct FifoReader {
     path: String,
-    channel: ChannelPick,
-    /// Stateful LR4 low-pass for a `Sub` channel — `Some` iff
-    /// `channel` is `ChannelPick::Sub`. Owned here (not on the Copy
-    /// `ChannelPick`) so its biquad memory persists across periods;
-    /// (re)construct in `new` resets it.
-    sub_filter: Option<Lr4LowPass>,
-    /// Optional stateful stereo LR4 high-pass for MAIN channels when a
-    /// wireless sub is present and bass management is enabled. Two filter
-    /// instances keep L/R state independent. `None` means full-range mains.
-    main_highpass: Option<[Lr4HighPass; 2]>,
     fd: Option<RawFd>,
     assembler: PeriodAssembler,
-    policy: FallbackPolicy,
     read_buf: Vec<u8>,
-    fifo_periods: u64,
-    fallback_periods: u64,
     open_failures: u64,
     read_failures: u64,
-    logged_first_fallback: bool,
 }
 
-impl DacContentSource {
+impl FifoReader {
     /// No I/O here — the FIFO is opened lazily on the first period so a
     /// not-yet-created path is a normal startup ordering, not an error.
-    pub fn new(
-        path: &str,
-        channel: ChannelPick,
-        period_frames: u32,
-        main_highpass_hz: Option<f64>,
-    ) -> Self {
-        let period_bytes = (period_frames as usize) * 2 /* channels */ * 2 /* bytes */;
-        // A Sub channel owns a fresh (state-cleared) low-pass at its
-        // carried corner; every other pick has no filter.
-        let sub_filter = match channel {
-            ChannelPick::Sub(corner_hz) => Some(Lr4LowPass::new(corner_hz)),
-            _ => None,
-        };
-        let main_highpass = match (channel, main_highpass_hz) {
-            (ChannelPick::Sub(_), _) | (_, None) => None,
-            (_, Some(corner_hz)) => {
-                Some([Lr4HighPass::new(corner_hz), Lr4HighPass::new(corner_hz)])
-            }
-        };
+    fn new(path: &str, period_bytes: usize) -> Self {
         Self {
             path: path.to_string(),
-            channel,
-            sub_filter,
-            main_highpass,
             fd: None,
             assembler: PeriodAssembler::new(period_bytes),
-            policy: FallbackPolicy::new(),
             read_buf: vec![0u8; period_bytes],
-            fifo_periods: 0,
-            fallback_periods: 0,
             open_failures: 0,
             read_failures: 0,
-            logged_first_fallback: false,
         }
     }
 
-    /// Try to serve one period from the FIFO into `out`. Returns true
-    /// when `out` now holds round-trip audio; false means the caller
-    /// must fill `out` from the DIRECT content path for this period
-    /// (inv-B — never silence). Never blocks.
-    pub fn try_fill_period(&mut self, out: &mut [ProgramSample]) -> bool {
+    /// Fill `out` with one period, or ZERO it and return false when the
+    /// producer has not staged one. Same post-condition as the ring arm's
+    /// `read_period`: `out` is always left complete, so the lane never hands
+    /// the DAC a stale buffer.
+    fn fill(&mut self, out: &mut [ProgramSample]) -> bool {
         self.open_if_needed();
         self.drain_available();
-
-        let was_fallback = self.policy.mode == Mode::Fallback;
-        if self.policy.serve_from_fifo(self.assembler.staged_periods()) {
-            let popped = self.assembler.pop_period(out);
-            if !popped {
-                // Structurally impossible (the policy only grants a serve
-                // when >=1 period is staged), but on a reboot-on-fail
-                // daemon an invariant break must degrade to a clean
-                // direct-path period — never a stale-buffer glitch.
-                debug_assert!(false, "policy granted FIFO serve without a staged period");
-                eprintln!(
-                    "event=outputd.dac_content.pop_underrun fifo={} action=serve_direct_content",
-                    self.path,
-                );
-                self.fallback_periods += 1;
-                return false;
-            }
-            if was_fallback {
-                eprintln!(
-                    "event=outputd.dac_content.{} fifo={} staged_periods={}",
-                    if self.policy.recoveries == 0 {
-                        "engaged"
-                    } else {
-                        "recovered"
-                    },
-                    self.path,
-                    self.assembler.staged_periods(),
-                );
-            }
-            self.channel.apply_with_main_highpass(
-                out,
-                self.sub_filter.as_mut(),
-                self.main_highpass.as_mut(),
-            );
-            self.fifo_periods += 1;
-            true
-        } else {
-            if !was_fallback {
-                // A real FIFO→fallback transition. Log the first one
-                // unconditionally; afterwards transitions stay visible
-                // via the STATUS counters (recovery is damped, so a
-                // flapping producer cannot spam the journal).
-                if !self.logged_first_fallback {
-                    eprintln!(
-                        "event=outputd.dac_content.fallback reason=fifo_starved fifo={} \
-                         action=serve_direct_content detail=inv-B: leader keeps playing \
-                         the direct path; see HANDOFF-multiroom.md §2",
-                        self.path,
-                    );
-                    self.logged_first_fallback = true;
-                }
-            }
-            self.fallback_periods += 1;
-            false
+        if self.assembler.pop_period(out) {
+            return true;
         }
-    }
-
-    /// Apply this source's channel pick to a period the caller filled
-    /// from the DIRECT (inv-B fallback) content lane, sharing the SAME
-    /// stateful filter as the FIFO path so a starvation transition is
-    /// continuous.
-    ///
-    /// For most picks the direct lane already carries this speaker's own
-    /// correct format, so the pick is a FIFO-only property and this is a
-    /// no-op (matches the module-level "pick applies to FIFO periods
-    /// ONLY" decision). But a `Sub` member MUST NEVER play full-range —
-    /// the dumb-sub lane carries the bond's full-range stereo on the
-    /// direct path too — so for `Sub` this collapses to the clip-safe
-    /// mono sum and runs the LR4 low-pass, exactly as the FIFO path does.
-    /// The DAC loop calls this on every fallback period; only `Sub`
-    /// changes the buffer.
-    pub fn apply_pick_to_fallback_period(&mut self, period: &mut [ProgramSample]) {
-        if matches!(self.channel, ChannelPick::Sub(_)) || self.main_highpass.is_some() {
-            self.channel.apply_with_main_highpass(
-                period,
-                self.sub_filter.as_mut(),
-                self.main_highpass.as_mut(),
-            );
-        }
-    }
-
-    pub fn main_highpass_corner_hz(&self) -> Option<f64> {
-        self.main_highpass.map(|filters| filters[0].corner_hz())
-    }
-
-    pub fn metrics(&self) -> DacContentMetrics {
-        DacContentMetrics {
-            serving_fifo: self.policy.mode == Mode::Fifo,
-            fifo_periods: self.fifo_periods,
-            fallback_periods: self.fallback_periods,
-            fallback_transitions: self.policy.fallback_transitions,
-            recoveries: self.policy.recoveries,
-            staged_periods: self.assembler.staged_periods() as u64,
-            overflow_dropped_periods: self.assembler.overflow_dropped_periods,
-            open_failures: self.open_failures,
-            read_failures: self.read_failures,
-        }
+        out.fill(0);
+        false
     }
 
     fn open_if_needed(&mut self) {
@@ -728,11 +533,7 @@ impl DacContentSource {
             )
         };
         if fd >= 0 {
-            eprintln!(
-                "event=outputd.dac_content.opened fifo={} channel={}",
-                self.path,
-                self.channel.as_str(),
-            );
+            eprintln!("event=outputd.dac_content.opened fifo={}", self.path);
             self.fd = Some(fd);
         } else {
             self.open_failures += 1;
@@ -783,10 +584,190 @@ impl DacContentSource {
     }
 }
 
-impl Drop for DacContentSource {
+impl Drop for FifoReader {
     fn drop(&mut self) {
         if let Some(fd) = self.fd.take() {
             unsafe { libc::close(fd) };
+        }
+    }
+}
+
+/// The lane's transport. Exactly one arm exists per daemon; `Config::from_env`
+/// refuses a box that declares both.
+enum Reader {
+    Fifo(FifoReader),
+    /// The SHM ring, read through the SAME reader the central content hop uses
+    /// ([`ShmRingSource`]) rather than a second attach/widen/counter
+    /// implementation: it already is "attach a declared geometry, try-consume
+    /// one slot per DAC period, zero-fill on empty, never block".
+    Ring(ShmRingSource),
+}
+
+/// The DAC-content source. One instance per daemon, owned by the DAC loop;
+/// all I/O non-blocking on that thread.
+pub struct DacContentSource {
+    reader: Reader,
+    channel: ChannelPick,
+    /// Stateful LR4 low-pass for a `Sub` channel — `Some` iff
+    /// `channel` is `ChannelPick::Sub`. Owned here (not on the Copy
+    /// `ChannelPick`) so its biquad memory persists across periods;
+    /// (re)construct resets it.
+    sub_filter: Option<Lr4LowPass>,
+    /// Optional stateful stereo LR4 high-pass for MAIN channels when a
+    /// wireless sub is present and bass management is enabled. Two filter
+    /// instances keep L/R state independent. `None` means full-range mains.
+    main_highpass: Option<[Lr4HighPass; 2]>,
+    served_periods: u64,
+    starved_periods: u64,
+    last_period_served: bool,
+    logged_first_starvation: bool,
+}
+
+impl DacContentSource {
+    /// The FIFO transport. No I/O here — see [`FifoReader::new`].
+    pub fn fifo(
+        path: &str,
+        channel: ChannelPick,
+        period_frames: u32,
+        main_highpass_hz: Option<f64>,
+    ) -> Self {
+        let period_bytes = (period_frames as usize) * 2 /* channels */ * 2 /* bytes */;
+        Self::with_reader(
+            Reader::Fifo(FifoReader::new(path, period_bytes)),
+            channel,
+            main_highpass_hz,
+        )
+    }
+
+    /// The SHM ring transport — attaches (or creates) the return ring at
+    /// `path` at the lane's pinned geometry.
+    ///
+    /// The geometry is NOT negotiated here: the wire is S16LE stereo by
+    /// contract (snapclient decodes to the snapserver-pinned `48000:16:2`)
+    /// and the slot is one DAC period, so the only free field is `n_slots`,
+    /// which the caller passes from the same constant the conf.d block and
+    /// `jasper.multiroom.dac_content_ring` spell. `RingReader::create_or_attach`
+    /// compares every field against the live header and refuses a mismatch
+    /// with `InvalidData`, so a writer that disagrees on ANY of them parks
+    /// this daemon instead of being reinterpreted at the wrong stride.
+    pub fn ring(
+        path: &str,
+        channel: ChannelPick,
+        period_frames: u32,
+        n_slots: u32,
+        main_highpass_hz: Option<f64>,
+    ) -> io::Result<Self> {
+        let ring = ShmRingSource::new(path, period_frames, 2, SampleFormat::S16Le, n_slots)?;
+        Ok(Self::with_reader(
+            Reader::Ring(ring),
+            channel,
+            main_highpass_hz,
+        ))
+    }
+
+    fn with_reader(reader: Reader, channel: ChannelPick, main_highpass_hz: Option<f64>) -> Self {
+        // A Sub channel owns a fresh (state-cleared) low-pass at its
+        // carried corner; every other pick has no filter.
+        let sub_filter = match channel {
+            ChannelPick::Sub(corner_hz) => Some(Lr4LowPass::new(corner_hz)),
+            _ => None,
+        };
+        let main_highpass = match (channel, main_highpass_hz) {
+            (ChannelPick::Sub(_), _) | (_, None) => None,
+            (_, Some(corner_hz)) => {
+                Some([Lr4HighPass::new(corner_hz), Lr4HighPass::new(corner_hz)])
+            }
+        };
+        Self {
+            reader,
+            channel,
+            sub_filter,
+            main_highpass,
+            served_periods: 0,
+            starved_periods: 0,
+            last_period_served: false,
+            logged_first_starvation: false,
+        }
+    }
+
+    /// Fill `out` with this lane's period. Never blocks.
+    ///
+    /// An armed lane IS the content source, so it always answers: real audio
+    /// when the producer kept up, SILENCE when it did not (D4 — no replay, no
+    /// fallback, a counter instead). The caller therefore has no "not served"
+    /// branch to take.
+    ///
+    /// The `Err` is the ring arm's slot-length contract only — a destination
+    /// that is not exactly one slot would emit a short or stale period, so it
+    /// fails loud rather than playing it. Publish [`Self::metrics`] before
+    /// propagating it, as the central ring's call site does, so `/state`'s
+    /// last sample stays honest through a fatal period.
+    pub fn fill_period(&mut self, out: &mut [ProgramSample]) -> Result<()> {
+        let served = match &mut self.reader {
+            Reader::Fifo(fifo) => fifo.fill(out),
+            // `read_period` zero-fills on an empty ring, so both arms leave
+            // `out` complete either way.
+            Reader::Ring(ring) => ring.read_period(out)? > 0,
+        };
+        self.last_period_served = served;
+        if served {
+            self.served_periods += 1;
+        } else {
+            self.starved_periods += 1;
+            if !self.logged_first_starvation {
+                // Once per process: the counter carries the rest, so a
+                // chronically dry producer cannot spam the journal.
+                eprintln!(
+                    "event=outputd.dac_content.starved transport={} action=emit_silence \
+                     detail=D4: the return lane has no fallback source; see \
+                     starved_periods in /state",
+                    self.transport(),
+                );
+                self.logged_first_starvation = true;
+            }
+        }
+        // Applied on a starved period too, so the Sub low-pass and the mains
+        // high-pass decay through an outage instead of resuming from frozen
+        // state. On silence every pick is value-preserving except those two
+        // filters, which is exactly the point.
+        self.channel.apply_with_main_highpass(
+            out,
+            self.sub_filter.as_mut(),
+            self.main_highpass.as_mut(),
+        );
+        Ok(())
+    }
+
+    fn transport(&self) -> &'static str {
+        match self.reader {
+            Reader::Fifo(_) => "fifo",
+            Reader::Ring(_) => "ring",
+        }
+    }
+
+    pub fn main_highpass_corner_hz(&self) -> Option<f64> {
+        self.main_highpass.map(|filters| filters[0].corner_hz())
+    }
+
+    pub fn metrics(&self) -> DacContentMetrics {
+        let (staged_periods, overflow_dropped_periods, open_failures, read_failures) =
+            match &self.reader {
+                Reader::Fifo(fifo) => (
+                    fifo.assembler.staged_periods() as u64,
+                    fifo.assembler.overflow_dropped_periods,
+                    fifo.open_failures,
+                    fifo.read_failures,
+                ),
+                Reader::Ring(_) => (0, 0, 0, 0),
+            };
+        DacContentMetrics {
+            serving_fifo: self.last_period_served,
+            fifo_periods: self.served_periods,
+            starved_periods: self.starved_periods,
+            staged_periods,
+            overflow_dropped_periods,
+            open_failures,
+            read_failures,
         }
     }
 }
@@ -864,54 +845,6 @@ mod tests {
         let mut out = [0 as ProgramSample; 4];
         assert!(a.pop_period(&mut out));
         assert_eq!(out.to_vec(), wv(&[2, 2, 2, 2])); // periods 0 and 1 dropped
-    }
-
-    // ---------- pure: FallbackPolicy ----------
-
-    #[test]
-    fn policy_starts_in_fallback_and_needs_damped_health_to_serve() {
-        let mut p = FallbackPolicy::new();
-        // Dry producer: stays in fallback forever, no transition churn.
-        for _ in 0..100 {
-            assert!(!p.serve_from_fifo(0));
-        }
-        assert_eq!(p.fallback_transitions, 0);
-        // Producer appears: must stay ready RECOVERY_STREAK_PERIODS long.
-        for i in 0..(RECOVERY_STREAK_PERIODS - 1) {
-            assert!(!p.serve_from_fifo(RECOVERY_READY_PERIODS), "period {i}");
-        }
-        assert!(p.serve_from_fifo(RECOVERY_READY_PERIODS));
-        // The FIRST take-over is an ENGAGEMENT, not a recovery: nothing
-        // was lost, so recoveries stays 0 (and can never exceed
-        // fallback_transitions — the operator-clarity invariant).
-        assert_eq!(p.recoveries, 0);
-        assert_eq!(p.fallback_transitions, 0);
-    }
-
-    #[test]
-    fn policy_falls_back_immediately_on_starvation_never_silence() {
-        let mut p = FallbackPolicy::new();
-        for _ in 0..RECOVERY_STREAK_PERIODS {
-            p.serve_from_fifo(RECOVERY_READY_PERIODS);
-        }
-        assert!(p.serve_from_fifo(1)); // serving from FIFO
-                                       // The very period the FIFO is dry, fall back (no silence gap).
-        assert!(!p.serve_from_fifo(0));
-        assert_eq!(p.fallback_transitions, 1);
-    }
-
-    #[test]
-    fn policy_recovery_streak_resets_on_flap() {
-        let mut p = FallbackPolicy::new();
-        // Almost recover, then flap: streak must reset (damping).
-        for _ in 0..(RECOVERY_STREAK_PERIODS - 1) {
-            p.serve_from_fifo(RECOVERY_READY_PERIODS);
-        }
-        assert!(!p.serve_from_fifo(0)); // flap: not ready
-        for i in 0..(RECOVERY_STREAK_PERIODS - 1) {
-            assert!(!p.serve_from_fifo(RECOVERY_READY_PERIODS), "period {i}");
-        }
-        assert!(p.serve_from_fifo(RECOVERY_READY_PERIODS));
     }
 
     // ---------- pure: ChannelPick ----------
@@ -1282,7 +1215,7 @@ mod tests {
         // A "sub" pick at the default corner builds a low-pass on the
         // source (a sub must never run filterless / full-range).
         let fifo = TempFifo::create("sub-default");
-        let src = DacContentSource::new(
+        let src = DacContentSource::fifo(
             fifo.path_str(),
             ChannelPick::Sub(SUB_DEFAULT_CORNER_HZ),
             TEST_PERIOD_FRAMES,
@@ -1296,66 +1229,9 @@ mod tests {
     }
 
     #[test]
-    fn source_sub_fallback_period_is_low_passed_never_full_range() {
-        // inv-B fallback periods for a Sub member must also be collapsed
-        // to mono + low-passed — the dumb-sub lane carries full-range
-        // stereo on the direct path too, and a sub must NEVER play it.
-        let fifo = TempFifo::create("sub-fallback");
-        let mut src = DacContentSource::new(
-            fifo.path_str(),
-            ChannelPick::Sub(80.0),
-            TEST_PERIOD_FRAMES,
-            None,
-        );
-        // A burst of high-frequency-ish full-scale content on the direct
-        // (fallback) lane: alternating +/- full scale ≈ Nyquist content,
-        // which the sub LP must crush.
-        let mut total_peak = 0i64;
-        for blk in 0..200 {
-            let mut period = vec![0 as ProgramSample; (TEST_PERIOD_FRAMES as usize) * 2];
-            for (i, s) in period.iter_mut().enumerate() {
-                *s = if (blk + i) % 2 == 0 {
-                    ProgramSample::MAX
-                } else {
-                    ProgramSample::MIN
-                };
-            }
-            src.apply_pick_to_fallback_period(&mut period);
-            // Both channels identical (mono).
-            for frame in period.chunks_exact(2) {
-                assert_eq!(frame[0], frame[1]);
-            }
-            if blk >= 50 {
-                for &s in &period {
-                    // i64: `ProgramSample::MIN.abs()` panics at i32.
-                    total_peak = total_peak.max(i64::from(s).abs());
-                }
-            }
-        }
-        assert!(
-            total_peak < i64::from(w(1_000)),
-            "sub fallback leaked near-Nyquist content: peak {total_peak}"
-        );
-    }
-
-    #[test]
-    fn source_non_sub_fallback_period_is_untouched() {
-        // For non-Sub picks the direct lane already carries the correct
-        // local format, so the fallback helper is a no-op (the module's
-        // "pick applies to FIFO periods ONLY" decision).
-        let fifo = TempFifo::create("left-fallback");
-        let mut src =
-            DacContentSource::new(fifo.path_str(), ChannelPick::Left, TEST_PERIOD_FRAMES, None);
-        let original = wv(&[10, 20, 30, 40, 50, 60, 70, 80]);
-        let mut period = original.clone();
-        src.apply_pick_to_fallback_period(&mut period);
-        assert_eq!(period, original, "non-Sub fallback must be untouched");
-    }
-
-    #[test]
     fn source_main_highpass_is_built_for_mains_and_ignored_for_sub() {
         let fifo = TempFifo::create("main-hp-build");
-        let src = DacContentSource::new(
+        let src = DacContentSource::fifo(
             fifo.path_str(),
             ChannelPick::Left,
             TEST_PERIOD_FRAMES,
@@ -1363,7 +1239,7 @@ mod tests {
         );
         assert_eq!(src.main_highpass_corner_hz(), Some(80.0));
 
-        let sub = DacContentSource::new(
+        let sub = DacContentSource::fifo(
             fifo.path_str(),
             ChannelPick::Sub(80.0),
             TEST_PERIOD_FRAMES,
@@ -1373,32 +1249,95 @@ mod tests {
         assert!(sub.sub_filter.is_some());
     }
 
+    /// A starved period REPLACES whatever the caller left in the buffer.
+    ///
+    /// Unfiltered pick, so the lane's silence is exactly zeros: the caller's
+    /// stale content must not survive, which is the D4 half that says an outage
+    /// is silence rather than a replay.
     #[test]
-    fn source_main_highpass_applies_to_fallback_periods() {
-        // Bass management is local speaker shaping, so the inv-B direct
-        // fallback path must be high-passed too while a sub is present.
-        let fifo = TempFifo::create("main-hp-fallback");
-        let mut src = DacContentSource::new(
+    fn a_starved_period_replaces_the_callers_buffer_with_silence() {
+        let fifo = TempFifo::create("starved-silence");
+        let mut src = DacContentSource::fifo(
             fifo.path_str(),
             ChannelPick::Stereo,
             TEST_PERIOD_FRAMES,
-            Some(80.0),
+            None,
         );
-        let settle_blocks = (SUB_SAMPLE_RATE_HZ as usize / TEST_PERIOD_FRAMES as usize).max(1);
-        let mut peak = 0i64;
-        for blk in 0..(settle_blocks + 200) {
-            let mut period = vec![w(10_000); (TEST_PERIOD_FRAMES as usize) * 2];
-            src.apply_pick_to_fallback_period(&mut period);
-            if blk >= settle_blocks {
-                for &s in &period {
-                    peak = peak.max(i64::from(s).abs());
-                }
-            }
+        let mut out = vec![w(12_345); (TEST_PERIOD_FRAMES as usize) * 2];
+        src.fill_period(&mut out).unwrap();
+        assert_eq!(out, vec![0 as ProgramSample; 8]);
+        let m = src.metrics();
+        assert!(!m.serving_fifo);
+        assert_eq!(m.starved_periods, 1);
+        assert_eq!(m.fifo_periods, 0);
+    }
+
+    /// A starved period still runs the pick's stateful filters.
+    ///
+    /// This is what survives of the deleted `apply_pick_to_fallback_period`
+    /// pins: their subject (a fallback period carrying the direct lane's
+    /// full-range stereo) went away with the fallback, but the
+    /// filter-continuity property they depended on is now the reason the pick
+    /// runs on silence — a filter frozen through an outage resumes from stale
+    /// memory and thumps.
+    ///
+    /// The distinguishing evidence is a `Sub` member's ring-down: after a loud
+    /// run the first starved periods are NOT silent, and the tail shrinks. A
+    /// source that skipped the pick on starvation would emit exact zeros from
+    /// the first starved period, so this fails on that mutation.
+    #[test]
+    fn a_starved_period_keeps_the_stateful_filters_running() {
+        let fifo = TempFifo::create("starved-sub-tail");
+        let mut src = DacContentSource::fifo(
+            fifo.path_str(),
+            ChannelPick::Sub(80.0),
+            TEST_PERIOD_FRAMES,
+            None,
+        );
+        let mut writer = connect_producer(&mut src, &fifo);
+        let mut out = vec![0 as ProgramSample; 8];
+        // Settle the LR4 low-pass at full scale: one period in, one period out,
+        // so staging never overflows. 600 x 4 frames = 50 ms, many time
+        // constants at an 80 Hz corner.
+        let loud = le_bytes(&[i16::MAX; 8]);
+        for _ in 0..600 {
+            writer.write_all(&loud).unwrap();
+            src.fill_period(&mut out).unwrap();
         }
+        assert!(src.metrics().serving_fifo);
+        let settled = settled_peak(&out, 0);
         assert!(
-            peak < i64::from(w(100)),
-            "main HP fallback leaked DC bass: peak {peak}"
+            settled > i64::from(w(20_000)),
+            "LP never settled: {settled}"
         );
+
+        // Producer stops. The lane is starving, but the low-pass keeps being
+        // driven with silence, so its charge rings DOWN instead of vanishing.
+        drop(writer);
+        let mut first_starved_peak = None;
+        let mut last_peak = i64::MAX;
+        for _ in 0..40 {
+            src.fill_period(&mut out).unwrap();
+            if src.metrics().serving_fifo {
+                continue; // still draining the kernel FIFO
+            }
+            let peak = settled_peak(&out, 0);
+            if first_starved_peak.is_none() {
+                first_starved_peak = Some(peak);
+            } else {
+                assert!(
+                    peak < last_peak,
+                    "the low-pass tail must decay through the outage: {peak} !< {last_peak}"
+                );
+            }
+            last_peak = peak;
+        }
+        let first = first_starved_peak.expect("the source never starved");
+        assert!(
+            first > i64::from(w(1_000)),
+            "a frozen filter would have emitted exact silence; got {first}"
+        );
+        assert!(src.metrics().starved_periods >= 2);
     }
 
     // ---------- end-to-end with a real FIFO ----------
@@ -1451,12 +1390,8 @@ mod tests {
     /// ordering so no test can reintroduce that deadlock.
     fn connect_producer(src: &mut DacContentSource, fifo: &TempFifo) -> std::fs::File {
         let mut out = vec![0 as ProgramSample; (TEST_PERIOD_FRAMES as usize) * 2];
-        // Prime the source's read end (a fallback period, no writer yet).
-        let _ = src.try_fill_period(&mut out);
-        debug_assert!(
-            src.fd.is_some(),
-            "read end must be open before the producer connects"
-        );
+        // Prime the source's read end (a starved period, no writer yet).
+        src.fill_period(&mut out).unwrap();
         std::fs::OpenOptions::new()
             .write(true)
             .open(&fifo.path)
@@ -1464,151 +1399,76 @@ mod tests {
     }
 
     #[test]
-    fn source_serves_direct_until_producer_demonstrates_health() {
-        let fifo = TempFifo::create("damped");
-        let mut src = DacContentSource::new(
+    fn fifo_serves_the_producers_periods_and_counts_them() {
+        let fifo = TempFifo::create("fifo-serves");
+        let mut src =
+            DacContentSource::fifo(fifo.path_str(), ChannelPick::Left, TEST_PERIOD_FRAMES, None);
+        let mut out = vec![0 as ProgramSample; 8];
+
+        // No writer: silence, honest counters, no panic, no block.
+        for _ in 0..3 {
+            src.fill_period(&mut out).unwrap();
+            assert!(out.iter().all(|&s| s == 0));
+        }
+        let m = src.metrics();
+        assert!(!m.serving_fifo);
+        assert_eq!(m.starved_periods, 3);
+        assert_eq!(m.fifo_periods, 0);
+
+        // Producer connects: the lane serves the very next period — there is
+        // no damped engagement streak left to wait through.
+        let mut writer = connect_producer(&mut src, &fifo);
+        writer
+            .write_all(&le_bytes(&[3i16, -3, 3, -3, 3, -3, 3, -3]))
+            .unwrap();
+        src.fill_period(&mut out).unwrap();
+        assert_eq!(out, vec![w(3); 8], "ChannelPick::Left duplicates ch0");
+        let m = src.metrics();
+        assert!(m.serving_fifo);
+        assert_eq!(m.fifo_periods, 1);
+        assert_eq!(m.open_failures, 0);
+    }
+
+    #[test]
+    fn fifo_starves_to_silence_when_the_writer_stops() {
+        let fifo = TempFifo::create("fifo-outage");
+        let mut src = DacContentSource::fifo(
             fifo.path_str(),
             ChannelPick::Stereo,
             TEST_PERIOD_FRAMES,
             None,
         );
         let mut out = vec![0 as ProgramSample; 8];
-
-        // No writer: every period is served direct (inv-B), no panic,
-        // no block, metrics honest.
-        for _ in 0..3 {
-            assert!(!src.try_fill_period(&mut out));
-        }
-        let m = src.metrics();
-        assert!(!m.serving_fifo);
-        assert_eq!(m.fallback_periods, 3);
-        assert_eq!(m.fifo_periods, 0);
-
-        // Producer connects and stays ahead: after the damped streak the
-        // FIFO takes over.
-        let mut writer = std::fs::OpenOptions::new()
-            .write(true)
-            .open(&fifo.path)
-            .unwrap();
-        let one_period = le_bytes(&[7i16; 8]);
-        // Pre-fill enough for the whole recovery streak plus the served
-        // periods that follow.
-        for _ in 0..(RECOVERY_STREAK_PERIODS as usize + 4) {
-            writer.write_all(&one_period).unwrap();
-        }
-
-        let mut served = 0;
-        for _ in 0..(RECOVERY_STREAK_PERIODS as usize + 2) {
-            if src.try_fill_period(&mut out) {
-                served += 1;
-                assert_eq!(out, vec![w(7); 8]);
-            }
-        }
-        assert!(
-            served >= 1,
-            "FIFO never took over after demonstrated health"
-        );
-        let m = src.metrics();
-        assert!(m.serving_fifo);
-        // First take-over = engagement, not a recovery (no outage yet).
-        assert_eq!(m.recoveries, 0);
-        assert_eq!(m.fallback_transitions, 0);
-        assert_eq!(m.open_failures, 0);
-    }
-
-    #[test]
-    fn source_missing_fifo_path_counts_open_failures_and_serves_direct() {
-        let path = temp_fifo_path("missing"); // never mkfifo'd
-        let mut src = DacContentSource::new(
-            path.to_str().unwrap(),
-            ChannelPick::Stereo,
-            TEST_PERIOD_FRAMES,
-            None,
-        );
-        let mut out = vec![0 as ProgramSample; 8];
-        for _ in 0..3 {
-            assert!(!src.try_fill_period(&mut out));
-        }
-        let m = src.metrics();
-        assert_eq!(m.open_failures, 3); // one retry per period, cheap
-        assert!(!m.serving_fifo);
-    }
-
-    #[test]
-    fn source_falls_back_immediately_when_writer_stops_then_recovers() {
-        let fifo = TempFifo::create("outage");
-        let mut src =
-            DacContentSource::new(fifo.path_str(), ChannelPick::Left, TEST_PERIOD_FRAMES, None);
-        let mut out = vec![0 as ProgramSample; 8];
-        let one_period = le_bytes(&[3i16, -3, 3, -3, 3, -3, 3, -3]);
-
-        // Healthy producer long enough to take over.
         let mut writer = connect_producer(&mut src, &fifo);
-        for _ in 0..(RECOVERY_STREAK_PERIODS as usize + 4) {
-            writer.write_all(&one_period).unwrap();
-        }
-        let mut took_over = false;
-        for _ in 0..(RECOVERY_STREAK_PERIODS as usize + 2) {
-            if src.try_fill_period(&mut out) {
-                took_over = true;
-                // ChannelPick::Left duplicated ch0 onto both channels.
-                assert_eq!(out, vec![w(3); 8]);
-            }
-        }
-        assert!(took_over);
+        writer.write_all(&le_bytes(&[9i16; 8])).unwrap();
+        src.fill_period(&mut out).unwrap();
+        assert_eq!(out, vec![w(9); 8]);
 
-        // Producer dies: serve every still-buffered period (staging PLUS
-        // whatever the kernel FIFO held when the write end closed — EOF
-        // arrives only after those are drained), then the next dry period
-        // falls back — never silence, exactly one transition. The bound
-        // generously exceeds the most the producer ever wrote, so the
-        // assertion can't be brittle to drain/pop interleaving.
+        // Writer dies: drain whatever is buffered, then every further period
+        // is SILENCE — never a replay of the last good one (D4).
         drop(writer);
-        let drain_bound = (RECOVERY_STREAK_PERIODS as usize + 4) + MAX_STAGED_PERIODS + 8;
-        let mut fell_back = false;
+        let drain_bound = MAX_STAGED_PERIODS + 8;
+        let mut starved = false;
         for _ in 0..drain_bound {
-            if !src.try_fill_period(&mut out) {
-                fell_back = true;
+            src.fill_period(&mut out).unwrap();
+            if !src.metrics().serving_fifo {
+                starved = true;
                 break;
             }
         }
-        assert!(
-            fell_back,
-            "source kept claiming FIFO audio after writer death"
+        assert!(starved, "source kept claiming audio after writer death");
+        assert_eq!(
+            out,
+            vec![0 as ProgramSample; 8],
+            "starvation must be silence"
         );
-        let m = src.metrics();
-        assert!(!m.serving_fifo);
-        assert_eq!(m.fallback_transitions, 1);
-
-        // New writer: damped recovery works again on the SAME fd (the
-        // source kept its read fd open across the producer's death, so
-        // the helper's prime is a no-op reopen — it does not churn fd).
-        let mut writer = connect_producer(&mut src, &fifo);
-        for _ in 0..(RECOVERY_STREAK_PERIODS as usize + 4) {
-            writer.write_all(&one_period).unwrap();
-        }
-        let mut recovered = false;
-        let deadline = Instant::now() + Duration::from_secs(2);
-        while Instant::now() < deadline {
-            if src.try_fill_period(&mut out) {
-                recovered = true;
-                break;
-            }
-        }
-        assert!(
-            recovered,
-            "source never recovered after a new writer connected"
-        );
-        // One real outage cycle: one transition, one recovery (the
-        // initial engagement does not count).
-        assert_eq!(src.metrics().recoveries, 1);
-        assert_eq!(src.metrics().fallback_transitions, 1);
+        assert!(src.metrics().starved_periods >= 1);
     }
 
     #[test]
-    fn source_never_blocks_with_a_writer_that_sends_nothing() {
+    fn fifo_never_blocks_with_a_writer_that_sends_nothing() {
         let fifo = TempFifo::create("idle-writer");
-        let mut src = DacContentSource::new(
+        let mut src = DacContentSource::fifo(
             fifo.path_str(),
             ChannelPick::Stereo,
             TEST_PERIOD_FRAMES,
@@ -1619,7 +1479,7 @@ mod tests {
         let mut out = vec![0 as ProgramSample; 8];
         let start = Instant::now();
         for _ in 0..10 {
-            assert!(!src.try_fill_period(&mut out));
+            src.fill_period(&mut out).unwrap();
         }
         assert!(
             start.elapsed() < Duration::from_millis(200),
@@ -1627,5 +1487,227 @@ mod tests {
             start.elapsed()
         );
         assert_eq!(src.metrics().read_failures, 0);
+    }
+
+    #[test]
+    fn fifo_missing_path_counts_open_failures_and_stays_silent() {
+        let path = temp_fifo_path("missing"); // never mkfifo'd
+        let mut src = DacContentSource::fifo(
+            path.to_str().unwrap(),
+            ChannelPick::Stereo,
+            TEST_PERIOD_FRAMES,
+            None,
+        );
+        let mut out = vec![0 as ProgramSample; 8];
+        for _ in 0..3 {
+            src.fill_period(&mut out).unwrap();
+        }
+        let m = src.metrics();
+        assert_eq!(m.open_failures, 3); // one retry per period, cheap
+        assert_eq!(m.starved_periods, 3);
+        assert!(!m.serving_fifo);
+    }
+
+    // ---------- the ring transport ----------
+
+    use jasper_ring::{Geometry, TestRingWriter, SAMPLE_FORMAT_S16LE, SAMPLE_FORMAT_S32LE};
+
+    fn temp_ring_path(tag: &str) -> std::path::PathBuf {
+        let nonce = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap()
+            .as_nanos();
+        let dir = std::env::temp_dir().join(format!(
+            "jts-dac-content-ring-{tag}-{}-{nonce}",
+            std::process::id()
+        ));
+        std::fs::create_dir_all(&dir).unwrap();
+        dir.join("dac-content.ring")
+    }
+
+    struct TempRing {
+        path: std::path::PathBuf,
+    }
+
+    impl TempRing {
+        fn create(tag: &str) -> Self {
+            Self {
+                path: temp_ring_path(tag),
+            }
+        }
+
+        fn path_str(&self) -> &str {
+            self.path.to_str().unwrap()
+        }
+    }
+
+    impl Drop for TempRing {
+        fn drop(&mut self) {
+            let _ = std::fs::remove_file(&self.path);
+            if let Some(p) = self.path.parent() {
+                let _ = std::fs::remove_dir(p);
+            }
+        }
+    }
+
+    /// The lane's wire at test scale: S16LE stereo, `TEST_PERIOD_FRAMES` slots.
+    fn ring_geometry(period_frames: u32, n_slots: u32) -> Geometry {
+        Geometry {
+            rate: 48_000,
+            channels: 2,
+            sample_format: SAMPLE_FORMAT_S16LE,
+            period_frames,
+            n_slots,
+        }
+    }
+
+    fn ring_source(ring: &TempRing, channel: ChannelPick) -> DacContentSource {
+        DacContentSource::ring(ring.path_str(), channel, TEST_PERIOD_FRAMES, 2, None).unwrap()
+    }
+
+    #[test]
+    fn ring_consumes_exactly_one_slot_per_period() {
+        let ring = TempRing::create("one-slot");
+        let mut src = ring_source(&ring, ChannelPick::Stereo);
+        let mut writer =
+            TestRingWriter::create_or_attach(ring.path_str(), ring_geometry(TEST_PERIOD_FRAMES, 2))
+                .unwrap();
+
+        // Two slots published; each period must take exactly ONE of them.
+        assert!(writer.try_publish_slot(&[1i16; 8]));
+        assert!(writer.try_publish_slot(&[2i16; 8]));
+
+        let mut out = vec![0 as ProgramSample; 8];
+        src.fill_period(&mut out).unwrap();
+        assert_eq!(out, vec![w(1); 8], "first period must take the first slot");
+        src.fill_period(&mut out).unwrap();
+        assert_eq!(
+            out,
+            vec![w(2); 8],
+            "second period must take the second slot"
+        );
+
+        let m = src.metrics();
+        assert_eq!(m.fifo_periods, 2);
+        assert_eq!(m.starved_periods, 0);
+        assert!(m.serving_fifo);
+        // FIFO-only gauges read zero on the ring — its queue is the mapping.
+        assert_eq!(m.staged_periods, 0);
+        assert_eq!(m.overflow_dropped_periods, 0);
+        assert_eq!(m.open_failures, 0);
+    }
+
+    #[test]
+    fn ring_starvation_is_silence_and_counts() {
+        let ring = TempRing::create("starve");
+        let mut src = ring_source(&ring, ChannelPick::Stereo);
+        let mut writer =
+            TestRingWriter::create_or_attach(ring.path_str(), ring_geometry(TEST_PERIOD_FRAMES, 2))
+                .unwrap();
+        assert!(writer.try_publish_slot(&[i16::MAX; 8]));
+
+        let mut out = vec![0 as ProgramSample; 8];
+        src.fill_period(&mut out).unwrap();
+        assert_eq!(out, vec![w(i16::MAX); 8]);
+        assert!(src.metrics().serving_fifo);
+
+        // Ring now empty: silence, a counter, and NO replay of the loud
+        // period just served (D4 — the whole point of the ruling).
+        for i in 1..=3 {
+            src.fill_period(&mut out).unwrap();
+            assert_eq!(
+                out,
+                vec![0 as ProgramSample; 8],
+                "period {i} must be silent"
+            );
+            let m = src.metrics();
+            assert!(!m.serving_fifo);
+            assert_eq!(m.starved_periods, i);
+            assert_eq!(m.fifo_periods, 1);
+        }
+    }
+
+    /// A geometry the ring cannot serve is refused at construction, typed —
+    /// the class `main` maps to a config-class park (exit 78) rather than a
+    /// restart loop.
+    #[test]
+    fn ring_geometry_mismatch_is_refused_typed() {
+        // Every axis the writer can disagree on, one at a time, against a
+        // reader that declares S16 / 2ch / TEST_PERIOD_FRAMES / 2 slots.
+        let cases: [(&str, Geometry); 3] = [
+            ("period", ring_geometry(TEST_PERIOD_FRAMES * 2, 2)),
+            ("slots", ring_geometry(TEST_PERIOD_FRAMES, 4)),
+            (
+                "format",
+                Geometry {
+                    sample_format: SAMPLE_FORMAT_S32LE,
+                    ..ring_geometry(TEST_PERIOD_FRAMES, 2)
+                },
+            ),
+        ];
+        for (label, written) in cases {
+            let ring = TempRing::create(&format!("mismatch-{label}"));
+            let _writer =
+                jasper_ring::RingWriter::create_or_attach(ring.path_str(), written).unwrap();
+            let err = match DacContentSource::ring(
+                ring.path_str(),
+                ChannelPick::Stereo,
+                TEST_PERIOD_FRAMES,
+                2,
+                None,
+            ) {
+                Ok(_) => panic!("{label} mismatch must be refused"),
+                Err(e) => e,
+            };
+            assert_eq!(err.kind(), io::ErrorKind::InvalidData, "{label}");
+        }
+    }
+
+    /// The pick means the same thing on either transport.
+    ///
+    /// Both arms carry the bond's shared stereo, so identical wire samples must
+    /// reach the DAC identically. Run every pick through both and compare — a
+    /// ring arm that forgot the pick, or applied it at a different point in the
+    /// chain, differs here on the first frame.
+    #[test]
+    fn the_pick_is_identical_on_both_transports() {
+        let wire: [i16; 8] = [100, -200, 3000, -4000, i16::MAX, i16::MIN, 0, 7];
+        for pick in [
+            ChannelPick::Stereo,
+            ChannelPick::Left,
+            ChannelPick::Right,
+            ChannelPick::Mono,
+            ChannelPick::Sub(80.0),
+        ] {
+            // FIFO arm.
+            let fifo = TempFifo::create(&format!("pick-fifo-{}", pick.as_str()));
+            let mut fifo_src =
+                DacContentSource::fifo(fifo.path_str(), pick, TEST_PERIOD_FRAMES, None);
+            let mut writer = connect_producer(&mut fifo_src, &fifo);
+            writer.write_all(&le_bytes(&wire)).unwrap();
+            let mut from_fifo = vec![0 as ProgramSample; 8];
+            fifo_src.fill_period(&mut from_fifo).unwrap();
+            assert!(fifo_src.metrics().serving_fifo, "{}", pick.as_str());
+
+            // Ring arm, same wire samples.
+            let ring = TempRing::create(&format!("pick-ring-{}", pick.as_str()));
+            let mut ring_src = ring_source(&ring, pick);
+            let mut ring_writer = TestRingWriter::create_or_attach(
+                ring.path_str(),
+                ring_geometry(TEST_PERIOD_FRAMES, 2),
+            )
+            .unwrap();
+            assert!(ring_writer.try_publish_slot(&wire));
+            let mut from_ring = vec![0 as ProgramSample; 8];
+            ring_src.fill_period(&mut from_ring).unwrap();
+            assert!(ring_src.metrics().serving_fifo, "{}", pick.as_str());
+
+            assert_eq!(
+                from_fifo,
+                from_ring,
+                "pick {} differs between transports",
+                pick.as_str()
+            );
+        }
     }
 }

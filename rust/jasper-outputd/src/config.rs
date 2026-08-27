@@ -79,6 +79,31 @@ pub const DEFAULT_SHM_RING_SLOTS: u32 = 2;
 pub const MIN_SHM_RING_SLOTS: u32 = 2;
 pub const MAX_SHM_RING_SLOTS: u32 = 16;
 
+/// The DAC-content RETURN ring — a grouping leader's round-trip ingress, read
+/// by `dac_content::DacContentSource`'s ring arm.
+///
+/// A THIRD ring, and deliberately not a third `*_SHM_RING_PATH` env: unlike the
+/// central content hop there is nothing to vary. Only a LEADER has a return
+/// path to carry, so there is no role-dependent second spelling, and the
+/// marker env below is a bare arm/disarm rather than a path. Mirrored by
+/// `jasper.multiroom.dac_content_ring.DAC_CONTENT_RING_FILE` and by
+/// `pcm.jts_ring_dac_content`'s `path` in
+/// `deploy/alsa/conf.d/63-jts-ring-dac-content.conf`; the three literals are
+/// pinned equal by `tests/test_dac_content_ring_platform.py`.
+pub const DEFAULT_DAC_CONTENT_RING_PATH: &str = "/dev/shm/jts-ring/dac-content.ring";
+
+/// Depth of that ring, at the ioplug's slot CEILING (`JTS_RING_MAX_SLOTS`).
+/// Not tunable from a conf.d edit, so not tunable from an env either — the
+/// writer's block spells the same number. 16 x 1024 frames = 341 ms at 48 kHz.
+pub const DAC_CONTENT_RING_SLOTS: u32 = 16;
+
+/// Frames per slot on that ring. The slot IS the reader's period, which is what
+/// lets outputd consume a whole DAC period per DAC period and never hold a
+/// partial slot — so a box whose `period_frames` is not this value cannot serve
+/// the lane, and `Config::from_env` refuses to arm it rather than creating a
+/// ring the writer's ioplug can never open.
+pub const DAC_CONTENT_RING_PERIOD_FRAMES: u32 = DEFAULT_PERIOD_FRAMES;
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ShmRingConfig {
     pub path: String,
@@ -220,9 +245,19 @@ pub struct Config {
     /// the direct content PCM whenever the FIFO starves (inv-B — never
     /// silence). `None` (default — solo) is byte-identical to today.
     pub dac_content_fifo: Option<String>,
+    /// The SAME round-trip lane on its destination transport: `Some` iff
+    /// `JASPER_OUTPUTD_DAC_CONTENT_LANE` marks this box a leader whose
+    /// snapclient writes [`DEFAULT_DAC_CONTENT_RING_PATH`] through the C
+    /// ioplug. Mutually exclusive with `dac_content_fifo` — one lane, one
+    /// source — and the path is the constant, never operator input.
+    ///
+    /// **Nothing writes this key yet.** The reconciler side is its own change;
+    /// until it lands an armed lane is an operator action, and the FIFO stays
+    /// the only spelling any box carries.
+    pub dac_content_ring: Option<String>,
     /// Which channel of the shared stereo program this speaker plays
     /// from the round-trip lane (channel-split vocabulary; default
-    /// stereo = passthrough). Only meaningful with `dac_content_fifo`.
+    /// stereo = passthrough). Only meaningful with an armed lane.
     pub dac_content_channel: ChannelPick,
     /// Optional LR4 high-pass corner for MAIN channels in a wireless-sub
     /// bond. `None` means full-range mains. Invalid env values resolve to
@@ -597,22 +632,67 @@ impl Config {
                 }
             },
         };
-        if dac_content_fifo.is_some() {
+        // The lane's DESTINATION transport (ADR-0100): a bare arm/disarm marker,
+        // shaped like JASPER_OUTPUTD_ACTIVE_LANE rather than like a path env,
+        // because the return ring has exactly one spelling and no role-dependent
+        // variant. The path is the named constant — never operator input — so
+        // there is no path<->role allowlist to write here: the crossing the
+        // active ring's biconditional exists to refuse (some OTHER box reading
+        // the active path) cannot be expressed, since no env can name this path.
+        let dac_content_ring = env_bool("JASPER_OUTPUTD_DAC_CONTENT_LANE", false)
+            .then(|| DEFAULT_DAC_CONTENT_RING_PATH.to_string());
+
+        // ONE lane, ONE source. Both spellings armed is a writer fault, not a
+        // state a healthy box can be in — and guessing which transport wins
+        // would silently pick one snapclient's output over another's.
+        if dac_content_ring.is_some() && dac_content_fifo.is_some() {
+            anyhow::bail!(
+                "JASPER_OUTPUTD_DAC_CONTENT_LANE and JASPER_OUTPUTD_DAC_CONTENT_FIFO \
+                 are two transports for the ONE round-trip lane and cannot both be \
+                 armed; the ring is the transport (ADR-0100) and the FIFO is retained \
+                 only until it is verified on metal — drop one"
+            );
+        }
+
+        // Everything below holds for the lane whichever transport carries it:
+        // it IS the content source, it is structurally stereo, and its
+        // ChannelPick must never reach a crossover. Every refusal names the key
+        // the operator actually set, so the message points at the line to edit.
+        let dac_content_key = if dac_content_ring.is_some() {
+            Some("JASPER_OUTPUTD_DAC_CONTENT_LANE")
+        } else if dac_content_fifo.is_some() {
+            Some("JASPER_OUTPUTD_DAC_CONTENT_FIFO")
+        } else {
+            None
+        };
+        if let Some(key) = dac_content_key {
             if content_bridge_mode != ContentBridgeMode::Direct {
                 anyhow::bail!(
-                    "JASPER_OUTPUTD_DAC_CONTENT_FIFO requires \
-                     JASPER_OUTPUTD_CONTENT_BRIDGE=direct (the round-trip lane \
-                     is itself the content source; it cannot share the DAC \
-                     with another content-source policy)"
+                    "{key} requires JASPER_OUTPUTD_CONTENT_BRIDGE=direct (the \
+                     round-trip lane is itself the content source; it cannot share \
+                     the DAC with another content-source policy)"
                 );
             }
             if sink_mode != SinkMode::SingleAlsa {
                 anyhow::bail!(
-                    "JASPER_OUTPUTD_DAC_CONTENT_FIFO requires \
-                     JASPER_OUTPUTD_SINK=single_alsa (the round-trip lane is a \
-                     stereo single-DAC grouping-member path)"
+                    "{key} requires JASPER_OUTPUTD_SINK=single_alsa (the round-trip \
+                     lane is a stereo single-DAC grouping-member path)"
                 );
             }
+        }
+        // The ring arm's one extra requirement: the slot IS the reader's period.
+        // A box with any other period would CREATE the return ring at a geometry
+        // the writer's ioplug then refuses to open, which presents as a leader
+        // that plays silence forever with a climbing starvation counter — loud in
+        // /state but three layers from its cause. Name it here instead.
+        if dac_content_ring.is_some() && period_frames != DAC_CONTENT_RING_PERIOD_FRAMES {
+            anyhow::bail!(
+                "JASPER_OUTPUTD_DAC_CONTENT_LANE requires \
+                 JASPER_OUTPUTD_PERIOD_FRAMES={} (the return ring's slot IS one DAC \
+                 period, so outputd never holds a partial slot); this box declares {}",
+                DAC_CONTENT_RING_PERIOD_FRAMES,
+                period_frames
+            );
         }
 
         let tts_socket_path = env_optional("JASPER_OUTPUTD_TTS_SOCKET");
@@ -757,13 +837,16 @@ impl Config {
         // reach the tweeter post-crossover. (It does not gate on sink_mode here
         // — single-ALSA is enforced for this lane in the dac_content block
         // above — so it keeps its own shape rather than the shared predicate.)
-        if dac_content_fifo.is_some() && (content_channels != 2 || active_lane) {
-            anyhow::bail!(
-                "JASPER_OUTPUTD_DAC_CONTENT_FIFO requires JASPER_OUTPUTD_ACTIVE_CHANNELS=2 \
-                 and JASPER_OUTPUTD_ACTIVE_LANE unset (the round-trip lane is a stereo \
-                 grouping-member path; on an active-crossover lane its ChannelPick would \
-                 send a full-range channel to the tweeter)"
-            );
+        // BOTH transports: the hazard is the pick, not the wire it arrived on.
+        if let Some(key) = dac_content_key {
+            if content_channels != 2 || active_lane {
+                anyhow::bail!(
+                    "{key} requires JASPER_OUTPUTD_ACTIVE_CHANNELS=2 \
+                     and JASPER_OUTPUTD_ACTIVE_LANE unset (the round-trip lane is a stereo \
+                     grouping-member path; on an active-crossover lane its ChannelPick would \
+                     send a full-range channel to the tweeter)"
+                );
+            }
         }
 
         // The SHM ring reader's settings. `Some` iff the ring is the resolved
@@ -865,6 +948,7 @@ impl Config {
             reference_udp_target: env_optional("JASPER_OUTPUTD_REFERENCE_UDP_TARGET"),
             control_socket_path: env_optional("JASPER_OUTPUTD_CONTROL_SOCKET"),
             dac_content_fifo,
+            dac_content_ring,
             dac_content_channel,
             dac_content_highpass_hz,
             dac_content_trim_db,
@@ -985,6 +1069,13 @@ mod tests {
 
     static ENV_LOCK: Mutex<()> = Mutex::new(());
 
+    /// One `with_env` fixture for a table-driven refusal test: what the case is
+    /// meant to prove, and the env that puts the box in that shape.
+    type EnvCase = (
+        &'static str,
+        &'static [(&'static str, Option<&'static str>)],
+    );
+
     /// What a composite fixture must declare since #2285 P2 retired the default.
     ///
     /// `default_content_pcm`'s `(Composite, Direct)` arm used to guess
@@ -1059,8 +1150,10 @@ mod tests {
             assert!(cfg.chip_ref_tee_path.is_none());
             assert!(cfg.reference_udp_target.is_none());
             assert!(cfg.control_socket_path.is_none());
-            // Multi-room round-trip lane is OFF by default (solo contract).
+            // Multi-room round-trip lane is OFF by default (solo contract),
+            // on BOTH transports.
             assert!(cfg.dac_content_fifo.is_none());
+            assert!(cfg.dac_content_ring.is_none());
             assert_eq!(cfg.dac_content_channel, ChannelPick::Stereo);
             assert_eq!(cfg.dac_content_highpass_hz, None);
             // Active-crossover lane marker is off by default (solo/passive).
@@ -1072,6 +1165,103 @@ mod tests {
                 "/var/lib/jasper/outputd_assistant_volume_reference.json"
             );
         });
+    }
+
+    /// The marker arms the ring transport at the ONE named path.
+    ///
+    /// The path is not operator input: no env names it, so a box either reads
+    /// the return ring or reads nothing. That is the whole reason this lane
+    /// needs no path<->role biconditional of the active ring's kind.
+    #[test]
+    fn the_dac_content_marker_arms_the_ring_at_the_named_path() {
+        with_env(
+            &[
+                ("JASPER_OUTPUTD_DAC_CONTENT_LANE", Some("1")),
+                ("JASPER_OUTPUTD_DAC_CONTENT_CHANNEL", Some("left")),
+                ("JASPER_OUTPUTD_CONTENT_BRIDGE", Some("direct")),
+            ],
+            || {
+                let cfg = Config::from_env().unwrap();
+                assert_eq!(
+                    cfg.dac_content_ring.as_deref(),
+                    Some(DEFAULT_DAC_CONTENT_RING_PATH)
+                );
+                assert!(cfg.dac_content_fifo.is_none());
+                assert_eq!(cfg.dac_content_channel, ChannelPick::Left);
+                // The lane owns the content source, so no central ring attaches.
+                assert!(cfg.shm_ring.is_none());
+            },
+        );
+    }
+
+    /// ONE lane, ONE source: both transports armed is refused, not ranked.
+    #[test]
+    fn arming_both_dac_content_transports_is_refused() {
+        with_env(
+            &[
+                ("JASPER_OUTPUTD_DAC_CONTENT_LANE", Some("1")),
+                ("JASPER_OUTPUTD_DAC_CONTENT_FIFO", Some("/run/x.fifo")),
+                ("JASPER_OUTPUTD_CONTENT_BRIDGE", Some("direct")),
+            ],
+            || {
+                let err = Config::from_env().expect_err("two transports must be refused");
+                let text = format!("{err:#}");
+                assert!(text.contains("JASPER_OUTPUTD_DAC_CONTENT_LANE"), "{text}");
+                assert!(text.contains("JASPER_OUTPUTD_DAC_CONTENT_FIFO"), "{text}");
+            },
+        );
+    }
+
+    /// The ring arm inherits the lane's shape guards, and adds the slot one.
+    ///
+    /// Each row is a config a leader could plausibly be given and must NOT
+    /// start on: the pick would reach a crossover, the lane would share the DAC
+    /// with the central ring, the sink is not one this lane can drive, or the
+    /// slot is not one DAC period. Parametrized rather than four near-identical
+    /// tests, and asserting only that startup REFUSES — never the prose.
+    #[test]
+    fn the_ring_arm_refuses_every_shape_it_cannot_serve() {
+        let cases: [EnvCase; 4] = [
+            (
+                "active-crossover lane: the pick would reach the tweeter",
+                &[
+                    ("JASPER_OUTPUTD_DAC_CONTENT_LANE", Some("1")),
+                    ("JASPER_OUTPUTD_CONTENT_BRIDGE", Some("direct")),
+                    ("JASPER_OUTPUTD_ACTIVE_LANE", Some("1")),
+                ],
+            ),
+            (
+                "central ring too: two content sources on one DAC",
+                &[
+                    ("JASPER_OUTPUTD_DAC_CONTENT_LANE", Some("1")),
+                    ("JASPER_OUTPUTD_CONTENT_BRIDGE", Some("shm_ring")),
+                ],
+            ),
+            (
+                "composite sink: not a stereo single-DAC member path",
+                &[
+                    ("JASPER_OUTPUTD_DAC_CONTENT_LANE", Some("1")),
+                    ("JASPER_OUTPUTD_CONTENT_BRIDGE", Some("direct")),
+                    ("JASPER_OUTPUTD_SINK", Some("dual_apple")),
+                ],
+            ),
+            (
+                "period is not the ring's slot: the writer could never open it",
+                &[
+                    ("JASPER_OUTPUTD_DAC_CONTENT_LANE", Some("1")),
+                    ("JASPER_OUTPUTD_CONTENT_BRIDGE", Some("direct")),
+                    ("JASPER_OUTPUTD_PERIOD_FRAMES", Some("512")),
+                ],
+            ),
+        ];
+        for (label, vars) in cases {
+            with_env(vars, || {
+                assert!(
+                    Config::from_env().is_err(),
+                    "must refuse to start — {label}"
+                );
+            });
+        }
     }
 
     #[test]

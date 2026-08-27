@@ -28,7 +28,7 @@ use jasper_outputd::alsa_backend::{
     open_playback_pcm, prime_periods, AlsaBackend, FinalSinkStartupConfigError, IoCounters,
     NegotiatedPcm, PairedCompositeSink,
 };
-use jasper_outputd::config::{BackendMode, Config, SinkMode};
+use jasper_outputd::config::{BackendMode, Config, SinkMode, DAC_CONTENT_RING_SLOTS};
 use jasper_outputd::core::{OutputCore, PeriodReport};
 use jasper_outputd::dac_content::DacContentSource;
 use jasper_outputd::shm_ring_source::ShmRingSource;
@@ -176,22 +176,28 @@ fn main() -> Result<()> {
 ///
 /// Two events rather than one, because the journal line is the readable surface
 /// during a park and the two outcomes are not the same fault:
-/// `outputd.shm_ring.config_error` means parked-for-config, and
-/// `outputd.shm_ring.attach_error` carries `kind=` so a restart loop names what
+/// `outputd.<lane>.config_error` means parked-for-config, and
+/// `outputd.<lane>.attach_error` carries `kind=` so a restart loop names what
 /// it is retrying against.
-fn classify_shm_ring_attach_error(path: &str, e: io::Error) -> anyhow::Error {
+///
+/// `lane` names WHICH ring, since a box can carry more than one: `shm_ring` for
+/// the central content hop, `dac_content` for a leader's return lane. The
+/// central hop's event strings are unchanged by it. `EBUSY` — the SPSC guard
+/// refusing a ring a live foreign reader still owns — lands in the restart arm
+/// by this same kind split, which is right: the incumbent may exit.
+fn classify_ring_attach_error(lane: &str, path: &str, e: io::Error) -> anyhow::Error {
     if matches!(
         e.kind(),
         io::ErrorKind::InvalidInput | io::ErrorKind::InvalidData
     ) {
-        eprintln!("event=outputd.shm_ring.config_error path={path} detail={e}");
+        eprintln!("event=outputd.{lane}.config_error path={path} detail={e}");
         anyhow::Error::new(e).context(ConfigClassError)
     } else {
         eprintln!(
-            "event=outputd.shm_ring.attach_error path={path} kind={:?} detail={e}",
+            "event=outputd.{lane}.attach_error path={path} kind={:?} detail={e}",
             e.kind()
         );
-        anyhow::Error::new(e).context("attaching to the SHM content ring")
+        anyhow::Error::new(e).context("attaching to an SHM content ring")
     }
 }
 
@@ -411,7 +417,7 @@ fn run_alsa(
                 config.content_format,
                 ring.n_slots,
             )
-            .map_err(|e| classify_shm_ring_attach_error(&ring.path, e))?;
+            .map_err(|e| classify_ring_attach_error("shm_ring", &ring.path, e))?;
             Some(src)
         }
         None => None,
@@ -420,27 +426,56 @@ fn run_alsa(
         state.mark_shm_ring(src.metrics());
         state.mark_shm_ring_wire(src.wire_format(), src.channels());
     }
-    // Multi-room round-trip lane (Increment 3, HANDOFF-multiroom.md §2):
-    // when configured, the DAC is fed from the member-content FIFO with
-    // an inv-B fallback to the direct content read below. Lazy + non-
-    // blocking; None (solo) leaves this loop byte-identical to before.
-    let mut dac_content = config.dac_content_fifo.as_deref().map(|path| {
-        eprintln!(
-            "event=outputd.dac_content.enabled fifo={} channel={} main_highpass_hz={}",
-            path,
-            config.dac_content_channel.as_str(),
+    // The multi-room round-trip lane: on a grouping LEADER the DAC is fed from
+    // the bond's shared program coming back out of the sync engine, so the
+    // leader is sample-locked with its members. An armed lane IS the content
+    // source — it never falls back, and a period it cannot fill is silence
+    // (D4). `Config::from_env` has already refused both transports at once, so
+    // at most one arm is built here; neither armed (solo) leaves this loop
+    // byte-identical to before.
+    let dac_content_lane = config
+        .dac_content_ring
+        .as_deref()
+        .map(|path| ("ring", path))
+        .or_else(|| {
             config
-                .dac_content_highpass_hz
-                .map(|v| format!("{v:.1}"))
-                .unwrap_or_else(|| "none".to_string()),
-        );
-        DacContentSource::new(
-            path,
-            config.dac_content_channel,
-            config.period_frames,
-            config.dac_content_highpass_hz,
-        )
-    });
+                .dac_content_fifo
+                .as_deref()
+                .map(|path| ("fifo", path))
+        });
+    let mut dac_content = match dac_content_lane {
+        Some((transport, path)) => {
+            eprintln!(
+                "event=outputd.dac_content.enabled transport={} path={} channel={} \
+                 main_highpass_hz={}",
+                transport,
+                path,
+                config.dac_content_channel.as_str(),
+                config
+                    .dac_content_highpass_hz
+                    .map(|v| format!("{v:.1}"))
+                    .unwrap_or_else(|| "none".to_string()),
+            );
+            Some(if transport == "ring" {
+                DacContentSource::ring(
+                    path,
+                    config.dac_content_channel,
+                    config.period_frames,
+                    DAC_CONTENT_RING_SLOTS,
+                    config.dac_content_highpass_hz,
+                )
+                .map_err(|e| classify_ring_attach_error("dac_content", path, e))?
+            } else {
+                DacContentSource::fifo(
+                    path,
+                    config.dac_content_channel,
+                    config.period_frames,
+                    config.dac_content_highpass_hz,
+                )
+            })
+        }
+        None => None,
+    };
     // Bonded-member TTS (Increment 5 PR-2): constructed ONLY when the
     // reconciler set the socket env — solo keeps fanin-owned TTS and
     // this loop stays byte-identical. The OutputCore engine (assistant
@@ -516,12 +551,21 @@ fn run_alsa(
 
     while !shutdown.load(Ordering::Relaxed) {
         let period_clipped_samples: u32;
-        let mut served_from_fifo = false;
-        if let Some(src) = dac_content.as_mut() {
-            served_from_fifo = src.try_fill_period(&mut content_buf);
-            state.mark_dac_content(src.metrics());
-        }
-        if !served_from_fifo {
+        // An armed round-trip lane owns the content period outright: it fills
+        // `content_buf` with the bond's program or with silence, so there is no
+        // second source to consult and the arms below belong to a box with no
+        // lane at all. Metrics are published BEFORE the fatal-fault `?` can
+        // propagate, so `/state`'s last sample stays honest.
+        let served_from_dac_content = match dac_content.as_mut() {
+            Some(src) => {
+                let filled = src.fill_period(&mut content_buf);
+                state.mark_dac_content(src.metrics());
+                filled?;
+                true
+            }
+            None => false,
+        };
+        if !served_from_dac_content {
             if let Some(src) = shm_ring.as_mut() {
                 // Try-read one slot from the SHM ping-pong ring;
                 // empty -> silence (read_period zero-fills). Never blocks, and a
@@ -559,13 +603,6 @@ fn run_alsa(
                 )
                 .context(FinalSinkStartupConfigError));
             }
-            // The inv-B fallback pick that used to run here is UNREACHABLE and
-            // is gone with the route it belonged to: an armed `dac_content`
-            // lane requires `CONTENT_BRIDGE=direct` (`Config::from_env`), which
-            // attaches no ring, which takes the park arm above. A ring read and
-            // a round-trip lane cannot coexist, so nothing arrives here needing
-            // a channel pick. `DacContentSource::apply_pick_to_fallback_period`
-            // stays with the lane for the #3118 rebuild.
         }
         let trim = if dac_content.is_some() {
             state.dac_content_trim_gain()
@@ -1742,7 +1779,7 @@ mod tests {
             Err(e) => e,
         };
         assert_eq!(io_error.kind(), io::ErrorKind::InvalidData);
-        let error = classify_shm_ring_attach_error(&path, io_error);
+        let error = classify_ring_attach_error("shm_ring", &path, io_error);
 
         assert_eq!(runtime_error_exit_code(&error), Some(EXIT_CONFIG));
 
@@ -1771,7 +1808,8 @@ mod tests {
             io::ErrorKind::PermissionDenied,
             io::ErrorKind::StorageFull,
         ] {
-            let error = classify_shm_ring_attach_error(
+            let error = classify_ring_attach_error(
+                "shm_ring",
                 "/dev/shm/jts-ring/content.ring",
                 io::Error::new(kind, "synthetic attach failure"),
             );
@@ -1785,7 +1823,8 @@ mod tests {
         // A bare errno with NO mapped `ErrorKind` (EIO): the shape a raw syscall
         // failure arrives in, and the one an `Uncategorized`-defaults-to-park
         // classifier would get wrong.
-        let raw = classify_shm_ring_attach_error(
+        let raw = classify_ring_attach_error(
+            "shm_ring",
             "/dev/shm/jts-ring/content.ring",
             io::Error::from_raw_os_error(5),
         );
@@ -1794,7 +1833,8 @@ mod tests {
         // ...and the config-class kinds still do, so the assertion above is a
         // boundary rather than "the classifier marks nothing".
         for kind in [io::ErrorKind::InvalidInput, io::ErrorKind::InvalidData] {
-            let error = classify_shm_ring_attach_error(
+            let error = classify_ring_attach_error(
+                "shm_ring",
                 "/dev/shm/jts-ring/content.ring",
                 io::Error::new(kind, "synthetic declaration fault"),
             );
@@ -2071,6 +2111,7 @@ mod tests {
             reference_udp_target: None,
             control_socket_path: None,
             dac_content_fifo: None,
+            dac_content_ring: None,
             dac_content_channel: jasper_outputd::dac_content::ChannelPick::Stereo,
             dac_content_highpass_hz: None,
             dac_content_trim_db: 0.0,
