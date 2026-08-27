@@ -2680,6 +2680,51 @@ def test_a_take_with_no_play_behind_it_names_no_provenance(
     assert "provenance" not in banked
 
 
+@pytest.mark.parametrize(
+    "phase", [PHASE_CHECK, PHASE_MEASURE, PHASE_VERIFY],
+)
+def test_an_unprompted_phase_take_reaches_the_real_store(tmp_path, phase):
+    """The three new takes are ROUTABLE, not merely built.
+
+    Their measurement kind is ``""`` — honestly unresolved, because a CHECK or
+    a MEASURE is taken through whatever graph is live and ``take_kind`` refuses
+    to guess. The store accepts that, but only under the ``measure_kind``
+    spelling: it routes that key by PRESENCE, while ``kind`` is routed by
+    membership in ``MEASURE_KINDS``, which ``""`` fails. A tidy-up that made
+    the two symmetrical would leave every take of these three phases with no
+    route, and the retention fail-soft would turn that into a WARN and silence
+    — a phase that banks nothing looks exactly like a phase nobody captured.
+
+    So this drives the REAL store rather than a recorder: routed, written, and
+    readable back under the take id its own record names.
+    """
+    from jasper.active_speaker.crossover_v2.spatial import phase_capture_record
+
+    bank, refs, bundle_dir, _store = _retention_bundle(
+        tmp_path, f"cap_{phase}_session",
+    )
+    record = phase_capture_record(
+        phase=phase, index=3, attempt=1,
+        session_id=f"cap_{phase}_session",
+        graph_fingerprint="",
+        captured_at="2026-08-27T00:00:00Z",
+        wav_sha256="e" * 64,
+    )
+    assert record["measure_kind"] == ""
+
+    banked_id = bank(CaptureResult(wav=b"unprompted-bytes"), record)
+    assert banked_id, "an unresolved measure kind must still route"
+
+    landed = (
+        bundle_dir / "evidence" / "v1" / "artifacts" / "crossover_v2"
+        / f"cap_{phase}_session" / "positions" / f"{record['take_id']}.json"
+    )
+    assert json.loads(landed.read_text())["phase"] == phase
+    assert [e["take_id"] for e in refs["position_artifacts"]] == [
+        record["take_id"]
+    ]
+
+
 def test_a_store_that_refuses_costs_a_warning_and_not_the_capture(
     tmp_path, caplog,
 ):
