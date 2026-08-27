@@ -4,8 +4,10 @@
 
 """Guard: cue registry and cue play sites must match exactly, both ways.
 
-AGENTS.md ("No silent failure paths"): a failure path that would leave
-the speaker silent must play a registered cue — append a CueDef to
+docs/extensibility.md ("no silent failure → audible cue" for anything
+that blocks a response) — and this guard is the mechanism behind
+AGENTS.md's non-negotiable 6, "No silent deafness": a failure path that
+would leave the speaker silent must play a registered cue — append a CueDef to
 jasper/cues/registry.py AND wire a play call into the failure handler.
 Both halves are easy to ship without the other, and the result is only
 observable in production failure modes (rarely-executed code):
@@ -63,8 +65,9 @@ def test_every_registered_cue_is_played_somewhere():
     assert not orphans, (
         f"CueDef(s) registered in jasper/cues/registry.py with no play "
         f"site anywhere in jasper/: {orphans}. Wire `cues.play(\"<slug>\")` "
-        "into the failure path the cue announces (see AGENTS.md 'No silent "
-        "failure paths' + docs/HANDOFF-audible-feedback.md), or delete the "
+        "into the failure path the cue announces (see docs/extensibility.md "
+        "'no silent failure -> audible cue' + "
+        "docs/HANDOFF-audible-feedback.md), or delete the "
         "CueDef — an unplayed cue is regenerated on every provider switch "
         "for nothing."
     )

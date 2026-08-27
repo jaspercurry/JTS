@@ -69,6 +69,6 @@ class WakeFuser:
         any rule that cannot evaluate — missing signal, exception, genuine
         uncertainty — MUST resolve to True (fire). The verifier may only ever
         suppress a *confident* false fire; it must never make the speaker go
-        deaf because verification was unsure (AGENTS.md no-silent-failure
-        rule)."""
+        deaf because verification was unsure (docs/extensibility.md, "no silent
+        failure -> audible cue for anything that blocks a response")."""
         return True

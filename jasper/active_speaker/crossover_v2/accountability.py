@@ -663,8 +663,8 @@ def assess_accountability(
     after = grade_prediction(predicted_sum)
     # The stash, and the named line an absent report earns (two-stage
     # commission D4). The line lands with the ``None`` rather than with the
-    # screen that renders it, because per AGENTS.md's no-silent-failure rule
-    # a disclosure nobody can grep for is not a disclosure. ``why`` separates
+    # screen that renders it, because a disclosure nobody can grep for is not
+    # a disclosure. ``why`` separates
     # the two causes, which have different remedies — a prediction that was
     # never built (no summed model to grade) from one the evaluator refused
     # (a malformed or degenerate curve, already logged in detail by the

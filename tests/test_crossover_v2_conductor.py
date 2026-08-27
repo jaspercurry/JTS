@@ -8537,10 +8537,9 @@ def test_an_ungradeable_prediction_stashes_none_and_names_itself(caplog, monkeyp
     """D4's ``None`` propagation and its named log line.
 
     An absent report is a user-visible dead end — the review screen renders "we
-    could not predict this" and refuses Apply on it — so per AGENTS.md's
-    no-silent-failure rule it gets a line somebody can grep for, carrying WHICH
-    of the two causes fired. ``None`` must never be papered over into a
-    fabricated verdict."""
+    could not predict this" and refuses Apply on it — so it gets a line
+    somebody can grep for, carrying WHICH of the two causes fired. ``None``
+    must never be papered over into a fabricated verdict."""
     from jasper.active_speaker import crossover_v2_flow as flow_mod
 
     caplog.set_level(logging.WARNING, logger=_DIAG_LOGGER)

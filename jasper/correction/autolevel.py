@@ -305,8 +305,8 @@ class AutolevelController:
                         # The final volume set is the one that actually
                         # leaves the speaker at its intended level (lock or
                         # restored listening level). A silent failure here
-                        # can strand the speaker at the measurement volume —
-                        # per AGENTS.md no-silent-failure, make it observable.
+                        # can strand the speaker at the measurement volume, so
+                        # make it observable.
                         logger.warning(
                             "autolevel: final set_main_volume_db(%.1f) failed "
                             "(session=%s) — speaker may remain at the "

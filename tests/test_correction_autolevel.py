@@ -388,8 +388,8 @@ async def test_autolevel_lock_is_not_authoritative_until_cleanup_finishes():
 
 async def test_autolevel_graceful_stop_logs_setter_failures(caplog):
     """_graceful_stop's fade-down loop and its final lock-value set must
-    LOG set_main_volume_db failures rather than swallowing them silently
-    (AGENTS.md no-silent-failure). A CamillaDSP write that fails during
+    LOG set_main_volume_db failures rather than swallowing them silently.
+    A CamillaDSP write that fails during
     stop can strand the speaker at the measurement level; the operator
     needs a journal line to know why."""
     controller = AutolevelController(session_id="stop-logs")
