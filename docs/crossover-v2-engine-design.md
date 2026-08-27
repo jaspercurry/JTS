@@ -38,9 +38,9 @@ visible as such rather than absent.
 ## `TuningSession` and the five seams
 
 `TuningSession` holds one session's state and lifecycle — `open` / `close`,
-also usable as an async context manager (`__aenter__` / `__aexit__`), with `is_open`,
-`graph_fingerprint` and `banked_record_ids` as its read surface. Every side
-effect it can have crosses one of **five fields on `EngineSeams`**
+also usable as an async context manager (`__aenter__` / `__aexit__`), with
+`is_open`, `graph_fingerprint` and `banked_record_ids` as its read surface.
+Every side effect it can have crosses one of **five fields on `EngineSeams`**
 ([`session_seams.py`](../jasper/active_speaker/crossover_v2/session_seams.py)),
 frozen and injected exactly as `V2FlowSeams` is, so a test double is a complete
 substitute rather than a partial one:
@@ -78,13 +78,13 @@ engine, and the second would bank a record the session never counts in
 `banked_record_ids`. The field is public because construction and testing need
 it. Wave 2 lands the enforcement pin, when there is a front end to point it at.
 
-**All five seams are `async`, and so is every implementation that satisfies
-one.** `MeasurementSessionGraph`'s three verbs, `VolumeOwner`'s `acquire_level`
-/ `prove` / `release`, and `program_playback.play_program` were already `async`:
+**All five seams are `async`, and so is the machinery behind every one.**
+`MeasurementSessionGraph`'s three verbs, `VolumeOwner`'s `acquire_level` /
+`prove` / `release`, and `program_playback.play_program` were already `async`:
 the transport is CamillaDSP over a websocket and every production caller is
 already on the event loop. It was **one decision for all of them, not one per
-seam**, and it carries a second half — each release path shields its cleanup, so
-a cancelled `close()` cannot leave the fader at measurement level. See
+seam**, and it carries a second half — each release path shields its cleanup,
+so a cancelled `close()` cannot leave the fader at measurement level. See
 [ADR-0179](adr/0179-the-tuning-engines-seams-are-async-and-a-release-completes-before-cancellation-propagates.md).
 
 ## What is wired today, and what is not

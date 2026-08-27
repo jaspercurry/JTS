@@ -86,8 +86,12 @@ async def _attach_cleanup_failure(
     The broad catch is the point rather than an oversight: a seam may raise
     anything, and there is no narrower type that means "the cleanup failed".
     ``CancelledError`` is deliberately NOT caught here — it is not an
-    ``Exception``, and :func:`_shielded_cleanup` is what keeps a cancellation
-    from reaching this await at all.
+    ``Exception``. On the failed-open path nothing arrives:
+    :meth:`TuningSession._release_both_after_failed_open` shields its cleanup
+    and attaches any cancellation itself. On the ``__aexit__`` path one CAN
+    arrive, because :meth:`TuningSession._release_slots` re-raises the cancel
+    it waited out — and there the cancellation replacing the body's exception
+    is the right answer, since the caller asked for it.
     """
     try:
         await cleanup()
@@ -336,6 +340,16 @@ class TuningSession:
         seams' release halves are idempotent and safe against nothing-held for
         exactly this path.
 
+        **The guard catches ``BaseException``, and that is the cancellation
+        half of the same rule.** Both awaits below are cancel points, and a
+        ``CancelledError`` is not an ``Exception`` — so an ``except Exception``
+        here would let a cancel land on an acquire that had already registered
+        the claim and skip the give-back entirely, leaving the fader at
+        measurement level with nothing marked held for a later :meth:`close` to
+        release. The bare ``raise`` still propagates the cancellation; the
+        acquire itself stays unshielded, because an acquire a caller no longer
+        wants should not finish (ADR-0179).
+
         The record store has no open: it is a sink whose lifetime IS this
         session's, and the id every record carries is the key that says so.
 
@@ -356,7 +370,7 @@ class TuningSession:
             self._graph_installed = True
             await self.seams.volume.acquire(self.measurement_level_db)
             self._volume_held = True
-        except Exception as opening_exc:  # noqa: BLE001 - re-raised below
+        except BaseException as opening_exc:  # noqa: BLE001 - re-raised below
             self._graph_fingerprint = ""
             await self._release_both_after_failed_open(opening_exc)
             raise

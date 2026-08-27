@@ -553,10 +553,25 @@ _RELEASE_TURNS = 50
 
 @dataclass
 class _SlowVolume(_Volume):
-    """A release that stays in flight, logged when it COMPLETES."""
+    """A claim whose calls stay in flight, each logged when it COMPLETES.
+
+    ``slow_acquire`` registers the claim BEFORE it yields, which is the state
+    that makes a cancelled acquire dangerous: the fader has already moved.
+    """
 
     events: list[str] = field(default_factory=list)
     releasing: asyncio.Event = field(default_factory=asyncio.Event)
+    acquiring: asyncio.Event = field(default_factory=asyncio.Event)
+    slow_acquire: bool = False
+
+    async def acquire(self, level_db: float) -> None:
+        self.acquired.append(level_db)
+        if self.slow_acquire:
+            self.acquiring.set()
+            for _ in range(_RELEASE_TURNS):
+                await asyncio.sleep(0)
+        if self.acquire_raises:
+            raise RuntimeError("the household is holding it")
 
     async def release(self) -> None:
         self.releasing.set()
@@ -591,6 +606,11 @@ async def test_a_close_cancelled_mid_release_still_gives_both_slots_back_in_orde
     closing = asyncio.ensure_future(session.close())
     await volume.releasing.wait()
     closing.cancel()
+    # A second cancel while the shielded give-back is in flight: a caller that
+    # cancels twice must not be obeyed the second time either, or the retry
+    # loop's tolerance is untested and abandoning the release becomes free.
+    await asyncio.sleep(0)
+    closing.cancel()
 
     with pytest.raises(asyncio.CancelledError):
         await closing
@@ -620,6 +640,32 @@ async def test_a_cancelled_cleanup_after_a_failed_open_does_not_replace_the_caus
 
     assert events == ["volume", "graph"]
     assert isinstance(caught.value.__context__, asyncio.CancelledError)
+
+
+async def test_a_cancel_during_acquire_still_gives_the_half_taken_claim_back():
+    """The cancellation half of *an open that fails puts back what it took*.
+
+    ``open``'s guard catches ``BaseException`` because a ``CancelledError`` is
+    not an ``Exception``. Catching only ``Exception`` skips the give-back on
+    this path entirely: the acquire has already registered the claim, so the
+    fader stays at measurement level while both held-flags read ``False`` —
+    nothing a later ``close()`` could give back, on a session that reports
+    itself shut.
+    """
+    events: list[str] = []
+    volume = _SlowVolume(events=events, slow_acquire=True)
+    session, _ = _session(graph=_LoggingGraph(events=events), volume=volume)
+
+    opening = asyncio.ensure_future(session.open())
+    await volume.acquiring.wait()
+    opening.cancel()
+
+    with pytest.raises(asyncio.CancelledError):
+        await opening
+
+    assert events == ["volume", "graph"]
+    assert volume.releases == 1
+    assert not session.is_open
 
 
 # --------------------------------------------------------------------------- #
