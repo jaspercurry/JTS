@@ -12,6 +12,7 @@ operator acts on (the missing function, the intent reason, the stale marker).
 from __future__ import annotations
 
 import json
+import subprocess
 from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import patch
@@ -233,6 +234,114 @@ def test_check_usbsink_card_verdicts(
         r = doctor.check_usbsink_card()
 
     assert r.status == status
+
+
+# ----------------------------------------------------------------------
+# check_usbsink_host_stream — #3194 disclosure. The Pi cannot tell an idle
+# host from a wedged ISO data path, so this check only ever reports.
+# ----------------------------------------------------------------------
+
+
+@pytest.mark.parametrize(
+    "composed, card_present, rate, must_name",
+    [
+        (False, False, None, "uac2.usb0"),
+        (True, False, None, "check_usbsink_card"),
+        (True, True, None, "Capture Rate"),
+        (True, True, 0, "capture_rate=0"),
+        (True, True, 48000, "capture_rate=48000"),
+    ],
+    ids=["not-composed", "no-card", "no-control", "host-idle-or-wedged", "streaming"],
+)
+def test_check_usbsink_host_stream_discloses_without_judging(
+    monkeypatch, tmp_path, composed, card_present, rate, must_name
+):
+    function_path = tmp_path / "uac2.usb0"
+    if composed:
+        function_path.mkdir()
+    card = tmp_path / "UAC2Gadget"
+    if card_present:
+        card.mkdir()
+    monkeypatch.setattr(doctor.usbsink, "_uac2_function_path", lambda: function_path)
+    monkeypatch.setattr(doctor.usbsink, "UAC2_CARD_PATH", str(card))
+    monkeypatch.setattr(doctor.usbsink, "_uac2_capture_rate", lambda: rate)
+
+    result = doctor.check_usbsink_host_stream()
+
+    assert result.status == "ok"
+    assert must_name in result.detail
+
+
+@pytest.mark.parametrize(
+    "raised",
+    [
+        FileNotFoundError(2, "No such file or directory", "amixer"),
+        subprocess.TimeoutExpired("amixer", 5.0),
+    ],
+    ids=["amixer-absent", "read-hung"],
+)
+def test_check_usbsink_host_stream_never_crashes_the_doctor(
+    monkeypatch, tmp_path, raised
+):
+    """alsa-utils is not in install.sh's apt lists, and a wedged card can hang
+    the read — the exact state this check exists to name. Driven through the
+    doctor's own runner, which turns an escaping exception into a red fail."""
+    function_path = tmp_path / "uac2.usb0"
+    function_path.mkdir()
+    card = tmp_path / "UAC2Gadget"
+    card.mkdir()
+    monkeypatch.setattr(doctor.usbsink, "_uac2_function_path", lambda: function_path)
+    monkeypatch.setattr(doctor.usbsink, "UAC2_CARD_PATH", str(card))
+
+    def raise_it(*args, **kwargs):
+        raise raised
+
+    monkeypatch.setattr(doctor._shared.subprocess, "run", raise_it)
+
+    result = doctor._run_doctor_check(doctor.check_usbsink_host_stream)
+
+    assert result.status == "ok"
+    assert "not observable here" in result.detail
+
+
+@pytest.mark.parametrize(
+    "controls_rc, controls_out, value_rc, value_out, expected",
+    [
+        (1, "", 0, "", None),
+        (0, "numid=3,iface=MIXER,name='PCM Capture Volume'\n", 0, "", None),
+        (0, "numid=8,iface=PCM,name='Capture Rate'\n", 1, "", None),
+        (
+            0,
+            "numid=8,iface=PCM,name='Capture Rate'\n",
+            0,
+            "numid=8,iface=PCM,name='Capture Rate'\n"
+            "  ; type=INTEGER,access=r--v----,values=1\n  : values=48000\n",
+            48000,
+        ),
+        (
+            0,
+            "numid=1,iface=MIXER,name='PCM Capture Switch'\n"
+            "numid=9,iface=PCM,name='Capture Rate'\n",
+            0,
+            "  ; type=INTEGER,access=r--v----,values=1\n  : values=0\n",
+            0,
+        ),
+    ],
+    ids=["controls-fail", "control-absent", "cget-fail", "streaming", "resolved-numid"],
+)
+def test_uac2_capture_rate_resolves_the_pcm_control_by_name(
+    monkeypatch, controls_rc, controls_out, value_rc, value_out, expected
+):
+    """The numid shifts with the composed direction set, so never pin it."""
+
+    def fake_run(cmd, timeout=5.0):
+        if "controls" in cmd:
+            return SimpleNamespace(returncode=controls_rc, stdout=controls_out)
+        return SimpleNamespace(returncode=value_rc, stdout=value_out)
+
+    monkeypatch.setattr(doctor.usbsink, "_run", fake_run)
+
+    assert doctor.usbsink._uac2_capture_rate() == expected
 
 
 # ----------------------------------------------------------------------
