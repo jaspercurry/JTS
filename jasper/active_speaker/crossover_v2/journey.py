@@ -456,11 +456,12 @@ class V2StageCapabilities:
     """What ONE commission stage binds, and what it needs handed to it.
 
     The v2 commission runs as two relay sessions against two session objects
-    (``prepare_v2_session`` measures and stops; the household applies;
-    ``prepare_v2_verify`` verifies). The seams they bind are identical except in
-    two places, and until #2291 Phase 3 both shapes were hand-assembled at their
-    own call site — which is how the rollback seam came to be bound on the stage
-    that never reaches a VERIFY verdict and left off the stage that does.
+    (``prepare_v2_session`` measures and stops; the household applies; the same
+    preparer's ``verify_only`` stage verifies). The seams they bind are
+    identical except in two places, and until #2291 Phase 3 both shapes were
+    hand-assembled at their own call site — which is how the rollback seam came
+    to be bound on the stage that never reaches a VERIFY verdict and left off
+    the stage that does.
 
     ``provides`` lists ONLY the seams that DIFFER between stages — the ones
     :func:`jasper.web.correction_crossover_v2.bind_v2_stage_seams` branches on.

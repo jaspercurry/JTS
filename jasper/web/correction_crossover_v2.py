@@ -841,7 +841,7 @@ def observe_restore() -> None:
     :func:`persist_conductor_state`, which is structurally the identical
     resurrection mechanism the ``evidence`` finding above was filed for. It is
     listed here rather than left to the reachability argument (post-Undo the
-    envelope resolves ``not_applicable``, and ``prepare_v2_verify`` refuses
+    envelope resolves ``not_applicable``, and a verify-only prepare refuses
     without ``applied``) because that argument makes the field correct by
     accident, and the accident is one screen-routing change away from being a
     stale caveat on a live session.
@@ -2554,8 +2554,9 @@ def _post_apply_grade(block: Mapping[str, Any]) -> dict[str, Any]:
 # that needs a live read of the state directory (the durability verdict, which
 # the builder hands back rather than taking itself).
 #
-# Re-bound under their historical names because ``prepare_v2_verify`` reaches
-# them as module globals and the stage-bridge suite names them off this module.
+# Re-bound under their historical names because ``prepare_v2_session``'s
+# verify-only stage reaches them as module globals and the stage-bridge suite
+# names them off this module.
 _finite = _durable._finite
 _decimate_sum = _durable._decimate_sum
 _decimate_delta = _durable._decimate_delta
@@ -3711,7 +3712,7 @@ def _bank_household_findings(
     re-open and re-hash the finding artifact AND its cited ``candidate.json``
     on every one of those polls, forever, on a Pi. It would also fail to reach
     the DONE screen at all: stage 2 opens a **new** bundle under a **new**
-    relay session id (``prepare_v2_verify`` → ``open_v2_evidence_store``), so
+    relay session id (a verify-only prepare → ``open_v2_evidence_store``), so
     by the time the household sees the result screen, "this session's bundle"
     no longer holds the set the measuring session banked. Reading once and
     projecting the compact result into the durable state is the same shape
@@ -4506,9 +4507,9 @@ def ensure_crossover_preview_ready(*, durable: bool = False) -> dict[str, Any]:
     no-preview branch) — which then can NEVER match a preview generated later,
     so Apply refuses ``measured_candidate_preset_mismatch`` forever. This is
     called at the top of :func:`resolve_conductor_context` — the one place
-    both session-open (:func:`prepare_v2_session`) and the verify re-arm
-    (:func:`prepare_v2_verify`) resolve the design draft/topology — so the
-    fallback branch is never reached from a v2 entry point again.
+    both stages of :func:`prepare_v2_session`, session-open and the verify
+    re-arm, resolve the design draft/topology — so the fallback branch is
+    never reached from a v2 entry point again.
 
     Reuses the SAME generator ``/sound/`` drives
     (:func:`~jasper.active_speaker.web_commissioning.regenerate_crossover_preview_from_current_draft`,
@@ -4641,9 +4642,9 @@ def resolve_conductor_context(status: Mapping[str, Any]) -> V2ConductorContext:
     what to finish first — never a guessed default.
 
     This runs at SESSION OPEN — ``prepare_v2_session`` calls it before the
-    relay session is registered and the phone link minted, and
-    ``prepare_v2_verify`` before its re-arm — which is what makes the driver-
-    safety-profile gate below a pre-flight rather than a surprise (issue
+    relay session is registered and the phone link minted, and before a
+    verify-only re-arm — which is what makes the driver-safety-profile gate
+    below a pre-flight rather than a surprise (issue
     #1821). Before that gate existed, this function checked only that a
     profile object was PRESENT while its refusal text claimed confirmation had
     been checked; the real confirmation gate lived four screens later inside
@@ -4858,7 +4859,7 @@ def attach_stage2_preflight(status: MutableMapping[str, Any]) -> None:
 
     Two-stage commission work order D3: *"The review screen runs
     ``resolve_conductor_context``'s predicate — the same fail-closed resolution
-    ``prepare_v2_verify`` will run — twice: once at review render, and again
+    a verify-only prepare will run — twice: once at review render, and again
     server-side immediately before the apply commits."* This is the render-time
     half. **The pre-POST half landed with PR-T3** and lives in
     :func:`_assert_stage_2_can_open`, which ``handle_v2_apply`` calls
@@ -4868,9 +4869,9 @@ def attach_stage2_preflight(status: MutableMapping[str, Any]) -> None:
 
     Without it, the failure mode is exactly the applied-and-ungraded end state
     the whole work order exists to eliminate — premise 5: a box can be applied
-    and still be unable to open stage 2, because ``prepare_v2_verify``'s very
-    next line is ``resolve_conductor_context(status)`` and that carries seven
-    refusal sites of its own plus ``ensure_crossover_preview_ready()``'s. The
+    and still be unable to open stage 2, because a verify-only prepare reaches
+    ``resolve_conductor_context(status)`` and that carries seven refusal sites
+    of its own plus ``ensure_crossover_preview_ready()``'s. The
     household applies, stage 2 refuses at open, and the speaker sits corrected
     with no verdict.
 
@@ -5941,544 +5942,8 @@ def _build_source_run(
     )
 
 
-def prepare_v2_session(
-    raw: Mapping[str, Any],
-    *,
-    status: Mapping[str, Any],
-    run_async: Any,
-    camilla_factory: Any,
-) -> V2PreparedSession:
-    """Prepare the ``POST /crossover/v2/session`` relay hosting (S1a).
-
-    Gates (fail-closed, before any relay registration): the volume-recovery
-    gate (``needs_recovery`` — the W2 ruling) and the conductor-context
-    resolution. Hydration (S1d): the durable state is
-    hydrated through :meth:`CrossoverV2Session.hydrate` with the NEW relay
-    session id — a prior session's CHECK/MEASURE evidence is invalidated per
-    §5.6 (and logged); the fresh session starts at CHECK.
-
-    ``raw["tier"]`` selects the commission instrument (flow-simplification
-    §3): the wizard posts the household's explicit choice, and an unrecognised
-    one is refused before any relay registration rather than silently measured
-    as something else. It is resolved into ONE :class:`V2PlanShape` here, which
-    is then threaded into both the emitted spec and the conductor's index→phase
-    map — the two surfaces that must agree about the walk and used to reach
-    their defaults independently.
-
-    **An ABSENT tier inherits the lapsed session's, and #2639 is the
-    asymmetry that fixed.** ``resolve_plan_shape`` is strict about unknown
-    names and lenient about absence, resolving nothing to ``TIER_FULL``; every
-    re-measure action the envelope mints posts an empty body, because the
-    action does not know what the session was. So a REMOTE session's own retry
-    silently minted ``full`` — a tier the turntable rig cannot walk, since full
-    is not externally positioned and its verify plan raises in
-    ``position_angle_deg`` — and an Express household was demoted by the same
-    line. :func:`prepare_v2_verify` already reads its tier from durable state
-    (``_verify_plan_shape``); this reads the same fact from the same place when
-    the body does not name one, which makes the two siblings agree rather than
-    giving the retry a second rule. An explicit body tier still wins: the tier
-    chooser is how a household changes instrument.
-    """
-    from jasper.active_speaker.branch_chain import confirmed_protection_sections
-    from jasper.active_speaker.branch_chain import beaming_onset_hz
-    from jasper.active_speaker.crossover_v2.alignment_prescription import (
-        ALIGNMENT_PRESCRIPTION_KEY,
-        AlignmentPrescriptionRefused,
-        read_alignment_prescription,
-    )
-    from jasper.active_speaker.crossover_v2.topology_prescription import (
-        TOPOLOGY_PRESCRIPTION_KEY,
-        TopologyPrescriptionRefused,
-        apply_topology_pin,
-        read_topology_prescription,
-    )
-    from jasper.active_speaker.excitation_safety_plan import (
-        resolve_driver_protection_slope_db_per_octave,
-    )
-    from jasper.active_speaker.crossover_v2.journey import LATERAL_CONSUMER_FC_SELECTOR
-    from jasper.active_speaker.crossover_v2_flow import (
-        STAGE1_INCLUDES_CLOUD_MEASURE,
-        STAGE1_INCLUDES_ENTRY_BASELINE,
-        CrossoverV2Session,
-        CrossoverV2FlowError,
-        V2ConductorSnapshot,
-        alignment_delay_search_bounds_us,
-        attempt_history_from_state,
-        build_v2_cloud_index_phase_map,
-        build_v2_session_spec,
-        resolve_plan_shape,
-        session_wall_clock_ceiling_s,
-    )
-    from jasper.active_speaker.crossover_v2.coordinator import (
-        series_position_from_state,
-    )
-
-    requested_tier = (raw.get("tier") if raw else None) or None
-    if requested_tier is None:
-        # #2639. Read fresh rather than from any snapshot: this runs before
-        # hydration, and the lapsed session's tier is exactly what the durable
-        # state's ``tier`` key holds. ``None`` here is still ``None`` to
-        # ``resolve_plan_shape`` — a first session, with no lapsed tier to
-        # inherit, keeps the shipped default.
-        requested_tier = ((load_v2_state() or {}).get("tier")) or None
-    try:
-        plan_shape = resolve_plan_shape(requested_tier)
-    except CrossoverV2FlowError as exc:
-        raise refused_from_flow_error(exc) from exc
-    if session_volume_plan().needs_recovery:
-        raise CrossoverV2Refused(
-            "the measurement volume needs recovery; recover it before starting "
-            "a new session"
-        )
-    # W6.1 E1/E3-at-open: force-drain a stale-active (ceiling) and reset a
-    # residual owned-active leftover so plan.open() starts clean — the silent
-    # 200→adapter_failed loop happened when a prior session left the volume
-    # active and open() then refused. Runs AFTER the needs_recovery gate (which
-    # refused a crash-active / unresolved state toward the recover screen), then
-    # re-gates in case a drain here could not confirm and latched unresolved.
-    reconcile_session_volume_for_new_session(run_async, camilla_factory)
-    if session_volume_plan().needs_recovery:
-        raise CrossoverV2Refused(
-            "the measurement volume needs recovery; recover it before starting "
-            "a new session"
-        )
-    context = resolve_conductor_context(status)
-    try:
-        protection_sections = confirmed_protection_sections(
-            context.safety_profile, context.role_targets
-        )
-    except ValueError as exc:
-        raise CrossoverV2Refused(
-            "The confirmed driver protection cannot be used for this measurement."
-        ) from exc
-    # #2662, and it happens HERE for three reasons. It is the untrusted-input
-    # boundary, so a malformed or out-of-lobe prescription is refused before any
-    # evidence store, relay registration, or capture — an operator walking a
-    # delay sweep learns at the tap, not after a ten-minute measurement. It is
-    # the first point holding the crossover corner the bound is a half-period
-    # of. And it sits AFTER the two speaker-level gates above rather than before
-    # them: whether this speaker can be measured at all is a prior question to
-    # whether this request's prescription is good, and answering them in the
-    # other order would hand a household a prescription error for a speaker
-    # whose protection cannot be used either way.
-    #
-    # Never inherited from the lapsed session's durable state the way ``tier``
-    # above deliberately is: a prescription is one round's explicit instruction,
-    # and a "measure again" that silently re-ran a candidate would put that
-    # candidate's name on a round nobody asked for.
-    #
-    # The TOPOLOGY pin is read FIRST, and the order is load-bearing rather than
-    # alphabetical: it decides the corner this round runs at, and the delay
-    # gate below is a half-period AT that corner. Read the other way round, a
-    # 4000 Hz round's delay would be bounded by the incumbent 1648.7 Hz lobe
-    # (303 us) instead of its own (125 us) — a gate that passes candidates
-    # the round it is gating cannot support.
-    #
-    # Every bound it applies is a DECLARATION, asked of the module that owns
-    # it: the two role bands a corner is admissible within (read positionally,
-    # in the order this context builds them — woofer first) and the upper
-    # driver's declared protective high-pass slope. The ka/beaming onset rides
-    # along as DISCLOSURE only (#1675 makes it guidance, and no admissibility
-    # bound anywhere reads it).
-    #
-    # The declarations are gathered ONLY for a request that carries a pin, and
-    # that branch is deliberate rather than an optimisation. Several of this
-    # context's fields are read nowhere else on this path; deriving them
-    # unconditionally would make an ORDINARY round's session-open depend on
-    # declarations it is not using — including a positional read of
-    # ``roles_bands`` — so a context shaped for a decision this round does not
-    # take could fail a round that never asked for one.
-    raw_topology = (raw or {}).get(TOPOLOGY_PRESCRIPTION_KEY)
-    topology_prescription = None
-    if raw_topology is not None:
-        # Woofer first, tweeter second — the order this context builds them in.
-        woofer_band, tweeter_band = (
-            context.roles_bands[0].band, context.roles_bands[1].band,
-        )
-        woofer_diameter_mm = context.radiating_diameter_mm_by_role.get("woofer")
-        try:
-            topology_prescription = read_topology_prescription(
-                raw_topology,
-                declared_floor_hz=tweeter_band.lower_hz,
-                lower_driver_ceiling_hz=woofer_band.upper_hz,
-                minimum_slope_db_per_octave=(
-                    resolve_driver_protection_slope_db_per_octave(
-                        context.safety_profile, context.role_targets["tweeter"],
-                    )
-                ),
-                beaming_ceiling_hz=(
-                    None if woofer_diameter_mm is None
-                    else beaming_onset_hz(float(woofer_diameter_mm))
-                ),
-            )
-        except TopologyPrescriptionRefused as exc:
-            raise CrossoverV2Refused(
-                "the topology prescription was refused "
-                f"({exc.reason}): {exc.detail}"
-            ) from exc
-    # What this round actually runs at — one decision, made by the module that
-    # owns the pin and taken identically by the grading stage below.
-    session_preset, session_fc_hz = apply_topology_pin(
-        topology_prescription, preset=context.preset, fc_hz=context.fc_hz,
-    )
-    try:
-        alignment_prescription = read_alignment_prescription(
-            (raw or {}).get(ALIGNMENT_PRESCRIPTION_KEY),
-            # THIS round's corner, never ``context.fc_hz`` — see the pin above.
-            fc_hz=session_fc_hz,
-            # The preset's own declared window, from its single owner. It is
-            # the one bound here that does not rest on a number the request
-            # supplied — and it already existed as the Fix-3 plausibility
-            # screen, ten minutes downstream, wearing household copy that asks
-            # the user to move the microphone. Asking it HERE is what stops a
-            # prescribed candidate being blamed on a mic.
-            declared_bounds_us=alignment_delay_search_bounds_us(context.preset),
-        )
-    except AlignmentPrescriptionRefused as exc:
-        raise CrossoverV2Refused(
-            f"the alignment prescription was refused ({exc.reason}): {exc.detail}"
-        ) from exc
-    # #2662 W2b: which capture source answers this session's asks. After the
-    # speaker-level gates (they are prior questions), before any state is
-    # opened (an explicit-override refusal must cost nothing) — and BEFORE the
-    # plan below, because the source is half of "does this round hold before
-    # every capture" and a plan built from the other half alone would emit
-    # entries the gate cannot read.
-    capture_source, wired_device = _resolve_prepare_capture_source()
-    # ...which is the whole of what the source changes about the shape. Rebound
-    # ONCE, here, so every surface downstream — the index map, the spec, the
-    # gate — reads one shape rather than a half-updated one.
-    plan_shape = _hand_released_plan_shape(plan_shape, capture_source)
-    include_cloud_measure = STAGE1_INCLUDES_CLOUD_MEASURE
-    # R16's lateral walk (plan §4.4) is not a stage-1 group. Spelled here beside
-    # the cloud flag, rather than passed as a literal below, because an
-    # operator's staged angle walk flips it and the spec and the conductor's
-    # index map must be built from ONE decision either way.
-    include_lateral = False
-    # #2291's entry baseline. Same reason, same place: the emitted plan and the
-    # conductor's index→phase map are two surfaces that must agree about which
-    # captures this session runs, and reading the flag twice is how they get to
-    # disagree.
-    include_entry_baseline = STAGE1_INCLUDES_ENTRY_BASELINE
-    # ...and the map those three flags decide, built ONCE: the journal line
-    # below and the conductor's walk read one plan, not two readings of it.
-    stage1_index_phase = build_v2_cloud_index_phase_map(
-        plan_shape=plan_shape,
-        include_cloud_measure=include_cloud_measure,
-        include_lateral=include_lateral,
-        include_entry_baseline=include_entry_baseline,
-    )
-    # P2's staged angle walk (#2732). ONE take, feeding the map, the spec and
-    # the conductor's two lateral kwargs. Before any state is opened, so a
-    # refusal costs nothing. The map above is this walk's ``base_entries`` —
-    # the captures that are NOT the walk — and is rebuilt below when one is
-    # taken; that rebuild is still ONE decision, because the take is not redone.
-    staged_walk = _take_staged_angle_walk(
-        plan_shape,
-        base_entries=len(stage1_index_phase),
-        lateral_group_present=include_lateral,
-        plans_cloud_group=include_cloud_measure,
-    )
-    lateral_prompts: tuple[Any, ...] | None = None
-    lateral_consumer = LATERAL_CONSUMER_FC_SELECTOR
-    if staged_walk is not None:
-        lateral_prompts, lateral_consumer = staged_walk
-        include_lateral = True
-        stage1_index_phase = build_v2_cloud_index_phase_map(
-            plan_shape=plan_shape,
-            include_cloud_measure=include_cloud_measure,
-            include_lateral=include_lateral,
-            include_entry_baseline=include_entry_baseline,
-            lateral_prompts=lateral_prompts,
-        )
-    evidence_store, _bundle_id = open_v2_evidence_store(context.topology)
-    acknowledgement_binding = secrets.token_urlsafe(24)
-    stop_event = threading.Event()
-    stop_lock = threading.Lock()
-    complete_event = threading.Event()
-    retake_event = threading.Event()
-    # The position gate — built for any GATED shape, so a tap-paced session
-    # (every relay round) still carries no gate at all and every begin reaches
-    # the conductor exactly as it always has. Two shapes are gated: the arm's
-    # remote tier, whose driver releases each hold, and a hand-walked round on
-    # the wired source, where a person does.
-    position_gate = PositionGate() if plan_shape.positions_gated else None
-    if position_gate is not None:
-        log_event(
-            logger,
-            "correction.crossover_v2_remote_session_open",
-            stage=1,
-            tier=plan_shape.tier,
-            # WHICH mover releases this session's holds. The event name is the
-            # arm's and stays it — a driver greps it, and the doc names it —
-            # so the second gated shape says so in a field instead of a second
-            # event nothing is watching for. The shape's own field name, not a
-            # second word for it.
-            hand_released=plan_shape.hand_released_positions,
-            # The captures this session will ACTUALLY take, off that plan. It
-            # logged ``plan_shape.measure_capture_target`` — the cloud-INCLUSIVE
-            # shape target, 10 where the shipped stage 1 walks 3. The reader is
-            # an external positioner with no screen to check it against, and
-            # OVER-reporting is the direction that STALLS a walk: a driver sized
-            # at 10 waits for seven captures that are never coming, until the
-            # session ceiling expires (#2506). On 2026-08-19 a wired-night
-            # driver met exactly that contradiction — its own
-            # ``--complete-after 3`` against this line's 10 — and settled it by
-            # re-deriving the count by hand on the live box.
-            captures=len(stage1_index_phase),
-        )
-
-    prior_raw = load_v2_state()
-    attempt_store = _attempt_loop_store_snapshot()
-    prior_loop = (
-        prior_raw.get("attempts_loop")
-        if isinstance(prior_raw, Mapping) else None
-    )
-    prior_decision = (
-        prior_loop.get("last_decision")
-        if isinstance(prior_loop, Mapping) else None
-    )
-    prior_snapshot = (
-        V2ConductorSnapshot(
-            session_id=str(prior_raw.get("session_id") or ""),
-            accepted_phases=tuple(prior_raw.get("accepted_phases") or ()),
-            applied=bool(prior_raw.get("applied")),
-            gain_plan_db=prior_raw.get("gain_plan_db"),
-            attempt_history=attempt_history_from_state(prior_raw),
-            last_attempt_decision=(
-                dict(prior_decision)
-                if isinstance(prior_decision, Mapping)
-                else None
-            ),
-        )
-        if isinstance(prior_raw, Mapping)
-        else None
-    )
-
-    holder: dict[str, Any] = {}
-
-    def _open(client: Any, base: str, capture_origin: str, return_url: str) -> Any:
-        spec = build_v2_session_spec(
-            context.roles_bands,
-            # THIS round's corner, the same one the conductor above was opened
-            # at. The entry-baseline program this plan announces is stage 2's
-            # own anchor, and ``build_verify_program`` is fc-dependent TWICE:
-            # the sweep's low bound is ``min(VERIFY_F_LO_HZ=150, fc/2)`` (live
-            # below fc = 300) and the leading pilot's high bound is
-            # ``min(VERIFY_PILOT_F_HI_HZ=800, fc/VERIFY_PILOT_FC_CLEARANCE_RATIO
-            # =2.5)`` (live below fc = 2000). So a plan built at the incumbent
-            # corner while the session solves at a pinned one announces a
-            # DIFFERENT program at every corner under 2000 Hz — which is most
-            # of a two-way's legal pin band, jts3's 1600-2500 included, not the
-            # sub-300 Hz curiosity an earlier version of this comment claimed.
-            session_fc_hz,
-            acknowledgement_binding=acknowledgement_binding,
-            plan_shape=plan_shape,
-            include_cloud_measure=include_cloud_measure,
-            include_lateral=include_lateral,
-            include_entry_baseline=include_entry_baseline,
-            lateral_prompts=lateral_prompts,
-            default_setup_calibration=default_setup_calibration_for_v2(),
-        ).with_return_url(return_url)
-        # This stage's own wall-clock budget, read ONCE off the plan it just
-        # emitted: the relay link is minted against it below and the walked-away
-        # volume ceiling is armed from it further down, and those two must
-        # describe the same session (issue #2509).
-        ceiling_s = session_wall_clock_ceiling_s(spec.capture_plan)
-        rc = _mint_source_session(
-            capture_source,
-            wired_device,
-            client,
-            spec,
-            base=base,
-            capture_origin=capture_origin,
-            return_url=return_url,
-            plan_shape=plan_shape,
-            ceiling_s=ceiling_s,
-        )
-        # The conductor + publishers bind to the MINTED provider session id
-        # (the seam's identity rule — the wired id rides the same key).
-        relay_session_id = rc.pi_session.session_id
-        publish_check, publish_candidate, refs = bind_evidence_publishers(
-            evidence_store, relay_session_id
-        )
-        # A cloud session legitimately outlasts the 3-entry flow's walked-away
-        # ceiling; scale it from the plan this session actually emitted (never
-        # from the constants, so a caller-configured cloud is covered too) and
-        # arm it BEFORE the volume opens.
-        session_volume_plan().set_wall_clock_ceiling_s(ceiling_s)
-        # One signal per session, shared by the play seam (which fires it) and
-        # the runner (which installs the armed capture's phase ladder on it).
-        playback_started = PlaybackStartSignal()
-        # Same shape, same reason: written by the play seam, read by analyze.
-        capture_provenance = CaptureProvenanceRecorder()
-        play = bind_production_play(
-            run_async=run_async,
-            camilla_factory=camilla_factory,
-            evidence_store=evidence_store,
-            relay_session_id=relay_session_id,
-            topology=context.topology,
-            preset=context.preset,
-            role_channels=context.role_channels,
-            playback_device=context.playback_device,
-            safety_profile=context.safety_profile,
-            role_targets=context.role_targets,
-            session_volume_db=context.session_volume_db,
-            protection_sections_by_role=protection_sections,
-            declared_sensitivities=context.declared_sensitivities,
-            on_playback_started=playback_started.fire,
-            provenance=capture_provenance,
-        )
-        # This stage's journey, resolved once (#2291 Phase 4). The index→phase
-        # map is the one built above from the SAME resolved plan shape the
-        # emitted spec used — not merely the same function at its own defaults
-        # — so the prompt an entry carries, the phase the conductor runs for
-        # that index, and the count the journal announced can never disagree.
-        # ``verify_capture_target`` is the tier's own number, handed over as a
-        # fact: the boost-permission rule that reads it (work
-        # order D2's consequence — this session's phases carry no VERIFY,
-        # because the post-apply sweep is stage 2) belongs to the journey.
-        opening = open_stage(
-            STAGE_MEASURE_CAPABILITIES,
-            index_phase_map=stage1_index_phase,
-            verify_capture_target=plan_shape.verify_capture_target,
-        )
-        # A9. Resolved ONCE and used twice, because the two uses have to agree:
-        # the ordinal that decides which round this is is the ordinal a staged
-        # prescription must have been staged for, and re-reading it would let a
-        # state write between the two hand this round an instruction written for
-        # another one.
-        series_position = series_position_from_state(prior_raw)
-        # ONE take, already split by class — see the take's own contract for why
-        # the split is made there and not here.
-        staged_blend, staged_driver = _take_staged_prescription(
-            series_position.ordinal
-        )
-        conductor = CrossoverV2Session.hydrate(
-            prior_snapshot,
-            session_id=relay_session_id,
-            # The PINNED topology when this request carried one, else the
-            # context's own — resolved once, above, so the preset and the
-            # corner can never name two different crossovers.
-            source_preset=session_preset,
-            roles_bands=context.roles_bands,
-            fc_hz=session_fc_hz,
-            driver_caps_dbfs=context.driver_caps_dbfs,
-            driver_sweep_duration_limits_s=context.driver_sweep_duration_limits_s,
-            session_volume_db=context.session_volume_db,
-            seams=bind_v2_stage_seams(
-                opening,
-                play=play,
-                evidence_store=evidence_store,
-                relay_session_id=relay_session_id,
-                refs=refs,
-                publish_check=publish_check,
-                publish_candidate=publish_candidate,
-                run_async=run_async,
-                camilla_factory=camilla_factory,
-                provenance=capture_provenance,
-            ),
-            tier=plan_shape.tier,
-            # The gate's own fact, handed down rather than re-derived from the
-            # tier: a geometry-locked retake asks for a pose no HELD walk can
-            # state, so the group refuses it for either gated shape.
-            positions_gated=plan_shape.positions_gated,
-            index_phase_map=opening.plan.index_phase_map,
-            post_apply_verifies=opening.plan.post_apply_verifies,
-            driver_spacing_m=context.driver_spacing_m,
-            driver_class_by_role=context.driver_class_by_role,
-            radiating_diameter_mm_by_role=context.radiating_diameter_mm_by_role,
-            # #2732 P2. From the SAME take the map and the spec above read.
-            lateral_consumer=lateral_consumer,
-            lateral_prompts=lateral_prompts,
-            measurement_protection_sections_by_role=protection_sections,
-            sound_design_revision=context.sound_design_revision,
-            tweeter_measurement_band_hz=context.tweeter_measurement_band_hz,
-            attempt_floor=attempt_store.floor,
-            speaker_id=context.topology.topology_id,
-            alignment_prescription=alignment_prescription,
-            # The pin itself, held so the session knows it IS pinned: it closes
-            # the Fc search and suppresses the selector, and it banks the
-            # provenance on the round's receipt. The topology it names has
-            # already taken effect in the two arguments above.
-            topology_prescription=topology_prescription,
-            # #2698. The same series fact the grading stage reads, from the
-            # same reader and off the same durable state this snapshot is
-            # built from — because stage 1 reads it too, and reads it FIRST.
-            # ``_blend_prescription`` runs at candidate-build time, here in
-            # MEASURE, and an absent position there is not a no-op: it falls
-            # back to the incumbent, so a measuring session with no position
-            # silently discards every blend instruction the previous round
-            # banked and the series can never converge.
-            series_position=series_position,
-            # A9, and it rides the same stage for the same reason: the door it
-            # enters is ``_blend_prescription``, which runs at candidate-build
-            # time, so a prescription handed to any other stage would be held by
-            # a session that never builds a candidate.
-            blend_prescription=(
-                None if staged_blend is None else staged_blend.prescription
-            ),
-            blend_prescription_sha256=(
-                "" if staged_blend is None else staged_blend.prescription_sha256
-            ),
-            # PR-B, on this stage for the line above's reason with the same
-            # deadline and a different door: the per-driver class is merged onto
-            # the Layer-1a fit inside the candidate build, which is MEASURE's.
-            driver_prescription=(
-                None if staged_driver is None else staged_driver.prescription
-            ),
-        )
-        persist_conductor_state(conductor, failure_code=None, evidence=refs)
-        holder["run"] = _build_source_run(
-            capture_source,
-            conductor,
-            volume=_volume_hooks(camilla_factory, context),
-            stop_event=stop_event,
-            stop_lock=stop_lock,
-            position_gate=position_gate,
-            evidence_refs=refs,
-            playback_started=playback_started,
-            wired_device=wired_device,
-            ceiling_s=ceiling_s,
-            complete_event=complete_event,
-            retake_event=retake_event,
-        )
-        return rc
-
-    async def _run(client: Any, pi_session: Any) -> None:
-        await holder["run"](client, pi_session)
-
-    def _request_stop() -> None:
-        with stop_lock:
-            stop_event.set()
-
-    return V2PreparedSession(
-        label=V2_RELAY_KIND_SESSION,
-        open=_open,
-        run_and_consume=_run,
-        request_stop=_request_stop,
-        position_gate=position_gate,
-        capture_source=capture_source,
-        request_complete=(
-            complete_event.set if capture_source == SOURCE_WIRED else None
-        ),
-        request_retake=(
-            # Carried only by a walk that can ever WAIT for a person, which is
-            # the same question the gate answers: the retake is served at a
-            # HELD BEGIN or in the held-set window, and a gateless walk reaches
-            # neither — the recovery re-arm is one sweep at the mark with no
-            # group to hold open. Carrying it there would answer a household's
-            # POST with ok:true and then do nothing at all, which is the one
-            # shape a signal seam must never have.
-            retake_event.set
-            if capture_source == SOURCE_WIRED and position_gate is not None
-            else None
-        ),
-    )
-
-
-# The request field that selects which post-apply instrument
-# ``prepare_v2_verify`` opens, and its one non-default value.
+# The request field that selects which post-apply instrument a verify-only
+# prepare opens, and its one non-default value.
 VERIFY_STAGE_KEY = "stage"
 VERIFY_STAGE_POST_APPLY = "post_apply"
 VERIFY_STAGE_RECOVERY = "recovery"
@@ -6517,20 +5982,77 @@ def _verify_plan_shape(
         raise refused_from_flow_error(exc) from exc
 
 
-def prepare_v2_verify(
+def prepare_v2_session(
     raw: Mapping[str, Any],
     *,
     status: Mapping[str, Any],
     run_async: Any,
     camilla_factory: Any,
+    verify_only: bool = False,
 ) -> V2PreparedSession:
-    """Prepare ``POST /crossover/v2/verify`` — the post-apply session.
+    """Prepare one v2 relay hosting — ``verify_only`` picks which stage.
 
-    Requires a durable post-apply state (MEASURE accepted + applied). Opens a
-    NEW relay session hosting a post-apply plan; the conductor is rebuilt in
-    verify-only mode (CHECK/MEASURE marked accepted, applied, verify priors
-    rehydrated from the durable state), with its index→phase map built by
-    ``build_v2_verify_index_phase_map``.
+    ``POST /crossover/v2/session`` (S1a) when false, ``POST
+    /crossover/v2/verify`` when true. The flag is the dispatch's own
+    discriminator handed one frame down, never re-derived here
+    (``correction_setup._handle_crossover_v2_relay``).
+
+    **One sequence, and the nine steps along it that fork.** From the
+    capture-source resolution onward both stages run the same steps in the same
+    order: resolve the source, rebind the plan shape, open the evidence bundle,
+    build the position gate, mint the relay session, re-arm the walked-away
+    ceiling, bind the evidence publishers, bind the play seam, open the journey,
+    bind the seams, construct the conductor, persist, build the runner, return a
+    :class:`V2PreparedSession`. That shared SEQUENCE is why they are one
+    function rather than two free to drift apart; it is not a claim that every
+    step is identical. Exactly nine of them read ``verify_only`` — the prologue
+    (which gates run, and whether the round is RESOLVED from the request or
+    REHYDRATED from durable state), the stage-1-only plan flags and staged angle
+    walk, the prior-snapshot read against the durable rehydration, the position
+    gate's journal line (``stage`` and ``captures``, never the gate predicate,
+    which is shared), the session spec builder, the play seam's
+    ``protection_sections_by_role`` (stage 2 takes no MEASURE capture, so it
+    leaves the seam's own ``None``), the journey's capability set, the
+    conductor's constructor and its kwargs, and the returned ``label``.
+
+    ``bind_v2_stage_seams`` is deliberately not among the nine: one call serves
+    both stages, which is what keeps "which callable implements each seam"
+    answerable in one place instead of at two sites free to disagree.
+
+    **Stage 1** (``verify_only=False``). Gates (fail-closed, before any relay
+    registration): the volume-recovery gate (``needs_recovery`` — the W2
+    ruling) and the conductor-context resolution. Hydration (S1d): the durable
+    state is hydrated through :meth:`CrossoverV2Session.hydrate` with the NEW
+    relay session id — a prior session's CHECK/MEASURE evidence is invalidated
+    per §5.6 (and logged); the fresh session starts at CHECK.
+
+    ``raw["tier"]`` selects the commission instrument (flow-simplification
+    §3): the wizard posts the household's explicit choice, and an unrecognised
+    one is refused before any relay registration rather than silently measured
+    as something else. It is resolved into ONE :class:`V2PlanShape` here, which
+    is then threaded into both the emitted spec and the conductor's index→phase
+    map — the two surfaces that must agree about the walk and used to reach
+    their defaults independently.
+
+    **An ABSENT tier inherits the lapsed session's, and #2639 is the
+    asymmetry that fixed.** ``resolve_plan_shape`` is strict about unknown
+    names and lenient about absence, resolving nothing to ``TIER_FULL``; every
+    re-measure action the envelope mints posts an empty body, because the
+    action does not know what the session was. So a REMOTE session's own retry
+    silently minted ``full`` — a tier the turntable rig cannot walk, since full
+    is not externally positioned and its verify plan raises in
+    ``position_angle_deg`` — and an Express household was demoted by the same
+    line. The verify-only stage reads its tier from durable state
+    (``_verify_plan_shape``); this reads the same fact from the same place when
+    the body does not name one, which makes the two stages agree rather than
+    giving the retry a second rule. An explicit body tier still wins: the tier
+    chooser is how a household changes instrument.
+
+    **Stage 2** (``verify_only=True``). Requires a durable post-apply state
+    (MEASURE accepted + applied). Opens a NEW relay session hosting a
+    post-apply plan; the conductor is rebuilt in verify-only mode (CHECK/MEASURE
+    marked accepted, applied, verify priors rehydrated from the durable state),
+    with its index→phase map built by ``build_v2_verify_index_phase_map``.
 
     **ONE entry point, two shapes** (two-stage commission work order D2,
     owner-confirmed 2026-07-29) — generalized over the plan shape rather than
@@ -6550,150 +6072,396 @@ def prepare_v2_verify(
     An unrecognised ``stage`` is refused rather than silently measured as
     something else — the same strictness ``normalize_tier`` applies to a tier.
     """
-    import numpy as np
-
-    from jasper.active_speaker.crossover_v2.journey import PHASE_CHECK, PHASE_MEASURE
-    from jasper.active_speaker.crossover_v2_flow import (
-        CrossoverV2Session,
-        attempt_history_from_state,
-        build_v2_verify_index_phase_map,
-        build_v2_verify_session_spec,
-        session_wall_clock_ceiling_s,
-    )
     from jasper.active_speaker.crossover_v2.coordinator import (
         series_position_from_state,
     )
     from jasper.active_speaker.crossover_v2.topology_prescription import (
         apply_topology_pin,
     )
+    from jasper.active_speaker.crossover_v2_flow import (
+        CrossoverV2Session,
+        attempt_history_from_state,
+        session_wall_clock_ceiling_s,
+    )
 
-    if session_volume_plan().needs_recovery:
-        raise CrossoverV2Refused(
-            "the measurement volume needs recovery; recover it before verifying"
+    if verify_only:
+        from jasper.active_speaker.crossover_v2.journey import (
+            PHASE_CHECK,
+            PHASE_MEASURE,
         )
-    state = load_v2_state()
-    if not state or not state.get("applied"):
-        raise CrossoverV2Refused(
-            "verification needs an applied measured crossover; measure and "
-            "apply first"
+        from jasper.active_speaker.crossover_v2_flow import (
+            build_v2_verify_index_phase_map,
+            build_v2_verify_session_spec,
         )
-    attempt_store = _attempt_loop_store_snapshot()
-    attempts_loop = state.get("attempts_loop")
-    attempts_loop = attempts_loop if isinstance(attempts_loop, Mapping) else {}
-    prior_attempt_decision = attempts_loop.get("last_decision")
-    candidate_state = state.get("candidate")
-    tuning_attempt_id = (
-        str(candidate_state.get("fingerprint") or "")
-        if isinstance(candidate_state, Mapping) else ""
-    )
-    plan_shape = _verify_plan_shape(raw, state)
-    context = resolve_conductor_context(status)
-    # #2662 W2b: the same one-decision source resolution stage 1 makes, in
-    # the same position — after the speaker-level gates, BEFORE the evidence
-    # bundle opens, so a refused verify-start (relay-less Pi, unplugged mic
-    # under an explicit wired override) costs no side effects (gate S3, both
-    # preparers).
+
+        if session_volume_plan().needs_recovery:
+            raise CrossoverV2Refused(
+                "the measurement volume needs recovery; recover it before verifying"
+            )
+        # ``or {}`` rather than a None check, so the narrowing survives into
+        # ``_open`` below: an absent state and an unapplied one are the same
+        # refusal, and the empty mapping never reaches past this gate.
+        state = load_v2_state() or {}
+        if not state.get("applied"):
+            raise CrossoverV2Refused(
+                "verification needs an applied measured crossover; measure and "
+                "apply first"
+            )
+        attempt_store = _attempt_loop_store_snapshot()
+        attempts_loop = state.get("attempts_loop")
+        attempts_loop = attempts_loop if isinstance(attempts_loop, Mapping) else {}
+        prior_attempt_decision = attempts_loop.get("last_decision")
+        candidate_state = state.get("candidate")
+        tuning_attempt_id = (
+            str(candidate_state.get("fingerprint") or "")
+            if isinstance(candidate_state, Mapping) else ""
+        )
+        plan_shape = _verify_plan_shape(raw, state)
+        context = resolve_conductor_context(status)
+    else:
+        from jasper.active_speaker.branch_chain import confirmed_protection_sections
+        from jasper.active_speaker.branch_chain import beaming_onset_hz
+        from jasper.active_speaker.crossover_v2.alignment_prescription import (
+            ALIGNMENT_PRESCRIPTION_KEY,
+            AlignmentPrescriptionRefused,
+            read_alignment_prescription,
+        )
+        from jasper.active_speaker.crossover_v2.topology_prescription import (
+            TOPOLOGY_PRESCRIPTION_KEY,
+            TopologyPrescriptionRefused,
+            read_topology_prescription,
+        )
+        from jasper.active_speaker.excitation_safety_plan import (
+            resolve_driver_protection_slope_db_per_octave,
+        )
+        from jasper.active_speaker.crossover_v2.journey import (
+            LATERAL_CONSUMER_FC_SELECTOR,
+        )
+        from jasper.active_speaker.crossover_v2_flow import (
+            STAGE1_INCLUDES_CLOUD_MEASURE,
+            STAGE1_INCLUDES_ENTRY_BASELINE,
+            CrossoverV2FlowError,
+            V2ConductorSnapshot,
+            alignment_delay_search_bounds_us,
+            build_v2_cloud_index_phase_map,
+            build_v2_session_spec,
+            resolve_plan_shape,
+        )
+
+        requested_tier = (raw.get("tier") if raw else None) or None
+        if requested_tier is None:
+            # #2639. Read fresh rather than from any snapshot: this runs before
+            # hydration, and the lapsed session's tier is exactly what the durable
+            # state's ``tier`` key holds. ``None`` here is still ``None`` to
+            # ``resolve_plan_shape`` — a first session, with no lapsed tier to
+            # inherit, keeps the shipped default.
+            requested_tier = ((load_v2_state() or {}).get("tier")) or None
+        try:
+            plan_shape = resolve_plan_shape(requested_tier)
+        except CrossoverV2FlowError as exc:
+            raise refused_from_flow_error(exc) from exc
+        if session_volume_plan().needs_recovery:
+            raise CrossoverV2Refused(
+                "the measurement volume needs recovery; recover it before starting "
+                "a new session"
+            )
+        # W6.1 E1/E3-at-open: force-drain a stale-active (ceiling) and reset a
+        # residual owned-active leftover so plan.open() starts clean — the silent
+        # 200→adapter_failed loop happened when a prior session left the volume
+        # active and open() then refused. Runs AFTER the needs_recovery gate (which
+        # refused a crash-active / unresolved state toward the recover screen), then
+        # re-gates in case a drain here could not confirm and latched unresolved.
+        reconcile_session_volume_for_new_session(run_async, camilla_factory)
+        if session_volume_plan().needs_recovery:
+            raise CrossoverV2Refused(
+                "the measurement volume needs recovery; recover it before starting "
+                "a new session"
+            )
+        context = resolve_conductor_context(status)
+        try:
+            protection_sections = confirmed_protection_sections(
+                context.safety_profile, context.role_targets
+            )
+        except ValueError as exc:
+            raise CrossoverV2Refused(
+                "The confirmed driver protection cannot be used for this measurement."
+            ) from exc
+        # #2662, and it happens HERE for three reasons. It is the untrusted-input
+        # boundary, so a malformed or out-of-lobe prescription is refused before any
+        # evidence store, relay registration, or capture — an operator walking a
+        # delay sweep learns at the tap, not after a ten-minute measurement. It is
+        # the first point holding the crossover corner the bound is a half-period
+        # of. And it sits AFTER the two speaker-level gates above rather than before
+        # them: whether this speaker can be measured at all is a prior question to
+        # whether this request's prescription is good, and answering them in the
+        # other order would hand a household a prescription error for a speaker
+        # whose protection cannot be used either way.
+        #
+        # Never inherited from the lapsed session's durable state the way ``tier``
+        # above deliberately is: a prescription is one round's explicit instruction,
+        # and a "measure again" that silently re-ran a candidate would put that
+        # candidate's name on a round nobody asked for.
+        #
+        # The TOPOLOGY pin is read FIRST, and the order is load-bearing rather than
+        # alphabetical: it decides the corner this round runs at, and the delay
+        # gate below is a half-period AT that corner. Read the other way round, a
+        # 4000 Hz round's delay would be bounded by the incumbent 1648.7 Hz lobe
+        # (303 us) instead of its own (125 us) — a gate that passes candidates
+        # the round it is gating cannot support.
+        #
+        # Every bound it applies is a DECLARATION, asked of the module that owns
+        # it: the two role bands a corner is admissible within (read positionally,
+        # in the order this context builds them — woofer first) and the upper
+        # driver's declared protective high-pass slope. The ka/beaming onset rides
+        # along as DISCLOSURE only (#1675 makes it guidance, and no admissibility
+        # bound anywhere reads it).
+        #
+        # The declarations are gathered ONLY for a request that carries a pin, and
+        # that branch is deliberate rather than an optimisation. Several of this
+        # context's fields are read nowhere else on this path; deriving them
+        # unconditionally would make an ORDINARY round's session-open depend on
+        # declarations it is not using — including a positional read of
+        # ``roles_bands`` — so a context shaped for a decision this round does not
+        # take could fail a round that never asked for one.
+        raw_topology = (raw or {}).get(TOPOLOGY_PRESCRIPTION_KEY)
+        topology_prescription = None
+        if raw_topology is not None:
+            # Woofer first, tweeter second — the order this context builds them in.
+            woofer_band, tweeter_band = (
+                context.roles_bands[0].band, context.roles_bands[1].band,
+            )
+            woofer_diameter_mm = context.radiating_diameter_mm_by_role.get("woofer")
+            try:
+                topology_prescription = read_topology_prescription(
+                    raw_topology,
+                    declared_floor_hz=tweeter_band.lower_hz,
+                    lower_driver_ceiling_hz=woofer_band.upper_hz,
+                    minimum_slope_db_per_octave=(
+                        resolve_driver_protection_slope_db_per_octave(
+                            context.safety_profile, context.role_targets["tweeter"],
+                        )
+                    ),
+                    beaming_ceiling_hz=(
+                        None if woofer_diameter_mm is None
+                        else beaming_onset_hz(float(woofer_diameter_mm))
+                    ),
+                )
+            except TopologyPrescriptionRefused as exc:
+                raise CrossoverV2Refused(
+                    "the topology prescription was refused "
+                    f"({exc.reason}): {exc.detail}"
+                ) from exc
+        # What this round actually runs at — one decision, made by the module that
+        # owns the pin and taken identically by the grading stage.
+        session_preset, session_fc_hz = apply_topology_pin(
+            topology_prescription, preset=context.preset, fc_hz=context.fc_hz,
+        )
+        try:
+            alignment_prescription = read_alignment_prescription(
+                (raw or {}).get(ALIGNMENT_PRESCRIPTION_KEY),
+                # THIS round's corner, never ``context.fc_hz`` — see the pin above.
+                fc_hz=session_fc_hz,
+                # The preset's own declared window, from its single owner. It is
+                # the one bound here that does not rest on a number the request
+                # supplied — and it already existed as the Fix-3 plausibility
+                # screen, ten minutes downstream, wearing household copy that asks
+                # the user to move the microphone. Asking it HERE is what stops a
+                # prescribed candidate being blamed on a mic.
+                declared_bounds_us=alignment_delay_search_bounds_us(context.preset),
+            )
+        except AlignmentPrescriptionRefused as exc:
+            raise CrossoverV2Refused(
+                f"the alignment prescription was refused ({exc.reason}): {exc.detail}"
+            ) from exc
+
+    # #2662 W2b: which capture source answers this session's asks. After the
+    # speaker-level gates (they are prior questions), before any state is
+    # opened (an explicit-override refusal must cost nothing) — and BEFORE the
+    # stage-1 plan below, because the source is half of "does this round hold
+    # before every capture" and a plan built from the other half alone would
+    # emit entries the gate cannot read. Stage 2 resolves it in the same
+    # position for the same reason: a refused verify-start (relay-less Pi,
+    # unplugged mic under an explicit wired override) costs no side effects
+    # (gate S3, both stages).
     capture_source, wired_device = _resolve_prepare_capture_source()
-    # Stage 1's rebinding, in the same position and for the same reason: this
-    # stage's plan is built from ``plan_shape`` inside ``_open`` below, so the
-    # shape has to know who releases its holds before anything reads it.
+    # ...which is the whole of what the source changes about the shape. Rebound
+    # ONCE, here, so every surface downstream — the index map, the spec, the
+    # gate — reads one shape rather than a half-updated one.
     plan_shape = _hand_released_plan_shape(plan_shape, capture_source)
-    evidence_store, _bundle_id = open_v2_evidence_store(context.topology)
-    priors_raw = state.get("verify_priors") or {}
-    sum_raw = priors_raw.get("predicted_sum") if isinstance(priors_raw, Mapping) else None
-    predicted_sum = None
-    if isinstance(sum_raw, Mapping) and sum_raw.get("freqs_hz"):
-        predicted_sum = (
-            np.asarray(sum_raw["freqs_hz"], dtype=float),
-            np.asarray(sum_raw["magnitude_db"], dtype=float),
+    if not verify_only:
+        include_cloud_measure = STAGE1_INCLUDES_CLOUD_MEASURE
+        # R16's lateral walk (plan §4.4) is not a stage-1 group. Spelled here beside
+        # the cloud flag, rather than passed as a literal below, because an
+        # operator's staged angle walk flips it and the spec and the conductor's
+        # index map must be built from ONE decision either way.
+        include_lateral = False
+        # #2291's entry baseline. Same reason, same place: the emitted plan and the
+        # conductor's index→phase map are two surfaces that must agree about which
+        # captures this session runs, and reading the flag twice is how they get to
+        # disagree.
+        include_entry_baseline = STAGE1_INCLUDES_ENTRY_BASELINE
+        # ...and the map those three flags decide, built ONCE: the journal line
+        # below and the conductor's walk read one plan, not two readings of it.
+        stage1_index_phase = build_v2_cloud_index_phase_map(
+            plan_shape=plan_shape,
+            include_cloud_measure=include_cloud_measure,
+            include_lateral=include_lateral,
+            include_entry_baseline=include_entry_baseline,
         )
-    # Two-stage commission D4: the prediction's stored spec verdict, rehydrated
-    # exactly like ``gate_ms`` below so this re-arm's own persist carries it
-    # forward instead of blanking it. Absent (a state written before D4, or an
-    # ungradeable prediction) stays None — unknown, never a pass.
-    predicted_spec = (
-        priors_raw.get("predicted_spec") if isinstance(priors_raw, Mapping) else None
-    )
-    predicted_spec = predicted_spec if isinstance(predicted_spec, Mapping) else None
-    # The delta probe's commanded axis, rehydrated (#2291 Phase 3). This is the
-    # stage the probe RUNS in, and stage 1 is the only stage that can produce
-    # the curve, so without this every shipped stage 2 graded its correction
-    # with the shortfall-vs-model-error discriminator switched off. ``None``
-    # stays ``VERDICT_UNAVAILABLE`` — no evidence to refuse on, and no
-    # permission granted either.
-    commanded_delta = commanded_delta_prior_from_state(state)
-    # The probe's STATE axis, rehydrated on exactly the same route and for the
-    # same reason (#2614). ``None`` narrows the two directional safety rules to
-    # the change axis alone, which the probe's own caller names on the journal
-    # rather than letting a hearing-safety mask quietly shrink.
-    declared_transfer = declared_transfer_prior_from_state(state)
-    # What stage 1 proposed, rehydrated (#2392) — the identity the round
-    # receipt names. Stage 2 plans nothing, so this is the only channel, and an
-    # absent key (a state written before #2392, or a stage 1 whose proposal
-    # assembly was refused) stays ``""``: the receipt then records the
-    # candidate fingerprint under an explicit ``proposal_fingerprint_kind``
-    # rather than claiming a proposal identity it never had.
-    proposal_fingerprint = (
-        str(priors_raw.get("proposal_fingerprint") or "")
-        if isinstance(priors_raw, Mapping) else ""
-    )
-    # #2291's measured "before", rehydrated. Stage 2 never captures one — its
-    # plan has no ``PHASE_ENTRY_BASELINE`` entry, by construction, because the
-    # baseline has to precede the apply this stage is verifying — so this is
-    # the only way the benefit verdict gets a side to compare against. ``None``
-    # stays ``entry_baseline_unavailable``: INDETERMINATE, never a pass, and
-    # declared to the capability journal below so the verdict's reason is not
-    # the first place anyone learns it was missing.
-    entry_baseline = entry_baseline_prior_from_state(state)
-    # #2662, rehydrated on entry_baseline's route and for its reason: stage 2
-    # never opened a session with a prescription (it takes no MEASURE capture),
-    # so this durable record is the only way the round it grades can name what
-    # its delay was derived from.
-    alignment_prescription = alignment_prescription_prior_from_state(state)
-    # The topology pin, on the line above's route and carrying more than a
-    # receipt field: this stage GRADES the applied graph, and a pinned round
-    # applied a crossover the saved declaration does not name. Re-opening at
-    # the incumbent corner would hand VERIFY the wrong design target (R18's
-    # absolute claim) and the wrong overlap band, so the round would be graded
-    # for not being the crossover it deliberately replaced. Resolved before the
-    # session below for the same one-decision reason stage 1 resolves it.
-    topology_prescription = topology_prescription_prior_from_state(state)
-    verify_preset, verify_fc_hz = apply_topology_pin(
-        topology_prescription, preset=context.preset, fc_hz=context.fc_hz,
-    )
-    # A9, on the line above's route and for its reason, sharpened by one fact
-    # that arm did not have to face: ``verify_priors`` is REBUILT from the
-    # conductor on every persist, so this is not merely how stage 2 learns what
-    # the round was prescribed — it is the only thing that stops stage 2's own
-    # persist erasing it before the receipt is written.
-    blend_prescription = blend_prescription_prior_from_state(state)
-    blend_prescription_sha256 = blend_prescription_sha256_from_state(state)
-    alignment_objective = str(
-        (priors_raw.get("alignment_objective") if isinstance(priors_raw, Mapping)
-         else "") or ""
-    )
-    gate_ms = (
-        priors_raw.get("gate_window_ms") if isinstance(priors_raw, Mapping) else None
-    )
-    # Measurement-honesty gate G3's PREVIOUS reference — read as dated
-    # history, never rehydrated as this session's comparator (#1927). This
-    # re-arm always establishes its own baseline from its own first usable
-    # VERIFY attempt; the only thing this record can do is make the session
-    # SAY it reset the reference, and by how much. Absent (a state written
-    # before this key, or a session that never reached a usable VERIFY pilot)
-    # simply leaves the disclosure silent. Shape validation lives in
-    # ``CrossoverV2Session.__init__`` so the "values plus a date, or
-    # nothing" rule has one owner.
-    pilot_transfer_prior = pilot_transfer_prior_from_state(state)
+        # P2's staged angle walk (#2732). ONE take, feeding the map, the spec and
+        # the conductor's two lateral kwargs. Before any state is opened, so a
+        # refusal costs nothing. The map above is this walk's ``base_entries`` —
+        # the captures that are NOT the walk — and is rebuilt below when one is
+        # taken; that rebuild is still ONE decision, because the take is not redone.
+        staged_walk = _take_staged_angle_walk(
+            plan_shape,
+            base_entries=len(stage1_index_phase),
+            lateral_group_present=include_lateral,
+            plans_cloud_group=include_cloud_measure,
+        )
+        lateral_prompts: tuple[Any, ...] | None = None
+        lateral_consumer = LATERAL_CONSUMER_FC_SELECTOR
+        if staged_walk is not None:
+            lateral_prompts, lateral_consumer = staged_walk
+            include_lateral = True
+            stage1_index_phase = build_v2_cloud_index_phase_map(
+                plan_shape=plan_shape,
+                include_cloud_measure=include_cloud_measure,
+                include_lateral=include_lateral,
+                include_entry_baseline=include_entry_baseline,
+                lateral_prompts=lateral_prompts,
+            )
+    evidence_store, _bundle_id = open_v2_evidence_store(context.topology)
+    if verify_only:
+        import numpy as np
+
+        priors_raw = state.get("verify_priors") or {}
+        sum_raw = priors_raw.get("predicted_sum") if isinstance(priors_raw, Mapping) else None
+        predicted_sum = None
+        if isinstance(sum_raw, Mapping) and sum_raw.get("freqs_hz"):
+            predicted_sum = (
+                np.asarray(sum_raw["freqs_hz"], dtype=float),
+                np.asarray(sum_raw["magnitude_db"], dtype=float),
+            )
+        # Two-stage commission D4: the prediction's stored spec verdict, rehydrated
+        # exactly like ``gate_ms`` below so this re-arm's own persist carries it
+        # forward instead of blanking it. Absent (a state written before D4, or an
+        # ungradeable prediction) stays None — unknown, never a pass.
+        predicted_spec = (
+            priors_raw.get("predicted_spec") if isinstance(priors_raw, Mapping) else None
+        )
+        predicted_spec = predicted_spec if isinstance(predicted_spec, Mapping) else None
+        # The delta probe's commanded axis, rehydrated (#2291 Phase 3). This is the
+        # stage the probe RUNS in, and stage 1 is the only stage that can produce
+        # the curve, so without this every shipped stage 2 graded its correction
+        # with the shortfall-vs-model-error discriminator switched off. ``None``
+        # stays ``VERDICT_UNAVAILABLE`` — no evidence to refuse on, and no
+        # permission granted either.
+        commanded_delta = commanded_delta_prior_from_state(state)
+        # The probe's STATE axis, rehydrated on exactly the same route and for the
+        # same reason (#2614). ``None`` narrows the two directional safety rules to
+        # the change axis alone, which the probe's own caller names on the journal
+        # rather than letting a hearing-safety mask quietly shrink.
+        declared_transfer = declared_transfer_prior_from_state(state)
+        # What stage 1 proposed, rehydrated (#2392) — the identity the round
+        # receipt names. Stage 2 plans nothing, so this is the only channel, and an
+        # absent key (a state written before #2392, or a stage 1 whose proposal
+        # assembly was refused) stays ``""``: the receipt then records the
+        # candidate fingerprint under an explicit ``proposal_fingerprint_kind``
+        # rather than claiming a proposal identity it never had.
+        proposal_fingerprint = (
+            str(priors_raw.get("proposal_fingerprint") or "")
+            if isinstance(priors_raw, Mapping) else ""
+        )
+        # #2291's measured "before", rehydrated. Stage 2 never captures one — its
+        # plan has no ``PHASE_ENTRY_BASELINE`` entry, by construction, because the
+        # baseline has to precede the apply this stage is verifying — so this is
+        # the only way the benefit verdict gets a side to compare against. ``None``
+        # stays ``entry_baseline_unavailable``: INDETERMINATE, never a pass, and
+        # declared to the capability journal below so the verdict's reason is not
+        # the first place anyone learns it was missing.
+        entry_baseline = entry_baseline_prior_from_state(state)
+        # #2662, rehydrated on entry_baseline's route and for its reason: stage 2
+        # never opened a session with a prescription (it takes no MEASURE capture),
+        # so this durable record is the only way the round it grades can name what
+        # its delay was derived from.
+        alignment_prescription = alignment_prescription_prior_from_state(state)
+        # The topology pin, on the line above's route and carrying more than a
+        # receipt field: this stage GRADES the applied graph, and a pinned round
+        # applied a crossover the saved declaration does not name. Re-opening at
+        # the incumbent corner would hand VERIFY the wrong design target (R18's
+        # absolute claim) and the wrong overlap band, so the round would be graded
+        # for not being the crossover it deliberately replaced. Resolved before the
+        # session below for the same one-decision reason stage 1 resolves it.
+        topology_prescription = topology_prescription_prior_from_state(state)
+        verify_preset, verify_fc_hz = apply_topology_pin(
+            topology_prescription, preset=context.preset, fc_hz=context.fc_hz,
+        )
+        # A9, on the line above's route and for its reason, sharpened by one fact
+        # that arm did not have to face: ``verify_priors`` is REBUILT from the
+        # conductor on every persist, so this is not merely how stage 2 learns what
+        # the round was prescribed — it is the only thing that stops stage 2's own
+        # persist erasing it before the receipt is written.
+        blend_prescription = blend_prescription_prior_from_state(state)
+        blend_prescription_sha256 = blend_prescription_sha256_from_state(state)
+        alignment_objective = str(
+            (priors_raw.get("alignment_objective") if isinstance(priors_raw, Mapping)
+             else "") or ""
+        )
+        gate_ms = (
+            priors_raw.get("gate_window_ms") if isinstance(priors_raw, Mapping) else None
+        )
+        # Measurement-honesty gate G3's PREVIOUS reference — read as dated
+        # history, never rehydrated as this session's comparator (#1927). This
+        # re-arm always establishes its own baseline from its own first usable
+        # VERIFY attempt; the only thing this record can do is make the session
+        # SAY it reset the reference, and by how much. Absent (a state written
+        # before this key, or a session that never reached a usable VERIFY pilot)
+        # simply leaves the disclosure silent. Shape validation lives in
+        # ``CrossoverV2Session.__init__`` so the "values plus a date, or
+        # nothing" rule has one owner.
+        pilot_transfer_prior = pilot_transfer_prior_from_state(state)
+    else:
+        prior_raw = load_v2_state()
+        attempt_store = _attempt_loop_store_snapshot()
+        prior_loop = (
+            prior_raw.get("attempts_loop")
+            if isinstance(prior_raw, Mapping) else None
+        )
+        prior_decision = (
+            prior_loop.get("last_decision")
+            if isinstance(prior_loop, Mapping) else None
+        )
+        prior_snapshot = (
+            V2ConductorSnapshot(
+                session_id=str(prior_raw.get("session_id") or ""),
+                accepted_phases=tuple(prior_raw.get("accepted_phases") or ()),
+                applied=bool(prior_raw.get("applied")),
+                gain_plan_db=prior_raw.get("gain_plan_db"),
+                attempt_history=attempt_history_from_state(prior_raw),
+                last_attempt_decision=(
+                    dict(prior_decision)
+                    if isinstance(prior_decision, Mapping)
+                    else None
+                ),
+            )
+            if isinstance(prior_raw, Mapping)
+            else None
+        )
+
     acknowledgement_binding = secrets.token_urlsafe(24)
     stop_event = threading.Event()
     stop_lock = threading.Lock()
     complete_event = threading.Event()
     retake_event = threading.Event()
-    # Same rule as stage 1's, with one extra case: ``_verify_plan_shape``
-    # returns ``None`` for the recovery re-arm, which has no tier and therefore
-    # no gate — it is the one-sweep session a household starts by hand, at the
-    # mark, with nowhere to walk to.
+    # The position gate — built for any GATED shape, so a tap-paced session
+    # (every relay round) still carries no gate at all and every begin reaches
+    # the conductor exactly as it always has. Two shapes are gated: the arm's
+    # remote tier, whose driver releases each hold, and a hand-walked round on
+    # the wired source, where a person does. ``plan_shape`` is ``None`` for the
+    # verify-only recovery re-arm, which has no tier and therefore no gate — it
+    # is the one-sweep session a household starts by hand, at the mark, with
+    # nowhere to walk to.
     position_gate = (
         PositionGate()
         if plan_shape is not None and plan_shape.positions_gated
@@ -6703,26 +6471,70 @@ def prepare_v2_verify(
         log_event(
             logger,
             "correction.crossover_v2_remote_session_open",
-            stage=2,
+            stage=2 if verify_only else 1,
             tier=plan_shape.tier,
+            # WHICH mover releases this session's holds. The event name is the
+            # arm's and stays it — a driver greps it, and the doc names it —
+            # so the second gated shape says so in a field instead of a second
+            # event nothing is watching for. The shape's own field name, not a
+            # second word for it.
             hand_released=plan_shape.hand_released_positions,
-            captures=plan_shape.verify_capture_target,
+            # The captures this session will ACTUALLY take, off that plan. Stage
+            # 1 logged ``plan_shape.measure_capture_target`` — the
+            # cloud-INCLUSIVE shape target, 10 where the shipped stage 1 walks 3.
+            # The reader is an external positioner with no screen to check it
+            # against, and OVER-reporting is the direction that STALLS a walk: a
+            # driver sized at 10 waits for seven captures that are never coming,
+            # until the session ceiling expires (#2506). On 2026-08-19 a
+            # wired-night driver met exactly that contradiction — its own
+            # ``--complete-after 3`` against this line's 10 — and settled it by
+            # re-deriving the count by hand on the live box.
+            captures=(
+                plan_shape.verify_capture_target
+                if verify_only else len(stage1_index_phase)
+            ),
         )
+
     holder: dict[str, Any] = {}
 
     def _open(client: Any, base: str, capture_origin: str, return_url: str) -> Any:
-        spec = build_v2_verify_session_spec(
-            # The corner this round was measured and applied at — stage 1's
-            # ``session_fc_hz`` rehydrated. Same one-corner-per-round rule as
-            # the stage-1 spec above.
-            verify_fc_hz,
-            acknowledgement_binding=acknowledgement_binding,
-            plan_shape=plan_shape,
-            default_setup_calibration=default_setup_calibration_for_v2(),
-        ).with_return_url(return_url)
-        # Stage 2's own budget, read once off its own plan — the link below and
-        # the ceiling further down size from the same number, exactly as stage 1
-        # does (issue #2509).
+        if verify_only:
+            spec = build_v2_verify_session_spec(
+                # The corner this round was measured and applied at — stage 1's
+                # ``session_fc_hz`` rehydrated. Same one-corner-per-round rule
+                # as the stage-1 spec below.
+                verify_fc_hz,
+                acknowledgement_binding=acknowledgement_binding,
+                plan_shape=plan_shape,
+                default_setup_calibration=default_setup_calibration_for_v2(),
+            ).with_return_url(return_url)
+        else:
+            spec = build_v2_session_spec(
+                context.roles_bands,
+                # THIS round's corner, the same one the conductor below was opened
+                # at. The entry-baseline program this plan announces is stage 2's
+                # own anchor, and ``build_verify_program`` is fc-dependent TWICE:
+                # the sweep's low bound is ``min(VERIFY_F_LO_HZ=150, fc/2)`` (live
+                # below fc = 300) and the leading pilot's high bound is
+                # ``min(VERIFY_PILOT_F_HI_HZ=800, fc/VERIFY_PILOT_FC_CLEARANCE_RATIO
+                # =2.5)`` (live below fc = 2000). So a plan built at the incumbent
+                # corner while the session solves at a pinned one announces a
+                # DIFFERENT program at every corner under 2000 Hz — which is most
+                # of a two-way's legal pin band, jts3's 1600-2500 included, not the
+                # sub-300 Hz curiosity an earlier version of this comment claimed.
+                session_fc_hz,
+                acknowledgement_binding=acknowledgement_binding,
+                plan_shape=plan_shape,
+                include_cloud_measure=include_cloud_measure,
+                include_lateral=include_lateral,
+                include_entry_baseline=include_entry_baseline,
+                lateral_prompts=lateral_prompts,
+                default_setup_calibration=default_setup_calibration_for_v2(),
+            ).with_return_url(return_url)
+        # This stage's own wall-clock budget, read ONCE off the plan it just
+        # emitted: the relay link is minted against it below and the walked-away
+        # volume ceiling is armed from it further down, and those two must
+        # describe the same session (issue #2509).
         ceiling_s = session_wall_clock_ceiling_s(spec.capture_plan)
         rc = _mint_source_session(
             capture_source,
@@ -6735,14 +6547,18 @@ def prepare_v2_verify(
             plan_shape=plan_shape,
             ceiling_s=ceiling_s,
         )
+        # The conductor + publishers bind to the MINTED provider session id
+        # (the seam's identity rule — the wired id rides the same key).
         relay_session_id = rc.pi_session.session_id
-        # Re-arm the walked-away ceiling from THIS plan (1 entry ⇒ the plain
-        # 1800 s baseline; Full's stage-2 walk scales it like any other plan).
-        # The volume plan is process-global, so a preceding cloud session would
-        # otherwise leave its own longer ceiling in force for a measurement
-        # that cannot possibly need it.
+        # Re-arm the walked-away ceiling from THIS stage's own plan, BEFORE the
+        # volume opens. The volume plan is process-global, so a preceding
+        # session would otherwise leave its ceiling in force in either
+        # direction: a cloud stage 1 legitimately outlasts the 3-entry flow's
+        # window, and a 1-entry stage 2 cannot possibly need a cloud's. Scaled
+        # from the plan this session actually emitted, never from the constants,
+        # so a caller-configured cloud is covered too.
         session_volume_plan().set_wall_clock_ceiling_s(ceiling_s)
-        _publish_check, publish_candidate, refs = bind_evidence_publishers(
+        publish_check, publish_candidate, refs = bind_evidence_publishers(
             evidence_store, relay_session_id
         )
         # One signal per session, shared by the play seam (which fires it) and
@@ -6762,96 +6578,200 @@ def prepare_v2_verify(
             safety_profile=context.safety_profile,
             role_targets=context.role_targets,
             session_volume_db=context.session_volume_db,
+            # Stage 2 takes no MEASURE capture, so it declares no measurement
+            # protection sections and rides the seam's own "none" default.
+            protection_sections_by_role=(
+                None if verify_only else protection_sections
+            ),
             declared_sensitivities=context.declared_sensitivities,
             on_playback_started=playback_started.fire,
             provenance=capture_provenance,
         )
-        # This stage's journey (#2291 Phase 4), the same contract stage 1 opens
-        # and differing only in its arguments. ``available`` states facts about
-        # the rehydration above and nothing more — which slug each fact answers
-        # to is the journey's, so the journal's "missing" line cannot drift
-        # from what the conductor was really constructed with. No
-        # ``verify_capture_target``: this plan really does contain VERIFY, so
-        # the phase-derived reading is already the right one.
-        opening = open_stage(
-            STAGE_VERIFY_CAPABILITIES,
-            index_phase_map=build_v2_verify_index_phase_map(plan_shape=plan_shape),
-            available=available_stage_priors(
-                commanded_delta=commanded_delta is not None,
-                predicted_sum=predicted_sum is not None,
-                entry_baseline=entry_baseline is not None,
-            ),
+        if verify_only:
+            # This stage's journey (#2291 Phase 4), the same contract stage 1
+            # opens and differing only in its arguments. ``available`` states
+            # facts about the rehydration above and nothing more — which slug
+            # each fact answers to is the journey's, so the journal's "missing"
+            # line cannot drift from what the conductor was really constructed
+            # with. No ``verify_capture_target``: this plan really does contain
+            # VERIFY, so the phase-derived reading is already the right one.
+            opening = open_stage(
+                STAGE_VERIFY_CAPABILITIES,
+                index_phase_map=build_v2_verify_index_phase_map(plan_shape=plan_shape),
+                available=available_stage_priors(
+                    commanded_delta=commanded_delta is not None,
+                    predicted_sum=predicted_sum is not None,
+                    entry_baseline=entry_baseline is not None,
+                ),
+            )
+        else:
+            # This stage's journey, resolved once (#2291 Phase 4). The index→phase
+            # map is the one built above from the SAME resolved plan shape the
+            # emitted spec used — not merely the same function at its own defaults
+            # — so the prompt an entry carries, the phase the conductor runs for
+            # that index, and the count the journal announced can never disagree.
+            # ``verify_capture_target`` is the tier's own number, handed over as a
+            # fact: the boost-permission rule that reads it (work
+            # order D2's consequence — this session's phases carry no VERIFY,
+            # because the post-apply sweep is stage 2) belongs to the journey.
+            opening = open_stage(
+                STAGE_MEASURE_CAPABILITIES,
+                index_phase_map=stage1_index_phase,
+                verify_capture_target=plan_shape.verify_capture_target,
+            )
+        # ONE binding for both stages. ``bind_v2_stage_seams`` is already the
+        # single owner of "which callable implements each seam"; taking it at
+        # one call site is what stops the two stages disagreeing about one —
+        # which they had begun to, stage 2 reaching its check publisher through
+        # a second, underscore-prefixed name for the same object.
+        seams = bind_v2_stage_seams(
+            opening,
+            play=play,
+            evidence_store=evidence_store,
+            relay_session_id=relay_session_id,
+            refs=refs,
+            publish_check=publish_check,
+            publish_candidate=publish_candidate,
+            run_async=run_async,
+            camilla_factory=camilla_factory,
+            provenance=capture_provenance,
         )
-        conductor = CrossoverV2Session(
-            session_id=relay_session_id,
-            # The topology the round being graded was MEASURED and APPLIED at
-            # — the pin when the durable state carried one, else the context's
-            # own. Resolved once, above.
-            source_preset=verify_preset,
-            # Stage 1's twin, and the ONLY statement of the fact this session
-            # gets: this ctor is handed no ``tier`` at all, so before #2879 a
-            # geometry-locked stage-2 group prompted for the 75 cm rung even on
-            # the arm. The gate above and this now read one shape.
-            positions_gated=bool(plan_shape and plan_shape.positions_gated),
-            roles_bands=context.roles_bands,
-            fc_hz=verify_fc_hz,
-            driver_caps_dbfs=context.driver_caps_dbfs,
-            driver_sweep_duration_limits_s=context.driver_sweep_duration_limits_s,
-            session_volume_db=context.session_volume_db,
-            seams=bind_v2_stage_seams(
-                opening,
-                play=play,
-                evidence_store=evidence_store,
-                relay_session_id=relay_session_id,
-                refs=refs,
-                publish_check=_publish_check,
-                publish_candidate=publish_candidate,
-                run_async=run_async,
-                camilla_factory=camilla_factory,
-                provenance=capture_provenance,
-            ),
-            driver_spacing_m=context.driver_spacing_m,
-            driver_class_by_role=context.driver_class_by_role,
-            radiating_diameter_mm_by_role=context.radiating_diameter_mm_by_role,
-            tweeter_measurement_band_hz=context.tweeter_measurement_band_hz,
-            accepted_phases=(PHASE_CHECK, PHASE_MEASURE),
-            applied=True,
-            gain_plan_db=state.get("gain_plan_db"),
-            index_phase_map=opening.plan.index_phase_map,
-            measure_predicted_sum=predicted_sum,
-            measure_predicted_spec_report=predicted_spec,
-            measure_commanded_delta=commanded_delta,
-            measure_declared_transfer=declared_transfer,
-            measure_proposal_fingerprint=proposal_fingerprint,
-            measure_entry_baseline=entry_baseline,
-            alignment_prescription=alignment_prescription,
-            topology_prescription=topology_prescription,
-            blend_prescription=blend_prescription,
-            blend_prescription_sha256=blend_prescription_sha256,
-            measure_alignment_objective=alignment_objective,
-            measure_gate_window_ms=(
-                float(gate_ms) if isinstance(gate_ms, (int, float)) else None
-            ),
-            verify_pilot_transfer_prior=pilot_transfer_prior,
-            attempt_history=attempt_history_from_state(state),
-            # #2602: where the next round sits in the flattening series, read
-            # off the receipt the previous round banked and carried forward
-            # across sessions — the series outlives the session that started
-            # it. This stage reads it in ``_grade_round_once``, the stage that
-            # grades a round. It is wired on BOTH stages since #2698:
-            # #2687 gave stage 1 its own reader (``_blend_prescription``, at
-            # candidate-build time), which falsified the argument this line
-            # once carried for being the series' only wiring site.
-            series_position=series_position_from_state(state),
-            attempt_floor=attempt_store.floor,
-            last_attempt_decision=(
-                dict(prior_attempt_decision)
-                if isinstance(prior_attempt_decision, Mapping) else None
-            ),
-            speaker_id=context.topology.topology_id,
-            tuning_attempt_id=tuning_attempt_id,
-        )
-        # Keep the durable candidate/applied facts; rebind the session id.
+        if verify_only:
+            conductor = CrossoverV2Session(
+                session_id=relay_session_id,
+                # The topology the round being graded was MEASURED and APPLIED at
+                # — the pin when the durable state carried one, else the context's
+                # own. Resolved once, above.
+                source_preset=verify_preset,
+                # Stage 1's twin, and the ONLY statement of the fact this session
+                # gets: this ctor is handed no ``tier`` at all, so before #2879 a
+                # geometry-locked stage-2 group prompted for the 75 cm rung even on
+                # the arm. The gate above and this now read one shape.
+                positions_gated=bool(plan_shape and plan_shape.positions_gated),
+                roles_bands=context.roles_bands,
+                fc_hz=verify_fc_hz,
+                driver_caps_dbfs=context.driver_caps_dbfs,
+                driver_sweep_duration_limits_s=context.driver_sweep_duration_limits_s,
+                session_volume_db=context.session_volume_db,
+                seams=seams,
+                driver_spacing_m=context.driver_spacing_m,
+                driver_class_by_role=context.driver_class_by_role,
+                radiating_diameter_mm_by_role=context.radiating_diameter_mm_by_role,
+                tweeter_measurement_band_hz=context.tweeter_measurement_band_hz,
+                accepted_phases=(PHASE_CHECK, PHASE_MEASURE),
+                applied=True,
+                gain_plan_db=state.get("gain_plan_db"),
+                index_phase_map=opening.plan.index_phase_map,
+                measure_predicted_sum=predicted_sum,
+                measure_predicted_spec_report=predicted_spec,
+                measure_commanded_delta=commanded_delta,
+                measure_declared_transfer=declared_transfer,
+                measure_proposal_fingerprint=proposal_fingerprint,
+                measure_entry_baseline=entry_baseline,
+                alignment_prescription=alignment_prescription,
+                topology_prescription=topology_prescription,
+                blend_prescription=blend_prescription,
+                blend_prescription_sha256=blend_prescription_sha256,
+                measure_alignment_objective=alignment_objective,
+                measure_gate_window_ms=(
+                    float(gate_ms) if isinstance(gate_ms, (int, float)) else None
+                ),
+                verify_pilot_transfer_prior=pilot_transfer_prior,
+                attempt_history=attempt_history_from_state(state),
+                # #2602: where the next round sits in the flattening series, read
+                # off the receipt the previous round banked and carried forward
+                # across sessions — the series outlives the session that started
+                # it. This stage reads it in ``_grade_round_once``, the stage that
+                # grades a round. It is wired on BOTH stages since #2698:
+                # #2687 gave stage 1 its own reader (``_blend_prescription``, at
+                # candidate-build time), which falsified the argument this line
+                # once carried for being the series' only wiring site.
+                series_position=series_position_from_state(state),
+                attempt_floor=attempt_store.floor,
+                last_attempt_decision=(
+                    dict(prior_attempt_decision)
+                    if isinstance(prior_attempt_decision, Mapping) else None
+                ),
+                speaker_id=context.topology.topology_id,
+                tuning_attempt_id=tuning_attempt_id,
+            )
+        else:
+            # A9. Resolved ONCE and used twice, because the two uses have to agree:
+            # the ordinal that decides which round this is is the ordinal a staged
+            # prescription must have been staged for, and re-reading it would let a
+            # state write between the two hand this round an instruction written for
+            # another one.
+            series_position = series_position_from_state(prior_raw)
+            # ONE take, already split by class — see the take's own contract for why
+            # the split is made there and not here.
+            staged_blend, staged_driver = _take_staged_prescription(
+                series_position.ordinal
+            )
+            conductor = CrossoverV2Session.hydrate(
+                prior_snapshot,
+                session_id=relay_session_id,
+                # The PINNED topology when this request carried one, else the
+                # context's own — resolved once, above, so the preset and the
+                # corner can never name two different crossovers.
+                source_preset=session_preset,
+                roles_bands=context.roles_bands,
+                fc_hz=session_fc_hz,
+                driver_caps_dbfs=context.driver_caps_dbfs,
+                driver_sweep_duration_limits_s=context.driver_sweep_duration_limits_s,
+                session_volume_db=context.session_volume_db,
+                seams=seams,
+                tier=plan_shape.tier,
+                # The gate's own fact, handed down rather than re-derived from the
+                # tier: a geometry-locked retake asks for a pose no HELD walk can
+                # state, so the group refuses it for either gated shape.
+                positions_gated=plan_shape.positions_gated,
+                index_phase_map=opening.plan.index_phase_map,
+                post_apply_verifies=opening.plan.post_apply_verifies,
+                driver_spacing_m=context.driver_spacing_m,
+                driver_class_by_role=context.driver_class_by_role,
+                radiating_diameter_mm_by_role=context.radiating_diameter_mm_by_role,
+                # #2732 P2. From the SAME take the map and the spec above read.
+                lateral_consumer=lateral_consumer,
+                lateral_prompts=lateral_prompts,
+                measurement_protection_sections_by_role=protection_sections,
+                sound_design_revision=context.sound_design_revision,
+                tweeter_measurement_band_hz=context.tweeter_measurement_band_hz,
+                attempt_floor=attempt_store.floor,
+                speaker_id=context.topology.topology_id,
+                alignment_prescription=alignment_prescription,
+                # The pin itself, held so the session knows it IS pinned: it closes
+                # the Fc search and suppresses the selector, and it banks the
+                # provenance on the round's receipt. The topology it names has
+                # already taken effect in the two arguments above.
+                topology_prescription=topology_prescription,
+                # #2698. The same series fact the grading stage reads, from the
+                # same reader and off the same durable state this snapshot is
+                # built from — because stage 1 reads it too, and reads it FIRST.
+                # ``_blend_prescription`` runs at candidate-build time, here in
+                # MEASURE, and an absent position there is not a no-op: it falls
+                # back to the incumbent, so a measuring session with no position
+                # silently discards every blend instruction the previous round
+                # banked and the series can never converge.
+                series_position=series_position,
+                # A9, and it rides the same stage for the same reason: the door it
+                # enters is ``_blend_prescription``, which runs at candidate-build
+                # time, so a prescription handed to any other stage would be held by
+                # a session that never builds a candidate.
+                blend_prescription=(
+                    None if staged_blend is None else staged_blend.prescription
+                ),
+                blend_prescription_sha256=(
+                    "" if staged_blend is None else staged_blend.prescription_sha256
+                ),
+                # PR-B, on this stage for the line above's reason with the same
+                # deadline and a different door: the per-driver class is merged onto
+                # the Layer-1a fit inside the candidate build, which is MEASURE's.
+                driver_prescription=(
+                    None if staged_driver is None else staged_driver.prescription
+                ),
+            )
+        # Stage 2 keeps the durable candidate/applied facts and rebinds the
+        # session id; stage 1 writes its fresh one.
         persist_conductor_state(conductor, failure_code=None, evidence=refs)
         holder["run"] = _build_source_run(
             capture_source,
@@ -6877,7 +6797,7 @@ def prepare_v2_verify(
             stop_event.set()
 
     return V2PreparedSession(
-        label=V2_RELAY_KIND_VERIFY,
+        label=V2_RELAY_KIND_VERIFY if verify_only else V2_RELAY_KIND_SESSION,
         open=_open,
         run_and_consume=_run,
         request_stop=_request_stop,
@@ -6915,9 +6835,9 @@ def _assert_stage_2_can_open(status: Mapping[str, Any]) -> None:
     removed auto-apply ``handle_v2_apply`` was ALSO the automatic path and a
     refusal here would have newly refused a shipped automatic flow.
 
-    It closes the hole work-order premise 5 was hiding: ``prepare_v2_verify``'s
-    very next line is ``resolve_conductor_context(status)``, which is
-    fail-closed and carries seven refusal sites of its own plus
+    It closes the hole work-order premise 5 was hiding: a verify-only prepare
+    reaches ``resolve_conductor_context(status)``, which is fail-closed and
+    carries seven refusal sites of its own plus
     ``ensure_crossover_preview_ready()``'s. So a box can be applied and still
     be unable to open stage 2 — the household applies, stage 2 refuses at open,
     and the speaker sits corrected with no verdict. That applied-and-ungraded

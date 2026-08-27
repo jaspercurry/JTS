@@ -527,8 +527,10 @@ def test_the_v2_dispatch_threads_the_idle_hold_into_the_relay_runner(
     idle_hold = _RecordingIdleHold()
     seen: dict[str, object] = {}
 
-    def _fake_prepare(raw, *, status, run_async, camilla_factory):
-        seen["prepare_kwargs"] = {"status", "run_async", "camilla_factory"}
+    def _fake_prepare(raw, *, status, run_async, camilla_factory, verify_only):
+        seen["prepare_kwargs"] = {
+            "status", "run_async", "camilla_factory", "verify_only",
+        }
         return SimpleNamespace(
             label="crossover_v2:session",
             open=lambda *a, **kw: None,
@@ -575,7 +577,6 @@ def test_the_v2_dispatch_threads_the_idle_hold_into_the_relay_runner(
     # this signature check.
     assert "idle_hold" not in seen["prepare_kwargs"]
     assert "idle_hold" not in inspect.signature(v2host.prepare_v2_session).parameters
-    assert "idle_hold" not in inspect.signature(v2host.prepare_v2_verify).parameters
     assert seen["orchestrator"] is idle_hold
 
     # ...and the route reads it off the handler cfg make_server builds. That
@@ -586,6 +587,76 @@ def test_the_v2_dispatch_threads_the_idle_hold_into_the_relay_runner(
     dispatch = inspect.getsource(correction_setup._make_handler)
     assert 'idle_hold=cfg["idle_hold"]' in dispatch
     assert '"idle_hold": idle_hold' in inspect.getsource(correction_setup.make_server)
+
+
+@pytest.mark.parametrize(
+    ("verify_only", "expected_label"),
+    [
+        pytest.param(False, "crossover_v2:session", id="session-route"),
+        pytest.param(True, "crossover_v2:verify", id="verify-route"),
+    ],
+)
+def test_the_v2_dispatch_carries_its_routes_stage_into_the_relay_kind(
+    monkeypatch, verify_only, expected_label,
+):
+    """Which STAGE a route opens, carried through the dispatch to the kind.
+
+    ``/crossover/v2/session`` and ``/crossover/v2/verify`` are one handler
+    separated by one boolean, and since the two preparers converged that boolean
+    is the whole of the separation. Nothing pinned it: hardcoding
+    ``verify_only=False`` at the call site passed every suite, because the
+    handler had only ever been driven for stage 1.
+
+    Asserted at BOTH ends of the hop — the flag the preparer is handed, and the
+    label the relay kind ends up carrying — so neither a dropped argument nor a
+    preparer that ignores it can pass. The expected labels are spelled as
+    literals rather than read back off the module, because they are the wire
+    identity the relay lifecycle keys on.
+    """
+    from jasper.web import correction_crossover_backend
+    from jasper.web import correction_crossover_v2 as v2host
+
+    seen: dict[str, object] = {}
+
+    def _fake_prepare(raw, *, status, run_async, camilla_factory, verify_only):
+        seen["verify_only"] = verify_only
+        return SimpleNamespace(
+            # The real preparer's own line, so the label this route surfaces is
+            # the stage the route asked for rather than one the stub chose.
+            label=(
+                v2host.V2_RELAY_KIND_VERIFY if verify_only
+                else v2host.V2_RELAY_KIND_SESSION
+            ),
+            open=lambda *a, **kw: None,
+            run_and_consume=lambda *a, **kw: None,
+            request_stop=lambda: None,
+            position_gate=None,
+            capture_source=v2host.SOURCE_RELAY,
+            request_complete=None,
+            request_retake=None,
+        )
+
+    def _fake_run_relay_capture(kind, relay_base, *, return_url, idle_hold):
+        seen["kind"] = kind
+        return {"tap_link": "https://capture.test/#s=cap_1", "status": "awaiting_phone"}
+
+    monkeypatch.setattr(correction_setup, "_read_json_body", lambda _h: {})
+    monkeypatch.setattr(
+        correction_setup, "_require_relay_base", lambda: "https://relay.test",
+    )
+    monkeypatch.setattr(correction_setup, "_crossover_blocking_phase", lambda: None)
+    monkeypatch.setattr(correction_crossover_backend, "status_payload", dict)
+    monkeypatch.setattr(v2host, "prepare_v2_session", _fake_prepare)
+    monkeypatch.setattr(correction_setup, "_run_relay_capture", _fake_run_relay_capture)
+    monkeypatch.setattr(
+        correction_setup, "_request_local_return_url",
+        lambda _h, _p: "http://jts.local/",
+    )
+
+    correction_setup._handle_crossover_v2_relay(None, verify_only=verify_only)
+
+    assert seen["verify_only"] is verify_only
+    assert seen["kind"].label == expected_label
 
 
 # ---------- #1860: level-ramp kinds now hold the idle-exit tracker too ------

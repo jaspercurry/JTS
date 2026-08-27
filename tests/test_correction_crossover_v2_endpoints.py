@@ -3862,7 +3862,7 @@ def test_the_envelope_route_actually_runs_the_preflight():
     a product bug rather than a missing line. ``handle_envelope`` is the only
     path that serves this envelope to the wizard, so the call belongs there and
     a source read is enough to prove it has not been lost in a refactor (same
-    shape as ``test_both_session_preparers_rearm_the_walked_away_volume_ceiling``
+    shape as ``test_the_session_preparer_rearms_the_walked_away_volume_ceiling``
     above, and for the same reason).
     """
     import inspect
@@ -3906,25 +3906,25 @@ def test_a_resolvable_context_is_the_only_thing_that_enables_apply():
         v2host.resolve_conductor_context = original
 
 
-def test_both_session_preparers_rearm_the_walked_away_volume_ceiling():
-    """S4: the ceiling is only correct because both preparers re-arm it from
-    their OWN plan — the volume plan is process-global, so a dropped call in
-    either one silently leaves the other's ceiling in force. Nothing enforced
-    that; this does, by reading the call out of each preparer's source.
+def test_the_session_preparer_rearms_the_walked_away_volume_ceiling():
+    """S4: the ceiling is only correct because the preparer re-arms it from the
+    plan the stage it opened actually emitted — the volume plan is
+    process-global, so a dropped call silently leaves the previous session's
+    ceiling in force. Nothing enforced that; this does, by reading the call out
+    of the preparer's source.
     """
     import inspect
 
     # The derivation is now BOUND to a name (issue #2509 sizes the relay link
     # from the same number), so pinning the two tokens separately would no
     # longer prove the value reaches the arm. Pin the binding and the arm.
-    for fn in (v2host.prepare_v2_session, v2host.prepare_v2_verify):
-        source = inspect.getsource(fn)
-        assert "ceiling_s = session_wall_clock_ceiling_s(spec.capture_plan)" in (
-            source
-        ), f"{fn.__name__} must size the ceiling from the plan it emits"
-        assert "set_wall_clock_ceiling_s(ceiling_s)" in source, (
-            f"{fn.__name__} must arm the ceiling it derived"
-        )
+    source = inspect.getsource(v2host.prepare_v2_session)
+    assert "ceiling_s = session_wall_clock_ceiling_s(spec.capture_plan)" in (
+        source
+    ), "the preparer must size the ceiling from the plan it emits"
+    assert "set_wall_clock_ceiling_s(ceiling_s)" in source, (
+        "the preparer must arm the ceiling it derived"
+    )
     # And the two plans really do want different ceilings, which is the whole
     # reason the re-arm cannot be done once at import.
     from jasper.active_speaker.crossover_v2_flow import (
@@ -4323,9 +4323,9 @@ def test_seeding_a_rearm_from_durable_state_never_seeds_the_comparator():
     assert conductor.verify_pilot_transfer_reference is None
     # …and the preparer really does route it to that argument, never to a
     # baseline. Source-read for the same reason
-    # ``test_both_session_preparers_rearm_the_walked_away_volume_ceiling``
+    # ``test_the_session_preparer_rearms_the_walked_away_volume_ceiling``
     # uses one: driving ``_open`` needs a live relay.
-    source = inspect.getsource(v2host.prepare_v2_verify)
+    source = inspect.getsource(v2host.prepare_v2_session)
     assert "pilot_transfer_prior_from_state(state)" in source
     assert "verify_pilot_transfer_prior=pilot_transfer_prior" in source
     assert "verify_pilot_transfer_baseline" not in source
@@ -12227,7 +12227,7 @@ def test_the_rearm_stand_in_matches_prepare_v2_verifys_durable_write_set():
     two tests below prove something about a shape production no longer has."""
     import inspect
 
-    source = inspect.getsource(v2host.prepare_v2_verify)
+    source = inspect.getsource(v2host.prepare_v2_session)
 
     assert "persist_conductor_state(" in source
     for direct_writer in (
@@ -13095,8 +13095,9 @@ def test_stage_2_reopens_at_the_topology_the_round_was_measured_at(monkeypatch):
     monkeypatch.setattr(topology_mod, "apply_topology_pin", _apply)
 
     with pytest.raises(_StoppedAtTheTap):
-        v2host.prepare_v2_verify(
+        v2host.prepare_v2_session(
             {}, status={}, run_async=None, camilla_factory=None,
+            verify_only=True,
         )
 
     assert seen["fc_hz"] == _PIN_FC_HZ
@@ -13160,8 +13161,9 @@ def test_stage_2_of_an_unpinned_round_re_points_nothing(monkeypatch):
     monkeypatch.setattr(topology_mod, "apply_topology_pin", _apply)
 
     with pytest.raises(_StoppedAtTheTap):
-        v2host.prepare_v2_verify(
+        v2host.prepare_v2_session(
             {}, status={}, run_async=None, camilla_factory=None,
+            verify_only=True,
         )
 
     assert seen["prescription"] is None

@@ -1144,14 +1144,16 @@ def test_the_wired_source_is_what_makes_a_hand_walked_round_gated():
     assert _hand_released_plan_shape(None, SOURCE_WIRED) is None
 
 
-def test_both_preparers_build_the_gate_from_the_shapes_own_answer():
-    """One question, one predicate, at BOTH construction sites — the drift
-    this pins is one stage gaining the second gated shape while the other
-    silently keeps running a hand-walked wired round with no hold at all."""
+def test_the_preparer_builds_the_gate_from_the_shapes_own_answer():
+    """One question, one predicate, one construction site — the drift this pins
+    is a stage gaining the second gated shape while another silently keeps
+    running a hand-walked wired round with no hold at all. The two stages used
+    to build the gate at two sites; they now share one, so the count is what
+    says a second one has not grown back."""
     from jasper.web import correction_crossover_v2 as v2host
 
     source = inspect.getsource(v2host)
-    assert source.count("PositionGate() if plan_shape.positions_gated") == 1
+    assert source.count("PositionGate()") == 1
     assert source.count("if plan_shape is not None and plan_shape.positions_gated") == 1
     assert "PositionGate() if plan_shape.externally_positioned" not in source
 
@@ -1207,9 +1209,9 @@ def test_a_hand_walked_wired_re_verify_opens_with_a_gate(caplog, monkeypatch):
         v2host, "_resolve_prepare_capture_source",
         lambda: (v2host.SOURCE_WIRED, SimpleNamespace(model_key="umik2")),
     )
-    prepared = v2host.prepare_v2_verify(
+    prepared = v2host.prepare_v2_session(
         {v2host.VERIFY_STAGE_KEY: v2host.VERIFY_STAGE_POST_APPLY},
-        status=_status(), run_async=None, camilla_factory=None,
+        status=_status(), run_async=None, camilla_factory=None, verify_only=True,
     )
 
     assert prepared.position_gate is not None
@@ -1284,9 +1286,9 @@ def test_both_preparers_tell_their_conductor_whether_its_begins_are_held(
     assert _opened_conductor(monkeypatch, v2host, stage_1)._positions_gated is True
 
     v2host.save_v2_state({"applied": True, "tier": TIER_FULL})
-    stage_2 = v2host.prepare_v2_verify(
+    stage_2 = v2host.prepare_v2_session(
         {v2host.VERIFY_STAGE_KEY: v2host.VERIFY_STAGE_POST_APPLY},
-        status=_status(), run_async=None, camilla_factory=None,
+        status=_status(), run_async=None, camilla_factory=None, verify_only=True,
     )
     assert stage_2.position_gate is not None
     assert _opened_conductor(monkeypatch, v2host, stage_2)._positions_gated is True
@@ -1302,9 +1304,9 @@ def test_a_relay_stage_2_conductor_is_told_nothing_holds_its_begins(monkeypatch)
         lambda: (v2host.SOURCE_RELAY, None),
     )
     v2host.save_v2_state({"applied": True, "tier": TIER_FULL})
-    prepared = v2host.prepare_v2_verify(
+    prepared = v2host.prepare_v2_session(
         {v2host.VERIFY_STAGE_KEY: v2host.VERIFY_STAGE_POST_APPLY},
-        status=_status(), run_async=None, camilla_factory=None,
+        status=_status(), run_async=None, camilla_factory=None, verify_only=True,
     )
     assert prepared.position_gate is None
     # The shared harness, because this one DOES reach the relay runner it
@@ -1329,8 +1331,9 @@ def test_a_wired_recovery_re_arm_carries_no_retake_it_could_not_serve(monkeypatc
         lambda: (v2host.SOURCE_WIRED, SimpleNamespace(model_key="umik2")),
     )
     v2host.save_v2_state({"applied": True, "tier": TIER_FULL})
-    prepared = v2host.prepare_v2_verify(
+    prepared = v2host.prepare_v2_session(
         {}, status=_status(), run_async=None, camilla_factory=None,
+        verify_only=True,
     )
     assert prepared.position_gate is None      # the recovery shape
     assert prepared.request_retake is None
@@ -1741,16 +1744,16 @@ def test_a_hand_walked_stage_keeps_the_default_link():
     assert relay_link_ttl_s(None, 2520.0) == DEFAULT_TTL_S
 
 
-def test_both_preparers_mint_their_link_from_the_ceiling_they_arm():
+def test_the_preparer_mints_its_link_from_the_ceiling_it_arms():
     """The two are one decision: a stage that armed a 2520 s ceiling and minted
     a 900 s link is exactly the failure. Read out of the source, the same way
     the ceiling re-arm itself is pinned.
 
     Since #2662 W2b the mint lives behind ``_mint_source_session`` (the
-    per-source fork), so the invariant is pinned at all three sites: the
-    helper's relay branch is where the TTL literal must live, and each
-    preparer must hand THAT helper its own ``ceiling_s`` — the number it
-    arms the volume plan with a few lines later.
+    per-source fork), so the invariant is pinned at both sites: the helper's
+    relay branch is where the TTL literal must live, and the preparer must
+    hand THAT helper the ``ceiling_s`` it derived — the number it arms the
+    volume plan with a few lines later, for whichever stage it opened.
     """
     import inspect
 
@@ -1762,17 +1765,16 @@ def test_both_preparers_mint_their_link_from_the_ceiling_they_arm():
         "_mint_source_session's relay branch must mint from the ceiling it "
         "is handed"
     )
-    # ...and each preparer hands it the ceiling that preparer arms.
-    for fn in (v2host.prepare_v2_session, v2host.prepare_v2_verify):
-        source = inspect.getsource(fn)
-        assert "ceiling_s = session_wall_clock_ceiling_s(spec.capture_plan)" in source, (
-            f"{fn.__name__} must derive its ceiling from the plan it emitted"
-        )
-        assert re.search(
-            r"_mint_source_session\([^)]*ceiling_s=ceiling_s", source, re.S
-        ), (
-            f"{fn.__name__} must mint its relay link from the ceiling it arms"
-        )
+    # ...and the preparer hands it the ceiling it arms.
+    source = inspect.getsource(v2host.prepare_v2_session)
+    assert "ceiling_s = session_wall_clock_ceiling_s(spec.capture_plan)" in source, (
+        "the preparer must derive its ceiling from the plan it emitted"
+    )
+    assert re.search(
+        r"_mint_source_session\([^)]*ceiling_s=ceiling_s", source, re.S
+    ), (
+        "the preparer must mint its relay link from the ceiling it arms"
+    )
 
 
 def _tier_resolved_by_prepare(body, state, tmp_path):

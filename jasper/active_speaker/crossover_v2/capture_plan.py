@@ -1779,7 +1779,7 @@ def build_v2_verify_index_phase_map(
         2 .. M               CLOUD_VERIFY       (M-1 prompted positions)
 
     ``plan_shape is None`` is the shipped 1-entry recovery re-verify —
-    ``{1: PHASE_VERIFY}``, byte-identical to what ``prepare_v2_verify``
+    ``{1: PHASE_VERIFY}``, byte-identical to what the verify-only preparer
     hardcoded before the split. A shape supplies the tier's own post-apply walk
     (work order D2, owner-confirmed 2026-07-29): express is ``M = 1`` and so
     resolves to the same single-entry map; Full is the multi-position spatial

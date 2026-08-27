@@ -2348,9 +2348,9 @@ class CrossoverV2Session:
         # Layer-1a linearization (#1668 PR-C): per-role driver class, used by
         # class_prior_limit(). #1665's component-entry declarations HAVE landed
         # and both production construction sites populate this
-        # (``correction_crossover_v2.prepare_v2_session`` /
-        # ``prepare_v2_verify``, from ``_resolve_driver_class_by_role``); the
-        # empty default remains for callers with no declaration, matching
+        # (``correction_crossover_v2.prepare_v2_session``, either stage, from
+        # ``_resolve_driver_class_by_role``); the empty default remains for
+        # callers with no declaration, matching
         # linearization_envelope.compose_envelope's own "unknown".
         self._driver_class_by_role = (
             dict(driver_class_by_role) if driver_class_by_role else {}
@@ -2833,8 +2833,8 @@ class CrossoverV2Session:
         # it, by construction rather than by a check.
         #
         # Why (owner ruling, 2026-07-31, option (b) on #1927). Until then a
-        # verify-only re-arm (``prepare_v2_verify``) REHYDRATED this from the
-        # previous session's persisted ``verify_priors``, so the reference
+        # verify-only re-arm REHYDRATED this from the previous session's
+        # persisted ``verify_priors``, so the reference
         # never expired. The gate then conflated two different quantities:
         # within-session chain consistency (its stated purpose — VERIFY
         # replays the identical program through the identical graph, so 0.35
@@ -2886,7 +2886,7 @@ class CrossoverV2Session:
         # disagree about which attempt the reference came from.
         self._verify_pilot_baseline_at: float | None = None
         # The PREVIOUS session's reference, as dated HISTORY — never a
-        # comparator. ``prepare_v2_verify`` threads it so this session can
+        # comparator. The verify-only re-arm threads it so this session can
         # DISCLOSE that it reset the reference and by how much; it is read by
         # ``_verify_verdict`` only to compute that disclosure, and by nothing
         # else. Shape: ``{"values": {role: dB}, "at": epoch}``; absent, empty,
