@@ -307,14 +307,16 @@ def _coupling_state(
 ) -> dict[str, Any]:
     """The resolved fan-in -> CamillaDSP coupling (audio-graph consolidation P2/P4).
 
-    Surfaces the persisted intent (``JASPER_FANIN_CAMILLA_COUPLING``, fail-safe to
-    loopback), the outputd content bridge it pairs with, whether those two
-    INTENT tokens are a coherent pair (both ring, or neither — a partial flip is
-    fail-closed), and the live fan-in STATUS transport for a fleet-wide "which
-    transport is this box on" view. Read fresh from the env files (never
-    os.environ — jasper-control isn't restarted on a coupling change). Fail-soft:
-    any read error degrades to ``None`` (see the except below) rather than
-    erroring the whole /state call.
+    Surfaces the persisted token (``JASPER_FANIN_CAMILLA_COUPLING``), the outputd
+    content bridge, whether those two are a coherent pair, and the live fan-in
+    STATUS transport. Since ADR-0100 the live transport has one possible answer
+    — a running fan-in is on the ring, and refuses anything else at parse — so
+    what these fields are FOR is the migration: naming a box whose persisted
+    files still carry the retired token, and the partial-flip window where one
+    of the two has been rewritten and the other has not. Read fresh from the env
+    files (never os.environ — jasper-control isn't restarted on a coupling
+    change). Fail-soft: any read error degrades to ``None`` (see the except
+    below) rather than erroring the whole /state call.
 
     ``intent_coherent`` is named for what it compares: two env strings. It was
     published as ``coherent`` until R5b, which reads as a verdict on the ring
@@ -399,10 +401,10 @@ def _observed_ring_wire(
 ) -> dict[str, Any] | None:
     """The wire a daemon read back off the ring header it ATTACHED to.
 
-    ``None`` when the daemon is unreachable, the block is absent (loopback
-    publishes no ring block at all), or neither axis is present — all of which
-    mean "not observed", which a reader must not confuse with "observed to be
-    correct".
+    ``None`` when the daemon is unreachable, the block is absent (outputd
+    publishes its ``shm_ring`` block only on the ring content bridge), or
+    neither axis is present — all of which mean "not observed", which a reader
+    must not confuse with "observed to be correct".
 
     ``format_key`` differs per daemon because the two chose different spellings
     for the same field (fan-in ``wire_format``, outputd ``format``); this is the
