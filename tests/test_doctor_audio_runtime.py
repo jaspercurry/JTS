@@ -3419,11 +3419,15 @@ filters:
 def test_no_doctor_remedy_names_a_coupling_the_cli_rejects():
     """THE CLASS, not the three instances below.
 
-    Eight of this module's remedies named `jasper-fanin-coupling-reconcile
-    loopback` — a coupling ADR-0100 removed from the CLI's `choices`, so an
-    operator who copied one got `exit 2` and an argparse error instead of a fix.
-    A dead remedy is worse than no remedy: it spends the reader's trust in the
-    rest of the line.
+    Eight of the audio_runtime module's remedies named
+    `jasper-fanin-coupling-reconcile loopback` — a coupling ADR-0100 removed
+    from the CLI's `choices`, so an operator who copied one got `exit 2` and an
+    argparse error instead of a fix. A dead remedy is worse than no remedy: it
+    spends the reader's trust in the rest of the line.
+
+    EVERY DOCTOR MODULE, not just this one's subject: an operator copies a line
+    out of `jasper-doctor` without knowing which module printed it, so the class
+    is only closed when the whole package is judged.
 
     DERIVED FROM BOTH VOCABULARIES, never from a list here. The tokens to judge
     are the coupling names `jasper.fanin_coupling` still spells (so the RETIRED
@@ -3437,6 +3441,7 @@ def test_no_doctor_remedy_names_a_coupling_the_cli_rejects():
 
     import jasper.fanin_coupling as fc
     import jasper.fanin.coupling_reconcile as cr
+    from jasper.cli import doctor as doctor_pkg
 
     couplings = {
         value
@@ -3447,7 +3452,9 @@ def test_no_doctor_remedy_names_a_coupling_the_cli_rejects():
         "the retired token stopped being spelled — this pin no longer judges it"
     )
 
-    source = Path(audio_runtime.__file__).read_text(encoding="utf-8")
+    modules = sorted(Path(doctor_pkg.__file__).parent.glob("*.py"))
+    assert len(modules) > 1, "the doctor package glob found nothing to judge"
+    source = "\n".join(m.read_text(encoding="utf-8") for m in modules)
     # Same source line only: a remedy split across lines puts its verb on the
     # next one, and a comment that merely names the command carries none at all.
     named = {
