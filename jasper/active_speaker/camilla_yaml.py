@@ -360,10 +360,9 @@ def capture_device_for_playback(playback_device: str) -> str:
     documents, asserted on the read-back rather than on the emit.
 
     THE DEVICE AXIS IS TOPOLOGY-FREE BY CONSTRUCTION, which is why this
-    signature takes no ``topology`` and this body reads no env and no file:
-    ring membership is a pure test against
-    :data:`~jasper.fanin_coupling.RING_PCM_DEVICES`, a module constant, and the
-    non-ring answer is a constant too. Only the FORMAT axis needs
+    signature takes no ``topology`` and this body reads no env and no file: the
+    ring is the only transport (ADR-0100), so every playback device pairs with
+    Ring A and the answer is a module constant. Only the FORMAT axis needs
     :func:`~jasper.fanin_coupling.resolve_ring_wire`, which reads the box's
     declaration and can raise ``ValueError`` — so a caller that needs the
     device name alone pays none of that, and cannot fail for a reason that is
@@ -372,10 +371,8 @@ def capture_device_for_playback(playback_device: str) -> str:
     deliberately does not; a caller that needs more than the device asks that
     function instead.
     """
-    from jasper.fanin_coupling import RING_CAPTURE_DEVICE, RING_PCM_DEVICES
+    from jasper.fanin_coupling import RING_CAPTURE_DEVICE
 
-    if playback_device not in RING_PCM_DEVICES:
-        return DEFAULT_CAPTURE_DEVICE
     return RING_CAPTURE_DEVICE
 
 

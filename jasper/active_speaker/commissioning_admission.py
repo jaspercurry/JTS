@@ -748,9 +748,7 @@ def issue_protection_evidence(
         # sweep; and {ring sink, ring source} moves from refused to ACCEPTED —
         # the capability, since ``fanin.coupling_reconcile
         # .ring_endpoint_anchor_converged`` DEMANDS that same pair on an armed
-        # box, so before this the two gates were mutually unsatisfiable. Every
-        # other pair keeps the verdict the constant gave it, because a non-ring
-        # sink still expects ``DEFAULT_CAPTURE_DEVICE``.
+        # box, so before this the two gates were mutually unsatisfiable.
         #
         # WHAT THE NEW CELL PROVES IS COHERENCE, NOT LIVENESS, and the gap is
         # deliberate: this reads no env, so it cannot know the box's coupling —

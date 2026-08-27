@@ -1003,8 +1003,6 @@ install_camilladsp() {
         echo "Installed CamillaDSP to ${CAMILLA_DIR}/camilladsp"
     fi
 
-    # CamillaDSP captures plug:jasper_capture here; that tap and this graph's
-    # playback half move to the ring together, never one at a time.
     # The flat outputd startup graph is copied here as a fallback/template,
     # then regenerated after the Python package is installed and the current
     # output hardware state has been observed so the active DAC's latency
@@ -1267,8 +1265,8 @@ install_alsa() {
 
     select_audio_hardware_roles
 
-    # /etc/asound.conf provides the system-wide ALSA PCM definitions
-    # (per-renderer fan-in lanes, jasper_capture, outputd lanes, etc.).
+    # /etc/asound.conf provides the system-wide ALSA PCM definitions; its own
+    # header owns what they are and why (deploy/alsa/asoundrc.jasper).
     #
     # Location matters: this file MUST be world-readable so that
     # renderer processes running as non-root users (shairport-sync as
@@ -1550,9 +1548,8 @@ reconcile_grouping_state() {
 }
 
 resolve_fanin_coupling_default() {
-    # P3/P4 default-flip. Enable the boot-time default-resolution unit AND run
-    # the pass once now so this deploy converges the box onto the shipped
-    # defaults:
+    # Enable the boot-time default-resolution unit AND run the pass once now so
+    # this deploy converges the box onto the shipped defaults:
     #   - fan-in coupling: the ring, the only central transport (ADR-0100);
     #   - USB combo (JASPER_FANIN_USB_DIRECT + _HOST_CLOCK + _RESAMPLER_CUSHION_DECAY):
     #     enabled on a gadget box (dtoverlay=dwc2,dr_mode=peripheral present), else

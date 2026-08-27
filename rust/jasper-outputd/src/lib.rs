@@ -39,11 +39,8 @@ mod json;
 pub mod ledger;
 pub mod loudness;
 pub mod mixer;
-// Ring B: the SHM ping-pong ring content-source reader, active only under
-// JASPER_OUTPUTD_CONTENT_BRIDGE=shm_ring. Shipped default on eligible stereo
-// topologies (P4 LANDED — docs/HANDOFF-audio-graph-consolidation.md); off
-// elsewhere by resolved policy — nothing in the DAC loop touches it unless
-// the flag selects it.
+// Ring B: the SHM ping-pong ring content-source reader — the one central
+// transport from CamillaDSP to the DAC (ADR-0100).
 pub mod shm_ring_source;
 // Observe-only software-AEC reference clock drift estimator (research-doc
 // increment 2): composes the shared jasper-clock DLL to measure :9891-reference

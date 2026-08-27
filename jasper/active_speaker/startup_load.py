@@ -1573,17 +1573,6 @@ def build_driver_commission_load_preflight(
     # the socket-activated wizards, which never `EnvironmentFile=`d either file
     # and stay alive across a reconcile, so `os.environ` is a stale reader of
     # both keys.
-    #
-    # NOT the doctor's `check_active_ring_split_transport`, and no helper is
-    # extracted to make it look like one: that check is a different predicate —
-    # the graph names the ACTIVE ring AND the coupling is not `shm_ring`, with
-    # no marker term and a docstring that forbids adding one. What the two share
-    # is a single-owner sub-expression, which is the property that matters, not
-    # one predicate with two readers.
-    #
-    # Off the ring there is nothing to arm: a non-ring sink is carried by the
-    # snd-aloop tap fan-in feeds under every coupling, so this passes and an
-    # unarmed box behaves exactly as it did before.
     from jasper.fanin_coupling import (
         COUPLING_SHM_RING,
         RING_PCM_DEVICES,
