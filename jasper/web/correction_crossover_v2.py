@@ -5489,17 +5489,24 @@ def _volume_hooks(
         # before the plan exists refuses every session on `assert_ready`. Here
         # the two are symmetric: the session opens where the plan opened, and
         # closes where the graph went back.
+        # A ``finally`` on a success flag rather than a broad ``except``: this
+        # has to cover a CANCELLED open as well as a raising one, and a
+        # ``CancelledError`` is not an ``Exception``. An open that got the
+        # level but not the graph must keep NEITHER — drain the plan the way a
+        # failed open already does, and release the pause so a refused session
+        # never strands voice.
+        session_open = False
         try:
             await tuning.open()
-        except BaseException:  # noqa: BLE001 - re-raised after the give-back
-            # An open that got the level but not the graph must not keep
-            # either: drain the plan the way a failed open already does, and
-            # release the pause so a refused session never strands voice.
-            try:
-                await plan.abandon(_set, _get, reason="session_open_failed")
-            finally:
-                await release_session_measurement_pause()
-            raise
+            session_open = True
+        finally:
+            if not session_open:
+                try:
+                    await plan.abandon(
+                        _set, _get, reason="session_open_failed",
+                    )
+                finally:
+                    await release_session_measurement_pause()
         return opened
 
     async def _put_the_graph_back() -> None:

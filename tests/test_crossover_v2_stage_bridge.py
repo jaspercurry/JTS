@@ -1876,7 +1876,7 @@ def test_stage_2_persist_does_not_regress_the_stage_1_facts(monkeypatch):
 # --------------------------------------------------------------------------- #
 
 
-def _real_seam_session(monkeypatch, cam_factory=None) -> dict:
+def _real_seam_session(monkeypatch, cam_factory=None, graph=None) -> dict:
     """The session `_open()` builds with the REAL engine binder.
 
     No `FakeSeams`. The original end-to-end pin substituted the binder, so it
@@ -1898,6 +1898,7 @@ def _real_seam_session(monkeypatch, cam_factory=None) -> dict:
     # fixture speaker does not carry. The VOLUME seam stays the real interim
     # claim, because the plan it verifies is the whole subject here.
     real_binder = v2host.bind_v2_engine_seams
+    graph_override = graph
 
     def _twin_graph_binder(**kwargs):
         import dataclasses as _dc
@@ -1905,7 +1906,7 @@ def _real_seam_session(monkeypatch, cam_factory=None) -> dict:
         from tests.engine_twin import FakeGraph
 
         seams = real_binder(**kwargs)
-        graph = FakeGraph()
+        graph = graph_override or FakeGraph()
         captured["graph"] = graph
         return _dc.replace(seams, graph=graph)
 
@@ -1963,6 +1964,59 @@ async def test_the_session_opens_where_the_plan_it_verifies_opens(monkeypatch):
     await hooks.close()
 
     assert not session.is_open
+    v2host.set_volume_plan_for_tests(None)
+
+
+async def test_a_session_that_takes_the_level_but_not_the_graph_keeps_neither(
+    monkeypatch,
+):
+    """The give-back the new placement owes.
+
+    Opening the session is now the hooks' second act, so a graph install that
+    fails happens with the plan already open and the pause already held.
+    Leaving either would strand the speaker at measurement volume with voice
+    paused and no session to drain it — the worse half of the failure the
+    ordering exists to avoid.
+    """
+    from jasper.active_speaker.session_volume_plan import SessionVolumePlan
+    from tests.engine_twin import FakeGraph
+
+    released: list[str] = []
+
+    async def _no_pause() -> None:
+        return None
+
+    async def _record_release() -> None:
+        released.append("pause")
+
+    monkeypatch.setattr(v2host, "acquire_session_measurement_pause", _no_pause)
+    monkeypatch.setattr(
+        v2host, "release_session_measurement_pause", _record_release,
+    )
+    plan = SessionVolumePlan()
+    v2host.set_volume_plan_for_tests(plan)
+
+    class _Cam:
+        def __init__(self) -> None:
+            self.db = -15.0
+
+        async def get_volume_db(self, best_effort: bool = False) -> float:
+            return self.db
+
+        async def set_volume_db(self, db: float, best_effort: bool = False) -> bool:
+            self.db = float(db)
+            return True
+
+    cam = _Cam()
+    captured = _real_seam_session(
+        monkeypatch, cam_factory=lambda: cam, graph=FakeGraph(install_raises=True),
+    )
+
+    with pytest.raises(Exception):
+        await captured["hooks"].open()
+
+    assert plan.measurement_volume_db is None, "the plan was left open"
+    assert released == ["pause"], "voice was left paused with no session"
     v2host.set_volume_plan_for_tests(None)
 
 
