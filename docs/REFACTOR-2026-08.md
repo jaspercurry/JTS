@@ -291,3 +291,35 @@ use jts.local or jts5 — and run `jasper-doctor` + a music/voice smoke test.
 Campaign ends when
 Waves 0–4 and 6–7 are checked, the right-size report shows the deltas, and
 this file is deleted.
+
+## Close-out — owner checklist (rulings 2026-08-27; this file lives until
+## the last box below is ticked, then dies with right-size-report.sh)
+
+Ruled, recorded so nobody re-litigates:
+- **Endpoint gate: KEEP** (owner, 2026-08-27). The reconciler's
+  `resolve_outputd_capture_device` → exit-66 chain stays: it is the only
+  fail-loud "Python works" tripwire in the reconcile and the sole trigger of
+  the #2489 clockless park. Its resolved value is deliberately unused. Never
+  trim the one-entry map in `camilla_config_contract.py` alone — the gate
+  and the entry go together or not at all (landmined in both files). On this
+  file's deletion, this ruling graduates to an ADR.
+- **capture-relay: KEEP re-confirmed** with the close deltas in hand
+  (original ruling 2026-08-25).
+
+Owner to-do (deferred deliberately, in order):
+- [ ] Audible music/voice smoke on jts.local — the last DoD half; the
+      silent half (deploy fb37085a5+, doctor, daemons) passed 2026-08-27.
+- [ ] Bench window: re-certify route-latency for `usb_low_latency_48k`
+      (the standing doctor FAIL is a stale 2026-07-12 aloop-era artifact —
+      pre-existing, remedy verified viable, run as root); optionally
+      re-derive the AirPlay latency constant
+      (`DEFAULT_FANIN_OUTPUT_LATENCY_FRAMES=1024`, value-identical today)
+      against the ring's real depth; pair with #3073 item 5.
+- [ ] Park-presentation questions: the class-c park banner, and the
+      parked:false fifth-shape (ring-eligible box whose converge spine
+      fails reads parked:false while loud elsewhere).
+- [ ] Next-batch pick from the triaged backlog (~16 issues incl. #3073
+      item-7 smalls). The no-pick batch already ran 2026-08-27: vulture-12,
+      dead raw/env params, the rate_adjust request lie.
+- [ ] Delete this file + scripts/right-size-report.sh (one PR), moving the
+      endpoint-gate ruling above into docs/adr/.
