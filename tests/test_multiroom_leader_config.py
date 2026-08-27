@@ -11,6 +11,9 @@ websocket I/O and are validated on hardware (the doctor's `leader pipe`
 check + grouping runtime health are their backstops)."""
 from __future__ import annotations
 
+import json
+from pathlib import Path
+
 import pytest
 
 from jasper.multiroom.leader_config import (
@@ -188,14 +191,20 @@ def test_solo_restore_emit_is_lenient_under_protected_tweeter(tmp_path, monkeypa
     assert out.exists()
 
 
-async def test_solo_restore_re_emit_requests_no_rate_adjust(tmp_path, monkeypatch):
-    """The re_emit unwind arm (stash missing/gone) is the one place in this
-    module that calls emit_sound_config directly instead of going through
-    member_camilla_kwargs (see test_solo_restore_emit_is_lenient_under_
-    protected_tweeter for why: un-bonding must always succeed). It must still
-    say enable_rate_adjust=False — this box's local playback sink is Ring B
-    (ADR-0100), an ioplug CamillaDSP cannot actuate rate_adjust on regardless
-    of what the config asks for; see member_config's module docstring."""
+async def _run_solo_restore(tmp_path, monkeypatch) -> Path:
+    """Drive ``restore_solo_config``'s re_emit arm; return the written config.
+
+    The re_emit unwind arm (stash missing/gone) is the one place in this module
+    that calls emit_sound_config directly instead of going through
+    member_camilla_kwargs — see
+    test_solo_restore_emit_is_lenient_under_protected_tweeter for why: un-bonding
+    must always succeed.
+
+    The shared apply engine is replaced with a stub that just runs ``prepare``:
+    its locking/validation machinery is unrelated to what these tests pin and
+    would otherwise need a real writer lock path and a CamillaDSP-valid
+    candidate on disk.
+    """
     from jasper.multiroom import leader_config
 
     monkeypatch.setenv("JASPER_SOUND_PROFILE_PATH", str(tmp_path / "profile.json"))
@@ -213,10 +222,6 @@ async def test_solo_restore_re_emit_requests_no_rate_adjust(tmp_path, monkeypatc
     monkeypatch.setattr(leader_config, "read_stash", lambda: None)
     monkeypatch.setattr(leader_config, "_clear_stash", lambda: None)
 
-    # Replace the shared apply engine with a stub that just runs `prepare` —
-    # its locking/validation machinery is unrelated to what this test pins
-    # and would otherwise need a real writer lock path and a CamillaDSP-valid
-    # candidate on disk.
     async def fake_apply_dsp_config(*, prepare=None, **kwargs):
         if prepare is not None:
             prepare()
@@ -233,4 +238,172 @@ async def test_solo_restore_re_emit_requests_no_rate_adjust(tmp_path, monkeypatc
     result = await leader_config.restore_solo_config(camilla_factory=lambda: _Cam())
 
     assert result == str(solo_restore_path)
-    assert "enable_rate_adjust: false" in solo_restore_path.read_text()
+    return solo_restore_path
+
+
+def _save_topology(tmp_path, monkeypatch, topology) -> Path:
+    """Point the topology loader at ``topology`` (an OutputTopology, or raw
+    text for the corrupt case)."""
+    path = tmp_path / "output_topology.json"
+    path.write_text(
+        topology if isinstance(topology, str) else json.dumps(topology.to_dict())
+    )
+    monkeypatch.setenv("JASPER_OUTPUT_TOPOLOGY_PATH", str(path))
+    return path
+
+
+def _unplanned_events(caplog) -> list[dict[str, str]]:
+    """The degraded-emit disclosures in ``caplog``, as structured fields."""
+    from jasper.multiroom.cascade_timeline import _parse_logfmt_event
+
+    parsed = (_parse_logfmt_event(record.getMessage()) for record in caplog.records)
+    return [
+        fields
+        for event, fields in filter(None, parsed)
+        if event == "multiroom.camilla_apply"
+        and fields.get("result") == "solo_restore_unplanned"
+    ]
+
+
+def _solo_restore_yaml(muted=frozenset(), fold=None) -> str:
+    """The bytes the un-bond re-emit owes for a given channel plan.
+
+    Reconstructed from the same loaders `prepare` uses, so the comparison is
+    against a real emitter call rather than against another arm of the code
+    under test. The default arguments are the pre-plan call verbatim — the
+    emitter's solo-impact contract makes them byte-identical to passing
+    neither, which is what "byte-identical to today" means here.
+    """
+    from jasper.sound.camilla_yaml import emit_sound_config
+    from jasper.sound.profile import load_profile
+    from jasper.sound.settings import load_sound_settings, output_trim_db
+
+    profile = load_profile()
+    settings = load_sound_settings()
+    return emit_sound_config(
+        profile,
+        room_peqs=[],
+        profile_id="grouping-solo-restore",
+        output_trim_db=output_trim_db(profile, settings),
+        enable_rate_adjust=False,
+        muted_outputs=muted,
+        mono_fold_output=fold,
+    )
+
+
+async def test_solo_restore_re_emit_requests_no_rate_adjust(tmp_path, monkeypatch):
+    """It must say enable_rate_adjust=False — this box's local playback sink is
+    Ring B (ADR-0100), an ioplug CamillaDSP cannot actuate rate_adjust on
+    regardless of what the config asks for; see member_config's module
+    docstring."""
+    written = await _run_solo_restore(tmp_path, monkeypatch)
+
+    assert "enable_rate_adjust: false" in written.read_text()
+
+
+# #2179's channel plan reaches the THIRD flat writer. Un-bonding hands the box
+# back its own DAC, so the same mutes and the same mono fold every other flat
+# writer emits belong here — while the path's binding constraint (un-bonding
+# can never refuse) survives every way the plan can fail.
+
+
+async def test_un_bonding_a_mono_box_emits_the_folded_muted_graph(
+    tmp_path, monkeypatch
+):
+    from jasper.active_speaker.runtime_contract import classify_camilla_graph
+    from tests.test_active_speaker_runtime_contract import _full_range_mono_on
+
+    topology = _full_range_mono_on(0)
+    _save_topology(tmp_path, monkeypatch, topology)
+
+    text = (await _run_solo_restore(tmp_path, monkeypatch)).read_text()
+
+    # BOTH halves of the plan, against an independently-stated expectation:
+    # output 1 declined, and the program folded onto the one declared output.
+    assert text == _solo_restore_yaml(muted=frozenset({1}), fold=0)
+    # And judged by the verifier that owns the question rather than by reading
+    # the bytes: the emitted graph is one this topology accepts.
+    graph = classify_camilla_graph(topology=topology, text=text)
+    assert graph.allowed is True, graph.issues
+    assert graph.details["hard_muted_outputs"] == [1]
+
+
+async def test_un_bonding_a_stereo_box_is_byte_identical_to_today(
+    tmp_path, monkeypatch
+):
+    """A stereo topology declares both outputs: nothing to mute, nothing to
+    fold. The plan must change nothing at all here."""
+    from tests.test_active_speaker_runtime_contract import _full_range_stereo
+
+    _save_topology(tmp_path, monkeypatch, _full_range_stereo())
+
+    text = (await _run_solo_restore(tmp_path, monkeypatch)).read_text()
+
+    assert text == _solo_restore_yaml()
+
+
+@pytest.mark.parametrize("topology", ["{ not json", json.dumps({"kind": "bogus"})])
+async def test_un_bonding_never_refuses_on_a_corrupt_topology(
+    tmp_path, monkeypatch, caplog, topology
+):
+    """The binding constraint. A topology that cannot be read must not strand
+    the speaker on the bonded pipe config — it degrades to exactly the call
+    this path made before the plan existed, and says so."""
+    from jasper.multiroom import leader_config
+
+    _save_topology(tmp_path, monkeypatch, topology)
+
+    with caplog.at_level("INFO", logger=leader_config.logger.name):
+        text = (await _run_solo_restore(tmp_path, monkeypatch)).read_text()
+
+    assert text == _solo_restore_yaml()
+    # Degraded, and DISCLOSED — an unmuted graph on a box that may be mono is
+    # not something this path may emit silently.
+    assert [fields["error"] for fields in _unplanned_events(caplog)] == [
+        "OutputTopologyError"
+    ]
+
+
+async def test_un_bonding_with_no_saved_topology_stays_quiet(
+    tmp_path, monkeypatch, caplog
+):
+    """A MISSING topology is not a failure — nothing is declared, so nothing is
+    undeclared. It takes the empty plan without claiming degradation."""
+    from jasper.multiroom import leader_config
+
+    monkeypatch.setenv(
+        "JASPER_OUTPUT_TOPOLOGY_PATH", str(tmp_path / "absent_topology.json")
+    )
+
+    with caplog.at_level("INFO", logger=leader_config.logger.name):
+        text = (await _run_solo_restore(tmp_path, monkeypatch)).read_text()
+
+    assert text == _solo_restore_yaml()
+    assert not _unplanned_events(caplog)
+
+
+async def test_un_bonding_never_refuses_when_the_emit_rejects_the_plan(
+    tmp_path, monkeypatch, caplog
+):
+    """The other way the plan can fail: it is derived, but the emitter refuses
+    it at its own API boundary. Un-bonding still succeeds, on today's bytes."""
+    import jasper.sound.camilla_yaml as sound_yaml
+    from jasper.multiroom import leader_config
+    from jasper.sound.camilla_yaml import FlatChannelPlan
+    from tests.test_active_speaker_runtime_contract import _full_range_mono_on
+
+    _save_topology(tmp_path, monkeypatch, _full_range_mono_on(0))
+    # A plan the emitter MUST reject at its API boundary: a fold whose
+    # complement is left unmuted would put raw program on an output the
+    # topology never assigned.
+    monkeypatch.setattr(
+        sound_yaml,
+        "flat_graph_channel_plan",
+        lambda *a, **kw: FlatChannelPlan(mono_fold_output=0),
+    )
+
+    with caplog.at_level("INFO", logger=leader_config.logger.name):
+        text = (await _run_solo_restore(tmp_path, monkeypatch)).read_text()
+
+    assert text == _solo_restore_yaml()
+    assert [fields["error"] for fields in _unplanned_events(caplog)] == ["ValueError"]
