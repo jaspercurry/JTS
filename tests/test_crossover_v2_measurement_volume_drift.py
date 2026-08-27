@@ -61,6 +61,7 @@ from jasper.active_speaker.crossover_v2.refusal_copy import (
     REASON_MEASUREMENT_VOLUME_DRIFT,
     REASON_REGISTRY,
 )
+from jasper.active_speaker.session_volume_plan import FaderVolumeDoor
 from jasper.active_speaker.volume_latch import (
     READBACK_TOLERANCE_DB,
     MeasurementFaderDrift,
@@ -378,7 +379,7 @@ def _open_plan(tmp_path, *, at_db: float = DECLARED_DB):
 
     fader = _fader(value=HOUSEHOLD_DB)
     plan = SessionVolumePlan(state_path=tmp_path / "session_volume.json")
-    opened = asyncio.run(plan.open(at_db, fader.set, fader.get))
+    opened = asyncio.run(plan.open(at_db, FaderVolumeDoor(fader.set, fader.get)))
     assert opened is SessionVolumeOpenResult.OPENED
     fader.state["writes"].clear()
     return plan, fader
@@ -412,7 +413,7 @@ def test_a_drained_plan_still_reports_its_volume_and_must_not_hold_it(tmp_path):
     # emergency floor, so neither candidate confirms and the plan latches
     # unresolved.
     stuck = _fader(value=-5.0, sticks=False)
-    asyncio.run(plan.close(stuck.set, stuck.get))
+    asyncio.run(plan.close(FaderVolumeDoor(stuck.set, stuck.get)))
     assert plan.needs_recovery
     assert plan.measurement_volume_db == DECLARED_DB  # the field still says it
 
@@ -427,7 +428,7 @@ def test_a_restored_plan_holds_nothing(tmp_path):
     """After a clean close there is no volume to hold, so the household's own
     level is left exactly where the restore put it."""
     plan, fader = _open_plan(tmp_path)
-    asyncio.run(plan.close(fader.set, fader.get))
+    asyncio.run(plan.close(FaderVolumeDoor(fader.set, fader.get)))
     fader.state["writes"].clear()
     assert asyncio.run(plan.hold_measurement_volume(fader.get)) is None
     assert fader.state["writes"] == []
@@ -450,7 +451,7 @@ def test_a_stale_session_past_its_ceiling_holds_nothing(tmp_path):
         clock=lambda: now[0],
     )
     assert asyncio.run(
-        plan.open(DECLARED_DB, fader.set, fader.get)
+        plan.open(DECLARED_DB, FaderVolumeDoor(fader.set, fader.get))
     ) is SessionVolumeOpenResult.OPENED
     fader.state["value"] = HOUSEHOLD_DB
     fader.state["writes"].clear()
@@ -499,7 +500,7 @@ def test_a_drain_that_confirmed_but_could_not_persist_still_holds_nothing(
         monkey = plan._persist
         plan._persist = boom  # the marker write fails AFTER the fader is set
         try:
-            result = asyncio.run(plan.close(set_only_the_floor, drain.get))
+            result = asyncio.run(plan.close(FaderVolumeDoor(set_only_the_floor, drain.get)))
         finally:
             plan._persist = monkey
 

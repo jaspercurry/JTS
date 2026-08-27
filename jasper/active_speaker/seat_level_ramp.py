@@ -180,6 +180,7 @@ from .seat_level_reference import (
 )
 from .session_volume_plan import (
     DEFAULT_SESSION_VOLUME_STATE_PATH,
+    FaderVolumeDoor,
     SessionVolumeOpenResult,
     SessionVolumePlan,
     SessionVolumePlanError,
@@ -1569,8 +1570,17 @@ async def run_seat_level_ramp(
         # A killed leveling pass should surface far sooner than a measurement
         # session's 30-minute walked-away window.
         plan.set_wall_clock_ceiling_s(watchdog_s + 60.0)
+        # THE DIRECT DOOR, permanently — this ramp writes the fader itself
+        # rather than through a ranked claim, because the process it runs in
+        # has no owner to arbitrate through: ``jasper.cli.seat_level`` installs
+        # none, so ``jasper.volume_owner.volume_owner()`` answers ``None``
+        # here. That is a fact about a single-purpose CLI holding the speaker
+        # alone, not a gap: there is no second writer for an owner to arbitrate
+        # against. The crossover wizard's door moves onto the owner at W5-c1;
+        # this one does not follow it.
+        volume_door = FaderVolumeDoor(set_main_volume_db, get_main_volume_db)
         try:
-            opened = await plan.open(start_db, set_main_volume_db, get_main_volume_db)
+            opened = await plan.open(start_db, volume_door)
         except SessionVolumePlanError:
             # An undrainable prior latch. Nothing was mutated here; the recovery
             # path owns that state and must run before another pass.
@@ -1687,9 +1697,7 @@ async def run_seat_level_ramp(
 
             async def _drain() -> None:
                 drained["result"] = await plan.close(
-                    set_main_volume_db,
-                    get_main_volume_db,
-                    reason="seat_level_complete",
+                    volume_door, reason="seat_level_complete",
                 )
 
             restored["ok"] = await run_teardown("volume_restore", _drain()) and (

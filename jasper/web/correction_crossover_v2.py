@@ -1299,8 +1299,12 @@ _SESSION_VOLUME_DRAIN_TIMEOUT_S = 15.0
 
 
 def _session_volume_io(camilla_factory: Any) -> tuple[Callable[[float], Any], Callable[[], Any]]:
-    """(set, get) main-volume callables for the plan drains, fail-closed on
-    CamillaUnavailable so a wedged DSP cannot silently no-op a recovery."""
+    """(set, get) main-volume callables, fail-closed on CamillaUnavailable so a
+    wedged DSP cannot silently no-op a recovery.
+
+    Two consumers now, and only one of them writes: :func:`_volume_door` wraps
+    both into the plan's door, and the capture-time hold takes ``_get`` alone.
+    """
     from jasper.camilla import CamillaUnavailable
 
     async def _set(db: float) -> bool:
@@ -1316,6 +1320,22 @@ def _session_volume_io(camilla_factory: Any) -> tuple[Callable[[float], Any], Ca
             raise RuntimeError("CamillaDSP is unavailable") from exc
 
     return _set, _get
+
+
+def _volume_door(camilla_factory: Any) -> Any:
+    """The plan's one door for every path in this module that drains or opens.
+
+    ONE builder for all four writing call sites, which is the point: W5-c1
+    moves this module's fader authority onto
+    :class:`~jasper.volume_owner.VolumeOwner`, and every caller below asks for
+    its door here rather than assembling one — so that move is a change to
+    this function's body instead of a change to four sites that could each
+    drift. The read-only capture-time hold keeps taking ``_session_volume_io``
+    directly: it never writes, so it is not this door's business.
+    """
+    from jasper.active_speaker.session_volume_plan import FaderVolumeDoor
+
+    return FaderVolumeDoor(*_session_volume_io(camilla_factory))
 
 
 def _release_pause_best_effort(run_async: Any) -> None:
@@ -1376,10 +1396,9 @@ def enforce_session_volume_ceiling_if_stale(
             return False
     except (OSError, RuntimeError, ValueError):
         return False
-    set_v, get_v = _session_volume_io(camilla_factory)
     try:
         run_async(
-            plan.enforce_ceiling(set_v, get_v),
+            plan.enforce_ceiling(_volume_door(camilla_factory)),
             timeout=_SESSION_VOLUME_DRAIN_TIMEOUT_S,
         )
     except (concurrent.futures.TimeoutError, OSError, RuntimeError, ValueError):
@@ -1418,10 +1437,9 @@ def recover_session_volume(
     )
 
     plan = session_volume_plan()
-    set_v, get_v = _session_volume_io(camilla_factory)
     try:
         result = run_async(
-            plan.recover_unresolved(set_v, get_v),
+            plan.recover_unresolved(_volume_door(camilla_factory)),
             timeout=_SESSION_VOLUME_DRAIN_TIMEOUT_S,
         )
     except concurrent.futures.TimeoutError:
@@ -1455,10 +1473,11 @@ def reconcile_session_volume_for_new_session(
     enforce_session_volume_ceiling_if_stale(run_async, camilla_factory)
     if plan.measurement_volume_db is None or plan.needs_recovery:
         return
-    set_v, get_v = _session_volume_io(camilla_factory)
     try:
         run_async(
-            plan.abandon(set_v, get_v, reason="stale_session_reset"),
+            plan.abandon(
+                _volume_door(camilla_factory), reason="stale_session_reset",
+            ),
             timeout=_SESSION_VOLUME_DRAIN_TIMEOUT_S,
         )
         log_event(logger, "correction.crossover_v2_stale_session_reset")
@@ -5468,7 +5487,7 @@ def _volume_hooks(
     # fail-closed contract actually cover — a DSP wedge during open then drains
     # to a non-OPENED result instead of raising an unhandled exception past the
     # runner (the W6.1 gate's escape class).
-    _set, _get = _session_volume_io(camilla_factory)
+    door = _volume_door(camilla_factory)
 
     async def _open() -> Any:
         # Hold voice paused for the WHOLE session BEFORE setting the volume, so
@@ -5479,7 +5498,7 @@ def _volume_hooks(
         await acquire_session_measurement_pause()
         opened: Any = None
         try:
-            opened = await plan.open(context.session_volume_db, _set, _get)
+            opened = await plan.open(context.session_volume_db, door)
         finally:
             if str(getattr(opened, "value", opened)) != "opened":
                 await release_session_measurement_pause()
@@ -5506,7 +5525,7 @@ def _volume_hooks(
             than voice left paused.
             """
             try:
-                await plan.abandon(_set, _get, reason="session_open_failed")
+                await plan.abandon(door, reason="session_open_failed")
             finally:
                 await release_session_measurement_pause()
 
@@ -5581,14 +5600,14 @@ def _volume_hooks(
     async def _close() -> Any:
         try:
             await _put_the_graph_back()
-            return await plan.close(_set, _get)
+            return await plan.close(door)
         finally:
             await release_session_measurement_pause()
 
     async def _abandon() -> Any:
         try:
             await _put_the_graph_back()
-            return await plan.abandon(_set, _get)
+            return await plan.abandon(door)
         finally:
             await release_session_measurement_pause()
 

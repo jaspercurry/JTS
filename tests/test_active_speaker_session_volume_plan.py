@@ -28,6 +28,7 @@ from jasper.active_speaker.seat_level_reference import (
 )
 from jasper.active_speaker.session_volume_plan import (
     DEFAULT_WALL_CLOCK_CEILING_S,
+    FaderVolumeDoor,
     MAX_WALL_CLOCK_CEILING_S,
     MEASUREMENT_REFERENCE_VOLUME_DB,
     SessionVolumeOpenResult,
@@ -641,7 +642,7 @@ def test_open_writes_active_intent_before_first_mutation(tmp_path):
     vol = FakeVolume(initial=-6.0, on_set=_record_status)
     plan = SessionVolumePlan(state_path=p)
 
-    result = asyncio.run(plan.open(-12.0, vol.set, vol.get))
+    result = asyncio.run(plan.open(-12.0, FaderVolumeDoor(vol.set, vol.get)))
     assert result is SessionVolumeOpenResult.OPENED
     # The durable state was already 'active' at the moment of the first set.
     assert statuses_seen and statuses_seen[0] == "active"
@@ -658,13 +659,13 @@ def test_open_writes_active_intent_before_first_mutation(tmp_path):
 def test_restore_is_exact_and_once():
     vol = FakeVolume(initial=-6.0)
     plan = SessionVolumePlan()
-    assert asyncio.run(plan.open(-12.0, vol.set, vol.get)) is SessionVolumeOpenResult.OPENED
+    assert asyncio.run(plan.open(-12.0, FaderVolumeDoor(vol.set, vol.get))) is SessionVolumeOpenResult.OPENED
     assert vol.value == -12.0
-    first = asyncio.run(plan.close(vol.set, vol.get))
+    first = asyncio.run(plan.close(FaderVolumeDoor(vol.set, vol.get)))
     assert first is SessionVolumeRestoreResult.EXACT_RESTORED
     assert vol.value == -6.0  # original restored
     set_calls = sum(1 for e in vol.order if e[0] == "set")
-    again = asyncio.run(plan.close(vol.set, vol.get))
+    again = asyncio.run(plan.close(FaderVolumeDoor(vol.set, vol.get)))
     assert again is SessionVolumeRestoreResult.ALREADY_RESOLVED
     # Idempotent: a second close performs no further volume mutation.
     assert sum(1 for e in vol.order if e[0] == "set") == set_calls
@@ -678,7 +679,7 @@ def test_open_confirm_failure_falls_back_to_emergency():
     # Neither the measurement volume nor the original confirms; emergency does.
     vol = FakeVolume(initial=-6.0, confirm_targets={-60.0})
     plan = SessionVolumePlan()
-    result = asyncio.run(plan.open(-12.0, vol.set, vol.get))
+    result = asyncio.run(plan.open(-12.0, FaderVolumeDoor(vol.set, vol.get)))
     assert result is SessionVolumeOpenResult.EMERGENCY_ATTENUATED
     assert vol.value == -60.0  # emergency floor
     # Emergency confirmed => resolved (no lingering unresolved risk).
@@ -690,7 +691,7 @@ def test_open_confirm_failure_no_fallback_latches_unresolved(tmp_path):
     p = tmp_path / "sv.json"
     vol = FakeVolume(initial=-6.0, confirm_targets=set())
     plan = SessionVolumePlan(state_path=p)
-    result = asyncio.run(plan.open(-12.0, vol.set, vol.get))
+    result = asyncio.run(plan.open(-12.0, FaderVolumeDoor(vol.set, vol.get)))
     assert result is SessionVolumeOpenResult.FAILED
     unresolved = plan.unresolved_volume_safety
     assert unresolved is not None
@@ -705,7 +706,7 @@ def test_wall_clock_ceiling_force_drains_stale_active(tmp_path):
     p = tmp_path / "sv.json"
     vol = FakeVolume(initial=-6.0)
     opener = SessionVolumePlan(state_path=p, wall_clock_ceiling_s=10.0, clock=lambda: 1000.0)
-    asyncio.run(opener.open(-12.0, vol.set, vol.get))
+    asyncio.run(opener.open(-12.0, FaderVolumeDoor(vol.set, vol.get)))
     assert vol.value == -12.0
 
     # A fresh process hydrates the durable state well past the ceiling.
@@ -713,7 +714,7 @@ def test_wall_clock_ceiling_force_drains_stale_active(tmp_path):
     assert later.stale_active() is True
     with pytest.raises(SessionVolumePlanError):
         later.assert_ready()
-    drained = asyncio.run(later.enforce_ceiling(vol.set, vol.get))
+    drained = asyncio.run(later.enforce_ceiling(FaderVolumeDoor(vol.set, vol.get)))
     assert drained is SessionVolumeRestoreResult.EXACT_RESTORED
     assert vol.value == -6.0
     assert json.loads(p.read_text())["status"] == "resolved"
@@ -735,7 +736,7 @@ def test_set_wall_clock_ceiling_stamps_the_next_open_and_stays_bounded(tmp_path)
     assert plan.wall_clock_ceiling_s == DEFAULT_WALL_CLOCK_CEILING_S
 
     plan.set_wall_clock_ceiling_s(3360.0)
-    asyncio.run(plan.open(-12.0, vol.set, vol.get))
+    asyncio.run(plan.open(-12.0, FaderVolumeDoor(vol.set, vol.get)))
     assert json.loads(p.read_text())["wall_clock_ceiling_s"] == 3360.0
     # A session that would have been stale under the 1800 s default is not
     # stale under the ceiling this plan actually opened with...
@@ -756,10 +757,10 @@ def test_enforce_ceiling_noop_when_fresh(tmp_path):
     p = tmp_path / "sv.json"
     vol = FakeVolume(initial=-6.0)
     opener = SessionVolumePlan(state_path=p, wall_clock_ceiling_s=1800.0, clock=lambda: 1000.0)
-    asyncio.run(opener.open(-12.0, vol.set, vol.get))
+    asyncio.run(opener.open(-12.0, FaderVolumeDoor(vol.set, vol.get)))
     fresh = SessionVolumePlan(state_path=p, wall_clock_ceiling_s=1800.0, clock=lambda: 1001.0)
     assert fresh.stale_active() is False
-    assert asyncio.run(fresh.enforce_ceiling(vol.set, vol.get)) is None
+    assert asyncio.run(fresh.enforce_ceiling(FaderVolumeDoor(vol.set, vol.get))) is None
     assert vol.value == -12.0  # untouched
 
 
@@ -770,7 +771,7 @@ def test_crash_hydrated_active_is_not_ready_until_recovered(tmp_path):
     p = tmp_path / "sv.json"
     vol = FakeVolume(initial=-6.0)
     opener = SessionVolumePlan(state_path=p, wall_clock_ceiling_s=1800.0, clock=lambda: 1000.0)
-    asyncio.run(opener.open(-12.0, vol.set, vol.get))
+    asyncio.run(opener.open(-12.0, FaderVolumeDoor(vol.set, vol.get)))
 
     # Simulate a restart: new instance hydrates the SAME durable active state,
     # still within the ceiling. The status is NOT flipped to unresolved...
@@ -781,7 +782,7 @@ def test_crash_hydrated_active_is_not_ready_until_recovered(tmp_path):
     with pytest.raises(SessionVolumePlanError):
         reborn.assert_ready()
     # recover_unresolved drains it (unlike the lease, this does not refuse active).
-    recovered = asyncio.run(reborn.recover_unresolved(vol.set, vol.get))
+    recovered = asyncio.run(reborn.recover_unresolved(FaderVolumeDoor(vol.set, vol.get)))
     assert recovered is SessionVolumeRestoreResult.EXACT_RESTORED
     assert vol.value == -6.0
 
@@ -791,7 +792,7 @@ def test_needs_recovery_true_for_unresolved_and_foreign_active(tmp_path):
     p1 = tmp_path / "sv1.json"
     vol = FakeVolume(initial=-6.0, confirm_targets=set())
     plan1 = SessionVolumePlan(state_path=p1)
-    asyncio.run(plan1.open(-12.0, vol.set, vol.get))  # nothing confirms
+    asyncio.run(plan1.open(-12.0, FaderVolumeDoor(vol.set, vol.get)))  # nothing confirms
     assert plan1.unresolved_volume_safety is not None
     assert plan1.needs_recovery is True
 
@@ -802,7 +803,7 @@ def test_needs_recovery_true_for_unresolved_and_foreign_active(tmp_path):
     opener = SessionVolumePlan(
         state_path=p2, wall_clock_ceiling_s=1800.0, clock=lambda: 1000.0
     )
-    asyncio.run(opener.open(-12.0, vol2.set, vol2.get))
+    asyncio.run(opener.open(-12.0, FaderVolumeDoor(vol2.set, vol2.get)))
     assert opener.needs_recovery is False  # owned by this process
     reborn = SessionVolumePlan(
         state_path=p2, wall_clock_ceiling_s=1800.0, clock=lambda: 1005.0
@@ -811,7 +812,7 @@ def test_needs_recovery_true_for_unresolved_and_foreign_active(tmp_path):
     assert reborn.needs_recovery is True
 
     # Draining resolves both signals.
-    asyncio.run(reborn.recover_unresolved(vol2.set, vol2.get))
+    asyncio.run(reborn.recover_unresolved(FaderVolumeDoor(vol2.set, vol2.get)))
     assert reborn.needs_recovery is False
 
     # No state at all -> nothing to recover.
@@ -833,4 +834,59 @@ def test_open_refuses_over_unresolved_state(tmp_path):
     vol = FakeVolume()
     plan = SessionVolumePlan(state_path=p)
     with pytest.raises(SessionVolumePlanError, match="recover it"):
-        asyncio.run(plan.open(-12.0, vol.set, vol.get))
+        asyncio.run(plan.open(-12.0, FaderVolumeDoor(vol.set, vol.get)))
+
+
+# --- the injected door -------------------------------------------------------
+#
+# What W5-c0 adds is the SHAPE the plan reaches the fader through, so what is
+# pinned here is that shape's one contract: every verb answers about the FADER,
+# not about a write having been attempted. W5-c1 binds a second implementation
+# over ``VolumeOwner``; these pins are the bar it has to clear.
+
+
+@pytest.mark.parametrize("verb", ["establish_measurement_level_db",
+                                  "restore_household_level_db"])
+def test_a_door_verb_is_true_only_when_the_fader_confirms(verb):
+    """Both write verbs answer readback, never "the setter was called".
+
+    The exact→emergency ladder and its durable latch are built on this bool: a
+    door that answered ``True`` for an unconfirmed write would let
+    ``_drain_restore`` clear its resolved marker over a speaker still sitting
+    at measurement level — the shape ``_clear_resolved`` exists to refuse.
+    """
+    confirms = FakeVolume(initial=-6.0)
+    drifts = FakeVolume(initial=-6.0, confirm_targets=set())
+    assert asyncio.run(
+        getattr(FaderVolumeDoor(confirms.set, confirms.get), verb)(-12.0)
+    ) is True
+    assert asyncio.run(
+        getattr(FaderVolumeDoor(drifts.set, drifts.get), verb)(-12.0)
+    ) is False
+
+
+def test_the_door_reads_the_household_level_it_will_restore_to():
+    vol = FakeVolume(initial=-6.0)
+    assert asyncio.run(
+        FaderVolumeDoor(vol.set, vol.get).read_household_level_db()
+    ) == -6.0
+
+
+def test_a_door_that_cannot_confirm_either_candidate_latches_unresolved(tmp_path):
+    """The ladder rides the door: exact, then emergency, then the latch.
+
+    Drives all three rungs through the door rather than through the raw
+    callables, which is the coupling W5-c1 changes — a pin taken one level
+    below the door could not see a binding that stopped falling through.
+    """
+    opener = FakeVolume(initial=-6.0, confirm_targets={-12.0})
+    plan = SessionVolumePlan(state_path=tmp_path / "sv.json")
+    assert asyncio.run(
+        plan.open(-12.0, FaderVolumeDoor(opener.set, opener.get))
+    ) is SessionVolumeOpenResult.OPENED
+    stuck = FakeVolume(initial=-12.0, confirm_targets=set())
+    assert asyncio.run(
+        plan.close(FaderVolumeDoor(stuck.set, stuck.get))
+    ) is SessionVolumeRestoreResult.FAILED
+    assert [t for verb, t in stuck.order if verb == "set"] == [-6.0, -60.0]
+    assert plan.unresolved_volume_safety is not None

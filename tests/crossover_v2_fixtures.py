@@ -780,11 +780,11 @@ class _FakeVolumePlan:
         self.opened: list = []
         self.abandoned: list = []
 
-    async def open(self, volume_db, set_cb, get_cb):
+    async def open(self, volume_db, door):
         self.opened.append(volume_db)
         return "opened"
 
-    async def abandon(self, set_cb, get_cb):
+    async def abandon(self, door):
         self.abandoned.append(True)
         return "exact_restored"
 
