@@ -4016,12 +4016,13 @@ class ProductionPlay:
     graph: Any
 
     def __call__(self, phase: str, program: Any) -> None:
-        """Still the play seam itself, so binding it needs no unwrapping.
+        """Still callable as the play seam, for the callers that treat it so.
 
-        ``bind_production_play``'s shipped contract is *"returns the thing you
-        call with (phase, program)"*, and that contract has callers — including
-        the ones that hand this straight to ``bind_v2_stage_seams``. Carrying
-        the graph beside it must not cost them a ``.play``.
+        Production unwraps it — the preparer binds ``.play`` and reads
+        ``.graph`` — so this is not what the flow relies on. It is here because
+        ``bind_production_play``'s shipped contract was *"returns the thing you
+        call with (phase, program)"*, and the suites that call the binder
+        directly still hold that contract. Delete it when they stop.
         """
         return self.play(phase, program)
 
@@ -4167,6 +4168,12 @@ def bind_production_play(
         ),
         confirm_live=confirm_graph_is_live,
     )
+    # The three OUT-OF-RUNNER drains reach the graph only through here, and
+    # they run when no session object exists to reach it through. Without this
+    # the ceiling enforcer releases the measurement pause into a live
+    # crossover-free, role-routed graph — the household programme resuming
+    # through a graph built to measure one driver at a time.
+    register_session_measurement_graph(session_graph)
 
     def _play(phase: str, program: Any) -> None:
         bundle_dir = evidence_store.bundle_dir
@@ -5476,6 +5483,23 @@ def _volume_hooks(
         finally:
             if str(getattr(opened, "value", opened)) != "opened":
                 await release_session_measurement_pause()
+        # AFTER the plan confirms, and that order is the whole of it. The
+        # session's volume slot is the interim claim, which VERIFIES the plan
+        # is open at this level rather than taking one — so opening the session
+        # before the plan exists refuses every session on `assert_ready`. Here
+        # the two are symmetric: the session opens where the plan opened, and
+        # closes where the graph went back.
+        try:
+            await tuning.open()
+        except BaseException:  # noqa: BLE001 - re-raised after the give-back
+            # An open that got the level but not the graph must not keep
+            # either: drain the plan the way a failed open already does, and
+            # release the pause so a refused session never strands voice.
+            try:
+                await plan.abandon(_set, _get, reason="session_open_failed")
+            finally:
+                await release_session_measurement_pause()
+            raise
         return opened
 
     async def _put_the_graph_back() -> None:
@@ -5744,14 +5768,38 @@ def _applied_profile_now() -> Mapping[str, Any] | None:
         return None
 
 
+class _NoRoutedPhasesGraph:
+    """The graph slot for a stage that measures nothing through one.
+
+    Stage 2 is verify-class on every tier: it plays its summed sweep through
+    the APPLIED production graph and takes no routed per-driver capture. A
+    session bound to the real measurement graph would therefore swap the whole
+    DSP chain, step aside on the first summed phase, and swap back — a full
+    graph load and restore for zero measurements, carrying every stranding
+    exposure an installed graph carries and buying nothing.
+
+    Reports ``""`` as its fingerprint, which is the seam's own spelling for
+    *"the host cannot name the graph"* — honest here, because there is no
+    measurement graph to name.
+    """
+
+    async def install(self) -> str:
+        return ""
+
+    async def patch(self, changes: Mapping[str, Any]) -> None:
+        return None
+
+    async def restore(self) -> None:
+        return None
+
+
 def bind_v2_engine_seams(
     *,
     session_graph: Any,
     evidence_store: Any,
     relay_session_id: str,
     camilla_factory: Any,
-    compose_stimulus: Any = None,
-    state_path: Any = None,
+    routed_phases: bool = True,
 ) -> Any:
     """The ENGINE's five seams, bound where the flow's seventeen are bound.
 
@@ -5785,7 +5833,7 @@ def bind_v2_engine_seams(
     _set, _get = _session_volume_io(camilla_factory)
     del _set  # the plan owns the write this wave; this seam only reads.
     return EngineSeams(
-        graph=session_graph,
+        graph=session_graph if routed_phases else _NoRoutedPhasesGraph(),
         volume=PlanHeldVolumeClaim(plan, _get),
         # F9, settled and deliberately un-bridged: ``bank`` returns a
         # store-relative PATH while the shipped flow publishers write artifact
@@ -5806,7 +5854,7 @@ def bind_v2_engine_seams(
         # alternative shape (a mapping guessed to make it "work") plays the
         # wrong stimulus and banks a record that looks correct.
         play=ProgramPlaybackTransaction(
-            compose=compose_stimulus or _compose_not_yet_mapped,
+            compose=_compose_not_yet_mapped,
             session_volume_plan=plan,
         ),
         # The bundle directory is read when the verb is ASKED, not when the
@@ -5814,7 +5862,7 @@ def bind_v2_engine_seams(
         # does not. Reading it here would make every caller that binds seams
         # supply a fully-formed store to get an object it may never call.
         recommend=lambda record_ids: BankedRoundRecommender(
-            evidence_store.bundle_dir, state_path=state_path,
+            evidence_store.bundle_dir,
         )(record_ids),
     )
 
@@ -6934,6 +6982,10 @@ def prepare_v2_session(
                 evidence_store=evidence_store,
                 relay_session_id=relay_session_id,
                 camilla_factory=camilla_factory,
+                # Stage 2 is verify-class on every tier — it grades through the
+                # APPLIED graph and takes no routed capture — so it must not
+                # swap the measurement graph in and straight back out.
+                routed_phases=not verify_only,
             ),
             measurement_level_db=context.session_volume_db,
         )
@@ -6956,21 +7008,20 @@ def prepare_v2_session(
         return rc
 
     async def _run(client: Any, pi_session: Any) -> None:
-        """The session's whole lifetime, which is this coroutine's.
+        """Drive the walk the preparer built.
 
-        ``open`` is here rather than in ``_open`` because it INSTALLS the
-        measurement graph — an await, and ``_open`` is a sync closure the
-        dispatch calls from a handler thread. ``close`` is not here either: it
-        runs where the graph went back before this wave, inside the volume
-        hooks' close/abandon arms and BEFORE the plan's fader drain. Wrapping
-        this body in ``async with`` instead would invert that order and restore
-        the household level through a still-installed measurement graph.
+        The session's own lifetime is NOT driven here. Both halves live in the
+        volume hooks: ``open`` after the plan confirms the level (the interim
+        claim verifies that plan, so it cannot precede it), and ``close`` where
+        the graph went back before this wave, before the plan's fader drain.
+        The runner calls those hooks, so the session opens and closes inside
+        the same span this coroutine owns — without this body being able to
+        reorder either.
         """
         if held is None:
             raise RuntimeError(
                 "the v2 relay session was run before it was opened"
             )
-        await held.tuning.open()
         await held.run(client, pi_session)
 
     def _request_stop() -> None:

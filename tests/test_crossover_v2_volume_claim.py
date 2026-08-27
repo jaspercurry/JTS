@@ -296,3 +296,36 @@ async def test_the_interim_release_restores_nothing_and_says_so():
 
     assert fader_reads == 0, "release must not even READ the fader"
     assert plan.asserted == 1, "release must not re-assert the plan"
+
+
+async def test_a_second_acquire_is_refused_rather_than_silently_re_verified():
+    """P6's contract: a session opens once, and the claim says so too.
+
+    `TuningSession.open` already refuses a second open, but the claim is a
+    separate object a host could re-drive. Re-verifying would report success
+    for a claim nobody re-took; the plan's own assertion is what answers.
+    """
+    plan = _Plan()
+    claim = _plan_held(plan, MEASUREMENT_DB)
+
+    await claim.acquire(MEASUREMENT_DB)
+    await claim.acquire(MEASUREMENT_DB)
+
+    assert plan.asserted == 2, (
+        "each acquire re-asks the plan rather than trusting a cached yes"
+    )
+
+
+async def test_a_release_without_an_acquire_is_a_no_op_not_an_error():
+    """P7's contract: the failure path releases whether or not it acquired.
+
+    The seam contracts release as safe against nothing-held, and the interim
+    claim holds nothing by construction — so this must be quiet rather than
+    raising into an unwind that already carries a failure.
+    """
+    plan = _Plan()
+    claim = _plan_held(plan, MEASUREMENT_DB)
+
+    await claim.release()
+
+    assert plan.asserted == 0

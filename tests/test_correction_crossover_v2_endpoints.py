@@ -170,11 +170,15 @@ def test_live_model_error_binding_reports_identity_conflict_to_conductor():
 class _NoGraphSession:
     """A tuning session that holds no graph, for the pause-lifecycle tests.
 
-    ``_volume_hooks`` closes the session where it used to release the module
-    global. These tests are about the PAUSE, not the graph, so the session they
-    pass gives back nothing — which is also the real no-op shape for a session
-    that never played a routed stimulus.
+    ``_volume_hooks`` opens the session after the plan confirms and closes it
+    where the graph used to go back. These tests are about the PAUSE, not the
+    graph, so the session they pass takes and gives back nothing — which is
+    also the real no-op shape for a session that never played a routed
+    stimulus.
     """
+
+    async def open(self) -> None:
+        return None
 
     async def close(self) -> None:
         return None
@@ -8018,6 +8022,9 @@ def test_the_graph_goes_back_before_the_fader_does(monkeypatch):
     order: list[str] = []
 
     class _LoggingSession:
+        async def open(self) -> None:
+            return None
+
         async def close(self) -> None:
             order.append("graph")
 
