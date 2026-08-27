@@ -50,7 +50,8 @@ JTS_RING_IOPLUG_PROVENANCE="${JTS_RING_IOPLUG_PROVENANCE:-/var/lib/jasper/ring-i
 # Degrade-to-warn contract (campaign risk #5): a build failure MUST NOT
 # fail the install, and this is deliberately the OPPOSITE of
 # build_install_rust_daemon's required=1 fatal path. The ring is load-bearing
-# on an armed box, so the reason is no longer "nothing uses it" — it is that
+# on every box (ADR-0100 — it is the only transport), so the reason is no
+# longer "nothing uses it" — it is that
 # an aborted install is the one outcome a box cannot deploy its way out of.
 # `run_contained_build` runs this cc with a soft `MemoryHigh` throttle and a
 # `choom -n 900` OOM bias (a hard `MemoryMax` is opt-in), which is what makes
@@ -77,9 +78,9 @@ JTS_RING_IOPLUG_PROVENANCE="${JTS_RING_IOPLUG_PROVENANCE:-/var/lib/jasper/ring-i
 #
 # Two build-failure shapes, and what the doctor sees for each:
 #   - First-ever build fails (no prior .so): so_dest is absent, so the
-#     doctor's `ring platform` check reports the missing asset — `warn` while
-#     the box is on loopback, `fail` once a ring coupling is armed. Honest
-#     either way.
+#     doctor's `ring platform` check reports the missing asset — `fail`.
+#     ADR-0100 made the ring the only transport, so there is no longer a
+#     degraded "still on loopback" case left to warn about instead.
 #   - Rebuild fails on a box with a prior good deploy: the pre-build rm -f
 #     below only cleans the CACHE copy, so the PREVIOUS .so stays installed
 #     at so_dest and still open-probes fine. What separates it from a fresh
@@ -149,8 +150,10 @@ build_install_jts_ring_ioplug() {
         # STALE-BINARY HAZARD (the 2026-07-02 class): the pre-build rm -f above
         # only cleans the CACHE copy, so on a box with a prior good deploy the
         # PREVIOUS .so is still installed at so_dest. We do NOT remove the stale
-        # .so: an installed-but-stale ioplug is strictly less broken than none
-        # while loopback carries audio either way.
+        # .so: an installed-but-stale ioplug is strictly less broken than none —
+        # a wire needing nothing extra still plays through it, where removing
+        # the .so would silence every box outright (ADR-0100: the ring is the
+        # only transport).
         #
         # What we DO remove is the installer's VOUCH for it. The provenance
         # record is this function's claim about what it installed; a failed
@@ -283,7 +286,7 @@ revoke_ring_ioplug_provenance() {
 # Install the product conf.d device definitions + the /dev/shm/jts-ring
 # directory lifecycle. Both are pure static files (no compile). Placing them
 # opens nothing on its own — the PCMs resolve, and the directory holds no ring
-# file until a coupling arms — but on an armed box both are load-bearing.
+# file until the coupling arms.
 # Kept separate from the build so the conf/tmpfiles land even on a box where
 # the C build failed (the doctor can then still report exactly which of the
 # three assets is missing).
@@ -373,11 +376,12 @@ install_jts_ring_platform() {
     # created ring, which is inside the normal deploy audio bounce.
     #
     # The ACTIVE ring joined the set here rather than at the arm path, because
-    # the arm path's own deleter (`_delete_stale_ring_files`, inside `_arm_ring`)
-    # is bypassed on exactly the boxes that have this file: an operator-pinned
-    # box short-circuits before `reconcile_coupling`, and every armed fleet box
-    # is pinned. The installer needs no roleful knowledge to own it — on a box
-    # that has no ACTIVE ring the file does not exist and `rm -f` is a no-op.
+    # the arm path's own deleter (`_delete_stale_ring_files`, inside
+    # `_converge_ring`) is bypassed on exactly the boxes that have this file:
+    # an operator-pinned box short-circuits before `reconcile_coupling`, and
+    # every armed fleet box is pinned. The installer needs no roleful
+    # knowledge to own it — on a box that has no ACTIVE ring the file does not
+    # exist and `rm -f` is a no-op.
     #
     # Safe because nothing needs the header to SURVIVE a deploy: the ring is
     # create-or-attach from BOTH ends (the ioplug's `ring_mapping_open` and

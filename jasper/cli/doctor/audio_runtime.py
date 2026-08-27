@@ -2100,9 +2100,11 @@ def check_ring_ioplug_provenance() -> CheckResult:
       nothing from any installed plugin, so "cannot vouch" is a ``warn`` — real,
       but nothing is refused on such a box;
     * a wire that declares a non-default sample FORMAT is refused at the arm by
-      ``ring_wire_caps_ready``, which is a ``fail``: the box drops to loopback,
-      and a roleful box parks its content lane. Reporting that as a warning
-      would bury the one verdict that predicts a disarm.
+      ``ring_wire_caps_ready``, which is a ``fail``: the gate fails closed and
+      leaves the box exactly as it was found — a roleful box parks its content
+      lane (ADR-0178) — never a fallback to a second transport (ADR-0100).
+      Reporting that as a warning would bury the one verdict that predicts a
+      stalled arm.
 
     WHAT THE PREDICATE COVERS, so this does not over-promise:
     ``ring_wire_capabilities`` reads the sample format, the Ring A / Ring B

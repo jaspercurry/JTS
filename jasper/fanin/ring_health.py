@@ -545,7 +545,8 @@ def ring_edge_width_ready(
     THE INVARIANT. For each ring, ``(sample_format, channels)`` is resolved once
     per box by ``jasper.fanin_coupling.resolve_ring_wire``, and every end that
     declares a geometry must declare exactly that. Any end that cannot ⇒ refuse
-    to arm, fail-safe to loopback, naming the end and the value it declared.
+    to arm: the gate fails closed and leaves the box exactly as it was found —
+    never a fallback (ADR-0100) — naming the end and the value it declared.
     **Equality only, never a ranking**: no width-comparison primitive exists
     in-repo for ALSA format strings and ``S24_3LE`` — live on the DAC edge —
     already breaks any ordering by byte count, so this refuses ANY mismatch
@@ -776,7 +777,8 @@ def ring_assets_ready() -> tuple[bool, str]:
     (``jts_ring_playback``, or ``jts_ring_active_playback`` on an armed roleful
     box) cannot resolve — CamillaDSP would crash-loop on its statefile and the fan-in
     ``StartLimitAction=reboot`` could compound it. So the reconciler refuses to
-    arm and stays on loopback. Presence-only (the doctor owns the deep open-probe);
+    arm and leaves the box exactly as it was found — never a fallback to a
+    second transport (ADR-0100). Presence-only (the doctor owns the deep open-probe);
     ``jasper.ring_assets`` is the SSOT shared with ``check_ring_platform_assets``.
     """
     from jasper.ring_assets import ring_asset_presence
@@ -1151,7 +1153,8 @@ def ring_endpoint_anchor_converged(
     every ``skipped`` as "the ring config was NOT loaded" and failed, so an
     anchor-riding box could never pass step 3 — observed on jts.local
     2026-08-15, ``detail=eq_on_active_not_wired result=arm_ring_camilla_failed``
-    with the reconciler correctly keeping loopback.
+    with the gate correctly failing closed and leaving the box exactly as it
+    was found.
 
     THE ACCEPTANCE IS A DIRECT PROOF, never a widening of the refusal. There is
     genuinely nothing for a reconcile to do when the graph the statefile points
@@ -1178,7 +1181,7 @@ def ring_endpoint_anchor_converged(
        along because this predicate is also consulted on the CONFIRM path, where
        ``ring_edge_width_ready`` does not run — without it an armed anchor box
        whose width later sheared would be reported converged forever instead of
-       being recovered to loopback. Including it can only ever REFUSE more.
+       refused like any other sheared box. Including it can only ever REFUSE more.
     4. **All-muted** — every output the graph declares ends in a wired hard mute
        at :data:`STARTUP_MUTE_GAIN_DB` (:func:`_anchor_is_all_muted`). This is
        the fact the success detail NAMES, so it is the fact this measures rather
@@ -1335,8 +1338,9 @@ def composite_ring_wire_ready(topology: Any) -> tuple[bool, str]:
             f"jasper-fanin-coupling-reconcile shm_ring`. The boot graph's own "
             f"capture and playback formats are baked when it is EMITTED, so "
             f"re-running the hardware reconciler alone leaves a stale narrow "
-            f"boot graph and the next arm refuses again. Keeping the coupling "
-            f"on loopback."
+            f"boot graph and the next arm refuses again. The gate fails "
+            f"closed: the box is left exactly as it was found, never a "
+            f"fallback."
         )
     return True, (
         f"composite sink declares the wide ring wire ({RING_WIRE_FORMAT_WIDE}), "
@@ -1405,11 +1409,13 @@ def ring_topology_ready(*, strict_unreadable: bool = False) -> tuple[bool, str]:
         topology = load_output_topology_strict()
     except (OutputTopologyError, OSError, ValueError) as exc:
         if strict_unreadable:
-            # An unreadable topology is NOT proven eligible — fail closed to
-            # loopback rather than arm a ring we cannot prove is eligible.
+            # An unreadable topology is NOT proven eligible — fail closed and
+            # leave the box exactly as it was found rather than arm a ring we
+            # cannot prove is eligible.
             return False, (
-                f"topology unreadable ({exc}); resolving loopback (fail-closed) "
-                "rather than arm a ring it cannot prove is eligible"
+                f"topology unreadable ({exc}); fail-closed (box left exactly "
+                "as it was found) rather than arm a ring it cannot prove is "
+                "eligible"
             )
         return True, f"topology unreadable ({exc}); deferring to outputd's own guard"
     if topology_supports_shm_ring(topology):
@@ -1442,8 +1448,10 @@ def ring_topology_ready(*, strict_unreadable: bool = False) -> tuple[bool, str]:
     # answered by the active arm above, admitted or refused on its wide-wire
     # rule and endpoint proof. A composite reaches here only when it is
     # PASSIVE (not roleful, so no active ring) — a roleful composite resolves 4
-    # since P8b item 1b. For these shapes loopback is the right coupling and
-    # the household knows the setup.
+    # since P8b item 1b. These shapes now PARK under their own name instead
+    # (ADR-0178: passive-stereo-composite is #2982, explicit-mono is #3117) —
+    # see jasper.control.transport_park — rather than falling back to a
+    # second coupling.
     # A plain single-sink speaker still needs an explicit passive stereo layout
     # before this arm is legal. A stale roleful/subwoofer topology needs the same
     # first recovery step: ``jasper-output-topology-reset`` clears it to the
@@ -1457,7 +1465,8 @@ def ring_topology_ready(*, strict_unreadable: bool = False) -> tuple[bool, str]:
         "the ACTIVE ring instead, which this box did not qualify for either; a "
         "PASSIVE composite dual-DAC is neither, so it has no ring at all; and "
         "explicit-mono is excluded by policy, not a ring-v2 timing gap). "
-        "Keeping the coupling on loopback. If this box is actually a plain stereo "
+        "This box parks under its own name (ADR-0178) rather than falling "
+        "back to a second coupling. If this box is actually a plain stereo "
         "single-sink speaker carrying a stale roleful/subwoofer topology, run "
         "`jasper-output-topology-reset` to clear it to an unconfigured state, "
         "save an explicit passive stereo layout, then re-arm."
