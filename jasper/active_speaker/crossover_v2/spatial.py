@@ -799,10 +799,11 @@ def take_id_for(position_id: str, attempt: int) -> str:
     so a lexical sort of the bundle is also a chronological one.
 
     Written here once: this expression stood in all three builders below and a
-    fourth time at ``correction_crossover_v2.bind_position_retention``, and four
-    copies of an index convention is four places for it to drift. The seam and
-    the record must name the same take or the bundle's sidecar path and the
-    session's own evidence disagree.
+    fourth time at the storage seam, and four copies of an index convention is
+    four places for it to drift. The seam mints nothing now — it reads
+    ``take_id`` off the record and the record store names the artifact from it —
+    because the seam and the record must name the same take or the bundle's
+    path and the session's own evidence disagree.
     """
     return f"{position_id}_a{int(attempt):02d}"
 
@@ -948,13 +949,14 @@ def _take_identity(
     record uses, because a retained take is still published through an ENVELOPE
     whose ``kind`` is this package's document-type discriminator** —
     ``POSITION_EVIDENCE_KIND``, and the same convention as every other artifact
-    here. The web host splats this record into that envelope last, so a ``kind``
-    written here silently REPLACES the discriminator and
+    here. :meth:`~.record_store.BankedRecordStore.bank` writes that envelope
+    around this record, reading the measure kind out from under either spelling
+    and always writing it back under this one — so a ``kind`` written here would
+    be taken for the discriminator and
     :func:`~.position_cycle.read_lateral_take` /
-    :func:`~.position_cycle.read_entry_baseline_take` stop recognising the take
-    at all. The two words converge on one when the retention lift replaces
-    ``publish_json_artifact`` with the record store's own ``bank`` and the
-    envelope goes away; delete this spelling then.
+    :func:`~.position_cycle.read_entry_baseline_take` would stop recognising the
+    take at all. The two words converge on one only if the envelope itself ever
+    goes away; delete this spelling then.
     """
     return {
         "phase": phase,
