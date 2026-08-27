@@ -315,6 +315,14 @@ class TuningSession:
     #: is itself the before. Read-only: a session banks into its own store and
     #: never into a prior one. See :class:`~.prior_bank.PriorBank`.
     prior: PriorBank | None = None
+    #: The solved per-role drive plan this session's programs were composed at,
+    #: and the id of the program that played. The two inputs
+    #: :func:`~.harmonic_evidence.rebuild_measure_program` needs, declared here
+    #: so :meth:`save` can write them — see that method for why a session state
+    #: that omits them cannot be re-read. Empty means this session was not told,
+    #: and the reader's own refusal then names which one is missing.
+    gain_plan_db: Mapping[str, float] = field(default_factory=dict)
+    candidate_program_id: str = ""
 
     _graph_installed: bool = field(default=False, init=False)
     _volume_held: bool = field(default=False, init=False)
@@ -548,12 +556,29 @@ class TuningSession:
         would be a way to lose it. This verb writes the session-level state that
         accounts for them.
 
-        **The five keys it writes are exactly what
+        **Five of its keys are exactly what
         :meth:`~.prior_bank.PriorBank.read` reads back**, which is the whole
         reason a later session can grade against this one. One of them is
         shaped by that round trip: a disclosure is written as its code AND
         whether the capture happened, because those are two different facts to
         the analysis that reads the bank.
+
+        **The other two are what make the session's PROGRAM re-derivable**, and
+        they are written for a reader that already exists:
+        :func:`~.harmonic_evidence.rebuild_measure_program` rebuilds the MEASURE
+        program from ``gain_plan_db`` and ``candidate.program_id``, brute-forces
+        the two parameters nobody banks, and accepts a rebuild **only** when its
+        ``program_id`` reproduces — *a reconstruction that cannot prove itself
+        must not be read*. Every harmonic offset derives from the sweep that
+        program carries, so a state without these two keys is a session whose
+        distortion can never be re-analyzed, however complete its captures.
+
+        Written under the reader's own names and nesting, never a second
+        spelling, and written even when empty: that reader answers a missing
+        input with a structured refusal naming which one
+        (``{"missing": "candidate.program_id"}``), and an absent key and an
+        empty one reach it identically. Only the fields are owed here — the
+        reconstruction stays where it already lives.
 
         The prior's own disclosures are NOT copied in. This state says what
         THIS session disclosed; what the round as a whole cannot claim is
@@ -569,6 +594,8 @@ class TuningSession:
                 {"code": stub.code, "captured": stub.captured}
                 for stub in self._disclosures
             ),
+            "gain_plan_db": dict(self.gain_plan_db),
+            "candidate": {"program_id": self.candidate_program_id},
         })
         return SaveOutcome(state_id=state_id, record_ids=ids)
 
@@ -773,6 +800,15 @@ class TuningSession:
         and hand the verdict a comparand measured somewhere else. ``""`` where
         the prior baselined no such pose, and ``""`` for a session with no
         prior: an honest fact about the capture, never a refusal to bank it.
+
+        ``wav_path`` is the record → capture pointer, and it is what makes
+        :meth:`analyze` able to reach a capture from a banked record at all.
+        Taken from the transaction that played, because that is the only party
+        that can say it: a bundle-relative capture path is NOT derivable from
+        the take id — ``bundles.capture_artifact_relpath`` appends a ``uuid4``
+        hex, and its caller mints the path BEFORE the write precisely so the
+        record can carry it. ``""`` on the same terms as
+        ``baseline_record_id``: no bytes were placed, said plainly.
         """
         return {
             "session_id": self.session_id,
@@ -790,4 +826,5 @@ class TuningSession:
             "level_db": proven_level_db,
             "stimulus_dbfs": stimulus_dbfs,
             "incident": outcome.incident,
+            "wav_path": outcome.wav_path,
         }

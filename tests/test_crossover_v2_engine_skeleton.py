@@ -38,6 +38,12 @@ from jasper.active_speaker.crossover_v2.contracts import (
     REGIME_NEAR_FIELD,
     REGIME_REFERENCE_AXIS,
 )
+from jasper.active_speaker.crossover_v2.harmonic_evidence import (
+    PROGRAM_NOT_REPRODUCIBLE,
+    STATE_UNREADABLE,
+    HarmonicEvidenceRefused,
+    rebuild_measure_program,
+)
 from jasper.active_speaker.crossover_v2.measure_spec import (
     DISTORTION_VS_LEVEL_NOT_IMPLEMENTED,
     INVERTED_POLARITY_NOT_IMPLEMENTED,
@@ -65,6 +71,11 @@ from jasper.active_speaker.crossover_v2.session import (
 from jasper.active_speaker.crossover_v2.session_seams import EngineSeams
 
 from tests._async_wait import wait_signalled
+
+#: Crossover bands for ``rebuild_measure_program``, whose VALUES are not this
+#: file's subject: the two save pins below turn on WHICH refusal the reader
+#: reaches, and it reads the state's keys before it ever reaches a band.
+_REBUILD_BANDS_HZ = {"woofer": (40.0, 1800.0), "tweeter": (1500.0, 20000.0)}
 
 
 # --------------------------------------------------------------------------- #
@@ -154,6 +165,9 @@ class _Records:
 class _Play:
     stage: str = STAGE_RESTORE
     incident: str = ""
+    #: Where this transaction put the bytes, minted before the write because
+    #: nothing downstream can re-derive it.
+    wav_path: str = ""
     #: One (stage, incident) per call, consumed in order; falls back to the
     #: single defaults once exhausted. A mixed-outcome walk is a sequence.
     script: list[tuple[str, str]] = field(default_factory=list)
@@ -177,7 +191,9 @@ class _Play:
             self.script[index] if index < len(self.script)
             else (self.stage, self.incident)
         )
-        return PlaybackOutcome(stage_reached=stage, incident=incident)
+        return PlaybackOutcome(
+            stage_reached=stage, incident=incident, wav_path=self.wav_path,
+        )
 
 
 @dataclass
@@ -190,7 +206,11 @@ class _Recommender:
 
 
 def _session(
-    prior: PriorBank | None = None, **overrides: Any,
+    prior: PriorBank | None = None,
+    *,
+    gain_plan_db: Mapping[str, float] | None = None,
+    candidate_program_id: str = "",
+    **overrides: Any,
 ) -> tuple[TuningSession, dict[str, Any]]:
     parts: dict[str, Any] = {
         "graph": _Graph(),
@@ -205,6 +225,8 @@ def _session(
         seams=EngineSeams(**parts),
         measurement_level_db=-20.0,
         prior=prior,
+        gain_plan_db=gain_plan_db or {},
+        candidate_program_id=candidate_program_id,
     )
     return session, parts
 
@@ -754,6 +776,39 @@ async def test_the_pose_prompt_reaches_both_the_transaction_and_the_record():
     ]
 
 
+async def test_a_banked_record_names_the_capture_the_transaction_wrote():
+    """Without this, ``analyze`` reads records that reach no audio.
+
+    A bundle-relative capture path is NOT derivable from anything else on the
+    record: ``bundles.capture_artifact_relpath`` appends a ``uuid4`` hex, so the
+    transaction that mints it before the write is the only party that can say
+    it. It comes off the play outcome for that reason, rather than being
+    re-derived here from an id that cannot produce it.
+    """
+    minted = "captures/summed/s1_a01-9f2c.wav"
+    session, parts = _session(play=_Play(wav_path=minted))
+
+    async with session:
+        await session.measure(MeasureSpec(kind=MEASURE_KIND_BASELINE))
+
+    assert [row["wav_path"] for row in parts["records"].banked] == [minted]
+
+
+async def test_a_capture_that_placed_no_bytes_banks_an_empty_pointer():
+    """``""`` is a fact about the capture, never a refusal to bank it.
+
+    ``baseline_record_id``'s precedent, on the other pointer: a record whose
+    audio was never retained still grades, and a reader learns that from the
+    empty field rather than from the record's absence.
+    """
+    session, parts = _session()
+
+    async with session:
+        await session.measure(MeasureSpec(kind=MEASURE_KIND_BASELINE))
+
+    assert parts["records"].banked[0]["wav_path"] == ""
+
+
 async def test_an_unproven_level_refuses_to_bank_but_never_to_play():
     """MS-14 in the shape ruling S10 preserves.
 
@@ -1063,6 +1118,62 @@ async def test_save_persists_the_session_state_over_the_records_measure_banked()
     assert state["disclosures"] == (
         {"code": NEAR_FIELD_SPLICE_NOT_IMPLEMENTED, "captured": True},
     )
+
+
+async def test_the_saved_state_satisfies_the_program_rebuilds_own_inputs():
+    """Pinned against the real reader, not against a spelling of its keys.
+
+    Every harmonic offset derives from the sweep the MEASURE program carries,
+    so a state that cannot rebuild that program is a session whose distortion
+    can never be re-analyzed however complete its captures. The two inputs
+    ``rebuild_measure_program`` reads were written by no ``save``, and their
+    absence reaches it as :data:`STATE_UNREADABLE` — the same refusal a corrupt
+    bank gets.
+
+    Told, the state gets PAST that gate: what refuses now is the id proof
+    itself, which is the reader doing its job on a program this test never
+    composed.
+    """
+    session, parts = _session(
+        gain_plan_db={"woofer": -6.0, "tweeter": -3.5},
+        candidate_program_id="prog-9",
+    )
+
+    async with session:
+        await session.measure(MeasureSpec(
+            kind=MEASURE_KIND_BASELINE, regime=REGIME_NEAR_FIELD,
+        ))
+    await session.save()
+
+    state = parts["records"].persisted[0]
+    with pytest.raises(HarmonicEvidenceRefused) as refused:
+        rebuild_measure_program(state, _REBUILD_BANDS_HZ)
+    assert refused.value.reason == PROGRAM_NOT_REPRODUCIBLE
+
+
+async def test_a_session_told_no_program_still_says_so_under_the_readers_names():
+    """The keys are written empty, never omitted.
+
+    ``rebuild_measure_program`` answers a missing input with a structured
+    refusal naming WHICH one, and an absent key and an empty one reach it
+    identically — so writing them empty keeps one spelling of the document and
+    lets the reader's own vocabulary report the hole.
+    """
+    session, parts = _session()
+
+    async with session:
+        await session.measure(MeasureSpec(
+            kind=MEASURE_KIND_BASELINE, regime=REGIME_NEAR_FIELD,
+        ))
+    await session.save()
+
+    state = parts["records"].persisted[0]
+    assert state["gain_plan_db"] == {}
+    assert state["candidate"] == {"program_id": ""}
+    with pytest.raises(HarmonicEvidenceRefused) as refused:
+        rebuild_measure_program(state, _REBUILD_BANDS_HZ)
+    assert refused.value.reason == STATE_UNREADABLE
+    assert refused.value.evidence["missing"] == "candidate.program_id"
 
 
 # --------------------------------------------------------------------------- #

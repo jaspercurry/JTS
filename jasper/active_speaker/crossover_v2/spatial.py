@@ -68,8 +68,20 @@ from jasper.audio_measurement.gating import TRUSTED_FLOOR_MULTIPLIER
 from jasper.audio_measurement.program import KIND_SWEEP, RoleBand
 from jasper.audio_measurement.program_analysis import INTEGRITY_CHECK_SWEEP_HEARD
 
-from .contracts import CaptureValidity
-from .journey import PHASE_ENTRY_BASELINE, PHASE_LATERAL
+from .contracts import (
+    DESIGN_AXIS_DEG,
+    ENTRY_GRAPH_FINGERPRINT_UNKNOWN,
+    MEASURE_KIND_BASELINE,
+    MEASURE_KIND_CANDIDATE,
+    MEASURE_KIND_VERIFY,
+    CaptureValidity,
+)
+from .journey import (
+    PHASE_CLOUD_VERIFY,
+    PHASE_ENTRY_BASELINE,
+    PHASE_LATERAL,
+    PHASE_VERIFY,
+)
 from .round_evidence import MeasuredResponse, measured_response_from_analysis
 from .verification import (
     ECHO_BAND_HF_REGIME_FLOOR_HZ,
@@ -132,6 +144,8 @@ __all__ = [
     "group_position_floor",
     "geometry_retake",
     "take_id_for",
+    "TakeClaim",
+    "take_kind",
     "cloud_position_record",
     "pose_curve_record",
     "lateral_pose_record",
@@ -793,6 +807,98 @@ def take_id_for(position_id: str, attempt: int) -> str:
     return f"{position_id}_a{int(attempt):02d}"
 
 
+#: The graph fingerprints that name no graph.  Both spellings reach a record —
+#: ``""`` from a host that could not name its graph at all, and
+#: :data:`~.contracts.ENTRY_GRAPH_FINGERPRINT_UNKNOWN` from
+#: ``coordinator.entry_graph_fingerprint`` when no applied profile was found —
+#: and neither can classify a take.
+_UNNAMED_GRAPHS = frozenset({"", ENTRY_GRAPH_FINGERPRINT_UNKNOWN})
+
+#: The phases whose captures are a re-measure AFTER an apply.  Used only to
+#: separate ``verify`` from ``candidate`` — never to separate ``baseline`` from
+#: either, which is the split :func:`take_kind` refuses to take from a phase.
+_VERIFY_PHASES = frozenset({PHASE_VERIFY, PHASE_CLOUD_VERIFY})
+
+
+def take_kind(
+    *, graph_fingerprint: str, baseline_fingerprint: str, phase: str,
+) -> str:
+    """Which of :data:`~.contracts.MEASURE_KINDS` a take is, or ``""``.
+
+    **Derived from the GRAPH, never from the phase.**  A phase → kind map is not
+    merely imprecise, it is not well defined: :data:`~.journey.PHASE_LATERAL` is
+    a per-driver walk that is a ``baseline`` **or** a ``candidate`` check
+    depending on which candidate was applied under it, and the cloud phases
+    split by which side of the apply they sit on.  Only the graph the take
+    played through tells those apart, which is why #3130 put
+    ``graph_fingerprint`` on the pose record in the first place.
+
+    The rule: equal to the round's pre-apply fingerprint → ``baseline``; a
+    post-apply re-measure phase → ``verify``; anything else played through a
+    graph that is not the "before" → ``candidate``.
+
+    ``graph_fingerprint`` is the applied profile's ``candidate_fingerprint``
+    (:func:`~.coordinator.entry_graph_fingerprint`'s namespace), deliberately
+    NOT the running-config hash ``provenance.graph.fingerprint`` carries — see
+    :func:`lateral_pose_record` for why the running hash cannot separate two
+    walks.  ``baseline_fingerprint`` is the same quantity for the round's own
+    "before", so the two are comparable.
+
+    **Unresolvable is ``""``, never a guess.**  Either fingerprint unnamed and
+    this returns empty: an honest fact about the capture, exactly as
+    ``baseline_record_id`` is ``""`` where the prior baselined no such pose.
+    """
+    if graph_fingerprint in _UNNAMED_GRAPHS:
+        return ""
+    if baseline_fingerprint in _UNNAMED_GRAPHS:
+        return ""
+    if graph_fingerprint == baseline_fingerprint:
+        return MEASURE_KIND_BASELINE
+    if phase in _VERIFY_PHASES:
+        return MEASURE_KIND_VERIFY
+    return MEASURE_KIND_CANDIDATE
+
+
+@dataclass(frozen=True)
+class TakeClaim:
+    """What the SESSION claimed around one take, on every record it banks.
+
+    The engine's own fields (``session.TuningSession._record``), carried at the
+    builders so a flow-banked take and an engine-banked take are one record
+    shape rather than two.  Offline re-analysis (ruling S3) reads the bank, and
+    a reader that had to ask which of two shapes it was holding could not.
+
+    Every field defaults empty because the three flow call sites do not state
+    them yet — and an empty field here is an honest fact about the capture,
+    never a refusal to bank it.  The wave that lifts retention states them.
+
+    ``baseline_fingerprint`` is the round's pre-apply graph, the comparand
+    :func:`take_kind` needs; the take's OWN graph stays a separate builder
+    keyword because it is a fact about the take, not about the claim.
+
+    ``level_db`` is the PROVEN fader level — the reading
+    ``VolumeClaim.prove`` returned and the session re-checked against the level
+    it declared — and ``stimulus_dbfs`` is the ladder rung the stimulus played
+    at.  Two different quantities on purpose: a ladder moves the stimulus, never
+    the claim, and the 8.712 dB incident is what one field saying both costs.
+
+    ``wav_path`` is the record → capture pointer, bundle-relative.  It is NOT
+    derivable from ``take_id``: ``bundles.capture_artifact_relpath`` appends a
+    ``uuid4`` hex, and its caller mints the path BEFORE the write precisely so
+    the record can carry it.  Without it a banked record names a capture nothing
+    can reach, which is what leaves offline analysis with no inputs.
+    """
+
+    baseline_fingerprint: str = ""
+    baseline_record_id: str = ""
+    candidate_id: str = ""
+    polarity: str = ""
+    level_db: float | None = None
+    stimulus_dbfs: float | None = None
+    incident: str = ""
+    wav_path: str = ""
+
+
 def _take_identity(
     *,
     position_id: str,
@@ -801,6 +907,8 @@ def _take_identity(
     attempt: int,
     session_id: str,
     wav_sha256: str | None,
+    graph_fingerprint: str = "",
+    claim: TakeClaim = TakeClaim(),
 ) -> dict[str, Any]:
     """The identity block every retained take carries, whatever kind it is.
 
@@ -819,7 +927,25 @@ def _take_identity(
     never the index (§6's rule that "content hashing stays the verifier; it must
     stop being the index"). Recorded whether or not any store retained the
     bytes, because it is what lets a laptop-side WAV be matched back to this
-    take at all.
+    take at all. ``claim.wav_path`` is its POINTER sibling: the digest says
+    whether bytes are the right ones, the path says where they are.
+
+    ``graph_fingerprint`` and the :class:`TakeClaim` fields are here rather than
+    in the three builders because they belong to EVERY take whatever its kind —
+    one edit, three records. The measure kind is derived here for the same
+    reason, and from the graph rather than from ``phase``: see :func:`take_kind`.
+
+    **It is spelled ``measure_kind`` and not ``kind``, which the engine's own
+    record uses, because a retained take is still published through an ENVELOPE
+    whose ``kind`` is this package's document-type discriminator** —
+    ``POSITION_EVIDENCE_KIND``, and the same convention as every other artifact
+    here. The web host splats this record into that envelope last, so a ``kind``
+    written here silently REPLACES the discriminator and
+    :func:`~.position_cycle.read_lateral_take` /
+    :func:`~.position_cycle.read_entry_baseline_take` stop recognising the take
+    at all. The two words converge on one when the retention lift replaces
+    ``publish_json_artifact`` with the record store's own ``bank`` and the
+    envelope goes away; delete this spelling then.
     """
     return {
         "phase": phase,
@@ -828,6 +954,19 @@ def _take_identity(
         "take_id": take_id_for(position_id, attempt),
         "session_id": session_id,
         "wav_sha256": wav_sha256,
+        "measure_kind": take_kind(
+            graph_fingerprint=graph_fingerprint,
+            baseline_fingerprint=claim.baseline_fingerprint,
+            phase=phase,
+        ),
+        "graph_fingerprint": graph_fingerprint,
+        "baseline_record_id": claim.baseline_record_id,
+        "candidate_id": claim.candidate_id,
+        "polarity": claim.polarity,
+        "level_db": claim.level_db,
+        "stimulus_dbfs": claim.stimulus_dbfs,
+        "incident": claim.incident,
+        "wav_path": claim.wav_path,
     }
 
 
@@ -853,6 +992,9 @@ def cloud_position_record(
     summed_ripple_db: float | None,
     glitch_detected: bool,
     wav_sha256: str | None,
+    graph_fingerprint: str = "",
+    regime: str = "",
+    claim: TakeClaim = TakeClaim(),
 ) -> dict[str, Any]:
     """One retained cloud position, as the record two consumers read.
 
@@ -893,9 +1035,18 @@ def cloud_position_record(
     :attr:`~jasper.audio_measurement.gate_disclosure.GateDisclosure.reflection_delay_ms`
     for why the absolute time is meaningless to a reader.
 
-    The identity half — phase, index, attempt, ``take_id``, ``session_id`` and
-    the ``wav_sha256`` verifier — is :func:`_take_identity`, shared with the
-    other two builders.
+    The identity half — phase, index, attempt, ``take_id``, ``session_id``, the
+    ``wav_sha256`` verifier and the engine's own :class:`TakeClaim` fields — is
+    :func:`_take_identity`, shared with the other two builders.
+
+    ``regime`` is WHAT PLAYED, in the walk seam's vocabulary
+    (:data:`LATERAL_POSE_REGIME` is the other word in it), and is ``""`` here
+    until a caller states it. **That vocabulary is not
+    :data:`~.contracts.MEASURE_REGIMES`'** ``reference_axis``/``near_field``
+    pair, which the engine's own record spells under the same key — two
+    vocabularies, one key name, and converging them is the retention lift's,
+    not this builder's. Stating a guessed word here would make the collision
+    harder to find, not easier.
 
     ``geometry`` is WHERE the microphone was, as fields rather than as English
     (owner ruling, 2026-08-24).  Until it existed this record carried no
@@ -914,8 +1065,10 @@ def cloud_position_record(
         **_take_identity(
             position_id=position_id, phase=phase, index=index, attempt=attempt,
             session_id=session_id, wav_sha256=wav_sha256,
+            graph_fingerprint=graph_fingerprint, claim=claim,
         ),
         "prompt": prompt,
+        "regime": regime,
         "wide": wide,
         # The position's named question (attribution-stage plan §5's promotion
         # queue item 1). The prompt string alone cannot be parsed back into a
@@ -993,6 +1146,7 @@ def lateral_pose_record(
     graph_fingerprint: str,
     captured_at: str,
     wav_sha256: str | None,
+    claim: TakeClaim = TakeClaim(),
 ) -> dict[str, Any]:
     """One retained lateral pose, as the evidence bundle's sidecar carries it.
 
@@ -1012,7 +1166,13 @@ def lateral_pose_record(
     the SAME before and after a candidate is applied and cannot tell two walks
     apart.  The applied candidate can, which is what makes a banked walk
     classifiable as a baseline or a candidate check without reading the
-    capture-retention ring.
+    capture-retention ring.  :func:`take_kind` is that classification, and it
+    is stamped on the record here rather than left for a reader to redo.
+
+    ``position_axis`` is horizontal by construction: this record carries a
+    signed whole-degree bearing, and :class:`PositionGeometry` refuses a
+    bearing on the vertical axis.  Stated so a reader of the bank does not have
+    to know that to place the microphone.
 
     ``captured_at`` is minted at retention, not carried on the pose, for the
     reason :func:`entry_baseline_record` mints its own: a
@@ -1044,15 +1204,16 @@ def lateral_pose_record(
         **_take_identity(
             position_id=pose.pose_id, phase=PHASE_LATERAL, index=pose.index,
             attempt=pose.attempt, session_id=session_id, wav_sha256=wav_sha256,
+            graph_fingerprint=graph_fingerprint, claim=claim,
         ),
         "prompt": pose.prompt,
         "role": pose.role,
         "position_deg": int(position_deg),
+        "position_axis": POSITION_AXIS_HORIZONTAL,
         "offset_cm": float(pose.offset_cm),
         "at_mark": bool(pose.at_mark),
         "regime": LATERAL_POSE_REGIME,
         "lateral_consumer": lateral_consumer,
-        "graph_fingerprint": graph_fingerprint,
         "captured_at": captured_at,
         "curves": [pose_curve_record(curve) for curve in pose.curves],
     }
@@ -1075,6 +1236,9 @@ def entry_baseline_record(
     summed_ripple_db: float | None,
     glitch_detected: bool,
     wav_sha256: str | None,
+    prompt: str = "",
+    regime: str = "",
+    claim: TakeClaim = TakeClaim(),
 ) -> dict[str, Any]:
     """The entry baseline's retained record — a cloud position's shape, minus
     the group, plus the curve.
@@ -1103,11 +1267,20 @@ def entry_baseline_record(
     ``round_evidence.EntryBaseline.to_dict``, under the same names, so one
     reader covers both — see
     :func:`~.position_cycle.read_entry_baseline_take`.
+
+    **The pose is the design axis**, not a missing fact: this capture has no
+    prompted spot, and a capture with no prompted move is
+    :data:`~.contracts.DESIGN_AXIS_DEG` on the horizontal axis — the same
+    reading ``session.TuningSession._bearings`` gives a spec that names no
+    position, so one pose is one record on both sides. ``reference_mark`` still
+    says WHERE that axis was measured from; ``prompt`` is ``""`` because no
+    instruction was issued, which is a different fact from an unknown one.
     """
     identity = _take_identity(
         position_id=f"{PHASE_ENTRY_BASELINE}_{index:02d}",
         phase=PHASE_ENTRY_BASELINE, index=index, attempt=attempt,
         session_id=session_id, wav_sha256=wav_sha256,
+        graph_fingerprint=graph_fingerprint, claim=claim,
     )
     return {
         # The entry baseline has no prompted spot of its own, so its position
@@ -1116,7 +1289,10 @@ def entry_baseline_record(
         **identity,
         "program_id": program_id,
         "reference_mark": reference_mark,
-        "graph_fingerprint": graph_fingerprint,
+        "prompt": prompt,
+        "position_deg": DESIGN_AXIS_DEG,
+        "position_axis": POSITION_AXIS_HORIZONTAL,
+        "regime": regime,
         "captured_at": captured_at,
         "freqs_hz": [float(hz) for hz in freqs_hz],
         "magnitude_db": [float(db) for db in magnitude_db],
