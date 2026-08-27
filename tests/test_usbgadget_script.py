@@ -34,6 +34,7 @@ ROOT = Path(__file__).resolve().parents[1]
 UP = ROOT / "deploy" / "usbsink" / "jasper-usbgadget-up"
 DOWN = ROOT / "deploy" / "usbsink" / "jasper-usbgadget-down"
 WANTED = ROOT / "deploy" / "usbsink" / "jasper-usbgadget-wanted"
+INSTALL_FRAGMENT = ROOT / "deploy" / "lib" / "install" / "systemd-units.sh"
 NAME_PATCH = ROOT / "deploy" / "usbsink" / "jasper-usbsink-name-patch"
 SNAPSHOT = ROOT / "deploy" / "usbsink" / "jasper-usbgadget-snapshot"
 
@@ -469,10 +470,13 @@ def test_usb_audio_requires_canonical_authority_plus_readiness_mirror():
         "AUDIO_READY_CMD=\"${JASPER_USBGADGET_AUDIO_READY_CMD:-"
         "systemctl is-enabled --quiet jasper-usbsink.service}\""
     )
+    direct_armed_probe = (
+        "/opt/jasper/.venv/bin/python -m jasper.fanin.status "
+        "--usbsink-direct-armed"
+    )
     expected_data_ready = (
         "AUDIO_DATA_READY_CMD=\"${JASPER_USBGADGET_AUDIO_DATA_READY_CMD:-"
-        "/opt/jasper/.venv/bin/python -m jasper.fanin.status "
-        "--usbsink-direct-armed}\""
+        f"{direct_armed_probe}}}\""
     )
     for script in (UP, WANTED):
         text = script.read_text()
@@ -481,6 +485,11 @@ def test_usb_audio_requires_canonical_authority_plus_readiness_mirror():
         assert expected_data_ready in text
         assert "JASPER_USBGADGET_AUDIO_INTENT_CMD" not in text
         assert "JASPER_USBGADGET_AUDIO_GATE_CMD" not in text
+    # The install baseline's own recompose gate is a third copy of the same
+    # probe (deploy/lib/install/systemd-units.sh, usbsink_direct_lane_armed).
+    # Drift there fails safe — a broken probe reads "not armed" and takes the
+    # old always-recompose path — but it silently loses the #3194 fix.
+    assert direct_armed_probe in INSTALL_FRAGMENT.read_text()
 
 
 def test_name_patch_treats_speaker_state_as_inert_data(tmp_path: Path) -> None:

@@ -29,6 +29,11 @@ RUN_DIR="${JASPER_CAMILLA_RECOVER_RUN_DIR:-/run}"
 ASOUND_ROOT="${JASPER_ASOUND_ROOT:-/proc/asound}"
 DEV_SND_ROOT="${JASPER_DEV_SND_ROOT:-/dev/snd}"
 COOLDOWN_SEC="${JASPER_CAMILLA_RECOVER_COOLDOWN_SEC:-300}"
+# How long to wait after `start jasper-camilla.service` before trusting it
+# (#3096). jasper-camilla.service is Restart=always/RestartSec=2, so a doomed
+# instance has replaced itself within ~2.5s of dying; 3s gives that one full
+# cycle a margin without eating much of this handler's 45s TimeoutStartSec.
+LIVENESS_WAIT_SEC="${JASPER_CAMILLA_RECOVER_LIVENESS_WAIT_SEC:-3}"
 STATE_FILE="${STATE_DIR}/camilla_recover_last_attempt"
 LOCK_DIR="${RUN_DIR}/jasper-camilla-recover.lock"
 # The park record lives in /run, not STATE_DIR: the park is terminal for the
@@ -344,9 +349,31 @@ unit_action restart jasper-fanin.service
 "$SYSTEMCTL" start jasper-camilla.service >/dev/null 2>&1
 camilla_status=$?
 emit unit_action action "start" unit "jasper-camilla.service" status "$camilla_status"
+
+camilla_park_detail="jasper-camilla.service would not start after the core-graph park and one bounded restart attempt"
+if [[ "$camilla_status" -eq 0 ]]; then
+    # `systemctl start` on a Type=simple unit returns 0 the instant the
+    # process forks, so a CamillaDSP that starts and then exits on a busy
+    # ALSA device still reads as success above (#3096). A bare `is-active`
+    # cannot tell a live process from a fresh corpse -- RestartSec=2 means a
+    # doomed instance reads "active" again ~2.5s after each death. NRestarts
+    # was reset by the reset-failed a few lines up, so a rise after a short
+    # wait means the instance just started already died and was replaced by
+    # systemd's own restart: the honest discriminator.
+    sleep "$LIVENESS_WAIT_SEC"
+    nrestarts="$("$SYSTEMCTL" show -p NRestarts --value jasper-camilla.service 2>/dev/null)"
+    if [[ "$nrestarts" =~ ^[0-9]+$ ]] && (( nrestarts > 0 )); then
+        emit liveness_check unit "jasper-camilla.service" nrestarts "$nrestarts" verdict "died_after_start"
+        camilla_status=1
+        camilla_park_detail="jasper-camilla.service started but exited again (NRestarts=${nrestarts}) within ${LIVENESS_WAIT_SEC}s of the core-graph park and one bounded restart attempt"
+    fi
+    # Non-numeric/empty nrestarts means the probe was inconclusive (unexpected
+    # systemctl output) -- err toward declaring recovery rather than parking a
+    # graph that might be fine (#3096's stated asymmetry); camilla_status
+    # stays 0.
+fi
 if [[ "$camilla_status" -ne 0 ]]; then
-    park_core_graph camilla_start_failed \
-        "jasper-camilla.service would not start after the core-graph park and one bounded restart attempt"
+    park_core_graph camilla_start_failed "$camilla_park_detail"
     exit 0
 fi
 
@@ -368,7 +395,5 @@ done
 unit_action start jasper-aec-reconcile.service
 unit_action start jasper-grouping-reconcile.service
 
-# `systemctl start` of a Type=simple unit returns 0 at fork, so this leg can
-# declare recovery on a CamillaDSP that dies moments later. See #3096.
 emit recovered action "core_graph_restarted"
 exit 0

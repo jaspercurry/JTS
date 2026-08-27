@@ -375,16 +375,16 @@ appendix; `/state` and doctor show desired vs observed address plus
 `enable_usbgadget` (`deploy/lib/install/systemd-units.sh`) establishes one safe
 deployment baseline **without interpreting intent**: disable and stop the derived
 USB-audio unit, keep or bring up NCM, and recompose an active gadget only when
-old unit state or a present UAC2 card proves stale audio could still be
-advertised. `jasper-usbgadget.service` is the first gadget unit the installer
+old unit state or a UAC2 card proves stale audio may be advertised **and**
+fan-in's DIRECT lane is unarmed (a live consumer means converged, not stale —
+#3194). `jasper-usbgadget.service` is the first gadget unit the installer
 enables, deliberately, since it carries the default-on network. A pending
 host-role reboot keeps NCM-only composition while the controller is still
 peripheral so a deploy over that link can finish; strict USB audio availability
 stays false. The later `reapply_source_intent` call is the single canonical
 replay point: for On it performs fan-in DIRECT arm → UAC2 recompose → readiness
-marker start, while invalid intent fails closed. An already-converged NCM-only
-deploy does not bounce the management link. Pinned by
-`tests/test_install_usbgadget_migration.py`.
+marker start, while invalid intent fails closed. A converged deploy binds the
+gadget zero times. Pinned by `tests/test_install_usbgadget_migration.py`.
 
 ## Controller forensics
 

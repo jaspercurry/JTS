@@ -558,6 +558,35 @@ async def test_measure_refuses_a_session_that_was_never_opened():
         await session.measure(MeasureSpec(kind=MEASURE_KIND_BASELINE))
 
 
+async def test_a_cancel_mid_walk_still_accounts_for_what_already_banked():
+    """Every stimulus is a cancel point, so the accounting cannot wait for the
+    walk to end.
+
+    A record written to the store but missing from ``banked_record_ids`` is
+    evidence on disk the session denies taking — ``save`` would omit it, and a
+    later ``PriorBank`` reading that state would grade against a bank one
+    capture short of what the speaker actually measured.
+    """
+    events: list[str] = []
+    play = _PausingPlay(events=events, pause_before=2)
+    session, parts = _session(play=play)
+    await session.open()
+
+    walking = asyncio.ensure_future(session.measure(MeasureSpec(
+        kind=MEASURE_KIND_BASELINE, positions=(0, 22),
+    )))
+    await wait_signalled(play.reached, "the second stimulus", producer=walking)
+    walking.cancel()
+
+    with pytest.raises(asyncio.CancelledError):
+        await walking
+
+    assert parts["records"].banked, "the first stimulus banked before the cancel"
+    assert session.banked_record_ids == ("rec-1",), (
+        "a record the store holds is missing from the session's own account"
+    )
+
+
 # --------------------------------------------------------------------------- #
 # the release paths under cancellation
 #
@@ -574,6 +603,22 @@ async def test_measure_refuses_a_session_that_was_never_opened():
 #: shielded. Turns rather than seconds: no wall clock, so a starved runner
 #: cannot flip either direction.
 _RELEASE_TURNS = 50
+
+
+@dataclass
+class _PausingPlay(_Play):
+    """A walk that parks inside one stimulus so a cancel can land mid-loop."""
+
+    events: list[str] = field(default_factory=list)
+    reached: asyncio.Event = field(default_factory=asyncio.Event)
+    pause_before: int = 2
+
+    async def run(self, **kwargs: Any) -> PlaybackOutcome:
+        if len(self.calls) + 1 == self.pause_before:
+            self.reached.set()
+            for _ in range(_RELEASE_TURNS):
+                await asyncio.sleep(0)
+        return await super().run(**kwargs)
 
 
 @dataclass
