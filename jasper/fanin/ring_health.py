@@ -748,9 +748,9 @@ def ring_wire_caps_ready() -> tuple[bool, str]:
     undeclared box needs the ``wire_format`` capability and this gate performs a
     real record compare — hashing the ``.so`` and reading
     ``RING_IOPLUG_PROVENANCE`` — on every pass. A box whose last deploy took the
-    ioplug-build WARN is therefore REFUSED here (loopback on a flat box, the
-    parked content lane on a roleful one) rather than arming into a CamillaDSP
-    that cannot open the ring. ``jasper-doctor``'s ``ring ioplug provenance``
+    ioplug-build WARN is therefore REFUSED here — a roleful box's content lane
+    parks (ADR-0178) — rather than arming into a CamillaDSP that cannot open
+    the ring. ``jasper-doctor``'s ``ring ioplug provenance``
     check reports that state with the redeploy remedy BEFORE this gate acts on
     it. The short-circuit arm survives for one shape only: a box an operator has
     pinned to ``S16_LE`` through ``JASPER_FANIN_RING_WIRE_FORMAT`` (the rollback

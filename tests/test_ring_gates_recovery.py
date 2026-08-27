@@ -159,9 +159,9 @@ def test_caps_gate_is_live_on_an_undeclared_box(monkeypatch, tmp_path):
     An undeclared box resolves the wide wire, which differs from the ioplug's
     compiled-in conf.d default, so its conf.d carries a `format` line and this
     gate performs a real record compare on every pass. A box whose last deploy
-    took the ioplug-build WARN is REFUSED here — loopback on a flat box, the
-    parked content lane on a roleful one — instead of arming into a CamillaDSP
-    that cannot open the ring.
+    took the ioplug-build WARN is REFUSED here — a roleful box's content lane
+    parks (ADR-0178) — instead of arming into a CamillaDSP that cannot open
+    the ring.
 
     The wire is NOT stubbed here: it is resolved from the (isolated, empty) env
     chain exactly as a real undeclared box resolves it, so this fails if the

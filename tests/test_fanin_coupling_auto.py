@@ -641,7 +641,7 @@ def test_auto_combo_only_change_forces_fanin_restart(tmp_path, monkeypatch):
 def _armed_shm_ring_outputd() -> str:
     """The outputd.env an ALREADY-armed shm_ring box carries. With this present a
     subsequent reconcile sees NO outputd move, so the coupling stays put and the
-    reconcile takes the lightweight CONFIRM path (not _arm_ring) — the shape that
+    reconcile takes the lightweight CONFIRM path (not _converge_ring) — the shape that
     makes the combo force a bare fan-in restart the coordination must wrap."""
     return cr._apply_actions("", cr._outputd_actions(""))[0]
 
