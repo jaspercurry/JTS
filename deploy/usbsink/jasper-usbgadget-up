@@ -24,10 +24,16 @@
 # contract check reads that exact path, and renaming it would break the
 # byte-identical attribute contract. Accepted debt; see the HANDOFF.
 #
-# Idempotent: if the descriptor already exists AND is bound to a UDC, exits
-# 0 without touching it. A partial (unbound) descriptor is torn down and
-# rebuilt. The function truth table is computed once and logged as a
+# Idempotent by COMPOSITION, not by mere existence: a descriptor that is bound
+# AND already carries the desired function set exits 0 without a single write.
+# Anything else — unbound, absent, or bound with a different function set — is
+# torn down and rebuilt once. The truth table is computed once and logged as a
 # structured `event=usb_gadget.compose` line.
+#
+# Callers do not run this script; they run jasper-usbgadget-converge, which
+# makes the same comparison before deciding whether a unit restart is needed at
+# all. This check is what keeps a plain `systemctl start` on an already-bound
+# descriptor from silently accepting a STALE composition.
 #
 # Testability: the ConfigFS root, UDC class dir, canonical audio-allowed probe,
 # and derived-lifecycle-readiness probe are overridable via env (defaults are
@@ -40,43 +46,33 @@
 set -euo pipefail
 PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
 
-CONFIGFS="${JASPER_CONFIGFS_ROOT:-/sys/kernel/config}"
-UDC_CLASS_DIR="${JASPER_UDC_CLASS_DIR:-/sys/class/udc}"
+# shellcheck source=deploy/usbsink/jasper-usbgadget-compose.sh
+source "$(dirname "$0")/jasper-usbgadget-compose.sh"
+
 CPUINFO="${JASPER_CPUINFO_FILE:-/proc/cpuinfo}"
-NAME=jts-usb-audio
-GADGET_DIR="${CONFIGFS}/usb_gadget/${NAME}"
+NAME="${GADGET_NAME}"
 SPEAKER_NAME_FILE="${JASPER_SPEAKER_NAME_FILE:-/var/lib/jasper/speaker_name.env}"
 SPEAKER_NAME_READER="${JASPER_SPEAKER_NAME_READER:-/opt/jasper/.venv/bin/python}"
-
-# Injectable probes. The canonical source-aware start guard authorizes audio
-# from current household intent plus role. The derived unit enablement is a
-# separate readiness mirror: it can suppress audio after a failed/stale On
-# transition, but can never override canonical Off or follower parking.
-# Overridable so tests can drive every row of the truth table without systemd.
-AUDIO_ALLOWED_CMD="${JASPER_USBGADGET_AUDIO_ALLOWED_CMD:-/opt/jasper/.venv/bin/jasper-local-source-allowed --source usbsink}"
-AUDIO_READY_CMD="${JASPER_USBGADGET_AUDIO_READY_CMD:-systemctl is-enabled --quiet jasper-usbsink.service}"
-AUDIO_DATA_READY_CMD="${JASPER_USBGADGET_AUDIO_DATA_READY_CMD:-/opt/jasper/.venv/bin/python -m jasper.fanin.status --usbsink-direct-armed}"
-HARDWARE_ALLOWED_CMD="${JASPER_USBGADGET_HARDWARE_ALLOWED_CMD:-/opt/jasper/.venv/bin/python -m jasper.audio_hardware.usb_port_role --require-management-transport}"
-USB_MIC_ENABLED_CMD="${JASPER_USBGADGET_USB_MIC_ENABLED_CMD:-/opt/jasper/.venv/bin/python -m jasper.usb_mic --check-intent}"
 
 log() {
     echo "jasper-usbgadget-up: $*"
 }
 
-emit() {
-    # Structured single-line event for journal grep (the wifi-guardian idiom).
-    # `$1` is the outcome suffix on `event=usb_gadget.`; `$2` is the kv tail.
-    if [[ -n "${2:-}" ]]; then
-        printf 'event=usb_gadget.%s %s\n' "$1" "$2" >&2
-    else
-        printf 'event=usb_gadget.%s\n' "$1" >&2
-    fi
-}
+jasper_usbgadget_desired
 
-if ! ${HARDWARE_ALLOWED_CMD}; then
+if [[ "${HARDWARE_OK}" == "0" ]]; then
     emit skip "reason=hardware_unavailable where=up"
     "$(dirname "$0")/jasper-usbgadget-down" || true
     exit 0
+fi
+
+# One OTG controller on the BCM2712 (dwc2). The ExecCondition already ensured a
+# UDC exists; re-check for the operator-hand-start path, before building a
+# descriptor that could not be bound.
+if [[ -z "${GADGET_UDC}" ]]; then
+    log "no UDC available under ${UDC_CLASS_DIR} — is dwc2 loaded and the dtoverlay set?" >&2
+    emit skip "reason=no_udc"
+    exit 1
 fi
 
 SPEAKER_NAME="JTS"
@@ -101,7 +97,7 @@ write_if_present() {
     fi
 }
 
-# ---- Function truth table (computed once) ----------------------------------
+# ---- Function truth table (already computed by the shared fragment) --------
 #
 # network is on unless the kill switch is the exact literal `disabled`
 # (case-insensitive; any other value logs a warning and stays enabled —
@@ -116,41 +112,15 @@ write_if_present() {
 #   off      on               uac2.usb0  (legacy shape)
 #   off      off              none  (ExecCondition already skipped the unit)
 
-net_raw="${JASPER_USB_NETWORK:-enabled}"
-# Lowercase via tr (portable across bash 3.2/5.x; ${var,,} is bash 4+ only).
-net_lc="$(printf '%s' "${net_raw}" | tr '[:upper:]' '[:lower:]')"
-WANT_NETWORK=1
-if [[ "${net_lc}" == "disabled" ]]; then
-    WANT_NETWORK=0
-elif [[ "${net_lc}" != "enabled" && -n "${net_lc}" ]]; then
-    log "WARN JASPER_USB_NETWORK=${net_raw} is not 'enabled'/'disabled'; staying enabled" >&2
-fi
-
-WANT_AUDIO=0
-audio_reason="intent_disabled_or_parked"
-if ${AUDIO_ALLOWED_CMD} >/dev/null 2>&1; then
-    audio_reason="derived_unit_disabled"
-    if ${AUDIO_READY_CMD} >/dev/null 2>&1; then
-        audio_reason="direct_lane_unarmed"
-        if ${AUDIO_DATA_READY_CMD} >/dev/null 2>&1; then
-            WANT_AUDIO=1
-            audio_reason="enabled_direct_ready"
-        fi
-    fi
-fi
-
-# The return microphone is deliberately a refinement of the existing UAC2
-# source in this first slice. It can never create an audio function on its own:
-# USB Audio Input must already be authorized, armed, and ready above.
-WANT_USB_MIC=0
-if [[ "${WANT_AUDIO}" == "1" ]] && ${USB_MIC_ENABLED_CMD} >/dev/null 2>&1; then
-    WANT_USB_MIC=1
+if [[ "${NET_INTENT}" != "enabled" && "${NET_INTENT}" != "disabled" \
+      && -n "${NET_INTENT}" ]]; then
+    log "WARN JASPER_USB_NETWORK=${NET_INTENT} is not 'enabled'/'disabled'; staying enabled" >&2
 fi
 
 emit compose \
-    "network=${WANT_NETWORK} audio=${WANT_AUDIO} usb_mic=${WANT_USB_MIC} net_intent=${net_lc:-enabled} audio_reason=${audio_reason}"
+    "network=${WANT_NETWORK} audio=${WANT_AUDIO} usb_mic=${WANT_USB_MIC} net_intent=${NET_INTENT:-enabled} audio_reason=${AUDIO_REASON}"
 
-if [[ "${WANT_NETWORK}" == "0" && "${WANT_AUDIO}" == "0" ]]; then
+if [[ "${WANTED}" == "0" ]]; then
     # Nothing to compose. The unit's ExecCondition (jasper-usbgadget-wanted)
     # normally skips the unit in this state, so reaching here means an operator
     # started it by hand — tear any stale descriptor down and exit clean so we
@@ -160,16 +130,23 @@ if [[ "${WANT_NETWORK}" == "0" && "${WANT_AUDIO}" == "0" ]]; then
     exit 0
 fi
 
-# ---- Idempotency: bound descriptor => done ---------------------------------
+# ---- Idempotency: bound descriptor carrying the desired functions => done --
 
+jasper_usbgadget_live
+if [[ "${LIVE_BOUND}" == "1" && "${LIVE_COMPOSITION}" == "${COMPOSITION}" ]]; then
+    log "${NAME} already configured and bound to ${LIVE_UDC}"
+    emit up \
+        "state=already_bound udc=${LIVE_UDC} network=${WANT_NETWORK} audio=${WANT_AUDIO} usb_mic=${WANT_USB_MIC}"
+    exit 0
+fi
 if [[ -d "${GADGET_DIR}" ]]; then
-    bound_udc=$(cat "${GADGET_DIR}/UDC" 2>/dev/null || true)
-    if [[ -n "${bound_udc}" ]]; then
-        log "${NAME} already configured and bound to ${bound_udc}"
-        emit up "state=already_bound udc=${bound_udc}"
-        exit 0
+    if [[ "${LIVE_BOUND}" == "1" ]]; then
+        log "${NAME} bound with a different composition; rebuilding"
+        emit recompose \
+            "reason=composition_drift live_network=${LIVE_NETWORK} live_audio=${LIVE_AUDIO} live_usb_mic=${LIVE_USB_MIC} want_network=${WANT_NETWORK} want_audio=${WANT_AUDIO} want_usb_mic=${WANT_USB_MIC}"
+    else
+        log "${NAME} exists but not bound; clearing before re-create"
     fi
-    log "${NAME} exists but not bound; clearing before re-create"
     "$(dirname "$0")/jasper-usbgadget-down" || true
 fi
 
@@ -313,16 +290,8 @@ if [[ "${WANT_AUDIO}" == "1" ]]; then
 fi
 
 # ---- Bind to the UDC -------------------------------------------------------
-#
-# One OTG controller on the BCM2712 (dwc2). The ExecCondition already ensured
-# a UDC exists, but re-check for the operator-hand-start path.
-UDC=$(ls "${UDC_CLASS_DIR}" 2>/dev/null | head -n1 || true)
-if [[ -z "${UDC}" ]]; then
-    log "no UDC available under ${UDC_CLASS_DIR} — is dwc2 loaded and the dtoverlay set?" >&2
-    emit skip "reason=no_udc"
-    exit 1
-fi
-echo "${UDC}" > UDC
 
-log "${NAME} bound to UDC ${UDC}"
-emit up "state=bound udc=${UDC} network=${WANT_NETWORK} audio=${WANT_AUDIO} usb_mic=${WANT_USB_MIC}"
+echo "${GADGET_UDC}" > UDC
+
+log "${NAME} bound to UDC ${GADGET_UDC}"
+emit up "state=bound udc=${GADGET_UDC} network=${WANT_NETWORK} audio=${WANT_AUDIO} usb_mic=${WANT_USB_MIC}"

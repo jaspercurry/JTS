@@ -404,6 +404,14 @@ install_usbsink_unit_files() {
         "${REPO_DIR}/deploy/usbsink/jasper-usbgadget-wanted" \
         /usr/local/sbin/jasper-usbgadget-wanted
     install -m 0755 \
+        "${REPO_DIR}/deploy/usbsink/jasper-usbgadget-converge" \
+        /usr/local/sbin/jasper-usbgadget-converge
+    # Sourced (not executed) by -wanted/-up/-converge, which find it beside
+    # themselves — so it lives in sbin with them rather than /usr/local/lib.
+    install -m 0644 \
+        "${REPO_DIR}/deploy/usbsink/jasper-usbgadget-compose.sh" \
+        /usr/local/sbin/jasper-usbgadget-compose.sh
+    install -m 0755 \
         "${REPO_DIR}/deploy/usbsink/jasper-usbmic-apply-result" \
         /usr/local/sbin/jasper-usbmic-apply-result
     install -m 0755 \
@@ -498,32 +506,6 @@ install_usb_network_files() {
     fi
 }
 
-usbsink_direct_lane_armed() {
-    # True when fan-in's DIRECT usbsink capture lane is live — byte-identical to
-    # the gadget truth table's AUDIO_DATA_READY_CMD default, which is the shared
-    # source for this fact. The source coordinator remains the authority on the
-    # composition; its own live probe is narrower and separately bounded, so a
-    # disagreement here only ever costs a recompose it would have done anyway.
-    # A shell function (not an env seam) so the install harness can override it.
-    /opt/jasper/.venv/bin/python -m jasper.fanin.status --usbsink-direct-armed \
-        >/dev/null 2>&1
-}
-
-refresh_usb_stream_consumers() {
-    # A gadget rebuild destroys and recreates the UAC2Gadget ALSA card. The two
-    # stream consumers hold handles across that: jasper-fanin is deliberately
-    # NOT PartOf the gadget (it is the core mixer and must survive a gadget
-    # cycle), and jasper-usbmic's ExecCondition can leave it inactive after
-    # PartOf= propagation. Refresh both in data-path order, once, right after
-    # the rebuild, and report each outcome rather than assuming both took. The
-    # event line is the operator surface for a refresh that did not. See #3194.
-    local fanin=ok
-    local usbmic=ok
-    systemctl try-restart jasper-fanin.service >/dev/null 2>&1 || fanin=failed
-    systemctl try-restart jasper-usbmic.service >/dev/null 2>&1 || usbmic=failed
-    echo "  event=install.usb_stream_consumers_refreshed order=fanin,usbmic fanin=${fanin} usbmic=${usbmic}"
-}
-
 enable_usbgadget() {
     # The composite gadget is the FIRST gadget unit we enable — it carries the
     # default-on USB management network where the resolved transport permits.
@@ -535,23 +517,22 @@ enable_usbgadget() {
     # [Install] WantedBy=sys-subsystem-net-devices-usb0.device, so `enable`
     # wires the pull without starting it until usb0 appears.
     #
-    # Install owns only a safe deployment baseline: derived USB audio Off and a
-    # network-only gadget. It MUST NOT interpret canonical On or start the
-    # source here. The later reapply_source_intent pass is the single owner of
-    # the ordered On transition (arm fan-in direct capture, then advertise UAC2,
-    # then start the process-free readiness marker). Advertising UAC2 from here first
-    # creates a host-visible source with no live data plane.
+    # Install expresses NO composition intent of its own. It MUST NOT interpret
+    # canonical On or start the source here; the later reapply_source_intent
+    # pass is the single owner of the ordered On transition (arm fan-in direct
+    # capture, then advertise UAC2, then start the process-free readiness
+    # marker).
     #
-    # This baseline is also the upgrade/backcompat fence. Old releases may
-    # arrive with jasper-usbsink enabled/active and a bound UAC2 descriptor.
-    # Disable+stop the derived unit before touching the gadget. Recompose an
-    # already-active gadget only when prior derived audio or the UAC2 card proves
-    # stale audio may be present AND that endpoint has no live consumer; a
-    # converged NCM-only gadget must not flap on every deploy (the deploy itself
-    # may be using that management link), and neither must a converged UAC2
-    # endpoint whose fan-in DIRECT lane is still armed — recomposing that one
-    # only forces the coordinator to rebuild it seconds later, which is the
-    # deploy-time double bind that wedged the dwc2 ISO path in #3194.
+    # The old baseline parked jasper-usbsink first and then recomposed the
+    # gadget "to network-only". That was itself a composition intent, and a
+    # false one: it flipped the desired shape Off and the coordinator flipped it
+    # back seconds later, which IS the deploy-time double bind that wedged the
+    # dwc2 ISO data path in #3194. The upgrade/backcompat fence it stood for now
+    # lives in the composer's own truth table, whose third gate refuses UAC2
+    # unless live fan-in reports the DIRECT lane armed — so a stale endpoint
+    # from an old release is withdrawn by the converge below, and a converged
+    # one is left exactly where it is.
+    #
     # The path watcher is always cheap/inert; the sampler starts only while the
     # persistent operator marker exists. try-restart picks up helper updates on
     # deploy without turning a disabled sampler on.
@@ -562,46 +543,6 @@ enable_usbgadget() {
     systemctl enable --now jasper-usbgadget-forensics.path >/dev/null 2>&1 || \
         echo "  WARN: could not arm opt-in USB gadget forensics watcher"
     systemctl try-restart jasper-usbgadget-forensics.service >/dev/null 2>&1 || true
-
-    local audio_was_enabled=0
-    local audio_was_active=0
-    local uac2_was_present=0
-    local uac2_present_after_enable=0
-    local audio_enabled_now=0
-    local audio_active_now=0
-    local gadget_was_active=0
-    local direct_lane_was_armed=0
-    local park_rc=0
-    systemctl is-enabled --quiet jasper-usbsink.service 2>/dev/null && \
-        audio_was_enabled=1
-    systemctl is-active --quiet jasper-usbsink.service 2>/dev/null && \
-        audio_was_active=1
-    [[ -d "${JASPER_UAC2_CARD_PATH:-/proc/asound/UAC2Gadget}" ]] && \
-        uac2_was_present=1
-    systemctl is-active --quiet jasper-usbgadget.service 2>/dev/null && \
-        gadget_was_active=1
-    # Probe the data plane before parking the readiness marker. Parking does not
-    # disarm fan-in's DIRECT lane (that is the coupling owner's job), but read it
-    # while the pre-deploy graph is still whole.
-    usbsink_direct_lane_armed && direct_lane_was_armed=1
-    systemctl disable --now jasper-usbsink.service >/dev/null 2>&1 || park_rc=$?
-
-    # A systemctl command can return non-zero after partially succeeding, so
-    # observed state is authoritative. Fail closed if either half remains: the
-    # gadget readiness gate reads enablement, while an active stale lifecycle
-    # marker proves the old derived state did not park cleanly.
-    systemctl is-enabled --quiet jasper-usbsink.service 2>/dev/null && \
-        audio_enabled_now=1
-    systemctl is-active --quiet jasper-usbsink.service 2>/dev/null && \
-        audio_active_now=1
-    if [[ "${audio_enabled_now}" == "1" || "${audio_active_now}" == "1" ]]; then
-        echo "  ERROR: could not park USB Audio Input before composition; refusing to compose the USB gadget" >&2
-        return 1
-    fi
-    if [[ "${park_rc}" != "0" ]]; then
-        echo "  WARN: USB Audio Input park command returned ${park_rc}, but observed derived state is Off"
-    fi
-    echo "  event=install.usb_gadget_baseline audio=off next=source_intent_reapply"
 
     # NOTE the failure branch below only fires on a REAL failure (modprobe
     # failure, gadget-up exit >=255, masked unit): the ExecCondition
@@ -617,27 +558,20 @@ enable_usbgadget() {
     systemctl enable --now jasper-usbgadget.service >/dev/null 2>&1 || \
         echo "  WARN: jasper-usbgadget failed to enable/compose — check 'systemctl status jasper-usbgadget' and 'journalctl -u jasper-usbgadget' (pre-reboot no-UDC is a clean skip, not this error)"
     systemctl enable jasper-usbnet-dhcp.service >/dev/null 2>&1 || true
-    [[ -d "${JASPER_UAC2_CARD_PATH:-/proc/asound/UAC2Gadget}" ]] && \
-        uac2_present_after_enable=1
-    if [[ "${uac2_was_present}" == "1" || \
-          "${uac2_present_after_enable}" == "1" || \
-          ( "${gadget_was_active}" == "1" && ( \
-            "${audio_was_enabled}" == "1" || \
-            "${audio_was_active}" == "1" ) ) ]]; then
-        if [[ "${direct_lane_was_armed}" == "1" ]]; then
-            # The advertised endpoint has its live consumer, so it is converged,
-            # not the stale shape this baseline defends against. Leave the bound
-            # descriptor alone and let the coordinator own the composition: it
-            # re-checks the same consumer and recomposes only if it disagrees.
-            echo "  event=install.usb_gadget_baseline_recompose_skipped reason=direct_lane_armed"
-        else
-            systemctl restart jasper-usbgadget.service >/dev/null 2>&1 || {
-                echo "  ERROR: jasper-usbgadget did not recompose to the network-only install baseline; refusing to continue with possibly stale UAC2 advertised. Check 'journalctl -u jasper-usbgadget'" >&2
-                return 1
-            }
-            refresh_usb_stream_consumers
-        fi
-    fi
+
+    # One converge. It compares the live ConfigFS composition against the truth
+    # table and does nothing at all when they already agree, so a deploy over a
+    # converged link — NCM-only or a UAC2 endpoint with its live consumer —
+    # performs zero ConfigFS writes and never re-enumerates the host. A real
+    # difference costs exactly one teardown+rebuild plus the ordered
+    # fan-in→usbmic refresh, both owned by the converger.
+    #
+    # Fail closed: a converge that could not reach the desired composition may
+    # have left UAC2 advertised without its consumer, so it stops the install.
+    "${JASPER_USBGADGET_CONVERGE:-/usr/local/sbin/jasper-usbgadget-converge}" install || {
+        echo "  ERROR: jasper-usbgadget did not converge to the desired composition; refusing to continue with possibly stale UAC2 advertised. Check 'journalctl -u jasper-usbgadget'" >&2
+        return 1
+    }
 }
 
 install_grouping_unit_files() {

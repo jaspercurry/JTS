@@ -46,13 +46,23 @@ def test_usb_mic_apply_is_durable_delayed_and_naturally_debounced() -> None:
     text = APPLY_UNIT.read_text()
     assert "Type=oneshot" in text
     assert "ExecStart=/bin/sleep 0.35" in text
-    assert (
-        "ExecStartPost=/usr/bin/systemctl restart "
-        "jasper-aec-bridge.service jasper-usbgadget.service"
-    ) in text
+    assert "ExecStartPost=/usr/bin/systemctl restart jasper-aec-bridge.service" in text
     assert "event=usb_mic.recompose_applied" in text
     assert "ExecStopPost=/usr/local/sbin/jasper-usbmic-apply-result" in text
     assert "TimeoutStartSec=" in text
+
+
+def test_usb_mic_apply_reaches_the_gadget_only_through_its_converger() -> None:
+    """#3194: a mic toggle must not be a fourth direct owner of the descriptor.
+
+    The converger compares the live ConfigFS composition (the mic is its
+    ``usb_mic`` field) against the truth table, so re-applying an unchanged
+    shape performs no rebind at all.
+    """
+
+    text = APPLY_UNIT.read_text()
+    assert "ExecStartPost=/usr/local/sbin/jasper-usbgadget-converge usb_mic" in text
+    assert "jasper-usbgadget.service" not in text
 
 
 def test_usb_mic_apply_retries_accepted_failures_with_a_hard_bound() -> None:
@@ -61,10 +71,6 @@ def test_usb_mic_apply_retries_accepted_failures_with_a_hard_bound() -> None:
     assert "StartLimitBurst=4" in text
     assert "Restart=on-failure" in text
     assert "RestartSec=2s" in text
-    assert (
-        "ExecStartPost=/usr/bin/systemctl restart "
-        "jasper-aec-bridge.service jasper-usbgadget.service"
-    ) in text
 
 
 def test_usb_mic_apply_failure_helper_emits_only_for_failure() -> None:

@@ -8,8 +8,9 @@ Issue #2340 (2026-08-11 U2 deploy): PI_HOST resolved to 10.12.194.1, the
 USB gadget's management subnet (usb0 — docs/HANDOFF-usb-gadget.md).
 install.sh rebuilds the composite USB gadget mid-install, which tore down
 that link out from under the deploy's own ssh session: the transport died
-with no FIN, the local ssh hung, and the transcript froze around
-event=install.usb_gadget_baseline — while the install itself had already
+with no FIN, the local ssh hung, and the transcript froze around the
+install's gadget step (then `event=install.usb_gadget_baseline`, now
+`event=usb_gadget.converge`) — while the install itself had already
 succeeded on the Pi. scripts/deploy-to-pi.sh now warns (never blocks)
 before rsync when PI_HOST is about to resolve into that subnet, and bounds
 the ssh transport with keepalives so a real sever surfaces as a ~60s error

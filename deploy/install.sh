@@ -467,10 +467,10 @@ Hardware tier (detected on this host): $(detect_hardware_tier)
      (jasper-usbgadget.service): where the resolved USB role permits, its USB
      management network (a CPU-serial-derived usb0 /30, no forwarding) makes
      http://<hostname>/ work over USB even with Wi-Fi off, alongside the
-     wizard-toggled USB audio function. Install first parks derived USB audio
-     and establishes an NCM-only baseline when management transport is
-     available; the source-intent coordinator later restores canonical On in
-     direct-lane-before-advertising order. NM keyfile owns usb0 and the
+     wizard-toggled USB audio function. Install expresses no composition
+     intent: it converges the descriptor against the gadget's own truth table
+     and rebinds only on a real difference; the source-intent coordinator owns
+     canonical On in direct-lane-before-advertising order. NM keyfile owns usb0 and the
      device-activated jasper-usbnet-dhcp.service (dnsmasq-base) serves DHCP.
      Kill switch: JASPER_USB_NETWORK=disabled.
    - Enable socket-activated streambox-safe web surfaces:
@@ -673,10 +673,10 @@ Hardware tier (detected on this host): $(detect_hardware_tier)
      (jasper-usbgadget.service): where the resolved USB role permits, it carries
      a USB management network (ncm.usb0, CPU-serial-derived /30, no forwarding) so
      http://<hostname>/ works over USB even with Wi-Fi off, plus the
-     wizard-toggled USB audio function. Install first parks derived USB audio
-     and establishes an NCM-only baseline when management transport is
-     available; the source-intent coordinator later restores canonical On in
-     direct-lane-before-advertising order. Install the
+     wizard-toggled USB audio function. Install expresses no composition
+     intent: it converges the descriptor against the gadget's own truth table
+     and rebinds only on a real difference; the source-intent coordinator owns
+     canonical On in direct-lane-before-advertising order. Install the
      NM keyfile owning usb0 and the scoped,
      device-activated jasper-usbnet-dhcp.service (dnsmasq-base — no global
      dnsmasq service). USB audio stays off by default. Skips cleanly

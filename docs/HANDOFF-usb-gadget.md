@@ -188,10 +188,12 @@ The control daemon hands the change to `jasper-usbmic-apply.service`, whose
 350 ms grace is durable across a control-daemon exit and naturally debounces
 rapid changes — it lets a request arriving over USB NCM finish before descriptor
 re-enumeration briefly drops that link. The apply job restarts
-`jasper-aec-bridge.service` plus `jasper-usbgadget.service`: the bridge adds or
-removes the dedicated `:9894` duplicate, the gadget changes `p_chmask` and
-`bcdDevice`, and systemd starts/stops the dependency-enabled
-`jasper-usbmic.service`. The POST returns 200 only after systemd accepts the
+`jasper-aec-bridge.service` and then runs `jasper-usbgadget-converge`: the
+bridge adds or removes the dedicated `:9894` duplicate, and the converge
+rebinds only if the microphone shape actually changed — `usb_mic` is a field of
+the composition token, read back from `p_chmask` — changing `p_chmask` and
+`bcdDevice` and refreshing fan-in then `jasper-usbmic.service` when it does.
+The POST returns 200 only after systemd accepts the
 apply job; if scheduling fails it returns a structured 502 while reporting that
 the durable intent was saved. Once accepted, a failed bridge/gadget apply is
 retried three times with a two-second backoff (four attempts total); the hard
@@ -372,12 +374,17 @@ appendix; `/state` and doctor show desired vs observed address plus
 
 ## Deploy baseline and source replay
 
-`enable_usbgadget` (`deploy/lib/install/systemd-units.sh`) establishes one safe
-deployment baseline **without interpreting intent**: disable and stop the derived
-USB-audio unit, keep or bring up NCM, and recompose an active gadget only when
-old unit state or a UAC2 card proves stale audio may be advertised **and**
-fan-in's DIRECT lane is unarmed (a live consumer means converged, not stale —
-#3194). `jasper-usbgadget.service` is the first gadget unit the installer
+`enable_usbgadget` (`deploy/lib/install/systemd-units.sh`) expresses **no
+composition intent of its own**: it enables the units and runs
+`jasper-usbgadget-converge`, which compares the live ConfigFS composition
+against the shared truth table and rebinds only on a real difference. A stale
+UAC2 endpoint left by an old release has no armed DIRECT lane, so the truth
+table already says audio=0 and the converge withdraws it; a converged endpoint
+that still has its consumer is left alone. The installer no longer parks the
+derived USB-audio unit first — that park was itself a false composition intent,
+flipped Off here and back On by the coordinator seconds later, which is the
+deploy-time double bind that wedged the dwc2 ISO data path (#3194).
+`jasper-usbgadget.service` is the first gadget unit the installer
 enables, deliberately, since it carries the default-on network. A pending
 host-role reboot keeps NCM-only composition while the controller is still
 peripheral so a deploy over that link can finish; strict USB audio availability

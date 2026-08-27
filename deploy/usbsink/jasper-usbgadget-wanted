@@ -20,66 +20,20 @@
 # ExecCondition, distinct from a failure (exit >=255 or 1..254 → failed).
 # systemd treats ExecCondition exit codes 1..254 as "skip"; we use 1.
 #
-# The probes mirror jasper-usbgadget-up so the two never disagree. All are
-# env-overridable (defaults are the real paths/commands) for hermetic tests.
+# The decision itself is the shared truth table, so this can never disagree
+# with jasper-usbgadget-up or jasper-usbgadget-converge.
 set -uo pipefail
 PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
 
-UDC_CLASS_DIR="${JASPER_UDC_CLASS_DIR:-/sys/class/udc}"
-AUDIO_ALLOWED_CMD="${JASPER_USBGADGET_AUDIO_ALLOWED_CMD:-/opt/jasper/.venv/bin/jasper-local-source-allowed --source usbsink}"
-AUDIO_READY_CMD="${JASPER_USBGADGET_AUDIO_READY_CMD:-systemctl is-enabled --quiet jasper-usbsink.service}"
-AUDIO_DATA_READY_CMD="${JASPER_USBGADGET_AUDIO_DATA_READY_CMD:-/opt/jasper/.venv/bin/python -m jasper.fanin.status --usbsink-direct-armed}"
-HARDWARE_ALLOWED_CMD="${JASPER_USBGADGET_HARDWARE_ALLOWED_CMD:-/opt/jasper/.venv/bin/python -m jasper.audio_hardware.usb_port_role --require-management-transport}"
+# shellcheck source=deploy/usbsink/jasper-usbgadget-compose.sh
+source "$(dirname "$0")/jasper-usbgadget-compose.sh"
 
-emit() {
-    if [[ -n "${2:-}" ]]; then
-        printf 'event=usb_gadget.%s %s\n' "$1" "$2" >&2
-    else
-        printf 'event=usb_gadget.%s\n' "$1" >&2
-    fi
-}
+jasper_usbgadget_desired
 
-if ! ${HARDWARE_ALLOWED_CMD}; then
-    emit skip "reason=hardware_unavailable where=wanted"
+if [[ "${WANTED}" == "0" ]]; then
+    emit skip "reason=${WANTED_REASON} where=wanted"
     exit 1
 fi
 
-# No UDC yet (pre-reboot fresh install): skip cleanly.
-udc=$(ls "${UDC_CLASS_DIR}" 2>/dev/null | head -n1 || true)
-if [[ -z "${udc}" ]]; then
-    emit skip "reason=no_udc where=wanted"
-    exit 1
-fi
-
-# Network wanted unless the kill switch is the exact literal `disabled`.
-net_raw="${JASPER_USB_NETWORK:-enabled}"
-# Lowercase via tr (portable across bash 3.2/5.x; ${var,,} is bash 4+ only).
-net_lc="$(printf '%s' "${net_raw}" | tr '[:upper:]' '[:lower:]')"
-want_network=1
-[[ "${net_lc}" == "disabled" ]] && want_network=0
-
-# Audio wanted only when the canonical source guard accepts BOTH current
-# household USB intent and role, the coordinator-derived lifecycle mirror is
-# enabled, AND live fan-in reports the direct USB lane armed. Canonical Off
-# dominates; derived enablement/readiness are never preference. Requiring all
-# three prevents boot from advertising UAC2 before its consumer exists.
-want_audio=0
-audio_reason="intent_disabled_or_parked"
-if ${AUDIO_ALLOWED_CMD} >/dev/null 2>&1; then
-    audio_reason="derived_unit_disabled"
-    if ${AUDIO_READY_CMD} >/dev/null 2>&1; then
-        audio_reason="direct_lane_unarmed"
-        if ${AUDIO_DATA_READY_CMD} >/dev/null 2>&1; then
-            want_audio=1
-            audio_reason="enabled_direct_ready"
-        fi
-    fi
-fi
-
-if [[ "${want_network}" == "0" && "${want_audio}" == "0" ]]; then
-    emit skip "reason=no_function_wanted where=wanted"
-    exit 1
-fi
-
-emit wanted "network=${want_network} audio=${want_audio} audio_reason=${audio_reason}"
+emit wanted "network=${WANT_NETWORK} audio=${WANT_AUDIO} audio_reason=${AUDIO_REASON}"
 exit 0
