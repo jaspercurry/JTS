@@ -104,19 +104,6 @@ pcm.correction_substream {
         format S16_LE
     }
 }
-pcm.jasper_capture {
-    type dsnoop
-    slave {
-        pcm "hw:Loopback,1,7"
-        rate 48000
-        channels 2
-        format S16_LE
-    }
-}
-pcm.jasper_ref {
-    type plug
-    slave.pcm "jasper_capture"
-}
 """
 
 
@@ -124,47 +111,7 @@ def test_fanin_asound_wiring_ok(monkeypatch, tmp_path):
     _patch_asound_conf(monkeypatch, _FANIN_ASOUND, tmp_path)
     r = doctor.check_fanin_asound_wiring()
     assert r.status == "ok"
-    assert "substream 7" in r.detail
-
-
-def test_fanin_asound_wiring_fails_on_legacy_capture(monkeypatch, tmp_path):
-    _patch_asound_conf(
-        monkeypatch,
-        _FANIN_ASOUND.replace('pcm "hw:Loopback,1,7"', 'pcm "hw:Loopback,1,0"'),
-        tmp_path,
-    )
-    r = doctor.check_fanin_asound_wiring()
-    assert r.status == "fail"
-    assert "substream 0" in r.detail
-    assert "EBUSY" in r.detail
-
-
-def test_fanin_asound_wiring_fails_without_jasper_ref(monkeypatch, tmp_path):
-    _patch_asound_conf(
-        monkeypatch,
-        _FANIN_ASOUND.replace(
-            'pcm.jasper_ref {\n    type plug\n    slave.pcm "jasper_capture"\n}\n',
-            "",
-        ),
-        tmp_path,
-    )
-    r = doctor.check_fanin_asound_wiring()
-    assert r.status == "fail"
-    assert "pcm.jasper_ref missing" in r.detail
-
-
-def test_fanin_asound_wiring_fails_when_capture_shape_unpinned(monkeypatch, tmp_path):
-    _patch_asound_conf(
-        monkeypatch,
-        _FANIN_ASOUND.replace(
-            '        pcm "hw:Loopback,1,7"\n        rate 48000\n',
-            '        pcm "hw:Loopback,1,7"\n',
-        ),
-        tmp_path,
-    )
-    r = doctor.check_fanin_asound_wiring()
-    assert r.status == "fail"
-    assert "48 kHz stereo S16_LE" in r.detail
+    assert "renderer/test lanes" in r.detail
 
 
 class _FakeSocket:

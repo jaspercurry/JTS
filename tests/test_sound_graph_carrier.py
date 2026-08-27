@@ -1291,7 +1291,7 @@ def test_refusal_payload_is_typed_and_stable(reason_code):
 _SHM_RING_KWARGS = capture_kwargs_for_coupling("shm_ring")
 
 
-def test_base_flat_loopback_coupling_is_byte_identical(tmp_path):
+def test_base_flat_no_coupling_kwargs_is_byte_identical(tmp_path):
     # The default-OFF proof at the CHOKEPOINT: a reemit with no coupling kwargs
     # (or an empty dict) is byte-for-byte the same emitted YAML as one that never
     # mentioned the coupling. Uses the real emit_sound_config (not mocked) so the
@@ -1314,8 +1314,8 @@ def test_base_flat_loopback_coupling_is_byte_identical(tmp_path):
     ).yaml
     assert none_coupled == baseline
     assert empty_coupled == baseline
-    # And it is the ALSA dsnoop capture, untouched.
-    assert 'device: "plug:jasper_capture"' in baseline
+    # And it is the emitter's own default, Ring A.
+    assert f'device: "{RING_CAPTURE_DEVICE}"' in baseline
     assert "type: File" not in baseline
 
 
@@ -1331,7 +1331,6 @@ def test_base_flat_shm_ring_coupling_emits_ring_devices(tmp_path):
     ).yaml
     assert f'device: "{RING_CAPTURE_DEVICE}"' in cfg
     assert f'device: "{RING_PLAYBACK_DEVICE}"' in cfg
-    assert 'device: "plug:jasper_capture"' not in cfg
     assert "type: AsyncSinc" not in cfg
     assert "enable_rate_adjust: false" in cfg
 
@@ -1354,7 +1353,6 @@ def test_shm_ring_coupling_keeps_the_capture_half_for_a_grouped_pipe_sink(tmp_pa
         fanin_coupling_capture_kwargs=_SHM_RING_KWARGS,
     ).yaml
     assert f'device: "{RING_CAPTURE_DEVICE}"' in cfg
-    assert 'device: "plug:jasper_capture"' not in cfg
     # The pipe SINK is untouched — Ring B never crosses.
     assert f'device: "{RING_PLAYBACK_DEVICE}"' not in cfg
     assert "/run/snapfifo" in cfg
@@ -1377,7 +1375,6 @@ def test_program_bake_carrier_follows_the_coupling_on_capture_only(tmp_path):
         fanin_coupling_capture_kwargs=_SHM_RING_KWARGS,
     ).yaml
     assert f'device: "{RING_CAPTURE_DEVICE}"' in cfg
-    assert 'device: "plug:jasper_capture"' not in cfg
     assert f'device: "{RING_PLAYBACK_DEVICE}"' not in cfg
 
 

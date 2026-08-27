@@ -274,12 +274,10 @@ resampler is an *object* — `resampler: {type: AsyncSinc, profile: Balanced}` �
 not the pre-v2 scalar `resampler_type: BalancedAsync` (the v4 parser rejects the
 scalar). `file_capture_resampler_yaml`, `DEFAULT_FILE_CAPTURE_RESAMPLER_TYPE`/
 `_PROFILE`, and `DEFAULT_LEAN_CAPTURE_FIFO` no longer exist (deleted with the
-producerless `capture_pipe_path` surface, 2026-07-15); `is_async_resampler`
-survives in
-[`jasper/camilla_config_contract.py`](../jasper/camilla_config_contract.py)
-for the snd-aloop rate_adjust/resampler oscillation guard (a test-only
-invariant guard — no runtime caller; `test_camilla_config_contract` feeds it
-every JTS-generated config). Neither
+producerless `capture_pipe_path` surface, 2026-07-15). `is_async_resampler` and
+the snd-aloop rate_adjust/resampler oscillation guard it served are gone too:
+under ADR-0100 no emitter produces an snd-aloop capture, so the guard had no
+shape left to pin. Neither
 the stereo ([`jasper/sound/camilla_yaml.py`](../jasper/sound/camilla_yaml.py))
 nor active-speaker
 ([`jasper/active_speaker/camilla_yaml.py`](../jasper/active_speaker/camilla_yaml.py))

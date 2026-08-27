@@ -33,13 +33,13 @@ from jasper.audio_runtime_overrides import (
 )
 from jasper.camilla_config_contract import (
     ACTIVE_OUTPUTD_PLAYBACK_DEVICE,
-    DEFAULT_CAPTURE_DEVICE,
     DEFAULT_CAPTURE_FORMAT,
     DEFAULT_CHUNKSIZE,
     DEFAULT_PLAYBACK_DEVICE,
     DEFAULT_PLAYBACK_FORMAT,
     DEFAULT_SAMPLE_RATE,
     DEFAULT_TARGET_LEVEL,
+    RETIRED_ALOOP_CAPTURE_DEVICE,
     outputd_capture_device_for_playback,
     read_camilla_devices_config,
 )
@@ -1744,7 +1744,12 @@ def transport_topology_for_coupling(
             "transport": "alsa_loopback",
             "writer": "jasper-fanin",
             "playback_pcm": "hw:Loopback,0,7",
-            "camilla_capture_device": DEFAULT_CAPTURE_DEVICE,
+            # The RETIRED route's own tap, not `DEFAULT_CAPTURE_DEVICE`: that
+            # constant is the EMITTERS' answer and now names Ring A (ADR-0100).
+            # This branch describes the shape a box that has not reconciled to
+            # the ring is still carrying, so it must keep naming what such a box
+            # actually captures.
+            "camilla_capture_device": RETIRED_ALOOP_CAPTURE_DEVICE,
             "format": DEFAULT_CAPTURE_FORMAT,
             "channels": 2,
             "sample_rate": DEFAULT_SAMPLE_RATE,
@@ -2018,11 +2023,17 @@ def transport_coherence_report(
     # The ARMED direction of the same shear is already covered inside the ring
     # branch above ("transport plan is shm_ring but Camilla capture=…"), which is
     # why this side is the one that needed adding rather than a second copy.
+    #
+    # A graph with NO playback device is out of scope, not merely non-ring: a
+    # bonded leader's bake writes a File/SNAPFIFO sink and has no ALSA playback
+    # half to be half-moved. Refusing it here refused the reconcile that would
+    # arm the box — the deadlock shape #2329 and the active-ring waypoint note
+    # below both exist to avoid.
     if normalized not in _RING_TRANSPORT_SHAPES and capture_device:
         from jasper.fanin_coupling import RING_CAPTURE_DEVICE, RING_PCM_DEVICES
 
         if capture_device == RING_CAPTURE_DEVICE and (
-            playback_device not in RING_PCM_DEVICES
+            playback_device is not None and playback_device not in RING_PCM_DEVICES
         ):
             errors.append(
                 f"transport plan is {normalized} but Camilla "

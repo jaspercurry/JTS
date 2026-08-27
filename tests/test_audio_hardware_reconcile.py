@@ -325,10 +325,7 @@ def _half_moved_graph_env(tmp_path: Path) -> dict[str, str]:
     fail-closed route by ``outputd_active_lane_decision`` before the coherence
     report ever sees it, so a fixture built on one cannot reach an exit 1.
     """
-    from jasper.camilla_config_contract import (
-        DEFAULT_CAPTURE_DEVICE,
-        DEFAULT_PLAYBACK_DEVICE,
-    )
+    from jasper.camilla_config_contract import DEFAULT_PLAYBACK_DEVICE
     from jasper.fanin_coupling import RING_ACTIVE_PLAYBACK_DEVICE, RING_CAPTURE_DEVICE
 
     env = _active_graph_env(tmp_path, channels=2)
@@ -337,12 +334,12 @@ def _half_moved_graph_env(tmp_path: Path) -> dict[str, str]:
         statefile.read_text(encoding="utf-8").split("config_path:", 1)[1].strip()
     )
     text = active_config.read_text(encoding="utf-8")
+    # The emit already captures Ring A, so only the PLAYBACK half is staged back
+    # onto the passive lane — that is what makes the pair half-moved.
     assert RING_ACTIVE_PLAYBACK_DEVICE in text, text
-    assert DEFAULT_CAPTURE_DEVICE in text, text
+    assert RING_CAPTURE_DEVICE in text, text
     active_config.write_text(
-        text.replace(RING_ACTIVE_PLAYBACK_DEVICE, DEFAULT_PLAYBACK_DEVICE).replace(
-            DEFAULT_CAPTURE_DEVICE, RING_CAPTURE_DEVICE
-        ),
+        text.replace(RING_ACTIVE_PLAYBACK_DEVICE, DEFAULT_PLAYBACK_DEVICE),
         encoding="utf-8",
     )
     return env

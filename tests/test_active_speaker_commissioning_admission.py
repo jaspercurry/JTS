@@ -36,7 +36,7 @@ from jasper.audio_measurement.excitation_artifacts import (
     readmit_excitation_for_playback,
 )
 from jasper.audio_measurement.playback import PlaybackResult
-from jasper.camilla_config_contract import DEFAULT_CAPTURE_DEVICE
+from jasper.camilla_config_contract import RETIRED_ALOOP_CAPTURE_DEVICE
 from jasper.fanin_coupling import RING_ACTIVE_PLAYBACK_DEVICE, RING_CAPTURE_DEVICE
 from tests.test_active_speaker_excitation_safety_plan import _profile_and_targets
 from tests.test_active_speaker_profile import _two_way_preset
@@ -974,25 +974,21 @@ def test_successful_admission_does_not_log_or_persist_protection_report(
     assert not report_path.exists()
 
 
-# --- capture_route_current: both ends of the running graph must agree -------
+# --- capture_route_current: the running graph must read Ring A --------------
 #
-# #2412 Wave 2. ``capture_route_current`` is a PROTECTION check — "the graph
-# CamillaDSP is actually running reads the source I expect" — and until this
-# wave it compared the running capture device against the ``DEFAULT_CAPTURE_DEVICE``
-# constant, which accepted the snd-aloop tap paired with ANY sink. It now
-# derives the expectation from the running graph's OWN playback device
-# (``capture_device_for_playback``), so the pair must cohere.
+# ``capture_route_current`` is a PROTECTION check — "the graph CamillaDSP is
+# actually running reads the source I expect" — and it derives that expectation
+# from the running graph's own playback device
+# (``capture_device_for_playback``). Ring A is the one fan-in → CamillaDSP
+# transport (ADR-0100), so every sink derives the same source and the SOURCE is
+# the whole verdict: a graph still on the retired snd-aloop tap reads a device
+# nothing writes and sweeps into digital silence with every daemon healthy.
 #
-# The check had ZERO tests before these five (``grep -rl capture_route_current
-# tests/`` returned nothing), which is why the hole below could exist unseen.
-#
-# THE DELTA IS TWO CELLS AND EACH HAS ITS OWN TEST, so no polarity rides on an
-# argument: {ring sink, aloop source} accepted -> REFUSED (T2, and T4 for the
-# chain), and {ring sink, ring source} refused -> ACCEPTED (T1, the capability).
-# The other two cells keep the constant's verdict (T3, T5). That is both halves
-# of this wave's lens question — does it still refuse what it refused, and does
-# it now refuse the graph that sweeps into silence — with the one pair the wave
-# deliberately starts accepting named rather than implied.
+# BOTH SINKS CARRY BOTH POLARITIES, one cell per test, so no verdict rides on an
+# argument: {ring sink, ring source} T1 and {DAC sink, ring source} T3 pass;
+# {ring sink, tap} T2 and {DAC sink, tap} T5 refuse. T4 drives T2's graph
+# through the whole refusal chain, since a check-level verdict that never
+# reaches the operator is not a refusal.
 
 
 def _graph_with_devices(raw: str, *, playback_device: str, capture_device: str) -> str:
@@ -1091,52 +1087,51 @@ def test_capture_route_current_refuses_ring_playback_with_aloop_capture(
         tmp_path,
         monkeypatch,
         playback_device=RING_ACTIVE_PLAYBACK_DEVICE,
-        capture_device=DEFAULT_CAPTURE_DEVICE,
+        capture_device=RETIRED_ALOOP_CAPTURE_DEVICE,
     )
     assert report["checks"]["capture_route_current"] is False
     assert _failed_checks(report) == {"capture_route_current"}
     assert report["passed"] is False
 
 
-def test_capture_route_current_accepts_non_ring_playback_with_aloop_capture(
+def test_capture_route_current_accepts_non_ring_playback_with_ring_capture(
     tmp_path, monkeypatch
 ):
-    """T3 — the control: a box that is not armed is untouched.
+    """T3 — the control: a direct-DAC sink still commissions.
 
-    Kills an over-tightening that would break commissioning on every non-ring
-    box.
-    """
-    report = _report_for_devices(
-        tmp_path,
-        monkeypatch,
-        playback_device="hw:CARD=DAC8x,DEV=0",
-        capture_device=DEFAULT_CAPTURE_DEVICE,
-    )
-    assert report["checks"]["capture_route_current"] is True
-    assert _failed_checks(report) == set()
-    assert report["passed"] is True
-
-
-def test_capture_route_current_refuses_non_ring_playback_with_ring_capture(
-    tmp_path, monkeypatch
-):
-    """T5 — the non-regression direction: still refused, for a derived reason.
-
-    The mirror of T2, and the other half of this wave's lens question: *does the
-    check still refuse everything it refused before?* This pair was refused by
-    the old constant because the capture was not it; it is refused under the
-    derivation because a non-ring sink expects ``DEFAULT_CAPTURE_DEVICE``. Same
-    verdict, different mechanism — which is exactly the shape a rewrite can
-    silently lose. It is also the half-moved graph
-    ``transport_coherence_report``'s non-ring branch detects, so the two guards
-    corroborate. The property holds by construction; an argument in place of a
-    guard guards nothing.
+    Kills an over-tightening that would break commissioning on every box whose
+    sink is not a ring. Ring A is the one fan-in → CamillaDSP transport
+    (ADR-0100), so the source is the ring here exactly as it is on the ring
+    sink — the sink is what differs, and it must not change this verdict.
     """
     report = _report_for_devices(
         tmp_path,
         monkeypatch,
         playback_device="hw:CARD=DAC8x,DEV=0",
         capture_device=RING_CAPTURE_DEVICE,
+    )
+    assert report["checks"]["capture_route_current"] is True
+    assert _failed_checks(report) == set()
+    assert report["passed"] is True
+
+
+def test_capture_route_current_refuses_non_ring_playback_with_aloop_capture(
+    tmp_path, monkeypatch
+):
+    """T5 — the sink does not license the retired tap either.
+
+    The mirror of T2 on the other sink: a graph still sourcing the snd-aloop tap
+    reads a device nothing writes whatever it plays into, so the refusal must
+    not depend on the sink being a ring. Without this, a check that only
+    inspected ring sinks would pass every direct-DAC box back onto the retired
+    source. It is also the half-moved graph ``transport_coherence_report``'s
+    non-ring branch detects, so the two guards corroborate.
+    """
+    report = _report_for_devices(
+        tmp_path,
+        monkeypatch,
+        playback_device="hw:CARD=DAC8x,DEV=0",
+        capture_device=RETIRED_ALOOP_CAPTURE_DEVICE,
     )
     assert report["checks"]["capture_route_current"] is False
     assert _failed_checks(report) == {"capture_route_current"}
@@ -1161,7 +1156,7 @@ def test_ring_playback_with_aloop_capture_refuses_at_admission_naming_the_check(
     swept = _graph_with_devices(
         raw,
         playback_device=RING_ACTIVE_PLAYBACK_DEVICE,
-        capture_device=DEFAULT_CAPTURE_DEVICE,
+        capture_device=RETIRED_ALOOP_CAPTURE_DEVICE,
     )
 
     async def read_running():

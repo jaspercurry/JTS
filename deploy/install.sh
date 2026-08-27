@@ -1011,7 +1011,8 @@ install_camilladsp() {
         echo "Installed CamillaDSP to ${CAMILLA_DIR}/camilladsp"
     fi
 
-    # CamillaDSP captures plug:jasper_capture (fan-in summed substream 7).
+    # CamillaDSP captures plug:jasper_capture here; that tap and this graph's
+    # playback half move to the ring together, never one at a time.
     # The flat outputd startup graph is copied here as a fallback/template,
     # then regenerated after the Python package is installed and the current
     # output hardware state has been observed so the active DAC's latency

@@ -69,8 +69,8 @@ from jasper.active_speaker.playback_route import (
 from jasper.active_speaker.profile import ActiveSpeakerConfigError
 from jasper.active_speaker.runtime_contract import OUTPUTD_ACTIVE_PLAYBACK_DEVICE
 from jasper.camilla_config_contract import (
-    DEFAULT_CAPTURE_DEVICE,
     DEFAULT_PLAYBACK_FORMAT,
+    RETIRED_ALOOP_CAPTURE_DEVICE,
     parse_camilla_devices_config,
 )
 from jasper.active_speaker import ActiveSpeakerPreset, audible_outputs_for_role
@@ -365,7 +365,7 @@ async def test_reconcile_current_dsp_keeps_an_armed_box_on_the_ring(
     stale = config_dir / "sound_current.yml"
     pre_arm = ring_graph.replace(
         RING_ACTIVE_PLAYBACK_DEVICE, OUTPUTD_ACTIVE_PLAYBACK_DEVICE
-    ).replace(RING_CAPTURE_DEVICE, DEFAULT_CAPTURE_DEVICE)
+    ).replace(RING_CAPTURE_DEVICE, RETIRED_ALOOP_CAPTURE_DEVICE)
     assert pre_arm != ring_graph
     stale.write_text(pre_arm, encoding="utf-8")
     camilla = _FakeCamilla(str(stale))
@@ -1118,7 +1118,7 @@ async def test_a_half_forwarded_device_block_is_refused_by_the_transport_gate(
     see a field that is forwarded and then lost between the call site and the
     file, and this cannot see a field that never affects the two device names.
     The mutation below is deliberately of the shape the walk is blind to — the
-    call site still names every field, and the capture is dropped downstream —
+    call site still names every field, and the capture is rewritten downstream —
     so the two guards are demonstrably not one guard twice.
 
     The refusal is at the gate, not before the write. The old predicate could
@@ -1136,9 +1136,9 @@ async def test_a_half_forwarded_device_block_is_refused_by_the_transport_gate(
 
     def half_forwarding(preset_arg, **kwargs):
         # The pre-Wave-1 defect, reproduced downstream of the call site: the
-        # sink stays the ring, the capture falls back to the emitter's snd-aloop
-        # tap default. Under `shm_ring` fan-in stops feeding that tap.
-        kwargs.pop("capture_device", None)
+        # sink stays the ring, the capture lands on the retired snd-aloop tap.
+        # Nothing writes that tap, so the pair sweeps a device nobody fills.
+        kwargs["capture_device"] = RETIRED_ALOOP_CAPTURE_DEVICE
         return real(preset_arg, **kwargs)
 
     monkeypatch.setattr(
@@ -1962,7 +1962,7 @@ async def test_driver_commissioning_is_byte_identical_on_every_non_ring_device(
         ),
         # Not a ring end: ADR-0100 left one transport, so the line reports the
         # journal's own "no answer" literal rather than a second name.
-        (OUTPUTD_ACTIVE_PLAYBACK_DEVICE, "-", DEFAULT_CAPTURE_DEVICE, "-"),
+        (OUTPUTD_ACTIVE_PLAYBACK_DEVICE, "-", RING_CAPTURE_DEVICE, "-"),
     ],
     ids=["ring", "aloop_active_lane"],
 )
@@ -2082,11 +2082,11 @@ def _leaf_paths(node, prefix: str = "") -> dict[str, object]:
 async def test_the_ring_emit_changes_the_transport_and_nothing_else(
     tmp_path, monkeypatch, wire
 ):
-    """THE LOAD-BEARING ASSERTION: eight device fields at most, and nothing else.
+    """THE LOAD-BEARING ASSERTION: seven device fields at most, and nothing else.
 
     Everything #2412 claims about hearing safety rests on this one sentence —
-    that pointing a commissioning emit at the ring moves the CAPTURE DEVICE, the
-    two formats and the four latency/queue knobs, and touches no filter, no
+    that pointing a commissioning emit at the ring moves the PLAYBACK DEVICE,
+    the two formats and the four latency/queue knobs, and touches no filter, no
     mixer, no pipeline step, no gain, no mute and no volume limit. §1.6's
     boundary argument, the unchanged-protection claim, and the panel's ability
     to review a bounded change all inherit from it.
@@ -2101,13 +2101,13 @@ async def test_the_ring_emit_changes_the_transport_and_nothing_else(
     **BOTH WIRES, because the count is not fixed and a one-wire test would
     report the wrong bound.** The emitter's non-ring formats are `S32_LE`, and
     the shipped ring default is WIDE — so on an ordinary box the two format
-    fields hold the SAME value on both transports and only six fields move. They
-    move only on a box an operator rolled back to the narrow wire. The design's
-    "capture device, the two formats, and the four knobs" is therefore exact as
-    an UPPER BOUND and one field pair too many as a count, which is why the
-    bound is asserted as a subset with the six unconditional movers required
-    inside it, and the format pair asserted to move on exactly the wire where it
-    should.
+    fields hold the SAME value on both transports and only five fields move.
+    They move only on a box an operator rolled back to the narrow wire. The
+    design's "playback device, the two formats, and the four knobs" is therefore
+    exact as an UPPER BOUND and one field pair too many as a count, which is why
+    the bound is asserted as a subset with the five unconditional movers
+    required inside it, and the format pair asserted to move on exactly the wire
+    where it should.
     """
     import yaml
 
@@ -2147,10 +2147,6 @@ async def test_the_ring_emit_changes_the_transport_and_nothing_else(
     always_move = {
         # The independent variable — what the caller asked for.
         "devices.playback.device",
-        # The capture device, which is the whole point: under `shm_ring` fan-in
-        # fills Ring A and stops feeding the snd-aloop tap, so a ring sink over
-        # `plug:jasper_capture` would sweep a device nobody writes.
-        "devices.capture.device",
         # The four latency/queue knobs of the certified ring geometry.
         "devices.chunksize",
         "devices.target_level",
@@ -2159,15 +2155,19 @@ async def test_the_ring_emit_changes_the_transport_and_nothing_else(
     }
     # THE BOUND: nothing outside the device block moves, on either wire.
     assert changed <= always_move | formats, changed - (always_move | formats)
-    # ...and every one of the six unconditional movers actually did.
+    # ...and every one of the five unconditional movers actually did.
     assert always_move <= changed, always_move - changed
+    # The CAPTURE device is not among them and that is the point: Ring A is the
+    # only fan-in → CamillaDSP transport (ADR-0100), so the source no longer
+    # depends on which sink the caller asked for.
+    assert "devices.capture.device" not in changed
     # ...and the format pair moves on exactly the wire where the ring's answer
     # differs from the emitter's non-ring default, never on the other.
     assert (formats <= changed) is (wire != DEFAULT_PLAYBACK_FORMAT), (wire, changed)
 
     # And the direction of each, so a diff of the right SHAPE but the wrong
     # values cannot pass. Every expectation reads from its owning constant.
-    assert flat_aloop["devices.capture.device"] == DEFAULT_CAPTURE_DEVICE
+    assert flat_aloop["devices.capture.device"] == RING_CAPTURE_DEVICE
     assert flat_ring["devices.capture.device"] == RING_CAPTURE_DEVICE
     assert flat_ring["devices.capture.format"] == wire
     assert flat_ring["devices.playback.format"] == wire

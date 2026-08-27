@@ -402,8 +402,8 @@ def test_playback_pipe_path_emits_file_sink_for_the_bonded_leader():
     assert "enable_rate_adjust: false" in yaml
     # The ALSA loopback sink is fully replaced…
     assert 'device: "outputd_content_playback"' not in yaml
-    # …but the capture side stays the normal ALSA lane.
-    assert 'device: "plug:jasper_capture"' in yaml
+    # …but the capture side stays the emitter's default, Ring A.
+    assert 'device: "jts_ring_capture"' in yaml
     # Loud-output safety survives the sink swap.
     assert "volume_limit: 0.0" in yaml
 

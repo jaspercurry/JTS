@@ -13,7 +13,6 @@ from jasper.camilla_config_contract import (
     parse_camilla_devices_config,
     resolve_camilla_chunksize,
     resolve_camilla_target_level,
-    snd_aloop_rate_adjust_oscillation_reason,
     total_positive_boost_db,
 )
 
@@ -509,98 +508,3 @@ def test_parse_camilla_devices_config_ignores_nested_volume_limit() -> None:
         assert "volume_limit" not in parsed
 
 
-# --- G8: snd-aloop rate_adjust + async-resampler oscillation guard ---
-# The documented failure is the metastable AirPlay-dropout oscillation when a
-# snd-aloop capture
-# (plug:jasper_capture / hw:Loopback) at capture-rate == playback-rate runs BOTH
-# enable_rate_adjust AND an async resampler — CamillaDSP's adjuster fights the
-# loopback's own rate tracking. The safe shape is enable_rate_adjust true AND no
-# async resampler block. These pin that contract so a future emitter edit can't
-# silently re-introduce the oscillation.
-
-
-def _standard_sound_config(**kwargs) -> str:
-    from jasper.sound.camilla_yaml import emit_sound_config
-    from jasper.sound.profile import SoundProfile
-
-    return emit_sound_config(SoundProfile(), **kwargs)
-
-
-def test_standard_snd_aloop_config_is_safe_and_rate_adjusted():
-    """The shipped default config taps the snd-aloop summed lane: it MUST carry
-    enable_rate_adjust true (the loopback round-trip needs it) and MUST NOT
-    carry an async resampler block."""
-    yaml = _standard_sound_config()
-    assert 'device: "plug:jasper_capture"' in yaml
-    assert "enable_rate_adjust: true" in yaml
-    assert "resampler:" not in yaml
-    assert snd_aloop_rate_adjust_oscillation_reason(yaml) is None
-
-
-def test_guard_flags_async_resampler_on_snd_aloop_capture():
-    """Inject the oscillation: an async resampler block alongside
-    enable_rate_adjust on the snd-aloop capture. The guard must catch it."""
-    safe = _standard_sound_config()
-    oscillating = safe.replace(
-        "  enable_rate_adjust: true",
-        "  enable_rate_adjust: true\n"
-        "  resampler:\n"
-        "    type: AsyncSinc\n"
-        "    profile: Balanced",
-    )
-    reason = snd_aloop_rate_adjust_oscillation_reason(oscillating)
-    assert reason is not None
-    assert "oscillation" in reason
-    assert "AsyncSinc" in reason
-
-
-def test_guard_ignores_stale_raw_file_capture_config():
-    """The snd-aloop guard ignores a stale legacy RawFile capture config.
-
-    The emitters no longer produce this shape (the producerless
-    ``capture_pipe_path`` lean lane was removed), but an un-reconciled lab box
-    could still have one on disk — the guard must key off the capture DEVICE,
-    not just presence of a resampler block."""
-    file_capture = """devices:
-  samplerate: 48000
-  enable_rate_adjust: true
-  resampler:
-    type: AsyncSinc
-    profile: Balanced
-  capture:
-    type: RawFile
-    channels: 2
-    filename: "/run/jasper-fanin/camilla.pipe"
-    format: S32_LE
-"""
-    assert snd_aloop_rate_adjust_oscillation_reason(file_capture) is None
-
-
-def test_guard_ignores_bonded_leader_pipe_config():
-    """The bonded-leader pipe sink sets enable_rate_adjust:false on its snd-aloop
-    capture (snapclient is the sole rate-tracker). That is NOT the oscillation
-    and must not be flagged."""
-    leader = _standard_sound_config(
-        playback_pipe_path="/run/snapserver/snapfifo",
-        enable_rate_adjust=False,
-    )
-    assert 'device: "plug:jasper_capture"' in leader
-    assert snd_aloop_rate_adjust_oscillation_reason(leader) is None
-
-
-def test_active_speaker_baseline_snd_aloop_config_is_safe():
-    """The active-speaker baseline emitter also taps plug:jasper_capture; assert
-    it ships the safe rate-adjust shape too."""
-    from jasper.active_speaker import (
-        ActiveSpeakerPreset,
-        emit_active_speaker_baseline_config,
-    )
-    from tests.test_active_speaker_profile import _two_way_preset
-
-    preset = ActiveSpeakerPreset.from_mapping(_two_way_preset())
-    yaml = emit_active_speaker_baseline_config(
-        preset, playback_device="active_dac_playback"
-    )
-    assert 'device: "plug:jasper_capture"' in yaml
-    assert "enable_rate_adjust: true" in yaml
-    assert snd_aloop_rate_adjust_oscillation_reason(yaml) is None
