@@ -41,7 +41,7 @@ def test_ring_platform_deletes_stale_tmpfs_rings_before_systemd_units():
     observe stale geometry.
 
     #2285 P2 added the ACTIVE ring to the set. Its other deleter
-    (``_delete_stale_ring_files``, inside ``_arm_ring``) is bypassed on an
+    (``_delete_stale_ring_files``, inside ``_converge_ring``) is bypassed on an
     operator-pinned box, and every armed fleet box is pinned — so before this,
     the one ring file a roleful box actually runs on was the one ring file no
     deploy cleared.
