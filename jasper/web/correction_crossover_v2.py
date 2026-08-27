@@ -2934,20 +2934,16 @@ def _persist_terminal_failure(
 
 
 def _wav_bytes_to_samples(wav_bytes: bytes) -> tuple[Any, int]:
-    import io
+    """This binding's decode, now owned beside its encoder.
 
-    import numpy as np
-    from scipy.io import wavfile
+    Lifted to :func:`~jasper.audio_measurement.wired_capture.decode_wav_to_mono`
+    so the engine's offline ``analyze`` can decode a banked capture without
+    reaching into ``jasper.web`` — the dependency runs the other way, and this
+    was the one piece of the analyze-seam assembly the truth layer needed.
+    """
+    from jasper.audio_measurement.wired_capture import decode_wav_to_mono
 
-    rate, data = wavfile.read(io.BytesIO(wav_bytes))
-    if data.ndim > 1:
-        data = data[:, 0]
-    if np.issubdtype(data.dtype, np.integer):
-        scale = float(np.iinfo(data.dtype).max)
-        samples = data.astype(np.float64) / scale
-    else:
-        samples = data.astype(np.float64)
-    return samples, int(rate)
+    return decode_wav_to_mono(wav_bytes)
 
 
 def resolve_relay_calibration(setup: Any, device: Any) -> Any:

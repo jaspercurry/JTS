@@ -83,7 +83,7 @@ S32_LE and :func:`encode_wav_s32` writes 32-bit integer PCM. The pipeline
 pins the RATE (``capture_relay.spec.REQUIRED_SAMPLE_RATE_HZ``), not the
 width: the analyze seam decodes format from the container
 (``scipy.io.wavfile`` reads int32 and normalizes by the dtype max — see
-``_wav_bytes_to_samples`` in ``jasper.web.correction_crossover_v2``), and
+:func:`decode_wav_to_mono` below, this module's own inverse), and
 the phone's 16-bit WAV is its encoder's choice, not a contract. Keeping the
 source width means the one place precision could be spent is a place it
 isn't.
@@ -125,6 +125,7 @@ __all__ = [
     "WiredRecorder",
     "WiredRecording",
     "build_capture_integrity_report",
+    "decode_wav_to_mono",
     "encode_wav_s32",
     "resolve_wired_mic",
     "scan_zero_runs",
@@ -591,6 +592,33 @@ def scan_zero_runs(mono_int32: Any) -> tuple[int, list[dict[str, int]]]:
         if len(runs) < ZERO_RUN_RECORD_CAP:
             runs.append({"offset": int(start), "len": length})
     return count, runs
+
+
+def decode_wav_to_mono(wav_bytes: bytes) -> tuple[Any, int]:
+    """Decode a capture WAV to ``(float64 mono samples, sample_rate_hz)``.
+
+    :func:`encode_wav_s32`'s inverse, and its neighbour so the two halves of
+    the WAV round trip have one owner. Width is read from the container, never
+    assumed: the pipeline pins the RATE, not the sample width, so a phone's
+    16-bit file and this module's 32-bit file both arrive here correctly.
+
+    Channel 0 of a multichannel file, because the analysis compares FRAMES —
+    an interleaved read would inflate the count the frame ledger checks.
+    """
+    import io
+
+    import numpy as np
+    from scipy.io import wavfile
+
+    rate, data = wavfile.read(io.BytesIO(wav_bytes))
+    if data.ndim > 1:
+        data = data[:, 0]
+    if np.issubdtype(data.dtype, np.integer):
+        scale = float(np.iinfo(data.dtype).max)
+        samples = data.astype(np.float64) / scale
+    else:
+        samples = data.astype(np.float64)
+    return samples, int(rate)
 
 
 def encode_wav_s32(mono_int32: Any, *, sample_rate_hz: int) -> tuple[bytes, int]:

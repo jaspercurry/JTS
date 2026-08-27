@@ -30,15 +30,18 @@ are fine; they share nothing but the seams handed to them.
 **What this class deliberately does NOT do yet.** The skeleton is seams and
 contracts; the waves fill them.
 
-* **It plays nothing and installs nothing.** Every side effect crosses an
-  injected seam, and no production implementation of any of them exists yet:
-  the graph is wave 6, the volume claim wave 5, the record store waves 3 and 4,
-  the play transaction wave 2.
-* **``analyze`` runs no analysis.** §1's wholesale default — *every* analysis
-  whose input kinds are present in the bank — lands in wave 2, in the CALLER.
-  The 92 analysis units port whole and unedited; what changes is that something
-  finally calls all of them. Today ``analyze`` reports only what this session
-  could not do, which is the half of its contract that ships with the surface.
+* **It still plays nothing.** Every side effect crosses an injected seam. The
+  record store, the volume claim and the session graph now have production
+  implementations; the **play transaction does not**, so no capture bytes are
+  written yet and :meth:`TuningSession.analyze` says so by name rather than
+  pretending otherwise.
+* **``analyze`` now runs the wholesale default** — *every* analysis whose input
+  kinds are present in the bank — and it does so in the CALLER, over
+  :data:`~.analysis_units.ANALYSIS_UNITS`. The units port whole and unedited;
+  what changed is that something finally calls all of them, and that a unit the
+  bank cannot feed is named rather than dropped. Reaching a capture still needs
+  a host to declare where it is and what it was measured through; see
+  :meth:`TuningSession.analyze`'s disclosed limit.
 * **It does not apply, and it never will.** The apply/rollback transaction is
   §3's one *"not a target. Ever."*
 
@@ -54,6 +57,8 @@ from dataclasses import dataclass, field
 from typing import Any, Awaitable, Callable, Coroutine, Iterable, Mapping
 
 from ..volume_latch import fader_matches
+from .analysis_units import AnalysisSkip
+from .analysis_walk import AnalysisDeclaration, walk_bank
 from .contracts import DESIGN_AXIS_DEG, POSITION_AXIS_VERTICAL
 from .measure_spec import CapabilityStub, MeasureSpec, stubbed_capabilities
 from .playback_transaction import PlaybackOutcome
@@ -248,24 +253,49 @@ class MeasureOutcome:
 class AnalyzeOutcome:
     """Every analysis the bank supported, and every one it did not.
 
-    ``results`` is keyed by analysis name. ``disclosures`` is the half ruling
-    S12 and §1's second property share: *a missing input is DISCLOSED, never
-    silently skipped* — because silence is what let the current defects hide.
+    **Both are keyed by RECORD id first**, and the unit dimension sits inside:
+    ``results[record_id][unit_name]`` holds only the ``ProgramAnalysis`` fields
+    that unit owns, and ``skipped[record_id]`` is that capture's own skips. A
+    session banks one record per position per ladder rung, so a bank of one is
+    the exception — flattened on unit name, one capture's analysis would
+    overwrite another's and a unit could be reported as both run and skipped in
+    the same answer.
 
-    **Read an empty ``results`` as "nothing is wired to run yet", never as
-    "everything ran and found nothing".** Wave 2 lands the wholesale registry in
-    :meth:`TuningSession.analyze` and, with it, the per-analysis not-run
-    disclosure §1 words as *"no distortion analysis: no distortion-vs-level
-    capture in this session"*. Naming that shape before the registry exists
-    would be guessing at it.
+    **The invariant is therefore per record**: for every id,
+    ``len(results[id]) + len(skipped[id])`` accounts for the whole table, minus
+    anything that failed. ``disclosures`` stays bank-wide, because it is about
+    the ENGINE rather than about any one capture — the half ruling S12 and §1's
+    second property share: *a missing input is DISCLOSED, never silently
+    skipped*, because silence is what let the current defects hide.
 
-    ``results`` is a mapping the caller must treat as read-only. A frozen
-    dataclass freezes rebinding, not the object bound — wave 2's registry
-    should hand this a copy rather than the dict it is still filling.
+    **Read an empty ``results[id]`` as "every gate said no for that capture",
+    never as "nothing is wired to run yet".** That is the flip the walker made,
+    and it is safe to read that way only because ``skipped`` arrived with it: an
+    empty ``results[id]`` beside a populated ``skipped[id]`` is fifteen units
+    naming the first input that capture could not reach, which is a different
+    and much more useful fact than silence. Empty *mappings* — no keys at all —
+    mean the bank held no records.
+
+    **``skipped`` and ``disclosures`` are two vocabularies and must stay
+    apart**, because their subjects differ: a :class:`~.measure_spec.CapabilityStub`
+    says *the ENGINE never built this analysis*, and its message is hard-wired
+    to "not implemented", its ``aborted()`` raises on any code outside its
+    four-row table, and its merge rule upgrades an entry when later evidence
+    arrives. An :class:`~.analysis_units.AnalysisSkip` says *THIS BANK lacks the
+    input this analysis needs* — no upgrade, no wording, two structured fields.
+    Rendering a skip as a stub would make the disclosure say the opposite of the
+    truth about a unit that is built and merely unfed.
+
+    ``results`` is a mapping the caller must treat as read-only, and the walker
+    hands over a copy rather than the dict it filled. A frozen dataclass freezes
+    rebinding, not the object bound.
     """
 
-    results: Mapping[str, Any]
+    results: Mapping[str, Mapping[str, Any]]
     disclosures: tuple[CapabilityStub, ...]
+    skipped: Mapping[str, tuple[AnalysisSkip, ...]] = field(
+        default_factory=dict
+    )
 
 
 @dataclass(frozen=True)
@@ -324,6 +354,15 @@ class TuningSession:
     #: and the reader's own refusal then names which one is missing.
     gain_plan_db: Mapping[str, float] = field(default_factory=dict)
     candidate_program_id: str = ""
+    #: The rest of what :meth:`analyze` needs to reach a capture offline: the
+    #: driver bands (the rebuild's third input, which the two above do not
+    #: supply), the round's crossover corner, and where the captures were
+    #: written. Defaulted and never required — a session told none of it still
+    #: measures and still banks, and :meth:`analyze` names each absent piece
+    #: rather than guessing it.
+    analysis_declaration: AnalysisDeclaration = field(
+        default_factory=AnalysisDeclaration
+    )
 
     _graph_installed: bool = field(default=False, init=False)
     _volume_held: bool = field(default=False, init=False)
@@ -511,11 +550,52 @@ class TuningSession:
         back, and :meth:`~.session_seams.RecordStore.read` is the door that
         makes it reachable.
 
-        **Today it runs nothing.** §1's wholesale default is wave 2's, and it
-        lands in this method rather than in any analysis unit — *do not decouple
-        the analysis layer, replace its caller.* What ships now is the honest
-        half: the capability holes this session hit, reported rather than
-        skipped.
+        **It runs everything the bank supports.** §1's wholesale default lands
+        in this method rather than in any analysis unit — *do not decouple the
+        analysis layer, replace its caller.* The walk reads each banked record,
+        assembles what that record actually carries, gates every unit in
+        :data:`~.analysis_units.ANALYSIS_UNITS` on it, calls the analysis layer
+        **once** per capture, and projects each admitted unit's own fields into
+        ``results``.
+
+        **A unit the bank cannot feed is named, not silently dropped.** It
+        arrives in ``skipped`` under its record's id, carrying the code for the
+        input that was missing — which is the whole difference between this and
+        ``_crossover_region_null_registry``'s defect, where the detector *"did
+        not return 'unknown,' it was never asked."* Where the capture itself is
+        out of reach, all fifteen carry **the first input the walk could not
+        reach**, not fifteen different ones: the checks are ordered, so a bank
+        missing both its driver bands and its capture bytes reports
+        ``no_driver_bands`` and never mentions the bytes.
+
+        **DISCLOSED LIMIT — nothing here writes captures.** Reaching one needs
+        ``driver_bands_hz``, ``crossover_fc_hz`` and ``capture_root`` declared,
+        ``candidate_program_id`` and ``gain_plan_db`` set, and a record whose
+        ``wav_path`` is non-empty. No production
+        :class:`~.playback_transaction.PlaybackTransaction` exists, so nothing
+        fills that last one yet; a bank whose records all carry an empty
+        ``wav_path`` skips every unit, each saying so. That is a walker
+        reporting an honest gap, not an inert one — the day a transaction
+        writes bytes and a host makes the declarations, this same walk produces
+        results with no further edit here.
+
+        **DISCLOSED LIMIT — the offline walk runs UNCALIBRATED.** It hands the
+        layer default :class:`~.program_analysis.MeasurementGeometry` and
+        priors carrying only the declared corner; the calibration curve, the
+        ``mic_tier`` and the phone's ``capture_report`` are assembled today only
+        by the wizard's own seam, and lifting that assembly is a later wave's.
+        Results land under the same record and unit keys a calibrated run would
+        use, so a reader cannot tell the two apart from the shape — the
+        difference is real and is stated here rather than inferred.
+
+        **A unit that FAILED is not in either mapping.** The walk keeps failures
+        apart from skips, and this verb surfaces neither a fourth
+        ``AnalyzeOutcome`` field nor a fake skip for them: a failure reaches
+        :data:`~.analysis_walk.ANALYSIS_FAILED_EVENT` in the journal, with the
+        half that raised, the units it took and the record id. It is therefore
+        absent from ``results`` and from ``skipped`` both, which is why the
+        per-record invariant accounts for the table *minus anything that
+        failed*.
 
         **A prior bank's own disclosures are reported too, and first.** They are
         the capability holes the PRIOR session hit, re-rendered in this build's
@@ -533,9 +613,22 @@ class TuningSession:
         implying it does.
         """
         prior = self.prior.disclosures if self.prior is not None else ()
+        records = {
+            record_id: await self.seams.records.read(record_id)
+            for record_id in self._banked
+        }
+        walk = walk_bank(
+            records,
+            {
+                "gain_plan_db": dict(self.gain_plan_db),
+                "candidate": {"program_id": self.candidate_program_id},
+            },
+            self.analysis_declaration,
+        )
         return AnalyzeOutcome(
-            results={},
+            results={rid: dict(units) for rid, units in walk.results.items()},
             disclosures=tuple(_merge_disclosures([*prior, *self._disclosures])),
+            skipped=dict(walk.skipped),
         )
 
     async def recommend(self) -> RecommendOutcome:
@@ -569,10 +662,16 @@ class TuningSession:
         whether the capture happened, because those are two different facts to
         the analysis that reads the bank.
 
-        **The other two are what make the session's PROGRAM re-derivable**, and
-        they are written for a reader that already exists:
+        **The other three are what make the session's PROGRAM re-derivable**,
+        and they are written for a reader that already exists:
         :func:`~.harmonic_evidence.rebuild_measure_program` rebuilds the MEASURE
-        program from ``gain_plan_db`` and ``candidate.program_id``, brute-forces
+        program from ``gain_plan_db`` and ``candidate.program_id``, which it
+        reads out of this state, **and from the driver bands, which it does
+        not** — those are a positional parameter, so ``bands_hz`` is banked here
+        for an offline reader to pick up and hand to it. Neither derivable from
+        the other two nor carried by any record: a state without it leaves a
+        caller with nothing to pass, however complete the other two are. It
+        brute-forces
         the two parameters nobody banks, and accepts a rebuild **only** when its
         ``program_id`` reproduces — *a reconstruction that cannot prove itself
         must not be read*. Every harmonic offset derives from the sweep that
@@ -602,6 +701,12 @@ class TuningSession:
             ),
             "gain_plan_db": dict(self.gain_plan_db),
             "candidate": {"program_id": self.candidate_program_id},
+            "bands_hz": {
+                role: list(band)
+                for role, band in sorted(
+                    self.analysis_declaration.driver_bands_hz.items()
+                )
+            },
         })
         return SaveOutcome(state_id=state_id, record_ids=ids)
 

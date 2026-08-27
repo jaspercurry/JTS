@@ -413,7 +413,7 @@ def test_the_ledger_counts_frames_not_wav_bytes():
 
 
 def test_a_multichannel_decode_still_compares_one_channels_frames():
-    """``_wav_bytes_to_samples`` keeps channel 0 of a multichannel WAV, and the
+    """``decode_wav_to_mono`` keeps channel 0 of a multichannel WAV, and the
     frame count is unchanged by that — the ledger must compare frames, never
     interleaved samples."""
     prog = _verify_program()
