@@ -632,7 +632,7 @@ def test_reconcile_innomaker_stays_passive_without_a_legal_active_graph(
     assert result.returncode == 0, result.stderr
     outputd_env = (tmp_path / "outputd.env").read_text(encoding="utf-8")
     assert "JASPER_OUTPUTD_SINK=single_alsa" in outputd_env
-    assert "JASPER_OUTPUTD_CONTENT_PCM=outputd_content_capture" in outputd_env
+    assert "JASPER_OUTPUTD_CONTENT_PCM" not in outputd_env
     assert "JASPER_OUTPUTD_ACTIVE_CHANNELS=''" in outputd_env
     assert "JASPER_OUTPUTD_ACTIVE_LANE=''" in outputd_env
     # The gate RAN and declined — it is no longer skipped for this DAC.
@@ -706,7 +706,6 @@ def test_reconcile_lane_probe_failure_is_named_apart_from_a_lane_less_dac(
     # Fail-closed is unchanged: the box is passive either way.
     outputd_env = (tmp_path / "outputd.env").read_text(encoding="utf-8")
     assert "JASPER_OUTPUTD_SINK=single_alsa" in outputd_env
-    assert "JASPER_OUTPUTD_CONTENT_PCM=outputd_content_capture" in outputd_env
     assert "JASPER_OUTPUTD_ACTIVE_CHANNELS=''" in outputd_env
     assert "JASPER_OUTPUTD_ACTIVE_LANE=''" in outputd_env
 
@@ -779,11 +778,11 @@ def test_reconcile_innomaker_arms_the_width_two_lane_on_a_legal_active_graph(
     assert result.returncode == 0, result.stderr
     outputd_env = (tmp_path / "outputd.env").read_text(encoding="utf-8")
     assert "JASPER_OUTPUTD_SINK=single_alsa" in outputd_env
-    # #2285 P2 (A6): a ROLEFUL box reaches outputd over the ACTIVE RING, which
-    # outputd reads as a FILE — it opens no content PCM at all. Written
-    # EXPLICIT-EMPTY rather than omitted, so a box carrying the old value
-    # converges instead of keeping it; the retired name is asserted ABSENT.
-    assert "JASPER_OUTPUTD_CONTENT_PCM=''" in outputd_env
+    # #2285 P2 (A6): a ROLEFUL box reaches outputd over the ACTIVE RING,
+    # which outputd reads as a FILE — it opens no content PCM at all.
+    # ADR-0100 retired the key with the lane; the reconciler states it
+    # nowhere, and the retired capture name appears nowhere either.
+    assert "JASPER_OUTPUTD_CONTENT_PCM" not in outputd_env
     assert "outputd_active_content_capture" not in outputd_env
     assert "JASPER_OUTPUTD_ACTIVE_CHANNELS=2" in outputd_env
     assert "JASPER_OUTPUTD_ACTIVE_LANE=1" in outputd_env
@@ -1025,7 +1024,6 @@ def test_reconcile_recognized_arrival_starts_outputd_when_values_unchanged(
     outputd_env = (
         "JASPER_OUTPUTD_BACKEND=alsa\n"
         "JASPER_OUTPUTD_SINK=single_alsa\n"
-        "JASPER_OUTPUTD_CONTENT_PCM=outputd_content_capture\n"
         "JASPER_OUTPUTD_DAC_PCM=outputd_dac\n"
         "JASPER_OUTPUTD_DUAL_DAC_A_PCM=''\n"
         "JASPER_OUTPUTD_DUAL_DAC_B_PCM=''\n"
@@ -1539,7 +1537,7 @@ def test_reconcile_dual_apple_defers_runtime_until_active_graph_is_loaded(
     outputd_env = (tmp_path / "outputd.env").read_text(encoding="utf-8")
     assert "JASPER_OUTPUTD_BACKEND=fake" in outputd_env
     assert "JASPER_OUTPUTD_SINK=single_alsa" in outputd_env
-    assert "JASPER_OUTPUTD_CONTENT_PCM=outputd_content_capture" in outputd_env
+    assert "JASPER_OUTPUTD_CONTENT_PCM" not in outputd_env
     assert "JASPER_OUTPUTD_DUAL_DAC_A_PCM=''" in outputd_env
     # Parked/unrecognized: no profile to query, so the declared format clears
     # too — explicit empty, matching how ACTIVE_CHANNELS/ACTIVE_LANE clear
@@ -1993,7 +1991,6 @@ def test_reconcile_dac8x_role_disables_apple_helpers(tmp_path: Path):
     # the wide 8-channel active lane (fail-closed: the gate kept it stereo).
     outputd_env = (tmp_path / "outputd.env").read_text(encoding="utf-8")
     assert "JASPER_OUTPUTD_SINK=single_alsa" in outputd_env
-    assert "JASPER_OUTPUTD_CONTENT_PCM=outputd_content_capture" in outputd_env
     assert "JASPER_OUTPUTD_ACTIVE_CHANNELS=''" in outputd_env
     # wide-output-path PR-7: the registry-declared final-edge format is LIVE
     # (outputd reads it, requests it on the DAC PCM, and parks at exit 78 on
@@ -2035,11 +2032,7 @@ def test_reconcile_dac8x_active_graph_wide_profile_emits_that_width(tmp_path: Pa
     outputd_env = (tmp_path / "outputd.env").read_text(encoding="utf-8")
     assert "JASPER_OUTPUTD_BACKEND=alsa" in outputd_env
     assert "JASPER_OUTPUTD_SINK=single_alsa" in outputd_env
-    # #2285 P2 (A6): a ROLEFUL box reaches outputd over the ACTIVE RING, which
-    # outputd reads as a FILE — it opens no content PCM at all. Written
-    # EXPLICIT-EMPTY rather than omitted, so a box carrying the old value
-    # converges instead of keeping it; the retired name is asserted ABSENT.
-    assert "JASPER_OUTPUTD_CONTENT_PCM=''" in outputd_env
+    # ADR-0100: the retired content lane's capture name appears nowhere.
     assert "outputd_active_content_capture" not in outputd_env
     assert "JASPER_OUTPUTD_ACTIVE_CHANNELS=6" in outputd_env
     assert "JASPER_OUTPUTD_DAC_PCM=outputd_dac" in outputd_env
@@ -2067,11 +2060,7 @@ def test_reconcile_dac8x_active_graph_two_way_drives_only_two(tmp_path: Path):
     assert result.returncode == 0, result.stderr
     outputd_env = (tmp_path / "outputd.env").read_text(encoding="utf-8")
     assert "JASPER_OUTPUTD_SINK=single_alsa" in outputd_env
-    # #2285 P2 (A6): a ROLEFUL box reaches outputd over the ACTIVE RING, which
-    # outputd reads as a FILE — it opens no content PCM at all. Written
-    # EXPLICIT-EMPTY rather than omitted, so a box carrying the old value
-    # converges instead of keeping it; the retired name is asserted ABSENT.
-    assert "JASPER_OUTPUTD_CONTENT_PCM=''" in outputd_env
+    # ADR-0100: the retired content lane's capture name appears nowhere.
     assert "outputd_active_content_capture" not in outputd_env
     assert "JASPER_OUTPUTD_ACTIVE_CHANNELS=2" in outputd_env
     # A 2-ch active sink is the case channel width can't distinguish from a
@@ -2109,11 +2098,7 @@ def test_reconcile_single_apple_active_graph_drives_width_two(tmp_path: Path):
     assert "JASPER_AUDIO_DAC_ID=apple_usb_c_dongle" in env_text
     outputd_env = (tmp_path / "outputd.env").read_text(encoding="utf-8")
     assert "JASPER_OUTPUTD_SINK=single_alsa" in outputd_env
-    # #2285 P2 (A6): a ROLEFUL box reaches outputd over the ACTIVE RING, which
-    # outputd reads as a FILE — it opens no content PCM at all. Written
-    # EXPLICIT-EMPTY rather than omitted, so a box carrying the old value
-    # converges instead of keeping it; the retired name is asserted ABSENT.
-    assert "JASPER_OUTPUTD_CONTENT_PCM=''" in outputd_env
+    # ADR-0100: the retired content lane's capture name appears nowhere.
     assert "outputd_active_content_capture" not in outputd_env
     assert "JASPER_OUTPUTD_ACTIVE_CHANNELS=2" in outputd_env
     assert "JASPER_OUTPUTD_ACTIVE_LANE=1" in outputd_env
@@ -2139,11 +2124,7 @@ def test_reconcile_active_leader_program_bake_uses_crossover_endpoint(
     assert result.returncode == 0, result.stderr
     outputd_env = (tmp_path / "outputd.env").read_text(encoding="utf-8")
     assert "JASPER_OUTPUTD_SINK=single_alsa" in outputd_env
-    # #2285 P2 (A6): a ROLEFUL box reaches outputd over the ACTIVE RING, which
-    # outputd reads as a FILE — it opens no content PCM at all. Written
-    # EXPLICIT-EMPTY rather than omitted, so a box carrying the old value
-    # converges instead of keeping it; the retired name is asserted ABSENT.
-    assert "JASPER_OUTPUTD_CONTENT_PCM=''" in outputd_env
+    # ADR-0100: the retired content lane's capture name appears nowhere.
     assert "outputd_active_content_capture" not in outputd_env
     assert "JASPER_OUTPUTD_ACTIVE_CHANNELS=2" in outputd_env
     assert "JASPER_OUTPUTD_ACTIVE_LANE=1" in outputd_env
@@ -2179,7 +2160,6 @@ def test_reconcile_program_bake_without_crossover_endpoint_stays_stereo(
 
     assert result.returncode == 0, result.stderr
     outputd_env = (tmp_path / "outputd.env").read_text(encoding="utf-8")
-    assert "JASPER_OUTPUTD_CONTENT_PCM=outputd_content_capture" in outputd_env
     assert "JASPER_OUTPUTD_ACTIVE_CHANNELS=''" in outputd_env
     assert "JASPER_OUTPUTD_ACTIVE_LANE=''" in outputd_env
     assert "single_alsa_active" not in result.stderr
@@ -2206,7 +2186,6 @@ def test_reconcile_active_leader_crossover_over_cap_stays_stereo(
 
     assert result.returncode == 0, result.stderr
     outputd_env = (tmp_path / "outputd.env").read_text(encoding="utf-8")
-    assert "JASPER_OUTPUTD_CONTENT_PCM=outputd_content_capture" in outputd_env
     assert "JASPER_OUTPUTD_ACTIVE_CHANNELS=''" in outputd_env
     assert "JASPER_OUTPUTD_ACTIVE_LANE=''" in outputd_env
     assert "single_alsa_active" not in result.stderr
@@ -2228,11 +2207,7 @@ def test_reconcile_active_graph_does_not_render_route_aliases(tmp_path: Path):
 
     assert result.returncode == 0, result.stderr
     outputd_env = (tmp_path / "outputd.env").read_text(encoding="utf-8")
-    # #2285 P2 (A6): a ROLEFUL box reaches outputd over the ACTIVE RING, which
-    # outputd reads as a FILE — it opens no content PCM at all. Written
-    # EXPLICIT-EMPTY rather than omitted, so a box carrying the old value
-    # converges instead of keeping it; the retired name is asserted ABSENT.
-    assert "JASPER_OUTPUTD_CONTENT_PCM=''" in outputd_env
+    # ADR-0100: the retired content lane's capture name appears nowhere.
     assert "outputd_active_content_capture" not in outputd_env
     assert "JASPER_OUTPUTD_ACTIVE_CHANNELS=2" in outputd_env
     template = (tmp_path / "asoundrc.jasper.template").read_text(encoding="utf-8")
@@ -2260,7 +2235,6 @@ def test_reconcile_dac8x_active_graph_over_cap_stays_stereo(tmp_path: Path):
     assert result.returncode == 0, result.stderr
     outputd_env = (tmp_path / "outputd.env").read_text(encoding="utf-8")
     assert "JASPER_OUTPUTD_SINK=single_alsa" in outputd_env
-    assert "JASPER_OUTPUTD_CONTENT_PCM=outputd_content_capture" in outputd_env
     assert "JASPER_OUTPUTD_ACTIVE_CHANNELS=''" in outputd_env
     assert "single_alsa_active" not in result.stderr
     assert "active_graph=active_graph_unsafe:active_graph_output_count_mismatch" in result.stderr
@@ -2390,7 +2364,6 @@ def test_reconcile_floor_only_outputd_change_restarts_outputd_only(
     outputd_env = (
         "JASPER_OUTPUTD_BACKEND=alsa\n"
         "JASPER_OUTPUTD_SINK=single_alsa\n"
-        "JASPER_OUTPUTD_CONTENT_PCM=outputd_content_capture\n"
         "JASPER_OUTPUTD_DAC_PCM=outputd_dac\n"
         "JASPER_OUTPUTD_DUAL_DAC_A_PCM=''\n"
         "JASPER_OUTPUTD_DUAL_DAC_B_PCM=''\n"
@@ -2549,7 +2522,6 @@ def test_reconcile_route_only_change_restarts_fanin_not_voice(tmp_path: Path):
     outputd_env = (
         "JASPER_OUTPUTD_BACKEND=alsa\n"
         "JASPER_OUTPUTD_SINK=single_alsa\n"
-        "JASPER_OUTPUTD_CONTENT_PCM=outputd_content_capture\n"
         "JASPER_OUTPUTD_DAC_PCM=outputd_dac\n"
         "JASPER_OUTPUTD_DUAL_DAC_A_PCM=''\n"
         "JASPER_OUTPUTD_DUAL_DAC_B_PCM=''\n"

@@ -298,14 +298,15 @@ ENV_CONTRACT_EXCEPTIONS: dict[str, str] = {
     # deploy/bin/jasper-outputd-failure-reconcile, not by the Rust daemon.
     "JASPER_OUTPUTD_CONFIG_RETRY_STATE": "outputd failure helper retry marker path; script-only",
     "JASPER_OUTPUTD_CONFIG_RETRY_WINDOW_SEC": "outputd failure helper retry marker window; script-only",
-    # The reconciler's INERT write of the retired content lane's capture PCM.
-    # outputd no longer reads it (ADR-0100 deleted the lane), and the write
-    # itself is still in deploy/bin/jasper-audio-hardware-reconcile plus the
-    # retired pairing default in jasper/audio_runtime_plan.py.
-    # REMOVAL CONDITION: goes with the reconciler sweep (S6 / the #3116 wave)
-    # that stops writing it — delete this entry then, and this guard fails
-    # until someone does.
-    "JASPER_OUTPUTD_CONTENT_PCM": "inert write, removed with the reconciler sweep — S6/#3116 wave",
+    # The retired content lane's capture PCM. outputd no longer reads it
+    # (ADR-0100 deleted the lane) and nothing writes it any more: the
+    # reconciler sweep removed the last writes. The ONE surviving mention is
+    # jasper/audio_runtime_plan.py's retired-route describer, which reads the
+    # key with a default so a box carrying a stale on-disk value still gets a
+    # truthful park report.
+    # REMOVAL CONDITION: goes when that describer goes — delete this entry
+    # then, and this guard fails until someone does.
+    "JASPER_OUTPUTD_CONTENT_PCM": "retired lane; read with a default by the park describer, written by nothing",
     # The removed transport_pipe coupling's outputd key. The Rust
     # local_content_pipe path was deleted with the coupling, so it is not
     # Rust-read anymore; it survives as the reconciler's legacy migration-sweep
