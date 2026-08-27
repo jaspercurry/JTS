@@ -66,11 +66,34 @@ _IOPLUG_C = _REPO / "c" / "jts-ring-ioplug" / "pcm_jts_ring.c"
 _IOPLUG_H = _REPO / "c" / "jts-ring-ioplug" / "jts_ring_shm.h"
 _RING_PLATFORM_SH = _REPO / "deploy" / "lib" / "install" / "ring-platform.sh"
 _OUTPUTD_CONFIG_RS = _REPO / "rust" / "jasper-outputd" / "src" / "config.rs"
+_OUTPUTD_DAC_CONTENT_RS = _REPO / "rust" / "jasper-outputd" / "src" / "dac_content.rs"
+_OUTPUTD_RING_SOURCE_RS = (
+    _REPO / "rust" / "jasper-outputd" / "src" / "shm_ring_source.rs"
+)
+
+#: The one rate this box runs. Neither the conf.d block nor the Python
+#: identity declares it — the ioplug inherits it and the Rust reader hardcodes
+#: it — so it is spelled here once and pinned against that reader below.
+_RING_RATE_HZ = 48_000
 
 
 def _read(path: Path) -> str:
     assert path.exists(), f"source not present: {path}"
     return path.read_text(encoding="utf-8")
+
+
+def _rust_production_half(path: Path) -> str:
+    """A Rust source with its ``#[cfg(test)]`` module cut off.
+
+    The pins below count their matches, and the crate's own tests construct
+    the same readers with throwaway geometries — an unscoped count would trip
+    on them, or worse, pass by matching a test literal. The split is on a
+    COLUMN-ZERO attribute: ``dac_content.rs`` also carries an indented
+    ``#[cfg(test)]`` on a field, well above the call this pins.
+    """
+    return re.split(
+        r"^#\[cfg\(test\)\]", _read(path), maxsplit=1, flags=re.MULTILINE
+    )[0]
 
 
 # --- T-1: the conf.d is a block the ioplug can parse ------------------------
@@ -326,6 +349,70 @@ def test_the_reader_side_rust_constants_agree_with_the_python_ones(
     )
 
 
+def test_the_rust_ring_arm_opens_the_wire_python_and_the_confd_declare():
+    """FORMAT and CHANNELS, pinned where the reader actually spells them.
+
+    ``config.rs`` declares the path and the depth as named constants, so the
+    parametrized pin above reaches them. The other two axes are not constants
+    at all: they are POSITIONAL literals in the one call that builds the
+    reader, which is why nothing above guards them. A drift is a geometry
+    mismatch ``RingReader::create_or_attach`` refuses — the leader parks
+    instead of playing, and neither language shows the disagreement alone.
+
+    The two spellings are compared NORMALIZED (underscores dropped, folded to
+    lower) rather than through a lookup table, so no edit keeps them in step
+    artificially — and unlike a title-case derivation it stays correct for the
+    crate's three-part ``S24_3Le``, which no rule of that shape reproduces.
+    """
+    calls = re.findall(
+        r"ShmRingSource::new\(\s*[^,]+,\s*[^,]+,\s*(\d+),\s*SampleFormat::(\w+)\s*,",
+        _rust_production_half(_OUTPUTD_DAC_CONTENT_RS),
+    )
+    assert len(calls) == 1, (
+        f"{_OUTPUTD_DAC_CONTENT_RS.name} must build the ring reader exactly "
+        f"once for this pin to guard it; found {len(calls)}. A second call "
+        "site of the same shape would leave this checking only the first."
+    )
+    channels, sample_format = calls[0]
+    assert int(channels) == DAC_CONTENT_RING_CHANNELS, (
+        f"the reader opens {channels} channels where the conf.d block and "
+        f"jasper.multiroom.dac_content_ring declare {DAC_CONTENT_RING_CHANNELS}"
+    )
+    assert sample_format.replace("_", "").lower() == (
+        DAC_CONTENT_RING_FORMAT.replace("_", "").lower()
+    ), (
+        f"the reader opens SampleFormat::{sample_format} where the conf.d "
+        f"block and jasper.multiroom.dac_content_ring declare "
+        f"{DAC_CONTENT_RING_FORMAT}"
+    )
+
+
+def test_the_ring_readers_rate_is_the_one_rate_this_box_runs():
+    """The RATE axis — the only one no declarer but the reader carries.
+
+    The conf.d block names no rate and the Python identity holds no constant
+    for it; the ioplug inherits it and this literal is where it enters the
+    ring's geometry. It is VALIDATED rather than negotiated: the geometry goes
+    field-by-field against the live header at attach, so a changed rate here
+    presents as a refused attach, not a resample. The depth claim this module
+    documents is computed from the same number.
+    """
+    rates = re.findall(
+        r"^\s*rate:\s*([\d_]+)\s*,",
+        _rust_production_half(_OUTPUTD_RING_SOURCE_RS),
+        re.MULTILINE,
+    )
+    assert len(rates) == 1, (
+        f"{_OUTPUTD_RING_SOURCE_RS.name} must build the geometry exactly once "
+        f"for this pin to guard it; found {len(rates)}. A second geometry at "
+        "another rate would leave this checking only the first."
+    )
+    assert int(rates[0].replace("_", "")) == _RING_RATE_HZ, (
+        f"the ring reader pins {rates[0]} Hz where this tree's depth and "
+        f"timing claims are computed at {_RING_RATE_HZ} Hz"
+    )
+
+
 def test_the_dac_content_ring_is_deeper_in_time_than_the_grouping_ring():
     """The depth claim the module's comment makes, checked rather than asserted.
 
@@ -343,10 +430,11 @@ def test_the_dac_content_ring_is_deeper_in_time_than_the_grouping_ring():
     dac_frames = DAC_CONTENT_RING_PERIOD_FRAMES * DAC_CONTENT_RING_SLOTS
     grouping_frames = GROUPING_RING_PERIOD_FRAMES * GROUPING_RING_SLOTS
     assert dac_frames > grouping_frames
-    # 48 kHz is the one rate this box runs (jasper-outputd's SAMPLE_RATE).
-    assert round(dac_frames / 48_000 * 1000) == 341, (
+    # The rate this depth is computed at is the one the reader pins, checked
+    # against the Rust literal by the rate test above.
+    assert round(dac_frames / _RING_RATE_HZ * 1000) == 341, (
         f"the module documents 341 ms of depth; the geometry now buys "
-        f"{dac_frames / 48_000 * 1000:.0f} ms"
+        f"{dac_frames / _RING_RATE_HZ * 1000:.0f} ms"
     )
 
 

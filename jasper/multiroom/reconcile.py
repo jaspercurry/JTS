@@ -49,7 +49,7 @@ from pathlib import Path
 
 from .. import atomic_io
 from .. import tts_routing as _tts_routing
-from ..fanin_coupling import RING_ACTIVE_PLAYBACK_DEVICE
+from ..fanin_coupling import OUTPUTD_ENV_BOOL_TRUE, RING_ACTIVE_PLAYBACK_DEVICE
 from ..log_event import log_event
 from ..ring_assets import RING_ACTIVE_CONTENT_FILE, ring_writer_lock_path
 from ..source_intent import (
@@ -58,6 +58,7 @@ from ..source_intent import (
 from ..source_intent import RECONCILE_UNIT as SOURCE_INTENT_RECONCILE_UNIT
 from . import config
 from .config import GroupingConfig
+from .dac_content_ring import DAC_CONTENT_LANE_ENV
 from .effective_role import (
     FOLLOWER_STATUS_FILE,
     grouping_request_fingerprint,
@@ -689,9 +690,15 @@ def dac_content_lane_armed(
 
     ONE derivation, and it is the WRITER'S OWN: it asks
     :func:`outputd_grouping_env` for the env it would write and reads the lane's
-    FIFO key out of it rather than restating the rule — a restatement drifts the
+    keys out of it rather than restating the rule — a restatement drifts the
     first time the writer gains an input, which has already happened once
     (``flat_output_allowed``, with the output runtime contract).
+
+    EITHER transport counts, for the same reason
+    :mod:`jasper.control.transport_park` names both: one lane, two spellings.
+    Reading only the FIFO key would answer "not armed" the moment the writer
+    moves to the ring marker, and this predicate's consumer would then arm
+    ``shm_ring`` under a lane that owns the DAC.
 
     Its consumer is the coupling support matrix
     (:func:`jasper.audio_runtime_plan.coupling_supported_for_route`), which
@@ -705,12 +712,13 @@ def dac_content_lane_armed(
     imported at module level BY ``multiroom.active_leader_config``), so
     importing this predicate there would invert that direction into a cycle.
     """
-    return bool(
-        outputd_grouping_env(
-            cfg,
-            active_endpoint=active_endpoint,
-            flat_output_allowed=flat_output_allowed,
-        )[OUTPUTD_DAC_CONTENT_FIFO_ENV]
+    env = outputd_grouping_env(
+        cfg,
+        active_endpoint=active_endpoint,
+        flat_output_allowed=flat_output_allowed,
+    )
+    return bool(env[OUTPUTD_DAC_CONTENT_FIFO_ENV]) or (
+        env.get(DAC_CONTENT_LANE_ENV, "").strip().lower() in OUTPUTD_ENV_BOOL_TRUE
     )
 
 
