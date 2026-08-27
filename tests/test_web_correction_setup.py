@@ -1717,9 +1717,9 @@ def test_recover_volume_routes_to_the_v2_plan(monkeypatch):
     class _V2Plan:
         needs_recovery = True
 
-        async def recover_unresolved(self, set_v, get_v):
-            await set_v(-15.0)
-            await get_v()
+        async def recover_unresolved(self, door):
+            await door.restore_household_level_db(-15.0)
+            await door.read_household_level_db()
             drained.append(True)
             return SessionVolumeRestoreResult.EXACT_RESTORED
 

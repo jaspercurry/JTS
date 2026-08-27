@@ -9142,12 +9142,16 @@ async def open_measurement_volume(
         raise CrossoverV2FlowError(
             "the session volume needs recovery; drain it before opening a session"
         )
+    from .session_volume_plan import FaderVolumeDoor
+
     volume_db = derive_session_volume_db(
         safety_profile,
         target_fingerprints,
         declared_sensitivities=declared_sensitivities,
     )
-    return await plan.open(volume_db, set_main_volume_db, get_main_volume_db)
+    return await plan.open(
+        volume_db, FaderVolumeDoor(set_main_volume_db, get_main_volume_db)
+    )
 
 
 async def abandon_measurement_volume(
@@ -9160,7 +9164,11 @@ async def abandon_measurement_volume(
     measurement volume. Delegates to the plan's ``abandon`` (the same
     fail-closed latch trio ``close`` uses).
     """
-    return await plan.abandon(set_main_volume_db, get_main_volume_db)
+    from .session_volume_plan import FaderVolumeDoor
+
+    return await plan.abandon(
+        FaderVolumeDoor(set_main_volume_db, get_main_volume_db)
+    )
 
 
 __all__ = [

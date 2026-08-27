@@ -8067,7 +8067,7 @@ def test_volume_hooks_release_pause_when_open_does_not_confirm(monkeypatch):
     v2host.reset_session_measurement_pause_for_tests()
 
     class _DrainedPlan:
-        async def open(self, vol, set_v, get_v):
+        async def open(self, vol, door):
             return "failed"
 
     v2host.set_volume_plan_for_tests(_DrainedPlan())
@@ -8092,11 +8092,14 @@ def test_reconcile_drains_residual_owned_active_before_new_session():
     """E1: a residual owned-active plan (a prior failed session's leftover) is
     drained before a fresh session, so plan.open() starts clean instead of
     raising SessionVolumePlanError into the silent 200→adapter_failed loop."""
-    from jasper.active_speaker.session_volume_plan import SessionVolumePlan
+    from jasper.active_speaker.session_volume_plan import (
+        FaderVolumeDoor,
+        SessionVolumePlan,
+    )
 
     plan = SessionVolumePlan()
     cam = _FakeVolCam(-15.0)
-    asyncio.run(plan.open(-20.0, cam.set, cam.get))
+    asyncio.run(plan.open(-20.0, FaderVolumeDoor(cam.set, cam.get)))
     assert plan.measurement_volume_db == -20.0
     assert not plan.needs_recovery  # owned-active this process, within ceiling
     v2host.set_volume_plan_for_tests(plan)
@@ -8111,12 +8114,15 @@ def test_reconcile_drains_residual_owned_active_before_new_session():
 def test_enforce_ceiling_drains_a_stale_active_and_is_cheap_otherwise():
     """E3: enforce_ceiling (previously zero callers) force-drains a session that
     outlived the wall-clock ceiling, and is a no-op on a healthy session."""
-    from jasper.active_speaker.session_volume_plan import SessionVolumePlan
+    from jasper.active_speaker.session_volume_plan import (
+        FaderVolumeDoor,
+        SessionVolumePlan,
+    )
 
     clock = [1000.0]
     plan = SessionVolumePlan(wall_clock_ceiling_s=10.0, clock=lambda: clock[0])
     cam = _FakeVolCam(-15.0)
-    asyncio.run(plan.open(-20.0, cam.set, cam.get))
+    asyncio.run(plan.open(-20.0, FaderVolumeDoor(cam.set, cam.get)))
     assert cam.vol == -20.0
     v2host.set_volume_plan_for_tests(plan)
 
@@ -8161,9 +8167,9 @@ def test_recover_session_volume_routes_to_the_plan():
     class _Plan:
         needs_recovery = True
 
-        async def recover_unresolved(self, set_v, get_v):
-            await set_v(-15.0)
-            await get_v()
+        async def recover_unresolved(self, door):
+            await door.restore_household_level_db(-15.0)
+            await door.read_household_level_db()
             drained.append(True)
             return SessionVolumeRestoreResult.EXACT_RESTORED
 
@@ -9955,6 +9961,7 @@ def _boosting_candidate(preset, *, boost_db: float):
 def _open_session_volume_plan(*, household_db: float, measurement_db: float = -20.0):
     """An OPEN plan holding ``measurement_db``, as a live session would."""
     from jasper.active_speaker.session_volume_plan import (
+        FaderVolumeDoor,
         SessionVolumeOpenResult,
         SessionVolumePlan,
     )
@@ -9963,7 +9970,7 @@ def _open_session_volume_plan(*, household_db: float, measurement_db: float = -2
     plan = SessionVolumePlan()
     cam = _FakeApplyAndVolumeCam()
     assert (
-        asyncio.run(plan.open(measurement_db, cam.set_volume_db, cam.get_volume_db))
+        asyncio.run(plan.open(measurement_db, FaderVolumeDoor(cam.set_volume_db, cam.get_volume_db)))
         is SessionVolumeOpenResult.OPENED
     )
     assert _FakeApplyAndVolumeCam.vol == measurement_db

@@ -58,7 +58,7 @@ import time
 from dataclasses import dataclass
 from enum import Enum
 from pathlib import Path
-from typing import Any, Iterable, Mapping
+from typing import Any, Iterable, Mapping, Protocol
 
 from jasper.atomic_io import atomic_write_text
 from jasper.control.measurement_hold import read_measurement_hold
@@ -664,13 +664,83 @@ def _load_state(path: Path | None) -> _State | None:
     )
 
 
+class VolumeDoor(Protocol):
+    """How this plan reaches the fader — the ONE injected door, three questions.
+
+    The plan owns no CamillaDSP and never will. What changed is the shape of
+    what it owns instead: a ``(set, get)`` pair let every caller decide for
+    itself what a write meant, and the two things this plan writes are not the
+    same thing. Opening ESTABLISHES a measurement level nothing may be admitted
+    against until it is confirmed; draining RESTORES the household level the
+    session snapshotted. Naming them apart is what lets one binding write
+    through a ranked claim and another write straight at the fader, without the
+    plan learning which it got.
+
+    **Both verbs answer the same question, and it is the fader's:** *is the
+    fader confirmed at this level?* Not *did a write go out*, and not *is some
+    intent recorded* — the exact→emergency ladder and its durable latch are
+    built on a real readback, and a door that answered anything softer would
+    let :meth:`SessionVolumePlan._drain_restore` clear a resolved marker over a
+    speaker still sitting at measurement level.
+    """
+
+    async def read_household_level_db(self) -> float | None:
+        """The level to come back to, or ``None`` when it cannot be read.
+
+        Taken once, at open, before the first mutation — the snapshot the whole
+        walked-away guarantee restores toward. ``None`` is an ordinary answer
+        (an unreadable fader at open), and the plan falls through to the
+        emergency floor rather than inventing a level.
+        """
+        raise NotImplementedError
+
+    async def establish_measurement_level_db(self, level_db: float) -> bool:
+        """Put the fader on the session's measurement level; confirmed?"""
+        raise NotImplementedError
+
+    async def restore_household_level_db(self, level_db: float) -> bool:
+        """Put the fader back on a household level; confirmed?"""
+        raise NotImplementedError
+
+
+@dataclass(frozen=True)
+class FaderVolumeDoor:
+    """The direct door: set-and-confirm straight at the fader.
+
+    Both verbs land on the same
+    :func:`~jasper.active_speaker.volume_latch.set_and_confirm_volume`, because
+    at this door they genuinely are one act — it is the CALLER's authority that
+    differs, not the write. Callers that arbitrate their fader through
+    :class:`~jasper.volume_owner.VolumeOwner` bind a door that does; callers in
+    a process with no owner to arbitrate through bind this one, and
+    :func:`~jasper.volume_owner.volume_owner` answering ``None`` there is a
+    fact about that process rather than a defect.
+    """
+
+    set_main_volume_db: SetMainVolumeDb
+    get_main_volume_db: GetMainVolumeDb
+
+    async def read_household_level_db(self) -> float | None:
+        return await self.get_main_volume_db()
+
+    async def establish_measurement_level_db(self, level_db: float) -> bool:
+        return await set_and_confirm_volume(
+            level_db, self.set_main_volume_db, self.get_main_volume_db
+        )
+
+    async def restore_household_level_db(self, level_db: float) -> bool:
+        return await set_and_confirm_volume(
+            level_db, self.set_main_volume_db, self.get_main_volume_db
+        )
+
+
 class SessionVolumePlan:
     """Owner of one session-scoped fixed measurement volume + its restore latch.
 
-    Owns no CamillaDSP: every method that mutates volume takes the set/get main
-    volume callables (mirroring ``CrossoverLevelLease``). The process-global
-    production instance injects a durable state path; test instances stay
-    in-memory unless they opt into one.
+    Owns no CamillaDSP: every method that mutates volume takes one
+    :class:`VolumeDoor` (mirroring ``CrossoverLevelLease``, which took the
+    callables raw). The process-global production instance injects a durable
+    state path; test instances stay in-memory unless they opt into one.
     """
 
     def __init__(
@@ -906,8 +976,7 @@ class SessionVolumePlan:
     async def open(
         self,
         measurement_volume_db: float,
-        set_main_volume_db: SetMainVolumeDb,
-        get_main_volume_db: GetMainVolumeDb,
+        door: VolumeDoor,
     ) -> SessionVolumeOpenResult:
         """Snapshot the household volume, then set the fixed measurement volume.
 
@@ -929,7 +998,7 @@ class SessionVolumePlan:
                 "opening a new measurement volume"
             )
         try:
-            observed = await get_main_volume_db()
+            observed = await door.read_household_level_db()
         except (OSError, RuntimeError, TimeoutError, ValueError):
             observed = None
         original = _finite_nonpositive(observed)
@@ -945,9 +1014,7 @@ class SessionVolumePlan:
         # Write BEFORE the first mutation.
         self._persist_state(state)
         self._state = state
-        if await set_and_confirm_volume(
-            volume, set_main_volume_db, get_main_volume_db
-        ):
+        if await door.establish_measurement_level_db(volume):
             self._opened_this_process = True
             log_event(
                 logger,
@@ -961,9 +1028,7 @@ class SessionVolumePlan:
             return SessionVolumeOpenResult.OPENED
         # Setter could not be confirmed: the live volume is unknown — drain it.
         drained = await self._drain_restore(
-            set_main_volume_db,
-            get_main_volume_db,
-            reason="measurement_volume_set_unconfirmed",
+            door, reason="measurement_volume_set_unconfirmed",
         )
         if drained is SessionVolumeRestoreResult.EMERGENCY_ATTENUATED:
             return SessionVolumeOpenResult.EMERGENCY_ATTENUATED
@@ -1055,8 +1120,7 @@ class SessionVolumePlan:
 
     async def _drain_restore(
         self,
-        set_main_volume_db: SetMainVolumeDb,
-        get_main_volume_db: GetMainVolumeDb,
+        door: VolumeDoor,
         *,
         reason: str,
     ) -> SessionVolumeRestoreResult:
@@ -1079,9 +1143,7 @@ class SessionVolumePlan:
                 candidates.append(("exact", original))
             candidates.append(("emergency", self._emergency_volume_db))
             for recovery, target in candidates:
-                if not await set_and_confirm_volume(
-                    target, set_main_volume_db, get_main_volume_db
-                ):
+                if not await door.restore_household_level_db(target):
                     continue
                 self._clear_resolved()
                 log_event(
@@ -1108,32 +1170,25 @@ class SessionVolumePlan:
 
     async def close(
         self,
-        set_main_volume_db: SetMainVolumeDb,
-        get_main_volume_db: GetMainVolumeDb,
+        door: VolumeDoor,
         *,
         reason: str = "session_closed",
     ) -> SessionVolumeRestoreResult:
         """Restore the household volume exactly once and resolve (idempotent)."""
-        return await self._drain_restore(
-            set_main_volume_db, get_main_volume_db, reason=reason
-        )
+        return await self._drain_restore(door, reason=reason)
 
     async def abandon(
         self,
-        set_main_volume_db: SetMainVolumeDb,
-        get_main_volume_db: GetMainVolumeDb,
+        door: VolumeDoor,
         *,
         reason: str = "session_abandoned",
     ) -> SessionVolumeRestoreResult:
         """Session-death observation hook (Wave 5 calls it) — drains restore-once."""
-        return await self._drain_restore(
-            set_main_volume_db, get_main_volume_db, reason=reason
-        )
+        return await self._drain_restore(door, reason=reason)
 
     async def enforce_ceiling(
         self,
-        set_main_volume_db: SetMainVolumeDb,
-        get_main_volume_db: GetMainVolumeDb,
+        door: VolumeDoor,
         now: float | None = None,
     ) -> SessionVolumeRestoreResult | None:
         """Force-drain an active session that has outlived the wall-clock ceiling.
@@ -1145,15 +1200,12 @@ class SessionVolumePlan:
         if not self.stale_active(now):
             return None
         return await self._drain_restore(
-            set_main_volume_db,
-            get_main_volume_db,
-            reason="wall_clock_ceiling_exceeded",
+            door, reason="wall_clock_ceiling_exceeded",
         )
 
     async def recover_unresolved(
         self,
-        set_main_volume_db: SetMainVolumeDb,
-        get_main_volume_db: GetMainVolumeDb,
+        door: VolumeDoor,
     ) -> SessionVolumeRestoreResult:
         """The volume_recovery path: drain a latched unresolved OR stale-active state.
 
@@ -1161,11 +1213,7 @@ class SessionVolumePlan:
         refuses ``active`` states), this drains a stale-active state too — the
         plan owns its stale-active handling via the timestamp.
         """
-        return await self._drain_restore(
-            set_main_volume_db,
-            get_main_volume_db,
-            reason="volume_recovery",
-        )
+        return await self._drain_restore(door, reason="volume_recovery")
 
 
 DEFAULT_SESSION_VOLUME_STATE_PATH = _DEFAULT_STATE_PATH
