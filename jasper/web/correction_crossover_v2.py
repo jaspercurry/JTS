@@ -5787,6 +5787,13 @@ def bind_v2_engine_seams(
     return EngineSeams(
         graph=session_graph,
         volume=PlanHeldVolumeClaim(plan, _get),
+        # F9, settled and deliberately un-bridged: ``bank`` returns a
+        # store-relative PATH while the shipped flow publishers write artifact
+        # FINGERPRINTS into ``refs``. The two never meet this wave — the only
+        # caller of ``bank`` is ``measure``, and ``measure`` has no production
+        # driver until W1-c lifts the walk, so this store is bound and never
+        # exercised. The question becomes live at W1-c, and a bridge chosen now
+        # would be chosen against no requirement.
         records=BankedRecordStore(
             evidence=evidence_store,
             relay_session_id=relay_session_id,
@@ -5802,9 +5809,13 @@ def bind_v2_engine_seams(
             compose=compose_stimulus or _compose_not_yet_mapped,
             session_volume_plan=plan,
         ),
-        recommend=BankedRoundRecommender(
+        # The bundle directory is read when the verb is ASKED, not when the
+        # seam is bound: a recommendation needs a bundle on disk, and binding
+        # does not. Reading it here would make every caller that binds seams
+        # supply a fully-formed store to get an object it may never call.
+        recommend=lambda record_ids: BankedRoundRecommender(
             evidence_store.bundle_dir, state_path=state_path,
-        ),
+        )(record_ids),
     )
 
 

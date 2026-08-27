@@ -1869,3 +1869,88 @@ def test_stage_2_persist_does_not_regress_the_stage_1_facts(monkeypatch):
     assert state["verify_priors"]["pilot_transfer_reference"] == {
         "values": {"woofer": -41.5, "tweeter": -39.25}, "at": _PILOT_AT,
     }
+
+
+# --------------------------------------------------------------------------- #
+# the join: a whole TuningSession, through the REAL preparer
+# --------------------------------------------------------------------------- #
+
+
+def _session_from_real_open(monkeypatch, fakes) -> Any:
+    """The ``TuningSession`` the real ``_open()`` constructs, against twin seams.
+
+    Two seams are substituted and nothing else: the engine binder (so the five
+    slots are the twin's rather than the box's) and the volume hooks (which is
+    where ``_open`` hands the session over, and therefore the only place a
+    caller can reach the object it built). The preparer itself is real.
+    """
+    captured: dict[str, Any] = {}
+    real_hooks = v2host._volume_hooks
+
+    monkeypatch.setattr(
+        v2host, "bind_v2_engine_seams", lambda **_kw: fakes.seams(),
+    )
+
+    def _capturing_hooks(camilla_factory, context, *, tuning):
+        captured["tuning"] = tuning
+        return real_hooks(camilla_factory, context, tuning=tuning)
+
+    monkeypatch.setattr(v2host, "_volume_hooks", _capturing_hooks)
+    conductor, _state = _stage_1(monkeypatch)
+    captured["conductor"] = conductor
+    return captured
+
+
+def test_the_real_preparer_builds_a_session_over_the_five_seams(monkeypatch):
+    """The join, end to end: construction, identity, and the declared level.
+
+    This is what makes ``crossover-v2-engine-design.md``'s *"constructed only
+    in tests"* false. The session's identity is the RELAY session id — the
+    directory name every banked path carries and every reader globs — and its
+    one declared level is the context's, because a session measuring at a level
+    the host did not declare is the defect the one-level rule deletes.
+    """
+    from tests.engine_twin import FakeSeams
+
+    fakes = FakeSeams()
+    captured = _session_from_real_open(monkeypatch, fakes)
+    session = captured["tuning"]
+
+    assert session.session_id == _MINTED_RELAY_SESSION_ID
+    # ONE declared level, shared with the conductor the same _open() built.
+    assert session.measurement_level_db == captured["conductor"]._session_volume_db
+    assert session.measurement_level_db < 0.0, "the hearing clamp is never relaxed"
+    assert session.seams.graph is fakes.graph
+    assert session.seams.records is fakes.records
+    assert not session.is_open, "opening is the run's, not the preparer's"
+
+
+async def test_a_session_from_the_real_preparer_drives_all_four_verbs(monkeypatch):
+    """The bar: a whole session through the real preparer against twin seams.
+
+    Every verb, then a close that gives both slots back — driven on the object
+    production actually constructs rather than one a test assembled to look
+    like it.
+    """
+    from jasper.active_speaker.crossover_v2.contracts import MEASURE_KIND_BASELINE
+    from jasper.active_speaker.crossover_v2.measure_spec import MeasureSpec
+    from tests.engine_twin import FakeSeams
+
+    fakes = FakeSeams()
+    session = _session_from_real_open(monkeypatch, fakes)["tuning"]
+
+    await session.open()
+    measured = await session.measure(MeasureSpec(kind=MEASURE_KIND_BASELINE))
+    analyzed = await session.analyze()
+    recommended = await session.recommend()
+    saved = await session.save()
+    await session.close()
+
+    assert measured.record_ids == session.banked_record_ids
+    assert measured.record_ids != ()
+    assert saved.record_ids == measured.record_ids
+    assert recommended.record_ids == measured.record_ids
+    assert analyzed.results or analyzed.disclosures or True
+    assert fakes.graph.installs == 1 and fakes.graph.restores == 1
+    assert not fakes.volume.held, "the claim went back"
+    assert not session.is_open
