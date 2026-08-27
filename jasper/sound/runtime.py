@@ -13,7 +13,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Callable
 
-from jasper.audio_runtime_plan import fanin_coupling_capture_kwargs
+from jasper.fanin_coupling import coupling_capture_kwargs_from_env
 from jasper.log_event import log_event
 from jasper.sound.profile import (
     PROFILE_PATH,
@@ -239,7 +239,7 @@ def _render_saved_dsp_on_carrier(
             out_path=out_path if write else None,
             profile_id=RECONCILE_PROFILE_ID,
             output_trim_db=trim_db,
-            fanin_coupling_capture_kwargs=fanin_coupling_capture_kwargs(coupling),
+            fanin_coupling_capture_kwargs=coupling_capture_kwargs_from_env(),
         )
     except CarrierCannotHostEq as exc:
         raise CarrierCannotHostEq(
@@ -339,11 +339,11 @@ async def load_profile_config(
         )
 
     # SHARED fan-in→Camilla coupling: resolve the capture/playback-device kwargs
-    # ONCE (explicit override from the coupling reconciler, else the live env).
-    # Default loopback -> {} -> byte-identical emit. Stereo carriers apply the
-    # shm-ring devices; active baselines keep their own topology-specific paths;
-    # grouped pipe sinks keep their own PLAYBACK (capture still follows).
-    coupling_capture_kwargs = fanin_coupling_capture_kwargs(coupling)
+    # ONCE. ONE transport (ADR-0100) — unconditionally the ring, never {}.
+    # Stereo carriers apply the shm-ring devices; active baselines keep their
+    # own topology-specific paths; grouped pipe sinks keep their own PLAYBACK
+    # (capture still follows).
+    coupling_capture_kwargs = coupling_capture_kwargs_from_env()
 
     async def _prepare_config() -> dict[str, Any]:
         current_path = await cam.get_config_file_path(best_effort=False)

@@ -419,14 +419,14 @@ Hardware tier (detected on this host): $(detect_hardware_tier)
    - jts_ring ALSA ioplug from c/jts-ring-ioplug with make plugin
      (needs libasound2-dev), installed to the arch ALSA plugin dir,
      sha256-compared like the Rust daemons. Installing it opens nothing by
-     itself, but on a box whose coupling is armed the ring carries the
-     audio. A build failure never fails the install. On a first-ever build
-     failure the .so is absent and the doctor 'ring platform' check warns
-     (fails if the ring is armed); on a REBUILD failure a prior good .so
-     stays installed and the deploy REVOKES the installer's provenance
-     record, so the doctor's 'ring ioplug provenance' check reports an
-     unvouched plugin — warn, or fail on a box whose wire needs a conf.d
-     field only a vouched plugin is known to parse.
+     itself, but the ring is this box's only transport (ADR-0100) and
+     carries all of its audio. A build failure never fails the install. On
+     a first-ever build failure the .so is absent and the doctor 'ring
+     platform' check fails; on a REBUILD failure a prior good .so stays
+     installed and the deploy REVOKES the installer's provenance record, so
+     the doctor's 'ring ioplug provenance' check reports an unvouched
+     plugin — warn, or fail on a box whose wire needs a conf.d field only a
+     vouched plugin is known to parse.
    - The shairport-sync/nqptp source builds and Rust daemon builds
      run RAM-bounded and cgroup-contained via
      deploy/lib/install/build-sandbox.sh, so an OOM kills only the build,
@@ -448,8 +448,7 @@ Hardware tier (detected on this host): $(detect_hardware_tier)
    - Install the jts_ring device definitions (the /etc/alsa/conf.d
      drop-ins for the coupling rings, the renderer-ingress lanes and the
      grouping ingress) and the /dev/shm/jts-ring directory lifecycle
-     (/etc/tmpfiles.d/jts-ring.conf). Placing them opens nothing; each
-     ring's arm decision belongs to its own reconciler.
+     (/etc/tmpfiles.d/jts-ring.conf). Placing them opens nothing.
    - Write output hardware state before Camilla statefile seed.
    - Render outputd flat startup config with active DAC latency floor.
    - Re-assert ownership and modes on the /var/lib/jasper-intsecrets
@@ -580,11 +579,11 @@ Hardware tier (detected on this host): $(detect_hardware_tier)
    - jts_ring ALSA ioplug from c/jts-ring-ioplug with make plugin
      (needs libasound2-dev), installed to the arch ALSA plugin dir,
      sha256-compared like the Rust daemons. Installing it opens nothing by
-     itself, but on a box whose coupling is armed the ring carries the
-     audio. A build failure never fails the install: a first-ever failure
-     leaves the .so absent (doctor warns, or fails if the ring is armed); a
-     REBUILD failure leaves the prior .so installed and REVOKES the
-     installer's provenance record, so the doctor's 'ring ioplug
+     itself, but the ring is this box's only transport (ADR-0100) and
+     carries all of its audio. A build failure never fails the install: a
+     first-ever failure leaves the .so absent (doctor 'ring platform' check
+     fails); a REBUILD failure leaves the prior .so installed and REVOKES
+     the installer's provenance record, so the doctor's 'ring ioplug
      provenance' check reports an unvouched plugin — warn, or fail on a box
      whose wire needs a conf.d field only a vouched plugin is known to
      parse.
@@ -616,8 +615,7 @@ Hardware tier (detected on this host): $(detect_hardware_tier)
      grouping ingress — each names itself in the transcript as it is
      placed) and the /dev/shm/jts-ring directory lifecycle
      (/etc/tmpfiles.d/jts-ring.conf, applied immediately). Placing them
-     opens nothing; each ring's arm decision belongs to its own
-     reconciler.
+     opens nothing.
    - Write output hardware state before Camilla statefile seed.
    - Render outputd flat startup config with active DAC latency floor.
 
@@ -684,20 +682,6 @@ Hardware tier (detected on this host): $(detect_hardware_tier)
      dnsmasq service). USB audio stays off by default. Skips cleanly
      pre-reboot when no UDC exists yet. Kill switch:
      JASPER_USB_NETWORK=disabled.
-   - Release the outputd snd-aloop content lane before outputd restarts,
-     but ONLY when this build changes the width outputd REQUESTS on that
-     lane: it compares JASPER_OUTPUTD_CONTENT_FORMAT in the current
-     /var/lib/jasper/outputd.env (absent/empty == outputd's own S16_LE
-     default) against the width the coupling is about to emit. snd-aloop
-     param-locks a pair to its first opener, so a still-running old
-     CamillaDSP would fail the new outputd's open and walk it into
-     StartLimitAction=reboot mid-install. Both sides are reconciler-owned
-     env, deliberately NOT a CamillaDSP config read: the flat cutover config
-     is re-rendered earlier in this same run, so a config read here can
-     already show the new width while the running CamillaDSP still holds the
-     old lock. Stops jasper-camilla early and starts it back at its normal
-     late position. No width change (every ordinary deploy) means no extra
-     stop.
    - Require jasper-outputd to be active and answering STATUS before
      voice starts against the final-output path.
    - Seed or validate the outputd Camilla statefile while preserving

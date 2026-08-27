@@ -6,7 +6,7 @@
 //!
 //! # What this is
 //!
-//! The Ring B prototype replaces the outputd *content* snd-aloop hop
+//! Ring B replaces the outputd *content* snd-aloop hop
 //! (CamillaDSP playback -> outputd content) — a free-running ~1536-frame
 //! (~32 ms) loopback buffer — with a bounded N-slot ping-pong ring in shared
 //! memory. CamillaDSP writes into the ring through a custom ALSA ioplug

@@ -193,9 +193,10 @@ def main(argv: list[str] | None = None) -> int:
     # neither of which pre-sources those files — sees the persisted
     # chunksize / target-level keys the emit consults from the live env. The
     # coupling TOKEN itself does not depend on this hydration:
-    # fanin_coupling_capture_kwargs(None) reads it file-fresh from fanin.env
-    # (read_persisted_coupling), so even an un-hydrated CLI run resolves the right
-    # coupling. setdefault semantics keep an explicit shell override winning.
+    # coupling_capture_kwargs_from_env() is unconditional (ONE transport,
+    # ADR-0100) and consults no env at all, so even an un-hydrated CLI run
+    # resolves the same ring kwargs. setdefault semantics keep an explicit
+    # shell override winning.
     from jasper.env_load import load_env_files
 
     load_env_files()

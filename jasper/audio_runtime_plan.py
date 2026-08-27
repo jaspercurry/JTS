@@ -55,7 +55,6 @@ from jasper.fanin_coupling import (
     RING_CAMILLA_TARGET_LEVEL,
     VALID_COUPLINGS,
     capture_half,
-    coupling_capture_kwargs_from_env,
     coupling_value_removed,
     member_kwargs_are_pipe_sink,
     resolve_coupling,
@@ -2212,24 +2211,6 @@ def outputd_latency_floor_actions(
         else:
             actions.append(RuntimeEnvAction("unset", key))
     return tuple(actions)
-
-
-def fanin_coupling_capture_kwargs(
-    coupling: str | None = None,
-    *,
-    env: Mapping[str, str] | None = None,
-) -> EmitSoundConfigKwargs:
-    """Return CamillaDSP capture kwargs for the shared fan-in coupling.
-
-    The typed ``EmitSoundConfigKwargs`` door onto
-    :func:`coupling_capture_kwargs_from_env` for the sound/correction emit
-    callers. ONE transport (ADR-0100), so neither parameter selects anything:
-    the emit callers still thread a coupling token and the tests still pin an
-    env, and both are inert here.
-    """
-
-    del coupling, env
-    return cast(EmitSoundConfigKwargs, coupling_capture_kwargs_from_env())
 
 
 def apply_capture_precedence(

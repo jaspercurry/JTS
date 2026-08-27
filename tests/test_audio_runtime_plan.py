@@ -43,7 +43,6 @@ from jasper.audio_runtime_plan import (
     correction_latency_eligibility,
     correction_latency_eligibility_for_config,
     fanin_coupling_action,
-    fanin_coupling_capture_kwargs,
     outputd_dac_buffer_pair_error,
     outputd_env_buffer_pair_error,
     outputd_latency_floor_actions,
@@ -68,6 +67,7 @@ from jasper.fanin_coupling import (
     RING_CAMILLA_QUEUELIMIT,
     RING_CAMILLA_TARGET_LEVEL,
     VALID_COUPLINGS,
+    coupling_capture_kwargs_from_env,
 )
 
 
@@ -836,7 +836,7 @@ def test_bitperfect_route_is_declared_but_inactive_and_aec_degraded():
     assert "inactive" in profile.blocking_reason
 
 
-def test_fanin_coupling_capture_kwargs_are_the_ring_whatever_the_env_says(
+def test_coupling_capture_kwargs_from_env_are_the_ring_whatever_the_env_says(
     monkeypatch,
 ):
     # ADR-0100: the ring is the only transport, so no env value and no persisted
@@ -849,17 +849,17 @@ def test_fanin_coupling_capture_kwargs_are_the_ring_whatever_the_env_says(
     monkeypatch.setenv("JASPER_FANIN_CAMILLA_COUPLING", "loopback")
 
     for kwargs in (
-        fanin_coupling_capture_kwargs(None),
-        fanin_coupling_capture_kwargs(None, env={}),
-        fanin_coupling_capture_kwargs("loopback"),
-        fanin_coupling_capture_kwargs(COUPLING_SHM_RING),
+        coupling_capture_kwargs_from_env(),
+        coupling_capture_kwargs_from_env(None),
+        coupling_capture_kwargs_from_env({}),
+        coupling_capture_kwargs_from_env({COUPLING_ENV_VAR: COUPLING_SHM_RING}),
     ):
         assert kwargs["capture_device"] == "jts_ring_capture"
 
 
 def test_capture_precedence_applies_shm_ring_when_no_stronger_topology():
     base = {"enable_rate_adjust": True, "playback_pipe_path": None}
-    coupling = fanin_coupling_capture_kwargs("shm_ring")
+    coupling = coupling_capture_kwargs_from_env()
 
     merged = apply_capture_precedence(
         base,
@@ -916,7 +916,7 @@ def test_capture_half_is_one_owner_shared_by_both_sink_owning_callers():
     """
     from jasper.fanin_coupling import CAPTURE_HALF_KEYS, capture_half
 
-    full = fanin_coupling_capture_kwargs("shm_ring")
+    full = coupling_capture_kwargs_from_env()
     assert set(CAPTURE_HALF_KEYS) == {"capture_device", "capture_format"}
     assert set(capture_half(full)) == set(CAPTURE_HALF_KEYS)
     # No coercion: the resolver's values cross unchanged, so a future type change

@@ -13,8 +13,9 @@ writer of the keys they read. The dependency is one-way: this module imports
 nothing from that one.
 
 The ``*_ready`` / ``*_proof`` / ``*_converged`` gates answer ``(ok, detail)``
-and fail CLOSED, so a box whose ring cannot be proved keeps loopback; each
-gate's own docstring owns why.
+and fail CLOSED, so a box whose ring cannot be proved parks at exit 78
+(ADR-0100 config park, never a fallback); each gate's own docstring owns
+why.
 """
 
 from __future__ import annotations
