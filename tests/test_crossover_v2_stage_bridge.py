@@ -4,14 +4,13 @@
 
 """What crosses — and what is lost at — the crossover-v2 stage-1 → stage-2 bridge.
 
-The v2 commission runs as TWO relay sessions. Stage 1
-(:func:`~jasper.web.correction_crossover_v2.prepare_v2_session`) measures and
-stops; the household applies; stage 2
-(:func:`~jasper.web.correction_crossover_v2.prepare_v2_verify`) opens a BRAND-NEW
-relay session with a BRAND-NEW conductor. Nothing is handed between them in
-memory: the only channel is the durable state file
+The v2 commission runs as TWO relay sessions, from one preparer
+(:func:`~jasper.web.correction_crossover_v2.prepare_v2_session`) under its two
+``verify_only`` settings. Stage 1 measures and stops; the household applies;
+stage 2 opens a BRAND-NEW relay session with a BRAND-NEW conductor. Nothing is
+handed between them in memory: the only channel is the durable state file
 :func:`~jasper.web.correction_crossover_v2.persist_conductor_state` writes and
-``prepare_v2_verify`` reads back.
+the verify-only prepare reads back.
 
 So the bridge is a contract, and this module pins it by driving the REAL
 production preparers rather than restating the source.
@@ -146,7 +145,7 @@ def _delta_probe_given_a_tracking_curve(conductor: Any, tracked: Any) -> Any:
     ``_run_delta_probe`` needs three inputs: a VERIFY tracking curve and the
     band that capture's own gate trusts (both produced by a post-apply capture)
     and the commanded delta (the stage-1 fact this module is about). A
-    conductor fresh out of ``prepare_v2_verify`` has none of them, so asserting
+    conductor fresh out of the verify-only prepare has none of them, so asserting
     "the probe is unavailable" on it would pass for the wrong reason and keep
     passing even if the bridge started carrying the commanded delta. Installing
     the two capture-side inputs isolates the one input the bridge is
@@ -682,7 +681,7 @@ def test_persisted_verify_priors_carries_exactly_the_fourteen_bridge_keys(monkey
 def test_the_simple_verify_priors_reach_the_stage_2_conductor(monkeypatch):
     """The read side: each persisted prior lands on the fresh conductor.
 
-    Driven through the real ``prepare_v2_verify`` against a seeded applied
+    Driven through the real verify-only prepare against a seeded applied
     state, so this is the actual rehydration path, values and all — not a
     restatement of the ctor argument list. Note the ONE name change across the
     boundary: ``pilot_transfer_reference`` is written by the session that owned
@@ -696,7 +695,7 @@ def test_the_simple_verify_priors_reach_the_stage_2_conductor(monkeypatch):
     ``test_the_baseline_crosses_the_bridge_with_its_values_intact``) beside the
     rest of that field's contract — section 3 here is the rollback seam — and
     ``proposal_fingerprint`` (#2392) is read back through the real
-    ``prepare_v2_verify`` in
+    verify-only prepare in
     ``tests/test_crossover_v2_round_wiring.py::test_the_receipt_names_the_proposal_that_was_made``,
     where the receipt it feeds can be asserted in the same breath. A number in
     a test name that no assertion owns is a comment that rots.
@@ -1848,7 +1847,7 @@ def test_the_commanded_delta_is_block_averaged_in_db_not_in_power():
 def test_stage_2_persist_does_not_regress_the_stage_1_facts(monkeypatch):
     """Opening stage 2 rebinds the session id and keeps what stage 1 earned.
 
-    The first thing ``prepare_v2_verify``'s ``_open`` does after building its
+    The first thing the verify-only prepare's ``_open`` does after building its
     conductor is persist it, under the relay session id THIS stage just minted.
     Everything the measuring session banked has to survive that rebind, or the
     household loses it on the very first post-apply screen.

@@ -1312,7 +1312,7 @@ def test_end_to_end_wired_session_through_the_real_host_consume_path(
     """The #2701 wired-readiness pin, extended to a full fake-ALSA session.
 
     A REAL ``CrossoverV2Session`` in the recovery re-verify shape (the
-    1-entry map ``prepare_v2_verify`` builds) is driven by the wired runner
+    1-entry map the verify-only prepare builds) is driven by the wired runner
     over a fake ALSA device. The analyze seam is the REAL
     ``bind_production_analyze`` — it decodes the provider's own 32-bit
     48 kHz WAV with the production decoder (proving the format path), threads

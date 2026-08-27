@@ -95,7 +95,7 @@ well; four things moved.
 Everything else in §6's web-file table reproduced within a line or two.
 
 **One structural fact neither §5 nor §6 carries, and it changes the blast
-radius:** the production caller surface is **39 names across 8 modules**, not
+radius:** the production caller surface is **38 names across 8 modules**, not
 the handful the dispatch chain suggests. Three of the eight are outside the
 `/correction` web tier entirely — `correction_crossover_v2_republish.py`
 (which reaches **four private names**), `jasper/cli/doctor/correction.py`, and
@@ -146,7 +146,7 @@ unlike its twin.
 | **R** | 1793–1993 | 201 | Status projection, part 2: `CHART_CURVE_MAX_JSON_POINTS = 256`, `_decimate_curve_for_chart`, `_chart_cloud_status`, `_prediction_status`. | in-file (row S) | **LIFTS WHOLE**, same module as Q. |
 | **S** | 1994–2165 | 172 | `crossover_v2_status_block()` — **the file's one read entry point**, and `_household_findings_status`. Embedded as `payload["crossover_v2"]` at `backend:2097-2104`; that is what feeds the human's `/correction/crossover` page. | **backend `:2097`; doctor `:596`, `:717`** | **LIFTS WHOLE.** Deletion-order step 2 — the earliest large win, nothing depends on it landing first. |
 | **T** | 2166–2545 | 380 | Post-apply grading: the grade/scope/spatial vocabularies (`GRADE_*`, 13 constants), `_spatial_grade`, `_post_apply_grade` (296 L) — *"was the correction now ON the speaker ever checked after it landed?"* | in-file (row S); **`jasper/cli/doctor/correction.py:703-713` imports all nine `GRADE_*`** | **→§2** (the analyze registry). It is an analysis, and it is the largest single analysis in the file. |
-| **U** | 2546–2582 | 37 | **The fifth barrel.** 16 names re-bound off `durable_state` under historical names (`:2559-2578`), because *"`prepare_v2_verify` reaches them as module globals and the stage-bridge suite names them off this module"* (`:2557-2558`). **Five have zero in-file uses**, and **two of those five have no consumer anywhere** — see below. | in-file (11 of 16); **republish `:182` reaches `_candidate_summary`**; tests | **SUPERSEDED** → `crossover_v2/durable_state.py` (1,869 L). Two lines deletable **today**; the rest the moment W5-a converges the preparers and the tests are repointed. Not in §6's table. |
+| **U** | 2546–2582 | 37 | **The fifth barrel.** 16 names re-bound off `durable_state` under historical names (`:2559-2578`), because *"`prepare_v2_session`'s verify-only stage reaches them as module globals and the stage-bridge suite names them off this module"* (`:2557-2558`). **Five have zero in-file uses**, and **two of those five have no consumer anywhere** — see below. | in-file (11 of 16); **republish `:182` reaches `_candidate_summary`**; tests | **SUPERSEDED** → `crossover_v2/durable_state.py` (1,869 L). Two lines deletable **today**. **This row's stated unblock condition did NOT come true.** It read *"the rest the moment W5-a converges the preparers and the tests are repointed"*; W5-a landed (#3166) and the tests are repointed, and the converged preparer **still reaches 8 of the 16** as module globals. The reach was never the duplication — each stage used them itself, so folding the two changed nothing about it. The real condition is a preparer that imports from `durable_state` directly. Not in §6's table. |
 | **V** | 2583–2806 | 224 | Staged-prescription / angle-walk intake: `_take_staged_prescription`, `_take_staged_angle_walk`, `_fc_hz_label`. | in-file (rows AM, AN) | **→W3-b** (recommender binding). |
 | **W** | 2807–2929 | 123 | Conductor persistence, write side: `persist_conductor_state`, `_persist_terminal_failure`. | in-file (rows AM, AN); **relay `:589`, `:875`, `:954`, `:994`, `:1005`; wired `:611`, `:862`, `:883`, `:888`** | **→W1-a**. This is what `TuningSession.save()` replaces. |
 | **X** | 2930–3035 | 106 | Calibration resolution: `_wav_bytes_to_samples`, `resolve_relay_calibration`, `default_setup_calibration_for_v2`, `_setup_calibration_observation`. | in-file (row Y); named in `setup` prose `:2352`, `:3762`, `:3921` | **→W2-b** |
@@ -165,7 +165,7 @@ unlike its twin.
 | **AK** | 5674–5784 | 111 | `bind_v2_stage_seams` — builds one stage's `V2FlowSeams` and journals what it opened with. **The convergence point**: rows J, Y, AA, AB, AQ all arrive here. | in-file (rows AM, AN) | **→W5-b** — `EngineSeams` replaces `V2FlowSeams`. This is the file's single most consequential line-range for the cutover. |
 | **AL** | 5785–5942 | 158 | Capture-source resolution and run building: `_resolve_prepare_capture_source`, `_hand_released_plan_shape`, `_mint_source_session`, `_build_source_run`. | in-file (rows AM, AN) | **→W5-a** — shared tail of both preparers; converges with them. |
 | **AM** | 5943–6518 | 576 | `prepare_v2_session` (534 L) + the three `VERIFY_STAGE_*` constants + `_verify_plan_shape`. Stage-1 preparer: gate, build the conductor, hand the walk to the capture source. Holds the conductor in a bare `holder: dict[str, Any]` at `:6258`, filled `:6432`, drained by `_run` at `:6448`. | **setup `:6341`** | **→W5-a**, then W5-b. |
-| **AN** | 6519–6903 | 385 | `prepare_v2_verify` (382 L) — the near-duplicate twin. Same `_open`/`_run`/`holder` shape (`:6711`, `:6856`, `:6872`), same `bind_v2_stage_seams` call shape, same `_build_source_run` tail. | **setup `:6341`**; `VERIFY_STAGE_*` also by **`scripts/run-crossover-round.py:188`, the file's one top-level production import** | **→W5-a.** Rows AL+AM+AN = **1,119 lines**, the biggest de-duplication win in either god file. |
+| **AN** | 6519–6903 | 385 | The verify-only preparer (382 L) — the near-duplicate twin. Same `_open`/`_run`/`holder` shape (`:6711`, `:6856`, `:6872`), same `bind_v2_stage_seams` call shape, same `_build_source_run` tail. | **setup `:6341`**; `VERIFY_STAGE_*` also by **`scripts/run-crossover-round.py:188`, the file's one top-level production import** | **W5-a LANDED (#3166).** This range no longer exists: the twin folded into row AM's preparer under a `verify_only` flag, and `bind_v2_stage_seams` is now ONE call for both stages. Rows AL+AM+AN were **1,119 lines** and the fold returned **−94 of code**, not the whole 385 — the two bodies shared a ~95-line scaffold and little else; the rest was per-stage prose and per-stage ctor kwargs, which do not fold. Read that number before sizing any sibling row's de-duplication win. Row AM is now the whole preparer, and carries on to W5-b. |
 | **AO** | 6904–6960 | 57 | Apply banner + `_assert_stage_2_can_open` — refuse an apply this speaker could not then verify (D3). | in-file (row AP) | **KEEP** |
 | **AP** | 6961–7361 | 401 | `handle_v2_apply` — the apply transaction. | **setup `:6390`** | **KEEP.** This is §6's *"NO ENGINE HOME"* ruling resolved in this file's favour: the apply transaction is *"not a target. Ever."*, and its two options were a publish/commit organ **or a thin surviving host module**. This file is that host. |
 | **AQ** | 7362–7462 | 101 | `bind_delta_probe_rollback` — the conductor's `rollback` seam; calls `handle_v2_restore` at `:7428`. | in-file (row AK) | **KEEP** — it is the apply transaction's inverse and reaches into row AT. |
@@ -176,7 +176,7 @@ unlike its twin.
 
 ### The whole production caller surface, in one place
 
-**39 names across 8 modules.** Enumerated by matching import *statements* — not
+**38 names across 8 modules.** Enumerated by matching import *statements* — not
 by grepping an alias prefix, which misses the four modules that bind the host
 to a local name (`_host`) or take it as a parameter:
 
@@ -193,7 +193,7 @@ and over-counts. It returns **20** import sites.)*
 | Caller | Import site | Name(s) reached | Use sites |
 |---|---|---|---|
 | `correction_setup.py` | 1010 | `CrossoverV2LocalSeamError`, `classify_program_failure` | 1029, 1031 |
-| | 6419 (`v2host`) | `prepare_v2_session`, `prepare_v2_verify`, `SOURCE_WIRED`, `handle_v2_apply`, `handle_v2_restore` | 6341, 6356, 6390, 6421 |
+| | 6419 (`v2host`) | `prepare_v2_session`, `SOURCE_WIRED`, `handle_v2_apply`, `handle_v2_restore` | 6341, 6356, 6390, 6421 |
 | | 7394 | `refusal_next_action` | 7399 |
 | | 7536 | `CrossoverV2Refused` | 7539 |
 | | 7646 | `v2_volume_recovery_active`, `recover_session_volume` | 7648–7649 |
@@ -384,11 +384,11 @@ the interface half. The safety-critical half is row AH.
 
 ### 3.5 The barrels are load-bearing for the *tests*, not for production
 
-Row U's own comment (`:2557-2558`) says the barrel exists because
-`prepare_v2_verify` reaches those names as module globals **and the stage-bridge
-suite names them off this module**. Five of the sixteen have no in-file consumer
-at all — but "no in-file consumer" is not "no consumer", and the difference
-matters per line:
+Row U's own comment (`:2557-2558`) says the barrel exists because the
+preparer's verify-only stage reaches those names as module globals **and the
+stage-bridge suite names them off this module**. Five of the sixteen have no
+in-file consumer at all — but "no in-file consumer" is not "no consumer", and
+the difference matters per line:
 
 | Barrel line | Name | Who reaches it *through this module* |
 |---|---|---|

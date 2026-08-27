@@ -386,7 +386,7 @@ def _walk_to_verify(conductor, *, persist: bool = False) -> int:
 
 
 def _stage2_conductor_kwargs() -> dict:
-    """What ``prepare_v2_verify`` builds for a post-apply session: applied,
+    """What the verify-only prepare builds for a post-apply session: applied,
     CHECK/MEASURE already accepted, and stage 2's own index->phase map."""
     from jasper.active_speaker.crossover_v2_flow import (
         build_v2_verify_index_phase_map,
@@ -1577,10 +1577,11 @@ def test_the_review_hold_machinery_is_retained_but_no_longer_on_the_path():
 
     **A discrepancy with the work order, recorded here rather than papered
     over.** D10 says the 1-entry recovery re-verify and the ``apply_failed``
-    refusal "still reach them". Neither does: ``prepare_v2_verify`` constructs
-    its conductor with ``applied=True``, so ``_apply_observed`` short-circuits
-    before the deferral AND before the ``apply_failed`` check, which live in
-    the same branch. The machinery is genuinely unreached in production now.
+    refusal "still reach them". Neither does: the verify-only prepare
+    constructs its conductor with ``applied=True``, so ``_apply_observed``
+    short-circuits before the deferral AND before the ``apply_failed`` check,
+    which live in the same branch. The machinery is genuinely unreached in
+    production now.
     """
     from jasper.active_speaker.crossover_v2_flow import (
         VERIFY_ANCHOR_HOLD_MESSAGE,
@@ -2692,7 +2693,7 @@ def test_verify_rearm_preserves_candidate_identity_and_cloud_block(monkeypatch):
     """A new VERIFY relay keeps the applied candidate and its cloud evidence.
 
     B1 (blocker, 2026-07-26 review): a verify-only re-arm's conductor
-    (``prepare_v2_verify``'s ``index_phase_map={1: PHASE_VERIFY}``) has no
+    (the re-arm's ``index_phase_map={1: PHASE_VERIFY}``) has no
     group phase in ITS OWN session, so ``_cloud_summary`` honestly returns
     ``None`` for it — but the OLD session-id-gated carry-forward turned that
     ``None`` into a destructive overwrite of a real prior cloud verdict.
@@ -2704,7 +2705,7 @@ def test_verify_rearm_preserves_candidate_identity_and_cloud_block(monkeypatch):
     Walks: a completed cloud session (durable state seeded, mirroring what
     ``persist_conductor_state`` would have written) -> the REAL re-arm
     conductor + the REAL ``persist_conductor_state`` call (the exact
-    production seam ``prepare_v2_verify``'s ``_open`` uses, mirroring
+    production seam the verify-only prepare's ``_open`` uses, mirroring
     ``test_second_apply_pre_apply_profile_survives_the_deferred_verify_rearm``'s
     own pattern for ``pre_apply_profile``) -> asserts all three surfaces
     (`/state`, the envelope, the doctor) still see the cloud verdict. The
@@ -2742,7 +2743,7 @@ def test_verify_rearm_preserves_candidate_identity_and_cloud_block(monkeypatch):
         },
     })
 
-    # The real production seam: prepare_v2_verify's _open mints a fresh
+    # The real production seam: the verify-only prepare's _open mints a
     # conductor bound to a NEW relay session id and immediately persists it
     # ("Keep the durable candidate/applied facts; rebind the session id.").
     conductor = CrossoverV2Session(
@@ -2959,10 +2960,11 @@ def test_a_persisted_state_write_drops_the_retired_fc_selection():
 def test_stage_2_keeps_the_measuring_sessions_banked_finding(monkeypatch):
     """CC1: the DONE screen is in a different session from the one that banked.
 
-    ``prepare_v2_verify`` opens a NEW relay session AND a NEW evidence bundle,
-    so "read this session's bundle" cannot reach the finding the MEASURING
-    session banked — the household would be told the speaker is tuned with the
-    disclosure silently dropped somewhere between deciding and being told.
+    The verify-only prepare opens a NEW relay session AND a NEW evidence
+    bundle, so "read this session's bundle" cannot reach the finding the
+    MEASURING session banked — the household would be told the speaker is tuned
+    with the disclosure silently dropped somewhere between deciding and being
+    told.
     The projection therefore carries forward on its own predicate: a session
     that never runs MEASURE never had the chance to bank one, so its silence is
     a timestamp rather than a verdict.
@@ -4249,7 +4251,7 @@ def test_verify_rearm_persists_a_dated_pilot_transfer_reference():
 
 
 def _rearm_conductor_for_persist(session_id: str, index_phase_map: dict, **kwargs):
-    """A conductor of ``prepare_v2_verify``'s shape, seams stubbed — the same
+    """A conductor of the verify-only prepare's shape, seams stubbed — the same
     construction ``test_verify_rearm_does_not_blank_the_persisted_cloud_block``
     uses to exercise the REAL ``persist_conductor_state``."""
     return CrossoverV2Session(
@@ -4300,7 +4302,7 @@ def test_verify_rearm_keeps_the_prior_level_reference_across_its_own_writes():
 
 def test_seeding_a_rearm_from_durable_state_never_seeds_the_comparator():
     """The SEEDING path end to end, minus the relay: durable state carrying a
-    previous session's reference → the value ``prepare_v2_verify`` passes as
+    previous session's reference → the value the verify-only prepare passes as
     ``verify_pilot_transfer_prior`` → a fresh conductor. The comparator stays
     empty; only the history arrives (#1927)."""
     v2host.save_v2_state({
@@ -11372,9 +11374,9 @@ def test_second_apply_pre_apply_profile_survives_the_deferred_verify_rearm(
     in ``handle_v2_apply``/``observe_apply_success`` (both prove correct
     here); it was that ``persist_conductor_state`` built a fresh state dict
     that never carried ``pre_apply_profile`` forward, so the deferred VERIFY
-    that auto-arms after every apply (``prepare_v2_verify`` mints a NEW relay
-    session id and immediately calls ``persist_conductor_state`` to "rebind"
-    it — see its own call site) wiped the just-stashed pointer before a
+    that auto-arms after every apply (the verify-only prepare mints a NEW
+    relay session id and immediately calls ``persist_conductor_state`` to
+    "rebind" it — see its own call site) wiped the just-stashed pointer before a
     household could ever reach the verify_fail Undo screen. This test
     reproduces that exact rebind call (a real ``CrossoverV2Session``, not a
     mock) between each apply and the next, and pins that the stash survives
@@ -11392,7 +11394,7 @@ def test_second_apply_pre_apply_profile_survives_the_deferred_verify_rearm(
     state_path = tmp_path / "baseline_profile.json"
 
     def _simulate_deferred_verify_rearm(*, verify_session_id: str) -> None:
-        """Exactly what ``prepare_v2_verify``'s ``_open`` does: mint a fresh
+        """Exactly what the verify-only prepare's ``_open`` does: mint a fresh
         conductor bound to a NEW relay session id, applied=True, and
         immediately persist it ("Keep the durable candidate/applied facts;
         rebind the session id.") — the real production seam this regression
@@ -11643,8 +11645,8 @@ def test_restore_refuses_when_run8_apply_was_the_speakers_first_ever(
 # These tests drive the REAL fix end to end, through the real seams, with
 # NO hand-seeded preview file anywhere: v2 session start
 # (``v2host.ensure_crossover_preview_ready`` — the seam both
-# ``resolve_conductor_context`` callers, ``prepare_v2_session`` and
-# ``prepare_v2_verify``, share) generates the preview from the current
+# ``resolve_conductor_context`` callers — both stages of
+# ``prepare_v2_session`` — share) generates the preview from the current
 # design draft when absent, reusing ``/sound/``'s own generator
 # (``jasper.active_speaker.web_commissioning.regenerate_crossover_preview_from_current_draft``
 # -> ``crossover_preview.save_crossover_preview``).
@@ -12218,10 +12220,10 @@ def _apply_prior_then_v2_candidate(monkeypatch, tmp_path):
     return anchor
 
 
-def test_the_rearm_stand_in_matches_prepare_v2_verifys_durable_write_set():
+def test_the_rearm_stand_in_matches_prepare_v2_sessions_durable_write_set():
     """``_rearm_verify`` below is a stand-in, and a stand-in is only evidence
     while it stays faithful. Its fidelity claim is narrow and checkable:
-    ``prepare_v2_verify`` reaches durable v2 state through
+    the verify-only prepare reaches durable v2 state through
     ``persist_conductor_state`` and nothing else. A future re-arm that writes
     the state file by another route fails here rather than quietly making the
     two tests below prove something about a shape production no longer has."""
@@ -12238,7 +12240,7 @@ def test_the_rearm_stand_in_matches_prepare_v2_verifys_durable_write_set():
 
 
 def _rearm_verify():
-    """What ``prepare_v2_verify`` does to durable state on a ``verify_retry``:
+    """What the verify-only prepare does to durable state on a ``verify_retry``:
     re-derive the session context (which re-ensures the crossover preview) and
     persist a conductor under a BRAND-NEW session id. The write-set fidelity
     of this stand-in is pinned by the test directly above."""
@@ -12414,7 +12416,7 @@ def test_a_persist_after_a_rollback_cannot_resurrect_applied(
     """#2616 — the live session's stale ``applied`` must not overwrite the clear.
 
     The production shape exactly: a stage-2 conductor is minted ``applied=True``
-    (``prepare_v2_verify``'s own ``_open``), the delta probe's rollback seam
+    (the verify-only prepare's own ``_open``), the delta probe's rollback seam
     restores through ``handle_v2_restore`` — which clears the DURABLE flag and
     holds no conductor — and then the ordinary post-capture
     ``persist_conductor_state`` runs. Before the fix that persist wrote the
@@ -12471,8 +12473,8 @@ def test_a_persist_after_a_rollback_cannot_resurrect_applied(
 # ``jasper/active_speaker/crossover_v2/topology_prescription.py`` owns the gate
 # and every bound it applies; that module's own suite owns those. What is
 # pinned HERE is the DOOR the gate is bolted to — the request boundary
-# ``prepare_v2_session`` is, and the durable read-back ``prepare_v2_verify``
-# re-opens from:
+# ``prepare_v2_session`` is, and the durable read-back its verify-only
+# stage re-opens from:
 #
 #   1. the ORDER the boundary reads its two request-body prescriptions in,
 #      because the delay gate's bound is a half-period AT the corner the
@@ -12858,7 +12860,7 @@ def test_a_pinned_rounds_record_survives_the_persist_and_rehydrates_equal(
 ):
     """Stage 2 re-opens AT this record, so a lossy round trip is not cosmetic.
 
-    ``prepare_v2_verify`` reads the pin back out of ``verify_priors`` and
+    The verify-only prepare reads the pin back out of ``verify_priors`` and
     re-points its own preset and corner from it. A record that failed to
     rehydrate would grade a 2400 Hz round's VERIFY against the incumbent
     corner's design target — the applied graph judged for not being the
@@ -13135,8 +13137,8 @@ def test_stage_2_of_an_unpinned_round_re_points_nothing(monkeypatch):
         v2host, "_resolve_prepare_capture_source", lambda: ("relay", None),
     )
     # A working stub, not a fail-arm: the bundle opens BEFORE the re-point in
-    # ``prepare_v2_verify``, so arming it to fail would stop this run short of
-    # the seam it is about.
+    # the verify-only prepare, so arming it to fail would stop this run short
+    # of the seam it is about.
     monkeypatch.setattr(
         v2host, "open_v2_evidence_store",
         lambda *_a: (SimpleNamespace(), "bundle-stage2-ordinary"),

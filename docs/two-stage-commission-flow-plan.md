@@ -16,6 +16,12 @@
 > [`docs/gating-v2-plan.md`](gating-v2-plan.md) /
 > [`docs/room-correction-regime-plan.md`](room-correction-regime-plan.md)
 > (the layers this flow commissions).
+>
+> **Symbol note (2026-08-26).** The second preparer this document calls
+> `prepare_v2_verify` was folded into `prepare_v2_session(verify_only=True)`
+> by #3166; the two stages are one function under one flag. Every claim
+> below has been re-pointed to say so **except D2's quoted owner ruling**,
+> which keeps the wording it was given on 2026-07-29.
 
 ## Why (the ruling, in one paragraph)
 
@@ -92,8 +98,8 @@ read in the tree, not inferred from a name.
   `pre_apply_profile` — the only place Undo's restore target survives.
   The review screen does not need a new apply path; it needs a button
   that posts to the one that is there.
-- **`prepare_v2_verify`'s precondition is NOT two things, and stage 2 is
-  NOT satisfied by construction.** Earlier drafts of this document said
+- **The verify-only prepare's precondition is NOT two things, and stage 2
+  is NOT satisfied by construction.** Earlier drafts of this document said
   it was; that was wrong, and the error mattered — it hid a design hole
   (D3 closes it). Two refusals are local: `session_volume_plan()
   .needs_recovery` false, `state["applied"]` truthy. The very next line
@@ -108,7 +114,7 @@ read in the tree, not inferred from a name.
   fingerprints, per-role excitation ceilings, and a declared playback
   device. Its docstring names this caller explicitly: *"`prepare_v2_
   session` calls it before the relay session is registered and the phone
-  link minted, and `prepare_v2_verify` before its re-arm."* So a box can
+  link minted, and before a verify-only re-arm."* So a box can
   be applied and still be unable to open stage 2. It remains true that
   there is **no fingerprint match and no same-process prior session** in
   the re-arm's own preconditions.
@@ -239,25 +245,25 @@ exact moment the household is being asked to decide.
 owner-confirmed 2026-07-29.** The ruling names "the SHIPPED 1-entry
 re-verify machinery (`prepare_v2_verify`)". That machinery builds a
 **1-entry** verify at the mark. Express's post-apply phase is already
-`EXPRESS_CLOUD_VERIFY_POSITIONS = 1`, so for Express `prepare_v2_verify`
-*is* stage 2, exactly. **Full tier's post-apply phase is a 6-position
+`EXPRESS_CLOUD_VERIFY_POSITIONS = 1`, so for Express the verify-only
+prepare *is* stage 2, exactly. **Full tier's post-apply phase is a 6-position
 cloud-verify walk** (`DEFAULT_CLOUD_VERIFY_POSITIONS = 6`), and running
 Full's stage 2 as a single position would silently discard the
 spatially-averaged "after" evidence that the chart's after-curve, the
 post-apply spec verdict, and the delta-probe all read. Adopted:
 **stage 2 preserves the tier's shipped verify shape** — Express → the
 existing 1-entry re-arm; Full → a cloud-verify session of
-`DEFAULT_CLOUD_VERIFY_POSITIONS`, built by the same
-`prepare_v2_verify`-shaped entry point generalized over the plan shape,
-not a second parallel builder. The 1-entry form remains what it is
-today: the recovery re-verify, reachable from a failed stage 2.
+`DEFAULT_CLOUD_VERIFY_POSITIONS`, built by the same verify-shaped entry
+point generalized over the plan shape, not a second parallel builder. The
+1-entry form remains what it is today: the recovery re-verify, reachable
+from a failed stage 2.
 
 **What "generalized over the plan shape" actually costs — this is real
 work, not a parameter.** `build_v2_cloud_index_phase_map` and the
 conductor's `index_phase_map` argument both exist, so the seam is there;
-what does not exist is a map for a post-apply-only plan.
-`prepare_v2_verify` hardcodes `index_phase_map={1: PHASE_VERIFY}` and
-constructs its conductor with **no `retain_position`/`publish_cloud`
+what does not exist is a map for a post-apply-only plan. The re-arm
+hardcoded `index_phase_map={1: PHASE_VERIFY}` and
+constructed its conductor with **no `retain_position`/`publish_cloud`
 seams**, explicitly because *"this session's `index_phase_map` is
 `{1: PHASE_VERIFY}` only, so it has no cloud group of any kind."*
 Stage 2 at Full needs `{1: VERIFY, 2..M: CLOUD_VERIFY}`, both cloud
@@ -358,8 +364,8 @@ shell). It renders, in this order:
 
 **The stage-2 openability preflight (closes the hole premise 5 was
 hiding).** The review screen runs `resolve_conductor_context`'s
-predicate — the same fail-closed resolution `prepare_v2_verify` will run
-— **twice**: once at review render, and again server-side immediately
+predicate — the same fail-closed resolution the verify-only prepare will
+run — **twice**: once at review render, and again server-side immediately
 before the apply commits. A failed preflight names what to finish first
 (the refusal text is already household-facing) and **disables the Apply
 control**, exactly as D4's ungradeable prediction does. Without this,

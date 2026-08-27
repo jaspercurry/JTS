@@ -300,7 +300,7 @@ def test_driver_class_by_role_fake_resolver_injection_reaches_the_context(monkey
     _resolve_driver_class_by_role returns lands unchanged on
     context.driver_class_by_role, which is the exact value both conductor
     construction sites (prepare_v2_session's .hydrate(...) and
-    prepare_v2_verify's CrossoverV2Session(...)) pass straight through as
+    the verify-only prepare's CrossoverV2Session(...)) pass straight through as
     the ctor's driver_class_by_role= — and
     test_driver_class_by_role_ctor_param_threads_into_the_fit
     (tests/test_crossover_v2_conductor.py) independently proves THAT ctor

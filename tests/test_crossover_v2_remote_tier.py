@@ -805,7 +805,7 @@ def test_a_geometry_locked_hand_released_group_refuses_too(monkeypatch, caplog):
     names the wider spot.
 
     It also covers the ARM's stage 2, which reached this branch unrefused
-    before the predicate moved: ``prepare_v2_verify`` constructs its session
+    before the predicate moved: the verify-only prepare constructs its session
     with no ``tier`` at all, so the old ``tier_is_externally_positioned`` read
     answered False for every stage-2 group including remote's.
     """

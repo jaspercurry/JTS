@@ -7,8 +7,9 @@
 > current state: specific facts here (thresholds, env defaults, file
 > responsibilities, "what's working" lists) drift, and names that no longer
 > exist in the code — chiefly the `CrossoverV2Conductor` class, dissolved in
-> #2291 Phase 5c-iv — are kept where they are what the entry was about at the
-> time. Current operational truth is
+> #2291 Phase 5c-iv, and `prepare_v2_verify`, folded into
+> `prepare_v2_session(verify_only=True)` in #3166 — are kept where they are
+> what the entry was about at the time. Current operational truth is
 > [`tuning-operator-runbook.md`](../tuning-operator-runbook.md), and the file
 > map in [`crossover-v2-engine-design.md`](../crossover-v2-engine-design.md) is
 > the current shape.
