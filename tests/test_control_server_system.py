@@ -816,12 +816,12 @@ def test_state_returns_snapshot_with_fail_soft_sections(
     monkeypatch.setenv("JASPER_VOLUME_STATE_PATH", str(state_path))
     monkeypatch.setenv("JASPER_DSP_APPLY_STATE_PATH", str(dsp_apply))
     monkeypatch.setenv("JASPER_SOUND_PROFILE_PATH", str(tmp_path / "missing_sound.json"))
-    # Provider + model come from the wizard-owned SSOT file, read fresh —
-    # NOT from os.environ. Write the file AND set a *different* stale env
-    # value to prove the file is authoritative: jasper-control keeps a
-    # frozen JASPER_VOICE_PROVIDER across a switch (it isn't restarted),
-    # so the file must win. This is the regression guard for the
-    # stale-/system/ bug.
+    # Provider comes from the wizard-owned SSOT file, read fresh — NOT from
+    # os.environ. Write the file AND set a *different* stale env value to
+    # prove the file is authoritative: jasper-control keeps a frozen
+    # JASPER_VOICE_PROVIDER across a switch (it isn't restarted), so the
+    # file must win. This is the regression guard for the stale-/system/
+    # bug.
     provider_file = tmp_path / "voice_provider.env"
     provider_file.write_text(
         "JASPER_VOICE_PROVIDER=openai\nJASPER_OPENAI_MODEL=gpt-realtime-2\n"
@@ -832,6 +832,18 @@ def test_state_returns_snapshot_with_fail_soft_sections(
     )
     monkeypatch.setenv("JASPER_VOICE_PROVIDER_FILE", str(provider_file))
     monkeypatch.setenv("JASPER_VOICE_PROVIDER", "gemini")  # stale env, must be ignored
+    # Model comes from read_active_model_from_env_files (merges jasper.env +
+    # the wizard file; issue #3133) rather than this file alone — stub it so
+    # this shape test isn't tied to real /etc/jasper paths. The dedicated
+    # jasper.env-pinned-model regression is
+    # test_state_voice_model_reads_pin_from_jasper_env_not_just_wizard_file
+    # below.
+    from jasper.voice import provider_state
+    monkeypatch.setattr(
+        provider_state,
+        "read_active_model_from_env_files",
+        lambda provider: "gpt-realtime-2" if provider == "openai" else "",
+    )
     # Point librespot state at a missing file → empty dict.
     monkeypatch.setenv(
         "JASPER_LIBRESPOT_STATE", str(tmp_path / "missing.json"),
@@ -889,6 +901,81 @@ def test_state_returns_snapshot_with_fail_soft_sections(
     # legacy all-enabled default). Top-level shape guard.
     assert isinstance(body["transit"]["packs"], list)
     assert any(p["id"] == "nyc" for p in body["transit"]["packs"])
+
+
+async def test_state_voice_model_reads_pin_from_jasper_env_not_just_wizard_file(
+    monkeypatch, tmp_path,
+):
+    """issue #3133's drift class, for /state instead of the doctor's
+    pricing row: active_provider.model only ever sees the wizard's SSOT
+    file, so a model pinned solely in jasper.env (never written to the
+    wizard file) would render as the catalog default there. /state.voice.model
+    must come from read_active_model_from_env_files instead, which merges
+    jasper.env with the wizard file — same set jasper-voice sources."""
+    from jasper.control import state_aggregate
+    from jasper.voice import provider_state
+    from jasper.voice.catalog import default_model_id
+
+    provider_file = tmp_path / "voice_provider.env"
+    provider_file.write_text("JASPER_VOICE_PROVIDER=openai\n")  # no model key
+    monkeypatch.setenv("JASPER_VOICE_PROVIDER_FILE", str(provider_file))
+
+    seen_providers: list[str] = []
+
+    def fake_model_from_files(provider: str) -> str:
+        seen_providers.append(provider)
+        return "jasperenv-pinned-model"
+
+    monkeypatch.setattr(
+        provider_state, "read_active_model_from_env_files", fake_model_from_files,
+    )
+
+    body = await state_aggregate._get_state(
+        camilla_host="127.0.0.1",
+        camilla_port=1234,
+        voice_socket_path="/nonexistent.sock",
+        ha_status_snapshot=lambda: {"configured": False, "connected": False},
+    )
+
+    assert body["voice"]["provider"] == "openai"
+    assert body["voice"]["model"] == "jasperenv-pinned-model"
+    assert body["voice"]["model"] != default_model_id("openai")
+    # Same provider /state reports must be the one resolved for — never a
+    # second, independently-read provider.
+    assert seen_providers == ["openai"]
+
+
+async def test_state_voice_model_is_none_when_provider_unconfigured(
+    monkeypatch, tmp_path,
+):
+    """Preserves the pre-existing display contract (empty/None means no
+    usable provider) and proves the merged-files resolver is never
+    consulted for a provider that doesn't exist."""
+    from jasper.control import state_aggregate
+    from jasper.voice import provider_state
+
+    monkeypatch.setenv(
+        "JASPER_VOICE_PROVIDER_FILE", str(tmp_path / "missing_voice_provider.env"),
+    )
+
+    def fail_if_called(provider: str) -> str:
+        raise AssertionError(
+            f"resolver must not run for an unconfigured provider, got {provider!r}",
+        )
+
+    monkeypatch.setattr(
+        provider_state, "read_active_model_from_env_files", fail_if_called,
+    )
+
+    body = await state_aggregate._get_state(
+        camilla_host="127.0.0.1",
+        camilla_port=1234,
+        voice_socket_path="/nonexistent.sock",
+        ha_status_snapshot=lambda: {"configured": False, "connected": False},
+    )
+
+    assert body["voice"]["provider_status"] == "missing"
+    assert body["voice"]["model"] is None
 
 
 def test_state_active_speaker_commissioning_block_passes_through(

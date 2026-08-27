@@ -848,12 +848,13 @@ async def _get_state(
     from ..output_hardware import load_state as _load_output_hardware_state
     from ..speaker_name import read_state as _read_speaker_name_state
     from ..voice.provider_state import (
+        read_active_model_from_env_files,
         read_active_provider_state,
         read_barge_in_enabled,
     )
 
-    # Provider + model: re-read the wizard-owned SSOT file fresh on every
-    # call. jasper-control is NOT restarted on a provider switch (only
+    # Provider: re-read the wizard-owned SSOT file fresh on every call.
+    # jasper-control is NOT restarted on a provider switch (only
     # jasper-voice is), so reading os.environ here pins the value to
     # whatever it was at this daemon's start and shows a stale provider
     # after every switch — the /system/ bug this fixes. Same fresh-read
@@ -1266,7 +1267,16 @@ async def _get_state(
         "ts": datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%S.%fZ"),
         "voice": {
             "provider": active_provider.provider,
-            "model": active_provider.model,
+            # active_provider.model only sees the wizard file; a model
+            # pinned solely in jasper.env would show the catalog default.
+            # read_active_model_from_env_files merges jasper.env + the
+            # wizard file (same set jasper-voice sources) — same drift
+            # class as the doctor's pricing row, issue #3133.
+            "model": (
+                read_active_model_from_env_files(active_provider.provider)
+                if active_provider.configured
+                else None
+            ),
             "provider_status": active_provider.status,
             "provider_error": active_provider.detail or None,
             "session_active": voice_session,
