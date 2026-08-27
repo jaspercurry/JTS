@@ -1592,6 +1592,32 @@ def _jts_ring_probe_wire(pcm: str) -> tuple[int, str] | None:
     return channels, sample_format
 
 
+def _jts_ring_probeable_pcms() -> list[tuple[str, str]]:
+    """The ``(pcm, tool)`` pairs an open-probe may safely touch right now.
+
+    EMPTY unless ``jasper-fanin`` is inactive: fan-in is Ring A's only writer,
+    and a box whose fan-in is down is not carrying audio through any ring, so
+    nothing can be disturbed by opening one. While fan-in runs, a probe would
+    contend with a live transport for no diagnostic gain — the ioplug is
+    demonstrably registered, because the graph is using it.
+
+    Within that, only PCMs whose ring FILE is absent: an existing file may still
+    be attached (CamillaDSP writes Ring B, outputd reads it), and an absent one
+    cannot be, so this is what makes "never probe a ring in use" a property of
+    the gate rather than of the ioplug's EBUSY.
+    """
+    if _run(["systemctl", "is-active", "jasper-fanin.service"]).stdout.strip() == (
+        "active"
+    ):
+        return []
+    probeable = []
+    for pcm, tool, _ring_basename in _JTS_RING_PCMS:
+        ring_path = _jts_ring_path_for(pcm)
+        if ring_path and not os.path.exists(ring_path):
+            probeable.append((pcm, tool))
+    return probeable
+
+
 def _jts_ring_pcm_resolves(pcm: str, tool: str) -> tuple[bool, str]:
     """Open-probe one inert jts_ring PCM. Success means ALSA resolved the
     conf.d name AND dlopen()ed the ioplug .so AND the writer-dead/no-reader
@@ -1599,11 +1625,10 @@ def _jts_ring_pcm_resolves(pcm: str, tool: str) -> tuple[bool, str]:
     safe: the ioplug free-runs (playback) or emits timer-paced silence
     (capture) rather than blocking (the lab resolvability-step contract).
 
-    NO PRODUCTION CALLER since ADR-0100 made the ring the only transport:
-    `check_ring_platform_assets` can no longer reach an inert box, so it checks
-    presence only. Kept because the -DPIC / arch-mismatch detection it provides
-    has no replacement, and re-gating it on "jasper-fanin is not active" is the
-    open follow-up. Delete it with its tests if that follow-up is declined.
+    THE ONLY DETECTION for the -DPIC / arch-mismatch class (a structurally
+    invalid .so that presence checks pass and ALSA cannot dlopen). Reached only
+    through :func:`_jts_ring_probeable_pcms`, which is what keeps it off a ring
+    the daemons are using.
 
     Leaves no residue: the ioplug open path is create-or-attach
     (O_RDWR|O_CREAT|O_EXCL), so probing an ABSENT ring CREATES the ring file.
@@ -1897,17 +1922,21 @@ def check_ring_platform_assets() -> CheckResult:
               separates the two, by comparing the installer's record against the
               plugin on disk. See ring-platform.sh.
       fail  — an asset is missing: the graph cannot resolve its ring devices,
-              and there is no second transport to fall back to.
+              and there is no second transport to fall back to. Or a present
+              ioplug ALSA cannot actually load (the -DPIC / arch-mismatch
+              class), which only the open-probe can tell apart from a healthy
+              one.
 
-    PRESENCE ONLY, never an open-probe. The ring always has a live
-    reader/writer, so the ioplug's SPSC guard would EBUSY the probe — and the
-    live ring must not be disturbed. Deriving "is it armed?" from the persisted
-    JASPER_FANIN_CAMILLA_COUPLING is what made this check probe a live ring on a
-    box whose key had not been written yet (coupling-auto runs
-    After=jasper-fanin.service), so the answer is a constant now. The "is the
-    ring coherent + alive" verdict belongs to `check_fanin_coupling` (intent vs
-    the loaded config) and `check_ring_geometry_coherence` (env vs conf.d vs the
-    on-disk header).
+    THE OPEN-PROBE RUNS ONLY WHERE IT CANNOT DISTURB ANYTHING —
+    :func:`_jts_ring_probeable_pcms` decides, on fan-in's systemd state plus
+    each ring file's absence, and answers nothing on a box carrying audio. That
+    gate replaced a persisted-token one (``JASPER_FANIN_CAMILLA_COUPLING``),
+    which probed a LIVE ring on any box whose key had not been written yet
+    (coupling-auto runs ``After=jasper-fanin.service``).
+
+    The "is the ring coherent + alive" verdict is not here: it belongs to
+    `check_fanin_coupling` (the loaded graph) and `check_ring_geometry_coherence`
+    (env vs conf.d vs the on-disk header).
     """
     label = "ring platform"
     # Pass the module-level constants (which tests monkeypatch, and which alias the
@@ -1938,12 +1967,35 @@ def check_ring_platform_assets() -> CheckResult:
             "(bash scripts/deploy-to-pi.sh) to rebuild them.",
         )
 
+    present_detail = "ioplug + conf.d + /dev/shm/jts-ring present"
+    probeable = _jts_ring_probeable_pcms()
+    if not probeable:
+        return CheckResult(
+            label,
+            "ok",
+            f"{present_detail} (open-probe skipped — fan-in is running or a ring "
+            "file is in use; see the 'fan-in coupling' and 'ring geometry' checks)",
+        )
+    failures = []
+    for pcm, tool in probeable:
+        ok, detail = _jts_ring_pcm_resolves(pcm, tool)
+        if not ok:
+            failures.append(f"{pcm}: {detail}")
+    if failures:
+        return CheckResult(
+            label,
+            "fail",
+            "the ring ioplug is installed but ALSA cannot open through it: "
+            + "; ".join(failures)
+            + " — a structurally invalid plugin (the -DPIC / arch-mismatch "
+            "class) passes a presence check and still cannot carry audio; "
+            "redeploy (bash scripts/deploy-to-pi.sh) to rebuild it.",
+        )
     return CheckResult(
         label,
         "ok",
-        "ioplug + conf.d + /dev/shm/jts-ring present "
-        "(open-probe skipped — live ring; see the 'fanin coupling' and "
-        "'ring geometry' checks)",
+        f"{present_detail}; open-probe resolved "
+        + ", ".join(pcm for pcm, _tool in probeable),
     )
 
 

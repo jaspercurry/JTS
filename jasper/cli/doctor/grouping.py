@@ -220,8 +220,9 @@ def check_grouping_pair_lock() -> CheckResult:
 # what makes it safe to run against a LIVE bond, which the sibling
 # `_jts_ring_pcm_resolves` probe in the audio_runtime domain is not: that one
 # runs `aplay`/`arecord` for a second, which does reach `prepare` and would
-# create-or-attach the ring, so it is gated on the ring being UNARMED. There is
-# no equivalent "unarmed" state to gate on here — a bonded endpoint's grouping
+# create-or-attach the ring, so it is gated (`_jts_ring_probeable_pcms`) on
+# fan-in being inactive AND the ring file being absent. There is no equivalent
+# state to gate on here — a bonded endpoint's grouping
 # ring is live whenever snapclient holds it — so the probe itself has to be the
 # thing that cannot perturb. `tests/test_grouping_ring_observability.py` pins
 # the attach-site claim against the C source.

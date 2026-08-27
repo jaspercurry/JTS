@@ -4271,9 +4271,11 @@ def _stage_assets(monkeypatch, tmp_path, *, so=True, conf=True, shm=True):
 
 # --- check_ring_platform_assets ---------------------------------------
 #
-# PRESENCE ONLY since ADR-0100: the ring is the only transport, so it is always
-# load-bearing, there is no inert phase to open-probe, and a missing asset is a
-# hard failure rather than a "loopback still carries audio" warn.
+# Presence is always load-bearing since ADR-0100: the ring is the only
+# transport, so a missing asset is a hard failure rather than a "loopback still
+# carries audio" warn. The open-probe rides along ONLY where it cannot disturb
+# anything — fan-in inactive AND the ring file absent — because a present but
+# unloadable ioplug (the -DPIC / arch-mismatch class) passes presence.
 
 
 def _probe_must_not_run(monkeypatch):
@@ -4285,11 +4287,75 @@ def _probe_must_not_run(monkeypatch):
     monkeypatch.setattr(audio_runtime, "_jts_ring_pcm_resolves", _boom)
 
 
+def _fanin_unit_state(monkeypatch, state: str):
+    """Answer `systemctl is-active jasper-fanin.service` with ``state``."""
+    monkeypatch.setattr(
+        audio_runtime,
+        "_run",
+        lambda cmd, timeout=5.0: SimpleNamespace(
+            returncode=0, stdout=f"{state}\n", stderr=""
+        ),
+    )
+
+
 def test_ok_when_all_assets_present(monkeypatch, tmp_path):
     _stage_assets(monkeypatch, tmp_path)
+    _fanin_unit_state(monkeypatch, "active")
     _probe_must_not_run(monkeypatch)
     res = audio_runtime.check_ring_platform_assets()
     assert res.status == "ok"
+
+
+def test_a_live_fanin_is_never_open_probed(monkeypatch, tmp_path):
+    """The gate is fan-in's systemd state, not a persisted token.
+
+    Its predecessor derived "is the ring armed?" from
+    JASPER_FANIN_CAMILLA_COUPLING, which probed a LIVE ring on every box whose
+    key had not been written yet — coupling-auto runs
+    After=jasper-fanin.service, so that is every fresh boot.
+    """
+    _stage_assets(monkeypatch, tmp_path)
+    _probe_that_creates_the_ring(monkeypatch, tmp_path)
+    _fanin_unit_state(monkeypatch, "active")
+
+    assert audio_runtime._jts_ring_probeable_pcms() == []
+
+
+def test_a_ring_file_already_on_disk_is_never_open_probed(monkeypatch, tmp_path):
+    """An existing ring may still be attached; an absent one cannot be.
+
+    That is what makes "never probe a ring in use" a property of this gate
+    rather than a hope about the ioplug's EBUSY.
+    """
+    _stage_assets(monkeypatch, tmp_path)
+    rings = _probe_that_creates_the_ring(monkeypatch, tmp_path)
+    _fanin_unit_state(monkeypatch, "inactive")
+    rings["jts_ring_capture"].write_bytes(b"live-armed-ring-magic")
+
+    probeable = dict(audio_runtime._jts_ring_probeable_pcms())
+
+    assert "jts_ring_capture" not in probeable
+    assert "jts_ring_playback" in probeable
+
+
+def test_an_ioplug_alsa_cannot_open_is_a_hard_fail(monkeypatch, tmp_path):
+    """The -DPIC / arch-mismatch class: present on disk, unloadable by ALSA.
+
+    Presence cannot separate it from a healthy plugin, so without the probe the
+    box reports a green ring platform and carries no audio.
+    """
+    _stage_assets(monkeypatch, tmp_path)
+    _fanin_unit_state(monkeypatch, "inactive")
+    monkeypatch.setattr(
+        audio_runtime,
+        "_jts_ring_pcm_resolves",
+        lambda pcm, tool: (False, "undefined symbol: snd_dlsym_start"),
+    )
+
+    res = audio_runtime.check_ring_platform_assets()
+
+    assert res.status == "fail"
+    assert "snd_dlsym_start" in res.detail
 
 
 @pytest.mark.parametrize(
