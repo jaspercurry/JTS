@@ -848,9 +848,7 @@ def take_kind(
     this returns empty: an honest fact about the capture, exactly as
     ``baseline_record_id`` is ``""`` where the prior baselined no such pose.
     """
-    if graph_fingerprint in _UNNAMED_GRAPHS:
-        return ""
-    if baseline_fingerprint in _UNNAMED_GRAPHS:
+    if graph_fingerprint in _UNNAMED_GRAPHS or baseline_fingerprint in _UNNAMED_GRAPHS:
         return ""
     if graph_fingerprint == baseline_fingerprint:
         return MEASURE_KIND_BASELINE
