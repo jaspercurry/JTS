@@ -40,7 +40,7 @@ from collections.abc import Mapping
 from dataclasses import dataclass
 from typing import Literal
 
-from ..env_load import read_env_file_state
+from ..env_load import merged_env_files, read_env_file_state
 from .catalog import (
     VALID_PROVIDER_IDS,
     default_model_id,
@@ -215,6 +215,42 @@ def read_active_provider_and_model(
     or the catalog default for that provider."""
     state = read_active_provider_state(path)
     return state.provider, state.model
+
+
+def read_active_model_from_env_files(
+    provider: str, paths: "tuple[str, ...] | None" = None,
+) -> str:
+    """The model ``provider`` resolves to from the merged env FILES
+    (:func:`jasper.env_load.merged_env_files`) — never from this
+    process's own ``os.environ``.
+
+    The model's documented home is ``jasper.env`` (the operator base
+    file; ``.env.example`` ships the keys there), but
+    ``scripts/switch-gemini-model.sh`` writes it to *this* module's
+    wizard file instead — whichever one was written to last wins, which
+    is exactly what merging the full env-file set (operator file first,
+    wizard file after — the same order ``jasper-voice`` sources them in)
+    gives you. That is why this is not just ``read_active_model``
+    (:data:`PROVIDER_FILE` alone): a model an operator pinned only in
+    ``jasper.env`` would read back as the catalog default there.
+
+    Bypassing ``os.environ`` matters because a calling-shell export of
+    ``JASPER_GEMINI_MODEL``/``JASPER_OPENAI_MODEL``/``JASPER_GROK_MODEL``
+    outranks both files there (``jasper.env_load.load_env_files`` uses
+    ``setdefault``), so a reader built on ``Config``/``os.environ`` —
+    jasper-doctor invoked as ``sudo -E jasper-doctor``, say — can name a
+    model ``jasper-voice`` does not actually run. Same drift class
+    :func:`read_active_provider_state` closes for the provider selector
+    itself (issue #3133, following #2212/#3129).
+
+    Falls back to the catalog default when neither file pins one,
+    matching what ``jasper-voice`` resolves from a clean environment.
+    ``""`` for an unknown provider id."""
+    entry = provider_by_id(provider)
+    if entry is None:
+        return ""
+    value = merged_env_files(paths).get(entry.model_env, "").strip()
+    return value or default_model_id(provider)
 
 
 # --- Per-provider barge-in enable flag ---------------------------------

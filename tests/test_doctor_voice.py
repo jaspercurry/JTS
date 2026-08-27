@@ -15,7 +15,7 @@ from jasper.cli import doctor
 from jasper.cli.doctor import voice as doctor_voice
 from jasper.config import Config
 from jasper.tools.packs import TOOL_PACKS
-from jasper.voice.catalog import PROVIDERS, provider_ids_manifest_text
+from jasper.voice.catalog import PROVIDERS, default_model_id, provider_ids_manifest_text
 
 from .doctor_test_support import _fresh_cfg
 
@@ -207,10 +207,13 @@ def test_pricing_warns_only_for_an_unpriced_active_model(
 ):
     """An unpriced active model reads $0 cost, so the spend cap cannot bound it."""
     _ssot(monkeypatch, tmp_path, "gemini")
-    extra = {"JASPER_GEMINI_MODEL": model} if model else {}
-    cfg = _fresh_cfg(monkeypatch, GEMINI_API_KEY="AIzaABCDEF12345", **extra)
+    monkeypatch.setattr(
+        doctor_voice,
+        "read_active_model_from_env_files",
+        lambda provider: model or default_model_id(provider),
+    )
 
-    assert doctor.check_pricing(cfg).status == status
+    assert doctor.check_pricing().status == status
 
 
 @pytest.mark.parametrize(
@@ -230,22 +233,33 @@ def test_pricing_warns_when_it_could_not_ask_which_model_is_active(
     monkeypatch.setattr(
         doctor_voice, "read_active_provider_state", lambda: _state(status),
     )
-    cfg = _fresh_cfg(monkeypatch, GEMINI_API_KEY="AIzaABCDEF12345")
 
-    assert doctor.check_pricing(cfg).status == verdict
+    assert doctor.check_pricing().status == verdict
 
 
-def test_pricing_prices_the_ssot_providers_model(monkeypatch, tmp_path: Path):
-    """Which model gets a rate follows the SSOT provider; the model string
-    itself still comes from Config, which merges the operator env with the
-    wizard file exactly as jasper-voice does."""
+def test_pricing_prices_the_model_the_ssot_provider_resolves_from_files(
+    monkeypatch, tmp_path: Path,
+):
+    """Which model gets a rate follows the SSOT provider (not a stale
+    JASPER_VOICE_PROVIDER this process's environment might carry), and
+    the model string itself comes from
+    provider_state.read_active_model_from_env_files — the merged env
+    FILES, never Config/os.environ, where a shell-exported
+    JASPER_GEMINI_MODEL would outrank the wizard file (issue #3133).
+    File-vs-shell precedence itself is pinned in test_provider_state.py;
+    this test pins the doctor's dispatch to that resolver."""
     import jasper.usage as usage
 
     _ssot(monkeypatch, tmp_path, "gemini")
-    cfg = _fresh_cfg(
-        monkeypatch,
-        JASPER_VOICE_PROVIDER="openai",
-        OPENAI_API_KEY="sk-openai1234",
+    monkeypatch.setenv("JASPER_VOICE_PROVIDER", "openai")  # stale env; must lose
+    seen_providers: list[str] = []
+
+    def fake_model_from_files(provider: str) -> str:
+        seen_providers.append(provider)
+        return "gemini-3.1-flash-live-preview"
+
+    monkeypatch.setattr(
+        doctor_voice, "read_active_model_from_env_files", fake_model_from_files,
     )
     priced: list[str] = []
     real = usage.pricing_for_model
@@ -255,10 +269,11 @@ def test_pricing_prices_the_ssot_providers_model(monkeypatch, tmp_path: Path):
         lambda m, **kw: (priced.append(m), real(m, **kw))[1],
     )
 
-    doctor.check_pricing(cfg)
+    result = doctor.check_pricing()
 
-    assert cfg.gemini_model != cfg.openai_model
-    assert priced == [cfg.gemini_model]
+    assert seen_providers == ["gemini"]
+    assert priced == ["gemini-3.1-flash-live-preview"]
+    assert result.status == "ok"
 
 
 def _spend_cap_cfg(monkeypatch, tmp_path: Path, cap: str) -> Config:
