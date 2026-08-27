@@ -25,7 +25,6 @@ from dataclasses import dataclass, field
 from typing import Any, Mapping
 
 import numpy as np
-import pytest
 
 from jasper.active_speaker import crossover_v2_flow as flow
 from jasper.active_speaker.crossover_v2 import intervention as iv
@@ -2000,36 +1999,3 @@ def _absolute(max_db, *, band=(1000.0, 4000.0), worst_db=None, worst_hz=1700.0):
         "n_bins": 16384,
     }
 
-
-@pytest.fixture(autouse=True)
-def a_process_with_a_volume_owner(monkeypatch):
-    """Stand up the precondition every v2 session now has in production.
-
-    After W5-c1 the session claims the fader through
-    :class:`~jasper.volume_owner.VolumeOwner`, and ``bind_v2_engine_seams``
-    REFUSES when no owner is installed rather than minting a second authority
-    over one fader. ``jasper.web.__main__`` installs one before serving, so a
-    process without one is a registration defect — but a test module that
-    drives production wiring has to stand the same precondition up, or it
-    exercises the refusal instead of the subject.
-
-    Autouse where it is imported, not globally: a suite that wants to pin the
-    no-owner refusal itself must not have one seated underneath it. Seated
-    through the module global so monkeypatch puts the process back.
-    """
-    import jasper.volume_owner as volume_owner_module
-
-    fader = {"db": -20.0}
-
-    async def _set(db: float) -> bool:
-        fader["db"] = float(db)
-        return True
-
-    async def _get() -> float:
-        return fader["db"]
-
-    monkeypatch.setattr(
-        volume_owner_module,
-        "_process_owner",
-        volume_owner_module.VolumeOwner(set_fader_db=_set, get_fader_db=_get),
-    )

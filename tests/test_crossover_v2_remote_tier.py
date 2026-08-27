@@ -127,10 +127,8 @@ STAGE2_ANGLES = (0, 0, -7, 7, -22, 22)
 
 
 
-# Autouse where imported: production refuses a session with no volume owner.
-from tests.crossover_v2_fixtures import (  # noqa: F401
-    a_process_with_a_volume_owner,
-)
+# Production refuses a session with no volume owner; stand one up.
+pytestmark = pytest.mark.usefixtures("a_process_with_a_volume_owner")
 
 def _stage1_of(shape):
     """The shipped stage-1 plan for a RESOLVED shape — the flags are the

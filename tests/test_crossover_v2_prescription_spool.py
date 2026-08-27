@@ -131,10 +131,8 @@ _APPLIED_INCUMBENT = (
 
 
 
-# Autouse where imported: production refuses a session with no volume owner.
-from tests.crossover_v2_fixtures import (  # noqa: F401
-    a_process_with_a_volume_owner,
-)
+# Production refuses a session with no volume owner; stand one up.
+pytestmark = pytest.mark.usefixtures("a_process_with_a_volume_owner")
 
 def _document(**overrides: Any) -> bytes:
     """The accepted document's bytes, verbatim unless a test changes one field.

@@ -96,12 +96,10 @@ from jasper.output_topology import (
 from jasper.web import correction_crossover_v2 as v2host
 
 
-# Autouse where imported: production refuses a session with no volume owner.
-# ``_real_seam_session`` then replaces this stand-in with an owner over its
-# own fixture fader.
-from tests.crossover_v2_fixtures import (  # noqa: F401
-    a_process_with_a_volume_owner,
-)
+# Production refuses a session with no volume owner; stand one up.
+# ``_real_seam_session`` then replaces this stand-in with an owner over
+# its own fixture fader.
+pytestmark = pytest.mark.usefixtures("a_process_with_a_volume_owner")
 
 # --------------------------------------------------------------------------- #
 # private reaches, all of them, in one place
@@ -1903,8 +1901,11 @@ def _real_seam_session(monkeypatch, cam_factory=None, graph=None) -> dict:
 
     _cam_for_owner = (cam_factory or (lambda: None))()
     if _cam_for_owner is not None:
-        _owner_set = lambda db: _cam_for_owner.set_volume_db(db, best_effort=True)  # noqa: E731
-        _owner_get = lambda: _cam_for_owner.get_volume_db(best_effort=True)  # noqa: E731
+        async def _owner_set(db):
+            return await _cam_for_owner.set_volume_db(db, best_effort=True)
+
+        async def _owner_get():
+            return await _cam_for_owner.get_volume_db(best_effort=True)
     else:
         _standin = {"db": -20.0}
 
