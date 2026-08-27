@@ -564,3 +564,52 @@ def test_the_state_file_is_asked_for_only_when_it_was_not_supplied(tmp_path, cap
 
     assert any("--state" in action for action in without["next_actions"])
     assert not any("--state" in action for action in with_state["next_actions"])
+
+
+# --------------------------------------------------------------------------- #
+# 6. status_document — the value door behind the print door (W3-a)
+# --------------------------------------------------------------------------- #
+
+#: The literal contract, so this pin does not just compare ``status_document``
+#: to itself. Both the CLI JSON below and the direct call below are built by
+#: ``status_document`` — the CLI is a thin wrapper over it — so a set dropped
+#: from ``status_document`` would vanish from BOTH sides of a same-keys
+#: comparison and the pin would stay green. Only a literal expectation, held
+#: nowhere near the code under test, has teeth against that.
+_STATUS_DOCUMENT_KEYS = {
+    "speaker",
+    "packet_fingerprint",
+    "packet_error",
+    "declared",
+    "banked",
+    "staged",
+    "applied",
+    "next_actions",
+}
+
+
+def test_status_document_and_the_cli_json_carry_the_same_keys(tmp_path, capsys):
+    """The value door W3-b will call agrees with the print door on shape.
+
+    ``status_document`` takes the packet as a value rather than
+    ``argparse.Namespace``, so W3-b's ``Recommender`` adapter
+    (docs/REFACTOR-CUTOVER-2026-08.md §3) can hand it a packet it already
+    built — via ``build_crossover_evidence_packet``, the same builder used
+    here — without a second walk of the bundle. Structured keys only, never
+    prose: a wording change in a section's ``summary`` must not be able to
+    fail this.
+    """
+    session, draft = _speaker_dirs(
+        tmp_path, draft=_draft(), classification=_classification()
+    )
+
+    _, cli_payload = _status([str(session), "--drivers", str(draft)], capsys)
+    packet = cli.build_crossover_evidence_packet(
+        session, state_path=None, driver_draft_path=draft, dump_ring_dir=None
+    )
+    doc_payload = cli.status_document(packet, "", state_supplied=False)
+
+    assert set(doc_payload) == _STATUS_DOCUMENT_KEYS
+    assert set(doc_payload) == set(cli_payload)
+    for name in ("declared", "banked", "staged", "applied"):
+        assert set(doc_payload[name]) == set(cli_payload[name])
