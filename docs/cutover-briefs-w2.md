@@ -397,10 +397,10 @@ anywhere in `jasper/`.
 
 | Element | Prior art | Note |
 |---|---|---|
-| `AnalysisUnit(name, run, gate)` frozen dataclass | `CapabilityPack` `tools/packs.py:131` | `gate` at `:147` |
+| `AnalysisUnit(name, fields, gate)` frozen dataclass | `CapabilityPack` `tools/packs.py:131` | `gate` at `:147`. **Landed #3165 with `fields`, not `packs.py`'s `run`** — the analysis layer has one entry point, so per-unit `run` callables would be throwaway scaffolding (S4). See the isolation row |
 | `ANALYSIS_UNITS` module-level tuple | `TOOL_PACKS` `packs.py:281` | order load-bearing (9→10, 11→12→13) and pinned, per `packs.py:14` |
 | derived name set, never re-listed | `STUB_CODES` `measure_spec.py:184`; `refusal_copy.py:1307-1311` | `frozenset(u.name for u in ANALYSIS_UNITS)` |
-| per-unit `try/except` isolation | `register_packs` `packs.py:436-441` | a raising unit is **failed**, not skipped — `PackOutcome`'s docstring draws that line at `:160-180` |
+| `try/except` isolation — **per-unit at the gate, per-walk at the produce half** | `register_packs` `packs.py:436-441` | a raise is **failed**, not skipped — `PackOutcome`'s docstring draws that line at `:160-180`. **Bounded by #3165's recorded forfeit** (`analysis_units.py:70-76`): with no per-unit `run`, one `analyze_program_capture` raise fails all fifteen produce-halves at once, so only *gate* raises isolate per unit |
 | one wire shape | `outcomes_to_state` `packs.py:187` | for `/state` and the evidence packet |
 
 **The one deviation: `gate` returns a reason string, not `bool`.**
@@ -589,7 +589,7 @@ never log or error prose.
 |---|---|---|
 | W2-d | the census script's four class counts (3 / 1 / 1 / 20) and the 25-field total, asserted from a fresh `ast.parse`; `test_correction_boundary_ssot` covers `crossover_v2` | add a `ProgramAnalysis` field without a construction-site write → the "never written" list is non-empty → red. Add a `jasper/active_speaker/crossover_v2/x.py` importing `jasper.web` → boundary test red |
 | W2-a | every `name` unique; `ANALYSIS_NAMES` derived, not re-listed; **every gate total** — a property test over generated programs asserting no gate raises; unit 14's gate code `==` `_verify_absolute_result`'s `not_evaluated` for every input | re-list `ANALYSIS_NAMES` as a literal and drop a row → the derived-set pin red. Make one gate raise on an empty segment tuple → the totality property red |
-| W2-b+c | a bank missing one input kind produces **N−1** results and **one** `AnalysisSkip` whose `missing` names the input; a raising unit yields `failed`, not `skipped`; `results` is a copy (mutating it does not mutate the walker's dict) | **delete the gate on one unit and watch it raise instead of skip** (§2's own mutation). Return the live dict instead of a copy → the copy pin red. Swap `skipped` for `disclosures` → the four `measure_spec` pins red |
+| W2-b+c | a bank missing one input kind produces **N−1** results and **one** `AnalysisSkip` whose `missing` names the input; `failed` is distinguishable from `skipped` **at the walk level** — a raise from the single analysis entry marks the walk failed, not one unit (#3165's forfeit, `analysis_units.py:70-76`); `results` is a copy (mutating it does not mutate the walker's dict) | **make one unit's gate answer `""` for a bank lacking its input and watch that unit alone leave the disclosure set, no other unit's outcome moving** — the gate is where per-unit isolation is real. Return the live dict instead of a copy → the copy pin red. Swap `skipped` for `disclosures` → the four `measure_spec` pins red |
 
 Two bars that are **not** worth building, said so it is a decision rather than an
 omission: a golden-output pin on `ProgramAnalysis` (the layer ports whole — the
