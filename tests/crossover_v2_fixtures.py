@@ -384,8 +384,16 @@ def _verify_analysis(
 # --- fake seams -----------------------------------------------------------------
 
 
-def bank_into(sink: list[Any], *, with_capture: bool = False) -> flow.BankTake:
+def bank_into(
+    sink: list[Any], *, with_capture: bool = False, phase: str | None = None,
+) -> flow.BankTake:
     """A ``bank_take`` seam that records what it banked and answers an id.
+
+    ``phase`` narrows what reaches ``sink`` to one phase's takes. Every
+    accepted capture banks one — CHECK and MEASURE included — so a test about
+    the cloud group's records would otherwise read the walk's warm-up takes as
+    group members. The seam still answers an id for the takes it filters out:
+    they were banked, they are simply not this test's subject.
 
     The production binding answers the store id that finds the record again,
     and ``""`` only when nothing was stored — so a recorder that answered
@@ -399,7 +407,8 @@ def bank_into(sink: list[Any], *, with_capture: bool = False) -> flow.BankTake:
     """
     def bank_take(result: Any, record: Mapping[str, Any]) -> str:
         banked = dict(record)
-        sink.append((result, banked) if with_capture else banked)
+        if phase is None or banked.get("phase") == phase:
+            sink.append((result, banked) if with_capture else banked)
         return f"crossover_v2/fixture/positions/{banked.get('take_id') or ''}.json"
 
     return bank_take

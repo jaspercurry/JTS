@@ -210,14 +210,23 @@ def _post_apply_analysis(conductor: Any, *, scale: float = 1.0, max_db: float = 
     )
 
 
-def _consume_verify(conductor: Any, analysis: Any, *, attempt: int = 1) -> Any:
+def _consume_verify(
+    conductor: Any, analysis: Any, *, attempt: int = 1,
+    index: int = 0, result: Any = None,
+) -> Any:
     """Drive the production VERIFY trigger site.
 
     ``_consume_verify`` is where the Express tier grades its round, and it is
     the real entry point the relay runner calls — not a test-only shim. Reached
     directly because the runner in between is a thread and a websocket.
+
+    ``index`` and ``result`` are the capture's identity and its bytes, which
+    VERIFY gained when it started banking a take of its own. Defaulted because
+    every caller here is driving the GRADING trigger, not the banking: a
+    ``None`` result banks a take that honestly carries no digest, which is the
+    same answer any capture with no bytes gets.
     """
-    return conductor._consume_verify(analysis, attempt=attempt)
+    return conductor._consume_verify(index, analysis, result, attempt=attempt)
 
 
 def _seed_round_state(*, anchor: bool = True) -> dict[str, Any]:

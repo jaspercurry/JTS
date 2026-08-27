@@ -1229,6 +1229,54 @@ def lateral_pose_record(
     }
 
 
+def phase_capture_record(
+    *,
+    phase: str,
+    index: int,
+    attempt: int,
+    session_id: str,
+    graph_fingerprint: str,
+    captured_at: str,
+    wav_sha256: str | None,
+    claim: TakeClaim = TakeClaim(),
+) -> dict[str, Any]:
+    """One banked take for a phase that prompts no spot: CHECK, MEASURE, VERIFY.
+
+    These three play from wherever the microphone already is — there is no
+    table row, no bearing and no instruction — so what a take of one records is
+    the CAPTURE: its bytes' digest and the identity that finds it again. The
+    phase's own analysis is not duplicated here; it already lives where the
+    phase puts it (``_measure_analysis``, ``_verify_analysis``, the gain plan
+    CHECK publishes), and a take is what survives the round while those are
+    rewritten inside it.
+
+    **The take id follows the entry baseline's convention rather than inventing
+    a second one.** That phase had the same problem first — a retained capture
+    with no prompted spot — and solved it by minting the position id from the
+    phase and the index, so the position id IS the take id once
+    :func:`take_id_for` has qualified it by attempt. One convention, four
+    phases; a reader who can parse one banked take can parse all of them.
+
+    No ``position_deg`` and no ``reference_mark``: unlike the entry baseline,
+    which is measured from a declared axis and says so, these three make no
+    claim about where the microphone was. An absent fact is honest; a
+    ``DESIGN_AXIS_DEG`` invented here would be a bearing nothing commanded.
+    """
+    identity = _take_identity(
+        position_id=f"{phase}_{index:02d}",
+        phase=phase, index=index, attempt=attempt,
+        session_id=session_id, wav_sha256=wav_sha256,
+        graph_fingerprint=graph_fingerprint, claim=claim,
+    )
+    return {
+        # Same coincidence the entry baseline records: no prompted spot of its
+        # own, so this take's position id IS its take id.
+        "position_id": identity["take_id"],
+        **identity,
+        "captured_at": captured_at,
+    }
+
+
 def entry_baseline_record(
     *,
     index: int,

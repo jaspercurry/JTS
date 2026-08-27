@@ -1123,7 +1123,9 @@ def test_an_accepted_pose_is_retained_with_its_angle():
         prompts=prompts,
         seams=replace(
             fakes.seams(),
-            bank_take=bank_into(retained, with_capture=True),
+            bank_take=bank_into(
+                retained, with_capture=True, phase=PHASE_LATERAL,
+            ),
         ),
     )
     _evidence_walk(c, prompts)

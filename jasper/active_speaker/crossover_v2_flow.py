@@ -4227,9 +4227,9 @@ class CrossoverV2Session:
             program, result, priors, self._geometry, phase=phase,
         )
         if phase == PHASE_CHECK:
-            verdict = self._consume_check(analysis)
+            verdict = self._consume_check(index, attempt, analysis, result)
         elif phase == PHASE_MEASURE:
-            verdict = self._consume_measure(analysis)
+            verdict = self._consume_measure(index, attempt, analysis, result)
         elif phase == PHASE_LATERAL:
             verdict = self._consume_lateral_pose(index, attempt, analysis, result)
         elif phase in GROUP_PHASES:
@@ -4243,7 +4243,9 @@ class CrossoverV2Session:
             # result, bank it as a tuning attempt, and do it silently.
             verdict = self._consume_entry_baseline(index, attempt, analysis, result)
         else:
-            verdict = self._consume_verify(analysis, attempt=attempt)
+            verdict = self._consume_verify(
+                index, analysis, result, attempt=attempt,
+            )
         # THIS capture's pilot evidence, attached to whatever verdict came back
         # — at ONE point, deliberately, rather than at each gate that can
         # produce ``locate_failed``. Three separate gates already refuse on a
@@ -4654,8 +4656,12 @@ class CrossoverV2Session:
     # the diagnostic log call is the ONLY new control flow here — none of the
     # accept/reject branching below moved or changed.
 
-    def _consume_check(self, analysis: ProgramAnalysis) -> PhaseVerdict:
+    def _consume_check(
+        self, index: int, attempt: int, analysis: ProgramAnalysis, result: Any,
+    ) -> PhaseVerdict:
         verdict = self._check_verdict(analysis)
+        if verdict.accepted:
+            self._bank_phase_capture(PHASE_CHECK, index, attempt, result)
         self._safe_log_diag(self._log_check_diag, analysis, verdict)
         return verdict
 
@@ -4706,10 +4712,45 @@ class CrossoverV2Session:
         self._seams.publish_check(gain_plan, analysis.ambient_report or {})
         return PhaseVerdict(True, payload={"measurement_phase": PHASE_CHECK})
 
-    def _consume_measure(self, analysis: ProgramAnalysis) -> PhaseVerdict:
+    def _consume_measure(
+        self, index: int, attempt: int, analysis: ProgramAnalysis, result: Any,
+    ) -> PhaseVerdict:
         verdict = self._measure_verdict(analysis)
+        if verdict.accepted:
+            self._bank_phase_capture(PHASE_MEASURE, index, attempt, result)
         self._safe_log_diag(self._log_measure_diag, analysis, verdict)
         return verdict
+
+    def _bank_phase_capture(
+        self, phase: str, index: int, attempt: int, result: Any,
+    ) -> None:
+        """Bank one take for a phase with no prompted spot.
+
+        CHECK, MEASURE and VERIFY play from wherever the microphone already is,
+        so what is banked is the CAPTURE — its bytes and the identity that
+        finds them again. Each phase's own analysis stays where the phase puts
+        it: those are rewritten inside a round, and a take is what survives it.
+
+        On an ACCEPTED verdict only, which is the rule every other retained
+        kind already follows. A refused capture is not evidence of the speaker,
+        it is evidence of the room or the phone, and the journal is where that
+        is recorded.
+
+        Fail-soft is the binding's, exactly as it is for the three prompted
+        kinds: a full disk must not turn a good capture into a retake.
+        """
+        self._seams.bank_take(
+            result,
+            _spatial.phase_capture_record(
+                phase=phase,
+                index=index,
+                attempt=attempt,
+                session_id=self.session_id,
+                graph_fingerprint=self._entry_graph_fingerprint(),
+                captured_at=time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
+                wav_sha256=_capture_wav_sha256(result),
+            ),
+        )
 
     def _note_ripple_reservation(self, predicted_ripple_db: float) -> None:
         """Bank G1's reservation about the capture being accepted (#2087).
@@ -7302,9 +7343,11 @@ class CrossoverV2Session:
         )
 
     def _consume_verify(
-        self, analysis: ProgramAnalysis, *, attempt: int,
+        self, index: int, analysis: ProgramAnalysis, result: Any, *, attempt: int,
     ) -> PhaseVerdict:
         verdict = self._verify_verdict(analysis)
+        if verdict.accepted:
+            self._bank_phase_capture(PHASE_VERIFY, index, attempt, result)
         self._safe_log_diag(self._log_verify_diag, analysis, verdict)
         # #2291: the round's post-apply side. Retained BEFORE grading, because
         # the Full tier grades the round later (when the post-apply cloud
