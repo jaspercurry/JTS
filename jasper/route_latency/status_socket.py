@@ -4,18 +4,16 @@
 
 """One shared reader for the ``STATUS\\n`` line protocol fan-in and outputd use.
 
-Several route-latency surfaces need "connect to a JTS control socket, send
-``STATUS\\n``, read the JSON reply to EOF, parse it, and confirm it's an
-object": the artifact writer (:mod:`jasper.cli.route_latency_artifact`) and the
-click/capture harness (:mod:`jasper.cli.route_latency_harness`). This module
-owns that mechanic once; each caller keeps its OWN error policy on top,
-because they genuinely differ:
+Several callers need "connect to a JTS control socket, send ``STATUS\\n``, read
+the JSON reply to EOF, parse it, and confirm it's an object". This module owns
+that mechanic once; each caller keeps its OWN error policy on top, because they
+genuinely differ:
 
-* the artifact writer wants the exception to propagate so it can classify the
-  failure (``live_fanin_status_unreadable:{type}``); it wraps this in a
-  try/except of its own;
-* the harness wants a fail-soft ``None`` per surface (an unreachable daemon is
-  an expected snapshot state) and logs at DEBUG; it uses
+* doctor and the AEC CLIs want the exception to propagate so they can name the
+  failure in their own report; they use :func:`read_status_socket` inside a
+  try/except of their own;
+* the click/capture harness wants a fail-soft ``None`` per surface (an
+  unreachable daemon is an expected snapshot state) and logs at DEBUG; it uses
   :func:`read_status_socket_or_none`.
 
 Deliberately NOT unifying the ``coupling_reconcile`` / ``audio_validation``

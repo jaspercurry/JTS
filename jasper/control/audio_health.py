@@ -15,8 +15,8 @@ so the broader dashboard adds no daemon or second resident loop.
 The contract deliberately separates continuity from timing.  A USB host-clock
 ``l2_fallback`` keeps audio playing safely, so it degrades the latency axis but
 does not claim the signal path failed.  Likewise ``l0_locked`` is live clocking
-state, not proof of end-to-end latency; only the route artifact can verify that
-claim.
+state, not an end-to-end latency number; ``current_stream.latency`` is where
+the summed queues are reported.
 """
 from __future__ import annotations
 
@@ -31,10 +31,6 @@ from collections import deque
 from collections.abc import Callable, Mapping
 from typing import Any
 
-from ..audio_runtime_plan import (
-    USB_LOW_LATENCY_P95_BUDGET_MS,
-    USB_LOW_LATENCY_P99_BUDGET_MS,
-)
 from ..local_sources.registry import local_source_lifecycles
 from ..music_sources import MUSIC_SOURCE_SPECS, Source
 from ..fanin.latency_mode import PRESETS, classify_runtime
@@ -499,16 +495,13 @@ def _read_transport_state(plan: Any) -> dict[str, Any]:
 
 
 def read_route_claim() -> dict[str, Any]:
-    """Read the declared route plus its measured latency artifact.
+    """Read the declared route and its transport coherence.
 
     This is config/statefile work plus one bounded outputd STATUS read rather
-    than a live audio probe, and therefore runs on the slow cadence.  The
-    artifact assessment is shared with ``/state`` via
-    :func:`jasper.control.state_aggregate.route_latency_artifact_state`.
+    than a live audio probe, and therefore runs on the slow cadence.
     """
     try:
         from ..audio_runtime_plan import build_audio_runtime_plan_from_system
-        from .state_aggregate import route_latency_artifact_state
 
         plan = build_audio_runtime_plan_from_system()
         profile = plan.route_profile
@@ -526,12 +519,9 @@ def read_route_claim() -> dict[str, Any]:
             "fixed_sample_rate": profile.fixed_sample_rate,
             "low_latency_claim": profile.low_latency_claim,
             "route_config_hash": plan.route_config_hash,
-            "p95_budget_ms": profile.p95_budget_ms,
-            "p99_budget_ms": profile.p99_budget_ms,
-            "artifact": route_latency_artifact_state(plan),
             "transport": transport,
         }
-    except _MONITOR_ERRORS as exc:
+    except _MONITOR_ERRORS:
         logger.debug("audio route claim read failed", exc_info=True)
         return {
             "status": "unavailable",
@@ -540,9 +530,6 @@ def read_route_claim() -> dict[str, Any]:
             "fixed_sample_rate": None,
             "low_latency_claim": False,
             "route_config_hash": None,
-            "p95_budget_ms": None,
-            "p99_budget_ms": None,
-            "artifact": {"status": "fail", "reason": str(exc)},
             "transport": _empty_transport(),
         }
 
@@ -1006,47 +993,6 @@ def _signal_path(
     }
 
 
-def _verification(route: Mapping[str, Any]) -> dict[str, Any]:
-    if not bool(route.get("low_latency_claim")):
-        return {
-            "status": "not_applicable",
-            "validated_at": None,
-            "p95_ms": None,
-            "p99_ms": None,
-            "p95_budget_ms": None,
-            "p99_budget_ms": None,
-            "issues": [],
-        }
-    artifact = _mapping(route.get("artifact"))
-    artifact_status = artifact.get("status")
-    issues = [
-        str(issue)
-        for issue in artifact.get("issues") or []
-        if isinstance(issue, str)
-    ]
-    budget_issue_codes = {
-        f"p95_exceeds_{USB_LOW_LATENCY_P95_BUDGET_MS:g}ms",
-        f"p99_exceeds_{USB_LOW_LATENCY_P99_BUDGET_MS:g}ms",
-    }
-    target_missed = any(issue in budget_issue_codes for issue in issues)
-    if target_missed:
-        status = "target_missed"
-    else:
-        status = {
-            "pass": "verified",
-            "warn": "partial",
-        }.get(str(artifact_status), "unverified")
-    return {
-        "status": status,
-        "validated_at": artifact.get("validated_at"),
-        "p95_ms": artifact.get("p95_ms"),
-        "p99_ms": artifact.get("p99_ms"),
-        "p95_budget_ms": route.get("p95_budget_ms"),
-        "p99_budget_ms": route.get("p99_budget_ms"),
-        "issues": issues,
-    }
-
-
 def _usb_timing(
     route: Mapping[str, Any],
     host_clock: Mapping[str, Any] | None,
@@ -1055,7 +1001,6 @@ def _usb_timing(
     active: bool,
 ) -> dict[str, Any]:
     claimed = bool(route.get("low_latency_claim"))
-    verification = _verification(route)
     resampler = _mapping(_mapping(usb_input).get("resampler"))
     latency_runtime = classify_runtime(resampler, host_clock)
     raw_mode = latency_runtime.ladder
@@ -1121,7 +1066,6 @@ def _usb_timing(
             "headline": headline,
             "detail": detail,
             "route_id": route.get("route_id"),
-            "verification": verification,
             "runtime": runtime,
         }
 
@@ -1137,7 +1081,6 @@ def _usb_timing(
                 "health is checked separately."
             ),
             "route_id": route.get("route_id"),
-            "verification": verification,
             "runtime": runtime,
         }
     if not claimed:
@@ -1147,9 +1090,8 @@ def _usb_timing(
             "kind": "route_latency",
             "status": "idle",
             "headline": "Standard buffered route",
-            "detail": "This route does not make a measured low-latency claim.",
+            "detail": "This route runs with standard buffering.",
             "route_id": route.get("route_id"),
-            "verification": verification,
             "runtime": runtime,
         }
     if active and raw_mode == "l2_fallback":
@@ -1186,7 +1128,6 @@ def _usb_timing(
         "headline": headline,
         "detail": detail,
         "route_id": route.get("route_id"),
-        "verification": verification,
         "runtime": runtime,
     }
 
@@ -1219,15 +1160,6 @@ def _airplay_timing(airplay: Mapping[str, Any], *, active: bool) -> dict[str, An
         "headline": headline,
         "detail": detail,
         "route_id": None,
-        "verification": {
-            "status": "not_applicable",
-            "validated_at": None,
-            "p95_ms": None,
-            "p99_ms": None,
-            "p95_budget_ms": None,
-            "p99_budget_ms": None,
-            "issues": [],
-        },
         "runtime": {"mode": "standard", "raw_mode": None},
     }
 
@@ -1241,15 +1173,6 @@ def _not_applicable_timing() -> dict[str, Any]:
         "headline": "No timing contract for this source",
         "detail": "Timing is shown only where JTS has an honest runtime signal.",
         "route_id": None,
-        "verification": {
-            "status": "not_applicable",
-            "validated_at": None,
-            "p95_ms": None,
-            "p99_ms": None,
-            "p95_budget_ms": None,
-            "p99_budget_ms": None,
-            "issues": [],
-        },
         "runtime": {"mode": "standard", "raw_mode": None},
     }
 
@@ -2313,10 +2236,9 @@ def compose_audio_health(
                 "dac": copy.deepcopy(_mapping(outputd).get("dac")),
                 "tts": copy.deepcopy(_mapping(outputd).get("tts")),
             },
-            "route_verification": {
+            "route": {
                 "route_id": route_state.get("route_id"),
                 "route_config_hash": route_state.get("route_config_hash"),
-                **_verification(route_state),
             },
             "airplay": {
                 "status": ap.get("status"),

@@ -252,21 +252,14 @@ Three contracts the surfaces above depend on:
   silence followed by the freshest source frame. The first post-idle samples are
   silence, never minutes-old room audio.
 
-During an active host recording, doctor compares the fresh p95 with the 120 ms
-acceptance budget; it deliberately does not judge a frozen idle ring. For a
-reviewable run record, keep the host capture open and run
-`sudo /opt/jasper/.venv/bin/jasper-usb-mic-latency-artifact` (`--duration-seconds`,
-`--host-os`, `--host-app`, `--output`; `--require-pass` makes a warning a nonzero
-exit). The schema-1 artifact rejects any tick where the host is not pulling and
-binds the window to build, descriptor revision, resolved export source,
-negotiated capture and writer geometry, host/app identity, and counter deltas.
-Certification requires ≥15 s of uninterrupted status, and percentile aggregation
-begins only after both an 11-second warm-up **and** 512 exact source-age appends
-— that counter proof, not wall time, is what guarantees the rolling window holds
-only this run when status reads are delayed. Percentiles are conservative
-nearest-rank aggregates of qualifying ticks, not raw per-frame samples; the three
-`*_sha256` fields bind configuration, run identity, and content and **none is a
-cryptographic operator signature**.
+The relay publishes a live rolling p50/p95/p99 of that age over its last 512
+periods in `/run/jasper-usbmic/status.json`. During an active host recording,
+doctor reads the fresh p95 and warns above 120 ms; it deliberately does not
+judge a frozen idle ring, because an idle host has no meaningful standing
+latency. That is the whole story: the number is monitored, never certified
+([ADR-0185](adr/0185-latency-is-monitored-and-adapted-never-certified.md)).
+To read it yourself, keep the host capture open and query the status file —
+`host_streaming` tells you whether the window is meaningful at all.
 
 The measured scope is `source_age_scope=bridge_emit_to_alsa_write`. **This is
 not physical mic→host end-to-end latency**: XVF/PortAudio capture time, current
@@ -516,8 +509,8 @@ still owed a hardware pass:
 
 - **Composite under simultaneous traffic** — enumeration and return capture
   passed separately; still owed sustained Mac→Pi playback and Pi→Mac capture
-  together while exercising NCM, plus the schema-4-vs-host-capture latency
-  certification that separates gadget/USB/host terms.
+  together while exercising NCM, plus a schema-4-vs-host-capture latency
+  measurement that separates gadget/USB/host terms.
 - **The network claims, end to end, with Wi-Fi off** — `jts.local` and the
   derived address both reach this speaker over usb0, DHCP hands out one lease,
   the host keeps its own default route, and dnsmasq drops privileges cleanly

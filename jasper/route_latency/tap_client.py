@@ -51,8 +51,7 @@ class TapClientError(RuntimeError):
 
     Callers must treat this as a hard failure of the arm/disarm step — a
     measurement run with a tap that never armed produces zero ingress
-    evidence, which is exactly the "refuse to certify" case this harness
-    exists to enforce.
+    evidence, and a run with no evidence must produce no numbers.
     """
 
 
@@ -101,7 +100,7 @@ class TapArmer(Protocol):
     :class:`FaninTapClient` (fan-in DIRECT-capture tap, control UDS) is the sole
     implementation since the usbsink-bridge HTTP tap was removed. ``arm`` raises
     :class:`TapClientError` on any failure (a run with a tap that never armed
-    produces zero ingress evidence — the "refuse to certify" case)."""
+    produces zero ingress evidence, so it must produce no numbers)."""
 
     def arm(self, params: TapArmParams | None = None) -> dict[str, object]: ...
 

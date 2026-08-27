@@ -7,23 +7,19 @@
 These tests exercise the real production code paths (never a duplicated
 re-implementation): `capture_mic_detections` with an injected fake mic
 reader, `analyze_matches`/`latency_ms_for_match` against synthetic tap +
-mic evidence with known ground-truth latencies, the samples-JSON writer
-checked against `jasper.cli.route_latency_artifact`'s REAL parser (imported
-directly, never duplicated), and the CLI's argparse wiring end-to-end via
-`main()`.
+mic evidence with known ground-truth latencies, the samples-JSON writer,
+and the CLI's argparse wiring end-to-end via `main()`.
 """
 from __future__ import annotations
 
 import json
 import struct
-from pathlib import Path
 
 import pytest
 
 from jasper import wake_legs
-from jasper.audio_validation import percentile_min_samples
-from jasper.cli import route_latency_artifact
 from jasper.cli import route_latency_harness as harness
+from jasper.route_latency.click_track import percentile_min_samples
 from jasper.route_latency.mic_readers import (
     RAW0_BYTES_PER_PACKET,
     RAW0_SAMPLE_RATE_HZ,
@@ -304,8 +300,7 @@ def test_per_impulse_reanchoring_eliminates_100ppm_drift_over_promotion_window(m
 
 
 # --------------------------------------------------------------------------
-# Latency math + samples-JSON: exact values in, exact values out; schema
-# checked against route_latency_artifact's REAL parser.
+# Latency math + samples-JSON: exact values in, exact values out.
 # --------------------------------------------------------------------------
 
 
@@ -390,27 +385,24 @@ def test_analyze_matches_respects_match_rate_floor():
     assert result.match_rate_ok is False
 
 
-def test_write_samples_json_matches_route_latency_artifact_bare_list_schema(tmp_path):
+def test_write_samples_json_writes_a_bare_list_of_milliseconds(tmp_path):
     latencies = (30.1, 31.4, 29.8, 30.0)
 
     path = harness.write_samples_json(latencies, tmp_path / "samples.json")
 
-    # Written as the bare-list shape (option 1 of the three the artifact
-    # accepts) — round-trip through the REAL artifact parser, not a
-    # reimplementation.
-    parsed = route_latency_artifact.load_latency_samples(path)
+    parsed = json.loads(path.read_text(encoding="utf-8"))
+    assert isinstance(parsed, list)
     assert parsed == pytest.approx(list(latencies))
 
 
 def test_write_samples_json_survives_a_full_promotion_scale_round_trip(tmp_path):
-    # >=1000 samples (the p99 certification floor) round-tripping through
-    # the real artifact parser without truncation/precision loss beyond
-    # float round-trip tolerance.
+    # A promotion-scale run (>=1000 samples) round-trips without truncation or
+    # precision loss beyond float round-trip tolerance.
     n = percentile_min_samples(99)
     latencies = tuple(30.0 + (i % 7) * 0.5 for i in range(n))
 
     path = harness.write_samples_json(latencies, tmp_path / "samples.json")
-    parsed = route_latency_artifact.load_latency_samples(path)
+    parsed = json.loads(path.read_text(encoding="utf-8"))
 
     assert len(parsed) == n
     assert parsed == pytest.approx(list(latencies))
@@ -438,7 +430,7 @@ def test_summarize_latencies_empty_does_not_crash():
 
 
 # --------------------------------------------------------------------------
-# Route-health honesty: never auto-asserts route_health_ok.
+# Route-health honesty: reports the window, rules on nothing.
 # --------------------------------------------------------------------------
 
 
@@ -485,7 +477,7 @@ def test_diff_route_health_clean_snapshot_would_justify_ok():
 
     report = harness.diff_route_health(before, after)
 
-    assert report.would_justify_route_health_ok is True
+    assert report.window_clean is True
     assert all(v == 0.0 for v in report.known_counter_deltas.values())
 
 
@@ -495,7 +487,7 @@ def test_diff_route_health_unreachable_daemon_never_justifies_ok():
 
     report = harness.diff_route_health(before, after)
 
-    assert report.would_justify_route_health_ok is False
+    assert report.window_clean is False
 
 
 def test_diff_route_health_incomplete_surfaces_never_justify_ok():
@@ -504,7 +496,7 @@ def test_diff_route_health_incomplete_surfaces_never_justify_ok():
 
     report = harness.diff_route_health(before, after)
 
-    assert report.would_justify_route_health_ok is False
+    assert report.window_clean is False
 
 
 def test_diff_route_health_requires_numeric_stable_counters():
@@ -515,7 +507,7 @@ def test_diff_route_health_requires_numeric_stable_counters():
         after["outputd"]["dac"]["xrun_count"] = bad_value
 
         assert (
-            harness.diff_route_health(before, after).would_justify_route_health_ok
+            harness.diff_route_health(before, after).window_clean
             is False
         )
 
@@ -539,7 +531,7 @@ def test_diff_route_health_requires_unique_usb_direct_lane():
             )
 
         assert (
-            harness.diff_route_health(before, after).would_justify_route_health_ok
+            harness.diff_route_health(before, after).window_clean
             is False
         )
 
@@ -552,7 +544,7 @@ def test_diff_route_health_requires_numeric_usb_direct_counters():
         after["fanin"]["inputs"][1]["resampler"]["unlock_count"] = bad_value
 
         assert (
-            harness.diff_route_health(before, after).would_justify_route_health_ok
+            harness.diff_route_health(before, after).window_clean
             is False
         )
 
@@ -565,7 +557,7 @@ def test_diff_route_health_requires_numeric_xruns_on_every_fanin_lane():
         after["fanin"]["inputs"][0]["xrun_count"] = bad_value
 
         assert (
-            harness.diff_route_health(before, after).would_justify_route_health_ok
+            harness.diff_route_health(before, after).window_clean
             is False
         )
 
@@ -575,7 +567,7 @@ def test_diff_route_health_topology_change_never_justifies_ok():
     after = _healthy_route_snapshot(uptime_seconds=20.0)
     after["fanin"]["inputs"].reverse()
 
-    assert harness.diff_route_health(before, after).would_justify_route_health_ok is False
+    assert harness.diff_route_health(before, after).window_clean is False
 
 
 def test_diff_route_health_fanin_restart_with_clean_counters_fails():
@@ -583,7 +575,7 @@ def test_diff_route_health_fanin_restart_with_clean_counters_fails():
     after = _healthy_route_snapshot(uptime_seconds=30.0)
     after["fanin"]["uptime_seconds"] = 1.0
 
-    assert harness.diff_route_health(before, after).would_justify_route_health_ok is False
+    assert harness.diff_route_health(before, after).window_clean is False
 
 
 def test_diff_route_health_outputd_restart_with_clean_counters_fails():
@@ -591,7 +583,7 @@ def test_diff_route_health_outputd_restart_with_clean_counters_fails():
     after = _healthy_route_snapshot(uptime_seconds=30.0)
     after["outputd"]["uptime_seconds"] = 1.0
 
-    assert harness.diff_route_health(before, after).would_justify_route_health_ok is False
+    assert harness.diff_route_health(before, after).window_clean is False
 
 
 def test_diff_route_health_reports_all_nonzero_deltas_generically():
@@ -617,7 +609,7 @@ def test_diff_route_health_negative_known_delta_means_restart_not_clean():
     report = harness.diff_route_health(before, after)
 
     assert report.known_counter_deltas["fanin.output.xrun_count"] == -7.0
-    assert report.would_justify_route_health_ok is False
+    assert report.window_clean is False
 
 
 def test_diff_route_health_fanin_output_xrun_would_not_justify_ok():
@@ -633,7 +625,7 @@ def test_diff_route_health_fanin_output_xrun_would_not_justify_ok():
     report = harness.diff_route_health(before, after)
 
     assert report.known_counter_deltas["fanin.output.xrun_count"] == 4.0
-    assert report.would_justify_route_health_ok is False
+    assert report.window_clean is False
 
 
 def test_diff_route_health_outputd_content_and_dac_xruns_would_not_justify_ok():
@@ -653,7 +645,7 @@ def test_diff_route_health_outputd_content_and_dac_xruns_would_not_justify_ok():
 
         report = harness.diff_route_health(before, after)
 
-        assert report.would_justify_route_health_ok is False
+        assert report.window_clean is False
 
 
 def test_diff_route_health_per_lane_resampler_unlock_would_not_justify_ok():
@@ -681,7 +673,7 @@ def test_diff_route_health_per_lane_resampler_unlock_would_not_justify_ok():
         snapshot(0, 0, 0, 0, uptime_seconds=10.0),
         snapshot(0, 0, 0, 0, uptime_seconds=20.0),
     )
-    assert clean.would_justify_route_health_ok is True
+    assert clean.window_clean is True
 
     # A resampler unlock on the USB lane disqualifies, and the array-indexed
     # path is what gets flagged.
@@ -690,26 +682,26 @@ def test_diff_route_health_per_lane_resampler_unlock_would_not_justify_ok():
         snapshot(1, 0, 0, 0, uptime_seconds=20.0),
     )
     assert report.known_counter_deltas["fanin.inputs.1.resampler.unlock_count"] == 1.0
-    assert report.would_justify_route_health_ok is False
+    assert report.window_clean is False
 
     # Silence / overrun / per-lane xrun each independently disqualify.
     assert harness.diff_route_health(
         snapshot(0, 0, 0, 0, uptime_seconds=10.0),
         snapshot(0, 256, 0, 0, uptime_seconds=20.0),
-    ).would_justify_route_health_ok is False
+    ).window_clean is False
     assert harness.diff_route_health(
         snapshot(0, 0, 0, 0, uptime_seconds=10.0),
         snapshot(0, 0, 128, 0, uptime_seconds=20.0),
-    ).would_justify_route_health_ok is False
+    ).window_clean is False
     assert harness.diff_route_health(
         snapshot(0, 0, 0, 0, uptime_seconds=10.0),
         snapshot(0, 0, 0, 3, uptime_seconds=20.0),
-    ).would_justify_route_health_ok is False
+    ).window_clean is False
 
 
 # --------------------------------------------------------------------------
 # CLI end-to-end (main()) — generate, analyze (with real evidence files),
-# match-rate refusal, --invoke-artifact passthrough.
+# match-rate refusal.
 # --------------------------------------------------------------------------
 
 
@@ -743,7 +735,7 @@ def _write_jsonl(path, rows):
     path.write_text("\n".join(json.dumps(r) for r in rows) + "\n", encoding="utf-8")
 
 
-def test_cli_analyze_end_to_end_writes_artifact_compatible_samples(tmp_path, capsys):
+def test_cli_analyze_end_to_end_writes_per_impulse_samples(tmp_path, capsys):
     tap_path = tmp_path / "tap.jsonl"
     mic_path = tmp_path / "mic.jsonl"
     n = 200
@@ -767,19 +759,17 @@ def test_cli_analyze_end_to_end_writes_artifact_compatible_samples(tmp_path, cap
         "--tap-events", str(tap_path),
         "--mic-detections", str(mic_path),
         "--out-dir", str(tmp_path),
-        "--duration-seconds", "300",
     ])
 
     assert rc == 0
     samples_path = tmp_path / "latency-samples.json"
     assert samples_path.exists()
-    values = route_latency_artifact.load_latency_samples(samples_path)
+    values = json.loads(samples_path.read_text(encoding="utf-8"))
     assert len(values) == n
     # 30ms raw tap→mic delta; ring_fill_frames=512 is diagnostic only.
     assert all(v == pytest.approx(30.0) for v in values)
     out = capsys.readouterr().out
     assert "match_rate=100.0%" in out
-    assert "certifiable_percentiles=[95]" in out
 
 
 def test_warn_if_tap_count_far_below_schedule_fires_only_on_large_shortfall(capsys):
@@ -829,7 +819,6 @@ def test_cli_analyze_warns_on_tap_side_truncation_but_still_emits(tmp_path, caps
         "--tap-events", str(tap_path),
         "--mic-detections", str(mic_path),
         "--out-dir", str(tmp_path),
-        "--duration-seconds", "300",
         "--expected-impulse-count", "1000",  # schedule planned 1000, tap saw 200
     ])
 
@@ -858,7 +847,6 @@ def test_cli_analyze_no_truncation_warning_when_count_matches(tmp_path, capsys):
         "--tap-events", str(tap_path),
         "--mic-detections", str(mic_path),
         "--out-dir", str(tmp_path),
-        "--duration-seconds", "300",
         "--expected-impulse-count", "200",
     ])
 
@@ -883,7 +871,6 @@ def test_cli_analyze_refuses_below_match_rate_floor_and_writes_nothing(tmp_path,
         "--tap-events", str(tap_path),
         "--mic-detections", str(mic_path),
         "--out-dir", str(tmp_path),
-        "--duration-seconds", "300",
     ])
 
     assert rc == 1
@@ -899,7 +886,6 @@ def test_cli_analyze_errors_cleanly_on_missing_tap_events(tmp_path, capsys):
         "--tap-events", str(tmp_path / "does-not-exist.jsonl"),
         "--mic-detections", str(mic_path),
         "--out-dir", str(tmp_path),
-        "--duration-seconds", "300",
     ])
 
     assert rc == 1
@@ -916,7 +902,6 @@ def test_cli_analyze_errors_cleanly_on_missing_mic_detections(tmp_path, capsys):
         "--tap-events", str(tap_path),
         "--mic-detections", str(tmp_path / "does-not-exist.jsonl"),
         "--out-dir", str(tmp_path),
-        "--duration-seconds", "300",
     ])
 
     assert rc == 1
@@ -924,7 +909,7 @@ def test_cli_analyze_errors_cleanly_on_missing_mic_detections(tmp_path, capsys):
     assert "no mic detections found" in err
 
 
-def test_cli_analyze_prints_route_health_and_never_auto_confirms(tmp_path, capsys):
+def test_cli_analyze_prints_route_health_deltas_and_the_window_verdict(tmp_path, capsys):
     tap_path = tmp_path / "tap.jsonl"
     mic_path = tmp_path / "mic.jsonl"
     n = 200
@@ -956,12 +941,11 @@ def test_cli_analyze_prints_route_health_and_never_auto_confirms(tmp_path, capsy
         "--mic-detections", str(mic_path),
         "--route-health-snapshot", str(health_path),
         "--out-dir", str(tmp_path),
-        "--duration-seconds", "300",
     ])
 
     assert rc == 0
     out = capsys.readouterr().out
-    assert "would NOT be justified" in out
+    assert "NOT clean" in out
     assert "fanin.output.xrun_count: +2" in out
 
 
@@ -1002,7 +986,6 @@ def test_health_report_excludes_timestamp_noise_leaves(tmp_path, capsys):
         "--mic-detections", str(mic_path),
         "--route-health-snapshot", str(health_path),
         "--out-dir", str(tmp_path),
-        "--duration-seconds", "300",
     ])
 
     assert rc == 0
@@ -1032,185 +1015,12 @@ def test_analyze_tolerates_malformed_route_health_snapshot(tmp_path, capsys):
         "--mic-detections", str(mic_path),
         "--route-health-snapshot", str(health_path),
         "--out-dir", str(tmp_path),
-        "--duration-seconds", "300",
     ])
 
     assert rc == 0
     assert (tmp_path / "latency-samples.json").exists()
     err = capsys.readouterr().err
     assert "could not read route-health snapshot" in err
-
-
-def test_cli_invoke_artifact_shells_out_with_harness_id_and_duration(tmp_path, monkeypatch, capsys):
-    tap_path = tmp_path / "tap.jsonl"
-    mic_path = tmp_path / "mic.jsonl"
-    n = 200
-    _write_jsonl(
-        tap_path,
-        [{"monotonic_ns": i * 1_500_000_000, "frame_index": i, "ring_fill_frames": 0, "peak": 0.8} for i in range(n)],
-    )
-    _write_jsonl(mic_path, [{"monotonic_ns": i * 1_500_000_000 + 30_000_000, "peak": 0.5} for i in range(n)])
-
-    captured_cmd: list[str] = []
-
-    class _FakeCompleted:
-        returncode = 0
-
-    def _fake_run(cmd, **kwargs):
-        captured_cmd.extend(cmd)
-        return _FakeCompleted()
-
-    monkeypatch.setattr(harness.subprocess, "run", _fake_run)
-
-    rc = harness.main([
-        "analyze",
-        "--tap-events", str(tap_path),
-        "--mic-detections", str(mic_path),
-        "--out-dir", str(tmp_path),
-        "--duration-seconds", "300",
-        "--invoke-artifact",
-        "--measurement-id", "run-7",
-    ])
-
-    assert rc == 0
-    # The artifact CLI is resolved to a real path (sibling of sys.executable,
-    # then PATH) so it works under sudo where the venv bin dir isn't on PATH;
-    # the invoked command's basename is always the artifact CLI name.
-    assert Path(captured_cmd[0]).name == harness.ARTIFACT_CLI_NAME
-    assert "--harness-id" in captured_cmd
-    assert captured_cmd[captured_cmd.index("--harness-id") + 1] == harness.HARNESS_ID
-    assert "--duration-seconds" in captured_cmd
-    assert captured_cmd[captured_cmd.index("--duration-seconds") + 1] == "300.0"
-    assert "--measurement-id" in captured_cmd
-    assert captured_cmd[captured_cmd.index("--measurement-id") + 1] == "run-7"
-    # route-health-ok is never auto-passed without --confirm-route-health-ok
-    assert "--route-health-ok" not in captured_cmd
-
-
-def test_cli_invoke_artifact_passes_route_health_ok_only_with_explicit_confirm(tmp_path, monkeypatch):
-    # The positive case: --route-health-ok reaches the artifact CLI only
-    # when BOTH the harness's own health-diff verdict says it would be
-    # justified AND the operator explicitly passed --confirm-route-health-ok
-    # (see RouteHealthReport.would_justify_route_health_ok's docstring for
-    # why this is never inferred alone).
-    tap_path = tmp_path / "tap.jsonl"
-    mic_path = tmp_path / "mic.jsonl"
-    n = 200
-    _write_jsonl(
-        tap_path,
-        [{"monotonic_ns": i * 1_500_000_000, "frame_index": i, "ring_fill_frames": 0, "peak": 0.8} for i in range(n)],
-    )
-    _write_jsonl(mic_path, [{"monotonic_ns": i * 1_500_000_000 + 30_000_000, "peak": 0.5} for i in range(n)])
-    health_path = tmp_path / "route-health-snapshot.json"
-    health_path.write_text(
-        json.dumps(
-            {
-                "before": _healthy_route_snapshot(),
-                "after": _healthy_route_snapshot(uptime_seconds=20.0),
-            }
-        ),
-        encoding="utf-8",
-    )
-
-    captured_cmd: list[str] = []
-
-    class _FakeCompleted:
-        returncode = 0
-
-    def _fake_run(cmd, **kwargs):
-        captured_cmd.extend(cmd)
-        return _FakeCompleted()
-
-    monkeypatch.setattr(harness.subprocess, "run", _fake_run)
-
-    rc = harness.main([
-        "analyze",
-        "--tap-events", str(tap_path),
-        "--mic-detections", str(mic_path),
-        "--route-health-snapshot", str(health_path),
-        "--out-dir", str(tmp_path),
-        "--duration-seconds", "300",
-        "--invoke-artifact",
-        "--confirm-route-health-ok",
-    ])
-
-    assert rc == 0
-    assert "--route-health-ok" in captured_cmd
-
-
-def test_resolve_artifact_cli_prefers_sibling_of_sys_executable(tmp_path, monkeypatch):
-    # The documented invocation runs the harness from a venv bin dir that is
-    # NOT on sudo's PATH; the artifact CLI is a sibling console entry point, so
-    # resolution must find it next to sys.executable first.
-    sibling = tmp_path / harness.ARTIFACT_CLI_NAME
-    sibling.write_text("#!/bin/sh\n", encoding="utf-8")
-    monkeypatch.setattr(harness.sys, "executable", str(tmp_path / "python"))
-
-    assert harness._resolve_artifact_cli() == str(sibling)
-
-
-def test_resolve_artifact_cli_falls_back_to_bare_name_when_absent(tmp_path, monkeypatch):
-    import shutil
-
-    monkeypatch.setattr(harness.sys, "executable", str(tmp_path / "python"))
-    monkeypatch.setattr(harness.sys, "argv", [str(tmp_path / "harness")])
-    monkeypatch.setattr(shutil, "which", lambda _name: None)
-
-    assert harness._resolve_artifact_cli() == harness.ARTIFACT_CLI_NAME
-
-
-def test_cli_invoke_artifact_reports_clean_error_when_artifact_missing(tmp_path, monkeypatch, capsys):
-    tap_path = tmp_path / "tap.jsonl"
-    mic_path = tmp_path / "mic.jsonl"
-    n = 200
-    _write_jsonl(
-        tap_path,
-        [{"monotonic_ns": i * 1_500_000_000, "frame_index": i, "ring_fill_frames": 0, "peak": 0.8} for i in range(n)],
-    )
-    _write_jsonl(mic_path, [{"monotonic_ns": i * 1_500_000_000 + 30_000_000, "peak": 0.5} for i in range(n)])
-
-    def _raise_not_found(cmd, **kwargs):
-        raise FileNotFoundError(cmd[0])
-
-    monkeypatch.setattr(harness.subprocess, "run", _raise_not_found)
-
-    rc = harness.main([
-        "analyze",
-        "--tap-events", str(tap_path),
-        "--mic-detections", str(mic_path),
-        "--out-dir", str(tmp_path),
-        "--duration-seconds", "300",
-        "--invoke-artifact",
-    ])
-
-    # The samples file is still written; only the passthrough failed, and it
-    # fails with a clean message, not an uncaught traceback.
-    assert rc == 1
-    assert (tmp_path / "latency-samples.json").exists()
-    err = capsys.readouterr().err
-    assert harness.ARTIFACT_CLI_NAME in err
-    assert "could not find" in err
-
-
-def test_cli_run_subcommand_does_not_accept_duration_or_jitter_flags(tmp_path):
-    # Regression guard: `run` loads the schedule file directly and derives
-    # duration/jitteredness from it. It must NOT accept --duration-seconds
-    # or --impulse-spacing-jittered as separate flags — an earlier version
-    # of this CLI required --duration-seconds on `run` and then silently
-    # discarded whatever the operator typed in favor of the schedule's own
-    # value, which is confusing and error-prone. Those flags exist only on
-    # `analyze` (which has no schedule file to read them from).
-    schedule_path = tmp_path / "schedule.json"
-    schedule = harness.click_track.build_schedule("quick", seed=1)
-    harness.click_track.write_schedule_json(schedule, schedule_path)
-
-    with pytest.raises(SystemExit) as exc_info:
-        harness.main(["run", str(schedule_path), "--duration-seconds", "300"])
-    assert exc_info.value.code == 2
-
-    with pytest.raises(SystemExit) as exc_info:
-        harness.main(["run", str(schedule_path), "--impulse-spacing-jittered"])
-    assert exc_info.value.code == 2
 
 
 def test_cli_mic_distance_cm_converts_to_compensation_ms(tmp_path):
@@ -1227,12 +1037,13 @@ def test_cli_mic_distance_cm_converts_to_compensation_ms(tmp_path):
         "--tap-events", str(tap_path),
         "--mic-detections", str(mic_path),
         "--out-dir", str(tmp_path),
-        "--duration-seconds", "300",
         "--mic-distance-cm", "10",
     ])
 
     assert rc == 0
-    values = route_latency_artifact.load_latency_samples(tmp_path / "latency-samples.json")
+    values = json.loads(
+        (tmp_path / "latency-samples.json").read_text(encoding="utf-8")
+    )
     # 10cm ~= 0.29ms of compensation subtracted from the raw 30ms latency.
     assert all(v == pytest.approx(30.0 - harness.SOUND_MS_PER_CM * 10, abs=0.01) for v in values)
 

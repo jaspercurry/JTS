@@ -610,8 +610,8 @@ def ring_edge_width_ready(
     ``DEFAULT_PLAYBACK_FORMAT``, the box-wide program-lane default. That was
     correct while the two were equal, but once PR-6 widened the default it would
     have refused the ring on EVERY ring-eligible box — including jts.local,
-    whose armed ring was coherently narrow through the kwargs override and which
-    carries a CERTIFIED USB-route latency artifact measured on that ring.
+    whose armed ring was coherently narrow through the kwargs override and whose
+    USB-route latency was measured on that ring.
     Ring-coupled boxes keep the ring at its own RESOLVED wire, whatever that
     resolves to — which is the property that survived the resolver's default
     going wide: the two values coincide again on an undeclared box, and this

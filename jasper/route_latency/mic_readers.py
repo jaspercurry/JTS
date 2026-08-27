@@ -72,7 +72,7 @@ class MicSourceUnavailableError(RuntimeError):
     fall back to a different source or synthesize samples. See module
     docstring: an unfed :9879 is an expected steady state on a box with no
     XVF3800 mic present, so this is the harness's explicit "no evidence,
-    refuse to certify" signal.
+    refuse to measure" signal.
     """
 
 

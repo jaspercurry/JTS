@@ -148,27 +148,13 @@ def _outputd(
     }
 
 
-def _route(
-    *,
-    artifact_status: str = "pass",
-    artifact_issues: list[str] | None = None,
-    transport: dict | None = None,
-) -> dict:
+def _route(*, transport: dict | None = None) -> dict:
     return {
         "status": "available",
         "route_id": "usb_low_latency_48k",
         "source_id": "usbsink",
         "fixed_sample_rate": 48000,
         "low_latency_claim": True,
-        "p95_budget_ms": 40.0,
-        "p99_budget_ms": 42.0,
-        "artifact": {
-            "status": artifact_status,
-            "validated_at": "2026-07-14T12:00:00Z",
-            "p95_ms": 37.9,
-            "p99_ms": 38.3,
-            "issues": artifact_issues or [],
-        },
         "transport": transport or {"coherence_errors": [], "capability_gap": None},
     }
 
@@ -177,7 +163,6 @@ def _compose(
     *,
     selected=None,
     ladder=None,
-    artifact_status="pass",
     service_states=None,
     source_intents=None,
     session=None,
@@ -187,7 +172,7 @@ def _compose(
     return compose_audio_health(
         airplay=_airplay(selected=selected, ladder=ladder),
         outputd=outputd if outputd is not None else _outputd(),
-        route=_route(artifact_status=artifact_status, transport=transport),
+        route=_route(transport=transport),
         issues=[],
         sampled_at=1000.0,
         service_states=service_states,
@@ -207,12 +192,11 @@ def _compose(
     )
 
 
-def test_usb_l0_and_matching_artifact_are_two_distinct_verified_facts() -> None:
+def test_usb_l0_reports_the_live_lowest_latency_runtime() -> None:
     health = _compose(selected="usbsink", ladder="l0_locked")
 
     assert health["signal_path"]["status"] == "ok"
     assert health["latency"]["status"] == "ok"
-    assert health["latency"]["verification"]["status"] == "verified"
     assert health["latency"]["runtime"] == {
         "mode": "lowest_latency",
         "raw_mode": "l0_locked",
@@ -292,23 +276,6 @@ def test_usb_terminal_fallback_outranks_raised_recovery_buffer() -> None:
     )
 
 
-def test_stale_artifact_is_technical_evidence_not_a_household_warning() -> None:
-    # ADR-0101: staleness reaches the card as the assessor's disclosing warn,
-    # which reads as partial evidence — never as a household alarm.
-    health = _compose(
-        selected="usbsink",
-        ladder="l0_locked",
-        artifact_status="warn",
-    )
-
-    assert health["latency"]["runtime"]["mode"] == "lowest_latency"
-    assert health["latency"]["verification"]["status"] == "partial"
-    assert health["latency"]["status"] == "ok"
-    assert health["latency"]["headline"] == "Low latency · stable"
-    assert health["overall"]["status"] == "ok"
-    assert health["technical"]["route_verification"]["status"] == "partial"
-
-
 def test_airplay_sync_stays_source_specific_not_a_latency_claim() -> None:
     health = _compose(selected="airplay")
 
@@ -316,7 +283,6 @@ def test_airplay_sync_stays_source_specific_not_a_latency_claim() -> None:
     assert health["latency"]["kind"] == "none"
     airplay = next(source for source in health["sources"] if source["id"] == "airplay")
     assert airplay["timing"]["kind"] == "sync"
-    assert airplay["timing"]["verification"]["status"] == "not_applicable"
 
 
 def test_failed_inactive_renderer_is_not_disguised_as_idle() -> None:
@@ -1932,44 +1898,6 @@ def test_usb_route_and_runtime_uncertainty_are_not_green() -> None:
     assert unavailable["overall"]["status"] == "warn"
     assert missing_clock["latency"]["status"] == "warn"
     assert "clock mode unavailable" in missing_clock["latency"]["headline"]
-
-
-def test_old_target_miss_is_technical_evidence_not_a_household_warning() -> None:
-    route = _route(
-        artifact_status="warn",
-        artifact_issues=["p99_exceeds_42ms"],
-    )
-    route["artifact"]["p99_ms"] = 50.0
-    health = compose_audio_health(
-        airplay=_airplay(selected="usbsink", ladder="l0_locked"),
-        outputd=_outputd(),
-        route=route,
-        issues=[],
-        sampled_at=1000.0,
-    )
-
-    assert health["latency"]["verification"]["status"] == "target_missed"
-    assert health["latency"]["status"] == "ok"
-    assert health["overall"]["status"] == "ok"
-    assert health["technical"]["route_verification"]["status"] == "target_missed"
-
-
-def test_target_miss_issue_code_tracks_budget_constant(monkeypatch) -> None:
-    monkeypatch.setattr(audio_health, "USB_LOW_LATENCY_P99_BUDGET_MS", 43)
-    route = _route(
-        artifact_status="warn",
-        artifact_issues=["p99_exceeds_43ms"],
-    )
-
-    health = compose_audio_health(
-        airplay=_airplay(selected="usbsink", ladder="l0_locked"),
-        outputd=_outputd(),
-        route=route,
-        issues=[],
-        sampled_at=1000.0,
-    )
-
-    assert health["technical"]["route_verification"]["status"] == "target_missed"
 
 
 def test_selected_source_without_a_fanin_lane_is_a_continuity_issue() -> None:

@@ -60,8 +60,8 @@
 | Characterize whole-system CPU/memory/journal behavior over time | [System soak artifacts](#system-soak-artifacts) |
 | Measure inter-speaker sync error for multi-room (stereo pair / sub) on WiFi | [Multi-room sync spike (P0)](#multi-room-sync-spike-p0) |
 | Measure the AirPlay latency budget a sender negotiates (free vs. tight regime for bonded-leader lip-sync) | [Pi-side diagnostics](#pi-side-diagnostics) — [`scripts/airplay-latency-probe.sh`](../scripts/airplay-latency-probe.sh) |
-| Certify (or honestly fail) `usb_low_latency_48k`'s p95/p99 route-latency claim with real click/capture impulses | [Route-latency click/capture harness](#route-latency-clickcapture-harness) |
-| Certify the reverse `JTS Mic` bridge-emit→ALSA-write latency while a computer is actively recording | [USB microphone export latency artifact](#usb-microphone-export-latency-artifact) |
+| Measure `usb_low_latency_48k`'s real p95/p99 route latency with click/capture impulses | [Route-latency click/capture harness](#route-latency-clickcapture-harness) |
+| Read the reverse `JTS Mic` bridge-emit→ALSA-write latency while a computer is actively recording | [USB microphone export latency](#usb-microphone-export-latency) |
 | Turn up logging for one subsystem on the live Pi (`/system` Debug card) | [`HANDOFF-observability.md`](HANDOFF-observability.md) |
 | Diagnose speaker identity (mDNS collision rename, hostname drift, management-UI 403s) | [`HANDOFF-identity.md`](HANDOFF-identity.md) — `/state.resilience.identity`, the doctor identity checks, `event=identity_reconcile.*` |
 | Get the verbose DEBUG context around a failure (in-RAM flight recorder, `event=flightrec.dump`) | [`HANDOFF-observability.md`](HANDOFF-observability.md) |
@@ -756,43 +756,36 @@ Pure stdlib + numpy/scipy; covered by `tests/test_analyze_wake_corpus_quality.py
 
 ---
 
-## USB microphone export latency artifact
+## USB microphone export latency
 
-`jasper-usb-mic-latency-artifact` samples the live `jasper-usbmic` status while
-a computer is actively recording from `JTS Mic`. It rejects an idle or stale
-window, then writes a schema-1 JSON record bound to the installed build,
-descriptor revision, resolved software/chip export source, negotiated
-XVF/PortAudio capture geometry,
-realized ALSA writer geometry/target, and operator-supplied host application.
-Use it for the optional Pi→computer microphone direction; it does not replace
-the host→speaker click/capture harness below.
+The `jasper-usbmic` relay measures its own `bridge_emit_to_alsa_write` age
+continuously and publishes live p50/p95/p99 in
+`/run/jasper-usbmic/status.json`. `jasper-doctor`'s "USB microphone export"
+check reads that live number while a computer is actively recording from
+`JTS Mic` and warns above 120 ms; it deliberately does not judge a frozen idle
+ring. There is nothing to certify — see
+[ADR-0185](adr/0185-latency-is-monitored-and-adapted-never-certified.md).
 
 ```sh
-sudo /opt/jasper/.venv/bin/jasper-usb-mic-latency-artifact \
-  --duration-seconds 30 \
-  --host-os "macOS 15" \
-  --host-app "CoreAudio / sounddevice" \
-  --output /tmp/jts-usb-mic-latency.json
+# The live number, straight from the relay:
+ssh pi@jts.local 'jq "{host_streaming, source_age_ms_p50, source_age_ms_p95, source_age_ms_p99}" /run/jasper-usbmic/status.json'
 ```
 
-The active-only 120 ms doctor budget and the exact artifact interpretation are
-canonical in
+The measured scope is `bridge_emit_to_alsa_write`, canonical in
 [`HANDOFF-usb-gadget.md`](HANDOFF-usb-gadget.md#toggling-and-choosing-the-computer-microphone-from-wake).
-Aggregation waits at least 11 seconds and also proves 512 exact source-age
-appends after the first post-start relay status, so delayed status reads cannot
-admit history from before the run. Use the documented 30-second command for
-review artifacts, and add `--require-pass` in automation.
+It is **not** physical mic→host end-to-end latency: XVF/PortAudio capture time,
+gadget fill, USB transport, and the host audio stack are separate terms.
 
 ---
 
 ## Route-latency click/capture harness
 
 `jasper-route-latency-harness` (source: `jasper/cli/route_latency_harness.py`
-+ `jasper/route_latency/`) is the click-in/capture-back measurement producer
-[`jasper-route-latency-artifact`](../jasper/cli/route_latency_artifact.py)
-needs — the artifact CLI binds measured latency to the live route identity
-and writes the schema-v1 validation artifact, but it has never itself played
-or captured audio; this harness is what generates real per-impulse evidence.
++ `jasper/route_latency/`) is the click-in/capture-back measurement tool: it
+plays real impulses through the USB route and reports what they measured. It
+is an on-demand diagnostic and grades nothing — latency is monitored live on
+`/system` and adapted at runtime, never certified
+([ADR-0185](adr/0185-latency-is-monitored-and-adapted-never-certified.md)).
 See [`docs/HANDOFF-usb-low-latency.md`](HANDOFF-usb-low-latency.md) for the
 full quick/promotion end-to-end walkthrough and current route status.
 
@@ -827,9 +820,8 @@ records the ring's pre-read fill depth per impulse as diagnostic context, but
 that is not added to the latency (doing so would double-count the ring
 dwell).
 
-**Quick gate (p95 <= 40 ms, >=200 impulses, >=5 min — budget tightened
-2026-07-11 to the certified electrical floor, see
-`docs/HANDOFF-usb-latency-measurement.md` §1):**
+**Quick run (>=200 impulses over >=5 min — enough for p95 to mean
+something):**
 
 Invoke every CLI by its absolute venv path (`/opt/jasper/.venv/bin/...`):
 under `sudo` the venv `bin/` is not on `secure_path`, so a bare command name
@@ -850,7 +842,8 @@ sudo /opt/jasper/.venv/bin/jasper-route-latency-harness capture \
   /tmp/route-latency/quick-schedule.json \
   --out-dir /tmp/route-latency
 
-# 3. Analyze the captured evidence and emit an artifact-feedable samples file.
+# 3. Analyze the captured evidence: pair tap/mic detections, print the
+#    percentiles, and write latency-samples.json.
 #    Point --tap-events at the JSONL that `capture` printed it armed: the fan-in
 #    DIRECT-capture path (/run/jasper-fanin/impulse-tap.jsonl) — the sole ingress
 #    tap since the aloop solo path (and its /run/jasper-usbsink tap) were deleted
@@ -861,35 +854,20 @@ sudo /opt/jasper/.venv/bin/jasper-route-latency-harness capture \
   --tap-events /run/jasper-fanin/impulse-tap.jsonl \
   --mic-detections /tmp/route-latency/mic-detections.jsonl \
   --route-health-snapshot /tmp/route-latency/route-health-snapshot.json \
-  --out-dir /tmp/route-latency \
-  --duration-seconds 360
-
-# 4. Feed the real artifact CLI (see docs/HANDOFF-usb-low-latency.md):
-sudo /opt/jasper/.venv/bin/jasper-route-latency-artifact \
-  --samples /tmp/route-latency/latency-samples.json \
-  --duration-seconds 360 \
-  --harness-id jts-click-capture-v1 \
-  --route-health-ok   # only if step 3's printed deltas justify it
+  --out-dir /tmp/route-latency
 ```
 
 Or run steps 2-3 in one shot with `run` (`generate` still stays separate,
-since the WAV only needs generating once). `run` loads the schedule file
-directly, so it derives duration and jitter itself — it does not take
-`--duration-seconds`/`--impulse-spacing-jittered` (those exist only on
-`analyze`, which has no schedule file to read them from):
+since the WAV only needs generating once):
 
 ```sh
 sudo /opt/jasper/.venv/bin/jasper-route-latency-harness run \
   /tmp/route-latency/quick-schedule.json \
-  --out-dir /tmp/route-latency \
-  --invoke-artifact
+  --out-dir /tmp/route-latency
 ```
 
-**Promotion gate (p99 <= 42 ms, >=1000 jittered impulses, >=30 min):**
-identical flow with `generate promotion` instead of `generate quick`. On
-`analyze`, add `--impulse-spacing-jittered` to declare that fact to the
-artifact CLI (`run` needs no such flag — it reads jitteredness straight off
-the loaded schedule):
+**Promotion run (>=1000 jittered impulses over >=30 min — enough for p99):**
+identical flow with `generate promotion` instead of `generate quick`:
 
 ```sh
 # generate promotion on the laptop (memory-heavy render — see below), then
@@ -897,9 +875,7 @@ the loaded schedule):
 /opt/jasper/.venv/bin/jasper-route-latency-harness generate promotion --out-dir /tmp/route-latency
 sudo /opt/jasper/.venv/bin/jasper-route-latency-harness run \
   /tmp/route-latency/promotion-schedule.json \
-  --out-dir /tmp/route-latency \
-  --invoke-artifact \
-  --require-pass
+  --out-dir /tmp/route-latency
 ```
 
 **Getting the WAV to the playback host.** The click-track WAV is played by a
@@ -914,15 +890,15 @@ generate it (the 1 GB Pi is busy running the audio stack under test).
 **Route-health honesty.** `capture` snapshots the two live route owners — the
 fan-in and outputd `STATUS` sockets — before and after the capture window
 (writing `route-health-snapshot.json`);
-`analyze` then diffs that file, prints every nonzero counter delta, and states
-whether `--route-health-ok` on the artifact CLI *would* be justified — it
-never asserts that for the operator. Both surfaces and the expected USB DIRECT
-lane/counter shape must be present in both snapshots; incomplete telemetry is
-not a clean window. The verdict disqualifies on ANY nonzero change to a curated
-route-health counter (a NEGATIVE delta means the daemon restarted mid-window —
-also unclean): the fan-in output xrun, the outputd content/DAC xruns, and any
-fan-in USB-resampler unlock/silence/overrun or per-lane xrun. The retired
-bridge/state surface is not route-health evidence. Read the printed deltas before deciding.
+`analyze` then diffs that file, prints every nonzero counter delta, and says
+whether the measurement window was clean. Both surfaces and the expected USB
+DIRECT lane/counter shape must be present in both snapshots; incomplete
+telemetry is not a clean window. The window reads unclean on ANY nonzero change
+to a curated route-health counter (a NEGATIVE delta means the daemon restarted
+mid-window — also unclean): the fan-in output xrun, the outputd content/DAC
+xruns, and any fan-in USB-resampler unlock/silence/overrun or per-lane xrun.
+The retired bridge/state surface is not route-health evidence. It gates
+nothing — read the printed deltas before trusting the numbers.
 
 **Mic source.** Default is `udp:9879` (the AEC bridge's `raw0` leg — requires
 an XVF3800 present with 6-channel firmware and the bridge running; the
@@ -940,8 +916,8 @@ uncertainty regardless of run length.
 
 **Pairing.** Nearest-match within a bounded window; a tap or mic detection
 with more than one plausible partner is rejected as ambiguous rather than
-guessed at, and the tool refuses to emit an artifact-feedable file below a
-match-rate floor (default 90% of tap events).
+guessed at, and the tool refuses to emit a samples file below a match-rate
+floor (default 90% of tap events).
 
 **Test coverage:**
 `tests/test_route_latency_click_track.py`,
@@ -1047,7 +1023,6 @@ Live Pi state without modifying anything:
 | `sudo /opt/jasper/.venv/bin/jasper-doctor` | Codified BRINGUP smoke tests — first command to run when something's broken. Checks run with bounded parallelism while probes that would perturb one another stay serialized — ALSA opens against each other, and the voice-provider import probe against the memory-headroom sample — so the flat report keeps stable ordering without summing every subprocess timeout. Also re-checks output hardware observed-vs-active state plus presence/hashes for opaque runtime model files that JTS stages directly (required openWakeWord assets, the active wake model when registry-pinned, and configured DTLN ONNX stages when DTLN is enabled). |
 | `curl -s http://jts.local/system/diagnostics.json \| jq` | Management dashboard doctor snapshot. It serves the last root-fidelity `jasper-doctor --json --out` result immediately and schedules a background refresh when the cache is stale or missing, so the dashboard does not block on a live doctor run. |
 | `curl -s http://jts.local:8780/state \| jq` | Cross-daemon JSON snapshot (voice / audio including `output_hardware` / AEC runtime profile / renderers). Fail-soft per section. |
-| `sudo /opt/jasper/.venv/bin/jasper-route-latency-artifact --samples <latencies.json> --duration-seconds <s> --route-health-ok` | Writes the doctor-consumed `route_latency` validation artifact from measured USB click/capture latencies and the live `jasper.audio_runtime_plan` route identity. It is not the measurement harness; only pass `--route-health-ok` when the same window had complete, clean fan-in/outputd telemetry. |
 | [`scripts/fetch-pi-logs.sh`](../scripts/fetch-pi-logs.sh) | Pulls journals + previous-boot OOM/watchdog/reboot forensics + monotonic boot timelines + configs + ALSA state to `./logs/`, redacting env-style secrets before write. Read the `*-latest.*` symlinks plus `log-noise-summary-latest.txt` for line counts and repeated-message fingerprints. |
 | [`scripts/journal-review.sh`](../scripts/journal-review.sh) | Read-only journal-health digest run ON the Pi for the last `--since` window (default `7 days ago`): journal disk usage + retention/truncation, per-unit auto-restart counts, warning+ volume by unit, top `event=<domain.action>` keys with a week-over-week DELTA + never-seen-before keys, OOM/watchdog fingerprints, and repeated-message fingerprints (reuses `fetch-pi-logs.sh`'s fingerprinter). `--json` for machine consumption. Bounded (windowed journalctl + awk, no full-journal scan); always exits 0; the only write is its own `/var/lib/jasper/journal-review.state.json` week-over-week baseline. |
 | [`scripts/pi-run-diagnostic.sh`](../scripts/pi-run-diagnostic.sh) | Safe lane for ad-hoc Pi-side diagnostics: wraps a command in `systemd-run` with memory/runtime bounds and a positive `OOMScoreAdjust`. |

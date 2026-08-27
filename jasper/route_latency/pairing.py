@@ -27,7 +27,7 @@ The algorithm:
 
 The result reports matched, unmatched-tap, unmatched-mic, and
 ambiguous-rejected counts so ``analyze`` can print an honest summary and
-refuse to certify below the match-rate floor.
+refuse to emit samples below the match-rate floor.
 """
 from __future__ import annotations
 
@@ -181,7 +181,7 @@ def pair_events(
     # Phase 2: only a tap with one unpoisoned candidate may contribute a
     # latency sample.  A tap whose sole candidate was implicated by another
     # ambiguous tap is itself ambiguous, not unmatched: it still has a
-    # plausible partner, but that partner cannot be certified uniquely.
+    # plausible partner, but that partner cannot be resolved uniquely.
     for tap_i, eligible in candidates.items():
         mic_i = nearest_mic_for_tap[tap_i]
         if tap_i in ambiguous_tap_idx or mic_i in ambiguous_mic_idx:

@@ -31,7 +31,7 @@ import time
 
 from jasper.audio_hardware.usb_port_role import gadget_unavailable_detail
 from jasper.audio_runtime_plan import UAC2_LOW_LATENCY_EXPECTED_ATTRS
-from jasper.audio_validation import route_live_state_issues
+from jasper.audio_validation_route import route_live_state_issues
 from jasper.fanin.status import fanin_usbsink_lane_is_direct, read_fanin_status
 from jasper.music_sources import Source
 from jasper.output_hardware import current_usb_data_role
@@ -445,7 +445,6 @@ def check_usbsink_low_latency_contract() -> CheckResult:
         route_live_state_issues(
             plan.route_latency_identity(),
             fanin_status=fanin_status,
-            allow_idle_direct_lane=True,
         )
     )
     if live_issues:

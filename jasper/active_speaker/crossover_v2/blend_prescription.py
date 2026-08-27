@@ -1712,8 +1712,7 @@ def read_prescription_bytes(payload: bytes) -> Mapping[str, Any]:
 def prescription_sha256(payload: bytes) -> str:
     """The digest of the bytes actually parsed.
 
-    Provenance for what was read rather than for what was meant — the shape
-    ``route_latency_artifact._read_sample_text`` already uses. It goes on the
+    Provenance for what was read rather than for what was meant. It goes on the
     receipt beside the prescriber's name so a later reader can prove which
     document produced a round.
     """

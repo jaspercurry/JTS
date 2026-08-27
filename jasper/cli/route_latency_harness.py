@@ -4,13 +4,10 @@
 
 """`jasper-route-latency-harness` — the click/capture measurement CLI.
 
-Produces the real per-impulse latency evidence
-`jasper.cli.route_latency_artifact --samples` needs to certify (or honestly
-fail) the `usb_low_latency_48k` route. This CLI is a measurement producer,
-not a certification authority: `analyze` writes samples-JSON in the
-artifact's exact schema and prints an honest route-health delta, but never
-decides pass/fail itself — that stays `route_latency_artifact`'s job (see
-`jasper.audio_validation.route_latency_gate_status`).
+Measures the real per-impulse latency of the `usb_low_latency_48k` route and
+reports the numbers. It is an on-demand diagnostic: nothing here grades the
+result, and no verdict is written anywhere (see ADR-0185 — latency is
+monitored on `/system` and adapted at runtime, never certified).
 
 Four steps, run separately or via `run`:
 
@@ -26,17 +23,8 @@ Four steps, run separately or via `run`:
               Rust process, not by this CLI) plus capture's mic-detections
               JSONL and health snapshot, pair them, compute latency,
               write samples-JSON + a human summary, and refuse to emit a
-              feedable file below the match-rate floor.
-  run       — capture then analyze in one shot, with an optional
-              --invoke-artifact passthrough to
-              jasper-route-latency-artifact.
-
-Route-health honesty: this CLI NEVER asserts --route-health-ok on the
-operator's behalf. It prints the before/after counter deltas from the two live
-route status surfaces (fan-in DIRECT ingress plus outputd) and states whether the
-declaration WOULD be justified; the operator makes the actual call by passing
---confirm-route-health-ok (alongside --invoke-artifact), which is only honored
-when the printed health diff would itself justify it.
+              samples file below the match-rate floor.
+  run       — capture then analyze in one shot.
 
 Two standalone box-side utilities, independent of the four-step flow (see
 docs/HANDOFF-usb-latency-measurement.md §3 and §5):
@@ -47,6 +35,11 @@ docs/HANDOFF-usb-latency-measurement.md §3 and §5):
   convert-pcap — convert a tcpdump `:9891` reference-stream pcap into
                  mic-detections JSONL, for the electrical-plane measurement
                  method (no capture device needed).
+
+Route-health honesty: `capture` snapshots the two live route status surfaces
+(fan-in DIRECT ingress plus outputd) before and after the window and `analyze`
+prints every counter delta, so the operator can see for themselves whether the
+measurement window was clean. The tool never rules on that.
 """
 from __future__ import annotations
 
@@ -54,20 +47,14 @@ import argparse
 import json
 import logging
 import math
-import subprocess
 import sys
 import time
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Mapping
 
-from jasper.audio_validation import (
-    ROUTE_LATENCY_P95_BUDGET_MS,
-    ROUTE_LATENCY_P99_BUDGET_MS,
-    certified_route_latency_percentiles,
-)
-from jasper.cli.route_latency_artifact import nearest_rank_percentile
 from jasper.log_event import log_event
+from jasper.percentiles import nearest_rank_percentile
 from jasper.route_latency import click_track, ref9891_pcap, warm_check
 from jasper.route_latency.impulse_detect import (
     DEFAULT_HYSTERESIS,
@@ -112,7 +99,6 @@ from jasper.route_latency.tap_transport import (
 
 logger = logging.getLogger("jasper.cli.route_latency_harness")
 
-HARNESS_ID = "jts-click-capture-v1"
 
 DEFAULT_OUT_DIR = Path("/var/lib/jasper/audio-validation/route-latency-harness")
 DEFAULT_DISTANCE_COMPENSATION_MS = 0.0
@@ -147,8 +133,8 @@ MIN_TAP_DETECT_RATE_DEFAULT = 0.90
 # explicitly calls out as "this alone means unhealthy."
 #
 # The set encodes the same "clean window" contract the HANDOFF names (see
-# docs/HANDOFF-usb-low-latency.md "Only pass `--route-health-ok` when…"): no
-# fan-in USB resampler unlock/silence/overrun and no outputd/fan-in xruns. The names are
+# docs/HANDOFF-usb-low-latency.md "Watching the route"): no fan-in USB
+# resampler unlock/silence/overrun and no outputd/fan-in xruns. The names are
 # cross-checked against the Rust status serializers by
 # `test_known_health_counter_names_exist_in_rust_status_json`, so a Rust-side
 # rename fails loudly rather than silently degrading the verdict to
@@ -162,7 +148,7 @@ MIN_TAP_DETECT_RATE_DEFAULT = 0.90
 #     unlock/silence/overrun). Their dotted path carries a lane INDEX
 #     (`fanin.inputs.0.xrun_count`) that is not stable across a topology
 #     change, so they are matched by dotted-path SUFFIX instead of exact path —
-#     any lane's xrun/unlock/silence/overrun disqualifies. `_numeric_deltas`
+#     any lane's xrun/unlock/silence/overrun counts. `_numeric_deltas`
 #     recurses into lists so these are visible in `all_deltas`.
 KNOWN_HEALTH_COUNTER_PATHS: tuple[tuple[str, ...], ...] = (
     # fan-in output (post-mix ALSA loopback) xruns — a stable dict path.
@@ -176,8 +162,9 @@ KNOWN_HEALTH_COUNTER_PATHS: tuple[tuple[str, ...], ...] = (
 # fan-in STATUS `inputs` array carries per-lane `xrun_count` and, on the
 # clock-crossing USB lane, a `resampler` object with `unlock_count` /
 # `silence_frames` / `overrun_frames`. Any lane's nonzero delta on one of these
-# disqualifies (the contract's "no fan-in USB resampler unlock/silence/overrun,
-# and no outputd/fan-in xruns"). Suffix-matched because the lane index is not
+# marks the window unclean (the contract's "no fan-in USB resampler
+# unlock/silence/overrun, and no outputd/fan-in xruns"). Suffix-matched because
+# the lane index is not
 # stable across topology changes; leaf names cross-checked against
 # `rust/jasper-fanin/src/state.rs` by the contract test.
 KNOWN_HEALTH_COUNTER_SUFFIXES: tuple[tuple[str, ...], ...] = (
@@ -346,8 +333,8 @@ def _usb_direct_health_counters(
 
 @dataclass(frozen=True)
 class RouteHealthReport:
-    """Honest before/after route-health comparison. Never asserts
-    `route_health_ok` on the operator's behalf — see module docstring."""
+    """Honest before/after route-health comparison. Advisory: it describes the
+    measurement window, and rules on nothing — see module docstring."""
 
     all_deltas: Mapping[str, float]
     known_counter_deltas: Mapping[str, float]
@@ -355,7 +342,7 @@ class RouteHealthReport:
     after: Mapping[str, Any]
 
     @property
-    def would_justify_route_health_ok(self) -> bool:
+    def window_clean(self) -> bool:
         """True iff the complete, stable USB route stayed healthy throughout.
 
         Every stable counter must be present and numeric in both snapshots;
@@ -365,20 +352,16 @@ class RouteHealthReport:
         the window. Missing or malformed telemetry is unknown, never proof of
         health.
 
-        Any nonzero delta on a known counter disqualifies — including a
-        NEGATIVE one. These counters are per-process monotonic, so a delta
+        Any nonzero delta on a known counter marks the window unclean —
+        including a NEGATIVE one. These counters are per-process monotonic, so a delta
         below zero can only mean the daemon under test restarted mid-window
         (its counter reset to 0). A restart is by definition an unclean
         window — the audio path dropped out, the tap disarmed, and the JSONL
         can be lost on `RuntimeDirectory` teardown — so a "-7 capture_xruns"
-        must NOT read as "cleaner than clean." (The earlier `delta <= 0`
-        treated a restart as justifying the declaration, contradicting the
-        `*** known counter ***` flag the printout puts on that same line.)
+        must NOT read as "cleaner than clean."
 
-        This is advisory only — see class docstring and the CLI's printed
-        caveat. A CLI that silently asserted this for the operator would
-        be exactly the "auto-declare route health" failure mode the
-        architecture brief and `route_latency_artifact` explicitly refuse.
+        Advisory only: it gates nothing and is printed for the operator to
+        weigh alongside the latency numbers.
         """
 
         if any(
@@ -587,9 +570,7 @@ def read_mic_detections_jsonl(path: Path) -> list[MicDetection]:
 
 
 # --------------------------------------------------------------------------
-# Latency math + samples-JSON emission (matches route_latency_artifact's
-# accepted schema exactly — see jasper.cli.route_latency_artifact
-# `_latency_values_from_json`)
+# Latency math + samples-JSON emission
 # --------------------------------------------------------------------------
 
 
@@ -647,9 +628,7 @@ def analyze_matches(
 
 
 def summarize_latencies(latencies_ms: tuple[float, ...]) -> dict[str, Any]:
-    # Reuse the CERTIFYING percentile implementation so the harness's printed
-    # p50/p95/p99 can never drift from what jasper-route-latency-artifact
-    # actually gates on (nearest-rank; empty -> None).
+    # nearest-rank; empty -> None.
     values = list(latencies_ms)
     return {
         "count": len(values),
@@ -662,9 +641,7 @@ def summarize_latencies(latencies_ms: tuple[float, ...]) -> dict[str, Any]:
 
 
 def write_samples_json(latencies_ms: tuple[float, ...], path: Path) -> Path:
-    """Write samples in the bare-list shape `route_latency_artifact --samples`
-    accepts (see `_latency_values_from_json` — list-of-floats is option 1,
-    the simplest of the three accepted shapes)."""
+    """Write the per-impulse latencies as a bare JSON list of milliseconds."""
 
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text(json.dumps(list(latencies_ms), indent=2), encoding="utf-8")
@@ -841,9 +818,8 @@ def _cmd_capture(args: argparse.Namespace) -> int:
 
     if capture.stopped_early:
         # Loud: a capture that died mid-window must never read as a quiet
-        # success. Downstream honesty gates (match-rate floor, artifact
-        # duration/percentile certification) still protect correctness, but
-        # the operator needs the when/why here — this is an evidence tool.
+        # success. The match-rate floor still refuses a badly paired run, but
+        # the operator needs the when/why here — this is a measurement tool.
         log_event(
             logger,
             "route_latency_harness.mic_source_stopped_early",
@@ -922,29 +898,16 @@ def _cmd_analyze(args: argparse.Namespace) -> int:
         f"p95_ms={_fmt(summary['p95_ms'])} "
         f"p99_ms={_fmt(summary['p99_ms'])}"
     )
-    certified = certified_route_latency_percentiles(
-        sample_count=summary["count"],
-        duration_seconds=args.duration_seconds,
-        jittered_impulse_spacing=args.impulse_spacing_jittered,
-    )
-    print(
-        f"certifiable_percentiles={list(certified)} "
-        f"(p95 budget {ROUTE_LATENCY_P95_BUDGET_MS:g} ms, "
-        f"p99 budget {ROUTE_LATENCY_P99_BUDGET_MS:g} ms — "
-        "certification itself happens in jasper-route-latency-artifact)"
-    )
-
     if not result.match_rate_ok:
         print(
             f"error: match rate {result.pairing.match_rate:.1%} is below the "
-            f"floor {result.match_rate_floor:.1%} — refusing to emit an "
-            "artifact-feedable samples file. Check playback volume, mic "
-            "threshold, and that the WAV played to completion.",
+            f"floor {result.match_rate_floor:.1%} — refusing to emit a samples "
+            "file. Check playback volume, mic threshold, and that the WAV "
+            "played to completion.",
             file=sys.stderr,
         )
         return 1
 
-    health_report: RouteHealthReport | None = None
     health_snapshot_path = Path(args.route_health_snapshot) if args.route_health_snapshot else None
     if health_snapshot_path and health_snapshot_path.exists():
         try:
@@ -958,8 +921,9 @@ def _cmd_analyze(args: argparse.Namespace) -> int:
                 file=sys.stderr,
             )
         if isinstance(raw, dict):
-            health_report = diff_route_health(raw.get("before") or {}, raw.get("after") or {})
-            _print_health_report(health_report)
+            _print_health_report(
+                diff_route_health(raw.get("before") or {}, raw.get("after") or {})
+            )
         elif raw is not None:
             print(
                 f"warning: route-health snapshot {health_snapshot_path} is not "
@@ -970,16 +934,6 @@ def _cmd_analyze(args: argparse.Namespace) -> int:
     out_dir = Path(args.out_dir)
     samples_path = write_samples_json(result.latencies_ms, out_dir / "latency-samples.json")
     print(f"samples -> {samples_path}")
-
-    if args.invoke_artifact:
-        return _invoke_artifact(
-            samples_path,
-            duration_seconds=args.duration_seconds,
-            impulse_spacing_jittered=args.impulse_spacing_jittered,
-            measurement_id=args.measurement_id,
-            route_health_ok=bool(health_report and health_report.would_justify_route_health_ok and args.confirm_route_health_ok),
-            require_pass=args.require_pass,
-        )
     return 0
 
 
@@ -1039,82 +993,12 @@ def _print_health_report(report: RouteHealthReport) -> None:
     for key, delta in sorted(report.all_deltas.items()):
         flag = " *** known counter ***" if key in report.known_counter_deltas and delta != 0 else ""
         print(f"  {key}: {delta:+g}{flag}")
-    verdict = "WOULD be justified" if report.would_justify_route_health_ok else "would NOT be justified"
     print(
-        f"--route-health-ok on jasper-route-latency-artifact {verdict} by "
-        "this snapshot. This tool never asserts it for you — review the "
-        "deltas above and pass --confirm-route-health-ok (with "
-        "--invoke-artifact) only if you agree."
+        "measurement window was "
+        + ("CLEAN" if report.window_clean else "NOT clean")
+        + " by this snapshot. Read the deltas above before trusting the "
+        "latency numbers from this run."
     )
-
-
-ARTIFACT_CLI_NAME = "jasper-route-latency-artifact"
-
-
-def _resolve_artifact_cli() -> str:
-    """Resolve the sibling `jasper-route-latency-artifact` executable.
-
-    Under the documented invocation (`sudo /opt/jasper/.venv/bin/
-    jasper-route-latency-harness ...`), the venv's `bin/` is NOT on sudo's
-    PATH/`secure_path`, so a bare `subprocess.run(["jasper-route-latency-
-    artifact"])` dies with `FileNotFoundError`. The artifact CLI is a console
-    entry point installed right next to this one, so we look in the same
-    directory as `sys.executable` (the venv's python → its `bin/`) first, then
-    the dir this script was launched from, and only then fall back to PATH.
-    Returns a name/path suitable for `subprocess.run`; the bare name is the
-    last resort (kept so a PATH-based dev invocation still works).
-    """
-
-    import shutil
-
-    for base in (Path(sys.executable).parent, Path(sys.argv[0]).resolve().parent):
-        candidate = base / ARTIFACT_CLI_NAME
-        if candidate.is_file():
-            return str(candidate)
-    return shutil.which(ARTIFACT_CLI_NAME) or ARTIFACT_CLI_NAME
-
-
-def _invoke_artifact(
-    samples_path: Path,
-    *,
-    duration_seconds: float,
-    impulse_spacing_jittered: bool,
-    measurement_id: str,
-    route_health_ok: bool,
-    require_pass: bool,
-) -> int:
-    cmd = [
-        _resolve_artifact_cli(),
-        "--samples",
-        str(samples_path),
-        "--duration-seconds",
-        str(duration_seconds),
-        "--harness-id",
-        HARNESS_ID,
-    ]
-    if impulse_spacing_jittered:
-        cmd.append("--impulse-spacing-jittered")
-    if measurement_id:
-        cmd.extend(["--measurement-id", measurement_id])
-    if route_health_ok:
-        cmd.append("--route-health-ok")
-    if require_pass:
-        cmd.append("--require-pass")
-    print(f"invoking: {' '.join(cmd)}")
-    try:
-        result = subprocess.run(cmd)
-    except FileNotFoundError:
-        print(
-            f"error: could not find {ARTIFACT_CLI_NAME} next to this CLI, on "
-            "PATH, or as a bare command. The samples file is already written "
-            f"({samples_path}); run it by hand, e.g.\n"
-            f"  sudo /opt/jasper/.venv/bin/{ARTIFACT_CLI_NAME} "
-            f"--samples {samples_path} --duration-seconds {duration_seconds:g} "
-            f"--harness-id {HARNESS_ID}",
-            file=sys.stderr,
-        )
-        return 1
-    return result.returncode
 
 
 def _cmd_run(args: argparse.Namespace) -> int:
@@ -1127,13 +1011,12 @@ def _cmd_run(args: argparse.Namespace) -> int:
     args.tap_events = _resolve_tap(args).tap_path
     args.mic_detections = str(Path(args.out_dir) / "mic-detections.jsonl")
     args.route_health_snapshot = str(Path(args.out_dir) / "route-health-snapshot.json")
-    schedule = click_track.load_schedule_json(Path(args.schedule))
-    args.duration_seconds = schedule.duration_seconds
-    args.impulse_spacing_jittered = schedule.jittered
     # Feed the schedule's planned impulse count into analyze so its
     # schedule-vs-detected tap sanity check fires automatically on a `run`
     # (the standalone `analyze` path takes --expected-impulse-count explicitly).
-    args.expected_impulse_count = schedule.impulse_count
+    args.expected_impulse_count = click_track.load_schedule_json(
+        Path(args.schedule)
+    ).impulse_count
     return _cmd_analyze(args)
 
 
@@ -1198,16 +1081,6 @@ def _add_mic_detector_args(parser: argparse.ArgumentParser) -> None:
     parser.add_argument("--mic-refractory-ms", type=float, default=DEFAULT_REFRACTORY_MS, help=f"Egress refractory window in ms (default {DEFAULT_REFRACTORY_MS:g}).")
 
 
-def _add_schedule_metadata_args(parser: argparse.ArgumentParser) -> None:
-    """`--duration-seconds` / `--impulse-spacing-jittered` — needed by
-    `analyze`, which has no schedule file to derive them from (it only sees
-    raw JSONL evidence), but NOT by `run`, which loads the schedule
-    directly and would otherwise silently discard whatever the operator
-    typed here in favor of the schedule's own values."""
-    parser.add_argument("--duration-seconds", type=float, required=True, help="Measurement window duration in seconds (passed through to --invoke-artifact).")
-    parser.add_argument("--impulse-spacing-jittered", action="store_true", help="Declare jittered impulse spacing (required for p99 promotion certification).")
-
-
 def _add_analyze_args(
     parser: argparse.ArgumentParser,
     *,
@@ -1220,25 +1093,20 @@ def _add_analyze_args(
     if include_expected_impulse_count:
         parser.add_argument("--expected-impulse-count", type=int, default=None, help="Scheduled impulse count. analyze warns if the tap detected far fewer — the tap-side-truncation catch.")
     parser.add_argument("--min-tap-detect-rate", type=float, default=MIN_TAP_DETECT_RATE_DEFAULT, help=f"Warn (not fail) if detected tap events fall below this fraction of the scheduled impulse count (default {MIN_TAP_DETECT_RATE_DEFAULT * 100:g} pct); catches a truncated tap window that match-rate alone can hide.")
-    parser.add_argument("--measurement-id", default="", help="Optional run id, passed through to --invoke-artifact.")
-    parser.add_argument("--invoke-artifact", action="store_true", help="Shell out to jasper-route-latency-artifact after writing samples.")
-    parser.add_argument("--confirm-route-health-ok", action="store_true", help="Operator confirms the printed route-health deltas justify --route-health-ok on the artifact CLI. Never inferred automatically.")
-    parser.add_argument("--require-pass", action="store_true", help="Passed through to --invoke-artifact.")
 
 
 def _build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         description=(
-            "Click/capture route-latency measurement harness. Produces the "
-            "per-impulse samples jasper-route-latency-artifact --samples "
-            "consumes to certify (or honestly fail) the usb_low_latency_48k "
-            "route's p95/p99 claims."
+            "Click/capture route-latency measurement harness. Measures the "
+            "usb_low_latency_48k route's real per-impulse latency and reports "
+            "the numbers; it grades nothing."
         ),
     )
     sub = parser.add_subparsers(dest="command", required=True)
 
     p_generate = sub.add_parser("generate", help="Write a click-track WAV + JSON schedule for a preset.")
-    p_generate.add_argument("preset", choices=sorted(click_track.PRESETS), help="quick (p95 gate) or promotion (p99 gate).")
+    p_generate.add_argument("preset", choices=sorted(click_track.PRESETS), help="quick (short run) or promotion (long, jittered run).")
     p_generate.add_argument("--out-dir", default=str(DEFAULT_OUT_DIR), help=f"Output directory (default: {DEFAULT_OUT_DIR}).")
     p_generate.add_argument("--amplitude-dbfs", type=float, default=click_track.DEFAULT_AMPLITUDE_DBFS, help=f"Click amplitude in dBFS (default {click_track.DEFAULT_AMPLITUDE_DBFS:g} — modest by design; start quiet).")
     p_generate.add_argument("--seed", type=int, default=0, help="Schedule RNG seed (default 0; reproducible).")
@@ -1266,7 +1134,6 @@ def _build_parser() -> argparse.ArgumentParser:
     p_analyze.add_argument("--mic-detections", required=True, help="Mic-detections JSONL from `capture`.")
     p_analyze.add_argument("--route-health-snapshot", default=None, help="route-health-snapshot.json from `capture`.")
     p_analyze.add_argument("--out-dir", default=str(DEFAULT_OUT_DIR), help=f"Output directory (default: {DEFAULT_OUT_DIR}).")
-    _add_schedule_metadata_args(p_analyze)
     _add_analyze_args(p_analyze)
     p_analyze.set_defaults(func=_cmd_analyze)
 
@@ -1308,8 +1175,6 @@ def main(argv: list[str] | None = None) -> int:
 
 
 __all__ = [
-    "ARTIFACT_CLI_NAME",
-    "HARNESS_ID",
     "AnalyzeResult",
     "MicCaptureResult",
     "RouteHealthReport",

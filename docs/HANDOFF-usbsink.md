@@ -121,11 +121,10 @@ systemctl status jasper-usbsink.service jasper-usbgadget.service jasper-fanin.se
 jasper-doctor
 ```
 
-For the optional reverse `JTS Mic` direction, the active-only 120 ms doctor
-gate and the identity-bound `jasper-usb-mic-latency-artifact` certification
-workflow are canonical in
+For the optional reverse `JTS Mic` direction, the relay's live latency
+telemetry and the active-only 120 ms doctor warn are canonical in
 [HANDOFF-usb-gadget.md](HANDOFF-usb-gadget.md#toggling-and-choosing-the-computer-microphone-from-wake).
-That tool measures relay-emit→final-ALSA-write; it does not claim the
+That number is relay-emit→final-ALSA-write; it does not describe the
 host-to-speaker route latency, which is measured by the click/capture harness in
 [HANDOFF-usb-low-latency.md](HANDOFF-usb-low-latency.md).
 

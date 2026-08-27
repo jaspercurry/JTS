@@ -2,175 +2,20 @@
 #
 # SPDX-License-Identifier: Apache-2.0
 
-"""Route-latency gates and live fan-in/outputd identity assessment."""
+"""Live fan-in identity assessment for the declared low-latency route.
+
+Compares what fan-in is actually running against the identity the audio
+runtime plan says the route needs. This is a live comparison, never a stored
+verdict — see ADR-0185.
+"""
 from __future__ import annotations
 
-import json
-import math
 from typing import Any, Mapping
 
-from .audio_runtime_plan import (
-    USB_LOW_LATENCY_P95_BUDGET_MS as ROUTE_LATENCY_P95_BUDGET_MS,
-    USB_LOW_LATENCY_P99_BUDGET_MS as ROUTE_LATENCY_P99_BUDGET_MS,
-)
 from .fanin.status import DIRECT_HEALTH_CAPTURING, DIRECT_HEALTH_IDLE
 
 
-ROUTE_LATENCY_P95_MIN_DURATION_SECONDS = 5 * 60
-ROUTE_LATENCY_P99_MIN_DURATION_SECONDS = 30 * 60
-ROUTE_LATENCY_RERUN_ACTION = "run_route_latency_validation"
-#: Codes about the PROOF's validity, not the route's: config/identity drift, a
-#: run too short to certify p95, an aged-out or clock-skewed artifact.
-#: Disclosed, never failed — ADR-0101.
-ROUTE_LATENCY_DISCLOSURE_ISSUES = frozenset(
-    {"config_mismatch", "p95_uncertified", "artifact_stale", "artifact_from_future"}
-)
 JsonValue = None | bool | int | float | str | list["JsonValue"] | dict[str, "JsonValue"]
-
-
-def percentile_min_samples(percentile: float) -> int:
-    """Return the minimum samples to certify a percentile.
-
-    Rule: ``ceil(10 / (1 - percentile))``. Accepts either 0.95/0.99 or
-    95/99. Values must be strictly between 0 and 1 after normalization.
-    """
-
-    p = float(percentile)
-    if p > 1.0:
-        p = p / 100.0
-    if not 0.0 < p < 1.0:
-        raise ValueError(f"percentile must be in (0, 1), got {percentile!r}")
-    return int(math.ceil(10.0 / (1.0 - p)))
-
-
-def certified_route_latency_percentiles(
-    *,
-    sample_count: int,
-    duration_seconds: float,
-    jittered_impulse_spacing: bool = False,
-) -> tuple[int, ...]:
-    """Return which route-latency percentiles this run may certify."""
-
-    certified: list[int] = []
-    if (
-        sample_count >= percentile_min_samples(95)
-        and duration_seconds >= ROUTE_LATENCY_P95_MIN_DURATION_SECONDS
-    ):
-        certified.append(95)
-    if (
-        sample_count >= percentile_min_samples(99)
-        and duration_seconds >= ROUTE_LATENCY_P99_MIN_DURATION_SECONDS
-        and jittered_impulse_spacing
-    ):
-        certified.append(99)
-    return tuple(certified)
-
-
-def _p99_sample_and_duration_sufficient(
-    *,
-    sample_count: int,
-    duration_seconds: float,
-) -> bool:
-    return (
-        sample_count >= percentile_min_samples(99)
-        and duration_seconds >= ROUTE_LATENCY_P99_MIN_DURATION_SECONDS
-    )
-
-
-def route_latency_gate_status(
-    *,
-    p95_ms: float | None,
-    p99_ms: float | None,
-    sample_count: int,
-    duration_seconds: float,
-    jittered_impulse_spacing: bool = False,
-    config_match: bool = True,
-    route_health_ok: bool = True,
-    proof_issues: tuple[str, ...] = (),
-) -> tuple[str, str, tuple[int, ...], tuple[str, ...]]:
-    """Classify a route-latency artifact using the production gate.
-
-    ``proof_issues`` carries validity facts the caller observed about the
-    artifact itself (age, clock skew); they classify as disclosures.
-    """
-
-    certified = certified_route_latency_percentiles(
-        sample_count=sample_count,
-        duration_seconds=duration_seconds,
-        jittered_impulse_spacing=jittered_impulse_spacing,
-    )
-    p95_breach = f"p95_exceeds_{ROUTE_LATENCY_P95_BUDGET_MS:g}ms"
-    p99_breach = f"p99_exceeds_{ROUTE_LATENCY_P99_BUDGET_MS:g}ms"
-
-    # Every leg runs before any verdict: a measured breach must never hide
-    # behind a disclosure that returned early.
-    issues: list[str] = list(proof_issues)
-    if not config_match:
-        issues.append("config_mismatch")
-    if not route_health_ok:
-        issues.append("route_health_anomaly")
-    if p95_ms is None:
-        issues.append("p95_missing")
-    elif p95_ms > ROUTE_LATENCY_P95_BUDGET_MS:
-        issues.append(p95_breach)
-    if 95 not in certified:
-        issues.append("p95_uncertified")
-    if p99_ms is None:
-        issues.append("p99_missing")
-    elif 99 not in certified:
-        issues.append(
-            "p99_spacing_unverified"
-            if _p99_sample_and_duration_sufficient(
-                sample_count=sample_count,
-                duration_seconds=duration_seconds,
-            )
-            and not jittered_impulse_spacing
-            else "p99_uncertified"
-        )
-    elif p99_ms > ROUTE_LATENCY_P99_BUDGET_MS:
-        issues.append(p99_breach)
-
-    if any(
-        issue in {"route_health_anomaly", "p95_missing", p95_breach}
-        for issue in issues
-    ):
-        return "fail", "fix_route_latency_before_claim", certified, tuple(issues)
-    if p99_breach in issues:
-        return (
-            "warn",
-            "reduce_tail_latency_before_promotion",
-            certified,
-            tuple(issues),
-        )
-    if any(issue in ROUTE_LATENCY_DISCLOSURE_ISSUES for issue in issues):
-        return "warn", ROUTE_LATENCY_RERUN_ACTION, certified, tuple(issues)
-    if issues:
-        return "warn", "run_p99_promotion_validation", certified, tuple(issues)
-    return "pass", "usb_low_latency_route_promotable", certified, ()
-
-
-def _normal_json(value: Any) -> JsonValue:
-    return json.loads(json.dumps(value, sort_keys=True, separators=(",", ":")))
-
-
-def _string_issues(raw: Any) -> tuple[str, ...]:
-    if not isinstance(raw, list):
-        return ()
-    return tuple(item for item in raw if isinstance(item, str))
-
-
-def _route_identity_mismatches(
-    observed: Mapping[str, Any],
-    expected: Mapping[str, JsonValue],
-) -> tuple[str, ...]:
-    issues: list[str] = []
-    for key, expected_value in expected.items():
-        if key not in observed:
-            issues.append(f"identity_mismatch:{key}")
-            continue
-        if _normal_json(observed.get(key)) != _normal_json(expected_value):
-            issues.append(f"identity_mismatch:{key}")
-    return tuple(issues)
 
 
 def _int_or_none(value: Any) -> int | None:
@@ -205,17 +50,16 @@ def route_live_state_issues(
     expected_identity: Mapping[str, JsonValue],
     *,
     fanin_status: Mapping[str, Any] | None = None,
-    allow_idle_direct_lane: bool = False,
 ) -> tuple[str, ...]:
-    """Return live runtime mismatches that invalidate route-latency promotion.
+    """Return the ways live fan-in departs from the route's declared identity.
 
-    Route artifacts bind measurements to the intended route identity. Promotion
-    also needs fan-in to be running that identity: the direct USB source,
-    negotiated capture geometry, and resampler lock/target are live timing
-    facts, not config promises. Artifact creation keeps the strict default
-    because its measurement window must have a capturing, locked direct lane.
-    Doctor may allow an idle direct lane because a stored certification remains
-    valid while the host is not streaming; static identity and geometry are
+    The direct USB source, the negotiated capture geometry, and the resampler
+    lock/target are live timing facts, not config promises, so the low-latency
+    route is only actually installed when fan-in reports them.
+
+    An explicitly idle direct lane (fan-in's own ``direct.health == "idle"``)
+    relaxes the activity-dependent legs — health and resampler lock — because
+    an idle USB host is not a broken route. Static identity and geometry are
     still checked in that state.
     """
 
@@ -242,9 +86,7 @@ def route_live_state_issues(
                     issues.append(f"live_fanin_direct_mismatch:{lane}:device")
 
                 health = str(direct.get("health") or "unknown")
-                idle_allowed = (
-                    allow_idle_direct_lane and health == DIRECT_HEALTH_IDLE
-                )
+                idle_allowed = health == DIRECT_HEALTH_IDLE
                 if health != DIRECT_HEALTH_CAPTURING and not idle_allowed:
                     issues.append(f"live_fanin_direct_unhealthy:{lane}:{health}")
 
@@ -315,9 +157,7 @@ def route_live_state_issues(
                     and direct.get("health") == DIRECT_HEALTH_IDLE
                 )
                 idle_unlock_allowed = (
-                    allow_idle_direct_lane
-                    and lane_is_explicitly_idle
-                    and resampler.get("locked") is False
+                    lane_is_explicitly_idle and resampler.get("locked") is False
                 )
                 if resampler.get("locked") is not True and not idle_unlock_allowed:
                     issues.append(f"live_fanin_resampler_unlocked:{lane}")

@@ -42,11 +42,6 @@ from .chip_aec_policy import (
     STATUS_APPROVED,
     resolve_chip_aec_dac_gate,
 )
-from .audio_runtime_plan import (
-    ROUTE_LATENCY_PROFILE as RUNTIME_ROUTE_LATENCY_PROFILE,
-    USB_LOW_LATENCY_P95_BUDGET_MS,
-    USB_LOW_LATENCY_P99_BUDGET_MS,
-)
 from .control import client as control
 from .env_load import parse_env_file
 from .log_event import log_event
@@ -55,7 +50,6 @@ from .log_event import log_event
 CURRENT_SCHEMA_VERSION = 1
 DEFAULT_ARTIFACT_DIR = Path("/var/lib/jasper/audio-validation")
 LATEST_POINTER_NAME = "latest.json"
-ROUTE_LATENCY_POINTER_NAME = "latest-route-latency.json"
 DEFAULT_STALE_AFTER = timedelta(days=30)
 DEFAULT_FUTURE_SKEW = timedelta(minutes=5)
 ALLOWED_STATUSES = frozenset({"pass", "warn", "fail", "unknown"})
@@ -69,14 +63,6 @@ HARDWARE_VALIDATION_PROFILES = (
 )
 READINESS_SNAPSHOT_KIND = "readiness_snapshot"
 HARDWARE_VALIDATION_KIND = "hardware_validation_passive"
-ROUTE_LATENCY_PROFILE = RUNTIME_ROUTE_LATENCY_PROFILE
-ROUTE_LATENCY_MIC_ID = "route_latency"
-ROUTE_LATENCY_KIND = "route_latency"
-ROUTE_LATENCY_P95_BUDGET_MS = USB_LOW_LATENCY_P95_BUDGET_MS
-ROUTE_LATENCY_P99_BUDGET_MS = USB_LOW_LATENCY_P99_BUDGET_MS
-ROUTE_LATENCY_P95_MIN_DURATION_SECONDS = 5 * 60
-ROUTE_LATENCY_P99_MIN_DURATION_SECONDS = 30 * 60
-ROUTE_LATENCY_STALE_AFTER = timedelta(hours=24)
 DEFAULT_HARDWARE_OBSERVE_SECONDS = 10.0
 MAX_SHORT_HARDWARE_OBSERVE_SECONDS = 120.0
 LONG_HARDWARE_OBSERVE_SECONDS = 1800.0
@@ -207,219 +193,6 @@ def make_artifact(
     )
 
 
-from . import audio_validation_route as audio_validation_route
-from .audio_validation_route import (
-    ROUTE_LATENCY_RERUN_ACTION as ROUTE_LATENCY_RERUN_ACTION,
-    _fanin_input_status as _fanin_input_status,
-    _int_or_none as _int_or_none,
-    _mapping_or_empty as _mapping_or_empty,
-    _normal_json as _normal_json,
-    _p99_sample_and_duration_sufficient as _p99_sample_and_duration_sufficient,
-    _route_identity_mismatches as _route_identity_mismatches,
-    _string_issues as _string_issues,
-    certified_route_latency_percentiles as certified_route_latency_percentiles,
-    percentile_min_samples as percentile_min_samples,
-    route_latency_gate_status as route_latency_gate_status,
-    route_live_state_issues as route_live_state_issues,
-)
-
-
-def make_route_latency_artifact(
-    *,
-    route_id: str,
-    source_id: str,
-    dac_id: str,
-    route_config_hash: str,
-    p95_ms: float | None,
-    p99_ms: float | None,
-    sample_count: int,
-    duration_seconds: float,
-    camilla_config_hash: str = "",
-    fanin_direct_config: Mapping[str, JsonValue] | None = None,
-    fanin_direct_negotiated_buffer_frames: int | None = None,
-    fanin_resampler_config: Mapping[str, JsonValue] | None = None,
-    outputd_config: Mapping[str, JsonValue] | None = None,
-    uac2_gadget_attrs: Mapping[str, JsonValue] | None = None,
-    measurement_provenance: Mapping[str, JsonValue] | None = None,
-    impulse_spacing_jittered: bool = False,
-    route_health_ok: bool = True,
-    route_health_issues: tuple[str, ...] | list[str] = (),
-    validated_at: datetime | None = None,
-) -> ValidationArtifact:
-    """Build a route-latency artifact without playing/measuring audio."""
-
-    health_issues = tuple(str(issue) for issue in route_health_issues if str(issue))
-    negotiated_buffer_frames = _int_or_none(
-        fanin_direct_negotiated_buffer_frames
-    )
-    if fanin_direct_config and (
-        negotiated_buffer_frames is None or negotiated_buffer_frames <= 0
-    ):
-        health_issues = tuple(
-            dict.fromkeys(
-                (
-                    *health_issues,
-                    "live_fanin_direct_negotiated_buffer_missing",
-                )
-            )
-        )
-    status, recommendation, certified, issues = route_latency_gate_status(
-        p95_ms=p95_ms,
-        p99_ms=p99_ms,
-        sample_count=sample_count,
-        duration_seconds=duration_seconds,
-        jittered_impulse_spacing=impulse_spacing_jittered,
-        config_match=True,
-        route_health_ok=route_health_ok and not health_issues,
-    )
-    issues = tuple(dict.fromkeys((*issues, *health_issues)))
-    checks: dict[str, JsonValue] = {
-        "kind": ROUTE_LATENCY_KIND,
-        "identity": {
-            "route_id": route_id,
-            "source_id": source_id,
-            "dac_profile_id": dac_id,
-            "route_config_hash": route_config_hash,
-            "camilla_config_hash": camilla_config_hash,
-            "fanin_direct_config": dict(fanin_direct_config or {}),
-            "fanin_direct_negotiated_buffer_frames": negotiated_buffer_frames,
-            "fanin_resampler_config": dict(fanin_resampler_config or {}),
-            "outputd_config": dict(outputd_config or {}),
-            "uac2_gadget_attrs": dict(uac2_gadget_attrs or {}),
-        },
-        "sample_count": sample_count,
-        "duration_seconds": duration_seconds,
-        "impulse_spacing_jittered": impulse_spacing_jittered,
-        "p95_ms": p95_ms,
-        "p99_ms": p99_ms,
-        "certified_percentiles": list(certified),
-        "evidence": dict(measurement_provenance or {}),
-        "budgets_ms": {
-            "p95": ROUTE_LATENCY_P95_BUDGET_MS,
-            "p99": ROUTE_LATENCY_P99_BUDGET_MS,
-        },
-        "issues": list(issues),
-    }
-    return make_artifact(
-        mic_id=ROUTE_LATENCY_MIC_ID,
-        dac_id=dac_id,
-        profile=ROUTE_LATENCY_PROFILE,
-        status=status,
-        checks=checks,
-        recommendation=recommendation,
-        validated_at=validated_at,
-    )
-
-
-def assess_route_latency_artifact(
-    result: ArtifactLoadResult,
-    *,
-    route_config_hash: str,
-    expected_identity: Mapping[str, JsonValue] | None = None,
-) -> dict[str, JsonValue]:
-    """Return doctor/state friendly verdict for the latest route artifact."""
-
-    if result.artifact is None:
-        return {
-            "state": result.state,
-            "status": "fail",
-            "reason": "; ".join(result.errors) or "artifact missing",
-            "artifact_path": str(result.path) if result.path else "",
-            "config_match": False,
-        }
-    artifact = result.artifact
-    checks = dict(artifact.checks)
-    identity = checks.get("identity")
-    if not isinstance(identity, dict):
-        identity = {}
-    observed_hash = str(identity.get("route_config_hash") or "")
-    expected = dict(expected_identity or {"route_config_hash": route_config_hash})
-    identity_issues = _route_identity_mismatches(identity, expected)
-    binding_issues: tuple[str, ...] = ()
-    if _mapping_or_empty(expected.get("fanin_direct_config")):
-        negotiated_buffer_frames = _int_or_none(
-            identity.get("fanin_direct_negotiated_buffer_frames")
-        )
-        if (
-            negotiated_buffer_frames is None
-            or negotiated_buffer_frames <= 0
-        ):
-            binding_issues = (
-                "route_binding_missing:fanin_direct_negotiated_buffer_frames",
-            )
-    config_match = observed_hash == route_config_hash and not identity_issues
-    artifact_issues = _string_issues(checks.get("issues"))
-    route_artifact_health_issues = tuple(
-        issue
-        for issue in artifact_issues
-        if issue == "route_health_anomaly" or issue.startswith("live_")
-    )
-    route_health_ok = not route_artifact_health_issues
-    try:
-        sample_count = int(checks.get("sample_count") or 0)
-    except (TypeError, ValueError):
-        sample_count = 0
-    try:
-        duration_seconds = float(checks.get("duration_seconds") or 0.0)
-    except (TypeError, ValueError):
-        duration_seconds = 0.0
-    p95_raw = checks.get("p95_ms")
-    p99_raw = checks.get("p99_ms")
-    p95_ms = float(p95_raw) if isinstance(p95_raw, (int, float)) else None
-    p99_ms = float(p99_raw) if isinstance(p99_raw, (int, float)) else None
-    jittered_impulse_spacing = bool(checks.get("impulse_spacing_jittered", False))
-    proof_issues = {
-        "stale": ("artifact_stale",),
-        "future": ("artifact_from_future",),
-    }.get(result.state, ())
-    status, recommendation, certified, issues = route_latency_gate_status(
-        p95_ms=p95_ms,
-        p99_ms=p99_ms,
-        sample_count=sample_count,
-        duration_seconds=duration_seconds,
-        jittered_impulse_spacing=jittered_impulse_spacing,
-        config_match=config_match,
-        route_health_ok=route_health_ok,
-        proof_issues=proof_issues,
-    )
-    issues = tuple(
-        dict.fromkeys(
-            (
-                *issues,
-                *identity_issues,
-                *binding_issues,
-                *route_artifact_health_issues,
-            )
-        )
-    )
-    if binding_issues:
-        # Presence is mandatory, never a compatible warning — the artifact does
-        # not bind the run to a negotiated buffer at all
-        # (docs/HANDOFF-usb-low-latency.md).
-        status = "fail"
-        recommendation = "fix_route_latency_before_claim"
-    if result.state not in {"loaded", "stale", "future"}:
-        status = "fail"
-        issues = tuple(dict.fromkeys((*issues, result.state)))
-    return {
-        "state": result.state,
-        "status": status,
-        "validated_at": _format_timestamp(artifact.validated_at),
-        "recommendation": recommendation,
-        "artifact_path": str(result.path) if result.path else "",
-        "config_match": config_match,
-        "route_config_hash": observed_hash,
-        "expected_route_config_hash": route_config_hash,
-        "sample_count": sample_count,
-        "duration_seconds": duration_seconds,
-        "impulse_spacing_jittered": jittered_impulse_spacing,
-        "p95_ms": p95_ms,
-        "p99_ms": p99_ms,
-        "certified_percentiles": list(certified),
-        "issues": list(issues),
-    }
-
-
 def parse_artifact_payload(payload: Any) -> ValidationArtifact:
     """Parse and validate a schema-v1 artifact from decoded JSON."""
 
@@ -500,14 +273,10 @@ def write_latest_pointer(
     *,
     directory: Path | str = DEFAULT_ARTIFACT_DIR,
     file_mode: int = 0o644,
-    pointer_name: str = LATEST_POINTER_NAME,
 ) -> Path:
     """Atomically update one trusted latest pointer for status surfaces."""
 
-    directory_path = Path(directory)
-    if Path(pointer_name).name != pointer_name or not pointer_name.endswith(".json"):
-        raise ValueError("pointer_name must be a JSON filename")
-    path = directory_path / pointer_name
+    path = Path(directory) / LATEST_POINTER_NAME
     _write_artifact_json(path, artifact, file_mode=file_mode)
     return path
 
@@ -606,7 +375,7 @@ def load_latest_artifact(
         paths = sorted(
             p for p in directory_path.glob("*.json")
             if p.is_file()
-            and p.name not in {LATEST_POINTER_NAME, ROUTE_LATENCY_POINTER_NAME}
+            and p.name != LATEST_POINTER_NAME
         )
     except OSError as e:
         return ArtifactLoadResult(
