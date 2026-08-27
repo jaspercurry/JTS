@@ -263,8 +263,12 @@ def test_threads_capture_device() -> None:
     # The gap-1 seam: the reconciler passes the grouping ring here.
     doc = _doc(channel="left", capture_device="loop:0,1")
     assert doc["devices"]["capture"]["device"] == "loop:0,1"
-    # Default keeps the fan-in tap (unchanged from the solo baseline capture).
-    assert _doc(channel="left")["devices"]["capture"]["device"] == "plug:jasper_capture"
+    # Default is the emitter's own — Ring A, the one fan-in → CamillaDSP hop.
+    from jasper.fanin_coupling import RING_CAPTURE_DEVICE
+
+    assert (
+        _doc(channel="left")["devices"]["capture"]["device"] == RING_CAPTURE_DEVICE
+    )
 
 
 def test_metadata_records_program_channel() -> None:

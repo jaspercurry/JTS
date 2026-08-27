@@ -397,26 +397,26 @@ def _assistant_gain_fault(loudness: dict[str, object]) -> str | None:
 def check_fanin_asound_wiring() -> CheckResult:
     """Verify the deployed ALSA graph is the fan-in graph.
 
-    This catches the exact split-brain failure that silences a
-    `loopback`-coupled box: renderers and jasper-fanin are running in
-    fan-in mode, but /etc/asound.conf still points `pcm.jasper_capture`
-    at the old substream 0 instead of the summed fan-in output on
-    substream 7 — so CamillaDSP captures a private renderer lane, or
-    fails to open one at all, instead of the summed program.
+    The RENDERER side of the snd-aloop graph, which the ring did not
+    replace: each renderer writes its own private lane and jasper-fanin
+    reads all of them. A lane whose slave or wire has drifted from
+    `deploy/alsa/asoundrc.jasper` costs that renderer its audio, so this
+    is file-level drift detection against the shipped template.
 
-    It is not an AEC check. Since U4/P7-1 the AEC bridge's reference is
-    jasper-outputd's UDP speaker monitor, and since U4/P7-2 so is
-    jasper-aec-tune's; neither opens this tap. Every ALSA-graph
-    assertion below is file-level drift detection against
-    `deploy/alsa/asoundrc.jasper`, which is why they hold on a
-    ring-coupled box too — there the shipped definitions survive with
-    no writer and no reader. (The pair-5 definitions are already gone:
-    P9-C deleted them. What survives is the pair-0..4/6/7 set, whose
-    pair 6 is outputd's passive content lane — grouping left snd-aloop
-    for its own SHM ring and names no pair here.) The one assertion
-    that is not about the graph is the trailing `audio_topology.env`
-    probe, which warns about a leftover from the retired dmix/fanin
-    switcher.
+    It does NOT check CamillaDSP's capture. Under ADR-0100 the ring is
+    the one fan-in → CamillaDSP transport, and what carries it is
+    reported elsewhere: `check_ring_platform_assets` for whether the
+    ioplug, the conf.d drop-in and /dev/shm/jts-ring EXIST, and
+    `check_ring_geometry_coherence` for whether the `jts_ring_capture`
+    block's geometry agrees with fan-in's env and the on-disk header. A
+    third partial reader of that same drop-in here would be a second
+    answer, not a stronger one. It is not an AEC check either: the
+    bridge's reference is jasper-outputd's UDP speaker monitor and it
+    opens no ALSA tap.
+
+    The one assertion that is not about the graph is the trailing
+    `audio_topology.env` probe, which warns about a leftover from the
+    retired dmix/fanin switcher.
     """
     label = "fan-in ALSA wiring"
     path = Path("/etc/asound.conf")
@@ -478,58 +478,6 @@ def check_fanin_asound_wiring() -> CheckResult:
             "the fan-in asoundrc.",
         )
 
-    capture = _asound_pcm_block(active, "jasper_capture")
-    if capture is None:
-        return CheckResult(
-            label,
-            "fail",
-            "pcm.jasper_capture missing — CamillaDSP has no capture "
-            "device on a loopback-coupled box.",
-        )
-    if 'pcm "hw:Loopback,1,7"' not in capture:
-        detail = (
-            "pcm.jasper_capture must dsnoop hw:Loopback,1,7 "
-            "(jasper-fanin's summed output)."
-        )
-        if 'pcm "hw:Loopback,1,0"' in capture:
-            detail += (
-                " It currently points at substream 0, which is now a "
-                "private fan-in input lane and can make the tap's "
-                "readers fail with EBUSY."
-            )
-        return CheckResult(label, "fail", detail)
-    for required in ("rate 48000", "channels 2", "format S16_LE"):
-        if required not in capture:
-            return CheckResult(
-                label,
-                "fail",
-                "pcm.jasper_capture must pin the dsnoop slave to "
-                f"48 kHz stereo S16_LE; missing {required!r}.",
-            )
-
-    # `pcm.jasper_ref` has had NO reader since U4/P7-3 retired the last one
-    # (the AEC bridge's ALSA fallback went first, in P7-1). The definition is
-    # deliberately retained — `deploy/alsa/asoundrc.jasper` still ships it, and
-    # P9-E is what reduces the remaining aloop PCMs — so
-    # what these two branches report is deployed-asoundrc drift from the
-    # shipped file, not a broken consumer.
-    ref = _asound_pcm_block(active, "jasper_ref")
-    if ref is None:
-        return CheckResult(
-            label,
-            "fail",
-            "pcm.jasper_ref missing — deploy/alsa/asoundrc.jasper still "
-            "ships this plug wrapper, so the deployed asoundrc has "
-            "drifted from it. Re-run install.sh.",
-        )
-    if 'slave.pcm "jasper_capture"' not in ref:
-        return CheckResult(
-            label,
-            "fail",
-            "pcm.jasper_ref must plug-wrap pcm.jasper_capture; the "
-            "deployed block wraps something else.",
-        )
-
     stale_state = Path("/var/lib/jasper/audio_topology.env")
     if stale_state.exists():
         return CheckResult(
@@ -540,11 +488,7 @@ def check_fanin_asound_wiring() -> CheckResult:
             f"deploy/install.sh to archive/remove it.",
         )
 
-    return CheckResult(
-        label,
-        "ok",
-        "renderer/test lanes 0..4; jasper_capture/jasper_ref on summed substream 7",
-    )
+    return CheckResult(label, "ok", "renderer/test lanes 0..4")
 
 @doctor_check(order=51, group="audio")
 def check_fanin_service() -> CheckResult:

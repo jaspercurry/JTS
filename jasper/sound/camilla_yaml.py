@@ -29,6 +29,7 @@ from jasper.camilla_config_contract import (
     DEFAULT_PLAYBACK_FORMAT,
     DEFAULT_SAMPLE_RATE,
     DEFAULT_VOLUME_LIMIT_DB,
+    RETIRED_ALOOP_CAPTURE_DEVICE,
     PeqFilter,
     ensure_volume_limit_db,
     resolve_camilla_chunksize,
@@ -430,6 +431,12 @@ def emit_flat_outputd_cutover_config(
 
     return emit_sound_config(
         SoundProfile(enabled=False),
+        # BOTH HALVES MOVE TOGETHER OR NEITHER DOES. This graph's playback is
+        # still the snd-aloop content lane, and its chunk/target/queue are the
+        # loopback-resolved ones — the ioplug pins the ring's period bytes
+        # min==max, so a 1024-frame chunk cannot negotiate Ring A at all. So the
+        # capture stays on the retired tap until the playback half moves.
+        capture_device=RETIRED_ALOOP_CAPTURE_DEVICE,
         muted_outputs=flat_graph_muted_outputs(topology, width=FLAT_GRAPH_WIDTH),
         out_path=out_path,
     )

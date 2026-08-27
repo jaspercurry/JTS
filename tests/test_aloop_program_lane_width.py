@@ -2,24 +2,25 @@
 #
 # SPDX-License-Identifier: Apache-2.0
 
-"""The snd-aloop program lane's width is ONE fact with three declarers (U2, #2223).
+"""The snd-aloop program lane's width is ONE fact with two declarers (U2, #2223).
 
-The lane: ``jasper-fanin`` writes its summed program to ``hw:Loopback,0,7`` and
-``pcm.jasper_capture`` dsnoops ``hw:Loopback,1,7``. On a ``loopback``-coupled
-box that lane IS the program path into CamillaDSP. On a ``shm_ring`` box it has
+The lane: ``jasper-fanin`` used to write its summed program to
+``hw:Loopback,0,7`` and ``pcm.jasper_capture`` dsnoops ``hw:Loopback,1,7``. The
+ring is the only fan-in → CamillaDSP transport (ADR-0100), so the lane has
 neither a writer nor a reader: U4/P7-2 moved the last reader off the tap and
-U4/P7-4 dropped the lossy aloop MIRROR that used to shadow the ring onto it. So
-the width below is a ``loopback``-box fact now — and the declarers still have to
-agree, because ``loopback`` is still a supported coupling.
+U4/P7-4 dropped the lossy aloop MIRROR that used to shadow the ring onto it.
+``mixer::FORMAT`` still decides the width of the per-renderer capture inputs on
+the same card, and the shipped dsnoop still declares it, so the two have to keep
+agreeing until the tap's definition is removed.
 
-**It is narrow, and three separate places say so without any of them knowing
-about the others.** Before this file, ``mixer::FORMAT`` — the writer, and the
-one that decides what the other two must say — had NO test anywhere in the
-tree, Rust or Python. This pins the set together so the lane's width cannot be
-half-moved: a widening has to move every declarer in the same commit or fail
-here with the list of what it missed.
+**It is narrow, and both places say so without either knowing about the
+other.** Before this file, ``mixer::FORMAT`` — the writer, and the one that
+decides what the other must say — had NO test anywhere in the tree, Rust or
+Python. This pins the set together so the lane's width cannot be half-moved: a
+widening has to move every declarer in the same commit or fail here with the
+list of what it missed.
 
-**There were four, and U4/P7-2 retired the fourth.** ``jasper/cli/aec_tune.py``
+**There was a third, and U4/P7-2 retired it.** ``jasper/cli/aec_tune.py``
 used to open the dsnoop RAW to record its AEC reference, which made it a
 declarer by accident — a raw open cannot absorb a format move. It reads
 jasper-outputd's speaker-monitor UDP feed now, so it declares nothing about
@@ -30,8 +31,8 @@ load-bearing enough to be a test rather than a comment. An snd-aloop substream
 is not "an S16 device": the **post-DSP content lane role** runs ``S32_LE`` on
 every box in the fleet, and has since the wide-output-path program's PR-6, on a
 substream pair (``hw:Loopback,0/1,6``) on the SAME card. So the reason this
-lane is narrow is ``mixer::FORMAT`` and the three literals that follow it —
-nothing about snd-aloop.
+lane is narrow is ``mixer::FORMAT`` and the literals that follow it — nothing
+about snd-aloop.
 
 **And the counter-example is a ROLE, not a device.** What is true, and what the
 test below asserts, is that the named post-DSP content PCMs declare ``S32_LE`` —
@@ -71,7 +72,6 @@ ALOOP_PROGRAM_LANE_FORMAT_RUST = "S16LE"
 
 FANIN_MIXER_RS = REPO / "rust" / "jasper-fanin" / "src" / "mixer.rs"
 ASOUNDRC = REPO / "deploy" / "alsa" / "asoundrc.jasper"
-DOCTOR_AUDIO_RUNTIME = REPO / "jasper" / "cli" / "doctor" / "audio_runtime.py"
 AEC_TUNE = REPO / "jasper" / "cli" / "aec_tune.py"
 
 
@@ -91,7 +91,7 @@ def _pcm_block(text: str, name: str) -> str:
 
 
 # ---------------------------------------------------------------------------
-# The three declarers, and the guard that keeps the retired fourth retired.
+# The two declarers, and the guard that keeps the retired third retired.
 # ---------------------------------------------------------------------------
 
 
@@ -128,43 +128,6 @@ def test_the_dsnoop_reader_declares_the_same_width():
     )
     assert f"format {ALOOP_PROGRAM_LANE_FORMAT}" in capture, (
         "the dsnoop slave format must equal jasper-fanin's mixer::FORMAT"
-    )
-
-
-def _slice_between(text: str, start: str, end: str) -> str:
-    """The region of `text` from `start` up to the next `end` after it.
-
-    SCOPED ON PURPOSE. The doctor names this format TWICE — once for a lane
-    this contract does not own (the renderer substreams) and once for the
-    dsnoop. A bare substring assertion passes while the site that matters
-    moves, which is the half-guarded shape that reads as covered and guards
-    nothing.
-    """
-    begin = text.index(start)
-    tail = text[begin + len(start) :]
-    stop = tail.index(end)
-    return tail[:stop]
-
-
-def test_the_doctor_pins_the_same_width_on_the_live_box():
-    """`check_fanin_asound_wiring` is the on-box half of this contract.
-
-    It substring-matches the rendered /etc/asound.conf, so a widened lane whose
-    doctor pin was not moved reports a healthy box that cannot open its own
-    capture.
-    """
-    text = DOCTOR_AUDIO_RUNTIME.read_text()
-    # From where the doctor takes the jasper_capture stanza to where it moves on
-    # to jasper_ref — the renderer-lane loop that names the same format lives
-    # OUTSIDE this window.
-    window = _slice_between(
-        text,
-        '_asound_pcm_block(active, "jasper_capture")',
-        '_asound_pcm_block(active, "jasper_ref")',
-    )
-    assert f'"format {ALOOP_PROGRAM_LANE_FORMAT}"' in window, (
-        "check_fanin_asound_wiring must pin the jasper_capture dsnoop slave "
-        "format between taking that block and moving on to jasper_ref"
     )
 
 

@@ -28,6 +28,7 @@ from jasper.active_speaker import camilla_yaml as active_camilla_yaml
 from jasper.camilla_config_contract import (
     DEFAULT_CAPTURE_FORMAT,
     DEFAULT_CAPTURE_DEVICE,
+    RETIRED_ALOOP_CAPTURE_DEVICE,
     parse_camilla_devices_config,
 )
 from jasper.active_speaker.playback import FORBIDDEN_TEST_PCM_TOKENS
@@ -2354,9 +2355,9 @@ def test_the_crossover_v2_program_graph_follows_the_arm_in_both_directions(
     assert "  enable_rate_adjust: false" in ring_graph
 
     # --- NON-RING: the SAME site at an explicitly-named ALSA lane. ---------
-    # Not merely "capture is the tap": byte-identical to the emit this site made
-    # before it derived anything, so a caller naming a non-ring sink cannot
-    # notice the derivation at all.
+    # Not merely "capture is the emitter default": byte-identical to the emit
+    # this site made before it derived anything, so a caller naming a non-ring
+    # sink cannot notice the derivation at all.
     aloop_graph = _crossover_v2_program_graph(
         topology,
         tmp_path / "aloop",
@@ -2735,7 +2736,7 @@ def test_the_capture_half_is_coherence_checked_in_both_directions():
     # claim is that the trap is covered end to end.)
     armed = _coherence_errors(
         coupling="shm_ring",
-        capture=DEFAULT_CAPTURE_DEVICE,
+        capture=RETIRED_ALOOP_CAPTURE_DEVICE,
         playback=RING_ACTIVE_PLAYBACK_DEVICE,
         outputd_env=armed_env,
     )
@@ -2778,7 +2779,7 @@ def test_the_capture_half_is_coherence_checked_in_both_directions():
 
     assert _coherence_errors(
         coupling="loopback",
-        capture=DEFAULT_CAPTURE_DEVICE,
+        capture=RETIRED_ALOOP_CAPTURE_DEVICE,
         playback=DEFAULT_PLAYBACK_DEVICE,
         outputd_env={"JASPER_OUTPUTD_CONTENT_PCM": DEFAULT_OUTPUTD_CAPTURE_DEVICE},
     ) == ()

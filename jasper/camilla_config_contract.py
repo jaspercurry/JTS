@@ -18,12 +18,23 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Iterable, Mapping
 
+from jasper.fanin_coupling import RING_CAPTURE_DEVICE
 
-# Defaults match the outputd topology. Generated correction and
+
+# Capture is Ring A, aliased rather than respelled so the emitters' no-kwargs
+# answer and the ring's own device name cannot drift apart. The ring is the only
+# fan-in -> CamillaDSP transport (ADR-0100), so an emit that receives no coupling
+# kwargs must still name a lane fan-in actually writes.
+DEFAULT_CAPTURE_DEVICE = RING_CAPTURE_DEVICE
+# The snd-aloop tap ADR-0100 retired, spelled ONCE for the sites that still have
+# to name it: the flat cutover graph (whose playback half has not moved yet) and
+# the transport describer's account of a box that has not reconciled. It dies
+# with `deploy/alsa/asoundrc.jasper`.
+RETIRED_ALOOP_CAPTURE_DEVICE = "plug:jasper_capture"
+# Playback matches the outputd topology. Generated correction and
 # sound-profile configs must keep Camilla's playback target on the
 # post-DSP outputd loopback lane; otherwise applying a profile would
 # route music around jasper-outputd while TTS still uses outputd.
-DEFAULT_CAPTURE_DEVICE = "plug:jasper_capture"
 DEFAULT_PLAYBACK_DEVICE = "outputd_content_playback"
 ACTIVE_OUTPUTD_PLAYBACK_DEVICE = "outputd_active_content_playback"
 DEFAULT_OUTPUTD_CAPTURE_DEVICE = "outputd_content_capture"
@@ -296,105 +307,6 @@ def ensure_volume_limit_db(value: float) -> float:
     if out > 0:
         raise ValueError("volume_limit_db must not exceed 0 dB")
     return out
-
-
-# CamillaDSP v4 async (ratio-adjustable) resampler types. The snd-aloop safety
-# predicate below recognizes these explicitly so an unknown or synchronous
-# resampler cannot be mistaken for the oscillation-prone adaptive shape.
-ASYNC_RESAMPLER_TYPES = frozenset({"AsyncSinc", "AsyncPoly"})
-
-
-def is_async_resampler(resampler_type: str | None) -> bool:
-    """Return whether this is a recognized v4 ratio-adjustable resampler."""
-    return resampler_type in ASYNC_RESAMPLER_TYPES
-
-
-# snd-aloop ALSA captures whose name a JTS config taps for the summed program.
-# A `plug:`-wrapped form resolves to the same device, so match the substring.
-_SND_ALOOP_CAPTURE_TOKENS = ("jasper_capture", "Loopback")
-
-
-def snd_aloop_rate_adjust_oscillation_reason(text: str) -> str | None:
-    """Return why an emitted CamillaDSP config would re-introduce the
-    rate_adjust + async-resampler oscillation on a snd-aloop capture, else None.
-
-    This is a TEST-TIME contract predicate, NOT a runtime emit-time guard: it has
-    no callers in the emit path, so it does not fail-loud at config generation.
-    The regression test in test_camilla_config_contract.py feeds it every
-    JTS-generated snd-aloop capture config to pin that the emitters never produce
-    the oscillation-prone shape; a genuinely NEW emitter path is only covered once
-    it is added to that test's fixtures.
-
-    A snd-aloop ALSA capture (``plug:jasper_capture`` / ``hw:Loopback,...``) at
-    capture-rate == playback-rate already rate-tracks via the loopback, so
-    ``enable_rate_adjust: true`` WITH an async resampler makes CamillaDSP's
-    adjuster and the resampler fight, producing the metastable AirPlay-dropout
-    oscillation documented in docs/HANDOFF (CamillaDSP rate_adjust + AsyncSinc).
-    The safe shape is enable_rate_adjust true AND NO async resampler block.
-
-    Returns a one-clause reason string when the config is a JTS-generated
-    snd-aloop capture config (single samplerate ⇒ capture == playback by
-    construction) that carries an async resampler — the dangerous both-on
-    combination. Returns None when the config is not a snd-aloop capture or is
-    safe. NOTE the bonded-leader pipe-sink config legitimately sets
-    ``enable_rate_adjust: false`` on its snd-aloop capture (snapclient is the
-    sole rate-tracker on the synced chain) — that is NOT this oscillation and is
-    intentionally not flagged; only the async-resampler-on-loopback case is.
-    Parser is deliberately lightweight — these are JTS-generated configs with
-    a stable, simple ``devices:`` shape, not arbitrary YAML.
-    """
-    capture_device: str | None = None
-    has_resampler = False
-    resampler_type: str | None = None
-    in_devices = False
-    devices_indent = 0
-    nested: str | None = None
-    nested_indent = 0
-
-    for raw_line in text.splitlines():
-        stripped = raw_line.strip()
-        if not stripped or stripped.startswith("#"):
-            continue
-        indent = _yaml_indent(raw_line)
-        if not in_devices:
-            if stripped == "devices:":
-                in_devices = True
-                devices_indent = indent
-            continue
-        # Left the devices: block.
-        if indent <= devices_indent and raw_line.lstrip() == raw_line:
-            break
-        if stripped.endswith(":"):
-            key = stripped[:-1].strip()
-            if key in {"capture", "playback", "resampler"}:
-                nested = key
-                nested_indent = indent
-                if key == "resampler":
-                    has_resampler = True
-            continue
-        if ":" not in stripped:
-            continue
-        key, raw_value = stripped.split(":", 1)
-        key = key.strip()
-        value = _clean_yaml_scalar(raw_value)
-        if nested == "capture" and key == "device" and indent > nested_indent:
-            capture_device = value
-        elif nested == "resampler" and key == "type" and indent > nested_indent:
-            resampler_type = value
-
-    if capture_device is None:
-        return None
-    if not any(tok in capture_device for tok in _SND_ALOOP_CAPTURE_TOKENS):
-        return None  # not a snd-aloop capture
-
-    if has_resampler and is_async_resampler(resampler_type):
-        return (
-            f"snd-aloop capture {capture_device!r} carries an async resampler "
-            f"(type={resampler_type!r}) — combined with enable_rate_adjust this "
-            "fights the loopback's own rate tracking (the AirPlay-dropout "
-            "oscillation)"
-        )
-    return None
 
 
 @dataclass(frozen=True)
