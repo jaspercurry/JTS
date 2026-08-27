@@ -276,14 +276,13 @@ def test_a_refused_prepare_leaves_the_bundle_store_untouched(
             )
 
         monkeypatch.setattr(v2host, "open_v2_evidence_store", _bomb)
-        prepare = (
-            v2host.prepare_v2_session if preparer == "session"
-            else v2host.prepare_v2_verify
-        )
         with pytest.raises(
             v2host.CrossoverV2Refused, match="relay capture is not configured"
         ):
-            prepare({}, status={}, run_async=None, camilla_factory=None)
+            v2host.prepare_v2_session(
+                {}, status={}, run_async=None, camilla_factory=None,
+                verify_only=preparer == "verify",
+            )
     finally:
         v2host.set_state_path_for_tests(None)
 

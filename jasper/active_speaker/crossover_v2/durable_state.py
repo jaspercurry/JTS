@@ -170,9 +170,9 @@ def _decimate_sum(predicted_sum: Any) -> dict[str, Any] | None:
     decimated curve
     (see ``test_the_persisted_prediction_verdict_is_the_veto_s_not_a_re_grade``).
     **One path re-persists an old curve, not just new ones:** a verify-only
-    re-arm (:func:`prepare_v2_verify`) rehydrates ``predicted_sum`` from
-    whatever is on disk and feeds it straight back through this function at
-    its own persist step, so a pre-fix 513-point stride, encountered this
+    re-arm rehydrates ``predicted_sum`` from whatever is on disk and feeds it
+    straight back through this function at its own persist step, so a pre-fix
+    513-point stride, encountered this
     way, is itself now block-averaged again — 513 → 256 at 93.75 Hz spacing
     (halved, not preserved) — where the old code would have left an
     already-persisted curve untouched on that path. Still honest values,
@@ -564,8 +564,8 @@ def pilot_transfer_prior_from_state(
 
     The read side of :func:`persist_conductor_state`'s
     ``verify_priors.pilot_transfer_reference`` — the mirror of
-    :func:`_predicted_spec_prior` above, and the whole of what
-    ``prepare_v2_verify`` seeds a fresh conductor's *history* with.
+    :func:`_predicted_spec_prior` above, and the whole of what a verify-only
+    re-arm seeds a fresh conductor's *history* with.
 
     Named and module-level so the seeding PATH is drivable in a test without a
     relay: durable state in, the ctor's ``verify_pilot_transfer_prior``
@@ -602,7 +602,7 @@ def commanded_delta_prior_from_state(
     **A length disagreement is one of those, checked here (#2316 N3).** The two
     arrays are read separately, so a truncated or hand-edited record yields two
     valid arrays that are not a curve. Returning them would leave the two
-    surfaces disagreeing in the journal: ``prepare_v2_verify``'s capability line
+    surfaces disagreeing in the journal: a verify-only re-arm's capability line
     would report the commanded delta PRESENT, and the probe's own warning would
     report it unavailable a moment later. Both degrade safely, but one of the
     two lines is false, and an operator reading the capability line has no way
@@ -1417,7 +1417,7 @@ def build_conductor_state(
             # ``None`` means ungradeable, which is not a pass.
             #
             # Threaded through exactly like ``gate_window_ms`` below, and
-            # rehydrated by ``prepare_v2_verify`` for the same reason: a
+            # rehydrated by the verify-only re-arm for the same reason: a
             # verify-only re-arm builds a fresh conductor that never runs a
             # fit, so a verdict that did not travel that route would be
             # dropped on the first "Try again" — the ``cloud`` B1 bug shape,
@@ -1553,7 +1553,7 @@ def build_conductor_state(
             ),
             "gate_window_ms": conductor.measure_gate_window_ms,
             # Measurement-honesty gate G3's reference, DATED — history, not a
-            # comparator (#1927). ``prepare_v2_verify`` hands it to the next
+            # comparator (#1927). The verify-only re-arm hands it to the next
             # conductor as ``verify_pilot_transfer_prior``, which may only
             # disclose it; the constructor argument that used to make it that
             # session's live baseline is gone. Carried forward below when this
@@ -1570,9 +1570,9 @@ def build_conductor_state(
         },
         "evidence": dict(evidence) if evidence else None,
     }
-    # A conductor that declares no tier of its own — the verify-only re-arm
-    # (``prepare_v2_verify``), which re-runs one tracking capture against an
-    # ALREADY-applied result — must not erase which instrument produced that
+    # A conductor that declares no tier of its own — the verify-only re-arm,
+    # which re-runs one tracking capture against an ALREADY-applied result —
+    # must not erase which instrument produced that
     # result. Carried forward unconditionally, exactly like ``cloud`` below
     # and for the same reason: the re-arm runs under a brand-new relay session
     # id, so a session-scoped guard would drop it on the first "Try again".
@@ -1654,7 +1654,7 @@ def build_conductor_state(
     # B1 fix (flat-linearization plan PR-4 review, 2026-07-26): ``cloud``
     # carries the SAME session-id-gated shape as ``candidate``/``evidence``
     # above, which is the WRONG guard for it — a verify-only re-arm's
-    # conductor (``prepare_v2_verify``'s ``index_phase_map={1: PHASE_VERIFY}``)
+    # conductor (the re-arm's ``index_phase_map={1: PHASE_VERIFY}``)
     # has NO group phase in ITS OWN session, so ``_cloud_summary`` always
     # returns ``None`` for it: not because nothing closed, but because there
     # is nothing to close in this session. A session-id gate would never
@@ -1704,7 +1704,7 @@ def build_conductor_state(
     # forward draws one block up, keyed on the phase that actually produces the
     # value. This is what puts the measuring session's finding on the DONE
     # screen: stage 2 is a different session in a different bundle
-    # (``prepare_v2_verify`` opens a new one), and without this the result
+    # (the verify-only re-arm opens a new one), and without this the result
     # screen would silently lose what the measurement learned.
     #
     # The converse matters just as much: a session that DOES run MEASURE writes
@@ -1769,7 +1769,7 @@ def build_conductor_state(
     #   * ``pre_apply_profile`` is carried forward UNCONDITIONALLY (not gated
     #     on a matching session_id): the deferred VERIFY that auto-arms right
     #     after every SUCCESSFUL apply runs under a BRAND-NEW relay session id
-    #     (``prepare_v2_verify`` mints one and "rebinds" the conductor's
+    #     (the verify-only re-arm mints one and "rebinds" the conductor's
     #     session_id before its own ``persist_conductor_state`` call), so a
     #     session-id-gated carry-forward would lose the stash on that very
     #     first post-apply snapshot. W6.12 P0: without this, the verify phase
@@ -1781,7 +1781,7 @@ def build_conductor_state(
     #   * ``apply_blocked`` IS session-scoped (#1605): it is only ever set on
     #     a BLOCKED auto-apply, which — unlike a successful one — refuses the
     #     deferred VERIFY outright (the honest ``apply_failed`` reason, never a
-    #     re-arm), so it never has to survive ``prepare_v2_verify``'s
+    #     re-arm), so it never has to survive the verify-only re-arm's
     #     new-session rebind. Gating it drops a stale nudge the moment a fresh
     #     session begins instead of leaking session A's blocker onto session
     #     B's apply step.
@@ -1799,7 +1799,7 @@ def build_conductor_state(
     # captures have persisted: it would have graded the apply's own headroom
     # charge blind and could roll a healthy correction back — the precise
     # failure this key exists to prevent, one phase later. And
-    # ``prepare_v2_verify``'s re-arm persists under a brand-new session id, so
+    # the verify-only re-arm persists under a brand-new session id, so
     # every "Try again" probe would have been blind too.
     #
     # Session-scoping it would reintroduce that second half: like

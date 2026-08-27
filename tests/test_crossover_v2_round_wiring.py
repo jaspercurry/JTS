@@ -1685,9 +1685,9 @@ def _full_stage_2(monkeypatch) -> tuple[Any, list[int]]:
     monkeypatch.setattr(
         baseline_profile_mod, "restore_applied_baseline_profile", _counted,
     )
-    prepared = v2host.prepare_v2_verify(
+    prepared = v2host.prepare_v2_session(
         {"stage": "post_apply"}, status=_status(), run_async=_bg_run_async,
-        camilla_factory=lambda: SimpleNamespace(),
+        camilla_factory=lambda: SimpleNamespace(), verify_only=True,
     )
     conductor, _state = _open_prepared(monkeypatch, prepared)
     assert flow.PHASE_CLOUD_VERIFY in conductor.session_phases, (

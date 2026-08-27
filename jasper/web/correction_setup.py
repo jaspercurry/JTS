@@ -6338,12 +6338,12 @@ def _handle_crossover_v2_relay(
             "before starting a crossover measurement session"
         )
     status = correction_crossover_backend.status_payload()
-    prepare = v2host.prepare_v2_verify if verify_only else v2host.prepare_v2_session
-    prepared = prepare(
+    prepared = v2host.prepare_v2_session(
         raw,
         status=status,
         run_async=_run_async,
         camilla_factory=_camilla,
+        verify_only=verify_only,
     )
     # #2662 W2b: the relay origin is required only when the session actually
     # opens on the relay — a wired session must work on a relay-unconfigured

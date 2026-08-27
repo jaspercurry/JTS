@@ -413,8 +413,9 @@ def _stage_2(monkeypatch, *, camilla_factory: Any = None) -> tuple[Any, dict[str
     unconditionally, ahead of its own refusal check) must supply a callable —
     see ``test_stage_2_rollback_refuses_cleanly_with_no_pre_apply_profile``.
     """
-    prepared = v2host.prepare_v2_verify(
-        {}, status=_status(), run_async=None, camilla_factory=camilla_factory
+    prepared = v2host.prepare_v2_session(
+        {}, status=_status(), run_async=None, camilla_factory=camilla_factory,
+        verify_only=True,
     )
     return _open_prepared(monkeypatch, prepared)
 
@@ -498,6 +499,67 @@ def _seed_applied_stage_1_state() -> dict[str, Any]:
     }
     v2host.save_v2_state(state)
     return state
+
+
+# --------------------------------------------------------------------------- #
+# 0. the seam binding neither stage's own run would notice losing
+# --------------------------------------------------------------------------- #
+
+
+class _RecordingCheckStore:
+    """An evidence store that keeps what was published through it."""
+
+    session_id = "bundle-check-pin"
+
+    def __init__(self) -> None:
+        self.published: list[tuple[str, Any]] = []
+
+    def publish_json_artifact(self, relpath: str, payload: Any) -> Any:
+        self.published.append((relpath, payload))
+        return SimpleNamespace(fingerprint="fp-check-pin")
+
+
+@pytest.mark.parametrize(
+    "open_stage_under_test",
+    [pytest.param(_stage_1, id="stage-1"), pytest.param(_stage_2, id="stage-2")],
+)
+def test_each_stage_binds_its_own_sessions_check_publisher(
+    monkeypatch, open_stage_under_test,
+):
+    """Both stages bind the REAL check publisher, for THIS session's bundle.
+
+    Stage 2 never runs CHECK — its conductor is constructed with CHECK already
+    accepted, so ``_consume_check`` is unreachable — which means no verdict, no
+    artifact and no screen would notice if its ``publish_check`` were dropped,
+    swapped for the other publisher, or left pointing at another session's
+    bundle. The seam is the only place that binding is observable, so the seam
+    is what this reads: call what the conductor holds and require the artifact
+    to land in this stage's own bundle under the relay session id this stage
+    minted.
+    """
+    from jasper.audio_measurement.program_analysis import GainPlan
+
+    store = _RecordingCheckStore()
+    monkeypatch.setattr(
+        v2host, "open_v2_evidence_store",
+        lambda topology: (store, store.session_id),
+    )
+    if open_stage_under_test is _stage_2:
+        # Stage 2's own preceding gate: an applied durable state.
+        _seed_applied_stage_1_state()
+
+    conductor, _state = open_stage_under_test(monkeypatch)
+
+    conductor._seams.publish_check(
+        GainPlan(
+            gain_db={"woofer": -11.0}, predicted_peak_dbfs=-11.0, snr_floor_ok=True,
+        ),
+        {"bands": []},
+    )
+
+    (relpath, payload), = store.published
+    assert relpath == f"crossover_v2/{_MINTED_RELAY_SESSION_ID}/check.json"
+    assert payload["gain_plan_db"] == {"woofer": -11.0}
 
 
 # --------------------------------------------------------------------------- #
