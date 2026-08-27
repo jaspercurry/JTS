@@ -2,15 +2,18 @@
 #
 # SPDX-License-Identifier: Apache-2.0
 
-"""inv-5 (docs/HANDOFF-multiroom.md §2) — no CamillaDSP IN A BONDED CHAIN runs
-rate_adjust, because snapclient's sample-stuffing is the single rate-tracker for
-the synced chain (two rate-adjusters oscillate). That is the leader's
-pipe-writing CamillaDSP and the ACTIVE follower's ring-capturing one. A DUMB
+"""inv-5 (docs/HANDOFF-multiroom.md §2) — no CamillaDSP runs rate_adjust.
+snapclient's sample-stuffing is the single rate-tracker for the synced chain
+(two rate-adjusters oscillate); and, since ADR-0100, every sink
+`member_camilla_kwargs` can hand out — the leader's pipe, or Ring B for
+everything else (dumb follower / solo / off / invalid) — is one CamillaDSP
+cannot actuate rate_adjust on regardless (a File sink has no output clock; a
+ring PCM is an ioplug, and alsa-lib reports card -1 for every ioplug). A DUMB
 follower's local CamillaDSP is out of the bonded path (canonical model,
-Increment 5) and keeps solo defaults — rate_adjust ON, correctly. Covers the
-shared predicate, the member-config policy, the generator param on the live
-generators, and the jasper-doctor backstops (active-config rate_adjust + leader
-pipe + outputd channel-pick env drift)."""
+Increment 5) and keeps solo defaults — rate_adjust OFF, same as every other
+role now. Covers the shared predicate, the member-config policy, the
+generator param on the live generators, and the jasper-doctor backstops
+(active-config rate_adjust + leader pipe + outputd channel-pick env drift)."""
 from __future__ import annotations
 
 from jasper.multiroom.config import (
@@ -83,12 +86,13 @@ def test_member_camilla_kwargs_active_follower_is_solo_defaults():
     """CANONICAL (Increment 5): an active FOLLOWER's local CamillaDSP is OUT
     of the bonded playback path (the round-trip feeds outputd directly);
     it keeps producing the normal direct lane — the inv-B fallback feed —
-    so its config stays byte-for-byte the solo config (rate_adjust=True is
-    CORRECT: its sink is the ALSA loopback, which has a clock)."""
+    so its config stays byte-for-byte the solo config (rate_adjust=False is
+    correct there too: its sink is Ring B (ADR-0100), an ioplug CamillaDSP
+    cannot actuate rate_adjust on)."""
     from jasper.multiroom.member_config import member_camilla_kwargs
     kw = member_camilla_kwargs(_cfg(enabled=True, role="follower", channel="right",
                                     bond_id="b", leader_addr="jts.local"))
-    assert kw["enable_rate_adjust"] is True
+    assert kw["enable_rate_adjust"] is False
     assert kw["playback_pipe_path"] is None
 
 
@@ -96,7 +100,7 @@ def test_member_camilla_kwargs_solo_is_unchanged_defaults():
     """Solo / off → the solo-speaker defaults (config byte-for-byte unchanged)."""
     from jasper.multiroom.member_config import member_camilla_kwargs
     kw = member_camilla_kwargs(_cfg())  # grouping off
-    assert kw["enable_rate_adjust"] is True
+    assert kw["enable_rate_adjust"] is False
     assert kw["playback_pipe_path"] is None
 
 
@@ -133,7 +137,7 @@ def test_member_camilla_kwargs_invalid_member_unchanged():
     from jasper.multiroom.member_config import member_camilla_kwargs
     kw = member_camilla_kwargs(_cfg(enabled=True, role="", channel="left",
                                     bond_id="", error="bond_id empty"))
-    assert kw["enable_rate_adjust"] is True
+    assert kw["enable_rate_adjust"] is False
     assert kw["playback_pipe_path"] is None
 
 
@@ -274,10 +278,12 @@ def test_doctor_check_does_not_warn_on_a_dumb_follower(monkeypatch, tmp_path):
 
     A DUMB (passive, single-DAC) follower plays the bond through outputd's
     dac_content lane; its own camilla#1 stays on the solo fallback feed, which
-    `member_camilla_kwargs` emits with `enable_rate_adjust=True` DELIBERATELY,
-    into a sink that has a clock. Warning there would red every correctly
-    configured passive follower in the fleet — a doctor that cries wolf — and
-    there is no bond apply on that box for this check to catch.
+    `member_camilla_kwargs` emits with `enable_rate_adjust=False` (that
+    fallback feed's sink is Ring B — ADR-0100 — an ioplug CamillaDSP cannot
+    actuate rate_adjust on). This check still must not warn there: it has no
+    bond apply on that box to catch, so it would red every passive follower
+    in the fleet regardless of the local config's value — a doctor that
+    cries wolf.
     """
     import jasper.cli.doctor.correction as corrmod
     import jasper.multiroom.config as cfgmod
@@ -287,7 +293,7 @@ def test_doctor_check_does_not_warn_on_a_dumb_follower(monkeypatch, tmp_path):
     dumb_follower = _cfg(enabled=True, role="follower", channel="right",
                          bond_id="b", leader_addr="jts.local")
     # Re-derived, not assumed: this is what the member policy emits there.
-    assert member_camilla_kwargs(dumb_follower)["enable_rate_adjust"] is True
+    assert member_camilla_kwargs(dumb_follower)["enable_rate_adjust"] is False
 
     _stub_active_box(monkeypatch, False)
     monkeypatch.setattr(cfgmod, "load_config", lambda *a, **k: dumb_follower)

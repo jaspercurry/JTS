@@ -1288,7 +1288,7 @@ def test_refusal_payload_is_typed_and_stable(reason_code):
 # byte-identical.
 # (imports for these tests live in the top-of-file import block.)
 
-_SHM_RING_KWARGS = capture_kwargs_for_coupling("shm_ring")
+_SHM_RING_KWARGS = capture_kwargs_for_coupling()
 
 
 def test_base_flat_no_coupling_kwargs_is_byte_identical(tmp_path):
@@ -1468,7 +1468,7 @@ def test_stereo_host_reemit_requires_explicit_passive_layout(
     from jasper.sound.profile import SimpleEq, SoundProfile
 
     profile = SoundProfile(enabled=True, simple_eq=SimpleEq(bass_db=4.0))
-    golden = emit_sound_config(profile, room_peqs=[])
+    golden = emit_sound_config(profile, room_peqs=[], enable_rate_adjust=False)
 
     _persist_topology(_full_range_stereo(), tmp_path, monkeypatch)
     config_dir = tmp_path / "configured"

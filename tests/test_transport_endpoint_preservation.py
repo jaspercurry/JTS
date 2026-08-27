@@ -2118,7 +2118,7 @@ async def test_the_ring_emit_changes_the_transport_and_nothing_else(
     )
 
     monkeypatch.setattr(
-        "jasper.fanin_coupling.read_declared_ring_wire_format", lambda env=None: wire
+        "jasper.fanin_coupling.read_declared_ring_wire_format", lambda: wire
     )
     topology, preset = _commissioning_box()
     aloop = yaml.safe_load(

@@ -1910,7 +1910,7 @@ def test_the_flat_lane_is_refused_on_a_roleful_box_so_its_ring_kwargs_cannot_sto
     from jasper.fanin_coupling import capture_kwargs_for_coupling
 
     # The kwargs are unconditionally the STEREO ring's...
-    kwargs = capture_kwargs_for_coupling("shm_ring")
+    kwargs = capture_kwargs_for_coupling()
     assert kwargs["playback_device"] == RING_PLAYBACK_DEVICE
 
     # ...and every topology that HAS an active ring refuses the lane they serve.

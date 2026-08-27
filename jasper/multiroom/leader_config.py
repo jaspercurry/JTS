@@ -5,9 +5,9 @@
 """Bonded-leader CamillaDSP regeneration + solo restore — the grouping
 reconciler's config-apply arm (Increment 5, HANDOFF-multiroom.md §2).
 
-On bond form, the LEADER's one CamillaDSP must switch from the solo ALSA
-loopback sink to the snapserver pipe (the shared-stream producer); on
-disband it must switch back. This module owns both moves, reusing the
+On bond form, the LEADER's one CamillaDSP must switch from the solo Ring B
+sink to the snapserver pipe (the shared-stream producer); on disband it
+must switch back. This module owns both moves, reusing the
 SAME machinery as the wizards so the three apply paths cannot drift:
 
   - the saved sound profile + settings (``load_profile`` /
@@ -273,13 +273,17 @@ async def restore_solo_config(*, camilla_factory=_camilla) -> str | None:
             # cannot form a bond in the first place (apply_bonded_leader_config
             # refuses an active `current` via the carrier), so `current` here
             # is never a roleful graph. Deliberately the SOLO defaults — no
-            # member kwargs: this IS the un-bonding.
+            # member kwargs: this IS the un-bonding. enable_rate_adjust=False
+            # is explicit rather than the emitter's own default: this box's
+            # playback sink is Ring B (ADR-0100), an ioplug CamillaDSP cannot
+            # actuate rate_adjust on (see member_config's module docstring).
             emit_sound_config(
                 profile,
                 room_peqs=peqs,
                 out_path=SOLO_RESTORE_PATH,
                 profile_id="grouping-solo-restore",
                 output_trim_db=output_trim_db(profile, settings),
+                enable_rate_adjust=False,
             )
             return {"room_peq_count": len(peqs)}
 

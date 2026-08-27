@@ -329,29 +329,22 @@ def resolve_ring_wire_format(raw: str | None) -> str:
     )
 
 
-def read_declared_ring_wire_format(
-    env: Mapping[str, str] | None = None,
-) -> str:
+def read_declared_ring_wire_format() -> str:
     """The box's declared ring wire format, resolved the way fan-in resolves it.
 
-    FILE-FRESH on the live path (``env`` is ``None``), over the same chain
-    systemd gives ``jasper-fanin`` — ``/etc/jasper/jasper.env`` then
-    ``/var/lib/jasper/fanin.env``, later wins. Not ``os.environ``: the callers
-    that need this answer are socket-activated wizards and long-lived daemons
-    that never loaded ``fanin.env`` at all, which is the ``os.environ``-stale
-    class AGENTS.md canonizes (the voice-provider fix). An explicit ``env``
-    mapping is authoritative with no file fallback, for a caller that means the
-    env it hands in.
+    FILE-FRESH, over the same chain systemd gives ``jasper-fanin`` —
+    ``/etc/jasper/jasper.env`` then ``/var/lib/jasper/fanin.env``, later wins.
+    Not ``os.environ``: the callers that need this answer are socket-activated
+    wizards and long-lived daemons that never loaded ``fanin.env`` at all, which
+    is the ``os.environ``-stale class AGENTS.md canonizes (the voice-provider
+    fix).
 
     A file that cannot be read contributes nothing — an absent ``fanin.env`` is
     the ordinary unarmed state — but a file that IS readable and declares a
     value this repo does not recognize raises, exactly as fan-in would.
     """
-    if env is not None:
-        return resolve_ring_wire_format(env.get(RING_WIRE_FORMAT_ENV_VAR))
-
     # Lazy imports: jasper.fanin.coupling_reconcile imports THIS module, so a
-    # top-level import would be circular (mirrors coupling_capture_kwargs_from_env).
+    # top-level import would be circular.
     from pathlib import Path
 
     from jasper.env_file import read_value
@@ -687,7 +680,7 @@ def resolve_outputd_ring_slots(raw_slots: str | None) -> int:
     )
 
 
-def capture_kwargs_for_coupling(raw: str | None = None) -> dict[str, object]:
+def capture_kwargs_for_coupling() -> dict[str, object]:
     """Return the ``emit_sound_config`` capture kwargs for the ring.
 
     UNCONDITIONAL: a ``{}`` here would emit a graph whose capture names a lane
@@ -717,7 +710,6 @@ def capture_kwargs_for_coupling(raw: str | None = None) -> dict[str, object]:
     it strands the bond or sends a full-range program to a per-driver ring.
     ``resolve_output_layout`` owns that device.
     """
-    del raw  # one transport: nothing here selects on a coupling token
     wire = resolve_ring_wire()
     return {
         "capture_device": RING_CAPTURE_DEVICE,
@@ -782,19 +774,16 @@ def content_lane_format_for_coupling(raw: str | None = None) -> str:
     return DEFAULT_PLAYBACK_FORMAT
 
 
-def coupling_capture_kwargs_from_env(
-    env: dict[str, str] | None = None,
-) -> dict[str, object]:
+def coupling_capture_kwargs_from_env() -> dict[str, object]:
     """The live ``emit_sound_config`` capture kwargs — always the ring's.
 
     The one call shape a config emitter uses to thread the SHARED fan-in→Camilla
     coupling into a live re-emit. It consults NO env: the ring is the only
     central transport (ADR-0100), so there is nothing for a token to select and
-    a token that failed to resolve can no longer make this answer ``{}`` — which
-    would re-emit a graph capturing a lane fan-in does not write, silently, in
-    the middle of a ``/sound/`` or ``/correction/`` save.
+    no unresolved token can make this answer ``{}`` — which would re-emit a
+    graph capturing a lane fan-in does not write, silently, in the middle of a
+    ``/sound/`` or ``/correction/`` save.
     """
-    del env  # see above: no env selects this answer
     return capture_kwargs_for_coupling()
 
 
