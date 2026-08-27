@@ -280,10 +280,10 @@ def emit_mixer(
 # ``jasper.multiroom.reconcile.outputd_grouping_env``) — not a consumer of
 # this Python primitive.
 
-# The split mixer's name. Distinct from ``master_gain`` on purpose: the Ducker
-# drives CamillaDSP's global ``main_volume`` fader and relies on ``master_gain``
-# staying the identity mixer, so channel-select is a SEPARATE mixer inserted
-# after it.
+# The split mixer's name. Distinct from ``master_gain`` on purpose: a whole-box
+# channel pick is a separate concern from the program's own routing, so it is a
+# SEPARATE mixer inserted after it. (Ducking is unrelated to either — it is a
+# transient-duck claim on the volume owner, ``jasper.camilla.Ducker``.)
 CHANNEL_SELECT_MIXER = "channel_select"
 
 # Per-source gain for a 2-channel L+R mono sum. 20*log10(0.5) = -6.0206 dB:
@@ -375,16 +375,17 @@ def emit_master_gain_pipeline(
     only how the pipeline is written. The ``master_gain`` step name is
     deliberately hard-coded — it IS the contract of the configs that
     carry it (the base outputd config and the correction/sound family;
-    active-speaker configs have no ``master_gain``): those configs emit
-    the mixer as an identity placeholder and preserve it VERBATIM.
-    Precisely (do not restate this wrong): the Ducker attenuates
-    CamillaDSP's built-in ``main_volume`` fader, **not** this mixer;
-    ``master_gain`` is the stable identity anchor that a downstream weave
-    would position against — the multi-room channel-split weave once
-    spliced ``channel_select`` immediately after it this way, before it was
-    removed as dead code (Wave 1 cleanup, 2026-08-25) — and the reserved
-    hook for future mixer ops. See the sound-emitter tests for the
-    byte-level contract.
+    active-speaker configs have no ``master_gain``). Its MAPPING is an
+    identity placeholder on every shape but one: a mono passive topology
+    folds both program channels onto its single declared output there
+    (``jasper.sound.camilla_yaml._master_gain_mixer_yaml``). The step name
+    is the stable anchor a downstream weave would position against — the
+    multi-room channel-split weave once spliced ``channel_select``
+    immediately after it this way, before it was removed as dead code
+    (Wave 1 cleanup, 2026-08-25) — and the reserved hook for future mixer
+    ops. Ducking rides none of this: it is a transient-duck claim on the
+    volume owner (``jasper.camilla.Ducker``). See the sound-emitter tests
+    for the byte-level contract.
 
     ``right_names=None`` (solo) duplicates ``left_names`` onto channel 1 —
     reproduces the sound emitter's solo pipeline byte-for-byte (the

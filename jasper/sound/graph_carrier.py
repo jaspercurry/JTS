@@ -36,9 +36,11 @@ from jasper.audio_runtime_plan import EmitSoundConfigKwargs, apply_capture_prece
 from jasper.fanin_coupling import capture_half
 from jasper.sound.camilla_yaml import (
     FLAT_GRAPH_WIDTH,
+    FlatChannelPlan,
     emit_sound_config,
     extract_room_peqs_from_config,
     extract_room_peqs_from_config_text,
+    flat_graph_channel_plan,
     is_base_config,
     is_jts_generated_config,
 )
@@ -122,10 +124,7 @@ class _StereoHostCarrier:
         # re-assert in reemit() for the live-draft path that skips the pre-check.
         # Lazy import keeps the base wizard path light (the one allowed
         # sound->active_speaker bridge, like _classify_loaded_config below).
-        from jasper.active_speaker.runtime_contract import (
-            flat_graph_muted_outputs,
-            flat_program_graph_block,
-        )
+        from jasper.active_speaker.runtime_contract import flat_program_graph_block
 
         self._eq_block = flat_program_graph_block() if guard_flat_topology else None
         self.can_host_eq = self._eq_block is None
@@ -136,12 +135,14 @@ class _StereoHostCarrier:
         # path, silently REPLACES the width-matched cutover the statefile guard
         # just approved (install runs reconcile_sound_dsp_state, then restarts
         # Camilla onto whatever this wrote). Same single owner the cutover render
-        # reads, so the two cannot disagree about which channels are unclaimed;
-        # this carrier restates no topology rules of its own.
-        self._flat_muted_outputs = (
-            flat_graph_muted_outputs(width=FLAT_GRAPH_WIDTH)
+        # reads, so the two cannot disagree about which channels are unclaimed
+        # or about where a mono box folds its program; this carrier restates no
+        # topology rules of its own. Without the fold half, saving preference EQ
+        # on a mono box would silently un-fold the graph the cutover seeded.
+        self._flat_channel_plan = (
+            flat_graph_channel_plan(width=FLAT_GRAPH_WIDTH)
             if guard_flat_topology
-            else frozenset()
+            else FlatChannelPlan()
         )
 
     def _compute_room_peqs(self) -> list:
@@ -162,17 +163,22 @@ class _StereoHostCarrier:
     def _validate_member_kwargs(self, member_kwargs: dict) -> None:
         """Carrier-specific guard after grouping policy is resolved."""
 
-    def _muted_outputs_for(self, emit_kwargs: Mapping[str, object]) -> frozenset[int]:
-        """The unclaimed playback channels to hard mute for THIS re-emit.
+    def _channel_plan_for(
+        self, emit_kwargs: Mapping[str, object]
+    ) -> FlatChannelPlan:
+        """The hard mutes and the mono fold to apply to THIS re-emit.
 
-        Withheld — empty — whenever the resolved sink is not this speaker's own
-        DAC, because then there is no physical output to decline:
+        Withheld — the empty plan — whenever the resolved sink is not this
+        speaker's own DAC, because then there is no physical output to decline
+        and no local cabinet to fold for:
 
         * ``playback_pipe_path`` (bonded-leader Snapcast FIFO). The pipe carries
           the SHARED stereo program to every follower; muting a channel there
-          would strip it out of the group's stream, not silence a local output.
-          Same load-bearing "no DAC attached" key the runtime contract's
-          program-bake exemption rests on.
+          would strip it out of the group's stream, and folding would collapse
+          the whole GROUP to mono to suit this one leader's cabinet. A bonded
+          member's own fold lives receiver-side instead (``jasper-outputd``'s
+          ``ChannelPick``). Same load-bearing "no DAC attached" key the runtime
+          contract's program-bake exemption rests on.
 
         A grouped topology that genuinely needs per-output muting on a pipe
         sink is the Distributed-Active track's problem; withholding here is
@@ -181,8 +187,8 @@ class _StereoHostCarrier:
         """
 
         if emit_kwargs.get("playback_pipe_path"):
-            return frozenset()
-        return self._flat_muted_outputs
+            return FlatChannelPlan()
+        return self._flat_channel_plan
 
     def reemit(
         self,
@@ -250,14 +256,15 @@ class _StereoHostCarrier:
             member_kwargs=member_kwargs,
         )
         room_peqs = self._compute_room_peqs() if room_peqs is None else list(room_peqs)
-        muted_outputs = self._muted_outputs_for(emit_kwargs)
+        plan = self._channel_plan_for(emit_kwargs)
         yaml = emit_sound_config(
             profile,
             room_peqs=room_peqs,
             out_path=out_path,
             profile_id=profile_id,
             output_trim_db=output_trim_db,
-            muted_outputs=muted_outputs,
+            muted_outputs=plan.muted_outputs,
+            mono_fold_output=plan.mono_fold_output,
             **emit_kwargs,
         )
         return ReemitResult(yaml=yaml, room_peq_count=len(room_peqs))
