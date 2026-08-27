@@ -1960,7 +1960,9 @@ async def test_driver_commissioning_is_byte_identical_on_every_non_ring_device(
             RING_CAPTURE_DEVICE,
             None,  # resolved from the box's own wire below, never a literal
         ),
-        (OUTPUTD_ACTIVE_PLAYBACK_DEVICE, "alsa", DEFAULT_CAPTURE_DEVICE, "-"),
+        # Not a ring end: ADR-0100 left one transport, so the line reports the
+        # journal's own "no answer" literal rather than a second name.
+        (OUTPUTD_ACTIVE_PLAYBACK_DEVICE, "-", DEFAULT_CAPTURE_DEVICE, "-"),
     ],
     ids=["ring", "aloop_active_lane"],
 )

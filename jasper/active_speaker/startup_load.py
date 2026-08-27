@@ -73,7 +73,7 @@ from .startup_hold import (
     release_staged_startup_hold,
     startup_hold_marker_path,
 )
-from ..fanin_coupling import transport_label
+from ..fanin_coupling import RING_PCM_DEVICES, TRANSPORT_RING
 from .safe_playback import load_safe_playback_state
 from .staging import (
     COMMISSIONING_TRANSPORT_GATE_ID,
@@ -1585,8 +1585,8 @@ def build_driver_commission_load_preflight(
     # snd-aloop tap fan-in feeds under every coupling, so this passes and an
     # unarmed box behaves exactly as it did before.
     from jasper.fanin_coupling import (
+        COUPLING_SHM_RING,
         RING_PCM_DEVICES,
-        is_shm_ring_coupling,
         ring_active_endpoint_armed,
     )
 
@@ -1632,8 +1632,8 @@ def build_driver_commission_load_preflight(
         # direction: both remedies are safe to run, and inventing a per-file
         # verdict from an exception that carries none would be the guess.
         try:
-            ring_feed_armed = is_shm_ring_coupling(
-                read_persisted_coupling(FANIN_ENV_PATH)
+            ring_feed_armed = (
+                read_persisted_coupling(FANIN_ENV_PATH) == COUPLING_SHM_RING
             )
             ring_endpoint_armed = ring_active_endpoint_armed()
         except (OSError, ValueError):
@@ -1888,10 +1888,12 @@ async def load_driver_commissioning_config(
     # `commissioning_transport_armed` gate keys on, so the gate's verdict and
     # this line can never name two different transports for one load.
     load_transport = (
-        transport_label(
-            ((preflight.get("prepare") or {}).get("config") or {}).get("playback_device")
+        TRANSPORT_RING
+        if ((preflight.get("prepare") or {}).get("config") or {}).get(
+            "playback_device"
         )
-        or "-"
+        in RING_PCM_DEVICES
+        else "-"
     )
 
     if not preflight.get("load_allowed"):

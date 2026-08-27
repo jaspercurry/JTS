@@ -762,15 +762,11 @@ def test_rollback_reloads_the_staged_all_muted_config(monkeypatch, tmp_path):
     "playback_device, arm, expect_transport",
     [
         # The LAB/CI OVERRIDE route — `resolve_output_layout` case 1, which
-        # honours any explicit device. It is the only way an `alsa` transport is
-        # still reachable after #2285 P2 (post-seal correction 9). The device is
-        # this campaign's established lab idiom rather than the retired
-        # `outputd_active_content_playback`: re-pointing onto deleted vocabulary
-        # would keep the removed world alive for a test's benefit, which is the
-        # thing correction 9 rules out. It is also NOT one of
-        # `FORBIDDEN_ACTIVE_PLAYBACK_TOKENS` — `outputd_content_playback` is,
-        # being the CONTENT lane, so it cannot stand in here.
-        ("hw:CARD=Lab,DEV=0", False, "alsa"),
+        # honours any explicit device. Since ADR-0100 there is no second
+        # transport to name it, so the line reports the journal's own "no
+        # answer" literal. The device is this campaign's established lab idiom
+        # and is NOT one of `FORBIDDEN_ACTIVE_PLAYBACK_TOKENS`.
+        ("hw:CARD=Lab,DEV=0", False, "-"),
         # The PRODUCTION route — no override, so this walks case 2, the chooser
         # P2 made unconditional. Previously this row passed the ring device
         # explicitly and so also went through case 1; routing it through the
@@ -789,12 +785,9 @@ def test_the_load_line_names_the_transport_on_both_polarities(
     commissioning-on-the-ring introduces. Both polarities, because one would
     pass against a line that hard-coded either answer.
 
-    The polarity pair SURVIVES #2285 P2 while `/state`'s narrows to ring/`null`
-    (post-seal correction 9), and the asymmetry is deliberate: `transport_label`
-    keeps its `alsa` branch because it labels whatever device string it is
-    handed, and this line reports the device the load actually used — including
-    one an operator overrode. Only the `/state` SURFACE contract went
-    single-valued.
+The pair is ring vs the journal's `-`: ADR-0100 left one transport, so a
+    device that is not a ring end has no name to be given, and this line says so
+    rather than inventing one.
 
     The ring arm is also the PROOF that `arm_ring_transport` does something —
     the reason #2412 can ship that helper for P2 to call rather than shipping an

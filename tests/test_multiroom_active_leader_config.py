@@ -28,6 +28,7 @@ import jasper.dsp_apply as dsp_apply_mod
 import jasper.output_topology as output_topology_mod
 import jasper.sound.profile as sound_profile_mod
 import jasper.sound.settings as sound_settings_mod
+from jasper.fanin_coupling import COUPLING_SHM_RING
 from jasper.multiroom import active_leader_config as alc
 from jasper.multiroom import follower_config as fc
 from jasper.multiroom.config import GroupingConfig
@@ -100,16 +101,13 @@ class _FakeCamilla:
 
 
 def _persist_coupling(monkeypatch, coupling: str) -> None:
-    """Both readers of the coupling token, because they are separate bindings.
+    """The token the precheck's route gate reads, bound where it reads it.
 
-    D5's gate reads it through this module's own module-level import; the bake
-    reads it through `coupling_capture_kwargs_from_env`, whose lazy import
-    resolves the ORIGINAL function. In production both hit the same file.
+    ``active_leader_config`` imports ``read_persisted_coupling`` at module level,
+    so the binding to patch is its own. Nothing else in the precheck consults a
+    coupling token any more.
     """
-    import jasper.fanin.coupling_reconcile as crmod
-
     monkeypatch.setattr(alc, "read_persisted_coupling", lambda *a, **k: coupling)
-    monkeypatch.setattr(crmod, "read_persisted_coupling", lambda *a, **k: coupling)
 
 
 def _patch_evidence(monkeypatch, tmp_path, topology, draft, preview, measurements):
@@ -146,11 +144,11 @@ def _patch_evidence(monkeypatch, tmp_path, topology, draft, preview, measurement
     # Snapcast precondition: pretend the binaries are installed (a dev machine has
     # no snapserver/snapclient, which would otherwise fail-close the precheck).
     monkeypatch.setattr(shutil, "which", lambda name: f"/usr/bin/{name}")
-    # The bake's capture FOLLOWS the persisted coupling now (T-8), so pin the
-    # default here to `loopback` — today's bytes — and let the tests that care
-    # drive it explicitly through `_persist_coupling`. Without this the emitted
-    # capture would vary with whatever the host's fanin.env happens to say.
-    _persist_coupling(monkeypatch, "loopback")
+    # The BAKE no longer reads a coupling token (ADR-0100 left one transport, so
+    # `coupling_capture_kwargs_from_env` answers the ring unconditionally). The
+    # precheck's route GATE still reads one, so pin it to what every box carries
+    # rather than letting the host's fanin.env decide.
+    _persist_coupling(monkeypatch, COUPLING_SHM_RING)
 
 
 def _fake_apply_dsp_config():
@@ -230,21 +228,23 @@ def test_precheck_emits_reproves_both_configs(monkeypatch, tmp_path) -> None:
 
 
 # --------------------------------------------------------------------------
-# T-8 — B1: the leader's camilla#1 program bake follows the live coupling.
+# T-8 — B1: the leader's camilla#1 program bake captures the ring.
 #
-# The narrowed route gate ADMITS a ring-armed active leader (its dac_content
-# lane is cleared, so the ring strands nothing there). That is what makes the
-# bake reachable, and the bake defaults its capture to the snd-aloop fan-in tap
-# — a device fan-in stops writing the moment the ring is armed. camilla#1 is the
-# producer of the whole bond's audio, so a coupling-blind bake is a SILENT GROUP
-# with every daemon healthy. Gate and bake are not separable; these pin the bake
-# half.
+# The route gate ADMITS a ring-armed active leader (its dac_content lane is
+# cleared, so the ring strands nothing there). That is what makes the bake
+# reachable, and the bake used to default its capture to the snd-aloop fan-in tap
+# — a device fan-in stopped writing the moment the ring was armed. camilla#1 is
+# the producer of the whole bond's audio, so a bake that captured that tap was a
+# SILENT GROUP with every daemon healthy. Gate and bake are not separable; these
+# pin the bake half.
 # --------------------------------------------------------------------------
 
 
-def test_leader_bake_capture_follows_coupling(monkeypatch, tmp_path) -> None:
-    """Under `shm_ring` the bake captures Ring A at the resolved wire format —
-    and its sink is STILL the snapfifo `File`, never Ring B."""
+def test_leader_bake_captures_ring_a_and_keeps_the_snapfifo_sink(
+    monkeypatch, tmp_path
+) -> None:
+    """The bake captures Ring A at the box's resolved wire format — and its sink
+    is STILL the snapfifo `File`, never Ring B."""
     from jasper.fanin_coupling import RING_CAPTURE_DEVICE, resolve_ring_wire
     from jasper.multiroom.reconcile import SNAPFIFO
 
@@ -268,40 +268,6 @@ def test_leader_bake_capture_follows_coupling(monkeypatch, tmp_path) -> None:
     assert bake["devices"]["playback"]["type"] == "File"
     assert bake["devices"]["playback"]["filename"] == SNAPFIFO
     assert bake["devices"]["enable_rate_adjust"] is False
-
-
-def test_leader_bake_under_loopback_is_unchanged(monkeypatch, tmp_path) -> None:
-    """The other half of the resolver's contract: `{}` under `loopback`.
-
-    Byte-identity is proved at its SOURCE rather than by comparing three fields:
-    the filtered kwargs are EMPTY, and an empty ``**`` splat cannot change a byte
-    of the emitted YAML — the emitter's own DEFAULT_CAPTURE_* bindings apply
-    exactly as they did before this call site existed.
-    """
-    from jasper.fanin_coupling import capture_half, coupling_capture_kwargs_from_env
-    from jasper.camilla_config_contract import (
-        DEFAULT_CAPTURE_DEVICE,
-        DEFAULT_CAPTURE_FORMAT,
-    )
-    from jasper.multiroom.reconcile import SNAPFIFO
-
-    topology = _dual_apple_topology()
-    draft = _draft(topology)
-    preview = build_crossover_preview(draft, created_at="2026-06-14T12:10:00Z")
-    measurements = _measurements(topology, tmp_path)
-    _patch_evidence(monkeypatch, tmp_path, topology, draft, preview, measurements)
-    _persist_coupling(monkeypatch, "loopback")
-
-    assert capture_half(coupling_capture_kwargs_from_env()) == {}
-
-    asyncio.run(alc.precheck_active_leader(_cfg("left"), validate=_valid_config))
-
-    bake = yaml.safe_load(
-        Path(alc.LEADER_BAKE_CONFIG_PATH).read_text(encoding="utf-8")
-    )
-    assert bake["devices"]["capture"]["device"] == DEFAULT_CAPTURE_DEVICE
-    assert bake["devices"]["capture"]["format"] == DEFAULT_CAPTURE_FORMAT
-    assert bake["devices"]["playback"]["filename"] == SNAPFIFO
 
 
 def test_precheck_admits_shm_ring_for_an_active_leader(monkeypatch, tmp_path) -> None:

@@ -1119,45 +1119,25 @@ def test_bitperfect_route_is_declared_but_inactive_and_aec_degraded():
     assert "inactive" in profile.blocking_reason
 
 
-def test_fanin_coupling_capture_kwargs_none_reads_coupling_file_fresh(monkeypatch):
-    # DEFECT 1: coupling=None resolves the TOKEN from the persisted fanin.env SSOT
-    # (read_persisted_coupling), NOT from os.environ. os.environ here says loopback
-    # (stale), but the file-fresh SSOT drives the result.
-    monkeypatch.setenv("JASPER_FANIN_CAMILLA_COUPLING", "loopback")  # stale os.environ
-
-    # SSOT says shm_ring -> ring kwargs, even though os.environ says loopback.
-    monkeypatch.setattr(
-        "jasper.fanin.coupling_reconcile.read_persisted_coupling",
-        lambda *a, **k: "shm_ring",
-    )
-    kwargs = fanin_coupling_capture_kwargs(None)
-    assert kwargs["capture_device"] == "jts_ring_capture"
-
-    # SSOT says loopback -> {}, the byte-identical-to-today path.
-    monkeypatch.setattr(
-        "jasper.fanin.coupling_reconcile.read_persisted_coupling",
-        lambda *a, **k: "loopback",
-    )
-    assert fanin_coupling_capture_kwargs(None) == {}
-
-
-def test_fanin_coupling_capture_kwargs_none_explicit_env_ignores_file(monkeypatch):
-    # An EXPLICIT env mapping stays authoritative (the reconciler/binder path
-    # passes dict(os.environ) right after pre-syncing it): the persisted file is
-    # NOT read. Fails loudly if the file reader is consulted.
+def test_fanin_coupling_capture_kwargs_are_the_ring_whatever_the_env_says(
+    monkeypatch,
+):
+    # ADR-0100: the ring is the only transport, so no env value and no persisted
+    # file can make this answer anything else — a `{}` here would emit a graph
+    # capturing a lane nothing writes.
     def _boom(*a, **k):
-        raise AssertionError("explicit-env path must not read the persisted file")
+        raise AssertionError("the capture kwargs must not depend on a coupling token")
 
-    monkeypatch.setattr(
-        "jasper.fanin.coupling_reconcile.read_persisted_coupling", _boom
-    )
-    assert fanin_coupling_capture_kwargs(None, env={}) == {}
-    assert (
-        fanin_coupling_capture_kwargs(
-            None, env={"JASPER_FANIN_CAMILLA_COUPLING": "shm_ring"}
-        ).get("capture_device")
-        == "jts_ring_capture"
-    )
+    monkeypatch.setattr("jasper.fanin.ring_health.read_persisted_coupling", _boom)
+    monkeypatch.setenv("JASPER_FANIN_CAMILLA_COUPLING", "loopback")
+
+    for kwargs in (
+        fanin_coupling_capture_kwargs(None),
+        fanin_coupling_capture_kwargs(None, env={}),
+        fanin_coupling_capture_kwargs("loopback"),
+        fanin_coupling_capture_kwargs(COUPLING_SHM_RING),
+    ):
+        assert kwargs["capture_device"] == "jts_ring_capture"
 
 
 def test_capture_precedence_applies_shm_ring_when_no_stronger_topology():
@@ -1274,8 +1254,7 @@ def test_plan_valid_couplings_is_fanin_coupling_ssot():
     from jasper import audio_runtime_plan
 
     assert audio_runtime_plan._VALID_COUPLINGS is VALID_COUPLINGS
-    assert COUPLING_SHM_RING in VALID_COUPLINGS
-    assert COUPLING_LOOPBACK in VALID_COUPLINGS
+    assert set(VALID_COUPLINGS) == {COUPLING_SHM_RING}
 
 
 # --------------------------------------------------------------------------

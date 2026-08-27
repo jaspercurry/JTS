@@ -48,7 +48,7 @@ from .camilla_yaml import (
     capture_device_for_playback,
     emit_active_speaker_commissioning_config,
 )
-from ..fanin_coupling import TRANSPORT_RING, transport_label
+from ..fanin_coupling import RING_PCM_DEVICES, TRANSPORT_RING
 from .crossover_preview import CROSSOVER_PREVIEW_KIND
 from .driver_protection import declared_protection_highpass_floor_hz
 from .environment import classify_camilla_config_text
@@ -2443,7 +2443,7 @@ def prepare_driver_commissioning_config(
     # blocker path this line has to stay readable on. The literal `-` (never an
     # empty value, which reads as "unknown") covers a non-ring emit, which has
     # no ring wire, and a blocked prepare, which has no emitted block at all.
-    transport = transport_label(resolved_playback_device)
+    transport_is_ring = resolved_playback_device in RING_PCM_DEVICES
     logger.info(
         "event=active_speaker.driver_commission_prepared status=%s group=%s role=%s "
         "outputs=%s blockers=%d transport=%s capture=%s playback=%s wire=%s",
@@ -2452,12 +2452,12 @@ def prepare_driver_commissioning_config(
         role,
         sorted(audible_outputs),
         blocker_count,
-        transport or "-",
+        TRANSPORT_RING if transport_is_ring else "-",
         devices.capture_device if devices is not None else "-",
         resolved_playback_device or "-",
         (
             devices.capture_format
-            if devices is not None and transport == TRANSPORT_RING
+            if devices is not None and transport_is_ring
             else "-"
         ),
     )

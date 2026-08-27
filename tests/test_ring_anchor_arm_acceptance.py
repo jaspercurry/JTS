@@ -37,7 +37,6 @@ from jasper.fanin.coupling_reconcile import (
     ring_endpoint_anchor_converged,
 )
 from jasper.fanin_coupling import (
-    COUPLING_LOOPBACK,
     COUPLING_SHM_RING,
     RING_ACTIVE_PLAYBACK_DEVICE,
     RING_CAPTURE_DEVICE,
@@ -279,7 +278,7 @@ def test_the_arm_camilla_step_converges_on_that_anchor(tmp_path, monkeypatch):
     )
     _skipped_carrier_refusal(monkeypatch, reason=CARRIER_TRANSIENT_ACTIVE_REFUSAL)
 
-    assert cr._reconcile_camilla(COUPLING_SHM_RING, reason="arm") == (
+    assert cr._reconcile_camilla(reason="arm") == (
         True,
         CAMILLA_ANCHOR_CONVERGED_DETAIL,
     )
@@ -302,16 +301,14 @@ def _arm_with_camilla_detail(tmp_path, detail: str):
     outputd_env = tmp_path / "outputd.env"
     outputd_env.write_text("", encoding="utf-8")
     return reconcile_coupling(
-        COUPLING_SHM_RING,
         reason="test",
         env_path=fanin_env,
         outputd_env_path=outputd_env,
         restart_fanin=lambda: (True, ""),
         restart_outputd=lambda: (True, ""),
-        reconcile_camilla=lambda _c: (True, detail),
+        reconcile_camilla=lambda: (True, detail),
         kick_hardware_reconcile=lambda: (True, ""),
         restart_voice=lambda: (True, ""),
-        active_leader_check=lambda: False,
     )
 
 
@@ -321,7 +318,6 @@ def test_the_converged_arm_carries_its_detail_into_the_result(
     """The link between the camilla step and what the operator is told."""
     result = _arm_with_camilla_detail(tmp_path, CAMILLA_ANCHOR_CONVERGED_DETAIL)
     assert result.ok, result.detail
-    assert result.direction == "arm"
     assert result.detail == CAMILLA_ANCHOR_CONVERGED_DETAIL
 
 
@@ -355,9 +351,7 @@ def test_the_converged_arm_says_so_on_the_operator_stdout_line(
         "reconcile_coupling",
         lambda *a, **k: CouplingResult(
             ok=True,
-            desired=COUPLING_SHM_RING,
             changed=True,
-            direction="arm",
             restarted_fanin=True,
             restarted_outputd=True,
             reconciled_camilla=True,
@@ -444,7 +438,7 @@ def test_the_arm_hands_the_camilla_rung_the_daemon_reported_path(
         ),
     )
 
-    cr._reconcile_camilla(COUPLING_SHM_RING, reason="arm")
+    cr._reconcile_camilla(reason="arm")
     assert seen == ["/var/lib/camilladsp/configs/daemon-says-this.yml"]
 
 
@@ -679,7 +673,7 @@ def test_an_anchor_still_at_the_ALOOP_endpoint_is_refused(tmp_path, monkeypatch)
     assert OUTPUTD_ACTIVE_PLAYBACK_DEVICE in detail
 
     _skipped_carrier_refusal(monkeypatch, reason=CARRIER_TRANSIENT_ACTIVE_REFUSAL)
-    step_ok, step_detail = cr._reconcile_camilla(COUPLING_SHM_RING, reason="arm")
+    step_ok, step_detail = cr._reconcile_camilla(reason="arm")
     assert step_ok is False
     assert step_detail.startswith(CARRIER_TRANSIENT_ACTIVE_REFUSAL)
 
@@ -748,7 +742,7 @@ def test_a_commissioning_load_is_never_accepted(tmp_path, monkeypatch):
     assert DEFAULT_COMMISSIONING_CONFIG_NAME in detail
 
     _skipped_carrier_refusal(monkeypatch, reason=CARRIER_TRANSIENT_ACTIVE_REFUSAL)
-    step_ok, _ = cr._reconcile_camilla(COUPLING_SHM_RING, reason="arm")
+    step_ok, _ = cr._reconcile_camilla(reason="arm")
     assert step_ok is False
 
 
@@ -961,7 +955,7 @@ def test_a_different_carrier_refusal_is_never_routed_to_the_acceptance(
         lambda: (consulted.append(True) or (True, "should never be asked")),
     )
 
-    assert cr._reconcile_camilla(COUPLING_SHM_RING, reason="arm") == (
+    assert cr._reconcile_camilla(reason="arm") == (
         False,
         "eq_on_active_bonded_member",
     )
@@ -1009,7 +1003,7 @@ def test_the_journal_records_both_acceptance_outcomes(tmp_path, monkeypatch, cap
     _stage_box(tmp_path, monkeypatch, graph_yaml=coherent)
     _skipped_carrier_refusal(monkeypatch, reason=CARRIER_TRANSIENT_ACTIVE_REFUSAL)
     with caplog.at_level(logging.INFO, logger=cr.logger.name):
-        cr._reconcile_camilla(COUPLING_SHM_RING, reason="arm")
+        cr._reconcile_camilla(reason="arm")
     assert _anchor_log_records(caplog) == [
         ("camilla_converged_anchor", logging.INFO)
     ]
@@ -1018,49 +1012,19 @@ def test_the_journal_records_both_acceptance_outcomes(tmp_path, monkeypatch, cap
     caplog.clear()
     _stage_box(tmp_path / "b", monkeypatch, graph_yaml=incoherent)
     with caplog.at_level(logging.INFO, logger=cr.logger.name):
-        cr._reconcile_camilla(COUPLING_SHM_RING, reason="arm")
+        cr._reconcile_camilla(reason="arm")
     assert _anchor_log_records(caplog) == [
         ("camilla_anchor_not_converged", logging.WARNING)
     ]
     assert f"refusal={CARRIER_TRANSIENT_ACTIVE_REFUSAL}" in caplog.text
 
-    # 3. DISARM -> the acceptance is never consulted, so neither line appears.
-    caplog.clear()
-    with caplog.at_level(logging.INFO, logger=cr.logger.name):
-        cr._reconcile_camilla(COUPLING_LOOPBACK, reason="disarm")
-    assert _anchor_log_records(caplog) == []
-
-    # 4. ARM with a DIFFERENT refusal -> likewise silent.
+    # 3. A DIFFERENT refusal -> the acceptance is never consulted, so neither
+    #    line appears.
     caplog.clear()
     _skipped_carrier_refusal(monkeypatch, reason="eq_on_active_bonded_member")
     with caplog.at_level(logging.INFO, logger=cr.logger.name):
-        cr._reconcile_camilla(COUPLING_SHM_RING, reason="arm")
+        cr._reconcile_camilla(reason="arm")
     assert _anchor_log_records(caplog) == []
-
-
-# --- (d)(e) the untouched directions ----------------------------------------
-
-
-def test_the_disarm_exemption_is_byte_identical(tmp_path, monkeypatch):
-    """The loopback direction still accepts ANY skip, without consulting the
-    acceptance at all — the disarm's whole point is that a flat box has nothing
-    to flip, and a roleful box's graph is moved by the rollback ladder instead.
-    """
-    from jasper.fanin import coupling_reconcile as cr
-
-    consulted: list[bool] = []
-    monkeypatch.setattr(
-        cr,
-        "ring_endpoint_anchor_converged",
-        lambda: (consulted.append(True) or (False, "should never be asked")),
-    )
-    for reason in (CARRIER_TRANSIENT_ACTIVE_REFUSAL, "flat_profile_noop"):
-        _skipped_carrier_refusal(monkeypatch, reason=reason)
-        assert cr._reconcile_camilla(COUPLING_LOOPBACK, reason="disarm") == (
-            True,
-            "skipped",
-        )
-    assert consulted == []
 
 
 def test_an_applied_baseline_arm_is_unchanged(monkeypatch):
@@ -1082,7 +1046,7 @@ def test_an_applied_baseline_arm_is_unchanged(monkeypatch):
         lambda: (consulted.append(True) or (True, "should never be asked")),
     )
 
-    assert cr._reconcile_camilla(COUPLING_SHM_RING, reason="arm") == (
+    assert cr._reconcile_camilla(reason="arm") == (
         True,
         "reconciled",
     )
@@ -1103,9 +1067,7 @@ def test_an_ordinary_arm_prints_no_detail(tmp_path, monkeypatch, capsys):
         "reconcile_coupling",
         lambda *a, **k: CouplingResult(
             ok=True,
-            desired=COUPLING_SHM_RING,
             changed=True,
-            direction="arm",
             restarted_fanin=True,
             restarted_outputd=True,
             reconciled_camilla=True,

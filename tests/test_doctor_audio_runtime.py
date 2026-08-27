@@ -2656,7 +2656,6 @@ def test_armed_daemon_lane_never_fed_still_warns(monkeypatch):
     assert "correction:" not in result.detail  # no correction problem entry
 
 
-
 # ===========================================================================
 # check_aloop_registered_substreams — the snd-aloop remnant guard (#2285 P9-C)
 #
@@ -2887,8 +2886,6 @@ def _modprobe_substreams() -> int:
 def test_walker_range_matches_modprobe_pcm_substreams():
     """The walker must scan exactly the substreams the module creates."""
     assert audio_runtime._ALOOP_SUBSTREAMS == _modprobe_substreams()
-
-
 
 
 def test_outputd_content_aloop_pcm_matches_asoundrc_slave():
@@ -3124,10 +3121,12 @@ def test_check_warns_on_loopback_capture_with_stale_local_file_playback(
 def test_check_warns_on_dangerous_drift_loopback_intent_rawfile_loaded(
     monkeypatch, tmp_path
 ):
-    # The crash-loop precursor: env says loopback but the RawFile config is live.
+    # The crash-loop precursor: a retired persisted token with a RawFile config
+    # live. The remedy names the ONE transport, never the intent it just read —
+    # an intent this box has to be converged OFF, not re-applied.
     res = _run_check(monkeypatch, coupling="loopback", cfg_text=_RAWFILE_CFG, tmp_path=tmp_path)
     assert res.status == "warn"
-    assert "jasper-fanin-coupling-reconcile loopback" in res.detail
+    assert "jasper-fanin-coupling-reconcile shm_ring" in res.detail
 
 
 def test_check_ok_when_no_loaded_capture(monkeypatch, tmp_path):
@@ -3254,7 +3253,7 @@ def test_loopback_warns_on_stale_ring_graph_with_clean_env(monkeypatch, tmp_path
     assert res.status == "warn"
     assert "ring ioplug device" in res.detail
     assert "jts_ring_capture" in res.detail
-    assert "jasper-fanin-coupling-reconcile loopback" in res.detail
+    assert "jasper-fanin-coupling-reconcile --auto" in res.detail
 
 
 def test_loopback_ok_when_loaded_graph_is_plain_alsa(monkeypatch, tmp_path):
@@ -3543,19 +3542,70 @@ filters:
 """
 
 
+def test_no_doctor_remedy_names_a_coupling_the_cli_rejects():
+    """THE CLASS, not the three instances below.
+
+    Eight of this module's remedies named `jasper-fanin-coupling-reconcile
+    loopback` — a coupling ADR-0100 removed from the CLI's `choices`, so an
+    operator who copied one got `exit 2` and an argparse error instead of a fix.
+    A dead remedy is worse than no remedy: it spends the reader's trust in the
+    rest of the line.
+
+    DERIVED FROM BOTH VOCABULARIES, never from a list here. The tokens to judge
+    are the coupling names `jasper.fanin_coupling` still spells (so the RETIRED
+    one is judged, which is the whole point, and a future token is judged the
+    day it is added); the verdict is the reconciler's OWN argparse. English that
+    merely names the command in a sentence carries no coupling token and is not
+    judged.
+    """
+    import re
+    from pathlib import Path
+
+    import jasper.fanin_coupling as fc
+    import jasper.fanin.coupling_reconcile as cr
+
+    couplings = {
+        value
+        for name, value in vars(fc).items()
+        if name.startswith("COUPLING_") and isinstance(value, str)
+    }
+    assert "loopback" in couplings, (
+        "the retired token stopped being spelled — this pin no longer judges it"
+    )
+
+    source = Path(audio_runtime.__file__).read_text(encoding="utf-8")
+    # Same source line only: a remedy split across lines puts its verb on the
+    # next one, and a comment that merely names the command carries none at all.
+    named = {
+        m.group(1)
+        for m in re.finditer(
+            r"jasper-fanin-coupling-reconcile[^\S\n]+([A-Za-z_][\w-]*)", source
+        )
+    } & couplings
+
+    for token in sorted(named):
+        accepted = True
+        try:
+            cr.main([token, "--help"])
+        except SystemExit as exc:
+            # 0 = --help printed (the token parsed); 2 = argparse rejected it.
+            accepted = exc.code == 0
+        assert accepted, (
+            f"the doctor prints `jasper-fanin-coupling-reconcile {token}`, which "
+            "the CLI rejects"
+        )
+
+
 def test_stale_ring_devices_under_loopback_send_a_roleful_box_up_the_ladder(
     monkeypatch, tmp_path
 ):
     """A ROLEFUL box gets the ARM LADDER, not a reconcile that converges nothing.
 
-    This is the state PR #2514's residual describes: a ring-endpoint graph loaded
-    while the coupling has fallen back to loopback. The check's remedy used to be
-    `jasper-fanin-coupling-reconcile loopback` unconditionally — which on a
-    roleful box moves nothing and reports SUCCESS. `reconcile_current_dsp`
-    declines to host a transient active graph (`eq_on_active_not_wired` ->
-    status `skipped`), and `_reconcile_camilla` turns a `skipped` under a
-    non-shm_ring coupling into `True`. So the operator ran a command, was told it
-    worked, and the warn stayed.
+    This is the state PR #2514's residual describes: a ring-endpoint graph
+    loaded while the persisted coupling still names the retired token. The
+    check's remedy used to be `jasper-fanin-coupling-reconcile loopback`
+    unconditionally — which on a roleful box moved nothing and reported SUCCESS.
+    So the operator ran a command, was told it worked, and the warn stayed.
 
     The graph has to be moved by step 1 of the ladder. Asserted through the
     classification-free half of the message — the command spelling — because
@@ -3563,10 +3613,10 @@ def test_stale_ring_devices_under_loopback_send_a_roleful_box_up_the_ladder(
 
     #2285 P2 turned the ladder around. It was the ROLLBACK ladder
     (`baseline-reemit --endpoint aloop` -> reconcile -> `…-reconcile loopback`);
-    that first rung is now an argparse error and its destination is the PARK for
-    a roleful box, so the remedy converges FORWARD onto the ring instead. Both
-    halves are asserted — the ring rungs present, the retired ones absent — so a
-    partial re-point cannot pass.
+    both of those rungs are argparse errors now and the destination was the PARK
+    for a roleful box, so the remedy converges FORWARD onto the ring instead.
+    Both halves are asserted — the ring rungs present, the retired ones absent —
+    so a partial re-point cannot pass.
     """
     monkeypatch.setattr(
         audio_runtime, "_requires_roleful_graph", lambda: True)
@@ -3594,9 +3644,9 @@ def test_stale_ring_devices_under_loopback_keep_the_plain_remedy_when_passive(
     """CONTROL: a PASSIVE box keeps exactly the one-command remedy.
 
     Without this the assertion above would also pass if the ladder text had been
-    appended unconditionally — and on a passive box the coupling reconciler
-    genuinely is the whole fix, so sending one up a three-rung active-speaker
-    ladder would be worse advice, not more of it.
+    appended unconditionally — and on a passive box the reconciler's unattended
+    pass genuinely is the whole fix, so sending one up a three-rung
+    active-speaker ladder would be worse advice, not more of it.
     """
     monkeypatch.setattr(
         audio_runtime, "_requires_roleful_graph", lambda: False)
@@ -3607,9 +3657,8 @@ def test_stale_ring_devices_under_loopback_keep_the_plain_remedy_when_passive(
         tmp_path=tmp_path,
     )
     assert res.status == "warn"
-    assert "jasper-fanin-coupling-reconcile loopback" in res.detail
+    assert "jasper-fanin-coupling-reconcile --auto" in res.detail
     assert "baseline-reemit" not in res.detail, res.detail
-
 
 
 # ===========================================================================
@@ -3922,7 +3971,6 @@ def test_a_roleful_topology_is_reported_roleful(monkeypatch, tmp_path):
 
     assert audio_runtime._requires_roleful_graph() is True
     assert "ROLEFUL" in audio_runtime.check_ring_conf_floor_render().detail
-
 
 
 # ===========================================================================
@@ -4307,7 +4355,6 @@ def test_buffer_health_resolves_the_wire_with_the_boxs_topology(monkeypatch):
     assert isinstance(result, str), result
 
 
-
 # ===========================================================================
 # check_ring_platform_assets
 #
@@ -4407,39 +4454,37 @@ def test_ok_when_all_assets_present_and_probes_resolve(monkeypatch, tmp_path):
     assert "jts_ring_capture" in res.detail and "jts_ring_playback" in res.detail
 
 
-def test_warn_when_so_missing(monkeypatch, tmp_path):
-    # Build failed / ring unavailable: inert phase => warn, not fail
-    # (loopback still carries audio).
+def test_fail_when_so_missing(monkeypatch, tmp_path):
+    # The build failed, so the box has no plugin for the ONE transport it has.
     _stage_assets(monkeypatch, tmp_path, so=False)
     _probes_ok(monkeypatch)
     res = audio_runtime.check_ring_platform_assets()
-    assert res.status == "warn"
+    assert res.status == "fail"
     assert "ioplug .so absent" in res.detail
-    assert "loopback still active" in res.detail
     assert "redeploy" in res.detail.lower()
 
 
-def test_warn_when_conf_missing(monkeypatch, tmp_path):
+def test_fail_when_conf_missing(monkeypatch, tmp_path):
     _stage_assets(monkeypatch, tmp_path, conf=False)
     _probes_ok(monkeypatch)
     res = audio_runtime.check_ring_platform_assets()
-    assert res.status == "warn"
+    assert res.status == "fail"
     assert "conf.d absent" in res.detail
 
 
-def test_warn_when_shm_dir_missing(monkeypatch, tmp_path):
+def test_fail_when_shm_dir_missing(monkeypatch, tmp_path):
     _stage_assets(monkeypatch, tmp_path, shm=False)
     _probes_ok(monkeypatch)
     res = audio_runtime.check_ring_platform_assets()
-    assert res.status == "warn"
+    assert res.status == "fail"
     assert "absent" in res.detail
 
 
-def test_warn_lists_every_missing_asset(monkeypatch, tmp_path):
+def test_the_failure_lists_every_missing_asset(monkeypatch, tmp_path):
     _stage_assets(monkeypatch, tmp_path, so=False, conf=False, shm=False)
     _probes_ok(monkeypatch)
     res = audio_runtime.check_ring_platform_assets()
-    assert res.status == "warn"
+    assert res.status == "fail"
     assert "ioplug .so absent" in res.detail
     assert "conf.d absent" in res.detail
 
@@ -4455,7 +4500,7 @@ def test_missing_asset_does_not_run_the_open_probe(monkeypatch, tmp_path):
     monkeypatch.setattr(
         audio_runtime, "_jts_ring_pcm_resolves", _boom)
     res = audio_runtime.check_ring_platform_assets()
-    assert res.status == "warn"
+    assert res.status == "fail"
 
 
 def test_fail_when_so_present_but_pcm_open_fails(monkeypatch, tmp_path):
@@ -4731,25 +4776,35 @@ def test_armed_ring_with_assets_present_is_ok_and_skips_probe(monkeypatch, tmp_p
     assert "skipped" in res.detail
 
 
-def test_armed_ring_with_missing_asset_is_fail_not_warn(monkeypatch, tmp_path):
-    # ARMED but an asset is gone: the ring is load-bearing, so this is a hard
-    # failure (unlike the inert-phase warn).
+def test_a_missing_asset_fails_whatever_the_persisted_token_says(
+    monkeypatch, tmp_path
+):
+    """The verdict does NOT turn on the coupling any more, and that is the fix.
+
+    It used to: an armed box FAILED and an unarmed one merely WARNED "inert
+    platform incomplete (loopback still active)". ADR-0100 retired that route,
+    so on a box whose persisted token had not been rewritten yet the warn
+    claimed a transport the box does not have — a speaker emitting nothing,
+    reported as degraded-but-playing, which is exactly the reported-as-healthy
+    case the transport parks exist to prevent.
+
+    Both polarities are driven, because one alone would also pass against a
+    check that still branched and happened to be tested on the branch that
+    matches.
+    """
     _stage_assets(monkeypatch, tmp_path, so=False)
+
+    def _verdict(label):
+        res = audio_runtime.check_ring_platform_assets()
+        assert res.status == "fail", label
+        assert "missing" in res.detail.lower(), label
+        # The retired claim is asserted ABSENT: it is worse than silence.
+        assert "loopback" not in res.detail.lower(), label
+        assert "inert" not in res.detail.lower(), label
+
+    _verdict("persisted token not rewritten yet")
     _arm_ring(monkeypatch)
-    res = audio_runtime.check_ring_platform_assets()
-    assert res.status == "fail"
-    assert "ARMED" in res.detail
-    assert "missing" in res.detail.lower()
-
-
-def test_inert_missing_asset_stays_warn(monkeypatch, tmp_path):
-    # Default (loopback) + a missing asset stays a warn — loopback still carries
-    # audio, so P1's inert-phase contract holds.
-    _stage_assets(monkeypatch, tmp_path, so=False)
-    # No _arm_ring: read_persisted_coupling returns loopback on the test box.
-    res = audio_runtime.check_ring_platform_assets()
-    assert res.status == "warn"
-    assert "inert" in res.detail
+    _verdict("persisted token names the ring")
 
 
 # --- The open-probe asks for what the CONF.D DECLARES, never the resolver ----
@@ -5061,7 +5116,6 @@ def test_writer_lock_guard_counts_one_pid_once(monkeypatch, tmp_path):
 
     # Not a fail (one pid), but the unlinked fd still earns the warn.
     assert result.status == "warn"
-
 
 
 # ===========================================================================

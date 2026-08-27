@@ -17,7 +17,7 @@ from pathlib import Path
 from typing import Any, Mapping
 
 from jasper.camilla_config_contract import parse_camilla_devices_config
-from jasper.fanin_coupling import transport_label
+from jasper.fanin_coupling import RING_PCM_DEVICES, TRANSPORT_RING
 from jasper.output_topology import OutputTopologyError, load_output_topology_strict
 
 from ._common import (
@@ -441,10 +441,12 @@ def _idle_commissioning_summary() -> dict[str, Any]:
 def _commissioning_transport(topology: Any) -> str | None:
     """Which transport this box's commissioning would emit on, or ``None``.
 
-    ONE derivation with the two ``driver_commission_*`` journal lines
-    (:func:`jasper.fanin_coupling.transport_label`), reading the same chooser
-    commissioning itself reads (``resolve_active_playback_device``), so the two
-    surfaces cannot disagree about a device they both resolve the same way.
+    ONE token with the two ``driver_commission_*`` journal lines
+    (:data:`jasper.fanin_coupling.TRANSPORT_RING`), keyed on the same
+    :data:`~jasper.fanin_coupling.RING_PCM_DEVICES` membership and reading the
+    same chooser commissioning itself reads
+    (``resolve_active_playback_device``), so the two surfaces cannot disagree
+    about a device they both resolve the same way.
     Stated that way on purpose rather than as "they can never differ": the
     shared thing is the DERIVATION, not the input. ``prepare`` accepts a
     caller-supplied ``playback_device=`` override, so a caller that passed one
@@ -458,17 +460,15 @@ def _commissioning_transport(topology: Any) -> str | None:
     active outputd lane like any other, and reports ``ring`` exactly as a
     roleful one does.
 
-    **SINGLE-TRANSPORT since #2285 P2** (post-seal correction 9). On a production
-    box this field is ``ring`` or ``None`` — never ``alsa``. P2 deleted
+    **SINGLE-TRANSPORT.** This field is ``ring`` or ``None``. #2285 P2 deleted
     ``resolve_output_layout`` case 2's marker read, so the ACTIVE-endpoint marker
     takes no part in this derivation at all: spied across both the roleful and
     the passive fixture, ``ring_active_endpoint_armed`` is consulted ZERO times
-    and both polarities report ``ring``. ``alsa`` survives only for a device
-    string that is not the ring, which this path reaches only through an explicit
-    lab/CI override (``resolve_output_layout``'s case 1 — the ``playback_device``
-    argument or ``JASPER_ACTIVE_SPEAKER_PLAYBACK_DEVICE``). ``transport_label``
-    keeps that branch and labels such a device honestly; only this SURFACE
-    narrowed.
+    and both polarities report ``ring``. A device string that is NOT a ring end —
+    reachable only through an explicit lab/CI override
+    (``resolve_output_layout``'s case 1: the ``playback_device`` argument or
+    ``JASPER_ACTIVE_SPEAKER_PLAYBACK_DEVICE``) — reports ``None``, because
+    ADR-0100 left no second transport for it to be labelled as.
 
     **The gate is the DAC PROFILE, measured rather than assumed.**
     ``resolve_output_layout`` names the ring when the profile declares an active
@@ -502,7 +502,7 @@ def _commissioning_transport(topology: Any) -> str | None:
         device, _source = resolve_active_playback_device(topology)
     except (*_READINESS_DERIVATION_ERRORS, AttributeError):
         return None
-    return transport_label(device)
+    return TRANSPORT_RING if device in RING_PCM_DEVICES else None
 
 
 def _derive_commissioning_summary(

@@ -2,23 +2,20 @@
 #
 # SPDX-License-Identifier: Apache-2.0
 
-"""P3/P4 default-flip: default-resolution of the fan-in coupling + USB combo.
+"""The unattended pass: the USB combo decision, and the ring convergence.
 
-Pins the campaign brief's contracts + the review remediation:
-  - marker semantics (operator coupling choice survives the auto pass, while USB
-    combo permission still follows canonical source intent);
-  - eligibility no-ops across the validated box shapes
-    (jts.local eligible; jts3 roleful; jts5 composite; jts4 streambox loopback);
   - the USB combo arms ONLY on a gadget box that ALSO has canonical USB intent
     On, local sources allowed for the current role, and a ready derived
     lifecycle mirror — B2 capability-gated arming + split-brain fix;
   - off a combo box the fan-in keys are EXPLICIT `disabled`, never unset — F5
     jasper.env-precedence fix;
-  - a grouped box resolves loopback (not a route-blocked ok=False) — F3;
-  - an unreadable topology resolves loopback (fail-closed) in the auto path — F4;
-  - a stale JASPER_FANIN_RING_SLOTS self-heals before the gates so it does not
-    disarm a box a manual arm would keep — F6;
+  - a stale JASPER_FANIN_RING_SLOTS self-heals so it cannot leave the box on a
+    Ring-A geometry the ioplug will not attach — F6;
   - idempotence (auto pass twice = one write).
+
+There is no coupling DECISION here since ADR-0100: the ring is the only central
+transport, so a box it cannot serve parks under its own name rather than
+resolving a second route.
 """
 
 from __future__ import annotations
@@ -38,7 +35,6 @@ from jasper.fanin import coupling_reconcile as cr
 from jasper.fanin import latency_mode as lm
 from jasper.fanin_coupling import (
     COUPLING_ENV_VAR,
-    COUPLING_LOOPBACK,
     COUPLING_SHM_RING,
     DEFAULT_FANIN_RING_SLOTS,
     RING_CAMILLA_CHUNKSIZE,
@@ -63,115 +59,8 @@ def _isolate_base_jasper_env(tmp_path, monkeypatch):
 
 
 # --------------------------------------------------------------------------
-# Pure decision: is_operator_choice + resolve_auto_decision
+# The USB combo's authority
 # --------------------------------------------------------------------------
-
-
-@pytest.mark.parametrize(
-    "raw,expected",
-    [
-        ("operator", True),
-        ("OPERATOR", True),
-        ("  operator  ", True),
-        (None, False),
-        ("", False),
-        ("auto", False),
-        ("garbage", False),
-        ("1", False),
-    ],
-)
-def test_is_operator_choice(raw, expected):
-    assert ca.is_operator_choice(raw) is expected
-
-
-def test_no_gate_refuses_a_box_for_its_install_profile(monkeypatch):
-    """#2285 deleted the class gate. This runs against the REAL gate list.
-
-    The first version of this pin called `_stub_ring_gates`, which replaces
-    `default_ring_gates` wholesale — so it never saw the real list, its
-    install-profile monkeypatch was inert, and re-adding the deleted gate
-    verbatim left it green. Anything asserting on a stubbed list cannot notice
-    a gate being put back, which is the only regression direction that matters
-    here.
-
-    Two halves, both against the real list:
-
-    1. NAME — no class-shaped gate is in it. This is what dies if someone
-       resurrects `("install_profile", …)`.
-    2. BEHAVIOUR — a real streambox, resolved through the real list, is refused
-       (if at all) by a RING gate naming ring evidence, never by its profile.
-       On a dev box the ring assets are genuinely absent, so the refusal is
-       real rather than arranged.
-    """
-
-    from jasper import install_profile
-
-    real_gates = cr.default_ring_gates()
-    names = [name for name, _ in real_gates]
-
-    # (1) The deleted gate's name, and the class question in any spelling.
-    assert "install_profile" not in names, names
-    for name in names:
-        assert "profile" not in name, f"{name} looks like a class gate: {names}"
-
-    # (2) A real streambox through the real gates. `read_install_profile` is
-    # patched at its own module so ANY surviving reader on the resolve path
-    # would still see a streambox — the point is that nothing reads it.
-    monkeypatch.setattr(
-        install_profile,
-        "read_install_profile",
-        lambda: install_profile.STREAMBOX_INSTALL_PROFILE,
-    )
-    decision = ca.resolve_auto_decision(
-        marker_raw=None,
-        gadget_present=True,
-        usb_intent_enabled=True,
-        ring_gates=real_gates,
-    )
-
-    assert "streambox" not in decision.reason.lower(), decision.reason
-    assert "install profile" not in decision.reason.lower(), decision.reason
-    if decision.coupling == COUPLING_LOOPBACK:
-        # Refused — it must name the ring gate that refused, so an operator is
-        # told what to fix rather than that their box is the wrong kind.
-        assert any(f"({name})" in decision.reason for name in names), decision.reason
-
-    # USB DIRECT eligibility stays independent of the ring question — the
-    # original gate's other justification, which must survive its deletion.
-    assert decision.combo_armed is True
-    assert decision.usb_combo_actions
-    assert [a.value for a in decision.usb_combo_actions] == [
-        "enabled", "enabled", "enabled", "576",
-    ]
-
-
-def test_a_streambox_arms_when_its_own_ring_evidence_passes(monkeypatch):
-    """The other direction, with the gate ANSWERS stubbed but the shape real.
-
-    `_SHARED_RING_PREFLIGHTS` holds direct function references, so the gate
-    answers cannot be monkeypatched through the real tuple — this half
-    substitutes the list to make every gate pass and asserts a streambox then
-    takes the ring, which the class gate forbade outright. It is deliberately
-    NOT the pin for the deletion (see the test above); it pins that nothing
-    else refuses a streambox once its evidence is good.
-    """
-
-    from jasper import install_profile
-
-    monkeypatch.setattr(
-        install_profile,
-        "read_install_profile",
-        lambda: install_profile.STREAMBOX_INSTALL_PROFILE,
-    )
-    _stub_ring_gates(monkeypatch, eligible=True)
-    decision = ca.resolve_auto_decision(
-        marker_raw=None,
-        gadget_present=True,
-        usb_intent_enabled=True,
-        ring_gates=cr.default_ring_gates(),
-    )
-
-    assert decision.coupling == COUPLING_SHM_RING, decision.reason
 
 
 def test_usbsink_effective_gate_reads_canonical_source_state_and_role(monkeypatch):
@@ -247,133 +136,11 @@ def _fail_gate(detail="ineligible"):
     return lambda: (False, detail)
 
 
-def test_decision_operator_marker_freezes_coupling_but_not_usb_permission():
-    d = ca.resolve_auto_decision(
-        marker_raw="operator",
-        gadget_present=True,
-        usb_intent_enabled=True,
-        ring_gates=(("assets", _pass_gate()),),
-        current_coupling=COUPLING_SHM_RING,
-    )
-    assert d.owned is False
-    assert d.coupling == COUPLING_SHM_RING
-    assert d.combo_armed is True
-    assert [action.value for action in d.usb_combo_actions] == [
-        "enabled", "enabled", "enabled", "576",
-    ]
-
-
-def test_decision_eligible_gadget_box_with_intent_resolves_ring_and_combo_on():
-    d = ca.resolve_auto_decision(
-        marker_raw=None,
-        gadget_present=True,
-        usb_intent_enabled=True,
-        ring_gates=(("assets", _pass_gate()), ("topology", _pass_gate())),
-    )
-    assert d.owned is True
-    assert d.coupling == COUPLING_SHM_RING
-    assert d.combo_armed is True
-    assert [(a.action, a.key, a.value) for a in d.usb_combo_actions] == [
-        ("set", ca.USB_DIRECT_ENV_VAR, "enabled"),
-        ("set", ca.HOST_CLOCK_ENV_VAR, "enabled"),
-        ("set", ca.CUSHION_DECAY_ENV_VAR, "enabled"),
-        ("set", ca.CUSHION_DECAY_FLOOR_ENV_VAR, "576"),
-    ]
-
-
-def test_decision_gadget_without_usb_intent_does_not_arm_combo():
-    """B2: gadget-capable hardware without USB-audio intent keeps the combo
-    off (fan-in keys explicitly disabled)."""
-    d = ca.resolve_auto_decision(
-        marker_raw=None,
-        gadget_present=True,
-        usb_intent_enabled=False,
-        ring_gates=(("assets", _pass_gate()),),
-    )
-    assert d.combo_armed is False
-    assert [(a.action, a.key, a.value) for a in d.usb_combo_actions] == [
-        ("set", ca.USB_DIRECT_ENV_VAR, "disabled"),
-        ("set", ca.HOST_CLOCK_ENV_VAR, "disabled"),
-        ("set", ca.CUSHION_DECAY_ENV_VAR, "disabled"),
-        ("set", ca.CUSHION_DECAY_FLOOR_ENV_VAR, "576"),
-    ]
-
-
-def test_decision_usb_intent_without_gadget_does_not_arm_combo():
-    """Intent on but no gadget hardware → combo off (both signals required)."""
-    d = ca.resolve_auto_decision(
-        marker_raw=None,
-        gadget_present=False,
-        usb_intent_enabled=True,
-        ring_gates=(("assets", _pass_gate()),),
-    )
-    assert d.combo_armed is False
-    assert [a.value for a in d.usb_combo_actions] == [
-        "disabled", "disabled", "disabled", "576",
-    ]
-
-
-def test_decision_first_failing_gate_short_circuits_to_loopback():
-    # The topology gate fails (a roleful box) -> loopback, reason names the gate,
-    # and the later gates are NOT consulted.
-    calls: list[str] = []
-
-    def spy(name, ok):
-        def g():
-            calls.append(name)
-            return (ok, name)
-
-        return g
-
-    d = ca.resolve_auto_decision(
-        marker_raw=None,
-        gadget_present=False,
-        usb_intent_enabled=False,
-        ring_gates=(
-            ("assets", spy("assets", True)),
-            ("topology", spy("topology", False)),
-            ("geometry", spy("geometry", True)),
-        ),
-    )
-    assert d.owned is True
-    assert d.coupling == COUPLING_LOOPBACK
-    assert "topology" in d.reason
-    assert calls == ["assets", "topology"]  # short-circuit: geometry never ran
-
-
-def test_decision_gate_raising_fails_safe_to_loopback():
-    def boom():
-        raise OSError("topology unreadable")
-
-    d = ca.resolve_auto_decision(
-        marker_raw=None,
-        gadget_present=False,
-        usb_intent_enabled=False,
-        ring_gates=(("assets", _pass_gate()), ("topology", boom)),
-    )
-    assert d.coupling == COUPLING_LOOPBACK
-    assert "topology" in d.reason
-
-
 def test_combo_is_armed_requires_both_signals():
     assert ca.combo_is_armed(gadget_present=True, usb_intent_enabled=True) is True
     assert ca.combo_is_armed(gadget_present=True, usb_intent_enabled=False) is False
     assert ca.combo_is_armed(gadget_present=False, usb_intent_enabled=True) is False
     assert ca.combo_is_armed(gadget_present=False, usb_intent_enabled=False) is False
-
-
-def test_usb_combo_authority_has_no_runtime_health_override():
-    """Only gadget availability plus canonical intent can resolve composition."""
-
-    decision = ca.resolve_auto_decision(
-        marker_raw=None,
-        gadget_present=True,
-        usb_intent_enabled=True,
-        ring_gates=(),
-    )
-
-    assert decision.combo_armed is True
-    assert not hasattr(decision, "fallback_active")
 
 
 @pytest.mark.parametrize(
@@ -589,34 +356,26 @@ def test_live_gadget_probe_reads_shared_resolved_capability(monkeypatch):
     assert ca.read_usb_gadget_available() is False
 
 
-def test_resolved_choice_label():
-    assert ca.resolved_choice_label("operator") == "operator"
-    assert ca.resolved_choice_label(None) == "auto"
-    assert ca.resolved_choice_label("garbage") == "auto"
-
-
 # --------------------------------------------------------------------------
 # reconcile_auto orchestration — env writes, marker no-op, combo, idempotence
 # --------------------------------------------------------------------------
 
 
 def _stub_ring_gates(monkeypatch, *, eligible: bool):
-    """Make both the auto-decision ring gates AND the arm preflights resolve to
-    ``eligible``. Stubs at the reconciler boundary so no /dev/shm or topology
-    file is touched. Also stubs the route gate + the slot self-heal so a real
-    grouping read / conf.d read is never needed."""
+    """Keep the reconciler's own file reads out of these USB-combo unit tests.
+
+    Stubs at the reconciler boundary so no /dev/shm, conf.d or topology file is
+    touched. ``eligible`` is what the surviving graph-move proof gates answer;
+    the ring convergence itself has no eligibility decision left to make.
+    """
     assets = ("ring_assets", lambda: (eligible, "assets"))
     topo = ("ring_topology", lambda: (eligible, "topology"))
     monkeypatch.setattr(cr, "default_ring_gates", lambda: (assets, topo))
+    # The slot self-heal runs on every pass; keep it a no-op here (it re-reads
+    # the conf.d otherwise). Its own behavior is covered separately.
     monkeypatch.setattr(
-        cr, "ring_route_ready", lambda route_mode, **kw: (eligible, "route")
+        cr, "_migrate_stale_fanin_ring_slots", lambda snap, reason: (snap, False)
     )
-    monkeypatch.setattr(cr, "ring_geometry_ready", lambda text: (eligible, "geom"))
-    monkeypatch.setattr(cr, "ring_slot_geometry_ready", lambda text: (eligible, "slots"))
-    # The F6 slot self-heal runs before the gates; keep it a no-op in unit tests
-    # (it re-reads the conf.d otherwise). Its own behavior is covered separately.
-    monkeypatch.setattr(cr, "_migrate_stale_fanin_ring_slots", lambda snap, reason: snap)
-    # Arm-spine preflights (only reached when eligible + coupling flips to ring).
     import jasper.ring_assets as ra
 
     monkeypatch.setattr(
@@ -628,7 +387,9 @@ def _stub_ring_gates(monkeypatch, *, eligible: bool):
     monkeypatch.setattr(ra, "RING_CONF_D", str(SHIPPED_RING_CONF_D))
     monkeypatch.setattr(cr, "ring_assets_ready", lambda: (eligible, "assets"))
     monkeypatch.setattr(cr, "ring_topology_ready_strict", lambda: (eligible, "topology"))
-    monkeypatch.setattr(cr, "_delete_stale_ring_files", lambda reason, fanin_text="": None)
+    monkeypatch.setattr(
+        cr, "_delete_stale_ring_files", lambda reason, fanin_text="": False
+    )
     _stub_ioplug_caps(monkeypatch)
 
 
@@ -699,7 +460,6 @@ def _auto(
     restarts,
     usb_intent=None,
     camilla_ok=True,
-    leader=False,
     fanin_ok=True,
     camilla_stop_ok=True,
     camilla_start_ok=True,
@@ -712,7 +472,7 @@ def _auto(
     present AND USB audio on). ``camilla_stop``/``camilla_start`` are the coordinated
     combo-restart pause/resume ops (record ``camilla_stop``/``camilla_start`` in
     ``restarts``) so the RTTIME-SIGKILL coordination can be exercised hardware-free.
-    ``kick_hardware_reconcile`` records ``hardware_reconcile`` — the arm's
+    ``kick_hardware_reconcile`` records ``hardware_reconcile`` — the spine's
     content-format converge — so its ORDER against ``outputd`` is assertable, and
     ``kick_ok=False`` exercises the fail-closed refusal."""
     if usb_intent is None:
@@ -734,8 +494,8 @@ def _auto(
         restarts.append("camilla_start")
         return (camilla_start_ok, "" if camilla_start_ok else "camilla start failed")
 
-    def rc(coupling):
-        restarts.append(f"camilla:{coupling}")
+    def rc():
+        restarts.append(f"camilla:{COUPLING_SHM_RING}")
         return (camilla_ok, "reconciled" if camilla_ok else "bad")
 
     def kh():
@@ -754,84 +514,7 @@ def _auto(
         start_camilla=rstc,
         reconcile_camilla=rc,
         kick_hardware_reconcile=kh,
-        active_leader_check=lambda: leader,
     )
-
-def test_auto_operator_marker_preserves_coupling_and_converges_usb_combo(
-    tmp_path, monkeypatch,
-):
-    """The transport is frozen, but canonical USB On still arms capture."""
-    fanin = tmp_path / "fanin.env"
-    outputd = tmp_path / "outputd.env"
-    fanin.write_text(
-        "JASPER_FANIN_COUPLING_CHOICE=operator\n"
-        "JASPER_FANIN_CAMILLA_COUPLING=shm_ring\n"
-    )
-    _stub_ring_gates(monkeypatch, eligible=True)  # would resolve ring if owned
-    # The coupling owner is bypassed; only combo convergence may restart fan-in.
-    called = {"n": 0}
-    monkeypatch.setattr(
-        cr, "reconcile_coupling", lambda *a, **k: called.__setitem__("n", called["n"] + 1)
-    )
-    restarts: list[str] = []
-    r = _auto(fanin, outputd, gadget=True, restarts=restarts)
-    assert r.owned is False
-    assert r.ok is True
-    # Nit8: report the frozen box's real coupling, not a hardcoded loopback.
-    assert r.coupling == COUPLING_SHM_RING
-    assert called["n"] == 0
-    assert "fanin" in restarts
-    # Marker + exact coupling survive while the USB combo becomes explicit On.
-    text = fanin.read_text()
-    assert "JASPER_FANIN_COUPLING_CHOICE=operator" in text
-    assert f"{ca.USB_DIRECT_ENV_VAR}=enabled" in text
-
-
-@pytest.mark.parametrize("coupling", [COUPLING_LOOPBACK, COUPLING_SHM_RING])
-@pytest.mark.parametrize(
-    "initial_value,usb_intent,expected_value",
-    [
-        ("enabled", False, "disabled"),
-        ("disabled", True, "enabled"),
-    ],
-)
-def test_operator_frozen_coupling_still_converges_usb_authorization(
-    tmp_path,
-    monkeypatch,
-    coupling,
-    initial_value,
-    usb_intent,
-    expected_value,
-):
-    fanin = tmp_path / "fanin.env"
-    outputd = tmp_path / "outputd.env"
-    fanin.write_text(
-        "JASPER_FANIN_COUPLING_CHOICE=operator\n"
-        f"JASPER_FANIN_CAMILLA_COUPLING={coupling}\n"
-        f"{ca.USB_DIRECT_ENV_VAR}={initial_value}\n"
-        f"{ca.HOST_CLOCK_ENV_VAR}={initial_value}\n"
-        f"{ca.CUSHION_DECAY_ENV_VAR}={initial_value}\n"
-    )
-    outputd.write_text("")
-    _stub_ring_gates(monkeypatch, eligible=True)
-    restarts: list[str] = []
-
-    result = _auto(
-        fanin,
-        outputd,
-        gadget=True,
-        usb_intent=usb_intent,
-        restarts=restarts,
-    )
-
-    assert result.ok is True
-    assert result.owned is False
-    assert result.coupling == coupling
-    assert cr.read_persisted_coupling(fanin) == coupling
-    assert read_value(fanin.read_text(), ca.USB_DIRECT_ENV_VAR) == expected_value
-    assert "fanin" in restarts
-    assert not any(item.startswith("camilla:") for item in restarts)
-
 
 def test_auto_eligible_gadget_box_with_intent_arms_ring_and_combo(
     tmp_path, monkeypatch
@@ -846,8 +529,6 @@ def test_auto_eligible_gadget_box_with_intent_arms_ring_and_combo(
     _stub_ring_gates(monkeypatch, eligible=True)
     restarts: list[str] = []
     r = _auto(fanin, outputd, gadget=True, restarts=restarts)
-    assert r.owned is True
-    assert r.coupling == COUPLING_SHM_RING
     assert r.combo_armed is True
     assert r.usb_combo_changed is True
     assert r.ok is True
@@ -856,8 +537,6 @@ def test_auto_eligible_gadget_box_with_intent_arms_ring_and_combo(
     assert read_value(text, ca.HOST_CLOCK_ENV_VAR) == "enabled"
     assert read_value(text, ca.CUSHION_DECAY_ENV_VAR) == "enabled"
     assert read_value(text, COUPLING_ENV_VAR) == COUPLING_SHM_RING
-    # Auto NEVER stamps the operator marker (stays auto-owned).
-    assert read_value(text, ca.COUPLING_CHOICE_ENV_VAR) is None
     assert r.restarted_fanin_for_combo is False
 
 
@@ -877,7 +556,6 @@ def test_auto_gadget_present_but_usb_audio_off_does_not_arm_combo(tmp_path, monk
     text = fanin.read_text()
     assert read_value(text, ca.USB_DIRECT_ENV_VAR) == "disabled"
     # The ring can still resolve (eligible), but the combo is off.
-    assert r.coupling == COUPLING_SHM_RING
 
 
 def test_auto_malformed_usb_intent_disarms_stale_combo_then_fails(
@@ -887,28 +565,21 @@ def test_auto_malformed_usb_intent_disarms_stale_combo_then_fails(
 ):
     """Invalid canonical USB intent must not abort before the safe disarm.
 
-    The operator marker freezes the coupling choice only; it cannot preserve a
-    stale USB DIRECT lane whose authorization is unreadable.
+    Unreadable authorization cannot preserve a stale USB DIRECT lane, and it
+    cannot fail the ring convergence either — the two halves are independent.
     """
 
     fanin = tmp_path / "fanin.env"
     outputd = tmp_path / "outputd.env"
     fanin.write_text(
-        "JASPER_FANIN_COUPLING_CHOICE=operator\n"
-        "JASPER_FANIN_CAMILLA_COUPLING=loopback\n"
+        f"{COUPLING_ENV_VAR}={COUPLING_SHM_RING}\n"
         f"{ca.USB_DIRECT_ENV_VAR}=enabled\n"
         f"{ca.HOST_CLOCK_ENV_VAR}=enabled\n"
         f"{ca.CUSHION_DECAY_ENV_VAR}=enabled\n"
         "JASPER_UNRELATED_SOURCE_SENTINEL=enabled\n"
     )
-    outputd.write_text("")
-    monkeypatch.setattr(
-        cr,
-        "_migrate_stale_fanin_ring_slots",
-        lambda *_args, **_kwargs: pytest.fail(
-            "malformed USB safety disarm must not run unrelated ring migrations"
-        ),
-    )
+    outputd.write_text(_armed_shm_ring_outputd())
+    _stub_ring_gates(monkeypatch, eligible=True)
 
     def invalid_usb_intent():
         raise RuntimeError("bad USB intent value")
@@ -928,8 +599,10 @@ def test_auto_malformed_usb_intent_disarms_stale_combo_then_fails(
         gadget_present=True,
         restart_fanin=lambda: (restarts.append("fanin"), (True, ""))[1],
         restart_outputd=lambda: (restarts.append("outputd"), (True, ""))[1],
-        reconcile_camilla=lambda _coupling: (True, "reconciled"),
-        active_leader_check=lambda: False,
+        stop_camilla=lambda: (restarts.append("camilla_stop"), (True, ""))[1],
+        start_camilla=lambda: (restarts.append("camilla_start"), (True, ""))[1],
+        reconcile_camilla=lambda: (True, "reconciled"),
+        kick_hardware_reconcile=lambda: (True, ""),
     )
 
     text = fanin.read_text()
@@ -937,9 +610,8 @@ def test_auto_malformed_usb_intent_disarms_stale_combo_then_fails(
     assert read_value(text, ca.HOST_CLOCK_ENV_VAR) == "disabled"
     assert read_value(text, ca.CUSHION_DECAY_ENV_VAR) == "disabled"
     assert read_value(text, "JASPER_UNRELATED_SOURCE_SENTINEL") == "enabled"
-    assert read_value(text, ca.COUPLING_CHOICE_ENV_VAR) == "operator"
-    assert read_value(text, COUPLING_ENV_VAR) == COUPLING_LOOPBACK
-    assert restarts == ["fanin"]
+    assert read_value(text, COUPLING_ENV_VAR) == COUPLING_SHM_RING
+    assert restarts == ["camilla_stop", "fanin", "camilla_start"]
     assert result.combo_armed is False
     assert result.usb_combo_changed is True
     assert result.restarted_fanin_for_combo is True
@@ -947,62 +619,6 @@ def test_auto_malformed_usb_intent_disarms_stale_combo_then_fails(
     assert result.ok is False
     assert "bad USB intent value" in result.detail
     assert "result=auto_usb_intent_fail_closed" in caplog.text
-
-
-def test_auto_jts3_roleful_is_loopback_combo_off(tmp_path, monkeypatch):
-    """jts3 shape: roleful topology (a ring gate fails) + no gadget -> loopback,
-    combo written to explicit OFF (F5), and the arm never runs (no ring transition)."""
-    fanin = tmp_path / "fanin.env"
-    outputd = tmp_path / "outputd.env"
-    fanin.write_text("")
-    outputd.write_text("")
-    _stub_ring_gates(monkeypatch, eligible=False)
-    restarts: list[str] = []
-    r = _auto(fanin, outputd, gadget=False, restarts=restarts)
-    assert r.owned is True
-    assert r.coupling == COUPLING_LOOPBACK
-    assert r.combo_armed is False
-    # No gadget: combo keys written to EXPLICIT off (F5 — defeats jasper.env
-    # precedence), not left absent.
-    text = fanin.read_text()
-    assert read_value(text, ca.USB_DIRECT_ENV_VAR) == "disabled"
-    assert read_value(text, COUPLING_ENV_VAR) in (None, COUPLING_LOOPBACK)
-
-
-def test_auto_jts5_composite_is_loopback(tmp_path, monkeypatch):
-    """jts5 shape: composite dual-DAC (a ring gate fails) + no gadget -> loopback."""
-    fanin = tmp_path / "fanin.env"
-    outputd = tmp_path / "outputd.env"
-    fanin.write_text("")
-    outputd.write_text("")
-    _stub_ring_gates(monkeypatch, eligible=False)
-    r = _auto(fanin, outputd, gadget=False, restarts=[])
-    assert r.owned is True
-    assert r.coupling == COUPLING_LOOPBACK
-    assert r.combo_armed is False
-
-
-def test_auto_jts4_streambox_no_fanin_stack_exits_clean(tmp_path, monkeypatch):
-    """Legacy jts4 shape: ineligible ring and no gadget exits cleanly.
-
-    Current streamboxes run this owner because they share fan-in and may need
-    USB DIRECT. Since #2285 nothing keeps ring on loopback for the profile's
-    sake -- THIS box resolves loopback because its ring evidence is absent, and
-    that is the shape under test.
-    """
-    fanin = tmp_path / "fanin.env"
-    outputd = tmp_path / "outputd.env"
-    # Already loopback (a streambox never armed anything).
-    fanin.write_text("JASPER_FANIN_CAMILLA_COUPLING=loopback\n")
-    outputd.write_text("")
-    _stub_ring_gates(monkeypatch, eligible=False)
-    r = _auto(fanin, outputd, gadget=False, restarts=[])
-    assert r.owned is True
-    assert r.coupling == COUPLING_LOOPBACK
-    assert r.ok is True
-    assert r.combo_armed is False
-    # Combo written to explicit OFF (F5).
-    assert read_value(fanin.read_text(), ca.USB_DIRECT_ENV_VAR) == "disabled"
 
 
 def test_auto_gadget_lost_clears_stale_combo_keys(tmp_path, monkeypatch):
@@ -1058,28 +674,24 @@ def test_auto_is_idempotent_second_pass_writes_nothing(tmp_path, monkeypatch):
 
 
 def test_auto_combo_only_change_forces_fanin_restart(tmp_path, monkeypatch):
-    """A combo-only change on an already-at-desired-coupling box (loopback, no
-    ring transition -> confirm path, no bounce) still needs fan-in restarted so the
-    new combo takes effect. The auto pass issues that one restart."""
+    """A combo-only change on a box already coherent on the ring takes the
+    no-bounce path, so the new combo would not be live until fan-in restarts.
+    The auto pass issues that one restart — CamillaDSP-coordinated, because the
+    ring is live and a bare fan-in restart is what SIGKILLs camilla."""
     fanin = tmp_path / "fanin.env"
     outputd = tmp_path / "outputd.env"
-    # Already loopback; gadget present + USB audio on but combo NOT yet written.
-    fanin.write_text("JASPER_FANIN_CAMILLA_COUPLING=loopback\n")
-    outputd.write_text("")
-    # Ineligible for ring (so coupling stays loopback = no arm bounce), gadget+intent.
-    _stub_ring_gates(monkeypatch, eligible=False)
+    fanin.write_text(f"{COUPLING_ENV_VAR}={COUPLING_SHM_RING}\n")
+    outputd.write_text(_armed_shm_ring_outputd())
+    _stub_ring_gates(monkeypatch, eligible=True)
     restarts: list[str] = []
     r = _auto(fanin, outputd, gadget=True, restarts=restarts)
     assert r.usb_combo_changed is True
     assert r.combo_armed is True
-    assert r.coupling == COUPLING_LOOPBACK
-    # The confirm path did not restart fan-in, so the combo forced one.
+    # The no-bounce path did not restart fan-in, so the combo forced one.
     assert r.restarted_fanin_for_combo is True
     assert restarts.count("fanin") == 1
-    # LOOPBACK skips the camilla coordination (snd-aloop decouples the two): the
-    # combo fan-in restart does NOT pause/resume camilla.
-    assert "camilla_stop" not in restarts
-    assert "camilla_start" not in restarts
+    assert restarts.index("camilla_stop") < restarts.index("fanin")
+    assert restarts.index("fanin") < restarts.index("camilla_start")
 
 
 def _armed_shm_ring_outputd() -> str:
@@ -1087,7 +699,7 @@ def _armed_shm_ring_outputd() -> str:
     subsequent reconcile sees NO outputd move, so the coupling stays put and the
     reconcile takes the lightweight CONFIRM path (not _arm_ring) — the shape that
     makes the combo force a bare fan-in restart the coordination must wrap."""
-    return cr._apply_actions("", cr._outputd_actions(COUPLING_SHM_RING, ""))[0]
+    return cr._apply_actions("", cr._outputd_actions(""))[0]
 
 
 def test_auto_combo_change_on_ring_pauses_camilla_around_fanin_restart(
@@ -1106,7 +718,6 @@ def test_auto_combo_change_on_ring_pauses_camilla_around_fanin_restart(
     _stub_ring_gates(monkeypatch, eligible=True)
     restarts: list[str] = []
     r = _auto(fanin, outputd, gadget=True, restarts=restarts)
-    assert r.coupling == COUPLING_SHM_RING
     assert r.usb_combo_changed is True
     assert r.restarted_fanin_for_combo is True
     assert r.ok is True
@@ -1164,72 +775,6 @@ def test_auto_ring_combo_fanin_restart_failure_still_resumes_camilla(tmp_path, m
 # --------------------------------------------------------------------------
 
 
-def _stub_ring_gates_except_route(monkeypatch, *, eligible: bool):
-    """Like _stub_ring_gates but leaves the REAL ring_route_ready in place, so a
-    route decision (grouped vs solo) flows through for the F3 test."""
-    assets = ("ring_assets", lambda: (eligible, "assets"))
-    topo = ("ring_topology", lambda: (eligible, "topology"))
-    monkeypatch.setattr(cr, "default_ring_gates", lambda: (assets, topo))
-    monkeypatch.setattr(cr, "ring_geometry_ready", lambda text: (eligible, "geom"))
-    monkeypatch.setattr(cr, "ring_slot_geometry_ready", lambda text: (eligible, "slots"))
-    monkeypatch.setattr(cr, "_migrate_stale_fanin_ring_slots", lambda snap, reason: snap)
-    import jasper.ring_assets as ra
-
-    monkeypatch.setattr(
-        ra, "ring_asset_presence", lambda **kw: ra.RingAssetPresence(True, True, True)
-    )
-    # The wire gate reads both conf.d PCM blocks; claiming assets present
-    # while the path points nowhere would exercise a torn-conf.d refusal
-    # instead of the eligibility path under test.
-    monkeypatch.setattr(ra, "RING_CONF_D", str(SHIPPED_RING_CONF_D))
-    monkeypatch.setattr(cr, "ring_assets_ready", lambda: (eligible, "assets"))
-    monkeypatch.setattr(cr, "ring_topology_ready_strict", lambda: (eligible, "topology"))
-    monkeypatch.setattr(cr, "_delete_stale_ring_files", lambda reason, fanin_text="": None)
-
-
-def test_auto_grouped_leader_resolves_loopback_and_succeeds(tmp_path, monkeypatch):
-    """F3: a grouped (active-leader) box would pass the asset/topology/geometry gates
-    on its stereo shape, but the ring is not supported while grouped. The route gate
-    must resolve loopback so the reconcile succeeds — NOT resolve shm_ring and then
-    get route-blocked with ok=False (a failing boot unit on a healthy box)."""
-    fanin = tmp_path / "fanin.env"
-    outputd = tmp_path / "outputd.env"
-    fanin.write_text("")
-    outputd.write_text("")
-    # Everything eligible EXCEPT we let the real route gate see an active leader.
-    _stub_ring_gates_except_route(monkeypatch, eligible=True)
-    restarts: list[str] = []
-    r = _auto(
-        fanin, outputd, gadget=False, restarts=restarts, leader=True
-    )
-    assert r.owned is True
-    assert r.coupling == COUPLING_LOOPBACK
-    assert r.ok is True
-    # It resolved loopback via the route gate, so no ring arm / no block.
-    assert r.coupling_result is not None
-    assert r.coupling_result.direction != "blocked"
-
-
-def test_ring_route_ready_blocks_an_armed_dac_content_lane_only():
-    ok_solo, _ = cr.ring_route_ready("solo", dac_content_lane_armed=False)
-    assert ok_solo is True
-    ok_unknown, _ = cr.ring_route_ready("unknown", dac_content_lane_armed=False)
-    assert ok_unknown is True  # indeterminate never blocks a legitimate solo arm
-    ok_leader, detail = cr.ring_route_ready(
-        "active_leader", dac_content_lane_armed=True
-    )
-    assert ok_leader is False
-    assert "loopback" in detail
-    assert "dac_content" in detail
-    # NARROWED: a bonded box whose lane is cleared (every ACTIVE endpoint) is no
-    # longer route-blocked, so the auto pass keeps its ring instead of reverting
-    # it to loopback on every boot/deploy.
-    ok_active_endpoint, detail = cr.ring_route_ready(
-        "active_leader", dac_content_lane_armed=False
-    )
-    assert ok_active_endpoint is True, detail
-
-
 # --------------------------------------------------------------------------
 # F4 — the auto topology gate fails CLOSED on an unreadable topology
 # --------------------------------------------------------------------------
@@ -1257,41 +802,15 @@ def test_ring_topology_strict_fails_closed_on_unreadable(monkeypatch):
     assert "fail-closed" in strict_detail
 
 
-def test_absent_topology_auto_decision_remains_loopback(tmp_path, monkeypatch):
-    """No saved speaker layout is not implicit stereo Ring-B permission."""
-    missing = tmp_path / "missing-output-topology.json"
-    monkeypatch.setenv("JASPER_OUTPUT_TOPOLOGY_PATH", str(missing))
-
-    decision = ca.resolve_auto_decision(
-        marker_raw=None,
-        gadget_present=True,
-        usb_intent_enabled=True,
-        ring_gates=(("ring_topology", cr.ring_topology_ready_strict),),
-    )
-
-    assert decision.coupling == COUPLING_LOOPBACK
-    assert "no speaker layout is configured" in decision.reason
-
-
 # --------------------------------------------------------------------------
 # F6 — a stale JASPER_FANIN_RING_SLOTS self-heals BEFORE the auto gates run
 # --------------------------------------------------------------------------
 
 
 def test_auto_stale_ring_slots_self_heals_and_keeps_ring(tmp_path, monkeypatch):
-    """F6: a box armed with a stale JASPER_FANIN_RING_SLOTS=8 line must NOT be
-    disarmed to loopback — the auto pass runs the SAME slot self-heal a manual arm
-    does before the slot gate, so the residue is overridden and the ring resolves.
-
-    ``r.coupling`` ALONE DOES NOT PROVE THAT, and for a while this test believed
-    it did. That field is the auto pass's DECISION; the arm that follows it can
-    still refuse and roll the persisted coupling back to loopback underneath a
-    green assertion. That is exactly what happened once the ioplug capability
-    gate went live on an undeclared box (the ring wire's wide default) and this
-    test — which builds its own gate set so it can exercise the REAL slot
-    self-heal — did not inherit ``_stub_ioplug_caps``. So the persisted
-    ``fanin.env`` coupling is asserted too: the decision and the outcome are two
-    facts, and only the second one is what the box wakes up on.
+    """A box carrying a stale JASPER_FANIN_RING_SLOTS=8 line self-heals: the
+    pass writes the conf.d's coherent value so fan-in creates Ring A with the
+    geometry the ioplug attaches against, instead of leaving the box sheared.
     """
     fanin = tmp_path / "fanin.env"
     outputd = tmp_path / "outputd.env"
@@ -1302,19 +821,16 @@ def test_auto_stale_ring_slots_self_heals_and_keeps_ring(tmp_path, monkeypatch):
     outputd.write_text(_armed_outputd_env())
     _persist_ring_eligible_topology(tmp_path, monkeypatch)
 
-    # Assets/topology/route/geometry eligible; conf.d says n_slots=2 so the stale
-    # `=8` is shear-prone and self-heals. Use the REAL slot gate + migration so the
-    # F6 wiring is exercised end to end.
+    # conf.d says n_slots=2 so the stale `=8` is shear-prone and self-heals. Uses
+    # the REAL migration so the wiring is exercised end to end.
     assets = ("ring_assets", lambda: (True, "assets"))
     topo = ("ring_topology", lambda: (True, "topology"))
     monkeypatch.setattr(cr, "default_ring_gates", lambda: (assets, topo))
-    monkeypatch.setattr(
-        cr, "ring_route_ready", lambda route_mode, **kw: (True, "route")
-    )
-    monkeypatch.setattr(cr, "ring_geometry_ready", lambda text: (True, "geom"))
     monkeypatch.setattr(cr, "ring_assets_ready", lambda: (True, "assets"))
     monkeypatch.setattr(cr, "ring_topology_ready_strict", lambda: (True, "topology"))
-    monkeypatch.setattr(cr, "_delete_stale_ring_files", lambda reason, fanin_text="": None)
+    monkeypatch.setattr(
+        cr, "_delete_stale_ring_files", lambda reason, fanin_text="": False
+    )
     import jasper.ring_assets as ra
 
     monkeypatch.setattr(
@@ -1329,13 +845,8 @@ def test_auto_stale_ring_slots_self_heals_and_keeps_ring(tmp_path, monkeypatch):
     _stub_ioplug_caps(monkeypatch)
 
     restarts: list[str] = []
-    r = _auto(fanin, outputd, gadget=False, restarts=restarts)
-    assert r.owned is True
-    # The stale slots line was overridden (self-heal), so the ring resolved — NOT
-    # disarmed to loopback.
-    assert r.coupling == COUPLING_SHM_RING
+    _auto(fanin, outputd, gadget=False, restarts=restarts)
     assert read_value(fanin.read_text(), "JASPER_FANIN_RING_SLOTS") == "2"
-    # ...and the box is ACTUALLY left on the ring, not merely decided onto it.
     assert cr.read_persisted_coupling(fanin) == COUPLING_SHM_RING
 
 
@@ -1361,13 +872,11 @@ def test_auto_stale_base_ring_slots_self_heals_and_keeps_ring(tmp_path, monkeypa
     assets = ("ring_assets", lambda: (True, "assets"))
     topo = ("ring_topology", lambda: (True, "topology"))
     monkeypatch.setattr(cr, "default_ring_gates", lambda: (assets, topo))
-    monkeypatch.setattr(
-        cr, "ring_route_ready", lambda route_mode, **kw: (True, "route")
-    )
-    monkeypatch.setattr(cr, "ring_geometry_ready", lambda text: (True, "geom"))
     monkeypatch.setattr(cr, "ring_assets_ready", lambda: (True, "assets"))
     monkeypatch.setattr(cr, "ring_topology_ready_strict", lambda: (True, "topology"))
-    monkeypatch.setattr(cr, "_delete_stale_ring_files", lambda reason, fanin_text="": None)
+    monkeypatch.setattr(
+        cr, "_delete_stale_ring_files", lambda reason, fanin_text="": False
+    )
     import jasper.ring_assets as ra
 
     monkeypatch.setattr(
@@ -1381,10 +890,8 @@ def test_auto_stale_base_ring_slots_self_heals_and_keeps_ring(tmp_path, monkeypa
     _stub_ioplug_caps(monkeypatch)
 
     restarts: list[str] = []
-    r = _auto(fanin, outputd, gadget=False, restarts=restarts)
+    _auto(fanin, outputd, gadget=False, restarts=restarts)
 
-    assert r.owned is True
-    assert r.coupling == COUPLING_SHM_RING
     assert read_value(fanin.read_text(), "JASPER_FANIN_RING_SLOTS") == "2"
     assert cr.read_persisted_coupling(fanin) == COUPLING_SHM_RING
 
@@ -1433,7 +940,6 @@ def test_fresh_install_auto_arms_exactly_the_documented_combo_block(
 
     r = _auto(fanin, outputd, gadget=True, restarts=[])
 
-    assert r.owned is True
     assert r.combo_armed is True
     text = fanin.read_text()
     # EXACTLY the documented combo env block (measurement doc §2 host-clock table).
@@ -1448,9 +954,6 @@ def test_fresh_install_auto_arms_exactly_the_documented_combo_block(
             f"fresh-install auto-pass must write {key}={value} on an eligible "
             "gadget box (measurement doc §2); it did not"
         )
-    # Auto ownership is preserved — the auto-pass never freezes the box to an
-    # operator choice (that would stop the combo re-arming across deploys).
-    assert read_value(text, ca.COUPLING_CHOICE_ENV_VAR) is None
 
 
 def test_fresh_install_ring_geometry_defaults_match_the_doc_table():
@@ -1507,125 +1010,3 @@ def test_fresh_install_cushion_decay_floor_default_is_576():
         "hardware-validated floor the measurement doc §2 table ships"
     )
 
-
-@pytest.mark.parametrize(
-    "marker,carried,converged",
-    [
-        # ARM — the jts.local shape: the hardware reconciler armed the marker,
-        # the projection is still Ring B's file.
-        ("1", "/dev/shm/jts-ring/content.ring", "/dev/shm/jts-ring/active-content.ring"),
-        # DISARM — the marker was cleared (the active-lane decision losing its
-        # hardware proof) while the coupling stayed shm_ring.
-        ("", "/dev/shm/jts-ring/active-content.ring", "/dev/shm/jts-ring/content.ring"),
-    ],
-)
-def test_an_operator_pinned_box_still_converges_its_ring_path_projection(
-    tmp_path, monkeypatch, marker, carried, converged
-):
-    """A pinned box is the ORDINARY armed box, and it must still self-heal.
-
-    ``reconcile_coupling`` is the ring path's only writer, and step 1 returns
-    before it on an operator-frozen box — so a crossed marker/path pair was
-    PERMANENT there, in both directions, and every armed box on the fleet is
-    pinned (step 1's own note). Every claim that the pair is "one pass from
-    healed" was false for exactly the boxes it mattered on.
-
-    The pin freezes the transport CHOICE; the ring path is not a choice. So the
-    projection converges and NOTHING else moves: the coupling owner is still
-    never called, the coupling line is untouched, and no daemon is bounced.
-    """
-    fanin = tmp_path / "fanin.env"
-    outputd = tmp_path / "outputd.env"
-    fanin.write_text(
-        "JASPER_FANIN_COUPLING_CHOICE=operator\n"
-        f"JASPER_FANIN_CAMILLA_COUPLING={COUPLING_SHM_RING}\n"
-        # Combo keys already at their gadget-less answer, so the USB half of the
-        # pass writes nothing and the ONLY thing that could move a daemon here is
-        # the projection converge under test.
-        f"{ca.USB_DIRECT_ENV_VAR}=disabled\n"
-        f"{ca.HOST_CLOCK_ENV_VAR}=disabled\n"
-        f"{ca.CUSHION_DECAY_ENV_VAR}=disabled\n"
-        f"{ca.CUSHION_DECAY_FLOOR_ENV_VAR}=576\n"
-    )
-    outputd.write_text(
-        "JASPER_OUTPUTD_CONTENT_BRIDGE=shm_ring\n"
-        f"JASPER_OUTPUTD_RING_ACTIVE_ENDPOINT={marker}\n"
-        f"JASPER_OUTPUTD_SHM_RING_PATH={carried}\n"
-    )
-    _stub_ring_gates(monkeypatch, eligible=True)
-    called = {"n": 0}
-    monkeypatch.setattr(
-        cr, "reconcile_coupling", lambda *a, **k: called.__setitem__("n", called["n"] + 1)
-    )
-    restarts: list[str] = []
-
-    result = _auto(fanin, outputd, gadget=False, restarts=restarts)
-
-    assert result.owned is False
-    assert result.ok is True
-    assert f"JASPER_OUTPUTD_SHM_RING_PATH={converged}" in outputd.read_text()
-    # The coupling owner stayed bypassed — the heal did not smuggle in a flip.
-    assert called["n"] == 0
-    assert f"JASPER_FANIN_CAMILLA_COUPLING={COUPLING_SHM_RING}" in fanin.read_text()
-    assert "JASPER_FANIN_COUPLING_CHOICE=operator" in fanin.read_text()
-    # Writes only. A moved projection means outputd is not running that value
-    # anyway, so an unattended pass does not bounce the final output owner.
-    assert restarts == [], restarts
-    # The bridge is a transport key and stays exactly as the box had it.
-    assert "JASPER_OUTPUTD_CONTENT_BRIDGE=shm_ring" in outputd.read_text()
-
-
-def test_a_pinned_loopback_box_keeps_its_coupling_when_the_marker_is_hand_armed(
-    tmp_path, monkeypatch
-):
-    """The override test: a hand-armed marker must never move a frozen coupling.
-
-    The state: the operator deliberately chose ``loopback``, and something armed
-    the endpoint marker anyway (a hand-edit, or a hardware reconcile whose
-    active-lane decision passed while the transport stayed frozen). What it
-    MEANS: outputd is on its ALSA lane under the ``direct`` bridge, and its
-    ring-path allowlist lives inside ``if content_bridge_mode ==
-    ContentBridgeMode::ShmRing`` (``rust/jasper-outputd/src/config.rs``), so it
-    never reads the ring path at all. There is no crossed pair to heal here —
-    the key is inert — and the safe outcome is that the operator's ``loopback``
-    survives untouched.
-
-    That is why the projection converger is scoped to the ring coupling: on this
-    box, writing the ring path would be a transport write on a box whose
-    transport the operator froze, for zero safety gain.
-    """
-    fanin = tmp_path / "fanin.env"
-    outputd = tmp_path / "outputd.env"
-    fanin.write_text(
-        "JASPER_FANIN_COUPLING_CHOICE=operator\n"
-        f"JASPER_FANIN_CAMILLA_COUPLING={COUPLING_LOOPBACK}\n"
-        f"{ca.USB_DIRECT_ENV_VAR}=disabled\n"
-        f"{ca.HOST_CLOCK_ENV_VAR}=disabled\n"
-        f"{ca.CUSHION_DECAY_ENV_VAR}=disabled\n"
-        f"{ca.CUSHION_DECAY_FLOOR_ENV_VAR}=576\n"
-    )
-    outputd.write_text(
-        "JASPER_OUTPUTD_RING_ACTIVE_ENDPOINT=1\n"
-        "JASPER_OUTPUTD_SHM_RING_PATH=/dev/shm/jts-ring/content.ring\n"
-    )
-    _stub_ring_gates(monkeypatch, eligible=True)
-    called = {"n": 0}
-    monkeypatch.setattr(
-        cr, "reconcile_coupling", lambda *a, **k: called.__setitem__("n", called["n"] + 1)
-    )
-    restarts: list[str] = []
-
-    result = _auto(fanin, outputd, gadget=False, restarts=restarts)
-
-    # THE assertion: the operator's transport choice is never overridden.
-    assert result.owned is False
-    assert result.coupling == COUPLING_LOOPBACK
-    assert f"JASPER_FANIN_CAMILLA_COUPLING={COUPLING_LOOPBACK}" in fanin.read_text()
-    assert called["n"] == 0
-    assert restarts == [], restarts
-    # ...and the inert key is left alone rather than "helpfully" rewritten.
-    assert (
-        "JASPER_OUTPUTD_SHM_RING_PATH=/dev/shm/jts-ring/content.ring"
-        in outputd.read_text()
-    )
-    assert "JASPER_OUTPUTD_CONTENT_BRIDGE" not in outputd.read_text()

@@ -332,10 +332,6 @@ def _coupling_state(
     try:
         from pathlib import Path
 
-        from ..fanin.coupling_auto import (
-            COUPLING_CHOICE_ENV_VAR,
-            resolved_choice_label,
-        )
         from ..fanin.ring_health import (
             FANIN_ENV_PATH,
             OUTPUTD_ENV_PATH,
@@ -360,7 +356,6 @@ def _coupling_state(
             fanin_text = Path(FANIN_ENV_PATH).read_text(encoding="utf-8")
         except OSError:
             fanin_text = ""
-        choice = resolved_choice_label(read_value(fanin_text, COUPLING_CHOICE_ENV_VAR))
         live_transport = None
         if isinstance(fanin_status, dict):
             output = fanin_status.get("output")
@@ -379,22 +374,22 @@ def _coupling_state(
                     outputd_status, ("shm_ring",), format_key="format"
                 ),
             },
-            "choice": choice,
             "combo": _combo_state(fanin_text=fanin_text),
         }
     except (ImportError, OSError, ValueError, TypeError, AttributeError) as e:
-        # Fail-soft: any read/resolve error degrades to the loopback default so a
-        # transient issue never breaks the whole /state call. Concrete exception
-        # set (no blind except) — an import miss, an unreadable env file, or a
-        # malformed value are the only ways this fails.
+        # Fail-soft so a transient issue never breaks the whole /state call, but
+        # NOT to a value: this used to degrade to "persisted": "loopback" with
+        # "intent_coherent": True, which named the RETIRED transport and called
+        # it healthy — a read failure reported as a diagnosis. ``None`` says what
+        # actually happened. Concrete exception set (no blind except): an import
+        # miss, an unreadable env file, or a malformed value.
         logger.debug("coupling state read failed: %s", e)
         return {
-            "persisted": "loopback",
-            "content_bridge": "direct",
-            "intent_coherent": True,
+            "persisted": None,
+            "content_bridge": None,
+            "intent_coherent": None,
             "live_transport": None,
             "observed": {"ring_a": None, "ring_b": None},
-            "choice": "auto",
             "combo": {"state": "disarmed"},
         }
 
