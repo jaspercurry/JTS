@@ -46,6 +46,9 @@ def _fake_env(tmp_path: Path) -> tuple[dict[str, str], Path]:
         'if [[ -n "${FAKE_SYSTEMCTL_FAIL:-}" && "$*" == ${FAKE_SYSTEMCTL_FAIL} ]]; then\n'
         "    exit 1\n"
         "fi\n"
+        'if [[ "$*" == "show -p NRestarts --value jasper-camilla.service" ]]; then\n'
+        '    printf \'%s\\n\' "${FAKE_SYSTEMCTL_NRESTARTS-0}"\n'
+        "fi\n"
         "exit 0\n",
     )
     _write_exe(
@@ -65,6 +68,10 @@ def _fake_env(tmp_path: Path) -> tuple[dict[str, str], Path]:
             "JASPER_CAMILLA_RECOVER_RUN_DIR": str(run_dir),
             "JASPER_ASOUND_ROOT": str(asound),
             "JASPER_DEV_SND_ROOT": str(dev_snd),
+            # Zero the post-start liveness wait (#3096): the fake systemctl
+            # answers NRestarts instantly, so the production 3s margin only
+            # slows this suite down for no hermetic benefit.
+            "JASPER_CAMILLA_RECOVER_LIVENESS_WAIT_SEC": "0",
             "PATH": f"{bin_dir}:{env.get('PATH', '')}",
         }
     )
@@ -126,6 +133,58 @@ def test_camilla_recover_cooldown_parks_without_retrying_graph(tmp_path: Path):
     assert "start jasper-camilla.service" not in call_text
     assert "restart jasper-outputd.service" not in call_text
     assert "reboot" not in call_text
+
+
+# --------------------------------------------------------------------------
+# The success leg lies at fork (#3096): verify liveness before "recovered"
+# --------------------------------------------------------------------------
+
+def test_dying_after_fork_takes_the_park_leg_instead_of_recovered(tmp_path: Path):
+    """Type=simple returns 0 at fork; a doomed restart must still park."""
+    env, calls = _fake_env(tmp_path)
+    env["FAKE_SYSTEMCTL_NRESTARTS"] = "1"
+
+    result = _run(env, "pytest")
+
+    assert result.returncode == 0
+    assert (
+        "event=camilla.recover.liveness_check unit=jasper-camilla.service "
+        "nrestarts=1 verdict=died_after_start"
+    ) in result.stderr
+    assert "event=camilla.recover.park reason=camilla_start_failed" in result.stderr
+    assert "event=camilla.recover.recovered" not in result.stderr
+
+    call_text = calls.read_text(encoding="utf-8")
+    assert "show -p NRestarts --value jasper-camilla.service" in call_text
+    # Camilla is already known-dead; restarting outputd behind it would be
+    # pointless busywork inside the handler's tight 45s TimeoutStartSec.
+    assert "restart jasper-outputd.service" not in call_text
+
+    record = tmp_path / "run" / "jasper-camilla-recover.state"
+    fields = _record_fields(record)
+    assert fields["reason"] == "camilla_start_failed"
+    assert "NRestarts=1" in fields["detail"]
+
+
+def test_inconclusive_liveness_probe_still_declares_recovered(tmp_path: Path):
+    """An unreadable NRestarts must not park a graph that might be fine.
+
+    The cost of a false negative here is a working speaker parked deaf until
+    a human acts (#3096's stated asymmetry), so an inconclusive probe must
+    fall back to the pre-existing recovered ladder, not to a park.
+    """
+    env, calls = _fake_env(tmp_path)
+    env["FAKE_SYSTEMCTL_NRESTARTS"] = ""
+
+    result = _run(env, "pytest")
+
+    assert result.returncode == 0
+    assert "event=camilla.recover.recovered action=core_graph_restarted" in result.stderr
+    assert "event=camilla.recover.liveness_check" not in result.stderr
+
+    call_text = calls.read_text(encoding="utf-8")
+    assert "show -p NRestarts --value jasper-camilla.service" in call_text
+    assert "restart jasper-outputd.service" in call_text
 
 
 # --------------------------------------------------------------------------
