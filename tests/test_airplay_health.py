@@ -27,7 +27,6 @@ def _fanin_status(
     output_frames: int = 0,
     output_xruns: int = 0,
     input_buffer_frames: int = 4096,
-    output_buffer_frames: int = 3072,
     progress_age_ms: int = 0,
 ) -> dict:
     return {
@@ -45,7 +44,6 @@ def _fanin_status(
             "pcm": "hw:Loopback,0,7",
             "sample_rate": 48000,
             "period_frames": 256,
-            "buffer_frames": output_buffer_frames,
             "frames_written": output_frames,
             "xrun_count": output_xruns,
         },

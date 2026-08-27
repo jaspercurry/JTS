@@ -169,25 +169,19 @@ EnvironmentFile=/etc/jasper/jasper.env
 # frame: actual queued audio depends on the writer/reader fill level,
 # and shairport can observe snd-aloop delay on its private lane.
 #
-# The output side is intentionally smaller than the input burst absorber.
-# 1024 frames (~21 ms) is validated on the low-latency Apple-DAC path with
-# CamillaDSP chunksize=256/target_level=1536. That older 3072-frame default
-# was needed when the downstream Camilla path used a 1024-frame chunk; with
-# the DAC floor applied, it is latency without useful headroom.
+# There is no matching output key: the program leaves over the SHM ring
+# (ADR-0100), whose depth is JASPER_FANIN_RING_SLOTS, not an ALSA buffer.
 #
 # Read at runtime by jasper_fanin::config::Config::from_env().
 # Override via /var/lib/jasper/fanin.env if you need to retune
 # (e.g., a future PR with verified-tighter WiFi delivery).
 Environment="JASPER_FANIN_INPUT_BUFFER_FRAMES=4096"
-Environment="JASPER_FANIN_OUTPUT_BUFFER_FRAMES=1024"
 
 # Wizard/reconciler-owned overrides — loaded LAST so they win over the
 # Environment= defaults above (later EnvironmentFile= beats earlier
 # Environment=). jasper.fanin.coupling_reconcile is the single writer of this
-# file. Nothing overrides JASPER_FANIN_OUTPUT_BUFFER_FRAMES any more (the
-# adaptive shrink arm was deleted), so the Environment= default above is the
-# live value unless an operator hand-edits this file. Optional (leading
-# `-`): absent on a fresh box, where the 1024 default above is live.
+# file. Optional (leading `-`): absent on a fresh box, where the packaged
+# defaults above are live.
 EnvironmentFile=-/var/lib/jasper/fanin.env
 
 # Renderer-ingress lane map (U3/P6a) — which renderer lanes reach this daemon

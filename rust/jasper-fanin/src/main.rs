@@ -165,13 +165,11 @@ fn run() -> Result<()> {
     // will retry on a 5 s backoff per the unit's RestartSec.
     let config = Config::from_env()?;
     info!(
-        "event=fanin.config_loaded inputs={} output={} sample_rate={} period_frames={} input_buffer_frames={} output_buffer_frames={}",
+        "event=fanin.config_loaded inputs={} sample_rate={} period_frames={} input_buffer_frames={}",
         config.input_pcms.len(),
-        config.output_pcm,
         config.sample_rate,
         config.period_frames,
         config.input_buffer_frames,
-        config.output_buffer_frames,
     );
 
     // Heartbeat. The work loop calls `bump_progress()` after every
@@ -456,8 +454,6 @@ fn run() -> Result<()> {
             sample_rate: config.sample_rate,
             period_frames: config.period_frames,
             input_buffer_frames: config.input_buffer_frames,
-            output_buffer_frames: config.output_buffer_frames,
-            output_pcm: config.output_pcm.clone(),
             tts_metrics,
             host_clock_fragment: Arc::clone(&host_clock_fragment),
         },

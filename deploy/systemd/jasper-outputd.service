@@ -70,7 +70,6 @@ EnvironmentFile=/etc/jasper/jasper.env
 Environment="JASPER_OUTPUTD_BACKEND=alsa"
 Environment="JASPER_OUTPUTD_DAC_PCM=outputd_dac"
 Environment="JASPER_OUTPUTD_PERIOD_FRAMES=1024"
-Environment="JASPER_OUTPUTD_CONTENT_BUFFER_FRAMES=4096"
 Environment="JASPER_OUTPUTD_DAC_BUFFER_FRAMES=3072"
 # JASPER_OUTPUTD_CONTENT_BRIDGE is deliberately UNSET here: undeclared IS the
 # one transport (ADR-0100), and a baseline that named the retired route would

@@ -34,7 +34,6 @@ def _render(
     tmp_path: Path,
     camilla_yaml: str,
     outputd_env: object = None,
-    fanin_output_buffer_frames: int | None = None,
     jasper_env_content: str = "",
     grouping_airplay_content: str | None = None,
     fanin_status_socket: Path | None = None,
@@ -45,7 +44,6 @@ def _render(
     statefile = tmp_path / "statefile.yml"
     camilla = tmp_path / "camilla.yml"
     airplay_env = tmp_path / "airplay_mode.env"
-    fanin_env = tmp_path / "fanin.env"
     outputd_env_path = tmp_path / "outputd.env"
     jasper_env_path = tmp_path / "jasper.env"
     speaker_env = tmp_path / "speaker_name.env"
@@ -68,10 +66,6 @@ def _render(
     camilla.write_text(textwrap.dedent(camilla_yaml).lstrip())
     statefile.write_text(f"config_path: {camilla}\n")
     airplay_env.write_text("JASPER_AIRPLAY_FREE_RUNNING=no\n")
-    if fanin_output_buffer_frames is not None:
-        fanin_env.write_text(
-            f"JASPER_FANIN_OUTPUT_BUFFER_FRAMES={fanin_output_buffer_frames}\n"
-        )
     jasper_env_path.write_text(jasper_env_content)
     speaker_env.write_text('JASPER_SPEAKER_NAME="Unit Test"\n')
 
@@ -94,7 +88,6 @@ def _render(
             "JASPER_SHAIRPORT_TEMPLATE": str(template),
             "JASPER_SHAIRPORT_CONF": str(target),
             "JASPER_AIRPLAY_MODE_ENV": str(airplay_env),
-            "JASPER_FANIN_ENV_FILE": str(fanin_env),
             "JASPER_OUTPUTD_ENV_FILE": str(outputd_env_path),
             "JASPER_ENV_FILE": str(jasper_env_path),
             "JASPER_SPEAKER_NAME_FILE": str(speaker_env),
@@ -233,7 +226,6 @@ def test_airplay_renderer_prefers_live_outputd_dac_delay(tmp_path: Path):
               target_level: 2048
             """,
             outputd_env=_outputd_env(dac_buffer_frames=512),
-            fanin_output_buffer_frames=1024,
             outputd_status_socket=outputd_status,
         )
 
@@ -259,7 +251,6 @@ def test_airplay_renderer_prefers_live_fanin_output_delay(tmp_path: Path):
               target_level: 2048
             """,
             outputd_env=_outputd_env(dac_buffer_frames=512),
-            fanin_output_buffer_frames=1024,
             fanin_status_socket=fanin_status,
             outputd_status_socket=outputd_status,
         )
@@ -339,23 +330,6 @@ def test_airplay_renderer_falls_back_on_invalid_outputd_dac_buffer(tmp_path: Pat
     )
 
     assert "audio_backend_latency_offset_in_seconds = -0.149333;" in rendered
-
-
-def test_airplay_renderer_reads_fanin_output_buffer_from_env_file(tmp_path: Path):
-    rendered, _ = _render(
-        tmp_path,
-        """
-        devices:
-          samplerate: 48000
-          chunksize: 1024
-          queuelimit: 4
-          target_level: 2048
-        """,
-        fanin_output_buffer_frames=1024,
-    )
-
-    # CamillaDSP 1024 + fan-in output 1024 + outputd DAC 3072 = 5120 frames.
-    assert "audio_backend_latency_offset_in_seconds = -0.106667;" in rendered
 
 
 _PROD_CAMILLA = """

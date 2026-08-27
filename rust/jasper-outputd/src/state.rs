@@ -408,7 +408,11 @@ impl OutputdState {
             sample_rate: AtomicU64::new(config.sample_rate as u64),
             content_period_frames: AtomicU64::new(config.period_frames as u64),
             dac_period_frames: AtomicU64::new(config.period_frames as u64),
-            content_buffer_frames: AtomicU64::new(config.content_buffer_frames as u64),
+            // Seeded to the period, which is what `set_negotiated` installs at
+            // open: there is no ALSA capture ring on the content side any more
+            // (ADR-0100), so the honest depth is the SHM ring's own
+            // `content.ring.capacity_frames`, published beside this.
+            content_buffer_frames: AtomicU64::new(config.period_frames as u64),
             dac_buffer_frames: AtomicU64::new(config.dac_buffer_frames as u64),
             content_bridge_mode: config.content_bridge_mode.as_str().to_string(),
             // PROTOTYPE SHM ring reader health.
@@ -2213,7 +2217,6 @@ mod tests {
             dual_max_delay_delta_frames: 2,
             sample_rate: 48_000,
             period_frames: 1024,
-            content_buffer_frames: 4096,
             dac_buffer_frames: 3072,
             content_bridge_mode: ContentBridgeMode::Direct,
             shm_ring: None,

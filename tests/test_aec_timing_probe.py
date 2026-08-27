@@ -84,7 +84,7 @@ def test_parse_profiles_supports_default_all_and_custom() -> None:
 
 @pytest.mark.parametrize(
     "value",
-    ["", "fast", "1024/512", "1024/1024", "1024/1536", "4096/8192", "0/1024"],
+    ["", "fast", "1024/512", "1024/1024", "1024/1536", "0/1024"],
 )
 def test_parse_profiles_rejects_invalid_values(value: str) -> None:
     with pytest.raises(Exception):
@@ -94,9 +94,6 @@ def test_parse_profiles_rejects_invalid_values(value: str) -> None:
 def test_custom_profile_error_names_outputd_buffer_contract() -> None:
     with pytest.raises(Exception, match="2 x period"):
         aec.parse_profiles("1024/1536")
-
-    with pytest.raises(Exception, match="pins content buffer"):
-        aec.parse_profiles("4096/8192")
 
 
 def test_outputd_dropin_uses_root_only_env_file_and_cleans_up(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
@@ -115,7 +112,6 @@ def test_outputd_dropin_uses_root_only_env_file_and_cleans_up(tmp_path: Path, mo
     )
     assert env_path.read_text(encoding="utf-8") == (
         "JASPER_OUTPUTD_PERIOD_FRAMES=1024\n"
-        "JASPER_OUTPUTD_CONTENT_BUFFER_FRAMES=4096\n"
         "JASPER_OUTPUTD_DAC_BUFFER_FRAMES=2048\n"
         "JASPER_OUTPUTD_CHIP_REF_TEE_PATH=\n"
     )

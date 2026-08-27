@@ -62,8 +62,11 @@ def _rust_emitted_json_keys(path: Path) -> set[str]:
 # Python consumers read it with fail-soft .get() chains, so a renamed Rust key
 # silently turns into None on /state, in the doctor, and in correction
 # integrity snapshots. outputd's half of this contract executes in its own
-# crate; fan-in's emitter is still scanned because rust/jasper-fanin is frozen
-# and cannot take the matching `#[test]` yet.
+# crate (`snapshot_json_emits_every_key_the_python_status_consumers_read` in
+# rust/jasper-outputd/src/state.rs); fan-in's own `#[test]`s pin its emitted
+# shape but never look at the Python call sites, so fan-in's emitter is
+# scanned HERE instead — this is the only place that pins which Python
+# reader depends on which emitted key.
 # ---------------------------------------------------------------------------
 
 FANIN_STATUS_CONSUMERS: dict[str, set[str]] = {
@@ -77,12 +80,12 @@ FANIN_STATUS_CONSUMERS: dict[str, set[str]] = {
     "jasper/control/airplay_health.py": {
         "inputs", "label", "frames_read", "xrun_count",
         "output", "frames_written", "sample_rate", "period_frames",
-        "buffer_frames", "input_buffer_frames", "selected_input",
+        "input_buffer_frames", "selected_input",
         "watchdog", "last_progress_age_ms", "pings_skipped",
     },
     # check_fanin_service
     "jasper/cli/doctor/audio_runtime.py": {
-        "output", "pcm", "frames_written", "xrun_count", "buffer_frames",
+        "output", "pcm", "frames_written", "xrun_count",
         "inputs", "label", "input_buffer_frames",
         "watchdog", "last_progress_age_ms",
     },

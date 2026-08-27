@@ -33,12 +33,8 @@ from jasper.audio_runtime_plan import (
     ROUTE_USB_LOW_LATENCY_48K,
     apply_capture_precedence,
     DEFAULT_FANIN_INPUT_BUFFER_FRAMES,
-    DEFAULT_FANIN_OUTPUT_BUFFER_FRAMES,
-    DEFAULT_OUTPUTD_CONTENT_BUFFER_FRAMES,
     DEFAULT_OUTPUTD_DAC_BUFFER_FRAMES,
     DEFAULT_OUTPUTD_PERIOD_FRAMES,
-    DEFAULT_USB_LOW_LATENCY_OUTPUTD_CONTENT_BUFFER_FRAMES,
-    OUTPUTD_CONTENT_BUFFER_KEY,
     OUTPUTD_DAC_BUFFER_KEY,
     OUTPUTD_MIN_BUFFER_PERIOD_MULTIPLIER,
     OUTPUTD_PERIOD_KEY,
@@ -48,7 +44,6 @@ from jasper.audio_runtime_plan import (
     correction_latency_eligibility_for_config,
     fanin_coupling_action,
     fanin_coupling_capture_kwargs,
-    outputd_content_buffer_pair_error,
     outputd_dac_buffer_pair_error,
     outputd_env_buffer_pair_error,
     outputd_latency_floor_actions,
@@ -205,58 +200,6 @@ def test_profile_floor_wrapper_preserves_layer_precedence_and_warnings():
     )
 
 
-def test_content_buffer_wrapper_preserves_layer_precedence_and_warnings():
-    key = OUTPUTD_CONTENT_BUFFER_KEY
-    base_label = "/etc/jasper/jasper.env"
-    override_label = "/var/lib/jasper/audio_runtime_overrides.json"
-    generated_label = "/var/lib/jasper/outputd.env"
-    route = resolve_audio_route_profile(
-        {AUDIO_ROUTE_PROFILE_KEY: ROUTE_USB_LOW_LATENCY_48K}
-    )
-
-    setting = audio_plan._resolve_outputd_content_buffer_int(
-        route=route,
-        base_env={key: "2048"},
-        override_env={key: "768"},
-        generated_env={key: "1024"},
-        base_label=base_label,
-        override_label=override_label,
-        generated_label=generated_label,
-    )
-
-    assert setting.value == 768
-    assert setting.source_kind == "lab_override"
-    assert setting.override_value == "768"
-    assert setting.operator_value == "2048"
-    assert setting.generated_value == "1024"
-    assert setting.warnings == (
-        f"{key} is set in both {base_label} and {generated_label}; "
-        "one knob has two homes",
-        f"{key} lab override in {override_label} is active; it intentionally "
-        "wins over env/route values",
-    )
-
-    policy_setting = audio_plan._resolve_outputd_content_buffer_int(
-        route=route,
-        base_env={},
-        override_env={},
-        # The policy's subject is a box that NAMED the retired route: an
-        # undeclared bridge is the ring, where the content buffer sizes nothing
-        # and the policy is dropped upstream.
-        generated_env={key: "1024", "JASPER_OUTPUTD_CONTENT_BRIDGE": "direct"},
-        base_label=base_label,
-        override_label=override_label,
-        generated_label=generated_label,
-    )
-    assert policy_setting.value == 1536
-    assert policy_setting.source_kind == "route_policy"
-    assert policy_setting.warnings == (
-        f"{key} in {generated_label} is 1024, but the "
-        f"{ROUTE_USB_LOW_LATENCY_48K} route policy is 1536; rerun "
-        "audio hardware reconcile",
-    )
-
-
 def test_invalid_lab_override_is_ignored_with_warning():
     plan = build_audio_runtime_plan(
         overrides={"JASPER_CAMILLA_TARGET_LEVEL": "bad"},
@@ -295,176 +238,8 @@ def test_outputd_latency_floor_actions_set_profile_floor_when_no_operator_env():
         ("set", "JASPER_CAMILLA_CHUNKSIZE", "256"),
         ("set", "JASPER_CAMILLA_TARGET_LEVEL", "1536"),
         ("set", "JASPER_OUTPUTD_PERIOD_FRAMES", "128"),
-        ("unset", "JASPER_OUTPUTD_CONTENT_BUFFER_FRAMES", ""),
         ("set", "JASPER_OUTPUTD_DAC_BUFFER_FRAMES", "256"),
     ]
-
-
-def test_outputd_latency_floor_actions_set_usb_route_content_buffer():
-    actions = outputd_latency_floor_actions(
-        profile_id=APPLE_USB_C_DONGLE_ID,
-        base_env={AUDIO_ROUTE_PROFILE_KEY: ROUTE_USB_LOW_LATENCY_48K},
-        # Declared off the ring: an undeclared bridge IS the ring, and there the
-        # policy is inert and dropped.
-        outputd_env={"JASPER_OUTPUTD_CONTENT_BRIDGE": "direct"},
-    )
-
-    by_key = {action.key: action for action in actions}
-    assert by_key["JASPER_OUTPUTD_CONTENT_BUFFER_FRAMES"].action == "set"
-    assert by_key["JASPER_OUTPUTD_CONTENT_BUFFER_FRAMES"].value == "1536"
-
-
-def test_usb_low_latency_without_dac_floor_keeps_outputd_pair_coherent():
-    # Non-ring (loopback/direct) box with no DAC period floor: period stays 1024,
-    # so the route's 1536 content buffer is incoherent (< 2 x period) and the
-    # coherence guard repairs it to the packaged default with a "suppressing"
-    # warning. (The shm_ring bridge takes a different path — the policy is inert
-    # and dropped upstream — covered by test_usb_low_latency_shm_ring_bridge_*.)
-    plan = build_audio_runtime_plan(
-        profile_id="",
-        base_env={AUDIO_ROUTE_PROFILE_KEY: ROUTE_USB_LOW_LATENCY_48K},
-        outputd_env={"JASPER_OUTPUTD_CONTENT_BRIDGE": "direct"},
-    )
-
-    period = plan.setting(OUTPUTD_PERIOD_KEY).value
-    content_buffer = plan.setting(OUTPUTD_CONTENT_BUFFER_KEY).value
-    assert period == DEFAULT_OUTPUTD_PERIOD_FRAMES
-    assert content_buffer == DEFAULT_OUTPUTD_CONTENT_BUFFER_FRAMES
-    assert content_buffer >= OUTPUTD_MIN_BUFFER_PERIOD_MULTIPLIER * period
-    assert any("suppressing the low-latency route buffer" in w for w in plan.warnings)
-
-    actions = outputd_latency_floor_actions(
-        profile_id="",
-        base_env={AUDIO_ROUTE_PROFILE_KEY: ROUTE_USB_LOW_LATENCY_48K},
-        outputd_env={"JASPER_OUTPUTD_CONTENT_BRIDGE": "direct"},
-    )
-    by_key = {action.key: action for action in actions}
-    assert by_key[OUTPUTD_PERIOD_KEY].action == "unset"
-    assert by_key[OUTPUTD_CONTENT_BUFFER_KEY].action == "unset"
-
-
-def test_usb_low_latency_with_dac_floor_keeps_shipped_pair():
-    plan = build_audio_runtime_plan(
-        profile_id=APPLE_USB_C_DONGLE_ID,
-        base_env={AUDIO_ROUTE_PROFILE_KEY: ROUTE_USB_LOW_LATENCY_48K},
-        outputd_env={
-            OUTPUTD_PERIOD_KEY: "128",
-            OUTPUTD_CONTENT_BUFFER_KEY: "1536",
-            # Off the ring: the shipped pair is the retired route's, and an
-            # undeclared bridge would be the ring, where the buffer is dropped.
-            OUTPUTD_CONTENT_BRIDGE_KEY: "direct",
-        },
-    )
-
-    assert plan.setting(OUTPUTD_PERIOD_KEY).value == 128
-    assert (
-        plan.setting(OUTPUTD_CONTENT_BUFFER_KEY).value
-        == DEFAULT_USB_LOW_LATENCY_OUTPUTD_CONTENT_BUFFER_FRAMES
-    )
-    assert not any("suppressing the low-latency route buffer" in w for w in plan.warnings)
-
-
-def test_usb_low_latency_shm_ring_bridge_drops_inert_content_buffer_policy():
-    """Under the shm_ring content bridge (Ring B), the outputd content buffer is
-    architecturally inert (outputd never opens the content ALSA PCM, so
-    configure_pcm — the only consumer — is skipped). The USB low-latency route
-    MUST NOT emit its 1536 policy there: it was one-knob-two-truths drift against
-    the honest /state ring capacity. The setting falls back to the packaged
-    default instead of the route policy."""
-    plan = build_audio_runtime_plan(
-        profile_id=APPLE_USB_C_DONGLE_ID,
-        base_env={AUDIO_ROUTE_PROFILE_KEY: ROUTE_USB_LOW_LATENCY_48K},
-        outputd_env={
-            OUTPUTD_PERIOD_KEY: "128",
-            OUTPUTD_CONTENT_BRIDGE_KEY: "shm_ring",
-        },
-    )
-
-    setting = plan.setting(OUTPUTD_CONTENT_BUFFER_KEY)
-    assert setting.value != DEFAULT_USB_LOW_LATENCY_OUTPUTD_CONTENT_BUFFER_FRAMES
-    assert setting.value == DEFAULT_OUTPUTD_CONTENT_BUFFER_FRAMES
-    assert setting.source_kind != "route_policy"
-    # Negative control: ONLY a genuine shm_ring is inert. Any other literal —
-    # a typo, or the REMOVED `rate_match` — resolves `direct`, which DOES open
-    # the content PCM, so the policy still applies. Exercised through both so
-    # the suppression cannot quietly widen to "anything non-empty".
-    for stale_bridge in ("rate_match", "not-a-bridge"):
-        stale_plan = build_audio_runtime_plan(
-            profile_id=APPLE_USB_C_DONGLE_ID,
-            base_env={AUDIO_ROUTE_PROFILE_KEY: ROUTE_USB_LOW_LATENCY_48K},
-            outputd_env={
-                OUTPUTD_PERIOD_KEY: "128",
-                OUTPUTD_CONTENT_BRIDGE_KEY: stale_bridge,
-            },
-        )
-        assert (
-            stale_plan.setting(OUTPUTD_CONTENT_BUFFER_KEY).value
-            == DEFAULT_USB_LOW_LATENCY_OUTPUTD_CONTENT_BUFFER_FRAMES
-        ), stale_bridge
-
-
-def test_outputd_floor_actions_shm_ring_bridge_unsets_content_buffer():
-    """Writer-side proof: the reconciler stops EMITTING
-    JASPER_OUTPUTD_CONTENT_BUFFER_FRAMES=1536 under the shm_ring bridge — the
-    action becomes `unset`, so outputd uses its (inert but non-misleading)
-    compile-time default. This path only ever sees outputd.env, which is why the
-    suppression keys on the outputd bridge and not the (invisible-here) coupling."""
-    shm_ring_actions = outputd_latency_floor_actions(
-        profile_id=APPLE_USB_C_DONGLE_ID,
-        base_env={AUDIO_ROUTE_PROFILE_KEY: ROUTE_USB_LOW_LATENCY_48K},
-        outputd_env={
-            OUTPUTD_PERIOD_KEY: "128",
-            OUTPUTD_CONTENT_BRIDGE_KEY: "shm_ring",
-        },
-    )
-    by_key = {a.key: a for a in shm_ring_actions}
-    assert by_key[OUTPUTD_CONTENT_BUFFER_KEY].action == "unset"
-
-    # A box that NAMED the retired route still emits the 1536 policy. It has to
-    # be named: an undeclared bridge is the ring, which is the arm above.
-    loopback_actions = outputd_latency_floor_actions(
-        profile_id=APPLE_USB_C_DONGLE_ID,
-        base_env={AUDIO_ROUTE_PROFILE_KEY: ROUTE_USB_LOW_LATENCY_48K},
-        outputd_env={
-            OUTPUTD_PERIOD_KEY: "128",
-            OUTPUTD_CONTENT_BRIDGE_KEY: "direct",
-        },
-    )
-    loopback_by_key = {a.key: a for a in loopback_actions}
-    assert loopback_by_key[OUTPUTD_CONTENT_BUFFER_KEY].action == "set"
-    assert loopback_by_key[OUTPUTD_CONTENT_BUFFER_KEY].value == "1536"
-
-
-def test_usb_low_latency_route_hash_reflects_shm_ring_content_buffer_drop():
-    """The suppressed content-buffer policy is part of the route identity, so the
-    route_config_hash for a shm_ring USB-low-latency box differs from the loopback
-    one — the intended, minimal-blast-radius consequence (no schema bump; only
-    affected configs' hashes move). A stale route-latency artifact taken before
-    this change is invalidated (config_mismatch), which is correct: it must be
-    re-certified after this ships."""
-    shm_ring_plan = build_audio_runtime_plan(
-        profile_id=APPLE_USB_C_DONGLE_ID,
-        base_env={AUDIO_ROUTE_PROFILE_KEY: ROUTE_USB_LOW_LATENCY_48K},
-        fanin_env={COUPLING_ENV_VAR: COUPLING_SHM_RING},
-        outputd_env={
-            OUTPUTD_PERIOD_KEY: "128",
-            OUTPUTD_CONTENT_BRIDGE_KEY: "shm_ring",
-        },
-        route_mode="solo",
-    )
-    loopback_plan = build_audio_runtime_plan(
-        profile_id=APPLE_USB_C_DONGLE_ID,
-        base_env={AUDIO_ROUTE_PROFILE_KEY: ROUTE_USB_LOW_LATENCY_48K},
-        outputd_env={OUTPUTD_PERIOD_KEY: "128"},
-        route_mode="solo",
-    )
-    assert shm_ring_plan.route_config_hash != loopback_plan.route_config_hash
-    assert (
-        shm_ring_plan.route_latency_identity()["outputd_config"][
-            OUTPUTD_CONTENT_BUFFER_KEY
-        ]
-        == DEFAULT_OUTPUTD_CONTENT_BUFFER_FRAMES
-    )
 
 
 def test_python_outputd_buffer_contract_matches_rust_validator():
@@ -476,13 +251,6 @@ def test_python_outputd_buffer_contract_matches_rust_validator():
     assert "period_frames.saturating_mul(2)" in config_rs
     assert "minimum ALSA jitter margin" in config_rs
     assert OUTPUTD_MIN_BUFFER_PERIOD_MULTIPLIER == 2
-    assert outputd_content_buffer_pair_error(
-        period_frames=1024,
-        content_buffer_frames=1536,
-    ) == (
-        "JASPER_OUTPUTD_CONTENT_BUFFER_FRAMES=1536 must be >= "
-        "2 x JASPER_OUTPUTD_PERIOD_FRAMES=1024 (minimum ALSA jitter margin)"
-    )
     assert outputd_dac_buffer_pair_error(
         period_frames=1024,
         dac_buffer_frames=1024,
@@ -493,16 +261,6 @@ def test_python_outputd_buffer_contract_matches_rust_validator():
     assert outputd_env_buffer_pair_error(
         base_env={},
         outputd_env={
-            OUTPUTD_CONTENT_BUFFER_KEY: "1536",
-        },
-    ) == (
-        "JASPER_OUTPUTD_CONTENT_BUFFER_FRAMES=1536 must be >= "
-        "2 x JASPER_OUTPUTD_PERIOD_FRAMES=1024 (minimum ALSA jitter margin)"
-    )
-    assert outputd_env_buffer_pair_error(
-        base_env={},
-        outputd_env={
-            OUTPUTD_CONTENT_BUFFER_KEY: "4096",
             OUTPUTD_DAC_BUFFER_KEY: "1024",
         },
     ) == (
@@ -531,10 +289,6 @@ def test_packaged_outputd_buffer_defaults_are_mutually_coherent():
     gained one.
     """
 
-    assert outputd_content_buffer_pair_error(
-        period_frames=DEFAULT_OUTPUTD_PERIOD_FRAMES,
-        content_buffer_frames=DEFAULT_OUTPUTD_CONTENT_BUFFER_FRAMES,
-    ) is None
     assert outputd_dac_buffer_pair_error(
         period_frames=DEFAULT_OUTPUTD_PERIOD_FRAMES,
         dac_buffer_frames=DEFAULT_OUTPUTD_DAC_BUFFER_FRAMES,
@@ -549,7 +303,7 @@ def test_packaged_outputd_buffer_defaults_are_mutually_coherent():
 
 def _override(value: str, *, reason: str = "r", created_at: str = "") -> RuntimeOverrideEntry:
     return RuntimeOverrideEntry(
-        key=OUTPUTD_CONTENT_BUFFER_KEY,
+        key=OUTPUTD_DAC_BUFFER_KEY,
         value=value,
         reason=reason,
         created_at=created_at,
@@ -569,33 +323,23 @@ def test_buffer_pair_refusal_names_the_layer_that_holds_the_losing_value():
     """
 
     operator = outputd_env_buffer_pair_error(
-        base_env={OUTPUTD_CONTENT_BUFFER_KEY: "1536"},
+        base_env={OUTPUTD_DAC_BUFFER_KEY: "1536"},
         outputd_env={},
         base_label=_BASE_LABEL,
         outputd_label=_OUTPUTD_LABEL,
     )
     assert operator is not None
-    assert f"{OUTPUTD_CONTENT_BUFFER_KEY}=1536 comes from {_BASE_LABEL}" in operator
+    assert f"{OUTPUTD_DAC_BUFFER_KEY}=1536 comes from {_BASE_LABEL}" in operator
     assert f"{OUTPUTD_PERIOD_KEY}=1024 comes from packaged systemd/outputd default" in operator
 
     generated = outputd_env_buffer_pair_error(
         base_env={},
-        outputd_env={OUTPUTD_CONTENT_BUFFER_KEY: "1536"},
+        outputd_env={OUTPUTD_DAC_BUFFER_KEY: "1536"},
         base_label=_BASE_LABEL,
         outputd_label=_OUTPUTD_LABEL,
     )
     assert generated is not None
-    assert f"{OUTPUTD_CONTENT_BUFFER_KEY}=1536 comes from {_OUTPUTD_LABEL}" in generated
-
-    # The DAC-buffer half of the pair gets the same treatment.
-    dac = outputd_env_buffer_pair_error(
-        base_env={OUTPUTD_DAC_BUFFER_KEY: "1024"},
-        outputd_env={},
-        base_label=_BASE_LABEL,
-        outputd_label=_OUTPUTD_LABEL,
-    )
-    assert dac is not None
-    assert f"{OUTPUTD_DAC_BUFFER_KEY}=1024 comes from {_BASE_LABEL}" in dac
+    assert f"{OUTPUTD_DAC_BUFFER_KEY}=1536 comes from {_OUTPUTD_LABEL}" in generated
 
 
 def test_buffer_pair_refusal_is_the_bare_rust_mirror_without_labels():
@@ -603,9 +347,9 @@ def test_buffer_pair_refusal_is_the_bare_rust_mirror_without_labels():
 
     assert outputd_env_buffer_pair_error(
         base_env={},
-        outputd_env={OUTPUTD_CONTENT_BUFFER_KEY: "1536"},
+        outputd_env={OUTPUTD_DAC_BUFFER_KEY: "1536"},
     ) == (
-        "JASPER_OUTPUTD_CONTENT_BUFFER_FRAMES=1536 must be >= "
+        "JASPER_OUTPUTD_DAC_BUFFER_FRAMES=1536 must be >= "
         "2 x JASPER_OUTPUTD_PERIOD_FRAMES=1024 (minimum ALSA jitter margin)"
     )
     # One label is not enough: a half-labelled provenance would name one layer
@@ -613,7 +357,7 @@ def test_buffer_pair_refusal_is_the_bare_rust_mirror_without_labels():
     assert ";" not in (
         outputd_env_buffer_pair_error(
             base_env={},
-            outputd_env={OUTPUTD_CONTENT_BUFFER_KEY: "1536"},
+            outputd_env={OUTPUTD_DAC_BUFFER_KEY: "1536"},
             outputd_label=_OUTPUTD_LABEL,
         )
         or ""
@@ -631,13 +375,13 @@ def test_buffer_pair_refusal_quotes_the_override_store_that_wrote_the_line():
 
     detail = outputd_env_buffer_pair_error(
         base_env={},
-        outputd_env={OUTPUTD_CONTENT_BUFFER_KEY: "1536"},
+        outputd_env={OUTPUTD_DAC_BUFFER_KEY: "1536"},
         base_label=_BASE_LABEL,
         outputd_label=_OUTPUTD_LABEL,
         override_entries={
-            OUTPUTD_CONTENT_BUFFER_KEY: _override(
+            OUTPUTD_DAC_BUFFER_KEY: _override(
                 "1536",
-                reason="latency-tuning-outputd-content-buffer-1536-verified-floor",
+                reason="latency-tuning-outputd-dac-buffer-1536-verified-floor",
                 created_at="2026-07-02T00:00:00Z",
             )
         },
@@ -651,21 +395,21 @@ def test_buffer_pair_refusal_quotes_the_override_store_that_wrote_the_line():
     # failure this provenance exists to prevent.
     relocated = outputd_env_buffer_pair_error(
         base_env={},
-        outputd_env={OUTPUTD_CONTENT_BUFFER_KEY: "1536"},
+        outputd_env={OUTPUTD_DAC_BUFFER_KEY: "1536"},
         base_label=_BASE_LABEL,
         outputd_label=_OUTPUTD_LABEL,
-        override_entries={OUTPUTD_CONTENT_BUFFER_KEY: _override("1536")},
+        override_entries={OUTPUTD_DAC_BUFFER_KEY: _override("1536")},
         override_label="/run/test/overrides.json",
     )
     assert relocated is not None
     assert "/run/test/overrides.json" in relocated
     assert DEFAULT_AUDIO_RUNTIME_OVERRIDES_PATH not in relocated
     assert (
-        "reason=latency-tuning-outputd-content-buffer-1536-verified-floor" in detail
+        "reason=latency-tuning-outputd-dac-buffer-1536-verified-floor" in detail
     )
     # The remediation must be runnable AS PRINTED — the actual key, never a
     # `<key>` placeholder the operator has to translate.
-    assert f"jasper-audio-config overrides-clear {OUTPUTD_CONTENT_BUFFER_KEY}" in detail
+    assert f"jasper-audio-config overrides-clear {OUTPUTD_DAC_BUFFER_KEY}" in detail
     assert "<key>" not in detail
 
 
@@ -675,13 +419,13 @@ def test_buffer_pair_refusal_quotes_the_override_store_that_wrote_the_line():
         pytest.param(
             "the store disagrees with the value on disk",
             {},
-            {OUTPUTD_CONTENT_BUFFER_KEY: "1536"},
+            {OUTPUTD_DAC_BUFFER_KEY: "1536"},
             _override("2048"),
             id="store-value-mismatch",
         ),
         pytest.param(
             "jasper.env owns the line, not the store",
-            {OUTPUTD_CONTENT_BUFFER_KEY: "1536"},
+            {OUTPUTD_DAC_BUFFER_KEY: "1536"},
             {},
             _override("1536"),
             id="operator-layer-owns-it",
@@ -699,7 +443,7 @@ def test_buffer_pair_refusal_does_not_misattribute_to_the_override_store(
         outputd_env=outputd_env,
         base_label=_BASE_LABEL,
         outputd_label=_OUTPUTD_LABEL,
-        override_entries={OUTPUTD_CONTENT_BUFFER_KEY: entry},
+        override_entries={OUTPUTD_DAC_BUFFER_KEY: entry},
     )
     assert detail is not None, why
     assert "override store" not in detail, why
@@ -719,7 +463,7 @@ def test_validate_outputd_env_cli_reads_the_override_store(tmp_path, capsys):
     base_env.write_text("", encoding="utf-8")
     outputd_env = tmp_path / "outputd.env"
     outputd_env.write_text(
-        f"{OUTPUTD_CONTENT_BUFFER_KEY}=1536\n", encoding="utf-8"
+        f"{OUTPUTD_DAC_BUFFER_KEY}=1536\n", encoding="utf-8"
     )
     fanin_env = tmp_path / "fanin.env"
     fanin_env.write_text("", encoding="utf-8")
@@ -729,10 +473,10 @@ def test_validate_outputd_env_cli_reads_the_override_store(tmp_path, capsys):
             "kind": "jts_audio_runtime_overrides",
             "schema_version": 1,
             "overrides": {
-                OUTPUTD_CONTENT_BUFFER_KEY: {
+                OUTPUTD_DAC_BUFFER_KEY: {
                     "value": "1536",
                     "created_at": "2026-07-02T00:00:00Z",
-                    "reason": "latency-tuning-outputd-content-buffer-1536-verified-floor",
+                    "reason": "latency-tuning-outputd-dac-buffer-1536-verified-floor",
                 }
             },
         }),
@@ -755,47 +499,8 @@ def test_validate_outputd_env_cli_reads_the_override_store(tmp_path, capsys):
     assert str(store) in printed
     assert "created_at=2026-07-02T00:00:00Z" in printed
     assert (
-        "reason=latency-tuning-outputd-content-buffer-1536-verified-floor" in printed
+        "reason=latency-tuning-outputd-dac-buffer-1536-verified-floor" in printed
     )
-
-
-def test_coherence_repair_sees_the_override_and_declines_by_scope():
-    """Ordering fact, pinned: the repair runs AFTER the store wins.
-
-    `_coherent_outputd_content_buffer_setting` wraps the already-resolved
-    setting, so it SEES a lab override — the store is not a structural bypass.
-    It declines because its scope is JTS's own route policy: an operator value
-    wins by design, and the candidate refusal is the correct catch. A refactor
-    that made the repair rewrite a lab override would silently discard operator
-    intent, so the decline is pinned rather than assumed.
-    """
-
-    plan = build_audio_runtime_plan(
-        profile_id="",
-        base_env={},
-        outputd_env={},
-        overrides={OUTPUTD_CONTENT_BUFFER_KEY: "1536"},
-        route_mode="solo",
-    )
-    setting = plan.setting(OUTPUTD_CONTENT_BUFFER_KEY)
-    assert setting.value == 1536
-    assert setting.source_kind == "lab_override"
-    assert plan.setting(OUTPUTD_PERIOD_KEY).value == DEFAULT_OUTPUTD_PERIOD_FRAMES
-    # The repair saw it: it attached the incoherence warning rather than
-    # rewriting the value.
-    assert any("minimum ALSA jitter margin" in w for w in setting.warnings)
-
-    # ...and the floor pass then COPIES that value into outputd.env, which is
-    # how a store value reaches the file the refusal reports.
-    actions = outputd_latency_floor_actions(
-        profile_id="",
-        base_env={},
-        outputd_env={},
-        overrides={OUTPUTD_CONTENT_BUFFER_KEY: "1536"},
-    )
-    assert ("set", OUTPUTD_CONTENT_BUFFER_KEY, "1536") in [
-        (a.action, a.key, a.value) for a in actions
-    ]
 
 
 def test_outputd_latency_floor_actions_unset_when_operator_env_owns_key():
@@ -833,8 +538,7 @@ def test_outputd_latency_floor_actions_unset_when_profile_has_no_floor():
 def test_outputd_latency_floor_actions_set_the_dac8x_soak_floor():
     # The R7a hardware-validated floor reaches outputd.env through the same
     # writer-side policy the Apple dongle uses: Camilla 256/1536 and outputd
-    # period 128 / dac_buffer 256, with the content buffer left at the packaged
-    # default (4096) — the 128/4096 content pair the jts3 soak ran.
+    # period 128 / dac_buffer 256.
     actions = outputd_latency_floor_actions(
         profile_id=HIFIBERRY_DAC8X_ID,
         base_env={},
@@ -847,11 +551,6 @@ def test_outputd_latency_floor_actions_set_the_dac8x_soak_floor():
     assert by_key["JASPER_CAMILLA_TARGET_LEVEL"].value == "1536"
     assert by_key[OUTPUTD_PERIOD_KEY].value == "128"
     assert by_key[OUTPUTD_DAC_BUFFER_KEY].value == "256"
-    # The packaged content-buffer default is emitted as an unset (the writer
-    # never pins a value equal to the shipped default), so outputd runs the
-    # soak-proven 128-period / 4096-buffer content pair.
-    assert by_key[OUTPUTD_CONTENT_BUFFER_KEY].action == "unset"
-    assert DEFAULT_OUTPUTD_CONTENT_BUFFER_FRAMES == 4096
 
 
 def test_outputd_latency_floor_actions_use_lab_override():
@@ -877,19 +576,6 @@ def test_bad_operator_value_is_ignored_and_warned():
 
     assert plan.setting("JASPER_CAMILLA_TARGET_LEVEL").value == 1536
     assert any("rough-test" in warning and "ignored" in warning for warning in plan.warnings)
-
-
-def test_fanin_env_is_the_owned_home_for_fanin_buffer_tuning():
-    plan = build_audio_runtime_plan(
-        base_env={"JASPER_FANIN_OUTPUT_BUFFER_FRAMES": "2048"},
-        fanin_env={"JASPER_FANIN_OUTPUT_BUFFER_FRAMES": "1024"},
-        route_mode="solo",
-    )
-
-    setting = plan.setting("JASPER_FANIN_OUTPUT_BUFFER_FRAMES")
-    assert setting.value == 1024
-    assert setting.source_kind == "generated_env"
-    assert any("reconciler-owned home" in warning for warning in plan.warnings)
 
 
 def test_audio_route_profile_defaults_to_corrected_safe_path():
@@ -981,10 +667,6 @@ def test_usb_low_latency_route_identity_carries_direct_capture_and_resampler():
     plan = build_audio_runtime_plan(
         base_env={AUDIO_ROUTE_PROFILE_KEY: ROUTE_USB_LOW_LATENCY_48K},
         profile_id=APPLE_USB_C_DONGLE_ID,
-        # The identity's content-buffer row is the RETIRED route's; an
-        # undeclared bridge is the ring, which drops the row entirely (that
-        # shape has its own test).
-        outputd_env={OUTPUTD_CONTENT_BRIDGE_KEY: "direct"},
         route_mode="solo",
     )
     identity = plan.route_latency_identity()
@@ -1008,10 +690,6 @@ def test_usb_low_latency_route_identity_carries_direct_capture_and_resampler():
         "buffer_period_aligned": True,
     }
     assert identity["outputd_config"]["JASPER_OUTPUTD_PERIOD_FRAMES"] == 128
-    assert (
-        identity["outputd_config"]["JASPER_OUTPUTD_CONTENT_BUFFER_FRAMES"]
-        == DEFAULT_USB_LOW_LATENCY_OUTPUTD_CONTENT_BUFFER_FRAMES
-    )
     assert identity["uac2_gadget_attrs"]["c_sync"] == "async"
 
 
@@ -1764,17 +1442,11 @@ def test_packaged_systemd_defaults_match_plan_constants():
     assert _env_int(outputd_unit, "JASPER_OUTPUTD_PERIOD_FRAMES") == (
         DEFAULT_OUTPUTD_PERIOD_FRAMES
     )
-    assert _env_int(outputd_unit, "JASPER_OUTPUTD_CONTENT_BUFFER_FRAMES") == (
-        DEFAULT_OUTPUTD_CONTENT_BUFFER_FRAMES
-    )
     assert _env_int(outputd_unit, "JASPER_OUTPUTD_DAC_BUFFER_FRAMES") == (
         DEFAULT_OUTPUTD_DAC_BUFFER_FRAMES
     )
     assert _env_int(fanin_unit, "JASPER_FANIN_INPUT_BUFFER_FRAMES") == (
         DEFAULT_FANIN_INPUT_BUFFER_FRAMES
-    )
-    assert _env_int(fanin_unit, "JASPER_FANIN_OUTPUT_BUFFER_FRAMES") == (
-        DEFAULT_FANIN_OUTPUT_BUFFER_FRAMES
     )
 
 

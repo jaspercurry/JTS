@@ -61,18 +61,17 @@ than the raw speaker-to-mic acoustic path.
 The probe can temporarily retune outputd's period/buffer shape for repeated
 profiles. This is a diagnostic retune only; production routing is unchanged.
 
-The probe holds `JASPER_OUTPUTD_CONTENT_BUFFER_FRAMES=4096` and varies the
-outputd period plus DAC buffer. Built-in profile names:
+The probe varies the outputd period plus DAC buffer. Built-in profile
+names:
 
-| Name | `JASPER_OUTPUTD_PERIOD_FRAMES` | `JASPER_OUTPUTD_CONTENT_BUFFER_FRAMES` | `JASPER_OUTPUTD_DAC_BUFFER_FRAMES` |
-|---|---:|---:|---:|
-| `default` | 1024 | 4096 | 3072 |
-| `1024/2048` | 1024 | 4096 | 2048 |
-| `512/1024` | 512 | 4096 | 1024 |
+| Name | `JASPER_OUTPUTD_PERIOD_FRAMES` | `JASPER_OUTPUTD_DAC_BUFFER_FRAMES` |
+|---|---:|---:|
+| `default` | 1024 | 3072 |
+| `1024/2048` | 1024 | 2048 |
+| `512/1024` | 512 | 1024 |
 
 Use `--profiles all` to run those three in sequence. A custom
-`PERIOD/BUFFER` value is accepted only when `BUFFER >= 2 x PERIOD` and the
-pinned 4096-frame content buffer is also at least `2 x PERIOD`.
+`PERIOD/BUFFER` value is accepted only when `BUFFER >= 2 x PERIOD`.
 
 ## Usage
 

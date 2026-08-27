@@ -364,7 +364,7 @@ def test_fanin_music_output_tap_stays_deleted():
     # assertion above passes vacuously on an empty string. One surviving,
     # load-bearing name per file — each the direct neighbour of a deleted one.
     for filename, needle in (
-        ("config.rs", "JASPER_FANIN_OUTPUT_PCM"),
+        ("config.rs", "JASPER_FANIN_INPUT_PCMS"),
         ("mixer.rs", "configure_pcm"),
         ("state.rs", "push_output_json"),
     ):

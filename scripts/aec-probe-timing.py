@@ -41,7 +41,6 @@ DEFAULT_REF_UDP_PORT = 9891
 DEFAULT_MIC_DEVICE = "hw:CARD=Array,DEV=0"
 DEFAULT_MIC_CHANNELS = 6
 DEFAULT_REMOTE_PYTHON = "/opt/jasper/.venv/bin/python"
-DEFAULT_CONTENT_BUFFER_FRAMES = 4096
 OUTPUTD_CONTROL_SOCKET = "/run/jasper-outputd/control.sock"
 CHIP_REF_TEE_PATH = "/run/jasper-outputd/aec-timing-probe-chip-ref.s16le"
 DROPIN_DIR = "/run/systemd/system/jasper-outputd.service.d"
@@ -143,11 +142,6 @@ def parse_profiles(value: str) -> list[OutputProfile]:
         if buffer < min_buffer:
             raise argparse.ArgumentTypeError(
                 f"profile {item!r} has buffer smaller than 2 x period"
-            )
-        if DEFAULT_CONTENT_BUFFER_FRAMES < min_buffer:
-            raise argparse.ArgumentTypeError(
-                f"profile {item!r} requires content buffer >= {min_buffer}, "
-                f"but this probe pins content buffer to {DEFAULT_CONTENT_BUFFER_FRAMES}"
             )
         profiles.append(OutputProfile(item, period, buffer))
     return profiles
@@ -389,7 +383,6 @@ def write_outputd_dropin(profile: OutputProfile, *, tee_path: str | None) -> Non
     Path(DROPIN_DIR).mkdir(parents=True, exist_ok=True)
     env_lines = [
         f"JASPER_OUTPUTD_PERIOD_FRAMES={profile.period_frames}",
-        f"JASPER_OUTPUTD_CONTENT_BUFFER_FRAMES={DEFAULT_CONTENT_BUFFER_FRAMES}",
         f"JASPER_OUTPUTD_DAC_BUFFER_FRAMES={profile.dac_buffer_frames}",
         f"JASPER_OUTPUTD_CHIP_REF_TEE_PATH={tee_path or ''}",
     ]

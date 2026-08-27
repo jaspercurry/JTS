@@ -988,7 +988,6 @@ def check_dongle_headphone_at_max() -> CheckResult:
 from . import audio_runtime as audio_runtime
 from .audio_runtime import (
     _FANIN_EXPECTED_ALOOP_INPUTS,
-    _FANIN_EXPECTED_OUTPUT_PCM,
     _OUTPUTD_EXPECTED_DAC_PCM,
     _OUTPUTD_EXPECTED_DUAL_DAC_PCM,
     _OUTPUTD_STATUS_SOCKET,
@@ -1013,7 +1012,6 @@ from .audio_runtime import (
 
 __all__ = [
     "_FANIN_EXPECTED_ALOOP_INPUTS",
-    "_FANIN_EXPECTED_OUTPUT_PCM",
     "_OUTPUTD_EXPECTED_DAC_PCM",
     "_OUTPUTD_EXPECTED_DUAL_DAC_PCM",
     "_OUTPUTD_STATUS_SOCKET",

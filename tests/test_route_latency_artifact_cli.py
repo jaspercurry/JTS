@@ -24,7 +24,6 @@ def _usb_plan():
         },
         fanin_env={
             "JASPER_FANIN_INPUT_BUFFER_FRAMES": "4096",
-            "JASPER_FANIN_OUTPUT_BUFFER_FRAMES": "1024",
         },
         profile_id="apple_usb_c_dongle",
         route_mode="solo",

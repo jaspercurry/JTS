@@ -67,7 +67,6 @@ def _airplay(
                 "available": True,
                 "selected_input": selected,
                 "input_buffer_frames": 4096,
-                "output_buffer_frames": 1024,
                 "inputs": {
                     spec.id.value: {
                         "label": spec.fanin_label,
@@ -2850,7 +2849,6 @@ def test_airplay_collector_exposes_fixed_declared_inputs_and_host_clock() -> Non
         "output": {
             "frames_written": 100,
             "xrun_count": 0,
-            "buffer_frames": 1024,
             "snd_pcm_delay_frames": 864,
             "snd_pcm_delay_ms": 18.0,
         },

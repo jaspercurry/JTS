@@ -2240,7 +2240,6 @@ def compose_audio_health(
             "fanin": {
                 "available": bool(fanin.get("available")),
                 "input_buffer_frames": fanin.get("input_buffer_frames"),
-                "output_buffer_frames": fanin.get("output_buffer_frames"),
                 "inputs": copy.deepcopy(fanin.get("inputs")),
                 "host_clock": copy.deepcopy(fanin.get("host_clock")),
                 "watchdog": copy.deepcopy(fanin.get("watchdog")),

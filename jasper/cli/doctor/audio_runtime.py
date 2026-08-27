@@ -154,10 +154,6 @@ def _fanin_expected_inputs(
         for label, pcm in _FANIN_EXPECTED_ALOOP_INPUTS
     ]
 
-_FANIN_EXPECTED_OUTPUT_PCM = "hw:Loopback,0,7"
-
-_OUTPUTD_CONTENT_ALOOP_PCM = "hw:Loopback,0,6"
-
 _OUTPUTD_EXPECTED_DAC_PCM = "outputd_dac"
 
 _OUTPUTD_EXPECTED_DUAL_DAC_PCM = "dual_apple_usb_c_dac_4ch"
@@ -621,14 +617,6 @@ def check_fanin_service() -> CheckResult:
             "journalctl -u jasper-fanin for event=fanin.ring.opened.",
         )
 
-    # NOT CHECKED: output.pcm. It is a CONFIG echo of JASPER_FANIN_OUTPUT_PCM
-    # (state.rs pushes self.output_pcm), a variable nothing in this tree writes
-    # and that fan-in never opens — since ADR-0100 the ring IS the program path
-    # and no ALSA playback device is opened at all (rust/jasper-fanin/src/mixer.rs).
-    # So the only value it can carry is the daemon's compiled-in default, and
-    # comparing it here FAILed a healthy migrating box for a key nothing reads.
-    # `_FANIN_EXPECTED_OUTPUT_PCM` survives as the snd-aloop pair-7 registration
-    # (see `_derive_registered_pairs`), which is a different question.
     inputs = data.get("inputs")
     if not isinstance(inputs, list):
         return CheckResult(
@@ -671,18 +659,11 @@ def check_fanin_service() -> CheckResult:
     frames = output.get("frames_written", 0)
     xruns = output.get("xrun_count", 0)
     input_buffer_frames = data.get("input_buffer_frames")
-    output_buffer_frames = output.get("buffer_frames")
     if not isinstance(input_buffer_frames, int):
         return CheckResult(
             "jasper-fanin service",
             "fail",
             "active but STATUS missing integer input_buffer_frames",
-        )
-    if not isinstance(output_buffer_frames, int):
-        return CheckResult(
-            "jasper-fanin service",
-            "fail",
-            "active but STATUS missing integer output.buffer_frames",
         )
     input_xruns = []
     for inp in data.get("inputs", []):
@@ -700,27 +681,6 @@ def check_fanin_service() -> CheckResult:
             f"4096. AirPlay WiFi burst absorption was validated at 4096; "
             f"check /var/lib/jasper/fanin.env and "
             f"JASPER_FANIN_INPUT_BUFFER_FRAMES.",
-        )
-    if output_buffer_frames < 1024:
-        return CheckResult(
-            "jasper-fanin service",
-            "fail",
-            f"active, but runtime output_buffer_frames={output_buffer_frames} is below "
-            f"1024. The 1024-frame fan-in output queue is the production "
-            f"floor validated on the low-latency Camilla path; lower values "
-            f"need fresh hardware validation before shipping. Check "
-            f"/var/lib/jasper/fanin.env and "
-            f"JASPER_FANIN_OUTPUT_BUFFER_FRAMES.",
-        )
-    if output_buffer_frames > 3072:
-        return CheckResult(
-            "jasper-fanin service",
-            "fail",
-            f"active, but runtime output_buffer_frames={output_buffer_frames} exceeds "
-            f"3072. Larger fan-in output queues add latency and need a "
-            f"fresh AirPlay offset validation before shipping. "
-            f"Check /var/lib/jasper/fanin.env and "
-            f"JASPER_FANIN_OUTPUT_BUFFER_FRAMES.",
         )
     tts = data.get("tts", {})
     if not isinstance(tts, dict) or not bool(tts.get("enabled", False)):
@@ -774,7 +734,6 @@ def check_fanin_service() -> CheckResult:
         f"active, frames_written={frames}, "
         f"transport={actual_transport}, "
         f"input_buffer_frames={input_buffer_frames}, "
-        f"output_buffer_frames={output_buffer_frames}, "
         f"output xruns={xruns}, input xruns={','.join(input_xruns) or '0'}, "
         f"progress_age_ms={progress_age}, "
         f"{tts_detail}",
@@ -1278,9 +1237,7 @@ def check_audio_runtime_plan() -> CheckResult:
         f"{plan.setting('JASPER_CAMILLA_TARGET_LEVEL').value}, "
         f"outputd={plan.setting('JASPER_OUTPUTD_PERIOD_FRAMES').value}/"
         f"{plan.setting('JASPER_OUTPUTD_DAC_BUFFER_FRAMES').value}, "
-        f"content_buffer={plan.setting('JASPER_OUTPUTD_CONTENT_BUFFER_FRAMES').value}, "
-        f"fanin={plan.setting('JASPER_FANIN_INPUT_BUFFER_FRAMES').value}/"
-        f"{plan.setting('JASPER_FANIN_OUTPUT_BUFFER_FRAMES').value}"
+        f"fanin={plan.setting('JASPER_FANIN_INPUT_BUFFER_FRAMES').value}"
     )
     if plan.errors:
         return CheckResult(
@@ -4024,24 +3981,22 @@ def check_ring_transport_park() -> CheckResult:
 # operator who reads it learns where the remnant is scheduled to die.
 #
 # #2508 retired the GROUPING half — the bonded ingress that used to ride pair 6
-# raw. What survives is outputd's PASSIVE CONTENT lane (AXIS-1), plus fan-in's
-# own input/output lanes; retiring those is AXIS-1's work and has no issue
-# filed yet. So the check's text points at the lane, not at a number that this
-# campaign closes.
+# raw. ADR-0100 then retired the rest: outputd's passive content lane (pair 6)
+# and fan-in's summed music output (pair 7) both moved to SHM rings, and
+# deploy/alsa/asoundrc.jasper declares neither. What survives is fan-in's five
+# CAPTURE lanes and nothing else.
 #
 # WHAT IT ASSERTS. Every OPEN aloop substream has a REGISTERED purpose, where
-# the registered set is DERIVED — never restated — from the three places that
-# already own the pair allocation:
+# the registered set is DERIVED — never restated — from the one place that
+# still owns a pair allocation:
 #
 #   pairs 0-4  `_FANIN_EXPECTED_ALOOP_INPUTS`   (above, this module)
-#   pair  7    `_FANIN_EXPECTED_OUTPUT_PCM`     (same)
-#   pair  6    `_OUTPUTD_CONTENT_ALOOP_PCM`     (same)
 #
 # Deriving rather than tabulating is what makes retirement MECHANICAL: a pair
 # stops being registered the moment its owning constant stops naming it, with
 # no edit here and no phase label to remember. A hand-maintained table would
-# be a fifth restatement of the allocation (after the modprobe conf prose,
-# asoundrc.jasper, and the two constants above) and would silently keep
+# be a fourth restatement of the allocation (after the modprobe conf prose,
+# asoundrc.jasper, and the constant above) and would silently keep
 # permitting a lane after its owner dropped it — risk 5.1's "permanent by
 # silence" transplanted onto the very instrument built to measure it.
 #
@@ -4050,33 +4005,34 @@ def check_ring_transport_park() -> CheckResult:
 # aloop pair (nothing else may take it), so the registered set must not flap
 # with arming state.
 #
-# Pair 5 is absent because no owner names it any more: P9-C deleted its PCM
-# definitions. So an open pair 5 is a box that resurrected a deleted lane (a
-# rolled-back binary, a stale asoundrc, a hand-started process) and is exactly
-# the regression P9-C can produce. That is the FAIL.
+# Pairs 5, 6 and 7 are absent because no owner names any of them: P9-C deleted
+# pair 5's PCM definitions and ADR-0100 deleted pairs 6 and 7's. So an open
+# pair in that range is a box that resurrected a deleted lane (a rolled-back
+# binary, a stale asoundrc, a hand-started process) and is exactly the
+# regression those two changes can produce. That is the FAIL. Reserved rather
+# than reclaimed, per deploy/modprobe.d/snd-aloop.conf: pcm_substreams stays 8
+# so no surviving pair renumbers.
 #
 # NOT ASSERTABLE, AND NOW PERMANENTLY SO — the first half of design :497. That
 # bullet opened "snd-aloop present ⟹ grouping-capable box" (restated at :441 as
 # "the module loads only on a grouping-capable box"). It was carried forward on
 # the premise that the remnant would become grouping-only. It did the opposite:
 # grouping LEFT pair 6 for the SHM ring, and every pair the set still registers
-# belongs to fan-in or outputd on every box. `check_loopback`
+# belongs to fan-in's capture side on every box. `check_loopback`
 # (jasper/cli/doctor/audio.py) asserts the module must be present fleet-wide,
 # which is now simply the end state rather than a temporary disagreement. The
 # clause is recorded as retired, not carried.
 #
-# WHY NOT THE LITERAL "anything but pair 6 is a FAIL". Pair 6 is not the last
-# survivor and never became one — fan-in's input lanes and summed output are
-# registered on every box — so the literal would red-doctor healthy hardware.
-# Live
-# evidence, 2026-08-14: jts4 holds `/proc/asound/Loopback/pcm1c/sub3` in
+# WHY NOT A LITERAL SET. The registered pairs stay DERIVED even now that only
+# one owner is left, because a literal would keep permitting a lane after its
+# owner dropped it. Live evidence for why the surviving five must not be
+# blanket-failed, 2026-08-14: jts4 holds `/proc/asound/Loopback/pcm1c/sub3` in
 # `state: RUNNING`, owner cgroup `jasper-fanin.service` — the usbsink lane's
 # idle-read fallback that deploy/modprobe.d/snd-aloop.conf documents ("fan-in
 # still OPENS hw:Loopback,1,3 as the usbsink lane's idle read fallback when USB
 # Audio Input is off"). jts3 and jts.local held nothing. A guard that fails on
 # a documented, healthy holder is a false positive, and a doctor that cries
-# wolf is worse than no doctor. So the registered set tracks its owners, and
-# the guard tightens toward the design's end state as those owners drop pairs.
+# wolf is worse than no doctor.
 #
 # BOUNDED. At most 4 PCM directories x `_ALOOP_SUBSTREAMS` status reads (32
 # small procfs files), plus one `comm`/`cgroup` read per offender, capped at
@@ -4091,9 +4047,8 @@ def check_ring_transport_park() -> CheckResult:
 # `aplay` as its probe. Today the false positive is UNREACHABLE: every PCM that
 # probe opens maps to a pair this check still registers (0/1/2 renderer lanes,
 # 4 correction), so an observed temporary open reads as `ok` either way. The
-# serialization is kept because it becomes load-bearing the moment a pair
-# retires — an unregistered pair briefly held open by a co-tenant probe would
-# then read as an offender — and its cost is near zero.
+# serialization is kept because an unregistered pair briefly held open by a
+# co-tenant probe would read as an offender, and its cost is near zero.
 # ---------------------------------------------------------------------------
 
 #: procfs ALSA root. Overridable for tests, matching the established
@@ -4145,14 +4100,15 @@ def _pair_from_loopback_pcm(pcm: str) -> int | None:
     return int(m.group(2))
 
 
-def _derive_registered_pairs() -> tuple[dict[int, str], int] | None:
-    """``({pair: provenance}, content_pair)`` derived from the owning facts.
+def _derive_registered_pairs() -> dict[int, str] | None:
+    """``{pair: provenance}`` derived from the owning facts.
 
     The registered set is never written down here — it is read out of the
-    constants that already own the allocation (see the header comment). A pair
-    leaves the set exactly when its owner stops naming it.
+    constant that already owns the allocation (see the header comment). A pair
+    leaves the set exactly when its owner stops naming it, which is how pairs 6
+    and 7 left when ADR-0100 moved both onto SHM rings.
 
-    Returns None if ANY source constant is unparseable. That is deliberately
+    Returns None if ANY source entry is unparseable. That is deliberately
     all-or-nothing: a partial derivation would silently shrink the registered
     set, and a shrunk set turns legitimate holders into doctor FAILs. Better to
     say "I could not derive this" than to red-doctor a healthy speaker.
@@ -4165,22 +4121,7 @@ def _derive_registered_pairs() -> tuple[dict[int, str], int] | None:
             return None
         registered[pair] = f"fan-in input lane {label!r}"
 
-    output_pair = _pair_from_loopback_pcm(_FANIN_EXPECTED_OUTPUT_PCM)
-    if output_pair is None:
-        return None
-    registered[output_pair] = "fan-in summed music output"
-
-    content_pair = _pair_from_loopback_pcm(_OUTPUTD_CONTENT_ALOOP_PCM)
-    if content_pair is None:
-        return None
-    # Last on purpose: this row wins the provenance string if pair 6 is ever
-    # shared with another owner. It has none today — the bonded grouping
-    # ingress that used to share it raw now rides
-    # jasper.multiroom.grouping_ring's SHM ring, so this lane is pair 6's sole
-    # opener.
-    registered[content_pair] = "outputd passive content lane"
-
-    return registered, content_pair
+    return registered
 
 
 def _aloop_substream_owner(status_text: str) -> str:
@@ -4232,13 +4173,11 @@ def check_aloop_registered_substreams() -> CheckResult:
     - every open pair registered  -> ok, reporting the remnant's current size
     - an UNREGISTERED pair open   -> fail, naming the offender
 
-    The registered set is DERIVED from the constants that own the pair
+    The registered set is DERIVED from the constant that owns the pair
     allocation, so it shrinks on its own as pairs retire. The unregistered
-    case is pair 5 today: P9-C deleted its PCM definitions, so anything
-    holding it has resurrected a deleted lane.
-
-    EOL for the remnant itself: AXIS-1, whose passive content lane is pair 6's
-    sole remaining owner. #2508 retired the grouping half.
+    cases are pairs 5, 6 and 7: P9-C deleted pair 5's PCM definitions and
+    ADR-0100 deleted pairs 6 and 7's, so anything holding one of them has
+    resurrected a deleted lane.
     """
     label = "aloop remnant"
 
@@ -4257,19 +4196,11 @@ def check_aloop_registered_substreams() -> CheckResult:
             label,
             "warn",
             "could not derive the registered substream set from its owning "
-            "constants (_FANIN_EXPECTED_ALOOP_INPUTS / "
-            "_FANIN_EXPECTED_OUTPUT_PCM / _OUTPUTD_CONTENT_ALOOP_PCM in "
-            "this module) — each must be an "
-            "'hw:Loopback,<device>,<sub>' triple. The remnant's scope cannot "
-            "be verified.",
+            "constant (_FANIN_EXPECTED_ALOOP_INPUTS in this module) — each "
+            "entry must be an 'hw:Loopback,<device>,<sub>' triple. The "
+            "remnant's scope cannot be verified.",
         )
-    registered_pairs, content_pair = derived
-    # There is deliberately NO "content pair missing from the registry"
-    # branch: the pair is derived from _OUTPUTD_CONTENT_ALOOP_PCM and inserted
-    # by the same function, so it is in the set by construction. The earlier
-    # hand-maintained table could drift from its source constant; a derived
-    # set cannot, so the branch that caught that drift is now unreachable code.
-    # `test_content_pair_is_always_registered` pins the invariant instead.
+    registered_pairs = derived
 
     offenders: list[str] = []
     registered_open: set[int] = set()
@@ -4321,28 +4252,29 @@ def check_aloop_registered_substreams() -> CheckResult:
             label,
             "fail",
             "snd-aloop substream(s) open with no registered purpose in this "
-            f"phase: {'; '.join(shown)}{suffix}. Pair {content_pair} is "
-            "outputd's passive content lane (AXIS-1); "
-            "pair 5's PCM definitions were DELETED by #2285 P9-C, so a holder "
-            "there means a rolled-back binary or a stale /etc/asound.conf "
-            "resurrected a deleted lane. Identify the process above, stop it, "
-            "and re-run `bash scripts/deploy-to-pi.sh` to restore the shipped "
-            "ALSA config.",
+            f"phase: {'; '.join(shown)}{suffix}. Only fan-in's five capture "
+            "lanes (pairs 0-4) are registered: pair 5's PCM definitions were "
+            "DELETED by #2285 P9-C, and pairs 6 and 7's by ADR-0100 when the "
+            "content lane and the summed music output both moved to SHM rings. "
+            "A holder there means a rolled-back binary or a stale "
+            "/etc/asound.conf resurrected a deleted lane. Identify the process "
+            "above, stop it, and re-run `bash scripts/deploy-to-pi.sh` to "
+            "restore the shipped ALSA config.",
         )
 
-    other_pairs = sorted(registered_open - {content_pair})
+    open_pairs = sorted(registered_open)
     detail = (
         f"scoped: {len(registered_pairs)} of {_ALOOP_SUBSTREAMS} pairs "
-        f"still registered, aloop remnant on pair {content_pair} "
-        "(outputd's passive content lane, AXIS-1)"
+        f"still registered (fan-in's capture lanes); no aloop remnant on the "
+        "program path"
     )
-    if other_pairs:
+    if open_pairs:
         detail += (
-            "; other open pairs held by registered owners: "
-            f"{other_pairs}"
+            "; open pairs held by registered owners: "
+            f"{open_pairs}"
         )
     else:
-        detail += "; no other pair currently open"
+        detail += "; no pair currently open"
     if unreadable:
         detail += f"; {unreadable} substream status file(s) unreadable"
     return CheckResult(label, "ok", detail)

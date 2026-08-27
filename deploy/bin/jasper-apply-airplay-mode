@@ -43,9 +43,6 @@
 #                                 Default: /var/lib/camilladsp/outputd-statefile.yml.
 #   JASPER_CAMILLA_DEFAULT_CONFIG — fallback CamillaDSP config path.
 #                                   Default: /etc/camilladsp/outputd-cutover.yml.
-#   JASPER_FANIN_ENV_FILE       — optional fan-in env file used to
-#                                 source JASPER_FANIN_OUTPUT_BUFFER_FRAMES.
-#                                 Default: /var/lib/jasper/fanin.env.
 #   JASPER_OUTPUTD_ENV_FILE     — optional outputd retune file used to
 #                                 read JASPER_OUTPUTD_DAC_BUFFER_FRAMES
 #                                 and content-bridge latency knobs. The
@@ -82,7 +79,6 @@ JASPER_ENV_FILE="${JASPER_ENV_FILE:-/etc/jasper/jasper.env}"
 SPEAKER_NAME_FILE="${JASPER_SPEAKER_NAME_FILE:-/var/lib/jasper/speaker_name.env}"
 CAMILLA_STATEFILE="${JASPER_CAMILLA_STATEFILE:-/var/lib/camilladsp/outputd-statefile.yml}"
 CAMILLA_DEFAULT_CONFIG="${JASPER_CAMILLA_DEFAULT_CONFIG:-/etc/camilladsp/outputd-cutover.yml}"
-FANIN_ENV_FILE="${JASPER_FANIN_ENV_FILE:-/var/lib/jasper/fanin.env}"
 OUTPUTD_ENV_FILE="${JASPER_OUTPUTD_ENV_FILE:-/var/lib/jasper/outputd.env}"
 # Reconciler-owned env file (jasper-grouping-reconcile) carrying the
 # bonded-leader AirPlay offset delta. ABSENT/empty on solo + followers,
@@ -94,6 +90,14 @@ RENDERER_LANES_FILE="${JASPER_RENDERER_LANES_ENV:-/var/lib/jasper/renderer_lanes
 FANIN_STATUS_SOCKET="${JASPER_FANIN_STATUS_SOCKET:-/run/jasper-fanin/control.sock}"
 OUTPUTD_STATUS_SOCKET="${JASPER_OUTPUTD_STATUS_SOCKET:-/run/jasper-outputd/control.sock}"
 DEFAULT_OUTPUTD_DAC_BUFFER_FRAMES=3072
+# Stand-in for the fan-in → CamillaDSP queue depth, in frames at the configured
+# sample rate. Fan-in reaches CamillaDSP over the SHM ring (ADR-0100), which has
+# no ALSA delay to sample, so fan-in STATUS reports none and this fixed value is
+# what the derived offset actually uses. 1024 is the number the retired
+# JASPER_FANIN_OUTPUT_BUFFER_FRAMES shipped, kept so the offset is unchanged;
+# re-deriving it against the ring's real depth needs a fresh AirPlay sync
+# measurement.
+DEFAULT_FANIN_OUTPUT_LATENCY_FRAMES=1024
 
 if [[ ! -f "$TEMPLATE" ]]; then
     echo "jasper-apply-airplay-mode: template missing at $TEMPLATE" >&2
@@ -147,32 +151,6 @@ camilla_devices_int() {
             }
         }
     ' "$config"
-}
-
-fanin_output_buffer_frames() {
-    local value="${JASPER_FANIN_OUTPUT_BUFFER_FRAMES:-}"
-    if [[ -z "$value" && -r "$FANIN_ENV_FILE" ]]; then
-        value="$(
-            awk -F= '
-                /^[[:space:]]*JASPER_FANIN_OUTPUT_BUFFER_FRAMES[[:space:]]*=/ {
-                    sub(/^[^=]*=[[:space:]]*/, "")
-                    sub(/[[:space:]]*(#.*)?$/, "")
-                    print
-                    exit
-                }
-            ' "$FANIN_ENV_FILE"
-        )"
-    fi
-    value="${value//[[:space:]]/}"
-    value="${value%\"}"
-    value="${value#\"}"
-    value="${value%\'}"
-    value="${value#\'}"
-    if [[ "$value" =~ ^[0-9]+$ ]]; then
-        printf '%s\n' "$value"
-    else
-        printf '1024\n'
-    fi
 }
 
 env_file_value() {
@@ -276,8 +254,8 @@ fanin_output_latency_frames() {
         echo "jasper-apply-airplay-mode: using fanin STATUS output.snd_pcm_delay_frames=$value" >&2
         printf '%s\n' "$value"
     else
-        echo "jasper-apply-airplay-mode: fanin STATUS delay unavailable; using configured output buffer fallback" >&2
-        fanin_output_buffer_frames
+        echo "jasper-apply-airplay-mode: fanin STATUS delay unavailable; using the fixed ring-queue stand-in" >&2
+        printf '%s\n' "$DEFAULT_FANIN_OUTPUT_LATENCY_FRAMES"
     fi
 }
 
@@ -354,9 +332,9 @@ derive_audio_backend_latency_offset() {
     # Fan-in output queue (between jasper-fanin and CamillaDSP/AEC).
     # This is downstream of shairport's private input lane, so it is
     # also invisible to shairport's snd_pcm_delay(). Prefer the live
-    # ALSA delay surfaced by jasper-fanin STATUS; fall back to the
-    # configured buffer size while the daemon is unavailable or on an
-    # older build without that field.
+    # ALSA delay surfaced by jasper-fanin STATUS; a ring box reports none
+    # (ADR-0100 left no playback PCM to sample), so in practice the fixed
+    # stand-in below is what the offset uses.
     fanin_output_latency="$(fanin_output_latency_frames)"
 
     # outputd's DAC queue is downstream of shairport's private lane

@@ -19,7 +19,7 @@ import hashlib
 import json
 import os
 import re
-from dataclasses import dataclass, replace
+from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Literal, Mapping, Sequence, TypedDict, cast
 
@@ -121,19 +121,17 @@ DEFAULT_CAMILLA_STATEFILE_PATH = "/var/lib/camilladsp/outputd-statefile.yml"
 DEFAULT_CAMILLA2_STATEFILE_PATH = "/var/lib/camilladsp/crossover-statefile.yml"
 
 OUTPUTD_PERIOD_KEY = "JASPER_OUTPUTD_PERIOD_FRAMES"
-OUTPUTD_CONTENT_BUFFER_KEY = "JASPER_OUTPUTD_CONTENT_BUFFER_FRAMES"
 OUTPUTD_DAC_BUFFER_KEY = "JASPER_OUTPUTD_DAC_BUFFER_FRAMES"
 OUTPUTD_MIN_BUFFER_PERIOD_MULTIPLIER = 2
 DEFAULT_OUTPUTD_PERIOD_FRAMES = 1024
-DEFAULT_OUTPUTD_CONTENT_BUFFER_FRAMES = 4096
 DEFAULT_OUTPUTD_DAC_BUFFER_FRAMES = 3072
-# How the three defaults above are NAMED to an operator: they come from
+# How the two defaults above are NAMED to an operator: they come from
 # jasper-outputd.service's Environment= lines and outputd's own compile-time
 # defaults, so there is no file to edit for them. One spelling, because it is
 # read back by both the plan's provenance vocabulary and the refusal path's.
 PACKAGED_OUTPUTD_DEFAULT_SOURCE = "packaged systemd/outputd default"
 OUTPUTD_CONTENT_BRIDGE_KEY = "JASPER_OUTPUTD_CONTENT_BRIDGE"
-# The width outputd REQUESTS on its snd-aloop content lane. Reconciler-owned
+# The width outputd REQUESTS on its content upstream. Reconciler-owned
 # (jasper-audio-hardware-reconcile is the single writer, from
 # jasper.fanin_coupling.content_lane_format_for_coupling). Absent or empty is
 # outputd's own documented default — the pre-flip S16 lane every box ran before
@@ -146,9 +144,7 @@ OUTPUTD_DEFAULT_CONTENT_FORMAT = "S16_LE"
 OUTPUTD_RING_PATH_KEY = "JASPER_OUTPUTD_SHM_RING_PATH"
 MAX_LOW_LATENCY_CORRECTION_GROUP_DELAY_FRAMES = 512
 FANIN_INPUT_BUFFER_KEY = "JASPER_FANIN_INPUT_BUFFER_FRAMES"
-FANIN_OUTPUT_BUFFER_KEY = "JASPER_FANIN_OUTPUT_BUFFER_FRAMES"
 DEFAULT_FANIN_INPUT_BUFFER_FRAMES = 4096
-DEFAULT_FANIN_OUTPUT_BUFFER_FRAMES = 1024
 FANIN_INPUT_RESAMPLER_KEY = "JASPER_FANIN_INPUT_RESAMPLER"
 FANIN_INPUT_RESAMPLER_LANE_KEY = "JASPER_FANIN_INPUT_RESAMPLER_LANE"
 FANIN_INPUT_RESAMPLER_TARGET_KEY = "JASPER_FANIN_INPUT_RESAMPLER_TARGET_FRAMES"
@@ -168,7 +164,6 @@ DEFAULT_USB_LOW_LATENCY_RESAMPLER_TARGET_FRAMES = 512
 DEFAULT_USB_LOW_LATENCY_RESAMPLER_MAX_ADJUST_PPM = 500
 DEFAULT_USB_LOW_LATENCY_RESAMPLER_CUSHION_FRAMES = 1536
 DEFAULT_USB_LOW_LATENCY_RESAMPLER_RING_FRAMES = 4096
-DEFAULT_USB_LOW_LATENCY_OUTPUTD_CONTENT_BUFFER_FRAMES = 1536
 AUDIO_ROUTE_PROFILE_KEY = "JASPER_AUDIO_ROUTE_PROFILE"
 ROUTE_CORRECTED_48K = "corrected_48k"
 ROUTE_USB_LOW_LATENCY_48K = "usb_low_latency_48k"
@@ -208,15 +203,11 @@ OUTPUTD_LATENCY_KEYS = (
     "JASPER_CAMILLA_CHUNKSIZE",
     "JASPER_CAMILLA_TARGET_LEVEL",
     OUTPUTD_PERIOD_KEY,
-    OUTPUTD_CONTENT_BUFFER_KEY,
     OUTPUTD_DAC_BUFFER_KEY,
 )
 AUDIO_RUNTIME_OVERRIDE_KEYS = frozenset(
     OUTPUTD_LATENCY_KEYS
-    + (
-        FANIN_INPUT_BUFFER_KEY,
-        FANIN_OUTPUT_BUFFER_KEY,
-    )
+    + (FANIN_INPUT_BUFFER_KEY,)
 )
 BASE_ENV_PROCESS_FALLBACK_KEYS = frozenset(
     AUDIO_RUNTIME_OVERRIDE_KEYS
@@ -601,21 +592,6 @@ def outputd_buffer_pair_error(
     )
 
 
-def outputd_content_buffer_pair_error(
-    *,
-    period_frames: int,
-    content_buffer_frames: int,
-) -> str | None:
-    """Return the content-buffer invariant error that maps to outputd exit 78."""
-
-    return outputd_buffer_pair_error(
-        buffer_name=OUTPUTD_CONTENT_BUFFER_KEY,
-        buffer_frames=content_buffer_frames,
-        period_name=OUTPUTD_PERIOD_KEY,
-        period_frames=period_frames,
-    )
-
-
 def outputd_dac_buffer_pair_error(
     *,
     period_frames: int,
@@ -774,30 +750,6 @@ def outputd_env_buffer_pair_error(
     )
     if period_error is not None:
         return period_error
-    content_buffer_frames, content_error, content_layer = _effective_outputd_positive_int(
-        OUTPUTD_CONTENT_BUFFER_KEY,
-        default=DEFAULT_OUTPUTD_CONTENT_BUFFER_FRAMES,
-        layers=values,
-    )
-    if content_error is not None:
-        return content_error
-    detail = outputd_content_buffer_pair_error(
-        period_frames=period_frames,
-        content_buffer_frames=content_buffer_frames,
-    )
-    if detail is not None:
-        if labels is None:
-            return detail
-        return f"{detail}; " + _pair_provenance(
-            buffer_key=OUTPUTD_CONTENT_BUFFER_KEY,
-            buffer_frames=content_buffer_frames,
-            buffer_layer=content_layer,
-            period_frames=period_frames,
-            period_layer=period_layer,
-            labels=labels,
-            override_entries=entries,
-            override_label=override_label,
-        )
     dac_buffer_frames, dac_error, dac_layer = _effective_outputd_positive_int(
         OUTPUTD_DAC_BUFFER_KEY,
         default=DEFAULT_OUTPUTD_DAC_BUFFER_FRAMES,
@@ -1419,23 +1371,10 @@ def build_audio_runtime_plan(
         generated_label=outputd_env_label,
         profile_id=profile_id,
     )
-    outputd_content_buffer_setting = _coherent_outputd_content_buffer_setting(
-        period_setting=outputd_period_setting,
-        content_buffer_setting=_resolve_outputd_content_buffer_int(
-            route=route_profile,
-            base_env=base_values,
-            override_env=override_values,
-            generated_env=outputd_values,
-            base_label=base_env_label,
-            override_label=override_label,
-            generated_label=outputd_env_label,
-        ),
-    )
     settings = [
         camilla_chunksize_setting,
         camilla_target_setting,
         outputd_period_setting,
-        outputd_content_buffer_setting,
         _resolve_profile_floor_int(
             key=OUTPUTD_DAC_BUFFER_KEY,
             default=DEFAULT_OUTPUTD_DAC_BUFFER_FRAMES,
@@ -1451,16 +1390,6 @@ def build_audio_runtime_plan(
         _resolve_fanin_int(
             key=FANIN_INPUT_BUFFER_KEY,
             default=DEFAULT_FANIN_INPUT_BUFFER_FRAMES,
-            base_env=base_values,
-            override_env=override_values,
-            fanin_env=fanin_values,
-            base_label=base_env_label,
-            override_label=override_label,
-            fanin_label=fanin_env_label,
-        ),
-        _resolve_fanin_int(
-            key=FANIN_OUTPUT_BUFFER_KEY,
-            default=DEFAULT_FANIN_OUTPUT_BUFFER_FRAMES,
             base_env=base_values,
             override_env=override_values,
             fanin_env=fanin_values,
@@ -2279,12 +2208,7 @@ def outputd_latency_floor_actions(
         elif key in base_values:
             actions.append(RuntimeEnvAction("unset", key))
         elif setting.source_kind in {"device_profile", "route_policy"}:
-            if key == OUTPUTD_CONTENT_BUFFER_KEY and int(setting.value) == (
-                DEFAULT_OUTPUTD_CONTENT_BUFFER_FRAMES
-            ):
-                actions.append(RuntimeEnvAction("unset", key))
-            else:
-                actions.append(RuntimeEnvAction("set", key, str(setting.value)))
+            actions.append(RuntimeEnvAction("set", key, str(setting.value)))
         else:
             actions.append(RuntimeEnvAction("unset", key))
     return tuple(actions)
@@ -2545,110 +2469,6 @@ def _resolve_profile_floor_int(
         base_label=base_label,
         override_label=override_label,
         generated_label=generated_label,
-    )
-
-
-def _resolve_outputd_content_buffer_int(
-    *,
-    route: AudioRouteProfile,
-    base_env: Mapping[str, str],
-    override_env: Mapping[str, str],
-    generated_env: Mapping[str, str],
-    base_label: str,
-    override_label: str,
-    generated_label: str,
-) -> RuntimeSetting:
-    key = OUTPUTD_CONTENT_BUFFER_KEY
-    # The low-latency route policy for the outputd content buffer is architecturally
-    # INERT under the shm_ring content bridge (Ring B): outputd never opens the
-    # content ALSA PCM, so `configure_pcm` — the only consumer of
-    # JASPER_OUTPUTD_CONTENT_BUFFER_FRAMES — is skipped (alsa_backend.rs). Emitting
-    # 1536 there is one-knob-two-truths drift: the env says 1536 while the honest
-    # /state ring capacity is n_slots x period. Drop the route policy under shm_ring
-    # so the reconciler unsets the key (falling back to outputd's compile-time
-    # default, equally inert but non-misleading). Keyed on the OUTPUTD BRIDGE read
-    # from generated_env (outputd.env) — the value the daemon actually consumes to
-    # decide whether to open the content PCM — NOT the coupling: the writer-side
-    # `outputd_latency_floor_actions` path does not thread fanin.env, so the coupling
-    # is invisible there, but the outputd bridge is always in outputd.env. Same
-    # owner as the two above, so all three answer absence identically.
-    route_value = (
-        DEFAULT_USB_LOW_LATENCY_OUTPUTD_CONTENT_BUFFER_FRAMES
-        if route.route_id == ROUTE_USB_LOW_LATENCY_48K
-        and not outputd_bridge_is_ring(_raw(generated_env, OUTPUTD_CONTENT_BRIDGE_KEY))
-        else None
-    )
-    return _resolve_layered_policy_int(
-        key=key,
-        policy=_PositiveIntPolicy(
-            value=route_value,
-            source_kind="route_policy",
-            source=f"AudioRouteProfile:{route.route_id}",
-            name="route policy",
-            owner_id=route.route_id,
-            absent_detail="route has no content-buffer policy",
-            override_scope="route",
-            packaged_default=DEFAULT_OUTPUTD_CONTENT_BUFFER_FRAMES,
-            packaged_source=PACKAGED_OUTPUTD_DEFAULT_SOURCE,
-        ),
-        base_env=base_env,
-        override_env=override_env,
-        generated_env=generated_env,
-        base_label=base_label,
-        override_label=override_label,
-        generated_label=generated_label,
-    )
-
-
-def _coherent_outputd_content_buffer_setting(
-    *,
-    period_setting: RuntimeSetting,
-    content_buffer_setting: RuntimeSetting,
-) -> RuntimeSetting:
-    period_frames = int(period_setting.value)
-    content_buffer_frames = int(content_buffer_setting.value)
-    detail = outputd_content_buffer_pair_error(
-        period_frames=period_frames,
-        content_buffer_frames=content_buffer_frames,
-    )
-    if detail is None:
-        return content_buffer_setting
-    if content_buffer_setting.source_kind != "route_policy":
-        return replace(
-            content_buffer_setting,
-            warnings=content_buffer_setting.warnings
-            + (
-                f"{detail}; {content_buffer_setting.key} comes from "
-                f"{content_buffer_setting.source}, so the reconciler will refuse "
-                "to write this candidate until the pair is coherent",
-            ),
-        )
-
-    repaired_value = max(
-        DEFAULT_OUTPUTD_CONTENT_BUFFER_FRAMES,
-        minimum_outputd_buffer_frames(period_frames),
-    )
-    source_kind: SourceKind = (
-        "packaged_default"
-        if repaired_value == DEFAULT_OUTPUTD_CONTENT_BUFFER_FRAMES
-        else "route_policy"
-    )
-    source = (
-        PACKAGED_OUTPUTD_DEFAULT_SOURCE
-        if source_kind == "packaged_default"
-        else content_buffer_setting.source
-    )
-    return replace(
-        content_buffer_setting,
-        value=repaired_value,
-        source_kind=source_kind,
-        source=source,
-        warnings=content_buffer_setting.warnings
-        + (
-            f"{detail}; suppressing the low-latency route buffer until "
-            f"{OUTPUTD_PERIOD_KEY} is coherent, using "
-            f"{content_buffer_setting.key}={repaired_value}",
-        ),
     )
 
 
