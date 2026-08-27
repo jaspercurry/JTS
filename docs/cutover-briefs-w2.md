@@ -432,6 +432,8 @@ The phrase invites the wrong reading. Naming all four, with what dies at each:
   as *"nothing is wired to run yet"*. After W2 an empty `results` means **every
   gate said no**. The sentence must be rewritten in the same PR that lands the
   walker, or the contract line will say the opposite of the code.
+- **Superseded 2026-08-27 by the W2-b+c walker (PR #3176):** empty `results`
+  now means every gate said no, and `results`/`skipped` are keyed per record.
 
 **Site B — `bind_production_analyze._analyze`
 (`web/correction_crossover_v2.py:3074-3179`). Does not flip in W2.** It is the
