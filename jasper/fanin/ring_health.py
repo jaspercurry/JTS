@@ -1290,8 +1290,7 @@ def composite_ring_wire_ready(topology: Any) -> tuple[bool, str]:
     next arm — this time from ``ring_edge_width_ready``, naming the graph.
     Measured on jts.local 2026-08-15: the staged anchor declared ``S16_LE`` on
     both lanes before ``baseline-reemit --endpoint ring`` and ``S32_LE`` on both
-    after it. So the remedy is the whole ladder, graph first, exactly as
-    ``docs/HANDOFF-audio-graph-consolidation.md`` spells it — and in the
+    after it. So the remedy is the whole ladder, graph first — and in the
     ``sudo /opt/jasper/.venv/bin/…`` spelling the doctor's own rollback ladder
     uses (``jasper/cli/doctor/audio_runtime.py``), because these two strings are
     operator-copied text for the same three rungs and only that spelling pastes

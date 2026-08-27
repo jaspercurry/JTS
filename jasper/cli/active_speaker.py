@@ -882,11 +882,6 @@ def _cmd_baseline_reemit(args: argparse.Namespace) -> int:
     nothing else — no live artifact, no canonical copy, no statefile. The
     re-proof still gates it, so a preview file is never a graph the contract
     rejected.
-
-    The full ladder, its ordering rationale, and why every intermediate state is
-    silence rather than wrong audio live in
-    ``docs/HANDOFF-audio-graph-consolidation.md`` ("The ACTIVE-ring arm/rollback
-    lifecycle") — one home, pointed at from here rather than restated.
     """
     from jasper.active_speaker.baseline_profile import (
         load_applied_baseline_profile_state,

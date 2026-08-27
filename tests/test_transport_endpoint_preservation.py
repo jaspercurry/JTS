@@ -1238,9 +1238,8 @@ async def test_driver_commissioning_still_emits_on_an_unarmed_box(
     was marked when the emit was genuinely unreachable: before #2412's waves an
     unarmed roleful box's commissioning emit named
     ``outputd_active_content_playback``, a PCM whose definition #2534 had
-    deleted (positive control: ``pcm.outputd_content_playback`` IS still found
-    in ``deploy/alsa/asoundrc.jasper``), so the device the "control" proved
-    reachable was never openable. #2412 Waves 1-3 made ring commissioning work
+    deleted, so the device the "control" proved reachable was never openable.
+    #2412 Waves 1-3 made ring commissioning work
     and P2 makes the chooser name the ring, so the emit is now both reachable
     and coherent. The marker is REMOVED rather than left non-strict — sealed
     §3.4 rule 3 admits zero xfails, and a passing test wearing an xfail hides

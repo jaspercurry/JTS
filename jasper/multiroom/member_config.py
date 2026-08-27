@@ -23,8 +23,7 @@ outputd's ``dac_content`` lane, picking its channel THERE (outputd
     is OUT of the bonded playback path (the round-trip feeds outputd's
     dac_content lane directly); it keeps producing the normal direct lane —
     which is exactly the inv-B fallback feed — so its config stays
-    byte-for-byte the solo config, rate_adjust=True and all (its sink is the
-    ALSA loopback, which HAS a clock to track).
+    byte-for-byte the solo config, rate_adjust=True and all.
   - ACTIVE FOLLOWER (multi-driver, distributed-active Slice 3): NOT this path.
     An active follower relocates Layer A onto its OWN CamillaDSP IN the bonded
     path — it captures the grouping ring

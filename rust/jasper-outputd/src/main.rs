@@ -377,10 +377,9 @@ fn run_alsa(
     let mut content_buf = vec![0 as ProgramSample; content_period_samples];
     let mut reference_buf =
         vec![0 as ProgramSample; (config.period_frames as usize) * (CHANNELS as usize)];
-    // Ring B: the SHM ping-pong ring content source. Shipped default on
-    // eligible stereo topologies (P4 LANDED —
-    // docs/HANDOFF-audio-graph-consolidation.md); off elsewhere by resolved
-    // policy. Constructed ONLY under JASPER_OUTPUTD_CONTENT_BRIDGE=shm_ring;
+    // Ring B: the SHM ping-pong ring content source — the one central
+    // transport from CamillaDSP to the DAC (ADR-0100).
+    // Constructed ONLY under JASPER_OUTPUTD_CONTENT_BRIDGE=shm_ring;
     // None leaves the loop byte-identical. A declaration this reader refuses, or
     // a geometry/version/size disagreement with the writer's existing ring, is a
     // hard error here — mapped to the config-class exit 78 so the unit parks
