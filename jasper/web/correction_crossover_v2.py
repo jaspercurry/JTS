@@ -4481,7 +4481,7 @@ def bind_production_play(
 
         run_async(_emit())
 
-    def _compose_stimulus(
+    async def _compose_stimulus(
         *,
         spec: Any,
         position_deg: Any = None,
@@ -4499,6 +4499,22 @@ def bind_production_play(
         which the transaction reports and the record carries — they do not
         choose a stimulus, and a compose that consulted them would be inventing
         a second program vocabulary beside the flow's.
+
+        **ASYNC, and the render goes to a thread.** ``measure`` awaits this on
+        the correction loop — the one background loop every short endpoint
+        bridges into — so rendering a sweep inline would freeze status, apply,
+        restore and every other handler for the length of the write. That is
+        the blocking-the-one-loop shape ADR-0179's ``to_thread`` guidance
+        names, and it is why the seam's ``Compose`` contract allows either
+        colour rather than requiring sync.
+
+        **NOT memoised per phase, deliberately.** The program IS
+        identity-constant per phase, so a walk re-renders identical bytes — but
+        the shipped ``_play`` re-renders the same path the same way, and a memo
+        HERE would make two writers of one artifact disagree about when it is
+        rewritten. Worth doing once, for both, when something drives enough
+        stimuli to measure it; not worth a cache-invalidation question on a
+        path nothing drives yet.
         """
         from jasper.active_speaker.crossover_v2.measurement_phase import (
             phase_for_measurement,
@@ -4512,9 +4528,14 @@ def bind_production_play(
         bundle_dir = evidence_store.bundle_dir
         wav_rel = f"crossover_v2/{relay_session_id}/{phase}_program.wav"
         wav_path = Path(bundle_dir) / wav_rel
-        wav_path.parent.mkdir(parents=True, exist_ok=True)
-        write_program_wav(wav_path, program)
-        artifact = evidence_store.identify_artifact(wav_rel)
+
+        def _render() -> Any:
+            """The blocking span: one mkdir, one WAV write, one fingerprint."""
+            wav_path.parent.mkdir(parents=True, exist_ok=True)
+            write_program_wav(wav_path, program)
+            return evidence_store.identify_artifact(wav_rel)
+
+        artifact = await asyncio.to_thread(_render)
         return ProgramForStimulus(
             program=program,
             seams=bind_program_playback_seams(

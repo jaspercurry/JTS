@@ -337,3 +337,28 @@ def test_every_below_ready_return_names_a_disclosed_incident():
         "stage did not, or ready did not complete — in which case add it to "
         "BELOW_READY_INCIDENTS and name it in the disclosed-gap paragraph."
     )
+
+
+async def test_an_async_compose_is_awaited_rather_than_passed_through():
+    """The shape PRODUCTION uses, which the pins above did not drive.
+
+    The host's compose renders a WAV and fingerprints it, so it is `async def`
+    and hands the work to a thread — awaiting it on the correction loop is the
+    whole reason. Every other pin here binds a SYNC compose, so without this
+    one the awaitable branch of `_resolve` ships unexercised and a transaction
+    that forgot to await would hand `play_program` a coroutine object.
+    """
+    seams = _Seams()
+
+    async def _compose(**_kwargs: Any) -> ProgramForStimulus:
+        return ProgramForStimulus(program=_Program(), seams=seams.as_kwargs())
+
+    transaction = ProgramPlaybackTransaction(
+        compose=_compose, session_volume_plan=_Plan(),
+    )
+
+    outcome = await _run(transaction)
+
+    assert outcome.stage_reached == STAGE_RESTORE
+    assert outcome.played is True
+    assert seams.played == 1, "the awaited program never reached the speaker"
