@@ -610,6 +610,17 @@ whose re-verification before any campaign is ours. Terms in §6 R5.
 > silent deafness**, is scoped to *wake-response cues* — not a wizard's disabled
 > Apply. Repointing them would **widen a non-negotiable by prose edit**, which is
 > not a rider's authority, so they are flagged and left alone.
+>
+> **RESOLVED — owner ruled 2026-08-26: DROP the attribution, do not grow the
+> charter.** Two corrections came with it, both from `REFACTOR-CUTOVER-2026-08.md`
+> Appendix A. The count is **13, not 10** — a wrap-safe sweep found three more
+> sites spelling it *"no silent failure paths"*, one of them wrapped across a
+> newline. And the sites are **two classes, not one**: four are cue-shaped and
+> repoint honestly to `docs/extensibility.md:87-89`, which carries the wording
+> live; the other nine claim a greppable-disclosure rule that has never existed
+> in any revision, and simply lose the parenthetical. **The closed list is not
+> touched either way**, which is what made the drop safe. Executed as one
+> comments-only sweep rather than the wave riders proposed here.
 
 ### Wave 0 — Free the class-A suite. Zero design decisions.
 
