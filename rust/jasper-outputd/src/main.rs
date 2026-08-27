@@ -2059,7 +2059,6 @@ mod tests {
             dual_max_delay_delta_frames: 2,
             sample_rate: 48_000,
             period_frames: 128,
-            content_buffer_frames: 512,
             dac_buffer_frames: 256,
             content_bridge_mode: ContentBridgeMode::Direct,
             shm_ring: None,

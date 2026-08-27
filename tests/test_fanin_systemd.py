@@ -450,25 +450,6 @@ def test_input_buffer_frames_sized_for_wifi_burst_absorption():
     )
 
 
-def test_output_buffer_frames_stays_latency_bounded():
-    """Output ALSA ring should not inherit the large input burst
-    absorber. 1024 frames (~21 ms at 48 kHz) is the validated default on
-    the low-latency Camilla path; WiFi burst absorption belongs on input
-    lanes."""
-    unit = _read_unit()
-    match = re.search(
-        r'^\s*Environment\s*=\s*"?JASPER_FANIN_OUTPUT_BUFFER_FRAMES=(\d+)"?',
-        unit,
-        re.MULTILINE,
-    )
-    assert match is not None, (
-        "jasper-fanin.service must set JASPER_FANIN_OUTPUT_BUFFER_FRAMES "
-        "separately from the input burst absorber"
-    )
-    val = int(match.group(1))
-    assert val == 1024
-
-
 def test_hardening_directives_present():
     """Defense-in-depth filesystem hardening — matches the
     conventions of other jasper-* units. None of these are

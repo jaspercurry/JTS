@@ -18,7 +18,6 @@ use crate::dac_content::{
 use crate::types::{SampleFormat, SAMPLE_RATE};
 
 pub const DEFAULT_PERIOD_FRAMES: u32 = 1024;
-pub const DEFAULT_CONTENT_BUFFER_FRAMES: u32 = 4096;
 pub const DEFAULT_DAC_BUFFER_FRAMES: u32 = 3072;
 pub const DEFAULT_CHIP_REF_SAMPLE_RATE: u32 = 16_000;
 pub const DEFAULT_CHIP_REF_PERIOD_FRAMES: u32 = 128;
@@ -195,7 +194,6 @@ pub struct Config {
     pub dual_max_delay_delta_frames: i64,
     pub sample_rate: u32,
     pub period_frames: u32,
-    pub content_buffer_frames: u32,
     pub dac_buffer_frames: u32,
     pub content_bridge_mode: ContentBridgeMode,
     /// PROTOTYPE SHM ring reader settings. `Some` iff
@@ -328,10 +326,6 @@ impl Config {
             }
         };
         let period_frames = env_u32("JASPER_OUTPUTD_PERIOD_FRAMES", DEFAULT_PERIOD_FRAMES)?;
-        let content_buffer_frames = env_u32(
-            "JASPER_OUTPUTD_CONTENT_BUFFER_FRAMES",
-            DEFAULT_CONTENT_BUFFER_FRAMES,
-        )?;
         let dac_buffer_frames = env_u32(
             "JASPER_OUTPUTD_DAC_BUFFER_FRAMES",
             DEFAULT_DAC_BUFFER_FRAMES,
@@ -396,12 +390,6 @@ impl Config {
                 sample_rate
             );
         }
-        validate_buffer(
-            "JASPER_OUTPUTD_CONTENT_BUFFER_FRAMES",
-            content_buffer_frames,
-            period_frames,
-            "JASPER_OUTPUTD_PERIOD_FRAMES",
-        )?;
         validate_buffer(
             "JASPER_OUTPUTD_DAC_BUFFER_FRAMES",
             dac_buffer_frames,
@@ -865,7 +853,6 @@ impl Config {
             dual_max_delay_delta_frames,
             sample_rate,
             period_frames,
-            content_buffer_frames,
             dac_buffer_frames,
             content_bridge_mode,
             shm_ring,
@@ -1061,7 +1048,6 @@ mod tests {
             assert!(cfg.dual_dac_b_pcm.is_none());
             assert_eq!(cfg.sample_rate, SAMPLE_RATE);
             assert_eq!(cfg.period_frames, DEFAULT_PERIOD_FRAMES);
-            assert_eq!(cfg.content_buffer_frames, DEFAULT_CONTENT_BUFFER_FRAMES);
             assert_eq!(cfg.dac_buffer_frames, DEFAULT_DAC_BUFFER_FRAMES);
             assert_eq!(cfg.content_bridge_mode, ContentBridgeMode::ShmRing);
             assert_eq!(cfg.chip_ref_sample_rate, DEFAULT_CHIP_REF_SAMPLE_RATE);

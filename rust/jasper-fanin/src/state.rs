@@ -130,7 +130,6 @@ pub struct StateServer {
     /// Per-input state (shared with the mixer).
     inputs: Vec<InputSnapshotSource>,
     /// Output state (shared with the mixer).
-    output_pcm: String,
     output_frames_written: Arc<AtomicU64>,
     output_xrun_count: Arc<AtomicU64>,
     output_delay_frames: Arc<AtomicU64>,
@@ -144,7 +143,6 @@ pub struct StateServer {
     sample_rate: u32,
     period_frames: u32,
     input_buffer_frames: u32,
-    output_buffer_frames: u32,
     tts_metrics: Option<TtsMetrics>,
     /// Shared impulse-tap state (armed + counters + knobs), cloned from the
     /// mixer's `DirectTapHook` (C4). Served on `TAP_ARM`/`TAP_DISARM`/STATUS.
@@ -216,8 +214,6 @@ pub struct StateServerConfig {
     pub sample_rate: u32,
     pub period_frames: u32,
     pub input_buffer_frames: u32,
-    pub output_buffer_frames: u32,
-    pub output_pcm: String,
     pub tts_metrics: Option<TtsMetrics>,
     /// The combo-mode host-clock STATUS fragment (C7), created and initialized
     /// (to the disabled block) by `main` and updated by the `fanin-host-clock`
@@ -233,8 +229,6 @@ impl StateServer {
             sample_rate,
             period_frames,
             input_buffer_frames,
-            output_buffer_frames,
-            output_pcm,
             tts_metrics,
             host_clock_fragment,
         } = config;
@@ -261,7 +255,6 @@ impl StateServer {
             started_at: Instant::now(),
             socket_path,
             inputs,
-            output_pcm,
             output_frames_written: Arc::clone(&mixer.frames_written),
             output_xrun_count: Arc::clone(&mixer.output_xrun_count),
             output_delay_frames: Arc::clone(&mixer.output_delay_frames),
@@ -271,7 +264,6 @@ impl StateServer {
             sample_rate,
             period_frames,
             input_buffer_frames,
-            output_buffer_frames,
             tts_metrics,
             tap: mixer.direct_tap_state(),
             tap_config: mixer.direct_tap_config(),
@@ -1097,13 +1089,9 @@ impl StateServer {
     /// Render output transport, delay, and optional SHM-ring observability.
     fn push_output_json(&self, buf: &mut String) {
         buf.push_str(r#""output":{"#);
-        push_kv_str(buf, "pcm", &self.output_pcm);
-        buf.push(',');
         push_kv_u64(buf, "sample_rate", self.sample_rate as u64);
         buf.push(',');
         push_kv_u64(buf, "period_frames", self.period_frames as u64);
-        buf.push(',');
-        push_kv_u64(buf, "buffer_frames", self.output_buffer_frames as u64);
         buf.push(',');
         push_kv_u64(
             buf,
@@ -1511,7 +1499,6 @@ mod tests {
                     muted: Arc::new(AtomicBool::new(false)),
                 },
             ],
-            output_pcm: "hw:Loopback,0,7".to_string(),
             output_frames_written: Arc::new(AtomicU64::new(98765)),
             output_xrun_count: Arc::new(AtomicU64::new(1)),
             output_delay_frames: Arc::new(AtomicU64::new(1024)),
@@ -1533,7 +1520,6 @@ mod tests {
             sample_rate: 48000,
             period_frames: 256,
             input_buffer_frames: 4096,
-            output_buffer_frames: 2048,
             tts_metrics: Some(TtsMetrics::new(96_000)),
             tap: Arc::new(TapState::default()),
             tap_config: Arc::new(Mutex::new(TapConfig::default())),
@@ -1736,11 +1722,25 @@ mod tests {
     fn snapshot_json_output_fields() {
         let server = make_test_server();
         let j = server.snapshot_json();
-        assert!(j.contains(r#""pcm":"hw:Loopback,0,7""#));
         assert!(j.contains(r#""sample_rate":48000"#));
         assert!(j.contains(r#""frames_written":98765"#));
         assert!(j.contains(r#""snd_pcm_delay_frames":1024"#));
         assert!(j.contains(r#""snd_pcm_delay_ms":21.333"#));
+
+        // The output block names no ALSA playback device and no ALSA output
+        // buffer: the ring is the only transport (ADR-0100), so both keys were
+        // config echoes of env vars nothing applied. A resurrected echo here is
+        // a lane declaration the daemon cannot honour.
+        let parsed: serde_json::Value = serde_json::from_str(&j).expect("STATUS parses");
+        let output = parsed["output"].as_object().expect("output object");
+        assert!(
+            !output.contains_key("pcm"),
+            "output block re-echoes a PCM: {j}"
+        );
+        assert!(
+            !output.contains_key("buffer_frames"),
+            "output block re-echoes an ALSA buffer: {j}"
+        );
     }
 
     #[test]

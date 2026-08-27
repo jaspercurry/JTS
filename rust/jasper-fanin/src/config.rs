@@ -150,15 +150,6 @@ pub const STATIC_CUSHION_JITTER_MARGIN_FRAMES: u32 = 32;
 
 #[derive(Debug, Clone)]
 pub struct Config {
-    /// ALSA PCM name (or `hw:Card,Dev,Sub`) for the summed output.
-    ///
-    /// PARSED AND NEVER OPENED. Nothing in this daemon writes an ALSA playback
-    /// device: the program goes to Ring A and nowhere else (ADR-0100). The field
-    /// ships because STATUS echoes it and the doctor's fan-in check reads that
-    /// echo (`jasper.cli.doctor.audio_runtime`); retiring the key is that
-    /// check's to make.
-    pub output_pcm: String,
-
     /// Per-input PCMs — the capture side of each renderer or internal
     /// test lane's dedicated snd-aloop substream. Order matters: the STATUS
     /// endpoint reports inputs in this order, and `input_renderers`
@@ -193,12 +184,6 @@ pub struct Config {
     /// absorb observed WiFi A-MPDU AirPlay burst gaps without input
     /// xruns.
     pub input_buffer_frames: u32,
-
-    /// Declared output buffer size in frames. PARSED AND NEVER APPLIED — no ALSA
-    /// playback device is opened (ADR-0100); the ring's depth is `ring_slots`.
-    /// It survives as the STATUS echo the AirPlay latency derivation falls back
-    /// to when a daemon reports no live delay (ADR-0118).
-    pub output_buffer_frames: u32,
 
     /// Path to the UDS socket exposing the STATUS command. The
     /// `/state` aggregator in jasper-control queries it; jasper-doctor
@@ -653,7 +638,6 @@ impl Config {
     /// Returns `Err` only on structural misconfiguration (e.g., input
     /// PCM list length != renderer label list length).
     pub fn from_env() -> Result<Self> {
-        let output_pcm = env_str("JASPER_FANIN_OUTPUT_PCM", "hw:Loopback,0,7");
         let input_pcms = env_list(
             "JASPER_FANIN_INPUT_PCMS",
             &[
@@ -690,27 +674,20 @@ impl Config {
             "JASPER_FANIN_BUFFER_FRAMES",
             4096,
         )?;
-        let output_buffer_frames = env_u32("JASPER_FANIN_OUTPUT_BUFFER_FRAMES", 1024)?;
 
-        // Sanity: buffer sizes must be >= 2 × period_frames per the
+        // Sanity: the input buffer must be >= 2 × period_frames per the
         // standard ALSA convention (the period is what wakes the
         // reader/writer; the buffer absorbs jitter between wakeups).
         // Floor of 2× catches the most common misconfig where someone
-        // sets buffer_frames=period_frames.
+        // sets buffer_frames=period_frames. The capture lanes are the only
+        // ALSA edge left: the program leaves over Ring A (ADR-0100), which
+        // is sized by `ring_slots`, not by an ALSA buffer.
         let min_buffer_frames = period_frames.saturating_mul(2);
         if input_buffer_frames < min_buffer_frames {
             anyhow::bail!(
                 "JASPER_FANIN_INPUT_BUFFER_FRAMES={} must be >= 2 × JASPER_FANIN_PERIOD_FRAMES={} \
                  (minimum ALSA jitter-absorption convention)",
                 input_buffer_frames,
-                period_frames,
-            );
-        }
-        if output_buffer_frames < min_buffer_frames {
-            anyhow::bail!(
-                "JASPER_FANIN_OUTPUT_BUFFER_FRAMES={} must be >= 2 × JASPER_FANIN_PERIOD_FRAMES={} \
-                 (minimum ALSA jitter-absorption convention)",
-                output_buffer_frames,
                 period_frames,
             );
         }
@@ -1174,13 +1151,11 @@ impl Config {
         }
 
         Ok(Self {
-            output_pcm,
             input_pcms,
             input_renderers,
             sample_rate,
             period_frames,
             input_buffer_frames,
-            output_buffer_frames,
             control_socket_path: "/run/jasper-fanin/control.sock".to_string(),
             xrun_log_path: env_str(
                 "JASPER_FANIN_XRUN_LOG_PATH",
@@ -1412,14 +1387,12 @@ mod tests {
     fn from_env_uses_documented_defaults() {
         with_env(
             &[
-                ("JASPER_FANIN_OUTPUT_PCM", None),
                 ("JASPER_FANIN_INPUT_PCMS", None),
                 ("JASPER_FANIN_INPUT_RENDERERS", None),
                 ("JASPER_FANIN_SAMPLE_RATE", None),
                 ("JASPER_FANIN_PERIOD_FRAMES", None),
                 ("JASPER_FANIN_BUFFER_FRAMES", None),
                 ("JASPER_FANIN_INPUT_BUFFER_FRAMES", None),
-                ("JASPER_FANIN_OUTPUT_BUFFER_FRAMES", None),
                 ("JASPER_FANIN_TTS_SOCKET", None),
                 ("JASPER_FANIN_TTS_MAX_PENDING_FRAMES", None),
                 ("JASPER_FANIN_TTS_PROGRAM_DUCK_DB", None),
@@ -1436,7 +1409,6 @@ mod tests {
             ],
             || {
                 let cfg = Config::from_env().expect("defaults must parse");
-                assert_eq!(cfg.output_pcm, "hw:Loopback,0,7");
                 assert_eq!(cfg.input_pcms.len(), 5);
                 assert_eq!(cfg.input_renderers.len(), 5);
                 assert_eq!(cfg.input_renderers[0], "spotify");
@@ -1444,7 +1416,6 @@ mod tests {
                 assert_eq!(cfg.sample_rate, 48_000);
                 assert_eq!(cfg.period_frames, 256);
                 assert_eq!(cfg.input_buffer_frames, 4096);
-                assert_eq!(cfg.output_buffer_frames, 1024);
                 assert_eq!(
                     cfg.tts_socket_path.as_deref(),
                     Some("/run/jasper-fanin/tts.sock")
@@ -2101,25 +2072,6 @@ mod tests {
     }
 
     #[test]
-    fn output_buffer_must_be_at_least_twice_period() {
-        with_env(
-            &[
-                ("JASPER_FANIN_PERIOD_FRAMES", Some("512")),
-                ("JASPER_FANIN_OUTPUT_BUFFER_FRAMES", Some("512")),
-            ],
-            || {
-                let err = Config::from_env().expect_err("output buffer < 2×period must error");
-                let msg = format!("{:#}", err);
-                assert!(
-                    msg.contains("JASPER_FANIN_OUTPUT_BUFFER_FRAMES"),
-                    "expected output-buffer error, got: {}",
-                    msg,
-                );
-            },
-        );
-    }
-
-    #[test]
     fn usb_direct_period_defaults_to_256() {
         with_env(&[("JASPER_FANIN_USB_DIRECT_PERIOD_FRAMES", None)], || {
             let cfg = Config::from_env().expect("defaults must parse");
@@ -2670,12 +2622,10 @@ mod tests {
             &[
                 ("JASPER_FANIN_BUFFER_FRAMES", Some("2048")),
                 ("JASPER_FANIN_INPUT_BUFFER_FRAMES", None),
-                ("JASPER_FANIN_OUTPUT_BUFFER_FRAMES", None),
             ],
             || {
                 let cfg = Config::from_env().expect("legacy env must parse");
                 assert_eq!(cfg.input_buffer_frames, 2048);
-                assert_eq!(cfg.output_buffer_frames, 1024);
             },
         );
     }
@@ -3041,10 +2991,9 @@ mod tests {
         with_env(
             &[
                 ("JASPER_FANIN_PERIOD_FRAMES", Some("200")),
-                // 200*2 = 400 >= 2*200 buffer floor, so the buffer guard passes
-                // and the slot-shear guard is what fires.
+                // 4096 >= 2*200 input-buffer floor, so that guard passes and
+                // the slot-shear guard is what fires.
                 ("JASPER_FANIN_INPUT_BUFFER_FRAMES", Some("4096")),
-                ("JASPER_FANIN_OUTPUT_BUFFER_FRAMES", Some("1024")),
             ],
             || {
                 let err = Config::from_env().expect_err("non-128-multiple period must error");

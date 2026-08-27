@@ -1051,7 +1051,6 @@ _fallback_latency_floor_actions() {
     printf 'unset JASPER_CAMILLA_CHUNKSIZE\n'
     printf 'unset JASPER_CAMILLA_TARGET_LEVEL\n'
     printf 'unset JASPER_OUTPUTD_PERIOD_FRAMES\n'
-    printf 'unset JASPER_OUTPUTD_CONTENT_BUFFER_FRAMES\n'
     printf 'unset JASPER_OUTPUTD_DAC_BUFFER_FRAMES\n'
 }
 
@@ -1136,7 +1135,7 @@ apply_latency_floor_env() {
     LATENCY_FLOOR_CHANGED=0
     local dac_id="$1"
     local actions kind key value
-    local camilla_chunk="" camilla_target="" outputd_period="" outputd_content_buffer="" outputd_buffer=""
+    local camilla_chunk="" camilla_target="" outputd_period="" outputd_buffer=""
     actions="$(latency_floor_actions_for_dac "$dac_id")"
     while read -r kind key value; do
         [[ -n "${kind:-}" ]] || continue
@@ -1146,7 +1145,6 @@ apply_latency_floor_env() {
                     JASPER_CAMILLA_CHUNKSIZE) camilla_chunk="$value" ;;
                     JASPER_CAMILLA_TARGET_LEVEL) camilla_target="$value" ;;
                     JASPER_OUTPUTD_PERIOD_FRAMES) outputd_period="$value" ;;
-                    JASPER_OUTPUTD_CONTENT_BUFFER_FRAMES) outputd_content_buffer="$value" ;;
                     JASPER_OUTPUTD_DAC_BUFFER_FRAMES) outputd_buffer="$value" ;;
                 esac
                 ;;
@@ -1164,7 +1162,7 @@ apply_latency_floor_env() {
         esac
     done <<<"$actions"
     log_event "latency_floor" \
-        "output_dac_id=${dac_id} camilla_chunksize=${camilla_chunk:-default} camilla_target_level=${camilla_target:-default} outputd_period_frames=${outputd_period:-default} outputd_content_buffer_frames=${outputd_content_buffer:-default} outputd_dac_buffer_frames=${outputd_buffer:-default} changed=${LATENCY_FLOOR_CHANGED}"
+        "output_dac_id=${dac_id} camilla_chunksize=${camilla_chunk:-default} camilla_target_level=${camilla_target:-default} outputd_period_frames=${outputd_period:-default} outputd_dac_buffer_frames=${outputd_buffer:-default} changed=${LATENCY_FLOOR_CHANGED}"
 }
 
 print_env() {

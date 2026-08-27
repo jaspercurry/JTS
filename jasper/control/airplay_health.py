@@ -823,7 +823,6 @@ class AirPlayHealthSampler:
         }
 
         input_buffer_frames = _as_int(status.get("input_buffer_frames"))
-        output_buffer_frames = _as_int(output.get("buffer_frames"))
         # Fixed-shape, source-neutral observations for the outer audio-health
         # composer. Keep only what explains health; /state retains the full
         # fan-in STATUS for deep debugging. Every declared source gets a slot,
@@ -918,7 +917,6 @@ class AirPlayHealthSampler:
         current = {
             "available": True,
             "input_buffer_frames": input_buffer_frames,
-            "output_buffer_frames": output_buffer_frames,
             "selected_input": status.get("selected_input"),
             "inputs": input_observations,
             "host_clock": (
@@ -944,7 +942,6 @@ class AirPlayHealthSampler:
                 "xrun_count": output_xruns,
                 "sample_rate": _as_int(output.get("sample_rate")),
                 "period_frames": _as_int(output.get("period_frames")),
-                "buffer_frames": _as_int(output.get("buffer_frames")),
                 "snd_pcm_delay_frames": output.get("snd_pcm_delay_frames"),
                 "snd_pcm_delay_ms": output.get("snd_pcm_delay_ms"),
             },

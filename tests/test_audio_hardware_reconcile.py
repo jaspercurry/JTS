@@ -2369,10 +2369,10 @@ def test_reconcile_floor_only_outputd_change_restarts_outputd_only(
     tmp_path: Path,
 ):
     # The #1257 scenario proper: a converged apple steady state where the ONLY
-    # outputd.env delta is a codified latency FLOOR re-emit — the usb_low_latency
-    # route writes JASPER_OUTPUTD_CONTENT_BUFFER_FRAMES=1536. DAC identity and
-    # asound are unchanged, so wake must stay up: bounce jasper-outputd alone,
-    # never stop jasper-voice, never re-run jasper-aec-reconcile.
+    # outputd.env delta is a codified latency FLOOR re-emit — the DAC-buffer
+    # floor. DAC identity and asound are unchanged, so wake must stay up:
+    # bounce jasper-outputd alone, never stop jasper-voice, never re-run
+    # jasper-aec-reconcile.
     rendered_template = (
         "pcm.outputd_dac {\n"
         "    type hw\n"
@@ -2385,10 +2385,9 @@ def test_reconcile_floor_only_outputd_change_restarts_outputd_only(
         "}\n"
         "defaults.pcm.rate_converter \"__RATE_CONVERTER__\"\n"
     )
-    # Converged apple outputd.env: every runtime key and every apple profile
-    # floor key already at steady state, WITH the direct content bridge, but
-    # WITHOUT the route's content-buffer floor — so the 1536 emit is the sole
-    # delta and this is a genuinely floor-only re-emit.
+    # Converged apple outputd.env: every runtime key at steady state EXCEPT the
+    # DAC-buffer floor — so its re-emit is the sole delta and this is a
+    # genuinely floor-only re-emit.
     outputd_env = (
         "JASPER_OUTPUTD_BACKEND=alsa\n"
         "JASPER_OUTPUTD_SINK=single_alsa\n"
@@ -2413,11 +2412,9 @@ def test_reconcile_floor_only_outputd_change_restarts_outputd_only(
         # a no-op and nothing commits (a box deployed before this key existed
         # writes it once, on its first reconcile, and converges from then on).
         "JASPER_OUTPUTD_RING_ACTIVE_ENDPOINT=''\n"
-        "JASPER_OUTPUTD_CONTENT_BRIDGE=direct\n"
         "JASPER_CAMILLA_CHUNKSIZE=256\n"
         "JASPER_CAMILLA_TARGET_LEVEL=1536\n"
         "JASPER_OUTPUTD_PERIOD_FRAMES=128\n"
-        "JASPER_OUTPUTD_DAC_BUFFER_FRAMES=256\n"
     )
     result = _run_reconcile(
         tmp_path,
@@ -2427,7 +2424,6 @@ def test_reconcile_floor_only_outputd_change_restarts_outputd_only(
         initial_env=(
             "JASPER_AUDIO_DAC_ID=apple_usb_c_dongle\n"
             "JASPER_AUDIO_DAC_CARD=A\n"
-            "JASPER_AUDIO_ROUTE_PROFILE=usb_low_latency_48k\n"
         ),
         initial_outputd_env=outputd_env,
         initial_template=rendered_template,
@@ -2436,7 +2432,7 @@ def test_reconcile_floor_only_outputd_change_restarts_outputd_only(
     assert result.returncode == 0, result.stderr
     assert _render_log(tmp_path) == ""
     new_outputd_env = (tmp_path / "outputd.env").read_text(encoding="utf-8")
-    assert "JASPER_OUTPUTD_CONTENT_BUFFER_FRAMES=1536" in new_outputd_env
+    assert "JASPER_OUTPUTD_DAC_BUFFER_FRAMES=256" in new_outputd_env
     commands = _systemctl_log(tmp_path)
     assert "--no-block restart jasper-outputd.service" in commands
     assert "event=audio_hardware_reconcile.outputd_only_restarted" in result.stderr
@@ -2544,9 +2540,9 @@ def test_reconcile_route_only_change_restarts_fanin_not_voice(tmp_path: Path):
         "}\n"
         "defaults.pcm.rate_converter \"__RATE_CONVERTER__\"\n"
     )
-    # Fully converged apple + usb_low_latency outputd.env: the route's content
-    # buffer floor (1536) is ALREADY present alongside the apple profile floor,
-    # so the floor pass is a no-op and nothing commits to outputd.env.
+    # Fully converged apple + usb_low_latency outputd.env: the apple profile
+    # floor is ALREADY present, so the floor pass is a no-op and nothing
+    # commits to outputd.env.
     outputd_env = (
         "JASPER_OUTPUTD_BACKEND=alsa\n"
         "JASPER_OUTPUTD_SINK=single_alsa\n"
@@ -2573,7 +2569,6 @@ def test_reconcile_route_only_change_restarts_fanin_not_voice(tmp_path: Path):
         "JASPER_CAMILLA_TARGET_LEVEL=1536\n"
         "JASPER_OUTPUTD_PERIOD_FRAMES=128\n"
         "JASPER_OUTPUTD_DAC_BUFFER_FRAMES=256\n"
-        "JASPER_OUTPUTD_CONTENT_BUFFER_FRAMES=1536\n"
     )
     result = _run_reconcile(
         tmp_path,
@@ -2736,8 +2731,7 @@ def test_render_success_still_writes_template(tmp_path: Path):
 def test_reconcile_apple_emits_codified_latency_floor(tmp_path: Path):
     # An Apple dongle declares a measured floor; the reconciler emits all
     # profile-floor keys into the wizard-owned outputd.env (mirroring the
-    # channel write). Route-owned content buffering is absent on the default
-    # corrected route, so it stays on the packaged outputd default.
+    # channel write). The retired content-buffer key is never emitted.
     result = _run_reconcile(tmp_path, APPLE_LISTING, "--reason", "test")
 
     assert result.returncode == 0, result.stderr
@@ -2843,16 +2837,11 @@ def test_reconcile_dac8x_emits_the_soak_validated_floor(tmp_path: Path):
         ("JASPER_OUTPUTD_DAC_BUFFER_FRAMES", "256"),
     ):
         assert f"{key}={value}" in outputd_env, (key, outputd_env)
-    # The content buffer is NOT pinned: it stays at outputd's packaged 4096, so
-    # the content capture runs the 128/4096 pair the soak's Stage B ran.
-    assert not _outputd_env_key_present(
-        outputd_env, "JASPER_OUTPUTD_CONTENT_BUFFER_FRAMES"
-    )
     assert (
         "event=audio_hardware_reconcile.latency_floor "
         "reason=test output_dac_id=hifiberry_dac8x camilla_chunksize=256 "
         "camilla_target_level=1536 outputd_period_frames=128 "
-        "outputd_content_buffer_frames=4096 outputd_dac_buffer_frames=256"
+        "outputd_dac_buffer_frames=256"
     ) in result.stderr
 
 
@@ -2872,7 +2861,6 @@ def test_reconcile_no_floor_drops_stale_floor_keys(tmp_path: Path):
             "JASPER_CAMILLA_CHUNKSIZE=256\n"
             "JASPER_CAMILLA_TARGET_LEVEL=1024\n"
             "JASPER_OUTPUTD_PERIOD_FRAMES=256\n"
-            "JASPER_OUTPUTD_CONTENT_BUFFER_FRAMES=1024\n"
             "JASPER_OUTPUTD_DAC_BUFFER_FRAMES=512\n"
         ),
     )
@@ -2883,7 +2871,6 @@ def test_reconcile_no_floor_drops_stale_floor_keys(tmp_path: Path):
         "JASPER_CAMILLA_CHUNKSIZE",
         "JASPER_CAMILLA_TARGET_LEVEL",
         "JASPER_OUTPUTD_PERIOD_FRAMES",
-        "JASPER_OUTPUTD_CONTENT_BUFFER_FRAMES",
         "JASPER_OUTPUTD_DAC_BUFFER_FRAMES",
     ):
         assert not _outputd_env_key_present(outputd_env, key), key
@@ -2920,37 +2907,6 @@ def test_reconcile_operator_env_override_survives_reconciler(tmp_path: Path):
     assert "JASPER_OUTPUTD_PERIOD_FRAMES=128" in outputd_env
 
 
-def test_reconcile_usb_low_latency_route_leaves_the_content_buffer_alone(
-    tmp_path: Path,
-):
-    """The route's content-buffer pin does not survive the one transport.
-
-    It sized outputd's ALSA content capture, which no longer exists: outputd
-    reads the ring (ADR-0100), and this box declares no bridge, which IS the
-    ring. So the route emits no pin and the packaged default stands — the same
-    disposition the default corrected route already had, reported on the floor
-    line rather than silently.
-    """
-    result = _run_reconcile(
-        tmp_path,
-        APPLE_LISTING,
-        "--reason",
-        "test",
-        initial_env="JASPER_AUDIO_ROUTE_PROFILE=usb_low_latency_48k\n",
-    )
-
-    assert result.returncode == 0, result.stderr
-    outputd_env = (tmp_path / "outputd.env").read_text(encoding="utf-8")
-    assert not _outputd_env_key_present(
-        outputd_env, "JASPER_OUTPUTD_CONTENT_BUFFER_FRAMES"
-    )
-    assert "outputd_content_buffer_frames=4096" in result.stderr
-    # The route's LIVE floor keys still land, so this is the one axis that
-    # dropped rather than the route failing to apply.
-    assert "JASPER_CAMILLA_TARGET_LEVEL=1536" in outputd_env
-    assert "JASPER_OUTPUTD_PERIOD_FRAMES=128" in outputd_env
-
-
 def test_reconcile_refusal_preserves_env_and_leaves_every_service_running(
     tmp_path: Path,
 ):
@@ -2976,7 +2932,7 @@ def test_reconcile_refusal_preserves_env_and_leaves_every_service_running(
         "JASPER_OUTPUTD_ACTIVE_CHANNELS=8\n"
         "JASPER_OUTPUTD_ACTIVE_LANE=1\n"
         "JASPER_OUTPUTD_PERIOD_FRAMES=128\n"
-        "JASPER_OUTPUTD_CONTENT_BUFFER_FRAMES=1536\n"
+        "JASPER_OUTPUTD_DAC_BUFFER_FRAMES=256\n"
     )
     overrides = tmp_path / "audio_runtime_overrides.json"
     overrides.write_text(
@@ -2988,7 +2944,7 @@ def test_reconcile_refusal_preserves_env_and_leaves_every_service_running(
                     "value": "1024",
                     "reason": "test invalid staged outputd env",
                 },
-                "JASPER_OUTPUTD_CONTENT_BUFFER_FRAMES": {
+                "JASPER_OUTPUTD_DAC_BUFFER_FRAMES": {
                     "value": "1536",
                     "reason": "test invalid staged outputd env",
                 },
@@ -3042,7 +2998,6 @@ def test_reconcile_refuses_invalid_dac_buffer_candidate_and_preserves_prior(
         "JASPER_OUTPUTD_BACKEND=alsa\n"
         "JASPER_OUTPUTD_SINK=single_alsa\n"
         "JASPER_OUTPUTD_PERIOD_FRAMES=128\n"
-        "JASPER_OUTPUTD_CONTENT_BUFFER_FRAMES=1536\n"
         "JASPER_OUTPUTD_DAC_BUFFER_FRAMES=256\n"
     )
     overrides = tmp_path / "audio_runtime_overrides.json"
@@ -3054,10 +3009,6 @@ def test_reconcile_refuses_invalid_dac_buffer_candidate_and_preserves_prior(
                 "JASPER_OUTPUTD_PERIOD_FRAMES": {
                     "value": "1024",
                     "reason": "test invalid staged dac buffer",
-                },
-                "JASPER_OUTPUTD_CONTENT_BUFFER_FRAMES": {
-                    "value": "4096",
-                    "reason": "keep content buffer valid",
                 },
                 "JASPER_OUTPUTD_DAC_BUFFER_FRAMES": {
                     "value": "256",

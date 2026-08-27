@@ -549,7 +549,7 @@ project's `event=<subsystem>.<action> [key=value ...]` convention.
 | Event | When | Severity |
 |---|---|---|
 | `event=fanin.boot version=...` | process startup | INFO |
-| `event=fanin.config_loaded inputs=N output=... sample_rate=... period_frames=... input_buffer_frames=...` | parsed runtime config | INFO |
+| `event=fanin.config_loaded inputs=N sample_rate=... period_frames=... input_buffer_frames=...` | parsed runtime config | INFO |
 | `event=fanin.input.opened label=airplay pcm=hw:Loopback,1,1 ...` | each input opened | INFO |
 | `event=fanin.ring.opened path=/dev/shm/jts-ring/program.ring ...` | Ring A attached | INFO |
 | `event=fanin.mixer.running inputs=N output_xruns=0` | work loop started | INFO |

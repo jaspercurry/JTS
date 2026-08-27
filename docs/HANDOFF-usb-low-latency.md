@@ -55,14 +55,13 @@ measured steady numbers. jts.local runs `1536` as a box tuning. Both clear the
 resampler churn floor by a wide margin (`target + cushion >= minimum_safe_fill +
 period + 32` = 562 at the default geometry).
 
-`JASPER_OUTPUTD_CONTENT_BUFFER_FRAMES` has no place in the shipped set:
-outputd reads Ring B directly and never opens an ALSA content
-capture PCM, so the key's only consumer (`configure_pcm`) is skipped and
-`jasper.audio_runtime_plan` does not emit it. outputd's `/state` publishes the
-honest Ring B capacity in `content.ring.capacity_frames` next to a synthetic
-period-sized `content.buffer_frames`, and `jasper-doctor` validates ring
-geometry rather than mis-applying the ALSA `>= 2× period` jitter floor to the
-synthetic.
+There is no outputd content-buffer knob: outputd reads Ring B directly and
+never opens an ALSA content capture PCM, so the key that once sized one was
+retired along with its `>= 2× period` validation. outputd's `/state` publishes
+the honest Ring B capacity in `content.ring.capacity_frames` next to a
+synthetic period-sized `content.buffer_frames`, and `jasper-doctor` validates
+ring geometry rather than mis-applying the ALSA `>= 2× period` jitter floor to
+the synthetic.
 
 ## Earning the claim
 

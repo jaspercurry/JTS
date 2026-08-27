@@ -246,7 +246,6 @@ _FANIN_RING_BLOCK = {
 def _fanin_status_payload(
     *,
     input_buffer_frames: int = 4096,
-    output_buffer_frames: int = 1024,
     progress_age_ms: int = 2,
     transport: str = "shm_ring",
     ring: dict | None = _FANIN_RING_BLOCK,
@@ -255,9 +254,7 @@ def _fanin_status_payload(
     report: transport=shm_ring with a ring block. Pass ``ring=None`` to build
     the malformed no-ring-block shape."""
     output = {
-        "pcm": doctor._FANIN_EXPECTED_OUTPUT_PCM,
         "transport": transport,
-        "buffer_frames": output_buffer_frames,
         "frames_written": 1234,
         "xrun_count": 0,
     }
@@ -748,7 +745,6 @@ def test_check_fanin_service_ok_with_expected_status(monkeypatch):
     assert r.status == "ok"
     assert "transport=shm_ring" in r.detail
     assert "input_buffer_frames=4096" in r.detail
-    assert "output_buffer_frames=1024" in r.detail
     assert "tts_enabled=true" in r.detail
     assert "assistant_loudness_decision=False" in r.detail
 
@@ -958,7 +954,7 @@ def test_check_fanin_service_fails_when_status_socket_unreachable(monkeypatch):
     assert "UDS probe" in r.detail
 
 
-def test_check_fanin_service_fails_on_small_runtime_buffers(monkeypatch):
+def test_check_fanin_service_fails_on_small_runtime_input_buffer(monkeypatch):
     _patch_fanin_systemctl(monkeypatch)
     _patch_fanin_status_socket(
         monkeypatch,
@@ -967,25 +963,6 @@ def test_check_fanin_service_fails_on_small_runtime_buffers(monkeypatch):
     r = doctor.check_fanin_service()
     assert r.status == "fail"
     assert "input_buffer_frames=2048" in r.detail
-
-    _patch_fanin_status_socket(
-        monkeypatch,
-        _fanin_status_payload(output_buffer_frames=512),
-    )
-    r = doctor.check_fanin_service()
-    assert r.status == "fail"
-    assert "output_buffer_frames=512" in r.detail
-
-
-def test_check_fanin_service_accepts_new_low_latency_output_default(monkeypatch):
-    _patch_fanin_systemctl(monkeypatch)
-    _patch_fanin_status_socket(
-        monkeypatch,
-        _fanin_status_payload(output_buffer_frames=1024),
-    )
-    r = doctor.check_fanin_service()
-    assert r.status == "ok"
-    assert "output_buffer_frames=1024" in r.detail
 
 
 def test_outputd_service_fails_when_disabled(monkeypatch):
@@ -2638,6 +2615,23 @@ def proc_root(monkeypatch, tmp_path):
     return _set
 
 
+#: The pairs that must be registered at this head, written as a LITERAL on
+#: purpose. Deriving this expectation from the same constant the production
+#: code derives from would make it move in lockstep with a regression — drop
+#: pair 0 from `_FANIN_EXPECTED_ALOOP_INPUTS` and a derived expectation drops
+#: it too, so nothing fails. A literal is what makes a source-constant
+#: deletion detectable.
+_EXPECTED_REGISTERED_PAIRS = (0, 1, 2, 3, 4)
+
+#: The pairs whose owners are GONE, and which must therefore read as offenders.
+#: Pair 5 lost its PCM definitions to #2285 P9-C; pairs 6 and 7 lost theirs to
+#: ADR-0100, which moved outputd's passive content lane and fan-in's summed
+#: music output onto SHM rings. deploy/alsa/asoundrc.jasper declares none of the
+#: three, and deploy/modprobe.d/snd-aloop.conf records them as
+#: reserved-not-reclaimed so no surviving pair renumbers.
+_RETIRED_PAIRS = (5, 6, 7)
+
+
 # --------------------------------------------------------------------------
 # Verdicts
 # --------------------------------------------------------------------------
@@ -2656,13 +2650,17 @@ def test_all_closed_is_ok(proc_root, tmp_path):
     proc_root(_make_card(tmp_path))
     result = audio_runtime.check_aloop_registered_substreams()
     assert result.status == "ok"
-    assert "no other pair currently open" in result.detail
+    assert "no pair currently open" in result.detail
     # The remnant's size is REPORTED, not merely asserted — risk 5.1 in the
     # design is "the remnant becomes permanent by silence".
-    assert "aloop remnant on pair 6" in result.detail
-    # …and it names the lane that still owns the pair, not a closed issue
-    # number (see test_check_text_names_the_remnants_remaining_owner).
-    assert "passive content lane" in result.detail
+    assert (
+        f"{len(_EXPECTED_REGISTERED_PAIRS)} of "
+        f"{audio_runtime._ALOOP_SUBSTREAMS} pairs"
+    ) in result.detail
+    # The program path is off snd-aloop entirely (ADR-0100); the text must
+    # not still name a content lane that no longer exists.
+    assert "passive content lane" not in result.detail
+    assert "pair 6" not in result.detail
 
 
 def test_registered_open_pair_is_ok_jts4_shape(proc_root, tmp_path):
@@ -2679,28 +2677,26 @@ def test_registered_open_pair_is_ok_jts4_shape(proc_root, tmp_path):
     assert "[3]" in result.detail
 
 
-def test_content_pair_open_is_ok(proc_root, tmp_path):
-    """A box holding pair 6 is the remnant working as designed — that pair is
-    outputd's passive content lane."""
-    proc_root(_make_card(tmp_path, {"pcm0p": [6], "pcm1c": [6]}))
-    result = audio_runtime.check_aloop_registered_substreams()
-    assert result.status == "ok"
-    # Pair 6 IS the content pair, so it is never one of the "other" pairs.
-    assert "no other pair currently open" in result.detail
-
-
 @pytest.mark.parametrize("pcm_dir", ["pcm0p", "pcm0c", "pcm1p", "pcm1c"])
-def test_positive_control_foreign_substream_fails(proc_root, tmp_path, pcm_dir):
+@pytest.mark.parametrize("pair", _RETIRED_PAIRS)
+def test_positive_control_foreign_substream_fails(
+    proc_root, tmp_path, pcm_dir, pair
+):
     """POSITIVE CONTROL — a deliberately-opened foreign substream trips it.
 
-    Pair 5 is the foreign one: P9-C deleted its PCM definitions, so a holder
-    there resurrected a deleted lane. Parametrised across all four PCM
-    directions so a walker that only scanned the playback side would fail this.
+    Pairs 5, 6 and 7 are the foreign ones: P9-C deleted pair 5's PCM
+    definitions and ADR-0100 deleted pairs 6 and 7's when the passive content
+    lane and the summed music output both moved to SHM rings. A holder on any
+    of them has resurrected a deleted lane — a rolled-back binary or a stale
+    asoundrc — which is the regression this guard exists to catch, and which
+    read as `ok` for as long as pairs 6 and 7 stayed in the registered set.
+    Parametrised across all four PCM directions so a walker that only scanned
+    the playback side would fail this.
     """
-    proc_root(_make_card(tmp_path, {pcm_dir: [5]}))
+    proc_root(_make_card(tmp_path, {pcm_dir: [pair]}))
     result = audio_runtime.check_aloop_registered_substreams()
     assert result.status == "fail"
-    assert f"{pcm_dir}/sub5" in result.detail
+    assert f"{pcm_dir}/sub{pair}" in result.detail
     assert "no registered purpose" in result.detail
 
 
@@ -2717,22 +2713,22 @@ def test_positive_control_names_the_offender(proc_root, tmp_path):
 def test_offender_detail_is_bounded(proc_root, tmp_path, monkeypatch):
     """A pathological box cannot produce an unbounded doctor line.
 
-    The registered set is shrunk to the content pair alone, so every other pair
-    reads as an offender and the offender count (28) genuinely exceeds the cap.
-    An earlier version of this test opened only pair 5 across the four PCM dirs,
-    giving exactly 4 offenders against a cap of 4; `[:cap]` and `[:]` were then
+    The registered set is shrunk to one pair, so every other pair reads as an
+    offender and the offender count (28) genuinely exceeds the cap. An earlier
+    version of this test opened only pair 5 across the four PCM dirs, giving
+    exactly 4 offenders against a cap of 4; `[:cap]` and `[:]` were then
     indistinguishable and the bound was asserted but never proven.
     """
     monkeypatch.setattr(
         audio_runtime,
         "_derive_registered_pairs",
-        lambda: ({6: "outputd passive content lane"}, 6),
+        lambda: {0: "fan-in input lane 'spotify'"},
     )
     proc_root(
         _make_card(
             tmp_path,
             {
-                pcm: [p for p in range(audio_runtime._ALOOP_SUBSTREAMS) if p != 6]
+                pcm: [p for p in range(audio_runtime._ALOOP_SUBSTREAMS) if p != 0]
                 for pcm in audio_runtime._ALOOP_PCM_DIRS
             },
         )
@@ -2821,31 +2817,10 @@ def test_walker_range_matches_modprobe_pcm_substreams():
 # Derivation — the registered set is READ from its owners, never restated
 # --------------------------------------------------------------------------
 
-#: The pairs that must be registered at this head, written as a LITERAL on
-#: purpose. Deriving this expectation from the same constants the production
-#: code derives from would make it move in lockstep with a regression — drop
-#: pair 0 from `_FANIN_EXPECTED_ALOOP_INPUTS` and a derived expectation drops
-#: it too, so nothing fails. A literal is what makes a source-constant
-#: deletion detectable.
-_EXPECTED_REGISTERED_PAIRS = (0, 1, 2, 3, 4, 6, 7)
-
-
 def test_derived_set_matches_the_expected_allocation():
-    """Dropping a pair from any owning constant changes this set.
-
-    Also the re-sourcing pin (design §6.1a): pair 6 derives from
-    `_OUTPUTD_CONTENT_ALOOP_PCM`, and `_EXPECTED_REGISTERED_PAIRS` is the same
-    literal it was before that move — the registered set is byte-identical
-    across it, and across the grouping ingress leaving snd-aloop entirely.
-
-    The re-sourcing's negative control — breaking the grouping round-trip's own
-    constant and watching the set stay identical — retired with the constant:
-    the reconciler names no aloop pair at all now, so nothing in the grouping
-    path can feed this derivation to begin with.
-    """
-    derived, content_pair = audio_runtime._derive_registered_pairs()
+    """Dropping a pair from the owning constant changes this set."""
+    derived = audio_runtime._derive_registered_pairs()
     assert tuple(sorted(derived)) == _EXPECTED_REGISTERED_PAIRS
-    assert content_pair == 6
 
 
 @pytest.mark.parametrize("pair", _EXPECTED_REGISTERED_PAIRS)
@@ -2860,19 +2835,6 @@ def test_every_registered_pair_open_is_ok(proc_root, tmp_path, pair):
     proc_root(_make_card(tmp_path, {"pcm0p": [pair], "pcm1c": [pair]}))
     result = audio_runtime.check_aloop_registered_substreams()
     assert result.status == "ok", f"pair {pair} open read as {result.detail}"
-
-
-def test_content_pair_is_always_registered():
-    """Replaces the old 'content pair missing from the registry' warn branch.
-
-    That branch existed because a hand-maintained table could drift from its
-    source constant. The derived set inserts the content pair (pair 6) from
-    `_OUTPUTD_CONTENT_ALOOP_PCM` in the same function that returns it, so the
-    drift is now structurally impossible and the branch was deleted as
-    unreachable. This is the invariant that replaced it.
-    """
-    derived, content_pair = audio_runtime._derive_registered_pairs()
-    assert content_pair in derived
 
 
 def test_derivation_is_all_or_nothing_on_a_bad_input(monkeypatch):
@@ -2892,36 +2854,41 @@ def test_derivation_rejects_a_non_loopback_card(monkeypatch):
     from jasper.cli.doctor import audio_runtime
 
     monkeypatch.setattr(
-        audio_runtime, "_FANIN_EXPECTED_OUTPUT_PCM", "hw:SomeOtherCard,0,7"
+        audio_runtime,
+        "_FANIN_EXPECTED_ALOOP_INPUTS",
+        [("spotify", "hw:SomeOtherCard,1,0")],
     )
     assert audio_runtime._derive_registered_pairs() is None
 
 
-def test_unparseable_content_pcm_constant_is_warn(proc_root, tmp_path, monkeypatch):
-    """Pair 6's source is `_OUTPUTD_CONTENT_ALOOP_PCM` now, not a grouping
-    constant — an unparseable value there, not in reconcile.py, is what
-    degrades the full check to warn."""
+def test_unparseable_source_constant_is_warn(proc_root, tmp_path, monkeypatch):
+    """An unparseable owner degrades the FULL check to warn, never to a
+    shrunken set that red-doctors a healthy box."""
     from jasper.cli.doctor import audio_runtime
 
-    monkeypatch.setattr(audio_runtime, "_OUTPUTD_CONTENT_ALOOP_PCM", "not-a-pcm")
+    monkeypatch.setattr(
+        audio_runtime, "_FANIN_EXPECTED_ALOOP_INPUTS", [("spotify", "not-a-pcm")]
+    )
     proc_root(_make_card(tmp_path))
     result = audio_runtime.check_aloop_registered_substreams()
     assert result.status == "warn"
     assert "could not derive" in result.detail
 
 
-def test_pair_five_is_not_registered():
-    """P9-C DELETED pair 5, so no owner names it any more; re-registering it
-    from any owning constant fails here — the deletion is what the guard
-    protects."""
-    derived, _ = audio_runtime._derive_registered_pairs()
+@pytest.mark.parametrize("pair", _RETIRED_PAIRS)
+def test_retired_pairs_are_not_registered(pair):
+    """No owner names pairs 5-7 any more, so re-registering one from any
+    owning constant fails here — the deletion is what the guard protects, and
+    a registered pair is a pair whose resurrection reads as healthy.
+    """
+    derived = audio_runtime._derive_registered_pairs()
 
-    assert 5 not in derived
+    assert pair not in derived
 
 
 def test_registered_pairs_are_within_the_module_range():
     substreams = _modprobe_substreams()
-    derived, _ = audio_runtime._derive_registered_pairs()
+    derived = audio_runtime._derive_registered_pairs()
     for pair in derived:
         assert 0 <= pair < substreams, (
             f"registered pair {pair} is outside pcm_substreams={substreams}"

@@ -646,13 +646,12 @@ impl TtsMixer {
             warn!(
                 "event=fanin.tts_wire_width_mismatch declared={} expected={} \
                  action=converted note=jasper-voice and jasper-fanin disagree on \
-                 this box's assistant width; either the coupling/wire-format \
+                 this box's assistant width; either the wire-format \
                  declaration changed without restarting jasper-voice, or the box \
-                 resolves a wide wire it has not armed (the wire format defaults \
-                 WIDE, so a loopback box is still narrow on the transport half \
-                 and restarting voice will not change that) — compare \
-                 JASPER_FANIN_RING_WIRE_FORMAT and \
-                 JASPER_FANIN_CAMILLA_COUPLING in fanin.env",
+                 resolves a wide wire it has not armed (the ring's wire format \
+                 defaults WIDE, so a narrow box has to declare narrow and \
+                 restarting voice will not change that) — compare \
+                 JASPER_FANIN_RING_WIRE_FORMAT in fanin.env",
                 declared.verb(),
                 expected.verb(),
             );
@@ -3354,16 +3353,13 @@ mod tests {
         assert!(line.contains("declared=AUDIO"), "{line}");
         assert!(line.contains("expected=AUDIO32"), "{line}");
         assert!(line.contains("action=converted"), "{line}");
-        // The remediation must name BOTH causes. "Restart jasper-voice" alone is
-        // wrong advice for a declared-wide-but-unarmed box, where restarting
-        // changes nothing and the coupling is the thing to look at.
-        assert!(
-            line.contains("JASPER_FANIN_CAMILLA_COUPLING"),
-            "the remediation must name the coupling half: {line}",
-        );
+        // The remediation names the one lever that can still be wrong. A
+        // coupling declaration cannot produce a width disagreement any more:
+        // the served set is unset/empty/shm_ring, and anything else parks the
+        // daemon at exit 78 before a payload is ever mixed (ADR-0100).
         assert!(
             line.contains("JASPER_FANIN_RING_WIRE_FORMAT"),
-            "the remediation must name the format half: {line}",
+            "the remediation must name the wire-format lever: {line}",
         );
         drop(flush_tx);
     }

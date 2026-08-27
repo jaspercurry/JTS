@@ -205,7 +205,7 @@ def test_convergence_preserves_coexisting_keys_and_custom_outputd_ring_path(
 ):
     fanin_env = _write(
         tmp_path / "fanin.env",
-        "JASPER_FANIN_OUTPUT_BUFFER_FRAMES=1536\n# operator note\n",
+        "JASPER_FANIN_INPUT_BUFFER_FRAMES=4096\n# operator note\n",
     )
     outputd_env = _write(
         tmp_path / "outputd.env",
@@ -224,7 +224,7 @@ def test_convergence_preserves_coexisting_keys_and_custom_outputd_ring_path(
 
     fanin_body = fanin_env.read_text(encoding="utf-8")
     outputd_body = outputd_env.read_text(encoding="utf-8")
-    assert "JASPER_FANIN_OUTPUT_BUFFER_FRAMES=1536" in fanin_body
+    assert "JASPER_FANIN_INPUT_BUFFER_FRAMES=4096" in fanin_body
     assert "# operator note" in fanin_body
     assert "JASPER_CAMILLA_CHUNKSIZE=256" in outputd_body
     # The convergence preserves the operator's custom Ring B path.
