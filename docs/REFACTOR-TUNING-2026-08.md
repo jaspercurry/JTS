@@ -961,13 +961,27 @@ stated rather than quietly replaced.
 | X1 | sweep-lease trio + closed-loop solver | **DELETED** — never ran in production |
 | X2 | summed-capture runtime | **DELETED** — no production caller |
 
-**The enumerated-set check, at HEAD.** `grep 'set_volume_db('` across `jasper/`,
-excluding the clamped door's own definition and the owner's bound doors, returns
-exactly three sites, each named above: `volume_coordinator.py:2068` (the
-coordinator door the owner is *built on*, not a competing writer),
-`commissioning_service.py:1336` (**W15**, ruled stopped), and
-`correction_crossover_v2._session_volume_io` (**W7**, the single named exception, dying
-with wave 6). **No unaccounted writer remains.**
+**The enumerated-set check, at HEAD — widened past the trailing paren.** This
+row used to grep `set_volume_db(`, which structurally cannot see a bare
+bound-method reference; one exists, so the check is `grep -rn 'set_volume_db'
+jasper/`, and it returns **17 hits**. Thirteen carry no writer: the clamped
+door's own definition (`camilla.py:684`) and its three internal callers
+(`:741`, `:810`, `:827`); the owner's own binding
+(`volume_coordinator.py:2830`, inside the
+`install_volume_owner(VolumeOwner(...))` call); and eight prose mentions
+(`camilla.py:457`, `:700`, `volume_owner.py:205`, `seat_level_ramp.py:1336`,
+`session_seams.py:158`, `correction_setup.py:291`, `cli/aec_tune.py:308`,
+`audio_measurement/level_solver.py:32`). Four sites remain:
+`volume_coordinator.py:2068` (the coordinator door the owner is *built on*, not
+a competing writer), `commissioning_service.py:1336` (**W15**, ruled stopped),
+`correction_crossover_v2._session_volume_io` (**W7**, the single named
+exception, dying with wave 6), and — **the one the paren-grep cannot see** —
+`cli/seat_level.py:413`, binding `set_main_volume_db=cam.set_volume_db`.
+That last is a separate CLI process (`jasper-seat-level`) that never calls
+`install_volume_owner`, so `volume_owner()` answers `None` there
+(`volume_owner.py:799-806`) and there is no owner for it to arbitrate against.
+**No unaccounted writer remains — and the claim no longer rests on a grep that
+could not find one.**
 
 **Six catches, recorded because each was a census entry that read one way and
 behaved another.** W3 (reads deletable, is the only cross-process recovery) ·

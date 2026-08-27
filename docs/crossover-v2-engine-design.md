@@ -249,16 +249,14 @@ level sits below a measurement volume, so including it would win every time and
 pull the fader off the declared level. And the bound **never inverts**: supplying
 a reference can only lower a release, never raise it.
 
-**On `held_target_db` — live today, retired in 6e.** ADR-0004 records the
-reader as a parameter on `jasper/camilla.py`'s release path and adds a scope
-note saying it goes dead once the engine installs one session-scoped graph and
-stops swapping per candidate. **That precondition has already happened, and the
-parameter has not gone yet.** At HEAD it is a constructor argument on
-`MeasurementSessionGraph` itself, threaded into its load and restore paths, and
-bound in production by `web/correction_crossover_v2.py`. The flow states the
-order precisely: it *"rides the session graph's two swaps now instead of two per
-stimulus; **wave 6d retires the duck and 6e retires this reader**"* — so read
-this parameter as live plumbing in the class described above until 6e lands.
+**On `held_target_db` — retired in 6e.** ADR-0004 records the reader as a
+parameter on `jasper/camilla.py`'s release path and adds a scope note saying it
+goes dead once the engine installs one session-scoped graph and stops swapping
+per candidate. That is what happened. Wave 6d stopped the measurement swap
+ducking at all, which left no release for a session-owned level to steer, and
+6e deleted the reader with it: **`held_target_db` has zero hits in `jasper/` at
+HEAD**, and `_duck_release_target_db`'s docstring now records the
+declared-reference exception as gone with the swap that needed it.
 
 What outlives it is the **shape**: ask at release time rather than resolving
 eagerly, because ownership can end inside a bracket; a `None` answer is a
