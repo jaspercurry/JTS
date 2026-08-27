@@ -2930,7 +2930,6 @@ mod tests {
         };
         let state = OutputdState::new(&cfg);
         state.mark_dac_content(DacContentMetrics {
-            transport: "fifo",
             serving_fifo: true,
             fifo_periods: 100,
             starved_periods: 7,
@@ -2975,7 +2974,6 @@ mod tests {
         };
         let state = OutputdState::new(&cfg);
         state.mark_dac_content(DacContentMetrics {
-            transport: "ring",
             serving_fifo: true,
             fifo_periods: 11,
             starved_periods: 2,

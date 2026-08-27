@@ -1779,7 +1779,7 @@ mod tests {
             Err(e) => e,
         };
         assert_eq!(io_error.kind(), io::ErrorKind::InvalidData);
-        let error = classify_shm_ring_attach_error(&path, io_error);
+        let error = classify_ring_attach_error("shm_ring", &path, io_error);
 
         assert_eq!(runtime_error_exit_code(&error), Some(EXIT_CONFIG));
 
@@ -1808,7 +1808,8 @@ mod tests {
             io::ErrorKind::PermissionDenied,
             io::ErrorKind::StorageFull,
         ] {
-            let error = classify_shm_ring_attach_error(
+            let error = classify_ring_attach_error(
+                "shm_ring",
                 "/dev/shm/jts-ring/content.ring",
                 io::Error::new(kind, "synthetic attach failure"),
             );
@@ -1822,7 +1823,8 @@ mod tests {
         // A bare errno with NO mapped `ErrorKind` (EIO): the shape a raw syscall
         // failure arrives in, and the one an `Uncategorized`-defaults-to-park
         // classifier would get wrong.
-        let raw = classify_shm_ring_attach_error(
+        let raw = classify_ring_attach_error(
+            "shm_ring",
             "/dev/shm/jts-ring/content.ring",
             io::Error::from_raw_os_error(5),
         );
@@ -1831,7 +1833,8 @@ mod tests {
         // ...and the config-class kinds still do, so the assertion above is a
         // boundary rather than "the classifier marks nothing".
         for kind in [io::ErrorKind::InvalidInput, io::ErrorKind::InvalidData] {
-            let error = classify_shm_ring_attach_error(
+            let error = classify_ring_attach_error(
+                "shm_ring",
                 "/dev/shm/jts-ring/content.ring",
                 io::Error::new(kind, "synthetic declaration fault"),
             );

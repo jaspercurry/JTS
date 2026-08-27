@@ -439,8 +439,6 @@ impl PeriodAssembler {
 /// `OutputdState::mark_dac_content` copies it into atomics.
 #[derive(Debug, Clone, Copy)]
 pub struct DacContentMetrics {
-    /// Which transport is armed — `"fifo"` or `"ring"`.
-    pub transport: &'static str,
     /// True when the lane filled the LAST period with real audio.
     ///
     /// **The name is the wire's, and it is load-bearing.** Python reads
@@ -763,7 +761,6 @@ impl DacContentSource {
                 Reader::Ring(_) => (0, 0, 0, 0),
             };
         DacContentMetrics {
-            transport: self.transport(),
             serving_fifo: self.last_period_served,
             fifo_periods: self.served_periods,
             starved_periods: self.starved_periods,
@@ -1414,7 +1411,6 @@ mod tests {
             assert!(out.iter().all(|&s| s == 0));
         }
         let m = src.metrics();
-        assert_eq!(m.transport, "fifo");
         assert!(!m.serving_fifo);
         assert_eq!(m.starved_periods, 3);
         assert_eq!(m.fifo_periods, 0);
@@ -1592,7 +1588,6 @@ mod tests {
         );
 
         let m = src.metrics();
-        assert_eq!(m.transport, "ring");
         assert_eq!(m.fifo_periods, 2);
         assert_eq!(m.starved_periods, 0);
         assert!(m.serving_fifo);
