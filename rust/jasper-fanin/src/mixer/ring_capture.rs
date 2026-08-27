@@ -187,7 +187,9 @@ pub(super) enum RingDetachReason {
     /// above (permissions on the file or its directory, an exhausted mapping, a
     /// torn file). Kept separate from `Unavailable` because the remediation is
     /// different: this one usually means the renderer user is not in the ring
-    /// directory's group, or a unit is missing `UMask=0007`.
+    /// directory's group, or a unit is missing `UMask=0007`. The one exception to
+    /// that remediation is `EBUSY` — a live FOREIGN reader already holds the ring
+    /// (the journal's `event=jts_ring.reader.busy` line names the incumbent pid).
     Refused,
     /// The mapping outlived the FILE: the ring at this path was replaced (a
     /// geometry change cleared and recreated it, or an arm/disarm did) while
