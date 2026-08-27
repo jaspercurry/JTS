@@ -58,6 +58,14 @@ route-latency path.
   the "route latency evidence" doctor check. The harness loses
   `--invoke-artifact`, `--require-pass`, `--confirm-route-health-ok`,
   `--measurement-id` and `--duration-seconds`.
+- Also deleted, for the same reason in the mic-export direction:
+  `jasper-usb-mic-latency-artifact` and its console entry, which graded a
+  `JTS Mic` window against a `USB_MIC_LATENCY_BUDGET_MS` into a pass/warn
+  status behind `--require-pass`. The `jasper-usbmic` relay already publishes
+  a live rolling p50/p95/p99 in `/run/jasper-usbmic/status.json`, and doctor's
+  "USB microphone export" check already reads that live p95 while the host is
+  actively pulling and warns above 120 ms — an observation of the present, so
+  it stays, along with the `USB_MIC_LATENCY_WARN_MS` threshold it reads.
 - Deliberately given up: a persistent, per-box record that this route once
   measured under 40 ms. If that question is ever asked again it is answered by
   running the harness, which takes five minutes and reports the *current* box.

@@ -61,7 +61,7 @@
 | Measure inter-speaker sync error for multi-room (stereo pair / sub) on WiFi | [Multi-room sync spike (P0)](#multi-room-sync-spike-p0) |
 | Measure the AirPlay latency budget a sender negotiates (free vs. tight regime for bonded-leader lip-sync) | [Pi-side diagnostics](#pi-side-diagnostics) — [`scripts/airplay-latency-probe.sh`](../scripts/airplay-latency-probe.sh) |
 | Measure `usb_low_latency_48k`'s real p95/p99 route latency with click/capture impulses | [Route-latency click/capture harness](#route-latency-clickcapture-harness) |
-| Certify the reverse `JTS Mic` bridge-emit→ALSA-write latency while a computer is actively recording | [USB microphone export latency artifact](#usb-microphone-export-latency-artifact) |
+| Read the reverse `JTS Mic` bridge-emit→ALSA-write latency while a computer is actively recording | [USB microphone export latency](#usb-microphone-export-latency) |
 | Turn up logging for one subsystem on the live Pi (`/system` Debug card) | [`HANDOFF-observability.md`](HANDOFF-observability.md) |
 | Diagnose speaker identity (mDNS collision rename, hostname drift, management-UI 403s) | [`HANDOFF-identity.md`](HANDOFF-identity.md) — `/state.resilience.identity`, the doctor identity checks, `event=identity_reconcile.*` |
 | Get the verbose DEBUG context around a failure (in-RAM flight recorder, `event=flightrec.dump`) | [`HANDOFF-observability.md`](HANDOFF-observability.md) |
@@ -756,32 +756,25 @@ Pure stdlib + numpy/scipy; covered by `tests/test_analyze_wake_corpus_quality.py
 
 ---
 
-## USB microphone export latency artifact
+## USB microphone export latency
 
-`jasper-usb-mic-latency-artifact` samples the live `jasper-usbmic` status while
-a computer is actively recording from `JTS Mic`. It rejects an idle or stale
-window, then writes a schema-1 JSON record bound to the installed build,
-descriptor revision, resolved software/chip export source, negotiated
-XVF/PortAudio capture geometry,
-realized ALSA writer geometry/target, and operator-supplied host application.
-Use it for the optional Pi→computer microphone direction; it does not replace
-the host→speaker click/capture harness below.
+The `jasper-usbmic` relay measures its own `bridge_emit_to_alsa_write` age
+continuously and publishes live p50/p95/p99 in
+`/run/jasper-usbmic/status.json`. `jasper-doctor`'s "USB microphone export"
+check reads that live number while a computer is actively recording from
+`JTS Mic` and warns above 120 ms; it deliberately does not judge a frozen idle
+ring. There is nothing to certify — see
+[ADR-0185](adr/0185-latency-is-monitored-and-adapted-never-certified.md).
 
 ```sh
-sudo /opt/jasper/.venv/bin/jasper-usb-mic-latency-artifact \
-  --duration-seconds 30 \
-  --host-os "macOS 15" \
-  --host-app "CoreAudio / sounddevice" \
-  --output /tmp/jts-usb-mic-latency.json
+# The live number, straight from the relay:
+ssh pi@jts.local 'jq "{host_streaming, source_age_ms_p50, source_age_ms_p95, source_age_ms_p99}" /run/jasper-usbmic/status.json'
 ```
 
-The active-only 120 ms doctor budget and the exact artifact interpretation are
-canonical in
+The measured scope is `bridge_emit_to_alsa_write`, canonical in
 [`HANDOFF-usb-gadget.md`](HANDOFF-usb-gadget.md#toggling-and-choosing-the-computer-microphone-from-wake).
-Aggregation waits at least 11 seconds and also proves 512 exact source-age
-appends after the first post-start relay status, so delayed status reads cannot
-admit history from before the run. Use the documented 30-second command for
-review artifacts, and add `--require-pass` in automation.
+It is **not** physical mic→host end-to-end latency: XVF/PortAudio capture time,
+gadget fill, USB transport, and the host audio stack are separate terms.
 
 ---
 

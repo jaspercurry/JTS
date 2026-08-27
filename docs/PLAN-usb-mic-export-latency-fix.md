@@ -303,6 +303,14 @@ Rewrite **`docs/HANDOFF-usb-gadget.md`** "Toggling the computer microphone from 
 
 ### 3b. One-shot certification artifact (mic-direction sibling of the route-latency artifact)
 
+> **Executed, then reversed — do not rebuild this.** This section shipped as
+> `jasper/cli/usb_mic_latency_artifact.py` and was deleted, along with the
+> route-latency artifact it was modelled on, by
+> [ADR-0185](adr/0185-latency-is-monitored-and-adapted-never-certified.md):
+> latency is monitored and adapted, never certified. The live half of this plan
+> (§3a's relay percentiles, the doctor warn, the `/aec` passthrough) stands and
+> is what the mic direction uses today.
+
 Adapt the pattern in `jasper/cli/route_latency_artifact.py` (`RouteLatencyMetrics` at `:~53`, `nearest_rank_percentile` at `:~71`, `metrics_from_samples` at `:~86`, config-hash binding via provenance). Add a new artifact builder (new module `jasper/cli/usb_mic_latency_artifact.py` OR a function in the relay's tooling) that binds a certification run to:
 
 - `build_sha` (from `/var/lib/jasper/build.txt`),
