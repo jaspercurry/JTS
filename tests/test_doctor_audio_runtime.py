@@ -1128,6 +1128,32 @@ def test_the_arm_waypoint_is_reported_once_by_the_check_that_owns_it(
     assert "--endpoint aloop" not in split.detail
 
 
+def test_the_doctor_reads_outputd_env_through_the_units_own_layering(
+    monkeypatch, tmp_path
+):
+    """The LAST EnvironmentFile wins, exactly as it does for outputd itself.
+
+    jasper-outputd.service names outputd.env then grouping-outputd.env, so a
+    bonded box's grouping pin overrides the base file. Reading only the base
+    layer reported such a box on an env it is not running — which is what made
+    the transport checks contradict the grouping doctor.
+    """
+    from jasper.fanin_coupling import OUTPUTD_CONTENT_BRIDGE_ENV_VAR
+
+    base = tmp_path / "outputd.env"
+    base.write_text(f"{OUTPUTD_CONTENT_BRIDGE_ENV_VAR}=shm_ring\n", encoding="utf-8")
+    grouping = tmp_path / "grouping-outputd.env"
+    grouping.write_text(f"{OUTPUTD_CONTENT_BRIDGE_ENV_VAR}=direct\n", encoding="utf-8")
+    monkeypatch.setenv("JASPER_OUTPUTD_ENV_FILE", str(base))
+    monkeypatch.setattr(
+        "jasper.multiroom.reconcile.OUTPUTD_GROUPING_ENV_FILE", str(grouping)
+    )
+
+    env = audio_runtime._outputd_reconciled_env()
+
+    assert env[OUTPUTD_CONTENT_BRIDGE_ENV_VAR] == "direct"
+
+
 def test_outputd_content_bridge_detail_reports_every_mode():
     """The surviving `/state.content_bridge` readout is a plain mode string.
 
@@ -3023,6 +3049,15 @@ _ALSA_LOCAL_PIPE_CFG = _ALSA_CFG.replace(
     "/run/jasper-outputd/content.pipe",
 )
 
+# What a bonded LEADER actually loads: Ring A capture (its transport is the ring
+# like every other box) into the Snapcast pipe (its post-DSP endpoint is the
+# bond, not a local ring). `_ALSA_CFG` is the near-miss — same sink, a capture
+# that reverted off the ring — and must keep warning.
+_BONDED_LEADER_CFG = _ALSA_CFG.replace(
+    'device: "plug:jasper_capture"',
+    'device: "jts_ring_capture"',
+)
+
 
 def test_capture_parser_reads_rawfile(tmp_path):
     cfg = tmp_path / "c.yml"
@@ -3073,6 +3108,36 @@ def test_a_graph_that_is_not_the_ring_graph_warns_with_the_ring_remedy(
     OK). Under one transport they are the same state — the loaded graph is not
     this box's ring graph — and the remedy names the only transport there is.
     """
+    res = _run_check(monkeypatch, cfg_text=cfg_text, tmp_path=tmp_path)
+    assert res.status == "warn"
+    assert "jasper-fanin-coupling-reconcile shm_ring" in res.detail
+
+
+def test_a_bonded_leader_feeding_the_snapcast_pipe_is_ok(monkeypatch, tmp_path):
+    """THE FALSE WARN this endpoint restores.
+
+    A bonded leader's camilla#1 captures Ring A and plays into the Snapcast
+    pipe; it reaches no local ring at all, by design. Comparing the playback
+    axis anyway read `(missing)` against a ring name and warned the box that is
+    feeding the whole group.
+
+    Its CONTROL is `_ALSA_CFG` in the parametrized warn above: the same sink
+    with a capture that reverted off the ring still warns, so what is accepted
+    here is the ENDPOINT and not any File sink.
+    """
+    res = _run_check(monkeypatch, cfg_text=_BONDED_LEADER_CFG, tmp_path=tmp_path)
+    assert res.status == "ok"
+
+
+def test_a_non_snapcast_file_sink_is_not_that_endpoint(monkeypatch, tmp_path):
+    """A stale LOCAL pipe is a real fault — the filename is what tells them apart.
+
+    Without comparing it, "playback is a File sink" would exempt every stale
+    pipe the removed transport left behind.
+    """
+    cfg_text = _BONDED_LEADER_CFG.replace(
+        "/run/jasper-snapserver/snapfifo", "/run/jasper-outputd/content.pipe"
+    )
     res = _run_check(monkeypatch, cfg_text=cfg_text, tmp_path=tmp_path)
     assert res.status == "warn"
     assert "jasper-fanin-coupling-reconcile shm_ring" in res.detail
@@ -4350,19 +4415,24 @@ def test_an_ioplug_alsa_cannot_open_is_a_hard_fail(monkeypatch, tmp_path):
 
     Presence cannot separate it from a healthy plugin, so without the probe the
     box reports a green ring platform and carries no audio.
+
+    The second assertion is a PASS-THROUGH pin, not a prose pin: the sentinel is
+    the test's own, and what is being pinned is that the probe's reason reaches
+    the operator rather than being swallowed into "probe failed".
     """
+    probe_reason = "probe-reason-sentinel"
     _stage_assets(monkeypatch, tmp_path)
     _fanin_unit_state(monkeypatch, "inactive")
     monkeypatch.setattr(
         audio_runtime,
         "_jts_ring_pcm_resolves",
-        lambda pcm, tool: (False, "undefined symbol: snd_dlsym_start"),
+        lambda pcm, tool: (False, probe_reason),
     )
 
     res = audio_runtime.check_ring_platform_assets()
 
     assert res.status == "fail"
-    assert "snd_dlsym_start" in res.detail
+    assert probe_reason in res.detail
 
 
 @pytest.mark.parametrize(
@@ -4987,6 +5057,7 @@ def _arrange(
     playback_device: str | None,
     crossover_playback_device: str | None = None,
     primary_config_missing: bool = False,
+    grouped_park: bool = False,
 ) -> None:
     """Put the box in one (content-bridge, loaded-graph-playback) combination.
 
@@ -5001,8 +5072,14 @@ def _arrange(
     outputd_env.write_text(
         f"JASPER_OUTPUTD_CONTENT_BRIDGE={bridge}\n", encoding="utf-8"
     )
+    # The env-file seam the doctor's layered reader honours for the FIRST layer;
+    # the module constant is what the ring-path derivation still reads.
+    monkeypatch.setenv("JASPER_OUTPUTD_ENV_FILE", str(outputd_env))
     monkeypatch.setattr(
         "jasper.audio_runtime_plan.DEFAULT_OUTPUTD_ENV_PATH", str(outputd_env)
+    )
+    monkeypatch.setattr(
+        audio_runtime, "_grouped_dac_content_lane_parked", lambda: grouped_park
     )
     primary = _write_pair(tmp_path, "primary", playback_device)
     if primary_config_missing:
@@ -5061,25 +5138,31 @@ def test_a_bridge_waiting_on_a_ring_nobody_writes_fails_too(
     assert "jasper-fanin-coupling-reconcile shm_ring" in result.detail
 
 
-def test_the_known_mid_arm_transient_is_disclosed_to_the_operator(
+def test_a_bonded_follower_on_the_stereo_ring_is_not_a_split(
     monkeypatch, tmp_path
 ) -> None:
-    """The arm ladder moves the graph first, so this can FAIL mid-ladder.
+    """THE FALSE FAIL this carve-out exists to prevent.
 
-    That is the ladder working. The detail has to say so, or an operator
-    running doctor during an arm reads a correct FAIL as a fault.
+    A bonded passive follower loads the stereo ring by design while its
+    grouping env pins CONTENT_BRIDGE=direct, and it PLAYS — through the
+    dac_content lane. The generalized predicate reads that pair as a split, and
+    the arm it would prescribe is one `coupling_supported_for_route` refuses for
+    exactly this box. `check_ring_transport_park` owns the shape by name, so
+    this check stands down on it.
+
+    Its CONTROL is the parametrized fail above: the identical
+    (direct bridge, stereo ring) pair with no park FAILs, so what is carved out
+    here is the park and not the stereo ring itself.
     """
     _arrange(
         monkeypatch,
         tmp_path,
         bridge=DIRECT_BRIDGE,
-        playback_device=RING_ACTIVE_PLAYBACK_DEVICE,
+        playback_device=RING_PLAYBACK_DEVICE,
+        grouped_park=True,
     )
 
-    detail = audio_runtime.check_ring_split_transport().detail.lower()
-
-    assert "transient" in detail
-    assert "authoritative" in detail
+    assert audio_runtime.check_ring_split_transport().status == "ok"
 
 
 # --- Per-conjunct pins. A two-term conjunction passes a single-conjunct test
@@ -5218,6 +5301,7 @@ def _arrange_projection(monkeypatch, tmp_path, *, env_lines: str):
     """
     env = tmp_path / "outputd.env"
     env.write_text(env_lines, encoding="utf-8")
+    monkeypatch.setenv("JASPER_OUTPUTD_ENV_FILE", str(env))
     monkeypatch.setattr(
         "jasper.audio_runtime_plan.DEFAULT_OUTPUTD_ENV_PATH", str(env)
     )

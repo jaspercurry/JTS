@@ -19,7 +19,7 @@ from ... import ring_assets
 from ...audio_hardware.dac import latency_floor_for
 from ...audio_measurement.correction_lane import CORRECTION_SUBSTREAM
 from ...camilla_config_contract import read_camilla_device_field
-from ...env_load import parse_env_file
+from ...env_load import merged_env_files
 from ...fanin_coupling import RING_SLOT_FRAMES
 from ._registry import doctor_check
 from ._shared import CheckResult, _active_audio_dac_id, _run
@@ -166,8 +166,6 @@ _OUTPUTD_EXPECTED_DAC_PCM = "outputd_dac"
 
 _OUTPUTD_EXPECTED_DUAL_DAC_PCM = "dual_apple_usb_c_dac_4ch"
 
-_OUTPUTD_ENV_PATH = "/var/lib/jasper/outputd.env"
-
 _FANIN_STATUS_SOCKET = "/run/jasper-fanin/control.sock"
 
 _OUTPUTD_STATUS_SOCKET = "/run/jasper-outputd/control.sock"
@@ -262,9 +260,28 @@ def _route_live_state_issues_for_doctor(
 
 
 def _outputd_reconciled_env() -> dict[str, str]:
-    return parse_env_file(
-        os.environ.get("JASPER_OUTPUTD_ENV_FILE") or _OUTPUTD_ENV_PATH
-    )
+    """outputd's env as its own unit layers it, read fresh.
+
+    BOTH FILES, in ``jasper-outputd.service``'s own ``EnvironmentFile=`` order:
+    ``outputd.env`` then ``grouping-outputd.env``, so a bonded box's grouping
+    pins (notably ``JASPER_OUTPUTD_CONTENT_BRIDGE=direct``) win here exactly as
+    they win for the daemon. Reading only the first layer reported a bonded box
+    on an env it is not running.
+
+    The merge is :func:`jasper.control.transport_park._outputd_env`'s, consumed
+    rather than restated, so the doctor and ``/state`` cannot disagree about
+    what outputd's env says.
+    """
+    from ...control.transport_park import _outputd_env
+
+    override = os.environ.get("JASPER_OUTPUTD_ENV_FILE")
+    if override:
+        # The test/operator seam for the FIRST layer only; the grouping layer
+        # keeps its own path so an override cannot hide a bonded pin.
+        from ...multiroom.reconcile import OUTPUTD_GROUPING_ENV_FILE
+
+        return merged_env_files((override, OUTPUTD_GROUPING_ENV_FILE))
+    return _outputd_env()
 
 
 def _outputd_active_channels_from_env(env: dict[str, str]) -> int | None:
@@ -1063,6 +1080,28 @@ def _loaded_playback_type(config_path: Path) -> str | None:
     return _loaded_device_field(config_path, "playback", "type")
 
 
+def _loaded_playback_filename(config_path: Path) -> str | None:
+    """The ``devices.playback.filename`` of a CamillaDSP config, or None."""
+    return _loaded_device_field(config_path, "playback", "filename")
+
+
+def _graph_feeds_the_bond(config_path: Path) -> bool:
+    """Is this graph's post-DSP endpoint the bond rather than a local ring?
+
+    A bonded LEADER's camilla#1 plays into the Snapcast pipe
+    (:data:`jasper.multiroom.reconcile.SNAPFIFO`, imported rather than
+    respelled) and never touches a ring device. Any OTHER ``File`` sink is not
+    this endpoint — a stale local pipe is a real fault and must keep failing the
+    playback axis, which is why the filename is compared and not just the type.
+    """
+    from ...multiroom.reconcile import SNAPFIFO
+
+    return (
+        _loaded_playback_type(config_path) == "File"
+        and _loaded_playback_filename(config_path) == SNAPFIFO
+    )
+
+
 def _loaded_playback_format(config_path: Path) -> str | None:
     """The ``devices.playback.format`` of a CamillaDSP config, or None."""
     return _loaded_device_field(config_path, "playback", "format")
@@ -1424,14 +1463,15 @@ def _requires_roleful_graph() -> bool:
 def check_fanin_coupling() -> CheckResult:
     """The loaded CamillaDSP graph must name this box's ring devices.
 
-    Since ADR-0100 the ring is the only transport, so there is ONE expectation
-    and no second one to select between: capture is ``jts_ring_capture``
-    (Ring A) and playback is the post-DSP ring this box's endpoint marker names
-    (``jts_ring_playback``, or ``jts_ring_active_playback`` once the active
-    endpoint is armed). A graph naming anything else is a stale artifact —
-    CamillaDSP reads or writes a device nobody is at the far end of. The fix is
-    to re-run the ordered reconciler:
-    ``jasper-fanin-coupling-reconcile shm_ring``.
+    Since ADR-0100 the ring is the only transport, so the capture axis has ONE
+    expectation and no second one to select between: ``jts_ring_capture``
+    (Ring A). The playback axis has two legal endpoints — the post-DSP ring this
+    box's endpoint marker names (``jts_ring_playback``, or
+    ``jts_ring_active_playback`` once the active endpoint is armed), or the
+    Snapcast pipe a bonded LEADER feeds instead of any local ring. A graph
+    naming anything else is a stale artifact — CamillaDSP reads or writes a
+    device nobody is at the far end of. The fix is to re-run the ordered
+    reconciler: ``jasper-fanin-coupling-reconcile shm_ring``.
 
     KEYED ON THE LOADED GRAPH, never on ``JASPER_FANIN_CAMILLA_COUPLING``. A
     running fan-in is on the ring whatever that file says — the daemon refuses
@@ -1448,6 +1488,7 @@ def check_fanin_coupling() -> CheckResult:
         RING_PLAYBACK_DEVICE,
         ring_active_endpoint_armed,
     )
+    from jasper.multiroom.reconcile import SNAPFIFO
 
     label = "fan-in coupling"
     # _active_camilla_config_path returns (statefile, active_config_path|None);
@@ -1495,7 +1536,13 @@ def check_fanin_coupling() -> CheckResult:
             f"capture={capture}/{capture_device or '(missing)'} "
             f"(expected Alsa/{RING_CAPTURE_DEVICE})"
         )
-    if playback_device != expected_playback:
+    # A box has TWO legal post-DSP endpoints, and only one of them is a ring: a
+    # bonded LEADER's camilla#1 writes the Snapcast pipe and reaches no ring
+    # device at all (jasper.multiroom.reconcile owns that lane). The playback
+    # axis is this check's business only on the ring endpoint; comparing anyway
+    # read `(missing)` against a ring name and warned a box feeding the group.
+    feeds_the_bond = _graph_feeds_the_bond(config_path)
+    if not feeds_the_bond and playback_device != expected_playback:
         if roleful and not armed:
             ring_mismatches.append(
                 f"playback_device={playback_device or '(missing)'} "
@@ -1510,10 +1557,11 @@ def check_fanin_coupling() -> CheckResult:
                 f"(expected {expected_playback})"
             )
     if not ring_mismatches:
+        endpoint = SNAPFIFO if feeds_the_bond else expected_playback
         return CheckResult(
             label,
             "ok",
-            f"capture={RING_CAPTURE_DEVICE}, playback={expected_playback}",
+            f"capture={RING_CAPTURE_DEVICE}, playback={endpoint}",
         )
     # Severity stays WARN. Under the arm ladder this is a mid-procedure
     # TRANSIENT — the graph moves first, the marker is re-derived second — so a
@@ -1599,8 +1647,9 @@ def _jts_ring_probeable_pcms() -> list[tuple[str, str]]:
 
     Within that, only PCMs whose ring FILE is absent: an existing file may still
     be attached (CamillaDSP writes Ring B, outputd reads it), and an absent one
-    cannot be, so this is what makes "never probe a ring in use" a property of
-    the gate rather than of the ioplug's EBUSY.
+    cannot be. That is a GATE, not a guarantee — the ``exists`` check races a
+    daemon restarting underneath it — but a probe that loses that race still
+    unlinks only what it created, and the ioplug's SPSC guard is what refuses it.
     """
     if _run(["systemctl", "is-active", "jasper-fanin.service"]).stdout.strip() == (
         "active"
@@ -1658,14 +1707,18 @@ def _jts_ring_pcm_resolves(pcm: str, tool: str) -> tuple[bool, str]:
     # conf.d's own pcm.<name> block declares (an absent key is the ioplug's
     # own default) — see _jts_ring_probe_wire.
     sink = "/dev/null" if tool == "arecord" else "/dev/zero"
+    # 4 s, not 6: the caller probes up to three PCMs in one row, and a doctor row
+    # is cut off at 15 s — at 6 s each, three hung probes overrun it and the
+    # operator loses the stderr this probe exists to surface. 4 s still leaves
+    # 3 s of slack over a 1 s capture/playback.
     try:
         proc = _run(
             [tool, "-D", pcm, "-c", str(channels), "-r", "48000",
              "-f", sample_format, "-d", "1", sink],
-            timeout=6.0,
+            timeout=4.0,
         )
     except subprocess.TimeoutExpired:
-        return False, "open probe hung (>6 s) — ioplug no-reader/no-writer path may be broken"
+        return False, "open probe hung (>4 s) — ioplug no-reader/no-writer path may be broken"
     finally:
         # Remove a ring file the probe created (it did not exist beforehand).
         # Best-effort: a failure to unlink must not turn a clean probe into a
@@ -1681,6 +1734,30 @@ def _jts_ring_pcm_resolves(pcm: str, tool: str) -> tuple[bool, str]:
     if len(err) > 160:
         err = err[:157] + "..."
     return False, err or f"{tool} exit {proc.returncode}"
+
+
+def _grouped_dac_content_lane_parked() -> bool:
+    """Is this box the bonded shape whose post-DSP hop is not a ring at all?
+
+    ``jasper.control.transport_park`` is the one place that answers which park a
+    box is in, so this asks it rather than re-deriving "is it bonded" from the
+    grouping config — a second derivation would drift from the surface the
+    household and ``/state`` read.
+
+    Fail-soft to False: an unreadable topology must not silence a real split.
+    The park check's own ``unavailable`` branch is where that read failure is
+    reported.
+    """
+    from ...control import transport_park
+
+    try:
+        state = transport_park.snapshot()
+    except Exception:  # noqa: BLE001 - a park read must never crash a sibling
+        return False
+    return any(
+        park.get("park_class") == transport_park.PARK_GROUPED_DAC_CONTENT_LANE
+        for park in (state.get("parks") or [])
+    )
 
 
 @doctor_check(order=51.72, group="audio")
@@ -1731,6 +1808,15 @@ def check_ring_split_transport() -> CheckResult:
     :func:`check_ring_transport_park`'s question, and whether the graph is the
     one this box should be running is :func:`check_fanin_coupling`'s.
 
+    NOR IS THE GROUPED PARK. A bonded box whose dac_content lane is armed runs
+    ``JASPER_OUTPUTD_CONTENT_BRIDGE=direct`` by design (its grouping env pins
+    it, and ``jasper.cli.doctor.grouping`` requires that pin while bonded) while
+    its graph still loads the stereo ring — a pair this predicate reads as a
+    split on a box that is playing. It is a park with a name and an issue, and
+    the arm this check would prescribe is one
+    ``coupling_supported_for_route`` refuses for exactly that box, so the park
+    is carved out rather than double-reported with a dead remedy.
+
     KNOWN TRANSIENT. The arm ladder moves the graph first and the bridge later,
     so a doctor run taken INSIDE an active arm ladder can FAIL here for the
     seconds between those rungs. That is the ladder working, not a fault. The
@@ -1738,10 +1824,8 @@ def check_ring_split_transport() -> CheckResult:
     """
     from jasper.audio_runtime_plan import (
         DEFAULT_CAMILLA2_STATEFILE_PATH,
-        DEFAULT_OUTPUTD_ENV_PATH,
         output_endpoint_evidence_from_statefiles,
     )
-    from jasper.env_file import read_value
     from jasper.fanin_coupling import (
         OUTPUTD_CONTENT_BRIDGE_ENV_VAR,
         OUTPUTD_CONTENT_BRIDGE_SHM_RING,
@@ -1751,12 +1835,19 @@ def check_ring_split_transport() -> CheckResult:
     )
 
     label = "ring split transport"
-    try:
-        outputd_env = Path(DEFAULT_OUTPUTD_ENV_PATH).read_text(encoding="utf-8")
-    except OSError:
-        outputd_env = ""
+    if _grouped_dac_content_lane_parked():
+        # A bonded box's grouping env pins the DIRECT bridge and its graph feeds
+        # the dac_content lane, so the pair below reads as a split while the box
+        # is playing. That shape has an owner — `check_ring_transport_park`
+        # names it `grouped_dac_content_lane` with its tracked issue — and this
+        # check must not prescribe an arm the coupling support matrix refuses
+        # for exactly that box.
+        return CheckResult(
+            label, "ok", "grouped dac_content lane; see the transport-park check"
+        )
+    outputd_env = _outputd_reconciled_env()
     bridge = resolve_outputd_content_bridge(
-        read_value(outputd_env, OUTPUTD_CONTENT_BRIDGE_ENV_VAR)
+        outputd_env.get(OUTPUTD_CONTENT_BRIDGE_ENV_VAR)
     )
     outputd_on_ring = bridge == OUTPUTD_CONTENT_BRIDGE_SHM_RING
 
@@ -1864,15 +1955,14 @@ def check_active_ring_path_projection() -> CheckResult:
     from jasper.env_file import read_value
 
     label = "active ring path projection"
-    try:
-        outputd_env = Path(DEFAULT_OUTPUTD_ENV_PATH).read_text(encoding="utf-8")
-    except OSError:
-        outputd_env = ""
     # THE BRIDGE, not the persisted coupling: outputd's ring-path allowlist runs
     # iff outputd is on the ring bridge, so that key is what makes this one live
     # or inert. A box off the ring bridge is the sibling check's subject.
+    #
+    # LAYERED, because a bonded box's grouping env pins this key and the unit
+    # reads that file last — the gate has to see what outputd sees.
     bridge = resolve_outputd_content_bridge(
-        read_value(outputd_env, OUTPUTD_CONTENT_BRIDGE_ENV_VAR)
+        _outputd_reconciled_env().get(OUTPUTD_CONTENT_BRIDGE_ENV_VAR)
     )
     if bridge != OUTPUTD_CONTENT_BRIDGE_SHM_RING:
         return CheckResult(
@@ -1880,6 +1970,14 @@ def check_active_ring_path_projection() -> CheckResult:
             "ok",
             f"{OUTPUTD_CONTENT_BRIDGE_ENV_VAR}={bridge}; no ring path to read",
         )
+    # The SUBJECT stays outputd.env's own text: the marker and the ring path are
+    # single-writer keys of that file (the grouping layer pins neither), and
+    # `_outputd_ring_path_for` is contracted on one snapshot of the file being
+    # reconciled — a merged view would fork that derivation.
+    try:
+        outputd_env = Path(DEFAULT_OUTPUTD_ENV_PATH).read_text(encoding="utf-8")
+    except OSError:
+        outputd_env = ""
     carried = resolve_outputd_ring_path(
         read_value(outputd_env, OUTPUTD_RING_PATH_ENV_VAR)
     )
@@ -3092,10 +3190,13 @@ def _outputd_transport_health(
     OUTPUTD'S OWN ENV IS THE EXPECTATION, not ``JASPER_FANIN_CAMILLA_COUPLING``.
     Under ADR-0100 the fan-in file selects nothing — the daemon serves the ring
     whatever it says — so it cannot predict what outputd opened. The content
-    bridge in outputd's env can, and it is the file outputd itself reads, which
-    makes this comparison "is the running daemon on the env it was last given?"
-    — a restart it missed after a reconcile. Whether that env is the RIGHT one
-    for this box is :func:`check_ring_split_transport`'s question.
+    bridge does, and ``outputd_env`` here is the daemon's own env read through
+    the unit's ``EnvironmentFile=`` layering (:func:`_outputd_reconciled_env`),
+    so a bonded box's grouping pin is part of the expectation exactly as it is
+    part of what outputd started with. That makes this comparison "is the
+    running daemon on the env it was last given?" — a restart it missed after a
+    reconcile. Whether that env is the RIGHT one for this box is
+    :func:`check_ring_split_transport`'s question.
     """
     from jasper.fanin_coupling import (
         COUPLING_SHM_RING,
