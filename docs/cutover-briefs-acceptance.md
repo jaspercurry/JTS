@@ -14,9 +14,10 @@
 > [`REFACTOR-CUTOVER-2026-08.md`](REFACTOR-CUTOVER-2026-08.md) — plans the
 > cutover. This chunk plans the **proof**.
 >
-> **Nothing here is a hardware licence.** Ruling S11's five sanctioned acts are
-> still five. §3 *drafts* a sixth for the owner to sign or refuse; drafting it
-> does not add it.
+> **Nothing here is a hardware licence.** §3 drafted a sixth sanctioned act for
+> the owner to sign or refuse; **he adopted it on 2026-08-26**, so S11's list is
+> now six. The act itself is still blocked on a build that does not exist, and
+> nothing else in this brief opens the box.
 
 **STATUS — scouted at `c253c3cf1`, paper only. No hardware was touched.**
 
@@ -25,7 +26,7 @@
 | 0 | Premise re-derivation ledger | VERIFIED-COMPLETE |
 | 1 | Row 9 — the baseline re-park | VERIFIED-COMPLETE, three gaps flagged |
 | 2 | Row 10 — the instrument roster's status | VERIFIED-COMPLETE |
-| 3 | The S11 amendment for the producer build | **DRAFTED — awaits the owner** |
+| 3 | The S11 amendment for the producer build | **ADOPTED — owner-ratified 2026-08-26; now S11 act 6** |
 | 4 | The chunk-3 order | VERIFIED-COMPLETE |
 
 **The three things to read if you read nothing else.** (1) Row 9's pass/fail
@@ -33,8 +34,10 @@ instrument is a bespoke script chain inside a **gitignored** directory, not a
 shipped tool — the tool the criterion names errors on this round shape by design
 (§1.6). (2) 7j demoted the topology block, but **`driver_style` is not
 metadata** and a second gate one step downstream is untouched, so "7j landed"
-does not mean "the box opens" (§1.4). (3) **Three of S11's five sanctioned acts
-are unrun**, and they batch into one bench evening in dependency order (§4).
+does not mean "the box opens" (§1.4). (3) **Three of S11's six sanctioned acts
+are unrun** — 1, 2 and 5 — and they batch into one bench evening in dependency
+order (§4). (Act 6, adopted 2026-08-26, is a fourth unrun act, but it waits on a
+build rather than on an evening — §3.3.)
 
 ---
 
@@ -477,9 +480,10 @@ best-of final, re-measured. It opens **only after every row above closes**, and
 it **opens with instrument bring-up in roster order — R-1 → R-5a**, with
 R-5b/R-6 when the owner provides hardware.
 
-Two constraints the roster carries and this brief will not soften. **S11's five
-sanctioned acts stay exactly five** — the roster is post-acceptance and adds
-nothing to that list (`:1456-1464`). And **an instrument is CODE; a preset is
+Two constraints the roster carries and this brief will not soften. **S11's
+sanctioned acts stay exactly six** — the original five plus the act 6 adopted on
+2026-08-26 — and the roster is post-acceptance and adds nothing to that list
+(`:1456-1464`). And **an instrument is CODE; a preset is
 DATA** (`:1341-1346`) — assembling `full-cloud` out of built instruments is a
 parameter bundle, but building R-1…R-6 is engineering.
 
@@ -538,11 +542,13 @@ that file.
 
 ## 3. The S11 amendment for the producer build
 
-> **THIS SECTION DRAFTS. IT DOES NOT ENACT.** S11's licence is closed at five
-> acts and only the owner may widen it. What follows is amendment text written
-> to be signed or refused, plus the cost of the act it would authorise, so the
-> ruling is made with the bill in view. **Until the owner adds it, the producer
-> cannot be proven and must not be run.**
+> **ADOPTED — owner-ratified 2026-08-26 (in-chat).** This section drafted the
+> amendment; the owner signed it, and it is now **S11 act 6**, recorded in
+> `REFACTOR-TUNING-2026-08.md` §4. The text below is the draft as written and as
+> adopted — the plan's S11 row is the authoritative copy. The cost accounting in
+> §3.3 stands unchanged, and it is the operative constraint now: **the act
+> proves a producer, it does not build one, so nothing may run until the build
+> in §3.3 lands.**
 
 ### 3.1 Why the existing five acts do not cover it
 
@@ -571,12 +577,14 @@ and §6 R8 is explicit that it is *"scoping, not commissioning"* — an hour on 
 box to answer the design question *"what should the receipt say?"*, before wave
 4 books an estimate. It authorises looking. It does not authorise a run.
 
-And S11 says **"NO commissioning"** in terms. The producer proof is a
-commissioning run. It is excluded by name, and 4g's own text concedes it:
-*"which S11 excludes until a commissioning run is added to the sanctioned five
-explicitly."*
+And S11 said **"NO commissioning"** in terms. The producer proof is a
+commissioning run. It was excluded by name, and 4g's own text conceded it —
+*"which S11 excluded until a commissioning run was added to the sanctioned list
+explicitly"* — which is exactly the condition the 2026-08-26 ratification met.
+**S11's exclusion now reads "NO commissioning beyond act 6's single bounded
+run."**
 
-### 3.2 The draft amendment — for owner sign-off
+### 3.2 The amendment — drafted here, adopted 2026-08-26 as S11 act 6
 
 > **(6) The commissioning producer proof.** *One* commissioning run on jts3,
 > for the sole purpose of proving that the re-armed summed-capture producer
@@ -647,7 +655,10 @@ it one evening, assuming the build is already merged and green.
 **Quiet-hours note.** This act plays audible stimuli. It is daytime work or it
 asks first.
 
-### 3.4 If the owner refuses
+### 3.4 If the owner had refused — the path not taken
+
+*Kept as the recorded cost of the alternative; the owner adopted the act on
+2026-08-26, so this branch is counterfactual.*
 
 Refusal is a coherent answer and the plan already survives it. 4g's producer
 half simply does not land during the refactor; the withdrawn −2,089-line
@@ -687,7 +698,7 @@ Wave 5 is CLOSED (`:923`) though its Verify demanded the run first; waves
 6d/6e/6f merged (`f6a6c56f3`, `5da40b9e2`, `b9738bf67`) though 6d's own body set
 a bar it did not clear — *"**Not merged.** … the no-pop check on jts3 is the
 evidence that licenses it"*; and PR #3006 deferred act 5 outright. **So three of
-S11's five acts are unrun — 1 (row 9), 2 (no-pop), 5 (7j's verification) — and
+S11's six acts are unrun — 1 (row 9), 2 (no-pop), 5 (7j's verification) — and
 no record of any exists in `captures/`.** This is not a violation to litigate.
 The plan flagged its own split as *"the conductor's scoping of the rule, not the
 owner's words — say so, and let the owner collapse it if he meant a hardware run
@@ -713,10 +724,12 @@ chunk 2's §7 contains no producer item and the document never mentions 4g or 4h
 It is chunk-1 residual that neither chunk owns. §3 asks the licence question;
 who schedules the build is a different open question this brief does not answer.
 
-**The owner's queue is three items, not one.** #3151 settled chunk 2's §6
-decisions and left two things waiting on him — **6.2's seam brief** and
-**Appendix A's charter question**. §3's act 6 is the third. They are
-independent: none blocks another, and only act 6 touches hardware.
+**The owner's queue was three items, and it is now empty.** #3151 settled chunk
+2's §6 decisions and left two things waiting on him — **6.2's seam brief** and
+**Appendix A's charter question**; §3's act 6 was the third. All three were
+ruled in chat on **2026-08-26**: 6.2 **FOLDs**, Appendix A **drops the
+attribution**, and act 6 is **adopted**. They were independent — none blocked
+another — and only act 6 touches hardware.
 
 ### The recommendation
 

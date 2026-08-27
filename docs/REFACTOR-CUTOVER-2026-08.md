@@ -13,9 +13,10 @@
 > question here.
 
 **STATUS — all eight sections VERIFIED-COMPLETE, re-derived at `4a9e9f631`.
-§6's three open decisions are SETTLED-OR-BRIEFED and the citation question is
-answered, re-derived at `c253c3cf1`. Two things wait on the owner: 6.2's seam
-brief and Appendix A's one question.**
+§6's three open decisions are SETTLED and the citation question is answered,
+re-derived at `c253c3cf1`. NOTHING WAITS ON THE OWNER — he ruled both remaining
+items in chat on 2026-08-26: 6.2's seam brief FOLDs, and Appendix A's question is
+DROP the attribution.**
 
 | § | Section | Status |
 |---|---|---|
@@ -25,10 +26,10 @@ brief and Appendix A's one question.**
 | 3 | Recommender binding | VERIFIED-COMPLETE |
 | 4 | Seam colour reconciliation | VERIFIED-COMPLETE |
 | 5 | Front-end wiring | VERIFIED-COMPLETE |
-| 6 | God-file dissolution map | VERIFIED-COMPLETE · **6.1 RULED · 6.2 RULED + one OWNER-BRIEF · 6.3 RULED** |
+| 6 | God-file dissolution map | VERIFIED-COMPLETE · **6.1 RULED · 6.2 RULED (FOLD, owner 2026-08-26) · 6.3 RULED** |
 | 7 | Merge-order DAG + floor accounting | VERIFIED-COMPLETE |
 | 8 | Risks and tiers | VERIFIED-COMPLETE |
-| A | The "no-silent-failure" citations | **ANSWERED — one owner question** |
+| A | The "no-silent-failure" citations | **RULED (owner 2026-08-26) — DROP the attribution** |
 
 ---
 
@@ -55,15 +56,14 @@ plan whose inputs drifted is a plan whose schedule drifted.
 | Sync call sites at `session.py ~:306/:534/:554` | ten `self.seams.*` call sites: `:307 :309 :478 :501 :532 :548 :552 :585 :598 :624` | **widened.** The handed three are #3106's N6 note, which counted `SessionGraph`'s three (`:307`, `:532`, `:552`) only. See §4. |
 | The three `spatial.py` take builders share `_take_identity` | see §1 | re-derived there. |
 | `position_cycle.json` is THE index (#3064) | see §1 | re-derived there. |
+| *(asserted by this plan itself)* a **fourth**, inlined fail-soft retention boundary at `crossover_v2_flow.py:6879` inside `_run_cloud_pipeline`, making the lift four sites | **REFUTED — three sites.** `:6879` is a **comment**, not code: it sits in the `except` arm of a `publish_cloud` call (`:6873-6888`) — different seam, different arity (`(phase, group_result)` vs `(take_id, result, metadata)`), different event (`…_cloud_publish_failed` vs `…_position_retain_failed`). `self._seams.retain_position` occurs **exactly twice** in the 9,228-line file, `:5266` and `:5269`, both inside `_hand_to_retention`, which has exactly three call sites: `:5056`, `:5254`, `:7020` | **corrected — #3145 D6.** The real inlined copies existed and were collapsed by `27f13a4e4` (#2753); the file says so itself at `:6980`. §1's *"leaves a second writer behind"* hazard **does not exist**, and W1-c is smaller than scheduled. |
 
-**One structural finding the handed brief did not carry:** `_hand_to_retention`
-is not the only fail-soft retention boundary. `crossover_v2_flow.py:6879` inside
-`_run_cloud_pipeline` carries an **inlined copy** of the same
-try/except/WARN/return-False shape, with a comment saying it *"mirrors
-`_retain_cloud_position`'s fail-soft boundary"*. The retention lift is therefore
-**four** sites, not three, and a lift that migrates only the three named call
-sites leaves a second writer behind — which is exactly the one-index rule's
-failure mode in a different costume.
+**The fourth-site premise was this plan's own, and it spread before it was
+caught.** It is recorded here rather than quietly deleted, because that is what
+this ledger is for. It had already propagated into `cutover-map-flow.md` and
+`cutover-map-web.md`, which #3145 corrected at the same time; the three
+assertions inside *this* document (`§0`, `§1`, `§6`) were left standing then and
+are retired in this pass.
 
 ---
 
@@ -217,8 +217,9 @@ question, not as done.**
 `False` (`:5266-5278`). Three call sites — `:5056` (`_retain_lateral_pose`),
 `:5254` (`_retain_cloud_position`, the method's last statement), `:7020`
 (`_retain_entry_baseline`, **the only site that uses the return value**, feeding
-`artifact_ref = take_id if stored else ""` at `:7023`). Plus the **fourth,
-inlined** copy at `:6879` inside `_run_cloud_pipeline` (§0).
+`artifact_ref = take_id if stored else ""` at `:7023`). **Three, and only
+three** — the "fourth, inlined copy" this plan once claimed at `:6879` is a
+comment in a different seam's `except` arm (§0's ledger, #3145 D6).
 
 **CHECK, MEASURE and VERIFY bank no take at all** — there is no fourth, fifth or
 sixth call site, and `_consume_check` (`:4638`), `_consume_measure` (`:4690`) and
@@ -261,7 +262,18 @@ ring means deleting that split, not only its Python readers.
 opaque ids over `take_id_for`; **no new index**. `persist`/`read_state` land on
 `persist_conductor_state`'s shape (`web/…:2809`), which is wave 3's *"schema
 writer with no schema"*.
-*Size:* ~300 lines including pins. *Verification bar:* the twin's own contract run
+**Scope settled by the 2026-08-26 FOLD ruling (§6.2), and the D12 gate on this
+item lifts:** the five `V2FlowSeams` publishers — `publish_check`,
+`publish_candidate`, `publish_cloud`, `publish_findings`, `publish_round_receipt`
+— **fold into this store**, discriminated by `kind`; `EngineSeams` gains no sixth
+field. **Fail-soft stays at the caller**, in a named wrapper on
+`_hand_to_retention`'s shape (`crossover_v2_flow.py:5256`), never inside the
+store and never as a flag — so `publish_candidate`'s must-not-fail-quietly
+contract and `publish_findings`/`publish_cloud`'s deliberate fail-soft stay
+visible in the code that calls them. `bank`'s docstring and the twin pin
+(`tests/engine_twin.py:199-234`) widen from *one capture record* to *one record*
+in the same PR.
+*Size:* ~300 lines including pins, plus the publisher fold and the twin's growth. *Verification bar:* the twin's own contract run
 against the real store — bank, drop, read back, and a `read` of an unknown id
 returning `None` rather than raising; plus a pin that the discriminator constant
 is read from `position_cycle.POSITION_EVIDENCE_KIND` rather than re-spelled.
@@ -275,7 +287,7 @@ never-banked fields, and map `phase → kind` **explicitly** through
 thirteen present for all three kinds, mutation-verified by dropping one field.
 *Tier:* default. **Depends on W1-a.**
 
-**W1-c — the retention lift: four sites in, three phases added, the ring out.**
+**W1-c — the retention lift: three sites in, three phases added, the ring out.**
 The #3076 obligations 1–4 in one PR, per S5. This is the largest single item in
 the cutover and the one most likely to want splitting; if it splits, split by
 *reader* (obligation 2) and keep obligations 1+3 together — a sidecar that dies
@@ -975,9 +987,9 @@ already moved to `crossover_v2/refusal_copy.py` (see the note at `:524-539`).
 | **relay callbacks** `authorize_begin` · `on_armed` · `consume_capture` | 3970–4626 | **§5** — this is what `measure()` replaces |
 | CHECK · MEASURE · lateral · cloud verdicts and retention | 4627–5279 | §1 (W1-c) + §2 |
 | cloud group close + speculative close | 5280–5766 | §2 + §5 |
-| **candidate build · publish · commit** | 5839–6334 | **RULED + OWNER-BRIEF — 6.2.** 54% is pure compute with homes already; the commit half never applies; the open call is where the five publisher seams bind |
+| **candidate build · publish · commit** | 5839–6334 | **RULED — 6.2.** 54% is pure compute with homes already; the commit half never applies; the five publisher seams **fold into `RecordStore`** (owner, 2026-08-26) |
 | findings/evidence publishing + refusal | 6335–6728 | refusal → the organ; findings → §1 |
-| cloud pipeline runner (+ the inlined retention at `:6879`) | 6729–6913 | §2 + W1-c |
+| cloud pipeline runner (**no retention here** — `:6879` is a comment in a `publish_cloud` `except` arm, not an inlined copy; §0) | 6729–6913 | §2 + W1-c |
 | entry baseline | 6914–7048 | §1 |
 | the round, graded | 7049–7304 | §2 |
 | VERIFY verdict + attempt grading | 7305–7924 | §2 (`measure(kind=verify)` then `analyze`) |
@@ -1169,7 +1181,7 @@ bench datum that *"undercut it."* Either the label is spent or it names a bench
 that is not that W6. **A one-sentence question for whoever writes the ADRs — not
 the executor's to guess**, and not this pack's to answer.
 
-### 6.2 RULED, then OWNER-BRIEF — this block never applies, and 53% of it already has a home
+### 6.2 RULED — this block never applies, 53% of it already has a home, and the five publishers FOLD
 
 **The row conflated two different things, and the correction is checkable.** The
 range is `:5839-6334` — 496 lines, seven methods, **all seven internal to
@@ -1230,12 +1242,17 @@ where all five publishers are actually bound (`bind_evidence_publishers:3392`,
 `bind_cloud_publisher:3921`) — to **§1 (W1-a)**. But W1-a's own text (`:255-265`)
 scopes it to `bank` / `read` / `persist` / `read_state` and says nothing about a
 publisher. **One side of the same seam is assigned; the other is marked NO HOME.**
-Whichever way the brief below is answered, W1-a's scope line has to be edited to
-match, or the two tables stay in disagreement.
+The ruling below closes that disagreement, and W1-a's scope line is edited to
+match it.
 
 ---
 
-**OWNER-BRIEF — where do the five publisher seams bind?**
+**RULED (owner, 2026-08-26) — FOLD. `RecordStore` is THE durable-write seam.**
+
+The five `V2FlowSeams` publishers fold into `RecordStore`; **fail-soft stays at
+the caller**, on `_hand_to_retention`'s shape, not inside the store and not as a
+seam flag. `EngineSeams` keeps its five fields — there is no sixth seam. The
+brief's reasoning is kept below as the recorded *why*.
 
 *Context, plainly.* The engine talks to the outside world through exactly five
 injected slots. Writing a durable file is one of them (`records`). But the old
@@ -1245,7 +1262,7 @@ the candidate — must never fail quietly. When the old seam set is replaced by 
 new one, those five either fold into the one store or the store gains a sibling.
 **The boundary is one-writer-with-a-label versus two-writers-with-two-contracts.**
 
-*Recommendation: fold them into `RecordStore`, and keep fail-soft at the caller.*
+*Why fold — the recommendation the owner adopted.*
 
 - **Cost of folding.** `bank`'s docstring and its twin pin (`tests/engine_twin.py:199-234`)
   currently mean *one capture record*; carrying a candidate, a check, a cloud
@@ -1269,9 +1286,8 @@ new one, those five either fold into the one store or the store gains a sibling.
   Keep the store plain, keep the wrapper, and the distinction stays visible
   instead of becoming a flag.
 
-*What the owner is actually deciding:* whether `RecordStore` is **the** engine's
-durable-write seam, or **a** durable-write seam. One sentence settles it, and the
-answer edits W1-a's scope line either way.
+*What the owner decided:* `RecordStore` is **the** engine's durable-write seam,
+not **a** durable-write seam. W1-a's scope line is edited to match (§1).
 
 ### 6.3 RULED — the emitters are plane-1 observability; both offered options are wrong
 
@@ -1592,14 +1608,19 @@ sweep trap is stated as a standing rule rather than an anecdote. **Treat 13 as a
 floor, not a total** — it is what one phrasing-variant sweep found, and a looser
 shape would only raise it.
 
-### One owner question
+### RULED (owner, 2026-08-26) — drop the attribution
 
-**Nine sites claim the charter requires a greppable disclosure line for a
-user-visible dead end. It never has, in any revision. Do you want that written
-into the charter as a named default — or should those nine drop the attribution
-and keep the sentence, which already says why?**
+The question was: nine sites claim the charter requires a greppable disclosure
+line for a user-visible dead end, and it never has, in any revision — write that
+into the charter as a named default, or drop the attribution and keep the
+sentence, which already says why?
 
-**Recommendation: drop the attribution; do not grow the charter.** AGENTS.md is
+**RULED: drop the attribution. The charter does not grow, and the closed list is
+not touched.** Executed as a comments-and-prose-only sweep, separately from the
+wave riders this appendix originally proposed — the ruling arrived before the
+waves opened those files, so a single sweep is cheaper than nine riders.
+
+**The reasoning, as recommended and adopted:** AGENTS.md is
 176 lines against a ~220 cap, and its own Docs default (`:74-76`) says *"do not
 restate here … what another file owns."* Every one of the nine sentences is
 self-sufficient without the parenthetical — *"a disclosure nobody can grep for is
@@ -1609,10 +1630,16 @@ its own decision id. The Comments default already sanctions exactly that shape
 (*"why-pointers (`See ADR-NNN`, an issue, a doc)"*), and a charter line restating
 what thirteen sites each already state is thirteen fresh drift sites.
 
-**If the answer is "drop":** the four class-(i) sites repoint to non-negotiable 6
-(or `extensibility.md:87-89`, which is closer for the two non-wake ones), the
-nine class-(ii) sites lose four words each, and **the closed list is not
-touched**. Riders in the wave that opens each file, per
-`REFACTOR-TUNING-2026-08.md:579` — never a standalone PR. Five of the nine are in
-this plan's zone; the other four and all four class-(i) sites belong to the
-parallel programs and travel with them.
+**What "drop" means per class:** the four class-(i) sites repoint to
+`extensibility.md:87-89`, which carries the wording live and is closer than
+non-negotiable 6 for the two non-wake ones; the nine class-(ii) sites lose the
+parenthetical and keep the sentence, which already says why; class (iii) — the
+frozen review doc — is untouched. **The closed list is not touched by any of it.**
+
+**Executed as one standalone comments-only sweep**, which departs from this
+appendix's original *"riders in the wave that opens each file, per
+`REFACTOR-TUNING-2026-08.md:579` — never a standalone PR."* That instruction
+assumed the sites would be reached incidentally; the ruling landed first, the
+waves have not opened these files, and the sites span four programs' zones (only
+five of the thirteen are in this plan's). A single zero-behaviour comment sweep
+is cheaper to review and to verify than nine riders spread across four programs.

@@ -18,7 +18,7 @@ document says so — "unchanged" is a finding too.
 
 **The plan moved twice under this brief in one day** (#3143 → #3151 → #3147):
 §0–§6 shifted **+4** and §7–§8 shifted **+347**, and #3151 opened a decision that
-changes W1-a's scope (D12). Every plan citation here was re-verified against its
+changes W1-a's scope (D12 — since **RULED: FOLD**). Every plan citation here was re-verified against its
 target's text after the shift, not arithmetic-adjusted. **Re-verify again before
 cutting** — §7's trap 4 is not rhetorical.
 
@@ -29,8 +29,8 @@ cutting** — §7's trap 4 is not rhetorical.
 Twelve. Group A (D1–D5) are shape questions W1-a has to answer and §1 leaves
 partly open. Group B (D6–D10) are **counts that are wrong at HEAD** — D6 is the
 one that changes a work item's title. **D11** is a citation block stale enough to
-need its own table, and it lives with its subject in §3.1. **D12 is an open owner
-decision that lands on W1-a's scope** — read it before starting.
+need its own table, and it lives with its subject in §3.1. **D12 landed on W1-a's scope and is now
+RULED (FOLD, 2026-08-26)** — read it before starting.
 
 Every one was verified by reading the file, not by taking a prior document's
 word. Where §1 is right, this brief says so instead of re-asserting it as new.
@@ -56,7 +56,7 @@ word. Where §1 is right, this brief says so instead of re-asserting it as new.
 | **D9** | *"`level_db` and `stimulus_dbfs` live only in the debug ring today, through `CaptureProvenance.to_dict` (`capture_provenance.py:117-134`)"* (`:166-168`) | **Neither name exists in that file** — zero occurrences. `to_dict` (`:117`, body `:119-134`) emits `main_volume_db`, `session_volume_db`, `graph{kind,config_path,fingerprint}`, `stimulus{program_id,phase,wav_sha256,peak_dbfs}` | §1's *conclusion* holds and is if anything understated (§3.3); its *field names* are the engine's, not the ring's, and a builder grepping for them finds nothing |
 | **D10** | *"three readers re-pair the WAV by `parent.parent / "wav" / stem` written out verbatim in three places"* (`:252-254`) | **TWO:** `harmonic_evidence.py:613`, `feature_classifier.py:482`. The other two pairings are **different rules** — `severed-twin-replay.py:249` uses `sidecar_path.with_suffix(".wav")` (flat sibling, the un-split ring), and `harmonic-distortion-replay.py:266-271` binds by sha256 content across a separate `--captures` directory with no path derivation at all | reader #1 (`_capture_snr_block`) never touches a WAV |
 
-### D12 — an OPEN owner decision changes W1-a's scope
+### D12 — RULED (owner, 2026-08-26): FOLD. W1-a's scope is settled
 
 Landed by #3151 while this brief was being written: **§6.2's owner-brief
 (`:1238-1274`) asks whether the five `V2FlowSeams` publishers fold into
@@ -68,10 +68,12 @@ and because §1 and §6 currently **disagree**: §6's web-file table routes
 while W1-a's own text scopes it to the four protocol methods and says nothing
 about a publisher (`:1226-1234`).
 
-**Do not start W1-a until this is answered.** If the owner folds, `bank` widens
-from *one capture record* to five artifact kinds, and `tests/engine_twin.py:199-234`
-and this brief's §2 both grow. The plan's recommendation is **fold** (`:1248`),
-and it sits on W1-a's critical path at tier 2, feeding the W5-b join.
+**ANSWERED — the owner ruled FOLD on 2026-08-26, and this gate lifts.** The five
+publishers fold into `RecordStore`; `EngineSeams` gains no sixth field; fail-soft
+stays at the caller. So `bank` **does** widen from *one capture record* to the
+five artifact kinds, and `tests/engine_twin.py:199-234` and this brief's §2 both
+grow with it — priced, not avoided. W1-a sits on the critical path at tier 2,
+feeding the W5-b join, and may now start.
 
 **Two things this brief already settled that the fold-brief agrees with**, so
 they hold under either answer:
