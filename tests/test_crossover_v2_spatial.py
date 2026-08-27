@@ -766,33 +766,42 @@ def test_the_pose_record_banks_one_curve_per_driver_it_measured():
     assert all("phase_deg" in c for c in record["curves"])
 
 
-def test_the_storage_seam_and_the_builders_mint_the_same_take_id():
-    """One index convention, spelled once.
+def test_the_storage_seam_names_the_take_the_record_names():
+    """One index convention, minted ONCE — by the builder, read by the seam.
 
-    The seam names the bundle path and the builder names the record inside it;
-    when the two spelled the convention separately, a change to one silently
-    made the sidecar's path and its contents disagree about which take it was.
+    The seam names the bundle path and the builder names the record inside it.
+    While the two spelled the convention separately a change to one silently
+    made the path and its contents disagree about which take it was; worse, for
+    the entry baseline (whose ``position_id`` IS a take id already) the second
+    mint appended a second ``_aNN`` every time. The seam re-mints nothing now:
+    the record carries ``take_id`` and the store names the artifact from it.
     """
+    import asyncio
+
     from jasper.web import correction_crossover_v2 as v2host
 
     minted: list[str] = []
 
     class _Store:
-        bundle_dir = "/nonexistent"
+        bundle_dir = "/no-such-bundle"
         session_id = "sess"
 
         def publish_json_artifact(self, path, payload):
             minted.append(path)
             return SimpleNamespace(fingerprint="fp")
 
-    seam = v2host.bind_position_retention(_Store(), "relay", {})
-    seam("cloud_measure_03", SimpleNamespace(wav=None), {"attempt": 7})
+        def identify_artifact(self, path):
+            return SimpleNamespace(fingerprint="fp")
 
-    assert minted == [
-        f"crossover_v2/relay/positions/"
-        f"{spatial.take_id_for('cloud_measure_03', 7)}.json"
-    ]
-    assert spatial.take_id_for("cloud_measure_03", 7) == "cloud_measure_03_a07"
+    seam = v2host.bind_position_retention(_Store(), "relay", {}, asyncio.run)
+    take_id = spatial.take_id_for("cloud_measure_03", 7)
+    seam(
+        SimpleNamespace(wav=None),
+        {"attempt": 7, "take_id": take_id, "measure_kind": ""},
+    )
+
+    assert minted == [f"crossover_v2/relay/positions/{take_id}.json"]
+    assert take_id == "cloud_measure_03_a07"
 
 
 def test_an_entry_baseline_take_id_carries_index_and_attempt():

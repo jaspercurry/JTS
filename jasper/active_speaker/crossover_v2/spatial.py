@@ -791,7 +791,7 @@ class PositionGeometry:
 
 
 def take_id_for(position_id: str, attempt: int) -> str:
-    """One take's id, as every builder AND the storage seam spell it.
+    """One take's id, as every builder that mints one spells it.
 
     A geometry retake reuses the position id — same prompted spot, measured
     again from further out — so the id alone does not identify a take
@@ -799,10 +799,11 @@ def take_id_for(position_id: str, attempt: int) -> str:
     so a lexical sort of the bundle is also a chronological one.
 
     Written here once: this expression stood in all three builders below and a
-    fourth time at ``correction_crossover_v2.bind_position_retention``, and four
-    copies of an index convention is four places for it to drift. The seam and
-    the record must name the same take or the bundle's sidecar path and the
-    session's own evidence disagree.
+    fourth time at the storage seam, and four copies of an index convention is
+    four places for it to drift. The seam mints nothing now — it reads
+    ``take_id`` off the record and the record store names the artifact from it —
+    because the seam and the record must name the same take or the bundle's
+    path and the session's own evidence disagree.
     """
     return f"{position_id}_a{int(attempt):02d}"
 
@@ -945,16 +946,16 @@ def _take_identity(
     reason, and from the graph rather than from ``phase``: see :func:`take_kind`.
 
     **It is spelled ``measure_kind`` and not ``kind``, which the engine's own
-    record uses, because a retained take is still published through an ENVELOPE
-    whose ``kind`` is this package's document-type discriminator** —
-    ``POSITION_EVIDENCE_KIND``, and the same convention as every other artifact
-    here. The web host splats this record into that envelope last, so a ``kind``
-    written here silently REPLACES the discriminator and
-    :func:`~.position_cycle.read_lateral_take` /
-    :func:`~.position_cycle.read_entry_baseline_take` stop recognising the take
-    at all. The two words converge on one when the retention lift replaces
-    ``publish_json_artifact`` with the record store's own ``bank`` and the
-    envelope goes away; delete this spelling then.
+    record uses, because :func:`take_kind` can honestly answer ``""``** — a
+    take whose graph names neither fingerprint is unresolved, never guessed.
+    :meth:`~.record_store.BankedRecordStore.bank` accepts the measurement kind
+    under EITHER spelling and always writes it back under this one, so the two
+    are interchangeable everywhere except at that empty value: ``kind`` is read
+    by MEMBERSHIP in :data:`~.contracts.MEASURE_KINDS`, which ``""`` fails,
+    while ``measure_kind`` is read by the KEY's PRESENCE, which carries an
+    unresolved take through. A ``""`` written here as ``kind`` would leave the
+    record with no route at all. The two words converge on one when an
+    unresolved take stops being expressible; delete this spelling then.
     """
     return {
         "phase": phase,

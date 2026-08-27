@@ -80,6 +80,7 @@ from jasper.web import correction_crossover_v2 as v2host
 from tests.crossover_v2_fixtures import (
     FC_HZ,
     FakeSeams,
+    bank_into,
     _capture,
     _conductor,
     _roles,
@@ -143,8 +144,8 @@ def _baseline_only_conductor(fakes: FakeSeams, **kwargs):
 def _read_take(metadata: dict[str, Any]) -> dict[str, Any] | None:
     """The retained take, through the SHIPPED reader and the real store envelope.
 
-    ``retain_position`` wraps a builder's record in ``schema_version`` + ``kind``
-    before it lands, so a test that handed the bare metadata to the reader would
+    ``BankedRecordStore.bank`` wraps a builder's record in ``schema_version``
+    + ``kind`` before it lands, so handing the bare metadata to the reader would
     prove nothing about the file the speaker actually writes — and the reader
     filters on that ``kind``.
     """
@@ -360,9 +361,7 @@ def test_the_retained_take_rehydrates_into_the_record_the_round_holds():
         fakes,
         seams=dataclasses.replace(
             fakes.seams(),
-            retain_position=lambda pid, result, meta: retained.append(
-                (pid, result, dict(meta))
-            ),
+            bank_take=bank_into(retained, with_capture=True),
         ),
     )
 
@@ -371,9 +370,9 @@ def test_the_retained_take_rehydrates_into_the_record_the_round_holds():
     conductor.consume_capture(1, 1, _capture())
 
     assert len(retained) == 1
-    position_id, _result, metadata = retained[0]
+    _result, metadata = retained[0]
     assert metadata["phase"] == PHASE_ENTRY_BASELINE
-    assert conductor.measure_entry_baseline.artifact_ref == position_id
+    assert conductor.measure_entry_baseline.artifact_ref == metadata["take_id"]
     assert EntryBaseline.from_dict(
         _read_take(metadata)
     ) == conductor.measure_entry_baseline
@@ -382,21 +381,23 @@ def test_the_retained_take_rehydrates_into_the_record_the_round_holds():
 def test_a_failing_retention_store_does_not_cost_the_household_a_retake():
     """Evidence retention is forensics, never a gate.
 
-    Same guarantee ``_retain_cloud_position`` gives, stated for the phase that
-    reuses it: a full disk must not turn an acoustically-good baseline into a
-    retake. The round still grades against its own "before" — that record is
-    held in memory and written to the flow state file, neither of which this
-    seam touches. What a failed store costs is the copy that would have
-    OUTLIVED the round, and the record says so by naming no artifact rather
-    than naming a take nobody wrote.
+    A full disk must not turn an acoustically-good baseline into a retake. The
+    round still grades against its own "before" — that record is held in memory
+    and written to the flow state file, neither of which this seam touches.
+    What a failed store costs is the copy that would have OUTLIVED the round,
+    and the record says so by naming no artifact rather than naming a take
+    nobody wrote.
+
+    The RAISE is the binding's to catch (``bind_position_retention``), which is
+    why this drives the seam's own vocabulary for it: ``""`` — nothing stored.
+    This is the only site that reads that answer, so this is where it is pinned.
     """
     fakes = FakeSeams()
-
-    def _explode(_pid, _result, _meta):
-        raise OSError("disk full")
-
     conductor = _baseline_only_conductor(
-        fakes, seams=dataclasses.replace(fakes.seams(), retain_position=_explode),
+        fakes,
+        seams=dataclasses.replace(
+            fakes.seams(), bank_take=lambda _result, _record: "",
+        ),
     )
 
     conductor.authorize_begin(1, 1)

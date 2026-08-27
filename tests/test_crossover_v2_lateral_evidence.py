@@ -53,6 +53,7 @@ from jasper.audio_measurement.program_analysis import (
 from tests.crossover_v2_fixtures import (
     FC_HZ,
     FakeSeams,
+    bank_into,
     _alignment,
     _conductor,
     _measure_analysis,
@@ -1122,21 +1123,19 @@ def test_an_accepted_pose_is_retained_with_its_angle():
         prompts=prompts,
         seams=replace(
             fakes.seams(),
-            retain_position=lambda pid, result, meta: retained.append(
-                (pid, result, dict(meta))
-            ),
+            bank_take=bank_into(retained, with_capture=True),
         ),
     )
     _evidence_walk(c, prompts)
 
-    assert [pid for pid, _r, _m in retained] == [
+    banked = [meta for _r, meta in retained]
+    assert [m["pose_id"] for m in banked] == [
         f"{PHASE_LATERAL}_{FIRST_LATERAL_INDEX + i:02d}"
         for i in range(len(prompts))
     ]
     # The RAW capture crosses the seam, not a derived curve — a replay needs
     # the bytes.
-    assert all(getattr(result, "wav", None) for _pid, result, _m in retained)
-    banked = [meta for _pid, _r, meta in retained]
+    assert all(getattr(result, "wav", None) for result, _m in retained)
     assert [m["position_deg"] for m in banked] == [0, 7, -7, 22, -22]
     assert [round(m["offset_cm"], 1) for m in banked] == [
         round(p.offset_cm, 1) for p in prompts
@@ -1154,28 +1153,6 @@ def test_an_accepted_pose_is_retained_with_its_angle():
     assert first["take_id"] == f"{first['pose_id']}_a{first['attempt']:02d}"
     assert first["prompt"] == prompts[0].text
     assert first["wav_sha256"] == hashlib.sha256(b"fake-wav").hexdigest()
-
-
-def test_a_failing_retention_never_rejects_a_good_pose(caplog):
-    """Fail-soft control: retention is forensics, never a gate. A full disk must
-    not turn an acoustically-good pose into a retake."""
-    def boom(_pid, _result, _meta):
-        raise OSError("no space left on device")
-
-    prompts = _angle_prompts()
-    fakes = FakeSeams()
-    c = _evidence_conductor(
-        fakes, prompts=prompts,
-        seams=replace(fakes.seams(), retain_position=boom),
-    )
-    _run_phase(c, 1, 1)
-    _run_phase(c, 2, 1)
-    with caplog.at_level(logging.WARNING):
-        verdict = _run_phase(c, FIRST_LATERAL_INDEX, 1)
-
-    assert verdict["accepted"] is True
-    assert len(c.lateral_poses) == 1
-    assert "crossover_v2_position_retain_failed" in caplog.text
 
 
 def test_a_closed_walk_says_so_by_name(caplog):

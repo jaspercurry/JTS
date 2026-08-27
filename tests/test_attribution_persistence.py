@@ -12,6 +12,7 @@ them. The schema itself is pinned in ``tests/test_attribution_findings.py``.
 
 from __future__ import annotations
 
+import asyncio
 import dataclasses
 import json
 import math
@@ -1319,13 +1320,12 @@ def test_position_retention_puts_the_wav_path_and_digest_in_the_state(
 
     store, bundle_dir = _open_store(tmp_path)
     refs: dict = {}
-    retain = v2host.bind_position_retention(store, RELAY, refs)
+    bank = v2host.bind_position_retention(store, RELAY, refs, asyncio.run)
 
     class _Result:
         wav = b"take-bytes"
 
-    retain(
-        "cloud_measure_03",
+    bank(
         _Result(),
         {
             "position_id": "cloud_measure_03",
@@ -1333,6 +1333,7 @@ def test_position_retention_puts_the_wav_path_and_digest_in_the_state(
             "index": 3,
             "attempt": 2,
             "take_id": "cloud_measure_03_a02",
+            "measure_kind": "",
             "prompt": "Two hand-widths LEFT of the mark.",
             "wide": False,
             "captured_at": 1.0,

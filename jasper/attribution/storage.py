@@ -137,10 +137,10 @@ def publish_finding_set(
 
     Returns the store's ``ArtifactIdentity``. Raises
     :class:`FindingStorageError` on any store refusal — this function does
-    **not** swallow failures, matching ``bind_cloud_publisher`` and
-    ``bind_position_retention``: the fail-soft boundary belongs at the flow
-    call site, so every other caller keeps the strictness the store was built
-    for.
+    **not** swallow failures, matching ``bind_cloud_publisher``: the fail-soft
+    boundary belongs at the caller, so every other caller keeps the strictness
+    the store was built for. (``bind_position_retention`` catches inside itself
+    instead — it is the exception, and says why.)
     """
 
     if not isinstance(finding_set, FindingSet):

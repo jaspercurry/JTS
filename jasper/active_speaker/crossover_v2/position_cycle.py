@@ -105,9 +105,10 @@ _BANKED_POSITIONS_GLOB = (
     f"bundle/*/{EVIDENCE_ROOT}/artifacts/crossover_v2/*/positions/*.json"
 )
 
-#: ``kind`` on the speaker's own per-take record
-#: (``correction_crossover_v2``'s ``retain_position``). Records that do not
-#: carry it are not this document's input, whatever else is in the directory.
+#: ``kind`` on the speaker's own per-take record, stamped by
+#: :meth:`~.record_store.BankedRecordStore.bank` as it envelopes the take.
+#: Records that do not carry it are not this document's input, whatever else
+#: is in the directory.
 POSITION_EVIDENCE_KIND = "jts_crossover_v2_position_evidence"
 
 #: What each take contributes to the index — the identity, the pose, and the
@@ -209,8 +210,8 @@ def read_lateral_take(path: Path) -> dict[str, Any] | None:
     deliberately indistinguishable to the caller: unreadable, not a JSON
     object, not a position-evidence record at all, or a CLOUD position. The
     last is the ordinary case rather than an error — the web host's
-    ``retain_position`` serves both groups into the same directory, and this
-    reader wants one of them.
+    ``bank_take`` serves both groups into the same directory, and this reader
+    wants one of them.
 
     **The rule is phase, and the reason is NOT "only a pose has a bearing".**
     It was, until the 2026-08-24 geometry ruling made

@@ -3613,14 +3613,14 @@ def test_thin_evidence_lock_is_disclosed_not_retried(monkeypatch):
     assert PHASE_CLOUD_MEASURE in c.accepted_phases
 
 
-def test_retain_position_seam_gets_every_accepted_position_with_its_prompt():
+def test_the_bank_seam_gets_every_accepted_position_with_its_prompt():
     """The forensic record the choreography owes: the prompt is the only durable
     statement of WHERE a curve was measured."""
     retained: list = []
     fakes = FakeSeams()
     seams = replace(
         fakes.seams(),
-        retain_position=lambda pid, result, meta: retained.append((pid, dict(meta))),
+        bank_take=bank_into(retained),
     )
     c = CrossoverV2Session(
         session_id=SESSION, source_preset=_preset(), roles_bands=_roles(),
@@ -3630,24 +3630,24 @@ def test_retain_position_seam_gets_every_accepted_position_with_its_prompt():
     attempt = _walk(c, (1, 2), 1)
     _walk(c, CLOUD_MEASURE_INDEXES, attempt)
 
-    assert [pid for pid, _m in retained] == [
+    assert [meta["position_id"] for meta in retained] == [
         f"{PHASE_CLOUD_MEASURE}_{i:02d}" for i in CLOUD_MEASURE_INDEXES
     ]
-    prompts = [meta["prompt"] for _pid, meta in retained]
+    prompts = [meta["prompt"] for meta in retained]
     assert prompts == [p.text for p in CLOUD_POSITION_PROMPTS[: len(retained)]]
-    assert sum(1 for _pid, meta in retained if meta["wide"]) >= 2
+    assert sum(1 for meta in retained if meta["wide"]) >= 2
     # Each position's NAMED QUESTION rides its record, from the same table row
     # the prompt came from (attribution-stage plan §5 promotion-queue item 1).
     # The prompt string cannot be parsed back into a role, so the label is the
     # only way the attribution stage sees a labelled sample rather than an
     # anonymous member of an average — and it has to be the row's, not a guess.
-    roles = [meta["role"] for _pid, meta in retained]
+    roles = [meta["role"] for meta in retained]
     assert roles == [p.role for p in CLOUD_POSITION_PROMPTS[: len(retained)]]
     # …and the shipped walk really does sample all three questions, which is
     # the point of labelling them at all: a walk that only ever produced one
     # role would be the same average with extra words.
     assert set(roles) == set(POSITION_ROLES)
-    for _pid, meta in retained:
+    for meta in retained:
         assert meta["phase"] == PHASE_CLOUD_MEASURE
         assert meta["session_id"] == SESSION
         assert meta["captured_at"] > 0
@@ -3675,7 +3675,7 @@ def test_a_verify_pose_banks_its_angle_axis_and_distance_as_fields():
         # a second FakeSeams() here would silently drop ``apply_done``.
         seams=replace(
             fakes.seams(),
-            retain_position=lambda pid, result, meta: retained.append(dict(meta)),
+            bank_take=bank_into(retained),
         ),
         index_phase_map=STAGE2_MAP,
         accepted_phases=(PHASE_CHECK, PHASE_MEASURE),
@@ -3732,7 +3732,7 @@ def test_a_retake_records_the_prompt_it_was_actually_given(monkeypatch):
         fc_hz=FC_HZ, driver_caps_dbfs=CAPS, session_volume_db=SESSION_VOLUME_DB,
         seams=replace(
             fakes.seams(),
-            retain_position=lambda pid, r, meta: retained.append(dict(meta)),
+            bank_take=bank_into(retained),
         ),
         index_phase_map=CLOUD_MAP,
     )
@@ -3768,26 +3768,6 @@ def test_a_retake_records_the_prompt_it_was_actually_given(monkeypatch):
     assert [t["attempt"] for t in surviving if t["index"] == last] == [
         takes[2]["attempt"]
     ]
-
-
-def test_retain_position_failure_never_fails_the_capture(caplog):
-    """Evidence retention is forensics, not a gate: a full disk must not turn an
-    acoustically-good position into a retake."""
-    def boom(_pid, _result, _meta):
-        raise OSError("no space left on device")
-
-    fakes = FakeSeams()
-    c = CrossoverV2Session(
-        session_id=SESSION, source_preset=_preset(), roles_bands=_roles(),
-        fc_hz=FC_HZ, driver_caps_dbfs=CAPS, session_volume_db=SESSION_VOLUME_DB,
-        seams=replace(fakes.seams(), retain_position=boom),
-        index_phase_map=CLOUD_MAP,
-    )
-    attempt = _walk(c, (1, 2), 1)
-    with caplog.at_level(logging.WARNING):
-        verdict = _run_phase(c, CLOUD_MEASURE_INDEXES[0], attempt)
-    assert verdict["accepted"] is True
-    assert "crossover_v2_position_retain_failed" in caplog.text
 
 
 def test_group_combine_failure_degrades_to_an_unknown_verdict(monkeypatch):
@@ -5938,6 +5918,7 @@ from jasper.audio_measurement.program import (  # noqa: E402
 
 from tests.crossover_v2_fixtures import (
     CAPS,
+    bank_into,
     CLOUD_MAP,
     CLOUD_MEASURE_INDEXES,
     CLOUD_VERIFY_INDEXES,
@@ -10475,7 +10456,7 @@ def test_every_retained_position_carries_its_gate_provenance_as_a_sentence():
         fc_hz=FC_HZ, driver_caps_dbfs=CAPS, session_volume_db=SESSION_VOLUME_DB,
         seams=replace(
             fakes.seams(),
-            retain_position=lambda pid, r, meta: retained.append(dict(meta)),
+            bank_take=bank_into(retained),
         ),
         index_phase_map=CLOUD_MAP,
     )
@@ -10514,7 +10495,7 @@ def test_every_retained_position_carries_the_numbers_behind_that_sentence():
     numbers ride beside the sentence on every retained take — derived by the
     same single typed reader, never assembled here.
 
-    This is the SIDECAR's half: the record handed to ``retain_position`` is
+    This is the BANKED RECORD's half: what reaches the ``bank_take`` seam is
     ``cloud_position_record``'s own dict, so both keys are on every take
     whatever their values. The separate allowlist between that record and the
     CLOUD artifact's rows (``position_evidence._RECORD_FIELDS``, which drops a
@@ -10534,7 +10515,7 @@ def test_every_retained_position_carries_the_numbers_behind_that_sentence():
         fc_hz=FC_HZ, driver_caps_dbfs=CAPS, session_volume_db=SESSION_VOLUME_DB,
         seams=replace(
             fakes.seams(),
-            retain_position=lambda pid, r, meta: retained.append(dict(meta)),
+            bank_take=bank_into(retained),
         ),
         index_phase_map=CLOUD_MAP,
     )

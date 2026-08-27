@@ -408,7 +408,7 @@ class FakeConductor:
         if self._on_armed is not None:
             self._on_armed()
 
-    def consume_capture(self, index, attempt, answer, entry=None):
+    def consume_capture(self, index, attempt, answer):
         self.answers.append(answer)
         verdict = self._verdicts.pop(0) if self._verdicts else {"accepted": True}
         self.events.append(("consume", index, attempt, dict(verdict)))

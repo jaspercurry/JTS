@@ -801,7 +801,7 @@ def _bank_lateral_walk(session: Path, degrees: list[int]) -> list[dict[str, Any]
     not from a dict written here: a fixture that spelled the fields itself
     would keep passing the day that record changed shape. The envelope
     (``schema_version`` + ``kind``) is what
-    ``correction_crossover_v2.retain_position`` wraps it in.
+    ``record_store.BankedRecordStore.bank`` wraps it in.
     """
     round_dir = next((session / "evidence/v1/artifacts/crossover_v2").iterdir())
     positions = round_dir / "positions"

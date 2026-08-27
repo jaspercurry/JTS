@@ -19,11 +19,16 @@ already are:
 * **The ask.** The plan walk hands a provider three conductor-owned hooks —
   ``authorize_begin(index, attempt, entry)`` (admission, and the position
   gate ahead of it), ``on_armed(state)`` (the host plays program X), and
-  ``consume_capture(index, attempt, answer, entry)`` (the answer lands) —
-  plus the stop/completion predicates. The shipped carrier of that hook set
-  is ``jasper.capture_relay.session.run_capture_plan``, driven by the relay
-  provider (``jasper.web.correction_crossover_v2_relay``); a wired provider
-  implements the same conversation against local capture instead of a phone.
+  ``consume_capture(index, attempt, answer)`` (the answer lands) — plus the
+  stop/completion predicates. The arity asymmetry is real and not an
+  oversight: ``authorize_begin`` reads the entry because it gates on the
+  prompted spot, ``consume_capture`` never read its own, so that parameter
+  went. ``run_capture_plan`` appends the entry only to a hook that declares
+  room for one, so both arities are served by one walk. The shipped carrier
+  of that hook set is ``jasper.capture_relay.session.run_capture_plan``,
+  driven by the relay provider (``jasper.web.correction_crossover_v2_relay``);
+  a wired provider implements the same conversation against local capture
+  instead of a phone.
 * **The answer.** :class:`CaptureAnswer` below. The relay's
   ``jasper.capture_relay.session.CaptureResult`` already satisfies it — the
   relay provider passes through what the phone sent — and a wired provider
