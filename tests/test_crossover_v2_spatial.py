@@ -35,7 +35,9 @@ from jasper.active_speaker.crossover_v2.contracts import (
     ENTRY_GRAPH_FINGERPRINT_UNKNOWN,
     MEASURE_KIND_BASELINE,
     MEASURE_KIND_CANDIDATE,
+    MEASURE_KIND_VERIFY,
     MEASURE_KINDS,
+    POLARITY_INVERTED,
 )
 from jasper.active_speaker.crossover_v2.journey import (
     PHASE_CLOUD_MEASURE,
@@ -518,6 +520,51 @@ def test_every_take_builder_carries_the_whole_engine_record(builder):
     assert set(_ENGINE_RECORD_FIELDS) <= set(record)
 
 
+#: The six that no builder banked, each with a value nothing else on a record
+#: could be mistaken for. Presence alone would go green against carriers that
+#: emitted a constant empty, which is what these are until the retention lift
+#: states them.
+_STATED_CLAIM = spatial.TakeClaim(
+    baseline_record_id="rec-before-7",
+    candidate_id="cand-fp-42",
+    polarity=POLARITY_INVERTED,
+    level_db=-18.5,
+    stimulus_dbfs=-9.0,
+    incident="unproven_level",
+)
+
+
+@pytest.mark.parametrize("builder", [_cloud_record, _pose_record, _entry_record])
+@pytest.mark.parametrize(
+    "engine_field, stated",
+    [
+        ("baseline_record_id", "rec-before-7"),
+        ("candidate_id", "cand-fp-42"),
+        ("polarity", POLARITY_INVERTED),
+        ("level_db", -18.5),
+        ("stimulus_dbfs", -9.0),
+        ("incident", "unproven_level"),
+    ],
+)
+def test_a_stated_claim_reaches_the_record_it_was_stated_for(
+    builder, engine_field, stated,
+):
+    """Each of the six CARRIES, rather than merely appearing.
+
+    A carrier that emitted a constant empty would satisfy a presence pin
+    forever — and these six are inert in production until the retention lift
+    binds a claim, so a presence pin is exactly the shape that would rot
+    unnoticed. Distinct values per field, so a builder that stamped one of them
+    into another's slot is red rather than lucky.
+
+    ``level_db`` and ``stimulus_dbfs`` are two numbers on purpose: a ladder
+    moves the stimulus, never the claim.
+    """
+    record = builder(claim=_STATED_CLAIM)
+
+    assert record[engine_field] == stated
+
+
 @pytest.mark.parametrize("builder", [_cloud_record, _pose_record, _entry_record])
 def test_a_take_record_does_not_overwrite_the_envelopes_document_type(builder):
     """A retained take is published INSIDE an envelope, and it splats in last.
@@ -529,11 +576,15 @@ def test_a_take_record_does_not_overwrite_the_envelopes_document_type(builder):
     the way out and make every banked take unreadable, silently: the walk index
     would report a round with no poses rather than an error.
     """
-    envelope = {
-        "schema_version": 1, "kind": POSITION_EVIDENCE_KIND, **builder(),
-    }
+    record = builder()
 
-    assert envelope["kind"] == POSITION_EVIDENCE_KIND
+    # The key itself, not just the surviving value: an emission that wrote the
+    # RIGHT word under the WRONG key would leave the envelope below intact and
+    # still be the collision this pin exists for.
+    assert "kind" not in record
+    assert {"schema_version": 1, "kind": POSITION_EVIDENCE_KIND, **record}[
+        "kind"
+    ] == POSITION_EVIDENCE_KIND
 
 
 def test_a_takes_kind_is_read_off_the_graph_and_never_off_the_phase():
@@ -560,6 +611,30 @@ def test_a_takes_kind_is_read_off_the_graph_and_never_off_the_phase():
 
     assert kinds == {MEASURE_KIND_BASELINE, MEASURE_KIND_CANDIDATE}
     assert kinds <= set(MEASURE_KINDS)
+
+
+def test_a_re_measure_after_the_apply_is_a_verify_and_not_a_candidate():
+    """The one branch the pose pins above can never reach.
+
+    A verify take and a candidate take BOTH played through a graph that is not
+    the round's "before", so the fingerprints alone cannot separate them — the
+    phase is what says this capture is the re-measure that grades an apply
+    rather than the check that proposed it. That is the single job ``phase``
+    has here, and it is why the rest of the rule refuses to read it.
+    """
+    verify = _cloud_record(
+        phase=PHASE_CLOUD_VERIFY,
+        graph_fingerprint="fp-candidate",
+        claim=spatial.TakeClaim(baseline_fingerprint="fp-entry"),
+    )
+    candidate = _cloud_record(
+        phase=PHASE_CLOUD_MEASURE,
+        graph_fingerprint="fp-candidate",
+        claim=spatial.TakeClaim(baseline_fingerprint="fp-entry"),
+    )
+
+    assert verify["measure_kind"] == MEASURE_KIND_VERIFY
+    assert candidate["measure_kind"] == MEASURE_KIND_CANDIDATE
 
 
 @pytest.mark.parametrize(

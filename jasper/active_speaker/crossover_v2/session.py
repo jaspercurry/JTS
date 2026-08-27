@@ -59,6 +59,7 @@ from .measure_spec import CapabilityStub, MeasureSpec, stubbed_capabilities
 from .playback_transaction import PlaybackOutcome
 from .prior_bank import CapturePose, PriorBank
 from .session_seams import EngineSeams
+from .spatial import take_id_for
 
 __all__ = [
     "AnalyzeOutcome",
@@ -329,6 +330,11 @@ class TuningSession:
     _spent: bool = field(default=False, init=False)
     _graph_fingerprint: str = field(default="", init=False)
     _banked: list[str] = field(default_factory=list, init=False)
+    #: How many takes this session has minted an id for. The ordinal in
+    #: :meth:`_next_take_id`, and deliberately in memory only — a persisted
+    #: registry of minted ids would be a second index over the bank, which the
+    #: one-index rule forbids.
+    _takes_minted: int = field(default=0, init=False)
     _disclosures: list[CapabilityStub] = field(default_factory=list, init=False)
 
     # ---------------------------------------------------------------- lifetime
@@ -709,12 +715,45 @@ class TuningSession:
             else:
                 record_id = await self.seams.records.bank(self._record(
                     spec, bearing, prompt, stimulus_dbfs, outcome,
-                    proven_level_db,
+                    proven_level_db, self._next_take_id(spec.kind),
                 ))
         return StimulusOutcome(
             position_deg=bearing, stimulus_dbfs=stimulus_dbfs,
             level_db=proven_level_db, record_id=record_id, incident=incident,
         )
+
+    def _next_take_id(self, kind: str) -> str:
+        """This session's next take id — the name the store files a record by.
+
+        **The engine holds no position identity, and this is the consequence.**
+        :class:`~.measure_spec.MeasureSpec` names bearings, prompts and rungs;
+        it carries no position id, no take id and no attempt, and there is no
+        retake concept here at all — a re-measure is another :meth:`measure`
+        call. The one index :meth:`measure` does hold, its ``enumerate`` over
+        the bearings, is per POSITION and not per record: an inner ladder of
+        rungs makes several records under one of them. So nothing in reach
+        identifies a take, and a record banked without a name is a record the
+        store cannot file.
+
+        What it mints instead is ``entry_baseline_record``'s precedent, which
+        solved this exact shape for the one other capture with no prompted
+        spot: a position id built from WHAT the take is plus an ordinal —
+        ``f"{kind}_{n:02d}"`` — run through :func:`~.spatial.take_id_for`, the
+        repo's one spelling of a take id. Minting the string here instead would
+        be a fifth copy of that convention.
+
+        ``n`` counts takes minted by THIS session, in memory, so two records of
+        one session never collide however many specs or rungs produced them.
+        Nothing wider is claimed: uniqueness across sessions is the store's
+        relay-scoped path, not a name.
+
+        The attempt is ``0`` on every engine take, and truthfully — the suffix
+        exists because a geometry RETAKE reuses its position id, and this
+        session's ordinal has already moved on by then.
+        """
+        ordinal = self._takes_minted
+        self._takes_minted += 1
+        return take_id_for(f"{kind}_{ordinal:02d}", 0)
 
     async def _proven_level(self) -> float | None:
         """This stimulus's fader level, or ``None`` when it is not proven.
@@ -772,6 +811,7 @@ class TuningSession:
         stimulus_dbfs: float | None,
         outcome: PlaybackOutcome,
         proven_level_db: float,
+        take_id: str,
     ) -> Mapping[str, Any]:
         """One stimulus, as the facts wave 4's five blocks are built around.
 
@@ -809,9 +849,15 @@ class TuningSession:
         hex, and its caller mints the path BEFORE the write precisely so the
         record can carry it. ``""`` on the same terms as
         ``baseline_record_id``: no bytes were placed, said plainly.
+
+        ``take_id`` is what the store files this record BY, minted by
+        :meth:`_next_take_id` at bank time rather than derived here — see there
+        for why the engine has no position identity to derive one from. A
+        record without it is a record the store cannot place.
         """
         return {
             "session_id": self.session_id,
+            "take_id": take_id,
             "kind": spec.kind,
             "baseline_record_id": self._baseline_for(
                 spec, bearing, stimulus_dbfs,

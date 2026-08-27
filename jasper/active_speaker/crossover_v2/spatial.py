@@ -882,6 +882,17 @@ class TakeClaim:
     at.  Two different quantities on purpose: a ladder moves the stimulus, never
     the claim, and the 8.712 dB incident is what one field saying both costs.
 
+    **``level_db`` is optional HERE and never optional on an engine-banked
+    record, and that difference is a fact rather than a mismatch to iron out.**
+    The engine banks a stimulus only once its level proved, so its own field is
+    always a number; the flow's three retention sites hold no volume claim at
+    all, so a take retained there has no proven level to state and ``None``
+    says exactly that.  Narrowing this to ``float`` would force those callers
+    to invent a number, which is the failure ``_proven_level`` exists to stop.
+    ``stimulus_dbfs`` is optional on BOTH sides for a different reason and
+    needs no such note: ``None`` is the single stimulus a program declares when
+    no ladder was asked for.
+
     ``wav_path`` is the record → capture pointer, bundle-relative.  It is NOT
     derivable from ``take_id``: ``bundles.capture_artifact_relpath`` appends a
     ``uuid4`` hex, and its caller mints the path BEFORE the write precisely so

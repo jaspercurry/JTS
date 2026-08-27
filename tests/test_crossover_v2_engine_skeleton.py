@@ -69,6 +69,7 @@ from jasper.active_speaker.crossover_v2.session import (
     TuningSession,
 )
 from jasper.active_speaker.crossover_v2.session_seams import EngineSeams
+from jasper.active_speaker.crossover_v2.spatial import take_id_for
 
 from tests._async_wait import wait_signalled
 
@@ -792,6 +793,54 @@ async def test_a_banked_record_names_the_capture_the_transaction_wrote():
         await session.measure(MeasureSpec(kind=MEASURE_KIND_BASELINE))
 
     assert [row["wav_path"] for row in parts["records"].banked] == [minted]
+
+
+async def test_every_banked_take_of_one_session_is_named_apart_from_the_others():
+    """A record the store cannot file is a record that was not banked.
+
+    The engine holds no position identity — no position id, no take id, no
+    attempt — and its one index is per POSITION, so a ladder of rungs makes
+    several records under it. Two records of one session must still be two
+    names, or the second overwrites the first at the store's path.
+
+    Uniqueness is claimed for the SESSION and no wider: two sessions are two
+    relay-scoped paths, which is what makes a global registry of minted ids
+    unnecessary.
+    """
+    session, parts = _session()
+
+    async with session:
+        await session.measure(MeasureSpec(
+            kind=MEASURE_KIND_BASELINE, positions=(0, 22),
+            level_ladder_dbfs=(-12.0, -6.0),
+        ))
+
+    take_ids = [row["take_id"] for row in parts["records"].banked]
+    assert len(take_ids) == 4
+    assert len(set(take_ids)) == 4
+    # Minted through the one spelling of a take id, not a second convention.
+    assert take_ids[0] == take_id_for(f"{MEASURE_KIND_BASELINE}_00", 0)
+
+
+async def test_a_second_measure_keeps_counting_where_the_first_stopped():
+    """The ordinal is the SESSION's, not the call's.
+
+    Two specs measured by one session are one bank. An ordinal that restarted
+    per call would mint the same name twice and file the second capture over
+    the first — the failure the ordinal exists to prevent, reintroduced by the
+    scope it is kept at.
+    """
+    session, parts = _session()
+
+    async with session:
+        await session.measure(MeasureSpec(kind=MEASURE_KIND_BASELINE))
+        await session.measure(MeasureSpec(kind=MEASURE_KIND_CANDIDATE))
+
+    take_ids = [row["take_id"] for row in parts["records"].banked]
+    assert take_ids == [
+        take_id_for(f"{MEASURE_KIND_BASELINE}_00", 0),
+        take_id_for(f"{MEASURE_KIND_CANDIDATE}_01", 0),
+    ]
 
 
 async def test_a_capture_that_placed_no_bytes_banks_an_empty_pointer():
