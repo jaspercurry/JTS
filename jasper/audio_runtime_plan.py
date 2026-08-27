@@ -1658,6 +1658,7 @@ def transport_topology_for_coupling(
     check compare a value with itself.
     """
 
+    from jasper.fanin.ring_health import load_topology_for_wire, resolve_wire_for_gate
     from jasper.fanin_coupling import (
         OUTPUTD_RING_PATH_ENV_VAR,
         RING_ACTIVE_PLAYBACK_DEVICE,
@@ -1666,27 +1667,35 @@ def transport_topology_for_coupling(
         RING_PLAYBACK_DEVICE,
         resolve_outputd_ring_path,
         resolve_ring_path,
-        resolve_ring_wire,
     )
 
     fanin_values = dict(fanin_env or {})
     outputd_values = dict(outputd_env or {})
+    normalized = resolve_coupling(coupling)
     # The MARKER, not the observed device, selects the post-DSP shape. On an
     # armed active endpoint the post-DSP hop is the ACTIVE ring: a different
     # device, a different file, and a per-driver width the topology decides,
     # where Ring B is a full-range stereo program.
     active_endpoint = ring_active_endpoint_armed(outputd_values)
-    # Resolve WITH the saved topology when the active shape is in play: the
-    # active width is the one per-topology axis of that ring, and the
-    # shipped-geometry answer (`None` topology) has no active width at all.
-    # Every other axis is topology-free, so the stereo shape and the Ring A row
-    # below keep their topology-free resolution byte-for-byte.
-    if active_endpoint:
-        from jasper.fanin.ring_health import load_topology_for_wire
-
-        wire = resolve_ring_wire(load_topology_for_wire())
-    else:
-        wire = resolve_ring_wire()
+    # Read the saved topology ONLY where an axis actually depends on it: the
+    # ACTIVE ring's width, which only the ring arm publishes. Every other axis —
+    # the format, Ring A's width, Ring B's — is topology-free, so the other
+    # arms answer for the shipped geometry without touching the disk.
+    #
+    # Through the GATE resolver, never `resolve_ring_wire` directly. This layer
+    # DESCRIBES a box for read-only surfaces (`jasper-audio-config explain`,
+    # jasper-doctor); a wire token neither language parses would otherwise raise
+    # through them and replace the whole verdict with a traceback. The two wire
+    # axes go UNKNOWN instead, which every comparison in
+    # :func:`transport_coherence_report` already treats as missing evidence, and
+    # the bad declaration keeps its loud owners: fan-in parks at exit 78 and the
+    # doctor's ring-wire check names the token.
+    wire, _ = resolve_wire_for_gate(
+        load_topology_for_wire()
+        if active_endpoint and normalized == COUPLING_SHM_RING
+        else None
+    )
+    wire_format = wire.sample_format if wire is not None else None
     # Ring A (fan-in -> CamillaDSP, jts_ring_capture). Its wire — format, and a
     # channel count that is per-ring — comes from the one resolver every
     # declaring end reads, so /state reports the geometry the ring is actually
@@ -1697,11 +1706,10 @@ def transport_topology_for_coupling(
         "path": resolve_ring_path(fanin_values.get(RING_PATH_ENV_VAR)),
         "writer": "jasper-fanin",
         "camilla_capture_device": RING_CAPTURE_DEVICE,
-        "format": wire.sample_format,
-        "channels": wire.ring_a_channels,
+        "format": wire_format,
+        "channels": wire.ring_a_channels if wire is not None else None,
         "sample_rate": DEFAULT_SAMPLE_RATE,
     }
-    normalized = resolve_coupling(coupling)
     if normalized == COUPLING_SHM_RING:
         # Ring B (CamillaDSP -> outputd, jts_ring_playback), or the ACTIVE ring
         # on an armed roleful box. Its concrete path lives in outputd's env
@@ -1711,10 +1719,12 @@ def transport_topology_for_coupling(
         )
         if active_endpoint:
             post_dsp_device = RING_ACTIVE_PLAYBACK_DEVICE
-            post_dsp_channels: int | None = wire.ring_active_channels
+            post_dsp_channels: int | None = (
+                wire.ring_active_channels if wire is not None else None
+            )
         else:
             post_dsp_device = RING_PLAYBACK_DEVICE
-            post_dsp_channels = wire.ring_b_channels
+            post_dsp_channels = wire.ring_b_channels if wire is not None else None
         return TransportTopology(
             name=(
                 TRANSPORT_SHM_RING_ACTIVE if active_endpoint else TRANSPORT_SHM_RING
@@ -1725,7 +1735,7 @@ def transport_topology_for_coupling(
                 "path": post_dsp_path,
                 "camilla_playback_device": post_dsp_device,
                 "reader": "jasper-outputd",
-                "format": wire.sample_format,
+                "format": wire_format,
                 "channels": post_dsp_channels,
                 "sample_rate": DEFAULT_SAMPLE_RATE,
             },

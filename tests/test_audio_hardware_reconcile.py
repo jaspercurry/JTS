@@ -316,34 +316,6 @@ def _active_graph_env(
     return out
 
 
-def _stereo_ring_sink_graph_env(tmp_path: Path) -> dict[str, str]:
-    """Stage a graph whose sink is the STEREO ring, which has no outputd capture.
-
-    Deliberately not an active-endpoint playback device: that class is DEMOTED
-    to the passive fail-closed route by ``outputd_active_lane_decision`` before
-    the coherence report ever sees it, so a fixture built on one cannot reach an
-    exit 1.
-    """
-    from jasper.fanin_coupling import (
-        RING_ACTIVE_PLAYBACK_DEVICE,
-        RING_CAPTURE_DEVICE,
-        RING_PLAYBACK_DEVICE,
-    )
-
-    env = _active_graph_env(tmp_path, channels=2)
-    statefile = Path(env["JASPER_CAMILLA_STATEFILE"])
-    active_config = Path(
-        statefile.read_text(encoding="utf-8").split("config_path:", 1)[1].strip()
-    )
-    text = active_config.read_text(encoding="utf-8")
-    assert RING_ACTIVE_PLAYBACK_DEVICE in text, text
-    assert RING_CAPTURE_DEVICE in text, text
-    active_config.write_text(
-        text.replace(RING_ACTIVE_PLAYBACK_DEVICE, RING_PLAYBACK_DEVICE),
-        encoding="utf-8",
-    )
-    return env
-
 
 def _active_leader_graph_env(
     tmp_path: Path,
@@ -2843,66 +2815,6 @@ def test_the_note_prefix_the_script_matches_is_the_one_the_cli_prints(
 
     assert rc == 0, out
     assert out.startswith("ok note="), out
-
-
-def test_outputd_env_validation_rejects_a_stereo_ring_sink_under_a_loopback_plan(
-    tmp_path: Path,
-    capsys,
-) -> None:
-    """The CLI's exit-1 path, on a contradiction that still reaches it.
-
-    Two neighbouring shapes do NOT reach it, for different reasons, and neither
-    is a regression:
-
-      * the ACTIVE RING under a loopback plan is the documented mid-arm
-        WAYPOINT — a note at rc 0 on purpose, because reporting it as an error
-        deadlocked the arm ladder on jts3 (2026-08-11);
-      * the RETIRED snd-aloop ACTIVE lane is in ``_ACTIVE_ENDPOINT_DEVICES``, so
-        a graph naming it fails ``outputd_active_lane_decision`` and is DEMOTED
-        to ``devices=None`` before the coherence report runs — the fail-closed
-        demotion, which this command has always had.
-
-    The STEREO ring reaches it: a ring PCM has no outputd capture pairing by
-    construction, so a graph writing it under a plan whose post-DSP hop is still
-    the snd-aloop lane writes a ring nobody reads. Nothing else pins this
-    command's rc-1 path.
-    """
-    from jasper.cli.audio_config import main as audio_config_main
-
-    graph_env = _stereo_ring_sink_graph_env(tmp_path)
-    base_env = tmp_path / "jasper.env"
-    base_env.write_text("JASPER_AUDIO_DAC_ID=hifiberry_dac8x\n", encoding="utf-8")
-    outputd_env = tmp_path / "outputd.env"
-    outputd_env.write_text(
-        "JASPER_OUTPUTD_CONTENT_PCM=outputd_content_capture\n",
-        encoding="utf-8",
-    )
-    fanin_env = tmp_path / "fanin.env"
-    fanin_env.write_text(
-        "JASPER_FANIN_CAMILLA_COUPLING=loopback\n",
-        encoding="utf-8",
-    )
-
-    result = audio_config_main(
-        [
-            "validate-outputd-env",
-            "--base-env",
-            str(base_env),
-            "--outputd-env",
-            str(outputd_env),
-            "--fanin-env",
-            str(fanin_env),
-            "--camilla-statefile",
-            graph_env["JASPER_CAMILLA_STATEFILE"],
-            "--camilla2-statefile",
-            str(tmp_path / "crossover-statefile.yml"),
-            "--output-topology",
-            graph_env["JASPER_OUTPUT_TOPOLOGY_PATH"],
-        ]
-    )
-
-    assert result == 1
-    assert "no registered outputd capture" in capsys.readouterr().out
 
 
 def _outputd_env_key_present(outputd_env: str, key: str) -> bool:

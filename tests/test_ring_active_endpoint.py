@@ -2771,6 +2771,17 @@ def test_the_capture_device_comparison_names_the_quiet_trap_not_every_graph():
         playback=RING_ACTIVE_PLAYBACK_DEVICE,
         outputd_env=armed_env,
     ) == ()
+    # ...and the same paired sink with RING A on the capture half. This is the
+    # shape the retired HALF-moved-graph guard called an error. It is not one:
+    # fan-in serves Ring A whatever the persisted token says (ADR-0100), so
+    # CamillaDSP captures real audio, plays into the paired snd-aloop lane, and
+    # outputd reads it — the box PLAYS, and no contradiction may be reported.
+    assert _coherence_errors(
+        coupling="loopback",
+        capture=RING_CAPTURE_DEVICE,
+        playback=DEFAULT_PLAYBACK_DEVICE,
+        outputd_env={"JASPER_OUTPUTD_CONTENT_PCM": DEFAULT_OUTPUTD_CAPTURE_DEVICE},
+    ) == ()
 
 
 def test_every_mid_sequence_state_is_silence_or_coherent_never_wrong_audio():
