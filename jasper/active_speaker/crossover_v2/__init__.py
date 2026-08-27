@@ -89,6 +89,8 @@ call and neither extends:
 * :mod:`.session_graph` — the graph seam filled: one measurement graph installed
   once per session and proven before each stimulus, instead of a config swap and
   a duck around every capture.
+* :mod:`.volume_claim` — the volume seam filled: one session-measurement claim
+  on the ranked owner, holding the handle the seam does not carry.
 * :mod:`.playback_transaction` — ready → admit → lock → play → restore, a named
   boundary INSIDE ``measure`` rather than a fifth verb.
 * :mod:`.measure_spec` — what one ``measure`` asks for, and the named stubs for
