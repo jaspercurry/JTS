@@ -577,7 +577,7 @@ def check_usb_mic_export() -> CheckResult:
 def check_usb_combo_consistency() -> CheckResult:
     """Cross-check canonical USB permission against the resolved combo state.
 
-    Three facts that must agree on a healthy combo box:
+    Two facts that must agree on a healthy combo box:
 
     1. EFFECTIVE PERMISSION — canonical ``source_intent.env`` says USB Audio
        Input is On *and* the current grouping role allows local sources.
@@ -586,6 +586,7 @@ def check_usb_combo_consistency() -> CheckResult:
        not a second preference store. Invalid intent remains a loud failure.
     2. RESOLVED — ``fanin.env`` carries ``JASPER_FANIN_USB_DIRECT=enabled`` (the
        reconciler armed the combo so fan-in DIRECT-captures the gadget).
+
     Reported outcomes:
 
     - ``fail`` — ``jasper-usbsink.service`` is in the ``failed`` state (its
