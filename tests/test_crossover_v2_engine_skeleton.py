@@ -543,16 +543,25 @@ async def test_measure_refuses_a_session_that_was_never_opened():
 # --------------------------------------------------------------------------- #
 
 
+#: Loop turns a slow release stays in flight for. It must exceed the one or
+#: two turns a detached release gets between the cancel landing and the test
+#: waking, or the mutation these pins exist for would finish in time to look
+#: shielded. Turns rather than seconds: no wall clock, so a starved runner
+#: cannot flip either direction.
+_RELEASE_TURNS = 50
+
+
 @dataclass
 class _SlowVolume(_Volume):
-    """A release that takes a scheduler turn, logged when it COMPLETES."""
+    """A release that stays in flight, logged when it COMPLETES."""
 
     events: list[str] = field(default_factory=list)
     releasing: asyncio.Event = field(default_factory=asyncio.Event)
 
     async def release(self) -> None:
         self.releasing.set()
-        await asyncio.sleep(0.05)
+        for _ in range(_RELEASE_TURNS):
+            await asyncio.sleep(0)
         self.releases += 1
         self.events.append("volume")
 
