@@ -17,6 +17,12 @@ made in prose somewhere in the diff:
 - **1e** a composite may not arm the ring at the narrow wire.
 - **1f** the reconciler/emitter walk's load-bearing verdicts.
 
+The last section is later work on the same sink: the flat graph's PROGRAM-TO-
+OUTPUT mapping. #3219 gave the emitter a width and left the composite's mapping
+undecided; those tests pin the decision (one program channel per child DAC) and
+the typed refusal that lands with it, which closes a hole live-channel counting
+could not see.
+
 NOTHING HERE ARMS ANYTHING. These are pure predicate/render tests; the arm of a
 real composite box stays an operator ladder gated on item 2 (#2255).
 """
@@ -26,14 +32,27 @@ from __future__ import annotations
 from pathlib import Path
 
 import pytest
+import yaml
 
+from jasper.active_speaker.camilla_yaml import STARTUP_MUTE_GAIN_DB
 from jasper.active_speaker.runtime_contract import (
+    _flat_hard_muted_outputs,
     active_ring_channels_for_topology,
+    classify_camilla_graph,
+    classify_output_contract,
+    flat_graph_program_dest_map,
     ring_channels_for_topology,
     topology_sink_is_composite,
     topology_supports_shm_ring,
 )
 from jasper.output_topology import OUTPUT_TOPOLOGY_KIND, OutputTopology
+from jasper.sound.camilla_yaml import (
+    FlatChannelPlan,
+    emit_flat_outputd_cutover_config,
+    emit_sound_config,
+    flat_graph_channel_plan,
+)
+from jasper.sound.profile import SoundProfile
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
 
@@ -224,13 +243,49 @@ def test_the_ring_b_boundary_is_asserted_not_assumed():
     assert topology_supports_shm_ring(topology) is False
 
 
-def test_a_passive_composite_still_resolves_no_ring_at_all():
-    """Widening the ACTIVE function must not give a PASSIVE composite a ring.
+def _stereo_topology() -> OutputTopology:
+    """An ordinary single-DAC passive stereo box: outputs 0 and 1, one child."""
+    return OutputTopology.from_mapping({
+        "artifact_schema_version": 1,
+        "kind": OUTPUT_TOPOLOGY_KIND,
+        "topology_id": "stereo",
+        "name": "Plain stereo",
+        "status": "draft",
+        "hardware": {
+            "device_id": "apple_usb_c_dongle",
+            "device_label": "Apple",
+            "physical_output_count": 2,
+            "child_devices": [{
+                "child_id": "apple_dac_1",
+                "device_id": "apple_usb_c_dongle",
+                "device_label": "Apple",
+                "serial": "AAA",
+                "physical_output_indexes": [0, 1],
+            }],
+        },
+        "speaker_groups": [
+            {
+                "id": "left", "label": "Left", "kind": "left",
+                "mode": "full_range_passive",
+                "channels": [{"role": "full_range", "physical_output_index": 0}],
+            },
+            {
+                "id": "right", "label": "Right", "kind": "right",
+                "mode": "full_range_passive",
+                "channels": [{"role": "full_range", "physical_output_index": 1}],
+            },
+        ],
+        "routing": {"main_left_group_id": "left", "main_right_group_id": "right"},
+    })
 
-    It is not roleful, so the active arm never runs; Ring B still excludes it.
-    Such a box stays on loopback, exactly as before.
+
+def _composite_passive_stereo() -> OutputTopology:
+    """A PASSIVE stereo composite: L on child A's output 0, R on child B's 2.
+
+    The shape a dual-Apple stereo box really has — each child contributes ONE
+    declared full_range output, which is why channel 1 is not output 1 here.
     """
-    passive = _composite_topology([
+    return _composite_topology([
         {
             "id": "left",
             "label": "Left",
@@ -246,6 +301,15 @@ def test_a_passive_composite_still_resolves_no_ring_at_all():
             "channels": [{"role": "full_range", "physical_output_index": 2}],
         },
     ])
+
+
+def test_a_passive_composite_still_resolves_no_ring_at_all():
+    """Widening the ACTIVE function must not give a PASSIVE composite a ring.
+
+    It is not roleful, so the active arm never runs; Ring B still excludes it.
+    Such a box stays on loopback, exactly as before.
+    """
+    passive = _composite_passive_stereo()
     assert active_ring_channels_for_topology(passive) is None
     assert ring_channels_for_topology(passive) is None
     assert topology_supports_shm_ring(passive) is False
@@ -574,6 +638,227 @@ def test_the_unattended_pass_refuses_a_composite_carrying_neither_proven_arm(
     ok, detail = coupling_reconcile.ring_roleful_unattended_ready()
     assert ok is False
     assert "jasper-fanin-coupling-reconcile shm_ring" in detail
+
+
+# --- the composite's flat program-to-output mapping --------------------------
+#
+# #3219 gave the flat emitter a width and recorded that a composite sink still
+# needed "the mixer's dest-to-output mapping decided before a wide graph means
+# anything there". This is that decision, and the refusal that lands with it.
+
+
+def _flat_program_dests(yaml_text: str) -> dict[int, int]:
+    """Which PROGRAM channel each mixer dest carries, off the emitted YAML.
+
+    Reads the graph rather than the plan, so these tests judge what CamillaDSP
+    would actually do. A dest fed only at the hard-mute floor carries no
+    program and is absent from the result.
+    """
+    payload = yaml.safe_load(yaml_text)
+    carried: dict[int, int] = {}
+    for entry in payload["mixers"]["master_gain"]["mapping"]:
+        live = [
+            source for source in entry["sources"]
+            if float(source["gain"]) > STARTUP_MUTE_GAIN_DB
+        ]
+        if len(live) == 1:
+            carried[int(entry["dest"])] = int(live[0]["channel"])
+    return carried
+
+
+def test_a_wide_composite_graph_puts_one_program_channel_on_each_child():
+    """THE headline pin: L on child A's output, R on child B's — not 0 and 1.
+
+    A dual-Apple stereo box declares outputs 0 and 2, and outputd deinterleaves
+    0/1 to child A and 2/3 to child B. An identity mixer would send BOTH program
+    channels into child A and leave the declared right speaker silent, so the
+    mapping is what makes a wide graph mean anything here.
+    """
+    topology = _composite_passive_stereo()
+    text = emit_flat_outputd_cutover_config(topology=topology, width=4)
+
+    assert _flat_program_dests(text) == {0: 0, 2: 1}
+
+
+def test_a_wide_composite_graph_terminally_mutes_the_outputs_between():
+    """The dead dests are 1 and 3 — BETWEEN the program's two, not after them.
+
+    The surplus rule used to be "past the program's own width"; on a composite
+    the unclaimed output sits in the middle, so the mute set follows the mapping
+    instead. Proved off the emitted graph by the same structural check the
+    runtime contract uses, never off the plan's intent.
+    """
+    topology = _composite_passive_stereo()
+    text = emit_flat_outputd_cutover_config(topology=topology, width=4)
+
+    assert _flat_hard_muted_outputs(text, 4) == frozenset({1, 3})
+
+
+def test_the_wide_composite_graph_corrects_both_program_channels():
+    """Each program-carrying dest keeps a filter chain; neither runs raw.
+
+    The pipeline's Mixer runs FIRST, so the per-channel chains belong to DESTS.
+    Leaving them on 0 and 1 would apply the right channel's correction to a dead
+    output and put uncorrected program on the live one — a gain-structure defect
+    the mute set alone cannot see.
+    """
+    topology = _composite_passive_stereo()
+    payload = yaml.safe_load(
+        emit_flat_outputd_cutover_config(topology=topology, width=4)
+    )
+    chains = {
+        int(step["channels"][0]): step["names"]
+        for step in payload["pipeline"]
+        if step["type"] == "Filter"
+    }
+
+    assert set(chains) == {0, 1, 2, 3}
+    assert chains[0] == chains[2], "both program dests carry the same flat chain"
+    assert all(name.endswith("_commission_mute") for name in chains[1] + chains[3])
+
+
+def test_the_checker_refuses_the_identity_shape_on_a_composite():
+    """The pre-PR shape — program on 0 and 1, mutes on 2 and 3 — is REFUSED.
+
+    Live-channel COUNTING cannot see this: two live channels against two
+    declared outputs balances exactly as the correct graph does. Resolving the
+    mapping is what turns the count into the per-index question that catches it.
+    """
+    topology = _composite_passive_stereo()
+    wrong = emit_sound_config(
+        SoundProfile(enabled=False), width=4, muted_outputs=(2, 3)
+    )
+
+    assert _flat_program_dests(wrong) == {0: 0, 1: 1}
+    graph = classify_camilla_graph(topology=topology, text=wrong)
+    assert graph.allowed is False
+    assert "flat_full_range_graph_wider_than_topology" in {
+        issue["code"] for issue in graph.issues
+    }
+
+
+def test_the_checker_admits_the_mapped_shape_on_a_composite():
+    """The BOUNDARY for the test above: the mapped graph is allowed.
+
+    Emitter and checker are pinned against each other here — a refusal that
+    also rejected the correct graph would be a park, not a fix.
+    """
+    topology = _composite_passive_stereo()
+    text = emit_flat_outputd_cutover_config(topology=topology, width=4)
+
+    assert classify_camilla_graph(topology=topology, text=text).allowed is True
+
+
+def test_a_wide_graph_whose_mapping_is_undecided_is_refused_by_name():
+    """An UNDECIDED mapping plus a wide graph is a typed refusal, not a count.
+
+    Both children must declare exactly one output for the pairing to resolve;
+    a composite whose declared outputs sit on ONE child resolves nothing, and a
+    wide graph from it can no longer slip through on a balanced live count.
+    """
+    lopsided = _composite_topology([
+        {
+            "id": "left", "label": "Left", "kind": "left",
+            "mode": "full_range_passive",
+            "channels": [{"role": "full_range", "physical_output_index": 0}],
+        },
+        {
+            "id": "right", "label": "Right", "kind": "right",
+            "mode": "full_range_passive",
+            "channels": [{"role": "full_range", "physical_output_index": 1}],
+        },
+    ])
+    contract = classify_output_contract(lopsided)
+    assert flat_graph_program_dest_map(lopsided, contract, width=4) is None
+
+    graph = classify_camilla_graph(
+        topology=lopsided,
+        text=emit_sound_config(
+            SoundProfile(enabled=False), width=4, muted_outputs=(2, 3)
+        ),
+    )
+    assert graph.allowed is False
+    assert "flat_full_range_graph_mapping_undecided" in {
+        issue["code"] for issue in graph.issues
+    }
+
+
+def test_a_declared_output_that_receives_no_program_is_refused():
+    """#3219's inherited hole: a wide graph that renders CLEAN and plays SILENT.
+
+    Its own example — a mono box whose one ``full_range`` output sits past the
+    program's channels, rendered at width 4. The mutes are all correct and the
+    one declared output is unmuted, so every check that judges *mutes* passes;
+    but output 2 is a surplus dest carrying the mixer's mute-floor feed, so
+    nothing routes program to it. The map is what makes "this declared output
+    receives no program" decidable, which is why #3219 deferred the refusal to
+    this PR rather than guessing at it.
+    """
+    mono_past_program = OutputTopology.from_mapping({
+        "artifact_schema_version": 1,
+        "kind": OUTPUT_TOPOLOGY_KIND,
+        "topology_id": "mono-past-program",
+        "name": "Mono on output 2",
+        "status": "draft",
+        "hardware": {
+            "device_id": "hifiberry_dac8x",
+            "device_label": "DAC8x",
+            "physical_output_count": 8,
+            "child_devices": [{
+                "child_id": "dac8x", "device_id": "hifiberry_dac8x",
+                "device_label": "DAC8x", "serial": "AAA",
+                "physical_output_indexes": [0, 1, 2, 3, 4, 5, 6, 7],
+            }],
+        },
+        "speaker_groups": [{
+            "id": "mono", "label": "Mono", "kind": "mono",
+            "mode": "full_range_passive",
+            "channels": [{"role": "full_range", "physical_output_index": 2}],
+        }],
+        "routing": {"main_left_group_id": "mono", "main_right_group_id": "mono"},
+    })
+    text = emit_flat_outputd_cutover_config(topology=mono_past_program, width=4)
+
+    # The render completes and output 2 is the ONLY live channel — the exact
+    # shape #3219 described, reproduced rather than asserted from its prose.
+    assert _flat_hard_muted_outputs(text, 4) == frozenset({0, 1, 3})
+    assert 2 not in _flat_program_dests(text)
+
+    graph = classify_camilla_graph(topology=mono_past_program, text=text)
+    assert graph.allowed is False
+    assert "flat_full_range_graph_declared_output_unfed" in {
+        issue["code"] for issue in graph.issues
+    }
+
+
+@pytest.mark.parametrize("width", [2, 4])
+def test_the_narrow_composite_answer_is_unchanged(width: int):
+    """At the PROGRAM's own width nothing moves — the pre-existing rule stands.
+
+    A 2-wide composite graph cannot express outputs 0 and 2, so the mapping
+    stays undecided there and the box keeps counting, which is why a working
+    dual-Apple stereo box is still not refused. Only the WIDE answer is new.
+    """
+    topology = _composite_passive_stereo()
+    contract = classify_output_contract(topology)
+    resolved = flat_graph_program_dest_map(topology, contract, width=width)
+
+    assert (resolved is None) is (width == 2)
+    assert flat_graph_channel_plan(topology, width=2) == FlatChannelPlan()
+
+
+def test_a_non_composite_box_still_maps_by_index():
+    """The identity answer is reported as ABSENCE, so stereo emits unchanged.
+
+    The plan returning ``None`` rather than ``(0, 1)`` is what keeps every
+    non-composite emit byte-identical — the emitter reads absence as the
+    identity, so there is only one spelling of the ordinary graph.
+    """
+    stereo = _stereo_topology()
+    contract = classify_output_contract(stereo)
+
+    assert flat_graph_program_dest_map(stereo, contract, width=2) == (0, 1)
+    assert flat_graph_channel_plan(stereo, width=2).program_dest_map is None
 
 
 if __name__ == "__main__":  # pragma: no cover

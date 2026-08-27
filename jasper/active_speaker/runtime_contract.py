@@ -680,8 +680,9 @@ def topology_sink_is_composite(topology: OutputTopology) -> bool:
     STEREO ring carries a full-range stereo program, which a 4-ch composite is
     not — a ROLEFUL composite's post-crossover program rides the ACTIVE ring
     instead, see :func:`active_ring_channels_for_topology`) and
-    ``flat_graph_output_mapping_is_indexed`` (outputd fans the stereo program
-    across child DACs, so Camilla channel *i* is not physical output *i*).
+    ``flat_graph_program_dest_map`` (outputd fans the stereo program across
+    child DACs, so program channel *i* is not physical output *i* — it is the
+    single output that child *i* declares).
     """
 
     return len(topology.hardware.child_devices) >= 2
@@ -1022,37 +1023,57 @@ def flat_full_range_outputs(contract: OutputContract) -> frozenset[int]:
     )
 
 
-def flat_graph_output_mapping_is_indexed(
+def flat_graph_program_dest_map(
     topology: OutputTopology,
     contract: OutputContract,
     *,
     width: int,
-) -> bool:
-    """True iff Camilla playback channel *i* drives physical output *i*.
+) -> tuple[int, ...] | None:
+    """Which playback channel each program channel drives, or ``None``.
 
-    The flat lane writes ``width`` channels to one outputd sink; whether channel
-    index and physical-output index coincide depends on the sink. Two conditions
-    establish it, and neither is assumed:
+    The ONE answer to "where does the flat graph put the program". The renderer
+    builds its mixer, its per-dest chains and its mutes from this; the checker
+    asks it whether a live channel reached an undeclared output. One derivation
+    is what keeps those two incapable of disagreeing.
 
-    * **not a composite sink** (:func:`topology_sink_is_composite`). A composite
-      (dual-Apple) sink has outputd fan the stereo program across child DACs, so
-      a working dual-Apple stereo box legitimately sits on outputs 0 and 2 —
-      there, channel 1 is not output 1.
-    * **every claimed output lies inside ``width``**. If the topology names
-      output 5 for a 2-wide graph, the graph plainly is not addressing outputs
-      by index, so no per-index conclusion is available.
+    Playback-channel index and physical-output index are ONE space: a
+    composite's children own a contiguous pair each
+    (``hardware.child_devices[].physical_output_indexes``) and outputd
+    deinterleaves in that order, so an entry is both a dest and an output.
 
-    Where this holds, the safety question can be asked exactly (does the graph
-    emit on an output the topology does not claim?). Where it does not, callers
-    fall back to counting live channels, which is mapping-agnostic. Returning
-    ``False`` is always the conservative answer: it costs precision, never
-    safety.
+    Two shapes resolve:
+
+    * **indexed** — not a composite, every claimed output inside ``width``:
+      program channel *i* drives output *i*.
+    * **composite-paired** — a multi-child sink whose children declare exactly
+      ONE ``full_range`` output each, all inside ``width``: program channel *i*
+      drives child *i*'s output. A dual-Apple stereo box sits on outputs 0 and 2
+      this way, which is exactly why the identity answer is wrong for it.
+
+    ``None`` is UNDECIDED and both callers fail closed on it: the renderer mutes
+    and folds nothing, and :func:`_flat_graph_allowed` refuses a graph wider than
+    the program rather than guess where its live channels landed.
     """
 
-    if topology_sink_is_composite(topology):
-        return False
+    from jasper.sound.camilla_yaml import FLAT_PROGRAM_WIDTH
+
+    if width < FLAT_PROGRAM_WIDTH:
+        return None
     claimed = flat_full_range_outputs(contract)
-    return bool(claimed) and claimed <= frozenset(range(width))
+    if not claimed or not claimed <= frozenset(range(width)):
+        return None
+    if not topology_sink_is_composite(topology):
+        return tuple(range(FLAT_PROGRAM_WIDTH))
+    children = topology.hardware.child_devices
+    if len(children) != FLAT_PROGRAM_WIDTH:
+        return None
+    dests: list[int] = []
+    for child in children:
+        owned = sorted(claimed.intersection(child.physical_output_indexes))
+        if len(owned) != 1:
+            return None
+        dests.append(owned[0])
+    return tuple(dests)
 
 
 def flat_graph_muted_outputs(
@@ -1071,9 +1092,9 @@ def flat_graph_muted_outputs(
     YAML rather than trusting the emitter.
 
     Muting is index-wise, so it is withheld unless
-    :func:`flat_graph_output_mapping_is_indexed` establishes that Camilla
-    channel *i* really drives physical output *i* — muting by index on a
-    composite sink would silence a working speaker.
+    :func:`flat_graph_program_dest_map` resolves where the program actually
+    lands — muting by a mapping nobody has established would silence a working
+    speaker.
 
     Returns EMPTY — mute nothing — when that fails, and for three more cases
     where the flat lane has no business silencing anything:
@@ -1105,7 +1126,7 @@ def flat_graph_muted_outputs(
         return frozenset()
     if not contract.topology_configured or contract.requires_roleful_graph:
         return frozenset()
-    if not flat_graph_output_mapping_is_indexed(topology, contract, width=width):
+    if flat_graph_program_dest_map(topology, contract, width=width) is None:
         return frozenset()
     return frozenset(range(width)) - flat_full_range_outputs(contract)
 
@@ -1282,7 +1303,7 @@ def _flat_graph_allowed(
     summary: dict[str, Any],
     program_bake_pipe: bool = False,
     hard_muted_outputs: frozenset[int] = frozenset(),
-    indexed_output_mapping: bool = False,
+    program_dest_map: tuple[int, ...] | None = None,
     required_mono_fold: int | None = None,
     mono_fold_proved: bool = False,
 ) -> GraphSafety:
@@ -1322,29 +1343,68 @@ def _flat_graph_allowed(
     #
     # How the live set is judged depends on what is known about the sink:
     #
-    # * `indexed_output_mapping` — channel i drives output i, so ask the exact
-    #   question: is any LIVE channel an output the topology does not claim?
-    #   This is what makes muting the WRONG channel useless (a mono box that
-    #   silences its claimed output still has a live channel landing on an
-    #   undeclared one).
-    # * otherwise (composite sink, or claims outside the graph's width) the
-    #   mapping is outputd's to make and no per-index conclusion is available,
-    #   so fall back to counting: more live channels than assigned outputs means
-    #   at least one lands somewhere undeclared under ANY injective mapping.
-    #   This is the pre-existing rule, unchanged — it is why a working
-    #   dual-Apple stereo box on outputs 0 and 2 is not refused.
+    # * a RESOLVED `program_dest_map` — dest index IS physical output index, so
+    #   the exact question can be asked: is any LIVE channel an output the
+    #   topology does not claim? This is what makes muting the WRONG channel
+    #   useless (a mono box that silences its claimed output still has a live
+    #   channel landing on an undeclared one), and since the map also resolves a
+    #   composite pairing it is what catches a wide composite graph whose program
+    #   landed on the child-A pair instead of one output per child.
+    # * UNDECIDED mapping on a graph WIDER than the program — refuse. Counting
+    #   cannot speak here: the surplus dests are hard muted, so a graph feeding
+    #   the wrong outputs has exactly as many live channels as the right one and
+    #   the count is blind to the difference. #3219 widened the emitter and
+    #   recorded that the refusal lands with the mapping; this is it.
+    # * UNDECIDED mapping at the program's own width — count, as before: more
+    #   live channels than assigned outputs means at least one lands somewhere
+    #   undeclared under ANY injective mapping. The pre-existing rule, unchanged
+    #   — it is why a 2-wide dual-Apple stereo box on outputs 0 and 2 is not
+    #   refused.
     if isinstance(playback_channels, int) and not isinstance(playback_channels, bool):
         live_outputs = frozenset(range(playback_channels)) - hard_muted_outputs
     else:
         live_outputs = None
     if allowed and contract.topology_configured and live_outputs is not None:
-        if indexed_output_mapping:
+        from jasper.sound.camilla_yaml import FLAT_PROGRAM_WIDTH
+
+        code = "flat_full_range_graph_wider_than_topology"
+        if program_dest_map is not None:
             undeclared = sorted(live_outputs - full_range_outputs)
+            # The RECIPROCAL of "no emission on an undeclared output": a
+            # declared output that nothing feeds. Only the program's dests (and
+            # the fold, which sums onto one of them) carry program at all, so a
+            # declared output outside that set gets the mixer's mute-floor feed
+            # and the speaker is silent while every mute reads correct. #3219
+            # recorded this hole against the mapping; the map is what makes it
+            # decidable, so the refusal lands here with it.
+            carries_program = frozenset(program_dest_map) | (
+                frozenset() if required_mono_fold is None
+                else frozenset({required_mono_fold})
+            )
+            silent = sorted(full_range_outputs - carries_program)
+            if undeclared:
+                detail = (
+                    f"flat full-range graph emits on physical output(s) "
+                    f"{', '.join(str(index) for index in undeclared)}, which the "
+                    f"saved full-range topology does not assign"
+                )
+            elif silent:
+                code = "flat_full_range_graph_declared_output_unfed"
+                detail = (
+                    f"flat full-range graph routes no program to declared "
+                    f"physical output(s) "
+                    f"{', '.join(str(index) for index in silent)}; the program "
+                    f"reaches {', '.join(str(index) for index in sorted(carries_program))}"
+                )
+            else:
+                detail = ""
+        elif playback_channels > FLAT_PROGRAM_WIDTH:
+            code = "flat_full_range_graph_mapping_undecided"
             detail = (
-                f"flat full-range graph emits on physical output(s) "
-                f"{', '.join(str(index) for index in undeclared)}, which the "
-                f"saved full-range topology does not assign"
-            ) if undeclared else ""
+                f"flat full-range graph is {playback_channels} channels wide on "
+                f"a sink whose program-to-output mapping is undecided, so no "
+                f"live channel can be traced to a declared physical output"
+            )
         else:
             over_wide = len(live_outputs) > len(full_range_outputs)
             detail = (
@@ -1354,9 +1414,7 @@ def _flat_graph_allowed(
             ) if over_wide else ""
         if detail:
             allowed = False
-            issues.append(_issue(
-                "blocker", "flat_full_range_graph_wider_than_topology", detail
-            ))
+            issues.append(_issue("blocker", code, detail))
     if not allowed:
         if contract.classification == CONTRACT_UNCONFIGURED:
             issues.append(_issue(
@@ -3870,7 +3928,7 @@ def classify_camilla_graph(
             hard_muted_outputs=_flat_hard_muted_outputs(
                 text, summary.get("playback_channels")
             ),
-            indexed_output_mapping=flat_graph_output_mapping_is_indexed(
+            program_dest_map=flat_graph_program_dest_map(
                 topology, contract, width=summary.get("playback_channels") or 0
             ),
             required_mono_fold=required_mono_fold,

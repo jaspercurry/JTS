@@ -15,7 +15,7 @@ from __future__ import annotations
 import logging
 import math
 import re
-from collections.abc import Iterable
+from collections.abc import Iterable, Sequence
 from dataclasses import dataclass
 from pathlib import Path
 from typing import TYPE_CHECKING
@@ -99,6 +99,40 @@ def _normalize_width(width: int) -> int:
             f"channels (the ring layout's accept-set); got {width}"
         )
     return width
+
+
+def _normalize_program_dest_map(
+    program_dest_map: Sequence[int] | None,
+    *,
+    width: int,
+) -> tuple[int, ...] | None:
+    """Validate ``emit_sound_config(program_dest_map=...)`` at the API boundary.
+
+    Fail LOUD on the three ways a map would silently drop or double a program
+    channel. ``runtime_contract.flat_graph_program_dest_map`` owns WHICH dests
+    are right; this only refuses a map no graph could mean.
+    """
+
+    if program_dest_map is None:
+        return None
+    dests = tuple(int(dest) for dest in program_dest_map)
+    if len(dests) != FLAT_PROGRAM_WIDTH:
+        raise ValueError(
+            f"program_dest_map must name one dest per program channel "
+            f"({FLAT_PROGRAM_WIDTH}); got {len(dests)}"
+        )
+    if len(set(dests)) != len(dests):
+        raise ValueError(
+            f"program_dest_map must not send two program channels to one dest; "
+            f"got {dests}"
+        )
+    out_of_range = sorted(dest for dest in dests if not 0 <= dest < width)
+    if out_of_range:
+        raise ValueError(
+            f"program_dest_map dests must be playback channels in 0..{width - 1}; "
+            f"got {', '.join(str(dest) for dest in out_of_range)}"
+        )
+    return dests
 
 
 def _normalize_muted_outputs(
@@ -187,7 +221,21 @@ def _normalize_mono_fold_output(
     return index
 
 
-def _master_gain_mixer_yaml(mono_fold_output: int | None, *, width: int) -> str:
+def _program_dests(program_dest_map: Sequence[int] | None) -> tuple[int, ...]:
+    """Which dest each program channel drives. ``None`` IS the identity — the
+    absence is what keeps every non-composite emit byte-identical."""
+
+    if program_dest_map is None:
+        return tuple(range(FLAT_PROGRAM_WIDTH))
+    return tuple(program_dest_map)
+
+
+def _master_gain_mixer_yaml(
+    mono_fold_output: int | None,
+    *,
+    width: int,
+    program_dest_map: Sequence[int] | None = None,
+) -> str:
     """The ``master_gain`` mixer block, under a caller-supplied ``mixers:`` key.
 
     This is the seam the graph WIDENS at — the same one the roleful emitter
@@ -205,11 +253,14 @@ def _master_gain_mixer_yaml(mono_fold_output: int | None, *, width: int) -> str:
     and its terminal hard mute, which :func:`_normalize_mono_fold_output`
     refuses a fold without.
 
-    A dest past the program has no input channel to copy, so it takes the
+    A dest CARRYING NO PROGRAM has no input channel to copy, so it takes the
     parked graph's shape (``emit_active_speaker_parked_config``): one feed from
     program channel 0 at the hard-mute floor, an entry that changes the channel
     count without carrying program. Its terminal pipeline mute is the half the
-    runtime contract re-proves.
+    runtime contract re-proves. Which dests those are follows
+    ``program_dest_map``: on a composite the program lands on one output per
+    child (0 and 2 on a dual-Apple stereo box), so the dead dests are 1 and 3
+    rather than everything past the program's own width.
 
     ``master_gain`` stops being identity here. That is safe for the Ducker,
     which claims the volume owner (``jasper.camilla.Ducker``) and never touches
@@ -232,6 +283,7 @@ def _master_gain_mixer_yaml(mono_fold_output: int | None, *, width: int) -> str:
 
         return source(0, fmt(STARTUP_MUTE_GAIN_DB), False)
 
+    program_dests = _program_dests(program_dest_map)
     lines = [
         "  master_gain:",
         f"    channels: {{ in: {FLAT_PROGRAM_WIDTH}, out: {width} }}",
@@ -243,13 +295,48 @@ def _master_gain_mixer_yaml(mono_fold_output: int | None, *, width: int) -> str:
                 source(channel, fmt(gain_db), inverted)
                 for channel, gain_db, inverted in mono_sum_sources()
             )
-        elif dest < FLAT_PROGRAM_WIDTH:
-            sources = source(dest, "0", False)
+        elif dest in program_dests:
+            sources = source(program_dests.index(dest), "0", False)
         else:
             sources = surplus_source()
         lines.append(f"      - dest: {dest}")
         lines.append(f"        sources: [{sources}]")
     return "\n".join(lines)
+
+
+def _program_pipeline_yaml(
+    left_names: Sequence[str],
+    right_names: Sequence[str] | None,
+    *,
+    program_dests: tuple[int, ...],
+) -> str:
+    """The mixer step plus one ``Filter`` step per PROGRAM-CARRYING dest.
+
+    The pipeline's Mixer runs FIRST, so these chains are downstream of the
+    2->width widening and belong to DESTS, not to program channels. An indexed
+    sink's two coincide, and delegating there keeps it byte-identical. On a
+    composite the chain must FOLLOW the program to child B's output: left on
+    dest 1 it would correct a dead output and leave the live one raw.
+    """
+
+    if program_dests == tuple(range(FLAT_PROGRAM_WIDTH)):
+        return emit_master_gain_pipeline(left_names, right_names)
+    chains = (
+        list(left_names),
+        list(left_names if right_names is None else right_names),
+    )
+    return "\n".join(
+        ["  - type: Mixer", "    name: master_gain"]
+        + [
+            line
+            for dest, names in zip(program_dests, chains)
+            for line in (
+                "  - type: Filter",
+                f"    channels: [{dest}]",
+                f"    names: [{', '.join(names)}]",
+            )
+        ]
+    )
 
 
 def emit_sound_config(
@@ -275,6 +362,7 @@ def emit_sound_config(
     muted_outputs: Iterable[int] | None = None,
     mono_fold_output: int | None = None,
     width: int = FLAT_GRAPH_WIDTH,
+    program_dest_map: Sequence[int] | None = None,
 ) -> str:
     """Build a CamillaDSP YAML config for the preference profile.
 
@@ -342,6 +430,16 @@ def emit_sound_config(
     it; :func:`flat_graph_channel_plan` owns which channel folds where, this
     emitter only how the fold is spelled. ``None`` is **byte-identical** to
     before this parameter existed (the solo-impact contract).
+
+    ``program_dest_map`` names which playback channel each PROGRAM channel
+    drives, routing both the mixer's feeds and the per-dest filter chains.
+    ``None`` (default) is the identity and is **byte-identical** to before this
+    parameter existed (the solo-impact contract); a composite sink is the one
+    shape needing another answer, since outputd deinterleaves the period across
+    its child DACs.
+    ``jasper.active_speaker.runtime_contract.flat_graph_program_dest_map`` owns
+    WHICH dests those are. Mutually exclusive with ``mono_fold_output``, which
+    collapses the program this spreads.
 
     ``width`` is the graph's OUTPUT width, and the bound the other channel
     axes here are checked against. The PROGRAM does not widen with it: capture
@@ -436,6 +534,16 @@ def emit_sound_config(
     mono_fold_output = _normalize_mono_fold_output(
         mono_fold_output, muted_channels, width=width
     )
+    dest_map = _normalize_program_dest_map(program_dest_map, width=width)
+    if dest_map is not None and mono_fold_output is not None:
+        # A fold sums BOTH program channels onto one output; a non-identity map
+        # exists precisely because they belong on two. The plan derives them
+        # together and never asks for both, so a caller here is misrouted.
+        raise ValueError(
+            "mono_fold_output and program_dest_map are mutually exclusive: a "
+            "fold collapses the program the map is spreading"
+        )
+    program_dests = _program_dests(dest_map)
     # The shared stereo-prefix builder (jasper.camilla_stereo_prefix) owns the
     # room-PEQ -> headroom -> preamp -> preference assembly. Build the active
     # preference filters once and pass them in (it drops inactive specs);
@@ -474,10 +582,10 @@ def emit_sound_config(
         right_names = list(
             chain_names if chain_names_right is None else chain_names_right
         )
-        if 0 in muted_channels:
-            left_names.append(output_commission_mute_name(0))
-        if 1 in muted_channels:
-            right_names.append(output_commission_mute_name(1))
+        if program_dests[0] in muted_channels:
+            left_names.append(output_commission_mute_name(program_dests[0]))
+        if program_dests[1] in muted_channels:
+            right_names.append(output_commission_mute_name(program_dests[1]))
         filter_yaml = "\n".join(
             [filter_yaml]
             + [
@@ -490,17 +598,21 @@ def emit_sound_config(
                 )
             ]
         )
-        pipeline_yaml = emit_master_gain_pipeline(left_names, right_names)
-        # A channel past the program has no chain to append to, so its mute is
+        pipeline_yaml = _program_pipeline_yaml(
+            left_names, right_names, program_dests=program_dests
+        )
+        # A channel CARRYING NO PROGRAM has no chain to append to, so its mute is
         # its whole Filter step. Appended here rather than by widening
         # `emit_master_gain_pipeline`, a deliberately 2-channel shape (see its
-        # docstring); empty at the default width.
+        # docstring); empty at the default width, and on a composite it is the
+        # dead dest BETWEEN the program's two (dest 1) as well as the trailing
+        # one, which is why the test is membership rather than `>= width`.
         pipeline_yaml = "\n".join(
             [pipeline_yaml]
             + [
                 line
                 for index in sorted(muted_channels)
-                if index >= FLAT_PROGRAM_WIDTH
+                if index not in program_dests
                 for line in (
                     "  - type: Filter",
                     f"    channels: [{index}]",
@@ -509,7 +621,9 @@ def emit_sound_config(
             ]
         )
     else:
-        pipeline_yaml = emit_master_gain_pipeline(chain_names, chain_names_right)
+        pipeline_yaml = _program_pipeline_yaml(
+            chain_names, chain_names_right, program_dests=program_dests
+        )
     # inv-5: an active bond member runs rate_adjust off (snapclient is the sole
     # rate-tracker); default True keeps the solo path unchanged.
     rate_adjust_literal = "true" if enable_rate_adjust else "false"
@@ -575,7 +689,7 @@ filters:
 {filter_yaml}
 
 mixers:
-{_master_gain_mixer_yaml(mono_fold_output, width=width)}
+{_master_gain_mixer_yaml(mono_fold_output, width=width, program_dest_map=dest_map)}
 
 pipeline:
 {pipeline_yaml}
@@ -608,12 +722,15 @@ pipeline:
 class FlatChannelPlan:
     """How a ``width``-wide flat graph addresses the topology's outputs.
 
-    Two answers that are only correct together, so they are derived together
+    Three answers that are only correct together, so they are derived together
     (:func:`flat_graph_channel_plan`). The empty plan is the golden stereo graph.
     """
 
     muted_outputs: frozenset[int] = frozenset()
     mono_fold_output: int | None = None
+    # None means the identity: program channel i drives dest i. Only a composite
+    # sink resolves anything else today.
+    program_dest_map: tuple[int, ...] | None = None
 
 
 def flat_graph_channel_plan(
@@ -628,15 +745,22 @@ def flat_graph_channel_plan(
     half of the mono answer — which channel the program folds ONTO — and reads
     the topology once so the two cannot describe different boxes.
 
+    The third answer is WHERE THE PROGRAM LANDS, delegated whole to
+    ``jasper.active_speaker.runtime_contract.flat_graph_program_dest_map``: the
+    identity on an indexed sink, and one output per child on a composite whose
+    children declare exactly one ``full_range`` output each. It is reported as
+    ``None`` for the identity so every non-composite emit stays byte-identical.
+
     The fold is offered only for an explicit 1-channel full-range layout
     (``CONTRACT_NORMAL_MONO_FULL_RANGE``) that assigns exactly one output, and
     only when the SSOT's mute set is that output's exact complement. That last
     equality is the load-bearing one: it is how every case the SSOT withholds
-    muting for — unconfigured, roleful/protected, corrupt, or a composite sink
-    whose channel *i* is not physical output *i* — withholds the fold too,
-    without this function re-deriving (or drifting from) any of those rules. A
-    composite mono box in particular must NOT fold here: outputd owns the
-    program's fan-out across its child DACs.
+    muting for — unconfigured, roleful/protected, corrupt, or a sink whose
+    program-to-output mapping does not resolve — withholds the fold too, without
+    this function re-deriving (or drifting from) any of those rules. A composite
+    mono box in particular must NOT fold here: outputd owns the program's
+    fan-out across its child DACs, and the mapping resolves one output per
+    child, which a single-output mono layout is not.
 
     One case the mute set cannot speak for, so it is withheld explicitly: a
     single full-range output sitting PAST the program's channels (a mono box on
@@ -660,6 +784,7 @@ def flat_graph_channel_plan(
         classify_output_contract,
         flat_full_range_outputs,
         flat_graph_muted_outputs,
+        flat_graph_program_dest_map,
     )
     from jasper.output_topology import (
         OutputTopologyError,
@@ -674,6 +799,7 @@ def flat_graph_channel_plan(
         return FlatChannelPlan()
     muted = flat_graph_muted_outputs(topology, width=width)
     assigned = flat_full_range_outputs(contract)
+    dest_map = flat_graph_program_dest_map(topology, contract, width=width)
     if (
         contract.classification == CONTRACT_NORMAL_MONO_FULL_RANGE
         and len(assigned) == 1
@@ -683,7 +809,12 @@ def flat_graph_channel_plan(
         return FlatChannelPlan(
             muted_outputs=muted, mono_fold_output=next(iter(assigned))
         )
-    return FlatChannelPlan(muted_outputs=muted)
+    # Reported only when it is NOT the identity: the emitter reads absence as
+    # "program channel i drives dest i", so passing the identity explicitly
+    # would be a second spelling of the same graph.
+    if dest_map == tuple(range(FLAT_PROGRAM_WIDTH)):
+        dest_map = None
+    return FlatChannelPlan(muted_outputs=muted, program_dest_map=dest_map)
 
 
 def emit_flat_outputd_cutover_config(
@@ -715,10 +846,14 @@ def emit_flat_outputd_cutover_config(
     read of the topology.
 
     ``topology`` (any ``OutputTopology``) is a test seam; production reads the
-    saved topology. ``width`` likewise has no production caller off its default
-    yet: a composite sink needs the mixer's dest-to-output mapping decided
-    before a wide graph means anything there
-    (:func:`flat_graph_channel_plan` withholds both mute and fold for one).
+    saved topology. ``width`` has no production caller off its default yet — the
+    reconciler that will pass one for a passive composite is a later change —
+    but a wide graph now MEANS something on a composite sink: the mixer's
+    dest-to-output mapping is decided (:func:`flat_graph_channel_plan` resolves
+    one output per child), so a 4-wide dual-Apple stereo graph puts the program
+    on outputs 0 and 2 and terminally mutes 1 and 3. A sink whose mapping does
+    NOT resolve still gets no mute and no fold, and the runtime contract refuses
+    a wide graph from it rather than counting live channels it cannot place.
     """
 
     from jasper.fanin_coupling import (
@@ -755,6 +890,7 @@ def emit_flat_outputd_cutover_config(
         enable_rate_adjust=RING_CAMILLA_ENABLE_RATE_ADJUST,
         muted_outputs=plan.muted_outputs,
         mono_fold_output=plan.mono_fold_output,
+        program_dest_map=plan.program_dest_map,
         width=width,
         out_path=out_path,
     )
