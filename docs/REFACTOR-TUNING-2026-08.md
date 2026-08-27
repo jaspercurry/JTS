@@ -10,8 +10,8 @@
 > plan's R5 (acknowledged 2026-08-25, both directions).
 
 
-**Status: final.** Every gate the inventory escalated is closed — eleven owner
-rulings, S1–S11, recorded in §4 — and both programs have reconciled their
+**Status: final.** Every gate the inventory escalated is closed — twelve owner
+rulings, S1–S12, recorded in §4 — and both programs have reconciled their
 boundaries in writing (§6 R5). One decision arrived *with* newly-assigned scope
 rather than being left open: **#1738**, wire or delete `jasper/bass_extension/`
 (§4). A fresh session executes this. **Read §6's R9 and R5 first**: the repo's
@@ -114,10 +114,20 @@ path kept alive as insurance.
 - **The voice side is not touched.** No wake, providers, prompt, or cues.
 - **The audit program's zone is not touched.** `11` draws the boundary; the two
   programs meet by handoff, never by shared files.
-- **The truth layer's behaviour does not change.** 92 analysis units port whole
-  and unedited (`00 §4.1`). The two known defects are in what the caller *hands*
-  them, and they get fixed as part of defining the record contract — never as
-  pre-work (`00 §3.3`).
+- **The truth layer's behaviour does not change.** It ports whole and unedited
+  (`00 §4.1`): every `*.py` under `jasper/audio_measurement` and
+  `jasper/active_speaker/crossover_v2`, holding the gated analysis units that
+  group the **20 produced `ProgramAnalysis` fields**
+  `tests/test_program_analysis_field_census.py` counts from source. They group
+  into **15 units**, one per distinct gate; W2-a's table is where those fifteen
+  are written down, and it carries their pin. Membership is a rule about two
+  package roots rather than a number to re-count, and
+  `tests/test_correction_boundary_ssot.py` pins the direction that makes it a
+  layer at all — neither package imports its own front end. That is a stated
+  method, which the draft's unenumerated "92 units" never had;
+  `REFACTOR-CUTOVER-2026-08.md` §2 records the failed re-derivation. The two
+  known defects are in what the caller *hands* them, and they get fixed as part
+  of defining the record contract — never as pre-work (`00 §3.3`).
 - **The apply/rollback transaction is never a refactor target.** It is the one
   irreversible act and the only path that writes a live DSP graph. Moving it
   buys nothing and risks the thing the household hears.
@@ -160,7 +170,10 @@ contract.
              DISCLOSURE says it, never blocks
                                  │  (program, samples, sample_rate) + a dir
                                  ▼
- TRUTH LAYER — 92 units. UNCHANGED. Zero upward imports, and tested.
+ TRUTH LAYER — two packages, 15 analysis units. UNCHANGED. No upward
+   import, each package against its own front end: audio_measurement takes
+   neither consumer package, crossover_v2 takes no web
+   (test_correction_boundary_ssot).
    62 of 79 in-product modules pure · 10 file readers · 7 live transport
                                  ▼
  TRANSPORT — the fan-in `correction` ring lane. Stereo, bit-exact
@@ -227,7 +240,7 @@ fresh session reading §3's wave names will think VERIFY is still a thing:
 |---|---|
 | capture walk · capture plan · spatial group | `measure` |
 | VERIFY (prepare · grade · verdict) | `measure` (candidate-check parameterization) + `analyze` |
-| the 92-unit analysis layer · round views | `analyze` |
+| the 15-unit analysis layer · round views | `analyze` |
 | the prescriber CLI's `packet → propose → stage → status` *(existing subcommand names, left alone)* | `recommend` (already shipped, already decoupled — **do not re-extract**) |
 | `persist_conductor_state` · the record writers | `save` |
 | the apply/rollback transaction | none — it is not a verb, and it never moves |
@@ -274,7 +287,7 @@ Three stated properties, not accidents:
 
 *This changes no analysis unit.* The wholesale default lives in the **caller** —
 the `analyze` verb deciding what to invoke — which is exactly the corollary §0
-already carries: *do not decouple the analysis layer, replace its caller.* The 92
+already carries: *do not decouple the analysis layer, replace its caller.* The 15
 units still port whole and unedited; what changes is that something finally calls
 all of them.
 
@@ -1251,7 +1264,7 @@ purpose. **Gate:** mechanical — author plus a sanity look. **Rollback:** per-P
 
 ---
 
-## 4. What the owner settled — nine rulings, no open gates
+## 4. What the owner settled — twelve rulings, no open gates
 
 ### Settled — owner rulings, 2026-08-25
 
@@ -1296,14 +1309,14 @@ One correction rides with these rather than being silently applied: the plan's
 **No open gates. The plan is final.**
 
 Every decision the inventory escalated has been answered by the owner on
-2026-08-25 and recorded as S1–S11 above. Nothing in this plan waits on a ruling;
+2026-08-25 and recorded as S1–S12 above. Nothing in this plan waits on a ruling;
 what remains is execution, and the evidence still owed is named in §6 rather than
 left as a decision in disguise — the no-pop check, the #2202 scoping hour, and
 the class-B verification pass are measurements to take, not questions to ask.
 
 ### One decision arrived WITH new scope — and it is not a reopened gate
 
-Said plainly, because the heading above must stay true. S1–S11 settled **this
+Said plainly, because the heading above must stay true. S1–S12 settled **this
 plan's shape**, and none of them reopens. But the audit-program reconciliation
 (2026-08-25) **assigned this plan a package it did not previously own**, and that
 package came with its own owner decision attached:

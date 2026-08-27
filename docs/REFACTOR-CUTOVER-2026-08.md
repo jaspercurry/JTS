@@ -232,13 +232,19 @@ cannot be lost):
 
 1. Build the three missing retention paths (CHECK / MEASURE / VERIFY takes)
    **at the destination**, retaining into #3064's `take_id` convention.
-2. Flip the sidecar's **seven** readers — four via
-   `evidence_packet.RING_SIDECAR_GLOB` (`evidence_packet`, `harmonic_evidence`,
-   `feature_classifier`, `round_views`) and **three that glob flat `*.json`**
-   (`audio_measurement/capture_integrity.py:193`,
+2. Flip the sidecar's **seven** readers. Seven is right; the composition is
+   **3 + 4**, not 4 + 3 (`cutover-briefs-w1.md` D7, D8 — both halves of the
+   original sentence were wrong). **Three** call `.glob(RING_SIDECAR_GLOB)` —
+   `evidence_packet.py:1246`, `harmonic_evidence.py:603`,
+   `feature_classifier.py:456`; `round_views` globs nothing and reaches the ring
+   through the first of those, by passing `dump_ring_dir=`. **Four** glob flat
+   `*.json` — `audio_measurement/capture_integrity.py:193`,
    `scripts/harmonic-distortion-replay.py:260`,
-   `scripts/severed-twin-replay.py:240`) — fixing the globbers onto the one index
-   as you flip them.
+   `scripts/severed-twin-replay.py:240`, and
+   `scripts/derive-crossover-incident-fixture.py:138`, which globs
+   `*_measure_*.json` over a pinned frozen bank and so breaks on the filename
+   scheme as well as on the deletion. Fix the globbers onto the one index as you
+   flip them.
 3. **The sidecar dies in that same PR**, per ruling S5 — it is a proof bracket,
    not a fallback.
 4. `provenance.take()`'s single shot at the analyze seam is **plumbing to carry,
@@ -294,8 +300,8 @@ the cutover and the one most likely to want splitting; if it splits, split by
 before its replacement writes is a data loss, and a sidecar that outlives it is
 the second-writer defect.
 *Size:* target < 400 lines; if it exceeds, split as above. *Verification bar:*
-a CHECK, a MEASURE and a VERIFY capture each produce a banked take; the four
-`RING_SIDECAR_GLOB` readers and the three flat globbers read the take instead;
+a CHECK, a MEASURE and a VERIFY capture each produce a banked take; the three
+`RING_SIDECAR_GLOB` readers and the four flat globbers read the take instead;
 watched-fail on each reader. *Tier:* default — it touches no clamp — but the
 `provenance.take()` carry (obligation 4) is the part to review hardest.
 
@@ -354,16 +360,17 @@ N analyses per bank multiplies journal volume by N; budget for it.
 
 ### PREMISE FAILED — the "92 analysis units" cannot be reproduced at HEAD
 
-The figure appears five times in the chunk-1 plan
-(`REFACTOR-TUNING-2026-08.md:117`, `:163`, `:164`, `:230`, `:277`) and is
-**never enumerated**. Its cited evidence base — fragments `00`–`11` under
+The figure appeared five times in the chunk-1 plan and was **never enumerated**.
+Its cited evidence base — fragments `00`–`11` under
 `captures/tuning-stack-inventory-2026-08/` — is gitignored (`.gitignore:40`) and
-absent from the tree, so it cannot be checked.
+absent from the tree, so it cannot be checked. **W2-d restates all five**
+(`REFACTOR-TUNING-2026-08.md:117`, `:173`, `:177`, `:243`, `:290`) against the
+committed method below.
 
 Counted at HEAD by `ast.parse` over top-level nodes: **79** modules = 35
 (`jasper/audio_measurement/*.py`) + 44 (`jasper/active_speaker/crossover_v2/*.py`),
 which reproduces the plan's own *"62 of 79 in-product modules pure · 10 file
-readers · 7 live transport"* (`:164`) exactly. No definition of "unit" reaches 92:
+readers · 7 live transport"* (`:177`) exactly. No definition of "unit" reaches 92:
 425 public top-level functions, 482 private, 253 classes, 87 functions in
 `program_analysis.py` alone, 25 `ProgramAnalysis` fields. One numeric
 coincidence, flagged as a coincidence: `jasper/active_speaker/*.py` has 92
@@ -374,9 +381,15 @@ There is also **no in-repo pin on the 79-module membership**: the zero-upward-
 imports test `tests/test_correction_boundary_ssot.py:175` scopes to
 `jasper/audio_measurement` only (`:187`).
 
-**Disposition:** do not carry 92 forward unenumerated. Either restate the
-acceptance claim in terms of the 79 modules that *can* be pinned, or re-derive 92
-with a stated counting method inside the PR that first claims it.
+**Disposition — settled by W2-d, and it took BOTH halves rather than either.**
+The two numbers answer different questions, so neither substitutes for the
+other: module membership says *which modules are in the truth layer*, and the
+registry's coverage claim needs *how many named analyses the table holds*. W2-d
+therefore ships the unit count with a committed method — the 20 produced
+`ProgramAnalysis` fields that `tests/test_program_analysis_field_census.py`
+counts from a fresh parse, grouped by gate into 15 units — **and** widens
+`tests/test_correction_boundary_ssot.py` so both package roots have a
+no-upward-import pin. 92 is not carried forward.
 
 ### Who calls analysis today
 
@@ -492,12 +505,16 @@ failure mode.
 the missing input kind, asserted as a structured field and never as prose.
 *Tier:* default.
 
-**W2-d — settle the 92.** Either enumerate it with a committed counting method
-or restate acceptance row 3c's analysis claim against the pinnable 79. Ships as
-a docs edit to `REFACTOR-TUNING-2026-08.md` plus, if 79 is chosen, widening
-`test_correction_boundary_ssot.py:175` to cover `crossover_v2` so the membership
-has a pin at all.
-*Size:* ~60 lines. *Independent — schedulable first.* *Tier:* default.
+**W2-d — settle the 92.** **Both halves, not either** — see the disposition
+above for why one does not substitute for the other. Enumerate the units with a
+committed counting method, shipped as a CI pin rather than as prose, **and**
+widen `test_correction_boundary_ssot.py:175` to cover `crossover_v2` so the
+truth layer's membership has a direction pin at all. The five plan sites restate
+against the method. *(The "acceptance row 3c" this item used to name is a
+mis-citation: row 3c is Front-end sharing (MS-17), and the analysis-unit claim
+is not an acceptance row — it lives in the plan's §0 non-goals and §1 diagram.)*
+*Size:* ~60 lines, plus the census pin. *Independent — schedulable first.*
+*Tier:* default.
 
 ---
 
