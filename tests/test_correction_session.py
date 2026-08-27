@@ -1557,6 +1557,37 @@ async def _run_verify(sess, verify_room_gain_db: float) -> None:
     await sess.on_verify_capture_uploaded(verify_path)
 
 
+async def test_carrierless_apply_refuses_a_layout_it_cannot_width_match(
+    tmp_path: Path, monkeypatch
+):
+    """#2185's width hole, gated. The no-getter compatibility branch emits a
+    plain 2-channel graph with no mutes and no fold, so on a MONO layout its
+    second channel would reach an output the household never declared. It now
+    refuses instead, typed, rather than relying on having no production caller.
+    """
+    from jasper.correction.runtime_safety import CorrectionRuntimeSafetyError
+    from jasper.output_topology import save_output_topology
+    from tests.test_active_speaker_runtime_contract import _full_range_mono
+
+    save_output_topology(
+        _full_range_mono(), tmp_path / "output_topology.json"
+    )
+    sess = _make_session(tmp_path)
+
+    async def fake_camilla(path: str) -> bool:
+        return True
+
+    await _measure_one_position(sess, room_gain_db=8.0)
+    assert sess.state == SessionState.READY
+
+    # The session unwraps its DspApplyError and re-raises the typed cause, so
+    # this is what the wizard's own `except CorrectionRuntimeSafetyError` sees.
+    with pytest.raises(CorrectionRuntimeSafetyError):
+        await sess.apply(fake_camilla)
+
+    assert sess.state == SessionState.FAILED
+
+
 async def test_verify_populates_acceptance_verdict_and_position1_basis(
     tmp_path: Path,
 ):

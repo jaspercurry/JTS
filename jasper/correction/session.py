@@ -2123,20 +2123,39 @@ class MeasurementSession:
                 # only a setter. The web surface always passes camilla_get_config
                 # and therefore uses the topology-aware carrier above.
                 #
-                # SAFE BY UNREACHABILITY, NOT BY CHECK (issue #2185). This branch
-                # emits a plain 2-channel graph with no carrier, so it carries no
-                # width match: on a MONO topology its second channel would land
-                # on a physical output the household never declared. Nothing here
-                # stops that — `assert_flat_apply_safe` tests only the
-                # protected-tweeter predicate, which a mono topology passes. The
-                # only thing keeping it safe is that exactly one production
-                # caller exists (jasper/web/correction_setup.py) and it supplies
-                # camilla_get_config, so the guarded carrier path above is what
-                # actually runs. Do not add a caller here without width-gating
-                # (or deleting) this branch first.
-                from jasper.correction.runtime_safety import assert_flat_apply_safe
+                # SAFE BY CHECK, no longer by unreachability alone (#2185).
+                # This branch emits a plain 2-channel graph with no carrier and
+                # so no width match: on a MONO topology its second channel would
+                # land on an output the household never declared, and
+                # `assert_flat_apply_safe` does not stop it (that tests only the
+                # protected-tweeter predicate, which mono passes). Production
+                # still never arrives — the one caller supplies
+                # camilla_get_config and takes the carrier path above — so this
+                # makes adding a caller safe instead of silently wrong.
+                #
+                # REFUSES rather than folds: emitting the width-matched graph is
+                # the carrier's job, and a second emitter that knew the fold
+                # would be the drift site the single-owner plan prevents. The
+                # plan comes from that owner, so no topology rule is restated
+                # here; a non-empty plan means this box needs mutes or a fold
+                # that this branch cannot supply.
+                from jasper.correction.runtime_safety import (
+                    CorrectionRuntimeSafetyError,
+                    assert_flat_apply_safe,
+                )
+                from jasper.sound.camilla_yaml import (
+                    FLAT_GRAPH_WIDTH,
+                    FlatChannelPlan,
+                    flat_graph_channel_plan,
+                )
 
                 assert_flat_apply_safe()
+                if flat_graph_channel_plan(width=FLAT_GRAPH_WIDTH) != FlatChannelPlan():
+                    raise CorrectionRuntimeSafetyError(
+                        "room-correction apply without a CamillaDSP config "
+                        "reader cannot width-match this speaker layout; apply "
+                        "through the graph carrier instead"
+                    )
                 emit_sound_config(
                     profile,
                     room_peqs=peq_objs,
