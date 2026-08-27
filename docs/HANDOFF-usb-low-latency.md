@@ -46,14 +46,14 @@ others:
 | CamillaDSP ring `rate_adjust` | off | one-clock blocking chain; rate-adjust on Ring A+B packed the queues and measured ≈194 ms |
 | Ring B `jts_ring_playback` | 2 slots × 128 frames | already minimal |
 
-The shipped warm-up cushion default is **2048** frames
-(`JASPER_FANIN_INPUT_RESAMPLER_WARMUP_CUSHION_FRAMES`). It is the acquisition
-ceiling the held target starts at and, with cushion decay armed, descends from
-toward the 576-frame floor (`DEFAULT_CUSHION_DECAY_FLOOR_FRAMES`), so it shapes
-cold-start descent and underrun margin — **not** the steady-state floor or the
-measured steady numbers. jts.local runs `1536` as a box tuning. Both clear the
-resampler churn floor by a wide margin (`target + cushion >= minimum_safe_fill +
-period + 32` = 562 at the default geometry).
+The `usb_low_latency_48k` route's warm-up cushion default is **1536** frames
+(`jasper/audio_runtime_plan.py`), set for every box on the route — six periods
+of 256, ≈2048 held with the 512-frame target. It is the acquisition ceiling
+the held target starts at and, with cushion decay armed, descends toward the
+576-frame floor (`DEFAULT_CUSHION_DECAY_FLOOR_FRAMES`), shaping cold-start
+descent and underrun margin — **not** the steady-state floor or the measured
+steady numbers. `2048` is only the fan-in daemon's bare compiled fallback
+(`rust/jasper-fanin/src/config.rs`) when no route sets the key.
 
 There is no outputd content-buffer knob: outputd reads Ring B directly and
 never opens an ALSA content capture PCM, so the key that once sized one was
