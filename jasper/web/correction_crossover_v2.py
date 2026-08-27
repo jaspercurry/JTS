@@ -46,6 +46,7 @@ from __future__ import annotations
 import asyncio
 import concurrent.futures
 import dataclasses
+import functools
 import hashlib
 import json
 import logging
@@ -4069,23 +4070,6 @@ class _HeldSession:
     run: Any
 
 
-def _compose_not_yet_mapped(**_facts: Any) -> Any:
-    """Refuse loudly rather than guess which stimulus a spec means.
-
-    The engine names a measurement ``kind``; the flow names a ``phase``. The
-    mapping between them is W5-b3's, and it is not a formality: the
-    summed-sweep phases deliberately share ONE program object, and
-    ``accepted_phases`` differs by stage. A guessed mapping does not fail — it
-    plays the WRONG stimulus and banks a record that looks correct, which is
-    the silent class this engine exists to remove.
-    """
-    raise NotImplementedError(
-        "kind→phase mapping is W5-b3; a guessed mapping silently plays the "
-        "wrong stimulus. The play seam is wired and not drivable until W5-b3 "
-        "lands the mapping and W1-c routes the walk through measure()."
-    )
-
-
 @dataclass(frozen=True)
 class ProductionPlay:
     """The play seam, and the measurement graph it was bound around.
@@ -4098,6 +4082,12 @@ class ProductionPlay:
 
     play: Callable[[str, Any], None]
     graph: Any
+    #: The engine's ``compose`` seam, built here because every binding it needs
+    #: — the bundle, the artifact minting, the topology, the safety profile,
+    #: the role targets and the declared level — is already resolved in this
+    #: function. Threading ten of them back out to build it elsewhere would
+    #: make a second site free to disagree with this one about any of them.
+    compose: Any = None
 
     def __call__(self, phase: str, program: Any) -> None:
         """Still callable as the play seam, for the callers that treat it so.
@@ -4491,7 +4481,60 @@ def bind_production_play(
 
         run_async(_emit())
 
-    return ProductionPlay(play=_play, graph=session_graph)
+    def _compose_stimulus(
+        *,
+        spec: Any,
+        position_deg: Any = None,
+        prompt: str = "",
+        level_db: float = 0.0,
+        stimulus_dbfs: Any = None,
+        program_for_phase: Any = None,
+    ) -> Any:
+        """One stimulus, as the program plus the seams ``play_program`` takes.
+
+        The engine's five facts in, a ``ProgramForStimulus`` out. Only two of
+        them reach the flow: ``spec.kind`` picks the phase, and the phase picks
+        the program BY IDENTITY through the session's own
+        ``program_for_phase``. The other three describe the pose and the rung,
+        which the transaction reports and the record carries — they do not
+        choose a stimulus, and a compose that consulted them would be inventing
+        a second program vocabulary beside the flow's.
+        """
+        from jasper.active_speaker.crossover_v2.measurement_phase import (
+            phase_for_measurement,
+        )
+        from jasper.active_speaker.crossover_v2.program_transaction import (
+            ProgramForStimulus,
+        )
+
+        phase = phase_for_measurement(getattr(spec, "kind", ""))
+        program = program_for_phase(phase)
+        bundle_dir = evidence_store.bundle_dir
+        wav_rel = f"crossover_v2/{relay_session_id}/{phase}_program.wav"
+        wav_path = Path(bundle_dir) / wav_rel
+        wav_path.parent.mkdir(parents=True, exist_ok=True)
+        write_program_wav(wav_path, program)
+        artifact = evidence_store.identify_artifact(wav_rel)
+        return ProgramForStimulus(
+            program=program,
+            seams=bind_program_playback_seams(
+                camilla_factory(),
+                bundle_dir=str(bundle_dir),
+                artifact=artifact,
+                config_dir=resolved_config_dir,
+                program=program,
+                wav_path=str(wav_path),
+                topology=topology,
+                safety_profile=safety_profile,
+                role_targets=role_targets,
+                session_volume_db=session_volume_db,
+                declared_sensitivities=declared_sensitivities,
+            ),
+        )
+
+    return ProductionPlay(
+        play=_play, graph=session_graph, compose=_compose_stimulus,
+    )
 
 
 # --------------------------------------------------------------------------- #
@@ -5925,6 +5968,7 @@ def bind_v2_engine_seams(
     evidence_store: Any,
     relay_session_id: str,
     camilla_factory: Any,
+    compose_stimulus: Any,
     routed_phases: bool = True,
 ) -> Any:
     """The ENGINE's five seams, bound where the flow's seventeen are bound.
@@ -5976,13 +6020,13 @@ def bind_v2_engine_seams(
             load_state=load_v2_state,
             save_state=save_v2_state,
         ),
-        # DRIVABLE WHEN: W5-b3 lands the kind→phase mapping AND W1-c routes the
-        # capture walk through ``measure``. Until both, this seam is WIRED and
-        # not drivable — and the refusal below is loud on purpose, because the
-        # alternative shape (a mapping guessed to make it "work") plays the
-        # wrong stimulus and banks a record that looks correct.
+        # The kind→phase mapping is bound (``measurement_phase``), so this seam
+        # composes a real stimulus by identity from what the conductor
+        # composed. Production still does not DRIVE it: nothing calls
+        # ``measure`` until W1-c routes the capture walk through it, so the
+        # map's proof is its table pin rather than a production run.
         play=ProgramPlaybackTransaction(
-            compose=_compose_not_yet_mapped,
+            compose=compose_stimulus,
             session_volume_plan=plan,
         ),
         # The bundle directory is read when the verb is ASKED, not when the
@@ -7110,6 +7154,13 @@ def prepare_v2_session(
                 evidence_store=evidence_store,
                 relay_session_id=relay_session_id,
                 camilla_factory=camilla_factory,
+                # The session's own program door, so a stimulus is picked BY
+                # IDENTITY from what this conductor composed rather than
+                # recomposed at a guessed level.
+                compose_stimulus=functools.partial(
+                    production_play.compose,
+                    program_for_phase=conductor.program_for_phase,
+                ),
                 # Stage 2 is verify-class on every tier — it grades through the
                 # APPLIED graph and takes no routed capture — so it must not
                 # swap the measurement graph in and straight back out.
