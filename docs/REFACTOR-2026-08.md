@@ -307,8 +307,12 @@ Ruled, recorded so nobody re-litigates:
   (original ruling 2026-08-25).
 
 Owner to-do (deferred deliberately, in order):
-- [ ] Audible music/voice smoke on jts.local — the last DoD half; the
-      silent half (deploy fb37085a5+, doctor, daemons) passed 2026-08-27.
+- [x] Audible music/voice smoke on jts.local — DONE 2026-08-27: music
+      verified on AirPlay AND USB plus a wake-word voice exchange, at
+      post-wave main. The USB path needed clearing a deploy-time gadget
+      wedge first (dwc2 ISO path dead after the deploy's double gadget
+      rebind; cured by cycling jasper-usbgadget + consumers) — fix-forward
+      filed as #3194, a next-batch candidate.
 - [ ] Bench window: re-certify route-latency for `usb_low_latency_48k`
       (the standing doctor FAIL is a stale 2026-07-12 aloop-era artifact —
       pre-existing, remedy verified viable, run as root); optionally
