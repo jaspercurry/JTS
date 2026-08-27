@@ -313,12 +313,14 @@ Owner to-do (deferred deliberately, in order):
       wedge first (dwc2 ISO path dead after the deploy's double gadget
       rebind; cured by cycling jasper-usbgadget + consumers) — fix-forward
       filed as #3194, a next-batch candidate.
-- [ ] Bench window: re-certify route-latency for `usb_low_latency_48k`
-      (the standing doctor FAIL is a stale 2026-07-12 aloop-era artifact —
-      pre-existing, remedy verified viable, run as root); optionally
-      re-derive the AirPlay latency constant
+- [x] Bench window: re-certify route-latency for `usb_low_latency_48k` —
+      VOID 2026-08-27 under
+      [ADR-0185](adr/0185-latency-is-monitored-and-adapted-never-certified.md):
+      latency is monitored and adapted, never certified, so the standing
+      doctor FAIL and the artifact it wanted are both gone. The optional
+      AirPlay latency re-derivation
       (`DEFAULT_FANIN_OUTPUT_LATENCY_FRAMES=1024`, value-identical today)
-      against the ring's real depth; pair with #3073 item 5.
+      stays tracked under #3073 item 5.
 - [ ] Park-presentation questions: the class-c park banner — RESOLVED
       2026-08-27: message, not banner (owner ruling; PR #3206 gives each
       park class its own household sentence on the surfaces the system

@@ -509,8 +509,8 @@ still owed a hardware pass:
 
 - **Composite under simultaneous traffic** — enumeration and return capture
   passed separately; still owed sustained Mac→Pi playback and Pi→Mac capture
-  together while exercising NCM, plus the schema-4-vs-host-capture latency
-  certification that separates gadget/USB/host terms.
+  together while exercising NCM, plus a schema-4-vs-host-capture latency
+  measurement that separates gadget/USB/host terms.
 - **The network claims, end to end, with Wi-Fi off** — `jts.local` and the
   derived address both reach this speaker over usb0, DHCP hands out one lease,
   the host keeps its own default route, and dnsmasq drops privileges cleanly

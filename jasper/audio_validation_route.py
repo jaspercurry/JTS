@@ -50,16 +50,17 @@ def route_live_state_issues(
     expected_identity: Mapping[str, JsonValue],
     *,
     fanin_status: Mapping[str, Any] | None = None,
-    allow_idle_direct_lane: bool = False,
 ) -> tuple[str, ...]:
     """Return the ways live fan-in departs from the route's declared identity.
 
     The direct USB source, the negotiated capture geometry, and the resampler
     lock/target are live timing facts, not config promises, so the low-latency
     route is only actually installed when fan-in reports them.
-    ``allow_idle_direct_lane`` relaxes the lock/health legs for a host that is
-    simply not streaming (fan-in's own ``direct.health == "idle"``); static
-    identity and geometry are still checked in that state.
+
+    An explicitly idle direct lane (fan-in's own ``direct.health == "idle"``)
+    relaxes the activity-dependent legs — health and resampler lock — because
+    an idle USB host is not a broken route. Static identity and geometry are
+    still checked in that state.
     """
 
     issues: list[str] = []
@@ -85,9 +86,7 @@ def route_live_state_issues(
                     issues.append(f"live_fanin_direct_mismatch:{lane}:device")
 
                 health = str(direct.get("health") or "unknown")
-                idle_allowed = (
-                    allow_idle_direct_lane and health == DIRECT_HEALTH_IDLE
-                )
+                idle_allowed = health == DIRECT_HEALTH_IDLE
                 if health != DIRECT_HEALTH_CAPTURING and not idle_allowed:
                     issues.append(f"live_fanin_direct_unhealthy:{lane}:{health}")
 
@@ -158,9 +157,7 @@ def route_live_state_issues(
                     and direct.get("health") == DIRECT_HEALTH_IDLE
                 )
                 idle_unlock_allowed = (
-                    allow_idle_direct_lane
-                    and lane_is_explicitly_idle
-                    and resampler.get("locked") is False
+                    lane_is_explicitly_idle and resampler.get("locked") is False
                 )
                 if resampler.get("locked") is not True and not idle_unlock_allowed:
                     issues.append(f"live_fanin_resampler_unlocked:{lane}")

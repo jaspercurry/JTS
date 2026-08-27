@@ -445,7 +445,6 @@ def check_usbsink_low_latency_contract() -> CheckResult:
         route_live_state_issues(
             plan.route_latency_identity(),
             fanin_status=fanin_status,
-            allow_idle_direct_lane=True,
         )
     )
     if live_issues:

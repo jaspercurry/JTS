@@ -1510,8 +1510,8 @@ and doctor surface.
 - **Pi performance:** camilla CPU% with the sealed extension block
   (R1) vs baseline; `PatchConfig` round-trip latency under load;
   scheduler wall-time per tick.
-- **Latency:** re-run the existing route-latency cert after Wave 3 on
-  the lab box — expected delta zero; the cert gate is the proof.
+- **Latency:** compare the `/system` latency row before and after Wave 3
+  on the lab box — expected delta zero.
 - **Hardware validation (Wave 7, the only paid-in-time wave):**
   transition-audibility bench (Wave 0 rig, re-run on final code);
   full sealed commission on a lab box incl. deliberately-wrong cases

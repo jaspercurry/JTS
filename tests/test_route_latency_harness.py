@@ -430,7 +430,7 @@ def test_summarize_latencies_empty_does_not_crash():
 
 
 # --------------------------------------------------------------------------
-# Route-health honesty: never auto-asserts route_health_ok.
+# Route-health honesty: reports the window, rules on nothing.
 # --------------------------------------------------------------------------
 
 

@@ -35,8 +35,8 @@ the bottom, each as a small scoped task.
    `journalctl | grep event=bass_ext`, `/state.bass_extension`, and
    the doctor; note any perceived pumping/tonal steps with timestamps
    so they can be matched to `target_change` events.
-7. **Latency cert re-run** (`route latency evidence` doctor path) —
-   expected delta zero; the cert gate is the proof.
+7. **Latency re-check** — compare the `/system` latency row before and
+   after; expected delta zero.
 
 ## Codex-assist tasks (one small PR each, normal charter rules)
 

@@ -41,7 +41,7 @@ Add capability fields to the owner below; do not build a parallel truth.
 | `jasper/cli/aec_bridge.py` | Mic capture, WebRTC AEC3, optional DTLN, chip-AEC beam forwarding, UDP leg emission, corpus-only streams. |
 | `rust/jasper-outputd` | Final DAC playback and, in chip-AEC mode, fanning the final speaker buffer to the XVF3800 USB-IN reference path; owns reference health counters. |
 | `jasper/voice/input_policy.py` | The provider-facing boundary. Converts applied mic/AEC runtime config into an input contract (`xvf_chip_aec`, `xvf_software_aec3`, `custom_udp`, `direct_mic`) and resolves provider preprocessing (e.g. OpenAI `noise_reduction=auto`) from it, so provider adapters receive a resolved policy, not raw hardware guesses. |
-| `jasper/audio_validation.py` (+ `audio_validation_route.py`) | Schema-v1 validation artifacts under `/var/lib/jasper/audio-validation/`, and route-latency gates plus live fan-in/outputd identity assessment behind the same import surface. |
+| `jasper/audio_validation.py` (+ `audio_validation_route.py`) | Schema-v1 validation artifacts under `/var/lib/jasper/audio-validation/`. `audio_validation_route.py` is separate: live fan-in identity assessment, no artifact of its own. |
 
 ## The rules that hold
 

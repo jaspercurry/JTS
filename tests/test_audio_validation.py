@@ -257,7 +257,7 @@ def test_route_live_state_requires_the_negotiated_direct_buffer():
     )
 
 
-def test_route_live_state_issues_allows_only_explicit_idle_unlock_when_requested():
+def test_route_live_state_issues_relaxes_only_on_an_explicitly_idle_lane():
     identity = {
         "fanin_direct_config": {
             "lane": "usbsink",
@@ -295,27 +295,14 @@ def test_route_live_state_issues_allows_only_explicit_idle_unlock_when_requested
             ]
         }
 
-    # The strict default: an idle/unlocked lane is not running the route.
-    assert route_live_state_issues(
-        identity,
-        fanin_status=status("idle"),
-    ) == (
-        "live_fanin_direct_unhealthy:usbsink:idle",
-        "live_fanin_resampler_unlocked:usbsink",
-    )
-
-    # Doctor relaxes the activity legs while the box is explicitly idle.
-    assert route_live_state_issues(
-        identity,
-        fanin_status=status("idle"),
-        allow_idle_direct_lane=True,
-    ) == ()
+    # An explicitly idle lane relaxes the activity-dependent legs: an idle USB
+    # host is not a broken route.
+    assert route_live_state_issues(identity, fanin_status=status("idle")) == ()
 
     # Capturing is healthy but still requires the activity-dependent lock.
     assert route_live_state_issues(
         identity,
         fanin_status=status("capturing"),
-        allow_idle_direct_lane=True,
     ) == ("live_fanin_resampler_unlocked:usbsink",)
 
     # Broken/unknown are neither healthy nor idle, so both failures remain.
@@ -323,7 +310,6 @@ def test_route_live_state_issues_allows_only_explicit_idle_unlock_when_requested
         assert route_live_state_issues(
             identity,
             fanin_status=status(health),
-            allow_idle_direct_lane=True,
         ) == (
             f"live_fanin_direct_unhealthy:usbsink:{health or 'unknown'}",
             "live_fanin_resampler_unlocked:usbsink",
@@ -334,7 +320,6 @@ def test_route_live_state_issues_allows_only_explicit_idle_unlock_when_requested
     assert route_live_state_issues(
         identity,
         fanin_status=status("idle", target_fill_frames=1536),
-        allow_idle_direct_lane=True,
     ) == ("live_fanin_resampler_mismatch:usbsink:target_fill_frames",)
 
 
