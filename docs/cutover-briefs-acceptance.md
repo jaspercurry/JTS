@@ -34,10 +34,11 @@ instrument is a bespoke script chain inside a **gitignored** directory, not a
 shipped tool — the tool the criterion names errors on this round shape by design
 (§1.6). (2) 7j demoted the topology block, but **`driver_style` is not
 metadata** and a second gate one step downstream is untouched, so "7j landed"
-does not mean "the box opens" (§1.4). (3) **Three of S11's six sanctioned acts
-are unrun** — 1, 2 and 5 — and they batch into one bench evening in dependency
-order (§4). (Act 6, adopted 2026-08-26, is a fourth unrun act, but it waits on a
-build rather than on an evening — §3.3.)
+does not mean "the box opens" (§1.4). (3) **Two of S11's six sanctioned acts are
+unrun** — 1 and 5 — and they batch into one bench evening in dependency order
+(§4); **act 2 (no-pop) has a banked bounded PASS** on jts3 and joins that evening
+only if the owner reopens its bound. (Act 6, adopted 2026-08-26, is a third unrun
+act, but it waits on a build rather than on an evening — §3.3.)
 
 ---
 
@@ -57,7 +58,7 @@ recorded rather than silently corrected.
 | The report's bar reads *"anything smaller than about 0.4 dB is noise, not a result"* (`:1302`) | source is *"any future **'improvement'** smaller than about 0.4 dB is noise, not a result"* (`report/derived/page.py:246-250`) | **paraphrase, not quote.** The plan renders it inside quote marks. Substance identical; the word `improvement` scopes it to deltas, which matters when someone points it at an absolute. |
 | Row 7j: *"entering `driver_style` — **metadata** — rotates `topology_config_fingerprint`"* (`:1063`) | **`driver_style` is not metadata.** 7j's own rider `62c5402f3` records review R1 refuting it: it selects the tweeter's `min_highpass_hz` and sits in the **role-independent** driver-safety target match. HEAD's comment says so at `setup_status.py:1050-1054` | **STALE, and consequential.** The topology block died; a second gate did not. §1.4, gap 3. |
 | S11 act 5 (7j's demotion verification) is available to lean on | **never run.** PR #3006: *"The on-box verification (S11 sanctioned act 5) is **deferred**"* — jts3 was running a non-ancestor build | **OPEN.** §4. |
-| Wave 6d landed with the no-pop check as its licensing evidence | 6d **merged** at `f6a6c56f3` (#3111). Its own body says *"**Not merged.** This is the staging point: it wants the adversarial pass, and the no-pop check on jts3 is the evidence that licenses it"* — and **no no-pop record exists** in `captures/` | **OPEN, and it is not row 9's problem to fix.** §4. |
+| Wave 6d landed with the no-pop check as its licensing evidence | 6d **merged** at `f6a6c56f3` (#3111). Its body still carries the pre-merge staging text — *"**Not merged.** … the no-pop check on jts3 is the evidence that licenses it"* — but **the check ran and was banked before that merge.** The sanctioned-act record is a **comment on #3111** (2026-08-26T16:25:58Z), which is why a `captures/` search could not find it | **RECONCILED, not open: a bounded PASS is banked.** The bound is the owner's to close. §4. |
 
 **One structural finding the brief was not handed.** Row 9's pass/fail number
 is not produced by any shipped tool. The named tool — `jasper-round-views
@@ -695,16 +696,58 @@ acceptance row 5's four destinations"*). **Row 10 waits on the full cutover.**
 
 **The honest caveat: the plan's per-wave schedule has already been overtaken.**
 Wave 5 is CLOSED (`:923`) though its Verify demanded the run first; waves
-6d/6e/6f merged (`f6a6c56f3`, `5da40b9e2`, `b9738bf67`) though 6d's own body set
-a bar it did not clear — *"**Not merged.** … the no-pop check on jts3 is the
-evidence that licenses it"*; and PR #3006 deferred act 5 outright. **So three of
-S11's six acts are unrun — 1 (row 9), 2 (no-pop), 5 (7j's verification) — and
-no record of any exists in `captures/`.** This is not a violation to litigate.
+6d/6e/6f merged (`f6a6c56f3`, `5da40b9e2`, `b9738bf67`); and PR #3006 deferred
+act 5 outright. **6d's bar was met rather than skipped** — its body's *"**Not
+merged.** … the no-pop check on jts3 is the evidence that licenses it"* is
+pre-merge staging text, and the check ran on 2026-08-26 and was banked on that
+same PR before the merge. **So two of S11's six acts are unrun — 1 (row 9) and 5
+(7j's verification), with no record of either in `captures/`** — and act 2 is a
+banked bounded PASS. This is not a violation to litigate.
 The plan flagged its own split as *"the conductor's scoping of the rule, not the
 owner's words — say so, and let the owner collapse it if he meant a hardware run
 every time"* (`:501-503`), and the owner's sentence reads the other way: *"We'll
 get that done and then we'll start measuring on hardware once everything's
 landed."* Execution followed the owner.
+
+**What act 2's banked PASS covers, and what it leaves open.** The act's bar is
+*"swap the graph inside an open measurement window with the fader parked and a
+recorder running, and listen"* (`REFACTOR-TUNING-2026-08.md:1055-1057`). The run
+met every clause of it, and met the last one with a **recorded artifact rather
+than an ear-claim**: UMIK-2 continuous capture at 48k/S32_LE while the *shipped*
+`MeasurementSessionGraph` (deployed `f9d7c81`) performed both un-ducked swaps
+plus a ducked in-recording control. The load-bearing statistic is the
+**sample-to-sample delta** — room noise can raise a peak but cannot produce a
+one-sample step — and every swap window sits **7–8 dB below the ambient floor's
+own delta** (un-ducked install −8.3, restore −7.7, ducked control −7.5):
+un-ducked is indistinguishable from ducked is indistinguishable from silence. The
+swaps were separately proven real (`confirm_graph_is_live` true; un-ducked reload
+1.9 ms), and the duck cost measured **453.8 ms/swap** against the plan's predicted
+Δ2 ≈ 454 ms, which independently corroborates the number 6d was priced on.
+
+**The bound, declared by the run and not closed by it: every swap re-applied the
+box's own current graph.** jts3 carries a `protection_required` compression
+driver with no committed crossover, so no *program* graph gets synthesized for
+it, and **no swap between two different graphs is on record.** The run argues the
+bound is physically empty — a session swaps only in silence (install before the
+first stimulus, restore after the last), and in silence a gain difference makes
+no sound, leaving the reload discontinuity as the only noise mechanism, which is
+exactly what was measured. **That argument is the owner's to accept or to send
+back, and this brief does not mark the act complete.** Note what a re-run would
+cost before reopening it: a second graph to swap to means a committed crossover
+on jts3, and S11 forbids crossover changes to the box's sound until acceptance
+closes — so the bound may not be closable on this box during the refactor at all.
+
+*Evidence, by name.* The sanctioned-act record and the merge disposition are both
+comments on **PR #3111** (2026-08-26T16:25:58Z and T18:58:32Z); the wave's own
+deletion argument is in its body. It is restated outside that PR in **#3137**
+(6e)'s wave-closing disposition, which banks the same two numbers. There is **no
+`captures/` directory for this act** — the duck material in
+`captures/tuning-stack-inventory-2026-08/08-lane-stereo-and-duck-evidence.md` is
+the 2026-08-25 crux-8 bench run on build `9fcda9ee5`, a different run from this
+one (2026-08-26, build `f9d7c81`). *(One line this brief flags
+rather than edits, per §1.7's boundary rule: `REFACTOR-TUNING-2026-08.md:1057`
+still reads "It is still unrun" of this act. It wants one line from whoever owns
+that doc.)*
 
 | Gate | Blocks row 9? | Blocks row 10? |
 |---|---|---|
@@ -740,7 +783,7 @@ another — and only act 6 touches hardware.
 
 ### The recommendation
 
-**Batch the three unrun acts into one bench evening** — same box, same deploy,
+**Batch the two unrun acts into one bench evening** — same box, same deploy,
 and their order is a dependency chain rather than a list:
 
 ```
@@ -750,15 +793,18 @@ deploy (bash scripts/deploy-to-pi.sh, PI_HOST=jts3.local)
      │       determination: it tells you which gate the box is behind.
      └─ re-mint (§1.5)
         └─ ACT 1  row 9, round r1
-           │      └─ ACT 2  the no-pop check, INSIDE r1's open measurement
-           │                window — fader parked, recorder running, listen
+           │      └─ (ACT 2  banked bounded PASS, 2026-08-26 — carried only if
+           │                 the owner reopens its bound, and then INSIDE r1's
+           │                 open measurement window)
            └─ ACT 1  row 9, round r2 (no re-level between rounds)
               └─ the standing park
 ```
 
-Act 5 first because it says whether the session opens at all. Act 2 needs an
-open measurement window and r1 already provides one — running it standalone
-means opening a session twice for one answer. One evening for three acts.
+Act 5 first because it says whether the session opens at all. **Act 2 is a
+conditional node, not a required one:** its PASS is already banked, so the
+evening is two acts unless the owner reopens the bound — and if he does, the
+re-run needs an open measurement window that r1 already provides, so it rides r1
+rather than opening a session twice. One evening either way.
 
 **Then gate the next box-behaviour change on row 9's result.** §3's own rule
 now points at chunk 2's join node **W5-b (`TuningSession` in production)** and

@@ -480,21 +480,37 @@ was.
 ### Work items
 
 **W2-a — the name vocabulary and the table.** A new module under
-`crossover_v2/` holding `AnalysisUnit(name, run, gate)` and the literal tuple,
+`crossover_v2/` holding `AnalysisUnit(name, fields, gate)` and the literal tuple,
 with the gate predicate seeded from `STIMULUS_KINDS` + `MEASURE_KINDS` + the
 `ProgramAnalysis` per-field phase table (`:1864-1980`). **No caller yet** — this
 PR adds a table and its pins only.
 *Size:* ~280 lines. *Verification bar:* every unit's `name` unique; every `gate`
 total (a property test over generated banks asserting no gate raises); the
 derived name set is derived, not re-listed. *Tier:* default.
+**Landed as #3165 (`762715e24`) with `fields` and deliberately no per-unit
+`run`:** the analysis layer has one entry point, so fifteen `run` placeholders
+would have been throwaway scaffolding — ruling S4. The reviewer accepted the
+deviation as additively recoverable and recorded one forfeit, which is what
+re-words W2-b's bar below.
 
 **W2-b — the walker replaces `results={}`.** `TuningSession.analyze` iterates the
-table, runs each unit whose gate passes, and returns the results copy. Per-unit
-`try/except` isolation, `packs.py:439-441`'s shape.
+table, calls `analyze_program_capture` once, and projects each passing unit's
+`fields` out of that one `ProgramAnalysis` into the results copy.
+**Isolation is per-unit at the gate and per-walk at the produce half** — with no
+per-unit `run`, one raise inside the single analysis entry
+(`program_analysis.py:6054`, phase dispatch internal) fails **all fifteen
+produce-halves together**. `packs.py:439-441`'s `try/except` shape therefore
+applies to the gate half, which is the half that is per-unit; the produce half
+gets one `try/except` around the walk. The forfeit is recorded at
+`analysis_units.py:70-76`.
 *Size:* ~150 lines. *Depends on:* W2-a, W1-a (the store's `read`, which is what
 makes `analyze` offline), W4-a (colour). *Verification bar:* a bank with one
-missing input kind produces N−1 results and one skip; mutation-verified by
-removing the gate and watching the unit raise instead of skip. *Tier:* default.
+missing input kind produces N−1 results and one skip naming the input;
+mutation-verified **at the gate**, which is where per-unit isolation is real —
+make one unit's gate answer `""` for a bank that lacks its input and watch that
+unit alone leave the disclosure set, with no other unit's outcome moving.
+`failed` and `skipped` stay distinguishable, but at the **walk** level: a raise
+from the analysis entry marks the walk failed, not one unit. *Tier:* default.
 
 **W2-c — the per-analysis not-run disclosure.** Render each skipped unit as a
 `CapabilityStub` in §1's wording — *"no distortion analysis: no
