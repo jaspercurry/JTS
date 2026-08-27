@@ -21,6 +21,7 @@ from jasper.fanin_coupling import (
     COUPLING_SHM_RING,
     DEFAULT_FANIN_RING_PATH,
     DEFAULT_FANIN_RING_SLOTS,
+    RING_A_CHANNELS,
     RING_PATH_ENV_VAR,
     RING_SLOTS_ENV_VAR,
     RING_SLOTS_MAX,
@@ -29,6 +30,7 @@ from jasper.fanin_coupling import (
     RING_WIRE_FORMATS,
     resolve_ring_slots,
 )
+from jasper.ring_assets import RING_CONF_DEFAULT_CHANNELS
 
 _REPO_ROOT = Path(__file__).resolve().parent.parent
 _FANIN_CONFIG_RS = _REPO_ROOT / "rust" / "jasper-fanin" / "src" / "config.rs"
@@ -43,6 +45,8 @@ _FANIN_DIRECT_CAPTURE_RS = (
 _FANIN_RING_CAPTURE_RS = (
     _REPO_ROOT / "rust" / "jasper-fanin" / "src" / "mixer" / "ring_capture.rs"
 )
+_OUTPUTD_TYPES_RS = _REPO_ROOT / "rust" / "jasper-outputd" / "src" / "types.rs"
+_RING_IOPLUG_C = _REPO_ROOT / "c" / "jts-ring-ioplug" / "pcm_jts_ring.c"
 
 
 def _config_rs_text() -> str:
@@ -79,6 +83,12 @@ def _ring_capture_rs_text() -> str:
     if not _FANIN_RING_CAPTURE_RS.exists():
         pytest.skip(f"rust source not present: {_FANIN_RING_CAPTURE_RS}")
     return _FANIN_RING_CAPTURE_RS.read_text(encoding="utf-8")
+
+
+def _source_text(path: Path) -> str:
+    if not path.exists():
+        pytest.skip(f"source not present: {path}")
+    return path.read_text(encoding="utf-8")
 
 
 def _call_sites(fn: str, code: str) -> int:
@@ -170,6 +180,76 @@ def test_shm_ring_wire_format_env_var_name_agrees():
     for token in RING_WIRE_FORMATS:
         assert f'"{token}"' in text, (
             f"Rust must accept the {token} wire token Python's vocabulary declares"
+        )
+
+
+_CHANNEL_DECLARATIONS = (
+    (
+        "rust/jasper-fanin/src/mixer.rs (CHANNELS)",
+        _FANIN_MIXER_RS,
+        r"^pub const CHANNELS:\s*u32\s*=\s*(\d+);",
+    ),
+    (
+        "rust/jasper-outputd/src/types.rs (CHANNELS)",
+        _OUTPUTD_TYPES_RS,
+        r"^pub const CHANNELS:\s*u16\s*=\s*(\d+);",
+    ),
+    (
+        "c/jts-ring-ioplug/pcm_jts_ring.c (JTS_RING_DEFAULT_CHANNELS)",
+        _RING_IOPLUG_C,
+        r"^#define\s+JTS_RING_DEFAULT_CHANNELS\s+(\d+)",
+    ),
+)
+
+
+def test_stereo_program_channel_count_agrees_across_python_rust_and_c():
+    """The stereo program's WIDTH is declared five times and was pinned nowhere.
+
+    The env names, the slot bounds and the wire format above all have a
+    cross-language pin. The channel count — the other field the ring header
+    compares on attach — had none, in any module: two Rust crates, the C ioplug
+    and two Python constants each spell it independently, and
+    ``tests/test_ring_assets.py`` pinned the Python conf.d default to a bare
+    literal rather than to the C ``#define`` its own comment says it mirrors.
+
+    What drift costs, per site:
+
+    * ``mixer.rs`` sizes the renderer ingress lanes and creates Ring A's header
+      with it. A widened fan-in against an unchanged reader is a geometry
+      mismatch — ``RING_ATTACH_FATAL`` on the Pi at arm, never in CI.
+    * ``types.rs`` is ``AudioFormat::default()``, outputd's program width.
+    * ``JTS_RING_DEFAULT_CHANNELS`` is what a conf.d block declares by OMISSION,
+      and none of the three shipped blocks in
+      ``deploy/alsa/conf.d/60-jts-ring.conf`` spells ``channels``. Every one of
+      them therefore rides this default.
+    * ``RING_CONF_DEFAULT_CHANNELS`` is Python's model of that same C default —
+      the renderer writes a ``channels`` line only where the resolved wire
+      differs from it, so a Python side out of step with the ``.so`` omits the
+      key it needed to write (the ``format`` axis keeps this pair deliberately
+      APART, and its docstring explains why; the channels axis does not).
+
+    ``RING_STEREO_PROGRAM_CHANNELS`` is the same number reached from the
+    topology side and is already pinned equal to ``RING_A_CHANNELS`` by
+    ``tests/test_runtime_contract_ring.py``, so it is not re-pinned here.
+    """
+    assert RING_A_CHANNELS == RING_CONF_DEFAULT_CHANNELS, (
+        "the two Python spellings of the stereo width disagree: "
+        f"jasper.fanin_coupling.RING_A_CHANNELS={RING_A_CHANNELS}, "
+        f"jasper.ring_assets.RING_CONF_DEFAULT_CHANNELS={RING_CONF_DEFAULT_CHANNELS}"
+    )
+    for label, path, pattern in _CHANNEL_DECLARATIONS:
+        found = re.findall(pattern, _source_text(path), re.MULTILINE)
+        assert len(found) == 1, (
+            f"expected exactly one channel-count declaration in {label}, found "
+            f"{len(found)} — this pin would silently guard only the first. "
+            "Narrow the pattern or pin each site."
+        )
+        assert int(found[0]) == RING_A_CHANNELS, (
+            f"stereo program width drifted: {label} declares {found[0]}, Python's "
+            f"RING_A_CHANNELS declares {RING_A_CHANNELS}. Change every site in the "
+            "same commit — the ring header's channel count is compared field by "
+            "field on attach, so a mismatch surfaces as a failed ioplug attach "
+            "on-Pi, not here."
         )
 
 
