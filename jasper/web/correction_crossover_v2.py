@@ -162,6 +162,7 @@ from jasper.web.correction_crossover_v2_relay import (
 if TYPE_CHECKING:
     from jasper.active_speaker.crossover_v2_flow import AnalyzeCapture
     from jasper.active_speaker.model_error_store import ModelErrorStoreSnapshot
+    from jasper.active_speaker.session_volume_plan import VolumeDoor
 
 logger = logging.getLogger(__name__)
 
@@ -1302,8 +1303,11 @@ def _session_volume_io(camilla_factory: Any) -> tuple[Callable[[float], Any], Ca
     """(set, get) main-volume callables, fail-closed on CamillaUnavailable so a
     wedged DSP cannot silently no-op a recovery.
 
-    Two consumers now, and only one of them writes: :func:`_volume_door` wraps
-    both into the plan's door, and the capture-time hold takes ``_get`` alone.
+    **Three consumers, and only one of them writes.** :func:`_volume_door`
+    (`:1338`) wraps both into the plan's door; the capture-time hold (`:4276`)
+    takes ``_get`` alone; :func:`bind_v2_engine_seams` (`:5894`) takes ``_get``
+    alone for the interim volume claim, and is the site W5-c1 rewires onto
+    :class:`~jasper.volume_owner.VolumeOwner`.
     """
     from jasper.camilla import CamillaUnavailable
 
@@ -1322,7 +1326,7 @@ def _session_volume_io(camilla_factory: Any) -> tuple[Callable[[float], Any], Ca
     return _set, _get
 
 
-def _volume_door(camilla_factory: Any) -> Any:
+def _volume_door(camilla_factory: Any) -> "VolumeDoor":
     """The plan's one door for every path in this module that drains or opens.
 
     ONE builder for all four writing call sites, which is the point: W5-c1
@@ -1330,8 +1334,16 @@ def _volume_door(camilla_factory: Any) -> Any:
     :class:`~jasper.volume_owner.VolumeOwner`, and every caller below asks for
     its door here rather than assembling one — so that move is a change to
     this function's body instead of a change to four sites that could each
-    drift. The read-only capture-time hold keeps taking ``_session_volume_io``
-    directly: it never writes, so it is not this door's business.
+    drift.
+
+    **The capture-time hold keeps a RAW getter and must not be moved onto this
+    door.** Not because it happens not to write: because
+    ``hold_measurement_volume`` is the #2925 tripwire, and a tripwire has to
+    read the PHYSICAL fader. An owner-backed read answers with the level the
+    owner DECLARES, so routing the hold through a door would compare the
+    declared level against itself — the check would pass by construction, on
+    every capture, including the ones where the fader had genuinely moved.
+    That is the whole defect #2925 recorded, rebuilt as a green light.
     """
     from jasper.active_speaker.session_volume_plan import FaderVolumeDoor
 

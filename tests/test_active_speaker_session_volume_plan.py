@@ -841,13 +841,38 @@ def test_open_refuses_over_unresolved_state(tmp_path):
 #
 # What W5-c0 adds is the SHAPE the plan reaches the fader through, so what is
 # pinned here is that shape's one contract: every verb answers about the FADER,
-# not about a write having been attempted. W5-c1 binds a second implementation
-# over ``VolumeOwner``; these pins are the bar it has to clear.
+# not about a write having been attempted.
 
 
+#: EVERY ``VolumeDoor`` binding this repo ships, as ``(id, factory)``. The pins
+#: below take this axis so they are the DOOR's gate rather than
+#: ``FaderVolumeDoor``'s — W5-c1 adds its owner-backed door as one entry here
+#: and inherits all three as a real gate.
+#:
+#: **This axis is the whole point, and the first version of these pins did not
+#: have it.** They parametrized over the two verbs but hard-coded the one
+#: implementation, so an owner-backed door would have run zero of them. The
+#: hazard that leaves open is specific and reproducible:
+#: ``VolumeOwner.declare_household_level_db`` returns ``True`` for a legitimate
+#: DEFERRAL to a higher-ranked claim — the fader is not written and stays where
+#: it was. A door that passed that ``True`` through would make ``plan.close``
+#: report ``EXACT_RESTORED`` and clear the durable intent over a speaker still
+#: sitting at measurement level, which is exactly what ``VolumeDoor``'s
+#: docstring forbids and what the walked-away guarantee exists to prevent.
+#:
+#: So a door added here must answer for the FADER, not for the owner's intent:
+#: a deferral is ``False``, because the level is not in effect.
+DOOR_FACTORIES = [
+    pytest.param(
+        lambda vol: FaderVolumeDoor(vol.set, vol.get), id="fader",
+    ),
+]
+
+
+@pytest.mark.parametrize("door_factory", DOOR_FACTORIES)
 @pytest.mark.parametrize("verb", ["establish_measurement_level_db",
                                   "restore_household_level_db"])
-def test_a_door_verb_is_true_only_when_the_fader_confirms(verb):
+def test_a_door_verb_is_true_only_when_the_fader_confirms(verb, door_factory):
     """Both write verbs answer readback, never "the setter was called".
 
     The exact→emergency ladder and its durable latch are built on this bool: a
@@ -857,22 +882,30 @@ def test_a_door_verb_is_true_only_when_the_fader_confirms(verb):
     """
     confirms = FakeVolume(initial=-6.0)
     drifts = FakeVolume(initial=-6.0, confirm_targets=set())
-    assert asyncio.run(
-        getattr(FaderVolumeDoor(confirms.set, confirms.get), verb)(-12.0)
-    ) is True
-    assert asyncio.run(
-        getattr(FaderVolumeDoor(drifts.set, drifts.get), verb)(-12.0)
-    ) is False
+    assert asyncio.run(getattr(door_factory(confirms), verb)(-12.0)) is True
+    assert asyncio.run(getattr(door_factory(drifts), verb)(-12.0)) is False
 
 
-def test_the_door_reads_the_household_level_it_will_restore_to():
+@pytest.mark.parametrize("door_factory", DOOR_FACTORIES)
+def test_the_door_reads_the_household_level_the_fader_actually_carries(
+    door_factory,
+):
+    """The snapshot is a reading, not a declaration.
+
+    ``open`` persists this number as ``original_main_volume_db`` before its
+    first mutation, and every drain restores toward it. A door that answered
+    with a level some owner DECLARES rather than one the fader carries would
+    snapshot the intent instead of the state — and the crash this write exists
+    to survive is precisely the one where those two disagree.
+    """
     vol = FakeVolume(initial=-6.0)
-    assert asyncio.run(
-        FaderVolumeDoor(vol.set, vol.get).read_household_level_db()
-    ) == -6.0
+    assert asyncio.run(door_factory(vol).read_household_level_db()) == -6.0
 
 
-def test_a_door_that_cannot_confirm_either_candidate_latches_unresolved(tmp_path):
+@pytest.mark.parametrize("door_factory", DOOR_FACTORIES)
+def test_a_door_that_cannot_confirm_either_candidate_latches_unresolved(
+    tmp_path, door_factory,
+):
     """The ladder rides the door: exact, then emergency, then the latch.
 
     Drives all three rungs through the door rather than through the raw
@@ -882,11 +915,11 @@ def test_a_door_that_cannot_confirm_either_candidate_latches_unresolved(tmp_path
     opener = FakeVolume(initial=-6.0, confirm_targets={-12.0})
     plan = SessionVolumePlan(state_path=tmp_path / "sv.json")
     assert asyncio.run(
-        plan.open(-12.0, FaderVolumeDoor(opener.set, opener.get))
+        plan.open(-12.0, door_factory(opener))
     ) is SessionVolumeOpenResult.OPENED
     stuck = FakeVolume(initial=-12.0, confirm_targets=set())
     assert asyncio.run(
-        plan.close(FaderVolumeDoor(stuck.set, stuck.get))
+        plan.close(door_factory(stuck))
     ) is SessionVolumeRestoreResult.FAILED
     assert [t for verb, t in stuck.order if verb == "set"] == [-6.0, -60.0]
     assert plan.unresolved_volume_safety is not None
