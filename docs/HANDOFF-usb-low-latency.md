@@ -28,7 +28,7 @@ reaches the summed write intact.
 
 ```
 UAC2 gadget capture
-  → jasper-fanin DIRECT capture (hw:UAC2Gadget, period 256 / buffer 768)
+  → jasper-fanin DIRECT capture (hw:UAC2Gadget, period 256 / buffer 768 requested, gadget rounds to 1024, ≈21.3 ms at 48 kHz — rust/jasper-fanin/src/mixer.rs)
   → jasper-fanin USB input resampler (target 512 + warm-up cushion, ring 4096)
   → Ring A program.ring (jts_ring_capture, 2 slots × 128 frames)
   → CamillaDSP protection/correction (chunk 128 / target 128 / queue 1, rate_adjust off)
