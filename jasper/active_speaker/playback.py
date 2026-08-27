@@ -137,7 +137,7 @@ FORBIDDEN_TEST_PCM_TOKENS = (
     # The RETIRED snd-aloop playback lane by its own name: `DEFAULT_PLAYBACK_DEVICE`
     # is Ring B now (ADR-0100) and is already covered by its literal below, so
     # naming the constant here would both duplicate that entry and stop
-    # forbidding the aloop lane, which asoundrc still declares.
+    # forbidding the aloop lane by name.
     RETIRED_ALOOP_PLAYBACK_DEVICE,
     ACTIVE_OUTPUTD_PLAYBACK_DEVICE,
     "jasper_out",

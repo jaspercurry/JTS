@@ -4753,11 +4753,10 @@ def safe_graph_for_current_topology(
     ``jasper-active-speaker baseline-reemit --endpoint ring`` is FOR — it
     publishes the re-emitted graph over the artifact this function selects and
     repoints the statefile at it, which is also why it is step ONE of the arm
-    ladder rather than a tidy-up after it (ordering:
-    ``docs/HANDOFF-audio-graph-consolidation.md``, "The ACTIVE-ring arm/rollback
-    lifecycle"). The doctor's ``check_fanin_coupling`` reports the gap in the
-    meantime — it derives the expected playback device from the endpoint marker,
-    so it names the exact mismatch rather than reading green through it. This
+    ladder rather than a tidy-up after it. The doctor's ``check_fanin_coupling``
+    reports the gap in the meantime — it derives the expected playback device
+    from the endpoint marker, so it names the exact mismatch rather than reading
+    green through it. This
     function deliberately does NOT add a refusal of its own: blocking here would
     turn a recoverable stale artifact into a box that cannot seed a graph at all.
 
