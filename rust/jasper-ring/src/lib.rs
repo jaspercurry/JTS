@@ -22,15 +22,7 @@
 //! dependency on the C side being present. The C writer half + that header live
 //! in the `c/jts-ring-ioplug/` ring-consumers change stacked alongside this
 //! crate; the `c/jts-ring-ioplug/*` cross-references throughout this crate point
-//! at it (and this crate is inert until a ring lab flag is armed regardless).
-//!
-//! **This is a prototype and flag-gated everywhere.** Nothing here runs in a
-//! product path unless a lab flag is set: `JASPER_OUTPUTD_CONTENT_BRIDGE=shm_ring`
-//! for the outputd (Ring B) reader (default `direct`), or
-//! `JASPER_FANIN_CAMILLA_COUPLING=shm_ring` for the fan-in (Ring A) writer
-//! ([`RingWriter`], called from `jasper-fanin`'s mixer only under
-//! `Coupling::ShmRing`; default `loopback`). With both flags unset the crate is
-//! compiled-in but inert.
+//! at it.
 //!
 //! # SHM contract v1 (`/dev/shm/jts-ring/content.ring`)
 //!

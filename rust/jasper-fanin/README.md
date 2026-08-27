@@ -1,13 +1,12 @@
 # jasper-fanin
 
 Per-renderer snd-aloop substream fan-in for JTS. Reads N capture-side
-substreams (one per music renderer), sums them sample-wise, and writes
-one summed-music stream for CamillaDSP. Where that stream goes depends
-on the box's coupling: `loopback` writes the `hw:Loopback,0,7` substream
-CamillaDSP dsnoops on; `shm_ring` writes Ring A and opens no ALSA output
-at all (U4/P7-4 dropped the lane-7 mirror it used to write alongside the
-ring). (The AEC bridge read the aloop stream too until U4/P7-1; it now
-takes outputd's UDP speaker monitor as its only reference.)
+substreams (one per music renderer), sums them sample-wise, and
+publishes one summed-music stream for CamillaDSP into Ring A — the SPSC
+shared-memory ring that is the only fan-in → CamillaDSP transport
+([ADR-0100](../../docs/adr/0100-one-audio-transport.md)). No ALSA
+playback device is opened. A box the ring cannot serve parks; there is
+no fallback.
 
 See [`docs/HANDOFF-fan-in-daemon.md`](../../docs/HANDOFF-fan-in-daemon.md)
 for the architecture, the resilience + observability contract, and the
@@ -41,8 +40,8 @@ pytest suite under `tests/test_fanin_*.py` and
 ## Status
 
 Production default as of 2026-05-26. The daemon opens renderer capture
-lanes, sums active inputs into the dedicated summed-output substream,
-exposes STATUS over `/run/jasper-fanin/control.sock`, logs xruns to
+lanes, sums active inputs into Ring A, exposes STATUS over
+`/run/jasper-fanin/control.sock`, logs xruns to
 `/var/lib/jasper/fanin/xrun_history.jsonl`, and participates in systemd
 watchdog supervision. Source selection is controlled by jasper-mux over
 the same socket with `AUTO`, `SELECT <label>`, or `NONE`; fan-in only
@@ -59,7 +58,6 @@ cargo run --release
 JASPER_FANIN_LOG_LEVEL=debug cargo run --release
 
 # With non-default config:
-JASPER_FANIN_OUTPUT_PCM=hw:Loopback,0,7 \
 JASPER_FANIN_INPUT_PCMS='hw:Loopback,1,0|hw:Loopback,1,1' \
 JASPER_FANIN_INPUT_RENDERERS='spotify|airplay' \
 cargo run --release

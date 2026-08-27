@@ -528,6 +528,17 @@ def resolve_coupling(raw: str | None) -> str:
     reconciler rewrites on its next pass. Case-insensitive; whitespace ignored.
     For "is this file still on the retired route?" ask
     :func:`coupling_value_removed`, which answers it directly.
+
+    THIS IS NOT THE DAEMON'S RULE, and nothing may derive a runtime expectation
+    from it. Since ADR-0100 the Rust daemon serves exactly ``None`` / ``""`` /
+    ``shm_ring`` — it has no loopback arm to take — and refuses anything else as
+    a config-class fault (exit 78, the unit parks). So a running fan-in is
+    always on the ring, whatever this returns. The ``COUPLING_LOOPBACK`` answer
+    for an unset key describes only the persisted FILE's legacy default, which
+    is what the ``--auto`` reconciler and :func:`coupling_value_removed` read it
+    for; the doctor no longer derives its expected transport from it (that
+    mapping FAILed a healthy box whose key had not been written yet, since
+    coupling-auto runs ``After=jasper-fanin.service``).
     """
     if raw is None:
         return COUPLING_LOOPBACK

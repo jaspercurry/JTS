@@ -71,8 +71,8 @@ use crate::impulse_tap::{TapConfig, TapState};
 use crate::json::json_string;
 use crate::lane_resampler::LaneResamplerObservability;
 use crate::mixer::{
-    CouplingObservability, DirectObservability, LaneSource, Mixer, RingLaneObservability,
-    TrimControl, OUTPUT_DELAY_UNAVAILABLE,
+    DirectObservability, LaneSource, Mixer, RingLaneObservability, RingObservability, TrimControl,
+    OUTPUT_DELAY_UNAVAILABLE,
 };
 use crate::tts::TtsMetrics;
 use crate::watchdog::Heartbeat;
@@ -134,9 +134,9 @@ pub struct StateServer {
     output_frames_written: Arc<AtomicU64>,
     output_xrun_count: Arc<AtomicU64>,
     output_delay_frames: Arc<AtomicU64>,
-    /// Coupling transport echo. Cloned from the mixer so STATUS reads the same
+    /// Ring A observability. Cloned from the mixer so STATUS reads the same
     /// atomics the work loop writes.
-    coupling: CouplingObservability,
+    ring: RingObservability,
     selected_input_index: Arc<AtomicI32>,
     /// Watchdog handle for the heartbeat metrics.
     heartbeat: Arc<Heartbeat>,
@@ -265,7 +265,7 @@ impl StateServer {
             output_frames_written: Arc::clone(&mixer.frames_written),
             output_xrun_count: Arc::clone(&mixer.output_xrun_count),
             output_delay_frames: Arc::clone(&mixer.output_delay_frames),
-            coupling: mixer.coupling.clone(),
+            ring: mixer.ring_observability.clone(),
             selected_input_index: mixer.selected_input_index(),
             heartbeat,
             sample_rate,
@@ -1131,19 +1131,18 @@ impl StateServer {
         );
         buf.push(',');
 
-        // coupling transport echo. `transport:"loopback"` (default) carries no
-        // ring block — byte-identical observability to the pre-coupling daemon.
-        // `transport:"shm_ring"` adds a `ring` block (see below).
-        push_kv_str(buf, "transport", self.coupling.transport);
-        // Ring A (shm_ring): the SPSC SHM ring counter block. `occupancy` is the
+        // The transport echo. `shm_ring` is the only fan-in → CamillaDSP
+        // transport (ADR-0100); the key stays because the doctor's fan-in check
+        // reads it to prove the daemon is on the topology the box persisted.
+        push_kv_str(buf, "transport", "shm_ring");
+        // Ring A: the SPSC SHM ring counter block. `occupancy` is the
         // live write_seq-read_seq depth; `published` slots reached a live reader;
         // `full_waits` is the bounded live-reader back-pressure count. The stuck
         // vs no-reader drop counts are UN-FOLDED (issue #1524): `stuck_reader_drops`
         // is a heartbeat-live-but-frozen reader (bounded-wait give-ups + sticky
         // demotions), `drop_no_reader` a dead/absent reader (normal reload
         // transient). `stall_active` / `last_stall_ms` surface a live/recent stall
-        // episode. Only present under shm_ring — byte-identical observability to
-        // today under loopback.
+        // episode.
         //
         // There are no `mirror_frames` / `mirror_drops` here: U4/P7-4 removed the
         // lossy aloop side-tap they counted, and a pair of counters pinned at 0
@@ -1154,48 +1153,47 @@ impl StateServer {
         // from the geometry the writer attached against, not echoed from
         // config — so a reader of /state can answer which wire this ring
         // actually carries rather than which one was requested.
-        if let Some(ring) = &self.coupling.ring {
-            buf.push(',');
-            buf.push_str(r#""ring":{"#);
-            push_kv_str(buf, "path", &ring.path);
-            buf.push(',');
-            push_kv_u64(buf, "slots", ring.slots as u64);
-            buf.push(',');
-            push_kv_str(buf, "wire_format", ring.wire_format);
-            buf.push(',');
-            push_kv_u64(buf, "channels", ring.channels as u64);
-            buf.push(',');
-            push_kv_u64(buf, "occupancy", ring.occupancy.load(Ordering::Relaxed));
-            buf.push(',');
-            push_kv_u64(buf, "published", ring.published.load(Ordering::Relaxed));
-            buf.push(',');
-            push_kv_u64(buf, "full_waits", ring.full_waits.load(Ordering::Relaxed));
-            buf.push(',');
-            push_kv_u64(
-                buf,
-                "stuck_reader_drops",
-                ring.stuck_reader_drops.load(Ordering::Relaxed),
-            );
-            buf.push(',');
-            push_kv_u64(
-                buf,
-                "drop_no_reader",
-                ring.drop_no_reader.load(Ordering::Relaxed),
-            );
-            buf.push(',');
-            push_kv_bool(
-                buf,
-                "stall_active",
-                ring.stall_active.load(Ordering::Relaxed),
-            );
-            buf.push(',');
-            push_kv_u64(
-                buf,
-                "last_stall_ms",
-                ring.last_stall_ms.load(Ordering::Relaxed),
-            );
-            buf.push('}');
-        }
+        let ring = &self.ring;
+        buf.push(',');
+        buf.push_str(r#""ring":{"#);
+        push_kv_str(buf, "path", &ring.path);
+        buf.push(',');
+        push_kv_u64(buf, "slots", ring.slots as u64);
+        buf.push(',');
+        push_kv_str(buf, "wire_format", ring.wire_format);
+        buf.push(',');
+        push_kv_u64(buf, "channels", ring.channels as u64);
+        buf.push(',');
+        push_kv_u64(buf, "occupancy", ring.occupancy.load(Ordering::Relaxed));
+        buf.push(',');
+        push_kv_u64(buf, "published", ring.published.load(Ordering::Relaxed));
+        buf.push(',');
+        push_kv_u64(buf, "full_waits", ring.full_waits.load(Ordering::Relaxed));
+        buf.push(',');
+        push_kv_u64(
+            buf,
+            "stuck_reader_drops",
+            ring.stuck_reader_drops.load(Ordering::Relaxed),
+        );
+        buf.push(',');
+        push_kv_u64(
+            buf,
+            "drop_no_reader",
+            ring.drop_no_reader.load(Ordering::Relaxed),
+        );
+        buf.push(',');
+        push_kv_bool(
+            buf,
+            "stall_active",
+            ring.stall_active.load(Ordering::Relaxed),
+        );
+        buf.push(',');
+        push_kv_u64(
+            buf,
+            "last_stall_ms",
+            ring.last_stall_ms.load(Ordering::Relaxed),
+        );
+        buf.push('}');
         buf.push('}');
     }
 
@@ -1517,9 +1515,18 @@ mod tests {
             output_frames_written: Arc::new(AtomicU64::new(98765)),
             output_xrun_count: Arc::new(AtomicU64::new(1)),
             output_delay_frames: Arc::new(AtomicU64::new(1024)),
-            coupling: CouplingObservability {
-                transport: "loopback",
-                ring: None,
+            ring: RingObservability {
+                path: "/dev/shm/jts-ring/program.ring".to_string(),
+                slots: 8,
+                wire_format: "S32_LE",
+                channels: 2,
+                occupancy: Arc::new(AtomicU64::new(6)),
+                published: Arc::new(AtomicU64::new(12345)),
+                full_waits: Arc::new(AtomicU64::new(9)),
+                stuck_reader_drops: Arc::new(AtomicU64::new(4)),
+                drop_no_reader: Arc::new(AtomicU64::new(3)),
+                stall_active: Arc::new(AtomicBool::new(true)),
+                last_stall_ms: Arc::new(AtomicU64::new(1500)),
             },
             selected_input_index: Arc::new(AtomicI32::new(-1)),
             heartbeat: Arc::new(Heartbeat::new()),
@@ -1538,28 +1545,6 @@ mod tests {
                 crate::host_clock::build_config(false, 300, 2048),
             ))),
         }
-    }
-
-    fn make_ring_test_server() -> StateServer {
-        use crate::mixer::RingObservability;
-        let mut server = make_test_server();
-        server.coupling = CouplingObservability {
-            transport: "shm_ring",
-            ring: Some(RingObservability {
-                path: "/dev/shm/jts-ring/program.ring".to_string(),
-                slots: 8,
-                wire_format: "S32_LE",
-                channels: 2,
-                occupancy: Arc::new(AtomicU64::new(6)),
-                published: Arc::new(AtomicU64::new(12345)),
-                full_waits: Arc::new(AtomicU64::new(9)),
-                stuck_reader_drops: Arc::new(AtomicU64::new(4)),
-                drop_no_reader: Arc::new(AtomicU64::new(3)),
-                stall_active: Arc::new(AtomicBool::new(true)),
-                last_stall_ms: Arc::new(AtomicU64::new(1500)),
-            }),
-        };
-        server
     }
 
     #[test]
@@ -1779,25 +1764,9 @@ mod tests {
     }
 
     #[test]
-    fn snapshot_json_loopback_transport_has_no_pipe_block() {
-        // Default coupling: transport=loopback, NO pipe block — byte-identical
-        // observability to the pre-coupling daemon.
+    fn snapshot_json_reports_ring_observability() {
+        // The single transport + the shared ring counter block.
         let server = make_test_server();
-        let j = server.snapshot_json();
-        assert!(
-            j.contains(r#""transport":"loopback""#),
-            "missing transport: {j}"
-        );
-        assert!(
-            !j.contains(r#""pipe":"#),
-            "loopback must emit no pipe block: {j}"
-        );
-    }
-
-    #[test]
-    fn snapshot_json_shm_ring_reports_ring_observability() {
-        // shm_ring: transport + the shared ring counter block.
-        let server = make_ring_test_server();
         let j = server.snapshot_json();
         assert!(
             j.contains(r#""transport":"shm_ring""#),
@@ -1847,22 +1816,6 @@ mod tests {
         // can answer that without inferring it from config.
         assert_eq!(ring["wire_format"], "S32_LE", "wire_format: {ring}");
         assert_eq!(ring["channels"], 2, "channels: {ring}");
-        // shm_ring carries NO pipe block.
-        assert!(
-            !j.contains(r#""pipe":{"#),
-            "shm_ring must emit no pipe block: {j}"
-        );
-    }
-
-    #[test]
-    fn snapshot_json_loopback_has_no_ring_block() {
-        // Default coupling emits neither pipe nor ring — byte-identical to today.
-        let server = make_test_server();
-        let j = server.snapshot_json();
-        assert!(
-            !j.contains(r#""ring":{"#),
-            "loopback must emit no ring block: {j}"
-        );
     }
 
     #[test]
@@ -2304,13 +2257,16 @@ mod tests {
         server.inputs[0].ring = Some(obs);
 
         let j = server.snapshot_json();
+        let parsed: serde_json::Value = serde_json::from_str(&j).unwrap();
+        let inputs = parsed["inputs"].as_array().unwrap();
+        // Scoped to the LANE array: `output.ring` is the program ring's own
+        // block and is always present, so a whole-document count would conflate
+        // the two axes.
         assert_eq!(
-            j.matches(r#""ring":{"#).count(),
+            inputs.iter().filter(|i| i.get("ring").is_some()).count(),
             1,
             "only the ring lane renders a ring block: {j}"
         );
-        let parsed: serde_json::Value = serde_json::from_str(&j).unwrap();
-        let inputs = parsed["inputs"].as_array().unwrap();
         let ring = inputs.iter().find(|i| i["label"] == "spotify").unwrap();
         assert_eq!(ring["source"].as_str(), Some("ring"));
         assert_eq!(

@@ -6,8 +6,8 @@
 //!
 //! Source of truth for defaults: `docs/HANDOFF-fan-in-daemon.md`
 //! "Configuration" section for the original knobs, plus
-//! `docs/HANDOFF-usb-low-latency.md` for the camilla_coupling/ring/
-//! cushion-decay/auto-trim/usb-direct/host-clock knobs
+//! `docs/HANDOFF-usb-low-latency.md` for the
+//! ring/cushion-decay/auto-trim/usb-direct/host-clock knobs
 //! (each field's own comment below points at the doc that actually
 //! documents it). If you change a default here, update the matching
 //! HANDOFF too — the doc is what operators read.
@@ -152,18 +152,11 @@ pub const STATIC_CUSHION_JITTER_MARGIN_FRAMES: u32 = 32;
 pub struct Config {
     /// ALSA PCM name (or `hw:Card,Dev,Sub`) for the summed output.
     ///
-    /// WRITTEN by the `Coupling::Loopback` output arm and nothing else, and
-    /// READ by CamillaDSP alone — which dsnoops the corresponding capture side
-    /// of this substream pair. (The AEC bridge read it until U4/P7-1 and
-    /// jasper-aec-tune until U4/P7-2; both take outputd's UDP speaker monitor
-    /// now.)
-    ///
-    /// A `shm_ring` box parses this field and never opens it: U4/P7-4 dropped
-    /// the lossy aloop mirror the ring arm used to write alongside Ring A, so
-    /// nothing feeds `hw:Loopback,0,7` there — and after P7-2, nothing reads it
-    /// there either. The field still ships because the coupling is a runtime
-    /// choice — the same binary must be able to take the loopback arm — and
-    /// STATUS still echoes the configured value.
+    /// PARSED AND NEVER OPENED. Nothing in this daemon writes an ALSA playback
+    /// device: the program goes to Ring A and nowhere else (ADR-0100). The field
+    /// ships because STATUS echoes it and the doctor's fan-in check reads that
+    /// echo (`jasper.cli.doctor.audio_runtime`); retiring the key is that
+    /// check's to make.
     pub output_pcm: String,
 
     /// Per-input PCMs — the capture side of each renderer or internal
@@ -201,9 +194,10 @@ pub struct Config {
     /// xruns.
     pub input_buffer_frames: u32,
 
-    /// ALSA output buffer size in frames. Keep this latency-bounded
-    /// but large enough that CamillaDSP can consistently read a full
-    /// 1024-frame chunk from the dsnoop capture side.
+    /// Declared output buffer size in frames. PARSED AND NEVER APPLIED — no ALSA
+    /// playback device is opened (ADR-0100); the ring's depth is `ring_slots`.
+    /// It survives as the STATUS echo the AirPlay latency derivation falls back
+    /// to when a daemon reports no live delay (ADR-0118).
     pub output_buffer_frames: u32,
 
     /// Path to the UDS socket exposing the STATUS command. The
@@ -249,25 +243,15 @@ pub struct Config {
     /// canonical speaker-volume record because fan-in is the sole writer.
     pub assistant_reference_path: String,
 
-    /// fan-in → CamillaDSP coupling transport. `Loopback` (the default) writes
-    /// the ALSA snd-aloop substream `output_pcm` exactly as today; CamillaDSP
-    /// dsnoop-captures it — byte-identical to the pre-coupling daemon. `ShmRing`
-    /// (Ring A, PROTOTYPE) publishes an SPSC ping-pong SHM ring (`ring_path`,
-    /// `ring_slots`) that CamillaDSP reads via a capture-direction ioplug. The
-    /// Python config generator (`jasper.fanin_coupling`) is the cross-language
-    /// source of truth; this normalization MUST agree with `resolve_coupling`
-    /// there. Env: `JASPER_FANIN_CAMILLA_COUPLING` (`loopback` | `shm_ring`).
-    pub camilla_coupling: Coupling,
-
-    /// The SPSC SHM ring file written under `Coupling::ShmRing` (Ring A). Unused
-    /// for `Loopback`. Default `/dev/shm/jts-ring/program.ring`
-    /// (the owned tmpfs root, so a magic-invalid file is reclaimable). Env:
+    /// The SPSC SHM ring file fan-in writes toward CamillaDSP (Ring A). Default
+    /// `/dev/shm/jts-ring/program.ring` (the owned tmpfs root, so a
+    /// magic-invalid file is reclaimable). Env:
     /// `JASPER_FANIN_RING_PATH`. Python `fanin_coupling.resolve_ring_path` uses
     /// the same default.
     pub ring_path: String,
 
-    /// The ring's slot count under `Coupling::ShmRing`. Buffer depth is
-    /// `ring_slots * 128` frames — the ONLY latency axis with slot_frames pinned
+    /// The ring's slot count (Ring A). Buffer depth is `ring_slots * 128`
+    /// frames — the ONLY latency axis with slot_frames pinned
     /// at 128 (the outputd DAC-period contract). Default 2 (256 frames ≈
     /// 5.3 ms, matching the hardware-validated chunk-128 ring graph);
     /// a present value outside 2..=16 (the ring header's MIN/MAX) FAILS LOUD in
@@ -279,10 +263,10 @@ pub struct Config {
     /// fail-loud backstop.
     pub ring_slots: u32,
 
-    /// The sample format Ring A's wire carries under `Coupling::ShmRing`.
-    /// Unused for `Loopback`. Default [`RingWireFormat::S32Le`] — narrow is a
-    /// width regression on the hop the ring replaces, so the wide wire is what
-    /// an undeclared box gets and `S16_LE` is an operator's rollback pin. Env:
+    /// The sample format Ring A's wire carries. Default
+    /// [`RingWireFormat::S32Le`] — narrow is a width regression on the hop the
+    /// ring replaces, so the wide wire is what an undeclared box gets and
+    /// `S16_LE` is an operator's rollback pin. Env:
     /// `JASPER_FANIN_RING_WIRE_FORMAT` (`S16_LE` | `S32_LE`); a present but
     /// unrecognized value fails loud in `Config::from_env` as a config-class
     /// fault (exit 78, the unit parks) rather than resolving to a default the
@@ -517,41 +501,6 @@ impl Config {
     }
 }
 
-/// fan-in → CamillaDSP coupling transport. Mirrors `jasper.fanin_coupling`'s
-/// `loopback` / `shm_ring` selector. Fail-SAFE: an
-/// unset/unrecognized env value resolves to `Loopback` (the
-/// byte-identical-to-today path).
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum Coupling {
-    /// ALSA snd-aloop substream output; CamillaDSP dsnoop-captures it. Default.
-    Loopback,
-    /// SPSC ping-pong SHM ring output (Ring A, PROTOTYPE); CamillaDSP reads it
-    /// via a capture-direction ioplug.
-    ShmRing,
-}
-
-impl Coupling {
-    /// Normalize a raw `JASPER_FANIN_CAMILLA_COUPLING` value. Fail-safe to
-    /// `Loopback` on unset/empty/unknown — matches Python's `resolve_coupling`
-    /// so the daemon and the emitted config can never disagree on the transport.
-    fn from_env_value(raw: Option<&str>) -> Self {
-        match raw.map(|s| s.trim().to_ascii_lowercase()).as_deref() {
-            Some("shm_ring") => Coupling::ShmRing,
-            _ => Coupling::Loopback,
-        }
-    }
-
-    /// The transport vocabulary token — the same spelling Python's
-    /// `jasper.fanin_coupling.COUPLING_LOOPBACK` / `COUPLING_SHM_RING` use and
-    /// the reconciler persists. Round-trips `from_env_value`.
-    pub fn as_str(self) -> &'static str {
-        match self {
-            Coupling::Loopback => "loopback",
-            Coupling::ShmRing => "shm_ring",
-        }
-    }
-}
-
 /// The sample format Ring A's wire carries — the ONE place in this daemon that
 /// owns the wire-format vocabulary. Both directions live here (token → header
 /// id for the geometry fan-in builds, header id → token for what STATUS
@@ -641,22 +590,17 @@ impl Config {
     /// Whether THIS BOX's resolved final-output wire is wide (S32LE) — the ONE
     /// per-box width decision the whole daemon reads (U2 / #2223).
     ///
-    /// A wide wire needs BOTH halves: the ring transport (this daemon's aloop
-    /// write is pinned narrow by [`crate::mixer::FORMAT`], so a loopback box
-    /// emits S16 whatever it declared) AND an S32LE ring wire format. The ring's
-    /// own attached header is the RUNTIME authority for what
+    /// The TRANSPORT half of the conjunction is `true` on every box: the ring is
+    /// the only fan-in → CamillaDSP transport (ADR-0100). What decides the width
+    /// is the WIRE FORMAT half, which `JASPER_FANIN_RING_WIRE_FORMAT` resolves to
+    /// `S32_LE` when unset ([`RingWireFormat::from_env_value`]). The ring's own
+    /// attached header is the RUNTIME authority for what
     /// `write_ring_period` publishes; this is the same fact resolved from config
     /// at construction, which is when the lane buffers and the direct lane's
     /// render width have to be sized. The two cannot drift: `create_or_attach`
     /// validates the header field-by-field against the geometry built from this
     /// same config and fails the open on a mismatch, and `Mixer::new`
     /// cross-checks them explicitly before mixing a single period.
-    ///
-    /// The FORMAT half is now true by default: `JASPER_FANIN_RING_WIRE_FORMAT`
-    /// unset resolves to `S32_LE` ([`RingWireFormat::from_env_value`]). So what
-    /// still gates a wide box is the TRANSPORT half — the `shm_ring` coupling,
-    /// which the coupling reconciler arms per box and refuses on anything it
-    /// cannot prove. A box on `loopback` stays narrow whatever it declared.
     ///
     /// THE CONJUNCTION ITSELF LIVES IN THE SHARED CRATE
     /// ([`jasper_tts_protocol::TtsWireWidth::from_box_declaration`]) and this
@@ -670,14 +614,14 @@ impl Config {
         matches!(
             jasper_tts_protocol::TtsWireWidth::from_box_declaration(
                 matches!(self.ring_wire_format, RingWireFormat::S32Le),
-                matches!(self.camilla_coupling, Coupling::ShmRing),
+                true,
             ),
             jasper_tts_protocol::TtsWireWidth::Wide,
         )
     }
 
     /// The `event=fanin.tts_wire.resolved` startup line — this box's resolved
-    /// ASSISTANT wire width, and BOTH declared halves that produced it.
+    /// ASSISTANT wire width and the declared wire format that produced it.
     ///
     /// A support read must be able to answer "is a mismatch converting right
     /// now" without journal archaeology, and "which half made this narrow?"
@@ -698,10 +642,9 @@ impl Config {
             jasper_tts_protocol::TtsWireWidth::Narrow
         };
         format!(
-            "event=fanin.tts_wire.resolved verb={} wire_format={} coupling={} sample_bytes={}",
+            "event=fanin.tts_wire.resolved verb={} wire_format={} sample_bytes={}",
             width.verb(),
             self.ring_wire_format.as_str(),
-            self.camilla_coupling.as_str(),
             width.sample_bytes(),
         )
     }
@@ -774,16 +717,34 @@ impl Config {
 
         let loudness_defaults = AssistantLoudnessConfig::default();
 
-        // fan-in → CamillaDSP coupling. Default Loopback (byte-identical to
-        // today). Fail-safe normalization mirrors Python's resolve_coupling.
-        let camilla_coupling = Coupling::from_env_value(
-            std::env::var("JASPER_FANIN_CAMILLA_COUPLING")
-                .ok()
-                .as_deref(),
-        );
+        // The ring is the ONLY fan-in → CamillaDSP transport (ADR-0100), so this
+        // key no longer selects anything — it only has to be able to REFUSE a
+        // declaration this daemon can no longer serve. Unset / empty means "no
+        // declaration" (empty is how the env-file writers clear a key), the same
+        // reading `JASPER_FANIN_RING_WIRE_FORMAT` gives it. Anything else that is
+        // not `shm_ring` — a persisted `loopback` above all — is a config-class
+        // fault: exit 78, the unit parks visibly rather than playing over a
+        // transport the operator did not ask for.
+        match std::env::var("JASPER_FANIN_CAMILLA_COUPLING")
+            .ok()
+            .as_deref()
+            .map(|s| s.trim().to_ascii_lowercase())
+            .as_deref()
+        {
+            None | Some("") | Some("shm_ring") => {}
+            Some(other) => {
+                return Err(anyhow::anyhow!(
+                    "JASPER_FANIN_CAMILLA_COUPLING={} unsupported (shm_ring) — the \
+                     SHM ring is this daemon's only transport toward CamillaDSP \
+                     (ADR-0100); a box that cannot be served by it parks instead \
+                     of falling back",
+                    other,
+                )
+                .context(crate::ConfigClassError));
+            }
+        }
 
-        // Ring A (shm_ring) knobs. Parsed unconditionally (sane defaults) but
-        // only USED under Coupling::ShmRing. Path default matches Python's
+        // Ring A knobs. Path default matches Python's
         // resolve_ring_path; slots default 2, checked against the ring header's
         // 2..=16 range (RING_SLOTS_MIN/MAX) — a fail-loud out-of-range value is
         // a config error, not a silent clamp, so a typo can't ship a geometry
@@ -816,13 +777,11 @@ impl Config {
         // The ring's slot is pinned at RING_SLOT_FRAMES (128, the outputd
         // DAC-period contract): fan-in publishes period_frames/128 slots per
         // step, so period_frames MUST be a whole multiple of 128 or a step would
-        // shear a slot. Fail LOUD at config (only when shm_ring is actually
-        // selected — an odd period under loopback/pipe is fine).
-        if camilla_coupling == Coupling::ShmRing && period_frames % RING_SLOT_FRAMES != 0 {
+        // shear a slot. Fail LOUD at config.
+        if period_frames % RING_SLOT_FRAMES != 0 {
             return Err(anyhow::anyhow!(
                 "JASPER_FANIN_PERIOD_FRAMES={} must be a whole multiple of the \
-                 pinned SHM ring slot size ({} frames) under \
-                 JASPER_FANIN_CAMILLA_COUPLING=shm_ring — a fractional slot count \
+                 pinned SHM ring slot size ({} frames) — a fractional slot count \
                  would shear the ring",
                 period_frames,
                 RING_SLOT_FRAMES,
@@ -1272,7 +1231,6 @@ impl Config {
                 "JASPER_FANIN_ASSISTANT_REFERENCE_PATH",
                 "/var/lib/jasper/assistant_volume_reference.json",
             ),
-            camilla_coupling,
             ring_path,
             ring_slots,
             ring_wire_format,
@@ -1637,9 +1595,8 @@ mod tests {
     #[test]
     fn positive_dimension_passes_valid_values_unchanged() {
         // DA-0040 must not perturb valid inputs: a legal positive value flows
-        // through env_u32_positive unchanged. (period_frames must stay a whole
-        // multiple of the 128-frame ring slot under the default loopback
-        // coupling only; 512 satisfies it regardless.)
+        // through env_u32_positive unchanged. (period_frames must be a whole
+        // multiple of the 128-frame ring slot; 512 satisfies that.)
         with_env(&[("JASPER_FANIN_PERIOD_FRAMES", Some("512"))], || {
             let cfg = Config::from_env().expect("parses");
             assert_eq!(cfg.period_frames, 512);
@@ -2723,78 +2680,53 @@ mod tests {
         );
     }
 
+    /// Which `JASPER_FANIN_CAMILLA_COUPLING` declarations this daemon will
+    /// serve, now that the ring is the only transport (ADR-0100).
+    ///
+    /// The REFUSAL is the load-bearing half: a box still carrying a persisted
+    /// `loopback` must PARK — exit 78 via [`crate::ConfigClassError`], visible on
+    /// /state and doctor — not silently play over the ring the operator did not
+    /// ask for. Unset / empty is "no declaration" (empty is how this repo's env
+    /// writers clear a key), which the single transport serves.
     #[test]
-    fn coupling_defaults_to_loopback_when_unset() {
-        with_env(&[("JASPER_FANIN_CAMILLA_COUPLING", None)], || {
-            let cfg = Config::from_env().expect("defaults must parse");
-            assert_eq!(cfg.camilla_coupling, Coupling::Loopback);
-        });
+    fn only_a_ring_declaration_or_none_is_served() {
+        for (raw, served) in [
+            (None, true),
+            (Some(""), true),
+            (Some("   "), true),
+            (Some("shm_ring"), true),
+            (Some(" SHM_RING "), true),
+            (Some("loopback"), false),
+            (Some("pipe"), false),
+            (Some("transport_pipe"), false),
+            (Some("ring"), false),
+            (Some("shm-ring"), false),
+        ] {
+            with_env(
+                &[("JASPER_FANIN_CAMILLA_COUPLING", raw)],
+                || match Config::from_env() {
+                    Ok(_) => assert!(served, "{raw:?} must be refused"),
+                    Err(err) => {
+                        assert!(!served, "{raw:?} must be served: {err:#}");
+                        assert!(
+                            err.downcast_ref::<crate::ConfigClassError>().is_some(),
+                            "{raw:?} must park the unit (exit 78), not restart-loop it",
+                        );
+                    }
+                },
+            );
+        }
     }
 
     #[test]
-    fn coupling_unknown_value_fails_safe_to_loopback() {
-        // A typo must NEVER silently flip the shared realtime capture. Mirrors
-        // Python's resolve_coupling fail-safe.
-        with_env(&[("JASPER_FANIN_CAMILLA_COUPLING", Some("pipe"))], || {
-            let cfg = Config::from_env().expect("unknown coupling must parse");
-            assert_eq!(cfg.camilla_coupling, Coupling::Loopback);
-        });
-    }
-
-    #[test]
-    fn coupling_loopback_value_is_loopback() {
-        with_env(
-            &[("JASPER_FANIN_CAMILLA_COUPLING", Some("loopback"))],
-            || {
-                let cfg = Config::from_env().expect("loopback coupling must parse");
-                assert_eq!(cfg.camilla_coupling, Coupling::Loopback);
-            },
-        );
-    }
-
-    #[test]
-    fn coupling_from_env_value_normalization() {
-        // Direct unit test of the normalization, independent of the env plumbing.
-        assert_eq!(Coupling::from_env_value(None), Coupling::Loopback);
-        assert_eq!(Coupling::from_env_value(Some("")), Coupling::Loopback);
-        assert_eq!(Coupling::from_env_value(Some("  ")), Coupling::Loopback);
-        assert_eq!(Coupling::from_env_value(Some("pipe")), Coupling::Loopback);
-        assert_eq!(
-            Coupling::from_env_value(Some("loopback")),
-            Coupling::Loopback
-        );
-        assert_eq!(
-            Coupling::from_env_value(Some("garbage")),
-            Coupling::Loopback
-        );
-        // Ring A (shm_ring) token — must agree with Python's resolve_coupling.
-        assert_eq!(
-            Coupling::from_env_value(Some("shm_ring")),
-            Coupling::ShmRing
-        );
-        assert_eq!(
-            Coupling::from_env_value(Some(" SHM_RING ")),
-            Coupling::ShmRing
-        );
-        // A near-miss typo fails safe to loopback, never the shared ring.
-        assert_eq!(Coupling::from_env_value(Some("ring")), Coupling::Loopback);
-        assert_eq!(
-            Coupling::from_env_value(Some("shm-ring")),
-            Coupling::Loopback
-        );
-    }
-
-    #[test]
-    fn shm_ring_coupling_parses_with_ring_defaults() {
+    fn ring_defaults_parse() {
         with_env(
             &[
-                ("JASPER_FANIN_CAMILLA_COUPLING", Some("shm_ring")),
                 ("JASPER_FANIN_RING_PATH", None),
                 ("JASPER_FANIN_RING_SLOTS", None),
             ],
             || {
-                let cfg = Config::from_env().expect("shm_ring defaults must parse");
-                assert_eq!(cfg.camilla_coupling, Coupling::ShmRing);
+                let cfg = Config::from_env().expect("ring defaults must parse");
                 assert_eq!(cfg.ring_path, "/dev/shm/jts-ring/program.ring");
                 assert_eq!(cfg.ring_slots, 2);
                 // Default period (256) is a multiple of the 128-frame slot.
@@ -3104,12 +3036,10 @@ mod tests {
     }
 
     #[test]
-    fn shm_ring_period_must_be_multiple_of_slot_frames() {
-        // 200 is not a multiple of 128 -> shear -> fail loud, but ONLY under
-        // shm_ring (loopback/pipe tolerate any period).
+    fn ring_period_must_be_multiple_of_slot_frames() {
+        // 200 is not a multiple of 128 -> shear -> fail loud.
         with_env(
             &[
-                ("JASPER_FANIN_CAMILLA_COUPLING", Some("shm_ring")),
                 ("JASPER_FANIN_PERIOD_FRAMES", Some("200")),
                 // 200*2 = 400 >= 2*200 buffer floor, so the buffer guard passes
                 // and the slot-shear guard is what fires.
@@ -3117,8 +3047,7 @@ mod tests {
                 ("JASPER_FANIN_OUTPUT_BUFFER_FRAMES", Some("1024")),
             ],
             || {
-                let err = Config::from_env()
-                    .expect_err("non-128-multiple period under shm_ring must error");
+                let err = Config::from_env().expect_err("non-128-multiple period must error");
                 let msg = format!("{:#}", err);
                 assert!(
                     msg.contains("multiple") && msg.contains("slot"),
@@ -3131,25 +3060,6 @@ mod tests {
                      into StartLimitAction=reboot: {}",
                     msg,
                 );
-            },
-        );
-    }
-
-    #[test]
-    fn non_shm_ring_tolerates_odd_period() {
-        // The 128-multiple guard is scoped to shm_ring: loopback with a
-        // non-128-multiple period must still parse (byte-identical to today).
-        with_env(
-            &[
-                ("JASPER_FANIN_CAMILLA_COUPLING", Some("loopback")),
-                ("JASPER_FANIN_PERIOD_FRAMES", Some("200")),
-                ("JASPER_FANIN_INPUT_BUFFER_FRAMES", Some("4096")),
-                ("JASPER_FANIN_OUTPUT_BUFFER_FRAMES", Some("1024")),
-            ],
-            || {
-                let cfg = Config::from_env().expect("loopback tolerates odd period");
-                assert_eq!(cfg.period_frames, 200);
-                assert_eq!(cfg.camilla_coupling, Coupling::Loopback);
             },
         );
     }
@@ -3170,33 +3080,24 @@ mod tests {
         );
     }
 
-    /// The per-box program width (U2 / #2223) needs BOTH halves: the ring
-    /// transport AND an S32LE wire. A loopback box is narrow whatever the wire
-    /// format says, because an snd-aloop substream is S16 — resolving it wide
-    /// would build spine-scale lanes for an output that cannot carry them.
+    /// The per-box program width (U2 / #2223) now follows the WIRE FORMAT alone:
+    /// the transport half of the conjunction is `true` on every box (ADR-0100).
+    ///
+    /// The unset row is the one that matters most: the wire resolver defaults
+    /// WIDE, so an undeclared box arms the widened source path (spine-scale lane
+    /// buffers, the `AUDIO32` assistant verb, the wide earcon bake) with no
+    /// declaration at all, and an operator's `S16_LE` is the pin that narrows it.
     #[test]
-    fn the_program_width_needs_both_the_ring_transport_and_the_wide_format() {
-        let cases = [
-            ("shm_ring", Some("S32_LE"), true),
-            ("shm_ring", Some("S16_LE"), false),
-            ("loopback", Some("S32_LE"), false),
-            ("loopback", Some("S16_LE"), false),
-        ];
-        for (coupling, wire, expected) in cases {
-            with_env(
-                &[
-                    ("JASPER_FANIN_CAMILLA_COUPLING", Some(coupling)),
-                    ("JASPER_FANIN_RING_WIRE_FORMAT", wire),
-                ],
-                || {
-                    let cfg = Config::from_env().expect("defaults must parse");
-                    assert_eq!(
-                        cfg.program_wire_is_wide(),
-                        expected,
-                        "coupling={coupling} wire={wire:?}",
-                    );
-                },
-            );
+    fn the_program_width_follows_the_declared_wire_format() {
+        for (wire, expected) in [
+            (None, true),
+            (Some("S32_LE"), true),
+            (Some("S16_LE"), false),
+        ] {
+            with_env(&[("JASPER_FANIN_RING_WIRE_FORMAT", wire)], || {
+                let cfg = Config::from_env().expect("defaults must parse");
+                assert_eq!(cfg.program_wire_is_wide(), expected, "wire={wire:?}");
+            });
         }
     }
 
@@ -3207,99 +3108,24 @@ mod tests {
     /// scrolled away, but this line is always there, and `jasper-voice` emits
     /// its own `event=tts_wire.resolved` to pair with it.
     ///
-    /// Asserted by CONTENT, not by presence. Naming both declared halves is the
-    /// point — a line that said only "narrow" would leave a support read unable
-    /// to tell a narrow-format box from an unarmed one, which is exactly the
-    /// distinction the whole conjunction exists to draw.
+    /// Asserted by CONTENT, not by presence: a line that said only "narrow"
+    /// would leave a support read unable to tell a narrow-format box from a
+    /// wide-format one, which is the distinction the line exists to draw.
     #[test]
-    fn the_startup_width_line_names_the_verdict_and_both_declared_halves() {
-        let cases = [
-            ("shm_ring", "S32_LE", "AUDIO32", "4"),
-            ("shm_ring", "S16_LE", "AUDIO", "2"),
-            // The row a support read most needs to distinguish: declared wide,
-            // resolved narrow, BECAUSE of the coupling.
-            ("loopback", "S32_LE", "AUDIO", "2"),
-            ("loopback", "S16_LE", "AUDIO", "2"),
-        ];
-        for (coupling, wire, verb, sample_bytes) in cases {
-            with_env(
-                &[
-                    ("JASPER_FANIN_CAMILLA_COUPLING", Some(coupling)),
-                    ("JASPER_FANIN_RING_WIRE_FORMAT", Some(wire)),
-                ],
-                || {
-                    let line = Config::from_env()
-                        .expect("defaults must parse")
-                        .assistant_wire_resolved_line();
-                    assert!(line.starts_with("event=fanin.tts_wire.resolved "), "{line}",);
-                    assert!(line.contains(&format!("verb={verb}")), "{line}");
-                    assert!(line.contains(&format!("wire_format={wire}")), "{line}");
-                    assert!(line.contains(&format!("coupling={coupling}")), "{line}");
-                    assert!(
-                        line.contains(&format!("sample_bytes={sample_bytes}")),
-                        "{line}",
-                    );
-                },
-            );
+    fn the_startup_width_line_names_the_verdict_and_the_declared_format() {
+        for (wire, verb, sample_bytes) in [("S32_LE", "AUDIO32", "4"), ("S16_LE", "AUDIO", "2")] {
+            with_env(&[("JASPER_FANIN_RING_WIRE_FORMAT", Some(wire))], || {
+                let line = Config::from_env()
+                    .expect("defaults must parse")
+                    .assistant_wire_resolved_line();
+                assert!(line.starts_with("event=fanin.tts_wire.resolved "), "{line}",);
+                assert!(line.contains(&format!("verb={verb}")), "{line}");
+                assert!(line.contains(&format!("wire_format={wire}")), "{line}");
+                assert!(
+                    line.contains(&format!("sample_bytes={sample_bytes}")),
+                    "{line}",
+                );
+            });
         }
-    }
-
-    /// THE TRANSPORT IS NOW THE ONLY GATE on the widened source path, and this
-    /// pins both halves of that.
-    ///
-    /// Before the ring wire's default went wide this asserted the opposite —
-    /// that an unset key left the widened route inert — because the FORMAT half
-    /// of `program_wire_is_wide`'s conjunction was false by default. It is true
-    /// by default now, so a `shm_ring` box arms the widened route (spine-scale
-    /// lane buffers, the `AUDIO32` assistant verb, the wide earcon bake) with no
-    /// declaration at all. That is the flip's point, not a side effect.
-    ///
-    /// What still holds it back is the COUPLING: fan-in's aloop write is pinned
-    /// narrow by `mixer::FORMAT` however the box spelled its format, so a
-    /// `loopback` box stays narrow. Pinning that half is what keeps the
-    /// conjunction from quietly collapsing into a single-input check.
-    #[test]
-    fn the_wide_program_path_follows_the_transport_not_a_declaration() {
-        with_env(
-            &[
-                ("JASPER_FANIN_CAMILLA_COUPLING", Some("shm_ring")),
-                ("JASPER_FANIN_RING_WIRE_FORMAT", None),
-            ],
-            || {
-                let cfg = Config::from_env().expect("defaults must parse");
-                assert!(
-                    cfg.program_wire_is_wide(),
-                    "an undeclared shm_ring box resolves the wide wire, so the \
-                     widened source path is armed without a declaration",
-                );
-            },
-        );
-        // A loopback box stays narrow whatever the format half says — the aloop
-        // write is pinned narrow by `mixer::FORMAT`.
-        with_env(
-            &[
-                ("JASPER_FANIN_CAMILLA_COUPLING", None),
-                ("JASPER_FANIN_RING_WIRE_FORMAT", None),
-            ],
-            || {
-                let cfg = Config::from_env().expect("defaults must parse");
-                assert!(!cfg.program_wire_is_wide());
-            },
-        );
-        // ...and neither half alone is enough: the operator's narrow pin on a
-        // ring box is the other way the conjunction fails.
-        with_env(
-            &[
-                ("JASPER_FANIN_CAMILLA_COUPLING", Some("shm_ring")),
-                ("JASPER_FANIN_RING_WIRE_FORMAT", Some("S16_LE")),
-            ],
-            || {
-                let cfg = Config::from_env().expect("the narrow pin must parse");
-                assert!(
-                    !cfg.program_wire_is_wide(),
-                    "an operator's S16_LE pin must still narrow the program wire",
-                );
-            },
-        );
     }
 }

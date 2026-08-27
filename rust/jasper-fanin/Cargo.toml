@@ -23,9 +23,9 @@ jasper-env = { path = "../jasper-env" }
 # docs/HANDOFF-usb-low-latency.md.
 jasper-resampler = { path = "../jasper-resampler" }
 # The SPSC ping-pong SHM ring — the same crate jasper-outputd's Ring B reader
-# consumes. Pure (mmap via libc, no ALSA). Ring A (PROTOTYPE, flag-gated behind
-# JASPER_FANIN_CAMILLA_COUPLING=shm_ring) uses its production RingWriter as the
-# Output::Ring publish half; CamillaDSP reads it via a capture-direction ioplug.
+# consumes. Pure (mmap via libc, no ALSA). Ring A is this daemon's only output
+# (ADR-0100): its RingWriter is the publish half, and CamillaDSP reads it via a
+# capture-direction ioplug.
 jasper-ring = { path = "../jasper-ring" }
 # The shared host-slaved USB clock ladder + servo + ALSA pitch actuator. When
 # JASPER_FANIN_USB_DIRECT=enabled fan-in owns the gadget capture, so the

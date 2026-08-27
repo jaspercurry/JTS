@@ -162,14 +162,12 @@ pub struct XrunEvent {
 #[derive(Debug, Clone, Copy)]
 pub enum XrunSource {
     Input,
-    Output,
 }
 
 impl XrunSource {
     fn as_str(&self) -> &'static str {
         match self {
             XrunSource::Input => "input",
-            XrunSource::Output => "output",
         }
     }
 }
@@ -295,8 +293,8 @@ mod tests {
 
         let mut log = XrunLog::new(&tmp).expect("open xrun log");
         log.record(&XrunEvent {
-            source: XrunSource::Output,
-            label: "out".to_string(),
+            source: XrunSource::Input,
+            label: "airplay".to_string(),
             frames: 256,
             count: 1,
         });
@@ -314,8 +312,8 @@ mod tests {
             .unwrap();
         let lines: Vec<_> = content.lines().collect();
         assert_eq!(lines.len(), 2);
-        assert!(lines[0].contains(r#""source":"output""#));
-        assert!(lines[1].contains(r#""source":"input""#));
+        assert!(lines[0].contains(r#""label":"airplay""#));
+        assert!(lines[1].contains(r#""label":"spotify""#));
 
         let _ = std::fs::remove_file(&tmp);
     }

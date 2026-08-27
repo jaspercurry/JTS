@@ -283,13 +283,34 @@ def _patch_fanin_systemctl(monkeypatch, *, enabled="enabled", active="active"):
     )
 
 
+# The healthy Ring A block a running fan-in always publishes (ADR-0100 — the
+# ring is the only transport, so there is no ring-less live STATUS).
+_FANIN_RING_BLOCK = {
+    "path": "/dev/shm/jts-ring/program.ring",
+    "slots": 2,
+    "wire_format": "S32_LE",
+    "channels": 2,
+    "occupancy": 1,
+    "published": 4242,
+    "full_waits": 0,
+    "stuck_reader_drops": 0,
+    "drop_no_reader": 0,
+    "stall_active": False,
+    "last_stall_ms": 0,
+}
+
+
 def _fanin_status_payload(
     *,
     input_buffer_frames: int = 4096,
     output_buffer_frames: int = 1024,
     progress_age_ms: int = 2,
-    transport: str = "loopback",
+    transport: str = "shm_ring",
+    ring: dict | None = _FANIN_RING_BLOCK,
 ) -> bytes:
+    """A fan-in STATUS payload. Defaults to the ONLY shape a live daemon can
+    report: transport=shm_ring with a ring block. Pass ``ring=None`` to build
+    the malformed no-ring-block shape."""
     output = {
         "pcm": doctor._FANIN_EXPECTED_OUTPUT_PCM,
         "transport": transport,
@@ -297,6 +318,8 @@ def _fanin_status_payload(
         "frames_written": 1234,
         "xrun_count": 0,
     }
+    if ring is not None:
+        output["ring"] = dict(ring)
     return json.dumps(
         {
             "input_buffer_frames": input_buffer_frames,
@@ -814,26 +837,56 @@ def test_check_fanin_service_ok_with_expected_status(monkeypatch):
     _patch_fanin_status_socket(monkeypatch, _fanin_status_payload())
     r = doctor.check_fanin_service()
     assert r.status == "ok"
-    assert "transport=loopback" in r.detail
+    assert "transport=shm_ring" in r.detail
     assert "input_buffer_frames=4096" in r.detail
     assert "output_buffer_frames=1024" in r.detail
     assert "tts_enabled=true" in r.detail
     assert "assistant_loudness_decision=False" in r.detail
 
 
-def test_check_fanin_service_fails_on_live_transport_mismatch(monkeypatch):
+@pytest.mark.parametrize("persisted", ["shm_ring", "loopback", None])
+def test_check_fanin_service_expects_the_ring_whatever_the_file_says(
+    monkeypatch, persisted
+):
+    """The expected transport is a CONSTANT, not a read of the persisted file.
+
+    Fan-in refuses every non-ring declaration at config parse (exit 78), so a
+    LIVE STATUS can only come from a ring box. Deriving the expectation from
+    /var/lib/jasper/fanin.env FAILed a healthy box whose key was unwritten —
+    coupling-auto runs After=jasper-fanin.service, so that is every fresh boot.
+    """
     _patch_fanin_systemctl(monkeypatch)
     monkeypatch.setattr(
         "jasper.fanin.ring_health.read_persisted_coupling",
-        lambda: "shm_ring",
+        lambda: persisted,
     )
     _patch_fanin_status_socket(monkeypatch, _fanin_status_payload())
 
     r = doctor.check_fanin_service()
 
+    assert r.status == "ok"
+
+
+def test_check_fanin_service_fails_on_a_non_ring_live_transport(monkeypatch):
+    _patch_fanin_systemctl(monkeypatch)
+    _patch_fanin_status_socket(
+        monkeypatch, _fanin_status_payload(transport="loopback")
+    )
+
+    r = doctor.check_fanin_service()
+
     assert r.status == "fail"
     assert "output.transport='loopback'" in r.detail
-    assert "expected 'shm_ring'" in r.detail
+
+
+def test_check_fanin_service_fails_when_status_carries_no_ring_block(monkeypatch):
+    _patch_fanin_systemctl(monkeypatch)
+    _patch_fanin_status_socket(monkeypatch, _fanin_status_payload(ring=None))
+
+    r = doctor.check_fanin_service()
+
+    assert r.status == "fail"
+    assert "output.ring" in r.detail
 
 
 def test_check_fanin_service_reports_pre_dsp_tts_loudness(monkeypatch):
@@ -2470,12 +2523,13 @@ def _fanin_payload_with_ring(ring: dict | None) -> bytes:
     return json.dumps(payload).encode()
 
 
-def test_check_fanin_ring_stall_ok_when_loopback(monkeypatch):
-    # Default loopback coupling: STATUS carries no ring block → skip-if-loopback.
-    _patch_fanin_status_socket(monkeypatch, _fanin_status_payload())
+def test_check_fanin_ring_stall_ok_when_status_has_no_ring_block(monkeypatch):
+    # A STATUS-shape guard, not a topology branch: with no counters there is
+    # nothing to assess, and the missing block is the 'jasper-fanin service'
+    # check's failure to report.
+    _patch_fanin_status_socket(monkeypatch, _fanin_status_payload(ring=None))
     r = doctor.check_fanin_ring_stall()
     assert r.status == "ok"
-    assert "loopback" in r.detail
 
 
 def test_check_fanin_ring_stall_ok_when_draining(monkeypatch):
@@ -4430,103 +4484,57 @@ def _stage_assets(monkeypatch, tmp_path, *, so=True, conf=True, shm=True):
         audio_runtime, "_JTS_RING_SHM_DIR", str(shm_dir))
 
 
-def _probes_ok(monkeypatch):
-    monkeypatch.setattr(
-        audio_runtime, "_jts_ring_pcm_resolves", lambda pcm, tool: (True, "resolved")
-    )
-
-
-def _probes_fail(monkeypatch, detail="undefined symbol: snd_dlsym_start"):
-    monkeypatch.setattr(
-        audio_runtime, "_jts_ring_pcm_resolves", lambda pcm, tool: (False, detail)
-    )
-
-
 # --- check_ring_platform_assets ---------------------------------------
+#
+# PRESENCE ONLY since ADR-0100: the ring is the only transport, so it is always
+# load-bearing, there is no inert phase to open-probe, and a missing asset is a
+# hard failure rather than a "loopback still carries audio" warn.
 
 
-def test_ok_when_all_assets_present_and_probes_resolve(monkeypatch, tmp_path):
-    _stage_assets(monkeypatch, tmp_path)
-    _probes_ok(monkeypatch)
-    res = audio_runtime.check_ring_platform_assets()
-    assert res.status == "ok"
-    assert "inert" in res.detail
-    assert "jts_ring_capture" in res.detail and "jts_ring_playback" in res.detail
-
-
-def test_fail_when_so_missing(monkeypatch, tmp_path):
-    # The build failed, so the box has no plugin for the ONE transport it has.
-    _stage_assets(monkeypatch, tmp_path, so=False)
-    _probes_ok(monkeypatch)
-    res = audio_runtime.check_ring_platform_assets()
-    assert res.status == "fail"
-    assert "ioplug .so absent" in res.detail
-    assert "redeploy" in res.detail.lower()
-
-
-def test_fail_when_conf_missing(monkeypatch, tmp_path):
-    _stage_assets(monkeypatch, tmp_path, conf=False)
-    _probes_ok(monkeypatch)
-    res = audio_runtime.check_ring_platform_assets()
-    assert res.status == "fail"
-    assert "conf.d absent" in res.detail
-
-
-def test_fail_when_shm_dir_missing(monkeypatch, tmp_path):
-    _stage_assets(monkeypatch, tmp_path, shm=False)
-    _probes_ok(monkeypatch)
-    res = audio_runtime.check_ring_platform_assets()
-    assert res.status == "fail"
-    assert "absent" in res.detail
-
-
-def test_the_failure_lists_every_missing_asset(monkeypatch, tmp_path):
-    _stage_assets(monkeypatch, tmp_path, so=False, conf=False, shm=False)
-    _probes_ok(monkeypatch)
-    res = audio_runtime.check_ring_platform_assets()
-    assert res.status == "fail"
-    assert "ioplug .so absent" in res.detail
-    assert "conf.d absent" in res.detail
-
-
-def test_missing_asset_does_not_run_the_open_probe(monkeypatch, tmp_path):
-    # Guard: when an asset is missing we must NOT open-probe (there is no
-    # working plugin to probe). A probe that raised here would prove it ran.
-    _stage_assets(monkeypatch, tmp_path, so=False)
+def _probe_must_not_run(monkeypatch):
+    """Fail loudly if the check open-probes. It must never touch a live ring."""
 
     def _boom(pcm, tool):  # pragma: no cover - must never be called
-        raise AssertionError("probe ran despite missing asset")
+        raise AssertionError("check_ring_platform_assets must not open-probe")
 
-    monkeypatch.setattr(
-        audio_runtime, "_jts_ring_pcm_resolves", _boom)
-    res = audio_runtime.check_ring_platform_assets()
-    assert res.status == "fail"
+    monkeypatch.setattr(audio_runtime, "_jts_ring_pcm_resolves", _boom)
 
 
-def test_fail_when_so_present_but_pcm_open_fails(monkeypatch, tmp_path):
-    # The .so is installed but ALSA can't use it (bad registration / arch /
-    # -DPIC): a genuine defect that would break P2's arm => fail.
+def test_ok_when_all_assets_present(monkeypatch, tmp_path):
     _stage_assets(monkeypatch, tmp_path)
-    _probes_fail(monkeypatch)
+    _probe_must_not_run(monkeypatch)
+    res = audio_runtime.check_ring_platform_assets()
+    assert res.status == "ok"
+
+
+@pytest.mark.parametrize(
+    "staged, expected_fragments",
+    [
+        ({"so": False}, ["ioplug .so absent", "redeploy"]),
+        ({"conf": False}, ["conf.d absent", "redeploy"]),
+        ({"shm": False}, ["absent", "redeploy"]),
+        (
+            {"so": False, "conf": False, "shm": False},
+            ["ioplug .so absent", "conf.d absent", "redeploy"],
+        ),
+    ],
+)
+def test_any_missing_asset_is_a_hard_fail(
+    monkeypatch, tmp_path, staged, expected_fragments
+):
+    """A missing asset FAILs whatever the persisted file says, and says redeploy.
+
+    There is no second transport to degrade onto: the graph cannot resolve its
+    ring devices at all, so there is no "loopback still carries audio" warn to
+    fall back to. The verdict must not depend on read_persisted_coupling, so
+    this never stubs it, and it must never open-probe a live ring.
+    """
+    _stage_assets(monkeypatch, tmp_path, **staged)
+    _probe_must_not_run(monkeypatch)
     res = audio_runtime.check_ring_platform_assets()
     assert res.status == "fail"
-    assert "PCM open failed" in res.detail
-    assert "snd_dlsym_start" in res.detail
-
-
-def test_fail_names_the_failing_pcm(monkeypatch, tmp_path):
-    _stage_assets(monkeypatch, tmp_path)
-
-    def _one_fails(pcm, tool):
-        if pcm == "jts_ring_playback":
-            return False, "Unknown PCM"
-        return True, "resolved"
-
-    monkeypatch.setattr(
-        audio_runtime, "_jts_ring_pcm_resolves", _one_fails)
-    res = audio_runtime.check_ring_platform_assets()
-    assert res.status == "fail"
-    assert "jts_ring_playback" in res.detail
+    for fragment in expected_fragments:
+        assert fragment in res.detail.lower() or fragment in res.detail
 
 
 # --- _jts_ring_pcm_resolves (the open-probe helper) -------------------
@@ -4721,34 +4729,7 @@ def test_probe_unlinks_even_when_open_fails(monkeypatch, tmp_path):
     assert not ring.exists(), "residue left behind after a failed probe"
 
 
-def test_ebusy_probe_failure_reports_in_use_not_a_defect(monkeypatch, tmp_path):
-    # On a lab-armed box the probe fails with EBUSY (SPSC live-reader guard).
-    # The check must NOT tell the operator to rebuild the .so.
-    _stage_assets(monkeypatch, tmp_path)
-
-    def _busy(pcm, tool):
-        return False, "arecord: main:830: audio open error: Device or resource busy"
-
-    monkeypatch.setattr(
-        audio_runtime, "_jts_ring_pcm_resolves", _busy)
-    res = audio_runtime.check_ring_platform_assets()
-    assert res.status == "fail"
-    assert "in use" in res.detail
-    assert "-DPIC" not in res.detail  # no misleading rebuild advice
-    assert "not a registration defect" in res.detail
-
-
-def test_non_busy_probe_failure_still_advises_rebuild(monkeypatch, tmp_path):
-    # A genuine registration defect keeps the -DPIC / arch rebuild advice.
-    _stage_assets(monkeypatch, tmp_path)
-    _probes_fail(monkeypatch, "undefined symbol: snd_dlsym_start")
-    res = audio_runtime.check_ring_platform_assets()
-    assert res.status == "fail"
-    assert "-DPIC" in res.detail
-    assert "in use" not in res.detail
-
-
-# --- P2: armed-state aware ---------------------------------------------------
+# --- The verdict is independent of the persisted token ----------------
 
 
 def _arm_ring(monkeypatch):
@@ -4756,24 +4737,6 @@ def _arm_ring(monkeypatch):
         "jasper.fanin.ring_health.read_persisted_coupling",
         lambda *a, **k: "shm_ring",
     )
-
-
-def test_armed_ring_with_assets_present_is_ok_and_skips_probe(monkeypatch, tmp_path):
-    # ARMED (shm_ring persisted) + assets present: do NOT open-probe (the live
-    # ring EBUSYs the SPSC guard); report ok and defer coherence to the coupling
-    # check. The probe hook is set to fail loudly so the test proves it is NOT run.
-    _stage_assets(monkeypatch, tmp_path)
-    _arm_ring(monkeypatch)
-
-    def _must_not_be_called(pcm, tool):
-        raise AssertionError("armed ring must not open-probe the live ring")
-
-    monkeypatch.setattr(
-        audio_runtime, "_jts_ring_pcm_resolves", _must_not_be_called)
-    res = audio_runtime.check_ring_platform_assets()
-    assert res.status == "ok"
-    assert "ARMED" in res.detail
-    assert "skipped" in res.detail
 
 
 def test_a_missing_asset_fails_whatever_the_persisted_token_says(

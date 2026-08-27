@@ -102,14 +102,31 @@ def test_coupling_selector_env_var_name_agrees():
     )
 
 
-def test_coupling_shm_ring_token_agrees():
-    # Ring A: the Rust normalizer MUST accept the same shm_ring token Python's
-    # resolve_coupling accepts, or the daemon and the emitted/armed config
-    # disagree on the transport of the SHARED realtime capture.
+def test_rust_serves_the_undeclared_key_as_well_as_the_ring_token():
+    """The Rust ACCEPT-SET is ``None`` | ``""`` | ``shm_ring`` — all three.
+
+    Ring A is the daemon's only transport (ADR-0100), so this key no longer
+    SELECTS anything on the Rust side; it only has to serve what the fleet can
+    legitimately present and refuse the rest (that refusal half is pinned
+    behaviorally in-crate by `only_a_ring_declaration_or_none_is_served`).
+
+    UNSET is a first-class served state and this is the row that says so.
+    `coupling-auto` runs ``After=jasper-fanin.service``, so on a fresh or reset
+    box fan-in starts BEFORE the key is written. If Rust refused the undeclared
+    key, that box would park on every first boot; because it serves it, no
+    Python reader may map undeclared → loopback and derive a runtime
+    expectation from it (see ``resolve_coupling``'s docstring, and the doctor's
+    `_fanin_health_from_status`, which expects ``shm_ring`` unconditionally).
+
+    Shape-level on purpose: it complements the in-crate behavioral pin rather
+    than restating it, and what can drift across the language boundary is the
+    accept-set's MEMBERSHIP, which is what this reads.
+    """
     text = _config_rs_text()
-    assert f'Some("{COUPLING_SHM_RING}") => Coupling::ShmRing' in text, (
-        f"Rust coupling parse must map the {COUPLING_SHM_RING!r} token to "
-        "Coupling::ShmRing"
+    assert f'None | Some("") | Some("{COUPLING_SHM_RING}") => {{}}' in text, (
+        "the Rust accept arm must serve the undeclared key (None), a cleared "
+        f"key (empty), and the {COUPLING_SHM_RING!r} token Python's "
+        "resolve_coupling emits — all three in one arm"
     )
 
 
@@ -263,80 +280,34 @@ def _rust_code_only(text: str) -> str:
     )
 
 
-def _shm_ring_construction_arm(text: str) -> str:
-    """`Mixer::new`'s `Coupling::ShmRing` construction arm, comments stripped.
+def test_fanin_mixer_publishes_slots_and_opens_no_playback_pcm():
+    """The mixer publishes 128-frame slots — and opens NO playback PCM at all.
 
-    SCOPED ON PURPOSE, and comment-stripped on purpose. The assertions below are
-    negative — "this arm opens nothing" — and a negative assertion over the whole
-    file would be satisfied by the `Coupling::Loopback` arm's legitimate
-    `open_output`, while one over the raw arm text would be defeated by the
-    arm's own comment explaining what U4/P7-4 removed. Both failure shapes read
-    as covered and guard nothing, so the slice is bounded and the prose is cut.
-    """
-    opener = "Coupling::ShmRing => {"
-    assert opener in text, "the mixer must still have a ShmRing output arm"
-    body, sep, _ = text[text.index(opener) :].partition("\n        };\n")
-    # Containment: the slice must stop at the transport `match`'s own terminator.
-    assert sep, "could not find the end of the transport match"
-    assert "RingWriter::create_or_attach" in body and "Output::Ring(Box::new(" in body, (
-        "the slice does not look like the ShmRing construction arm"
-    )
-    return _rust_code_only(body)
-
-
-def test_shm_ring_mixer_publishes_slots_and_opens_no_aloop_pcm():
-    """The ring arm publishes 128-frame slots — and opens NO ALSA PCM (U4/P7-4).
-
-    Until P7-4 this arm ALSO opened `config.output_pcm` as a lossy aloop mirror,
-    so a ring-coupled box kept feeding `hw:Loopback,0,7` for the dsnoop taps.
-    Those readers are gone (P7-1, P7-2, P7-3) and the mirror went last, in that
-    order: on a ring box the ring is the whole output. Re-adding any playback open here
-    silently restores a second writer of a lane nobody reads — and, worse, one
-    that would make the aloop tap look alive to the next consumer that reaches
-    for it.
+    The ring is the whole output (ADR-0100). The guard is whole-FILE now rather
+    than scoped to one arm of a transport match, because there is no second arm
+    to be satisfied by: every `PCM::new` in the fan-in mixer must be a CAPTURE
+    open (a renderer lane or the USB gadget). A playback open re-added anywhere
+    here is a second writer of a lane nobody reads, and one that would make the
+    aloop tap look alive to the next consumer that reaches for it.
     """
     text = _mixer_rs_text()
-    assert "Output::Ring" in text
+    assert "RingOutput" in text
     assert "RingWriter" in text
     assert ".publish(" in text
     # The 128-frame slot is pinned via the shared RING_SLOT_FRAMES constant.
     assert "RING_SLOT_FRAMES" in text
 
-    ring_arm = _shm_ring_construction_arm(text)
-    # `open_music_output(` was a third name here until 2026-08-14, when the
-    # unconsumed `JASPER_FANIN_MUSIC_OUTPUT_PCM` tap was deleted by owner ruling.
-    # `PCM::new(` catches a re-added INLINE open in this arm and nothing more — a
-    # NEW helper (`fn open_whatever` calling `PCM::new` at its own definition site,
-    # outside this slice) is invisible here, exactly as `open_music_output` was
-    # before it got its own name in this list. The music tap's own resurrection is
-    # pinned by name in `test_fanin_music_output_tap_stays_deleted` below; the
-    # general helper-shaped case is a known gap in THIS assertion, named so the
-    # list does not read as broader than it is.
-    for opener in ("open_output(", "PCM::new("):
-        assert opener not in ring_arm, (
-            f"the ShmRing arm must open no ALSA PCM — found {opener!r}. The aloop "
-            "mirror was removed in U4/P7-4; the ring is the whole output here. "
-            "(If that hit is inside a TRAILING comment, the strip only drops "
-            "whole-line comments — move it onto its own line.)"
-        )
-    assert "output_pcm" not in ring_arm, (
-        "the ShmRing arm must not reach for config.output_pcm — that field "
-        "belongs to the Coupling::Loopback arm now. (If that hit is inside a "
-        "TRAILING comment, the strip only drops whole-line comments — move it "
-        "onto its own line.)"
+    code = _rust_code_only(text)
+    assert "Direction::Playback" not in code, (
+        "the fan-in mixer must open no ALSA playback device — the SHM ring is "
+        "the whole output (ADR-0100). (If that hit is inside a TRAILING comment, "
+        "the strip only drops whole-line comments — move it onto its own line.)"
     )
-
-    # POSITIVE CONTROL: the same slicing + stripping applied to the arm that DOES
-    # open a PCM must find it. Without this, a slicer that silently returned ""
-    # would make every assertion above pass.
-    loopback_arm = _rust_code_only(
-        text[
-            text.index("Coupling::Loopback => {") : text.index("Coupling::ShmRing => {")
-        ]
-    )
-    assert "open_output(" in loopback_arm and "config.output_pcm" in loopback_arm, (
-        "the loopback arm must still open config.output_pcm — if this fails, the "
-        "negative assertions above are not proving anything"
+    # POSITIVE CONTROL: every surviving open is a capture one, so the absence
+    # above is a real fact about the opens rather than about an empty string.
+    assert _call_sites("PCM::new", code) == code.count("Direction::Capture") > 0, (
+        "every PCM::new in the fan-in mixer must be a Direction::Capture open — "
+        "if this fails, the assertion above is not proving anything"
     )
 
 
@@ -357,12 +328,11 @@ def test_fanin_music_output_tap_stays_deleted():
     name-absence guard, comment-stripped, so the crate's prose ABOUT the deletion
     neither satisfies nor trips it.
 
-    Why it is not redundant with the ShmRing-arm opener list above: that list is
-    SCOPED to one construction arm and catches an INLINE `PCM::new`. A revived
-    `open_music_output` helper calls `PCM::new` at its own definition site,
-    outside that slice — invisible there, caught here. Reviving the tap also
-    means reviving the env parse and the config field, and each is pinned by
-    name, so a partial resurrection fails just as loudly as a whole one.
+    Why it is not redundant with the playback-open guard above: that guard is
+    about the OUTPUT DIRECTION, and a revived music tap would trip it only while
+    it stayed an ALSA playback open. Reviving the tap also means reviving the env
+    parse and the config field, and each is pinned by name here, so a partial
+    resurrection fails just as loudly as a whole one.
     """
     sources = {
         "config.rs": _config_rs_text(),
@@ -395,7 +365,7 @@ def test_fanin_music_output_tap_stays_deleted():
     # load-bearing name per file — each the direct neighbour of a deleted one.
     for filename, needle in (
         ("config.rs", "JASPER_FANIN_OUTPUT_PCM"),
-        ("mixer.rs", "open_output"),
+        ("mixer.rs", "configure_pcm"),
         ("state.rs", "push_output_json"),
     ):
         code = _rust_code_only(sources[filename])
@@ -413,29 +383,24 @@ def test_fanin_music_output_tap_stays_deleted():
 # or /state reader). One fact, one owner.
 
 
-def test_step_fills_output_buf_once_above_the_transport_dispatch():
-    """`step()`'s narrow saturate is SHARED by both transports, above the match.
+def test_step_fills_output_buf_once_above_the_ring_publish():
+    """`step()`'s narrow saturate runs ONCE, above the ring publish.
 
     The mutant this catches: moving (or duplicating)
-    `saturate_to_i16(&self.sum_buf, &mut self.output_buf, self.program_width)` into the
-    `Output::Alsa` arm. `output_buf` is ALSO the NARROW ring wire's published
+    `saturate_to_i16(&self.sum_buf, &mut self.output_buf, self.program_width)`
+    below or past the publish. `output_buf` is the NARROW ring wire's published
     payload — `write_ring_period` publishes it slot by slot whenever the ring's
-    attached header is S16LE. A saturate that ran only on the ALSA path would
-    leave a narrow ring-coupled box publishing a stale (or, on the first period,
-    all-zero) buffer into Ring A, with CamillaDSP reading it and every counter
-    healthy. That is the whole fleet's narrow boxes going silent-or-stuttering
-    from a mutant with no error path.
-
-    Before U4/P7-4 this test's subject was the aloop mirror, which took
-    `output_buf` on BOTH wires; the mirror is gone, so the wide wire no longer
-    reads `output_buf` at all and the narrow wire is the reason the ordering
-    still matters.
+    attached header is S16LE. A publish that ran before the saturate would leave
+    a narrow box publishing a stale (or, on the first period, all-zero) buffer
+    into Ring A, with CamillaDSP reading it and every counter healthy. That is
+    the whole fleet's narrow boxes going silent-or-stuttering from a mutant with
+    no error path.
 
     This is pinned in Python because `step()` has no hardware-free Rust test at
     all: it reads live ALSA inputs. The in-crate ring tests
     (`wide_ring_slots_carry_the_left_justified_narrow_slots`) enter at
     `write_ring_period`, one call BELOW the ordering asserted here, so they
-    cannot see which transport filled the buffer they are handed.
+    cannot see what filled the buffer they are handed.
     """
     text = _mixer_rs_text()
 
@@ -452,16 +417,15 @@ def test_step_fills_output_buf_once_above_the_transport_dispatch():
     assert body.count("fn ") == 1, "the step() slice ran past its own function"
 
     saturate = "saturate_to_i16(&self.sum_buf, &mut self.output_buf, self.program_width)"
-    dispatch = "match &mut self.output {"
+    publish = "write_ring_period("
     assert body.count(saturate) == 1, (
         "step() must fill output_buf with exactly ONE saturate — a second one "
-        "means the call was duplicated into the transport arms"
+        "means the call was duplicated"
     )
-    assert body.count(dispatch) == 1, "step() must dispatch on the transport once"
-    assert body.index(saturate) < body.index(dispatch), (
-        "the saturate that fills output_buf must sit ABOVE the transport match, "
-        "shared by both arms — inside Output::Alsa it would leave a narrow "
-        "ring-coupled box publishing a stale output_buf into Ring A"
+    assert body.count(publish) == 1, "step() must publish to the ring exactly once"
+    assert body.index(saturate) < body.index(publish), (
+        "the saturate that fills output_buf must sit ABOVE the ring publish — "
+        "below it, a narrow box publishes a stale output_buf into Ring A"
     )
 
 
