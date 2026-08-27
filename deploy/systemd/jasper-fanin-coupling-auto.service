@@ -1,16 +1,13 @@
-# DEFAULT-RESOLUTION pass for the fan-in coupling + USB combo (campaign P3/P4).
+# CONVERGENCE pass for the fan-in ring coupling + USB combo.
 # Runs at boot AND on every deploy (install.sh) as a Type=oneshot reconciler
 # (pattern 3: the reconciler is the single env writer; the daemons read the
-# resolved env). It resolves the SHIPPED default:
-#   - ring coupling (shm_ring) on a solo, ring-eligible box, else loopback; and
-#   - the USB low-latency combo on a gadget box, else combo-off.
-# ...UNLESS the operator recorded an explicit choice
-# (JASPER_FANIN_COUPLING_CHOICE=operator in fanin.env), in which case the exact
-# coupling is frozen so a deliberate transport revert sticks. USB combo/direct
-# authorization still converges from canonical USB intent; the operator marker
-# cannot preserve capture after household Off.
+# resolved env). It converges:
+#   - the ring coupling, the only central transport (ADR-0100); a shape the ring
+#     cannot serve parks under its own name rather than taking a second route; and
+#   - the USB low-latency combo on a gadget box whose household turned USB Audio
+#     Input on, else combo-off.
 #
-# A no-op on an already-resolved box (the confirm path bounces no daemon), so
+# A no-op on an already-converged box (the confirm path bounces no daemon), so
 # the steady-state boot cost is one short reconcile with zero audio churn.
 #
 # Concurrency: install.sh and an operator CLI can run the same transition. The
@@ -18,15 +15,15 @@
 # (/run/jasper-fanin-coupling.lock) with a bounded wait and aborts loudly (unit
 # lands `failed`, doctor-visible) on contention.
 [Unit]
-Description=Resolve the default fan-in coupling + USB combo (P3/P4 default-flip)
+Description=Converge the fan-in ring coupling + resolve the USB combo
 Documentation=file:/opt/jasper/docs/HANDOFF-audio-graph-consolidation.md
 # This oneshot has no automatic Restart= loop. Every source transaction asks it
 # to converge, so deliberate rapid toggles must not hit systemd's default
 # successful-start rate limit.
 StartLimitIntervalSec=0
-# Run AFTER the audio graph is up so an arm transition (which bounces
-# fan-in/outputd and reloads CamillaDSP) lands on live daemons. Wants (not
-# Requires) so a degraded box still runs the pass and resolves loopback.
+# Run AFTER the audio graph is up so a convergence (which bounces fan-in/outputd
+# and reloads CamillaDSP) lands on live daemons. Wants (not Requires) so a
+# degraded box still runs the pass.
 After=jasper-fanin.service jasper-outputd.service jasper-camilla.service jasper-control.service
 Wants=jasper-fanin.service jasper-outputd.service jasper-camilla.service
 
@@ -44,15 +41,6 @@ Type=oneshot
 # headroom. tests/test_fanin_coupling_reconcile.py fails if the two drift; the
 # previous hand-kept tallies here (review #1252, #2175, #2285 P7) drifted twice
 # and are what the derivation replaces.
-#
-# What the old tallies omitted, and the reason this ceiling moved: every daemon
-# op costs a blocking reset-failed preamble on a crash-budget unit, and the
-# coupling-flip half and the combo half are ADDITIVE in that order (reconcile_auto
-# delegates the flip at "Step 4", then runs the coordinated restart when the combo
-# changed and the flip did not already bounce fan-in) where the old tally treated
-# them as alternatives. Fan-in is restarted three times across that path, and the
-# camilla resume inside it carries the critical path through everything camilla
-# pulls — including the hw-reconcile -> outputd serialisation.
 #
 # THIS CEILING IS SIZED FOR A LIVE BROKER — a decision, not an oversight. A dead
 # broker makes each op retry through direct systemctl, which would push the pass

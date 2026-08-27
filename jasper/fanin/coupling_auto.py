@@ -27,10 +27,8 @@ env writer; daemons read the resolved env). It is import-cheap (stdlib only) so
 the reconciler CLI and any tests can resolve the decision without pulling in the
 heavy topology/ring readers unless a real box asks.
 
-THE COUPLING IS NOT DECIDED HERE. ADR-0100 left one central transport, so the
-decision this module also used to make — which route an eligible box resolves to
-— has no second answer to choose between, and the operator-choice marker that
-froze that choice had nothing left to freeze.
+THE COUPLING IS NOT DECIDED HERE: ADR-0100 left one central transport, so there
+is no route to choose between.
 
 FAIL-SAFE DIRECTION = combo-off. A signal that cannot be proved is never read as
 permission: an unreadable config file does not arm a capture lane.
@@ -40,7 +38,6 @@ from __future__ import annotations
 
 import logging
 import subprocess
-from collections.abc import Callable
 
 from jasper.audio_runtime_plan import RuntimeEnvAction
 from jasper.fanin.latency_mode import DEFAULT_MODE, preset_for
@@ -116,12 +113,6 @@ def usb_combo_actions(
             "set", CUSHION_DECAY_FLOOR_ENV_VAR, str(preset.floor_frames)
         ),
     )
-
-
-# A ring gate is a zero-arg callable returning (ok, detail) — the same shape the
-# reconciler's ``ring_assets_ready`` / ``ring_topology_ready`` /
-# ``ring_geometry_ready`` / ``ring_slot_geometry_ready`` preflights already return.
-RingGate = Callable[[], "tuple[bool, str]"]
 
 
 def read_usb_gadget_available() -> bool:

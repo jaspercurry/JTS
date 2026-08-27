@@ -1820,12 +1820,10 @@ install_systemd_units() {
     # watchdog-loop on an unfed UDP socket.
     reconcile_aec_state
     reconcile_grouping_state
-    # P3/P4 default-flip: resolve the SHIPPED default fan-in coupling (shm_ring on
-    # a ring-eligible box, else loopback) and the USB combo (on a gadget box),
-    # UNLESS the operator recorded an explicit choice. Runs AFTER grouping
-    # reconcile so the coupling pass sees the settled active-leader state. A no-op
-    # on an operator-frozen box and on an already-resolved box (confirm path, no
-    # daemon bounce).
+    # Converge the fan-in ring coupling (the only central transport) and resolve
+    # the USB combo (on a gadget box). Runs AFTER grouping reconcile so the pass
+    # sees the settled active-leader state. A no-op on an already-converged box
+    # (confirm path, no daemon bounce).
     resolve_fanin_coupling_default
     # WiFi profile guardian: oneshot at boot, gated by
     # ConditionPathExists= on the wizard's stash file. Enabling is safe
