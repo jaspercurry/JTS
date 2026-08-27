@@ -1221,7 +1221,7 @@ await (async () => {
 
 // 28b. /status is the live transport authority after /start. A reload on a
 //      relay-capable speaker must recover an active local run as local and lock
-//      the Change/fallback controls against mid-run transport mutation.
+//      the Change control against mid-run transport mutation.
 await (async () => {
   setRelayMode(true);
   setFetchRoute("/status", () => ({
@@ -1244,9 +1244,8 @@ await (async () => {
     "active status locks transport/default mutation controls");
   assert(getOrMake("change-run-defaults").disabled === true &&
       getOrMake("measurement-options").classList.contains("hidden") &&
-      getOrMake("change-run-defaults").getAttribute("aria-expanded") === "false" &&
-      getOrMake("local-capture-fallback").classList.contains("hidden"),
-    "active status closes and disables every transport/default control");
+      getOrMake("change-run-defaults").getAttribute("aria-expanded") === "false",
+    "active status closes and disables the run-defaults edit control");
   setFetchRoute("/status", () => ({ state: "idle", capture_transport: "local" }));
   setFetchRoute("/envelope", () => makeEnvelope());
   setRelayMode(false);
@@ -1438,31 +1437,6 @@ await (async () => {
   "run defaults: repeat remains server-owned for both transports");
 }
 
-// 28g. Before Start, a relay-capable speaker offers a reversible transport
-//      choice inside Change. Once local capture is selected, the same control
-//      can return to phone capture instead of becoming a one-way fallback.
-await (async () => {
-  setRelayConfigured(true);
-  setRelayMode(true);
-  setFetchRoute("/envelope", () => makeEnvelope());
-  const transportChoice = getOrMake("local-capture-fallback");
-  assert(!transportChoice.classList.contains("hidden") &&
-      transportChoice.textContent === "Use this device's microphone",
-    "relay default offers the unlocked local-capture choice");
-  transportChoice.click();
-  await settle();
-  assert(getRelayMode() === false &&
-      !transportChoice.classList.contains("hidden") &&
-      transportChoice.textContent === "Use the measurement page",
-    "local choice keeps one visible route back to phone capture");
-  transportChoice.click();
-  await settle();
-  assert(getRelayMode() === true &&
-      transportChoice.textContent === "Use this device's microphone",
-    "phone capture can be restored before Start");
-  setRelayConfigured(false);
-  setRelayMode(false);
-})();
 
 // 29. The v9 contract is closed. Unknown versions, screens, sections,
 //     duplicates, or actions are rejected before any of them become policy.

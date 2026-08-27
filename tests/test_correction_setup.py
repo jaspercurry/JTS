@@ -149,6 +149,12 @@ def test_capture_relay_ui_contract_is_wired():
     assert 'id="relay-panel"' not in body
     assert 'id="relay-start-capture"' not in body
     assert 'id="relay-tap-link"' in body
+    # Issue #3069: the pre-Start local-capture toggle is gone. Desktop capture
+    # on the relay path opens #relay-tap-link in a new tab exactly like the
+    # phone does, instead of flipping the session into a local-capture mode
+    # that dead-ends in startMicCapture's non-secure-context refusal.
+    assert 'id="local-capture-fallback"' not in body
+    assert "localCaptureFallbackBtn" not in js
     assert "postJson('relay/capture'" in js
     assert "function endpoint(path)" in js
     assert "return '/correction/' + path;" in js
@@ -161,6 +167,24 @@ def test_capture_relay_ui_contract_is_wired():
     assert "function relayPrimaryAction()" not in js
     assert "KNOWN_ACTION_ENDPOINTS" in js
     assert "env.sections" in js
+
+
+def test_non_secure_context_refusal_points_at_enabling_the_relay():
+    # Issue #3069 follow-up (zone-owner direction): JTS local pages are
+    # plain HTTP by design -- secure-context capture lives only at the
+    # relay's publicly trusted origin, never at a local HTTPS hop. This
+    # refusal only fires for relay-disabled installs (relay-configured ones
+    # never reach local capture at all -- see
+    # test_capture_relay_ui_contract_is_wired above), so its remedy names
+    # the actual enable surface, JASPER_CAPTURE_RELAY_BASE -- the same one
+    # _require_relay_base()'s own operator message names -- instead of
+    # steering the household toward a scheme switch.
+    js = _module_js()
+
+    assert "This install has the capture relay " in js
+    assert "disabled; set JASPER_CAPTURE_RELAY_BASE and deploy the relay + " in js
+    assert "capture page to turn on microphone capture from this page." in js
+    assert "reopen this page over HTTPS" not in js
 
 
 def test_capture_relay_next_position_ui_hides_expired_link():
@@ -3201,16 +3225,16 @@ def test_local_resume_reacquires_mic_before_advancing_capture_states():
 
 
 def test_local_permission_is_requested_only_after_start_setup_action():
+    # The pre-Start local-capture toggle (issue #3069) is gone, so this pins
+    # only the landing init branch now: relay-disabled installs populate
+    # input devices without ever calling detectMicrophones(), which is what
+    # would trigger a permission prompt before the user reaches Start.
     js = _module_js()
     landing = js.split("// Landing never asks for microphone permission.", 1)[1]
     landing = landing.split("updateMicCalibrationRows();", 1)[0]
-    fallback = js.split("localCaptureFallbackBtn.addEventListener", 1)[1]
-    fallback = fallback.split("if (changeRunDefaultsBtn)", 1)[0]
 
     assert "detectMicrophones();" not in landing
-    assert "detectMicrophones();" not in fallback
     assert "populateInputDevices();" in landing
-    assert "populateInputDevices();" in fallback
     assert "pollState();" in landing
 
 

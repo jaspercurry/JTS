@@ -1571,7 +1571,6 @@ __TABS__
       __CORRECTION_STRATEGY_OPTIONS__
     </select>
     <p class="hint" style="margin-top:0.3em">Balanced is the recommended household setting. Safe makes fewer, gentler adjustments.</p>
-    <button id="local-capture-fallback" type="button" class="btn btn--ghost">Use this device's microphone</button>
   </div>
 </section>
 

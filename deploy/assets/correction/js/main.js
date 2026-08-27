@@ -45,7 +45,6 @@ import { renderRelayQr } from "/assets/shared/js/qr.js";
   var relayLinkRow = document.getElementById('relay-link-row');
   var relayTapLink = document.getElementById('relay-tap-link');
   var relayQr = document.getElementById('relay-qr');
-  var localCaptureFallbackBtn = document.getElementById('local-capture-fallback');
   var inputDeviceSelect = document.getElementById('input-device-select');
   var refreshInputsBtn = document.getElementById('refresh-inputs');
   var micModelSelect = document.getElementById('mic-model-select');
@@ -383,12 +382,6 @@ import { renderRelayQr } from "/assets/shared/js/qr.js";
         ? 'Continue on the measurement page while the speaker coordinates each capture.'
         : 'This device will capture the microphone signal locally.';
     }
-    if (localCaptureFallbackBtn) {
-      localCaptureFallbackBtn.textContent = relayMode
-        ? "Use this device's microphone"
-        : 'Use the measurement page';
-    }
-    hideEl(localCaptureFallbackBtn, runTransportLocked || !relayConfigured);
     hideEl(autolevelLockBtn, true);
     hideEl(autolevelCancelBtn, true);
     hideEl(autolevelStatus, true);
@@ -407,9 +400,6 @@ import { renderRelayQr } from "/assets/shared/js/qr.js";
     if (changeRunDefaultsBtn) changeRunDefaultsBtn.disabled = runTransportLocked;
     if (runTransportLocked) {
       setMeasurementOptionsOpen(false);
-      hideEl(localCaptureFallbackBtn, true);
-    } else {
-      hideEl(localCaptureFallbackBtn, !relayConfigured);
     }
   }
 
@@ -1026,12 +1016,18 @@ import { renderRelayQr } from "/assets/shared/js/qr.js";
           'Tap “Refresh microphones”, reselect it, and try again.');
       } else if (!window.isSecureContext) {
         // Browsers withhold getUserMedia outside a secure context, so this is
-        // a scheme dead end, not a denied permission. Issue #3069 repoints
-        // this path at the session's capture link.
+        // a scheme dead end, not a denied permission. Issue #3069 removed the
+        // only in-page path that could reach this while relay is configured
+        // (the pre-Start local-capture toggle), so it now fires solely for
+        // relay-disabled installs opened over plain HTTP. JTS pages are
+        // plain HTTP by design (secure-context capture lives at the relay's
+        // publicly trusted origin, never at a local HTTPS hop), so the fix
+        // named here is enabling the capture relay, not switching schemes.
         console.warn('microphone capture unavailable outside a secure context', e);
         jtsAlert('This page is not a secure context, so the browser will not ' +
-          'give it the microphone. Measure with the capture link this page ' +
-          'mints, or reopen this page over HTTPS.');
+          'give it the microphone. This install has the capture relay ' +
+          'disabled; set JASPER_CAPTURE_RELAY_BASE and deploy the relay + ' +
+          'capture page to turn on microphone capture from this page.');
       } else {
         console.warn('microphone permission unavailable', e);
         jtsAlert('Microphone access was not available. Check permission and try again.');
@@ -3567,15 +3563,6 @@ import { renderRelayQr } from "/assets/shared/js/qr.js";
   calibrationFileInput.addEventListener('change', function () { invalidateLoadedCalibration(); });
   fetchCalibrationBtn.addEventListener('click', function () { fetchCalibration(); });
   uploadCalibrationBtn.addEventListener('click', function () { uploadCalibration(); });
-  if (localCaptureFallbackBtn) {
-    localCaptureFallbackBtn.addEventListener('click', function () {
-      if (runTransportLocked) return;
-      setRelayMode(!relayMode);
-      if (!relayMode) populateInputDevices();
-      envelopeRetryArmed = true;
-      refreshEnvelope();
-    });
-  }
   if (changeRunDefaultsBtn) {
     changeRunDefaultsBtn.addEventListener('click', function () {
       if (runTransportLocked) return;
@@ -3625,9 +3612,11 @@ import { renderRelayQr } from "/assets/shared/js/qr.js";
   // refresh control is likewise inside that post-Start setup section.
   // No scheme upgrade here. The self-signed HTTPS origin is never entered by
   // redirect (issue #2632): a native cert interstitial cannot be automated and
-  // is hostile household UX. Off the relay path on plain HTTP, local capture
-  // dead-ends in startMicCapture's catch; issue #3069 repoints it at the
-  // session's capture link.
+  // is hostile household UX. Relay, once configured, is this page's only
+  // pre-Start transport (issue #3069) — the old toggle back to local browser
+  // capture dead-ended in startMicCapture's catch on plain HTTP. Desktop
+  // capture on the relay path reuses #relay-tap-link exactly like the phone:
+  // open the minted capture link in a new tab instead of a separate fallback.
   if (relayConfigured) {
     setRelayMode(true);
   } else {
