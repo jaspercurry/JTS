@@ -56,7 +56,7 @@ from .commissioning_evidence import (
 from .commissioning_evidence_store import (
     CommissioningEvidenceStore,
     CommissioningEvidenceStoreError,
-    CommissioningEvidenceStoreErrorCode,
+    is_missing,
 )
 from .commissioning_lifecycle import CommissioningTransition
 from .commissioning_run import (
@@ -85,10 +85,6 @@ class IsolatedCapturePromotionError(ValueError):
 
 
 logger = logging.getLogger(__name__)
-
-
-def _missing(error: CommissioningEvidenceStoreError) -> bool:
-    return error.code == CommissioningEvidenceStoreErrorCode.MISSING
 
 
 def _reopen_region_evidence_plan_for_baseline(
@@ -130,7 +126,7 @@ def _reopen_region_evidence_plan_for_baseline(
     try:
         existing = evidence_store.reopen_region_evidence_plan(run=run)
     except CommissioningEvidenceStoreError as exc:
-        if not publish_if_missing or not _missing(exc):
+        if not publish_if_missing or not is_missing(exc):
             raise
         evidence_store.publish_region_evidence_plan(expected)
         existing = evidence_store.reopen_region_evidence_plan(run=run)
@@ -342,7 +338,7 @@ def _complete_if_ready(
                 )
             )
         except CommissioningEvidenceStoreError as exc:
-            if _missing(exc):
+            if is_missing(exc):
                 return None
             raise
     complete = CompleteIsolatedDriverEvidence(plan=plan, drivers=tuple(drivers))
@@ -412,7 +408,7 @@ def resume_isolated_evidence(
     try:
         plan = evidence_store.reopen_region_evidence_plan(run=run)
     except CommissioningEvidenceStoreError as exc:
-        if _missing(exc):
+        if is_missing(exc):
             return None
         raise
     try:
@@ -420,7 +416,7 @@ def resume_isolated_evidence(
             run_id=run.run_id
         )
     except CommissioningEvidenceStoreError as exc:
-        if not _missing(exc):
+        if not is_missing(exc):
             raise
     else:
         return None
@@ -435,7 +431,7 @@ def resume_isolated_evidence(
                 role=target.role,
             )
         except CommissioningEvidenceStoreError as exc:
-            if not _missing(exc):
+            if not is_missing(exc):
                 raise
             published = False
         if published:
@@ -507,7 +503,7 @@ def isolated_evidence_status(
     try:
         plan = evidence_store.reopen_region_evidence_plan(run=run)
     except CommissioningEvidenceStoreError as exc:
-        if _missing(exc):
+        if is_missing(exc):
             return {"status": "not_started", "reason": "evidence_plan_missing"}
         raise
     attempts = run_store.attempts(run)
@@ -535,7 +531,7 @@ def isolated_evidence_status(
                 role=target.role,
             )
         except CommissioningEvidenceStoreError as exc:
-            if not _missing(exc):
+            if not is_missing(exc):
                 raise
             driver_complete = False
         drivers.append(
@@ -554,7 +550,7 @@ def isolated_evidence_status(
             )
         )
     except CommissioningEvidenceStoreError as exc:
-        if not _missing(exc):
+        if not is_missing(exc):
             raise
         complete_fingerprint = None
     return {

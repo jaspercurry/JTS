@@ -205,6 +205,13 @@ class FakeRecords:
     test can bank a walk, ``save`` it, drop the session, and rebuild a
     :class:`~jasper.active_speaker.crossover_v2.prior_bank.PriorBank` over the
     result, which is how a candidate-check test states its "before".
+
+    :meth:`bank` takes ONE record of any kind, not one capture record (the
+    2026-08-26 FOLD ruling): the five ``V2FlowSeams`` publishers land through
+    this seam too, so a check, a candidate, a cloud result, a finding set and a
+    round receipt are all banked records here. The twin keeps them in one list
+    because ids are opaque and nothing reads them by kind — the real store's
+    kind table is what decides where each one lands.
     """
 
     banked: list[Mapping[str, Any]] = field(default_factory=list)
