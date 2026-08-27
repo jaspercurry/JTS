@@ -1288,7 +1288,7 @@ def test_refusal_payload_is_typed_and_stable(reason_code):
 # byte-identical.
 # (imports for these tests live in the top-of-file import block.)
 
-_SHM_RING_KWARGS = capture_kwargs_for_coupling("shm_ring")
+_SHM_RING_KWARGS = capture_kwargs_for_coupling()
 
 
 def test_base_flat_no_coupling_kwargs_is_byte_identical(tmp_path):

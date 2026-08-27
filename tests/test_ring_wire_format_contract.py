@@ -184,7 +184,7 @@ def test_both_languages_fail_loud_on_a_token_neither_recognizes(raw: str) -> Non
 
 
 def test_the_resolver_answers_the_declared_wire_not_a_policy_constant(
-    monkeypatch,
+    monkeypatch, tmp_path
 ) -> None:
     """The R6/R7 activation path, end to end through the resolver.
 
@@ -199,28 +199,32 @@ def test_the_resolver_answers_the_declared_wire_not_a_policy_constant(
     """
     import jasper.fanin_coupling as fc
 
-    assert fc.read_declared_ring_wire_format(env={}) == RING_WIRE_FORMAT_WIDE, (
+    fanin_env = tmp_path / "fanin.env"
+    monkeypatch.setattr(
+        "jasper.fanin.coupling_reconcile.FANIN_ENV_PATH", str(fanin_env)
+    )
+    monkeypatch.setattr(
+        "jasper.fanin.coupling_reconcile.JASPER_ENV_PATH", str(tmp_path / "jasper.env")
+    )
+
+    assert fc.read_declared_ring_wire_format() == RING_WIRE_FORMAT_WIDE, (
         "an undeclared box must resolve WIDE — the resolver's default is the "
         "whole mechanism by which the fleet converges without declaring"
     )
-    assert (
-        fc.read_declared_ring_wire_format(env={RING_WIRE_FORMAT_ENV_VAR: "S16_LE"})
-        == RING_WIRE_FORMAT
-    ), "an operator's narrow pin must survive the resolver's wide default"
-    assert (
-        fc.read_declared_ring_wire_format(
-            env={RING_WIRE_FORMAT_ENV_VAR: RING_WIRE_FORMAT_WIDE}
-        )
-        == RING_WIRE_FORMAT_WIDE
+    fanin_env.write_text(f"{RING_WIRE_FORMAT_ENV_VAR}=S16_LE\n", encoding="utf-8")
+    assert fc.read_declared_ring_wire_format() == RING_WIRE_FORMAT, (
+        "an operator's narrow pin must survive the resolver's wide default"
     )
+    fanin_env.write_text(
+        f"{RING_WIRE_FORMAT_ENV_VAR}={RING_WIRE_FORMAT_WIDE}\n", encoding="utf-8"
+    )
+    assert fc.read_declared_ring_wire_format() == RING_WIRE_FORMAT_WIDE
 
     monkeypatch.setattr(
-        fc, "read_declared_ring_wire_format", lambda env=None: RING_WIRE_FORMAT_WIDE
+        fc, "read_declared_ring_wire_format", lambda: RING_WIRE_FORMAT_WIDE
     )
     assert fc.resolve_ring_wire().sample_format == RING_WIRE_FORMAT_WIDE
-    monkeypatch.setattr(
-        fc, "read_declared_ring_wire_format", lambda env=None: RING_WIRE_FORMAT
-    )
+    monkeypatch.setattr(fc, "read_declared_ring_wire_format", lambda: RING_WIRE_FORMAT)
     assert fc.resolve_ring_wire().sample_format == RING_WIRE_FORMAT
 
 
