@@ -53,7 +53,6 @@ from jasper.audio_runtime_plan import RuntimeEnvAction
 from jasper.output_topology_runtime import GROUPING_RECONCILE_UNIT
 from jasper.env_file import read_value, remove, upsert
 from jasper.fanin.coupling_auto import (
-    RingGate,
     combo_is_armed,
     read_usb_gadget_available,
     usb_combo_actions,
@@ -152,6 +151,8 @@ ENTRY_LOCK_POLL_SECONDS = 0.2
 
 # A daemon op (fan-in restart or camilla reconcile) returns (ok, detail).
 DaemonOp = Callable[[], tuple[bool, str]]
+# A ring preflight gate returns the same (ok, detail).
+RingGate = Callable[[], tuple[bool, str]]
 
 
 @dataclass(frozen=True)

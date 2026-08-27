@@ -552,7 +552,7 @@ def test_cli_auto_and_explicit_are_mutually_exclusive(monkeypatch):
 
     monkeypatch.setattr("jasper.env_load.load_env_files", lambda *a, **k: None)
     with pytest.raises(SystemExit):
-        cr.main(["loopback", "--auto"])
+        cr.main([COUPLING_SHM_RING, "--auto"])
 
 
 def test_cli_requires_a_choice_or_auto(monkeypatch):

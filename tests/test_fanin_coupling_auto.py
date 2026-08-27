@@ -128,14 +128,6 @@ def test_usbsink_canonical_off_dominates_stale_enabled_mirror(monkeypatch):
     assert ca.usbsink_effectively_enabled() is False
 
 
-def _pass_gate(detail="ok"):
-    return lambda: (True, detail)
-
-
-def _fail_gate(detail="ineligible"):
-    return lambda: (False, detail)
-
-
 def test_combo_is_armed_requires_both_signals():
     assert ca.combo_is_armed(gadget_present=True, usb_intent_enabled=True) is True
     assert ca.combo_is_armed(gadget_present=True, usb_intent_enabled=False) is False
@@ -357,40 +349,23 @@ def test_live_gadget_probe_reads_shared_resolved_capability(monkeypatch):
 
 
 # --------------------------------------------------------------------------
-# reconcile_auto orchestration — env writes, marker no-op, combo, idempotence
+# reconcile_auto orchestration — env writes, combo, idempotence
 # --------------------------------------------------------------------------
 
 
-def _stub_ring_gates(monkeypatch, *, eligible: bool):
-    """Keep the reconciler's own file reads out of these USB-combo unit tests.
+def _stub_ring_geometry_heals(monkeypatch):
+    """Keep the ring convergence's own file reads out of these combo tests.
 
-    Stubs at the reconciler boundary so no /dev/shm, conf.d or topology file is
-    touched. ``eligible`` is what the surviving graph-move proof gates answer;
-    the ring convergence itself has no eligibility decision left to make.
+    The two geometry heals run on every pass and read the conf.d and /dev/shm;
+    stub both so these tests exercise the combo half only. Their own behavior is
+    covered separately (the F6 tests below run the REAL slot heal).
     """
-    assets = ("ring_assets", lambda: (eligible, "assets"))
-    topo = ("ring_topology", lambda: (eligible, "topology"))
-    monkeypatch.setattr(cr, "default_ring_gates", lambda: (assets, topo))
-    # The slot self-heal runs on every pass; keep it a no-op here (it re-reads
-    # the conf.d otherwise). Its own behavior is covered separately.
     monkeypatch.setattr(
         cr, "_migrate_stale_fanin_ring_slots", lambda snap, reason: (snap, False)
     )
-    import jasper.ring_assets as ra
-
-    monkeypatch.setattr(
-        ra, "ring_asset_presence", lambda **kw: ra.RingAssetPresence(True, True, True)
-    )
-    # The wire gate reads both conf.d PCM blocks; claiming assets present
-    # while the path points nowhere would exercise a torn-conf.d refusal
-    # instead of the eligibility path under test.
-    monkeypatch.setattr(ra, "RING_CONF_D", str(SHIPPED_RING_CONF_D))
-    monkeypatch.setattr(cr, "ring_assets_ready", lambda: (eligible, "assets"))
-    monkeypatch.setattr(cr, "ring_topology_ready_strict", lambda: (eligible, "topology"))
     monkeypatch.setattr(
         cr, "_delete_stale_ring_files", lambda reason, fanin_text="": False
     )
-    _stub_ioplug_caps(monkeypatch)
 
 
 def _persist_ring_eligible_topology(tmp_path: Path, monkeypatch) -> Path:
@@ -420,35 +395,6 @@ def _armed_outputd_env() -> str:
     return (
         "JASPER_OUTPUTD_CONTENT_FORMAT="
         f"{content_lane_format_for_coupling(COUPLING_SHM_RING)}\n"
-    )
-
-
-def _stub_ioplug_caps(monkeypatch):
-    """Make the ioplug CAPABILITY gate admit whatever wire the box resolves.
-
-    Since the ring wire's default went wide, an undeclared box needs the
-    ``wire_format`` ioplug capability (``ring_wire_capabilities``) and a dev host
-    carries no provenance record — so the real ``ring_wire_caps_ready`` refuses
-    every arm, for a reason unrelated to the eligibility/combo/slot logic these
-    tests are about.
-
-    ITS OWN FUNCTION because it is needed by callers that do NOT use
-    :func:`_stub_ring_gates` — the F6 slot tests build their own gate set so they
-    can exercise the REAL slot self-heal, and inheriting this stub by copy is how
-    they came to be missing it. Stubs the RECORD compare, never
-    ``ring_wire_caps_ready`` itself, so the gate still resolves the box's wire.
-    Mirrors ``force_ring_gates_pass`` in test_fanin_coupling_reconcile.py.
-    """
-    import jasper.ring_assets as ra
-
-    monkeypatch.setattr(
-        ra,
-        "ring_ioplug_wire_supported",
-        lambda wire, **kw: ra.RingIoplugWireSupport(
-            ok=True,
-            needed=ra.ring_wire_capabilities(wire),
-            detail="stubbed: the installed ioplug vouches for this wire",
-        ),
     )
 
 
@@ -516,17 +462,17 @@ def _auto(
         kick_hardware_reconcile=kh,
     )
 
-def test_auto_eligible_gadget_box_with_intent_arms_ring_and_combo(
+def test_auto_gadget_box_with_intent_arms_ring_and_combo(
     tmp_path, monkeypatch
 ):
-    """jts.local shape: solo, ring-eligible, gadget present, USB audio ON resolves
+    """jts.local shape: gadget present and USB audio ON — the pass writes
     shm_ring and enables the fan-in direct-capture combo."""
     fanin = tmp_path / "fanin.env"
     outputd = tmp_path / "outputd.env"
     fanin.write_text("")
     outputd.write_text("")
     _persist_ring_eligible_topology(tmp_path, monkeypatch)
-    _stub_ring_gates(monkeypatch, eligible=True)
+    _stub_ring_geometry_heals(monkeypatch)
     restarts: list[str] = []
     r = _auto(fanin, outputd, gadget=True, restarts=restarts)
     assert r.combo_armed is True
@@ -547,7 +493,7 @@ def test_auto_gadget_present_but_usb_audio_off_does_not_arm_combo(tmp_path, monk
     outputd = tmp_path / "outputd.env"
     fanin.write_text("")
     outputd.write_text("")
-    _stub_ring_gates(monkeypatch, eligible=True)
+    _stub_ring_geometry_heals(monkeypatch)
     restarts: list[str] = []
     r = _auto(
         fanin, outputd, gadget=True, usb_intent=False, restarts=restarts
@@ -555,7 +501,6 @@ def test_auto_gadget_present_but_usb_audio_off_does_not_arm_combo(tmp_path, monk
     assert r.combo_armed is False
     text = fanin.read_text()
     assert read_value(text, ca.USB_DIRECT_ENV_VAR) == "disabled"
-    # The ring can still resolve (eligible), but the combo is off.
 
 
 def test_auto_malformed_usb_intent_disarms_stale_combo_then_fails(
@@ -579,7 +524,7 @@ def test_auto_malformed_usb_intent_disarms_stale_combo_then_fails(
         "JASPER_UNRELATED_SOURCE_SENTINEL=enabled\n"
     )
     outputd.write_text(_armed_shm_ring_outputd())
-    _stub_ring_gates(monkeypatch, eligible=True)
+    _stub_ring_geometry_heals(monkeypatch)
 
     def invalid_usb_intent():
         raise RuntimeError("bad USB intent value")
@@ -632,10 +577,9 @@ def test_auto_gadget_lost_clears_stale_combo_keys(tmp_path, monkeypatch):
         "JASPER_FANIN_USB_DIRECT=enabled\n"
         "JASPER_FANIN_HOST_CLOCK=enabled\n"
         "JASPER_FANIN_RESAMPLER_CUSHION_DECAY=enabled\n"
-        "JASPER_FANIN_CAMILLA_COUPLING=loopback\n"
     )
     outputd.write_text("")
-    _stub_ring_gates(monkeypatch, eligible=False)
+    _stub_ring_geometry_heals(monkeypatch)
     restarts: list[str] = []
     r = _auto(fanin, outputd, gadget=False, restarts=restarts)
     assert r.usb_combo_changed is True
@@ -655,7 +599,7 @@ def test_auto_is_idempotent_second_pass_writes_nothing(tmp_path, monkeypatch):
     fanin.write_text("")
     outputd.write_text("")
     _persist_ring_eligible_topology(tmp_path, monkeypatch)
-    _stub_ring_gates(monkeypatch, eligible=True)
+    _stub_ring_geometry_heals(monkeypatch)
 
     r1 = _auto(fanin, outputd, gadget=True, restarts=[])
     assert r1.usb_combo_changed is True
@@ -682,7 +626,7 @@ def test_auto_combo_only_change_forces_fanin_restart(tmp_path, monkeypatch):
     outputd = tmp_path / "outputd.env"
     fanin.write_text(f"{COUPLING_ENV_VAR}={COUPLING_SHM_RING}\n")
     outputd.write_text(_armed_shm_ring_outputd())
-    _stub_ring_gates(monkeypatch, eligible=True)
+    _stub_ring_geometry_heals(monkeypatch)
     restarts: list[str] = []
     r = _auto(fanin, outputd, gadget=True, restarts=restarts)
     assert r.usb_combo_changed is True
@@ -715,7 +659,7 @@ def test_auto_combo_change_on_ring_pauses_camilla_around_fanin_restart(
     # change is the combo fan-in keys -> confirm path -> combo-forced fan-in restart.
     fanin.write_text("JASPER_FANIN_CAMILLA_COUPLING=shm_ring\n")
     outputd.write_text(_armed_shm_ring_outputd())
-    _stub_ring_gates(monkeypatch, eligible=True)
+    _stub_ring_geometry_heals(monkeypatch)
     restarts: list[str] = []
     r = _auto(fanin, outputd, gadget=True, restarts=restarts)
     assert r.usb_combo_changed is True
@@ -737,7 +681,7 @@ def test_auto_ring_combo_camilla_stop_failure_aborts_fanin_restart(tmp_path, mon
     outputd = tmp_path / "outputd.env"
     fanin.write_text("JASPER_FANIN_CAMILLA_COUPLING=shm_ring\n")
     outputd.write_text(_armed_shm_ring_outputd())
-    _stub_ring_gates(monkeypatch, eligible=True)
+    _stub_ring_geometry_heals(monkeypatch)
     restarts: list[str] = []
     r = _auto(
         fanin, outputd, gadget=True, restarts=restarts,
@@ -758,7 +702,7 @@ def test_auto_ring_combo_fanin_restart_failure_still_resumes_camilla(tmp_path, m
     outputd = tmp_path / "outputd.env"
     fanin.write_text("JASPER_FANIN_CAMILLA_COUPLING=shm_ring\n")
     outputd.write_text(_armed_shm_ring_outputd())
-    _stub_ring_gates(monkeypatch, eligible=True)
+    _stub_ring_geometry_heals(monkeypatch)
     restarts: list[str] = []
     r = _auto(
         fanin, outputd, gadget=True, restarts=restarts,
@@ -768,11 +712,6 @@ def test_auto_ring_combo_fanin_restart_failure_still_resumes_camilla(tmp_path, m
     assert r.restarted_fanin_for_combo is False
     assert restarts.index("camilla_stop") < restarts.index("fanin")
     assert restarts.index("fanin") < restarts.index("camilla_start")
-
-
-# --------------------------------------------------------------------------
-# F3 — a grouped box resolves loopback (not a route-blocked ok=False)
-# --------------------------------------------------------------------------
 
 
 # --------------------------------------------------------------------------
@@ -803,7 +742,7 @@ def test_ring_topology_strict_fails_closed_on_unreadable(monkeypatch):
 
 
 # --------------------------------------------------------------------------
-# F6 — a stale JASPER_FANIN_RING_SLOTS self-heals BEFORE the auto gates run
+# F6 — a stale JASPER_FANIN_RING_SLOTS self-heals on every auto pass
 # --------------------------------------------------------------------------
 
 
@@ -821,28 +760,18 @@ def test_auto_stale_ring_slots_self_heals_and_keeps_ring(tmp_path, monkeypatch):
     outputd.write_text(_armed_outputd_env())
     _persist_ring_eligible_topology(tmp_path, monkeypatch)
 
-    # conf.d says n_slots=2 so the stale `=8` is shear-prone and self-heals. Uses
-    # the REAL migration so the wiring is exercised end to end.
-    assets = ("ring_assets", lambda: (True, "assets"))
-    topo = ("ring_topology", lambda: (True, "topology"))
-    monkeypatch.setattr(cr, "default_ring_gates", lambda: (assets, topo))
-    monkeypatch.setattr(cr, "ring_assets_ready", lambda: (True, "assets"))
-    monkeypatch.setattr(cr, "ring_topology_ready_strict", lambda: (True, "topology"))
+    # Uses the REAL slot heal so the wiring is exercised end to end; what is
+    # stubbed is the /dev/shm sweep beside it and the conf.d the heal reads.
     monkeypatch.setattr(
         cr, "_delete_stale_ring_files", lambda reason, fanin_text="": False
     )
     import jasper.ring_assets as ra
 
-    monkeypatch.setattr(
-        ra, "ring_asset_presence", lambda **kw: ra.RingAssetPresence(True, True, True)
-    )
-    # The wire gate reads both conf.d PCM blocks; claiming assets present
-    # while the path points nowhere would exercise a torn-conf.d refusal
-    # instead of the eligibility path under test.
+    # The heal reads the conf.d's declared wire before it writes the slot count;
+    # point it at the SHIPPED file rather than the dev host's /etc.
     monkeypatch.setattr(ra, "RING_CONF_D", str(SHIPPED_RING_CONF_D))
     # conf.d Ring-A n_slots = 2 (the pinned default); the on-disk `=8` disagrees.
     monkeypatch.setattr(ra, "ring_conf_n_slots", lambda pcm, conf_d=None: 2)
-    _stub_ioplug_caps(monkeypatch)
 
     restarts: list[str] = []
     _auto(fanin, outputd, gadget=False, restarts=restarts)
@@ -854,11 +783,8 @@ def test_auto_stale_base_ring_slots_self_heals_and_keeps_ring(tmp_path, monkeypa
     """F6 through the real systemd env chain.
 
     A stale ``JASPER_FANIN_RING_SLOTS=8`` in /etc/jasper/jasper.env is still the
-    effective fan-in value when fanin.env has no later override. The auto pass must
-    write the coherent fanin.env override before its slot gate runs.
-
-    Asserts the PERSISTED coupling as well as the decision, and stubs the ioplug
-    capability gate, for the reasons its sibling above spells out.
+    effective fan-in value when fanin.env has no later override. The auto pass
+    must write the coherent fanin.env override.
     """
     fanin = tmp_path / "fanin.env"
     outputd = tmp_path / "outputd.env"
@@ -869,25 +795,13 @@ def test_auto_stale_base_ring_slots_self_heals_and_keeps_ring(tmp_path, monkeypa
     monkeypatch.setattr(cr, "JASPER_ENV_PATH", str(jasper_env))
     _persist_ring_eligible_topology(tmp_path, monkeypatch)
 
-    assets = ("ring_assets", lambda: (True, "assets"))
-    topo = ("ring_topology", lambda: (True, "topology"))
-    monkeypatch.setattr(cr, "default_ring_gates", lambda: (assets, topo))
-    monkeypatch.setattr(cr, "ring_assets_ready", lambda: (True, "assets"))
-    monkeypatch.setattr(cr, "ring_topology_ready_strict", lambda: (True, "topology"))
     monkeypatch.setattr(
         cr, "_delete_stale_ring_files", lambda reason, fanin_text="": False
     )
     import jasper.ring_assets as ra
 
-    monkeypatch.setattr(
-        ra, "ring_asset_presence", lambda **kw: ra.RingAssetPresence(True, True, True)
-    )
-    # The wire gate reads both conf.d PCM blocks; claiming assets present
-    # while the path points nowhere would exercise a torn-conf.d refusal
-    # instead of the eligibility path under test.
     monkeypatch.setattr(ra, "RING_CONF_D", str(SHIPPED_RING_CONF_D))
     monkeypatch.setattr(ra, "ring_conf_n_slots", lambda pcm, conf_d=None: 2)
-    _stub_ioplug_caps(monkeypatch)
 
     restarts: list[str] = []
     _auto(fanin, outputd, gadget=False, restarts=restarts)
@@ -925,10 +839,9 @@ _FANIN_CONFIG_RS = _REPO_ROOT / "rust" / "jasper-fanin" / "src" / "config.rs"
 def test_fresh_install_auto_arms_exactly_the_documented_combo_block(
     tmp_path, monkeypatch
 ):
-    """§2 combo table: on an ELIGIBLE gadget box (gadget present + usbsink intent
-    enabled + ring-eligible topology) the auto-pass writes EXACTLY this block into
-    fanin.env — the three combo flags ``enabled`` AND coupling ``shm_ring`` — and
-    stamps NO operator marker. If the auto-pass ever stopped arming one of these,
+    """§2 combo table: on a gadget box with usbsink intent enabled the auto-pass
+    writes EXACTLY this block into fanin.env — the three combo flags ``enabled``
+    AND coupling ``shm_ring``. If the auto-pass ever stopped arming one of these,
     a fresh install would silently ship a slower config than the doc claims.
     """
     fanin = tmp_path / "fanin.env"
@@ -936,7 +849,7 @@ def test_fresh_install_auto_arms_exactly_the_documented_combo_block(
     fanin.write_text("")
     outputd.write_text("")
     _persist_ring_eligible_topology(tmp_path, monkeypatch)
-    _stub_ring_gates(monkeypatch, eligible=True)
+    _stub_ring_geometry_heals(monkeypatch)
 
     r = _auto(fanin, outputd, gadget=True, restarts=[])
 

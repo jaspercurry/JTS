@@ -310,14 +310,11 @@ def _coupling_state(
     Surfaces the persisted intent (``JASPER_FANIN_CAMILLA_COUPLING``, fail-safe to
     loopback), the outputd content bridge it pairs with, whether those two
     INTENT tokens are a coherent pair (both ring, or neither — a partial flip is
-    fail-closed), the live
-    fan-in STATUS transport for a fleet-wide "which transport is this box on" view,
-    and the ``choice`` — whether the current coupling is an explicit ``operator``
-    pick or an ``auto``-resolved default (P4 default-flip; read from the
-    ``JASPER_FANIN_COUPLING_CHOICE`` marker). Read fresh from the env files (never
+    fail-closed), and the live fan-in STATUS transport for a fleet-wide "which
+    transport is this box on" view. Read fresh from the env files (never
     os.environ — jasper-control isn't restarted on a coupling change). Fail-soft:
-    any read error degrades to the loopback default rather than erroring the whole
-    /state call.
+    any read error degrades to ``None`` (see the except below) rather than
+    erroring the whole /state call.
 
     ``intent_coherent`` is named for what it compares: two env strings. It was
     published as ``coherent`` until R5b, which reads as a verdict on the ring
