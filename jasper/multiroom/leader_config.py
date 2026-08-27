@@ -229,9 +229,13 @@ async def restore_solo_config(*, camilla_factory=_camilla) -> str | None:
     Raises on a failed apply (stash kept — the next reconcile retries).
     """
     from jasper.dsp_apply import apply_dsp_config
+    from jasper.output_topology import load_output_topology_strict
     from jasper.sound.camilla_yaml import (
+        FLAT_GRAPH_WIDTH,
+        FlatChannelPlan,
         emit_sound_config,
         extract_room_peqs_from_config,
+        flat_graph_channel_plan,
         is_jts_generated_config,
     )
     from jasper.sound.profile import load_profile
@@ -277,14 +281,55 @@ async def restore_solo_config(*, camilla_factory=_camilla) -> str | None:
             # is explicit rather than the emitter's own default: this box's
             # playback sink is Ring B (ADR-0100), an ioplug CamillaDSP cannot
             # actuate rate_adjust on (see member_config's module docstring).
-            emit_sound_config(
-                profile,
-                room_peqs=peqs,
-                out_path=SOLO_RESTORE_PATH,
-                profile_id="grouping-solo-restore",
-                output_trim_db=output_trim_db(profile, settings),
-                enable_rate_adjust=False,
-            )
+            #
+            # The channel plan IS one of those solo defaults (#2179): lenient
+            # is not blind. Un-bonding hands the box its own DAC back, so the
+            # outputs the topology declines must be muted and a mono cabinet's
+            # one output must carry the folded program, exactly as every other
+            # flat writer emits them.
+            def emit(plan: FlatChannelPlan) -> None:
+                emit_sound_config(
+                    profile,
+                    room_peqs=peqs,
+                    out_path=SOLO_RESTORE_PATH,
+                    profile_id="grouping-solo-restore",
+                    output_trim_db=output_trim_db(profile, settings),
+                    enable_rate_adjust=False,
+                    muted_outputs=plan.muted_outputs,
+                    mono_fold_output=plan.mono_fold_output,
+                )
+
+            # Best effort: the never-refuse constraint above, spelled as code.
+            # The plan adds two ways to raise and NEITHER may strand the
+            # speaker on the bonded pipe config, so the fallback is the empty
+            # plan — byte-identical to passing neither argument (the emitter's
+            # solo-impact contract), i.e. this path's pre-plan call verbatim.
+            #
+            # `ValueError` is exactly the width of those two:
+            # `load_output_topology_strict` normalises every unreadable or
+            # malformed topology into `OutputTopologyError` (a ValueError), and
+            # `emit_sound_config` refuses an inconsistent plan at its API
+            # boundary with a plain one. A write failure is deliberately NOT
+            # caught — the fallback writes the same file, so an un-bond cannot
+            # survive one either way.
+            #
+            # The topology is loaded HERE rather than left to the plan's own
+            # soft failure so a CORRUPT one is disclosed instead of silently
+            # degrading. A MISSING one is not a failure — nothing is declared,
+            # so nothing is undeclared — and yields the empty plan quietly.
+            try:
+                emit(flat_graph_channel_plan(
+                    load_output_topology_strict(), width=FLAT_GRAPH_WIDTH
+                ))
+            except ValueError as exc:
+                log_event(
+                    logger,
+                    "multiroom.camilla_apply",
+                    result="solo_restore_unplanned",
+                    path=SOLO_RESTORE_PATH,
+                    error=type(exc).__name__,
+                )
+                emit(FlatChannelPlan())
             return {"room_peq_count": len(peqs)}
 
     await apply_dsp_config(
