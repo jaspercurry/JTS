@@ -498,6 +498,28 @@ install_usb_network_files() {
     fi
 }
 
+usbsink_direct_lane_armed() {
+    # True when fan-in's DIRECT usbsink capture lane is live. Same probe the
+    # gadget truth table and the source coordinator use. A shell function (not
+    # an env seam) so the hermetic install harness can override it.
+    /opt/jasper/.venv/bin/python -m jasper.fanin.status --usbsink-direct-armed \
+        >/dev/null 2>&1
+}
+
+refresh_usb_stream_consumers() {
+    # A gadget rebuild destroys and recreates the UAC2Gadget ALSA card. The two
+    # stream consumers hold handles across that: jasper-fanin is deliberately
+    # NOT PartOf the gadget (it is the core mixer and must survive a gadget
+    # cycle), and jasper-usbmic's ExecCondition can leave it inactive after
+    # PartOf= propagation. Refresh both in data-path order, once, right after
+    # the rebuild. See #3194.
+    echo "  event=install.usb_stream_consumers_refreshed order=fanin,usbmic"
+    systemctl try-restart jasper-fanin.service >/dev/null 2>&1 || \
+        echo "  WARN: could not refresh jasper-fanin after the USB gadget rebuild"
+    systemctl try-restart jasper-usbmic.service >/dev/null 2>&1 || \
+        echo "  WARN: could not refresh jasper-usbmic after the USB gadget rebuild"
+}
+
 enable_usbgadget() {
     # The composite gadget is the FIRST gadget unit we enable — it carries the
     # default-on USB management network where the resolved transport permits.
@@ -520,8 +542,12 @@ enable_usbgadget() {
     # arrive with jasper-usbsink enabled/active and a bound UAC2 descriptor.
     # Disable+stop the derived unit before touching the gadget. Recompose an
     # already-active gadget only when prior derived audio or the UAC2 card proves
-    # stale audio may be present; a converged NCM-only gadget must not flap on
-    # every deploy (the deploy itself may be using that management link).
+    # stale audio may be present AND that endpoint has no live consumer; a
+    # converged NCM-only gadget must not flap on every deploy (the deploy itself
+    # may be using that management link), and neither must a converged UAC2
+    # endpoint whose fan-in DIRECT lane is still armed — recomposing that one
+    # only forces the coordinator to rebuild it seconds later, which is the
+    # deploy-time double bind that wedged the dwc2 ISO path in #3194.
     # The path watcher is always cheap/inert; the sampler starts only while the
     # persistent operator marker exists. try-restart picks up helper updates on
     # deploy without turning a disabled sampler on.
@@ -540,6 +566,7 @@ enable_usbgadget() {
     local audio_enabled_now=0
     local audio_active_now=0
     local gadget_was_active=0
+    local direct_lane_was_armed=0
     local park_rc=0
     systemctl is-enabled --quiet jasper-usbsink.service 2>/dev/null && \
         audio_was_enabled=1
@@ -549,6 +576,10 @@ enable_usbgadget() {
         uac2_was_present=1
     systemctl is-active --quiet jasper-usbgadget.service 2>/dev/null && \
         gadget_was_active=1
+    # Probe the data plane before parking the readiness marker. Parking does not
+    # disarm fan-in's DIRECT lane (that is the coupling owner's job), but read it
+    # while the pre-deploy graph is still whole.
+    usbsink_direct_lane_armed && direct_lane_was_armed=1
     systemctl disable --now jasper-usbsink.service >/dev/null 2>&1 || park_rc=$?
 
     # A systemctl command can return non-zero after partially succeeding, so
@@ -589,10 +620,19 @@ enable_usbgadget() {
           ( "${gadget_was_active}" == "1" && ( \
             "${audio_was_enabled}" == "1" || \
             "${audio_was_active}" == "1" ) ) ]]; then
-        systemctl restart jasper-usbgadget.service >/dev/null 2>&1 || {
-            echo "  ERROR: jasper-usbgadget did not recompose to the network-only install baseline; refusing to continue with possibly stale UAC2 advertised. Check 'journalctl -u jasper-usbgadget'" >&2
-            return 1
-        }
+        if [[ "${direct_lane_was_armed}" == "1" ]]; then
+            # The advertised endpoint has its live consumer, so it is converged,
+            # not the stale shape this baseline defends against. Leave the bound
+            # descriptor alone and let the coordinator own the composition: it
+            # re-checks the same consumer and recomposes only if it disagrees.
+            echo "  event=install.usb_gadget_baseline_recompose_skipped reason=direct_lane_armed"
+        else
+            systemctl restart jasper-usbgadget.service >/dev/null 2>&1 || {
+                echo "  ERROR: jasper-usbgadget did not recompose to the network-only install baseline; refusing to continue with possibly stale UAC2 advertised. Check 'journalctl -u jasper-usbgadget'" >&2
+                return 1
+            }
+            refresh_usb_stream_consumers
+        fi
     fi
 }
 

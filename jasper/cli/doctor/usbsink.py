@@ -25,6 +25,7 @@ import json
 import math
 import os
 from pathlib import Path
+import re
 import time
 
 from jasper.audio_hardware.usb_port_role import gadget_unavailable_detail
@@ -58,6 +59,13 @@ USBGADGET_UNIT = "jasper-usbgadget.service"
 USBSINK_GADGET_PATH = Path("/sys/kernel/config/usb_gadget/jts-usb-audio")
 UAC2_EXPECTED_LOW_LATENCY_ATTRS = UAC2_LOW_LATENCY_EXPECTED_ATTRS
 USB_NAME_PATCH_SCHEMA = "3"
+UAC2_CARD_NAME = "UAC2Gadget"
+UAC2_CARD_PATH = "/proc/asound/UAC2Gadget"
+# u_audio registers the volatile host-stream rate indicator on the PCM
+# interface, not MIXER, and its numid shifts with the composed direction set —
+# resolve it by name rather than pinning a numid.
+_UAC2_RATE_NUMID_RE = re.compile(r"numid=(\d+),iface=PCM,name='Capture Rate'")
+_UAC2_CTL_VALUE_RE = re.compile(r"^\s*: values=(\d+)", re.MULTILINE)
 
 
 def _systemd_is_active(unit: str) -> bool:
@@ -80,6 +88,25 @@ def _module_loaded(name: str) -> bool:
         line.split() and line.split()[0] == name
         for line in proc.stdout.splitlines()
     )
+
+
+def _uac2_capture_rate() -> int | None:
+    """Read u_audio's volatile ``Capture Rate`` control, or None if unreadable.
+
+    Subprocesses ``amixer`` for the same reasons the usbsink volume bridge does
+    (jasper/usbsink/volume_bridge.py): no python-alsa dependency, and stable
+    parseable output."""
+    controls = _run(["amixer", "-c", UAC2_CARD_NAME, "controls"])
+    if controls.returncode != 0:
+        return None
+    numid = _UAC2_RATE_NUMID_RE.search(controls.stdout)
+    if numid is None:
+        return None
+    value = _run(["amixer", "-c", UAC2_CARD_NAME, "cget", f"numid={numid.group(1)}"])
+    if value.returncode != 0:
+        return None
+    match = _UAC2_CTL_VALUE_RE.search(value.stdout)
+    return int(match.group(1)) if match else None
 
 
 def _uac2_function_path() -> Path:
@@ -293,7 +320,7 @@ def check_usbsink_card() -> CheckResult:
             "usbsink card", "ok",
             "service disabled — card check skipped",
         )
-    if Path("/proc/asound/UAC2Gadget").is_dir():
+    if Path(UAC2_CARD_PATH).is_dir():
         return CheckResult(
             "usbsink card", "ok",
             "UAC2Gadget card present (host will see the speaker as USB audio)",
@@ -303,6 +330,50 @@ def check_usbsink_card() -> CheckResult:
         "service active but /proc/asound/UAC2Gadget missing — "
         f"{USBGADGET_UNIT} didn't compose/bind uac2.usb0. Check "
         f"`systemctl status {USBGADGET_UNIT}` for the failure mode.",
+    )
+
+
+@doctor_check(order=59.3, group="usbsink")
+def check_usbsink_host_stream() -> CheckResult:
+    """Disclose whether the HOST has actually started the USB audio stream.
+
+    Everything else in this group proves the gadget side: descriptor composed,
+    card present, marker active, lane armed. None of it can see the one state
+    #3194 produced — the host enumerates and its control plane works (volume
+    keys move ``PCM Capture Volume``) while the ISO data path never starts, so
+    playback is silent with no failing check anywhere.
+
+    u_audio publishes exactly that fact as a volatile, read-only ``Capture
+    Rate`` kcontrol on the gadget card: it holds the negotiated rate while the
+    host streams and reads 0 otherwise. This check reports it and nothing more.
+    An idle host also reads 0, so the Pi cannot tell "host idle" from "host
+    playing into a wedged data path" — the honest disclosure is the number plus
+    the recovery, never a verdict, which is why this check never fails."""
+    label = "usbsink host stream"
+    if not _uac2_function_path().exists():
+        return CheckResult(label, "ok", "uac2.usb0 not composed — no host stream")
+    if not Path(UAC2_CARD_PATH).is_dir():
+        return CheckResult(
+            label, "ok",
+            f"{UAC2_CARD_PATH} missing — see check_usbsink_card",
+        )
+    rate = _uac2_capture_rate()
+    if rate is None:
+        return CheckResult(
+            label, "ok",
+            "kernel does not expose the u_audio 'Capture Rate' control on "
+            f"{UAC2_CARD_NAME} — host stream state is not observable here",
+        )
+    if rate > 0:
+        return CheckResult(
+            label, "ok", f"host stream running (capture_rate={rate})",
+        )
+    return CheckResult(
+        label, "ok",
+        "host is not streaming (capture_rate=0). Normal while the host is "
+        "idle. If the host IS playing, the ISO data path never started: "
+        f"`systemctl restart {USBGADGET_UNIT}`, then restart jasper-fanin and "
+        f"{USBMIC_UNIT} to drop their stale card handles (#3194).",
     )
 
 

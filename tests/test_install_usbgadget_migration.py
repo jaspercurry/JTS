@@ -39,6 +39,7 @@ def _harness(
     park_rc: int = 0,
     restart_rc: int = 0,
     uac2_present: bool = False,
+    direct_lane_armed: bool = False,
 ) -> str:
     """Source the install fragment with a stateful ``systemctl`` shim."""
 
@@ -84,6 +85,7 @@ systemctl() {{
   return 0
 }}
 source "{FRAGMENT}"
+usbsink_direct_lane_armed() {{ return {0 if direct_lane_armed else 1}; }}
 enable_usbgadget
 """
 
@@ -186,6 +188,63 @@ def test_inactive_failed_gadget_recomposes_when_uac2_descriptor_survived(tmp_pat
 
     assert proc.returncode == 0, proc.stderr
     assert "restart jasper-usbgadget.service" in calls
+
+
+def test_converged_uac2_with_live_consumer_is_not_recomposed(tmp_path):
+    """#3194: install must not tear down an endpoint the coordinator will rebuild.
+
+    A UAC2 function whose fan-in DIRECT lane is armed is converged, not stale.
+    Recomposing it here produced the deploy-time pair of gadget binds that
+    wedged the dwc2 ISO data path.
+    """
+
+    proc, calls = _run(
+        tmp_path,
+        derived_enabled=True,
+        derived_active=True,
+        gadget_active=True,
+        uac2_present=True,
+        direct_lane_armed=True,
+    )
+
+    assert proc.returncode == 0, proc.stderr
+    assert "restart jasper-usbgadget.service" not in calls
+    assert "try-restart jasper-fanin.service" not in calls
+    assert "direct_lane_armed" in proc.stdout
+
+
+def test_recompose_refreshes_both_stream_consumers_in_data_path_order(tmp_path):
+    """A rebuild invalidates both consumers' UAC2Gadget card handles."""
+
+    proc, calls = _run(
+        tmp_path,
+        derived_enabled=True,
+        derived_active=True,
+        gadget_active=True,
+        uac2_present=True,
+    )
+
+    assert proc.returncode == 0, proc.stderr
+    recompose_idx = calls.index("restart jasper-usbgadget.service")
+    fanin_idx = calls.index("try-restart jasper-fanin.service")
+    usbmic_idx = calls.index("try-restart jasper-usbmic.service")
+    assert recompose_idx < fanin_idx < usbmic_idx
+
+
+def test_failed_recompose_does_not_refresh_stream_consumers(tmp_path):
+    """Consumers are refreshed for a rebuild that happened, never a failed one."""
+
+    proc, calls = _run(
+        tmp_path,
+        derived_enabled=False,
+        gadget_active=True,
+        uac2_present=True,
+        restart_rc=1,
+    )
+
+    assert proc.returncode != 0
+    assert "try-restart jasper-fanin.service" not in calls
+    assert "try-restart jasper-usbmic.service" not in calls
 
 
 def test_failed_audio_park_refuses_to_compose(tmp_path):

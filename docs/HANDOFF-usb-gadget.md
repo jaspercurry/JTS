@@ -376,15 +376,29 @@ appendix; `/state` and doctor show desired vs observed address plus
 deployment baseline **without interpreting intent**: disable and stop the derived
 USB-audio unit, keep or bring up NCM, and recompose an active gadget only when
 old unit state or a present UAC2 card proves stale audio could still be
-advertised. `jasper-usbgadget.service` is the first gadget unit the installer
+advertised **and** fan-in's DIRECT lane is not armed — an advertised endpoint
+with its live consumer is converged, and recomposing it here only forced the
+coordinator to rebuild it seconds later (the deploy-time pair of gadget binds
+that wedged the dwc2 ISO data path in #3194). When that baseline does recompose,
+it then refreshes both stream consumers in data-path order — `jasper-fanin`
+(deliberately not `PartOf=` the gadget) and `jasper-usbmic` — so neither carries
+a stale UAC2Gadget card handle into the replay.
+`jasper-usbgadget.service` is the first gadget unit the installer
 enables, deliberately, since it carries the default-on network. A pending
 host-role reboot keeps NCM-only composition while the controller is still
 peripheral so a deploy over that link can finish; strict USB audio availability
 stays false. The later `reapply_source_intent` call is the single canonical
 replay point: for On it performs fan-in DIRECT arm → UAC2 recompose → readiness
-marker start, while invalid intent fails closed. An already-converged NCM-only
-deploy does not bounce the management link. Pinned by
+marker start, while invalid intent fails closed. An already-converged deploy —
+NCM-only, or NCM+UAC2 with its consumer — binds the gadget zero times and never
+bounces the management link or the host's stream. Pinned by
 `tests/test_install_usbgadget_migration.py`.
+
+`jasper-doctor`'s `usbsink host stream` check reports u_audio's volatile
+`Capture Rate` kcontrol (PCM iface, name-resolved — the numid moves with the
+composed direction set). It is the only surface that can see a host whose
+control plane works while the ISO data path never started. An idle host also
+reads 0, so the check discloses the number and the recovery and never fails.
 
 ## Controller forensics
 
