@@ -604,6 +604,29 @@ const _: fn() = || {
     assert_send::<RingReader>();
 };
 
+/// The incumbent `reader_pid` iff a LIVE FOREIGN reader already owns this ring:
+/// pid stamped, pid not ours, heartbeat younger than
+/// [`WRITER_LIVENESS_TIMEOUT_NS`]. A zero pid, a never-stamped heartbeat, a
+/// stale one, or our own pid (re-attach) all read as free.
+///
+/// Predicate, window, and BEST-EFFORT/TOCTOU caveat mirror
+/// `foreign_reader_is_live` in `c/jts-ring-ioplug/jts_ring_shm.c`.
+fn foreign_reader_is_live(map: &RingMapping, now_ns: u64) -> Option<u64> {
+    let pid = map
+        .header_atomic(layout::OFF_READER_PID)
+        .load(Ordering::Relaxed);
+    if pid == 0 || pid == std::process::id() as u64 {
+        return None;
+    }
+    let heartbeat_ns = map
+        .header_atomic(layout::OFF_READER_HEARTBEAT_NS)
+        .load(Ordering::Relaxed);
+    if heartbeat_ns == 0 {
+        return None;
+    }
+    (now_ns.saturating_sub(heartbeat_ns) < WRITER_LIVENESS_TIMEOUT_NS).then_some(pid)
+}
+
 impl RingReader {
     /// Attach to an existing ring, or create it if absent, validating against
     /// `expected`. `O_EXCL` create races are resolved by attaching instead.
@@ -611,9 +634,24 @@ impl RingReader {
     /// On attach the reader resyncs `read_seq = write_seq` (drops the <=
     /// `n_slots` stale slots accumulated while the reader was down; counted
     /// `attach_resyncs`) and stamps `reader_pid`.
+    ///
+    /// Refuses with `EBUSY` — and stamps nothing — when a live FOREIGN reader
+    /// already owns the ring: it is SPSC and tolerates exactly one reader.
     pub fn create_or_attach(path: &str, expected: Geometry) -> io::Result<Self> {
         expected.validate_self()?;
         let map = attach_or_create(path, expected, RingRole::Reader)?;
+
+        // SPSC GUARD: refuse before ANY header store, so a refused attach leaves
+        // the incumbent's read_seq + reader_pid exactly as it left them. `EBUSY`
+        // is the code the C reader returns for this same refusal — see
+        // `jts_ring_reader_open` in `c/jts-ring-ioplug/jts_ring_shm.c`.
+        if let Some(other) = foreign_reader_is_live(&map, monotonic_ns()) {
+            eprintln!(
+                "event={} path={path} existing_reader_pid={other}",
+                ring_event(RingRole::Reader, "busy")
+            );
+            return Err(io::Error::from_raw_os_error(libc::EBUSY));
+        }
 
         // Resync to the writer's current tip: the reader is joining a
         // possibly-running writer, and stale slots are worthless to a pacer.
@@ -2231,12 +2269,19 @@ mod tests {
                 .load(Ordering::Relaxed),
             ours
         );
-        // Simulate a second reader taking over: stamp a foreign pid.
+        // Simulate a second reader taking over: stamp a foreign pid. Zero the
+        // heartbeat with it — this test is about drop's `cur == mine` guard, and
+        // a synthetic foreign pid with a LIVE heartbeat is what the attach
+        // exclusivity guard refuses.
         let foreign = ours.wrapping_add(1);
         reader
             .map
             .header_atomic(layout::OFF_READER_PID)
             .store(foreign, Ordering::Relaxed);
+        reader
+            .map
+            .header_atomic(layout::OFF_READER_HEARTBEAT_NS)
+            .store(0, Ordering::Relaxed);
         // Read the header slot out before dropping (drop munmaps our mapping),
         // by attaching a second mapping to the same file.
         let checker = RingReader::create_or_attach(&path, g).unwrap();
@@ -2256,6 +2301,159 @@ mod tests {
             "dropping a reader must not clear a foreign reader_pid"
         );
         drop(checker);
+        cleanup(&path);
+    }
+
+    /// Stamp a synthetic incumbent reader into `map`'s header: `pid`, and a
+    /// heartbeat `heartbeat_age` in the past (`None` = never stamped). The age is
+    /// an INJECTED clock value, so the liveness boundary is exercised without
+    /// sleeping. Clamped to 1 so an age exceeding the host's uptime still tests
+    /// the age path rather than collapsing onto the never-stamped path.
+    fn stamp_incumbent_reader(map: &RingMapping, pid: u64, heartbeat_age: Option<u64>) {
+        map.header_atomic(layout::OFF_READER_PID)
+            .store(pid, Ordering::Relaxed);
+        let heartbeat_ns = match heartbeat_age {
+            None => 0,
+            Some(age) => monotonic_ns().saturating_sub(age).max(1),
+        };
+        map.header_atomic(layout::OFF_READER_HEARTBEAT_NS)
+            .store(heartbeat_ns, Ordering::Relaxed);
+    }
+
+    #[test]
+    fn reader_attach_refuses_only_a_live_foreign_reader() {
+        let ours = std::process::id() as u64;
+        let foreign = ours.wrapping_add(1);
+        // Coarse ages only — the exact `<` boundary is pinned deterministically
+        // in `foreign_reader_liveness_window_is_exclusive_at_the_boundary`, which
+        // injects `now_ns` instead of racing the attach's own elapsed time.
+        // (tag, incumbent reader_pid, heartbeat age, attach refused?)
+        let cases = [
+            ("fresh-foreign", foreign, Some(0), true),
+            (
+                "foreign-stale",
+                foreign,
+                Some(WRITER_LIVENESS_TIMEOUT_NS * 3),
+                false,
+            ),
+            ("foreign-never-heartbeat", foreign, None, false),
+            ("zero-pid-fresh-heartbeat", 0, Some(0), false),
+            ("own-pid-fresh-heartbeat", ours, Some(0), false),
+        ];
+
+        for (tag, incumbent_pid, heartbeat_age, expect_refusal) in cases {
+            let path = tmp_ring_path("foreignreader");
+            let g = proto_geometry();
+            // Creates the ring and gives us a mapping to stamp the synthetic
+            // incumbent through; its own attach stamp is overwritten below.
+            let holder = RingReader::create_or_attach(&path, g).unwrap();
+            stamp_incumbent_reader(&holder.map, incumbent_pid, heartbeat_age);
+
+            match RingReader::create_or_attach(&path, g) {
+                Err(e) => {
+                    assert!(expect_refusal, "{tag}: unexpected refusal: {e:?}");
+                    assert_eq!(
+                        e.raw_os_error(),
+                        Some(libc::EBUSY),
+                        "{tag}: refusal must carry the C reader's EBUSY"
+                    );
+                }
+                Ok(reader) => {
+                    assert!(!expect_refusal, "{tag}: attach should have been refused");
+                    assert_eq!(
+                        reader
+                            .map
+                            .header_atomic(layout::OFF_READER_PID)
+                            .load(Ordering::Relaxed),
+                        ours,
+                        "{tag}: a permitted attach takes ownership of reader_pid"
+                    );
+                    drop(reader);
+                }
+            }
+            drop(holder);
+            cleanup(&path);
+        }
+    }
+
+    #[test]
+    fn foreign_reader_liveness_window_is_exclusive_at_the_boundary() {
+        let path = tmp_ring_path("foreignwindow");
+        let g = proto_geometry();
+        let holder = RingReader::create_or_attach(&path, g).unwrap();
+        let foreign = (std::process::id() as u64).wrapping_add(1);
+        // A fixed heartbeat plus an injected `now_ns`: the age is exact, so the
+        // `<` comparison is pinned without any dependence on elapsed real time.
+        const HEARTBEAT_NS: u64 = 1_000_000_000_000;
+        holder
+            .map
+            .header_atomic(layout::OFF_READER_PID)
+            .store(foreign, Ordering::Relaxed);
+        holder
+            .map
+            .header_atomic(layout::OFF_READER_HEARTBEAT_NS)
+            .store(HEARTBEAT_NS, Ordering::Relaxed);
+
+        let at = |now_ns: u64| foreign_reader_is_live(&holder.map, now_ns);
+        assert_eq!(
+            at(HEARTBEAT_NS + WRITER_LIVENESS_TIMEOUT_NS - 1),
+            Some(foreign),
+            "one ns inside the window is still live"
+        );
+        assert_eq!(
+            at(HEARTBEAT_NS + WRITER_LIVENESS_TIMEOUT_NS),
+            None,
+            "the window is exclusive: age == timeout is dead"
+        );
+        // A heartbeat stamped after `now_ns` was sampled must clamp to age 0
+        // (definitely live), never underflow into a huge age.
+        assert_eq!(at(HEARTBEAT_NS - 5), Some(foreign));
+
+        drop(holder);
+        cleanup(&path);
+    }
+
+    #[test]
+    fn refused_attach_leaves_incumbent_reader_state_untouched() {
+        // The guard must run before ANY header store: a refused attach that had
+        // already resynced read_seq or stamped reader_pid would corrupt the live
+        // reader it lost to. Mirrors the C reader, which munmaps and returns
+        // -EBUSY before touching either field.
+        let path = tmp_ring_path("busynostomp");
+        let g = proto_geometry();
+        let holder = RingReader::create_or_attach(&path, g).unwrap();
+        let foreign = (std::process::id() as u64).wrapping_add(1);
+        stamp_incumbent_reader(&holder.map, foreign, Some(0));
+        // write_seq is 0, so an attach resync (read_seq = write_seq) would
+        // visibly clobber this sentinel.
+        const INCUMBENT_READ_SEQ: u64 = 7;
+        holder
+            .map
+            .header_atomic(layout::OFF_READ_SEQ)
+            .store(INCUMBENT_READ_SEQ, Ordering::Relaxed);
+
+        let err = match RingReader::create_or_attach(&path, g) {
+            Ok(_) => panic!("a live foreign reader must refuse the attach"),
+            Err(e) => e,
+        };
+        assert_eq!(err.raw_os_error(), Some(libc::EBUSY));
+        assert_eq!(
+            holder
+                .map
+                .header_atomic(layout::OFF_READ_SEQ)
+                .load(Ordering::Relaxed),
+            INCUMBENT_READ_SEQ,
+            "a refused attach must not resync the incumbent's read_seq"
+        );
+        assert_eq!(
+            holder
+                .map
+                .header_atomic(layout::OFF_READER_PID)
+                .load(Ordering::Relaxed),
+            foreign,
+            "a refused attach must not steal reader_pid"
+        );
+        drop(holder);
         cleanup(&path);
     }
 

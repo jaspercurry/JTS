@@ -447,9 +447,9 @@ void jts_ring_writer_close(jts_ring_writer_t *w);
 // reader_pid is already stamped (pid != 0, pid != getpid(), heartbeat younger
 // than the liveness window), open refuses with -EBUSY and does NOT stamp
 // anything — a stray second `arecord -D jts_ring_capture` while CamillaDSP is
-// attached would otherwise corrupt read_seq. (The Rust reader has no such guard
-// because outputd owns Ring B's reader singleton by construction; Ring A's
-// capture device is operator-openable, so the guard is load-bearing here.)
+// attached would otherwise corrupt read_seq. The Rust `RingReader` runs the
+// same predicate over the same header fields and window, and refuses with the
+// same EBUSY.
 // Returns 0 on success (fills *out), <0 (negative errno-ish) on a fatal error
 // (-EBUSY on a live foreign reader, -EINVAL on geometry mismatch). `path` must
 // be an absolute /dev/shm/jts-ring/... path for the magic-invalid reclaim.
