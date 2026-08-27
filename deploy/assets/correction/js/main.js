@@ -1019,12 +1019,15 @@ import { renderRelayQr } from "/assets/shared/js/qr.js";
         // a scheme dead end, not a denied permission. Issue #3069 removed the
         // only in-page path that could reach this while relay is configured
         // (the pre-Start local-capture toggle), so it now fires solely for
-        // relay-disabled installs opened over plain HTTP — there is no
-        // capture link to offer instead.
+        // relay-disabled installs opened over plain HTTP. JTS pages are
+        // plain HTTP by design (secure-context capture lives at the relay's
+        // publicly trusted origin, never at a local HTTPS hop), so the fix
+        // named here is enabling the capture relay, not switching schemes.
         console.warn('microphone capture unavailable outside a secure context', e);
         jtsAlert('This page is not a secure context, so the browser will not ' +
-          'give it the microphone. This install has no phone-relay capture ' +
-          'configured — reopen this page over HTTPS to measure with it.');
+          'give it the microphone. This install has the capture relay ' +
+          'disabled; set JASPER_CAPTURE_RELAY_BASE and deploy the relay + ' +
+          'capture page to turn on microphone capture from this page.');
       } else {
         console.warn('microphone permission unavailable', e);
         jtsAlert('Microphone access was not available. Check permission and try again.');

@@ -169,6 +169,24 @@ def test_capture_relay_ui_contract_is_wired():
     assert "env.sections" in js
 
 
+def test_non_secure_context_refusal_points_at_enabling_the_relay():
+    # Issue #3069 follow-up (zone-owner direction): JTS local pages are
+    # plain HTTP by design -- secure-context capture lives only at the
+    # relay's publicly trusted origin, never at a local HTTPS hop. This
+    # refusal only fires for relay-disabled installs (relay-configured ones
+    # never reach local capture at all -- see
+    # test_capture_relay_ui_contract_is_wired above), so its remedy names
+    # the actual enable surface, JASPER_CAPTURE_RELAY_BASE -- the same one
+    # _require_relay_base()'s own operator message names -- instead of
+    # steering the household toward a scheme switch.
+    js = _module_js()
+
+    assert "This install has the capture relay " in js
+    assert "disabled; set JASPER_CAPTURE_RELAY_BASE and deploy the relay + " in js
+    assert "capture page to turn on microphone capture from this page." in js
+    assert "reopen this page over HTTPS" not in js
+
+
 def test_capture_relay_next_position_ui_hides_expired_link():
     js = _module_js()
 
