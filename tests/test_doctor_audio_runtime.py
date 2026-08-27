@@ -2598,7 +2598,6 @@ def test_armed_daemon_lane_never_fed_still_warns(monkeypatch):
 
 _REPO_ROOT = Path(__file__).resolve().parents[1]
 _MODPROBE_CONF = _REPO_ROOT / "deploy" / "modprobe.d" / "snd-aloop.conf"
-_ASOUNDRC_JASPER = _REPO_ROOT / "deploy" / "alsa" / "asoundrc.jasper"
 
 _OPEN_STATUS = (
     "state: RUNNING\n"
@@ -2815,22 +2814,6 @@ def _modprobe_substreams() -> int:
 def test_walker_range_matches_modprobe_pcm_substreams():
     """The walker must scan exactly the substreams the module creates."""
     assert audio_runtime._ALOOP_SUBSTREAMS == _modprobe_substreams()
-
-
-def test_outputd_content_aloop_pcm_matches_asoundrc_slave():
-    """`_OUTPUTD_CONTENT_ALOOP_PCM` — pair 6's registration source since
-    design §6.1(a) — must name the same PCM asoundrc.jasper's
-    `pcm.outputd_content_playback` slave actually opens, or the doctor's
-    derivation and the shipped ALSA config drift apart silently.
-    """
-    text = audio_runtime._asound_non_comment_text(
-        _ASOUNDRC_JASPER.read_text(encoding="utf-8")
-    )
-    block = audio_runtime._asound_pcm_block(text, "outputd_content_playback")
-    assert block is not None
-    m = re.search(r'slave\s*\{\s*pcm\s+"([^"]+)"', block)
-    assert m, f"no slave pcm found in outputd_content_playback block: {block!r}"
-    assert m.group(1) == audio_runtime._OUTPUTD_CONTENT_ALOOP_PCM
 
 
 # --------------------------------------------------------------------------

@@ -77,29 +77,24 @@ pub use direct_capture::{DirectObservability, DrainStats};
 use ring_capture::read_ring_and_render;
 pub use ring_capture::RingLaneObservability;
 
-/// Stereo. The CamillaDSP capture expects 2 channels, and so does the
-/// `jasper_capture` dsnoop it reads through. Not configurable.
+/// Stereo, on both ends: the renderer ingress lanes carry 2 channels and so
+/// does the ring this daemon publishes to. Not configurable.
 pub const CHANNELS: u32 = 2;
 
 /// PCM sample format for this daemon's snd-aloop capture lanes — the
-/// per-renderer inputs. The program this daemon publishes does not use this
-/// format at all: it carries the ring's own wire (`ring_wire_format`), and no
-/// aloop lane is written.
+/// per-renderer inputs, which since ADR-0100 are the only aloop lanes left.
+/// The program this daemon publishes does not use this format at all: it
+/// carries the ring's own wire (`ring_wire_format`), and no aloop lane is
+/// written.
 ///
-/// `pcm.jasper_capture`'s dsnoop slave and the doctor's
-/// `check_fanin_asound_wiring` pin must name this same format.
-/// `tests/test_aloop_program_lane_width.py` pins the set, so moving this is a
-/// same-commit change to all three rather than a daemon-local edit.
+/// The renderer aliases' slaves in `deploy/alsa/asoundrc.jasper` must name this
+/// same format — they are the playback half of the pairs opened here — so
+/// moving it is a same-commit change to both. `tests/test_fanin_wiring.py` pins
+/// the ALSA side; `tests/test_aloop_program_lane_width.py` pins this one.
 ///
-/// Narrow here is a JTS DECLARATION, not an snd-aloop limit — the **post-DSP
-/// content lane role** runs `S32_LE` on every box, on a substream pair
-/// (`hw:Loopback,0/1,6`) on this same card. State it role-first: that pair
-/// carries a second, mutually-exclusive role, the bonded active-follower
-/// round-trip, which opens the raw device at `S16_LE`
-/// (`jasper.multiroom.reconcile`), so the bare device name proves nothing in
-/// either direction. The per-box program-width capability is the RING's
-/// (`ring_wire_format`); this lane is owned by P7/P9, which re-point its
-/// consumers and remove snd-aloop rather than widen it.
+/// Narrow here is a JTS DECLARATION about ingress, not an snd-aloop limit and
+/// not the box's program width. That capability is the RING's
+/// (`ring_wire_format`).
 pub const FORMAT: Format = Format::S16LE;
 
 /// Sentinel for "no ALSA playback delay sample has landed", which since

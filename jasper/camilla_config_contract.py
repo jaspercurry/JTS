@@ -26,9 +26,9 @@ from jasper.fanin_coupling import RING_CAPTURE_DEVICE, RING_PLAYBACK_DEVICE
 # fan-in -> CamillaDSP transport (ADR-0100), so an emit that receives no coupling
 # kwargs must still name a lane fan-in actually writes.
 DEFAULT_CAPTURE_DEVICE = RING_CAPTURE_DEVICE
-# The snd-aloop tap ADR-0100 retired, spelled ONCE for the one site that still
-# has to name it: the flat cutover graph, whose playback half has not moved yet.
-# It dies with `deploy/alsa/asoundrc.jasper`.
+# The snd-aloop tap ADR-0100 retired. Its ALSA definition is gone, so this name
+# no longer resolves on a box; it survives to RECOGNIZE the retired route in a
+# graph an unreconciled box still carries, never to emit it.
 RETIRED_ALOOP_CAPTURE_DEVICE = "plug:jasper_capture"
 # Playback is Ring B, aliased for the same reason capture is aliased to Ring A:
 # the ring is the only CamillaDSP -> outputd transport (ADR-0100), so a
@@ -38,7 +38,9 @@ RETIRED_ALOOP_CAPTURE_DEVICE = "plug:jasper_capture"
 DEFAULT_PLAYBACK_DEVICE = RING_PLAYBACK_DEVICE
 # The snd-aloop playback half ADR-0100 retired — the twin of
 # RETIRED_ALOOP_CAPTURE_DEVICE, and the key the outputd-capture pairing below is
-# still written against. It dies with `deploy/alsa/asoundrc.jasper`.
+# still written against. Its ALSA definition is gone too, so the pairing below
+# resolves a name that no box can open: the lookup exists to CLASSIFY a graph
+# carrying the retired route, never to hand a caller a lane to write.
 RETIRED_ALOOP_PLAYBACK_DEVICE = "outputd_content_playback"
 ACTIVE_OUTPUTD_PLAYBACK_DEVICE = "outputd_active_content_playback"
 DEFAULT_OUTPUTD_CAPTURE_DEVICE = "outputd_content_capture"
@@ -61,10 +63,10 @@ DEFAULT_CAPTURE_FORMAT = "S32_LE"
 # a −18 dB tweeter trim stop costing three bits of program resolution.
 #
 # Two things must move with this value, and both are derived rather than
-# restated: ``deploy/alsa/asoundrc.jasper`` pins the PASSIVE lane's snd-aloop
-# slaves to the same format (the active lane is deliberately unpinned — raw
-# `hw`, first-opener-wins, so a mismatch fails the open instead of converting),
-# and the audio-hardware reconciler emits outputd's matching
+# restated: ``deploy/camilladsp/outputd-cutover.yml`` carries it on BOTH ring
+# halves (since ADR-0100 the flat startup graph names ``jts_ring_capture`` and
+# ``jts_ring_playback``, and the ioplug pins the ring's own geometry), and the
+# audio-hardware reconciler emits outputd's matching
 # ``JASPER_OUTPUTD_CONTENT_FORMAT`` through
 # ``jasper.fanin_coupling.content_lane_format_for_coupling``.
 DEFAULT_PLAYBACK_FORMAT = "S32_LE"
