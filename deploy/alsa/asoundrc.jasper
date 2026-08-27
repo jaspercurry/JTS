@@ -38,8 +38,8 @@ defaults.pcm.rate_converter "__RATE_CONVERTER__"
 # private capture sides, sums them sample-wise, and publishes to the SHM
 # ring; the ring is the only central transport from there to the DAC
 # (ADR-0100), so nothing between fan-in and jasper-outputd is defined
-# here. The final DAC alias below is: jasper-outputd is its only normal
-# writer.
+# here. The final DAC alias below is the other end: jasper-outputd is its
+# only normal writer.
 #
 # Topology:
 #

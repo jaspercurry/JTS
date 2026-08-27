@@ -63,10 +63,10 @@ DEFAULT_CAPTURE_FORMAT = "S32_LE"
 # a −18 dB tweeter trim stop costing three bits of program resolution.
 #
 # Two things must move with this value, and both are derived rather than
-# restated: ``deploy/alsa/asoundrc.jasper`` pins the PASSIVE lane's snd-aloop
-# slaves to the same format (the active lane is deliberately unpinned — raw
-# `hw`, first-opener-wins, so a mismatch fails the open instead of converting),
-# and the audio-hardware reconciler emits outputd's matching
+# restated: ``deploy/camilladsp/outputd-cutover.yml`` carries it on BOTH ring
+# halves (since ADR-0100 the flat startup graph names ``jts_ring_capture`` and
+# ``jts_ring_playback``, and the ioplug pins the ring's own geometry), and the
+# audio-hardware reconciler emits outputd's matching
 # ``JASPER_OUTPUTD_CONTENT_FORMAT`` through
 # ``jasper.fanin_coupling.content_lane_format_for_coupling``.
 DEFAULT_PLAYBACK_FORMAT = "S32_LE"

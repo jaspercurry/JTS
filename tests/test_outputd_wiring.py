@@ -96,13 +96,13 @@ def test_asoundrc_no_longer_declares_any_camilla_to_outputd_lane():
         "ctl.outputd_content_capture",
     ):
         assert name not in rc, f"{name} was re-declared in asoundrc.jasper"
-    # Nothing may claim substreams 5 or 6 under any alias — the pairs stay free.
-    # Deliberately the broader of the two assertions: it fails on any future
-    # re-declaration whatever the PCM is named.
-    assert "subdevice 5" not in rc
-    assert "subdevice 6" not in rc
-    assert "Loopback,0,6" not in rc
-    assert "Loopback,1,6" not in rc
+    # Nothing may claim substream 5 or 6 under any alias — the pairs stay free.
+    # Deliberately the broader of the two assertions: a re-declaration fails
+    # here whatever the PCM is named, because a slave has to spell the
+    # substream to reach it. Both halves of both pairs, since a lane needs only
+    # one end to come back.
+    for substream in ("Loopback,0,5", "Loopback,1,5", "Loopback,0,6", "Loopback,1,6"):
+        assert substream not in rc, f"{substream} was re-declared in asoundrc.jasper"
 
 
 def test_active_path_pcms_never_use_plug_or_plughw():
