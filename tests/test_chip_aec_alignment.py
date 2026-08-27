@@ -224,6 +224,19 @@ def test_the_class_key_is_the_identity_minus_the_unit_it_was_measured_on() -> No
             alignment.hardware_class_key(broken)
 
 
+def test_hardware_class_identity_placeholder_is_pinned_not_just_nonempty() -> None:
+    # AlignmentIdentity's per-unit fields currently clear the same rule as
+    # every other text field ("non-empty"), so "unkeyed" passes today by
+    # accident of that rule being generic. Nothing stops a later rule from
+    # tightening just the per-unit two to a real serial's or hardware key's
+    # shape — the placeholder would then fail it, and the first place that
+    # would show up is a pasted REGISTRY row, not a test. Pin the literal so
+    # that change breaks here, by name, instead.
+    resolved = alignment.hardware_class_identity(_class_fields())
+    for name in alignment.PER_UNIT_IDENTITY_FIELDS:
+        assert getattr(resolved, name) == "unkeyed"
+
+
 def test_a_shipped_row_meets_the_same_driver_cap_a_commissioned_one_does() -> None:
     # Non-negotiable #2: CHIP_AEC_SYS_DELAY_MIN..MAX is the chip's declared
     # cap. A shipped row is hand-pasted rather than measured here, so it fails
