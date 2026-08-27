@@ -53,7 +53,6 @@ from jasper.fanin_coupling import (
     RING_CAMILLA_TARGET_LEVEL,
     VALID_COUPLINGS,
     capture_half,
-    capture_kwargs_for_coupling,
     coupling_capture_kwargs_from_env,
     member_kwargs_are_pipe_sink,
     resolve_coupling,
@@ -2354,23 +2353,15 @@ def fanin_coupling_capture_kwargs(
 ) -> EmitSoundConfigKwargs:
     """Return CamillaDSP capture kwargs for the shared fan-in coupling.
 
-    ``coupling=None`` means read the live env, matching ordinary sound/correction
-    emits. An explicit coupling is used by the coupling reconciler immediately
-    after it rewrites ``fanin.env``; process env may still be stale, so the
-    explicit value wins.
+    The typed ``EmitSoundConfigKwargs`` door onto
+    :func:`coupling_capture_kwargs_from_env` for the sound/correction emit
+    callers. ONE transport (ADR-0100), so neither parameter selects anything:
+    the emit callers still thread a coupling token and the tests still pin an
+    env, and both are inert here.
     """
 
-    if coupling is None:
-        # Live path (env is None): file-fresh coupling token. Explicit env:
-        # authoritative, no file read — pass the mapping straight through.
-        return cast(
-            EmitSoundConfigKwargs,
-            coupling_capture_kwargs_from_env(None if env is None else dict(env)),
-        )
-    return cast(
-        EmitSoundConfigKwargs,
-        capture_kwargs_for_coupling(coupling),
-    )
+    del coupling, env
+    return cast(EmitSoundConfigKwargs, coupling_capture_kwargs_from_env())
 
 
 def apply_capture_precedence(
