@@ -1384,7 +1384,7 @@ def test_confirm_shm_ring_coherent_stays_lightweight(tmp_path, monkeypatch):
     # The other side of the CONFIRM-path fix: a COHERENT already-armed shm_ring box
     # must NOT bounce fan-in/outputd on every reconcile tick — only re-load camilla.
     # This pins that the escalation is gated on POSITIVE incoherence evidence, so a
-    # healthy box keeps the cheap confirm rather than always running _arm_ring.
+    # healthy box keeps the cheap confirm rather than always running _converge_ring.
     import jasper.ring_assets as ra
 
     monkeypatch.setattr(

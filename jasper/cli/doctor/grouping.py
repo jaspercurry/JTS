@@ -472,9 +472,9 @@ def check_grouping_rate_adjust() -> CheckResult:
     scope, and deliberately so: it plays the round-tripped stream through
     outputd's ``dac_content`` lane, and its own CamillaDSP stays on the solo
     fallback feed — which :func:`jasper.multiroom.member_config.member_camilla_kwargs`
-    emits with ``enable_rate_adjust=True`` on purpose, into a sink that really
-    does have a clock. There is no bond apply on that box for this check to
-    catch, so including it would warn on a correctly-configured speaker.
+    emits ``enable_rate_adjust=False`` too, into Ring B, an ioplug CamillaDSP
+    cannot actuate rate_adjust on. Its local CamillaDSP never joins the bonded
+    chain, so there is no bond apply here to catch.
 
     This reads the ACTIVE config, so it
     catches every generator and a config generated BEFORE the bond formed

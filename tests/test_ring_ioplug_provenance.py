@@ -435,8 +435,8 @@ def test_every_non_producing_install_path_revokes_the_record():
 # below pin both halves. On a wire that renders no conf.d field beyond the
 # ioplug's own defaults an unvouched plugin costs that box nothing, so `warn`
 # is the honest weight. On a wire declaring a non-default sample FORMAT the SAME
-# record state makes `ring_wire_caps_ready` refuse the arm — loopback on a flat
-# box, a parked content lane on a roleful one — so it is a `fail`.
+# record state makes `ring_wire_caps_ready` refuse the arm — a roleful box's
+# content lane parks (ADR-0178) — so it is a `fail`.
 #
 # SINCE THE RING-WIRE DEFAULT FLIP, the `warn` half is reached only by a box an
 # operator has PINNED to S16_LE: an undeclared box resolves the wide wire and
@@ -675,9 +675,9 @@ def test_an_undeclared_box_now_needs_the_capability_so_the_verdict_is_a_failure(
     differs from the C ioplug's compiled-in conf.d default, so its conf.d
     carries a `format` line and the capability set is `{wire_format}`. An
     unvouched plugin therefore cannot be shown to parse that field, the arm is
-    REFUSED by `ring_wire_caps_ready`, and the honest weight is `fail` — the
-    box drops to loopback (a working transport on a flat box, a parked content
-    lane on a roleful one) rather than crashing CamillaDSP at open().
+    REFUSED by `ring_wire_caps_ready`, and the honest weight is `fail` — a
+    roleful box's content lane parks (ADR-0178), catching what would
+    otherwise be a CamillaDSP crash-loop at `open()`.
 
     The gate is dormant on no box now except an operator's narrow pin; the
     §10.5(1) fleet provenance audit is what made that safe to land.

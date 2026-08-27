@@ -163,11 +163,11 @@ FOLLOWER (driver-DSP): snapclient → grouping ring → CamillaDSP
    which has no output clock. So no CamillaDSP *in a bonded chain* runs
    `rate_adjust=true`, on either role. A dumb follower is the deliberate
    exception: its CamillaDSP is out of the bonded path, feeding the fallback
-   lane into a sink that really does have a clock. The leader-bake half is the
-   member-config policy (`member_camilla_kwargs`), applied identically on every
-   config path (`/sound`, `/correction`, the reconciler) rather than threaded
-   per call site; `check_grouping_rate_adjust` is the backstop and owns the
-   full rule.
+   lane into Ring B, an ioplug sink with no clock to track. The leader-bake
+   half is the member-config policy (`member_camilla_kwargs`), applied
+   identically on every config path (`/sound`, `/correction`, the reconciler)
+   rather than threaded per call site; `check_grouping_rate_adjust` is the
+   backstop and owns the full rule.
 
 **Buffer depth is the jitter lever, and it is now real.** `buffer_ms` rides the
 global `--stream.buffer` flag in `reconcile.snapserver_argv`. It was previously

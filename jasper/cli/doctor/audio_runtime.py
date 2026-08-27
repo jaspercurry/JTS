@@ -2100,9 +2100,13 @@ def check_ring_ioplug_provenance() -> CheckResult:
       nothing from any installed plugin, so "cannot vouch" is a ``warn`` — real,
       but nothing is refused on such a box;
     * a wire that declares a non-default sample FORMAT is refused at the arm by
-      ``ring_wire_caps_ready``, which is a ``fail``: the box drops to loopback,
-      and a roleful box parks its content lane. Reporting that as a warning
-      would bury the one verdict that predicts a disarm.
+      ``ring_wire_caps_ready``, which is a ``fail``: a stale/mismatched ioplug
+      otherwise presents as CamillaDSP crash-looping on ``-EINVAL`` at
+      ``open()`` against the ring. This gate only catches it earlier, on the
+      roleful ``--auto`` converge path (its sole caller) — the manual
+      ``jasper-fanin-coupling-reconcile shm_ring`` remedy skips it entirely.
+      Reporting that as a warning would bury the one verdict that predicts
+      the crash loop.
 
     WHAT THE PREDICATE COVERS, so this does not over-promise:
     ``ring_wire_capabilities`` reads the sample format, the Ring A / Ring B
