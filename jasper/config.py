@@ -986,11 +986,16 @@ class Config:
         unknown provider id. The one provider→model mapping: a new
         provider's model resolution lives here and nowhere else.
 
-        Takes the provider rather than reading ``self.voice_provider`` so
-        a caller that resolves the active provider from the wizard-owned
-        SSOT file (jasper.voice.provider_state — jasper-doctor does) can
-        still get the model the daemon would use, which merges the
-        operator's ``/etc/jasper/jasper.env`` with the wizard file."""
+        Reads THIS process's own environment, where a calling-shell
+        export of e.g. ``JASPER_GEMINI_MODEL`` outranks both
+        ``jasper.env`` and the wizard file (``env_load.load_env_files``
+        uses ``setdefault``). Correct for ``jasper-voice`` itself, whose
+        environment is always fresh (restarted on every relevant
+        switch) — but a reader describing a DIFFERENT, possibly-polluted
+        process (jasper-doctor's pricing check) should call
+        ``jasper.voice.provider_state.read_active_model_from_env_files``
+        instead, which merges the same files without touching
+        ``os.environ`` (issue #3133)."""
         return {
             "gemini": self.gemini_model,
             "openai": self.openai_model,
