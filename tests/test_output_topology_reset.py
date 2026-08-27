@@ -274,3 +274,47 @@ def test_cleanup_failure_keeps_new_topology_and_does_not_restore_old_graph(
         "status": "partial",
         "error": "OSError: cleanup failed",
     }
+
+
+@pytest.mark.parametrize(
+    ("reconcile", "expected_line"),
+    [
+        pytest.param(
+            {"ok": None, "skipped": True},
+            "reconcile: skipped (--no-reconcile)",
+            id="skipped",
+        ),
+        pytest.param(
+            {"ok": True},
+            f"reconcile: completed {topology_runtime.RECONCILE_UNIT}",
+            id="ok",
+        ),
+        pytest.param(
+            {"ok": False, "converging": True},
+            "reconcile: still converging; audio should come up shortly",
+            id="converging",
+        ),
+        pytest.param(
+            {"ok": False, "error": "grouping failed"},
+            "reconcile: did not complete; audio remains parked",
+            id="plain_failure",
+        ),
+    ],
+)
+def test_cli_print_summary_reconcile_line_is_honest_about_converging(
+    reconcile: dict, expected_line: str, capsys: pytest.CaptureFixture[str],
+) -> None:
+    """A still-running job must not print as a failure, and a genuine
+    failure must still print as one (#3094)."""
+    from jasper.cli import output_topology_reset as cli_reset
+
+    result = {
+        "topology_path": "/tmp/output_topology.json",
+        "before": {"readable": True, "name": "old", "speaker_groups": []},
+        "after": {"readable": True, "name": "new", "speaker_groups": []},
+        "reconcile": reconcile,
+    }
+
+    cli_reset._print_summary(result, dry_run=False)
+
+    assert expected_line in capsys.readouterr().out

@@ -5673,6 +5673,114 @@ def test_reset_cleanup_failure_keeps_new_topology_and_does_not_restore_old_graph
     assert payload["reset"]["status"] == "needs_attention"
 
 
+def test_reset_reports_converging_when_reconcile_is_still_activating(
+    monkeypatch,
+    tmp_path: Path,
+) -> None:
+    """A reconcile past its own wait budget is not needs_attention (#3094)."""
+    from jasper.output_topology import new_topology_draft, save_output_topology
+
+    topology_path = tmp_path / "output_topology.json"
+    monkeypatch.setenv("JASPER_OUTPUT_TOPOLOGY_PATH", str(topology_path))
+    save_output_topology(new_topology_draft(name="Old intent"), topology_path)
+    request = sound_setup._output_topology_payload()
+
+    def park_and_commit(_topology, commit, **_kwargs):
+        return _RuntimeMutation(commit())
+
+    monkeypatch.setattr(
+        "jasper.active_speaker.runtime_convergence.park_and_commit_topology",
+        park_and_commit,
+    )
+    monkeypatch.setattr(
+        "jasper.active_speaker.reset.clear_active_speaker_setup_state",
+        lambda: {"status": "cleared"},
+    )
+    monkeypatch.setattr(
+        "jasper.output_topology_runtime.trigger_reconcile",
+        lambda **_kwargs: {"ok": False, "converging": True},
+    )
+    monkeypatch.setattr(
+        sound_setup,
+        "_active_speaker_stop_summed_test_tone",
+        lambda **_kwargs: {"status": "idle"},
+    )
+    monkeypatch.setattr(
+        sound_setup,
+        "_active_speaker_stop_commission_tone",
+        lambda **_kwargs: {"status": "idle"},
+    )
+    monkeypatch.setattr(
+        sound_setup,
+        "_active_speaker_stop_payload",
+        lambda: {"status": "idle"},
+    )
+
+    payload = sound_setup._reset_output_topology_payload({
+        "topology_revision": request["topology_revision"],
+        "detected_hardware_identity": request["hardware_adoption"]["identity"],
+    })
+
+    assert payload["reset"] == {
+        "status": "converging",
+        "message": (
+            "Speaker setup was reset and is still applying. "
+            "Check Status in a moment."
+        ),
+    }
+
+
+def test_reset_reconcile_failure_without_converging_still_needs_attention(
+    monkeypatch,
+    tmp_path: Path,
+) -> None:
+    """A genuine reconcile failure (not converging) keeps needing attention."""
+    from jasper.output_topology import new_topology_draft, save_output_topology
+
+    topology_path = tmp_path / "output_topology.json"
+    monkeypatch.setenv("JASPER_OUTPUT_TOPOLOGY_PATH", str(topology_path))
+    save_output_topology(new_topology_draft(name="Old intent"), topology_path)
+    request = sound_setup._output_topology_payload()
+
+    def park_and_commit(_topology, commit, **_kwargs):
+        return _RuntimeMutation(commit())
+
+    monkeypatch.setattr(
+        "jasper.active_speaker.runtime_convergence.park_and_commit_topology",
+        park_and_commit,
+    )
+    monkeypatch.setattr(
+        "jasper.active_speaker.reset.clear_active_speaker_setup_state",
+        lambda: {"status": "cleared"},
+    )
+    monkeypatch.setattr(
+        "jasper.output_topology_runtime.trigger_reconcile",
+        lambda **_kwargs: {"ok": False, "error": "grouping failed"},
+    )
+    monkeypatch.setattr(
+        sound_setup,
+        "_active_speaker_stop_summed_test_tone",
+        lambda **_kwargs: {"status": "idle"},
+    )
+    monkeypatch.setattr(
+        sound_setup,
+        "_active_speaker_stop_commission_tone",
+        lambda **_kwargs: {"status": "idle"},
+    )
+    monkeypatch.setattr(
+        sound_setup,
+        "_active_speaker_stop_payload",
+        lambda: {"status": "idle"},
+    )
+
+    payload = sound_setup._reset_output_topology_payload({
+        "topology_revision": request["topology_revision"],
+        "detected_hardware_identity": request["hardware_adoption"]["identity"],
+    })
+
+    assert payload["reset"]["status"] == "needs_attention"
+
+
 def test_active_speaker_measurement_and_baseline_http_routes_are_exposed(
     monkeypatch,
     tmp_path: Path,
@@ -8041,6 +8149,54 @@ def test_repin_endpoint_keeps_the_design_and_clears_what_must_be_reverified(
     ]
     # The offer is spent: the save now matches the attached hardware.
     assert sound_setup._output_topology_payload()["hardware_repin"] is None
+
+
+def test_repin_reports_converging_when_reconcile_is_still_activating(
+    monkeypatch,
+    tmp_path: Path,
+):
+    """A reconcile past its own wait budget is not needs_attention (#3094)."""
+    _write_repin_fixture(monkeypatch, tmp_path, attached_serial_b="NEW-DONGLE")
+    _stub_repin_runtime(monkeypatch)
+    monkeypatch.setattr(
+        "jasper.output_topology_runtime.trigger_reconcile",
+        lambda **_kwargs: {"ok": False, "converging": True},
+    )
+    request = sound_setup._output_topology_payload()
+
+    payload = sound_setup._repin_output_topology_payload({
+        "topology_revision": request["topology_revision"],
+        "detected_hardware_identity": request["hardware_adoption"]["identity"],
+    })
+
+    assert payload["repin"] == {
+        "status": "converging",
+        "message": (
+            "Pinned the new DAC and kept your speaker setup. Audio is "
+            "still applying. Check Status in a moment."
+        ),
+    }
+
+
+def test_repin_reconcile_failure_without_converging_still_needs_attention(
+    monkeypatch,
+    tmp_path: Path,
+):
+    """A genuine reconcile failure (not converging) keeps needing attention."""
+    _write_repin_fixture(monkeypatch, tmp_path, attached_serial_b="NEW-DONGLE")
+    _stub_repin_runtime(monkeypatch)
+    monkeypatch.setattr(
+        "jasper.output_topology_runtime.trigger_reconcile",
+        lambda **_kwargs: {"ok": False, "error": "grouping failed"},
+    )
+    request = sound_setup._output_topology_payload()
+
+    payload = sound_setup._repin_output_topology_payload({
+        "topology_revision": request["topology_revision"],
+        "detected_hardware_identity": request["hardware_adoption"]["identity"],
+    })
+
+    assert payload["repin"]["status"] == "needs_attention"
 
 
 def test_repin_rejects_a_stale_request_before_parking(monkeypatch, tmp_path: Path):
