@@ -1237,7 +1237,7 @@ def test_cli_mic_distance_cm_converts_to_compensation_ms(tmp_path):
     assert all(v == pytest.approx(30.0 - harness.SOUND_MS_PER_CM * 10, abs=0.01) for v in values)
 
 
-@pytest.mark.parametrize("subcommand", ["generate", "arm", "disarm", "capture", "analyze", "run"])
+@pytest.mark.parametrize("subcommand", ["generate", "arm", "disarm", "capture", "analyze", "run", "warm-check", "convert-pcap"])
 def test_cli_help_does_not_raise_for_every_subcommand(subcommand):
     # Regression guard: argparse treats a literal '%' in a help= string as
     # a format specifier and raises ValueError at parser-build time if it

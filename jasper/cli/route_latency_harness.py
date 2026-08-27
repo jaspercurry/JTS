@@ -37,6 +37,16 @@ route status surfaces (fan-in DIRECT ingress plus outputd) and states whether th
 declaration WOULD be justified; the operator makes the actual call by passing
 --confirm-route-health-ok (alongside --invoke-artifact), which is only honored
 when the printed health diff would itself justify it.
+
+Two standalone box-side utilities, independent of the four-step flow (see
+docs/HANDOFF-usb-latency-measurement.md §3 and §5):
+
+  warm-check   — query fan-in STATUS and report whether the USB resampler is
+                 at its churn-safe floor (warm) or still descending from a
+                 cold start.
+  convert-pcap — convert a tcpdump `:9891` reference-stream pcap into
+                 mic-detections JSONL, for the electrical-plane measurement
+                 method (no capture device needed).
 """
 from __future__ import annotations
 
@@ -58,7 +68,7 @@ from jasper.audio_validation import (
 )
 from jasper.cli.route_latency_artifact import nearest_rank_percentile
 from jasper.log_event import log_event
-from jasper.route_latency import click_track
+from jasper.route_latency import click_track, ref9891_pcap, warm_check
 from jasper.route_latency.impulse_detect import (
     DEFAULT_HYSTERESIS,
     DEFAULT_REFRACTORY_MS,
@@ -79,8 +89,10 @@ from jasper.route_latency.pairing import (
     pair_events,
 )
 from jasper.route_latency.status_socket import (
+    DEFAULT_STATUS_TIMEOUT_SECONDS,
     FANIN_STATUS_SOCKET,
     OUTPUTD_STATUS_SOCKET,
+    read_status_socket,
     read_status_socket_or_none,
 )
 from jasper.route_latency.tap_client import (
@@ -1125,6 +1137,33 @@ def _cmd_run(args: argparse.Namespace) -> int:
     return _cmd_analyze(args)
 
 
+def _cmd_warm_check(args: argparse.Namespace) -> int:
+    try:
+        status = read_status_socket(args.socket, timeout=args.timeout)
+    except (OSError, TimeoutError) as e:
+        print(f"error: could not reach fan-in STATUS at {args.socket}: {e}", file=sys.stderr)
+        return 1
+    try:
+        verdict = warm_check.warm_verdict(status)
+    except LookupError as e:
+        print(f"error: {e}", file=sys.stderr)
+        return 1
+    print(json.dumps(verdict.to_status_dict()))
+    return 0 if verdict.warm else 1
+
+
+def _cmd_convert_pcap(args: argparse.Namespace) -> int:
+    try:
+        result = ref9891_pcap.convert_pcap_to_detections(
+            Path(args.pcap), Path(args.out), threshold=args.threshold
+        )
+    except (OSError, ValueError) as e:
+        print(f"error: {e}", file=sys.stderr)
+        return 1
+    print(result.summary_line())
+    return 0
+
+
 # --------------------------------------------------------------------------
 # argparse wiring
 # --------------------------------------------------------------------------
@@ -1239,6 +1278,23 @@ def _build_parser() -> argparse.ArgumentParser:
     _add_mic_detector_args(p_run)
     _add_analyze_args(p_run, include_expected_impulse_count=False)
     p_run.set_defaults(func=_cmd_run)
+
+    p_warm_check = sub.add_parser(
+        "warm-check",
+        help="Query fan-in STATUS and verify the USB resampler is warm (locked, at the 576-frame floor) before capturing.",
+    )
+    p_warm_check.add_argument("--socket", default=FANIN_STATUS_SOCKET, help=f"fan-in control socket (default: {FANIN_STATUS_SOCKET}).")
+    p_warm_check.add_argument("--timeout", type=float, default=DEFAULT_STATUS_TIMEOUT_SECONDS, help=f"STATUS read timeout in seconds (default {DEFAULT_STATUS_TIMEOUT_SECONDS:g}).")
+    p_warm_check.set_defaults(func=_cmd_warm_check)
+
+    p_convert_pcap = sub.add_parser(
+        "convert-pcap",
+        help="Offline step: convert a tcpdump `:9891` reference pcap into mic-detections JSONL (electrical-plane method, §3).",
+    )
+    p_convert_pcap.add_argument("pcap", help="Input pcap from `tcpdump -i lo udp port 9891` (passive capture; never binds the port).")
+    p_convert_pcap.add_argument("out", help="Output mic-detections JSONL path (feed to `analyze --mic-detections`).")
+    p_convert_pcap.add_argument("--threshold", type=float, default=ref9891_pcap.DEFAULT_THRESHOLD, help=f"Peak-detection threshold, 0..1 normalized S16 (default {ref9891_pcap.DEFAULT_THRESHOLD:g}).")
+    p_convert_pcap.set_defaults(func=_cmd_convert_pcap)
 
     return parser
 

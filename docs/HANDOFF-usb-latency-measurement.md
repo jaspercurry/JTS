@@ -193,8 +193,25 @@ The route-latency harness compares two timestamp streams, both on the Pi's
 The delta is the Pi-internal path (ingress → queued-to-DAC). It excludes the DAC's
 own ring+URB+analog latency (§4 measures that).
 
+**Warm up first, and confirm it — don't trust a clock.** A cold session starts
+at the resampler's acquisition ceiling and descends to the 576-frame churn-safe
+floor over ~2.5 min of *unbroken* playback (§5); a stream stop restarts the
+descent (§6's `EarlyUnlock` residual). Play a continuous stream, then poll
+`warm-check` instead of guessing a lead-in duration:
+
 ```sh
-# On the Pi: arm the tap, capture the :9891 reference
+# On the Pi: poll until warm (locked, held==576, decay frozen at the floor)
+/opt/jasper/.venv/bin/jasper-route-latency-harness warm-check
+```
+
+Exits `0` and prints `{"locked": true, "held": 576, "frozen_reason":
+"at_floor", "warm": true}` once settled; any other shape (`"warm": false`, or a
+lower `held`) means keep the stream playing and poll again.
+
+```sh
+# On the Pi: arm the tap, capture the :9891 reference. tcpdump is a passive
+# listener on the loopback -- it never binds :9891, so it can't collide with
+# outputd's own socket.
 printf 'TAP_ARM {"threshold":0.2}' | sudo -n nc -U -N -w3 /run/jasper-fanin/control.sock
 sudo rm -f /tmp/ref9891.pcap
 sudo nohup tcpdump -i lo -w /tmp/ref9891.pcap udp port 9891 >/dev/null 2>&1 &
@@ -206,15 +223,19 @@ afplay quick-final-leadin.wav
 sudo pkill tcpdump
 printf 'TAP_DISARM' | sudo -n nc -U -N -w3 /run/jasper-fanin/control.sock
 sudo cp /run/jasper-fanin/impulse-tap.jsonl /tmp/tap-events.jsonl
-sudo python3 /tmp/ref9891_pcap_to_detections.py /tmp/ref9891.pcap /tmp/detections.jsonl 0.006
+sudo /opt/jasper/.venv/bin/jasper-route-latency-harness convert-pcap \
+    /tmp/ref9891.pcap /tmp/detections.jsonl --threshold 0.006
 sudo /opt/jasper/.venv/bin/jasper-route-latency-harness analyze \
     --tap-events /tmp/tap-events.jsonl --mic-detections /tmp/detections.jsonl \
     --duration-seconds 75
 ```
 
-The pcap→detections converter re-anchors pcap realtime to `CLOCK_MONOTONIC` via a
-Pi-sampled offset; the `:9891` wire format is headerless interleaved-stereo int16
-@ 48 kHz.
+`warm-check` and `convert-pcap` are `jasper-route-latency-harness` subcommands
+(`jasper/route_latency/warm_check.py`, `jasper/route_latency/ref9891_pcap.py`)
+— committed, tested tree code, not a hand-copied `/tmp` script. `convert-pcap`
+re-anchors pcap realtime to `CLOCK_MONOTONIC` via a Pi-sampled offset; the
+`:9891` wire format is headerless interleaved-stereo int16 @ 48 kHz. `analyze`
+pairs the two evidence streams and prints the measured p50/p95/p99.
 
 ---
 
@@ -542,7 +563,14 @@ conditions"; that section is the single source of truth, this is a pointer.
 
 ---
 
-Last verified: 2026-07-14 (the duplicated USB bridge/state retirement is marked
+Last verified: 2026-08-27 (§3's ad-hoc `/tmp` pcap converter and manual
+STATUS-polling instructions replaced with the committed `jasper-route-latency-harness
+warm-check` / `convert-pcap` subcommands -- `jasper/route_latency/warm_check.py`,
+`jasper/route_latency/ref9891_pcap.py`, pinned by
+`tests/test_route_latency_warm_check.py` /
+`tests/test_route_latency_ref9891_pcap.py`. Scoped to the measurement
+protocol only -- what (if anything) certifies the measured number is out of
+this section's scope and not addressed here). Prior 2026-07-14: the duplicated USB bridge/state retirement is marked
 complete and rechecked against fan-in STATUS + UDC sysfs ownership. Prior
 2026-07-11: §1 gained the certified promotion result
 as current truth and the cert budget was tightened to p95<=40ms/p99<=42ms in
