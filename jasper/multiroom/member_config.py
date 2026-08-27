@@ -23,7 +23,7 @@ outputd's ``dac_content`` lane, picking its channel THERE (outputd
     is OUT of the bonded playback path (the round-trip feeds outputd's
     dac_content lane directly); it keeps producing the normal direct lane —
     which is exactly the inv-B fallback feed — so its config stays
-    byte-for-byte the solo config, rate_adjust=True and all.
+    byte-for-byte the solo config.
   - ACTIVE FOLLOWER (multi-driver, distributed-active Slice 3): NOT this path.
     An active follower relocates Layer A onto its OWN CamillaDSP IN the bonded
     path — it captures the grouping ring
@@ -34,6 +34,18 @@ outputd's ``dac_content`` lane, picking its channel THERE (outputd
     arm), not by ``member_camilla_kwargs`` / ``emit_sound_config``. This
     function only governs the leader bake + the dumb-member solo defaults.
   - Solo / off / invalid: solo defaults (byte-for-byte unchanged).
+
+  EVERY branch above emits ``enable_rate_adjust=False``, not just the
+  leader's. The non-leader sink used to be the ALSA loopback (a real output
+  clock, so ``True`` was a live request there); since ADR-0100 it is Ring B
+  (:data:`jasper.fanin_coupling.RING_PLAYBACK_DEVICE`, the ONE CamillaDSP ->
+  outputd transport), and a ring PCM is an ioplug — alsa-lib reports card -1
+  for every ioplug, so CamillaDSP builds no HCtl and the request cannot be
+  actuated (see ``jasper.active_speaker.camilla_yaml``'s
+  ``DEFAULT_ACTIVE_ENABLE_RATE_ADJUST`` for the same mechanism on the other
+  ring). Requesting ``True`` there is not wrong-but-harmless, it is a
+  standing lie: ``capture_status.rate_adjust`` would echo the request on the
+  websocket while nothing moves. This function no longer asks.
 
 This module owns the decision so every config-apply path — ``/sound``,
 ``/correction``, and the grouping reconciler's bond apply
@@ -70,12 +82,15 @@ def member_camilla_kwargs(
 
     ACTIVE LEADER: ``enable_rate_adjust=False`` + ``playback_pipe_path``
     (the bonded-leader pipe sink). DUMB FOLLOWER and solo / off /
-    invalid: the solo-speaker defaults (``enable_rate_adjust=True``,
+    invalid: the solo-speaker defaults (``enable_rate_adjust=False``,
     ``playback_pipe_path=None``), so those configs are byte-for-byte
     unchanged — the dumb follower's local chain is the inv-B fallback feed,
-    not part of the synced stream. An ACTIVE follower (multi-driver) does NOT
-    use this function: its driver-domain crossover config comes from
-    :mod:`jasper.multiroom.follower_config` (distributed-active Slice 3).
+    not part of the synced stream. ``enable_rate_adjust`` is False there too:
+    that fallback feed's sink is Ring B, an ioplug CamillaDSP cannot actuate
+    rate_adjust on (see the module docstring). An ACTIVE follower
+    (multi-driver) does NOT use this function: its driver-domain crossover
+    config comes from :mod:`jasper.multiroom.follower_config`
+    (distributed-active Slice 3).
 
     Members drop channels in outputd's ChannelPick, never in a local
     CamillaDSP weave.
@@ -101,6 +116,6 @@ def member_camilla_kwargs(
             out["channel_delays_ms"] = (cfg.left_delay_ms, cfg.right_delay_ms)
         return out
     return {
-        "enable_rate_adjust": True,
+        "enable_rate_adjust": False,
         "playback_pipe_path": None,
     }

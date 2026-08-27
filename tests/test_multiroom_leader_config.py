@@ -186,3 +186,51 @@ def test_solo_restore_emit_is_lenient_under_protected_tweeter(tmp_path, monkeypa
         profile_id="grouping-solo-restore",
     )
     assert out.exists()
+
+
+async def test_solo_restore_re_emit_requests_no_rate_adjust(tmp_path, monkeypatch):
+    """The re_emit unwind arm (stash missing/gone) is the one place in this
+    module that calls emit_sound_config directly instead of going through
+    member_camilla_kwargs (see test_solo_restore_emit_is_lenient_under_
+    protected_tweeter for why: un-bonding must always succeed). It must still
+    say enable_rate_adjust=False — this box's local playback sink is Ring B
+    (ADR-0100), an ioplug CamillaDSP cannot actuate rate_adjust on regardless
+    of what the config asks for; see member_config's module docstring."""
+    from jasper.multiroom import leader_config
+
+    monkeypatch.setenv("JASPER_SOUND_PROFILE_PATH", str(tmp_path / "profile.json"))
+    monkeypatch.setenv("JASPER_SOUND_SETTINGS_PATH", str(tmp_path / "settings.json"))
+    config_dir = tmp_path / "configs"
+    solo_restore_path = tmp_path / "grouping_solo_restore.yml"
+    monkeypatch.setattr(leader_config, "CONFIG_DIR", str(config_dir))
+    monkeypatch.setattr(
+        leader_config, "BONDED_CONFIG_PATH", str(config_dir / "grouping_leader.yml")
+    )
+    monkeypatch.setattr(leader_config, "SOLO_RESTORE_PATH", str(solo_restore_path))
+    # No stash — forces the re_emit arm (test_restore_action_re_emits_when_
+    # stash_is_missing_gone_or_pipe_shaped pins the "stash=None -> re_emit"
+    # decision this relies on).
+    monkeypatch.setattr(leader_config, "read_stash", lambda: None)
+    monkeypatch.setattr(leader_config, "_clear_stash", lambda: None)
+
+    # Replace the shared apply engine with a stub that just runs `prepare` —
+    # its locking/validation machinery is unrelated to what this test pins
+    # and would otherwise need a real writer lock path and a CamillaDSP-valid
+    # candidate on disk.
+    async def fake_apply_dsp_config(*, prepare=None, **kwargs):
+        if prepare is not None:
+            prepare()
+
+    monkeypatch.setattr("jasper.dsp_apply.apply_dsp_config", fake_apply_dsp_config)
+
+    class _Cam:
+        async def get_config_file_path(self, *, best_effort=True):
+            return leader_config.BONDED_CONFIG_PATH  # bonded_active -> re_emit
+
+        async def set_config_file_path(self, path, *, best_effort=False):
+            pass
+
+    result = await leader_config.restore_solo_config(camilla_factory=lambda: _Cam())
+
+    assert result == str(solo_restore_path)
+    assert "enable_rate_adjust: false" in solo_restore_path.read_text()
