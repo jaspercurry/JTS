@@ -1468,7 +1468,7 @@ def test_stereo_host_reemit_requires_explicit_passive_layout(
     from jasper.sound.profile import SimpleEq, SoundProfile
 
     profile = SoundProfile(enabled=True, simple_eq=SimpleEq(bass_db=4.0))
-    golden = emit_sound_config(profile, room_peqs=[])
+    golden = emit_sound_config(profile, room_peqs=[], enable_rate_adjust=False)
 
     _persist_topology(_full_range_stereo(), tmp_path, monkeypatch)
     config_dir = tmp_path / "configured"
