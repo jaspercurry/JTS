@@ -64,6 +64,8 @@ from jasper.active_speaker.crossover_v2.session import (
 )
 from jasper.active_speaker.crossover_v2.session_seams import EngineSeams
 
+from tests._async_wait import wait_signalled
+
 
 # --------------------------------------------------------------------------- #
 # the smallest thing that satisfies the five seams
@@ -604,7 +606,7 @@ async def test_a_close_cancelled_mid_release_still_gives_both_slots_back_in_orde
     await session.open()
 
     closing = asyncio.ensure_future(session.close())
-    await volume.releasing.wait()
+    await wait_signalled(volume.releasing, "the release started", producer=closing)
     closing.cancel()
     # A second cancel while the shielded give-back is in flight: a caller that
     # cancels twice must not be obeyed the second time either, or the retry
@@ -632,7 +634,7 @@ async def test_a_cancelled_cleanup_after_a_failed_open_does_not_replace_the_caus
     session, _ = _session(graph=_LoggingGraph(events=events), volume=volume)
 
     opening = asyncio.ensure_future(session.open())
-    await volume.releasing.wait()
+    await wait_signalled(volume.releasing, "the release started", producer=opening)
     opening.cancel()
 
     with pytest.raises(RuntimeError, match="the household is holding it") as caught:
@@ -657,7 +659,7 @@ async def test_a_cancel_during_acquire_still_gives_the_half_taken_claim_back():
     session, _ = _session(graph=_LoggingGraph(events=events), volume=volume)
 
     opening = asyncio.ensure_future(session.open())
-    await volume.acquiring.wait()
+    await wait_signalled(volume.acquiring, "the acquire started", producer=opening)
     opening.cancel()
 
     with pytest.raises(asyncio.CancelledError):
