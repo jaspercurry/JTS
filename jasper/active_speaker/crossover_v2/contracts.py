@@ -96,6 +96,7 @@ __all__ = [
     "QualityStatus",
     "REGIME_NEAR_FIELD",
     "REGIME_REFERENCE_AXIS",
+    "ROUND_RECEIPT_KIND",
     "RealizationStatus",
     "ResponseCurve",
     "RoundReceipt",
@@ -116,6 +117,11 @@ __all__ = [
 #: "the blend record is absent for this round" — the two are different facts
 #: and only the version can separate them.
 SCHEMA_VERSION = 2
+
+#: What a banked round receipt calls itself — the discriminator a store routes
+#: on, so it is named here beside the type that emits it rather than spelled
+#: once in :meth:`RoundReceipt._core` and again at every writer.
+ROUND_RECEIPT_KIND = "jts_crossover_v2_round_receipt"
 
 
 class CrossoverV2FlowError(RuntimeError):
@@ -1349,7 +1355,7 @@ class RoundReceipt:
     def _core(self) -> dict[str, Any]:
         return {
             "schema_version": SCHEMA_VERSION,
-            "kind": "jts_crossover_v2_round_receipt",
+            "kind": ROUND_RECEIPT_KIND,
             "round_id": self.round_id,
             "entry_graph_fingerprint": self.entry_graph_fingerprint,
             "rollback_anchor": dict(self.rollback_anchor),

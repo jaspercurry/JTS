@@ -154,6 +154,16 @@ class _PublishOutcomeUnknown(OSError):
     pass
 
 
+def is_missing(error: CommissioningEvidenceStoreError) -> bool:
+    """Is this refusal *"there is no such artifact"* rather than a failure?
+
+    The one question a reader asks that has an answer other than "raise", so it
+    belongs beside the code it compares rather than re-spelled at each caller.
+    """
+
+    return error.code == CommissioningEvidenceStoreErrorCode.MISSING
+
+
 def _canonical_json(value: Mapping[str, Any]) -> bytes:
     try:
         return json.dumps(

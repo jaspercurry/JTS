@@ -6,7 +6,7 @@
 
 One file on the speaker holds everything a tuning round has to survive a
 process restart, a page reload and the gap between two sessions. Until wave 3
-rank 2 its schema existed only as an 854-line dict literal inside a web
+rank 2 its schema existed only as a dict literal inside a web
 handler — *"a schema writer with no schema"*
 (``docs/REFACTOR-TUNING-2026-08.md`` §3). This module is that schema, and it
 owns **both directions**: :func:`build_conductor_state` assembles the document,

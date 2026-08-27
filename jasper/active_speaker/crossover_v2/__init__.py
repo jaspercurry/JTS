@@ -100,6 +100,9 @@ call and neither extends:
 * :mod:`.analysis_units` — what ``analyze`` can run: fifteen named analyses,
   the ``ProgramAnalysis`` fields each owns, and the gate that names the input a
   bank would have to carry for it to run at all.
+* :mod:`.record_store` — the record seam filled: one durable writer over the
+  write-once evidence bundle and the session's own state file, and the kind
+  table that says where each banked artifact lands.
 
 Offline evaluation, deliberately not a search:
 

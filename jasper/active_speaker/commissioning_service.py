@@ -41,8 +41,8 @@ from .commissioning_evidence_store import (
     EVIDENCE_ROOT,
     CommissioningEvidenceStore,
     CommissioningEvidenceStoreError,
-    CommissioningEvidenceStoreErrorCode,
     complete_relative_path,
+    is_missing,
     isolated_driver_evidence_relative_path,
 )
 from .commissioning_host import (
@@ -87,10 +87,6 @@ class CommissioningServiceError(ValueError):
 
 
 CurrentAuthorityLoader = Callable[[], CommissioningHostAuthoritySnapshot]
-
-
-def _missing(error: CommissioningEvidenceStoreError) -> bool:
-    return error.code == CommissioningEvidenceStoreErrorCode.MISSING
 
 
 def _finite_number(value: Any, *, field_name: str) -> float:
@@ -342,7 +338,7 @@ class CommissioningCaptureService:
             )
             isolated = reopen_isolated(run_id=self.run.run_id)
         except CommissioningEvidenceStoreError as exc:
-            if _missing(exc):
+            if is_missing(exc):
                 raise CommissioningServiceError(
                     "isolated_evidence_incomplete",
                     "complete fixed-axis driver evidence is required first",
@@ -408,7 +404,7 @@ class CommissioningCaptureService:
         try:
             artifact = self.evidence_store.identify_artifact(path)
         except CommissioningEvidenceStoreError as exc:
-            if _missing(exc):
+            if is_missing(exc):
                 return None
             raise
         payload = self.evidence_store.reopen_json_artifact(artifact)

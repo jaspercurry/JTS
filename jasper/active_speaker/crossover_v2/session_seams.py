@@ -206,11 +206,17 @@ class RecordStore(Protocol):
     """Where this session's evidence lands — the one shape, one writer.
 
     Two pairs, because the store holds two things and each must come back out:
-    :meth:`bank` / :meth:`read` for ONE capture record (wave 4's five blocks —
+    :meth:`bank` / :meth:`read` for ONE record (wave 4's five blocks —
     identity · place · stimulus-and-path · honesty · **the curve**), and
     :meth:`persist` / :meth:`read_state` for the session's own durable state
-    (wave 3's ``persist_conductor_state``, today an 854-line function that is
-    *"a schema writer with no schema"*).
+    (wave 3's ``persist_conductor_state``, now a write wrapper over
+    :func:`~.durable_state.build_conductor_state`, which owns the schema).
+
+    **ONE record, not one capture record** (the 2026-08-26 FOLD ruling): the
+    five ``V2FlowSeams`` publishers fold onto :meth:`bank`, discriminated by
+    the record's own ``kind``, so a check, a candidate, a cloud result, a
+    finding set and a round receipt land through the same seam a capture does.
+    Fail-soft stays in a named wrapper at the caller, never in the store.
 
     **The read halves are what make ``analyze`` an offline verb.** Ruling S3: a
     banked session can be re-analyzed by any analysis that did not exist when it
@@ -231,7 +237,7 @@ class RecordStore(Protocol):
     """
 
     async def bank(self, record: Mapping[str, Any]) -> str:
-        """Write one capture record; return the id that finds it again."""
+        """Write one record; return the id that finds it again."""
         raise NotImplementedError
 
     async def read(self, record_id: str) -> Mapping[str, Any] | None:
