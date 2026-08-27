@@ -21,7 +21,12 @@ import pytest
 
 from jasper.active_speaker.crossover_v2.contracts import MEASURE_KIND_BASELINE
 from jasper.active_speaker.crossover_v2.measure_spec import MeasureSpec
-from jasper.active_speaker.crossover_v2.volume_claim import MeasurementVolumeClaim
+from jasper.active_speaker.crossover_v2.session import UNPROVEN_LEVEL
+from jasper.active_speaker.crossover_v2.volume_claim import (
+    MeasurementVolumeClaim,
+    PlanHeldVolumeClaim,
+)
+from jasper.active_speaker.session_volume_plan import SessionVolumePlanError
 from jasper.volume_owner import ClaimKind, VolumeClaimRefused, VolumeOwner
 
 from tests.engine_twin import FakeSeams, open_session
@@ -152,3 +157,142 @@ async def test_a_real_session_drives_the_adapter_through_the_seam():
     assert [r["level_db"] for r in fakes.banked] == [MEASUREMENT_DB]
     assert outcome.record_ids != ()
     assert fader.db == HOUSEHOLD_DB, "close() gave the fader back"
+
+
+# --------------------------------------------------------------------------- #
+# the INTERIM claim — the plan holds the fader, this proves it
+#
+# Bound only while `SessionVolumePlan` still owns the fader. What matters is
+# that the honesty gate stays REAL through that window: a pass-through prove()
+# would let `measure` bank records stamped with a level the speaker was not
+# playing at, and every other assertion here would stay green while it did.
+# --------------------------------------------------------------------------- #
+
+
+class _Plan:
+    """The fader authority this wave: open at a declared level, or not."""
+
+    def __init__(
+        self, declared: float | None = MEASUREMENT_DB, *, ready: bool = True,
+    ) -> None:
+        self.measurement_volume_db = declared
+        self._ready = ready
+        self.asserted = 0
+
+    def assert_ready(self, now: float | None = None) -> None:
+        self.asserted += 1
+        if not self._ready:
+            raise SessionVolumePlanError("no measurement volume is open")
+
+
+def _plan_held(plan: _Plan, fader_db: float | None) -> PlanHeldVolumeClaim:
+    async def _read() -> float | None:
+        return fader_db
+
+    return PlanHeldVolumeClaim(plan, _read)
+
+
+async def test_the_interim_claim_proves_a_fader_that_agrees_with_the_plan():
+    claim = _plan_held(_Plan(), MEASUREMENT_DB)
+
+    await claim.acquire(MEASUREMENT_DB)
+
+    assert await claim.prove() == MEASUREMENT_DB
+
+
+async def test_a_fader_moved_out_from_under_the_plan_does_not_prove():
+    """Condition 2's bar: the honesty gate is real, not a pass-through.
+
+    Something moved the fader while the plan still believes it holds the
+    session's level. `prove` must refuse, because a reading that disagrees is
+    the 8.712 dB shape — a number stamped into a record while the speaker
+    played at another.
+    """
+    claim = _plan_held(_Plan(), MEASUREMENT_DB + 8.712)
+
+    await claim.acquire(MEASUREMENT_DB)
+
+    assert await claim.prove() is None
+
+
+async def test_a_moved_fader_refuses_the_bank_and_not_the_walk():
+    """The refusal reaches `measure` as MS-14's, end to end.
+
+    Driving the real session over the real interim claim: the stimulus still
+    plays, the walk still continues, and what the drift costs is the CLAIM.
+    """
+    claim = _plan_held(_Plan(), MEASUREMENT_DB + 8.712)
+    fakes = FakeSeams().replace(volume=claim)
+
+    async with open_session(fakes, measurement_level_db=MEASUREMENT_DB) as (
+        session, _,
+    ):
+        outcome = await session.measure(MeasureSpec(kind=MEASURE_KIND_BASELINE))
+
+    assert fakes.play.calls, "the stimulus must still have played"
+    assert outcome.record_ids == ()
+    assert fakes.banked == []
+    assert outcome.stimuli[0].incident == UNPROVEN_LEVEL
+
+
+async def test_an_unreadable_fader_does_not_prove():
+    claim = _plan_held(_Plan(), None)
+
+    await claim.acquire(MEASUREMENT_DB)
+
+    assert await claim.prove() is None
+
+
+async def test_a_plan_holding_nothing_proves_nothing():
+    claim = _plan_held(_Plan(declared=None), MEASUREMENT_DB)
+
+    assert await claim.prove() is None
+
+
+async def test_an_acquire_against_a_plan_that_is_not_open_fails_closed():
+    """`assert_ready` is a readable fact, so it is checked rather than trusted."""
+    plan = _Plan(ready=False)
+    claim = _plan_held(plan, MEASUREMENT_DB)
+
+    with pytest.raises(SessionVolumePlanError):
+        await claim.acquire(MEASUREMENT_DB)
+
+    assert plan.asserted == 1
+
+
+async def test_a_session_measuring_at_a_level_the_plan_never_opened_is_refused():
+    """The one-declared-level rule, checked at the seam it enters.
+
+    A session whose declared level is not the plan's would stamp its own
+    number onto captures the plan set a different level for — the five
+    overlapping notions of "the level" this rule deletes.
+    """
+    claim = _plan_held(_Plan(declared=MEASUREMENT_DB), MEASUREMENT_DB)
+
+    with pytest.raises(SessionVolumePlanError):
+        await claim.acquire(MEASUREMENT_DB - 6.0)
+
+
+async def test_the_interim_release_restores_nothing_and_says_so():
+    """Condition 3: a disclosed no-op, and it must not double-restore.
+
+    The plan's drain owns restore this wave. The double-give-back this avoids
+    is why the real claim is not bound yet, so a release that touched the
+    fader here would reintroduce exactly what the option exists to prevent.
+    """
+    fader_reads = 0
+
+    async def _read() -> float | None:
+        nonlocal fader_reads
+        fader_reads += 1
+        return MEASUREMENT_DB
+
+    plan = _Plan()
+    claim = PlanHeldVolumeClaim(plan, _read)
+    await claim.acquire(MEASUREMENT_DB)
+
+    await claim.release()
+    await claim.release()
+
+    assert fader_reads == 0, "release must not even READ the fader"
+    assert plan.asserted == 1, "release must not re-assert the plan"

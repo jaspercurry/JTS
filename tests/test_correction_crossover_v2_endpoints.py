@@ -167,6 +167,19 @@ def test_live_model_error_binding_reports_identity_conflict_to_conductor():
     ) is False
 
 
+class _NoGraphSession:
+    """A tuning session that holds no graph, for the pause-lifecycle tests.
+
+    ``_volume_hooks`` closes the session where it used to release the module
+    global. These tests are about the PAUSE, not the graph, so the session they
+    pass gives back nothing — which is also the real no-op shape for a session
+    that never played a routed stimulus.
+    """
+
+    async def close(self) -> None:
+        return None
+
+
 class _FakeVolCam:
     """A CamillaController stand-in for the session-volume drains."""
 
@@ -7970,7 +7983,7 @@ def test_volume_hooks_hold_pause_from_open_to_every_drain(monkeypatch):
         cam = _FakeVolCam(-15.0)
 
         async def scenario():
-            hooks = v2host._volume_hooks(lambda: cam, _Ctx())
+            hooks = v2host._volume_hooks(lambda: cam, _Ctx(), tuning=_NoGraphSession())
             opened = await hooks.open()
             assert opened is SessionVolumeOpenResult.OPENED
             assert cam.vol == -20.0
@@ -8002,7 +8015,7 @@ def test_volume_hooks_release_pause_when_open_does_not_confirm(monkeypatch):
         session_volume_db = -20.0
 
     async def scenario():
-        hooks = v2host._volume_hooks(lambda: _FakeVolCam(-15.0), _Ctx())
+        hooks = v2host._volume_hooks(lambda: _FakeVolCam(-15.0), _Ctx(), tuning=_NoGraphSession())
         result = await hooks.open()
         assert result == "failed"
         assert not v2host.session_measurement_pause_held()
@@ -8128,7 +8141,7 @@ def _real_hooks_scaffold(monkeypatch):
     class _Ctx:
         session_volume_db = -20.0
 
-    hooks = v2host._volume_hooks(lambda: cam, _Ctx())
+    hooks = v2host._volume_hooks(lambda: cam, _Ctx(), tuning=_NoGraphSession())
     return hooks, plan, cam, log
 
 
