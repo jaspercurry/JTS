@@ -1398,6 +1398,37 @@ def test_load_output_topology_strict_rejects_non_utf8_bytes(
         load_output_topology_strict(path)
 
 
+@pytest.mark.parametrize("device_id", [5, True, 1.5, ["hifiberry_dac8x"], {"id": 1}])
+def test_load_output_topology_strict_rejects_a_non_string_device_id(
+    tmp_path: Path, device_id: object
+) -> None:
+    """The strict loader's contract is that EVERY malformed artifact leaves as
+    its one typed error.
+
+    A truthy non-string `device_id` reached `normalize_output_device_id`'s
+    `.strip()` and raised `AttributeError` — which is not a `ValueError`, so it
+    escaped the loader's own handling and every caller written to that contract.
+    The topology is otherwise valid, so nothing earlier can refuse it.
+    """
+    path = tmp_path / "output_topology.json"
+    path.write_text(
+        json.dumps({
+            "artifact_schema_version": 1,
+            "kind": OUTPUT_TOPOLOGY_KIND,
+            "topology_id": "living_room",
+            "name": "Living room",
+            "status": "draft",
+            "hardware": {**_base_hardware(), "device_id": device_id},
+            "speaker_groups": [],
+            "routing": {},
+        }),
+        encoding="utf-8",
+    )
+
+    with pytest.raises(OutputTopologyError):
+        load_output_topology_strict(path)
+
+
 def test_load_output_topology_strict_allows_missing_as_unconfigured(
     tmp_path: Path,
 ) -> None:
