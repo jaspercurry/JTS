@@ -1379,7 +1379,15 @@ They are not one concern; they are field extraction attached to three phase
 verdicts, and §6 already routes those verdicts — CHECK and MEASURE at
 `:4627-5279`, VERIFY at `:7305-7924`, both → §2. The emitters are the journal
 half of those same rows and move in those same PRs. **No new home, no deletion,
-no third `AnalyzeOutcome` field, and no row of its own in the deletion order.**
+no third `AnalyzeOutcome` field *for the emitters*, and no row of its own in the
+deletion order.**
+
+**Narrowed when W2-c landed, exactly as `cutover-briefs-w2.md` §2.1 says it must
+be.** The ruling above refutes turning the emitters into `analyze`'s journal, on
+the ground that doing so would mean inventing a third field **and** wiring the
+conductor to the engine — a §6 row quietly acquiring W5-b. `AnalyzeOutcome.skipped`
+is neither: it is W2-c's own named deliverable, it carries the not-run disclosure
+and nothing else, and it wires no conductor. The emitters still get no field.
 
 **One sub-question is deferred, deliberately, to the item that can answer it.**
 Once §2's registry exists, the 103 hand-extracted fields and

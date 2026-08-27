@@ -1046,7 +1046,10 @@ async def test_analyze_reports_the_holes_and_needs_no_open_session():
     assert [stub.code for stub in outcome.disclosures] == [
         NEAR_FIELD_SPLICE_NOT_IMPLEMENTED
     ]
-    assert outcome.results == {}
+    # Per record, because that is the shape: this bank's one record reached no
+    # capture, so it produced nothing and every unit says why.
+    assert all(produced == {} for produced in outcome.results.values())
+    assert all(skips for skips in outcome.skipped.values())
 
 
 async def test_analyze_names_each_hole_once_however_many_specs_hit_it():
