@@ -417,8 +417,25 @@ def _fast_lane_selected_tests(
                 "tests/test_wake_training_feature_bank.py",
             ),
         ),
+        (
+            # issue #3142: a module nested one directory deeper than the
+            # package (jasper/cli/doctor/audio_runtime.py) selected only
+            # the package/module arms (test_cli.py, test_audio_runtime.py)
+            # and missed the doctor family's tests/test_doctor_<module>.py
+            # convention entirely. test_doctor_env.py is an unrelated
+            # sibling pulled in only by the family-wide glob, pinning that
+            # the fix covers the whole jasper/cli/doctor/ package, not just
+            # this one file.
+            "jasper/cli/doctor/audio_runtime.py",
+            (
+                "tests/test_audio_runtime.py",
+                "tests/test_cli.py",
+                "tests/test_doctor_audio_runtime.py",
+                "tests/test_doctor_env.py",
+            ),
+        ),
     ],
-    ids=("lane-resolver", "wake-feature-bank-fixtures"),
+    ids=("lane-resolver", "wake-feature-bank-fixtures", "doctor-nested-module"),
 )
 def test_fast_lane_routes_internal_support_files_to_their_guards(
     tmp_path: Path,
