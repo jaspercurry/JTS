@@ -155,7 +155,7 @@ def test_both_chokepoints_resolve_coupling_through_one_helper(monkeypatch):
     # Both chokepoints (the durable apply + the dry-run reconcile) resolve the
     # coupling through the SAME helper (coupling_capture_kwargs_from_env),
     # so the dry-run YAML and the durable apply can never disagree (which would
-    # break unchanged-detection) — and an explicit override threads to both.
+    # break unchanged-detection).
     import inspect
 
     src = inspect.getsource(runtime.load_profile_config)
