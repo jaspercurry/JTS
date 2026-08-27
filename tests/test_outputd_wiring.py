@@ -6,7 +6,6 @@
 from __future__ import annotations
 
 import os
-import re
 import shlex
 import subprocess
 import time
@@ -72,63 +71,38 @@ def _resolve_systemd_unit_env(
     return env
 
 
-def _pcm_block(text: str, name: str) -> str:
-    start = text.index(f"pcm.{name}")
-    tail = text[start:]
-    next_def = re.search(r"^(?:pcm|ctl)\.", tail[len(f"pcm.{name}"):], re.MULTILINE)
-    if next_def:
-        return tail[:len(f"pcm.{name}") + next_def.start()]
-    return tail
+def test_asoundrc_no_longer_declares_any_camilla_to_outputd_lane():
+    """Both Camilla -> outputd snd-aloop lanes are gone, active and passive.
 
-
-def test_asoundrc_declares_outputd_post_dsp_lane_without_dsnoop():
-    """The passive content lane's shape AND its pinned width.
-
-    This pair is `type plug` over slaves that PIN the format, so the slave pin
-    is the only place the lane's width is declared. It must equal
-    DEFAULT_PLAYBACK_FORMAT, the constant every JTS emitter writes into
-    CamillaDSP's `playback: format:`: a narrower slave silently requantizes the
-    whole program on its way into outputd.
-    """
-    from jasper.camilla_config_contract import DEFAULT_PLAYBACK_FORMAT
-
-    rc = _non_comment((REPO / "deploy" / "alsa" / "asoundrc.jasper").read_text())
-    playback = _pcm_block(rc, "outputd_content_playback")
-    capture = _pcm_block(rc, "outputd_content_capture")
-    assert "type plug" in playback
-    assert 'pcm "hw:Loopback,0,6"' in playback
-    assert "type plug" in capture
-    assert 'pcm "hw:Loopback,1,6"' in capture
-    assert "type dsnoop" not in capture
-    assert f"format {DEFAULT_PLAYBACK_FORMAT}" in playback
-    assert f"format {DEFAULT_PLAYBACK_FORMAT}" in capture
-
-
-def test_asoundrc_no_longer_declares_the_active_content_lane():
-    """A roleful box reaches its DAC over the ACTIVE ring
-    (``jts_ring_active_playback``), the ONE legal ACTIVE endpoint. Re-declaring
-    these PCMs would restore a SECOND transport for one lane, which the
-    no-legacy-fallback doctrine refuses.
+    A roleful box reaches its DAC over the ACTIVE ring
+    (``jts_ring_active_playback``) and a stereo box over Ring B; ADR-0100 makes
+    the SHM ring the ONE central transport. Re-declaring either PCM pair would
+    restore a SECOND transport for one lane, which the no-legacy-fallback
+    doctrine refuses. jasper-outputd opens no ALSA capture PCM at all now, so
+    a re-declaration here would have no reader either.
     """
     rc = _non_comment((REPO / "deploy" / "alsa" / "asoundrc.jasper").read_text())
-    # Read guard first: every assertion below is an ABSENCE, so an empty or
-    # comment-only read would satisfy all of them vacuously.
-    assert len(rc) > 1000, f"asoundrc read looks truncated ({len(rc)} chars)"
+    # Positive control FIRST: every assertion below is an ABSENCE, so an empty
+    # or comment-only read would satisfy all of them vacuously. Proving the
+    # reader found the SURVIVING renderer ingress is what rules that out.
+    assert "pcm.shairport_substream" in rc
+    assert 'pcm "hw:Loopback,0,1"' in rc
     for name in (
         "pcm.outputd_active_content_playback",
         "pcm.outputd_active_content_capture",
         "ctl.outputd_active_content_capture",
+        "pcm.outputd_content_playback",
+        "pcm.outputd_content_capture",
+        "ctl.outputd_content_capture",
     ):
         assert name not in rc, f"{name} was re-declared in asoundrc.jasper"
-    # Nothing may claim substream 5 under any alias — the pair stays free.
-    # Deliberately the broader of the two assertions: it fails on any future
-    # re-declaration whatever the PCM is named.
-    assert "subdevice 5" not in rc
-
-    # Positive control: the same read still finds the SURVIVING passive lane,
-    # so a broken reader cannot make the absence assertions pass vacuously.
-    assert "pcm.outputd_content_playback" in rc
-    assert 'pcm "hw:Loopback,1,6"' in _pcm_block(rc, "outputd_content_capture")
+    # Nothing may claim substream 5 or 6 under any alias — the pairs stay free.
+    # Deliberately the broader of the two assertions: a re-declaration fails
+    # here whatever the PCM is named, because a slave has to spell the
+    # substream to reach it. Both halves of both pairs, since a lane needs only
+    # one end to come back.
+    for substream in ("Loopback,0,5", "Loopback,1,5", "Loopback,0,6", "Loopback,1,6"):
+        assert substream not in rc, f"{substream} was re-declared in asoundrc.jasper"
 
 
 def test_active_path_pcms_never_use_plug_or_plughw():

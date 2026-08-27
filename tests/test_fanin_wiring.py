@@ -7,7 +7,7 @@
 These read deploy-time files directly and lock down the production
 renderer graph:
 
-    renderer/test private lanes -> jasper-fanin -> jasper_capture substream 7
+    renderer/test private lanes -> jasper-fanin -> SHM ring
 
 They do not exercise ALSA itself; hardware validation lives on the Pi
 through jasper-doctor and the AirPlay/renderer smoke tests.
@@ -78,13 +78,24 @@ def test_asoundrc_declares_private_renderer_lanes():
         seen.add(expected_slave)
 
 
-def test_asoundrc_capture_reads_fanin_summed_output():
+def test_asoundrc_declares_no_snd_aloop_central_hop():
+    """ADR-0100: the SHM ring is fan-in's ONLY publish path.
+
+    The summed program never reaches an snd-aloop substream, so the dsnoop tap
+    CamillaDSP used to capture (``jasper_capture``) and its plug alias
+    (``jasper_ref``) are DELETED, not merely unread. Re-declaring either would
+    offer a second central transport to a graph that must have exactly one.
+    """
     rc = _non_comment((REPO / "deploy" / "alsa" / "asoundrc.jasper").read_text())
-    capture = _pcm_block(rc, "jasper_capture")
-    assert 'pcm "hw:Loopback,1,7"' in capture
-    assert 'pcm "hw:Loopback,1,0"' not in capture
-    assert "pcm.jasper_ref" in rc
-    assert 'slave.pcm "jasper_capture"' in rc
+    # Positive control FIRST: the assertions below are ABSENCES, so an empty or
+    # comment-only read would satisfy all of them vacuously. Proving the reader
+    # found the SURVIVING renderer ingress is what rules that out.
+    assert 'pcm "hw:Loopback,0,0"' in _pcm_block(rc, "librespot_substream")
+    for name in ("jasper_capture", "jasper_ref"):
+        assert name not in rc, f"{name} was re-declared in asoundrc.jasper"
+    # Nothing may claim substream 7 under any alias — the pair stays free.
+    assert "Loopback,0,7" not in rc
+    assert "Loopback,1,7" not in rc
 
 
 def test_renderer_units_use_private_lanes():
