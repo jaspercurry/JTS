@@ -149,15 +149,12 @@ class StatefileCamillaController:
     CONVERGE a box whose CamillaDSP is stopped instead of aborting on a refused
     websocket (#2664).
 
-    Why that matters, from the jts4 incident: install deliberately stops
-    CamillaDSP before the reconcile when a deploy changes the content lane's
-    wire width (``release_camilla_content_lane_for_format_flip`` in
-    deploy/lib/install/systemd-units.sh) — snd-aloop param-locks the pair to its
-    first opener. The width flip is EXACTLY when the graph must be re-emitted,
-    so the one deploy that needs the reconcile most was the one that could not
-    reach the daemon. It aborted, and install then started CamillaDSP against a
-    statefile still naming the pre-flip graph: ``set_format`` EINVAL, five
-    restarts, ``start-limit-hit``.
+    Why that matters, from the jts4 incident: install could stop CamillaDSP
+    before the reconcile, and the width flip is EXACTLY when the graph must be
+    re-emitted — so the one deploy that needed the reconcile most was the one
+    that could not reach the daemon. It aborted, and install then started
+    CamillaDSP against a statefile still naming the pre-flip graph:
+    ``set_format`` EINVAL, five restarts, ``start-limit-hit``.
 
     This is a TRANSPORT, not a graph choice. The carrier is still resolved from
     the config the statefile already names, so a roleful box re-emits its own

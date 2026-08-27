@@ -143,23 +143,18 @@ pub struct OutputdState {
     started_at: Instant,
     backend: String,
     sink_mode: String,
-    content_pcm: String,
-    /// The DECLARED format of the post-DSP content lane — what the box says
-    /// outputd should ask CamillaDSP's snd-aloop lane for (`Config::
-    /// content_format`, set from `config.content_format.as_str()`). The
-    /// reconciler (`jasper-audio-hardware-reconcile`) emits this key per
-    /// coupling now — `S32_LE` on `loopback`, and `S32_LE` on `shm_ring` too
-    /// by default since the ring wire's resolver defaults wide. `S16_LE`
-    /// remains the value here for an unreconciled box, or a ring box pinned
-    /// narrow (`JASPER_FANIN_RING_WIRE_FORMAT=S16_LE`), not "today always". It
-    /// is what `content.format` reports only UNTIL outputd opens that lane;
-    /// the fake backend and the SHM-ring source never do, so there it is the
-    /// whole answer.
+    /// The DECLARED wire of the post-DSP content hop — the RING's wire, which
+    /// `ShmRingSource` builds its geometry from (`Config::content_format`). The
+    /// reconciler (`jasper-audio-hardware-reconcile`) emits `S32_LE` by
+    /// default, since the ring wire's resolver defaults wide; `S16_LE` means an
+    /// unreconciled box, or one pinned narrow
+    /// (`JASPER_FANIN_RING_WIRE_FORMAT=S16_LE`).
     ///
-    /// Under `shm_ring` the key names no snd-aloop lane at all — it declares
-    /// the RING's wire, which `ShmRingSource` builds its geometry from. That is
-    /// why `shm_ring.format` falls back to this value before the reader
-    /// attaches: the same declaration, read at the other hop.
+    /// It is the whole answer for `content.format`: nothing here negotiates,
+    /// because the ring's own attach is what validates the declaration against
+    /// the writer's header. `shm_ring.format` falls back to this value before
+    /// the reader attaches for the same reason — one declaration, read at the
+    /// other hop.
     declared_content_format: String,
     /// The DECLARED content-hop channel count (`Config::content_channels`) — the
     /// other axis of the same declaration as [`Self::declared_content_format`],
@@ -168,12 +163,6 @@ pub struct OutputdState {
     /// axis has exactly one home, and the cell holds only what the reader
     /// reported.
     declared_content_channels: u64,
-    /// The format the content lane actually NEGOTIATED, read back from the
-    /// installed `hw_params` (`SampleFormat::as_str`, hence `&'static str`).
-    /// Written exactly once, at open, and it is what `content.format` reports
-    /// from then on — a half-flipped box (lane re-pinned on one side only) has
-    /// to be visible as what is RUNNING, not as what someone declared.
-    negotiated_content_format: OnceLock<&'static str>,
     dac_pcm: String,
     /// The registry-DECLARED format of the final hardware edge — what the
     /// reconciler says the DAC's `hw:` device is at. It is what `dac.format`
@@ -394,10 +383,8 @@ impl OutputdState {
             started_at: Instant::now(),
             backend: config.backend.as_str().to_string(),
             sink_mode: config.sink_mode.as_str().to_string(),
-            content_pcm: config.content_pcm.clone(),
             declared_content_format: config.content_format.as_str().to_string(),
             declared_content_channels: u64::from(config.content_channels),
-            negotiated_content_format: OnceLock::new(),
             dac_pcm: config.dac_pcm.clone(),
             declared_dac_format: config.declared_dac_format.as_str().to_string(),
             negotiated_dac_format: OnceLock::new(),
@@ -566,16 +553,6 @@ impl OutputdState {
     /// a value that could change under a reader is worse than a stale one.
     pub fn set_dac_format(&self, format: SampleFormat) {
         let _ = self.negotiated_dac_format.set(format.as_str());
-    }
-
-    /// Record the sample format the content lane negotiated at open.
-    ///
-    /// Set-once for the same reason as [`Self::set_dac_format`]: the ALSA run
-    /// loop calls it once, right after the lane opens, and there is no second
-    /// negotiation to report. A repeat call is ignored rather than allowed to
-    /// move the answer under a reader.
-    pub fn set_content_format(&self, format: SampleFormat) {
-        let _ = self.negotiated_content_format.set(format.as_str());
     }
 
     pub fn mark_period(&self, counters: IoCounters, reference_sequence: u64, clipped_samples: u32) {
@@ -935,6 +912,9 @@ impl OutputdState {
         buf.push(',');
 
         buf.push_str(r#""content":{"#);
+        // The one upstream, and the key that says so — the ring is attached or
+        // this daemon has already parked (ADR-0100). `alsa` names the window
+        // before the ring attaches, not a second route.
         push_kv_str(
             &mut buf,
             "source",
@@ -945,26 +925,10 @@ impl OutputdState {
             },
         );
         buf.push(',');
-        push_kv_str(&mut buf, "pcm", &self.content_pcm);
-        buf.push(',');
-        // NEGOTIATED once outputd has opened the content lane: the format read
-        // back off the installed hw_params, not the declaration that asked for
-        // it. Mirrors `dac.format` one hop upstream, and for the same reason —
-        // the two hops are independent, so a reader needs each lane's OWN truth
-        // to tell a coherent box from a half-flipped one.
-        //
-        // Falls back to the declaration whenever no lane is open: the fake
-        // backend for its whole life, the SHM-ring source (which reads no ALSA
-        // content PCM at all), and the ALSA backend's pre-open window, since the
-        // state socket binds before the lane opens.
-        push_kv_str(
-            &mut buf,
-            "format",
-            self.negotiated_content_format
-                .get()
-                .copied()
-                .unwrap_or(self.declared_content_format.as_str()),
-        );
+        // The DECLARED wire of the content hop. Nothing negotiates it here: the
+        // ring's own attach validates the declaration against the writer's
+        // header, so this is the value that got the ring open.
+        push_kv_str(&mut buf, "format", self.declared_content_format.as_str());
         buf.push(',');
         push_kv_u64(
             &mut buf,
@@ -1020,8 +984,8 @@ impl OutputdState {
         // content source, outputd reads the post-DSP program from an n-slot SHM
         // ping-pong ring, NOT an ALSA capture PCM — so `content.buffer_frames`
         // above is a synthetic period-sized stand-in (neither sink opens a content
-        // PCM under this source — `content_pcm_skipped` is the shared owner of
-        // that decision). This sub-block reports the TRUE Ring B capacity that
+        // PCM at all — ADR-0100 leaves the ring as outputd's one upstream).
+        // This sub-block reports the TRUE Ring B capacity that
         // outputd requires of the writer — n_slots x slot_frames — so the synthetic
         // is clearly labeled and jasper-doctor validates the ring geometry instead
         // of mis-applying the ALSA ">= 2x period" jitter floor (which a bounded
@@ -2240,14 +2204,12 @@ mod tests {
         Config {
             backend: BackendMode::Alsa,
             sink_mode: SinkMode::SingleAlsa,
-            content_pcm: "outputd_content_capture".to_string(),
             content_channels: 2,
             content_format: SampleFormat::S16Le,
             dac_pcm: "outputd_dac".to_string(),
             declared_dac_format: SampleFormat::S16Le,
             dual_dac_a_pcm: None,
             dual_dac_b_pcm: None,
-            dual_require_link: false,
             dual_max_delay_delta_frames: 2,
             sample_rate: 48_000,
             period_frames: 1024,
@@ -2291,7 +2253,6 @@ mod tests {
             // A composite on the direct bridge refuses at parse, so a composite
             // that is running at all is a ring composite.
             ring_active_endpoint: true,
-            content_pcm: String::new(),
             content_channels: 4,
             dac_pcm: "dual_apple_usb_c_dac_4ch".to_string(),
             dual_dac_a_pcm: Some("hw:CARD=A,DEV=0".to_string()),
@@ -2508,7 +2469,7 @@ mod tests {
             // `content.format` was added: the block's prefix is the contract
             // consumers read, so a new field belongs IN this needle, not around
             // it.
-            r#""content":{"source":"alsa","pcm":"outputd_content_capture","format":"S16_LE""#,
+            r#""content":{"source":"alsa","format":"S16_LE""#,
             r#""content_bridge":{"mode":"direct""#,
             r#""dac":{"pcm":"outputd_dac","format":"S16_LE""#,
             r#""sample_rate":48000"#,
@@ -2751,7 +2712,6 @@ mod tests {
 
         let negotiated = OutputdState::new(&test_config());
         negotiated.set_dac_format(SampleFormat::S24_3Le);
-        negotiated.set_content_format(SampleFormat::S24_3Le);
         let j = negotiated.snapshot_json();
         let _ = parse_snapshot_json(&j);
         assert!(
@@ -2792,75 +2752,12 @@ mod tests {
         let j = state.snapshot_json();
         let _ = parse_snapshot_json(&j);
         assert!(
-            j.contains(
-                r#""content":{"source":"alsa","pcm":"outputd_content_capture","format":"S32_LE""#
-            ),
+            j.contains(r#""content":{"source":"alsa","format":"S32_LE""#),
             "declared S32_LE content lane missing from {j}"
         );
         assert!(
             j.contains(r#""dac":{"pcm":"outputd_dac","format":"S16_LE""#),
             "the DAC edge must not inherit the content lane's width in {j}"
-        );
-    }
-
-    #[test]
-    fn snapshot_json_reports_the_negotiated_content_format_once_the_lane_opens() {
-        // What is RUNNING wins over what was declared. This is the half-flipped
-        // box: the reconciler declared a wide lane, the lane came up S16 anyway
-        // (a stale asound slave, an unconverted peer), and STATUS has to say so
-        // rather than repeat the declaration.
-        let state = OutputdState::new(&Config {
-            content_format: SampleFormat::S32Le,
-            ..test_config()
-        });
-
-        state.set_content_format(SampleFormat::S16Le);
-
-        let j = state.snapshot_json();
-        let _ = parse_snapshot_json(&j);
-        assert!(
-            j.contains(
-                r#""content":{"source":"alsa","pcm":"outputd_content_capture","format":"S16_LE""#
-            ),
-            "negotiated S16_LE content lane missing from {j}"
-        );
-    }
-
-    #[test]
-    fn negotiated_content_format_is_recorded_once_and_never_moves_under_a_reader() {
-        // Set-once, same as the DAC edge: there is one negotiation per open, so
-        // a later call must not change the answer a reader already took.
-        let state = OutputdState::new(&test_config());
-
-        state.set_content_format(SampleFormat::S32Le);
-        state.set_content_format(SampleFormat::S16Le);
-
-        assert!(
-            state
-                .snapshot_json()
-                .contains(r#""pcm":"outputd_content_capture","format":"S32_LE""#),
-            "first negotiated content value must stand"
-        );
-    }
-
-    #[test]
-    fn content_and_dac_format_are_reported_as_two_independent_fields() {
-        // One `set_` must never move the other: they are separate hops with
-        // separate declarations, and a consumer diffing them is how a
-        // half-flipped box gets caught.
-        let state = OutputdState::new(&test_config());
-
-        state.set_content_format(SampleFormat::S32Le);
-
-        let j = state.snapshot_json();
-        let _ = parse_snapshot_json(&j);
-        assert!(
-            j.contains(r#""pcm":"outputd_content_capture","format":"S32_LE""#),
-            "content hop must report its own negotiated format in {j}"
-        );
-        assert!(
-            j.contains(r#""dac":{"pcm":"outputd_dac","format":"S16_LE""#),
-            "dac hop must keep its own declaration in {j}"
         );
     }
 
@@ -2963,25 +2860,18 @@ mod tests {
     }
 
     #[test]
-    fn a_skipped_content_lane_reports_one_shape_on_both_sinks() {
-        // P8b item 1a. `PairedCompositeSink` gained the content-PCM skip its
-        // `AlsaBackend` sibling already had, and the design's binding constraint
-        // was that the /state `content` block under a skipped lane be the SAME
-        // shape on both transports — one vocabulary, two sinks — rather than a
-        // second shape invented for the composite.
+    fn the_ring_content_hop_reports_one_shape_on_both_sinks() {
+        // The /state `content` block is ONE vocabulary across both sinks —
+        // never a second shape invented for the composite.
         //
-        // What a skipped lane means at this layer, on either sink: `source` flips
-        // to shm_ring; `format` falls back to the DECLARATION, because no lane
-        // negotiated anything and `run_alsa` therefore never calls
-        // `set_content_format` (its `if let Some(..)` sees the sink's `None`);
-        // and `buffer_frames` is the period-sized SYNTHETIC, not a jitter buffer,
-        // with the true ring capacity carried beside it in `content.ring`.
+        // What the ring hop means at this layer, on either sink: `source` is
+        // shm_ring; `format` is the DECLARATION, because the ring's own attach
+        // is what validates it (nothing here negotiates); and `buffer_frames`
+        // is the period-sized SYNTHETIC, not a jitter buffer, with the true
+        // ring capacity carried beside it in `content.ring`.
         //
-        // Both states are driven identically here — same synthetic negotiated,
-        // no `set_content_format` on either — so any field where the composite
-        // answered differently would show up as a diff. The `pcm` NAME is the one
-        // field that legitimately differs (each sink names its own lane), so it is
-        // compared explicitly rather than being allowed to hide a shape change.
+        // Both states are driven identically here, so any field where the
+        // composite answered differently would show up as a diff.
         let ring = |base: Config| Config {
             content_bridge_mode: ContentBridgeMode::ShmRing,
             shm_ring: Some(crate::config::ShmRingConfig {
@@ -2993,10 +2883,9 @@ mod tests {
         let coherent = OutputdState::new(&ring(test_config()));
         let composite = OutputdState::new(&ring(dual_test_config()));
         // The stand-in `AlsaBackend::new` and `PairedCompositeSink::new` both
-        // report in place of a lane they did not open: `buffer_frames` ==
+        // report in place of a lane neither opens: `buffer_frames` ==
         // `period_frames` (see `synthetic_content_negotiated`, their shared
-        // owner). Neither gets a `set_content_format` call, exactly as `run_alsa`
-        // leaves it when the sink answers `None`.
+        // owner).
         let synthetic = NegotiatedPcm {
             sample_rate: 48_000,
             period_frames: 1024,
@@ -3010,26 +2899,13 @@ mod tests {
         coherent.set_negotiated(synthetic, dac);
         composite.set_negotiated(synthetic, dac);
 
-        let mut a = parse_snapshot_json(&coherent.snapshot_json())["content"].clone();
-        let mut b = parse_snapshot_json(&composite.snapshot_json())["content"].clone();
+        let a = parse_snapshot_json(&coherent.snapshot_json())["content"].clone();
+        let b = parse_snapshot_json(&composite.snapshot_json())["content"].clone();
 
-        // Each sink declares its own lane, and that is the ONLY field allowed to
-        // differ. Asserted positively first so a shape change cannot slip through
-        // as a missing key. The composite declares NONE (#2285 P2 A6: the
-        // reconciler writes explicit-empty, and `env_str` keeps it because it
-        // defaults only when a variable is UNSET), where it used to declare the
-        // deleted snd-aloop ACTIVE capture half.
-        assert_eq!(a["pcm"], "outputd_content_capture");
-        assert_eq!(b["pcm"], "");
-        a["pcm"] = serde_json::Value::Null;
-        b["pcm"] = serde_json::Value::Null;
-        assert_eq!(
-            a, b,
-            "a skipped content lane must report ONE shape on both sinks"
-        );
+        assert_eq!(a, b, "the content hop must report ONE shape on both sinks");
 
-        // And the shape is the skipped one, not merely a matching pair of wrong
-        // blocks: the source flips, the format is the declaration, and
+        // And the shape is the ring's, not merely a matching pair of wrong
+        // blocks: the source names the ring, the format is the declaration, and
         // buffer_frames is the period-sized synthetic sitting beside the ring's
         // true capacity.
         assert_eq!(b["source"], "shm_ring");

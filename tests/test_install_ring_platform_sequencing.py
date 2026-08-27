@@ -142,36 +142,6 @@ def _assert_camilla_restart_stays_after_dsp_reconcile(function_name: str):
     assert "restart_core_camilla_after_dsp_reconcile" not in vulnerable_window
 
 
-def _assert_content_lane_released_before_outputd_restarts(function_name: str):
-    """The width-flip release must precede EVERY step that starts outputd.
-
-    A release that ran later would be useless: the audio-hardware reconciler
-    restarts jasper-outputd itself (`--no-block restart`), and
-    require_outputd_ready restarts it again — either one, with the previous
-    CamillaDSP still pinning the snd-aloop content pair at the old width, fails
-    outputd's open at snd_pcm_hw_params and walks it into
-    StartLimitAction=reboot mid-install.
-    """
-    body = _function_body(
-        SYSTEMD_UNITS_SH.read_text(encoding="utf-8"),
-        function_name,
-    )
-    release = _call_pos(body, "release_camilla_content_lane_for_format_flip")
-    reconcile = body.index("/usr/local/sbin/jasper-audio-hardware-reconcile")
-    outputd_ready = _call_pos(body, "require_outputd_ready")
-    assert release < reconcile < outputd_ready
-
-
-def test_content_lane_released_before_outputd_restarts_in_systemd_units():
-    _assert_content_lane_released_before_outputd_restarts("install_systemd_units")
-
-
-def test_content_lane_released_before_outputd_restarts_in_streambox_units():
-    _assert_content_lane_released_before_outputd_restarts(
-        "start_streambox_runtime_units"
-    )
-
-
 def test_camilla_restart_stays_after_dsp_reconcile_in_systemd_units():
     """Camilla must not restart in the fan-in-restart to DSP-reconcile window.
 

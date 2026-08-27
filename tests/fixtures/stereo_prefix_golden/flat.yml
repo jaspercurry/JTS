@@ -25,7 +25,7 @@ devices:
   playback:
     type: Alsa
     channels: 2
-    device: "outputd_content_playback"
+    device: "jts_ring_playback"
     format: S32_LE
 
 filters:

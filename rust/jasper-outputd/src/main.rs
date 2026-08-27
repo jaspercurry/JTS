@@ -6,8 +6,9 @@
 //!
 //! The default binary mode remains fake so `jasper-outputd --once` is
 //! safe in a developer shell. The systemd unit opts into the real ALSA
-//! transport with `JASPER_OUTPUTD_BACKEND=alsa`, reading
-//! CamillaDSP's post-DSP loopback lane and writing the DAC directly.
+//! transport with `JASPER_OUTPUTD_BACKEND=alsa`, reading CamillaDSP's
+//! post-DSP program off the SHM ring — outputd's one upstream (ADR-0100) —
+//! and writing the DAC directly.
 
 use std::io::{self, Write};
 use std::mem;
@@ -24,8 +25,8 @@ use std::time::{Duration, Instant};
 use alsa::pcm::{State, PCM};
 use anyhow::{Context, Result};
 use jasper_outputd::alsa_backend::{
-    open_playback_pcm, prime_periods, AlsaBackend, ContentRead, FinalSinkStartupConfigError,
-    IoCounters, NegotiatedPcm, PairedCompositeSink,
+    open_playback_pcm, prime_periods, AlsaBackend, FinalSinkStartupConfigError, IoCounters,
+    NegotiatedPcm, PairedCompositeSink,
 };
 use jasper_outputd::config::{BackendMode, Config, SinkMode};
 use jasper_outputd::core::{OutputCore, PeriodReport};
@@ -39,7 +40,6 @@ use signal_hook::consts::signal::{SIGINT, SIGTERM};
 use signal_hook::flag;
 
 const REF_OUTPUT_QUEUE_CAPACITY: usize = 32;
-const MAX_DAC_CONTENT_DRAIN_READS: usize = 8;
 const CHIP_REF_RETRY_INITIAL: Duration = Duration::from_secs(1);
 const CHIP_REF_RETRY_MAX: Duration = Duration::from_secs(30);
 const CHIP_REF_WORKER_POLL: Duration = Duration::from_millis(200);
@@ -288,44 +288,10 @@ impl RuntimeAlsaSink {
         }
     }
 
-    /// The sample format this sink's CONTENT lane negotiated, or `None` when it
-    /// opened no ALSA content PCM at all (the SHM-ring content source) — the one
-    /// case where STATUS keeps echoing the declaration because there is no
-    /// negotiation to report.
-    ///
-    /// BOTH arms forward their sink's own answer unwrapped. While the composite
-    /// arm wrapped its answer in `Some(...)`, a composite could only ever claim a
-    /// negotiated format — which was true while that transport always opened its
-    /// lane, and became a false claim the moment it learned to skip it.
-    fn content_format(&self) -> Option<SampleFormat> {
-        match self {
-            Self::Single(sink) => sink.content_format(),
-            Self::Composite(sink) => sink.content_format(),
-        }
-    }
-
     fn counters(&self) -> IoCounters {
         match self {
             Self::Single(sink) => sink.counters(),
             Self::Composite(sink) => sink.counters(),
-        }
-    }
-
-    fn read_content_period(&mut self, out: &mut [ProgramSample]) -> Result<usize> {
-        match self {
-            Self::Single(sink) => sink.read_content_period(out),
-            Self::Composite(sink) => sink.read_content_period(out),
-        }
-    }
-
-    fn read_content_available(&mut self, out: &mut [ProgramSample]) -> Result<ContentRead> {
-        match self {
-            Self::Single(sink) => sink.read_content_available(out),
-            Self::Composite(_) => {
-                anyhow::bail!(
-                    "read_content_available is only supported by the stereo single-ALSA path"
-                )
-            }
         }
     }
 
@@ -401,12 +367,6 @@ fn run_alsa(
     // The final edge is open and its format is readback-verified: STATUS
     // `dac.format` stops echoing the declaration and reports what is running.
     state.set_dac_format(sink.dac_format());
-    // Same contract one hop upstream. `None` = no ALSA content lane was opened
-    // (SHM-ring source), so `content.format` stays on the declaration rather
-    // than reporting a negotiation that never happened.
-    if let Some(content_format) = sink.content_format() {
-        state.set_content_format(content_format);
-    }
     sink.mark_runtime_status(state);
     // Content/DAC width is carried as data (coherent single DAC of any width);
     // the published reference is always stereo (a wide sink folds to L == R).
@@ -415,7 +375,6 @@ fn run_alsa(
     // The program spine: one i32 period, ingested wide and written wide, with
     // the single quantization happening inside the sink at the DAC edge.
     let mut content_buf = vec![0 as ProgramSample; content_period_samples];
-    let mut content_read_buf = vec![0 as ProgramSample; content_period_samples];
     let mut reference_buf =
         vec![0 as ProgramSample; (config.period_frames as usize) * (CHANNELS as usize)];
     // Ring B: the SHM ping-pong ring content source. Shipped default on
@@ -554,7 +513,6 @@ fn run_alsa(
     let watchdog_interval = watchdog_interval();
     let mut last_watchdog = Instant::now();
     let mut dac_delay_warning_logged = false;
-    let mut content_drain_warning_logged = false;
     let mut reference_sequence = 0u64;
 
     while !shutdown.load(Ordering::Relaxed) {
@@ -563,34 +521,6 @@ fn run_alsa(
         if let Some(src) = dac_content.as_mut() {
             served_from_fifo = src.try_fill_period(&mut content_buf);
             state.mark_dac_content(src.metrics());
-            if served_from_fifo {
-                // The FIFO served this period — still DRAIN the direct
-                // content lane (bounded, non-blocking, discard) so an
-                // upstream writer to the loopback can never stall on a
-                // full ring while the round-trip is active. The drained
-                // data is intentionally discarded; an inv-B fallback
-                // period reads fresh direct content below.
-                //
-                // Best-effort: a hard error on this DISCARDED lane must
-                // NOT crash the daemon while the FIFO audio is healthy
-                // (inv-B — never silence the leader). Swallow it; if the
-                // lane is genuinely broken, the inv-B fallback read below
-                // surfaces it when we actually need the lane. Xruns are
-                // already recovered inside read_content_available.
-                for _ in 0..MAX_DAC_CONTENT_DRAIN_READS {
-                    match sink.read_content_available(&mut content_read_buf) {
-                        Ok(ContentRead::Frames(frames)) if frames > 0 => {}
-                        Ok(_) => break,
-                        Err(e) => {
-                            if !content_drain_warning_logged {
-                                eprintln!("event=outputd.dac_content.drain_failed detail={e:#}");
-                                content_drain_warning_logged = true;
-                            }
-                            break;
-                        }
-                    }
-                }
-            }
         }
         if !served_from_fifo {
             if let Some(src) = shm_ring.as_mut() {
@@ -611,21 +541,32 @@ fn run_alsa(
                 state.mark_shm_ring(src.metrics());
                 read?;
             } else {
-                let _frames_read = sink.read_content_period(&mut content_buf)?;
+                // ADR-0100: the ring-fed CamillaDSP chain is the only upstream
+                // outputd serves. A box that reaches here declared
+                // `JASPER_OUTPUTD_CONTENT_BRIDGE=direct`, so no ring was
+                // attached and there is nothing else to read — it PARKS rather
+                // than playing silence. Park-class (EX_CONFIG 78) because no
+                // restart can change a declaration. Which NAMED park it is
+                // comes from `jasper.control.transport_park` (ADR-0178).
+                return Err(anyhow::anyhow!(
+                    "PARKED: no content upstream. \
+                     JASPER_OUTPUTD_CONTENT_BRIDGE=direct names the retired \
+                     snd-aloop route, which no longer exists, so outputd \
+                     attached no ring and has nothing to read. The SHM ring is \
+                     the one transport (ADR-0100): remove the stale \
+                     JASPER_OUTPUTD_CONTENT_BRIDGE line from \
+                     /var/lib/jasper/outputd.env — an UNDECLARED bridge is the \
+                     ring — or set it to shm_ring."
+                )
+                .context(FinalSinkStartupConfigError));
             }
-            // inv-B fallback for a bonded member: the direct read above is
-            // the full-range stereo program, but a member must still play
-            // ITS channel on a fallback period too. Critically a `sub`
-            // member must NEVER emit full-range to a powered subwoofer — and
-            // the policy STARTS in fallback before the FIFO primes — so apply
-            // the same channel pick (and, for a sub, the LR4 low-pass with
-            // its carried-over filter state) the FIFO path applies. No-op for
-            // solo (dac_content is None); a no-op for non-channel-dropping
-            // picks. Runs before trim/duck/publish so the AEC reference
-            // carries the picked content too (inv-A).
-            if let Some(src) = dac_content.as_mut() {
-                src.apply_pick_to_fallback_period(&mut content_buf);
-            }
+            // The inv-B fallback pick that used to run here is UNREACHABLE and
+            // is gone with the route it belonged to: an armed `dac_content`
+            // lane requires `CONTENT_BRIDGE=direct` (`Config::from_env`), which
+            // attaches no ring, which takes the park arm above. A ring read and
+            // a round-trip lane cannot coexist, so nothing arrives here needing
+            // a channel pick. `DacContentSource::apply_pick_to_fallback_period`
+            // stays with the lane for the #3118 rebuild.
         }
         let trim = if dac_content.is_some() {
             state.dac_content_trim_gain()
@@ -2110,14 +2051,12 @@ mod tests {
         Config {
             backend: BackendMode::Alsa,
             sink_mode: SinkMode::SingleAlsa,
-            content_pcm: "outputd_content_capture".to_string(),
             content_channels: 2,
             content_format: SampleFormat::S16Le,
             dac_pcm: "outputd_dac".to_string(),
             declared_dac_format: SampleFormat::S16Le,
             dual_dac_a_pcm: None,
             dual_dac_b_pcm: None,
-            dual_require_link: false,
             dual_max_delay_delta_frames: 2,
             sample_rate: 48_000,
             period_frames: 128,

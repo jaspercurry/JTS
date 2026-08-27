@@ -147,10 +147,8 @@ RING_A_CHANNELS = 2
 # coupling. The ``shm_ring`` coupling is END-TO-END: fan-in writes Ring A
 # (program.ring), CamillaDSP captures it, and CamillaDSP writes its post-DSP
 # stereo program to Ring B (content.ring) via the ``jts_ring_playback`` ioplug,
-# which jasper-outputd reads one slot per DAC period. Both rings flip together or
-# not at all (the coupling reconciler is the single writer of the pair; a partial
-# flip is fail-closed to loopback/direct). It is a dual-boundary coupling (Ring A
-# capture + the post-DSP playback ring).
+# which jasper-outputd reads one slot per DAC period. It is a dual-boundary
+# coupling (Ring A capture + the post-DSP playback ring).
 #
 # The env keys below are read by the Rust ``jasper-outputd`` daemon
 # (``rust/jasper-outputd/src/config.rs``): ``JASPER_OUTPUTD_CONTENT_BRIDGE`` +
@@ -160,7 +158,6 @@ RING_A_CHANNELS = 2
 # 2-slot latency floor. They are still SEPARATE ring files, so a future coherent
 # operator override can tune Ring A without changing Ring B.
 OUTPUTD_CONTENT_BRIDGE_ENV_VAR = "JASPER_OUTPUTD_CONTENT_BRIDGE"
-OUTPUTD_CONTENT_BRIDGE_DIRECT = "direct"
 OUTPUTD_CONTENT_BRIDGE_SHM_RING = "shm_ring"
 OUTPUTD_RING_PATH_ENV_VAR = "JASPER_OUTPUTD_SHM_RING_PATH"
 DEFAULT_OUTPUTD_RING_PATH = "/dev/shm/jts-ring/content.ring"
@@ -617,27 +614,39 @@ def resolve_ring_slots(raw_slots: str | None) -> int:
     )
 
 
-def resolve_outputd_content_bridge(raw: str | None) -> str:
-    """Normalize a raw ``JASPER_OUTPUTD_CONTENT_BRIDGE`` value.
+#: Every spelling ``Config::from_env`` accepts for the ring, lower-cased. Kept in
+#: lockstep with the Rust match arm (``rust/jasper-outputd/src/config.rs``):
+#: answering a narrower set here would report a box on an alias as OFF the
+#: transport it is demonstrably running.
+_OUTPUTD_RING_BRIDGE_SPELLINGS = frozenset(
+    {OUTPUTD_CONTENT_BRIDGE_SHM_RING, "shmring", "ring"}
+)
 
-    Fail-SAFE to ``direct`` (the byte-identical-to-today outputd content source)
-    on unset, empty, or any unrecognized value. The vocabulary is exactly the
-    Rust daemon's (``config.rs``): ``direct`` (loopback's partner) and
-    ``shm_ring`` (Ring B). Case-insensitive; surrounding whitespace ignored.
 
-    A deleted bridge spelling lands here as an unrecognized value and resolves
-    ``direct``, matching the daemon's own fail-safe arm
-    (``REMOVED_RATE_MATCH_BRIDGE_SPELLINGS``). Do NOT reach for this resolver
-    where a *policy* must reject a stale value: the route-latency policy in
-    :mod:`jasper.audio_runtime_plan` compares the RAW literal precisely so this
-    fail-safe cannot launder a removed bridge into a green low-latency claim.
+def outputd_bridge_is_ring(raw: str | None) -> bool:
+    """Is outputd on the ring, given this box's raw bridge declaration?
+
+    UNDECLARED IS THE RING. ``None`` (key absent) and empty/whitespace both
+    answer True, because that is what the daemon does with them —
+    ``env_str("JASPER_OUTPUTD_CONTENT_BRIDGE", "shm_ring")`` — and this predicate
+    answers what outputd IS RUNNING, not what an operator happened to type. The
+    inverse reading is what made a healthy undeclared box read as a split
+    transport: `check_ring_split_transport` compared a ring GRAPH against a
+    not-ring ANSWER and called a playing speaker silent.
+
+    Everything else answers False, away from the ring: a stale ``direct``, a
+    retired lab spelling, a typo. Each of those makes outputd park (config.rs),
+    so False is also the honest answer about what it is running.
+
+    The accepted set mirrors the daemon's aliases exactly — see
+    :data:`_OUTPUTD_RING_BRIDGE_SPELLINGS`.
+
+    CANNOT SEE A READ FAILURE. Callers that cannot open ``outputd.env`` hand it
+    an empty string, which is indistinguishable from an undeclared key; a caller
+    that must tell those apart has to do so before it asks.
     """
-    if raw is None:
-        return OUTPUTD_CONTENT_BRIDGE_DIRECT
-    value = raw.strip().lower()
-    if value in (OUTPUTD_CONTENT_BRIDGE_DIRECT, OUTPUTD_CONTENT_BRIDGE_SHM_RING):
-        return value
-    return OUTPUTD_CONTENT_BRIDGE_DIRECT
+    declared = (raw or "").strip().lower()
+    return not declared or declared in _OUTPUTD_RING_BRIDGE_SPELLINGS
 
 
 def resolve_outputd_ring_path(raw_path: str | None) -> str:
@@ -684,39 +693,6 @@ def resolve_outputd_ring_slots(raw_slots: str | None) -> int:
         f"{OUTPUTD_RING_SLOTS_MIN}..={OUTPUTD_RING_SLOTS_MAX} — a shear-prone "
         "outputd SHM ring geometry must fail loud, not silently clamp"
     )
-
-
-def ring_pair_intent_is_coherent(
-    coupling_raw: str | None,
-    content_bridge_raw: str | None,
-) -> bool:
-    """True iff the two persisted INTENT tokens are a coherent pair.
-
-    The two must flip together: both ring (``shm_ring`` + ``shm_ring``) or neither
-    (``loopback`` + ``direct``). A PARTIAL flip — one end on the
-    ring and the other on ALSA/direct — is fail-closed everywhere (the reconciler,
-    the artifact binder, the doctor) because it strands one ring end (a silent
-    audio outage: outputd reads a ring nobody writes, or CamillaDSP writes a ring
-    nobody reads). Returns True for the two coherent states, False for a partial.
-
-    **INTENT, and the name says so.** This compares two env strings, each first
-    passed through its own fail-SAFE resolver, and nothing else: no ring header,
-    no conf.d, no daemon STATUS. It cannot see a wire that shears on format,
-    channels, period or slots, a stale on-disk ring file, or a box whose env pair
-    agrees while the loaded CamillaDSP graph does not. It was called
-    ``ring_pair_is_coherent`` until R5b, which reads as a verdict on the ring; the
-    verdict on the WIRE is
-    :func:`jasper.fanin.coupling_reconcile.ring_edge_width_ready` (every
-    declaring end, the loaded CamillaDSP graph included) and the OBSERVED tuple
-    both daemons publish, surfaced at
-    ``/state.audio_graph.coupling.observed``.
-    """
-    coupling = resolve_coupling(coupling_raw)
-    bridge = resolve_outputd_content_bridge(content_bridge_raw)
-    if coupling == COUPLING_SHM_RING:
-        return bridge == OUTPUTD_CONTENT_BRIDGE_SHM_RING
-    # loopback never pairs with the Ring B bridge.
-    return bridge == OUTPUTD_CONTENT_BRIDGE_DIRECT
 
 
 def capture_kwargs_for_coupling(raw: str | None = None) -> dict[str, object]:

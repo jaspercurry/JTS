@@ -88,12 +88,10 @@ def test_outputd_unit_runtime_and_exec_paths():
     assert OUTPUTD_TTS_SOCKET_ENV not in unit
     for expected in [
         'Environment="JASPER_OUTPUTD_BACKEND=alsa"',
-        'Environment="JASPER_OUTPUTD_CONTENT_PCM=outputd_content_capture"',
         'Environment="JASPER_OUTPUTD_DAC_PCM=outputd_dac"',
         'Environment="JASPER_OUTPUTD_PERIOD_FRAMES=1024"',
         'Environment="JASPER_OUTPUTD_CONTENT_BUFFER_FRAMES=4096"',
         'Environment="JASPER_OUTPUTD_DAC_BUFFER_FRAMES=3072"',
-        'Environment="JASPER_OUTPUTD_CONTENT_BRIDGE=direct"',
         'Environment="JASPER_OUTPUTD_CONTROL_SOCKET=/run/jasper-outputd/control.sock"',
     ]:
         assert expected in unit

@@ -29,7 +29,6 @@ from jasper.camilla_config_contract import (
     DEFAULT_PLAYBACK_FORMAT,
     DEFAULT_SAMPLE_RATE,
     DEFAULT_VOLUME_LIMIT_DB,
-    RETIRED_ALOOP_CAPTURE_DEVICE,
     PeqFilter,
     ensure_volume_limit_db,
     resolve_camilla_chunksize,
@@ -428,82 +427,42 @@ def emit_flat_outputd_cutover_config(
     """
 
     from jasper.active_speaker.runtime_contract import flat_graph_muted_outputs
-
-    return emit_sound_config(
-        SoundProfile(enabled=False),
-        # BOTH HALVES MOVE TOGETHER OR NEITHER DOES. This graph's playback is
-        # still the snd-aloop content lane, and its chunk/target/queue are the
-        # loopback-resolved ones — the ioplug pins the ring's period bytes
-        # min==max, so a 1024-frame chunk cannot negotiate Ring A at all. So the
-        # capture stays on the retired tap until the playback half moves.
-        capture_device=RETIRED_ALOOP_CAPTURE_DEVICE,
-        muted_outputs=flat_graph_muted_outputs(topology, width=FLAT_GRAPH_WIDTH),
-        out_path=out_path,
-    )
-
-
-# The ring flat startup graph — the ``shm_ring`` sibling of
-# ``outputd-cutover.yml``. A ring-armed box's statefile seeding
-# (``jasper.active_speaker.runtime_contract.safe_graph_for_current_topology``)
-# must re-seed a RING config on a camilla restart/deploy, not revert to
-# ``outputd-cutover.yml`` (loopback/direct) — that revert is audit finding 5's
-# "built-in revert" (a hand-placed ring config that dies on any camilla restart).
-# This emitter is the product path that produces the ring flat config so seeding
-# has a legal ring graph to select. Named alongside the loopback flat config; the
-# statefile seeder picks between them by the persisted coupling.
-RING_FLAT_CONFIG_NAME = "outputd-cutover-ring.yml"
-
-
-def emit_flat_ring_config(*, out_path: str | Path | None = None) -> str:
-    """Emit the flat outputd startup graph coupled to the SHM rings (shm_ring).
-
-    Identical to :func:`emit_flat_outputd_cutover_config` except the CamillaDSP
-    capture device is ``jts_ring_capture`` (Ring A) and the playback device is
-    ``jts_ring_playback`` (Ring B) — the end-to-end ring topology the
-    ``shm_ring`` coupling arms. Both lanes carry the box's RESOLVED ring wire
-    (:func:`jasper.fanin_coupling.resolve_ring_wire`), which is ``S32_LE`` unless
-    an operator has pinned the box narrow; naming a literal here would be a
-    second answer to a per-box question. The ring graph uses the hardware-validated
-    low-latency geometry (chunk 128 / target 128 / queue 1 / rate_adjust off).
-    This is the config the statefile seeder re-seeds on a ring-armed box so a
-    deploy / camilla restart keeps the rings instead of reverting to loopback.
-    """
-
     from jasper.fanin_coupling import (
-        RING_CAPTURE_DEVICE,
         RING_CAMILLA_CHUNKSIZE,
         RING_CAMILLA_ENABLE_RATE_ADJUST,
         RING_CAMILLA_QUEUELIMIT,
         RING_CAMILLA_TARGET_LEVEL,
-        RING_PLAYBACK_DEVICE,
         resolve_ring_wire,
     )
 
-    # The wire comes from the same resolver ``capture_kwargs_for_coupling``
-    # reads, so the seeded startup graph and a live ``/sound/`` re-emit cannot
-    # declare different widths for the same box. Resolved with NO topology —
-    # this emitter is the SOLO-STEREO flat graph by construction (a roleful box
-    # is seeded from the driver-domain emitters instead), so it has no
-    # per-topology width to ask for.
+    # BOTH HALVES ARE THE RING (ADR-0100) — capture is Ring A and playback is
+    # Ring B, both off the module defaults — so the geometry is the ring's own
+    # hardware-validated low-latency set. The ioplug pins the ring's period bytes
+    # min==max, so a 1024-frame chunk cannot negotiate either ring.
+    #
+    # The wire comes from the same resolver `capture_kwargs_for_coupling` reads,
+    # so the seeded startup graph and a live `/sound/` re-emit cannot declare
+    # different widths for the same box. Resolved with NO topology: this is the
+    # SOLO-STEREO flat graph by construction (a roleful box is seeded from the
+    # driver-domain emitters instead), so it has no per-topology width to ask for.
     wire = resolve_ring_wire()
 
     return emit_sound_config(
         SoundProfile(enabled=False),
-        capture_device=RING_CAPTURE_DEVICE,
         capture_format=wire.sample_format,
-        playback_device=RING_PLAYBACK_DEVICE,
         playback_format=wire.sample_format,
         chunksize=RING_CAMILLA_CHUNKSIZE,
         target_level=RING_CAMILLA_TARGET_LEVEL,
         queuelimit=RING_CAMILLA_QUEUELIMIT,
         enable_rate_adjust=RING_CAMILLA_ENABLE_RATE_ADJUST,
+        muted_outputs=flat_graph_muted_outputs(topology, width=FLAT_GRAPH_WIDTH),
         out_path=out_path,
     )
 
 
-# The flat cutover configs are read by whoever loads them (CamillaDSP, the
-# runtime contract's classifier, the camillagui config browser), not only by a
-# group-jasper daemon, so they are world-readable — wider than the 0640 the
+# The flat cutover config is read by whoever loads it (CamillaDSP, the runtime
+# contract's classifier, the camillagui config browser), not only by a
+# group-jasper daemon, so it is world-readable — wider than the 0640 the
 # ordinary sound configs get from `_atomic_write_text`.
 FLAT_CUTOVER_MODE = 0o644
 
@@ -529,66 +488,20 @@ class FlatCutoverRender:
         return any(item.changed for item in self.rendered)
 
 
-def _roleful_topology(topology: OutputTopology | None) -> bool:
-    """Does this topology drive per-driver (crossover / protected / sub) outputs?
-
-    THE ONE PREDICATE the flat ring config's render may key on. It is deliberately
-    ``requires_roleful_graph`` and deliberately NOT ``topology_supports_shm_ring``:
-    ring eligibility is about whether a ring CAN be armed, and ring v2's later
-    N-channel rung makes exactly the roleful boxes eligible — so keying the render
-    on eligibility would start writing a solo-stereo full-range graph onto
-    crossover boxes at precisely the moment the ring goes live there. Rolefulness
-    is about what the graph would DRIVE, which is the property the file's safety
-    depends on and which no later rung inverts.
-
-    Fails SAFE toward "roleful" only in the sense that an absent topology is not
-    roleful (nothing is declared, so nothing is crossed over) — that is the fresh
-    box, which is exactly where the flat stereo graph is correct.
-    """
-    if topology is None:
-        return False
-    from jasper.active_speaker.runtime_contract import classify_output_contract
-
-    return classify_output_contract(topology).requires_roleful_graph
-
-
 def render_flat_cutover_configs(
     *,
     config_dir: str | Path | None = None,
     topology: OutputTopology | None = None,
 ) -> FlatCutoverRender:
-    """Write both flat startup configs, WRITE-ON-CHANGE. The single writer.
+    """Write the flat startup config, WRITE-ON-CHANGE. The single writer.
 
-    ``outputd-cutover.yml`` (the loopback flat startup graph, width-matched to
-    the saved topology) and ``outputd-cutover-ring.yml`` (its ``shm_ring``
-    sibling, INERT until a coupling arms the rings but required on disk so a
-    ring-armed box re-seeds a ring graph instead of reverting to loopback).
+    ``outputd-cutover.yml`` — the flat startup graph, width-matched to the saved
+    topology and coupled to the rings at both halves (ADR-0100). There is one
+    file: the ``shm_ring`` sibling this used to write beside it collapsed into
+    it when the ring became the only transport, so a deploy or CamillaDSP
+    restart can no longer re-seed a box onto a graph its transport cannot serve.
 
-    **The ring sibling is written only on a NON-ROLEFUL box** (see
-    :func:`_roleful_topology`). It is a solo-stereo FULL-RANGE graph, and on a
-    crossover box that is full-range content routed to a tweeter — which is why
-    a roleful topology is refused the render. A roleful box's ring graph comes
-    from the active-speaker emitters, which carry the per-driver channels and
-    mutes; it is not this file with a different name.
-
-    THE GATE SKIPS THE WRITE; IT DOES NOT DELETE. Nothing here removes an
-    ``outputd-cutover-ring.yml`` that a previous non-roleful render already
-    wrote, and re-running on the now-roleful topology skips the write again
-    rather than clearing it. So a box that becomes roleful AFTER a ring render
-    keeps that full-range file on disk until something else removes it. That is
-    a KNOWN RESIDUAL, not a claim that it is cleaned up; the rung that gives a
-    roleful box its own ring graph is R7b in
-    ``docs/HANDOFF-audio-graph-consolidation.md``, which is where removing it
-    belongs.
-
-    What the residual cannot do is get SELECTED:
-    ``safe_graph_for_current_topology`` reaches the ring branch only when the
-    contract is not roleful, so the selection gate refuses the file on exactly
-    the boxes this render gate refuses to write it for. It does stay VISIBLE to
-    anything that lists the config directory — a live camillagui picker is the
-    case that makes the residual worth naming rather than leaving implicit.
-
-    THREE callers must produce byte-identical files or the box's graph depends
+    THREE callers must produce a byte-identical file or the box's graph depends
     on which one ran last: ``deploy/install.sh`` at deploy time,
     ``jasper-audio-hardware-reconcile`` at boot / udev / topology-save, and
     ``jasper-output-topology-reset``. They all reach this one function through
@@ -631,8 +544,6 @@ def render_flat_cutover_configs(
     entries: list[tuple[str, str]] = [
         (BASE_CONFIG_PATH.name, emit_flat_outputd_cutover_config(topology=topology)),
     ]
-    if not _roleful_topology(topology):
-        entries.append((RING_FLAT_CONFIG_NAME, emit_flat_ring_config()))
     rendered: list[RenderedFlatConfig] = []
     for name, text in entries:
         path = directory / name

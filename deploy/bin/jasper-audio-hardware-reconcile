@@ -1317,7 +1317,6 @@ converge_runtime_graph() {
             --topology "$OUTPUT_TOPOLOGY_PATH" \
             --statefile "$CAMILLA_STATEFILE" \
             --flat-config "${CAMILLA_CONF_DIR}/outputd-cutover.yml" \
-            --ring-flat-config "${CAMILLA_CONF_DIR}/outputd-cutover-ring.yml" \
             --write-statefile 2>&1
     )"; then
         log_event "runtime_graph" \

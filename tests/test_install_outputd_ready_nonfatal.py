@@ -155,21 +155,22 @@ def test_recovery_surface_is_wired_after_systemd_units_in_main():
     )
 
 
-def test_the_readiness_probe_keys_its_content_pcm_on_the_bridge_not_the_sink():
+def test_the_readiness_probe_makes_no_content_lane_claim():
     """#2285 P2 (A6/A8 fallout): the probe carried a SECOND copy of doctor's rule.
 
     It derived the expected `content.pcm` from `sink_mode` + ACTIVE_CHANNELS and
     demanded `outputd_active_content_capture` from a composite or active box.
-    That lane is deleted (#2534) and the hardware reconciler writes
-    explicit-EMPTY for both shapes, so post-A6 the probe would have failed —
-    WARNing "jasper-outputd is not ready" on every deploy to every armed roleful
-    box, jts.local included. Non-fatal by the tests above, and therefore exactly
-    the kind of false alarm that teaches an operator to ignore the real one.
+    That lane is deleted, and a second copy of a rule is what let this one go
+    stale: it would have WARNed "jasper-outputd is not ready" on every deploy to
+    every armed roleful box, jts.local included. Non-fatal by the tests above,
+    and therefore exactly the kind of false alarm that teaches an operator to
+    ignore the real one.
 
-    Two halves, so a partial fix cannot pass: the retired name must not be
-    DEMANDED anywhere in the installer, and the probe must gate its comparison
-    on `content.source` — the bridge is what decides whether a content PCM is
-    opened at all.
+    Under the one transport there is no content PCM to compare at all, so the
+    probe owns the DAC edge and nothing else; `check_outputd_service` owns the
+    content hop and runs later in this same install. Both halves are pinned so a
+    partial fix cannot pass: the retired name is demanded nowhere in the
+    installer, and the probe makes no content claim of its own.
     """
     text = installer_text()
 
@@ -182,8 +183,14 @@ def test_the_readiness_probe_keys_its_content_pcm_on_the_bridge_not_the_sink():
     assert demands == [], demands
 
     body = _require_outputd_ready_body(text)
-    assert 'content.get("source") != "shm_ring"' in body, body
-    assert "JASPER_OUTPUTD_ACTIVE_CHANNELS" not in body, body
+    code = "\n".join(
+        line for line in body.splitlines() if not line.lstrip().startswith("#")
+    )
+    for claim in ("content", "JASPER_OUTPUTD_ACTIVE_CHANNELS"):
+        assert claim not in code, (claim, code)
+    # ...and it still checks the edge it does own, so "no content claim" cannot
+    # be satisfied by a probe that checks nothing.
+    assert '"backend"' in code and '"dac"' in code, code
 
 
 def _require_outputd_ready_body(text: str) -> str:

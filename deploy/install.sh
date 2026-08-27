@@ -940,14 +940,6 @@ while time.monotonic() < deadline:
         # snd-aloop name) and runs later in this same install via
         # run_doctor_summary. Keeping a second copy of that rule here is what
         # let this one go stale in the first place.
-        content = data.get("content", {})
-        if content.get("source") != "shm_ring":
-            if content.get("pcm") != "outputd_content_capture":
-                raise RuntimeError(
-                    f"content.pcm={content.get('pcm')!r}, expected "
-                    f"'outputd_content_capture' for content.source="
-                    f"{content.get('source')!r} (sink_mode={sink_mode!r})"
-                )
         sys.exit(0)
     except Exception as e:
         last_error = e
@@ -1083,28 +1075,34 @@ ensure_output_hardware_state() {
 _render_outputd_cutover_configs() {
     # `jasper-sound render-flat-cutover` wraps
     # jasper.sound.camilla_yaml.render_flat_cutover_configs — the ONE writer of
-    # these two files. The root reconciler (jasper-audio-hardware-reconcile) and
+    # this file. The root reconciler (jasper-audio-hardware-reconcile) and
     # jasper-output-topology-reset call the same command, so the graph a box
     # boots cannot depend on which writer ran last. An inline heredoc here is
     # exactly how a second spelling gets born.
     /opt/jasper/.venv/bin/jasper-sound render-flat-cutover
+
+    # The ring sibling collapsed into outputd-cutover.yml (ADR-0100), and the
+    # renderer only SKIPS writing files — it never removes one. A box upgraded
+    # across the collapse keeps a stale full-range outputd-cutover-ring.yml that
+    # nothing selects but the camillagui config browser still lists. Remove it
+    # here, on the one deploy path that owns these bytes. Best-effort: a failed
+    # unlink is cosmetic, never a failed deploy.
+    rm -f "${CAMILLA_CONF}/outputd-cutover-ring.yml" 2>/dev/null || true
 }
 
 render_outputd_cutover_config() {
     # Design call for #27: generate the seeded flat startup config through the
-    # production outputd graph, with the active DAC profile's Camilla floor, not
-    # a bypass or a hand-edited static YAML. The active-speaker runtime contract
-    # below still decides whether flat is legal for the saved topology.
+    # production outputd graph, not a bypass or a hand-edited static YAML. The
+    # active-speaker runtime contract below still decides whether flat is legal
+    # for the saved topology.
     #
-    # Also renders the RING flat startup config (outputd-cutover-ring.yml), the
-    # shm_ring sibling. It is INERT until a coupling arms the rings (loopback
-    # coupling selects the plain cutover), but it MUST exist on disk so a
-    # ring-armed box's statefile seeding can re-seed a ring graph instead of
-    # reverting to loopback (audit finding 5). Rendering it every deploy keeps
-    # the ring graph's fixed low-latency geometry current alongside the loopback
-    # config's active-DAC latency floor.
+    # The active DAC profile's Camilla floor is deliberately NOT applied to this
+    # graph: both its halves are the SHM ring, and the ioplug pins the ring's
+    # period bytes min==max, so a profile floor would fail the open rather than
+    # raise it. The floor still reaches every emit whose playback is an ordinary
+    # ALSA device.
     local output
-    echo "  Rendering outputd flat startup configs (loopback DAC floor + ring geometry)"
+    echo "  Rendering outputd flat startup config (ring geometry)"
     if ! run_captured_command output _render_outputd_cutover_configs; then
         return 1
     fi
@@ -1117,15 +1115,10 @@ ensure_outputd_camilla_statefile() {
     # incomplete, and any topology with a tweeter/protected role park instead.
     local output
     echo "  Checking outputd Camilla statefile against active-speaker runtime contract"
-    # --ring-flat-config names the shm_ring sibling; runtime-safe-graph reads the
-    # persisted coupling from fanin.env (no --coupling passed) and selects the ring
-    # config only when the box is ring-armed. Default (loopback) stays on the plain
-    # cutover config, byte-for-byte as before.
     if ! run_captured_command output \
         /opt/jasper/.venv/bin/jasper-active-speaker runtime-safe-graph \
         --statefile /var/lib/camilladsp/outputd-statefile.yml \
         --flat-config "${CAMILLA_CONF}/outputd-cutover.yml" \
-        --ring-flat-config "${CAMILLA_CONF}/outputd-cutover-ring.yml" \
         --write-statefile; then
         return 1
     fi

@@ -2,9 +2,9 @@
 Description=Jasper final output owner
 Documentation=file:///opt/jasper/docs/HANDOFF-speaker-output-reference.md
 After=sound.target
-# In local transport-pipe mode, outputd owns the read side of CamillaDSP's File
-# playback pipe. Start it before Camilla so Camilla never blocks on an absent
-# reader during boot/reload.
+# outputd owns the read side of Ring B, the SHM ring CamillaDSP writes its
+# post-DSP program into (ADR-0100). Start it before Camilla so Camilla never
+# blocks on an absent reader during boot/reload.
 Before=jasper-camilla.service
 
 StartLimitIntervalSec=300
@@ -68,12 +68,13 @@ RuntimeDirectoryMode=0750
 
 EnvironmentFile=/etc/jasper/jasper.env
 Environment="JASPER_OUTPUTD_BACKEND=alsa"
-Environment="JASPER_OUTPUTD_CONTENT_PCM=outputd_content_capture"
 Environment="JASPER_OUTPUTD_DAC_PCM=outputd_dac"
 Environment="JASPER_OUTPUTD_PERIOD_FRAMES=1024"
 Environment="JASPER_OUTPUTD_CONTENT_BUFFER_FRAMES=4096"
 Environment="JASPER_OUTPUTD_DAC_BUFFER_FRAMES=3072"
-Environment="JASPER_OUTPUTD_CONTENT_BRIDGE=direct"
+# JASPER_OUTPUTD_CONTENT_BRIDGE is deliberately UNSET here: undeclared IS the
+# one transport (ADR-0100), and a baseline that named the retired route would
+# park every box that has not been reconciled since.
 Environment="JASPER_OUTPUTD_CONTROL_SOCKET=/run/jasper-outputd/control.sock"
 # Optional operator retune file. Keep this after the packaged defaults so
 # outputd and jasper-apply-airplay-mode agree when DAC buffer sizing is
@@ -100,7 +101,7 @@ EnvironmentFile=-/var/lib/jasper/grouping-outputd.env
 # without consuming Restart=on-failure/StartLimitAction; the
 # audio-hardware udev reconciler reset-failed+starts outputd when a
 # recognized DAC role returns. Camilla is intentionally not gated here:
-# in the outputd cutover topology it writes only to snd-aloop.
+# in the outputd cutover topology it writes only to Ring B, never to a DAC.
 ExecCondition=/bin/sh -c 'backend="$${JASPER_OUTPUTD_BACKEND:-alsa}"; card="$${JASPER_AUDIO_DAC_CARD:-}"; id="$${JASPER_AUDIO_DAC_ID:-unknown}"; if [ "$$backend" = "fake" ] || [ -z "$$card" ] || [ -e "/proc/asound/$$card" ]; then exit 0; fi; echo "event=outputd.output_device_gate.park reason=missing_dac output_dac_id=$$id output_dac_card=$$card outputd_backend=$$backend" >&2; exit 1'
 # On an outputd crash, refresh the output-hardware env before systemd's
 # built-in Restart=on-failure retry. The helper skips normal stops and
@@ -108,20 +109,6 @@ ExecCondition=/bin/sh -c 'backend="$${JASPER_OUTPUTD_BACKEND:-alsa}"; card="$${J
 # plus no-block outputd retry, then parks on a repeated config exit. It uses
 # --no-restart for the reconcile itself so that reconciler never controls
 # jasper-outputd from inside this unit's stop transaction.
-#
-# It also owns the one exit-1 class the restart ladder above cannot resolve:
-# a content-lane open that keeps failing. The first such failures restart
-# normally — that open is how outputd waits for CamillaDSP's half of the
-# snd-aloop pair on boot and on a width-flip deploy. The same failure is
-# permanent in two shapes: a peer locked at another width (the PASSIVE lane,
-# pair 6), or — since P9-C deleted the ACTIVE lane's pair-5 PCM definitions —
-# a roleful box that is not ring-armed naming a PCM that no longer exists. On
-# the 4th consecutive failure the helper stops the unit out-of-band (leaving
-# start 5 of the burst unspent) and records the reason and the fix in
-# /run/jasper-outputd-content-lane.state. Recovery depends on which lane it
-# was, and the record names the right one: fix the width for the passive lane,
-# or re-arm the ACTIVE ring for a roleful box; then
-# `systemctl restart jasper-outputd`.
 ExecStopPost=-/usr/local/sbin/jasper-outputd-failure-reconcile
 ExecStart=/opt/jasper/bin/jasper-outputd
 

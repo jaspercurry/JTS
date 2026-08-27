@@ -387,16 +387,14 @@ sudo /usr/local/sbin/jasper-wifi-guardian --reason manual  # guardian only
   seam, `_tick()` the pure policy under test.
 - `deploy/bin/jasper-audio-hardware-reconcile` (+ unit and udev rule) — the same
   event-driven shape for output DAC roles, and `deploy/bin/jasper-outputd-failure-reconcile`,
-  outputd's `ExecStopPost=` hook that parks repeated `EX_CONFIG=78` exits and a
-  four-times-failing content-lane open instead of looping into
-  `StartLimitAction=reboot`. Both are owned by
-  [HANDOFF-hotplug-resilience.md](HANDOFF-hotplug-resilience.md); the one thing
-  that belongs here is that the park record
-  (`/run/jasper-outputd-content-lane.state`) has ONE reader,
-  `jasper/control/content_lane_state.py`, feeding two surfaces that therefore
-  cannot disagree: `/state.resilience.content_lane` and doctor's
-  `check_outputd_content_lane_park`, which FAILs on a park and repeats the
-  record's lane-specific `action` verbatim.
+  outputd's `ExecStopPost=` hook that parks repeated `EX_CONFIG=78` exits
+  instead of looping into `StartLimitAction=reboot`. Both are owned by
+  [HANDOFF-hotplug-resilience.md](HANDOFF-hotplug-resilience.md). The one-reader
+  shape that belongs here is `jasper-camilla-recover`'s: its park record has
+  ONE reader, `jasper/control/camilla_recover_state.py`, feeding two surfaces
+  that therefore cannot disagree — `/state.resilience.camilla_recover` and
+  doctor's `check_camilla_recover_park`, which FAILs on a park and repeats the
+  record's `action` verbatim.
 - `deploy/modprobe.d/snd-aloop.conf` — single-card config
   (`enable=1 index=6 id=Loopback pcm_substreams=8`).
 - Tests: `tests/test_watchdog.py` (sentinel contract),

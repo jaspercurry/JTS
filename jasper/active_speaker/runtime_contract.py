@@ -37,7 +37,6 @@ import yaml
 from jasper.atomic_io import atomic_write_text
 from jasper.audio_measurement.evidence_identity import NormalizedActiveRawIdentity
 from jasper.log_event import log_event
-from jasper.sound.camilla_yaml import RING_FLAT_CONFIG_NAME
 
 if TYPE_CHECKING:
     from jasper.bass_extension.profile import BassExtensionProfile
@@ -119,16 +118,9 @@ from .profile import (
 
 logger = logging.getLogger(__name__)
 
+# The ONE flat outputd startup graph. It is a RING graph: the ring is the only
+# transport (ADR-0100), so there is no sibling to re-seed instead of.
 DEFAULT_FLAT_OUTPUTD_CONFIG = Path("/etc/camilladsp/outputd-cutover.yml")
-# The ``shm_ring`` sibling of the flat outputd cutover config. A ring-armed box
-# (JASPER_FANIN_CAMILLA_COUPLING=shm_ring) MUST re-seed its statefile to this ring
-# config on a camilla restart/deploy, not to the loopback flat config above — that
-# revert is audit finding 5's "built-in revert" (a hand-placed ring config that any
-# camilla restart silently reverts to loopback). Emitted by
-# jasper.sound.camilla_yaml.emit_flat_ring_config; installed by install.sh next to
-# outputd-cutover.yml. The graph selector picks between the two by the persisted
-# coupling (see ``safe_graph_for_current_topology``'s ``coupling`` argument).
-DEFAULT_RING_FLAT_OUTPUTD_CONFIG = Path("/etc/camilladsp") / RING_FLAT_CONFIG_NAME
 DEFAULT_CAMILLA2_STATEFILE = Path("/var/lib/camilladsp/crossover-statefile.yml")
 
 GRAPH_FLAT_FULL_RANGE = "flat_full_range"
@@ -4731,7 +4723,6 @@ def safe_graph_for_current_topology(
     current_config_path: str | Path | None = None,
     preferred_config_path: str | Path | None = None,
     flat_config_path: str | Path = DEFAULT_FLAT_OUTPUTD_CONFIG,
-    ring_flat_config_path: str | Path = DEFAULT_RING_FLAT_OUTPUTD_CONFIG,
     parked_config_path: str | Path | None = None,
     coupling: str | None = None,
     applied_baseline_path: str | Path | None = None,
@@ -4744,23 +4735,14 @@ def safe_graph_for_current_topology(
 ) -> SafeGraphDecision:
     """Select the only safe persisted CamillaDSP graph for this topology.
 
-    ``coupling`` is the persisted fan-in -> CamillaDSP coupling
-    (``JASPER_FANIN_CAMILLA_COUPLING``). When it resolves to ``shm_ring`` AND an
-    explicit valid passive-stereo topology is ring-eligible, the selected flat
-    graph is the RING flat config (``ring_flat_config_path``) instead of the
-    loopback ``flat_config_path`` — so a ring-armed box's deploy / CamillaDSP
-    restart re-seeds a ring config instead of reverting to loopback (audit
-    finding 5). A ``None`` or non-ring coupling preserves the loopback flat
-    selection byte-for-byte.
-
     **A ROLEFUL box's ring is a different question, and this function answers it
-    differently.** The flat branch picks between two PRE-RENDERED files, because
-    a flat graph is the same on every box. A roleful box's graph is per-speaker —
+    differently.** The flat branch selects one PRE-RENDERED file, because a flat
+    graph is the same on every box. A roleful box's graph is per-speaker —
     its crossover, its corrections — so there is nothing to pick between: the
     graphs that carry it (the applied baseline, the staged all-muted startup) are
-    emitted by the commissioning path, and after an arm they are RE-EMITTED
-    naming the ring, because ``resolve_output_layout`` is the single place that
-    chooses the active endpoint device. So the roleful branches below are
+    emitted by the commissioning path, naming the ACTIVE ring, because
+    ``resolve_output_layout`` is the single place that chooses the active
+    endpoint device. So the roleful branches below are
     unchanged and correct on an armed box — they preserve or select whatever the
     box's own graphs declare.
 
@@ -4959,53 +4941,10 @@ def safe_graph_for_current_topology(
         )
 
     if topology_allows_flat_dac_graph(contract):
-        # Ring-armed box: re-seed the RING flat config, not the loopback one, so a
-        # camilla restart/deploy keeps the rings (audit finding 5). Fail-SAFE: the
-        # loopback flat config below is the fallback whenever the ring path is not
-        # taken — it does NOT restore audio on an armed box (outputd still reads
-        # Ring B), but it prevents a camilla crash-loop and keeps the box
-        # doctor-visible so the operator can disarm; the coupling reconciler's own
-        # activation gate is where a truly unarm-able ring is caught. A non-ring
-        # coupling skips the ring path entirely (loopback flat, byte-for-byte).
-        #
-        # Gate the ring path on the FULL topology-ring-eligibility predicate
-        # (topology_supports_shm_ring), not just `not requires_roleful_graph`: the
-        # predicate additionally excludes composite (dual-Apple child_devices) and
-        # explicit-mono topologies, which the STEREO ring cannot carry — a 4-ch
-        # composite is not a full-range stereo program. (A ROLEFUL composite is
-        # not reachable in this branch at all: it requires a roleful graph and is
-        # seeded from the driver-domain emitters. Its post-crossover program
-        # rides the ACTIVE ring since P8b item 1b — a different transport, gated
-        # by active_ring_channels_for_topology, never by this predicate.)
-        # Without this, a PASSIVE composite box carrying a stale
-        # coupling=shm_ring would seed a stereo-ring flat config it cannot play.
-        # This is the promised "seeder consults the predicate" consultation.
-        from jasper.fanin_coupling import COUPLING_SHM_RING, resolve_coupling
-
-        if resolve_coupling(coupling) == COUPLING_SHM_RING and (
-            topology_supports_shm_ring(topology)
-        ):
-            ring_fallback = classify_bass_extension_graph(
-                topology,
-                evidence_source="persisted_candidate",
-                candidate_kind="explicit",
-                candidate_path=Path(ring_flat_config_path),
-                **authority,
-            )
-            if ring_fallback.allowed:
-                return SafeGraphDecision(
-                    status="select_flat",
-                    selected_config_path=str(ring_flat_config_path),
-                    reason=(
-                        "saved topology is an explicit passive stereo layout "
-                        "and is ring-eligible; box is ring-armed "
-                        "(coupling=shm_ring)"
-                    ),
-                    topology_contract=contract,
-                    current_graph=current_graph,
-                    preferred_graph=preferred_graph,
-                    fallback_graph=ring_fallback,
-                )
+        # ONE flat graph. It used to choose between a loopback flat config and a
+        # ring sibling by the persisted coupling; under one audio transport
+        # (ADR-0100) the flat graph IS the ring graph, so there is nothing to
+        # choose and no way to re-seed a box off its transport.
         fallback = classify_bass_extension_graph(
             topology,
             evidence_source="persisted_candidate",

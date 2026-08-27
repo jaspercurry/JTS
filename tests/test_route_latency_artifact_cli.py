@@ -7,6 +7,8 @@ from __future__ import annotations
 import json
 import hashlib
 
+import pytest
+
 from jasper.audio_runtime_plan import build_audio_runtime_plan
 from jasper.cli import route_latency_artifact
 
@@ -30,8 +32,10 @@ def _usb_plan():
 
 
 def _usb_plan_with_legacy_transport_error():
-    # A REMOVED/unknown outputd bridge literal (a partial flip without a
-    # matching shm_ring coupling) makes the USB low-latency plan error.
+    # A retired outputd bridge literal. outputd parks on it (ADR-0100), so the
+    # box is not on the transport the low-latency claim was measured over and
+    # the plan refuses to certify it. UNDECLARED would NOT error — that is the
+    # one transport — which is why the fixture has to state the retired value.
     return build_audio_runtime_plan(
         base_env={"JASPER_AUDIO_ROUTE_PROFILE": "usb_low_latency_48k"},
         outputd_env={"JASPER_OUTPUTD_CONTENT_BRIDGE": "rate_match"},
@@ -169,16 +173,21 @@ def test_build_artifact_refuses_runtime_plan_errors(monkeypatch):
         duration_seconds=30 * 60,
     )
 
-    try:
+    # The PLAN is the subject, not the sentence: pin that the refusal carries
+    # the plan's own route-policy errors, and that the plan produced one. A
+    # substring match on the remedy prose pinned the retired bridge's name and
+    # went stale with it.
+    plan_errors = _usb_plan_with_legacy_transport_error().route_policy_errors
+    assert len(plan_errors) == 1, plan_errors
+
+    with pytest.raises(ValueError) as excinfo:
         route_latency_artifact.build_route_latency_artifact_from_metrics(
             metrics,
             impulse_spacing_jittered=True,
             route_health_ok=True,
         )
-    except ValueError as e:
-        assert "requires JASPER_OUTPUTD_CONTENT_BRIDGE=direct" in str(e)
-    else:  # pragma: no cover - explicit assertion message
-        raise AssertionError("runtime-plan errors did not block artifact build")
+
+    assert all(error in str(excinfo.value) for error in plan_errors)
 
 
 def test_main_writes_quick_validation_warn_artifact(monkeypatch, tmp_path, capsys):

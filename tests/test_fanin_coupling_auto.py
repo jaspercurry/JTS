@@ -889,14 +889,14 @@ def test_fresh_install_ring_geometry_defaults_match_the_doc_table():
 
 def test_fresh_install_ring_geometry_emits_the_doc_table_values():
     """The same §2 ring-geometry values as they actually land in the emitted
-    CamillaDSP ring config (``emit_flat_ring_config`` — the config the statefile
-    seeder re-seeds on a ring-armed box). Pins the values end-to-end through the
+    CamillaDSP flat config (``emit_flat_outputd_cutover_config`` — the config the
+    statefile seeder re-seeds). Pins the values end-to-end through the
     emitter, not just the constants, so a wiring change that dropped one can't slip
     past. Hardware-free: a pure YAML-text emit, no CamillaDSP process.
     """
-    from jasper.sound.camilla_yaml import emit_flat_ring_config
+    from jasper.sound.camilla_yaml import emit_flat_outputd_cutover_config
 
-    text = emit_flat_ring_config()
+    text = emit_flat_outputd_cutover_config()
     assert "chunksize: 128" in text
     assert "target_level: 128" in text
     assert "queuelimit: 1" in text

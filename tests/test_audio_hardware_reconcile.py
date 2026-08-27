@@ -2494,8 +2494,9 @@ def test_reconcile_dac_change_with_floor_delta_takes_full_path(
         "--reason",
         "test",
         # Stored DAC id differs from the detected apple dongle -> dac_env_changed;
-        # asound is pre-rendered for card A so render_changed stays 0; the route
-        # profile supplies a coincident content-buffer floor delta.
+        # asound is pre-rendered for card A so render_changed stays 0; the
+        # dongle's declared floor lands in an empty outputd.env, which is the
+        # coincident floor delta.
         initial_env=(
             "JASPER_AUDIO_DAC_ID=A\n"
             "JASPER_AUDIO_DAC_CARD=A\n"
@@ -2510,7 +2511,8 @@ def test_reconcile_dac_change_with_floor_delta_takes_full_path(
     assert "JASPER_AUDIO_DAC_ID=apple_usb_c_dongle" in env_text
     # The floor delta really was coincident with the DAC change.
     new_outputd_env = (tmp_path / "outputd.env").read_text(encoding="utf-8")
-    assert "JASPER_OUTPUTD_CONTENT_BUFFER_FRAMES=1536" in new_outputd_env
+    assert "JASPER_CAMILLA_TARGET_LEVEL=1536" in new_outputd_env
+    assert "JASPER_OUTPUTD_PERIOD_FRAMES=128" in new_outputd_env
     commands = _systemctl_log(tmp_path)
     # Full path: voice stops and the AEC reconciler is re-run.
     assert "stop jasper-voice.service" in commands
@@ -2918,7 +2920,17 @@ def test_reconcile_operator_env_override_survives_reconciler(tmp_path: Path):
     assert "JASPER_OUTPUTD_PERIOD_FRAMES=128" in outputd_env
 
 
-def test_reconcile_usb_low_latency_route_emits_content_buffer(tmp_path: Path):
+def test_reconcile_usb_low_latency_route_leaves_the_content_buffer_alone(
+    tmp_path: Path,
+):
+    """The route's content-buffer pin does not survive the one transport.
+
+    It sized outputd's ALSA content capture, which no longer exists: outputd
+    reads the ring (ADR-0100), and this box declares no bridge, which IS the
+    ring. So the route emits no pin and the packaged default stands — the same
+    disposition the default corrected route already had, reported on the floor
+    line rather than silently.
+    """
     result = _run_reconcile(
         tmp_path,
         APPLE_LISTING,
@@ -2929,8 +2941,14 @@ def test_reconcile_usb_low_latency_route_emits_content_buffer(tmp_path: Path):
 
     assert result.returncode == 0, result.stderr
     outputd_env = (tmp_path / "outputd.env").read_text(encoding="utf-8")
-    assert "JASPER_OUTPUTD_CONTENT_BUFFER_FRAMES=1536" in outputd_env
-    assert "outputd_content_buffer_frames=1536" in result.stderr
+    assert not _outputd_env_key_present(
+        outputd_env, "JASPER_OUTPUTD_CONTENT_BUFFER_FRAMES"
+    )
+    assert "outputd_content_buffer_frames=4096" in result.stderr
+    # The route's LIVE floor keys still land, so this is the one axis that
+    # dropped rather than the route failing to apply.
+    assert "JASPER_CAMILLA_TARGET_LEVEL=1536" in outputd_env
+    assert "JASPER_OUTPUTD_PERIOD_FRAMES=128" in outputd_env
 
 
 def test_reconcile_refusal_preserves_env_and_leaves_every_service_running(
@@ -3576,10 +3594,10 @@ def test_reconcile_renders_the_width_matched_cutover_and_is_idempotent(
     assert first_event["changed"] == "yes"
 
     cutover = conf_dir / "outputd-cutover.yml"
-    ring = conf_dir / "outputd-cutover-ring.yml"
     # Width-matched: the mono topology claims output 0, so channel 1 is muted.
     assert "as_out1_commission_mute" in cutover.read_text(encoding="utf-8")
-    assert ring.exists()
+    # ONE flat config: its `shm_ring` sibling collapsed into it (ADR-0100).
+    assert not (conf_dir / "outputd-cutover-ring.yml").exists()
     assert cutover.stat().st_mode & 0o777 == 0o644
     before = (cutover.stat().st_mtime_ns, cutover.read_bytes())
 
@@ -3730,11 +3748,9 @@ def test_reconcile_emits_the_wide_content_format_on_an_armed_ring_box(
     harness diverges them, and there is no test-only override to close that gap
     without touching real system paths. The pin is exercised instead at the
     direct-call level, where the resolver (or its file inputs) can be
-    monkeypatched: tests/test_fanin_coupling.py,
+    monkeypatched: tests/test_fanin_coupling.py, and
     tests/test_audio_runtime_plan.py's shm_ring transport-coherence tests
-    (monkeypatch jasper.fanin_coupling.resolve_ring_wire), and
-    tests/test_install_content_lane_format_flip.py (monkeypatches
-    jasper.fanin.coupling_reconcile.FANIN_ENV_PATH onto its own tmp fanin.env).
+    (monkeypatch jasper.fanin_coupling.resolve_ring_wire).
 
     What this test still proves: the reconciler correctly PLUMBS
     content_lane_format_for_coupling's answer into

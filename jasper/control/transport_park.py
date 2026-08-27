@@ -9,8 +9,8 @@ ring cannot serve **parks loudly** — doctor FAIL, ``/state``, web banner —
 naming its tracked issue. [ADR-0178](../../docs/adr/0178-every-shape-the-ring-cannot-serve-parks-under-its-own-name.md)
 names the four shapes and why each is a class; this module is the one place
 that answers *which* park a box is in, so the three operator/household
-surfaces cannot disagree about it (the shape ``content_lane_state`` and
-``camilla_recover_state`` already use for their own out-of-band records).
+surfaces cannot disagree about it (the shape ``camilla_recover_state``
+already uses for its own out-of-band record).
 
 **Eligibility is read, never restated.** ``ring_channels_for_topology`` /
 ``active_ring_channels_for_topology`` in

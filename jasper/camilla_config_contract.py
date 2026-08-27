@@ -18,7 +18,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Iterable, Mapping
 
-from jasper.fanin_coupling import RING_CAPTURE_DEVICE
+from jasper.fanin_coupling import RING_CAPTURE_DEVICE, RING_PLAYBACK_DEVICE
 
 
 # Capture is Ring A, aliased rather than respelled so the emitters' no-kwargs
@@ -30,11 +30,16 @@ DEFAULT_CAPTURE_DEVICE = RING_CAPTURE_DEVICE
 # has to name it: the flat cutover graph, whose playback half has not moved yet.
 # It dies with `deploy/alsa/asoundrc.jasper`.
 RETIRED_ALOOP_CAPTURE_DEVICE = "plug:jasper_capture"
-# Playback matches the outputd topology. Generated correction and
-# sound-profile configs must keep Camilla's playback target on the
-# post-DSP outputd loopback lane; otherwise applying a profile would
-# route music around jasper-outputd while TTS still uses outputd.
-DEFAULT_PLAYBACK_DEVICE = "outputd_content_playback"
+# Playback is Ring B, aliased for the same reason capture is aliased to Ring A:
+# the ring is the only CamillaDSP -> outputd transport (ADR-0100), so a
+# generated correction or sound-profile config must name the lane outputd
+# actually reads. Routing a profile anywhere else would take music around
+# jasper-outputd while TTS still went through it.
+DEFAULT_PLAYBACK_DEVICE = RING_PLAYBACK_DEVICE
+# The snd-aloop playback half ADR-0100 retired — the twin of
+# RETIRED_ALOOP_CAPTURE_DEVICE, and the key the outputd-capture pairing below is
+# still written against. It dies with `deploy/alsa/asoundrc.jasper`.
+RETIRED_ALOOP_PLAYBACK_DEVICE = "outputd_content_playback"
 ACTIVE_OUTPUTD_PLAYBACK_DEVICE = "outputd_active_content_playback"
 DEFAULT_OUTPUTD_CAPTURE_DEVICE = "outputd_content_capture"
 ACTIVE_OUTPUTD_CAPTURE_DEVICE = "outputd_active_content_capture"
@@ -81,8 +86,10 @@ DRIVER_DOMAIN_PAIR_TRIM_FILTER = "pair_balance_trim"
 
 # The post-DSP ALSA transport's two halves, paired. RING devices are DELIBERATELY
 # ABSENT and this is a decision, not an omission: a ring has no outputd capture
-# PCM at all — outputd reads the ring FILE directly (`skip_content_pcm`), so
-# there is no second half to pair. Adding an entry would invent a snd-aloop lane
+# PCM at all — outputd reads the ring FILE directly, so there is no second half
+# to pair. What is left in the map is the RETIRED snd-aloop pair, kept only so a
+# box that has not reconciled onto the ring still reports a coherent account of
+# the lane it names. Adding an entry would invent a snd-aloop lane
 # that nothing opens, and `transport_coherence_report` reads the ABSENCE as
 # meaningful: a Camilla graph naming a ring under a LOOPBACK plan has no
 # registered capture. What that means then depends on WHICH ring — the stereo
@@ -96,7 +103,7 @@ DRIVER_DOMAIN_PAIR_TRIM_FILTER = "pair_balance_trim"
 # hard-exited when the lookup missed — stopped asking in the same commit; a
 # roleful box declares no content PCM at all now.
 _OUTPUTD_CAPTURE_BY_PLAYBACK_DEVICE = {
-    DEFAULT_PLAYBACK_DEVICE: DEFAULT_OUTPUTD_CAPTURE_DEVICE,
+    RETIRED_ALOOP_PLAYBACK_DEVICE: DEFAULT_OUTPUTD_CAPTURE_DEVICE,
 }
 
 
@@ -432,6 +439,14 @@ def parse_camilla_devices_config(text: str) -> dict[str, Any]:
     and ALSA endpoints. Ambiguous duplicate ``devices`` or direct
     ``volume_limit`` keys omit the limit so safety callers fail closed.
 
+    ``queuelimit`` and ``enable_rate_adjust`` join the direct subset because they
+    are half the RING's CamillaDSP-side contract (queue 1 / rate_adjust off — a
+    blocking slot handshake gives the rate controller nothing to adjust to), and
+    a drift pin that read only chunk/target would have called a seed correct with
+    either of them moved. ``enable_rate_adjust`` is the one BOOL here; anything
+    that is not ``true``/``false`` omits the key rather than guessing, like every
+    other field.
+
     ``capture_format`` / ``playback_format`` join ``*_device`` / ``*_channels``
     in the per-lane subset because the ring's width gate
     (``jasper.fanin.coupling_reconcile.ring_edge_width_ready``) has to judge
@@ -508,11 +523,22 @@ def parse_camilla_devices_config(text: str) -> dict[str, Any]:
         key = key.strip()
         value = _clean_yaml_scalar(raw_value)
 
-        if is_direct and key in {"samplerate", "chunksize", "target_level"}:
+        if is_direct and key in {
+            "samplerate",
+            "chunksize",
+            "target_level",
+            "queuelimit",
+        }:
             try:
                 result[key] = int(value)
             except ValueError:
                 continue
+            continue
+
+        if is_direct and key == "enable_rate_adjust":
+            lowered = value.strip().lower()
+            if lowered in {"true", "false"}:
+                result[key] = lowered == "true"
             continue
 
         if is_direct and key == "volume_limit":

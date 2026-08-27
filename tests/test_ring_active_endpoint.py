@@ -1612,8 +1612,8 @@ def test_the_coupling_warn_names_the_recovery_ladder_and_never_the_forbidden_rin
         lambda *a, **k: COUPLING_SHM_RING,
     )
     monkeypatch.setattr(
-        "jasper.fanin_coupling.resolve_outputd_content_bridge",
-        lambda raw: OUTPUTD_CONTENT_BRIDGE_SHM_RING,
+        "jasper.env_file.read_value",
+        lambda text, key: OUTPUTD_CONTENT_BRIDGE_SHM_RING,
     )
     monkeypatch.setattr(
         "jasper.fanin_coupling.ring_active_endpoint_armed", lambda env=None: False
@@ -1670,8 +1670,8 @@ def test_the_coupling_warn_on_an_armed_box_names_the_forward_ladder_not_a_rollba
         lambda *a, **k: COUPLING_SHM_RING,
     )
     monkeypatch.setattr(
-        "jasper.fanin_coupling.resolve_outputd_content_bridge",
-        lambda raw: OUTPUTD_CONTENT_BRIDGE_SHM_RING,
+        "jasper.env_file.read_value",
+        lambda text, key: OUTPUTD_CONTENT_BRIDGE_SHM_RING,
     )
     monkeypatch.setattr(
         "jasper.fanin_coupling.ring_active_endpoint_armed", lambda env=None: True
@@ -2748,40 +2748,32 @@ def test_the_capture_device_comparison_names_the_quiet_trap_not_every_graph():
         playback=RING_ACTIVE_PLAYBACK_DEVICE,
     ) == ()
 
-    # CONTROL 2 — an ordinary PASSIVE box on the paired snd-aloop lane is clean,
-    # and a fully armed one is too. The passive pair replaces the "fully
-    # rolled-back box" this control used to use: that box's sink was the ACTIVE
-    # snd-aloop lane, whose outputd capture pairing P2/A6 deleted, so it is now
-    # an error and can no longer say "the check is not blanket". The default
-    # pair is the one loopback shape that still HAS both halves registered.
-    from jasper.camilla_config_contract import (
-        DEFAULT_OUTPUTD_CAPTURE_DEVICE,
-        DEFAULT_PLAYBACK_DEVICE,
-    )
-
-    assert _coherence_errors(
-        coupling="loopback",
-        capture=RETIRED_ALOOP_CAPTURE_DEVICE,
-        playback=DEFAULT_PLAYBACK_DEVICE,
-        outputd_env={"JASPER_OUTPUTD_CONTENT_PCM": DEFAULT_OUTPUTD_CAPTURE_DEVICE},
-    ) == ()
+    # CONTROL 2 — the fully armed ring pair is clean, on both capture halves a
+    # box can present.
     assert _coherence_errors(
         coupling="shm_ring",
         capture=RING_CAPTURE_DEVICE,
         playback=RING_ACTIVE_PLAYBACK_DEVICE,
         outputd_env=armed_env,
     ) == ()
-    # ...and the same paired sink with RING A on the capture half. This is the
-    # shape the retired HALF-moved-graph guard called an error. It is not one:
-    # fan-in serves Ring A whatever the persisted token says (ADR-0100), so
-    # CamillaDSP captures real audio, plays into the paired snd-aloop lane, and
-    # outputd reads it — the box PLAYS, and no contradiction may be reported.
-    assert _coherence_errors(
-        coupling="loopback",
-        capture=RING_CAPTURE_DEVICE,
-        playback=DEFAULT_PLAYBACK_DEVICE,
-        outputd_env={"JASPER_OUTPUTD_CONTENT_PCM": DEFAULT_OUTPUTD_CAPTURE_DEVICE},
-    ) == ()
+
+    # CONTROL 3 — the retired snd-aloop pair, on BOTH capture halves a box can
+    # present it with. The Ring A half is the shape the retired HALF-moved-graph
+    # guard called an error and this comparison must not: fan-in serves Ring A
+    # whatever the persisted token says (ADR-0100), so a Ring A capture is the
+    # correct half and only the PLAYBACK side of this pair is retired.
+    from jasper.camilla_config_contract import (
+        DEFAULT_OUTPUTD_CAPTURE_DEVICE,
+        RETIRED_ALOOP_PLAYBACK_DEVICE,
+    )
+
+    for capture_half in (RETIRED_ALOOP_CAPTURE_DEVICE, RING_CAPTURE_DEVICE):
+        assert _coherence_errors(
+            coupling="loopback",
+            capture=capture_half,
+            playback=RETIRED_ALOOP_PLAYBACK_DEVICE,
+            outputd_env={"JASPER_OUTPUTD_CONTENT_PCM": DEFAULT_OUTPUTD_CAPTURE_DEVICE},
+        ) == (), capture_half
 
 
 def test_every_mid_sequence_state_is_silence_or_coherent_never_wrong_audio():

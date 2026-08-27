@@ -577,15 +577,14 @@ def test_outputd_dual_apple_sink_is_fail_closed_and_final_sink_only():
     assert "SinkMode::Composite" in config_rs
     assert '"composite" | "dual_apple"' in config_rs
     assert "JASPER_OUTPUTD_DUAL_DAC_A_PCM" in config_rs
-    # A composite on the direct bridge is a parse-time refusal. The refusal
-    # ITSELF is owned by config.rs's
-    # `a_composite_sink_on_the_direct_bridge_refuses_an_undeclared_content_pcm`,
+    # A PASSIVE composite is a parse-time refusal. The refusal ITSELF is owned
+    # by config.rs's `a_passive_composite_parks_and_a_roleful_one_does_not`,
     # which calls `Config::from_env` and reads the error — the right altitude,
     # and the reason there is no mirror of its wording here. What is pinned
-    # here is what that test cannot see: the deleted snd-aloop ACTIVE capture
-    # half must not come back as a default, and the ring arm must stay exempt
-    # or an armed composite cannot start.
-    assert '(SinkMode::Composite, ContentBridgeMode::ShmRing) => ""' in config_rs
+    # here is what that test cannot see: the discriminator is the ACTIVE-ring
+    # endpoint marker (a roleful composite must still start), and the deleted
+    # snd-aloop ACTIVE capture half must not come back as a default.
+    assert "sink_mode == SinkMode::Composite && !ring_active_endpoint" in config_rs
     assert '"outputd_active_content_capture"' not in _non_comment_rust(config_rs)
     assert "dual_apple_requires_pre_dsp_tts" not in main_rs
     assert "run_alsa_dual_apple" not in main_rs
@@ -603,9 +602,9 @@ def test_outputd_dual_apple_sink_is_fail_closed_and_final_sink_only():
 #
 # STATIC checks because `PairedCompositeSink` cannot be constructed without two
 # live ALSA PCMs. The Rust unit tests cover the pure decisions (`xrun_policy`,
-# `baseline_relatch_decision`, `delay_delta_check`,
-# `composite_ring_arm_link_ok`, `prime_periods`); these pin the WIRING between
-# them, which is what a plausible-looking rewrite would silently break.
+# `baseline_relatch_decision`, `delay_delta_check`, `prime_periods`); these pin
+# the WIRING between them, which is what a plausible-looking rewrite would
+# silently break.
 # ---------------------------------------------------------------------------
 
 
@@ -853,32 +852,32 @@ def test_composite_baseline_relatch_is_bounded_by_magnitude_not_by_count():
     assert "delay_baseline_relatches >" not in _non_comment_rust(alsa_rs)
 
 
-def test_a_composite_may_not_arm_the_ring_with_an_unlinked_child_pair():
-    """#2255: `link=ok` is an arm-time precondition for the SHM ring.
+def test_a_composite_may_not_be_driven_with_an_unlinked_child_pair():
+    """#2255: `link=ok` is a precondition for driving a composite at all.
 
     The composite's recovery model is built on `snd_pcm_link` — group prepare,
-    group re-prime, one atomic group start — so an armed unlinked composite is
-    a box whose recovery model does not hold; it keeps the loopback transport.
-    Arm-time only: the global `JASPER_OUTPUTD_DUAL_REQUIRE_LINK` default is
-    untouched, so an aloop composite is unaffected.
+    group re-prime, one atomic group start — so an unlinked pair is a box whose
+    recovery model does not hold. It used to gate only the RING ARM, because
+    the pair could stay on the snd-aloop transport instead; under one audio
+    transport (ADR-0100) there is nothing to stay on, so the gate is
+    unconditional and the box parks.
     """
     alsa_rs = (REPO / "rust" / "jasper-outputd" / "src" / "alsa_backend.rs").read_text()
     new_body = _non_comment_rust(
         _rust_fn_body(alsa_rs, "impl PairedCompositeSink", "pub fn new(")
     )
-    assert "composite_ring_arm_link_ok(skip_content_pcm, linked)" in new_body
+    assert "if !linked {" in new_body
     # Park-class (EX_CONFIG 78), not the restart ladder: whether two devices
     # link is a property of the devices, so every restart answers the same.
-    refusal = _rust_fn_body(
-        new_body, None, "if !composite_ring_arm_link_ok(skip_content_pcm, linked)"
-    )
+    refusal = _rust_fn_body(new_body, None, "if !linked {")
     assert "final_sink_startup(" in refusal
-    assert "event=outputd.dual_apple.ring_arm_refused" in refusal
+    assert "event=outputd.dual_apple.unlinked_pair_refused" in refusal
     # And the gate is asked BEFORE the sink is handed back.
-    assert new_body.index("composite_ring_arm_link_ok(") < new_body.index("Ok(Self {")
-    # The global default is untouched.
+    assert new_body.index("if !linked {") < new_body.index("Ok(Self {")
+    # The knob that used to make this optional is gone with it — an unlinked
+    # composite has no route left where it is merely a warning.
     config_rs = (REPO / "rust" / "jasper-outputd" / "src" / "config.rs").read_text()
-    assert 'env_bool("JASPER_OUTPUTD_DUAL_REQUIRE_LINK", false)' in config_rs
+    assert "JASPER_OUTPUTD_DUAL_REQUIRE_LINK" not in config_rs
 
 
 def test_composite_child_xruns_are_attributed_per_child_in_state():
@@ -995,139 +994,39 @@ def test_outputd_composite_children_take_the_declared_edge_width():
     assert "SampleFormat::S32Le" not in dac_format_fn
 
 
-def _composite_content_open_is_guarded(new_body: str) -> bool:
-    """Is `PairedCompositeSink::new`'s content open behind the shared skip?
+def test_neither_outputd_sink_opens_a_content_pcm():
+    """ADR-0100: the ring is outputd's one upstream, so no sink opens an ALSA
+    content capture PCM at all.
 
-    Factored out so the guard below and its positive control run the SAME
-    predicate.
-    """
-    body = _non_comment_rust(new_body)
-    if "let skip_content_pcm = content_pcm_skipped(config);" not in body:
-        return False
-    # Exactly one content open exists in the constructor at all, so "not in the
-    # skip arm" is the same statement as "in the else arm".
-    if body.count("Direction::Capture") != 1:
-        return False
-    # The decisive check: the skip arm opens NOTHING.
-    then_arm = _rust_fn_body(body, None, "if skip_content_pcm ")
-    if "PCM::new" in then_arm:
-        return False
-    return body.index("if skip_content_pcm {") < body.index("Direction::Capture")
-
-
-def test_outputd_composite_skips_the_content_pcm_on_a_ring_box():
-    """The composite sink honours the content-PCM skip its coherent sibling
-    already had, off ONE shared predicate.
-
-    Under the `shm_ring` content source the run loop reads the ring and never
-    calls `read_content_period`, and the `outputd_active_content_*` PCMs no
-    longer exist, so a composite that still opened its aloop lane fails the open
-    outright — exit 1, `Restart=on-failure`, and on the 4th consecutive
-    content-lane failure `jasper-outputd-failure-reconcile` parks the unit out
-    of band. The skip keeps an ARMED composite off that path, so it plays.
-
-    Static for the same reason as the edge-width guard above: neither `new` can
-    be constructed without live ALSA PCMs, and the Rust unit tests cover the
-    pure pieces.
+    Static because neither `new` can be constructed without live ALSA PCMs.
+    The whole-file capture count is the invariant: a re-introduced lane on
+    either sink shows up here whatever it is called.
     """
     alsa_rs = (REPO / "rust" / "jasper-outputd" / "src" / "alsa_backend.rs").read_text()
     main_rs = (REPO / "rust" / "jasper-outputd" / "src" / "main.rs").read_text()
 
-    # ONE predicate, defined once and read by both sinks. The definitions read
-    # `(config: &Config)`, so they are not call sites; each count below is
-    # exactly the two `new`s.
-    assert "fn content_pcm_skipped(config: &Config) -> bool {" in alsa_rs
-    assert _non_comment_rust(alsa_rs).count("content_pcm_skipped(config)") == 2, (
-        "expected exactly two call sites — one per sink. If a THIRD legitimate "
-        "reader appears, raise this count; do not re-spell the comparison inline "
-        "(the absence assertion below is the invariant that actually matters)."
-    )
-    # Same for the /state stand-in: one synthetic, both sinks, one vocabulary.
+    assert "Direction::Capture" not in _non_comment_rust(alsa_rs)
+    # The /state stand-in it left behind: one synthetic, both sinks, one
+    # vocabulary — no lane negotiated anything to report instead.
     assert "fn synthetic_content_negotiated(config: &Config) -> NegotiatedPcm {" in alsa_rs
     assert _non_comment_rust(alsa_rs).count("synthetic_content_negotiated(config)") == 2
-
-    # THE INVARIANT THE COUNTS ARE ONLY A PROXY FOR: this file names the bridge
-    # enum in exactly two places, and both are the owner's own match arms.
-    # Counting CALLS cannot see a site that re-derives the fact instead of
-    # asking for it. Pinned on the BARE TYPE NAME rather than one spelling of
-    # the comparison, which every non-identical re-derivation would defeat.
-    assert _non_comment_rust(alsa_rs).count("ContentBridgeMode") == 2, (
-        "the bridge-mode decision belongs to `content_pcm_skipped` alone (whose "
-        "two match arms are the two expected mentions); call it instead of "
-        "re-deriving it"
-    )
-    # And the owner decides by exhaustive match, so a new bridge variant is a
-    # compile error rather than a silent "open the lane".
-    skipped_body = _rust_fn_body(alsa_rs, None, "fn content_pcm_skipped(config: &Config)")
-    assert "match config.content_bridge_mode {" in skipped_body
-    assert "ContentBridgeMode::Direct => false," in skipped_body
-    assert "_ =>" not in skipped_body, "a catch-all arm defeats the point of the match"
-
-    # The composite holds an OPTIONAL content PCM, exactly as its sibling does.
-    composite_struct = alsa_rs.split("pub struct PairedCompositeSink {", 1)[1].split(
-        "\n}", 1
-    )[0]
-    assert "content: Option<PCM>," in composite_struct
-    assert "content_format: Option<SampleFormat>," in composite_struct
-
-    # And the open really is behind the guard.
-    new_body = _rust_fn_body(alsa_rs, "impl PairedCompositeSink", "pub fn new(config: &Config)")
-    assert len(new_body) > 400, f"composite new() body looks truncated: {new_body!r}"
-    assert _composite_content_open_is_guarded(new_body)
-
-    # `/state` sees the composite's own answer, unwrapped. While this arm read
-    # `Some(sink.content_format())`, a skipped composite would have claimed a
-    # negotiated format it never held, and `run_alsa`'s `if let Some(..)` would
-    # have stamped the declaration into STATUS as a readback.
-    content_format_fn = main_rs.split(
-        "fn content_format(&self) -> Option<SampleFormat> {", 1
-    )[1].split("\n    }", 1)[0]
-    assert "Self::Single(sink) => sink.content_format()," in content_format_fn
-    assert "Self::Composite(sink) => sink.content_format()," in content_format_fn
-    assert "Some(sink.content_format())" not in content_format_fn
-
-    # The composite's no-lane refusal is PARK-class (EX_CONFIG 78), not the
-    # exit-1 that walks this unit's restart ladder into
-    # `StartLimitAction=reboot`. A deliberate asymmetry with the sibling's line,
-    # pinned so a "restore symmetry" edit cannot silently reverse it.
-    read_body = _rust_fn_body(
-        alsa_rs, "impl PairedCompositeSink", "pub fn read_content_period("
-    )
-    assert "final_sink_startup(self.content.as_ref().context(" in read_body, (
-        "the composite's absent-lane refusal must park, not exit 1"
-    )
-
-
-def test_the_composite_content_skip_guard_can_actually_fail():
-    """The guard's own tripwire: prove it would bite on the shape it forbids.
-
-    Two poisons, each aimed at a different clause, because a predicate whose
-    first check always short-circuits is a predicate whose real assertion has
-    never run.
-    """
-    alsa_rs = (REPO / "rust" / "jasper-outputd" / "src" / "alsa_backend.rs").read_text()
-    new_body = _rust_fn_body(alsa_rs, "impl PairedCompositeSink", "pub fn new(config: &Config)")
-    assert _composite_content_open_is_guarded(new_body), "control must start green"
-
-    # Poison 1 — no skip guard at all, so the content open runs unconditionally.
-    unguarded = new_body.replace(
-        "let skip_content_pcm = content_pcm_skipped(config);", ""
-    )
-    assert "content_pcm_skipped(config)" not in _non_comment_rust(unguarded)
-    assert not _composite_content_open_is_guarded(unguarded)
-
-    # Poison 2 — the guard is present but the skip arm opens a PCM anyway: the
-    # regression that would re-create the unread lane while still looking
-    # guarded. `Direction::Playback` keeps the capture count at 1 so this poison
-    # can only be caught by the decisive skip-arm clause, not by the count.
-    smuggled = new_body.replace(
-        "if skip_content_pcm {",
-        "if skip_content_pcm {\n            let _ = PCM::new(&config.content_pcm, Direction::Playback, true);",
-        1,
-    )
-    assert _non_comment_rust(smuggled).count("Direction::Capture") == 1
-    assert not _composite_content_open_is_guarded(smuggled)
-
+    # And the run loop has one source. A box that declared no ring reaches the
+    # park, never a second read path.
+    assert "shm_ring.as_mut()" in main_rs
+    assert "read_content_period" not in main_rs
+    # The no-upstream arm parks by CLASS, not by wording: the marker is what
+    # `runtime_error_exit_code` downcasts into EX_CONFIG 78, and pinning the
+    # sentence instead would make a reworded remedy a test failure. Sliced from
+    # the run loop's own else-arm so the marker cannot drift onto some other
+    # error and leave this arm exiting 1 into the restart ladder.
+    run_alsa = main_rs.split("fn run_alsa(", 1)[1].split("fn notify_ready", 1)[0]
+    no_upstream = run_alsa.split("shm_ring.as_mut()", 1)[1].split("} else {", 1)[1]
+    no_upstream = no_upstream.split("\n            }", 1)[0]
+    assert "FinalSinkStartupConfigError" in no_upstream, no_upstream
+    assert "return Err(" in no_upstream, no_upstream
+    # And that marker IS the 78 park (the constant the unit's
+    # RestartPreventExitStatus is pinned against).
+    assert "const EXIT_CONFIG: i32 = 78;" in main_rs
 
 def test_outputd_single_sink_is_width_parametric_with_mono_reference_fold():
     """The coherent single sink carries width as DATA (a DAC8x rides the same
@@ -1156,39 +1055,11 @@ def test_outputd_single_sink_is_width_parametric_with_mono_reference_fold():
     assert "ref_outputs.publish(&content_buf, next_reference_sequence);" in main_rs
 
 
-def test_outputd_dual_apple_zero_frame_active_read_silences_period():
-    alsa_rs = (REPO / "rust" / "jasper-outputd" / "src" / "alsa_backend.rs").read_text()
-    # Anchored on the NAME plus its opening generic bracket, not the full
-    # parameter list: pinning the generic list makes this a tripwire on the type
-    # parameters rather than on the silence contract it is about.
-    classifier = alsa_rs.split(
-        "fn read_content_pcm<", 1,
-    )[1].split("fn zero_fill_content_period", 1)[0]
-    zero_fill = alsa_rs.split(
-        "fn zero_fill_content_period", 1,
-    )[1].split("pub struct AlsaBackend", 1)[0]
-    paired_sink = alsa_rs.split(
-        "impl PairedCompositeSink", 1,
-    )[1].split("pub fn write_dual_period", 1)[0]
-
-    # A successful zero-frame ALSA read is classified as no data and counted.
-    assert "if frames == 0 {" in classifier
-    assert "content_empty_period_count += 1" in classifier
-    assert "read: ContentRead::NoData" in classifier
-    # The shared silence helper maps that outcome to a full-period zero fill.
-    assert "ContentRead::NoData | ContentRead::XrunRecovered => 0" in zero_fill
-    # `S::default()` rather than a literal `0`: the helper is generic over the
-    # lane's sample width now, and digital silence is the type's zero at every
-    # width (widening zero is zero, so a zero-filled tail is unchanged audio).
-    assert "out[(frames_read * channels)..].fill(S::default());" in zero_fill
-    # The paired-composite path must use the same helper rather than drift.
-    assert "zero_fill_content_period(out, 4, classified.read)" in paired_sink
-
-
 def test_camilla_outputd_config_declares_outputd_lane():
     cutover = (REPO / "deploy" / "camilladsp" / "outputd-cutover.yml").read_text()
     camilla_unit = (REPO / "deploy" / "systemd" / "jasper-camilla.service").read_text()
-    assert 'device: "outputd_content_playback"' in cutover
+    # Ring B: the one lane outputd reads (ADR-0100).
+    assert 'device: "jts_ring_playback"' in cutover
     assert 'volume_limit: 0.0' in cutover
     # outputd's OWN statefile, never /var/lib/camilladsp/statefile.yml.
     assert "--statefile /var/lib/camilladsp/outputd-statefile.yml" in camilla_unit
@@ -1198,10 +1069,16 @@ def test_shipped_cutover_seed_declares_the_current_program_lane_width():
     """First-boot bytes must equal regenerated bytes.
 
     The shipped seed is what a box boots on before `jasper-sound
-    render-flat-cutover` has ever run. A drift from DEFAULT_PLAYBACK_FORMAT
-    pins the snd-aloop content pair at one width on the first Camilla start and
-    another on the first regeneration — a failed open on the raw active lane,
-    a silent extra requantization on the passive one.
+    render-flat-cutover` has ever run. A drift from the emitter pins the ring
+    at one geometry on the first Camilla start and another on the first
+    regeneration — and the ioplug pins the ring's period bytes min==max, so a
+    drifted chunk does not degrade, it fails the open.
+
+    Compared against the EMITTER rather than against literals, so the seed and
+    its one writer cannot part company on any axis the parser exposes — which is
+    now every axis the ring contract rests on, queue depth and rate-adjust
+    included (both were unpinned until `parse_camilla_devices_config` learned
+    them).
     """
     from jasper.camilla_config_contract import (
         DEFAULT_PLAYBACK_FORMAT,
@@ -1215,11 +1092,21 @@ def test_shipped_cutover_seed_declares_the_current_program_lane_width():
         read_camilla_device_field(cutover, "playback", "format")
         == DEFAULT_PLAYBACK_FORMAT
     )
-    assert read_camilla_device_field(cutover, "capture", "device") == (
-        parse_camilla_devices_config(emit_flat_outputd_cutover_config())[
-            "capture_device"
-        ]
-    )
+    emitted = parse_camilla_devices_config(emit_flat_outputd_cutover_config())
+    seeded = parse_camilla_devices_config(cutover.read_text(encoding="utf-8"))
+    for key in (
+        "capture_device",
+        "playback_device",
+        "capture_format",
+        "playback_format",
+        "chunksize",
+        "target_level",
+        "queuelimit",
+        "enable_rate_adjust",
+        "samplerate",
+        "volume_limit",
+    ):
+        assert seeded[key] == emitted[key], key
 
 
 def _run_ensure_outputd_camilla_statefile(
@@ -1285,9 +1172,7 @@ def test_install_seeds_the_separate_outputd_statefile_through_the_runtime_contra
         "/var/lib/camilladsp/outputd-statefile.yml"
     )
     assert argv[argv.index("--flat-config") + 1].endswith("/outputd-cutover.yml")
-    assert argv[argv.index("--ring-flat-config") + 1].endswith(
-        "/outputd-cutover-ring.yml"
-    )
+    assert "--ring-flat-config" not in argv
     assert systemctl == []
 
     refused, _graph, systemctl = _run_ensure_outputd_camilla_statefile(
@@ -1332,6 +1217,7 @@ def test_outputd_parks_on_missing_configured_output_dac_without_reboot_loop():
     assert 'card="$${JASPER_AUDIO_DAC_CARD:-}"' in outputd_unit
     assert '[ -e "/proc/asound/$$card" ]' in outputd_unit
     assert "event=outputd.output_device_gate.park reason=missing_dac" in outputd_unit
+    assert 'device: "jts_ring_playback"' in cutover
     assert "outputd_backend=$$backend" in outputd_unit
     assert "exit 1" in outputd_unit
     assert "ExecStartPre=/bin/sh -c" not in outputd_unit
@@ -1350,7 +1236,6 @@ def test_outputd_parks_on_missing_configured_output_dac_without_reboot_loop():
     assert 'CONFIG_EXIT_STATUS=78' in failure_reconcile
 
     assert "JASPER_AUDIO_DAC_CARD" not in camilla_unit
-    assert 'device: "outputd_content_playback"' in cutover
     assert 'ENV{SYSTEMD_WANTS}+="jasper-audio-hardware-reconcile.service"' in recover_rule
     assert "Before=jasper-outputd.service" in recover_unit
     assert "--no-block start jasper-outputd.service" in recover_script
@@ -1367,8 +1252,9 @@ def test_outputd_alsa_loop_publishes_reference_only_after_dac_write():
     main_rs = (REPO / "rust" / "jasper-outputd" / "src" / "main.rs").read_text()
     run_alsa = main_rs.split("fn run_alsa(", 1)[1].split("fn notify_ready", 1)[0]
     # Solo branch. Each needle is the solo call's exact one-line form so it
-    # cannot bind to the TTS branch's multi-line call.
-    content_read = run_alsa.index("sink.read_content_period(&mut content_buf)?;")
+    # cannot bind to the TTS branch's multi-line call. The one upstream is the
+    # ring (ADR-0100), so the read is its `read_period`.
+    content_read = run_alsa.index("let read = src.read_period(&mut content_buf);")
     dac_write = run_alsa.index("sink.write_period(&content_buf)?;")
     # Width-2 publishes the content directly; the wide sink folds to a stereo
     # reference first. Either way publish follows the DAC write and precedes
@@ -1558,9 +1444,10 @@ def test_outputd_tts_runtime_is_bonded_scoped():
 # crate's documented pattern for a buffer sized once at open.
 PERIOD_HOT_FUNCTIONS = [
     # (source file, enclosing `impl` block or None, function signature prefix)
-    ("alsa_backend.rs", "impl AlsaBackend", "pub fn read_content_available("),
     ("alsa_backend.rs", "impl AlsaBackend", "pub fn write_dac_period("),
-    ("alsa_backend.rs", "impl PairedCompositeSink", "pub fn read_content_period("),
+    # The ring reader is the one upstream, and it runs on the same SCHED_FIFO
+    # thread the writers do.
+    ("shm_ring_source.rs", "impl ShmRingSource", "pub fn read_period("),
     # The composite's WRITE half and the split it drives: a per-width arm and a
     # type parameter are the natural place to "just allocate the child buffers
     # here" instead of reusing `ChildPeriods`. Same SCHED_FIFO thread, same

@@ -4,20 +4,17 @@
 
 //! ALSA transport for the outputd topology.
 //!
-//! The DAC playback stream is blocking and owns timing. Camilla's
-//! post-DSP content lane is read nonblocking from snd-aloop; absent
-//! content becomes silence. This keeps the final output loop alive
-//! even when renderers are idle.
+//! The DAC playback stream is blocking and owns timing. Camilla's post-DSP
+//! program arrives over the SHM ring — outputd's one upstream (ADR-0100) — and
+//! this module opens no content PCM at all; absent content becomes silence.
+//! This keeps the final output loop alive even when renderers are idle.
 
 use alsa::pcm::{Access, Format, HwParams, State, IO, PCM};
 use alsa::{Direction, ValueOr};
 use anyhow::{Context, Result};
 
 use crate::config::Config;
-use crate::types::{
-    narrow_period, narrow_period_i24_le, widen_period, ProgramSample, SampleFormat, CHANNELS,
-    SAMPLE_RATE,
-};
+use crate::types::{narrow_period, narrow_period_i24_le, ProgramSample, SampleFormat, CHANNELS};
 
 const MAX_RECOVERIES_PER_PERIOD: u32 = 3;
 
@@ -153,58 +150,6 @@ fn baseline_relatch_decision(
     }
 }
 
-/// May a composite arm the SHM ring with the link state its children gave it?
-///
-/// **`link=ok` is an ARM-TIME precondition, not a runtime one.** The composite's
-/// recovery model rests entirely on `snd_pcm_link`: a group prepare, a group
-/// re-prime and one atomic group start are what re-establish A/B alignment
-/// after an xrun. An unlinked pair has no atomic restart primitive, so its
-/// post-recovery skew is unbounded AND unverifiable — see
-/// [`write_dac_fail_closed`], which keeps the pre-change bail there for exactly
-/// that reason.
-///
-/// So a composite whose children will not link is a box whose recovery model
-/// does not hold, and it must keep the aloop transport until it does. This is
-/// deliberately NOT a flip of the global `JASPER_OUTPUTD_DUAL_REQUIRE_LINK`
-/// default: an unlinked composite on the loopback transport is unaffected.
-/// Only ARMING is gated.
-fn composite_ring_arm_link_ok(ring_armed: bool, linked: bool) -> bool {
-    !ring_armed || linked
-}
-
-/// Why a content lane declared `S24_3LE` is refused rather than read.
-///
-/// One `&'static str` shared by both ingest entry points (the coherent single lane
-/// and the composite's active lane) so the two cannot drift into explaining it
-/// differently — and `&'static str` specifically because both call sites are
-/// period-hot and `test_outputd_period_hot_functions_do_not_allocate` forbids a
-/// `format!` there.
-///
-/// The asymmetry is real and intended: `S24_3LE` is an OUTPUT width in this
-/// vocabulary. The DAC edge has a packed write path; ingest has no packed read
-/// path, because nothing writes such a lane — the reconciler's content axis comes
-/// from `jasper.fanin_coupling`, which answers only `S16_LE` or `S32_LE`. Reaching
-/// this needs a hand-set `JASPER_OUTPUTD_CONTENT_FORMAT`.
-///
-/// **Why the refusal lives at the ingest arms and not in `Config::from_env`.** An
-/// early refusal there would make both of these arms unreachable by construction,
-/// which is a real attraction — it is the shape `Config`'s other cross-field
-/// guards (the full-range-stereo sink checks) already use. It was considered
-/// and not taken, for two reasons. The arms are MANDATORY whatever `Config`
-/// does: the match is over `SampleFormat`, so Rust requires an
-/// arm here, and the only alternatives to a loud refusal are a silent wrong arm
-/// (S16 read of a 3-byte lane — loud garbage at the speaker) or an `unreachable!`
-/// panic on the audio path, which this crate's panic-freedom invariant forbids.
-/// Given the arm must exist and must bail, a second guard upstream would be a
-/// second owner of the same rule rather than a replacement for this one. And keeping the vocabulary's ONE parse
-/// point axis-symmetric is deliberate (see `config.rs`'s content-axis comment);
-/// making `from_env` reject per-axis would put format policy back into the parser
-/// that the enum exists to keep out of it. If a future reader disagrees, the thing
-/// to move is the parse, and the arms stay regardless.
-const PACKED_CONTENT_LANE_UNSUPPORTED: &str =
-    "outputd content lane declares S24_3LE, which it has no packed read path for; \
-     the lane must be S16_LE or S32_LE (S24_3LE is an output-edge width only)";
-
 /// The single mapping from outputd's format vocabulary into ALSA's own.
 ///
 /// Everything else in the crate speaks [`SampleFormat`]; this is the one place
@@ -242,87 +187,6 @@ pub struct IoCounters {
     pub dac_xrun_count: u64,
 }
 
-/// Journal cooldown for `event=outputd.content_fill`, measured in DAC frames.
-///
-/// `dac_frames_written` is the only monotonic clock this hot path already
-/// has, and it advances at exactly the DAC rate — so a frame budget is a
-/// wall-clock cooldown without a syscall. One second: outputd's core is fixed
-/// at `SAMPLE_RATE` (config.rs bails on any other
-/// `JASPER_OUTPUTD_SAMPLE_RATE`), so this derives from that one constant
-/// rather than restating 48000.
-const FILL_LOG_COOLDOWN_FRAMES: u64 = SAMPLE_RATE as u64;
-
-/// Rate limiter for the content-fill journal line (issue #1768).
-///
-/// A short content read is zero-filled and still written to the DAC, which
-/// INSERTS `requested - frames` samples into the emitted timeline — audible as
-/// a brief tear, and it displaces everything downstream in time. Before this,
-/// only the `EPIPE`/`ESTRPIPE` branch ever printed, so the partial-period and
-/// `EAGAIN` paths — the ones that actually insert — were structurally silent:
-/// their counters surfaced only as fields on a line some OTHER condition
-/// happened to emit. That is how a corrupt measurement capture (#1765) and
-/// audible sweep tears both went unattributed.
-///
-/// The first fill after a quiet second always prints; the rest are counted and
-/// reported as `suppressed=` on the next line, so a pathological storm costs
-/// at most one journal line per second and still cannot hide.
-#[derive(Debug, Clone, Copy, Default)]
-struct FillLogGate {
-    next_log_frames: u64,
-    suppressed: u64,
-}
-
-impl FillLogGate {
-    /// `Some(suppressed_since_the_last_line)` when this fill should print.
-    fn admit(&mut self, dac_frames_written: u64) -> Option<u64> {
-        if dac_frames_written < self.next_log_frames {
-            self.suppressed += 1;
-            return None;
-        }
-        let suppressed = self.suppressed;
-        self.suppressed = 0;
-        self.next_log_frames = dac_frames_written.saturating_add(FILL_LOG_COOLDOWN_FRAMES);
-        Some(suppressed)
-    }
-}
-
-/// Journal a zero-fill that INSERTED `frames_short` samples into the emitted
-/// timeline (issue #1768).
-///
-/// Free function, not a method: BOTH transports zero-fill on exactly the same
-/// paths, and `kind="composite"` is explicitly open to further shapes — a
-/// per-transport copy would be a twin that drifts. Takes the pieces it needs
-/// so callers pass disjoint `&mut`/`&` field borrows.
-fn log_content_fill(
-    gate: &mut FillLogGate,
-    counters: &IoCounters,
-    content_pcm: &str,
-    source: &str,
-    frames_short: usize,
-) {
-    if frames_short == 0 {
-        return;
-    }
-    let Some(suppressed) = gate.admit(counters.dac_frames_written) else {
-        return;
-    };
-    eprintln!(
-        "event=outputd.content_fill source={} pcm={} frames_short={} empty_periods={} \
-partial_periods={} eagain_count={} xrun_count={} frames_read={} dac_frames_written={} \
-suppressed={}",
-        source,
-        content_pcm,
-        frames_short,
-        counters.content_empty_period_count,
-        counters.content_partial_period_count,
-        counters.content_eagain_count,
-        counters.content_xrun_count,
-        counters.content_frames_read,
-        counters.dac_frames_written,
-        suppressed,
-    );
-}
-
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct CompositeStatus {
     pub dac_a_pcm: String,
@@ -342,205 +206,21 @@ pub struct CompositeStatus {
     pub reprime_alignment_failures: u64,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum ContentRead {
-    Frames(usize),
-    NoData,
-    XrunRecovered,
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum ContentPcmRole {
-    Content,
-    ActiveContent,
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-struct ClassifiedContentRead {
-    read: ContentRead,
-    fill_source: &'static str,
-}
-
-#[derive(Debug, Clone, Copy)]
-struct ContentPcmReadSpec<'a> {
-    channels: usize,
-    pcm_name: &'a str,
-    negotiated: NegotiatedPcm,
-    role: ContentPcmRole,
-}
-
-/// Read and classify one nonblocking content-capture period.
-///
-/// Both the coherent-DAC and paired-composite transports consume the same
-/// content PCM contract. Keep the errno mapping, counters, and xrun recovery
-/// here so a new read outcome cannot drift between the two sinks. The caller
-/// still owns transport-specific zero-fill journaling.
-/// Generic over the SAMPLE TYPE because the content lane's width is now
-/// declared config: an `S16Le` lane reads through an `io_i16()` handle into an
-/// i16 staging buffer, an `S32Le` lane reads through `io_i32()` straight into the
-/// program period. Everything this function owns — the errno mapping, the
-/// counters, the xrun recovery, the journal line — is identical either way and
-/// must stay identical, which is exactly what one generic body guarantees.
-fn read_content_pcm<S, Read, Recover>(
-    out: &mut [S],
-    spec: ContentPcmReadSpec<'_>,
-    counters: &mut IoCounters,
-    read: Read,
-    recover: Recover,
-) -> Result<ClassifiedContentRead>
-where
-    S: Copy,
-    Read: FnOnce(&mut [S]) -> alsa::Result<usize>,
-    Recover: FnOnce(alsa::Error) -> alsa::Result<()>,
-{
-    let requested_frames = out.len() / spec.channels;
-    match read(out) {
-        Ok(frames) => {
-            counters.content_frames_read += frames as u64;
-            if frames == 0 {
-                counters.content_empty_period_count += 1;
-                Ok(ClassifiedContentRead {
-                    read: ContentRead::NoData,
-                    fill_source: "empty",
-                })
-            } else {
-                if frames < requested_frames {
-                    counters.content_partial_period_count += 1;
-                }
-                Ok(ClassifiedContentRead {
-                    read: ContentRead::Frames(frames),
-                    fill_source: "partial",
-                })
-            }
-        }
-        Err(error) => {
-            let errno = error.errno();
-            if errno == libc::EAGAIN {
-                counters.content_eagain_count += 1;
-                counters.content_empty_period_count += 1;
-                return Ok(ClassifiedContentRead {
-                    read: ContentRead::NoData,
-                    fill_source: "eagain",
-                });
-            }
-            if errno != libc::EPIPE && errno != libc::ESTRPIPE {
-                let context = match spec.role {
-                    ContentPcmRole::Content => {
-                        format!("reading outputd content PCM {}", spec.pcm_name)
-                    }
-                    ContentPcmRole::ActiveContent => {
-                        format!("reading outputd active content PCM {}", spec.pcm_name)
-                    }
-                };
-                return Err(error).context(context);
-            }
-
-            counters.content_xrun_count += 1;
-            counters.content_empty_period_count += 1;
-            match spec.role {
-                ContentPcmRole::Content => eprintln!(
-                    "event=outputd.xrun source=content pcm={} count={} errno={} frames_read={} empty_periods={} partial_periods={} eagain_count={} dac_frames_written={} period_frames={} buffer_frames={}",
-                    spec.pcm_name,
-                    counters.content_xrun_count,
-                    errno,
-                    counters.content_frames_read,
-                    counters.content_empty_period_count,
-                    counters.content_partial_period_count,
-                    counters.content_eagain_count,
-                    counters.dac_frames_written,
-                    spec.negotiated.period_frames,
-                    spec.negotiated.buffer_frames,
-                ),
-                ContentPcmRole::ActiveContent => eprintln!(
-                    "event=outputd.xrun source=active_content pcm={} count={} errno={}",
-                    spec.pcm_name, counters.content_xrun_count, errno
-                ),
-            }
-            let recovery_context = match spec.role {
-                ContentPcmRole::Content => "recovering outputd content xrun",
-                ContentPcmRole::ActiveContent => "recovering outputd active content xrun",
-            };
-            recover(error).context(recovery_context)?;
-            Ok(ClassifiedContentRead {
-                read: ContentRead::XrunRecovered,
-                fill_source: "xrun_recovered",
-            })
-        }
-    }
-}
-
-/// Apply the content-lane silence contract and return `(frames_read,
-/// frames_short)` for the transport-specific fill journal line.
-///
-/// Generic over the sample type for the same reason as `read_content_pcm`: it
-/// zero-fills whichever buffer the lane's declared width read into. Digital
-/// silence is `Default::default()` at every width — and it is worth naming that
-/// the widening of zero is zero, so a zero-filled tail sounds identical on the
-/// spine as it did at i16.
-fn zero_fill_content_period<S: Copy + Default>(
-    out: &mut [S],
-    channels: usize,
-    read: ContentRead,
-) -> (usize, usize) {
-    let requested_frames = out.len() / channels;
-    let frames_read = match read {
-        ContentRead::Frames(frames) => frames,
-        ContentRead::NoData | ContentRead::XrunRecovered => 0,
-    };
-    let frames_short = requested_frames.saturating_sub(frames_read);
-    if frames_short > 0 {
-        out[(frames_read * channels)..].fill(S::default());
-    }
-    (frames_read, frames_short)
-}
-
 pub struct AlsaBackend {
-    content: Option<PCM>,
     dac: PCM,
-    pub content_pcm: String,
     pub dac_pcm: String,
+    /// The stand-in geometry `/state` reports for the content hop. No ALSA
+    /// content lane is opened (ADR-0100 — the ring is the one upstream), so
+    /// there is nothing to negotiate; see `synthetic_content_negotiated`.
     pub content_negotiated: NegotiatedPcm,
     pub dac_negotiated: NegotiatedPcm,
     counters: IoCounters,
-    fill_log: FillLogGate,
     /// Runtime DAC/content width carried as data — a coherent single DAC reads
     /// and writes this many channels end-to-end. `2` is byte-identical to the
     /// previous compile-time `CHANNELS`; the reconciler emits wider values
     /// (DAC8x = 8) via `JASPER_OUTPUTD_ACTIVE_CHANNELS`. The reference/chip-ref
     /// width stays `CHANNELS=2` (the published reference is always stereo).
     channels: u16,
-    /// The format the CONTENT capture PCM negotiated — requested from
-    /// `Config::content_format` and checked against the installed `hw_params`
-    /// by `configure_pcm`'s content readback. `None` means no ALSA content PCM
-    /// was opened at all, which is the (PROTOTYPE) SHM-ring source: there is no
-    /// lane to have negotiated anything, so `/state` keeps reporting the
-    /// declaration rather than claiming a readback that never ran.
-    ///
-    /// Read the `None` case honestly: nothing HERE reads or verifies the ring,
-    /// so `content.format` under the SHM-ring source is a declaration this
-    /// backend never checked. It is checked elsewhere, at the ring itself:
-    /// `ShmRingSource` builds its geometry from the same `Config::content_format`
-    /// and `jasper_ring`'s attach compares every field against the ring header,
-    /// so a declaration that disagrees with the live ring fails startup
-    /// (config-class, exit 78) rather than being reported as a width nobody
-    /// verified. The ring's own attached wire is published separately, as
-    /// `/state.shm_ring.format`/`.channels`. Coherence across the ring's OTHER
-    /// ends is upstream of both:
-    /// `jasper.fanin.coupling_reconcile.ring_edge_width_ready` (wide-output-path PR-1,
-    /// #2226) runs FIRST in both the unattended auto-arm gate list
-    /// (`default_ring_gates()`) and the manual-arm chain. It verifies that every
-    /// declaring end states the SAME wire — it is a coherence gate, not a width
-    /// policy. Arming `shm_ring` puts both ring ends on
-    /// `resolve_ring_wire().sample_format`, and the audio-hardware reconciler
-    /// emits outputd's matching `JASPER_OUTPUTD_CONTENT_FORMAT` from that same
-    /// source, so a ring box gets a coherent lane automatically — no hand-set
-    /// config needed. Since the ring wire's resolver defaults WIDE that lane is
-    /// `S32_LE` on an undeclared box, which is the same width the `loopback`
-    /// lane already carried; an operator's `JASPER_FANIN_RING_WIRE_FORMAT=S16_LE`
-    /// pin is what makes it narrow. `content.source` sits immediately before
-    /// `content.format` in STATUS so a reader can always see which source the
-    /// format describes.
-    content_format: Option<SampleFormat>,
     /// The format OUTPUTD'S OWN CLIENT EDGE negotiated — requested from the
     /// registry declaration and checked against the installed `hw_params` by
     /// `configure_pcm`'s dac readback, so this is what outputd is running, not
@@ -574,17 +254,6 @@ pub struct AlsaBackend {
     /// `S24_3Le` edge, so this holds one period there and `dac_narrow_buf` is the
     /// empty one instead. It stays `Vec::new()` at the `S16Le` and `S32Le` edges.
     dac_pack_buf: Vec<u8>,
-    /// Reused i16 staging for an `S16Le` CONTENT lane — allocated once, at open.
-    /// Empty (zero bytes) on an `S32Le` lane, and empty under the SHM-ring source
-    /// (no ALSA content PCM is opened at all, so nothing ever reads through here).
-    ///
-    /// The ingest twin of `dac_narrow_buf`. alsa-rs's IO handles are typed, so an
-    /// S16 lane physically cannot read into an i32 slice; it reads here and
-    /// `widen_period` lifts the period onto the spine. `read_content_available`
-    /// borrows it as a disjoint field alongside `content` and `counters` — never
-    /// via `mem::take`, so no early return on that path can drop it and leave the
-    /// next period to re-allocate.
-    content_widen_buf: Vec<i16>,
 }
 
 /// Paired-composite transport: two clock-independent child DACs driven as one
@@ -592,29 +261,16 @@ pub struct AlsaBackend {
 /// transport dispatches on the composite SHAPE, not the DAC's identity. Stays
 /// exactly two children (a pairwise drift guard cannot be half-vectorized).
 pub struct PairedCompositeSink {
-    /// `None` under the SHM-ring content source, exactly as
-    /// [`AlsaBackend::content`] is — see `content_pcm_skipped`, the shared owner
-    /// of that decision.
-    ///
-    /// The transport honours that decision on its own terms rather than leaning
-    /// on `Config::from_env`'s gate. That independence is the whole point, and
-    /// it has already paid: the gate no longer admits a ring "only on a
-    /// single-ALSA sink" — a composite is an ACTIVE-ring endpoint since P8b
-    /// item 1, and jts.local has run armed on one since 2026-08-15 — so a
-    /// composite DOES reach the skip arm now, and this field was already right
-    /// about it. A sink that opens a lane its run loop never reads is wrong
-    /// independently of which configurations reach it, and a gate is a far
-    /// easier thing to widen than a transport is to re-audit.
-    content: Option<PCM>,
     dac_a: PCM,
     dac_b: PCM,
-    pub content_pcm: String,
     pub dac_a_pcm: String,
     pub dac_b_pcm: String,
+    /// The stand-in geometry `/state` reports for the content hop — the
+    /// coherent single sink's field, same contract. No ALSA content lane is
+    /// opened (ADR-0100).
     pub content_negotiated: NegotiatedPcm,
     pub dac_negotiated: NegotiatedPcm,
     counters: IoCounters,
-    fill_log: FillLogGate,
     linked: bool,
     /// Per-child cumulative xrun counts. The sink-level `dac_xrun_count` in
     /// `counters` stays exactly what it was (the doctor's existing consumer);
@@ -646,17 +302,6 @@ pub struct PairedCompositeSink {
     /// [`ChildPeriods`] for why the width is the variant rather than a separate
     /// field beside two typed buffer pairs.
     periods: ChildPeriods,
-    /// The format the ACTIVE content capture PCM negotiated — same contract as
-    /// [`AlsaBackend::content_format`], `Option` for the same reason: `None`
-    /// means no ALSA content PCM was opened at all, so there is no lane to have
-    /// negotiated anything and `/state` keeps reporting the declaration rather
-    /// than claiming a readback that never ran. Read that doc for what the `None`
-    /// case is honest about; one shape, two sinks.
-    content_format: Option<SampleFormat>,
-    /// Reused i16 ingest staging for an `S16Le` active content lane. Same
-    /// contract as [`AlsaBackend::content_widen_buf`]; empty on an `S32Le` lane,
-    /// and empty when no ALSA content lane was opened at all.
-    content_widen_buf: Vec<i16>,
 }
 
 /// One sample at a composite CHILD's edge width, and the conversion from the
@@ -821,14 +466,10 @@ impl ChildPeriods {
 ///
 /// Named for its first user — a final sink that could not be opened or
 /// negotiate outputd's geometry, where a restart cannot change the PCM alias or
-/// its hardware capabilities. The content lane's format readback carries it for
-/// the same reason: a device that installs a format other than the one outputd
-/// requested will install exactly that format again on the next start, so the
-/// unit must park where an operator can see it instead of restart-looping into
-/// `StartLimitAction=reboot`. It is deliberately NOT attached to ordinary
-/// content-lane open failures, which ARE transient — those mean CamillaDSP has
-/// not yet opened its half of the snd-aloop pair, and restarting is how outputd
-/// waits that out.
+/// its hardware capabilities. A box that declared no ring carries it for the
+/// same reason (`main`'s run loop): the declaration is what it is on every
+/// restart, so the unit must park where an operator can see it instead of
+/// restart-looping into `StartLimitAction=reboot`.
 #[derive(Debug)]
 pub struct FinalSinkStartupConfigError;
 
@@ -842,40 +483,6 @@ impl std::error::Error for FinalSinkStartupConfigError {}
 
 fn final_sink_startup<T>(result: Result<T>) -> Result<T> {
     result.context(FinalSinkStartupConfigError)
-}
-
-/// Does this box open an ALSA content PCM at all?
-///
-/// **The one owner of that question, read by BOTH sinks.** The content ALSA PCM
-/// is NOT opened when a non-ALSA content source owns the program: (PROTOTYPE)
-/// the SHM ring. It feeds `content_buf` directly in the run loop, so opening
-/// snd-aloop here would leave a STARTED, UNREAD capture lane — and once the
-/// reconciler stops rendering that lane, the open fails, and on this unit
-/// `Restart=on-failure` walks the ladder to `StartLimitAction=reboot`.
-///
-/// One predicate rather than the same comparison spelled once per sink: a second
-/// copy is exactly what would let one transport keep opening a lane the other
-/// had learned to skip. That divergence is not hypothetical — it is the state
-/// this function was extracted to end, with `PairedCompositeSink` on the wrong
-/// side of it.
-///
-/// Equivalent to `config.shm_ring.is_some()` by construction (`Config::from_env`
-/// builds `shm_ring` as `Some` iff this mode is selected), which is what makes
-/// the run loop's dispatch total: a skipped sink takes the ring arm and never
-/// reaches `read_content_period` at all.
-///
-/// An exhaustive `match` rather than an `==`, which is what the inline test it
-/// replaced used. A third `ContentBridgeMode` variant must not be able to default
-/// into "open the lane": that answer is only right for a source that actually
-/// feeds this PCM, and getting it wrong silently re-creates the started-unread
-/// lane this function exists to prevent. `Config::from_env`'s own bridge match
-/// (`config.rs`) already fails the build on a new variant; this is the same
-/// bargain one layer down.
-fn content_pcm_skipped(config: &Config) -> bool {
-    match config.content_bridge_mode {
-        crate::config::ContentBridgeMode::ShmRing => true,
-        crate::config::ContentBridgeMode::Direct => false,
-    }
 }
 
 /// The `NegotiatedPcm` reported in place of a content lane that was never opened
@@ -899,88 +506,9 @@ fn synthetic_content_negotiated(config: &Config) -> NegotiatedPcm {
 
 impl AlsaBackend {
     pub fn new(config: &Config) -> Result<Self> {
-        // Skip decision and its /state stand-in both come from the shared
-        // owners above — see `content_pcm_skipped` for why they are shared
-        // rather than spelled once per sink.
-        let skip_content_pcm = content_pcm_skipped(config);
-        let (content, content_negotiated) = if skip_content_pcm {
-            (None, synthetic_content_negotiated(config))
-        } else {
-            // This whole content-lane open (through the plain `.with_context`
-            // calls below, deliberately NOT `final_sink_startup`) is exit-1 /
-            // restart-loop class, never the EX_CONFIG 78 park — see
-            // `FinalSinkStartupConfigError`'s doc above for why an ordinary
-            // content-lane open failure is a routine transient (CamillaDSP has
-            // not yet opened its half of the snd-aloop pair) on every boot and
-            // every deploy, not a fault a restart cannot fix. Marking it
-            // park-class would convert that routine wait into a no-retry
-            // silent speaker. The one case this open actually races a WIDTH
-            // change, not just ordering, is guarded on the deploy side
-            // instead: `release_camilla_content_lane_for_format_flip` in
-            // `deploy/lib/install/systemd-units.sh` stops the old CamillaDSP
-            // before outputd restarts, exactly when the content lane's format
-            // is about to move under it. A width mismatch reached any OTHER
-            // way still fails here forever; `jasper-outputd-failure-reconcile`
-            // (the unit's `ExecStopPost`) counts consecutive failures carrying
-            // these contexts and parks the unit out-of-band before the restart
-            // ladder reaches `StartLimitAction=reboot`.
-            //
-            // The "routine transient" reasoning above is the PASSIVE lane's
-            // (pair 6), which still has both halves and still races CamillaDSP
-            // on boot. The ACTIVE lane has no snd-aloop transport at all since
-            // P9-C deleted its pair-5 PCM definitions, so on a roleful box that
-            // is not ring-armed this open fails PERMANENTLY, on the name. That
-            // is deliberate and it is why the exit class stays 1 rather than
-            // 78: one shared open site cannot tell the two lanes apart before
-            // it fails, and the streak park above resolves both correctly —
-            // the transient one recovers within the streak, the permanent one
-            // parks with the ACTIVE remediation (re-arm the ring).
-            //
-            // THIS block's contexts are lane-AGNOSTIC — `outputd content
-            // capture PCM …`, whatever `content_pcm` names — because this sink
-            // carries the ACTIVE lane too, on a roleful single DAC. So
-            // `jasper-outputd-failure-reconcile` cannot select the remediation
-            // off the context PREFIX; it reads the trailing PCM NAME, which
-            // every context here and on the composite sibling carries. Keying
-            // on the prefix silently gave a rolled-back DAC8x the passive
-            // (width-shear) remedy for a pair that no longer exists.
-            let content =
-                PCM::new(&config.content_pcm, Direction::Capture, true).with_context(|| {
-                    format!("opening outputd content capture PCM {}", config.content_pcm)
-                })?;
-            let negotiated = configure_pcm(PcmConfig {
-                role: "content",
-                pcm_name: &config.content_pcm,
-                pcm: &content,
-                sample_rate: config.sample_rate,
-                period_frames: config.period_frames,
-                channels: config.content_channels,
-                // Camilla's post-DSP loopback lane — its own declared hop, NOT
-                // the hardware edge and not outputd's internal program width.
-                // Every box now declares S32_LE here, on loopback and
-                // shm_ring alike — the ring wire's resolver defaults wide too
-                // (jasper-audio-hardware-reconcile emits this per coupling
-                // from the same source). Only an operator's rollback pin
-                // (JASPER_FANIN_RING_WIRE_FORMAT=S16_LE) narrows a ring box;
-                // unset/blank on an unreconciled box still falls back to
-                // S16_LE. `configure_pcm`'s content readback proves what the
-                // lane installed.
-                format: config.content_format,
-                buffer_frames: config.content_buffer_frames,
-                manual_start: false,
-            })
-            .with_context(|| {
-                format!(
-                    "configuring outputd content capture PCM {}",
-                    config.content_pcm
-                )
-            })?;
-            content
-                .start()
-                .with_context(|| format!("starting capture PCM {}", config.content_pcm))?;
-            (Some(content), negotiated)
-        };
-
+        // No ALSA content lane exists to negotiate: the ring is the one upstream
+        // (ADR-0100), so `/state`'s content geometry is the stand-in below.
+        let content_negotiated = synthetic_content_negotiated(config);
         let dac = final_sink_startup(
             PCM::new(&config.dac_pcm, Direction::Playback, false)
                 .with_context(|| format!("opening outputd DAC PCM {}", config.dac_pcm)),
@@ -1017,18 +545,10 @@ impl AlsaBackend {
         // only references are prose — docs/AEC-DIAG-01-baseline.md,
         // docs/CHIP-AEC-EXPERIMENT.md). It stays
         // by convention, because operators and journal-grep recipes read it and
-        // a stable key costs nothing. The content lane rides the
-        // explicitly-named `content_format=` beside it, so one line names both
-        // hops and a half-flipped box is visible at open rather than only in
-        // STATUS.
+        // a stable key costs nothing. `content_format=` names the OTHER hop —
+        // the ring's wire — so one line still names both.
         eprintln!(
-            "event=outputd.alsa.opened content_pcm={} content_source={} content_format={} dac_pcm={} channels={} sample_rate={} content_period_frames={} content_buffer_frames={} dac_period_frames={} dac_buffer_frames={} format={}",
-            config.content_pcm,
-            // The local, not a re-derivation. This line reports whether the lane
-            // above was opened, so it must read the same answer that decided it —
-            // spelling the comparison a second time here is how the two could
-            // disagree, and on the one line whose job is to say which it was.
-            if skip_content_pcm { "shm_ring" } else { "alsa" },
+            "event=outputd.alsa.opened content_source=shm_ring content_format={} dac_pcm={} channels={} sample_rate={} content_period_frames={} content_buffer_frames={} dac_period_frames={} dac_buffer_frames={} format={}",
             config.content_format.as_str(),
             config.dac_pcm,
             config.content_channels,
@@ -1041,23 +561,12 @@ impl AlsaBackend {
         );
 
         Ok(Self {
-            content,
             dac,
-            content_pcm: config.content_pcm.clone(),
             dac_pcm: config.dac_pcm.clone(),
             content_negotiated,
             dac_negotiated,
             counters: IoCounters::default(),
-            fill_log: FillLogGate::default(),
             channels: config.content_channels,
-            // `Some` only when an ALSA content lane was actually opened and its
-            // readback passed. Under the SHM-ring source `skip_content_pcm`
-            // short-circuits the open, so there is nothing to report.
-            content_format: if skip_content_pcm {
-                None
-            } else {
-                Some(config.content_format)
-            },
             // `configure_pcm`'s dac readback checked the installed client-side
             // format against this requested one, so storing the request stores
             // what outputd is running — it never reached here otherwise.
@@ -1074,19 +583,6 @@ impl AlsaBackend {
                 config.period_frames,
                 config.content_channels,
             ),
-            // No ALSA content lane opened ⇒ no ingest staging, whatever the
-            // declaration says. The SHM-ring source feeds `content_buf`
-            // directly and owns whatever staging its own wire needs, so
-            // nothing here is sized for it.
-            content_widen_buf: if skip_content_pcm {
-                Vec::new()
-            } else {
-                s16_staging(
-                    config.content_format,
-                    config.period_frames,
-                    config.content_channels,
-                )
-            },
         })
     }
 
@@ -1102,12 +598,6 @@ impl AlsaBackend {
         self.dac_format
     }
 
-    /// The format the content lane negotiated, or `None` when no ALSA content
-    /// PCM was opened (the SHM-ring source). See the field's doc.
-    pub fn content_format(&self) -> Option<SampleFormat> {
-        self.content_format
-    }
-
     pub fn counters(&self) -> IoCounters {
         self.counters
     }
@@ -1119,162 +609,6 @@ impl AlsaBackend {
         Ok(())
     }
 
-    pub fn read_content_period(&mut self, out: &mut [ProgramSample]) -> Result<usize> {
-        let read = self.read_content_available(out)?;
-        // Stay EXHAUSTIVE over `ContentRead` — a catch-all here would let a
-        // future variant silently inherit the "empty" label on the audio path
-        // instead of failing the build. `XrunRecovered` is labelled distinctly
-        // because it already printed its own `outputd.xrun` line; the pair
-        // should read as one event, not two unexplained ones.
-        let source = match read {
-            ContentRead::Frames(_) => "partial",
-            ContentRead::NoData => "empty",
-            ContentRead::XrunRecovered => "xrun_recovered",
-        };
-        let (frames, frames_short) = zero_fill_content_period(out, self.channels as usize, read);
-        log_content_fill(
-            &mut self.fill_log,
-            &self.counters,
-            &self.content_pcm,
-            source,
-            frames_short,
-        );
-        Ok(frames)
-    }
-
-    /// Read one nonblocking content period onto the PROGRAM SPINE, converting
-    /// from the lane's declared width as it reads.
-    ///
-    /// This is the wide path's S16 INGRESS, and it retired the temporary
-    /// i16-only-ingest guard `configure_pcm`'s content branch used to run (now
-    /// deleted, along with its tests). Before this, ingest fetched an `io_i16()`
-    /// handle unconditionally, so a wide declaration opened cleanly and then
-    /// failed on the FIRST period read — deep on the audio path, which on this
-    /// unit escalates to `StartLimitAction=reboot`; the guard refused the
-    /// declaration at startup instead. Every value the config parser accepts is
-    /// now a value ingest can actually read, so there is nothing left to refuse.
-    ///
-    /// The `S16Le` arm widens through the pre-sized `content_widen_buf`; the
-    /// `S32Le` arm reads the lane's native samples straight into `out` with no
-    /// conversion at all.
-    pub fn read_content_available(&mut self, out: &mut [ProgramSample]) -> Result<ContentRead> {
-        // Refuse the no-ALSA-lane case FIRST, before anything touches the staging
-        // buffer. Under the SHM-ring source `content` is `None` and `content_format`
-        // is `None` with it; the old i16-only ingest reached this same refusal on
-        // its first line, and keeping it first is what stops the S16 arm below from
-        // resizing the staging and then bailing — which would allocate and drop a
-        // whole period per call, on the audio path.
-        let content = self
-            .content
-            .as_ref()
-            .context("outputd ALSA content PCM is disabled in local-pipe mode")?;
-        let spec = ContentPcmReadSpec {
-            channels: self.channels as usize,
-            pcm_name: &self.content_pcm,
-            negotiated: self.content_negotiated,
-            role: ContentPcmRole::Content,
-        };
-        // `content_format` is `Some` here by construction: `new` sets it to `None`
-        // only on the path that leaves `content` `None` too, and the `?` above
-        // already returned in that case. Refuse rather than default, because the
-        // wrong arm is worse than no arm: silently choosing S16 on a lane that is
-        // actually S32 hands `io_i16()` a buffer of half-samples and the speaker
-        // plays loud garbage. There is no width to guess.
-        //
-        // `final_sink_startup` is load-bearing on this line, not decoration. A
-        // bare bail here would be ordinary-error class — exit 1, which on this
-        // unit means restart, and eventually `StartLimitAction=reboot`. That is
-        // the exact chain the retired i16-only ingest guard existed to prevent, so
-        // refusing a format outputd cannot resolve must PARK at EX_CONFIG 78,
-        // where an operator sees it, rather than reboot-loop against a condition
-        // no restart can change.
-        //
-        // Park-class is right even though this is a PER-PERIOD call, not a startup
-        // one, and that is the whole justification for borrowing a marker named
-        // for startup: the condition is a static property of the struct (set once
-        // in `new`, never mutated), so it cannot be transient. If it were ever
-        // true it would be true on every period and on every restart alike —
-        // precisely the case the marker exists to park rather than retry. The
-        // transient content-lane failures on this path stay unmarked, as before.
-        // A `&'static str` context, not a `format!`-ed one naming the PCM. Two
-        // reasons: it matches the idiom of every other error this function
-        // produces (the io-handle contexts are static too), and it keeps the
-        // period-hot body free of allocating tokens —
-        // `test_outputd_period_hot_functions_do_not_allocate` forbids `format!(`
-        // here, and although a `with_context` closure is lazy and would never run
-        // per period, a guard that has to reason about laziness is a guard that
-        // gets argued with. The PCM name is already on the open-time
-        // `event=outputd.alsa.opened` line and in STATUS.
-        let lane_format = final_sink_startup(self.content_format.context(
-            "outputd content PCM is open but its negotiated format is unknown; \
-             refusing to guess the ingest width",
-        ))?;
-        match lane_format {
-            // Refused, not read, and PARK-class for the same reason the
-            // unknown-width refusal above is: the declaration is a static property
-            // of this struct (set once in `new`), so it would be true on every
-            // period and on every restart alike. Exiting 1 here would restart-loop
-            // into `StartLimitAction=reboot`; exit 78 puts it where an operator
-            // sees it. See `PACKED_CONTENT_LANE_UNSUPPORTED` for why the ingest
-            // side has no packed path.
-            SampleFormat::S24_3Le => {
-                final_sink_startup(Err(anyhow::anyhow!(PACKED_CONTENT_LANE_UNSUPPORTED)))
-            }
-            SampleFormat::S32Le => {
-                let io = content
-                    .io_i32()
-                    .context("getting i32 IO handle for outputd content input")?;
-                let classified = read_content_pcm(
-                    out,
-                    spec,
-                    &mut self.counters,
-                    |samples| io.readi(samples),
-                    |error| content.try_recover(error, true),
-                )?;
-                Ok(classified.read)
-            }
-            SampleFormat::S16Le => {
-                if self.content_widen_buf.len() != out.len() {
-                    // Steady state never resizes: `new` sized this for the run
-                    // loop's period. A geometry that ever differs reallocates
-                    // once and then stays put.
-                    self.content_widen_buf.resize(out.len(), 0);
-                }
-                let io = content
-                    .io_i16()
-                    .context("getting i16 IO handle for outputd content input")?;
-                // Disjoint field borrows: `io`/`try_recover` hold `self.content`,
-                // the reader writes `self.content_widen_buf`, the counters are a
-                // third field. No `mem::take` dance, so no path can drop the
-                // staging buffer on the way out.
-                let classified = read_content_pcm(
-                    &mut self.content_widen_buf,
-                    spec,
-                    &mut self.counters,
-                    |samples| io.readi(samples),
-                    |error| content.try_recover(error, true),
-                )?;
-                widen_period(&self.content_widen_buf, out)?;
-                Ok(classified.read)
-            }
-        }
-    }
-
-    /// Write one already-mixed PROGRAM period to the final edge — **the single
-    /// quantization on outputd's output path.**
-    ///
-    /// The period arriving here IS the reference the caller publishes to the
-    /// chip/software AEC (inv-A: reference == final DAC content). `samples` is
-    /// never mutated, so the published reference and what the DAC receives are the
-    /// same audio; the taps narrow their own copy to S16 (D8).
-    ///
-    /// An `S32Le` edge takes the spine STRAIGHT THROUGH — this is the payoff of
-    /// the wide spine, and the reason the widening staging that used to live here
-    /// is gone: there is nothing left to convert. An `S16Le` edge narrows once,
-    /// round-to-nearest, into `dac_narrow_buf`. An `S24_3Le` edge narrows once to
-    /// 24 significant bits and PACKS into `dac_pack_buf` — three bytes per sample,
-    /// which is why it needs its own arm and its own ALSA handle rather than one
-    /// more monomorphisation of the shared writer (wide-output-path D9).
     pub fn write_dac_period(&mut self, samples: &[ProgramSample]) -> Result<()> {
         let channels = self.channels as usize;
         let frames_total = samples.len() / channels;
@@ -1405,57 +739,16 @@ impl PairedCompositeSink {
         // drive the declared child width at all (see `ChildPeriods::new`). A width
         // it cannot drive is a permanent registry/transport disagreement, so it
         // parks at EX_CONFIG 78 — and it does so without first opening two USB
-        // DACs and a snd-aloop lane for a configuration that was never going to
-        // run. It reads `config.period_frames`, not a negotiated value, so nothing
-        // here depends on the opens below.
+        // DACs for a configuration that was never going to run. It reads
+        // `config.period_frames`, not a negotiated value, so nothing here
+        // depends on the opens below.
         let periods = final_sink_startup(ChildPeriods::new(
             config.declared_dac_format,
             config.period_frames,
         ))?;
 
-        // The composite's half of the shared skip — the coherent single sink's
-        // arm, spelled the same way, off the same predicate. Under the SHM-ring
-        // content source nothing is opened and nothing is `.start()`ed: the run
-        // loop reads the ring and never asks this sink for a content period, so
-        // an open here would leave a started capture lane that nobody drains and
-        // that a later reconciler stops rendering at all.
-        let skip_content_pcm = content_pcm_skipped(config);
-        let (content, content_negotiated) = if skip_content_pcm {
-            (None, synthetic_content_negotiated(config))
-        } else {
-            let content =
-                PCM::new(&config.content_pcm, Direction::Capture, true).with_context(|| {
-                    format!(
-                        "opening outputd active content capture PCM {}",
-                        config.content_pcm
-                    )
-                })?;
-            let negotiated = configure_pcm(PcmConfig {
-                role: "active_content",
-                pcm_name: &config.content_pcm,
-                pcm: &content,
-                sample_rate: config.sample_rate,
-                period_frames: config.period_frames,
-                channels: config.content_channels,
-                // The active lane's own declared hop — same axis the single-ALSA
-                // content role reads, and independent of what the composite's
-                // children run at their edges (those take the DECLARED edge format
-                // below, from the other declaration).
-                format: config.content_format,
-                buffer_frames: config.content_buffer_frames,
-                manual_start: false,
-            })
-            .with_context(|| {
-                format!(
-                    "configuring outputd active content capture PCM {}",
-                    config.content_pcm
-                )
-            })?;
-            content
-                .start()
-                .with_context(|| format!("starting capture PCM {}", config.content_pcm))?;
-            (Some(content), negotiated)
-        };
+        // No ALSA content lane exists to negotiate — see `AlsaBackend::new`.
+        let content_negotiated = synthetic_content_negotiated(config);
 
         let dac_a = final_sink_startup(
             PCM::new(&dac_a_pcm, Direction::Playback, false)
@@ -1535,60 +828,47 @@ impl PairedCompositeSink {
                 linked = true;
                 eprintln!("event=outputd.dual_apple.link status=ok");
             }
-            Err(err) if config.dual_require_link => {
-                anyhow::bail!(
-                    "dual Apple snd_pcm_link failed and JASPER_OUTPUTD_DUAL_REQUIRE_LINK=1: {}",
-                    err
-                );
-            }
             Err(err) => {
                 eprintln!("event=outputd.dual_apple.link status=failed detail={err}");
             }
         }
 
-        // ARM-TIME precondition: a composite may not take the SHM ring unless
-        // its children linked. `skip_content_pcm` IS "this box is ring-armed"
-        // (`content_pcm_skipped` is the one owner of that question), so this is
-        // the transport's own arm gate, asked where the link answer is known.
+        // `link=ok` is a precondition for driving a composite at all: the
+        // recovery model that makes the pair safe is built on `snd_pcm_link`
+        // (group prepare, group re-prime, one atomic group start). Without it
+        // the pair's post-recovery A/B skew is unbounded and unverifiable, and
+        // on an active 2-way that skew IS the woofer/tweeter time alignment.
         //
-        // Why here and not as a runtime check: the recovery model that makes an
-        // armed composite safe is built on `snd_pcm_link` (group prepare, group
-        // re-prime, one atomic group start). Without it the pair's post-recovery
-        // A/B skew is unbounded and unverifiable, and on an active 2-way that
-        // skew IS the woofer/tweeter time alignment. A refusal with a named
-        // reason beats an armed box whose recovery model does not hold.
+        // It used to gate only the RING ARM, because an unlinked pair could
+        // stay on the snd-aloop transport instead. Under one audio transport
+        // (ADR-0100) there is no other transport to keep, so the gate is
+        // unconditional and the box parks rather than running a recovery model
+        // that does not hold.
         //
         // PARK-class (EX_CONFIG 78), like every other refusal in this
         // constructor: whether two devices will link is a property of the
         // devices and their drivers, so it answers identically on every restart.
         // Walking the restart ladder would only spend the box's start budget on
         // its way to `StartLimitAction=reboot`. Parking puts it where an
-        // operator — and jasper-doctor — can see it, and the box's own remedy is
-        // to keep the aloop transport until the pair links.
-        if !composite_ring_arm_link_ok(skip_content_pcm, linked) {
-            eprintln!("event=outputd.dual_apple.ring_arm_refused reason=link_required");
+        // operator — and jasper-doctor — can see it.
+        if !linked {
+            eprintln!("event=outputd.dual_apple.unlinked_pair_refused reason=link_required");
             return final_sink_startup(Err(anyhow::anyhow!(
-                "outputd composite sink refuses to arm the SHM ring with an unlinked child pair \
+                "outputd composite sink refuses to drive an unlinked child pair \
                  ({dac_a_pcm} + {dac_b_pcm}): snd_pcm_link is what makes the post-xrun group \
                  re-prime and atomic group start able to re-establish A/B alignment, so an \
-                 unlinked pair has no safe recovery. Keep this box on the loopback transport \
-                 until its children link."
+                 unlinked pair has no safe recovery."
             )));
         }
 
         // `content_source=`, `content_format=` and `format=` spelled exactly as
         // the single sink's `event=outputd.alsa.opened` line spells them, so one
-        // grep recipe reads both hops on either transport and a half-flipped box
-        // is visible at open rather than only in STATUS. `format=` is the
-        // CHILDREN's edge (both children, one declaration); it is bare for the
-        // same reason it is bare over there — operators and journal recipes read
-        // that key. `content_source=` is what keeps this line honest under the
-        // skip: `content_pcm=` names a lane that, on a ring box, was never
-        // opened, and the source key is the one token that says so at open time.
+        // grep recipe reads both hops and a half-flipped box is visible at open
+        // rather than only in STATUS. `format=` is the CHILDREN's edge (both
+        // children, one declaration); it is bare for the same reason it is bare
+        // over there — operators and journal recipes read that key.
         eprintln!(
-            "event=outputd.dual_apple.opened content_pcm={} content_source={} content_format={} dac_a_pcm={} dac_b_pcm={} sample_rate={} period_frames={} content_buffer_frames={} dac_buffer_frames={} linked={} max_delay_delta_frames={} format={}",
-            config.content_pcm,
-            if skip_content_pcm { "shm_ring" } else { "alsa" },
+            "event=outputd.dual_apple.opened content_source=shm_ring content_format={} dac_a_pcm={} dac_b_pcm={} sample_rate={} period_frames={} content_buffer_frames={} dac_buffer_frames={} linked={} max_delay_delta_frames={} format={}",
             config.content_format.as_str(),
             dac_a_pcm,
             dac_b_pcm,
@@ -1602,16 +882,13 @@ impl PairedCompositeSink {
         );
 
         Ok(Self {
-            content,
             dac_a,
             dac_b,
-            content_pcm: config.content_pcm.clone(),
             dac_a_pcm,
             dac_b_pcm,
             content_negotiated,
             dac_negotiated: dac_a_negotiated,
             counters: IoCounters::default(),
-            fill_log: FillLogGate::default(),
             linked,
             dac_a_xrun_count: 0,
             dac_b_xrun_count: 0,
@@ -1628,45 +905,11 @@ impl PairedCompositeSink {
             // — neither child reached here otherwise. Built at the top of this
             // function (see there for why it happens before the opens).
             periods,
-            // `Some` only when an ALSA content lane was actually opened and its
-            // readback passed — the coherent single sink's rule, unchanged.
-            content_format: if skip_content_pcm {
-                None
-            } else {
-                Some(config.content_format)
-            },
-            // The active content lane is 4-channel, so its ingest staging is
-            // wider than the per-child period buffers above. No ALSA content
-            // lane opened ⇒ no ingest staging, whatever the declaration says:
-            // the SHM-ring source feeds `content_buf` directly and owns whatever
-            // staging its own wire needs, so nothing here is sized for it.
-            content_widen_buf: if skip_content_pcm {
-                Vec::new()
-            } else {
-                s16_staging(
-                    config.content_format,
-                    config.period_frames,
-                    config.content_channels,
-                )
-            },
         })
     }
 
     pub fn counters(&self) -> IoCounters {
         self.counters
-    }
-
-    /// The format the active content lane negotiated (readback-checked at open
-    /// by `configure_pcm`'s content readback), or `None` when no ALSA content
-    /// PCM was opened at all (the SHM-ring source). See the field's doc.
-    ///
-    /// The composite twin of [`AlsaBackend::content_format`], and `Option` for
-    /// the same reason it is `Option` over there: `/state` must fall back to the
-    /// declaration when nothing negotiated, not report an unheld readback. One
-    /// shape, two sinks — `RuntimeAlsaSink::content_format` forwards both arms
-    /// unwrapped, so a `None` here reaches the same `/state` handling.
-    pub fn content_format(&self) -> Option<SampleFormat> {
-        self.content_format
     }
 
     /// The format BOTH children's edges negotiated (readback-checked at open by
@@ -1727,113 +970,6 @@ impl PairedCompositeSink {
                 .context("starting outputd dual Apple DAC B")?;
         }
         Ok(())
-    }
-
-    pub fn read_content_period(&mut self, out: &mut [ProgramSample]) -> Result<usize> {
-        // Same declared-width ingest as the single-ALSA lane; see
-        // `AlsaBackend::read_content_available` for why the S16 arm stages.
-        // `io` borrows `self.content` and has a Drop impl, so nothing inside
-        // those scopes may take `&mut self`. Decide the fill here, journal it
-        // after the borrow ends.
-        //
-        // Refuse the no-ALSA-lane case FIRST, before anything touches the staging
-        // buffer — the coherent single sink's rule, and for its reason.
-        //
-        // UNREACHABLE by construction, and stated as a claim rather than assumed:
-        // `content` is `None` only when `content_pcm_skipped` was true, which is
-        // true only under the SHM-ring source, and the run loop dispatches a
-        // ring-sourced box to `ShmRingSource::read_period` — this function is the
-        // `else` arm it does not take. So this is the typed refusal for a
-        // construction that no longer holds, never a runtime path.
-        //
-        // PARK-class (`final_sink_startup`, EX_CONFIG 78) rather than the
-        // ordinary exit-1 the coherent lane's equivalent line takes. The
-        // divergence is deliberate, and it is DEFENCE IN DEPTH rather than a
-        // consequence of the two lines differing in reachability — both are
-        // unreachable, for the same reason, and neither is load-bearing today.
-        //
-        // Park is simply the correct direction for this refusal's shape. The
-        // condition is a static property of the struct — set once in `new`, never
-        // mutated — so if it were ever true it would be true on every period and
-        // on every restart alike, exactly the case the marker exists to park
-        // rather than retry. Exiting 1 walks the restart ladder into
-        // `StartLimitAction=reboot`, which is the failure this whole change
-        // exists to remove; parking puts it where an operator sees it instead.
-        //
-        // Stated plainly so nobody "restores symmetry" by downgrading this
-        // marker: the sibling's `content.as_ref()` line carries the SAME latent
-        // hazard and has not been changed here. It is reached from two callers,
-        // not one — `AlsaBackend::read_content_period` (which `?`-propagates out
-        // of the run loop exactly as this does) and the dac_content drain (which
-        // swallows) — so "the sibling's is swallowed" would be false. Its shape
-        // is not evidence that exit-1 is right for it.
-        let content = final_sink_startup(self.content.as_ref().context(
-            "outputd active content PCM was not opened (SHM-ring content source); \
-             refusing to read a lane this sink does not hold",
-        ))?;
-        let spec = ContentPcmReadSpec {
-            channels: 4,
-            pcm_name: &self.content_pcm,
-            negotiated: self.content_negotiated,
-            role: ContentPcmRole::ActiveContent,
-        };
-        // `content_format` is `Some` here by construction: `new` sets it to `None`
-        // only on the path that leaves `content` `None` too, and the `?` above
-        // already returned in that case. Refuse rather than default, for the
-        // reason the coherent lane's twin refuses — the wrong arm hands a typed
-        // IO handle a buffer of half-samples and the speaker plays loud garbage.
-        // Park-class for the same static-property reason as the refusal above.
-        let lane_format = final_sink_startup(self.content_format.context(
-            "outputd active content PCM is open but its negotiated format is unknown; \
-             refusing to guess the ingest width",
-        ))?;
-        let classified = match lane_format {
-            // Same park-class refusal as the coherent lane's, same reason, same
-            // shared message — see `PACKED_CONTENT_LANE_UNSUPPORTED`.
-            SampleFormat::S24_3Le => {
-                return final_sink_startup(Err(anyhow::anyhow!(PACKED_CONTENT_LANE_UNSUPPORTED)));
-            }
-            SampleFormat::S32Le => {
-                let io = content
-                    .io_i32()
-                    .context("getting i32 IO handle for outputd active content input")?;
-                read_content_pcm(
-                    out,
-                    spec,
-                    &mut self.counters,
-                    |samples| io.readi(samples),
-                    |error| content.try_recover(error, true),
-                )?
-            }
-            SampleFormat::S16Le => {
-                if self.content_widen_buf.len() != out.len() {
-                    self.content_widen_buf.resize(out.len(), 0);
-                }
-                let io = content
-                    .io_i16()
-                    .context("getting i16 IO handle for outputd active content input")?;
-                // Disjoint field borrows, same as the single-ALSA arm — no
-                // `mem::take`, so no early return can drop the staging buffer.
-                let classified = read_content_pcm(
-                    &mut self.content_widen_buf,
-                    spec,
-                    &mut self.counters,
-                    |samples| io.readi(samples),
-                    |error| content.try_recover(error, true),
-                )?;
-                widen_period(&self.content_widen_buf, out)?;
-                classified
-            }
-        };
-        let (frames, frames_short) = zero_fill_content_period(out, 4, classified.read);
-        log_content_fill(
-            &mut self.fill_log,
-            &self.counters,
-            &self.content_pcm,
-            classified.fill_source,
-            frames_short,
-        );
-        Ok(frames)
     }
 
     /// Split one 4-channel program period to the two children and write both —
@@ -2319,46 +1455,6 @@ fn configure_pcm(config: PcmConfig<'_>) -> Result<NegotiatedPcm> {
             .context("get installed outputd DAC format")?;
         verify_dac_format(role, pcm_name, format, installed)?;
     }
-    if role == "content" || role == "active_content" {
-        // Prove what outputd's own client edge ended up at, exactly as the dac
-        // role does — and read the scope of THIS claim just as honestly, because
-        // the content lane's plumbing differs per build:
-        //
-        // The ACTIVE lane no longer reaches this readback AT ALL: an
-        // `active_content` role arrives only over the ACTIVE RING, which
-        // opens no ALSA PCM here. The role token survives in this condition
-        // because it is outputd's LANE-ROLE vocabulary — the ring lane still
-        // carries that role — and because a future ALSA-backed active lane would
-        // want exactly this proof. Nothing today takes that arm.
-        //
-        // The PASSIVE lane (`outputd_content_*`) is `type plug` over a slave
-        // that pins `format S32_LE` now, so this readback proves the CLIENT
-        // EDGE ONLY: a plug installs the client's own request client-side and
-        // converts on the slave side, so it agrees BY CONSTRUCTION and cannot
-        // see the slave's width. The slaves ARE re-pinned (the earlier "later
-        // step of the wide-output-path program" is done); the slave-edge proof
-        // is `tests/test_outputd_wiring.py::
-        // test_asoundrc_declares_outputd_post_dsp_lane_without_dsnoop`, not
-        // this Rust check.
-        //
-        // ONE `final_sink_startup` covers the WHOLE readback — the hw_params and
-        // format reads as well as the comparison. Marking only the comparison
-        // would leave a failed `hw_params_current()` exiting 1 into the very
-        // restart-loop-to-reboot class the guard above exists to prevent.
-        final_sink_startup(read_back_content_format(
-            || {
-                let current = pcm
-                    .hw_params_current()
-                    .with_context(|| format!("reading installed outputd {role} HwParams"))?;
-                current
-                    .get_format()
-                    .with_context(|| format!("get installed outputd {role} format"))
-            },
-            role,
-            pcm_name,
-            format,
-        ))?;
-    }
     if role == "chip_ref" {
         let current = pcm
             .hw_params_current()
@@ -2451,54 +1547,8 @@ fn verify_dac_format(
     verify_installed_format(role, pcm_name, requested, installed)
 }
 
-/// Fail closed unless the format ALSA installed on the CONTENT lane's client
-/// edge is exactly the one requested.
-///
-/// The content sibling of `verify_dac_format`, and the scope of what it proves
-/// depends on the lane — raw `hw` on the active lane (a real second proof),
-/// client-edge-only through the passive lane's `plug`. `configure_pcm`'s content
-/// readback comment carries the full argument; the failure is handled the same
-/// way (parked at EX_CONFIG 78, never restart-looped) because a device that
-/// substituted a format once will substitute it again.
-fn verify_content_format(
-    role: &str,
-    pcm_name: &str,
-    requested: SampleFormat,
-    installed: Format,
-) -> Result<()> {
-    verify_installed_format(role, pcm_name, requested, installed)
-}
-
-/// The CONTENT lane's whole readback: read the installed format, then compare.
-///
-/// One function so ONE `final_sink_startup` at the call site marks EVERY error
-/// the readback can produce, not just the comparison. The `dac` role gets that
-/// for free — its caller wraps the entire `configure_pcm` call — but the content
-/// call sites deliberately do NOT wrap the whole call, because an ordinary
-/// content-lane OPEN failure is transient on the PASSIVE lane (CamillaDSP has
-/// not opened its half of the snd-aloop pair yet) and restart-looping is how
-/// outputd waits that out. (On the ACTIVE lane that open is permanent since
-/// P9-C deleted its pair-5 PCMs; `jasper-outputd-failure-reconcile`'s streak
-/// park resolves both, which is why this exit class did not have to change.)
-/// Without this single mark point, a failed `hw_params_current()` would exit 1
-/// into that restart loop instead of parking.
-///
-/// `read_installed` is injected rather than read here so the failure path is
-/// testable without a live PCM — the same shape as `read_content_pcm`'s injected
-/// reader/recover closures.
-fn read_back_content_format(
-    read_installed: impl FnOnce() -> Result<Format>,
-    role: &str,
-    pcm_name: &str,
-    requested: SampleFormat,
-) -> Result<()> {
-    let installed = read_installed()?;
-    verify_content_format(role, pcm_name, requested, installed)
-}
-
-/// The one request-vs-installed comparison, shared by both readbacks so the two
-/// lanes can never drift into disagreeing about what a mismatch is or how it
-/// reads. Names BOTH formats: the operator has to know which end moved.
+/// The one request-vs-installed comparison. Names BOTH formats: the operator
+/// has to know which end moved.
 fn verify_installed_format(
     role: &str,
     pcm_name: &str,
@@ -2793,10 +1843,10 @@ struct ChildWriteLedger<'a> {
 /// `linked=false` there is no atomic group restart to re-establish alignment
 /// with, so a recovered pair's A/B skew is unbounded and unverifiable — a
 /// recovery that cannot be made safe is not a recovery, and the honest answer is
-/// the one this path already gave. That is also why `link=ok` is an arm-time
-/// precondition for the ring (see [`composite_ring_arm_link_ok`]); the unlinked
-/// composite is not made worse than it was, it is simply not given a recovery it
-/// cannot make safe.
+/// the one this path already gave. That is also why `link=ok` is a precondition
+/// this sink refuses to start without ([`PairedCompositeSink::new`]); the
+/// unlinked composite is not made worse than it was, it is simply not given a
+/// recovery it cannot make safe.
 ///
 /// `Ok(0)` now rides the same budget the coherent single sink gives it instead
 /// of bailing on the first occurrence: a spurious zero-frame return is not an
@@ -2878,7 +1928,6 @@ fn write_dac_fail_closed<S: Copy>(
 mod tests {
     use super::*;
     use crate::config::DEFAULT_DUAL_MAX_DELAY_DELTA_FRAMES;
-    use std::cell::Cell;
 
     /// One S16 sample at the program spine's scale.
     ///
@@ -2901,202 +1950,6 @@ mod tests {
         assert!(error
             .downcast_ref::<FinalSinkStartupConfigError>()
             .is_some());
-    }
-
-    fn test_negotiated_pcm() -> NegotiatedPcm {
-        NegotiatedPcm {
-            sample_rate: 48_000,
-            period_frames: 4,
-            buffer_frames: 8,
-        }
-    }
-
-    fn test_content_read_spec(role: ContentPcmRole) -> ContentPcmReadSpec<'static> {
-        ContentPcmReadSpec {
-            channels: 2,
-            pcm_name: "test_content",
-            negotiated: test_negotiated_pcm(),
-            role,
-        }
-    }
-
-    #[test]
-    fn content_pcm_read_counts_full_success_without_recovery() {
-        let mut out = [1i16; 8];
-        let mut counters = IoCounters::default();
-        let classified = read_content_pcm(
-            &mut out,
-            test_content_read_spec(ContentPcmRole::Content),
-            &mut counters,
-            |_| Ok(4),
-            |_| -> alsa::Result<()> { panic!("full read must not recover") },
-        )
-        .unwrap();
-
-        assert_eq!(classified.read, ContentRead::Frames(4));
-        assert_eq!(counters.content_frames_read, 4);
-        assert_eq!(counters.content_partial_period_count, 0);
-        assert_eq!(counters.content_empty_period_count, 0);
-        let (frames, frames_short) = zero_fill_content_period(&mut out, 2, classified.read);
-        assert_eq!((frames, frames_short), (4, 0));
-        assert_eq!(out, [1; 8]);
-    }
-
-    #[test]
-    fn content_pcm_read_counts_partial_and_zero_fills_unread_frames() {
-        let mut out = [1, 2, 3, 4, 9, 9, 9, 9];
-        let mut counters = IoCounters::default();
-        let classified = read_content_pcm(
-            &mut out,
-            test_content_read_spec(ContentPcmRole::ActiveContent),
-            &mut counters,
-            |_| Ok(2),
-            |_| -> alsa::Result<()> { panic!("partial read must not recover") },
-        )
-        .unwrap();
-
-        assert_eq!(classified.read, ContentRead::Frames(2));
-        assert_eq!(classified.fill_source, "partial");
-        assert_eq!(counters.content_frames_read, 2);
-        assert_eq!(counters.content_partial_period_count, 1);
-        let (frames, frames_short) = zero_fill_content_period(&mut out, 2, classified.read);
-        assert_eq!((frames, frames_short), (2, 2));
-        assert_eq!(out, [1, 2, 3, 4, 0, 0, 0, 0]);
-    }
-
-    #[test]
-    fn content_pcm_read_counts_empty_and_zero_fills_the_period() {
-        let mut out = [7i16; 8];
-        let mut counters = IoCounters::default();
-        let classified = read_content_pcm(
-            &mut out,
-            test_content_read_spec(ContentPcmRole::Content),
-            &mut counters,
-            |_| Ok(0),
-            |_| -> alsa::Result<()> { panic!("empty read must not recover") },
-        )
-        .unwrap();
-
-        assert_eq!(classified.read, ContentRead::NoData);
-        assert_eq!(classified.fill_source, "empty");
-        assert_eq!(counters.content_frames_read, 0);
-        assert_eq!(counters.content_empty_period_count, 1);
-        let (frames, frames_short) = zero_fill_content_period(&mut out, 2, classified.read);
-        assert_eq!((frames, frames_short), (0, 4));
-        assert_eq!(out, [0; 8]);
-    }
-
-    #[test]
-    fn content_pcm_read_classifies_eagain_without_recovery() {
-        let mut out = [7i16; 8];
-        let mut counters = IoCounters::default();
-        let classified = read_content_pcm(
-            &mut out,
-            test_content_read_spec(ContentPcmRole::ActiveContent),
-            &mut counters,
-            |_| Err(alsa::Error::new("readi", libc::EAGAIN)),
-            |_| -> alsa::Result<()> { panic!("EAGAIN must not recover") },
-        )
-        .unwrap();
-
-        assert_eq!(classified.read, ContentRead::NoData);
-        assert_eq!(classified.fill_source, "eagain");
-        assert_eq!(counters.content_eagain_count, 1);
-        assert_eq!(counters.content_empty_period_count, 1);
-        let (frames, frames_short) = zero_fill_content_period(&mut out, 2, classified.read);
-        assert_eq!((frames, frames_short), (0, 4));
-        assert_eq!(out, [0; 8]);
-    }
-
-    #[test]
-    fn content_pcm_read_recovers_epipe_and_returns_xrun_semantics() {
-        let mut out = [7i16; 8];
-        let mut counters = IoCounters::default();
-        let recovered_errno = Cell::new(None);
-        let classified = read_content_pcm(
-            &mut out,
-            test_content_read_spec(ContentPcmRole::Content),
-            &mut counters,
-            |_| Err(alsa::Error::new("readi", libc::EPIPE)),
-            |error| {
-                recovered_errno.set(Some(error.errno()));
-                Ok(())
-            },
-        )
-        .unwrap();
-
-        assert_eq!(classified.read, ContentRead::XrunRecovered);
-        assert_eq!(classified.fill_source, "xrun_recovered");
-        assert_eq!(recovered_errno.get(), Some(libc::EPIPE));
-        assert_eq!(counters.content_xrun_count, 1);
-        assert_eq!(counters.content_empty_period_count, 1);
-        let (frames, frames_short) = zero_fill_content_period(&mut out, 2, classified.read);
-        assert_eq!((frames, frames_short), (0, 4));
-        assert_eq!(out, [0; 8]);
-    }
-
-    #[test]
-    fn content_pcm_read_propagates_other_errno_without_touching_counters() {
-        let mut out = [7i16; 8];
-        let mut counters = IoCounters::default();
-        let error = read_content_pcm(
-            &mut out,
-            test_content_read_spec(ContentPcmRole::Content),
-            &mut counters,
-            |_| Err(alsa::Error::new("readi", libc::EBADF)),
-            |_| -> alsa::Result<()> { panic!("fatal read must not recover") },
-        )
-        .unwrap_err();
-
-        assert!(error
-            .to_string()
-            .contains("reading outputd content PCM test_content"));
-        assert_eq!(counters, IoCounters::default());
-    }
-
-    #[test]
-    fn fill_log_gate_prints_the_first_fill_immediately() {
-        // A fill must never wait for a cooldown to be seen — the whole defect
-        // in #1768 was that the inserting paths printed nothing at all.
-        let mut gate = FillLogGate::default();
-        assert_eq!(gate.admit(0), Some(0));
-    }
-
-    #[test]
-    fn fill_log_gate_suppresses_within_the_cooldown_and_reports_the_count() {
-        let mut gate = FillLogGate::default();
-        assert_eq!(gate.admit(0), Some(0));
-        // Same second: suppressed, but counted.
-        assert_eq!(gate.admit(1), None);
-        assert_eq!(gate.admit(FILL_LOG_COOLDOWN_FRAMES - 1), None);
-        // Cooldown elapsed — prints, and surfaces what it swallowed so a storm
-        // is bounded to one line per second WITHOUT being able to hide.
-        assert_eq!(gate.admit(FILL_LOG_COOLDOWN_FRAMES), Some(2));
-        // The suppressed tally resets after it is reported.
-        assert_eq!(gate.admit(2 * FILL_LOG_COOLDOWN_FRAMES), Some(0));
-    }
-
-    #[test]
-    fn fill_log_gate_paces_by_dac_frames_not_call_count() {
-        // The gate's clock is `dac_frames_written`, so a quiet run of fills
-        // spread across real time each print, however few calls there were.
-        let mut gate = FillLogGate::default();
-        let mut frames = 0u64;
-        for _ in 0..5 {
-            assert_eq!(gate.admit(frames), Some(0));
-            frames += FILL_LOG_COOLDOWN_FRAMES;
-        }
-    }
-
-    #[test]
-    fn zero_short_fill_is_a_no_op_that_does_not_spend_gate_budget() {
-        // The shared logger is called from four sites; a degenerate
-        // `frames_short == 0` must neither print nor consume the one-per-second
-        // budget a REAL fill needs.
-        let mut gate = FillLogGate::default();
-        let counters = IoCounters::default();
-        log_content_fill(&mut gate, &counters, "pcm", "partial", 0);
-        assert_eq!(gate.admit(0), Some(0));
     }
 
     #[test]
@@ -3335,11 +2188,10 @@ mod tests {
         for role in ["dac", "dual_dac_a", "dual_dac_b"] {
             assert!(is_final_edge_role(role), "{role} is a final hardware edge");
         }
-        // The content lanes have their OWN readback (`verify_content_format`,
-        // whose park scope and plug caveats differ), `chip_ref` has an exact
-        // whole-geometry check, and the fake backend opens nothing. None of them
-        // may fall into the edge branch — nor may a name that merely resembles a
-        // child role.
+        // The content roles have no lane to read back at all, `chip_ref` has an
+        // exact whole-geometry check, and the fake backend opens nothing. None
+        // of them may fall into the edge branch — nor may a name that merely
+        // resembles a child role.
         for role in [
             "content",
             "active_content",
@@ -3403,182 +2255,6 @@ mod tests {
                 "{role} mismatch must park, not restart-loop"
             );
         }
-    }
-
-    #[test]
-    fn content_format_readback_accepts_the_installed_format_it_requested() {
-        // Both content roles, both vocabulary values. The passive lane's `plug`
-        // makes this agree by construction today (see `configure_pcm`'s content
-        // readback comment); the active lane's raw `hw` makes it a real proof.
-        verify_content_format(
-            "content",
-            "outputd_content_capture",
-            SampleFormat::S16Le,
-            Format::S16LE,
-        )
-        .unwrap();
-        verify_content_format(
-            "active_content",
-            "outputd_active_content_capture",
-            SampleFormat::S32Le,
-            Format::S32LE,
-        )
-        .unwrap();
-    }
-
-    #[test]
-    fn content_format_readback_rejects_an_honestly_reported_mismatch() {
-        // The lane installed something other than the request and reported it.
-        // Both formats and the ROLE must be named: with two content roles and
-        // two hops in play, "which end moved" is only answerable if the message
-        // says which lane it was.
-        //
-        // The role assertion must match the SENTENCE POSITION, not the bare
-        // substring: `outputd_active_content_capture` contains both "content"
-        // and "active_content", so `text.contains(role)` was satisfied by the
-        // PCM name alone and stayed green even with the role hardcoded to the
-        // wrong lane. `"outputd <role> PCM"` can only come from the message's
-        // own role slot.
-        let err = verify_content_format(
-            "active_content",
-            "outputd_active_content_capture",
-            SampleFormat::S32Le,
-            Format::S16LE,
-        )
-        .unwrap_err();
-        let text = err.to_string();
-        assert!(text.contains("outputd active_content PCM"), "{text}");
-        assert!(text.contains("outputd_active_content_capture"), "{text}");
-        assert!(text.contains("S16LE"), "{text}");
-        assert!(text.contains("S32_LE"), "{text}");
-    }
-
-    #[test]
-    fn content_format_readback_rejects_an_edge_outside_the_vocabulary() {
-        // Sentinel moved off `S24LE` for the same reason the DAC readback's did:
-        // with `S24_3LE` in the vocabulary, a 24-bit sentinel here reads as if the
-        // accepted width were being rejected. `FloatLE` is unambiguously outside.
-        let err = verify_content_format(
-            "content",
-            "outputd_content_capture",
-            SampleFormat::S16Le,
-            Format::FloatLE,
-        )
-        .unwrap_err();
-        assert!(err.to_string().contains("FloatLE"), "{err}");
-    }
-
-    #[test]
-    fn the_content_readback_compares_the_format_it_read_not_the_one_requested() {
-        // Wiring guard against a self-satisfying readback: the comparison must
-        // consume what the READ returned. If it compared the request against
-        // itself it would agree always — green, and blind.
-        read_back_content_format(
-            || Ok(Format::S32LE),
-            "content",
-            "outputd_content_capture",
-            SampleFormat::S32Le,
-        )
-        .unwrap();
-
-        let err = read_back_content_format(
-            || Ok(Format::S16LE),
-            "content",
-            "outputd_content_capture",
-            SampleFormat::S32Le,
-        )
-        .unwrap_err();
-        assert!(err.to_string().contains("S16LE"), "{err}");
-        assert!(err.to_string().contains("S32_LE"), "{err}");
-    }
-
-    #[test]
-    fn content_format_mismatch_parks_the_unit_instead_of_restart_looping() {
-        // `configure_pcm` wraps the content readback in `final_sink_startup`, so
-        // a mismatch must carry the marker main() turns into EX_CONFIG 78 — a
-        // lane that substituted a format once will substitute it again, and this
-        // unit's restart loop escalates to StartLimitAction=reboot.
-        let error = final_sink_startup(verify_content_format(
-            "content",
-            "outputd_content_capture",
-            SampleFormat::S32Le,
-            Format::S16LE,
-        ))
-        .unwrap_err();
-
-        assert!(error
-            .downcast_ref::<FinalSinkStartupConfigError>()
-            .is_some());
-    }
-
-    #[test]
-    fn a_content_park_survives_the_callers_own_context_layer() {
-        // The dac marker is attached OUTERMOST (`final_sink_startup(configure_pcm
-        // (..).with_context(..))`); the content markers are attached INSIDE
-        // `configure_pcm` and the caller then wraps them in its own
-        // `.with_context("configuring outputd content capture PCM ...")`. So the
-        // park only works if `main`'s downcast walks the whole context chain
-        // rather than inspecting the outermost layer — pin that, because the
-        // alternative is a mismatch that silently restart-loops instead of
-        // parking. Mirrors both call sites' wrapping exactly.
-        //
-        // Second element covers the readback's INFRASTRUCTURE error — a failed
-        // `hw_params_current()` / `get_format()`. That path reaches the marker
-        // only because `read_back_content_format` owns the reads, so one
-        // `final_sink_startup` covers them; marking the comparison alone would
-        // let it exit 1 into the restart loop.
-        //
-        // There were THREE elements while a temporary i16-only ingest guard also
-        // rode this call site. The wide ingest deleted that guard, and its
-        // element with it — the deleted guard's own checklist named this test
-        // precisely because it is not named for the guard.
-        for inner in [
-            final_sink_startup(verify_content_format(
-                "content",
-                "outputd_content_capture",
-                SampleFormat::S32Le,
-                Format::S16LE,
-            )),
-            final_sink_startup(read_back_content_format(
-                || anyhow::bail!("reading installed outputd content HwParams failed"),
-                "content",
-                "outputd_content_capture",
-                SampleFormat::S16Le,
-            )),
-        ] {
-            let wrapped = inner
-                .with_context(|| {
-                    "configuring outputd content capture PCM outputd_content_capture".to_string()
-                })
-                .unwrap_err();
-
-            assert!(
-                wrapped
-                    .downcast_ref::<FinalSinkStartupConfigError>()
-                    .is_some(),
-                "marker lost under the caller's context: {wrapped:#}"
-            );
-        }
-    }
-
-    #[test]
-    fn both_readbacks_report_a_mismatch_in_one_shape() {
-        // One comparison behind both entry points: the dac and content lanes
-        // cannot drift into disagreeing about what a mismatch is or how it
-        // reads. Same requested/installed pair, same message but for the role.
-        let dac = verify_dac_format("dac", "some_pcm", SampleFormat::S32Le, Format::S16LE)
-            .unwrap_err()
-            .to_string();
-        let content =
-            verify_content_format("content", "some_pcm", SampleFormat::S32Le, Format::S16LE)
-                .unwrap_err()
-                .to_string();
-
-        assert_eq!(
-            dac.replacen("dac", "content", 1),
-            content,
-            "{dac} vs {content}"
-        );
     }
 
     #[test]
@@ -4010,20 +2686,6 @@ mod tests {
             baseline_relatch_decision(Some(7), 8, 0),
             BaselineRelatch::Refuse
         );
-    }
-
-    #[test]
-    fn only_a_linked_pair_may_arm_the_ring() {
-        // `link=ok` is an ARM-TIME precondition: the recovery model is built on
-        // `snd_pcm_link`, so a pair that will not link has no safe recovery and
-        // must keep the loopback transport.
-        assert!(composite_ring_arm_link_ok(true, true));
-        assert!(!composite_ring_arm_link_ok(true, false));
-        // Not armed: unchanged behaviour for an aloop composite, linked or
-        // not. This is deliberately NOT a flip of the global
-        // `JASPER_OUTPUTD_DUAL_REQUIRE_LINK` default.
-        assert!(composite_ring_arm_link_ok(false, true));
-        assert!(composite_ring_arm_link_ok(false, false));
     }
 
     #[test]

@@ -440,13 +440,6 @@ def _read_transport_state(plan: Any) -> dict[str, Any]:
     # outputd.env is read here because the plan carries decisions, not the
     # generated env it was built from.
     outputd_env = dict(read_env_file_state(DEFAULT_OUTPUTD_ENV_PATH).values)
-    outputd_status = _mapping(_read_local_status())
-    live_pcm = str(_mapping(outputd_status.get("content")).get("pcm") or "")
-    if live_pcm:
-        # Prefer what outputd actually opened over what it was told to open, so
-        # a reconcile window (env already rewritten, daemon not yet restarted)
-        # cannot read as a disconnect.
-        outputd_env["JASPER_OUTPUTD_CONTENT_PCM"] = live_pcm
     return _transport_state(
         # The plan's own resolved COUPLING, never its transport topology NAME.
         # `transport_coherence_report` takes a coupling TOKEN and re-derives the

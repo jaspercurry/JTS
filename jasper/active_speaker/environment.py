@@ -23,6 +23,7 @@ import yaml
 
 from jasper.camilla_config_contract import (
     DEFAULT_PLAYBACK_DEVICE,
+    RETIRED_ALOOP_PLAYBACK_DEVICE,
     DEFAULT_VOLUME_LIMIT_DB,
     parse_camilla_devices_config,
 )
@@ -348,7 +349,11 @@ def classify_camilla_config_text(text: str) -> dict[str, Any]:
     }:
         classification = "jts_generated_stereo"
         label = "JTS generated stereo DSP config"
-    elif playback_device == DEFAULT_PLAYBACK_DEVICE:
+    elif playback_device in {DEFAULT_PLAYBACK_DEVICE, RETIRED_ALOOP_PLAYBACK_DEVICE}:
+        # Ring B, or the retired snd-aloop lane a box that has not reconciled
+        # still names. Both are outputd's stereo hop; the second one no longer
+        # plays (ADR-0100), but classifying it `unknown_custom` would tell an
+        # operator JTS cannot preserve a graph JTS itself emitted.
         classification = "jts_outputd_stereo"
         label = "JTS outputd stereo config"
     elif playback_device and "jasper_out" in playback_device:

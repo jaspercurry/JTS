@@ -28,7 +28,6 @@ from jasper.active_speaker.calibration_level import load_calibration_level_state
 from jasper.active_speaker.environment import probe_active_speaker_environment
 from jasper.active_speaker.runtime_contract import (
     DEFAULT_FLAT_OUTPUTD_CONFIG,
-    DEFAULT_RING_FLAT_OUTPUTD_CONFIG,
     GRAPH_ALL_MUTED_ACTIVE_STARTUP,
     GRAPH_APPROVED_ACTIVE_RUNTIME,
     PARKED_MUTED_STATUS,
@@ -344,7 +343,6 @@ def _cmd_runtime_safe_graph(args: argparse.Namespace) -> int:
         statefile_path=args.statefile,
         current_config_path=args.current_config,
         flat_config_path=args.flat_config,
-        ring_flat_config_path=args.ring_flat_config,
         coupling=coupling,
         applied_baseline_path=baseline_profile_state_path(
             args.applied_baseline_state
@@ -1560,19 +1558,10 @@ def build_parser() -> argparse.ArgumentParser:
         help="normal full-range outputd config path",
     )
     runtime.add_argument(
-        "--ring-flat-config",
-        default=str(DEFAULT_RING_FLAT_OUTPUTD_CONFIG),
-        help=(
-            "ring (shm_ring) full-range outputd config path; selected instead of "
-            "--flat-config when the box is ring-armed (finding 5 re-seed)"
-        ),
-    )
-    runtime.add_argument(
         "--coupling",
         default=None,
         help=(
-            "persisted fan-in coupling (loopback|shm_ring); when "
-            "omitted, read from fanin.env. Ring-armed selects --ring-flat-config."
+            "persisted fan-in coupling; when omitted, read from fanin.env"
         ),
     )
     runtime.add_argument(

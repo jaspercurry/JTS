@@ -42,13 +42,16 @@ impl BackendMode {
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ContentBridgeMode {
+    /// The RETIRED snd-aloop route's name, kept only so the refusals that park
+    /// a box carrying it can say which route it asked for. Nothing serves it:
+    /// the composite park, the round-trip lane's own bridge requirement and —
+    /// for every other shape — `main`'s run loop, which finds no ring to read
+    /// and parks at the first period, are the three exits it reaches.
     Direct,
-    /// PROTOTYPE (latency/ring-proto-shm, flag `shm_ring`): read the post-DSP
-    /// stereo program from a 2-slot SHM ping-pong ring the CamillaDSP-playback
-    /// ALSA ioplug writes, instead of the snd-aloop content hop. Default is
-    /// `Direct`; this variant only arms when
-    /// `JASPER_OUTPUTD_CONTENT_BRIDGE=shm_ring` is set. See `jasper_ring` and
-    /// `shm_ring_source.rs`.
+    /// The one transport (ADR-0100): read the post-DSP program from an n-slot
+    /// SHM ping-pong ring the CamillaDSP-playback ALSA ioplug writes. This is
+    /// what an UNDECLARED `JASPER_OUTPUTD_CONTENT_BRIDGE` resolves to. See
+    /// `jasper_ring` and `shm_ring_source.rs`.
     ShmRing,
 }
 
@@ -125,17 +128,18 @@ impl ContentBridgeMode {
 /// Every spelling the REMOVED `rate_match` content bridge answered to.
 ///
 /// The bridge itself is gone (git history holds it); `shm_ring` is the
-/// frame-bounded transport that replaced it. A migrating box may still carry
-/// one of these spellings in `/var/lib/jasper/outputd.env`, so the parser fails
-/// SAFE to [`ContentBridgeMode::Direct`] and says so loudly rather than
-/// bailing — a deleted knob must never turn a routine deploy into a parked
-/// final-output owner (a silent speaker).
+/// frame-bounded transport that replaced it, and since ADR-0100 it is the ONLY
+/// one. Kept so the parse can name what a migrating box's
+/// `/var/lib/jasper/outputd.env` still asks for.
 ///
-/// This is NOT permission to run the bridge: the route-latency policy
-/// (`jasper.audio_runtime_plan._route_policy_errors`) still REFUSES any
-/// non-`direct` raw bridge value for a `usb_low_latency_48k` claim, so a box
-/// carrying a stale spelling reports an honest red claim instead of a
-/// silently-downgraded green one.
+/// These used to fail SAFE to [`ContentBridgeMode::Direct`] rather than bail,
+/// because bailing would have parked a box whose only sin was a stale env line
+/// while `direct` still carried audio. `direct` carries nothing now, so that
+/// trade is gone: fail-safe would buy the box no transport, only a park labelled
+/// as the composite/round-trip/stereo-sink refusal that happened to catch it
+/// next — or, on a plain stereo box, the first-period refusal, three layers from
+/// the stale line that caused it. Bailing HERE parks at the same exit 78 and
+/// names the key.
 pub const REMOVED_RATE_MATCH_BRIDGE_SPELLINGS: &[&str] =
     &["rate_match", "ratematch", "rate-matched", "rate_matched"];
 
@@ -143,41 +147,30 @@ pub const REMOVED_RATE_MATCH_BRIDGE_SPELLINGS: &[&str] =
 pub struct Config {
     pub backend: BackendMode,
     pub sink_mode: SinkMode,
-    pub content_pcm: String,
     pub content_channels: u16,
-    /// The DECLARED format of the post-DSP CONTENT lane — the format the ALSA
-    /// backend REQUESTS for the content capture PCM (`content_pcm`, and the
-    /// composite sink's active equivalent) and then proves it got, by reading
-    /// the installed `hw_params` back.
+    /// The DECLARED wire format of the post-DSP CONTENT hop — the SHM ring
+    /// between CamillaDSP and outputd. [`crate::shm_ring_source::ShmRingSource`]
+    /// builds the ring geometry from it, and the ring's attach validates it
+    /// against the header the writer created, so a declaration that disagrees
+    /// with the live ring parks at startup rather than being read at the wrong
+    /// width.
     ///
     /// A SEPARATE HOP from [`Self::declared_dac_format`], deliberately not a
-    /// copy of it: the content lane is the snd-aloop pair between CamillaDSP
-    /// and outputd, the DAC format is the hardware edge, and a box can
-    /// legitimately run one wide and the other narrow — a wide content lane
-    /// into a USB dongle that only offers S16 is a real configuration. Reading
-    /// one axis off the other would silently mis-declare whichever hop the box
-    /// did not name.
+    /// copy of it: this is the ring's wire, the DAC format is the hardware
+    /// edge, and a box can legitimately run one wide and the other narrow — a
+    /// wide content hop into a USB dongle that only offers S16 is a real
+    /// configuration. Reading one axis off the other would silently mis-declare
+    /// whichever hop the box did not name.
     ///
-    /// Unset or blank falls back to `S16_LE` — the pre-flip default, not the
-    /// live value on a reconciled box.
+    /// Unset or blank falls back to `S16_LE`.
     /// `deploy/bin/jasper-audio-hardware-reconcile` emits this key on every
-    /// box, ahead of the per-hardware branches, resolved per coupling by
-    /// `jasper.fanin_coupling.content_lane_format_for_coupling`: `S32_LE` on
-    /// the `loopback` coupling (the passive lane's slaves are re-pinned to
-    /// match — see `deploy/alsa/asoundrc.jasper`), and now `S32_LE` on
-    /// `shm_ring` too by default — the ring wire's resolver defaults wide,
-    /// the same width `loopback` already carried. `S16_LE` on a ring box
-    /// means an explicit operator rollback pin
+    /// box, ahead of the per-hardware branches, from
+    /// `jasper.fanin_coupling.content_lane_format_for_coupling`: `S32_LE` by
+    /// default, because the ring wire's resolver defaults wide. `S16_LE` on a
+    /// ring box means an explicit operator rollback pin
     /// (`JASPER_FANIN_RING_WIRE_FORMAT=S16_LE`), not the ordinary case.
-    /// Absence now means a box that has not yet reconciled (fresh install) or
+    /// Absence means a box that has not yet reconciled (fresh install) or
     /// whose probe could not run — not "every box".
-    ///
-    /// It names the content hop, not an ALSA lane specifically: on the
-    /// `shm_ring` coupling no snd-aloop lane is opened at all, and this value
-    /// is the SHM ring's own wire format — [`crate::shm_ring_source::ShmRingSource`]
-    /// builds the ring geometry from it, and the ring's attach validates it
-    /// against the header the writer created. One key, one hop, whichever
-    /// transport carries it.
     pub content_format: SampleFormat,
     pub dac_pcm: String,
     /// The registry-DECLARED format of the final hardware edge behind
@@ -199,7 +192,6 @@ pub struct Config {
     pub declared_dac_format: SampleFormat,
     pub dual_dac_a_pcm: Option<String>,
     pub dual_dac_b_pcm: Option<String>,
-    pub dual_require_link: bool,
     pub dual_max_delay_delta_frames: i64,
     pub sample_rate: u32,
     pub period_frames: u32,
@@ -344,31 +336,43 @@ impl Config {
             "JASPER_OUTPUTD_DAC_BUFFER_FRAMES",
             DEFAULT_DAC_BUFFER_FRAMES,
         )?;
-        let raw_content_bridge = env_str("JASPER_OUTPUTD_CONTENT_BRIDGE", "direct")
+        // UNDECLARED == the one transport. ADR-0100 makes `shm_ring` the only
+        // upstream outputd serves, so a box that names nothing gets it; the
+        // `direct` spellings survive only to be REFUSED downstream — by the
+        // composite park, by the round-trip lane's own requirement, and (for
+        // every other shape) at the first period, where there is no ring to
+        // read. Mirrors `jasper-fanin`'s coupling accept-set.
+        let raw_content_bridge = env_str("JASPER_OUTPUTD_CONTENT_BRIDGE", "shm_ring")
             .trim()
             .to_ascii_lowercase();
         let content_bridge_mode = match raw_content_bridge.as_str() {
             "direct" | "off" | "disabled" => ContentBridgeMode::Direct,
-            // PROTOTYPE flag (latency/ring-proto-shm).
             "shm_ring" | "shmring" | "ring" => ContentBridgeMode::ShmRing,
             other if REMOVED_RATE_MATCH_BRIDGE_SPELLINGS.contains(&other) => {
-                // Fail SAFE + LOUD on the deleted bridge (see
-                // REMOVED_RATE_MATCH_BRIDGE_SPELLINGS). Bailing here would exit
-                // 78 and park the final-output owner on a box whose only sin is
-                // a stale env line, so resolve `direct` — the transport the
-                // bridge sat in front of — and make the downgrade audible in
-                // the journal instead.
+                // The deleted rate_match bridge, named rather than lumped in
+                // with a typo — see REMOVED_RATE_MATCH_BRIDGE_SPELLINGS for why
+                // this bails now instead of resolving `direct`.
                 eprintln!(
                     "event=outputd.content_bridge.removed_value requested={other} \
-                     action=fail_safe_direct detail=the rate_match content bridge was \
-                     deleted; remove JASPER_OUTPUTD_CONTENT_BRIDGE from \
-                     /var/lib/jasper/outputd.env or set it to direct"
+                     action=park"
                 );
-                ContentBridgeMode::Direct
+                anyhow::bail!(
+                    "PARKED: JASPER_OUTPUTD_CONTENT_BRIDGE={:?} is the rate_match \
+                     content bridge, which was deleted. The SHM ring is the one \
+                     transport (ADR-0100), so there is nothing behind this value \
+                     to fall back to. Remove the stale \
+                     JASPER_OUTPUTD_CONTENT_BRIDGE line from \
+                     /var/lib/jasper/outputd.env — an UNDECLARED bridge is the \
+                     ring — or set it to shm_ring.",
+                    other
+                )
             }
             other => {
                 anyhow::bail!(
-                    "JASPER_OUTPUTD_CONTENT_BRIDGE must be one of direct, shm_ring; got {:?}",
+                    "JASPER_OUTPUTD_CONTENT_BRIDGE must be one of shm_ring (the one \
+                     transport, and what an UNDECLARED key resolves to) or direct \
+                     (the retired route, parsed only so the park refusals can name \
+                     it); got {:?}",
                     other
                 )
             }
@@ -411,52 +415,6 @@ impl Config {
             "JASPER_OUTPUTD_CHIP_REF_PERIOD_FRAMES",
         )?;
 
-        // The Composite arm used to default to `outputd_active_content_capture`,
-        // the snd-aloop ACTIVE lane's capture half. That PCM no longer exists:
-        // #2534 deleted its definitions, and the ACTIVE ring is now the one
-        // legal ACTIVE endpoint, so nothing can ever create it again. A default
-        // naming it was a permanently-broken guess that failed only later, at
-        // the sink open, and misdiagnosed itself on the way out —
-        // `jasper-outputd-failure-reconcile` matches the lane by name, so the
-        // park record would have named the deleted lane as if it were expected.
-        //
-        // SCOPED TO Direct, deliberately. Under `ShmRing` outputd reads the ring
-        // FILE and never opens a content PCM at all (`content_pcm_skipped`), so
-        // a ring-armed composite box legitimately has no content PCM to declare
-        // — bailing there would refuse to start the very topology this campaign
-        // is converging boxes onto.
-        //
-        // WHAT REACHES THIS ARM is the PASSIVE composite: a roleful composite's
-        // post-crossover program rides the ACTIVE ring, so it resolves
-        // `ShmRing` above. The passive dual-DAC shape resolves neither ring,
-        // which under one-audio-transport (ADR-0100 / ADR-0178) is a named
-        // park rather than a lane to re-arm — hence a tracked issue and no
-        // command.
-        //
-        // Failing HERE rather than at the open is the whole point: a
-        // `Config::from_env` error exits 78 (EX_CONFIG) before any ALSA device
-        // is touched, so the box parks immediately with the reason named
-        // instead of running on a guess it can never satisfy.
-        let default_content_pcm = match (sink_mode, content_bridge_mode) {
-            (SinkMode::SingleAlsa, _) => "outputd_content_capture",
-            (SinkMode::Composite, ContentBridgeMode::ShmRing) => "",
-            (SinkMode::Composite, ContentBridgeMode::Direct) => {
-                if env_str("JASPER_OUTPUTD_CONTENT_PCM", "").trim().is_empty() {
-                    anyhow::bail!(
-                        "PARKED: a passive composite (dual-DAC) sink has no \
-                         transport. The snd-aloop ACTIVE lane this arm used to \
-                         default to was deleted (#2534), and the shm_ring \
-                         transport carries a composite only for a ROLEFUL \
-                         layout, whose post-crossover program rides the ACTIVE \
-                         ring. Composite-on-ring for the passive shape is \
-                         tracked as #2982; until it lands this box stays \
-                         parked. A lab box may name its own content PCM in \
-                         JASPER_OUTPUTD_CONTENT_PCM."
-                    );
-                }
-                ""
-            }
-        };
         let default_dac_pcm = match sink_mode {
             SinkMode::SingleAlsa => "outputd_dac",
             SinkMode::Composite => "dual_apple_usb_c_dac_4ch",
@@ -523,15 +481,14 @@ impl Config {
         // The CONTENT lane's declared format — the OTHER hop, parsed with the
         // same exact-match/park-on-garbage semantics as the DAC edge above and
         // deliberately from its OWN name. Two hops, two declarations: reusing
-        // the DAC value here would tie the snd-aloop lane's width to the
-        // hardware edge's, and the two are independent by design (an S32
-        // content lane into an S16-only dongle edge is a supported shape).
+        // the DAC value here would tie the ring wire's width to the hardware
+        // edge's, and the two are independent by design (an S32 content hop
+        // into an S16-only dongle edge is a supported shape).
         //
-        // Unset or blank falls back to the historical S16_LE lane, but that is
+        // Unset or blank falls back to the historical S16_LE, but that is
         // no longer every live box: jasper-audio-hardware-reconcile emits this
-        // name on every box now, resolved per coupling (S32_LE on loopback,
-        // and now S32_LE on shm_ring too by default — the ring wire's
-        // resolver defaults wide — see
+        // name on every box now (S32_LE — the ring wire's resolver defaults
+        // wide — see
         // jasper.fanin_coupling.content_lane_format_for_coupling). S16_LE on
         // a ring box means an explicit operator rollback pin
         // (JASPER_FANIN_RING_WIRE_FORMAT=S16_LE), not the default. The axis is
@@ -724,14 +681,12 @@ impl Config {
         // the composite split lives entirely DOWNSTREAM of it, inside this
         // daemon, which reads ONE interleaved 4-channel period and calls
         // `deinterleave_4ch_to_dual_stereo`. The ring never sees a child. The
-        // transport it replaces — the raw snd-aloop lane — is equally one device
-        // on one clock domain and carries this exact composite in production
-        // today. The exclusion was right as a ring-v2 SCOPE call and wrong as a
-        // physics claim.
+        // exclusion was right as a ring-v2 SCOPE call and wrong as a physics
+        // claim.
         //
-        // What still holds a composite off the ring: `link=ok` is an arm-time
-        // precondition (`composite_ring_arm_link_ok` in alsa_backend.rs), and
-        // the household-facing arm is an explicit operator action gated by the
+        // What still holds a composite off the ring: `link=ok` is a precondition
+        // the composite sink enforces for itself (alsa_backend.rs), and the
+        // household-facing arm is an explicit operator action gated by the
         // Python preflights. Widening this term ENABLES that arm; it does not
         // perform one.
         //
@@ -742,6 +697,33 @@ impl Config {
         let ring_active_ok = active_lane
             && ring_active_endpoint
             && matches!(sink_mode, SinkMode::SingleAlsa | SinkMode::Composite);
+
+        // PARKED: the passive composite (dual-DAC) shape.
+        //
+        // The park the (Composite, Direct) content-PCM arm used to carry, re-keyed
+        // onto what survives the loopback route's deletion. The discriminator is
+        // the ACTIVE-ring endpoint marker, not the content bridge: a ROLEFUL
+        // composite's post-crossover program rides the ACTIVE ring and is the
+        // shape jts.local runs today, while the PASSIVE dual-DAC shape resolves
+        // no ring of either kind and has no transport at all.
+        //
+        // Ahead of the stereo-sink predicate below on purpose — that one would
+        // also refuse this box, but as a generic "not a full-range stereo sink",
+        // which is the wrong account of a composite and names no issue.
+        //
+        // Failing HERE is the whole point: a `Config::from_env` error exits 78
+        // (EX_CONFIG) before any ALSA device is touched, so the box parks
+        // immediately with the reason named instead of running on a guess it can
+        // never satisfy. No command is recommended: none can clear it.
+        if sink_mode == SinkMode::Composite && !ring_active_endpoint {
+            anyhow::bail!(
+                "PARKED: a passive composite (dual-DAC) sink has no transport. \
+                 The shm_ring transport carries a composite only for a ROLEFUL \
+                 layout, whose post-crossover program rides the ACTIVE ring. \
+                 Composite-on-ring for the passive shape is tracked as #2982; \
+                 until it lands this box stays parked."
+            );
+        }
 
         // The shared safety predicate for outputd's stereo-only features: they
         // may arm ONLY on a full-range stereo L/R sink — single-ALSA, exactly
@@ -796,14 +778,12 @@ impl Config {
             );
         }
 
-        // PROTOTYPE SHM ring reader (latency/ring-proto-shm). Some iff the flag
-        // selects it; the predicate above already rejected ShmRing on any sink
-        // that is neither a full-range stereo L/R sink nor an armed ACTIVE-ring
-        // endpoint (which since P8b item 1 includes a composite), and the
-        // local-pipe / dac-content guards (which require Direct) already made
-        // shm_ring
-        // mutually exclusive with those content sources. The remaining
-        // shm-ring-only validation is the slot count.
+        // The SHM ring reader's settings. `Some` iff the ring is the resolved
+        // transport; the predicate above already rejected it on any sink that is
+        // neither a full-range stereo L/R sink nor an armed ACTIVE-ring endpoint
+        // (which since P8b item 1 includes a composite), and the dac-content
+        // guard (which requires Direct) already made the ring mutually exclusive
+        // with the round-trip lane. The remaining validation is the slot count.
         let shm_ring = match content_bridge_mode {
             ContentBridgeMode::ShmRing => {
                 let n_slots = env_u32("JASPER_OUTPUTD_SHM_RING_SLOTS", DEFAULT_SHM_RING_SLOTS)?;
@@ -837,21 +817,19 @@ impl Config {
         // `is_full_range_stereo_lr_sink` goes TRUE — so outputd would attach the
         // ACTIVE ring as an ordinary stereo sink and unlock the post-crossover
         // TTS mixer onto a compression driver. On a 2-way box the widths are
-        // equal, so no channel-count check can catch it, and under `shm_ring`
-        // the loud CONTENT-PCM open failure that catches a mis-declaration today
-        // is gone (`skip_content_pcm`). Positive equality against a NAMED path
+        // equal, so no channel-count check can catch it, and there is no
+        // content-PCM open left to fail loudly on a mis-declaration. Positive
+        // equality against a NAMED path
         // constant is what keeps a future third ring from slipping through the
         // way a denylist would let it.
         //
-        // SCOPED TO ShmRing, deliberately. Under `Direct` there is no ring to
-        // read, so the "is the active path" side is structurally false while
-        // `ring_active_ok` stays TRUE on a healthy roleful box — an unscoped
-        // biconditional would therefore park a roleful box the moment its
-        // coupling fell back to loopback, and re-running the hardware
-        // reconciler would re-derive the marker and keep it parked. That state
-        // IS the PARK a roleful box reaches when it is unarmed, which
-        // makes the scoping matter more, not less — parking it here would bury
-        // the one doctor check that names the state. The incoherent-pair bail
+        // SCOPED TO ShmRing, deliberately. A roleful box carrying a persisted
+        // `direct` has no ring to read, so the "is the active path" side is
+        // structurally false while `ring_active_ok` stays TRUE — an unscoped
+        // biconditional would refuse it HERE, naming the ring-path allowlist for
+        // a box whose actual fault is that it declared no transport. It parks
+        // either way; this keeps the account of WHY correct, which is the one
+        // thing the doctor and the park record read. The incoherent-pair bail
         // above stays mode-independent, because a broken writer is broken under
         // every bridge.
         if content_bridge_mode == ContentBridgeMode::ShmRing {
@@ -878,14 +856,12 @@ impl Config {
         let config = Self {
             backend,
             sink_mode,
-            content_pcm: env_str("JASPER_OUTPUTD_CONTENT_PCM", default_content_pcm),
             content_channels,
             content_format,
             dac_pcm: env_str("JASPER_OUTPUTD_DAC_PCM", default_dac_pcm),
             declared_dac_format,
             dual_dac_a_pcm,
             dual_dac_b_pcm,
-            dual_require_link: env_bool("JASPER_OUTPUTD_DUAL_REQUIRE_LINK", false),
             dual_max_delay_delta_frames,
             sample_rate,
             period_frames,
@@ -1042,8 +1018,6 @@ mod tests {
     /// The value is deliberately a name no ALSA config defines: nothing here
     /// opens a PCM, and a plausible-looking real name would invite a reader to
     /// think the lane is resolved rather than merely declared.
-    const DECLARED_CONTENT_PCM: &str = "outputd_declared_content";
-
     fn with_env<F: FnOnce()>(vars: &[(&str, Option<&str>)], f: F) {
         let _guard = ENV_LOCK
             .lock()
@@ -1081,7 +1055,6 @@ mod tests {
             let cfg = Config::from_env().unwrap();
             assert_eq!(cfg.backend, BackendMode::Fake);
             assert_eq!(cfg.sink_mode, SinkMode::SingleAlsa);
-            assert_eq!(cfg.content_pcm, "outputd_content_capture");
             assert_eq!(cfg.content_channels, 2);
             assert_eq!(cfg.dac_pcm, "outputd_dac");
             assert!(cfg.dual_dac_a_pcm.is_none());
@@ -1090,7 +1063,7 @@ mod tests {
             assert_eq!(cfg.period_frames, DEFAULT_PERIOD_FRAMES);
             assert_eq!(cfg.content_buffer_frames, DEFAULT_CONTENT_BUFFER_FRAMES);
             assert_eq!(cfg.dac_buffer_frames, DEFAULT_DAC_BUFFER_FRAMES);
-            assert_eq!(cfg.content_bridge_mode, ContentBridgeMode::Direct);
+            assert_eq!(cfg.content_bridge_mode, ContentBridgeMode::ShmRing);
             assert_eq!(cfg.chip_ref_sample_rate, DEFAULT_CHIP_REF_SAMPLE_RATE);
             assert_eq!(cfg.chip_ref_period_frames, DEFAULT_CHIP_REF_PERIOD_FRAMES);
             assert_eq!(cfg.chip_ref_buffer_frames, DEFAULT_CHIP_REF_BUFFER_FRAMES);
@@ -1124,6 +1097,10 @@ mod tests {
                     Some("/run/jasper-grouping/member-content.fifo"),
                 ),
                 ("JASPER_OUTPUTD_DAC_CONTENT_CHANNEL", Some("left")),
+                // The round-trip lane still names the retired route, so under
+                // the one transport it PARKS (#3118). Pinned here so these knob
+                // contracts keep their own subject.
+                ("JASPER_OUTPUTD_CONTENT_BRIDGE", Some("direct")),
             ],
             || {
                 let cfg = Config::from_env().unwrap();
@@ -1142,6 +1119,10 @@ mod tests {
         with_env(
             &[
                 ("JASPER_OUTPUTD_DAC_CONTENT_FIFO", Some("/run/x.fifo")),
+                // The round-trip lane still names the retired route, so under the
+                // one transport it PARKS (#3118). Pinned here so these knob
+                // contracts keep their own subject.
+                ("JASPER_OUTPUTD_CONTENT_BRIDGE", Some("direct")),
                 ("JASPER_OUTPUTD_DAC_CONTENT_CHANNEL", Some("left")),
                 ("JASPER_OUTPUTD_DAC_CONTENT_HP_HZ", Some("120")),
             ],
@@ -1159,6 +1140,10 @@ mod tests {
             with_env(
                 &[
                     ("JASPER_OUTPUTD_DAC_CONTENT_FIFO", Some("/run/x.fifo")),
+                    // The round-trip lane still names the retired route, so under the
+                    // one transport it PARKS (#3118). Pinned here so these knob
+                    // contracts keep their own subject.
+                    ("JASPER_OUTPUTD_CONTENT_BRIDGE", Some("direct")),
                     ("JASPER_OUTPUTD_DAC_CONTENT_CHANNEL", Some("left")),
                     ("JASPER_OUTPUTD_DAC_CONTENT_HP_HZ", Some(raw)),
                 ],
@@ -1176,6 +1161,10 @@ mod tests {
         with_env(
             &[
                 ("JASPER_OUTPUTD_DAC_CONTENT_FIFO", Some("/run/x.fifo")),
+                // The round-trip lane still names the retired route, so under the
+                // one transport it PARKS (#3118). Pinned here so these knob
+                // contracts keep their own subject.
+                ("JASPER_OUTPUTD_CONTENT_BRIDGE", Some("direct")),
                 ("JASPER_OUTPUTD_DAC_CONTENT_CHANNEL", Some("sub")),
                 ("JASPER_OUTPUTD_DAC_CONTENT_SUB_HZ", Some("120")),
             ],
@@ -1194,6 +1183,10 @@ mod tests {
         with_env(
             &[
                 ("JASPER_OUTPUTD_DAC_CONTENT_FIFO", Some("/run/x.fifo")),
+                // The round-trip lane still names the retired route, so under the
+                // one transport it PARKS (#3118). Pinned here so these knob
+                // contracts keep their own subject.
+                ("JASPER_OUTPUTD_CONTENT_BRIDGE", Some("direct")),
                 ("JASPER_OUTPUTD_DAC_CONTENT_CHANNEL", Some("sub")),
             ],
             || {
@@ -1215,6 +1208,10 @@ mod tests {
         with_env(
             &[
                 ("JASPER_OUTPUTD_DAC_CONTENT_FIFO", Some("/run/x.fifo")),
+                // The round-trip lane still names the retired route, so under the
+                // one transport it PARKS (#3118). Pinned here so these knob
+                // contracts keep their own subject.
+                ("JASPER_OUTPUTD_CONTENT_BRIDGE", Some("direct")),
                 ("JASPER_OUTPUTD_DAC_CONTENT_CHANNEL", Some("sub")),
                 ("JASPER_OUTPUTD_DAC_CONTENT_SUB_HZ", Some("5")),
             ],
@@ -1227,6 +1224,10 @@ mod tests {
         with_env(
             &[
                 ("JASPER_OUTPUTD_DAC_CONTENT_FIFO", Some("/run/x.fifo")),
+                // The round-trip lane still names the retired route, so under the
+                // one transport it PARKS (#3118). Pinned here so these knob
+                // contracts keep their own subject.
+                ("JASPER_OUTPUTD_CONTENT_BRIDGE", Some("direct")),
                 ("JASPER_OUTPUTD_DAC_CONTENT_CHANNEL", Some("sub")),
                 ("JASPER_OUTPUTD_DAC_CONTENT_SUB_HZ", Some("5000")),
             ],
@@ -1243,6 +1244,10 @@ mod tests {
         with_env(
             &[
                 ("JASPER_OUTPUTD_DAC_CONTENT_FIFO", Some("/run/x.fifo")),
+                // The round-trip lane still names the retired route, so under the
+                // one transport it PARKS (#3118). Pinned here so these knob
+                // contracts keep their own subject.
+                ("JASPER_OUTPUTD_CONTENT_BRIDGE", Some("direct")),
                 ("JASPER_OUTPUTD_DAC_CONTENT_CHANNEL", Some("sub")),
                 ("JASPER_OUTPUTD_DAC_CONTENT_SUB_HZ", Some("90")),
                 ("JASPER_OUTPUTD_DAC_CONTENT_HP_HZ", Some("90")),
@@ -1262,6 +1267,10 @@ mod tests {
         with_env(
             &[
                 ("JASPER_OUTPUTD_DAC_CONTENT_FIFO", Some("/run/x.fifo")),
+                // The round-trip lane still names the retired route, so under the
+                // one transport it PARKS (#3118). Pinned here so these knob
+                // contracts keep their own subject.
+                ("JASPER_OUTPUTD_CONTENT_BRIDGE", Some("direct")),
                 ("JASPER_OUTPUTD_DAC_CONTENT_CHANNEL", Some("left")),
                 ("JASPER_OUTPUTD_DAC_CONTENT_SUB_HZ", Some("120")),
             ],
@@ -1308,6 +1317,24 @@ mod tests {
     }
 
     #[test]
+    fn the_round_trip_lane_parks_under_the_one_transport() {
+        // ADR-0178 `grouped_dac_content_lane` (#3118). The bonded member's lane
+        // pins the retired route, and nothing serves that route any more — so a
+        // box that arms the FIFO and declares nothing else lands in THIS
+        // refusal, exit 78, rather than starting and playing silence.
+        with_env(
+            &[("JASPER_OUTPUTD_DAC_CONTENT_FIFO", Some("/run/x.fifo"))],
+            || {
+                let err = Config::from_env()
+                    .expect_err("the round-trip lane has no transport and must park")
+                    .to_string();
+                assert!(err.contains("JASPER_OUTPUTD_DAC_CONTENT_FIFO"), "{err}");
+                assert!(err.contains("JASPER_OUTPUTD_CONTENT_BRIDGE"), "{err}");
+            },
+        );
+    }
+
+    #[test]
     fn dac_content_lane_rejects_non_single_alsa_sink() {
         with_env(
             &[
@@ -1315,12 +1342,9 @@ mod tests {
                 ("JASPER_OUTPUTD_SINK", Some("dual_apple")),
                 ("JASPER_OUTPUTD_DUAL_DAC_A_PCM", Some("hw:CARD=A,DEV=0")),
                 ("JASPER_OUTPUTD_DUAL_DAC_B_PCM", Some("hw:CARD=B,DEV=0")),
-                // SHADOW GUARD (#2285 P2): the content-PCM refusal precedes the
-                // dac-content-lane fence. This is the test whose own assertion
-                // reported the shadowing verbatim in CI ("guard should name the
-                // required mode, got: JASPER_OUTPUTD_CONTENT_PCM must be set…").
-                // Assertion unchanged, so the fence must still bite.
-                ("JASPER_OUTPUTD_CONTENT_PCM", Some(DECLARED_CONTENT_PCM)),
+                // The lane's bridge requirement bites first otherwise; the sink
+                // fence behind it is what this test pins.
+                ("JASPER_OUTPUTD_CONTENT_BRIDGE", Some("direct")),
             ],
             || {
                 let err = Config::from_env().unwrap_err();
@@ -1349,11 +1373,15 @@ mod tests {
                 ("JASPER_OUTPUTD_SINK", Some("dual_apple")),
                 ("JASPER_OUTPUTD_DUAL_DAC_A_PCM", Some("hw:CARD=A,DEV=0")),
                 ("JASPER_OUTPUTD_DUAL_DAC_B_PCM", Some("hw:CARD=B,DEV=0")),
-                // No JASPER_OUTPUTD_DAC_CONTENT_FIFO — camilla owns the round-trip.
-                // Declared since #2285 P2: this fixture is a LEGAL bonded-member
-                // shape and must still parse, so it declares the content PCM the
-                // composite/direct arm no longer defaults (DECLARED_CONTENT_PCM).
-                ("JASPER_OUTPUTD_CONTENT_PCM", Some(DECLARED_CONTENT_PCM)),
+                // The ACTIVE-ring endpoint marker pair: without it a composite
+                // is the passive shape's #2982 park, which is a different
+                // test's subject.
+                ("JASPER_OUTPUTD_ACTIVE_LANE", Some("1")),
+                ("JASPER_OUTPUTD_RING_ACTIVE_ENDPOINT", Some("1")),
+                (
+                    "JASPER_OUTPUTD_SHM_RING_PATH",
+                    Some(DEFAULT_ACTIVE_SHM_RING_PATH),
+                ),
             ],
             || {
                 let cfg = Config::from_env().unwrap();
@@ -1378,6 +1406,9 @@ mod tests {
                 ("JASPER_OUTPUTD_ACTIVE_CHANNELS", Some("2")),
                 ("JASPER_OUTPUTD_ACTIVE_LANE", Some("1")),
                 ("JASPER_OUTPUTD_TTS_SOCKET", Some("/run/x.sock")),
+                // An unarmed active lane is refused by the ring predicate first;
+                // this test is about the TTS guard behind it.
+                ("JASPER_OUTPUTD_CONTENT_BRIDGE", Some("direct")),
             ],
             || {
                 let err = Config::from_env().unwrap_err().to_string();
@@ -1389,10 +1420,9 @@ mod tests {
     }
 
     #[test]
-    fn a_wide_content_lane_is_accepted_on_the_direct_default_path() {
-        // The wide lane's whole purpose is the DIRECT path, so declaring S32
-        // there is legal — this is what the reconciler actually emits on the
-        // loopback coupling.
+    fn a_wide_content_wire_is_accepted_on_the_default_path() {
+        // S32 is what the reconciler emits for the ring wire by default, so the
+        // undeclared path — the one transport — has to take it.
         with_env(
             &[
                 ("JASPER_OUTPUTD_SINK", Some("single_alsa")),
@@ -1402,7 +1432,7 @@ mod tests {
             || {
                 let cfg = Config::from_env().unwrap();
                 assert_eq!(cfg.content_format, SampleFormat::S32Le);
-                assert_eq!(cfg.content_bridge_mode, ContentBridgeMode::Direct);
+                assert_eq!(cfg.content_bridge_mode, ContentBridgeMode::ShmRing);
             },
         );
     }
@@ -1472,6 +1502,9 @@ mod tests {
                 ("JASPER_OUTPUTD_ACTIVE_CHANNELS", Some("2")),
                 ("JASPER_OUTPUTD_ACTIVE_LANE", Some("1")),
                 ("JASPER_OUTPUTD_DAC_CONTENT_FIFO", Some("/run/x.fifo")),
+                // The lane's own bridge requirement bites first otherwise, and
+                // that refusal is a different test's subject.
+                ("JASPER_OUTPUTD_CONTENT_BRIDGE", Some("direct")),
             ],
             || {
                 let err = Config::from_env().unwrap_err().to_string();
@@ -1520,9 +1553,8 @@ mod tests {
         // falls back to 2, and `is_full_range_stereo_lr_sink` goes TRUE — so
         // WITHOUT the allowlist outputd would attach the ACTIVE ring as an
         // ordinary stereo sink and unlock its post-crossover TTS mixer onto a
-        // compression driver. Under shm_ring the loud CONTENT-PCM open failure
-        // that catches a mis-declaration today does not happen (skip_content_pcm),
-        // so this bail is the only thing standing there.
+        // compression driver. There is no content-PCM open left to fail loudly
+        // on a mis-declaration, so this bail is the only thing standing there.
         with_env(
             &[
                 ("JASPER_OUTPUTD_SINK", Some("single_alsa")),
@@ -1577,14 +1609,13 @@ mod tests {
     }
 
     #[test]
-    fn the_documented_rollback_off_the_ring_still_starts() {
-        // E1 — why the biconditional is SCOPED to ShmRing. The documented
-        // rollback puts the coupling back on loopback and the bridge back on
-        // direct while the hardware reconciler still (correctly) reports an
-        // active lane and re-derives the marker. Under an UNSCOPED biconditional
-        // `is_active_path` would be false while `ring_active_ok` stayed true, so
-        // the rolled-back box would park at exit 78 — and re-running the
-        // reconciler would keep it parked. It must simply start.
+    fn a_roleful_box_declaring_no_ring_parses_past_the_allowlist() {
+        // Why the biconditional is SCOPED to ShmRing. A roleful box carrying a
+        // persisted `direct` has no ring, so `is_active_path` is false while
+        // `ring_active_ok` stays true — an UNSCOPED biconditional would refuse
+        // it here, naming the ring-path allowlist for a box whose actual fault
+        // is that it declared no transport. It parses past this guard and parks
+        // at the first period instead, where the account is correct.
         with_env(
             &[
                 ("JASPER_OUTPUTD_SINK", Some("single_alsa")),
@@ -1607,8 +1638,7 @@ mod tests {
         // The extra door opens the CONTENT BRIDGE and nothing else. The TTS gate
         // keeps the UNTOUCHED `is_full_range_stereo_lr_sink` predicate, because
         // active-mode voice rides fan-in upstream of the crossover — mixing
-        // speech in post-crossover would send full-range audio to the tweeter
-        // whether it arrived over snd-aloop or over a ring.
+        // speech in post-crossover would send full-range audio to the tweeter.
         let mut env = armed_active_ring_env();
         env.push(("JASPER_OUTPUTD_TTS_SOCKET", Some("/run/x.sock")));
         with_env(&env, || {
@@ -1660,21 +1690,19 @@ mod tests {
         // door for a composite whose active lane was never armed. Same env as
         // above minus ACTIVE_LANE/RING_ACTIVE_ENDPOINT.
         //
-        // WHICH guard catches it is worth stating exactly, because it is NOT the
-        // ring-path allowlist. With `ring_active_ok` false and the composite not
-        // a full-range stereo L/R sink, the CONTENT-BRIDGE predicate refuses
-        // first (it runs before the allowlist), so the unarmed composite is
-        // turned away by the same stereo-only guard that has always held it —
-        // the allowlist never gets the chance. Asserting the allowlist's wording
-        // here would pin a guard that does not fire.
+        // WHICH guard catches it is worth stating exactly, because it is NOT
+        // the ring-path allowlist. A composite without the endpoint marker IS
+        // the passive shape, so the #2982 park refuses first — the allowlist
+        // never gets the chance. Asserting the allowlist's wording here would
+        // pin a guard that does not fire.
         let mut env = composite_active_ring_env();
         env.retain(|(k, _)| {
             *k != "JASPER_OUTPUTD_ACTIVE_LANE" && *k != "JASPER_OUTPUTD_RING_ACTIVE_ENDPOINT"
         });
         with_env(&env, || {
             let err = Config::from_env().unwrap_err().to_string();
-            assert!(err.contains("JASPER_OUTPUTD_CONTENT_BRIDGE"), "{err}");
-            assert!(err.contains("full-range stereo L/R sink"), "{err}");
+            assert!(err.contains("PARKED"), "{err}");
+            assert!(err.contains("#2982"), "{err}");
         });
     }
 
@@ -1800,31 +1828,43 @@ mod tests {
     }
 
     #[test]
-    fn a_composite_sink_on_the_direct_bridge_refuses_an_undeclared_content_pcm() {
-        // The snd-aloop ACTIVE lane this arm used to default to was deleted
-        // (#2534) and cannot come back, so guessing it is a permanently-broken
-        // config. Refusing at PARSE time is what turns it into an immediate,
-        // correctly-labelled park (exit 78) instead of a later sink-open
-        // failure that misnames itself in the park record.
-        with_env(
-            &[
-                ("JASPER_OUTPUTD_SINK", Some("dual_apple")),
-                ("JASPER_OUTPUTD_DUAL_DAC_A_PCM", Some("hw:CARD=A,DEV=0")),
-                ("JASPER_OUTPUTD_DUAL_DAC_B_PCM", Some("hw:CARD=B,DEV=0")),
-                ("JASPER_OUTPUTD_CONTENT_PCM", None),
-            ],
-            || {
-                let err = Config::from_env().expect_err(
-                    "a composite sink on the direct bridge with no declared \
-                     content PCM must refuse, not guess a deleted lane",
-                );
-                let msg = format!("{err:#}");
-                assert!(msg.contains("JASPER_OUTPUTD_CONTENT_PCM"), "{msg}");
-                // ADR-0178: the passive composite is a NAMED PARK carrying its
-                // tracked rebuild issue, not a lane an operator can re-arm.
-                assert!(msg.contains("#2982"), "{msg}");
-            },
-        );
+    fn a_passive_composite_parks_and_a_roleful_one_does_not() {
+        // ADR-0178: the passive dual-DAC shape has no transport under
+        // one-audio-transport, and it is a NAMED PARK carrying its tracked
+        // rebuild issue rather than a lane an operator can re-arm. Refusing at
+        // PARSE time is what turns it into an immediate, correctly-labelled
+        // park (exit 78) instead of a later sink-open failure.
+        //
+        // The discriminator is the ACTIVE-ring endpoint marker: a ROLEFUL
+        // composite rides the ACTIVE ring and is the shape jts.local runs, so
+        // the same sink mode must NOT park with the marker armed.
+        let composite = [
+            ("JASPER_OUTPUTD_SINK", Some("dual_apple")),
+            ("JASPER_OUTPUTD_DUAL_DAC_A_PCM", Some("hw:CARD=A,DEV=0")),
+            ("JASPER_OUTPUTD_DUAL_DAC_B_PCM", Some("hw:CARD=B,DEV=0")),
+        ];
+        with_env(&composite, || {
+            let err =
+                Config::from_env().expect_err("a passive composite has no transport and must park");
+            let msg = format!("{err:#}");
+            assert!(msg.contains("#2982"), "{msg}");
+        });
+
+        let mut roleful = composite.to_vec();
+        roleful.extend_from_slice(&[
+            ("JASPER_OUTPUTD_ACTIVE_LANE", Some("1")),
+            ("JASPER_OUTPUTD_RING_ACTIVE_ENDPOINT", Some("1")),
+            (
+                "JASPER_OUTPUTD_SHM_RING_PATH",
+                Some(DEFAULT_ACTIVE_SHM_RING_PATH),
+            ),
+        ]);
+        with_env(&roleful, || {
+            let cfg = Config::from_env()
+                .expect("a roleful composite rides the ACTIVE ring and must not park");
+            assert_eq!(cfg.sink_mode, SinkMode::Composite);
+            assert!(cfg.ring_active_endpoint);
+        });
     }
 
     #[test]
@@ -1834,15 +1874,19 @@ mod tests {
                 ("JASPER_OUTPUTD_SINK", Some("dual_apple")),
                 ("JASPER_OUTPUTD_DUAL_DAC_A_PCM", Some("hw:CARD=A,DEV=0")),
                 ("JASPER_OUTPUTD_DUAL_DAC_B_PCM", Some("hw:CARD=B,DEV=0")),
-                // Declared explicitly since the composite default was retired
-                // with the lane it named; the rest of this contract is
-                // unchanged by that.
-                ("JASPER_OUTPUTD_CONTENT_PCM", Some(DECLARED_CONTENT_PCM)),
+                // The ACTIVE-ring endpoint marker: without it this shape is
+                // the passive composite's park (see the test above), and the
+                // rest of the contract never gets to be checked.
+                ("JASPER_OUTPUTD_ACTIVE_LANE", Some("1")),
+                ("JASPER_OUTPUTD_RING_ACTIVE_ENDPOINT", Some("1")),
+                (
+                    "JASPER_OUTPUTD_SHM_RING_PATH",
+                    Some(DEFAULT_ACTIVE_SHM_RING_PATH),
+                ),
             ],
             || {
                 let cfg = Config::from_env().unwrap();
                 assert_eq!(cfg.sink_mode, SinkMode::Composite);
-                assert_eq!(cfg.content_pcm, DECLARED_CONTENT_PCM);
                 assert_eq!(cfg.content_channels, 4);
                 assert_eq!(cfg.dac_pcm, "dual_apple_usb_c_dac_4ch");
                 assert_eq!(cfg.dual_dac_a_pcm.as_deref(), Some("hw:CARD=A,DEV=0"));
@@ -1864,9 +1908,15 @@ mod tests {
                 ("JASPER_OUTPUTD_SINK", Some("composite")),
                 ("JASPER_OUTPUTD_DUAL_DAC_A_PCM", Some("hw:CARD=A,DEV=0")),
                 ("JASPER_OUTPUTD_DUAL_DAC_B_PCM", Some("hw:CARD=B,DEV=0")),
-                // Declared since #2285 P2 — both spellings must reach the SAME
-                // legal shape, so both arms of this equivalence declare it.
-                ("JASPER_OUTPUTD_CONTENT_PCM", Some(DECLARED_CONTENT_PCM)),
+                // The ACTIVE-ring endpoint marker pair: without it a composite
+                // is the passive shape's #2982 park, which is a different
+                // test's subject.
+                ("JASPER_OUTPUTD_ACTIVE_LANE", Some("1")),
+                ("JASPER_OUTPUTD_RING_ACTIVE_ENDPOINT", Some("1")),
+                (
+                    "JASPER_OUTPUTD_SHM_RING_PATH",
+                    Some(DEFAULT_ACTIVE_SHM_RING_PATH),
+                ),
             ],
             || {
                 let cfg = Config::from_env().unwrap();
@@ -1983,8 +2033,8 @@ mod tests {
     #[test]
     fn content_format_rejects_anything_else_loudly() {
         // Same reasoning as the DAC axis: a value outside the vocabulary can
-        // only be writer drift, and guessing a lane format would silently
-        // mis-declare what outputd asks snd-aloop for. Case variants are drift
+        // only be writer drift, and guessing a format would silently
+        // mis-declare the ring wire outputd attaches to. Case variants are drift
         // too — the only writer emits the uppercase ALSA literal.
         for bad in [
             "S24_LE", "S24_3BE", "s24_3le", "s32_le", "S32_BE", "float32",
@@ -2039,11 +2089,25 @@ mod tests {
 
     #[test]
     fn single_sink_takes_active_channels_width() {
-        with_env(&[("JASPER_OUTPUTD_ACTIVE_CHANNELS", Some("8"))], || {
-            let cfg = Config::from_env().unwrap();
-            assert_eq!(cfg.sink_mode, SinkMode::SingleAlsa);
-            assert_eq!(cfg.content_channels, 8);
-        });
+        // A wide coherent sink (DAC8x) is a ROLEFUL box, so it carries the
+        // ACTIVE-ring endpoint marker pair — without it the ring predicate
+        // turns it away before the width is worth asserting.
+        with_env(
+            &[
+                ("JASPER_OUTPUTD_ACTIVE_CHANNELS", Some("8")),
+                ("JASPER_OUTPUTD_ACTIVE_LANE", Some("1")),
+                ("JASPER_OUTPUTD_RING_ACTIVE_ENDPOINT", Some("1")),
+                (
+                    "JASPER_OUTPUTD_SHM_RING_PATH",
+                    Some(DEFAULT_ACTIVE_SHM_RING_PATH),
+                ),
+            ],
+            || {
+                let cfg = Config::from_env().unwrap();
+                assert_eq!(cfg.sink_mode, SinkMode::SingleAlsa);
+                assert_eq!(cfg.content_channels, 8);
+            },
+        );
     }
 
     #[test]
@@ -2064,12 +2128,6 @@ mod tests {
                 ("JASPER_OUTPUTD_ACTIVE_CHANNELS", Some("8")),
                 ("JASPER_OUTPUTD_DUAL_DAC_A_PCM", Some("hw:CARD=A,DEV=0")),
                 ("JASPER_OUTPUTD_DUAL_DAC_B_PCM", Some("hw:CARD=B,DEV=0")),
-                // SHADOW GUARD (#2285 P2): without this the composite/direct
-                // content-PCM refusal fires first and this test asserts against
-                // ITS message instead of the width guard's. Declaring it puts the
-                // test back on its own path; the assertion below is unchanged, so
-                // the width guard still has to bite for this to pass.
-                ("JASPER_OUTPUTD_CONTENT_PCM", Some(DECLARED_CONTENT_PCM)),
             ],
             || {
                 let err = Config::from_env().unwrap_err().to_string();
@@ -2095,6 +2153,9 @@ mod tests {
             &[
                 ("JASPER_OUTPUTD_ACTIVE_CHANNELS", Some("8")),
                 ("JASPER_OUTPUTD_TTS_SOCKET", Some("/run/x.sock")),
+                // The ring predicate refuses an unarmed wide sink first; this
+                // sub-case is about the TTS guard behind it.
+                ("JASPER_OUTPUTD_CONTENT_BRIDGE", Some("direct")),
             ],
             || {
                 let err = Config::from_env().unwrap_err().to_string();
@@ -2105,6 +2166,10 @@ mod tests {
             &[
                 ("JASPER_OUTPUTD_ACTIVE_CHANNELS", Some("4")),
                 ("JASPER_OUTPUTD_DAC_CONTENT_FIFO", Some("/run/x.fifo")),
+                // The round-trip lane still names the retired route, so under the
+                // one transport it PARKS (#3118). Pinned here so these knob
+                // contracts keep their own subject.
+                ("JASPER_OUTPUTD_CONTENT_BRIDGE", Some("direct")),
             ],
             || {
                 let err = Config::from_env().unwrap_err().to_string();
@@ -2114,30 +2179,23 @@ mod tests {
     }
 
     #[test]
-    fn composite_rejects_stereo_only_bridge_and_tts() {
+    fn a_composite_never_hosts_the_stereo_only_tts_mixer() {
+        // Width alone excludes it, and it must stay excluded on the ROLEFUL
+        // composite too — the one composite shape that still runs. (The passive
+        // shape never reaches this guard: it parks first, which is its own
+        // test's subject.)
         with_env(
             &[
                 ("JASPER_OUTPUTD_SINK", Some("composite")),
                 ("JASPER_OUTPUTD_DUAL_DAC_A_PCM", Some("hw:CARD=A,DEV=0")),
                 ("JASPER_OUTPUTD_DUAL_DAC_B_PCM", Some("hw:CARD=B,DEV=0")),
-                ("JASPER_OUTPUTD_CONTENT_BRIDGE", Some("shm_ring")),
-            ],
-            || {
-                let err = Config::from_env().unwrap_err().to_string();
-                assert!(err.contains("CONTENT_BRIDGE=shm_ring requires"), "{err}");
-            },
-        );
-        with_env(
-            &[
-                ("JASPER_OUTPUTD_SINK", Some("composite")),
-                ("JASPER_OUTPUTD_DUAL_DAC_A_PCM", Some("hw:CARD=A,DEV=0")),
-                ("JASPER_OUTPUTD_DUAL_DAC_B_PCM", Some("hw:CARD=B,DEV=0")),
+                ("JASPER_OUTPUTD_ACTIVE_LANE", Some("1")),
+                ("JASPER_OUTPUTD_RING_ACTIVE_ENDPOINT", Some("1")),
+                (
+                    "JASPER_OUTPUTD_SHM_RING_PATH",
+                    Some(DEFAULT_ACTIVE_SHM_RING_PATH),
+                ),
                 ("JASPER_OUTPUTD_TTS_SOCKET", Some("/run/x.sock")),
-                // SHADOW GUARD (#2285 P2) — this arm leaves the bridge at its
-                // `direct` default, so the content-PCM refusal preceded the
-                // TTS-socket guard. The arm ABOVE sets `shm_ring` and so never
-                // reached the refusal; only this one needed the declaration.
-                ("JASPER_OUTPUTD_CONTENT_PCM", Some(DECLARED_CONTENT_PCM)),
             ],
             || {
                 let err = Config::from_env().unwrap_err().to_string();
@@ -2148,20 +2206,10 @@ mod tests {
 
     #[test]
     fn dual_apple_sink_requires_both_child_pcms() {
-        with_env(
-            &[
-                ("JASPER_OUTPUTD_SINK", Some("dual_apple")),
-                // SHADOW GUARD (#2285 P2): the content-PCM refusal precedes the
-                // child-PCM guard, so without this the assertion below read the
-                // wrong message. Unchanged otherwise — the child-PCM guard must
-                // still bite for this to pass.
-                ("JASPER_OUTPUTD_CONTENT_PCM", Some(DECLARED_CONTENT_PCM)),
-            ],
-            || {
-                let err = Config::from_env().unwrap_err();
-                assert!(err.to_string().contains("JASPER_OUTPUTD_DUAL_DAC_A_PCM"));
-            },
-        );
+        with_env(&[("JASPER_OUTPUTD_SINK", Some("dual_apple"))], || {
+            let err = Config::from_env().unwrap_err();
+            assert!(err.to_string().contains("JASPER_OUTPUTD_DUAL_DAC_A_PCM"));
+        });
     }
 
     #[test]
@@ -2171,9 +2219,6 @@ mod tests {
                 ("JASPER_OUTPUTD_SINK", Some("dual_apple")),
                 ("JASPER_OUTPUTD_DUAL_DAC_A_PCM", Some("hw:CARD=A,DEV=0")),
                 ("JASPER_OUTPUTD_DUAL_DAC_B_PCM", Some("hw:CARD=A,DEV=0")),
-                // SHADOW GUARD (#2285 P2): the content-PCM refusal precedes the
-                // distinct-children guard. Assertion unchanged.
-                ("JASPER_OUTPUTD_CONTENT_PCM", Some(DECLARED_CONTENT_PCM)),
             ],
             || {
                 let err = Config::from_env().unwrap_err();
@@ -2190,9 +2235,6 @@ mod tests {
                 ("JASPER_OUTPUTD_DUAL_DAC_A_PCM", Some("hw:CARD=A,DEV=0")),
                 ("JASPER_OUTPUTD_DUAL_DAC_B_PCM", Some("hw:CARD=B,DEV=0")),
                 ("JASPER_OUTPUTD_DUAL_MAX_DELAY_DELTA_FRAMES", Some("-1")),
-                // SHADOW GUARD (#2285 P2): the content-PCM refusal precedes the
-                // delay-budget guard. Assertion unchanged.
-                ("JASPER_OUTPUTD_CONTENT_PCM", Some(DECLARED_CONTENT_PCM)),
             ],
             || {
                 let err = Config::from_env().unwrap_err();
@@ -2204,22 +2246,27 @@ mod tests {
     }
 
     #[test]
-    fn the_removed_rate_match_bridge_fails_safe_to_direct_on_every_spelling() {
+    fn the_removed_rate_match_bridge_parks_on_every_spelling() {
         // Legacy-cleanup contract: a box migrating with a persisted
-        // `rate_match` value in outputd.env must come up on `direct`, NOT bail.
-        // Bailing is exit 78 (EX_CONFIG), which parks the final-output owner —
-        // a silent speaker caused by a stale env line.
+        // `rate_match` value in outputd.env PARKS, naming the key. It used to
+        // fail SAFE to `direct` because that still carried audio; `direct`
+        // carries nothing now, so the fail-safe would only relabel the park.
+        //
+        // Pinned by CLASS, not prose: a `Config::from_env` error is the exit-78
+        // (EX_CONFIG) park by construction — `main` exits `EXIT_CONFIG` on it —
+        // and the one wording assertion is that the message names the KEY an
+        // operator has to edit, not how the sentence reads.
         let mut checked = 0usize;
         for &spelling in REMOVED_RATE_MATCH_BRIDGE_SPELLINGS {
             with_env(&[("JASPER_OUTPUTD_CONTENT_BRIDGE", Some(spelling))], || {
-                let cfg = Config::from_env()
-                    .unwrap_or_else(|e| panic!("spelling {spelling} must not bail: {e}"));
-                assert_eq!(
-                    cfg.content_bridge_mode,
-                    ContentBridgeMode::Direct,
-                    "spelling {spelling}"
+                let err = Config::from_env()
+                    .expect_err("a retired bridge has no transport and must park");
+                let msg = format!("{err:#}");
+                assert!(
+                    msg.contains("JASPER_OUTPUTD_CONTENT_BRIDGE"),
+                    "spelling {spelling} must name the key: {msg}"
                 );
-                assert!(cfg.shm_ring.is_none(), "spelling {spelling}");
+                assert!(msg.contains(spelling), "spelling {spelling}: {msg}");
             });
             checked += 1;
         }
@@ -2236,31 +2283,12 @@ mod tests {
     }
 
     #[test]
-    fn the_removed_rate_match_bridge_does_not_drag_a_wide_lane_down_with_it() {
-        // The deleted i16 pairing guard must not leave a ghost: a stale
-        // `rate_match` on a box whose content lane is legitimately WIDE now
-        // resolves `direct`, which is exactly the mode a wide lane belongs to.
-        // Before the deletion this same env pair bailed.
-        with_env(
-            &[
-                ("JASPER_OUTPUTD_SINK", Some("single_alsa")),
-                ("JASPER_OUTPUTD_ACTIVE_CHANNELS", Some("2")),
-                ("JASPER_OUTPUTD_CONTENT_BRIDGE", Some("rate_match")),
-                ("JASPER_OUTPUTD_CONTENT_FORMAT", Some("S32_LE")),
-            ],
-            || {
-                let cfg = Config::from_env().expect("stale rate_match must not bail");
-                assert_eq!(cfg.content_bridge_mode, ContentBridgeMode::Direct);
-                assert_eq!(cfg.content_format, SampleFormat::S32Le);
-            },
-        );
-    }
-
-    #[test]
     fn the_removed_rate_match_tuning_knobs_are_inert() {
         // The three `_RING_FRAMES` / `_TARGET_FRAMES` / `_MAX_ADJUST_PPM` keys
         // were deleted with the bridge. A stale — even unparseable — value must
-        // be ignored, never re-read into a validation that no longer exists.
+        // be ignored, never re-read into a validation that no longer exists:
+        // the park below is the BRIDGE's, and it must not become a parse error
+        // about a knob nothing reads.
         with_env(
             &[
                 ("JASPER_OUTPUTD_CONTENT_BRIDGE", Some("rate_match")),
@@ -2272,24 +2300,26 @@ mod tests {
                 ("JASPER_OUTPUTD_CONTENT_BRIDGE_MAX_ADJUST_PPM", Some("0")),
             ],
             || {
-                let cfg = Config::from_env().expect("stale bridge tuning must be inert");
-                assert_eq!(cfg.content_bridge_mode, ContentBridgeMode::Direct);
+                let msg = format!(
+                    "{:#}",
+                    Config::from_env().expect_err("the retired bridge parks")
+                );
+                assert!(msg.contains("rate_match"), "{msg}");
+                assert!(!msg.contains("RING_FRAMES"), "inert knob leaked: {msg}");
             },
         );
     }
 
     #[test]
     fn an_unknown_content_bridge_still_fails_loud() {
-        // The fail-SAFE arm is scoped to the removed spellings alone. A typo is
-        // still a hard bail — the operator asked for something that never
-        // existed, and silently serving `direct` would hide it.
+        // A typo is a hard bail too — the operator asked for something that
+        // never existed. It takes the generic arm rather than the retired-bridge
+        // one, and the advertised vocabulary names the ONE transport first.
         with_env(
             &[("JASPER_OUTPUTD_CONTENT_BRIDGE", Some("rate_matchh"))],
             || {
                 let err = Config::from_env().unwrap_err().to_string();
-                // The advertised vocabulary is pinned exactly: a deleted mode
-                // must not be offered back to the operator as a valid choice.
-                assert!(err.contains("must be one of direct, shm_ring"), "{err}");
+                assert!(err.contains("shm_ring"), "{err}");
                 assert!(err.contains("rate_matchh"), "must echo the value: {err}");
             },
         );
@@ -2384,17 +2414,18 @@ mod tests {
     // ----- PROTOTYPE shm_ring (latency/ring-proto-shm) -----
 
     #[test]
-    fn shm_ring_is_off_by_default() {
-        // Default-off proof: an unset content bridge is Direct AND leaves NO
-        // shm-ring fields set. `defaults_are_safe_for_developer_once_runs`
-        // covers the broad default set; this pins the shm-ring half explicitly.
+    fn the_ring_is_the_undeclared_transport_and_direct_carries_none() {
+        // ADR-0100: an unset content bridge IS the ring, with the ring settings
+        // resolved. A persisted `direct` still parses — that is how the park
+        // refusals get to name it — and it carries no ring.
         with_env(&[], || {
             let cfg = Config::from_env().unwrap();
-            assert_eq!(cfg.content_bridge_mode, ContentBridgeMode::Direct);
-            assert!(cfg.shm_ring.is_none());
+            assert_eq!(cfg.content_bridge_mode, ContentBridgeMode::ShmRing);
+            assert_eq!(
+                cfg.shm_ring.as_ref().map(|r| r.path.as_str()),
+                Some(DEFAULT_SHM_RING_PATH)
+            );
         });
-        // The `direct` default still parses unchanged and does not set
-        // shm_ring — the ring variant did not perturb it.
         with_env(&[("JASPER_OUTPUTD_CONTENT_BRIDGE", Some("direct"))], || {
             let cfg = Config::from_env().unwrap();
             assert_eq!(cfg.content_bridge_mode, ContentBridgeMode::Direct);

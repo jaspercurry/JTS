@@ -158,10 +158,6 @@ _FANIN_EXPECTED_OUTPUT_PCM = "hw:Loopback,0,7"
 
 _OUTPUTD_CONTENT_ALOOP_PCM = "hw:Loopback,0,6"
 
-_OUTPUTD_EXPECTED_CONTENT_PCM = "outputd_content_capture"
-
-_OUTPUTD_EXPECTED_ACTIVE_CONTENT_PCM = "outputd_active_content_capture"
-
 _OUTPUTD_EXPECTED_DAC_PCM = "outputd_dac"
 
 _OUTPUTD_EXPECTED_DUAL_DAC_PCM = "dual_apple_usb_c_dac_4ch"
@@ -264,9 +260,10 @@ def _outputd_reconciled_env() -> dict[str, str]:
 
     BOTH FILES, in ``jasper-outputd.service``'s own ``EnvironmentFile=`` order:
     ``outputd.env`` then ``grouping-outputd.env``, so a bonded box's grouping
-    pins (notably ``JASPER_OUTPUTD_CONTENT_BRIDGE=direct``) win here exactly as
-    they win for the daemon. Reading only the first layer reported a bonded box
-    on an env it is not running.
+    pins win here exactly as they win for the daemon. Reading only the first
+    layer reported a bonded box on an env it is not running. (The grouping layer
+    no longer pins a content bridge — ADR-0100 left the round-trip lane no route
+    to pin — but it still pins the lane's own keys, so the order still matters.)
 
     The merge is :func:`jasper.control.transport_park._outputd_env`'s, consumed
     rather than restated, so the doctor and ``/state`` cannot disagree about
@@ -1828,10 +1825,9 @@ def check_ring_split_transport() -> CheckResult:
     )
     from jasper.fanin_coupling import (
         OUTPUTD_CONTENT_BRIDGE_ENV_VAR,
-        OUTPUTD_CONTENT_BRIDGE_SHM_RING,
         RING_ACTIVE_PLAYBACK_DEVICE,
         RING_PLAYBACK_DEVICE,
-        resolve_outputd_content_bridge,
+        outputd_bridge_is_ring,
     )
 
     label = "ring split transport"
@@ -1846,10 +1842,16 @@ def check_ring_split_transport() -> CheckResult:
             label, "ok", "grouped dac_content lane; see the transport-park check"
         )
     outputd_env = _outputd_reconciled_env()
-    bridge = resolve_outputd_content_bridge(
+    # `(unset, = the ring)` rather than a bare `(unset)`: an undeclared bridge IS
+    # the ring (config.rs), so a reader who saw only "unset" beside a ring graph
+    # would think the pair disagreed when it agrees.
+    bridge = (
+        str(outputd_env.get(OUTPUTD_CONTENT_BRIDGE_ENV_VAR) or "").strip()
+        or "(unset, = the ring)"
+    )
+    outputd_on_ring = outputd_bridge_is_ring(
         outputd_env.get(OUTPUTD_CONTENT_BRIDGE_ENV_VAR)
     )
-    outputd_on_ring = bridge == OUTPUTD_CONTENT_BRIDGE_SHM_RING
 
     # BOTH STATEFILES, first-recognized-endpoint-wins — the same reader the
     # `check_outputd_service` transport note used before #2285 folded that note
@@ -1886,8 +1888,9 @@ def check_ring_split_transport() -> CheckResult:
     if graph_on_ring:
         stranded = (
             f"the loaded graph writes {playback_device} but "
-            f"{OUTPUTD_CONTENT_BRIDGE_ENV_VAR}={bridge}, so outputd reads its "
-            "ALSA content lane and nothing consumes the ring"
+            f"{OUTPUTD_CONTENT_BRIDGE_ENV_VAR}={bridge}, which names no "
+            "transport outputd can serve — it parks instead of reading, and "
+            "nothing consumes the ring"
         )
     else:
         stranded = (
@@ -1947,9 +1950,8 @@ def check_active_ring_path_projection() -> CheckResult:
     from jasper.fanin.coupling_reconcile import _outputd_ring_path_for
     from jasper.fanin_coupling import (
         OUTPUTD_CONTENT_BRIDGE_ENV_VAR,
-        OUTPUTD_CONTENT_BRIDGE_SHM_RING,
         OUTPUTD_RING_PATH_ENV_VAR,
-        resolve_outputd_content_bridge,
+        outputd_bridge_is_ring,
         resolve_outputd_ring_path,
     )
     from jasper.env_file import read_value
@@ -1961,14 +1963,17 @@ def check_active_ring_path_projection() -> CheckResult:
     #
     # LAYERED, because a bonded box's grouping env pins this key and the unit
     # reads that file last — the gate has to see what outputd sees.
-    bridge = resolve_outputd_content_bridge(
-        _outputd_reconciled_env().get(OUTPUTD_CONTENT_BRIDGE_ENV_VAR)
-    )
-    if bridge != OUTPUTD_CONTENT_BRIDGE_SHM_RING:
+    declared = str(
+        _outputd_reconciled_env().get(OUTPUTD_CONTENT_BRIDGE_ENV_VAR) or ""
+    ).strip()
+    if not outputd_bridge_is_ring(declared):
+        # A box that named the retired route reads no ring, so the allowlist has
+        # nothing to project. It is not healthy — it parks — and the park is the
+        # transport-park check's subject, not this one's.
         return CheckResult(
             label,
             "ok",
-            f"{OUTPUTD_CONTENT_BRIDGE_ENV_VAR}={bridge}; no ring path to read",
+            f"{OUTPUTD_CONTENT_BRIDGE_ENV_VAR}={declared}; no ring path to read",
         )
     # The SUBJECT stays outputd.env's own text: the marker and the ring path are
     # single-writer keys of that file (the grouping layer pins neither), and
@@ -3182,7 +3187,6 @@ def _outputd_transport_health(
     outputd_env: dict[str, str],
     sink_mode: object,
     active_channels: int | None,
-    expected_content_pcm: str,
     expected_dac_pcm: str,
 ) -> tuple[str, str, str, bool] | CheckResult:
     """Validate outputd's live topology, endpoint coherence, PCMs, and references.
@@ -3201,8 +3205,7 @@ def _outputd_transport_health(
     from jasper.fanin_coupling import (
         COUPLING_SHM_RING,
         OUTPUTD_CONTENT_BRIDGE_ENV_VAR,
-        OUTPUTD_CONTENT_BRIDGE_SHM_RING,
-        resolve_outputd_content_bridge,
+        outputd_bridge_is_ring,
     )
     from jasper.audio_runtime_plan import (
         DEFAULT_CAMILLA2_STATEFILE_PATH,
@@ -3212,10 +3215,13 @@ def _outputd_transport_health(
         transport_topology_for_coupling,
     )
 
-    bridge = resolve_outputd_content_bridge(
+    bridge = (
+        str(outputd_env.get(OUTPUTD_CONTENT_BRIDGE_ENV_VAR) or "").strip()
+        or "(unset, = the ring)"
+    )
+    outputd_on_ring = outputd_bridge_is_ring(
         outputd_env.get(OUTPUTD_CONTENT_BRIDGE_ENV_VAR)
     )
-    outputd_on_ring = bridge == OUTPUTD_CONTENT_BRIDGE_SHM_RING
     # ``None`` is the planner's own spelling for "not the ring" — it resolves to
     # the non-ring shape without this module naming a retired token.
     coupling = COUPLING_SHM_RING if outputd_on_ring else None
@@ -3236,7 +3242,6 @@ def _outputd_transport_health(
             "restart outputd onto it.",
         )
     live_outputd_env = dict(outputd_env)
-    live_outputd_env["JASPER_OUTPUTD_CONTENT_PCM"] = str(content.get("pcm") or "")
     endpoint_evidence = output_endpoint_evidence_from_statefiles(
         DEFAULT_CAMILLA_STATEFILE_PATH,
         DEFAULT_CAMILLA2_STATEFILE_PATH,
@@ -3282,59 +3287,6 @@ def _outputd_transport_health(
         # before reaching here. Errors above still FAIL here, because those are
         # outputd's own coherence, not a ladder rung.
     local_pipe_detail = f"content_source={actual_content_source}"
-    # KEYED ON THE CONTENT BRIDGE, NOT ON sink_mode. What decides whether a
-    # content PCM exists at all is which bridge outputd runs, and only the
-    # bridge: under the ring, outputd reads the ring FILE and opens no content
-    # PCM (`content_pcm_skipped`), whatever the sink is.
-    #
-    # This used to derive the expectation from sink_mode and compare against the
-    # snd-aloop ACTIVE lane for a composite/active box. That lane is deleted
-    # (#2534) and the reconciler no longer writes it, so the comparison would
-    # have FAILED every armed composite box in the fleet against a name nothing
-    # can produce.
-    #
-    # Under the ring the check therefore stops comparing to a name and instead
-    # REJECTS THE ONE NAME THAT MEANS SOMETHING IS STALE — the retired snd-aloop
-    # ACTIVE capture lane. Not "any value is the fault": under the ring the
-    # declaration is inert (nothing opens it), and the values a healthy box
-    # actually declares differ by shape rather than by health —
-    #
-    #   * roleful (composite, or active single-ALSA): the reconciler writes
-    #     explicit-EMPTY (`jasper-audio-hardware-reconcile`), and outputd keeps
-    #     it, since `env_str` defaults only when a variable is UNSET
-    #     (`rust/jasper-env/src/lib.rs`);
-    #   * flat/passive single-ALSA — the campaign's most common ring box: the
-    #     same reconciler writes the surviving PASSIVE lane, `jasper-outputd.service`
-    #     carries it as a unit default, and `Config::from_env`'s `SingleAlsa` arm
-    #     defaults to it too. That name is a live asoundrc declaration
-    #     (`deploy/alsa/asoundrc.jasper`) which the ring simply never opens.
-    #
-    # Failing on any value would have failed every flat ring box in the fleet,
-    # which is the same defect in the opposite direction from the sink-keyed
-    # expectation this replaced.
-    live_content_pcm = str(content.get("pcm") or "")
-    if actual_content_source == "shm_ring":
-        if live_content_pcm == _OUTPUTD_EXPECTED_ACTIVE_CONTENT_PCM:
-            return CheckResult(
-                "jasper-outputd",
-                "fail",
-                f"content.pcm={live_content_pcm!r} but content.source="
-                f"{actual_content_source!r}: that is the snd-aloop ACTIVE "
-                "capture lane, which #2534 deleted — no box can open it and no "
-                "reconcile writes it. A ring-coupled outputd reads the ring "
-                "FILE and opens no content PCM at all, so this is a stale value "
-                "surviving in outputd.env — run: sudo systemctl start "
-                "jasper-audio-hardware-reconcile",
-            )
-    elif live_content_pcm != expected_content_pcm:
-        return CheckResult(
-            "jasper-outputd",
-            "fail",
-            f"content.pcm={content.get('pcm')!r}; expected "
-            f"{expected_content_pcm!r} for content.source="
-            f"{actual_content_source!r}, sink_mode={sink_mode!r}, "
-            f"active_channels={active_channels!r}",
-        )
     if dac.get("pcm") != expected_dac_pcm:
         return CheckResult(
             "jasper-outputd",
@@ -3402,14 +3354,6 @@ def check_outputd_service() -> CheckResult:
     outputd_env = _outputd_reconciled_env()
     active_channels = _outputd_active_channels_from_env(outputd_env)
     active_single_alsa = sink_mode == "single_alsa" and active_channels is not None
-    # The DIRECT-bridge expectation only. A ring-coupled box is handled by the
-    # stale-name branch in the helper, which reads content.source — the bridge,
-    # not the sink, is what decides whether a content PCM is opened at all.
-    # sink_mode no longer selects a content PCM: the ACTIVE spelling it used to
-    # select was the deleted snd-aloop lane. Composite is not a case here
-    # either — a composite sink on the DIRECT bridge refuses at parse
-    # (`Config::from_env`, EX_CONFIG) rather than reaching this comparison.
-    expected_content_pcm = _OUTPUTD_EXPECTED_CONTENT_PCM
     expected_dac_pcm = (
         _OUTPUTD_EXPECTED_DUAL_DAC_PCM
         if sink_mode == "dual_apple"
@@ -3436,7 +3380,6 @@ def check_outputd_service() -> CheckResult:
         outputd_env=outputd_env,
         sink_mode=sink_mode,
         active_channels=active_channels,
-        expected_content_pcm=expected_content_pcm,
         expected_dac_pcm=expected_dac_pcm,
     )
     if isinstance(transport_health, CheckResult):
@@ -3916,98 +3859,6 @@ def _ring_detach_remedy(reason: str) -> str:
     return (
         "the ring file does not exist yet — normal briefly at boot; persistent "
         "means the renderer has never opened its device"
-    )
-
-
-@doctor_check(order=52.66, group="audio")
-def check_outputd_content_lane_park() -> CheckResult:
-    """jasper-outputd is not parked on a content-lane open failure.
-
-    ``deploy/bin/jasper-outputd-failure-reconcile`` parks the unit
-    out-of-band after ``CONTENT_LANE_PARK_AFTER`` consecutive content-lane
-    open failures, so the unit cannot ride ``Restart=on-failure`` into
-    ``StartLimitAction=reboot``. That park is TERMINAL for the boot —
-    nothing re-arms outputd on its own — and until this check existed the
-    record it writes had NO reader: a parked speaker was silent, and so was
-    every operator surface.
-
-    Severity is ``fail``, not ``warn``, and the reason is the definition the
-    rest of the doctor uses: a park means the speaker emits NOTHING and no
-    automatic path recovers it. That is operator-action class. A ``warn``
-    would put "your speaker is silent until you intervene" in the same bucket
-    as advisory drift.
-
-    The record's own ``action=`` and ``re_arm=`` text is surfaced verbatim
-    rather than restated here — the writer picks a LANE-SPECIFIC remedy
-    (active vs passive), and a second copy of that prose in Python is a
-    guaranteed drift site.
-    """
-    label = "outputd content lane"
-
-    from ...control import content_lane_state
-
-    state = content_lane_state.snapshot()
-    status = state.get("status")
-
-    if status == "absent":
-        return CheckResult(
-            label, "ok", "no content-lane failure record this boot"
-        )
-
-    if status == "unreadable":
-        return CheckResult(
-            label,
-            "warn",
-            f"content-lane record at {state.get('path')} exists but could not "
-            f"be read ({state.get('error')}) — a park cannot be ruled out. "
-            "The record is written root:jasper 0660 by jasper-outputd's "
-            "ExecStopPost; check that the reader is in group jasper.",
-        )
-
-    if status == "unintelligible":
-        return CheckResult(
-            label,
-            "warn",
-            f"content-lane record at {state.get('path')} is present but its "
-            "count/timestamp do not parse (a truncated write) — a park cannot "
-            "be ruled out from it. Check jasper-outputd's recent starts "
-            "directly; the record is cleared on the next clean stop.",
-        )
-
-    if state.get("parked"):
-        lane = state.get("lane") or "unknown"
-        count = state.get("count")
-        parts = [
-            f"PARKED — jasper-outputd stopped after {count} consecutive "
-            f"{lane}-lane open failures",
-        ]
-        parked_utc = state.get("parked_utc")
-        if parked_utc:
-            parts.append(f"at {parked_utc}")
-        action = state.get("action")
-        if action:
-            parts.append(f"ACTION: {action}")
-        re_arm = state.get("re_arm")
-        if re_arm:
-            parts.append(f"RE-ARM: {re_arm}")
-        return CheckResult(label, "fail", ". ".join(parts))
-
-    count = state.get("count")
-    if state.get("streak_live"):
-        return CheckResult(
-            label,
-            "warn",
-            f"content-lane open is failing: {count} consecutive failure(s) "
-            "recorded within the streak window, below the park threshold. "
-            "Usually a transient wait for CamillaDSP to open its half of the "
-            "pair at boot; persistent means the lane will park.",
-        )
-    return CheckResult(
-        label,
-        "ok",
-        f"content lane recovered — a stale record of {count} failure(s) "
-        f"remains ({state.get('age_sec')}s old, outside the streak window); "
-        "it is cleared on the next clean stop",
     )
 
 

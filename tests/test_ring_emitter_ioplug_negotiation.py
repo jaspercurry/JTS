@@ -36,7 +36,7 @@ from jasper.fanin_coupling import (
     RING_WIRE_FORMAT_WIDE,
 )
 from tests._ring_negotiation_model import accept, ioplug_constraints, negotiate
-from jasper.sound.camilla_yaml import emit_flat_ring_config
+from jasper.sound.camilla_yaml import emit_flat_outputd_cutover_config
 
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -48,7 +48,9 @@ CAMILLADSP_COMMIT = "05e9cfc"
 
 
 def _flat_ring_devices() -> dict:
-    return yaml.safe_load(emit_flat_ring_config())["devices"]
+    # The flat startup graph IS the ring graph now (ADR-0100): its `shm_ring`
+    # sibling collapsed into it when the ring became the only transport.
+    return yaml.safe_load(emit_flat_outputd_cutover_config())["devices"]
 
 
 def _ioplug_default_period_frames() -> int:

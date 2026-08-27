@@ -26,7 +26,7 @@ def test_sound_config_preserves_room_peqs_before_preference_eq():
 
     assert "Source: jasper.sound.camilla_yaml.emit_sound_config" in yaml
     assert "volume_limit: 0.0" in yaml
-    assert 'device: "outputd_content_playback"' in yaml
+    assert 'device: "jts_ring_playback"' in yaml
     assert "room_peq_1:" in yaml
     assert "sound_preamp" not in yaml  # default trim 0: boosts boost
     assert "sound_curve_harman_bass:" in yaml
@@ -401,7 +401,7 @@ def test_playback_pipe_path_emits_file_sink_for_the_bonded_leader():
     assert 'filename: "/run/jasper-snapserver/snapfifo"' in yaml
     assert "enable_rate_adjust: false" in yaml
     # The ALSA loopback sink is fully replaced…
-    assert 'device: "outputd_content_playback"' not in yaml
+    assert 'device: "jts_ring_playback"' not in yaml
     # …but the capture side stays the emitter's default, Ring A.
     assert 'device: "jts_ring_capture"' in yaml
     # Loud-output safety survives the sink swap.
@@ -422,7 +422,7 @@ def test_playback_pipe_path_none_is_byte_identical_solo():
     without_axis = emit_sound_config(profile, **kwargs)
     with_default = emit_sound_config(profile, playback_pipe_path=None, **kwargs)
     assert without_axis == with_default
-    assert 'device: "outputd_content_playback"' in without_axis
+    assert 'device: "jts_ring_playback"' in without_axis
     assert "type: File" not in without_axis
 
 
@@ -577,9 +577,9 @@ def test_solo_default_uses_alsa_capture_without_resampler():
 # --- ring flat config emitter (shm_ring statefile seed, P2) -------------------
 
 
-def test_emit_flat_ring_config_names_both_ring_devices_s32le(monkeypatch):
+def test_the_flat_startup_graph_names_both_ring_devices_s32le(monkeypatch):
     # RENAMED from ..._s16le: jasper.fanin_coupling.resolve_ring_wire()'s
-    # default flipped WIDE in PR #2601, and emit_flat_ring_config() has no way
+    # default flipped WIDE in PR #2601, and the cutover emitter has no way
     # to take an explicit wire — it always resolves through that function
     # (unlike jasper.ring_assets.render_ring_conf_wire, which takes a RingWire
     # parameter directly). The resolved wire is PINNED here via monkeypatch
@@ -589,7 +589,7 @@ def test_emit_flat_ring_config_names_both_ring_devices_s32le(monkeypatch):
     # that ever ran the installer) would reach this test — the same hazard
     # tests/test_fanin_coupling_reconcile.py's setup fixture documents.
     import jasper.fanin_coupling as fc
-    from jasper.sound.camilla_yaml import emit_flat_ring_config
+    from jasper.sound.camilla_yaml import emit_flat_outputd_cutover_config
 
     monkeypatch.setattr(
         fc,
@@ -601,7 +601,7 @@ def test_emit_flat_ring_config_names_both_ring_devices_s32le(monkeypatch):
             period_frames=fc.RING_SLOT_FRAMES,
         ),
     )
-    yaml = emit_flat_ring_config()
+    yaml = emit_flat_outputd_cutover_config()
     # Capture = Ring A (jts_ring_capture), playback = Ring B (jts_ring_playback),
     # both S32_LE ALSA devices — the end-to-end ring topology.
     capture = yaml.split("  capture:\n", 1)[1].split("\n  playback:\n", 1)[0]
@@ -619,40 +619,6 @@ def test_emit_flat_ring_config_names_both_ring_devices_s32le(monkeypatch):
     assert "enable_rate_adjust: false" in yaml
     # It is the disabled (flat) profile — no preference EQ filters.
     assert "volume_limit: 0.0" in yaml
-
-
-def test_emit_flat_ring_config_keeps_loopback_flat_config_unchanged():
-    from jasper.sound.camilla_yaml import (
-        emit_flat_outputd_cutover_config,
-        emit_flat_ring_config,
-    )
-
-    ring = emit_flat_ring_config()
-    loop = emit_flat_outputd_cutover_config()
-    # The loopback flat config has NO ring devices.
-    assert "jts_ring" not in loop
-    # The ring config uses its own low-latency geometry; the loopback flat config
-    # keeps the ordinary generated floor and does not inherit the ring queue.
-    assert "chunksize: 128" in ring
-    assert "target_level: 128" in ring
-    assert "queuelimit: 1" in ring
-    assert "enable_rate_adjust: false" in ring
-    assert "queuelimit: 4" in loop
-    assert "enable_rate_adjust: true" in loop
-    for key in ("samplerate:", "volume_limit:"):
-        ring_line = [ln for ln in ring.splitlines() if ln.strip().startswith(key)]
-        loop_line = [ln for ln in loop.splitlines() if ln.strip().startswith(key)]
-        assert ring_line == loop_line, f"{key} drifted between ring and loopback flat"
-
-
-# --- width-matched flat cutover (mono topologies) ----------------------------
-#
-# A mono full-range topology assigns ONE physical output, but the program lane
-# is stereo-pinned and outputd negotiates the DAC's own width. Without a mute,
-# the surplus channel puts full-range program on an output the household never
-# declared — and the runtime contract refuses to seed a statefile pointing at
-# such a graph, which is what blocked deploys on a mono box. These pin the
-# by-construction half: the emitter renders the surplus channel hard muted.
 
 
 def _mono_topology(output_index: int):
