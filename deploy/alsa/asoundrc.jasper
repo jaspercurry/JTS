@@ -31,25 +31,15 @@ defaults.pcm.rate_converter "__RATE_CONVERTER__"
 # jasper-doctor's `check_renderer_device_resolvable` for the codified
 # version of that probe.
 #
-# Why this file exists:
-#   - Each music renderer gets a private snd-aloop substream. That keeps
-#     renderer startup and handoff independent: AirPlay, Spotify,
-#     Bluetooth, and USB-in no longer contend for the same playback PCM.
-#   - jasper-fanin reads those per-renderer capture substreams, sums
-#     them sample-wise, and writes the single "summed music" stream to
-#     substream 7 — but ONLY under `loopback` coupling. A `shm_ring` box
-#     writes Ring A instead and leaves substream 7 with no writer at all
-#     (U4/P7-4 dropped the lane-7 mirror).
-#   - CamillaDSP reads that summed stream via `pcm.jasper_capture` and
-#     is its only reader. `pcm.jasper_ref`, the plug-wrapped alias, has
-#     no reader left at all (U4/P7-1 then P7-3) and is shipped only
-#     until P9-E deletes these definitions; everything AEC — the bridge
-#     and jasper-aec-tune alike — consumes outputd's speaker monitor.
-#   - In the outputd topology, CamillaDSP writes post-DSP content to
-#     `outputd_content_playback`, and jasper-outputd is the only reader
-#     of `outputd_content_capture` and the only normal writer to
-#     `outputd_dac`. Assistant TTS enters jasper-fanin before
-#     CamillaDSP, then reaches outputd as part of post-DSP content.
+# Why this file exists: each music renderer gets a private snd-aloop
+# playback substream, so renderer startup and handoff stay independent —
+# AirPlay, Spotify, Bluetooth, and USB-in never contend for one playback
+# PCM. That INGRESS is all snd-aloop carries. jasper-fanin reads the
+# private capture sides, sums them sample-wise, and publishes to the SHM
+# ring; the ring is the only central transport from there to the DAC
+# (ADR-0100), so nothing between fan-in and jasper-outputd is defined
+# here. The final DAC alias below is: jasper-outputd is its only normal
+# writer.
 #
 # Topology:
 #
@@ -62,24 +52,11 @@ defaults.pcm.rate_converter "__RATE_CONVERTER__"
 #                        fan-in still opens hw:Loopback,1,3 as the usbsink lane's
 #                        idle fallback when USB Audio Input is off)
 #   correction sweeps  → pcm.correction_substream  → hw:Loopback,0,4
-#   (active Nch DSP rides the ACTIVE ring, not snd-aloop — pair 5 UNALLOCATED)
-#   passive stereo DSP ← outputd_content_*        ← hw:Loopback,0/1,6
 #                                                       │
 #                                                       ▼ (loop)
 #   jasper-fanin reads        hw:Loopback,1,0..4
 #       sums sample-wise
-#       writes summed music → hw:Loopback,0,7
-#                                                       │
-#                                                       ▼ (loop)
-#                         pcm.jasper_capture dsnoop on hw:Loopback,1,7
-#                                                       │
-#                                                       └── jasper-camilla
-#                                                               │
-#                                                               ▼
-#                                                   outputd_content_playback
-#                                                               │
-#                                                               ▼ (loop)
-#                                                   outputd_content_capture
+#       writes the sum      → SHM ring → jasper-camilla → SHM ring
 #                                                               │
 #                                                               ▼
 #                                                       jasper-outputd
@@ -90,58 +67,19 @@ defaults.pcm.rate_converter "__RATE_CONVERTER__"
 #                                                               ▼
 #                                            selected DAC → speakers
 #
+# Assistant TTS enters jasper-fanin alongside the renderers, so it reaches
+# outputd as part of the same post-DSP program.
+#
 # The pre-2026-05-26 renderer-side dmix topology was retired after
 # measurements showed it caused periodic AirPlay drops via a WiFi
 # A-MPDU burst × dmix per-write timing interaction. The fan-in topology
 # preserves the good part of that work (multi-renderer safety) without
 # a shared userspace dmix write lock in front of the renderer path.
 #
-# The `pcm.jasper_capture` dsnoop tap below is CamillaDSP's capture
-# side of the summed stream. dsnoop is the multi-reader-safe ALSA
-# primitive (the dual of dmix on the playback side); it stays because
-# a raw `hw:` open would deny the slave to anything else. The dsnoop
-# slave is configured for 48 kHz S16_LE stereo — the shape CamillaDSP
-# targets. Both former second readers are gone and both took the same
-# exit: the AEC bridge at U4/P7-1 and jasper-aec-tune at U4/P7-2, each
-# onto outputd's UDP speaker monitor.
-#
 # RATE LOCK: snd-aloop's parameters are set per substream pair, not for
 # the whole card. Each renderer writes through a `plug:` wrapper to its
-# assigned substream; jasper-fanin opens every capture side at 48 kHz
-# S16_LE and publishes the summed output at the same shape. A renderer's
-# native rate cannot lock another renderer or the AEC/Camilla reference.
-#
-# Who opens this tap — one live reader, plus one alias nobody opens.
-# NOTE FIRST: since U4/P7-4 this tap has a PRODUCER only under `loopback`
-# coupling. On a `shm_ring` box fan-in writes Ring A and nothing writes
-# substream 7 — and nothing reads it there either, because U4/P7-2
-# re-pointed the last RAW consumer off it before P7-4 removed the writer:
-#   - CamillaDSP opens `plug:jasper_capture` (note the `plug:`) in the
-#     outputd config — on a `loopback` box. A `shm_ring` box's graph is
-#     emitted with the ring capture device instead, so it never reaches
-#     this tap. plug keeps the consumer tolerant of
-#     operator mistakes, but the intended fan-in output shape is fixed
-#     at 48 kHz S16_LE.
-#   - jasper-aec-tune USED to open `jasper_capture` for a bounded
-#     capture; since U4/P7-2 its reference is outputd's UDP monitor.
-#   - `jasper_ref` (defined below), the plug-wrapped alias, is opened by
-#     nothing: U4/P7-1 retired the AEC bridge's ALSA fallback and P7-3
-#     retired the timing probe's `--jasper-capture-pcm`, which were its
-#     only two readers. It ships until P9-E deletes these definitions.
-#
-# Why two names: `pcm.jasper_capture` is semantically "the raw dsnoop
-# tap", so its readers see exactly what the kernel produced, while
-# `pcm.jasper_ref` advertised rate-agnostic intent at a call site. With
-# both call sites retired the second name is vestigial — it is kept for
-# one ticket's worth of deletion ordering, not for a consumer.
-#
-# We never want camilla to read a raw `hw:Loopback,1,N` capture
-# directly — that would deny dsnoop the slave, and any second reader of
-# the tap would fail to open with `unable to open slave`. (jasper-aec-tune
-# was that second reader until U4/P7-2; the rule outlives it, because
-# dsnoop is what keeps the tap shareable at all.) In particular,
-# `hw:Loopback,1,0` is now a private fan-in input lane; the summed
-# music reference is `pcm.jasper_capture` on substream 7.
+# assigned substream and jasper-fanin opens every capture side at 48 kHz
+# S16_LE, so a renderer's native rate cannot lock another renderer.
 
 # Per-renderer substream aliases. deploy/modprobe.d/snd-aloop.conf OWNS the
 # substream allocation and the reasoning behind it (8 pairs per card, pinned
@@ -154,16 +92,7 @@ defaults.pcm.rate_converter "__RATE_CONVERTER__"
 #   2 — bluealsa-aplay     (Bluetooth A2DP)
 #   3 — USB lane's silent fallback while DIRECT gadget capture is off
 #   4 — correction/test sweeps
-#   5 — UNALLOCATED. This was the outputd active-speaker N-channel content
-#       lane (Camilla -> outputd); its PCM definitions were deleted once the
-#       ACTIVE ring became the roleful transport. A roleful box reaches its
-#       DAC over `jts_ring_active_playback`, never over snd-aloop. The endpoint
-#       vocabulary has since dropped this lane too: `jts_ring_active_playback`
-#       is the ONE legal ACTIVE endpoint, so there is no `--endpoint aloop` to
-#       resolve and no way to point a graph back here. Recovery from a parked
-#       roleful box is forward only — re-arm the ring.
-#   6 — outputd post-DSP content lane (Camilla -> outputd, passive box)
-#   7 — fan-in daemon's summed output → CamillaDSP (its only reader)
+#   5-7 — no alias here. The owner records why they stay reserved.
 #
 # Each alias is a `plug:` wrapper so the renderer's native rate/format
 # gets converted to the substream's 48 kHz S16_LE via the configured
@@ -208,94 +137,8 @@ pcm.correction_substream {
     }
 }
 
-# Post-Camilla lane for jasper-outputd. Camilla writes to
-# outputd_content_playback; jasper-outputd is the only reader of
-# outputd_content_capture. Do NOT wrap this capture side in dsnoop:
-# outputd needs exclusive ownership so it can be the timing owner for
-# the final DAC loop.
-#
-# WIDTH: both slaves pin `format S32_LE` — the passive lane carries the
-# post-DSP program at CamillaDSP's own working width so the ONE deliberate
-# output quantization happens inside jasper-outputd at the DAC edge, at the
-# DAC's declared width (jasper.camilla_config_contract.DEFAULT_PLAYBACK_FORMAT
-# is the emitter-side half of this pin; outputd's requested half is
-# JASPER_OUTPUTD_CONTENT_FORMAT, emitted by jasper-audio-hardware-reconcile).
-# These two stay `type plug` deliberately, unlike the raw active lane above:
-# the plug is open-order grace on a lane whose openers can arrive in either
-# order. The slave pin is what makes the lane's width a declaration rather
-# than a race — tests/test_outputd_wiring.py asserts it.
-pcm.outputd_content_playback {
-    type plug
-    slave {
-        pcm "hw:Loopback,0,6"
-        rate 48000
-        channels 2
-        format S32_LE
-    }
-}
-
-pcm.outputd_content_capture {
-    type plug
-    slave {
-        pcm "hw:Loopback,1,6"
-        rate 48000
-        channels 2
-        format S32_LE
-    }
-}
-
-ctl.outputd_content_capture {
-    type hw
-    card Loopback
-}
-
 # DAC alias for jasper-outputd once it owns the final speaker boundary. The
 # installer/reconciler renders parked states as a silent null PCM; live
 # composite output opens its child hw PCMs directly.
 __OUTPUTD_DAC_PCM_BLOCK__
 __OUTPUTD_DAC_CTL_BLOCK__
-
-pcm.jasper_capture {
-    type dsnoop
-    ipc_key 7778
-    ipc_perm 0666
-    slave {
-        pcm "hw:Loopback,1,7"
-        rate 48000
-        channels 2
-        format S16_LE
-        period_size 1024
-        buffer_size 4096
-    }
-    bindings {
-        0 0
-        1 1
-    }
-}
-
-# Plug-wrapped alias for pre-DSP capture. It has NO reader: the AEC
-# bridge's ALSA fallback was the first to go (U4/P7-1) and the timing
-# probe's --jasper-capture-pcm was the last (U4/P7-3). It is retained
-# only because P9-E, not P7, deletes the snd-aloop PCM definitions —
-# so this block is shipped, unread, and on its way out. Do not attach a
-# new reader to it; a live consumer of the pre-DSP sum reads
-# `jasper_capture` directly, as CamillaDSP does.
-#
-# What `plug` bought while it had readers, kept here so the deletion PR
-# does not also relitigate the wrapper: jasper_capture's dsnoop slave is
-# pinned to 48 kHz S16_LE stereo, so for a reader requesting that shape
-# this was an identity wrapper, and for one requesting anything else
-# ALSA applied the configured libsamplerate converter instead of feeding
-# mismatched samples. Without it a reader received distorted or silent
-# samples when the loopback's locked rate ≠ 48 kHz — the root cause of
-# the AEC-broken-with-AirPlay regression diagnosed on 2026-05-15, back
-# when the AEC bridge was one of these readers.
-pcm.jasper_ref {
-    type plug
-    slave.pcm "jasper_capture"
-}
-
-ctl.jasper_capture {
-    type hw
-    card Loopback
-}
