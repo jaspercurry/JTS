@@ -607,18 +607,14 @@ def check_fanin_service() -> CheckResult:
             "journalctl -u jasper-fanin for event=fanin.ring.opened.",
         )
 
-    output_pcm = output.get("pcm")
-    # output.pcm is a CONFIG echo (state.rs pushes self.output_pcm), not proof a
-    # PCM was opened: since ADR-0100 fan-in opens no ALSA playback device at all,
-    # and the field is parsed-never-opened. The equality still catches a
-    # /var/lib/jasper/fanin.env that drifted from the lane allocation.
-    if output_pcm != _FANIN_EXPECTED_OUTPUT_PCM:
-        return CheckResult(
-            "jasper-fanin service",
-            "fail",
-            f"active but STATUS output.pcm={output_pcm!r}; expected "
-            f"{_FANIN_EXPECTED_OUTPUT_PCM}. Check /var/lib/jasper/fanin.env.",
-        )
+    # NOT CHECKED: output.pcm. It is a CONFIG echo of JASPER_FANIN_OUTPUT_PCM
+    # (state.rs pushes self.output_pcm), a variable nothing in this tree writes
+    # and that fan-in never opens — since ADR-0100 the ring IS the program path
+    # and no ALSA playback device is opened at all (rust/jasper-fanin/src/mixer.rs).
+    # So the only value it can carry is the daemon's compiled-in default, and
+    # comparing it here FAILed a healthy migrating box for a key nothing reads.
+    # `_FANIN_EXPECTED_OUTPUT_PCM` survives as the snd-aloop pair-7 registration
+    # (see `_derive_registered_pairs`), which is a different question.
     inputs = data.get("inputs")
     if not isinstance(inputs, list):
         return CheckResult(
