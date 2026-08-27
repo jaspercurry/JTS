@@ -1000,6 +1000,327 @@ def test_muted_outputs_leaves_the_CLAIMED_channel_byte_identical():
     )
 
 
+# --- graph WIDTH --------------------------------------------------------------
+#
+# INERT: no production caller passes anything but the default. The axis exists
+# so a wider passive sink (the dual-Apple composite's four physical outputs) can
+# be emitted by this same lane later; WHICH output each dest drives there is a
+# separate decision, so nothing here routes program past the program's channels.
+
+
+def test_every_width_this_emitter_uses_is_one_the_ring_accepts():
+    """``_normalize_width`` skips the bounds import ON the default width, so the
+    default has to be in range as a fact rather than an assumption. Both halves
+    of the graph are rings (ADR-0100), so the program's width is bounded too."""
+    from jasper.active_speaker.runtime_contract import (
+        MAX_RING_CHANNELS,
+        MIN_RING_CHANNELS,
+    )
+    from jasper.sound.camilla_yaml import FLAT_GRAPH_WIDTH, FLAT_PROGRAM_WIDTH
+
+    assert MIN_RING_CHANNELS <= FLAT_PROGRAM_WIDTH <= MAX_RING_CHANNELS
+    assert MIN_RING_CHANNELS <= FLAT_GRAPH_WIDTH <= MAX_RING_CHANNELS
+
+
+@pytest.mark.parametrize("width", [2, 3, 4, 8])
+def test_width_moves_the_outputs_and_never_the_program(width):
+    """A wide graph gains OUTPUTS; the program it carries stays stereo.
+
+    Capture is the program lane (Ring A) and so is the ``master_gain`` mixer's
+    ``in``; only playback and the mixer's ``out`` follow ``width``. Widening in
+    the mixer is the roleful emitter's shape too (``{in: 2, out: output_count}``
+    in ``jasper.active_speaker.camilla_yaml``). The loud-output clamp is
+    non-negotiable at every width.
+    """
+    import yaml as yaml_lib
+
+    from jasper.sound.camilla_yaml import FLAT_PROGRAM_WIDTH
+
+    doc = yaml_lib.safe_load(
+        emit_sound_config(SoundProfile(enabled=False), width=width)
+    )
+
+    assert doc["devices"]["volume_limit"] == 0.0
+    assert doc["devices"]["capture"]["channels"] == FLAT_PROGRAM_WIDTH
+    assert doc["devices"]["playback"]["channels"] == width
+    mixer = doc["mixers"]["master_gain"]
+    assert mixer["channels"] == {"in": FLAT_PROGRAM_WIDTH, "out": width}
+    assert [entry["dest"] for entry in mixer["mapping"]] == list(range(width))
+    # No dest may draw on a channel the program does not have — the mixer would
+    # not load, and at width 2 it never could, so only a wide graph can regress.
+    assert {
+        source["channel"]
+        for entry in mixer["mapping"]
+        for source in entry["sources"]
+    } <= set(range(FLAT_PROGRAM_WIDTH))
+    # ...and none may draw on nothing: a sourceless dest is not a spelling this
+    # repo has ever loaded. Surplus dests take the parked graph's shape instead.
+    assert all(entry["sources"] for entry in mixer["mapping"])
+
+
+@pytest.mark.parametrize("fold_output", [None, 0, 1])
+def test_a_wide_graph_carries_the_program_and_mutes_every_other_output(
+    fold_output,
+):
+    """Width 4: the program reaches its declared dests, the rest are silent.
+
+    The fold in particular sums the PROGRAM's channels, never the output
+    width's — a 4-wide mono graph still sums exactly two, at the same clip-safe
+    gain a 2-wide one uses.
+    """
+    import yaml as yaml_lib
+
+    from jasper.active_speaker.camilla_yaml import (
+        STARTUP_MUTE_GAIN_DB,
+        output_commission_mute_name,
+    )
+    from jasper.camilla_emit import MONO_SUM_GAIN_DB
+    from jasper.sound.camilla_yaml import FLAT_PROGRAM_WIDTH
+
+    width = 4
+    live = {0, 1} if fold_output is None else {fold_output}
+    muted = sorted(set(range(width)) - live)
+    doc = yaml_lib.safe_load(
+        emit_sound_config(
+            SoundProfile(enabled=False),
+            width=width,
+            muted_outputs=muted,
+            mono_fold_output=fold_output,
+        )
+    )
+
+    mapping = {
+        entry["dest"]: entry["sources"]
+        for entry in doc["mixers"]["master_gain"]["mapping"]
+    }
+    assert sorted(mapping) == list(range(width))
+    if fold_output is None:
+        for dest in live:
+            assert mapping[dest] == [{"channel": dest, "gain": 0, "inverted": False}]
+    else:
+        fold = mapping[fold_output]
+        assert [source["channel"] for source in fold] == list(
+            range(FLAT_PROGRAM_WIDTH)
+        )
+        assert [source["gain"] for source in fold] == [
+            pytest.approx(MONO_SUM_GAIN_DB, abs=1e-4)
+        ] * FLAT_PROGRAM_WIDTH
+    # A surplus dest's ONE feed sits at the hard-mute floor. Pin the VALUE, not
+    # just the channel: in the width shape that passes no explicit mutes those
+    # dests get no Filter step at all, so this gain is the emitter's only
+    # attenuation on them — at unity it would put full-scale program on an
+    # output nothing declared.
+    for dest in range(FLAT_PROGRAM_WIDTH, width):
+        assert mapping[dest] == [
+            {
+                "channel": 0,
+                "gain": pytest.approx(STARTUP_MUTE_GAIN_DB, abs=1e-4),
+                "inverted": False,
+            }
+        ]
+    for channel in muted:
+        mute_name = output_commission_mute_name(channel)
+        assert _channel_filter_names(doc, channel)[-1] == mute_name
+        assert doc["filters"][mute_name]["parameters"]["mute"] is True
+    for channel in live:
+        assert (
+            output_commission_mute_name(channel)
+            not in _channel_filter_names(doc, channel)
+        )
+    # The complement check bounds on the GRAPH's width, not the default: muting
+    # only channel 1 leaves 2 and 3 live, and a fold that lands raw program on
+    # them is refused. Bounded at the default width this would emit.
+    with pytest.raises(ValueError):
+        emit_sound_config(
+            SoundProfile(enabled=False),
+            width=width,
+            muted_outputs=[1],
+            mono_fold_output=0,
+        )
+
+
+@pytest.mark.parametrize(
+    "kwargs",
+    [
+        # Ring B is the playback half (ADR-0100): a width outside the ring's
+        # accept-set fails the ioplug open rather than degrading.
+        pytest.param({"width": 1}, id="narrower-than-the-ring-carries"),
+        pytest.param({"width": 9}, id="wider-than-the-ring-carries"),
+        pytest.param({"width": 4, "muted_outputs": [4]}, id="mute-past-the-width"),
+        # A surplus channel has no room/preference chain, so a fold onto one
+        # would land UNCORRECTED program on a declared output — and the runtime
+        # contract judges mutes, not chains, so it would allow it.
+        pytest.param(
+            {"width": 4, "muted_outputs": [0, 1, 2], "mono_fold_output": 3},
+            id="fold-past-the-program",
+        ),
+        # snapserver's pipe source is a fixed stereo wire.
+        pytest.param(
+            {
+                "width": 4,
+                "enable_rate_adjust": False,
+                "playback_pipe_path": "/run/jasper-snapserver/snapfifo",
+            },
+            id="wide-graph-on-the-stereo-pipe-wire",
+        ),
+    ],
+)
+def test_a_width_this_lane_cannot_honour_is_refused(kwargs):
+    with pytest.raises(ValueError):
+        emit_sound_config(SoundProfile(enabled=False), **kwargs)
+
+
+@pytest.mark.parametrize(
+    "kwargs",
+    [
+        pytest.param({}, id="golden"),
+        pytest.param({"muted_outputs": [1]}, id="muted"),
+        pytest.param(
+            {"muted_outputs": [1], "mono_fold_output": 0}, id="mono-folded"
+        ),
+        pytest.param(
+            {
+                "room_peqs": [PeqFilter(freq=80.0, q=4.0, gain=-3.0)],
+                "room_peqs_right": [PeqFilter(freq=120.0, q=2.0, gain=-2.0)],
+                "channel_delays_ms": (1.5, 0.5),
+                "output_trim_db": 4.0,
+            },
+            id="leader-bake",
+        ),
+    ],
+)
+def test_the_default_width_emits_the_same_bytes_as_omitting_it(kwargs):
+    """The solo-impact contract: passing the default changes nothing. The
+    fixture goldens pin the omitted side; this pins the two to each other,
+    including the mute/fold shapes the goldens do not cover."""
+    profile = SoundProfile(enabled=True, curve_id="harman")
+    from jasper.sound.camilla_yaml import FLAT_GRAPH_WIDTH
+
+    assert emit_sound_config(profile, width=FLAT_GRAPH_WIDTH, **kwargs) == (
+        emit_sound_config(profile, **kwargs)
+    )
+
+
+def test_the_flat_cutover_default_width_emits_the_same_bytes_as_omitting_it():
+    from jasper.sound.camilla_yaml import (
+        FLAT_GRAPH_WIDTH,
+        emit_flat_outputd_cutover_config,
+    )
+
+    for topology in (_mono_topology(0), _stereo_topology(), _unconfigured_draft()):
+        assert emit_flat_outputd_cutover_config(
+            topology=topology, width=FLAT_GRAPH_WIDTH
+        ) == emit_flat_outputd_cutover_config(topology=topology)
+
+
+# A real registry device with more outputs than the program has channels, so a
+# graph can legitimately be rendered wider than stereo on it.
+_WIDE_DAC = {
+    "device_id": "hifiberry_dac8x",
+    "device_label": "HiFiBerry DAC8x",
+    "card_id": "DAC8",
+    "physical_output_count": 8,
+}
+
+
+def _wide_stereo_topology():
+    """Stereo on outputs 0 and 1 of an 8-output DAC — a box whose graph can be
+    rendered wider than the program without changing which outputs it claims."""
+    from jasper.output_topology import OutputTopology
+
+    return OutputTopology.from_mapping({
+        "artifact_schema_version": 1,
+        "kind": "jts_output_topology",
+        "topology_id": "wide-stereo",
+        "name": "Stereo on a wide DAC",
+        "status": "verified",
+        "hardware": dict(_WIDE_DAC),
+        "speaker_groups": [
+            {"id": "left", "label": "Left", "kind": "left",
+             "mode": "full_range_passive",
+             "channels": [{"role": "full_range", "physical_output_index": 0}]},
+            {"id": "right", "label": "Right", "kind": "right",
+             "mode": "full_range_passive",
+             "channels": [{"role": "full_range", "physical_output_index": 1}]},
+        ],
+        "routing": {"main_left_group_id": "left", "main_right_group_id": "right"},
+    })
+
+
+def _wide_mono_topology(output_index: int):
+    """One full-range output at ``output_index`` of the same 8-output DAC."""
+    from jasper.output_topology import OutputTopology
+
+    return OutputTopology.from_mapping({
+        "artifact_schema_version": 1,
+        "kind": "jts_output_topology",
+        "topology_id": "wide-mono",
+        "name": "Mono on a wide DAC",
+        "status": "verified",
+        "hardware": dict(_WIDE_DAC),
+        "speaker_groups": [{
+            "id": "main", "label": "Main speaker", "kind": "mono",
+            "mode": "full_range_passive",
+            "channels": [{"role": "full_range",
+                          "physical_output_index": output_index,
+                          "identity_verified": True}],
+        }],
+        "routing": {"mono_group_id": "main"},
+    })
+
+
+@pytest.mark.parametrize("output_index", [2, 3])
+def test_the_plan_withholds_a_fold_onto_an_output_past_the_program(output_index):
+    """A mono box whose one output sits past the program's channels gets mutes
+    but NO fold.
+
+    The complement equality holds for it, so nothing else in the plan withholds
+    — but only a program channel can carry a fold. Offering one would raise out
+    of ``render_flat_cutover_configs``, which has no guard behind it, turning a
+    deploy-time render into an abort instead of a typed refusal. The mute half
+    is unaffected.
+    """
+    from jasper.sound.camilla_yaml import (
+        emit_flat_outputd_cutover_config,
+        flat_graph_channel_plan,
+    )
+
+    width = 4
+    topology = _wide_mono_topology(output_index)
+
+    plan = flat_graph_channel_plan(topology, width=width)
+
+    assert plan.mono_fold_output is None
+    assert plan.muted_outputs == frozenset(range(width)) - {output_index}
+    # And the render that consumes the plan still completes.
+    assert emit_flat_outputd_cutover_config(topology=topology, width=width)
+
+
+def test_the_flat_cutover_threads_its_width_into_the_channel_plan():
+    """``width`` must reach :func:`flat_graph_channel_plan` — and through it the
+    SSOT's ``flat_graph_muted_outputs(topology, width=…)`` — or a wide graph
+    would mute only the stereo complement and leave the surplus outputs live on
+    a DAC the topology never assigned them to."""
+    import yaml as yaml_lib
+
+    from jasper.active_speaker.camilla_yaml import output_commission_mute_name
+    from jasper.sound.camilla_yaml import emit_flat_outputd_cutover_config
+
+    doc = yaml_lib.safe_load(
+        emit_flat_outputd_cutover_config(topology=_wide_stereo_topology(), width=4)
+    )
+
+    assert doc["devices"]["playback"]["channels"] == 4
+    assert [_channel_filter_names(doc, index)[-1] for index in (2, 3)] == [
+        output_commission_mute_name(2),
+        output_commission_mute_name(3),
+    ]
+    for channel in (0, 1):
+        assert output_commission_mute_name(channel) not in _channel_filter_names(
+            doc, channel
+        )
+
+
 # --- the production call shape ------------------------------------------------
 #
 # deploy/install.sh calls emit_flat_outputd_cutover_config with out_path ONLY,

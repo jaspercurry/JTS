@@ -55,12 +55,15 @@ if TYPE_CHECKING:  # `jasper.output_topology` has no jasper imports, but keep
 logger = logging.getLogger(__name__)
 
 BASE_CONFIG_PATH = Path("/etc/camilladsp/outputd-cutover.yml")
-# The program lane's fixed playback width. `emit_master_gain_pipeline` is a
+# The PROGRAM's width: capture channels, the `master_gain` mixer's `in`, and the
+# channels `mono_sum_sources()` sums. FIXED — `emit_master_gain_pipeline` is a
 # deliberately 2-channel shape (the config contract is stereo-pinned; 2.1's
-# 3-channel stream generalises it WITH that contract, not alone), so the width
-# is stated once here rather than re-derived by each caller that needs to know
-# which physical outputs the emitted graph reaches.
-FLAT_GRAPH_WIDTH = 2
+# 3-channel stream generalises it WITH that contract, not alone).
+FLAT_PROGRAM_WIDTH = 2
+# The default OUTPUT width, stated once rather than re-derived by each caller
+# that needs to know which physical outputs the emitted graph addresses. A wider
+# graph is opt-in per call (`emit_sound_config(width=...)`).
+FLAT_GRAPH_WIDTH = FLAT_PROGRAM_WIDTH
 SOUND_CONFIG_NAME = "sound_current.yml"
 SOUND_AUDITION_CONFIG_NAME = "sound_audition.yml"
 _JTS_GENERATED_RE = re.compile(
@@ -71,13 +74,44 @@ _JTS_GENERATED_RE = re.compile(
     r"|grouping_leader|grouping_solo_restore|grouping_follower)\.yml$"
 )
 
-def _normalize_muted_outputs(muted_outputs: Iterable[int] | None) -> frozenset[int]:
+def _normalize_width(width: int) -> int:
+    """Validate ``emit_sound_config(width=...)`` — the graph's OUTPUT width.
+
+    Bounded by the ring's own channel accept-set: playback is Ring B
+    (ADR-0100), so a width the transport cannot carry fails the ioplug open
+    rather than degrading. Those bounds are imported from their owner and only
+    OFF the default, keeping the runtime module out of an ordinary stereo
+    emission (see this module's ``TYPE_CHECKING`` note); the default sitting
+    inside them is test-pinned instead.
+    """
+
+    width = int(width)
+    if width == FLAT_GRAPH_WIDTH:
+        return width
+    from jasper.active_speaker.runtime_contract import (
+        MAX_RING_CHANNELS,
+        MIN_RING_CHANNELS,
+    )
+
+    if not MIN_RING_CHANNELS <= width <= MAX_RING_CHANNELS:
+        raise ValueError(
+            f"width must be {MIN_RING_CHANNELS}..{MAX_RING_CHANNELS} playback "
+            f"channels (the ring layout's accept-set); got {width}"
+        )
+    return width
+
+
+def _normalize_muted_outputs(
+    muted_outputs: Iterable[int] | None,
+    *,
+    width: int,
+) -> frozenset[int]:
     """Validate ``emit_sound_config(muted_outputs=...)`` at the API boundary.
 
     Fail LOUD on the two ways a caller can be wrong, because both would
     otherwise ship a graph nobody meant:
 
-    * an index outside the stereo-pinned width — the emitted pipeline has no
+    * an index outside the graph's OUTPUT width — the emitted pipeline has no
       such channel, so the "mute" would be a filter defined and never wired,
       i.e. an output left emitting while the caller believed it silenced;
     * every channel muted — a wholly silent program graph. That is not this
@@ -92,14 +126,14 @@ def _normalize_muted_outputs(muted_outputs: Iterable[int] | None) -> frozenset[i
     channels = frozenset(int(index) for index in muted_outputs)
     if not channels:
         return frozenset()
-    out_of_range = sorted(index for index in channels if not 0 <= index < FLAT_GRAPH_WIDTH)
+    out_of_range = sorted(index for index in channels if not 0 <= index < width)
     if out_of_range:
         raise ValueError(
             "muted_outputs indexes must be playback channels in "
-            f"0..{FLAT_GRAPH_WIDTH - 1}; got "
+            f"0..{width - 1}; got "
             f"{', '.join(str(index) for index in out_of_range)}"
         )
-    if len(channels) >= FLAT_GRAPH_WIDTH:
+    if len(channels) >= width:
         raise ValueError(
             "muted_outputs would mute every playback channel, emitting a "
             "wholly silent program graph; refuse the flat graph instead"
@@ -110,6 +144,8 @@ def _normalize_muted_outputs(muted_outputs: Iterable[int] | None) -> frozenset[i
 def _normalize_mono_fold_output(
     mono_fold_output: int | None,
     muted_channels: frozenset[int],
+    *,
+    width: int,
 ) -> int | None:
     """Validate ``emit_sound_config(mono_fold_output=...)`` at the API boundary.
 
@@ -121,14 +157,17 @@ def _normalize_mono_fold_output(
 
     An out-of-width index needs no separate check — it leaves an in-width
     channel unmuted and trips this same one.
+
+    A fold onto a channel PAST the program is refused for a different reason:
+    those channels carry no room/preference chain (only their mute), so the
+    fold would land uncorrected program on a declared output — and the runtime
+    contract, which judges mutes and not chains, would allow it.
     """
 
     if mono_fold_output is None:
         return None
     index = int(mono_fold_output)
-    unmuted_complement = sorted(
-        frozenset(range(FLAT_GRAPH_WIDTH)) - {index} - muted_channels
-    )
+    unmuted_complement = sorted(frozenset(range(width)) - {index} - muted_channels)
     if unmuted_complement:
         raise ValueError(
             f"mono_fold_output={index} requires every other playback channel "
@@ -136,20 +175,41 @@ def _normalize_mono_fold_output(
             "topology does not assign; unmuted: "
             f"{', '.join(str(other) for other in unmuted_complement)}"
         )
+    # After the complement check, so an out-of-width index keeps reporting the
+    # unmuted channel it left behind rather than this narrower reason.
+    if not 0 <= index < FLAT_PROGRAM_WIDTH:
+        raise ValueError(
+            f"mono_fold_output={index} is not a program channel "
+            f"(0..{FLAT_PROGRAM_WIDTH - 1}); a wider graph's surplus channels "
+            "carry no room/preference chain, so folding onto one would emit "
+            "uncorrected program"
+        )
     return index
 
 
-def _master_gain_mixer_yaml(mono_fold_output: int | None) -> str:
+def _master_gain_mixer_yaml(mono_fold_output: int | None, *, width: int) -> str:
     """The ``master_gain`` mixer block, under a caller-supplied ``mixers:`` key.
+
+    This is the seam the graph WIDENS at — the same one the roleful emitter
+    widens at (``jasper.active_speaker.camilla_yaml``'s split mixer, ``{in: 2,
+    out: output_count}``). Both counts are derived, never spelled, so neither
+    can outlive the width it described.
 
     Identity by default. ``mono_fold_output`` instead folds BOTH program
     channels onto that one output: a mono cabinet declares one full-range
     output on a 2-channel amp, so an identity mixer drops the program's other
     channel into an output it never declared. The feeds come from
     :func:`~jasper.camilla_emit.mono_sum_sources`, which owns the clip-safe
-    L+R recipe and the reason for its gain. The complement dest keeps its
-    identity route and its terminal hard mute, which
-    :func:`_normalize_mono_fold_output` refuses a fold without.
+    L+R recipe and the reason for its gain — and is PROGRAM-bounded, so a wider
+    graph still sums exactly two. The complement dest keeps its identity route
+    and its terminal hard mute, which :func:`_normalize_mono_fold_output`
+    refuses a fold without.
+
+    A dest past the program has no input channel to copy, so it takes the
+    parked graph's shape (``emit_active_speaker_parked_config``): one feed from
+    program channel 0 at the hard-mute floor, an entry that changes the channel
+    count without carrying program. Its terminal pipeline mute is the half the
+    runtime contract re-proves.
 
     ``master_gain`` stops being identity here. That is safe for the Ducker,
     which claims the volume owner (``jasper.camilla.Ducker``) and never touches
@@ -157,7 +217,8 @@ def _master_gain_mixer_yaml(mono_fold_output: int | None) -> str:
 
     The unity route is spelled ``gain: 0``, not ``fmt(0.0)``: that literal is
     the byte contract of every config already in the field (the golden fixtures
-    pin it). Only the fold's gains go through the shared formatter.
+    pin it). Only the fold's and the surplus dests' gains go through the shared
+    formatter.
     """
 
     def source(channel: int, gain: str, inverted: bool) -> str:
@@ -166,19 +227,26 @@ def _master_gain_mixer_yaml(mono_fold_output: int | None) -> str:
             f"inverted: {'true' if inverted else 'false'} }}"
         )
 
+    def surplus_source() -> str:
+        from jasper.active_speaker.camilla_yaml import STARTUP_MUTE_GAIN_DB
+
+        return source(0, fmt(STARTUP_MUTE_GAIN_DB), False)
+
     lines = [
         "  master_gain:",
-        "    channels: { in: 2, out: 2 }",
+        f"    channels: {{ in: {FLAT_PROGRAM_WIDTH}, out: {width} }}",
         "    mapping:",
     ]
-    for dest in range(FLAT_GRAPH_WIDTH):
+    for dest in range(width):
         if dest == mono_fold_output:
             sources = ", ".join(
                 source(channel, fmt(gain_db), inverted)
                 for channel, gain_db, inverted in mono_sum_sources()
             )
-        else:
+        elif dest < FLAT_PROGRAM_WIDTH:
             sources = source(dest, "0", False)
+        else:
+            sources = surplus_source()
         lines.append(f"      - dest: {dest}")
         lines.append(f"        sources: [{sources}]")
     return "\n".join(lines)
@@ -206,6 +274,7 @@ def emit_sound_config(
     playback_pipe_path: str | None = None,
     muted_outputs: Iterable[int] | None = None,
     mono_fold_output: int | None = None,
+    width: int = FLAT_GRAPH_WIDTH,
 ) -> str:
     """Build a CamillaDSP YAML config for the preference profile.
 
@@ -272,11 +341,22 @@ def emit_sound_config(
     for the gain rule). It PAIRS with ``muted_outputs`` and is refused without
     it; :func:`flat_graph_channel_plan` owns which channel folds where, this
     emitter only how the fold is spelled. ``None`` is **byte-identical** to
-    before this parameter existed (the solo-impact contract)."""
+    before this parameter existed (the solo-impact contract).
+
+    ``width`` is the graph's OUTPUT width, and the bound the other channel
+    axes here are checked against. The PROGRAM does not widen with it: capture
+    and the ``master_gain`` mixer's ``in`` stay :data:`FLAT_PROGRAM_WIDTH`,
+    because widening belongs in the mixer. Channels past the program carry no
+    program chain, only their mute, so a wider graph is meaningful only with
+    the matching ``muted_outputs``. Bounded by :func:`_normalize_width`, and
+    refused alongside ``playback_pipe_path``. The default is
+    **byte-identical** to before this parameter existed (the solo-impact
+    contract)."""
 
     # Loud-output safety: refuse to emit a config whose master fader
     # could boost above full scale. Mirrors the active_speaker emitter.
     volume_limit_db = ensure_volume_limit_db(volume_limit_db)
+    width = _normalize_width(width)
     # CamillaDSP latency knobs (G7): None → env-or-default, resolved at call
     # time so a JASPER_CAMILLA_{CHUNKSIZE,TARGET_LEVEL} systemd override applies
     # on the next regeneration. Unset env → the literal defaults (1024/2048), so
@@ -337,14 +417,25 @@ def emit_sound_config(
                 "rate-tracker on the synced chain; see "
                 "HANDOFF-multiroom.md §2 invariant 5"
             )
+        if width != FLAT_PROGRAM_WIDTH:
+            # `sampleformat=48000:16:2` (jasper.multiroom.reconcile.
+            # snapserver_argv): a wider pipe is not a wider sink, it is a
+            # frame-misaligned stream the reader cannot resynchronise.
+            raise ValueError(
+                "playback_pipe_path (bonded-leader pipe sink) is a fixed "
+                f"{FLAT_PROGRAM_WIDTH}-channel wire; width={width} is not "
+                "applicable to it"
+            )
     # Resolve the sentinel AFTER the explicitness guard above (mirrors the
     # chunksize/target_level None-or-default pattern a few lines up): the
     # ALSA loopback branch below still needs a concrete playback_format even
     # though a pipe sink never reads this resolved value.
     if playback_format is None:
         playback_format = DEFAULT_PLAYBACK_FORMAT
-    muted_channels = _normalize_muted_outputs(muted_outputs)
-    mono_fold_output = _normalize_mono_fold_output(mono_fold_output, muted_channels)
+    muted_channels = _normalize_muted_outputs(muted_outputs, width=width)
+    mono_fold_output = _normalize_mono_fold_output(
+        mono_fold_output, muted_channels, width=width
+    )
     # The shared stereo-prefix builder (jasper.camilla_stereo_prefix) owns the
     # room-PEQ -> headroom -> preamp -> preference assembly. Build the active
     # preference filters once and pass them in (it drops inactive specs);
@@ -400,6 +491,23 @@ def emit_sound_config(
             ]
         )
         pipeline_yaml = emit_master_gain_pipeline(left_names, right_names)
+        # A channel past the program has no chain to append to, so its mute is
+        # its whole Filter step. Appended here rather than by widening
+        # `emit_master_gain_pipeline`, a deliberately 2-channel shape (see its
+        # docstring); empty at the default width.
+        pipeline_yaml = "\n".join(
+            [pipeline_yaml]
+            + [
+                line
+                for index in sorted(muted_channels)
+                if index >= FLAT_PROGRAM_WIDTH
+                for line in (
+                    "  - type: Filter",
+                    f"    channels: [{index}]",
+                    f"    names: [{output_commission_mute_name(index)}]",
+                )
+            ]
+        )
     else:
         pipeline_yaml = emit_master_gain_pipeline(chain_names, chain_names_right)
     # inv-5: an active bond member runs rate_adjust off (snapclient is the sole
@@ -415,18 +523,18 @@ def emit_sound_config(
         # (jasper.camilla_config_contract).
         playback_yaml = f"""  playback:
     type: File
-    channels: 2
+    channels: {width}
     filename: "{playback_pipe_path}"
     format: {DEFAULT_PIPE_SINK_FORMAT}"""
     else:
         playback_yaml = f"""  playback:
     type: Alsa
-    channels: 2
+    channels: {width}
     device: "{playback_device}"
     format: {playback_format}"""
     capture_yaml = f"""  capture:
     type: Alsa
-    channels: 2
+    channels: {FLAT_PROGRAM_WIDTH}
     device: "{capture_device}"
     format: {capture_format}"""
     # The header's mixer sentence tracks the mixer it describes. Byte-identical
@@ -467,7 +575,7 @@ filters:
 {filter_yaml}
 
 mixers:
-{_master_gain_mixer_yaml(mono_fold_output)}
+{_master_gain_mixer_yaml(mono_fold_output, width=width)}
 
 pipeline:
 {pipeline_yaml}
@@ -530,6 +638,16 @@ def flat_graph_channel_plan(
     composite mono box in particular must NOT fold here: outputd owns the
     program's fan-out across its child DACs.
 
+    One case the mute set cannot speak for, so it is withheld explicitly: a
+    single full-range output sitting PAST the program's channels (a mono box on
+    output 2 of an 8-output DAC). The complement equality holds there, but only
+    a program channel can carry a fold — :func:`_normalize_mono_fold_output`
+    refuses the rest — so offering one would turn a render into an exception
+    (``render_flat_cutover_configs`` has no guard behind it; install would
+    abort) rather than a typed refusal. Withheld the same way the composite case
+    is, and for the same reason: this lane cannot say which output that program
+    belongs on. Deciding that is the deferred mapping work.
+
     Fails SOFT — the empty plan — on a corrupt topology, matching the SSOT.
     The graph is checked either way: ``classify_camilla_graph`` and
     ``safe_graph_for_current_topology`` both fail closed on that topology.
@@ -559,6 +677,7 @@ def flat_graph_channel_plan(
     if (
         contract.classification == CONTRACT_NORMAL_MONO_FULL_RANGE
         and len(assigned) == 1
+        and assigned <= frozenset(range(FLAT_PROGRAM_WIDTH))
         and muted == frozenset(range(width)) - assigned
     ):
         return FlatChannelPlan(
@@ -571,6 +690,7 @@ def emit_flat_outputd_cutover_config(
     *,
     out_path: str | Path | None = None,
     topology: OutputTopology | None = None,
+    width: int = FLAT_GRAPH_WIDTH,
 ) -> str:
     """Emit the flat outputd startup graph through the production generator.
 
@@ -578,11 +698,12 @@ def emit_flat_outputd_cutover_config(
     emitter as ordinary sound configs means the active DAC profile's latency
     floor reaches first boot without adding a second Camilla/outputd path.
 
-    WIDTH-MATCHED to the saved output topology. The emitted pipeline is always
-    the stereo-pinned two channels (outputd negotiates the DAC's own width —
-    the InnoMaker's two — so narrowing the ALSA device is not on the table),
-    but every channel the topology does not assign to a ``full_range`` output
-    is hard muted. A mono topology therefore boots a graph that CANNOT put
+    WIDTH-MATCHED to the saved output topology. The emitted pipeline is
+    ``width`` channels wide — the stereo default for every production caller
+    (outputd negotiates the DAC's own width — the InnoMaker's two — so
+    narrowing the ALSA device is not on the table) — and every channel the
+    topology does not assign to a ``full_range`` output is hard muted, at any
+    width. A mono topology therefore boots a graph that CANNOT put
     program audio on the output it never declared, instead of one that does so
     and is refused at the statefile guard. That refusal is real and stays:
     ``jasper.active_speaker.runtime_contract`` re-proves the mutes off this
@@ -594,7 +715,10 @@ def emit_flat_outputd_cutover_config(
     read of the topology.
 
     ``topology`` (any ``OutputTopology``) is a test seam; production reads the
-    saved topology.
+    saved topology. ``width`` likewise has no production caller off its default
+    yet: a composite sink needs the mixer's dest-to-output mapping decided
+    before a wide graph means anything there
+    (:func:`flat_graph_channel_plan` withholds both mute and fold for one).
     """
 
     from jasper.fanin_coupling import (
@@ -612,11 +736,14 @@ def emit_flat_outputd_cutover_config(
     #
     # The wire comes from the same resolver `capture_kwargs_for_coupling` reads,
     # so the seeded startup graph and a live `/sound/` re-emit cannot declare
-    # different widths for the same box. Resolved with NO topology: this is the
-    # SOLO-STEREO flat graph by construction (a roleful box is seeded from the
-    # driver-domain emitters instead), so it has no per-topology width to ask for.
+    # different widths for the same box. Resolved with NO topology: every
+    # production path here is the SOLO-STEREO flat graph (a roleful box is
+    # seeded from the driver-domain emitters instead), so there is no
+    # per-topology width to ask for. An off-default `width` would need a ring
+    # wide enough to carry it as well; establishing that pairing belongs to
+    # whoever first passes one.
     wire = resolve_ring_wire()
-    plan = flat_graph_channel_plan(topology, width=FLAT_GRAPH_WIDTH)
+    plan = flat_graph_channel_plan(topology, width=width)
 
     return emit_sound_config(
         SoundProfile(enabled=False),
@@ -628,6 +755,7 @@ def emit_flat_outputd_cutover_config(
         enable_rate_adjust=RING_CAMILLA_ENABLE_RATE_ADJUST,
         muted_outputs=plan.muted_outputs,
         mono_fold_output=plan.mono_fold_output,
+        width=width,
         out_path=out_path,
     )
 
