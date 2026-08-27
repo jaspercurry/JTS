@@ -514,3 +514,91 @@ def test_a_live_park_takes_the_household_headline():
     assert signal is not None
     assert signal["status"] == "issue"
     assert signal["headline"] == PARKED_HEADLINE
+
+
+@pytest.mark.parametrize(
+    "topology,env,park_class,issue,remedy", _PARK_CASES
+)
+def test_a_live_park_says_which_shape_parked_the_box(
+    topology, env, park_class, issue, remedy
+):
+    """Owner ruling 2026-08-27: a real message, not one canned sentence.
+
+    Both household writers compose from the same table, so the incident row
+    and the card cannot say different things about one park.
+    """
+    from jasper.control.audio_health import (
+        PARKED_DETAIL,
+        _state_issues,
+        _transport_park_signal,
+    )
+
+    state = transport_park.snapshot(topology, env, ring_only=True)
+    rows = {
+        row["key"]: row
+        for row in _state_issues(
+            {"warmup_active": True}, None, {}, {}, None, transport_park=state
+        )
+    }
+    row = rows[f"path.transport_park.{park_class}"]
+    assert row["detail"] != PARKED_DETAIL
+    assert row["detail"] in _transport_park_signal(state)["detail"]
+    if issue is not None:
+        assert issue in row["detail"]
+    else:
+        # The one class carrying a recorded command instead of a tracked issue
+        # sends the household to diagnostics for it. The command itself is a
+        # `sudo` line — the register #2472 took off this card, and the operator
+        # surfaces that already print it do not need a second copy here.
+        assert remedy not in row["detail"]
+
+
+def test_each_park_class_gets_its_own_household_sentence():
+    from jasper.control.audio_health import PARKED_DETAIL, _park_detail
+
+    details = set()
+    for case in _PARK_CASES:
+        topology, env, park_class = case.values[:3]
+        state = transport_park.snapshot(topology, env, ring_only=True)
+        details.add(_park_detail(
+            [park for park in state["parks"] if park["park_class"] == park_class]
+        ))
+    assert len(details) == len(_PARK_CASES)
+    assert PARKED_DETAIL not in details
+
+
+def test_an_unnamed_park_class_keeps_the_canned_sentence():
+    """A fifth class the classifier grows before the message table does.
+
+    It degrades to what every class said before this table existed, which is
+    the one thing a park must never do: go quiet.
+    """
+    from jasper.control.audio_health import (
+        PARKED_DETAIL,
+        PARKED_HEADLINE,
+        _state_issues,
+        _transport_park_signal,
+    )
+
+    state = {
+        "status": "parked",
+        "parked": True,
+        "ring_only": True,
+        "parks": [{
+            "park_class": "a_shape_with_no_message",
+            "issue": "#9999",
+            "remedy": None,
+            "detail": "operator evidence",
+        }],
+    }
+    signal = _transport_park_signal(state)
+    assert signal["headline"] == PARKED_HEADLINE
+    assert signal["detail"] == PARKED_DETAIL
+    rows = _state_issues(
+        {"warmup_active": True}, None, {}, {}, None, transport_park=state
+    )
+    assert [
+        row["detail"]
+        for row in rows
+        if str(row["key"]).startswith("path.transport_park.")
+    ] == [PARKED_DETAIL]

@@ -45,6 +45,12 @@ from .airplay_health import (
     SAMPLE_INTERVAL_SEC,
 )
 from .audio_incidents import IncidentStore, IssueTracker, SessionRollup
+from .transport_park import (
+    PARK_GROUPED_DAC_CONTENT_LANE,
+    PARK_MONO_FULL_RANGE,
+    PARK_PASSIVE_STEREO_COMPOSITE,
+    PARK_ROLEFUL_ACTIVE_ENDPOINT_UNCONVERGED,
+)
 from .uds import MAX_STATUS_BYTES, MUX_CONTROL_SOCKET_PATH, _mux_socket_command
 
 logger = logging.getLogger(__name__)
@@ -79,16 +85,47 @@ DIAGNOSTICS_REMEDY = "Run diagnostics if sound doesn't come back."
 # a speaker that is silent either way.
 PARKED_HEADLINE = "Sound cannot come out of the speaker"
 
-# ...and the sentence under it, for every park whose cause the household
-# cannot be told anything more useful about. Both detectors and the
-# `path.transport_park.*` incident rows share it: which class parked the box,
-# which endpoint disagreed, and the operator's one-command remedy are carried
-# by `/state.resilience.transport_park` and doctor's `check_ring_transport_park`,
-# which reads the same verdict.
+# ...and the sentence under it, for a park whose cause the household cannot be
+# told anything more useful about: `_parked_signal`'s live transport
+# contradiction, and any park class with no row in the table below.
 PARKED_DETAIL = (
     "The speaker's audio setup does not fit together, so nothing can play. "
     f"Check the speaker layout at /sound/setup/. {DIAGNOSTICS_REMEDY}"
 )
+
+# One household sentence per ADR-0178 park class. The classifier's own `detail`
+# is written for operators and reads like it ("Ring B", the endpoint marker,
+# the dac_content lane), so it is never spliced in here; this table says the
+# same fact in the register this card owns (#2472), and the class token is
+# imported rather than retyped so a rename cannot silently orphan a row.
+#
+# A class with no row here — a fifth the classifier grows before this table
+# does — degrades to PARKED_DETAIL, which is what every class said before.
+_PARK_MESSAGES: dict[str, str] = {
+    PARK_PASSIVE_STEREO_COMPOSITE: (
+        "This speaker sends sound to two sound cards at once, and JTS can no "
+        "longer drive that pair together. The speaker layout is at /sound/setup/."
+    ),
+    PARK_MONO_FULL_RANGE: (
+        "This speaker is set up as a single mono output, and JTS now needs at "
+        "least two channels. The speaker layout is at /sound/setup/."
+    ),
+    PARK_ROLEFUL_ACTIVE_ENDPOINT_UNCONVERGED: (
+        "This speaker's per-driver outputs are ready, but sound is not pointed "
+        "at them yet."
+    ),
+    PARK_GROUPED_DAC_CONTENT_LANE: (
+        "This speaker is grouped with another one, and a grouped speaker cannot "
+        "use the new audio setup. Ungrouping it brings sound back."
+    ),
+}
+
+# What a park's household sentence adds after the class message: the tracked
+# issue to wait on, or — where the class carries a recorded command instead —
+# where the household finds it. The command itself stays in doctor and
+# `/state.resilience.transport_park`; a `sudo` line is the register #2472 took
+# off this card.
+_PARK_REPAIRABLE = "Run diagnostics for the one step that repairs it."
 
 # The one household-facing sentence for a stopped CamillaDSP (#2163). Written
 # once and read by both surfaces it has to agree on: the `path.camilla_stopped`
@@ -641,6 +678,35 @@ def _parked_signal(route: Mapping[str, Any]) -> dict[str, Any] | None:
     }
 
 
+def _park_detail(parks: Any) -> str:
+    """The household sentence for one or more live transport parks.
+
+    Composed from :data:`_PARK_MESSAGES` plus the park record's OWN ``issue``
+    and ``remedy`` — the classifier already carries both, and discarding them
+    for one canned sentence was what made four different silences read the
+    same. Falls back whole to :data:`PARKED_DETAIL` when no park in ``parks``
+    has a message, so an unknown class says what every class used to say
+    rather than saying nothing.
+
+    Joins every park's sentence rather than picking one: a box can be in two
+    classes at once (a bonded mono speaker waits on both), and ADR-0178 keeps
+    them all for the same reason.
+    """
+    messages: list[str] = []
+    for park in parks if isinstance(parks, (list, tuple)) else []:
+        park = _mapping(park)
+        message = _PARK_MESSAGES.get(str(park.get("park_class") or ""))
+        if message is None:
+            continue
+        issue = str(park.get("issue") or "").strip()
+        if issue:
+            message = f"{message} Tracked as {issue}."
+        elif str(park.get("remedy") or "").strip():
+            message = f"{message} {_PARK_REPAIRABLE}"
+        messages.append(message)
+    return " ".join(messages) if messages else PARKED_DETAIL
+
+
 def _transport_park_signal(
     transport_park: Mapping[str, Any] | None,
 ) -> dict[str, Any] | None:
@@ -657,11 +723,6 @@ def _transport_park_signal(
     Presentation only, exactly like :func:`_parked_signal`: the incident rows
     :func:`_state_issues` writes from the same snapshot keep one row per park
     class, named by its key.
-
-    The classifier's own ``detail`` is deliberately NOT spliced in here. It is
-    written for doctor and ``/state.resilience.transport_park`` and reads like
-    it ("Ring B", the endpoint marker, the dac_content lane) — operator
-    evidence, which is the register #2472 took off this card.
     """
     state = _mapping(transport_park)
     if state.get("status") != "parked":
@@ -670,7 +731,7 @@ def _transport_park_signal(
         "code": "transport_unservable",
         "status": "issue",
         "headline": PARKED_HEADLINE,
-        "detail": PARKED_DETAIL,
+        "detail": _park_detail(state.get("parks")),
     }
 
 
@@ -1218,9 +1279,10 @@ def _state_issues(
         for park in park_state.get("parks") or []:
             if not isinstance(park, Mapping):
                 continue
-            # The park CLASS rides the key, where an identifier belongs; the
-            # classifier's operator detail, its tracked issue and the
-            # one-command remedy stay in doctor and
+            # The park CLASS rides the key, where an identifier belongs, and
+            # the row's detail is THIS class's household sentence — one row,
+            # one shape, one tracked issue. The operator's raw detail and the
+            # remedy command stay in doctor and
             # `/state.resilience.transport_park`, which read the same verdict.
             park_class = str(park.get("park_class"))
             issues.append(_issue(
@@ -1229,7 +1291,7 @@ def _state_issues(
                 impact="continuity",
                 severity="issue",
                 title=PARKED_HEADLINE,
-                detail=PARKED_DETAIL,
+                detail=_park_detail([park]),
             ))
     warmup = bool(airplay.get("warmup_active"))
     current = _mapping(airplay.get("current"))
