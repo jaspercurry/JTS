@@ -26,10 +26,9 @@ from jasper.fanin_coupling import RING_CAPTURE_DEVICE
 # fan-in -> CamillaDSP transport (ADR-0100), so an emit that receives no coupling
 # kwargs must still name a lane fan-in actually writes.
 DEFAULT_CAPTURE_DEVICE = RING_CAPTURE_DEVICE
-# The snd-aloop tap ADR-0100 retired, spelled ONCE for the sites that still have
-# to name it: the flat cutover graph (whose playback half has not moved yet) and
-# the transport describer's account of a box that has not reconciled. It dies
-# with `deploy/alsa/asoundrc.jasper`.
+# The snd-aloop tap ADR-0100 retired, spelled ONCE for the one site that still
+# has to name it: the flat cutover graph, whose playback half has not moved yet.
+# It dies with `deploy/alsa/asoundrc.jasper`.
 RETIRED_ALOOP_CAPTURE_DEVICE = "plug:jasper_capture"
 # Playback matches the outputd topology. Generated correction and
 # sound-profile configs must keep Camilla's playback target on the

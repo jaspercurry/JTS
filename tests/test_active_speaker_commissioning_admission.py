@@ -1124,8 +1124,7 @@ def test_capture_route_current_refuses_non_ring_playback_with_aloop_capture(
     reads a device nothing writes whatever it plays into, so the refusal must
     not depend on the sink being a ring. Without this, a check that only
     inspected ring sinks would pass every direct-DAC box back onto the retired
-    source. It is also the half-moved graph ``transport_coherence_report``'s
-    non-ring branch detects, so the two guards corroborate.
+    source.
     """
     report = _report_for_devices(
         tmp_path,
