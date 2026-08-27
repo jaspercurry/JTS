@@ -441,6 +441,70 @@ def test_doctor_severity_follows_the_park_status(monkeypatch, status, expected):
     assert check_ring_transport_park().status == expected
 
 
+# --- ADR-0184: the coverage seam that is not a park --------------------------
+
+
+@pytest.mark.parametrize(
+    "topology,env,unproven,expected",
+    [
+        (_stereo_plus_subwoofer(), {}, True, "warn"),
+        (_stereo_plus_subwoofer(), _ARMED, False, "ok"),
+        (_active_topology("stereo", "active_2_way"), _ARMED, False, "ok"),
+        (_full_range_stereo(), {}, False, "ok"),
+    ],
+    ids=["seam_unarmed", "seam_armed", "armed_active_crossover", "plain_stereo"],
+)
+def test_an_unproven_endpoint_warns_without_naming_a_park(
+    monkeypatch, topology, env, unproven, expected
+):
+    """ADR-0184: a width resolves, nothing armed the endpoint, no class names it.
+
+    ``requires_roleful_graph`` is True for a subwoofer box, so the ACTIVE width
+    resolves and every topology class is skipped; ``active_modes`` is empty, so
+    the endpoint class is scoped out. The doctor's greenest verdict was the
+    result. It warns instead — and only there: the status stays ``ok``, no park
+    is invented, and the two boxes that were already proven are untouched.
+    """
+    from jasper.cli.doctor.audio_runtime import check_ring_transport_park
+
+    state = transport_park.snapshot(topology, env, ring_only=False)
+    assert state["unproven_endpoint"] is unproven
+    assert state["status"] == "ok"
+    assert state["parks"] == []
+
+    monkeypatch.setattr(transport_park, "snapshot", lambda *a, **k: state)
+    assert check_ring_transport_park().status == expected
+
+
+@pytest.mark.parametrize(
+    "topology,env,park_class,issue,remedy", _PARK_CASES
+)
+def test_no_named_park_also_reports_an_unproven_endpoint(
+    topology, env, park_class, issue, remedy
+):
+    """The seam signal is the COMPLEMENT of class (c) on the same two inputs,
+    so a named park and the signal cannot describe one box — the double-report
+    ADR-0178 refuses, refused again."""
+    state = transport_park.snapshot(topology, env, ring_only=True)
+    assert state["unproven_endpoint"] is False
+
+
+def test_an_unproven_endpoint_reaches_no_household_surface():
+    """Operator-only. The box plays today and is unproven rather than named
+    silent afterwards; there is no household action either way."""
+    from jasper.control.audio_health import _state_issues, _transport_park_signal
+
+    state = transport_park.snapshot(_stereo_plus_subwoofer(), {}, ring_only=True)
+    assert state["unproven_endpoint"] is True
+    assert _transport_park_signal(state) is None
+    issues = _state_issues(
+        {"warmup_active": True}, None, {}, {}, None, transport_park=state
+    )
+    assert not [
+        row for row in issues if str(row["key"]).startswith("path.transport_park.")
+    ]
+
+
 # --- /state and the household card -------------------------------------------
 
 
