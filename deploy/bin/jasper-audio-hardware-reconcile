@@ -995,16 +995,18 @@ emit_dac_format_for_recognized() {
         "$OUTPUTD_ENV_TARGET_FILE" "JASPER_OUTPUTD_DAC_FORMAT" "$dac_format"
 }
 
-# Resolve the CamillaDSP -> outputd content lane's sample format for the LIVE
-# fan-in coupling, via the one Python policy function that also decides what
-# CamillaDSP emits (jasper.fanin_coupling.content_lane_format_for_coupling).
+# Resolve the CamillaDSP -> outputd content lane's sample format, via the one
+# Python policy function that also decides what CamillaDSP emits
+# (jasper.fanin_coupling.content_lane_format_for_coupling).
 # Prints the format, or nothing when Python is unavailable.
 #
-# The coupling token is read from $FANIN_ENV_FILE here rather than inside
-# Python: this reconciler owns that path (JASPER_FANIN_ENV_FILE), and reading it
-# file-fresh on every pass is the same discipline the wizard-owned state gets
-# everywhere else — a long-lived os.environ is a stale reader of a coupling the
-# ring reconciler can flip underneath us.
+# NO coupling token is passed. The ring is the one transport (ADR-0100), so
+# nothing selects on one and the policy function discards the argument. The
+# freshness that does matter lives inside Python: the ring-wire read
+# (read_declared_ring_wire_format) opens /etc/jasper/jasper.env and
+# /var/lib/jasper/fanin.env itself on every call, so an operator's
+# JASPER_FANIN_RING_WIRE_FORMAT pin reaches this probe with no threading from
+# the shell. Flipping JASPER_FANIN_CAMILLA_COUPLING does NOT move this answer.
 #
 # BLAST RADIUS — this is LIVE config, not a spare knob. jasper-outputd's config
 # PARSER accepts exactly {S16_LE, S24_3LE, S32_LE} or empty (empty/unset ==
@@ -1012,11 +1014,10 @@ emit_dac_format_for_recognized() {
 # OWNER at exit 78. S24_3LE parses only because both hops share ONE format
 # vocabulary — outputd has no packed-24 READ path and refuses such a lane at the
 # same exit 78, and this function cannot emit it in any case (the policy below
-# answers only S16_LE or S32_LE). outputd REQUESTS this format on its content
-# capture PCM: on the RAW active lane a value CamillaDSP is not writing fails
-# the open (fail-closed, by design — see deploy/alsa/asoundrc.jasper), and on
-# the plug-wrapped passive lane the plug converts, so a wrong value there is a
-# silent extra requantization rather than a refusal. It is NOT the DAC edge —
+# answers only S16_LE or S32_LE). outputd reads this as the SHM RING's wire
+# width (rust/jasper-outputd/src/shm_ring_source.rs), and the ring layout
+# defines only S16LE and S32LE — so a hand-set S24_3LE passes the parser and is
+# then refused park-class at that same exit 78. It is NOT the DAC edge —
 # that is JASPER_OUTPUTD_DAC_FORMAT, a separate hop with its own declaration,
 # and the two legitimately differ (an S32 content lane into the Apple dongle's
 # packed S24_3LE edge, which is the widest width that device advertises).
@@ -1028,14 +1029,10 @@ content_format_for_coupling() {
     if ! command -v "$OUTPUT_HARDWARE_PYTHON" >/dev/null 2>&1; then
         return 0
     fi
-    local coupling
-    coupling="$(env_file_value_from "$FANIN_ENV_FILE" "JASPER_FANIN_CAMILLA_COUPLING")"
-    JASPER_COUPLING_QUERY="$coupling" "$OUTPUT_HARDWARE_PYTHON" - <<'PY' 2>/dev/null || true
-import os
-
+    "$OUTPUT_HARDWARE_PYTHON" - <<'PY' 2>/dev/null || true
 from jasper.fanin_coupling import content_lane_format_for_coupling
 
-print(content_lane_format_for_coupling(os.environ["JASPER_COUPLING_QUERY"]))
+print(content_lane_format_for_coupling())
 PY
 }
 
@@ -1043,11 +1040,9 @@ PY
 # for. Prints nothing when the coupling probe could not answer, which the caller
 # reads as "leave the key alone" rather than "write a guess".
 #
-# There is no per-bridge narrowing here: no surviving bridge refuses the
-# coupling's own width, and a persisted deleted spelling fail-safes to `direct`
-# inside outputd (see REMOVED_RATE_MATCH_BRIDGE_SPELLINGS in
-# rust/jasper-outputd/src/config.rs), so the reconciler cannot construct a pair
-# outputd would reject.
+# There is no per-bridge narrowing here: the SHM ring is the one transport
+# (ADR-0100), so there is no second bridge whose accepted width could differ
+# from the coupling's own.
 resolved_content_format() {
     content_format_for_coupling
 }
@@ -1563,10 +1558,37 @@ set_outputd_active_lane_pair() {
     [[ "$pair_changed" == "1" ]]
 }
 
+# The RETIRED content lane's capture PCM, HEALED rather than restated.
+#
+# outputd stopped reading this key with the lane (ADR-0100), so this reconciler
+# no longer states it — but a box that reconciled before that carries the old
+# line, and set_env_file_var_if_changed is a per-key upsert: a key nobody writes
+# is never touched again, so the leftover would outlive the lane forever. Two
+# shapes make it harmful rather than inert. A present-but-empty value defeats
+# the absent-key default in jasper.audio_runtime_plan's retired-route describer
+# (`.get(key, default)` answers absence, not emptiness), which reports a
+# permanent post-DSP route disconnection no reconcile can clear; and on an
+# ACTIVE -> PASSIVE move the same leftover can fail the staged validator
+# outright (exit 78, outputd_env_invalid preserved=1).
+#
+# REMOVED, never written empty: emptiness is the value that causes shape one,
+# and this file's rule that it "always states a definitive value for every
+# conditional key" is kept — for a key outputd no longer reads, the definitive
+# value is no line at all.
+#
+# REMOVAL CONDITION: dies with jasper.audio_runtime_plan's describer read —
+# once nothing reads the key, no box needs healing off it.
+drop_retired_content_pcm() {
+    env_file_states_key "$OUTPUTD_ENV_TARGET_FILE" "JASPER_OUTPUTD_CONTENT_PCM" || return 1
+    jasper_env_file_unset \
+        "$OUTPUTD_ENV_TARGET_FILE" "JASPER_OUTPUTD_CONTENT_PCM" 0640 0750
+}
+
 apply_audio_runtime_env() {
     local changed=0
     local active_channels="" active_mode=0 graph_status="" active_lane_cap=""
     local content_format="" dac_format="" active_graph_payload="" active_endpoint_device=""
+    drop_retired_content_pcm && changed=1
     # The CONTENT lane's width is a function of the fan-in coupling, never of the
     # DAC — an unrecognized card still has a definitive answer, so unlike
     # JASPER_OUTPUTD_DAC_FORMAT (which needs a recognized profile to query and is
@@ -1590,13 +1612,6 @@ apply_audio_runtime_env() {
         OUTPUTD_ACTIVE_CHANNELS=""
         set_env_file_var_if_changed "$OUTPUTD_ENV_TARGET_FILE" "JASPER_OUTPUTD_BACKEND" "alsa" && changed=1
         set_env_file_var_if_changed "$OUTPUTD_ENV_TARGET_FILE" "JASPER_OUTPUTD_SINK" "dual_apple" && changed=1
-        # NO CONTENT PCM. A composite sink is roleful, and a roleful box reaches
-        # outputd over the ACTIVE RING, which outputd reads as a FILE — it opens
-        # no content PCM at all. Explicit-empty rather than left alone, so a box
-        # carrying a stale name converges instead of
-        # keeping it: outputd's own parse refuses an undeclared content PCM on
-        # the direct bridge (config.rs) and skips it entirely on the ring.
-        set_env_file_var_if_changed "$OUTPUTD_ENV_TARGET_FILE" "JASPER_OUTPUTD_CONTENT_PCM" "" && changed=1
         set_env_file_var_if_changed "$OUTPUTD_ENV_TARGET_FILE" "JASPER_OUTPUTD_DAC_PCM" "dual_apple_usb_c_dac_4ch" && changed=1
         set_env_file_var_if_changed "$OUTPUTD_ENV_TARGET_FILE" "JASPER_OUTPUTD_DUAL_DAC_A_PCM" "$DUAL_APPLE_DAC_A_PCM" && changed=1
         set_env_file_var_if_changed "$OUTPUTD_ENV_TARGET_FILE" "JASPER_OUTPUTD_DUAL_DAC_B_PCM" "$DUAL_APPLE_DAC_B_PCM" && changed=1
@@ -1698,10 +1713,6 @@ apply_audio_runtime_env() {
         if [[ "$active_mode" == "1" ]]; then
             OUTPUTD_ACTIVE_MODE=1
             OUTPUTD_ACTIVE_CHANNELS="$active_channels"
-            # NO CONTENT PCM — same reason as the composite branch above: an
-            # ACTIVE single-ALSA box is roleful, so it reaches outputd over the
-            # ACTIVE RING and outputd opens no content PCM.
-            set_env_file_var_if_changed "$OUTPUTD_ENV_TARGET_FILE" "JASPER_OUTPUTD_CONTENT_PCM" "" && changed=1
             set_env_file_var_if_changed "$OUTPUTD_ENV_TARGET_FILE" "JASPER_OUTPUTD_ACTIVE_CHANNELS" "$active_channels" && changed=1
             # Belt-and-suspenders for the latent outputd-TTS-mixer hazard: an
             # active 2-way speaker is ALSO 2-channel, so outputd's bare
@@ -1716,7 +1727,6 @@ apply_audio_runtime_env() {
         else
             OUTPUTD_ACTIVE_MODE=0
             OUTPUTD_ACTIVE_CHANNELS=""
-            set_env_file_var_if_changed "$OUTPUTD_ENV_TARGET_FILE" "JASPER_OUTPUTD_CONTENT_PCM" "$DEFAULT_OUTPUTD_CAPTURE_DEVICE" && changed=1
             # Clear the width knob so outputd defaults to stereo; a stale active
             # width would otherwise mis-size the (stereo) content lane.
             set_env_file_var_if_changed "$OUTPUTD_ENV_TARGET_FILE" "JASPER_OUTPUTD_ACTIVE_CHANNELS" "" && changed=1
@@ -1733,7 +1743,6 @@ apply_audio_runtime_env() {
         OUTPUTD_ACTIVE_CHANNELS=""
         set_env_file_var_if_changed "$OUTPUTD_ENV_TARGET_FILE" "JASPER_OUTPUTD_BACKEND" "fake" && changed=1
         set_env_file_var_if_changed "$OUTPUTD_ENV_TARGET_FILE" "JASPER_OUTPUTD_SINK" "single_alsa" && changed=1
-        set_env_file_var_if_changed "$OUTPUTD_ENV_TARGET_FILE" "JASPER_OUTPUTD_CONTENT_PCM" "$DEFAULT_OUTPUTD_CAPTURE_DEVICE" && changed=1
         set_env_file_var_if_changed "$OUTPUTD_ENV_TARGET_FILE" "JASPER_OUTPUTD_DAC_PCM" "outputd_dac" && changed=1
         set_env_file_var_if_changed "$OUTPUTD_ENV_TARGET_FILE" "JASPER_OUTPUTD_DUAL_DAC_A_PCM" "" && changed=1
         set_env_file_var_if_changed "$OUTPUTD_ENV_TARGET_FILE" "JASPER_OUTPUTD_DUAL_DAC_B_PCM" "" && changed=1
