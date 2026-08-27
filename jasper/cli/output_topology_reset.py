@@ -51,6 +51,10 @@ def _print_summary(result: dict[str, Any], *, dry_run: bool) -> None:
         print("  reconcile: skipped (--no-reconcile)")
     elif reconcile.get("ok"):
         print(f"  reconcile: completed {RECONCILE_UNIT}")
+    elif reconcile.get("converging"):
+        # Past trigger_reconcile's wait budget but still running underneath
+        # (#3094) -- not a failure, so it must not print as one.
+        print("  reconcile: still converging; audio should come up shortly")
     else:
         print("  reconcile: did not complete; audio remains parked")
 

@@ -132,7 +132,7 @@ def test_sound_setup_migrates_the_complete_event_vocabulary():
 
 
 def test_every_bool_or_optional_percent_s_field_is_prerendered_as_text():
-    """Pin all 125 affected parent `%s` positions, not hand-picked examples.
+    """Pin all 127 affected parent `%s` positions, not hand-picked examples.
 
     This includes the topology transaction wrappers and #2603's
     ``safety_profile_evaluation`` design-draft field.
@@ -163,11 +163,14 @@ def test_every_bool_or_optional_percent_s_field_is_prerendered_as_text():
     # checking in the full tuple. The combined test adds two more: the
     # `play_budget_s` it honoured (a float or None) and the `stop_reason` the
     # play ended on, which together say why one run was captured and another
-    # was not.
+    # was not. The reset and re-pin completions add a final pair: each gains
+    # a `reconcile_converging` field alongside its existing `reconcile_ok`,
+    # extending the save path's still-running-past-the-wait-budget distinction
+    # (#3094) to the two siblings that share `trigger_reconcile`.
     signature = "\n".join(wrapped_fields).encode()
-    assert len(wrapped_fields) == 125
+    assert len(wrapped_fields) == 127
     assert hashlib.sha256(signature).hexdigest() == (
-        "08ed98ecd464607da40d39bab5571d6e0db8e552566c26a0c3532503ed30d5bc"
+        "973fb96d13ef22c6de61ffa8e9f770689cecdceed3829803c57fa4fa74cfcbaf"
     )
 
 

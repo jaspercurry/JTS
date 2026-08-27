@@ -717,35 +717,49 @@ def _reset_output_topology_payload(raw: Mapping[str, Any]) -> dict[str, Any]:
         )
         reconcile = trigger_reconcile(reason="output_topology_reset")
     adoption = detected_hardware_adoption_precondition(load_output_hardware_state())
-    needs_attention = (
-        setup_reset.get("status") == "partial"
-        or not runtime.convergence.ok
-        or not reconcile.get("ok")
-    )
+    needs_attention_reset = {
+        "status": "needs_attention",
+        "message": (
+            "Speaker setup was reset and audio is off. JTS could not finish "
+            "setup cleanup; open Status before continuing."
+        ),
+    }
+    if setup_reset.get("status") == "partial" or not runtime.convergence.ok:
+        reset_result = needs_attention_reset
+    elif reconcile.get("converging"):
+        # The reconciler is still running past trigger_reconcile's own wait
+        # budget (#3094) -- not a failure, so it must not read as one.
+        reset_result = {
+            "status": "converging",
+            "message": (
+                "Speaker setup was reset and is still applying. "
+                "Check Status in a moment."
+            ),
+        }
+    elif not reconcile.get("ok"):
+        reset_result = needs_attention_reset
+    else:
+        reset_result = {
+            "status": "reset",
+            "message": "Speaker setup was reset. Audio is off until you choose a speaker layout.",
+        }
     log_event(
         logger,
         "sound.output_topology_reset",
-        result="needs_attention" if needs_attention else "reset",
+        result=reset_result["status"],
         topology_revision=saved_revision,
         hardware_ready=str(bool(adoption["allowed"])),
         cleanup_status=str(setup_reset.get("status")),
         cleanup_error=setup_reset.get("error"),
         runtime_convergence_ok=runtime.convergence.ok,
         reconcile_ok=str(bool(reconcile.get("ok"))),
+        reconcile_converging=str(bool(reconcile.get("converging"))),
         summed_stop=str(summed_stop.get("status")),
         tone_stop=str(tone_stop.get("status")),
         safe_stop=str(safe_stop.get("status")),
     )
     payload = _output_topology_payload()
-    payload["reset"] = {
-        "status": "needs_attention" if needs_attention else "reset",
-        "message": (
-            "Speaker setup was reset and audio is off. JTS could not finish "
-            "setup cleanup; open Status before continuing."
-            if needs_attention
-            else "Speaker setup was reset. Audio is off until you choose a speaker layout."
-        ),
-    }
+    payload["reset"] = reset_result
     payload["saved"] = True
     payload["runtime_convergence"] = runtime.convergence.to_dict()
     payload["reconcile"] = reconcile
@@ -811,11 +825,41 @@ def _repin_output_topology_payload(raw: Mapping[str, Any]) -> dict[str, Any]:
             ),
         )
         reconcile = trigger_reconcile(reason="output_topology_repin")
-    needs_attention = not runtime.convergence.ok or not reconcile.get("ok")
+    needs_attention_repin = {
+        "status": "needs_attention",
+        "message": (
+            "The new DAC was pinned and your speaker setup was kept, but audio "
+            "remains off. Open Status before continuing."
+        ),
+    }
+    if not runtime.convergence.ok:
+        repin_result = needs_attention_repin
+    elif reconcile.get("converging"):
+        # The reconciler is still running past trigger_reconcile's own wait
+        # budget (#3094) -- not a failure, so it must not read as one.
+        repin_result = {
+            "status": "converging",
+            "message": (
+                "Pinned the new DAC and kept your speaker setup. Audio is "
+                "still applying. Check Status in a moment."
+            ),
+        }
+    elif not reconcile.get("ok"):
+        repin_result = needs_attention_repin
+    else:
+        repin_result = {
+            "status": "repinned",
+            "message": (
+                "Pinned the new DAC and kept your speaker setup. Confirm these "
+                "outputs again: "
+                + ", ".join(plan.reverify_output_labels)
+                + ". Then re-run the drift measurement."
+            ),
+        }
     log_event(
         logger,
         "sound.output_topology_repin",
-        result="needs_attention" if needs_attention else "repinned",
+        result=repin_result["status"],
         topology_revision=saved_revision,
         device_id=snapshot.topology.hardware.device_id,
         replaced_children=plan.replaced_child_count,
@@ -823,25 +867,13 @@ def _repin_output_topology_payload(raw: Mapping[str, Any]) -> dict[str, Any]:
         reverify_outputs=len(plan.reverify_output_indexes),
         runtime_convergence_ok=runtime.convergence.ok,
         reconcile_ok=str(bool(reconcile.get("ok"))),
+        reconcile_converging=str(bool(reconcile.get("converging"))),
         summed_stop=str(summed_stop.get("status")),
         tone_stop=str(tone_stop.get("status")),
         safe_stop=str(safe_stop.get("status")),
     )
     payload = _output_topology_payload()
-    payload["repin"] = {
-        "status": "needs_attention" if needs_attention else "repinned",
-        "message": (
-            "The new DAC was pinned and your speaker setup was kept, but audio "
-            "remains off. Open Status before continuing."
-            if needs_attention
-            else (
-                "Pinned the new DAC and kept your speaker setup. Confirm these "
-                "outputs again: "
-                + ", ".join(plan.reverify_output_labels)
-                + ". Then re-run the drift measurement."
-            )
-        ),
-    }
+    payload["repin"] = repin_result
     payload["saved"] = True
     payload["runtime_convergence"] = runtime.convergence.to_dict()
     payload["reconcile"] = reconcile
