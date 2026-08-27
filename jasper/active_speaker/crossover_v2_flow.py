@@ -4647,14 +4647,16 @@ class CrossoverV2Session:
 
     # --- per-phase verdicts --------------------------------------------------
     #
-    # Each ``_consume_<phase>`` is a thin wrapper: compute the verdict via the
-    # UNCHANGED ``_<phase>_verdict`` logic, log that capture's full numeric
-    # diagnostics (Part 1 — on the accepted path AND every rejection) through
-    # ``_safe_log_diag`` — never the raw ``_log_*_diag`` call directly, so a
-    # bug in the logging path can never crash or flip the verdict already
-    # decided above it — then return the verdict. Splitting it this way means
-    # the diagnostic log call is the ONLY new control flow here — none of the
-    # accept/reject branching below moved or changed.
+    # Each ``_consume_<phase>`` is a thin wrapper around the verdict logic in
+    # ``_<phase>_verdict``, which is where every accept/reject decision lives
+    # and the only place one may be made. A wrapper does three things and
+    # decides nothing: take the verdict, bank the capture when it was accepted,
+    # and log that capture's full numeric diagnostics (on the accepted path AND
+    # every rejection) through ``_safe_log_diag`` — never the raw
+    # ``_log_*_diag`` call directly, so a bug in the logging path can neither
+    # crash nor flip a verdict already decided above it. Retention gets the
+    # same protection from the other direction: its fail-soft is the binding's,
+    # so a full disk cannot turn an accepted capture into a refused one.
 
     def _consume_check(
         self, index: int, attempt: int, analysis: ProgramAnalysis, result: Any,
