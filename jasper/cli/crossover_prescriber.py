@@ -138,6 +138,13 @@ def _speaker_url(path: str) -> str:
 
 
 def _load_packet(args: argparse.Namespace) -> dict[str, Any]:
+    """The packet, as a value — already separate from every verb's printing.
+
+    ``_cmd_packet``, ``_cmd_status`` and ``_gate`` each catch this call's
+    errors their own way (different exception tuples, different exit codes),
+    which is why the value door stops here rather than inside a shared
+    try/except: one mapping could not serve three different contracts.
+    """
     return build_crossover_evidence_packet(
         Path(args.session_dir),
         state_path=Path(args.state) if args.state else None,
@@ -915,19 +922,52 @@ def _print_status(payload: dict[str, Any]) -> None:
         print(f"  - {action}")
 
 
-def _cmd_status(args: argparse.Namespace) -> int:
-    """Where this speaker stands, and what it can do next. Writes nothing.
+def status_document(
+    packet: dict[str, Any] | None, packet_error: str, *, state_supplied: bool
+) -> dict[str, Any]:
+    """Where this speaker stands, and what it can do next, as a value.
+
+    Exactly what :func:`_print_status` prints and what ``status --json``
+    dumps. The packet is a parameter rather than ``argparse.Namespace`` so a
+    caller that already built one — W3-b's ``Recommender`` adapter,
+    ``docs/REFACTOR-CUTOVER-2026-08.md`` §3 — can hand it in directly instead
+    of walking the bundle a second time.
 
     **A partial answer beats no answer**, so an unreadable bundle does not stop
     the report: the packet's failure becomes every evidence section's reason,
     and the spool — which lives on the speaker, not in the bundle — is reported
     truthfully regardless. A prescription waiting for the next round is a fact
     about this speaker whichever directory the operator happened to name.
+    """
+    crossover_url = _speaker_url(CROSSOVER_PAGE_PATH)
+    declaration_url = _speaker_url(SOUND_SETUP_PAGE_PATH)
+    sections = _status_sections(packet, packet_error)
+    return {
+        "speaker": {
+            "hostname": read_identity().hostname,
+            "crossover_url": crossover_url,
+            "declaration_url": declaration_url,
+        },
+        "packet_fingerprint": (packet or {}).get("packet_fingerprint"),
+        "packet_error": packet_error or None,
+        **sections,
+        "next_actions": _next_actions(
+            sections,
+            state_supplied=state_supplied,
+            crossover_url=crossover_url,
+            declaration_url=declaration_url,
+        ),
+    }
 
-    The exit code still tells a script which of those two happened:
-    :data:`EXIT_EVIDENCE_UNREADABLE` when the packet could not be built,
-    matching this tool's contract that ``1`` means the evidence could not be
-    read. The report prints either way.
+
+def _cmd_status(args: argparse.Namespace) -> int:
+    """Where this speaker stands, and what it can do next. Writes nothing.
+
+    Loads the packet from ``args`` and hands it to :func:`status_document`,
+    then prints the result — the exit code still tells a script which of two
+    things happened: :data:`EXIT_EVIDENCE_UNREADABLE` when the packet could
+    not be built, matching this tool's contract that ``1`` means the evidence
+    could not be read. The report prints either way.
 
     Unlike its three siblings the human report goes to STDOUT. For them stdout
     is reserved for a document a pipe consumes and the human gloss goes to
@@ -942,25 +982,7 @@ def _cmd_status(args: argparse.Namespace) -> int:
     except (CrossoverEvidencePacketError, OSError) as exc:
         packet_error = str(exc)
 
-    crossover_url = _speaker_url(CROSSOVER_PAGE_PATH)
-    declaration_url = _speaker_url(SOUND_SETUP_PAGE_PATH)
-    sections = _status_sections(packet, packet_error)
-    payload: dict[str, Any] = {
-        "speaker": {
-            "hostname": read_identity().hostname,
-            "crossover_url": crossover_url,
-            "declaration_url": declaration_url,
-        },
-        "packet_fingerprint": (packet or {}).get("packet_fingerprint"),
-        "packet_error": packet_error or None,
-        **sections,
-        "next_actions": _next_actions(
-            sections,
-            state_supplied=bool(args.state),
-            crossover_url=crossover_url,
-            declaration_url=declaration_url,
-        ),
-    }
+    payload = status_document(packet, packet_error, state_supplied=bool(args.state))
 
     if args.json:
         print(json.dumps(payload, indent=2, sort_keys=True))
