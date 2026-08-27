@@ -1,0 +1,110 @@
+# SPDX-FileCopyrightText: 2026 Jasper Curry
+#
+# SPDX-License-Identifier: Apache-2.0
+
+"""Round-trip pin for the `:9891` pcap-to-detections converter.
+
+Synthesizes a tiny pcap (global header + Ethernet/IPv4/UDP packet records
+carrying 512-byte S16LE stereo payloads) so the test exercises the real
+byte-parsing path rather than a mocked one. The realtime<->monotonic offset
+is mocked to a fixed value so the JSONL output is exactly predictable
+instead of merely bounded.
+"""
+from __future__ import annotations
+
+import json
+import struct
+
+from jasper.route_latency import ref9891_pcap
+
+_DST_PORT = 9891
+_SAMPLE_COUNT = ref9891_pcap.PAYLOAD_BYTES // 2  # 256 int16s = 128 frames * 2 channels
+
+
+def _payload(peak_sample: int) -> bytes:
+    """One 512-byte S16LE stereo payload whose loudest sample is `peak_sample`."""
+
+    samples = [0] * _SAMPLE_COUNT
+    samples[0] = peak_sample
+    return struct.pack(f"<{_SAMPLE_COUNT}h", *samples)
+
+
+def _udp_packet(payload: bytes, *, dst_port: int = _DST_PORT) -> bytes:
+    eth = b"\x00" * 12 + b"\x08\x00"  # dst/src MAC (unchecked) + ethertype IPv4
+    ip = bytes([0x45]) + b"\x00" * 19  # version/IHL=5; rest of the IPv4 header is unchecked
+    udp = struct.pack(">HHHH", 55555, dst_port, 8 + len(payload), 0)
+    return eth + ip + udp + payload
+
+
+def _record(ts_s: int, ts_us: int, data: bytes) -> bytes:
+    return struct.pack("<IIII", ts_s, ts_us, len(data), len(data)) + data
+
+
+def _write_pcap(path, records: list[bytes]) -> None:
+    # Legacy microsecond-resolution global header (magic 0xA1B2C3D4).
+    global_hdr = struct.pack("<IHHiIII", 0xA1B2C3D4, 2, 4, 0, 0, 65535, 1)
+    path.write_bytes(global_hdr + b"".join(records))
+
+
+def test_convert_pcap_to_detections_round_trip(tmp_path, monkeypatch):
+    quiet = _payload(10)  # peak ~0.0003 -- below the default 0.006 threshold
+    loud = _payload(20000)  # peak 0.6103515625 -- above threshold
+
+    base = 1_700_000_000
+    records = [
+        _record(base, 0, _udp_packet(quiet)),
+        _record(base, 100_000, _udp_packet(loud)),  # rising edge -> detection #1 @ +0.100s
+        _record(base, 150_000, _udp_packet(quiet)),  # falling edge
+        _record(base, 200_000, _udp_packet(loud)),  # +0.100s since det #1 -> refractory-suppressed
+        _record(base, 250_000, _udp_packet(quiet)),  # falling edge
+        _record(base, 500_000, _udp_packet(loud)),  # +0.400s since det #1 -> detection #2 @ +0.500s
+        _record(base, 500_000, _udp_packet(quiet, dst_port=9999)),  # wrong port -- ignored entirely
+    ]
+    pcap_path = tmp_path / "ref9891.pcap"
+    _write_pcap(pcap_path, records)
+    out_path = tmp_path / "detections.jsonl"
+
+    # Fix rt_minus_mono = REALTIME_NOW - MONOTONIC_NOW to exactly `base` so
+    # every yielded packet's re-anchored monotonic timestamp is exact.
+    monkeypatch.setattr(ref9891_pcap.time, "clock_gettime", lambda clk: float(base) + 1000.0)
+    monkeypatch.setattr(ref9891_pcap.time, "monotonic", lambda: 1000.0)
+
+    result = ref9891_pcap.convert_pcap_to_detections(pcap_path, out_path)
+
+    assert result.n_packets == 6  # the wrong-port record never reaches the counter
+    assert result.n_detections == 2
+    assert result.threshold == ref9891_pcap.DEFAULT_THRESHOLD
+    assert result.rt_minus_mono == float(base)
+    assert result.summary_line() == (
+        "packets=6 detections=2 threshold=0.0060 rt_minus_mono=1700000000.000000"
+    )
+
+    # rt_ts and rt_minus_mono are both epoch-scale (~1.7e9); float64's ~15-17
+    # significant digits gives the subtraction to mono (~0.1-0.5s) at most
+    # ~100ns of slop -- inherent to the algorithm (see the module docstring's
+    # documented 0-2.67ms packet-granularity bias), not a porting bug. Bound
+    # it instead of asserting exact equality.
+    detections = [json.loads(line) for line in out_path.read_text().splitlines()]
+    expected_monotonic_ns = [100_000_000, 500_000_000]
+    assert len(detections) == len(expected_monotonic_ns)
+    for detection, expected_ns in zip(detections, expected_monotonic_ns):
+        assert abs(detection["monotonic_ns"] - expected_ns) < 1_000  # < 1 us
+        assert detection["peak"] == 20000 / 32768.0
+
+
+def test_payloads_skips_non_9891_and_short_records(tmp_path):
+    loud = _payload(20000)
+    records = [
+        _record(1, 0, _udp_packet(loud, dst_port=9999)),  # wrong port
+        _record(1, 0, b"\x00" * 10),  # shorter than Ethernet+IPv4+UDP headers
+        _record(1, 0, _udp_packet(loud)[:-1]),  # truncated payload (511 bytes, not 512)
+        _record(1, 0, _udp_packet(loud)),  # the only packet that should survive
+    ]
+    pcap_path = tmp_path / "ref9891.pcap"
+    _write_pcap(pcap_path, records)
+
+    yielded = list(ref9891_pcap.payloads(pcap_path))
+
+    assert len(yielded) == 1
+    _ts, payload = yielded[0]
+    assert len(payload) == ref9891_pcap.PAYLOAD_BYTES
