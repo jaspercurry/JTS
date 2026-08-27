@@ -18,6 +18,12 @@ literal edit":
   4. **The deliberate non-mover.** The SNR band tables still carry their static
      350 Hz edge and still satisfy the cross-instrument pins — routing them is
      a trap, not an omission.
+
+Requirement 5 arrived with the cutover and is the same invariant one layer out:
+the truth layer imports no front end. `jasper/audio_measurement` importing
+neither consumer package is what makes it a valid home for the SSOT; adding
+`jasper/active_speaker/crossover_v2` and its own front end gives the layer's
+membership — both packages, all of each — a pin instead of a claim.
 """
 from __future__ import annotations
 
@@ -131,6 +137,40 @@ def _exempt_line_numbers(path: Path, names: frozenset[str]) -> set[int]:
     return spans
 
 
+def _imported_module(path: Path, node: ast.ImportFrom) -> str:
+    """The absolute dotted name an ``ImportFrom`` names, relative ones included.
+
+    ``from ..correction import x`` reaches exactly as far as
+    ``import jasper.correction`` does, so a scan that skips ``node.level > 0``
+    is half a guard.
+    """
+    if node.level == 0:
+        return node.module or ""
+    package = path.relative_to(REPO_ROOT).with_suffix("").parts[:-1]
+    base = package[: len(package) - node.level + 1]
+    return ".".join([*base, *([node.module] if node.module else [])])
+
+
+def _upward_imports(
+    package: str, forbidden: tuple[tuple[str, ...], ...]
+) -> list[str]:
+    """Sites in ``package`` importing anything under a ``forbidden`` prefix."""
+    offenders: list[str] = []
+    for path in sorted((REPO_ROOT / package).rglob("*.py")):
+        tree = ast.parse(path.read_text(encoding="utf-8"), filename=str(path))
+        for node in ast.walk(tree):
+            names: list[str] = []
+            if isinstance(node, ast.Import):
+                names = [alias.name for alias in node.names]
+            elif isinstance(node, ast.ImportFrom):
+                names = [_imported_module(path, node)]
+            for name in names:
+                if tuple(name.split(".")[:2]) in forbidden:
+                    rel = path.relative_to(REPO_ROOT)
+                    offenders.append(f"{rel}:{node.lineno}: imports {name}")
+    return offenders
+
+
 @pytest.mark.parametrize("relative", ROUTED_FILES)
 def test_routed_files_do_not_redeclare_band_edge_literals(relative: str):
     """The drift guard (plan D3 requirement 1).
@@ -184,27 +224,37 @@ def test_audio_measurement_imports_neither_consumer_package():
     offending import out of `audio_measurement`, or re-argue where the SSOT
     belongs. Do not just delete this test.
     """
-    root = REPO_ROOT / "jasper" / "audio_measurement"
-    offenders: list[str] = []
-    for path in sorted(root.rglob("*.py")):
-        tree = ast.parse(path.read_text(encoding="utf-8"), filename=str(path))
-        for node in ast.walk(tree):
-            names: list[str] = []
-            if isinstance(node, ast.Import):
-                names = [alias.name for alias in node.names]
-            elif isinstance(node, ast.ImportFrom) and node.level == 0:
-                names = [node.module or ""]
-            for name in names:
-                if name.split(".")[:2] in (
-                    ["jasper", "correction"],
-                    ["jasper", "active_speaker"],
-                ):
-                    rel = path.relative_to(REPO_ROOT)
-                    offenders.append(f"{rel}:{node.lineno}: imports {name}")
+    offenders = _upward_imports(
+        "jasper/audio_measurement", (("jasper", "correction"), ("jasper", "active_speaker"))
+    )
     assert not offenders, (
         "jasper/audio_measurement must import neither jasper.correction nor "
         "jasper.active_speaker — that is what makes it a valid home for the "
         "boundary SSOT:\n" + "\n".join(offenders)
+    )
+
+
+def test_crossover_v2_imports_no_web_front_end():
+    """The other half of the truth layer's membership.
+
+    The truth layer is `jasper/audio_measurement` plus
+    `jasper/active_speaker/crossover_v2`, and "truth layer" means the front ends
+    import it and it imports no front end. The test above pins that direction
+    for the first package; this pins it for the second, whose front end is the
+    `/correction/` wizard under `jasper/web`.
+
+    It is also the property the analyze registry's home rests on: the one
+    decoder + calibration + mic-tier + capture-report assembly lives in
+    `jasper/web/correction_crossover_v2.py`, so a unit that needs it must have
+    it lifted rather than reach up for it.
+    """
+    offenders = _upward_imports(
+        "jasper/active_speaker/crossover_v2", (("jasper", "web"),)
+    )
+    assert not offenders, (
+        "jasper/active_speaker/crossover_v2 must not import jasper.web — the "
+        "dependency runs the other way, and that is what makes it part of the "
+        "truth layer rather than part of the wizard:\n" + "\n".join(offenders)
     )
 
 

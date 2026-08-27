@@ -711,15 +711,22 @@ landed."* Execution followed the owner.
 | The cutover (chunk 2, W1–W5) | **No** — (a) and (b) | **Yes** — rows 4, 5, 6 are its deliverables |
 | 7j on the deployed build, then the re-mint | **Yes** — without both, no session opens (§1.4) | transitively |
 | The 4g/4h producer build + a sanctioned act 6 | **No** — nothing in rows 1–10 depends on it (§3.4) | **No** |
-| Chunk 2's two open acceptance questions | **No** — claim/counting, not measurement | **Yes** — they are rows 3 and 3c |
+| Chunk 2's two open acceptance questions | **No** — claim/counting, not measurement | **Yes** — row 3, and the plan's analysis-unit claim (which is not an acceptance row; see below) |
 
 **Two items this brief inherits and does not own.** Chunk 2 found row 3's
 *"`DriverResponse` banked"* *"satisfied in spirit for one of three kinds and
 unsatisfied for two"* and says to record it as an **open acceptance question**;
-and row 3c's "92 analysis units" **cannot be reproduced at HEAD**, so chunk 2's
-W2-d either enumerates it with a committed method or restates the claim against
-the pinnable 79. Both are docs work, both are in chunk 2's tier 0, **neither
-touches a microphone.** Separately: **the 4g/4h producer build is on no DAG** —
+and the plan's "92 analysis units" **cannot be reproduced at HEAD**. **W2-d
+settles the second one**, and the method it commits to is: the **20 produced
+`ProgramAnalysis` fields** that `tests/test_program_analysis_field_census.py`
+counts from source, grouped by gate into **15 units** whose table W2-a carries.
+The truth layer's two package roots gain a no-upward-import pin at the same
+time. Nothing further is owed on it. *(One correction rides with this: the row
+reference this line used to carry was wrong. Acceptance row 3c is **Front-end
+sharing (MS-17)**, and the analysis-unit claim is **not an acceptance row at
+all** — it lives in the plan's §0 non-goals bullet and its §1 diagram, which is
+where W2-d restates it.)* Both are docs work, both are in chunk 2's tier 0,
+**neither touches a microphone.** Separately: **the 4g/4h producer build is on no DAG** —
 chunk 2's §7 contains no producer item and the document never mentions 4g or 4h.
 It is chunk-1 residual that neither chunk owns. §3 asks the licence question;
 who schedules the build is a different open question this brief does not answer.
