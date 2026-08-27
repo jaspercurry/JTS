@@ -299,12 +299,17 @@ ENV_CONTRACT_EXCEPTIONS: dict[str, str] = {
     "JASPER_OUTPUTD_CONFIG_RETRY_STATE": "outputd failure helper retry marker path; script-only",
     "JASPER_OUTPUTD_CONFIG_RETRY_WINDOW_SEC": "outputd failure helper retry marker window; script-only",
     # The retired content lane's capture PCM. outputd no longer reads it
-    # (ADR-0100 deleted the lane) and nothing writes it any more: the
-    # reconciler sweep removed the last writes. The ONE surviving mention is
+    # (ADR-0100 deleted the lane) and nothing writes it any more: the reconciler
+    # sweep removed the last writes and now actively REMOVES the key line from
+    # outputd.env, so one reconcile heals a box that carried a stale one and
+    # ABSENT is the steady state. The ONE surviving mention is
     # jasper/audio_runtime_plan.py's retired-route describer, which reads the
-    # key with a default so a box carrying a stale on-disk value still gets a
-    # truthful park report.
-    # REMOVAL CONDITION: goes when that describer goes — delete this entry
+    # key with an absent-key default — the state every reconciled box is in.
+    # REMOVAL CONDITION: goes when that describer goes. Retiring the describer
+    # ALSO means retiring the reconciler's endpoint-contract gate, which
+    # resolves the retired pairing map on every pass and exits 66 when it
+    # misses: dropping that map entry while the gate stands parks every box on
+    # every reconcile (see jasper/camilla_config_contract.py). Delete this entry
     # then, and this guard fails until someone does.
     "JASPER_OUTPUTD_CONTENT_PCM": "retired lane; read with a default by the park describer, written by nothing",
     # The removed transport_pipe coupling's outputd key. The Rust

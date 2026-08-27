@@ -532,8 +532,9 @@ def _patch_ring_coupled_box(
 
     #2285 P2: the ACTIVE snd-aloop endpoint is retired, so the roleful shapes
     below (composite, active single-ALSA) no longer have a direct-bridge form to
-    model. The reconciler writes an explicit-EMPTY ``JASPER_OUTPUTD_CONTENT_PCM``
-    for both, and ``Config::from_env`` refuses a composite sink on the DIRECT
+    model. The reconciler no longer states ``JASPER_OUTPUTD_CONTENT_PCM`` at all
+    — it REMOVES the key, so ABSENT is the converged steady state for every box
+    shape — and ``Config::from_env`` refuses a composite sink on the DIRECT
     bridge outright (EX_CONFIG), so a composite box that is running at all is a
     ring box. ``active_endpoint=True`` adds the reconciler's endpoint marker,
     which is what selects the ACTIVE-ring transport shape rather than the

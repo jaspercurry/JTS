@@ -98,10 +98,16 @@ DRIVER_DOMAIN_PAIR_TRIM_FILTER = "pair_balance_trim"
 # The snd-aloop ACTIVE pair is ABSENT for the SAME reason the rings are, and it
 # joined them rather than being special-cased: #2534 deleted its PCM definitions
 # and the ACTIVE ring is now the one legal ACTIVE endpoint, so no box has an
-# outputd capture half for it either. Its last hard consumer — the audio-hardware
-# reconciler, which resolved this map to write JASPER_OUTPUTD_CONTENT_PCM and
-# hard-exited when the lookup missed — stopped asking in the same commit; a
-# roleful box declares no content PCM at all now.
+# outputd capture half for it either. The audio-hardware reconciler's WRITE of
+# JASPER_OUTPUTD_CONTENT_PCM died with the lane — no box declares a content PCM
+# now — but the reconciler still RESOLVES this map once per pass, against the
+# constant RETIRED_ALOOP_PLAYBACK_DEVICE, and hard-exits 66 when the lookup
+# misses. That gate is a deliberate boot-time fail-loud tripwire (and the only
+# trigger for the #2489 clockless park), kept pending an owner ruling.
+#
+# So the entry below is NOT trimmable on its own: its key is exactly the
+# constant the gate feeds in, so deleting it while the gate stands parks EVERY
+# box on EVERY reconcile. The gate goes first, or the two go together.
 _OUTPUTD_CAPTURE_BY_PLAYBACK_DEVICE = {
     RETIRED_ALOOP_PLAYBACK_DEVICE: DEFAULT_OUTPUTD_CAPTURE_DEVICE,
 }

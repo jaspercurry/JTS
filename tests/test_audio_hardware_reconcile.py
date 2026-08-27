@@ -710,6 +710,34 @@ def test_reconcile_lane_probe_failure_is_named_apart_from_a_lane_less_dac(
     assert "JASPER_OUTPUTD_ACTIVE_LANE=''" in outputd_env
 
 
+@pytest.mark.parametrize(
+    "stale",
+    ["JASPER_OUTPUTD_CONTENT_PCM=''\n", "JASPER_OUTPUTD_CONTENT_PCM=outputd_content_capture\n"],
+)
+def test_reconcile_removes_a_stale_content_pcm_line(tmp_path: Path, stale: str):
+    """A box that reconciled before ADR-0100 carries the retired key; ONE
+    reconcile must drop the LINE, not merely stop restating it.
+
+    The writes are gone, and set_env_file_var_if_changed is a per-key upsert — a
+    key nobody writes is never touched again — so without an active removal the
+    leftover outlives the lane forever. Present-but-EMPTY is the shape that
+    bites: jasper.audio_runtime_plan's retired-route describer defaults on an
+    ABSENT key, so an empty one reports a post-DSP route disconnection that no
+    later reconcile could clear. Both spellings must heal to absent.
+    """
+    result = _run_reconcile(
+        tmp_path,
+        APPLE_LISTING,
+        "--reason",
+        "test",
+        initial_outputd_env=stale,
+    )
+
+    assert result.returncode == 0, result.stderr
+    outputd_env = (tmp_path / "outputd.env").read_text(encoding="utf-8")
+    assert "JASPER_OUTPUTD_CONTENT_PCM" not in outputd_env
+
+
 def test_reconcile_lane_less_profile_still_reports_dac_no_active_lane(
     tmp_path: Path,
 ):
@@ -3713,12 +3741,11 @@ def test_reconcile_emits_the_wide_content_format_on_an_armed_ring_box(
     bash helper) calls content_lane_format_for_coupling, whose ring-wire read
     (jasper.fanin_coupling.read_declared_ring_wire_format) is FILE-FRESH against
     the REAL /etc/jasper/jasper.env and /var/lib/jasper/fanin.env — not this
-    script's own $JASPER_ENV_FILE / $FANIN_ENV_FILE overrides, which only thread
-    through to the COUPLING token here (read via env_file_value_from). On a real
-    Pi those two path pairs are literally the same files, so an operator's pin
-    genuinely reaches this probe in production; only this hermetic tmp_path
-    harness diverges them, and there is no test-only override to close that gap
-    without touching real system paths. The pin is exercised instead at the
+    script's own $JASPER_ENV_FILE / $FANIN_ENV_FILE overrides, which reach no
+    part of this probe. On a real Pi those two path pairs are literally the same
+    files, so an operator's pin genuinely reaches this probe in production; only
+    this hermetic tmp_path harness diverges them, and there is no test-only
+    override to close that gap without touching real system paths. The pin is exercised instead at the
     direct-call level, where the resolver (or its file inputs) can be
     monkeypatched: tests/test_fanin_coupling.py, and
     tests/test_audio_runtime_plan.py's shm_ring transport-coherence tests

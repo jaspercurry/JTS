@@ -995,16 +995,18 @@ emit_dac_format_for_recognized() {
         "$OUTPUTD_ENV_TARGET_FILE" "JASPER_OUTPUTD_DAC_FORMAT" "$dac_format"
 }
 
-# Resolve the CamillaDSP -> outputd content lane's sample format for the LIVE
-# fan-in coupling, via the one Python policy function that also decides what
-# CamillaDSP emits (jasper.fanin_coupling.content_lane_format_for_coupling).
+# Resolve the CamillaDSP -> outputd content lane's sample format, via the one
+# Python policy function that also decides what CamillaDSP emits
+# (jasper.fanin_coupling.content_lane_format_for_coupling).
 # Prints the format, or nothing when Python is unavailable.
 #
-# The coupling token is read from $FANIN_ENV_FILE here rather than inside
-# Python: this reconciler owns that path (JASPER_FANIN_ENV_FILE), and reading it
-# file-fresh on every pass is the same discipline the wizard-owned state gets
-# everywhere else — a long-lived os.environ is a stale reader of a coupling the
-# ring reconciler can flip underneath us.
+# NO coupling token is passed. The ring is the one transport (ADR-0100), so
+# nothing selects on one and the policy function discards the argument. The
+# freshness that does matter lives inside Python: the ring-wire read
+# (read_declared_ring_wire_format) opens /etc/jasper/jasper.env and
+# /var/lib/jasper/fanin.env itself on every call, so an operator's
+# JASPER_FANIN_RING_WIRE_FORMAT pin reaches this probe with no threading from
+# the shell. Flipping JASPER_FANIN_CAMILLA_COUPLING does NOT move this answer.
 #
 # BLAST RADIUS — this is LIVE config, not a spare knob. jasper-outputd's config
 # PARSER accepts exactly {S16_LE, S24_3LE, S32_LE} or empty (empty/unset ==
@@ -1027,14 +1029,10 @@ content_format_for_coupling() {
     if ! command -v "$OUTPUT_HARDWARE_PYTHON" >/dev/null 2>&1; then
         return 0
     fi
-    local coupling
-    coupling="$(env_file_value_from "$FANIN_ENV_FILE" "JASPER_FANIN_CAMILLA_COUPLING")"
-    JASPER_COUPLING_QUERY="$coupling" "$OUTPUT_HARDWARE_PYTHON" - <<'PY' 2>/dev/null || true
-import os
-
+    "$OUTPUT_HARDWARE_PYTHON" - <<'PY' 2>/dev/null || true
 from jasper.fanin_coupling import content_lane_format_for_coupling
 
-print(content_lane_format_for_coupling(os.environ["JASPER_COUPLING_QUERY"]))
+print(content_lane_format_for_coupling())
 PY
 }
 
@@ -1560,10 +1558,37 @@ set_outputd_active_lane_pair() {
     [[ "$pair_changed" == "1" ]]
 }
 
+# The RETIRED content lane's capture PCM, HEALED rather than restated.
+#
+# outputd stopped reading this key with the lane (ADR-0100), so this reconciler
+# no longer states it — but a box that reconciled before that carries the old
+# line, and set_env_file_var_if_changed is a per-key upsert: a key nobody writes
+# is never touched again, so the leftover would outlive the lane forever. Two
+# shapes make it harmful rather than inert. A present-but-empty value defeats
+# the absent-key default in jasper.audio_runtime_plan's retired-route describer
+# (`.get(key, default)` answers absence, not emptiness), which reports a
+# permanent post-DSP route disconnection no reconcile can clear; and on an
+# ACTIVE -> PASSIVE move the same leftover can fail the staged validator
+# outright (exit 78, outputd_env_invalid preserved=1).
+#
+# REMOVED, never written empty: emptiness is the value that causes shape one,
+# and this file's rule that it "always states a definitive value for every
+# conditional key" is kept — for a key outputd no longer reads, the definitive
+# value is no line at all.
+#
+# REMOVAL CONDITION: dies with jasper.audio_runtime_plan's describer read —
+# once nothing reads the key, no box needs healing off it.
+drop_retired_content_pcm() {
+    env_file_states_key "$OUTPUTD_ENV_TARGET_FILE" "JASPER_OUTPUTD_CONTENT_PCM" || return 1
+    jasper_env_file_unset \
+        "$OUTPUTD_ENV_TARGET_FILE" "JASPER_OUTPUTD_CONTENT_PCM" 0640 0750
+}
+
 apply_audio_runtime_env() {
     local changed=0
     local active_channels="" active_mode=0 graph_status="" active_lane_cap=""
     local content_format="" dac_format="" active_graph_payload="" active_endpoint_device=""
+    drop_retired_content_pcm && changed=1
     # The CONTENT lane's width is a function of the fan-in coupling, never of the
     # DAC — an unrecognized card still has a definitive answer, so unlike
     # JASPER_OUTPUTD_DAC_FORMAT (which needs a recognized profile to query and is
