@@ -243,9 +243,12 @@ impl LaneResampler {
     /// DLL setpoint. The earlier c57 warm-up path seated this deep but then let
     /// the DLL drain the cushion away; on hardware, that over-consumed the
     /// bursty USB feed during acquisition and caused lock/unlock cycling. The
-    /// current `usb_low_latency_48k` route keeps a conservative eight-period
-    /// held cushion (`512 + 2048 = 2560` frames total, the `config.rs`
-    /// `WARMUP_CUSHION_FRAMES` default); hardware soak/cold-start validation must
+    /// `config.rs` `WARMUP_CUSHION_FRAMES` compiled default is a conservative
+    /// eight-period held cushion (`512 + 2048 = 2560` frames total); the
+    /// shipped `usb_low_latency_48k` route runs a shallower six-period cushion
+    /// (`512 + 1536 = 2048` frames total —
+    /// `DEFAULT_USB_LOW_LATENCY_RESAMPLER_CUSHION_FRAMES` in
+    /// `jasper/audio_runtime_plan.py`). Hardware soak/cold-start validation must
     /// pass before any lower route default ships.
     ///
     /// `ring_frames` is the input buffer depth: it MUST exceed
