@@ -1560,8 +1560,8 @@ impl Mixer {
             .map_err(|e| ring_open_error(&config.ring_path, config.ring_wire_format.as_str(), e))
             .with_context(|| format!("opening fan-in→camilla SHM ring {}", config.ring_path))?;
         // NOTHING else is opened. The ring IS the program path: no ALSA playback
-        // PCM is opened or fed, so nothing writes `config.output_pcm` — that
-        // field survives only as the STATUS echo of the configured value.
+        // PCM is opened or fed, and none is configured or echoed — the output
+        // device and buffer this daemon once parsed are retired (ADR-0100).
         let counters = RingCounters::new();
         let self_pace_period_ns =
             (config.period_frames as u64) * 1_000_000_000 / (config.sample_rate as u64);

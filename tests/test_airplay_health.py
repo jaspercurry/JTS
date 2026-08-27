@@ -41,7 +41,6 @@ def _fanin_status(
             },
         ],
         "output": {
-            "pcm": "hw:Loopback,0,7",
             "sample_rate": 48000,
             "period_frames": 256,
             "frames_written": output_frames,

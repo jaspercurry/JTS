@@ -45,8 +45,11 @@ The latency offset is never hand-set —
 [ADR-0118](adr/0118-the-airplay-latency-offset-is-derived-never-hand-set.md).
 `jasper-apply-airplay-mode` derives it at every render from the active
 CamillaDSP config plus the fan-in and outputd daemons' live STATUS
-`snd_pcm_delay_frames`, falling back to configured buffers only when a daemon is
-unavailable. Generic fallbacks render `-0.106667`; a live low-latency DAC floor
+`snd_pcm_delay_frames`. The outputd term falls back to that daemon's configured
+DAC buffer when it is unavailable; the fan-in term always uses a packaged
+constant (`DEFAULT_FANIN_OUTPUT_LATENCY_FRAMES=1024` in the script), because a
+ring box opens no playback PCM to sample and so reports no fan-in delay at all
+(ADR-0100). Generic fallbacks render `-0.106667`; a live low-latency DAC floor
 renders smaller. AirPlay video lip-sync on a computer-sourced stream is a
 separate, still-open calibration question — clean counters are not proof of it.
 
@@ -363,7 +366,8 @@ Beyond the three sync values and the derived offset above:
 | `deploy/shairport-sync.conf.template` | `interpolation = "auto"`; `log_verbosity = 2` | soxr when CPU has slack, basic when the buffer is shallow; verbosity 2 gives post-SETUP detail for the open Pattern E variant at ~2× baseline log volume, inside the persistent-journal cap. |
 | `deploy/systemd/shairport-sync.service` | `Nice=-10`, `IOSchedulingClass=realtime` | Matches CamillaDSP priority so shairport does not lose scheduler races. |
 | `deploy/camilladsp/outputd-cutover.yml` | `enable_rate_adjust=true`, no resampler; `target_level: 2048` (Pattern A/A2) | Canonical 1:1 config with a two-chunk playback target. |
-| `deploy/systemd/jasper-fanin.service` | `JASPER_FANIN_INPUT_BUFFER_FRAMES=4096`, `..._OUTPUT_...=1024` (Pattern A3) | Input supplies ~85 ms of WiFi-burst absorption; output is the JTS2-verified stable floor. |
+| `deploy/systemd/jasper-fanin.service` | `JASPER_FANIN_INPUT_BUFFER_FRAMES=4096` | Supplies ~85 ms of WiFi-burst absorption on each renderer lane. There is no matching output key — the program leaves over Ring A, sized by `JASPER_FANIN_RING_SLOTS`. |
+| `deploy/bin/jasper-apply-airplay-mode` | `DEFAULT_FANIN_OUTPUT_LATENCY_FRAMES=1024` (Pattern A3) | The fan-in → CamillaDSP queue term of the derived offset, and the JTS2-verified stable floor the retired output-buffer key shipped. A packaged constant rather than an env read: a ring box reports no fan-in ALSA delay, so this is what the offset always uses. |
 | `deploy/install.sh` | disables NetworkManager WiFi power-save | brcmfmac's default-ON would micro-stall AP2 RX. |
 | Default mode env | `JASPER_AIRPLAY_FREE_RUNNING=no` | Synced mode preserves video and multi-room timing; free-running (`/airplay/` toggle) is the fallback for unvalidated DAC/path issues. |
 

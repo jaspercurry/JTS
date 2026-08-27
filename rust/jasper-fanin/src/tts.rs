@@ -646,7 +646,7 @@ impl TtsMixer {
             warn!(
                 "event=fanin.tts_wire_width_mismatch declared={} expected={} \
                  action=converted note=jasper-voice and jasper-fanin disagree on \
-                 this box's assistant width; either the coupling/wire-format \
+                 this box's assistant width; either the wire-format \
                  declaration changed without restarting jasper-voice, or the box \
                  resolves a wide wire it has not armed (the ring's wire format \
                  defaults WIDE, so a narrow box has to declare narrow and \
