@@ -8,7 +8,7 @@ The grading itself — the four verdicts and the adoption table — is
 :mod:`jasper.active_speaker.crossover_v2.round_evidence`'s and
 :mod:`jasper.active_speaker.crossover_v2.verification`'s, and their own tests
 pin it as arithmetic. **This module pins the WIRING**: that a real stage-2
-conductor, built by the real ``prepare_v2_verify`` with the real host seams
+conductor, built by the real verify-only prepare with the real host seams
 behind it, reaches those answers and then does the right thing to the
 household's speaker.
 
@@ -2599,7 +2599,7 @@ def test_a_banked_instruction_reaches_the_next_rounds_measure_stage(monkeypatch)
     read at candidate-build time, which runs in the MEASURE stage, so a series
     converges only if the MEASURING session is hydrated with its position too.
     Before #2698 it was not: the one ``series_position=`` line lived in
-    ``prepare_v2_verify`` alone, ``self._series_position`` was ``None`` on
+    the verify-only prepare alone, ``self._series_position`` was ``None`` on
     every measuring session, and the build silently fell back to the incumbent.
     Measured on 2026-08-18: a round banked ``Peaking 2120.34 Hz, -0.7171 dB``
     and the next round emitted zero blend filters, with the done screen still

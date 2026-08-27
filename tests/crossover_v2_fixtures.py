@@ -755,7 +755,7 @@ def _verify_to_apply(fakes):
 
 
 def _rearm_conductor(fakes, **kwargs):
-    """A verify-only re-arm's conductor — ``prepare_v2_verify``'s shape."""
+    """A verify-only re-arm's conductor — the verify-only prepare's shape."""
     return CrossoverV2Session(
         session_id="verify_rearm_session",
         source_preset=_preset(),

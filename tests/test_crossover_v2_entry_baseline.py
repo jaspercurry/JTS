@@ -567,7 +567,7 @@ def test_stage_2_persist_does_not_erase_the_baseline_it_was_handed(monkeypatch):
     """The carry-forward, on the write that happens before any tone plays.
 
     Stage 2 never captures a baseline, so its conductor persists ``None`` for
-    this key on every write — including ``prepare_v2_verify``'s own opening
+    this key on every write — including the verify-only prepare's own opening
     persist. Without the carry-forward that first write would erase the exact
     measurement stage 2 exists to grade against, and the round would report
     ``entry_baseline_unavailable`` about a record it had just been handed.

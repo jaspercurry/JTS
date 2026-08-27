@@ -135,10 +135,12 @@ POST https://<host>/correction/crossover/v2/session   (start the v2 session)
 
 ## 2b. `/crossover/v2/verify` is a **different, secondary** endpoint — not used here
 
-`prepare_v2_verify` (`jasper/web/correction_crossover_v2.py:2333-2371`) mints
-a **separate** relay session hosting a **1-entry** plan that re-arms VERIFY
-*only*, from durable post-apply state — "the §5.2 re-verify action"
-(module docstring, `jasper/web/correction_crossover_v2.py:32-36`). It is for
+`prepare_v2_session(verify_only=True)` mints a **separate** relay session
+hosting a **1-entry** plan that re-arms VERIFY *only*, from durable post-apply
+state — "the §5.2 re-verify action" (module docstring,
+`jasper/web/correction_crossover_v2.py:34-38`). The July reading called this a
+second preparer of its own; the two converged in #3166 and the flag is now what
+picks the stage. It is for
 re-running VERIFY later (e.g. from the wizard's "Re-verify" affordance after
 a prior apply), not part of the initial CHECK→MEASURE→VERIFY run. `e0_capture.py`
 never calls it. See §5 for why the initial VERIFY doesn't need it.
