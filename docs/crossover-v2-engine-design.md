@@ -38,7 +38,7 @@ visible as such rather than absent.
 ## `TuningSession` and the five seams
 
 `TuningSession` holds one session's state and lifecycle — `open` / `close`,
-also usable as a context manager (`__enter__` / `__exit__`), with `is_open`,
+also usable as an async context manager (`__aenter__` / `__aexit__`), with `is_open`,
 `graph_fingerprint` and `banked_record_ids` as its read surface. Every side
 effect it can have crosses one of **five fields on `EngineSeams`**
 ([`session_seams.py`](../jasper/active_speaker/crossover_v2/session_seams.py)),
