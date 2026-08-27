@@ -316,17 +316,19 @@ def _active_graph_env(
     return out
 
 
-def _half_moved_graph_env(tmp_path: Path) -> dict[str, str]:
-    """Stage a HALF-moved graph: Ring A capture, passive-lane playback.
+def _stereo_ring_sink_graph_env(tmp_path: Path) -> dict[str, str]:
+    """Stage a graph whose sink is the STEREO ring, which has no outputd capture.
 
-    The capture half moved to the ring and the playback half did not, which is
-    what an interrupted re-emit or a hand-edit leaves behind. Deliberately not
-    an active-endpoint playback device: that class is DEMOTED to the passive
-    fail-closed route by ``outputd_active_lane_decision`` before the coherence
-    report ever sees it, so a fixture built on one cannot reach an exit 1.
+    Deliberately not an active-endpoint playback device: that class is DEMOTED
+    to the passive fail-closed route by ``outputd_active_lane_decision`` before
+    the coherence report ever sees it, so a fixture built on one cannot reach an
+    exit 1.
     """
-    from jasper.camilla_config_contract import DEFAULT_PLAYBACK_DEVICE
-    from jasper.fanin_coupling import RING_ACTIVE_PLAYBACK_DEVICE, RING_CAPTURE_DEVICE
+    from jasper.fanin_coupling import (
+        RING_ACTIVE_PLAYBACK_DEVICE,
+        RING_CAPTURE_DEVICE,
+        RING_PLAYBACK_DEVICE,
+    )
 
     env = _active_graph_env(tmp_path, channels=2)
     statefile = Path(env["JASPER_CAMILLA_STATEFILE"])
@@ -334,12 +336,10 @@ def _half_moved_graph_env(tmp_path: Path) -> dict[str, str]:
         statefile.read_text(encoding="utf-8").split("config_path:", 1)[1].strip()
     )
     text = active_config.read_text(encoding="utf-8")
-    # The emit already captures Ring A, so only the PLAYBACK half is staged back
-    # onto the passive lane — that is what makes the pair half-moved.
     assert RING_ACTIVE_PLAYBACK_DEVICE in text, text
     assert RING_CAPTURE_DEVICE in text, text
     active_config.write_text(
-        text.replace(RING_ACTIVE_PLAYBACK_DEVICE, DEFAULT_PLAYBACK_DEVICE),
+        text.replace(RING_ACTIVE_PLAYBACK_DEVICE, RING_PLAYBACK_DEVICE),
         encoding="utf-8",
     )
     return env
@@ -2845,16 +2845,14 @@ def test_the_note_prefix_the_script_matches_is_the_one_the_cli_prints(
     assert out.startswith("ok note="), out
 
 
-def test_outputd_env_validation_rejects_a_half_moved_graph(
+def test_outputd_env_validation_rejects_a_stereo_ring_sink_under_a_loopback_plan(
     tmp_path: Path,
     capsys,
 ) -> None:
-    """The CLI's exit-1 path, on the contradiction that still reaches it.
+    """The CLI's exit-1 path, on a contradiction that still reaches it.
 
-    #2285 P2 renamed and re-pointed this from
-    ``..._rejects_active_writer_passive_reader``. Both of that title's shapes
-    stopped reaching an exit 1, for two DIFFERENT reasons, and neither is a
-    regression:
+    Two neighbouring shapes do NOT reach it, for different reasons, and neither
+    is a regression:
 
       * the ACTIVE RING under a loopback plan is the documented mid-arm
         WAYPOINT — a note at rc 0 on purpose, because reporting it as an error
@@ -2864,12 +2862,14 @@ def test_outputd_env_validation_rejects_a_half_moved_graph(
         to ``devices=None`` before the coherence report runs — the fail-closed
         demotion, which this command has always had.
 
-    What still reaches the report is a graph whose halves disagree, which is why
-    this drives that instead. Nothing else pins this command's rc-1 path.
+    The STEREO ring reaches it: a ring PCM has no outputd capture pairing by
+    construction, so a graph writing it under a plan whose post-DSP hop is still
+    the snd-aloop lane writes a ring nobody reads. Nothing else pins this
+    command's rc-1 path.
     """
     from jasper.cli.audio_config import main as audio_config_main
 
-    graph_env = _half_moved_graph_env(tmp_path)
+    graph_env = _stereo_ring_sink_graph_env(tmp_path)
     base_env = tmp_path / "jasper.env"
     base_env.write_text("JASPER_AUDIO_DAC_ID=hifiberry_dac8x\n", encoding="utf-8")
     outputd_env = tmp_path / "outputd.env"
@@ -2902,7 +2902,7 @@ def test_outputd_env_validation_rejects_a_half_moved_graph(
     )
 
     assert result == 1
-    assert "HALF-moved graph" in capsys.readouterr().out
+    assert "no registered outputd capture" in capsys.readouterr().out
 
 
 def _outputd_env_key_present(outputd_env: str, key: str) -> bool:

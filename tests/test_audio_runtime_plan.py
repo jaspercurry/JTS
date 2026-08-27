@@ -1511,17 +1511,21 @@ def test_fanin_coupling_action_admits_a_bonded_active_endpoint():
     assert action.value == COUPLING_SHM_RING
 
 
-def test_transport_topology_removed_transport_pipe_falls_back_to_loopback():
-    # The removed transport_pipe coupling fails safe to the loopback topology.
-    loopback = transport_topology_for_coupling("loopback").to_dict()
-    removed = transport_topology_for_coupling("transport_pipe").to_dict()
+@pytest.mark.parametrize("token", ["loopback", "transport_pipe"])
+def test_an_unconverged_box_publishes_ring_a_with_its_stale_content_lane(token):
+    """ADR-0100: the fan-in -> CamillaDSP hop does not branch on the token.
 
-    assert loopback["name"] == "loopback"
-    assert loopback["outputd_content_source"] == "alsa"
-    assert loopback["fanin_to_camilla"]["transport"] == "alsa_loopback"
-    assert removed["name"] == "loopback"
-    assert removed["outputd_content_source"] == "alsa"
-    assert removed["fanin_to_camilla"]["transport"] == "alsa_loopback"
+    Any token outside VALID_COUPLINGS names a box whose POST-DSP hop has not
+    been converged off the snd-aloop content lane, and only that half. fan-in
+    serves Ring A or parks, so publishing an `alsa_loopback` capture here would
+    describe a route nothing runs.
+    """
+    topology = transport_topology_for_coupling(token).to_dict()
+
+    assert topology["name"] == "loopback"
+    assert topology["outputd_content_source"] == "alsa"
+    assert topology["fanin_to_camilla"]["transport"] == "shm_ring"
+    assert topology["fanin_to_camilla"]["camilla_capture_device"] == "jts_ring_capture"
 
 
 def test_loopback_topology_derives_outputd_reader_from_camilla_writer():

@@ -33,13 +33,11 @@ from jasper.audio_runtime_overrides import (
 )
 from jasper.camilla_config_contract import (
     ACTIVE_OUTPUTD_PLAYBACK_DEVICE,
-    DEFAULT_CAPTURE_FORMAT,
     DEFAULT_CHUNKSIZE,
     DEFAULT_PLAYBACK_DEVICE,
     DEFAULT_PLAYBACK_FORMAT,
     DEFAULT_SAMPLE_RATE,
     DEFAULT_TARGET_LEVEL,
-    RETIRED_ALOOP_CAPTURE_DEVICE,
     outputd_capture_device_for_playback,
     read_camilla_devices_config,
 )
@@ -1646,6 +1644,13 @@ def transport_topology_for_coupling(
     constants' comment for why the observed playback device is not the
     discriminator.
 
+    THE FAN-IN -> CAMILLADSP HOP DOES NOT BRANCH. Since ADR-0100 it is Ring A on
+    every box: fan-in serves the ring for a ``shm_ring``, unset or empty token
+    and PARKS on anything else, so no persisted value names a second hop-A
+    transport for this layer to publish. :data:`TRANSPORT_LOOPBACK` therefore
+    names a box whose POST-DSP hop has not been converged off its snd-aloop
+    content lane — the half ``outputd_content_source`` answers for.
+
     ``camilla_playback_device`` is the OBSERVED Camilla playback endpoint and is
     consulted by the LOOPBACK arm only, where it names the concrete lane whose
     outputd capture pairing is being derived. Under either ring shape it is
@@ -1654,67 +1659,68 @@ def transport_topology_for_coupling(
     check compare a value with itself.
     """
 
+    from jasper.fanin_coupling import (
+        OUTPUTD_RING_PATH_ENV_VAR,
+        RING_ACTIVE_PLAYBACK_DEVICE,
+        RING_CAPTURE_DEVICE,
+        RING_PATH_ENV_VAR,
+        RING_PLAYBACK_DEVICE,
+        resolve_outputd_ring_path,
+        resolve_ring_path,
+        resolve_ring_wire,
+    )
+
     fanin_values = dict(fanin_env or {})
     outputd_values = dict(outputd_env or {})
+    # The MARKER, not the observed device, selects the post-DSP shape. On an
+    # armed active endpoint the post-DSP hop is the ACTIVE ring: a different
+    # device, a different file, and a per-driver width the topology decides,
+    # where Ring B is a full-range stereo program.
+    active_endpoint = ring_active_endpoint_armed(outputd_values)
+    # Resolve WITH the saved topology when the active shape is in play: the
+    # active width is the one per-topology axis of that ring, and the
+    # shipped-geometry answer (`None` topology) has no active width at all.
+    # Every other axis is topology-free, so the stereo shape and the Ring A row
+    # below keep their topology-free resolution byte-for-byte.
+    if active_endpoint:
+        from jasper.fanin.ring_health import load_topology_for_wire
+
+        wire = resolve_ring_wire(load_topology_for_wire())
+    else:
+        wire = resolve_ring_wire()
+    # Ring A (fan-in -> CamillaDSP, jts_ring_capture). Its wire — format, and a
+    # channel count that is per-ring — comes from the one resolver every
+    # declaring end reads, so /state reports the geometry the ring is actually
+    # built to rather than a literal that can silently disagree with it. The
+    # concrete ring path lives in fan-in's env (RING_PATH).
+    fanin_to_camilla: dict[str, Any] = {
+        "transport": "shm_ring",
+        "path": resolve_ring_path(fanin_values.get(RING_PATH_ENV_VAR)),
+        "writer": "jasper-fanin",
+        "camilla_capture_device": RING_CAPTURE_DEVICE,
+        "format": wire.sample_format,
+        "channels": wire.ring_a_channels,
+        "sample_rate": DEFAULT_SAMPLE_RATE,
+    }
     normalized = resolve_coupling(coupling)
     if normalized == COUPLING_SHM_RING:
-        # Ring A (fan-in -> CamillaDSP, jts_ring_capture) + Ring B (CamillaDSP ->
-        # outputd, jts_ring_playback). Their wire — format, and a channel count
-        # that is per-ring — comes from the one resolver every declaring end
-        # reads, so /state reports the geometry the ring is actually built to
-        # rather than a literal that can silently disagree with it. The concrete
-        # ring paths live in the daemons' env (fan-in RING_PATH, outputd
-        # SHM_RING_PATH).
-        from jasper.fanin_coupling import (
-            OUTPUTD_RING_PATH_ENV_VAR,
-            RING_ACTIVE_PLAYBACK_DEVICE,
-            RING_CAPTURE_DEVICE,
-            RING_PATH_ENV_VAR,
-            RING_PLAYBACK_DEVICE,
-            resolve_outputd_ring_path,
-            resolve_ring_path,
-            resolve_ring_wire,
-        )
-
-        capture_ring = resolve_ring_path(fanin_values.get(RING_PATH_ENV_VAR))
-        content_ring = resolve_outputd_ring_path(
+        # Ring B (CamillaDSP -> outputd, jts_ring_playback), or the ACTIVE ring
+        # on an armed roleful box. Its concrete path lives in outputd's env
+        # (SHM_RING_PATH).
+        post_dsp_path = resolve_outputd_ring_path(
             outputd_values.get(OUTPUTD_RING_PATH_ENV_VAR)
         )
-        # The MARKER, not the observed device, selects the shape. On an armed
-        # active endpoint the post-DSP hop is the ACTIVE ring: a different
-        # device, a different file, and a per-driver width the topology decides,
-        # where Ring B is a full-range stereo program.
-        active_endpoint = ring_active_endpoint_armed(outputd_values)
-        # Resolve WITH the saved topology when the active shape is in play: the
-        # active width is the one per-topology axis of that ring, and the
-        # shipped-geometry answer (`None` topology) has no active width at all.
-        # The stereo shape keeps its topology-free resolution byte-for-byte —
-        # nothing it publishes is per-topology.
         if active_endpoint:
-            from jasper.fanin.ring_health import load_topology_for_wire
-
-            wire = resolve_ring_wire(load_topology_for_wire())
             post_dsp_device = RING_ACTIVE_PLAYBACK_DEVICE
-            post_dsp_path = content_ring
             post_dsp_channels: int | None = wire.ring_active_channels
         else:
-            wire = resolve_ring_wire()
             post_dsp_device = RING_PLAYBACK_DEVICE
-            post_dsp_path = content_ring
             post_dsp_channels = wire.ring_b_channels
         return TransportTopology(
             name=(
                 TRANSPORT_SHM_RING_ACTIVE if active_endpoint else TRANSPORT_SHM_RING
             ),
-            fanin_to_camilla={
-                "transport": "shm_ring",
-                "path": capture_ring,
-                "writer": "jasper-fanin",
-                "camilla_capture_device": RING_CAPTURE_DEVICE,
-                "format": wire.sample_format,
-                "channels": wire.ring_a_channels,
-                "sample_rate": DEFAULT_SAMPLE_RATE,
-            },
+            fanin_to_camilla=fanin_to_camilla,
             camilla_to_outputd={
                 "transport": "shm_ring",
                 "path": post_dsp_path,
@@ -1740,20 +1746,7 @@ def transport_topology_for_coupling(
     )
     return TransportTopology(
         name=COUPLING_LOOPBACK,
-        fanin_to_camilla={
-            "transport": "alsa_loopback",
-            "writer": "jasper-fanin",
-            "playback_pcm": "hw:Loopback,0,7",
-            # The RETIRED route's own tap, not `DEFAULT_CAPTURE_DEVICE`: that
-            # constant is the EMITTERS' answer and now names Ring A (ADR-0100).
-            # This branch describes the shape a box that has not reconciled to
-            # the ring is still carrying, so it must keep naming what such a box
-            # actually captures.
-            "camilla_capture_device": RETIRED_ALOOP_CAPTURE_DEVICE,
-            "format": DEFAULT_CAPTURE_FORMAT,
-            "channels": 2,
-            "sample_rate": DEFAULT_SAMPLE_RATE,
-        },
+        fanin_to_camilla=fanin_to_camilla,
         camilla_to_outputd={
             "transport": "alsa_loopback",
             "camilla_playback_device": loopback_playback,
@@ -1830,11 +1823,10 @@ def transport_coherence_report(
     against the channels CamillaDSP's loaded config declares — see the comment
     on those checks for why the evidence is per-end.
 
-    The CAPTURE lane is compared in BOTH directions — a ring plan whose graph
-    captures the snd-aloop tap, and a non-ring plan whose graph still captures
-    Ring A. Either way CamillaDSP sources a device nobody is writing, which is
-    digital silence with every env and every daemon reading clean; and neither
-    is visible on the channels axis, because Ring A and the tap are both stereo.
+    The CAPTURE lane is compared under the ring plan — a graph still sourcing
+    the snd-aloop tap reads a device nobody is writing, which is digital silence
+    with every env and every daemon reading clean, and is invisible on the
+    channels axis because Ring A and the tap are both stereo.
 
     Both ring SHAPES take the same branch: :data:`TRANSPORT_SHM_RING` and
     :data:`TRANSPORT_SHM_RING_ACTIVE` differ in WHICH post-DSP endpoint they
@@ -2002,48 +1994,6 @@ def transport_coherence_report(
             f"transport plan is {normalized} but {OUTPUTD_CONTENT_BRIDGE_KEY}=shm_ring; "
             "Ring B is armed without the matching Ring A plan"
         )
-
-    # THE CAPTURE MIRROR of the ring-device playback checks below, and it is
-    # scoped by the SAME waypoint rule they are. A non-ring plan whose loaded
-    # graph still CAPTURES Ring A sources a ring nobody writes — fan-in feeds the
-    # snd-aloop tap under loopback, not Ring A — so CamillaDSP reads silence
-    # while every env reads clean, and the channels axis cannot see it because
-    # Ring A and the tap are both stereo.
-    #
-    # WHY IT KEYS ON THE PLAYBACK HALF. The ring coupling is end-to-end, so the
-    # re-emit moves BOTH device halves together: at the mid-arm waypoint a
-    # loopback-plan graph legitimately names Ring A *and* the active ring, and
-    # calling that an error would deadlock the ladder from the capture side
-    # exactly as the playback side deadlocked it before #2329. That state is
-    # already reported — as a NOTE — by the active-ring branch below. What no
-    # ladder rung ever creates, and what this catches, is the HALF-moved graph:
-    # Ring A capture with the playback already back on a non-ring lane, i.e. a
-    # rollback that moved one half (a hand-edit, or an interrupted re-emit).
-    #
-    # The ARMED direction of the same shear is already covered inside the ring
-    # branch above ("transport plan is shm_ring but Camilla capture=…"), which is
-    # why this side is the one that needed adding rather than a second copy.
-    #
-    # A graph with NO playback device is out of scope, not merely non-ring: a
-    # bonded leader's bake writes a File/SNAPFIFO sink and has no ALSA playback
-    # half to be half-moved. Refusing it here refused the reconcile that would
-    # arm the box — the deadlock shape #2329 and the active-ring waypoint note
-    # below both exist to avoid.
-    if normalized not in _RING_TRANSPORT_SHAPES and capture_device:
-        from jasper.fanin_coupling import RING_CAPTURE_DEVICE, RING_PCM_DEVICES
-
-        if capture_device == RING_CAPTURE_DEVICE and (
-            playback_device is not None and playback_device not in RING_PCM_DEVICES
-        ):
-            errors.append(
-                f"transport plan is {normalized} but Camilla "
-                f"capture={capture_device!r} with playback="
-                f"{playback_device!r}: a HALF-moved graph. Under a non-ring plan "
-                "fan-in writes the snd-aloop tap and nothing writes Ring A, so "
-                "CamillaDSP would capture silence. Re-emit both halves together "
-                "(`jasper-active-speaker baseline-reemit --endpoint ring` on a "
-                "roleful box) and finish the arm"
-            )
 
     if normalized == TRANSPORT_LOOPBACK and playback_device:
         paired_capture = outputd_capture_device_for_playback(playback_device)
@@ -2408,28 +2358,6 @@ def fanin_coupling_capture_kwargs(
     emits. An explicit coupling is used by the coupling reconciler immediately
     after it rewrites ``fanin.env``; process env may still be stale, so the
     explicit value wins.
-
-    **Coupling TOKEN is resolved FILE-FRESH on the live path** (``coupling is
-    None`` AND ``env is None``): we delegate to
-    :func:`coupling_capture_kwargs_from_env` with ``env=None`` so it reads the
-    persisted ``fanin.env`` SSOT (:func:`read_persisted_coupling`) rather than a
-    STALE ``os.environ``. This is the same ``os.environ``-stale class issue
-    #1158 closed for the socket-activated wizards (``/sound/`` /
-    ``/correction/``), but that fix lives inside
-    ``coupling_capture_kwargs_from_env``: synthesizing ``dict(os.environ)``
-    unconditionally here would force the explicit-env branch and defeat it on
-    the CLI/install ``jasper-sound reconcile-current-dsp`` path
-    (which only ``load_env_files()``-hydrates via ``setdefault`` and is NOT the
-    reconciler's pre-synced-env caller). On a loopback box a polluted
-    ``os.environ`` coupling then emits a RING capture/playback config —
-    CamillaDSP crash-loops on a ring nobody writes (hardware-reproduced on
-    jts.local). An EXPLICIT ``env`` mapping stays authoritative (no file read) for
-    callers that want to pin the resolution deterministically — today only unit
-    tests, which pass a controlled env. No production caller passes ``env=``: the
-    reconciler/binder pre-syncs ``os.environ`` and the coupling files, then relies
-    on the ``coupling is None, env is None`` file-fresh path here (the token is
-    read from the ``fanin.env`` it just wrote), so the live emit never depends on a
-    stale ``os.environ`` coupling token.
     """
 
     if coupling is None:

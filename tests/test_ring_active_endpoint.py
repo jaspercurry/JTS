@@ -2706,24 +2706,20 @@ def _coherence_errors(*, coupling, capture, playback, outputd_env=None):
     )
 
 
-def test_the_capture_half_is_coherence_checked_in_both_directions():
-    """DEFENSE IN DEPTH for the quiet trap: a graph whose two device halves
-    disagree about the transport is named, not silently accepted.
+def test_the_capture_device_comparison_names_the_quiet_trap_not_every_graph():
+    """DEFENSE IN DEPTH for the quiet trap: a ring plan whose graph still sources
+    the snd-aloop tap is named, not silently accepted.
 
     The trap is quiet precisely because the axes that DO get compared cannot see
     it: the plan compares capture CHANNELS and Ring A is stereo exactly like the
     snd-aloop tap, and the arm's width gate only holds ring-NAMED lanes to the
     wire, so a tap capture is not-inspected rather than refused. Only the DEVICE
-    comparison catches it, and it has to run in both directions because a graph
-    can be left half-moved from either side.
+    comparison catches it.
 
-    #2285 P2 re-pointed the second direction and CONTROL 2. Both were phrased
-    around a ROLLBACK onto the snd-aloop ACTIVE lane; that lane's PCMs (#2534)
-    and its outputd capture pairing (P2/A6) are both deleted, so a loopback-plan
-    graph naming it is now unpaired by construction — no longer the "clean"
-    state a control can be built on. What the direction still catches is the
-    HALF-moved graph itself, which is why it is asserted by membership rather
-    than by an empty tuple.
+    The MIRROR of this — a non-ring plan whose graph captures Ring A — is no
+    longer a contradiction and no longer checked: under ADR-0100 fan-in serves
+    Ring A or parks, so a Ring A capture is the correct half whatever the
+    persisted token says.
     """
     armed_env = {
         "JASPER_OUTPUTD_CONTENT_BRIDGE": "shm_ring",
@@ -2731,9 +2727,6 @@ def test_the_capture_half_is_coherence_checked_in_both_directions():
         "JASPER_OUTPUTD_SHM_RING_PATH": DEFAULT_OUTPUTD_ACTIVE_RING_PATH,
     }
 
-    # ARM direction — armed plan, graph still on the tap. (This half already
-    # existed before the capture fix; it is pinned here because the fix's whole
-    # claim is that the trap is covered end to end.)
     armed = _coherence_errors(
         coupling="shm_ring",
         capture=RETIRED_ALOOP_CAPTURE_DEVICE,
@@ -2744,17 +2737,6 @@ def test_the_capture_half_is_coherence_checked_in_both_directions():
         "shm_ring but Camilla capture" in err and RING_CAPTURE_DEVICE in err
         for err in armed
     ), armed
-
-    # THE OTHER DIRECTION — non-ring plan, graph still on Ring A while the sink
-    # names the retired snd-aloop lane. No ladder rung creates this; an
-    # interrupted re-emit or a hand-edit does, and it is the shape a box
-    # commissioned before the retirement lands in if only its capture moves.
-    half_moved = _coherence_errors(
-        coupling="loopback",
-        capture=RING_CAPTURE_DEVICE,
-        playback=OUTPUTD_ACTIVE_PLAYBACK_DEVICE,
-    )
-    assert any("HALF-moved graph" in err for err in half_moved), half_moved
 
     # CONTROL 1 — the mid-arm WAYPOINT is not an error. Both halves have moved
     # while the coupling is still loopback; that is the state step 1 exists to
