@@ -660,13 +660,46 @@ class _LoggingGraph(_Graph):
         self.events.append("graph")
 
 
+async def test_a_refused_volume_costs_zero_graph_operations():
+    """NB1 at the engine: the claim goes first, so a refusal installs nothing.
+
+    A volume that will not establish is not a volume anything may be admitted
+    against. Installing first would buy two CamillaDSP swaps — install and
+    restore — for a session that never plays a stimulus, and it is the shape
+    the wizard already refuses one frame up. This is the setup half of the
+    order ``_release_slots`` mirrors: acquire, then install; restore, then
+    release.
+    """
+    graph = _Graph()
+    session, _ = _session(graph=graph, volume=_Volume(acquire_raises=True))
+
+    with pytest.raises(RuntimeError, match="holding it"):
+        await session.open()
+
+    assert graph.installs == 0, (
+        "the graph was installed for a session whose volume never established"
+    )
+    # The unwind still CALLS restore — unconditionally, because a seam that
+    # raised may have armed half of what it was asked for and the session
+    # cannot see how far it got. Against a graph that was never installed that
+    # call is the contracted no-op, which is why the install count is the
+    # property and the restore count is not.
+    assert not session.is_open
+
+
 async def test_a_close_cancelled_mid_release_still_gives_both_slots_back_in_order():
     """A cancelling caller waits for the fader before it gets its cancel.
 
     A bare ``await asyncio.shield(coro)`` detaches the give-back: the
-    cancellation reaches the caller while the fader is still being handed
-    over, the graph restore has not started, and the two end up out of the
+    cancellation reaches the caller while the slots are still being handed
+    over, the second release has not started, and the two end up out of the
     order ``_release_slots`` promises.
+
+    **The order is graph-then-volume, and it flipped with W5-c1's setup
+    reorder.** ``open`` now takes the claim before installing the graph, so
+    reverse order of taking is the graph first — which is also the isolation
+    order, since the volume release lands a level the household can hear and a
+    graph put back after that would swap the pipeline underneath it.
     """
     events: list[str] = []
     volume = _SlowVolume(events=events)
@@ -685,7 +718,7 @@ async def test_a_close_cancelled_mid_release_still_gives_both_slots_back_in_orde
     with pytest.raises(asyncio.CancelledError):
         await closing
 
-    assert events == ["volume", "graph"]
+    assert events == ["graph", "volume"]
     assert not session.is_open
 
 

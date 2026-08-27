@@ -381,9 +381,17 @@ class TuningSession:
     async def open(self) -> None:
         """Open the two held slots, in the order their contracts require.
 
-        The graph goes in first and its proof runs once, before anything can
-        play (MS-13); the volume claim is taken at the declared level second, so
-        the fader the graph will be measured through is already this session's.
+        **The claim goes first, and the order is :meth:`close`'s mirror.** The
+        teardown puts the graph back BEFORE the fader comes down, so setup
+        takes the fader before the graph goes in — reverse order of taking is
+        what makes the pair a stack rather than two independent lifetimes.
+
+        It is also the cheaper failure. A volume that will not establish is not
+        a volume anything may be admitted against, so a session that installed
+        the measurement graph first would buy two CamillaDSP swaps — install
+        and restore — for a session that never plays a stimulus. Acquiring
+        first means a refused volume costs zero graph operations, which is the
+        property NB1 pins one frame up in the wizard's own open arm.
 
         **An open that fails puts back everything it took, including the half a
         failing call may have armed.** ``install`` is inside the guard as well
@@ -419,10 +427,10 @@ class TuningSession:
         if self.is_open:
             raise SessionStateError(f"session {self.session_id} is already open")
         try:
-            self._graph_fingerprint = await self.seams.graph.install()
-            self._graph_installed = True
             await self.seams.volume.acquire(self.measurement_level_db)
             self._volume_held = True
+            self._graph_fingerprint = await self.seams.graph.install()
+            self._graph_installed = True
         except BaseException as opening_exc:  # noqa: BLE001 - re-raised below
             self._graph_fingerprint = ""
             await self._release_both_after_failed_open(opening_exc)
@@ -762,8 +770,8 @@ class TuningSession:
         """Give back whatever is still held, in reverse order of taking.
 
         Each slot's flag clears only once its release RETURNS, so a release
-        that raised is attempted again by the next :meth:`close`. The graph's
-        restore runs in a ``finally`` so a raising volume release cannot skip
+        that raised is attempted again by the next :meth:`close`. The volume's
+        release runs in a ``finally`` so a raising graph restore cannot skip
         it, and the volume's exception is the one that reaches the caller —
         it is the slot whose loss is audible.
 
@@ -777,15 +785,27 @@ class TuningSession:
             raise cancelled
 
     async def _give_back_held(self) -> None:
-        """The ordered give-back :meth:`_release_slots` shields."""
+        """The ordered give-back :meth:`_release_slots` shields.
+
+        **Graph first, and it is reverse order of taking now that the claim is
+        taken first.** It is also the isolation order the wizard's own teardown
+        keeps: the fader release lands the household level, and a graph put
+        back after that would swap the pipeline under audio already at a level
+        the household can hear.
+
+        The volume release still runs in the ``finally``, so a graph that will
+        not come back cannot strand the fader at measurement level, and the
+        volume's exception is still the one that reaches the caller — it is the
+        slot whose loss is audible.
+        """
         try:
-            if self._volume_held:
-                await self.seams.volume.release()
-                self._volume_held = False
-        finally:
             if self._graph_installed:
                 await self.seams.graph.restore()
                 self._graph_installed = False
+        finally:
+            if self._volume_held:
+                await self.seams.volume.release()
+                self._volume_held = False
 
     def _bearings(self, spec: MeasureSpec) -> tuple[int | None, ...]:
         """Where this spec measures, with the design axis spelled once.

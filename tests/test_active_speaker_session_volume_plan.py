@@ -862,10 +862,30 @@ def test_open_refuses_over_unresolved_state(tmp_path):
 #:
 #: So a door added here must answer for the FADER, not for the owner's intent:
 #: a deferral is ``False``, because the level is not in effect.
+def _owner_door(vol):
+    """The wizard's door: one owner, one claim, a PHYSICAL read.
+
+    The claim is real, so ``establish`` writes and confirms through
+    ``acquire_level``; ``restore`` declares and then re-reads, so a deferral
+    that wrote nothing answers ``False``.
+    """
+    from jasper.active_speaker.crossover_v2.volume_claim import (
+        MeasurementVolumeClaim,
+        OwnerVolumeDoor,
+    )
+    from jasper.volume_owner import VolumeOwner
+
+    owner = VolumeOwner(set_fader_db=vol.set, get_fader_db=vol.get)
+    return OwnerVolumeDoor(
+        owner, read_fader=vol.get, claim=MeasurementVolumeClaim(owner),
+    )
+
+
 DOOR_FACTORIES = [
     pytest.param(
         lambda vol: FaderVolumeDoor(vol.set, vol.get), id="fader",
     ),
+    pytest.param(_owner_door, id="owner"),
 ]
 
 

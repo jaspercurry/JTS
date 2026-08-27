@@ -173,16 +173,57 @@ class _NoGraphSession:
 
     ``_volume_hooks`` opens the session after the plan confirms and closes it
     where the graph used to go back. These tests are about the PAUSE, not the
-    graph, so the session they pass takes and gives back nothing — which is
-    also the real no-op shape for a session that never played a routed
-    stimulus.
+    graph, so the session they pass holds no graph — which is also the real
+    no-op shape for a session that never played a routed stimulus.
+
+    It DOES give the claim back, because a double that kept it would not be a
+    simplification: the plan's drain runs after this and would meet a rank-1
+    claim still outranking the household level, so every drain would defer and
+    latch. That is a property of the double, not of the code under test.
     """
+
+    def __init__(self) -> None:
+        # The hooks build the plan's door over THIS session's claim, so a
+        # double standing in for a session carries a real one over the
+        # process's owner — the same object the door establishes through.
+        self.seams = SimpleNamespace(volume=_session_claim())
 
     async def open(self) -> None:
         return None
 
     async def close(self) -> None:
-        return None
+        if self.seams.volume is not None:
+            await self.seams.volume.release()
+
+
+def _own_the_fader(monkeypatch, cam) -> None:
+    """Seat a real ``VolumeOwner`` over ``cam`` for the drain paths.
+
+    After W5-c1 the plan reaches the fader through the owner, so a drain test
+    without one exercises the fail-closed no-owner door instead of the drain.
+    Seated through the module global so monkeypatch restores the process.
+    """
+    import jasper.volume_owner as _vo
+
+    monkeypatch.setattr(
+        _vo,
+        "_process_owner",
+        _vo.VolumeOwner(
+            set_fader_db=lambda db: cam.set_volume_db(db, best_effort=True),
+            get_fader_db=lambda: cam.get_volume_db(best_effort=True),
+        ),
+    )
+
+
+def _session_claim():
+    """The session's one claim over whatever owner this test installed."""
+    from jasper.active_speaker.crossover_v2.volume_claim import (
+        MeasurementVolumeClaim,
+    )
+    from jasper.volume_owner import volume_owner
+
+    owner = volume_owner()
+    return None if owner is None else MeasurementVolumeClaim(owner)
 
 
 class _FakeVolCam:
@@ -8113,6 +8154,7 @@ def test_volume_hooks_hold_pause_from_open_to_every_drain(monkeypatch):
         v2host.reset_session_measurement_pause_for_tests()
         v2host.set_volume_plan_for_tests(SessionVolumePlan())
         cam = _FakeVolCam(-15.0)
+        _own_the_fader(monkeypatch, cam)
 
         async def scenario():
             hooks = v2host._volume_hooks(
@@ -8150,11 +8192,19 @@ def test_the_graph_goes_back_before_the_fader_does(monkeypatch):
     order: list[str] = []
 
     class _LoggingSession:
+        def __init__(self) -> None:
+            self.seams = SimpleNamespace(volume=_session_claim())
+
         async def open(self) -> None:
             return None
 
         async def close(self) -> None:
+            # The real session restores the graph and THEN releases the claim
+            # (reverse order of taking, after W5-c1's setup reorder). Both
+            # halves land in the one log, which is what makes this an order.
             order.append("graph")
+            if self.seams.volume is not None:
+                await self.seams.volume.release()
 
     class _LoggingCam(_FakeVolCam):
         async def set_volume_db(self, db: float, best_effort: bool = False) -> bool:
@@ -8169,6 +8219,7 @@ def test_the_graph_goes_back_before_the_fader_does(monkeypatch):
         session_volume_db = -20.0
 
     cam = _LoggingCam(-15.0)
+    _own_the_fader(monkeypatch, cam)
 
     async def scenario():
         hooks = v2host._volume_hooks(
@@ -8216,7 +8267,7 @@ def test_volume_hooks_release_pause_when_open_does_not_confirm(monkeypatch):
 # --- W6.1 Finding E: recovery paths actually recover -----------------------------
 
 
-def test_reconcile_drains_residual_owned_active_before_new_session():
+def test_reconcile_drains_residual_owned_active_before_new_session(monkeypatch):
     """E1: a residual owned-active plan (a prior failed session's leftover) is
     drained before a fresh session, so plan.open() starts clean instead of
     raising SessionVolumePlanError into the silent 200→adapter_failed loop."""
@@ -8227,6 +8278,7 @@ def test_reconcile_drains_residual_owned_active_before_new_session():
 
     plan = SessionVolumePlan()
     cam = _FakeVolCam(-15.0)
+    _own_the_fader(monkeypatch, cam)
     asyncio.run(plan.open(-20.0, FaderVolumeDoor(cam.set, cam.get)))
     assert plan.measurement_volume_db == -20.0
     assert not plan.needs_recovery  # owned-active this process, within ceiling
@@ -8239,7 +8291,7 @@ def test_reconcile_drains_residual_owned_active_before_new_session():
     assert cam.vol == -15.0  # restored to household
 
 
-def test_enforce_ceiling_drains_a_stale_active_and_is_cheap_otherwise():
+def test_enforce_ceiling_drains_a_stale_active_and_is_cheap_otherwise(monkeypatch):
     """E3: enforce_ceiling (previously zero callers) force-drains a session that
     outlived the wall-clock ceiling, and is a no-op on a healthy session."""
     from jasper.active_speaker.session_volume_plan import (
@@ -8250,6 +8302,7 @@ def test_enforce_ceiling_drains_a_stale_active_and_is_cheap_otherwise():
     clock = [1000.0]
     plan = SessionVolumePlan(wall_clock_ceiling_s=10.0, clock=lambda: clock[0])
     cam = _FakeVolCam(-15.0)
+    _own_the_fader(monkeypatch, cam)
     asyncio.run(plan.open(-20.0, FaderVolumeDoor(cam.set, cam.get)))
     assert cam.vol == -20.0
     v2host.set_volume_plan_for_tests(plan)
@@ -8283,7 +8336,7 @@ def test_v2_volume_recovery_active_tracks_needs_recovery():
     assert v2host.v2_volume_recovery_active() is False
 
 
-def test_recover_session_volume_routes_to_the_plan():
+def test_recover_session_volume_routes_to_the_plan(monkeypatch):
     """E2 host seam: recover_session_volume drains via the v2 plan's
     recover_unresolved (not the legacy lease) and reports the outcome."""
     from jasper.active_speaker.session_volume_plan import (
@@ -8303,6 +8356,7 @@ def test_recover_session_volume_routes_to_the_plan():
 
     v2host.set_volume_plan_for_tests(_Plan())
     cam = _FakeVolCam(-20.0)
+    _own_the_fader(monkeypatch, cam)
     succeeded, recovery = v2host.recover_session_volume(_bg_run_async, lambda: cam)
     assert succeeded is True
     assert recovery == "exact_restored"
@@ -8332,6 +8386,7 @@ def _real_hooks_scaffold(monkeypatch):
     plan = SessionVolumePlan()
     v2host.set_volume_plan_for_tests(plan)
     cam = _FakeVolCam(-15.0)
+    _own_the_fader(monkeypatch, cam)
 
     class _Ctx:
         session_volume_db = -20.0

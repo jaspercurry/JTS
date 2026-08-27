@@ -1300,23 +1300,21 @@ async def _play_under_session_pause(play_body: Callable[[], Any]) -> None:
 _SESSION_VOLUME_DRAIN_TIMEOUT_S = 15.0
 
 
-def _session_volume_io(camilla_factory: Any) -> tuple[Callable[[float], Any], Callable[[], Any]]:
-    """(set, get) main-volume callables, fail-closed on CamillaUnavailable so a
-    wedged DSP cannot silently no-op a recovery.
+def _session_volume_read(camilla_factory: Any) -> Callable[[], Any]:
+    """The main-volume READER, fail-closed on CamillaUnavailable.
 
-    **Three consumers, and only one of them writes.** :func:`_volume_door`
-    (`:1338`) wraps both into the plan's door; the capture-time hold (`:4276`)
-    takes ``_get`` alone; :func:`bind_v2_engine_seams` (`:5894`) takes ``_get``
-    alone for the interim volume claim, and is the site W5-c1 rewires onto
-    :class:`~jasper.volume_owner.VolumeOwner`.
+    **The write half is gone, and its absence is the point of W5-c1.** This
+    factory returned a ``(set, get)`` pair, and that ``_set`` was the one named
+    exception to ``VolumeOwner`` owning this fader — it called
+    ``CamillaController.set_volume_db`` directly, with no coordinator and no
+    arbitration. Every writer that consumed it now goes through the owner, so
+    there is nothing left for it to serve and it is deleted rather than left
+    for the next caller to find.
+
+    Reads never were the exception, and both survivors are reads: the
+    capture-time hold, and :func:`_volume_door`'s physical snapshot.
     """
     from jasper.camilla import CamillaUnavailable
-
-    async def _set(db: float) -> bool:
-        try:
-            return await camilla_factory().set_volume_db(db, best_effort=False)
-        except CamillaUnavailable as exc:
-            raise RuntimeError("CamillaDSP is unavailable") from exc
 
     async def _get() -> float | None:
         try:
@@ -1324,31 +1322,74 @@ def _session_volume_io(camilla_factory: Any) -> tuple[Callable[[float], Any], Ca
         except CamillaUnavailable as exc:
             raise RuntimeError("CamillaDSP is unavailable") from exc
 
-    return _set, _get
+    return _get
 
 
-def _volume_door(camilla_factory: Any) -> "VolumeDoor":
+def _fail_closed_volume_door(reason: str) -> "VolumeDoor":
+    """A door for a process with no owner: reports "not in effect", writes none.
+
+    ``jasper.web.__main__`` installs an owner before serving, so a missing one
+    is a registration defect rather than a shape this module supports. It
+    discloses at CRITICAL and hands back a door whose every verb fails —
+    minting a second owner here would be the arbitration failure the owner
+    exists to delete, and every caller already treats a ``False`` restore as a
+    failed drain that latches.
+    """
+
+    class _NoOwnerDoor:
+        async def read_household_level_db(self) -> float | None:
+            return None
+
+        async def establish_measurement_level_db(self, level_db: float) -> bool:
+            return False
+
+        async def restore_household_level_db(self, level_db: float) -> bool:
+            return False
+
+    log_event(
+        logger,
+        "correction.crossover_v2_volume_owner_absent",
+        level=logging.CRITICAL,
+        door=reason,
+    )
+    return _NoOwnerDoor()
+
+
+def _volume_door(
+    camilla_factory: Any, *, claim: Any = None, reason: str = "drain",
+) -> "VolumeDoor":
     """The plan's one door for every path in this module that drains or opens.
 
-    ONE builder for all four writing call sites, which is the point: W5-c1
-    moves this module's fader authority onto
-    :class:`~jasper.volume_owner.VolumeOwner`, and every caller below asks for
-    its door here rather than assembling one — so that move is a change to
-    this function's body instead of a change to four sites that could each
-    drift.
+    ONE builder, which is the point: this module's fader authority is
+    :class:`~jasper.volume_owner.VolumeOwner`, and every caller asks for its
+    door here rather than assembling one, so the binding is a single fact.
+
+    ``claim`` is the session's :class:`~jasper.active_speaker.crossover_v2.
+    volume_claim.MeasurementVolumeClaim` when a session is opening, and
+    ``None`` for the three OUT-OF-RUNNER drains — ceiling enforcement,
+    unresolved recovery and the new-session reconcile — which run when no
+    session exists and therefore have no claim to establish through. They need
+    the restore leg only, and a door that cannot establish says so rather than
+    pretending.
 
     **The capture-time hold keeps a RAW getter and must not be moved onto this
     door.** Not because it happens not to write: because
     ``hold_measurement_volume`` is the #2925 tripwire, and a tripwire has to
-    read the PHYSICAL fader. An owner-backed read answers with the level the
-    owner DECLARES, so routing the hold through a door would compare the
-    declared level against itself — the check would pass by construction, on
-    every capture, including the ones where the fader had genuinely moved.
-    That is the whole defect #2925 recorded, rebuilt as a green light.
+    read the PHYSICAL fader. This door's own read is physical for exactly that
+    reason — see ``OwnerVolumeDoor.read_household_level_db`` — but routing the
+    hold through the plan's door would still be wrong, because the hold asks
+    its question per stimulus against the level the PLAN declares, not against
+    a household level.
     """
-    from jasper.active_speaker.session_volume_plan import FaderVolumeDoor
+    from jasper.active_speaker.crossover_v2.volume_claim import OwnerVolumeDoor
+    from jasper.volume_owner import volume_owner
 
-    return FaderVolumeDoor(*_session_volume_io(camilla_factory))
+    owner = volume_owner()
+    if owner is None:
+        return _fail_closed_volume_door(reason)
+    return OwnerVolumeDoor(
+        owner, read_fader=_session_volume_read(camilla_factory), claim=claim,
+    )
 
 
 def _release_pause_best_effort(run_async: Any) -> None:
@@ -4328,7 +4369,7 @@ def bind_production_play(
             ``None`` means the plan holds no volume to prove; that is its
             question to answer, so this discloses and plays on.
             """
-            _, get_v = _session_volume_io(open_cam)
+            get_v = _session_volume_read(open_cam)
             held = await session_volume_plan().hold_measurement_volume(
                 get_v, context=f"capture:{phase}",
             )
@@ -5611,12 +5652,15 @@ def _volume_hooks(
     camilla_factory: Any, context: V2ConductorContext, *, tuning: Any,
 ) -> V2VolumeHooks:
     plan = session_volume_plan()
-    # The shared IO pair converts CamillaUnavailable (a bare Exception) into
-    # RuntimeError, which plan.open's internal catches and set_and_confirm's
-    # fail-closed contract actually cover — a DSP wedge during open then drains
-    # to a non-OPENED result instead of raising an unhandled exception past the
-    # runner (the W6.1 gate's escape class).
-    door = _volume_door(camilla_factory)
+    # THE SAME CLAIM the engine session holds, not a second one. The plan's
+    # door establishes through it and ``TuningSession.open`` takes the session
+    # slot through it; two ``MeasurementVolumeClaim`` objects over one owner
+    # would collide on the owner's same-kind rule, and that rule is there for
+    # OTHER holders — level-match, autolevel, the balance guard — not for a
+    # session arguing with itself.
+    door = _volume_door(
+        camilla_factory, claim=tuning.seams.volume, reason="session",
+    )
 
     async def _open() -> Any:
         # Hold voice paused for the WHOLE session BEFORE setting the volume, so
@@ -5638,13 +5682,18 @@ def _volume_hooks(
             # swaps — install and restore — for a session that never plays.
             # The runners' own non-OPENED branch is what tells the household
             # why, and it is only reachable if this result gets back to it.
+            #
+            # A refused CLAIM lands here too, and that is the NB1 property one
+            # frame down: ``plan.open`` establishes through the claim, so a
+            # session another holder's level-match still owns is refused before
+            # ``tuning.open()`` is ever called, and costs zero graph swaps.
             return opened
-        # AFTER the plan confirms, and that order is the whole of it. The
-        # session's volume slot is the interim claim, which VERIFIES the plan
-        # is open at this level rather than taking one — so opening the session
-        # before the plan exists refuses every session on `assert_ready`. Here
-        # the two are symmetric: the session opens where the plan opened, and
-        # closes where the graph went back.
+        # AFTER the plan confirms, and that order is the whole of it. The plan
+        # writes its durable intent BEFORE the claim is taken, so a crash in
+        # the gap hydrates as a recoverable state rather than a forgotten one;
+        # then ``tuning.open()`` finds the session's claim already held at this
+        # level and takes the graph. The two are symmetric: the session opens
+        # where the plan opened, and closes where the graph went back.
 
         async def _give_back_the_level() -> None:
             """Drain the level this open took, then let voice go.
@@ -6001,31 +6050,49 @@ def bind_v2_engine_seams(
     solved. The two coexist for the whole cutover: ``V2FlowSeams``'s
     apply/rollback half never moves.
 
-    **The volume seam is the INTERIM one, and that is a single-authority
-    decision rather than a shortcut.** ``SessionVolumePlan`` still owns this
-    fader through its own door until W5-c deletes it, so binding a real
-    ``MeasurementVolumeClaim`` here would put two authorities on one fader for
-    a whole wave — and they do not merely coexist, they RESTORE DIFFERENTLY:
-    the owner's release lands on the current next-ranked level, the plan's
-    drain lands on the original snapshot through its exact→emergency ladder.
-    A household level that moved mid-session makes the two disagree, with no
-    ordering between them. W5-c swaps the authority and deletes the doors in
-    one PR, so no commit boundary ever has two writers.
+    **The volume seam is the REAL claim, and this session is its first
+    production path.** ``SessionVolumePlan`` no longer writes this fader at
+    all: it keeps the durable half — the snapshot, the write-before-first-
+    mutation, the wall-clock ceiling and the unresolved latch — and reaches the
+    same :class:`~jasper.volume_owner.VolumeOwner` through
+    ``OwnerVolumeDoor``. One authority, one writer.
+
+    The two restores that used to have no ordering between them now have one.
+    The owner's release lands the fader on the current next-ranked level; the
+    plan's drain lands on the snapshot it took before its first mutation; the
+    session releases first and the plan's ladder declares second, so the
+    durable snapshot is last and wins.
+
+    **The claim this binds is the session's ONE claim**, and the plan's door
+    holds the same object — ``_volume_hooks`` builds its door over
+    ``tuning.seams.volume`` rather than minting a second. Two claims of one
+    kind is a ``VolumeClaimConflict`` by the owner's own rule, and it is a rule
+    worth keeping sharp for the holders it is actually about.
     """
     from jasper.active_speaker.crossover_v2.program_transaction import (
         ProgramPlaybackTransaction,
     )
     from jasper.active_speaker.crossover_v2.record_store import BankedRecordStore
     from jasper.active_speaker.crossover_v2.session_seams import EngineSeams
-    from jasper.active_speaker.crossover_v2.volume_claim import PlanHeldVolumeClaim
+    from jasper.active_speaker.crossover_v2.volume_claim import (
+        MeasurementVolumeClaim,
+    )
     from jasper.cli.crossover_recommender import BankedRoundRecommender
+    from jasper.volume_owner import volume_owner
 
     plan = session_volume_plan()
-    _set, _get = _session_volume_io(camilla_factory)
-    del _set  # the plan owns the write this wave; this seam only reads.
+    owner = volume_owner()
+    if owner is None:
+        # A registration defect, not a supported shape — ``web.__main__``
+        # installs one before serving. Refuse the session rather than mint a
+        # second owner over one fader.
+        raise RuntimeError(
+            "no volume owner is installed; the measurement session cannot "
+            "claim the fader"
+        )
     return EngineSeams(
         graph=session_graph if routed_phases else _NoRoutedPhasesGraph(),
-        volume=PlanHeldVolumeClaim(plan, _get),
+        volume=MeasurementVolumeClaim(owner),
         # F9, answered by W1-c and left un-bridged on purpose: ``bank``
         # returns a store-relative PATH while the shipped flow publishers write
         # artifact FINGERPRINTS into ``refs`` — and they still do.

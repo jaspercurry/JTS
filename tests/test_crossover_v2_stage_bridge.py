@@ -95,6 +95,35 @@ from jasper.output_topology import (
 )
 from jasper.web import correction_crossover_v2 as v2host
 
+
+@pytest.fixture(autouse=True)
+def _a_process_with_a_volume_owner(monkeypatch):
+    """Every test here drives production wiring, which requires an owner.
+
+    ``jasper.web.__main__`` installs one before serving, so a process without
+    one is a registration defect rather than a shape the session supports —
+    and W5-c1 made the session say so instead of minting a second authority
+    over the fader. A module that exercises that wiring has to stand up the
+    same precondition; ``_real_seam_session`` then replaces this stand-in with
+    an owner over its own fixture fader.
+    """
+    import jasper.volume_owner as _vo
+
+    standin = {"db": -20.0}
+
+    async def _set(db):
+        standin["db"] = float(db)
+        return True
+
+    async def _get():
+        return standin["db"]
+
+    monkeypatch.setattr(
+        _vo, "_process_owner",
+        _vo.VolumeOwner(set_fader_db=_set, get_fader_db=_get),
+    )
+
+
 # --------------------------------------------------------------------------- #
 # private reaches, all of them, in one place
 #
@@ -1886,7 +1915,34 @@ def _real_seam_session(monkeypatch, cam_factory=None, graph=None) -> dict:
     never met `SessionVolumePlan` — and that is exactly why it passed while
     every real session was refusing on `assert_ready`. A pin that swaps the
     subject cannot see the subject's coupling.
+
+    The same rule now seats a REAL `VolumeOwner` over this fixture's fader:
+    the claim is the fader's authority after W5-c1, so a substituted owner
+    would hide exactly the coupling these pins exist to check.
     """
+    import jasper.volume_owner as _vo
+
+    _cam_for_owner = (cam_factory or (lambda: None))()
+    if _cam_for_owner is not None:
+        _owner_set = lambda db: _cam_for_owner.set_volume_db(db, best_effort=True)  # noqa: E731
+        _owner_get = lambda: _cam_for_owner.get_volume_db(best_effort=True)  # noqa: E731
+    else:
+        _standin = {"db": -20.0}
+
+        async def _owner_set(db):
+            _standin["db"] = float(db)
+            return True
+
+        async def _owner_get():
+            return _standin["db"]
+
+    # Seated through the module global so monkeypatch restores the process.
+    monkeypatch.setattr(
+        _vo,
+        "_process_owner",
+        _vo.VolumeOwner(set_fader_db=_owner_set, get_fader_db=_owner_get),
+    )
+
     captured: dict[str, Any] = {}
     real_hooks = v2host._volume_hooks
 
@@ -2126,6 +2182,61 @@ async def test_a_cancel_inside_the_give_back_still_drains_the_level(monkeypatch)
     assert plan.measurement_volume_db is None, (
         "the cancel aborted the drain — the fader is stranded at measurement "
         "level with nobody holding it"
+    )
+    assert cam.db == -15.0, "the fader never came back"
+    v2host.set_volume_plan_for_tests(None)
+
+
+async def test_a_raising_pause_release_does_not_lose_the_give_back_drain(
+    monkeypatch,
+):
+    """MN2c: the drain runs FIRST, so a failing pause release cannot eat it.
+
+    The give-back's inner order is load-bearing and was correct-but-unpinned
+    until here. A fader left at measurement level is worse than voice left
+    paused, so the drain goes first and the pause release rides a ``finally``.
+    Swap the two statements and this pin is the one that reds: the release
+    raises, the drain never runs, and the speaker is left at measurement
+    level with the plan holding an intent nobody will drain.
+    """
+    from jasper.active_speaker.session_volume_plan import SessionVolumePlan
+    from tests.engine_twin import FakeGraph
+
+    async def _no_pause() -> None:
+        return None
+
+    async def _raising_release() -> None:
+        raise RuntimeError("the measurement pause could not be released")
+
+    monkeypatch.setattr(v2host, "acquire_session_measurement_pause", _no_pause)
+    monkeypatch.setattr(
+        v2host, "release_session_measurement_pause", _raising_release,
+    )
+    plan = SessionVolumePlan()
+    v2host.set_volume_plan_for_tests(plan)
+
+    class _Cam:
+        def __init__(self) -> None:
+            self.db = -15.0
+
+        async def get_volume_db(self, best_effort: bool = False) -> float:
+            return self.db
+
+        async def set_volume_db(self, db: float, best_effort: bool = False) -> bool:
+            self.db = float(db)
+            return True
+
+    cam = _Cam()
+    captured = _real_seam_session(
+        monkeypatch, cam_factory=lambda: cam, graph=FakeGraph(install_raises=True),
+    )
+
+    with pytest.raises(BaseException):
+        await captured["hooks"].open()
+
+    assert plan.measurement_volume_db is None, (
+        "the raising pause release swallowed the drain — the plan still "
+        "holds an intent nobody will drain"
     )
     assert cam.db == -15.0, "the fader never came back"
     v2host.set_volume_plan_for_tests(None)
