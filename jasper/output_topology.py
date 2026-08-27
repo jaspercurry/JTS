@@ -30,7 +30,6 @@ from .json_fields import JsonFields
 from .audio_hardware.dac import (
     APPLE_USB_C_DONGLE_ID as APPLE_USB_C_DONGLE_DEVICE_ID,
     DUAL_APPLE_USB_C_DAC_4CH_ID as DUAL_APPLE_USB_C_DAC_4CH_DEVICE_ID,
-    HIFIBERRY_DAC8X_ID as HIFIBERRY_DAC8X_DEVICE_ID,  # noqa: F401 - re-export.
     HIFIBERRY_DAC8X_STUDIO_ID as HIFIBERRY_DAC8X_STUDIO_DEVICE_ID,  # noqa: F401 - re-export.
     ChannelMapEntry,
     DacProfile,
