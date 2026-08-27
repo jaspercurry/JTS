@@ -39,19 +39,29 @@ impl BackendMode {
     }
 }
 
+/// WHERE THIS BOX'S CONTENT COMES FROM — one resolved source, never a ranking.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ContentBridgeMode {
     /// The RETIRED snd-aloop route's name, kept only so the refusals that park
     /// a box carrying it can say which route it asked for. Nothing serves it:
-    /// the composite park, the round-trip lane's own bridge requirement and —
-    /// for every other shape — `main`'s run loop, which finds no ring to read
-    /// and parks at the first period, are the three exits it reaches.
+    /// the composite park, the FIFO round-trip lane's own bridge requirement
+    /// and — for every other shape — `main`'s run loop, which finds no ring to
+    /// read and parks at the first period, are the three exits it reaches.
     Direct,
     /// The one transport (ADR-0100): read the post-DSP program from an n-slot
     /// SHM ping-pong ring the CamillaDSP-playback ALSA ioplug writes. This is
     /// what an UNDECLARED `JASPER_OUTPUTD_CONTENT_BRIDGE` resolves to. See
     /// `jasper_ring` and `shm_ring_source.rs`.
     ShmRing,
+    /// The group RETURN lane is this box's sole content source: the bond's
+    /// shared program arrives on [`DEFAULT_DAC_CONTENT_RING_PATH`] and no
+    /// central content hop is attached at all.
+    ///
+    /// NOT a spelling of `JASPER_OUTPUTD_CONTENT_BRIDGE` — no env value parses
+    /// to it. It is what an armed `JASPER_OUTPUTD_DAC_CONTENT_LANE` RESOLVES,
+    /// and declaring the bridge alongside that marker is refused, so the two
+    /// vocabularies can never both describe one box.
+    DacContentRing,
 }
 
 /// SHM ring reader settings (PROTOTYPE — only meaningful when
@@ -145,6 +155,7 @@ impl ContentBridgeMode {
         match self {
             Self::Direct => "direct",
             Self::ShmRing => "shm_ring",
+            Self::DacContentRing => "dac_content_ring",
         }
     }
 }
@@ -250,6 +261,11 @@ pub struct Config {
     /// snapclient writes [`DEFAULT_DAC_CONTENT_RING_PATH`] through the C
     /// ioplug. Mutually exclusive with `dac_content_fifo` — one lane, one
     /// source — and the path is the constant, never operator input.
+    ///
+    /// An armed marker SELECTS the content source: it resolves
+    /// [`ContentBridgeMode::DacContentRing`], so [`Self::shm_ring`] is `None`
+    /// and this is the only ring outputd attaches. Declaring
+    /// `JASPER_OUTPUTD_CONTENT_BRIDGE` beside it is refused for that reason.
     ///
     /// **Nothing writes this key yet.** The reconciler side is its own change;
     /// until it lands an armed lane is an operator action, and the FIFO stays
@@ -365,16 +381,40 @@ impl Config {
             "JASPER_OUTPUTD_DAC_BUFFER_FRAMES",
             DEFAULT_DAC_BUFFER_FRAMES,
         )?;
+        // The round-trip lane's DESTINATION transport (ADR-0100): a bare
+        // arm/disarm marker, shaped like JASPER_OUTPUTD_ACTIVE_LANE rather than
+        // like a path env, because the return ring has exactly one spelling and
+        // no role-dependent variant. The path is the named constant — never
+        // operator input — so there is no path<->role allowlist to write for it:
+        // the crossing the active ring's biconditional exists to refuse (some
+        // OTHER box reading the active path) cannot be expressed, since no env
+        // can name this path.
+        //
+        // READ AHEAD OF THE BRIDGE because it SELECTS the content source: an
+        // armed marker means the bond's return lane is where this box's program
+        // comes from, so there is no central hop left for a bridge to name.
+        let dac_content_ring = env_bool("JASPER_OUTPUTD_DAC_CONTENT_LANE", false)
+            .then(|| DEFAULT_DAC_CONTENT_RING_PATH.to_string());
+        // Blank == undeclared, matching the reconciler's disable-clears-stale
+        // idiom (it CLEARS a key by writing an empty value). The refusal below
+        // reads this; the resolution keeps `env_str`, whose raw read still parks
+        // a no-marker box that carries a blank bridge line.
+        let declared_content_bridge = env_optional("JASPER_OUTPUTD_CONTENT_BRIDGE");
         // UNDECLARED == the one transport. ADR-0100 makes `shm_ring` the only
         // upstream outputd serves, so a box that names nothing gets it; the
         // `direct` spellings survive only to be REFUSED downstream — by the
-        // composite park, by the round-trip lane's own requirement, and (for
-        // every other shape) at the first period, where there is no ring to
+        // composite park, by the FIFO round-trip lane's own requirement, and
+        // (for every other shape) at the first period, where there is no ring to
         // read. Mirrors `jasper-fanin`'s coupling accept-set.
         let raw_content_bridge = env_str("JASPER_OUTPUTD_CONTENT_BRIDGE", "shm_ring")
             .trim()
             .to_ascii_lowercase();
         let content_bridge_mode = match raw_content_bridge.as_str() {
+            // THE MARKER OWNS THE DECISION, ahead of every spelling below: the
+            // return lane IS the content source and no central ring attaches.
+            // A bridge declared alongside it is refused with the lane's other
+            // shape guards, so nothing is being overridden silently here.
+            _ if dac_content_ring.is_some() => ContentBridgeMode::DacContentRing,
             "direct" | "off" | "disabled" => ContentBridgeMode::Direct,
             "shm_ring" | "shmring" | "ring" => ContentBridgeMode::ShmRing,
             other if REMOVED_RATE_MATCH_BRIDGE_SPELLINGS.contains(&other) => {
@@ -566,11 +606,12 @@ impl Config {
         // Multi-room round-trip lane (Increment 3). Fail-loud contract
         // guards, written as ALLOWLISTS (not denylists): DacContentSource
         // is structurally stereo (2-channel periods — see period_bytes),
-        // and it IS the content source, so the lane is valid ONLY on the
-        // single-ALSA Direct content path. Rejecting "anything that is not
-        // the supported mode" — rather than "the one unsupported mode that
-        // exists today" — makes a future sink / bridge mode fail CLOSED
-        // (loud at startup) instead of silently mis-sizing content_buf.
+        // and it IS the content source, so the lane is valid ONLY on a
+        // single-ALSA sink that names no second content source. Rejecting
+        // "anything that is not the supported mode" — rather than "the one
+        // unsupported mode that exists today" — makes a future sink / bridge
+        // mode fail CLOSED (loud at startup) instead of silently mis-sizing
+        // content_buf.
         let dac_content_fifo = env_optional("JASPER_OUTPUTD_DAC_CONTENT_FIFO");
         let dac_content_trim_db = env_f32("JASPER_OUTPUTD_DAC_CONTENT_TRIM_DB", 0.0)?;
         if dac_content_trim_db > 0.0 {
@@ -632,16 +673,6 @@ impl Config {
                 }
             },
         };
-        // The lane's DESTINATION transport (ADR-0100): a bare arm/disarm marker,
-        // shaped like JASPER_OUTPUTD_ACTIVE_LANE rather than like a path env,
-        // because the return ring has exactly one spelling and no role-dependent
-        // variant. The path is the named constant — never operator input — so
-        // there is no path<->role allowlist to write here: the crossing the
-        // active ring's biconditional exists to refuse (some OTHER box reading
-        // the active path) cannot be expressed, since no env can name this path.
-        let dac_content_ring = env_bool("JASPER_OUTPUTD_DAC_CONTENT_LANE", false)
-            .then(|| DEFAULT_DAC_CONTENT_RING_PATH.to_string());
-
         // ONE lane, ONE source. Both spellings armed is a writer fault, not a
         // state a healthy box can be in — and guessing which transport wins
         // would silently pick one snapclient's output over another's.
@@ -666,7 +697,25 @@ impl Config {
             None
         };
         if let Some(key) = dac_content_key {
-            if content_bridge_mode != ContentBridgeMode::Direct {
+            if dac_content_ring.is_some() {
+                // ONE SOURCE, ONE SPELLING. The marker already said where this
+                // box's content comes from — the group return lane — so a bridge
+                // declaration can only restate that decision in a second
+                // vocabulary or contradict it, and outputd would have to rank
+                // two writers' programs to tell which. Refusing the pair is what
+                // lets the marker be read as the whole answer everywhere else.
+                if let Some(declared) = declared_content_bridge.as_deref() {
+                    anyhow::bail!(
+                        "{key} is armed, so JASPER_OUTPUTD_CONTENT_BRIDGE={:?} cannot \
+                         also be declared: the marker IS this box's content-source \
+                         decision (the bond's return lane at {}), and no central \
+                         content hop is attached beside it. Remove the \
+                         JASPER_OUTPUTD_CONTENT_BRIDGE line",
+                        declared,
+                        DEFAULT_DAC_CONTENT_RING_PATH
+                    );
+                }
+            } else if content_bridge_mode != ContentBridgeMode::Direct {
                 anyhow::bail!(
                     "{key} requires JASPER_OUTPUTD_CONTENT_BRIDGE=direct (the \
                      round-trip lane is itself the content source; it cannot share \
@@ -804,7 +853,11 @@ impl Config {
         let is_full_range_stereo_lr_sink =
             sink_mode == SinkMode::SingleAlsa && content_channels == 2 && !active_lane;
 
-        if content_bridge_mode != ContentBridgeMode::Direct
+        // Scoped by NAME to the central ring — the one mode this message is
+        // about. `!= Direct` used to say the same thing when the enum had two
+        // variants; it would now also catch a marker-armed box and answer it
+        // with a paragraph about a key that box must not declare.
+        if content_bridge_mode == ContentBridgeMode::ShmRing
             && !is_full_range_stereo_lr_sink
             && !ring_active_ok
         {
@@ -849,12 +902,13 @@ impl Config {
             }
         }
 
-        // The SHM ring reader's settings. `Some` iff the ring is the resolved
-        // transport; the predicate above already rejected it on any sink that is
-        // neither a full-range stereo L/R sink nor an armed ACTIVE-ring endpoint
-        // (which since P8b item 1 includes a composite), and the dac-content
-        // guard (which requires Direct) already made the ring mutually exclusive
-        // with the round-trip lane. The remaining validation is the slot count.
+        // The SHM ring reader's settings. `Some` iff the CENTRAL ring is the
+        // resolved source; the predicate above already rejected it on any sink
+        // that is neither a full-range stereo L/R sink nor an armed ACTIVE-ring
+        // endpoint (which since P8b item 1 includes a composite), and the
+        // round-trip lane resolved a source of its own, so the two are mutually
+        // exclusive by resolution rather than by a guard. The remaining
+        // validation is the slot count.
         let shm_ring = match content_bridge_mode {
             ContentBridgeMode::ShmRing => {
                 let n_slots = env_u32("JASPER_OUTPUTD_SHM_RING_SLOTS", DEFAULT_SHM_RING_SLOTS)?;
@@ -872,7 +926,9 @@ impl Config {
                     n_slots,
                 })
             }
-            ContentBridgeMode::Direct => None,
+            // No central hop: the retired route names none, and the armed
+            // marker's return lane IS the source (`dac_content_ring` below).
+            ContentBridgeMode::Direct | ContentBridgeMode::DacContentRing => None,
         };
 
         // THE ALLOWLIST — positive equality in BOTH directions, never a
@@ -1076,26 +1132,8 @@ mod tests {
         &'static [(&'static str, Option<&'static str>)],
     );
 
-    /// What a composite fixture must declare since #2285 P2 retired the default.
-    ///
-    /// `default_content_pcm`'s `(Composite, Direct)` arm used to guess
-    /// `outputd_active_content_capture`; #2534 deleted that PCM, so the arm now
-    /// REFUSES rather than guessing (the refusal is pinned by
-    /// `a_composite_sink_on_the_direct_bridge_refuses_an_undeclared_content_pcm`).
-    ///
-    /// **Why so many fixtures need it, and why setting it is not papering over
-    /// anything.** That refusal is the FIRST composite guard — line order puts it
-    /// ahead of the child-PCM, distinct-PCM, delay-budget, active-channel-width,
-    /// TTS-socket and dac-content-lane guards. So a composite fixture that
-    /// declares no content PCM now trips this refusal BEFORE reaching the guard
-    /// it exists to exercise, and its assertion reads a message about the wrong
-    /// thing. Declaring the PCM restores each test to the path it was written
-    /// for; every one of them keeps its ORIGINAL assertion, so a target guard
-    /// that stopped biting would still fail its own test.
-    ///
-    /// The value is deliberately a name no ALSA config defines: nothing here
-    /// opens a PCM, and a plausible-looking real name would invite a reader to
-    /// think the lane is resolved rather than merely declared.
+    /// Run `f` with the outputd env scrubbed to exactly `vars`, serialized
+    /// against every other env test and restored afterwards.
     fn with_env<F: FnOnce()>(vars: &[(&str, Option<&str>)], f: F) {
         let _guard = ENV_LOCK
             .lock()
@@ -1167,41 +1205,56 @@ mod tests {
         });
     }
 
-    /// The marker arms the ring transport at the ONE named path.
+    /// The marker alone SELECTS the content source: the return ring at the ONE
+    /// named path, and nothing else.
     ///
     /// The path is not operator input: no env names it, so a box either reads
     /// the return ring or reads nothing. That is the whole reason this lane
     /// needs no path<->role biconditional of the active ring's kind.
+    ///
+    /// This is also the ATTACH selection, because `main`'s `run_alsa` attaches
+    /// exactly the rings these two fields name: `shm_ring` for the central hop,
+    /// `dac_content_ring` for the return lane. `None` + `Some` is therefore
+    /// "exactly one ring is requested".
+    ///
+    /// A BLANK bridge is undeclared, not a declaration: the reconciler clears a
+    /// key by writing an empty value, so the marker must survive that spelling.
     #[test]
-    fn the_dac_content_marker_arms_the_ring_at_the_named_path() {
-        with_env(
-            &[
-                ("JASPER_OUTPUTD_DAC_CONTENT_LANE", Some("1")),
-                ("JASPER_OUTPUTD_DAC_CONTENT_CHANNEL", Some("left")),
-                ("JASPER_OUTPUTD_CONTENT_BRIDGE", Some("direct")),
-            ],
-            || {
-                let cfg = Config::from_env().unwrap();
-                assert_eq!(
-                    cfg.dac_content_ring.as_deref(),
-                    Some(DEFAULT_DAC_CONTENT_RING_PATH)
-                );
-                assert!(cfg.dac_content_fifo.is_none());
-                assert_eq!(cfg.dac_content_channel, ChannelPick::Left);
-                // The lane owns the content source, so no central ring attaches.
-                assert!(cfg.shm_ring.is_none());
-            },
-        );
+    fn the_dac_content_marker_selects_the_return_ring_as_the_sole_source() {
+        for bridge in [None, Some("")] {
+            with_env(
+                &[
+                    ("JASPER_OUTPUTD_DAC_CONTENT_LANE", Some("1")),
+                    ("JASPER_OUTPUTD_DAC_CONTENT_CHANNEL", Some("left")),
+                    ("JASPER_OUTPUTD_CONTENT_BRIDGE", bridge),
+                ],
+                || {
+                    let cfg = Config::from_env().unwrap();
+                    assert_eq!(
+                        cfg.dac_content_ring.as_deref(),
+                        Some(DEFAULT_DAC_CONTENT_RING_PATH)
+                    );
+                    assert!(cfg.dac_content_fifo.is_none());
+                    assert_eq!(cfg.dac_content_channel, ChannelPick::Left);
+                    // The lane owns the content source, so no central ring
+                    // attaches and the resolved mode says which source won.
+                    assert_eq!(cfg.content_bridge_mode, ContentBridgeMode::DacContentRing);
+                    assert!(cfg.shm_ring.is_none());
+                },
+            );
+        }
     }
 
     /// ONE lane, ONE source: both transports armed is refused, not ranked.
+    ///
+    /// No bridge is declared, so the two-transports fault is the ONLY one on
+    /// this box and the message it gets names both keys it has to drop.
     #[test]
     fn arming_both_dac_content_transports_is_refused() {
         with_env(
             &[
                 ("JASPER_OUTPUTD_DAC_CONTENT_LANE", Some("1")),
                 ("JASPER_OUTPUTD_DAC_CONTENT_FIFO", Some("/run/x.fifo")),
-                ("JASPER_OUTPUTD_CONTENT_BRIDGE", Some("direct")),
             ],
             || {
                 let err = Config::from_env().expect_err("two transports must be refused");
@@ -1214,42 +1267,56 @@ mod tests {
 
     /// The ring arm inherits the lane's shape guards, and adds the slot one.
     ///
-    /// Each row is a config a leader could plausibly be given and must NOT
-    /// start on: the pick would reach a crossover, the lane would share the DAC
-    /// with the central ring, the sink is not one this lane can drive, or the
-    /// slot is not one DAC period. Parametrized rather than four near-identical
-    /// tests, and asserting only that startup REFUSES — never the prose.
+    /// Each row is a config a bonded member could plausibly be given and must
+    /// NOT start on: the pick would reach a crossover, a second content-source
+    /// vocabulary is declared beside the marker, the sink is not one this lane
+    /// can drive, or the slot is not one DAC period. Parametrized rather than
+    /// five near-identical tests, and asserting only that startup REFUSES —
+    /// never the prose.
+    ///
+    /// Both bridge rows matter: `shm_ring` would be a second content source,
+    /// and `direct` is the spelling the marker REQUIRED before it selected the
+    /// source itself — so a box carrying the old pairing parks loudly rather
+    /// than starting under a decision two keys claim to own.
     #[test]
     fn the_ring_arm_refuses_every_shape_it_cannot_serve() {
-        let cases: [EnvCase; 4] = [
+        let cases: [EnvCase; 5] = [
             (
                 "active-crossover lane: the pick would reach the tweeter",
                 &[
                     ("JASPER_OUTPUTD_DAC_CONTENT_LANE", Some("1")),
-                    ("JASPER_OUTPUTD_CONTENT_BRIDGE", Some("direct")),
                     ("JASPER_OUTPUTD_ACTIVE_LANE", Some("1")),
                 ],
             ),
             (
-                "central ring too: two content sources on one DAC",
+                "central ring declared too: two content sources on one DAC",
                 &[
                     ("JASPER_OUTPUTD_DAC_CONTENT_LANE", Some("1")),
                     ("JASPER_OUTPUTD_CONTENT_BRIDGE", Some("shm_ring")),
                 ],
             ),
             (
-                "composite sink: not a stereo single-DAC member path",
+                "the retired route declared too: one source, one spelling",
                 &[
                     ("JASPER_OUTPUTD_DAC_CONTENT_LANE", Some("1")),
                     ("JASPER_OUTPUTD_CONTENT_BRIDGE", Some("direct")),
+                ],
+            ),
+            (
+                "composite sink: not a stereo single-DAC member path",
+                &[
+                    ("JASPER_OUTPUTD_DAC_CONTENT_LANE", Some("1")),
                     ("JASPER_OUTPUTD_SINK", Some("dual_apple")),
+                    // Declared, or the composite's own child-PCM requirement
+                    // refuses this row before the sink fence it is about.
+                    ("JASPER_OUTPUTD_DUAL_DAC_A_PCM", Some("hw:CARD=A,DEV=0")),
+                    ("JASPER_OUTPUTD_DUAL_DAC_B_PCM", Some("hw:CARD=B,DEV=0")),
                 ],
             ),
             (
                 "period is not the ring's slot: the writer could never open it",
                 &[
                     ("JASPER_OUTPUTD_DAC_CONTENT_LANE", Some("1")),
-                    ("JASPER_OUTPUTD_CONTENT_BRIDGE", Some("direct")),
                     ("JASPER_OUTPUTD_PERIOD_FRAMES", Some("512")),
                 ],
             ),
@@ -2499,6 +2566,17 @@ mod tests {
                 assert!(err.contains("rate_matchh"), "must echo the value: {err}");
             },
         );
+    }
+
+    /// A BLANK bridge counts as undeclared ONLY beside an armed round-trip
+    /// marker (the reconciler clears a key by emitting an empty value). Without
+    /// the marker it is still an unusable declaration and the box still parks —
+    /// the byte-identity this file's blank-vs-declared split must not move.
+    #[test]
+    fn a_blank_content_bridge_without_the_marker_still_parks() {
+        with_env(&[("JASPER_OUTPUTD_CONTENT_BRIDGE", Some(""))], || {
+            assert!(Config::from_env().is_err());
+        });
     }
 
     #[test]
