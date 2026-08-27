@@ -14,8 +14,7 @@ the unit cannot exhaust another restart burst and re-enter the handler
 This module is the reader, and it is deliberately ONE reader with two
 consumers — ``jasper-doctor``'s ``check_camilla_recover_park`` and
 ``/state.resilience.camilla_recover`` — so the operator-facing verdict
-cannot differ between the two surfaces. It is the core-graph twin of
-:mod:`jasper.control.content_lane_state`; the shared read half, and the
+cannot differ between the two surfaces. The shared read half, and the
 reasoning behind its fail-soft posture, live in
 :mod:`jasper.control.park_record`.
 

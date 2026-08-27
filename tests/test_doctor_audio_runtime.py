@@ -386,14 +386,20 @@ def _outputd_status_payload(
     *,
     backend: str = "alsa",
     sink_mode: str = "single_alsa",
-    content_pcm: str = doctor._OUTPUTD_EXPECTED_CONTENT_PCM,
     dac_pcm: str = doctor._OUTPUTD_EXPECTED_DAC_PCM,
-    content_buffer_frames: int = 4096,
+    # Period-sized, because that is the honest synthetic every box publishes:
+    # outputd opens no content ALSA PCM at all, so there is no negotiated
+    # content buffer behind this number (ADR-0100).
+    content_buffer_frames: int = 1024,
     dac_buffer_frames: int = 3072,
     period_frames: int = 1024,
     progress_age_ms: int = 2,
     dual_apple_status: dict | None = None,
-    content_source: str = "alsa",
+    # THE default, because it is the only source a started daemon reports:
+    # outputd attaches the ring or parks (ADR-0100). `alsa` stays reachable as
+    # an argument so the checks that own the stale-env and split-transport
+    # states can still stage a daemon that came up on the retired route.
+    content_source: str = "shm_ring",
     shm_ring_slots: int = 2,
     shm_ring_slot_frames: int | None = None,
     shm_ring_capacity_frames: int | None = None,
@@ -401,7 +407,6 @@ def _outputd_status_payload(
 ) -> bytes:
     content = {
         "source": content_source,
-        "pcm": content_pcm,
         "period_frames": period_frames,
         "buffer_frames": content_buffer_frames,
         "frames_read": 1234,
@@ -452,26 +457,12 @@ def _outputd_status_payload(
             "chip_ref_buffer_frames": 1280,
             "udp_target": None,
         },
+        # `mode` alone: the fill/ppm/lock counters beside it belonged to the
+        # rate_match bridge, which was deleted with its lane. Tied to
+        # `content_source` so this payload cannot describe a daemon that reads
+        # one transport and reports another.
         "content_bridge": {
-            "mode": "direct",
-            "enabled": False,
-            "locked": False,
-            "ring_frames": 16384,
-            "target_fill_frames": 4096,
-            "fill_frames": 0,
-            "min_fill_frames": 0,
-            "max_fill_frames": 0,
-            "ratio_ppm": 0.0,
-            "input_frames": 0,
-            "output_frames": 0,
-            "silence_frames": 0,
-            "underrun_frames": 0,
-            "overrun_frames": 0,
-            "resync_count": 0,
-            "reset_count": 0,
-            "ratio_clamp_count": 0,
-            "lock_count": 0,
-            "unlock_count": 0,
+            "mode": "shm_ring" if content_source == "shm_ring" else "direct",
         },
         "tts": {
             "pending_frames": 0,
@@ -586,21 +577,6 @@ def _patch_ring_coupled_box(
         )
 
 
-def _ring_coupled_status_payload(**kwargs) -> bytes:
-    """A STATUS payload for a ring-coupled box: no content PCM, honest synthetic.
-
-    ``content_pcm=""`` is what outputd publishes once the reconciler has written
-    explicit-empty — ``env_str`` defaults only when a variable is UNSET
-    (``rust/jasper-env/src/lib.rs``), so the empty value is preserved. The
-    period-sized content buffer is the real synthetic a ring box publishes,
-    because outputd never opens a content ALSA PCM under this bridge.
-    """
-    kwargs.setdefault("content_pcm", "")
-    kwargs.setdefault("content_buffer_frames", 1024)
-    kwargs.setdefault("period_frames", 1024)
-    return _outputd_status_payload(content_source="shm_ring", **kwargs)
-
-
 def _patch_fanin_status_socket(monkeypatch, payload: bytes):
     monkeypatch.setattr(
         doctor.socket,
@@ -616,16 +592,11 @@ def _patch_fanin_status_socket(monkeypatch, payload: bytes):
     content = decoded.get("content")
     if not isinstance(content, dict):
         return
-    content_pcm = str(content.get("pcm") or "")
     if content.get("source") == "shm_ring":
         playback_device = "jts_ring_playback"
         capture_device = "jts_ring_capture"
     else:
-        playback_device = (
-            "outputd_active_content_playback"
-            if content_pcm == doctor._OUTPUTD_EXPECTED_ACTIVE_CONTENT_PCM
-            else "outputd_content_playback"
-        )
+        playback_device = "outputd_content_playback"
         capture_device = "plug:jasper_capture"
     monkeypatch.setattr(
         audio_runtime_plan,
@@ -1027,14 +998,14 @@ def test_outputd_service_ok_with_expected_status(monkeypatch):
     _patch_fanin_systemctl(monkeypatch)
     _patch_fanin_status_socket(monkeypatch, _outputd_status_payload())
     r = doctor.check_outputd_service()
-    assert r.status == "ok"
+    assert r.status == "ok", r.detail
     assert "backend=alsa" in r.detail
-    assert "content_buffer_frames=4096" in r.detail
+    assert "content_buffer_frames=1024" in r.detail
     assert "dac_buffer_frames=3072" in r.detail
     assert "content_empty_periods=2" in r.detail
     assert "content_eagain_count=1" in r.detail
-    assert "content_source=alsa" in r.detail
-    assert "content_bridge=direct" in r.detail
+    assert "content_source=shm_ring" in r.detail
+    assert "content_bridge=shm_ring" in r.detail
     assert "speaker_reference_source=outputd_final_electrical" in r.detail
 
 
@@ -1093,14 +1064,19 @@ def test_the_arm_waypoint_is_reported_once_by_the_check_that_owns_it(
     monkeypatch.setattr(
         "jasper.audio_runtime_plan.DEFAULT_CAMILLA2_STATEFILE_PATH", str(absent)
     )
-    # No outputd.env on disk -> the content bridge resolves to `direct`, which is
-    # the term that makes the graph above a split.
-    monkeypatch.setattr(
-        "jasper.audio_runtime_plan.DEFAULT_OUTPUTD_ENV_PATH",
-        str(tmp_path / "absent-outputd.env"),
-    )
+    # The bridge has to be STATED to make the graph above a split: an absent
+    # key is the ring, and the ring agrees with the ring graph. The STATUS
+    # payload is the daemon that came up on THIS env — the retired source and
+    # its negotiated ALSA buffer — because the subject here is which check
+    # names the split, not whether the daemon reporting it survives startup.
+    outputd_env = tmp_path / "outputd.env"
+    outputd_env.write_text("JASPER_OUTPUTD_CONTENT_BRIDGE=direct\n", encoding="utf-8")
+    monkeypatch.setenv("JASPER_OUTPUTD_ENV_FILE", str(outputd_env))
     _patch_fanin_systemctl(monkeypatch)
-    _patch_fanin_status_socket(monkeypatch, _outputd_status_payload())
+    _patch_fanin_status_socket(
+        monkeypatch,
+        _outputd_status_payload(content_source="alsa", content_buffer_frames=4096),
+    )
     # `_patch_fanin_status_socket` also cans `output_endpoint_evidence_from_statefiles`
     # from the STATUS payload — convenient for the checks whose subject is the
     # payload, and fatal for this one, whose subject IS the evidence resolution.
@@ -1380,13 +1356,14 @@ def test_audio_runtime_plan_doctor_fails_usb_route_with_legacy_lab_transport(
     # typo) is a partial flip: outputd fail-safes it to `direct`, but the route
     # policy compares the raw value, so certification stays red. (transport_pipe was
     # removed 2026-07-11); a non-direct bridge without a matching shm_ring pair is
-    # a partial flip the USB low-latency route refuses.
+    # not the one transport, so the USB low-latency route refuses it.
     plan = audio_runtime_plan.build_audio_runtime_plan(
         base_env={
             audio_runtime_plan.AUDIO_ROUTE_PROFILE_KEY: (
                 audio_runtime_plan.ROUTE_USB_LOW_LATENCY_48K
             )
         },
+        fanin_env={"JASPER_FANIN_CAMILLA_COUPLING": "shm_ring"},
         outputd_env={"JASPER_OUTPUTD_CONTENT_BRIDGE": "rate_match"},
         route_mode="solo",
     )
@@ -1399,7 +1376,7 @@ def test_audio_runtime_plan_doctor_fails_usb_route_with_legacy_lab_transport(
     r = doctor.check_audio_runtime_plan()
 
     assert r.status == "fail"
-    assert "partial flip" in r.detail
+    assert "is not the one transport" in r.detail
 
 
 def test_route_latency_evidence_skips_non_claiming_route(monkeypatch):
@@ -1423,6 +1400,7 @@ def test_route_latency_evidence_fails_runtime_plan_errors(monkeypatch):
                 audio_runtime_plan.ROUTE_USB_LOW_LATENCY_48K
             )
         },
+        fanin_env={"JASPER_FANIN_CAMILLA_COUPLING": "shm_ring"},
         outputd_env={"JASPER_OUTPUTD_CONTENT_BRIDGE": "rate_match"},
         route_mode="solo",
     )
@@ -1445,6 +1423,8 @@ def test_route_latency_evidence_fails_missing_claim_artifact(monkeypatch, tmp_pa
                 audio_runtime_plan.ROUTE_USB_LOW_LATENCY_48K
             )
         },
+        fanin_env={"JASPER_FANIN_CAMILLA_COUPLING": "shm_ring"},
+        outputd_env={"JASPER_OUTPUTD_CONTENT_BRIDGE": "shm_ring"},
         profile_id=APPLE_USB_C_DONGLE_DEVICE_ID,
         route_mode="solo",
     )
@@ -1476,6 +1456,8 @@ def test_route_latency_evidence_warns_when_p99_not_certified(
                 audio_runtime_plan.ROUTE_USB_LOW_LATENCY_48K
             )
         },
+        fanin_env={"JASPER_FANIN_CAMILLA_COUPLING": "shm_ring"},
+        outputd_env={"JASPER_OUTPUTD_CONTENT_BRIDGE": "shm_ring"},
         profile_id=APPLE_USB_C_DONGLE_DEVICE_ID,
         route_mode="solo",
     )
@@ -1525,6 +1507,8 @@ def test_route_latency_evidence_passes_certified_promotion_artifact(
                 audio_runtime_plan.ROUTE_USB_LOW_LATENCY_48K
             )
         },
+        fanin_env={"JASPER_FANIN_CAMILLA_COUPLING": "shm_ring"},
+        outputd_env={"JASPER_OUTPUTD_CONTENT_BRIDGE": "shm_ring"},
         profile_id=APPLE_USB_C_DONGLE_DEVICE_ID,
         route_mode="solo",
     )
@@ -1575,6 +1559,8 @@ def test_route_latency_evidence_passes_certified_artifact_while_lane_idle(
                 audio_runtime_plan.ROUTE_USB_LOW_LATENCY_48K
             )
         },
+        fanin_env={"JASPER_FANIN_CAMILLA_COUPLING": "shm_ring"},
+        outputd_env={"JASPER_OUTPUTD_CONTENT_BRIDGE": "shm_ring"},
         profile_id=APPLE_USB_C_DONGLE_DEVICE_ID,
         route_mode="solo",
     )
@@ -1646,6 +1632,8 @@ def test_route_latency_live_state_rejects_changed_negotiated_direct_buffer(
                 audio_runtime_plan.ROUTE_USB_LOW_LATENCY_48K
             )
         },
+        fanin_env={"JASPER_FANIN_CAMILLA_COUPLING": "shm_ring"},
+        outputd_env={"JASPER_OUTPUTD_CONTENT_BRIDGE": "shm_ring"},
         profile_id=APPLE_USB_C_DONGLE_DEVICE_ID,
         route_mode="solo",
     )
@@ -1698,6 +1686,8 @@ def test_route_latency_evidence_warns_on_aged_out_in_budget_proof(
                 audio_runtime_plan.ROUTE_USB_LOW_LATENCY_48K
             )
         },
+        fanin_env={"JASPER_FANIN_CAMILLA_COUPLING": "shm_ring"},
+        outputd_env={"JASPER_OUTPUTD_CONTENT_BRIDGE": "shm_ring"},
         profile_id=APPLE_USB_C_DONGLE_DEVICE_ID,
         route_mode="solo",
     )
@@ -1753,6 +1743,8 @@ def test_route_latency_evidence_fails_live_state_mismatch(
                 audio_runtime_plan.ROUTE_USB_LOW_LATENCY_48K
             )
         },
+        fanin_env={"JASPER_FANIN_CAMILLA_COUPLING": "shm_ring"},
+        outputd_env={"JASPER_OUTPUTD_CONTENT_BRIDGE": "shm_ring"},
         profile_id=APPLE_USB_C_DONGLE_DEVICE_ID,
         route_mode="solo",
     )
@@ -1793,21 +1785,28 @@ def test_route_latency_evidence_fails_live_state_mismatch(
     assert "live_fanin_resampler_unlocked:usbsink" in r.detail
 
 
+# #2285 P2 (A6) retired the snd-aloop ACTIVE lane's outputd capture PAIRING with
+# the endpoint itself, so this shape stopped reporting a capture MISMATCH — there
+# is no registered capture left to mismatch against, and the unpaired-device arm
+# of `transport_coherence_errors` reports it instead. Same box, same verdict, a
+# different sentence. Kept as one constant so the two tests that read it cannot
+# drift apart from each other.
+_ROUTE_UNPAIRED = (
+    "post-DSP route has no registered outputd capture for "
+    "Camilla playback='outputd_active_content_playback'"
+)
+
+
 def test_outputd_service_ok_with_single_alsa_active_lane(monkeypatch, tmp_path):
     """An ACTIVE single-ALSA box is healthy on the ring, declaring NO content PCM.
 
-    #2285 P2 moved this off the direct bridge. It used to model the same box
-    declaring ``outputd_active_content_capture``; that lane is deleted (#2534),
-    the reconciler now writes explicit-empty for an active single-ALSA box, and
-    under the direct bridge outputd would open whatever it was handed
-    (``content_pcm_skipped`` is false there) — so the old shape describes no box
-    that can run. The width readout is still the assertion that matters, and it
-    comes from the env, independently of the bridge.
+    The width readout is the assertion that matters, and it comes from the env,
+    independently of the transport.
     """
     _patch_fanin_systemctl(monkeypatch)
     _patch_fanin_status_socket(
         monkeypatch,
-        _ring_coupled_status_payload(dac_pcm=doctor._OUTPUTD_EXPECTED_DAC_PCM),
+        _outputd_status_payload(dac_pcm=doctor._OUTPUTD_EXPECTED_DAC_PCM),
     )
     _patch_ring_coupled_box(
         monkeypatch, tmp_path, active_endpoint=True, active_channels=2
@@ -1819,88 +1818,22 @@ def test_outputd_service_ok_with_single_alsa_active_lane(monkeypatch, tmp_path):
     assert "active_channels=2" in r.detail
 
 
-def test_outputd_service_fails_when_a_ring_box_still_names_the_retired_content_pcm(
-    monkeypatch,
-    tmp_path,
-):
-    """The negative guard the retired name survives FOR.
+def _patch_disconnected_post_dsp_route(monkeypatch, tmp_path) -> None:
+    """Camilla on the retired ACTIVE snd-aloop lane, outputd off the ring.
 
-    #2285 P2 re-pointed this from ``..._when_active_env_has_legacy_content_pcm``,
-    which pinned the sink-keyed expectation: an ACTIVE box was compared against
-    ``outputd_active_content_capture`` and failed for declaring anything else.
-    That expectation is gone — the name it demanded is a PCM #2534 deleted and
-    no reconcile writes — so the comparison inverted. The same "a legacy content
-    PCM must not pass quietly" property now lands here: under the ring outputd
-    opens no content PCM at all, so the retired snd-aloop lane appearing in
-    ``outputd.env`` is the one value that means something stale survived.
-
-    The message must both NAME the stale value and carry the reconcile that
-    clears it, because the operator cannot infer either from a bare mismatch.
+    The bridge is STATED, because the unpaired-route error this stages lives in
+    the non-ring plan and an absent key resolves to the ring. The daemon in the
+    STATUS payload is the one that env starts, so it reports the retired source
+    and its negotiated ALSA buffer.
     """
+    env = tmp_path / "outputd-disconnected.env"
+    env.write_text("JASPER_OUTPUTD_CONTENT_BRIDGE=direct\n", encoding="utf-8")
+    monkeypatch.setenv("JASPER_OUTPUTD_ENV_FILE", str(env))
     _patch_fanin_systemctl(monkeypatch)
     _patch_fanin_status_socket(
         monkeypatch,
-        _ring_coupled_status_payload(
-            content_pcm=doctor._OUTPUTD_EXPECTED_ACTIVE_CONTENT_PCM,
-        ),
+        _outputd_status_payload(content_source="alsa", content_buffer_frames=4096),
     )
-    _patch_ring_coupled_box(monkeypatch, tmp_path, active_endpoint=True)
-
-    r = doctor.check_outputd_service()
-
-    assert r.status == "fail", r.detail
-    assert "outputd_active_content_capture" in r.detail
-    assert "jasper-audio-hardware-reconcile" in r.detail
-
-
-def test_outputd_service_ok_when_a_flat_ring_box_declares_its_passive_lane(
-    monkeypatch,
-    tmp_path,
-):
-    """CONTROL for the guard above — and the fleet's most common ring box.
-
-    A flat (passive single-ALSA) box on the ring still declares
-    ``outputd_content_capture``: the hardware reconciler writes it, the unit
-    carries it as an ``Environment=`` default, and ``Config::from_env``'s
-    ``SingleAlsa`` arm defaults to it. Under the ring nothing opens it, so the
-    declaration is inert — a live asoundrc definition the transport happens not
-    to use.
-
-    Without this control the guard above would also pass if the ring branch
-    rejected ANY content PCM, which is the shape that would have FAILED every
-    flat ring box in the fleet.
-    """
-    _patch_fanin_systemctl(monkeypatch)
-    _patch_fanin_status_socket(
-        monkeypatch,
-        _ring_coupled_status_payload(
-            content_pcm=doctor._OUTPUTD_EXPECTED_CONTENT_PCM,
-        ),
-    )
-    _patch_ring_coupled_box(monkeypatch, tmp_path)
-
-    r = doctor.check_outputd_service()
-
-    assert r.status == "ok", r.detail
-    assert "content_source=shm_ring" in r.detail
-
-
-# #2285 P2 (A6) retired the snd-aloop ACTIVE lane's outputd capture PAIRING with
-# the endpoint itself, so this shape stopped reporting a capture MISMATCH — there
-# is no registered capture left to mismatch against, and the unpaired-device arm
-# of `transport_coherence_errors` reports it instead. Same box, same verdict, a
-# different sentence. Kept as one constant so the two tests below cannot drift
-# apart from each other.
-_ROUTE_UNPAIRED = (
-    "post-DSP route has no registered outputd capture for "
-    "Camilla playback='outputd_active_content_playback'"
-)
-
-
-def _patch_disconnected_post_dsp_route(monkeypatch) -> None:
-    """Camilla on the active playback lane, outputd reading the passive one."""
-    _patch_fanin_systemctl(monkeypatch)
-    _patch_fanin_status_socket(monkeypatch, _outputd_status_payload())
     monkeypatch.setattr(
         "jasper.audio_runtime_plan.output_endpoint_evidence_from_statefiles",
         lambda *paths: audio_runtime_plan.OutputEndpointEvidence(
@@ -1976,7 +1909,7 @@ def test_outputd_service_fails_when_active_graph_feeds_passive_reader(
     monkeypatch.setenv(
         "JASPER_OUTPUT_TOPOLOGY_PATH", str(tmp_path / "output_topology.json")
     )
-    _patch_disconnected_post_dsp_route(monkeypatch)
+    _patch_disconnected_post_dsp_route(monkeypatch, tmp_path)
 
     r = doctor.check_outputd_service()
 
@@ -1997,7 +1930,7 @@ def test_route_disconnect_remedy_does_not_recommend_an_impossible_reconcile(
     topo_path = tmp_path / "output_topology.json"
     monkeypatch.setenv("JASPER_OUTPUT_TOPOLOGY_PATH", str(topo_path))
     _write_no_lane_active_topology(topo_path)
-    _patch_disconnected_post_dsp_route(monkeypatch)
+    _patch_disconnected_post_dsp_route(monkeypatch, tmp_path)
 
     r = doctor.check_outputd_service()
 
@@ -2069,7 +2002,7 @@ def test_outputd_service_warns_when_gain_exceeds_the_peak_cap(monkeypatch):
 def test_outputd_service_fails_when_dual_apple_status_missing(monkeypatch, tmp_path):
     _patch_fanin_systemctl(monkeypatch)
     payload = json.loads(
-        _ring_coupled_status_payload(
+        _outputd_status_payload(
             sink_mode="dual_apple",
             dac_pcm=doctor._OUTPUTD_EXPECTED_DUAL_DAC_PCM,
         ).decode()
@@ -2087,7 +2020,7 @@ def test_outputd_service_warns_when_dual_apple_pcm_link_missing(monkeypatch, tmp
     _patch_fanin_systemctl(monkeypatch)
     _patch_fanin_status_socket(
         monkeypatch,
-        _ring_coupled_status_payload(
+        _outputd_status_payload(
             sink_mode="dual_apple",
             dac_pcm=doctor._OUTPUTD_EXPECTED_DUAL_DAC_PCM,
             dual_apple_status={
@@ -2119,7 +2052,7 @@ def test_outputd_service_ok_with_dual_apple_status(monkeypatch, tmp_path):
     _patch_fanin_systemctl(monkeypatch)
     _patch_fanin_status_socket(
         monkeypatch,
-        _ring_coupled_status_payload(
+        _outputd_status_payload(
             sink_mode="dual_apple",
             dac_pcm=doctor._OUTPUTD_EXPECTED_DUAL_DAC_PCM,
         ),
@@ -5373,6 +5306,9 @@ def test_the_two_ladder_checks_partition_the_bridge(monkeypatch, tmp_path) -> No
         monkeypatch,
         tmp_path,
         env_lines=(
+            # STATED, because an absent key is the ring: this side of the
+            # partition is now something a box has to declare its way onto.
+            "JASPER_OUTPUTD_CONTENT_BRIDGE=direct\n"
             "JASPER_OUTPUTD_RING_ACTIVE_ENDPOINT=1\n"
             "JASPER_OUTPUTD_SHM_RING_PATH=/dev/shm/jts-ring/content.ring\n"
         ),

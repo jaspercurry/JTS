@@ -298,15 +298,14 @@ ENV_CONTRACT_EXCEPTIONS: dict[str, str] = {
     # deploy/bin/jasper-outputd-failure-reconcile, not by the Rust daemon.
     "JASPER_OUTPUTD_CONFIG_RETRY_STATE": "outputd failure helper retry marker path; script-only",
     "JASPER_OUTPUTD_CONFIG_RETRY_WINDOW_SEC": "outputd failure helper retry marker window; script-only",
-    # The same helper's content-lane park. These tune the consecutive-failure
-    # streak record that turns a permanent content-lane open failure into a park
-    # instead of a StartLimitAction=reboot; consumed only by
-    # deploy/bin/jasper-outputd-failure-reconcile. The Rust daemon never reads
-    # them — it only produces the journal contexts the helper matches on.
-    "JASPER_OUTPUTD_CONTENT_LANE_STATE": "outputd failure helper streak record path; script-only",
-    "JASPER_OUTPUTD_CONTENT_LANE_WINDOW_SEC": "outputd failure helper streak window; script-only",
-    "JASPER_OUTPUTD_CONTENT_LANE_PARK_AFTER": "outputd failure helper park bound; script-only",
-    "JASPER_OUTPUTD_CONTENT_LANE_JOURNAL_LINES": "outputd failure helper journal-tail bound; script-only",
+    # The reconciler's INERT write of the retired content lane's capture PCM.
+    # outputd no longer reads it (ADR-0100 deleted the lane), and the write
+    # itself is still in deploy/bin/jasper-audio-hardware-reconcile plus the
+    # retired pairing default in jasper/audio_runtime_plan.py.
+    # REMOVAL CONDITION: goes with the reconciler sweep (S6 / the #3116 wave)
+    # that stops writing it — delete this entry then, and this guard fails
+    # until someone does.
+    "JASPER_OUTPUTD_CONTENT_PCM": "inert write, removed with the reconciler sweep — S6/#3116 wave",
     # The removed transport_pipe coupling's outputd key. The Rust
     # local_content_pipe path was deleted with the coupling, so it is not
     # Rust-read anymore; it survives as the reconciler's legacy migration-sweep

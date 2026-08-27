@@ -152,7 +152,7 @@ box converges to it on the next deploy. This section is the single reference for
 | Ring A slots (`JASPER_FANIN_RING_SLOTS`) | `2` | `config.rs` `env_u32(…, 2)`; `jasper/fanin_coupling.py` `DEFAULT_FANIN_RING_SLOTS`; `deploy/alsa/conf.d/60-jts-ring.conf` `n_slots`; all lockstep |
 | Ring A period | `128` frames | conf.d `period_frames`; ioplug fixed. fan-in creates Ring A with the compile-time `RING_SLOT_FRAMES` (`config.rs`, no env override), so `128` is the ONLY value the transport carries. `jasper-audio-hardware-reconcile` renders the conf.d from the active DAC's declared `LatencyFloor` **only when that floor is also `128`** (the Apple dongle's is) and refuses any other floor — such a DAC still gets its floor's outputd geometry. Making the slot floor-derived is issue #2147 |
 | Ring B slots (`JASPER_OUTPUTD_SHM_RING_SLOTS`) | `2` | outputd config default |
-| Camilla ring-emit chunksize | `128` | `RING_CAMILLA_CHUNKSIZE` (`fanin_coupling.py`), emitted by `emit_flat_ring_config` |
+| Camilla ring-emit chunksize | `128` | `RING_CAMILLA_CHUNKSIZE` (`fanin_coupling.py`), emitted by `emit_flat_outputd_cutover_config` |
 | Camilla ring-emit target_level | `128` | `RING_CAMILLA_TARGET_LEVEL` |
 | Camilla ring-emit queuelimit | `1` | `RING_CAMILLA_QUEUELIMIT` |
 | Camilla ring-emit `enable_rate_adjust` | `false` | `RING_CAMILLA_ENABLE_RATE_ADJUST` |

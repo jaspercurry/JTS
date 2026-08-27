@@ -391,11 +391,6 @@ crossover.
   raw active lane whose peer already locked the pair — fails `hw_params` and
   exits 1 onto the ordinary restart ladder, because that same failure is how
   outputd waits for CamillaDSP on every boot.
-- **Content-lane open failures are parked out-of-band.** Four consecutive
-  failures end in `jasper-outputd-failure-reconcile` (stop plus a record at
-  `/run/jasper-outputd-content-lane.state` naming the fix), spending 4 of the 5
-  starts so `StartLimitAction=reboot` is never reached. The first failures still
-  restart, because the ring attach is how outputd waits for CamillaDSP.
 - **A missing DAC parks rather than restart-loops.** Startup is gated by the
   reconciler-owned card: `fake` passes (it opens no ALSA), an empty card passes
   for composite/parked shapes, and an `alsa` backend whose card is missing from

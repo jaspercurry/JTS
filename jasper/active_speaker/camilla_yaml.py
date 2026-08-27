@@ -25,7 +25,7 @@ from jasper.camilla_config_contract import (
     DEFAULT_CAPTURE_DEVICE,
     DEFAULT_CAPTURE_FORMAT,
     DEFAULT_PIPE_SINK_FORMAT,
-    DEFAULT_PLAYBACK_DEVICE,
+    RETIRED_ALOOP_PLAYBACK_DEVICE,
     DEFAULT_PLAYBACK_FORMAT,
     DEFAULT_SAMPLE_RATE,
     DEFAULT_VOLUME_LIMIT_DB,
@@ -137,7 +137,9 @@ BASELINE_LIMITER_CLIP_LIMIT_DB = -1.0
 BASS_EXTENSION_LT_FILTER = "bass_ext_lt"
 BASS_EXTENSION_SUBSONIC_FILTER = "bass_ext_subsonic"
 FORBIDDEN_ACTIVE_PLAYBACK_TOKENS = (
-    DEFAULT_PLAYBACK_DEVICE,
+    # The RETIRED snd-aloop stereo lane by its own name: `DEFAULT_PLAYBACK_DEVICE`
+    # is Ring B now (ADR-0100) and is already covered by its literal below.
+    RETIRED_ALOOP_PLAYBACK_DEVICE,
     "jasper_out",
     # The full-range STEREO ring. An active graph carries POST-crossover
     # per-driver channels; Ring B carries a full-range stereo program that

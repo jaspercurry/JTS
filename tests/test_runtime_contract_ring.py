@@ -16,11 +16,8 @@ from __future__ import annotations
 
 from pathlib import Path
 
-import pytest
-
 from jasper.active_speaker.runtime_contract import (
     CONTRACT_SUBWOOFER_PRESENT,
-    DEFAULT_RING_FLAT_OUTPUTD_CONFIG,
     RING_STEREO_PROGRAM_CHANNELS,
     classify_output_contract,
     ring_channels_for_topology,
@@ -30,9 +27,7 @@ from jasper.active_speaker.runtime_contract import (
 )
 from jasper.output_topology import OUTPUT_TOPOLOGY_KIND, OutputTopology
 from jasper.sound.camilla_yaml import (
-    RING_FLAT_CONFIG_NAME,
     emit_flat_outputd_cutover_config,
-    emit_flat_ring_config,
 )
 
 # Reuse the topology builders from the main runtime-contract suite.
@@ -379,174 +374,46 @@ def test_stale_subwoofer_on_dongle_is_correctly_ineligible():
     assert topology_supports_shm_ring(topo) is False
 
 
-# --- statefile seeding re-seeds the ring config on a ring-armed box ----------
+# --- statefile seeding has ONE flat graph -----------------------------------
 
 
-def _write_ring_and_loopback(tmp_path: Path) -> tuple[Path, Path]:
-    loop = tmp_path / "outputd-cutover.yml"
-    emit_flat_outputd_cutover_config(out_path=loop)
-    ring = tmp_path / "outputd-cutover-ring.yml"
-    emit_flat_ring_config(out_path=ring)
-    return loop, ring
+def test_the_one_flat_graph_is_seeded_whatever_the_coupling(tmp_path: Path):
+    """ADR-0100: the flat startup graph IS the ring graph.
 
+    It used to pick between a loopback flat config and a ring sibling by the
+    persisted coupling; with one transport there is nothing to pick, so no
+    coupling value can seed a box onto a graph its transport cannot serve.
+    """
+    flat = tmp_path / "outputd-cutover.yml"
+    emit_flat_outputd_cutover_config(out_path=flat)
 
-def test_ring_armed_box_reseeds_ring_flat_config(tmp_path: Path):
-    loop, ring = _write_ring_and_loopback(tmp_path)
-    decision = safe_graph_for_current_topology(
-        _full_range_stereo(),
-        flat_config_path=loop,
-        ring_flat_config_path=ring,
-        coupling="shm_ring",
-        staged_config={},
-    )
-    assert decision.ok
-    assert decision.status == "select_flat"
-    # THE finding-5 fix: an armed box selects the RING config, not loopback.
-    assert Path(decision.selected_config_path) == ring
-    assert "ring-armed" in decision.reason
-
-
-def test_loopback_box_reseeds_loopback_flat_config(tmp_path: Path):
-    loop, ring = _write_ring_and_loopback(tmp_path)
-    decision = safe_graph_for_current_topology(
-        _full_range_stereo(),
-        flat_config_path=loop,
-        ring_flat_config_path=ring,
-        coupling="loopback",
-        staged_config={},
-    )
-    assert decision.ok
-    assert Path(decision.selected_config_path) == loop
-
-
-def test_no_coupling_arg_defaults_to_loopback_flat(tmp_path: Path):
-    loop, ring = _write_ring_and_loopback(tmp_path)
-    decision = safe_graph_for_current_topology(
-        _full_range_stereo(),
-        flat_config_path=loop,
-        ring_flat_config_path=ring,
-        staged_config={},
-    )
-    assert decision.ok
-    assert Path(decision.selected_config_path) == loop
-
-
-def test_ring_armed_falls_back_to_loopback_when_ring_config_missing(tmp_path: Path):
-    # Ring config not written (P1 assets not staged / emitter hasn't run) — seeding
-    # fails SAFE to the loopback flat config. NB: on an armed box this does NOT
-    # restore audio (outputd still reads Ring B); its value is no camilla
-    # crash-loop + doctor visibility so the operator can disarm.
-    loop = tmp_path / "outputd-cutover.yml"
-    emit_flat_outputd_cutover_config(out_path=loop)
-    missing_ring = tmp_path / "outputd-cutover-ring.yml"  # never created
-    decision = safe_graph_for_current_topology(
-        _full_range_stereo(),
-        flat_config_path=loop,
-        ring_flat_config_path=missing_ring,
-        coupling="shm_ring",
-        staged_config={},
-    )
-    assert decision.ok
-    assert Path(decision.selected_config_path) == loop
-
-
-def test_ring_armed_composite_box_does_not_seed_ring_config(tmp_path: Path):
-    # SF4: the seeder ring branch must consult topology_supports_shm_ring, not just
-    # `not requires_roleful_graph`. A composite (dual-Apple) box is NOT roleful but
-    # is NOT ring-eligible (the stereo ring cannot drive a 4-ch composite sink). A
-    # stale coupling=shm_ring on such a box must fall back to the loopback flat
-    # config, never seed a stereo-ring config it cannot play.
-    loop, ring = _write_ring_and_loopback(tmp_path)
-    decision = safe_graph_for_current_topology(
-        _dual_apple_stereo(),
-        flat_config_path=loop,
-        ring_flat_config_path=ring,
-        coupling="shm_ring",
-        staged_config={},
-    )
-    assert decision.ok
-    # Falls back to the LOOPBACK flat config — the ring path was refused.
-    assert Path(decision.selected_config_path) == loop
-    assert "ring-armed" not in decision.reason
-
-
-def test_default_ring_flat_config_path_is_named_next_to_loopback():
-    assert str(DEFAULT_RING_FLAT_OUTPUTD_CONFIG) == "/etc/camilladsp/outputd-cutover-ring.yml"
-    assert DEFAULT_RING_FLAT_OUTPUTD_CONFIG.name == RING_FLAT_CONFIG_NAME
-
-
-# --- the flat ring cutover is not RENDERED onto a roleful box ----------------
+    for coupling in ("shm_ring", None):
+        decision = safe_graph_for_current_topology(
+            _full_range_stereo(),
+            flat_config_path=flat,
+            coupling=coupling,
+            staged_config={},
+        )
+        assert decision.status == "select_flat", decision.reason
+        assert decision.selected_config_path == str(flat)
 
 
 def _render_names(tmp_path: Path, topology) -> set[str]:
     from jasper.sound.camilla_yaml import render_flat_cutover_configs
 
     out = tmp_path / "camilladsp"
-    out.mkdir()
+    out.mkdir(parents=True)
     render_flat_cutover_configs(config_dir=out, topology=topology)
     return {p.name for p in out.iterdir()}
 
 
-def test_flat_ring_cutover_is_rendered_on_a_non_roleful_box(tmp_path: Path):
-    assert RING_FLAT_CONFIG_NAME in _render_names(tmp_path, _full_range_stereo())
-
-
-@pytest.mark.parametrize(
-    "topology_factory",
-    [
+def test_the_flat_cutover_renders_on_every_topology(tmp_path: Path):
+    """One file, rendered whatever the topology — its surplus channels are hard
+    muted by the emitter rather than the file being withheld."""
+    for factory in (
+        _full_range_stereo,
         lambda: _active_topology("stereo", "active_2_way"),
-        lambda: _active_topology("mono", "active_3_way"),
         _subwoofer_topology,
-    ],
-    ids=["active_2_way", "active_3_way", "subwoofer"],
-)
-def test_flat_ring_cutover_is_not_rendered_onto_a_roleful_box(
-    tmp_path: Path, topology_factory
-):
-    """A solo-stereo FULL-RANGE graph must not exist on a crossover box.
-
-    ``outputd-cutover-ring.yml`` is emitted by the flat (solo-stereo) emitter.
-    On a box whose outputs carry driver roles, that graph is full-range content
-    routed to a tweeter — so the file is not written there at all, rather than
-    written and guarded downstream.
-    """
-    names = _render_names(tmp_path, topology_factory())
-    assert RING_FLAT_CONFIG_NAME not in names
-    # The loopback flat config still renders — this gate removes ONE file, not
-    # the render.
-    assert "outputd-cutover.yml" in names
-
-
-def test_flat_ring_cutover_render_gate_keys_on_rolefulness_not_ring_eligibility():
-    """THE TRAP, named: the gate must read ``requires_roleful_graph``.
-
-    ``topology_supports_shm_ring`` looks like the natural predicate — today it is
-    False for exactly the roleful boxes this gate protects, so keying on it would
-    pass every test written today. It is the WRONG predicate, and it fails at the
-    worst moment: ring v2's N-channel rung gives roleful topologies a ring width,
-    which flips ``topology_supports_shm_ring`` TRUE for those same boxes. A gate
-    keyed on eligibility would then start writing the full-range flat ring graph
-    onto crossover boxes precisely when the ring goes live there — a
-    hearing-safety regression introduced by a change that never touched this
-    file.
-
-    Rolefulness is about what the graph would DRIVE and no later rung inverts it,
-    which is why it is the axis. This pins the reader itself rather than the
-    render's output, because the two predicates are indistinguishable by
-    behaviour until that later rung lands.
-    """
-    from jasper.sound import camilla_yaml
-
-    roleful = _active_topology("stereo", "active_2_way")
-    # Today both predicates would refuse this box — that is exactly why a
-    # behavioural test cannot tell them apart.
-    assert classify_output_contract(roleful).requires_roleful_graph is True
-    assert topology_supports_shm_ring(roleful) is False
-
-    # So pin the decision to the rolefulness axis: with rolefulness forced
-    # False, the ring config renders even though the box is ring-INELIGIBLE.
-    # A gate reading topology_supports_shm_ring could not produce this.
-    assert camilla_yaml._roleful_topology(roleful) is True
-    assert camilla_yaml._roleful_topology(_full_range_stereo()) is False
-    assert camilla_yaml._roleful_topology(_dual_apple_stereo()) is False
-    assert topology_supports_shm_ring(_dual_apple_stereo()) is False
+    ):
+        names = _render_names(tmp_path / str(id(factory)), factory())
+        assert names == {"outputd-cutover.yml"}

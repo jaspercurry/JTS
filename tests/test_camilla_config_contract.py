@@ -266,16 +266,24 @@ def test_generated_sound_config_uses_apple_dongle_floor(monkeypatch, tmp_path):
     assert parsed["target_level"] == 1536
 
 
-def test_fresh_flat_outputd_cutover_uses_apple_dongle_floor(monkeypatch, tmp_path):
-    """Fresh flat startup config is generated with the active profile floor.
+def test_fresh_flat_outputd_cutover_takes_the_ring_geometry(monkeypatch, tmp_path):
+    """The flat startup config carries the RING's geometry, not the DAC floor.
 
-    This pins the #27 blocker: the installed flat cutover path must not keep
-    booting an Apple-dongle box at the static 1024 / 2048 default.
+    The DAC profile's Camilla floor governs graphs whose playback is an ordinary
+    ALSA device. This graph's is Ring B, and the ioplug pins the ring's period
+    bytes min==max — an Apple-dongle floor of chunk 256 cannot negotiate it at
+    all, so a floor here would fail the open rather than raise it. The floor
+    still reaches every other emitted config.
     """
     monkeypatch.delenv("JASPER_CAMILLA_CHUNKSIZE", raising=False)
     monkeypatch.delenv("JASPER_CAMILLA_TARGET_LEVEL", raising=False)
     _stage_output_profile(monkeypatch, tmp_path, "apple_usb_c_dongle")
 
+    from jasper.fanin_coupling import (
+        RING_CAMILLA_CHUNKSIZE,
+        RING_CAMILLA_TARGET_LEVEL,
+        RING_PLAYBACK_DEVICE,
+    )
     from jasper.sound.camilla_yaml import emit_flat_outputd_cutover_config
 
     out = tmp_path / "outputd-cutover.yml"
@@ -283,9 +291,9 @@ def test_fresh_flat_outputd_cutover_uses_apple_dongle_floor(monkeypatch, tmp_pat
         emit_flat_outputd_cutover_config(out_path=out)
     )
     assert out.exists()
-    assert parsed["chunksize"] == 256
-    assert parsed["target_level"] == 1536
-    assert parsed["playback_device"] == "outputd_content_playback"
+    assert parsed["chunksize"] == RING_CAMILLA_CHUNKSIZE
+    assert parsed["target_level"] == RING_CAMILLA_TARGET_LEVEL
+    assert parsed["playback_device"] == RING_PLAYBACK_DEVICE
 
 
 def test_generated_sound_config_floorless_dac_uses_global_default(

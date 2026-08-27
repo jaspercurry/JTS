@@ -9,10 +9,8 @@ THE DEFECT, observed on jts4 2026-08-17 across the #2601 wide-wire flip.
 CamillaDSP, precisely so CamillaDSP cannot reopen a stale graph. But the
 reconcile asked the RUNNING daemon which config was loaded, and on that deploy
 the daemon was already stopped — by install itself.
-``release_camilla_content_lane_for_format_flip`` stops CamillaDSP when a build
-changes the content lane's wire width, because snd-aloop param-locks a substream
-pair to its first opener. So the one deploy that most needed a re-emit was the
-one that could not reach the websocket: ``get_config_file_path`` raised
+Install could stop CamillaDSP mid-deploy, so the one deploy that most needed a
+re-emit was the one that could not reach the websocket: ``get_config_file_path`` raised
 ``CamillaUnavailable: Connection refused``, the pass aborted, and install then
 started CamillaDSP against a statefile still naming the pre-flip
 ``sound_current.yml`` — ``snd_pcm_hw_params_set_format`` EINVAL five times, then
@@ -292,11 +290,10 @@ async def test_a_roleful_box_never_falls_back_to_the_flat_cutover(
 
     booted = read_camilla_statefile_config_path(statefile)
     assert booted is not None
-    # NOT the flat cutover — neither the loopback one nor its ring sibling.
-    assert Path(booted).name not in {
-        "outputd-cutover.yml",
-        "outputd-cutover-ring.yml",
-    }
+    # NOT the flat cutover. There is one now — the ring sibling collapsed into
+    # it (ADR-0100) — and install removes the orphan, so naming the retired file
+    # here would pin a shape no box can reach.
+    assert Path(booted).name != "outputd-cutover.yml"
     # And what it DOES name is the roleful graph: the per-driver split mixer is
     # the structural signal the safety classifier itself keys on, so asserting
     # it here is asserting "still band-limited per driver", not "still a file".

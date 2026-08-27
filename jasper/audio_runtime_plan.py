@@ -35,6 +35,7 @@ from jasper.camilla_config_contract import (
     ACTIVE_OUTPUTD_PLAYBACK_DEVICE,
     DEFAULT_CHUNKSIZE,
     DEFAULT_PLAYBACK_DEVICE,
+    RETIRED_ALOOP_PLAYBACK_DEVICE,
     DEFAULT_PLAYBACK_FORMAT,
     DEFAULT_SAMPLE_RATE,
     DEFAULT_TARGET_LEVEL,
@@ -47,6 +48,7 @@ from jasper.fanin_coupling import (
     COUPLING_LOOPBACK,
     COUPLING_SHM_RING,
     OUTPUTD_CONTENT_BRIDGE_SHM_RING,
+    outputd_bridge_is_ring,
     RING_CAMILLA_CHUNKSIZE,
     RING_CAMILLA_ENABLE_RATE_ADJUST,
     RING_CAMILLA_QUEUELIMIT,
@@ -54,11 +56,10 @@ from jasper.fanin_coupling import (
     VALID_COUPLINGS,
     capture_half,
     coupling_capture_kwargs_from_env,
+    coupling_value_removed,
     member_kwargs_are_pipe_sink,
     resolve_coupling,
-    resolve_outputd_content_bridge,
     ring_active_endpoint_armed,
-    ring_pair_intent_is_coherent,
 )
 
 # The named transport SHAPES. ``TransportTopology.name`` is the discriminator
@@ -132,7 +133,6 @@ DEFAULT_OUTPUTD_DAC_BUFFER_FRAMES = 3072
 # read back by both the plan's provenance vocabulary and the refusal path's.
 PACKAGED_OUTPUTD_DEFAULT_SOURCE = "packaged systemd/outputd default"
 OUTPUTD_CONTENT_BRIDGE_KEY = "JASPER_OUTPUTD_CONTENT_BRIDGE"
-OUTPUTD_CONTENT_BRIDGE_DIRECT = "direct"
 # The width outputd REQUESTS on its snd-aloop content lane. Reconciler-owned
 # (jasper-audio-hardware-reconcile is the single writer, from
 # jasper.fanin_coupling.content_lane_format_for_coupling). Absent or empty is
@@ -1186,7 +1186,7 @@ def route_config_hash_for_plan(
 def _route_policy_errors(
     *,
     route: AudioRouteProfile,
-    coupling: str,
+    coupling: str | None,
     outputd_env: Mapping[str, str],
     camilla_devices: Mapping[str, Any] | None = None,
 ) -> tuple[str, ...]:
@@ -1200,139 +1200,51 @@ def _route_policy_errors(
     if route.route_id != ROUTE_USB_LOW_LATENCY_48K:
         return tuple(errors)
 
-    normalized_coupling = resolve_coupling(coupling)
-    # RAW bridge value (lowercased) — NOT resolve_outputd_content_bridge, which
-    # fail-safes ANY unrecognized bridge to `direct` and would hide it here. A
-    # box can still carry a stale literal in outputd.env — a deleted bridge
-    # spelling, or a typo — and the route policy must refuse the
-    # low-latency claim on it rather than certify a box whose operator asked for
-    # something else. So it compares the operator's literal value.
-    # DO NOT "simplify" this to the resolver now that only two bridges parse:
-    # that would silently green-light a claim on a stale value.
-    raw_bridge = str(
-        outputd_env.get(OUTPUTD_CONTENT_BRIDGE_KEY, OUTPUTD_CONTENT_BRIDGE_DIRECT)
-        or OUTPUTD_CONTENT_BRIDGE_DIRECT
-    ).strip().lower()
-
-    # usb_low_latency_48k is certifiable on EITHER of the two COHERENT transports:
-    # loopback + direct (legacy/fail-safe fallback), OR the shm_ring pair (Ring A
-    # plus whichever post-DSP ring the box armed — the intent tokens are all this
-    # predicate reads). The ring pair was measured to reduce route latency, so
-    # the artifact binder must accept it — the earlier
-    # blanket "requires loopback + direct" would turn a ring-armed box's shipped
-    # low-latency claim permanently red (gap 8). Any OTHER raw bridge literal
-    # stays rejected, deleted lab transports included.
-    if normalized_coupling == COUPLING_SHM_RING and ring_pair_intent_is_coherent(
-        normalized_coupling, raw_bridge
-    ):
-        return tuple(errors)
-
-    if normalized_coupling != COUPLING_LOOPBACK:
-        errors.append(
-            f"{ROUTE_USB_LOW_LATENCY_48K} requires {COUPLING_ENV_VAR}=loopback or a "
-            f"coherent shm_ring pair; {normalized_coupling} is not coherent for "
-            "the production low-latency claim"
-        )
-    if raw_bridge != OUTPUTD_CONTENT_BRIDGE_DIRECT:
-        errors.append(
-            f"{ROUTE_USB_LOW_LATENCY_48K} requires "
-            f"{OUTPUTD_CONTENT_BRIDGE_KEY}={OUTPUTD_CONTENT_BRIDGE_DIRECT} (or the "
-            f"coherent shm_ring pair); {raw_bridge} without a matching "
-            f"{COUPLING_ENV_VAR}=shm_ring is a partial flip"
-        )
-    return tuple(errors)
-
-
-def outputd_content_format_change(
-    *,
-    outputd_env_path: str = DEFAULT_OUTPUTD_ENV_PATH,
-    fanin_env_path: str = DEFAULT_FANIN_ENV_PATH,
-) -> tuple[str, str] | None:
-    """``(current, next)`` when this build changes the width outputd REQUESTS on
-    its snd-aloop content lane — else ``None``.
-
-    THE DEPLOY-ORDERING HAZARD this answers (wide-output-path PR-6, survey
-    finding 12): snd-aloop locks a substream pair's rate/format/channels to its
-    FIRST opener. CamillaDSP owns the playback half of the content lane and holds
-    it for as long as it runs, so a deploy that changes the width has a window
-    where the still-running PREVIOUS CamillaDSP pins the pair at the old width
-    while the freshly-restarted jasper-outputd asks for the new one. That open
-    fails at ``snd_pcm_hw_params``, which is an ordinary error rather than
-    outputd's EX_CONFIG park — so ``Restart=on-failure`` retries it, and
-    ``StartLimitBurst=5`` / ``StartLimitAction=reboot`` on
-    ``jasper-outputd.service`` turns a format flip into a REBOOT in the middle of
-    an install. The installer's core bounce releases the lane first when this
-    returns a change.
-
-    Both sides come from reconciler-owned env, never from a CamillaDSP config
-    file, and that is the point: install re-renders the flat cutover config (and
-    later regenerates the sound graph) BEFORE the bounce, so a config file read at
-    bounce time can already show the NEW width while the running CamillaDSP still
-    holds the lane at the old one — a stale read in the one direction that
-    matters. ``outputd.env`` is only written by the audio-hardware reconciler,
-    which runs AFTER the release, so at probe time it still names the width the
-    RUNNING outputd successfully opened, i.e. the width the lane is actually
-    locked at.
-
-    - *current*: ``JASPER_OUTPUTD_CONTENT_FORMAT`` from ``outputd.env``. Absent,
-      empty, or unreadable reads as ``S16_LE`` — outputd's own documented default
-      for that env (``config.rs``), which is what every pre-flip box ran.
-    - *next*: :func:`jasper.fanin_coupling.content_lane_format_for_coupling` for
-      the persisted coupling — the exact value the reconciler is about to write.
-
-    Deliberately an EQUALITY check, never a width ranking — see
-    ``jasper.fanin.coupling_reconcile.ring_edge_width_ready``.
-
-    **A ``shm_ring`` box answers ``None`` UNCONDITIONALLY, and that is a
-    precondition of the install, not a cheap optimisation.** The hazard above is
-    snd-aloop's first-opener parameter lock. A ring-coupled box's outputd reads
-    the SHM ring and never opens an ALSA content lane at all, so there is no
-    substream pair for a stale CamillaDSP to pin — and the ring's own version of
-    the hazard (a header geometry mismatch) is already closed a step earlier by a
-    different owner: ``install_jts_ring_platform``
-    (``deploy/lib/install/ring-platform.sh``) ``rm -f``s ``program.ring`` and
-    ``content.ring`` UNCONDITIONALLY, before ``install_systemd_units`` runs, so
-    fan-in's restart creates them fresh at the resolved wire. Releasing a lane
-    that does not exist adds nothing to that.
-
-    Answering a change there is actively HARMFUL, which is why this is a guard
-    rather than a filter. ``release_camilla_content_lane_for_format_flip``
-    STOPS CamillaDSP, and before anything restarts it —
-    ``reconcile_sound_dsp_state`` → ``jasper-sound reconcile-current-dsp`` —
-    reads the loaded graph over CamillaDSP's websocket
-    (``reconcile_current_dsp`` opens with
-    ``cam.get_config_file_path(best_effort=False)``). With CamillaDSP stopped
-    that raises ``CamillaUnavailable``, the CLI's ``--fail-open`` turns it into
-    ``status=failed`` with exit 0, and the re-emit NEVER RUNS. The install then
-    restarts CamillaDSP onto the graph it failed to refresh. So a spurious
-    release does not cost "one extra stop/start" — it silently suppresses the
-    one step that converges a box whose ring wire moved underneath it.
-
-    This became reachable when the ring wire's resolver default went wide: an
-    already-armed box that never declared a wire carries ``S16_LE`` in
-    ``outputd.env`` against an upcoming ``S32_LE``. Before that, every
-    ring-coupled box compared equal here by accident of the narrow default, so
-    the ring branch was never exercised and the suppression never fired.
-    """
-
-    from jasper.fanin.ring_health import read_persisted_coupling
-    from jasper.fanin_coupling import (
-        COUPLING_SHM_RING,
-        content_lane_format_for_coupling,
-        resolve_coupling,
+    # BOTH HALVES ASK THEIR OWN DAEMON'S ACCEPT SET, not a normalizer. Each
+    # daemon serves the ring for an UNDECLARED key and parks on anything it
+    # cannot serve, so "the box is on the ring pair" is the question both
+    # predicates answer — and a certification that demanded written tokens would
+    # turn the shipped low-latency claim red on every box the reconciler has not
+    # written yet, which is the mirror of the gap that made the old policy
+    # accept the retired pair.
+    #
+    # `coupling_value_removed` is fan-in's rule inverted: unset / empty /
+    # `shm_ring` are served, and everything else — a persisted `loopback` above
+    # all — is a config-class fault that exits 78
+    # (`rust/jasper-fanin/src/config.rs`). `outputd_bridge_is_ring` is the same
+    # question for the post-DSP hop.
+    fanin_on_ring = not coupling_value_removed(coupling)
+    outputd_on_ring = outputd_bridge_is_ring(
+        outputd_env.get(OUTPUTD_CONTENT_BRIDGE_KEY)
     )
 
-    coupling = read_persisted_coupling(fanin_env_path)
-    if resolve_coupling(coupling) == COUPLING_SHM_RING:
-        return None
-    outputd = read_env_file_state(outputd_env_path)
-    current = str(outputd.values.get(OUTPUTD_CONTENT_FORMAT_KEY, "") or "").strip()
-    if not current:
-        current = OUTPUTD_DEFAULT_CONTENT_FORMAT
-    upcoming = content_lane_format_for_coupling(coupling)
-    if current == upcoming:
-        return None
-    return (current, upcoming)
+    # usb_low_latency_48k is certifiable on the one transport: the shm_ring pair
+    # (Ring A plus whichever post-DSP ring the box armed). The ring pair was
+    # measured to reduce route latency, so the artifact binder accepts it and
+    # refuses everything else.
+    if fanin_on_ring and outputd_on_ring:
+        return tuple(errors)
+
+    if not fanin_on_ring:
+        errors.append(
+            f"{ROUTE_USB_LOW_LATENCY_48K} requires a coherent shm_ring pair; "
+            f"{COUPLING_ENV_VAR}={str(coupling or '').strip().lower()} names a "
+            "transport jasper-fanin cannot serve, so it is not coherent for "
+            "the production low-latency claim"
+        )
+    if not outputd_on_ring:
+        # No `(unset)` fallback on either half: both predicates answer True for
+        # an absent or blank value, so a refusal here always has a literal to
+        # name.
+        raw_bridge = str(
+            outputd_env.get(OUTPUTD_CONTENT_BRIDGE_KEY) or ""
+        ).strip().lower()
+        errors.append(
+            f"{ROUTE_USB_LOW_LATENCY_48K} requires "
+            f"{OUTPUTD_CONTENT_BRIDGE_KEY}={OUTPUTD_CONTENT_BRIDGE_SHM_RING}; "
+            f"{raw_bridge} is not the one transport"
+        )
+    return tuple(errors)
 
 
 def build_audio_runtime_plan_from_system(
@@ -1618,7 +1530,16 @@ def build_audio_runtime_plan(
         correction_latency_eligibility=correction_latency,
         route_policy_errors=_route_policy_errors(
             route=route_profile,
-            coupling=str(coupling_setting.value),
+            # The RAW declaration, not `coupling_setting.value`: the resolver
+            # answers `loopback` for an absent key AND for a persisted one, and
+            # the certification has to tell those apart — one is a box fan-in
+            # serves, the other is a box fan-in parks. `_resolve_coupling`
+            # already recorded both layers it read.
+            coupling=(
+                coupling_setting.generated_value
+                if coupling_setting.generated_value is not None
+                else coupling_setting.operator_value
+            ),
             outputd_env=outputd_values,
             camilla_devices=camilla_devices,
         ),
@@ -1864,10 +1785,16 @@ def transport_coherence_report(
     errors: list[str] = []
     notes: list[str] = []
     normalized = topology.name
-    raw_bridge = str(
-        outputd_values.get(OUTPUTD_CONTENT_BRIDGE_KEY, OUTPUTD_CONTENT_BRIDGE_DIRECT)
-        or OUTPUTD_CONTENT_BRIDGE_DIRECT
-    ).strip().lower()
+    # Same owner as the route policy above: undeclared IS the ring, so this
+    # report cannot call a healthy box's pair split. The label below is only
+    # what a message PRINTS; every decision is the predicate's.
+    outputd_on_ring = outputd_bridge_is_ring(
+        outputd_values.get(OUTPUTD_CONTENT_BRIDGE_KEY)
+    )
+    bridge_label = (
+        str(outputd_values.get(OUTPUTD_CONTENT_BRIDGE_KEY) or "").strip().lower()
+        or "(unset, = the ring)"
+    )
 
     if normalized in _RING_TRANSPORT_SHAPES:
         expected_capture = str(
@@ -1932,10 +1859,10 @@ def transport_coherence_report(
                     "jasper-fanin-coupling-auto.service, which runs the same "
                     "pass)."
                 )
-        if raw_bridge != COUPLING_SHM_RING:
+        if not outputd_on_ring:
             errors.append(
                 f"transport plan is shm_ring but {OUTPUTD_CONTENT_BRIDGE_KEY}="
-                f"{raw_bridge}; Ring A and the post-DSP ring must move together"
+                f"{bridge_label}; Ring A and the post-DSP ring must move together"
             )
         if capture_device and capture_device != expected_capture:
             errors.append(
@@ -1998,19 +1925,26 @@ def transport_coherence_report(
                 )
         return TransportCoherenceReport(errors=tuple(errors), notes=tuple(notes))
 
-    if raw_bridge == COUPLING_SHM_RING:
-        errors.append(
-            f"transport plan is {normalized} but {OUTPUTD_CONTENT_BRIDGE_KEY}=shm_ring; "
-            "Ring B is armed without the matching Ring A plan"
-        )
-
+    # NO BRIDGE-VS-PLAN ERROR ON THIS SIDE. Both terms answer absence with a
+    # default, so together they say nothing: outputd attaches the ring unless a
+    # box states otherwise, and `resolve_coupling` answers loopback for an
+    # absent key (its own docstring forbids deriving a runtime expectation from
+    # that). A healthy box that has not reconciled yet is exactly this pair.
+    # The evidence-based owner is doctor's `check_ring_split_transport`, which
+    # compares the LOADED GRAPH against the bridge.
     if normalized == TRANSPORT_LOOPBACK and playback_device:
         paired_capture = outputd_capture_device_for_playback(playback_device)
         if paired_capture is not None:
+            # The RETIRED pair's own default: this branch is the retired
+            # snd-aloop route's coherence report, and outputd no longer reads
+            # JASPER_OUTPUTD_CONTENT_PCM at all, so an absent key means "the
+            # lane this branch is about", not "the ring".
             actual_capture = str(
                 outputd_values.get(
                     "JASPER_OUTPUTD_CONTENT_PCM",
-                    outputd_capture_device_for_playback(DEFAULT_PLAYBACK_DEVICE),
+                    outputd_capture_device_for_playback(
+                        RETIRED_ALOOP_PLAYBACK_DEVICE
+                    ),
                 )
                 or ""
             )
@@ -2032,9 +1966,9 @@ def transport_coherence_report(
             # 2026-08-11, exit 78; captures/r7b-jts3-arm-20260811T111338Z).
             #
             # Safe by construction rather than by permission: once the graph is
-            # loaded CamillaDSP writes the active ring, outputd is still reading
-            # its ALSA lane, and outputd's ring-path allowlist is scoped to the
-            # shm_ring bridge — so the waypoint is SILENCE, never wrong audio.
+            # loaded CamillaDSP writes the ACTIVE ring while outputd is still
+            # attached to the ring its unconverged path key names — Ring B, the
+            # full-range one — so the waypoint is SILENCE, never wrong audio.
             #
             # WHEN it goes silent is a separate question, and this layer cannot
             # see the answer: the evidence is the graph ON DISK (the statefile),
@@ -2058,8 +1992,8 @@ def transport_coherence_report(
                 f"{TRANSPORT_LOOPBACK} plan is the ACTIVE-ring arm waypoint: the "
                 "graph on disk names the active ring (and Ring A on its capture "
                 "side — the coupling is end-to-end, so the re-emit moves both "
-                "halves) while outputd still reads "
-                "its ALSA lane. The running CamillaDSP may still be on the "
+                "halves) while outputd is still attached to the ring its "
+                "unconverged path key names. The running CamillaDSP may still be on the "
                 "previously-loaded graph, so this box goes silent at the next "
                 "CamillaDSP load and stays silent until the ladder finishes. "
                 "Complete it with `systemctl start "
@@ -2636,17 +2570,12 @@ def _resolve_outputd_content_buffer_int(
     # from generated_env (outputd.env) — the value the daemon actually consumes to
     # decide whether to open the content PCM — NOT the coupling: the writer-side
     # `outputd_latency_floor_actions` path does not thread fanin.env, so the coupling
-    # is invisible there, but the outputd bridge is always in outputd.env. Uses the
-    # fail-safe resolver so only a genuine `shm_ring` suppresses the policy: any
-    # other value (a garbage literal, or a deleted spelling) resolves
-    # `direct`, which DOES open the content PCM, so the policy still applies.
-    generated_bridge = resolve_outputd_content_bridge(
-        _raw(generated_env, OUTPUTD_CONTENT_BRIDGE_KEY)
-    )
+    # is invisible there, but the outputd bridge is always in outputd.env. Same
+    # owner as the two above, so all three answer absence identically.
     route_value = (
         DEFAULT_USB_LOW_LATENCY_OUTPUTD_CONTENT_BUFFER_FRAMES
         if route.route_id == ROUTE_USB_LOW_LATENCY_48K
-        and generated_bridge != OUTPUTD_CONTENT_BRIDGE_SHM_RING
+        and not outputd_bridge_is_ring(_raw(generated_env, OUTPUTD_CONTENT_BRIDGE_KEY))
         else None
     )
     return _resolve_layered_policy_int(

@@ -34,8 +34,8 @@ use crate::types::{widen_period, ProgramSample, SampleFormat};
 
 /// The wire an `S24_3Le` declaration would ask for and the ring cannot carry.
 ///
-/// The ring's twin of `alsa_backend`'s `PACKED_CONTENT_LANE_UNSUPPORTED`, and
-/// refused for the same reason at the same exit code: `JASPER_OUTPUTD_CONTENT_FORMAT`
+/// Refused park-class, at the same exit code every other declaration fault
+/// takes: `JASPER_OUTPUTD_CONTENT_FORMAT`
 /// parses all three widths of the crate's one format vocabulary, `S24_3LE`
 /// among them, but neither the ring layout (`jasper_ring::Geometry` defines two
 /// sample-format ids, S16LE and S32LE) nor this reader has a packed-24 path. A

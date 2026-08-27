@@ -193,10 +193,6 @@ MEMBER_CONTENT_FIFO = ARGS_DIR + "/member-content.fifo"
 OUTPUTD_GROUPING_ENV_FILE = "/var/lib/jasper/grouping-outputd.env"
 OUTPUTD_DAC_CONTENT_FIFO_ENV = "JASPER_OUTPUTD_DAC_CONTENT_FIFO"
 OUTPUTD_DAC_CONTENT_CHANNEL_ENV = "JASPER_OUTPUTD_DAC_CONTENT_CHANNEL"
-# Pinned to "direct" while bonded (writer/validator coherence — see
-# outputd_grouping_env): the lane fail-closes on any other bridge mode,
-# and this file is the last env layer, so the pin wins over lab retunes.
-OUTPUTD_CONTENT_BRIDGE_ENV = "JASPER_OUTPUTD_CONTENT_BRIDGE"
 OUTPUTD_DAC_CONTENT_TRIM_ENV = "JASPER_OUTPUTD_DAC_CONTENT_TRIM_DB"
 # Receiver-side wireless-sub low-pass corner (Hz). Emitted ONLY when this
 # member's channel is "sub" — outputd's "sub" ChannelPick reads it to build
@@ -216,7 +212,7 @@ CAMILLA_UNIT = "jasper-camilla.service"
 # in jasper-voice.service. The TTS route matrix decides whether this file points
 # voice at outputd, parks voice/AEC, or omits the socket so voice falls back to
 # fan-in. Omission is intentional: present-but-empty is read as a real, invalid
-# path. Same never-empty lesson as the CONTENT_BRIDGE pin.
+# path.
 VOICE_GROUPING_ENV_FILE = "/var/lib/jasper/grouping-voice.env"
 VOICE_UNIT = "jasper-voice.service"
 
@@ -596,22 +592,14 @@ def outputd_grouping_env(
     full-range assistant audio to the tweeter. Active endpoints therefore clear
     the outputd TTS socket along with the dac_content lane.
 
-    WRITER/VALIDATOR COHERENCE (the jts3 2026-06-11 boot-loop incident):
-    outputd FAIL-CLOSES on ``DAC_CONTENT_FIFO`` + any non-``direct``
-    ``CONTENT_BRIDGE`` — and systemd composes outputd's env from LAYERS,
-    so a bridge set in ``/var/lib/jasper/outputd.env`` plus this file's
-    FIFO crashed outputd into StartLimitAction=reboot (contained by the
-    T5.1 boot-loop guard). The writer must never emit a combination the
-    validator rejects ACROSS ALL LAYERS, so while bonded this file —
-    deliberately the LAST EnvironmentFile= layer — also pins
-    ``CONTENT_BRIDGE=direct``, the lane's hard requirement.
-    Solo OMITS the key entirely (never an empty value: outputd's
-    ``env_str`` treats a SET-but-empty bridge mode as invalid and bails),
-    so a solo speaker falls back to the underlying layers. Bonding and a
-    lower-layer bridge choice coexist; neither can crash outputd.
-
-    The pin is NOT vestigial: the surviving ``shm_ring`` bridge trips the
-    same fail-closed guard.
+    THE LANE HAS NO TRANSPORT (ADR-0100 / ADR-0178 ``grouped_dac_content_lane``,
+    #3118). It used to pin ``CONTENT_BRIDGE=direct`` here, because outputd
+    fail-closes on ``DAC_CONTENT_FIFO`` + any other bridge and the writer must
+    never emit a combination the validator rejects across all env LAYERS. Under
+    one audio transport there is no route to pin: the pin would name a bridge
+    nothing serves, so the box would park either way — with a stale declaration
+    in its env rather than a clean one. It parks at outputd's own bridge
+    requirement instead, which names the lane and the key.
     """
     route = expected_grouping_tts_route(cfg, active_endpoint=active_endpoint)
 
@@ -659,7 +647,6 @@ def outputd_grouping_env(
         env = {
             OUTPUTD_DAC_CONTENT_FIFO_ENV: MEMBER_CONTENT_FIFO,
             OUTPUTD_DAC_CONTENT_CHANNEL_ENV: cfg.channel or "stereo",
-            OUTPUTD_CONTENT_BRIDGE_ENV: "direct",
             OUTPUTD_TTS_SOCKET_ENV: route.outputd_tts_socket,
             OUTPUTD_DAC_CONTENT_HP_HZ_ENV: main_highpass_hz,
             # Pair-balance trim (validated <= 0 by load_config; outputd
@@ -708,10 +695,10 @@ def dac_content_lane_armed(
 
     Its consumer is the coupling support matrix
     (:func:`jasper.audio_runtime_plan.coupling_supported_for_route`), which
-    blocks ``shm_ring`` only where this lane is armed: arming it pins
-    ``JASPER_OUTPUTD_CONTENT_BRIDGE=direct`` above, and under ``direct`` outputd
-    reads the snd-aloop content PCM an armed ring moves CamillaDSP off. Every
-    other bonded shape has the cleared lane and nothing for the ring to strand.
+    blocks ``shm_ring`` only where this lane is armed: the round-trip lane is
+    itself the content source, so it and the ring are mutually exclusive by
+    construction (outputd refuses the pair). Every other bonded shape has the
+    cleared lane and nothing for the ring to strand.
 
     It crosses module boundaries as a plain ``bool`` ON PURPOSE:
     ``jasper.audio_runtime_plan`` keeps its multiroom imports lazy (it is
@@ -1973,8 +1960,11 @@ def main(argv: list[str] | None = None) -> int:
                 reason=args.reason,
                 detail=(
                     GROUPED_SHM_RING_MECHANISM
-                    + " Disarm the ring (jasper-fanin-coupling-reconcile "
-                    "loopback) to group this speaker. Staying solo."
+                    # No disarm remedy is offered: the ring is the one transport
+                    # (ADR-0100), `jasper-fanin-coupling-reconcile loopback`
+                    # exits 2, and the bonded round-trip lane is itself parked
+                    # pending #3118. A remedy that cannot run is worse than none.
+                    + " Grouping this speaker waits on #3118. Staying solo."
                 ),
                 level=logging.WARNING,
             )

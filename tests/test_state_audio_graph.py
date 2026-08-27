@@ -4,6 +4,8 @@
 
 from __future__ import annotations
 
+import pytest
+
 from jasper import audio_runtime_plan, audio_validation
 from jasper.audio_hardware.dac import APPLE_USB_C_DONGLE_ID
 from jasper.control import state_aggregate
@@ -137,12 +139,20 @@ def test_audio_graph_state_aggregates_route_artifact_fanin_and_outputd(
 # --- /state.audio_graph.coupling (P2) ----------------------------------------
 
 
-def test_coupling_state_loopback_default_is_coherent(monkeypatch):
+def test_coupling_state_undeclared_box_is_not_coherent(monkeypatch):
+    """ADR-0100: only the ring PAIR is coherent, and one half here has not moved.
+
+    The two halves answer absence differently, and that is the point of this
+    case: an unreadable outputd.env still leaves outputd on the ring (its own
+    default), while the persisted coupling is a written token that says
+    ``loopback``. So the bridge reports the ring — what outputd runs — and the
+    pair is still incoherent, because the fan-in half names the retired
+    transport.
+    """
     monkeypatch.setattr(
         "jasper.fanin.ring_health.read_persisted_coupling",
         lambda *a, **k: "loopback",
     )
-    # No outputd.env -> content_bridge defaults to direct.
     monkeypatch.setattr(
         "jasper.fanin.ring_health.OUTPUTD_ENV_PATH",
         "/nonexistent/outputd.env",
@@ -151,14 +161,27 @@ def test_coupling_state_loopback_default_is_coherent(monkeypatch):
         fanin_status={"output": {"transport": "loopback"}}
     )
     assert block["persisted"] == "loopback"
-    assert block["content_bridge"] == "direct"
-    assert block["intent_coherent"] is True
+    assert block["content_bridge"] == "shm_ring"
+    assert block["intent_coherent"] is False
     assert block["live_transport"] == "loopback"
 
 
-def test_coupling_state_ring_armed_reports_coherent_pair(monkeypatch, tmp_path):
+@pytest.mark.parametrize(
+    "outputd_env_text",
+    [
+        # The reconciler WRITES the token, so a converged box carries it...
+        "JASPER_OUTPUTD_CONTENT_BRIDGE=shm_ring\n",
+        # ...and a box that never ran it is on the ring anyway, because that is
+        # outputd's own answer to an undeclared key. Both are the same running
+        # transport, so both must report the same coherent pair.
+        "",
+    ],
+)
+def test_coupling_state_ring_armed_reports_coherent_pair(
+    monkeypatch, tmp_path, outputd_env_text
+):
     outputd_env = tmp_path / "outputd.env"
-    outputd_env.write_text("JASPER_OUTPUTD_CONTENT_BRIDGE=shm_ring\n")
+    outputd_env.write_text(outputd_env_text)
     monkeypatch.setattr(
         "jasper.fanin.ring_health.read_persisted_coupling",
         lambda *a, **k: "shm_ring",
@@ -303,9 +326,11 @@ def test_observed_ring_wire_uses_each_producers_own_format_key():
 
 
 def test_coupling_state_partial_flip_reports_incoherent(monkeypatch, tmp_path):
-    # shm_ring fan-in but direct outputd = partial flip -> coherent False.
+    # shm_ring fan-in but direct outputd = partial flip -> coherent False. The
+    # token has to be STATED: an absent key is the ring, so a partial flip is
+    # now something an operator (or a stale env file) declared.
     outputd_env = tmp_path / "outputd.env"
-    outputd_env.write_text("")  # bridge defaults to direct
+    outputd_env.write_text("JASPER_OUTPUTD_CONTENT_BRIDGE=direct\n")
     monkeypatch.setattr(
         "jasper.fanin.ring_health.read_persisted_coupling",
         lambda *a, **k: "shm_ring",

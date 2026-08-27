@@ -642,12 +642,9 @@ def test_sub_corner_check_ok_when_wired(monkeypatch, tmp_path):
 def test_outputd_grouping_env_clears_when_not_active():
     """Disable-clears-stale: solo / invalid → the lane keys present as
     empty strings (outputd reads empty as unset → byte-identical solo
-    loop) and the bridge key fully OMITTED — never present-but-empty
-    (outputd's env_str treats a SET-but-empty bridge mode as invalid and
-    bails), and never pinned (solo must fall back to the underlying env
-    layers)."""
+    loop), and the writer never names a content bridge in any state — the
+    round-trip lane has no transport of its own to declare (ADR-0100)."""
     from jasper.multiroom.reconcile import (
-        OUTPUTD_CONTENT_BRIDGE_ENV,
         OUTPUTD_DAC_CONTENT_CHANNEL_ENV,
         OUTPUTD_DAC_CONTENT_FIFO_ENV,
         outputd_grouping_env,
@@ -659,22 +656,17 @@ def test_outputd_grouping_env_clears_when_not_active():
         env = outputd_grouping_env(cfg)
         assert env[OUTPUTD_DAC_CONTENT_FIFO_ENV] == ""
         assert env[OUTPUTD_DAC_CONTENT_CHANNEL_ENV] == ""
-        assert OUTPUTD_CONTENT_BRIDGE_ENV not in env
+        assert "JASPER_OUTPUTD_CONTENT_BRIDGE" not in env
 
 
-def test_outputd_grouping_env_writer_validator_parity():
-    """THE jts3 2026-06-11 boot-loop pin (writer/validator coherence):
-    whenever the writer arms the FIFO it MUST also pin
-    CONTENT_BRIDGE=direct — outputd fail-closes on the FIFO + non-direct-bridge
-    combination, and systemd composes env from layers, so without the
-    pin a lab retune in a lower layer crashes outputd into
-    StartLimitAction=reboot. And in NO state may the bridge key be
-    present-but-empty (outputd bails on an empty bridge mode)."""
-    from jasper.multiroom.reconcile import (
-        OUTPUTD_CONTENT_BRIDGE_ENV,
-        OUTPUTD_DAC_CONTENT_FIFO_ENV,
-        outputd_grouping_env,
-    )
+def test_outputd_grouping_env_never_declares_a_transport():
+    """The writer emits no content-bridge key in ANY state.
+
+    It used to pin ``direct`` beside the FIFO for writer/validator coherence
+    (the jts3 2026-06-11 boot-loop). Under one audio transport there is no
+    route to pin: the lane parks at outputd's own bridge requirement, and a
+    stale declaration in the last env layer would only obscure why."""
+    from jasper.multiroom.reconcile import outputd_grouping_env
     configs = [
         _cfg(),
         _cfg(enabled=True, role="leader", channel="left", bond_id="b"),
@@ -683,14 +675,7 @@ def test_outputd_grouping_env_writer_validator_parity():
         _cfg(enabled=True, role="", channel="left", bond_id="", error="bad"),
     ]
     for cfg in configs:
-        env = outputd_grouping_env(cfg)
-        if env[OUTPUTD_DAC_CONTENT_FIFO_ENV]:
-            assert env.get(OUTPUTD_CONTENT_BRIDGE_ENV) == "direct", (
-                "FIFO armed without the direct-bridge pin — the "
-                "guard-rejected layering the jts3 incident hit"
-            )
-        if OUTPUTD_CONTENT_BRIDGE_ENV in env:
-            assert env[OUTPUTD_CONTENT_BRIDGE_ENV] == "direct"
+        assert "JASPER_OUTPUTD_CONTENT_BRIDGE" not in outputd_grouping_env(cfg)
 
 
 def test_outputd_config_exit_code_contract():

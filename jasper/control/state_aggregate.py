@@ -55,7 +55,6 @@ from ..volume_diagnostics import (
 from . import (
     bootloop_guard_state,
     camilla_recover_state,
-    content_lane_state,
     debug_control,
     grouping_supervisor,
     measurement_hold,
@@ -337,9 +336,10 @@ def _coupling_state(
             read_persisted_coupling,
         )
         from ..fanin_coupling import (
+            COUPLING_SHM_RING,
             OUTPUTD_CONTENT_BRIDGE_ENV_VAR,
-            resolve_outputd_content_bridge,
-            ring_pair_intent_is_coherent,
+            OUTPUTD_CONTENT_BRIDGE_SHM_RING,
+            outputd_bridge_is_ring,
         )
         from ..env_file import read_value
 
@@ -348,8 +348,17 @@ def _coupling_state(
             outputd_text = Path(OUTPUTD_ENV_PATH).read_text(encoding="utf-8")
         except OSError:
             outputd_text = ""
-        content_bridge = resolve_outputd_content_bridge(
-            read_value(outputd_text, OUTPUTD_CONTENT_BRIDGE_ENV_VAR)
+        # What outputd IS RUNNING, through the one predicate that owns that
+        # question. An UNDECLARED bridge is the ring (config.rs), so this
+        # reports `shm_ring` for a box that named nothing — which is what it
+        # runs. Reporting the raw absence instead made a healthy box's pair read
+        # as incoherent on this surface.
+        content_bridge = (
+            OUTPUTD_CONTENT_BRIDGE_SHM_RING
+            if outputd_bridge_is_ring(
+                read_value(outputd_text, OUTPUTD_CONTENT_BRIDGE_ENV_VAR)
+            )
+            else "direct"
         )
         try:
             fanin_text = Path(FANIN_ENV_PATH).read_text(encoding="utf-8")
@@ -363,7 +372,10 @@ def _coupling_state(
         return {
             "persisted": coupling,
             "content_bridge": content_bridge,
-            "intent_coherent": ring_pair_intent_is_coherent(coupling, content_bridge),
+            "intent_coherent": (
+                coupling == COUPLING_SHM_RING
+                and content_bridge == OUTPUTD_CONTENT_BRIDGE_SHM_RING
+            ),
             "live_transport": live_transport,
             "observed": {
                 "ring_a": _observed_ring_wire(
@@ -1405,17 +1417,6 @@ async def _get_state(
             # for this boot via runtime drop-ins — fix the failing
             # daemon, then reboot to re-arm.
             "bootloop_guard": bootloop_guard_state.snapshot(),
-            # jasper-outputd's content-lane park record (written by its own
-            # ExecStopPost after repeated content-lane open failures, then the
-            # unit is stopped out-of-band so it cannot ride Restart=on-failure
-            # into StartLimitAction=reboot). parked=true means the speaker
-            # emits NOTHING and nothing re-arms it automatically — the record's
-            # own lane-specific `action` is the remedy. Fresh /run read per
-            # call (this daemon is never restarted when outputd parks);
-            # {"status": "absent"} on a healthy boot. Same reader
-            # jasper-doctor's check_outputd_content_lane_park uses, so the two
-            # surfaces cannot disagree.
-            "content_lane": content_lane_state.snapshot(),
             # jasper-camilla-recover's core-graph park record (ADR-0175).
             # parked=true means one bounded recovery pass could not bring the
             # DSP graph back, so CamillaDSP was stopped out-of-band: the

@@ -282,7 +282,6 @@ def test_flat_cutover_has_exactly_one_writer():
         assert "render-flat-cutover" in body, name
         # The emitter is reached through the CLI, never spelled directly in bash.
         assert "emit_flat_outputd_cutover_config" not in body, name
-        assert "emit_flat_ring_config" not in body, name
 
     # The reconciler renders BEFORE it can restart the audio graph, so a restart
     # loads this pass's graph rather than the previous topology's.

@@ -268,22 +268,56 @@ def test_member_kwargs_are_pipe_sink_detects_grouped_sink():
 # --- Ring B (outputd content bridge) vocabulary + coherence (P2) -------------
 
 
-def test_resolve_outputd_content_bridge_fail_safe_and_tokens():
-    from jasper.fanin_coupling import (
-        OUTPUTD_CONTENT_BRIDGE_DIRECT,
-        OUTPUTD_CONTENT_BRIDGE_SHM_RING,
-        resolve_outputd_content_bridge,
-    )
+def test_outputd_bridge_is_ring_truth_table_matches_the_daemon():
+    """The absence answer, pinned against the daemon it has to agree with.
 
-    assert resolve_outputd_content_bridge(None) == OUTPUTD_CONTENT_BRIDGE_DIRECT
-    assert resolve_outputd_content_bridge("") == OUTPUTD_CONTENT_BRIDGE_DIRECT
-    assert resolve_outputd_content_bridge(" DIRECT ") == OUTPUTD_CONTENT_BRIDGE_DIRECT
-    assert resolve_outputd_content_bridge("Shm_Ring") == OUTPUTD_CONTENT_BRIDGE_SHM_RING
-    # The REMOVED rate_match bridge fail-safes to direct here, matching the Rust
-    # daemon's own removed-value arm. The RAW string is what the route policy
-    # rejects — see test_audio_runtime_plan.py's refusal test.
-    assert resolve_outputd_content_bridge("rate_match") == OUTPUTD_CONTENT_BRIDGE_DIRECT
-    assert resolve_outputd_content_bridge("garbage") == OUTPUTD_CONTENT_BRIDGE_DIRECT
+    UNDECLARED IS THE RING on both sides: `Config::from_env` defaults
+    `JASPER_OUTPUTD_CONTENT_BRIDGE` to `shm_ring`, so a surface that read
+    absence the other way called a healthy box's transport split — a PLAYING
+    speaker reported SILENT. Everything else answers away from the ring, which
+    is also what outputd does with those values: it parks.
+    """
+    from jasper.fanin_coupling import outputd_bridge_is_ring
+
+    # Undeclared, in all three shapes a caller can hand over.
+    for undeclared in (None, "", "   "):
+        assert outputd_bridge_is_ring(undeclared) is True, repr(undeclared)
+    # The daemon's own alias set, case- and whitespace-insensitive.
+    for alias in ("shm_ring", "SHM_RING", " Shm_Ring ", "shmring", "ring"):
+        assert outputd_bridge_is_ring(alias) is True, alias
+    # The retired route, its parse aliases, the deleted lab bridge, and a typo.
+    for off in ("direct", "off", "disabled", "rate_match", "ratematch", "wat"):
+        assert outputd_bridge_is_ring(off) is False, off
+
+
+def test_outputd_bridge_ring_aliases_match_the_rust_accept_set():
+    """Drift pin: a Rust arm this predicate does not know reads as NOT the ring.
+
+    `Config::from_env` and this predicate are the two answers to one question,
+    and the Rust side is the one that decides what actually runs — so a widened
+    match arm there with no counterpart here would report a box as off the
+    transport it is demonstrably serving.
+    """
+    from pathlib import Path
+    import re
+
+    from jasper.fanin_coupling import _OUTPUTD_RING_BRIDGE_SPELLINGS
+
+    config_rs = (
+        Path(__file__).resolve().parents[1]
+        / "rust/jasper-outputd/src/config.rs"
+    ).read_text(encoding="utf-8")
+    arm = re.search(
+        r'^\s*((?:"[a-z_]+"\s*\|\s*)*"[a-z_]+")\s*=>\s*ContentBridgeMode::ShmRing,',
+        config_rs,
+        re.MULTILINE,
+    )
+    assert arm is not None, "the ShmRing parse arm moved; re-anchor this pin"
+    rust_spellings = set(re.findall(r'"([a-z_]+)"', arm.group(1)))
+    assert rust_spellings == set(_OUTPUTD_RING_BRIDGE_SPELLINGS), (
+        rust_spellings,
+        set(_OUTPUTD_RING_BRIDGE_SPELLINGS),
+    )
 
 
 def test_resolve_outputd_ring_path_and_slots_fail_safe():
@@ -308,20 +342,6 @@ def test_resolve_outputd_ring_path_and_slots_fail_safe():
     for bad in ("1", "0", "17", "-1", "garbage", "2.5"):
         with pytest.raises(ValueError):
             resolve_outputd_ring_slots(bad)
-
-
-def test_ring_pair_intent_is_coherent_only_for_matched_ends():
-    from jasper.fanin_coupling import ring_pair_intent_is_coherent
-
-    # Coherent: both ring, or neither.
-    assert ring_pair_intent_is_coherent("shm_ring", "shm_ring") is True
-    assert ring_pair_intent_is_coherent("loopback", "direct") is True
-    # PARTIAL flips (strand one ring end) are NOT coherent.
-    assert ring_pair_intent_is_coherent("shm_ring", "direct") is False
-    assert ring_pair_intent_is_coherent("loopback", "shm_ring") is False
-    # A None coupling resolves to loopback -> pairs with direct only.
-    assert ring_pair_intent_is_coherent(None, "direct") is True
-    assert ring_pair_intent_is_coherent(None, "shm_ring") is False
 
 
 # --- resolve_ring_wire: one resolution, four declarers -------------------------

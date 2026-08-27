@@ -1194,12 +1194,23 @@ def test_a_degraded_transport_read_cannot_poison_later_reads(monkeypatch) -> Non
     assert second["coherence_errors"] == []
 
 
-def test_transport_state_is_clean_when_the_paired_lanes_agree(monkeypatch) -> None:
+def test_transport_state_is_clean_when_the_ring_pair_is_undeclared(monkeypatch) -> None:
+    """The converged box declares NOTHING, and `/state` must call it clean.
+
+    An undeclared bridge is the ring — that is what outputd runs — so this is
+    the ordinary healthy shape, not a half-configured one. Reading absence the
+    other way put a playing speaker's pair on the parked card.
+    """
+    from jasper.fanin_coupling import RING_CAPTURE_DEVICE, RING_PLAYBACK_DEVICE
+
     register_passive_only_dac(monkeypatch)
     state = audio_health._transport_state(
-        coupling="loopback",
-        outputd_env={"JASPER_OUTPUTD_CONTENT_PCM": "outputd_content_capture"},
-        camilla_devices={"playback_device": "outputd_content_playback"},
+        coupling="shm_ring",
+        outputd_env={},
+        camilla_devices={
+            "capture_device": RING_CAPTURE_DEVICE,
+            "playback_device": RING_PLAYBACK_DEVICE,
+        },
         topology=_no_lane_active_two_way(),
     )
 

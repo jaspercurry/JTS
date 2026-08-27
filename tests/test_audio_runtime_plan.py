@@ -61,7 +61,7 @@ from jasper.audio_runtime_plan import (
 from jasper.camilla_config_contract import (
     ACTIVE_OUTPUTD_PLAYBACK_DEVICE,
     DEFAULT_OUTPUTD_CAPTURE_DEVICE,
-    DEFAULT_PLAYBACK_DEVICE,
+    RETIRED_ALOOP_PLAYBACK_DEVICE,
 )
 from jasper.cli.audio_config import main as audio_config_main
 from jasper.env_load import EnvFileState
@@ -240,7 +240,10 @@ def test_content_buffer_wrapper_preserves_layer_precedence_and_warnings():
         route=route,
         base_env={},
         override_env={},
-        generated_env={key: "1024"},
+        # The policy's subject is a box that NAMED the retired route: an
+        # undeclared bridge is the ring, where the content buffer sizes nothing
+        # and the policy is dropped upstream.
+        generated_env={key: "1024", "JASPER_OUTPUTD_CONTENT_BRIDGE": "direct"},
         base_label=base_label,
         override_label=override_label,
         generated_label=generated_label,
@@ -301,7 +304,9 @@ def test_outputd_latency_floor_actions_set_usb_route_content_buffer():
     actions = outputd_latency_floor_actions(
         profile_id=APPLE_USB_C_DONGLE_ID,
         base_env={AUDIO_ROUTE_PROFILE_KEY: ROUTE_USB_LOW_LATENCY_48K},
-        outputd_env={},
+        # Declared off the ring: an undeclared bridge IS the ring, and there the
+        # policy is inert and dropped.
+        outputd_env={"JASPER_OUTPUTD_CONTENT_BRIDGE": "direct"},
     )
 
     by_key = {action.key: action for action in actions}
@@ -318,7 +323,7 @@ def test_usb_low_latency_without_dac_floor_keeps_outputd_pair_coherent():
     plan = build_audio_runtime_plan(
         profile_id="",
         base_env={AUDIO_ROUTE_PROFILE_KEY: ROUTE_USB_LOW_LATENCY_48K},
-        outputd_env={},
+        outputd_env={"JASPER_OUTPUTD_CONTENT_BRIDGE": "direct"},
     )
 
     period = plan.setting(OUTPUTD_PERIOD_KEY).value
@@ -331,7 +336,7 @@ def test_usb_low_latency_without_dac_floor_keeps_outputd_pair_coherent():
     actions = outputd_latency_floor_actions(
         profile_id="",
         base_env={AUDIO_ROUTE_PROFILE_KEY: ROUTE_USB_LOW_LATENCY_48K},
-        outputd_env={},
+        outputd_env={"JASPER_OUTPUTD_CONTENT_BRIDGE": "direct"},
     )
     by_key = {action.key: action for action in actions}
     assert by_key[OUTPUTD_PERIOD_KEY].action == "unset"
@@ -345,6 +350,9 @@ def test_usb_low_latency_with_dac_floor_keeps_shipped_pair():
         outputd_env={
             OUTPUTD_PERIOD_KEY: "128",
             OUTPUTD_CONTENT_BUFFER_KEY: "1536",
+            # Off the ring: the shipped pair is the retired route's, and an
+            # undeclared bridge would be the ring, where the buffer is dropped.
+            OUTPUTD_CONTENT_BRIDGE_KEY: "direct",
         },
     )
 
@@ -412,11 +420,15 @@ def test_outputd_floor_actions_shm_ring_bridge_unsets_content_buffer():
     by_key = {a.key: a for a in shm_ring_actions}
     assert by_key[OUTPUTD_CONTENT_BUFFER_KEY].action == "unset"
 
-    # Non-ring (loopback/direct) USB low-latency box still emits the 1536 policy.
+    # A box that NAMED the retired route still emits the 1536 policy. It has to
+    # be named: an undeclared bridge is the ring, which is the arm above.
     loopback_actions = outputd_latency_floor_actions(
         profile_id=APPLE_USB_C_DONGLE_ID,
         base_env={AUDIO_ROUTE_PROFILE_KEY: ROUTE_USB_LOW_LATENCY_48K},
-        outputd_env={OUTPUTD_PERIOD_KEY: "128"},
+        outputd_env={
+            OUTPUTD_PERIOD_KEY: "128",
+            OUTPUTD_CONTENT_BRIDGE_KEY: "direct",
+        },
     )
     loopback_by_key = {a.key: a for a in loopback_actions}
     assert loopback_by_key[OUTPUTD_CONTENT_BUFFER_KEY].action == "set"
@@ -969,6 +981,10 @@ def test_usb_low_latency_route_identity_carries_direct_capture_and_resampler():
     plan = build_audio_runtime_plan(
         base_env={AUDIO_ROUTE_PROFILE_KEY: ROUTE_USB_LOW_LATENCY_48K},
         profile_id=APPLE_USB_C_DONGLE_ID,
+        # The identity's content-buffer row is the RETIRED route's; an
+        # undeclared bridge is the ring, which drops the row entirely (that
+        # shape has its own test).
+        outputd_env={OUTPUTD_CONTENT_BRIDGE_KEY: "direct"},
         route_mode="solo",
     )
     identity = plan.route_latency_identity()
@@ -999,19 +1015,17 @@ def test_usb_low_latency_route_identity_carries_direct_capture_and_resampler():
     assert identity["uac2_gadget_attrs"]["c_sync"] == "async"
 
 
-def test_usb_low_latency_route_rejects_any_non_direct_bridge_literal():
-    """The route policy compares the RAW outputd bridge literal, not the
-    fail-safe resolver — so a partial flip without a matching shm_ring coupling
-    is refused whatever the value spells.
+def test_usb_low_latency_route_rejects_any_non_ring_bridge_literal():
+    """The route policy compares the RAW outputd bridge literal, so a box
+    carrying a stale declaration is refused whatever the value spells.
 
-    `rate_match` is the load-bearing case: outputd DELETED that bridge and now
-    fail-safes every one of its spellings to `direct`. If this policy were
-    "simplified" onto `resolve_outputd_content_bridge`, a box still carrying a
-    stale spelling would launder into `direct` and certify a green
-    `usb_low_latency_48k` claim it must not get. Each spelling plus a typo is
-    exercised so that regression fails here.
+    `direct` and the `rate_match` spellings are the load-bearing cases: outputd
+    still PARSES them (that is how its park refusals name the retired route),
+    and a policy that resolved rather than compared would launder one into a
+    green `usb_low_latency_48k` claim it must not get.
     """
     for bridge in (
+        "direct",
         "rate_match",
         "ratematch",
         "rate-matched",
@@ -1025,21 +1039,46 @@ def test_usb_low_latency_route_rejects_any_non_direct_bridge_literal():
         )
 
         assert any(
-            "requires JASPER_OUTPUTD_CONTENT_BRIDGE=direct" in error
+            "requires JASPER_OUTPUTD_CONTENT_BRIDGE=shm_ring" in error
             for error in plan.errors
         ), f"{bridge} must not certify: {plan.errors}"
 
-    # Positive control: the two COHERENT transports still certify, so the
-    # assertion above is not passing because everything errors.
-    ok = build_audio_runtime_plan(
-        base_env={AUDIO_ROUTE_PROFILE_KEY: ROUTE_USB_LOW_LATENCY_48K},
-        outputd_env={OUTPUTD_CONTENT_BRIDGE_KEY: "direct"},
-        route_mode="solo",
-    )
-    assert not any(
-        "requires JASPER_OUTPUTD_CONTENT_BRIDGE=direct" in error
-        for error in ok.errors
-    ), ok.errors
+    # Positive control: the one COHERENT transport still certifies, so the loop
+    # above is not passing because everything errors. Both spellings of it —
+    # the token the reconciler writes, and the ABSENCE that resolves to the
+    # same running transport on a box it has not written yet. A control staged
+    # on `direct` would sit inside the refused set above and pass vacuously.
+    for outputd_env in ({OUTPUTD_CONTENT_BRIDGE_KEY: "shm_ring"}, {}):
+        ok = build_audio_runtime_plan(
+            base_env={AUDIO_ROUTE_PROFILE_KEY: ROUTE_USB_LOW_LATENCY_48K},
+            outputd_env=outputd_env,
+            route_mode="solo",
+        )
+        assert ok.route_policy_errors == (), (outputd_env, ok.route_policy_errors)
+
+
+def test_usb_low_latency_route_reads_each_daemon_own_accept_set():
+    """The claim rides the one transport, and each half is asked its own rule.
+
+    A persisted `loopback` is a coupling jasper-fanin REFUSES (exit 78,
+    `rust/jasper-fanin/src/config.rs`), so the box cannot be on the measured
+    transport and the claim is refused. An ABSENT key is the ring — that is
+    what fan-in serves — so a box the reconciler has not written yet keeps its
+    shipped claim. Demanding the written token instead turned every such box
+    permanently red.
+    """
+    def _errors(**fanin_env):
+        return build_audio_runtime_plan(
+            base_env={AUDIO_ROUTE_PROFILE_KEY: ROUTE_USB_LOW_LATENCY_48K},
+            fanin_env=fanin_env,
+            route_mode="solo",
+        ).route_policy_errors
+
+    assert _errors() == ()
+    assert _errors(JASPER_FANIN_CAMILLA_COUPLING="shm_ring") == ()
+    assert _errors(JASPER_FANIN_CAMILLA_COUPLING="") == ()
+    assert len(_errors(JASPER_FANIN_CAMILLA_COUPLING="loopback")) == 1
+    assert len(_errors(JASPER_FANIN_CAMILLA_COUPLING="transport_pipe")) == 1
 
 
 def test_route_config_hash_includes_fanin_direct_period():
@@ -1535,7 +1574,7 @@ def test_loopback_topology_derives_outputd_reader_from_camilla_writer():
     # unchanged by which pair carries it.
     topology = transport_topology_for_coupling(
         COUPLING_LOOPBACK,
-        camilla_playback_device=DEFAULT_PLAYBACK_DEVICE,
+        camilla_playback_device=RETIRED_ALOOP_PLAYBACK_DEVICE,
     )
 
     assert (
@@ -1809,9 +1848,12 @@ def test_usb_low_latency_rejects_partial_ring_flip_outputd_only():
     assert plan.route_policy_errors
 
 
-def test_usb_low_latency_still_accepts_default_loopback_direct():
+def test_usb_low_latency_accepts_the_one_transport():
+    """A reconciled box — the ring named at both ends — certifies."""
     plan = build_audio_runtime_plan(
         base_env={AUDIO_ROUTE_PROFILE_KEY: ROUTE_USB_LOW_LATENCY_48K},
+        fanin_env={COUPLING_ENV_VAR: COUPLING_SHM_RING},
+        outputd_env={OUTPUTD_CONTENT_BRIDGE_KEY: COUPLING_SHM_RING},
         route_mode="solo",
     )
     assert plan.route_policy_errors == ()
@@ -2154,12 +2196,14 @@ def test_shm_ring_channel_axis_is_quiet_when_camilla_agrees(monkeypatch):
 @pytest.mark.parametrize(
     "bridge_lines,reported",
     [
-        # ABSENT resolves to outputd's own default, `direct` — the shape a box
-        # takes when the ring keys were swept but the coupling line was not.
-        ({}, "direct"),
-        # ...and stated explicitly, which is what the loopback branch of
-        # `_outputd_actions` leaves behind mid-flip.
+        # STATED explicitly — the only way to be off the ring now. An ABSENT
+        # key used to appear here too, back when absence resolved `direct`; it
+        # resolves the RING now (outputd's own default), so that row moved to
+        # the coherent control below rather than being deleted.
         ({"JASPER_OUTPUTD_CONTENT_BRIDGE": "direct"}, "direct"),
+        # A retired lab spelling is equally off the ring, and equally a
+        # contradiction under a ring plan.
+        ({"JASPER_OUTPUTD_CONTENT_BRIDGE": "rate_match"}, "rate_match"),
     ],
 )
 def test_a_ring_plan_over_a_direct_bridge_is_a_contradiction(
@@ -2202,3 +2246,28 @@ def test_a_ring_plan_over_a_direct_bridge_is_a_contradiction(
     assert audio_plan.transport_topology_for_coupling(
         "shm_ring", outputd_env=outputd_env
     ).name == expected_shape
+
+
+@pytest.mark.parametrize("marker", ["", "1"], ids=["stereo", "active"])
+def test_an_undeclared_bridge_under_a_ring_plan_is_coherent(marker):
+    """THE CONTROL for the guard above, and the defect it was inverted on.
+
+    An UNDECLARED `JASPER_OUTPUTD_CONTENT_BRIDGE` is the ring — that is what
+    `Config::from_env` runs — so a ring plan over it is the ordinary converged
+    box, not a half flip. Reading absence the other way reported this box's
+    transport as split, which on the doctor's split-transport check called a
+    demonstrably playing speaker SILENT.
+    """
+    report = audio_plan.transport_coherence_report(
+        coupling="shm_ring",
+        outputd_env={
+            "JASPER_OUTPUTD_RING_ACTIVE_ENDPOINT": marker,
+            "JASPER_OUTPUTD_SHM_RING_PATH": (
+                "/dev/shm/jts-ring/active-content.ring"
+                if marker
+                else "/dev/shm/jts-ring/content.ring"
+            ),
+        },
+    )
+
+    assert [e for e in report.errors if "must move together" in e] == [], report

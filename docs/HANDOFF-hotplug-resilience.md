@@ -233,13 +233,10 @@ ALSA. Everything beyond that is out-of-band (ADR-0141):
 3. **outputd failure** runs
    [`jasper-outputd-failure-reconcile`](../deploy/bin/jasper-outputd-failure-reconcile)
    from `ExecStopPost`. It skips normal stops and `ExecCondition` parks;
-   refreshes `outputd.env` before the next built-in restart; gives `EX_CONFIG=78`
-   one bounded reconcile plus restart; and parks the unit on the 4th
-   consecutive content-lane open failure, recording reason, lane-specific
-   action, and re-arm paths in `/run/jasper-outputd-content-lane.state`.
-   `jasper-doctor` and `/state.resilience.content_lane` read that record
-   through [`jasper/control/content_lane_state.py`](../jasper/control/content_lane_state.py)
-   — a surface, so do not reword the record's fields casually.
+   refreshes `outputd.env` before the next built-in restart; and gives
+   `EX_CONFIG=78` one bounded reconcile plus restart. (Its content-lane park
+   class went with the lane under ADR-0100 — outputd attaches the ring or parks
+   at 78, which the retry ladder above already covers.)
 
 Half-present composites: a saved **roleful** composite (declared drivers
 needing per-driver DSP) parks to `JASPER_OUTPUTD_BACKEND=fake` rather than
@@ -366,7 +363,7 @@ the `/sound/` + doctor saved-vs-attached split. What no box has confirmed:
 - [`jasper/voice/daemon_main.py`](../jasper/voice/daemon_main.py) — raise on primary mic-open failure, exit 66
 - [`jasper/cli/doctor/audio.py`](../jasper/cli/doctor/audio.py) — `check_microphone` headline + mic checks deferring to the reader
 - [`jasper/control/server.py`](../jasper/control/server.py) — `/mic` parked/starting/offline surface
-- [`jasper/control/state_aggregate.py`](../jasper/control/state_aggregate.py) — `microphone` block, `voice.parked_no_mic`, `resilience.content_lane`
+- [`jasper/control/state_aggregate.py`](../jasper/control/state_aggregate.py) — `microphone` block, `voice.parked_no_mic`, `resilience.camilla_recover`
 - [`deploy/udev/99-jasper-audio-hardware-reconcile.rules`](../deploy/udev/99-jasper-audio-hardware-reconcile.rules) — output-DAC add/remove/change triggers
 - [`deploy/bin/jasper-output-hardware-hotplug`](../deploy/bin/jasper-output-hardware-hotplug) — Apple USB remove reconciler request
 - [`deploy/bin/jasper-outputd-failure-reconcile`](../deploy/bin/jasper-outputd-failure-reconcile) — retry-time env refresh + content-lane park
