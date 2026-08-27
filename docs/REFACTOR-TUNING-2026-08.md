@@ -1054,7 +1054,8 @@ changes configs *without* the dance; a simple pipeline-health check may remain;
 the gymnastics are deleted. So this is not an open gate and the plan does not ask
 for a nod. What it does ask for is **one piece of evidence** — the no-pop check (**sanctioned S11 validation act 2**)
 (swap the graph inside an open measurement window with the fader parked and a
-recorder running, and listen). It is still unrun. Pass → the duck goes on the
+recorder running, and listen). It ran — `cutover-briefs-acceptance.md` §4 owns
+the result. Pass → the duck goes on the
 measurement path. Fail → the session-scoped graph still fires it once per session
 instead of twice per stimulus, which is most of the win, and the health check
 absorbs the rest. Either way the scope is unchanged: **measurement-swap duck
