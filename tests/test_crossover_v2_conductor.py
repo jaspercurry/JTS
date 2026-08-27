@@ -1579,6 +1579,9 @@ def test_conductor_threads_geometry_and_result_to_analyze():
     assert seen_result is result  # the CaptureResult itself, not just bytes
     assert isinstance(geometry, MeasurementGeometry)
     assert geometry.driver_spacing_m == pytest.approx(0.15)
+    # This literal is the only tripwire for
+    # ``crossover_v2_flow.MEASUREMENT_DISTANCE_M``, which nothing in the tree
+    # imports — importing it here would make the assertion pass at any value.
     assert geometry.mic_distance_m == pytest.approx(1.0)
     assert geometry.parallax_us() > 0.0
 
@@ -1614,7 +1617,10 @@ def test_clipped_measure_is_transient_auto_retry_with_quieter_program():
             "by_speaker": 0, "by_household": 0,
         },
     }
-    # The automatic retry is gain-adjusted: 3 dB quieter.
+    # The automatic retry is gain-adjusted: 3 dB quieter. This literal is the
+    # only tripwire for ``crossover_v2_flow.CLIP_RETRY_BACKOFF_DB``, which
+    # nothing in the tree imports — importing it here would make the assertion
+    # pass at any value.
     gain_after = c.program_for_phase(PHASE_MEASURE).segment("sweep_w").gain_db
     assert gain_after == pytest.approx(gain_before - 3.0)
     # Retry (same index, next attempt) succeeds.
