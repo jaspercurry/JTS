@@ -10,10 +10,8 @@
 # runs every box carries the `jts_ring` ALSA ioplug, its conf.d device
 # definitions, and the /dev/shm/jts-ring directory. Installing them opens
 # nothing by itself — a PCM definition is not an open — but they are not
-# spare parts either: on a box whose coupling is ARMED they carry the audio,
-# so this helper stages what the arm depends on. Whether a box arms is the
-# coupling reconciler's decision, not this file's. Campaign context:
-# docs/HANDOFF-audio-graph-consolidation.md.
+# spare parts either: they carry the central audio path. See
+# docs/audio-paths.md.
 #
 # Three kinds of asset, all installed here:
 #   1. libasound_module_pcm_jts_ring.so — compiled on the Pi from

@@ -1835,7 +1835,7 @@ them; design **with** them.
 |---|---|---|
 | Raspberry Pi 5 **1 GB** target | User decision (2026-05-09): "see how far we can get on 1 GB" | PEQ is comfortable. FIR stays 1 GB-aware and research-gated: measure peak memory with ordinary source daemons still running before enabling mixed-phase / FDW paths. |
 | **Apple USB-C dongle**, stereo, 48 kHz | [README.md](../README.md) Hardware table | Filters are 2-channel. No multi-driver crossover work in scope. |
-| Pure ALSA: **snd-aloop + fan-in + outputd**, no PipeWire | [docs/audio-paths.md](audio-paths.md) | Sweep injection point is `correction_substream`, a dedicated fan-in lane. CamillaDSP captures from `pcm.jasper_capture` (dsnoop on summed `hw:Loopback,1,7`), processes, writes to `outputd_content_playback`, and jasper-outputd owns the DAC. |
+| Pure ALSA: **snd-aloop + fan-in + outputd**, no PipeWire | [docs/audio-paths.md](audio-paths.md) | Sweep injection point is `correction_substream`, a dedicated fan-in lane. CamillaDSP captures Ring A (`jts_ring_capture`), processes, writes Ring B, and jasper-outputd owns the DAC. |
 | `master_gain` mixer **already exists** as identity | [deploy/camilladsp/outputd-cutover.yml](../deploy/camilladsp/outputd-cutover.yml) | The EQ slot is reserved. We add filters in front of it, leave it alone. |
 | CamillaDSP websocket **no auth, 127.0.0.1 only** | [PLAN.md](../PLAN.md) | `pycamilladsp` calls stay loopback. Web UI never proxies CamillaDSP WS to the LAN. |
 | Volume coordination is **canonical and persistent** | [docs/HANDOFF-volume.md](HANDOFF-volume.md), [jasper/volume_coordinator.py](../jasper/volume_coordinator.py) | Sweep playback should set its own absolute level (not via VolumeCoordinator), restore previous on exit. |
@@ -2525,9 +2525,9 @@ From [docs/audio-paths.md](audio-paths.md):
 ```
 MUSIC chain
     renderers / correction sweeps → private fan-in lanes
-              → jasper-fanin → pcm.jasper_capture
+              → jasper-fanin → Ring A
               → jasper-camilla (main_volume + filters)
-              → outputd_content_playback
+              → Ring B, or the ACTIVE ring on a roleful box
               → jasper-outputd → outputd_dac → amp → speakers
 ```
 

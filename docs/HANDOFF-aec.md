@@ -187,8 +187,7 @@ outputd's 48 kHz monitor and runs AEC3.
 
 **CamillaDSP is a soft startup dependency, not a lifecycle owner.** The bridge
 reads the XVF mic directly and consumes outputd's final-reference UDP stream,
-its only reference source (the pre-Camilla `pcm.jasper_ref` ALSA fallback was
-retired). So `jasper-aec-bridge.service` uses `After=` plus `Wants=` for
+its only reference source. So `jasper-aec-bridge.service` uses `After=` plus `Wants=` for
 CamillaDSP and deliberately has neither `Requires=` nor `PartOf=`: a brief
 Camilla pause must leave the UDP mic producer running so `jasper-voice` keeps
 making watchdog progress (#1264).
@@ -344,11 +343,8 @@ corpus-quality metrics, and wake scoring under the far+music condition.
 
 ## Caveats
 
-- **The legacy ALSA tap is pre-CamillaDSP.** `jasper_capture` taps the
-  renderer→Camilla loopback *before* CamillaDSP, and its `pcm.jasper_ref` alias
-  has no reader at all. Do not infer speaker amplitude or final reference timing
-  from it; `jasper-aec-tune` numbers printed before it moved to the outputd
-  monitor are not comparable — re-run.
+- **There is no pre-CamillaDSP reference tap.** `jasper-aec-tune` numbers
+  printed before it moved to the outputd monitor are not comparable — re-run.
 - **Cross-clock-domain drift.** Reference and mic ride independent clocks that
   drift by tens of ppm. AEC3's delay estimator tolerates some drift but not
   unbounded; no async resampling is implemented on either leg.
@@ -388,7 +384,6 @@ corpus-quality metrics, and wake scoring under the far+music condition.
   `check_mic_capture`.
 - `deploy/systemd/jasper-aec-{bridge,init,reconcile}.service`,
   `deploy/bin/jasper-aec-reconcile`, `deploy/udev/99-jasper-aec-reconcile.rules`,
-  `deploy/alsa/asoundrc.jasper` (defines `pcm.jasper_capture`),
   `deploy/modprobe.d/snd-aloop.conf`, `deploy/modules-load.d/snd-aloop.conf`.
 - `deploy/install.sh` builds mandatory `jasper_aec3._aec3`, installs the
   optional-v2 lifecycle and `dfu-util`, seeds `/var/lib/jasper/aec_mode.env`,

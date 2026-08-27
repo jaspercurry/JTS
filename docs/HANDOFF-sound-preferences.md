@@ -298,9 +298,9 @@ active-crossover candidate stay the running config across a deploy, since
 writing identical bytes under a second filename would move only the NAME and
 cost a measurement round its entry-graph identity (#2572). **And on a roleful
 box it re-emits through the playback endpoint the box is LIVE on**, not the one
-its applied snapshot recorded, so a deploy cannot return an ACTIVE-ring-armed
-speaker to the snd-aloop lane (endpoint derivation:
-[HANDOFF-audio-graph-consolidation.md](HANDOFF-audio-graph-consolidation.md)).
+its applied snapshot recorded, so a deploy cannot return a roleful speaker from
+the ACTIVE ring to Ring B (endpoint derivation:
+[audio-paths.md](audio-paths.md)).
 
 **Read its "fail-open" narrowly.** install.sh runs it under an outer timeout and
 a failure leaves the current graph in place — but the statefile pointer is proved

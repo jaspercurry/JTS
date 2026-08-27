@@ -176,13 +176,13 @@ independent of USB Audio Input intent but exists only when the resolved hardware
 role supports a gadget.
 
 On enable, the coordinator writes unit enablement first, starts the fan-in
-coupling owner while UAC2 is still absent so the direct lane is armed and
+USB reconciler while UAC2 is still absent so the direct lane is armed and
 waiting, recomposes the gadget only when the UAC2 card is absent, starts the
 process-free USB readiness marker, then proves both `/proc/asound/UAC2Gadget`
 and a present `idle`/`capturing` direct lane. On disable or role park, it stops
 and disables the audio lifecycle first, recomposes only when the UAC2 card is
-present, proves the card disappeared, then always invokes the coupling owner to
-verify that no persisted direct lane survived. The owner is idempotent, so this
+present, proves the card disappeared, then always invokes that reconciler to
+verify that no persisted direct lane survived. It is idempotent, so this
 bounded verification does not imply an audio-graph restart when its derived plan
 is already correct. That order prevents an advertised audio device with no ready
 consumer. If an On transition fails, cleanup preserves desired On but withdraws
@@ -212,7 +212,7 @@ recovery attempt cannot silently disable both the USB output and the exported
 microphone.
 
 The operation is idempotent: an unrelated source toggle does not re-enumerate
-USB. The coupling owner may receive a bounded convergence request, but it
+USB. The fan-in USB reconciler may receive a bounded convergence request, but it
 restarts fan-in only when the derived plan actually changed; an unchanged
 CamillaDSP confirm uses the emitted-YAML equality fast path and reloads only
 when real drift exists. The NCM
@@ -227,14 +227,12 @@ composite owner, not a second lifecycle writer: bring-up re-reads the canonical
 intent/role gates, and `PartOf=jasper-usbgadget.service` makes the readiness
 marker re-prove the resulting UAC2 card.
 
-Malformed or unreadable USB intent also fails closed at the coupling boundary.
-The coupling owner treats USB authorization as false, writes the ordinary
+Malformed or unreadable USB intent also fails closed at that boundary.
+The reconciler treats USB authorization as false, writes the ordinary
 explicit-disabled fan-in combo plan, completes its ordered restart when needed,
 then emits `result=auto_usb_intent_fail_closed` and returns nonzero. Thus a stale
 previously armed direct-capture lane cannot survive the same malformed value
-that parked the source; unrelated source state and the current valid ring or
-loopback coupling remain untouched (a separately invalid/removed coupling still
-fails safe to loopback).
+that parked the source; unrelated source state remains untouched.
 
 ## Role parking
 
@@ -275,7 +273,7 @@ On unpair, grouping invokes the same source coordinator, which re-reads
 persisted desired state and restores only allowed sources. It owns USB's
 arm-direct → recompose-UAC2 → start-liveness order and Bluetooth's radio,
 runtime-unit, and accessory-owner order. Grouping never iterates the source
-registry or invokes accessory/coupling owners directly. If a source pass was
+registry or invokes accessory/USB owners directly. If a source pass was
 already activating, grouping joins it without interruption and then runs one
 fresh pass; its own success is withheld until source convergence completes.
 AirPlay latency changes use `systemctl try-restart` so grouping can refresh an

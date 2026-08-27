@@ -313,8 +313,8 @@ mix" is no longer true of the box: `mixer::FORMAT` is fan-in's snd-aloop WRITE,
 not a fleet-wide mix width, and a box whose program wire resolves wide sums at
 the i32 spine scale — which is every ring-armed box since the ring wire's
 default went wide on 2026-08-15
-([HANDOFF-audio-graph-consolidation.md](../HANDOFF-audio-graph-consolidation.md)
-owns that rule). What still carries this requirement is the BENCH LANE, which
+([`60-jts-ring.conf`](../../deploy/alsa/conf.d/60-jts-ring.conf) declares that
+wire). What still carries this requirement is the BENCH LANE, which
 is narrow by its own decision: the renderer-ingress lanes in
 [`61-jts-renderer-lanes.conf`](../../deploy/alsa/conf.d/61-jts-renderer-lanes.conf)
 omit `format` deliberately, unlike the program ring's conf.d, so the stimulus

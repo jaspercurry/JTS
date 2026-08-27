@@ -105,7 +105,7 @@
 > S16_LE by signed high word, a wide one hands the gadget's `i32` through
 > untouched. Since the ring wire's default went wide on 2026-08-15 the wide
 > route is what a ring-armed box takes with no declaration —
-> [HANDOFF-audio-graph-consolidation.md](../HANDOFF-audio-graph-consolidation.md)
+> [audio-paths.md](../audio-paths.md)
 > owns that rule. When USB
 > Audio Input is off, fan-in opens `hw:Loopback,1,3` as that lane's idle
 > fallback (nobody writes it). Diagrams below that show the bridge

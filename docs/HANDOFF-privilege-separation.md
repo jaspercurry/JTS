@@ -237,7 +237,7 @@ request shape: blocking `start` of only
 `jasper-source-intent-reconcile.service` may use 2703 seconds. That fixed
 start-only coordinator has a finite 2693-second systemd limit because one pass
 visits all four sources and may wait through bounded source actions and
-failed-unit resets, two accessory barriers, the fan-in coupling owner, and
+failed-unit resets, two accessory barriers, the fan-in USB reconciler, and
 fail-closed USB cleanup. The
 broker derives the exception from the validated
 verb, normalized singleton unit list, and `no_block=false`; a client-supplied
@@ -1078,7 +1078,7 @@ limits + `CAP_SYS_NICE` instead of full root, and the configs already
 group-readable (the prerequisite above). Sequence **camilla first** — it is the
 least hardware-entangled (a config reader + ALSA, no XVF/USB control writes) and
 its `systemd-analyze security` score is the easy win — then `outputd` / `fanin`
-(more entangled with the loopback/DAC topology, though their socket group is
+(more entangled with the ring/DAC topology, though their socket group is
 already set up). Validate on a bench / `jts3`, never the household box first.
 
 **Decision trigger.** Do this when the goal is a *fully* defensible least-

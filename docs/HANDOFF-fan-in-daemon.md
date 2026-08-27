@@ -60,48 +60,16 @@ path.
 Each renderer gets its own snd-aloop substream (`hw:Loopback,0,0..3`),
 and correction/test playback gets `correction_substream`
 (`hw:Loopback,0,4`). A small Rust daemon (`jasper-fanin`) reads the
-capture side of each substream, sums them sample-wise, and writes to a
-single dedicated
-"summed music" substream (`hw:Loopback,0,7`). CamillaDSP dsnoops on the
-capture side of that summed substream (`hw:Loopback,1,7`), and so did the
-AEC bridge until U4/P7-1 moved it to outputd's UDP speaker monitor
-— same consumer shape, just one substream pair shifted from the old
-dmix tap. The renderer dmix layer and its ~85 ms of latency disappear;
-the AEC reference signal becomes cleaner (post-mix, single point of
-truth); adding a future HDMI source is
-"assign the next free private substream" rather than "fight contention."
+capture side of each substream, sums them sample-wise, and publishes the
+summed program on Ring A, which CamillaDSP captures as
+`jts_ring_capture`. The renderer dmix layer and its ~85 ms of latency
+disappear; the AEC reference signal becomes cleaner (post-mix, single
+point of truth); adding a future HDMI source is "assign the next free
+private substream" rather than "fight contention."
 
 Net latency saving over the retired dmix topology: ~85 ms of
-renderer-side queueing. With the current 1024-frame fan-in output queue,
-the fixed downstream delay shairport must compensate is 1024 frames
-smaller than the old 3072-frame default. The saving survives any future
-PipeWire migration.
-
-## 2026-06-29 JTS2 output-buffer retune
-
-JTS2 (Pi 5, Apple USB-C dongle DAC, AirPlay source) was live-retuned after
-the DAC-latency-floor work moved CamillaDSP to `chunksize=256`,
-`target_level=1536` and outputd to `period=256`, DAC buffer `512`.
-
-Findings:
-
-- `JASPER_FANIN_OUTPUT_BUFFER_FRAMES=1024` is stable on this path. Initial
-  listening and counter watch were clean, and a post-rollback 3-minute
-  monitor showed zero new fan-in input/output xruns, zero outputd content
-  xrun/empty/partial/EAGAIN deltas, zero DAC xruns, zero Camilla playback
-  underruns, and zero shairport underruns.
-- `JASPER_FANIN_OUTPUT_BUFFER_FRAMES=512` is not stable. It failed within
-  about 40 seconds: fan-in reported `output.buffer_frames=512` and
-  `output.xrun_count=2876`. That is a hard no for production defaults on
-  this hardware path.
-- The 1024 result is an audio-stability finding, not a video-sync proof.
-  The user observed AirPlay video lip-sync problems from the computer even
-  after the 1024 audio counters were clean. Keep A/V sync validation
-  separate from xrun/underrun validation.
-
-So the production floor for the loopback fan-in output buffer is 1024
-frames (~21.3 ms at 48 kHz). Sub-1024 values remain lab-only and must not
-be codified without a new hardware soak and A/V sync check.
+renderer-side queueing, and the saving survives any future PipeWire
+migration.
 
 For future playback sources, this doc owns the topology details, but
 the cross-cutting contributor checklist lives in
@@ -155,28 +123,17 @@ Renderers (each on its own snd-aloop substream pair):
   bluealsa-aplay       → hw:Loopback,0,2
   jasper-usbsink       → hw:Loopback,0,3
   correction/test      → hw:Loopback,0,4
-  (pair 5 UNALLOCATED — formerly the outputd active lane; its PCM defs were
-   deleted at P9-C once the ACTIVE ring became the roleful transport)
-  outputd content lane → hw:Loopback,0,6    [Camilla → outputd on a passive box]
+  (pairs 5-7 UNALLOCATED — the central hops they used to carry are rings)
 
-jasper-fanin (the new Rust daemon):
+jasper-fanin (the Rust summing daemon):
   reads from           ← hw:Loopback,1,0..4 (via per-substream dsnoop or direct hw)
   sums sample-wise
-  writes to            → hw:Loopback,0,7   [coupling=loopback]
-                       → Ring A            [coupling=shm_ring, and NOTHING else —
-                                            U4/P7-4 dropped the lane-7 mirror]
+  writes to            → Ring A, and nothing else
 
-The "summed music" substream — a loopback-coupled box's program path.
-On a shm_ring box it has neither a writer nor a reader:
-  CamillaDSP captures  ← pcm.jasper_capture → dsnoop on hw:Loopback,1,7
-                         (shm_ring boxes capture jts_ring_capture instead)
-  (no reader)          ← pcm.jasper_ref     → plug alias, unread since U4/P7-3
+  CamillaDSP captures  ← jts_ring_capture (Ring A)
   All AEC reference    ← outputd UDP speaker monitor after CamillaDSP/outputd
-    (bridge, U4/P7-1; jasper-aec-tune, U4/P7-2 — that second move re-pointed
-     the tap's last RAW reader, and only then did P7-4 drop the ring box's
-     writer)
 
-CamillaDSP → outputd_content_playback → jasper-outputd → Apple USB-C dongle
+CamillaDSP → Ring B (or the ACTIVE ring) → jasper-outputd → DAC
 ```
 
 ### Lane sources — three transports, one lane shape
@@ -264,11 +221,10 @@ the transport swap. A geometry that is not expressible in whole slots fails
 loud at config rather than quietly handing the renderer a different cushion.
 
 Which lanes are ring lanes is decided in ONE place on the Python side
-(`jasper/renderer_lanes.py`) and is deliberately independent of the CamillaDSP
-coupling — a renderer ring and the fan-in → CamillaDSP hop are separate
-transports. See
-[HANDOFF-audio-graph-consolidation.md](HANDOFF-audio-graph-consolidation.md)
-Appendix A and its P6a row.
+(`jasper/renderer_lanes.py`). A renderer ring is a per-lane ingress choice; it
+is separate from Ring A, the fan-in → CamillaDSP hop every box runs. The lane
+PCMs are declared in
+[`61-jts-renderer-lanes.conf`](../deploy/alsa/conf.d/61-jts-renderer-lanes.conf).
 
 ### Arming a lane
 
@@ -302,12 +258,9 @@ which looks identical to "paused" on every other signal).
   pre-duck program loudness, applies the provider/profile peak-capped
   assistant gain policy, applies program ducking to renderer lanes, then
   mixes TTS/cues before CamillaDSP crossover/protection.
-- **AEC diagnostic tap shape.** `pcm.jasper_ref` is a plug-wrapped
-  alias that nothing opens — U4/P7-1 retired the bridge fallback and
-  P7-3 the timing probe, and it ships only until P9-E deletes the
-  aloop PCMs. It is not an AEC fallback: outputd's
-  UDP speaker monitor after CamillaDSP/outputd is the bridge's only
-  reference source.
+- **AEC reference shape.** Outputd's UDP speaker monitor after
+  CamillaDSP/outputd is the bridge's only reference source; there is no
+  pre-DSP ALSA tap.
 - **Mux arbitration.** `jasper-mux` still owns source policy:
   latest-source-wins in auto mode, and user-selected source override
   from the landing page. Fan-in only enforces the low-level selected
@@ -319,10 +272,9 @@ which looks identical to "paused" on every other signal).
   the already-crossed-over/protected stream reaches `jasper-outputd`.
   The pre-outputd `pcm.jasper_out` rollback dmix was retired (issue
   #2240).
-- **CamillaDSP config.** Capture device stays `plug:jasper_capture`.
-  The dsnoop's underlying substream remains `(1,7)` in the asoundrc —
-  invisible to CamillaDSP itself. Playback is `outputd_content_playback`
-  in the outputd topology.
+- **CamillaDSP config.** Capture is `jts_ring_capture` (Ring A);
+  playback is `jts_ring_playback`, or `jts_ring_active_playback` on a
+  roleful box.
 
 ### What this deletes
 
@@ -330,13 +282,10 @@ which looks identical to "paused" on every other signal).
 - `pcm.jasper_renderer_in` plug wrapper — gone.
 - The renderer-side 85 ms buffer that was invisible to shairport.
 - The need for shairport's `audio_backend_latency_offset_in_seconds` to
-  carry a renderer-dmix term. The current derivation compensates
-  CamillaDSP's `target_level` above `chunksize`, the fan-in output
-  buffer, and outputd's DAC buffer, so the cutover offset is
-  `-0.106667` with generic `target_level: 2048`, fan-in output buffer
-  `1024`, and outputd DAC buffer `3072`; on JTS2's low-latency Apple
-  profile (`256/1536`, fan-in `1024`, outputd DAC `512`) it is
-  `-0.058667`.
+  carry a renderer-dmix term. The derivation compensates the configured
+  downstream buffers and lives in one place, `derive_n()` in
+  [`deploy/bin/jasper-apply-airplay-mode`](../deploy/bin/jasper-apply-airplay-mode);
+  read it there rather than a copy here.
 
 ### What this adds
 
@@ -416,9 +365,7 @@ membership shields the work loop from it.
 | One input substream silent/idle | Treat as silence; sum continues with remaining inputs | Mux enforces single-source; idle substreams are normal |
 | All input substreams silent | Output zeros to maintain ALSA frame timing | Idle state is normal; don't underrun the output |
 | One input substream xrun | Log `event=fanin.xrun input=N count=M`; recover via `snd_pcm_recover`; continue | snd_pcm convention |
-| Output substream xrun | Log `event=fanin.xrun output count=M`; recover; AEC bridge handles brief ref outage gracefully | The bridge's `claude/aec-bridge-ref-starvation-fix` carries the last ref instead of using silence fallback |
 | Unable to open any configured input PCM at startup | Exit 1, let systemd restart with backoff | Every configured input is a private snd-aloop lane that should exist after install; missing one means live topology drift |
-| Unable to open output PCM at startup | Exit 1, let systemd restart with backoff | Structural; the dedicated output substream MUST exist |
 | Work loop hang | Watchdog ping stops, systemd kills + restarts in ~2 s | The whole point of the heartbeat |
 | Repeated wedge (5 restarts in 5 min) | `StartLimitAction=reboot` triggers clean system reboot | Tier 5.1 protection |
 | Ring A geometry is unusable — a rejected `JASPER_FANIN_RING_WIRE_FORMAT` / `_RING_SLOTS` / slot-shearing period, or a ring file whose header geometry differs from the one the daemon builds | Exit 78 (EX_CONFIG); `RestartPreventExitStatus=78` PARKS the unit failed | **No restart repairs either shape**, so the restart ladder above would reboot the speaker in a loop. Remediation differs — see below |
@@ -474,11 +421,10 @@ perceived loudness during simultaneous renderers, which mux is supposed
 to prevent anyway.
 
 The accumulator is `i64` and carries the numeric scale the box's resolved
-output wire names (`ProgramWidth` in `rust/jasper-fanin/src/mixer.rs`, off the
-same `Config::program_wire_is_wide` conjunction the assistant lane resolves
-below). `Narrow` is the S16 numeric scale described above, unchanged — what a
-`loopback` box takes, and what every box took while the ring wire's default was
-narrow. `Wide` (an `S32_LE` ring wire) is the i32 spine scale: each `i16` lane
+output wire names (`ProgramWidth` in `rust/jasper-fanin/src/mixer.rs`).
+`Narrow` is the S16 numeric scale described above, which is what an operator
+who has pinned the ring wire back to `S16_LE` takes. `Wide` (an `S32_LE` ring
+wire, the shipped default) is the i32 spine scale: each `i16` lane
 is promoted by `widen_i16_to_i32` at
 its own sum entry, the USB DIRECT lane contributes its gadget samples
 untouched, and S16 consumers narrow once with `narrow_i32_to_i16_round`.
@@ -498,32 +444,18 @@ consumer's job.
 
 **The assistant lane carries its own width.** The TTS wire has two
 self-describing payload verbs — `AUDIO` (S16LE) and `AUDIO32` (S32LE at spine
-scale) — and `jasper-voice` speaks whichever this box's declaration resolves to,
-so nothing is negotiated. That declaration is a CONJUNCTION, not the wire-format
-token alone: an `S32_LE` ring wire **and**
-`JASPER_FANIN_CAMILLA_COUPLING=shm_ring`, because fan-in's aloop write is
-pinned narrow (`mixer::FORMAT`) however the box spelled its format.
-**Since 2026-08-15 the format half is satisfied by default** —
-`jasper.fanin_coupling.resolve_ring_wire_format` answers `S32_LE` for a box that
-has declared nothing, and `deploy/alsa/conf.d/60-jts-ring.conf` spells that token
-in every block — so the COUPLING is the only half a box still has to reach: an
-armed `shm_ring` box speaks `AUDIO32` with no `JASPER_FANIN_RING_WIRE_FORMAT`
-line anywhere, and a `loopback` box stays on `AUDIO` however it is deployed.
-Pinning that key to `S16_LE` is the operator's rollback lever back to `AUDIO`,
-and nothing in this repo writes it. One rule decides it —
-`jasper_tts_protocol::TtsWireWidth::from_box_declaration`, which
-`Config::program_wire_is_wide` calls and
-`jasper.fanin_coupling.assistant_wire_is_wide` mirrors — and
-`tests/test_ring_wire_format_contract.py` pins the two languages' verdicts
-against each other over all four pairings.
+scale) — and `jasper-voice` speaks whichever this box's ring wire resolves to,
+so nothing is negotiated. `resolve_ring_wire_format` answers `S32_LE` for a box
+that has declared nothing, and `deploy/alsa/conf.d/60-jts-ring.conf` spells that
+token in every block, so a box speaks `AUDIO32` with no
+`JASPER_FANIN_RING_WIRE_FORMAT` line anywhere. Pinning that key to `S16_LE` is
+the operator's rollback lever back to `AUDIO`, and nothing in this repo writes
+it.
 
 The sum's width and the payload's are independent axes and all four pairings are
 defined; the two conversions between them (`widen_i16_to_i32` /
 `narrow_i32_to_i16_round`) are exact inverses, which is why a disagreement is
-logged (`event=fanin.tts_wire_width_mismatch`) rather than parked. Its window is
-bounded rather than open-ended: `coupling_reconcile` `try-restart`s
-`jasper-voice` whenever a flip changes the resolved assistant width, so the
-disagreement is a transient across a flip, not a state a box sits in. Both ends
+logged (`event=fanin.tts_wire_width_mismatch`) rather than parked. Both ends
 publish their resolved width at start — `event=tts_wire.resolved` from voice,
 `event=fanin.tts_wire.resolved` from fan-in — so "is a mismatch converting right
 now" is answerable from two lines without waiting for the (once-per-lifetime)
@@ -617,18 +549,17 @@ project's `event=<subsystem>.<action> [key=value ...]` convention.
 | Event | When | Severity |
 |---|---|---|
 | `event=fanin.boot version=...` | process startup | INFO |
-| `event=fanin.config_loaded inputs=N output=... sample_rate=... period_frames=... input_buffer_frames=... output_buffer_frames=...` | parsed runtime config | INFO |
+| `event=fanin.config_loaded inputs=N output=... sample_rate=... period_frames=... input_buffer_frames=...` | parsed runtime config | INFO |
 | `event=fanin.input.opened label=airplay pcm=hw:Loopback,1,1 ...` | each input opened | INFO |
-| `event=fanin.output.opened pcm=hw:Loopback,0,7 ...` | summed output opened | INFO |
+| `event=fanin.ring.opened path=/dev/shm/jts-ring/program.ring ...` | Ring A attached | INFO |
 | `event=fanin.mixer.running inputs=N output_xruns=0` | work loop started | INFO |
 | `event=fanin.xrun source=input label=airplay count=N` | input overrun recovered | WARN |
-| `event=fanin.xrun source=output count=N frames_pending=M` | output underrun recovered | WARN |
 | `event=fanin.source_select selected=airplay` | mux selected one input lane (or `selected=auto` / `selected=none`) | INFO |
 | `event=fanin.assistant_loudness kind=... final_gain_db=... reason=...` | pre-DSP TTS/cue gain decision | INFO |
 | `event=fanin.watchdog.stale age_ms=X` | heartbeat thread skipped a ping (sentinel stale) | WARN |
-| `event=fanin.ring.stall_detected reason=stuck_reader\|no_reader duration_ms=... dropped_periods=... occupancy=... reader_pid=... reader_heartbeat_age_ms=... full_waits=...` | shm_ring only: the ring stayed full-and-not-draining past 1 s (issue #1524); edge-triggered, ONCE per episode, rate-limited against a flapping reader | WARN |
-| `event=fanin.ring.stall_unrecovered reason=... duration_ms=... dropped_periods=...` | shm_ring only: a logged stall persisted past ~10 s (fan-in does NOT restart CamillaDSP — it owns the ring, not the DSP lifecycle) | WARN |
-| `event=fanin.ring.stall_cleared reason=... duration_ms=... dropped_periods=...` | shm_ring only: `read_seq` advanced again (reader resumed/reattached); one per cleared episode | INFO |
+| `event=fanin.ring.stall_detected reason=stuck_reader\|no_reader duration_ms=... dropped_periods=... occupancy=... reader_pid=... reader_heartbeat_age_ms=... full_waits=...` | the ring stayed full-and-not-draining past 1 s (issue #1524); edge-triggered, ONCE per episode, rate-limited against a flapping reader | WARN |
+| `event=fanin.ring.stall_unrecovered reason=... duration_ms=... dropped_periods=...` | a logged stall persisted past ~10 s (fan-in does NOT restart CamillaDSP — it owns the ring, not the DSP lifecycle) | WARN |
+| `event=fanin.ring.stall_cleared reason=... duration_ms=... dropped_periods=...` | `read_seq` advanced again (reader resumed/reattached); one per cleared episode | INFO |
 | `event=fanin.shutdown reason=signal graceful=true` | clean shutdown | INFO |
 
 Why this exact set: the `event=` prefix lets `scripts/jasper-trace.sh`
@@ -636,25 +567,23 @@ pick them up alongside other subsystems' events; the verbs match the
 `shairport.*` / `wifi_guardian.*` / `aec_bridge.*` patterns documented
 elsewhere.
 
-**Ring stall self-recovery (issue #1524, `shm_ring` coupling only).** Under
-`shm_ring` the `RingWriter` back-pressures the work loop while CamillaDSP
-drains the ring — that block is the pacer. If CamillaDSP wedges in Prepared
-(still polling, so its heartbeat looks live, but never calling `readi`, so
-`read_seq` never advances), the writer would otherwise wait forever per slot,
-running fan-in at ~1/9 real time and back-pressuring the input lanes until the
-correction-lane aplay times out at 12 s — with no fan-in-side signal (the 5 s
-progress watchdog never fires because `step()` keeps completing). The writer
+**Ring stall self-recovery (issue #1524).** The `RingWriter` back-pressures
+the work loop while CamillaDSP drains the ring — that block is the pacer. If
+CamillaDSP wedges in Prepared (still polling, so its heartbeat looks live, but
+never calling `readi`, so `read_seq` never advances), the writer would
+otherwise wait forever per slot, running fan-in at ~1/9 real time and
+back-pressuring the input lanes until the correction-lane aplay times out at
+12 s — with no fan-in-side signal (the 5 s progress watchdog never fires
+because `step()` keeps completing). The writer
 now DEMOTES such a reader once its `read_seq` has been frozen past
 `STUCK_READER_GRACE_NS` (1 s): it stops honoring the heartbeat and free-runs
 (drop-oldest), returning fan-in to real time and relieving the input
 back-pressure. Demotion is one-way and derived (it self-clears the instant the
-reader advances `read_seq` again). The default `loopback` coupling is
-timer-paced and structurally immune — this path never runs there and its
-`Output::Alsa` code is byte-identical. Observability: `/state.shm_ring`
+reader advances `read_seq` again). Observability: `/state.shm_ring`
 un-folds the drop counters into `stuck_reader_drops` (live-but-frozen reader;
 climbs during a stall) and `drop_no_reader` (dead/absent reader; the normal
 reload transient), plus `stall_active` / `last_stall_ms`. `jasper-doctor`'s
-`fan-in ring stall` check WARNs while `stall_active` is true (skip-if-loopback).
+`fan-in ring stall` check WARNs while `stall_active` is true.
 Design + code: `RingWriter::publish` in
 [`rust/jasper-ring/src/writer.rs`](../rust/jasper-ring/src/writer.rs) (demotion)
 and `write_ring_period` / `RingStallTracker` in
@@ -716,14 +645,23 @@ fixed 1 Hz patrol re-reads `direct.streaming` to repair a lost notification.
     {"label": "correction", "pcm": "hw:Loopback,1,4", "frames_read": 0, "xrun_count": 0, "catchup_resync_frames": 0, "catchup_events": 0}
   ],
   "output": {
-    "pcm": "hw:Loopback,0,7",
     "sample_rate": 48000,
     "period_frames": 256,
-    "buffer_frames": 1024,
     "frames_written": 5928432,
     "xrun_count": 0,
-    "snd_pcm_delay_frames": 1024,
-    "snd_pcm_delay_ms": 21.333
+    "transport": "shm_ring",
+    "ring": {
+      "path": "/dev/shm/jts-ring/program.ring",
+      "slots": 2,
+      "wire_format": "S32_LE",
+      "channels": 2,
+      "occupancy": 1,
+      "published": 5928432,
+      "full_waits": 0,
+      "stuck_reader_drops": 0,
+      "drop_no_reader": 0,
+      "stall_active": false
+    }
   },
   "watchdog": {
     "pings_sent": 142,
@@ -747,16 +685,14 @@ daemons.
 Fan-in checks are in the main doctor run-list:
 
 1. **`check_fanin_asound_wiring`** verifies `/etc/asound.conf` has no
-   retired `jasper_renderer_*` dmix blocks, defines every private
-   renderer/test lane with a pinned 48 kHz stereo S16_LE plug wrapper,
-   points `pcm.jasper_capture` at summed substream 7, and checks that
-   the now-readerless `pcm.jasper_ref` alias still plug-wraps it — a
-   shipped-vs-deployed asoundrc drift check until P9-E.
+   retired `jasper_renderer_*` dmix blocks and defines every private
+   renderer/test lane with a pinned 48 kHz stereo S16_LE plug wrapper — a
+   shipped-vs-deployed asoundrc drift check.
 
 2. **`check_fanin_service`** treats disabled or inactive
    `jasper-fanin.service` as a failure, probes
    `/run/jasper-fanin/control.sock`, verifies the live STATUS input
-   labels/PCMs and output PCM match the production graph, checks the
+   labels/PCMs match the production graph, checks the
    watchdog progress age, and warns if `input_buffer_frames` drops
    below the validated 4096-frame AirPlay burst absorber.
 
@@ -794,14 +730,12 @@ works without any wizard interaction.
 # Default values shown — operator override via /etc/jasper/jasper.env
 # (or /var/lib/jasper/fanin.env). The Environment= override in the
 # systemd unit (deploy/systemd/jasper-fanin.service) sets the
-# production input/output buffer overrides below.
-JASPER_FANIN_OUTPUT_PCM=hw:Loopback,0,7
+# production input buffer override below.
 JASPER_FANIN_INPUT_PCMS=hw:Loopback,1,0|hw:Loopback,1,1|hw:Loopback,1,2|hw:Loopback,1,3|hw:Loopback,1,4
 JASPER_FANIN_INPUT_RENDERERS=spotify|airplay|bluealsa|usbsink|correction   # informational, surfaces in /state
 JASPER_FANIN_SAMPLE_RATE=48000
 JASPER_FANIN_PERIOD_FRAMES=256                                  # ~5.3 ms at 48k
 JASPER_FANIN_INPUT_BUFFER_FRAMES=4096                            # ~85 ms input burst absorber — see "Buffer sizing" below
-JASPER_FANIN_OUTPUT_BUFFER_FRAMES=1024                           # ~21 ms output queue toward CamillaDSP/AEC
 JASPER_FANIN_TTS_SOCKET=/run/jasper-fanin/tts.sock                # production TTS IPC; "disabled" is rollback/lab only
 JASPER_FANIN_TTS_MAX_PENDING_FRAMES=96000                         # 2 s at 48 kHz
 JASPER_FANIN_TTS_PROGRAM_DUCK_DB=${JASPER_DUCK_DB:--25}           # override only for lab retuning
@@ -938,35 +872,10 @@ The original Phase 2 design defaulted to one shared
 (~21 ms), reasoned as "half the old dmix; matches the documented
 floor for stable dmix-replacement shapes." On 2026-05-26 we found
 that floor was too low for the **input** side under the real-world
-AirPlay-on-WiFi delivery pattern. The production unit now sets
-`JASPER_FANIN_INPUT_BUFFER_FRAMES=4096` (~85 ms). On 2026-06-29 JTS2
-testing, the output side was trimmed to
-`JASPER_FANIN_OUTPUT_BUFFER_FRAMES=1024` (~21 ms): 1024 held cleanly on
-AirPlay while 512 produced immediate output xruns. WiFi burst absorption
-therefore stays on the input side instead of becoming downstream
-fanin→CamillaDSP/AEC queueing.
-
-Between 2026-06-30 and P5c (2026-08-10), the fan-in output-buffer writer got
-its set/unset/floor decision from
-[`jasper.audio_runtime_plan`](../jasper/audio_runtime_plan.py)
-(`fanin_output_buffer_action`, `resolve_fanin_output_buffer_target`). P5c
-deleted that policy layer along with `jasper/fanin/buffer_reconcile.py` — the
-adaptive shrink never passed an on-device soak — so the packaged
-`jasper-fanin.service` `Environment=` 1024 default is now the sole source of
-`JASPER_FANIN_OUTPUT_BUFFER_FRAMES`; see
-[HANDOFF-audio-graph-consolidation.md](HANDOFF-audio-graph-consolidation.md)
-for the campaign context. The coupling selector was never part of that lab
-override and is unaffected by the P5c deletion; it still goes through the
-ordered `jasper-fanin-coupling-reconcile` transition, and the plan still owns
-its route-support policy so the doctor, operator explain CLI, and writer
-cannot drift. As of the P3/P4 default-flip the
-reconciler also has an `--auto` mode (`jasper.fanin.coupling_auto`) that resolves
-the SHIPPED default coupling (`shm_ring` on a ring-eligible box; loopback on
-any failed gate — since #2285 no gate refuses a box for its install profile)
-and the independent
-USB combo flags on deploy + boot, unless the operator-choice marker
-`JASPER_FANIN_COUPLING_CHOICE=operator` freezes the box — see
-[HANDOFF-audio-graph-consolidation.md](HANDOFF-audio-graph-consolidation.md).
+AirPlay-on-WiFi delivery pattern. The production unit sets
+`JASPER_FANIN_INPUT_BUFFER_FRAMES=4096` (~85 ms). WiFi burst absorption
+stays on the input side rather than becoming downstream queueing: Ring A
+is at the 2-slot floor.
 
 **The mechanism (kept here for future reference)**:
 
@@ -1200,19 +1109,6 @@ The `plug:` wrapper is what handles each renderer's native rate/format
 conversion to 48 kHz S16_LE — same role the old `jasper_renderer_in`
 plug played, but per-renderer instead of fronting a shared dmix.
 
-### Changed
-
-- `pcm.jasper_capture` dsnoop's slave shifts from `hw:Loopback,1,0` →
-  `hw:Loopback,1,7` (the new "summed music" substream).
-- `pcm.jasper_ref` plug wrapper unchanged (slave is still
-  `jasper_capture`). It was still the AEC bridge's explicit fallback at
-  the time of this migration; that fallback has since been retired
-  (U4/P7-1), as has the timing probe that briefly inherited it (P7-3),
-  so the alias now has no reader at all.
-- CamillaDSP's `v1.yml` capture device unchanged (still `plug:jasper_capture`)
-  at the time of this migration; `v1.yml` itself was later retired (issue
-  #2240) once the outputd mainline topology shipped.
-
 ### snd-aloop module parameters
 
 `deploy/modprobe.d/snd-aloop.conf`:
@@ -1241,7 +1137,7 @@ Each renderer's `--device` / `output_device` flag shifts from
 | shairport-sync | `output_device = "jasper_renderer_in"` | `output_device = "shairport_substream"` |
 | bluealsa-aplay | `--pcm=jasper_renderer_in` | `--pcm=bluealsa_substream` |
 
-Note (U3 / P6a): librespot's unit now spells this `--device
+Note: librespot's unit now spells this `--device
 ${JASPER_LIBRESPOT_DEVICE}`, whose in-unit default IS `librespot_substream` — so
 the value in the table is still what every unarmed box runs. The variable exists
 so a per-box ring flip is one env write plus a restart rather than a unit-file
@@ -1264,7 +1160,7 @@ rust/jasper-fanin/                  ← new
     main.rs                         ← entry, signal handling, sd_notify wiring
     mixer.rs                        ← the work loop: read N → sum → write 1
     mixer/direct_capture.rs         ← the USB DIRECT lane source
-    mixer/ring_capture.rs           ← the renderer-ingress RING lane source (U3/P6)
+    mixer/ring_capture.rs           ← the renderer-ingress RING lane source
     state.rs                        ← UDS status server
     json.rs                         ← canonical serializer for variable JSON strings
     config.rs                       ← env-var parsing
@@ -1538,36 +1434,5 @@ follow-on if/when warranted.
   capabilities of the Raspberry Pi 5" — the scheduling-latency numbers
   driving the SCHED_FIFO + PREEMPT_RT-gated design.
 
-Last verified: 2026-08-15 for the mixer's PROGRAM-WIDTH and assistant-payload
-paragraphs ONLY (the ring wire's default sample format flipped narrow → wide):
-`ProgramWidth`'s "shipped default" and the `AUDIO`/`AUDIO32` conjunction were
-re-read against `jasper.fanin_coupling.resolve_ring_wire_format`,
-`Config::program_wire_is_wide`, and
-`deploy/alsa/conf.d/60-jts-ring.conf` — the format half of the conjunction is
-now true by default, so the `shm_ring` coupling is the only remaining gate and
-`JASPER_FANIN_RING_WIRE_FORMAT=S16_LE` became a writer-less operator rollback
-pin. Nothing else in that pass. Prior 2026-08-15 for the renderer ring lane's
-REATTACH path ONLY
-(#2538): `RingReader::create_or_attach` and its 500 ms-bounded `flock` moved off
-the render thread onto per-lane `fanin-ring-attacher-<label>` threads, the retry
-latches gained per-lane phase seeding, and `/state`'s ring block gained
-`attach_pending` — the ring-lane presence-model section was rewritten against
-`rust/jasper-fanin/src/mixer/ring_capture.rs`. The rest of this file was NOT
-re-verified in that pass and keeps its prior date. Prior 2026-08-15 (topology
-diagram corrected for P9-C, audio-graph
-consolidation #2285: snd-aloop pair 5's PCM definitions — the outputd active
-lane — were deleted once the ACTIVE ring became the roleful transport,
-verified against `deploy/alsa/asoundrc.jasper`'s allocation header; prior
-2026-07-24 pass: atomic turn-start volume context, standalone live updates, and fail-closed post-DSP outputd parity checked against both Rust consumers; prior 2026-07-16 pass covered gentle-envelope calibration offset, held-content expiry, drained-before-end reference commit, and expanded STATUS observability against PR #1542; prior pass covered bounded raw-block queue and live gain ramp; prior 2026-07-14 automatic coupling profile gate rechecked: streambox
-stays loopback while the independent USB DIRECT decision still runs;
-librespot Tier-2 recovery final mutation rechecked
-as active-only `try-restart`, including concurrent Off/role parking;
-rechecked the fan-in source/module layout, checked-in
-Cargo lock and provenance posture, current xrun JSONL schema, single-writer
-append/crash-tail behavior, and the existing `usb_low_latency_48k` ownership
-and 4096/1024 fan-in buffer contract. Prior jts.local tuning found 512/1024
-input buffers never locked, 2048 and 3072 lock-churned and generated silence;
-a clean five-minute run with Rust bridge 256/3, fan-in 4096/1024, CamillaDSP
-256/1536, and outputd 128/256 had zero new bridge xruns, bridge underflows,
-resampler relocks, or resampler silence. Route-latency click/capture evidence
-remains required before claiming p95/p99.)
+Last verified: 2026-08-26 against `rust/jasper-fanin/src/`,
+`deploy/alsa/asoundrc.jasper`, and `deploy/alsa/conf.d/`.

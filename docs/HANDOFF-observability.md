@@ -171,10 +171,6 @@ window; this bites lab Pis first.
     lanes are not fake sessions. Missing or unreadable mux state **fails
     closed** as "Playback activity unavailable" and preserves an
     already-observed session; it is never presented as healthy idle.
-  - **The transport-coherence detector takes a coupling TOKEN**, not a
-    transport shape name, and derives the shape itself — handing it a shape
-    read an armed-ring box as loopback and called a playing speaker parked
-    (#2376). Only that detector's `errors` reach the parked wording.
   - **The override chain refines, it does not stack opinions.** A stopped
     CamillaDSP reaches `overall` (the signal path cannot see it: fan-in and
     outputd both keep looping when the stage between them disappears, so a

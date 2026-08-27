@@ -479,7 +479,7 @@ outputd post-DSP content, `7` fan-in summed output (see
 active-speaker content lane, mislabelled here as a "debug/monitor
 reserve" — is genuinely UNALLOCATED since P9-C deleted that lane's PCM
 definitions (the ACTIVE ring is the roleful transport now; see
-[HANDOFF-audio-graph-consolidation.md](../HANDOFF-audio-graph-consolidation.md)).
+[audio-paths.md](../audio-paths.md)).
 So DLNA can claim pair `5` directly rather than needing to reuse or
 repurpose an existing lane — do not assume a spare `hw:Loopback,0,8`;
 the modprobe `snd-aloop.conf` pins exactly 8 pairs.

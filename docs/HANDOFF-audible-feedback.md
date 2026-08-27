@@ -41,15 +41,11 @@ They are rendered in float and baked ONCE, at the sample width the box's
 wire declares (U2 PR-2): 24 kHz mono S16 on a narrow box, 24 kHz mono S32
 at the i32 spine scale on a wide one, so the recipe's own detail is not
 flattened onto the 16-bit grid before the wire could carry it. Which one a
-box takes is `jasper.fanin_coupling.assistant_wire_is_wide`'s answer — a
-CONJUNCTION of the ring wire's format and the `shm_ring` coupling; read the
-rule there rather than a copy here. **Since 2026-08-15 the format half is
-true by default**, so an armed `shm_ring` box bakes the wide earcon with no
-declaration at all and the coupling is the only remaining gate. A `loopback`
-box still bakes narrow, and so does a box an operator has pinned back with
-`JASPER_FANIN_RING_WIRE_FORMAT=S16_LE`. That narrow bake was byte-identical
-to every earcon the fleet had played while the wire's default was narrow; it
-is the unarmed box's path now, not the fleet's.
+box takes is `jasper.fanin_coupling.assistant_wire_is_wide`'s answer, off the
+ring wire's format; read the rule there rather than a copy here. The wire
+defaults wide, so a box bakes the wide earcon with no declaration at all. A box
+an operator has pinned back with `JASPER_FANIN_RING_WIRE_FORMAT=S16_LE` bakes
+narrow.
 `measure_pcm_24k_mono` takes the same width and normalizes it out, so an
 earcon's source-loudness profile is identical either way. Spoken cue
 WAVs are NOT affected: their source is a 16-bit provider TTS render on
