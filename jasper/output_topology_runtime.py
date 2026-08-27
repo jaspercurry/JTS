@@ -62,6 +62,7 @@ def trigger_reconcile(*, reason: str = "output_topology_reset") -> dict[str, Any
     """Synchronously ask both topology consumers to apply saved state."""
 
     from jasper.control.restart_broker import manage_units
+    from jasper.web._unit_snapshot import probe_unit_snapshot
 
     result: dict[str, Any] = {"ok": True}
     for unit in RECONCILE_UNITS:
@@ -75,12 +76,23 @@ def trigger_reconcile(*, reason: str = "output_topology_reset") -> dict[str, Any
             )
         except (OSError, RuntimeError, ValueError, TimeoutError) as exc:
             result = {"ok": False, "error": f"{type(exc).__name__}: {exc}"}
+        if not result.get("ok") and probe_unit_snapshot([unit]).state(unit).activating:
+            # The blocking start above gave up at its 15s budget, but this
+            # reconciler measures 25.5-26s on a Pi Zero 2 W
+            # (restart_broker.py's _CAMILLA_START_EXEC_TIMEOUT_CEILING_SEC
+            # comment) -- systemd's own job is still running after our
+            # client stopped waiting on it. That is not a failure, just a
+            # pass that outlives our patience, so say so distinctly rather
+            # than let it read as the needs_attention a real failure would
+            # be (#3094).
+            result = {**result, "converging": True}
         log_event(
             logger,
             "output_topology.reconcile",
             reason=reason,
             unit=unit,
             ok=bool(result.get("ok")),
+            converging=bool(result.get("converging")),
             error=result.get("error"),
             level=logging.INFO if result.get("ok") else logging.WARNING,
         )

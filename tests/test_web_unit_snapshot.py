@@ -81,6 +81,55 @@ def test_whole_probe_failure_is_unknown_and_fail_closed(monkeypatch):
     assert snapshot.error
 
 
+def test_probe_parses_result_and_exec_main_status(monkeypatch):
+    """trigger_reconcile's converging probe (#3094) needs these two fields."""
+    run_calls: list[list[str]] = []
+
+    def fake_run(command, **kwargs):
+        run_calls.append(command)
+        return SimpleNamespace(
+            returncode=0,
+            stdout=(
+                "Id=a.service\nLoadState=loaded\nActiveState=activating\n"
+                "Result=success\nExecMainStatus=0\n\n"
+                "Id=b.service\nLoadState=loaded\nActiveState=failed\n"
+                "Result=exit-code\nExecMainStatus=78\n"
+            ),
+            stderr="",
+        )
+
+    monkeypatch.setattr(mod.subprocess, "run", fake_run)
+
+    snapshot = mod.probe_unit_snapshot(("a.service", "b.service"))
+
+    assert "--property=Result" in run_calls[0]
+    assert "--property=ExecMainStatus" in run_calls[0]
+    a = snapshot.state("a.service")
+    assert a.result == "success"
+    assert a.exec_main_status == 0
+    b = snapshot.state("b.service")
+    assert b.result == "exit-code"
+    assert b.exec_main_status == 78
+
+
+def test_probe_tolerates_missing_result_and_exec_main_status(monkeypatch):
+    monkeypatch.setattr(
+        mod.subprocess,
+        "run",
+        lambda *_args, **_kwargs: SimpleNamespace(
+            returncode=0,
+            stdout="Id=a.service\nLoadState=loaded\nActiveState=active\n",
+            stderr="",
+        ),
+    )
+
+    snapshot = mod.probe_unit_snapshot(("a.service",))
+
+    state = snapshot.state("a.service")
+    assert state.result is None
+    assert state.exec_main_status is None
+
+
 def test_invalid_unit_name_never_reaches_subprocess(monkeypatch):
     monkeypatch.setattr(
         mod.subprocess,

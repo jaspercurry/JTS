@@ -172,6 +172,65 @@ def test_grouping_reconcile_failure_blocks_hardware_reconcile(
     assert calls == [topology_runtime.GROUPING_RECONCILE_UNIT]
 
 
+def test_reconcile_reports_converging_when_the_wait_times_out_but_job_runs(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A start that outlives trigger_reconcile's 15s wait is not a failure.
+
+    jasper-audio-hardware-reconcile measures 25.5-26s on a Pi Zero 2 W
+    (restart_broker.py), past the 15s budget manage_units is given here. When
+    that happens, systemd's own job is still running underneath the timed-out
+    client wait -- ActiveState reads "activating" -- and that must read as
+    still-converging, never as the needs_attention a real failure would be
+    (#3094).
+    """
+    from jasper.web import _unit_snapshot
+
+    monkeypatch.setattr(
+        "jasper.control.restart_broker.manage_units",
+        lambda unit, **_kwargs: {
+            "ok": False,
+            "error": "systemctl invocation failed: timed out after 15.0 seconds",
+        },
+    )
+    monkeypatch.setattr(
+        _unit_snapshot,
+        "probe_unit_snapshot",
+        lambda units: _unit_snapshot.UnitSnapshot(
+            {u: _unit_snapshot.UnitState(active_state="activating") for u in units}
+        ),
+    )
+
+    result = topology_runtime.trigger_reconcile(reason="test")
+
+    assert result["ok"] is False
+    assert result["converging"] is True
+
+
+def test_reconcile_stays_failed_when_the_probe_shows_no_activity(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A genuine failure (unit not activating) keeps the plain not-ok verdict."""
+    from jasper.web import _unit_snapshot
+
+    monkeypatch.setattr(
+        "jasper.control.restart_broker.manage_units",
+        lambda unit, **_kwargs: {"ok": False, "error": "grouping failed"},
+    )
+    monkeypatch.setattr(
+        _unit_snapshot,
+        "probe_unit_snapshot",
+        lambda units: _unit_snapshot.UnitSnapshot(
+            {u: _unit_snapshot.UnitState(active_state="failed") for u in units}
+        ),
+    )
+
+    result = topology_runtime.trigger_reconcile(reason="test")
+
+    assert result == {"ok": False, "error": "grouping failed"}
+    assert "converging" not in result
+
+
 def test_cleanup_failure_keeps_new_topology_and_does_not_restore_old_graph(
     topo_path: Path,
     monkeypatch: pytest.MonkeyPatch,

@@ -466,9 +466,9 @@ def _restart_outputd(reason: str) -> tuple[bool, str]:
 # How long a blocking start of the audio-hardware reconciler may take.
 #
 # The ENDPOINT-CONVERGENCE kick (``jasper.fanin.converge``) keeps the 15 s bound
-# it shipped with — the same one the topology-reset kick uses
-# (``jasper.cli.output_topology_reset._trigger_reconcile``) — because a timeout
-# there costs only a delayed marker re-derivation, which the next
+# it shipped with — the same one the topology save/reset/repin wizard surfaces
+# use (``jasper.output_topology_runtime.trigger_reconcile``) — because a
+# timeout there costs only a delayed marker re-derivation, which the next
 # udev/boot/deploy event converges anyway.
 #
 # The CONTENT-FORMAT converge gets real headroom instead, and the reason is a

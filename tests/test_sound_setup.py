@@ -2678,6 +2678,40 @@ def test_topology_save_reconcile_failure_reports_safe_attention_message(
     assert "private backend detail" not in saved["save"]["message"]
 
 
+def test_topology_save_reconcile_still_converging_reports_distinct_status(
+    monkeypatch, tmp_path: Path,
+):
+    """A reconcile past its own wait budget is not needs_attention (#3094)."""
+    monkeypatch.setenv("JASPER_OUTPUT_TOPOLOGY_PATH", str(tmp_path / "topology.json"))
+    monkeypatch.setattr(
+        sound_setup,
+        "_active_speaker_stop_summed_test_tone",
+        lambda **_kwargs: {"status": "idle"},
+    )
+    monkeypatch.setattr(
+        sound_setup,
+        "_active_speaker_stop_commission_tone",
+        lambda **_kwargs: {"status": "idle"},
+    )
+    monkeypatch.setattr(sound_setup, "_active_speaker_stop_payload", lambda: {"status": "idle"})
+    monkeypatch.setattr(
+        "jasper.output_topology_runtime.trigger_reconcile",
+        lambda **_kwargs: {"ok": False, "converging": True},
+    )
+
+    saved = sound_setup._save_output_topology_payload(
+        _innomaker_topology_payload(active=False)
+    )
+
+    assert saved["save"] == {
+        "status": "converging",
+        "message": (
+            "Speaker layout was saved and is still applying. "
+            "Check Status in a moment."
+        ),
+    }
+
+
 def test_topology_save_parks_before_replacing_saved_layout(
     monkeypatch, tmp_path: Path,
 ):
