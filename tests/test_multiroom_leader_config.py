@@ -364,6 +364,37 @@ async def test_un_bonding_never_refuses_on_a_corrupt_topology(
     ]
 
 
+async def test_un_bonding_never_refuses_on_a_valid_topology_with_a_bad_field(
+    tmp_path, monkeypatch, caplog
+):
+    """The case the corrupt-topology pins above cannot reach.
+
+    Those two die at an earlier gate — one is not JSON, the other has the wrong
+    `kind` — so neither exercises a topology that is valid all the way to a
+    single bad FIELD. This one is a well-formed mono layout whose
+    `hardware.device_id` is a JSON number: nothing refuses it until the schema
+    validates that field, which is exactly where an escaping error would reach
+    `apply_dsp_config`, be wrapped as `DspApplyError`, and re-raise — refusing
+    the un-bond this path forbids refusing.
+    """
+    import json as _json
+
+    from jasper.multiroom import leader_config
+    from tests.test_active_speaker_runtime_contract import _full_range_mono_on
+
+    payload = _full_range_mono_on(0).to_dict()
+    payload["hardware"]["device_id"] = 5
+    _save_topology(tmp_path, monkeypatch, _json.dumps(payload))
+
+    with caplog.at_level("INFO", logger=leader_config.logger.name):
+        text = (await _run_solo_restore(tmp_path, monkeypatch)).read_text()
+
+    assert text == _solo_restore_yaml()
+    assert [fields["error"] for fields in _unplanned_events(caplog)] == [
+        "OutputTopologyError"
+    ]
+
+
 async def test_un_bonding_with_no_saved_topology_stays_quiet(
     tmp_path, monkeypatch, caplog
 ):
