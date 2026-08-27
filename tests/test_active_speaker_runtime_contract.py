@@ -33,6 +33,7 @@ from jasper.active_speaker.camilla_yaml import (
     driver_linearization_taper_name,
 )
 from jasper.active_speaker.environment import CAMILLA_CLASS_ACTIVE_PARKED
+from jasper.camilla_emit import MONO_SUM_GAIN_DB, mono_sum_sources
 from jasper.active_speaker.runtime_contract import (
     ACTIVE_DRIVER_DOMAIN_SOURCE,
     GRAPH_APPROVED_ACTIVE_RUNTIME,
@@ -1623,11 +1624,22 @@ def test_full_range_mono_rejects_wider_flat_outputd_cutover(tmp_path: Path) -> N
 # before (the test above).
 
 
-def _mono_flat_yaml(*, muted: int | None, terminal: bool = True) -> str:
+def _mono_flat_yaml(
+    *,
+    muted: int | None,
+    terminal: bool = True,
+    fold: int | None = None,
+    fold_sources: list[tuple[int, float]] | None = None,
+) -> str:
     """A flat 2-channel graph, optionally hard-muting one channel.
 
     ``terminal=False`` appends a Gain AFTER the mute in the same step — the
     shape CamillaDSP would re-amplify, so it must not count as muted.
+
+    ``fold`` adds the ``master_gain`` mixer summing BOTH program channels onto
+    that output (and the pipeline step that runs it), the shape a mono cabinet
+    needs. ``fold_sources`` overrides the feeds so a falsification can hand the
+    checker a fold that is present but wrong.
     """
     chains = {0: ["flat"], 1: ["flat"]}
     filters = [
@@ -1649,6 +1661,22 @@ def _mono_flat_yaml(*, muted: int | None, terminal: bool = True) -> str:
                 "    type: Gain",
                 "    parameters: { gain: 40.0, mute: false }",
             ]
+    mixers: list[str] = []
+    mixer_step: list[str] = []
+    if fold is not None:
+        if fold_sources is None:
+            fold_sources = [
+                (channel, gain_db) for channel, gain_db, _ in mono_sum_sources()
+            ]
+        summed = ", ".join(
+            f"{{ channel: {channel}, gain: {gain_db}, inverted: false }}"
+            for channel, gain_db in fold_sources
+        )
+        mixers = ["mixers:", "  master_gain:", "    channels: { in: 2, out: 2 }", "    mapping:"]
+        for dest in range(2):
+            route = summed if dest == fold else f"{{ channel: {dest}, gain: 0, inverted: false }}"
+            mixers += [f"      - dest: {dest}", f"        sources: [{route}]"]
+        mixer_step = ["  - type: Mixer", "    name: master_gain"]
     return "\n".join(
         [
             "devices:",
@@ -1660,7 +1688,9 @@ def _mono_flat_yaml(*, muted: int | None, terminal: bool = True) -> str:
             "    device: outputd_content_playback",
             "filters:",
             *filters,
+            *mixers,
             "pipeline:",
+            *mixer_step,
             "  - type: Filter",
             "    channels: [0]",
             f"    names: [{', '.join(chains[0])}]",
@@ -1696,7 +1726,9 @@ def test_full_range_mono_allows_flat_cutover_with_unclaimed_channel_muted(
     topology = _full_range_mono_on(assigned)
     unclaimed = 1 - assigned
     flat = tmp_path / "outputd-cutover.yml"
-    flat.write_text(_mono_flat_yaml(muted=unclaimed), encoding="utf-8")
+    flat.write_text(
+        _mono_flat_yaml(muted=unclaimed, fold=assigned), encoding="utf-8"
+    )
 
     decision = safe_graph_for_current_topology(
         topology,
@@ -1708,6 +1740,7 @@ def test_full_range_mono_allows_flat_cutover_with_unclaimed_channel_muted(
     assert decision.fallback_graph is not None
     assert decision.fallback_graph.allowed is True
     assert decision.fallback_graph.details["hard_muted_outputs"] == [unclaimed]
+    assert decision.fallback_graph.details["mono_fold_output"] == assigned
 
 
 def test_rendered_mono_cutover_passes_the_statefile_guard_end_to_end(
@@ -1735,6 +1768,7 @@ def test_rendered_mono_cutover_passes_the_statefile_guard_end_to_end(
 
     assert decision.status == "select_flat"
     assert decision.fallback_graph.details["hard_muted_outputs"] == [1]
+    assert decision.fallback_graph.details["mono_fold_output"] == 0
     # The ALSA device keeps the hardware width; only the graph is narrowed.
     assert "channels: 2" in flat.read_text()
 
@@ -1754,6 +1788,122 @@ def test_muting_the_CLAIMED_channel_does_not_buy_a_mono_topology_anything(
     assert "flat_full_range_graph_wider_than_topology" in {
         issue["code"] for issue in graph.issues
     }
+
+
+# The mutes answer "does this graph emit where the household never declared?".
+# They do NOT answer "does the declared output carry the whole record?" — a
+# muted-but-unfolded mono graph passes the first question while playing the
+# program's left channel only. The renderer already refuses to emit one; these
+# pin the checker's INDEPENDENT proof off the emitted YAML, so a hand-edited or
+# stale config cannot reach a mono cabinet through the verifier.
+
+
+@pytest.mark.parametrize("assigned", [0, 1])
+def test_mono_topology_refuses_a_muted_but_unfolded_graph(assigned: int) -> None:
+    graph = classify_camilla_graph(
+        topology=_full_range_mono_on(assigned),
+        text=_mono_flat_yaml(muted=1 - assigned, fold=None),
+    )
+
+    assert graph.allowed is False
+    assert graph.details["mono_fold_output"] == assigned
+    # The ONLY blocker: the saved layout is complete and correct, so the
+    # layout ladder must not also fire and send the owner to re-save it.
+    assert [issue["code"] for issue in graph.issues] == [
+        "flat_full_range_graph_mono_fold_missing"
+    ]
+
+
+@pytest.mark.parametrize("sources", [
+    # Unity feeds sum 6 dB hotter than the clip-safe recipe: a mono track then
+    # clips against `volume_limit: 0.0`.
+    [(0, 0.0), (1, 0.0)],
+    # A rounded -6.0 dB is the drift MONO_SUM_GAIN_DB's own comment warns about.
+    [(0, -6.0), (1, -6.0)],
+    # One program channel fed twice is still half the record.
+    [(0, MONO_SUM_GAIN_DB), (0, MONO_SUM_GAIN_DB)],
+    # A single feed, whatever its gain.
+    [(0, MONO_SUM_GAIN_DB)],
+])
+def test_a_fold_that_is_present_but_wrong_does_not_prove_the_fold(
+    sources: list[tuple[int, float]],
+) -> None:
+    graph = classify_camilla_graph(
+        topology=_full_range_mono_on(0),
+        text=_mono_flat_yaml(muted=1, fold=0, fold_sources=sources),
+    )
+
+    assert graph.allowed is False, sources
+    assert "flat_full_range_graph_mono_fold_missing" in {
+        issue["code"] for issue in graph.issues
+    }
+
+
+def test_folding_onto_the_MUTED_channel_does_not_prove_the_fold() -> None:
+    """Fold credit is per-output, like mute credit: summing the program onto
+    the channel that is hard muted leaves the declared output carrying one raw
+    program channel and the cabinet playing half the record."""
+    graph = classify_camilla_graph(
+        topology=_full_range_mono_on(0), text=_mono_flat_yaml(muted=1, fold=1)
+    )
+
+    assert graph.allowed is False
+    assert "flat_full_range_graph_mono_fold_missing" in {
+        issue["code"] for issue in graph.issues
+    }
+
+
+def test_a_defined_fold_the_pipeline_never_runs_does_not_prove_the_fold() -> None:
+    """A `mixers:` entry is a definition, not an act. CamillaDSP skips a
+    bypassed step entirely, and a mixer no pipeline step names never runs at
+    all — either way the sum the mapping attests does not happen."""
+    folded = _mono_flat_yaml(muted=1, fold=0)
+    unwired = folded.replace("  - type: Mixer\n    name: master_gain\n", "")
+    bypassed = folded.replace(
+        "    name: master_gain\n", "    name: master_gain\n    bypassed: true\n"
+    )
+    assert unwired != folded and bypassed != folded
+
+    for text in (unwired, bypassed):
+        graph = classify_camilla_graph(topology=_full_range_mono_on(0), text=text)
+        assert graph.allowed is False, text
+        assert "flat_full_range_graph_mono_fold_missing" in {
+            issue["code"] for issue in graph.issues
+        }, text
+
+
+def test_stereo_flat_graph_verdict_is_untouched_by_the_fold_proof() -> None:
+    """A stereo topology declares both outputs, so nothing folds and nothing
+    new is demanded — the golden acceptance stays exactly as it was."""
+    graph = classify_camilla_graph(topology=_full_range_stereo(), text=_flat_yaml())
+
+    assert graph.allowed is True
+    assert graph.classification == GRAPH_FLAT_FULL_RANGE
+    assert graph.issues == ()
+    assert graph.details["mono_fold_output"] is None
+
+
+def test_bonded_leader_pipe_config_on_a_mono_box_stays_exempt() -> None:
+    """Bonding must not trip the fold demand.
+
+    A bonded leader's graph writes the snapserver FIFO, and the carrier
+    deliberately withholds the fold there: the pipe carries the GROUP's shared
+    stereo program, and folding it would collapse every follower to mono. That
+    graph is exempt on the File sink long before the fold is considered — the
+    same "no DAC attached" key the program bake rests on.
+    """
+    from jasper.multiroom.reconcile import SNAPFIFO
+    from jasper.sound.camilla_yaml import emit_sound_config
+
+    text = emit_sound_config(
+        SoundProfile(enabled=False),
+        playback_pipe_path=SNAPFIFO,
+        enable_rate_adjust=False,
+    )
+    graph = classify_camilla_graph(topology=_full_range_mono_on(0), text=text)
+
+    assert graph.allowed is True, graph.issues
+    assert graph.classification == GRAPH_PROGRAM_BAKE_PIPE
 
 
 def test_mute_that_is_not_terminal_does_not_count_as_muted() -> None:

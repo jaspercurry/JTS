@@ -36,6 +36,7 @@ import yaml
 
 from jasper.atomic_io import atomic_write_text
 from jasper.audio_measurement.evidence_identity import NormalizedActiveRawIdentity
+from jasper.camilla_emit import mono_sum_sources
 from jasper.log_event import log_event
 
 if TYPE_CHECKING:
@@ -85,6 +86,7 @@ from .graph_safety import (
     bass_extension_block_valid,
     bass_management_corner_matched,
     filter_param_matches,
+    float_matches as _float_matches,
     float_value as _float_value,
     mains_highpass_present,
     output_hard_muted_and_wired,
@@ -1149,6 +1151,119 @@ def _flat_hard_muted_outputs(text: str, playback_channels: Any) -> frozenset[int
     )
 
 
+# The flat family's one Mixer step. Its emitter of record,
+# ``jasper.camilla_emit.emit_master_gain_pipeline``, hard-codes the same literal
+# for the same reason: the name IS the byte contract of every flat config in the
+# field, so there is nothing to parameterise.
+_MASTER_GAIN_MIXER = "master_gain"
+
+
+def _required_mono_fold_output(
+    topology: OutputTopology, *, playback_channels: Any
+) -> int | None:
+    """The playback channel a flat graph on ``topology`` MUST fold onto, if any.
+
+    Delegated WHOLE to ``jasper.sound.camilla_yaml.flat_graph_channel_plan`` —
+    the renderer's own answer to "which channel folds where" — so the checker
+    cannot demand a fold the renderer would not emit, nor accept a box the
+    renderer would have folded. Every case the plan withholds the fold for
+    (unconfigured, roleful/protected, corrupt, composite sink) is withheld here
+    too, without this side re-deriving, or drifting from, any of those rules.
+
+    Imported lazily, mirroring :func:`_playback_is_program_bake_pipe`: the
+    active-speaker package pulls ``jasper.sound.camilla_yaml`` at module scope,
+    so a top-level edge back would be circular.
+
+    ``None`` when the graph's own width is unreadable or non-positive. A plan
+    derived at width 0 is degenerate — its mute set and the complement of the
+    assigned output are both empty, which reads as "fold" — and a graph whose
+    width cannot be read is already refused on its own summary issues.
+    """
+
+    if not isinstance(playback_channels, int) or isinstance(playback_channels, bool):
+        return None
+    if playback_channels <= 0:
+        return None
+    from jasper.sound.camilla_yaml import flat_graph_channel_plan
+
+    return flat_graph_channel_plan(topology, width=playback_channels).mono_fold_output
+
+
+def _flat_mono_fold_proved(text: str, fold_output: int) -> bool:
+    """True iff ``text``'s ``master_gain`` mixer really folds L+R onto
+    ``fold_output``, at the clip-safe gain, and really runs.
+
+    Derived at ``classify_camilla_graph``'s scope like the mute set, so
+    :func:`_flat_graph_allowed` stays text-free. Three facts, all required:
+
+    * the pipeline's Mixer steps are exactly one un-bypassed ``master_gain``. A
+      mixer the pipeline never runs folds nothing, and a second Mixer could
+      re-route what this one summed. ``bypassed:`` is read for the same reason
+      the mute proof reads it — CamillaDSP skips the step entirely, so the
+      mapping below would otherwise attest a fold that never happens;
+    * that mixer feeds ``fold_output`` from BOTH program channels, neither
+      source muted, order-free (a mixer is a sum);
+    * each feed carries :data:`~jasper.camilla_emit.MONO_SUM_GAIN_DB` and its
+      polarity. The gain is contract, not decoration: two unity feeds sum 6 dB
+      hotter, and a mono track then clips against ``volume_limit: 0.0``.
+
+    Fails closed on anything unparseable or unexpected.
+    """
+
+    try:
+        payload = yaml.safe_load(text)
+    except (RecursionError, UnicodeError, ValueError, yaml.YAMLError):
+        return False
+    if not isinstance(payload, dict):
+        return False
+    pipeline = payload.get("pipeline")
+    steps = [
+        step
+        for step in (pipeline if isinstance(pipeline, list) else [])
+        if isinstance(step, dict) and step.get("type") == "Mixer"
+    ]
+    if len(steps) != 1 or steps[0].get("name") != _MASTER_GAIN_MIXER:
+        return False
+    if _truthy_bool(steps[0].get("bypassed")):
+        return False
+    mixers = payload.get("mixers")
+    mixer = mixers.get(_MASTER_GAIN_MIXER) if isinstance(mixers, dict) else None
+    if not isinstance(mixer, dict):
+        return False
+    mapping = mixer.get("mapping")
+    if not isinstance(mapping, list):
+        return False
+    entries = [
+        entry
+        for entry in mapping
+        if isinstance(entry, dict)
+        and type(entry.get("dest")) is int
+        and entry["dest"] == fold_output
+    ]
+    if len(entries) != 1 or _truthy_bool(entries[0].get("mute")):
+        return False
+    sources = entries[0].get("sources")
+    expected = {
+        channel: (gain_db, inverted) for channel, gain_db, inverted in mono_sum_sources()
+    }
+    if not isinstance(sources, list) or len(sources) != len(expected):
+        return False
+    for source in sources:
+        if not isinstance(source, dict) or _truthy_bool(source.get("mute")):
+            return False
+        channel = source.get("channel")
+        # `pop` also makes a duplicated feed fail: the second occurrence of a
+        # channel is no longer expected.
+        if type(channel) is not int or channel not in expected:
+            return False
+        gain_db, inverted = expected.pop(channel)
+        if not _float_matches(source.get("gain"), gain_db):
+            return False
+        if _truthy_bool(source.get("inverted")) is not inverted:
+            return False
+    return not expected
+
+
 def _flat_graph_allowed(
     contract: OutputContract,
     *,
@@ -1157,6 +1272,8 @@ def _flat_graph_allowed(
     program_bake_pipe: bool = False,
     hard_muted_outputs: frozenset[int] = frozenset(),
     indexed_output_mapping: bool = False,
+    required_mono_fold: int | None = None,
+    mono_fold_proved: bool = False,
 ) -> GraphSafety:
     # Program-bake exemption (Stage B): a flat program graph whose playback is a
     # File/pipe sink (the active-leader's camilla#1 bake, NOT a DAC) is safe
@@ -1256,6 +1373,34 @@ def _flat_graph_allowed(
                 "A flat full-range graph requires a complete saved passive "
                 "mono or stereo layout.",
             ))
+    # The fold, re-proved. Muting the complement satisfies "no emission on an
+    # undeclared output" but leaves a mono cabinet playing the program's LEFT
+    # channel only — half the record, and quietly wrong rather than loudly
+    # wrong, which is exactly the class a structural check must catch. The
+    # renderer already refuses to emit an unfolded mono graph; this is the
+    # checker's independent proof off the emitted YAML, so the single-owner
+    # principle the mutes rest on holds for the fold too.
+    #
+    # BELOW the ladder above, and deliberately: that ladder explains why the
+    # saved LAYOUT forbids a flat graph, and a box refused only for a missing
+    # fold has a perfectly good layout. Refusing here instead of before it
+    # keeps the operator from being sent to re-save a topology that is already
+    # right. `required_mono_fold` is the RENDERER's own plan
+    # (`_required_mono_fold_output`), so a topology the renderer would not fold
+    # is never asked to.
+    if required_mono_fold is not None and not mono_fold_proved:
+        allowed = False
+        issues.append(_issue(
+            "blocker",
+            "flat_full_range_graph_mono_fold_missing",
+            (
+                "Mono full-range topology assigns one physical output "
+                f"({required_mono_fold}), but the graph's {_MASTER_GAIN_MIXER} "
+                "mixer does not fold both program channels onto it at the "
+                "clip-safe mono-sum gain; the speaker would play only the "
+                "program's left channel."
+            ),
+        ))
     return GraphSafety(
         classification=GRAPH_FLAT_FULL_RANGE,
         allowed=allowed,
@@ -1268,6 +1413,7 @@ def _flat_graph_allowed(
             "contract_requires_roleful_graph": contract.requires_roleful_graph,
             "volume_limit_ok": bool(summary.get("volume_limit_ok")),
             "hard_muted_outputs": sorted(hard_muted_outputs),
+            "mono_fold_output": required_mono_fold,
         },
     )
 
@@ -3699,7 +3845,12 @@ def classify_camilla_graph(
         # Which playback channels this graph provably cannot emit on, read off
         # the graph here (same text-free split as program_bake_pipe above) so
         # _flat_graph_allowed can ask "does it emit anywhere undeclared?"
-        # instead of the width proxy it used to.
+        # instead of the width proxy it used to. The mono fold is the same
+        # split once more: the topology says whether one is owed, the text says
+        # whether it is there.
+        required_mono_fold = _required_mono_fold_output(
+            topology, playback_channels=summary.get("playback_channels")
+        )
         graph = _flat_graph_allowed(
             contract,
             config_path=path_s,
@@ -3710,6 +3861,11 @@ def classify_camilla_graph(
             ),
             indexed_output_mapping=flat_graph_output_mapping_is_indexed(
                 topology, contract, width=summary.get("playback_channels") or 0
+            ),
+            required_mono_fold=required_mono_fold,
+            mono_fold_proved=(
+                required_mono_fold is not None
+                and _flat_mono_fold_proved(text, required_mono_fold)
             ),
         )
     elif camilla_class == "active_startup_candidate":
