@@ -26,9 +26,9 @@ from jasper.fanin_coupling import RING_CAPTURE_DEVICE, RING_PLAYBACK_DEVICE
 # fan-in -> CamillaDSP transport (ADR-0100), so an emit that receives no coupling
 # kwargs must still name a lane fan-in actually writes.
 DEFAULT_CAPTURE_DEVICE = RING_CAPTURE_DEVICE
-# The snd-aloop tap ADR-0100 retired, spelled ONCE for the one site that still
-# has to name it: the flat cutover graph, whose playback half has not moved yet.
-# It dies with `deploy/alsa/asoundrc.jasper`.
+# The snd-aloop tap ADR-0100 retired. Its ALSA definition is gone, so this name
+# no longer resolves on a box; it survives to RECOGNIZE the retired route in a
+# graph an unreconciled box still carries, never to emit it.
 RETIRED_ALOOP_CAPTURE_DEVICE = "plug:jasper_capture"
 # Playback is Ring B, aliased for the same reason capture is aliased to Ring A:
 # the ring is the only CamillaDSP -> outputd transport (ADR-0100), so a
@@ -38,7 +38,9 @@ RETIRED_ALOOP_CAPTURE_DEVICE = "plug:jasper_capture"
 DEFAULT_PLAYBACK_DEVICE = RING_PLAYBACK_DEVICE
 # The snd-aloop playback half ADR-0100 retired — the twin of
 # RETIRED_ALOOP_CAPTURE_DEVICE, and the key the outputd-capture pairing below is
-# still written against. It dies with `deploy/alsa/asoundrc.jasper`.
+# still written against. Its ALSA definition is gone too, so the pairing below
+# resolves a name that no box can open: the lookup exists to CLASSIFY a graph
+# carrying the retired route, never to hand a caller a lane to write.
 RETIRED_ALOOP_PLAYBACK_DEVICE = "outputd_content_playback"
 ACTIVE_OUTPUTD_PLAYBACK_DEVICE = "outputd_active_content_playback"
 DEFAULT_OUTPUTD_CAPTURE_DEVICE = "outputd_content_capture"
