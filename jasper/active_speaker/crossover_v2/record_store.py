@@ -229,24 +229,29 @@ def _measure_kind(record: Mapping[str, Any]) -> str | None:
     return None
 
 
-def _tag(record: Mapping[str, Any]) -> str:
-    """The record's own type tag, under any of the three spellings it takes.
+def _classify(record: Mapping[str, Any]) -> tuple[str | None, str]:
+    """This record's measurement kind, and the artifact kind that routes it.
 
-    ``kind`` is the engine's and the shipped payloads'; ``measure_kind`` is
-    the builder-shaped record's, which names its measurement kind and leaves
-    the artifact kind to the store; ``schema`` is a finding set's.
+    Answered together and ONCE per :meth:`BankedRecordStore.bank`: the route,
+    the envelope's ``measure_kind`` and the file's own ``kind`` are three
+    readings of one classification, and a reader that re-derives it is a
+    second place for it to answer differently.
+
+    The artifact kind is the record's own type tag under whichever of the
+    three spellings it takes: ``kind`` is the engine's and the shipped
+    payloads', ``schema`` is a finding set's, and a capture record's is the
+    store's to supply, because a capture names its MEASUREMENT kind and leaves
+    the artifact kind here.
     """
     measure = _measure_kind(record)
     if measure is not None:
-        return measure
-    return str(record.get("kind") or record.get("schema") or "")
+        return measure, POSITION_EVIDENCE_KIND
+    return None, str(record.get("kind") or record.get("schema") or "")
 
 
 def _discriminator(record: Mapping[str, Any]) -> str:
     """Which artifact kind this record IS — the key its route is filed under."""
-    if _measure_kind(record) is not None:
-        return POSITION_EVIDENCE_KIND
-    return _tag(record)
+    return _classify(record)[1]
 
 
 @dataclass(frozen=True)
@@ -284,9 +289,10 @@ class BankedRecordStore:
         survive exact reopen must never become reviewable, and a receipt that
         changed on readback is not the receipt anything cited.
         """
-        route = self._route(record)
+        measure, discriminator = _classify(record)
+        route = self._route(discriminator)
         relative = route.relative_path(self.relay_session_id, record)
-        payload = self._payload(record, route)
+        payload = self._payload(record, route, discriminator, measure)
         await asyncio.to_thread(
             self._publish, relative, payload, record, route,
         )
@@ -328,35 +334,38 @@ class BankedRecordStore:
 
     # --------------------------------------------------------------- internals
 
-    def _route(self, record: Mapping[str, Any]) -> _Route:
-        route = _ROUTES.get(_discriminator(record))
+    def _route(self, discriminator: str) -> _Route:
+        route = _ROUTES.get(discriminator)
         if route is None:
             raise ValueError(
-                f"no banked artifact kind for record {_tag(record)!r}"
+                f"no banked artifact kind for record {discriminator!r}"
             )
         return route
 
     def _payload(
-        self, record: Mapping[str, Any], route: _Route,
+        self,
+        record: Mapping[str, Any],
+        route: _Route,
+        discriminator: str,
+        measure: str | None,
     ) -> Mapping[str, Any]:
         if not route.enveloped:
             return dict(record)
         owned = [key for key in _ENVELOPE_KEYS if key in record]
         if owned:
             raise ValueError(
-                f"a banked {_discriminator(record)!r} record must not carry "
+                f"a banked {discriminator!r} record must not carry "
                 f"{owned} — the store writes those and takes them back off"
             )
         payload = {
             key: value for key, value in record.items()
             if key not in ("kind", _MEASURE_KIND_KEY)
         }
-        measure = _measure_kind(record)
         if measure is not None:
             payload[_MEASURE_KIND_KEY] = measure
         payload = {
             "schema_version": _SCHEMA_VERSION,
-            "kind": _discriminator(record),
+            "kind": discriminator,
             "relay_session_id": self.relay_session_id,
             **payload,
         }
@@ -389,12 +398,7 @@ class BankedRecordStore:
 
     def _save_next(self, state: dict[str, Any]) -> Mapping[str, Any]:
         """Write the state one persist further on than the file already is."""
-        prior = self.load_state() or {}
-        ordinal = prior.get(_PERSIST_ORDINAL_KEY)
-        state[_PERSIST_ORDINAL_KEY] = (
-            ordinal + 1 if isinstance(ordinal, int) and not isinstance(ordinal, bool)
-            else 1
-        )
+        state[_PERSIST_ORDINAL_KEY] = _ordinal(self.load_state() or {}) + 1
         self.save_state(state)
         return state
 
@@ -436,6 +440,19 @@ def _unwrap(document: Mapping[str, Any]) -> Mapping[str, Any]:
     return record
 
 
+def _ordinal(document: Mapping[str, Any]) -> int:
+    """The persist counter this document carries, or ``0`` when it carries none.
+
+    ``bool`` is excluded deliberately, and is why this is validated rather than
+    read: it is an ``int`` subclass, so a ``True`` in the counter's key would
+    otherwise read as persist 1 and hand the second persist the first one's id.
+    """
+    ordinal = document.get(_PERSIST_ORDINAL_KEY)
+    if isinstance(ordinal, int) and not isinstance(ordinal, bool):
+        return ordinal
+    return 0
+
+
 def _state_id(document: Mapping[str, Any]) -> str:
     """``state-{session_id}-{n}`` — a pure function of the document.
 
@@ -448,6 +465,4 @@ def _state_id(document: Mapping[str, Any]) -> str:
     mint one id for both — handing back the newer document under the older
     id, which is the one thing this id exists to detect.
     """
-    ordinal = document.get(_PERSIST_ORDINAL_KEY)
-    count = ordinal if isinstance(ordinal, int) and not isinstance(ordinal, bool) else 0
-    return f"state-{document.get('session_id') or ''}-{count}"
+    return f"state-{document.get('session_id') or ''}-{_ordinal(document)}"

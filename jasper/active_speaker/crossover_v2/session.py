@@ -617,14 +617,7 @@ class TuningSession:
             record_id: await self.seams.records.read(record_id)
             for record_id in self._banked
         }
-        walk = walk_bank(
-            records,
-            {
-                "gain_plan_db": dict(self.gain_plan_db),
-                "candidate": {"program_id": self.candidate_program_id},
-            },
-            self.analysis_declaration,
-        )
+        walk = walk_bank(records, self._program_state(), self.analysis_declaration)
         return AnalyzeOutcome(
             results={rid: dict(units) for rid, units in walk.results.items()},
             disclosures=tuple(_merge_disclosures([*prior, *self._disclosures])),
@@ -699,8 +692,7 @@ class TuningSession:
                 {"code": stub.code, "captured": stub.captured}
                 for stub in self._disclosures
             ),
-            "gain_plan_db": dict(self.gain_plan_db),
-            "candidate": {"program_id": self.candidate_program_id},
+            **self._program_state(),
             "bands_hz": {
                 role: list(band)
                 for role, band in sorted(
@@ -711,6 +703,19 @@ class TuningSession:
         return SaveOutcome(state_id=state_id, record_ids=ids)
 
     # --------------------------------------------------------------- internals
+
+    def _program_state(self) -> dict[str, Any]:
+        """The two state keys ``rebuild_measure_program`` reads for itself.
+
+        :meth:`save` banks them for an offline reader and :meth:`analyze` hands
+        the same shape straight to its walk, so the reader's own names and
+        nesting are spelled once: two spellings would drift silently, a rebuild
+        refusing with the state in front of it.
+        """
+        return {
+            "gain_plan_db": dict(self.gain_plan_db),
+            "candidate": {"program_id": self.candidate_program_id},
+        }
 
     async def _release_both_after_failed_open(
         self, opening_exc: BaseException,

@@ -81,6 +81,7 @@ No caller yet. The walker over this table is a separate item.
 from __future__ import annotations
 
 from dataclasses import dataclass
+from functools import lru_cache
 from typing import Callable
 
 from jasper.audio_measurement.program import (
@@ -206,28 +207,57 @@ class AnalysisUnit:
     gate: Callable[[AnalysisInputs], str]
 
 
-def _has_segment_id(inputs: AnalysisInputs, segment_id: str) -> bool:
-    """Scans ALL segments: the ambient window is a silence segment."""
-    return any(seg.segment_id == segment_id for seg in inputs.program.segments)
+@dataclass(frozen=True)
+class _ProgramFacts:
+    """Everything the gates below read off a program's segments.
 
-
-def _sweeps_by_role(inputs: AnalysisInputs) -> dict[str, int]:
-    """Sweep-segment count per role, over stimulus segments only.
-
-    ``stimulus_segments()`` is the courtesy-tone-safe enumerator:
-    ``KIND_COURTESY_TONE`` and ``KIND_SILENCE`` are both deliberately outside
-    ``STIMULUS_KINDS``, and a gate that walked ``program.segments`` instead
-    would count a courtesy tone as content.
+    Four facts, asked seventeen times in one walk before this existed — six for
+    the role sweeps, seven for the summed sweep, two each for the pilots and
+    the ambient window. All four are properties of the PROGRAM alone, so they
+    are derived together and once, and every gate stays the total
+    ``(inputs) -> str`` the walker calls.
     """
-    counts: dict[str, int] = {}
-    for seg in inputs.program.stimulus_segments():
-        if seg.kind == KIND_SWEEP and seg.role is not None:
-            counts[seg.role] = counts.get(seg.role, 0) + 1
-    return counts
+
+    role_sweeps: int
+    repeated_role_sweep: bool
+    summed_sweep: bool
+    pilot: bool
+    ambient_window: bool
 
 
-def _has_stimulus_kind(inputs: AnalysisInputs, kind: str) -> bool:
-    return any(seg.kind == kind for seg in inputs.program.stimulus_segments())
+@lru_cache(maxsize=8)
+def _facts(program: ExcitationProgram) -> _ProgramFacts:
+    """One pass over one program, memoized on the program itself.
+
+    Keyed on the PROGRAM and never on :class:`AnalysisInputs`:
+    ``MeasurementPriors.predicted_sum`` holds ndarrays, so an inputs-keyed
+    cache raises ``TypeError`` the moment a real capture carries a prediction.
+
+    ``stimulus_segments()`` is the courtesy-tone-safe enumerator —
+    ``KIND_COURTESY_TONE`` and ``KIND_SILENCE`` are both deliberately outside
+    ``STIMULUS_KINDS``, and counting over ``program.segments`` would read a
+    courtesy tone as content. The ambient window is the one fact counted over
+    all segments, because it IS a silence segment.
+    """
+    by_role: dict[str, int] = {}
+    summed = False
+    pilot = False
+    for seg in program.stimulus_segments():
+        if seg.kind == KIND_SUMMED_SWEEP:
+            summed = True
+        elif seg.kind == KIND_PILOT:
+            pilot = True
+        elif seg.kind == KIND_SWEEP and seg.role is not None:
+            by_role[seg.role] = by_role.get(seg.role, 0) + 1
+    return _ProgramFacts(
+        role_sweeps=len(by_role),
+        repeated_role_sweep=any(count >= 2 for count in by_role.values()),
+        summed_sweep=summed,
+        pilot=pilot,
+        ambient_window=any(
+            seg.segment_id == AMBIENT_SEGMENT_ID for seg in program.segments
+        ),
+    )
 
 
 def _always(_inputs: AnalysisInputs) -> str:
@@ -258,19 +288,20 @@ def _needs_level_check_bank(inputs: AnalysisInputs) -> str:
     carrying no per-role sweep and no summed sweep. So this stays a content
     gate, and the table still keys on nothing a phase vocabulary owns.
     """
-    if _sweeps_by_role(inputs) or _has_stimulus_kind(inputs, KIND_SUMMED_SWEEP):
+    facts = _facts(inputs.program)
+    if facts.role_sweeps or facts.summed_sweep:
         return NO_LEVEL_CHECK_CAPTURE
     return ""
 
 
 def _needs_ambient(inputs: AnalysisInputs) -> str:
     return _needs_level_check_bank(inputs) or (
-        "" if _has_segment_id(inputs, AMBIENT_SEGMENT_ID) else NO_AMBIENT_WINDOW
+        "" if _facts(inputs.program).ambient_window else NO_AMBIENT_WINDOW
     )
 
 
 def _needs_pilots(inputs: AnalysisInputs) -> str:
-    return "" if _has_stimulus_kind(inputs, KIND_PILOT) else NO_PILOT_SEGMENT
+    return "" if _facts(inputs.program).pilot else NO_PILOT_SEGMENT
 
 
 def _needs_ambient_and_pilots(inputs: AnalysisInputs) -> str:
@@ -286,23 +317,23 @@ def _needs_ambient_and_pilots(inputs: AnalysisInputs) -> str:
 
 def _needs_repeated_sweep(inputs: AnalysisInputs) -> str:
     """Drift is a first-vs-last comparison, so one occurrence is not enough."""
-    counts = _sweeps_by_role(inputs)
-    return "" if any(n >= 2 for n in counts.values()) else NO_REPEATED_SWEEP
+    facts = _facts(inputs.program)
+    return "" if facts.repeated_role_sweep else NO_REPEATED_SWEEP
 
 
 def _needs_role_sweep(inputs: AnalysisInputs) -> str:
-    return "" if _sweeps_by_role(inputs) else NO_ROLE_SWEEP
+    return "" if _facts(inputs.program).role_sweeps else NO_ROLE_SWEEP
 
 
 def _needs_branch_pair_and_fc(inputs: AnalysisInputs) -> str:
     """Both branches, plus the corner they are being aligned about."""
-    if len(_sweeps_by_role(inputs)) < 2:
+    if _facts(inputs.program).role_sweeps < 2:
         return NO_BRANCH_SWEEP_PAIR
     return "" if inputs.priors.crossover_fc_hz else ABSOLUTE_NO_FC
 
 
 def _needs_summed_sweep(inputs: AnalysisInputs) -> str:
-    return "" if _has_stimulus_kind(inputs, KIND_SUMMED_SWEEP) else NO_SUMMED_SWEEP
+    return "" if _facts(inputs.program).summed_sweep else NO_SUMMED_SWEEP
 
 
 def _needs_summed_and_fc(inputs: AnalysisInputs) -> str:

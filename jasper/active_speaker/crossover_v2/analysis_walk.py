@@ -279,12 +279,13 @@ def walk_bank(
             try:
                 analysis = _analysis(inputs, samples, rate)
             except Exception as error:  # noqa: BLE001 - the layer's raise fails it
+                names = tuple(unit.name for unit in admitted)
                 log_event(
                     logger, ANALYSIS_FAILED_EVENT, level=logging.WARNING,
-                    half="produce", units=tuple(u.name for u in admitted),
+                    half="produce", units=names,
                     record_id=record_id, error=type(error).__name__,
                 )
-                faulted.extend(unit.name for unit in admitted)
+                faulted.extend(names)
             else:
                 for unit in admitted:
                     produced[unit.name] = {
