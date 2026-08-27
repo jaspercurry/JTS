@@ -77,7 +77,7 @@ ACTIVE_ENDPOINT_REMEDY = (
 def _outputd_env() -> dict[str, str]:
     """outputd's persistent env, read fresh through its own layering.
 
-    The two paths and the FIFO key are taken from the modules that own them
+    The two paths and the lane keys are taken from the modules that own them
     rather than respelled here: ``OUTPUTD_ENV_PATH`` is the same constant
     :func:`~jasper.fanin_coupling.ring_active_endpoint_armed` reads when it is
     given no mapping, so the endpoint marker this reads and the marker that
@@ -158,7 +158,8 @@ def _assess(
         ring_channels_for_topology,
         topology_sink_is_composite,
     )
-    from ..fanin_coupling import ring_active_endpoint_armed
+    from ..fanin_coupling import OUTPUTD_ENV_BOOL_TRUE, ring_active_endpoint_armed
+    from ..multiroom.dac_content_ring import DAC_CONTENT_LANE_ENV
     from ..multiroom.reconcile import OUTPUTD_DAC_CONTENT_FIFO_ENV
     from ..output_topology import load_output_topology_strict
 
@@ -236,10 +237,25 @@ def _assess(
             )
         )
 
-    # Non-empty is the arming test, not presence: the grouping reconciler
-    # writes this key as an EMPTY string when the speaker is not an active
-    # member, so a cleared bond leaves the key behind.
-    if (env.get(OUTPUTD_DAC_CONTENT_FIFO_ENV) or "").strip():
+    # EITHER spelling arms the ONE round-trip lane, so both are this class.
+    # outputd requires ``JASPER_OUTPUTD_CONTENT_BRIDGE=direct`` for the FIFO
+    # and the ring alike (``rust/jasper-outputd/src/config.rs``), so the two
+    # park for one reason and the wire the lane arrived on is not a second
+    # shape; reading the FIFO key alone would leave a marker-armed box parked
+    # at outputd with no class naming it here.
+    #
+    # Each key is read with the semantics outputd reads it with: the FIFO is a
+    # PATH, non-empty rather than present, because the grouping reconciler
+    # writes it as an EMPTY string off-bond and a cleared bond leaves the key
+    # behind; the marker is a BARE flag, so ``=0`` is not armed.
+    #
+    # EXPIRY: the FIFO half of this test dies with the FIFO arm itself, in the
+    # deletion PR that follows a bonded pair playing through the ring on metal.
+    fifo_armed = bool((env.get(OUTPUTD_DAC_CONTENT_FIFO_ENV) or "").strip())
+    ring_armed = (
+        env.get(DAC_CONTENT_LANE_ENV) or ""
+    ).strip().lower() in OUTPUTD_ENV_BOOL_TRUE
+    if fifo_armed or ring_armed:
         parks.append(
             TransportPark(
                 park_class=PARK_GROUPED_DAC_CONTENT_LANE,

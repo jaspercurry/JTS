@@ -39,6 +39,11 @@ from tests.test_composite_ring_arm_enabling import (
 from tests.test_runtime_contract_ring import _dual_apple_stereo
 
 _FIFO_ENV = "JASPER_OUTPUTD_DAC_CONTENT_FIFO"
+#: The ring transport's arming marker, spelled as a LITERAL for the same
+#: reason the issue numbers below are: a case built from the constant it
+#: checks would move both sides together under a rename and stop pinning
+#: that the classifier reads the key outputd actually reads.
+_LANE_ENV = "JASPER_OUTPUTD_DAC_CONTENT_LANE"
 _ARMED = {OUTPUTD_RING_ACTIVE_ENDPOINT_ENV_VAR: "1"}
 
 
@@ -282,11 +287,61 @@ def test_converged_active_endpoint_does_not_park():
     assert parks == ()
 
 
-def test_cleared_dac_content_lane_does_not_park():
-    """The grouping reconciler writes the FIFO key as an EMPTY string when
-    this speaker is not an active member, so presence is not arming."""
-    parks = transport_park.classify(_full_range_stereo(), {_FIFO_ENV: ""})
-    assert parks == ()
+@pytest.mark.parametrize(
+    "env",
+    [
+        pytest.param({_FIFO_ENV: "/run/x.fifo"}, id="fifo_only"),
+        pytest.param({_LANE_ENV: "1"}, id="marker_only"),
+        pytest.param({_LANE_ENV: "on"}, id="marker_word"),
+        pytest.param({_FIFO_ENV: "/run/x.fifo", _LANE_ENV: "1"}, id="both"),
+    ],
+)
+def test_either_transport_arms_the_one_grouped_park(env):
+    """ONE lane, two spellings, ONE class — and one issue to follow.
+
+    outputd requires ``CONTENT_BRIDGE=direct`` for the ring marker and the
+    FIFO alike, so a marker-armed box parks for exactly the reason a
+    FIFO-armed one does. A trigger reading the FIFO key alone would leave it
+    refused at outputd with no class naming it here, which is the unnamed
+    park ADR-0178 exists to prevent.
+    """
+    parks = transport_park.classify(_full_range_stereo(), env)
+    assert _classes(parks) == {PARK_GROUPED_DAC_CONTENT_LANE}
+    assert _by_class(parks, PARK_GROUPED_DAC_CONTENT_LANE).issue == "#3118"
+
+
+@pytest.mark.parametrize(
+    "env",
+    [
+        pytest.param({}, id="neither_key"),
+        pytest.param({_FIFO_ENV: ""}, id="fifo_cleared"),
+        pytest.param({_FIFO_ENV: "", _LANE_ENV: ""}, id="ungrouped_clears_both"),
+        pytest.param({_LANE_ENV: "0"}, id="marker_off"),
+        pytest.param({_LANE_ENV: "false"}, id="marker_false"),
+    ],
+)
+def test_an_unarmed_lane_parks_under_neither_spelling(env):
+    """THE kill test for this class, across both spellings.
+
+    Each key is read the way outputd reads it: the FIFO as a non-empty PATH,
+    because the grouping reconciler writes it as an EMPTY string when this
+    speaker is not an active member; the marker through ``env_bool``, because
+    one tested for PRESENCE would call ``=0`` armed and park a speaker that is
+    playing.
+    """
+    assert transport_park.classify(_full_range_stereo(), env) == ()
+
+
+def test_the_grouped_park_reads_the_key_the_ring_module_owns():
+    """The classifier and the ring identity must name ONE key.
+
+    The literal above is what pins it: if the owner module's value drifts, the
+    classifier would silently watch a key nothing writes and the park would go
+    quiet.
+    """
+    from jasper.multiroom.dac_content_ring import DAC_CONTENT_LANE_ENV
+
+    assert DAC_CONTENT_LANE_ENV == _LANE_ENV
 
 
 def test_ring_eligible_stereo_box_does_not_park():

@@ -237,12 +237,13 @@ def ring_active_endpoint_armed(env: "Mapping[str, str] | None" = None) -> bool:
             return False
     else:
         raw = env.get(OUTPUTD_RING_ACTIVE_ENDPOINT_ENV_VAR)
-    return (raw or "").strip().lower() in _ENV_BOOL_TRUE
+    return (raw or "").strip().lower() in OUTPUTD_ENV_BOOL_TRUE
 
 
-# outputd's ``env_bool`` accept-set (``rust/jasper-outputd/src/config.rs``).
-# Spelled here so "armed" means one thing across the two languages.
-_ENV_BOOL_TRUE = frozenset(("1", "true", "yes", "on"))
+#: outputd's ``env_bool`` accept-set (``rust/jasper-outputd/src/config.rs``).
+#: Spelled here so "armed" means one thing across the two languages, for every
+#: bare outputd marker — the ACTIVE endpoint's and the dac-content lane's alike.
+OUTPUTD_ENV_BOOL_TRUE = frozenset(("1", "true", "yes", "on"))
 
 
 @dataclass(frozen=True)

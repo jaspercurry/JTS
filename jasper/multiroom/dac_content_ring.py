@@ -60,6 +60,15 @@ DAC_CONTENT_RING_FILE = "/dev/shm/jts-ring/dac-content.ring"
 #: Sibling of :data:`jasper.multiroom.grouping_ring.GROUPING_RING_CONF_D`.
 DAC_CONTENT_RING_CONF_D = "/etc/alsa/conf.d/63-jts-ring-dac-content.conf"
 
+#: The outputd env key that arms this ring as a box's dac-content source. A
+#: BARE marker, never a path: outputd derives the file from its own
+#: ``DEFAULT_DAC_CONTENT_RING_PATH``, pinned equal to
+#: :data:`DAC_CONTENT_RING_FILE`, so no env can name this ring and the two ends
+#: have no second spelling to disagree on. Truthiness is outputd's ``env_bool``
+#: accept-set (:data:`jasper.fanin_coupling.OUTPUTD_ENV_BOOL_TRUE`) — a reader
+#: that tests mere PRESENCE would call ``=0`` armed.
+DAC_CONTENT_LANE_ENV = "JASPER_OUTPUTD_DAC_CONTENT_LANE"
+
 #: The wire, spelled in the conf.d block rather than inherited from the ioplug's
 #: compiled defaults. Both ends already pin it independently: snapclient decodes
 #: to the snapserver-pinned ``sampleformat=48000:16:2``

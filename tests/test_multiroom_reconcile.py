@@ -3551,6 +3551,29 @@ def test_box_lane_verdict_reads_the_topology_the_writer_reads(monkeypatch):
     assert reconcile_mod.box_dac_content_lane_armed(cfg) is False
 
 
+def test_the_lane_verdict_follows_the_writer_onto_either_transport(monkeypatch):
+    """The predicate reads the writer's env, not one hardcoded key.
+
+    Nothing writes the ring marker yet, so this drives the writer directly.
+    The day ``outputd_grouping_env`` moves the lane onto the marker, a
+    FIFO-only reading would answer "not armed" and this predicate's consumer
+    — the coupling support matrix — would arm ``shm_ring`` under a lane that
+    owns the DAC. Two spellings, one verdict, and ``=0`` is not armed.
+    """
+    cfg = _leader()
+
+    def _writes(env):
+        monkeypatch.setattr(reconcile_mod, "outputd_grouping_env", lambda *a, **k: env)
+        return reconcile_mod.dac_content_lane_armed(cfg)
+
+    fifo = reconcile_mod.OUTPUTD_DAC_CONTENT_FIFO_ENV
+    marker = reconcile_mod.DAC_CONTENT_LANE_ENV
+    assert _writes({fifo: "/run/x.fifo"}) is True
+    assert _writes({fifo: "", marker: "1"}) is True
+    assert _writes({fifo: "", marker: "0"}) is False
+    assert _writes({fifo: ""}) is False
+
+
 def test_topology_state_survives_an_unimportable_dependency(monkeypatch):
     """ORDER IS LOAD-BEARING: the ImportError limb must precede the
     OutputTopologyError one.
