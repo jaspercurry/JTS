@@ -57,6 +57,7 @@ context resolver behind both preparers. This module owns the STAGE BOUNDARY.
 
 from __future__ import annotations
 
+import asyncio
 import importlib
 import math
 import sys
@@ -64,6 +65,8 @@ from types import SimpleNamespace
 from typing import Any
 
 import pytest
+
+from tests._async_wait import wait_signalled
 
 from jasper.active_speaker import commission_wiring, crossover_v2_flow, delta_probe
 from jasper.active_speaker import design_draft
@@ -2017,6 +2020,157 @@ async def test_a_session_that_takes_the_level_but_not_the_graph_keeps_neither(
 
     assert plan.measurement_volume_db is None, "the plan was left open"
     assert released == ["pause"], "voice was left paused with no session"
+    v2host.set_volume_plan_for_tests(None)
+
+
+def test_both_runner_volume_arms_classify_a_real_graph_install_failure():
+    """The note: a real install raises SessionGraphError, not RuntimeError.
+
+    Both runners classify a failed ``volume.open()`` by exception type. A
+    ``SessionGraphError`` is a sibling of ``RuntimeError``, not a subclass, so
+    before this it escaped both arms: the give-back still ran (no strand), but
+    ``_purge_best_effort`` was skipped — leaking the relay session to worker
+    TTL, the exact leak that arm exists to prevent — and the terminal failure
+    was never persisted, leaving the wizard's failure view blank.
+
+    A source-text pin because the property is which TYPES the arm names, and a
+    type absent from a tuple has no behaviour to observe.
+    """
+    import ast
+    from pathlib import Path as _Path
+
+    for module in (
+        "jasper/web/correction_crossover_v2_relay.py",
+        "jasper/web/correction_crossover_v2_wired.py",
+    ):
+        source = _Path(__file__).resolve().parents[1] / module
+        tree = ast.parse(source.read_text(encoding="utf-8"))
+        caught: set[str] = set()
+        for node in ast.walk(tree):
+            if not isinstance(node, ast.Try):
+                continue
+            calls = {
+                getattr(inner.func, "attr", None)
+                for inner in ast.walk(node)
+                if isinstance(inner, ast.Call)
+            }
+            if "open" not in calls:
+                continue
+            for handler in node.handlers:
+                names = handler.type
+                items = names.elts if isinstance(names, ast.Tuple) else [names]
+                caught.update(
+                    getattr(item, "id", "") for item in items if item is not None
+                )
+
+        assert "SessionGraphError" in caught, (
+            f"{module}: a real graph install failure escapes the volume arm — "
+            "the relay session leaks to worker TTL and the wizard shows a "
+            "blank failure view"
+        )
+
+
+async def test_a_cancel_inside_the_give_back_still_drains_the_level(monkeypatch):
+    """NB2: the give-back is shielded, so a cancel cannot abort the drain.
+
+    This is the failure that does not self-heal. An aborted drain leaves the
+    fader at measurement level with nobody holding it — and because the plan
+    never latched, ``needs_recovery`` answers False, so the recovery screen
+    never offers it. In-process, only the wall-clock ceiling would ever notice.
+    """
+    from jasper.active_speaker.session_volume_plan import SessionVolumePlan
+    from tests.engine_twin import FakeGraph
+
+    async def _no_pause() -> None:
+        return None
+
+    monkeypatch.setattr(v2host, "acquire_session_measurement_pause", _no_pause)
+    monkeypatch.setattr(v2host, "release_session_measurement_pause", _no_pause)
+    plan = SessionVolumePlan()
+    v2host.set_volume_plan_for_tests(plan)
+
+    reached = asyncio.Event()
+
+    class _SlowDrainPlan(SessionVolumePlan):
+        async def abandon(self, *a, **kw):
+            reached.set()
+            for _ in range(50):
+                await asyncio.sleep(0)
+            return await super().abandon(*a, **kw)
+
+    plan.__class__ = _SlowDrainPlan
+
+    class _Cam:
+        def __init__(self) -> None:
+            self.db = -15.0
+
+        async def get_volume_db(self, best_effort: bool = False) -> float:
+            return self.db
+
+        async def set_volume_db(self, db: float, best_effort: bool = False) -> bool:
+            self.db = float(db)
+            return True
+
+    cam = _Cam()
+    captured = _real_seam_session(
+        monkeypatch, cam_factory=lambda: cam, graph=FakeGraph(install_raises=True),
+    )
+
+    opening = asyncio.ensure_future(captured["hooks"].open())
+    await wait_signalled(reached, "the give-back started", producer=opening)
+    opening.cancel()
+
+    with pytest.raises(BaseException):
+        await opening
+
+    assert plan.measurement_volume_db is None, (
+        "the cancel aborted the drain — the fader is stranded at measurement "
+        "level with nobody holding it"
+    )
+    assert cam.db == -15.0, "the fader never came back"
+    v2host.set_volume_plan_for_tests(None)
+
+
+async def test_a_volume_that_did_not_confirm_installs_no_graph_at_all(
+    monkeypatch,
+):
+    """NB1: a non-OPENED plan.open must RETURN, not fall through.
+
+    A volume that did not confirm is not a volume anything may be admitted
+    against, so installing the measurement graph past it buys two CamillaDSP
+    swaps — install and restore — for a session that never plays a stimulus.
+    And the result has to reach the runners: their non-OPENED branch is what
+    tells the household why the session refused, and a fall-through makes that
+    branch unreachable.
+    """
+    from tests.engine_twin import FakeGraph
+
+    async def _no_pause() -> None:
+        return None
+
+    from jasper.active_speaker.session_volume_plan import SessionVolumePlan
+
+    class _RefusingPlan(SessionVolumePlan):
+        """A real plan whose open never confirms — the shape NB1 is about."""
+
+        async def open(self, *_a, **_kw):
+            return "refused"
+
+        def assert_ready(self, now=None):
+            raise AssertionError("a refused open must not reach the claim")
+
+    monkeypatch.setattr(v2host, "acquire_session_measurement_pause", _no_pause)
+    monkeypatch.setattr(v2host, "release_session_measurement_pause", _no_pause)
+    v2host.set_volume_plan_for_tests(_RefusingPlan())
+
+    graph = FakeGraph()
+    captured = _real_seam_session(monkeypatch, graph=graph)
+
+    opened = await captured["hooks"].open()
+
+    assert str(opened) == "refused", "the runners' branch never saw the result"
+    assert graph.installs == 0, "a graph was swapped in for a session that cannot play"
+    assert graph.restores == 0
     v2host.set_volume_plan_for_tests(None)
 
 

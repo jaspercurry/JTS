@@ -5483,30 +5483,65 @@ def _volume_hooks(
         finally:
             if str(getattr(opened, "value", opened)) != "opened":
                 await release_session_measurement_pause()
+        if str(getattr(opened, "value", opened)) != "opened":
+            # RETURN, rather than falling through. A volume that did not
+            # confirm is not a volume anything may be admitted against, so
+            # installing the measurement graph here would buy two CamillaDSP
+            # swaps — install and restore — for a session that never plays.
+            # The runners' own non-OPENED branch is what tells the household
+            # why, and it is only reachable if this result gets back to it.
+            return opened
         # AFTER the plan confirms, and that order is the whole of it. The
         # session's volume slot is the interim claim, which VERIFIES the plan
         # is open at this level rather than taking one — so opening the session
         # before the plan exists refuses every session on `assert_ready`. Here
         # the two are symmetric: the session opens where the plan opened, and
         # closes where the graph went back.
+
+        async def _give_back_the_level() -> None:
+            """Drain the level this open took, then let voice go.
+
+            Inner order is load-bearing: the drain runs even if the pause
+            release fails, because a fader left at measurement level is worse
+            than voice left paused.
+            """
+            try:
+                await plan.abandon(_set, _get, reason="session_open_failed")
+            finally:
+                await release_session_measurement_pause()
+
         # A ``finally`` on a success flag rather than a broad ``except``: this
         # has to cover a CANCELLED open as well as a raising one, and a
         # ``CancelledError`` is not an ``Exception``. An open that got the
-        # level but not the graph must keep NEITHER — drain the plan the way a
-        # failed open already does, and release the pause so a refused session
-        # never strands voice.
+        # level but not the graph must keep NEITHER.
         session_open = False
         try:
             await tuning.open()
             session_open = True
         finally:
             if not session_open:
+                # SHIELDED, the same shape ``TuningSession._release_slots``
+                # uses: a cancel landing inside the drain aborts it and leaves
+                # the fader at measurement level with nobody holding it — and
+                # because the plan never latched, ``needs_recovery`` answers
+                # False, so the recovery screen never offers. Only the
+                # wall-clock ceiling would ever notice.
+                giving_back = asyncio.ensure_future(_give_back_the_level())
                 try:
-                    await plan.abandon(
-                        _set, _get, reason="session_open_failed",
-                    )
-                finally:
-                    await release_session_measurement_pause()
+                    await asyncio.shield(giving_back)
+                except asyncio.CancelledError:
+                    while not giving_back.done():
+                        try:
+                            await asyncio.shield(giving_back)
+                        except asyncio.CancelledError:
+                            continue
+                        except (OSError, RuntimeError, TimeoutError, ValueError):
+                            # The same enumerated set ``_put_the_graph_back``
+                            # catches below, and for its reason: a drain that
+                            # will not complete must not replace the caller's
+                            # cancellation with its own symptom.
+                            break
+                    raise
         return opened
 
     async def _put_the_graph_back() -> None:
