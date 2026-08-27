@@ -1810,7 +1810,7 @@ is written.
 | # | Invariant | Pin | Status |
 |---|---|---|---|
 | MS-1 | Whole device contract, or none — every `ActiveEmitDevices` field derived and forwarded | `tests/test_ring_active_endpoint.py::test_every_emit_devices_field_reaches_the_emitter` | named |
-| MS-2 | Both ends move together — under `shm_ring` a graph's capture and playback halves move on the same rung | `tests/test_ring_active_endpoint.py::test_the_capture_half_is_coherence_checked_in_both_directions` | named |
+| MS-2 | Both ends move together — under `shm_ring` a graph's capture and playback halves move on the same rung | `tests/test_ring_active_endpoint.py::test_the_capture_device_comparison_names_the_quiet_trap_not_every_graph` | named |
 | MS-3 | One wire — one `resolve_ring_wire` format on both ends, plus the `RING_CAMILLA_*` geometry | `tests/test_transport_endpoint_preservation.py::test_boot_anchor_derives_the_ring_device_block` | named |
 | MS-4 | Stimuli enter pre-DSP — a renderer-lane ring, never the post-crossover active ring | `tests/test_ring_active_endpoint.py::test_both_rings_are_forbidden_test_pcm_targets` | named |
 | MS-5 | Every ring-naming emitter asks the width via `_assert_ring_playback_width` | `tests/test_ring_active_endpoint.py::test_the_width_refusal_actually_fires_through_an_emitter` | named |
