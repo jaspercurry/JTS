@@ -1265,10 +1265,8 @@ install_alsa() {
 
     select_audio_hardware_roles
 
-    # /etc/asound.conf provides the system-wide ALSA PCM definitions: the
-    # per-renderer snd-aloop ingress aliases and the outputd_dac final-output
-    # block. Nothing between fan-in and outputd is defined there — that is the
-    # SHM ring (ADR-0100), whose devices live in /etc/alsa/conf.d.
+    # /etc/asound.conf provides the system-wide ALSA PCM definitions; its own
+    # header owns what they are and why (deploy/alsa/asoundrc.jasper).
     #
     # Location matters: this file MUST be world-readable so that
     # renderer processes running as non-root users (shairport-sync as

@@ -16,7 +16,8 @@
 //! n-slot queue by construction, so the only "drop" is the attach-time resync
 //! `jasper_ring` already performs.
 //!
-//! Flag-gated: only constructed when `JASPER_OUTPUTD_CONTENT_BRIDGE=shm_ring`.
+//! Declared via `JASPER_OUTPUTD_CONTENT_BRIDGE`; undeclared resolves to the
+//! ring, which is what the shipped unit leaves it at.
 
 use std::io;
 
