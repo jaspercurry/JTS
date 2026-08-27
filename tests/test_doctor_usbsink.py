@@ -12,6 +12,7 @@ operator acts on (the missing function, the intent reason, the stale marker).
 from __future__ import annotations
 
 import json
+import subprocess
 from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import patch
@@ -269,6 +270,38 @@ def test_check_usbsink_host_stream_discloses_without_judging(
 
     assert result.status == "ok"
     assert must_name in result.detail
+
+
+@pytest.mark.parametrize(
+    "raised",
+    [
+        FileNotFoundError(2, "No such file or directory", "amixer"),
+        subprocess.TimeoutExpired("amixer", 5.0),
+    ],
+    ids=["amixer-absent", "read-hung"],
+)
+def test_check_usbsink_host_stream_never_crashes_the_doctor(
+    monkeypatch, tmp_path, raised
+):
+    """alsa-utils is not in install.sh's apt lists, and a wedged card can hang
+    the read — the exact state this check exists to name. Driven through the
+    doctor's own runner, which turns an escaping exception into a red fail."""
+    function_path = tmp_path / "uac2.usb0"
+    function_path.mkdir()
+    card = tmp_path / "UAC2Gadget"
+    card.mkdir()
+    monkeypatch.setattr(doctor.usbsink, "_uac2_function_path", lambda: function_path)
+    monkeypatch.setattr(doctor.usbsink, "UAC2_CARD_PATH", str(card))
+
+    def raise_it(*args, **kwargs):
+        raise raised
+
+    monkeypatch.setattr(doctor._shared.subprocess, "run", raise_it)
+
+    result = doctor._run_doctor_check(doctor.check_usbsink_host_stream)
+
+    assert result.status == "ok"
+    assert "not observable here" in result.detail
 
 
 @pytest.mark.parametrize(

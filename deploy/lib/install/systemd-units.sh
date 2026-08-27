@@ -499,9 +499,12 @@ install_usb_network_files() {
 }
 
 usbsink_direct_lane_armed() {
-    # True when fan-in's DIRECT usbsink capture lane is live. Same probe the
-    # gadget truth table and the source coordinator use. A shell function (not
-    # an env seam) so the hermetic install harness can override it.
+    # True when fan-in's DIRECT usbsink capture lane is live — byte-identical to
+    # the gadget truth table's AUDIO_DATA_READY_CMD default, which is the shared
+    # source for this fact. The source coordinator remains the authority on the
+    # composition; its own live probe is narrower and separately bounded, so a
+    # disagreement here only ever costs a recompose it would have done anyway.
+    # A shell function (not an env seam) so the install harness can override it.
     /opt/jasper/.venv/bin/python -m jasper.fanin.status --usbsink-direct-armed \
         >/dev/null 2>&1
 }
@@ -512,12 +515,13 @@ refresh_usb_stream_consumers() {
     # NOT PartOf the gadget (it is the core mixer and must survive a gadget
     # cycle), and jasper-usbmic's ExecCondition can leave it inactive after
     # PartOf= propagation. Refresh both in data-path order, once, right after
-    # the rebuild. See #3194.
-    echo "  event=install.usb_stream_consumers_refreshed order=fanin,usbmic"
-    systemctl try-restart jasper-fanin.service >/dev/null 2>&1 || \
-        echo "  WARN: could not refresh jasper-fanin after the USB gadget rebuild"
-    systemctl try-restart jasper-usbmic.service >/dev/null 2>&1 || \
-        echo "  WARN: could not refresh jasper-usbmic after the USB gadget rebuild"
+    # the rebuild, and report each outcome rather than assuming both took. The
+    # event line is the operator surface for a refresh that did not. See #3194.
+    local fanin=ok
+    local usbmic=ok
+    systemctl try-restart jasper-fanin.service >/dev/null 2>&1 || fanin=failed
+    systemctl try-restart jasper-usbmic.service >/dev/null 2>&1 || usbmic=failed
+    echo "  event=install.usb_stream_consumers_refreshed order=fanin,usbmic fanin=${fanin} usbmic=${usbmic}"
 }
 
 enable_usbgadget() {

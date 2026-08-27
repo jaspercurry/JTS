@@ -26,6 +26,7 @@ import math
 import os
 from pathlib import Path
 import re
+import subprocess
 import time
 
 from jasper.audio_hardware.usb_port_role import gadget_unavailable_detail
@@ -95,15 +96,24 @@ def _uac2_capture_rate() -> int | None:
 
     Subprocesses ``amixer`` for the same reasons the usbsink volume bridge does
     (jasper/usbsink/volume_bridge.py): no python-alsa dependency, and stable
-    parseable output."""
-    controls = _run(["amixer", "-c", UAC2_CARD_NAME, "controls"])
-    if controls.returncode != 0:
-        return None
-    numid = _UAC2_RATE_NUMID_RE.search(controls.stdout)
-    if numid is None:
-        return None
-    value = _run(["amixer", "-c", UAC2_CARD_NAME, "cget", f"numid={numid.group(1)}"])
-    if value.returncode != 0:
+    parseable output. ``_run`` is a bare ``subprocess.run``, so both failure
+    modes have to be caught here: alsa-utils is not in install.sh's apt lists,
+    and a wedged card — the very state this feeds — can hang the read past the
+    timeout. Either one must read as "not observable", never as a doctor crash.
+    ``TimeoutExpired`` subclasses ``SubprocessError``, not ``OSError``."""
+    try:
+        controls = _run(["amixer", "-c", UAC2_CARD_NAME, "controls"])
+        if controls.returncode != 0:
+            return None
+        numid = _UAC2_RATE_NUMID_RE.search(controls.stdout)
+        if numid is None:
+            return None
+        value = _run(
+            ["amixer", "-c", UAC2_CARD_NAME, "cget", f"numid={numid.group(1)}"]
+        )
+        if value.returncode != 0:
+            return None
+    except (OSError, subprocess.SubprocessError):
         return None
     match = _UAC2_CTL_VALUE_RE.search(value.stdout)
     return int(match.group(1)) if match else None
