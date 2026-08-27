@@ -62,7 +62,7 @@ def test_shm_ring_kwargs_are_full_ring_topology_capture_and_playback():
     # box's resolved wire (resolve_ring_wire()). The two ends flip together; a
     # half-ring config (ring capture + ALSA loopback playback) would strand one
     # end, so the emit kwargs MUST carry both devices.
-    kwargs = capture_kwargs_for_coupling("shm_ring")
+    kwargs = capture_kwargs_for_coupling()
     assert kwargs == {
         "capture_device": RING_CAPTURE_DEVICE,
         "capture_format": RING_WIRE_FORMAT_WIDE,
@@ -130,34 +130,14 @@ def test_shm_ring_ring_path_and_slots_resolve_with_fail_safe_defaults():
             resolve_ring_slots(bad)
 
 
-def test_coupling_capture_kwargs_from_env_shm_ring_returns_full_ring_kwargs():
-    from jasper.fanin_coupling import coupling_capture_kwargs_from_env
-
-    kwargs = coupling_capture_kwargs_from_env(
-        {"JASPER_FANIN_CAMILLA_COUPLING": "shm_ring"}
-    )
-    assert kwargs == {
-        "capture_device": RING_CAPTURE_DEVICE,
-        "capture_format": RING_WIRE_FORMAT_WIDE,
-        "playback_device": RING_PLAYBACK_DEVICE,
-        "playback_format": RING_WIRE_FORMAT_WIDE,
-        "chunksize": RING_CAMILLA_CHUNKSIZE,
-        "target_level": RING_CAMILLA_TARGET_LEVEL,
-        "queuelimit": RING_CAMILLA_QUEUELIMIT,
-        "enable_rate_adjust": RING_CAMILLA_ENABLE_RATE_ADJUST,
-    }
-
-
-def test_shm_ring_armed_env_emits_ring_capture_device_s32le():
-    # SF-2: the shm_ring capture kwargs DO flow through
+def test_ring_kwargs_emit_ring_capture_device_s32le():
+    # SF-2: the ring capture kwargs DO flow through
     # coupling_capture_kwargs_from_env into the product emitters (transport_pipe
-    # precedent) — this is deliberate coherence-when-armed. When the ring coupling is
-    # set in the env, a household /sound/ save emits a CamillaDSP config whose
-    # ALSA capture device is jts_ring_capture + the box's resolved wire format, so
-    # the emitted config and the running fan-in daemon name the SAME ring. (That
-    # device only RESOLVES once the arm script has installed the ioplug conf.d
-    # block; until then the flag stays unset, which is byte-identical to today —
-    # see test_coupling_capture_kwargs_from_env_default_is_empty.)
+    # precedent) — this is deliberate coherence. A household /sound/ save emits a
+    # CamillaDSP config whose ALSA capture device is jts_ring_capture + the box's
+    # resolved wire format, so the emitted config and the running fan-in daemon
+    # name the SAME ring. (That device only RESOLVES once the arm script has
+    # installed the ioplug conf.d block.)
     #
     # Renamed from ...s16le: an undeclared box now resolves S32_LE (the
     # resolver's default flipped WIDE in PR #2601). S16_LE survives only as the
@@ -166,9 +146,7 @@ def test_shm_ring_armed_env_emits_ring_capture_device_s32le():
     # per-topology walk that used to carry this test's old name.
     from jasper.fanin_coupling import coupling_capture_kwargs_from_env
 
-    armed_kwargs = coupling_capture_kwargs_from_env(
-        {"JASPER_FANIN_CAMILLA_COUPLING": "shm_ring"}
-    )
+    armed_kwargs = coupling_capture_kwargs_from_env()
     cfg = emit_sound_config(SoundProfile(), profile_id="x", **armed_kwargs)
 
     capture_block = cfg.split("  capture:\n", 1)[1].split("\n  playback:\n", 1)[0]
@@ -224,18 +202,16 @@ def test_capture_kwargs_from_env_are_the_ring_with_no_coupling_declared_at_all(
     )
     monkeypatch.delenv("JASPER_FANIN_CAMILLA_COUPLING", raising=False)
 
-    for env in (None, {}, {"JASPER_FANIN_CAMILLA_COUPLING": ""}):
-        kwargs = fanin_coupling.coupling_capture_kwargs_from_env(env)
-        assert kwargs == {
-            "capture_device": RING_CAPTURE_DEVICE,
-            "capture_format": RING_WIRE_FORMAT_WIDE,
-            "playback_device": RING_PLAYBACK_DEVICE,
-            "playback_format": RING_WIRE_FORMAT_WIDE,
-            "chunksize": RING_CAMILLA_CHUNKSIZE,
-            "target_level": RING_CAMILLA_TARGET_LEVEL,
-            "queuelimit": RING_CAMILLA_QUEUELIMIT,
-            "enable_rate_adjust": RING_CAMILLA_ENABLE_RATE_ADJUST,
-        }, env
+    assert fanin_coupling.coupling_capture_kwargs_from_env() == {
+        "capture_device": RING_CAPTURE_DEVICE,
+        "capture_format": RING_WIRE_FORMAT_WIDE,
+        "playback_device": RING_PLAYBACK_DEVICE,
+        "playback_format": RING_WIRE_FORMAT_WIDE,
+        "chunksize": RING_CAMILLA_CHUNKSIZE,
+        "target_level": RING_CAMILLA_TARGET_LEVEL,
+        "queuelimit": RING_CAMILLA_QUEUELIMIT,
+        "enable_rate_adjust": RING_CAMILLA_ENABLE_RATE_ADJUST,
+    }
 
 
 def test_resolve_coupling_answers_loopback_for_every_non_ring_value():
