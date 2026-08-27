@@ -23,6 +23,12 @@ second implementation that drifts.
 ``os.environ``: jasper-control is not restarted when a bond forms or a
 reconciler rewrites ``outputd.env``, so a value captured at import would be
 permanently wrong.
+
+**One signal that is not a park.** :func:`snapshot`'s ``unproven_endpoint``
+names the coverage seam ADR-0184 records — a box whose wide-ring width
+resolves with no armed endpoint and no class to name it. It carries neither
+an issue nor a remedy, which is exactly why ADR-0178 refuses it a class, and
+it stops at the operator surfaces.
 """
 from __future__ import annotations
 
@@ -113,6 +119,11 @@ class _Assessment:
     #: either kind. When no class then names it, the box is neither servable
     #: nor named, and saying "the ring can serve this box" would be false.
     ring_unresolved: bool
+    #: The wide ring resolves a width for this box, nothing has armed the
+    #: endpoint that would carry it, and no park class covers the gap — the
+    #: coverage seam [ADR-0184](../../docs/adr/0184-a-resolvable-width-with-no-armed-endpoint-signals-rather-than-parks.md)
+    #: records. Operator-only: NOT a park, NOT a household claim.
+    unproven_endpoint: bool
 
 
 def ring_only_transport() -> bool:
@@ -204,16 +215,14 @@ def _assess(
                 )
             )
 
+    endpoint_armed = ring_active_endpoint_armed(env)
+
     # ACTIVE-CROSSOVER boxes only, not every roleful one. `requires_roleful_graph`
     # is also True for a passive stereo box that merely adds a subwoofer or a
     # protected output, and those have no active-speaker baseline to re-emit —
     # parking them would hand the household a remedy that cannot run. The
     # narrower `active_modes` is the fact the remedy actually needs.
-    if (
-        active_ring is not None
-        and contract.active_modes
-        and not ring_active_endpoint_armed(env)
-    ):
+    if active_ring is not None and contract.active_modes and not endpoint_armed:
         parks.append(
             TransportPark(
                 park_class=PARK_ROLEFUL_ACTIVE_ENDPOINT_UNCONVERGED,
@@ -244,7 +253,20 @@ def _assess(
             )
         )
 
-    return _Assessment(parks=tuple(parks), ring_unresolved=ring_unresolved)
+    # The coverage seam ADR-0184 records, and the ONLY new fact this module
+    # reports beyond the four classes. It is deliberately the complement of the
+    # class-(c) condition above — same width, same marker, `active_modes`
+    # inverted — so the two can never both describe one box and ADR-0178's
+    # double-report objection does not apply.
+    unproven_endpoint = bool(
+        active_ring is not None and not contract.active_modes and not endpoint_armed
+    )
+
+    return _Assessment(
+        parks=tuple(parks),
+        ring_unresolved=ring_unresolved,
+        unproven_endpoint=unproven_endpoint,
+    )
 
 
 def classify(
@@ -306,6 +328,12 @@ def snapshot(
         Topology or env could not be read. Reported distinctly rather than as
         a healthy box, the same posture the other park readers hold.
 
+    ``unproven_endpoint`` rides alongside ``status``, never inside it: it is
+    the ADR-0184 coverage seam — a box whose wide-ring width resolves with no
+    armed endpoint and no class to name it — and it is an OPERATOR fact only.
+    It does not change any status, add a park, or reach the household card.
+    Always present, ``False`` when it cannot be assessed.
+
     Never raises.
     """
     resolved_ring_only = ring_only_transport() if ring_only is None else ring_only
@@ -317,6 +345,7 @@ def snapshot(
             "parked": False,
             "ring_only": resolved_ring_only,
             "parks": [],
+            "unproven_endpoint": False,
             "error": str(exc),
         }
 
@@ -333,4 +362,5 @@ def snapshot(
         "parked": status == "parked",
         "ring_only": resolved_ring_only,
         "parks": [park.to_dict() for park in parks],
+        "unproven_endpoint": assessment.unproven_endpoint,
     }

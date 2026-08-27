@@ -3908,6 +3908,11 @@ def check_ring_transport_park() -> CheckResult:
     ``jasper.control.transport_park`` — the same reader
     ``/state.resilience.transport_park`` and the household audio card use, so
     the three surfaces cannot name different issues for the same box.
+
+    One shape lands between ``ok`` and a park: the ADR-0184 coverage seam,
+    where a width resolves for a box no class can name and nothing has armed
+    the endpoint that would carry it. It warns here and nowhere else — there
+    is no rebuild issue and no command to carry, so it is not a fifth class.
     """
     label = "ring transport parks"
 
@@ -3925,6 +3930,22 @@ def check_ring_transport_park() -> CheckResult:
         )
 
     if status == "ok":
+        if state.get("unproven_endpoint"):
+            # ADR-0184's coverage seam: a width resolves, so none of the three
+            # topology classes fires, and the box is not active-crossover, so
+            # the endpoint class is scoped out — the greenest verdict on a box
+            # nothing has proved. A warn, never a park: there is no rebuild
+            # issue and no command to carry, which is the bar ADR-0178 sets.
+            return CheckResult(
+                label,
+                "warn",
+                "the wide ring resolves a width for this box, but outputd's "
+                "active-ring endpoint marker is not armed and this is not an "
+                "active-crossover layout, so none of the four named parks "
+                "describes it (ADR-0184). Unproven, not parked — nothing is "
+                "claimed to the household. Report the saved layout "
+                "(/sound/setup/) if sound is missing.",
+            )
         # The honest claim, not "the ring can serve this box": a box with no
         # ring geometry that no class names lands in `unclassified` below, and
         # this sentence must not have already told the operator it was fine.
