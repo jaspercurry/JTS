@@ -708,9 +708,18 @@ def ring_channels_for_topology(topology: OutputTopology) -> int | None:
 
     The topology-contract citizenship for rings (audio-graph consolidation P2):
     Ring A/Ring B carry a full-range **stereo** program on a single coherent
-    ALSA sink, so :data:`RING_STEREO_PROGRAM_CHANNELS` is the answer only for
-    the explicit, valid passive stereo contract. An UNCONFIGURED topology has
-    no declared speaker layout and remains parked, so it has no Ring B.
+    ALSA sink, so :data:`RING_STEREO_PROGRAM_CHANNELS` is the answer for an
+    explicit, valid passive layout — stereo or MONO. An UNCONFIGURED topology
+    has no declared speaker layout and remains parked, so it has no Ring B.
+
+    **Mono rides the stereo ring: a mono BOX is not a mono SIGNAL PATH.** Every
+    ring end stays two channels wide on a mono cabinet — the fan-in mixer is
+    2-channel, CamillaDSP emits two (both program channels folded onto the one
+    declared output, complement hard muted), and the reconciler clears
+    ``JASPER_OUTPUTD_ACTIVE_CHANNELS`` for a non-active box so outputd opens the
+    DAC at stereo. The fold lives in the GRAPH, downstream of them all. The
+    exclusion this replaces was right that a 1-channel ring is not
+    representable, and wrong that a mono box wants one.
 
     Everything else has no Ring B:
 
@@ -739,11 +748,7 @@ def ring_channels_for_topology(topology: OutputTopology) -> int | None:
       stable serial identity, and that single entry must NOT disqualify the ring.
       (Pre-2026-07 this read ``if child_devices:`` — a bare truthiness check that
       wrongly refused every shipped-default box, since observed hardware always
-      records its one child. See DEFECT 2.);
-    - an explicit mono full-range topology: the ring layout's accept-set starts
-      at 2 channels (``jasper_ring``'s ``validate_self``, mirrored by the C
-      ioplug's ``JTS_RING_MIN_CHANNELS``), so a 1-channel ring is not
-      representable, and no consumer asks for one.
+      records its one child. See DEFECT 2.).
     """
     contract = classify_output_contract(topology)
     if contract.requires_roleful_graph:
@@ -753,10 +758,16 @@ def ring_channels_for_topology(topology: OutputTopology) -> int | None:
     # coherent L/R sink the ring drives.
     if topology_sink_is_composite(topology):
         return None
-    # A declared stereo full-range layout is the sole Ring-B shape.  An empty
-    # topology is deliberately silent; treating it as implicit stereo would
-    # give ``speaker_groups=[]`` two meanings.
-    if contract.classification == CONTRACT_NORMAL_STEREO_FULL_RANGE and not contract.issues:
+    # A declared passive full-range layout is the Ring-B shape, mono or stereo:
+    # both drive one coherent sink with the same 2-channel program (see the
+    # mono paragraph above). An empty topology is deliberately silent; treating
+    # it as implicit stereo would give ``speaker_groups=[]`` two meanings.
+    if contract.issues:
+        return None
+    if contract.classification in {
+        CONTRACT_NORMAL_STEREO_FULL_RANGE,
+        CONTRACT_NORMAL_MONO_FULL_RANGE,
+    }:
         return RING_STEREO_PROGRAM_CHANNELS
     return None
 

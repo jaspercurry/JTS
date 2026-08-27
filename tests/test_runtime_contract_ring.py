@@ -101,9 +101,30 @@ def test_full_range_stereo_supports_ring():
     assert topology_supports_shm_ring(_full_range_stereo()) is True
 
 
-def test_full_range_mono_does_not_support_ring():
-    # A stereo ring cannot drive an explicit mono full-range topology.
-    assert topology_supports_shm_ring(_full_range_mono()) is False
+def test_full_range_mono_supports_the_stereo_ring():
+    # A mono CABINET is not a mono signal path: every ring end stays two
+    # channels wide and the fold happens in the CamillaDSP graph, downstream.
+    assert topology_supports_shm_ring(_full_range_mono()) is True
+
+
+def test_a_mono_topology_with_issues_still_supports_no_ring():
+    # Eligibility is gated on a CLEAN contract for mono exactly as for stereo.
+    unassigned = _topology(
+        [
+            {
+                "id": "mono",
+                "label": "Mono speaker",
+                "kind": "mono",
+                "mode": "full_range_passive",
+                "channels": [{"role": "full_range"}],
+            }
+        ],
+        {"mono_group_id": "mono"},
+    )
+
+    assert classify_output_contract(unassigned).issues
+    assert ring_channels_for_topology(unassigned) is None
+    assert topology_supports_shm_ring(unassigned) is False
 
 
 def test_subwoofer_topology_does_not_support_ring():
@@ -170,7 +191,7 @@ def _eligibility_table():
     return [
         ("unconfigured", _topology([]), None),
         ("full_range_stereo", _full_range_stereo(), RING_STEREO_PROGRAM_CHANNELS),
-        ("full_range_mono", _full_range_mono(), None),
+        ("full_range_mono", _full_range_mono(), RING_STEREO_PROGRAM_CHANNELS),
         ("subwoofer", _subwoofer_topology(), None),
         ("composite_dual_apple", _dual_apple_stereo(), None),
         ("active_2_way_stereo", _active_topology("stereo", "active_2_way"), None),
