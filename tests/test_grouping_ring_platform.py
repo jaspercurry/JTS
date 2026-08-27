@@ -297,16 +297,25 @@ def test_the_confd_block_and_the_python_constants_agree(key, constant):
     )
 
 
-def test_the_grouping_ring_is_the_only_pcm_that_asks_to_be_paced():
-    """``pace_nominal 1`` is here, and nowhere else in the conf.d tree.
+def test_only_the_rings_snapclient_writes_ask_to_be_paced():
+    """``pace_nominal 1`` is here, and nowhere a clock-carrying writer writes.
 
-    The field opts this PCM's PLAYBACK direction into the ioplug's rate limiter
-    (``jts_ring_pace_apply``). It is scoped to this one block on purpose: every
-    other ring's writer already carries a clock, and the limiter's whole reason
-    to exist is the one writer that does not. Two ways that scoping breaks
-    silently — the field being dropped from this file (the storm comes back with
-    nothing to say so), and the field spreading to a ring that never needed it
-    (a rate bound on a path nobody measured) — so both directions are pinned.
+    The field opts a PCM's PLAYBACK direction into the ioplug's rate limiter
+    (``jts_ring_pace_apply``). The scoping rule is about the WRITER, not the
+    ring: every other ring's writer already carries a clock, and the limiter's
+    whole reason to exist is the one writer that does not — snapclient, whose
+    ALSA player expects the device to pace it. Two ways that scoping breaks
+    silently — the field being dropped from a file that needs it (the storm
+    comes back with nothing to say so), and the field spreading to a ring that
+    never needed it (a rate bound on a path nobody measured) — so both
+    directions are pinned.
+
+    The DAC-content return ring (``63-``, #3118) joined this set when it landed:
+    same writer, same missing clock. That it is read by DAC-paced outputd rather
+    than by CamillaDSP does not exempt it — the governor is a floor under the
+    reader's failure, not a substitute for the reader's clock. A THIRD file
+    appearing here should be re-decided, not waved through: the question is only
+    ever "does this block's writer carry its own clock?".
     """
     conf = _read(_GROUPING_CONF)
     body = conf[conf.index("{") + 1 : conf.rindex("}")]
@@ -323,9 +332,12 @@ def test_the_grouping_ring_is_the_only_pcm_that_asks_to_be_paced():
             r"^\s*pace_nominal\s+\S", _strip_conf_comments(_read(path)), re.MULTILINE
         )
     )
-    assert declaring == [_GROUPING_CONF.name], (
-        "pace_nominal is scoped to the grouping ring; these conf.d files also "
-        f"declare it: {declaring}"
+    assert declaring == [
+        _GROUPING_CONF.name,
+        "63-jts-ring-dac-content.conf",
+    ], (
+        "pace_nominal is scoped to the rings snapclient writes; the conf.d "
+        f"files declaring it are now: {declaring}"
     )
 
 
@@ -562,6 +574,7 @@ def test_the_deploy_does_not_unlink_the_grouping_ring_file():
 
     Grouping-ring design §3.4.
     """
+    from jasper.multiroom.dac_content_ring import DAC_CONTENT_RING_FILE
     from jasper.ring_assets import (
         RING_A_PROGRAM_FILE,
         RING_ACTIVE_CONTENT_FILE,
@@ -574,6 +587,13 @@ def test_the_deploy_does_not_unlink_the_grouping_ring_file():
         RING_A_PROGRAM_FILE,
         RING_B_CONTENT_FILE,
         RING_ACTIVE_CONTENT_FILE,
+        # The DAC-content return ring (#3118) is the case that proves the rule
+        # is about ESCALATION and not about snapclient: snapclient writes it
+        # too, but its READER is outputd (StartLimitAction=reboot), so a stale
+        # header reboots the household. Its own membership pin, and the
+        # escalation premise it rests on, are in
+        # tests/test_dac_content_ring_platform.py.
+        DAC_CONTENT_RING_FILE,
     }, f"the deploy-time ring rm -f set changed: {sorted(removed)}"
     assert GROUPING_RING_FILE not in removed
     # The asymmetry is stated where the lines are, not only here.

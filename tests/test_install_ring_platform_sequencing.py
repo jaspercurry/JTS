@@ -46,9 +46,11 @@ def test_ring_platform_deletes_stale_tmpfs_rings_before_systemd_units():
     the one ring file a roleful box actually runs on was the one ring file no
     deploy cleared.
 
-    The set is asserted EXACTLY, not by membership: a fourth ring must join this
+    The set is asserted EXACTLY, not by membership: a new ring must join this
     contract deliberately rather than inherit a stale-geometry deploy by
-    omission, which is the shape of the gap this closed.
+    omission, which is the shape of the gap this closed. #3118 added the
+    DAC-content return ring that way — its reader is outputd, which carries the
+    same ``StartLimitAction=reboot`` as the fan-in case above.
     """
 
     body = _function_body(
@@ -61,6 +63,7 @@ def test_ring_platform_deletes_stale_tmpfs_rings_before_systemd_units():
         "/dev/shm/jts-ring/program.ring",
         "/dev/shm/jts-ring/content.ring",
         "/dev/shm/jts-ring/active-content.ring",
+        "/dev/shm/jts-ring/dac-content.ring",
     ]
     assert "/dev/shm/jts-ring/*" not in body, "ring cleanup must not use globs"
     # RING FILES ONLY. A `.writer.lock` / `.open.lock` unlink would open a
@@ -79,7 +82,14 @@ def test_the_installer_clears_every_ring_the_platform_knows_about():
     there and not here fails HERE — the direction that matters, since the file
     that motivated this (the ACTIVE ring) was added to the platform years after
     the deleter was written and silently never joined it.
+
+    The DAC-content return ring (#3118) is named separately because it is
+    deliberately NOT a registry member — like the grouping ring it is neither the
+    coupling's wire nor a renderer lane, so it owns its identity in
+    :mod:`jasper.multiroom.dac_content_ring`. Naming it here keeps the derived
+    half derived: a registry ring that skips the deleter still fails.
     """
+    from jasper.multiroom.dac_content_ring import DAC_CONTENT_RING_FILE
     from jasper.ring_assets import (
         RING_ACTIVE_CONTENT_FILE,
         RING_B_CONTENT_FILE,
@@ -95,6 +105,7 @@ def test_the_installer_clears_every_ring_the_platform_knows_about():
         RING_A_PROGRAM_FILE,
         RING_B_CONTENT_FILE,
         RING_ACTIVE_CONTENT_FILE,
+        DAC_CONTENT_RING_FILE,
     }
 
 

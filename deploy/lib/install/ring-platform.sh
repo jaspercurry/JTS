@@ -335,6 +335,22 @@ install_jts_ring_conf_assets() {
         echo "  WARN: ${grouping_src} missing; grouping-ingress ring PCM not installed" >&2
     fi
 
+    # 1d. DAC-content return ring PCM (#3118). Same shape and same reason as the
+    #     three blocks above: system-wide 0644 so any user can resolve the name.
+    #     It has NO consumers yet — the lane it serves is parked (ADR-0178
+    #     `grouped_dac_content_lane`) and nothing names pcm.jts_ring_dac_content
+    #     (jasper/multiroom/dac_content_ring.py) until the transport lands. On
+    #     every box in the fleet this file costs one block alsa-lib parses and
+    #     nothing else.
+    local dac_content_src="${REPO_DIR}/deploy/alsa/conf.d/63-jts-ring-dac-content.conf"
+    if [[ -f "${dac_content_src}" ]]; then
+        install -d -m 0755 /etc/alsa/conf.d
+        install -m 0644 "${dac_content_src}" /etc/alsa/conf.d/63-jts-ring-dac-content.conf
+        echo "  Installed /etc/alsa/conf.d/63-jts-ring-dac-content.conf (pcm.jts_ring_dac_content; the grouping leader's round-trip return)"
+    else
+        echo "  WARN: ${dac_content_src} missing; DAC-content return ring PCM not installed" >&2
+    fi
+
     # 2. /dev/shm/jts-ring directory via tmpfiles.d. Group-writable +
     #    setgid so the (root today) ring writer + reader share it, and a
     #    non-root RENDERER in group `jts-ring` can create and write its lane's
@@ -395,9 +411,18 @@ install_jts_ring_platform() {
     # RING FILES ONLY, never the sibling `.writer.lock` / `.open.lock`:
     # unlinking a lock opens a silent inode-tear window between two holders.
     #
-    # AND ONLY THESE THREE. `grouping.ring` — the bonded endpoint's snapcast
-    # ingress, pcm.jts_ring_grouping in 62-jts-ring-grouping.conf — is
-    # deliberately absent, and stays absent when its consumers arrive.
+    # `dac-content.ring` — the grouping leader's round-trip return,
+    # pcm.jts_ring_dac_content in 63-jts-ring-dac-content.conf — JOINS the set,
+    # on the reboot side of the asymmetry below: its READER is jasper-outputd,
+    # whose unit carries the same StartLimitBurst=5 + StartLimitAction=reboot as
+    # jasper-fanin, and its geometry is DERIVED from outputd's own period
+    # (DEFAULT_PERIOD_FRAMES), so a deploy that moves that number leaves a
+    # stale-geometry file whose fatal attach reboots the household. Unlinking it
+    # is mandatory for the same reason unlinking the three above is.
+    #
+    # `grouping.ring` — the bonded endpoint's snapcast ingress,
+    # pcm.jts_ring_grouping in 62-jts-ring-grouping.conf — is deliberately
+    # absent, and stays absent when its consumers arrive.
     #
     # The reason is a FAILURE-ESCALATION ASYMMETRY between the two ends' units,
     # not a difference in which daemon is running at this instant:
@@ -427,4 +452,5 @@ install_jts_ring_platform() {
     rm -f /dev/shm/jts-ring/program.ring
     rm -f /dev/shm/jts-ring/content.ring
     rm -f /dev/shm/jts-ring/active-content.ring
+    rm -f /dev/shm/jts-ring/dac-content.ring
 }
