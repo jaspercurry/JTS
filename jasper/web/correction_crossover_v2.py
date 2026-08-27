@@ -4958,9 +4958,9 @@ def attach_stage2_preflight(status: MutableMapping[str, Any]) -> None:
             "message": message,
             "next_action": refusal_next_action(exc),
         }
-        # A user-visible dead end gets a named line nobody has to guess at
-        # (AGENTS.md's no-silent-failure rule) — the household sees a disabled
-        # Apply, and this is where an operator reads why.
+        # A user-visible dead end gets a named line nobody has to guess at —
+        # the household sees a disabled Apply, and this is where an operator
+        # reads why.
         log_event(
             logger,
             "correction.crossover_v2_stage2_preflight_refused",

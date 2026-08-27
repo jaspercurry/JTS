@@ -150,7 +150,8 @@ async def test_flag_tool_fail_soft_on_store_error(store: WakeEventStore):
     """If record_flag raises (DB locked, disk full, etc.), the tool
     MUST NOT propagate — it returns success=false with a user-
     facing message. Telemetry failures are not allowed to silence
-    the speaker (AGENTS.md: 'no silent failure paths')."""
+    the speaker (docs/extensibility.md: 'no silent failure -> audible
+    cue' for anything that blocks a response)."""
     # Force a record_flag exception by monkey-patching it onto the store.
     async def _boom(_reason):
         raise RuntimeError("disk full")

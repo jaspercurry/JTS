@@ -3454,7 +3454,7 @@ def test_a_refused_preflight_carries_the_predicates_own_sentence(caplog):
     """The refusal messages already name what to finish first, so they are
     passed through verbatim rather than re-phrased here — and the refusal gets
     a named log line, because a household-visible dead end nobody can grep for
-    is not a disclosure (AGENTS.md's no-silent-failure rule)."""
+    is not a disclosure."""
     from jasper.active_speaker.crossover_v2.journey import PHASE_REVIEW
 
     def _refuse(status):
@@ -8879,7 +8879,7 @@ def test_watchdog_collapse_posts_session_over_then_grace_then_purge(monkeypatch)
 def test_a_time_budget_expiry_logs_which_clock_ran_out_and_what_survived(
     monkeypatch, caplog,
 ):
-    """AGENTS.md's no-silent-failure rule, applied to D8's disclosure: a
+    """D8's disclosure: a
     user-visible expiry gets a NAMED line in the shipped
     ``correction.crossover_v2_*`` namespace, carrying which budget expired and
     what the expiry preserved. A disclosure nobody can grep for is not a

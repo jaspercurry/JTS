@@ -196,8 +196,9 @@ def test_the_rejected_connection_cannot_carry_a_failure_cue_either(peer_pair):
     A cue is not a separate channel — it is another segment on this same
     socket. Once the peer has hung up, the cue write fails the same way, so the
     household gets no speech AND no audible reason for it. That is the
-    silent-failure class AGENTS.md forbids, and it is unreachable only because
-    a stale peer is unreachable.
+    silent-failure class docs/extensibility.md forbids ("no silent failure ->
+    audible cue" for anything that blocks a response), and it is unreachable
+    only because a stale peer is unreachable.
     """
     ours, peer = peer_pair
     adapter = _OutputdStreamAdapter(ours, wire_wide=True)

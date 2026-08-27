@@ -437,7 +437,7 @@ persisted curve stays what it is — a drawing, not the instrument.
 `None` stays load-bearing throughout: an ungradeable prediction renders
 as "we could not predict this" and **disables the Apply control**,
 rather than presenting an unevidenced proposal. That refusal is a
-user-visible dead end, so per AGENTS.md's no-silent-failure rule it gets
+user-visible dead end, so it gets
 its own named log line in the shipped `correction.crossover_v2_*`
 namespace (e.g. `correction.crossover_v2_prediction_ungradeable`,
 carrying why) **and a test that pins both the log and the disabled
@@ -693,8 +693,8 @@ expiry disclosure is a user-visible failure surface: it gets a named
 line in the `correction.crossover_v2_*` namespace naming which budget
 expired (relay TTL / `awaiting_begin` / wall-clock ceiling) and what
 survived, **and a test that pins the disclosure to the budget that
-actually ran out** — per AGENTS.md's no-silent-failure and
-pin-promises rules. Separately, CHECK's **pre-arm** copy stops saying
+actually ran out** (issue #1807) — a disclosure nobody can grep for is
+not a disclosure. Separately, CHECK's **pre-arm** copy stops saying
 "Measuring room noise — stay quiet." CHECK's ambient window is
 deliberately composed to measure the room *before* the household is
 asked to go quiet, and the gain solve reads it: the measurement-honest
