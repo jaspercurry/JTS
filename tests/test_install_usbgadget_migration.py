@@ -4,11 +4,11 @@
 
 """Install-time USB gadget ordering contracts.
 
-The installer must never advertise UAC2 from stale derived enablement. It first
-parks ``jasper-usbsink`` and establishes an NCM-only gadget; the later source-
-intent coordinator owns canonical On and its direct-lane-before-advertising
-sequence. The shell harness models fresh installs and upgrades without systemd,
-ConfigFS, root, or USB hardware.
+The installer expresses no composition intent of its own: it enables the units
+and then asks the gadget's converger to reconcile ConfigFS with the shared
+truth table. The source-intent coordinator still owns canonical On and its
+direct-lane-before-advertising sequence. The shell harness models fresh
+installs and upgrades without systemd, ConfigFS, root, or USB hardware.
 """
 from __future__ import annotations
 
@@ -32,60 +32,33 @@ GADGET_UNIT = ROOT / "deploy" / "systemd" / "jasper-usbgadget.service"
 def _harness(
     tmp_path: Path,
     *,
-    derived_enabled: bool,
-    derived_active: bool | None = None,
-    gadget_active: bool = False,
     gadget_rc: int = 0,
-    park_rc: int = 0,
-    restart_rc: int = 0,
-    uac2_present: bool = False,
-    direct_lane_armed: bool = False,
+    converge_rc: int = 0,
 ) -> str:
-    """Source the install fragment with a stateful ``systemctl`` shim."""
+    """Source the install fragment with a ``systemctl`` shim and a stub
+    converger, both of which record every call in order."""
 
-    log = tmp_path / "systemctl.log"
-    enabled_state = 1 if derived_enabled else 0
-    active_state = enabled_state if derived_active is None else int(derived_active)
-    gadget_active_state = 1 if gadget_active else 0
-    uac2_path = tmp_path / "UAC2Gadget"
-    if uac2_present:
-        uac2_path.mkdir(exist_ok=True)
+    log = tmp_path / "calls.log"
+    converge = tmp_path / "jasper-usbgadget-converge"
+    converge.write_text(
+        "#!/usr/bin/env bash\n"
+        f'printf "converge %s\\n" "$*" >> "{log}"\n'
+        f"exit {converge_rc}\n"
+    )
+    converge.chmod(0o755)
     return f"""
 set -uo pipefail
 REPO_DIR="{ROOT}"
 SYSTEMD_DIR="{tmp_path / 'systemd'}"
-JASPER_UAC2_CARD_PATH="{uac2_path}"
-USBSINK_ENABLED={enabled_state}
-USBSINK_ACTIVE={active_state}
+JASPER_USBGADGET_CONVERGE="{converge}"
 systemctl() {{
   echo "$*" >> "{log}"
-  if [[ "${{1:-}}" == "is-enabled" && "$*" == *jasper-usbsink.service* ]]; then
-    [[ "${{USBSINK_ENABLED}}" == "1" ]]
-    return
-  fi
-  if [[ "${{1:-}}" == "is-active" && "$*" == *jasper-usbsink.service* ]]; then
-    [[ "${{USBSINK_ACTIVE}}" == "1" ]]
-    return
-  fi
-  if [[ "${{1:-}}" == "is-active" && "$*" == *jasper-usbgadget.service* ]]; then
-    return $((1 - {gadget_active_state}))
-  fi
-  if [[ "${{1:-}}" == "disable" && "$*" == *jasper-usbsink.service* ]]; then
-    if [[ {park_rc} != 0 ]]; then return {park_rc}; fi
-    USBSINK_ENABLED=0
-    USBSINK_ACTIVE=0
-    return 0
-  fi
   if [[ "${{1:-}}" == "enable" && "$*" == *--now* && "$*" == *jasper-usbgadget.service* ]]; then
     return {gadget_rc}
-  fi
-  if [[ "${{1:-}}" == "restart" && "$*" == *jasper-usbgadget.service* ]]; then
-    return {restart_rc}
   fi
   return 0
 }}
 source "{FRAGMENT}"
-usbsink_direct_lane_armed() {{ return {0 if direct_lane_armed else 1}; }}
 enable_usbgadget
 """
 
@@ -97,195 +70,63 @@ def _run(tmp_path: Path, **kwargs):
         text=True,
         timeout=20,
     )
-    log = tmp_path / "systemctl.log"
+    log = tmp_path / "calls.log"
     calls = log.read_text().splitlines() if log.exists() else []
     return proc, calls
 
 
-def test_fresh_install_establishes_audio_off_before_ncm_gadget(tmp_path):
-    proc, calls = _run(tmp_path, derived_enabled=False)
+def test_install_enables_the_units_then_converges_once(tmp_path):
+    proc, calls = _run(tmp_path)
 
     assert proc.returncode == 0, proc.stderr
-    park_idx = calls.index("disable --now jasper-usbsink.service")
     compose_idx = calls.index("enable --now jasper-usbgadget.service")
-    assert park_idx < compose_idx
-    assert "enable jasper-usbsink.service" not in calls
-    assert "start jasper-usbsink.service" not in calls
-    assert "event=install.usb_gadget_baseline audio=off" in proc.stdout
+    converge_idx = calls.index("converge install")
+    assert compose_idx < converge_idx
+    assert calls.count("converge install") == 1
 
 
-def test_upgrade_on_state_is_parked_without_install_side_restore(tmp_path):
-    """Canonical On is intentionally restored later by the coordinator."""
+def test_install_never_restarts_the_gadget_or_its_consumers_itself(tmp_path):
+    """#3194: install is not an owner of the descriptor or of the blast radius.
 
-    proc, calls = _run(
-        tmp_path,
-        derived_enabled=True,
-        derived_active=True,
-    )
-
-    assert proc.returncode == 0, proc.stderr
-    assert calls.index("disable --now jasper-usbsink.service") < calls.index(
-        "enable --now jasper-usbgadget.service"
-    )
-    assert "enable jasper-usbsink.service" not in calls
-    assert "start jasper-usbsink.service" not in calls
-
-
-def test_active_upgrade_recomposes_network_only_after_parking_audio(tmp_path):
-    """A bound descriptor must not take gadget-up's stale idempotent fast path."""
-
-    proc, calls = _run(
-        tmp_path,
-        derived_enabled=True,
-        derived_active=True,
-        gadget_active=True,
-    )
-
-    assert proc.returncode == 0, proc.stderr
-    park_idx = calls.index("disable --now jasper-usbsink.service")
-    compose_idx = calls.index("enable --now jasper-usbgadget.service")
-    recompose_idx = calls.index("restart jasper-usbgadget.service")
-    assert park_idx < compose_idx < recompose_idx
-
-
-def test_active_ncm_only_gadget_is_not_flapped_on_every_deploy(tmp_path):
-    """A deploy over the NCM management link must preserve converged NCM."""
-
-    proc, calls = _run(
-        tmp_path,
-        derived_enabled=False,
-        derived_active=False,
-        gadget_active=True,
-    )
-
-    assert proc.returncode == 0, proc.stderr
-    assert "restart jasper-usbgadget.service" not in calls
-
-
-def test_active_gadget_recomposes_when_uac2_card_proves_descriptor_drift(tmp_path):
-    proc, calls = _run(
-        tmp_path,
-        derived_enabled=False,
-        derived_active=False,
-        gadget_active=True,
-        uac2_present=True,
-    )
-
-    assert proc.returncode == 0, proc.stderr
-    assert "restart jasper-usbgadget.service" in calls
-
-
-def test_inactive_failed_gadget_recomposes_when_uac2_descriptor_survived(tmp_path):
-    """A failed oneshot can leave ConfigFS bound even while systemd is inactive."""
-
-    proc, calls = _run(
-        tmp_path,
-        derived_enabled=False,
-        derived_active=False,
-        gadget_active=False,
-        uac2_present=True,
-    )
-
-    assert proc.returncode == 0, proc.stderr
-    assert "restart jasper-usbgadget.service" in calls
-
-
-def test_converged_uac2_with_live_consumer_is_not_recomposed(tmp_path):
-    """#3194: install must not tear down an endpoint the coordinator will rebuild.
-
-    A UAC2 function whose fan-in DIRECT lane is armed is converged, not stale.
-    Recomposing it here produced the deploy-time pair of gadget binds that
-    wedged the dwc2 ISO data path.
+    Every gadget teardown/rebuild, and the fan-in -> usbmic refresh that has to
+    follow one, belongs to the converger. An installer that restarts the unit
+    directly is the deploy-time rebind this issue is about.
     """
 
-    proc, calls = _run(
-        tmp_path,
-        derived_enabled=True,
-        derived_active=True,
-        gadget_active=True,
-        uac2_present=True,
-        direct_lane_armed=True,
-    )
+    _proc, calls = _run(tmp_path)
 
-    assert proc.returncode == 0, proc.stderr
     assert "restart jasper-usbgadget.service" not in calls
-    assert "try-restart jasper-fanin.service" not in calls
-    assert "direct_lane_armed" in proc.stdout
-
-
-def test_recompose_refreshes_both_stream_consumers_in_data_path_order(tmp_path):
-    """A rebuild invalidates both consumers' UAC2Gadget card handles."""
-
-    proc, calls = _run(
-        tmp_path,
-        derived_enabled=True,
-        derived_active=True,
-        gadget_active=True,
-        uac2_present=True,
-    )
-
-    assert proc.returncode == 0, proc.stderr
-    recompose_idx = calls.index("restart jasper-usbgadget.service")
-    fanin_idx = calls.index("try-restart jasper-fanin.service")
-    usbmic_idx = calls.index("try-restart jasper-usbmic.service")
-    assert recompose_idx < fanin_idx < usbmic_idx
-
-
-def test_failed_recompose_does_not_refresh_stream_consumers(tmp_path):
-    """Consumers are refreshed for a rebuild that happened, never a failed one."""
-
-    proc, calls = _run(
-        tmp_path,
-        derived_enabled=False,
-        gadget_active=True,
-        uac2_present=True,
-        restart_rc=1,
-    )
-
-    assert proc.returncode != 0
     assert "try-restart jasper-fanin.service" not in calls
     assert "try-restart jasper-usbmic.service" not in calls
 
 
-def test_failed_audio_park_refuses_to_compose(tmp_path):
-    proc, calls = _run(
-        tmp_path,
-        derived_enabled=True,
-        derived_active=True,
-        park_rc=1,
-    )
+def test_install_expresses_no_composition_intent_of_its_own(tmp_path):
+    """The old baseline parked jasper-usbsink first, which flipped the desired
+    composition Off and made the coordinator flip it back — the double bind.
+    The truth table's live-consumer gate now owns the anti-stale decision."""
 
-    assert proc.returncode != 0
-    assert "could not park USB Audio Input" in proc.stderr
-    assert "enable --now jasper-usbgadget.service" not in calls
+    _proc, calls = _run(tmp_path)
+
+    for call in calls:
+        assert "jasper-usbsink.service" not in call, call
 
 
-def test_failed_network_only_recompose_refuses_to_continue(tmp_path):
-    proc, calls = _run(
-        tmp_path,
-        derived_enabled=False,
-        gadget_active=True,
-        uac2_present=True,
-        restart_rc=1,
-    )
+def test_failed_converge_refuses_to_continue(tmp_path):
+    proc, calls = _run(tmp_path, converge_rc=1)
 
     assert proc.returncode != 0
     assert "possibly stale UAC2 advertised" in proc.stderr
-    assert "restart jasper-usbgadget.service" in calls
+    assert "converge install" in calls
 
 
 def test_enable_usbgadget_enables_device_activated_dhcp(tmp_path):
-    _proc, calls = _run(tmp_path, derived_enabled=False)
+    _proc, calls = _run(tmp_path)
 
     assert "enable jasper-usbnet-dhcp.service" in calls
 
 
 def test_enable_usbgadget_reports_real_gadget_failure(tmp_path):
-    proc, _calls = _run(
-        tmp_path,
-        derived_enabled=False,
-        gadget_rc=1,
-    )
+    proc, _calls = _run(tmp_path, gadget_rc=1)
 
     assert proc.returncode == 0, proc.stderr
     assert "journalctl -u jasper-usbgadget" in proc.stdout
@@ -300,6 +141,15 @@ def test_enable_usbgadget_does_not_interpret_or_restore_canonical_on():
     assert "source_intent_enabled" not in body
     assert "systemctl enable jasper-usbsink.service" not in body
     assert "systemctl start jasper-usbsink.service" not in body
+
+
+def test_installer_stages_the_converger_and_its_shared_truth_table():
+    source = FRAGMENT.read_text()
+
+    assert "deploy/usbsink/jasper-usbgadget-converge" in source
+    assert "/usr/local/sbin/jasper-usbgadget-converge" in source
+    assert "deploy/usbsink/jasper-usbgadget-compose.sh" in source
+    assert "/usr/local/sbin/jasper-usbgadget-compose.sh" in source
 
 
 def test_usbnet_networkmanager_policy_owns_only_usb0_without_carrier():

@@ -128,7 +128,12 @@ def _ncm_function_path() -> Path:
 
 
 def _network_wanted() -> bool:
-    """Mirror ``jasper-usbgadget-up``'s network half of the truth table.
+    """Mirror the network half of the shared gadget truth table.
+
+    The table itself lives in ``deploy/usbsink/jasper-usbgadget-compose.sh``,
+    which ``jasper-usbgadget-{wanted,up,converge}`` all source; this is the
+    deliberate SECOND implementation, in Python, so the doctor can report on a
+    composition it did not compute.
 
     Network is wanted unless the kill switch is the exact literal
     ``disabled`` (case-insensitive); any other value is treated as
@@ -137,8 +142,11 @@ def _network_wanted() -> bool:
     file parse) because ``jasper.env_load`` already unions
     ``/etc/jasper/jasper.env`` into ``os.environ`` at CLI startup —
     the same convention every other doctor env read in this package uses.
+    The shell side reaches the same value the same way: the fragment reads
+    that one key out of the same file when nothing supplied it in the
+    environment, parsing it exactly as ``parse_env_text`` does.
 
-    NOT stripped: ``jasper-usbgadget-up`` matches the RAW value (no trim), so
+    NOT stripped: the shell table matches the RAW environment value (no trim), so
     a whitespace-decorated ``" disabled"`` is a warned near-miss that STAYS
     enabled in bash. The Python readers must agree byte-for-byte, or
     check_usbgadget_composition would false-fail when bash composed ncm but
@@ -173,9 +181,10 @@ def _audio_wanted() -> tuple[bool, str]:
 def _audio_composition_wanted() -> tuple[bool, str]:
     """Apply every gadget audio-readiness gate to authorization.
 
-    Keep this in lockstep with ``jasper-usbgadget-up`` and
-    ``jasper-usbgadget-wanted``: advertising UAC2 is safe only after canonical
-    authorization, derived unit enablement, and a live fan-in DIRECT consumer.
+    Keep this in lockstep with ``deploy/usbsink/jasper-usbgadget-compose.sh``,
+    the single shell definition that ``jasper-usbgadget-{wanted,up,converge}``
+    all source: advertising UAC2 is safe only after canonical authorization,
+    derived unit enablement, and a live fan-in DIRECT consumer.
     """
 
     allowed, reason = _audio_wanted()
@@ -885,8 +894,10 @@ def check_usbsink_active_libcomposite() -> CheckResult:
 def check_usbgadget_composition() -> CheckResult:
     """The composed gadget functions must match the composed *intent*.
 
-    jasper-usbgadget-up computes a function truth table once at start (see
-    docs/HANDOFF-usb-gadget.md):
+    deploy/usbsink/jasper-usbgadget-compose.sh holds the one function truth
+    table; jasper-usbgadget-up computes it from there at start, and
+    jasper-usbgadget-converge computes it again to decide whether a rebind is
+    needed at all (see docs/HANDOFF-usb-gadget.md):
 
       network intent   audio authorized+ready    composed functions
       --------------   ------------------------  --------------------

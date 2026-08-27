@@ -1,0 +1,112 @@
+#!/usr/bin/env bash
+# The ONE caller-facing entry point for the composite USB gadget.
+#
+# Anything that wants the gadget to reflect current intent runs this instead of
+# `systemctl restart jasper-usbgadget.service`. It reads the DESIRED composition
+# from the shared truth table and the LIVE composition from ConfigFS, and acts
+# only on a real difference:
+#
+#   converged  -> zero ConfigFS writes, zero unit jobs, exit 0
+#   different  -> exactly one teardown, plus the rebuild when a descriptor is
+#                 still wanted (both the composer's own unit job), then the
+#                 ordered consumer refresh, exit 0
+#   failed     -> exit 1, so a caller can fail closed on a composition it could
+#                 not reach
+#
+# jasper-usbgadget.service remains the only ConfigFS writer; this script owns
+# only the DECISION and the blast radius. That split is deliberate: the rebuild
+# has to run as a unit job (its ExecStartPre modprobes libcomposite, publishes
+# the UAC2 name patch, and snapshots the controller), and a script running
+# INSIDE that unit could not restart jasper-fanin — the gadget is ordered
+# After= fan-in, so a restart job issued from its own start phase would deadlock.
+#
+# PHYSICS, stated once. A real rebuild unbinds the UDC, so the host
+# re-enumerates: the UAC2Gadget ALSA card is destroyed and recreated, and every
+# handle on it goes stale. Two consequences, both load-bearing:
+#   - jasper-fanin (deliberately not PartOf= the gadget, it is the core mixer)
+#     and jasper-usbmic (whose ExecCondition can leave it inactive after PartOf=
+#     propagation) are refreshed here, in data-path order.
+#   - the HOST's player must reopen its stream. A default-device stream follows
+#     re-enumeration on its own; a DEVICE-TARGETED stream holds the dead
+#     pre-rebuild handle forever and has to be restarted by hand. Nothing on the
+#     Pi can fix that, which is exactly why an unchanged composition must not
+#     rebuild. See #3194.
+#
+# Usage: jasper-usbgadget-converge [reason]
+#   `reason` is a short operator tag echoed into the event line (install,
+#   usb_mic, hand). It never affects the decision.
+#
+# The systemctl seam defaults to the real binary and exists so pytest can drive
+# this hermetically; no unit that runs this script sources a management-writable
+# environment file. See tests/test_usbgadget_script.py.
+set -uo pipefail
+PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
+
+# shellcheck source=deploy/usbsink/jasper-usbgadget-compose.sh
+source "$(dirname "$0")/jasper-usbgadget-compose.sh"
+
+SYSTEMCTL="${JASPER_USBGADGET_SYSTEMCTL:-systemctl}"
+GADGET_UNIT=jasper-usbgadget.service
+REASON="${1:-unspecified}"
+
+jasper_usbgadget_desired
+jasper_usbgadget_live
+
+# `WANTED` is the desired BOUND state: 1 means a bound descriptor carrying
+# COMPOSITION, 0 means no descriptor at all (kill-switched, parked, no UDC, or
+# hardware that cannot be a peripheral). Both the presence and the contents
+# have to agree before this is a no-op, so an unbound leftover descriptor is
+# still converged rather than accepted.
+if [[ "${WANTED}" == "0" ]]; then
+    if [[ "${LIVE_PRESENT}" == "0" ]]; then
+        emit converge \
+            "state=unchanged reason=${REASON} want_bound=0 network=0 audio=0 usb_mic=0"
+        exit 0
+    fi
+elif [[ "${LIVE_BOUND}" == "1" && "${LIVE_COMPOSITION}" == "${COMPOSITION}" ]]; then
+    emit converge \
+        "state=unchanged reason=${REASON} want_bound=1 udc=${LIVE_UDC} network=${WANT_NETWORK} audio=${WANT_AUDIO} usb_mic=${WANT_USB_MIC}"
+    exit 0
+fi
+
+emit converge \
+    "state=rebuilding reason=${REASON} live_bound=${LIVE_BOUND} live_network=${LIVE_NETWORK} live_audio=${LIVE_AUDIO} live_usb_mic=${LIVE_USB_MIC} want_bound=${WANTED} want_network=${WANT_NETWORK} want_audio=${WANT_AUDIO} want_usb_mic=${WANT_USB_MIC} audio_reason=${AUDIO_REASON}"
+
+# One teardown+rebuild. A restart whose ExecCondition now says "nothing wanted"
+# stops at the teardown, which is the correct end state for want_bound=0.
+# systemd's own failure text is left on stderr for the journal/install
+# transcript; only its routine stdout is suppressed.
+if ! ${SYSTEMCTL} restart "${GADGET_UNIT}" >/dev/null; then
+    emit converge \
+        "state=failed reason=${REASON} phase=restart want_bound=${WANTED} want_network=${WANT_NETWORK} want_audio=${WANT_AUDIO} want_usb_mic=${WANT_USB_MIC} unit=${GADGET_UNIT}"
+    exit 1
+fi
+
+# Read ConfigFS back rather than assume the restart landed. Two ways it does
+# not: withdrawal against an already-INACTIVE unit runs only the start half,
+# whose ExecCondition then skips, so a descriptor left over from a failed
+# earlier start survives still advertised; and a start half that skipped or
+# failed leaves nothing bound when a descriptor was wanted. Either way, a
+# `rebuilt` line asserting the DESIRED shape would be a claim this script never
+# checked.
+jasper_usbgadget_live
+if [[ "${WANTED}" == "0" && "${LIVE_PRESENT}" != "0" ]] || \
+   [[ "${WANTED}" == "1" && "${LIVE_BOUND}" == "0" ]]; then
+    emit converge \
+        "state=failed reason=${REASON} phase=verify want_bound=${WANTED} live_present=${LIVE_PRESENT} live_bound=${LIVE_BOUND} live_network=${LIVE_NETWORK} live_audio=${LIVE_AUDIO} live_usb_mic=${LIVE_USB_MIC} unit=${GADGET_UNIT}"
+    exit 1
+fi
+
+# Consumers are refreshed for a rebuild that happened, never a failed one, and
+# always in data-path order. Report each outcome rather than assuming both took:
+# this line is the operator surface for a refresh that did not.
+fanin=ok
+usbmic=ok
+${SYSTEMCTL} try-restart jasper-fanin.service >/dev/null 2>&1 || fanin=failed
+${SYSTEMCTL} try-restart jasper-usbmic.service >/dev/null 2>&1 || usbmic=failed
+# The composition reported here is the one READ BACK above, never the one that
+# was asked for: a rebuild that landed on a different shape than the truth table
+# computed (a probe that flipped between this script's read and gadget-up's) has
+# to name itself in the journal rather than hide behind the desired values.
+emit converge \
+    "state=rebuilt reason=${REASON} want_bound=${WANTED} network=${LIVE_NETWORK} audio=${LIVE_AUDIO} usb_mic=${LIVE_USB_MIC} order=fanin,usbmic fanin=${fanin} usbmic=${usbmic}"

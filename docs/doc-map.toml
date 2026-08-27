@@ -685,6 +685,8 @@ code = [
   "deploy/systemd/bluetooth.service.d/**",
   "deploy/usbsink/jasper-usbgadget-wanted",
   "deploy/usbsink/jasper-usbgadget-up",
+  "deploy/usbsink/jasper-usbgadget-converge",
+  "deploy/usbsink/jasper-usbgadget-compose.sh",
   "deploy/nginx-jasper.conf",
   "deploy/nginx-jasper-streambox.conf",
   "deploy/lib/install/systemd-units.sh",

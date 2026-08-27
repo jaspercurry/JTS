@@ -46,25 +46,74 @@ def test_usb_mic_apply_is_durable_delayed_and_naturally_debounced() -> None:
     text = APPLY_UNIT.read_text()
     assert "Type=oneshot" in text
     assert "ExecStart=/bin/sleep 0.35" in text
-    assert (
-        "ExecStartPost=/usr/bin/systemctl restart "
-        "jasper-aec-bridge.service jasper-usbgadget.service"
-    ) in text
+    assert "ExecStartPost=/usr/bin/systemctl restart jasper-aec-bridge.service" in text
     assert "event=usb_mic.recompose_applied" in text
     assert "ExecStopPost=/usr/local/sbin/jasper-usbmic-apply-result" in text
     assert "TimeoutStartSec=" in text
 
 
+def test_usb_mic_apply_reaches_the_gadget_only_through_its_converger() -> None:
+    """#3194: a mic toggle must not be a fourth direct owner of the descriptor.
+
+    The converger compares the live ConfigFS composition (the mic is its
+    ``usb_mic`` field) against the truth table, so re-applying an unchanged
+    shape performs no rebind at all.
+    """
+
+    text = APPLY_UNIT.read_text()
+    assert "ExecStartPost=/usr/local/sbin/jasper-usbgadget-converge usb_mic" in text
+    assert "jasper-usbgadget.service" not in text
+
+
+def _directive(text: str, key: str) -> str:
+    for line in text.splitlines():
+        stripped = line.strip()
+        if stripped.startswith(f"{key}="):
+            return stripped.split("=", 1)[1].strip()
+    raise AssertionError(f"{key}= not found in {APPLY_UNIT}")
+
+
+def _seconds(raw: str) -> float:
+    """Parse the systemd time spans this unit uses (bare seconds, `s`, `min`)."""
+    value = raw.strip()
+    for suffix, scale in (("min", 60.0), ("s", 1.0)):
+        if value.endswith(suffix):
+            return float(value[: -len(suffix)]) * scale
+    return float(value)
+
+
 def test_usb_mic_apply_retries_accepted_failures_with_a_hard_bound() -> None:
     text = APPLY_UNIT.read_text()
-    assert "StartLimitIntervalSec=5min" in text
-    assert "StartLimitBurst=4" in text
     assert "Restart=on-failure" in text
-    assert "RestartSec=2s" in text
-    assert (
-        "ExecStartPost=/usr/bin/systemctl restart "
-        "jasper-aec-bridge.service jasper-usbgadget.service"
-    ) in text
+    assert int(_directive(text, "StartLimitBurst")) == 4
+
+
+def test_usb_mic_apply_start_limit_window_outlasts_its_own_worst_case_run() -> None:
+    """#3194 round 2 (B2): a burst only bounds retries if the window can see it.
+
+    The failure this limit exists for is a HANG, which spends the whole
+    TimeoutStartSec before each RestartSec backoff — so the burst-th start lands
+    ``(burst - 1)`` such cycles after the first. A StartLimitIntervalSec shorter
+    than that span never counts four starts, the limit never trips, and the
+    recompose loop runs forever with a gadget re-enumeration per attempt. Pinned
+    as the RELATIONSHIP, not as two literals, so raising the timeout again
+    cannot silently disarm the bound.
+    """
+
+    text = APPLY_UNIT.read_text()
+    interval = _seconds(_directive(text, "StartLimitIntervalSec"))
+    burst = int(_directive(text, "StartLimitBurst"))
+    timeout = _seconds(_directive(text, "TimeoutStartSec"))
+    backoff = _seconds(_directive(text, "RestartSec"))
+
+    worst_case_span = (burst - 1) * (timeout + backoff)
+    assert interval > worst_case_span, (
+        interval,
+        burst,
+        timeout,
+        backoff,
+        worst_case_span,
+    )
 
 
 def test_usb_mic_apply_failure_helper_emits_only_for_failure() -> None:

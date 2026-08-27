@@ -7,7 +7,15 @@ Description=Apply the desired JTS USB microphone shape
 Documentation=file:///opt/jasper/docs/HANDOFF-usb-gadget.md
 # One accepted apply gets at most four starts (the initial try plus three
 # retries). jasper-control resets this budget before each explicit user action.
-StartLimitIntervalSec=5min
+#
+# The interval has to outlast the worst-case RUN of those four starts, not just
+# name them: the failure this bounds is a HANG, which spends the whole
+# TimeoutStartSec below before each RestartSec backoff, so the fourth start
+# lands three such cycles after the first. A window shorter than that span never
+# sees four starts inside it, the burst never trips, and the "hard start limit"
+# below bounds nothing — each retry another gadget re-enumeration. Pinned as
+# that relationship, not as two numbers, by tests/test_usb_mic_systemd.py.
+StartLimitIntervalSec=15min
 StartLimitBurst=4
 
 [Service]
@@ -16,14 +24,23 @@ Type=oneshot
 # browser. Restarting this active oneshot restarts the sleep, which naturally
 # debounces rapid switch changes while the durable intent remains authoritative.
 ExecStart=/bin/sleep 0.35
-# This inner restart is intentionally blocking: the following applied event
-# means both target jobs completed, not merely that systemd accepted them.
-ExecStartPost=/usr/bin/systemctl restart jasper-aec-bridge.service jasper-usbgadget.service
+# Both inner commands are intentionally blocking: the following applied event
+# means the work completed, not merely that systemd accepted a job.
+ExecStartPost=/usr/bin/systemctl restart jasper-aec-bridge.service
+# The gadget is reached through its converger, never restarted directly. The
+# microphone is the `usb_mic` half of the composition token, so re-applying the
+# shape it already carries costs nothing, while a real change costs exactly one
+# rebuild plus the ordered fan-in -> usbmic refresh the converger owns.
+ExecStartPost=/usr/local/sbin/jasper-usbgadget-converge usb_mic
 ExecStartPost=/usr/bin/logger --tag jasper-usbmic-apply event=usb_mic.recompose_applied unit=jasper-usbmic-apply.service
 # SERVICE_RESULT/EXIT_* are systemd-provided to ExecStopPost. The helper stays
 # silent on success and emits the stable failed event for every failed result.
 ExecStopPost=/usr/local/sbin/jasper-usbmic-apply-result
-TimeoutStartSec=30s
+# Covers the whole blocking apply: the AEC bridge restart, then a converge whose
+# rebuild path is one gadget restart (worst measured 33.64 s) plus two consumer
+# restarts. The old 30 s bound predates the consumer refresh and would turn a
+# slow-but-legal rebuild into a retry, and each retry is another re-enumeration.
+TimeoutStartSec=180s
 # A failed bridge/gadget restart must not leave durable intent unapplied after
 # one transient failure. ExecStartPost failure makes the oneshot fail, so PID 1
 # retries the complete desired-state apply with a bounded backoff.

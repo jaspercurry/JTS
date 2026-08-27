@@ -34,6 +34,8 @@ ROOT = Path(__file__).resolve().parents[1]
 UP = ROOT / "deploy" / "usbsink" / "jasper-usbgadget-up"
 DOWN = ROOT / "deploy" / "usbsink" / "jasper-usbgadget-down"
 WANTED = ROOT / "deploy" / "usbsink" / "jasper-usbgadget-wanted"
+CONVERGE = ROOT / "deploy" / "usbsink" / "jasper-usbgadget-converge"
+COMPOSE = ROOT / "deploy" / "usbsink" / "jasper-usbgadget-compose.sh"
 INSTALL_FRAGMENT = ROOT / "deploy" / "lib" / "install" / "systemd-units.sh"
 NAME_PATCH = ROOT / "deploy" / "usbsink" / "jasper-usbsink-name-patch"
 SNAPSHOT = ROOT / "deploy" / "usbsink" / "jasper-usbgadget-snapshot"
@@ -84,6 +86,9 @@ def _run(
     cpuinfo_serial: str = "10000000abcdef01",
     speaker_name_file: Path | None = None,
     usb_mic: str = FALSE,
+    env_file: Path | None = None,
+    env_extra: dict[str, str] | None = None,
+    args: list[str] | None = None,
 ) -> tuple[subprocess.CompletedProcess[str], Path]:
     configfs = configfs if configfs is not None else _configfs(tmp_path)
     udc = _udc_dir(tmp_path, present=udc_present)
@@ -107,13 +112,20 @@ def _run(
             speaker_name_file or (tmp_path / "no-such-name.env")
         ),
         "JASPER_SPEAKER_NAME_READER": str(ROOT / ".venv/bin/python"),
+        # Absent by default so a developer box that HAS /etc/jasper/jasper.env
+        # cannot leak its kill switch into these rows.
+        "JASPER_USBGADGET_ENV_FILE": str(
+            env_file or (tmp_path / "no-such-jasper.env")
+        ),
     })
     if network is None:
         env.pop("JASPER_USB_NETWORK", None)
     else:
         env["JASPER_USB_NETWORK"] = network
+    if env_extra:
+        env.update(env_extra)
     proc = subprocess.run(
-        ["bash", str(script)],
+        ["bash", str(script), *(args or [])],
         check=False, cwd=ROOT, env=env, text=True, capture_output=True,
         timeout=60,
     )
@@ -417,6 +429,380 @@ def test_up_idempotent_when_already_bound(tmp_path):
     assert "already_bound" in proc2.stderr
 
 
+def test_up_rebuilds_a_bound_descriptor_whose_composition_drifted(tmp_path):
+    """Bound is not converged. A bound descriptor carrying the WRONG function
+    set takes the teardown-and-rebuild branch, not the idempotent fast path.
+
+    Only the DECISION is asserted here: the rebuild's ``mkdir`` needs the real
+    ConfigFS teardown to have completed, which a plain-file temp tree cannot do
+    (see test_down_tears_down_both_functions)."""
+    proc1, cfg = _run(UP, tmp_path, network="enabled", audio_intent=FALSE)
+    assert proc1.returncode == 0, proc1.stderr
+    assert not _linked(cfg, "uac2.usb0")
+    # Same bound descriptor, but audio is now wanted.
+    proc2, _ = _run(
+        UP, tmp_path, network="enabled", audio_intent=TRUE, audio_gate=TRUE,
+        configfs=cfg,
+    )
+    assert "already_bound" not in proc2.stderr
+    assert (
+        "event=usb_gadget.recompose reason=composition_drift "
+        "live_network=1 live_audio=0 live_usb_mic=0 "
+        "want_network=1 want_audio=1 want_usb_mic=0"
+    ) in proc2.stderr
+    # The teardown half is observable: the old function set is gone and the
+    # descriptor is unbound.
+    assert not _linked(cfg, "ncm.usb0")
+    assert (_gadget_dir(cfg) / "UDC").read_text().strip() == ""
+
+
+# ---------- jasper-usbgadget-converge (the one caller-facing entry) ---------
+
+
+def _systemctl_shim(
+    tmp_path: Path,
+    *,
+    restart_rc: int = 0,
+    tears_down: Path | None = None,
+) -> tuple[Path, Path]:
+    """A fake systemctl that logs its argv, injected through the converger's
+    documented JASPER_USBGADGET_SYSTEMCTL seam. ``tears_down`` models the unit's
+    ExecStop actually removing the descriptor, which a restart against an
+    already-inactive unit does NOT do."""
+    log = tmp_path / "systemctl.log"
+    shim = tmp_path / "systemctl-shim"
+    teardown = (
+        f'rm -rf "{_gadget_dir(tears_down)}"\n' if tears_down is not None else ""
+    )
+    shim.write_text(
+        "#!/usr/bin/env bash\n"
+        f'printf "%s\\n" "$*" >> "{log}"\n'
+        'if [[ "${1:-}" == "restart" ]]; then\n'
+        f"  {teardown}"
+        f"  exit {restart_rc}\n"
+        "fi\n"
+        "exit 0\n"
+    )
+    shim.chmod(0o755)
+    return shim, log
+
+
+def _tree(configfs: Path) -> dict[str, str]:
+    """Every path under the gadget dir plus the bytes of each regular file, so
+    a test can prove ZERO ConfigFS writes rather than merely no unit job."""
+    root = _gadget_dir(configfs)
+    if not root.exists():
+        return {}
+    out: dict[str, str] = {}
+    for path in sorted(root.rglob("*")):
+        rel = str(path.relative_to(root))
+        if path.is_symlink():
+            out[rel] = f"link:{os.readlink(path)}"
+        elif path.is_file():
+            out[rel] = path.read_text()
+        else:
+            out[rel] = "dir"
+    return out
+
+
+def _jasper_env(tmp_path: Path, body: str) -> Path:
+    tmp_path.mkdir(parents=True, exist_ok=True)
+    path = tmp_path / "jasper.env"
+    path.write_text(body)
+    return path
+
+
+def _converge(
+    tmp_path: Path,
+    configfs: Path,
+    *,
+    restart_rc: int = 0,
+    tears_down: bool = False,
+    **kwargs,
+):
+    tmp_path.mkdir(parents=True, exist_ok=True)
+    shim, log = _systemctl_shim(
+        tmp_path,
+        restart_rc=restart_rc,
+        tears_down=configfs if tears_down else None,
+    )
+    proc, _ = _run(
+        CONVERGE, tmp_path, configfs=configfs,
+        env_extra={"JASPER_USBGADGET_SYSTEMCTL": str(shim)},
+        args=["deploy"],
+        **kwargs,
+    )
+    calls = log.read_text().splitlines() if log.exists() else []
+    return proc, calls
+
+
+def test_converge_on_matching_composition_writes_nothing_and_runs_no_job(tmp_path):
+    """#3194: a deploy over a converged gadget must not re-enumerate the host."""
+    proc1, cfg = _run(UP, tmp_path, network="enabled", audio_intent=TRUE, audio_gate=TRUE)
+    assert proc1.returncode == 0, proc1.stderr
+    before = _tree(cfg)
+
+    proc, calls = _converge(
+        tmp_path, cfg, network="enabled", audio_intent=TRUE, audio_gate=TRUE,
+    )
+
+    assert proc.returncode == 0, proc.stderr
+    assert "event=usb_gadget.converge state=unchanged" in proc.stderr
+    assert calls == []
+    assert _tree(cfg) == before
+
+
+def test_converge_on_changed_composition_rebuilds_then_refreshes_in_order(tmp_path):
+    """A real difference costs one rebuild and the ordered consumer refresh."""
+    proc1, cfg = _run(UP, tmp_path, network="enabled", audio_intent=FALSE)
+    assert proc1.returncode == 0, proc1.stderr
+
+    proc, calls = _converge(
+        tmp_path, cfg, network="enabled", audio_intent=TRUE, audio_gate=TRUE,
+    )
+
+    assert proc.returncode == 0, proc.stderr
+    assert "event=usb_gadget.converge state=rebuilding" in proc.stderr
+    assert "event=usb_gadget.converge state=rebuilt" in proc.stderr
+    assert "fanin=ok usbmic=ok" in proc.stderr
+    assert calls == [
+        "restart jasper-usbgadget.service",
+        "try-restart jasper-fanin.service",
+        "try-restart jasper-usbmic.service",
+    ]
+
+
+def test_converge_reads_the_kill_switch_from_the_env_file_it_did_not_inherit(
+    tmp_path,
+):
+    """#3194 round 2 (B1): the kill switch reaches the gadget UNIT through its
+    EnvironmentFile=, but the converger runs from install.sh and from
+    jasper-usbmic-apply, neither of which loads it. If the converger could not
+    see it, a kill-switched box would compute desired network=1 against a live
+    network=0 forever — every deploy and every mic toggle a rebuild."""
+    env_file = _jasper_env(
+        tmp_path / "env",
+        "# JASPER_USB_NETWORK=enabled\nJASPER_USB_NETWORK=disabled\n",
+    )
+    # The converged box: kill switch on, audio on -> uac2 only.
+    up, cfg = _run(
+        UP, tmp_path, network="disabled", audio_intent=TRUE, audio_gate=TRUE,
+    )
+    assert up.returncode == 0, up.stderr
+    assert not _linked(cfg, "ncm.usb0")
+    before = _tree(cfg)
+
+    proc, calls = _converge(
+        tmp_path / "converge", cfg,
+        network=None, env_file=env_file,
+        audio_intent=TRUE, audio_gate=TRUE,
+    )
+
+    assert proc.returncode == 0, proc.stderr
+    assert "state=unchanged" in proc.stderr
+    assert "network=0 audio=1 usb_mic=0" in proc.stderr
+    assert calls == []
+    assert _tree(cfg) == before
+
+
+def test_env_file_kill_switch_is_read_the_way_the_python_parser_reads_it(tmp_path):
+    """One key, parsed as jasper.env_load.parse_env_text parses it: comments
+    skipped, quotes stripped, surrounding whitespace trimmed, last wins. An
+    inherited assignment still beats the file, and an unreadable or keyless file
+    falls back to the default-on network rather than dropping it."""
+    cases = [
+        ("JASPER_USB_NETWORK=disabled\n", 0),
+        ('JASPER_USB_NETWORK="disabled"\n', 0),
+        ("JASPER_USB_NETWORK='disabled'\n", 0),
+        ("  JASPER_USB_NETWORK =  disabled  \n", 0),
+        ("JASPER_USB_NETWORK=DISABLED\n", 0),
+        ("JASPER_USB_NETWORK=disabled\nJASPER_USB_NETWORK=enabled\n", 1),
+        ("# JASPER_USB_NETWORK=disabled\n", 1),
+        ("JASPER_USB_NETWORK_EXTRA=disabled\n", 1),
+        ("JASPER_USB_NETWORK=\n", 1),
+        ("", 1),
+    ]
+    for index, (body, expect_network) in enumerate(cases):
+        env_file = _jasper_env(tmp_path / f"env{index}", body)
+        proc, _cfg = _run(
+            UP, tmp_path / f"case{index}",
+            network=None, env_file=env_file, audio_intent=TRUE, audio_gate=TRUE,
+        )
+        assert proc.returncode == 0, (body, proc.stderr)
+        assert f"network={expect_network} audio=1" in proc.stderr, (
+            body, proc.stderr,
+        )
+
+    # An inherited assignment wins over the file, as it does for the unit.
+    env_file = _jasper_env(tmp_path / "envwin", "JASPER_USB_NETWORK=disabled\n")
+    proc, _cfg = _run(
+        UP, tmp_path / "inherited",
+        network="enabled", env_file=env_file, audio_intent=TRUE, audio_gate=TRUE,
+    )
+    assert proc.returncode == 0, proc.stderr
+    assert "network=1 audio=1" in proc.stderr
+
+    # A missing file leaves the default-on network rather than dropping it.
+    proc, _cfg = _run(
+        UP, tmp_path / "absent",
+        network=None, env_file=tmp_path / "nope.env",
+        audio_intent=TRUE, audio_gate=TRUE,
+    )
+    assert proc.returncode == 0, proc.stderr
+    assert "network=1 audio=1" in proc.stderr
+
+
+def test_converge_treats_the_microphone_as_part_of_the_composition(tmp_path):
+    """The usb_mic field is why a /wake toggle reaches the gadget at all — and
+    why re-applying the shape it already carries does not."""
+    proc1, cfg = _run(
+        UP, tmp_path, network="enabled", audio_intent=TRUE, audio_gate=TRUE,
+        usb_mic=TRUE,
+    )
+    assert proc1.returncode == 0, proc1.stderr
+
+    same, same_calls = _converge(
+        tmp_path / "same", cfg, network="enabled", audio_intent=TRUE,
+        audio_gate=TRUE, usb_mic=TRUE,
+    )
+    assert same.returncode == 0, same.stderr
+    assert "state=unchanged" in same.stderr
+    assert same_calls == []
+
+    off, off_calls = _converge(
+        tmp_path / "off", cfg, network="enabled", audio_intent=TRUE,
+        audio_gate=TRUE, usb_mic=FALSE,
+    )
+    assert off.returncode == 0, off.stderr
+    assert "state=rebuilding" in off.stderr
+    assert off_calls[0] == "restart jasper-usbgadget.service"
+
+
+def test_converge_withdraws_a_descriptor_no_longer_wanted(tmp_path):
+    """Desired "no descriptor" against a bound one is still a difference."""
+    proc1, cfg = _run(UP, tmp_path, network="enabled", audio_intent=FALSE)
+    assert proc1.returncode == 0, proc1.stderr
+
+    proc, calls = _converge(
+        tmp_path, cfg, network="disabled", audio_intent=FALSE, tears_down=True,
+    )
+
+    assert proc.returncode == 0, proc.stderr
+    assert "state=rebuilding" in proc.stderr
+    assert "want_bound=0" in proc.stderr
+    assert calls[0] == "restart jasper-usbgadget.service"
+
+
+def test_converge_is_a_noop_when_nothing_is_wanted_and_nothing_exists(tmp_path):
+    proc, calls = _converge(
+        tmp_path, _configfs(tmp_path), network="disabled", audio_intent=FALSE,
+    )
+
+    assert proc.returncode == 0, proc.stderr
+    assert "state=unchanged" in proc.stderr
+    assert "want_bound=0 network=0 audio=0 usb_mic=0" in proc.stderr
+    assert calls == []
+
+
+def test_converge_clears_an_unbound_leftover_when_nothing_is_wanted(tmp_path):
+    """Presence, not just binding, is part of the comparison: a descriptor the
+    host cannot see is still not the desired "no descriptor" end state."""
+    _up, cfg = _run(UP, tmp_path, network="enabled", audio_intent=FALSE)
+    down, _ = _run(DOWN, tmp_path, configfs=cfg)
+    assert down.returncode == 0, down.stderr
+    assert _gadget_dir(cfg).exists()
+    assert (_gadget_dir(cfg) / "UDC").read_text().strip() == ""
+
+    proc, calls = _converge(
+        tmp_path, cfg, network="disabled", audio_intent=FALSE, tears_down=True,
+    )
+
+    assert proc.returncode == 0, proc.stderr
+    assert "state=rebuilding" in proc.stderr
+    assert "live_bound=0 " in proc.stderr
+    assert calls[0] == "restart jasper-usbgadget.service"
+
+
+def test_converge_fails_closed_and_skips_the_refresh_when_the_rebuild_fails(tmp_path):
+    """Consumers are refreshed for a rebuild that happened, never a failed one,
+    and the caller must be able to stop on a composition it could not reach."""
+    proc1, cfg = _run(UP, tmp_path, network="enabled", audio_intent=FALSE)
+    assert proc1.returncode == 0, proc1.stderr
+
+    proc, calls = _converge(
+        tmp_path, cfg, network="enabled", audio_intent=TRUE, audio_gate=TRUE,
+        restart_rc=1,
+    )
+
+    assert proc.returncode == 1
+    assert "event=usb_gadget.converge state=failed" in proc.stderr
+    assert "phase=restart" in proc.stderr
+    assert calls == ["restart jasper-usbgadget.service"]
+
+
+def test_converge_fails_closed_when_a_withdrawal_leaves_the_descriptor_behind(tmp_path):
+    """A restart against an already-inactive unit runs only the start half, so a
+    leftover descriptor survives still advertised. Reporting that as `rebuilt`
+    would hand the caller a stale endpoint; the converge reports it and fails."""
+    _up, cfg = _run(UP, tmp_path, network="enabled", audio_intent=FALSE)
+
+    proc, calls = _converge(tmp_path, cfg, network="disabled", audio_intent=FALSE)
+
+    assert proc.returncode == 1
+    assert "event=usb_gadget.converge state=failed" in proc.stderr
+    assert "phase=verify" in proc.stderr
+    assert "want_bound=0 live_present=1 live_bound=1" in proc.stderr
+    assert calls == ["restart jasper-usbgadget.service"]
+
+
+def test_converge_fails_closed_when_a_rebuild_leaves_nothing_bound(tmp_path):
+    """The composing direction gets the same post-condition: a start half that
+    skipped or failed leaves no descriptor, and a `rebuilt` line asserting the
+    desired shape would be a claim the converge never checked."""
+    _up, cfg = _run(UP, tmp_path, network="enabled", audio_intent=FALSE)
+
+    proc, calls = _converge(
+        tmp_path, cfg, network="enabled", audio_intent=TRUE, audio_gate=TRUE,
+        tears_down=True,
+    )
+
+    assert proc.returncode == 1
+    assert "event=usb_gadget.converge state=failed" in proc.stderr
+    assert "phase=verify" in proc.stderr
+    assert "want_bound=1 live_present=0 live_bound=0" in proc.stderr
+    assert calls == ["restart jasper-usbgadget.service"]
+
+
+def test_converge_reports_the_composition_it_read_back_not_the_one_it_wanted(
+    tmp_path,
+):
+    """A rebuild that landed on a different shape than the truth table computed
+    has to name itself, so the rebuilt line carries LIVE values."""
+    _up, cfg = _run(UP, tmp_path, network="enabled", audio_intent=FALSE)
+
+    proc, _calls = _converge(
+        tmp_path, cfg, network="enabled", audio_intent=TRUE, audio_gate=TRUE,
+    )
+
+    assert proc.returncode == 0, proc.stderr
+    # want_audio=1 was asked for; the descriptor still carries audio=0.
+    assert "want_audio=1" in proc.stderr
+    assert "state=rebuilt" in proc.stderr
+    assert "network=1 audio=0 usb_mic=0 order=fanin,usbmic" in proc.stderr
+
+
+def test_converge_withdraws_the_gadget_when_hardware_is_unavailable(tmp_path):
+    proc1, cfg = _run(UP, tmp_path, network="enabled", audio_intent=FALSE)
+    assert proc1.returncode == 0, proc1.stderr
+
+    proc, calls = _converge(tmp_path, cfg, hardware_allowed=FALSE, tears_down=True)
+
+    assert proc.returncode == 0, proc.stderr
+    assert "state=rebuilding" in proc.stderr
+    assert "want_bound=0" in proc.stderr
+    assert calls[0] == "restart jasper-usbgadget.service"
+
+
 # ---------- jasper-usbgadget-wanted (ExecCondition) -------------------------
 
 
@@ -460,7 +846,12 @@ def test_wanted_skips_when_hardware_transport_is_unavailable(tmp_path):
 
 
 def test_usb_audio_requires_canonical_authority_plus_readiness_mirror():
-    """Both paths require intent, lifecycle readiness, and a live direct lane."""
+    """Intent, lifecycle readiness, and a live direct lane — defined ONCE.
+
+    The three probes used to be written out in both gadget-up and
+    gadget-wanted, and a third time in the installer. They now live only in the
+    shared truth table every consumer sources, so the copies cannot drift.
+    """
 
     expected_allowed = (
         "AUDIO_ALLOWED_CMD=\"${JASPER_USBGADGET_AUDIO_ALLOWED_CMD:-"
@@ -478,18 +869,28 @@ def test_usb_audio_requires_canonical_authority_plus_readiness_mirror():
         "AUDIO_DATA_READY_CMD=\"${JASPER_USBGADGET_AUDIO_DATA_READY_CMD:-"
         f"{direct_armed_probe}}}\""
     )
-    for script in (UP, WANTED):
+    compose = COMPOSE.read_text()
+    for probe in (expected_allowed, expected_ready, expected_data_ready):
+        assert probe in compose
+    assert "JASPER_USBGADGET_AUDIO_INTENT_CMD" not in compose
+    assert "JASPER_USBGADGET_AUDIO_GATE_CMD" not in compose
+
+    source_line = 'source "$(dirname "$0")/jasper-usbgadget-compose.sh"'
+    for script in (UP, WANTED, CONVERGE):
         text = script.read_text()
-        assert expected_allowed in text
-        assert expected_ready in text
-        assert expected_data_ready in text
-        assert "JASPER_USBGADGET_AUDIO_INTENT_CMD" not in text
-        assert "JASPER_USBGADGET_AUDIO_GATE_CMD" not in text
-    # The install baseline's own recompose gate is a third copy of the same
-    # probe (deploy/lib/install/systemd-units.sh, usbsink_direct_lane_armed).
-    # Drift there fails safe — a broken probe reads "not armed" and takes the
-    # old always-recompose path — but it silently loses the #3194 fix.
-    assert direct_armed_probe in INSTALL_FRAGMENT.read_text()
+        assert source_line in text, script.name
+        for probe in (expected_allowed, expected_ready, expected_data_ready):
+            assert probe not in text, script.name
+
+    # Negative proof for the deleted #3198 machinery: the installer no longer
+    # carries its own copy of the direct-lane probe, nor the recompose gate and
+    # consumer refresh that copy existed to serve. The converge subsumes all
+    # three.
+    installer = INSTALL_FRAGMENT.read_text()
+    assert direct_armed_probe not in installer
+    assert "usbsink_direct_lane_armed" not in installer
+    assert "refresh_usb_stream_consumers" not in installer
+    assert "usb_gadget_baseline_recompose_skipped" not in installer
 
 
 def test_name_patch_treats_speaker_state_as_inert_data(tmp_path: Path) -> None:
