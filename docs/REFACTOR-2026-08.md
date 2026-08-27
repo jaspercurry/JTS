@@ -319,9 +319,12 @@ Owner to-do (deferred deliberately, in order):
       re-derive the AirPlay latency constant
       (`DEFAULT_FANIN_OUTPUT_LATENCY_FRAMES=1024`, value-identical today)
       against the ring's real depth; pair with #3073 item 5.
-- [ ] Park-presentation questions: the class-c park banner, and the
-      parked:false fifth-shape (ring-eligible box whose converge spine
-      fails reads parked:false while loud elsewhere).
+- [ ] Park-presentation questions: the class-c park banner — RESOLVED
+      2026-08-27: message, not banner (owner ruling; PR #3206 gives each
+      park class its own household sentence on the surfaces the system
+      page already has) — and the parked:false fifth-shape (ring-eligible
+      box whose converge spine fails reads parked:false while loud
+      elsewhere), still open.
 - [ ] Next-batch pick from the triaged backlog (~16 issues incl. #3073
       item-7 smalls). The no-pick batch already ran 2026-08-27: vulture-12,
       dead raw/env params, the rate_adjust request lie.
