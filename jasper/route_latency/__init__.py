@@ -4,9 +4,8 @@
 
 """Click/capture route-latency measurement harness — supporting modules.
 
-Produces the real per-impulse latency evidence
-`jasper.cli.route_latency_artifact` needs to certify (or honestly fail) the
-`usb_low_latency_48k` route's p95/p99 claims. See
+Measures the `usb_low_latency_48k` route's real per-impulse latency, on
+demand. Nothing here grades the result (ADR-0185). See
 `jasper.cli.route_latency_harness` for the CLI entry point
 (`jasper-route-latency-harness`) and `docs/HANDOFF-usb-low-latency.md` for
 the end-to-end quick/promotion usage.
@@ -14,8 +13,8 @@ the end-to-end quick/promotion usage.
 Module map:
 
   - `click_track` — generates the WAV a human plays on the host, plus its
-    JSON schedule, sized to clear the certification gates in
-    `jasper.audio_validation` with margin.
+    JSON schedule, sized with margin over the sample count and window a
+    target percentile needs to be meaningful.
   - `impulse_detect` — the shared peak/hysteresis/refractory detector
     algorithm, mirrored (not imported — different runtime) by the Rust
     ingress tap in `rust/jasper-fanin`.

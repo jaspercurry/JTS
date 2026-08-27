@@ -8,28 +8,40 @@ import wave
 
 import pytest
 
-from jasper.audio_validation import (
-    ROUTE_LATENCY_P95_MIN_DURATION_SECONDS,
-    ROUTE_LATENCY_P99_MIN_DURATION_SECONDS,
-    percentile_min_samples,
-)
 from jasper.route_latency import click_track
+from jasper.route_latency.click_track import percentile_min_samples
 
 
-def test_quick_preset_clears_p95_certification_gate_with_margin():
+def test_quick_preset_clears_the_p95_statistical_minimum_with_margin():
     preset = click_track.PRESETS[click_track.QUICK_PRESET_NAME]
 
     assert preset.impulse_count > percentile_min_samples(95)
-    assert preset.duration_seconds > ROUTE_LATENCY_P95_MIN_DURATION_SECONDS
+    assert preset.duration_seconds > click_track.P95_MIN_DURATION_SECONDS
     assert preset.jittered is False
 
 
-def test_promotion_preset_clears_p99_certification_gate_with_margin():
+def test_promotion_preset_clears_the_p99_statistical_minimum_with_margin():
     preset = click_track.PRESETS[click_track.PROMOTION_PRESET_NAME]
 
     assert preset.impulse_count > percentile_min_samples(99)
-    assert preset.duration_seconds > ROUTE_LATENCY_P99_MIN_DURATION_SECONDS
+    assert preset.duration_seconds > click_track.P99_MIN_DURATION_SECONDS
     assert preset.jittered is True
+
+
+@pytest.mark.parametrize(
+    "percentile, expected",
+    [(0.95, 200), (95, 200), (0.99, 1000), (99, 1000)],
+)
+def test_percentile_min_samples_scales_with_the_tail(percentile, expected):
+    assert percentile_min_samples(percentile) == expected
+
+
+@pytest.mark.parametrize("percentile", [100, 0, 1.0, -1])
+def test_percentile_min_samples_rejects_a_percentile_outside_the_open_unit(
+    percentile,
+):
+    with pytest.raises(ValueError):
+        percentile_min_samples(percentile)
 
 
 def test_build_schedule_produces_exact_impulse_count():

@@ -1,9 +1,9 @@
 # Handoff: USB-in low latency — production `usb_low_latency_48k`
 
 Operational truth for the USB-in route: the shipped topology, the settings that
-are coupled to each other, how the route earns its low-latency claim, and the
-combo arming/host-clock machinery around it. The route keeps USB inside the
-shared fan-in → CamillaDSP → outputd protection path; it is not a bypass.
+are coupled to each other, how the route's latency is watched, and the combo
+arming/host-clock machinery around it. The route keeps USB inside the shared
+fan-in → CamillaDSP → outputd protection path; it is not a bypass.
 
 Neighbouring owners — do not restate them here:
 [HANDOFF-usb-latency-measurement.md](HANDOFF-usb-latency-measurement.md) (how to
@@ -11,9 +11,11 @@ measure, the current measured numbers, the per-stage breakdown, what a fresh
 install ships) · [HANDOFF-usbsink.md](HANDOFF-usbsink.md) (the USB source's data
 plane and observed state) ·
 [testing-tooling.md](testing-tooling.md#route-latency-clickcapture-harness) (the
-harness architecture). Decisions: the evidence gate is
-[ADR-0108](adr/0108-a-latency-claim-is-earned-by-a-measured-artifact.md), the
-host-clock observable is
+harness architecture). Decisions: latency is monitored and adapted, never
+certified —
+[ADR-0185](adr/0185-latency-is-monitored-and-adapted-never-certified.md)
+(superseding [ADR-0108](adr/0108-a-latency-claim-is-earned-by-a-measured-artifact.md));
+the host-clock observable is
 [ADR-0109](adr/0109-the-combo-host-clock-servo-observes-resampler-correction.md),
 and the single-capture-pipeline rule is
 [ADR-0107](adr/0107-usb-gadget-audio-has-one-capture-pipeline.md).
@@ -63,76 +65,45 @@ synthetic period-sized `content.buffer_frames`, and `jasper-doctor` validates
 ring geometry rather than mis-applying the ALSA `>= 2× period` jitter floor to
 the synthetic.
 
-## Earning the claim
+## Watching the route
 
-A low-latency claim is earned by a measured route-latency artifact, never by
-configuration — the rule and its gates are
-[ADR-0108](adr/0108-a-latency-claim-is-earned-by-a-measured-artifact.md).
-Certification needs p95 ≤ 40 ms over ≥ 200 impulses / ≥ 5 minutes; p99
-promotion needs ≥ 1000 jittered impulses over ≥ 30 minutes with p99 ≤ 42 ms.
+Latency is **monitored** and **adapted**, never certified — the rule is
+[ADR-0185](adr/0185-latency-is-monitored-and-adapted-never-certified.md).
 
-**Short of that, the gate discloses rather than parks (ADR-0101).**
-`route_latency_gate_status` runs every leg before it classifies once, so a
-measured breach can never hide behind a disclosure:
+- **Monitored, continuously:** `/system/audio/`'s Current-stream Latency block
+  sums the four live queues (USB input, mixing, DSP, DAC presentation) from the
+  fan-in and outputd `STATUS` sockets on every 5-second poll; the USB-latency
+  card shows the live held input buffer.
+- **Adapted, continuously:** the fan-in USB resampler's warm-up cushion and its
+  decay toward the 576-frame floor, plus the host-clock ladder
+  ([ADR-0109](adr/0109-the-combo-host-clock-servo-observes-resampler-correction.md)),
+  move the operating point at runtime. `/system` names the ladder state.
+- **Measured, on demand:** `jasper-route-latency-harness` (source:
+  `jasper/cli/route_latency_harness.py` + `jasper/route_latency/`) plays real
+  impulses through the route and prints the per-impulse percentiles. It writes
+  no verdict, and nothing reads its output but the operator.
 
-- **fail** (`fix_route_latency_before_claim`) — no artifact at all, a measured
-  `p95_exceeds_40ms`, an absent p95, `route_health_anomaly` or any `live_*`
-  mismatch, and `route_binding_missing:fanin_direct_negotiated_buffer_frames`
-  (presence of that binding is mandatory, never a compatible warning).
-- **disclose** (warn, `run_route_latency_validation`) — facts about the
-  *proof's* validity rather than the route's: `config_mismatch`,
-  `p95_uncertified`, `artifact_stale`, `artifact_from_future`. Every issue
-  token is preserved so a consumer still sees WHAT is stale, and the claim
-  keeps running.
-- **warn on the promotion ladder** — `p99_exceeds_42ms` gets
-  `reduce_tail_latency_before_promotion`; `p99_missing` /
-  `p99_uncertified` / `p99_spacing_unverified` get
-  `run_p99_promotion_validation`.
-
-Operationally:
-
-`jasper-route-latency-harness` (source: `jasper/cli/route_latency_harness.py` +
-`jasper/route_latency/`) produces the click-in/capture-back samples;
-`sudo /opt/jasper/.venv/bin/jasper-route-latency-artifact` binds them to the live
-route identity and writes `/var/lib/jasper/audio-validation/`. Invoke both by
-absolute venv path — under `sudo` the venv `bin/` is not on `secure_path`.
+Invoke it by absolute venv path — under `sudo` the venv `bin/` is not on
+`secure_path`:
 
 ```sh
-# 1. Generate the click-track WAV + schedule (use `promotion` for the p99 gate).
+# 1. Generate the click-track WAV + schedule (`promotion` for a p99-scale run).
 /opt/jasper/.venv/bin/jasper-route-latency-harness generate quick --out-dir /tmp/route-latency
 
 # 2. On the Pi: arm the tap, play the WAV on the host at a modest volume
 #    (start very quiet — CamillaDSP's volume_limit stays the 0 dB ceiling),
-#    then analyze and shell out to the artifact writer. `run` reads duration
-#    and jitteredness off the schedule; those flags exist only on `analyze`.
+#    then analyze.
 sudo /opt/jasper/.venv/bin/jasper-route-latency-harness run \
   /tmp/route-latency/quick-schedule.json \
-  --out-dir /tmp/route-latency \
-  --invoke-artifact \
-  --confirm-route-health-ok
+  --out-dir /tmp/route-latency
 ```
 
-Or drive the artifact writer directly once a samples file exists:
-
-```sh
-sudo /opt/jasper/.venv/bin/jasper-route-latency-artifact \
-  --samples /tmp/route-latency/latency-samples.json \
-  --duration-seconds 360 \
-  --harness-id jts-click-capture-v1 \
-  --route-health-ok
-```
-
-Only declare `--route-health-ok` when the same measurement window had complete,
-clean fan-in/outputd telemetry: both live surfaces and the expected USB DIRECT
-lane/counter shape present, with no fan-in USB resampler unlock/silence/overrun
-and no outputd/fan-in xruns. `analyze` prints exactly that delta — every nonzero
-fan-in/outputd counter change across the window — and states whether the
-declaration *would* be justified; it never asserts it for you. The artifact
-writer is strict mid-stream (an unlocked resampler fails artifact creation);
-doctor is topology-aware in steady state (an explicitly `health:"idle"` direct
-lane may read `locked:false`, but capturing/broken/unknown stays strict). A
-static-identity change while idle is a disclosure, not a failure — see the
-gate table above.
+A number is only worth reading if its window was clean: both live surfaces and
+the expected USB DIRECT lane/counter shape present in both snapshots, with no
+fan-in USB resampler unlock/silence/overrun and no outputd/fan-in xruns.
+`analyze` prints exactly that delta — every nonzero fan-in/outputd counter
+change across the window — and says whether the window was clean. It gates
+nothing; read the deltas before trusting the percentiles.
 
 `run` defaults to `--tap-transport auto`, which always resolves to the fan-in
 tap — the only ingress — and prints its choice first
@@ -331,7 +302,7 @@ jts.local and that the box self-heals without a manual fan-in restart.
 
 ## Impulse tap (fan-in)
 
-The certified route's ingress is fan-in's `hw:UAC2Gadget` capture, so the impulse
+The route's ingress is fan-in's `hw:UAC2Gadget` capture, so the impulse
 tap runs inline in the direct read, before the resampler, and writes
 `/run/jasper-fanin/impulse-tap.jsonl`
 (`{"monotonic_ns","frame_index","ring_fill_frames","peak"}`). Arm and disarm are

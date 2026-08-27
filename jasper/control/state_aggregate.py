@@ -168,43 +168,6 @@ def _build_usbsink_renderer_state(
     }
 
 
-def route_latency_artifact_state(plan: Any) -> dict[str, Any] | None:
-    """Assess the current route's latency artifact for state/health consumers."""
-    if not getattr(plan.route_profile, "low_latency_claim", False):
-        return None
-    try:
-        from ..audio_validation import (
-            LATEST_POINTER_NAME,
-            ROUTE_LATENCY_POINTER_NAME,
-            ROUTE_LATENCY_STALE_AFTER,
-            artifact_directory,
-            assess_route_latency_artifact,
-            load_artifact,
-        )
-
-        result = load_artifact(
-            artifact_directory() / ROUTE_LATENCY_POINTER_NAME,
-            max_age=ROUTE_LATENCY_STALE_AFTER,
-        )
-        if result.state == "missing":
-            # Upgrade compatibility: older route writers populated only the
-            # general latest pointer. This remains constant work (two files
-            # maximum), and identity assessment below still fails closed if
-            # that pointer belongs to another validation profile or route.
-            result = load_artifact(
-                artifact_directory() / LATEST_POINTER_NAME,
-                max_age=ROUTE_LATENCY_STALE_AFTER,
-            )
-        return assess_route_latency_artifact(
-            result,
-            route_config_hash=plan.route_config_hash,
-            expected_identity=plan.route_latency_identity(),
-        )
-    except Exception as e:  # noqa: BLE001
-        logger.exception("route latency artifact state read failed")
-        return {"status": "fail", "reason": str(e)}
-
-
 def _audio_graph_state(
     *,
     fanin_status: dict[str, Any] | None,
@@ -237,14 +200,6 @@ def _audio_graph_state(
         and isinstance(outputd_aec_clock.get("latency"), dict)
         else None
     )
-    artifact = route_latency_artifact_state(plan)
-    route_status = "unclaimed"
-    if plan.route_profile.low_latency_claim:
-        route_status = (
-            str(artifact.get("status"))
-            if isinstance(artifact, dict) and artifact.get("status")
-            else "fail"
-        )
     coupling_block = _coupling_state(
         fanin_status=fanin_status, outputd_status=outputd_status
     )
@@ -252,14 +207,10 @@ def _audio_graph_state(
         "route": {
             "id": plan.route_profile.route_id,
             "source_id": plan.route_profile.source_id,
-            "claim_status": route_status,
             "low_latency_claim": plan.route_profile.low_latency_claim,
             "route_config_hash": plan.route_config_hash,
-            "p95_budget_ms": plan.route_profile.p95_budget_ms,
-            "p99_budget_ms": plan.route_profile.p99_budget_ms,
             "contract": plan.route_profile.to_dict(),
         },
-        "artifact": artifact,
         "fanin": {
             "usbsink_input": fanin_usbsink,
             "resampler": (

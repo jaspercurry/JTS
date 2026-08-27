@@ -15,7 +15,6 @@ from jasper import audio_validation
 from jasper.audio_profile_state import MicProbe
 from jasper.audio_validation import (
     ArtifactLoadResult,
-    ROUTE_LATENCY_POINTER_NAME,
     ValidationArtifact,
     ValidationArtifactError,
     artifact_age,
@@ -24,16 +23,11 @@ from jasper.audio_validation import (
     load_artifact,
     load_latest_artifact,
     make_artifact,
-    make_route_latency_artifact,
     parse_artifact_payload,
-    percentile_min_samples,
-    route_latency_gate_status,
-    route_live_state_issues,
-    certified_route_latency_percentiles,
-    assess_route_latency_artifact,
     write_artifact,
     write_latest_pointer,
 )
+from jasper.audio_validation_route import route_live_state_issues
 
 
 NOW = datetime(2026, 6, 1, 16, 0, tzinfo=timezone.utc)
@@ -155,222 +149,6 @@ def test_make_artifact_defaults_timestamp_to_timezone_aware_utc():
     assert artifact.validated_at.tzinfo is not None
 
 
-def test_route_latency_percentile_sample_rules_are_statistically_pinned():
-    assert percentile_min_samples(0.95) == 200
-    assert percentile_min_samples(95) == 200
-    assert percentile_min_samples(0.99) == 1000
-    assert percentile_min_samples(99) == 1000
-    with pytest.raises(ValueError):
-        percentile_min_samples(100)
-
-
-def test_route_latency_certification_requires_samples_and_duration():
-    assert certified_route_latency_percentiles(
-        sample_count=199,
-        duration_seconds=5 * 60,
-    ) == ()
-    assert certified_route_latency_percentiles(
-        sample_count=200,
-        duration_seconds=(5 * 60) - 1,
-    ) == ()
-    assert certified_route_latency_percentiles(
-        sample_count=200,
-        duration_seconds=5 * 60,
-    ) == (95,)
-    assert certified_route_latency_percentiles(
-        sample_count=1000,
-        duration_seconds=(30 * 60) - 1,
-    ) == (95,)
-    assert certified_route_latency_percentiles(
-        sample_count=1000,
-        duration_seconds=30 * 60,
-    ) == (95,)
-    assert certified_route_latency_percentiles(
-        sample_count=1000,
-        duration_seconds=30 * 60,
-        jittered_impulse_spacing=True,
-    ) == (95, 99)
-
-
-def test_route_latency_gate_status_pass_warn_fail_boundaries():
-    # Boundary values sit just inside/outside the certified, measured-basis
-    # budget (p95<=40ms, p99<=42ms — 2026-07-11 tightening; see the docstring
-    # on USB_LOW_LATENCY_P95_BUDGET_MS in audio_runtime_plan.py).
-    status, _rec, certified, issues = route_latency_gate_status(
-        p95_ms=39.0,
-        p99_ms=41.0,
-        sample_count=1000,
-        duration_seconds=30 * 60,
-        jittered_impulse_spacing=True,
-    )
-    assert status == "pass"
-    assert certified == (95, 99)
-    assert issues == ()
-
-    status, recommendation, certified, issues = route_latency_gate_status(
-        p95_ms=39.0,
-        p99_ms=None,
-        sample_count=200,
-        duration_seconds=5 * 60,
-    )
-    assert status == "warn"
-    assert certified == (95,)
-    assert issues == ("p99_missing",)
-    # Promotion evidence, not proof validity: this recommendation is what keeps
-    # the p95 re-run remedy off an artifact that is already valid.
-    assert recommendation == "run_p99_promotion_validation"
-
-    status, _rec, _certified, issues = route_latency_gate_status(
-        p95_ms=41.0,
-        p99_ms=41.0,
-        sample_count=1000,
-        duration_seconds=30 * 60,
-        jittered_impulse_spacing=True,
-    )
-    assert status == "fail"
-    assert "p95_exceeds_40ms" in issues
-
-    status, _rec, certified, issues = route_latency_gate_status(
-        p95_ms=39.0,
-        p99_ms=41.0,
-        sample_count=1000,
-        duration_seconds=30 * 60,
-    )
-    assert status == "warn"
-    assert certified == (95,)
-    assert issues == ("p99_spacing_unverified",)
-
-
-def test_route_latency_short_run_discloses_measured_in_budget_p95():
-    # ADR-0101: too few impulses to certify p95 is a statement about the RUN,
-    # not about the route. A measured-in-budget p95 discloses and keeps the
-    # claim; a measured breach on the same short run still fails.
-    status, recommendation, certified, issues = route_latency_gate_status(
-        p95_ms=38.0,
-        p99_ms=39.0,
-        sample_count=50,
-        duration_seconds=60,
-    )
-    assert status == "warn"
-    assert certified == ()
-    assert issues == ("p95_uncertified", "p99_uncertified")
-    assert recommendation == audio_validation.ROUTE_LATENCY_RERUN_ACTION
-
-    status, _rec, _certified, issues = route_latency_gate_status(
-        p95_ms=41.0,
-        p99_ms=39.0,
-        sample_count=50,
-        duration_seconds=60,
-    )
-    assert status == "fail"
-    assert "p95_exceeds_40ms" in issues
-
-
-def test_route_latency_measured_tail_breach_survives_a_disclosure():
-    # A disclosure must never short-circuit a measurement leg: the certified
-    # p99 breach keeps its token and its own recommendation even when the
-    # proof's config binding has drifted.
-    status, recommendation, _certified, issues = route_latency_gate_status(
-        p95_ms=38.0,
-        p99_ms=500.0,
-        sample_count=1000,
-        duration_seconds=30 * 60,
-        jittered_impulse_spacing=True,
-        config_match=False,
-    )
-    assert status == "warn"
-    assert "p99_exceeds_42ms" in issues
-    assert "config_mismatch" in issues
-    assert recommendation == "reduce_tail_latency_before_promotion"
-
-    # The same breach under a proof-validity disclosure, and under a measured
-    # p95 breach that outranks both.
-    _status, _rec, _certified, issues = route_latency_gate_status(
-        p95_ms=38.0,
-        p99_ms=500.0,
-        sample_count=1000,
-        duration_seconds=30 * 60,
-        jittered_impulse_spacing=True,
-        proof_issues=("artifact_stale",),
-    )
-    assert "p99_exceeds_42ms" in issues
-    assert "artifact_stale" in issues
-
-    status, _rec, _certified, issues = route_latency_gate_status(
-        p95_ms=41.0,
-        p99_ms=500.0,
-        sample_count=1000,
-        duration_seconds=30 * 60,
-        jittered_impulse_spacing=True,
-        proof_issues=("artifact_stale",),
-    )
-    assert status == "fail"
-    assert "p95_exceeds_40ms" in issues
-    assert "p99_exceeds_42ms" in issues
-
-
-def test_route_latency_issue_codes_follow_budget_constants(monkeypatch):
-    route = audio_validation.audio_validation_route
-    monkeypatch.setattr(route, "ROUTE_LATENCY_P95_BUDGET_MS", 37.5)
-    monkeypatch.setattr(route, "ROUTE_LATENCY_P99_BUDGET_MS", 43)
-
-    _status, _rec, _certified, issues = route_latency_gate_status(
-        p95_ms=38.0,
-        p99_ms=44.0,
-        sample_count=1000,
-        duration_seconds=30 * 60,
-        jittered_impulse_spacing=True,
-    )
-    assert "p95_exceeds_37.5ms" in issues
-
-    _status, _rec, _certified, issues = route_latency_gate_status(
-        p95_ms=37.0,
-        p99_ms=44.0,
-        sample_count=1000,
-        duration_seconds=30 * 60,
-        jittered_impulse_spacing=True,
-    )
-    assert issues == ("p99_exceeds_43ms",)
-
-
-def test_make_route_latency_artifact_records_identity_and_certification():
-    artifact = make_route_latency_artifact(
-        route_id="usb_low_latency_48k",
-        source_id="usbsink",
-        dac_id="apple_usb_c_dongle",
-        route_config_hash="abc123",
-        camilla_config_hash="camilla123",
-        fanin_direct_config={"period_frames": 256, "min_buffer_frames": 768},
-        fanin_direct_negotiated_buffer_frames=768,
-        fanin_resampler_config={"target_frames": 512},
-        outputd_config={"period_frames": 256},
-        uac2_gadget_attrs={"c_sync": "async"},
-        measurement_provenance={
-            "input_kind": "raw_samples",
-            "sample_sha256": "0" * 64,
-            "harness_id": "jts-click-capture",
-        },
-        p95_ms=38.5,
-        p99_ms=41.0,
-        sample_count=1000,
-        duration_seconds=30 * 60,
-        impulse_spacing_jittered=True,
-        validated_at=NOW,
-    )
-
-    assert artifact.profile == audio_validation.ROUTE_LATENCY_PROFILE
-    assert artifact.status == "pass"
-    checks = artifact.checks
-    assert checks["identity"]["dac_profile_id"] == "apple_usb_c_dongle"
-    assert checks["identity"]["route_config_hash"] == "abc123"
-    assert checks["identity"]["camilla_config_hash"] == "camilla123"
-    assert checks["identity"]["fanin_direct_negotiated_buffer_frames"] == 768
-    assert checks["certified_percentiles"] == [95, 99]
-    assert checks["evidence"]["input_kind"] == "raw_samples"
-    assert checks["evidence"]["sample_sha256"] == "0" * 64
-    assert checks["evidence"]["harness_id"] == "jts-click-capture"
-
-
 def test_route_live_state_issues_detect_runtime_mismatches():
     identity = {
         "fanin_direct_config": {
@@ -444,7 +222,7 @@ def test_route_live_state_issues_detect_runtime_mismatches():
     assert "live_fanin_resampler_mismatch:usbsink:target_fill_frames" in issues
 
 
-def test_route_live_state_requires_certified_negotiated_direct_buffer():
+def test_route_live_state_requires_the_negotiated_direct_buffer():
     identity = {
         "fanin_direct_config": {
             "lane": "usbsink",
@@ -517,8 +295,7 @@ def test_route_live_state_issues_allows_only_explicit_idle_unlock_when_requested
             ]
         }
 
-    # Artifact creation uses the strict default: a measurement-time artifact
-    # cannot certify an idle/unlocked lane.
+    # The strict default: an idle/unlocked lane is not running the route.
     assert route_live_state_issues(
         identity,
         fanin_status=status("idle"),
@@ -527,7 +304,7 @@ def test_route_live_state_issues_allows_only_explicit_idle_unlock_when_requested
         "live_fanin_resampler_unlocked:usbsink",
     )
 
-    # Doctor may assess stored certification while the box is explicitly idle.
+    # Doctor relaxes the activity legs while the box is explicitly idle.
     assert route_live_state_issues(
         identity,
         fanin_status=status("idle"),
@@ -559,192 +336,6 @@ def test_route_live_state_issues_allows_only_explicit_idle_unlock_when_requested
         fanin_status=status("idle", target_fill_frames=1536),
         allow_idle_direct_lane=True,
     ) == ("live_fanin_resampler_mismatch:usbsink:target_fill_frames",)
-
-
-def test_assess_route_latency_artifact_discloses_mismatched_hash(tmp_path):
-    # ADR-0101: the route config moved under a passing proof. That is a
-    # disclosure naming both hashes, not a failed claim.
-    artifact = make_route_latency_artifact(
-        route_id="usb_low_latency_48k",
-        source_id="usbsink",
-        dac_id="apple_usb_c_dongle",
-        route_config_hash="old",
-        p95_ms=38.5,
-        p99_ms=41.0,
-        sample_count=1000,
-        duration_seconds=30 * 60,
-        validated_at=NOW,
-    )
-    path = write_artifact(artifact, directory=tmp_path)
-    result = load_artifact(path, now=NOW + timedelta(days=1))
-
-    summary = assess_route_latency_artifact(result, route_config_hash="new")
-
-    assert summary["status"] == "warn"
-    assert summary["config_match"] is False
-    assert "config_mismatch" in summary["issues"]
-    assert summary["route_config_hash"] == "old"
-    assert summary["expected_route_config_hash"] == "new"
-    assert summary["recommendation"] == audio_validation.ROUTE_LATENCY_RERUN_ACTION
-
-
-def test_assess_route_latency_artifact_discloses_identity_mismatch(tmp_path):
-    artifact = make_route_latency_artifact(
-        route_id="usb_low_latency_48k",
-        source_id="usbsink",
-        dac_id="apple_usb_c_dongle",
-        route_config_hash="same",
-        camilla_config_hash="camilla-a",
-        fanin_direct_config={"period_frames": 256, "min_buffer_frames": 768},
-        fanin_direct_negotiated_buffer_frames=768,
-        fanin_resampler_config={"target_frames": 512},
-        outputd_config={"JASPER_OUTPUTD_PERIOD_FRAMES": 1024},
-        p95_ms=38.5,
-        p99_ms=41.0,
-        sample_count=1000,
-        duration_seconds=30 * 60,
-        impulse_spacing_jittered=True,
-        validated_at=NOW,
-    )
-    path = write_artifact(artifact, directory=tmp_path)
-    result = load_artifact(path, now=NOW + timedelta(days=1))
-
-    summary = assess_route_latency_artifact(
-        result,
-        route_config_hash="same",
-        expected_identity={
-            "route_id": "usb_low_latency_48k",
-            "source_id": "usbsink",
-            "dac_profile_id": "apple_usb_c_dongle",
-            "route_config_hash": "same",
-            "camilla_config_hash": "camilla-b",
-            "fanin_direct_config": {
-                "period_frames": 256,
-                "min_buffer_frames": 768,
-            },
-            "fanin_resampler_config": {"target_frames": 512},
-            "outputd_config": {"JASPER_OUTPUTD_PERIOD_FRAMES": 1024},
-        },
-    )
-
-    assert summary["status"] == "warn"
-    assert summary["config_match"] is False
-    assert "identity_mismatch:camilla_config_hash" in summary["issues"]
-
-
-def test_assess_route_latency_artifact_rejects_missing_negotiated_buffer(tmp_path):
-    # The binding's presence is mandatory and is NOT a compatible warning
-    # (docs/HANDOFF-usb-low-latency.md). The artifact is stamped with a valid
-    # binding and then stripped of it, so the writer's co-stamped route-health
-    # issue is absent and only the assessor's own identity check can fail it.
-    artifact = make_route_latency_artifact(
-        route_id="usb_low_latency_48k",
-        source_id="usbsink",
-        dac_id="apple_usb_c_dongle",
-        route_config_hash="same",
-        fanin_direct_config={"period_frames": 256, "min_buffer_frames": 768},
-        fanin_direct_negotiated_buffer_frames=768,
-        p95_ms=38.5,
-        p99_ms=41.0,
-        sample_count=1000,
-        duration_seconds=30 * 60,
-        impulse_spacing_jittered=True,
-        validated_at=NOW,
-    )
-    path = write_artifact(artifact, directory=tmp_path)
-    payload = json.loads(path.read_text(encoding="utf-8"))
-    payload["checks"]["identity"]["fanin_direct_negotiated_buffer_frames"] = None
-    path.write_text(json.dumps(payload), encoding="utf-8")
-    result = load_artifact(path, now=NOW + timedelta(days=1))
-
-    summary = assess_route_latency_artifact(
-        result,
-        route_config_hash="same",
-        expected_identity={
-            "route_config_hash": "same",
-            "fanin_direct_config": {
-                "period_frames": 256,
-                "min_buffer_frames": 768,
-            },
-        },
-    )
-
-    assert summary["status"] == "fail"
-    assert (
-        "route_binding_missing:fanin_direct_negotiated_buffer_frames"
-        in summary["issues"]
-    )
-    assert "route_health_anomaly" not in summary["issues"]
-    assert summary["config_match"] is True
-
-
-@pytest.mark.parametrize(
-    ("now", "expected_state", "expected_issue"),
-    [
-        (NOW + timedelta(hours=25), "stale", "artifact_stale"),
-        (NOW - timedelta(hours=1), "future", "artifact_from_future"),
-    ],
-)
-def test_route_latency_proof_validity_discloses_instead_of_failing(
-    tmp_path,
-    now,
-    expected_state,
-    expected_issue,
-):
-    # ADR-0101: the 24h window and the host clock are proof-validity facts. A
-    # measured-in-budget run that aged out or was stamped by a skewed clock
-    # discloses with its own token and the rerun action; it does not fail, and
-    # it does not claim a config change that never happened.
-    artifact = make_route_latency_artifact(
-        route_id="usb_low_latency_48k",
-        source_id="usbsink",
-        dac_id="apple_usb_c_dongle",
-        route_config_hash="same",
-        p95_ms=38.5,
-        p99_ms=41.0,
-        sample_count=1000,
-        duration_seconds=30 * 60,
-        impulse_spacing_jittered=True,
-        validated_at=NOW,
-    )
-    path = write_artifact(artifact, directory=tmp_path)
-    result = load_artifact(
-        path,
-        now=now,
-        max_age=audio_validation.ROUTE_LATENCY_STALE_AFTER,
-    )
-
-    summary = assess_route_latency_artifact(result, route_config_hash="same")
-
-    assert result.state == expected_state
-    assert summary["status"] == "warn"
-    assert expected_issue in summary["issues"]
-    assert summary["recommendation"] == audio_validation.ROUTE_LATENCY_RERUN_ACTION
-    assert summary["config_match"] is True
-    assert "config_mismatch" not in summary["issues"]
-
-
-def test_assess_route_latency_artifact_preserves_route_health_anomaly(tmp_path):
-    artifact = make_route_latency_artifact(
-        route_id="usb_low_latency_48k",
-        source_id="usbsink",
-        dac_id="apple_usb_c_dongle",
-        route_config_hash="same",
-        p95_ms=38.5,
-        p99_ms=41.0,
-        sample_count=1000,
-        duration_seconds=30 * 60,
-        impulse_spacing_jittered=True,
-        route_health_ok=False,
-        validated_at=NOW,
-    )
-    path = write_artifact(artifact, directory=tmp_path)
-    result = load_artifact(path, now=NOW + timedelta(days=1))
-
-    summary = assess_route_latency_artifact(result, route_config_hash="same")
-
-    assert summary["status"] == "fail"
-    assert "route_health_anomaly" in summary["issues"]
 
 
 def test_load_missing_returns_missing_result(tmp_path):
@@ -911,19 +502,6 @@ def test_load_latest_artifact_picks_newest_matching_valid_payload(tmp_path):
     assert result.state == "loaded"
     assert result.artifact == newest_match
     assert result.path == expected_path
-
-
-def test_write_latest_pointer_supports_a_scoped_status_pointer(tmp_path):
-    artifact = _artifact()
-
-    path = write_latest_pointer(
-        artifact,
-        directory=tmp_path,
-        pointer_name=ROUTE_LATENCY_POINTER_NAME,
-    )
-
-    assert path.name == ROUTE_LATENCY_POINTER_NAME
-    assert load_artifact(path, now=NOW).artifact == artifact
 
 
 def test_load_latest_artifact_reports_malformed_when_no_valid_artifacts(tmp_path):

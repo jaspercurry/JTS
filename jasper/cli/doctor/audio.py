@@ -1007,7 +1007,6 @@ from .audio_runtime import (
     check_ring_geometry_coherence,
     check_ring_ioplug_provenance,
     check_ring_platform_assets,
-    check_route_latency_evidence,
 )
 
 __all__ = [
@@ -1031,7 +1030,6 @@ __all__ = [
     "check_ring_geometry_coherence",
     "check_ring_ioplug_provenance",
     "check_ring_platform_assets",
-    "check_route_latency_evidence",
 ]
 
 def _devices_volume_limit_from_text(text: str) -> float | None:

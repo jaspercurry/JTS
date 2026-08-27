@@ -18,16 +18,14 @@ Produces two artifacts a human plays/uses together:
   truncated run shrinks its denominator too. See
   `jasper.cli.route_latency_harness._warn_if_tap_count_far_below_schedule`.
 
-Sizing is driven directly by the certification gates in
-``jasper.audio_validation`` (``percentile_min_samples`` /
-``ROUTE_LATENCY_P95_MIN_DURATION_SECONDS`` /
-``ROUTE_LATENCY_P99_MIN_DURATION_SECONDS``) plus a fixed safety margin, so a
-generated track always has enough impulses and enough wall-clock duration to
-certify its target percentile even after some impulses are dropped during
-pairing (a played-but-unmatched click, mic dropout, etc). The margin is
-deliberately generous: pairing rejects ambiguous/double matches (see
-``jasper.route_latency.pairing``), so headroom protects against real-world
-attrition, not just rounding.
+Sizing is statistical, not a policy: a percentile needs a minimum sample count
+before it means anything (``percentile_min_samples``) and a minimum wall-clock
+window before the tail it describes has had a chance to appear. Both get a
+fixed safety margin, so a generated track still resolves its target percentile
+after some impulses are dropped during pairing (a played-but-unmatched click,
+mic dropout, etc). The margin is deliberately generous: pairing rejects
+ambiguous/double matches (see ``jasper.route_latency.pairing``), so headroom
+protects against real-world attrition, not just rounding.
 
 Audio-output safety: default click amplitude is -12 dBFS (a deliberately
 modest level — see the safe-volume doctrine in AGENTS.md/README: CamillaDSP's
@@ -46,12 +44,9 @@ import wave
 from dataclasses import dataclass
 from pathlib import Path
 
-from jasper.audio_validation import (
-    ROUTE_LATENCY_P95_MIN_DURATION_SECONDS,
-    ROUTE_LATENCY_P99_MIN_DURATION_SECONDS,
-    percentile_min_samples,
-)
 
+P95_MIN_DURATION_SECONDS = 5 * 60
+P99_MIN_DURATION_SECONDS = 30 * 60
 
 SAMPLE_RATE_HZ = 48_000
 CHANNELS = 2
@@ -67,10 +62,10 @@ CLICK_TONE_HZ = 2_000.0
 CLICK_DURATION_MS = 5.0
 DEFAULT_AMPLITUDE_DBFS = -12.0
 
-# Safety margin over the raw certification minimums (see module docstring):
+# Safety margin over the raw statistical minimums (see module docstring):
 # pairing can legitimately drop some impulses (mic dropout, an ambiguous
 # double-match near the pairing window edge), so a generated track always
-# clears the gate with room to spare rather than landing exactly on it.
+# clears the minimum with room to spare rather than landing exactly on it.
 _COUNT_MARGIN = 1.2
 _DURATION_MARGIN = 1.2
 
@@ -83,14 +78,28 @@ class ClickTrackPreset:
     """One named impulse-count/duration/jitter target.
 
     ``impulse_count`` and ``duration_seconds`` are pre-margined: they already
-    clear the corresponding certification gate in
-    ``jasper.audio_validation`` by ``_COUNT_MARGIN`` / ``_DURATION_MARGIN``.
+    clear the statistical minimum by ``_COUNT_MARGIN`` / ``_DURATION_MARGIN``.
     """
 
     name: str
     impulse_count: int
     duration_seconds: float
     jittered: bool
+
+
+def percentile_min_samples(percentile: float) -> int:
+    """Return the minimum samples for a percentile to mean anything.
+
+    Rule: ``ceil(10 / (1 - percentile))``. Accepts either 0.95/0.99 or
+    95/99. Values must be strictly between 0 and 1 after normalization.
+    """
+
+    p = float(percentile)
+    if p > 1.0:
+        p = p / 100.0
+    if not 0.0 < p < 1.0:
+        raise ValueError(f"percentile must be in (0, 1), got {percentile!r}")
+    return int(math.ceil(10.0 / (1.0 - p)))
 
 
 def _preset(name: str, *, percentile: float, min_duration_seconds: float, jittered: bool) -> ClickTrackPreset:
@@ -105,22 +114,21 @@ def _preset(name: str, *, percentile: float, min_duration_seconds: float, jitter
     )
 
 
-# Quick gate targets p95 certification: >=200 impulses over >=300s.
-# Promotion gate targets p99 certification (which also requires jittered
-# spacing): >=1000 impulses over >=1800s.
+# Quick resolves p95: >=200 impulses over >=300s. Promotion resolves p99
+# (whose tail also needs jittered spacing): >=1000 impulses over >=1800s.
 PRESETS: dict[str, ClickTrackPreset] = {
     p.name: p
     for p in (
         _preset(
             QUICK_PRESET_NAME,
             percentile=95,
-            min_duration_seconds=ROUTE_LATENCY_P95_MIN_DURATION_SECONDS,
+            min_duration_seconds=P95_MIN_DURATION_SECONDS,
             jittered=False,
         ),
         _preset(
             PROMOTION_PRESET_NAME,
             percentile=99,
-            min_duration_seconds=ROUTE_LATENCY_P99_MIN_DURATION_SECONDS,
+            min_duration_seconds=P99_MIN_DURATION_SECONDS,
             jittered=True,
         ),
     )
@@ -172,9 +180,9 @@ def _spacing_seconds(*, count: int, duration_seconds: float, jittered: bool, rng
     # Jittered: each inter-impulse gap is mean_spacing scaled by a uniform
     # factor in [0.5, 1.5), then the whole sequence is rescaled to exactly
     # fill `usable` seconds. This guarantees N impulses fit the requested
-    # duration exactly while satisfying the artifact's
-    # `--impulse-spacing-jittered` promotion requirement with real variance
-    # (not a fixed-then-rounded schedule).
+    # duration exactly while giving the promotion preset real spacing variance
+    # (not a fixed-then-rounded schedule), so a periodic artefact of the
+    # schedule cannot masquerade as the route's own tail.
     raw_gaps = [mean_spacing * rng.uniform(0.5, 1.5) for _ in range(count)]
     raw_total = sum(raw_gaps)
     scale = usable / raw_total
@@ -318,6 +326,8 @@ __all__ = [
     "CLICK_DURATION_MS",
     "CLICK_TONE_HZ",
     "DEFAULT_AMPLITUDE_DBFS",
+    "P95_MIN_DURATION_SECONDS",
+    "P99_MIN_DURATION_SECONDS",
     "PROMOTION_PRESET_NAME",
     "PRESETS",
     "QUICK_PRESET_NAME",
@@ -327,6 +337,7 @@ __all__ = [
     "ClickTrackPreset",
     "build_schedule",
     "load_schedule_json",
+    "percentile_min_samples",
     "render_wav",
     "write_schedule_json",
 ]

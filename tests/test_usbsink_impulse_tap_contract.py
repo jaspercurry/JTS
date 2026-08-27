@@ -158,10 +158,9 @@ def test_read_tap_events_skips_lines_missing_required_fields(tmp_path):
 
 # --------------------------------------------------------------------------
 # Health-counter names: the harness's route-health verdict
-# (`RouteHealthReport.would_justify_route_health_ok`, which
-# `--confirm-route-health-ok` gates on) reads specific counter paths out of
+# (`RouteHealthReport.window_clean`) reads specific counter paths out of
 # fan-in/outputd STATUS snapshots. If a Rust serializer renamed one of those,
-# a stable-path lookup could stop observing the real counter and the flagged
+# a stable-path lookup could stop observing the real counter and the printed
 # verdict would silently degrade to vacuous-true. Pin the leaf names against
 # the Rust source so a rename fails loudly here — the same cross-language
 # discipline used for the JSONL fixture and the raw0 wire constants.

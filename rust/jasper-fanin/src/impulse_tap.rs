@@ -6,10 +6,10 @@
 //!
 //! # Why it lives here
 //!
-//! Route-latency evidence is only trustworthy if the ingress timestamp is
+//! A route-latency measurement is only trustworthy if the ingress timestamp is
 //! taken *on the claiming route's own audio path*. Ported verbatim from
 //! `jasper-usbsink-audio`'s tap (same JSONL schema, same detector, same arm
-//! validation): when `JASPER_FANIN_USB_DIRECT=enabled`, the certified route's
+//! validation): when `JASPER_FANIN_USB_DIRECT=enabled`, the low-latency route's
 //! ingress is fan-in's `hw:UAC2Gadget` capture — the usbsink bridge hop is
 //! gone — so the tap must run HERE, inline in `read_direct_and_render` over the
 //! already-converted S16 slice, before it is pushed into the lane resampler. It

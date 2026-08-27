@@ -28,8 +28,8 @@ The USB-input chain is `Mac app → hw:UAC2Gadget → fan-in direct capture →
 [host-clock DLL + varispeed resampler + cushion] → Ring A → CamillaDSP → Ring B
 → jasper-outputd → Apple USB-C dongle → analog out`.
 
-**Certified promotion result (2026-07-11) — current certified truth.** The
-promotion-length certification run on jts.local (build `d5abf5ad`; artifact
+**Promotion-length result (2026-07-11) — current measured truth.** The
+promotion-length run on jts.local (build `d5abf5ad`; run record
 `20260711T234400.457205Z__route_latency__apple_usb_c_dongle__route_latency__pass.json`;
 route_hash `3bca2569c864ad1a`) measured, at the electrical `:9891` plane with
 the flow-gated streaming detector, at the **576-frame churn-safe floor**:
@@ -38,13 +38,12 @@ the flow-gated streaming detector, at the **576-frame churn-safe floor**:
 |---|---|---|---|---|---|---|
 | **36.35** | 37.93 | 38.29 | 38.48 | 100% | 1094 | 32.6 min |
 
-Zero outliers. This is the **route JTS owns** (fan-in ingress → outputd egress)
-— the plane the cert gate certifies — and it clears the tightened p95<=40 /
-p99<=42 budget (below) with margin. It reads ~4 ms below the 2026-07-07 `40.73`
+Zero outliers. This is the **route JTS owns** (fan-in ingress → outputd egress),
+the plane every number in this doc is measured at. It reads ~4 ms below the 2026-07-07 `40.73`
 p50 quick number because it is a longer, flow-gated measurement (1094 impulses
 / 32.6 min vs n=40) on a later build; both are the same 576 floor / `:9891`
 plane, so the delta is run-length + build, not a measurement-point change. This
-supersedes the 2026-07-07 electrical row as the current certified electrical
+supersedes the 2026-07-07 electrical row as the current measured electrical
 truth; that pair is kept below as the DAC-term composition basis.
 
 **2026-07-07 electrical+analog cross-check (the DAC-term composition basis).**
@@ -60,23 +59,13 @@ same **576-frame cushion floor** (the steady low-latency state):
 = `53.96` — composing to the directly-measured analog p50 **exactly**. Two
 independent measurements a day apart validate each other.
 
-**Certification budget (tightened 2026-07-11 to the certified floor):** these
-are the numbers the route-latency cert gate now certifies against —
-`USB_LOW_LATENCY_P95_BUDGET_MS = 40.0` / `_P99_BUDGET_MS = 42.0` in
-`jasper/audio_runtime_plan.py`. `40.0` sits `2.1` ms over the certified p95
-(`37.93`) and `1.5` ms over the observed max (`38.48`); `42.0` is the tail
-budget, `2` ms above the p95 gate and `~3.7` ms over the certified p99
-(`38.29`) — so any `>=2` ms regression trips the gate. It is a cert-time
-tripwire only: no runtime consumer reads it. The prior `48.0` / `60.0` budget
-was the honest-but-loose recalibration from the 2026-07-07 n=40 quick run,
-before the promotion run proved the electrical plane holds well under 40 ms in
-steady state. **Flap protocol:** a marginal fail gets ONE clean re-run
-(steady-state, flow-gated) before it is treated as a regression; loosening
-these numbers requires new measured evidence. **Config-hash note:** the budget
-participates in `route_config_hash`, so tightening it invalidates the
-2026-07-11 artifact's `config_match` — doctor reads `config_mismatch` until one
-fresh certification run re-certifies against 40/42 (the measured numbers clear
-it with margin; the run is ~35 min at the documented flow-gated methodology).
+**Reading a later run against this one.** There is no budget and no gate —
+latency is monitored on `/system` and adapted at runtime, never certified
+([ADR-0185](adr/0185-latency-is-monitored-and-adapted-never-certified.md)).
+The numbers above are the reference point a later run is compared against by
+eye: p95 `37.93`, p99 `38.29`, observed max `38.48` at the electrical plane.
+A `>=2` ms move from those is worth investigating; a marginal one gets ONE
+clean re-run (steady-state, flow-gated) before it is believed at all.
 The ~40 ms goal is **met at the electrical plane** in steady state; the §7
 "Documented leads" (`EarlyUnlock` revoke-policy tuning, DAC-side buffer trim)
 are now further-improvement candidates — deliver it from the *first click* and
@@ -444,7 +433,7 @@ buffering — and the honest ranking of what's left, most-actionable first:
    directions would land.
 
 **Net:** the ~40 ms electrical goal is already met in steady state (`36.35` ms
-certified p50, §1). #1 (`EarlyUnlock` revoke-policy tuning) and #2 (DAC URB
+measured p50, §1). #1 (`EarlyUnlock` revoke-policy tuning) and #2 (DAC URB
 depth) are the realistic near-term targets — together they'd make the box
 *reliably* deliver that floor from the *first click* (eliminating the ~2.5-min
 cold-descent ceiling) and trim ~2-3 ms off the ~53 ms full-chain, rather than
@@ -471,7 +460,7 @@ they're queued:
 - **DAC-side buffer/queue depth trim** (ladder item 2 above). `~2–3` ms
   recoverable by reducing `JASPER_OUTPUTD_DAC_BUFFER_FRAMES` / the outputd
   URB queue depth, bounded by the underrun floor — a measured trim, no new
-  design. **Pickup trigger:** after a fresh `jasper-route-latency-artifact`
+  design. **Pickup trigger:** after a fresh `jasper-route-latency-harness`
   run re-pins the current baseline, validated with an overnight soak showing
   zero outputd underruns. Don't trim while the measurement basis is stale —
   a regression would be invisible.

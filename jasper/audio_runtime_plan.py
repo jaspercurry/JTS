@@ -167,30 +167,7 @@ AUDIO_ROUTE_PROFILE_KEY = "JASPER_AUDIO_ROUTE_PROFILE"
 ROUTE_CORRECTED_48K = "corrected_48k"
 ROUTE_USB_LOW_LATENCY_48K = "usb_low_latency_48k"
 ROUTE_BITPERFECT_DECLARED = "bitperfect_passthrough_declared"
-ROUTE_LATENCY_PROFILE = "route_latency"
 USB_LOW_LATENCY_SOURCE_ID = "usbsink"
-# Route-latency certification budget at the electrical tap->:9891 plane.
-# Measured basis: the 2026-07-11 promotion certification on jts.local (artifact
-# 20260711T234400.457205Z__route_latency__apple_usb_c_dongle__route_latency__pass.json,
-# build d5abf5ad, route_hash 3bca2569c864ad1a) measured p50 36.35 / p95 37.93 /
-# p99 38.29 / max 38.48 ms over 1094 matched impulses (100% match, 32.6 min,
-# zero outliers) at the 576-frame churn-safe floor, electrical :9891 plane,
-# flow-gated streaming detector. See docs/HANDOFF-usb-latency-measurement.md §1.
-# 40.0 sits 2.1 ms over the measured p95 (37.93) and 1.5 ms over the observed
-# max (38.48); 42.0 is the tail budget, 2 ms above the p95 gate and ~3.7 ms over
-# the measured p99 (38.29) — so any >=2 ms regression trips the gate. The gate
-# is a cert-time tripwire only: no runtime consumer reads these constants. Flap
-# protocol: a marginal fail gets ONE clean re-run (steady-state, flow-gated)
-# before it is treated as a regression; loosening these numbers requires new
-# measured evidence.
-# NOTE: these constants ride AudioRouteProfile.to_dict() into
-# route_config_hash_for_plan, so tightening them changes the route_config_hash
-# for any usb_low_latency_48k box. The 2026-07-11 artifact (certified against
-# the prior 48/60 budget) therefore reads config_mismatch until ONE fresh
-# certification run re-certifies against 40/42 — its measured numbers clear the
-# new gate with margin.
-USB_LOW_LATENCY_P95_BUDGET_MS = 40.0
-USB_LOW_LATENCY_P99_BUDGET_MS = 42.0
 ROUTE_CONFIG_HASH_SCHEMA_VERSION = 4
 UAC2_LOW_LATENCY_EXPECTED_ATTRS = {
     "c_sync": "async",
@@ -426,9 +403,6 @@ class AudioRouteProfile:
     bitperfect: bool = False
     active: bool = True
     aec_reference_mode: str = "outputd_final_electrical"
-    p95_budget_ms: float | None = None
-    p99_budget_ms: float | None = None
-    evidence_profile: str | None = None
     blocking_reason: str = ""
     warnings: tuple[str, ...] = ()
 
@@ -448,12 +422,6 @@ class AudioRouteProfile:
             "active": self.active,
             "aec_reference_mode": self.aec_reference_mode,
         }
-        if self.p95_budget_ms is not None:
-            out["p95_budget_ms"] = self.p95_budget_ms
-        if self.p99_budget_ms is not None:
-            out["p99_budget_ms"] = self.p99_budget_ms
-        if self.evidence_profile:
-            out["evidence_profile"] = self.evidence_profile
         if self.blocking_reason:
             out["blocking_reason"] = self.blocking_reason
         if self.warnings:
@@ -891,9 +859,6 @@ def resolve_audio_route_profile(
             fanin_input_resampler_required=True,
             camilla_required=True,
             outputd_final_reference_required=True,
-            p95_budget_ms=USB_LOW_LATENCY_P95_BUDGET_MS,
-            p99_budget_ms=USB_LOW_LATENCY_P99_BUDGET_MS,
-            evidence_profile=ROUTE_LATENCY_PROFILE,
             warnings=warnings,
         )
 
@@ -1084,7 +1049,7 @@ def route_latency_identity_for_plan(
     camilla_config_hash: str,
     dac_profile_id: str | None = None,
 ) -> dict[str, Any]:
-    """Expected validation identity for the effective low-latency route."""
+    """The identity live fan-in must be running for this route to be real."""
 
     return {
         "route_id": route.route_id,
@@ -1111,7 +1076,11 @@ def route_config_hash_for_plan(
     correction_latency: CorrectionLatencyEligibility,
     camilla_config_hash: str = "",
 ) -> str:
-    """Stable short hash for matching latency artifacts to this plan."""
+    """Stable short fingerprint of everything this plan resolved.
+
+    Published on ``/state`` and by doctor so a config change is visible as a
+    changed hash; nothing grades against it.
+    """
 
     payload = {
         "schema_version": ROUTE_CONFIG_HASH_SCHEMA_VERSION,
@@ -1154,7 +1123,7 @@ def _route_policy_errors(
     # BOTH HALVES ASK THEIR OWN DAEMON'S ACCEPT SET, not a normalizer. Each
     # daemon serves the ring for an UNDECLARED key and parks on anything it
     # cannot serve, so "the box is on the ring pair" is the question both
-    # predicates answer — and a certification that demanded written tokens would
+    # predicates answer — and a policy that demanded written tokens would
     # turn the shipped low-latency claim red on every box the reconciler has not
     # written yet, which is the mirror of the gap that made the old policy
     # accept the retired pair.
@@ -1169,10 +1138,10 @@ def _route_policy_errors(
         outputd_env.get(OUTPUTD_CONTENT_BRIDGE_KEY)
     )
 
-    # usb_low_latency_48k is certifiable on the one transport: the shm_ring pair
-    # (Ring A plus whichever post-DSP ring the box armed). The ring pair was
-    # measured to reduce route latency, so the artifact binder accepts it and
-    # refuses everything else.
+    # usb_low_latency_48k runs on the one transport: the shm_ring pair (Ring A
+    # plus whichever post-DSP ring the box armed). The ring pair was measured to
+    # reduce route latency, so the route policy accepts it and refuses
+    # everything else.
     if fanin_on_ring and outputd_on_ring:
         return tuple(errors)
 
@@ -1460,7 +1429,7 @@ def build_audio_runtime_plan(
             route=route_profile,
             # The RAW declaration, not `coupling_setting.value`: the resolver
             # answers `loopback` for an absent key AND for a persisted one, and
-            # the certification has to tell those apart — one is a box fan-in
+            # the route policy has to tell those apart — one is a box fan-in
             # serves, the other is a box fan-in parks. `_resolve_coupling`
             # already recorded both layers it read.
             coupling=(
@@ -2463,8 +2432,8 @@ def _effective_camilla_target_setting(
     In the ordinary ALSA loopback topology, CamillaDSP's target_level is a real
     playback-buffer latency/stability knob. Under shm_ring, the emitter uses the
     validated ring geometry (target 128) instead of the loopback DAC floor. Keep
-    the route plan/hash on those same effective values so latency artifacts match
-    the loaded graph instead of the generated env floor used by loopback profiles.
+    the route plan/hash on those same effective values so they describe the
+    loaded graph instead of the generated env floor used by loopback profiles.
     """
 
     normalized = resolve_coupling(coupling)

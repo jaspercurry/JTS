@@ -13,7 +13,6 @@ import socket
 import subprocess
 import time
 from pathlib import Path
-from typing import TYPE_CHECKING
 
 from ... import ring_assets
 from ...audio_hardware.dac import latency_floor_for
@@ -24,9 +23,6 @@ from ...fanin_coupling import RING_SLOT_FRAMES
 from ._registry import doctor_check
 from ._shared import CheckResult, _active_audio_dac_id, _run
 from .correction import _active_camilla_config_path
-
-if TYPE_CHECKING:
-    from ...audio_runtime_plan import AudioRuntimePlan
 
 # Asset paths are shared with the coupling reconciler. Historical private names
 # remain available for focused tests and downstream imports.
@@ -205,50 +201,6 @@ def _read_status_socket(socket_path: str) -> dict[str, object]:
     if not isinstance(parsed, dict):
         raise ValueError("STATUS response root is not an object")
     return parsed
-
-
-def _route_live_state_issues_for_doctor(
-    plan: AudioRuntimePlan,
-    *,
-    negotiated_buffer_frames: int | None = None,
-) -> tuple[str, ...]:
-    from jasper.audio_validation import route_live_state_issues
-
-    identity = plan.route_latency_identity()
-    if negotiated_buffer_frames is not None:
-        direct = identity.get("fanin_direct_config")
-        if isinstance(direct, dict):
-            identity["fanin_direct_config"] = {
-                **direct,
-                "negotiated_buffer_frames": negotiated_buffer_frames,
-            }
-    issues: list[str] = []
-    fanin_status: dict[str, object] | None = None
-
-    try:
-        fanin_status = _read_status_socket(_FANIN_STATUS_SOCKET)
-    except (OSError, TimeoutError, json.JSONDecodeError, ValueError) as e:
-        issues.append(f"live_fanin_status_unreadable:{type(e).__name__}")
-
-    return tuple(
-        dict.fromkeys(
-            (
-                *issues,
-                *route_live_state_issues(
-                    identity,
-                    fanin_status=fanin_status,
-                    # A valid promotion artifact certifies the installed route,
-                    # not a promise that an idle USB host keeps the activity-
-                    # dependent resampler lock asserted forever. fan-in's
-                    # direct.health is the canonical idle/capturing/broken
-                    # classifier; the shared helper remains fail-closed unless
-                    # that field says exactly "idle". The artifact writer does
-                    # not opt in and therefore stays strict mid-stream.
-                    allow_idle_direct_lane=True,
-                ),
-            )
-        )
-    )
 
 
 def _outputd_reconciled_env() -> dict[str, str]:
@@ -1143,7 +1095,7 @@ def check_camilla_playback_format() -> CheckResult:
     Miss either split and this check red-lines a HEALTHY box with a remediation
     that regenerates the identical config: without the File split, every
     pipe-sink leader and parked box; without the ring split, every armed-ring box
-    (including the certified-latency USB box), whose canary criterion is
+    (including the low-latency USB box), whose canary criterion is
     literally "doctor green". The pipe/File sink stays pinned narrow
     (``DEFAULT_PIPE_SINK_FORMAT`` ``S16_LE``) regardless of the ring wire flip,
     so it still diverges in force from the loopback lane's
@@ -1252,105 +1204,6 @@ def check_audio_runtime_plan() -> CheckResult:
             summary + "; " + "; ".join(plan.warnings[:3]),
         )
     return CheckResult("audio runtime plan", "ok", summary)
-
-
-@doctor_check(order=51.65, group="audio")
-def check_route_latency_evidence() -> CheckResult:
-    """Low-latency route claims require a fresh measured artifact."""
-
-    from jasper.audio_runtime_plan import build_audio_runtime_plan_from_system
-    from jasper.audio_validation import (
-        ROUTE_LATENCY_MIC_ID,
-        ROUTE_LATENCY_P95_BUDGET_MS,
-        ROUTE_LATENCY_PROFILE,
-        ROUTE_LATENCY_RERUN_ACTION,
-        ROUTE_LATENCY_STALE_AFTER,
-        artifact_directory,
-        assess_route_latency_artifact,
-        load_latest_artifact,
-    )
-
-    plan = build_audio_runtime_plan_from_system()
-    route = plan.route_profile
-    if not route.low_latency_claim:
-        return CheckResult(
-            "route latency evidence",
-            "ok",
-            f"route_profile={route.route_id} has no low-latency claim",
-        )
-    if plan.errors:
-        return CheckResult(
-            "route latency evidence",
-            "fail",
-            f"route_profile={route.route_id}, route_hash={plan.route_config_hash}, "
-            "runtime plan errors block latency certification: "
-            + "; ".join(plan.errors),
-        )
-
-    dac_id = None if plan.profile_id == "unknown" else plan.profile_id
-    result = load_latest_artifact(
-        artifact_directory(),
-        mic_id=ROUTE_LATENCY_MIC_ID,
-        dac_id=dac_id,
-        profile=ROUTE_LATENCY_PROFILE,
-        max_age=ROUTE_LATENCY_STALE_AFTER,
-    )
-    summary = assess_route_latency_artifact(
-        result,
-        route_config_hash=plan.route_config_hash,
-        expected_identity=plan.route_latency_identity(),
-    )
-    detail = (
-        f"route_profile={route.route_id}, route_hash={plan.route_config_hash}, "
-        f"artifact_status={summary.get('status')}, state={summary.get('state')}, "
-        f"p95_ms={summary.get('p95_ms')}, p99_ms={summary.get('p99_ms')}, "
-        f"samples={summary.get('sample_count')}, "
-        f"duration_seconds={summary.get('duration_seconds')}, "
-        f"certified={summary.get('certified_percentiles')}, "
-        f"config_match={summary.get('config_match')}, "
-        f"artifact_hash={summary.get('route_config_hash')}, "
-        f"issues={summary.get('issues')}, "
-        f"artifact={summary.get('artifact_path')}"
-    )
-    status = str(summary.get("status") or "fail")
-    if status in {"pass", "warn"}:
-        negotiated_buffer_frames: int | None = None
-        if result.artifact is not None:
-            artifact_identity = result.artifact.checks.get("identity")
-            if isinstance(artifact_identity, dict):
-                raw_buffer = artifact_identity.get(
-                    "fanin_direct_negotiated_buffer_frames"
-                )
-                if isinstance(raw_buffer, (int, float, str)) and not isinstance(
-                    raw_buffer, bool
-                ):
-                    try:
-                        parsed_buffer = int(raw_buffer)
-                    except (TypeError, ValueError):
-                        parsed_buffer = 0
-                    if parsed_buffer > 0:
-                        negotiated_buffer_frames = parsed_buffer
-        live_issues = _route_live_state_issues_for_doctor(
-            plan,
-            negotiated_buffer_frames=negotiated_buffer_frames,
-        )
-        if live_issues:
-            status = "fail"
-            detail += f", live_issues={list(live_issues)}"
-    if status == "pass":
-        return CheckResult("route latency evidence", "ok", detail)
-    if status == "warn" and summary.get("recommendation") != ROUTE_LATENCY_RERUN_ACTION:
-        # A p99-promotion recommendation is about evidence that is already
-        # valid; the re-run remedy below would misdirect it.
-        return CheckResult("route latency evidence", "warn", detail)
-    return CheckResult(
-        "route latency evidence",
-        "warn" if status == "warn" else "fail",
-        detail + "; Run route-latency validation for usb_low_latency_48k; "
-        "p95 must be "
-        f"<={ROUTE_LATENCY_P95_BUDGET_MS:g} ms with >=200 impulses over >=5 minutes, "
-        "and promotion p99 requires >=1000 impulses over >=30 minutes.",
-    )
 
 
 @doctor_check(order=51.68, group="audio")
