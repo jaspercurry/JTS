@@ -399,6 +399,9 @@ def build_v2_run_and_consume(
             TRANSIENT_AUTO_RETRY_CODES,
         )
         from jasper.active_speaker.crossover_v2_flow import v2_first_begin_timeout_s
+        from jasper.active_speaker.crossover_v2.session_graph import (
+            SessionGraphError,
+        )
         from jasper.active_speaker.session_volume_plan import SessionVolumePlanError
         from jasper.correction.coordinator import MeasurementWindowError
 
@@ -777,7 +780,9 @@ def build_v2_run_and_consume(
 
         try:
             opened = await volume.open()
-        except (SessionVolumePlanError, MeasurementWindowError) as exc:
+        except (
+            SessionVolumePlanError, MeasurementWindowError, SessionGraphError,
+        ) as exc:
             # volume.open() raised BEFORE the capture loop owns cleanup — the
             # relay session is already minted (run 2's retry leaked one here
             # when the prior session's volume state was still open, firing

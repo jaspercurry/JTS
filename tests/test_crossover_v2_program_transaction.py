@@ -278,3 +278,62 @@ async def test_a_cancel_reaches_the_caller_rather_than_becoming_an_incident():
 
     with pytest.raises(asyncio.CancelledError):
         await _run(_transaction(seams=seams))
+
+
+def test_every_below_ready_return_names_a_disclosed_incident():
+    """The honesty map, defended by a pin instead of by prose.
+
+    Prose cannot defend the map: the disclosed gap already lost count once —
+    it called `session_level_not_ready` "the one place" while
+    `STIMULUS_NOT_COMPOSED` was overstating too. A third arm that returns
+    `ready` without ready having completed would be the same defect again, and
+    a reader comparing four paragraphs would be the only thing standing
+    between it and a record that looks correct.
+
+    So: every `STAGE_READY` return in the adapter must pair the stage with one
+    of the incidents the module DISCLOSES as below-ready. A new arm either
+    names itself in that set or reds this.
+
+    A source-text pin, under the exception `test_crossover_v2_verification`
+    already records for its import-direction guard: a return that does not
+    exist has no behaviour to observe, and the property is about the SET of
+    returns rather than about any one call.
+    """
+    import ast
+    from pathlib import Path
+
+    from jasper.active_speaker.crossover_v2 import program_transaction as subject
+
+    # Two categories, and every ready-return must fall in one:
+    #   - the disclosed gap: ready did NOT complete (the module owns this set)
+    #   - ready DID complete and a later stage did not (admission refusal)
+    allowed = set(subject.BELOW_READY_INCIDENTS) | {
+        subject.STIMULUS_ADMISSION_REFUSED,
+    }
+    tree = ast.parse(Path(subject.__file__).read_text(encoding="utf-8"))
+    run = next(
+        node for node in ast.walk(tree)
+        if isinstance(node, ast.AsyncFunctionDef) and node.name == "run"
+    )
+
+    ready_returns: list[str] = []
+    for node in ast.walk(run):
+        if not isinstance(node, ast.Return) or not isinstance(node.value, ast.Call):
+            continue
+        kwargs = {kw.arg: kw.value for kw in node.value.keywords}
+        stage = kwargs.get("stage_reached")
+        if not isinstance(stage, ast.Name) or stage.id != "STAGE_READY":
+            continue
+        incident = kwargs.get("incident")
+        ready_returns.append(
+            incident.id if isinstance(incident, ast.Name) else "<none>"
+        )
+
+    assert ready_returns, "anti-vacuity: the adapter must still have ready arms"
+    named = {getattr(subject, name, name) for name in ready_returns}
+    assert named <= allowed, (
+        "a STAGE_READY return names an incident no category claims: "
+        f"{sorted(named - allowed)}. Either ready really completed and a later "
+        "stage did not, or ready did not complete — in which case add it to "
+        "BELOW_READY_INCIDENTS and name it in the disclosed-gap paragraph."
+    )
