@@ -31,10 +31,21 @@ import pytest
 from jasper.active_speaker import crossover_v2_flow as flow
 from jasper.active_speaker.crossover_v2 import refusal_copy
 from jasper.active_speaker.crossover_v2 import capture_dispatch, spatial
+from jasper.active_speaker.crossover_v2.contracts import (
+    ENTRY_GRAPH_FINGERPRINT_UNKNOWN,
+    MEASURE_KIND_BASELINE,
+    MEASURE_KIND_CANDIDATE,
+    MEASURE_KIND_VERIFY,
+    MEASURE_KINDS,
+    POLARITY_INVERTED,
+)
 from jasper.active_speaker.crossover_v2.journey import (
     PHASE_CLOUD_MEASURE,
     PHASE_CLOUD_VERIFY,
     PHASE_LATERAL,
+)
+from jasper.active_speaker.crossover_v2.position_cycle import (
+    POSITION_EVIDENCE_KIND,
 )
 from jasper.audio_measurement.program_analysis import (
     INTEGRITY_FAIL,
@@ -349,6 +360,25 @@ def test_the_entry_ladder_still_names_the_room_before_the_record():
 # --------------------------------------------------------------------------- #
 
 
+def _cloud_record(**overrides):
+    """One retained cloud position, with only the field under test named."""
+    fields = {
+        "position_id": "cloud_measure_03", "phase": PHASE_CLOUD_MEASURE,
+        "index": 3, "attempt": 7, "prompt": "stand here", "wide": False,
+        "role": "onax",
+        "geometry": spatial.PositionGeometry(
+            axis=spatial.POSITION_AXIS_HORIZONTAL, degrees=-7,
+            mark_distance_m=1.0,
+        ),
+        "captured_at": 1.0, "session_id": "sess", "gate_window_ms": 12.0,
+        "gate_floor_source": "reflection", "gate_disclosure": "a wall",
+        "gate_moved_rms_db": 2.59, "gate_reflection_delay_ms": 5.33,
+        "validity_floor_hz": 100.0, "gating_applied": True,
+        "summed_ripple_db": 1.0, "glitch_detected": False, "wav_sha256": "abc",
+    }
+    return spatial.cloud_position_record(**{**fields, **overrides})
+
+
 def test_a_position_take_id_is_qualified_by_the_attempt():
     """A geometry retake reuses its position id, so the id alone is not a take.
 
@@ -359,19 +389,7 @@ def test_a_position_take_id_is_qualified_by_the_attempt():
 
     Mutation-selected: dropping the attempt suffix left 374 tests green.
     """
-    record = spatial.cloud_position_record(
-        position_id="cloud_measure_03", phase=PHASE_CLOUD_MEASURE, index=3,
-        attempt=7, prompt="stand here", wide=False, role="onax",
-        geometry=spatial.PositionGeometry(
-            axis=spatial.POSITION_AXIS_HORIZONTAL, degrees=-7,
-            mark_distance_m=1.0,
-        ),
-        captured_at=1.0, session_id="sess", gate_window_ms=12.0,
-        gate_floor_source="reflection", gate_disclosure="a wall",
-        gate_moved_rms_db=2.59, gate_reflection_delay_ms=5.33,
-        validity_floor_hz=100.0, gating_applied=True, summed_ripple_db=1.0,
-        glitch_detected=False, wav_sha256="abc",
-    )
+    record = _cloud_record()
 
     assert record["take_id"] == "cloud_measure_03_a07"
     assert record["position_id"] == "cloud_measure_03"
@@ -388,28 +406,8 @@ def test_all_three_take_builders_state_one_identity_under_one_vocabulary():
     this red.
     """
     core = {"phase", "index", "attempt", "take_id", "session_id", "wav_sha256"}
-    cloud = spatial.cloud_position_record(
-        position_id="cloud_measure_03", phase=PHASE_CLOUD_MEASURE, index=3,
-        attempt=7, prompt="stand here", wide=False, role="onax",
-        geometry=spatial.PositionGeometry(
-            axis=spatial.POSITION_AXIS_HORIZONTAL, degrees=-7,
-            mark_distance_m=1.0,
-        ),
-        captured_at=1.0, session_id="sess", gate_window_ms=12.0,
-        gate_floor_source="reflection", gate_disclosure="a wall",
-        gate_moved_rms_db=2.59, gate_reflection_delay_ms=5.33,
-        validity_floor_hz=100.0, gating_applied=True, summed_ripple_db=1.0,
-        glitch_detected=False, wav_sha256="abc",
-    )
-    pose = spatial.lateral_pose_record(
-        spatial.LateralPose(
-            pose_id="lateral_03", index=3, attempt=7, prompt="step left",
-            role="offax", offset_cm=25.0, at_mark=False, curves=(),
-        ),
-        position_deg=-22, lateral_consumer="fc_selector", session_id="sess",
-        graph_fingerprint="fp-applied", captured_at="2026-08-26T00:00:00Z",
-        wav_sha256="abc",
-    )
+    cloud = _cloud_record()
+    pose = _pose_record()
     entry = _entry_record(index=3, attempt=7, session_id="sess", wav_sha256="abc")
 
     for record in (cloud, pose, entry):
@@ -443,6 +441,20 @@ def _pose_record(**overrides):
     )
 
 
+def _entry_record(**overrides):
+    """One retained entry-baseline take, with only the field under test named."""
+    fields = {
+        "index": 9, "attempt": 1, "session_id": "sess", "program_id": "prog",
+        "reference_mark": flow.REFERENCE_MARK_DESIGN_AXIS,
+        "graph_fingerprint": "fp", "captured_at": "2026-08-11T00:00:00Z",
+        "freqs_hz": (200.0, 400.0), "magnitude_db": (-1.5, 0.5),
+        "excluded": (True, False),
+        "validity_floor_hz": 100.0, "gate_window_ms": 12.0,
+        "summed_ripple_db": 1.0, "glitch_detected": False, "wav_sha256": "abc",
+    }
+    return spatial.entry_baseline_record(**{**fields, **overrides})
+
+
 def test_every_retained_take_kind_states_when_it_was_captured():
     """``captured_at`` on all three builders, not on two of them.
 
@@ -451,21 +463,7 @@ def test_every_retained_take_kind_states_when_it_was_captured():
     them, but never WHEN. Sorting or windowing banked rounds by time had to
     fall back on file mtime, which WO-0 measured actively misrouting.
     """
-    cloud = spatial.cloud_position_record(
-        position_id="cloud_measure_03", phase=PHASE_CLOUD_MEASURE, index=3,
-        attempt=7, prompt="stand here", wide=False, role="onax",
-        geometry=spatial.PositionGeometry(
-            axis=spatial.POSITION_AXIS_HORIZONTAL, degrees=-7,
-            mark_distance_m=1.0,
-        ),
-        captured_at=1.0, session_id="sess", gate_window_ms=12.0,
-        gate_floor_source="reflection", gate_disclosure="a wall",
-        gate_moved_rms_db=2.59, gate_reflection_delay_ms=5.33,
-        validity_floor_hz=100.0, gating_applied=True, summed_ripple_db=1.0,
-        glitch_detected=False, wav_sha256="abc",
-    )
-
-    for record in (cloud, _pose_record(), _entry_record()):
+    for record in (_cloud_record(), _pose_record(), _entry_record()):
         assert record["captured_at"]
 
 
@@ -483,6 +481,208 @@ def test_two_walks_at_one_pose_are_told_apart_by_the_applied_candidate():
 
     assert before["take_id"] == after["take_id"]
     assert before["graph_fingerprint"] != after["graph_fingerprint"]
+
+
+#: Every fact the engine's own record carries
+#: (``session.TuningSession._record``), under the name a retained take spells
+#: it. A take banked by the flow and a take banked by the engine must be ONE
+#: shape: offline re-analysis (ruling S3) reads the bank, and a reader that had
+#: to ask which of two shapes it was holding could not run the same analysis
+#: over both.
+#:
+#: One name differs, and only while the flow still publishes through an
+#: envelope: the engine's ``kind`` is ``measure_kind`` here, because ``kind`` in
+#: a published take is this package's document-type discriminator. See
+#: ``spatial._take_identity``.
+_ENGINE_RECORD_FIELDS = (
+    "session_id", "measure_kind", "baseline_record_id", "position_deg",
+    "position_axis", "prompt", "candidate_id", "regime", "polarity",
+    "graph_fingerprint", "level_db", "stimulus_dbfs", "incident", "wav_path",
+)
+
+
+@pytest.mark.parametrize("builder", [_cloud_record, _pose_record, _entry_record])
+def test_every_take_builder_carries_the_whole_engine_record(builder):
+    """All fourteen, on all three — parametrized, because it is one question.
+
+    Six of these were banked by NO builder before this pin: the comparand
+    (``baseline_record_id``), which candidate was under test (``candidate_id``),
+    which way the driver was wired (``polarity``), the PROVEN fader level
+    (``level_db``), the ladder rung (``stimulus_dbfs``) and what went wrong
+    (``incident``) — and ``wav_path``, the pointer that lets a banked record
+    reach its own capture, was carried by none of the four.
+
+    Presence, not value: what a caller does not state is honestly empty, and
+    the fields' contents are each other tests' subject.
+    """
+    record = builder()
+
+    assert set(_ENGINE_RECORD_FIELDS) <= set(record)
+
+
+#: The six that no builder banked, each with a value nothing else on a record
+#: could be mistaken for. Presence alone would go green against carriers that
+#: emitted a constant empty, which is what these are until the retention lift
+#: states them.
+_STATED_CLAIM = spatial.TakeClaim(
+    baseline_record_id="rec-before-7",
+    candidate_id="cand-fp-42",
+    polarity=POLARITY_INVERTED,
+    level_db=-18.5,
+    stimulus_dbfs=-9.0,
+    incident="unproven_level",
+)
+
+
+@pytest.mark.parametrize("builder", [_cloud_record, _pose_record, _entry_record])
+@pytest.mark.parametrize(
+    "engine_field, stated",
+    [
+        ("baseline_record_id", "rec-before-7"),
+        ("candidate_id", "cand-fp-42"),
+        ("polarity", POLARITY_INVERTED),
+        ("level_db", -18.5),
+        ("stimulus_dbfs", -9.0),
+        ("incident", "unproven_level"),
+    ],
+)
+def test_a_stated_claim_reaches_the_record_it_was_stated_for(
+    builder, engine_field, stated,
+):
+    """Each of the six CARRIES, rather than merely appearing.
+
+    A carrier that emitted a constant empty would satisfy a presence pin
+    forever — and these six are inert in production until the retention lift
+    binds a claim, so a presence pin is exactly the shape that would rot
+    unnoticed. Distinct values per field, so a builder that stamped one of them
+    into another's slot is red rather than lucky.
+
+    ``level_db`` and ``stimulus_dbfs`` are two numbers on purpose: a ladder
+    moves the stimulus, never the claim.
+    """
+    record = builder(claim=_STATED_CLAIM)
+
+    assert record[engine_field] == stated
+
+
+@pytest.mark.parametrize("builder", [_cloud_record, _pose_record, _entry_record])
+def test_a_take_record_does_not_overwrite_the_envelopes_document_type(builder):
+    """A retained take is published INSIDE an envelope, and it splats in last.
+
+    ``kind`` in a published take names the DOCUMENT — the same convention every
+    other artifact in this package follows — and both readers of a banked take
+    refuse anything whose ``kind`` is not ``POSITION_EVIDENCE_KIND``. A record
+    that spelled its measure kind ``kind`` would replace the discriminator on
+    the way out and make every banked take unreadable, silently: the walk index
+    would report a round with no poses rather than an error.
+    """
+    record = builder()
+
+    # The key itself, not just the surviving value: an emission that wrote the
+    # RIGHT word under the WRONG key would leave the envelope below intact and
+    # still be the collision this pin exists for.
+    assert "kind" not in record
+    assert {"schema_version": 1, "kind": POSITION_EVIDENCE_KIND, **record}[
+        "kind"
+    ] == POSITION_EVIDENCE_KIND
+
+
+def test_a_takes_kind_is_read_off_the_graph_and_never_off_the_phase():
+    """``PHASE_LATERAL`` is a baseline OR a candidate check; only the graph says.
+
+    A silent ``phase → kind`` map does not merely mislabel some records — it is
+    not well defined. One per-driver walk is the "before" when it ran on the
+    round's entry graph and the candidate check when it ran on an applied one,
+    and the take id, the pose and the phase are identical either way.
+    """
+    kinds = {
+        pose["measure_kind"]
+        for pose in (
+            _pose_record(
+                graph_fingerprint="fp-entry",
+                claim=spatial.TakeClaim(baseline_fingerprint="fp-entry"),
+            ),
+            _pose_record(
+                graph_fingerprint="fp-candidate",
+                claim=spatial.TakeClaim(baseline_fingerprint="fp-entry"),
+            ),
+        )
+    }
+
+    assert kinds == {MEASURE_KIND_BASELINE, MEASURE_KIND_CANDIDATE}
+    assert kinds <= set(MEASURE_KINDS)
+
+
+def test_a_re_measure_after_the_apply_is_a_verify_and_not_a_candidate():
+    """The one branch the pose pins above can never reach.
+
+    A verify take and a candidate take BOTH played through a graph that is not
+    the round's "before", so the fingerprints alone cannot separate them — the
+    phase is what says this capture is the re-measure that grades an apply
+    rather than the check that proposed it. That is the single job ``phase``
+    has here, and it is why the rest of the rule refuses to read it.
+    """
+    verify = _cloud_record(
+        phase=PHASE_CLOUD_VERIFY,
+        graph_fingerprint="fp-candidate",
+        claim=spatial.TakeClaim(baseline_fingerprint="fp-entry"),
+    )
+    candidate = _cloud_record(
+        phase=PHASE_CLOUD_MEASURE,
+        graph_fingerprint="fp-candidate",
+        claim=spatial.TakeClaim(baseline_fingerprint="fp-entry"),
+    )
+
+    assert verify["measure_kind"] == MEASURE_KIND_VERIFY
+    assert candidate["measure_kind"] == MEASURE_KIND_CANDIDATE
+
+
+@pytest.mark.parametrize(
+    "graph_fingerprint, baseline_fingerprint",
+    [
+        (ENTRY_GRAPH_FINGERPRINT_UNKNOWN, "fp-entry"),
+        ("fp-candidate", ENTRY_GRAPH_FINGERPRINT_UNKNOWN),
+        ("", "fp-entry"),
+        ("fp-candidate", ""),
+    ],
+)
+def test_a_take_whose_graph_is_unnamed_says_so_instead_of_guessing(
+    graph_fingerprint, baseline_fingerprint,
+):
+    """Both spellings of "no graph", from both sides of the comparison.
+
+    ``""`` is what a host that could not name its graph leaves, and
+    ``unknown`` is what ``entry_graph_fingerprint`` returns when no applied
+    profile was found. Either one on either side and the kind is unresolvable —
+    so the record says nothing rather than picking the wrong one, which is
+    ``baseline_record_id``'s precedent: an honest fact about the capture, never
+    a refusal to bank it.
+    """
+    record = _pose_record(
+        graph_fingerprint=graph_fingerprint,
+        claim=spatial.TakeClaim(baseline_fingerprint=baseline_fingerprint),
+    )
+
+    assert record["measure_kind"] == ""
+
+
+@pytest.mark.parametrize("builder", [_cloud_record, _pose_record, _entry_record])
+def test_a_take_carries_the_path_of_the_capture_it_was_reduced_from(builder):
+    """The pointer, round-tripped — what makes offline analysis reachable.
+
+    A capture's bundle-relative path is NOT derivable from the take id:
+    ``bundles.capture_artifact_relpath`` appends a ``uuid4`` hex, so whoever
+    mints the path before the write is the only party that can state it. Banked
+    without it, a record names a curve whose audio nothing can find again.
+    """
+    minted = "captures/summed/cloud_measure_03_a07-9f2c.wav"
+
+    record = builder(claim=spatial.TakeClaim(wav_path=minted))
+
+    assert record["wav_path"] == minted
+    # The verifier and the pointer are two facts, not one: the digest says
+    # whether the bytes are the right ones, the path says where they are.
+    assert record["wav_sha256"] != record["wav_path"]
 
 
 def test_a_banked_pose_curve_reconstructs_the_complex_transfer_function():
@@ -593,20 +793,6 @@ def test_the_storage_seam_and_the_builders_mint_the_same_take_id():
         f"{spatial.take_id_for('cloud_measure_03', 7)}.json"
     ]
     assert spatial.take_id_for("cloud_measure_03", 7) == "cloud_measure_03_a07"
-
-
-def _entry_record(**overrides):
-    """One retained entry-baseline take, with only the field under test named."""
-    fields = {
-        "index": 9, "attempt": 1, "session_id": "sess", "program_id": "prog",
-        "reference_mark": flow.REFERENCE_MARK_DESIGN_AXIS,
-        "graph_fingerprint": "fp", "captured_at": "2026-08-11T00:00:00Z",
-        "freqs_hz": (200.0, 400.0), "magnitude_db": (-1.5, 0.5),
-        "excluded": (True, False),
-        "validity_floor_hz": 100.0, "gate_window_ms": 12.0,
-        "summed_ripple_db": 1.0, "glitch_detected": False, "wav_sha256": "abc",
-    }
-    return spatial.entry_baseline_record(**{**fields, **overrides})
 
 
 def test_an_entry_baseline_take_id_carries_index_and_attempt():

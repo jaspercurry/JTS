@@ -123,10 +123,19 @@ class PlaybackOutcome:
     actually read is the session's volume claim's to report, and a second copy
     of it here is the *"two fields of this block disagreeing"* shape that cost
     the campaign the 8.712 dB level bug.
+
+    ``wav_path`` IS carried, and for the opposite reason: it has no second copy
+    anywhere. A capture's bundle-relative path is not derivable from the take
+    id — ``bundles.capture_artifact_relpath`` appends a ``uuid4`` hex — so
+    whoever mints it before the write is the only one who can say it, and this
+    transaction is that caller. ``""`` while no implementation writes bytes; a
+    record's ``wav_path`` is then empty and offline analysis has nothing to
+    reach, which is an honest statement of the gap rather than a guessed path.
     """
 
     stage_reached: str
     incident: str = ""
+    wav_path: str = ""
 
     def __post_init__(self) -> None:
         if self.stage_reached not in _STAGE_RANK:
