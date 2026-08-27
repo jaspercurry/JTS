@@ -196,8 +196,12 @@ the composition token, read back from `p_chmask` — changing `p_chmask` and
 The POST returns 200 only after systemd accepts the
 apply job; if scheduling fails it returns a structured 502 while reporting that
 the durable intent was saved. Once accepted, a failed bridge/gadget apply is
-retried three times with a two-second backoff (four attempts total); the hard
-start limit prevents an unbounded recompose loop, and
+retried three times with a two-second backoff (four attempts total). The start
+limit only bounds that loop while its window outlasts the worst-case run of
+four starts — a hang spends the full `TimeoutStartSec` before each backoff, so
+`StartLimitIntervalSec` is sized against three of those cycles rather than
+against wall-clock intuition; a window shorter than the span lets the burst
+never trip and the recompose loop runs forever. Beyond the bound,
 `event=usb_mic.recompose_failed` plus doctor drift are the operator surface if
 all attempts fail. An explicit later switch resets that retry budget.
 

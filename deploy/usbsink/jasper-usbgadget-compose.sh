@@ -40,6 +40,7 @@ CONFIGFS="${JASPER_CONFIGFS_ROOT:-/sys/kernel/config}"
 UDC_CLASS_DIR="${JASPER_UDC_CLASS_DIR:-/sys/class/udc}"
 GADGET_NAME=jts-usb-audio
 GADGET_DIR="${CONFIGFS}/usb_gadget/${GADGET_NAME}"
+JASPER_ENV_FILE="${JASPER_USBGADGET_ENV_FILE:-/etc/jasper/jasper.env}"
 
 AUDIO_ALLOWED_CMD="${JASPER_USBGADGET_AUDIO_ALLOWED_CMD:-/opt/jasper/.venv/bin/jasper-local-source-allowed --source usbsink}"
 AUDIO_READY_CMD="${JASPER_USBGADGET_AUDIO_READY_CMD:-systemctl is-enabled --quiet jasper-usbsink.service}"
@@ -55,6 +56,41 @@ emit() {
     else
         printf 'event=usb_gadget.%s\n' "$1" >&2
     fi
+}
+
+_jasper_usbgadget_env_usb_network() {
+    # JASPER_USB_NETWORK reaches the gadget UNIT through its EnvironmentFile=,
+    # but the converger runs from install.sh and from jasper-usbmic-apply, and
+    # neither loads /etc/jasper/jasper.env. Without this read a kill-switched
+    # box computes desired network=1 here while the unit composes network=0, so
+    # the two never agree and every deploy and every mic toggle rebuilds —
+    # forever. Reading the ONE key restores the agreement.
+    #
+    # Grep-and-extract, never source/eval: this runs as root, and sourcing turns
+    # an inert config value into a code path. The parse mirrors
+    # jasper.env_load.parse_env_text, which is what unions the same key into the
+    # doctor's os.environ, so the shell and Python readers cannot disagree about
+    # a file value: comments skipped, split on the first `=`, surrounding
+    # whitespace stripped, one layer of matching quotes dropped, last assignment
+    # wins. Every failure (absent file, unreadable, key missing) yields an empty
+    # value, which the caller reads as the default `enabled` — the fail-safe
+    # direction, because withdrawing the management network is what strands a
+    # deploy riding ncm.usb0.
+    local line value
+    [[ -r "${JASPER_ENV_FILE}" ]] || return 0
+    line=$(grep -a -E '^[[:space:]]*JASPER_USB_NETWORK[[:space:]]*=' \
+        "${JASPER_ENV_FILE}" 2>/dev/null | tail -n1 || true)
+    [[ -n "${line}" ]] || return 0
+    value="${line#*=}"
+    # Trim surrounding whitespace without extglob (bash 3.2 runs the tests).
+    value="${value#"${value%%[![:space:]]*}"}"
+    value="${value%"${value##*[![:space:]]}"}"
+    if [[ "${#value}" -ge 2 ]]; then
+        case "${value}" in
+            \"*\"|\'*\') value="${value:1:${#value}-2}" ;;
+        esac
+    fi
+    printf '%s' "${value}"
 }
 
 # SC2034 (appears unused) — every name below is read by the sourcing script.
@@ -104,7 +140,18 @@ jasper_usbgadget_desired() {
     # (case-insensitive; any other value stays enabled — mirrors
     # JASPER_SHAIRPORT_SUPERVISOR). Lowercase via tr: ${var,,} is bash 4+ only
     # and the test harness runs on macOS bash 3.2.
-    local net_raw="${JASPER_USB_NETWORK:-enabled}"
+    #
+    # An assignment already in the environment wins over the file, exactly as
+    # it does for the gadget unit (systemd's EnvironmentFile= never overrides an
+    # inherited value) and for jasper.env_load's setdefault union. Only a caller
+    # that inherited nothing falls through to the file read.
+    local net_raw
+    if [[ -n "${JASPER_USB_NETWORK+x}" ]]; then
+        net_raw="${JASPER_USB_NETWORK:-enabled}"
+    else
+        net_raw="$(_jasper_usbgadget_env_usb_network)"
+        net_raw="${net_raw:-enabled}"
+    fi
     NET_INTENT="$(printf '%s' "${net_raw}" | tr '[:upper:]' '[:lower:]')"
     WANT_NETWORK=1
     if [[ "${NET_INTENT}" == "disabled" ]]; then
@@ -161,6 +208,15 @@ jasper_usbgadget_live() {
     # Function membership is tested with -L, not -e: `ln -s functions/<fn>
     # configs/c.1/` writes a link whose stored target only resolves inside real
     # ConfigFS, so -e would answer differently on a Pi and in a temp tree.
+    #
+    # OBSERVABLE GATE MISMATCH, on purpose: this reads the CONFIG SYMLINK (is
+    # the function composed onto c.1?), while jasper-usbsink.service and the
+    # doctor's check_usbgadget_composition read the FUNCTION DIRECTORY (does
+    # functions/uac2.usb0 exist at all?). gadget-up creates the directory before
+    # linking it, so the two disagree for the width of a partial build: the
+    # directory says "audio" while the symlink does not. That is the right split
+    # here — a function the configuration does not carry is not advertised, so
+    # membership, not existence, is what a rebind changes.
     LIVE_PRESENT=0
     LIVE_BOUND=0
     LIVE_UDC=""

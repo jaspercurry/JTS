@@ -7,7 +7,15 @@ Description=Apply the desired JTS USB microphone shape
 Documentation=file:///opt/jasper/docs/HANDOFF-usb-gadget.md
 # One accepted apply gets at most four starts (the initial try plus three
 # retries). jasper-control resets this budget before each explicit user action.
-StartLimitIntervalSec=5min
+#
+# The interval has to outlast the worst-case RUN of those four starts, not just
+# name them: the failure this bounds is a HANG, which spends the whole
+# TimeoutStartSec below before each RestartSec backoff, so the fourth start
+# lands three such cycles after the first. A window shorter than that span never
+# sees four starts inside it, the burst never trips, and the "hard start limit"
+# below bounds nothing — each retry another gadget re-enumeration. Pinned as
+# that relationship, not as two numbers, by tests/test_usb_mic_systemd.py.
+StartLimitIntervalSec=15min
 StartLimitBurst=4
 
 [Service]

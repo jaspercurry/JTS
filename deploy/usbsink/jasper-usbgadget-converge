@@ -82,18 +82,19 @@ if ! ${SYSTEMCTL} restart "${GADGET_UNIT}" >/dev/null; then
     exit 1
 fi
 
-# Withdrawal is the one target a restart cannot reach on its own: against an
-# already-INACTIVE unit systemd runs only the start half, whose ExecCondition
-# then skips, and a descriptor left over from a failed earlier start survives
-# still advertised. Read it back rather than assume. The composing direction
-# needs no such check — its start half runs gadget-up, which fails loudly.
-if [[ "${WANTED}" == "0" ]]; then
-    jasper_usbgadget_live
-    if [[ "${LIVE_PRESENT}" != "0" ]]; then
-        emit converge \
-            "state=failed reason=${REASON} phase=verify want_bound=0 live_bound=${LIVE_BOUND} live_network=${LIVE_NETWORK} live_audio=${LIVE_AUDIO} live_usb_mic=${LIVE_USB_MIC} unit=${GADGET_UNIT}"
-        exit 1
-    fi
+# Read ConfigFS back rather than assume the restart landed. Two ways it does
+# not: withdrawal against an already-INACTIVE unit runs only the start half,
+# whose ExecCondition then skips, so a descriptor left over from a failed
+# earlier start survives still advertised; and a start half that skipped or
+# failed leaves nothing bound when a descriptor was wanted. Either way, a
+# `rebuilt` line asserting the DESIRED shape would be a claim this script never
+# checked.
+jasper_usbgadget_live
+if [[ "${WANTED}" == "0" && "${LIVE_PRESENT}" != "0" ]] || \
+   [[ "${WANTED}" == "1" && "${LIVE_BOUND}" == "0" ]]; then
+    emit converge \
+        "state=failed reason=${REASON} phase=verify want_bound=${WANTED} live_present=${LIVE_PRESENT} live_bound=${LIVE_BOUND} live_network=${LIVE_NETWORK} live_audio=${LIVE_AUDIO} live_usb_mic=${LIVE_USB_MIC} unit=${GADGET_UNIT}"
+    exit 1
 fi
 
 # Consumers are refreshed for a rebuild that happened, never a failed one, and
@@ -103,5 +104,9 @@ fanin=ok
 usbmic=ok
 ${SYSTEMCTL} try-restart jasper-fanin.service >/dev/null 2>&1 || fanin=failed
 ${SYSTEMCTL} try-restart jasper-usbmic.service >/dev/null 2>&1 || usbmic=failed
+# The composition reported here is the one READ BACK above, never the one that
+# was asked for: a rebuild that landed on a different shape than the truth table
+# computed (a probe that flipped between this script's read and gadget-up's) has
+# to name itself in the journal rather than hide behind the desired values.
 emit converge \
-    "state=rebuilt reason=${REASON} want_bound=${WANTED} network=${WANT_NETWORK} audio=${WANT_AUDIO} usb_mic=${WANT_USB_MIC} order=fanin,usbmic fanin=${fanin} usbmic=${usbmic}"
+    "state=rebuilt reason=${REASON} want_bound=${WANTED} network=${LIVE_NETWORK} audio=${LIVE_AUDIO} usb_mic=${LIVE_USB_MIC} order=fanin,usbmic fanin=${fanin} usbmic=${usbmic}"
