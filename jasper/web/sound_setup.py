@@ -566,6 +566,7 @@ def _save_output_topology_payload(
                 level=logging.WARNING,
                 unit=RECONCILE_UNIT,
                 error=reconcile.get("error"),
+                converging=reconcile.get("converging"),
             )
     evaluation = topology.evaluation()
     log_event(
@@ -581,21 +582,34 @@ def _save_output_topology_payload(
         software_guards_requested=str(guards_changed),
         runtime_convergence_ok=runtime.convergence.ok,
         reconcile_ok=reconcile.get("ok"),
+        reconcile_converging=reconcile.get("converging"),
         summed_stop=str(summed_stop.get("status")),
         tone_stop=str(tone_stop.get("status")),
         safe_stop=str(safe_stop.get("status")),
     )
-    save = (
-        {
-            "status": "needs_attention",
+    needs_attention_save = {
+        "status": "needs_attention",
+        "message": (
+            "Speaker layout was saved, but audio remains off. "
+            "Open Status before continuing."
+        ),
+    }
+    if not runtime.convergence.ok:
+        save = needs_attention_save
+    elif reconcile.get("converging"):
+        # The reconciler is still running past trigger_reconcile's own wait
+        # budget (#3094) -- not a failure, so it must not read as one.
+        save = {
+            "status": "converging",
             "message": (
-                "Speaker layout was saved, but audio remains off. "
-                "Open Status before continuing."
+                "Speaker layout was saved and is still applying. "
+                "Check Status in a moment."
             ),
         }
-        if not runtime.convergence.ok or not reconcile.get("ok")
-        else {"status": "saved", "message": "Saved speaker layout."}
-    )
+    elif not reconcile.get("ok"):
+        save = needs_attention_save
+    else:
+        save = {"status": "saved", "message": "Saved speaker layout."}
     return {
         **_output_topology_payload(),
         "runtime_convergence": runtime.convergence.to_dict(),

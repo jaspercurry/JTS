@@ -24,10 +24,14 @@ _UNIT_NAME_RE = re.compile(r"^[A-Za-z0-9_.@:-]+$")
 
 @dataclass(frozen=True)
 class UnitState:
-    """The two systemd properties needed by the source-management pages."""
+    """The systemd properties needed by the source-management pages, plus
+    Result/ExecMainStatus for callers that must tell a still-running job
+    apart from a finished one (trigger_reconcile's post-timeout probe, #3094)."""
 
     load_state: str | None = None
     active_state: str | None = None
+    result: str | None = None
+    exec_main_status: int | None = None
 
     @property
     def available(self) -> bool:
@@ -73,9 +77,17 @@ def _parse_show_output(output: str, allowed_units: frozenset[str]) -> dict[str, 
         unit = properties.get("Id")
         if unit not in allowed_units:
             continue
+        exec_main_status = properties.get("ExecMainStatus")
         states[unit] = UnitState(
             load_state=properties.get("LoadState"),
             active_state=properties.get("ActiveState"),
+            result=properties.get("Result"),
+            exec_main_status=(
+                int(exec_main_status)
+                if exec_main_status is not None
+                and exec_main_status.lstrip("-").isdigit()
+                else None
+            ),
         )
     return states
 
@@ -108,6 +120,8 @@ def probe_unit_snapshot(
                 "--property=Id",
                 "--property=LoadState",
                 "--property=ActiveState",
+                "--property=Result",
+                "--property=ExecMainStatus",
                 *requested,
             ],
             check=False,
