@@ -636,9 +636,7 @@ def _reconcile_camilla(
     A pass whose env moved forces a full reconcile because the graph is the
     change.  A no-op pass passes ``force=False`` so unchanged source reconciles
     take the runtime's YAML-equality fast path while still repairing a genuinely
-    drifted loaded config.  The coupling is passed explicitly so the emit does
-    not depend on this process's stale ``os.environ`` (the env file was just
-    rewritten under us). reconcile_current_dsp validates with ``camilladsp
+    drifted loaded config.  reconcile_current_dsp validates with ``camilladsp
     --check`` before loading and fail-closes on an invalid config, so a failure
     here leaves the previously-loaded config running.
 
@@ -666,9 +664,7 @@ def _reconcile_camilla(
     from jasper.sound.runtime import reconcile_current_dsp
 
     try:
-        payload = asyncio.run(
-            reconcile_current_dsp(force=force, coupling=COUPLING_SHM_RING)
-        )
+        payload = asyncio.run(reconcile_current_dsp(force=force))
     except Exception as e:  # noqa: BLE001 - report, never raise out of the reconcile
         return False, f"camilla reconcile raised: {e}"
     status = payload.get("status")

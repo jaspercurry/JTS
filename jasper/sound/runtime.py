@@ -209,7 +209,6 @@ def _render_saved_dsp_on_carrier(
     *,
     profile_path: str | Path,
     config_dir: str | Path,
-    coupling: str | None,
     write: bool,
     profile: SoundProfile | None = None,
     settings: SoundSettings | None = None,
@@ -274,13 +273,18 @@ def materialise_saved_dsp_on_carrier(
     Carrier incompatibility raises
     :class:`jasper.sound.graph_carrier.CarrierCannotHostEq`; I/O failures are
     allowed to propagate. There is no flat-graph fallback.
+
+    ``coupling`` selects nothing — one transport (ADR-0100), so the capture
+    kwargs are the ring whatever any token says. It is accepted only because
+    :func:`jasper.active_speaker.runtime_convergence.compose_selected_flat_graph`
+    still passes one; remove it with that caller's own coupling thread.
     """
 
+    del coupling
     return _render_saved_dsp_on_carrier(
         base_config_path,
         profile_path=profile_path,
         config_dir=config_dir,
-        coupling=coupling,
         write=True,
     ).output_path
 
@@ -296,7 +300,6 @@ async def load_profile_config(
     audition: bool = False,
     output_trim_db: float = 0.0,
     profile_id: str | None = None,
-    coupling: str | None = None,
 ) -> tuple[Any, Path, SoundProfile]:
     """Render and load ``profile`` on top of the currently loaded DSP graph.
 
@@ -388,7 +391,6 @@ async def reconcile_current_dsp(
     config_dir: str | Path = DEFAULT_CONFIG_DIR,
     camilla_factory: Callable[[], Any] = default_camilla_factory,
     force: bool = False,
-    coupling: str | None = None,
     statefile_path: str | Path | None = None,
 ) -> dict[str, Any]:
     """Refresh the current JTS-owned generated DSP graph from saved intent.
@@ -472,7 +474,6 @@ async def reconcile_current_dsp(
                 current_path,
                 profile_path=profile_path,
                 config_dir=config_path,
-                coupling=coupling,
                 write=False,
                 profile=profile,
                 settings=settings,
@@ -534,7 +535,6 @@ async def reconcile_current_dsp(
             persist_profile=False,
             output_trim_db=trim_db,
             profile_id=RECONCILE_PROFILE_ID,
-            coupling=coupling,
         )
     return _log_reconcile_result(
         {

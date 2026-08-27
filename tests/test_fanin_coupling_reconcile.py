@@ -341,7 +341,7 @@ def test_production_confirm_uses_nonforcing_camilla_fast_path(monkeypatch):
         reason="source steady state",
         force=False,
     ) == (True, "unchanged")
-    assert observed == [{"force": False, "coupling": COUPLING_SHM_RING}]
+    assert observed == [{"force": False}]
 
 
 def _rung_over_a_real_camilla_down_reconcile(box, tmp_path, monkeypatch, **rung_kwargs):
