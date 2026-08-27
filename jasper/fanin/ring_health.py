@@ -1195,10 +1195,9 @@ def ring_endpoint_anchor_converged(
     ``reconcile_current_dsp`` has already declined. **On the ARM path** that
     puts it behind the whole preflight ladder, so it can neither admit nor refuse
     an arm those gates have not already passed. **On the CONFIRM path it is the
-    only graph check that runs at all** — that path's gates are
-    :func:`ring_wire_caps_ready` and :func:`_ring_confirm_needs_self_heal`, and
-    neither reads the loaded graph — which is why axes 3 and 4 are here rather
-    than left to the arm's preflights.
+    only graph check that runs at all** — that path's gate,
+    :func:`ring_wire_caps_ready`, does not read the loaded graph — which is why
+    axes 3 and 4 are here rather than left to the arm's preflights.
     """
     from jasper.active_speaker.camilla_yaml import STARTUP_MUTE_GAIN_DB
 
@@ -1235,9 +1234,8 @@ def composite_ring_wire_ready(topology: Any) -> tuple[bool, str]:
     rule is greppable, but wired into exactly ONE call site —
     :func:`ring_topology_ready`'s ACTIVE arm — because both arming paths (the
     unattended ``--auto`` pass and the operator arm) reach the ring through that
-    one gate. A separate entry in ``default_ring_gates`` would have had to be
-    threaded into ``_arm_ring``'s hand-written gate sequence as well, and a rule
-    wired into one of two paths reads as covered while half of it is not.
+    one gate. A rule wired into one of two paths reads as covered while half of
+    it is not.
 
     THE REGRESSION THIS REFUSES, which is invisible on every other axis. The
     CamillaDSP→outputd content hop takes its format from
