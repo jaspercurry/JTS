@@ -520,7 +520,7 @@ def test_dashboard_metrics_current_keys_exist_in_sampler():
 DASHBOARD_AUDIO_HEALTH_KEYS = {
     "schema_version", "sampled_at", "overall", "signal_path", "latency",
     "sources", "issues", "technical", "status", "headline", "detail",
-    "active_source", "since", "applicable", "kind", "verification",
+    "active_source", "since", "applicable", "kind",
     "runtime", "state", "started_at", "last_seen_at", "recovered_at",
     "current_stream", "current_incident", "recent_incidents", "media",
     "processing", "output", "signal", "session", "summary", "details",
