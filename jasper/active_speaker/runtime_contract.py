@@ -4756,8 +4756,8 @@ def safe_graph_for_current_topology(
     ladder rather than a tidy-up after it. The doctor's ``check_fanin_coupling``
     reports the gap in the meantime — it derives the expected playback device
     from the endpoint marker, so it names the exact mismatch rather than reading
-    green through it. This
-    function deliberately does NOT add a refusal of its own: blocking here would
+    green through it. This function deliberately does NOT add a refusal of its
+    own: blocking here would
     turn a recoverable stale artifact into a box that cannot seed a graph at all.
 
     The PARKED shape needs nothing either way — its sink is a ``File``, so it is
