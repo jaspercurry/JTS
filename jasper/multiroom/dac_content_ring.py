@@ -15,11 +15,11 @@ the wire both ends have to agree on.
 <../docs/adr/0178-every-shape-the-ring-cannot-serve-parks-under-its-own-name>`
 ``grouped_dac_content_lane``, #3118): its old transport was a raw-PCM FIFO,
 which the one-transport ruling (ADR-0100) leaves with no route to pin —
-``jasper.multiroom.reconcile.grouping_env`` says so in prose. This module is
-the identity the lane moves ONTO, shipped ahead of its consumers exactly as
-``60-jts-ring.conf``, ``61-jts-renderer-lanes.conf`` and the grouping ring all
-shipped ahead of theirs, so a geometry that fails on metal costs one file
-rather than a transport already flipped onto it.
+``jasper.multiroom.reconcile.outputd_grouping_env`` says so in prose. This
+module is the identity the lane moves ONTO, shipped ahead of its consumers
+exactly as ``60-jts-ring.conf``, ``61-jts-renderer-lanes.conf`` and the
+grouping ring all shipped ahead of theirs, so a geometry that fails on metal
+costs one file rather than a transport already flipped onto it.
 
 **A sibling of** :mod:`jasper.multiroom.grouping_ring`, **not a reuse of it.**
 The two rings carry the same wire between the same two processes' languages,
