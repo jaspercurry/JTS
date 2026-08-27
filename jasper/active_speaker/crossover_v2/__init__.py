@@ -95,6 +95,9 @@ call and neither extends:
   the mic-only regimes the engine has not built yet (ruling S12).
 * :mod:`.prior_bank` — a previous session's bank, read back: the "before" a
   candidate check grades against, and what that bank already disclosed.
+* :mod:`.analysis_units` — what ``analyze`` can run: fifteen named analyses,
+  the ``ProgramAnalysis`` fields each owns, and the gate that names the input a
+  bank would have to carry for it to run at all.
 
 Offline evaluation, deliberately not a search:
 
