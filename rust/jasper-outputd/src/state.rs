@@ -249,16 +249,16 @@ pub struct OutputdState {
     shm_ring_writer_pid: AtomicU64,
     shm_ring_writer_heartbeat_age_ms: AtomicU64,
     shm_ring_writer_alive: AtomicBool,
-    dac_content_fifo: Option<String>,
+    /// The armed round-trip lane's path, whichever transport carries it, and
+    /// which transport that is. `None` = solo.
+    dac_content_lane: Option<(&'static str, String)>,
     dac_content_channel: String,
     dac_content_highpass_hz: Option<f64>,
     dac_content_trim_db_tenths: AtomicI32,
     dac_content_trim_gain_bits: AtomicU32,
     dac_content_serving_fifo: AtomicBool,
     dac_content_fifo_periods: AtomicU64,
-    dac_content_fallback_periods: AtomicU64,
-    dac_content_fallback_transitions: AtomicU64,
-    dac_content_recoveries: AtomicU64,
+    dac_content_starved_periods: AtomicU64,
     dac_content_staged_periods: AtomicU64,
     dac_content_overflow_dropped_periods: AtomicU64,
     dac_content_open_failures: AtomicU64,
@@ -443,7 +443,11 @@ impl OutputdState {
             shm_ring_writer_pid: AtomicU64::new(0),
             shm_ring_writer_heartbeat_age_ms: AtomicU64::new(0),
             shm_ring_writer_alive: AtomicBool::new(false),
-            dac_content_fifo: config.dac_content_fifo.clone(),
+            dac_content_lane: config
+                .dac_content_ring
+                .clone()
+                .map(|path| ("ring", path))
+                .or_else(|| config.dac_content_fifo.clone().map(|path| ("fifo", path))),
             dac_content_channel: config.dac_content_channel.as_str().to_string(),
             dac_content_highpass_hz: config.dac_content_highpass_hz,
             dac_content_trim_db_tenths: AtomicI32::new(trim_db_tenths(config.dac_content_trim_db)),
@@ -452,9 +456,7 @@ impl OutputdState {
             ))),
             dac_content_serving_fifo: AtomicBool::new(false),
             dac_content_fifo_periods: AtomicU64::new(0),
-            dac_content_fallback_periods: AtomicU64::new(0),
-            dac_content_fallback_transitions: AtomicU64::new(0),
-            dac_content_recoveries: AtomicU64::new(0),
+            dac_content_starved_periods: AtomicU64::new(0),
             dac_content_staged_periods: AtomicU64::new(0),
             dac_content_overflow_dropped_periods: AtomicU64::new(0),
             dac_content_open_failures: AtomicU64::new(0),
@@ -525,7 +527,7 @@ impl OutputdState {
     }
 
     pub fn set_dac_content_trim_db(&self, trim_db: f32) -> Result<f32> {
-        if self.dac_content_fifo.is_none() {
+        if self.dac_content_lane.is_none() {
             anyhow::bail!("dac_content lane is not enabled");
         }
         let tenths = validate_trim_db_tenths(trim_db)?;
@@ -832,12 +834,8 @@ impl OutputdState {
             .store(metrics.serving_fifo, Ordering::Relaxed);
         self.dac_content_fifo_periods
             .store(metrics.fifo_periods, Ordering::Relaxed);
-        self.dac_content_fallback_periods
-            .store(metrics.fallback_periods, Ordering::Relaxed);
-        self.dac_content_fallback_transitions
-            .store(metrics.fallback_transitions, Ordering::Relaxed);
-        self.dac_content_recoveries
-            .store(metrics.recoveries, Ordering::Relaxed);
+        self.dac_content_starved_periods
+            .store(metrics.starved_periods, Ordering::Relaxed);
         self.dac_content_staged_periods
             .store(metrics.staged_periods, Ordering::Relaxed);
         self.dac_content_overflow_dropped_periods
@@ -1141,11 +1139,16 @@ impl OutputdState {
         // intent). enabled:false with no further fields when the lane is
         // not configured (solo — zero cost, zero noise).
         buf.push_str(r#""dac_content":{"#);
-        match self.dac_content_fifo.as_deref() {
-            Some(fifo) => {
+        match self.dac_content_lane.as_ref() {
+            Some((transport, path)) => {
                 push_kv_bool(&mut buf, "enabled", true);
                 buf.push(',');
-                push_kv_str(&mut buf, "fifo", fifo);
+                push_kv_str(&mut buf, "transport", transport);
+                buf.push(',');
+                // The path under the key its transport owns. A FIFO box's block
+                // is unchanged; a ring box says `ring` rather than lying with
+                // `fifo`.
+                push_kv_str(&mut buf, transport, path);
                 buf.push(',');
                 push_kv_str(&mut buf, "channel", &self.dac_content_channel);
                 buf.push(',');
@@ -1170,21 +1173,8 @@ impl OutputdState {
                 buf.push(',');
                 push_kv_u64(
                     &mut buf,
-                    "fallback_periods",
-                    self.dac_content_fallback_periods.load(Ordering::Relaxed),
-                );
-                buf.push(',');
-                push_kv_u64(
-                    &mut buf,
-                    "fallback_transitions",
-                    self.dac_content_fallback_transitions
-                        .load(Ordering::Relaxed),
-                );
-                buf.push(',');
-                push_kv_u64(
-                    &mut buf,
-                    "recoveries",
-                    self.dac_content_recoveries.load(Ordering::Relaxed),
+                    "starved_periods",
+                    self.dac_content_starved_periods.load(Ordering::Relaxed),
                 );
                 buf.push(',');
                 push_kv_u64(
@@ -2229,6 +2219,7 @@ mod tests {
             reference_udp_target: None,
             control_socket_path: None,
             dac_content_fifo: None,
+            dac_content_ring: None,
             dac_content_channel: crate::dac_content::ChannelPick::Stereo,
             dac_content_highpass_hz: None,
             dac_content_trim_db: 0.0,
@@ -2939,11 +2930,10 @@ mod tests {
         };
         let state = OutputdState::new(&cfg);
         state.mark_dac_content(DacContentMetrics {
+            transport: "fifo",
             serving_fifo: true,
             fifo_periods: 100,
-            fallback_periods: 7,
-            fallback_transitions: 2,
-            recoveries: 2,
+            starved_periods: 7,
             staged_periods: 3,
             overflow_dropped_periods: 1,
             open_failures: 4,
@@ -2953,15 +2943,14 @@ mod tests {
         let _ = parse_snapshot_json(&j);
         for needle in [
             r#""dac_content":{"enabled":true"#,
+            r#""transport":"fifo""#,
             r#""trim_db":-3.5"#,
             r#""main_highpass_hz":80.0"#,
             r#""fifo":"/run/jasper-grouping/member-content.fifo""#,
             r#""channel":"left""#,
             r#""serving_fifo":true"#,
             r#""fifo_periods":100"#,
-            r#""fallback_periods":7"#,
-            r#""fallback_transitions":2"#,
-            r#""recoveries":2"#,
+            r#""starved_periods":7"#,
             r#""staged_periods":3"#,
             r#""overflow_dropped_periods":1"#,
             r#""open_failures":4"#,
@@ -2969,6 +2958,49 @@ mod tests {
         ] {
             assert!(j.contains(needle), "missing {needle} in {j}");
         }
+    }
+
+    /// The ring transport's block names its own path key and keeps every field
+    /// the pair-lock verdict reads.
+    ///
+    /// `serving_fifo` is the load-bearing one: `jasper.multiroom.state` and
+    /// `jasper.control.grouping_supervisor` read it to decide whether bytes are
+    /// flowing, and they must keep working when a leader moves onto the ring.
+    #[test]
+    fn snapshot_json_dac_content_ring_keeps_the_pair_lock_fields() {
+        let cfg = Config {
+            dac_content_ring: Some(crate::config::DEFAULT_DAC_CONTENT_RING_PATH.to_string()),
+            dac_content_channel: crate::dac_content::ChannelPick::Right,
+            ..test_config()
+        };
+        let state = OutputdState::new(&cfg);
+        state.mark_dac_content(DacContentMetrics {
+            transport: "ring",
+            serving_fifo: true,
+            fifo_periods: 11,
+            starved_periods: 2,
+            staged_periods: 0,
+            overflow_dropped_periods: 0,
+            open_failures: 0,
+            read_failures: 0,
+        });
+        let j = state.snapshot_json();
+        let _ = parse_snapshot_json(&j);
+        for needle in [
+            r#""dac_content":{"enabled":true"#,
+            r#""transport":"ring""#,
+            r#""ring":"/dev/shm/jts-ring/dac-content.ring""#,
+            r#""channel":"right""#,
+            r#""serving_fifo":true"#,
+            r#""starved_periods":2"#,
+        ] {
+            assert!(j.contains(needle), "missing {needle} in {j}");
+        }
+        // A ring box must NOT claim a FIFO path it does not have.
+        assert!(
+            !j.contains(r#""fifo":"#),
+            "ring block spelled a fifo key: {j}"
+        );
     }
 
     #[test]

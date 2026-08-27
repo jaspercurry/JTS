@@ -297,6 +297,35 @@ def test_the_dac_content_ring_slot_is_one_outputd_dac_period():
     )
 
 
+@pytest.mark.parametrize(
+    ("rust_const", "rust_type", "constant"),
+    [
+        ("DEFAULT_DAC_CONTENT_RING_PATH", "&str", DAC_CONTENT_RING_FILE),
+        ("DAC_CONTENT_RING_SLOTS", "u32", DAC_CONTENT_RING_SLOTS),
+    ],
+)
+def test_the_reader_side_rust_constants_agree_with_the_python_ones(
+    rust_const, rust_type, constant
+):
+    """The THIRD declarer the module docstring names: outputd's Rust config.
+
+    outputd's ring arm resolves the return ring from its own constants, because
+    nothing hands a Rust daemon a Python module — so the path it opens and the
+    depth it declares are spelled a second time there. A drift in the PATH means
+    the reader attaches a ring the writer never writes (a leader that plays
+    silence with a climbing starvation counter, forever); a drift in the SLOTS
+    is a geometry mismatch the crate refuses at attach, parking the box. Neither
+    is visible in either language alone.
+    """
+    rust = _read(_OUTPUTD_CONFIG_RS)
+    literal = f'"{constant}"' if rust_type == "&str" else str(constant)
+    needle = f"pub const {rust_const}: {rust_type} = {literal};"
+    assert needle in rust, (
+        f"{_OUTPUTD_CONFIG_RS.name} must spell `{needle}` — outputd's reader and "
+        f"jasper.multiroom.dac_content_ring disagree about {rust_const}"
+    )
+
+
 def test_the_dac_content_ring_is_deeper_in_time_than_the_grouping_ring():
     """The depth claim the module's comment makes, checked rather than asserted.
 
