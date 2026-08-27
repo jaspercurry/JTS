@@ -531,11 +531,18 @@ class TuningSession:
         for index, bearing in enumerate(self._bearings(spec)):
             prompt = prompts[index] if index < len(prompts) else ""
             for stimulus_dbfs in rungs:
-                stimuli.append(await self._one_stimulus(
+                stimulus = await self._one_stimulus(
                     spec, bearing, prompt, stimulus_dbfs,
-                ))
+                )
+                stimuli.append(stimulus)
+                # Accounted as each one banks, never after the walk: every
+                # stimulus is a cancel point, and a record written to the store
+                # but missing from this list is one `save` cannot account for
+                # and `banked_record_ids` denies — evidence on disk that the
+                # session says it never took.
+                if stimulus.record_id:
+                    self._banked.append(stimulus.record_id)
 
-        self._banked.extend(s.record_id for s in stimuli if s.record_id)
         return MeasureOutcome(
             spec=spec, stimuli=tuple(stimuli), disclosures=stubs,
         )

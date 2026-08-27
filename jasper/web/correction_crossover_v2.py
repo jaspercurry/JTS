@@ -1183,11 +1183,20 @@ def reset_session_measurement_pause_for_tests() -> None:
 # session-scoped measurement graph (wave 6b — installed once, not per stimulus)
 # --------------------------------------------------------------------------- #
 #
-# The same process-global shape the pause above uses, and for the same reason:
-# the thing is acquired deep inside a play and has to be released by every
-# drain path, none of which can see the play's closure. Registered by
-# ``bind_production_play`` when it builds the stage's graph; released by
-# ``_volume_hooks``'s close/abandon arms beside the pause.
+# **The OUT-OF-RUNNER drains only, and this dies at W5-c.** The runner's own
+# path no longer comes through here: the stage's graph is ``EngineSeams.graph``
+# on a ``TuningSession`` whose lifetime is the run coroutine's, and both
+# runner-side restores (``_volume_hooks``'s close/abandon arms, and the
+# summed-sweep step-aside inside the play) go through that object.
+#
+# What still needs a process-global handle is the three drains that run when no
+# runner owns the session and there is therefore no session to reach through:
+# ceiling enforcement, unresolved recovery, and the new-session reconcile. W5-c
+# re-homes those three and deletes this global with them; the three callers in
+# ``tests/test_crossover_v2_session_graph.py`` die in that same PR.
+#
+# Not a second authority over the graph: every path calls ``restore()`` on the
+# SAME object, and that method is idempotent by contract.
 _session_graph: Any = None
 
 
@@ -1215,12 +1224,15 @@ def register_session_measurement_graph(graph: Any) -> None:
 async def release_session_measurement_graph() -> None:
     """Put the entry graph back (idempotent), then forget it.
 
-    **Two callers, and between them they cover every drain**: ``_volume_hooks``'s
-    close/abandon arms for a session the runner still owns, and
-    :func:`_release_pause_best_effort` for the three that run when it does not
-    (ceiling / recover / new-session reconcile). Both restore the graph BEFORE
-    releasing the measurement pause, so the swap never lands under a resumed
-    household programme.
+    **The OUT-OF-RUNNER drains only, and this function dies at W5-c.** Its one
+    remaining caller is :func:`_release_pause_best_effort`, serving the three
+    drains that run when no runner owns the session and there is therefore no
+    session object to reach the graph through: ceiling enforcement, unresolved
+    recovery, and the new-session reconcile. A session the runner DOES own goes
+    through ``TuningSession.close`` instead. W5-c re-homes those three drains
+    and deletes this with them. It still restores the graph BEFORE releasing
+    the measurement pause, so the swap never lands under a resumed household
+    programme.
 
     A call that runs when nothing is installed — a session that never played a
     routed stimulus, a crash-fresh process, a second drain — is a safe no-op,
@@ -3959,6 +3971,62 @@ def bind_cloud_publisher(
     return publish_cloud
 
 
+@dataclass(frozen=True)
+class _HeldSession:
+    """What one prepared relay hosting holds between ``open`` and the run.
+
+    A named pair rather than the untyped ``holder`` dict this replaces: the
+    engine's session and the source walk are two different lifetimes that
+    happen to be handed across the same closure boundary, and ``holder["run"]``
+    could not say which of them a reader was looking at.
+    """
+
+    tuning: Any
+    run: Any
+
+
+def _compose_not_yet_mapped(**_facts: Any) -> Any:
+    """Refuse loudly rather than guess which stimulus a spec means.
+
+    The engine names a measurement ``kind``; the flow names a ``phase``. The
+    mapping between them is W5-b3's, and it is not a formality: the
+    summed-sweep phases deliberately share ONE program object, and
+    ``accepted_phases`` differs by stage. A guessed mapping does not fail — it
+    plays the WRONG stimulus and banks a record that looks correct, which is
+    the silent class this engine exists to remove.
+    """
+    raise NotImplementedError(
+        "kind→phase mapping is W5-b3; a guessed mapping silently plays the "
+        "wrong stimulus. The play seam is wired and not drivable until W5-b3 "
+        "lands the mapping and W1-c routes the walk through measure()."
+    )
+
+
+@dataclass(frozen=True)
+class ProductionPlay:
+    """The play seam, and the measurement graph it was bound around.
+
+    The graph is RETURNED rather than registered in a module global. It is one
+    session's graph and its lifetime is that session's, so the session holds it
+    — as ``EngineSeams.graph`` — and a process-wide slot that two sessions
+    could displace each other in has no reason to exist.
+    """
+
+    play: Callable[[str, Any], None]
+    graph: Any
+
+    def __call__(self, phase: str, program: Any) -> None:
+        """Still callable as the play seam, for the callers that treat it so.
+
+        Production unwraps it — the preparer binds ``.play`` and reads
+        ``.graph`` — so this is not what the flow relies on. It is here because
+        ``bind_production_play``'s shipped contract was *"returns the thing you
+        call with (phase, program)"*, and the suites that call the binder
+        directly still hold that contract. Delete it when they stop.
+        """
+        return self.play(phase, program)
+
+
 def bind_production_play(
     *,
     run_async: Any,
@@ -3977,7 +4045,7 @@ def bind_production_play(
     config_dir: str | None = None,
     on_playback_started: Callable[[Any], None] | None = None,
     provenance: CaptureProvenanceRecorder | None = None,
-) -> Callable[[str, Any], None]:
+) -> "ProductionPlay":
     """The real ``play`` seam: program WAV → admitted playback through the DSP.
 
     CHECK/MEASURE render + publish the program WAV into the session's evidence
@@ -4100,6 +4168,11 @@ def bind_production_play(
         ),
         confirm_live=confirm_graph_is_live,
     )
+    # The three OUT-OF-RUNNER drains reach the graph only through here, and
+    # they run when no session object exists to reach it through. Without this
+    # the ceiling enforcer releases the measurement pause into a live
+    # crossover-free, role-routed graph — the household programme resuming
+    # through a graph built to measure one driver at a time.
     register_session_measurement_graph(session_graph)
 
     def _play(phase: str, program: Any) -> None:
@@ -4228,7 +4301,9 @@ def bind_production_play(
                 # Restoring here (not per stimulus) is what keeps an all-routed
                 # walk at two swaps for the whole session and bounds a mixed one
                 # by its routed/summed transitions.
-                await release_session_measurement_graph()
+                # The session's own graph object, not the global: this play is
+                # bound around it, so the step-aside reaches it directly.
+                await session_graph.restore()
                 # The hold runs FIRST and unconditionally, so the provenance
                 # record below observes a fader that was just proven.
                 await _hold_fader(camilla_factory)
@@ -4332,7 +4407,7 @@ def bind_production_play(
 
         run_async(_emit())
 
-    return _play
+    return ProductionPlay(play=_play, graph=session_graph)
 
 
 # --------------------------------------------------------------------------- #
@@ -5384,7 +5459,9 @@ class V2PreparedSession:
     request_retake: Callable[[], None] | None = None
 
 
-def _volume_hooks(camilla_factory: Any, context: V2ConductorContext) -> V2VolumeHooks:
+def _volume_hooks(
+    camilla_factory: Any, context: V2ConductorContext, *, tuning: Any,
+) -> V2VolumeHooks:
     plan = session_volume_plan()
     # The shared IO pair converts CamillaUnavailable (a bare Exception) into
     # RuntimeError, which plan.open's internal catches and set_and_confirm's
@@ -5406,6 +5483,65 @@ def _volume_hooks(camilla_factory: Any, context: V2ConductorContext) -> V2Volume
         finally:
             if str(getattr(opened, "value", opened)) != "opened":
                 await release_session_measurement_pause()
+        if str(getattr(opened, "value", opened)) != "opened":
+            # RETURN, rather than falling through. A volume that did not
+            # confirm is not a volume anything may be admitted against, so
+            # installing the measurement graph here would buy two CamillaDSP
+            # swaps — install and restore — for a session that never plays.
+            # The runners' own non-OPENED branch is what tells the household
+            # why, and it is only reachable if this result gets back to it.
+            return opened
+        # AFTER the plan confirms, and that order is the whole of it. The
+        # session's volume slot is the interim claim, which VERIFIES the plan
+        # is open at this level rather than taking one — so opening the session
+        # before the plan exists refuses every session on `assert_ready`. Here
+        # the two are symmetric: the session opens where the plan opened, and
+        # closes where the graph went back.
+
+        async def _give_back_the_level() -> None:
+            """Drain the level this open took, then let voice go.
+
+            Inner order is load-bearing: the drain runs even if the pause
+            release fails, because a fader left at measurement level is worse
+            than voice left paused.
+            """
+            try:
+                await plan.abandon(_set, _get, reason="session_open_failed")
+            finally:
+                await release_session_measurement_pause()
+
+        # A ``finally`` on a success flag rather than a broad ``except``: this
+        # has to cover a CANCELLED open as well as a raising one, and a
+        # ``CancelledError`` is not an ``Exception``. An open that got the
+        # level but not the graph must keep NEITHER.
+        session_open = False
+        try:
+            await tuning.open()
+            session_open = True
+        finally:
+            if not session_open:
+                # SHIELDED, the same shape ``TuningSession._release_slots``
+                # uses: a cancel landing inside the drain aborts it and leaves
+                # the fader at measurement level with nobody holding it — and
+                # because the plan never latched, ``needs_recovery`` answers
+                # False, so the recovery screen never offers. Only the
+                # wall-clock ceiling would ever notice.
+                giving_back = asyncio.ensure_future(_give_back_the_level())
+                try:
+                    await asyncio.shield(giving_back)
+                except asyncio.CancelledError:
+                    while not giving_back.done():
+                        try:
+                            await asyncio.shield(giving_back)
+                        except asyncio.CancelledError:
+                            continue
+                        except (OSError, RuntimeError, TimeoutError, ValueError):
+                            # The same enumerated set ``_put_the_graph_back``
+                            # catches below, and for its reason: a drain that
+                            # will not complete must not replace the caller's
+                            # cancellation with its own symptom.
+                            break
+                    raise
         return opened
 
     async def _put_the_graph_back() -> None:
@@ -5428,7 +5564,12 @@ def _volume_hooks(camilla_factory: Any, context: V2ConductorContext) -> V2Volume
         from jasper.active_speaker.crossover_v2.session_graph import SessionGraphError
 
         try:
-            await release_session_measurement_graph()
+            # The session gives back what it took: its volume slot is the
+            # interim claim (a disclosed no-op this wave, because the plan's
+            # drain below owns restore) and its graph slot is this stage's
+            # measurement graph. Called HERE and not around the run, so the
+            # order this docstring promises is the order that happens.
+            await tuning.close()
         except (SessionGraphError, OSError, RuntimeError, TimeoutError, ValueError):
             log_event(
                 logger,
@@ -5667,6 +5808,105 @@ def _applied_profile_now() -> Mapping[str, Any] | None:
             exc_info=True,
         )
         return None
+
+
+class _NoRoutedPhasesGraph:
+    """The graph slot for a stage that measures nothing through one.
+
+    Stage 2 is verify-class on every tier: it plays its summed sweep through
+    the APPLIED production graph and takes no routed per-driver capture. A
+    session bound to the real measurement graph would therefore swap the whole
+    DSP chain, step aside on the first summed phase, and swap back — a full
+    graph load and restore for zero measurements, carrying every stranding
+    exposure an installed graph carries and buying nothing.
+
+    Reports ``""`` as its fingerprint, which is the seam's own spelling for
+    *"the host cannot name the graph"* — honest here, because there is no
+    measurement graph to name.
+    """
+
+    async def install(self) -> str:
+        return ""
+
+    async def patch(self, changes: Mapping[str, Any]) -> None:
+        return None
+
+    async def restore(self) -> None:
+        return None
+
+
+def bind_v2_engine_seams(
+    *,
+    session_graph: Any,
+    evidence_store: Any,
+    relay_session_id: str,
+    camilla_factory: Any,
+    routed_phases: bool = True,
+) -> Any:
+    """The ENGINE's five seams, bound where the flow's seventeen are bound.
+
+    The second binder, deliberately beside the first.
+    :func:`bind_v2_stage_seams` is already the single owner of *"which callable
+    implements each seam"*, and putting this anywhere else would re-create the
+    *"two call sites free to disagree"* problem that binder exists to have
+    solved. The two coexist for the whole cutover: ``V2FlowSeams``'s
+    apply/rollback half never moves.
+
+    **The volume seam is the INTERIM one, and that is a single-authority
+    decision rather than a shortcut.** ``SessionVolumePlan`` still owns this
+    fader through its own door until W5-c deletes it, so binding a real
+    ``MeasurementVolumeClaim`` here would put two authorities on one fader for
+    a whole wave — and they do not merely coexist, they RESTORE DIFFERENTLY:
+    the owner's release lands on the current next-ranked level, the plan's
+    drain lands on the original snapshot through its exact→emergency ladder.
+    A household level that moved mid-session makes the two disagree, with no
+    ordering between them. W5-c swaps the authority and deletes the doors in
+    one PR, so no commit boundary ever has two writers.
+    """
+    from jasper.active_speaker.crossover_v2.program_transaction import (
+        ProgramPlaybackTransaction,
+    )
+    from jasper.active_speaker.crossover_v2.record_store import BankedRecordStore
+    from jasper.active_speaker.crossover_v2.session_seams import EngineSeams
+    from jasper.active_speaker.crossover_v2.volume_claim import PlanHeldVolumeClaim
+    from jasper.cli.crossover_recommender import BankedRoundRecommender
+
+    plan = session_volume_plan()
+    _set, _get = _session_volume_io(camilla_factory)
+    del _set  # the plan owns the write this wave; this seam only reads.
+    return EngineSeams(
+        graph=session_graph if routed_phases else _NoRoutedPhasesGraph(),
+        volume=PlanHeldVolumeClaim(plan, _get),
+        # F9, settled and deliberately un-bridged: ``bank`` returns a
+        # store-relative PATH while the shipped flow publishers write artifact
+        # FINGERPRINTS into ``refs``. The two never meet this wave — the only
+        # caller of ``bank`` is ``measure``, and ``measure`` has no production
+        # driver until W1-c lifts the walk, so this store is bound and never
+        # exercised. The question becomes live at W1-c, and a bridge chosen now
+        # would be chosen against no requirement.
+        records=BankedRecordStore(
+            evidence=evidence_store,
+            relay_session_id=relay_session_id,
+            load_state=load_v2_state,
+            save_state=save_v2_state,
+        ),
+        # DRIVABLE WHEN: W5-b3 lands the kind→phase mapping AND W1-c routes the
+        # capture walk through ``measure``. Until both, this seam is WIRED and
+        # not drivable — and the refusal below is loud on purpose, because the
+        # alternative shape (a mapping guessed to make it "work") plays the
+        # wrong stimulus and banks a record that looks correct.
+        play=ProgramPlaybackTransaction(
+            compose=_compose_not_yet_mapped,
+            session_volume_plan=plan,
+        ),
+        # The bundle directory is read when the verb is ASKED, not when the
+        # seam is bound: a recommendation needs a bundle on disk, and binding
+        # does not. Reading it here would make every caller that binds seams
+        # supply a fully-formed store to get an object it may never call.
+        recommend=lambda record_ids: BankedRoundRecommender(
+            evidence_store.bundle_dir,
+        )(record_ids),
+    )
 
 
 def bind_v2_stage_seams(
@@ -6491,7 +6731,7 @@ def prepare_v2_session(
             ),
         )
 
-    holder: dict[str, Any] = {}
+    held: _HeldSession | None = None
 
     def _open(client: Any, base: str, capture_origin: str, return_url: str) -> Any:
         if verify_only:
@@ -6562,7 +6802,7 @@ def prepare_v2_session(
         playback_started = PlaybackStartSignal()
         # Same shape, same reason: written by the play seam, read by analyze.
         capture_provenance = CaptureProvenanceRecorder()
-        play = bind_production_play(
+        production_play = bind_production_play(
             run_async=run_async,
             camilla_factory=camilla_factory,
             evidence_store=evidence_store,
@@ -6583,6 +6823,8 @@ def prepare_v2_session(
             on_playback_started=playback_started.fire,
             provenance=capture_provenance,
         )
+        play = production_play.play
+        session_graph = production_play.graph
         if verify_only:
             # This stage's journey (#2291 Phase 4), the same contract stage 1
             # opens and differing only in its arguments. ``available`` states
@@ -6769,10 +7011,31 @@ def prepare_v2_session(
         # Stage 2 keeps the durable candidate/applied facts and rebinds the
         # session id; stage 1 writes its fresh one.
         persist_conductor_state(conductor, failure_code=None, evidence=refs)
-        holder["run"] = _build_source_run(
+        # The engine's session, constructed HERE and held for the run's
+        # lifetime. Its graph slot is the one this stage just bound, so the
+        # measurement graph is a field on an object that dies with the run
+        # rather than a module global two sessions could displace.
+        from jasper.active_speaker.crossover_v2.session import TuningSession
+
+        tuning = TuningSession(
+            session_id=relay_session_id,
+            seams=bind_v2_engine_seams(
+                session_graph=session_graph,
+                evidence_store=evidence_store,
+                relay_session_id=relay_session_id,
+                camilla_factory=camilla_factory,
+                # Stage 2 is verify-class on every tier — it grades through the
+                # APPLIED graph and takes no routed capture — so it must not
+                # swap the measurement graph in and straight back out.
+                routed_phases=not verify_only,
+            ),
+            measurement_level_db=context.session_volume_db,
+        )
+        nonlocal held
+        source_run = _build_source_run(
             capture_source,
             conductor,
-            volume=_volume_hooks(camilla_factory, context),
+            volume=_volume_hooks(camilla_factory, context, tuning=tuning),
             stop_event=stop_event,
             stop_lock=stop_lock,
             position_gate=position_gate,
@@ -6783,10 +7046,25 @@ def prepare_v2_session(
             complete_event=complete_event,
             retake_event=retake_event,
         )
+        held = _HeldSession(tuning=tuning, run=source_run)
         return rc
 
     async def _run(client: Any, pi_session: Any) -> None:
-        await holder["run"](client, pi_session)
+        """Drive the walk the preparer built.
+
+        The session's own lifetime is NOT driven here. Both halves live in the
+        volume hooks: ``open`` after the plan confirms the level (the interim
+        claim verifies that plan, so it cannot precede it), and ``close`` where
+        the graph went back before this wave, before the plan's fader drain.
+        The runner calls those hooks, so the session opens and closes inside
+        the same span this coroutine owns — without this body being able to
+        reorder either.
+        """
+        if held is None:
+            raise RuntimeError(
+                "the v2 relay session was run before it was opened"
+            )
+        await held.run(client, pi_session)
 
     def _request_stop() -> None:
         with stop_lock:

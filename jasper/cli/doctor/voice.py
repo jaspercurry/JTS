@@ -20,7 +20,10 @@ from ...voice.catalog import (
     provider_by_id,
     provider_ids_manifest_text,
 )
-from ...voice.provider_state import read_active_provider_state
+from ...voice.provider_state import (
+    read_active_model_from_env_files,
+    read_active_provider_state,
+)
 from ._registry import doctor_check
 from ._shared import (
     _EXCEPTION_DETAIL_LIMIT,
@@ -39,9 +42,11 @@ def _provider_api_key_attr(provider_id: str) -> str:
 # question — what THIS jasper-doctor process inherited — and a calling-shell
 # export outranks the file there (jasper.env_load.load_env_files uses
 # setdefault), so the two can name different providers in one report
-# (issue #2212). Config stays the authority for what the daemon resolves
-# *given* a provider: key material and model, from the same env files
-# jasper-voice sources.
+# (issue #2212). Config stays the authority for the API key *given* a
+# provider (check_provider_key). The MODEL given a provider is likewise
+# read from files rather than Config — read_active_model_from_env_files()
+# merges the same env files jasper-voice sources, so a shell export can't
+# make this process name a model jasper-voice does not run (issue #3133).
 #
 # Statuses where the file cannot name a provider. check_provider_key
 # adjudicates a bad or unreadable selection; its neighbours defer to it and
@@ -450,8 +455,8 @@ def check_spend_cap(cfg: Config) -> CheckResult:
     except Exception as e:  # noqa: BLE001
         return CheckResult("daily spend cap", "warn", str(e))
 
-@doctor_check(order=44, group="voice", label="voice model pricing", needs_cfg=True)
-def check_pricing(cfg: Config) -> CheckResult:
+@doctor_check(order=44, group="voice", label="voice model pricing")
+def check_pricing() -> CheckResult:
     """Spend estimates (and thus the cap) depend on the bundled rate data
     loading and the active model having a rate. Surface both, since a
     missing/corrupt model_pricing.json or an unpriced active model silently
@@ -469,11 +474,17 @@ def check_pricing(cfg: Config) -> CheckResult:
                 "model_pricing.json failed to load — every model is unpriced, "
                 "so cost reads $0 and the spend cap can't bound it. Re-deploy.",
             )
-        # Active provider from the SSOT file; the model that provider will
-        # actually run from Config, which merges the operator env with the
-        # wizard file exactly as jasper-voice does.
+        # Active provider AND model from the merged env files — never from
+        # Config/os.environ, where a shell-exported JASPER_GEMINI_MODEL (or
+        # the OPENAI/GROK siblings) outranks both jasper.env and the wizard
+        # file (env_load.load_env_files uses setdefault) and would make this
+        # row name a model jasper-voice does not actually run (issue #3133,
+        # the same drift class #3129 closed for the provider selector).
         state = read_active_provider_state()
-        model = cfg.voice_model_for(state.provider) if state.configured else ""
+        model = (
+            read_active_model_from_env_files(state.provider)
+            if state.configured else ""
+        )
         if not model:
             return CheckResult(
                 "voice model pricing",
