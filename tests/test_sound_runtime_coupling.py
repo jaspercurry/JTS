@@ -12,9 +12,9 @@ resolver are unit-tested elsewhere (``test_sound_graph_carrier.py`` /
 them, so every reconcile re-emits the ring capture/playback topology.
 
 Since ADR-0100 the ring is the only central transport, so the kwargs are
-UNCONDITIONAL: no env value, no persisted token and no explicit override can
-make this seam answer ``{}``. That matters at exactly this chokepoint — a
-``{}`` here re-emits a graph whose capture names a lane nothing writes.
+UNCONDITIONAL: neither an env value nor a persisted token can make this seam
+answer ``{}``. That matters at exactly this chokepoint — a ``{}`` here re-emits
+a graph whose capture names a lane nothing writes.
 """
 from __future__ import annotations
 
@@ -47,25 +47,21 @@ class _FakeCamilla:
         return self._path
 
 
-def _capture_reemit_coupling(
-    monkeypatch, tmp_path, *, coupling_env: str | None,
-    coupling_override: str | None = None,
-):
+def _capture_reemit_coupling(monkeypatch, tmp_path):
     """Run reconcile_current_dsp far enough to call carrier.reemit once and
     return the ``fanin_coupling_capture_kwargs`` it was given.
 
     The fake carrier returns a base_flat result; what this helper needs is the
     dry-run reemit call, not what reconcile decides afterwards.
 
-    ``coupling_env`` names the PERSISTED coupling. It is driven by monkeypatching
-    the SSOT reader rather than ``os.environ``, which is also what proves the
-    answer no longer depends on either: the persisted
-    file wins.
+    Both token sources are pinned AWAY from the ring — the env var is unset and
+    the persisted SSOT reader answers ``loopback`` — so ring kwargs coming out
+    the far end prove the seam consults neither.
     """
     monkeypatch.delenv("JASPER_FANIN_CAMILLA_COUPLING", raising=False)
     monkeypatch.setattr(
         "jasper.fanin.coupling_reconcile.read_persisted_coupling",
-        lambda *a, **k: coupling_env if coupling_env is not None else "loopback",
+        lambda *a, **k: "loopback",
     )
 
     config_dir = tmp_path / "configs"
@@ -109,7 +105,6 @@ def _capture_reemit_coupling(
 
     async def _spy_apply(*a, **k):
         seen["apply_called"] = True
-        seen["apply_coupling"] = k.get("coupling")
         return _ApplyState(), "applied.yml", None
 
     monkeypatch.setattr(runtime, "load_profile_config", _spy_apply)
@@ -118,7 +113,6 @@ def _capture_reemit_coupling(
         runtime.reconcile_current_dsp(
             config_dir=config_dir,
             camilla_factory=lambda: _FakeCamilla(str(current)),
-            coupling=coupling_override,
         )
     )
     return result, seen
@@ -141,9 +135,7 @@ def test_reconcile_with_no_coupling_env_still_passes_the_ring_kwargs(
     hands the carrier the ring topology — and the flat-profile noop no longer
     short-circuits, because there is now a real topology to write.
     """
-    result, seen = _capture_reemit_coupling(
-        monkeypatch, tmp_path, coupling_env=None
-    )
+    result, seen = _capture_reemit_coupling(monkeypatch, tmp_path)
     kwargs = seen["fanin_coupling_capture_kwargs"]
     assert kwargs["capture_device"] == "jts_ring_capture"
     assert kwargs["playback_device"] == "jts_ring_playback"
@@ -189,20 +181,3 @@ def test_the_resolver_helper_ignores_persisted_and_env_coupling(monkeypatch):
     assert kwargs["capture_device"] == "jts_ring_capture"
     assert kwargs["playback_device"] == "jts_ring_playback"
     assert kwargs["enable_rate_adjust"] is False
-
-
-def test_reconcile_explicit_shm_ring_override_arms_regardless_of_env(monkeypatch, tmp_path):
-    # coupling="shm_ring" passed to reconcile_current_dsp emits the ring
-    # topology even when the env says loopback (the reconciler's
-    # stale-env-proof path), and the override threads to the durable apply.
-    result, seen = _capture_reemit_coupling(
-        monkeypatch, tmp_path, coupling_env="loopback", coupling_override="shm_ring",
-    )
-    kwargs = seen["fanin_coupling_capture_kwargs"]
-    assert kwargs["capture_device"] == "jts_ring_capture"
-    assert kwargs["playback_device"] == "jts_ring_playback"
-    assert seen["apply_called"] is True
-    assert seen["apply_coupling"] == "shm_ring"
-    assert result["status"] == "reconciled"
-
-

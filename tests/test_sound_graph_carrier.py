@@ -1514,7 +1514,6 @@ def test_materialise_saved_dsp_preserves_preferences_trim_and_room_peqs(
         base,
         profile_path=profile_path,
         config_dir=config_dir,
-        coupling="loopback",
     )
 
     assert out_path == config_dir / "sound_current.yml"
