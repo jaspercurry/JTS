@@ -2481,13 +2481,21 @@ def _with_server_owned_identity(
     ``identity_verified`` says a household member heard the right driver on
     that lane, so a writer that is not :func:`set_channel_identity_verified`
     may only carry the persisted record forward: its ``True`` survives where
-    ``recorded`` already holds one for the same group, role AND physical
-    output — re-pinning a lane retires the audition that named it. Clearing
-    stays open to every writer, so a re-pin's clear still lands.
+    ``recorded`` already holds one for the same group, role, physical output,
+    AND declared hardware device — re-pinning a lane, or swapping the
+    declared device under an unchanged group/role/output key, retires the
+    audition that named it, because the audition named that hardware, not
+    the key. Clearing stays open to every writer, so either kind of change
+    still lands its clear.
     """
 
     verified = {
-        (group.id, channel.role, channel.physical_output_index)
+        (
+            group.id,
+            channel.role,
+            channel.physical_output_index,
+            recorded.hardware.device_id,
+        )
         for group in recorded.speaker_groups
         for channel in group.channels
         if channel.identity_verified
@@ -2498,7 +2506,13 @@ def _with_server_owned_identity(
         nonlocal refused
         if not channel.identity_verified or channel.identity_verified_authorized:
             return channel
-        if (group_id, channel.role, channel.physical_output_index) in verified:
+        key = (
+            group_id,
+            channel.role,
+            channel.physical_output_index,
+            topology.hardware.device_id,
+        )
+        if key in verified:
             return channel
         refused += 1
         return replace(channel, identity_verified=False)

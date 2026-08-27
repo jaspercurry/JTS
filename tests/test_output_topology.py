@@ -1499,6 +1499,54 @@ def test_saved_channel_identity_is_server_owned(
     ] == [stored]
 
 
+@pytest.mark.parametrize(
+    ("claimed_device_id", "stored"),
+    [
+        ("hifiberry_dac8x", True),
+        # The audition named the OLD device on this lane: a same-key save
+        # under a DIFFERENT declared device is a different device wearing the
+        # old key, not the same lane resaved.
+        ("other_dac", False),
+    ],
+)
+def test_saved_channel_identity_dies_with_a_changed_hardware_device(
+    tmp_path: Path,
+    claimed_device_id: str,
+    stored: bool,
+) -> None:
+    """#3109: a same-key save carries the audition forward only onto the same device."""
+
+    path = tmp_path / "output_topology.json"
+    save_output_topology(_topology(groups=[_passive_main("mono", "mono", 0)]), path)
+    with output_topology_mod.output_topology_mutation(path) as mutation:
+        mutation.save(
+            set_channel_identity_verified(
+                mutation.snapshot().topology,
+                speaker_group_id="mono",
+                role="full_range",
+                identity_verified=True,
+            )
+        )
+
+    with output_topology_mod.output_topology_mutation(path) as mutation:
+        mutation.save(
+            _topology(
+                groups=[_passive_main("mono", "mono", 0, identity_verified=True)],
+                hardware={
+                    "device_id": claimed_device_id,
+                    "device_label": "Claimed hardware",
+                    "physical_output_count": 8,
+                },
+            )
+        )
+
+    assert [
+        channel.identity_verified
+        for group in load_output_topology_snapshot(path).topology.speaker_groups
+        for channel in group.channels
+    ] == [stored]
+
+
 def test_channel_identity_authorization_cannot_arrive_in_a_payload() -> None:
     """Only the server can mark a lane's audition, so no payload may say it."""
 
