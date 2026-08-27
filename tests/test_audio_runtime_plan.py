@@ -836,27 +836,6 @@ def test_bitperfect_route_is_declared_but_inactive_and_aec_degraded():
     assert "inactive" in profile.blocking_reason
 
 
-def test_coupling_capture_kwargs_from_env_are_the_ring_whatever_the_env_says(
-    monkeypatch,
-):
-    # ADR-0100: the ring is the only transport, so no env value and no persisted
-    # file can make this answer anything else — a `{}` here would emit a graph
-    # capturing a lane nothing writes.
-    def _boom(*a, **k):
-        raise AssertionError("the capture kwargs must not depend on a coupling token")
-
-    monkeypatch.setattr("jasper.fanin.ring_health.read_persisted_coupling", _boom)
-    monkeypatch.setenv("JASPER_FANIN_CAMILLA_COUPLING", "loopback")
-
-    for kwargs in (
-        coupling_capture_kwargs_from_env(),
-        coupling_capture_kwargs_from_env(None),
-        coupling_capture_kwargs_from_env({}),
-        coupling_capture_kwargs_from_env({COUPLING_ENV_VAR: COUPLING_SHM_RING}),
-    ):
-        assert kwargs["capture_device"] == "jts_ring_capture"
-
-
 def test_capture_precedence_applies_shm_ring_when_no_stronger_topology():
     base = {"enable_rate_adjust": True, "playback_pipe_path": None}
     coupling = coupling_capture_kwargs_from_env()

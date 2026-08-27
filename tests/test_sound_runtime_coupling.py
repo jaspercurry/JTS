@@ -168,13 +168,14 @@ def test_both_chokepoints_resolve_coupling_through_one_helper(monkeypatch):
     del monkeypatch
 
 
-def test_the_resolver_helper_answers_the_ring_for_every_input(monkeypatch):
-    """No env value, no override and no persisted token can produce ``{}``.
+def test_the_resolver_helper_ignores_persisted_and_env_coupling(monkeypatch):
+    """No persisted token and no ``os.environ`` value can produce ``{}``.
 
     The DEFECT-1 class this used to guard — a stale ``os.environ`` coupling
     steering the CLI reconcile onto the wrong route — cannot recur, because
-    there is no second route to be steered onto and nothing here reads a token
-    at all. That is proved rather than reasoned: the persisted reader raises.
+    there is no second route to be steered onto and the resolver takes no
+    coupling argument at all (ADR-0100: it consults neither). That is proved
+    rather than reasoned: the persisted reader raises.
     """
     from jasper.fanin_coupling import coupling_capture_kwargs_from_env
 
@@ -184,18 +185,10 @@ def test_the_resolver_helper_answers_the_ring_for_every_input(monkeypatch):
     monkeypatch.setattr("jasper.fanin.ring_health.read_persisted_coupling", _boom)
     monkeypatch.setenv("JASPER_FANIN_CAMILLA_COUPLING", "loopback")
 
-    for env in (
-        None,
-        {},
-        {"JASPER_FANIN_CAMILLA_COUPLING": "shm_ring"},
-        {"JASPER_FANIN_CAMILLA_COUPLING": "loopback"},
-        {"JASPER_FANIN_CAMILLA_COUPLING": "transport_pipe"},
-        {"JASPER_FANIN_CAMILLA_COUPLING": "fif0"},
-    ):
-        kwargs = coupling_capture_kwargs_from_env(env)
-        assert kwargs["capture_device"] == "jts_ring_capture", env
-        assert kwargs["playback_device"] == "jts_ring_playback", env
-        assert kwargs["enable_rate_adjust"] is False, env
+    kwargs = coupling_capture_kwargs_from_env()
+    assert kwargs["capture_device"] == "jts_ring_capture"
+    assert kwargs["playback_device"] == "jts_ring_playback"
+    assert kwargs["enable_rate_adjust"] is False
 
 
 def test_reconcile_explicit_shm_ring_override_arms_regardless_of_env(monkeypatch, tmp_path):
