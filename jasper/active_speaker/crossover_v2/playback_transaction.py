@@ -187,7 +187,7 @@ class PlaybackTransaction(Protocol):
     exception remains correct for a programming error.
     """
 
-    def run(
+    async def run(
         self,
         *,
         spec: "MeasureSpec",

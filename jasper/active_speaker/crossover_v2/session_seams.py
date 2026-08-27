@@ -55,7 +55,7 @@ can never strand another's.
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import Any, Callable, Mapping, Protocol, Sequence
+from typing import Any, Awaitable, Callable, Mapping, Protocol, Sequence
 
 from .playback_transaction import PlaybackTransaction
 
@@ -92,17 +92,14 @@ class SessionGraph(Protocol):
     ``active_emit_devices(...)`` and forwarded — a subset poisons one stimulus
     today and every angle, retry and driver once the graph is session-scoped.
 
-    **These three verbs are declared synchronous and the real implementation is
-    not.** :class:`~.session_graph.MeasurementSessionGraph` is ``async``,
-    because the transport is CamillaDSP over a websocket and every production
-    caller is already on the event loop. Contract and idempotence match; only
-    the colour differs. Reconciling it belongs to the wave that wires
-    :class:`~.session.TuningSession` to a front end — all five seams are
-    declared synchronous, so it is one decision for all of them, not one per
-    seam.
+    **These three verbs are ``async``**, so
+    :class:`~.session_graph.MeasurementSessionGraph` satisfies them directly:
+    the transport is CamillaDSP over a websocket and every production caller is
+    already on the event loop. See ADR-0179 for why all five seams took one
+    colour rather than one per seam.
     """
 
-    def install(self) -> str:
+    async def install(self) -> str:
         """Install the graph and return its fingerprint.
 
         The fingerprint is provenance a record carries — which graph the
@@ -118,7 +115,7 @@ class SessionGraph(Protocol):
         """
         raise NotImplementedError
 
-    def patch(self, changes: Mapping[str, Any]) -> None:
+    async def patch(self, changes: Mapping[str, Any]) -> None:
         """Change what one candidate needs, without re-installing.
 
         The cheap half of *"structural swap once, patch per candidate"*, which
@@ -129,7 +126,7 @@ class SessionGraph(Protocol):
         """
         raise NotImplementedError
 
-    def restore(self) -> None:
+    async def restore(self) -> None:
         """Put back whatever the install displaced.
 
         Called on every path out of a session, including the failing ones,
@@ -159,7 +156,7 @@ class VolumeClaim(Protocol):
     writes; the owner becomes the write door's only caller, never its exception.
     """
 
-    def acquire(self, level_db: float) -> None:
+    async def acquire(self, level_db: float) -> None:
         """Take the session-measurement claim at the declared level.
 
         **May raise**, including after registering the claim internally. The
@@ -168,7 +165,7 @@ class VolumeClaim(Protocol):
         """
         raise NotImplementedError
 
-    def prove(self) -> float | None:
+    async def prove(self) -> float | None:
         """The fader reading, but only when it AGREES with the declared level.
 
         **MS-14, and the shape ruling S10 preserves.** Returns the number the
@@ -195,7 +192,7 @@ class VolumeClaim(Protocol):
         """
         raise NotImplementedError
 
-    def release(self) -> None:
+    async def release(self) -> None:
         """Give the fader back.
 
         Called on every path out of the session, including after an
@@ -233,11 +230,11 @@ class RecordStore(Protocol):
     result — disclose it and recommend, never block.
     """
 
-    def bank(self, record: Mapping[str, Any]) -> str:
+    async def bank(self, record: Mapping[str, Any]) -> str:
         """Write one capture record; return the id that finds it again."""
         raise NotImplementedError
 
-    def read(self, record_id: str) -> Mapping[str, Any] | None:
+    async def read(self, record_id: str) -> Mapping[str, Any] | None:
         """One banked record by id, or ``None`` when the store has no such id.
 
         ``None`` rather than a raise: a missing record is a fact an offline
@@ -245,11 +242,11 @@ class RecordStore(Protocol):
         """
         raise NotImplementedError
 
-    def persist(self, state: Mapping[str, Any]) -> str:
+    async def persist(self, state: Mapping[str, Any]) -> str:
         """Write the session's durable state; return the id that finds it."""
         raise NotImplementedError
 
-    def read_state(self, state_id: str) -> Mapping[str, Any] | None:
+    async def read_state(self, state_id: str) -> Mapping[str, Any] | None:
         """One persisted session state by id, or ``None`` when there is none.
 
         ``None`` for :meth:`read`'s reason and for one more: a state id may
@@ -268,7 +265,7 @@ class RecordStore(Protocol):
 #: table says in as many words **do not re-extract** it. The engine's job is to
 #: have a verb that reaches it, so a front end asks the session rather than
 #: assembling a CLI invocation of its own.
-Recommender = Callable[[Sequence[str]], Mapping[str, Any]]
+Recommender = Callable[[Sequence[str]], Awaitable[Mapping[str, Any]]]
 
 
 @dataclass(frozen=True)

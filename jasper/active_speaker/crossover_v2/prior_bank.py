@@ -112,7 +112,7 @@ class PriorBank:
     disclosures: tuple[CapabilityStub, ...]
 
     @classmethod
-    def read(cls, store: "RecordStore", state_id: str) -> "PriorBank | None":
+    async def read(cls, store: "RecordStore", state_id: str) -> "PriorBank | None":
         """The bank one ``save`` left behind, or ``None`` when there is none.
 
         ``None`` rather than a raise, for the reason
@@ -124,7 +124,7 @@ class PriorBank:
         consistent reading of one bank and a walk costs no store reads per
         capture.
         """
-        state = store.read_state(state_id)
+        state = await store.read_state(state_id)
         if state is None:
             return None
         record_ids = _texts(state.get("record_ids"))
@@ -134,7 +134,7 @@ class PriorBank:
             measurement_level_db=_number(state.get("measurement_level_db")),
             graph_fingerprint=str(state.get("graph_fingerprint") or ""),
             record_ids=record_ids,
-            baselines=_baselines_by_pose(store, record_ids),
+            baselines=await _baselines_by_pose(store, record_ids),
             disclosures=_disclosures(state.get("disclosures")),
         )
 
@@ -148,13 +148,13 @@ class PriorBank:
         return self.baselines.get(pose, "")
 
 
-def _baselines_by_pose(
+async def _baselines_by_pose(
     store: "RecordStore", record_ids: tuple[str, ...],
 ) -> Mapping[CapturePose, str]:
     """Each pose the prior baselined, against the LAST id that baselined it."""
     found: dict[CapturePose, str] = {}
     for record_id in record_ids:
-        record = store.read(record_id)
+        record = await store.read(record_id)
         if record is None or record.get("kind") != MEASURE_KIND_BASELINE:
             continue
         found[pose_of(record)] = record_id

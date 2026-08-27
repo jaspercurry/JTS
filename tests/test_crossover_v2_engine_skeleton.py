@@ -11,6 +11,7 @@ refuses to BANK without ever refusing to play.
 """
 from __future__ import annotations
 
+import asyncio
 from dataclasses import dataclass, field
 from typing import Any, Mapping, Sequence
 
@@ -81,16 +82,16 @@ class _Graph:
     install_raises: bool = False
     restore_raises: bool = False
 
-    def install(self) -> str:
+    async def install(self) -> str:
         self.installs += 1
         if self.install_raises:
             raise RuntimeError("install blew up after arming half a graph")
         return self.fingerprint
 
-    def patch(self, changes: Mapping[str, Any]) -> None:
+    async def patch(self, changes: Mapping[str, Any]) -> None:
         self.patches.append(changes)
 
-    def restore(self) -> None:
+    async def restore(self) -> None:
         self.restores += 1
         if self.restore_raises:
             raise RuntimeError("restore blew up")
@@ -108,18 +109,18 @@ class _Volume:
     acquire_raises: bool = False
     release_raises: bool = False
 
-    def acquire(self, level_db: float) -> None:
+    async def acquire(self, level_db: float) -> None:
         self.acquired.append(level_db)
         if self.acquire_raises:
             raise RuntimeError("the household is holding it")
 
-    def prove(self) -> float | None:
+    async def prove(self) -> float | None:
         index, self.proves = self.proves, self.proves + 1
         if index < len(self.readings):
             return self.readings[index]
         return self.proven_db
 
-    def release(self) -> None:
+    async def release(self) -> None:
         self.releases += 1
         if self.release_raises:
             raise RuntimeError("release blew up")
@@ -130,19 +131,19 @@ class _Records:
     banked: list[Mapping[str, Any]] = field(default_factory=list)
     persisted: list[Mapping[str, Any]] = field(default_factory=list)
 
-    def bank(self, record: Mapping[str, Any]) -> str:
+    async def bank(self, record: Mapping[str, Any]) -> str:
         self.banked.append(record)
         return f"rec-{len(self.banked)}"
 
-    def read(self, record_id: str) -> Mapping[str, Any] | None:
+    async def read(self, record_id: str) -> Mapping[str, Any] | None:
         index = int(record_id.removeprefix("rec-")) - 1
         return self.banked[index] if 0 <= index < len(self.banked) else None
 
-    def persist(self, state: Mapping[str, Any]) -> str:
+    async def persist(self, state: Mapping[str, Any]) -> str:
         self.persisted.append(state)
         return f"state-{len(self.persisted)}"
 
-    def read_state(self, state_id: str) -> Mapping[str, Any] | None:
+    async def read_state(self, state_id: str) -> Mapping[str, Any] | None:
         index = int(state_id.removeprefix("state-")) - 1
         return self.persisted[index] if 0 <= index < len(self.persisted) else None
 
@@ -156,7 +157,7 @@ class _Play:
     script: list[tuple[str, str]] = field(default_factory=list)
     calls: list[dict[str, Any]] = field(default_factory=list)
 
-    def run(
+    async def run(
         self,
         *,
         spec: MeasureSpec,
@@ -181,7 +182,7 @@ class _Play:
 class _Recommender:
     asked: list[tuple[str, ...]] = field(default_factory=list)
 
-    def __call__(self, record_ids: Sequence[str]) -> Mapping[str, Any]:
+    async def __call__(self, record_ids: Sequence[str]) -> Mapping[str, Any]:
         self.asked.append(tuple(record_ids))
         return {"asked": len(record_ids)}
 
@@ -388,10 +389,10 @@ def test_the_design_axis_is_spelled_the_way_spatial_spells_it():
 # --------------------------------------------------------------------------- #
 
 
-def test_open_installs_the_graph_once_and_claims_the_declared_level():
+async def test_open_installs_the_graph_once_and_claims_the_declared_level():
     session, parts = _session()
 
-    with session:
+    async with session:
         assert parts["graph"].installs == 1
         assert parts["volume"].acquired == [-20.0]
         assert session.graph_fingerprint == "graph-abc"
@@ -403,40 +404,40 @@ def test_open_installs_the_graph_once_and_claims_the_declared_level():
     assert not session.is_open
 
 
-def test_opening_an_open_session_is_a_programming_error():
+async def test_opening_an_open_session_is_a_programming_error():
     session, _ = _session()
 
-    with session:
+    async with session:
         with pytest.raises(SessionStateError):
-            session.open()
+            await session.open()
 
 
-def test_a_closed_session_is_spent_and_will_not_re_open():
+async def test_a_closed_session_is_spent_and_will_not_re_open():
     """One lifetime per instance. Rebuilding over an existing bank is wave 2's
     first decision, and a re-open that quietly worked would answer it here."""
     session, _ = _session()
-    session.open()
-    session.close()
+    await session.open()
+    await session.close()
 
     with pytest.raises(SessionStateError):
-        session.open()
+        await session.open()
 
 
-def test_closing_a_closed_session_is_not_an_error():
+async def test_closing_a_closed_session_is_not_an_error():
     session, parts = _session()
-    session.open()
-    session.close()
-    session.close()
+    await session.open()
+    await session.close()
+    await session.close()
 
     assert parts["volume"].releases == 1
 
 
-def test_an_open_that_cannot_claim_the_fader_puts_the_graph_back():
+async def test_an_open_that_cannot_claim_the_fader_puts_the_graph_back():
     """Half an open is a speaker measuring through a graph nobody holds."""
     session, parts = _session(volume=_Volume(acquire_raises=True))
 
     with pytest.raises(RuntimeError):
-        session.open()
+        await session.open()
 
     assert parts["graph"].restores == 1
     assert parts["volume"].releases == 1, "a half-registered claim is given back"
@@ -444,41 +445,41 @@ def test_an_open_that_cannot_claim_the_fader_puts_the_graph_back():
     assert session.graph_fingerprint == ""
 
 
-def test_an_install_that_raises_mid_arming_still_restores_the_graph():
+async def test_an_install_that_raises_mid_arming_still_restores_the_graph():
     """A conforming install may route the tweeter and then fail. Skipping the
     restore because the call raised would leave the box that way."""
     session, parts = _session(graph=_Graph(install_raises=True))
 
     with pytest.raises(RuntimeError):
-        session.open()
+        await session.open()
 
     assert parts["graph"].restores == 1
     assert not session.is_open
 
 
-def test_a_failing_graph_restore_still_gives_the_fader_back():
+async def test_a_failing_graph_restore_still_gives_the_fader_back():
     session, parts = _session(graph=_Graph(restore_raises=True))
-    session.open()
+    await session.open()
 
     with pytest.raises(RuntimeError):
-        session.close()
+        await session.close()
 
     assert parts["volume"].releases == 1
 
 
-def test_a_failing_volume_release_still_restores_the_graph():
+async def test_a_failing_volume_release_still_restores_the_graph():
     """The fader is the slot whose loss is audible, so its exception is the one
     that reaches the caller — but the graph is still put back."""
     session, parts = _session(volume=_Volume(release_raises=True))
-    session.open()
+    await session.open()
 
     with pytest.raises(RuntimeError):
-        session.close()
+        await session.close()
 
     assert parts["graph"].restores == 1
 
 
-def test_a_release_that_raised_is_tried_again_by_the_next_close():
+async def test_a_release_that_raised_is_tried_again_by_the_next_close():
     """A slot whose release failed stays marked held, so the retry is real.
 
     A stranded fader claim leaves the speaker at a measurement level nobody
@@ -486,32 +487,32 @@ def test_a_release_that_raised_is_tried_again_by_the_next_close():
     """
     volume = _Volume(release_raises=True)
     session, _ = _session(volume=volume)
-    session.open()
+    await session.open()
 
     with pytest.raises(RuntimeError):
-        session.close()
+        await session.close()
     assert volume.releases == 1
 
     volume.release_raises = False
-    session.close()
+    await session.close()
 
     assert volume.releases == 2
     assert not session.is_open
 
 
-def test_a_close_failure_does_not_mask_the_exception_in_flight():
+async def test_a_close_failure_does_not_mask_the_exception_in_flight():
     """The body's failure is what the caller needs to see; the close failure is
     chained onto it rather than replacing it."""
     session, _ = _session(volume=_Volume(release_raises=True))
 
     with pytest.raises(ValueError, match="the real problem") as caught:
-        with session:
+        async with session:
             raise ValueError("the real problem")
 
     assert isinstance(caught.value.__context__, RuntimeError)
 
 
-def test_a_cleanup_failure_during_a_failed_open_does_not_hide_the_cause():
+async def test_a_cleanup_failure_during_a_failed_open_does_not_hide_the_cause():
     """The install failure is what names the cause; a release that also fails
     is attached to it rather than reported in its place."""
     session, _ = _session(
@@ -519,17 +520,97 @@ def test_a_cleanup_failure_during_a_failed_open_does_not_hide_the_cause():
     )
 
     with pytest.raises(RuntimeError, match="install blew up") as caught:
-        session.open()
+        await session.open()
 
     assert isinstance(caught.value.__context__, RuntimeError)
     assert "release blew up" in str(caught.value.__context__)
 
 
-def test_measure_refuses_a_session_that_was_never_opened():
+async def test_measure_refuses_a_session_that_was_never_opened():
     session, _ = _session()
 
     with pytest.raises(SessionStateError):
-        session.measure(MeasureSpec(kind=MEASURE_KIND_BASELINE))
+        await session.measure(MeasureSpec(kind=MEASURE_KIND_BASELINE))
+
+
+# --------------------------------------------------------------------------- #
+# the release paths under cancellation
+#
+# Both pins read the ordered log at the INSTANT the failure surfaces, never
+# after a settling sleep: a release that is still running in a detached task
+# has already lost the property, and a pin that only counted the calls would
+# go green as soon as the abandoned task finished.
+# --------------------------------------------------------------------------- #
+
+
+@dataclass
+class _SlowVolume(_Volume):
+    """A release that takes a scheduler turn, logged when it COMPLETES."""
+
+    events: list[str] = field(default_factory=list)
+    releasing: asyncio.Event = field(default_factory=asyncio.Event)
+
+    async def release(self) -> None:
+        self.releasing.set()
+        await asyncio.sleep(0.05)
+        self.releases += 1
+        self.events.append("volume")
+
+
+@dataclass
+class _LoggingGraph(_Graph):
+    events: list[str] = field(default_factory=list)
+
+    async def restore(self) -> None:
+        await super().restore()
+        self.events.append("graph")
+
+
+async def test_a_close_cancelled_mid_release_still_gives_both_slots_back_in_order():
+    """A cancelling caller waits for the fader before it gets its cancel.
+
+    A bare ``await asyncio.shield(coro)`` detaches the give-back: the
+    cancellation reaches the caller while the fader is still being handed
+    over, the graph restore has not started, and the two end up out of the
+    order ``_release_slots`` promises.
+    """
+    events: list[str] = []
+    volume = _SlowVolume(events=events)
+    session, _ = _session(graph=_LoggingGraph(events=events), volume=volume)
+    await session.open()
+
+    closing = asyncio.ensure_future(session.close())
+    await volume.releasing.wait()
+    closing.cancel()
+
+    with pytest.raises(asyncio.CancelledError):
+        await closing
+
+    assert events == ["volume", "graph"]
+    assert not session.is_open
+
+
+async def test_a_cancelled_cleanup_after_a_failed_open_does_not_replace_the_cause():
+    """The hole the shield closes, and the reason it is part of the decision.
+
+    ``_attach_cleanup_failure`` catches ``Exception``, which is not a
+    ``CancelledError`` — so an unshielded give-back lets a cancellation out
+    over the very exception ``open`` is propagating, and the caller is told
+    the session was cancelled rather than that the fader was already held.
+    """
+    events: list[str] = []
+    volume = _SlowVolume(events=events, acquire_raises=True)
+    session, _ = _session(graph=_LoggingGraph(events=events), volume=volume)
+
+    opening = asyncio.ensure_future(session.open())
+    await volume.releasing.wait()
+    opening.cancel()
+
+    with pytest.raises(RuntimeError, match="the household is holding it") as caught:
+        await opening
+
+    assert events == ["volume", "graph"]
+    assert isinstance(caught.value.__context__, asyncio.CancelledError)
 
 
 # --------------------------------------------------------------------------- #
@@ -537,11 +618,11 @@ def test_measure_refuses_a_session_that_was_never_opened():
 # --------------------------------------------------------------------------- #
 
 
-def test_one_measure_reports_one_entry_per_position_it_names():
+async def test_one_measure_reports_one_entry_per_position_it_names():
     session, parts = _session()
 
-    with session:
-        outcome = session.measure(MeasureSpec(
+    async with session:
+        outcome = await session.measure(MeasureSpec(
             kind=MEASURE_KIND_CANDIDATE, positions=(-22, 0, 22),
             candidate_id="cand-7",
         ))
@@ -558,13 +639,13 @@ def test_one_measure_reports_one_entry_per_position_it_names():
     }
 
 
-def test_a_ladder_measures_every_position_at_every_rung():
+async def test_a_ladder_measures_every_position_at_every_rung():
     """R-4's axis: the unit is position × rung, and each rung is a stimulus
     level — never a second claim on the fader (ruling S8)."""
     session, parts = _session()
 
-    with session:
-        outcome = session.measure(MeasureSpec(
+    async with session:
+        outcome = await session.measure(MeasureSpec(
             kind=MEASURE_KIND_BASELINE, positions=(0, 22),
             level_ladder_dbfs=(-20.0, -12.0),
         ))
@@ -581,15 +662,15 @@ def test_a_ladder_measures_every_position_at_every_rung():
     ]
 
 
-def test_a_spec_naming_no_position_measures_the_design_axis():
+async def test_a_spec_naming_no_position_measures_the_design_axis():
     """``()`` and ``(0,)`` are one pose, spelled the way ``spatial`` spells it."""
     empty, empty_parts = _session()
-    with empty:
-        empty.measure(MeasureSpec(kind=MEASURE_KIND_BASELINE))
+    async with empty:
+        await empty.measure(MeasureSpec(kind=MEASURE_KIND_BASELINE))
 
     explicit, explicit_parts = _session()
-    with explicit:
-        explicit.measure(MeasureSpec(
+    async with explicit:
+        await explicit.measure(MeasureSpec(
             kind=MEASURE_KIND_BASELINE, positions=(DESIGN_AXIS_DEG,),
         ))
 
@@ -597,13 +678,13 @@ def test_a_spec_naming_no_position_measures_the_design_axis():
     assert empty_parts["records"].banked[0]["position_deg"] == DESIGN_AXIS_DEG
 
 
-def test_the_pose_prompt_reaches_both_the_transaction_and_the_record():
+async def test_the_pose_prompt_reaches_both_the_transaction_and_the_record():
     """MS-17: one record shape, and the prompt rides it whichever mover
     satisfied the precondition."""
     session, parts = _session()
 
-    with session:
-        session.measure(MeasureSpec(
+    async with session:
+        await session.measure(MeasureSpec(
             kind=MEASURE_KIND_BASELINE, positions=(0, 22),
             pose_prompts=("stand at the mark", "step 22 degrees left"),
         ))
@@ -616,7 +697,7 @@ def test_the_pose_prompt_reaches_both_the_transaction_and_the_record():
     ]
 
 
-def test_an_unproven_level_refuses_to_bank_but_never_to_play():
+async def test_an_unproven_level_refuses_to_bank_but_never_to_play():
     """MS-14 in the shape ruling S10 preserves.
 
     The stimulus still plays and the session can still measure again; what the
@@ -624,8 +705,8 @@ def test_an_unproven_level_refuses_to_bank_but_never_to_play():
     """
     session, parts = _session(volume=_Volume(proven_db=None))
 
-    with session:
-        outcome = session.measure(MeasureSpec(kind=MEASURE_KIND_BASELINE))
+    async with session:
+        outcome = await session.measure(MeasureSpec(kind=MEASURE_KIND_BASELINE))
 
     assert parts["play"].calls, "the stimulus must still have played"
     assert outcome.record_ids == ()
@@ -634,15 +715,15 @@ def test_an_unproven_level_refuses_to_bank_but_never_to_play():
     assert outcome.stimuli[0].level_db is None
 
 
-def test_the_level_is_proven_per_stimulus_not_once_per_spec():
+async def test_the_level_is_proven_per_stimulus_not_once_per_spec():
     """A claim can be preempted between two positions of one walk. A single
     proof taken before the walk would stamp an unverified level into every
     record after it — the 8.712 dB shape."""
     volume = _Volume(readings=[-20.0, None, -20.0])
     session, parts = _session(volume=volume)
 
-    with session:
-        outcome = session.measure(MeasureSpec(
+    async with session:
+        outcome = await session.measure(MeasureSpec(
             kind=MEASURE_KIND_BASELINE, positions=(-22, 0, 22),
         ))
 
@@ -654,7 +735,7 @@ def test_the_level_is_proven_per_stimulus_not_once_per_spec():
     assert len(parts["play"].calls) == 3
 
 
-def test_a_reading_that_disagrees_with_the_declared_level_is_not_proven():
+async def test_a_reading_that_disagrees_with_the_declared_level_is_not_proven():
     """G-5. ``prove()`` is contracted to return a reading only when it agrees;
     the session re-checks against the level it declared rather than trusting
     the answer, so the number banked and the number played are one number.
@@ -665,39 +746,39 @@ def test_a_reading_that_disagrees_with_the_declared_level_is_not_proven():
     drifted = _Volume(proven_db=-20.0 - (READBACK_TOLERANCE_DB * 10))
     session, parts = _session(volume=drifted)
 
-    with session:
-        outcome = session.measure(MeasureSpec(kind=MEASURE_KIND_BASELINE))
+    async with session:
+        outcome = await session.measure(MeasureSpec(kind=MEASURE_KIND_BASELINE))
 
     assert parts["records"].banked == []
     assert outcome.stimuli[0].incident == UNPROVEN_LEVEL
 
 
-def test_a_reading_inside_the_confirm_tolerance_is_proven_and_banked():
+async def test_a_reading_inside_the_confirm_tolerance_is_proven_and_banked():
     """Anti-vacuity for the check above: agreement is not exact equality."""
     nudged = _Volume(proven_db=-20.0 + (READBACK_TOLERANCE_DB / 2))
     session, parts = _session(volume=nudged)
 
-    with session:
-        outcome = session.measure(MeasureSpec(kind=MEASURE_KIND_BASELINE))
+    async with session:
+        outcome = await session.measure(MeasureSpec(kind=MEASURE_KIND_BASELINE))
 
     assert len(outcome.record_ids) == 1
     assert parts["records"].banked[0]["level_db"] == nudged.proven_db
 
 
-def test_a_transaction_that_never_reached_play_banks_nothing():
+async def test_a_transaction_that_never_reached_play_banks_nothing():
     session, parts = _session(
         play=_Play(stage=STAGE_ADMIT, incident="relay_timeout")
     )
 
-    with session:
-        outcome = session.measure(MeasureSpec(kind=MEASURE_KIND_BASELINE))
+    async with session:
+        outcome = await session.measure(MeasureSpec(kind=MEASURE_KIND_BASELINE))
 
     assert outcome.record_ids == ()
     assert parts["records"].banked == []
     assert outcome.stimuli[0].incident == "relay_timeout"
 
 
-def test_a_mixed_walk_banks_what_played_and_says_why_for_the_rest():
+async def test_a_mixed_walk_banks_what_played_and_says_why_for_the_rest():
     """The continue-not-break rule: one failed position must not end the walk,
     and every entry says what became of its own stimulus."""
     session, parts = _session(play=_Play(script=[
@@ -706,8 +787,8 @@ def test_a_mixed_walk_banks_what_played_and_says_why_for_the_rest():
         (STAGE_RESTORE, ""),
     ]))
 
-    with session:
-        outcome = session.measure(MeasureSpec(
+    async with session:
+        outcome = await session.measure(MeasureSpec(
             kind=MEASURE_KIND_BASELINE, positions=(-22, 0, 22),
         ))
 
@@ -718,11 +799,11 @@ def test_a_mixed_walk_banks_what_played_and_says_why_for_the_rest():
     assert [row["position_deg"] for row in parts["records"].banked] == [-22, 22]
 
 
-def test_a_stub_that_captures_nothing_stops_the_stimulus():
+async def test_a_stub_that_captures_nothing_stops_the_stimulus():
     session, parts = _session()
 
-    with session:
-        outcome = session.measure(MeasureSpec(
+    async with session:
+        outcome = await session.measure(MeasureSpec(
             kind=MEASURE_KIND_BASELINE, polarity=POLARITY_INVERTED,
         ))
 
@@ -734,7 +815,7 @@ def test_a_stub_that_captures_nothing_stops_the_stimulus():
     ]
 
 
-def test_an_aborted_call_never_claims_a_capture_was_banked():
+async def test_an_aborted_call_never_claims_a_capture_was_banked():
     """S12 honesty, turned on the disclosure itself.
 
     A near-field spec that also asks for inverted polarity captures NOTHING —
@@ -743,8 +824,8 @@ def test_an_aborted_call_never_claims_a_capture_was_banked():
     """
     session, parts = _session()
 
-    with session:
-        outcome = session.measure(MeasureSpec(
+    async with session:
+        outcome = await session.measure(MeasureSpec(
             kind=MEASURE_KIND_BASELINE,
             regime=REGIME_NEAR_FIELD,
             polarity=POLARITY_INVERTED,
@@ -756,15 +837,15 @@ def test_an_aborted_call_never_claims_a_capture_was_banked():
     }
     assert not any(stub.captured for stub in outcome.disclosures)
     assert all("nothing captured" in stub.message for stub in outcome.disclosures)
-    assert not any(stub.captured for stub in session.analyze().disclosures)
+    assert not any(stub.captured for stub in (await session.analyze()).disclosures)
 
 
-def test_a_stub_whose_capture_still_happens_measures_and_discloses():
+async def test_a_stub_whose_capture_still_happens_measures_and_discloses():
     """R-3: the near-field capture ships, and the splice is what is owed."""
     session, parts = _session()
 
-    with session:
-        outcome = session.measure(MeasureSpec(
+    async with session:
+        outcome = await session.measure(MeasureSpec(
             kind=MEASURE_KIND_BASELINE, regime=REGIME_NEAR_FIELD,
         ))
 
@@ -776,29 +857,29 @@ def test_a_stub_whose_capture_still_happens_measures_and_discloses():
     assert outcome.disclosures[0].captured is True
 
 
-def test_the_outcome_carries_the_spec_it_answers():
+async def test_the_outcome_carries_the_spec_it_answers():
     """A caller holding one outcome can say which parameters produced it —
     which is what makes a bank of them comparable."""
     spec = MeasureSpec(kind=MEASURE_KIND_CANDIDATE, candidate_id="cand-7")
     session, _ = _session()
 
-    with session:
-        outcome = session.measure(spec)
+    async with session:
+        outcome = await session.measure(spec)
 
     assert isinstance(outcome, MeasureOutcome)
     assert outcome.spec is spec
 
 
-def test_analyze_reports_the_holes_and_needs_no_open_session():
+async def test_analyze_reports_the_holes_and_needs_no_open_session():
     """Ruling S3: a banked session is re-analyzable offline, forever."""
     session, _ = _session()
 
-    with session:
-        session.measure(MeasureSpec(
+    async with session:
+        await session.measure(MeasureSpec(
             kind=MEASURE_KIND_BASELINE, regime=REGIME_NEAR_FIELD,
         ))
 
-    outcome = session.analyze()
+    outcome = await session.analyze()
 
     assert not session.is_open
     assert [stub.code for stub in outcome.disclosures] == [
@@ -807,22 +888,22 @@ def test_analyze_reports_the_holes_and_needs_no_open_session():
     assert outcome.results == {}
 
 
-def test_analyze_names_each_hole_once_however_many_specs_hit_it():
+async def test_analyze_names_each_hole_once_however_many_specs_hit_it():
     """A ten-position near-field walk owes the splice once, not ten times."""
     session, _ = _session()
 
-    with session:
+    async with session:
         for _ in range(3):
-            session.measure(MeasureSpec(
+            await session.measure(MeasureSpec(
                 kind=MEASURE_KIND_BASELINE, regime=REGIME_NEAR_FIELD,
             ))
 
-    assert [stub.code for stub in session.analyze().disclosures] == [
+    assert [stub.code for stub in (await session.analyze()).disclosures] == [
         NEAR_FIELD_SPLICE_NOT_IMPLEMENTED
     ]
 
 
-def test_a_hole_that_later_banks_evidence_stops_saying_it_captured_nothing():
+async def test_a_hole_that_later_banks_evidence_stops_saying_it_captured_nothing():
     """Order must not decide what ``analyze`` believes is in the bank.
 
     An aborted near-field call discloses "nothing captured"; a later near-field
@@ -831,19 +912,19 @@ def test_a_hole_that_later_banks_evidence_stops_saying_it_captured_nothing():
     """
     session, _ = _session()
 
-    with session:
-        session.measure(MeasureSpec(
+    async with session:
+        await session.measure(MeasureSpec(
             kind=MEASURE_KIND_BASELINE,
             regime=REGIME_NEAR_FIELD,
             polarity=POLARITY_INVERTED,
         ))
-        assert not session.analyze().disclosures[0].captured
+        assert not (await session.analyze()).disclosures[0].captured
 
-        session.measure(MeasureSpec(
+        await session.measure(MeasureSpec(
             kind=MEASURE_KIND_BASELINE, regime=REGIME_NEAR_FIELD,
         ))
 
-    disclosures = session.analyze().disclosures
+    disclosures = (await session.analyze()).disclosures
     near_field = [
         s for s in disclosures if s.code == NEAR_FIELD_SPLICE_NOT_IMPLEMENTED
     ]
@@ -851,68 +932,68 @@ def test_a_hole_that_later_banks_evidence_stops_saying_it_captured_nothing():
     assert near_field[0].captured is True
 
 
-def test_a_hole_that_already_banked_evidence_is_not_downgraded():
+async def test_a_hole_that_already_banked_evidence_is_not_downgraded():
     """The reverse never happens: banked evidence does not stop existing."""
     session, _ = _session()
 
-    with session:
-        session.measure(MeasureSpec(
+    async with session:
+        await session.measure(MeasureSpec(
             kind=MEASURE_KIND_BASELINE, regime=REGIME_NEAR_FIELD,
         ))
-        session.measure(MeasureSpec(
+        await session.measure(MeasureSpec(
             kind=MEASURE_KIND_BASELINE,
             regime=REGIME_NEAR_FIELD,
             polarity=POLARITY_INVERTED,
         ))
 
     near_field = [
-        s for s in session.analyze().disclosures
+        s for s in (await session.analyze()).disclosures
         if s.code == NEAR_FIELD_SPLICE_NOT_IMPLEMENTED
     ]
     assert len(near_field) == 1
     assert near_field[0].captured is True
 
 
-def test_a_banked_record_can_be_read_back_by_its_id():
+async def test_a_banked_record_can_be_read_back_by_its_id():
     """The read door is what makes ``analyze`` an offline verb (ruling S3)."""
     session, parts = _session()
 
-    with session:
-        outcome = session.measure(MeasureSpec(
+    async with session:
+        outcome = await session.measure(MeasureSpec(
             kind=MEASURE_KIND_BASELINE, positions=(22,),
         ))
 
-    record = parts["records"].read(outcome.record_ids[0])
+    record = await parts["records"].read(outcome.record_ids[0])
 
     assert record is not None
     assert record["position_deg"] == 22
-    assert parts["records"].read("rec-99") is None
+    assert await parts["records"].read("rec-99") is None
 
 
-def test_recommend_asks_the_prescriber_over_everything_banked():
+async def test_recommend_asks_the_prescriber_over_everything_banked():
     session, parts = _session()
 
-    with session:
-        session.measure(MeasureSpec(
+    async with session:
+        await session.measure(MeasureSpec(
             kind=MEASURE_KIND_CANDIDATE, positions=(0, 22),
         ))
 
-    outcome = session.recommend()
+    outcome = await session.recommend()
 
     assert parts["recommend"].asked == [("rec-1", "rec-2")]
     assert outcome.record_ids == ("rec-1", "rec-2")
     assert outcome.recommendation == {"asked": 2}
 
 
-def test_save_persists_the_session_state_over_the_records_measure_banked():
+async def test_save_persists_the_session_state_over_the_records_measure_banked():
     session, parts = _session()
 
-    with session:
-        session.measure(MeasureSpec(
+    async with session:
+        await session.measure(MeasureSpec(
             kind=MEASURE_KIND_BASELINE, regime=REGIME_NEAR_FIELD,
         ))
 
-    outcome = session.save()
+    outcome = await session.save()
 
     assert outcome.state_id == "state-1"
     assert outcome.record_ids == ("rec-1",)
@@ -932,13 +1013,13 @@ def test_save_persists_the_session_state_over_the_records_measure_banked():
 # --------------------------------------------------------------------------- #
 
 
-def _banked(records: _Records, *specs: MeasureSpec) -> tuple[str, TuningSession]:
+async def _banked(records: _Records, *specs: MeasureSpec) -> tuple[str, TuningSession]:
     """Run a whole session over ``records``; return its state id and the session."""
     session, _parts = _session(records=records)
-    with session:
+    async with session:
         for spec in specs:
-            session.measure(spec)
-    return session.save().state_id, session
+            await session.measure(spec)
+    return (await session.save()).state_id, session
 
 
 def _pose(record: Mapping[str, Any]) -> CapturePose:
@@ -949,7 +1030,7 @@ def _pose(record: Mapping[str, Any]) -> CapturePose:
     )
 
 
-def test_a_prior_bank_is_exactly_what_save_wrote_read_back_again():
+async def test_a_prior_bank_is_exactly_what_save_wrote_read_back_again():
     """The round trip, which is the type's whole contract.
 
     Every field is asserted against the session that wrote it or against the
@@ -957,13 +1038,13 @@ def test_a_prior_bank_is_exactly_what_save_wrote_read_back_again():
     agreeing with a constant the writer never produced.
     """
     records = _Records()
-    state_id, wrote = _banked(
+    state_id, wrote = await _banked(
         records,
         MeasureSpec(kind=MEASURE_KIND_BASELINE, regime=REGIME_NEAR_FIELD),
         MeasureSpec(kind=MEASURE_KIND_BASELINE, positions=(22,)),
     )
 
-    bank = PriorBank.read(records, state_id)
+    bank = await PriorBank.read(records, state_id)
 
     assert bank is not None
     assert bank.state_id == state_id
@@ -971,22 +1052,22 @@ def test_a_prior_bank_is_exactly_what_save_wrote_read_back_again():
     assert bank.measurement_level_db == wrote.measurement_level_db
     assert bank.graph_fingerprint == wrote.graph_fingerprint
     assert bank.record_ids == wrote.banked_record_ids
-    assert bank.disclosures == wrote.analyze().disclosures
+    assert bank.disclosures == (await wrote.analyze()).disclosures
     assert bank.disclosures == (
         stub_for_code(NEAR_FIELD_SPLICE_NOT_IMPLEMENTED, captured=True),
     )
 
 
-def test_a_state_id_the_store_cannot_resolve_reads_as_no_prior():
+async def test_a_state_id_the_store_cannot_resolve_reads_as_no_prior():
     """A missing bank is a fact to disclose, never an exception (ruling S10).
 
     The state file this replaces is overwritten every persist, so "the prior
     round's state is gone" is an ordinary outcome and not a corruption.
     """
-    assert PriorBank.read(_Records(), "state-99") is None
+    assert await PriorBank.read(_Records(), "state-99") is None
 
 
-def test_a_pose_measured_twice_resolves_to_the_later_baseline():
+async def test_a_pose_measured_twice_resolves_to_the_later_baseline():
     """A retake supersedes the attempt it followed.
 
     "Immediately before apply" is what makes the before→after bracket honest,
@@ -994,39 +1075,39 @@ def test_a_pose_measured_twice_resolves_to_the_later_baseline():
     tiebreak WITHIN a pose and never across poses — see the walk below.
     """
     records = _Records()
-    state_id, _wrote = _banked(
+    state_id, _wrote = await _banked(
         records,
         MeasureSpec(kind=MEASURE_KIND_BASELINE, positions=(22,)),
         MeasureSpec(kind=MEASURE_KIND_CANDIDATE, positions=(22,)),
         MeasureSpec(kind=MEASURE_KIND_BASELINE, positions=(22,)),
     )
 
-    bank = PriorBank.read(records, state_id)
+    bank = await PriorBank.read(records, state_id)
 
     assert bank is not None
     assert bank.baseline_for(_pose(records.banked[0])) == "rec-3"
 
 
-def test_a_pose_the_prior_never_baselined_has_no_before():
+async def test_a_pose_the_prior_never_baselined_has_no_before():
     """A round with no comparable "before" says so; it does not promote one.
 
     Neither a candidate capture at the same pose nor a baseline at a different
     one is this capture's comparand.
     """
     records = _Records()
-    state_id, _wrote = _banked(
+    state_id, _wrote = await _banked(
         records,
         MeasureSpec(kind=MEASURE_KIND_CANDIDATE, positions=(22,)),
         MeasureSpec(kind=MEASURE_KIND_BASELINE, positions=(-22,)),
     )
 
-    bank = PriorBank.read(records, state_id)
+    bank = await PriorBank.read(records, state_id)
 
     assert bank is not None
     assert bank.baseline_for(_pose(records.banked[0])) == ""
 
 
-def test_each_capture_of_one_walk_names_the_before_taken_at_ITS_pose():
+async def test_each_capture_of_one_walk_names_the_before_taken_at_ITS_pose():
     """The whole reason the comparand is resolved per capture and not per bank.
 
     A prior that walked three poses in ONE ``measure`` call banked three
@@ -1036,7 +1117,7 @@ def test_each_capture_of_one_walk_names_the_before_taken_at_ITS_pose():
     behaviour as the correction's effect.
     """
     records = _Records()
-    prior_id, _wrote = _banked(records, MeasureSpec(
+    prior_id, _wrote = await _banked(records, MeasureSpec(
         kind=MEASURE_KIND_BASELINE, positions=(-22, 0, 22),
     ))
     before_at = {r["position_deg"]: f"rec-{i}"
@@ -1044,10 +1125,10 @@ def test_each_capture_of_one_walk_names_the_before_taken_at_ITS_pose():
     assert len(before_at) == 3
 
     session, parts = _session(
-        records=records, prior=PriorBank.read(records, prior_id),
+        records=records, prior=await PriorBank.read(records, prior_id),
     )
-    with session:
-        session.measure(MeasureSpec(
+    async with session:
+        await session.measure(MeasureSpec(
             kind=MEASURE_KIND_VERIFY, positions=(-22, 0, 22), candidate_id="c1",
         ))
 
@@ -1058,7 +1139,7 @@ def test_each_capture_of_one_walk_names_the_before_taken_at_ITS_pose():
     ]
 
 
-def test_each_rung_of_a_ladder_names_the_before_taken_at_ITS_rung():
+async def test_each_rung_of_a_ladder_names_the_before_taken_at_ITS_rung():
     """The same rule on the axis a level ladder moves along.
 
     One bearing, several stimulus levels. Pairing across rungs would difference
@@ -1067,7 +1148,7 @@ def test_each_rung_of_a_ladder_names_the_before_taken_at_ITS_rung():
     ignores.
     """
     records = _Records()
-    prior_id, _wrote = _banked(records, MeasureSpec(
+    prior_id, _wrote = await _banked(records, MeasureSpec(
         kind=MEASURE_KIND_BASELINE, level_ladder_dbfs=(-20.0, -12.0),
     ))
     before_at = {r["stimulus_dbfs"]: f"rec-{i}"
@@ -1075,10 +1156,10 @@ def test_each_rung_of_a_ladder_names_the_before_taken_at_ITS_rung():
     assert len(before_at) == 2
 
     session, parts = _session(
-        records=records, prior=PriorBank.read(records, prior_id),
+        records=records, prior=await PriorBank.read(records, prior_id),
     )
-    with session:
-        session.measure(MeasureSpec(
+    async with session:
+        await session.measure(MeasureSpec(
             kind=MEASURE_KIND_VERIFY, level_ladder_dbfs=(-20.0, -12.0),
         ))
 
@@ -1089,7 +1170,7 @@ def test_each_rung_of_a_ladder_names_the_before_taken_at_ITS_rung():
     ]
 
 
-def test_every_capture_names_the_before_it_will_be_graded_against():
+async def test_every_capture_names_the_before_it_will_be_graded_against():
     """One hop from a capture to its comparand, so a verdict re-runs offline.
 
     Ruling S3's return on banking complete records is that any future analysis
@@ -1098,19 +1179,19 @@ def test_every_capture_names_the_before_it_will_be_graded_against():
     the pairing rather than reading it.
     """
     records = _Records()
-    prior_id, _wrote = _banked(records, MeasureSpec(kind=MEASURE_KIND_BASELINE))
-    bank = PriorBank.read(records, prior_id)
+    prior_id, _wrote = await _banked(records, MeasureSpec(kind=MEASURE_KIND_BASELINE))
+    bank = await PriorBank.read(records, prior_id)
 
     session, parts = _session(prior=bank)
-    with session:
-        session.measure(MeasureSpec(kind=MEASURE_KIND_VERIFY, candidate_id="c1"))
+    async with session:
+        await session.measure(MeasureSpec(kind=MEASURE_KIND_VERIFY, candidate_id="c1"))
 
     banked = parts["records"].banked[0]
     assert banked["baseline_record_id"] == "rec-1"
     assert banked["candidate_id"] == "c1"
 
 
-def test_a_session_with_no_prior_still_banks_and_says_the_before_is_empty():
+async def test_a_session_with_no_prior_still_banks_and_says_the_before_is_empty():
     """MS-14's shape applied to the comparand: refuse to CLAIM, never to work.
 
     A first-ever round has no "before". That is an honest fact about the
@@ -1118,13 +1199,13 @@ def test_a_session_with_no_prior_still_banks_and_says_the_before_is_empty():
     """
     session, parts = _session()
 
-    with session:
-        session.measure(MeasureSpec(kind=MEASURE_KIND_VERIFY))
+    async with session:
+        await session.measure(MeasureSpec(kind=MEASURE_KIND_VERIFY))
 
     assert parts["records"].banked[0]["baseline_record_id"] == ""
 
 
-def test_analyze_reports_the_priors_holes_before_its_own_and_each_once():
+async def test_analyze_reports_the_priors_holes_before_its_own_and_each_once():
     """A round's evidence is both sides of it, so both sides' holes are named.
 
     Prior first because it happened first, and a hole both sides hit is one
@@ -1132,26 +1213,26 @@ def test_analyze_reports_the_priors_holes_before_its_own_and_each_once():
     sessions tripped over it.
     """
     records = _Records()
-    prior_id, _wrote = _banked(
+    prior_id, _wrote = await _banked(
         records,
         MeasureSpec(kind=MEASURE_KIND_BASELINE, position_axis=POSITION_AXIS_VERTICAL),
         MeasureSpec(kind=MEASURE_KIND_BASELINE, regime=REGIME_NEAR_FIELD),
     )
 
-    session, _parts = _session(records=records, prior=PriorBank.read(records, prior_id))
-    with session:
-        session.measure(MeasureSpec(
+    session, _parts = _session(records=records, prior=await PriorBank.read(records, prior_id))
+    async with session:
+        await session.measure(MeasureSpec(
             kind=MEASURE_KIND_VERIFY, regime=REGIME_NEAR_FIELD,
         ))
 
-    codes = [stub.code for stub in session.analyze().disclosures]
+    codes = [stub.code for stub in (await session.analyze()).disclosures]
 
     assert codes == [
         VERTICAL_AXIS_NOT_IMPLEMENTED, NEAR_FIELD_SPLICE_NOT_IMPLEMENTED,
     ]
 
 
-def test_a_hole_the_prior_could_not_capture_is_upgraded_when_this_session_does():
+async def test_a_hole_the_prior_could_not_capture_is_upgraded_when_this_session_does():
     """The merge keeps the best news, across banks as well as within one.
 
     The prior's near-field spec was aborted by its vertical sibling and banked
@@ -1160,22 +1241,22 @@ def test_a_hole_the_prior_could_not_capture_is_upgraded_when_this_session_does()
     there is.
     """
     records = _Records()
-    prior_id, _wrote = _banked(records, MeasureSpec(
+    prior_id, _wrote = await _banked(records, MeasureSpec(
         kind=MEASURE_KIND_BASELINE,
         regime=REGIME_NEAR_FIELD,
         position_axis=POSITION_AXIS_VERTICAL,
     ))
-    bank = PriorBank.read(records, prior_id)
+    bank = await PriorBank.read(records, prior_id)
     assert [s.captured for s in bank.disclosures] == [False, False]
 
     session, _parts = _session(records=records, prior=bank)
-    with session:
-        session.measure(MeasureSpec(
+    async with session:
+        await session.measure(MeasureSpec(
             kind=MEASURE_KIND_VERIFY, regime=REGIME_NEAR_FIELD,
         ))
 
     near_field = [
-        s for s in session.analyze().disclosures
+        s for s in (await session.analyze()).disclosures
         if s.code == NEAR_FIELD_SPLICE_NOT_IMPLEMENTED
     ]
     assert len(near_field) == 1
@@ -1193,16 +1274,16 @@ def test_a_hole_the_prior_could_not_capture_is_upgraded_when_this_session_does()
     ],
     ids=["absent", "not-a-list", "unknown-code", "not-a-mapping", "empty"],
 )
-def test_a_banked_disclosure_this_build_cannot_describe_is_dropped(disclosures):
+async def test_a_banked_disclosure_this_build_cannot_describe_is_dropped(disclosures):
     """Rendering a hole this build has no words for would say nothing to a person.
 
     The bank still carries the raw code for whoever wrote it; what is dropped
     is the pretence that this build can explain it.
     """
     records = _Records()
-    state_id = records.persist({"record_ids": (), "disclosures": disclosures})
+    state_id = await records.persist({"record_ids": (), "disclosures": disclosures})
 
-    assert PriorBank.read(records, state_id).disclosures == ()
+    assert (await PriorBank.read(records, state_id)).disclosures == ()
 
 
 # --------------------------------------------------------------------------- #

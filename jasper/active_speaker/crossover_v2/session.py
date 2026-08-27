@@ -49,8 +49,9 @@ engine replaces. A third spelling of either would read as the same thing.
 
 from __future__ import annotations
 
+import asyncio
 from dataclasses import dataclass, field
-from typing import Any, Callable, Iterable, Mapping
+from typing import Any, Awaitable, Callable, Coroutine, Iterable, Mapping
 
 from ..volume_latch import fader_matches
 from .contracts import DESIGN_AXIS_DEG, POSITION_AXIS_VERTICAL
@@ -70,26 +71,73 @@ __all__ = [
 ]
 
 
-def _attach_cleanup_failure(
-    primary: BaseException, cleanup: "Callable[[], None]",
+async def _attach_cleanup_failure(
+    primary: BaseException, cleanup: "Callable[[], Awaitable[None]]",
 ) -> None:
     """Run a cleanup; if it fails, hang the failure on ``primary`` and go on.
 
     The one place this engine knows the rule *a cleanup failure never replaces
     the failure that caused the cleanup*. An exception raised out of a
-    ``finally`` or an ``__exit__`` demotes the original to ``__context__`` and
+    ``finally`` or an ``__aexit__`` demotes the original to ``__context__`` and
     reports the symptom — so the original propagates and the cleanup's failure
     is attached to it instead. The FIRST such failure wins, because the first
     thing to fail while unwinding is the one nearest the cause.
 
     The broad catch is the point rather than an oversight: a seam may raise
     anything, and there is no narrower type that means "the cleanup failed".
+    ``CancelledError`` is deliberately NOT caught here — it is not an
+    ``Exception``, and :func:`_shielded_cleanup` is what keeps a cancellation
+    from reaching this await at all.
     """
     try:
-        cleanup()
+        await cleanup()
     except Exception as cleanup_exc:  # noqa: BLE001 - see the docstring
-        if primary.__context__ is None:
-            primary.__context__ = cleanup_exc
+        _attach_first(primary, cleanup_exc)
+
+
+def _attach_first(primary: BaseException, failure: BaseException) -> None:
+    """:func:`_attach_cleanup_failure`'s rule, for a failure already in hand."""
+    if primary.__context__ is None:
+        primary.__context__ = failure
+
+
+async def _shielded_cleanup(
+    cleanup: "Coroutine[Any, Any, None]",
+) -> BaseException | None:
+    """Run a cleanup to completion whatever the caller does to us.
+
+    Returns the cancellation that arrived while the cleanup ran, or ``None``.
+    Both release paths need the cleanup FINISHED before anything propagates;
+    they differ only in what they then do with that cancellation, so that
+    decision stays with each of them.
+
+    The house idiom, whose reference form is
+    :mod:`jasper.web.correction_crossover_v2_wired`: start the cleanup as a
+    TASK, so a cancel aimed at us lands on the shield instead of on the
+    cleanup, and keep waiting through a repeat cancel. A bare
+    ``await asyncio.shield(coro)`` is a different and weaker thing — it
+    detaches the cleanup and lets the cancellation past it, which is how a
+    fader ends up stranded at measurement level (ADR-0179).
+
+    An un-cancelled cleanup's own failure propagates from here, because that
+    is the exception the caller needs. Once a cancellation has arrived the
+    cleanup's failure is dropped in favour of it, the shape
+    ``volume_persistence`` states: an acquisition result is secondary to
+    caller cancellation.
+    """
+    task = asyncio.ensure_future(cleanup)
+    try:
+        await asyncio.shield(task)
+    except asyncio.CancelledError as stop:
+        while not task.done():
+            try:
+                await asyncio.shield(task)
+            except asyncio.CancelledError:
+                continue
+            except Exception:  # noqa: BLE001 - see the docstring
+                break
+        return stop
+    return None
 
 
 def _merge_disclosures(
@@ -238,9 +286,9 @@ class TuningSession:
     Construct with an identity, the injected :class:`~.session_seams.EngineSeams`,
     the ONE declared level every stimulus in this session plays at, and — for a
     session that grades against a previous one — that session's
-    :class:`~.prior_bank.PriorBank`. Use it as a context manager, or call
+    :class:`~.prior_bank.PriorBank`. Use it as an async context manager, or call
     :meth:`open` and :meth:`close` — the second exists because a web front end's
-    lifetime is a sequence of HTTP requests and cannot hold a ``with``.
+    lifetime is a sequence of HTTP requests and cannot hold an ``async with``.
 
     Four declarations and six fields of state. The 102-attribute session this
     replaces is what happens when a class accumulates the answers instead of the
@@ -273,7 +321,7 @@ class TuningSession:
 
     # ---------------------------------------------------------------- lifetime
 
-    def open(self) -> None:
+    async def open(self) -> None:
         """Open the two held slots, in the order their contracts require.
 
         The graph goes in first and its proof runs once, before anything can
@@ -304,16 +352,16 @@ class TuningSession:
         if self.is_open:
             raise SessionStateError(f"session {self.session_id} is already open")
         try:
-            self._graph_fingerprint = self.seams.graph.install()
+            self._graph_fingerprint = await self.seams.graph.install()
             self._graph_installed = True
-            self.seams.volume.acquire(self.measurement_level_db)
+            await self.seams.volume.acquire(self.measurement_level_db)
             self._volume_held = True
         except Exception as opening_exc:  # noqa: BLE001 - re-raised below
             self._graph_fingerprint = ""
-            self._release_both_after_failed_open(opening_exc)
+            await self._release_both_after_failed_open(opening_exc)
             raise
 
-    def close(self) -> None:
+    async def close(self) -> None:
         """Release both held slots, even if releasing one raises.
 
         Idempotent, and **re-attemptable per slot**: a release that raises
@@ -324,31 +372,31 @@ class TuningSession:
         measurement level nobody chose.
 
         Closing an already-closed session is not an error; that is what an
-        ``__exit__`` after an explicit :meth:`close` does.
+        ``__aexit__`` after an explicit :meth:`close` does.
         """
         self._spent = True
-        self._release_slots()
+        await self._release_slots()
 
-    def __enter__(self) -> "TuningSession":
-        self.open()
+    async def __aenter__(self) -> "TuningSession":
+        await self.open()
         return self
 
-    def __exit__(
+    async def __aexit__(
         self, _exc_type: object, exc_value: BaseException | None, _tb: object,
     ) -> None:
         """Close, without letting a close-time failure hide the real one.
 
-        A raise from inside the ``with`` body is the failure the caller needs
-        to see. Letting a close failure propagate on top of it would demote the
-        original to ``__context__`` and report the symptom instead — so when
-        something is already in flight the close failure is attached to it and
-        the original goes on. With nothing in flight, a close failure IS the
-        failure and propagates normally.
+        A raise from inside the ``async with`` body is the failure the caller
+        needs to see. Letting a close failure propagate on top of it would
+        demote the original to ``__context__`` and report the symptom instead —
+        so when something is already in flight the close failure is attached to
+        it and the original goes on. With nothing in flight, a close failure IS
+        the failure and propagates normally.
         """
         if exc_value is None:
-            self.close()
+            await self.close()
             return
-        _attach_cleanup_failure(exc_value, self.close)
+        await _attach_cleanup_failure(exc_value, self.close)
 
     @property
     def is_open(self) -> bool:
@@ -370,7 +418,7 @@ class TuningSession:
 
     # ------------------------------------------------------------------- verbs
 
-    def measure(self, spec: MeasureSpec) -> MeasureOutcome:
+    async def measure(self, spec: MeasureSpec) -> MeasureOutcome:
         """Measure what the spec asks for: every position, at every rung.
 
         One verb for all three kinds. The order is fixed and each step is
@@ -416,7 +464,7 @@ class TuningSession:
         for index, bearing in enumerate(self._bearings(spec)):
             prompt = prompts[index] if index < len(prompts) else ""
             for stimulus_dbfs in rungs:
-                stimuli.append(self._one_stimulus(
+                stimuli.append(await self._one_stimulus(
                     spec, bearing, prompt, stimulus_dbfs,
                 ))
 
@@ -425,7 +473,7 @@ class TuningSession:
             spec=spec, stimuli=tuple(stimuli), disclosures=stubs,
         )
 
-    def analyze(self) -> AnalyzeOutcome:
+    async def analyze(self) -> AnalyzeOutcome:
         """Every analysis the banked records support — and every one they do not.
 
         **Deliberately not gated on an open session.** Ruling S3's whole return
@@ -462,7 +510,7 @@ class TuningSession:
             disclosures=tuple(_merge_disclosures([*prior, *self._disclosures])),
         )
 
-    def recommend(self) -> RecommendOutcome:
+    async def recommend(self) -> RecommendOutcome:
         """Ask the prescriber what to do about everything banked so far.
 
         One word for what the code has called propose, prescribe and recommend —
@@ -475,10 +523,10 @@ class TuningSession:
         """
         ids = tuple(self._banked)
         return RecommendOutcome(
-            recommendation=self.seams.recommend(ids), record_ids=ids,
+            recommendation=await self.seams.recommend(ids), record_ids=ids,
         )
 
-    def save(self) -> SaveOutcome:
+    async def save(self) -> SaveOutcome:
         """Persist the session's own state. *"Saving is simple."*
 
         The per-capture records are already banked by :meth:`measure` — a
@@ -498,7 +546,7 @@ class TuningSession:
         :meth:`analyze`'s answer, composed at read time from both banks.
         """
         ids = tuple(self._banked)
-        state_id = self.seams.records.persist({
+        state_id = await self.seams.records.persist({
             "session_id": self.session_id,
             "graph_fingerprint": self._graph_fingerprint,
             "measurement_level_db": self.measurement_level_db,
@@ -512,7 +560,9 @@ class TuningSession:
 
     # --------------------------------------------------------------- internals
 
-    def _release_both_after_failed_open(self, opening_exc: BaseException) -> None:
+    async def _release_both_after_failed_open(
+        self, opening_exc: BaseException,
+    ) -> None:
         """Give back both halves after an :meth:`open` that failed part-way.
 
         **Unconditional, and that is the point.** A seam that raised may have
@@ -528,13 +578,23 @@ class TuningSession:
         the real cause, and replacing it with a symptom from the cleanup would
         report the wrong thing. The volume's failure is the one attached when
         both fail — it is the slot whose loss is audible.
+
+        **A cancellation arriving here is a cleanup failure, not the answer**,
+        and is attached exactly as a raising release would be: letting one past
+        would replace the very exception this function exists to preserve.
         """
-        for release in (self.seams.volume.release, self.seams.graph.restore):
-            _attach_cleanup_failure(opening_exc, release)
+        cancelled = await _shielded_cleanup(self._give_back_both(opening_exc))
+        if cancelled is not None:
+            _attach_first(opening_exc, cancelled)
         self._volume_held = False
         self._graph_installed = False
 
-    def _release_slots(self) -> None:
+    async def _give_back_both(self, opening_exc: BaseException) -> None:
+        """Both releases, unconditionally, each attaching its own failure."""
+        for release in (self.seams.volume.release, self.seams.graph.restore):
+            await _attach_cleanup_failure(opening_exc, release)
+
+    async def _release_slots(self) -> None:
         """Give back whatever is still held, in reverse order of taking.
 
         Each slot's flag clears only once its release RETURNS, so a release
@@ -542,14 +602,25 @@ class TuningSession:
         restore runs in a ``finally`` so a raising volume release cannot skip
         it, and the volume's exception is the one that reaches the caller —
         it is the slot whose loss is audible.
+
+        **Shielded, and the cancellation still propagates.** A cancelling
+        caller waits for both releases before it gets its ``CancelledError``:
+        the caller that cancelled is not the one who has to hear a fader left
+        at measurement level.
         """
+        cancelled = await _shielded_cleanup(self._give_back_held())
+        if cancelled is not None:
+            raise cancelled
+
+    async def _give_back_held(self) -> None:
+        """The ordered give-back :meth:`_release_slots` shields."""
         try:
             if self._volume_held:
-                self.seams.volume.release()
+                await self.seams.volume.release()
                 self._volume_held = False
         finally:
             if self._graph_installed:
-                self.seams.graph.restore()
+                await self.seams.graph.restore()
                 self._graph_installed = False
 
     def _bearings(self, spec: MeasureSpec) -> tuple[int | None, ...]:
@@ -573,7 +644,7 @@ class TuningSession:
             return (None,)
         return (DESIGN_AXIS_DEG,)
 
-    def _one_stimulus(
+    async def _one_stimulus(
         self,
         spec: MeasureSpec,
         bearing: int | None,
@@ -581,8 +652,8 @@ class TuningSession:
         stimulus_dbfs: float | None,
     ) -> StimulusOutcome:
         """Prove, play, and bank exactly one stimulus."""
-        proven_level_db = self._proven_level()
-        outcome: PlaybackOutcome = self.seams.play.run(
+        proven_level_db = await self._proven_level()
+        outcome: PlaybackOutcome = await self.seams.play.run(
             spec=spec,
             position_deg=bearing,
             prompt=prompt,
@@ -595,7 +666,7 @@ class TuningSession:
             if proven_level_db is None:
                 incident = incident or UNPROVEN_LEVEL
             else:
-                record_id = self.seams.records.bank(self._record(
+                record_id = await self.seams.records.bank(self._record(
                     spec, bearing, prompt, stimulus_dbfs, outcome,
                     proven_level_db,
                 ))
@@ -604,7 +675,7 @@ class TuningSession:
             level_db=proven_level_db, record_id=record_id, incident=incident,
         )
 
-    def _proven_level(self) -> float | None:
+    async def _proven_level(self) -> float | None:
         """This stimulus's fader level, or ``None`` when it is not proven.
 
         :meth:`~.session_seams.VolumeClaim.prove` is contracted to return a
@@ -621,7 +692,7 @@ class TuningSession:
         already declares. Banking the level is then banking ONE number that
         both the stimulus and the record agree on.
         """
-        reading = self.seams.volume.prove()
+        reading = await self.seams.volume.prove()
         if reading is None or not fader_matches(reading, self.measurement_level_db):
             return None
         return float(reading)

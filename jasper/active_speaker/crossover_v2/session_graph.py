@@ -48,13 +48,10 @@ nothing playing. Both swaps keep the writer lock. Every other
 ``set_active_config_raw`` caller replaces the pipeline under live audio and
 still ducks.
 
-**Async, and the seam is not.** :class:`~.session_seams.SessionGraph` declares
-its three verbs synchronous; the transport underneath is CamillaDSP over a
-websocket and every production caller is already on the event loop, so these are
-``async``. The verbs, their contract and their idempotence match the seam
-exactly; only the colour differs. Reconciling that belongs with the seam (all
-four of them are synchronous today), not with the first implementation to
-discover it.
+**Async, like the seam.** :class:`~.session_seams.SessionGraph` declares its
+three verbs ``async`` for the reason this implementation is: the transport
+underneath is CamillaDSP over a websocket and every production caller is already
+on the event loop. See ADR-0179.
 """
 
 from __future__ import annotations

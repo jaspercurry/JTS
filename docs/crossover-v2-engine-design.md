@@ -78,15 +78,14 @@ engine, and the second would bank a record the session never counts in
 `banked_record_ids`. The field is public because construction and testing need
 it. Wave 2 lands the enforcement pin, when there is a front end to point it at.
 
-**The four seams declared in `session_seams.py` are synchronous, and the real
-implementations are not.** Both `MeasurementSessionGraph.install` and
-`volume_owner.VolumeOwner.prove` are `async`. `MeasurementSessionGraph` is `async` because the
-transport is CamillaDSP over a websocket and every production caller is already
-on the event loop. Contract and idempotence match the seam exactly; only the
-colour differs. Because all four are synchronous today, reconciling that is
-**one decision for all of them, not one per seam**, and it belongs to the wave
-that wires `TuningSession` to a front end — not to the first implementation that
-trips over it.
+**All five seams are `async`, and so is every implementation that satisfies
+one.** `MeasurementSessionGraph`'s three verbs, `VolumeOwner`'s `acquire_level`
+/ `prove` / `release`, and `program_playback.play_program` were already `async`:
+the transport is CamillaDSP over a websocket and every production caller is
+already on the event loop. It was **one decision for all of them, not one per
+seam**, and it carries a second half — each release path shields its cleanup, so
+a cancelled `close()` cannot leave the fader at measurement level. See
+[ADR-0179](adr/0179-the-tuning-engines-seams-are-async-and-a-release-completes-before-cancellation-propagates.md).
 
 ## What is wired today, and what is not
 
