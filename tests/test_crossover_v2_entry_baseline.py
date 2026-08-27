@@ -116,6 +116,12 @@ from tests.test_crossover_v2_stage_bridge import (
 # --------------------------------------------------------------------------- #
 
 
+
+# Autouse where imported: production refuses a session with no volume owner.
+from tests.crossover_v2_fixtures import (  # noqa: F401
+    a_process_with_a_volume_owner,
+)
+
 def _stage_1_map() -> dict[int, str]:
     """The index→phase map the shipped stage 1 runs, at the production flags."""
     return build_v2_cloud_index_phase_map(

@@ -87,6 +87,12 @@ from tests.test_crossover_v2_stage_bridge import (
 
 
 
+
+# Autouse where imported: production refuses a session with no volume owner.
+from tests.crossover_v2_fixtures import (  # noqa: F401
+    a_process_with_a_volume_owner,
+)
+
 def test_two_restore_triggers_run_one_undo_and_keep_the_honest_sentence(
     monkeypatch,
 ):

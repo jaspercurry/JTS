@@ -186,7 +186,12 @@ class _NoGraphSession:
         # The hooks build the plan's door over THIS session's claim, so a
         # double standing in for a session carries a real one over the
         # process's owner — the same object the door establishes through.
-        self.seams = SimpleNamespace(volume=_session_claim())
+        # Exposed as ``claim`` because the caller injects it into both, the
+        # way production's composition root does; nothing reads it back out
+        # of ``seams`` (that would be the engine-internal reach the
+        # verification suite forbids).
+        self.claim = _session_claim()
+        self.seams = SimpleNamespace(volume=self.claim)
 
     async def open(self) -> None:
         return None
@@ -8157,8 +8162,9 @@ def test_volume_hooks_hold_pause_from_open_to_every_drain(monkeypatch):
         _own_the_fader(monkeypatch, cam)
 
         async def scenario():
+            _sess = _NoGraphSession()
             hooks = v2host._volume_hooks(
-                lambda: cam, _Ctx(), tuning=_NoGraphSession(),
+                lambda: cam, _Ctx(), tuning=_sess, volume_claim=_sess.claim,
             )
             opened = await hooks.open()
             assert opened is SessionVolumeOpenResult.OPENED
@@ -8193,7 +8199,8 @@ def test_the_graph_goes_back_before_the_fader_does(monkeypatch):
 
     class _LoggingSession:
         def __init__(self) -> None:
-            self.seams = SimpleNamespace(volume=_session_claim())
+            self.claim = _session_claim()
+            self.seams = SimpleNamespace(volume=self.claim)
 
         async def open(self) -> None:
             return None
@@ -8222,8 +8229,9 @@ def test_the_graph_goes_back_before_the_fader_does(monkeypatch):
     _own_the_fader(monkeypatch, cam)
 
     async def scenario():
+        _sess = _LoggingSession()
         hooks = v2host._volume_hooks(
-            lambda: cam, _Ctx(), tuning=_LoggingSession(),
+            lambda: cam, _Ctx(), tuning=_sess, volume_claim=_sess.claim,
         )
         await hooks.open()
         order.clear()  # the open's own fader write is not what this pins
@@ -8255,7 +8263,11 @@ def test_volume_hooks_release_pause_when_open_does_not_confirm(monkeypatch):
         session_volume_db = -20.0
 
     async def scenario():
-        hooks = v2host._volume_hooks(lambda: _FakeVolCam(-15.0), _Ctx(), tuning=_NoGraphSession())
+        _sess = _NoGraphSession()
+        hooks = v2host._volume_hooks(
+            lambda: _FakeVolCam(-15.0), _Ctx(), tuning=_sess,
+            volume_claim=_sess.claim,
+        )
         result = await hooks.open()
         assert result == "failed"
         assert not v2host.session_measurement_pause_held()
@@ -8391,7 +8403,10 @@ def _real_hooks_scaffold(monkeypatch):
     class _Ctx:
         session_volume_db = -20.0
 
-    hooks = v2host._volume_hooks(lambda: cam, _Ctx(), tuning=_NoGraphSession())
+    _sess = _NoGraphSession()
+    hooks = v2host._volume_hooks(
+        lambda: cam, _Ctx(), tuning=_sess, volume_claim=_sess.claim,
+    )
     return hooks, plan, cam, log
 
 

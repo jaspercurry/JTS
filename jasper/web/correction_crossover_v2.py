@@ -1355,6 +1355,23 @@ def _fail_closed_volume_door(reason: str) -> "VolumeDoor":
     return _NoOwnerDoor()
 
 
+def _session_volume_claim() -> Any:
+    """This session's ONE fader claim, or ``None`` when no owner is installed.
+
+    Minted at the composition root and injected into the two things that hold
+    it — the engine's volume seam and the plan's door — because they are one
+    claim, not two. ``None`` is the no-owner registration defect, and both
+    consumers already fail closed on it.
+    """
+    from jasper.active_speaker.crossover_v2.volume_claim import (
+        MeasurementVolumeClaim,
+    )
+    from jasper.volume_owner import volume_owner
+
+    owner = volume_owner()
+    return None if owner is None else MeasurementVolumeClaim(owner)
+
+
 def _volume_door(
     camilla_factory: Any, *, claim: Any = None, reason: str = "drain",
 ) -> "VolumeDoor":
@@ -5649,7 +5666,11 @@ class V2PreparedSession:
 
 
 def _volume_hooks(
-    camilla_factory: Any, context: V2ConductorContext, *, tuning: Any,
+    camilla_factory: Any,
+    context: V2ConductorContext,
+    *,
+    tuning: Any,
+    volume_claim: Any = None,
 ) -> V2VolumeHooks:
     plan = session_volume_plan()
     # THE SAME CLAIM the engine session holds, not a second one. The plan's
@@ -5658,9 +5679,7 @@ def _volume_hooks(
     # would collide on the owner's same-kind rule, and that rule is there for
     # OTHER holders — level-match, autolevel, the balance guard — not for a
     # session arguing with itself.
-    door = _volume_door(
-        camilla_factory, claim=tuning.seams.volume, reason="session",
-    )
+    door = _volume_door(camilla_factory, claim=volume_claim, reason="session")
 
     async def _open() -> Any:
         # Hold voice paused for the WHOLE session BEFORE setting the volume, so
@@ -6039,6 +6058,7 @@ def bind_v2_engine_seams(
     relay_session_id: str,
     camilla_factory: Any,
     compose_stimulus: Any,
+    volume_claim: Any = None,
     routed_phases: bool = True,
 ) -> Any:
     """The ENGINE's five seams, bound where the flow's seventeen are bound.
@@ -6064,35 +6084,33 @@ def bind_v2_engine_seams(
     durable snapshot is last and wins.
 
     **The claim this binds is the session's ONE claim**, and the plan's door
-    holds the same object — ``_volume_hooks`` builds its door over
-    ``tuning.seams.volume`` rather than minting a second. Two claims of one
-    kind is a ``VolumeClaimConflict`` by the owner's own rule, and it is a rule
-    worth keeping sharp for the holders it is actually about.
+    holds the same object — both are handed the claim the caller minted, so
+    neither reaches into the other for it. ``EngineSeams`` is engine-internal;
+    a front end reading this seam back out would be doing engine work outside
+    the engine. Two claims of one kind is a ``VolumeClaimConflict`` by the
+    owner's own rule, and it is a rule worth keeping sharp for the holders it
+    is actually about.
     """
     from jasper.active_speaker.crossover_v2.program_transaction import (
         ProgramPlaybackTransaction,
     )
     from jasper.active_speaker.crossover_v2.record_store import BankedRecordStore
     from jasper.active_speaker.crossover_v2.session_seams import EngineSeams
-    from jasper.active_speaker.crossover_v2.volume_claim import (
-        MeasurementVolumeClaim,
-    )
     from jasper.cli.crossover_recommender import BankedRoundRecommender
-    from jasper.volume_owner import volume_owner
 
     plan = session_volume_plan()
-    owner = volume_owner()
-    if owner is None:
+    claim = volume_claim if volume_claim is not None else _session_volume_claim()
+    if claim is None:
         # A registration defect, not a supported shape — ``web.__main__``
-        # installs one before serving. Refuse the session rather than mint a
-        # second owner over one fader.
+        # installs an owner before serving. Refuse the session rather than
+        # mint a second authority over one fader.
         raise RuntimeError(
             "no volume owner is installed; the measurement session cannot "
             "claim the fader"
         )
     return EngineSeams(
         graph=session_graph if routed_phases else _NoRoutedPhasesGraph(),
-        volume=MeasurementVolumeClaim(owner),
+        volume=claim,
         # F9, answered by W1-c and left un-bridged on purpose: ``bank``
         # returns a store-relative PATH while the shipped flow publishers write
         # artifact FINGERPRINTS into ``refs`` — and they still do.
@@ -7235,6 +7253,13 @@ def prepare_v2_session(
         # rather than a module global two sessions could displace.
         from jasper.active_speaker.crossover_v2.session import TuningSession
 
+        # ONE claim for this session, minted HERE and injected into both the
+        # things that hold it: the engine's volume seam, and the plan's door.
+        # Made at the composition root rather than reached for afterwards —
+        # ``EngineSeams`` is engine-internal, and a front end that read
+        # ``tuning.seams.volume`` back out would be doing engine work outside
+        # the engine (``session_seams.EngineSeams``, wave 2's enforcement pin).
+        volume_claim = _session_volume_claim()
         tuning = TuningSession(
             session_id=relay_session_id,
             seams=bind_v2_engine_seams(
@@ -7249,6 +7274,7 @@ def prepare_v2_session(
                     production_play.compose,
                     program_for_phase=conductor.program_for_phase,
                 ),
+                volume_claim=volume_claim,
                 # Stage 2 is verify-class on every tier — it grades through the
                 # APPLIED graph and takes no routed capture — so it must not
                 # swap the measurement graph in and straight back out.
@@ -7260,7 +7286,10 @@ def prepare_v2_session(
         source_run = _build_source_run(
             capture_source,
             conductor,
-            volume=_volume_hooks(camilla_factory, context, tuning=tuning),
+            volume=_volume_hooks(
+                camilla_factory, context, tuning=tuning,
+                volume_claim=volume_claim,
+            ),
             stop_event=stop_event,
             stop_lock=stop_lock,
             position_gate=position_gate,

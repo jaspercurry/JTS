@@ -96,33 +96,12 @@ from jasper.output_topology import (
 from jasper.web import correction_crossover_v2 as v2host
 
 
-@pytest.fixture(autouse=True)
-def _a_process_with_a_volume_owner(monkeypatch):
-    """Every test here drives production wiring, which requires an owner.
-
-    ``jasper.web.__main__`` installs one before serving, so a process without
-    one is a registration defect rather than a shape the session supports —
-    and W5-c1 made the session say so instead of minting a second authority
-    over the fader. A module that exercises that wiring has to stand up the
-    same precondition; ``_real_seam_session`` then replaces this stand-in with
-    an owner over its own fixture fader.
-    """
-    import jasper.volume_owner as _vo
-
-    standin = {"db": -20.0}
-
-    async def _set(db):
-        standin["db"] = float(db)
-        return True
-
-    async def _get():
-        return standin["db"]
-
-    monkeypatch.setattr(
-        _vo, "_process_owner",
-        _vo.VolumeOwner(set_fader_db=_set, get_fader_db=_get),
-    )
-
+# Autouse where imported: production refuses a session with no volume owner.
+# ``_real_seam_session`` then replaces this stand-in with an owner over its
+# own fixture fader.
+from tests.crossover_v2_fixtures import (  # noqa: F401
+    a_process_with_a_volume_owner,
+)
 
 # --------------------------------------------------------------------------- #
 # private reaches, all of them, in one place
@@ -1946,9 +1925,9 @@ def _real_seam_session(monkeypatch, cam_factory=None, graph=None) -> dict:
     captured: dict[str, Any] = {}
     real_hooks = v2host._volume_hooks
 
-    def _capturing_hooks(camilla_factory, context, *, tuning):
+    def _capturing_hooks(camilla_factory, context, *, tuning, **kw):
         captured["tuning"] = tuning
-        captured["hooks"] = real_hooks(camilla_factory, context, tuning=tuning)
+        captured["hooks"] = real_hooks(camilla_factory, context, tuning=tuning, **kw)
         return captured["hooks"]
 
     monkeypatch.setattr(v2host, "_volume_hooks", _capturing_hooks)
@@ -2321,7 +2300,7 @@ async def test_a_stage_two_session_swaps_no_graph_for_a_walk_with_no_captures(
     captured: dict[str, Any] = {}
     real_hooks = v2host._volume_hooks
 
-    def _capturing_hooks(camilla_factory, context, *, tuning):
+    def _capturing_hooks(camilla_factory, context, *, tuning, **kw):
         captured["tuning"] = tuning
         return real_hooks(camilla_factory, context, tuning=tuning)
 
@@ -2351,7 +2330,7 @@ def _session_from_real_open(monkeypatch, fakes) -> Any:
         v2host, "bind_v2_engine_seams", lambda **_kw: fakes.seams(),
     )
 
-    def _capturing_hooks(camilla_factory, context, *, tuning):
+    def _capturing_hooks(camilla_factory, context, *, tuning, **kw):
         captured["tuning"] = tuning
         return real_hooks(camilla_factory, context, tuning=tuning)
 

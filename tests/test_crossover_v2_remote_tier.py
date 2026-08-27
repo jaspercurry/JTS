@@ -126,6 +126,12 @@ STAGE1_ANGLES = (0, -7, 7, -22, 22, 0)
 STAGE2_ANGLES = (0, 0, -7, 7, -22, 22)
 
 
+
+# Autouse where imported: production refuses a session with no volume owner.
+from tests.crossover_v2_fixtures import (  # noqa: F401
+    a_process_with_a_volume_owner,
+)
+
 def _stage1_of(shape):
     """The shipped stage-1 plan for a RESOLVED shape — the flags are the
     shipped ones so a plan built here is the plan a session runs."""
