@@ -313,7 +313,7 @@ HARMONICS_ARTIFACT = "harmonic_distortion.json"
 #: Where a round banks one JSON record per accepted take, INSIDE the round
 #: directory :func:`round_artifact_dir` returns.
 #:
-#: The web host's ``retain_position`` publishes
+#: The web host's ``bank_take`` seam publishes
 #: ``crossover_v2/{relay}/positions/{take_id}.json`` and the evidence store
 #: prefixes ``{EVIDENCE_ROOT}/artifacts/``, so the record lands one level below
 #: the relay directory this module already resolves. :mod:`.position_cycle`

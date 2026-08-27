@@ -581,11 +581,11 @@ def build_v2_run_and_consume(
                 cancel_ladder()
             _post_sweep_phase_best_effort(HOST_PHASE_SWEEP_COMPLETE)
 
-        def consume(index: int, attempt: int, result: Any, entry: Any = None):
+        def consume(index: int, attempt: int, result: Any):
             # Same local-seam boundary as on_armed, for consume_capture's
             # analyze seam.
             try:
-                verdict = conductor.consume_capture(index, attempt, result, entry)
+                verdict = conductor.consume_capture(index, attempt, result)
             except OSError as exc:
                 raise _host.CrossoverV2LocalSeamError(str(exc)) from exc
             code = verdict.get("code") if isinstance(verdict, Mapping) else None

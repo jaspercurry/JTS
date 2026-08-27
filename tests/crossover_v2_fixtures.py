@@ -22,7 +22,7 @@ from __future__ import annotations
 import dataclasses
 import math
 from dataclasses import dataclass, field
-from typing import Any
+from typing import Any, Mapping
 
 import numpy as np
 
@@ -382,6 +382,27 @@ def _verify_analysis(
 
 
 # --- fake seams -----------------------------------------------------------------
+
+
+def bank_into(sink: list[Any], *, with_capture: bool = False) -> flow.BankTake:
+    """A ``bank_take`` seam that records what it banked and answers an id.
+
+    The production binding answers the store id that finds the record again,
+    and ``""`` only when nothing was stored — so a recorder that answered
+    ``""`` would make every test of the one caller that READS the answer
+    (``CrossoverV2Session._retain_entry_baseline``) pass for the wrong reason.
+    The id is minted the way the store mints it, off the record's OWN take id,
+    which is the invariant the seam exists to keep.
+
+    ``with_capture`` keeps the :class:`CaptureResult` beside the record, for
+    the two tests that assert the raw bytes cross the seam.
+    """
+    def bank_take(result: Any, record: Mapping[str, Any]) -> str:
+        banked = dict(record)
+        sink.append((result, banked) if with_capture else banked)
+        return f"crossover_v2/fixture/positions/{banked.get('take_id') or ''}.json"
+
+    return bank_take
 
 
 @dataclass

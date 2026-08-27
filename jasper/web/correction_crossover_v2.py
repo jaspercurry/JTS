@@ -3528,9 +3528,9 @@ def bind_round_receipt(
 
 
 def bind_position_retention(
-    store: Any, relay_session_id: str, refs: dict[str, Any]
-) -> Callable[[str, Any, Mapping[str, Any]], None]:
-    """The real ``retain_position`` seam — one WAV + one JSON per cloud position.
+    store: Any, relay_session_id: str, refs: dict[str, Any], run_async: Any
+) -> Callable[[Any, Mapping[str, Any]], str]:
+    """The real ``bank_take`` seam — one WAV + one banked record per take.
 
     The forensic record the position-group choreography owes: the S0 work that
     produced this program's central finding (source-fixed vs room-fixed comb
@@ -3540,50 +3540,93 @@ def bind_position_retention(
 
     Placement follows the shipped bundle scheme —
     ``bundles.capture_artifact_relpath("summed", group, role)`` with the TAKE
-    id (position id + attempt) as ``group``, so a cloud WAV lands beside the
-    flow's other summed captures rather than in a private layout — and the
-    metadata sidecar
-    carries the prompt the operator was given, which is the only durable record
-    of WHERE a curve was measured. ``metadata["position_id"]`` is what feeds
+    id as ``group``, so a cloud WAV lands beside the flow's other summed
+    captures rather than in a private layout — and the banked record carries
+    the prompt the operator was given, which is the only durable record of
+    WHERE a curve was measured. ``metadata["position_id"]`` is what feeds
     ``spatial_combine.PositionCapture.position_id``, so a flagged or outlying
     position can be named back to the household in PR-4's report.
 
-    This function does NOT swallow failures. The evidence store is deliberately
-    strict — ``publish_json_artifact`` raises ``CommissioningEvidenceStoreError``
-    (a ``RuntimeError``) rather than silently dropping an artifact, and a WAV
-    write raises ``OSError`` — and the fail-soft boundary lives one level up, at
-    the conductor's ``_retain_cloud_position`` call site, which logs and
-    continues so a full disk cannot turn an acoustically-good position into a
-    retake. Keeping the boundary there rather than here means the strictness the
-    store was built for is preserved for every OTHER caller.
-    ``bundles.register_capture`` is the one exception and it is not this
-    function's to make: every public write in that module fail-softs, so a
-    bundle record that cannot be written WARNs and the position still stands.
+    **The JSON half goes through the record store, which is the writer this
+    function used to be.** ``BankedRecordStore`` files a position take at the
+    same path and imports ``POSITION_EVIDENCE_KIND`` rather than re-spelling
+    the discriminator, so the reader's constant and the writer's literal can no
+    longer drift apart. It also names the artifact from ``record["take_id"]``
+    instead of re-minting one from the position id, which is what the entry
+    baseline's doubled take id was: that record's ``position_id`` IS its take
+    id, so a second mint appended a second ``_aNN``.
+
+    **This is the fail-soft boundary, and the only one.** It lives at the
+    binding rather than in the conductor because the store stays strict — ``publish_json_artifact`` raises
+    ``CommissioningEvidenceStoreError`` (a ``RuntimeError``) rather than
+    silently dropping an artifact, and a WAV write raises ``OSError`` — so
+    every OTHER caller of that store keeps the strictness it was built for,
+    while a full disk here cannot turn an acoustically-good capture into a
+    retake. The WARN keeps its shipped event name so a log search spans the
+    move. ``bundles.register_capture`` is the one write this does not have to
+    guard: every public write in that module already fail-softs.
+
+    Returns the store id that finds the record again, or ``""`` when nothing
+    was banked — which is the whole vocabulary
+    :meth:`~jasper.active_speaker.crossover_v2_flow.CrossoverV2Session._retain_entry_baseline`
+    reads.
     """
     from jasper.active_speaker.bundles import (
         capture_artifact_relpath,
         register_capture,
     )
-    from jasper.active_speaker.crossover_v2.spatial import take_id_for
+    from jasper.active_speaker.commissioning_evidence_store import EVIDENCE_ROOT
+    from jasper.active_speaker.crossover_v2.record_store import BankedRecordStore
 
-    def retain_position(
-        position_id: str, result: Any, metadata: Mapping[str, Any]
-    ) -> None:
+    # The same store ``bind_v2_engine_seams`` binds as the engine's record
+    # seam, constructed here rather than shared because the two binders take
+    # their arguments at two different call sites. It is a frozen dataclass
+    # over the same bundle and the same state file, so this is one writer
+    # constructed twice and never two authorities.
+    records = BankedRecordStore(
+        evidence=store,
+        relay_session_id=relay_session_id,
+        load_state=load_v2_state,
+        save_state=save_v2_state,
+    )
+
+    def bank_take(result: Any, metadata: Mapping[str, Any]) -> str:
+        try:
+            return _bank_one_take(result, metadata)
+        except (OSError, RuntimeError, TypeError, ValueError):
+            log_event(
+                logger, "correction.crossover_v2_position_retain_failed",
+                level=logging.WARNING,
+                session_id=str(metadata.get("session_id") or ""),
+                phase=str(metadata.get("phase") or ""),
+                position_id=str(metadata.get("take_id") or ""),
+                exc_info=True,
+            )
+            return ""
+
+    def _bank_one_take(result: Any, metadata: Mapping[str, Any]) -> str:
         wav = getattr(result, "wav", None)
         record = dict(metadata)
         # A geometry retake re-uses its position id — same prompted spot,
         # measured again from further out — so the id alone does NOT identify a
         # take. The evidence store is write-once (a repeated path is a
-        # PATH_CONFLICT refusal), which would have dropped the retake's sidecar
-        # and left the REPLACED take as the only record of a curve that is not
-        # in the cloud. Qualify by attempt: every take gets its own sidecar,
-        # the superseded one stays on disk as the honest walk record, and the
-        # conductor's `group_position_takes` names which attempt survived.
+        # PATH_CONFLICT refusal), which would have dropped the retake's record
+        # and left the REPLACED take as the only account of a curve that is not
+        # in the cloud. The builders qualify by attempt: every take gets its own
+        # file, the superseded one stays on disk as the honest walk record, and
+        # the conductor's `group_position_takes` names which attempt survived.
         #
-        # Minted through the builders' own function, never re-spelled here: the
-        # sidecar path and the record inside it must name the same take.
+        # READ off the record, never re-minted here. The record's own take id is
+        # what the store names the artifact by, so a second mint at this seam
+        # could only ever disagree with it — which is exactly what it did for
+        # the entry baseline, whose ``position_id`` IS a take id already.
         attempt = int(record.get("attempt") or 0)
-        take_id = take_id_for(position_id, attempt)
+        take_id = str(record.get("take_id") or "")
+        # A cloud position and an entry baseline call it ``position_id``, a
+        # lateral pose calls it ``pose_id`` — the two vocabularies
+        # ``spatial._take_identity`` deliberately keeps apart, joined here
+        # because ``refs`` has one column for the prompted spot.
+        position_id = str(record.get("position_id") or record.get("pose_id") or "")
         wav_rel = ""
         if isinstance(wav, (bytes, bytearray)):
             bundle_dir = Path(store.bundle_dir)
@@ -3604,15 +3647,12 @@ def bind_position_retention(
                 relative_path=wav_rel,
                 payload={**record, "speaker_group_id": take_id},
             )
-        artifact = store.publish_json_artifact(
-            f"crossover_v2/{relay_session_id}/positions/{take_id}.json",
-            {
-                "schema_version": 1,
-                "kind": "jts_crossover_v2_position_evidence",
-                "relay_session_id": relay_session_id,
-                **record,
-            },
-        )
+        # The store owns the envelope, the path and the discriminator. Driven
+        # through ``run_async`` because the retention path is synchronous all
+        # the way up from ``consume_capture`` — it runs on a relay/wired worker
+        # thread, and site B holds the conductor's ``_close_lock`` across this
+        # call exactly as it held the direct write this replaces.
+        record_id = str(run_async(records.bank(record)))
         positions = refs.setdefault("position_artifacts", [])
         # WO-1 (attribution plan §6): the per-position WAV path AND its
         # SHA-256 ride the durable state, not only the bundle sidecar, "so
@@ -3626,12 +3666,20 @@ def bind_position_retention(
             "position_id": position_id,
             "attempt": attempt,
             "take_id": take_id,
-            "artifact": artifact.fingerprint,
+            # Still the artifact FINGERPRINT and not ``bank``'s store id. F9
+            # (the join, #3193) left the two un-bridged because nothing reads
+            # this column yet; W1-d's index is what will want the path, and it
+            # can have it then. Re-identified rather than returned because the
+            # store hands back the id that finds a record, not its digest.
+            "artifact": store.identify_artifact(
+                f"{EVIDENCE_ROOT}/artifacts/{record_id}"
+            ).fingerprint,
             "wav_path": wav_rel,
             "wav_sha256": str(record.get("wav_sha256") or ""),
         })
+        return record_id
 
-    return retain_position
+    return bank_take
 
 
 def v2_session_identity(store: Any, relay_session_id: str) -> Any:
@@ -3673,9 +3721,9 @@ def _publish_findings(
     the citation is verifiable and, being a bundle artifact, is bound to the
     same lifetime the finding is (Q-C).
 
-    **Fail-soft, unlike its two sibling seams.** ``publish_cloud`` and
-    ``retain_position`` deliberately let the strict store's refusals surface
-    so the conductor's own boundary handles them. Findings are different:
+    **Fail-soft, like ``bank_take`` and unlike ``publish_cloud``**, which
+    deliberately lets the strict store's refusals surface so the conductor's
+    own boundary handles them. Findings are different:
     plan §3.4 makes them *optional evidence artifacts* — "a session with no
     findings behaves exactly as it does today" — so a findings failure must
     not turn a successfully-published cloud group into a logged failure. The
@@ -5968,7 +6016,7 @@ def bind_v2_stage_seams(
     The unconditional seams are unconditional on purpose. ``apply_failed`` is
     never consulted by stage 2 (its conductor is constructed ``applied=True``,
     so ``authorize_begin``'s apply-observed short-circuit runs first), and
-    ``publish_cloud``/``retain_position`` do nothing for a single-entry recovery
+    ``publish_cloud``/``bank_take`` do nothing for a single-entry recovery
     re-verify — but Full's stage 2 IS a post-apply position group whose combined
     curve the after-chart, the post-apply spec verdict, and the delta probe all
     read, and ``V2FlowSeams`` requires the two apply gates outright. Binding a
@@ -6012,8 +6060,8 @@ def bind_v2_stage_seams(
         publish_candidate=publish_candidate,
         apply_complete=_applied_gate,
         apply_failed=_apply_failure_gate,
-        retain_position=bind_position_retention(
-            evidence_store, relay_session_id, refs
+        bank_take=bind_position_retention(
+            evidence_store, relay_session_id, refs, run_async
         ),
         publish_cloud=bind_cloud_publisher(evidence_store, relay_session_id, refs),
         # #2291's round receipt. Bound on both stages rather than gated on a

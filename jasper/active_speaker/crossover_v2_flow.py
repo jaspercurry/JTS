@@ -1481,6 +1481,26 @@ ApplyGate = Callable[[], bool]
 # ``authorize_begin`` can REFUSE the deferred VERIFY with an honest reason
 # instead of holding forever toward a dishonest relay_timeout.
 ApplyFailureGate = Callable[[], str]
+# Banks one accepted capture: ``(capture_result, record)`` -> the store id that
+# finds the record again, or ``""`` when nothing was stored. The record carries
+# its own ``take_id`` (:func:`~.crossover_v2.spatial.take_id_for`), so the store
+# names the take rather than the seam re-minting it.
+BankTake = Callable[[Any, Mapping[str, Any]], str]
+
+
+def _no_bank_take(_result: Any, _record: Mapping[str, Any]) -> str:
+    """The unbound record seam: nothing is stored, and that is not an error.
+
+    A session with no evidence store runs its groups with no durable per-take
+    artifact — the correct behaviour, and the ordinary state of every session
+    unit test. Answering ``""`` here rather than leaving the seam ``None`` is
+    what lets all three retention sites call it unguarded: the one caller that
+    reads the answer (:meth:`CrossoverV2Session._retain_entry_baseline`) cannot
+    tell an unbound seam from a store that refused, and does not need to.
+    """
+    return ""
+
+
 class RecordModelError(Protocol):
     """Banks one model-predicted/realized pair outside the session."""
 
@@ -1506,18 +1526,17 @@ class V2FlowSeams:
     publish_candidate: PublishCandidate
     apply_complete: ApplyGate
     apply_failed: ApplyFailureGate
-    # Position-group evidence retention (PR-3b), called once per ACCEPTED cloud
-    # capture with ``(position_id, capture_result, metadata)``. Optional so
-    # every pre-cloud construction site (and every session unit test) stays
-    # valid; ``None`` means the group runs with no durable per-position
-    # artifact, which is the correct behaviour for a session with no evidence
-    # store rather than a reason to fail a capture.
-    retain_position: Callable[[str, Any, Mapping[str, Any]], None] | None = None
+    # Evidence retention, called once per ACCEPTED capture of the three
+    # retained kinds (cloud position, lateral pose, entry baseline). The
+    # PRODUCTION binding is the fail-soft one — a full disk must not turn a
+    # good capture into a retake — so no call site here guards it: see
+    # :func:`_no_bank_take` for what the default answers and why "" is the
+    # whole vocabulary a caller needs.
+    bank_take: BankTake = _no_bank_take
     # PR-4: the cloud honesty-pipeline bundle publisher, called once per
-    # CLOSED group with ``(phase, cloud_group_result_dict)``. Optional for the
-    # same reason ``retain_position`` is: every pre-PR-4 construction site
-    # (and every session unit test) stays valid, and ``None`` means the
-    # group's result is computed and readable via
+    # CLOSED group with ``(phase, cloud_group_result_dict)``. Optional so every
+    # pre-PR-4 construction site (and every session unit test) stays valid, and
+    # ``None`` means the group's result is computed and readable via
     # :meth:`CrossoverV2Session.group_cloud_result` but not published as a
     # bundle artifact.
     publish_cloud: Callable[[str, Mapping[str, Any]], None] | None = None
@@ -4181,7 +4200,7 @@ class CrossoverV2Session:
             raise CrossoverV2FlowError(str(exc)) from exc
 
     def consume_capture(
-        self, index: int, attempt: int, result: Any, entry: Any = None,
+        self, index: int, attempt: int, result: Any,
     ) -> dict[str, Any]:
         """Analyze one uploaded capture and advance (or reject) the phase."""
         phase = self._phase_of_index(index)
@@ -5053,8 +5072,8 @@ class CrossoverV2Session:
         bearing names where the operator was sent, not where the table wanted.
         Same shape for both consumers, so their poses stay comparable.
         """
-        self._hand_to_retention(
-            pose.pose_id, PHASE_LATERAL, result,
+        self._seams.bank_take(
+            result,
             _spatial.lateral_pose_record(
                 pose,
                 position_deg=position_angle_deg(prompt),
@@ -5199,9 +5218,8 @@ class CrossoverV2Session:
         Idempotent per index: a retaken position REPLACES the earlier take, so
         a group can never carry two curves for one prompted spot.
 
-        **WO-1 moved the ``retain_position is None`` early return BELOW the
-        metadata build**, so the record is assembled whether or not a retention
-        seam is bound — see
+        **The record is assembled whether or not a retention seam is bound**,
+        because ``_group_position_meta`` below reads it either way — see
         :func:`~jasper.active_speaker.crossover_v2.spatial.cloud_position_record`
         for the two consumers that ordering serves, and for what each field of
         the record is.
@@ -5251,31 +5269,7 @@ class CrossoverV2Session:
         self._group_position_meta.setdefault(phase, {})[
             position.position_id
         ] = metadata
-        self._hand_to_retention(position.position_id, phase, result, metadata)
-
-    def _hand_to_retention(
-        self, take_id: str, phase: str, result: Any, metadata: Mapping[str, Any],
-    ) -> bool:
-        """Hand one take's bytes to the evidence seam; return whether it stored.
-
-        The ONE fail-soft boundary for all three retained kinds (cloud position,
-        lateral pose, entry baseline). No seam bound is not an error, and a
-        bound seam that raises costs a WARN: a full disk must not turn a good
-        capture into a retake.
-        """
-        if self._seams.retain_position is None:
-            return False
-        try:
-            self._seams.retain_position(take_id, result, metadata)
-        except (OSError, RuntimeError, TypeError, ValueError):
-            log_event(
-                logger, "correction.crossover_v2_position_retain_failed",
-                level=logging.WARNING,
-                session_id=self.session_id, phase=phase,
-                position_id=take_id, exc_info=True,
-            )
-            return False
-        return True
+        self._seams.bank_take(result, metadata)
 
     def _close_cloud_group(
         self, phase: str, position: _CloudPosition | None
@@ -6977,17 +6971,18 @@ class CrossoverV2Session:
     ) -> None:
         """Bank the accepted baseline, and hand its bytes to the evidence seam.
 
-        ``retain_position`` is reused rather than duplicated even though this
-        is not a :data:`GROUP_PHASES` member, so an entry baseline lands in
+        ``bank_take`` is reused rather than duplicated even though this is not
+        a :data:`GROUP_PHASES` member, so an entry baseline lands in
         ``refs["position_artifacts"]`` beside every other retained take and one
         replay path covers both. Being outside the group bookkeeping is exactly
         why the call is explicit here: nothing else would make it.
 
-        Fail-soft on the same terms as :meth:`_retain_cloud_position` — same
-        caught family, same WARN. Evidence retention is forensics, never a
-        gate: a full disk must not turn an acoustically-good baseline into a
-        retake, and the reduced record (which is what the round actually
-        grades) is banked whether or not any bytes were stored.
+        **The only one of the three retention sites that reads the seam's
+        answer.** Evidence retention is forensics, never a gate — the binding
+        fail-softs, so a full disk cannot turn an acoustically-good baseline
+        into a retake, and the reduced record (which is what the round actually
+        grades) is banked whether or not any bytes were stored. What the answer
+        decides is only whether this baseline can CITE a durable artifact.
 
         **The retained take carries the reduced CURVE, not only its scalars**
         (fragment ``02`` duplication #2). The same arrays go into the flow
@@ -7016,11 +7011,15 @@ class CrossoverV2Session:
             glitch_detected=bool(analysis.glitch_detected),
             wav_sha256=_capture_wav_sha256(result),
         )
-        take_id = str(metadata["take_id"])
-        stored = self._hand_to_retention(
-            take_id, PHASE_ENTRY_BASELINE, result, metadata,
+        # The TAKE id and not the store's record id: ``artifact_ref`` is read
+        # back out of the bundle by
+        # :func:`~.crossover_v2.position_cycle.read_entry_baseline_take`, which
+        # answers a banked take's ``take_id`` under this name. One vocabulary,
+        # so an in-session baseline and a re-read one name the same thing.
+        artifact_ref = (
+            str(metadata["take_id"])
+            if self._seams.bank_take(result, metadata) else ""
         )
-        artifact_ref = take_id if stored else ""
         from jasper.active_speaker.crossover_v2.round_evidence import EntryBaseline
 
         self._measure_entry_baseline = EntryBaseline.from_measurement(

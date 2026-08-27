@@ -607,7 +607,7 @@ def build_v2_wired_run_and_consume(
                 channel=int(device_meta.get("channel_selected", 0)),
             )
             try:
-                verdict = conductor.consume_capture(index, attempt, answer, entry)
+                verdict = conductor.consume_capture(index, attempt, answer)
             except OSError as exc:
                 raise _host.CrossoverV2LocalSeamError(str(exc)) from exc
             code = verdict.get("code") if isinstance(verdict, Mapping) else None

@@ -112,6 +112,7 @@ from tests.test_capture_relay_plan import FakePlanRelayBackend, PhonePlanDriver
 from tests.crossover_v2_fixtures import (
     CAPS,
     FC_HZ,
+    bank_into,
     SESSION_VOLUME_DB,
     _check_analysis,
     _measure_analysis,
@@ -340,9 +341,12 @@ def _conductor(backend, session, phone, *, published, phases_seen=None,
             publish_candidate=lambda cand: published.append(("candidate", cand)),
             apply_complete=v2host._applied_gate,
             apply_failed=v2host._apply_failure_gate,
-            retain_position=(
-                None if retained is None
-                else lambda pid, result, meta: retained.append((pid, dict(meta)))
+            # Nothing stored unless a test asked to record what was banked —
+            # the same answer an unbound seam gives, so the fixtures that do
+            # not care keep the artifact_ref they had.
+            bank_take=(
+                (lambda _result, _record: "") if retained is None
+                else bank_into(retained)
             ),
             # #2291/#2318: bound, and FALSE. The seam's UNBOUND answer is
             # deliberately "boosted" — an intervention nobody can inspect comes
@@ -1228,10 +1232,10 @@ def test_a_terminal_measure_refusal_posts_its_exact_terminal_event(monkeypatch):
     )
     real_consume = conductor.consume_capture
 
-    def refuse_measure(index, attempt, result, entry=None):
+    def refuse_measure(index, attempt, result):
         if index == 2:
             raise conductor._refuse(REASON_CORRECTION_MODEL_ERROR)
-        return real_consume(index, attempt, result, entry)
+        return real_consume(index, attempt, result)
 
     monkeypatch.setattr(conductor, "consume_capture", refuse_measure)
     volume = VolumeRecorder()
@@ -1756,7 +1760,9 @@ def test_full_cloud_session_with_a_mid_cloud_retake_through_the_real_runner():
     # superseded one is the walk record — and they are distinguishable, because
     # a bare position id is ambiguous once a retake shares it.
     retaken_id = f"{PHASE_CLOUD_MEASURE}_{last_cloud_measure_index:02d}"
-    takes = [meta for pid, meta in retained if pid == retaken_id]
+    takes = [
+        meta for meta in retained if meta["position_id"] == retaken_id
+    ]
     assert len(takes) == 2
     assert takes[0]["attempt"] != takes[1]["attempt"]
     # And the SURVIVING take is the retake, recorded with the wider-spot prompt
@@ -2246,26 +2252,33 @@ def test_position_retention_survives_a_retake_through_the_real_evidence_store(
         info["bundle_dir"], expected_session_id=info["session_id"]
     )
     refs: dict = {}
-    retain = v2host.bind_position_retention(store, "cap_retake_session", refs)
+    bank = v2host.bind_position_retention(
+        store, "cap_retake_session", refs, asyncio.run,
+    )
 
     position_id = f"{PHASE_CLOUD_MEASURE}_10"
     base = {
         "position_id": position_id, "phase": PHASE_CLOUD_MEASURE, "index": 10,
         "wide": False, "role": "onax", "captured_at": 1.0,
         "session_id": "cap_retake_session",
+        # What ``spatial.take_kind`` stamps on every built record, and what the
+        # store routes a position take by. Empty is the honest answer for a
+        # take whose graph names no fingerprint, and it still banks.
+        "measure_kind": "",
         "gate_window_ms": 8.0, "validity_floor_hz": 140.0,
         "gating_applied": True, "summed_ripple_db": 1.0,
         "glitch_detected": False,
     }
-    retain(
-        position_id, CaptureResult(wav=b"first-take"),
-        {**base, "attempt": 10,
+    bank(
+        CaptureResult(wav=b"first-take"),
+        {**base, "attempt": 10, "take_id": f"{position_id}_a10",
          "prompt": "Move the microphone 10 in (25 cm) to the LEFT of the "
                    "mark, at mark height."},
     )
-    retain(
-        position_id, CaptureResult(wav=b"wider-retake"),
-        {**base, "attempt": 11, "wide": True, "role": "offax",
+    bank(
+        CaptureResult(wav=b"wider-retake"),
+        {**base, "attempt": 11, "take_id": f"{position_id}_a11",
+         "wide": True, "role": "offax",
          "prompt": "Same measurement, wider spot: move the microphone "
                    "30 in (75 cm) to the LEFT of the mark."},
     )
@@ -2335,12 +2348,15 @@ def test_retained_position_is_recorded_in_the_bundle_it_was_written_into(
         bundle_dir, expected_session_id=info["session_id"]
     )
     refs: dict = {}
-    retain = v2host.bind_position_retention(store, "cap_record_session", refs)
+    bank = v2host.bind_position_retention(
+        store, "cap_record_session", refs, asyncio.run,
+    )
 
     oversize = b"\x00" * (MAX_CAPTURE_WAV_BYTES + 1)
-    retain(
-        f"{PHASE_CLOUD_MEASURE}_04", CaptureResult(wav=oversize),
+    bank_id = bank(
+        CaptureResult(wav=oversize),
         {"position_id": f"{PHASE_CLOUD_MEASURE}_04",
+         "take_id": f"{PHASE_CLOUD_MEASURE}_04_a04", "measure_kind": "",
          "phase": PHASE_CLOUD_MEASURE, "index": 4, "attempt": 4,
          "wide": False, "role": "onax", "captured_at": 1.0,
          "session_id": "cap_record_session", "prompt": "on the mark",
@@ -2349,6 +2365,7 @@ def test_retained_position_is_recorded_in_the_bundle_it_was_written_into(
          "glitch_detected": False},
     )
 
+    assert bank_id, "the record must bank, or the WAV assertions below are vacuous"
     entries = json.loads((bundle_dir / "info.json").read_text())["summed_captures"]
     assert len(entries) == 1
     entry = entries[0]
@@ -2366,6 +2383,117 @@ def test_retained_position_is_recorded_in_the_bundle_it_was_written_into(
     assert recorded[entry["artifact_path"]]["sha256"] == hashlib.sha256(
         oversize
     ).hexdigest()
+
+
+def _retention_bundle(tmp_path, relay_session_id):
+    """A real bundle, a real evidence store, and the seam bound over both."""
+    from jasper.active_speaker.bundles import open_bundle
+    from jasper.active_speaker.commissioning_evidence_store import (
+        CommissioningEvidenceStore,
+    )
+
+    from tests.active_speaker_fixtures import mono_output_topology
+
+    info = open_bundle(
+        mono_output_topology(mode="active_2_way"),
+        calibration_id="calibration-test",
+        sessions_dir=tmp_path / "sessions",
+    )
+    assert info is not None
+    bundle_dir = Path(info["bundle_dir"])
+    store = CommissioningEvidenceStore.open(
+        bundle_dir, expected_session_id=info["session_id"]
+    )
+    refs: dict = {}
+    bank = v2host.bind_position_retention(
+        store, relay_session_id, refs, asyncio.run
+    )
+    return bank, refs, bundle_dir
+
+
+def _entry_baseline_take(index=9, attempt=1):
+    """One entry-baseline record, from the builder the flow actually calls."""
+    from jasper.active_speaker.crossover_v2.spatial import entry_baseline_record
+
+    return entry_baseline_record(
+        index=index,
+        attempt=attempt,
+        session_id="cap_entry_session",
+        program_id="prog-entry",
+        reference_mark="design_axis",
+        graph_fingerprint="fp-entry",
+        captured_at="2026-08-27T00:00:00Z",
+        freqs_hz=[100.0, 200.0, 400.0],
+        magnitude_db=[0.0, -1.0, -2.0],
+        excluded=[False, False, True],
+        validity_floor_hz=140.0,
+        gate_window_ms=8.0,
+        summed_ripple_db=1.0,
+        glitch_detected=False,
+        wav_sha256="d" * 64,
+    )
+
+
+def test_an_entry_baseline_banks_under_the_take_id_its_own_record_names(tmp_path):
+    """The artifact's stem IS ``record["take_id"]`` — one mint, not two.
+
+    An entry baseline is the one retained kind whose ``position_id`` is already
+    a take id, so a seam that re-minted one from the position id appended a
+    second ``_aNN``: the file landed at ``entry_baseline_09_a01_a01.json`` while
+    the record inside said ``entry_baseline_09_a01``, and
+    ``refs["position_artifacts"]`` carried the doubled id. Nothing was
+    observed-broken, because every reader globs rather than reconstructing a
+    filename — what was broken is the JOIN between a take and its artifact, and
+    that join is what W1-d's index is built on.
+
+    The store names the artifact from the record's own take id, so the fix falls
+    out of the lift. Pinned anyway: "it fell out for free" is what gets un-fixed.
+    """
+    bank, refs, bundle_dir = _retention_bundle(tmp_path, "cap_entry_session")
+
+    record = _entry_baseline_take()
+    record_id = bank(CaptureResult(wav=b"entry-bytes"), record)
+
+    banked = sorted(
+        (bundle_dir / "evidence" / "v1" / "artifacts" / "crossover_v2"
+         / "cap_entry_session" / "positions").glob("*.json")
+    )
+    assert [path.stem for path in banked] == [record["take_id"]]
+    assert record_id.endswith(f"/{record['take_id']}.json")
+    # ...and the state's own index names the same take, which is the half the
+    # doubled mint actually corrupted.
+    assert [e["take_id"] for e in refs["position_artifacts"]] == [
+        record["take_id"]
+    ]
+    assert json.loads(banked[0].read_text())["take_id"] == record["take_id"]
+
+
+def test_a_store_that_refuses_costs_a_warning_and_not_the_capture(
+    tmp_path, caplog,
+):
+    """The fail-soft boundary, at the binding the lift moved it to.
+
+    Evidence retention is forensics, never a gate: a full disk must not turn an
+    acoustically-good capture into a retake. The store stays strict for every
+    other caller — this drives it into a REAL refusal (two different payloads at
+    one write-once path is ``PATH_CONFLICT``) rather than a raising fake, so the
+    exception this catches is the one production can actually raise.
+    """
+    bank, refs, _bundle_dir = _retention_bundle(tmp_path, "cap_refuse_session")
+
+    record = _entry_baseline_take()
+    assert bank(CaptureResult(wav=b"entry-bytes"), record)
+
+    with caplog.at_level(logging.WARNING):
+        answer = bank(
+            CaptureResult(wav=b"entry-bytes"),
+            {**record, "summed_ripple_db": 9.0},
+        )
+
+    assert answer == ""
+    assert "crossover_v2_position_retain_failed" in caplog.text
+    # The refused take is absent from the index rather than present-but-wrong.
+    assert len(refs["position_artifacts"]) == 1
 
 
 def test_cloud_publisher_writes_one_artifact_per_group_through_the_real_store(

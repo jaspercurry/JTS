@@ -28,8 +28,8 @@ untouched — so it stays opaque in the sense the protocol means.
 propagate unwrapped, and every check the shipped publishers ran at the write —
 the cloud payload's session-identity stamp, the reopen-and-compare a candidate
 and a receipt owe — comes with them. **Fail-soft is the only thing the fold
-leaves at the caller**, in a named wrapper (``crossover_v2_flow``'s
-``_hand_to_retention`` is the shape), never here and never a flag, so a
+leaves at the caller**, in a named wrapper (``correction_crossover_v2``'s
+``bank_take`` binding is the shape), never here and never a flag, so a
 publisher that must not fail quietly and one that deliberately fail-softs stay
 visibly different in the code that calls them.
 
