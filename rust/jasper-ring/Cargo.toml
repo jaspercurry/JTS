@@ -33,7 +33,7 @@
 name = "jasper-ring"
 version = "0.1.0"
 edition = "2021"
-description = "SPSC ping-pong SHM frame ring (reader + shared header/seq logic) for the JTS Ring B latency prototype."
+description = "SPSC ping-pong SHM frame ring (reader + shared header/seq logic) for JTS Ring B."
 license = "Apache-2.0"
 repository = "https://github.com/jaspercurry/JTS"
 authors = ["Jasper Curry <jaspercurry@gmail.com>"]

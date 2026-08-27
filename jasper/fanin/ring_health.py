@@ -13,7 +13,8 @@ writer of the keys they read. The dependency is one-way: this module imports
 nothing from that one.
 
 The ``*_ready`` / ``*_proof`` / ``*_converged`` gates answer ``(ok, detail)``
-and fail CLOSED, so a box whose ring cannot be proved keeps loopback; each
+and fail CLOSED, so a box whose ring cannot be proved is left exactly as
+it was found and the move is declined (never a fallback — ADR-0100); each
 gate's own docstring owns why.
 """
 

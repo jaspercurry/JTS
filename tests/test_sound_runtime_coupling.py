@@ -153,30 +153,31 @@ def test_reconcile_with_no_coupling_env_still_passes_the_ring_kwargs(
 
 def test_both_chokepoints_resolve_coupling_through_one_helper(monkeypatch):
     # Both chokepoints (the durable apply + the dry-run reconcile) resolve the
-    # coupling through the SAME plan helper (fanin_coupling_capture_kwargs),
+    # coupling through the SAME helper (coupling_capture_kwargs_from_env),
     # so the dry-run YAML and the durable apply can never disagree (which would
-    # break unchanged-detection) — and an explicit override threads to both.
+    # break unchanged-detection).
     import inspect
 
     src = inspect.getsource(runtime.load_profile_config)
-    assert "fanin_coupling_capture_kwargs(coupling)" in src
+    assert "coupling_capture_kwargs_from_env()" in src
     assert "fanin_coupling_capture_kwargs=coupling_capture_kwargs" in src
     reconcile_src = inspect.getsource(runtime.reconcile_current_dsp)
     assert "_render_saved_dsp_on_carrier(" in reconcile_src
     materializer_src = inspect.getsource(runtime._render_saved_dsp_on_carrier)
-    assert "fanin_coupling_capture_kwargs(coupling)" in materializer_src
+    assert "coupling_capture_kwargs_from_env()" in materializer_src
     del monkeypatch
 
 
-def test_the_resolver_helper_answers_the_ring_for_every_input(monkeypatch):
-    """No env value, no override and no persisted token can produce ``{}``.
+def test_the_resolver_helper_ignores_persisted_and_env_coupling(monkeypatch):
+    """No persisted token and no ``os.environ`` value can produce ``{}``.
 
     The DEFECT-1 class this used to guard — a stale ``os.environ`` coupling
     steering the CLI reconcile onto the wrong route — cannot recur, because
-    there is no second route to be steered onto and nothing here reads a token
-    at all. That is proved rather than reasoned: the persisted reader raises.
+    there is no second route to be steered onto and the resolver takes no
+    coupling argument at all (ADR-0100: it consults neither). That is proved
+    rather than reasoned: the persisted reader raises.
     """
-    from jasper.audio_runtime_plan import fanin_coupling_capture_kwargs
+    from jasper.fanin_coupling import coupling_capture_kwargs_from_env
 
     def _boom(*a, **k):
         raise AssertionError("the capture kwargs must not depend on a coupling token")
@@ -184,11 +185,10 @@ def test_the_resolver_helper_answers_the_ring_for_every_input(monkeypatch):
     monkeypatch.setattr("jasper.fanin.ring_health.read_persisted_coupling", _boom)
     monkeypatch.setenv("JASPER_FANIN_CAMILLA_COUPLING", "loopback")
 
-    for arg in (None, "shm_ring", "loopback", "transport_pipe", "fif0"):
-        kwargs = fanin_coupling_capture_kwargs(arg)
-        assert kwargs["capture_device"] == "jts_ring_capture", arg
-        assert kwargs["playback_device"] == "jts_ring_playback", arg
-        assert kwargs["enable_rate_adjust"] is False, arg
+    kwargs = coupling_capture_kwargs_from_env()
+    assert kwargs["capture_device"] == "jts_ring_capture"
+    assert kwargs["playback_device"] == "jts_ring_playback"
+    assert kwargs["enable_rate_adjust"] is False
 
 
 def test_reconcile_explicit_shm_ring_override_arms_regardless_of_env(monkeypatch, tmp_path):
