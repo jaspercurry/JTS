@@ -420,8 +420,8 @@ def test_the_glob_matches_a_record_the_REAL_store_wrote(tmp_path):
     )
 
     relay, record = "cap1", _record(1, 7)
-    # The EXACT call ``correction_crossover_v2``'s ``retain_position`` makes —
-    # same relative path expression, same payload preamble.
+    # The EXACT write ``record_store.BankedRecordStore.bank`` makes for a
+    # position take — same relative path expression, same envelope.
     store.publish_json_artifact(
         f"crossover_v2/{relay}/positions/{record['take_id']}.json",
         {

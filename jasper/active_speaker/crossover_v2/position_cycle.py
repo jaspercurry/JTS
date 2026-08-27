@@ -105,9 +105,10 @@ _BANKED_POSITIONS_GLOB = (
     f"bundle/*/{EVIDENCE_ROOT}/artifacts/crossover_v2/*/positions/*.json"
 )
 
-#: ``kind`` on the speaker's own per-take record
-#: (``correction_crossover_v2``'s ``bank_take``). Records that do not
-#: carry it are not this document's input, whatever else is in the directory.
+#: ``kind`` on the speaker's own per-take record, stamped by
+#: :meth:`~.record_store.BankedRecordStore.bank` as it envelopes the take.
+#: Records that do not carry it are not this document's input, whatever else
+#: is in the directory.
 POSITION_EVIDENCE_KIND = "jts_crossover_v2_position_evidence"
 
 #: What each take contributes to the index — the identity, the pose, and the

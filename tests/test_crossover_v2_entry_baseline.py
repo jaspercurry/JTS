@@ -144,8 +144,8 @@ def _baseline_only_conductor(fakes: FakeSeams, **kwargs):
 def _read_take(metadata: dict[str, Any]) -> dict[str, Any] | None:
     """The retained take, through the SHIPPED reader and the real store envelope.
 
-    ``retain_position`` wraps a builder's record in ``schema_version`` + ``kind``
-    before it lands, so a test that handed the bare metadata to the reader would
+    ``BankedRecordStore.bank`` wraps a builder's record in ``schema_version``
+    + ``kind`` before it lands, so handing the bare metadata to the reader would
     prove nothing about the file the speaker actually writes — and the reader
     filters on that ``kind``.
     """

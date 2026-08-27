@@ -10495,7 +10495,7 @@ def test_every_retained_position_carries_the_numbers_behind_that_sentence():
     numbers ride beside the sentence on every retained take — derived by the
     same single typed reader, never assembled here.
 
-    This is the SIDECAR's half: the record handed to ``retain_position`` is
+    This is the BANKED RECORD's half: what reaches the ``bank_take`` seam is
     ``cloud_position_record``'s own dict, so both keys are on every take
     whatever their values. The separate allowlist between that record and the
     CLOUD artifact's rows (``position_evidence._RECORD_FIELDS``, which drops a

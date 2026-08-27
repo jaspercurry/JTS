@@ -3509,9 +3509,10 @@ def bind_round_receipt(
     Raises rather than swallowing: the store is deliberately strict, and the
     fail-soft boundary is the round coordinator's own receipt writer
     (:func:`jasper.active_speaker.crossover_v2.coordinator.run_round` catches
-    it), exactly as it is for :func:`bind_position_retention`. Keeping the
+    it), the same shape :func:`bind_cloud_publisher` takes. Keeping the
     boundary there preserves the strictness for every other caller of this
-    store.
+    store. :func:`bind_position_retention` is the ONE that catches inside
+    itself, and says why.
     """
 
     def publish_round_receipt(receipt: Mapping[str, Any]) -> str:
@@ -3557,8 +3558,9 @@ def bind_position_retention(
     id, so a second mint appended a second ``_aNN``.
 
     **This is the fail-soft boundary, and the only one.** It lives at the
-    binding rather than in the conductor because the store stays strict — ``publish_json_artifact`` raises
-    ``CommissioningEvidenceStoreError`` (a ``RuntimeError``) rather than
+    binding rather than in the conductor because the store stays strict —
+    ``publish_json_artifact`` raises ``CommissioningEvidenceStoreError``
+    (a ``RuntimeError``) rather than
     silently dropping an artifact, and a WAV write raises ``OSError`` — so
     every OTHER caller of that store keeps the strictness it was built for,
     while a full disk here cannot turn an acoustically-good capture into a
@@ -4021,10 +4023,13 @@ def bind_cloud_publisher(
     is exactly what was asked for either way.
 
     Fail-soft at the CALLER (``CrossoverV2Session._run_cloud_pipeline``):
-    like :func:`bind_position_retention`, this function does not swallow
-    failures itself — a full disk or a write-once conflict must surface as
-    an exception here so the conductor's own boundary can log and continue
-    rather than every OTHER caller of this store losing its strictness.
+    this function does not swallow failures itself — a full disk or a
+    write-once conflict must surface as an exception here so the conductor's
+    own boundary can log and continue rather than every OTHER caller of this
+    store losing its strictness. :func:`bind_position_retention` is the
+    opposite, deliberately: its conductor-side boundary moved INTO the binding
+    when the three retention sites lifted onto the record store, so it catches
+    where this one raises.
     """
 
     def publish_cloud(phase: str, result: Mapping[str, Any]) -> None:
@@ -5956,13 +5961,15 @@ def bind_v2_engine_seams(
     return EngineSeams(
         graph=session_graph if routed_phases else _NoRoutedPhasesGraph(),
         volume=PlanHeldVolumeClaim(plan, _get),
-        # F9, settled and deliberately un-bridged: ``bank`` returns a
-        # store-relative PATH while the shipped flow publishers write artifact
-        # FINGERPRINTS into ``refs``. The two never meet this wave — the only
-        # caller of ``bank`` is ``measure``, and ``measure`` has no production
-        # driver until W1-c lifts the walk, so this store is bound and never
-        # exercised. The question becomes live at W1-c, and a bridge chosen now
-        # would be chosen against no requirement.
+        # F9, answered by W1-c and left un-bridged on purpose: ``bank``
+        # returns a store-relative PATH while the shipped flow publishers write
+        # artifact FINGERPRINTS into ``refs`` — and they still do.
+        # ``bank`` has a second caller now (``bind_position_retention`` banks
+        # every retained take through a ``BankedRecordStore`` of its own over
+        # this same bundle), and that caller kept
+        # ``refs["position_artifacts"][].artifact`` a fingerprint because no
+        # reader consumes the column yet. W1-d's index is the first thing that
+        # will want the path, and it can take ``bank``'s return when it lands.
         records=BankedRecordStore(
             evidence=evidence_store,
             relay_session_id=relay_session_id,

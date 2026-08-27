@@ -2225,7 +2225,7 @@ def test_position_retention_survives_a_retake_through_the_real_evidence_store(
     """The retention seam against the REAL, write-once store — not a lambda.
 
     Round-1 review blocker B3: every other test substitutes a recorder for
-    ``retain_position``, so nothing exercised the store's write-once contract.
+    the retention seam, so nothing exercised the store's write-once contract.
     Against the real one, two takes of a retaken position used to collide on a
     single path: the second write was refused (fail-soft, so the session
     survived) and the ONLY surviving sidecar described the REPLACED take — its

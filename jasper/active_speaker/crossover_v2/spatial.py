@@ -791,7 +791,7 @@ class PositionGeometry:
 
 
 def take_id_for(position_id: str, attempt: int) -> str:
-    """One take's id, as every builder AND the storage seam spell it.
+    """One take's id, as every builder that mints one spells it.
 
     A geometry retake reuses the position id — same prompted spot, measured
     again from further out — so the id alone does not identify a take
@@ -946,17 +946,16 @@ def _take_identity(
     reason, and from the graph rather than from ``phase``: see :func:`take_kind`.
 
     **It is spelled ``measure_kind`` and not ``kind``, which the engine's own
-    record uses, because a retained take is still published through an ENVELOPE
-    whose ``kind`` is this package's document-type discriminator** —
-    ``POSITION_EVIDENCE_KIND``, and the same convention as every other artifact
-    here. :meth:`~.record_store.BankedRecordStore.bank` writes that envelope
-    around this record, reading the measure kind out from under either spelling
-    and always writing it back under this one — so a ``kind`` written here would
-    be taken for the discriminator and
-    :func:`~.position_cycle.read_lateral_take` /
-    :func:`~.position_cycle.read_entry_baseline_take` would stop recognising the
-    take at all. The two words converge on one only if the envelope itself ever
-    goes away; delete this spelling then.
+    record uses, because :func:`take_kind` can honestly answer ``""``** — a
+    take whose graph names neither fingerprint is unresolved, never guessed.
+    :meth:`~.record_store.BankedRecordStore.bank` accepts the measurement kind
+    under EITHER spelling and always writes it back under this one, so the two
+    are interchangeable everywhere except at that empty value: ``kind`` is read
+    by MEMBERSHIP in :data:`~.contracts.MEASURE_KINDS`, which ``""`` fails,
+    while ``measure_kind`` is read by the KEY's PRESENCE, which carries an
+    unresolved take through. A ``""`` written here as ``kind`` would leave the
+    record with no route at all. The two words converge on one when an
+    unresolved take stops being expressible; delete this spelling then.
     """
     return {
         "phase": phase,
