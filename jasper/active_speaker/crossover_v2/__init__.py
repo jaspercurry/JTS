@@ -95,6 +95,8 @@ call and neither extends:
   boundary INSIDE ``measure`` rather than a fifth verb.
 * :mod:`.program_transaction` — the play seam filled: one stimulus through
   ``play_program``, reporting the stage it WATCHED rather than one it assumed.
+* :mod:`.measurement_phase` — which stimulus a measurement KIND plays, in the
+  flow's phase words: the one place those two vocabularies meet.
 * :mod:`.measure_spec` — what one ``measure`` asks for, and the named stubs for
   the mic-only regimes the engine has not built yet (ruling S12).
 * :mod:`.prior_bank` — a previous session's bank, read back: the "before" a
