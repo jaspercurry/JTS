@@ -1998,4 +1998,3 @@ def _absolute(max_db, *, band=(1000.0, 4000.0), worst_db=None, worst_hz=1700.0):
         "worst_hz": worst_hz,
         "n_bins": 16384,
     }
-

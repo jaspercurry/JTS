@@ -25,6 +25,7 @@ from jasper.active_speaker.crossover_v2.volume_claim import (
     MeasurementVolumeClaim,
     OwnerVolumeDoor,
 )
+from jasper.active_speaker.session_volume_plan import RestoreOutcome
 from jasper.volume_owner import ClaimKind, VolumeClaimRefused, VolumeOwner
 
 from tests.engine_twin import FakeSeams, open_session
@@ -219,11 +220,14 @@ async def test_another_holders_same_kind_claim_still_conflicts():
     assert "session_measurement" in str(caught.value)
 
 
-async def test_the_door_names_the_holder_rather_than_only_failing(caplog):
+async def test_the_door_separates_a_conflict_from_an_unconfirmed_write(caplog):
     """F2's honest surfacing: a reasoned refusal, never a bare failure.
 
     "CamillaDSP would not confirm" and "another wizard never gave the fader
-    back" have opposite fixes, so the disclosure has to tell them apart.
+    back" have opposite fixes, so the disclosure has to tell them apart. What
+    it reports is the claim KIND, not which of the three same-kind takers holds
+    it — the owner keeps no holder identity, and this pin asserts only what is
+    actually knowable.
     """
     import logging
 
@@ -239,7 +243,7 @@ async def test_the_door_names_the_holder_rather_than_only_failing(caplog):
 
     assert established is False, "a refused claim is not an established level"
     assert "session_volume_claim_refused" in caplog.text
-    assert "session_measurement" in caplog.text, "the holder is named"
+    assert "session_measurement" in caplog.text, "the claim KIND is named"
 
 
 async def test_a_door_with_no_claim_cannot_establish_and_says_so():
@@ -272,4 +276,85 @@ async def test_the_doors_restore_refuses_a_declaration_the_fader_did_not_take():
 
     assert declared_alone is True, "the owner defers, and says its intent stands"
     assert fader.db == MEASUREMENT_DB, "the deferral wrote nothing"
-    assert restored is False, "the DOOR answers for the fader, not the intent"
+    assert restored is RestoreOutcome.DEFERRED, (
+        "the DOOR answers for the fader — and a deferral is its own answer, "
+        "not a failed write the ladder should walk past"
+    )
+
+
+async def test_the_ladder_stops_on_a_deferral_and_leaves_the_exact_level_standing():
+    """B1+B2, as one pin: ONE surviving owner, a real live claim, no clobber.
+
+    The two blockers shared a root cause — a deferral read as a failed write.
+    The drain then walked to its emergency rung, declared −60 dB, and left the
+    FLOOR standing as the owner's household level for the moment the claim
+    released. This drives the whole ladder through one owner that outlives it,
+    with the deferral caused by a genuinely held rank-1 claim rather than by an
+    unconfirmable write, and asserts all four consequences at once.
+    """
+    from jasper.active_speaker.session_volume_plan import (
+        SessionVolumeOpenResult,
+        SessionVolumePlan,
+        SessionVolumeRestoreResult,
+    )
+
+    fader = _Fader(HOUSEHOLD_DB)
+    owner = _owner_over(fader)
+    await owner.declare_household_level_db(HOUSEHOLD_DB)
+
+    # Production's order: the plan snapshots the household level and writes its
+    # durable intent, and only THEN does the claim move the fader — so the
+    # snapshot is the household level, not the measurement one.
+    session_claim = MeasurementVolumeClaim(owner)
+    plan = SessionVolumePlan()
+    opened = await plan.open(
+        MEASUREMENT_DB,
+        OwnerVolumeDoor(owner, read_fader=fader.get, claim=session_claim),
+    )
+    assert opened is SessionVolumeOpenResult.OPENED
+    # A live measurement session now holds the fader, exactly as the wall-clock
+    # ceiling finds it when it fires on a slow-but-alive positioner.
+    assert fader.db == MEASUREMENT_DB
+
+    # The out-of-runner drain: no claim of its own, which is the whole shape.
+    drained = await plan.close(OwnerVolumeDoor(owner, read_fader=fader.get))
+
+    assert drained is SessionVolumeRestoreResult.DEFERRED, (
+        "a deferral is not a failed write and must not walk the ladder"
+    )
+    assert owner.declared_level_db() == MEASUREMENT_DB, (
+        "the session's claim still outranks the household level"
+    )
+    assert plan.unresolved_volume_safety is None, "nothing to recover from"
+    assert plan.needs_recovery is False, "no recovery screen for a live session"
+    assert fader.db == MEASUREMENT_DB, "the drain moved a fader it does not own"
+
+    # And the standing household level is still the EXACT original, so the
+    # release lands there rather than on the emergency floor.
+    await session_claim.release()
+    assert fader.db == HOUSEHOLD_DB, (
+        "the losing rung replaced the winning declaration — the speaker came "
+        "back to the emergency floor instead of the household level"
+    )
+
+
+async def test_a_duck_over_the_household_level_is_landed_not_failed():
+    """A duck is an attenuation over a level in effect, not a rival level.
+
+    Judging "landed" against the bare level would call a ducked speaker a
+    failed write and send the ladder to its floor — the same clobber as B2,
+    arriving through a different door.
+    """
+    fader = _Fader(MEASUREMENT_DB)
+    owner = _owner_over(fader)
+    await owner.declare_household_level_db(HOUSEHOLD_DB)
+    await owner.acquire_duck(12.0)
+    door = OwnerVolumeDoor(owner, read_fader=fader.get)
+
+    outcome = await door.restore_household_level_db(HOUSEHOLD_DB)
+
+    assert outcome is RestoreOutcome.LANDED, (
+        "a ducked speaker read as a failed write — the ladder would walk to "
+        "its floor and leave -60 dB standing"
+    )
+    assert fader.db == HOUSEHOLD_DB - 12.0, "the duck is still down"

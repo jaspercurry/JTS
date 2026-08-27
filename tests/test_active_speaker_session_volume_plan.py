@@ -29,6 +29,7 @@ from jasper.active_speaker.seat_level_reference import (
 from jasper.active_speaker.session_volume_plan import (
     DEFAULT_WALL_CLOCK_CEILING_S,
     FaderVolumeDoor,
+    RestoreOutcome,
     MAX_WALL_CLOCK_CEILING_S,
     MEASUREMENT_REFERENCE_VOLUME_DB,
     SessionVolumeOpenResult,
@@ -890,20 +891,41 @@ DOOR_FACTORIES = [
 
 
 @pytest.mark.parametrize("door_factory", DOOR_FACTORIES)
-@pytest.mark.parametrize("verb", ["establish_measurement_level_db",
-                                  "restore_household_level_db"])
-def test_a_door_verb_is_true_only_when_the_fader_confirms(verb, door_factory):
-    """Both write verbs answer readback, never "the setter was called".
+def test_establish_is_true_only_when_the_fader_confirms(door_factory):
+    """The open verb answers readback, never "the setter was called".
 
-    The exact→emergency ladder and its durable latch are built on this bool: a
-    door that answered ``True`` for an unconfirmed write would let
-    ``_drain_restore`` clear its resolved marker over a speaker still sitting
-    at measurement level — the shape ``_clear_resolved`` exists to refuse.
+    A door that answered ``True`` for an unconfirmed write would let a session
+    be admitted against a level the speaker is not playing at.
     """
     confirms = FakeVolume(initial=-6.0)
     drifts = FakeVolume(initial=-6.0, confirm_targets=set())
-    assert asyncio.run(getattr(door_factory(confirms), verb)(-12.0)) is True
-    assert asyncio.run(getattr(door_factory(drifts), verb)(-12.0)) is False
+    establish = "establish_measurement_level_db"
+    assert asyncio.run(getattr(door_factory(confirms), establish)(-12.0)) is True
+    assert asyncio.run(getattr(door_factory(drifts), establish)(-12.0)) is False
+
+
+@pytest.mark.parametrize("door_factory", DOOR_FACTORIES)
+def test_restore_lands_or_fails_but_never_reports_an_unwritten_level(
+    door_factory,
+):
+    """The drain verb answers readback too — and has a THIRD answer.
+
+    ``LANDED`` only when the fader carries the level; ``FAILED`` when the write
+    did not confirm. The third, ``DEFERRED``, is not reachable through a door
+    holding no competing claim, and is pinned where it lives — against a real
+    live claim, in the volume-claim suite. What matters here is that neither of
+    these two ever reports a level the fader does not carry: the exact→emergency
+    ladder and its durable latch are built on that.
+    """
+    confirms = FakeVolume(initial=-6.0)
+    drifts = FakeVolume(initial=-6.0, confirm_targets=set())
+    restore = "restore_household_level_db"
+    assert asyncio.run(
+        getattr(door_factory(confirms), restore)(-12.0)
+    ) is RestoreOutcome.LANDED
+    assert asyncio.run(
+        getattr(door_factory(drifts), restore)(-12.0)
+    ) is RestoreOutcome.FAILED
 
 
 @pytest.mark.parametrize("door_factory", DOOR_FACTORIES)

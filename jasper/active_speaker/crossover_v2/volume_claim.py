@@ -49,6 +49,7 @@ from ...volume_owner import (
     VolumeClaimRefused,
     VolumeOwner,
 )
+from ..session_volume_plan import RestoreOutcome
 from ..volume_latch import GetMainVolumeDb, fader_matches, read_fader_db
 
 logger = logging.getLogger(__name__)
@@ -222,13 +223,15 @@ class OwnerVolumeDoor:
         try:
             await self._claim.acquire(level_db)
         except VolumeClaimRefused as exc:
-            # NAME THE HOLDER, not just the failure. A ``VolumeClaimConflict``
-            # here means some other rank-1 taker in this process — the
-            # level-match ramp, autolevel, the balance guard — still holds its
-            # claim, and the owner's own message says which kind. Without it a
-            # support read cannot tell "CamillaDSP would not confirm" from
-            # "another wizard never gave the fader back", and those have
-            # opposite fixes.
+            # SPLIT THE TWO FAILURES, which is what a support read needs.
+            # ``reason=`` separates a conflict — some other rank-1 taker in
+            # this process, the level-match ramp, autolevel or the balance
+            # guard, still holding its claim — from a write CamillaDSP would
+            # not confirm. Those have opposite fixes. ``holder=`` carries the
+            # owner's own message, which names the claim KIND rather than
+            # which of the three takers it is; the owner keeps no
+            # holder identity to report, and inventing one here would be a
+            # second ledger.
             log_event(
                 logger,
                 "correction.session_volume_claim_refused",
@@ -240,26 +243,42 @@ class OwnerVolumeDoor:
             return False
         return True
 
-    async def restore_household_level_db(self, level_db: float) -> bool:
-        """Declare the household level, then answer whether the FADER took it.
+    async def restore_household_level_db(self, level_db: float) -> RestoreOutcome:
+        """Declare the household level, then say what actually became of it.
 
-        **Two questions, and the second is why this is not a pass-through.**
+        **Three answers, because the owner genuinely has three.**
         ``declare_household_level_db`` returns whether the OWNER's intent is in
-        effect, and it answers ``True`` for a legitimate deferral — under a
-        commissioning claim the new level is recorded and the fader is not
-        written at all. Passing that through would make the plan's ladder
-        report ``EXACT_RESTORED`` and clear its durable intent over a speaker
-        still sitting at measurement level, which is the exact shape
-        ``_clear_resolved`` measured at +47.5 dB.
+        effect, and it answers ``True`` in two very different situations: the
+        fader was written, or a higher-ranked claim holds the fader and the
+        level was merely RECORDED. Collapsing those into one boolean is what
+        broke the ladder — a deferral read as a failed write sends
+        ``_drain_restore`` to its emergency rung, which declares −60 dB and
+        leaves the FLOOR standing as the owner's household level once the
+        claim releases.
 
-        So the declaration stands either way — it is the caller's intent, and
-        the owner will land it when the higher claim releases — but this door
-        answers for the fader. A deferral is ``False``, the ladder falls
-        through to the emergency floor, and if that will not confirm either the
-        plan latches ``unresolved`` exactly as it did when it held the door
-        itself.
+        So this door distinguishes them, and the discriminator is the owner's
+        own synchronous reader rather than a guess:
+        :meth:`~jasper.volume_owner.VolumeOwner.declared_level_db` is the
+        highest-ranked LEVEL claim held, so a value that is not the level just
+        declared means something outranks this declaration and the fader is not
+        this door's to move. That is DEFERRED, and the drain stops on it: the
+        level is recorded, and the owner lands it when the claim above it
+        releases.
+
+        **Landed is judged against the owner's TARGET, not the bare level.** A
+        transient duck is an attenuation over the level in effect, not a
+        different level — it leaves ``declared_level_db`` alone and moves the
+        fader. Comparing against the bare level would call a ducked speaker a
+        failed write and send the ladder to its floor, which is the same defect
+        arriving through a different door.
         """
-        declared = await self._owner.declare_household_level_db(level_db)
-        if not declared:
-            return False
-        return fader_matches(await self.read_household_level_db(), level_db)
+        if not await self._owner.declare_household_level_db(level_db):
+            return RestoreOutcome.FAILED
+        in_effect = self._owner.declared_level_db()
+        if in_effect is None or not fader_matches(in_effect, level_db):
+            return RestoreOutcome.DEFERRED
+        target = self._owner.target_db()
+        reading = await self.read_household_level_db()
+        if target is not None and fader_matches(reading, target):
+            return RestoreOutcome.LANDED
+        return RestoreOutcome.FAILED

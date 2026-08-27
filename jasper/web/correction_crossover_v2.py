@@ -1325,34 +1325,35 @@ def _session_volume_read(camilla_factory: Any) -> Callable[[], Any]:
     return _get
 
 
-def _fail_closed_volume_door(reason: str) -> "VolumeDoor":
-    """A door for a process with no owner: reports "not in effect", writes none.
+def _refuse_without_a_volume_owner(where: str) -> "CrossoverV2Refused":
+    """The one refusal for a process with no fader owner, household copy and all.
 
-    ``jasper.web.__main__`` installs an owner before serving, so a missing one
-    is a registration defect rather than a shape this module supports. It
-    discloses at CRITICAL and hands back a door whose every verb fails —
-    minting a second owner here would be the arbitration failure the owner
-    exists to delete, and every caller already treats a ``False`` restore as a
-    failed drain that latches.
+    ``jasper.web.__main__`` installs an owner before serving, so a process
+    without one is a REGISTRATION defect rather than a shape this module
+    supports — there is no second authority to fall back to, and minting one
+    would be the arbitration failure the owner exists to delete.
+
+    Raised rather than answered with a door that quietly fails every verb: a
+    door like that is a guard against a hypothetical, and the paths that would
+    reach it already treat a raise as a failed drain. The household gets
+    registry copy from here, because the wizard's 500 arm renders an
+    unmapped exception's own string and internals are not household copy.
     """
-
-    class _NoOwnerDoor:
-        async def read_household_level_db(self) -> float | None:
-            return None
-
-        async def establish_measurement_level_db(self, level_db: float) -> bool:
-            return False
-
-        async def restore_household_level_db(self, level_db: float) -> bool:
-            return False
+    from jasper.active_speaker.crossover_v2.refusal_copy import (
+        REASON_INTERNAL_ERROR,
+        REASON_REGISTRY,
+    )
 
     log_event(
         logger,
         "correction.crossover_v2_volume_owner_absent",
         level=logging.CRITICAL,
-        door=reason,
+        where=where,
     )
-    return _NoOwnerDoor()
+    return CrossoverV2Refused(
+        REASON_REGISTRY[REASON_INTERNAL_ERROR].message,
+        code=REASON_INTERNAL_ERROR,
+    )
 
 
 def _session_volume_claim() -> Any:
@@ -1360,8 +1361,8 @@ def _session_volume_claim() -> Any:
 
     Minted at the composition root and injected into the two things that hold
     it — the engine's volume seam and the plan's door — because they are one
-    claim, not two. ``None`` is the no-owner registration defect, and both
-    consumers already fail closed on it.
+    claim, not two. ``None`` is the no-owner registration defect, and the
+    binder turns it into the household refusal above.
     """
     from jasper.active_speaker.crossover_v2.volume_claim import (
         MeasurementVolumeClaim,
@@ -1403,7 +1404,7 @@ def _volume_door(
 
     owner = volume_owner()
     if owner is None:
-        return _fail_closed_volume_door(reason)
+        raise _refuse_without_a_volume_owner(reason)
     return OwnerVolumeDoor(
         owner, read_fader=_session_volume_read(camilla_factory), claim=claim,
     )
@@ -1460,15 +1461,28 @@ def enforce_session_volume_ceiling_if_stale(
     ``DEFAULT_WALL_CLOCK_CEILING_S`` is force-drained here, restoring the
     household volume and releasing any held measurement pause. v2-only. Returns
     True iff a stale session was drained.
+
+    **A LIVE session's claim outranks this drain, and that is not a failure.**
+    This runs on the request thread while a ``TuningSession`` may still hold
+    the fader — the slow-but-alive positioner this exists for. The owner then
+    RECORDS the household level behind that claim and lands it on release, so
+    the drain answers ``DEFERRED``: nothing is latched, no recovery is offered,
+    and the pause stays held because the session that owns it is still running.
+    The caller's gate still hears that the ceiling expired.
     """
+    from jasper.active_speaker.session_volume_plan import (
+        SessionVolumeRestoreResult,
+    )
+
     plan = session_volume_plan()
     try:
         if not plan.stale_active():
             return False
     except (OSError, RuntimeError, ValueError):
         return False
+    result: Any = None
     try:
-        run_async(
+        result = run_async(
             plan.enforce_ceiling(_volume_door(camilla_factory)),
             timeout=_SESSION_VOLUME_DRAIN_TIMEOUT_S,
         )
@@ -1478,6 +1492,13 @@ def enforce_session_volume_ceiling_if_stale(
             "correction.crossover_v2_ceiling_enforce_failed",
             level=logging.ERROR,
         )
+    if result is SessionVolumeRestoreResult.DEFERRED:
+        log_event(
+            logger,
+            "correction.crossover_v2_ceiling_enforce_deferred",
+            level=logging.INFO,
+        )
+        return True
     _release_pause_best_effort(run_async)
     return True
 
@@ -1539,18 +1560,36 @@ def reconcile_session_volume_for_new_session(
     ``unresolved`` / crash-hydrated ``needs_recovery`` state is NOT drained here
     — the caller's ``needs_recovery`` gate refuses it toward the recover-volume
     screen.
+
+    **A live session's claim defers this drain rather than failing it.** The
+    household level is recorded behind that claim and lands on release, so
+    nothing latches and the caller's ``needs_recovery`` gate does not send a
+    household that simply opened a second session toward the recovery screen.
     """
+    from jasper.active_speaker.session_volume_plan import (
+        SessionVolumeRestoreResult,
+    )
+
     plan = session_volume_plan()
     enforce_session_volume_ceiling_if_stale(run_async, camilla_factory)
     if plan.measurement_volume_db is None or plan.needs_recovery:
         return
     try:
-        run_async(
+        reconciled = run_async(
             plan.abandon(
                 _volume_door(camilla_factory), reason="stale_session_reset",
             ),
             timeout=_SESSION_VOLUME_DRAIN_TIMEOUT_S,
         )
+        if reconciled is SessionVolumeRestoreResult.DEFERRED:
+            # A live session still holds the fader. Its level is recorded and
+            # lands on release; nothing is latched, so the caller's
+            # ``needs_recovery`` gate does not send a household that simply
+            # opened a second session toward the recovery screen.
+            log_event(
+                logger, "correction.crossover_v2_stale_session_reset_deferred",
+            )
+            return
         log_event(logger, "correction.crossover_v2_stale_session_reset")
     except (concurrent.futures.TimeoutError, OSError, RuntimeError, ValueError):
         log_event(
@@ -5780,11 +5819,14 @@ def _volume_hooks(
         from jasper.active_speaker.crossover_v2.session_graph import SessionGraphError
 
         try:
-            # The session gives back what it took: its volume slot is the
-            # interim claim (a disclosed no-op this wave, because the plan's
-            # drain below owns restore) and its graph slot is this stage's
-            # measurement graph. Called HERE and not around the run, so the
-            # order this docstring promises is the order that happens.
+            # The session gives back what it took, and BOTH halves are real
+            # now: the graph goes back first, then the claim is released and
+            # the owner lands the standing household level. The plan's drain
+            # below then re-asserts its own durable snapshot on top, which is
+            # what makes one authority out of two definitions of "where the
+            # fader belongs" — the snapshot is last and wins. Called HERE and
+            # not around the run, so the order this docstring promises is the
+            # order that happens.
             await tuning.close()
         except (SessionGraphError, OSError, RuntimeError, TimeoutError, ValueError):
             log_event(
@@ -6101,13 +6143,12 @@ def bind_v2_engine_seams(
     plan = session_volume_plan()
     claim = volume_claim if volume_claim is not None else _session_volume_claim()
     if claim is None:
-        # A registration defect, not a supported shape — ``web.__main__``
-        # installs an owner before serving. Refuse the session rather than
-        # mint a second authority over one fader.
-        raise RuntimeError(
-            "no volume owner is installed; the measurement session cannot "
-            "claim the fader"
-        )
+        # A registration defect, not a supported shape. Refused as household
+        # copy rather than as a bare RuntimeError: the route's 500 arm renders
+        # an unmapped exception's own string on the wizard's status line, and
+        # "no volume owner is installed" is internals, not something a person
+        # can act on.
+        raise _refuse_without_a_volume_owner("session")
     return EngineSeams(
         graph=session_graph if routed_phases else _NoRoutedPhasesGraph(),
         volume=claim,
@@ -7307,9 +7348,10 @@ def prepare_v2_session(
         """Drive the walk the preparer built.
 
         The session's own lifetime is NOT driven here. Both halves live in the
-        volume hooks: ``open`` after the plan confirms the level (the interim
-        claim verifies that plan, so it cannot precede it), and ``close`` where
-        the graph went back before this wave, before the plan's fader drain.
+        volume hooks: ``open`` after the plan has written its durable intent
+        (the claim is the first fader mutation, and the intent must be on disk
+        before it — that ordering is what a crash in the gap survives), and
+        ``close`` where the graph goes back, before the plan's fader drain.
         The runner calls those hooks, so the session opens and closes inside
         the same span this coroutine owns — without this body being able to
         reorder either.

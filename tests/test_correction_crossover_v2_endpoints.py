@@ -176,10 +176,17 @@ class _NoGraphSession:
     graph, so the session they pass holds no graph — which is also the real
     no-op shape for a session that never played a routed stimulus.
 
-    It DOES give the claim back, because a double that kept it would not be a
-    simplification: the plan's drain runs after this and would meet a rank-1
-    claim still outranking the household level, so every drain would defer and
-    latch. That is a property of the double, not of the code under test.
+    It DOES give the claim back, and that is the session's real contract
+    rather than a convenience: ``TuningSession.close`` releases the volume
+    slot, and the plan's drain runs after it precisely so the claim is gone by
+    then. A double that kept the claim would model a session that never closed.
+
+    The drain it runs after would DEFER, not fail — a rank-1 claim outranking
+    the household level means the level is recorded and lands on release. That
+    is the code's behaviour, not the double's; the adversarial review's B1
+    found this comment asserting the opposite, and the drains that genuinely
+    run without a claim now stop on a deferral instead of walking to their
+    emergency rung.
     """
 
     def __init__(self) -> None:
@@ -8257,6 +8264,10 @@ def test_volume_hooks_release_pause_when_open_does_not_confirm(monkeypatch):
         async def open(self, vol, door):
             return "failed"
 
+    # The hooks build their door before calling the plan, and a door needs an
+    # owner; production always has one.
+    _own_the_fader(monkeypatch, _FakeVolCam(-15.0))
+
     v2host.set_volume_plan_for_tests(_DrainedPlan())
 
     class _Ctx:
@@ -13452,3 +13463,51 @@ def test_stage_2_of_an_unpinned_round_re_points_nothing(monkeypatch):
     # not rebuild its crossover regions at all.
     assert seen["preset_unchanged"] is True
     assert seen["fc_hz"] == FC_HZ
+
+
+def test_the_ceiling_defers_under_a_live_claim_and_offers_no_recovery(monkeypatch):
+    """B1 at the host: the wall-clock ceiling fires on a LIVE session.
+
+    ``_enforce_session_volume_ceiling`` exists for the slow-but-alive
+    positioner, so it runs on the request thread while a ``TuningSession``
+    still holds the claim. The owner records the household level behind that
+    claim and lands it on release, so this must read as DEFERRED — zero fader
+    writes, nothing latched, and no recovery screen for a household whose
+    session is simply still running.
+    """
+    from jasper.active_speaker.crossover_v2.volume_claim import (
+        MeasurementVolumeClaim,
+        OwnerVolumeDoor,
+    )
+    from jasper.active_speaker.session_volume_plan import SessionVolumePlan
+    from jasper.volume_owner import volume_owner
+
+    clock = [1000.0]
+    plan = SessionVolumePlan(wall_clock_ceiling_s=10.0, clock=lambda: clock[0])
+    cam = _FakeVolCam(-15.0)
+    _own_the_fader(monkeypatch, cam)
+    owner = volume_owner()
+
+    claim = MeasurementVolumeClaim(owner)
+    asyncio.run(
+        plan.open(
+            -20.0,
+            OwnerVolumeDoor(
+                owner, read_fader=lambda: cam.get_volume_db(), claim=claim
+            ),
+        )
+    )
+    assert cam.vol == -20.0
+    v2host.set_volume_plan_for_tests(plan)
+    clock[0] += 3600.0  # walked away, well past the ceiling
+    writes_before = cam.vol
+
+    drained = v2host.enforce_session_volume_ceiling_if_stale(
+        _bg_run_async, lambda: cam
+    )
+
+    assert drained is True, "the ceiling still reports that it expired"
+    assert cam.vol == writes_before, "the drain moved a fader it does not own"
+    assert plan.needs_recovery is False, "a live session is not a recovery case"
+    assert plan.unresolved_volume_safety is None, "nothing latched"
+    v2host.set_volume_plan_for_tests(None)

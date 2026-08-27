@@ -762,7 +762,17 @@ class TuningSession:
         self._graph_installed = False
 
     async def _give_back_both(self, opening_exc: BaseException) -> None:
-        """Both releases, unconditionally, each attaching its own failure."""
+        """Both releases, unconditionally, each attaching its own failure.
+
+        **Volume first here, graph first in :meth:`_give_back_held`, and the
+        asymmetry is deliberate.** This list is ordered by which failure the
+        caller should be told about — ``_attach_first`` keeps the earliest, and
+        the volume's is the one to keep because its loss is audible. The
+        teardown's order is about which WRITE lands first, where the graph must
+        go back before the fader moves. Nothing here is arming a live
+        pipeline: both releases run unconditionally against seams that may have
+        armed nothing, so their order carries no isolation meaning.
+        """
         for release in (self.seams.volume.release, self.seams.graph.restore):
             await _attach_cleanup_failure(opening_exc, release)
 

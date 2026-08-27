@@ -1934,8 +1934,10 @@ def _real_seam_session(monkeypatch, cam_factory=None, graph=None) -> dict:
     monkeypatch.setattr(v2host, "_volume_hooks", _capturing_hooks)
     # ONLY the graph seam is substituted: emitting a real measurement graph
     # needs a preset whose protection satisfies the program floor, which this
-    # fixture speaker does not carry. The VOLUME seam stays the real interim
-    # claim, because the plan it verifies is the whole subject here.
+    # fixture speaker does not carry. The VOLUME seam stays the real
+    # ``MeasurementVolumeClaim`` over the owner seated above, because the fader
+    # authority is the whole subject here and a substituted one could not see
+    # the coupling these pins exist to check.
     real_binder = v2host.bind_v2_engine_seams
     graph_override = graph
 
@@ -1958,13 +1960,19 @@ def _real_seam_session(monkeypatch, cam_factory=None, graph=None) -> dict:
     return captured
 
 
-async def test_the_session_opens_where_the_plan_it_verifies_opens(monkeypatch):
-    """B1's repro, as a pin: opening the session is the hooks' second act.
+async def test_the_session_opens_after_the_plan_has_armed_its_durable_intent(
+    monkeypatch,
+):
+    """Opening the session is the hooks' SECOND act, and the reason changed.
 
-    The interim claim VERIFIES the plan rather than taking a claim of its own,
-    so a session opened before `plan.open` runs refuses on `assert_ready` —
-    every session, both stages. The ordering is therefore a contract and not a
-    detail, and the hooks' open arm is where it is kept.
+    It used to be that the interim claim verified the plan, so a session opened
+    first refused on ``assert_ready``. W5-c1 deleted that claim: the session's
+    claim is now the first thing that MOVES the fader, and the plan's durable
+    intent has to be on disk before any mutation — a crash in the gap must
+    hydrate as a recoverable state rather than a forgotten one. The ordering is
+    still a contract, and still kept in the hooks' open arm; what it protects
+    is crash recovery rather than an assertion. Production says so at
+    ``correction_crossover_v2``'s open arm.
     """
     from jasper.active_speaker.session_volume_plan import SessionVolumePlan
 
