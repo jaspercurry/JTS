@@ -1,7 +1,8 @@
 # Right-size baseline — 2026-08
 
 > **Campaign artifact, deleted with the campaign** — same lifecycle as
-> [REFACTOR-2026-08.md](REFACTOR-2026-08.md) (wave 0.5).
+> REFACTOR-2026-08.md (wave 0.5, deleted 2026-08-27 — see
+> [ADR-0186](adr/0186-the-endpoint-gate-stays.md)).
 > Verbatim output of `bash scripts/right-size-report.sh` computed at
 > `810b0cd899a35f30377eca8eb3d03fa4a5fe93d2`; check that commit out to
 > reproduce these numbers exactly.
