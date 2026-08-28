@@ -4174,7 +4174,15 @@ def bind_production_play(
                 )
 
         def _observe(open_cam: Callable[[], Any], graph_kind: str) -> Any:
-            """Awaitable: record what this stimulus plays THROUGH, fail-soft."""
+            """Awaitable: record what this stimulus plays THROUGH, fail-soft.
+
+            Reads ``main_volume_db`` itself rather than reusing
+            ``_hold_fader``'s proven read — deliberately, a second physical
+            RPC and not a redundancy to fold away: this read sits closest in
+            time to the stimulus, which is what a forensic record must
+            describe, and one extra best-effort round-trip per capture is
+            the accepted price.
+            """
             return record_capture_provenance(
                 provenance, open_cam=open_cam, graph_kind=graph_kind, program=program,
                 artifact=artifact, read_volume_plan=session_volume_plan,

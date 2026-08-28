@@ -746,6 +746,11 @@ three new defects.**
 > **3.** **The sidecar dies in that same PR**, per ruling S5 — it is a proof
 > bracket, not a fallback.
 
+**Executed by #3250, but not as mapped here:** the ring's producer and the
+shell split die; `RING_SIDECAR_GLOB` and the readers below do not — the
+reader flip is blocked on a field the banked record lacks (`diagnostic` /
+`capture_integrity` / `frame_ledger`), so twelve readers survive by design.
+
 **Carried.** What dies, enumerated so nothing is left behind:
 
 - `_maybe_retain_capture` — `web/…:3223` (signature `:3223-3227`), its sole call

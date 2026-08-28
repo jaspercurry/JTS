@@ -189,7 +189,9 @@ the existing tests do not carry that pin, so the mismatch could recur
 silently.
 
 **4. Set the stage-2 anchor-capture retention marker for the DoD run.**
-`XOVER_CAPTURE_DUMP_ENABLED_MARKER` in the dump directory keeps the anchor
+[The marker died with #3250; the store banks every accepted capture
+unconditionally now.] `XOVER_CAPTURE_DUMP_ENABLED_MARKER` in the dump
+directory keeps the anchor
 VERIFY captures on disk. Receipts store identity only by default, so
 without the marker the run's anchor curves cannot be re-graded offline once
 the session closes — and re-grading is exactly what items 2 and 3 want a
