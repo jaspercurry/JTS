@@ -514,7 +514,8 @@ def resolve_wire_for_gate(topology: Any = None) -> tuple[Any | None, str]:
     except ValueError as exc:
         return None, (
             f"{exc} — refusing to arm on a wire this box cannot declare; "
-            "keeping loopback"
+            "fails closed and leaves the box exactly as it was found — "
+            "never a fallback (ADR-0100)"
         )
 
 
@@ -695,8 +696,9 @@ def ring_edge_width_ready(
             f"{wire.ring_a_channels}ch / Ring B {wire.ring_b_channels}ch, but "
             "these ends disagree: "
             + "; ".join(problems)
-            + ". Every declaring end must state the SAME wire or the ioplug "
-            "attach fails hard at arm; keeping loopback until they agree"
+            + ". Every declaring end must state the SAME wire or the gate "
+            "fails closed and leaves the box exactly as it was found — "
+            "never a fallback (ADR-0100) — until they agree"
         )
     # The COUNT and the NAMES come from the declarations that were actually
     # compared, so the message cannot outlive an end being dropped from the
@@ -1240,15 +1242,17 @@ def composite_ring_wire_ready(topology: Any) -> tuple[bool, str]:
     one gate. A rule wired into one of two paths reads as covered while half of
     it is not.
 
-    THE REGRESSION THIS REFUSES, which is invisible on every other axis. The
-    CamillaDSP→outputd content hop takes its format from
-    :func:`jasper.fanin_coupling.content_lane_format_for_coupling`: under
-    ``loopback`` that is ``DEFAULT_PLAYBACK_FORMAT`` (**S32_LE**), under
-    ``shm_ring`` it is ``resolve_ring_wire().sample_format``. Moving a composite
-    from its aloop lane onto a NARROW ring, changing nothing else, would narrow
-    the POST-crossover per-driver program from 32 to 16 bits. That is the exact
-    quantization class the wide-output-path program exists to remove, arriving
-    through a transport change nobody would look at for it.
+    THE REGRESSION THIS REFUSES, which is invisible on every other axis. Before
+    ADR-0100 retired the loopback coupling,
+    :func:`jasper.fanin_coupling.content_lane_format_for_coupling` selected the
+    CamillaDSP→outputd content hop's format BY coupling — ``DEFAULT_PLAYBACK_FORMAT``
+    (**S32_LE**) under ``loopback``, ``resolve_ring_wire().sample_format`` under
+    ``shm_ring`` (today it answers the ring's resolved format unconditionally;
+    see that function's own note). Moving a composite from its aloop lane onto a
+    NARROW ring, changing nothing else, would narrow the POST-crossover
+    per-driver program from 32 to 16 bits. That was the exact quantization class
+    the wide-output-path program exists to remove, arriving through a transport
+    change nobody would look at for it.
 
     WHAT REACHES THIS REFUSAL NOW. The ring wire's resolver defaults WIDE, so an
     undeclared composite converges with no declaration at all and passes here —
@@ -1543,7 +1547,8 @@ def ring_slot_geometry_ready(fanin_text: str) -> tuple[bool, str]:
     default-migration class: old 8-slot state would make fan-in write an 8-slot
     program.ring against the conf.d's pinned 2. The period gate
     (:func:`ring_geometry_ready`) does NOT cover this second axis. Fail-SAFE:
-    refuse to arm (recover to loopback) with a crisp reason.
+    refuse to arm and leave the box exactly as it was found, with a crisp
+    reason — never a fallback (ADR-0100).
     """
     from jasper.fanin_coupling import RING_SLOTS_ENV_VAR
     from jasper.ring_assets import ring_slot_geometry_matches_conf
@@ -1566,9 +1571,11 @@ def ring_slot_geometry_ready(fanin_text: str) -> tuple[bool, str]:
 
 
 def read_persisted_coupling(env_path: str | os.PathLike = FANIN_ENV_PATH) -> str:
-    """The coupling the daemons will read on their next start (resolved,
-    fail-safe to loopback). Doctor + observability use this to compare the
-    persisted intent against the live fan-in transport."""
+    """The coupling the daemons will read on their next start — resolved through
+    :func:`resolve_coupling`, whose own note applies here too: the ``loopback``
+    answer is a legacy label for an absent/invalid value, never a live daemon
+    state. Doctor + observability use this to compare the persisted intent
+    against the live fan-in transport."""
     try:
         text = Path(env_path).read_text(encoding="utf-8")
     except OSError:
