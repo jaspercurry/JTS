@@ -35,6 +35,7 @@ from jasper.active_speaker.crossover_v2.playback_transaction import (
 from jasper.active_speaker.crossover_v2.program_transaction import (
     STIMULUS_ADMISSION_REFUSED,
     STIMULUS_CAPTURE_NOT_BOUND,
+    STIMULUS_EMISSION_FAILED,
     STIMULUS_LEVEL_NOT_READY,
     STIMULUS_NOT_CAPTURED,
     STIMULUS_NOT_COMPOSED,
@@ -43,6 +44,7 @@ from jasper.active_speaker.crossover_v2.program_transaction import (
     ProgramPlaybackTransaction,
     StimulusCaptureError,
 )
+from jasper.active_speaker.program_playback import ProgramPlaybackError
 from jasper.active_speaker.session_volume_plan import SessionVolumePlanError
 from jasper.audio_measurement.playback import PlaybackError, PlaybackFailureCode
 
@@ -230,8 +232,45 @@ async def test_a_failed_emission_reports_lock_because_it_got_past_admission():
 
     assert outcome.stage_reached == STAGE_LOCK
     assert outcome.played is False
-    assert outcome.incident == STIMULUS_PLAY_FAILED
+    assert outcome.incident == STIMULUS_EMISSION_FAILED
     assert seams.locked == 1, "the failure happened INSIDE the lock"
+
+
+@pytest.mark.parametrize(
+    ("raised", "expected_incident"),
+    [
+        (ProgramPlaybackError("reap failed"), STIMULUS_PLAY_FAILED),
+        (
+            PlaybackError(
+                "aplay died",
+                code=PlaybackFailureCode.PROCESS_FAILED,
+                wav_path=Path("/tmp/x.wav"),
+                alsa_device="null",
+            ),
+            STIMULUS_EMISSION_FAILED,
+        ),
+        (OSError("device vanished"), STIMULUS_EMISSION_FAILED),
+    ],
+)
+async def test_the_program_family_and_the_emission_family_stay_apart(
+    raised, expected_incident,
+):
+    """Two incidents because the two classify differently at the host.
+
+    ``ProgramPlaybackError`` renders the program-unplayable refusal today;
+    ``PlaybackError``/``OSError`` classify to internal_error (fix-and-retry).
+    A transaction that folded them into one incident would let a dead aplay
+    reach the household as safety copy — the failure-identity break the split
+    exists to prevent. Mutation: merge the two arms and the PlaybackError and
+    OSError rows red.
+    """
+    seams = _Seams(play_raises=raised)
+
+    outcome = await _run(_transaction(seams=seams))
+
+    assert outcome.stage_reached == STAGE_LOCK
+    assert outcome.played is False
+    assert outcome.incident == expected_incident
 
 
 async def test_a_box_that_was_never_ready_says_so_in_the_incident():

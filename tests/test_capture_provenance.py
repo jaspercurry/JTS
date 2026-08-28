@@ -639,3 +639,99 @@ def test_analyze_without_a_play_carries_no_provenance(monkeypatch):
         phase=PHASE_CHECK,
     )
     assert carry.take() is None
+
+
+def test_the_engine_compose_leg_observes_and_holds_like_the_flow_leg(
+    monkeypatch, tmp_path,
+):
+    """Wrapper parity: the engine leg's stimulus carries the same provenance
+    block and the same mid-lock fader proof a flow-leg stimulus does.
+
+    `bind_production_play`'s compose is what `TuningSession.measure` plays
+    through, and `_play_body`'s two wrappers — the #2925 hold (outermost) and
+    the provenance observation — must ride it identically, or a MEASURE take
+    banked off the engine leg names no graph and no fader while its flow-leg
+    twin names both. Asserted at the composed seams' own `play_wav`: awaiting
+    it records the observation, proves (never writes) the fader, and only
+    then plays.
+    """
+    from jasper.active_speaker import camilla_yaml as camilla_yaml_mod
+    from jasper.active_speaker import crossover_v2_flow as flow_mod
+    from jasper.audio_measurement import program as program_mod
+    from jasper.active_speaker.crossover_v2.contracts import (
+        MEASURE_KIND_CANDIDATE,
+    )
+    from jasper.active_speaker.crossover_v2.measure_spec import MeasureSpec
+
+    monkeypatch.setattr(program_mod, "write_program_wav", lambda path, program: None)
+    monkeypatch.setattr(
+        camilla_yaml_mod, "emit_active_speaker_program_config",
+        lambda *a, **k: ROUTING_GRAPH_YAML,
+    )
+    played: list[str] = []
+
+    def _fake_seams(cam_arg, **kwargs):
+        async def play_wav() -> Any:
+            played.append("played")
+            return SimpleNamespace(ok=True)
+
+        async def readmit() -> Any:
+            return SimpleNamespace(allowed=True, refusals=())
+
+        return {
+            "play_wav": play_wav,
+            "readmit": readmit,
+            "writer_lock": lambda: _FakeWindow(),
+        }
+
+    monkeypatch.setattr(flow_mod, "bind_program_playback_seams", _fake_seams)
+
+    class _HoldRecordingPlan(_FakePlan):
+        def __init__(self) -> None:
+            super().__init__()
+            self.holds: list[str] = []
+
+        async def hold_measurement_volume(
+            self, get_main_volume_db: Any, *, context: str = "",
+        ) -> float | None:
+            self.holds.append(context)
+            return await super().hold_measurement_volume(
+                get_main_volume_db, context=context,
+            )
+
+    plan = _HoldRecordingPlan()
+    v2host.set_volume_plan_for_tests(plan)
+    cam = _FakeCam(volume_db=-20.0)
+    recorder = CaptureProvenanceRecorder()
+    production = v2host.bind_production_play(
+        run_async=asyncio.run,
+        camilla_factory=lambda: cam,
+        evidence_store=_FakeEvidenceStore(tmp_path),
+        relay_session_id="engine_compose_probe",
+        topology=object(),
+        preset=object(),
+        role_channels={"woofer": 0, "tweeter": 1},
+        playback_device="hw:Test",
+        safety_profile={},
+        role_targets={},
+        session_volume_db=-20.0,
+        provenance=recorder,
+    )
+
+    prepared = asyncio.run(production.compose(
+        spec=MeasureSpec(kind=MEASURE_KIND_CANDIDATE),
+        program_for_phase=lambda phase: _program(),
+    ))
+    asyncio.run(prepared.seams["play_wav"]())
+
+    carried = recorder.take()
+    assert carried is not None, "the compose leg observes when a recorder is bound"
+    assert carried.to_dict()["main_volume_db"] == -20.0
+    assert plan.holds == ["capture:measure"], (
+        "the #2925 hold runs for the engine leg's stimulus, per stimulus"
+    )
+    assert cam.volume_writes == [], (
+        "the hold proves the declared measurement volume; it never writes it"
+    )
+    assert played == ["played"], "the stimulus still plays, after both wrappers"
+    v2host.set_volume_plan_for_tests(None)

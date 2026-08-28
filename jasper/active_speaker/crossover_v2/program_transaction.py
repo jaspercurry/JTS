@@ -116,6 +116,7 @@ __all__ = [
     "BELOW_READY_INCIDENTS",
     "STIMULUS_ADMISSION_REFUSED",
     "STIMULUS_CAPTURE_NOT_BOUND",
+    "STIMULUS_EMISSION_FAILED",
     "STIMULUS_LEVEL_NOT_READY",
     "STIMULUS_NOT_CAPTURED",
     "STIMULUS_NOT_COMPOSED",
@@ -133,8 +134,19 @@ __all__ = [
 STIMULUS_LEVEL_NOT_READY = "session_level_not_ready"
 #: Fresh re-admission refused the program before any audio (MS-4's gate).
 STIMULUS_ADMISSION_REFUSED = "program_admission_refused"
-#: The program was admitted and the lock taken, and the emission failed.
+#: The program was admitted and the lock taken, and ``play_program``'s OWN
+#: family refused past that point — a :class:`ProgramPlaybackError` that is
+#: not the admission refusal. The PROGRAM family, kept apart from the
+#: mechanics family below because their classifications differ at the host:
+#: this one renders the program-unplayable refusal today, and folding the
+#: mechanics into it would send a dead aplay to the household as safety copy.
 STIMULUS_PLAY_FAILED = "program_play_failed"
+#: The program was admitted and the emission MECHANISM failed — an aplay
+#: death, a vanished device, an I/O fault (``PlaybackError``/``OSError``,
+#: neither a :class:`ProgramPlaybackError`). Today's classifier answers this
+#: family ``internal_error`` (fix-and-retry), never the program-unplayable
+#: safety copy, and the split is what lets a host keep that identity.
+STIMULUS_EMISSION_FAILED = "stimulus_emission_failed"
 #: The host could not assemble a program for this stimulus at all, so
 #: ``play_program`` was never called. The disclosed gap's OTHER below-``ready``
 #: incident — ``ready`` is reported for the same missing-rung reason.
@@ -336,13 +348,21 @@ class ProgramPlaybackTransaction:
             return PlaybackOutcome(
                 stage_reached=STAGE_RESTORE, incident=STIMULUS_NOT_CAPTURED,
             )
-        except (ProgramPlaybackError, PlaybackError, OSError):
-            # Past admission and inside the writer lock, so `lock` completed
-            # and `play` did not. Named types rather than a bare
-            # ``RuntimeError``: the seam keeps raising for a PROGRAMMING error,
-            # so a mis-bound seam must still surface as one.
+        except ProgramPlaybackError:
+            # Past admission and inside the writer lock: `lock` completed and
+            # `play` did not, and the refusal is `play_program`'s OWN family.
             return PlaybackOutcome(
                 stage_reached=STAGE_LOCK, incident=STIMULUS_PLAY_FAILED,
+            )
+        except (PlaybackError, OSError):
+            # Same stage, DIFFERENT family: the emission mechanism died (aplay,
+            # device, I/O) rather than the program being refused. Two incidents
+            # because the two classify differently at the host — see the codes'
+            # own comments. Named types rather than a bare ``RuntimeError``:
+            # the seam keeps raising for a PROGRAMMING error, so a mis-bound
+            # seam must still surface as one.
+            return PlaybackOutcome(
+                stage_reached=STAGE_LOCK, incident=STIMULUS_EMISSION_FAILED,
             )
 
         if wav_path:

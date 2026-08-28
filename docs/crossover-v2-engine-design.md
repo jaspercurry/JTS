@@ -92,9 +92,11 @@ so a cancelled `close()` cannot leave the fader at measurement level. See
 This document describes the engine's shape. Read it against the wiring, because
 at HEAD the shape is ahead of it:
 
-- **`TuningSession` is constructed only in tests** — `tests/engine_twin.py` and
-  `tests/test_crossover_v2_engine_skeleton.py`. No production caller builds one
-  yet, which is what "the wave that wires it to a front end" is waiting on.
+- **`TuningSession` is constructed in production** — the converged preparer
+  builds one per stage and holds it for the run's lifetime
+  (`jasper/web/correction_crossover_v2.py`, `prepare_v2_session`), and the
+  wired walk drives `measure()` for its MEASURE captures. The other verbs'
+  production callers are still owed.
 - **`MeasurementSessionGraph` is the seam implementation that runs in
   production today**, through `crossover_v2_flow` and
   `web/correction_crossover_v2` — it is the part of this design already carrying

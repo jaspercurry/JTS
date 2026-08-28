@@ -2415,6 +2415,8 @@ async def test_a_session_from_the_real_preparer_drives_all_four_verbs(monkeypatc
     assert saved.record_ids == measured.record_ids
     assert recommended.record_ids == measured.record_ids
     assert analyzed.results or analyzed.disclosures or True
-    assert fakes.graph.installs == 1 and fakes.graph.restores == 1
+    # One install at open plus one prove-or-install per stimulus (MS-13/S6:
+    # the idempotent install IS the health check); this walk played one.
+    assert fakes.graph.installs == 2 and fakes.graph.restores == 1
     assert not fakes.volume.held, "the claim went back"
     assert not session.is_open

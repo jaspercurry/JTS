@@ -58,7 +58,8 @@ import time
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import (
-    TYPE_CHECKING, Any, Callable, Mapping, MutableMapping, Sequence, cast,
+    TYPE_CHECKING, Any, Callable, Mapping, MutableMapping, NoReturn, Sequence,
+    cast,
 )
 
 from jasper.atomic_io import atomic_write_text
@@ -1112,6 +1113,25 @@ def reset_session_measurement_pause_for_tests() -> None:
     global _session_pause_cm, _session_abort_target
     _session_pause_cm = None
     _session_abort_target = None
+
+
+async def _under_measurement_isolation(play_body: Callable[[], Any]) -> None:
+    """One play under the session's isolation, whichever shape holds it.
+
+    The selector both playback legs use — the flow's ``_emit`` and the engine
+    measure leg — spelled once so the two cannot drift: with the session-held
+    window, the body runs abort-target-registered under it
+    (:func:`_play_under_session_pause` — a latched isolation-loss abort
+    REFUSES the play, and a mid-play abort surfaces as the named
+    ``MeasurementWindowError``); without it, a per-play window is taken.
+    """
+    if session_measurement_pause_held():
+        await _play_under_session_pause(play_body)
+        return
+    from jasper.correction import coordinator
+
+    async with coordinator.measurement_window():
+        await play_body()
 
 
 async def _play_under_session_pause(play_body: Callable[[], Any]) -> None:
@@ -4109,6 +4129,53 @@ def bind_production_play(
         confirm_live=confirm_graph_is_live,
     )
 
+    def _observe_stimulus(
+        open_cam: Callable[[], Any], graph_kind: str, program: Any, artifact: Any,
+    ) -> Any:
+        """Awaitable: record what this stimulus plays THROUGH, fail-soft.
+
+        Reads ``main_volume_db`` itself rather than reusing the fader hold's
+        proven read — deliberately, a second physical RPC and not a redundancy
+        to fold away: this read sits closest in time to the stimulus, which is
+        what a forensic record must describe, and one extra best-effort
+        round-trip per capture is the accepted price.
+
+        One implementation for both playback legs — the flow's ``_play`` and
+        the engine's compose — so the two cannot drift about what a
+        provenance block records.
+        """
+        return record_capture_provenance(
+            provenance, open_cam=open_cam, graph_kind=graph_kind,
+            program=program, artifact=artifact,
+            read_volume_plan=session_volume_plan,
+        )
+
+    async def _hold_fader_for(open_cam: Callable[[], Any], phase: str) -> None:
+        """Re-prove the session's measurement volume for THIS stimulus.
+
+        The ONE volume discipline every playback leg uses (#2925), owned by
+        the plan (``SessionVolumePlan.hold_measurement_volume``) because only
+        the plan can serialize it against its own drains. NOT gated on
+        ``observing`` the way provenance is: that record is forensics, this is
+        the safety ledger's own integrity — ``readmit_program_from_wav``
+        admitted this program against the DECLARED volume, so a stimulus
+        emitted at any other level was never the one that was admitted.
+
+        ``None`` means the plan holds no volume to prove; that is its question
+        to answer, so this discloses and plays on.
+        """
+        get_v = _session_volume_read(open_cam)
+        held = await session_volume_plan().hold_measurement_volume(
+            get_v, context=f"capture:{phase}",
+        )
+        if held is None:
+            log_event(
+                logger,
+                "correction.crossover_v2_capture_volume_unheld",
+                level=logging.WARNING,
+                phase=phase,
+            )
+
     def _play(phase: str, program: Any) -> None:
         bundle_dir = evidence_store.bundle_dir
         wav_rel = f"crossover_v2/{relay_session_id}/{phase}_program.wav"
@@ -4168,45 +4235,10 @@ def bind_production_play(
                 )
 
         def _observe(open_cam: Callable[[], Any], graph_kind: str) -> Any:
-            """Awaitable: record what this stimulus plays THROUGH, fail-soft.
-
-            Reads ``main_volume_db`` itself rather than reusing
-            ``_hold_fader``'s proven read — deliberately, a second physical
-            RPC and not a redundancy to fold away: this read sits closest in
-            time to the stimulus, which is what a forensic record must
-            describe, and one extra best-effort round-trip per capture is
-            the accepted price.
-            """
-            return record_capture_provenance(
-                provenance, open_cam=open_cam, graph_kind=graph_kind, program=program,
-                artifact=artifact, read_volume_plan=session_volume_plan,
-            )
+            return _observe_stimulus(open_cam, graph_kind, program, artifact)
 
         async def _hold_fader(open_cam: Callable[[], Any]) -> None:
-            """Re-prove the session's measurement volume for THIS stimulus.
-
-            The ONE volume discipline both playback shapes use (#2925), owned
-            by the plan (``SessionVolumePlan.hold_measurement_volume``) because
-            only the plan can serialize it against its own drains. NOT gated on
-            ``observing`` the way provenance is: that record is forensics, this
-            is the safety ledger's own integrity — ``readmit_program_from_wav``
-            admitted this program against the DECLARED volume, so a stimulus
-            emitted at any other level was never the one that was admitted.
-
-            ``None`` means the plan holds no volume to prove; that is its
-            question to answer, so this discloses and plays on.
-            """
-            get_v = _session_volume_read(open_cam)
-            held = await session_volume_plan().hold_measurement_volume(
-                get_v, context=f"capture:{phase}",
-            )
-            if held is None:
-                log_event(
-                    logger,
-                    "correction.crossover_v2_capture_volume_unheld",
-                    level=logging.WARNING,
-                    phase=phase,
-                )
+            await _hold_fader_for(open_cam, phase)
 
         async def _play_body() -> None:
             from jasper.active_speaker.capture_provenance import (
@@ -4331,23 +4363,14 @@ def bind_production_play(
                 **seams,
             )
 
-        async def _emit() -> None:
-            # The session holds ONE measurement window for its whole life (W6.1
-            # — see acquire_session_measurement_pause). ``measurement_window``
-            # is exclusive/non-nestable, so nest-SKIP it here when the session
-            # already holds it — registering this play task as the window's
-            # abort target so an isolation-loss abort still stops the sweep.
-            # Only fall back to a per-play window if the session pause is
-            # somehow not held.
-            if session_measurement_pause_held():
-                await _play_under_session_pause(_play_body)
-                return
-            from jasper.correction import coordinator
-
-            async with coordinator.measurement_window():
-                await _play_body()
-
-        run_async(_emit())
+        # The session holds ONE measurement window for its whole life (W6.1 —
+        # see acquire_session_measurement_pause). ``measurement_window`` is
+        # exclusive/non-nestable, so the selector nest-SKIPs it when the
+        # session already holds it — registering this play task as the
+        # window's abort target so an isolation-loss abort still stops the
+        # sweep — and takes a per-play window only if the session pause is
+        # somehow not held.
+        run_async(_under_measurement_isolation(_play_body))
 
     async def _compose_stimulus(
         *,
@@ -4383,7 +4406,19 @@ def bind_production_play(
         rewritten. Worth doing once, for both, when something drives enough
         stimuli to measure it; not worth a cache-invalidation question on a
         path nothing drives yet.
+
+        **The two ``_play_body`` wrappers ride here too, same order, same
+        gates.** The #2925 fader hold (outermost, unconditional, inside the
+        writer lock and before any audio) and the provenance observation
+        (``observing = provenance is not None`` — the same gate ``_play_body``
+        uses) wrap ``play_wav`` exactly as the flow leg wraps it, so a MEASURE
+        capture banked off the engine leg carries the same provenance block
+        and the same mid-lock fader proof a flow-leg capture does. No
+        phase-ladder signal: the wired walk has no phone to pace.
         """
+        from jasper.active_speaker.capture_provenance import (
+            GRAPH_KIND_PROGRAM_ROUTING,
+        )
         from jasper.active_speaker.crossover_v2.measurement_phase import (
             phase_for_measurement,
         )
@@ -4404,22 +4439,38 @@ def bind_production_play(
             return evidence_store.identify_artifact(wav_rel)
 
         artifact = await asyncio.to_thread(_render)
-        return ProgramForStimulus(
+        cam = camilla_factory()
+        seams = bind_program_playback_seams(
+            cam,
+            bundle_dir=str(bundle_dir),
+            artifact=artifact,
+            config_dir=resolved_config_dir,
             program=program,
-            seams=bind_program_playback_seams(
-                camilla_factory(),
-                bundle_dir=str(bundle_dir),
-                artifact=artifact,
-                config_dir=resolved_config_dir,
-                program=program,
-                wav_path=str(wav_path),
-                topology=topology,
-                safety_profile=safety_profile,
-                role_targets=role_targets,
-                session_volume_db=session_volume_db,
-                declared_sensitivities=declared_sensitivities,
-            ),
+            wav_path=str(wav_path),
+            topology=topology,
+            safety_profile=safety_profile,
+            role_targets=role_targets,
+            session_volume_db=session_volume_db,
+            declared_sensitivities=declared_sensitivities,
         )
+        if provenance is not None:
+            pre_provenance_play_wav = seams["play_wav"]
+
+            async def _play_wav_observed() -> Any:
+                await _observe_stimulus(
+                    lambda: cam, GRAPH_KIND_PROGRAM_ROUTING, program, artifact,
+                )
+                return await pre_provenance_play_wav()
+
+            seams["play_wav"] = _play_wav_observed
+        pre_hold_play_wav = seams["play_wav"]
+
+        async def _play_wav_volume_held() -> Any:
+            await _hold_fader_for(lambda: cam, phase)
+            return await pre_hold_play_wav()
+
+        seams["play_wav"] = _play_wav_volume_held
+        return ProgramForStimulus(program=program, seams=seams)
 
     return ProductionPlay(
         play=_play, graph=session_graph, compose=_compose_stimulus,
@@ -6231,6 +6282,201 @@ def _wired_stimulus_capture(
     )
 
 
+def _bind_engine_measure_leg(
+    *,
+    tuning: Any,
+    stimulus_capture: Any,
+    index_phase_map: Mapping[int, str],
+    run_async: Any,
+) -> Callable[[int, int, Any], Any] | None:
+    """The wired walk's engine leg: MEASURE captures through ``measure()``.
+
+    Returns the ``capture_stimulus(index, attempt, entry)`` callable the wired
+    runner drives in place of its own recorder + ``on_armed`` for the indices
+    this closure claims, or ``None`` when there is nothing to bind (no local
+    capture half — the relay). The closure answers ``None`` for every index it
+    does NOT claim, and the walk's own path is unchanged for those.
+
+    **It claims exactly the MEASURE indices.** That is the one phase the
+    engine can drive end-to-end today: its kind exists
+    (``MEASURE_KIND_CANDIDATE``), its program is routed (a verify-class summed
+    sweep is structurally not re-admittable — ``admit_excitation_program``
+    raises for it — so the transaction's readmit gate cannot pass one), and
+    its graph discipline matches the session's prove-per-stimulus model. CHECK
+    and the prompted walks stay on the flow callbacks until their kinds and
+    verdicts move engine-side.
+
+    **The whole ``measure()`` runs under the session's measurement isolation**
+    — the same :func:`_under_measurement_isolation` selector the flow leg's
+    ``_emit`` uses, so a latched isolation-loss abort REFUSES the play before
+    any audio and a mid-sweep abort cancels it and surfaces as the named
+    ``MeasurementWindowError``, identically on both legs. The engine leg's
+    span under the window is wider than the flow leg's (it also covers the
+    render, the recording tail and the banking, where ``_play_body`` covers
+    graph-prove + hold + play), which errs toward MORE abortability, not less.
+
+    **Failure identity is preserved by re-raising the exception TYPE today's
+    path emits** for each engine incident, so ``classify_program_failure`` and
+    the frozen persisted codes read identically whichever leg played:
+
+    * ``program_admission_refused`` → ``ProgramAdmissionError`` →
+      ``program_unplayable`` (disclosed downgrade: the refusal SLUGS are not
+      reconstructable from an incident code, so
+      ``state["failure"]["refusals"]`` is empty for a mid-walk admission
+      refusal — and with them the ``PROGRAM_PROFILE_NOT_CONFIRMED`` dedicated
+      code/screen is unreachable from a mid-walk MEASURE refusal. The slugs
+      are still journaled at the admission site itself, and a profile-level
+      refusal dies at CHECK — which runs first, on the flow leg, with full
+      fidelity.)
+    * ``program_play_failed`` (``play_program``'s OWN family) →
+      ``ProgramPlaybackError`` → ``program_unplayable``, as today.
+    * ``stimulus_emission_failed`` (aplay/device/I-O death —
+      ``PlaybackError``/``OSError``, outside the program family) →
+      ``CrossoverV2LocalSeamError`` → ``internal_error`` (fix-and-retry), as
+      today. A dead aplay must never render the program-unplayable safety
+      copy.
+    * ``session_level_not_ready`` → ``SessionVolumePlanError`` and
+      ``stimulus_not_captured``/``program_not_composed`` → the local-seam
+      family → ``internal_error``, as today.
+    * **Any incident this table does not name** → ``internal_error``: an
+      unknown failure gets the fix-and-retry copy, never safety copy.
+
+    **An UNPROVEN level is not a walk event.** MS-14 is engine-internal
+    honesty: the claim's single pre-transaction ``prove()`` read is STRICTER
+    than the #2925 hold (no independent re-read; ``None`` on preemption or
+    one unreadable round-trip), so treating its refusal as terminal would
+    invent a new walk-death today's path does not have — contradicting both
+    ``prove()``'s contract ("refuses to BANK … never to play the stimulus or
+    to try again") and ``run()``'s "never raises for a measurement problem".
+    The #2925 hold still runs INSIDE the play (the compose wrapper), and a
+    genuine drift still raises ``MeasurementFaderDrift`` through the leg to
+    the same terminal end as the flow leg. So: played + hold held + answer
+    minted + ``UNPROVEN_LEVEL`` ⇒ the answer is graded normally (the walk
+    sees exactly today's behavior); the engine banks nothing, and the gap is
+    a WARNING event plus the outcome's own disclosure.
+    """
+    if stimulus_capture is None:
+        return None
+    from jasper.active_speaker.crossover_v2.contracts import (
+        MEASURE_KIND_CANDIDATE,
+    )
+    from jasper.active_speaker.crossover_v2.journey import PHASE_MEASURE
+    from jasper.active_speaker.crossover_v2.measure_spec import MeasureSpec
+    from jasper.active_speaker.crossover_v2.program_transaction import (
+        STIMULUS_ADMISSION_REFUSED,
+        STIMULUS_EMISSION_FAILED,
+        STIMULUS_LEVEL_NOT_READY,
+        STIMULUS_NOT_CAPTURED,
+        STIMULUS_PLAY_FAILED,
+    )
+    from jasper.active_speaker.crossover_v2.session import UNPROVEN_LEVEL
+    from jasper.active_speaker.program_admission import ProgramAdmissionError
+    from jasper.active_speaker.program_playback import ProgramPlaybackError
+    from jasper.active_speaker.session_volume_plan import SessionVolumePlanError
+    from jasper.audio_measurement.wired_capture import WiredCaptureError
+
+    measure_indices = {
+        index for index, phase in index_phase_map.items()
+        if phase == PHASE_MEASURE
+    }
+    if not measure_indices:
+        return None
+
+    def _raise_as_todays_failure(incident: str) -> NoReturn:
+        """The incident, as the exception type the classifier already maps.
+
+        The default arm is ``internal_error`` on purpose: only the incidents
+        this table NAMES as the program family may reach the
+        program-unplayable safety copy, so an incident a later engine adds
+        gets fix-and-retry until somebody classifies it deliberately.
+        """
+        if incident == STIMULUS_ADMISSION_REFUSED:
+            raise ProgramAdmissionError(
+                "program re-admission refused (engine measure leg)"
+            )
+        if incident == STIMULUS_PLAY_FAILED:
+            raise ProgramPlaybackError(f"stimulus failed: {incident}")
+        if incident == STIMULUS_LEVEL_NOT_READY:
+            raise SessionVolumePlanError("no measurement volume is open")
+        if incident == STIMULUS_NOT_CAPTURED:
+            raise WiredCaptureError(
+                "the wired capture half minted no evidence for the stimulus"
+            )
+        if incident == STIMULUS_EMISSION_FAILED:
+            raise CrossoverV2LocalSeamError(
+                "the emission mechanism failed (aplay/device/I-O)"
+            )
+        raise CrossoverV2LocalSeamError(
+            f"engine measure leg failed: {incident or 'no incident named'}"
+        )
+
+    def _measure_capture(index: int, attempt: int, entry: Any) -> Any:
+        del entry  # MEASURE is the unprompted design-axis capture
+        if index not in measure_indices:
+            return None
+        async def _measured() -> Any:
+            # The selector runs a body and returns nothing (its flow-leg body
+            # is side-effecting), so the outcome rides a holder.
+            measured: list[Any] = []
+
+            async def _body() -> None:
+                measured.append(await tuning.measure(
+                    MeasureSpec(kind=MEASURE_KIND_CANDIDATE)
+                ))
+
+            await _under_measurement_isolation(_body)
+            return measured[0]
+
+        outcome = run_async(_measured())
+        if len(outcome.stimuli) != 1:
+            # The leg mints a single-stimulus spec and grades THE stimulus
+            # against THE drained answer; a spec that produced any other count
+            # would pair takes wrongly. Load-bearing assumption, checked.
+            raise CrossoverV2LocalSeamError(
+                "engine measure leg expects exactly one stimulus, got "
+                f"{len(outcome.stimuli)}"
+            )
+        stimulus = outcome.stimuli[0]
+        answer = stimulus_capture.take_answer()
+        if stimulus.banked and answer is not None:
+            log_event(
+                logger,
+                "correction.crossover_v2_engine_measure",
+                index=index,
+                attempt=attempt,
+                record_id=stimulus.record_id,
+                level_db=stimulus.level_db,
+            )
+            return answer
+        if stimulus.incident == UNPROVEN_LEVEL and answer is not None:
+            # Played, recorded, #2925 hold held (a drift would have raised out
+            # of the play) — only the claim's stricter pre-play read failed.
+            # MS-14 already did its whole job: the ENGINE record is not
+            # banked. The walk grades the answer exactly as today; inventing
+            # a rejection or a death here would be a new trigger with no
+            # flow-leg analog.
+            log_event(
+                logger,
+                "correction.crossover_v2_engine_measure_unproven",
+                level=logging.WARNING,
+                index=index,
+                attempt=attempt,
+            )
+            return answer
+        log_event(
+            logger,
+            "correction.crossover_v2_engine_measure_failed",
+            level=logging.WARNING,
+            index=index,
+            attempt=attempt,
+            incident=stimulus.incident,
+            banked=stimulus.banked,
+        )
+        _raise_as_todays_failure(stimulus.incident or STIMULUS_NOT_CAPTURED)
+
+    return _measure_capture
+
+
 def _build_source_run(
     source: str,
     conductor: Any,
@@ -6245,15 +6491,16 @@ def _build_source_run(
     ceiling_s: float,
     complete_event: threading.Event,
     retake_event: threading.Event,
+    capture_stimulus: Any = None,
 ) -> Callable[[Any, Any], Any]:
     """One provider runner per source, driving the same conductor hooks.
 
     The relay runner takes the phone-phase signal (its progress ladder); the
     wired runner takes the device, the session ceiling (its confirm-wait
-    bound) and the local completion and retake signals. Neither takes the
-    other's extras — the seam's rule that a source's choreography stays
-    private, and the relay's retake needs no signal here because it arrives on
-    the phone's own begin.
+    bound), the local completion and retake signals, and the engine measure
+    leg. Neither takes the other's extras — the seam's rule that a source's
+    choreography stays private, and the relay's retake needs no signal here
+    because it arrives on the phone's own begin.
     """
     if source == SOURCE_WIRED:
         from jasper.web import correction_crossover_v2_wired as wired
@@ -6269,6 +6516,7 @@ def _build_source_run(
             retake_event=retake_event,
             position_gate=position_gate,
             evidence_refs=evidence_refs,
+            capture_stimulus=capture_stimulus,
         )
     from jasper.web import correction_crossover_v2_relay as relay
 
@@ -7139,6 +7387,14 @@ def prepare_v2_session(
         # ``tuning.seams.volume`` back out would be doing engine work outside
         # the engine (``session_seams.EngineSeams``, wave 2's enforcement pin).
         volume_claim = _session_volume_claim()
+        # The half that records what a stimulus does to the room — minted ONCE,
+        # because two parties hold the same object: the play transaction (which
+        # records across the play and banks the path) and the wired walk (which
+        # drains the minted answer so `consume_capture` grades the very take
+        # the engine banked). None on the relay: its microphone is a phone.
+        stimulus_capture = _wired_stimulus_capture(
+            capture_source, wired_device, evidence_store,
+        )
         tuning = TuningSession(
             session_id=relay_session_id,
             seams=bind_v2_engine_seams(
@@ -7153,11 +7409,7 @@ def prepare_v2_session(
                     production_play.compose,
                     program_for_phase=conductor.program_for_phase,
                 ),
-                # The half that records what that stimulus does to the room.
-                # Bound only where the box holding the microphone is this one.
-                capture_stimulus=_wired_stimulus_capture(
-                    capture_source, wired_device, evidence_store,
-                ),
+                capture_stimulus=stimulus_capture,
                 volume_claim=volume_claim,
                 # Stage 2 is verify-class on every tier — it grades through the
                 # APPLIED graph and takes no routed capture — so it must not
@@ -7183,6 +7435,12 @@ def prepare_v2_session(
             ceiling_s=ceiling_s,
             complete_event=complete_event,
             retake_event=retake_event,
+            capture_stimulus=_bind_engine_measure_leg(
+                tuning=tuning,
+                stimulus_capture=stimulus_capture,
+                index_phase_map=opening.plan.index_phase_map,
+                run_async=run_async,
+            ),
         )
         held = _HeldSession(tuning=tuning, run=source_run)
         return rc

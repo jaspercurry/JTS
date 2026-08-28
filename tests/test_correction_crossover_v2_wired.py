@@ -1829,3 +1829,404 @@ def test_only_the_wired_source_binds_a_capture_half():
     # carries resolves against the same root `analyze` will be declared.
     assert wired_half.bundle_dir == Path("/var/lib/jasper/bundle")
     assert relay_half is None
+
+
+# --------------------------------------------------------------------------- #
+# layer 6: the ENGINE MEASURE LEG
+# --------------------------------------------------------------------------- #
+#
+# The wired walk's MEASURE capture runs through `TuningSession.measure()`: the
+# engine plays the stimulus through the real play transaction, the shared
+# capture half records across it and banks the path, and the walk's verdict
+# grades the very take the engine banked. Every other index keeps the walk's
+# own recorder + `on_armed` path, and every engine failure surfaces as the
+# exception type the runner's arms already classify.
+
+
+class _LegSession:
+    """A `TuningSession` stand-in: scripted `measure`, recorded specs."""
+
+    measurement_level_db = -22.0
+
+    def __init__(self, outcome=None):
+        self.specs: list = []
+        self._outcome = outcome
+
+    async def measure(self, spec):
+        self.specs.append(spec)
+        if self._outcome is not None:
+            return self._outcome
+        return SimpleNamespace(stimuli=(SimpleNamespace(
+            record_id="rec-1", banked=True, incident="", level_db=-22.0,
+        ),))
+
+
+class _LegCaptureHalf:
+    """The drained-answer side of `WiredStimulusCapture`, scripted."""
+
+    def __init__(self, answer="the-engine-take"):
+        self._answers = [answer] if answer is not None else []
+
+    def take_answer(self):
+        return self._answers.pop() if self._answers else None
+
+
+@pytest.fixture()
+def _held_window(monkeypatch):
+    """The leg under the session-held window, nothing latched.
+
+    The leg's measure runs under `_under_measurement_isolation`; taking the
+    held-window arm keeps these pins off the real coordinator. Abort-latch
+    pins override `_session_abort_target` themselves.
+    """
+    monkeypatch.setattr(v2host, "session_measurement_pause_held", lambda: True)
+    monkeypatch.setattr(v2host, "_session_abort_target", None)
+    return monkeypatch
+
+
+class _FakeAbortTarget:
+    """The pause's abort target: latched or not, registrations recorded."""
+
+    def __init__(self, failed=False):
+        self.failed = failed
+        self.registered: list = []
+        self.cleared = 0
+
+    def register(self, task):
+        self.registered.append(task)
+
+    def clear(self):
+        self.cleared += 1
+
+
+def _leg(tuning=None, half=None, phase_map=None):
+    def _run_async(coro):
+        return asyncio.run(coro)
+
+    return v2host._bind_engine_measure_leg(
+        tuning=tuning if tuning is not None else _LegSession(),
+        stimulus_capture=half if half is not None else _LegCaptureHalf(),
+        index_phase_map=phase_map if phase_map is not None else {
+            1: "check", 2: "measure", 3: "cloud_measure",
+        },
+        run_async=_run_async,
+    )
+
+
+def test_the_engine_leg_claims_exactly_the_measure_indices(_held_window):
+    """CHECK and the prompted walks stay on the flow callbacks; MEASURE is
+    the one phase the engine can drive end-to-end today (kind exists, program
+    routed and re-admittable, graph discipline matches install-at-open)."""
+    tuning = _LegSession()
+    leg = _leg(tuning=tuning)
+
+    assert leg(1, 1, entry=None) is None
+    assert leg(3, 1, entry=None) is None
+    assert tuning.specs == [], "an unclaimed index must not reach the engine"
+
+    answer = leg(2, 1, entry=None)
+
+    assert answer == "the-engine-take"
+    assert [spec.kind for spec in tuning.specs] == ["candidate"]
+
+
+def test_a_stage_with_no_measure_index_binds_no_leg():
+    """A verify-only stage's map has no MEASURE, so there is no closure at
+    all — the walk's signature stays None and its behavior is untouched."""
+    from jasper.active_speaker.crossover_v2.journey import PHASE_VERIFY
+
+    assert _leg(phase_map={1: PHASE_VERIFY}) is None
+    assert v2host._bind_engine_measure_leg(
+        tuning=_LegSession(), stimulus_capture=None,
+        index_phase_map={2: "measure"}, run_async=lambda c: c,
+    ) is None
+
+
+def test_the_walk_consumes_the_engine_take_for_the_claimed_index(monkeypatch):
+    """The join pin: index 2's verdict grades the ENGINE's answer, index 1
+    still runs the walk's own recorder, and the conversation order holds."""
+    persists: list = []
+    recorded: list = []
+    conductor = FakeConductor()
+    volume = VolumeRecorder()
+
+    def _tracking_factory(max_capture_s):
+        recorded.append(max_capture_s)
+        return _recorder_factory()(max_capture_s)
+
+    def _engine_leg(index, attempt, entry):
+        return "the-engine-take" if index == 2 else None
+
+    runner = _build(
+        conductor, volume, monkeypatch=monkeypatch, persists=persists,
+        recorder_factory=_tracking_factory,
+        capture_stimulus=_engine_leg,
+    )
+    _run(runner, plan=_plan(target=2, max_attempts=4))
+
+    kinds = [event[0] for event in conductor.events]
+    assert kinds == [
+        "authorize", "on_armed", "consume", "authorize", "consume",
+    ], "the engine leg replaces on_armed for its index and nothing else"
+    assert conductor.answers[1] == "the-engine-take"
+    assert isinstance(conductor.answers[0], v2wired.WiredCaptureAnswer)
+    assert len(recorded) == 1, "the walk's recorder must not roll for the engine take"
+
+
+def test_an_engine_leg_failure_lands_in_the_runners_existing_arms(monkeypatch):
+    """The leg raises the same types the local leg raises, so the persisted
+    terminal code comes out of the SAME classifier arm — internal_error for a
+    capture-chain fault, exactly as a local recorder death lands today."""
+    terminal: list = []
+    conductor = FakeConductor()
+    volume = VolumeRecorder()
+
+    def _engine_leg(index, attempt, entry):
+        raise WiredCaptureError("the capture half minted no evidence")
+
+    runner = _build(
+        conductor, volume, monkeypatch=monkeypatch, terminal=terminal,
+        capture_stimulus=_engine_leg,
+    )
+    with pytest.raises(WiredCaptureError):
+        _run(runner)
+
+    assert terminal == [REASON_INTERNAL_ERROR]
+    assert volume.events == ["open", "abandon"], "the walked-away drain held"
+
+
+@pytest.mark.parametrize(
+    ("incident", "expected_type"),
+    [
+        # program family -> the program-unplayable refusal, as today
+        ("program_admission_refused", "ProgramAdmissionError"),
+        ("program_play_failed", "ProgramPlaybackError"),
+        # everything else -> internal_error (fix-and-retry), as today: a dead
+        # aplay (`stimulus_emission_failed`) must never render safety copy,
+        # and an incident this table does not know defaults there too.
+        ("stimulus_emission_failed", "CrossoverV2LocalSeamError"),
+        ("session_level_not_ready", "SessionVolumePlanError"),
+        ("stimulus_not_captured", "WiredCaptureError"),
+        ("program_not_composed", "CrossoverV2LocalSeamError"),
+        ("some_future_incident", "CrossoverV2LocalSeamError"),
+    ],
+)
+def test_each_engine_incident_reraises_todays_exception_type(
+    _held_window, incident, expected_type,
+):
+    """Failure identity survives the leg, per FAMILY.
+
+    The classifier and the frozen persisted codes must read the same
+    whichever leg played the stimulus: only `play_program`'s own family may
+    reach `program_unplayable`; the emission mechanics and every unknown
+    incident keep today's `internal_error`. Mutation: collapse the mapping to
+    one type and the rows of the other family red.
+    """
+    outcome = SimpleNamespace(stimuli=(SimpleNamespace(
+        record_id="", banked=False, incident=incident, level_db=None,
+    ),))
+    leg = _leg(tuning=_LegSession(outcome=outcome))
+
+    with pytest.raises(Exception) as caught:
+        leg(2, 1, entry=None)
+
+    assert type(caught.value).__name__ == expected_type
+
+
+def test_an_unproven_level_is_not_a_walk_event(_held_window):
+    """MS-14 is engine-internal honesty, never a new death trigger.
+
+    The claim's single pre-play read is STRICTER than the #2925 hold (no
+    independent re-read; None on preemption or one unreadable round-trip).
+    The stimulus played, the hold held (a genuine drift raises out of the
+    play itself, same terminal end as the flow leg), the answer was minted —
+    so the walk grades it exactly as today. The engine's own refusal stands:
+    nothing banked, disclosed in the outcome. Mutation: re-raising here reds
+    this pin alone.
+    """
+    outcome = SimpleNamespace(stimuli=(SimpleNamespace(
+        record_id="", banked=False, incident="unproven_level", level_db=None,
+    ),))
+    leg = _leg(tuning=_LegSession(outcome=outcome))
+
+    assert leg(2, 1, entry=None) == "the-engine-take"
+
+
+def test_a_multi_stimulus_outcome_is_refused_as_a_wiring_fault(_held_window):
+    """The leg pairs THE stimulus with THE drained answer.
+
+    `take_answer` drains the last mint, so the pairing is sound only while
+    the leg's spec is single-stimulus — a checked assumption, not a comment.
+    """
+    outcome = SimpleNamespace(stimuli=(
+        SimpleNamespace(record_id="a", banked=True, incident="", level_db=-22.0),
+        SimpleNamespace(record_id="b", banked=True, incident="", level_db=-22.0),
+    ))
+    leg = _leg(tuning=_LegSession(outcome=outcome))
+
+    with pytest.raises(v2host.CrossoverV2LocalSeamError):
+        leg(2, 1, entry=None)
+
+
+def test_a_latched_isolation_abort_refuses_the_engine_play(monkeypatch):
+    """Parity with `_play_under_session_pause`: a failed gate lease refuses
+    the NEXT play with the named error, before any audio — the engine leg
+    included. Mutation: dropping the isolation wrapper reds this (the leg
+    would play instead of refusing)."""
+    from jasper.correction.coordinator import MeasurementWindowError
+
+    monkeypatch.setattr(v2host, "session_measurement_pause_held", lambda: True)
+    monkeypatch.setattr(
+        v2host, "_session_abort_target", _FakeAbortTarget(failed=True)
+    )
+    tuning = _LegSession()
+    leg = _leg(tuning=tuning)
+
+    with pytest.raises(MeasurementWindowError):
+        leg(2, 1, entry=None)
+
+    assert tuning.specs == [], "a latched abort must refuse BEFORE any audio"
+
+
+def test_the_engine_play_registers_as_the_windows_abort_target(monkeypatch):
+    """The isolation-loss abort can stop an in-flight engine sweep only if
+    the measure task is registered on the window's abort target, exactly as
+    the flow leg registers its play task."""
+    monkeypatch.setattr(v2host, "session_measurement_pause_held", lambda: True)
+    target = _FakeAbortTarget()
+    monkeypatch.setattr(v2host, "_session_abort_target", target)
+    leg = _leg()
+
+    assert leg(2, 1, entry=None) == "the-engine-take"
+    assert len(target.registered) == 1, "the measure task must be registered"
+    assert target.cleared == 1, "and cleared when the play ends"
+
+
+def test_a_mid_measure_abort_surfaces_as_the_named_window_error(monkeypatch):
+    """An isolation-loss cancel mid-sweep becomes MeasurementWindowError, so
+    the runner's cleanup arm persists an honest failure — flow-leg parity."""
+    from jasper.correction.coordinator import MeasurementWindowError
+
+    target = _FakeAbortTarget()
+    monkeypatch.setattr(v2host, "session_measurement_pause_held", lambda: True)
+    monkeypatch.setattr(v2host, "_session_abort_target", target)
+
+    class _AbortedSession(_LegSession):
+        async def measure(self, spec):
+            # The coordinator latches the failure and cancels the registered
+            # task; the cancel lands inside the play body.
+            target.failed = True
+            raise asyncio.CancelledError()
+
+    leg = _leg(tuning=_AbortedSession())
+
+    with pytest.raises(MeasurementWindowError):
+        leg(2, 1, entry=None)
+
+
+def test_a_banked_take_whose_answer_was_not_minted_is_a_capture_fault(_held_window):
+    """The leg's own honesty gate: a record with no drainable answer means
+    the two halves disagree, and serving the previous take would grade the
+    wrong audio."""
+    leg = _leg(half=_LegCaptureHalf(answer=None))
+
+    with pytest.raises(WiredCaptureError):
+        leg(2, 1, entry=None)
+
+
+def test_take_answer_is_take_and_clear(tmp_path):
+    """An answer serves exactly one consume; a stale one is never re-served."""
+    half = _capture_half(tmp_path)
+
+    async def _play() -> None:
+        return None
+
+    asyncio.run(half.around(_play, program=_StimulusProgram()))
+
+    first = half.take_answer()
+    assert isinstance(first, v2wired.WiredCaptureAnswer)
+    assert half.take_answer() is None, "the second ask must not re-serve the take"
+
+
+def test_the_engine_leg_banks_real_evidence_end_to_end(_held_window, tmp_path):
+    """The lane's landing pin, at test altitude: a REAL `TuningSession` over a
+    REAL `ProgramPlaybackTransaction` with the REAL wired capture half (fake
+    recorder, fake play seams) — driven exactly as the walk drives the leg.
+
+    Three facts prove the take is real evidence and one answer:
+    the banked record's `wav_path` names bytes that exist in the bundle; the
+    record carries the PROVEN level (MS-14 live on the wired path); and the
+    answer the leg hands `consume_capture` decodes to the same audio the
+    banked file holds.
+    """
+    from jasper.active_speaker.crossover_v2.program_transaction import (
+        ProgramForStimulus,
+        ProgramPlaybackTransaction,
+    )
+    from tests.engine_twin import FakeSeams, tuning_session
+    import dataclasses as _dc
+
+    class _PassingPlan:
+        measurement_volume_db = -22.0
+
+        def assert_ready(self, now=None):
+            return None
+
+    class _PlaySeams:
+        async def _readmit(self):
+            return SimpleNamespace(allowed=True, refusals=())
+
+        async def _play_wav(self):
+            return object()
+
+        def _writer_lock(self):
+            class _Lock:
+                async def __aenter__(self):
+                    return None
+
+                async def __aexit__(self, *exc):
+                    return None
+
+            return _Lock()
+
+        def as_kwargs(self):
+            return {
+                "readmit": self._readmit,
+                "play_wav": self._play_wav,
+                "writer_lock": self._writer_lock,
+            }
+
+    half = _capture_half(tmp_path)
+    program = _StimulusProgram()
+
+    def _compose(**_kw):
+        return ProgramForStimulus(program=program, seams=_PlaySeams().as_kwargs())
+
+    transaction = ProgramPlaybackTransaction(
+        compose=_compose, session_volume_plan=_PassingPlan(), capture=half,
+    )
+    fakes = FakeSeams()
+    fakes = _dc.replace(fakes, play=transaction)
+    session, fakes = tuning_session(fakes)
+    asyncio.run(session.open())
+
+    leg = v2host._bind_engine_measure_leg(
+        tuning=session,
+        stimulus_capture=half,
+        index_phase_map={1: "check", 2: "measure"},
+        run_async=asyncio.run,
+    )
+    answer = leg(2, 1, entry=None)
+
+    assert isinstance(answer, v2wired.WiredCaptureAnswer)
+    [record] = fakes.records.banked
+    assert record["kind"] == "candidate"
+    assert record["level_db"] == session.measurement_level_db, (
+        "the record carries the PROVEN level, not a declared one"
+    )
+    banked_wav = tmp_path / record["wav_path"]
+    assert banked_wav.exists(), "the record points at bytes that exist"
+    assert banked_wav.read_bytes() == answer.wav, (
+        "the verdict grades the very take the engine banked"
+    )
+    asyncio.run(session.close())

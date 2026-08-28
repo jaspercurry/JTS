@@ -506,7 +506,11 @@ class TuningSession:
            When such a stub wins, every stub returned alongside it is
            re-rendered as having captured nothing, because none of them did.
         2. **One play transaction per stimulus**, ready → admit → lock → play →
-           restore, behind :mod:`.playback_transaction`. The unit is position ×
+           restore, behind :mod:`.playback_transaction` — and **the graph is
+           proven-or-reinstalled immediately before each one** (MS-13/S6: the
+           idempotent ``install`` IS the health check), because between two
+           stimuli another DSP writer may have replaced it. The record's
+           ``graph_fingerprint`` is that prove's answer. The unit is position ×
            ladder rung: a ladder moves the stimulus level, never the claim.
         3. **The level is proven per stimulus** (MS-14), immediately before that
            stimulus's transaction. A claim can be preempted between two
@@ -846,7 +850,21 @@ class TuningSession:
         prompt: str,
         stimulus_dbfs: float | None,
     ) -> StimulusOutcome:
-        """Prove, play, and bank exactly one stimulus."""
+        """Prove the graph, prove the level, play, and bank exactly one stimulus.
+
+        **The graph is proven per stimulus, not only at open** — the design's
+        own *"install once — and the idempotent install IS the health check"*
+        (MS-13, ruling S6). Between two stimuli the writer lock is released
+        and arbitrary time passes, so another DSP writer may have replaced the
+        running graph; ``install()`` is the install-or-prove that puts it back
+        (ruling S10's shape: repair and disclose, never refuse to play). The
+        fingerprint the record carries is THIS prove's answer, so a record
+        names the graph its own stimulus actually played through rather than
+        the one open() installed. A stage bound to
+        ``composition.NoRoutedPhasesGraph`` answers ``""`` throughout, which
+        is the same honest "no graph to name" it answered at open.
+        """
+        self._graph_fingerprint = await self.seams.graph.install()
         proven_level_db = await self._proven_level()
         outcome: PlaybackOutcome = await self.seams.play.run(
             spec=spec,
