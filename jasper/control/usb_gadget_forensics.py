@@ -15,6 +15,21 @@ from ..web._common import write_env_file
 ENABLED_FILE = "/var/lib/jasper/usb_gadget_forensics.env"
 RUNTIME_DIR = "/run/jasper-usb-gadget-forensics"
 
+# The sampler's single-threaded loop (deploy/usbsink/jasper-usbgadget-snapshot
+# run_forensics) does not rewrite status.json while a repair blocks it: the
+# gadget restart is bounded at that script's REPAIR_RESTART_TIMEOUT_SEC (60s),
+# and a rebuild that lands runs jasper_usbgadget_refresh_consumers
+# (deploy/usbsink/jasper-usbgadget-compose.sh), which chains two more
+# try-restarts at that same 60s bound each -- 60 + 2*60 = 180s worst case with
+# no status write in between. Nothing on disk flags "repair in flight" for
+# that whole span (the request.<action> marker this module also reads below
+# is deleted the instant the loop starts handling it, before the blocking
+# call), so the freshness window can't be narrowed by keying off a repair
+# marker -- it has to be widened outright, trading away fast genuine-
+# staleness detection (previously 30s / 3 sample intervals) for never
+# false-alarming "not running" mid-repair.
+REPAIR_WORST_CASE_SEC = 180.0
+
 
 def snapshot() -> dict:
     """Return bounded operator state; never expose captured artifact contents."""
@@ -28,7 +43,8 @@ def snapshot() -> dict:
         pass
     last_sample = status.get("last_sample_at")
     interval = status.get("sample_interval_sec")
-    freshness = max(30.0, float(interval) * 3) if isinstance(interval, (int, float)) else 30.0
+    margin = float(interval) if isinstance(interval, (int, float)) else 30.0
+    freshness = max(REPAIR_WORST_CASE_SEC + margin, margin * 3)
     fresh = isinstance(last_sample, (int, float)) and time.time() - last_sample < freshness
     pending = next(
         (action for action in ("repair", "capture")
