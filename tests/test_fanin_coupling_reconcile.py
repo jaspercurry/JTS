@@ -863,34 +863,6 @@ def test_convergence_writes_the_coherent_pair_in_order(tmp_path, _ring_assets_pr
     assert read_value(outputd_text, OUTPUTD_RING_SLOTS_ENV_VAR) == "2"
 
 
-def test_convergence_completes_when_the_ring_geometry_matches(tmp_path, monkeypatch):
-    # The mirror: when the conf.d period equals outputd's resolved period (128 on
-    # the Apple-dongle floor), the geometry gate passes and the arm proceeds.
-    import jasper.ring_assets as ra
-
-    monkeypatch.setattr(
-        ra, "ring_asset_presence", lambda **kw: ra.RingAssetPresence(True, True, True)
-    )
-    monkeypatch.setattr(ra, "RING_CONF_D", str(_ring_conf(tmp_path)))
-    _stub_ring_ioplug_wire_supported(monkeypatch)
-
-    fanin_env = _write(tmp_path / "fanin.env", "")
-    outputd_env = _write(tmp_path / "outputd.env", "JASPER_OUTPUTD_PERIOD_FRAMES=128\n")
-    calls, ro, rf, rc = _recorder()
-
-    result = _reconcile(
-        fanin_env=fanin_env,
-        outputd_env=outputd_env,
-        restart_outputd=ro,
-        restart_fanin=rf,
-        reconcile_camilla=rc,
-    )
-
-    assert result.ok is True
-    assert calls == ["outputd", "fanin", "camilla:shm_ring"]
-    assert read_persisted_coupling(fanin_env) == COUPLING_SHM_RING
-
-
 # --- D5 (wide-output-path program): ring wire-width preflight ----------------
 
 
@@ -1114,55 +1086,6 @@ def test_converge_refuses_the_spine_when_the_content_format_converge_fails(
     assert calls == []
     # The persisted intent still names the ring — there is nowhere else to go,
     # and the box parks visibly rather than being walked onto a second route.
-    assert read_persisted_coupling(fanin_env) == COUPLING_SHM_RING
-
-
-def test_geometry_gate_honours_an_outputd_period_from_the_jasper_env_position(
-    tmp_path, monkeypatch
-):
-    """The gate must model outputd's TWO-file env chain, not just outputd.env.
-
-    jasper-outputd.service loads /etc/jasper/jasper.env first and outputd.env
-    last. The documented operator seam puts JASPER_OUTPUTD_PERIOD_FRAMES in the
-    FIRST file, and ``outputd_latency_floor_actions`` honours it by REMOVING the
-    generated key from the second — so on a seam-configured box the period lives
-    ONLY in jasper.env. Reading outputd.env alone reported the 1024 packaged
-    default and refused the arm while the running outputd was correctly at 128
-    (jts4, 2026-08-14).
-
-    The conf.d here pins 128, so the gate passes iff it reads the seam.
-    """
-    import jasper.ring_assets as ra
-
-    monkeypatch.setattr(
-        ra, "ring_asset_presence", lambda **kw: ra.RingAssetPresence(True, True, True)
-    )
-    monkeypatch.setattr(ra, "RING_CONF_D", str(_ring_conf(tmp_path)))
-    monkeypatch.setattr(ra, "RING_A_PROGRAM_FILE", str(tmp_path / "program.ring"))
-    monkeypatch.setattr(ra, "RING_B_CONTENT_FILE", str(tmp_path / "content.ring"))
-    _stub_ring_ioplug_wire_supported(monkeypatch)
-    jasper_env = _write(
-        tmp_path / "jasper.env",
-        "JASPER_OUTPUTD_PERIOD_FRAMES=128\nJASPER_OUTPUTD_DAC_BUFFER_FRAMES=512\n",
-    )
-    monkeypatch.setattr(
-        "jasper.fanin.coupling_reconcile.JASPER_ENV_PATH", str(jasper_env)
-    )
-    monkeypatch.setattr("jasper.fanin.ring_health.JASPER_ENV_PATH", str(jasper_env))
-    # The seam's whole shape: the generated key is ABSENT from outputd.env.
-    fanin_env = _write(tmp_path / "fanin.env", "")
-    outputd_env = _write(tmp_path / "outputd.env", "")
-    calls, ro, rf, rc = _recorder()
-
-    result = _reconcile(
-        fanin_env=fanin_env,
-        outputd_env=outputd_env,
-        restart_outputd=ro,
-        restart_fanin=rf,
-        reconcile_camilla=rc,
-    )
-
-    assert result.ok is True, result.detail
     assert read_persisted_coupling(fanin_env) == COUPLING_SHM_RING
 
 

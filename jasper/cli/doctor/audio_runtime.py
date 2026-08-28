@@ -2478,8 +2478,11 @@ def check_ring_conf_floor_render() -> CheckResult:
     period and DAC buffer hand-set in that file. These branches therefore say
     what is not RENDERED and name both routes to a ring; they must not say the
     ring is unavailable, which is a claim about the resolved period they do not
-    read. ``ring geometry`` and the coupling reconciler's own preflight own that
-    axis.
+    read. No preflight owns that axis: ``ring geometry`` compares only the
+    on-disk pair (conf.d vs the ring file header), and the arm spine
+    (``reconcile_coupling`` -> ``_converge_ring``) never reads the resolved
+    period — a conf.d/resolved-period divergence surfaces as outputd's hard
+    ioplug ``open()`` error at attach, not as a refusal.
 
     THE FLOOR IS NOT THE ONLY REASON, and R7b changed what this check can say
     about the other one. A ROLEFUL (active-crossover) box does not ring on the
@@ -2514,9 +2517,10 @@ def check_ring_conf_floor_render() -> CheckResult:
 
     Scope: this compares the conf.d against the DECLARED floor, which is what
     the renderer uses. An operator ``JASPER_OUTPUTD_PERIOD_FRAMES`` override
-    moves outputd's EFFECTIVE period away from the floor; that divergence is
-    the coupling reconciler's preflight to catch (and ``ring geometry`` for the
-    on-disk axis), not this check's.
+    moves outputd's EFFECTIVE period away from the floor; nothing preflights
+    that divergence (``ring geometry`` covers only the on-disk axis) — it
+    fails outputd's ring attach hard at ``open()`` — and it is deliberately
+    not this check's to catch either.
     """
     label = "ring conf floor"
     # Local import: audio_runtime_plan is heavy and the doctor's other ring
