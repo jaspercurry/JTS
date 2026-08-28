@@ -335,7 +335,7 @@ green. A pin that stays green under its own mutation is not covering this.
 > persisting, with a measured **+47.5 dB** hazard in the other order. That one
 > lives in the plan module, not this file. Do not confuse them; both are real.
 
-### 3.2 Five process-global mutables, and they do not travel alone
+### 3.2 Four process-global mutables, and they do not travel alone
 
 | Name | Line | Mutated at | Guarded by |
 |---|---|---|---|
@@ -344,9 +344,10 @@ green. A pin that stays green under its own mutation is not covering this.
 | `_session_pause_cm` | 1126 | `:1138`, `:1159`, `:1176` | *(none — loop-thread confinement)* |
 | `_session_abort_target` | 1127 | `:1138`, `:1159`, `:1176` | *(none)* |
 
-§6 names four; `_state_path_override` is the fifth. `_session_graph` was a
-sixth until W5-c2 deleted it — the measurement graph is now a field on the
-`TuningSession` that dies with the run, reachable through no module global.
+§6 named four and `_state_path_override` was the fifth it missed. `_session_graph`
+was one of those four, and W5-c2 deleted it — the measurement graph is now a
+field on the `TuningSession` that dies with the run, reachable through no
+module global. Four remain, the table above.
 The two unguarded ones are safe only because they are entered and exited on
 jasper-web's **single** background loop thread (`jasper-correction-loop`) —
 that confinement *is* the lock. Anything that moves them to a

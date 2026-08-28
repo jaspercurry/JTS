@@ -8692,10 +8692,12 @@ def test_enforce_ceiling_drains_a_stale_active_and_is_cheap_otherwise(monkeypatc
 
 # The household-visible conclusion the three drains share, one pin per arm:
 # **voice/mux isolation is never freed while a measurement session still owns
-# the fader.** Each arm reaches _release_pause_best_effort by a different
-# route -- an outcome that says DEFERRED, no outcome at all, and an outcome
-# that says LANDED -- which is exactly why the release cannot be gated on the
-# outcome. Freeing the pause here resumes the household programme through a
+# the fader.** Two of the three arms reach _release_pause_best_effort and are
+# stopped by its claim gate -- one carrying no outcome at all (the drain
+# raised), one carrying LANDED -- which is exactly why the release cannot be
+# gated on the outcome. The DEFERRED arm never gets there: it pins the
+# ceiling's own early return, the one guard that already existed. Freeing the
+# pause on any of them resumes the household programme through a
 # crossover-free, role-routed measurement graph.
 
 
