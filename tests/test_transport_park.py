@@ -702,13 +702,52 @@ def test_a_converged_or_unreadable_graph_claims_no_refusal(monkeypatch, kwargs):
 def test_the_refusal_signal_reads_no_graph_off_its_own_gate(
     monkeypatch, topology, env
 ):
-    """The third arm off the same three facts, disjoint from the class above
-    (marker NOT armed) and the ADR-0184 seam beside it (not active-crossover).
-    A box outside the gate never pays for the read."""
+    """A box outside the gate never pays for the graph read.
+
+    ``not_active_crossover`` is also the combination NO arm claims — a
+    resolved width, no active modes, marker ARMED. ADR-0184 defines its seam
+    on an UNarmed marker, so the silence here is deliberate rather than a gap
+    this module should close; issue #3244 holds that shape.
+    """
     reads = _loaded_graph(monkeypatch, converged=False)
     state = transport_park.snapshot(topology, env, ring_only=True)
     assert state["converge_refused"] is None
     assert reads == []
+
+
+@pytest.mark.parametrize(
+    "refusal,expected",
+    [
+        pytest.param("the loaded graph plays hw:0,0", "warn", id="refused"),
+        pytest.param(None, "ok", id="converged"),
+    ],
+)
+def test_the_doctor_warns_on_a_converge_refusal(monkeypatch, refusal, expected):
+    """Parity with the ADR-0184 seam's branch beside it.
+
+    The doctor is one of the surfaces ``transport_park``'s docstring promises
+    cannot disagree; reading ``unproven_endpoint`` but not ``converge_refused``
+    made ``ok`` speak for a box the converge pass keeps refusing. The refusal
+    SENTENCE is the snapshot's own, carried through rather than re-composed,
+    so this surface cannot describe it differently from `/state` and the card.
+    """
+    from jasper.cli.doctor.audio_runtime import check_ring_transport_park
+
+    state = {
+        "status": "ok",
+        "parked": False,
+        "ring_only": True,
+        "parks": [],
+        "unproven_endpoint": False,
+        "converge_refused": refusal,
+    }
+    monkeypatch.setattr(transport_park, "snapshot", lambda *a, **k: state)
+    result = check_ring_transport_park()
+    assert result.status == expected
+    if refusal:
+        assert refusal in result.detail
+    # Never a park: the graph it already had keeps playing.
+    assert result.speaker_silent is False
 
 
 def test_a_converge_refusal_reaches_no_household_surface(monkeypatch):

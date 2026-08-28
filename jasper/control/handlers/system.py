@@ -6,13 +6,33 @@
 
 from __future__ import annotations
 
-from typing import Any
+from typing import Any, Callable
 
 from .. import server as _server
 from ._base import ControlHandlerMixin
 
 
 class SystemRoutes(ControlHandlerMixin):
+    def _transport_park_reader(self) -> Callable[[], dict[str, Any]]:
+        """The park-verdict reader both operator surfaces share.
+
+        The health sampler's CACHED verdict when it has one, so the park rows
+        and the health rows built from it in one payload are the same
+        observation rather than two reads minutes apart; the module's own
+        fresh read otherwise, because ``/state`` and ``/system/snapshot`` must
+        keep answering when the sampler does not — a contract older than this
+        field. ``transport_park.snapshot()`` is fail-soft and never raises, so
+        a sampler-less handler still answers.
+
+        One resolver for both routes: the fallback rule is a single fact, and
+        a change to it that reached only one surface is exactly the drift the
+        park classifier exists to prevent.
+        """
+        from ..transport_park import snapshot
+
+        return getattr(
+            self._audio_health_sampler, "transport_park_snapshot", None,
+        ) or snapshot
     def _get_healthz(self) -> None:
         self._send_json({"ok": True})
 
@@ -39,16 +59,10 @@ class SystemRoutes(ControlHandlerMixin):
                         # One tick's transport-park verdict for the whole
                         # payload: `resilience.transport_park` and the
                         # `audio_health` rows attached below are then the same
-                        # observation, not two reads minutes apart. getattr,
-                        # because a sampler that cannot answer must degrade to
-                        # the aggregator's own fresh read — /state keeps
-                        # working when the health sampler does not, and that
-                        # contract is older than this field.
-                        transport_park_snapshot=getattr(
-                            self._audio_health_sampler,
-                            "transport_park_snapshot",
-                            None,
-                        ),
+                        # observation, not two reads minutes apart. Resolved by
+                        # the shared reader, so /system/snapshot cannot end up
+                        # on a different fallback rule.
+                        transport_park_snapshot=self._transport_park_reader(),
                     )
                 ),
             )
@@ -85,7 +99,6 @@ class SystemRoutes(ControlHandlerMixin):
         # Sampler may be None in tests / direct CLI invocation;
         # surface an empty history rather than 500.
         from ..system_metrics import read_build_info
-        from ..transport_park import snapshot as transport_park_snapshot
         from ...speaker_name import read_state as _read_speaker_name_state
         from ...voice.provider_state import read_active_provider
 
@@ -139,14 +152,17 @@ class SystemRoutes(ControlHandlerMixin):
             _server.logger.exception("audio health snapshot failed")
             audio_health = None
 
-        # The park verdict the /system page's park card renders. Read from the
-        # health sampler's cached value when there is one, exactly as
-        # `/state.resilience.transport_park` does, so the two operator surfaces
-        # cannot disagree in time; `transport_park.snapshot()` is fail-soft and
-        # never raises, so a sampler-less handler still answers.
-        park_reader = getattr(
-            self._audio_health_sampler, "transport_park_snapshot", None,
-        ) or transport_park_snapshot
+        # The park verdict the /system page's park card renders — the same
+        # cached verdict `/state.resilience.transport_park` reads, through the
+        # same resolver.
+        #
+        # NOT identical at every instant: `/state`'s whole response sits behind
+        # `STATE_RESPONSE_CACHE_TTL_SEC` (server.py) while this route composes
+        # fresh, so a sampler tick between the two leaves a skew window bounded
+        # by that TTL. Bounded and self-clearing, and both surfaces name the
+        # same park either way — what one writer for the verdict buys is that
+        # they cannot name DIFFERENT parks, not that they update in lockstep.
+        park_reader = self._transport_park_reader()
 
         install_profile = _server._control_install_profile()
         payload: dict[str, Any] = {

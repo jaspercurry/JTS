@@ -54,7 +54,9 @@ export function waitingNote(spanGrid) {
 // Class labels are DERIVED from the token rather than mapped, so a fifth
 // class added in jasper/control/transport_park.py appears here with no JS
 // edit and no second vocabulary to drift.
-const PARK_HEADLINE = {
+// Exported so the harness can pin status -> entry SELECTION by identity
+// instead of matching the copy, which would make every reword a test edit.
+export const PARK_HEADLINE = {
   parked: "No ring serves this box, so it emits nothing.",
   pending: "This box still plays on the loopback route. It parks when that route is deleted.",
   unclassified: "This box's saved layout resolves no ring geometry, and no named park describes it yet.",
@@ -64,7 +66,7 @@ const PARK_HEADLINE = {
 // `converge_refused` is not a park — the box is ring-eligible and every
 // status above reads clean — so it gets its own headline and its own row
 // rather than being folded in with the named classes.
-const CONVERGE_HEADLINE =
+export const CONVERGE_HEADLINE =
   "The ring can serve this box, but its program was never moved onto the ring.";
 
 // null while the transport is fine, so views.js can hide the whole card

@@ -602,6 +602,17 @@ DASHBOARD_TRANSPORT_PARK_READS = {
 }
 
 
+#: A complete `<object>.<property>` access, bounded on both ends. Whole
+#: tokens rather than a substring scan, because `park.converge_refused` is
+#: CONTAINED IN `park.converge_refused_text` — containment would wave an
+#: appending rename straight through the pin it exists to hold.
+_JS_PROPERTY_ACCESS = re.compile(r"\b([A-Za-z_$][\w$]*\.[A-Za-z_$][\w$]*)(?![\w$])")
+
+
+def _js_property_accesses(js: str) -> set[str]:
+    return set(_JS_PROPERTY_ACCESS.findall(js))
+
+
 def test_dashboard_transport_park_keys_exist_in_park_snapshot():
     """Every name the park card reads must survive the park reader → payload.
 
@@ -609,10 +620,14 @@ def test_dashboard_transport_park_keys_exist_in_park_snapshot():
     (which carries `error` only on the unavailable branch, so a deliberately
     unreadable topology produces that one) plus a real `TransportPark` record
     for the per-park names.
+
+    Both halves compare WHOLE names — a token set on the JS side, the payload's
+    own key set on the other — so neither direction can be satisfied by a
+    longer name that merely contains the pinned one.
     """
     from jasper.control import transport_park
 
-    js = _system_status_js_text()
+    js = _js_property_accesses(_system_status_js_text())
     names = _payload_key_names(transport_park.snapshot(env={}))
     # The unavailable branch: an object `_assess` cannot classify.
     names |= _payload_key_names(transport_park.snapshot(topology=object(), env={}))

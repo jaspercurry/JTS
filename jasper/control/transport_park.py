@@ -13,10 +13,12 @@ surfaces cannot disagree about it (the shape ``camilla_recover_state``
 already uses for its own out-of-band record).
 
 **Where a park shows.** jasper-doctor FAILs, ``/state`` carries the verdict,
-and the ``/system`` page renders one row per park. Owner ruling 2026-08-27:
-no banner — a browser learns about a park on the system screen and nowhere
-else. The household audio card still speaks for a LIVE (ring-only) park,
-because that box is silent and the household must be told.
+and the ``/system`` page renders one row per park —
+[ADR-0187](../../docs/adr/0187-park-presentation-is-the-system-screen-only.md):
+no banner, a browser learns about a park on the system screen and nowhere
+else. That ADR supersedes ADR-0178's presentation clause only; its classes
+and bars stand. The household audio card still speaks for a LIVE (ring-only)
+park, because that box is silent and the household must be told.
 
 **Eligibility is read, never restated.** ``ring_channels_for_topology`` /
 ``active_ring_channels_for_topology`` in
@@ -335,11 +337,18 @@ def _assess(
         active_ring is not None and not contract.active_modes and not endpoint_armed
     )
 
-    # The third arm off the same three facts, disjoint from both the class
-    # above (marker NOT armed) and the seam above it (not active-crossover):
-    # the marker IS armed, so nothing else asks whether the program actually
-    # moved. Only then is the graph read at all, so a box with no active ring
-    # pays nothing for this.
+    # A third arm off the same three facts, reached by a combination neither
+    # of the two above claims: class (c) needs the marker NOT armed, ADR-0184's
+    # seam needs no active modes AND no marker, and this needs the marker armed
+    # ON an active-crossover box — so nothing else asks whether the program
+    # actually moved. Only then is the graph read at all, and a box with no
+    # active ring pays nothing for this.
+    #
+    # NOT full coverage of the combinations: a resolved width with NO active
+    # modes and the marker ARMED reports nothing, deliberately — ADR-0184
+    # defines its seam on an UNarmed marker, and widening it here would be this
+    # module re-deriving a model it does not own. Issue #3244 (ring-restoration
+    # lane) holds that shape.
     converge_refused = (
         _endpoint_graph_refusal()
         if active_ring is not None and contract.active_modes and endpoint_armed
