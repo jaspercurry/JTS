@@ -529,7 +529,7 @@ _ENGINE_RECORD_FIELDS = (
     "builder", [_cloud_record, _pose_record, _entry_record, _phase_record],
 )
 def test_every_take_builder_carries_the_whole_engine_record(builder):
-    """All fourteen, on all three — parametrized, because it is one question.
+    """All fourteen, on all four — parametrized, because it is one question.
 
     Six of these were banked by NO builder before this pin: the comparand
     (``baseline_record_id``), which candidate was under test (``candidate_id``),

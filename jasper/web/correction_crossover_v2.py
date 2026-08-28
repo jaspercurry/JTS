@@ -4184,7 +4184,7 @@ def bind_cloud_publisher(
     own boundary can log and continue rather than every OTHER caller of this
     store losing its strictness. :func:`bind_position_retention` is the
     opposite, deliberately: its conductor-side boundary moved INTO the binding
-    when the three retention sites lifted onto the record store, so it catches
+    when the flow's retention sites lifted onto the record store, so it catches
     where this one raises.
     """
 

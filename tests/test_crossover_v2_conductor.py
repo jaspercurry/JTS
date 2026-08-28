@@ -37,6 +37,7 @@ import yaml
 
 from jasper.active_speaker import crossover_v2_flow as flow
 from jasper.active_speaker.crossover_v2 import capture_plan
+from jasper.active_speaker.crossover_v2.contracts import MEASURE_KIND_VERIFY
 from jasper.active_speaker.crossover_v2 import refusal_copy
 from jasper.active_speaker.crossover_v2 import accountability
 from jasper.active_speaker.crossover_v2 import intervention as iv
@@ -3671,6 +3672,77 @@ def test_the_three_unprompted_phases_each_bank_a_take_of_their_own():
         assert take["attempt"] > 0
         assert take["wav_sha256"]
         assert take["captured_at"]
+
+
+def test_a_verify_take_banks_the_kind_its_own_round_can_derive():
+    """VERIFY classifies; it does not bank an unresolved kind it could resolve.
+
+    ``take_kind`` needs two named fingerprints: the graph this capture went
+    through, and the round's pre-apply comparand. By VERIFY the session holds
+    both — the entry baseline stage 1 took is what a post-apply re-measure is
+    post-apply OF — so leaving the comparand unstated would bank ``""`` for a
+    take whose kind the round already knows. CHECK and MEASURE genuinely
+    cannot: CHECK is kindless by design, and MEASURE's comparand is minted
+    after it banks.
+
+    The two fingerprints must also DIFFER, which is what makes this a verify
+    rather than a baseline — the same graph on both sides is the round that
+    changed nothing.
+    """
+    retained: list = []
+    fakes = FakeSeams()
+    c = _conductor(
+        fakes,
+        seams=replace(
+            fakes.seams(),
+            bank_take=bank_into(retained),
+            entry_graph_fingerprint=lambda: "fp-after-the-apply",
+        ),
+        index_phase_map=STAGE2_MAP,
+        accepted_phases=(PHASE_CHECK, PHASE_MEASURE),
+        applied=True,
+    )
+    # The fixture's stage-2 baseline, whose graph is "fixture_entry_graph" —
+    # named, and not the post-apply one above.
+    assert c.measure_entry_baseline is not None
+
+    _run_phase(c, VERIFY_INDEX, 1)
+
+    banked = [m for m in retained if m["phase"] == PHASE_VERIFY]
+    assert len(banked) == 1
+    assert banked[0]["measure_kind"] == MEASURE_KIND_VERIFY
+
+
+def test_a_catch_all_capture_banks_under_the_phase_it_actually_ran():
+    """The dispatch's ``else`` is a CATCH-ALL, and its take says so.
+
+    Every phase the dispatch does not name by hand lands in the VERIFY arm.
+    Banking those under a hardcoded ``verify`` would file them durably as
+    post-apply tracking evidence — the same mislabel the entry baseline's
+    explicit carve-out one branch up exists to prevent, except written into a
+    write-once record instead of a verdict, where no later capture can correct
+    it.
+
+    The program selector is stubbed because it refuses these phases before the
+    arm is reached; what is under test is which LABEL the arm banks, not which
+    stimulus the phase plays.
+    """
+    retained: list = []
+    fakes = FakeSeams()
+    odd_index = max(STAGE2_MAP) + 1
+    c = _conductor(
+        fakes,
+        seams=replace(fakes.seams(), bank_take=bank_into(retained)),
+        index_phase_map={**STAGE2_MAP, odd_index: PHASE_APPLYING},
+        accepted_phases=(PHASE_CHECK, PHASE_MEASURE),
+        applied=True,
+    )
+    c.program_for_phase = lambda phase: c._verify_program
+
+    _run_phase(c, odd_index, 1)
+
+    assert [m["phase"] for m in retained] == [PHASE_APPLYING]
+    assert retained[0]["take_id"].startswith(f"{PHASE_APPLYING}_")
 
 
 def test_an_unprompted_take_is_named_the_way_the_entry_baseline_named_its_own():
