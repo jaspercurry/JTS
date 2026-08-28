@@ -1058,7 +1058,7 @@ REMOTE_RELAY_TTL_MARGIN_S = 300
 def relay_link_ttl_s(plan_shape: Any, wall_clock_ceiling_s: float) -> int:
     """The relay link TTL a stage about to be minted should ask for (#2509).
 
-    ``capture_relay.session.DEFAULT_TTL_S`` (900 s) is an ABSOLUTE clock —
+    ``capture_relay.session.DEFAULT_TTL_S`` is an ABSOLUTE clock —
     ``TIME_BUDGET_LINK``, counted from the mint and refreshed by nothing. A
     hand-walked stage finishes well inside it. A REMOTE stage does not fit: its
     own wall-clock ceiling is 1800 s (stage 1) / 2040 s (stage 2) at the shipped
@@ -1076,8 +1076,8 @@ def relay_link_ttl_s(plan_shape: Any, wall_clock_ceiling_s: float) -> int:
 
     Hand-walked shapes (and the tier-less recovery re-arm, ``plan_shape=None``)
     keep the default, which is the scope of the observed failure: no
-    hand-walked run has been observed to reach 900 s. This is the seam a
-    hand-walked shape would be widened at.
+    hand-walked run has been observed to reach ``DEFAULT_TTL_S``. This is the
+    seam a hand-walked shape would be widened at.
     """
     from jasper.capture_relay.session import DEFAULT_TTL_S, MAX_TTL_S
 
