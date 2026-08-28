@@ -930,7 +930,7 @@ function validDefaultSetupHint(spec) {
   return hint;
 }
 
-// W6.12: a `crossover_sweep` capture (both the legacy per-driver flow and
+// A `crossover_sweep` capture (both the legacy per-driver flow and
 // the v2 capture-plan session) has NO calibration-picker screen of its own
 // — `boot()` renders straight to the fixed DATA screen for this kind. The
 // legacy flow gets its calibration from the `level_ramp` level-match page
@@ -2504,13 +2504,10 @@ function armRetakeSlot(ctx, { index, attempt, attempts = null }) {
 // verdict lands, so the "Retake this measurement" control the household is
 // looking at stays on screen through the whole next capture.
 //
-// It used to be DISABLED here, to keep a live-looking control from doing
-// nothing when tapped. That traded one silent failure for another: a disabled
-// button cannot fire a click, so the press produced no reaction at all — the
-// owner pressed retake mid-verify on 2026-08-03 and the session journal
-// recorded no retake and no refusal, just an auto-advance (issue #2090). The
-// control now stays tappable and ANSWERS: `retakeControl`'s handler re-checks
-// the window and says why it is closed. Silence is the only wrong outcome.
+// The control stays tappable rather than disabled: a disabled button cannot
+// fire a click, so a press would produce no reaction at all. `retakeControl`'s
+// handler re-checks the window and ANSWERS why it is closed — silence is the
+// only wrong outcome.
 function shutRetakeWindow(ctx) {
   ctx.retakeSlot = null;
 }
@@ -3700,13 +3697,11 @@ async function waitForCaptureResult(client, spec, index, attempt, target, isAbor
 // `waitForCaptureAuthorized` does (authorized / refused / deferred never
 // escapes this function / aborted / deadSession).
 //
-// W6.13: `setup` PIGGYBACKS on every begin post. A v2 capture-plan session
-// has no calibration-picker/confirm screen to post setup from — unlike the
-// legacy level_ramp flow, whose Continue tap (validateSetupBeforeContinue)
-// posts it well before any capture — so until this fix the silently-applied
-// household-mic calibration (`applyDefaultCalibrationHintSilently`, boot())
-// only ever reached the wire inside the much later `armed` event. Riding the
-// begin itself (not a separate standalone post) matters because the relay's
+// `setup` PIGGYBACKS on every begin post. A v2 capture-plan session has no
+// calibration-picker/confirm screen to post setup from — unlike the legacy
+// level_ramp flow, whose Continue tap (validateSetupBeforeContinue) posts it
+// well before any capture. Riding the begin itself (not a separate standalone
+// post) matters because the relay's
 // phone-event slot is last-write-wins: a standalone setup event would be
 // overwritten by this begin within one write-RTT, usually before the Pi's
 // ~0.75 s poll ever saw it — the exact overwrite class the ambient_stats
@@ -4001,8 +3996,7 @@ async function runPlanCapture(ctx, { index, attempt, retake = false }) {
         // getUserMedia + worklet compile — the session already tore down
         // while this was in flight. Close it here rather than assigning it
         // to ctx.recorder, which would orphan a live mic stream with
-        // nothing left to close it (reviewer-demonstrated: mic stayed hot
-        // after "Measurement stopped" until page reload).
+        // nothing left to close it.
         await recorder.close();
         return;
       }
@@ -4649,10 +4643,7 @@ async function boot() {
     assertCaptureProtocolCompatible(spec, pageIdentity);
     client.setCapturePageIdentity(pageIdentity);
     // Signing is unconditional: with one protocol there is no version that
-    // exempts a phone event from its authenticated envelope. This used to be
-    // gated on the spec's protocol being at least two, which a protocol-1
-    // spec — including a version-less one, via the deleted legacy mapping —
-    // could turn off entirely.
+    // exempts a phone event from its authenticated envelope.
     client.setTransportIntegrity(verified.integrity, { required: true });
   } catch (err) {
     setStatus(relayBootFailureMessage(err), "error");

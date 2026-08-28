@@ -479,11 +479,11 @@ def _build_registry(
     # bundle so transport + spotify capture the same Router.
     router = spotify_router if spotify_router is not None else _build_router(cfg)
     # Tool registration is data-driven: the ordered TOOL_PACKS registry
-    # in jasper.tools.packs replaces the old hardcoded per-subsystem
-    # block. The inline gates that used to live here (timer's
-    # `is not None`, calendar/gmail's `list_account_names()`) are lifted
-    # into each pack's `gate` predicate; the rest self-gate inside their
-    # factory. The walk is fault-isolated per pack — see register_packs.
+    # in jasper.tools.packs decides what's included. Per-tool gates
+    # (timer's `is not None`, calendar/gmail's `list_account_names()`)
+    # live in each pack's `gate` predicate; the rest self-gate inside
+    # their factory. The walk is fault-isolated per pack — see
+    # register_packs.
     deps = ToolDeps(
         volume_coordinator=volume_coordinator,
         renderer=renderer,

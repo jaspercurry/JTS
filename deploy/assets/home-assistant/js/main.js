@@ -5,8 +5,8 @@
 // main.js — /ha/ (Home Assistant connection wizard) page behaviour.
 //
 // The page is server-rendered in one of three states (none / partial /
-// connected) by jasper/web/home_assistant_setup.py. This module only adds
-// the client-side behaviour that used to live in inline <script> blocks:
+// connected) by jasper/web/home_assistant_setup.py. This module adds the
+// client-side behaviour, per state:
 //
 //   state 1 (none)      — the "Find Home Assistant" mDNS scan + click-to-fill
 //                         on result rows and recent-URL chips.

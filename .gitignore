@@ -60,10 +60,9 @@ wake-events/
 # like /onboard-pi.
 !.claude/commands/
 !.claude/commands/**
-# Agent definitions ARE checked in too — they're how any session launches
-# a first-class subagent type (e.g. the adversarial-gate reviewer) instead
-# of re-deriving the standing method ad hoc. See AGENTS.md "The standing
-# multi-agent method".
+# Agent definitions, if added, should be tracked too — same unignore
+# pattern as .claude/commands/ above, so a first-class subagent type is
+# launchable rather than silently gitignored.
 !.claude/agents/
 !.claude/agents/**
 

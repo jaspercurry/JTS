@@ -673,14 +673,10 @@ function renderActionRow(env) {
   const showPrimary = !relayActive
     || (env.next_action && env.next_action.show_during_relay);
   const alternates = Array.isArray(env.alternate_actions) ? env.alternate_actions : [];
-  // W6.12: the same show_during_relay escape hatch, per-alternate. Before
-  // this the gate blanket-cleared EVERY alternate action while the relay was
-  // in flight, so the verify_fail screen's Undo / Re-measure — the "get me
-  // out of this" affordances — vanished behind a live relay link the
-  // operator had no obvious reason to expect (they had to guess "hit Stop"
-  // to make them reappear). Only alternates the envelope explicitly marks
-  // show_during_relay survive the gate; every other alternate stays hidden
-  // while a relay is in flight, unchanged from before.
+  // Only alternates the envelope explicitly marks show_during_relay survive
+  // the gate — e.g. the verify_fail screen's Undo / Re-measure "get me out
+  // of this" affordances must stay visible even while a relay link is live.
+  // Every other alternate stays hidden while a relay is in flight.
   const shownAlternates = relayActive
     ? alternates.filter((action) => action && action.show_during_relay)
     : alternates;

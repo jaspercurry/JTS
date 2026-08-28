@@ -568,9 +568,8 @@ _POST_ROUTES = frozenset({
     "/crossover/relay-cancel",
     "/crossover/reset",
     "/crossover/recover-volume",
-    # v2 session flow (Wave 5a) — the only crossover-measurement flow since
-    # W5b retired the legacy per-driver flow and the JASPER_CROSSOVER_FLOW
-    # selector.
+    # v2 session flow — the only crossover-measurement flow. There is no
+    # per-driver flow and no JASPER_CROSSOVER_FLOW selector to branch on.
     "/crossover/v2/session",
     "/crossover/v2/verify",
     "/crossover/v2/apply",
@@ -7378,18 +7377,16 @@ def _make_handler(cfg: dict[str, Any]) -> type[BaseHTTPRequestHandler]:
                         )
                     )
                 except ValueError as e:
-                    # W6 finding: a refused session start was previously
-                    # invisible in journalctl — the 400 reached the browser
-                    # but nothing landed in the journal to debug it from.
-                    #
-                    # Issue #1820/#1821 review: a session-open refusal never
-                    # reaches the envelope, because the envelope renders from a
-                    # PERSISTED failure and the pre-flight deliberately refuses
-                    # before any state is written. So the reason's own action
-                    # rides the 400 body instead — the wizard renders it as a
-                    # button beside the message, and the household is one click
-                    # from the fix rather than one navigation plus one click.
-                    # Same registry entry the hard-stop screen would have read.
+                    # Log the refusal so it is debuggable from the journal,
+                    # not just visible as a 400 in the browser. A session-open
+                    # refusal never reaches the envelope, because the envelope
+                    # renders from a PERSISTED failure and the pre-flight
+                    # deliberately refuses before any state is written. So the
+                    # reason's own action rides the 400 body instead — the
+                    # wizard renders it as a button beside the message, and the
+                    # household is one click from the fix rather than one
+                    # navigation plus one click. Same registry entry the
+                    # hard-stop screen would have read.
                     from jasper.web.correction_crossover_v2 import (
                         refusal_next_action,
                     )
@@ -7636,12 +7633,12 @@ def _make_handler(cfg: dict[str, Any]) -> type[BaseHTTPRequestHandler]:
                 if path == "/crossover/recover-volume":
                     from jasper.camilla import CamillaUnavailable
 
-                    # W6.1 E2: when the v2 session owns the unresolved (or
-                    # crash-hydrated active) session volume, route to its plan's
-                    # recover_unresolved — the legacy lease holds no unresolved
-                    # state for a v2 session, so it 409'd
-                    # crossover_volume_recovery_not_required and the
-                    # volume_recovery screen's own button was dead.
+                    # When the v2 session owns the unresolved (or
+                    # crash-hydrated active) session volume, route to its
+                    # plan's recover_unresolved — the legacy lease holds no
+                    # unresolved state for a v2 session, so routing there
+                    # instead would 409 crossover_volume_recovery_not_required
+                    # and leave the volume_recovery screen's own button dead.
                     from . import correction_crossover_v2 as v2host
 
                     if v2host.v2_volume_recovery_active():

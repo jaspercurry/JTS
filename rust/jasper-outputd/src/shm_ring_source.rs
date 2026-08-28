@@ -220,7 +220,7 @@ impl ShmRingSource {
     /// Both wires land on the same i32 spine, and neither adds a conversion:
     /// - **S16LE** — consume into the narrow scratch, then widen by `<< 16`
     ///   through the shared [`widen_period`], exactly like every other S16
-    ///   ingress. Exact, and unchanged from when the run loop did it.
+    ///   ingress.
     /// - **S32LE** — consume straight into the period's own bytes. An `S32LE`
     ///   slot is full-scale little-endian i32, which is exactly what
     ///   [`ProgramSample`] is (see its "left-justified" doc), so the copy is an

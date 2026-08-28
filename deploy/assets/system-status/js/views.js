@@ -189,8 +189,7 @@ export function update(refs, snap) {
 
   // Transport parks: same reasoning, and independent of the audio alert —
   // a box can be parked on a shape the ring cannot serve while the live
-  // signal path reads healthy, which is exactly the state that used to be
-  // visible nowhere a browser could reach.
+  // signal path reads healthy.
   const parks = transportParkCard(snap.transport_park);
   refs.parksSection.hidden = !parks;
   if (parks) {

@@ -542,14 +542,13 @@ def build_v2_run_and_consume(
         def on_armed(state: Any) -> None:
             if stop_event.is_set():
                 raise CaptureStopped("capture stopped")
-            # The pre-tone phase ladder (#1824 D4). ``sweep_started`` used to be
-            # posted right here, synchronously, BEFORE the play seam had done
-            # anything at all — so the phone announced the measurement tone
-            # ~4.6 s before the first sound of a courtesy-prelude program and
-            # stayed on that line through the beeps, the settle and the room-
-            # listening window. The ladder instead posts each phase when it
-            # actually becomes audible, anchored at the play path's own WAV
-            # handoff (``PlaybackStartSignal``).
+            # The pre-tone phase ladder. Posting ``sweep_started`` synchronously
+            # here, before the play seam has done anything, would announce the
+            # measurement tone to the phone up to ~4.6 s before the first sound
+            # of a courtesy-prelude program plays — and hold that announcement
+            # through the beeps, the settle and the room-listening window. The
+            # ladder instead posts each phase when it actually becomes audible,
+            # anchored at the play path's own WAV handoff (``PlaybackStartSignal``).
             #
             # Backwards-compatible in the one direction that matters: when no
             # play-start signal is wired (a host binding its own play seam, or
@@ -594,18 +593,9 @@ def build_v2_run_and_consume(
                 failure_code=code if not verdict.get("accepted") else None,
                 evidence=evidence_refs,
             )
-            # (An ``auto_apply``-keyed branch lived here until
-            # flow-simplification PR-U1, and the flag it read is itself gone
-            # since PR-T3 removed auto-apply. It fired the apply off whichever
-            # capture verdict carried the flag — MEASURE's accept originally,
-            # the CLOUD_MEASURE group close after the 2026-07-27 timing move.
-            # §2.6 moved the trigger off a capture verdict entirely and onto
-            # the household's confirmation past the walked cloud, so the flag
-            # no longer reaches any verdict a production session emits and the
-            # branch became unreachable. It is DELETED rather than left as a
-            # comment-that-lies: ``authorize`` above is now the only place that
-            # fires ``_fire_auto_apply``, which is the whole point of putting
-            # the confirm seam at the host boundary.)
+            # ``authorize`` above is the only place that fires
+            # ``_fire_auto_apply`` — the confirm seam lives at the host
+            # boundary, not on any capture verdict.
             #
             # The EAGER FIT trigger (owner UX direction, 2026-07-30). This
             # verdict flag marks the one accept that leaves a walked, unconfirmed

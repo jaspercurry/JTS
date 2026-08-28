@@ -26,8 +26,7 @@ RUNTIME_DIR = "/run/jasper-usb-gadget-forensics"
 # is deleted the instant the loop starts handling it, before the blocking
 # call), so the freshness window can't be narrowed by keying off a repair
 # marker -- it has to be widened outright, trading away fast genuine-
-# staleness detection (previously 30s / 3 sample intervals) for never
-# false-alarming "not running" mid-repair.
+# staleness detection for never false-alarming "not running" mid-repair.
 REPAIR_WORST_CASE_SEC = 180.0
 
 

@@ -523,15 +523,6 @@ def check_aec_bridge_running() -> CheckResult:
         f"journalctl -u jasper-aec-bridge -e",
     )
 
-# `check_aec_output_card` retired in PR 2 of the resilience-ladder
-# series. The bridge previously wrote AEC'd mic to a second
-# snd-aloop card (LoopbackAEC at hw:7) that jasper-voice read from;
-# that card was removed because snd-aloop's kernel-side
-# loopback_cable wedged on consumer SIGKILL, requiring a reboot.
-# The bridge now sends over UDP localhost — no kernel-side state.
-# `check_mic_capture` already verifies the new transport end-to-end
-# by exercising whatever JASPER_MIC_DEVICE points at.
-
 
 # Compiled once: matches the bridge's periodic RMS log lines, e.g.
 # "rms over 5.0s: ref=15694 mic=2077 aec=311 → attenuation=-16.5 dB (...)".

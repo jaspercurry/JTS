@@ -72,10 +72,9 @@ class TapAction:
     # tight enough that single-tap doesn't feel laggy, loose enough
     # that natural human double/triple-taps register reliably. macOS's
     # default double-click speed is ~500 ms; we run a touch tighter.
-    # Earlier value (280 ms) was too aggressive for BT HID — physical
-    # knob clicks add springback delay between presses; user couldn't
-    # land three taps within the window (verified on VK-01 hardware
-    # 2026-05-23).
+    # BT HID physical knob clicks add springback delay between presses;
+    # too short a window drops legitimate multi-taps (verified on VK-01
+    # hardware).
     window_ms: int = 400
 
 

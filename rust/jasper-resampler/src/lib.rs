@@ -2063,8 +2063,7 @@ mod tests {
     // ---- Per-lane RMS level (USB combo silence gate) ---------------------
     // The SINGLE definition of the USB path's dBFS level metric. jasper-fanin
     // consumes `rms_dbfs_i16` / `RMS_DBFS_FLOOR` from this crate; the mux's
-    // activity gate consumes that telemetry. These pure-math vectors used to live in
-    // jasper-fanin's mixer tests; they moved here with the helper.
+    // activity gate consumes that telemetry.
 
     #[test]
     fn rms_dbfs_i16_silence_is_the_floor() {

@@ -182,13 +182,13 @@ import { renderRelayQr } from "/assets/shared/js/qr.js";
 
   // Stepped-wizard (P3b) envelope-poll bookkeeping. The /status poll stays
   // the capture/upload/autolevel mechanism layer; the ENVELOPE drives the
-  // user-facing wizard chrome (step, verdict, nudges, primary action). To
-  // honour the P3b-1 reviewer's poll discipline — hot-poll only during
-  // active capture, fetch once per state change on static screens — we
-  // track status observations separately from the last successfully rendered
-  // envelope and refresh on a transition, plus a low-frequency tick while a
-  // capture screen is live. A failed envelope must not make every unchanged
-  // 500 ms status tick look like a new transition.
+  // user-facing wizard chrome (step, verdict, nudges, primary action). Poll
+  // discipline: hot-poll only during active capture, fetch once per state
+  // change on static screens. We track status observations separately from
+  // the last successfully rendered envelope and refresh on a transition,
+  // plus a low-frequency tick while a capture screen is live. A failed
+  // envelope must not make every unchanged 500 ms status tick look like a
+  // new transition.
   var lastObservedStatusState = null;
   var lastRenderedEnvelopeScreen = null;
   var lastRenderedEnvelopeState = null;
@@ -2199,9 +2199,9 @@ import { renderRelayQr } from "/assets/shared/js/qr.js";
     }
   }
 
-  // Poll discipline (P3b-1 reviewer advisory): active capture is hot-polled;
-  // idle gets a lightweight readiness/banner refresh because both are
-  // external to Room state. Other static screens remain state-edge triggered.
+  // Poll discipline: active capture is hot-polled; idle gets a lightweight
+  // readiness/banner refresh because both are external to Room state. Other
+  // static screens remain state-edge triggered.
   function scheduleEnvelopePoll(screen) {
     if (envelopeTimer) { clearTimeout(envelopeTimer); envelopeTimer = null; }
     if (!envelopePollingEnabled) return;

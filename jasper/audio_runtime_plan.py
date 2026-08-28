@@ -1723,10 +1723,7 @@ def transport_coherence_report(
             # the marker could not be written until the path moved, and the path
             # is derived FROM the marker. Neither could move first, the refusal
             # exited 78, and `jasper-camilla`'s `Requires=` on that unit took the
-            # DSP graph down and disabled its own rollback. Observed on
-            # jts.local, 2026-08-21, first arm of a dual-Apple composite. The
-            # sibling waypoint below is the same shape on the loopback plan
-            # (jts3, 2026-08-11).
+            # DSP graph down and disabled its own rollback.
             #
             # Safe by construction rather than by permission, on three counts:
             # outputd REFUSES the crossed pair, so the waypoint is silence and

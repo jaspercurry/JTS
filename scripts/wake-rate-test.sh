@@ -101,7 +101,7 @@ LOCAL_METRICS="$REPO_ROOT/scripts/_wake_audio_metrics.py"
 # Template path for the cross-correlation utterance finder. Prefer the
 # per-phrase subdirectory (logs/wake-test-track/<slug>/<slug>.wav) if
 # present; fall back to the legacy flat path (logs/wake-test-track/<slug>.wav)
-# for backward compat with pre-2026-05-21 layouts.
+# for backward compat with older layouts.
 LOCAL_TEMPLATE="$REPO_ROOT/logs/wake-test-track/${SLUG}/${SLUG}.wav"
 if [[ ! -f "$LOCAL_TEMPLATE" ]]; then
     LOCAL_TEMPLATE="$REPO_ROOT/logs/wake-test-track/${SLUG}.wav"

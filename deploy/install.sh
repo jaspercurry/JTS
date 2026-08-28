@@ -1679,9 +1679,8 @@ PYBAKE
     install_web_assets
 
     # Prune retired static pages from prior installs. Their nginx routes and
-    # install copies are gone (the landing page's inline Integrations section
-    # replaced /integrations; the correction preflight's self-signed-HTTPS hop
-    # was removed per issue #2632); remove the orphaned files so a
+    # install copies are gone (the correction preflight's self-signed-HTTPS
+    # hop was removed per issue #2632); remove the orphaned files so a
     # previously-deployed Pi does not keep unreachable pages on disk.
     rm -f /usr/share/jasper-web/integrations.html
     rm -f /usr/share/jasper-web/correction-preflight.html

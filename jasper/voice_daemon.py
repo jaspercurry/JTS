@@ -319,16 +319,10 @@ class FanInDucker:
 #     in the room, so it doesn't add detector bias beyond what
 #     normal listening produces.
 #
-# Earlier values: 5 s (defensive but felt like a 15-20 s dead zone
-# end-to-end once detector buffer warmup was added), 10 s (original,
-# pre-persistent-connection era when each wake cost a Live slot),
-# 0.7 s (May 2026). Even 0.7 s combined with the old post-response
-# idle window produced a ~2.2 s total deadzone after the model
-# finished speaking — long enough that quick follow-ups got dropped
-# silently. The TtsPlayout drain primitive now anchors turn-end on
-# samples actually queued, so the refractory only needs to cover
-# the dmix tail itself. 0.2 s is ~2.5x the 85 ms dmix buffer —
-# still a margin, but won't swallow conversational pacing.
+# The TtsPlayout drain primitive anchors turn-end on samples actually
+# queued, so the refractory only needs to cover the dmix tail itself.
+# 0.2 s is ~2.5x the 85 ms dmix buffer — still a margin, but won't
+# swallow conversational pacing.
 WAKE_REFRACTORY_SEC = 0.2
 
 # Head-room a push-to-talk turn must leave the model to start answering
@@ -3298,8 +3292,8 @@ class WakeLoop:
         }
         # Attach the absolute volume context when the active TTS route
         # interprets it: the pre-DSP fan-in mix (solo/leader) or the confirmed
-        # post-DSP outputd mix (a reconciled passive member, since #1547). The
-        # same wire message is sent either way — the post-DSP consumer owns the
+        # post-DSP outputd mix (a reconciled passive member). The same wire
+        # message is sent either way — the post-DSP consumer owns the
         # structural downstream-is-zero fact. Ambiguous/legacy routes stay off.
         route_consumes_context = getattr(
             self._cfg, "duck_transport", ""

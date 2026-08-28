@@ -58,7 +58,7 @@ dmesg -T --since "$since" 2>/dev/null | redact_jasper_diagnostics \
 # /var/lib/camilladsp/outputd-statefile.yml's config_path for that.
 cp /etc/camilladsp/outputd-cutover.yml "$DIR/camilladsp.yml" 2>/dev/null || true
 cp /var/lib/camilladsp/outputd-statefile.yml "$DIR/camilladsp-statefile.yml" 2>/dev/null || true
-# /etc/asound.conf since PR #223 (2026-05-23); fall back to the
+# /etc/asound.conf is the current config path; fall back to the
 # legacy /root/.asoundrc for older Pis.
 cp /etc/asound.conf "$DIR/asoundrc" 2>/dev/null \
     || cp /root/.asoundrc "$DIR/asoundrc" 2>/dev/null \

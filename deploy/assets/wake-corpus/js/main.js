@@ -22,10 +22,10 @@
 //   * jtsConfirm comes from the shared dialog.js module — never
 //     window.confirm, which the browser can suppress.
 //   * The Python-owned leg labels/order + USB AEC3 sweep-baseline label
-//     (formerly template substitutions) now ride in a
-//     <script type="application/json" id="wake-corpus-config"> block the page
-//     renders, read once below. A cached ES module can't carry per-deploy
-//     Python data, so it's injected via the (no-store) HTML instead.
+//     ride in a <script type="application/json" id="wake-corpus-config">
+//     block the page renders, read once below. A cached ES module can't
+//     carry per-deploy Python data, so it's injected via the (no-store)
+//     HTML instead.
 //   * capture-option state rules live in ./controls.js so they can be tested
 //     directly without loading this full recorder module.
 //
@@ -68,8 +68,8 @@ const LEG_ORDER = [
   'chip_aec_150', 'chip_aec_210', 'xvf_raw0_webrtc_aec3',
   'xvf_raw0_dtln', 'raw0', 'usb_raw', 'usb_webrtc',
   'on', 'off', 'dtln',
-  // AEC3 sweep legs (formerly the {aec3_sweep_js_order} substitution) sit
-  // between 'dtln' and 'usb_dtln', preserving the original playback ordering.
+  // AEC3 sweep legs sit between 'dtln' and 'usb_dtln', preserving the
+  // original playback ordering.
   ...(_config.aec3_sweep_order || []),
   'usb_dtln', 'ref',
 ];

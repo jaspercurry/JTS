@@ -6129,7 +6129,7 @@ def test_maybe_restore_main_volume_swallows_restore_failure():
 
 
 def test_maybe_restore_skips_while_measurement_still_active():
-    # A reset rejected during a sweep (the server refuses it; see PR #737's
+    # A reset rejected during a sweep (the server refuses it via the
     # SessionBusyError guard) leaves the session mid-measurement. The restore
     # must NOT drop the ramped sweep level underneath the active measurement.
     from jasper.correction.session import (

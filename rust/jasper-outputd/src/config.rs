@@ -167,14 +167,9 @@ impl ContentBridgeMode {
 /// one. Kept so the parse can name what a migrating box's
 /// `/var/lib/jasper/outputd.env` still asks for.
 ///
-/// These used to fail SAFE to [`ContentBridgeMode::Direct`] rather than bail,
-/// because bailing would have parked a box whose only sin was a stale env line
-/// while `direct` still carried audio. `direct` carries nothing now, so that
-/// trade is gone: fail-safe would buy the box no transport, only a park labelled
-/// as the composite/round-trip/stereo-sink refusal that happened to catch it
-/// next — or, on a plain stereo box, the first-period refusal, three layers from
-/// the stale line that caused it. Bailing HERE parks at the same exit 78 and
-/// names the key.
+/// `direct` carries no audio, so there is no fallback to fail safe to: a
+/// matching spelling bails here, parking at exit 78 and naming the key. See
+/// docs/HANDOFF-audio-latency-foundation.md for the removal history.
 pub const REMOVED_RATE_MATCH_BRIDGE_SPELLINGS: &[&str] =
     &["rate_match", "ratematch", "rate-matched", "rate_matched"];
 
@@ -314,13 +309,12 @@ pub struct Config {
     /// it — mixing / channel-picking post-crossover sends full-range audio to
     /// the tweeter (unsafe).
     /// Wider active sinks (composite, >2ch) are already excluded from the
-    /// stereo-only FEATURES by their channel width. That is why the reconciler
-    /// historically did not set this for them — but since P8b item 1 it DOES,
-    /// on a composite whose active-ring endpoint it accepts, because this
-    /// marker is also half of the `ring_active_ok` pair. Setting it costs the
-    /// composite nothing on the feature side (width already excluded it) and is
-    /// what lets `from_env` admit the ACTIVE ring. Default false (solo/passive)
-    /// is byte-identical to today.
+    /// stereo-only FEATURES by their channel width, so setting this marker on
+    /// a composite whose active-ring endpoint it accepts costs it nothing on
+    /// the feature side. The reconciler sets it there anyway because this
+    /// marker is also half of the `ring_active_ok` pair, and is what lets
+    /// `from_env` admit the ACTIVE ring. Default false (solo/passive) is
+    /// byte-identical to a box that never sets it.
     pub active_lane: bool,
     /// The reconciler's declaration that the post-DSP endpoint is the ACTIVE
     /// ring (`DEFAULT_ACTIVE_SHM_RING_PATH`) rather than the full-range stereo
@@ -1685,9 +1679,9 @@ mod tests {
         // Same invariant on the sibling stereo-only feature: a content bridge
         // must refuse to arm on an active-crossover lane, where the full-range
         // program it carries would be split to the tweeter. Exercised through
-        // `shm_ring` — the surviving non-direct bridge — so the gate keeps a
-        // live witness now that `rate_match` fail-safes to `direct` and could
-        // no longer reach it.
+        // `shm_ring`, the only value that still resolves to a content bridge
+        // (`rate_match` spellings park instead; see
+        // REMOVED_RATE_MATCH_BRIDGE_SPELLINGS).
         with_env(
             &[
                 ("JASPER_OUTPUTD_SINK", Some("single_alsa")),
@@ -2490,10 +2484,9 @@ mod tests {
 
     #[test]
     fn the_removed_rate_match_bridge_parks_on_every_spelling() {
-        // Legacy-cleanup contract: a box migrating with a persisted
-        // `rate_match` value in outputd.env PARKS, naming the key. It used to
-        // fail SAFE to `direct` because that still carried audio; `direct`
-        // carries nothing now, so the fail-safe would only relabel the park.
+        // A box migrating with a persisted `rate_match` value in outputd.env
+        // PARKS, naming the key — see REMOVED_RATE_MATCH_BRIDGE_SPELLINGS for
+        // why.
         //
         // Pinned by CLASS, not prose: a `Config::from_env` error is the exit-78
         // (EX_CONFIG) park by construction — `main` exits `EXIT_CONFIG` on it —
