@@ -35,6 +35,7 @@ import pytest
 import yaml
 
 from jasper.active_speaker.camilla_yaml import STARTUP_MUTE_GAIN_DB
+from jasper.camilla_config_contract import PeqFilter
 from jasper.active_speaker.runtime_contract import (
     _flat_hard_muted_outputs,
     active_ring_channels_for_topology,
@@ -695,25 +696,49 @@ def test_a_wide_composite_graph_terminally_mutes_the_outputs_between():
 
 
 def test_the_wide_composite_graph_corrects_both_program_channels():
-    """Each program-carrying dest keeps a filter chain; neither runs raw.
+    """Each program-carrying dest keeps its OWN chain, in the right ORIENTATION.
 
     The pipeline's Mixer runs FIRST, so the per-channel chains belong to DESTS.
     Leaving them on 0 and 1 would apply the right channel's correction to a dead
     output and put uncorrected program on the live one — a gain-structure defect
     the mute set alone cannot see.
+
+    Deliberately ASYMMETRIC (left 111 Hz; right 777 Hz plus a delay): under a
+    symmetric profile the two chains are equal, so "each dest has a chain" holds
+    whichever way round they are wired and a swapped mapping stays green. The
+    distinct room segments are what make the ORIENTATION observable, and the
+    left/right room split is the axis that carries a per-seat correction.
     """
     topology = _composite_passive_stereo()
-    payload = yaml.safe_load(
-        emit_flat_outputd_cutover_config(topology=topology, width=4)
-    )
+    # Through the PLAN, not hand-written kwargs: the routing under test is the
+    # topology's own answer. Only the asymmetric profile is supplied here, which
+    # the cutover emitter (a fixed flat profile) has no way to take.
+    plan = flat_graph_channel_plan(topology, width=4)
+    payload = yaml.safe_load(emit_sound_config(
+        SoundProfile(enabled=False),
+        width=4,
+        muted_outputs=plan.muted_outputs,
+        program_dest_map=plan.program_dest_map,
+        room_peqs=[PeqFilter(freq=111.0, q=2.0, gain=-3.0)],
+        room_peqs_right=[PeqFilter(freq=777.0, q=2.0, gain=-3.0)],
+        channel_delays_ms=(0.0, 1.25),
+    ))
     chains = {
         int(step["channels"][0]): step["names"]
         for step in payload["pipeline"]
         if step["type"] == "Filter"
     }
+    peq_freq = {
+        name: spec["parameters"]["freq"]
+        for name, spec in payload["filters"].items()
+        if spec["parameters"].get("freq") is not None
+    }
 
     assert set(chains) == {0, 1, 2, 3}
-    assert chains[0] == chains[2], "both program dests carry the same flat chain"
+    # Child A's declared output carries the LEFT room segment, child B's the
+    # RIGHT — a swap lands each seat's correction on the other speaker.
+    assert [peq_freq[name] for name in chains[0] if name in peq_freq] == [111.0]
+    assert [peq_freq[name] for name in chains[2] if name in peq_freq] == [777.0]
     assert all(name.endswith("_commission_mute") for name in chains[1] + chains[3])
 
 

@@ -1083,10 +1083,11 @@ def flat_graph_muted_outputs(
 ) -> frozenset[int]:
     """Playback channels a ``width``-wide flat graph must hard-mute.
 
-    The flat emitter maps program channel *i* to physical output *i*, so every
-    channel the saved topology does not claim as ``full_range`` would otherwise
-    send full-range program to an output the household never declared — a
-    mis-wired or undeclared driver receiving full range. Muting them is how the
+    The flat emitter routes each program channel to the physical output
+    :func:`flat_graph_program_dest_map` names for it, so every channel the saved
+    topology does not claim as ``full_range`` would otherwise send full-range
+    program to an output the household never declared — a mis-wired or
+    undeclared driver receiving full range. Muting them is how the
     flat lane satisfies "no emission on undeclared outputs" BY CONSTRUCTION;
     :func:`_flat_graph_allowed` then re-proves it structurally off the emitted
     YAML rather than trusting the emitter.
