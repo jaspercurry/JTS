@@ -137,9 +137,10 @@ def _assert_camilla_restart_stays_after_dsp_reconcile(function_name: str):
     )
     fanin_restart = body.index("systemctl restart jasper-fanin.service")
     reconcile = body.index("reconcile_sound_dsp_state", fanin_restart)
-    # The restart step is a named helper now (it has to choose `start` over
-    # `try-restart` when the width-flip release stopped Camilla) — the ordering
-    # contract is about that step, whatever it is spelled.
+    # The restart step is a named helper shared by both install paths; ADR-0100
+    # deleted the width-flip release that used to make it choose `start` over
+    # `try-restart`, so today it is unconditional — the ordering contract is
+    # about that step, whatever it is spelled.
     camilla_restart = body.index(
         "restart_core_camilla_after_dsp_reconcile", reconcile
     )
