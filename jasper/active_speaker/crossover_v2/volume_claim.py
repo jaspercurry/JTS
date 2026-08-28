@@ -71,11 +71,6 @@ class MeasurementVolumeClaim:
         self._owner = owner
         self._handle: VolumeClaimHandle | None = None
 
-    @property
-    def level_db(self) -> float | None:
-        """The level this session's claim is held at, or ``None`` if unheld."""
-        return None if self._handle is None else self._handle.level_db
-
     async def acquire(self, level_db: float) -> None:
         """Ensure this session's ONE claim is established at ``level_db``.
 
@@ -107,15 +102,16 @@ class MeasurementVolumeClaim:
         than a give-back of something never taken.
         """
         held = self._handle
-        if held is not None:
-            if fader_matches(held.level_db, level_db):
-                return
-            raise VolumeClaimRefused(
-                "this session already holds its measurement claim at "
-                f"{held.level_db} dB, not the requested {level_db} dB"
+        if held is None:
+            self._handle = await self._owner.acquire_level(
+                ClaimKind.SESSION_MEASUREMENT, level_db,
             )
-        self._handle = await self._owner.acquire_level(
-            ClaimKind.SESSION_MEASUREMENT, level_db,
+            return
+        if fader_matches(held.level_db, level_db):
+            return
+        raise VolumeClaimRefused(
+            "this session already holds its measurement claim at "
+            f"{held.level_db} dB, not the requested {level_db} dB"
         )
 
     async def prove(self) -> float | None:
