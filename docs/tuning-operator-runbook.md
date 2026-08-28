@@ -317,7 +317,8 @@ the Pi plays and records on one host, so there is **no phone, no relay
 dependency, and none of the three capture-device gestures**. With no such mic the
 session refuses at the tap and says so — it never falls back to the phone quietly
 — and `JASPER_CAPTURE_SOURCE=relay` is the way to the parked phone-mic flow
-(documented in `.env.example`). The position gate is unchanged, and on the wired
+([ADR-0188](adr/0188-wired-first-measurement-relay-parked.md); the knob is
+documented in `.env.example`). The position gate is unchanged, and on the wired
 source a hand-walked round is gated too, because there is no capture page to
 tap. Two steps are new: stage 1's held set
 closes on `POST /correction/crossover/v2/complete` (empty body), bounded by the

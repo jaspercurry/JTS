@@ -630,8 +630,8 @@ def test_prepare_v2_session_runs_the_real_conductor_context_resolver(monkeypatch
     topo = _topology(HIFIBERRY_DAC8X.id, 8, card_id="DAC8")
     _patch_topology(monkeypatch, topo)
     # The subject is the CONTEXT resolver, so the capture source is named
-    # rather than probed: wired is the default since the 2026-08-28 ruling,
-    # and no machine running this suite has a measurement mic plugged in.
+    # rather than probed: wired is the default (ADR-0188), and no machine
+    # running this suite has a measurement mic plugged in.
     monkeypatch.setenv("JASPER_CAPTURE_SOURCE", SOURCE_RELAY)
     monkeypatch.setattr(
         v2host, "open_v2_evidence_store", lambda topology: (object(), "sess-fake")

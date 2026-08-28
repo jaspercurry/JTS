@@ -13,9 +13,10 @@ choreograph — sessions, encrypted upload, deferred begins over a public
 Worker, host events, purge — does not exist here at all. What replaces it:
 
 * **Source resolution** (:func:`resolve_v2_capture_source`): wired is THE
-  acoustic-measurement path, chosen by default from a registry-anchored usbid
-  match (probe-at-use — :func:`jasper.audio_measurement.wired_capture.
-  resolve_wired_mic`); the relay is parked and reachable by naming it in
+  acoustic-measurement path (ADR-0188), chosen by default from a
+  registry-anchored usbid match (probe-at-use —
+  :func:`jasper.audio_measurement.wired_capture.resolve_wired_mic`); the relay
+  is parked and reachable by naming it in
   ``JASPER_CAPTURE_SOURCE``. Disclose-and-recommend, never nanny: no mic and
   no override is a named disclosure carrying both remedies
   (:class:`WiredMicMissing`), never a relay session nobody asked for, and the
@@ -182,9 +183,8 @@ def resolve_v2_capture_source(
 ) -> tuple[str, WiredMicDevice | None]:
     """Which capture source this session should open, resolved at prepare.
 
-    WIRED is the default and the only auto-selected source (owner ruling
-    2026-08-28: wired is the acoustic-measurement path, the phone relay is
-    parked and reachable only by explicit configuration). Probe-at-use:
+    WIRED is the default and the only auto-selected source (see
+    ``docs/adr/0188-wired-first-measurement-relay-parked.md``). Probe-at-use:
     presence is read fresh from ``/proc/asound`` every time — the mic is
     plugged in for a measurement, so there is no steady state for a
     reconciler to own.

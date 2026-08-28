@@ -115,10 +115,10 @@ def test_wired_is_the_default_source_when_a_mic_is_present(tmp_path, env):
 
 @pytest.mark.parametrize("env", WIRED_ENVS)
 def test_no_mic_discloses_instead_of_falling_back_to_the_relay(tmp_path, env):
-    """The owner ruling (2026-08-28): wired is THE acoustic-measurement path,
-    so absence is DISCLOSED and the session refuses to guess. A silent relay
-    session here is the defect — a household measures their speaker through a
-    phone they never chose because a USB plug was loose."""
+    """ADR-0188: wired is THE acoustic-measurement path, so absence is
+    DISCLOSED and the session refuses to guess. A silent relay session here is
+    the defect — a household measures their speaker through a phone they never
+    chose because a USB plug was loose."""
     with pytest.raises(v2wired.WiredMicMissing) as caught:
         v2wired.resolve_v2_capture_source(env, proc_asound=tmp_path)
     assert caught.value.code == v2wired.CODE_WIRED_MIC_MISSING

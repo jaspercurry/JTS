@@ -432,8 +432,7 @@ def session_open(monkeypatch):
     # and asks the relay-configured question before any bundle opens. The
     # gate under test is the SAFETY one, so this suite names the phone-relay
     # provider rather than depending on a measurement mic being plugged into
-    # whatever machine runs it (wired is the default source since the
-    # 2026-08-28 ruling).
+    # whatever machine runs it (wired is the default source, ADR-0188).
     monkeypatch.setenv("JASPER_CAPTURE_SOURCE", SOURCE_RELAY)
     monkeypatch.setenv("JASPER_CAPTURE_RELAY_BASE", "https://relay.test")
     from jasper import output_topology as output_topology_mod

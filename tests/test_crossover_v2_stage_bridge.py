@@ -249,7 +249,7 @@ def _production_host_seams(monkeypatch, tmp_path):
     # The preparers' source gate (#2662 W2b, gate fix round S3) resolves the
     # capture source and asks the relay-configured question BEFORE any
     # evidence bundle opens. These suites drive the PHONE-RELAY provider, so
-    # they name it: wired is the default source since the 2026-08-28 ruling,
+    # they name it: wired is the default source (ADR-0188),
     # and a host with no measurement mic discloses rather than opening a
     # relay session nobody asked for. Both halves of that — the disclosure
     # and the relay-LESS refusal — have their own pins in
