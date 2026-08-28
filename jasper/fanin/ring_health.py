@@ -392,7 +392,6 @@ def ring_wire_declarations(
     """
     from jasper.fanin_coupling import (
         RING_A_CHANNELS,
-        COUPLING_SHM_RING as _SHM,
         content_lane_format_for_coupling,
     )
     from jasper.ring_assets import (
@@ -467,7 +466,7 @@ def ring_wire_declarations(
             end="CamillaDSP emitted stanzas",
             source="capture_kwargs_for_coupling(shm_ring)",
             ring=RING_B,
-            sample_format=content_lane_format_for_coupling(_SHM),
+            sample_format=content_lane_format_for_coupling(),
             note="counterfactual: what arming would emit",
             # The coupling's kwargs carry a format and no channel count — this
             # end genuinely has nothing to say on that axis, ever.

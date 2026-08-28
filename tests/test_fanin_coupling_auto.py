@@ -394,7 +394,7 @@ def _armed_outputd_env() -> str:
 
     return (
         "JASPER_OUTPUTD_CONTENT_FORMAT="
-        f"{content_lane_format_for_coupling(COUPLING_SHM_RING)}\n"
+        f"{content_lane_format_for_coupling()}\n"
     )
 
 
