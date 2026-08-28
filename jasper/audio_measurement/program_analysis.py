@@ -51,7 +51,7 @@ MEASURE / VERIFY their own short pre-pilot room-listening window.
 
 Reuses the measurement kernel (:mod:`~jasper.audio_measurement.sweep` /
 ``deconv`` / ``gating`` / ``snr_policy`` / ``analysis``) and mirrors
-``jasper.capture_relay.alignment``'s confidence vocabulary. No I/O, no product
+``jasper.audio_measurement.alignment``'s confidence vocabulary. No I/O, no product
 policy, and no ``jasper.correction`` / ``jasper.active_speaker`` import at all —
 the boundary ``tests/test_correction_boundary_ssot.py`` pins. The optional
 configured-path seam needs product crossover transfers, so the HOST evaluates
@@ -94,7 +94,7 @@ from jasper.audio_measurement.timeline_slip import (
     fit_timeline_step,
     slip_rejects_capture,
 )
-from jasper.capture_relay.alignment import cross_correlation_alignment
+from jasper.audio_measurement.alignment import cross_correlation_alignment
 from jasper.log_event import log_event
 
 if TYPE_CHECKING:
@@ -157,7 +157,7 @@ class ConfiguredPathConditioningError(ValueError):
 # What went wrong: until D7 the residual was measured from
 # `_locate_in_window`'s integer `located_start`, i.e. the plain
 # `int(np.argmax(...))` of a full-band correlation of the DRY stimulus against
-# the ROOM-CONVOLVED capture (`capture_relay.alignment.cross_correlation_alignment`
+# the ROOM-CONVOLVED capture (`alignment.cross_correlation_alignment`
 # — no band-limiting, no envelope, no sub-sample refinement). That correlation
 # yields the room impulse response rather than a symmetric autocorrelation
 # peak, so its argmax hops between adjacent early lobes by a few samples, and
@@ -2690,7 +2690,7 @@ def _locate_in_window(
     "the anchor these segments actually locate under". Two copies of this
     window would let the choice and the consequence drift apart silently.
 
-    Returns BOTH of :class:`~jasper.capture_relay.alignment.AlignmentResult`'s
+    Returns BOTH of :class:`~jasper.audio_measurement.alignment.AlignmentResult`'s
     scores, because they answer different questions and returning only the first
     is what produced the 2026-08-21 mis-anchor. ``confidence`` is its peakedness
     margin, ``(peak - secondary) / peak``: "is the winning lag sharp against its

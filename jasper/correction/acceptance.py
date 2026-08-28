@@ -104,7 +104,7 @@ from jasper.env_load import bounded_env_float, bounded_env_int
 # Every threshold whose true value is hardware-gated is a deploy-time knob (H1
 # supplies the real numbers on-device — the defaults here are conservative
 # placeholders, NOT empirically derived), mirroring the
-# JASPER_CAPTURE_ALIGNMENT_THRESHOLD pattern in capture_relay/alignment.py and
+# JASPER_CAPTURE_ALIGNMENT_THRESHOLD pattern in audio_measurement/alignment.py and
 # the JASPER_RAMP_* knobs in audio_measurement/ramp.py. Set them in jasper.env
 # once measured; no rebuild required. Out-of-range or unparseable values fall
 # back to the documented default — a jasper.env edit can never brick the

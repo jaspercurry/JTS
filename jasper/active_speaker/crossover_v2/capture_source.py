@@ -12,9 +12,10 @@ deferred begins, host events, purge — is that provider's private internals,
 never the conductor's or the web host's.
 
 This module is the seam's VOCABULARY, deliberately logic-free (the same
-register as :mod:`.refusal_copy` and :mod:`.contracts`): the provider identities
-and the answer contract. The two halves of the conversation live where they
-already are:
+register as :mod:`.refusal_copy` and :mod:`.contracts`): the provider
+identities, the answer contract, and the two exceptions a conductor answers an
+``authorize_begin`` with. The halves of the conversation live here or where
+they already are:
 
 * **The ask.** The plan walk hands a provider three conductor-owned hooks —
   ``authorize_begin(index, attempt, entry)`` (admission, and the position
@@ -29,6 +30,10 @@ already are:
   driven by the relay provider (``jasper.web.correction_crossover_v2_relay``);
   a wired provider implements the same conversation against local capture
   instead of a phone.
+* **The two ways to say no.** :class:`CaptureBeginRefused` (terminal) and
+  :class:`CaptureBeginDeferred` (a soft hold) below. They are the conductor's
+  answers to ``authorize_begin``, so they are seam vocabulary and not a
+  transport's: both providers raise and translate them.
 * **The answer.** :class:`CaptureAnswer` below. The relay's
   ``jasper.capture_relay.session.CaptureResult`` already satisfies it — the
   relay provider passes through what the phone sent — and a wired provider
@@ -88,6 +93,46 @@ SOURCE_RELAY = "relay"
 #: by ``resolve_v2_capture_source`` in that module — presence of a
 #: measurement-class capture card, with a ``JASPER_CAPTURE_SOURCE`` override.
 SOURCE_WIRED = "wired"
+
+class CaptureBeginRefused(RuntimeError):
+    """The conductor refused a provider's ``begin_capture`` request.
+
+    Admission stays conductor-owned (SPEC W2.3): the host's injected
+    ``authorize_begin`` raises this to refuse — most importantly when
+    ``repeat_admission`` refuses the attempt budget. ``code`` is the stable
+    machine reason; ``user_message`` is the operator-facing copy
+    (refusal-naming pattern, #1534). Both ride the provider's refusal channel
+    (for the relay: the refusal host event) so the operator can see why
+    nothing started."""
+
+    def __init__(self, code: str, user_message: str = "") -> None:
+        super().__init__(user_message or code)
+        self.code = str(code)
+        self.user_message = str(user_message or code)
+
+
+class CaptureBeginDeferred(RuntimeError):
+    """A NON-terminal soft-hold on a ``begin_capture``.
+
+    Distinct from :class:`CaptureBeginRefused` (terminal — ends the whole
+    plan): the host's injected ``authorize_begin`` raises this when the Pi
+    is not YET ready to admit this capture but the plan should stay alive —
+    e.g. a heterogeneous plan (crossover-measurement-productization-design.md
+    §5.7) parked between MEASURE and VERIFY awaiting the household's Apply
+    tap. The provider holds the capture in the SAME ``awaiting_begin`` phase,
+    so the identical ``begin_capture {index, attempt}`` may be retried — the
+    attempt budget is not spent and the session does not end. ``code`` is the
+    stable machine reason; ``user_message`` is the operator-facing copy
+    (mirrors ``CaptureBeginRefused``). Because a provider retries throughout a
+    hold, the relay runner dedupes on the (index, code) transition: one INFO
+    log + one ``capture_deferred`` host event per state change, DEBUG for
+    identical repeats."""
+
+    def __init__(self, code: str, user_message: str = "") -> None:
+        super().__init__(user_message or code)
+        self.code = str(code)
+        self.user_message = str(user_message or code)
+
 
 #: The per-take integrity counters a provider's answer carries, in the exact
 #: wire spelling ``reconcile_capture_frames`` reads. DERIVED from the owner

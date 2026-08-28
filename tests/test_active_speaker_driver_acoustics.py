@@ -791,7 +791,7 @@ def test_signal_locator_refuses_missing_controlled_quiet_or_tail(tmp_path):
 def test_worst_legal_late_lf_sweep_keeps_locator_and_deconvolution_bounded(
     tmp_path, monkeypatch
 ):
-    from jasper.capture_relay import alignment as relay_alignment
+    from jasper.audio_measurement import alignment as kernel_alignment
 
     reference, meta = _reference_sweep(12.0)
     path = _write_relay_capture(
@@ -804,7 +804,7 @@ def test_worst_legal_late_lf_sweep_keeps_locator_and_deconvolution_bounded(
     )
     locator_fft_sizes = []
     deconv_fft_sizes = []
-    real_alignment = relay_alignment.cross_correlation_alignment
+    real_alignment = kernel_alignment.cross_correlation_alignment
     real_deconv = deconv.regularized_deconvolution_full
 
     def observed_alignment(captured, stimulus, **kwargs):
@@ -816,7 +816,7 @@ def test_worst_legal_late_lf_sweep_keeps_locator_and_deconvolution_bounded(
         return real_deconv(captured, stimulus, sample_rate, **kwargs)
 
     monkeypatch.setattr(
-        relay_alignment, "cross_correlation_alignment", observed_alignment
+        kernel_alignment, "cross_correlation_alignment", observed_alignment
     )
     monkeypatch.setattr(deconv, "regularized_deconvolution_full", observed_deconv)
     result = da.analyze_driver_capture(

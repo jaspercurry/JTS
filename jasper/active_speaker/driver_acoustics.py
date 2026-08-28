@@ -423,7 +423,7 @@ def _capture_to_magnitude(
     alignment = None
     if ambient_duration_s is not None:
         from scipy.signal import resample_poly
-        from jasper.capture_relay.alignment import assert_alignment_confident
+        from jasper.audio_measurement.alignment import assert_alignment_confident
 
         # Locate across the full legal relay window at 16 kHz.  The largest
         # correlation is <=2**20, then only the final <=2**21 full-rate crop is

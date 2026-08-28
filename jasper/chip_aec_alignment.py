@@ -542,7 +542,7 @@ def analyze_timing(channels: np.ndarray, stimulus_16k: np.ndarray) -> TimingResu
 
     import numpy as np
 
-    from jasper.capture_relay.alignment import cross_correlation_alignment
+    from jasper.audio_measurement.alignment import cross_correlation_alignment
 
     if channels.ndim != 2 or channels.shape[1] != CAPTURE_CHANNELS:
         raise ValueError("timing capture must be six-channel")
@@ -596,7 +596,7 @@ def _power(values: np.ndarray) -> float:
 def _capture_windows(channels: np.ndarray, active: np.ndarray) -> tuple[int, list[float], list[float], int]:
     import numpy as np
 
-    from jasper.capture_relay.alignment import cross_correlation_alignment
+    from jasper.audio_measurement.alignment import cross_correlation_alignment
 
     starts = [
         cross_correlation_alignment(channels[:, index], active, sample_rate=RATE).lag_samples

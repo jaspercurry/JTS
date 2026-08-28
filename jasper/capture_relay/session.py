@@ -30,6 +30,10 @@ from collections.abc import Callable, Mapping
 from dataclasses import dataclass
 from typing import Any, NamedTuple, TypeVar
 
+from jasper.active_speaker.crossover_v2.capture_source import (
+    CaptureBeginDeferred,
+    CaptureBeginRefused,
+)
 from jasper.capture_relay.client import RelayClient, RelayError
 from jasper.capture_relay.cues import classify_failure_cue
 from jasper.capture_relay.crypto import (
@@ -439,47 +443,6 @@ class RelayCapacityUnavailable(ValueError):
     PR-3b is the first release that can actually reach this path (it is the
     first to emit a plan larger than ``LEGACY_MAX_CAPTURE_PLAN_ATTEMPTS``); the
     shape was chosen here rather than left to be discovered on a stale relay."""
-
-
-class CaptureBeginRefused(RuntimeError):
-    """The Pi refused a phone ``begin_capture`` request (capture plans).
-
-    Admission stays Pi-owned (SPEC W2.3): the host's injected
-    ``authorize_begin`` raises this to refuse — most importantly when
-    ``repeat_admission`` refuses the attempt budget. ``code`` is the stable
-    machine reason; ``user_message`` is the phone/operator-facing copy
-    (refusal-naming pattern, #1534). Both ride the refusal host event so the
-    phone can show why nothing started."""
-
-    def __init__(self, code: str, user_message: str = "") -> None:
-        super().__init__(user_message or code)
-        self.code = str(code)
-        self.user_message = str(user_message or code)
-
-
-class CaptureBeginDeferred(RuntimeError):
-    """A NON-terminal soft-hold on a phone's ``begin_capture`` (capture plans).
-
-    Distinct from :class:`CaptureBeginRefused` (terminal — ends the whole
-    plan): the host's injected ``authorize_begin`` raises this when the Pi
-    is not YET ready to admit this capture but the plan should stay alive —
-    e.g. a heterogeneous plan (crossover-measurement-productization-design.md
-    §5.7) parked between MEASURE and VERIFY awaiting the household's Apply
-    tap. The Pi replies with a ``capture_deferred`` host event
-    (index/attempt/code/reason) and keeps polling in the SAME
-    ``awaiting_begin`` phase, so the phone may retry the IDENTICAL
-    ``begin_capture {index, attempt}`` — the attempt budget is not spent and
-    the session does not end. ``code`` is the stable machine reason;
-    ``user_message`` is the phone-facing copy (mirrors
-    ``CaptureBeginRefused``). Because the phone retries throughout a hold,
-    the runner dedupes on the (index, code) transition: one INFO log + one
-    ``capture_deferred`` host event per state change, DEBUG for identical
-    repeats."""
-
-    def __init__(self, code: str, user_message: str = "") -> None:
-        super().__init__(user_message or code)
-        self.code = str(code)
-        self.user_message = str(user_message or code)
 
 
 @dataclass(frozen=True)

@@ -1333,7 +1333,6 @@ code = [
   "jasper/capture_relay/crypto.py",
   "jasper/capture_relay/client.py",
   "jasper/capture_relay/session.py",
-  "jasper/capture_relay/alignment.py",
   "jasper/capture_relay/cues.py",
   "jasper/capture_relay/health.py",
   "jasper/capture_relay_config.py",
@@ -1353,5 +1352,5 @@ requires_docs_when = [
 ]
 verification = [
   "python3 scripts/docs-impact.py --validate-only",
-  "pytest tests/test_capture_relay_spec.py tests/test_capture_relay_crypto.py tests/test_capture_relay_session.py tests/test_capture_relay_alignment.py tests/test_relay_worker_js.py tests/test_capture_page_js.py",
+  "pytest tests/test_capture_relay_spec.py tests/test_capture_relay_crypto.py tests/test_capture_relay_session.py tests/test_relay_worker_js.py tests/test_capture_page_js.py",
 ]

@@ -918,7 +918,7 @@ mode for a tool whose entire job is a trustworthy result.
   a first-class check: a weak/ambiguous correlation peak should fail loud the same
   way a bad hash does. (Intact-but-misaligned is exactly the failure the byte hash
   cannot catch.) Coverage today is **per-flow and uneven** — the shared gate
-  (`capture_relay/alignment.py`, `assert_alignment_confident`) is *not* the
+  (`audio_measurement/alignment.py`, `assert_alignment_confident`) is *not* the
   common seam, and enforcement remains owned by each flow because the metrics
   are not interchangeable. State as of 2026-08-02 (`DA-0002`; per-flow map and
   rollout rationale in issue #1882):

@@ -19,7 +19,7 @@ by a single unknown constant gain ``G`` because the whole chain is LTI and
 
 So one *trusted, settled* reading fixes ``G`` (the line's slope is a known ``1``),
 and the volume that puts the mic anywhere in the window is exact. An earlier
-draft reused ``capture_relay.alignment.cross_correlation_alignment`` to recover
+draft reused ``audio_measurement.alignment.cross_correlation_alignment`` to recover
 the transport delay ``τ``; that estimator is waveform-domain and structurally
 near-degenerate on a monotonic ramp envelope. The replacement never estimates
 ``τ`` — it *waits out* the modeled worst-case loop latency after every volume
@@ -169,7 +169,7 @@ RECOVERABLE_ERRORS = (
 # Every threshold whose true value is hardware-gated is a deploy-time knob
 # (H1 supplies the real numbers on-device — the defaults here are conservative
 # placeholders, NOT empirically derived), mirroring the
-# JASPER_CAPTURE_ALIGNMENT_THRESHOLD pattern in capture_relay/alignment.py. Set
+# JASPER_CAPTURE_ALIGNMENT_THRESHOLD pattern in audio_measurement/alignment.py. Set
 # them in jasper.env once measured; no rebuild required. Out-of-range or
 # unparseable values fall back to the documented default; a *combination* of
 # individually-valid values that fails cross-field validation also falls back

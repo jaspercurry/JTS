@@ -248,7 +248,10 @@ from jasper.audio_measurement.program_analysis import (
     ProgramAnalysis,
     polarity_label,
 )
-from jasper.capture_relay.session import CaptureBeginDeferred, CaptureBeginRefused
+from jasper.active_speaker.crossover_v2.capture_source import (
+    CaptureBeginDeferred,
+    CaptureBeginRefused,
+)
 from jasper.log_event import log_event
 
 logger = logging.getLogger(__name__)
