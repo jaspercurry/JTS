@@ -144,6 +144,10 @@ _AEC_BRIDGE_UNIT = "jasper-aec-bridge.service"
 _USB_MIC_LEG_APPLY_COALESCE_SECONDS = 5.0
 _usb_mic_leg_apply_lock = threading.Lock()
 _usb_mic_leg_apply_pending: tuple[str, float] | None = None
+# Serializes POST /aec/commission's check-then-start across
+# ThreadingHTTPServer workers, so two clicks cannot both pass the is-active
+# probe before either start lands.
+_aec_commission_start_lock = threading.Lock()
 
 
 def _diagnostics_result_path() -> str:
@@ -701,27 +705,31 @@ def _reset_oneshot_unit(unit: str, *, event: str) -> None:
         )
 
 
-def _schedule_usb_gadget_recompose() -> bool:
-    """Hand delayed, debounced apply to systemd before returning to the client.
+def _run_oneshot_start(
+    unit: str,
+    verb: str,
+    *,
+    event_prefix: str,
+    extra_fields: dict[str, Any] | None = None,
+) -> bool:
+    """Reset then no-block start/restart one maintenance oneshot, observably.
 
-    Restarting an already-running oneshot cancels its 350 ms grace sleep and
-    begins it again, so rapid switch changes naturally debounce.  Unlike an
-    in-process Timer, the durable intent's apply job survives jasper-control
-    exiting after this request.  Reset the unit's failure/start-rate state so
-    each explicit user action gets a fresh, bounded retry budget.
+    ``event_prefix`` is ``<owner>.<action>``: the failure/scheduled events are
+    ``<event_prefix>_failed`` / ``<event_prefix>_scheduled`` and the
+    best-effort reset logs ``<owner>.reset_failed_skipped``. ``extra_fields``
+    ride on the scheduled event only. The reset clears systemd's
+    failure/start-rate state so each explicit user action gets a fresh,
+    bounded retry budget.
     """
-
-    _reset_oneshot_unit(_USB_MIC_APPLY_UNIT, event="usb_mic.reset_failed_skipped")
-
+    owner = event_prefix.rsplit(".", 1)[0]
+    _reset_oneshot_unit(unit, event=f"{owner}.reset_failed_skipped")
     try:
-        result = _run_unit_systemctl(
-            "restart", "--no-block", _USB_MIC_APPLY_UNIT,
-        )
+        result = _run_unit_systemctl(verb, "--no-block", unit)
     except (OSError, subprocess.SubprocessError) as exc:
         log_event(
             logger,
-            "usb_mic.recompose_failed",
-            unit=_USB_MIC_APPLY_UNIT,
+            f"{event_prefix}_failed",
+            unit=unit,
             phase="enqueue",
             error=str(exc),
             level=logging.ERROR,
@@ -730,8 +738,8 @@ def _schedule_usb_gadget_recompose() -> bool:
     if result.returncode != 0:
         log_event(
             logger,
-            "usb_mic.recompose_failed",
-            unit=_USB_MIC_APPLY_UNIT,
+            f"{event_prefix}_failed",
+            unit=unit,
             phase="enqueue",
             returncode=result.returncode,
             detail=(result.stderr or result.stdout).strip().replace(
@@ -742,12 +750,28 @@ def _schedule_usb_gadget_recompose() -> bool:
         return False
     log_event(
         logger,
-        "usb_mic.recompose_scheduled",
-        unit=_USB_MIC_APPLY_UNIT,
-        grace_ms=350,
-        max_attempts=4,
+        f"{event_prefix}_scheduled",
+        unit=unit,
+        **(extra_fields or {}),
     )
     return True
+
+
+def _schedule_usb_gadget_recompose() -> bool:
+    """Hand delayed, debounced apply to systemd before returning to the client.
+
+    Restarting an already-running oneshot cancels its 350 ms grace sleep and
+    begins it again, so rapid switch changes naturally debounce.  Unlike an
+    in-process Timer, the durable intent's apply job survives jasper-control
+    exiting after this request.
+    """
+
+    return _run_oneshot_start(
+        _USB_MIC_APPLY_UNIT,
+        "restart",
+        event_prefix="usb_mic.recompose",
+        extra_fields={"grace_ms": 350, "max_attempts": 4},
+    )
 
 
 def _aec_commission_running() -> bool:
@@ -759,36 +783,12 @@ def _start_aec_commission() -> bool:
 
     ``--no-block``: the run takes minutes and the browser only needs the job
     accepted — the /aec poll's ``commission.running`` probe tracks the rest.
-    Reset first so a previous failed run cannot spend this explicit user
-    action's start budget.
     """
-    unit = _aec_endpoints._AEC_COMMISSION_SERVICE
-    _reset_oneshot_unit(unit, event="aec_commission.reset_failed_skipped")
-    try:
-        result = _run_unit_systemctl("start", "--no-block", unit)
-    except (OSError, subprocess.SubprocessError) as exc:
-        log_event(
-            logger,
-            "aec_commission.start_failed",
-            unit=unit,
-            error=str(exc),
-            level=logging.ERROR,
-        )
-        return False
-    if result.returncode != 0:
-        log_event(
-            logger,
-            "aec_commission.start_failed",
-            unit=unit,
-            returncode=result.returncode,
-            detail=(result.stderr or result.stdout).strip().replace(
-                "\n", " | ",
-            ),
-            level=logging.ERROR,
-        )
-        return False
-    log_event(logger, "aec_commission.start_scheduled", unit=unit)
-    return True
+    return _run_oneshot_start(
+        _aec_endpoints._AEC_COMMISSION_SERVICE,
+        "start",
+        event_prefix="aec_commission.start",
+    )
 
 
 def _augment_source_payload(payload: dict[str, Any]) -> dict[str, Any]:

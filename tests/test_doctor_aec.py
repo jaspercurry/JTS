@@ -1542,6 +1542,32 @@ def test_aec_bridge_running_reports_chip_forwarding(monkeypatch):
     assert "software AEC enabled" not in result.detail
 
 
+def test_aec_bridge_down_during_commissioning_is_intentional_not_a_failure(
+    monkeypatch,
+):
+    """The commissioner stops the AEC stack for its audible run; the doctor
+    must report that as the intended state, not a red bridge failure with a
+    restart remedy."""
+
+    def fake_run(cmd, **kwargs):
+        if cmd == ["systemctl", "is-active", "jasper-aec-bridge.service"]:
+            return SimpleNamespace(returncode=3, stdout="inactive\n", stderr="")
+        if cmd == ["systemctl", "is-enabled", "jasper-aec-bridge.service"]:
+            return SimpleNamespace(returncode=0, stdout="enabled\n", stderr="")
+        if cmd == ["systemctl", "is-active", "jasper-aec-commission.service"]:
+            return SimpleNamespace(
+                returncode=0, stdout="activating\n", stderr="",
+            )
+        raise AssertionError(f"unexpected command: {cmd!r}")
+
+    monkeypatch.setattr(doctor.aec, "_parked_as_bonded_follower", lambda: False)
+    monkeypatch.setattr(doctor.aec, "_run", fake_run)
+
+    result = doctor.aec.check_aec_bridge_running()
+
+    assert result.status == "ok"
+
+
 def test_audio_profile_doctor_check_warns_when_runtime_env_pending(monkeypatch):
     monkeypatch.setattr(doctor.aec, "_aec_mode_setting", lambda: "auto")
     settings = {

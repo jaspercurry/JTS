@@ -483,6 +483,20 @@ def check_aec_bridge_running() -> CheckResult:
     if is_active == "active":
         return CheckResult("AEC bridge service", "ok", _running_aec_bridge_detail())
 
+    # The commissioner stops the whole AEC stack for its audible measurement
+    # (minutes) and its live marker parks every reconcile, so a down bridge is
+    # the intended state — not a failure with a restart remedy.
+    commission_state = _run(
+        ["systemctl", "is-active", "jasper-aec-commission.service"]
+    ).stdout.strip()
+    if commission_state in {"active", "activating", "reloading"} or Path(
+        "/run/jasper-chip-aec-commission/active"
+    ).exists():
+        return CheckResult(
+            "AEC bridge service", "ok",
+            "chip-AEC commissioning in progress; bridge intentionally stopped",
+        )
+
     aec_mode = _aec_mode_setting()
     capture_ch = xvf3800.capture_channels()
     chip_present = capture_ch is not None

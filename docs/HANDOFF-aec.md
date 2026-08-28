@@ -45,14 +45,17 @@ conversion, a second reference route, or a rate matcher.**
 
 ## Commissioning
 
-Explicit and foreground-only:
+One measurement path, two explicit triggers — the CLI and the /wake page's
+re-measure button (`POST /aec/commission` starting
+`jasper-aec-commission.service`); service-safe, no TTY dependency, never
+automatic:
 
 ```sh
 sudo jasper-aec-commission
 ```
 
-That command is the only path allowed to play its bounded fixed signal or issue
-the single volatile XVF reset that clears stale adaptive state. It starts from
+That measurement path is the only one allowed to play its bounded fixed signal
+or issue the single volatile XVF reset that clears stale adaptive state. It starts from
 the shipped `SYS_DELAY=-37` hardware baseline and plays one discarded sweep as
 the operator's quiet cue, then measures three accepted trials on all four
 physical microphones, chooses one global delay nearest the causal window's
@@ -166,7 +169,12 @@ timer, or runs a servo. `/aec`, `/state`, and `jasper-doctor` expose `ready`,
 `disclosed_stale`, `unavailable`, or `fault` with the reconciler-provided
 reason/action. If the XVF is absent after a previous AEC-enabled boot, the
 reconciler clears the stale `udp:9876`, disables the bridge, and stops voice
-instead of leaving wake-word on an unfed UDP socket.
+instead of leaving wake-word on an unfed UDP socket. While a live
+commissioning marker exists every pass mutates nothing, except the
+commissioner's own reason-keyed arm call
+(`--reason chip-aec-commission-arm`), which publishes only the final
+chip-reference vector and starts outputd on it so the commissioning preflight
+can find the native chip-ref writer.
 
 `/aec` separates saved intent from applied runtime truth. `raw_intent` mirrors
 `/var/lib/jasper/aec_mode.env`; active fields (`mode`, `bridge_role`,

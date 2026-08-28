@@ -445,17 +445,20 @@ class AecRoutes(ControlHandlerMixin):
         # One-tap chip-AEC re-commissioning: start the root oneshot that runs
         # the audible measurement (minutes; stops voice/AEC while it runs).
         # Button-initiated only — nothing else starts this unit. Token-gated
-        # like the other high-impact /aec mutations.
-        if _server._aec_commission_running():
-            self._send_json(
-                {
-                    "error": "chip-AEC re-commissioning is already running",
-                    "commission": {"running": True},
-                },
-                status=409,
-            )
-            return
-        if not _server._start_aec_commission():
+        # like the other high-impact /aec mutations. The lock makes
+        # check-then-start atomic across worker threads.
+        with _server._aec_commission_start_lock:
+            if _server._aec_commission_running():
+                self._send_json(
+                    {
+                        "error": "chip-AEC re-commissioning is already running",
+                        "commission": {"running": True},
+                    },
+                    status=409,
+                )
+                return
+            started = _server._start_aec_commission()
+        if not started:
             self._send_json(
                 {
                     "error": "the re-commissioning run could not be started",

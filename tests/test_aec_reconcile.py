@@ -2615,15 +2615,38 @@ def _marker(tmp_path: Path) -> Path:
     return tmp_path / "voice-input-absent"
 
 
-def test_live_commission_marker_pass_arms_reference_vector_only(
+def test_reconcile_is_noop_while_foreground_commissioner_owns_lifecycle(
     tmp_path: Path,
 ) -> None:
-    """A live marker turns the pass into the commissioner's arm: it publishes
-    the final chip-reference vector (so the preflight can find outputd's
-    native chip-ref writer) and bounces outputd — nothing else. Voice, the
-    bridge, aec-init, the wizard mode file, and the mic-profile state cache
-    all stay owned by the foreground commissioner, and the bridge
-    ExecCondition stays closed."""
+    """Any pass under a LIVE marker that is not the commissioner's own
+    reason-keyed arm call — hotplug from its volatile XVF reset, timers,
+    deploys — mutates nothing, and the bridge ExecCondition stays closed."""
+    env_file = _write_env(tmp_path, "Array")
+    before = env_file.read_bytes()
+    (tmp_path / "chip-aec-commission-active").write_text("pid=123\n")
+    (tmp_path / "proc" / "123").mkdir(parents=True)
+
+    result = _run_reconcile(tmp_path, "--reason", "hotplug")
+
+    assert result.returncode == 0, result.stderr
+    assert env_file.read_bytes() == before
+    assert not (tmp_path / "aec_mode.env").exists()
+    assert not (tmp_path / "xvf3800.json").exists()
+    assert _systemctl_log(tmp_path) == ""
+    assert _run_reconcile(tmp_path, "--check-aec-ready").returncode == 1
+
+
+def test_live_commission_marker_arm_reason_pass_arms_reference_vector_only(
+    tmp_path: Path,
+) -> None:
+    """The commissioner's own reason-keyed call under its live marker is the
+    one arm dispatch: it publishes the final chip-reference vector (so the
+    preflight can find outputd's native chip-ref writer) and hands outputd a
+    start — nothing else. Voice, the bridge, aec-init, the wizard mode file,
+    and the mic-profile state cache all stay owned by the commissioner, and
+    the bridge ExecCondition stays closed."""
+    from jasper.cli.aec_commission import ARM_RECONCILE_REASON
+
     env_file = _write_env(
         tmp_path,
         "Array",
@@ -2636,7 +2659,7 @@ def test_live_commission_marker_pass_arms_reference_vector_only(
     (tmp_path / "chip-aec-commission-active").write_text("pid=123\n")
     (tmp_path / "proc" / "123").mkdir(parents=True)
 
-    result = _run_reconcile(tmp_path, "--reason", "hotplug")
+    result = _run_reconcile(tmp_path, "--reason", ARM_RECONCILE_REASON)
 
     assert result.returncode == 0, result.stderr
     values = _env_assignments(env_file)
@@ -2661,9 +2684,9 @@ def test_live_commission_marker_pass_arms_reference_vector_only(
         "restart jasper-outputd.service",
     ]
     assert _run_reconcile(tmp_path, "--check-aec-ready").returncode == 1
-    # Idempotent under the commissioner's own volatile-reset hotplug: an
-    # unchanged vector must not bounce outputd mid-measurement.
-    rerun = _run_reconcile(tmp_path, "--reason", "hotplug")
+    # A repeated arm call converges: an unchanged vector hands outputd
+    # nothing to restart.
+    rerun = _run_reconcile(tmp_path, "--reason", ARM_RECONCILE_REASON)
     assert rerun.returncode == 0, rerun.stderr
     assert _systemctl_log(tmp_path).splitlines() == [
         "reset-failed jasper-outputd.service",

@@ -897,6 +897,44 @@ def test_aec_full_status_rejects_unvalidated_beam_plan_from_one_probe(
     assert status["bridge_role"] == "pending"
 
 
+def test_aec_full_status_commission_carries_last_run_verdict(
+    aec_mode_file, wake_model_file, monkeypatch, tmp_path,
+):
+    """`commission` pairs the live-job probe with the persisted last-run
+    outcome, so a failed audible run is visible on the page with its reason
+    instead of dying in the journal."""
+    aec_mode_file.write_text(
+        "JASPER_AUDIO_INPUT_PROFILE=auto\n"
+        "JASPER_AEC_MODE=auto\n"
+        "JASPER_WAKE_LEG_RAW=1\n"
+        "JASPER_WAKE_LEG_DTLN=0\n"
+        "JASPER_WAKE_LEG_CHIP_AEC=0\n"
+    )
+    monkeypatch.setattr(aec_endpoints, "_aec_bridge_active", lambda: False)
+    monkeypatch.setattr(aec_endpoints, "_unit_active", lambda unit: False)
+    _stub_xvf_runtime(monkeypatch)
+    monkeypatch.setattr(
+        aec_endpoints,
+        "_fresh_jasper_env",
+        lambda: {"JASPER_AUDIO_DAC_ID": "apple_usb_c_dongle"},
+    )
+    outcome = tmp_path / "chip-aec-commission.json"
+    outcome.write_text(
+        '{"state": "failed", "detail": "timing peak ratio 1.02 below 1.10"}'
+    )
+    monkeypatch.setattr(
+        aec_endpoints, "_AEC_COMMISSION_STATE_FILE", str(outcome),
+    )
+
+    status = server._aec_full_status()
+
+    assert status["commission"] == {
+        "running": False,
+        "state": "failed",
+        "detail": "timing peak ratio 1.02 below 1.10",
+    }
+
+
 def test_aec_full_status_surfaces_required_xvf_firmware_update(
     aec_mode_file, wake_model_file, monkeypatch,
 ):

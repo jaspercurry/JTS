@@ -43,8 +43,9 @@ fall back *silently*. `custom` remains the explicit low-level lab escape hatch,
 and AEC3 remains valid for non-XVF mics.
 
 The chip reference uses its native USB-IN contract: ALSA `hw`, 16 kHz,
-stereo, S16_LE, period 128, buffer 256. Only the foreground
-`sudo jasper-aec-commission` command may play the fixed bounded signal and
+stereo, S16_LE, period 128, buffer 256. Only the `jasper-aec-commission`
+measurement path (the CLI, or the /wake button starting its service — always
+explicit, never automatic) may play the fixed bounded signal and
 issue one volatile reset. It tunes only `AUDIO_MGR_SYS_DELAY`; ordinary
 boot/replug reapplies the volatile profile silently from the installation
 artifact. Never call `SAVE_CONFIGURATION`. The complete operational lifecycle
@@ -891,8 +892,9 @@ DataPartition corruption belongs to the explicit DFU recovery procedure in
 
 A soft reset. The chip drops off USB, then re-enumerates ~2-3
 seconds later with all parameters returned to defaults. On JTS this command
-is owned exclusively by the explicit foreground `jasper-aec-commission`
-flow, which issues exactly one volatile reset before adaptation. Ordinary
+is owned exclusively by the explicit `jasper-aec-commission` measurement
+flow (CLI or the /wake button's service — never automatic), which issues
+exactly one volatile reset before adaptation. Ordinary
 init, boot, replug, reconcile, and diagnostics never call it.
 
 ### 4.14 `BOOT_STATUS` (resid 48, cmdid 5, length 3, char, RO)

@@ -129,8 +129,14 @@
   margin-top: 0.45rem;
   overflow-wrap: anywhere;
 }
-#echo-commission-button {
+.echo-status__commission {
   margin-top: 0.45rem;
+}
+.echo-status__commission-detail {
+  color: var(--muted);
+  font-size: 0.86rem;
+  line-height: 1.45;
+  margin-top: 0.3rem;
 }
 .firmware-update {
   display: grid;

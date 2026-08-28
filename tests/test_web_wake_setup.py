@@ -420,6 +420,10 @@ def test_wake_module_renders_server_choices_action_and_runtime_effective_label()
     assert 'await postJSON("usb-mic-leg", { leg })' in module
     assert 'const action = el("echo-status-action")' in module
     assert "action.textContent = actionText" in module
+    # The re-measure button gates on the backend-decoded boolean, never on
+    # matching the action prose.
+    assert "echo.commission_recommended" in module
+    assert 'includes("jasper-aec-commission")' not in module
 
 
 def test_get_unknown_path_404(tmp_path):

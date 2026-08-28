@@ -279,9 +279,11 @@ def _echo_card_html() -> str:
       <div class="echo-status__title" id="echo-status-title">checking…</div>
       <div class="echo-status__detail" id="echo-status-detail">—</div>
       <div class="echo-status__action" id="echo-status-action" hidden></div>
-      <button class="btn btn--primary" type="button"
+      <button class="btn btn--primary echo-status__commission" type="button"
               id="echo-commission-button" hidden
               disabled>Re-measure chip AEC (~3 min, plays test sweeps)</button>
+      <div class="echo-status__commission-detail"
+           id="echo-commission-detail" hidden></div>
     </div>
     <div class="firmware-update" id="firmware-update-card" hidden>
       <div class="firmware-update__copy">

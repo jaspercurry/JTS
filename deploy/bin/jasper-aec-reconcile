@@ -183,18 +183,26 @@ commission_marker_live() {
     [[ "$line" == "pid=${pid}" && "$pid" =~ ^[1-9][0-9]*$ && -d "$PROC_ROOT/$pid" ]]
 }
 
-# The foreground commissioner owns every lifecycle mutation while its process
-# is alive. Its one volatile USB reset fires hotplug; that reconcile must not
-# touch voice/bridge/init or the wizard files, and the bridge ExecCondition
-# must stay closed. The pass is NOT a full no-op: it publishes the final
-# chip-reference vector (COMMISSION_ARM dispatch below) because the resting
-# software-AEC3 env has no chip-ref writer armed and the commissioner's
-# preflight needs outputd carrying one — only this script writes that vector.
+# The commissioner owns every lifecycle mutation while its process is alive.
+# Its one volatile USB reset fires hotplug; that pass — and every other pass
+# under a live marker — mutates nothing and the bridge ExecCondition stays
+# closed. The single exception is the commissioner's OWN arm call, keyed on
+# --reason below: the resting software-AEC3 env has no chip-ref writer armed
+# and the commissioning preflight needs outputd carrying one, and only this
+# script writes that vector. The reason literal is mirrored by
+# jasper.cli.aec_commission.ARM_RECONCILE_REASON (pinned in
+# tests/test_aec_reconcile.py). A reason-keyed dispatch also keeps a stale or
+# PID-reused marker harmless: no caller but the live commissioner passes it.
+COMMISSION_ARM_REASON="chip-aec-commission-arm"
 COMMISSION_ARM=0
 if commission_marker_live; then
     log "commissioning marker present; foreground commissioner owns AEC lifecycle"
     [[ "$CHECK_ONLY" == "1" ]] && exit 1
-    COMMISSION_ARM=1
+    if [[ "$REASON" == "$COMMISSION_ARM_REASON" ]]; then
+        COMMISSION_ARM=1
+    else
+        exit 0
+    fi
 elif [[ -e "$COMMISSION_MARKER" ]]; then
     log "removing stale commissioning marker"
     [[ "$CHECK_ONLY" == "1" ]] || rm -f "$COMMISSION_MARKER"
@@ -2020,18 +2028,25 @@ else
 fi
 
 if [[ "$COMMISSION_ARM" == "1" ]]; then
-    # Arm-only dispatch for a live commissioning marker: publish the final
-    # chip-reference vector — the same write_leg_env "reference" arm
-    # activate_managed_chip_aec parks with (legs off, ref UDP target clear,
-    # chip-ref writer armed) — and hand it to jasper-outputd. Everything else
-    # this script does below stays excluded: the foreground commissioner owns
-    # voice/bridge/init, the wizard files, and the alignment record. Unchanged
-    # values mark no outputd restart, so the hotplug pass fired by the
-    # commissioner's own volatile XVF reset cannot bounce the writer
-    # mid-measurement; the commissioner's cleanup reconcile runs marker-free
-    # and re-derives the resting vector.
+    # Arm-only dispatch, reached ONLY by the commissioner's own reason-keyed
+    # call while its marker is live: publish the final chip-reference vector —
+    # the same write_leg_env "reference" arm activate_managed_chip_aec parks
+    # with (legs off, ref UDP target clear, chip-ref writer armed) — and hand
+    # it to jasper-outputd, strictly: the commissioner aborts on this exit
+    # code, so it must not claim success over a writer that is not running.
+    # Everything else this script does below stays excluded: the commissioner
+    # owns voice/bridge/init, the wizard files, and the alignment record.
+    # (The read-only derivation above may still log a
+    # aec_reconcile.aec_mic_device_derived/_rederived event; nothing it
+    # derives is persisted on this path except the vector.) The commissioner
+    # calls with its services already stopped, so the outputd hand-off is a
+    # plain start; its cleanup reconcile runs marker-free and re-derives the
+    # resting vector.
     write_leg_env "reference" "0" "0" "1" "0" "0"
-    restart_outputd_if_needed
+    if ! restart_outputd_if_needed "strict"; then
+        log "commission arm: jasper-outputd failed to start on the final chip-reference vector"
+        exit 1
+    fi
     log "commission arm: published final chip-reference vector chip_ref_pcm=${OUTPUTD_CHIP_REF_PCM}"
     exit 0
 fi
