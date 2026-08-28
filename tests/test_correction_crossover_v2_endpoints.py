@@ -108,6 +108,7 @@ from jasper.dsp_apply import config_file_sha256
 from jasper.web import correction_crossover_v2 as v2host
 from jasper.web import correction_crossover_v2_relay as v2relay
 
+from tests.conftest import seat_process_volume_owner
 from tests.test_capture_relay_plan import FakePlanRelayBackend, PhonePlanDriver
 from tests.crossover_v2_fixtures import (
     CAPS,
@@ -213,17 +214,11 @@ def _own_the_fader(monkeypatch, cam) -> None:
 
     After W5-c1 the plan reaches the fader through the owner, so a drain test
     without one exercises the fail-closed no-owner door instead of the drain.
-    Seated through the module global so monkeypatch restores the process.
     """
-    import jasper.volume_owner as _vo
-
-    monkeypatch.setattr(
-        _vo,
-        "_process_owner",
-        _vo.VolumeOwner(
-            set_fader_db=lambda db: cam.set_volume_db(db, best_effort=True),
-            get_fader_db=lambda: cam.get_volume_db(best_effort=True),
-        ),
+    seat_process_volume_owner(
+        monkeypatch,
+        lambda db: cam.set_volume_db(db, best_effort=True),
+        lambda: cam.get_volume_db(best_effort=True),
     )
 
 

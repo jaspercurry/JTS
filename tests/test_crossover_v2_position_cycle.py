@@ -335,8 +335,8 @@ def test_the_before_reads_back_in_the_shape_its_record_type_rehydrates_from(
 def test_a_lateral_pose_is_never_read_as_the_round_s_before(tmp_path):
     """Two record shapes in one directory, and each reader takes one.
 
-    ``retain_position`` serves the lateral walk, the cloud group and the entry
-    baseline into the same directory. Reading a per-driver pose as the summed
+    ``BankedRecordStore.bank`` routes the lateral walk, the cloud group and the
+    entry baseline into one directory. Reading a per-driver pose as the summed
     "before" would put the wrong capture on one side of a benefit comparison.
     """
     path = tmp_path / "pose.json"

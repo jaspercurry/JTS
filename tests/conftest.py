@@ -334,6 +334,25 @@ def _isolate_output_hardware_state(tmp_path_factory, monkeypatch):
     )
 
 
+def seat_process_volume_owner(monkeypatch, set_fader_db, get_fader_db) -> None:
+    """Seat a real ``VolumeOwner`` over one (set, get) fader pair.
+
+    Through the module global rather than ``install_volume_owner``, so
+    monkeypatch puts the process back at teardown. The FADER stays the
+    caller's — what a suite drives the owner over is its subject, so only the
+    seating is shared.
+    """
+    import jasper.volume_owner as volume_owner_module
+
+    monkeypatch.setattr(
+        volume_owner_module,
+        "_process_owner",
+        volume_owner_module.VolumeOwner(
+            set_fader_db=set_fader_db, get_fader_db=get_fader_db,
+        ),
+    )
+
+
 @pytest.fixture
 def a_process_with_a_volume_owner(monkeypatch):
     """Stand up the precondition every crossover-v2 session has in production.
@@ -349,11 +368,8 @@ def a_process_with_a_volume_owner(monkeypatch):
     **Opted into by name, never autouse.** A suite that wants to pin the
     no-owner refusal itself must not have an owner seated underneath it, so
     modules declare ``pytestmark = pytest.mark.usefixtures(...)`` rather than
-    getting one whether they want it or not. Seated through the module global
-    so monkeypatch puts the process back.
+    getting one whether they want it or not.
     """
-    import jasper.volume_owner as volume_owner_module
-
     fader = {"db": -20.0}
 
     async def _set(db: float) -> bool:
@@ -363,8 +379,4 @@ def a_process_with_a_volume_owner(monkeypatch):
     async def _get() -> float:
         return fader["db"]
 
-    monkeypatch.setattr(
-        volume_owner_module,
-        "_process_owner",
-        volume_owner_module.VolumeOwner(set_fader_db=_set, get_fader_db=_get),
-    )
+    seat_process_volume_owner(monkeypatch, _set, _get)
