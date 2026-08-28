@@ -2,41 +2,40 @@
 //
 // SPDX-License-Identifier: Apache-2.0
 
-// Per-octave-band ambient-noise stats for the driver-sweep quiet window (Wave
-// 2, phone-mic-relay-plan.md's "Dormant until the page PR" §, W2.1/W2.4
-// closed-loop SNR level solve).
+// Per-octave-band ambient-noise stats for the driver-sweep quiet window
+// (Wave 2, docs/phone-mic-relay-plan.md, W2.1/W2.4 closed-loop SNR level
+// solve).
 //
-// jasper/audio_measurement/level_solver.py's `solve_level` picks the
-// quietest safe (main_volume_db, commissioning_gain_db) for a driver sweep
-// from the room's PER-BAND ambient noise; absent a real measurement it
-// synthesizes a conservative broadband guess. `parse_ambient_stats_event`
-// (same module) already parses this event on the Pi side — this module is
-// the matching phone-side EMITTER. The parser validates schema, run_token,
-// clipped, and bands field for field; `duration_s` is an emitted SUPERSET
-// field the parser currently ignores (it matches the Pi test vectors and
-// rides for observability / future ambient-drift checks, W2.4):
+// This module is the phone-side EMITTER; nothing Pi-side consumes the event
+// today — ambient is measured from the capture itself
+// (jasper/audio_measurement/program_analysis.py's `_ambient_from_capture`),
+// which reads a differently-shaped per-band record of its own. The wire
+// shape below is forward-compatible plumbing, deliberately kept live so a
+// future consumer can read these bands without a page change:
 //
 //   { ambient_stats: { schema, run_token, duration_s, clipped, bands } }
 //   bands: [{ lo_hz, hi_hz, rms_dbfs }, ...]   (1..AMBIENT_STATS_MAX_BANDS)
+//   (`duration_s` rides for observability / future ambient-drift checks.)
 //
 // Pure and dependency-free (no DOM/browser globals) so it is unit-testable in
-// Node (tests/js/capture_ambient_stats_test.mjs) and cross-checked against
-// the real Python parser (tests/test_capture_page_ambient_stats_bridge.py).
+// Node (tests/js/capture_ambient_stats_test.mjs), which pins this shape.
 
 import { rmsToDbfs } from "./measurement-audio.js?v=20260815-4";
 import { CLIP_ABS_THRESHOLD } from "./level-events.js?v=20260815-4";
 
-// MUST match jasper.audio_measurement.level_solver.AMBIENT_STATS_SCHEMA_VERSION.
+// The page owns this schema version; there is no Pi-side twin to match.
+// Bump only alongside a versioned consumer.
 export const AMBIENT_STATS_SCHEMA_VERSION = 1;
-// MUST match jasper.audio_measurement.level_solver.AMBIENT_STATS_MAX_BANDS.
+// Upper bound on the emitted band list. A future Pi consumer must enforce
+// its own cap too — the event is untrusted wire input on that side.
 export const AMBIENT_STATS_MAX_BANDS = 64;
 
 // ISO-ish octave-band centers, 31.5 Hz - 16 kHz (10 bands). A driver sweep's
 // admitted band is Pi-owned and not carried on the wire spec (only the Pi
 // knows the driver-safety-confirmed excitation band), so the phone reports a
-// fixed set spanning the sweep's own audible range; the Pi's solver clips
-// whatever it receives to the admitted band before use
-// (`_clip_ambient_bands`), so a broader phone-side set is harmless.
+// fixed set spanning the sweep's own audible range. A consumer is expected to
+// clip what it receives to its own admitted band, which is what makes a
+// broader phone-side set harmless.
 const OCTAVE_BAND_CENTERS_HZ = Object.freeze([
   31.5, 63, 125, 250, 500, 1000, 2000, 4000, 8000, 16000,
 ]);
@@ -115,8 +114,8 @@ function samplesClipped(samples) {
 // Build the `{ambient_stats: {...}}` event payload for one quiet-window
 // capture. `durationS` is the actual recorded window length in seconds.
 // `runToken` echoes the spec's run_token exactly like level_batch does, so a
-// stale event from a previous attempt can never feed the wrong solve
-// (parse_ambient_stats_event rejects a run_token mismatch).
+// future consumer can reject a stale event from a previous attempt by
+// run_token mismatch (nothing Pi-side consumes the event today).
 export function buildAmbientStatsEvent(samples, sampleRate, runToken, durationS) {
   const input = samples instanceof Float32Array ? samples : new Float32Array(samples || []);
   const bands = computeOctaveBandStats(input, sampleRate).slice(0, AMBIENT_STATS_MAX_BANDS);

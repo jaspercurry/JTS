@@ -217,14 +217,14 @@ def test_capture_page_version_contract_is_published_and_cache_busted():
         # deployed page still advertises [1, 2, 3], so this page build must
         # publish AFTER the Pis stop emitting 1 and 2, not before.
         "supported_capture_protocol_versions": [3],
-        "capture_page_build": "20260818.1",
+        "capture_page_build": "20260828.1",
     }
     # The ?v= query is the page's ONLY cache-invalidation mechanism, and the
     # Pi's build gate checks the stamp's FORMAT, not its value — so a phone
     # holding the previous bundle would be accepted silently. Bumping
     # version.json without bumping this is therefore a shipping hazard, not a
     # cosmetic mismatch: that is what this pairing exists to catch.
-    assert "main.js?v=20260818-1" in index_html
+    assert "main.js?v=20260828-1" in index_html
     main_js = (_REPO / "capture-page/js/main.js").read_text(encoding="utf-8")
     # Every import stamp below must move whenever that module's content moves,
     # and the move must CASCADE to each module that imports it — otherwise a
@@ -242,7 +242,7 @@ def test_capture_page_version_contract_is_published_and_cache_busted():
     assert 'from "./transport-integrity.js?v=20260727-1"' in main_js
     # Both import measurement-audio.js, so both stamps ride its cascade.
     assert 'from "./level-events.js?v=20260815-4"' in main_js
-    assert 'from "./ambient-stats.js?v=20260815-4"' in main_js
+    assert 'from "./ambient-stats.js?v=20260828-1"' in main_js
     assert 'cp "${HERE}/version.json" "${DIST}/version.json"' in build_sh
 
 
@@ -375,9 +375,9 @@ def test_the_build_refuses_rather_than_publishing_without_the_shared_helper(tmp_
 # there is nothing to invalidate. A change that alters behaviour still owes the
 # stamp bumps capture-page/README.md's publish step 1 describes.
 _CAPTURE_PAGE_JS_DIGEST = (
-    "31d9539e7c34f8ef04c950a3c82579bcae6782643504251276348638136feffd"
+    "58de860474ed3f9ae214adffb6bf54cfdcd16fef8a66636cb03ebaa96701d5b2"
 )
-_CAPTURE_PAGE_JS_DIGEST_BUILD = "20260818.1"
+_CAPTURE_PAGE_JS_DIGEST_BUILD = "20260828.1"
 
 
 def test_capture_page_js_cannot_change_without_a_deliberate_build_stamp_decision():

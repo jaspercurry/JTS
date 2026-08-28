@@ -59,7 +59,7 @@ import {
   float32ToWavBlob,
   rmsToDbfs,
 } from "./measurement-audio.js?v=20260815-4";
-import { buildAmbientStatsEvent } from "./ambient-stats.js?v=20260815-4";
+import { buildAmbientStatsEvent } from "./ambient-stats.js?v=20260828-1";
 
 const PAGE_VERSION_URL = new URL("../version.json", import.meta.url);
 
@@ -228,7 +228,7 @@ function planEstimatedMinutes(spec) {
 
 // The screen-on hint's duration estimate, derived from the plan the Pi actually
 // sent rather than a constant. The hardcoded "about 4 minutes" was written for
-// the 3-capture flow; a 16-capture spatial cloud runs several times that, and a
+// the 3-capture flow; a 15-capture spatial cloud runs several times that, and a
 // household who trusts the number and lets the screen sleep loses the session.
 // No plan (the legacy level-ramp and single-capture kinds) keeps the original
 // string byte-for-byte.
@@ -1362,9 +1362,12 @@ async function captureAmbientNoise(recorder, spec, note = "") {
 }
 
 // Per-octave-band ambient-noise stats (Wave 2, W2.1/W2.4 closed-loop SNR
-// level solve — jasper.audio_measurement.level_solver.parse_ambient_stats_event).
-// Scoped to driver sweeps (crossover_sweep) since that solver only ever runs
-// per-driver; room_sweep/balance_burst/sync_marker have no such consumer.
+// level solve). Emitted forward-compatibly — nothing Pi-side consumes the
+// event today; the Pi computes ambient from the capture itself
+// (jasper/audio_measurement/program_analysis.py's `_ambient_from_capture`).
+// Scoped to driver sweeps (crossover_sweep), the one kind whose per-driver
+// level solve could ever use per-band ambient; room_sweep/balance_burst/
+// sync_marker have no such consumer.
 // Returns `{}` (spread-safe, no-op) for every other kind or an empty/failed
 // capture, so this rides for free on every capture protocol version — v1,
 // v2, and the v3 plan loop all call captureAmbientNoise() the same way.
