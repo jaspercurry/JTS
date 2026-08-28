@@ -199,6 +199,7 @@ def test_the_class_key_is_the_identity_minus_the_unit_it_was_measured_on() -> No
     assert set(alignment.HARDWARE_CLASS_IDENTITY_FIELDS) == (
         set(AlignmentIdentity.__dataclass_fields__)
         - alignment.PER_UNIT_IDENTITY_FIELDS
+        - alignment.RECORDED_ONLY_IDENTITY_FIELDS
     )
     for name in alignment.PER_UNIT_IDENTITY_FIELDS:
         moved = replace(identity, **{name: "a-sibling-box"})
@@ -216,9 +217,9 @@ def test_the_class_key_is_the_identity_minus_the_unit_it_was_measured_on() -> No
     assert alignment.hardware_class_key(_class_fields()) == key
     for broken in (
         _class_fields() | {"xvf_serial": identity.xvf_serial},
-        {name: value for name, value in _class_fields().items() if name != "beam_plan"},
+        {name: value for name, value in _class_fields().items() if name != "fixed_profile"},
         _class_fields() | {"output_rate": 0},
-        _class_fields() | {"output_format": " "},
+        _class_fields() | {"output_id": " "},
     ):
         with pytest.raises(ValueError):
             alignment.hardware_class_key(broken)
@@ -275,7 +276,7 @@ def test_a_harvested_entry_round_trips_into_the_registry_it_is_pasted_into(
     monkeypatch.setattr(shipped, "REGISTRY", (row,))
     # A sibling box — same class, different serial — is what the row is for.
     assert shipped.for_identity(replace(_identity(), xvf_serial="sibling")) is row
-    assert shipped.for_identity(replace(_identity(), output_format="S32_LE")) is None
+    assert shipped.for_identity(replace(_identity(), output_id="different_dac")) is None
 
 
 def test_a_malformed_artifact_is_not_merely_a_superseded_one() -> None:
@@ -352,8 +353,8 @@ def test_artifact_is_strict_identity_plus_k_only() -> None:
             ("xvf_serial", "output_hardware_key"),
         ),
         (
-            {"output_format": "S32_LE", "xvf_serial": "XVF3800-002"},
-            ("xvf_serial", "output_format"),
+            {"output_id": "other_dac", "xvf_serial": "XVF3800-002"},
+            ("xvf_serial", "output_id"),
         ),
     ],
 )
@@ -369,6 +370,25 @@ def test_identity_divergence_reports_every_moved_field(changes, expected) -> Non
     assert alignment.PER_UNIT_IDENTITY_FIELDS < set(
         AlignmentIdentity.__dataclass_fields__
     )
+
+
+def test_recorded_only_fields_never_diverge_but_a_physics_field_still_does() -> None:
+    # xvf_variant/beam_plan/output_format are recorded for forensics but carry
+    # no independent timing story (ADR-0189): the chip arms clean off a
+    # commissioned K even when all three moved. Layering a physics-field
+    # change on top still diverges, and reports only that field — proving the
+    # three are excluded even when mixed with a real change.
+    commissioned = _identity()
+    recorded_only_moved = replace(
+        commissioned,
+        xvf_variant="other_variant",
+        beam_plan="other_plan",
+        output_format="S32_LE",
+    )
+    assert alignment.identity_divergence(commissioned, recorded_only_moved) == ()
+
+    physics_moved = replace(recorded_only_moved, output_id="other_dac")
+    assert alignment.identity_divergence(commissioned, physics_moved) == ("output_id",)
 
 
 def test_global_delay_centers_all_four_mics_with_strong_edge_margin() -> None:

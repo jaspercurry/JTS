@@ -231,14 +231,11 @@ class AlignmentIdentity:
     output_id: str
     output_hardware_key: str
     output_pcm: str
-    # The sample format outputd's own client edge negotiated, read back from
-    # the installed ``hw_params`` (outputd STATUS ``dac.format``).  That is the
-    # hardware edge on a raw ``hw:`` device; through an ALSA ``plug`` it is not,
-    # because a plug installs the client's own request client-side and converts
-    # on the slave side.  A commissioned ``K`` is only valid for the electrical
-    # edge it was measured against, so moving the edge — a DAC swap, or the
-    # registry re-declaring one — is hardware-class divergence, which
-    # `identity_divergence` names as the loud kind.
+    # outputd's negotiated hw_params sample format (STATUS ``dac.format``).
+    # Recorded for forensics only — excluded from comparison
+    # (`RECORDED_ONLY_IDENTITY_FIELDS`): a width flip carries no bulk-delay
+    # mechanism, and outputd writes natively, so this has no independent
+    # timing story.  See ADR-0189.
     output_format: str
     output_rate: int
     output_channels: int
@@ -272,13 +269,26 @@ class AlignmentIdentity:
 # The identity fields that name THIS physical box rather than its hardware
 # class.  K is a property of the class, so a box whose only divergence is here
 # is running a proof measured on a sibling of itself — worth saying out loud,
-# not worth refusing (ADR-0101).  Everything else describes the class the
-# alignment was measured against.
+# not worth refusing (ADR-0101).
 PER_UNIT_IDENTITY_FIELDS = frozenset({"xvf_serial", "output_hardware_key"})
+# Recorded on every artifact but carrying no independent timing story:
+# xvf_variant is implied by xvf_firmware, beam_plan by fixed_profile, and
+# output_format has no bulk-delay mechanism of its own (ADR-0189).  Excluded
+# from comparison entirely, so an edit here never nags the fleet.
+RECORDED_ONLY_IDENTITY_FIELDS = frozenset({"xvf_variant", "beam_plan", "output_format"})
+# What K was actually measured against: every field but the two sets above.
 HARDWARE_CLASS_IDENTITY_FIELDS = tuple(
     name
     for name in AlignmentIdentity.__dataclass_fields__
     if name not in PER_UNIT_IDENTITY_FIELDS
+    and name not in RECORDED_ONLY_IDENTITY_FIELDS
+)
+# `identity_divergence`'s default walk: per-unit plus hardware-class, i.e.
+# everything except the recorded-only three.
+COMPARED_IDENTITY_FIELDS = tuple(
+    name
+    for name in AlignmentIdentity.__dataclass_fields__
+    if name not in RECORDED_ONLY_IDENTITY_FIELDS
 )
 
 
@@ -287,18 +297,21 @@ def hardware_class_identity(
 ) -> AlignmentIdentity:
     """Return an identity carrying only what names the hardware CLASS.
 
-    A mapping — a shipped registry row, which carries no per-unit fields — is
-    held to `AlignmentIdentity`'s own field rules by filling those two with a
-    placeholder, so a malformed row fails where it is declared rather than at
-    boot.  The placeholder is why the per-unit fields of the result mean
-    nothing; only `HARDWARE_CLASS_IDENTITY_FIELDS` may be read off it.
+    A mapping — a shipped registry row, which carries only
+    `HARDWARE_CLASS_IDENTITY_FIELDS` — is held to `AlignmentIdentity`'s own
+    field rules by filling the rest with a placeholder, so a malformed row
+    fails where it is declared rather than at boot.  The placeholder is why
+    the per-unit and recorded-only fields of the result mean nothing; only
+    `HARDWARE_CLASS_IDENTITY_FIELDS` may be read off it.
     """
 
     if isinstance(identity, AlignmentIdentity):
         return identity
     if set(identity) != set(HARDWARE_CLASS_IDENTITY_FIELDS):
         raise ValueError("hardware class identity fields are incomplete")
-    fields: dict[str, Any] = dict.fromkeys(PER_UNIT_IDENTITY_FIELDS, "unkeyed")
+    fields: dict[str, Any] = dict.fromkeys(
+        PER_UNIT_IDENTITY_FIELDS | RECORDED_ONLY_IDENTITY_FIELDS, "unkeyed"
+    )
     fields.update(identity)
     return AlignmentIdentity(**fields)
 
@@ -320,15 +333,18 @@ def identity_divergence(
     commissioned: AlignmentIdentity,
     live: AlignmentIdentity,
     *,
-    fields: Sequence[str] = tuple(AlignmentIdentity.__dataclass_fields__),
+    fields: Sequence[str] = COMPARED_IDENTITY_FIELDS,
 ) -> tuple[str, ...]:
     """Return the identity fields that differ, in declaration order.
 
-    The names are what a household needs to see, so they travel rather than a
-    verdict; a caller splits them against `PER_UNIT_IDENTITY_FIELDS`.  ``fields``
-    narrows the walk — a shipped class row compares only
-    `HARDWARE_CLASS_IDENTITY_FIELDS`, because its per-unit fields are the
-    placeholder `hardware_class_identity` filled in.
+    The default walk is `COMPARED_IDENTITY_FIELDS` — every field except
+    `RECORDED_ONLY_IDENTITY_FIELDS`, which carry no timing story and so never
+    diverge (ADR-0189).  The names are what a household needs to see, so they
+    travel rather than a verdict; a caller splits them against
+    `PER_UNIT_IDENTITY_FIELDS`.  ``fields`` narrows the walk further — a
+    shipped class row compares only `HARDWARE_CLASS_IDENTITY_FIELDS`, because
+    its per-unit fields are the placeholder `hardware_class_identity` filled
+    in.
     """
 
     return tuple(

@@ -279,9 +279,10 @@ def _arm_chip_aec(monkeypatch, dev, *, artifact, live=None) -> None:
     [
         ("xvf_serial", "replacement"),
         ("output_hardware_key", "usb-serial:replacement"),
-        # The final-edge format is the electrical edge K was measured against,
-        # so it is hardware-class divergence — the loud kind, still not a park.
-        ("output_format", "S32_LE"),
+        # The DAC identity is part of the hardware class K was measured
+        # against, so it is hardware-class divergence — the loud kind, still
+        # not a park.
+        ("output_id", "different_dac"),
     ],
 )
 def test_a_commissioned_identity_that_moved_is_applied_and_disclosed(
@@ -366,15 +367,15 @@ def test_a_fresh_install_on_a_shipped_hardware_class_arms_and_discloses(
 def test_a_fresh_install_on_an_unrecognized_hardware_class_still_parks(
     monkeypatch, disclosure_file, caplog
 ) -> None:
-    # The shipped row is for a different final-edge format, so it says nothing
-    # about this box: no K to run from, and the commissioner is the answer.
-    # The park names the near-miss field, or a row one firmware flash away is
+    # The shipped row is for a different DAC, so it says nothing about this
+    # box: no K to run from, and the commissioner is the answer. The park
+    # names the near-miss field, or a row one firmware flash away is
     # indistinguishable from an empty table.
     dev = _FakeXvfDevice()
     _arm_chip_aec(
         monkeypatch, dev, artifact=lambda: (_ for _ in ()).throw(ValueError("missing"))
     )
-    row = _shipped_row(output_format="S32_LE")
+    row = _shipped_row(output_id="different_dac")
     monkeypatch.setattr(shipped_alignment, "REGISTRY", (row,))
 
     with caplog.at_level(logging.ERROR, logger="jasper.aec_init"):
@@ -382,8 +383,8 @@ def test_a_fresh_install_on_an_unrecognized_hardware_class_still_parks(
 
     assert _write_map(dev)["SHF_BYPASS"] == [1]
     assert not disclosure_file.exists()
-    assert row.divergence(_live_identity()) == ("output_format",)
-    assert "output_format" in caplog.text
+    assert row.divergence(_live_identity()) == ("output_id",)
+    assert "output_id" in caplog.text
 
 
 @pytest.mark.parametrize(
