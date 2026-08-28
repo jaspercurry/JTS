@@ -31,6 +31,15 @@ _IMPORTED_FIXTURES = (
 )
 
 
+class _SystemctlResult:
+    """Stand-in for the `subprocess.CompletedProcess` a stubbed `systemctl` returns."""
+
+    def __init__(self, returncode: int = 0, stderr: str = "") -> None:
+        self.returncode = returncode
+        self.stderr = stderr
+        self.stdout = ""
+
+
 def test_aec_toggle_restarts_reconciler(monkeypatch, tmp_path, server_with_coordinator):
     """AEC mode changes must restart the oneshot reconciler, not just start it.
 
@@ -608,15 +617,10 @@ def test_usb_mic_recompose_is_handed_to_durable_systemd_job(monkeypatch):
     commands = []
     events = []
 
-    class Result:
-        returncode = 0
-        stderr = ""
-        stdout = ""
-
     monkeypatch.setattr(
         srv_mod.subprocess,
         "run",
-        lambda command, **_kwargs: commands.append(command) or Result(),
+        lambda command, **_kwargs: commands.append(command) or _SystemctlResult(),
     )
     monkeypatch.setattr(
         srv_mod,
@@ -648,16 +652,10 @@ def test_usb_mic_recompose_schedule_failure_is_observable(monkeypatch):
 
     events = []
 
-    class Result:
-        def __init__(self, returncode=0, stderr=""):
-            self.returncode = returncode
-            self.stderr = stderr
-            self.stdout = ""
-
     def run(command, **_kwargs):
         if "restart" in command:
-            return Result(1, "access denied\n")
-        return Result()
+            return _SystemctlResult(1, "access denied\n")
+        return _SystemctlResult()
 
     monkeypatch.setattr(srv_mod.subprocess, "run", run)
     monkeypatch.setattr(
@@ -683,25 +681,22 @@ def test_usb_mic_recompose_schedule_failure_is_observable(monkeypatch):
 def test_usb_mic_recompose_survives_reset_failed_against_a_gcd_unit(monkeypatch):
     """#3237: jasper-usbmic-apply.service is a bare oneshot with no
     RemainAfterExit, so systemd normally GCs it between runs and
-    reset-failed exits nonzero as routine idle state. That must not
-    abort the recompose before the restart is even attempted.
+    reset-failed exits nonzero as routine idle state. That must not abort
+    the recompose before the restart is attempted, and it must not be
+    reported through the same event as an actual scheduling failure.
     """
     import jasper.control.server as srv_mod
 
     commands = []
     events = []
 
-    class Result:
-        def __init__(self, returncode=0, stderr=""):
-            self.returncode = returncode
-            self.stderr = stderr
-            self.stdout = ""
-
     def run(command, **_kwargs):
         commands.append(command)
         if "reset-failed" in command:
-            return Result(1, "Unit jasper-usbmic-apply.service not loaded.\n")
-        return Result()
+            return _SystemctlResult(
+                1, "Unit jasper-usbmic-apply.service not loaded.\n",
+            )
+        return _SystemctlResult()
 
     monkeypatch.setattr(srv_mod.subprocess, "run", run)
     monkeypatch.setattr(
@@ -719,10 +714,94 @@ def test_usb_mic_recompose_survives_reset_failed_against_a_gcd_unit(monkeypatch)
             "jasper-usbmic-apply.service",
         ],
     ]
-    assert (
-        "usb_mic.recompose_failed",
-        "retry_budget_reset",
-    ) in [(event, fields.get("phase")) for event, fields in events]
+    assert events == [
+        (
+            "usb_mic.reset_failed_skipped",
+            {
+                "unit": "jasper-usbmic-apply.service",
+                "returncode": 1,
+                "detail": "Unit jasper-usbmic-apply.service not loaded.",
+                "level": srv_mod.logging.WARNING,
+            },
+        ),
+        (
+            "usb_mic.recompose_scheduled",
+            {
+                "unit": "jasper-usbmic-apply.service",
+                "grace_ms": 350,
+                "max_attempts": 4,
+            },
+        ),
+    ]
+
+
+def test_usb_mic_recompose_survives_reset_failed_raising(monkeypatch):
+    """An exception from the best-effort reset-failed step (e.g. a
+    subprocess timeout) must not skip the restart either.
+    """
+    import jasper.control.server as srv_mod
+
+    commands = []
+    events = []
+
+    def run(command, **_kwargs):
+        commands.append(command)
+        if "reset-failed" in command:
+            raise srv_mod.subprocess.TimeoutExpired(cmd=command, timeout=5.0)
+        return _SystemctlResult()
+
+    monkeypatch.setattr(srv_mod.subprocess, "run", run)
+    monkeypatch.setattr(
+        srv_mod,
+        "log_event",
+        lambda _logger, event, **fields: events.append((event, fields)),
+    )
+
+    assert srv_mod._schedule_usb_gadget_recompose() is True
+    assert commands == [
+        ["systemctl", "reset-failed", "jasper-usbmic-apply.service"],
+        [
+            "systemctl", "restart", "--no-block",
+            "jasper-usbmic-apply.service",
+        ],
+    ]
+    assert [event for event, _fields in events] == [
+        "usb_mic.reset_failed_skipped",
+        "usb_mic.recompose_scheduled",
+    ]
+
+
+def test_usb_mic_recompose_fails_when_restart_raises(monkeypatch):
+    """The restart step stays fatal even when systemctl itself errors, and
+    no recompose_scheduled event follows the failure.
+    """
+    import jasper.control.server as srv_mod
+
+    commands = []
+    events = []
+
+    def run(command, **_kwargs):
+        commands.append(command)
+        if "restart" in command:
+            raise srv_mod.subprocess.TimeoutExpired(cmd=command, timeout=5.0)
+        return _SystemctlResult()
+
+    monkeypatch.setattr(srv_mod.subprocess, "run", run)
+    monkeypatch.setattr(
+        srv_mod,
+        "log_event",
+        lambda _logger, event, **fields: events.append((event, fields)),
+    )
+
+    assert srv_mod._schedule_usb_gadget_recompose() is False
+    assert commands == [
+        ["systemctl", "reset-failed", "jasper-usbmic-apply.service"],
+        [
+            "systemctl", "restart", "--no-block",
+            "jasper-usbmic-apply.service",
+        ],
+    ]
+    assert [event for event, _fields in events] == ["usb_mic.recompose_failed"]
 
 
 def test_aec_firmware_update_starts_when_required(

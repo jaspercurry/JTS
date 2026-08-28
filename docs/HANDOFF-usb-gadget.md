@@ -202,8 +202,10 @@ four starts — a hang spends the full `TimeoutStartSec` before each backoff, so
 `StartLimitIntervalSec` is sized against three of those cycles rather than
 against wall-clock intuition; a window shorter than the span lets the burst
 never trip and the recompose loop runs forever. Beyond the bound,
-`event=usb_mic.recompose_failed` plus doctor drift are the operator surface if
-all attempts fail. An explicit later switch resets that retry budget.
+`event=usb_mic.recompose_failed phase=apply` plus doctor drift are the
+operator surface if all attempts fail — jasper-control's own scheduling
+failure (the 502 above) logs the same event with `phase=enqueue` instead.
+An explicit later switch resets that retry budget.
 
 The adjacent source selector writes `JASPER_USB_MIC_LEG`. The control endpoint
 fresh-reads the reconciler-owned `ChipBeamPlan` (rather than trusting the
