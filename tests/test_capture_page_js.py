@@ -375,7 +375,7 @@ def test_the_build_refuses_rather_than_publishing_without_the_shared_helper(tmp_
 # there is nothing to invalidate. A change that alters behaviour still owes the
 # stamp bumps capture-page/README.md's publish step 1 describes.
 _CAPTURE_PAGE_JS_DIGEST = (
-    "191c8b208b3cefb821ce5d8e84c8160cf56c1b23956709fa16bbc637de2b5e06"
+    "7f93a308cce2c8cdeb433feaae8e26c00661cce30b8009167e8efe2d23e98ffc"
 )
 _CAPTURE_PAGE_JS_DIGEST_BUILD = "20260828.1"
 

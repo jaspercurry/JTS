@@ -6,14 +6,12 @@
 // (Wave 2, docs/phone-mic-relay-plan.md, W2.1/W2.4 closed-loop SNR level
 // solve).
 //
-// This module is the phone-side EMITTER; the event has no Pi-side consumer
-// today — ambient is computed from the capture itself
-// (jasper/audio_measurement/program_analysis.py's `_ambient_from_capture`).
-// jasper/audio_measurement/level_solver.py's `solve_level` does accept a
-// per-band `ambient_bands` argument and will use it directly when given one
-// (no shipped caller supplies one today); absent one it synthesizes a
-// conservative broadband guess. The wire shape below stays live so a future
-// consumer can wire these bands in without a page change:
+// This module is the phone-side EMITTER; nothing Pi-side consumes the event
+// today — ambient is measured from the capture itself
+// (jasper/audio_measurement/program_analysis.py's `_ambient_from_capture`),
+// which reads a differently-shaped per-band record of its own. The wire
+// shape below is forward-compatible plumbing, deliberately kept live so a
+// future consumer can read these bands without a page change:
 //
 //   { ambient_stats: { schema, run_token, duration_s, clipped, bands } }
 //   bands: [{ lo_hz, hi_hz, rms_dbfs }, ...]   (1..AMBIENT_STATS_MAX_BANDS)
