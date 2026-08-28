@@ -87,6 +87,10 @@ from tests.test_crossover_v2_stage_bridge import (
 
 
 
+
+# Production refuses a session with no volume owner; stand one up.
+pytestmark = pytest.mark.usefixtures("a_process_with_a_volume_owner")
+
 def test_two_restore_triggers_run_one_undo_and_keep_the_honest_sentence(
     monkeypatch,
 ):

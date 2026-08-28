@@ -1733,6 +1733,18 @@ def test_recover_volume_routes_to_the_v2_plan(monkeypatch):
             return -15.0
 
     monkeypatch.setattr(correction_setup, "_camilla", lambda: _Cam())
+    # Production installs a fader owner before serving, and the v2 drains now
+    # refuse without one rather than falling back to a second authority.
+    import jasper.volume_owner as _vo
+
+    _owned = _Cam()
+    monkeypatch.setattr(
+        _vo, "_process_owner",
+        _vo.VolumeOwner(
+            set_fader_db=lambda db: _owned.set_volume_db(db, best_effort=True),
+            get_fader_db=lambda: _owned.get_volume_db(best_effort=True),
+        ),
+    )
     try:
         resp = _drive("/crossover/recover-volume", method="POST", body=b"{}")
         assert b"200" in resp.split(b"\r\n", 1)[0]

@@ -21,12 +21,11 @@ import pytest
 
 from jasper.active_speaker.crossover_v2.contracts import MEASURE_KIND_BASELINE
 from jasper.active_speaker.crossover_v2.measure_spec import MeasureSpec
-from jasper.active_speaker.crossover_v2.session import UNPROVEN_LEVEL
 from jasper.active_speaker.crossover_v2.volume_claim import (
     MeasurementVolumeClaim,
-    PlanHeldVolumeClaim,
+    OwnerVolumeDoor,
 )
-from jasper.active_speaker.session_volume_plan import SessionVolumePlanError
+from jasper.active_speaker.session_volume_plan import RestoreOutcome
 from jasper.volume_owner import ClaimKind, VolumeClaimRefused, VolumeOwner
 
 from tests.engine_twin import FakeSeams, open_session
@@ -160,172 +159,202 @@ async def test_a_real_session_drives_the_adapter_through_the_seam():
 
 
 # --------------------------------------------------------------------------- #
-# the INTERIM claim — the plan holds the fader, this proves it
-#
-# Bound only while `SessionVolumePlan` still owns the fader. What matters is
-# that the honesty gate stays REAL through that window: a pass-through prove()
-# would let `measure` bank records stamped with a level the speaker was not
-# playing at, and every other assertion here would stay green while it did.
+# the session's ONE claim, and the plan's door onto the same owner
 # --------------------------------------------------------------------------- #
 
 
-class _Plan:
-    """The fader authority this wave: open at a declared level, or not."""
-
-    def __init__(
-        self, declared: float | None = MEASUREMENT_DB, *, ready: bool = True,
-    ) -> None:
-        self.measurement_volume_db = declared
-        self._ready = ready
-        self.asserted = 0
-
-    def assert_ready(self, now: float | None = None) -> None:
-        self.asserted += 1
-        if not self._ready:
-            raise SessionVolumePlanError("no measurement volume is open")
+def _owner_over(fader: _Fader) -> VolumeOwner:
+    return VolumeOwner(set_fader_db=fader.set, get_fader_db=fader.get)
 
 
-def _plan_held(plan: _Plan, fader_db: float | None) -> PlanHeldVolumeClaim:
-    async def _read() -> float | None:
-        return fader_db
+async def test_a_second_acquire_at_the_same_level_is_the_claim_it_already_holds():
+    """Two callers, one session, one claim — and no conflict with itself.
 
-    return PlanHeldVolumeClaim(plan, _read)
-
-
-async def test_the_interim_claim_proves_a_fader_that_agrees_with_the_plan():
-    claim = _plan_held(_Plan(), MEASUREMENT_DB)
+    The plan's door establishes through this adapter and
+    ``TuningSession.open`` takes the session's slot through it. Sending the
+    second ask to the owner would raise ``VolumeClaimConflict`` against this
+    session's OWN claim, which is not the collision the same-kind rule exists
+    to catch.
+    """
+    fader = _Fader(HOUSEHOLD_DB)
+    claim = MeasurementVolumeClaim(_owner_over(fader))
 
     await claim.acquire(MEASUREMENT_DB)
+    await claim.acquire(MEASUREMENT_DB)
 
+    assert fader.db == MEASUREMENT_DB
     assert await claim.prove() == MEASUREMENT_DB
 
 
-async def test_a_fader_moved_out_from_under_the_plan_does_not_prove():
-    """Condition 2's bar: the honesty gate is real, not a pass-through.
+async def test_a_second_acquire_at_a_DIFFERENT_level_is_refused():
+    """One declared level per session. A quiet re-level would hide the defect.
 
-    Something moved the fader while the plan still believes it holds the
-    session's level. `prove` must refuse, because a reading that disagrees is
-    the 8.712 dB shape — a number stamped into a record while the speaker
-    played at another.
+    Moving a held claim is ``VolumeOwner.relevel`` and is deliberately not this
+    seam's verb — five overlapping notions of "the level" is what the
+    one-declared-level rule exists to delete.
     """
-    claim = _plan_held(_Plan(), MEASUREMENT_DB + 8.712)
-
+    fader = _Fader(HOUSEHOLD_DB)
+    claim = MeasurementVolumeClaim(_owner_over(fader))
     await claim.acquire(MEASUREMENT_DB)
 
-    assert await claim.prove() is None
-
-
-async def test_a_moved_fader_refuses_the_bank_and_not_the_walk():
-    """The refusal reaches `measure` as MS-14's, end to end.
-
-    Driving the real session over the real interim claim: the stimulus still
-    plays, the walk still continues, and what the drift costs is the CLAIM.
-    """
-    claim = _plan_held(_Plan(), MEASUREMENT_DB + 8.712)
-    fakes = FakeSeams().replace(volume=claim)
-
-    async with open_session(fakes, measurement_level_db=MEASUREMENT_DB) as (
-        session, _,
-    ):
-        outcome = await session.measure(MeasureSpec(kind=MEASURE_KIND_BASELINE))
-
-    assert fakes.play.calls, "the stimulus must still have played"
-    assert outcome.record_ids == ()
-    assert fakes.banked == []
-    assert outcome.stimuli[0].incident == UNPROVEN_LEVEL
-
-
-async def test_an_unreadable_fader_does_not_prove():
-    claim = _plan_held(_Plan(), None)
-
-    await claim.acquire(MEASUREMENT_DB)
-
-    assert await claim.prove() is None
-
-
-async def test_a_plan_holding_nothing_proves_nothing():
-    claim = _plan_held(_Plan(declared=None), MEASUREMENT_DB)
-
-    assert await claim.prove() is None
-
-
-async def test_an_acquire_against_a_plan_that_is_not_open_fails_closed():
-    """`assert_ready` is a readable fact, so it is checked rather than trusted."""
-    plan = _Plan(ready=False)
-    claim = _plan_held(plan, MEASUREMENT_DB)
-
-    with pytest.raises(SessionVolumePlanError):
-        await claim.acquire(MEASUREMENT_DB)
-
-    assert plan.asserted == 1
-
-
-async def test_a_session_measuring_at_a_level_the_plan_never_opened_is_refused():
-    """The one-declared-level rule, checked at the seam it enters.
-
-    A session whose declared level is not the plan's would stamp its own
-    number onto captures the plan set a different level for — the five
-    overlapping notions of "the level" this rule deletes.
-    """
-    claim = _plan_held(_Plan(declared=MEASUREMENT_DB), MEASUREMENT_DB)
-
-    with pytest.raises(SessionVolumePlanError):
+    with pytest.raises(VolumeClaimRefused):
         await claim.acquire(MEASUREMENT_DB - 6.0)
 
+    assert fader.db == MEASUREMENT_DB, "the refused re-level moved nothing"
 
-async def test_the_interim_release_restores_nothing_and_says_so():
-    """Condition 3: a disclosed no-op, and it must not double-restore.
 
-    The plan's drain owns restore this wave. The double-give-back this avoids
-    is why the real claim is not bound yet, so a release that touched the
-    fader here would reintroduce exactly what the option exists to prevent.
+async def test_another_holders_same_kind_claim_still_conflicts():
+    """The rule stays sharp for the holders it is actually about.
+
+    Level-match, autolevel and the balance guard share this process and this
+    kind. A stale one must refuse the session with a NAMED reason, not merge.
     """
-    fader_reads = 0
+    fader = _Fader(HOUSEHOLD_DB)
+    owner = _owner_over(fader)
+    await owner.acquire_level(ClaimKind.SESSION_MEASUREMENT, -9.0)
+    claim = MeasurementVolumeClaim(owner)
 
-    async def _read() -> float | None:
-        nonlocal fader_reads
-        fader_reads += 1
-        return MEASUREMENT_DB
+    with pytest.raises(VolumeClaimRefused) as caught:
+        await claim.acquire(MEASUREMENT_DB)
 
-    plan = _Plan()
-    claim = PlanHeldVolumeClaim(plan, _read)
-    await claim.acquire(MEASUREMENT_DB)
-
-    await claim.release()
-    await claim.release()
-
-    assert fader_reads == 0, "release must not even READ the fader"
-    assert plan.asserted == 1, "release must not re-assert the plan"
+    assert "session_measurement" in str(caught.value)
 
 
-async def test_a_second_acquire_is_refused_rather_than_silently_re_verified():
-    """P6's contract: a session opens once, and the claim says so too.
+async def test_the_door_separates_a_conflict_from_an_unconfirmed_write(caplog):
+    """F2's honest surfacing: a reasoned refusal, never a bare failure.
 
-    `TuningSession.open` already refuses a second open, but the claim is a
-    separate object a host could re-drive. Re-verifying would report success
-    for a claim nobody re-took; the plan's own assertion is what answers.
+    "CamillaDSP would not confirm" and "another wizard never gave the fader
+    back" have opposite fixes, so the disclosure has to tell them apart. What
+    it reports is the claim KIND, not which of the three same-kind takers holds
+    it — the owner keeps no holder identity, and this pin asserts only what is
+    actually knowable.
     """
-    plan = _Plan()
-    claim = _plan_held(plan, MEASUREMENT_DB)
+    import logging
 
-    await claim.acquire(MEASUREMENT_DB)
-    await claim.acquire(MEASUREMENT_DB)
+    fader = _Fader(HOUSEHOLD_DB)
+    owner = _owner_over(fader)
+    await owner.acquire_level(ClaimKind.SESSION_MEASUREMENT, -9.0)
+    door = OwnerVolumeDoor(
+        owner, read_fader=fader.get, claim=MeasurementVolumeClaim(owner),
+    )
 
-    assert plan.asserted == 2, (
-        "each acquire re-asks the plan rather than trusting a cached yes"
+    with caplog.at_level(logging.ERROR):
+        established = await door.establish_measurement_level_db(MEASUREMENT_DB)
+
+    assert established is False, "a refused claim is not an established level"
+    assert "session_volume_claim_refused" in caplog.text
+    assert "session_measurement" in caplog.text, "the claim KIND is named"
+
+
+async def test_a_door_with_no_claim_cannot_establish_and_says_so():
+    """The three out-of-runner drains bind the restore leg alone."""
+    fader = _Fader(HOUSEHOLD_DB)
+    door = OwnerVolumeDoor(_owner_over(fader), read_fader=fader.get)
+
+    assert await door.establish_measurement_level_db(MEASUREMENT_DB) is False
+    assert fader.db == HOUSEHOLD_DB
+
+
+async def test_the_doors_restore_refuses_a_declaration_the_fader_did_not_take():
+    """THE C3 RULING, at the door: declare_ok AND the fader actually landed.
+
+    ``declare_household_level_db`` answers ``True`` for a legitimate deferral
+    to a higher-ranked claim — the level is recorded and the fader is not
+    written. Passing that through would make the plan report a restore that
+    never happened and clear its durable intent over a speaker still at
+    measurement level.
+    """
+    fader = _Fader(HOUSEHOLD_DB)
+    owner = _owner_over(fader)
+    await owner.declare_household_level_db(HOUSEHOLD_DB)
+    # A commissioning claim outranks the household level and holds the fader.
+    await owner.acquire_level(ClaimKind.COMMISSIONING, MEASUREMENT_DB)
+    door = OwnerVolumeDoor(owner, read_fader=fader.get)
+
+    declared_alone = await owner.declare_household_level_db(HOUSEHOLD_DB)
+    restored = await door.restore_household_level_db(HOUSEHOLD_DB)
+
+    assert declared_alone is True, "the owner defers, and says its intent stands"
+    assert fader.db == MEASUREMENT_DB, "the deferral wrote nothing"
+    assert restored is RestoreOutcome.DEFERRED, (
+        "the DOOR answers for the fader — and a deferral is its own answer, "
+        "not a failed write the ladder should walk past"
     )
 
 
-async def test_a_release_without_an_acquire_is_a_no_op_not_an_error():
-    """P7's contract: the failure path releases whether or not it acquired.
+async def test_the_ladder_stops_on_a_deferral_and_leaves_the_exact_level_standing():
+    """B1+B2, as one pin: ONE surviving owner, a real live claim, no clobber.
 
-    The seam contracts release as safe against nothing-held, and the interim
-    claim holds nothing by construction — so this must be quiet rather than
-    raising into an unwind that already carries a failure.
+    The two blockers shared a root cause — a deferral read as a failed write.
+    The drain then walked to its emergency rung, declared −60 dB, and left the
+    FLOOR standing as the owner's household level for the moment the claim
+    released. This drives the whole ladder through one owner that outlives it,
+    with the deferral caused by a genuinely held rank-1 claim rather than by an
+    unconfirmable write, and asserts all four consequences at once.
     """
-    plan = _Plan()
-    claim = _plan_held(plan, MEASUREMENT_DB)
+    from jasper.active_speaker.session_volume_plan import (
+        SessionVolumeOpenResult,
+        SessionVolumePlan,
+        SessionVolumeRestoreResult,
+    )
 
-    await claim.release()
+    fader = _Fader(HOUSEHOLD_DB)
+    owner = _owner_over(fader)
+    await owner.declare_household_level_db(HOUSEHOLD_DB)
 
-    assert plan.asserted == 0
+    # Production's order: the plan snapshots the household level and writes its
+    # durable intent, and only THEN does the claim move the fader — so the
+    # snapshot is the household level, not the measurement one.
+    session_claim = MeasurementVolumeClaim(owner)
+    plan = SessionVolumePlan()
+    opened = await plan.open(
+        MEASUREMENT_DB,
+        OwnerVolumeDoor(owner, read_fader=fader.get, claim=session_claim),
+    )
+    assert opened is SessionVolumeOpenResult.OPENED
+    # A live measurement session now holds the fader, exactly as the wall-clock
+    # ceiling finds it when it fires on a slow-but-alive positioner.
+    assert fader.db == MEASUREMENT_DB
+
+    # The out-of-runner drain: no claim of its own, which is the whole shape.
+    drained = await plan.close(OwnerVolumeDoor(owner, read_fader=fader.get))
+
+    assert drained is SessionVolumeRestoreResult.DEFERRED, (
+        "a deferral is not a failed write and must not walk the ladder"
+    )
+    assert owner.declared_level_db() == MEASUREMENT_DB, (
+        "the session's claim still outranks the household level"
+    )
+    assert plan.unresolved_volume_safety is None, "nothing to recover from"
+    assert plan.needs_recovery is False, "no recovery screen for a live session"
+    assert fader.db == MEASUREMENT_DB, "the drain moved a fader it does not own"
+
+    # And the standing household level is still the EXACT original, so the
+    # release lands there rather than on the emergency floor.
+    await session_claim.release()
+    assert fader.db == HOUSEHOLD_DB, (
+        "the losing rung replaced the winning declaration — the speaker came "
+        "back to the emergency floor instead of the household level"
+    )
+
+
+async def test_a_duck_over_the_household_level_is_landed_not_failed():
+    """A duck is an attenuation over a level in effect, not a rival level.
+
+    Judging "landed" against the bare level would call a ducked speaker a
+    failed write and send the ladder to its floor — the same clobber as B2,
+    arriving through a different door.
+    """
+    fader = _Fader(MEASUREMENT_DB)
+    owner = _owner_over(fader)
+    await owner.declare_household_level_db(HOUSEHOLD_DB)
+    await owner.acquire_duck(12.0)
+    door = OwnerVolumeDoor(owner, read_fader=fader.get)
+
+    outcome = await door.restore_household_level_db(HOUSEHOLD_DB)
+
+    assert outcome is RestoreOutcome.LANDED, (
+        "a ducked speaker read as a failed write — the ladder would walk to "
+        "its floor and leave -60 dB standing"
+    )
+    assert fader.db == HOUSEHOLD_DB - 12.0, "the duck is still down"

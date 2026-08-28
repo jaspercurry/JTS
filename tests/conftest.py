@@ -332,3 +332,39 @@ def _isolate_output_hardware_state(tmp_path_factory, monkeypatch):
         "JASPER_OUTPUT_HARDWARE_STATE_PATH",
         str(tmp_path_factory.mktemp("output-hardware") / "output_hardware.json"),
     )
+
+
+@pytest.fixture
+def a_process_with_a_volume_owner(monkeypatch):
+    """Stand up the precondition every crossover-v2 session has in production.
+
+    After W5-c1 the session claims the fader through
+    :class:`~jasper.volume_owner.VolumeOwner`, and ``bind_v2_engine_seams``
+    REFUSES when no owner is installed rather than minting a second authority
+    over one fader. ``jasper.web.__main__`` installs one before serving, so a
+    process without one is a registration defect — but a test module driving
+    that wiring has to stand the same precondition up, or it exercises the
+    refusal instead of its subject.
+
+    **Opted into by name, never autouse.** A suite that wants to pin the
+    no-owner refusal itself must not have an owner seated underneath it, so
+    modules declare ``pytestmark = pytest.mark.usefixtures(...)`` rather than
+    getting one whether they want it or not. Seated through the module global
+    so monkeypatch puts the process back.
+    """
+    import jasper.volume_owner as volume_owner_module
+
+    fader = {"db": -20.0}
+
+    async def _set(db: float) -> bool:
+        fader["db"] = float(db)
+        return True
+
+    async def _get() -> float:
+        return fader["db"]
+
+    monkeypatch.setattr(
+        volume_owner_module,
+        "_process_owner",
+        volume_owner_module.VolumeOwner(set_fader_db=_set, get_fader_db=_get),
+    )

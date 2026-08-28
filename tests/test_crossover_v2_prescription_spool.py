@@ -130,6 +130,10 @@ _APPLIED_INCUMBENT = (
 )
 
 
+
+# Production refuses a session with no volume owner; stand one up.
+pytestmark = pytest.mark.usefixtures("a_process_with_a_volume_owner")
+
 def _document(**overrides: Any) -> bytes:
     """The accepted document's bytes, verbatim unless a test changes one field.
 

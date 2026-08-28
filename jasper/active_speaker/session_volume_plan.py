@@ -132,6 +132,32 @@ class SessionVolumeRestoreResult(str, Enum):
     EXACT_RESTORED = "exact_restored"
     EMERGENCY_ATTENUATED = "emergency_attenuated"
     ALREADY_RESOLVED = "already_resolved"
+    #: The household level is RECORDED and a higher-ranked claim holds the
+    #: fader. Nothing failed: the level lands when that claim releases, so the
+    #: drain stops here rather than searching, and nothing is latched. Not a
+    #: success either — the intent is still open, because the session that
+    #: outranks this drain is still running.
+    DEFERRED = "deferred"
+    FAILED = "failed"
+
+
+class RestoreOutcome(str, Enum):
+    """What a :class:`VolumeDoor`'s restore verb actually achieved.
+
+    Three answers, not two, and the third is why: an owner-backed door can
+    RECORD a household level that a higher-ranked claim keeps off the fader.
+    Reading that as a failed write is what makes a ladder walk to its emergency
+    rung and declare the floor over a perfectly good level — so deferral gets
+    its own answer and the ladder stops on it.
+    """
+
+    #: The fader carries this level now (ducks included — a duck is an
+    #: attenuation over a level in effect, not a different level).
+    LANDED = "landed"
+    #: Recorded, not written, because a higher-ranked LEVEL claim holds the
+    #: fader. The owner lands it when that claim releases.
+    DEFERRED = "deferred"
+    #: Not in effect and not deferred — the write did not confirm.
     FAILED = "failed"
 
 
@@ -698,8 +724,15 @@ class VolumeDoor(Protocol):
         """Put the fader on the session's measurement level; confirmed?"""
         raise NotImplementedError
 
-    async def restore_household_level_db(self, level_db: float) -> bool:
-        """Put the fader back on a household level; confirmed?"""
+    async def restore_household_level_db(self, level_db: float) -> RestoreOutcome:
+        """Put the fader back on a household level. Landed, deferred, failed?
+
+        Three answers because an owner-backed door genuinely has three. A
+        ``DEFERRED`` is NOT a failure and must not be treated as one: the level
+        is recorded and lands when the higher-ranked claim releases, so the
+        ladder stops rather than searching for a level that would also defer —
+        and, worse, standing as the declared one.
+        """
         raise NotImplementedError
 
 
@@ -728,10 +761,13 @@ class FaderVolumeDoor:
             level_db, self.set_main_volume_db, self.get_main_volume_db
         )
 
-    async def restore_household_level_db(self, level_db: float) -> bool:
-        return await set_and_confirm_volume(
+    async def restore_household_level_db(self, level_db: float) -> RestoreOutcome:
+        """Never defers: this door writes the fader itself, so there is no
+        arbitration to lose and no third answer to give."""
+        confirmed = await set_and_confirm_volume(
             level_db, self.set_main_volume_db, self.get_main_volume_db
         )
+        return RestoreOutcome.LANDED if confirmed else RestoreOutcome.FAILED
 
 
 class SessionVolumePlan:
@@ -1132,6 +1168,22 @@ class SessionVolumePlan:
         (the ceiling is enforced by the timestamp, not by a process restart).
         Restores the exact original if confirmable, else the emergency floor;
         latches unresolved only when neither confirms.
+
+        **A DEFERRED rung stops the walk** — see :class:`RestoreOutcome`. The
+        ladder is a search for a level the fader will take, and a deferral is
+        not a refusal to take one: it is a higher-ranked claim holding the
+        fader with this level already recorded behind it. Searching past it
+        would leave the emergency floor standing as the owner's declared
+        household level.
+
+        **Disclosed, and accepted: a PURE IO failure with no claim held still
+        leaves the floor standing.** When the door is owner-backed and every
+        rung genuinely fails to confirm, the emergency rung's declaration is
+        the last one made, so the owner's standing household level is the
+        floor. That is fail-QUIET rather than fail-loud, and it is the right
+        direction — the fader could not be moved at all, the state is latched
+        ``unresolved``, and the recovery screen offers. A speaker whose fader
+        will not respond is not one to leave declaring a listening level.
         """
         async with self._restore_lock:
             state = self._state
@@ -1143,7 +1195,26 @@ class SessionVolumePlan:
                 candidates.append(("exact", original))
             candidates.append(("emergency", self._emergency_volume_db))
             for recovery, target in candidates:
-                if not await door.restore_household_level_db(target):
+                outcome = await door.restore_household_level_db(target)
+                if outcome is RestoreOutcome.DEFERRED:
+                    # STOP. Not a rung that failed — a level that is RECORDED
+                    # and will land when the claim above it releases. Walking
+                    # on would declare the emergency floor over a perfectly
+                    # good household level and leave the floor standing as the
+                    # owner's answer, which is the louder mistake by 47 dB.
+                    # Nothing is latched and no recovery is offered: there is
+                    # nothing for a person to repair, and the session that
+                    # outranks this drain is still running.
+                    log_event(
+                        logger,
+                        "correction.session_volume_restore_deferred",
+                        level=logging.INFO,
+                        recovery=recovery,
+                        reason=reason,
+                        to_db=f"{target:.2f}",
+                    )
+                    return SessionVolumeRestoreResult.DEFERRED
+                if outcome is not RestoreOutcome.LANDED:
                     continue
                 self._clear_resolved()
                 log_event(

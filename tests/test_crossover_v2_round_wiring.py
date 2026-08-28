@@ -159,6 +159,10 @@ from tests.test_crossover_v2_stage_bridge import (
 # --------------------------------------------------------------------------- #
 
 
+
+# Production refuses a session with no volume owner; stand one up.
+pytestmark = pytest.mark.usefixtures("a_process_with_a_volume_owner")
+
 def _hydrated_series_position(conductor: Any) -> Any:
     """The :class:`SeriesPosition` this conductor was SEEDED with.
 

@@ -2,15 +2,14 @@
 #
 # SPDX-License-Identifier: Apache-2.0
 
-"""The session's fader claim, filled — twice, for one wave only.
+"""The session's fader claim, and the plan's door onto the same owner.
 
-**Two implementations, and exactly one is ever bound.**
-:class:`MeasurementVolumeClaim` is the destination: a real ranked claim on
-:class:`~jasper.volume_owner.VolumeOwner`. :class:`PlanHeldVolumeClaim` is the
-interim, bound while ``SessionVolumePlan`` still owns the fader through its own
-door — it takes no claim and proves what the plan holds. W5-c swaps the binding
-and deletes the plan's doors in one PR, so no commit boundary has two writers
-on this fader. The rest of this docstring describes the destination.
+**One authority over this fader, and W5-c1 is where it becomes true.**
+:class:`MeasurementVolumeClaim` is the session's ranked hold;
+:class:`OwnerVolumeDoor` is :class:`~jasper.active_speaker.session_volume_plan.
+SessionVolumePlan`'s door onto the same :class:`~jasper.volume_owner.VolumeOwner`.
+The plan keeps its durable half — the snapshot, the write-before-first-mutation,
+the wall-clock ceiling and the unresolved latch — and gives up the writing.
 
 :class:`~.session_seams.VolumeClaim` is handle-**free**: ``acquire`` / ``prove``
 / ``release`` pass nothing between them, because a session holds ONE claim for
@@ -20,33 +19,42 @@ four claim kinds across a whole process, so every call says which claim it
 means. This module is that difference and nothing else — one
 :class:`~jasper.volume_owner.VolumeClaimHandle` held between three calls.
 
-**Not the first production fader claim; the fifth consumer of one that already
-ships.** ``acquire_level`` has four production callers outside the owner today
-— level-match and autolevel in :mod:`jasper.web.correction_setup`, the
-commissioning floor tone in :mod:`jasper.web.sound_setup`, and
-:mod:`jasper.web.balance_volume_guard` — and three of them already take
-``SESSION_MEASUREMENT``. Nothing here clamps, arbitrates or writes the fader:
-the owner does all three, and it sits behind ``camilla.py``'s door as its only
-caller rather than as its exception.
+**Rank 1 is SHARED, and same-kind claims CONFLICT — those are two different
+facts.** ``SESSION_MEASUREMENT`` ranks 1, between household (0) and
+commissioning (2). Three other production takers hold that same kind — the
+level-match and autolevel ramps in :mod:`jasper.web.correction_setup` and
+:mod:`jasper.web.balance_volume_guard` — and they share this process, so a
+stale one makes :meth:`VolumeOwner.acquire_level` raise
+:class:`~jasper.volume_owner.VolumeClaimConflict` here: *two seats for one
+truth* is refused, not merged. What ``prove`` guards is the other axis —
+CROSS-rank preemption, a commissioning claim taking the fader *between two
+positions of a single walk* — which is why a proof is contracted once per
+stimulus rather than once per spec. A proof taken once per spec would stamp an
+unverified level into every record after that moment; taken once per stimulus
+it refuses exactly the capture that lost the fader, and nothing else.
 
-**Rank 1 is SHARED, which is why ``prove`` is contracted per stimulus.**
-``SESSION_MEASUREMENT`` ranks 1, between household (0) and commissioning (2),
-and three production takers already hold that same kind — so two rank-1 claims
-can be live in one process at once, and a commissioning claim can preempt this
-one *between two positions of a single walk*. A proof taken once per spec would
-stamp an unverified level into every record after that moment; taken once per
-stimulus it refuses exactly the capture that lost the fader, and nothing else.
+**Nothing here clamps or arbitrates.** ``devices.volume_limit`` stays ``0.0``
+and ``jasper.camilla._coerce_main_volume_db`` clamps every positive write; the
+owner sits behind that door as its only caller, never as its exception.
 """
 
 from __future__ import annotations
 
-from typing import Any, Callable
+import logging
 
-from ...volume_owner import ClaimKind, VolumeClaimHandle, VolumeOwner
-from ..session_volume_plan import SessionVolumePlanError
-from ..volume_latch import fader_matches
+from ...log_event import log_event
+from ...volume_owner import (
+    ClaimKind,
+    VolumeClaimHandle,
+    VolumeClaimRefused,
+    VolumeOwner,
+)
+from ..session_volume_plan import RestoreOutcome
+from ..volume_latch import GetMainVolumeDb, fader_matches, read_fader_db
 
-__all__ = ["MeasurementVolumeClaim", "PlanHeldVolumeClaim"]
+logger = logging.getLogger(__name__)
+
+__all__ = ["MeasurementVolumeClaim", "OwnerVolumeDoor"]
 
 
 class MeasurementVolumeClaim:
@@ -63,15 +71,49 @@ class MeasurementVolumeClaim:
         self._owner = owner
         self._handle: VolumeClaimHandle | None = None
 
-    async def acquire(self, level_db: float) -> None:
-        """Take the claim at the declared level.
+    @property
+    def level_db(self) -> float | None:
+        """The level this session's claim is held at, or ``None`` if unheld."""
+        return None if self._handle is None else self._handle.level_db
 
-        The handle is stored only once ``acquire_level`` RETURNS one. The
-        owner is fail-closed — an unconfirmable write raises and leaves no
-        claim held — so a raised acquire leaves this adapter holding nothing,
-        and the session's unconditional :meth:`release` on that path is a
-        no-op rather than a give-back of something never taken.
+    async def acquire(self, level_db: float) -> None:
+        """Ensure this session's ONE claim is established at ``level_db``.
+
+        **Idempotent for the SAME level, and that is the seam's own contract
+        rather than a fast path around the owner.** Two callers reach this
+        adapter for one session: the plan's :class:`OwnerVolumeDoor`, whose
+        ``establish`` leg is where the fader is actually written, and
+        :meth:`~.session.TuningSession.open`, which takes the session's volume
+        slot. They are asking for the same single claim — *"a session holds ONE
+        claim for its whole lifetime"* is this class's own premise — so the
+        second ask is answered from the handle already held rather than sent to
+        the owner as a second claim. Sending it would raise
+        :class:`~jasper.volume_owner.VolumeClaimConflict` against this
+        session's OWN claim, which is the one collision the owner's same-kind
+        rule is not there to catch.
+
+        The rule still bites where it means something: a DIFFERENT holder's
+        ``SESSION_MEASUREMENT`` claim raises from the owner untouched, and a
+        re-acquire at a DIFFERENT level raises here — that is the *five
+        overlapping notions of "the level"* defect the one-declared-level rule
+        exists to delete, and a claim that quietly re-levelled would hide it.
+        Moving a held claim is :meth:`~jasper.volume_owner.VolumeOwner.relevel`
+        and is deliberately not this seam's verb.
+
+        The handle is stored only once ``acquire_level`` RETURNS one. The owner
+        is fail-closed — an unconfirmable write raises and leaves no claim held
+        — so a raised acquire leaves this adapter holding nothing, and the
+        session's unconditional :meth:`release` on that path is a no-op rather
+        than a give-back of something never taken.
         """
+        held = self._handle
+        if held is not None:
+            if fader_matches(held.level_db, level_db):
+                return
+            raise VolumeClaimRefused(
+                "this session already holds its measurement claim at "
+                f"{held.level_db} dB, not the requested {level_db} dB"
+            )
         self._handle = await self._owner.acquire_level(
             ClaimKind.SESSION_MEASUREMENT, level_db,
         )
@@ -96,6 +138,11 @@ class MeasurementVolumeClaim:
         owner's: the owner tolerates a stale handle by ignoring it, but an
         adapter that kept one would go on claiming to hold what it gave back,
         and the next :meth:`prove` would ask about a claim that is gone.
+
+        Lands the fader on the standing household level. The plan's drain runs
+        AFTER this and re-asserts its own durable snapshot on top, which is the
+        ordering that makes one authority out of two definitions of *"where the
+        fader belongs"* — see :class:`OwnerVolumeDoor`.
         """
         if self._handle is None:
             return
@@ -103,93 +150,135 @@ class MeasurementVolumeClaim:
         self._handle = None
 
 
-class PlanHeldVolumeClaim:
-    """The INTERIM claim: ``SessionVolumePlan`` holds the fader, this proves it.
+class OwnerVolumeDoor:
+    """``SessionVolumePlan``'s door onto the owner — the plan stops writing.
 
-    **REMOVAL CONDITION, and this is not a fallback.** W5-c swaps this for
-    :class:`MeasurementVolumeClaim` in the SAME PR that deletes
-    ``SessionVolumePlan``'s fader doors (``_session_volume_io._set`` and its
-    consuming call sites). The two implementations are never both bound: the
-    seam lands now, the AUTHORITY moves when the old door dies. That is the
-    strangler proper — at no commit boundary do two writers hold this fader.
+    Implements :class:`~jasper.active_speaker.session_volume_plan.VolumeDoor`
+    over the same :class:`~jasper.volume_owner.VolumeOwner` the session claims
+    through, so the plan's ladder still CHOOSES the level while the owner makes
+    every write.
 
-    **Why the real claim is not bound yet, and it is not a coexistence
-    annoyance.** The two authorities restore to different definitions. The
-    owner's ``release`` lands the fader on the CURRENT next-ranked level — the
-    household claim as it stands at release time. The plan's drain restores the
-    ORIGINAL snapshot it took before its first mutation, through the
-    exact→emergency ladder, and latches when neither confirms. A household
-    level that moved during the session therefore makes the two restores
-    disagree about where the fader belongs, with no defined ordering between
-    them. Binding both would put that divergence on the speaker for a whole
-    wave.
-
-    **What this does NOT do.** It takes no claim, writes no fader, and restores
-    nothing. Everything it asserts, it read.
+    **Why the two restores no longer disagree.** The owner's ``release`` lands
+    the fader on the current next-ranked level; the plan's drain lands on the
+    snapshot it took before its first mutation. Those are two definitions of
+    *"where the fader belongs"*, and the interim seam this replaces existed
+    because binding both left no ordering between them. There is one now, and
+    it is the order the hooks already ran in: the session releases first
+    (``TuningSession.close``), the plan's ladder declares its durable snapshot
+    second, and the snapshot wins because it is last. Redundant when they agree
+    — the owner's settle reads before it writes, so an agreeing pair costs no
+    second write at all.
     """
 
     def __init__(
-        self, plan: Any, read_fader_db: Callable[[], Any],
+        self,
+        owner: VolumeOwner,
+        *,
+        read_fader: GetMainVolumeDb,
+        claim: MeasurementVolumeClaim | None = None,
     ) -> None:
-        self._plan = plan
-        self._read_fader_db = read_fader_db
+        self._owner = owner
+        self._read_fader = read_fader
+        self._claim = claim
 
-    async def acquire(self, level_db: float) -> None:
-        """Verify the plan already holds this session open at this level.
+    async def read_household_level_db(self) -> float | None:
+        """The PHYSICAL fader, deliberately — never the owner's declared level.
 
-        Two readable facts, checked rather than trusted. ``assert_ready`` is
-        the plan's own open/confirmed/inside-the-ceiling assertion — the same
-        one ``play_program`` acquires before every stimulus — and it raises
-        when the level is not actually in effect, which is the fail-closed
-        answer this seam's caller already handles.
+        This reading becomes ``original_main_volume_db``, the number every
+        drain restores toward and the one the walked-away guarantee is written
+        against. Answering with what the owner DECLARES would snapshot the
+        intent instead of the state, and the crash this write exists to survive
+        is precisely the one where those two disagree — a fader some other
+        writer moved, or an owner whose last settle could not be confirmed.
 
-        The declared level must also be the one this session was constructed
-        for. A session measuring at a level the plan never opened is the *five
-        overlapping notions of "the level"* defect the one-declared-level rule
-        exists to delete, and it is cheaper to refuse here than to discover it
-        in a banked record.
+        It is also the #2925 lens: a declared-level read compares a number
+        against itself and passes by construction. That is how a whole
+        overnight campaign of sweeps ran 8.712 dB below the confirmed volume
+        with every check green.
         """
-        self._plan.assert_ready()
-        declared = self._plan.measurement_volume_db
-        if declared is None or not fader_matches(declared, level_db):
-            raise SessionVolumePlanError(
-                "the session volume plan is open at "
-                f"{declared!r} dB, not the declared {level_db} dB"
+        return await read_fader_db(self._read_fader)
+
+    async def establish_measurement_level_db(self, level_db: float) -> bool:
+        """Take the session's claim at ``level_db``; confirmed?
+
+        The claim IS the establishing authority: ``acquire_level`` sets and
+        confirms fail-closed, so a ``True`` here is a fader that read back at
+        the declared level. A refusal — an unconfirmable write, or a
+        ``VolumeClaimConflict`` from another holder's same-kind claim — is
+        ``False``, and the plan's caller turns that into its own non-OPENED
+        answer rather than a raise.
+
+        A door with no claim cannot establish anything, and says so instead of
+        pretending: the three out-of-runner drains bind this door for their
+        restore leg alone, and none of them opens a session.
+        """
+        if self._claim is None:
+            log_event(
+                logger,
+                "correction.session_volume_establish_without_claim",
+                level=logging.ERROR,
+                level_db=f"{float(level_db):.2f}",
             )
+            return False
+        try:
+            await self._claim.acquire(level_db)
+        except VolumeClaimRefused as exc:
+            # SPLIT THE TWO FAILURES, which is what a support read needs.
+            # ``reason=`` separates a conflict — some other rank-1 taker in
+            # this process, the level-match ramp, autolevel or the balance
+            # guard, still holding its claim — from a write CamillaDSP would
+            # not confirm. Those have opposite fixes. ``holder=`` carries the
+            # owner's own message, which names the claim KIND rather than
+            # which of the three takers it is; the owner keeps no
+            # holder identity to report, and inventing one here would be a
+            # second ledger.
+            log_event(
+                logger,
+                "correction.session_volume_claim_refused",
+                level=logging.ERROR,
+                level_db=f"{float(level_db):.2f}",
+                reason=type(exc).__name__,
+                holder=str(exc),
+            )
+            return False
+        return True
 
-    async def prove(self) -> float | None:
-        """The fader reading, but only when it agrees with the declared level.
+    async def restore_household_level_db(self, level_db: float) -> RestoreOutcome:
+        """Declare the household level, then say what actually became of it.
 
-        A REAL check and deliberately not a pass-through: the 8.712 dB honesty
-        gate has to hold through this window too, or ``measure`` banks records
-        stamped with a level the speaker was not playing at. The comparison is
-        :func:`~jasper.active_speaker.volume_latch.fader_matches` at the repo's
-        one confirm tolerance, against the level the PLAN declares — which is
-        the authority this wave — and the session then re-checks the answer
-        against its own declared level. Two gates, one number.
+        **Three answers, because the owner genuinely has three.**
+        ``declare_household_level_db`` returns whether the OWNER's intent is in
+        effect, and it answers ``True`` in two very different situations: the
+        fader was written, or a higher-ranked claim holds the fader and the
+        level was merely RECORDED. Collapsing those into one boolean is what
+        broke the ladder — a deferral read as a failed write sends
+        ``_drain_restore`` to its emergency rung, which declares −60 dB and
+        leaves the FLOOR standing as the owner's household level once the
+        claim releases.
 
-        ``None`` for every way the level can fail to be in effect here: the
-        plan holds none, the fader could not be read, or the two disagree.
+        So this door distinguishes them, and the discriminator is the owner's
+        own synchronous reader rather than a guess:
+        :meth:`~jasper.volume_owner.VolumeOwner.declared_level_db` is the
+        highest-ranked LEVEL claim held, so a value that is not the level just
+        declared means something outranks this declaration and the fader is not
+        this door's to move. That is DEFERRED, and the drain stops on it: the
+        level is recorded, and the owner lands it when the claim above it
+        releases.
+
+        **Landed is judged against the owner's TARGET, not the bare level.** A
+        transient duck is an attenuation over the level in effect, not a
+        different level — it leaves ``declared_level_db`` alone and moves the
+        fader. Comparing against the bare level would call a ducked speaker a
+        failed write and send the ladder to its floor, which is the same defect
+        arriving through a different door.
         """
-        declared = self._plan.measurement_volume_db
-        if declared is None:
-            return None
-        reading = await self._read_fader_db()
-        if reading is None or not fader_matches(reading, declared):
-            return None
-        return float(reading)
-
-    async def release(self) -> None:
-        """A DISCLOSED no-op: the plan's drain owns restore this wave.
-
-        Not an oversight and not a silent one. ``_volume_hooks``'s ``_close``
-        and ``_abandon`` arms already run the plan's exact→emergency ladder
-        with its durable latch on every path out of the session, and a second
-        give-back here would be the double-restore this whole option exists to
-        avoid — two authorities landing the fader on two different definitions
-        of "where it belongs".
-
-        Idempotent and safe against nothing-held by construction: it holds
-        nothing.
-        """
-        return None
+        if not await self._owner.declare_household_level_db(level_db):
+            return RestoreOutcome.FAILED
+        in_effect = self._owner.declared_level_db()
+        if in_effect is None or not fader_matches(in_effect, level_db):
+            return RestoreOutcome.DEFERRED
+        target = self._owner.target_db()
+        reading = await self.read_household_level_db()
+        if target is not None and fader_matches(reading, target):
+            return RestoreOutcome.LANDED
+        return RestoreOutcome.FAILED

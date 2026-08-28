@@ -95,6 +95,12 @@ from jasper.output_topology import (
 )
 from jasper.web import correction_crossover_v2 as v2host
 
+
+# Production refuses a session with no volume owner; stand one up.
+# ``_real_seam_session`` then replaces this stand-in with an owner over
+# its own fixture fader.
+pytestmark = pytest.mark.usefixtures("a_process_with_a_volume_owner")
+
 # --------------------------------------------------------------------------- #
 # private reaches, all of them, in one place
 #
@@ -1886,20 +1892,52 @@ def _real_seam_session(monkeypatch, cam_factory=None, graph=None) -> dict:
     never met `SessionVolumePlan` — and that is exactly why it passed while
     every real session was refusing on `assert_ready`. A pin that swaps the
     subject cannot see the subject's coupling.
+
+    The same rule now seats a REAL `VolumeOwner` over this fixture's fader:
+    the claim is the fader's authority after W5-c1, so a substituted owner
+    would hide exactly the coupling these pins exist to check.
     """
+    import jasper.volume_owner as _vo
+
+    _cam_for_owner = (cam_factory or (lambda: None))()
+    if _cam_for_owner is not None:
+        async def _owner_set(db):
+            return await _cam_for_owner.set_volume_db(db, best_effort=True)
+
+        async def _owner_get():
+            return await _cam_for_owner.get_volume_db(best_effort=True)
+    else:
+        _standin = {"db": -20.0}
+
+        async def _owner_set(db):
+            _standin["db"] = float(db)
+            return True
+
+        async def _owner_get():
+            return _standin["db"]
+
+    # Seated through the module global so monkeypatch restores the process.
+    monkeypatch.setattr(
+        _vo,
+        "_process_owner",
+        _vo.VolumeOwner(set_fader_db=_owner_set, get_fader_db=_owner_get),
+    )
+
     captured: dict[str, Any] = {}
     real_hooks = v2host._volume_hooks
 
-    def _capturing_hooks(camilla_factory, context, *, tuning):
+    def _capturing_hooks(camilla_factory, context, *, tuning, **kw):
         captured["tuning"] = tuning
-        captured["hooks"] = real_hooks(camilla_factory, context, tuning=tuning)
+        captured["hooks"] = real_hooks(camilla_factory, context, tuning=tuning, **kw)
         return captured["hooks"]
 
     monkeypatch.setattr(v2host, "_volume_hooks", _capturing_hooks)
     # ONLY the graph seam is substituted: emitting a real measurement graph
     # needs a preset whose protection satisfies the program floor, which this
-    # fixture speaker does not carry. The VOLUME seam stays the real interim
-    # claim, because the plan it verifies is the whole subject here.
+    # fixture speaker does not carry. The VOLUME seam stays the real
+    # ``MeasurementVolumeClaim`` over the owner seated above, because the fader
+    # authority is the whole subject here and a substituted one could not see
+    # the coupling these pins exist to check.
     real_binder = v2host.bind_v2_engine_seams
     graph_override = graph
 
@@ -1922,13 +1960,19 @@ def _real_seam_session(monkeypatch, cam_factory=None, graph=None) -> dict:
     return captured
 
 
-async def test_the_session_opens_where_the_plan_it_verifies_opens(monkeypatch):
-    """B1's repro, as a pin: opening the session is the hooks' second act.
+async def test_the_session_opens_after_the_plan_has_armed_its_durable_intent(
+    monkeypatch,
+):
+    """Opening the session is the hooks' SECOND act, and the reason changed.
 
-    The interim claim VERIFIES the plan rather than taking a claim of its own,
-    so a session opened before `plan.open` runs refuses on `assert_ready` —
-    every session, both stages. The ordering is therefore a contract and not a
-    detail, and the hooks' open arm is where it is kept.
+    It used to be that the interim claim verified the plan, so a session opened
+    first refused on ``assert_ready``. W5-c1 deleted that claim: the session's
+    claim is now the first thing that MOVES the fader, and the plan's durable
+    intent has to be on disk before any mutation — a crash in the gap must
+    hydrate as a recoverable state rather than a forgotten one. The ordering is
+    still a contract, and still kept in the hooks' open arm; what it protects
+    is crash recovery rather than an assertion. Production says so at
+    ``correction_crossover_v2``'s open arm.
     """
     from jasper.active_speaker.session_volume_plan import SessionVolumePlan
 
@@ -2131,6 +2175,61 @@ async def test_a_cancel_inside_the_give_back_still_drains_the_level(monkeypatch)
     v2host.set_volume_plan_for_tests(None)
 
 
+async def test_a_raising_pause_release_does_not_lose_the_give_back_drain(
+    monkeypatch,
+):
+    """MN2c: the drain runs FIRST, so a failing pause release cannot eat it.
+
+    The give-back's inner order is load-bearing and was correct-but-unpinned
+    until here. A fader left at measurement level is worse than voice left
+    paused, so the drain goes first and the pause release rides a ``finally``.
+    Swap the two statements and this pin is the one that reds: the release
+    raises, the drain never runs, and the speaker is left at measurement
+    level with the plan holding an intent nobody will drain.
+    """
+    from jasper.active_speaker.session_volume_plan import SessionVolumePlan
+    from tests.engine_twin import FakeGraph
+
+    async def _no_pause() -> None:
+        return None
+
+    async def _raising_release() -> None:
+        raise RuntimeError("the measurement pause could not be released")
+
+    monkeypatch.setattr(v2host, "acquire_session_measurement_pause", _no_pause)
+    monkeypatch.setattr(
+        v2host, "release_session_measurement_pause", _raising_release,
+    )
+    plan = SessionVolumePlan()
+    v2host.set_volume_plan_for_tests(plan)
+
+    class _Cam:
+        def __init__(self) -> None:
+            self.db = -15.0
+
+        async def get_volume_db(self, best_effort: bool = False) -> float:
+            return self.db
+
+        async def set_volume_db(self, db: float, best_effort: bool = False) -> bool:
+            self.db = float(db)
+            return True
+
+    cam = _Cam()
+    captured = _real_seam_session(
+        monkeypatch, cam_factory=lambda: cam, graph=FakeGraph(install_raises=True),
+    )
+
+    with pytest.raises(BaseException):
+        await captured["hooks"].open()
+
+    assert plan.measurement_volume_db is None, (
+        "the raising pause release swallowed the drain — the plan still "
+        "holds an intent nobody will drain"
+    )
+    assert cam.db == -15.0, "the fader never came back"
+    v2host.set_volume_plan_for_tests(None)
+
+
 async def test_a_volume_that_did_not_confirm_installs_no_graph_at_all(
     monkeypatch,
 ):
@@ -2210,7 +2309,7 @@ async def test_a_stage_two_session_swaps_no_graph_for_a_walk_with_no_captures(
     captured: dict[str, Any] = {}
     real_hooks = v2host._volume_hooks
 
-    def _capturing_hooks(camilla_factory, context, *, tuning):
+    def _capturing_hooks(camilla_factory, context, *, tuning, **kw):
         captured["tuning"] = tuning
         return real_hooks(camilla_factory, context, tuning=tuning)
 
@@ -2240,7 +2339,7 @@ def _session_from_real_open(monkeypatch, fakes) -> Any:
         v2host, "bind_v2_engine_seams", lambda **_kw: fakes.seams(),
     )
 
-    def _capturing_hooks(camilla_factory, context, *, tuning):
+    def _capturing_hooks(camilla_factory, context, *, tuning, **kw):
         captured["tuning"] = tuning
         return real_hooks(camilla_factory, context, tuning=tuning)
 
