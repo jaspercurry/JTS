@@ -430,8 +430,6 @@ Its own doctrine and cadence; start at the doctrine, not the plans.
   audit method behind the `/deep-audit` command
 - [`REVIEW-deep-audit-ledger.md`](docs/REVIEW-deep-audit-ledger.md) — live
   findings tracker joined to the deep-audit reports by DA-NNNN id
-- [`REFACTOR-2026-08.md`](docs/REFACTOR-2026-08.md) — the current right-sizing
-  campaign plan and its wave ledger
 
 ### Historical and research
 
