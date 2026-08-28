@@ -188,8 +188,8 @@ from jasper.active_speaker.crossover_v2 import spatial as _spatial
 from jasper.active_speaker.crossover_v2 import verification as _verification
 from jasper.active_speaker.crossover_v2 import contracts as _contracts
 from jasper.active_speaker.crossover_v2.contracts import (
-    REFERENCE_MARK_DESIGN_AXIS,
     ENTRY_GRAPH_FINGERPRINT_UNKNOWN as _ENTRY_GRAPH_FINGERPRINT_UNKNOWN,
+    REFERENCE_MARK_DESIGN_AXIS as _REFERENCE_MARK_DESIGN_AXIS,
 )
 
 # #2291 Phase 2 moved the prescription policy — the two Layer-1a constants, the
@@ -492,8 +492,8 @@ from jasper.active_speaker.crossover_v2.spatial import (
 
 from jasper.active_speaker.crossover_v2.attempt_grading import (
     ATTEMPT_REASON_NO_FLOOR as ATTEMPT_REASON_NO_FLOOR,
-    PRESCRIBED_NON_WORSENING_DB,
     PREDICTED_SPEC_MATERIAL_IMPROVEMENT_DB as PREDICTED_SPEC_MATERIAL_IMPROVEMENT_DB,
+    PRESCRIBED_NON_WORSENING_DB as _PRESCRIBED_NON_WORSENING_DB,
 )
 
 
@@ -6623,7 +6623,7 @@ class CrossoverV2Session:
             state=linearization,
             grade_prediction=spec_report_for_predicted_sum,
             material_improvement_db=(
-                PRESCRIBED_NON_WORSENING_DB if prescribed_graph
+                _PRESCRIBED_NON_WORSENING_DB if prescribed_graph
                 else PREDICTED_SPEC_MATERIAL_IMPROVEMENT_DB
             ),
         )
@@ -6938,7 +6938,7 @@ class CrossoverV2Session:
         screen = _spatial.entry_baseline_screens(
             analysis,
             stimulus_located=_stimulus_locate_ok(analysis),
-            reference_mark=REFERENCE_MARK_DESIGN_AXIS,
+            reference_mark=_REFERENCE_MARK_DESIGN_AXIS,
         )
         if screen.kind is not None:
             return (
@@ -7177,7 +7177,7 @@ class CrossoverV2Session:
                 candidate_fingerprint=self._applied_candidate_id(),
                 commanded_delta_present=self._measure_commanded_delta is not None,
                 realization_tolerance_db=VERIFY_TOLERANCE_DB,
-                reference_mark=REFERENCE_MARK_DESIGN_AXIS,
+                reference_mark=_REFERENCE_MARK_DESIGN_AXIS,
                 # The map this session's own probe produced, or ``None`` when it
                 # never ran one (#2537). Both triggers reach this AFTER
                 # :meth:`_run_delta_probe` has stamped ``self._delta_probe``, so
@@ -7275,7 +7275,7 @@ class CrossoverV2Session:
             session_id=self.session_id, index=index,
             accepted=verdict.accepted, code=verdict.code or "",
             program_id=(baseline.program_id if baseline is not None else ""),
-            reference_mark=REFERENCE_MARK_DESIGN_AXIS,
+            reference_mark=_REFERENCE_MARK_DESIGN_AXIS,
             graph_fingerprint=(
                 baseline.graph_fingerprint if baseline is not None else ""
             ),
@@ -8076,7 +8076,7 @@ class CrossoverV2Session:
                     program_id=got_program,
                     reference_mark=got_mark,
                     other_program_id=want_program,
-                    other_reference_mark=REFERENCE_MARK_DESIGN_AXIS,
+                    other_reference_mark=_REFERENCE_MARK_DESIGN_AXIS,
                 )
                 if want_program and got_program and got_mark
                 else None

@@ -56,6 +56,7 @@ import logging
 import math
 from dataclasses import dataclass, replace
 from functools import lru_cache
+from types import MappingProxyType
 from typing import Any, Callable, Mapping, Sequence
 
 from jasper.audio_measurement.excitation_admission import FrequencyBand
@@ -1677,7 +1678,13 @@ def _stage1_capture_target(shape: Any) -> int:
 # This is the pre-cloud 3-entry layout, kept as the fallback for a session
 # constructed with no explicit ``index_phase_map``; the shipped session builds
 # its map through :func:`build_v2_cloud_index_phase_map` below.
-DEFAULT_INDEX_PHASE_MAP = {1: PHASE_CHECK, 2: PHASE_MEASURE, 3: PHASE_VERIFY}
+#
+# Frozen because it is a shared module-level default: today's one consumer,
+# ``JourneyPlan.from_index_map``, copies before it freezes, so an in-place
+# mutation here would corrupt every later session rather than fail loudly.
+DEFAULT_INDEX_PHASE_MAP: Mapping[int, str] = MappingProxyType(
+    {1: PHASE_CHECK, 2: PHASE_MEASURE, 3: PHASE_VERIFY}
+)
 
 
 def build_v2_cloud_index_phase_map(
