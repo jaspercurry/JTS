@@ -31,6 +31,19 @@ code {
 a.link { color: var(--primary); }
 a.link:hover { text-decoration: underline; text-underline-offset: 2px; }
 
+/* A lede sentence above a key/value list. app.css spaces a card's blocks with
+   `.info-card > * + *`, which `.deflist { margin: 0 }` then cancels at equal
+   specificity, so a list placed AFTER a note butts straight into it. Same
+   restoration `.current-incident .deflist` makes further down. */
+.info-card__note + .deflist { margin-top: 12px; }
+/* Park labels are class TOKENS ("roleful active endpoint unconverged"), so the
+   shared max-content label column starves the reason it explains on a narrow
+   screen. Stack, like the incident card's list at the same breakpoint. */
+@media (max-width: 619px) {
+  .deflist--parks { grid-template-columns: 1fr; row-gap: 4px; }
+  .deflist--parks dd + dt { margin-top: 6px; }
+}
+
 /* Live indicator */
 .live-pill { display: flex; align-items: center; gap: 8px; padding: 0 4px; }
 .live-pill__dot {

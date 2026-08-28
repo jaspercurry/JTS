@@ -5,12 +5,18 @@
 """The four named parks of the one-audio-transport rule.
 
 ADR-0100 makes ``shm_ring`` the only central transport and says a topology the
-ring cannot serve **parks loudly** — doctor FAIL, ``/state``, web banner —
-naming its tracked issue. [ADR-0178](../../docs/adr/0178-every-shape-the-ring-cannot-serve-parks-under-its-own-name.md)
+ring cannot serve **parks loudly**, naming its tracked issue.
+[ADR-0178](../../docs/adr/0178-every-shape-the-ring-cannot-serve-parks-under-its-own-name.md)
 names the four shapes and why each is a class; this module is the one place
-that answers *which* park a box is in, so the three operator/household
+that answers *which* park a box is in, so the operator and household
 surfaces cannot disagree about it (the shape ``camilla_recover_state``
 already uses for its own out-of-band record).
+
+**Where a park shows.** jasper-doctor FAILs, ``/state`` carries the verdict,
+and the ``/system`` page renders one row per park. Owner ruling 2026-08-27:
+no banner — a browser learns about a park on the system screen and nowhere
+else. The household audio card still speaks for a LIVE (ring-only) park,
+because that box is silent and the household must be told.
 
 **Eligibility is read, never restated.** ``ring_channels_for_topology`` /
 ``active_ring_channels_for_topology`` in
@@ -24,11 +30,12 @@ second implementation that drifts.
 reconciler rewrites ``outputd.env``, so a value captured at import would be
 permanently wrong.
 
-**One signal that is not a park.** :func:`snapshot`'s ``unproven_endpoint``
+**Two signals that are not parks.** :func:`snapshot`'s ``unproven_endpoint``
 names the coverage seam ADR-0184 records — a box whose wide-ring width
-resolves with no armed endpoint and no class to name it. It carries neither
-an issue nor a remedy, which is exactly why ADR-0178 refuses it a class, and
-it stops at the operator surfaces.
+resolves with no armed endpoint and no class to name it. ``converge_refused``
+names the shape past it: the marker IS armed and the program still never
+reached the endpoint. Neither carries an issue or a remedy, which is exactly
+why ADR-0178 refuses them a class, and both stop at the operator surfaces.
 """
 from __future__ import annotations
 
@@ -124,6 +131,11 @@ class _Assessment:
     #: coverage seam [ADR-0184](../../docs/adr/0184-a-resolvable-width-with-no-armed-endpoint-signals-rather-than-parks.md)
     #: records. Operator-only: NOT a park, NOT a household claim.
     unproven_endpoint: bool
+    #: Why the loaded graph is not at the endpoint its marker claims, or
+    #: ``None``. The second not-a-park signal, and the complement of BOTH the
+    #: ones above: same width, same marker, marker ARMED. See
+    #: :func:`_endpoint_graph_refusal`.
+    converge_refused: str | None
 
 
 def ring_only_transport() -> bool:
@@ -145,6 +157,49 @@ def ring_only_transport() -> bool:
     from ..fanin_coupling import COUPLING_SHM_RING, VALID_COUPLINGS
 
     return set(VALID_COUPLINGS) == {COUPLING_SHM_RING}
+
+
+def _endpoint_graph_refusal() -> str | None:
+    """Why the loaded graph is not at the endpoint its marker claims, or ``None``.
+
+    The shape ADR-0178's four classes and ADR-0184's seam all miss: a box the
+    ring CAN serve, whose endpoint marker IS armed, whose program was never
+    moved onto that endpoint. :mod:`jasper.fanin.converge` refuses such a box
+    on every unattended pass and — by its own contract — leaves it exactly as
+    it found it, but the refusal is a journald line and nothing else: no
+    statefile, no env key, no ``/state`` field. So the box reads ``parked:
+    false`` on every surface while its program goes nowhere.
+
+    NOT a park class, for the same reason ADR-0178 refuses one to the ADR-0184
+    seam and one more of its own: a refusal leaves whatever graph was already
+    loaded running, so "this box emits NOTHING" — the claim ``parked`` makes on
+    the household card — would be false here. This is an operator signal that
+    changes no status and adds no park.
+
+    Reads the graph rather than predicting the converge pass, and answers only
+    when it positively read one: an unreadable graph is unknown, not a refusal,
+    and the surfaces that own that shape (``active_speaker_parked``,
+    ``camilla_recover``) are already loud about it.
+    """
+    from ..fanin.ring_health import (
+        graph_at_active_ring_endpoint,
+        read_loaded_camilla_graph,
+    )
+
+    try:
+        graph = read_loaded_camilla_graph()
+        if graph.note:
+            return None
+        converged, detail = graph_at_active_ring_endpoint(graph)
+    except Exception:  # noqa: BLE001 - an optional signal must not mask the parks
+        return None
+    if converged:
+        return None
+    return (
+        "outputd's active-ring endpoint marker is armed, but the loaded "
+        f"CamillaDSP graph is not at that endpoint ({detail}), so the converge "
+        "pass refuses every time and leaves the box as it found it"
+    )
 
 
 def _assess(
@@ -280,10 +335,22 @@ def _assess(
         active_ring is not None and not contract.active_modes and not endpoint_armed
     )
 
+    # The third arm off the same three facts, disjoint from both the class
+    # above (marker NOT armed) and the seam above it (not active-crossover):
+    # the marker IS armed, so nothing else asks whether the program actually
+    # moved. Only then is the graph read at all, so a box with no active ring
+    # pays nothing for this.
+    converge_refused = (
+        _endpoint_graph_refusal()
+        if active_ring is not None and contract.active_modes and endpoint_armed
+        else None
+    )
+
     return _Assessment(
         parks=tuple(parks),
         ring_unresolved=ring_unresolved,
         unproven_endpoint=unproven_endpoint,
+        converge_refused=converge_refused,
     )
 
 
@@ -346,11 +413,20 @@ def snapshot(
         Topology or env could not be read. Reported distinctly rather than as
         a healthy box, the same posture the other park readers hold.
 
-    ``unproven_endpoint`` rides alongside ``status``, never inside it: it is
-    the ADR-0184 coverage seam — a box whose wide-ring width resolves with no
-    armed endpoint and no class to name it — and it is an OPERATOR fact only.
-    It does not change any status, add a park, or reach the household card.
-    Always present, ``False`` when it cannot be assessed.
+    Two signals ride alongside ``status``, never inside it. Both are OPERATOR
+    facts: neither changes a status, adds a park, or reaches the household
+    card, and both are always present.
+
+    ``unproven_endpoint``
+        The ADR-0184 coverage seam — a box whose wide-ring width resolves with
+        no armed endpoint and no class to name it. ``False`` when it cannot be
+        assessed.
+
+    ``converge_refused``
+        Why the loaded graph is not at the endpoint its ARMED marker claims,
+        or ``None`` — see :func:`_endpoint_graph_refusal`. A box in this shape
+        is ring-eligible and reads ``parked: false`` everywhere while its
+        program goes nowhere, which is why it needs a name of its own.
 
     Never raises.
     """
@@ -364,6 +440,7 @@ def snapshot(
             "ring_only": resolved_ring_only,
             "parks": [],
             "unproven_endpoint": False,
+            "converge_refused": None,
             "error": str(exc),
         }
 
@@ -381,4 +458,5 @@ def snapshot(
         "ring_only": resolved_ring_only,
         "parks": [park.to_dict() for park in parks],
         "unproven_endpoint": assessment.unproven_endpoint,
+        "converge_refused": assessment.converge_refused,
     }

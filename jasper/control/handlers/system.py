@@ -85,6 +85,7 @@ class SystemRoutes(ControlHandlerMixin):
         # Sampler may be None in tests / direct CLI invocation;
         # surface an empty history rather than 500.
         from ..system_metrics import read_build_info
+        from ..transport_park import snapshot as transport_park_snapshot
         from ...speaker_name import read_state as _read_speaker_name_state
         from ...voice.provider_state import read_active_provider
 
@@ -138,9 +139,19 @@ class SystemRoutes(ControlHandlerMixin):
             _server.logger.exception("audio health snapshot failed")
             audio_health = None
 
+        # The park verdict the /system page's park card renders. Read from the
+        # health sampler's cached value when there is one, exactly as
+        # `/state.resilience.transport_park` does, so the two operator surfaces
+        # cannot disagree in time; `transport_park.snapshot()` is fail-soft and
+        # never raises, so a sampler-less handler still answers.
+        park_reader = getattr(
+            self._audio_health_sampler, "transport_park_snapshot", None,
+        ) or transport_park_snapshot
+
         install_profile = _server._control_install_profile()
         payload: dict[str, Any] = {
             "build": read_build_info(),
+            "transport_park": park_reader(),
             "metrics": (
                 self._sampler.snapshot() if self._sampler is not None else None
             ),

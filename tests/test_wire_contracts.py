@@ -583,3 +583,55 @@ def test_dashboard_audio_health_keys_exist_in_normalized_sampler():
         "dashboard Audio view reads keys the composed audio-health snapshot "
         f"does not build: {missing}"
     )
+
+
+# The transport-park card (sections.js transportParkCard) reads NESTED names,
+# which the top-level `snap.*` sweep above cannot see. Each entry is the JS
+# access spelling -> the payload key it must find, so a rename on either side
+# fails here instead of silently blanking the one surface a browser can learn
+# about a park from.
+DASHBOARD_TRANSPORT_PARK_READS = {
+    "park.status": "status",
+    "park.parks": "parks",
+    "park.converge_refused": "converge_refused",
+    "park.error": "error",
+    "entry.park_class": "park_class",
+    "entry.issue": "issue",
+    "entry.remedy": "remedy",
+    "entry.detail": "detail",
+}
+
+
+def test_dashboard_transport_park_keys_exist_in_park_snapshot():
+    """Every name the park card reads must survive the park reader → payload.
+
+    Both snapshot shapes are driven from the real module: the healthy envelope
+    (which carries `error` only on the unavailable branch, so a deliberately
+    unreadable topology produces that one) plus a real `TransportPark` record
+    for the per-park names.
+    """
+    from jasper.control import transport_park
+
+    js = _system_status_js_text()
+    names = _payload_key_names(transport_park.snapshot(env={}))
+    # The unavailable branch: an object `_assess` cannot classify.
+    names |= _payload_key_names(transport_park.snapshot(topology=object(), env={}))
+    names |= _payload_key_names(
+        transport_park.TransportPark(
+            park_class="a_shape", issue="#1", remedy="run this", detail="why",
+        ).to_dict()
+    )
+
+    problems: list[str] = []
+    for spelling, key in sorted(DASHBOARD_TRANSPORT_PARK_READS.items()):
+        if spelling not in js:
+            problems.append(
+                f"contract pin stale: system-status JS no longer reads "
+                f"{spelling} — update this test's pins"
+            )
+        if key not in names:
+            problems.append(
+                f"the park card reads {spelling} but transport_park.snapshot() "
+                f"builds no {key!r} key — that row goes silently blank"
+            )
+    assert not problems, "\n".join(problems)

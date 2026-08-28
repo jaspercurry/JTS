@@ -14,6 +14,8 @@ Structured fields only. The prose beside each class is presentation.
 
 from __future__ import annotations
 
+from types import SimpleNamespace
+
 import pytest
 
 from jasper.control import transport_park
@@ -614,6 +616,111 @@ def test_an_unproven_endpoint_reaches_no_household_surface():
 
     state = transport_park.snapshot(_stereo_plus_subwoofer(), {}, ring_only=True)
     assert state["unproven_endpoint"] is True
+    assert _transport_park_signal(state) is None
+    issues = _state_issues(
+        {"warmup_active": True}, None, {}, {}, None, transport_park=state
+    )
+    assert not [
+        row for row in issues if str(row["key"]).startswith("path.transport_park.")
+    ]
+
+
+# --- the fifth shape: ring-eligible, converge refused ------------------------
+
+
+def _loaded_graph(monkeypatch, *, note="", converged=True, detail="elsewhere"):
+    """Stand in for the loaded CamillaDSP graph the refusal signal reads.
+
+    Returns the call log, so a test can prove the read did NOT happen — the
+    gate is the claim, and a signal that read the graph on every box would
+    cost every box a file read to answer a question about none of them.
+    """
+    from jasper.fanin import ring_health
+
+    reads: list[object] = []
+
+    def _read(*args, **kwargs):
+        reads.append(args)
+        return SimpleNamespace(note=note)
+
+    monkeypatch.setattr(ring_health, "read_loaded_camilla_graph", _read)
+    monkeypatch.setattr(
+        ring_health,
+        "graph_at_active_ring_endpoint",
+        lambda graph: (converged, detail),
+    )
+    return reads
+
+
+def test_an_armed_endpoint_whose_graph_never_moved_names_itself(monkeypatch):
+    """The shape neither ADR-0178 nor ADR-0184 covers: ring-eligible, marker
+    ARMED, program never moved onto the endpoint. jasper/fanin/converge.py
+    refuses such a box every pass and leaves it as found, logging and keeping
+    nothing — so every surface read `parked: false` about a box going nowhere.
+    """
+    _loaded_graph(monkeypatch, converged=False, detail="plays hw:0,0")
+    state = transport_park.snapshot(
+        _active_topology("stereo", "active_2_way"), _ARMED, ring_only=True
+    )
+    # NOT a park: a refusal leaves the loaded graph running, so the "emits
+    # nothing" claim `parked` makes would be false.
+    assert state["status"] == "ok"
+    assert state["parks"] == []
+    assert state["parked"] is False
+    assert state["unproven_endpoint"] is False
+    assert "plays hw:0,0" in state["converge_refused"]
+
+
+@pytest.mark.parametrize(
+    "kwargs",
+    [
+        pytest.param({"converged": True}, id="graph_is_at_the_endpoint"),
+        pytest.param({"note": "no statefile", "converged": False}, id="unreadable"),
+    ],
+)
+def test_a_converged_or_unreadable_graph_claims_no_refusal(monkeypatch, kwargs):
+    """Only a graph this box positively read and found elsewhere is a refusal.
+    An unreadable graph is unknown, and the surfaces that own THAT shape
+    (`active_speaker_parked`, `camilla_recover`) are already loud about it."""
+    _loaded_graph(monkeypatch, **kwargs)
+    state = transport_park.snapshot(
+        _active_topology("stereo", "active_2_way"), _ARMED, ring_only=True
+    )
+    assert state["converge_refused"] is None
+
+
+@pytest.mark.parametrize(
+    "topology,env",
+    [
+        pytest.param(_stereo_plus_subwoofer(), _ARMED, id="not_active_crossover"),
+        pytest.param(
+            _active_topology("stereo", "active_2_way"), {}, id="marker_unarmed"
+        ),
+        pytest.param(_full_range_stereo(), _ARMED, id="no_active_ring"),
+    ],
+)
+def test_the_refusal_signal_reads_no_graph_off_its_own_gate(
+    monkeypatch, topology, env
+):
+    """The third arm off the same three facts, disjoint from the class above
+    (marker NOT armed) and the ADR-0184 seam beside it (not active-crossover).
+    A box outside the gate never pays for the read."""
+    reads = _loaded_graph(monkeypatch, converged=False)
+    state = transport_park.snapshot(topology, env, ring_only=True)
+    assert state["converge_refused"] is None
+    assert reads == []
+
+
+def test_a_converge_refusal_reaches_no_household_surface(monkeypatch):
+    """Operator-only, like the ADR-0184 seam: the box is not claimed silent,
+    and there is no household action either way."""
+    from jasper.control.audio_health import _state_issues, _transport_park_signal
+
+    _loaded_graph(monkeypatch, converged=False)
+    state = transport_park.snapshot(
+        _active_topology("stereo", "active_2_way"), _ARMED, ring_only=True
+    )
+    assert state["converge_refused"]
     assert _transport_park_signal(state) is None
     issues = _state_issues(
         {"warmup_active": True}, None, {}, {}, None, transport_park=state
