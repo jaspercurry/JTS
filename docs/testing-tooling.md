@@ -1676,10 +1676,14 @@ is the manual JTS3 adapter for the reusable `usb_turntable` controller package.
 It provides USB detection, an identity/firmware probe, a read-only
 no-motion offset-from-zero query, left/right relative movement, a
 confirm-gated zero redefinition, home, the vendor stop request, and guarded
-absolute measurement positions. The latter always homes first and is bounded
-to `-45` through `+45` degrees from the acoustic on-axis zero. JTS owns the
-Raspberry Pi power preflight, the measurement-rig guard, the `set-zero`
-confirmation gate, those operator-facing names, and a bounded one-retry
+absolute measurement positions. The latter always homes first. Every motion
+command is bounded to `-45` through `+45` degrees from the acoustic on-axis
+zero by one constant with no runtime override: `position` refuses the target
+outright, and `left`/`right` refuse a move whose predicted endpoint would
+leave that envelope unless it moves back toward zero. JTS owns the
+Raspberry Pi power preflight, the travel envelope, the measurement-rig guard,
+the `set-zero` confirmation gate, those operator-facing names, and a
+bounded one-retry
 recovery (against a freshly opened controller session) for the read/guarded-
 idempotent commands (`offset`, `probe`, the guarded `position`) on the
 vendored transport's exact `ProtocolError` base class; the upstream package
