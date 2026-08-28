@@ -21,6 +21,7 @@ from jasper.active_speaker import angle_capture as ac
 from jasper.active_speaker import crossover_v2_flow as flow
 from jasper.active_speaker.crossover_v2 import journey
 from jasper.active_speaker.crossover_v2 import refusal_copy
+from jasper.active_speaker.crossover_v2 import spatial
 from jasper.active_speaker.crossover_v2.journey import (
     PHASE_CHECK,
     PHASE_LATERAL,
@@ -744,7 +745,7 @@ def test_an_unmeasurable_pose_is_dropped_and_the_walk_continues():
     assert "terminal" not in last
     assert c._group_position_floor(PHASE_LATERAL) == 0
     assert c._group_position_floor(flow.PHASE_CLOUD_MEASURE) == (
-        flow.MIN_RESOLVED_CLOUD_POSITIONS
+        spatial.MIN_RESOLVED_CLOUD_POSITIONS
     )
     # The rest of the walk still runs and the session still produces a
     # candidate at its close.

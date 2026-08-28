@@ -38,6 +38,7 @@ from jasper.active_speaker.crossover_v2.contracts import (
     MEASURE_KIND_VERIFY,
     MEASURE_KINDS,
     POLARITY_INVERTED,
+    REFERENCE_MARK_DESIGN_AXIS,
 )
 from jasper.active_speaker.crossover_v2.journey import (
     PHASE_CLOUD_MEASURE,
@@ -287,7 +288,7 @@ def test_a_sweep_nobody_could_hear_is_a_level_problem_not_a_glitch():
     screen = spatial.entry_baseline_screens(
         _Analysis(integrity=_failed(flow.INTEGRITY_CHECK_SWEEP_HEARD)),
         stimulus_located=True,
-        reference_mark=flow.REFERENCE_MARK_DESIGN_AXIS,
+        reference_mark=REFERENCE_MARK_DESIGN_AXIS,
     )
 
     assert screen.kind == spatial.SCREEN_LOCATE_FAILED
@@ -306,7 +307,7 @@ def test_any_other_failed_check_is_the_transient_glitch_class():
     screen = spatial.entry_baseline_screens(
         _Analysis(integrity=_failed("timeline_contiguous")),
         stimulus_located=True,
-        reference_mark=flow.REFERENCE_MARK_DESIGN_AXIS,
+        reference_mark=REFERENCE_MARK_DESIGN_AXIS,
     )
 
     assert screen.kind == spatial.SCREEN_CAPTURE_GLITCH
@@ -327,7 +328,7 @@ def test_an_absent_integrity_record_fails_this_capture_closed():
     screen = spatial.entry_baseline_screens(
         _Analysis(integrity=None),
         stimulus_located=True,
-        reference_mark=flow.REFERENCE_MARK_DESIGN_AXIS,
+        reference_mark=REFERENCE_MARK_DESIGN_AXIS,
     )
 
     assert screen.kind == spatial.SCREEN_CAPTURE_GLITCH, (
@@ -350,7 +351,7 @@ def test_the_entry_ladder_still_names_the_room_before_the_record():
             integrity=_failed("timeline_contiguous"), pilot_snr_ok=False,
         ),
         stimulus_located=True,
-        reference_mark=flow.REFERENCE_MARK_DESIGN_AXIS,
+        reference_mark=REFERENCE_MARK_DESIGN_AXIS,
     )
 
     assert screen.kind == spatial.SCREEN_PILOT_LEVEL_COLLAPSE
@@ -451,7 +452,7 @@ def _entry_record(**overrides):
     """One retained entry-baseline take, with only the field under test named."""
     fields = {
         "index": 9, "attempt": 1, "session_id": "sess", "program_id": "prog",
-        "reference_mark": flow.REFERENCE_MARK_DESIGN_AXIS,
+        "reference_mark": REFERENCE_MARK_DESIGN_AXIS,
         "graph_fingerprint": "fp", "captured_at": "2026-08-11T00:00:00Z",
         "freqs_hz": (200.0, 400.0), "magnitude_db": (-1.5, 0.5),
         "excluded": (True, False),
@@ -861,7 +862,7 @@ def test_the_three_comparability_facts_ride_the_entry_record():
     record = _entry_record(program_id="prog-42", graph_fingerprint="fp-entry")
 
     assert record["program_id"] == "prog-42"
-    assert record["reference_mark"] == flow.REFERENCE_MARK_DESIGN_AXIS
+    assert record["reference_mark"] == REFERENCE_MARK_DESIGN_AXIS
     assert record["graph_fingerprint"] == "fp-entry"
 
 
@@ -959,15 +960,11 @@ def test_only_the_lateral_walk_can_stand_on_nothing():
     lateral walk's coefficients are the anchor's and already in hand, so a pose
     nobody could capture costs a robustness sample and nothing else.
     """
-    floor = flow.MIN_RESOLVED_CLOUD_POSITIONS
+    floor = spatial.MIN_RESOLVED_CLOUD_POSITIONS
 
-    assert spatial.group_position_floor(
-        PHASE_LATERAL, min_resolved_cloud_positions=floor,
-    ) == 0
+    assert spatial.group_position_floor(PHASE_LATERAL) == 0
     for phase in (PHASE_CLOUD_MEASURE, PHASE_CLOUD_VERIFY):
-        assert spatial.group_position_floor(
-            phase, min_resolved_cloud_positions=floor,
-        ) == floor
+        assert spatial.group_position_floor(phase) == floor
 
 
 def test_every_screen_kind_has_a_household_sentence():

@@ -893,12 +893,15 @@ def _entry_baseline(session, measured_pre):
     the rule under test — which is what it did before this argument was
     written down.
     """
-    from jasper.active_speaker.crossover_v2.contracts import ResponseCurve
+    from jasper.active_speaker.crossover_v2.contracts import (
+        REFERENCE_MARK_DESIGN_AXIS,
+        ResponseCurve,
+    )
     from jasper.active_speaker.crossover_v2.round_evidence import EntryBaseline
 
     return EntryBaseline(
         program_id=session.program_for_phase(flow.PHASE_VERIFY).program_id,
-        reference_mark=flow.REFERENCE_MARK_DESIGN_AXIS,
+        reference_mark=REFERENCE_MARK_DESIGN_AXIS,
         curve=ResponseCurve(FREQS_HZ, measured_pre),
         excluded=tuple(False for _ in FREQS_HZ),
         graph_fingerprint="entry-graph",

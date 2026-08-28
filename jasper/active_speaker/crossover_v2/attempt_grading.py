@@ -55,12 +55,12 @@ with the flow, because a ladder that answers with a kind never touches the
 carrier — so this module needs no import of
 :mod:`~jasper.active_speaker.attempts_loop` at all, and does not have one.
 
-Two values below are the exception that proves the rule, moved here by #2291
-Phase 5c-ii because this is the module that *decides* with them:
-:data:`ATTEMPT_REASON_NO_FLOOR` is a grading **status**, not a sentence — it has
-no ``REASON_REGISTRY`` entry and no copy — and
-:data:`PREDICTED_SPEC_MATERIAL_IMPROVEMENT_DB` is a policy threshold.  Neither
-is household-facing text.
+Three values below are the exception that proves the rule, here because this is
+the module that *decides* with them: :data:`ATTEMPT_REASON_NO_FLOOR` is a
+grading **status**, not a sentence — it has no ``REASON_REGISTRY`` entry and no
+copy — and :data:`PREDICTED_SPEC_MATERIAL_IMPROVEMENT_DB` and
+:data:`PRESCRIBED_NON_WORSENING_DB` are the two policy thresholds a round
+chooses between.  None is household-facing text.
 
 Dependency direction, as for every module here: no ``jasper.web`` import and
 nothing from :mod:`jasper.active_speaker.crossover_v2_flow`.
@@ -76,6 +76,7 @@ __all__ = [
     "ATTEMPT_NEW",
     "ATTEMPT_REASON_NO_FLOOR",
     "PREDICTED_SPEC_MATERIAL_IMPROVEMENT_DB",
+    "PRESCRIBED_NON_WORSENING_DB",
     "GRADE_DECIDE_NEXT",
     "GRADE_KINDS",
     "GRADE_NOT_COMPARABLE",
@@ -133,6 +134,26 @@ ATTEMPT_REASON_NO_FLOOR = "ungraded_no_floor"
 # model and what the hardware realizes is not an improvement we can honestly
 # claim, so it is not recorded as one.
 PREDICTED_SPEC_MATERIAL_IMPROVEMENT_DB = 0.5
+
+#: The pre-Apply improvement bar for a candidate carrying PRESCRIBED branches:
+#: non-worsening (PR-B, conductor ruling 2026-08-20).
+#:
+#: Its sibling above — :data:`PREDICTED_SPEC_MATERIAL_IMPROVEMENT_DB`, 0.5 dB —
+#: is field evidence about the FIT and keeps its original subject untouched.
+#: This one exists because that figure is a POOLED-RMS improvement and a
+#: per-driver prescription is by construction a narrow high-Q filter aimed at
+#: ONE banked feature: 0.077-0.152 dB pooled on realistic fixtures even when it
+#: is exactly right, so the fitted bar would file the whole class as no
+#: improvement before its first hardware exercise rather than judge it. The
+#: reader that chooses between the two is the flow's ``_assert_accountable``,
+#: and the gate it hands the chosen number to never branches on either.
+#:
+#: 0.0 rather than "no bar at all": a model cannot settle whether a narrow cut
+#: helps, but it CAN say a proposal is predicted to make the speaker worse, and
+#: that is worth writing down. It is a LEDGER boundary, not a stop — neither
+#: bar refuses since the nanny burn-down (docs/measurement-loop-doctrine.md
+#: deviation (c)) — deciding ``improved`` against ``not_an_improvement``.
+PRESCRIBED_NON_WORSENING_DB: float = 0.0
 
 
 # --------------------------------------------------------------------------- #

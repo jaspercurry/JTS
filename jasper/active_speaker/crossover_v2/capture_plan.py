@@ -1672,6 +1672,14 @@ def _stage1_capture_target(shape: Any) -> int:
     ))
 
 
+# Capture-plan index → phase. APPLYING is a control-page phase (no capture)
+# that sits between MEASURE-accepted and VERIFY-armed, so it has no index.
+# This is the pre-cloud 3-entry layout, kept as the fallback for a session
+# constructed with no explicit ``index_phase_map``; the shipped session builds
+# its map through :func:`build_v2_cloud_index_phase_map` below.
+DEFAULT_INDEX_PHASE_MAP = {1: PHASE_CHECK, 2: PHASE_MEASURE, 3: PHASE_VERIFY}
+
+
 def build_v2_cloud_index_phase_map(
     *,
     plan_shape: V2PlanShape | None = None,

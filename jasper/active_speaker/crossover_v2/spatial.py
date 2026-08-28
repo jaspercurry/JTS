@@ -141,6 +141,7 @@ __all__ = [
     "lateral_evidence_grid_hz",
     "lateral_pose_curve",
     "entry_baseline_screens",
+    "MIN_RESOLVED_CLOUD_POSITIONS",
     "group_position_floor",
     "geometry_retake",
     "take_id_for",
@@ -515,10 +516,34 @@ def entry_baseline_screens(
 # --------------------------------------------------------------------------- #
 
 
-def group_position_floor(phase: str, *, min_resolved_cloud_positions: int) -> int:
+# The fewest RESOLVED positions a cloud group can close with and still produce a
+# usable claim, so a position the flow gives up on degrades the group instead of
+# ending the session (ruling item 3: "continue the phase if it can proceed with
+# the positions it has").
+#
+# MEASURED, not chosen: the group close itself has no position floor at all
+# (``_close_cloud_group`` never compares ``len(positions)`` to anything), and
+# ``combine_cloud_positions`` tolerates any non-empty group. The binding
+# constraint is downstream, in the fit —
+# ``linearization_envelope.position_stability_limit`` raises ``ValueError`` for
+# ``n_positions < 2``, because a cross-position spread across fewer than two
+# positions is undefined. So two is where "can proceed" genuinely stops.
+#
+# Deliberately NOT ``MIN_CLOUD_MEASURE_POSITIONS`` / ``MIN_CLOUD_VERIFY_POSITIONS``
+# (6 / 5): those are PLAN-DECLARATION floors — how many positions the household
+# is asked to walk — enforced once by ``_validated_cloud_counts`` before any
+# capture happens. Reusing them at runtime would have killed the 2026-08-03
+# verify, which was running usefully at 4 positions of the 6 that tier declared
+# then. Between this floor and the declared one the claim is degraded, and
+# degradation is DISCLOSED (the geometry verdict's ``n_positions`` /
+# ``thin_evidence`` already ride the envelope), not gated.
+MIN_RESOLVED_CLOUD_POSITIONS = 2
+
+
+def group_position_floor(phase: str) -> int:
     """How few resolved positions still lets a group stand.
 
-    A cloud is an AVERAGE: below ``min_resolved_cloud_positions`` there is
+    A cloud is an AVERAGE: below :data:`MIN_RESOLVED_CLOUD_POSITIONS` there is
     nothing to combine, so the session ends honestly.  The lateral walk is not —
     §4.4: "side evidence owns robustness, not the target".  The coefficients are
     the anchor's and already in hand, so a pose nobody could capture costs a
@@ -526,7 +551,7 @@ def group_position_floor(phase: str, *, min_resolved_cloud_positions: int) -> in
     walking, and let the consumer disclose that it decided on fewer positions
     than planned.
     """
-    return 0 if phase == PHASE_LATERAL else min_resolved_cloud_positions
+    return 0 if phase == PHASE_LATERAL else MIN_RESOLVED_CLOUD_POSITIONS
 
 
 @dataclass(frozen=True)

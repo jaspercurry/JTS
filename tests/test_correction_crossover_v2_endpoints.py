@@ -13398,17 +13398,17 @@ def _stage_1_prescription_taps(monkeypatch, body: Any) -> dict[str, Any]:
     module: ``prepare_v2_session`` imports each name inside its own body, so a
     name patched on the importer is a name the preparer never looks at.
     """
-    from jasper.active_speaker import crossover_v2_flow as flow_mod
     from jasper.active_speaker.crossover_v2 import (
         alignment_prescription as alignment_mod,
     )
+    from jasper.active_speaker.crossover_v2 import capture_plan as plan_mod
     from jasper.active_speaker.crossover_v2 import (
         topology_prescription as topology_mod,
     )
 
     _arm_stage_1(monkeypatch)
     seen: dict[str, Any] = {}
-    real_shape = flow_mod.resolve_plan_shape
+    real_shape = plan_mod.resolve_plan_shape
     real_topology_gate = topology_mod.read_topology_prescription
 
     def _shape(tier=None, **kwargs):
@@ -13426,7 +13426,7 @@ def _stage_1_prescription_taps(monkeypatch, body: Any) -> dict[str, Any]:
         seen["alignment_bounds_us"] = declared_bounds_us
         raise _StoppedAtTheTap("the delay gate was reached")
 
-    monkeypatch.setattr(flow_mod, "resolve_plan_shape", _shape)
+    monkeypatch.setattr(plan_mod, "resolve_plan_shape", _shape)
     monkeypatch.setattr(topology_mod, "read_topology_prescription", _topology)
     monkeypatch.setattr(alignment_mod, "read_alignment_prescription", _alignment)
 

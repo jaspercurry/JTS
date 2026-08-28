@@ -320,6 +320,7 @@ def classify_program_failure(
     ``"program re-admission refused: program_profile_not_confirmed"`` reach the
     wizard's DOM while the phone was told something else entirely.
     """
+    from jasper.active_speaker.crossover_v2.contracts import CrossoverV2FlowError
     from jasper.active_speaker.crossover_v2.refusal_copy import (
         REASON_MEASUREMENT_VOLUME_DRIFT,
         REASON_PROGRAM_PROFILE_NOT_CONFIRMED,
@@ -327,7 +328,6 @@ def classify_program_failure(
         REASON_PROTECTION_NOT_SEPARABLE,
         REASON_PROTECTION_SWEEP_TOO_LOW,
     )
-    from jasper.active_speaker.crossover_v2_flow import CrossoverV2FlowError
     from jasper.active_speaker.program_admission import (
         ProgramAdmissionError,
         ProgramAdmissionRefusal,
@@ -1587,8 +1587,8 @@ def _phase_from_state(state: Mapping[str, Any] | None) -> str:
         PHASE_MEASURE,
         PHASE_REVIEW,
         PHASE_VERIFY,
+        PRE_CLOUD_CAPTURE_PHASES,
     )
-    from jasper.active_speaker.crossover_v2_flow import PRE_CLOUD_CAPTURE_PHASES
 
     accepted = set(
         state.get("accepted_phases") or () if isinstance(state, Mapping) else ()
@@ -2439,6 +2439,10 @@ def _post_apply_grade(block: Mapping[str, Any]) -> dict[str, Any]:
     from jasper.active_speaker.crossover_v2.attempt_grading import (
         PREDICTED_SPEC_MATERIAL_IMPROVEMENT_DB,
     )
+    from jasper.active_speaker.crossover_v2.capture_plan import (
+        TIER_EXPRESS,
+        TIER_FULL,
+    )
     from jasper.active_speaker.crossover_v2.journey import PHASE_CLOUD_VERIFY
     from jasper.active_speaker.crossover_v2.refusal_copy import (
         REASON_VERIFY_CROSSOVER_REGION,
@@ -2446,8 +2450,6 @@ def _post_apply_grade(block: Mapping[str, Any]) -> dict[str, Any]:
     from jasper.active_speaker.crossover_v2_flow import (
         CLAIM_FAIL,
         CLAIM_PASS,
-        TIER_EXPRESS,
-        TIER_FULL,
     )
     from jasper.active_speaker.crossover_v2.accountability import LEDGER_NOT_AN_IMPROVEMENT
 
@@ -2847,12 +2849,10 @@ def _take_staged_angle_walk(
         staged_angle_request_pending,
         take_staged_angle_request,
     )
+    from jasper.active_speaker.crossover_v2.capture_plan import position_angle_deg
+    from jasper.active_speaker.crossover_v2.contracts import CrossoverV2FlowError
     from jasper.active_speaker.crossover_v2.journey import (
         LATERAL_CONSUMER_FORWARD_MODEL,
-    )
-    from jasper.active_speaker.crossover_v2_flow import (
-        CrossoverV2FlowError,
-        position_angle_deg,
     )
 
     def refused(reason: str, detail: str) -> CrossoverV2Refused:
@@ -5477,7 +5477,7 @@ class PositionGate:
         :data:`REMOTE_POSITION_HOLD_BUDGET_S`, when the whole walk outlived the
         session's wall-clock ceiling, or when the entry carries no target.
         """
-        from jasper.active_speaker.crossover_v2_flow import (
+        from jasper.active_speaker.crossover_v2.capture_plan import (
             POSITION_DEG_KEY,
             POSITION_ROLE_KEY,
         )
@@ -6517,10 +6517,8 @@ def _verify_plan_shape(
     The caller says which instrument it wants; the tier still comes from the
     durable state, so the household's tier choice governs both stages.
     """
-    from jasper.active_speaker.crossover_v2_flow import (
-        CrossoverV2FlowError,
-        resolve_plan_shape,
-    )
+    from jasper.active_speaker.crossover_v2.capture_plan import resolve_plan_shape
+    from jasper.active_speaker.crossover_v2.contracts import CrossoverV2FlowError
 
     stage = str((raw or {}).get(VERIFY_STAGE_KEY) or VERIFY_STAGE_RECOVERY).strip()
     if stage == VERIFY_STAGE_RECOVERY:
@@ -6626,6 +6624,9 @@ def prepare_v2_session(
     An unrecognised ``stage`` is refused rather than silently measured as
     something else — the same strictness ``normalize_tier`` applies to a tier.
     """
+    from jasper.active_speaker.crossover_v2.capture_plan import (
+        session_wall_clock_ceiling_s,
+    )
     from jasper.active_speaker.crossover_v2.coordinator import (
         series_position_from_state,
     )
@@ -6635,17 +6636,16 @@ def prepare_v2_session(
     from jasper.active_speaker.crossover_v2_flow import (
         CrossoverV2Session,
         attempt_history_from_state,
-        session_wall_clock_ceiling_s,
     )
 
     if verify_only:
+        from jasper.active_speaker.crossover_v2.capture_plan import (
+            build_v2_verify_index_phase_map,
+            build_v2_verify_session_spec,
+        )
         from jasper.active_speaker.crossover_v2.journey import (
             PHASE_CHECK,
             PHASE_MEASURE,
-        )
-        from jasper.active_speaker.crossover_v2_flow import (
-            build_v2_verify_index_phase_map,
-            build_v2_verify_session_spec,
         )
 
         if session_volume_plan().needs_recovery:
@@ -6688,18 +6688,20 @@ def prepare_v2_session(
         from jasper.active_speaker.excitation_safety_plan import (
             resolve_driver_protection_slope_db_per_octave,
         )
+        from jasper.active_speaker.crossover_v2.capture_plan import (
+            STAGE1_INCLUDES_CLOUD_MEASURE,
+            STAGE1_INCLUDES_ENTRY_BASELINE,
+            build_v2_cloud_index_phase_map,
+            build_v2_session_spec,
+            resolve_plan_shape,
+        )
+        from jasper.active_speaker.crossover_v2.contracts import CrossoverV2FlowError
         from jasper.active_speaker.crossover_v2.journey import (
             LATERAL_CONSUMER_FC_SELECTOR,
         )
         from jasper.active_speaker.crossover_v2_flow import (
-            STAGE1_INCLUDES_CLOUD_MEASURE,
-            STAGE1_INCLUDES_ENTRY_BASELINE,
-            CrossoverV2FlowError,
             V2ConductorSnapshot,
             alignment_delay_search_bounds_us,
-            build_v2_cloud_index_phase_map,
-            build_v2_session_spec,
-            resolve_plan_shape,
         )
 
         requested_tier = (raw.get("tier") if raw else None) or None

@@ -151,6 +151,14 @@ CAPTURE_PHASES = (
     PHASE_CLOUD_VERIFY,
 )
 
+# What a session ran before the position groups shipped. Durable state written
+# then carries no ``session_phases`` field, and it came from a session that ran
+# exactly these three — so this, not the (now longer) ``CAPTURE_PHASES``, is the
+# honest fallback for reading such a state. Reading a pre-cloud state against
+# the full tuple would report a household mid-"cloud_measure" in a session that
+# never had one.
+PRE_CLOUD_CAPTURE_PHASES = (PHASE_CHECK, PHASE_MEASURE, PHASE_VERIFY)
+
 # The phases whose accepted-capture bookkeeping is PER INDEX rather than per
 # phase, because one phase spans many prompted positions.
 GROUP_PHASES = frozenset({PHASE_CLOUD_MEASURE, PHASE_CLOUD_VERIFY, PHASE_LATERAL})

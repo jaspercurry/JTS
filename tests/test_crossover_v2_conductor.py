@@ -37,7 +37,10 @@ import yaml
 
 from jasper.active_speaker import crossover_v2_flow as flow
 from jasper.active_speaker.crossover_v2 import capture_plan
-from jasper.active_speaker.crossover_v2.contracts import MEASURE_KIND_VERIFY
+from jasper.active_speaker.crossover_v2.contracts import (
+    MEASURE_KIND_VERIFY,
+    REFERENCE_MARK_DESIGN_AXIS,
+)
 from jasper.active_speaker.crossover_v2 import refusal_copy
 from jasper.active_speaker.crossover_v2 import accountability
 from jasper.active_speaker.crossover_v2 import intervention as iv
@@ -144,7 +147,6 @@ from jasper.active_speaker.crossover_v2_flow import (
     _analysis_json,
     _program_duration_ms,
     _worst_pilot_snr_db,
-    abandon_measurement_volume,
     alignment_delay_search_bounds_us,
     alignment_to_candidate_fields,
     _min_positions_for_two_wide_offsets,
@@ -164,7 +166,6 @@ from jasper.active_speaker.crossover_v2_flow import (
     courtesy_prelude_for_phase,
     express_cloud_measure_positions,
     format_position_distance,
-    open_measurement_volume,
     resolve_plan_shape,
     spec_report_for_predicted_sum,
     session_wall_clock_ceiling_s,
@@ -235,7 +236,7 @@ def test_the_fixture_entry_baseline_is_measurably_worse_than_the_post_apply_one(
 
     post = measured_response_from_analysis(
         _verify_analysis(conductor.program_for_phase(PHASE_VERIFY)),
-        reference_mark=flow.REFERENCE_MARK_DESIGN_AXIS,
+        reference_mark=REFERENCE_MARK_DESIGN_AXIS,
     )
     # Comparable by construction, or the benefit verdict is about the fixture
     # rather than about the speaker.
@@ -2278,50 +2279,6 @@ def test_new_session_invalidates_check_and_measure_evidence():
     )
     assert fresh.accepted_phases == frozenset()
     assert fresh.current_phase == PHASE_CHECK
-
-
-# --- session volume lifecycle (§5.5) ----------------------------------------------
-
-
-def test_open_measurement_volume_refuses_needs_recovery():
-    """The recovery gate keys on needs_recovery, NOT unresolved alone (W2 gate)."""
-    plan = _FakeVolumePlan(needs_recovery=True)
-    with pytest.raises(CrossoverV2FlowError):
-        asyncio.run(open_measurement_volume(
-            plan,
-            safety_profile={},
-            target_fingerprints=["fp"],
-            set_main_volume_db=None,
-            get_main_volume_db=None,
-        ))
-    assert plan.opened == []
-
-
-def test_open_measurement_volume_derives_via_ssot(monkeypatch):
-    plan = _FakeVolumePlan()
-    import jasper.active_speaker.session_volume_plan as svp
-
-    monkeypatch.setattr(
-        svp, "session_measurement_volume_db", lambda profile, fps, **kw: -20.0
-    )
-    result = asyncio.run(open_measurement_volume(
-        plan,
-        safety_profile={"profile": True},
-        target_fingerprints=["fp-w", "fp-t"],
-        set_main_volume_db=None,
-        get_main_volume_db=None,
-    ))
-    assert result == "opened"
-    assert plan.opened == [-20.0]
-
-
-def test_session_death_abandons_volume():
-    plan = _FakeVolumePlan()
-    result = asyncio.run(abandon_measurement_volume(
-        plan, set_main_volume_db=None, get_main_volume_db=None,
-    ))
-    assert result == "exact_restored"
-    assert plan.abandoned == [True]
 
 
 # --- position-group choreography (flat-linearization PR-3b) ------------------
@@ -6157,7 +6114,6 @@ from tests.crossover_v2_fixtures import (
     _ENTRY_BASELINE_RESIDUAL_DB,
     _FIXTURE_FC_HZ,
     _FIXTURE_RAW_TRIM_DB,
-    _FakeVolumePlan,
     _GOLDEN_V2_PLAN_BYTES,
     _LINEARIZABLE_FREQS_HZ,
     _POST_APPLY_RESIDUAL_DB,

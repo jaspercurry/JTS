@@ -73,6 +73,7 @@ from jasper.active_speaker import commission_wiring, crossover_v2_flow, delta_pr
 from jasper.active_speaker import design_draft
 from jasper.active_speaker import driver_safety as driver_safety_mod
 from jasper.active_speaker import excitation_safety_plan as excitation_safety_plan_mod
+from jasper.active_speaker.crossover_v2 import contracts
 from jasper.active_speaker.crossover_v2.journey import (
     PHASE_CHECK,
     PHASE_CLOUD_MEASURE,
@@ -476,7 +477,7 @@ def _entry_baseline_record() -> dict[str, Any]:
     return {
         "kind": ENTRY_BASELINE_KIND,
         "program_id": _ENTRY_BASELINE_PROGRAM_ID,
-        "reference_mark": crossover_v2_flow.REFERENCE_MARK_DESIGN_AXIS,
+        "reference_mark": contracts.REFERENCE_MARK_DESIGN_AXIS,
         "freqs_hz": list(_ENTRY_BASELINE_FREQS_HZ),
         "magnitude_db": list(_ENTRY_BASELINE_DB),
         "excluded": list(_ENTRY_BASELINE_EXCLUDED),
