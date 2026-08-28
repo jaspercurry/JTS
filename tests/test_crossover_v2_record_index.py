@@ -12,6 +12,7 @@ which is the whole claim that losing this database loses nothing.
 
 from __future__ import annotations
 
+import json
 from pathlib import Path
 from typing import Any
 
@@ -33,7 +34,12 @@ from jasper.active_speaker.crossover_v2.record_index import (
 )
 from jasper.active_speaker.crossover_v2.record_store import BankedRecordStore
 from jasper.web import correction_crossover_v2 as host
-from tests.test_crossover_v2_record_store import RELAY, _bundle, _take
+from tests.test_crossover_v2_record_store import (
+    RELAY,
+    _banked_file,
+    _bundle,
+    _take,
+)
 
 ARTIFACTS = "evidence/v1/artifacts"
 
@@ -150,6 +156,66 @@ async def test_an_artifact_that_is_not_a_measurement_is_not_indexed(store):
 
     assert find_measurements(_db(store)) == ()
     assert rebuild(_db(store), _artifacts(store)) == 0
+
+
+async def test_a_take_still_banks_when_the_index_cannot_be_written(store):
+    """The capture survives its index. This is the whole reason for the catch.
+
+    A directory where the database goes is a database that cannot be opened,
+    and it stands in for the real cases — a full disk, a read-only bundle.
+    The index write runs AFTER the artifact is durable, so a raise here would
+    report a bank that succeeded as one that did not, and the caller's
+    fail-soft would drop the take from ``record_ids`` while its bytes sit in
+    the bundle.
+    """
+    _db(store).mkdir()
+
+    record_id = await store.bank(_builder_take())
+
+    assert record_id
+    assert _banked_file(store, record_id)["session_id"] == "engine-session"
+
+
+async def test_a_rebuild_replaces_a_corrupt_index(store):
+    """Bytes that are not a database are not a reason to refuse a rebuild."""
+    record_id = await store.bank(_builder_take())
+    _db(store).write_bytes(b"not a database" * 64)
+
+    assert rebuild(_db(store), _artifacts(store)) == 1
+    assert [row.path for row in find_measurements(_db(store))] == [record_id]
+
+
+@pytest.mark.parametrize("captured_at", [1e30, -1e30])
+async def test_an_out_of_range_clock_indexes_no_timestamp(store, captured_at):
+    """A clock outside the platform's ``time_t`` indexes ``None``, not a raise.
+
+    Unreachable from today's producers — every clock originates in a local
+    ``time.time()`` — but the raise would travel out of ``bank``. NaN is not
+    parametrized here because it cannot reach the index this way at all: the
+    evidence store refuses non-finite floats as non-canonical JSON before the
+    write. Its path is the rescan's, pinned below.
+    """
+    record_id = await store.bank(_builder_take(captured_at=captured_at))
+
+    assert [
+        (row.path, row.captured_at) for row in find_measurements(_db(store))
+    ] == [(record_id, None)]
+
+
+async def test_a_rescanned_nan_clock_indexes_no_timestamp(store):
+    """``json.loads`` accepts a bare ``NaN``, so the rescan is where it lands.
+
+    The banked file is edited under the store rather than written through it,
+    because the store is what makes this shape unbankable in the first place.
+    """
+    record_id = await store.bank(_builder_take())
+    banked = _artifacts(store) / record_id
+    document = json.loads(banked.read_text())
+    document["captured_at"] = float("nan")
+    banked.write_text(json.dumps(document))
+
+    assert rebuild(_db(store), _artifacts(store)) == 1
+    assert [row.captured_at for row in find_measurements(_db(store))] == [None]
 
 
 async def test_the_index_never_lands_in_the_byte_budgeted_subtree(store):

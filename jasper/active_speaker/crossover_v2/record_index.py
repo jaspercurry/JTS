@@ -144,7 +144,14 @@ def _captured_at(value: Any) -> str | None:
         return value or None
     if isinstance(value, bool) or not isinstance(value, (int, float)):
         return None
-    return time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime(value))
+    try:
+        return time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime(value))
+    except (OverflowError, ValueError, OSError):
+        # A number outside the platform's ``time_t``, or a NaN. Unreachable
+        # from today's producers — every clock here originates in a local
+        # ``time.time()`` — but this function promises ``None`` for a clock it
+        # cannot use, and a raise here would travel out of ``bank``.
+        return None
 
 
 def _row(path: str, document: Mapping[str, Any]) -> tuple[Any, ...] | None:
@@ -209,10 +216,20 @@ def rebuild(db_path: Path, artifacts_dir: Path) -> int:
         row = _row(take.relative_to(artifacts_dir).as_posix(), _load(take))
         if row is not None:
             rows.append(row)
+    try:
+        _write_all(db_path, rows)
+    except sqlite3.DatabaseError:
+        # Bytes that are not a database. Replacing the file IS the recovery —
+        # rebuilding is exactly the operation that can afford to lose it.
+        Path(db_path).unlink(missing_ok=True)
+        _write_all(db_path, rows)
+    return len(rows)
+
+
+def _write_all(db_path: Path, rows: list[tuple[Any, ...]]) -> None:
     with _connect(db_path) as connection:
         connection.execute("DELETE FROM measurements")
         _insert(connection, rows)
-    return len(rows)
 
 
 def find_measurements(
