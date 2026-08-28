@@ -432,7 +432,6 @@ class TuningSession:
             self._graph_fingerprint = await self.seams.graph.install()
             self._graph_installed = True
         except BaseException as opening_exc:  # noqa: BLE001 - re-raised below
-            self._graph_fingerprint = ""
             await self._release_both_after_failed_open(opening_exc)
             raise
 

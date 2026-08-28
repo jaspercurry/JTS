@@ -72,6 +72,7 @@ from .volume_latch import (
     GetMainVolumeDb,
     SetMainVolumeDb,
     hold_fader_at,
+    read_fader_db,
     set_and_confirm_volume,
 )
 
@@ -754,7 +755,7 @@ class FaderVolumeDoor:
     get_main_volume_db: GetMainVolumeDb
 
     async def read_household_level_db(self) -> float | None:
-        return await self.get_main_volume_db()
+        return await read_fader_db(self.get_main_volume_db)
 
     async def establish_measurement_level_db(self, level_db: float) -> bool:
         return await set_and_confirm_volume(
