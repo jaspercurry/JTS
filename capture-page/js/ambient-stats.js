@@ -33,9 +33,9 @@ export const AMBIENT_STATS_MAX_BANDS = 64;
 // ISO-ish octave-band centers, 31.5 Hz - 16 kHz (10 bands). A driver sweep's
 // admitted band is Pi-owned and not carried on the wire spec (only the Pi
 // knows the driver-safety-confirmed excitation band), so the phone reports a
-// fixed set spanning the sweep's own audible range; the Pi's solver clips
-// whatever it receives to the admitted band before use
-// (`_clip_ambient_bands`), so a broader phone-side set is harmless.
+// fixed set spanning the sweep's own audible range. A consumer is expected to
+// clip what it receives to its own admitted band, which is what makes a
+// broader phone-side set harmless.
 const OCTAVE_BAND_CENTERS_HZ = Object.freeze([
   31.5, 63, 125, 250, 500, 1000, 2000, 4000, 8000, 16000,
 ]);
