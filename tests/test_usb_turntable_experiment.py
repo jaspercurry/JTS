@@ -718,6 +718,12 @@ def test_the_travel_envelope_is_one_constant_the_whole_tool_derives_from(
         # Inward but not all the way back inside: still allowed. Recovery
         # is a direction, not a single jump.
         ("left", "1", "-80.87", -79.87, True),
+        # Inward far enough to cross zero and land outside the FAR side.
+        # It DOES end nearer saved zero (49.13 < 80.87), so a rule written
+        # on distance alone admits it -- a full swing through the envelope
+        # and back out. Recovery must also stay on its own side of zero.
+        ("left", "130", "-80.87", 49.13, False),
+        ("right", "130", "80.87", -49.13, False),
     ],
 )
 def test_relative_moves_are_gated_at_their_predicted_endpoint(
@@ -1662,7 +1668,7 @@ def test_docs_keep_manual_safety_and_provenance_boundaries() -> None:
     assert "never whether that belief is still the acoustic axis" in readme
     assert "There is no override" in readme
     assert "travel_envelope_exceeded" in readme
-    assert "strictly reduces its distance from saved zero" in readme
+    assert "stays on the same side of saved zero" in readme
     assert "caps commanded runaway, not a corrupted zero" in readme
     assert "python3 -m usb_turntable set-zero" in readme
     assert "development-time provenance" in vendor_readme

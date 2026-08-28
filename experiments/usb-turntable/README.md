@@ -141,9 +141,14 @@ bound derive from, and it changes only by an owner-approved change to that
 file.
 
 One exception makes a stranded platform recoverable: when the arm is already
-outside the envelope, a move that strictly reduces its distance from saved
-zero is allowed, so it can always be walked back in but never driven further
-out. `home` ends at zero and is never gated. `stop` is never gated at all.
+outside the envelope, a move is allowed if it stays on the same side of saved
+zero *and* strictly reduces its distance from it, so the arm can always be
+walked back in but never driven further out. Both halves are load-bearing —
+a move big enough to cross zero and land outside the far side still ends
+nearer zero, but it is a full swing through the envelope to a position just
+as far out, so it is refused. In practice the ceiling for the recovering
+direction is the current offset plus `45`. `home` ends at zero and is never
+gated. `stop` is never gated at all.
 A refusal exits `1` with `"reason": "travel_envelope_exceeded"` plus the cap,
 the current offset, the predicted endpoint, and the direction that still
 recovers. If the offset cannot be read or does not parse, the move is refused

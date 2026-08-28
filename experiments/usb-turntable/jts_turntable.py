@@ -251,15 +251,22 @@ def travel_endpoint(command: str, degrees: float, current_offset: float) -> floa
 def travel_is_allowed(endpoint: float, current_offset: float) -> bool:
     """Whether a move ending at ``endpoint`` may be commanded.
 
-    Inside the envelope, yes. Outside it, only when the move strictly
-    reduces the distance from saved zero: a platform already stranded
-    beyond the cap (a corrupted zero, a move made before this gate
-    existed) must always be recoverable inward, never driven further out.
+    Inside the envelope, yes. Outside it, only when the move stays on the
+    SAME side of saved zero and strictly reduces the distance from it: a
+    platform already stranded beyond the cap (a corrupted zero, a move
+    made before this gate existed) must always be recoverable inward,
+    never driven further out.
+
+    The same-sign term is load-bearing, not a tidier way to say the
+    second: a move that crosses zero and lands outside the FAR side can
+    still reduce the absolute distance -- from -80.87, ``left 161.7``
+    ends at +80.83 -- which is a full swing through the envelope to a
+    position just as far out as it started. Distance alone admits it.
     """
 
     if abs(endpoint) <= TRAVEL_ENVELOPE_DEGREES:
         return True
-    return abs(endpoint) < abs(current_offset)
+    return endpoint * current_offset > 0 and abs(endpoint) < abs(current_offset)
 
 
 def _believed_offset(reading: Any) -> float | None:
@@ -307,9 +314,12 @@ def _travel_refusal(controller: Any, args: argparse.Namespace) -> dict[str, Any]
 
     stranded = abs(current) > TRAVEL_ENVELOPE_DEGREES
     inward = ("left" if current < 0 else "right") if stranded else None
+    # The ceiling, not "whatever ends nearer zero": a big enough inward
+    # move swings through the envelope and back out the far side, which
+    # the gate refuses even though it does end nearer zero.
     remedy = (
-        f"the platform is already outside it, so only a `{inward}` move that "
-        "ends nearer saved zero, or `home`, is allowed"
+        f"the platform is already outside it, so only a `{inward}` move of at "
+        f"most {abs(current) + TRAVEL_ENVELOPE_DEGREES:g} deg, or `home`, is allowed"
         if inward is not None
         else "command a smaller move or `home`"
     )
