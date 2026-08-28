@@ -61,15 +61,15 @@ exactly; the docstring one does not, and this map's number is the AST span.
 | `KEEPER` | survives the dissolution — the row says where it should live |
 | `DIES` | deletable outright, nothing is stranded |
 
-§6's three open rulings for this file, numbered here so rows can cite them:
+§6's three rulings for this file, numbered here so rows can cite them. **All
+three are RULED, not open** — see
+[REFACTOR-CUTOVER-2026-08.md](REFACTOR-CUTOVER-2026-08.md) §6.1/§6.2/§6.3
+(owner, 2026-08-26). The bullets below point at each ruling rather than
+restate it:
 
-- **NO HOME 1** — the tuning constants (band D): each constant to its consuming
-  organ, or one `contracts` block.
-- **NO HOME 2** — candidate build · publish · commit (band V): irreversible
-  acts, and the apply transaction is *"not a target. Ever."* Either a
-  publish/commit organ or a thin surviving host module.
-- **NO HOME 3** — the diagnostic emitters (band AC): delete, or become
-  `analyze`'s journal.
+- **NO HOME 1** — the tuning constants (band D): ruled in §6.1.
+- **NO HOME 2** — candidate build · publish · commit (band V): ruled in §6.2.
+- **NO HOME 3** — the diagnostic emitters (band AC): ruled in §6.3.
 
 ---
 
