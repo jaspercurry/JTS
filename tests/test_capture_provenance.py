@@ -2,13 +2,13 @@
 #
 # SPDX-License-Identifier: Apache-2.0
 
-"""A retained capture must say what it was taken THROUGH.
+"""A banked capture must say what it was taken THROUGH.
 
 The 2026-08-19 jts3 forensic session is the subject: hours were spent
 comparing capture levels that turned out to have been measured through two
-different DSP graphs, because the retained sidecars recorded neither the
-fader nor any identity of the graph that was actually loaded — only a
-``config_path`` label that a program-graph load deliberately never repoints.
+different DSP graphs, because the capture records held neither the fader nor
+any identity of the graph that was actually loaded — only a ``config_path``
+label that a program-graph load deliberately never repoints.
 
 ``test_two_captures_share_a_config_path_and_still_report_different_graphs``
 is this file's pin: it reproduces exactly that pair.
@@ -17,7 +17,6 @@ is this file's pin: it reproduces exactly that pair.
 from __future__ import annotations
 
 import asyncio
-import json
 import logging
 from types import SimpleNamespace
 from typing import Any
@@ -34,9 +33,8 @@ from jasper.active_speaker.capture_provenance import (
 )
 # The phase these tests drive is the SESSION phase, not the stimulus one: it
 # is the first argument of ``bind_production_play``'s seam, which branches on
-# ``phase in SUMMED_SWEEP_PHASES``, and it is what lands in the retained
-# sidecar's top-level ``phase``. (The STIMULUS phase reaches the sidecar too,
-# but separately and without passing through here — the playback path calls
+# ``phase in SUMMED_SWEEP_PHASES``. (The STIMULUS phase reaches the record
+# separately and without passing through here — the playback path calls
 # ``record_capture_provenance``, whose fail-soft belt wraps
 # ``observe_capture_provenance``, and it is THAT function which reads
 # ``program.phase`` into ``provenance.stimulus.phase``.) Until
@@ -394,7 +392,7 @@ def test_resolving_the_cam_or_the_plan_happens_inside_the_belt(
 
 
 # --------------------------------------------------------------------------- #
-# the host wiring: play seam observes, retention seam writes
+# the host wiring: play seam observes, analyze seam carries
 # --------------------------------------------------------------------------- #
 
 
@@ -420,14 +418,19 @@ def _drive_one_capture(
     *,
     phase: str,
     cam: _FakeCam,
-    enabled: bool = True,
 ) -> dict[str, Any] | None:
-    """Play one phase then analyze one capture, returning the sidecar's JSON.
+    """Play one phase then analyze one capture, returning what the carry holds.
 
     Real ``play_program`` for the CHECK/MEASURE branch — the graph load, the
     writer lock and the ``play_wav`` handoff run in their production order, so
     WHEN the provenance is observed is genuinely under test. Only the transport
     below ``bind_program_playback_seams`` is faked.
+
+    **Nothing here arms observation.** There is no marker, no environment
+    variable and no flag: this is a household-default session, and what it
+    returns is what the banking seam would drain (``bind_position_retention``
+    calls the same ``take()`` on the same recorder). A ``None`` return means
+    the play seam observed nothing at all.
     """
     from jasper.active_speaker import camilla_yaml as camilla_yaml_mod
     from jasper.active_speaker import crossover_v2_flow as flow_mod
@@ -437,11 +440,6 @@ def _drive_one_capture(
     from jasper.audio_measurement import program_analysis as pa_mod
     from jasper.correction import coordinator
 
-    dump_dir = tmp_path / "xover-capture-dump"
-    dump_dir.mkdir(parents=True)
-    if enabled:
-        (dump_dir / v2host.XOVER_CAPTURE_DUMP_ENABLED_MARKER).touch()
-    monkeypatch.setattr(v2host, "XOVER_CAPTURE_DUMP_DIR", dump_dir)
     monkeypatch.setattr(coordinator, "measurement_window", lambda **kw: _FakeWindow())
     monkeypatch.setattr(program_mod, "write_program_wav", lambda path, program: None)
     monkeypatch.setattr(
@@ -489,6 +487,9 @@ def _drive_one_capture(
     v2host.set_volume_plan_for_tests(_FakePlan())
 
     recorder = CaptureProvenanceRecorder()
+    # The SECOND recorder, the one the banking seam drains. Threaded here so
+    # this helper reads the carry exactly where production reads it.
+    carry = CaptureProvenanceRecorder()
     play = v2host.bind_production_play(
         run_async=asyncio.run,
         camilla_factory=lambda: cam,
@@ -510,6 +511,7 @@ def _drive_one_capture(
         resolve_calibration=lambda setup, device: None,
         meta={},
         provenance=recorder,
+        carry=carry,
     )
     analyze(
         program,
@@ -518,10 +520,8 @@ def _drive_one_capture(
         MeasurementGeometry(),
         phase=phase,
     )
-    sidecars = sorted(dump_dir.glob("*.json"))
-    if not sidecars:
-        return None
-    return json.loads(sidecars[0].read_text())
+    carried = carry.take()
+    return carried.to_dict() if carried is not None else None
 
 
 @pytest.fixture(autouse=True)
@@ -530,30 +530,35 @@ def _reset_volume_plan():
     v2host.set_volume_plan_for_tests(None)
 
 
-def test_retained_sidecar_carries_the_provenance_block(monkeypatch, tmp_path):
-    """The night's fader and session volume ride the clip, not the journal.
+def test_a_household_capture_carries_provenance_with_nothing_to_arm(
+    monkeypatch, tmp_path
+):
+    """The pin the capture-dump ring's death owes: no marker, still observed.
+
+    While the ring existed, observation was bought only when its ENABLED
+    marker was present, so an ordinary household session carried nothing and
+    every banked take named no graph. This drives the real play seam with
+    nothing armed — no marker, no flag, no environment — and the carry the
+    banking seam drains is full.
 
     The fader is at the declared −20.0, so the play path's hold PROVES it and
-    the capture happens. What the clip carries is the level the capture was
+    the capture happens. What the record carries is the level the capture was
     actually taken at, and the two fields agree because a capture that reached
-    retention is by construction one whose fader was proven — the hold refuses
+    the carry is by construction one whose fader was proven — the hold refuses
     rather than writing when it is not (#2925).
     """
     cam = _FakeCam(volume_db=-20.0)
-    sidecar = _drive_one_capture(
+    provenance = _drive_one_capture(
         monkeypatch, tmp_path, phase=PHASE_CHECK, cam=cam,
     )
-    assert sidecar is not None
-    provenance = sidecar["provenance"]
+    assert provenance is not None
     assert cam.volume_writes == [], (
         "the hold proves the declared measurement volume; it never writes it"
     )
     assert provenance["main_volume_db"] == -20.0
     assert provenance["session_volume_db"] == -20.0
     assert provenance["stimulus"]["wav_sha256"] == "b" * 64
-    # Additive only: nothing the sidecar already carried moved or changed.
-    assert sidecar["phase"] == PHASE_CHECK
-    assert sidecar["diagnostic"] is not None or "diagnostic" in sidecar
+    assert provenance["graph"]["kind"] == GRAPH_KIND_PROGRAM_ROUTING
 
 
 def test_two_captures_share_a_config_path_and_still_report_different_graphs(
@@ -570,7 +575,7 @@ def test_two_captures_share_a_config_path_and_still_report_different_graphs(
     graph's own fingerprint differs alongside it as corroboration.
     """
     # Both faders sit at the declared measurement volume, so neither capture is
-    # refused by the play path's hold and both reach retention.
+    # refused by the play path's hold and both reach the carry.
     routed = _drive_one_capture(
         monkeypatch, tmp_path / "routed", phase=PHASE_CHECK,
         cam=_FakeCam(volume_db=-20.0),
@@ -582,15 +587,12 @@ def test_two_captures_share_a_config_path_and_still_report_different_graphs(
     assert routed is not None and summed is not None
 
     # The label the statefile reports is identical for both...
-    assert routed["provenance"]["graph"]["config_path"] == ANCHOR_PATH
-    assert summed["provenance"]["graph"]["config_path"] == ANCHOR_PATH
+    assert routed["graph"]["config_path"] == ANCHOR_PATH
+    assert summed["graph"]["config_path"] == ANCHOR_PATH
     # ...and yet these captures went through different transfer functions.
-    assert routed["provenance"]["graph"]["kind"] == GRAPH_KIND_PROGRAM_ROUTING
-    assert summed["provenance"]["graph"]["kind"] == GRAPH_KIND_APPLIED
-    assert (
-        routed["provenance"]["graph"]["fingerprint"]
-        != summed["provenance"]["graph"]["fingerprint"]
-    )
+    assert routed["graph"]["kind"] == GRAPH_KIND_PROGRAM_ROUTING
+    assert summed["graph"]["kind"] == GRAPH_KIND_APPLIED
+    assert routed["graph"]["fingerprint"] != summed["graph"]["fingerprint"]
 
 
 def test_an_unreadable_fader_nulls_the_field_and_the_capture_still_lands(
@@ -605,53 +607,29 @@ def test_an_unreadable_fader_nulls_the_field_and_the_capture_still_lands(
     #2925 tripwire says so at WARN instead of leaving the null silent.
     """
     with caplog.at_level(logging.WARNING, logger=PROVENANCE_LOGGER):
-        sidecar = _drive_one_capture(
+        provenance = _drive_one_capture(
             monkeypatch, tmp_path, phase=PHASE_CHECK,
             cam=_FakeCam(volume_reads=[-20.0, None]),
         )
-    assert sidecar is not None
-    assert sidecar["provenance"]["main_volume_db"] is None
-    # The capture itself is intact — WAV retained, existing fields written.
-    assert sidecar["wav_bytes"] == len(_mono_wav_bytes())
-    assert sidecar["provenance"]["graph"]["kind"] == GRAPH_KIND_PROGRAM_ROUTING
+    assert provenance is not None
+    assert provenance["main_volume_db"] is None
+    # The capture itself is intact — the rest of the record still landed.
+    assert provenance["graph"]["kind"] == GRAPH_KIND_PROGRAM_ROUTING
     assert "result=volume_disagreement" in caplog.text
 
 
-def test_retention_off_still_buys_the_safety_read_and_no_forensic_ones(
-    monkeypatch, tmp_path
-):
-    """No marker, no FORENSIC cost — but the fader hold is not forensics.
-
-    Retention gates the provenance observation (its config-path and
-    active-config round-trips), because that record is diagnostics. It does not
-    gate the play path's fader hold: the excitation-safety ledger admitted this
-    program against the DECLARED volume, so proving the speaker is at that
-    volume is the ledger's own integrity and is bought on every capture
-    (#2925). An undrifted fader costs exactly one read and writes nothing.
-    """
-    cam = _FakeCam(volume_db=-20.0)
-    sidecar = _drive_one_capture(
-        monkeypatch, tmp_path, phase=PHASE_CHECK, cam=cam, enabled=False,
-    )
-    assert sidecar is None  # nothing retained, as before
-    assert cam.reads == ["volume"]
-    assert cam.volume_writes == []
-
-
-def test_analyze_without_a_play_records_no_provenance(monkeypatch, tmp_path):
+def test_analyze_without_a_play_carries_no_provenance(monkeypatch):
     """A capture this recorder cannot speak for gets no block at all."""
     from jasper.audio_measurement import program_analysis as pa_mod
 
-    dump_dir = tmp_path / "xover-capture-dump"
-    dump_dir.mkdir()
-    (dump_dir / v2host.XOVER_CAPTURE_DUMP_ENABLED_MARKER).touch()
-    monkeypatch.setattr(v2host, "XOVER_CAPTURE_DUMP_DIR", dump_dir)
     monkeypatch.setattr(pa_mod, "analyze_program_capture", lambda *a, **k: "analysis")
 
+    carry = CaptureProvenanceRecorder()
     analyze = v2host.bind_production_analyze(
         resolve_calibration=lambda setup, device: None,
         meta={},
         provenance=CaptureProvenanceRecorder(),
+        carry=carry,
     )
     analyze(
         _program(),
@@ -660,5 +638,4 @@ def test_analyze_without_a_play_records_no_provenance(monkeypatch, tmp_path):
         MeasurementGeometry(),
         phase=PHASE_CHECK,
     )
-    sidecar = json.loads(sorted(dump_dir.glob("*.json"))[0].read_text())
-    assert "provenance" not in sidecar
+    assert carry.take() is None

@@ -562,13 +562,13 @@ own numbering, so resolve a code against the tool that produced it.
 | `scripts/run-crossover-round.py` | `0`, `3`–`12` | `EXIT_NAMES` in that file |
 | `jasper-arm-walk` | `0`, `3`–`15`, plus `129` / `130` / `143` (parked by SIGHUP / SIGINT / SIGTERM) | `EXIT_NAMES` in `jasper/active_speaker/arm_walk.py` |
 | `jasper-crossover-prescriber` | `0`–`3` | `EXIT_OK` / `EXIT_EVIDENCE_UNREADABLE` / `EXIT_REFUSED` / `EXIT_STAGE_FAILED` |
-| `scripts/bank-crossover-round.sh` | `0`–`4` | its own header block |
+| `scripts/bank-crossover-round.sh` | `0`, `3`, `4` | its own header block |
 
 Three traps worth knowing before you branch on a number:
 
 - **The round runner collapses its sub-tools' codes.** Any nonzero stage rc
   becomes `3`; any nonzero walk rc becomes `5` (except ssh's own `255`, which
-  becomes `12`); bank's `2`/`3`/`4` all become `9`. The sub-tool's real rc and
+  becomes `12`); every nonzero bank rc becomes `9`. The sub-tool's real rc and
   its own name survive **only in the trail** (`angle_capture_exit`,
   `arm_walk_exit` / `arm_walk_exit_name`, `bank_exit`). Read the trail, not `$?`,
   when you need to know *why* a phase failed.
@@ -576,10 +576,11 @@ Three traps worth knowing before you branch on a number:
   (with `refused (<reason>): <detail>` on stderr, and structured JSON on stdout
   under `--json`) *or* argparse's own malformed-invocation exit. Only the stderr
   text separates them.
-- **`bank-crossover-round.sh` `1` is overloaded.** It is either bash's own
-  missing-`<dest-dir>` usage refusal (instant, nothing pulled) or
-  `capture_integrity`'s `EXIT_UNREADABLE` forwarded after a full pull (no
-  dump-ring sidecars to check). Same number, opposite situations.
+- **`bank-crossover-round.sh` `1` is no longer overloaded.** It used to mean
+  either bash's own missing-`<dest-dir>` usage refusal or `capture_integrity`'s
+  `EXIT_UNREADABLE` forwarded after a full pull. The capture-dump ring it
+  graded is gone, so `1` is now only bash's own failure — and the round runner
+  aborts on it rather than continuing.
 
 The codes are a contract because a refusal is not a crash — it is the loop
 working.
@@ -815,13 +816,17 @@ a number: a value there would read as a preternaturally clean driver exactly
 where nothing was measured.
 
 **Per-capture SNR arrives with the ring, not with the round.** `capture_snr`
-carries each retained capture's magnitude and alignment signal-to-noise, keyed by
-the same `wav_sha256` the position rows use. It is populated only when you pass
+carries each capture's magnitude and alignment signal-to-noise, keyed by the
+same `wav_sha256` the position rows use. It is populated only when you pass
 `--dumps <banked-round>/dumps` — the ring ROOT, the same path
-`jasper-classify-features --dumps` takes, **not** the `sidecar/` directory inside
-it — because the capture-retention ring is off by default. Only captures the
-bundle's own session identity claims are published; the leftovers are counted
-rather than dropped.
+`jasper-classify-features --dumps` takes, **not** the `sidecar/` directory
+inside it. Only captures the bundle's own session identity claims are
+published; the leftovers are counted rather than dropped.
+
+**Rounds banked after the capture-dump ring was removed have no `dumps/`
+tree**, so `capture_snr` is absent for them and this flag has nothing to
+point at. The reader is unchanged and still opens corpora banked before the
+removal.
 
 ### Reading the gate and the reflector path honestly
 

@@ -80,7 +80,7 @@ the same phases minus the walk, for a human-moved or ordinary session -- and
 walk that nothing would serve.
 
 **Nothing here re-maps another tool's verdict.** ``jasper-arm-walk``'s exit
-codes and ``bank-crossover-round.sh``'s 0/1/2/3/4 are reported verbatim, by
+codes and ``bank-crossover-round.sh``'s 0/3/4 are reported verbatim, by
 their owners' own names, as the deciding value on this runner's own per-phase
 exit code. A failing walk stops the round before it banks: the walk's rc is
 the verdict, and a bank on top of it would be a second one.
@@ -250,8 +250,8 @@ EXIT_VERIFY = 6
 EXIT_INCOMPLETE = 7
 #: The session itself reported a failure. Its own error is on the line.
 EXIT_SESSION_FAILED = 8
-#: ``bank-crossover-round.sh`` refused: 2 dirty captures, 3 an incomplete bank,
-#: 4 a destination that was already used. Its rc is the deciding value.
+#: ``bank-crossover-round.sh`` refused: 3 an incomplete bank, 4 a destination
+#: that was already used. Its rc is the deciding value.
 EXIT_BANK = 9
 #: The apply POST was refused, blocked, or failed. Nothing was rolled back here
 #: — the endpoint's own transaction owns that.
@@ -700,12 +700,13 @@ def bank(dest: Path, *, since: str, target: Target, trail: Trail) -> int:
         ["bash", str(REPO_ROOT / "scripts" / "bank-crossover-round.sh"), str(dest)],
         env=env,
     )
-    # 0 clean, 1 nothing to grade (no dump-ring sidecars — the operator never
-    # armed it, which is not a dirty round), 2 dirty, 3 incomplete, 4 the
-    # destination was already used. Only the last three abort. The NUMBER is
-    # what rides the trail: a label spelled here would be this file's opinion
-    # of another tool's contract, wrong the day that tool renumbers.
-    ok = proc.returncode in (0, 1)
+    # 0 clean, 3 incomplete, 4 the destination was already used. Anything else
+    # is bash's own failure and aborts too: 1 used to mean "no dump-ring
+    # sidecars to grade", which was benign, and that ring is gone — so 1 is no
+    # longer overloaded and no longer a pass. The NUMBER is what rides the
+    # trail: a label spelled here would be this file's opinion of another
+    # tool's contract, wrong the day that tool renumbers.
+    ok = proc.returncode == 0
     trail.emit("bank", ok=ok, dest=str(dest), bank_exit=proc.returncode)
     return proc.returncode
 
@@ -994,7 +995,7 @@ def run_round(args: argparse.Namespace, target: Target, wizard: Wizard,
             stop_walk(walk, trail)
 
     bank_rc = bank(dest, since=since, target=target, trail=trail)
-    if bank_rc not in (0, 1):
+    if bank_rc != 0:
         return EXIT_BANK
 
     if args.angles:

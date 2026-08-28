@@ -37,7 +37,7 @@
 | Read a driver's harmonic distortion (H2/H3 vs frequency) out of MEASURE captures already on disk, with no new recording | [Harmonic-distortion replay](#harmonic-distortion-replay) — the bench; `jasper-read-distortion` for a banked round, which files the reading the evidence packet carries |
 | Hold a specific field incident still in CI — minimize a gitignored bank to a committed fixture and characterize the defect it produced | [Committed incident replay](#committed-incident-replay) |
 | Ask why a banked session's pooled flatness reads worse than its on-axis response sounds — re-read the same evaluation per octave and per position role | [Metric-honesty views](#metric-honesty-views) |
-| Pull a crossover-v2 round's evidence off the Pi into a directory you name, and refuse the run if its dump-ring captures aren't clean | [Crossover-v2 round banking](#crossover-v2-round-banking) — `scripts/bank-crossover-round.sh` |
+| Pull a crossover-v2 round's evidence off the Pi into a directory you name | [Crossover-v2 round banking](#crossover-v2-round-banking) — `scripts/bank-crossover-round.sh` |
 | Find out where a speaker stands before touching anything — what is declared, banked, staged and applied, and what each present or absent artifact makes possible next | [Crossover prescriber harness](#crossover-prescriber-harness) — `jasper-crossover-prescriber status` |
 | Gather one banked crossover round into a single versioned JSON document a person or a language model can reason about | [Crossover prescriber harness](#crossover-prescriber-harness) — `jasper-crossover-prescriber packet` |
 | Validate a blend-region correction someone (or something) proposed against the round it claims to answer, and see the machine-readable reason if it is refused | [Crossover prescriber harness](#crossover-prescriber-harness) — `jasper-crossover-prescriber propose` |
@@ -1754,43 +1754,54 @@ It then pulls the newest session bundle, the crossover-v2 flow state, the
 design draft, a bounded journal window (the four units a round speaks
 through: `jasper-correction-web`, `jasper-control`, `jasper-camilla`,
 `jasper-outputd`), a power re-check (`vcgencmd get_throttled` plus
-under-voltage grep counts), and the dump-ring captures
-(`XOVER_CAPTURE_DUMP_DIR`, root-owned on the Pi — split into `dumps/wav/`
-and `dumps/sidecar/`). Every pull is best-effort and independently
+under-voltage grep counts). Every pull is best-effort and independently
 reported to stderr, and a per-artifact status summary prints at the end
 regardless of outcome. The round's prediction fields are not lifted into a
 separate file: `state.json` is itself pulled into the bank, so the copy that
 existed to rescue them from the next round's overwrite had nothing left to
 rescue, and nothing ever opened it.
 
-Before comparing LEVELS across banked sidecars, read each one's
-`provenance` block — the live fader, the held session volume, and which DSP
-graph the capture actually went through. A CHECK/MEASURE capture and a summed
-one report the same `config_path` while going through different transfer
+Before comparing LEVELS across banked takes, read each one's `provenance`
+block — the live fader, the held session volume, and which DSP graph the
+capture actually went through. A CHECK/MEASURE capture and a summed one
+report the same `config_path` while going through different transfer
 functions (the 2026-08-19 jts3 session observed a +7…+15 dB per-branch
 difference on that box), so `graph.kind` is the field that tells them apart. See
 ["`provenance` — the config label is not the graph"](historical/crossover-measurement-v2-campaign-record.md#provenance--the-config-label-is-not-the-graph).
 
-Three things can make the script refuse a run, and none of them ever
-deletes a file that was already pulled — the refusal is the exit code
-plus the printed findings, forensics stay on disk. Each has its own exit
-code, on purpose: a caller scripting a retry loop over this command needs
-to tell "this destination is unusable" apart from "nothing to check yet"
+**The speaker-side capture-dump ring is gone**, and with it the `dumps/wav/`
++ `dumps/sidecar/` tree this script used to pull and grade. Every accepted
+capture's WAV and its provenance now ride the session bundle's own banked
+take records, which this script already pulls. Corpora banked before the
+removal keep their `dumps/` tree and every reader below still opens it.
+
+What the banked record does **not** carry is the ring sidecar's
+`diagnostic`, `capture_integrity` and `frame_ledger` blocks. Those are still
+computed and still logged, but they no longer land in any file — so a new
+round cannot be graded on them, and the readers that want them
+(`--dumps`-taking tools, `capture_snr`) have nothing to open for rounds
+banked from here on.
+
+Two things can make the script refuse a run, and neither ever deletes a
+file that was already pulled — the refusal is the exit code plus the
+printed findings, forensics stay on disk. Each has its own exit code, on
+purpose: a caller scripting a retry loop over this command needs to tell
+"this destination is unusable" apart from a bank that simply failed,
 without parsing stderr.
 
 | Exit | Meaning |
 |---|---|
-| `0` | the round bundle and flow state were both pulled, and `jasper.audio_measurement.capture_integrity` found every dump-ring sidecar clean |
-| `1` | the capture-integrity check found nothing to check — no dump-ring sidecars were pulled (the operator never created the `ENABLED` marker for this round, or the directory could not be read) — **or** `<dest-dir>` was omitted entirely (bash's own `${1:?…}` exit code; a one-time invocation mistake, not a state a retry loop cycles through, so it is not worth a distinct code) |
-| `2` | the round bundle and flow state were both pulled, but capture-integrity found at least one dump-ring sidecar dirty (including one whose JSON could not be parsed) — one `DIRTY sidecar=<name> finding=<code> detail=<text>` line per defect on stdout, machine-greppable on `finding=` |
-| `3` | **incomplete** — the round's own identity (its session bundle and/or its flow state) failed to pull. A bank that cannot say which round it banked is not a bank; this overrides whatever capture-integrity found, even a clean dump-ring |
-| `4` | `<dest-dir>` already exists and is non-empty. Nothing was pulled — a caller retrying into the same destination after a failed bank needs this distinguishable from `1`'s "nothing to check" |
+| `0` | the round bundle and flow state were both pulled |
+| `3` | **incomplete** — the round's own identity (its session bundle and/or its flow state) failed to pull. A bank that cannot say which round it banked is not a bank |
+| `4` | `<dest-dir>` already exists and is non-empty. Nothing was pulled |
 
-Exit `0`/`1`/`2` are exactly `jasper.audio_measurement.capture_integrity`'s
-own contract, propagated unchanged; `3` and `4` are this script's own,
-layered on top of it (that command alone never returns either — the
-non-empty-`<dest-dir>` and incomplete-bank checks are the bank script's
-job, not the checker's). Standalone: `python -m
+Any other non-zero code is bash's own — including `1` for an omitted
+`<dest-dir>` (`${1:?…}`). While the ring existed, `1` was overloaded with
+"no sidecars to grade" and callers treated it as a pass; it no longer is,
+and `scripts/run-crossover-round.py` now aborts on it.
+
+`jasper.audio_measurement.capture_integrity` is unchanged and still runs
+standalone over any directory of sidecars: `python -m
 jasper.audio_measurement.capture_integrity <sidecar-dir> [<dir> ...]`.
 Hardware-free coverage — clean / dirty / unreadable fixture trees, the
 exit-code values themselves (not just the names), and one test per named
@@ -2182,8 +2193,9 @@ nothing to `git rm` — this tool is the one copy going forward.
 Every subcommand reads a *banked round directory*, the tree
 `scripts/bank-crossover-round.sh <dest-dir>` produces (see
 ["Crossover-v2 round banking"](#crossover-v2-round-banking) above): a
-`bundle/<session>/` evidence bundle, optional `state.json` / `design-draft.json`, and optional
-`dumps/wav/` + `dumps/sidecar/` dump-ring captures. No file is globbed or
+`bundle/<session>/` evidence bundle, optional `state.json` / `design-draft.json`, and — in
+rounds banked before the capture-dump ring was removed — optional
+`dumps/wav/` + `dumps/sidecar/` captures. No file is globbed or
 re-parsed by hand — positions and the graded spec come from
 [`evidence_packet.build_crossover_evidence_packet`](../jasper/active_speaker/crossover_v2/evidence_packet.py),
 grading comes from
@@ -2693,9 +2705,9 @@ banks a round while its fit is still running.
 
 **No verdict is re-mapped.** `jasper-arm-walk`'s exit code rides through under
 its own name (`arm_walk_exit=6 arm_walk_exit_name=stuck`), and
-`bank-crossover-round.sh`'s `0/1/2/3/4` decides the round: `0` clean and `1`
-nothing to grade both continue, while `2` dirty, `3` incomplete and `4`
-destination-in-use abort it. A failing walk stops the round *before* banking —
+`bank-crossover-round.sh`'s `0/3/4` decides the round: `0` clean continues,
+while `3` incomplete, `4` destination-in-use and any other non-zero code abort
+it. A failing walk stops the round *before* banking —
 the walk's rc is the verdict and a bank on top would be a second one — and the
 runner prints the one `bank-crossover-round.sh` command that keeps the evidence
 still sitting on the Pi.

@@ -1116,11 +1116,14 @@ def _ring_sidecar(
     session_id: str | None = _BUNDLE_SESSION_ID,
     diagnostic: dict[str, Any] | None = None,
 ) -> Path:
-    """One dump-ring sidecar, in the shape ``_maybe_retain_capture`` writes.
+    """One dump-ring sidecar, in the shape banked corpora carry.
+
+    The speaker-side ring that wrote these is gone; corpora banked before its
+    removal still hold them, and this is the shape their readers open.
 
     ``ring`` is the ring ROOT, the directory a caller passes; the sidecar lands
-    in the ``sidecar/`` split ``bank-crossover-round.sh`` produces, which is
-    where ``RING_SIDECAR_GLOB`` looks for it.
+    in the ``sidecar/`` split ``bank-crossover-round.sh`` used to produce,
+    which is where ``RING_SIDECAR_GLOB`` looks for it.
 
     ``session_id=None`` writes the LEGACY shape — a sidecar from before the
     identity stamp existed, which is the corpus WO-0 actually had to read.

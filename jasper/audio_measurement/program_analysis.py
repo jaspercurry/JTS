@@ -7345,20 +7345,21 @@ def _gate_disclosure_of(response: "DriverResponse | None") -> str | None:
 def analysis_diagnostic_summary(analysis: Any) -> dict[str, Any]:
     """Flat, JSON-safe numeric diagnostics from one :class:`ProgramAnalysis`.
 
-    The operator capture-retention sidecar (``jasper.web.correction_crossover_v2``
-    ``_maybe_retain_capture``) attaches this to every retained WAV so the clip
-    is self-describing without replaying the analysis. Reads only fields
+    The distortion replays attach this to a capture they re-analyse so the
+    numbers can be compared against the ones a banked corpus already carries
+    (``harmonic_evidence``, ``scripts/harmonic-distortion-replay.py``). Reads
+    only fields
     ``ProgramAnalysis``/its nested dataclasses already carry — nothing here is
     recomputed. Per-driver/per-pilot fields key off each entry's OWN ``role``
     string (whatever the program declared — "woofer"/"tweeter" in production)
     rather than a hardcoded label, since this runs at the analyze seam, before
     the v2 session's role mapping exists.
 
-    Deliberately duck-typed (``analysis: Any``) and defensive throughout: this
-    is called from a best-effort retention path that must never raise even if
-    a test double stands in for a real ``ProgramAnalysis`` (see
-    ``bind_production_analyze``'s own tests, which monkeypatch
-    ``analyze_program_capture`` to return a bare string) — every field access
+    Deliberately duck-typed (``analysis: Any``) and defensive throughout: it
+    must never raise even if a test double stands in for a real
+    ``ProgramAnalysis`` (see ``bind_production_analyze``'s own tests, which
+    monkeypatch ``analyze_program_capture`` to return a bare string) — every
+    field access
     goes through ``getattr(..., None)`` so a malformed/foreign ``analysis``
     degrades to an emptier summary rather than raising past the caller's
     guard.

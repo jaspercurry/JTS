@@ -5,23 +5,19 @@
 # SPDX-License-Identifier: Apache-2.0
 
 # Bank one crossover-v2 round's evidence from the Pi into a directory YOU
-# name, then gate the run on its own dump-ring capture-integrity counters.
+# name.
 #
 # Every measurement campaign has re-invented this as throwaway shell in
 # captures/<campaign>/tools/ — most recently night_bank.sh + pull_dumps.sh +
 # integrity_summary.py in
 # captures/linearization-night-2026-08-19/tools/. This is the product
 # version: same pulls, same clean-run definition, but the destination is an
-# argument (never a hardcoded campaign path) and the integrity check is a
-# tested product module
-# (jasper/audio_measurement/capture_integrity.py) instead of a one-off
-# script.
+# argument, never a hardcoded campaign path.
 #
 # Usage:
 #   bash scripts/bank-crossover-round.sh <dest-dir>
 #   SINCE='2026-08-20 21:00:00' bash scripts/bank-crossover-round.sh <dest-dir>
 #   PI_HOST=jts3.local bash scripts/bank-crossover-round.sh <dest-dir>
-#   PYTHON=/path/to/python bash scripts/bank-crossover-round.sh <dest-dir>
 #
 # A caller-exported PI_HOST / PI_USER always wins over whatever
 # .env.local sets — scripts/_lib.sh owns that precedence for every
@@ -43,29 +39,27 @@
 #   journal/<unit>.log      journal window for the units that speak during a
 #                           round, plus journal/combined.log
 #   power.txt               vcgencmd get_throttled + under-voltage grep counts
-#   dumps/wav/*.wav         dump-ring captures (XOVER_CAPTURE_DUMP_DIR),
-#   dumps/sidecar/*.json    split by extension — root-owned on the Pi, so this
-#                           step needs sudo; empty when the operator never
-#                           created the ENABLED marker for this round
 #
 # Every pull above is best-effort and independently reported to stderr, and
 # a per-artifact summary prints at the end regardless of outcome — no silent
-# failure paths. Three things can make this script refuse the run, and none
-# of them ever deletes a file that was already pulled (the refusal is the
-# exit code plus the printed findings, forensics stay on disk). Each has its
-# own exit code so a caller scripting a retry loop can tell them apart
-# without parsing stderr:
+# failure paths. Two things can make this script refuse the run, and neither
+# ever deletes a file that was already pulled (the refusal is the exit code
+# plus the printed findings, forensics stay on disk). Each has its own exit
+# code so a caller scripting a retry loop can tell them apart without
+# parsing stderr:
 #
 #   * exit 4 — <dest-dir> already exists and is non-empty. Nothing was
 #     pulled; pick a fresh directory or remove the old one.
 #   * exit 3 — the round's own identity, the session BUNDLE or the flow
 #     STATE, failed to pull. A bank that can't say which round it banked is
-#     not a bank, regardless of what the capture-integrity check below
-#     found.
-#   * exit 0 / 1 / 2 — capture-integrity over dumps/sidecar/ ran (bundle and
-#     state both pulled) and this script's own exit code IS that check's:
-#     0 clean, 1 nothing to check (no dump-ring sidecars), 2 dirty — see
-#     jasper/audio_measurement/capture_integrity.py.
+#     not a bank.
+#   * exit 0 — bundle and state both pulled.
+#
+# This script used to pull the speaker's capture-dump ring and grade the
+# round on `jasper.audio_measurement.capture_integrity` over its sidecars.
+# That ring is gone, so there is nothing to pull and nothing to grade here.
+# The checker is unchanged and still runs standalone over any directory of
+# sidecars, including corpora banked before the removal.
 
 set -uo pipefail
 
@@ -77,8 +71,6 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 . "${SCRIPT_DIR}/_lib.sh"
 # shellcheck disable=SC1091
 . "${SCRIPT_DIR}/_diagnostic_redaction.sh"
-
-PYTHON="$(resolve_repo_python)"
 
 # N5: a bare `>` redirect per pulled file means re-running into an existing
 # $DEST silently truncates whatever was banked there before. Refuse instead
@@ -211,38 +203,9 @@ remote 'vcgencmd get_throttled 2>&1; \
     | tee "$DEST/power.txt" | sed 's/^/  power: /' >&2
 
 # --------------------------------------------------------------------- #
-# 6. Dump-ring captures — root-owned on the Pi, split WAV vs sidecar.
-#    Empty when the operator never created the ENABLED marker for this
-#    round; that is reported below by the integrity check, not here.
-# --------------------------------------------------------------------- #
-mkdir -p "$DEST/dumps/wav" "$DEST/dumps/sidecar"
-if remote "sudo tar -C /var/lib/jasper/xover-capture-dump -cf - --exclude=ENABLED . 2>/dev/null" \
-        | tar -C "$DEST/dumps" -xf - 2>/dev/null; then
-    find "$DEST/dumps" -maxdepth 1 -name '*.wav' -exec mv {} "$DEST/dumps/wav/" \; 2>/dev/null
-    find "$DEST/dumps" -maxdepth 1 -name '*.json' -exec mv {} "$DEST/dumps/sidecar/" \; 2>/dev/null
-fi
-n_wav=$(find "$DEST/dumps/wav" -name '*.wav' 2>/dev/null | wc -l | tr -d ' ')
-n_sidecar=$(find "$DEST/dumps/sidecar" -name '*.json' 2>/dev/null | wc -l | tr -d ' ')
-dumps_status="wav=$n_wav, sidecar=$n_sidecar"
-echo "dumps -> $DEST/dumps ($dumps_status)" >&2
-
-# --------------------------------------------------------------------- #
-# 7. Capture-integrity over the dump-ring sidecars. Its own 0/1/2 contract
-#    is unaffected by anything below — the bank-level exit-3 override
-#    (step 8) can still supersede it.
-# --------------------------------------------------------------------- #
-echo "" >&2
-echo "=== capture integrity (dumps/sidecar) ===" >&2
-PYTHONPATH="${REPO_ROOT}:${PYTHONPATH:-}" "$PYTHON" \
-    -m jasper.audio_measurement.capture_integrity "$DEST/dumps/sidecar"
-checker_rc=$?
-
-# --------------------------------------------------------------------- #
-# 8. Per-artifact summary, then the final verdict. A bank that never
+# 6. Per-artifact summary, then the final verdict. A bank that never
 #    pulled its own round identity (bundle and/or flow state) is not a
-#    bank, no matter how clean the dump-ring is — exit 3 overrides
-#    whatever the checker said. Otherwise this script's exit code IS the
-#    checker's.
+#    bank.
 # --------------------------------------------------------------------- #
 echo "" >&2
 echo "=== artifact pull summary ===" >&2
@@ -250,7 +213,6 @@ echo "  bundle:       $bundle_status" >&2
 echo "  state:        $state_status" >&2
 echo "  design-draft: $design_draft_status" >&2
 echo "  journal:      $journal_status" >&2
-echo "  dumps:        $dumps_status" >&2
 
 if (( bundle_ok == 0 )) || (( state_ok == 0 )); then
     echo "" >&2
@@ -259,9 +221,5 @@ if (( bundle_ok == 0 )) || (( state_ok == 0 )); then
 fi
 
 echo "" >&2
-if (( checker_rc == 0 )); then
-    echo "bank-crossover-round: CLEAN -> $DEST" >&2
-else
-    echo "bank-crossover-round: REFUSED (exit $checker_rc) -- every pulled file is kept under $DEST for forensics" >&2
-fi
-exit "$checker_rc"
+echo "bank-crossover-round: CLEAN -> $DEST" >&2
+exit 0
