@@ -749,15 +749,13 @@ def _ring_assets_present(monkeypatch):
 
 
 def force_ring_gates_pass(monkeypatch):
-    """Force the shm_ring activation gates to pass (assets + all geometry axes).
+    """Force the shm_ring activation gates to pass (assets + wire capability).
 
-    Every PREFLIGHT must pass for an arm to proceed: assets present, the conf.d
-    ring period matching outputd's resolved period, AND the Ring-A slot count
-    matching. Tests about the ARM SPINE (order, camilla-failure rollback, disarm)
-    stub all of them so they exercise the daemon path; the geometry-mismatch and
-    slot-mismatch behaviours have their own dedicated tests below (which do NOT use
-    this fixture). The stale-ring-file guard is also stubbed to a no-op so the
-    spine tests don't touch /dev/shm.
+    Tests about the ARM SPINE (order, camilla-failure rollback, disarm) stub
+    ring-asset presence and the ioplug wire-capability record so they exercise
+    the daemon path without a real conf.d/ioplug on the test host. The
+    stale-ring-file guard is also stubbed to a no-op so the spine tests don't
+    touch /dev/shm.
 
     ``RING_CONF_D`` points at the SHIPPED conf.d rather than a synthetic one:
     the four-ends wire gate reads both PCM blocks, and the file this repo
@@ -786,22 +784,6 @@ def force_ring_gates_pass(monkeypatch):
         lambda **kw: ra.RingAssetPresence(True, True, True),
     )
     monkeypatch.setattr(ra, "RING_CONF_D", str(SHIPPED_RING_CONF_D))
-    monkeypatch.setattr(
-        ra,
-        "ring_geometry_matches_outputd",
-        lambda outputd_period_frames, **kw: ra.RingGeometryMatch(
-            ok=True,
-            conf_period_frames=outputd_period_frames,
-            outputd_period_frames=outputd_period_frames,
-        ),
-    )
-    monkeypatch.setattr(
-        ra,
-        "ring_slot_geometry_matches_conf",
-        lambda fanin_n_slots, **kw: ra.RingSlotGeometryMatch(
-            ok=True, fanin_n_slots=fanin_n_slots, conf_n_slots=fanin_n_slots
-        ),
-    )
     monkeypatch.setattr(
         ra,
         "ring_ioplug_wire_supported",

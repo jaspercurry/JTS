@@ -259,10 +259,9 @@ def _effective_env_value(
     collapsing them here would make one of them wrong. ``source`` is meaningful
     only when the value is not ``None``.
 
-    ONE chain, three readers: this, :func:`resolve_effective_fanin_ring_slots`
-    and :func:`resolve_effective_fanin_wire_format`. Before it there were two
-    hand-rolled copies and one reader (:func:`_resolved_outputd_period_frames`)
-    that had never grown one.
+    ONE chain, read by :func:`resolve_effective_fanin_ring_slots` and
+    :func:`resolve_effective_fanin_wire_format` rather than each hand-rolling
+    the fallback.
     """
     raw = read_value(later_text, key)
     if raw is not None:
@@ -794,48 +793,6 @@ def ring_assets_ready() -> tuple[bool, str]:
     if presence.all_present:
         return True, "ring platform assets present (ioplug .so + conf.d + shm dir)"
     return False, "ring platform assets incomplete: " + "; ".join(presence.missing())
-
-
-def _resolved_outputd_period_frames(outputd_text: str) -> int:
-    """outputd's resolved ``JASPER_OUTPUTD_PERIOD_FRAMES`` (env chain, else default).
-
-    Same two-file chain systemd gives ``jasper-outputd`` — ``/etc/jasper/jasper.env``
-    first, ``/var/lib/jasper/outputd.env`` last, so the later file wins — resolved
-    through :func:`_effective_env_value`, the shared primitive the fan-in gates use.
-    When neither file declares it, outputd falls back to the packaged default
-    written on its unit (``DEFAULT_OUTPUTD_PERIOD_FRAMES`` = 1024). A malformed
-    value falls back to the default too.
-
-    READING ``outputd.env`` ALONE WAS A GATE BUG, and the two-file chain is not a
-    theoretical nicety here. ``outputd_latency_floor_actions`` gives an operator
-    key in ``jasper.env`` precedence by REMOVING the generated key from
-    ``outputd.env`` — so on a box using the documented operator seam, the period
-    lives ONLY in the file this reader used to skip. It then reported the 1024
-    default and ``ring_geometry_ready`` refused the arm while the RUNNING outputd
-    was correctly at 128 (reproduced on jts4, 2026-08-14). Its sibling
-    :func:`resolve_effective_fanin_ring_slots` already modelled the chain for
-    fan-in's identical ``jasper.env`` -> ``fanin.env`` ordering; this is the same
-    fix on the outputd side.
-
-    DELIBERATELY NOT MIRRORED INTO THE DOCTOR, which reads the same key through
-    a DIFFERENT and already-correct path: ``jasper.audio_runtime_plan``'s
-    layered resolver, which threads ``base_env`` and reports this exact shape as
-    ``source_kind="operator_env"`` from ``/etc/jasper/jasper.env``. The doctor
-    never had this bug, so there is nothing there to fix — the gap was this
-    module's alone.
-    """
-    from jasper.audio_runtime_plan import DEFAULT_OUTPUTD_PERIOD_FRAMES
-
-    raw, _ = _effective_env_value(
-        outputd_text, "JASPER_OUTPUTD_PERIOD_FRAMES", later_path=OUTPUTD_ENV_PATH
-    )
-    if raw is None:
-        return DEFAULT_OUTPUTD_PERIOD_FRAMES
-    try:
-        value = int(raw.strip())
-    except (TypeError, ValueError):
-        return DEFAULT_OUTPUTD_PERIOD_FRAMES
-    return value if value > 0 else DEFAULT_OUTPUTD_PERIOD_FRAMES
 
 
 def active_ring_endpoint_proof() -> tuple[bool, str]:
@@ -1483,32 +1440,6 @@ def ring_topology_ready(*, strict_unreadable: bool = False) -> tuple[bool, str]:
         "`jasper-output-topology-reset` to clear it to an unconfigured state, "
         "save an explicit passive stereo layout, then re-arm."
     )
-
-
-def ring_geometry_ready(outputd_text: str) -> tuple[bool, str]:
-    """The shm_ring PREFLIGHT gate for slot geometry: conf.d period == outputd period.
-
-    Checked BEFORE arming (after asset presence). The ``jts_ring_playback`` ioplug
-    opens Ring B with the conf.d ``period_frames``; outputd's ``ShmRingSource``
-    attaches with its resolved ``JASPER_OUTPUTD_PERIOD_FRAMES`` (one slot per DAC
-    period). A mismatch is a hard ``open()`` error, so CamillaDSP's ring load would
-    fail and the arm would roll back with a confusing daemon-level error. This
-    turns that into a crisp, actionable fail-closed reason. Mirrors
-    ``ring_assets_ready``'s fail-safe shape.
-    """
-    from jasper.ring_assets import ring_geometry_matches_outputd
-
-    match = ring_geometry_matches_outputd(_resolved_outputd_period_frames(outputd_text))
-    if match.ok:
-        # TODO: if shm_ring later permits operator chunk/target overrides, add
-        # a production validation boundary here and keep its source-derived
-        # CamillaDSP/ioplug contract aligned with the CI negotiation model.
-        return True, (
-            "ring slot geometry matches "
-            f"(conf.d period_frames={match.conf_period_frames} == outputd "
-            f"period_frames={match.outputd_period_frames})"
-        )
-    return False, match.detail
 
 
 def resolve_effective_fanin_ring_slots(fanin_text: str) -> FaninRingSlotsResolution:

@@ -814,11 +814,12 @@ DUAL_APPLE_USB_C_DAC_4CH = DacProfile(
     # ``jasper.audio_runtime_plan.outputd_latency_floor_actions`` emit ``unset``
     # for ``JASPER_OUTPUTD_PERIOD_FRAMES`` (its "no floor, or no recognized
     # profile, REMOVES stale generated values so the packaged defaults apply"
-    # arm) — outputd then falls to ``DEFAULT_PERIOD_FRAMES`` (1024) and
-    # ``ring_geometry_ready`` refuses the arm with "conf.d period 128 != outputd
-    # period 1024". (NOT ``_fallback_latency_floor_actions`` — that shell
-    # function is the interpreter-unavailable / command-failure fallback and
-    # never fires for a merely floorless profile.)
+    # arm) — outputd then falls to ``DEFAULT_PERIOD_FRAMES`` (1024), a conf.d
+    # period 128 vs outputd period 1024 divergence that fails CamillaDSP's ring
+    # ``open()`` hard rather than a clean refusal. (NOT
+    # ``_fallback_latency_floor_actions`` — that shell function is the
+    # interpreter-unavailable / command-failure fallback and never fires for a
+    # merely floorless profile.)
     #
     # ``outputd_period_frames`` is 128 == ``RING_SLOT_FRAMES``, so this composite
     # clears the ``ring_slot_fixed_128`` refusal without needing issue #2147.
