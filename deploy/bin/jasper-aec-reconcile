@@ -1473,6 +1473,21 @@ stop_disable_aec() {
     reset_failed_units jasper-aec-bridge.service jasper-aec-init.service
 }
 
+# The teardown every "no bridge is carrying the mic" exit shares.
+#
+# Disabling as well as stopping is what the direct-mic handovers must not lose:
+# the bridge's Restart=on-failure/RestartSec=2 would otherwise retry an enabled
+# failed unit past StartLimitBurst=4 into ITS StartLimitAction=reboot, and its
+# ExecCondition passes on disclosed_stale, so a later transient success would
+# open the single-open XVF capture device jasper-voice may be holding directly.
+# The UDP legs go with it: a JASPER_MIC_DEVICE_RAW=udp: left from an attempt
+# leaves voice's secondary UdpMicCapture spinning on a port nobody talks to.
+stop_aec_and_clear_legs() {
+    stop_disable_aec
+    write_leg_env "0" "0" "0" "0" "0" "0"
+    restart_outputd_if_needed
+}
+
 enable_start_aec() {
     # Bouncing the bridge replaces the UDP carrier jasper-voice reads, so a
     # pass that runs this can never also gate off the voice restart that
@@ -1703,12 +1718,16 @@ disclose_stale_chip_aec() {
         # verdict and leave the chip legs armed under a disclosure claiming
         # software AEC3. Pinned by
         # test_a_revoked_dac_verdict_flips_a_settled_chip_aec_box_onto_aec3.
+        #
+        # It is also what jasper-aec-init needs to re-run under its bypass
+        # profile (JASPER_AEC_CHIP_AEC_ENABLED=0) so the chip stops holding a
+        # half-applied alignment — which is why the attempt cannot be hoisted
+        # above it. jasper-outputd is NOT bounced here: this is an attempt, not
+        # a verdict, and the output owner is handed the leg vector the pass
+        # settles on, once, below.
         write_leg_env "1" "1" "0" "0" "0" "0"
-        restart_outputd_if_needed
         # enable_start_aec blocking-restarts init and the bridge — a mic outage
-        # of its own, and it re-runs init under JASPER_AEC_CHIP_AEC_ENABLED=0
-        # (its bypass profile) so the chip stops holding a half-applied
-        # alignment. A disclosure is LONG-LIVED by design, so paying that on
+        # of its own. A disclosure is LONG-LIVED by design, so paying that on
         # every udev event, deploy and wizard save for as long as it stands is
         # the deafness the gate exists to stop.
         if aec_stack_bounce_can_be_skipped; then
@@ -1727,25 +1746,13 @@ disclose_stale_chip_aec() {
     fi
     if [[ "$bridge_up" == "1" ]]; then
         # AEC3 now feeds the same udp:PORT carrier the chip beam did.
+        restart_outputd_if_needed
         set_env_var "$ENV_FILE" JASPER_MIC_DEVICE "$UDP_DEVICE"
         log "chip-AEC disclosed stale: ${reason}; running software AEC3"
     else
         # Nothing writes that carrier, and jasper-voice bound to an unfed
         # socket stalls into WatchdogSec=30s and StartLimitAction=reboot.
-        #
-        # Disable as well as stop, which is what park_managed_xvf's teardown
-        # bought and the direct-mic handover must not lose: the bridge's own
-        # Restart=on-failure/RestartSec=2 would otherwise retry an enabled
-        # failed unit past StartLimitBurst=4 into ITS StartLimitAction=reboot
-        # — and its ExecCondition now passes on disclosed_stale, so a later
-        # transient success would open the single-open XVF capture device
-        # jasper-voice is about to hold directly.
-        stop_disable_aec
-        # Nothing writes the UDP legs either, and a JASPER_MIC_DEVICE_RAW=udp:
-        # left from the attempt leaves voice's secondary UdpMicCapture spinning
-        # on a port nobody talks to.
-        write_leg_env "0" "0" "0" "0" "0" "0"
-        restart_outputd_if_needed
+        stop_aec_and_clear_legs
         set_env_var "$ENV_FILE" JASPER_MIC_DEVICE "$AEC_MIC_DEVICE"
         log "chip-AEC disclosed stale: ${reason}; AEC bridge is not active, using direct mic ${AEC_MIC_DEVICE}"
     fi
@@ -2097,9 +2104,7 @@ if grouping_voice_parked; then
     log "bonded follower (grouping-voice.env park flag): parking jasper-voice + AEC stack"
     run_systemctl disable --now jasper-voice.service
     reset_failed_units jasper-voice.service
-    stop_disable_aec
-    write_leg_env "0" "$LEG_RAW" "$LEG_DTLN" "$LEG_CHIP_AEC" "$LEG_CHIP_AEC_150" "$LEG_CHIP_AEC_210"
-    restart_outputd_if_needed
+    stop_aec_and_clear_legs
     exit 0
 fi
 
@@ -2113,9 +2118,7 @@ if managed_xvf_policy_applies; then
                 "unavailable" \
                 "$MANAGED_XVF_PARK_REASON" \
                 "Connect a supported XVF microphone"
-            stop_disable_aec
-            write_leg_env "0" "0" "0" "0" "0" "0"
-            restart_outputd_if_needed
+            stop_aec_and_clear_legs
             park_managed_xvf "$MANAGED_XVF_PARK_REASON"
             exit 0
         fi
@@ -2138,9 +2141,7 @@ if ! is_owned_mic_value "$CURRENT_MIC" "$UDP_DEVICE"; then
     # device. If it can't open, the daemon's exit-66 park (not a crash-loop)
     # is the safety net. Mirrors the "leave voice config untouched" contract.
     clear_voice_input_absent
-    stop_disable_aec
-    write_leg_env "0" "$LEG_RAW" "$LEG_DTLN" "$LEG_CHIP_AEC" "$LEG_CHIP_AEC_150" "$LEG_CHIP_AEC_210"
-    restart_outputd_if_needed
+    stop_aec_and_clear_legs
     exit 0
 fi
 
@@ -2148,9 +2149,7 @@ if [[ "$AEC_MODE" == "disabled" ]]; then
     if [[ -z "$PRESENT_MIC" ]]; then
         stop_voice
     fi
-    stop_disable_aec
-    write_leg_env "0" "$LEG_RAW" "$LEG_DTLN" "$LEG_CHIP_AEC" "$LEG_CHIP_AEC_150" "$LEG_CHIP_AEC_210"
-    restart_outputd_if_needed
+    stop_aec_and_clear_legs
     if [[ -n "$PRESENT_MIC" ]]; then
         if [[ "$CURRENT_MIC" != "$PRESENT_MIC" ]]; then
             set_env_var "$ENV_FILE" JASPER_MIC_DEVICE "$PRESENT_MIC"
@@ -2193,9 +2192,7 @@ fi
 if [[ -z "$PRESENT_MIC" ]]; then
     stop_voice
 fi
-stop_disable_aec
-write_leg_env "0" "$LEG_RAW" "$LEG_DTLN" "$LEG_CHIP_AEC" "$LEG_CHIP_AEC_150" "$LEG_CHIP_AEC_210"
-restart_outputd_if_needed
+stop_aec_and_clear_legs
 if [[ -n "$PRESENT_MIC" ]]; then
     if [[ "$CURRENT_MIC" != "$PRESENT_MIC" ]]; then
         set_env_var "$ENV_FILE" JASPER_MIC_DEVICE "$PRESENT_MIC"

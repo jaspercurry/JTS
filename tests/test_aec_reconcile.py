@@ -564,6 +564,41 @@ def test_a_disclosed_box_takes_the_direct_mic_when_the_bridge_is_not_active(
     assert "JASPER_MIC_DEVICE_RAW=udp:" not in body
 
 
+@pytest.mark.parametrize("bridge", ["restart_fails", "skipped"])
+def test_a_disclosed_fallback_hands_the_output_owner_one_settled_bounce(
+    tmp_path: Path, bridge: str
+) -> None:
+    # The fallback used to arm the software-AEC3 legs, bounce jasper-outputd,
+    # find the stack down, clear the legs and bounce it again — two outages of
+    # the output owner in one pass, the second undoing the first. The verdict
+    # now precedes the publication: outputd is restarted once, after the leg
+    # vector the pass settles on is already on disk, so it can never load the
+    # attempt's vector.
+    _write_env(tmp_path, "Array")
+    _write_mode(tmp_path)
+    _write_card(tmp_path, channels=6)
+    fake = _init_exit_systemctl(
+        tmp_path, aec_init.COMMISSION_REQUIRED_EXIT, bridge=bridge
+    )
+
+    result = _run_reconcile(
+        tmp_path, "--reason", "test", extra_env={"JASPER_SYSTEMCTL": str(fake)}
+    )
+
+    assert result.returncode == 0, result.stderr
+    lines = _systemctl_log(tmp_path).splitlines()
+    # Reading aec-init's exit status is the hand-off into the disclose path;
+    # the bounce before it armed the chip-reference producer aec-init samples.
+    handover = lines.index("show -p ExecMainStatus --value jasper-aec-init.service")
+    disclosed = lines[handover:]
+    bounces = _unit_command_indices(disclosed, "restart", "jasper-outputd.service")
+    assert len(bounces) == 1
+    # And it lands after the teardown that writes the settled legs, so no
+    # contradictory vector is observable between the write and the restart.
+    disabled = _unit_command_indices(disclosed, "disable", "jasper-aec-bridge.service")
+    assert disabled and max(disabled) < bounces[0]
+
+
 def test_reconcile_discloses_an_applied_alignment_its_proof_no_longer_matches(
     tmp_path: Path,
 ) -> None:
