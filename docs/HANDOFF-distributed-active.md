@@ -78,9 +78,9 @@ The compile/apply seam (`build_baseline_profile_candidate`,
 `apply_baseline_profile`,
 [baseline_profile.py](../jasper/active_speaker/baseline_profile.py)) threads
 `capture_device` into `emit_active_speaker_baseline_config`; the default
-resolves to Ring A on a solo box. `recompose_baseline_yaml` — the program-domain
-Layer-C re-emit — takes no capture parameter at all, because it only ever
-runs on the fan-in-fed program domain. `OutputTopology`
+resolves to Ring A on a solo box. `recompose_applied_baseline_yaml` — the
+program-domain Layer-C re-emit — takes no capture parameter at all, because
+it only ever runs on the fan-in-fed program domain. `OutputTopology`
 ([output_topology.py](../jasper/output_topology.py)) carries a pure-data
 `pairing_intent` (`solo | will_be_follower | has_follower`, absent == `solo`)
 that records design intent and seeds reconciler defaults; the reconciler

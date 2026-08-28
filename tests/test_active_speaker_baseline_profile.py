@@ -2635,54 +2635,15 @@ def test_baseline_profile_folds_declared_pad_into_the_sensitivity_gap(
     assert payload["corrections"]["woofer"]["gain_db"] == 0.0
 
 
-def test_recompose_baseline_yaml_matches_durable_builder_when_flat(
-    tmp_path: Path,
-) -> None:
-    # recompose_baseline_yaml is the carrier's composition seam (PR-3). With no
-    # preference EQ it must reproduce the durable builder's config byte-for-byte
-    # (it reuses the SAME derivation primitives), so applying flat EQ on an
-    # active speaker is a no-op on the protected graph.
-    from jasper.active_speaker.baseline_profile import recompose_baseline_yaml
-
-    topology = _dual_apple_topology()
-    draft = _draft(topology)
-    preview = build_crossover_preview(draft, created_at="2026-06-14T12:10:00Z")
-    measurements = _measurements(topology, tmp_path)
-    config_path = tmp_path / "active_speaker_baseline.yml"
-    built = build_baseline_profile_candidate(
-        topology,
-        design_draft=draft,
-        crossover_preview=preview,
-        measurements=measurements,
-        write=True,
-        state_path=tmp_path / "baseline_profile.json",
-        config_path=config_path,
-        validate=_valid_config,
-    )
-    # #1666: candidate lands on a source-fingerprinted sibling, not config_path.
-    durable_yaml = Path(built["config"]["path"]).read_text(encoding="utf-8")
-
-    flat_yaml, flat_issues = recompose_baseline_yaml(
-        topology,
-        crossover_preview=preview,
-        measurements=measurements,
-    )
-    assert flat_issues == []
-    assert flat_yaml == durable_yaml
-
-
 def test_recompose_applied_baseline_yaml_matches_the_durable_candidate_it_records(
     tmp_path: Path,
 ) -> None:
-    """The twin of the pin above, for the IMMUTABLE-snapshot recompose (#2572).
-
-    The sibling above pins the mutable-evidence seam
-    (``recompose_baseline_yaml``, off a live crossover preview). This pins the
-    production one — ``recompose_applied_baseline_yaml``, off the applied
-    record's frozen ``recomposition_snapshot`` — which is what the graph carrier
-    calls on every ``/sound`` save and every deploy reconcile. Nothing pinned it,
-    so the two halves of "the record can reproduce its own graph" were an
-    untested assumption.
+    """Pins the IMMUTABLE-snapshot recompose (#2572): re-deriving
+    ``recompose_applied_baseline_yaml`` from the applied record's frozen
+    ``recomposition_snapshot`` must reproduce the exact bytes the durable
+    builder wrote — this is what the graph carrier calls on every ``/sound``
+    save and every deploy reconcile. Nothing pinned it, so "the record can
+    reproduce its own graph" was an untested assumption.
 
     WHY THIS IS LOAD-BEARING NOW. It is the premise under the reconcile's
     content-aware no-op (``jasper.sound.runtime._running_config_is_intent``,
@@ -2726,149 +2687,6 @@ def test_recompose_applied_baseline_yaml_matches_the_durable_candidate_it_record
 
     assert issues == []
     assert recomposed == durable_yaml
-
-
-def test_recompose_baseline_yaml_inserts_preference_eq_and_stays_approved(
-    tmp_path: Path,
-) -> None:
-    # The keystone (invariant 2), end-to-end through the recompose seam: a
-    # +6 dB preference (a +4 dB highshelf -- a SHELF, the conservative
-    # easy-to-get-wrong case -- plus a +2 dB peak) rides PRE-SPLIT at unity,
-    # and the emitted graph still re-proves as GRAPH_APPROVED_ACTIVE_RUNTIME.
-    # Adding EQ never breaks the protection contract.
-    import re
-
-    from jasper.active_speaker.baseline_profile import recompose_baseline_yaml
-    from jasper.active_speaker.runtime_contract import (
-        GRAPH_APPROVED_ACTIVE_RUNTIME,
-        classify_camilla_graph,
-    )
-    from jasper.camilla_config_contract import FilterSpec
-
-    topology = _dual_apple_topology()
-    draft = _draft(topology)
-    preview = build_crossover_preview(draft, created_at="2026-06-14T12:10:00Z")
-    measurements = _measurements(topology, tmp_path)
-
-    prefs = [
-        FilterSpec(name="pref_hs", biquad_type="Highshelf", freq=8000.0, gain=4.0),
-        FilterSpec(name="pref_pk", biquad_type="Peaking", freq=120.0, gain=2.0, q=1.0),
-    ]
-    eq_yaml, eq_issues = recompose_baseline_yaml(
-        topology,
-        crossover_preview=preview,
-        measurements=measurements,
-        preference_filters=prefs,
-    )
-    assert eq_issues == []
-    assert "pref_hs:" in eq_yaml and "pref_pk:" in eq_yaml
-    assert "volume_limit: 0.0" in eq_yaml
-
-    # invariant 4 (emitter-side): preference boosts ride at unity just like the
-    # stereo /sound path. The active graph protects drivers by placing EQ
-    # pre-split, not by adding automatic program attenuation.
-    match = re.search(
-        r"active_baseline_headroom:\n\s+type: Gain\n\s+parameters: \{ gain: (-?\d+\.\d+)",
-        eq_yaml,
-    )
-    assert match is not None
-    assert float(match.group(1)) == 0.0
-
-    # invariant 5: the preference filter step is wired on the program channels
-    # strictly BEFORE the split mixer.
-    pipeline = eq_yaml[eq_yaml.index("\npipeline:"):]
-    pref_idx = pipeline.index("pref_hs, pref_pk")
-    mixer_idx = pipeline.index("type: Mixer")
-    assert pref_idx < mixer_idx
-
-    # invariant 2 (keystone): the protection contract still holds.
-    graph = classify_camilla_graph(
-        topology=topology,
-        text=eq_yaml,
-        bass_profile_summary=NO_BASS_EXTENSION_PROFILE_SUMMARY,
-    )
-    assert graph.classification == GRAPH_APPROVED_ACTIVE_RUNTIME
-    assert graph.allowed is True
-
-    # output_trim_db (manual headroom + loudness match) threads through recompose
-    # and folds into the SAME headroom gain (0 baseline + 4 trim = 4), so the
-    # active EQ apply honours the household's loudness setting; still APPROVED.
-    trimmed_yaml, trim_issues = recompose_baseline_yaml(
-        topology,
-        crossover_preview=preview,
-        measurements=measurements,
-        preference_filters=prefs,
-        output_trim_db=4.0,
-    )
-    assert trim_issues == []
-    trim_match = re.search(
-        r"active_baseline_headroom:\n\s+type: Gain\n\s+parameters: \{ gain: (-?\d+\.\d+)",
-        trimmed_yaml,
-    )
-    assert trim_match is not None and float(trim_match.group(1)) == -4.0
-    assert classify_camilla_graph(
-        topology=topology,
-        text=trimmed_yaml,
-        bass_profile_summary=NO_BASS_EXTENSION_PROFILE_SUMMARY,
-    ).allowed is True
-
-
-def test_recompose_baseline_yaml_inserts_room_peqs_and_folds_headroom(
-    tmp_path: Path,
-) -> None:
-    # Active room correction rides the same safe pre-split program bus as
-    # preference EQ, but positive room boosts are correction safety headroom:
-    # they fold into active_baseline_headroom instead of emitting a separate
-    # room_headroom gain.
-    import re
-
-    from jasper.active_speaker.baseline_profile import recompose_baseline_yaml
-    from jasper.active_speaker.runtime_contract import (
-        GRAPH_APPROVED_ACTIVE_RUNTIME,
-        classify_camilla_graph,
-    )
-
-    topology = _dual_apple_topology()
-    draft = _draft(topology)
-    preview = build_crossover_preview(draft, created_at="2026-06-14T12:10:00Z")
-    measurements = _measurements(topology, tmp_path)
-
-    room_peqs = [
-        PeqFilter(freq=45.0, q=5.0, gain=2.0),
-        PeqFilter(freq=80.0, q=6.0, gain=-4.0),
-        PeqFilter(freq=120.0, q=4.0, gain=1.0),
-    ]
-    room_yaml, room_issues = recompose_baseline_yaml(
-        topology,
-        crossover_preview=preview,
-        measurements=measurements,
-        room_peqs=room_peqs,
-    )
-    assert room_issues == []
-    assert room_yaml is not None
-    assert "room_peq_1:" in room_yaml and "room_peq_3:" in room_yaml
-    assert "room_headroom" not in room_yaml
-    match = re.search(
-        r"active_baseline_headroom:\n\s+type: Gain\n\s+parameters: \{ gain: (-?\d+\.\d+)",
-        room_yaml,
-    )
-    assert match is not None
-    assert float(match.group(1)) == -3.0
-
-    pipeline = room_yaml[room_yaml.index("\npipeline:"):]
-    assert (
-        pipeline.index("names: [room_peq_1, room_peq_2, room_peq_3]")
-        < pipeline.index("names: [active_baseline_headroom]")
-        < pipeline.index("type: Mixer")
-    )
-
-    graph = classify_camilla_graph(
-        topology=topology,
-        text=room_yaml,
-        bass_profile_summary=NO_BASS_EXTENSION_PROFILE_SUMMARY,
-    )
-    assert graph.classification == GRAPH_APPROVED_ACTIVE_RUNTIME
-    assert graph.allowed is True, graph.issues
 
 
 def _applied_mono_baseline(tmp_path: Path):
@@ -3293,23 +3111,6 @@ def test_layer_a_fingerprint_ignores_camilla_readback_null_defaults(
 
     assert active_layer_a_fingerprint(yaml_lib.safe_dump(readback)) == (
         active_layer_a_fingerprint(baseline_yaml)
-    )
-
-
-def test_recompose_baseline_yaml_refuses_when_preview_not_ready() -> None:
-    # When the saved evidence can no longer produce a baseline, recompose returns
-    # (None, issues) so the carrier refuses instead of emitting a partial graph.
-    from jasper.active_speaker.baseline_profile import recompose_baseline_yaml
-
-    topology = _dual_apple_topology()
-    yaml, issues = recompose_baseline_yaml(
-        topology,
-        crossover_preview={},
-        measurements={},
-    )
-    assert yaml is None
-    assert any(
-        issue["code"] == "baseline_crossover_preview_not_ready" for issue in issues
     )
 
 
