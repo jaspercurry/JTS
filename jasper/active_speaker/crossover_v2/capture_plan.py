@@ -94,7 +94,7 @@ CAPTURE_PLAN_TARGET = 3
 # This flow's own capture retry budget: the total admission attempts a v2
 # session may spend across its entries, including retaken captures.
 #
-# It is deliberately NOT `capture_relay.spec.MAX_CAPTURE_PLAN_ATTEMPTS`. Both
+# It is deliberately NOT `capture_protocol.MAX_CAPTURE_PLAN_ATTEMPTS`. Both
 # builders below passed that ceiling verbatim while the two happened to be
 # equal, which silently conflated a TRANSPORT limit (how many blob keys the
 # relay Worker will store for one session) with a POLICY choice (how many
@@ -216,7 +216,7 @@ MIN_CLOUD_VERIFY_POSITIONS = 6
 # Retake headroom a cloud plan carries ABOVE its entry count and its geometry
 # retries. Deliberately the same ABSOLUTE spare the shipped 3-entry flow has
 # always had (``CAPTURE_PLAN_MAX_ATTEMPTS - CAPTURE_PLAN_TARGET`` = 5), not the
-# same RATIO: `capture_relay.spec.MAX_CAPTURE_PLAN_ATTEMPTS`' own sizing note
+# same RATIO: `capture_protocol.MAX_CAPTURE_PLAN_ATTEMPTS`' own sizing note
 # says longer sets getting proportionally fewer retakes each "is the intended
 # direction — a 21-position session that needs 11 retakes has a problem retries
 # will not fix."
@@ -1473,7 +1473,7 @@ def assert_cloud_plan_fits_relay_capacity() -> None:
     """Raise unless the WORST-CASE cloud plan fits the relay's index space.
 
     The relay stores one blob per admitted attempt at ``capture_index =
-    attempt - 1``, so ``capture_relay.spec.MAX_CAPTURE_PLAN_ATTEMPTS`` bounds
+    attempt - 1``, so ``capture_protocol.MAX_CAPTURE_PLAN_ATTEMPTS`` bounds
     entries PLUS retakes for a whole session. That ceiling was sized (PR-3a)
     from the choreography constants above; this function is the executable
     statement of the dependency, so raising ``MAX_CLOUD_MEASURE_POSITIONS`` or
@@ -1481,7 +1481,7 @@ def assert_cloud_plan_fits_relay_capacity() -> None:
     here — loudly, in a hardware-free test — instead of stranding an operator
     mid-cloud when a blob index is refused.
     """
-    from jasper.capture_relay.spec import MAX_CAPTURE_PLAN_ATTEMPTS
+    from jasper.capture_protocol import MAX_CAPTURE_PLAN_ATTEMPTS
 
     # R16's walk and #2291's entry baseline are entries too — the walk
     # unconditionally, for the reason the shared producer above gives. Both
@@ -1614,7 +1614,7 @@ def cloud_plan_max_attempts(
     """This flow's retry budget for a cloud plan (a POLICY number).
 
     Entries + the bounded geometry retakes + ``CLOUD_RETAKE_ALLOWANCE``. Kept
-    separate from ``capture_relay.spec.MAX_CAPTURE_PLAN_ATTEMPTS`` (the relay's
+    separate from ``capture_protocol.MAX_CAPTURE_PLAN_ATTEMPTS`` (the relay's
     TRANSPORT ceiling) for the reason ``CAPTURE_PLAN_MAX_ATTEMPTS`` states:
     conflating the two is how a transport change silently becomes a product
     change. 23 at the full tier's shipped defaults, 14 for express.
@@ -1855,7 +1855,7 @@ def v2_first_begin_timeout_s() -> float:
     unparseable values fall back to the default, mirroring the
     ``JASPER_CAPTURE_ALIGNMENT_THRESHOLD`` pattern.
 
-    The ceiling is DERIVED from ``capture_relay.session.MAX_TTL_S`` rather than
+    The ceiling is DERIVED from ``capture_protocol.MAX_TTL_S`` rather than
     written here: nothing outliving the longest link the Worker grants can be
     honoured, whatever this knob says, and a second copy of that bound would be
     free to drift from it. Below the ceiling a hand-walked stage still spends
@@ -1863,7 +1863,7 @@ def v2_first_begin_timeout_s() -> float:
     what an operator has to weigh, and is the only place that says it.
     """
 
-    from jasper.capture_relay.session import MAX_TTL_S
+    from jasper.capture_protocol import MAX_TTL_S
 
     return bounded_env_float(
         "JASPER_V2_FIRST_BEGIN_TIMEOUT_S", V2_FIRST_BEGIN_TIMEOUT_S,
@@ -2034,7 +2034,7 @@ def build_v2_capture_plan(
     on, and the deployed page reads ``max_attempts``/``capture_target``
     generically with no plan-length cap of its own.
     """
-    from jasper.capture_relay.spec import CapturePlan, CapturePlanEntry
+    from jasper.capture_protocol import CapturePlan, CapturePlanEntry
 
     roles = tuple(roles_bands)
     # Every program below asks ``courtesy_prelude_for_phase`` for its OWN phase
@@ -2335,7 +2335,7 @@ def build_v2_verify_capture_plan(
     length must agree — a shape asking for more prompted poses than the table
     supplies is refused here rather than walked short.
     """
-    from jasper.capture_relay.spec import CapturePlan, CapturePlanEntry
+    from jasper.capture_protocol import CapturePlan, CapturePlanEntry
 
     # The anchor is stage 2's OPENING capture, so it is announced; the prompted
     # positions behind it are not (``courtesy_prelude_for_phase``). Two nominal

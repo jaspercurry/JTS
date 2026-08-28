@@ -694,7 +694,7 @@ def session_lateral_walk(
     arithmetic is a gate that refuses walks the relay would have taken, which is
     what the first one did.
     """
-    from jasper.capture_relay.spec import MAX_CAPTURE_PLAN_ATTEMPTS
+    from jasper.capture_protocol import MAX_CAPTURE_PLAN_ATTEMPTS
 
     off_regime = sorted({
         stop.regime for stop in request.stops if stop.regime != REGIME_PER_DRIVER

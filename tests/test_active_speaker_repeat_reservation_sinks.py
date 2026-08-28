@@ -178,7 +178,7 @@ def test_max_reservations_fits_every_budget_the_attempt_number_must_pass():
         "CAPTURE_PLAN_MAX_ATTEMPTS",
     )
     transport_ceiling = _constant_from_source(
-        "jasper/capture_relay/spec.py", "MAX_CAPTURE_PLAN_ATTEMPTS"
+        "jasper/capture_protocol.py", "MAX_CAPTURE_PLAN_ATTEMPTS"
     )
     # (1) plan-budget fit — the invariant that actually binds the v2 flow.
     assert MAX_RESERVATIONS <= flow_budget

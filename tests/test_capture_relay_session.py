@@ -1347,7 +1347,7 @@ def test_max_ttl_stays_in_lockstep_with_the_worker():
     """
     from pathlib import Path
 
-    from jasper.capture_relay.session import MAX_TTL_S
+    from jasper.capture_protocol import MAX_TTL_S
 
     worker_src = (
         Path(__file__).resolve().parent.parent / "relay" / "src" / "worker.js"

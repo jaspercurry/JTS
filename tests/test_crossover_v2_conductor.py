@@ -4335,7 +4335,7 @@ def test_the_stage_2_plan_walks_the_tiers_own_verify_shape():
     (``renderPlanAllDone`` reads the final wire index), and Express's copy
     claims LESS because it verified less (§1.3).
     """
-    from jasper.capture_relay.spec import MAX_CAPTURE_PLAN_ATTEMPTS
+    from jasper.capture_protocol import MAX_CAPTURE_PLAN_ATTEMPTS
 
     full = build_v2_verify_capture_plan(FC_HZ, plan_shape=resolve_plan_shape())
     assert full.capture_target == DEFAULT_CLOUD_VERIFY_POSITIONS == 6
@@ -5859,7 +5859,7 @@ def test_v2_session_spec_is_a_valid_protocol_3_crossover_spec():
 def test_shipped_v2_plans_keep_their_retry_budget_when_the_relay_ceiling_moves():
     """The v2 flow's retry budget is POLICY, not the relay's transport limit.
 
-    Both builders once passed ``capture_relay.spec.MAX_CAPTURE_PLAN_ATTEMPTS``
+    Both builders once passed ``capture_protocol.MAX_CAPTURE_PLAN_ATTEMPTS``
     verbatim, which was harmless only while the two constants happened to be
     equal at 8. Raising the relay ceiling to 32 for multi-position capture
     plans would otherwise have quadrupled these shipped flows' retry budget and
@@ -5871,10 +5871,8 @@ def test_shipped_v2_plans_keep_their_retry_budget_when_the_relay_ceiling_moves()
         build_v2_capture_plan,
         build_v2_verify_capture_plan,
     )
-    from jasper.capture_relay.spec import (
-        LEGACY_MAX_CAPTURE_PLAN_ATTEMPTS,
-        MAX_CAPTURE_PLAN_ATTEMPTS,
-    )
+    from jasper.capture_protocol import MAX_CAPTURE_PLAN_ATTEMPTS
+    from jasper.capture_relay.spec import LEGACY_MAX_CAPTURE_PLAN_ATTEMPTS
 
     assert CAPTURE_PLAN_MAX_ATTEMPTS == LEGACY_MAX_CAPTURE_PLAN_ATTEMPTS == 8
     assert CAPTURE_PLAN_MAX_ATTEMPTS <= MAX_CAPTURE_PLAN_ATTEMPTS
@@ -5917,7 +5915,7 @@ def test_worst_case_cloud_plan_fits_the_relay_index_space():
     The equality is asserted rather than the inequality alone: at zero headroom
     the next entry anyone adds must be a deliberate decision about what to spend
     it out of, not a test that quietly still passes."""
-    from jasper.capture_relay.spec import MAX_CAPTURE_PLAN_ATTEMPTS
+    from jasper.capture_protocol import MAX_CAPTURE_PLAN_ATTEMPTS
 
     assert_cloud_plan_fits_relay_capacity()
     worst_entries = cloud_capture_target(

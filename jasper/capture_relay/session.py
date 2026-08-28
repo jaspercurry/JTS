@@ -34,6 +34,9 @@ from jasper.active_speaker.crossover_v2.capture_source import (
     CaptureBeginDeferred,
     CaptureBeginRefused,
 )
+# Re-exported: the relay's TTL ceiling now lives with the shared capture
+# contract, and the relay host still reads it off this module.
+from jasper.capture_protocol import MAX_TTL_S as MAX_TTL_S
 from jasper.capture_relay.client import RelayClient, RelayError
 from jasper.capture_relay.cues import classify_failure_cue
 from jasper.capture_relay.crypto import (
@@ -58,20 +61,6 @@ logger = logging.getLogger(__name__)
 DEFAULT_TTL_S = 900
 DEFAULT_POLL_INTERVAL_S = 0.75
 DEFAULT_TIMEOUT_S = 120.0
-
-# The longest link the relay Worker grants (``MAX_TTL_S`` in
-# relay/src/worker.js, pinned in lockstep by tests/test_capture_relay_session.py).
-#
-# The Worker CLAMPS an over-large request rather than refusing it, so a caller
-# that asks for more is not an error there — it is a silent disagreement here.
-# ``open_capture`` publishes the requested ``ttl_s`` to the phone as
-# ``time_budget.session_s``, which is the number the household is told the link
-# lives for; a request the Worker quietly cut back would make that disclosure a
-# lie. So a caller sizing a TTL from its own budget clamps against this, and the
-# published number stays the granted one. It is a mirror of a separately
-# released artifact, exactly like ``LEGACY_MAX_CAPTURE_PLAN_ATTEMPTS``, not a
-# knob to tune from this side.
-MAX_TTL_S = 3600
 
 # How long the plan runner keeps polling through CONSECUTIVE transport failures
 # on ``client.status`` before it gives up and lets the failure end the session
@@ -1559,7 +1548,7 @@ def run_capture_plan(
     **Per-capture entries (schema_version 2, additive — crossover-
     measurement-productization-design.md §5.7).** When
     ``session.spec.capture_plan.entries`` is set, this runner exposes the
-    active :class:`~jasper.capture_relay.spec.CapturePlanEntry` (or ``None``
+    active :class:`~jasper.capture_protocol.CapturePlanEntry` (or ``None``
     on a plan with no entry table) to ``authorize_begin`` and
     ``consume_capture`` — declare one extra positional parameter to receive
     it (existing 2-/3-arg callables are unaffected; see

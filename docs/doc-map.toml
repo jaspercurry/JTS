@@ -1329,6 +1329,7 @@ safety = "connectivity-risk"
 # the Pi pulls from, feeding the EXISTING correction analysis. Three surfaces:
 # the Pi-side Python package, the Cloudflare Worker, and the static capture page.
 code = [
+  "jasper/capture_protocol.py",
   "jasper/capture_relay/spec.py",
   "jasper/capture_relay/crypto.py",
   "jasper/capture_relay/client.py",

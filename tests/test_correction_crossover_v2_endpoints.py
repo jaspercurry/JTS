@@ -92,10 +92,11 @@ from jasper.active_speaker.crossover_v2_flow import (
 )
 import jasper.active_speaker.baseline_profile as baseline_profile_mod
 
+import jasper.capture_protocol as capture_protocol
 import jasper.capture_relay.session as relay_session
+from jasper.capture_protocol import MAX_TTL_S
 from jasper.capture_relay.client import RelayClient
 from jasper.capture_relay.session import (
-    MAX_TTL_S,
     CaptureAborted,
     CaptureBeginRefused,
     CaptureResult,
@@ -670,7 +671,7 @@ def test_the_first_begin_ceiling_is_the_relay_link_ceiling(monkeypatch):
     monkeypatch.setenv("JASPER_V2_FIRST_BEGIN_TIMEOUT_S", str(MAX_TTL_S + 1))
     assert v2_first_begin_timeout_s() == V2_FIRST_BEGIN_TIMEOUT_S
 
-    monkeypatch.setattr(relay_session, "MAX_TTL_S", 7200)
+    monkeypatch.setattr(capture_protocol, "MAX_TTL_S", 7200)
     monkeypatch.setenv("JASPER_V2_FIRST_BEGIN_TIMEOUT_S", "7000")
     assert v2_first_begin_timeout_s() == 7000.0  # a twin would answer 300.0
 

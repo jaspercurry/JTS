@@ -94,6 +94,7 @@ SOURCE_RELAY = "relay"
 #: measurement-class capture card, with a ``JASPER_CAPTURE_SOURCE`` override.
 SOURCE_WIRED = "wired"
 
+
 class CaptureBeginRefused(RuntimeError):
     """The conductor refused a provider's ``begin_capture`` request.
 

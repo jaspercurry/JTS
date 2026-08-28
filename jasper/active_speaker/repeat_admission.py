@@ -48,7 +48,7 @@ MAX_ATTEMPTS = 4
 # The load-bearing relationship with the relay is an INEQUALITY, not equality:
 # the durable reservation attempt also indexes the commissioning bundle's
 # repeat captures, so it must never exceed the relay's per-plan attempt ceiling
-# (``capture_relay.spec.MAX_CAPTURE_PLAN_ATTEMPTS``). The two were both 8 until
+# (``capture_protocol.MAX_CAPTURE_PLAN_ATTEMPTS``). The two were both 8 until
 # that ceiling was raised to 32 for the multi-position capture choreography;
 # they were equal by coincidence of value, never by shared meaning. This number
 # is a per-driver infra circuit-breaker sized against MAX_ATTEMPTS above, so it
