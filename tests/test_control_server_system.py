@@ -22,7 +22,7 @@ REPO_ROOT = Path(__file__).resolve().parents[1]
 
 import pytest
 
-from jasper.control import state_aggregate
+from jasper.control import state_aggregate, usb_gadget_forensics
 from jasper.control.server import _make_handler
 
 from tests.control_server_fixtures import (
@@ -600,6 +600,36 @@ def test_usb_forensics_persists_intent_and_queues_fixed_action(
     assert body["running"] is True
     assert body["pending_action"] == "capture"
     assert (runtime / "request.capture").exists()
+
+
+@pytest.mark.parametrize(
+    "elapsed_sec, expect_running",
+    [
+        # A legally slow repair (deploy/usbsink/jasper-usbgadget-snapshot's
+        # REPAIR_RESTART_TIMEOUT_SEC-bounded restart plus its two
+        # jasper_usbgadget_refresh_consumers try-restarts) blocks status.json
+        # from being rewritten for up to REPAIR_WORST_CASE_SEC. That must
+        # still read "running", not false-alarm.
+        (usb_gadget_forensics.REPAIR_WORST_CASE_SEC - 10.0, True),
+        # Genuine staleness beyond the widened window must still be caught.
+        (usb_gadget_forensics.REPAIR_WORST_CASE_SEC + 40.0, False),
+    ],
+)
+def test_usb_forensics_freshness_tolerates_a_slow_repair(
+    monkeypatch, tmp_path, elapsed_sec, expect_running,
+):
+    monkeypatch.setattr(usb_gadget_forensics, "ENABLED_FILE", str(tmp_path / "forensics.env"))
+    (tmp_path / "forensics.env").write_text("JASPER_USB_GADGET_FORENSICS=1\n")
+    runtime = tmp_path / "run"
+    runtime.mkdir()
+    monkeypatch.setattr(usb_gadget_forensics, "RUNTIME_DIR", str(runtime))
+    (runtime / "status.json").write_text(json.dumps({
+        "running": True,
+        "sample_interval_sec": 10,
+        "last_sample_at": time.time() - elapsed_sec,
+    }))
+
+    assert usb_gadget_forensics.snapshot()["running"] is expect_running
 
 
 def test_usb_forensics_rejects_malformed_toggle(
