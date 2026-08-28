@@ -8990,110 +8990,10 @@ class CrossoverV2Session:
 _role_transfers = _priors.role_transfers
 
 
-async def confirm_graph_is_live(cam: Any, submitted_yaml: str) -> None:
-    """Prove the graph CamillaDSP is running is the one just submitted.
-
-    Contract: prove the SUBMITTED graph is live, tolerate benign serializer
-    normalization, reject a different graph. Submitted TEXT vs ``GetConfig``
-    cannot — a readback is a default-filled, normalized SUPERSET — so
-    ``ReadConfig`` canonicalizes first and STRICT equality still applies.
-    Evidence, and what was NOT measured:
-    ``docs/historical/crossover-measurement-v2-campaign-record.md``,
-    "Confirming a program graph is live".
-    """
-    from jasper.camilla import CamillaConfigRejected
-
-    from .commissioning_admission import (
-        ActiveCommissioningAdmissionError,
-        running_graph_fingerprint,
-    )
-    from .program_playback import ProgramPlaybackError
-
-    try:
-        normalized = await cam.normalize_config_raw(submitted_yaml, best_effort=False)
-        if not isinstance(normalized, str):
-            raise CamillaConfigRejected("normalization returned no config")
-    except CamillaConfigRejected as exc:
-        raise ProgramPlaybackError("program graph normalization failed") from exc
-    try:
-        matched = running_graph_fingerprint(
-            await cam.get_active_config_raw(best_effort=False)
-        ) == running_graph_fingerprint(normalized)
-    except ActiveCommissioningAdmissionError as exc:
-        raise ProgramPlaybackError("program graph readback is invalid") from exc
-    if not matched:
-        raise ProgramPlaybackError("program graph load was not confirmed")
-
-
-def bind_program_playback_seams(
-    cam: Any,
-    *,
-    bundle_dir: str,
-    artifact: Any,
-    config_dir: str,
-    program: ExcitationProgram,
-    wav_path: str,
-    topology: Any,
-    safety_profile: Mapping[str, Any],
-    role_targets: Mapping[str, str],
-    session_volume_db: float,
-    declared_sensitivities: Mapping[str, float] | None = None,
-    timeout_s: float = 60.0,
-) -> dict[str, Any]:
-    """The real CamillaController-backed seams for :func:`play_program`.
-
-    Returns the keyword mapping ``play_program(program,
-    session_volume_plan=..., **bind_program_playback_seams(...))`` consumes:
-
-    * ``play_wav`` — the verified-WAV source
-      (:func:`jasper.active_speaker.program_playback.verified_program_aplay`):
-      sha256-bound bytes through the stable-fd aplay path to
-      ``correction_substream``.
-    * ``readmit`` — :func:`jasper.active_speaker.program_admission.readmit_program_from_wav`
-      from a FRESH byte readback (the play-time gate).
-    * ``writer_lock`` — :func:`jasper.dsp_apply.dsp_writer_lock` on the shared
-      generated-config dir, held across the play so no other DSP writer can
-      replace the measurement graph mid-capture.
-
-    **The graph seams left this binding.** ``read_current_config_path``,
-    ``load_program_graph`` and ``restore_graph`` existed to swap the program
-    graph in and out around every stimulus;
-    :class:`~.crossover_v2.session_graph.MeasurementSessionGraph` now installs
-    it once per session and proves it before each one, so their per-stimulus
-    transport — two ``SetConfig`` calls, two ducks and the readback that
-    confirmed each — is gone rather than moved. ``confirm_graph_is_live`` is
-    still the proof; the session graph is what calls it.
-    """
-    from jasper.dsp_apply import dsp_writer_lock
-
-    from .program_admission import readmit_program_from_wav
-    from .program_playback import verified_program_aplay
-
-    async def _play_wav() -> Any:
-        return await verified_program_aplay(bundle_dir, artifact, timeout_s=timeout_s)
-
-    async def _readmit() -> Any:
-        # ``declared_sensitivities`` MUST match what the session composed
-        # against: readmission re-resolves every cap, so a program composed at
-        # the W6.5-derived HF ceiling would be refused here at the legacy one
-        # if the mapping were dropped on this side.
-        return readmit_program_from_wav(
-            program,
-            wav_path,
-            topology=topology,
-            safety_profile=safety_profile,
-            role_targets=role_targets,
-            session_volume_db=session_volume_db,
-            declared_sensitivities=declared_sensitivities,
-        )
-
-    return {
-        "play_wav": _play_wav,
-        "readmit": _readmit,
-        "writer_lock": lambda: dsp_writer_lock(
-            config_dir, source="crossover_v2_program"
-        ),
-    }
+# ``confirm_graph_is_live`` and ``bind_program_playback_seams`` moved whole to
+# :mod:`jasper.active_speaker.crossover_v2.composition` (band AE of this
+# file's dissolution map) — the engine's own composing module, importable
+# without this file.
 
 
 # --------------------------------------------------------------------------- #
@@ -9130,7 +9030,6 @@ __all__ = [
     "CrossoverV2Session",
     "CrossoverV2FlowError",
     "INTEGRITY_CHECK_SWEEP_HEARD",
-    "bind_program_playback_seams",
     "build_v2_capture_plan",
     "build_v2_session_spec",
     "build_v2_verify_capture_plan",

@@ -433,7 +433,7 @@ def _drive_one_capture(
     the play seam observed nothing at all.
     """
     from jasper.active_speaker import camilla_yaml as camilla_yaml_mod
-    from jasper.active_speaker import crossover_v2_flow as flow_mod
+    from jasper.active_speaker.crossover_v2 import composition as composition_mod
     from jasper.active_speaker.crossover_v2 import session_graph as session_graph_mod
     from jasper.active_speaker import program_playback as playback_mod
     from jasper.audio_measurement import program as program_mod
@@ -480,7 +480,7 @@ def _drive_one_capture(
             "writer_lock": lambda: _FakeWindow(),
         }
 
-    monkeypatch.setattr(flow_mod, "bind_program_playback_seams", _fake_seams)
+    monkeypatch.setattr(composition_mod, "bind_program_playback_seams", _fake_seams)
     monkeypatch.setattr(
         pa_mod, "analyze_program_capture", lambda *a, **k: "analysis"
     )
@@ -656,7 +656,7 @@ def test_the_engine_compose_leg_observes_and_holds_like_the_flow_leg(
     then plays.
     """
     from jasper.active_speaker import camilla_yaml as camilla_yaml_mod
-    from jasper.active_speaker import crossover_v2_flow as flow_mod
+    from jasper.active_speaker.crossover_v2 import composition as composition_mod
     from jasper.audio_measurement import program as program_mod
     from jasper.active_speaker.crossover_v2.contracts import (
         MEASURE_KIND_CANDIDATE,
@@ -684,7 +684,7 @@ def test_the_engine_compose_leg_observes_and_holds_like_the_flow_leg(
             "writer_lock": lambda: _FakeWindow(),
         }
 
-    monkeypatch.setattr(flow_mod, "bind_program_playback_seams", _fake_seams)
+    monkeypatch.setattr(composition_mod, "bind_program_playback_seams", _fake_seams)
 
     class _HoldRecordingPlan(_FakePlan):
         def __init__(self) -> None:

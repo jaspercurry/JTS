@@ -2334,7 +2334,11 @@ async def test_a_stage_two_session_swaps_no_graph_for_a_walk_with_no_captures(
     _stage_2(monkeypatch)
     session = captured["tuning"]
 
-    assert type(session.seams.graph).__name__ == "_NoRoutedPhasesGraph"
+    from jasper.active_speaker.crossover_v2.composition import (
+        NoRoutedPhasesGraph,
+    )
+
+    assert isinstance(session.seams.graph, NoRoutedPhasesGraph)
     assert await session.seams.graph.install() == "", (
         "a stage that measures through no graph cannot name one"
     )

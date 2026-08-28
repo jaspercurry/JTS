@@ -8437,7 +8437,7 @@ async def _restore_protected_neutral_program_graph() -> None:
     """
 
     from jasper.active_speaker.camilla_yaml import protected_neutral_program_origin
-    from jasper.active_speaker.crossover_v2_flow import confirm_graph_is_live
+    from jasper.active_speaker.crossover_v2.composition import confirm_graph_is_live
     from jasper.active_speaker.staging import DEFAULT_CAMILLA_CONFIG_DIR
     from jasper.dsp_apply import dsp_writer_lock
 

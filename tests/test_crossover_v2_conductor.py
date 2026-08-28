@@ -5743,9 +5743,13 @@ def test_bind_program_playback_seams_is_the_play_transaction_and_confirms_strict
     boot anchor stays put and a crash mid-session reboots onto the staged
     anchor — moved with them and is pinned in
     ``tests/test_crossover_v2_session_graph.py``. ``confirm_graph_is_live``
-    stayed here, so its strictness is still pinned here.
+    moved with the binding to ``crossover_v2.composition``; its strictness is
+    still pinned here.
     """
-    from jasper.active_speaker.crossover_v2_flow import bind_program_playback_seams
+    from jasper.active_speaker.crossover_v2 import composition
+    from jasper.active_speaker.crossover_v2.composition import (
+        bind_program_playback_seams,
+    )
     from jasper.camilla import CamillaConfigRejected
 
     calls: list = []
@@ -5817,27 +5821,28 @@ def test_bind_program_playback_seams_is_the_play_transaction_and_confirms_strict
 
     from jasper.active_speaker.program_playback import ProgramPlaybackError
 
-    # ``confirm_graph_is_live`` did NOT move — the session graph calls it, and
-    # its strictness is the same three claims it always made.
+    # ``confirm_graph_is_live`` moved WITH the binding to ``composition`` —
+    # the session graph calls it, and its strictness is the same three claims
+    # it always made.
     #
     # Default-fill tolerance: the readback is a normalized SUPERSET of the
     # submitted text, and a load is still CONFIRMED.
     cam.live = "program: graph\n"
-    asyncio.run(flow.confirm_graph_is_live(cam, "program: graph\n"))
+    asyncio.run(composition.confirm_graph_is_live(cam, "program: graph\n"))
     # A genuinely different graph is still rejected — the check is strict
     # equality of normalized fingerprints, not a subset comparison.
     cam.live = "different: graph\n"
     with pytest.raises(ProgramPlaybackError, match="load was not confirmed"):
         asyncio.run(
-            flow.confirm_graph_is_live(cam, "program: graph\n")
+            composition.confirm_graph_is_live(cam, "program: graph\n")
         )
     # Comment-only differences are benign: camilla's serde drops them.
     cam.live = "program: graph\n"
-    asyncio.run(flow.confirm_graph_is_live(cam, "# a note\nprogram: graph\n"))
+    asyncio.run(composition.confirm_graph_is_live(cam, "# a note\nprogram: graph\n"))
     # A submitted config camilla itself refuses is a NAMED refusal, distinct
     # from a mismatch, so hardware triage can tell the two apart.
     with pytest.raises(ProgramPlaybackError, match="normalization failed"):
-        asyncio.run(flow.confirm_graph_is_live(cam, "!!not-yaml\n"))
+        asyncio.run(composition.confirm_graph_is_live(cam, "!!not-yaml\n"))
 
 
 def test_v2_session_spec_is_a_valid_protocol_3_crossover_spec():
