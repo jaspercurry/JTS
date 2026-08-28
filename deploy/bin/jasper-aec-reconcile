@@ -1473,15 +1473,19 @@ stop_disable_aec() {
     reset_failed_units jasper-aec-bridge.service jasper-aec-init.service
 }
 
-# The teardown every "no bridge is carrying the mic" exit shares.
+# The teardown every "no bridge is carrying the mic" exit shares — parks,
+# direct-mic handovers, the disabled and custom-mic routes alike. Stopping,
+# disabling and clearing are correct at all of them: none wants a bridge, and
+# a stopped-but-enabled one is not a resting state.
 #
-# Disabling as well as stopping is what the direct-mic handovers must not lose:
-# the bridge's Restart=on-failure/RestartSec=2 would otherwise retry an enabled
-# failed unit past StartLimitBurst=4 into ITS StartLimitAction=reboot, and its
-# ExecCondition passes on disclosed_stale, so a later transient success would
-# open the single-open XVF capture device jasper-voice may be holding directly.
-# The UDP legs go with it: a JASPER_MIC_DEVICE_RAW=udp: left from an attempt
-# leaves voice's secondary UdpMicCapture spinning on a port nobody talks to.
+# Disabling as well as stopping is the load-bearing half. The bridge's
+# Restart=on-failure/RestartSec=2 retries an enabled failed unit past
+# StartLimitBurst=4 into ITS StartLimitAction=reboot, and a transient success
+# opens the single-open XVF capture device jasper-voice may be holding
+# directly — worst case a disclosed_stale box, whose alignment status the
+# bridge's ExecCondition admits. The UDP legs go with it: a
+# JASPER_MIC_DEVICE_RAW=udp: left from an attempt leaves voice's secondary
+# UdpMicCapture spinning on a port nobody talks to.
 stop_aec_and_clear_legs() {
     stop_disable_aec
     write_leg_env "0" "0" "0" "0" "0" "0"

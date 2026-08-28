@@ -524,15 +524,20 @@ def test_an_unappliable_alignment_runs_software_aec3_and_discloses(
     assert VOICE_RESTART_CMD in commands
 
 
-@pytest.mark.parametrize("bridge", ["restart_fails", "skipped"])
-def test_a_disclosed_box_takes_the_direct_mic_when_the_bridge_is_not_active(
+@pytest.mark.parametrize("bridge", ["active", "restart_fails", "skipped"])
+def test_a_disclosed_pass_settles_its_mic_leg_before_its_one_output_bounce(
     tmp_path: Path, bridge: str
 ) -> None:
-    # Nothing writes udp:9876 without the bridge, and jasper-voice bound to an
-    # unfed socket stalls into WatchdogSec=30s and the unit's
-    # StartLimitAction=reboot. Both shapes must reach the direct mic: a failed
-    # restart, and a restart that exits 0 because the ExecCondition SKIPPED the
-    # unit — `systemctl restart` cannot tell those apart, so the unit is asked.
+    # The verdict precedes the publication: jasper-outputd is bounced once, on
+    # the leg vector the pass settled on, so it can never load the attempt's.
+    #
+    # Three shapes reach the verdict. The bridge comes up and carries software
+    # AEC3; its restart fails; or its restart exits 0 because the ExecCondition
+    # SKIPPED the unit — `systemctl restart` cannot tell the last two apart, so
+    # the unit is asked. Without a bridge nothing writes udp:9876, and
+    # jasper-voice bound to an unfed socket stalls into WatchdogSec=30s and the
+    # unit's StartLimitAction=reboot, so those two take the direct mic.
+    carried = bridge == "active"
     env_file = _write_env(tmp_path, "Array")
     _write_mode(tmp_path)
     _write_card(tmp_path, channels=6)
@@ -547,56 +552,36 @@ def test_a_disclosed_box_takes_the_direct_mic_when_the_bridge_is_not_active(
     assert result.returncode == 0, result.stderr
     body = env_file.read_text()
     assert "JASPER_AEC_CHIP_AEC_ALIGNMENT_STATUS=disclosed_stale" in body
-    assert "JASPER_MIC_DEVICE=Array" in body
+    assert f"JASPER_MIC_DEVICE={'udp:9876' if carried else 'Array'}" in body
     assert not _marker(tmp_path).exists()
-    commands = _systemctl_log(tmp_path)
-    assert VOICE_RESTART_CMD in commands
-    # An enabled+failed bridge would Restart=on-failure every 2 s into its own
-    # StartLimitAction=reboot, and a transient success would grab the
-    # single-open XVF capture device jasper-voice now holds. Stop AND disable.
-    lines = commands.splitlines()
-    stopped = _unit_command_indices(lines, "stop", "jasper-aec-bridge.service")
-    disabled = _unit_command_indices(lines, "disable", "jasper-aec-bridge.service")
-    assert stopped and disabled
-    assert max(disabled) < lines.index(VOICE_RESTART_CMD)
-    # The UDP legs go with the bridge: a stale JASPER_MIC_DEVICE_RAW=udp: leaves
-    # voice's secondary capture spinning on a port nobody writes.
-    assert "JASPER_MIC_DEVICE_RAW=udp:" not in body
-
-
-@pytest.mark.parametrize("bridge", ["restart_fails", "skipped"])
-def test_a_disclosed_fallback_hands_the_output_owner_one_settled_bounce(
-    tmp_path: Path, bridge: str
-) -> None:
-    # The fallback used to arm the software-AEC3 legs, bounce jasper-outputd,
-    # find the stack down, clear the legs and bounce it again — two outages of
-    # the output owner in one pass, the second undoing the first. The verdict
-    # now precedes the publication: outputd is restarted once, after the leg
-    # vector the pass settles on is already on disk, so it can never load the
-    # attempt's vector.
-    _write_env(tmp_path, "Array")
-    _write_mode(tmp_path)
-    _write_card(tmp_path, channels=6)
-    fake = _init_exit_systemctl(
-        tmp_path, aec_init.COMMISSION_REQUIRED_EXIT, bridge=bridge
-    )
-
-    result = _run_reconcile(
-        tmp_path, "--reason", "test", extra_env={"JASPER_SYSTEMCTL": str(fake)}
-    )
-
-    assert result.returncode == 0, result.stderr
     lines = _systemctl_log(tmp_path).splitlines()
+    assert VOICE_RESTART_CMD in lines
     # Reading aec-init's exit status is the hand-off into the disclose path;
     # the bounce before it armed the chip-reference producer aec-init samples.
     handover = lines.index("show -p ExecMainStatus --value jasper-aec-init.service")
     disclosed = lines[handover:]
     bounces = _unit_command_indices(disclosed, "restart", "jasper-outputd.service")
     assert len(bounces) == 1
-    # And it lands after the teardown that writes the settled legs, so no
-    # contradictory vector is observable between the write and the restart.
+    if carried:
+        # The bridge is asked before the output owner is told, so the bounce
+        # carries the verdict rather than racing it.
+        restarted = _unit_command_indices(
+            disclosed, "restart", "jasper-aec-bridge.service"
+        )
+        assert restarted and max(restarted) < bounces[0]
+        return
+    # An enabled+failed bridge would Restart=on-failure every 2 s into its own
+    # StartLimitAction=reboot, and a transient success would grab the
+    # single-open XVF capture device jasper-voice now holds. Stop AND disable —
+    # and that teardown writes the settled legs, so it precedes the bounce.
+    stopped = _unit_command_indices(disclosed, "stop", "jasper-aec-bridge.service")
     disabled = _unit_command_indices(disclosed, "disable", "jasper-aec-bridge.service")
-    assert disabled and max(disabled) < bounces[0]
+    assert stopped and disabled
+    assert max(disabled) < bounces[0]
+    assert max(disabled) < lines.index(VOICE_RESTART_CMD)
+    # The UDP legs go with the bridge: a stale JASPER_MIC_DEVICE_RAW=udp: leaves
+    # voice's secondary capture spinning on a port nobody writes.
+    assert "JASPER_MIC_DEVICE_RAW=udp:" not in body
 
 
 def test_reconcile_discloses_an_applied_alignment_its_proof_no_longer_matches(
