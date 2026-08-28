@@ -659,6 +659,46 @@ def _enhanced_aec_status() -> dict:
     return _aec_endpoints._enhanced_aec_status()
 
 
+def _run_usbmic_systemctl(*args: str) -> subprocess.CompletedProcess[str]:
+    return subprocess.run(
+        ["systemctl", *args],
+        check=False,
+        capture_output=True,
+        text=True,
+        timeout=5.0,
+    )
+
+
+def _reset_usb_mic_apply_unit() -> None:
+    """Fail-soft and best-effort: a reset-failed failure must never block
+    the restart it precedes.  The unit is a bare oneshot with no
+    RemainAfterExit, so systemd normally GCs it between runs, and
+    reset-failed against an already-unloaded unit routinely exits nonzero
+    (#3237)."""
+    try:
+        result = _run_usbmic_systemctl("reset-failed", _USB_MIC_APPLY_UNIT)
+    except (OSError, subprocess.SubprocessError) as exc:
+        log_event(
+            logger,
+            "usb_mic.reset_failed_skipped",
+            unit=_USB_MIC_APPLY_UNIT,
+            error=str(exc),
+            level=logging.WARNING,
+        )
+        return
+    if result.returncode != 0:
+        log_event(
+            logger,
+            "usb_mic.reset_failed_skipped",
+            unit=_USB_MIC_APPLY_UNIT,
+            returncode=result.returncode,
+            detail=(result.stderr or result.stdout).strip().replace(
+                "\n", " | ",
+            ),
+            level=logging.WARNING,
+        )
+
+
 def _schedule_usb_gadget_recompose() -> bool:
     """Hand delayed, debounced apply to systemd before returning to the client.
 
@@ -669,48 +709,35 @@ def _schedule_usb_gadget_recompose() -> bool:
     each explicit user action gets a fresh, bounded retry budget.
     """
 
-    commands = (
-        (
-            "retry_budget_reset",
-            ["systemctl", "reset-failed", _USB_MIC_APPLY_UNIT],
-        ),
-        (
-            "enqueue",
-            ["systemctl", "restart", "--no-block", _USB_MIC_APPLY_UNIT],
-        ),
-    )
-    for phase, command in commands:
-        try:
-            result = subprocess.run(
-                command,
-                check=False,
-                capture_output=True,
-                text=True,
-                timeout=5.0,
-            )
-        except (OSError, subprocess.SubprocessError) as exc:
-            log_event(
-                logger,
-                "usb_mic.recompose_failed",
-                unit=_USB_MIC_APPLY_UNIT,
-                phase=phase,
-                error=str(exc),
-                level=logging.ERROR,
-            )
-            return False
-        if result.returncode != 0:
-            log_event(
-                logger,
-                "usb_mic.recompose_failed",
-                unit=_USB_MIC_APPLY_UNIT,
-                phase=phase,
-                returncode=result.returncode,
-                detail=(result.stderr or result.stdout).strip().replace(
-                    "\n", " | ",
-                ),
-                level=logging.ERROR,
-            )
-            return False
+    _reset_usb_mic_apply_unit()
+
+    try:
+        result = _run_usbmic_systemctl(
+            "restart", "--no-block", _USB_MIC_APPLY_UNIT,
+        )
+    except (OSError, subprocess.SubprocessError) as exc:
+        log_event(
+            logger,
+            "usb_mic.recompose_failed",
+            unit=_USB_MIC_APPLY_UNIT,
+            phase="enqueue",
+            error=str(exc),
+            level=logging.ERROR,
+        )
+        return False
+    if result.returncode != 0:
+        log_event(
+            logger,
+            "usb_mic.recompose_failed",
+            unit=_USB_MIC_APPLY_UNIT,
+            phase="enqueue",
+            returncode=result.returncode,
+            detail=(result.stderr or result.stdout).strip().replace(
+                "\n", " | ",
+            ),
+            level=logging.ERROR,
+        )
+        return False
     log_event(
         logger,
         "usb_mic.recompose_scheduled",
