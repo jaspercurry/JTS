@@ -988,7 +988,9 @@ def test_ring_edge_width_ready_refuses_when_the_coupling_stops_narrowing(
     assert "S32_LE" in detail
     assert "S16_LE" in detail
     assert "capture_kwargs_for_coupling" in detail
-    assert "keeping loopback" in detail
+    # Fails closed (ADR-0100), never a fallback — the reason code this gate
+    # actually carries, not the English sentence around it.
+    assert "ADR-0100" in detail
 
 
 def test_default_ring_gates_order_puts_each_gate_after_what_makes_it_meaningful():

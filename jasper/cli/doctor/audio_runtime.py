@@ -2003,8 +2003,9 @@ def check_ring_ioplug_provenance() -> CheckResult:
                 label,
                 "fail",
                 "the ring arm will be REFUSED on this box: "
-                f"{support.detail}. Cost until then: loopback on a flat box, a "
-                "parked content lane on a roleful one. Command: bash "
+                f"{support.detail}. Cost until then: a roleful box's content "
+                "lane parks (ADR-0178), catching what would otherwise be a "
+                "CamillaDSP crash-loop at open(). Command: bash "
                 "scripts/deploy-to-pi.sh",
             )
     record = ring_assets.read_ring_ioplug_provenance()

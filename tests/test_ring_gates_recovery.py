@@ -946,7 +946,9 @@ def test_an_unparseable_declared_wire_refuses_instead_of_raising(
         ok, detail = gate()
         assert ok is False, f"{gate.__name__} did not refuse"
         assert RING_WIRE_FORMAT_ENV_VAR in detail
-        assert "keeping loopback" in detail
+        # Fails closed (ADR-0100), never a fallback — the reason code this gate
+        # actually carries, not the English sentence around it.
+        assert "ADR-0100" in detail
 
 
 def test_wire_gate_says_so_when_it_could_not_read_the_graph(monkeypatch, tmp_path):
