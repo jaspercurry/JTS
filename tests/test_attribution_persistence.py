@@ -19,7 +19,6 @@ import math
 import shutil
 import warnings
 from pathlib import Path
-from types import SimpleNamespace
 
 import numpy as np
 import pytest
@@ -36,7 +35,6 @@ from jasper.active_speaker.crossover_v2_flow import (
     assemble_cloud_group_result,
     cloud_position_capture,
 )
-from jasper.capture_relay.session import CaptureResult
 from jasper.attribution.findings import (
     EVIDENCE_STORE_BUNDLE,
     EvidenceRef,
@@ -818,143 +816,6 @@ def _carve_outs() -> list[dict]:
             ],
         }
     ]
-
-
-def test_the_capture_ring_sidecar_gains_the_index_it_never_had(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    """§6's four-store problem, at the store where it bit hardest.
-
-    WO-0 found the operator capture ring carrying NEITHER the bundle id nor
-    the relay session id — only an epoch-microsecond filename stamp — which is
-    why the SHA-256 of the WAV bytes became the corpus's only reliable join,
-    and why directory mtime misrouted (the ~08:27 session lives in one bundle
-    while the bundle whose mtime IS 08:27 holds the previous evening's run).
-    """
-
-    from jasper.web import correction_crossover_v2 as v2host
-
-    dump = tmp_path / "ring"
-    dump.mkdir()
-    (dump / v2host.XOVER_CAPTURE_DUMP_ENABLED_MARKER).write_text("1")
-    monkeypatch.setattr(v2host, "XOVER_CAPTURE_DUMP_DIR", dump)
-
-    v2host._maybe_retain_capture(
-        phase=PHASE,
-        result=None,
-        wav=b"RIFF-not-really-a-wav",
-        analysis=None,
-        bundle_session_id="7f54494228cc",
-    )
-
-    sidecars = sorted(dump.glob("*.json"))
-    assert len(sidecars) == 1
-    sidecar = json.loads(sidecars[0].read_text())
-    identity = read_session_identity(sidecar)
-    assert identity is not None
-    assert identity.session_id == "7f54494228cc"
-    # And the full digest rides alongside the 12-char browsing prefix: a
-    # prefix is not a verifier.
-    assert len(sidecar["wav_sha256"]) == 64
-    assert sidecar["wav_sha256"].startswith(sidecar["wav_sha256_12"])
-
-
-def test_an_unbound_capture_still_retains_rather_than_refusing(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    """Retention is operator forensics and must never become a gate. A caller
-    with no bundle in scope writes a sidecar without the identity key, which
-    reads as legacy — the same state every pre-WO-1 sidecar is in."""
-
-    from jasper.web import correction_crossover_v2 as v2host
-
-    dump = tmp_path / "ring"
-    dump.mkdir()
-    (dump / v2host.XOVER_CAPTURE_DUMP_ENABLED_MARKER).write_text("1")
-    monkeypatch.setattr(v2host, "XOVER_CAPTURE_DUMP_DIR", dump)
-
-    v2host._maybe_retain_capture(
-        phase="check", result=None, wav=b"bytes", analysis=None
-    )
-
-    sidecar = json.loads(sorted(dump.glob("*.json"))[0].read_text())
-    assert read_session_identity(sidecar) is None
-
-
-def test_the_capture_ring_sidecar_records_the_phone_integrity_report(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    """Issue #2151: capture-side vs host-side splice attribution, without WAVs.
-
-    The 2026-08-05 R15 checkpoint burned three takes to ±128-sample (one render
-    quantum) discontinuities that came from the capture window losing focus.
-    Nothing on disk recorded that, so the only way to tell a capture-side splice
-    from a host-side one was to re-analyse the audio. The phone now reports what
-    it observed and the retained sidecar keeps it verbatim.
-    """
-
-    from jasper.web import correction_crossover_v2 as v2host
-
-    dump = tmp_path / "ring"
-    dump.mkdir()
-    (dump / v2host.XOVER_CAPTURE_DUMP_ENABLED_MARKER).write_text("1")
-    monkeypatch.setattr(v2host, "XOVER_CAPTURE_DUMP_DIR", dump)
-
-    report = {
-        "focus_lost": True,
-        "focus_losses": 1,
-        "focus_events": [{"kind": "blur", "ms": 4210}],
-        "blocks": 940,
-        "block_gaps": 0,
-        "block_gap_frames": 0,
-        "silent_blocks": 0,
-    }
-    v2host._maybe_retain_capture(
-        phase=PHASE,
-        result=CaptureResult(wav=b"bytes", capture_integrity=report),
-        wav=b"bytes",
-        analysis=None,
-    )
-
-    sidecar = json.loads(sorted(dump.glob("*.json"))[0].read_text())
-    assert sidecar["capture_integrity"] == report
-    # The exact asymmetry the field exists to expose: the page lost focus while
-    # the render graph stayed continuous, which puts the discontinuity UPSTREAM
-    # of the worklet rather than in the audio graph or on the Pi.
-    assert sidecar["capture_integrity"]["focus_lost"] is True
-    assert sidecar["capture_integrity"]["block_gaps"] == 0
-
-
-@pytest.mark.parametrize("report", [None, {}, "not-a-dict"])
-def test_an_unreported_capture_integrity_leaves_the_key_absent(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, report: object
-) -> None:
-    """ABSENT, never a default (#2151).
-
-    An older capture page reports nothing. Writing `{}` or a synthesized
-    "clean" record would let a later reader conclude the take was measured and
-    found sound — a claim no one made. The key's absence is the honest state,
-    and it is what a corpus scan must be able to distinguish.
-    """
-
-    from jasper.web import correction_crossover_v2 as v2host
-
-    dump = tmp_path / "ring"
-    dump.mkdir()
-    (dump / v2host.XOVER_CAPTURE_DUMP_ENABLED_MARKER).write_text("1")
-    monkeypatch.setattr(v2host, "XOVER_CAPTURE_DUMP_DIR", dump)
-
-    v2host._maybe_retain_capture(
-        phase=PHASE,
-        result=SimpleNamespace(device=None, setup=None, capture_integrity=report),
-        wav=b"bytes",
-        analysis=None,
-    )
-
-    sidecar = json.loads(sorted(dump.glob("*.json"))[0].read_text())
-    assert "capture_integrity" not in sidecar
-    # The rest of the sidecar is unaffected — a missing report is not a failure.
-    assert len(sidecar["wav_sha256"]) == 64
 
 
 def test_the_cloud_artifact_and_its_findings_share_one_identity(

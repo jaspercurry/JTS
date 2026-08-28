@@ -584,9 +584,8 @@ def _bind_measure_captures(dumps_dir: Path) -> list[dict[str, Any]]:
 
     Found by :data:`~.evidence_packet.RING_SIDECAR_GLOB` and paired with the WAV
     in the sidecar's own sibling ``wav/`` — the same rule
-    :func:`~.round_views._dump_ring_captures` and
-    :func:`~.feature_classifier.load_round_captures` use, so a ``--dumps`` path
-    cannot come to mean three different directories.
+    :func:`~.feature_classifier.load_round_captures` uses, so a ``--dumps`` path
+    cannot come to mean two different directories.
 
     Sidecars are deduplicated by ``wav_sha256``: a corpus may hold several
     re-analyses of one capture, and they are one capture, not several.

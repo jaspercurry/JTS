@@ -1051,8 +1051,7 @@ def test_an_apply_that_answers_200_but_did_not_apply_is_a_failure(checkout):
 
 @pytest.mark.parametrize("bank_exit,expected_rc,summarised", [
     (0, 0, True),    # clean
-    (1, 0, True),    # nothing to grade: no dump-ring sidecars, not a dirty round
-    (2, 9, False),   # dirty captures
+    (1, 9, False),   # bash's own failure — no longer overloaded as "nothing to grade"
     (3, 9, False),   # the bank could not pull the round's own identity
     (4, 9, False),   # the destination was already used
 ])

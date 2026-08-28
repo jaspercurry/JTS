@@ -47,7 +47,6 @@ import asyncio
 import concurrent.futures
 import dataclasses
 import functools
-import hashlib
 import json
 import logging
 import math
@@ -104,7 +103,6 @@ from jasper.active_speaker.crossover_v2.round_anchor import (
 # adds no cycle and no import cost worth deferring — every other flow symbol in
 # this module stays lazily imported inside its own function, as before.
 from jasper.active_speaker.capture_provenance import (
-    CaptureProvenance,
     CaptureProvenanceRecorder,
     record_capture_provenance,
 )
@@ -187,48 +185,6 @@ V2_RELAY_KIND_VERIFY = "crossover_v2:verify"
 # name them.
 FINDING_HOUSEHOLD_REFS_KEY = _durable.FINDING_HOUSEHOLD_REFS_KEY
 MAX_PERSISTED_SUM_POINTS = _durable.MAX_PERSISTED_SUM_POINTS
-
-# --------------------------------------------------------------------------- #
-# operator-debug capture retention (Part 2 — off by default, bounded)
-# --------------------------------------------------------------------------- #
-#
-# Productizes a hot-patch that used to live directly in ``_analyze`` and kept
-# getting silently wiped by every deploy (runtime Python is copied fresh from
-# the rsync checkout — see AGENTS.md on the /opt/jasper runtime).
-# An operator investigating a hardware failure creates
-# ``XOVER_CAPTURE_DUMP_DIR / "ENABLED"``; every subsequent CHECK/MEASURE/
-# VERIFY capture then persists its raw WAV + a diagnostic-summary sidecar
-# here for offline analysis. ABSENT by default → zero behavior change for
-# real households. Delete the marker (or the whole directory) to disable and
-# reclaim the disk budget below; this is deliberately removable, not a
-# permanent feature.
-XOVER_CAPTURE_DUMP_DIR = Path("/var/lib/jasper/xover-capture-dump")
-# The operator-created enable marker's filename, INSIDE XOVER_CAPTURE_DUMP_DIR.
-# Excluded from ring-buffer pruning below (see `_prune_capture_dump`) — the
-# marker is not a capture artifact, and without this exclusion the ring
-# buffer could eventually delete its own on/off switch (the marker is
-# typically the oldest file in the directory, so a naive oldest-first count/
-# byte cap would evict it first), silently re-disabling retention the
-# operator explicitly turned on.
-XOVER_CAPTURE_DUMP_ENABLED_MARKER = "ENABLED"
-# Ring-buffer caps, bounded BOTH ways so an operator who forgets to disable
-# this can't fill the 1 GB Pi's SD card. Counts every capture file in the
-# directory (a WAV and its JSON sidecar are two entries; the enable marker
-# is not counted), oldest-first deletion.
-XOVER_CAPTURE_DUMP_MAX_FILES = 90
-XOVER_CAPTURE_DUMP_MAX_BYTES = 300 * 1024 * 1024  # 300 MB
-
-
-def capture_dump_enabled() -> bool:
-    """Is operator capture retention switched on right now?
-
-    ONE reader of the marker, because two moments of a capture now depend on
-    the answer: the play seam decides whether to observe the graph, and
-    ``_maybe_retain_capture`` decides whether to write the clip. Read fresh
-    every call — the operator creates and deletes the marker on a live
-    speaker, with no restart.
-    """
-    return (XOVER_CAPTURE_DUMP_DIR / XOVER_CAPTURE_DUMP_ENABLED_MARKER).exists()
 
 _state_lock = threading.RLock()
 _state_path_override: Path | None = None
@@ -3163,32 +3119,26 @@ def bind_production_analyze(
     (persisted with the session's evidence refs) records the per-phase
     ``{"applied": False}`` annotation.
 
-    ``phase`` (required, keyword-only, issue #1855) is the conductor's own
-    flow phase — ``crossover_v2_flow.CrossoverV2Session.consume_capture``
-    always passes it. It is NOT the same value as ``program.phase``: every
-    cloud position plays the verify-shaped summed sweep, so
-    ``program.phase == "verify"`` even during
-    PHASE_CLOUD_MEASURE/PHASE_CLOUD_VERIFY. Retention (below) must label a
-    capture with the flow's phase, never the program's, or every cloud
-    position gets retained as "verify" (the bug this fixes — 32 of 45
-    retained sidecars, per the 2026-07-29 WO-0 retrospective). No default:
-    see ``crossover_v2_flow.AnalyzeCapture``'s docstring for why a silent
-    fallback to ``program.phase`` is exactly the defect class being fixed.
+    ``phase`` (required, keyword-only) is the conductor's own flow phase —
+    ``crossover_v2_flow.CrossoverV2Session.consume_capture`` always passes it,
+    and ``crossover_v2_flow.AnalyzeCapture`` declares it. It is NOT the same
+    value as ``program.phase``: every cloud position plays the verify-shaped
+    summed sweep, so ``program.phase == "verify"`` even during
+    PHASE_CLOUD_MEASURE/PHASE_CLOUD_VERIFY. This binding no longer reads it —
+    the capture-dump ring that labelled clips by it is gone — but the
+    protocol keeps it, so the parameter stays until the protocol changes.
 
     ``provenance`` (optional) is the session's
     :class:`~jasper.active_speaker.capture_provenance.CaptureProvenanceRecorder`
     — the same object ``bind_production_play`` records into, and the only way a
-    retained capture can name the graph it went through. Omitted, retention
-    behaves exactly as before.
+    banked take can name the graph it went through.
 
     ``carry`` (optional) is the SECOND recorder, the one the banking seam
     drains. The shot stays single and stays here, because this is the only
     place in a capture's life that runs exactly once between the play that
-    observed the graph and the arm that decides whether to bank — but the ring
-    it used to feed alone is being deleted, and a value taken here and given to
-    nobody would make the recorder write-only. Re-recorded rather than
-    re-observed: ``CaptureProvenance`` is a snapshot the play seam already
-    took, so the second hop moves bytes, never readings. See
+    observed the graph and the arm that decides whether to bank. Re-recorded
+    rather than re-observed: ``CaptureProvenance`` is a snapshot the play seam
+    already took, so the second hop moves bytes, never readings. See
     ``bind_position_retention`` for the drain.
     """
 
@@ -3277,9 +3227,8 @@ def bind_production_analyze(
             capture_report=getattr(result, "capture_integrity", None),
         )
         # THIS capture's stimulus, consumed ONCE: a second analyze with no
-        # play between gets ``None``, never the last capture's context. Both
-        # consumers below read this one value — the ring (until it dies) and
-        # the banking seam, through ``carry``.
+        # play between gets ``None``, never the last capture's context. The
+        # banking seam is its one consumer, reached through ``carry``.
         taken = provenance.take() if provenance is not None else None
         if carry is not None:
             # DRAINED FIRST, unconditionally, and that is not tidiness. Banking
@@ -3294,208 +3243,9 @@ def bind_production_analyze(
             carry.take()
             if taken is not None:
                 carry.record(taken)
-        # #1855: retention labels the capture from the FLOW's phase (this
-        # function's own required ``phase`` argument), never from
-        # ``program.phase`` — see the docstring above and
-        # ``_maybe_retain_capture``.
-        _maybe_retain_capture(
-            phase=phase, result=result, wav=wav, analysis=analysis,
-            # WO-1: the ring is the store WO-0 found carrying NEITHER the
-            # bundle id nor the relay session id — only an epoch-microsecond
-            # filename stamp, which is why the SHA-256 of the WAV bytes ended
-            # up as the corpus's only reliable join. ``meta`` is the evidence
-            # ``refs`` dict, which already holds the bundle session id.
-            bundle_session_id=str((meta or {}).get("bundle_session_id") or ""),
-            provenance=taken,
-        )
         return analysis
 
     return _analyze
-
-
-def _prune_capture_dump(
-    dump_dir: Path, *, max_files: int, max_bytes: int, phase: str = "unknown",
-) -> None:
-    """Oldest-first ring-buffer prune, bounded by BOTH file count and bytes.
-
-    Genuinely never raises. An operator is expected to `ls`/`scp`/`rm` this
-    directory WHILE captures keep landing — that is the documented usage —
-    so a file can legitimately vanish between one step and the next here.
-    Every ``.stat()``/``.unlink()`` is individually guarded (a file that
-    vanished mid-prune is just skipped, not fatal), and the WHOLE body is
-    additionally wrapped so any other OSError this doesn't anticipate still
-    degrades to a WARN instead of propagating out of ``_maybe_retain_capture``
-    and crashing the measurement (the exact bug class a disappearing-file
-    review finding caught: the old version's sort/sum `.stat()` calls sat
-    outside any try/except).
-    """
-    try:
-        entries = [
-            p for p in dump_dir.iterdir()
-            if p.is_file() and p.name != XOVER_CAPTURE_DUMP_ENABLED_MARKER
-        ]
-        sized: list[tuple[Path, float, int]] = []
-        for p in entries:
-            try:
-                st = p.stat()
-            except OSError:
-                continue  # vanished between iterdir() and stat() — skip it
-            sized.append((p, st.st_mtime, st.st_size))
-        sized.sort(key=lambda entry: entry[1])
-        total_bytes = sum(size for _p, _mtime, size in sized)
-        while sized and (len(sized) > max_files or total_bytes > max_bytes):
-            victim, _mtime, victim_bytes = sized.pop(0)
-            try:
-                victim.unlink()
-                total_bytes -= victim_bytes
-            except OSError:
-                continue
-    except OSError:
-        log_event(
-            logger, "correction.crossover_v2_capture_retain_failed",
-            level=logging.WARNING, phase=phase, exc_info=True,
-        )
-
-
-def _maybe_retain_capture(
-    *, phase: str, result: Any, wav: bytes, analysis: Any,
-    bundle_session_id: str = "",
-    provenance: CaptureProvenance | None = None,
-) -> None:
-    """Operator-debug capture retention (Part 2 — off by default, bounded).
-
-    Gated on ``XOVER_CAPTURE_DUMP_DIR / XOVER_CAPTURE_DUMP_ENABLED_MARKER``
-    existing; when it does not (the default for every real household), this
-    returns after one ``Path.exists()`` check — zero behavior change. When
-    present, persists
-    the raw captured WAV plus a diagnostic-summary JSON sidecar
-    (``program_analysis.analysis_diagnostic_summary`` — the same numbers the
-    v2 conductor's per-phase diag ``log_event`` calls surface, see
-    ``jasper.active_speaker.crossover_v2_flow``) so a retained clip is
-    self-describing without replaying the analysis, then ring-buffer prunes
-    the directory.
-
-    ``provenance`` is what the play seam observed while THIS capture's stimulus
-    was emitting (:mod:`jasper.active_speaker.capture_provenance`). Handed in,
-    never read here: by then the routing graph is restored and the fader may
-    have moved, so every one of those facts would be read after the fact.
-    ``None`` leaves the block absent rather than claiming an unmeasured context.
-
-    ``phase`` is the caller's resolved label (the flow's own phase — see
-    ``_analyze``'s docstring), not derived here. Before the #1855 fix this
-    function read ``program.phase`` directly, which mislabeled every cloud
-    position as "verify" (every cloud position plays the verify-shaped
-    summed sweep, so ``program.phase`` can't distinguish them) — 32 of 45
-    retained sidecars, per the 2026-07-29 WO-0 retrospective. Existing
-    on-disk sidecars from before the fix are NOT rewritten; they are
-    historical artifacts of the bug, not corrected in place.
-
-    Fully best-effort: this runs inside the real ``analyze`` seam, so ANY
-    failure here must never affect the measurement itself. Every failure
-    mode (disk full, permission, a non-``ProgramAnalysis`` double reaching
-    this from a test monkeypatch — see
-    ``test_production_analyze_threads_geometry_and_resolved_calibration``,
-    which stubs ``analyze_program_capture`` to return a bare string) is
-    caught and logged at WARN, never raised past this function.
-    """
-    if not capture_dump_enabled():
-        return
-    try:
-        from jasper.audio_measurement import program_analysis as _pa
-
-        XOVER_CAPTURE_DUMP_DIR.mkdir(parents=True, exist_ok=True)
-        device = getattr(result, "device", None) or {}
-        setup = getattr(result, "setup", None) or {}
-        device_label = str(device.get("label") or "unknown")
-        # Device labels are phone-reported free text (untrusted) — keep the
-        # filename filesystem-safe and short.
-        safe_device = "".join(
-            ch if (ch.isalnum() or ch in "-_") else "_" for ch in device_label
-        )[:40] or "unknown"
-        stamp = f"{time.time():.6f}".replace(".", "")
-        basename = f"{stamp}_{phase}_{safe_device}"
-        wav_path = XOVER_CAPTURE_DUMP_DIR / f"{basename}.wav"
-        sidecar_path = XOVER_CAPTURE_DUMP_DIR / f"{basename}.json"
-        wav_path.write_bytes(wav)
-        setup_mode, setup_calibration_id = _setup_calibration_observation(setup)
-        digest = hashlib.sha256(wav).hexdigest()
-        sidecar = {
-            "phase": phase,
-            "device_label": device_label,
-            "wav_bytes": len(wav),
-            "wav_sha256_12": digest[:12],
-            # WO-1 (attribution plan §6): the FULL digest, because a 12-char
-            # prefix is a browsing aid, not a verifier — and this ring is
-            # exactly where WO-0 had to fall back to content hashing for
-            # want of an index.
-            "wav_sha256": digest,
-            "setup_mode": setup_mode,
-            "setup_calibration_id": setup_calibration_id,
-            "diagnostic": _pa.analysis_diagnostic_summary(analysis),
-        }
-        # What the capture was taken THROUGH — fader, session volume, the graph
-        # actually loaded, the stimulus. Why a config path could not answer the
-        # graph half: ``capture_provenance``'s module docstring (2026-08-19).
-        if provenance is not None:
-            sidecar["provenance"] = provenance.to_dict()
-        # The phone's own account of the recording conditions (issue #2151):
-        # whether the capture page held the foreground, plus its render-graph
-        # block counters. Written ONLY when reported, so an older page leaves
-        # the key absent rather than claiming a clean take it never measured.
-        # This is what lets a ±128-sample splice be attributed to the capture
-        # side or the host side without re-analysing the WAV.
-        capture_integrity = getattr(result, "capture_integrity", None)
-        if isinstance(capture_integrity, dict) and capture_integrity:
-            sidecar["capture_integrity"] = capture_integrity
-        # The reconciliation of that report against what actually arrived
-        # (issue #2094) — the page's claim and the host's count side by side,
-        # with the losing hop named. Written whenever the analysis carries one,
-        # which is every capture analysed through the live seam; a test double
-        # that returns something other than a ProgramAnalysis leaves it absent.
-        frame_ledger = getattr(analysis, "frame_ledger", None)
-        if frame_ledger is not None:
-            sidecar["frame_ledger"] = frame_ledger.to_dict()
-        if bundle_session_id:
-            # The index this store never had. With it, a pulled ring sidecar
-            # joins to its bundle by id instead of by directory mtime — which
-            # WO-0 measured actively misrouting (the ~08:27 session lives in
-            # one bundle while the bundle whose mtime IS 08:27 holds the
-            # previous evening's run).
-            from jasper.attribution.session_identity import (
-                SessionIdentity,
-                stamp_session_identity,
-            )
-
-            stamp_session_identity(
-                sidecar, SessionIdentity(session_id=bundle_session_id)
-            )
-        sidecar_path.write_text(json.dumps(sidecar), encoding="utf-8")
-    except (OSError, ValueError, TypeError, AttributeError):
-        log_event(
-            logger, "correction.crossover_v2_capture_retain_failed",
-            level=logging.WARNING, phase=phase, exc_info=True,
-        )
-        return
-    log_event(
-        logger, "correction.crossover_v2_capture_retained",
-        phase=phase, bytes=len(wav), path=wav_path.name,
-    )
-    # Belt-and-suspenders: _prune_capture_dump is already internally
-    # never-raising, but this call site is guarded too so a future bug in
-    # prune (or an exception type it doesn't yet anticipate) still can't
-    # escape into the analyze seam and crash the measurement.
-    try:
-        _prune_capture_dump(
-            XOVER_CAPTURE_DUMP_DIR,
-            max_files=XOVER_CAPTURE_DUMP_MAX_FILES,
-            max_bytes=XOVER_CAPTURE_DUMP_MAX_BYTES,
-            phase=phase,
-        )
-    except (OSError, ValueError, TypeError, AttributeError):
-        log_event(
-            logger, "correction.crossover_v2_capture_retain_failed",
-            level=logging.WARNING, phase=phase, exc_info=True,
-        )
 
 
 def open_v2_evidence_store(topology: Any) -> tuple[Any, str]:
@@ -3726,14 +3476,10 @@ def bind_position_retention(
         # take banked with no analyze behind it names no provenance rather than
         # the previous capture's.
         #
-        # TODAY THE COMMON ANSWER IS "none", and not because captures go
-        # unobserved: the recorder is only fed when the capture-dump marker is
-        # present (``observing = provenance is not None and
-        # capture_dump_enabled()`` at the play seam), so an ordinary household
-        # session banks takes with no ``provenance`` key at all. That gate is
-        # the ring's, and it dies with the ring — the PR that deletes
-        # ``capture_dump_enabled`` has to re-express this condition or the
-        # carry starves permanently.
+        # An ordinary household session fills this: the play seam observes
+        # whenever it holds a recorder (``observing = provenance is not None``),
+        # with no marker and nothing else to switch on. "none" now means the
+        # take really was banked with no analyze behind it.
         carried = provenance.take() if provenance is not None else None
         if carried is not None:
             record["provenance"] = carried.to_dict()
@@ -4285,8 +4031,8 @@ def bind_production_play(
     deliberately does not, and no downstream reader can recover that from a
     file path — see that module for why. So the branch states it. The
     observation is taken as late as the seam allows (for CHECK/MEASURE, inside
-    the writer lock, after the load, immediately before the WAV handoff) and
-    only while retention is on — :func:`capture_dump_enabled`.
+    the writer lock, after the load, immediately before the WAV handoff), and
+    on every capture this binding holds a recorder for.
 
     **It is also the one owner of "at what level"** (#2925). Both branches call
     ``_hold_fader`` at that same instant — one seam, because the defect it
@@ -4469,13 +4215,16 @@ def bind_production_play(
                 verified_program_aplay,
             )
 
-            # Observing costs CamillaDSP round-trips, so it is bought only when
-            # retention is on; absent the marker it is one ``Path.exists()``.
+            # Observing costs CamillaDSP round-trips, and every capture now
+            # buys them: the banking seam drains this observation into the
+            # write-once record, so a session that skipped it would bank takes
+            # that name no graph and no fader. It used to be gated on the
+            # capture-dump marker as well; that ring is gone, and re-expressing
+            # this on the recorder alone is what keeps the carry fed.
             # The FADER HOLD below is not covered by this gate and never was
-            # meant to be (#2925): it buys one more read on every capture,
-            # retained or not, because it answers for the safety ledger rather
-            # than for the forensic record.
-            observing = provenance is not None and capture_dump_enabled()
+            # meant to be (#2925): it answers for the safety ledger rather than
+            # for the forensic record, so it runs even without a recorder.
+            observing = provenance is not None
 
             if phase in SUMMED_SWEEP_PHASES:
                 # The LIVE production graph IS the system under test — no graph
