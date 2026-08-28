@@ -1001,8 +1001,8 @@ emit_dac_format_for_recognized() {
 # Prints the format, or nothing when Python is unavailable.
 #
 # NO coupling token is passed. The ring is the one transport (ADR-0100), so
-# nothing selects on one and the policy function discards the argument. The
-# freshness that does matter lives inside Python: the ring-wire read
+# nothing selects on one and the policy function takes no such argument at
+# all. The freshness that does matter lives inside Python: the ring-wire read
 # (read_declared_ring_wire_format) opens /etc/jasper/jasper.env and
 # /var/lib/jasper/fanin.env itself on every call, so an operator's
 # JASPER_FANIN_RING_WIRE_FORMAT pin reaches this probe with no threading from

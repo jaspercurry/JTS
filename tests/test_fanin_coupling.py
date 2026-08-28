@@ -91,13 +91,13 @@ def test_content_lane_format_is_one_definition_for_both_ends_of_the_hop():
     emitted `playback: format:` and outputd's requested
     JASPER_OUTPUTD_CONTENT_FORMAT cannot disagree.
 
-    The answer is the ring wire's resolved format for this box, whatever token
-    is handed in — there is no second route to select (ADR-0100).
+    The answer is the ring wire's resolved format for this box — there is no
+    second route to select (ADR-0100), and the function takes no token to
+    pretend otherwise.
     """
     from jasper.fanin_coupling import content_lane_format_for_coupling
 
-    for raw in (None, "", "   ", "shm_ring", "loopback", "ring", "transport_pipe"):
-        assert content_lane_format_for_coupling(raw) == RING_WIRE_FORMAT_WIDE
+    assert content_lane_format_for_coupling() == RING_WIRE_FORMAT_WIDE
     # The answer is the kwargs' own value, not a second literal: it tracks
     # capture_kwargs_for_coupling, which is what actually reaches the emitters.
     assert (

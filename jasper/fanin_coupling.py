@@ -739,7 +739,7 @@ def capture_half(kwargs: Mapping[str, object]) -> dict[str, object]:
     return {key: value for key, value in kwargs.items() if key in CAPTURE_HALF_KEYS}
 
 
-def content_lane_format_for_coupling(raw: str | None = None) -> str:
+def content_lane_format_for_coupling() -> str:
     """The CamillaDSP→outputd content-hop sample format the ring carries.
 
     ONE definition of that hop's width, for both of its ends:
@@ -764,7 +764,6 @@ def content_lane_format_for_coupling(raw: str | None = None) -> str:
     Callers that need the format for an arbitrary sink want
     ``jasper.camilla_config_contract`` instead.
     """
-    del raw  # one transport: nothing here selects on a coupling token
     # Local import: this module stays stdlib-only at import time for the
     # socket-activated web surfaces (see the module docstring).
     from jasper.camilla_config_contract import DEFAULT_PLAYBACK_FORMAT
