@@ -3433,10 +3433,12 @@ def bind_position_retention(
     reads.
     """
     from jasper.active_speaker.bundles import (
+        CAPTURE_KIND_SEQUENTIAL,
         capture_artifact_relpath,
         register_capture,
     )
     from jasper.active_speaker.commissioning_evidence_store import EVIDENCE_ROOT
+    from jasper.active_speaker.crossover_v2.journey import PHASE_CHECK
     from jasper.active_speaker.crossover_v2.record_store import BankedRecordStore
 
     # The same store ``bind_v2_engine_seams`` binds as the engine's record
@@ -3517,9 +3519,19 @@ def bind_position_retention(
             # `artifact_manifest.json`, so the bundle does not describe the
             # audio it carries. The take id is the group — it is already what
             # `capture_artifact_relpath` above named the file by.
+            # CHECK and MEASURE play one recording that steps through every
+            # driver in turn, so neither is a summed capture — they are outside
+            # ``SUMMED_SWEEP_PHASES`` for the same reason. Every other take
+            # banked here (VERIFY, both position groups, the entry baseline)
+            # really is one summed sweep. The WAV placement above stays on the
+            # summed scheme either way; only the recorded kind splits.
             register_capture(
                 bundle_dir,
-                kind="summed",
+                kind=(
+                    CAPTURE_KIND_SEQUENTIAL
+                    if record.get("phase") in (PHASE_CHECK, PHASE_MEASURE)
+                    else "summed"
+                ),
                 relative_path=wav_rel,
                 payload={**record, "speaker_group_id": take_id},
             )
