@@ -5179,7 +5179,7 @@ class PositionGate:
     ABANDON (:meth:`abandon_hold`).
 
     **The mechanism is the shipped soft-hold, not a new one.**
-    :class:`~jasper.capture_relay.session.CaptureBeginDeferred` is the
+    :class:`~jasper.active_speaker.crossover_v2.capture_source.CaptureBeginDeferred` is the
     purpose-built non-terminal deferral: the Pi answers ``capture_deferred``,
     the phone parks on a wait screen with no affordance and re-posts the
     IDENTICAL begin every 1.5 s, the attempt budget is not spent, and the

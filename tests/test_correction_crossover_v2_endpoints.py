@@ -4210,7 +4210,7 @@ def test_the_eager_fit_is_invisible_to_the_speaker_page(monkeypatch):
     assert v2host.crossover_v2_status_block()["phase"] == "review"
 
 
-def test_the_held_set_offers_its_two_moves_to_a_wired_session(monkeypatch):
+def test_the_held_set_offers_its_two_moves_but_never_over_a_live_hold(monkeypatch):
     """#2881: on the WIRED source the confirm is the household's, on this page.
 
     The relay's held set is closed from the phone's own confirm screen, so the
@@ -4272,6 +4272,44 @@ def test_the_held_set_offers_its_two_moves_to_a_wired_session(monkeypatch):
         assert other["screen"] == "closing"
         assert other["next_action"] is None
         assert other["alternate_actions"] == []
+
+    # THE RETAKE WINDOW. Tapping Record-again puts the walk back at that slot
+    # and the gate holds its begin — but the group is still un-confirmed, so
+    # ``cloud_close`` keeps saying ``awaiting_confirm`` and this screen stays
+    # ``closing`` for the whole hold. Minting the pair through that window is
+    # what made every browser retake unreachable: the wizard shows one primary
+    # at a time, so a screen-level primary suppresses the walkthrough that
+    # renders the hold, the retake's prompt reached no surface at all, and the
+    # hold died at ``position_hold_expired`` 600 s later under a Save button.
+    # While a capture is held the confirm is not the household's move.
+    held = envelope_for({
+        "status": "awaiting_phone",
+        "source": "wired",
+        "position_pending": {
+            "index": 3,
+            "attempt": 2,
+            "degrees": 7,
+            "role": "onax",
+            "hand_released": True,
+            "prompt": {"progress": "p", "title": "t", "body": "b"},
+            "action": {
+                "id": "crossover_v2_position_ready",
+                "label": "l",
+                "endpoint": "/correction/crossover/v2/position-ready",
+                "body": {"index": 3, "degrees": 7},
+            },
+        },
+    })
+    assert held["screen"] == "closing"
+    assert held["next_action"] is None
+    assert held["alternate_actions"] == []
+    # Not busy — the household has something to do, it is just not the confirm.
+    assert held["busy"] is False
+    # The hold still reaches the renderer on the block it rides.
+    assert held["relay"]["position_pending"]["hand_released"] is True
+    # And the screen says something different from the un-held case, so the
+    # window is not a silent one.
+    assert held["verdict_text"] != wired["verdict_text"]
 
 
 def test_the_runner_starts_the_eager_fit_on_the_group_close_accept(monkeypatch):

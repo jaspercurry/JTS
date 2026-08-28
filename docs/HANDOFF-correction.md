@@ -1951,7 +1951,7 @@ GET  /crossover/envelope     commissioning screen envelope (dumb frontend):
                              verdict_text, nudges, next_action, progress, relay,
                              candidate_review, prediction, busy, findings,
                              round};
-                             schema v14
+                             schema v15
                              (CROSSOVER_V2_ENVELOPE_SCHEMA_VERSION — this
                              route dispatches to the v2 envelope, which is
                              the only flow since W5b). `prediction` is the

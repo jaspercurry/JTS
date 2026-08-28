@@ -157,32 +157,66 @@ assert.notEqual(relayStatus().textContent, holdingStatus);
 // -- state: the SCREEN takes the control back ------------------------------- //
 // The closing screen's Save / Record-again are `show_during_relay` primaries.
 // One primary at a time: the walkthrough stands down rather than competing.
-render(envelope(
-  { status: "awaiting_phone", source: "wired" },
-  {
-    next_action: {
-      id: "crossover_v2_complete",
-      label: "Save this measurement",
-      endpoint: "/correction/crossover/v2/complete",
-      body: {},
-      show_during_relay: true,
-    },
-    alternate_actions: [{
-      id: "crossover_v2_retake",
-      label: "Record the last spot again",
-      endpoint: "/correction/crossover/v2/retake",
-      body: {},
-      show_during_relay: true,
-    }],
-  },
-));
+// Labels come off the fixtures, so a re-word of the server's copy does not
+// need editing here — what is pinned is WHICH action reached the row.
+const CLOSING_SAVE = {
+  id: "crossover_v2_complete",
+  label: "Save this measurement",
+  endpoint: "/correction/crossover/v2/complete",
+  body: {},
+  show_during_relay: true,
+};
+const CLOSING_RETAKE = {
+  id: "crossover_v2_retake",
+  label: "Record the last spot again",
+  endpoint: "/correction/crossover/v2/retake",
+  body: {},
+  show_during_relay: true,
+};
+const CLOSING_ACTIONS = {
+  next_action: CLOSING_SAVE,
+  alternate_actions: [CLOSING_RETAKE],
+};
+const actionLabels = () =>
+  elements.get("crossover-action").children.map((node) => node.textContent);
+
+render(envelope({ status: "awaiting_phone", source: "wired" }, CLOSING_ACTIONS));
 assert.equal(walk().hidden, true);
 assert.equal(walkAction().children.length, 0);
-assert.deepEqual(
-  elements.get("crossover-action").children.map((node) => node.textContent),
-  ["Save this measurement", "Record the last spot again"],
-);
+assert.deepEqual(actionLabels(), [CLOSING_SAVE.label, CLOSING_RETAKE.label]);
 assertWiredStatus();
+
+// -- REGRESSION: a retake from the closing screen must not vanish ----------- //
+// The defect this pins: tapping Record-again puts the walk back at that slot
+// and the gate publishes a fresh hand-released hold — but the group stays
+// un-confirmed, so the screen is STILL `closing`. While the closing screen
+// mints its own `show_during_relay` primary, `yielded` is true and the panel
+// hides, so the retake's prompt rendered NOWHERE and the hold ran out its
+// 600 s budget under a Save button. The server now withholds the pair while a
+// hold is open; this is the JS half of that contract.
+render(envelope({
+  status: "awaiting_phone",
+  source: "wired",
+  position_pending: PENDING,
+}));  // closing + held: no screen primary, so the walk owns the screen
+assert.equal(walk().hidden, false);
+assert.deepEqual(actionLabels(), []);
+const retakeRelease = walkAction().children[0];
+assert.equal(retakeRelease.tag, "button");
+assert.equal(retakeRelease.textContent, PENDING.action.label);
+
+// …the release still posts the server's own body, and the screen then returns
+// to the closing pair once the walk finishes the re-recorded spot.
+posted.length = 0;
+nextEnvelope = envelope({ status: "awaiting_phone", source: "wired" });
+await retakeRelease.click();
+assert.deepEqual(posted, [{
+  path: "/correction/crossover/v2/position-ready",
+  body: PENDING.action.body,
+}]);
+render(envelope({ status: "awaiting_phone", source: "wired" }, CLOSING_ACTIONS));
+assert.equal(walk().hidden, true);
+assert.deepEqual(actionLabels(), [CLOSING_SAVE.label, CLOSING_RETAKE.label]);
 
 // -- state: WIND-DOWN — the captures are over ------------------------------- //
 // A retained prompt must not outlive the walk it described.
@@ -240,4 +274,4 @@ assert.equal(
   "Open the trusted capture page and follow its one next step.",
 );
 
-console.log(JSON.stringify({ ok: true, passed: 46 }));
+console.log(JSON.stringify({ ok: true, passed: 53 }));

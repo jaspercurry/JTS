@@ -1464,22 +1464,45 @@ def _closing_envelope(status: Mapping[str, Any]) -> dict[str, Any]:
     decisions — the same two the confirm screen has always offered, minted for
     the surface that can actually show them. Both carry ``show_during_relay``
     because the session they belong to is by definition still in flight.
+
+    **…but NOT while a capture is held.** Tapping "Record the last spot again"
+    puts the walk back at that slot, and the position gate holds its begin —
+    a hold that reaches this screen because the group is still un-confirmed,
+    so ``cloud_close`` keeps saying ``awaiting_confirm`` throughout. Minting
+    the pair through that window makes the two moves fight: a screen-level
+    primary suppresses the walkthrough that renders the hold (the wizard shows
+    one primary at a time), so the retake's own prompt would render NOWHERE
+    and the hold would run out its 600 s budget with the household looking at
+    a Save button. The state is not a conflict to arbitrate — while a capture
+    is held the confirm genuinely is not the household's move yet, and the
+    pair comes back on its own the moment the gate releases.
     """
     v2 = _v2(status)
     running = str(v2.get("cloud_close") or "") == CLOUD_CLOSE_RUNNING
-    wired = _wired_session(status) and not running
+    held = bool(_mapping(status.get("relay")).get("position_pending"))
+    on_wire = _wired_session(status)
+    wired = on_wire and not running and not held
+    if running:
+        verdict = (
+            "JTS is working out your correction from the measurements — this "
+            "takes a few seconds."
+        )
+    elif wired:
+        verdict = (
+            "All spots measured. Save this measurement, or record the last "
+            "spot again."
+        )
+    elif on_wire:
+        # Held. The only way to reach this screen with a hold open is a retake
+        # the household just asked for, so point at the step that is waiting
+        # rather than repeat that everything is measured.
+        verdict = "Re-recording one spot — follow the step below."
+    else:
+        verdict = "All spots measured — confirm on the measurement page."
     return _envelope(
         screen="closing",
         active_step="measure",
-        verdict=(
-            "JTS is working out your correction from the measurements — this "
-            "takes a few seconds."
-            if running
-            else "All spots measured. Save this measurement, or record the "
-            "last spot again."
-            if wired
-            else "All spots measured — confirm on the measurement page."
-        ),
+        verdict=verdict,
         next_action={
             "id": "crossover_v2_complete",
             "label": "Save this measurement",
@@ -2542,6 +2565,21 @@ def _wired_session(status: Mapping[str, Any]) -> bool:
     slot, so an offer outliving the session would be an offer to a 409.
     """
     return str(_mapping(status.get("relay")).get("source") or "") == SOURCE_WIRED
+
+
+def _follow_the_prompts(status: Mapping[str, Any]) -> str:
+    """WHERE the household reads the next spot's instruction, as a clause.
+
+    Two measuring screens have to name the place, and on the WIRED source
+    there is no measurement page to name — the walkthrough under the
+    live-session block is where each spot's prompt renders (#2881). One
+    definition rather than the same conditional written at both sites.
+    """
+    return (
+        "follow the step below"
+        if _wired_session(status)
+        else "follow the prompts on the measurement page"
+    )
 
 
 def _step_payload(active_step: str, done_steps: set[str]) -> list[dict[str, str]]:
@@ -3815,8 +3853,8 @@ def build_crossover_envelope_v2(status: Mapping[str, Any]) -> dict[str, Any]:
         env = _envelope(
             screen="measure", active_step="measure",
             verdict=(
-                "JTS is measuring from a few different spots — follow the "
-                "prompts on the measurement page. Moving the microphone between "
+                f"JTS is measuring from a few different spots — "
+                f"{_follow_the_prompts(status)}. Moving the microphone between "
                 "spots is what lets JTS tell the speaker apart from the room."
             ),
             next_action=None,
@@ -3831,8 +3869,8 @@ def build_crossover_envelope_v2(status: Mapping[str, Any]) -> dict[str, Any]:
         env = _envelope(
             screen="measure", active_step="measure",
             verdict=(
-                "JTS is measuring from a few spots either side of the mark, and "
-                "then back on it — follow the prompts on the measurement page. "
+                f"JTS is measuring from a few spots either side of the mark, "
+                f"and then back on it — {_follow_the_prompts(status)}. "
                 "Moving the microphone is what shows how the speaker's drivers "
                 "hand over to each other away from the middle."
             ),
