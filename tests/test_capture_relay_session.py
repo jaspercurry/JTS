@@ -1338,7 +1338,7 @@ def test_max_ttl_stays_in_lockstep_with_the_worker():
     """The Pi's ``MAX_TTL_S`` mirrors the Worker's, and the Worker CLAMPS.
 
     Both halves matter. The mirror is what lets a caller sizing a long link
-    (``correction_crossover_v2.relay_link_ttl_s``, issue #2509) clamp on this
+    (``correction_crossover_v2_relay.relay_link_ttl_s``, issue #2509) clamp on this
     side; the clamp is WHY it has to. An over-large request is not refused by
     the relay — it is silently cut back — and the session publishes its
     requested ``ttl_s`` to the phone as ``time_budget.session_s``, so an

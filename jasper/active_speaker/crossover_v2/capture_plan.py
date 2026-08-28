@@ -2636,7 +2636,7 @@ def session_wall_clock_ceiling_s(capture_plan: Any) -> float:
     rides ``capture_relay.session.DEFAULT_TTL_S``, and neither the split nor
     this ceiling makes it fit inside that link — this docstring must not be read
     as claiming it does.** A REMOTE stage does fit, because
-    ``jasper.web.correction_crossover_v2.relay_link_ttl_s`` mints its link from
+    ``jasper.web.correction_crossover_v2_relay.relay_link_ttl_s`` mints its link from
     this ceiling rather than from the default (issue #2509). At the 19-entry
     maximum the unclamped value would be 3720 s and the plan's hard cap binds at
     3600 s.

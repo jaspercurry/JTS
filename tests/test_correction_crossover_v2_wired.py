@@ -1619,19 +1619,9 @@ def test_a_relay_session_offers_no_local_retake_signal():
     prepared = v2host.V2PreparedSession(
         label="x", open=lambda *a: None,
         run_and_consume=lambda c, s: None, request_stop=lambda: None,
+        capture_source=SOURCE_RELAY,
     )
     assert prepared.request_retake is None
-    assert prepared.request_complete is None
-
-
-def test_prepared_session_defaults_to_the_relay_source():
-    """The dataclass default keeps every existing constructor call an
-    unchanged relay session."""
-    prepared = v2host.V2PreparedSession(
-        label="x", open=lambda *a: None,
-        run_and_consume=lambda c, s: None, request_stop=lambda: None,
-    )
-    assert prepared.capture_source == SOURCE_RELAY
     assert prepared.request_complete is None
 
 

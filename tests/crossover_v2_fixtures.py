@@ -737,7 +737,7 @@ def _plan_spy(mp) -> list:
 
 def _run_phase(conductor, index, attempt) -> dict:
     # Mirrors the production host's own authorize wrapper
-    # (``correction_crossover_v2.build_v2_run_and_consume``): admission, and
+    # (``correction_crossover_v2_relay.build_v2_run_and_consume``): admission, and
     # ONLY admission. It used to call ``confirm_cloud_measure_group(index)``
     # first, because the household's confirmation was inferred from a begin
     # past the cloud group; since the two-stage split (work order D1) the

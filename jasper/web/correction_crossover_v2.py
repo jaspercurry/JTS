@@ -4431,7 +4431,7 @@ def bind_production_play(
 # --------------------------------------------------------------------------- #
 #
 # The plan runners themselves are the providers'
-# (jasper.web.correction_crossover_v2_relay, re-published above, and
+# (jasper.web.correction_crossover_v2_relay, reached where it lives, and
 # jasper.web.correction_crossover_v2_wired). These stay HERE because they are
 # host policy a provider merely drives: the volume lifecycle it is handed, the
 # group-close seam, and the eager-fit starter it calls back into.
@@ -5447,6 +5447,11 @@ class V2PreparedSession:
     open: Callable[..., Any]
     run_and_consume: Callable[[Any, Any], Any]
     request_stop: Callable[[], None]
+    #: Which capture source this session opened on (#2662):
+    #: ``capture_source.SOURCE_RELAY`` or ``SOURCE_WIRED`` (local capture —
+    #: no relay client, no link, and the hosting must not require a
+    #: configured relay).
+    capture_source: str
     #: This session's position gate, or ``None`` for a tap-paced one. Built for
     #: either GATED shape (``V2PlanShape.positions_gated``): the remote tier,
     #: and a hand-walked round on the wired source.
@@ -5454,11 +5459,6 @@ class V2PreparedSession:
     #: block the envelope renders, and routes the release POST to
     #: :meth:`PositionGate.release`.
     position_gate: PositionGate | None = None
-    #: Which capture source this session opened on (#2662):
-    #: ``capture_source.SOURCE_RELAY`` (the default — the hosting mints a
-    #: relay link) or ``SOURCE_WIRED`` (local capture — no relay client, no
-    #: link, and the hosting must not require a configured relay).
-    capture_source: str = SOURCE_RELAY
     #: The wired session's completion signal (work order D1) — the local
     #: stand-in for the phone's authenticated complete-capture-set event.
     #: ``None`` on a relay session, whose signal rides the relay protocol.

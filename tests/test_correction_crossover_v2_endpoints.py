@@ -4,7 +4,7 @@
 
 """W5a endpoint binding: the v2 host through the REAL relay plan runner.
 
-Integration tests drive :func:`jasper.web.correction_crossover_v2.build_v2_run_and_consume`
+Integration tests drive :func:`jasper.web.correction_crossover_v2_relay.build_v2_run_and_consume`
 through the REAL :func:`jasper.capture_relay.session.run_capture_plan` against
 the faithful in-memory relay backend + scripted phone driver from
 ``tests/test_capture_relay_plan.py`` — no network, no Worker, no page:
