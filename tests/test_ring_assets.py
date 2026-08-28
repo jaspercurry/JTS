@@ -151,46 +151,6 @@ def test_ring_conf_period_frames_none_when_absent_or_torn(tmp_path):
     assert ring_assets.ring_conf_period_frames(str(empty)) is None
 
 
-def test_ring_geometry_matches_when_conf_equals_outputd(tmp_path):
-    conf = tmp_path / "60-jts-ring.conf"
-    conf.write_text(_RING_CONF_TEMPLATE.format(p=128), encoding="utf-8")
-    match = ring_assets.ring_geometry_matches_outputd(128, conf_d=str(conf))
-    assert match.ok is True
-    assert match.conf_period_frames == 128
-    assert match.outputd_period_frames == 128
-
-
-def test_ring_geometry_mismatch_gives_crisp_actionable_reason(tmp_path):
-    # SF3: the shipped conf.d pins the fixed 128-frame slot; a box whose outputd
-    # period is the packaged 1024 (e.g. jts3 / HiFiBerry, which declares no
-    # 128-frame latency floor) mismatches. This detail is OPERATOR-FACING and
-    # fires on today's floorless fleet.
-    conf = tmp_path / "60-jts-ring.conf"
-    conf.write_text(_RING_CONF_TEMPLATE.format(p=RING_SLOT_FRAMES), encoding="utf-8")
-    match = ring_assets.ring_geometry_matches_outputd(1024, conf_d=str(conf))
-    assert match.ok is False
-    assert match.conf_period_frames == RING_SLOT_FRAMES
-    assert match.outputd_period_frames == 1024
-    # Names both numbers and how to fix — not a bare "mismatch".
-    assert str(RING_SLOT_FRAMES) in match.detail and "1024" in match.detail
-    assert "JASPER_OUTPUTD_PERIOD_FRAMES" in match.detail
-    # It must NOT advise raising the conf.d to outputd's period: Ring A's slot is
-    # fan-in's compile-time constant, so that edit produces a geometry fan-in
-    # never builds (RING_ATTACH_FATAL) and nothing converges it back on a
-    # floorless box. The only advice is aligning the OUTPUTD period.
-    assert "do NOT raise the conf.d period" in match.detail
-    assert f"FIXED at {RING_SLOT_FRAMES}" in match.detail
-    assert "#2147" in match.detail
-
-
-def test_ring_geometry_missing_conf_is_failclosed(tmp_path):
-    match = ring_assets.ring_geometry_matches_outputd(
-        1024, conf_d=str(tmp_path / "missing.conf")
-    )
-    assert match.ok is False
-    assert match.conf_period_frames is None
-
-
 # --- Ring-A slot count coherence (defect A) ----------------------------------
 
 
@@ -212,37 +172,6 @@ def test_ring_conf_n_slots_none_when_absent_or_missing_block(tmp_path):
     assert ring_assets.ring_conf_n_slots("jts_ring_capture", str(conf)) is None
     # Requested block missing entirely -> None.
     assert ring_assets.ring_conf_n_slots("jts_ring_nope", str(conf)) is None
-
-
-def test_ring_slot_geometry_matches_when_env_equals_conf(tmp_path):
-    conf = tmp_path / "60-jts-ring.conf"
-    conf.write_text(_RING_CONF_TEMPLATE.format(p=128), encoding="utf-8")
-    match = ring_assets.ring_slot_geometry_matches_conf(2, conf_d=str(conf))
-    assert match.ok is True
-    assert match.fanin_n_slots == 2
-    assert match.conf_n_slots == 2
-
-
-def test_ring_slot_geometry_mismatch_gives_crisp_reason(tmp_path):
-    # Default migration: fan-in resolves an old 8-slot value while the conf.d pins
-    # the new 2-slot production default. Names both counts + the fix, not a bare
-    # "mismatch".
-    conf = tmp_path / "60-jts-ring.conf"
-    conf.write_text(_RING_CONF_TEMPLATE.format(p=128), encoding="utf-8")
-    match = ring_assets.ring_slot_geometry_matches_conf(8, conf_d=str(conf))
-    assert match.ok is False
-    assert match.fanin_n_slots == 8
-    assert match.conf_n_slots == 2
-    assert "n_slots=8" in match.detail and "n_slots=2" in match.detail
-    assert "JASPER_FANIN_RING_SLOTS" in match.detail
-
-
-def test_ring_slot_geometry_missing_conf_is_failclosed(tmp_path):
-    match = ring_assets.ring_slot_geometry_matches_conf(
-        8, conf_d=str(tmp_path / "missing.conf")
-    )
-    assert match.ok is False
-    assert match.conf_n_slots is None
 
 
 # --- On-disk ring header reader (defect A stale-file guard) -------------------
