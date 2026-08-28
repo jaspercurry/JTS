@@ -39,6 +39,7 @@ from typing import Any
 
 import pytest
 
+from jasper.active_speaker.crossover_v2.capture_source import SOURCE_RELAY
 from jasper.active_speaker.crossover_v2.refusal_copy import (
     REASON_PROGRAM_PROFILE_INCOMPLETE,
     REASON_PROGRAM_PROFILE_MISSING,
@@ -427,8 +428,12 @@ def session_open(monkeypatch):
     reached, so "no link minted" is pinned by construction, not by absence of
     an assertion.
     """
-    # The preparers' source gate (#2662 W2b S3) asks the relay-configured
-    # question before any bundle opens; this suite models the fleet default.
+    # The preparers' source gate (#2662 W2b S3) resolves the capture source
+    # and asks the relay-configured question before any bundle opens. The
+    # gate under test is the SAFETY one, so this suite names the phone-relay
+    # provider rather than depending on a measurement mic being plugged into
+    # whatever machine runs it (wired is the default source, ADR-0188).
+    monkeypatch.setenv("JASPER_CAPTURE_SOURCE", SOURCE_RELAY)
     monkeypatch.setenv("JASPER_CAPTURE_RELAY_BASE", "https://relay.test")
     from jasper import output_topology as output_topology_mod
     from jasper.active_speaker import commission_wiring, design_draft

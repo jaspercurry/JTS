@@ -157,8 +157,10 @@ has no `withdraw` verb. To clear the slot, stage over it or restore.
 `http://jts.local/correction/` → the crossover step. Screens are
 `speaker_setup → microphone_check → measure → apply → verify`. Place the mic
 ~1 m in front of the speaker at tweeter height, pick a tier on
-`microphone_check`, tap Start, follow the phone. When measurement ends, return
-to jts.local and choose Apply explicitly.
+`microphone_check`, tap Start. What paces the walk depends on the capture
+source — the wired default records on the Pi (see *The WIRED capture source*
+below); the parked phone flow is followed on the phone. When measurement ends,
+return to jts.local and choose Apply explicitly.
 
 **Three independent releases ship in a fixed order.** The phone page and the
 relay Worker both go out **before** the Pi, because each must be able to accept
@@ -308,14 +310,17 @@ the power preflight, the ±45° envelope clamp, the measured settle and the
 park-and-verify held in code. It is opt-in and foreground: nothing starts it. See
 [`testing-tooling.md`](testing-tooling.md#lab-arm-walk-harness).
 
-**The WIRED capture source changes steps 1–2.** When a measurement-class USB mic
-is plugged into the Pi (usbid matched against the calibration registry — a
-UMIK-2; never a voice array) the session opens on the wired source by default
-(`JASPER_CAPTURE_SOURCE` overrides in either direction, documented in
-`.env.example`): the Pi plays and records on one host, so there is **no phone, no
-relay dependency, and none of the three capture-device gestures**. The position
-gate is unchanged, and on the wired source a hand-walked round is gated too,
-because there is no capture page to tap. Two steps are new: stage 1's held set
+**The WIRED capture source is the default, and it changes steps 1–2.** A
+measurement-class USB mic plugged into the Pi (usbid matched against the
+calibration registry — a UMIK-2; never a voice array) is what a session opens on:
+the Pi plays and records on one host, so there is **no phone, no relay
+dependency, and none of the three capture-device gestures**. With no such mic the
+session refuses at the tap and says so — it never falls back to the phone quietly
+— and `JASPER_CAPTURE_SOURCE=relay` is the way to the parked phone-mic flow
+([ADR-0188](adr/0188-wired-first-measurement-relay-parked.md); the knob is
+documented in `.env.example`). The position gate is unchanged, and on the wired
+source a hand-walked round is gated too, because there is no capture page to
+tap. Two steps are new: stage 1's held set
 closes on `POST /correction/crossover/v2/complete` (empty body), bounded by the
 session ceiling and expiring as `session_ceiling_expired`; and
 `POST /correction/crossover/v2/retake` (empty body) re-opens the take that just

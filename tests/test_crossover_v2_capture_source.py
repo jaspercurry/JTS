@@ -9,9 +9,8 @@ makes: the relay's shipped answer type satisfies :class:`CaptureAnswer`; an
 answer carrying ONLY the contract's four attributes is sufficient for the
 production analyze seam (what makes the seam wired-ready — a second source
 mints exactly this shape); the integrity-counter tuple is the frame ledger's
-real read set, not a parallel spelling; and the host/provider module pair
-keeps the import shape that makes the strangler safe (host re-publishes the
-provider's names; the provider never imports the host at module scope).
+real read set, not a parallel spelling; and the host and the relay provider
+load independently of each other, publishing none of each other's names.
 """
 from __future__ import annotations
 
@@ -149,30 +148,19 @@ def test_the_integrity_counter_keys_are_the_ledgers_real_read_set():
     assert unrelated.render_gap_frames is None
 
 
-def test_the_host_republishes_the_names_it_actually_calls():
-    """The host's published surface survives the extraction (#2662 slice 1).
+def test_the_host_publishes_no_provider_names():
+    """Neither provider's names hang off the host — reached where they live.
 
-    ``correction_setup``, the preparers, and the existing test surface address
-    these names at the host module; the strangler keeps them there as the SAME
-    objects, so a patch or a call through either module is one binding, not two.
-
-    The list is now exactly the three the host itself invokes. Three more
-    (``TERMINAL_FAILURE_PURGE_GRACE_S``, ``program_phase_schedule``,
-    ``start_program_phase_ladder``) were re-published for external callers that
-    never arrived; they are reached at the provider module now.
+    The relay's three (once re-exported so the preparers could call them
+    unqualified) went when the relay stopped being the default source; the
+    other three were withdrawn earlier for external callers that never
+    arrived. Gone, not shadowed: each name is asserted absent on the host AND
+    present on the provider, so a rename cannot pass this vacuously.
     """
     for name in (
         "PlaybackStartSignal",
         "build_v2_run_and_consume",
         "relay_link_ttl_s",
-    ):
-        assert getattr(v2host, name) is getattr(v2relay, name), name
-
-
-def test_the_host_no_longer_republishes_provider_only_names():
-    """The three withdrawn re-exports are gone from the host, not shadowed."""
-
-    for name in (
         "TERMINAL_FAILURE_PURGE_GRACE_S",
         "program_phase_schedule",
         "start_program_phase_ladder",
@@ -181,28 +169,30 @@ def test_the_host_no_longer_republishes_provider_only_names():
         assert hasattr(v2relay, name), name
 
 
-def test_the_provider_reaches_the_host_only_at_call_time():
-    """Importing the provider does not import the host — behavioral pin.
+def test_neither_module_imports_the_other_at_module_scope():
+    """The pair loads independently — behavioral pin, both directions.
 
-    The host imports the provider EAGERLY (to re-publish its names), so the
-    pair stays import-safe only while the provider's host reach-backs are
-    call-time. Asserted on the real interpreter rather than by scanning
-    import statements: a fresh process imports the provider and checks
-    ``sys.modules`` for the host — which also catches an INDIRECT route (a
-    dependency of the provider growing a host import) that a source scan of
-    the one file cannot see. The ``find_spec`` line is the probe's positive
-    control: it proves the name asserted absent is a real, loadable module,
-    so a renamed host cannot make this pass vacuously.
+    Provider→host was always the strangler's import-safety condition. Host→
+    provider is what the WIRED default buys: the parked phone-relay island
+    must not load in a wizard process that measures on the local mic, so the
+    host reaches it on the relay branch only. Asserted on the real
+    interpreter rather than by scanning import statements: a fresh process
+    imports one module and checks ``sys.modules`` for the other — which also
+    catches an INDIRECT route (a dependency growing the import) that a source
+    scan of one file cannot see. The ``find_spec`` line is each probe's
+    positive control: it proves the name asserted absent is a real, loadable
+    module, so a rename cannot make this pass vacuously.
     """
-    probe = (
-        "import importlib.util, sys\n"
-        "import jasper.web.correction_crossover_v2_relay\n"
-        "assert 'jasper.web.correction_crossover_v2' not in sys.modules, "
-        "'the provider imported the host at module scope'\n"
-        "assert importlib.util.find_spec("
-        "'jasper.web.correction_crossover_v2') is not None\n"
-    )
-    completed = subprocess.run(
-        [sys.executable, "-c", probe], capture_output=True, text=True,
-    )
-    assert completed.returncode == 0, completed.stderr
+    host = "jasper.web.correction_crossover_v2"
+    provider = "jasper.web.correction_crossover_v2_relay"
+    for imported, absent in ((provider, host), (host, provider)):
+        probe = (
+            "import importlib.util, sys\n"
+            f"import {imported}\n"
+            f"assert {absent!r} not in sys.modules, 'imported at module scope'\n"
+            f"assert importlib.util.find_spec({absent!r}) is not None\n"
+        )
+        completed = subprocess.run(
+            [sys.executable, "-c", probe], capture_output=True, text=True,
+        )
+        assert completed.returncode == 0, (imported, completed.stderr)

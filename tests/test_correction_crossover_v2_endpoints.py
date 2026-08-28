@@ -4,7 +4,7 @@
 
 """W5a endpoint binding: the v2 host through the REAL relay plan runner.
 
-Integration tests drive :func:`jasper.web.correction_crossover_v2.build_v2_run_and_consume`
+Integration tests drive :func:`jasper.web.correction_crossover_v2_relay.build_v2_run_and_consume`
 through the REAL :func:`jasper.capture_relay.session.run_capture_plan` against
 the faithful in-memory relay backend + scripted phone driver from
 ``tests/test_capture_relay_plan.py`` — no network, no Worker, no page:
@@ -604,7 +604,7 @@ def _build_runner(conductor, volume, **kwargs):
     # unchanged from before.
     kwargs.setdefault("stop_event", threading.Event())
     kwargs.setdefault("stop_lock", threading.Lock())
-    return v2host.build_v2_run_and_consume(
+    return v2relay.build_v2_run_and_consume(
         conductor,
         volume=volume.hooks(),
         **kwargs,
@@ -744,7 +744,7 @@ def test_the_runner_passes_the_env_resolved_first_begin_budget(monkeypatch):
     )
     # Deliberately NOT via _build_runner: that helper pins first_begin_timeout_s
     # to the small test timeout, which is exactly the default path under test.
-    runner = v2host.build_v2_run_and_consume(
+    runner = v2relay.build_v2_run_and_consume(
         conductor,
         volume=VolumeRecorder().hooks(),
         poll_interval_s=0.01,
@@ -890,7 +890,7 @@ def test_no_session_path_applies_anything(monkeypatch):
     # …and the runner's own wiring cannot fire one: the seam is gone.
     import inspect
 
-    source = inspect.getsource(v2host.build_v2_run_and_consume)
+    source = inspect.getsource(v2relay.build_v2_run_and_consume)
     # Its docstring names the removal, so read the CODE: no call, no thread.
     code = "\n".join(
         line for line in source.splitlines() if not line.lstrip().startswith("#")
@@ -8436,7 +8436,7 @@ def test_camilla_unavailable_from_play_seam_full_cleanup(monkeypatch):
         apply_failed=conductor._seams.apply_failed,
     )
     hooks, plan, cam, log = _real_hooks_scaffold(monkeypatch)
-    runner = v2host.build_v2_run_and_consume(
+    runner = v2relay.build_v2_run_and_consume(
         conductor, volume=hooks, stop_event=threading.Event(),
         stop_lock=threading.Lock(), poll_interval_s=0.01, timeout_s=20.0,
     )
@@ -8460,7 +8460,7 @@ def test_analyze_seam_raise_full_cleanup(monkeypatch):
         analyses={"check": broken_analyze},
     )
     hooks, plan, cam, log = _real_hooks_scaffold(monkeypatch)
-    runner = v2host.build_v2_run_and_consume(
+    runner = v2relay.build_v2_run_and_consume(
         conductor, volume=hooks, stop_event=threading.Event(),
         stop_lock=threading.Lock(), poll_interval_s=0.01, timeout_s=20.0,
     )
@@ -8480,7 +8480,7 @@ def test_playback_refusal_keeps_its_distinct_code_through_the_catch_all(monkeypa
     hooks, plan, cam, log = _real_hooks_scaffold(monkeypatch)
     from jasper.active_speaker.program_playback import ProgramPlaybackError
 
-    runner = v2host.build_v2_run_and_consume(
+    runner = v2relay.build_v2_run_and_consume(
         conductor, volume=hooks, stop_event=threading.Event(),
         stop_lock=threading.Lock(), poll_interval_s=0.01, timeout_s=20.0,
     )
@@ -8909,7 +8909,7 @@ def test_local_seam_oserror_from_play_maps_to_internal_error(monkeypatch):
         apply_failed=conductor._seams.apply_failed,
     )
     hooks, plan, cam, log = _real_hooks_scaffold(monkeypatch)
-    runner = v2host.build_v2_run_and_consume(
+    runner = v2relay.build_v2_run_and_consume(
         conductor, volume=hooks, stop_event=threading.Event(),
         stop_lock=threading.Lock(), poll_interval_s=0.01, timeout_s=20.0,
     )
@@ -8995,7 +8995,7 @@ def test_terminal_failure_purge_waits_for_grace_but_volume_restore_is_immediate(
 
     monkeypatch.setattr(asyncio, "sleep", fake_sleep)
 
-    runner = v2host.build_v2_run_and_consume(
+    runner = v2relay.build_v2_run_and_consume(
         conductor, volume=hooks, stop_event=threading.Event(),
         stop_lock=threading.Lock(), poll_interval_s=0.01, timeout_s=20.0,
     )
@@ -12311,7 +12311,7 @@ def test_phase_ladder_replaces_the_eager_sweep_started_post(monkeypatch):
         v2host.observe_apply_success(state["candidate"]["fingerprint"])
 
     client, session, phone = _mint_v2_session(backend, spec, on_deferred=on_deferred)
-    signal = v2host.PlaybackStartSignal()
+    signal = v2relay.PlaybackStartSignal()
     ladder_program = _ladder_program()
 
     def on_play(_phase, _begun):
@@ -12391,7 +12391,7 @@ def test_playback_signal_handler_failure_never_stops_the_measurement():
     """The signal fires from INSIDE the play path, so an escaping handler error
     would abort a sweep over a status line. Pins the promise the widened catch
     in `PlaybackStartSignal.fire` makes (#1824 N2)."""
-    signal = v2host.PlaybackStartSignal()
+    signal = v2relay.PlaybackStartSignal()
 
     for boom in (
         AttributeError("no segments"),
