@@ -73,7 +73,27 @@ def test_audio_graph_state_aggregates_route_fanin_and_outputd(
 # --- /state.audio_graph.coupling (P2) ----------------------------------------
 
 
-def test_coupling_state_undeclared_box_is_not_coherent(monkeypatch):
+def _outputd_env_files(monkeypatch, tmp_path, *, outputd="", grouping=""):
+    """Redirect BOTH layers of outputd's env, in the unit's own order.
+
+    This surface reads the same merge jasper-doctor does, because a bonded
+    member's pins live in the grouping file and reading only the first layer
+    reported a bonded box on an env it is not running. A helper that patched
+    one path would let that regression back in silently.
+    """
+    first = tmp_path / "outputd.env"
+    second = tmp_path / "grouping-outputd.env"
+    first.write_text(outputd)
+    second.write_text(grouping)
+    monkeypatch.setattr(
+        "jasper.fanin.coupling_reconcile.OUTPUTD_ENV_PATH", str(first)
+    )
+    monkeypatch.setattr(
+        "jasper.multiroom.reconcile.OUTPUTD_GROUPING_ENV_FILE", str(second)
+    )
+
+
+def test_coupling_state_undeclared_box_is_not_coherent(monkeypatch, tmp_path):
     """ADR-0100: only the ring PAIR is coherent, and one half here has not moved.
 
     The two halves answer absence differently, and that is the point of this
@@ -87,10 +107,7 @@ def test_coupling_state_undeclared_box_is_not_coherent(monkeypatch):
         "jasper.fanin.ring_health.read_persisted_coupling",
         lambda *a, **k: "loopback",
     )
-    monkeypatch.setattr(
-        "jasper.fanin.ring_health.OUTPUTD_ENV_PATH",
-        "/nonexistent/outputd.env",
-    )
+    _outputd_env_files(monkeypatch, tmp_path)
     block = state_aggregate._coupling_state(
         fanin_status={"output": {"transport": "loopback"}}
     )
@@ -114,15 +131,11 @@ def test_coupling_state_undeclared_box_is_not_coherent(monkeypatch):
 def test_coupling_state_ring_armed_reports_coherent_pair(
     monkeypatch, tmp_path, outputd_env_text
 ):
-    outputd_env = tmp_path / "outputd.env"
-    outputd_env.write_text(outputd_env_text)
     monkeypatch.setattr(
         "jasper.fanin.ring_health.read_persisted_coupling",
         lambda *a, **k: "shm_ring",
     )
-    monkeypatch.setattr(
-        "jasper.fanin.ring_health.OUTPUTD_ENV_PATH", str(outputd_env)
-    )
+    _outputd_env_files(monkeypatch, tmp_path, outputd=outputd_env_text)
     block = state_aggregate._coupling_state(
         fanin_status={"output": {"transport": "shm_ring", "ring": {}}}
     )
@@ -130,6 +143,56 @@ def test_coupling_state_ring_armed_reports_coherent_pair(
     assert block["content_bridge"] == "shm_ring"
     assert block["intent_coherent"] is True
     assert block["live_transport"] == "shm_ring"
+
+
+def test_coupling_state_bonded_member_is_coherent_on_the_return_ring(
+    monkeypatch, tmp_path
+):
+    """A dumb bonded member is a THIRD resolved source, and a coherent one.
+
+    Its fan-in hop is Ring A like every other box's; its post-DSP hop is the
+    dac-content return ring by design, declared with the marker and no bridge
+    key at all. Reporting ``shm_ring`` here would name a central ring outputd
+    did not attach, and calling the pair incoherent would report a correctly
+    configured speaker as mid-flip.
+    """
+    monkeypatch.setattr(
+        "jasper.fanin.ring_health.read_persisted_coupling",
+        lambda *a, **k: "shm_ring",
+    )
+    _outputd_env_files(
+        monkeypatch,
+        tmp_path,
+        grouping="JASPER_OUTPUTD_DAC_CONTENT_LANE=1\n",
+    )
+    block = state_aggregate._coupling_state(
+        fanin_status={"output": {"transport": "shm_ring", "ring": {}}}
+    )
+    assert block["persisted"] == "shm_ring"
+    assert block["content_bridge"] == "dac_content_ring"
+    assert block["intent_coherent"] is True
+
+
+def test_coupling_state_ungrouped_member_returns_to_the_central_ring(
+    monkeypatch, tmp_path
+):
+    """Ungrouping clears the marker, so the box reports the ring again.
+
+    The reconciler clears by writing the key EMPTY rather than removing it, so
+    this also pins that a cleared marker is not read as armed.
+    """
+    monkeypatch.setattr(
+        "jasper.fanin.ring_health.read_persisted_coupling",
+        lambda *a, **k: "shm_ring",
+    )
+    _outputd_env_files(
+        monkeypatch,
+        tmp_path,
+        grouping="JASPER_OUTPUTD_DAC_CONTENT_LANE=\nJASPER_OUTPUTD_DAC_CONTENT_FIFO=\n",
+    )
+    block = state_aggregate._coupling_state(fanin_status=None)
+    assert block["content_bridge"] == "shm_ring"
+    assert block["intent_coherent"] is True
 
 
 # The two producers spell the SAME field differently, and `_observed_ring_wire`
@@ -263,14 +326,12 @@ def test_coupling_state_partial_flip_reports_incoherent(monkeypatch, tmp_path):
     # shm_ring fan-in but direct outputd = partial flip -> coherent False. The
     # token has to be STATED: an absent key is the ring, so a partial flip is
     # now something an operator (or a stale env file) declared.
-    outputd_env = tmp_path / "outputd.env"
-    outputd_env.write_text("JASPER_OUTPUTD_CONTENT_BRIDGE=direct\n")
     monkeypatch.setattr(
         "jasper.fanin.ring_health.read_persisted_coupling",
         lambda *a, **k: "shm_ring",
     )
-    monkeypatch.setattr(
-        "jasper.fanin.ring_health.OUTPUTD_ENV_PATH", str(outputd_env)
+    _outputd_env_files(
+        monkeypatch, tmp_path, outputd="JASPER_OUTPUTD_CONTENT_BRIDGE=direct\n"
     )
     block = state_aggregate._coupling_state(fanin_status=None)
     assert block["persisted"] == "shm_ring"

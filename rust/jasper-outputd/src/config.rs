@@ -89,15 +89,15 @@ pub const DEFAULT_SHM_RING_SLOTS: u32 = 2;
 pub const MIN_SHM_RING_SLOTS: u32 = 2;
 pub const MAX_SHM_RING_SLOTS: u32 = 16;
 
-/// The DAC-content RETURN ring — a grouping leader's round-trip ingress, read
-/// by `dac_content::DacContentSource`'s ring arm.
+/// The DAC-content RETURN ring — a dumb bonded member's round-trip ingress
+/// (either role), read by `dac_content::DacContentSource`'s ring arm.
 ///
 /// A THIRD ring, and deliberately not a third `*_SHM_RING_PATH` env: unlike the
-/// central content hop there is nothing to vary. Only a LEADER has a return
-/// path to carry, so there is no role-dependent second spelling, and the
-/// marker env below is a bare arm/disarm rather than a path. Mirrored by
-/// `jasper.multiroom.dac_content_ring.DAC_CONTENT_RING_FILE` and by
-/// `pcm.jts_ring_dac_content`'s `path` in
+/// central content hop there is nothing to vary. Every DUMB bonded member
+/// carries this lane, in either role, so there is no role-dependent second
+/// spelling, and the marker env below is a bare arm/disarm rather than a path.
+/// Mirrored by `jasper.multiroom.dac_content_ring.DAC_CONTENT_RING_FILE` and
+/// by `pcm.jts_ring_dac_content`'s `path` in
 /// `deploy/alsa/conf.d/63-jts-ring-dac-content.conf`; the three literals are
 /// pinned equal by `tests/test_dac_content_ring_platform.py`.
 pub const DEFAULT_DAC_CONTENT_RING_PATH: &str = "/dev/shm/jts-ring/dac-content.ring";
@@ -257,10 +257,11 @@ pub struct Config {
     /// silence). `None` (default — solo) is byte-identical to today.
     pub dac_content_fifo: Option<String>,
     /// The SAME round-trip lane on its destination transport: `Some` iff
-    /// `JASPER_OUTPUTD_DAC_CONTENT_LANE` marks this box a leader whose
-    /// snapclient writes [`DEFAULT_DAC_CONTENT_RING_PATH`] through the C
-    /// ioplug. Mutually exclusive with `dac_content_fifo` — one lane, one
-    /// source — and the path is the constant, never operator input.
+    /// `JASPER_OUTPUTD_DAC_CONTENT_LANE` marks this box a dumb bonded member
+    /// (either role) whose snapclient writes
+    /// [`DEFAULT_DAC_CONTENT_RING_PATH`] through the C ioplug. Mutually
+    /// exclusive with `dac_content_fifo` — one lane, one source — and the
+    /// path is the constant, never operator input.
     ///
     /// An armed marker SELECTS the content source: it resolves
     /// [`ContentBridgeMode::DacContentRing`], so [`Self::shm_ring`] is `None`

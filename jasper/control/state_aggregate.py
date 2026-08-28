@@ -268,10 +268,15 @@ def _coupling_state(
     change). Fail-soft: any read error degrades to ``None`` (see the except
     below) rather than erroring the whole /state call.
 
-    ``intent_coherent`` is named for what it compares: two env strings. It was
-    published as ``coherent`` until R5b, which reads as a verdict on the ring
-    itself — and the two tokens can agree perfectly while the rings shear on
-    format, channels, period or slots. ``observed`` is where the ring's actual
+    ``intent_coherent`` is named for what it compares: the persisted coupling
+    against the content source outputd resolved from its env. It was published
+    as ``coherent`` until R5b, which reads as a verdict on the ring itself — and
+    the two can agree perfectly while the rings shear on format, channels,
+    period or slots. ``content_bridge`` takes three values, one per resolved
+    source: ``shm_ring`` (the central post-DSP ring, including the undeclared
+    default), ``dac_content_ring`` (a dumb bonded member, off the round-trip
+    return ring), and ``direct`` — the only one nothing serves. ``observed`` is
+    where the ring's actual
     wire lives: both daemons read their attached header back and publish it
     (fan-in as ``output.ring.wire_format``/``channels``, outputd as
     ``shm_ring.format``/``channels``), which is a fact about the running
@@ -281,36 +286,35 @@ def _coupling_state(
     try:
         from pathlib import Path
 
-        from ..fanin.ring_health import (
-            FANIN_ENV_PATH,
-            OUTPUTD_ENV_PATH,
-            read_persisted_coupling,
-        )
+        from ..fanin.ring_health import FANIN_ENV_PATH, read_persisted_coupling
         from ..fanin_coupling import (
             COUPLING_SHM_RING,
-            OUTPUTD_CONTENT_BRIDGE_ENV_VAR,
             OUTPUTD_CONTENT_BRIDGE_SHM_RING,
-            outputd_bridge_is_ring,
+            dac_content_lane_marker_armed,
+            outputd_content_is_central_ring,
         )
-        from ..env_file import read_value
+        from .transport_park import _outputd_env
 
         coupling = read_persisted_coupling()
-        try:
-            outputd_text = Path(OUTPUTD_ENV_PATH).read_text(encoding="utf-8")
-        except OSError:
-            outputd_text = ""
-        # What outputd IS RUNNING, through the one predicate that owns that
+        # BOTH env layers, in the unit's own EnvironmentFile= order, through the
+        # merge jasper-doctor already consumes — a bonded member's grouping pins
+        # live in the second file, and reading only the first reported a bonded
+        # box on an env it is not running.
+        outputd_values = _outputd_env()
+        # What outputd IS RUNNING, through the predicates that own that
         # question. An UNDECLARED bridge is the ring (config.rs), so this
         # reports `shm_ring` for a box that named nothing — which is what it
         # runs. Reporting the raw absence instead made a healthy box's pair read
-        # as incoherent on this surface.
-        content_bridge = (
-            OUTPUTD_CONTENT_BRIDGE_SHM_RING
-            if outputd_bridge_is_ring(
-                read_value(outputd_text, OUTPUTD_CONTENT_BRIDGE_ENV_VAR)
-            )
-            else "direct"
-        )
+        # as incoherent on this surface. An armed dac-content marker OVERRIDES
+        # that default: outputd resolves the bonded return ring as its sole
+        # content source, which is the third value this field can take and the
+        # one `/state.content_bridge.mode` publishes for such a box.
+        if dac_content_lane_marker_armed(outputd_values):
+            content_bridge = "dac_content_ring"
+        elif outputd_content_is_central_ring(outputd_values):
+            content_bridge = OUTPUTD_CONTENT_BRIDGE_SHM_RING
+        else:
+            content_bridge = "direct"
         try:
             fanin_text = Path(FANIN_ENV_PATH).read_text(encoding="utf-8")
         except OSError:
@@ -323,9 +327,16 @@ def _coupling_state(
         return {
             "persisted": coupling,
             "content_bridge": content_bridge,
+            # COHERENT means "outputd is running a content source this coupling
+            # implies", not "both strings say shm_ring". A dumb bonded member is
+            # the second such source: its fan-in hop is Ring A like every other
+            # box's, and its post-DSP hop is the bonded return ring BY DESIGN, so
+            # calling that pair incoherent would report a correctly-configured
+            # speaker as mid-flip. `direct` remains the one incoherent value —
+            # nothing serves it.
             "intent_coherent": (
                 coupling == COUPLING_SHM_RING
-                and content_bridge == OUTPUTD_CONTENT_BRIDGE_SHM_RING
+                and content_bridge != "direct"
             ),
             "live_transport": live_transport,
             "observed": {

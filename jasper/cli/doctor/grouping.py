@@ -636,10 +636,9 @@ def check_grouping_channel_pick() -> CheckResult:
     full stereo program — the wrong channel), so this drift check is the
     only way a wrong-channel member is visible."""
     from ...multiroom.config import is_active_member, load_config
+    from ...fanin_coupling import dac_content_lane_marker_armed
     from ...multiroom.reconcile import (
-        MEMBER_CONTENT_FIFO,
         OUTPUTD_DAC_CONTENT_CHANNEL_ENV,
-        OUTPUTD_DAC_CONTENT_FIFO_ENV,
         OUTPUTD_GROUPING_ENV_FILE,
         is_active_speaker_box,
     )
@@ -670,26 +669,31 @@ def check_grouping_channel_pick() -> CheckResult:
         return CheckResult(label, "warn", f"could not read {path}: {e}")
 
     want_channel = cfg.channel or "stereo"
-    fifo = env.get(OUTPUTD_DAC_CONTENT_FIFO_ENV, "")
+    # The lane is armed by a BARE marker, so this asks the same predicate
+    # outputd's own accept-set backs rather than comparing a path: the ring file
+    # is derived at both ends from one constant and no env names it.
+    lane_armed = dac_content_lane_marker_armed(env)
     channel = env.get(OUTPUTD_DAC_CONTENT_CHANNEL_ENV, "")
     if active_endpoint:
-        if fifo or channel:
+        if lane_armed or channel:
             return CheckResult(
                 label, "warn",
                 f"active endpoint should have outputd channel-pick lane cleared "
-                f"(fifo={fifo or '(unset)'} channel={channel or '(unset)'}) — "
-                "active speakers receive the round-trip through the grouping "
-                "ring jts_ring_grouping; run jasper-grouping-reconcile",
+                f"(lane={'armed' if lane_armed else '(disarmed)'} "
+                f"channel={channel or '(unset)'}) — active speakers receive the "
+                "round-trip through the grouping ring jts_ring_grouping; run "
+                "jasper-grouping-reconcile",
             )
         return CheckResult(
             label, "ok",
             "active endpoint picks its channel off jts_ring_grouping",
         )
-    if fifo != MEMBER_CONTENT_FIFO or channel != want_channel:
+    if not lane_armed or channel != want_channel:
         return CheckResult(
             label, "warn",
-            f"outputd lane env drifted (fifo={fifo or '(unset)'} "
-            f"channel={channel or '(unset)'}, want fifo={MEMBER_CONTENT_FIFO} "
+            f"outputd lane env drifted (lane="
+            f"{'armed' if lane_armed else '(disarmed)'} "
+            f"channel={channel or '(unset)'}, want lane=armed "
             f"channel={want_channel}) — this member would play the wrong "
             "channel; run jasper-grouping-reconcile",
         )

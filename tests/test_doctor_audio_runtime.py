@@ -1289,7 +1289,7 @@ def test_audio_runtime_plan_doctor_fails_unsupported_route(monkeypatch):
         fanin_env={"JASPER_FANIN_CAMILLA_COUPLING": "shm_ring"},
         outputd_env={"JASPER_OUTPUTD_CONTENT_BRIDGE": "shm_ring"},
         route_mode="active_leader",
-        dac_content_lane_armed=True,
+        dac_content_fifo_lane_armed=True,
     )
     monkeypatch.setattr(
         audio_runtime_plan,
@@ -1313,7 +1313,7 @@ def test_audio_runtime_plan_doctor_passes_a_bonded_box_with_a_cleared_lane(
         fanin_env={"JASPER_FANIN_CAMILLA_COUPLING": "shm_ring"},
         outputd_env={"JASPER_OUTPUTD_CONTENT_BRIDGE": "shm_ring"},
         route_mode="active_leader",
-        dac_content_lane_armed=False,
+        dac_content_fifo_lane_armed=False,
     )
     monkeypatch.setattr(
         audio_runtime_plan,
@@ -4985,3 +4985,70 @@ def test_outputd_xrun_warning_reports_worst_lane():
     reason = doctor.audio_runtime._outputd_xrun_rate_warning(content, dac)
     assert reason is not None
     assert reason.startswith("dac ")
+
+
+# --- the dac-content marker reaches the doctor's content-source expectation --
+
+
+def _transport_health(env: dict[str, str], *, content_source: str):
+    """Run the doctor's transport-health helper over one env + STATUS pairing.
+
+    Returns the helper's own value: a ``CheckResult`` when it refused, or its
+    4-tuple when it got through. Nothing here reads a message string — the
+    discrimination is the RETURN SHAPE, which is what the caller branches on.
+    """
+    payload = json.loads(_outputd_status_payload(content_source=content_source))
+    return audio_runtime._outputd_transport_health(
+        payload,
+        payload["content"],
+        payload["dac"],
+        outputd_env=env,
+        sink_mode=payload["sink_mode"],
+        active_channels=None,
+        expected_dac_pcm=payload["dac"]["pcm"],
+    )
+
+
+_LANE_ARMED = {"JASPER_OUTPUTD_DAC_CONTENT_LANE": "1"}
+
+
+def test_a_marker_armed_member_expects_the_source_outputd_publishes():
+    """THE doctor half of the cutover: a bonded member must not FAIL.
+
+    Its bridge key is absent, which alone reads as the central ring and derives
+    `content.source == "shm_ring"`. But outputd resolved the dac-content return
+    ring, left `shm_ring` unattached, and therefore publishes `alsa` — so the
+    expectation has to be derived with the marker in hand, or every healthy
+    bonded speaker fails this check.
+    """
+    from jasper.cli.doctor._shared import CheckResult
+
+    assert not isinstance(
+        _transport_health(_LANE_ARMED, content_source="alsa"), CheckResult
+    )
+
+
+def test_a_marker_armed_member_still_refuses_a_central_ring_source():
+    """The narrowing is not a blanket pass: the marker names ONE expectation.
+
+    A daemon reporting `shm_ring` under an armed marker is running an env older
+    than the file it was given — the exact staleness this check exists to
+    catch — so it must still refuse.
+    """
+    from jasper.cli.doctor._shared import CheckResult
+
+    result = _transport_health(_LANE_ARMED, content_source="shm_ring")
+    assert isinstance(result, CheckResult)
+    assert result.status == "fail"
+
+
+def test_an_unbonded_box_keeps_expecting_the_central_ring():
+    """The shipped verdict where no marker is armed, both ways round."""
+    from jasper.cli.doctor._shared import CheckResult
+
+    assert not isinstance(
+        _transport_health({}, content_source="shm_ring"), CheckResult
+    )
+    stale = _transport_health({}, content_source="alsa")
+    assert isinstance(stale, CheckResult)
+    assert stale.status == "fail"

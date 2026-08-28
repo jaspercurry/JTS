@@ -794,6 +794,12 @@ def test_every_declared_transport_shape_is_reachable_and_vice_versa():
             "shm_ring",
             outputd_env={OUTPUTD_RING_ACTIVE_ENDPOINT_ENV_VAR: "1"},
         ).name,
+        # The dumb bonded member. Reached from the SAME coupling as the plain
+        # ring shape, because the marker and not the token decides this one.
+        transport_topology_for_coupling(
+            "shm_ring",
+            outputd_env={"JASPER_OUTPUTD_DAC_CONTENT_LANE": "1"},
+        ).name,
     }
     assert produced == set(TRANSPORT_SHAPES)
 

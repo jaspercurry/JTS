@@ -48,7 +48,6 @@ from jasper.fanin_coupling import (
     COUPLING_LOOPBACK,
     COUPLING_SHM_RING,
     OUTPUTD_CONTENT_BRIDGE_SHM_RING,
-    outputd_bridge_is_ring,
     RING_CAMILLA_CHUNKSIZE,
     RING_CAMILLA_ENABLE_RATE_ADJUST,
     RING_CAMILLA_QUEUELIMIT,
@@ -56,7 +55,9 @@ from jasper.fanin_coupling import (
     VALID_COUPLINGS,
     capture_half,
     coupling_value_removed,
+    dac_content_lane_marker_armed,
     member_kwargs_are_pipe_sink,
+    outputd_content_is_central_ring,
     resolve_coupling,
     ring_active_endpoint_armed,
 )
@@ -76,13 +77,23 @@ from jasper.fanin_coupling import (
 TRANSPORT_SHM_RING = COUPLING_SHM_RING
 TRANSPORT_SHM_RING_ACTIVE = "shm_ring_active"
 TRANSPORT_LOOPBACK = COUPLING_LOOPBACK
+# A dumb bonded member: outputd's content comes off the dac-content RETURN ring
+# and no central post-DSP ring is attached at all. Its own shape rather than
+# TRANSPORT_LOOPBACK, which would name an snd-aloop lane this box does not have
+# and would send it through the loopback branch's capture-pair comparison.
+TRANSPORT_DAC_CONTENT_RING = "dac_content_ring"
 # Every shape whose post-DSP hop is an SHM ring. Membership, never a `==` on one
 # name: a consumer that tested only `shm_ring` would silently take its LOOPBACK
 # arm on an active-ring box, which is the D5 permanent-red-line shape.
 _RING_TRANSPORT_SHAPES = frozenset((TRANSPORT_SHM_RING, TRANSPORT_SHM_RING_ACTIVE))
 # Every named shape, so an exhaustive consumer can assert it handled one.
 TRANSPORT_SHAPES = frozenset(
-    (TRANSPORT_LOOPBACK, TRANSPORT_SHM_RING, TRANSPORT_SHM_RING_ACTIVE)
+    (
+        TRANSPORT_LOOPBACK,
+        TRANSPORT_SHM_RING,
+        TRANSPORT_SHM_RING_ACTIVE,
+        TRANSPORT_DAC_CONTENT_RING,
+    )
 )
 
 
@@ -233,8 +244,8 @@ _VALID_AUDIO_ROUTE_PROFILES = {
 # The route modes that mean "grouping is enabled" (leader/follower = enabled +
 # valid + role; invalid_grouping = enabled + config error). Being one of these is
 # NECESSARY but no longer SUFFICIENT to block ``shm_ring``: the block also needs
-# ``dac_content_lane_armed`` (mechanism: GROUPED_SHM_RING_MECHANISM below; rule:
-# jasper.multiroom.reconcile.dac_content_lane_armed). An ACTIVE endpoint's lane
+# ``dac_content_fifo_lane_armed`` (mechanism: GROUPED_SHM_RING_MECHANISM below; rule:
+# jasper.multiroom.reconcile.dac_content_fifo_lane_armed). An ACTIVE endpoint's lane
 # is cleared, so the ring strands nothing; a PASSIVE leader, whose lane IS armed,
 # stays blocked — and is doubly safe by an identity neither function states:
 # `topology_supports_shm_ring(t)` implies `topology_allows_flat_dac_graph(
@@ -746,18 +757,18 @@ def coupling_supported_for_route(
     coupling: str,
     route_mode: RouteMode,
     *,
-    dac_content_lane_armed: bool,
+    dac_content_fifo_lane_armed: bool,
 ) -> CouplingSupport:
     """Return whether ``coupling`` is supported for ``route_mode``.
 
     One blocked combination, with TWO conditions because only one bonded shape
     conflicts with the ring: ``shm_ring`` + a grouping-enabled mode
-    (leader/follower/invalid) **and** ``dac_content_lane_armed``. See the module
+    (leader/follower/invalid) **and** ``dac_content_fifo_lane_armed``. See the module
     comment above for the mechanism. Symmetric half of the multiroom reconciler's
     "ring-armed box cannot bond" gate.
 
-    ``dac_content_lane_armed`` is
-    :func:`jasper.multiroom.reconcile.dac_content_lane_armed` — derived from the
+    ``dac_content_fifo_lane_armed`` is
+    :func:`jasper.multiroom.reconcile.dac_content_fifo_lane_armed` — derived from the
     function that WRITES the lane, so gate and writer cannot encode different
     rules. It arrives as a plain ``bool`` because importing the predicate here
     would invert this module's lazy-only ``jasper.multiroom`` dependency into a
@@ -775,7 +786,7 @@ def coupling_supported_for_route(
     if (
         normalized == COUPLING_SHM_RING
         and mode in _GROUPING_ENABLED_ROUTE_MODES
-        and dac_content_lane_armed
+        and dac_content_fifo_lane_armed
     ):
         return CouplingSupport(
             coupling=normalized,
@@ -795,18 +806,18 @@ def fanin_coupling_action(
     desired_raw: str | None,
     route_mode: RouteMode,
     *,
-    dac_content_lane_armed: bool,
+    dac_content_fifo_lane_armed: bool,
 ) -> tuple[RuntimeEnvAction | None, CouplingSupport]:
     """Return the ``fanin.env`` coupling action and route-policy verdict.
 
-    ``dac_content_lane_armed`` is passed straight through to
+    ``dac_content_fifo_lane_armed`` is passed straight through to
     :func:`coupling_supported_for_route`; see it for what the flag means and
     why it carries no default.
     """
 
     desired = resolve_coupling(desired_raw)
     support = coupling_supported_for_route(
-        desired, route_mode, dac_content_lane_armed=dac_content_lane_armed
+        desired, route_mode, dac_content_fifo_lane_armed=dac_content_fifo_lane_armed
     )
     if not support.supported:
         return None, support
@@ -1131,12 +1142,12 @@ def _route_policy_errors(
     # `coupling_value_removed` is fan-in's rule inverted: unset / empty /
     # `shm_ring` are served, and everything else — a persisted `loopback` above
     # all — is a config-class fault that exits 78
-    # (`rust/jasper-fanin/src/config.rs`). `outputd_bridge_is_ring` is the same
-    # question for the post-DSP hop.
+    # (`rust/jasper-fanin/src/config.rs`). `outputd_content_is_central_ring` is
+    # the same question for the post-DSP hop, and it reads the dac-content
+    # marker as well as the bridge: a bonded member is served, but off the ring
+    # PAIR this route's latency was measured on, so the claim must not stand.
     fanin_on_ring = not coupling_value_removed(coupling)
-    outputd_on_ring = outputd_bridge_is_ring(
-        outputd_env.get(OUTPUTD_CONTENT_BRIDGE_KEY)
-    )
+    outputd_on_ring = outputd_content_is_central_ring(outputd_env)
 
     # usb_low_latency_48k runs on the one transport: the shm_ring pair (Ring A
     # plus whichever post-DSP ring the box armed). The ring pair was measured to
@@ -1221,17 +1232,17 @@ def build_audio_runtime_plan_from_system(
     # behind a lazy import: this module is imported at module level by
     # jasper.multiroom.active_leader_config, so a top-level multiroom import
     # here would be a cycle. The bool crosses that boundary, never the predicate.
-    dac_content_lane_armed = False
+    dac_content_fifo_lane_armed = False
     try:
         from jasper.multiroom.config import load_config
-        from jasper.multiroom.reconcile import box_dac_content_lane_armed
+        from jasper.multiroom.reconcile import box_dac_content_fifo_lane_armed
 
         grouping_cfg = load_config(grouping_env_path)
         route_mode = route_mode_from_grouping_config(grouping_cfg)
-        dac_content_lane_armed = box_dac_content_lane_armed(grouping_cfg)
+        dac_content_fifo_lane_armed = box_dac_content_fifo_lane_armed(grouping_cfg)
     except ImportError:
         route_mode = "unknown"
-        dac_content_lane_armed = False
+        dac_content_fifo_lane_armed = False
     # The statefile's own reader, not a second one: this plan and the doctor's
     # `current correction` check must never disagree about which config is
     # loaded. Lazy like the other collaborators above — module level would make
@@ -1246,7 +1257,7 @@ def build_audio_runtime_plan_from_system(
         overrides=overrides.values(),
         profile_id=profile_id,
         route_mode=route_mode,
-        dac_content_lane_armed=dac_content_lane_armed,
+        dac_content_fifo_lane_armed=dac_content_fifo_lane_armed,
         correction_config_path=correction_config_path,
         base_env_label=base.path,
         outputd_env_label=outputd.path,
@@ -1268,7 +1279,7 @@ def build_audio_runtime_plan(
     # pairs with ``route_mode="unknown"``, which never blocks, so the pair is
     # coherent as "this caller has no grouping information"; a caller that
     # supplies a grouping route_mode must supply this too.
-    dac_content_lane_armed: bool = False,
+    dac_content_fifo_lane_armed: bool = False,
     base_env_label: str = DEFAULT_BASE_ENV_PATH,
     outputd_env_label: str = DEFAULT_OUTPUTD_ENV_PATH,
     fanin_env_label: str = DEFAULT_FANIN_ENV_PATH,
@@ -1389,7 +1400,7 @@ def build_audio_runtime_plan(
     support = coupling_supported_for_route(
         str(coupling_setting.value),
         route_mode,
-        dac_content_lane_armed=dac_content_lane_armed,
+        dac_content_fifo_lane_armed=dac_content_fifo_lane_armed,
     )
     camilla_devices = read_camilla_devices_config(correction_config_path)
     topology = transport_topology_for_coupling(
@@ -1453,13 +1464,19 @@ def transport_topology_for_coupling(
 ) -> TransportTopology:
     """Return the concrete transport topology implied by the coupling intent.
 
-    Three named shapes: :data:`TRANSPORT_LOOPBACK`, :data:`TRANSPORT_SHM_RING`
-    (the full-range stereo Ring A + Ring B pair), and
-    :data:`TRANSPORT_SHM_RING_ACTIVE` (a roleful box's Ring A plus the
-    post-crossover ACTIVE ring). The ring shapes are told apart by the persisted
-    coupling AND the reconciler's endpoint marker in ``outputd_env`` — see the
-    constants' comment for why the observed playback device is not the
-    discriminator.
+    Four named shapes: :data:`TRANSPORT_LOOPBACK`, :data:`TRANSPORT_SHM_RING`
+    (the full-range stereo Ring A + Ring B pair), :data:`TRANSPORT_SHM_RING_ACTIVE`
+    (a roleful box's Ring A plus the post-crossover ACTIVE ring), and
+    :data:`TRANSPORT_DAC_CONTENT_RING` (a dumb bonded member: Ring A, and a
+    post-DSP slot filled by the bonded RETURN ring instead of a central one).
+    The shapes are told apart by the persisted coupling AND the two markers in
+    ``outputd_env`` — see the constants' comment for why the observed playback
+    device is not the discriminator.
+
+    THE DAC-CONTENT SHAPE WINS OVER THE COUPLING, because it is the only one of
+    the four the coupling token cannot express: that token names the fan-in hop,
+    which is Ring A on this box exactly as on every other, while the marker
+    decides the post-DSP hop by itself.
 
     THE FAN-IN -> CAMILLADSP HOP DOES NOT BRANCH. Since ADR-0100 it is Ring A on
     every box: fan-in serves the ring for a ``shm_ring``, unset or empty token
@@ -1495,6 +1512,20 @@ def transport_topology_for_coupling(
     # device, a different file, and a per-driver width the topology decides,
     # where Ring B is a full-range stereo program.
     active_endpoint = ring_active_endpoint_armed(outputd_values)
+    # THE OTHER MARKER, and the reason this function is the seam. A dumb bonded
+    # member's outputd resolves ContentBridgeMode::DacContentRing: it reads the
+    # bonded RETURN ring and attaches no central ring at all. The COUPLING token
+    # cannot see that — it names the fan-in hop, which is still Ring A — so a
+    # caller that resolved `shm_ring` from an undeclared bridge would otherwise
+    # get a Ring B expectation for a box that has none, and every consumer
+    # downstream of this topology would report a healthy bonded member as
+    # incoherent. Fixed once HERE, at the layer that owns the shape, rather than
+    # at each of the four places that ask whether outputd is on the ring.
+    #
+    # The MARKER, not `outputd_content_is_central_ring`: a `direct` bridge is
+    # also "not the central ring", but that box is the legacy FIFO shape, which
+    # must keep resolving TRANSPORT_LOOPBACK so its incoherence still reports.
+    dac_content_lane = dac_content_lane_marker_armed(outputd_values)
     # Read the saved topology ONLY where an axis actually depends on it: the
     # ACTIVE ring's width, which only the ring arm publishes. Every other axis —
     # the format, Ring A's width, Ring B's — is topology-free, so the other
@@ -1528,6 +1559,47 @@ def transport_topology_for_coupling(
         "channels": wire.ring_a_channels if wire is not None else None,
         "sample_rate": DEFAULT_SAMPLE_RATE,
     }
+    if dac_content_lane:
+        from jasper.multiroom.dac_content_ring import (
+            DAC_CONTENT_RING_CHANNELS,
+            DAC_CONTENT_RING_FILE,
+            DAC_CONTENT_RING_FORMAT,
+            DAC_CONTENT_RING_PCM,
+        )
+
+        return TransportTopology(
+            name=TRANSPORT_DAC_CONTENT_RING,
+            fanin_to_camilla=fanin_to_camilla,
+            camilla_to_outputd={
+                # NOT a CamillaDSP hop at all — the writer is this box's
+                # snapclient and the DSP graph is not in this path. The key
+                # keeps its name because it is the dataclass's post-DSP slot;
+                # `camilla_playback_device` is deliberately absent rather than
+                # guessed, which is what stops any consumer comparing a Camilla
+                # endpoint against a lane Camilla does not drive.
+                "transport": "shm_ring",
+                "path": DAC_CONTENT_RING_FILE,
+                "outputd_capture_pcm": DAC_CONTENT_RING_PCM,
+                "writer": "snapclient",
+                "reader": "jasper-outputd",
+                "format": DAC_CONTENT_RING_FORMAT,
+                "channels": DAC_CONTENT_RING_CHANNELS,
+                "sample_rate": DEFAULT_SAMPLE_RATE,
+            },
+            camilla={
+                "chunksize": RING_CAMILLA_CHUNKSIZE,
+                "target_level": RING_CAMILLA_TARGET_LEVEL,
+                "queuelimit": RING_CAMILLA_QUEUELIMIT,
+                "enable_rate_adjust": RING_CAMILLA_ENABLE_RATE_ADJUST,
+                "capture_resampler": None,
+            },
+            # What outputd's own `/state` publishes for this box: `content.source`
+            # is `shm_ring` only while the CENTRAL ring is attached, and under the
+            # marker it is not (`rust/jasper-outputd/src/state.rs`). Naming the
+            # return ring here instead would turn the doctor's
+            # expected-vs-observed comparison red on a healthy bonded member.
+            outputd_content_source="alsa",
+        )
     if normalized == COUPLING_SHM_RING:
         # Ring B (CamillaDSP -> outputd, jts_ring_playback), or the ACTIVE ring
         # on an armed roleful box. Its concrete path lives in outputd's env
@@ -1685,9 +1757,7 @@ def transport_coherence_report(
     # Same owner as the route policy above: undeclared IS the ring, so this
     # report cannot call a healthy box's pair split. The label below is only
     # what a message PRINTS; every decision is the predicate's.
-    outputd_on_ring = outputd_bridge_is_ring(
-        outputd_values.get(OUTPUTD_CONTENT_BRIDGE_KEY)
-    )
+    outputd_on_ring = outputd_content_is_central_ring(outputd_values)
     bridge_label = (
         str(outputd_values.get(OUTPUTD_CONTENT_BRIDGE_KEY) or "").strip().lower()
         or "(unset, = the ring)"

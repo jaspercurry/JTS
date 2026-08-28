@@ -184,7 +184,7 @@ async def precheck_active_leader(
     from jasper.sound.settings import load_sound_settings, output_trim_db
 
     from .grouping_ring import GROUPING_RING_FORMAT, GROUPING_RING_PCM
-    from .reconcile import dac_content_lane_armed
+    from .reconcile import dac_content_fifo_lane_armed
 
     # program_channel_for is the SHARED single-box channel pick; re-raise its
     # follower-flavoured error as the leader error so this arm raises a single
@@ -248,7 +248,7 @@ async def precheck_active_leader(
     coupling_support = coupling_supported_for_route(
         read_persisted_coupling(),
         "active_leader",
-        dac_content_lane_armed=dac_content_lane_armed(
+        dac_content_fifo_lane_armed=dac_content_fifo_lane_armed(
             cfg,
             active_endpoint=box_is_active,
             flat_output_allowed=topology_allows_flat_dac_graph(

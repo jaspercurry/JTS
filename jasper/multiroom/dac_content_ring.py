@@ -4,22 +4,25 @@
 
 """The DAC-content return transport's identity — one name, one wire, one owner.
 
-A grouping LEADER plays what its followers play by taking its own program back
-out of the sync engine: the leader's localhost snapclient writes the bond's
-shared stereo, and ``jasper-outputd`` reads it one DAC period at a time so the
-leader is sample-locked to its members. This module owns what that transport
-IS — its ALSA PCM name, its ring file, the conf.d block that declares it, and
-the wire both ends have to agree on.
+A DUMB bonded member plays the bond's program by taking its own copy back
+out of the sync engine, in either role: its snapclient writes the bond's
+shared stereo — localhost for a leader, pointed at the leader for a
+follower, purely a ``--host`` difference and not which ring gets carried —
+and ``jasper-outputd`` reads it one DAC period at a time so the member is
+sample-locked to the bond. This module owns what that transport IS — its
+ALSA PCM name, its ring file, the conf.d block that declares it, and the
+wire both ends have to agree on.
 
-**Nothing opens it yet.** The lane is parked (:doc:`ADR-0178
-<../docs/adr/0178-every-shape-the-ring-cannot-serve-parks-under-its-own-name>`
-``grouped_dac_content_lane``, #3118): its old transport was a raw-PCM FIFO,
-which the one-transport ruling (ADR-0100) leaves with no route to pin —
-``jasper.multiroom.reconcile.outputd_grouping_env`` says so in prose. This
-module is the identity the lane moves ONTO, shipped ahead of its consumers
-exactly as ``60-jts-ring.conf``, ``61-jts-renderer-lanes.conf`` and the
-grouping ring all shipped ahead of theirs, so a geometry that fails on metal
-costs one file rather than a transport already flipped onto it.
+**Both ends are live.** ``jasper.multiroom.reconcile.outputd_grouping_env``
+arms :data:`DAC_CONTENT_LANE_ENV` on every dumb bonded member and points that
+member's snapclient at :data:`DAC_CONTENT_RING_PCM`; outputd resolves the
+marker to ``ContentBridgeMode::DacContentRing`` and reads this ring as the
+box's SOLE content source, attaching no central Ring B. The lane's old
+transport was a raw-PCM FIFO, which the one-transport ruling (ADR-0100) left
+with no route to pin — that spelling survives only as the
+``grouped_dac_content_lane`` park (:doc:`ADR-0178
+<../docs/adr/0178-every-shape-the-ring-cannot-serve-parks-under-its-own-name>`,
+#3118) until its own deletion PR, and no writer emits it.
 
 **A sibling of** :mod:`jasper.multiroom.grouping_ring`, **not a reuse of it.**
 The two rings carry the same wire between the same two processes' languages,
@@ -45,14 +48,15 @@ from __future__ import annotations
 from jasper.ring_assets import ring_writer_lock_path
 
 #: The ALSA PCM name ``deploy/alsa/conf.d/63-jts-ring-dac-content.conf``
-#: defines — one string for the leader's localhost snapclient ``--soundcard``
-#: and for outputd's reader.
+#: defines — one string for a dumb bonded member's snapclient
+#: ``--soundcard`` (either role) and for outputd's reader.
 DAC_CONTENT_RING_PCM = "jts_ring_dac_content"
 
 #: The SHM ring file that PCM's ``path`` names, under the shared
 #: ``/dev/shm/jts-ring`` directory the ring platform's tmpfiles entry creates.
-#: Only a LEADER has a return path to carry, so unlike the coupling's content
-#: hop there is no role-dependent second spelling.
+#: Every DUMB bonded member carries this lane, in either role, and all of
+#: them name the same single file — unlike the coupling's content hop, there
+#: is no role-dependent second spelling.
 DAC_CONTENT_RING_FILE = "/dev/shm/jts-ring/dac-content.ring"
 
 #: Where the installer places that conf.d block

@@ -138,9 +138,11 @@ def ring_only_transport() -> bool:
     A fan-in COUPLING vocabulary correctly gates a CONTENT-BRIDGE park
     (``grouped_dac_content_lane``) because
     :func:`jasper.audio_runtime_plan.coupling_supported_for_route` already
-    joins the two: it blocks the ``shm_ring`` coupling exactly where the
-    dac_content lane is armed, so "loopback is gone" and "the armed lane has
-    nowhere left to run" are one fact seen from two ends.
+    joins the two: it blocks the ``shm_ring`` coupling exactly where the LEGACY
+    FIFO round-trip spelling is armed — the one this class still names — so
+    "loopback is gone" and "the armed FIFO lane has nowhere left to run" are one
+    fact seen from two ends. The ring MARKER is on neither side of that join:
+    it is served, so it neither blocks the coupling nor parks.
     """
     from ..fanin_coupling import COUPLING_SHM_RING, VALID_COUPLINGS
 
@@ -158,8 +160,7 @@ def _assess(
         ring_channels_for_topology,
         topology_sink_is_composite,
     )
-    from ..fanin_coupling import OUTPUTD_ENV_BOOL_TRUE, ring_active_endpoint_armed
-    from ..multiroom.dac_content_ring import DAC_CONTENT_LANE_ENV
+    from ..fanin_coupling import ring_active_endpoint_armed
     from ..multiroom.reconcile import OUTPUTD_DAC_CONTENT_FIFO_ENV
     from ..output_topology import load_output_topology_strict
 
@@ -237,36 +238,38 @@ def _assess(
             )
         )
 
-    # EITHER spelling arms the ONE round-trip lane, so both are this class —
-    # but no longer for one reason (``rust/jasper-outputd/src/config.rs``). The
-    # FIFO half needs ``JASPER_OUTPUTD_CONTENT_BRIDGE=direct``, which its own
-    # grouping writer no longer emits. The MARKER half now parses instead: it
-    # SELECTS the return ring as the sole content source, and is armed ahead of
-    # the reconciler that writes its producer. Reading the FIFO key alone would
-    # leave a marker-armed box with no class naming it here.
+    # THE FIFO SPELLING ALONE. The round-trip lane has two spellings and only
+    # one of them is still a park: the grouping reconciler now arms
+    # :data:`~jasper.multiroom.dac_content_ring.DAC_CONTENT_LANE_ENV` on every
+    # dumb bonded member, and outputd SERVES that marker — it selects the
+    # dac-content return ring as the box's sole content source
+    # (``rust/jasper-outputd/src/config.rs``). A marker-armed box starts and
+    # plays, so naming it here would park a speaker that is audibly working and
+    # hand its household the "ungroup it to bring sound back" copy
+    # (:mod:`jasper.control.audio_health`) about a speaker already making sound.
+    # The trigger follows the truth: one class, and only the spelling that still
+    # has no producer.
     #
-    # Each key is read with the semantics outputd reads it with: the FIFO is a
-    # PATH, non-empty rather than present, because the grouping reconciler
-    # writes it as an EMPTY string off-bond and a cleared bond leaves the key
-    # behind; the marker is a BARE flag, so ``=0`` is not armed.
+    # The FIFO half keeps the class because it keeps the fault — it requires
+    # ``JASPER_OUTPUTD_CONTENT_BRIDGE=direct``, which no writer emits and which
+    # outputd now refuses beside the marker. It is read as a PATH, non-empty
+    # rather than present, because the grouping reconciler writes it as an EMPTY
+    # string on every branch and a cleared bond leaves the key behind.
     #
-    # EXPIRY: the FIFO half of this test dies with the FIFO arm itself, in the
-    # deletion PR that follows a bonded pair playing through the ring on metal.
+    # EXPIRY: dies with the FIFO arm itself, in the deletion PR that follows a
+    # bonded pair playing through the ring on metal (#3118) — the same PR that
+    # removes outputd's FIFO reader. Nothing else keeps this class alive.
     fifo_armed = bool((env.get(OUTPUTD_DAC_CONTENT_FIFO_ENV) or "").strip())
-    ring_armed = (
-        env.get(DAC_CONTENT_LANE_ENV) or ""
-    ).strip().lower() in OUTPUTD_ENV_BOOL_TRUE
-    if fifo_armed or ring_armed:
+    if fifo_armed:
         parks.append(
             TransportPark(
                 park_class=PARK_GROUPED_DAC_CONTENT_LANE,
                 issue=ISSUE_GROUPED_ON_RING,
                 remedy=None,
                 detail=(
-                    "this box is a bonded grouping member whose round-trip "
-                    "dac_content lane has no producer: the FIFO half needs a "
-                    "content bridge its writer no longer emits, and the marker "
-                    "half is armed ahead of the reconciler that serves its ring"
+                    "this box is a bonded grouping member pinned to the legacy "
+                    "raw-PCM FIFO round-trip lane, which needs a content bridge "
+                    "its writer no longer emits, so nothing produces its audio"
                 ),
             )
         )

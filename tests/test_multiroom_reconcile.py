@@ -26,6 +26,7 @@ import os
 
 import pytest
 
+from jasper.fanin_coupling import dac_content_lane_marker_armed
 from jasper.ring_assets import (
     RING_ACTIVE_CONTENT_FILE,
     RING_WRITER_LOCK_SUFFIX,
@@ -38,6 +39,10 @@ from jasper.multiroom.config import (
     GroupingConfig,
 )
 from jasper.multiroom import reconcile as reconcile_mod
+from jasper.multiroom.dac_content_ring import (
+    DAC_CONTENT_LANE_ENV,
+    DAC_CONTENT_RING_PCM,
+)
 from jasper.multiroom.grouping_ring import GROUPING_RING_PCM
 from jasper.multiroom.reconcile import (
     AIRPLAY_BONDED_EXTRA_DELAY_ENV,
@@ -378,15 +383,17 @@ def test_snapclient_argv_follower_passes_stable_mdns_host_verbatim():
     assert argv[argv.index("--host") + 1] == "jts3.local"
 
 
-# ---------- snapclient_argv(): inv-2 leader content lane (STAGED) ----------
+# ---------- snapclient_argv(): the player device ----------------------------
 #
-# The DAC reroute is gated off behind LEADER_CONTENT_LANE_GATE; player_fifo
-# defaults to None so snapclient is unchanged until the outputd reader lands.
+# `player_alsa_device` is the only player form. Both bonded shapes name an SHM
+# ring PCM here and differ only in WHICH one (see _assemble_args); unset is the
+# bare command.
 
 
-def test_snapclient_argv_unchanged_when_player_fifo_unset():
-    """player_fifo=None (default) is BYTE-FOR-BYTE the pre-inv-2 command — the
-    gated-off reroute is a true no-op."""
+def test_snapclient_argv_bare_when_no_player_device():
+    """`player_alsa_device` unset (the default) leaves the command
+    BYTE-FOR-BYTE bare — no player is named at all, so a caller that passes
+    nothing cannot half-wire one."""
     cfg = _follower(leader_addr="jts3.local")
     assert snapclient_argv(cfg) == [
         "snapclient",
@@ -395,44 +402,17 @@ def test_snapclient_argv_unchanged_when_player_fifo_unset():
         "--latency",
         "0",
     ]
-    assert snapclient_argv(cfg, player_fifo=None) == snapclient_argv(cfg)
+    assert snapclient_argv(cfg, player_alsa_device=None) == snapclient_argv(cfg)
     assert "--player" not in snapclient_argv(cfg)
 
 
-def test_snapclient_argv_adds_file_player_when_fifo_set():
-    """When staged on, snapclient writes raw PCM to the member-content FIFO via
-    its `file` player (never snd-aloop — inv-2); the leader still targets
-    loopback."""
-    fifo = "/run/jasper-grouping/member-content.fifo"
-    argv = snapclient_argv(_leader(), player_fifo=fifo)
-    assert argv[argv.index("--host") + 1] == "127.0.0.1"  # leader -> own server
-    assert "--player" in argv
-    assert argv[argv.index("--player") + 1] == f"file:filename={fifo}"
-
-
-# ---------- snapclient_argv(): ACTIVE endpoint ring player (Slice 3) --------
-
-
-def test_snapclient_argv_active_endpoint_uses_alsa_ring_player():
-    """An active endpoint writes the grouping ring via the ALSA player
-    (--soundcard <dev> --player alsa), NOT the dumb-follower file FIFO — its
-    CamillaDSP captures the SAME PCM and runs Layer A in the bonded path."""
+def test_snapclient_argv_names_the_device_through_the_alsa_player():
+    """A named device is written through snapclient's `alsa` player
+    (--soundcard <dev> --player alsa) — the one player form there is."""
     dev = GROUPING_RING_PCM
     argv = snapclient_argv(_follower(), player_alsa_device=dev)
     assert argv[argv.index("--soundcard") + 1] == dev
     assert argv[argv.index("--player") + 1] == "alsa"
-    assert "file:filename=" not in " ".join(argv)
-
-
-def test_snapclient_argv_alsa_player_takes_precedence_over_fifo():
-    """If both are (defensively) passed, the ALSA ring wins — the active path
-    never falls back to the FIFO."""
-    argv = snapclient_argv(
-        _follower(),
-        player_fifo="/x.fifo",
-        player_alsa_device=GROUPING_RING_PCM,
-    )
-    assert "--soundcard" in argv and "file:filename=" not in " ".join(argv)
 
 
 # ---------- _assemble_args(): pure derivation of the two env keys ----------
@@ -468,19 +448,15 @@ def test_assemble_args_leader_strips_binary_name_from_server():
 
 
 def test_assemble_args_leader_strips_binary_name_from_client():
-    from jasper.multiroom.reconcile import MEMBER_CONTENT_FIFO
-
     d = _assemble_args(_leader())
     assert not d[CLIENT_KEY].split()[0] == "snapclient"
-    # A DUMB member's client (the default, active_endpoint=False) carries
-    # the round-trip file player (Increment 5) and not an ALSA sink, which
-    # on this path would fight outputd for the DAC. NOT "always": an
-    # active-speaker endpoint gets `--player alsa` instead — pinned by
-    # test_assemble_args_active_endpoint_writes_the_ring_not_fifo below.
+    # A DUMB member's client (the default, active_endpoint=False) is the
+    # dac-content ring form. NOT "always": an active-speaker endpoint names the
+    # grouping ring instead — pinned by
+    # test_assemble_args_client_names_one_ring_per_shape below.
     assert d[CLIENT_KEY] == " ".join(
-        snapclient_argv(_leader(), player_fifo=MEMBER_CONTENT_FIFO)[1:]
+        snapclient_argv(_leader(), player_alsa_device=DAC_CONTENT_RING_PCM)[1:]
     )
-    assert f"--player file:filename={MEMBER_CONTENT_FIFO}" in d[CLIENT_KEY]
 
 
 def test_assemble_args_leader_server_carries_the_fifo_source():
@@ -496,63 +472,52 @@ def test_assemble_args_follower_server_empty_client_set():
     assert "--host 192.168.1.50" in d[CLIENT_KEY]
 
 
-def test_assemble_args_follower_uses_outputd_fifo_not_direct_alsa():
-    """The DUMB member shape, which is the default (active_endpoint=False):
-    the round-trip outputd FIFO via snapclient's `file` player, and no
-    direct-ALSA sink on that path.
+@pytest.mark.parametrize(
+    ("active_endpoint", "ring", "other_ring"),
+    [
+        (False, DAC_CONTENT_RING_PCM, GROUPING_RING_PCM),
+        (True, GROUPING_RING_PCM, DAC_CONTENT_RING_PCM),
+    ],
+)
+def test_assemble_args_client_names_one_ring_per_shape(
+    active_endpoint, ring, other_ring,
+):
+    """ONE snapclient shape, two rings — which one is the whole decision.
 
-    Scoped to that path, not a universal. An active-speaker endpoint
-    (active_endpoint=True) writes an ALSA sink instead — pinned by
-    test_assemble_args_active_endpoint_writes_the_ring_not_fifo below.
-    This test's name describes the default path it covers."""
-    from jasper.multiroom.reconcile import MEMBER_CONTENT_FIFO
-
-    d = _assemble_args(_follower())
-
-    assert d[SERVER_KEY] == ""
-    assert f"--player file:filename={MEMBER_CONTENT_FIFO}" in d[CLIENT_KEY]
-    assert "alsa:device=default" not in d[CLIENT_KEY]
-
-
-def test_assemble_args_active_endpoint_writes_the_ring_not_fifo():
-    """An ACTIVE endpoint (active_endpoint=True) writes the grouping ring via
-    the ALSA player; the dumb-follower FIFO is NOT used (camilla owns the
-    path). The default (active_endpoint=False) is unchanged."""
-    from jasper.multiroom.reconcile import MEMBER_CONTENT_FIFO
-
-    d = _assemble_args(_follower(), active_endpoint=True)
+    A DUMB member (the default, active_endpoint=False) writes the dac-content
+    RETURN ring, which outputd reads as its sole content source. An ACTIVE
+    endpoint writes the grouping ring, which its own CamillaDSP captures to run
+    Layer A in the bonded path. Each shape names its own ring and never the
+    other's — swapping them would silence the box."""
+    d = _assemble_args(_follower(), active_endpoint=active_endpoint)
     assert d[SERVER_KEY] == ""  # a follower runs no server
-    assert f"--soundcard {GROUPING_RING_PCM} --player alsa" in d[CLIENT_KEY]
-    assert MEMBER_CONTENT_FIFO not in d[CLIENT_KEY]
-    # default path is the dumb FIFO (regression guard for the off-by-default).
-    assert "--soundcard" not in _assemble_args(_follower())[CLIENT_KEY]
+    assert f"--soundcard {ring} --player alsa" in d[CLIENT_KEY]
+    assert other_ring not in d[CLIENT_KEY]
 
 
 def test_outputd_grouping_env_active_endpoint_clears_dac_content():
     """An ACTIVE follower disables outputd's dac_content ChannelPick — camilla
     owns the channel-pick + split, so outputd runs its normal active sink. The
-    round-trip lane env is cleared; TTS also stays off outputd because active
+    round-trip lane marker is cleared; TTS also stays off outputd because active
     voice rides fan-in upstream of the crossover. A DUMB member still arms the
-    FIFO lane."""
+    lane."""
     from jasper.multiroom.reconcile import (
-        OUTPUTD_DAC_CONTENT_FIFO_ENV,
         OUTPUTD_TTS_SOCKET_ENV,
         outputd_grouping_env,
     )
 
     active = outputd_grouping_env(_follower(), active_endpoint=True)
-    assert active[OUTPUTD_DAC_CONTENT_FIFO_ENV] == ""  # cleared (no dac_content)
+    assert active[DAC_CONTENT_LANE_ENV] == ""  # cleared (no dac_content)
     assert active[OUTPUTD_TTS_SOCKET_ENV] == ""
     dumb = outputd_grouping_env(
         _follower(), active_endpoint=False, flat_output_allowed=True
     )
-    assert dumb[OUTPUTD_DAC_CONTENT_FIFO_ENV] != ""  # dumb member arms the lane
+    assert dumb[DAC_CONTENT_LANE_ENV] != ""  # dumb member arms the lane
 
 
 def test_topology_changes_revoke_dac_bypass_without_deleting_bond_intent():
     """Reset and active-layout save both close a bonded passive DAC bypass."""
     from jasper.multiroom.reconcile import (
-        OUTPUTD_DAC_CONTENT_FIFO_ENV,
         _assemble_args,
         outputd_grouping_env,
     )
@@ -566,9 +531,9 @@ def test_topology_changes_revoke_dac_bypass_without_deleting_bond_intent():
         flat_output_allowed=False,
     )
 
-    assert allowed[OUTPUTD_DAC_CONTENT_FIFO_ENV] == reconcile_mod.MEMBER_CONTENT_FIFO
-    assert after_reset[OUTPUTD_DAC_CONTENT_FIFO_ENV] == ""
-    assert after_active_save[OUTPUTD_DAC_CONTENT_FIFO_ENV] == ""
+    assert dac_content_lane_marker_armed(allowed)
+    assert after_reset[DAC_CONTENT_LANE_ENV] == ""
+    assert after_active_save[DAC_CONTENT_LANE_ENV] == ""
     assert _assemble_args(bonded)[CLIENT_KEY]
     assert _assemble_args(bonded, active_endpoint=True)[CLIENT_KEY]
 
@@ -942,8 +907,8 @@ def test_write_args_file_no_partial_file_on_inner_failure(tmp_path, monkeypatch)
 def _patch_main_io(monkeypatch, tmp_path, cfg):
     """Redirect ALL of main()'s side effects to a tmp dir + record order.
 
-    Patches: the args + outputd-env files and the member FIFO into
-    tmp_path; load_config to the synthetic cfg; _apply + _restart_outputd
+    Patches: the args + outputd-env files into tmp_path; load_config to
+    the synthetic cfg; _apply + _restart_outputd
     to order-recording fakes; and the leader_config sync entrypoints to
     spies (main from-imports them at call time, so patching the
     leader_config MODULE attributes intercepts them)."""
@@ -966,11 +931,6 @@ def _patch_main_io(monkeypatch, tmp_path, cfg):
         reconcile_mod,
         "AIRPLAY_GROUPING_ENV_FILE",
         str(tmp_path / "grouping-airplay.env"),
-    )
-    monkeypatch.setattr(
-        reconcile_mod,
-        "MEMBER_CONTENT_FIFO",
-        str(tmp_path / "member-content.fifo"),
     )
     monkeypatch.setattr(
         reconcile_mod,
@@ -1376,34 +1336,23 @@ def test_role_apply_hands_all_sources_to_canonical_owner(
     assert not any("fanin-coupling" in entry for entry in order)
 
 
-def test_main_leader_writes_member_fifo(tmp_path, monkeypatch):
-    """An active member's round-trip FIFO exists after reconcile (created
-    before snapclient would start writing it)."""
-    import stat as stat_mod
-
-    _target, _order = _patch_main_io(monkeypatch, tmp_path, _leader())
-    assert main([]) == 0
-    fifo = tmp_path / "member-content.fifo"
-    assert fifo.exists()
-    assert stat_mod.S_ISFIFO(fifo.stat().st_mode)
-
-
 def test_main_writes_outputd_env_for_member_and_clears_for_solo(tmp_path, monkeypatch):
-    """The outputd lane env carries FIFO+channel while bonded and explicit
-    empty strings after disband (disable-clears-stale)."""
+    """The outputd lane env carries the ring MARKER + channel while bonded and
+    explicit empty strings after disband (disable-clears-stale). The legacy FIFO
+    key is cleared on BOTH paths — arming the marker beside a path is the
+    two-content-sources shape outputd refuses."""
     _target, _order = _patch_main_io(monkeypatch, tmp_path, _leader())
     assert main([]) == 0
     env = (tmp_path / "grouping-outputd.env").read_text()
-    assert (
-        "JASPER_OUTPUTD_DAC_CONTENT_FIFO=" + str(tmp_path / "member-content.fifo")
-        in env
-    )
+    assert f"{DAC_CONTENT_LANE_ENV}=1\n" in env
+    assert f"{reconcile_mod.OUTPUTD_DAC_CONTENT_FIFO_ENV}=\n" in env
     assert "JASPER_OUTPUTD_DAC_CONTENT_CHANNEL=left" in env
 
     _target, order = _patch_main_io(monkeypatch, tmp_path, _disabled())
     assert main([]) == 0
     env = (tmp_path / "grouping-outputd.env").read_text()
-    assert "JASPER_OUTPUTD_DAC_CONTENT_FIFO=\n" in env
+    assert f"{DAC_CONTENT_LANE_ENV}=\n" in env
+    assert f"{reconcile_mod.OUTPUTD_DAC_CONTENT_FIFO_ENV}=\n" in env
     assert "JASPER_OUTPUTD_DAC_CONTENT_CHANNEL=\n" in env
     assert "outputd_restart" in order  # env changed bonded→cleared ⇒ restart
 
@@ -1791,10 +1740,10 @@ def test_main_active_follower_prechecks_early_then_swaps_camilla_after_units(
     # Gate before units; camilla swap after the unit plan.
     assert order.index("precheck") < order.index("apply")
     assert order.index("apply") < order.index("camilla_active_follower")
-    # snapclient targets the grouping ring, not the dumb FIFO.
+    # snapclient targets the grouping ring, not the dumb member's return ring.
     body = target.read_text()
     assert GROUPING_RING_PCM in body
-    assert reconcile_mod.MEMBER_CONTENT_FIFO not in body
+    assert DAC_CONTENT_RING_PCM not in body
     # endpoint status persisted as active_crossover.
     status = tmp_path / "grouping-follower-status.json"
     assert '"active_follower": true' in status.read_text()
@@ -2115,10 +2064,10 @@ def test_main_active_leader_bakes_arms_camilla2_and_reseeds(tmp_path, monkeypatc
     assert "outputd_restart" not in order
     assert "stream_binding" in order  # the leader hosts the stream
     # snapclient targets the grouping ring (the leader is its own receiver),
-    # not the dumb FIFO; the leader still runs snapserver.
+    # not the dumb member's return ring; the leader still runs snapserver.
     body = target.read_text()
     assert GROUPING_RING_PCM in body
-    assert reconcile_mod.MEMBER_CONTENT_FIFO not in body
+    assert DAC_CONTENT_RING_PCM not in body
     assert f"{SERVER_KEY}=" in body and SNAPFIFO in body
     # endpoint status persisted as an active LEADER.
     status = (tmp_path / "grouping-follower-status.json").read_text()
@@ -3518,14 +3467,18 @@ def test_ensure_unit_active_contains_bounded_start_timeout(monkeypatch, caplog):
     )
 
 
-# --- ring-armed box refuses to bond (audit finding 3, P2) --------------------
+# --- the coupling no longer refuses a bond, and the fallback that still can ---
 #
-# NARROWED (T-5): the refusal's subject is outputd's dac_content lane, not
-# "grouping is on". `_patch_main_io` stubs `_output_topology_state` to
-# (False, True) — a PASSIVE box with a saved flat-capable layout, i.e. the DUMB
-# member that reads the lane — so the two refusal tests below keep their meaning
-# and only their reason token changes. The box that used to be refused for
-# nothing is covered by `test_ring_armed_active_endpoint_may_bond`.
+# The refusal gate's subject was outputd's dac_content lane, and the cutover
+# armed that lane onto the dac-content RING, which strands no second content
+# source — so the gate now fires for nobody and the tests below pin that.
+# `_patch_main_io` stubs `_output_topology_state` to (False, True), a PASSIVE
+# box with a saved flat-capable layout: the DUMB member that carries the lane,
+# i.e. the shape that used to be refused.
+#
+# The fail-safe fallback machinery itself is still live behind the ACTIVE
+# follower's readiness gate — `_refuse_follower_bond` — so the tests that pin
+# what a refused follower's local sources do are driven from there.
 
 
 def _arm_ring_for_reconcile(monkeypatch):
@@ -3536,42 +3489,76 @@ def _arm_ring_for_reconcile(monkeypatch):
     )
 
 
-def test_box_lane_verdict_reads_the_topology_the_writer_reads(monkeypatch):
-    """`box_dac_content_lane_armed` is the live twin of the pure predicate, for
-    the two gates that hold only a route mode. It must answer from the SAME
-    `_output_topology_state` the writer's own caller reads."""
-    cfg = _leader()
-    monkeypatch.setattr(reconcile_mod, "_output_topology_state", lambda: (False, True))
-    assert reconcile_mod.box_dac_content_lane_armed(cfg) is True  # DUMB member
+def _refuse_follower_bond(monkeypatch):
+    """Make main() take a LIVE fail-safe refusal on a follower.
+
+    The coupling gate refuses nobody since the cutover, so the refusal that
+    still reaches `fall_back_to_solo` is the ACTIVE follower's readiness gate.
+    Same fallback machinery, a reason that can actually happen — call AFTER
+    `_patch_main_io` (it overrides the passive topology stub)."""
+    import jasper.multiroom.follower_config as fc_mod
+
     monkeypatch.setattr(reconcile_mod, "_output_topology_state", lambda: (True, False))
-    assert reconcile_mod.box_dac_content_lane_armed(cfg) is False  # ACTIVE endpoint
-    # A passive box whose layout was never saved: the writer clears the lane
-    # there too (no declared speaker to send a flat program to).
-    monkeypatch.setattr(reconcile_mod, "_output_topology_state", lambda: (False, False))
-    assert reconcile_mod.box_dac_content_lane_armed(cfg) is False
+
+    def _boom(_cfg):
+        raise fc_mod.ActiveFollowerError("graph_unprovable", "nope")
+
+    monkeypatch.setattr(fc_mod, "precheck_active_follower_sync", _boom)
+    monkeypatch.setattr(fc_mod, "restore_active_follower_solo_sync", lambda: None)
 
 
-def test_the_lane_verdict_follows_the_writer_onto_either_transport(monkeypatch):
-    """The predicate reads the writer's env, not one hardcoded key.
+def test_the_lane_verdict_reads_only_the_fifo_spelling(monkeypatch):
+    """NARROWED at the cutover: the predicate is the FIFO spelling's question.
 
-    Nothing writes the ring marker yet, so this drives the writer directly.
-    The day ``outputd_grouping_env`` moves the lane onto the marker, a
-    FIFO-only reading would answer "not armed" and this predicate's consumer
-    — the coupling support matrix — would arm ``shm_ring`` under a lane that
-    owns the DAC. Two spellings, one verdict, and ``=0`` is not armed.
+    It still reads the WRITER's own env rather than restating a rule, but the
+    two spellings of the lane no longer answer one question. The ring MARKER
+    resolves outputd's content source to the dac-content return ring and leaves
+    the central `shm_ring` unattached, so it strands nothing and must NOT block
+    the coupling; only the legacy FIFO PATH does. Driven through a faked writer
+    because the live writer no longer emits a FIFO at all.
+
+    A whitespace-only value is not a path — `jasper.control.transport_park`
+    strips it the same way, and the two readers must not disagree about which
+    boxes are armed.
     """
     cfg = _leader()
 
     def _writes(env):
         monkeypatch.setattr(reconcile_mod, "outputd_grouping_env", lambda *a, **k: env)
-        return reconcile_mod.dac_content_lane_armed(cfg)
+        return reconcile_mod.dac_content_fifo_lane_armed(cfg)
 
     fifo = reconcile_mod.OUTPUTD_DAC_CONTENT_FIFO_ENV
-    marker = reconcile_mod.DAC_CONTENT_LANE_ENV
     assert _writes({fifo: "/run/x.fifo"}) is True
-    assert _writes({fifo: "", marker: "1"}) is True
-    assert _writes({fifo: "", marker: "0"}) is False
+    assert _writes({fifo: "   "}) is False
     assert _writes({fifo: ""}) is False
+    assert _writes({}) is False
+    # The marker is NOT this predicate's subject, in either truthiness.
+    assert _writes({fifo: "", DAC_CONTENT_LANE_ENV: "1"}) is False
+    assert _writes({fifo: "", DAC_CONTENT_LANE_ENV: "0"}) is False
+
+
+@pytest.mark.parametrize("cfg", [_disabled(), _invalid(), _leader(), _follower()])
+@pytest.mark.parametrize("active_endpoint", [False, True])
+@pytest.mark.parametrize("flat_output_allowed", [False, True])
+def test_no_live_config_arms_the_fifo_lane_verdict(
+    cfg, active_endpoint, flat_output_allowed,
+):
+    """THE CUTOVER, stated as the verdict its consumer sees.
+
+    The writer arms the ring MARKER for a dumb member and emits the FIFO path
+    on no branch at all, so this predicate is False for every shape a box can
+    be in. Its consumer is the coupling support matrix, whose one blocked cell
+    needs a True — which is exactly why a ring-armed dumb member can now bond.
+    A True here would silently re-refuse that bond.
+    """
+    assert (
+        reconcile_mod.dac_content_fifo_lane_armed(
+            cfg,
+            active_endpoint=active_endpoint,
+            flat_output_allowed=flat_output_allowed,
+        )
+        is False
+    )
 
 
 def test_topology_state_survives_an_unimportable_dependency(monkeypatch):
@@ -3590,12 +3577,16 @@ def test_topology_state_survives_an_unimportable_dependency(monkeypatch):
     assert reconcile_mod._output_topology_state() == (None, False)
 
 
-def test_box_lane_verdict_reads_no_topology_for_a_non_member(monkeypatch):
-    """The writer's OFF path is answered BEFORE any topology read.
+def test_box_lane_verdict_reads_no_topology_at_all(monkeypatch):
+    """The live twin answers WITHOUT reading the output topology — for a bonded
+    member as much as for a solo box.
 
     `_output_topology_state` logs a WARN per call on an unreadable topology, and
-    this predicate is on the 60 s route sampler and every /state build — so a
-    SOLO box that has no lane at all must not pay either the I/O or the spam.
+    this predicate runs on the 60 s route sampler and every /state build. The
+    read used to be load-bearing because the writer's FIFO branch was reached
+    through it; the marker branch is not, so the read became pure I/O and pure
+    log spam. It is still asked through the WRITER'S OWN rule, so the verdict
+    cannot drift from what the writer emits.
     """
     calls = []
     monkeypatch.setattr(
@@ -3605,43 +3596,10 @@ def test_box_lane_verdict_reads_no_topology_for_a_non_member(monkeypatch):
     )
 
     solo = dataclasses.replace(_leader(), enabled=False)
-    assert reconcile_mod.box_dac_content_lane_armed(solo) is False
     invalid = dataclasses.replace(_leader(), error="JASPER_GROUPING_BOND_ID is empty")
-    assert reconcile_mod.box_dac_content_lane_armed(invalid) is False
-    assert calls == [], "a non-member must not read the topology at all"
-
-    # …and a real member still does.
-    assert reconcile_mod.box_dac_content_lane_armed(_leader()) is True
-    assert calls == [1]
-
-
-def test_box_lane_verdict_fails_closed_on_an_unreadable_topology(monkeypatch):
-    """UNCERTAINTY FAILS CLOSED, and only on the axis that was unreadable.
-
-    `_output_topology_state` answers `(None, False)` when topology.json cannot
-    be read — the 2026-05-23 filesystem-loss class — and that cannot separate a
-    DUMB member (lane armed) from an ACTIVE endpoint (lane cleared). Answering
-    "not armed" there would let a box arm the ring while a stale
-    `JASPER_OUTPUTD_DAC_CONTENT_FIFO` is still live in outputd's env, and
-    outputd fail-closes on FIFO + a non-`direct` bridge — the boot-loop shape
-    the T5.1 guard exists to contain. So the rule is asked with the worst-case
-    shape instead.
-
-    A solo or invalid config still answers False, because that is the writer's
-    OFF-path answer and no guess was needed on that axis.
-    """
-    import dataclasses
-
-    monkeypatch.setattr(reconcile_mod, "_output_topology_state", lambda: (None, False))
-    assert reconcile_mod.box_dac_content_lane_armed(_leader()) is True
-    assert reconcile_mod.box_dac_content_lane_armed(_follower()) is True
-
-    solo = dataclasses.replace(_leader(), enabled=False)
-    assert reconcile_mod.box_dac_content_lane_armed(solo) is False
-    invalid = dataclasses.replace(
-        _leader(), error="JASPER_GROUPING_BOND_ID is empty"
-    )
-    assert reconcile_mod.box_dac_content_lane_armed(invalid) is False
+    for cfg in (solo, invalid, _leader(), _follower()):
+        assert reconcile_mod.box_dac_content_fifo_lane_armed(cfg) is False
+    assert calls == [], "the live verdict must not read the topology at all"
 
 
 def test_ring_armed_active_endpoint_may_bond(tmp_path, monkeypatch, caplog):
@@ -3684,32 +3642,40 @@ def test_ring_armed_active_endpoint_may_bond(tmp_path, monkeypatch, caplog):
     ), status
 
 
-def test_ring_armed_leader_refuses_bond_falls_back_to_solo(tmp_path, monkeypatch):
-    target, order = _patch_main_io(monkeypatch, tmp_path, _leader())
-    _arm_ring_for_reconcile(monkeypatch)
-    rc = main([])
-    # Refused: non-zero exit (the oneshot shows failed) so the operator notices.
-    assert rc == 1
-    # Fell back to solo: no bonded camilla apply, no snapcast server start.
-    assert "camilla_bonded" not in order
-    # The args file is written as the DISABLED (solo) shape.
-    text = target.read_text()
-    assert text == f"{SERVER_KEY}=\n{CLIENT_KEY}=\n"
-    # The follower status file records the ring block reason for /state + doctor.
+@pytest.mark.parametrize("coupling", ["shm_ring", "loopback"])
+def test_a_dumb_member_bonds_under_either_coupling(tmp_path, monkeypatch, coupling):
+    """THE CUTOVER: the fan-in coupling no longer gates a DUMB member's bond.
+
+    A ring-armed box used to be REFUSED here, because its round-trip lane was a
+    raw-PCM FIFO that needed outputd on the snd-aloop content PCM an armed ring
+    moves CamillaDSP off — two content sources, one DAC. Armed onto the
+    dac-content RETURN ring instead, outputd resolves its central `shm_ring` to
+    None, so the ring strands nothing and the coupling matrix's one blocked cell
+    no longer matches. `loopback` is the shape that always bonded; both now
+    reach the same place, which is what makes the refusal gate dead code.
+    """
     import json
 
-    status = json.loads((tmp_path / "grouping-follower-status.json").read_text())
-    assert (
-        status.get("blocked_reason")
-        == "fanin_shm_ring_unsupported_with_dac_content_lane"
+    target, order = _patch_main_io(monkeypatch, tmp_path, _leader())
+    monkeypatch.setattr(
+        "jasper.fanin.coupling_reconcile.read_persisted_coupling",
+        lambda *a, **k: coupling,
     )
-    assert status.get("local_sources_allowed") is True
+
+    assert main([]) == 0
+    assert "camilla_bonded" in order
+    # Bonded args, not the disabled (solo) shape — and onto the return ring.
+    assert f"--soundcard {DAC_CONTENT_RING_PCM} --player alsa" in target.read_text()
+    status = json.loads((tmp_path / "grouping-follower-status.json").read_text())
+    assert not status.get("blocked_reason")
 
 
-def test_ring_armed_follower_status_allows_sources_after_solo_fallback(
+def test_refused_follower_status_allows_sources_after_solo_fallback(
     tmp_path,
     monkeypatch,
 ):
+    """A refused follower is not left mute: the status main() persists un-parks
+    local sources, and the guard that reads it agrees."""
     from jasper.multiroom.effective_role import (
         effective_local_sources_park_reason,
         read_effective_role_status,
@@ -3717,14 +3683,12 @@ def test_ring_armed_follower_status_allows_sources_after_solo_fallback(
 
     requested = _follower(leader_addr="192.168.1.50")
     _patch_main_io(monkeypatch, tmp_path, requested)
-    _arm_ring_for_reconcile(monkeypatch)
+    _refuse_follower_bond(monkeypatch)
 
     assert main([]) == 1
     status_path = tmp_path / "grouping-follower-status.json"
     status = read_effective_role_status(str(status_path))
-    assert (
-        status["blocked_reason"] == "fanin_shm_ring_unsupported_with_dac_content_lane"
-    )
+    assert status["blocked_reason"] == "graph_unprovable"
     assert status["local_sources_allowed"] is True
     assert (
         effective_local_sources_park_reason(
@@ -3744,7 +3708,7 @@ def test_refused_follower_stays_parked_until_solo_unit_plan_succeeds(
 
     requested = _follower(leader_addr="192.168.1.50")
     _patch_main_io(monkeypatch, tmp_path, requested)
-    _arm_ring_for_reconcile(monkeypatch)
+    _refuse_follower_bond(monkeypatch)
     status_path = tmp_path / "grouping-follower-status.json"
 
     def fail_plan(_decision):
@@ -3767,7 +3731,7 @@ def test_refused_follower_grant_write_failure_keeps_prior_deny(
 
     requested = _follower(leader_addr="192.168.1.50")
     _patch_main_io(monkeypatch, tmp_path, requested)
-    _arm_ring_for_reconcile(monkeypatch)
+    _refuse_follower_bond(monkeypatch)
     real_write = reconcile_mod._write_follower_status
 
     def fail_only_grant(**kwargs):
@@ -3786,13 +3750,3 @@ def test_refused_follower_grant_write_failure_keeps_prior_deny(
     assert final["local_sources_allowed"] is False
 
 
-def test_loopback_box_still_bonds_normally(tmp_path, monkeypatch):
-    # Control: a non-ring (loopback) box bonds as before — the gate is ring-only.
-    target, order = _patch_main_io(monkeypatch, tmp_path, _leader())
-    monkeypatch.setattr(
-        "jasper.fanin.coupling_reconcile.read_persisted_coupling",
-        lambda *a, **k: "loopback",
-    )
-    rc = main([])
-    assert rc == 0
-    assert "camilla_bonded" in order

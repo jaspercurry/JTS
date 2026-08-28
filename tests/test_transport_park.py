@@ -354,19 +354,15 @@ def test_converged_active_endpoint_does_not_park():
     "env",
     [
         pytest.param({_FIFO_ENV: "/run/x.fifo"}, id="fifo_only"),
-        pytest.param({_LANE_ENV: "1"}, id="marker_only"),
-        pytest.param({_LANE_ENV: "on"}, id="marker_word"),
-        pytest.param({_FIFO_ENV: "/run/x.fifo", _LANE_ENV: "1"}, id="both"),
+        pytest.param({_FIFO_ENV: "/run/x.fifo", _LANE_ENV: "1"}, id="fifo_and_marker"),
     ],
 )
-def test_either_transport_arms_the_one_grouped_park(env):
-    """ONE lane, two spellings, ONE class — and one issue to follow.
+def test_the_legacy_fifo_spelling_arms_the_grouped_park(env):
+    """The FIFO half still has no producer, so it is still this class.
 
-    outputd requires ``CONTENT_BRIDGE=direct`` for the ring marker and the
-    FIFO alike, so a marker-armed box parks for exactly the reason a
-    FIFO-armed one does. A trigger reading the FIFO key alone would leave it
-    refused at outputd with no class naming it here, which is the unnamed
-    park ADR-0178 exists to prevent.
+    It needs ``CONTENT_BRIDGE=direct``, which its own grouping writer no longer
+    emits and which outputd now refuses beside the marker. A box carrying it —
+    with or without a marker beside it — emits nothing, so it must be named.
     """
     parks = transport_park.classify(_full_range_stereo(), env)
     assert _classes(parks) == {PARK_GROUPED_DAC_CONTENT_LANE}
@@ -379,18 +375,37 @@ def test_either_transport_arms_the_one_grouped_park(env):
         pytest.param({}, id="neither_key"),
         pytest.param({_FIFO_ENV: ""}, id="fifo_cleared"),
         pytest.param({_FIFO_ENV: "", _LANE_ENV: ""}, id="ungrouped_clears_both"),
+        pytest.param({_FIFO_ENV: "   "}, id="fifo_whitespace_is_not_a_path"),
         pytest.param({_LANE_ENV: "0"}, id="marker_off"),
         pytest.param({_LANE_ENV: "false"}, id="marker_false"),
     ],
 )
-def test_an_unarmed_lane_parks_under_neither_spelling(env):
-    """THE kill test for this class, across both spellings.
+def test_an_unarmed_lane_does_not_park(env):
+    """THE kill test for this class.
 
-    Each key is read the way outputd reads it: the FIFO as a non-empty PATH,
-    because the grouping reconciler writes it as an EMPTY string when this
-    speaker is not an active member; the marker through ``env_bool``, because
-    one tested for PRESENCE would call ``=0`` armed and park a speaker that is
-    playing.
+    The FIFO is read as a non-empty PATH, because the grouping reconciler
+    writes that key as an EMPTY string on every branch — a reader testing mere
+    presence would park every speaker the reconciler has ever touched.
+    """
+    assert transport_park.classify(_full_range_stereo(), env) == ()
+
+
+@pytest.mark.parametrize(
+    "env",
+    [
+        pytest.param({_LANE_ENV: "1"}, id="marker_only"),
+        pytest.param({_LANE_ENV: "on"}, id="marker_word"),
+        pytest.param({_FIFO_ENV: "", _LANE_ENV: "1"}, id="marker_with_cleared_fifo"),
+    ],
+)
+def test_a_marker_armed_member_is_served_and_does_not_park(env):
+    """THE CUTOVER'S OWN PIN: a dumb bonded member plays, so it must not park.
+
+    The grouping reconciler arms this marker on every dumb bonded member and
+    outputd SERVES it — the dac-content return ring becomes the box's sole
+    content source. Parking it would fail the doctor on a working speaker and
+    hand its household the "ungroup it to bring sound back" copy about a
+    speaker already making sound.
     """
     assert transport_park.classify(_full_range_stereo(), env) == ()
 
@@ -398,9 +413,9 @@ def test_an_unarmed_lane_parks_under_neither_spelling(env):
 def test_the_grouped_park_reads_the_key_the_ring_module_owns():
     """The classifier and the ring identity must name ONE key.
 
-    The literal above is what pins it: if the owner module's value drifts, the
-    classifier would silently watch a key nothing writes and the park would go
-    quiet.
+    The literal above is what pins it. The marker is no longer a park trigger,
+    but it is still the key that must NOT fire one, so a drift in the owner
+    module's value would silently reintroduce the park it was narrowed out of.
     """
     from jasper.multiroom.dac_content_ring import DAC_CONTENT_LANE_ENV
 

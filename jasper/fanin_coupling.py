@@ -635,6 +635,53 @@ def outputd_bridge_is_ring(raw: str | None) -> bool:
     return not declared or declared in _OUTPUTD_RING_BRIDGE_SPELLINGS
 
 
+def dac_content_lane_marker_armed(env: "Mapping[str, str]") -> bool:
+    """Is this box armed onto the bonded dac-content RETURN ring?
+
+    Reads :data:`~jasper.multiroom.dac_content_ring.DAC_CONTENT_LANE_ENV`, whose
+    single writer is ``jasper.multiroom.reconcile.outputd_grouping_env``. A BARE
+    marker, so the accept-set is outputd's own ``env_bool`` vocabulary
+    (:data:`OUTPUTD_ENV_BOOL_TRUE`) and ``=0`` is not armed — a reader that
+    tested mere PRESENCE would call a cleared bond armed, because this writer
+    clears by writing the key EMPTY.
+
+    The lazy import is deliberate: ``jasper.multiroom.dac_content_ring`` reaches
+    this module through ``jasper.ring_assets``, so naming it at module level
+    would close that into a cycle.
+    """
+    from jasper.multiroom.dac_content_ring import DAC_CONTENT_LANE_ENV
+
+    return (env.get(DAC_CONTENT_LANE_ENV) or "").strip().lower() in (
+        OUTPUTD_ENV_BOOL_TRUE
+    )
+
+
+def outputd_content_is_central_ring(env: "Mapping[str, str]") -> bool:
+    """Does outputd take the CENTRAL post-DSP ring as its content source here?
+
+    TWO INPUTS, ONE QUESTION. :func:`outputd_bridge_is_ring` answers it from the
+    bridge declaration alone, and "undeclared IS the ring" stopped being the
+    whole truth when the dac-content marker became a SELECTOR: an armed marker
+    resolves ``ContentBridgeMode::DacContentRing``, so outputd attaches the
+    bonded return ring and leaves ``shm_ring`` unattached — with the bridge key
+    absent, which is the only shape a marker-armed box may carry (outputd
+    refuses the marker beside an explicitly declared bridge of any value).
+
+    The marker is fed in HERE rather than into :func:`outputd_bridge_is_ring`
+    because that one takes a raw string and cannot see a second key. This takes
+    the env MAPPING for the same reason :func:`ring_active_endpoint_armed` does,
+    and every caller that asks "is outputd on the ring" already holds one.
+
+    Like both predicates it composes, it answers what outputd IS RUNNING rather
+    than what an operator typed, and it cannot see a read failure: a caller that
+    could not open ``outputd.env`` hands it an empty mapping, which reads as an
+    undeclared bridge with no marker — the ring.
+    """
+    return not dac_content_lane_marker_armed(env) and outputd_bridge_is_ring(
+        env.get(OUTPUTD_CONTENT_BRIDGE_ENV_VAR)
+    )
+
+
 def resolve_outputd_ring_path(raw_path: str | None) -> str:
     """Resolve the Ring B (content) SHM ring file path from a raw env value.
 

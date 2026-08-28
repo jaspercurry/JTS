@@ -562,26 +562,26 @@ def test_the_outputd_reader_unit_escalates_to_reboot():
     )
 
 
-def test_nothing_consumes_the_dac_content_ring_yet():
-    """PR-1 is INERT BY CONSTRUCTION, and that is a contract, not a happenstance.
+def test_the_ring_has_exactly_one_consumer_and_it_spells_the_owned_name():
+    """The inertness pin's successor: ONE opener, and it imports the identity.
 
-    The identity ships ahead of its transport so a geometry that fails on metal
-    costs one file. If a consumer lands without this pin moving, the "inert"
-    claim in the module docstring, the conf.d header and the installer comment
-    all become false at once, silently.
-
-    Scoped to the PCM NAME, which is what an opener must spell: the module's
-    constants may be imported by whatever lands next (that is what they are
-    for), but until the transport PR the string reaches nothing that opens it.
-    Delete this test in the PR that wires the first consumer.
+    Its predecessor asserted nothing opened this ring, and said in so many
+    words to delete it in the PR that wires the first consumer — this is that
+    PR. What replaces it is the claim that still has teeth: the grouping
+    reconciler is the only thing that names this PCM, and it names it by
+    IMPORTING the constant, so the ALSA block and the ``--soundcard`` argument
+    cannot drift into two spellings of one wire.
     """
+    from jasper.multiroom import reconcile
+
+    assert reconcile.DAC_CONTENT_RING_PCM is DAC_CONTENT_RING_PCM
     hits = sorted(
         path.relative_to(_REPO).as_posix()
         for path in (_REPO / "jasper").rglob("*.py")
         if DAC_CONTENT_RING_PCM in path.read_text(encoding="utf-8")
     )
     assert hits == ["jasper/multiroom/dac_content_ring.py"], (
-        f"pcm.{DAC_CONTENT_RING_PCM} is named outside its identity module: "
-        f"{hits}. A consumer landed — move it behind the hardware gate, and "
-        "delete this pin in the PR that wires it."
+        f"pcm.{DAC_CONTENT_RING_PCM} is spelled as a LITERAL outside its "
+        f"identity module: {hits}. Import the constant instead — a second "
+        "spelling is a wire the two ends can disagree about."
     )

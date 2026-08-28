@@ -950,9 +950,9 @@ def test_plan_valid_couplings_is_fanin_coupling_ssot():
 # --------------------------------------------------------------------------
 # T-5 — the narrowed shm_ring gate, DERIVED rather than parametrized.
 #
-# The gate's second condition is `dac_content_lane_armed`, and this block never
+# The gate's second condition is `dac_content_fifo_lane_armed`, and this block never
 # invents that boolean: every cell computes it from a real `GroupingConfig`
-# through `jasper.multiroom.reconcile.dac_content_lane_armed`, which is itself
+# through `jasper.multiroom.reconcile.dac_content_fifo_lane_armed`, which is itself
 # read out of the function that WRITES the lane. Parametrizing it as a free
 # boolean would pin combinations the real derivation cannot produce (the
 # `invalid_grouping x armed=True` cell most of all) and would assert nothing
@@ -1015,22 +1015,37 @@ _T5_CELLS = [
 
 
 def _t5_armed(cfg, active_endpoint: bool, flat_output_allowed: bool) -> bool:
-    from jasper.multiroom.reconcile import dac_content_lane_armed
+    """Does the WRITER arm this box onto the dac-content return ring?
 
-    return dac_content_lane_armed(
-        cfg,
-        active_endpoint=active_endpoint,
-        flat_output_allowed=flat_output_allowed,
+    Read out of ``outputd_grouping_env``'s own output through the marker's
+    accept-set, not restated: the table below is a table about the writer, and
+    a restatement drifts the first time the writer gains an input (which has
+    already happened once, with the output runtime contract).
+    """
+    from jasper.fanin_coupling import dac_content_lane_marker_armed
+    from jasper.multiroom.reconcile import outputd_grouping_env
+
+    return dac_content_lane_marker_armed(
+        outputd_grouping_env(
+            cfg,
+            active_endpoint=active_endpoint,
+            flat_output_allowed=flat_output_allowed,
+        )
     )
 
 
-def test_t5_predicate_is_read_out_of_the_writer_not_restated():
-    """The whole design rests on gate and writer being ONE rule. Pin it as an
-    identity against `outputd_grouping_env` itself, so a future fourth input
-    (the third arrived post-seal with the output runtime contract) cannot make
-    the predicate answer for a rule the writer no longer applies."""
+def test_t5_the_writer_clears_the_legacy_fifo_on_every_cell():
+    """THE CUTOVER, as an identity over every reachable bonded shape.
+
+    The two transports of one lane are mutually exclusive at outputd — arming
+    both is its most fundamental refusal — so the writer that arms the marker
+    must clear the FIFO key everywhere, including on the cells where it once
+    wrote a path. This is also what leaves the coupling gate below with no
+    live producer.
+    """
     from jasper.multiroom.reconcile import (
         OUTPUTD_DAC_CONTENT_FIFO_ENV,
+        dac_content_fifo_lane_armed,
         outputd_grouping_env,
     )
 
@@ -1038,8 +1053,12 @@ def test_t5_predicate_is_read_out_of_the_writer_not_restated():
         written = outputd_grouping_env(
             cfg, active_endpoint=endpoint, flat_output_allowed=flat
         )
-        assert _t5_armed(cfg, endpoint, flat) is bool(
-            written[OUTPUTD_DAC_CONTENT_FIFO_ENV]
+        assert written[OUTPUTD_DAC_CONTENT_FIFO_ENV] == "", label
+        assert (
+            dac_content_fifo_lane_armed(
+                cfg, active_endpoint=endpoint, flat_output_allowed=flat
+            )
+            is False
         ), label
 
 
@@ -1087,48 +1106,80 @@ def test_t5_cells_are_reachable():
     assert "CONTRACT_UNCONFIGURED" not in permitted
 
 
-def test_t5_shm_ring_gate_verdict_per_cell():
-    """The narrowed rule, cell by cell: `shm_ring` is blocked exactly where the
-    dac_content lane is armed.
+def test_t5_the_writer_arms_the_return_ring_on_exactly_the_dumb_member_cells():
+    """The writer's own rule, cell by cell.
 
-    Two flips from the pre-narrowing gate are load-bearing and named here:
+    The two DUMB-member cells — a passive leader and a passive follower, each
+    on a flat-permitted layout — are the only shapes that carry this lane.
+    Everything else is cleared: an ACTIVE endpoint (CamillaDSP owns the
+    channel-pick and the split), a box with no flat-permitted layout, a solo
+    box, and `invalid_grouping`, which falls past both writer branches into the
+    off-path return.
+    """
+    for label, cfg, endpoint, flat, expected_armed in _T5_CELLS:
+        assert _t5_armed(cfg, endpoint, flat) is expected_armed, label
 
-    - an ACTIVE endpoint (leader or follower) is now ALLOWED. That is what the
-      hazard PR exists for — a bonded ring-armed active leader — and it is safe
-      because the same writer clears that box's lane.
-    - `invalid_grouping` is now ALLOWED. It falls past both writer branches into
-      the off-path return, and `active = enabled and error is None` means no
-      bond forms at all, so the box is definitively solo. It is DETERMINATE,
-      unlike `unknown` (a transient read failure), which is why relaxing it is
-      not a relaxation on an indeterminate state.
+
+def test_t5_no_reachable_cell_blocks_the_ring_coupling():
+    """THE CUTOVER: a bonded member is ring-served, so nothing blocks the ring.
+
+    The gate's question is not "is the lane armed" but "does this box's
+    round-trip lane make the central ring unservable". Under the marker outputd
+    resolves its own `shm_ring` to `None`, so there is no second content source
+    to strand and the bond must proceed — this is what makes multi-room
+    servable again. Every reachable cell is therefore supported.
     """
     from jasper.audio_runtime_plan import route_mode_from_grouping_config
 
-    for label, cfg, endpoint, flat, expected_armed in _T5_CELLS:
-        armed = _t5_armed(cfg, endpoint, flat)
-        assert armed is expected_armed, label
+    for label, cfg, endpoint, flat, _expected in _T5_CELLS:
+        route_mode = route_mode_from_grouping_config(cfg)
+        for coupling in (COUPLING_SHM_RING, COUPLING_LOOPBACK):
+            support = coupling_supported_for_route(
+                coupling,
+                route_mode,
+                dac_content_fifo_lane_armed=_t5_armed_fifo(cfg, endpoint, flat),
+            )
+            assert support.supported is True, (label, coupling)
+            assert support.coupling == coupling, label
 
+
+def _t5_armed_fifo(cfg, active_endpoint: bool, flat_output_allowed: bool) -> bool:
+    from jasper.multiroom.reconcile import dac_content_fifo_lane_armed
+
+    return dac_content_fifo_lane_armed(
+        cfg,
+        active_endpoint=active_endpoint,
+        flat_output_allowed=flat_output_allowed,
+    )
+
+
+def test_t5_the_legacy_fifo_spelling_still_blocks_the_ring():
+    """The one spelling that survives as a blocker, until its own deletion PR.
+
+    It requires `JASPER_OUTPUTD_CONTENT_BRIDGE=direct`, under which outputd
+    reads the snd-aloop content PCM an armed ring moves CamillaDSP off — two
+    content sources on one DAC. No writer produces it any more, so this pins
+    the gate's contract rather than a state a box can reach.
+    """
+    from jasper.audio_runtime_plan import route_mode_from_grouping_config
+
+    for label, cfg, endpoint, flat, _expected in _T5_CELLS:
         route_mode = route_mode_from_grouping_config(cfg)
         support = coupling_supported_for_route(
-            COUPLING_SHM_RING, route_mode, dac_content_lane_armed=armed
+            COUPLING_SHM_RING, route_mode, dac_content_fifo_lane_armed=True
         )
-        assert support.supported is (not expected_armed), label
-        assert support.coupling == COUPLING_SHM_RING, label
-        if expected_armed:
+        blocked = route_mode in {"active_leader", "active_follower", "invalid_grouping"}
+        assert support.supported is (not blocked), label
+        if blocked:
             assert support.reason == "fanin_shm_ring_unsupported_with_dac_content_lane"
             assert "dac_content" in support.detail
-            # The old detail promised a ring-v2 date; the block is now about a
-            # lane, and the operator action is disarm-or-ungroup.
-            assert "ring v2" not in support.detail
-
-    # loopback is never blocked, whatever the lane says.
-    for label, cfg, endpoint, flat, _expected in _T5_CELLS:
-        support = coupling_supported_for_route(
-            COUPLING_LOOPBACK,
-            route_mode_from_grouping_config(cfg),
-            dac_content_lane_armed=_t5_armed(cfg, endpoint, flat),
-        )
-        assert support.supported is True, label
+        # loopback is never blocked, whatever the lane says.
+        assert (
+            coupling_supported_for_route(
+                COUPLING_LOOPBACK, route_mode, dac_content_fifo_lane_armed=True
+            ).supported
+            is True
+        ), label
 
 
 def test_t5_d1_asks_the_matrix_instead_of_hand_rolling_the_rule():
@@ -1159,14 +1210,14 @@ def test_shm_ring_route_policy_allows_solo_and_unknown():
     for mode in ("solo", "unknown"):
         for armed in (True, False):
             support = coupling_supported_for_route(
-                COUPLING_SHM_RING, mode, dac_content_lane_armed=armed
+                COUPLING_SHM_RING, mode, dac_content_fifo_lane_armed=armed
             )
             assert support.supported is True, (mode, armed)
 
 
 def test_fanin_coupling_action_blocks_shm_ring_for_armed_dac_content_lane():
     action, support = fanin_coupling_action(
-        COUPLING_SHM_RING, "active_follower", dac_content_lane_armed=True
+        COUPLING_SHM_RING, "active_follower", dac_content_fifo_lane_armed=True
     )
 
     assert action is None
@@ -1176,7 +1227,7 @@ def test_fanin_coupling_action_blocks_shm_ring_for_armed_dac_content_lane():
 
 def test_fanin_coupling_action_sets_supported_coupling():
     action, support = fanin_coupling_action(
-        COUPLING_SHM_RING, "solo", dac_content_lane_armed=False
+        COUPLING_SHM_RING, "solo", dac_content_fifo_lane_armed=False
     )
 
     assert support.supported is True
@@ -1193,7 +1244,7 @@ def test_fanin_coupling_action_admits_a_bonded_active_endpoint():
     dac_content lane is cleared (every ACTIVE endpoint) arms the ring instead of
     being force-reverted to loopback on the next boot/deploy pass."""
     action, support = fanin_coupling_action(
-        COUPLING_SHM_RING, "active_leader", dac_content_lane_armed=False
+        COUPLING_SHM_RING, "active_leader", dac_content_fifo_lane_armed=False
     )
 
     assert support.supported is True

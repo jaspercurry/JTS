@@ -346,7 +346,7 @@ install_jts_ring_conf_assets() {
     if [[ -f "${dac_content_src}" ]]; then
         install -d -m 0755 /etc/alsa/conf.d
         install -m 0644 "${dac_content_src}" /etc/alsa/conf.d/63-jts-ring-dac-content.conf
-        echo "  Installed /etc/alsa/conf.d/63-jts-ring-dac-content.conf (pcm.jts_ring_dac_content; the grouping leader's round-trip return)"
+        echo "  Installed /etc/alsa/conf.d/63-jts-ring-dac-content.conf (pcm.jts_ring_dac_content; a dumb bonded member's round-trip return, either role)"
     else
         echo "  WARN: ${dac_content_src} missing; DAC-content return ring PCM not installed" >&2
     fi
@@ -411,8 +411,9 @@ install_jts_ring_platform() {
     # RING FILES ONLY, never the sibling `.writer.lock` / `.open.lock`:
     # unlinking a lock opens a silent inode-tear window between two holders.
     #
-    # `dac-content.ring` — the grouping leader's round-trip return,
-    # pcm.jts_ring_dac_content in 63-jts-ring-dac-content.conf — JOINS the set,
+    # `dac-content.ring` — a dumb bonded member's round-trip return (either
+    # role), pcm.jts_ring_dac_content in 63-jts-ring-dac-content.conf — JOINS
+    # the set,
     # on the reboot side of the asymmetry below: its READER is jasper-outputd,
     # whose unit carries the same StartLimitBurst=5 + StartLimitAction=reboot as
     # jasper-fanin, and its geometry is DERIVED from outputd's own period

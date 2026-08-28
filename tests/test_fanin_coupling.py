@@ -266,6 +266,41 @@ def test_outputd_bridge_is_ring_truth_table_matches_the_daemon():
         assert outputd_bridge_is_ring(off) is False, off
 
 
+@pytest.mark.parametrize(
+    "env,expected",
+    [
+        pytest.param({}, True, id="undeclared_is_the_ring"),
+        pytest.param({"JASPER_OUTPUTD_CONTENT_BRIDGE": "shm_ring"}, True, id="declared"),
+        pytest.param({"JASPER_OUTPUTD_CONTENT_BRIDGE": "direct"}, False, id="retired"),
+        pytest.param({"JASPER_OUTPUTD_DAC_CONTENT_LANE": "1"}, False, id="marker"),
+        pytest.param({"JASPER_OUTPUTD_DAC_CONTENT_LANE": "on"}, False, id="marker_word"),
+        pytest.param({"JASPER_OUTPUTD_DAC_CONTENT_LANE": "0"}, True, id="marker_off"),
+        pytest.param({"JASPER_OUTPUTD_DAC_CONTENT_LANE": ""}, True, id="marker_cleared"),
+    ],
+)
+def test_the_central_ring_predicate_reads_both_keys(env, expected):
+    """The bridge key alone stopped answering this once the marker SELECTED.
+
+    An armed dac-content marker resolves `ContentBridgeMode::DacContentRing`,
+    so outputd attaches the bonded return ring and leaves `shm_ring` unattached
+    — with the bridge key absent, which the bridge predicate alone reads as the
+    ring. The marker is read through outputd's `env_bool` accept-set, so a
+    CLEARED key (the reconciler's own disable spelling) is not armed.
+    """
+    from jasper.fanin_coupling import outputd_content_is_central_ring
+
+    assert outputd_content_is_central_ring(env) is expected
+
+
+def test_the_marker_predicate_reads_the_key_the_ring_module_owns():
+    """One key, one owner: the reader and the writer's constant must agree."""
+    from jasper.fanin_coupling import dac_content_lane_marker_armed
+    from jasper.multiroom.dac_content_ring import DAC_CONTENT_LANE_ENV
+
+    assert DAC_CONTENT_LANE_ENV == "JASPER_OUTPUTD_DAC_CONTENT_LANE"
+    assert dac_content_lane_marker_armed({DAC_CONTENT_LANE_ENV: "1"}) is True
+
+
 def test_outputd_bridge_ring_aliases_match_the_rust_accept_set():
     """Drift pin: a Rust arm this predicate does not know reads as NOT the ring.
 

@@ -3020,7 +3020,7 @@ def _outputd_transport_health(
     from jasper.fanin_coupling import (
         COUPLING_SHM_RING,
         OUTPUTD_CONTENT_BRIDGE_ENV_VAR,
-        outputd_bridge_is_ring,
+        outputd_content_is_central_ring,
     )
     from jasper.audio_runtime_plan import (
         DEFAULT_CAMILLA2_STATEFILE_PATH,
@@ -3034,9 +3034,11 @@ def _outputd_transport_health(
         str(outputd_env.get(OUTPUTD_CONTENT_BRIDGE_ENV_VAR) or "").strip()
         or "(unset, = the ring)"
     )
-    outputd_on_ring = outputd_bridge_is_ring(
-        outputd_env.get(OUTPUTD_CONTENT_BRIDGE_ENV_VAR)
-    )
+    # BOTH markers, not the bridge key alone: a bonded member declares no bridge
+    # and still takes its content off the dac-content return ring, so asking the
+    # bridge by itself would derive a Ring B expectation for a box that has none
+    # and FAIL a healthy speaker on the `content.source` comparison below.
+    outputd_on_ring = outputd_content_is_central_ring(outputd_env)
     # ``None`` is the planner's own spelling for "not the ring" — it resolves to
     # the non-ring shape without this module naming a retired token.
     coupling = COUPLING_SHM_RING if outputd_on_ring else None
