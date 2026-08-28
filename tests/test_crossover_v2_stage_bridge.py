@@ -67,6 +67,7 @@ from typing import Any
 import pytest
 
 from tests._async_wait import wait_signalled
+from tests.conftest import seat_process_volume_owner
 
 from jasper.active_speaker import commission_wiring, crossover_v2_flow, delta_probe
 from jasper.active_speaker import design_draft
@@ -1936,8 +1937,6 @@ def _real_seam_session(monkeypatch, cam_factory=None, graph=None) -> dict:
     the claim is the fader's authority after W5-c1, so a substituted owner
     would hide exactly the coupling these pins exist to check.
     """
-    import jasper.volume_owner as _vo
-
     _cam_for_owner = (cam_factory or (lambda: None))()
     if _cam_for_owner is not None:
         async def _owner_set(db):
@@ -1955,12 +1954,7 @@ def _real_seam_session(monkeypatch, cam_factory=None, graph=None) -> dict:
         async def _owner_get():
             return _standin["db"]
 
-    # Seated through the module global so monkeypatch restores the process.
-    monkeypatch.setattr(
-        _vo,
-        "_process_owner",
-        _vo.VolumeOwner(set_fader_db=_owner_set, get_fader_db=_owner_get),
-    )
+    seat_process_volume_owner(monkeypatch, _owner_set, _owner_get)
 
     captured: dict[str, Any] = {}
     real_hooks = v2host._volume_hooks
@@ -2326,7 +2320,7 @@ async def test_a_stage_two_session_swaps_no_graph_for_a_walk_with_no_captures(
 
     def _capturing_hooks(camilla_factory, context, *, tuning, **kw):
         captured["tuning"] = tuning
-        return real_hooks(camilla_factory, context, tuning=tuning)
+        return real_hooks(camilla_factory, context, tuning=tuning, **kw)
 
     monkeypatch.setattr(v2host, "_volume_hooks", _capturing_hooks)
     _seed_applied_stage_1_state()
@@ -2356,7 +2350,7 @@ def _session_from_real_open(monkeypatch, fakes) -> Any:
 
     def _capturing_hooks(camilla_factory, context, *, tuning, **kw):
         captured["tuning"] = tuning
-        return real_hooks(camilla_factory, context, tuning=tuning)
+        return real_hooks(camilla_factory, context, tuning=tuning, **kw)
 
     monkeypatch.setattr(v2host, "_volume_hooks", _capturing_hooks)
     conductor, _state = _stage_1(monkeypatch)

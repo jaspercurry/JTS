@@ -836,8 +836,8 @@ def _bank_lateral_walk(session: Path, degrees: list[int]) -> list[dict[str, Any]
 def _bank_cloud_sidecar(session: Path) -> Path:
     """A CLOUD position's sidecar, in the same directory the poses land in.
 
-    The web host's ``retain_position`` serves both groups into one directory,
-    so this is the record the lateral reader must skip — not an error case.
+    ``BankedRecordStore.bank`` routes both groups into one directory, so
+    this is the record the lateral reader must skip — not an error case.
     """
     round_dir = next((session / "evidence/v1/artifacts/crossover_v2").iterdir())
     positions = round_dir / "positions"
@@ -875,7 +875,7 @@ def test_the_packet_carries_the_signed_bearings_a_lateral_walk_banked(tmp_path):
 def test_a_cloud_sidecar_is_never_read_as_a_lateral_pose(tmp_path):
     """Two record shapes in one directory, and the lateral reader takes one.
 
-    The web host's ``retain_position`` serves both groups into one directory.
+    ``BankedRecordStore.bank`` routes both groups into one directory.
     Reading a cloud seat's sidecar as a pose would put a summed sweep in a
     per-driver walk's take list — different captures, no shared row.
 
