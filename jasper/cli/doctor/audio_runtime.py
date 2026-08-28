@@ -3768,14 +3768,16 @@ def check_ring_transport_park() -> CheckResult:
     ``/state.resilience.transport_park`` and the household audio card use, so
     the three surfaces cannot name different issues for the same box.
 
-    Two shapes land between ``ok`` and a park, and both warn rather than park
-    because neither carries a rebuild issue or a command, which is the bar
+    Three shapes land between ``ok`` and a park, and all warn rather than park
+    because none carries a rebuild issue or a command, which is the bar
     ADR-0178 sets for a class: the ADR-0184 coverage seam (a width resolves
-    for a box no class can name, and nothing armed the endpoint), and a
-    converge refusal (the marker IS armed and the program still never reached
-    the endpoint). Both ride alongside ``status`` in the same snapshot, so
-    this check reads them here rather than letting ``ok`` speak for a box
-    neither the ring nor the converge pass is actually serving.
+    for a box no class can name, and nothing armed the endpoint), a converge
+    refusal (the marker IS armed and the program still never reached the
+    endpoint), and ADR-0189's mirror of the seam (the marker is armed under no
+    active modes, on a non-composite sink). All three ride alongside
+    ``status`` in the same snapshot, so this check reads them here rather than
+    letting ``ok`` speak for a box neither the ring nor the converge pass is
+    actually serving.
     """
     label = "ring transport parks"
 
@@ -3824,6 +3826,22 @@ def check_ring_transport_park() -> CheckResult:
                 "graph it already had keeps playing, so nothing is claimed to "
                 "the household. Re-emit the active-speaker baseline onto the "
                 "ring endpoint if sound is missing.",
+            )
+        if state.get("endpoint_armed_without_active_modes"):
+            # ADR-0189, the seam's mirror image: the marker is armed on a
+            # layout that declares no active mode, which its writers only do
+            # for an active-speaker graph. Composite sinks are excluded in the
+            # classifier, so reaching here means reconfiguration lag or a
+            # genuine mismatch — never the served-composite shape.
+            return CheckResult(
+                label,
+                "warn",
+                "outputd's active-ring endpoint marker is armed, but this "
+                "layout declares no active-crossover mode, so nothing here "
+                "should have armed it (ADR-0189). Not parked — whatever graph "
+                "is loaded keeps playing. A reconcile in flight clears this on "
+                "its next pass; if it persists, report the saved layout "
+                "(/sound/setup/).",
             )
         # The honest claim, not "the ring can serve this box": a box with no
         # ring geometry that no class names lands in `unclassified` below, and
