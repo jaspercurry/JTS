@@ -3735,11 +3735,11 @@ def test_reconcile_no_longer_narrows_for_the_removed_rate_match_bridge(
 
     The narrowing existed so a routine deploy would not emit a wide content lane
     into a bridge outputd refuses (exit 78 -> parked final-output owner, silent
-    speaker). With the bridge gone that pairing cannot exist: outputd fail-safes
-    every `rate_match` spelling to `direct`, which accepts the wide lane. So the
-    reconciler must now emit the COUPLING's own format — proving the narrowing
-    is really gone rather than merely unreachable, for every spelling the
-    deleted parse used to accept.
+    speaker). With the bridge gone that pairing cannot exist: outputd parks on
+    every `rate_match` spelling rather than reading a content format at all. So
+    the reconciler must now emit the COUPLING's own format — proving the
+    narrowing is really gone rather than merely unreachable, for every spelling
+    the deleted parse used to accept.
     """
     result = _run_reconcile(
         tmp_path,

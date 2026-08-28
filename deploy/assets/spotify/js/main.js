@@ -4,8 +4,8 @@
 
 // main.js — /spotify/ wizard behaviour.
 //
-// The page is server-rendered (forms POST and redirect); this module only
-// adds the progressive enhancements the legacy inline scripts used to do:
+// The page is server-rendered (forms POST and redirect); this module adds
+// the following progressive enhancements:
 //   1. highlight the picked OAuth-mode radio card and mirror it into the
 //      hidden form field (the picker is a sibling of the credentials form),
 //   2. copy the redirect URL to the clipboard with a "Copied!" flash,

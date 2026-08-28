@@ -668,7 +668,7 @@ def run(
     # RETRYABLE_COMMANDS is consulted exactly once, right here -- this branch
     # IS the dispatch gate (not a decoration around it): a command in the set
     # goes through the fresh-session retry helper, everything else keeps the
-    # single-open, zero-retry path unchanged from before #2516.
+    # single-open, zero-retry path.
     if args.command in RETRYABLE_COMMANDS:
         if args.command == "probe":
             result, retried = _run_with_session_retry(

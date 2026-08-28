@@ -669,12 +669,10 @@ INNOMAKER_HIFI_AMP_PRO = DacProfile(
         r"\bsnd_rpi_merus_amp\b",
         r"\bmerus audio amp ma120x0p-amp-0\b",
     ),
-    # Why this board declares S32_LE, historically: the kernel DAI (ma120x0p.c)
+    # Why this board declares S32_LE: the kernel DAI (ma120x0p.c)
     # advertises only S24_LE|S32_LE at continuous 44.1-192 kHz rates — a
     # driver-advertisement limit, not a documented silicon one (the driver's own
-    # hw_params has an unadvertised S16 branch) — and JTS pins 48 kHz/2ch. That
-    # advertisement is what kept the board passive-only while outputd could
-    # write S16 alone.
+    # hw_params has an unadvertised S16 branch) — and JTS pins 48 kHz/2ch.
     #
     # It now carries the active-output lane, on the same width-2 shape the
     # single Apple USB-C dongle already runs (one coherent ALSA device, one

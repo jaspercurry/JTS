@@ -444,12 +444,11 @@ class Config:
 
     # Gemini one-shot TTS model used by the cue subsystem when the
     # active voice provider is `gemini` (or a fallback path picks
-    # Gemini). Defaults to 3.1 Flash TTS Preview (released
-    # 2026-04-15); the older `gemini-2.5-flash-preview-tts`
-    # returned `FinishReason.OTHER` with empty content for ~60 % of
-    # calls in production, so it's no longer the default — set
-    # JASPER_GEMINI_TTS_MODEL=gemini-2.5-flash-preview-tts to keep
-    # the legacy path on for testing.
+    # Gemini). Defaults to 3.1 Flash TTS Preview; `gemini-2.5-flash-preview-tts`
+    # returns `FinishReason.OTHER` with empty content for ~60 % of
+    # calls in production, so it must not be the default — set
+    # JASPER_GEMINI_TTS_MODEL=gemini-2.5-flash-preview-tts only to
+    # reproduce that failure mode for testing.
     gemini_tts_model: str
 
     @classmethod
@@ -772,11 +771,11 @@ class Config:
                 "JASPER_GROK_CONTEXT_RESET_SEC",
                 _env_int("JASPER_LIVE_CONTEXT_RESET_SEC", 0),
             ),
-            # OpenAI Realtime: 60-min hard cap (verified against
-            # developers.openai.com/api/docs/guides/realtime-conversations
-            # as of 2026-05). 5-min buffer leaves comfortable headroom
-            # for an in-flight turn to finish before the proactive
-            # tear-down fires. See `_proactive_reconnect_watchdog`.
+            # OpenAI Realtime: 60-min hard cap per
+            # developers.openai.com/api/docs/guides/realtime-conversations.
+            # 5-min buffer leaves comfortable headroom for an in-flight turn
+            # to finish before the proactive tear-down fires. See
+            # `_proactive_reconnect_watchdog`.
             openai_session_max_sec=_env_int(
                 "JASPER_OPENAI_SESSION_MAX_SEC", 3600,
             ),

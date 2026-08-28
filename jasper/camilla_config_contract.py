@@ -369,9 +369,9 @@ GAINLESS_BIQUAD_TYPES = frozenset({"Highpass", "Lowpass", "Notch"})
 # expressible: a shelf emitted at any other Q would be a filter no evaluator in
 # this system can see, which is exactly the PR-L2 defect (2026-07-27).
 #
-# THE DEFECT: shelves used to be emitted with CamillaDSP's ``slope: 6.0`` on the
-# belief that 6 dB/octave was Butterworth. It is not. CamillaDSP's advanced
-# shelf takes S = slope/12 and derives
+# CamillaDSP's ``slope: 6.0`` is NOT Butterworth, despite reading like the
+# familiar 6 dB/octave figure. CamillaDSP's advanced shelf takes S = slope/12
+# and derives
 #     Q = 1 / sqrt((A + 1/A) * (1/S - 1) + 2),   A = 10**(gain/40)
 # (RBJ Audio EQ Cookbook; CamillaDSP src/filters/biquad.rs). Butterworth is
 # S = 1, i.e. ``slope: 12`` -- pinned by CamillaDSP's own ``lowshelf_slope_vs_q``

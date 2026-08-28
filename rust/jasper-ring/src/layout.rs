@@ -436,12 +436,10 @@ mod tests {
 
     /// The accept-set boundary, one axis at a time.
     ///
-    /// S32LE and 4 channels used to be REJECTED here and are now accepted: the
-    /// ring wire carries S32 and up to [`MAX_RING_CHANNELS`] channels, so the
-    /// old assertions asserted the opposite of the contract. The guard is not
-    /// weakened by that inversion — the negatives below cover both edges of
-    /// each widened axis (channels 0/1/9, an unknown format id) plus every
-    /// unchanged axis.
+    /// The ring wire carries S32 and up to [`MAX_RING_CHANNELS`] channels, so
+    /// both are accepted here. The negatives below cover both edges of each
+    /// widened axis (channels 0/1/9, an unknown format id) plus every
+    /// unchanged axis, so the guard is not weakened by accepting them.
     #[test]
     fn geometry_accept_set_boundary() {
         let base = Geometry {

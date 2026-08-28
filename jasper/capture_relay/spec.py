@@ -1965,12 +1965,11 @@ def build_crossover_sweep_spec(
             # could not act on yet. Absent for every caller that passes no
             # shape, so no screen grows an empty section.
             *((ui_note(str(walk_shape)),) if walk and walk_shape else ()),
-            # (``ui_level_meter("mic")`` used to sit here. It was dead on
-            # EVERY crossover consent screen — the v2 cloud, the legacy
-            # per-driver sweeps, and the 1-entry re-verify alike — because the
-            # page's ``updateLevelMeters`` is fed only by the level-ramp
-            # protocol, so this component never moved. Removed rather than
-            # wired: a meter that never moves reads as a broken mic. The
+            # (A mic level meter does not belong here: every crossover
+            # consent screen — the v2 cloud, the legacy per-driver sweeps,
+            # and the 1-entry re-verify alike — feeds ``updateLevelMeters``
+            # only from the level-ramp protocol, so the component would
+            # never move and would read as a broken mic. The
             # ``ui_level_meter`` BUILDER stays — the level-ramp flow still
             # uses it.)
             ui_button(button_label, action="begin_capture"),

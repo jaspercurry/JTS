@@ -5,8 +5,7 @@
 // main.js — /sources/ playback-source on/off toggles.
 //
 // The page server-renders four toggles (AirPlay, Bluetooth, Spotify Connect,
-// USB Audio Input) with ids t-<source>. This module wires each to the same
-// backend the legacy inline script did, behaviour-for-behaviour:
+// USB Audio Input) with ids t-<source>. This module wires each toggle:
 //
 //   * Optimistic UI — flip the checkbox immediately, POST ./set {source,
 //     enabled}, then reconcile from desired + effective state. If persistence

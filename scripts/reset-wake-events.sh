@@ -5,9 +5,7 @@
 # SPDX-License-Identifier: Apache-2.0
 
 # Reset the wake-event corpus on the Pi, starting a clean week of
-# data collection. Designed for the triple-stream architecture
-# rollout: after the feature deploys, run this to wipe the
-# pre-triple-stream legacy events + any test fires, so the
+# data collection: wipe existing events + any test fires, so the
 # upcoming week's data is a clean slate for analysis.
 #
 # What this does (atomic from the daemon's perspective):

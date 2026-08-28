@@ -5,12 +5,9 @@
 // Sound profile — parametric EQ editor.
 //
 // Static ES module served from /assets/sound-profile/js/ (revalidated by
-// nginx, same delivery model as /system/). Relocated verbatim from the
-// previously-inline _SOUND_JS in jasper/web/sound_setup.py; the only change
-// is that the CSRF helpers read the <meta name=jts-csrf> tag rather than
-// being string-substituted at render time. Module scope is strict mode —
-// the IIFE declares all its state with var/function, so behaviour is
-// unchanged.
+// nginx, same delivery model as /system/). CSRF helpers read the
+// <meta name=jts-csrf> tag. Module scope is strict mode — the IIFE
+// declares all its state with var/function.
 //
 // FOLLOW-UP (deferred, hardware-gated): unlike /system/'s JS — split into
 // dom/format/charts/components/sections/views/api/actions/main — most render/
@@ -897,16 +894,13 @@ import { magnitudeDb, GAINLESS_TYPES } from "/assets/sound-profile/js/eq-math.js
     return Number(hardware && hardware.physical_output_count) || 0;
   }
   function outputHardwareMismatch(topology) {
-    // The declared-vs-detected comparison used to be recomputed here from
-    // outputHardware(topology), observedOutputHardware(), and the clock
-    // domain report. It is now computed once, server-side, in
+    // The declared-vs-detected comparison is computed once, server-side, in
     // jasper.output_topology.declared_hardware_mismatch and published as
     // payload.hardware_mismatch (jasper/web/sound_setup.py's
-    // _output_topology_payload) -- the same rule
-    // jasper.control.audio_health's #2812 setup hint reads, since that
-    // detector runs in a different daemon and cannot see this page's HTTP
-    // response. `topology` is accepted but unused so existing call sites
-    // are unchanged.
+    // _output_topology_payload) -- the same rule jasper.control.audio_health's
+    // #2812 setup hint reads, since that detector runs in a different daemon
+    // and cannot see this page's HTTP response. `topology` is accepted but
+    // unused so existing call sites are unchanged.
     return outputTopology.hardwareMismatch;
   }
   function outputEvaluation(topology) {

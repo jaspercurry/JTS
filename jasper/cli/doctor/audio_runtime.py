@@ -1211,7 +1211,7 @@ def check_fanin_coupling_value() -> CheckResult:
     """The persisted fan-in coupling must be a RECOGNIZED token.
 
     A migrating box may carry ``JASPER_FANIN_CAMILLA_COUPLING=transport_pipe`` (the
-    coupling REMOVED 2026-07-11) or a typo. ``resolve_coupling`` fails such a value
+    removed coupling) or a typo. ``resolve_coupling`` fails such a value
     safe to loopback at daemon start, and the ``--auto`` reconciler converges it
     loudly (``event=…result=removed_coupling_failsafe``); this surfaces the stale
     value until that pass runs so the operator knows the persisted file names a
@@ -2412,9 +2412,8 @@ def check_ring_geometry_coherence() -> CheckResult:
     # sample_format and channels — through the SAME comparator the coupling
     # reconciler's stale-file guard and CONFIRM self-heal use, so the doctor
     # cannot call a file coherent that the reconciler is about to delete (or
-    # vice versa). The wire axes used to be REPORTED here and compared nowhere,
-    # which is precisely how a ring that shears on format or channel count
-    # passed every Python guard and was first noticed as a hard attach failure.
+    # vice versa). A ring that shears on format or channel count must fail
+    # here, not just be reported and left uncompared.
     verdict = ring_assets.ring_header_matches_conf(
         ring_assets.RING_A_PROGRAM_FILE,
         ring_assets.RING_A_CONF_PCM,

@@ -480,10 +480,7 @@ pub fn run_host_clock_thread(
 
     // Startup neutralize: heal a crashed predecessor. The action is
     // unconditional-of-flag inside the ladder, but we only spawn this thread
-    // when armed, so this only ever runs in combo-with-flag mode. (Also
-    // originally guarded against stomping an active solo-mode usbsink
-    // command during the coexistence window; that daemon was deleted
-    // 2026-07-10, #1209.)
+    // when armed, so this only ever runs in combo-with-flag mode.
     let capture_generation = signals.capture_generation.load(Ordering::Relaxed);
     actuator.ensure_ready(capture_generation, now_ms(&start));
     if let Some(action) = hc.startup_neutralize() {

@@ -4220,9 +4220,9 @@ def bind_production_play(
             # Observing costs CamillaDSP round-trips, and every capture now
             # buys them: the banking seam drains this observation into the
             # write-once record, so a session that skipped it would bank takes
-            # that name no graph and no fader. It used to be gated on the
-            # capture-dump marker as well; that ring is gone, and re-expressing
-            # this on the recorder alone is what keeps the carry fed.
+            # that name no graph and no fader. Expressing this on the recorder
+            # alone — rather than gating on a separate marker — is what keeps
+            # the carry fed.
             # The FADER HOLD below is not covered by this gate and never was
             # meant to be (#2925): it answers for the safety ledger rather than
             # for the forensic record, so it runs even without a recorder.

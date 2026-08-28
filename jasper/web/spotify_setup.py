@@ -238,9 +238,9 @@ def _restart_spotify_consumers() -> None:
 
 
 # Disambiguation note shown at the top of every Spotify wizard page.
-# The /spotify/ wizard was historically the only "Spotify setup" surface
-# even though it only handles the Web API account side; users would
-# land here looking to make basic Spotify Connect (phone-side
+# The /spotify/ wizard only handles the Web API account side, but
+# "Spotify setup" reads like it should cover everything Spotify-related;
+# users land here looking to make basic Spotify Connect (phone-side
 # "pick JTS in the app") work and feel lost. This note steers the
 # basic case to /sources/ and frames this wizard as advanced. Rendered
 # as a canonical .info-card so it shares the design system's accent

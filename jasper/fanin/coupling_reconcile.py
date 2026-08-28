@@ -1075,12 +1075,12 @@ def _converge_ring(
         )
         return CouplingResult(ok=True, changed=changed)
 
-    # GEOMETRY HEALS, every pass. They used to live inside the arm, which only
-    # ran when the coupling-flip WRITE moved — so a box already on the ring with
-    # a stale slot count or a stale on-disk ring stayed broken while the doctor
-    # told the operator to run a reconcile that healed nothing (defect A
-    # CONFIRM-path gap, 2026-07-05). Both are write-on-change, so a coherent box
-    # pays a few small reads and still takes the no-bounce path below.
+    # GEOMETRY HEALS, every pass — not only when the coupling-flip WRITE
+    # moves. A box already on the ring with a stale slot count or a stale
+    # on-disk ring must still be healed, or it stays broken with a doctor
+    # that tells the operator to run a reconcile that heals nothing. Both
+    # are write-on-change, so a coherent box pays a few small reads and
+    # still takes the no-bounce path below.
     fanin_snapshot, slots_healed = _migrate_stale_fanin_ring_slots(
         fanin_snapshot, reason
     )

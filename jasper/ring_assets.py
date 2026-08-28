@@ -43,8 +43,8 @@ from jasper.fanin_coupling import (
 )
 
 # The aarch64 ALSA plugin dir the ioplug ``.so`` installs into (the Pi 5 target).
-# Duplicated as a literal in ``jasper.cli.doctor.audio_runtime`` historically;
-# this is now the shared home. The build/install path is
+# This is the shared canonical home for the value — do not re-duplicate it as
+# a literal elsewhere. The build/install path is
 # ``deploy/lib/install/ring-platform.sh``.
 RING_ALSA_PLUGIN_DIR = "/usr/lib/aarch64-linux-gnu/alsa-lib"
 RING_IOPLUG_SO = "libasound_module_pcm_jts_ring.so"

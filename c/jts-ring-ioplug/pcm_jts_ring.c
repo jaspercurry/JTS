@@ -794,10 +794,9 @@ static snd_pcm_sframes_t jts_ring_capture_pointer(snd_pcm_ioplug_t *io) {
 static size_t capture_refill_destage(jts_ring_pcm_t *p) {
     if (p->stage_frames > 0) return p->stage_frames; // still draining a slot
     if (p->pending_silence_frames >= p->period_frames) {
-        // Fabricate the committed period. Zero the destage explicitly: the
-        // consume-empty path used to do this as a side effect, but silence is
-        // now served before consume runs, and the buffer still holds the
-        // previous slot's audio.
+        // Fabricate the committed period. Zero the destage explicitly: nothing
+        // else clears it before this silence is served, and the buffer still
+        // holds the previous slot's audio.
         memset(p->stage, 0, p->stage_capacity_frames * frame_bytes(p));
         p->pending_silence_frames -= p->period_frames;
         p->stage_frames = p->stage_capacity_frames;
