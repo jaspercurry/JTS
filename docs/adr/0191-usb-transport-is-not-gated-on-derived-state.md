@@ -1,4 +1,4 @@
-# ADR-0189: USB transport is not gated on derived state
+# ADR-0191: USB transport is not gated on derived state
 
 - **Date:** 2026-08-28
 - **Status:** Accepted

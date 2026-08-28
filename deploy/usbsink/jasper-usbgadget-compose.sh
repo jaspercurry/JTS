@@ -172,7 +172,7 @@ jasper_usbgadget_desired() {
     # doctor and /sources, never a precondition that can withdraw the endpoint.
     # A composed UAC2 nobody is consuming is a silent device the household can
     # see and reason about; a withdrawn one is an invisible failure. See
-    # ADR-0189.
+    # ADR-0191.
     AUDIO_REASON="intent_disabled_or_parked"
     if ${AUDIO_ALLOWED_CMD} >/dev/null 2>&1; then
         WANT_AUDIO=1

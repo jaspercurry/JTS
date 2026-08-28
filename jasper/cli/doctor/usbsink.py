@@ -15,7 +15,7 @@ loaded for the network function alone with USB audio fully off. The checks below
 compare observed gadget/function state against the *composed intent*
 (network kill-switch + canonical audio authorization), mirroring the truth table
 ``jasper-usbgadget-up``/``jasper-usbgadget-wanted`` compute. Derived lifecycle
-readiness is reported, never composed on (ADR-0189).
+readiness is reported, never composed on (ADR-0191).
 ``check_usbsink_low_latency_contract`` reads the actual fan-in direct-capture
 lane; the oneshot marker is lifecycle/readiness state, not data-plane liveness
 or latency evidence."""
@@ -166,7 +166,7 @@ def _audio_wanted() -> tuple[bool, str]:
     allowed (a bonded follower parks it). Derived state — the lifecycle mirror
     unit, fan-in's DIRECT consumer — is a CONSEQUENCE of that intent, reported
     by its own checks, never a precondition that can withdraw the endpoint
-    (ADR-0189).
+    (ADR-0191).
 
     Keep this in lockstep with ``deploy/usbsink/jasper-usbgadget-compose.sh``,
     the single shell definition that ``jasper-usbgadget-{wanted,up,converge}``
@@ -963,7 +963,7 @@ def check_usbgadget_composition() -> CheckResult:
     intent = f"network={want_network} audio={want_audio} ({audio_reason})"
     observed = f"ncm.usb0={ncm_present} uac2.usb0={uac2_present}"
     if uac2_present:
-        # Consumer state is DISCLOSED here, never a gate (ADR-0189). A composed
+        # Consumer state is DISCLOSED here, never a gate (ADR-0191). A composed
         # endpoint with no fan-in DIRECT lane plays into a void, which the
         # household can see and reason about; withdrawing the endpoint instead
         # is the invisible failure. Informational only: an idle box legitimately

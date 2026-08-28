@@ -692,7 +692,7 @@ def _patch_composition_env(
             "ok",
             "intent_disabled",
         ),
-        # ADR-0189: a disabled lifecycle mirror no longer suppresses UAC2.
+        # ADR-0191: a disabled lifecycle mirror no longer suppresses UAC2.
         # Derived state is a consequence of intent, never a precondition.
         (
             {
@@ -706,7 +706,7 @@ def _patch_composition_env(
             "ok",
             "enabled",
         ),
-        # ADR-0189: nor does an unarmed DIRECT lane. The endpoint stays
+        # ADR-0191: nor does an unarmed DIRECT lane. The endpoint stays
         # advertised and the consumer state is disclosed instead.
         (
             {

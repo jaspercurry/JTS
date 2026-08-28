@@ -153,7 +153,7 @@ follower. Both scripts call the same source-aware
 audio gate. Canonical Off or follower parking always wins. Derived state —
 `jasper-usbsink.service` enablement, fan-in's DIRECT lane — is a **consequence**
 of intent, disclosed by `check_usbgadget_composition` as `consumed=<bool>`,
-never a precondition that can withdraw the endpoint (ADR-0189). Desired-On with
+never a precondition that can withdraw the endpoint (ADR-0191). Desired-On with
 a disabled mirror or an unarmed data plane still composes UAC2: the host gets a
 device that plays into a void, which is visible and diagnosable, rather than no
 device at all, which is not.
@@ -377,7 +377,7 @@ composition intent of its own**: it enables the units and runs
 `jasper-usbgadget-converge`, which compares the live ConfigFS composition
 against the shared truth table and rebinds only on a real difference. A UAC2
 endpoint whose consumer has gone away is **no longer withdrawn**: the truth
-table has no readiness gate left to turn it into audio=0 (ADR-0189). It
+table has no readiness gate left to turn it into audio=0 (ADR-0191). It
 persists until canonical intent changes, and `check_usbgadget_composition`
 discloses `consumed=False` in the meantime. The installer no longer parks the
 derived USB-audio unit first — that park was itself a false composition intent,

@@ -856,7 +856,7 @@ def test_usb_audio_requires_canonical_authority_plus_readiness_mirror():
     consumer sources, so the copies cannot drift.
 
     The readiness-mirror and direct-lane probes that once sat beside it are
-    gone (ADR-0189): derived state is disclosed, never composed on. Their env
+    gone (ADR-0191): derived state is disclosed, never composed on. Their env
     names are asserted absent, so re-adding either gate fails here.
     """
 
