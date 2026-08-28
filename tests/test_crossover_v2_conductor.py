@@ -3653,10 +3653,15 @@ def test_the_three_unprompted_phases_each_bank_a_take_of_their_own():
     )
     _run_phase(stage2, VERIFY_INDEX, 1)
 
-    banked = {meta["phase"]: meta for meta in retained + verify_retained}
-    assert PHASE_CHECK in banked
-    assert PHASE_MEASURE in banked
-    assert PHASE_VERIFY in banked
+    # The LIST, not a phase-keyed dict: one take per accepted capture, and a
+    # dict would quietly collapse a double-bank into the single entry this pin
+    # was looking for — the real store would not catch it either, because two
+    # banks of one record are byte-identical and therefore idempotent.
+    all_banked = retained + verify_retained
+    assert [meta["phase"] for meta in all_banked] == [
+        PHASE_CHECK, PHASE_MEASURE, PHASE_VERIFY,
+    ]
+    banked = {meta["phase"]: meta for meta in all_banked}
     # Every one carries the identity a replay resolves it by, and the digest
     # that verifies the bytes it finds.
     for phase in (PHASE_CHECK, PHASE_MEASURE, PHASE_VERIFY):
@@ -3696,27 +3701,66 @@ def test_an_unprompted_take_is_named_the_way_the_entry_baseline_named_its_own():
         assert take["position_id"] == take["take_id"]
 
 
-def test_a_refused_capture_of_an_unprompted_phase_banks_nothing():
+def _refuse_check(fakes):
+    fakes.check = lambda program: _check_analysis(program, linearity=False)
+
+
+def _refuse_measure(fakes):
+    fakes.measure = lambda program: _measure_analysis(program, linearity=False)
+
+
+def _refuse_verify(fakes):
+    fakes.verify = lambda program: _verify_analysis(program, linearity=False)
+
+
+@pytest.mark.parametrize(
+    "phase", [PHASE_CHECK, PHASE_MEASURE, PHASE_VERIFY],
+)
+def test_a_refused_capture_of_an_unprompted_phase_banks_nothing(phase):
     """Accepted-only, the rule every other retained kind already follows.
 
     A refused capture is evidence about the room or the phone, not about the
     speaker, and the journal is where that is recorded. Banking one would put a
     take in the bundle that the round never graded and offline analyze would
     have to learn to skip.
+
+    Parametrized over all three because the rule is one rule and the arms are
+    three call sites: pinning it on CHECK alone left deleting the guard from
+    the MEASURE or the VERIFY arm invisible to the whole suite.
     """
+    # Resolved here rather than in the parametrize: ``VERIFY_INDEX`` is
+    # imported below this point in the module, so a decorator that named it
+    # would not collect.
+    refuse, warmup, index, stage_2 = {
+        PHASE_CHECK: (_refuse_check, (), 1, False),
+        PHASE_MEASURE: (_refuse_measure, (1,), 2, False),
+        PHASE_VERIFY: (_refuse_verify, (), VERIFY_INDEX, True),
+    }[phase]
+
     retained: list = []
     fakes = FakeSeams()
-    fakes.check = lambda program: _check_analysis(program, pilot_snr_ok=False)
+    refuse(fakes)
+    kwargs = (
+        {"index_phase_map": STAGE2_MAP,
+         "accepted_phases": (PHASE_CHECK, PHASE_MEASURE), "applied": True}
+        if stage_2 else {"index_phase_map": CLOUD_MAP}
+    )
     c = CrossoverV2Session(
         session_id=SESSION, source_preset=_preset(), roles_bands=_roles(),
         fc_hz=FC_HZ, driver_caps_dbfs=CAPS, session_volume_db=SESSION_VOLUME_DB,
         seams=replace(fakes.seams(), bank_take=bank_into(retained)),
-        index_phase_map=CLOUD_MAP,
+        **kwargs,
     )
-    verdict = _run_phase(c, 1, 1)
+    for warm in warmup:
+        _run_phase(c, warm, 1)
+
+    verdict = _run_phase(c, index, 1)
 
     assert verdict["accepted"] is False
-    assert [m for m in retained if m["phase"] == PHASE_CHECK] == []
+    assert [m for m in retained if m["phase"] == phase] == []
+    # ...and the warm-up captures that WERE accepted still banked, so this is
+    # reading a refusal rather than a seam that never fired.
+    assert len(retained) == len(warmup)
 
 
 def test_the_bank_seam_gets_every_accepted_position_with_its_prompt():

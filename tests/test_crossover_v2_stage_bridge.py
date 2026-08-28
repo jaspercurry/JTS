@@ -362,7 +362,7 @@ def _production_host_seams(monkeypatch, tmp_path):
     # bridge.
     monkeypatch.setattr(
         v2host, "open_v2_evidence_store",
-        lambda topology: (_AcceptingStore(), "bundle-test"),
+        lambda topology: (_AcceptingStore(tmp_path / "bundle"), "bundle-test"),
     )
     # The measurement-volume plan: the REAL one, on a temp state path, so the
     # preparers' volume gates (`needs_recovery`, the stale-ceiling drain, the
@@ -522,10 +522,24 @@ class _AcceptingStore:
     could not accept a write would turn every accepted capture into a logged
     retention failure and make this module's subject (the bridge) depend on a
     bundle being on disk.
+
+    **Scope: the position-take path only.** It answers the two calls that path
+    makes and nothing else — no ``reopen_json_artifact``, so a caller that
+    verifies a candidate or a receipt through it fails loudly rather than
+    quietly agreeing. That is the intended shape: this module tests the
+    bridge, and a stand-in that grew to cover every store caller would start
+    passing tests about the store.
+
+    ``bundle_dir`` is a real temp directory rather than ``""``. Empty resolves
+    to the pytest CWD, so the day the WAV leg of the banking path fires under
+    these tests it would write into the checkout instead of failing — the
+    quiet direction, and the one the previous double at least got loud.
     """
 
     session_id = "bundle-test"
-    bundle_dir = ""
+
+    def __init__(self, bundle_dir: Any) -> None:
+        self.bundle_dir = str(bundle_dir)
 
     def publish_json_artifact(self, relpath: str, payload: Any) -> Any:
         return SimpleNamespace(fingerprint=f"fp-{relpath}")

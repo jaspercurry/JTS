@@ -2459,7 +2459,7 @@ def _retention_bundle(tmp_path, relay_session_id, *, provenance=None):
     )
     refs: dict = {}
     bank = v2host.bind_position_retention(
-        store, relay_session_id, refs, asyncio.run, provenance,
+        store, relay_session_id, refs, asyncio.run, provenance=provenance,
     )
     return bank, refs, bundle_dir, store
 
@@ -2550,7 +2550,7 @@ def _stage_seams_over(store, relay_session_id, refs, recorder):
     )
 
 
-def test_the_banked_take_carries_the_provenance_the_play_seam_observed(
+def test_the_banked_take_carries_the_provenance_the_analyze_seam_carried(
     tmp_path, monkeypatch,
 ):
     """Obligation 4: the single shot is re-homed, not dropped.
@@ -2566,9 +2566,15 @@ def test_the_banked_take_carries_the_provenance_the_play_seam_observed(
     analyze seam carrying the shot forward, the banking seam draining it, and
     the binder handing both the SAME recorder.
 
-    The values are the PLAY seam's, observed while the stimulus was emitting.
-    By banking time the routing graph is restored and the fader may have moved,
-    so what is asserted is the carried reading and never a fresh one.
+    The values ORIGINATE at the play seam, observed while the stimulus was
+    emitting. This pin seeds the recorder directly rather than driving a real
+    play — the observation itself is ``record_capture_provenance``'s own
+    subject — so what it asserts is the CARRY: that the value the play seam
+    left reaches the banked record unchanged, and never a fresh reading.
+
+    Note what the seeding stands in for: in an ordinary session the recorder
+    is fed only when the capture-dump marker is present, so a banked take with
+    no ``provenance`` key is the common case today rather than a defect.
     """
     from jasper.active_speaker.capture_provenance import (
         CaptureProvenance,
@@ -2623,6 +2629,74 @@ def test_the_banked_take_carries_the_provenance_the_play_seam_observed(
     assert carried["main_volume_db"] == -20.0
     assert carried["session_volume_db"] == -20.0
     assert carried["stimulus"]["program_id"] == "prog-entry"
+
+
+def test_a_capture_that_observed_nothing_never_inherits_the_last_one_s_graph(
+    tmp_path, monkeypatch,
+):
+    """B1: a refused capture must not leave its provenance for the next one.
+
+    Banking is accepted-only, so a REFUSED capture's analyze parks a value in
+    the carry that nobody takes out. If the next accepted capture's own
+    observation missed — a marker flipped mid-session, or the blind belt ate a
+    CamillaDSP hiccup — it would drain that stranded value and write it into a
+    write-once forensic record, naming the graph and the fader of a capture
+    that never became evidence.
+
+    ``record`` cannot clear it: the case that strands a value is exactly the
+    case where there is no new value to overwrite it with. So the carry is
+    drained unconditionally at every analyze, and this drives that sequence —
+    observe, refuse (nothing banks), observe NOTHING, accept — and requires the
+    accepted take to name no provenance rather than the refused one's.
+    """
+    from jasper.active_speaker.capture_provenance import (
+        CaptureProvenance,
+        CaptureProvenanceRecorder,
+    )
+    from jasper.active_speaker.crossover_v2.journey import PHASE_ENTRY_BASELINE
+    from jasper.audio_measurement import program_analysis as pa_mod
+    from jasper.audio_measurement.program import build_verify_program
+    from jasper.audio_measurement.program_analysis import (
+        MeasurementGeometry,
+        MeasurementPriors,
+    )
+
+    monkeypatch.setattr(
+        pa_mod, "analyze_program_capture", lambda *_a, **_kw: "analysis",
+    )
+
+    _bank, refs, bundle_dir, store = _retention_bundle(
+        tmp_path, "cap_stale_session",
+    )
+    recorder = CaptureProvenanceRecorder()
+    seams = _stage_seams_over(store, "cap_stale_session", refs, recorder)
+
+    def _analyze_once():
+        seams.analyze(
+            build_verify_program(FC_HZ, sweep_s=0.5),
+            _FakeResult(),
+            MeasurementPriors(crossover_fc_hz=FC_HZ),
+            MeasurementGeometry(),
+            phase=PHASE_ENTRY_BASELINE,
+        )
+
+    # 1. A capture that WAS observed — and then refused, so nothing banks it.
+    recorder.record(CaptureProvenance(
+        graph_kind="measurement", graph_fingerprint="fp-of-the-refused-take",
+    ))
+    _analyze_once()
+
+    # 2. The next capture observes nothing at all, and is accepted.
+    _analyze_once()
+    accepted = _entry_baseline_take(index=11)
+    assert seams.bank_take(CaptureResult(wav=b"accepted-bytes"), accepted)
+
+    banked = json.loads(
+        (bundle_dir / "evidence" / "v1" / "artifacts" / "crossover_v2"
+         / "cap_stale_session" / "positions" / f"{accepted['take_id']}.json"
+         ).read_text()
+    )
+    assert "provenance" not in banked
 
 
 def test_a_take_with_no_play_behind_it_names_no_provenance(
@@ -2703,10 +2777,20 @@ def test_an_unprompted_phase_take_reaches_the_real_store(tmp_path, phase):
     bank, refs, bundle_dir, _store = _retention_bundle(
         tmp_path, f"cap_{phase}_session",
     )
+    # A fingerprint of the shape production emits. ``""`` would ALSO produce an
+    # empty measure kind, but by a second route — ``take_kind`` reads an
+    # unnamed graph as unclassifiable — so anchoring there would let this pin
+    # keep passing for the wrong reason the day a claim states the comparand.
+    # ``ENTRY_GRAPH_FINGERPRINT_UNKNOWN`` is what the coordinator hands the
+    # flow when it cannot name the applied profile, which is the live shape.
+    from jasper.active_speaker.crossover_v2.contracts import (
+        ENTRY_GRAPH_FINGERPRINT_UNKNOWN,
+    )
+
     record = phase_capture_record(
         phase=phase, index=3, attempt=1,
         session_id=f"cap_{phase}_session",
-        graph_fingerprint="",
+        graph_fingerprint=ENTRY_GRAPH_FINGERPRINT_UNKNOWN,
         captured_at="2026-08-27T00:00:00Z",
         wav_sha256="e" * 64,
     )

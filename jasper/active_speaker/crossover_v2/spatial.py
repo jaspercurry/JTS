@@ -150,6 +150,7 @@ __all__ = [
     "pose_curve_record",
     "lateral_pose_record",
     "entry_baseline_record",
+    "phase_capture_record",
     "boost_excluded_bands_hz",
 ]
 
@@ -798,9 +799,9 @@ def take_id_for(position_id: str, attempt: int) -> str:
     (attribution plan §6's "accepted-attempt <-> position mapping"). Zero-padded
     so a lexical sort of the bundle is also a chronological one.
 
-    Written here once: this expression stood in all three builders below and a
-    fourth time at the storage seam, and four copies of an index convention is
-    four places for it to drift. The seam mints nothing now — it reads
+    Written here once: this expression stood in every builder below and again
+    at the storage seam, and a copy of an index convention per caller is a
+    place per caller for it to drift. The seam mints nothing now — it reads
     ``take_id`` off the record and the record store names the artifact from it —
     because the seam and the record must name the same take or the bundle's
     path and the session's own evidence disagree.
@@ -867,8 +868,9 @@ class TakeClaim:
     shape rather than two.  Offline re-analysis (ruling S3) reads the bank, and
     a reader that had to ask which of two shapes it was holding could not.
 
-    Every field defaults empty because the three flow call sites do not state
-    them yet — and an empty field here is an honest fact about the capture,
+    Every field defaults empty because most flow call sites do not state them
+    yet — the unprompted-phase take states ``baseline_fingerprint`` once a
+    round has a baseline to compare against, and the rest still do not — and an empty field here is an honest fact about the capture,
     never a refusal to bank it.  The wave that lifts retention states them.
 
     ``baseline_fingerprint`` is the round's pre-apply graph, the comparand
@@ -884,9 +886,9 @@ class TakeClaim:
     **``level_db`` is optional HERE and never optional on an engine-banked
     record, and that difference is a fact rather than a mismatch to iron out.**
     The engine banks a stimulus only once its level proved, so its own field is
-    always a number; the flow's three retention sites hold no volume claim at
-    all, so a take retained there has no proven level to state and ``None``
-    says exactly that.  Narrowing this to ``float`` would force those callers
+    always a number; the flow's retention sites hold no volume claim at all,
+    so a take retained there has no proven level to state and ``None`` says
+    exactly that.  Narrowing this to ``float`` would force those callers
     to invent a number, which is the failure ``_proven_level`` exists to stop.
     ``stimulus_dbfs`` is optional on BOTH sides for a different reason and
     needs no such note: ``None`` is the single stimulus a program declares when
@@ -922,7 +924,7 @@ def _take_identity(
 ) -> dict[str, Any]:
     """The identity block every retained take carries, whatever kind it is.
 
-    The COMMON CORE of the three builders below. What each of them adds on top
+    The COMMON CORE of every builder below. What each of them adds on top
     is its own — a graded seat and a walk pose are different captures and their
     grading columns are never meaningful for each other
     (see :func:`lateral_pose_record`) — so this is a shared core plus a
@@ -941,8 +943,8 @@ def _take_identity(
     whether bytes are the right ones, the path says where they are.
 
     ``graph_fingerprint`` and the :class:`TakeClaim` fields are here rather than
-    in the three builders because they belong to EVERY take whatever its kind —
-    one edit, three records. The measure kind is derived here for the same
+    in the builders because they belong to EVERY take whatever its kind —
+    one edit, every record. The measure kind is derived here for the same
     reason, and from the graph rather than from ``phase``: see :func:`take_kind`.
 
     **It is spelled ``measure_kind`` and not ``kind``, which the engine's own
@@ -1238,13 +1240,15 @@ def phase_capture_record(
     graph_fingerprint: str,
     captured_at: str,
     wav_sha256: str | None,
+    prompt: str = "",
+    regime: str = "",
     claim: TakeClaim = TakeClaim(),
 ) -> dict[str, Any]:
     """One banked take for a phase that prompts no spot: CHECK, MEASURE, VERIFY.
 
     These three play from wherever the microphone already is — there is no
-    table row, no bearing and no instruction — so what a take of one records is
-    the CAPTURE: its bytes' digest and the identity that finds it again. The
+    table row and no instruction — so what a take of one records is the
+    CAPTURE: its bytes' digest and the identity that finds it again. The
     phase's own analysis is not duplicated here; it already lives where the
     phase puts it (``_measure_analysis``, ``_verify_analysis``, the gain plan
     CHECK publishes), and a take is what survives the round while those are
@@ -1257,10 +1261,20 @@ def phase_capture_record(
     :func:`take_id_for` has qualified it by attempt. One convention, four
     phases; a reader who can parse one banked take can parse all of them.
 
-    No ``position_deg`` and no ``reference_mark``: unlike the entry baseline,
-    which is measured from a declared axis and says so, these three make no
-    claim about where the microphone was. An absent fact is honest; a
-    ``DESIGN_AXIS_DEG`` invented here would be a bearing nothing commanded.
+    **The pose is the design axis**, for the reason
+    :func:`entry_baseline_record` already gives about its own unprompted
+    capture: a capture with no prompted move is :data:`~.contracts.DESIGN_AXIS_DEG`
+    on the horizontal axis, which is the same reading
+    ``session.TuningSession._bearings`` gives a spec that names no position, so
+    one pose is one record on both sides. Stating it is not inventing a
+    bearing — it is declining to make this the one banked kind whose pose a
+    reader has to special-case, and it keeps the four builders one shape for
+    the index W1-d builds on ``_record()``'s fields.
+
+    ``prompt`` is ``""`` because no instruction was issued, which is a
+    different fact from an unknown one; ``regime`` defaults empty for the same
+    reason it does on the entry baseline — the caller states it or it is
+    honestly unstated, and no builder guesses it from the phase.
     """
     identity = _take_identity(
         position_id=f"{phase}_{index:02d}",
@@ -1274,6 +1288,10 @@ def phase_capture_record(
         "position_id": identity["take_id"],
         **identity,
         "captured_at": captured_at,
+        "prompt": prompt,
+        "regime": regime,
+        "position_deg": DESIGN_AXIS_DEG,
+        "position_axis": POSITION_AXIS_HORIZONTAL,
     }
 
 

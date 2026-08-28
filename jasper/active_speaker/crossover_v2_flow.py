@@ -1494,7 +1494,7 @@ def _no_bank_take(_result: Any, _record: Mapping[str, Any]) -> str:
     A session with no evidence store runs its groups with no durable per-take
     artifact — the correct behaviour, and the ordinary state of every session
     unit test. Answering ``""`` here rather than leaving the seam ``None`` is
-    what lets all three retention sites call it unguarded: the one caller that
+    what lets every retention site call it unguarded: the one caller that
     reads the answer (:meth:`CrossoverV2Session._retain_entry_baseline`) cannot
     tell an unbound seam from a store that refused, and does not need to.
     """
@@ -1526,10 +1526,10 @@ class V2FlowSeams:
     publish_candidate: PublishCandidate
     apply_complete: ApplyGate
     apply_failed: ApplyFailureGate
-    # Evidence retention, called once per ACCEPTED capture of the three
-    # retained kinds (cloud position, lateral pose, entry baseline). The
-    # PRODUCTION binding is the fail-soft one — a full disk must not turn a
-    # good capture into a retake — so no call site here guards it: see
+    # Evidence retention, called once per ACCEPTED capture of every retained
+    # kind — the cloud position, the lateral pose, the entry baseline, and
+    # the three phases that prompt no spot. The PRODUCTION binding is the
+    # fail-soft one, so no call site here guards it: see
     # :func:`_no_bank_take` for what the default answers and why "" is the
     # whole vocabulary a caller needs.
     bank_take: BankTake = _no_bank_take
@@ -4244,7 +4244,7 @@ class CrossoverV2Session:
             verdict = self._consume_entry_baseline(index, attempt, analysis, result)
         else:
             verdict = self._consume_verify(
-                index, analysis, result, attempt=attempt,
+                index, attempt, analysis, result, phase=phase,
             )
         # THIS capture's pilot evidence, attached to whatever verdict came back
         # — at ONE point, deliberately, rather than at each gate that can
@@ -4655,17 +4655,38 @@ class CrossoverV2Session:
     # every rejection) through ``_safe_log_diag`` — never the raw
     # ``_log_*_diag`` call directly, so a bug in the logging path can neither
     # crash nor flip a verdict already decided above it. Retention gets the
-    # same protection from the other direction: its fail-soft is the binding's,
-    # so a full disk cannot turn an accepted capture into a refused one.
+    # same protection from the other direction — see ``V2FlowSeams.bank_take``,
+    # which states the fail-soft rule once for every site that banks.
+
+    def _consume_unprompted(
+        self,
+        phase: str,
+        index: int,
+        attempt: int,
+        analysis: ProgramAnalysis,
+        result: Any,
+        verdict: PhaseVerdict,
+        log_diag: Any,
+    ) -> PhaseVerdict:
+        """Bank an accepted unprompted capture, journal every one, decide nothing.
+
+        The shared body of the three arms whose phase prompts no spot. They
+        differed only in which verdict they took and which diagnostic they
+        logged, and a fourth copy is where the accepted-only rule starts being
+        true in two places and false in the third.
+        """
+        if verdict.accepted:
+            self._bank_phase_capture(phase, index, attempt, result)
+        self._safe_log_diag(log_diag, analysis, verdict)
+        return verdict
 
     def _consume_check(
         self, index: int, attempt: int, analysis: ProgramAnalysis, result: Any,
     ) -> PhaseVerdict:
-        verdict = self._check_verdict(analysis)
-        if verdict.accepted:
-            self._bank_phase_capture(PHASE_CHECK, index, attempt, result)
-        self._safe_log_diag(self._log_check_diag, analysis, verdict)
-        return verdict
+        return self._consume_unprompted(
+            PHASE_CHECK, index, attempt, analysis, result,
+            self._check_verdict(analysis), self._log_check_diag,
+        )
 
     def _check_verdict(self, analysis: ProgramAnalysis) -> PhaseVerdict:
         """CHECK's verdict: the ladder's answer, then the accept-side banking.
@@ -4717,11 +4738,10 @@ class CrossoverV2Session:
     def _consume_measure(
         self, index: int, attempt: int, analysis: ProgramAnalysis, result: Any,
     ) -> PhaseVerdict:
-        verdict = self._measure_verdict(analysis)
-        if verdict.accepted:
-            self._bank_phase_capture(PHASE_MEASURE, index, attempt, result)
-        self._safe_log_diag(self._log_measure_diag, analysis, verdict)
-        return verdict
+        return self._consume_unprompted(
+            PHASE_MEASURE, index, attempt, analysis, result,
+            self._measure_verdict(analysis), self._log_measure_diag,
+        )
 
     def _bank_phase_capture(
         self, phase: str, index: int, attempt: int, result: Any,
@@ -4738,21 +4758,48 @@ class CrossoverV2Session:
         it is evidence of the room or the phone, and the journal is where that
         is recorded.
 
-        Fail-soft is the binding's, exactly as it is for the three prompted
-        kinds: a full disk must not turn a good capture into a retake.
+        Fail-soft is the binding's, exactly as it is for every other retained
+        kind — see the seam's own field for the one statement of that rule.
+
+        **The baseline comparand is stated when the session has one**, which is
+        what lets ``take_kind`` classify a VERIFY take rather than leaving it
+        unresolved: by VERIFY the round's pre-apply graph is known, and it is
+        the one fact that separates a post-apply re-measure from a baseline.
+        CHECK and MEASURE reach here before any baseline exists and bank an
+        honestly empty kind — CHECK has none by design, and MEASURE's
+        comparand is minted after it banks.
         """
+        baseline = self._measure_entry_baseline
         self._seams.bank_take(
             result,
             _spatial.phase_capture_record(
                 phase=phase,
                 index=index,
                 attempt=attempt,
-                session_id=self.session_id,
-                graph_fingerprint=self._entry_graph_fingerprint(),
-                captured_at=time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
-                wav_sha256=_capture_wav_sha256(result),
+                claim=_spatial.TakeClaim(
+                    baseline_fingerprint=(
+                        baseline.graph_fingerprint if baseline is not None else ""
+                    ),
+                ),
+                **self._capture_stamp(result),
             ),
         )
+
+    def _capture_stamp(self, result: Any) -> dict[str, Any]:
+        """The four facts every banked take states about its OWN capture.
+
+        Whose session it belongs to, which graph it went through, when it was
+        taken, and the digest that verifies the bytes. Assembled once because
+        the builders take exactly these four keyword-for-keyword, and a
+        fourth hand-assembly is where the clock format or the fingerprint
+        source starts to differ between kinds that a single index has to sort.
+        """
+        return {
+            "session_id": self.session_id,
+            "graph_fingerprint": self._entry_graph_fingerprint(),
+            "captured_at": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
+            "wav_sha256": _capture_wav_sha256(result),
+        }
 
     def _note_ripple_reservation(self, predicted_ripple_db: float) -> None:
         """Bank G1's reservation about the capture being accepted (#2087).
@@ -5121,10 +5168,7 @@ class CrossoverV2Session:
                 pose,
                 position_deg=position_angle_deg(prompt),
                 lateral_consumer=self._lateral_consumer,
-                session_id=self.session_id,
-                graph_fingerprint=self._entry_graph_fingerprint(),
-                captured_at=time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
-                wav_sha256=_capture_wav_sha256(result),
+                **self._capture_stamp(result),
             ),
         )
 
@@ -7020,8 +7064,7 @@ class CrossoverV2Session:
         replay path covers both. Being outside the group bookkeeping is exactly
         why the call is explicit here: nothing else would make it.
 
-        **The only one of the three retention sites that reads the seam's
-        answer.** Evidence retention is forensics, never a gate — the binding
+        **The only retention site that reads the seam's answer.** Evidence retention is forensics, never a gate — the binding
         fail-softs, so a full disk cannot turn an acoustically-good baseline
         into a retake, and the reduced record (which is what the round actually
         grades) is banked whether or not any bytes were stored. What the answer
@@ -7034,15 +7077,12 @@ class CrossoverV2Session:
         rewritten on every persist. Both are written from ``measured`` here, so
         neither is a copy of the other.
         """
-        fingerprint = self._entry_graph_fingerprint()
         metadata = _spatial.entry_baseline_record(
             index=index,
             attempt=attempt,
-            session_id=self.session_id,
             program_id=measured.program_id,
             reference_mark=measured.reference_mark,
-            graph_fingerprint=fingerprint,
-            captured_at=time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
+            **self._capture_stamp(result),
             freqs_hz=measured.curve.hz,
             magnitude_db=measured.curve.db,
             excluded=measured.excluded,
@@ -7052,7 +7092,6 @@ class CrossoverV2Session:
             gate_window_ms=_gate_window_ms(analysis.summed_response),
             summed_ripple_db=analysis.summed_ripple_db,
             glitch_detected=bool(analysis.glitch_detected),
-            wav_sha256=_capture_wav_sha256(result),
         )
         # The TAKE id and not the store's record id: ``artifact_ref`` is read
         # back out of the bundle by
@@ -7067,7 +7106,7 @@ class CrossoverV2Session:
 
         self._measure_entry_baseline = EntryBaseline.from_measurement(
             measured,
-            graph_fingerprint=fingerprint,
+            graph_fingerprint=str(metadata["graph_fingerprint"]),
             captured_at=str(metadata["captured_at"]),
             artifact_ref=artifact_ref,
         )
@@ -7345,12 +7384,25 @@ class CrossoverV2Session:
         )
 
     def _consume_verify(
-        self, index: int, analysis: ProgramAnalysis, result: Any, *, attempt: int,
+        self,
+        index: int,
+        attempt: int,
+        analysis: ProgramAnalysis,
+        result: Any,
+        *,
+        phase: str,
     ) -> PhaseVerdict:
-        verdict = self._verify_verdict(analysis)
-        if verdict.accepted:
-            self._bank_phase_capture(PHASE_VERIFY, index, attempt, result)
-        self._safe_log_diag(self._log_verify_diag, analysis, verdict)
+        # ``phase`` is REQUIRED and is the flow's OWN phase, not
+        # :data:`PHASE_VERIFY`: this arm is the dispatch's CATCH-ALL, so an
+        # index whose phase nothing else claims lands here too. Banking such a
+        # capture under a hardcoded ``verify`` would file it durably as
+        # post-apply tracking evidence — the same mislabel the entry
+        # baseline's explicit carve-out above exists to prevent, but written
+        # into a write-once record rather than a verdict.
+        verdict = self._consume_unprompted(
+            phase, index, attempt, analysis, result,
+            self._verify_verdict(analysis), self._log_verify_diag,
+        )
         # #2291: the round's post-apply side. Retained BEFORE grading, because
         # the Full tier grades the round later (when the post-apply cloud
         # closes) from a call that cannot see this capture.

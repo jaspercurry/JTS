@@ -210,9 +210,15 @@ def _post_apply_analysis(conductor: Any, *, scale: float = 1.0, max_db: float = 
     )
 
 
+#: The index the harness banks a VERIFY take under when a caller states none.
+#: Not a production index — production threads the walk's own — so the take it
+#: mints is ``verify_00_a01``.
+_HARNESS_VERIFY_INDEX = 0
+
+
 def _consume_verify(
     conductor: Any, analysis: Any, *, attempt: int = 1,
-    index: int = 0, result: Any = None,
+    index: int = _HARNESS_VERIFY_INDEX, result: Any = None,
 ) -> Any:
     """Drive the production VERIFY trigger site.
 
@@ -220,13 +226,23 @@ def _consume_verify(
     the real entry point the relay runner calls — not a test-only shim. Reached
     directly because the runner in between is a thread and a websocket.
 
-    ``index`` and ``result`` are the capture's identity and its bytes, which
-    VERIFY gained when it started banking a take of its own. Defaulted because
-    every caller here is driving the GRADING trigger, not the banking: a
-    ``None`` result banks a take that honestly carries no digest, which is the
-    same answer any capture with no bytes gets.
+    **The take this mints under the defaults is a PHANTOM: do not assert on
+    it.** ``index``/``result`` default because every caller here drives the
+    GRADING trigger rather than the banking, so the banked take comes out
+    ``verify_00_a01`` with a ``None`` digest — an identity production never
+    mints (its indexes start at 1) and a digest that only means "this call
+    passed no bytes". It is banked because banking is what an accepted VERIFY
+    does, and suppressing it here would make the harness diverge from the
+    production arm on the very branch these tests exercise. Any test that
+    wants to READ a banked VERIFY take must state ``index`` and ``result``.
+
+    ``phase`` is stated rather than defaulted: the arm is the dispatch's
+    catch-all, and a default would let the harness bank under a label the
+    caller never chose — the mislabel :meth:`_consume_verify` documents.
     """
-    return conductor._consume_verify(index, analysis, result, attempt=attempt)
+    return conductor._consume_verify(
+        index, attempt, analysis, result, phase=flow.PHASE_VERIFY,
+    )
 
 
 def _seed_round_state(*, anchor: bool = True) -> dict[str, Any]:

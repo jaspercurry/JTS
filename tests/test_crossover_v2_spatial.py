@@ -43,6 +43,7 @@ from jasper.active_speaker.crossover_v2.journey import (
     PHASE_CLOUD_MEASURE,
     PHASE_CLOUD_VERIFY,
     PHASE_LATERAL,
+    PHASE_VERIFY,
 )
 from jasper.active_speaker.crossover_v2.position_cycle import (
     POSITION_EVIDENCE_KIND,
@@ -395,22 +396,27 @@ def test_a_position_take_id_is_qualified_by_the_attempt():
     assert record["position_id"] == "cloud_measure_03"
 
 
-def test_all_three_take_builders_state_one_identity_under_one_vocabulary():
+def test_every_take_builder_states_one_identity_under_one_vocabulary():
     """The common core, asserted as a SET rather than key by key.
 
-    A cloud position, a walk pose and an entry baseline are different captures
-    and their grading columns are never meaningful for each other — but the six
-    facts that say WHICH take this is are the same question three times, and a
-    reader that had to spell them differently per kind is the duplication row 4b
-    names. Adding a fourth builder that spells one of these its own way turns
-    this red.
+    A cloud position, a walk pose, an entry baseline and an unprompted-phase
+    capture are different captures and their grading columns are never
+    meaningful for each other — but the six facts that say WHICH take this is
+    are the same question four times, and a reader that had to spell them
+    differently per kind is the duplication row 4b names. A builder that spells
+    one of these its own way turns this red — which is why the fourth one is
+    here rather than pinned apart: the promise this docstring made was empty
+    for as long as the tuple below listed only three.
     """
     core = {"phase", "index", "attempt", "take_id", "session_id", "wav_sha256"}
     cloud = _cloud_record()
     pose = _pose_record()
     entry = _entry_record(index=3, attempt=7, session_id="sess", wav_sha256="abc")
+    unprompted = _phase_record(
+        index=3, attempt=7, session_id="sess", wav_sha256="abc",
+    )
 
-    for record in (cloud, pose, entry):
+    for record in (cloud, pose, entry, unprompted):
         assert core <= set(record)
         assert record["attempt"] == 7
         assert record["session_id"] == "sess"
@@ -455,15 +461,33 @@ def _entry_record(**overrides):
     return spatial.entry_baseline_record(**{**fields, **overrides})
 
 
+def _phase_record(**overrides):
+    """One retained unprompted-phase take (CHECK / MEASURE / VERIFY).
+
+    The fourth builder. It joins every family pin below rather than getting
+    pins of its own: "does this builder spell the family's vocabulary" is one
+    question, and asking it three times while a fourth builder answers
+    separately is how the shapes drift apart.
+    """
+    fields = {
+        "phase": PHASE_VERIFY, "index": 3, "attempt": 1, "session_id": "sess",
+        "graph_fingerprint": "fp", "captured_at": "2026-08-11T00:00:00Z",
+        "wav_sha256": "abc",
+    }
+    return spatial.phase_capture_record(**{**fields, **overrides})
+
+
 def test_every_retained_take_kind_states_when_it_was_captured():
-    """``captured_at`` on all three builders, not on two of them.
+    """``captured_at`` on every builder, not on some of them.
 
     A walk pose was the one retained take carrying no clock, so a banked round
     could say WHERE each capture was taken and in what ORDER the walk served
     them, but never WHEN. Sorting or windowing banked rounds by time had to
     fall back on file mtime, which WO-0 measured actively misrouting.
     """
-    for record in (_cloud_record(), _pose_record(), _entry_record()):
+    for record in (
+        _cloud_record(), _pose_record(), _entry_record(), _phase_record(),
+    ):
         assert record["captured_at"]
 
 
@@ -501,7 +525,9 @@ _ENGINE_RECORD_FIELDS = (
 )
 
 
-@pytest.mark.parametrize("builder", [_cloud_record, _pose_record, _entry_record])
+@pytest.mark.parametrize(
+    "builder", [_cloud_record, _pose_record, _entry_record, _phase_record],
+)
 def test_every_take_builder_carries_the_whole_engine_record(builder):
     """All fourteen, on all three — parametrized, because it is one question.
 
@@ -534,7 +560,9 @@ _STATED_CLAIM = spatial.TakeClaim(
 )
 
 
-@pytest.mark.parametrize("builder", [_cloud_record, _pose_record, _entry_record])
+@pytest.mark.parametrize(
+    "builder", [_cloud_record, _pose_record, _entry_record, _phase_record],
+)
 @pytest.mark.parametrize(
     "engine_field, stated",
     [
@@ -565,7 +593,9 @@ def test_a_stated_claim_reaches_the_record_it_was_stated_for(
     assert record[engine_field] == stated
 
 
-@pytest.mark.parametrize("builder", [_cloud_record, _pose_record, _entry_record])
+@pytest.mark.parametrize(
+    "builder", [_cloud_record, _pose_record, _entry_record, _phase_record],
+)
 def test_a_take_record_does_not_overwrite_the_envelopes_document_type(builder):
     """A retained take is published INSIDE an envelope, and it splats in last.
 
@@ -666,7 +696,9 @@ def test_a_take_whose_graph_is_unnamed_says_so_instead_of_guessing(
     assert record["measure_kind"] == ""
 
 
-@pytest.mark.parametrize("builder", [_cloud_record, _pose_record, _entry_record])
+@pytest.mark.parametrize(
+    "builder", [_cloud_record, _pose_record, _entry_record, _phase_record],
+)
 def test_a_take_carries_the_path_of_the_capture_it_was_reduced_from(builder):
     """The pointer, round-tripped — what makes offline analysis reachable.
 
