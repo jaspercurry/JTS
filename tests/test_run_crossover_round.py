@@ -1069,6 +1069,11 @@ def test_the_banks_own_exit_contract_decides_the_round(
     assert len(bank_lines) == 1
     row = next(r for r in _trail(trail) if r["step"] == "bank")
     assert row["bank_exit"] == bank_exit
+    # The trail's own verdict, asserted separately from the process rc because
+    # they are written by two different lines in `bank()` — the `ok=` flag and
+    # the abort gate. Only pinning the rc leaves the flag free to disagree with
+    # it, which is exactly how a stale `in (0, 1)` survives a green suite.
+    assert row["ok"] is (expected_rc == 0)
     # A refused bank stops the round before the candidate is summarised at
     # all; the trail is the observable now that nothing is written beside it.
     assert any(r["step"] == "candidate" for r in _trail(trail)) is summarised

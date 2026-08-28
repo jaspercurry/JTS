@@ -8,18 +8,22 @@ This is the ONE outcome the script can produce with no Pi, no SSH, and no
 network reachable: refusing to bank into a directory that already has
 something in it (exit 4). The check runs before the script's first
 `remote()` call, so it is safe to exercise as a real subprocess here. The
-rest of the contract (exit 0/1/2/3, all gated on a live Pi round-trip) is
-not exercised by this file.
+rest of the contract (exit 0/3, both gated on a live Pi round-trip) is not
+exercised by this file.
 
-Exit 4 exists at all because exit 1 was ambiguous: the capture-integrity
-checker also returns 1 for "nothing to check yet" (jasper.audio_measurement.
-capture_integrity), and a caller scripting a retry loop that hits a failed
-bank and retries into the SAME destination needs to tell "this destination
-is unusable" apart from "there was nothing to grade" without parsing
-stderr. The literal integer is what is pinned here, not a symbol -- a
-caller's `$?` is an integer, and a future renumbering that quietly moved
-this refusal back onto 1 (or onto 3, next to the incomplete-bank exit)
-would not be caught by anything that only asserts "not zero".
+Exit 4 exists at all because exit 1 was ambiguous WHEN IT WAS ADDED: the
+script then graded the round with the capture-integrity checker, which
+returns 1 for "nothing to check yet", and a caller scripting a retry loop
+that hits a failed bank and retries into the SAME destination needs to tell
+"this destination is unusable" apart from "there was nothing to grade"
+without parsing stderr. The capture-dump ring that grading read is gone and
+the script no longer calls the checker, so 1 is now only bash's own failure
+-- but 4 stays, because the retry-loop caller still needs the distinction
+from a bank that failed for any other reason. The literal integer is what
+is pinned here, not a symbol -- a caller's `$?` is an integer, and a future
+renumbering that quietly moved this refusal back onto 1 (or onto 3, next to
+the incomplete-bank exit) would not be caught by anything that only asserts
+"not zero".
 """
 
 from __future__ import annotations
@@ -68,9 +72,11 @@ def test_sourcing_the_shared_lib_survives_a_pre_set_pi_host(tmp_path):
     """scripts/_lib.sh is sourced INTO this script's own namespace.
 
     This script runs under `set -u`, so any name the library leaves unset
-    out from under it is an unbound-variable exit 1 -- and 1 is precisely
-    the capture-integrity checker's benign "nothing to check" verdict, so
-    a caller banks nothing and reads it as success. Reaching the exit-4
+    out from under it is an unbound-variable exit 1 -- which callers used to
+    read as the capture-integrity checker's benign "nothing to check"
+    verdict, banking nothing and calling it success. That overload is gone
+    (`run-crossover-round.py` now aborts on any non-zero bank rc), but the
+    silent-source failure this pin catches is not: reaching the exit-4
     refusal above proves the source completed.
     """
     dest = tmp_path / "already-banked"
