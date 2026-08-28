@@ -680,6 +680,51 @@ def test_usb_mic_recompose_schedule_failure_is_observable(monkeypatch):
     )]
 
 
+def test_usb_mic_recompose_survives_reset_failed_against_a_gcd_unit(monkeypatch):
+    """#3237: jasper-usbmic-apply.service is a bare oneshot with no
+    RemainAfterExit, so systemd normally GCs it between runs and
+    reset-failed exits nonzero as routine idle state. That must not
+    abort the recompose before the restart is even attempted.
+    """
+    import jasper.control.server as srv_mod
+
+    commands = []
+    events = []
+
+    class Result:
+        def __init__(self, returncode=0, stderr=""):
+            self.returncode = returncode
+            self.stderr = stderr
+            self.stdout = ""
+
+    def run(command, **_kwargs):
+        commands.append(command)
+        if "reset-failed" in command:
+            return Result(1, "Unit jasper-usbmic-apply.service not loaded.\n")
+        return Result()
+
+    monkeypatch.setattr(srv_mod.subprocess, "run", run)
+    monkeypatch.setattr(
+        srv_mod,
+        "log_event",
+        lambda _logger, event, **fields: events.append((event, fields)),
+    )
+
+    assert srv_mod._schedule_usb_gadget_recompose() is True
+
+    assert commands == [
+        ["systemctl", "reset-failed", "jasper-usbmic-apply.service"],
+        [
+            "systemctl", "restart", "--no-block",
+            "jasper-usbmic-apply.service",
+        ],
+    ]
+    assert (
+        "usb_mic.recompose_failed",
+        "retry_budget_reset",
+    ) in [(event, fields.get("phase")) for event, fields in events]
+
+
 def test_aec_firmware_update_starts_when_required(
     monkeypatch, server_with_coordinator,
 ):

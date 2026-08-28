@@ -667,19 +667,26 @@ def _schedule_usb_gadget_recompose() -> bool:
     in-process Timer, the durable intent's apply job survives jasper-control
     exiting after this request.  Reset the unit's failure/start-rate state so
     each explicit user action gets a fresh, bounded retry budget.
+
+    That reset is best-effort: the unit is a bare oneshot with no
+    RemainAfterExit, so systemd normally GCs it between runs, and
+    reset-failed against an already-unloaded unit exits nonzero as routine
+    idle state — not a reason to skip the restart below (#3237).
     """
 
     commands = (
         (
             "retry_budget_reset",
             ["systemctl", "reset-failed", _USB_MIC_APPLY_UNIT],
+            False,
         ),
         (
             "enqueue",
             ["systemctl", "restart", "--no-block", _USB_MIC_APPLY_UNIT],
+            True,
         ),
     )
-    for phase, command in commands:
+    for phase, command, fatal in commands:
         try:
             result = subprocess.run(
                 command,
@@ -697,7 +704,9 @@ def _schedule_usb_gadget_recompose() -> bool:
                 error=str(exc),
                 level=logging.ERROR,
             )
-            return False
+            if fatal:
+                return False
+            continue
         if result.returncode != 0:
             log_event(
                 logger,
@@ -710,7 +719,8 @@ def _schedule_usb_gadget_recompose() -> bool:
                 ),
                 level=logging.ERROR,
             )
-            return False
+            if fatal:
+                return False
     log_event(
         logger,
         "usb_mic.recompose_scheduled",
