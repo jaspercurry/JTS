@@ -18,7 +18,6 @@ from __future__ import annotations
 
 import json
 import socket
-import sys
 import time
 from dataclasses import dataclass
 from typing import Any
@@ -180,21 +179,6 @@ def fanin_usbsink_lane_is_direct(fanin_status: dict[str, Any] | None) -> bool:
     return bool(entry and entry.get("source") == FANIN_INPUT_SOURCE_DIRECT)
 
 
-def main(argv: list[str] | None = None) -> int:
-    """Small systemd/script probe for the boot-time USB composition gate."""
-
-    args = sys.argv[1:] if argv is None else argv
-    if args != ["--usbsink-direct-armed"]:
-        print("usage: python -m jasper.fanin.status --usbsink-direct-armed", file=sys.stderr)
-        return 2
-    armed = fanin_usbsink_lane_is_direct(read_fanin_status(timeout_sec=1.0))
-    print(
-        "event=fanin.usb_direct_gate result=" + ("armed" if armed else "not_armed"),
-        file=sys.stderr,
-    )
-    return 0 if armed else 1
-
-
 __all__ = [
     "DIRECT_HEALTH_BROKEN",
     "DIRECT_HEALTH_CAPTURING",
@@ -208,7 +192,3 @@ __all__ = [
     "FANIN_STATUS_SOCKET",
     "read_fanin_status",
 ]
-
-
-if __name__ == "__main__":
-    raise SystemExit(main())

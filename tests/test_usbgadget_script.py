@@ -5,12 +5,10 @@
 """Hermetic subprocess tests for the composite USB gadget scripts.
 
 deploy/usbsink/jasper-usbgadget-{up,down,wanted} are pure-bash policy scripts.
-They are driven here against a TEMP ConfigFS tree + fake UDC dir + injected
-canonical audio-allowed and derived-lifecycle-readiness probes — exactly the
-seams the scripts expose via env (JASPER_CONFIGFS_ROOT /
-JASPER_UDC_CLASS_DIR / JASPER_USBGADGET_AUDIO_ALLOWED_CMD /
-JASPER_USBGADGET_AUDIO_READY_CMD /
-JASPER_USBGADGET_AUDIO_DATA_READY_CMD / JASPER_CPUINFO_FILE). No real ConfigFS,
+They are driven here against a TEMP ConfigFS tree + fake UDC dir + an injected
+canonical audio-allowed probe — exactly the seams the scripts expose via env
+(JASPER_CONFIGFS_ROOT / JASPER_UDC_CLASS_DIR /
+JASPER_USBGADGET_AUDIO_ALLOWED_CMD / JASPER_CPUINFO_FILE). No real ConfigFS,
 libcomposite, or systemd — mirrors tests/test_wifi_guardian_script.py.
 
 Each test asserts on:
@@ -90,8 +88,6 @@ def _run(
     network: str | None = "enabled",
     audio_intent: str = FALSE,
     audio_gate: str = TRUE,
-    audio_ready: str | None = None,
-    audio_data_ready: str | None = None,
     hardware_allowed: str = TRUE,
     udc_present: bool = True,
     configfs: Path | None = None,
@@ -106,16 +102,10 @@ def _run(
     udc = _udc_dir(tmp_path, present=udc_present)
     env = os.environ.copy()
     audio_allowed = TRUE if audio_intent == TRUE and audio_gate == TRUE else FALSE
-    if audio_ready is None:
-        audio_ready = audio_intent
-    if audio_data_ready is None:
-        audio_data_ready = audio_intent
     env.update({
         "JASPER_CONFIGFS_ROOT": str(configfs),
         "JASPER_UDC_CLASS_DIR": str(udc),
         "JASPER_USBGADGET_AUDIO_ALLOWED_CMD": audio_allowed,
-        "JASPER_USBGADGET_AUDIO_READY_CMD": audio_ready,
-        "JASPER_USBGADGET_AUDIO_DATA_READY_CMD": audio_data_ready,
         "JASPER_USBGADGET_HARDWARE_ALLOWED_CMD": hardware_allowed,
         "JASPER_USBGADGET_USB_MIC_ENABLED_CMD": usb_mic,
         "JASPER_CPUINFO_FILE": str(_cpuinfo(tmp_path, cpuinfo_serial)),
@@ -859,41 +849,38 @@ def test_wanted_skips_when_hardware_transport_is_unavailable(tmp_path):
 
 
 def test_usb_audio_requires_canonical_authority_plus_readiness_mirror():
-    """Intent, lifecycle readiness, and a live direct lane — defined ONCE.
+    """Canonical authority is the ONE audio probe, defined once.
 
-    The three probes used to be written out in both gadget-up and
-    gadget-wanted, and a third time in the installer. They now live only in the
-    shared truth table every consumer sources, so the copies cannot drift.
+    It used to be written out in both gadget-up and gadget-wanted, and a third
+    time in the installer. It now lives only in the shared truth table every
+    consumer sources, so the copies cannot drift.
+
+    The readiness-mirror and direct-lane probes that once sat beside it are
+    gone (ADR-0189): derived state is disclosed, never composed on. Their env
+    names are asserted absent, so re-adding either gate fails here.
     """
 
     expected_allowed = (
         "AUDIO_ALLOWED_CMD=\"${JASPER_USBGADGET_AUDIO_ALLOWED_CMD:-"
         "/opt/jasper/.venv/bin/jasper-local-source-allowed --source usbsink}\""
     )
-    expected_ready = (
-        "AUDIO_READY_CMD=\"${JASPER_USBGADGET_AUDIO_READY_CMD:-"
-        "systemctl is-enabled --quiet jasper-usbsink.service}\""
-    )
     direct_armed_probe = (
         "/opt/jasper/.venv/bin/python -m jasper.fanin.status "
         "--usbsink-direct-armed"
     )
-    expected_data_ready = (
-        "AUDIO_DATA_READY_CMD=\"${JASPER_USBGADGET_AUDIO_DATA_READY_CMD:-"
-        f"{direct_armed_probe}}}\""
-    )
     compose = COMPOSE.read_text()
-    for probe in (expected_allowed, expected_ready, expected_data_ready):
-        assert probe in compose
+    assert expected_allowed in compose
     assert "JASPER_USBGADGET_AUDIO_INTENT_CMD" not in compose
     assert "JASPER_USBGADGET_AUDIO_GATE_CMD" not in compose
+    assert "JASPER_USBGADGET_AUDIO_READY_CMD" not in compose
+    assert "JASPER_USBGADGET_AUDIO_DATA_READY_CMD" not in compose
+    assert direct_armed_probe not in compose
 
     source_line = 'source "$(dirname "$0")/jasper-usbgadget-compose.sh"'
     for script in (UP, WANTED, CONVERGE):
         text = script.read_text()
         assert source_line in text, script.name
-        for probe in (expected_allowed, expected_ready, expected_data_ready):
-            assert probe not in text, script.name
+        assert expected_allowed not in text, script.name
 
     # Negative proof for the deleted #3198 machinery: the installer no longer
     # carries its own copy of the direct-lane probe, nor the recompose gate and
@@ -1372,45 +1359,10 @@ def test_up_canonical_off_dominates_stale_enabled_mirror(tmp_path):
         tmp_path,
         network="enabled",
         audio_intent=FALSE,
-        audio_ready=TRUE,
     )
     assert proc.returncode == 0, proc.stderr
     assert "network=1 audio=0" in proc.stderr
     assert "audio_reason=intent_disabled_or_parked" in proc.stderr
-    assert _linked(cfg, "ncm.usb0")
-    assert not _linked(cfg, "uac2.usb0")
-
-
-def test_up_desired_on_but_lifecycle_not_ready_composes_network_only(tmp_path):
-    """A failed/stale On transition must not advertise UAC2 without its consumer."""
-    proc, cfg = _run(
-        UP,
-        tmp_path,
-        network="enabled",
-        audio_intent=TRUE,
-        audio_gate=TRUE,
-        audio_ready=FALSE,
-    )
-    assert proc.returncode == 0, proc.stderr
-    assert "network=1 audio=0" in proc.stderr
-    assert "audio_reason=derived_unit_disabled" in proc.stderr
-    assert _linked(cfg, "ncm.usb0")
-    assert not _linked(cfg, "uac2.usb0")
-
-
-def test_up_desired_on_but_direct_lane_unarmed_composes_network_only(tmp_path):
-    proc, cfg = _run(
-        UP,
-        tmp_path,
-        network="enabled",
-        audio_intent=TRUE,
-        audio_gate=TRUE,
-        audio_ready=TRUE,
-        audio_data_ready=FALSE,
-    )
-    assert proc.returncode == 0, proc.stderr
-    assert "network=1 audio=0" in proc.stderr
-    assert "audio_reason=direct_lane_unarmed" in proc.stderr
     assert _linked(cfg, "ncm.usb0")
     assert not _linked(cfg, "uac2.usb0")
 
@@ -1421,25 +1373,10 @@ def test_wanted_canonical_off_dominates_stale_enabled_mirror(tmp_path):
         tmp_path,
         network="enabled",
         audio_intent=FALSE,
-        audio_ready=TRUE,
     )
     assert proc.returncode == 0, proc.stderr
     assert "network=1 audio=0" in proc.stderr
     assert "audio_reason=intent_disabled_or_parked" in proc.stderr
-
-
-def test_wanted_desired_on_but_lifecycle_not_ready_keeps_network(tmp_path):
-    proc, _ = _run(
-        WANTED,
-        tmp_path,
-        network="enabled",
-        audio_intent=TRUE,
-        audio_gate=TRUE,
-        audio_ready=FALSE,
-    )
-    assert proc.returncode == 0, proc.stderr
-    assert "network=1 audio=0" in proc.stderr
-    assert "audio_reason=derived_unit_disabled" in proc.stderr
 
 
 # ---------- jasper-usbgadget-down (teardown) --------------------------------

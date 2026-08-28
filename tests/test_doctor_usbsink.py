@@ -692,7 +692,8 @@ def _patch_composition_env(
             "ok",
             "intent_disabled",
         ),
-        # A failed On transition intentionally suppresses UAC2 until ready.
+        # ADR-0189: a disabled lifecycle mirror no longer suppresses UAC2.
+        # Derived state is a consequence of intent, never a precondition.
         (
             {
                 "udc_present": True,
@@ -700,12 +701,13 @@ def _patch_composition_env(
                 "usbsink_enabled": True,
                 "lifecycle_ready": False,
                 "ncm": True,
+                "uac2": True,
             },
             "ok",
-            "derived_unit_disabled",
+            "enabled",
         ),
-        # UAC2 stays hidden until fan-in is a live consumer; the combo
-        # fallback check diagnoses why DIRECT failed to arm.
+        # ADR-0189: nor does an unarmed DIRECT lane. The endpoint stays
+        # advertised and the consumer state is disclosed instead.
         (
             {
                 "udc_present": True,
@@ -714,9 +716,10 @@ def _patch_composition_env(
                 "lifecycle_ready": True,
                 "direct_ready": False,
                 "ncm": True,
+                "uac2": True,
             },
             "ok",
-            "direct_lane_unarmed",
+            "consumed=False",
         ),
         (
             {
@@ -799,8 +802,8 @@ def _patch_composition_env(
         "no-udc",
         "both-wanted",
         "network-only",
-        "lifecycle-not-ready",
-        "direct-unarmed",
+        "derived-unit-disabled-still-composes",
+        "unarmed-lane-still-composes",
         "parked-follower",
         "legacy-audio-only",
         "nothing-wanted",
@@ -932,7 +935,7 @@ def test_composition_retains_ncm_during_a_pending_host_reboot(
     monkeypatch.setenv("JASPER_UDC_CLASS_DIR", str(udc))
     monkeypatch.setenv("JASPER_USB_NETWORK", "enabled")
     monkeypatch.setattr(
-        doctor.usbsink, "_audio_composition_wanted", lambda: (False, "intent_disabled")
+        doctor.usbsink, "_audio_wanted", lambda: (False, "intent_disabled")
     )
 
     result = doctor.check_usbgadget_composition()
@@ -1010,7 +1013,7 @@ def test_usb_mic_export_rejects_a_stale_descriptor_revision(monkeypatch, tmp_pat
     monkeypatch.setattr(doctor.usbsink, "USBSINK_GADGET_PATH", gadget)
     _mic_intent(monkeypatch)
     monkeypatch.setattr(
-        doctor.usbsink, "_audio_composition_wanted", lambda: (True, "ready")
+        doctor.usbsink, "_audio_wanted", lambda: (True, "ready")
     )
 
     result = doctor.usbsink.check_usb_mic_export()
@@ -1028,7 +1031,7 @@ def _relay_mic_env(monkeypatch, tmp_path, payload: dict):
     monkeypatch.setattr(doctor.usbsink.time, "time", lambda: 100.5)
     _mic_intent(monkeypatch)
     monkeypatch.setattr(
-        doctor.usbsink, "_audio_composition_wanted", lambda: (True, "ready")
+        doctor.usbsink, "_audio_wanted", lambda: (True, "ready")
     )
     monkeypatch.setattr(doctor.usbsink, "_systemd_is_active", lambda _unit: True)
 
