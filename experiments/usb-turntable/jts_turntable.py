@@ -28,8 +28,25 @@ POWER_FLAG_NAMES = (
     "throttled",
     "soft_temperature_limit",
 )
-MEASUREMENT_MIN_DEGREES = -45.0
-MEASUREMENT_MAX_DEGREES = 45.0
+# Hardware-protection cap on how far from saved zero the arm may be
+# commanded, in degrees. Past it the arm fouls the rig and wraps its own
+# cable, which is component damage, not a measurement error. This is the
+# ONE number for the whole tool: `position`'s argument bound and the
+# `left`/`right` endpoint gate both derive from it, so they can never
+# drift apart. It changes only by an owner-approved PR -- there is
+# deliberately NO runtime override: no flag, no environment variable, no
+# config key widens it.
+#
+# What it does not cover: the gate reasons about the CONTROLLER'S
+# BELIEVED offset from its saved zero. A power event can silently re-seat
+# that belief (README, "Detect and probe"), so this caps commanded
+# runaway, not a corrupted zero. Confirming the physical zero is still
+# the acoustic axis remains a human bench task.
+TRAVEL_ENVELOPE_DEGREES = 45.0
+MEASUREMENT_MIN_DEGREES = -TRAVEL_ENVELOPE_DEGREES
+MEASUREMENT_MAX_DEGREES = TRAVEL_ENVELOPE_DEGREES
+TRAVEL_ENVELOPE_EXCEEDED = "travel_envelope_exceeded"
+TRAVEL_OFFSET_UNREADABLE = "travel_offset_unreadable"
 AUTOSTOP_ATTEMPTS = 4
 AUTOSTOP_RETRY_SECONDS = 1.5
 AUTOSTOP_PRODUCT = "MT320RUBL40ProV3"
@@ -56,9 +73,10 @@ VENDOR_ROOT = EXPERIMENT_ROOT / "vendor"
 # first and re-derives its move from the controller's own state, so a
 # retried invocation cannot double-move. `detect` is excluded: discovery
 # never touches the serial link, so it can't raise this error at all.
-# `set-zero` (owner-only, destructive) and the unguarded `left`/`right`/
-# `stop`/`home` motion commands are deliberately excluded and stay
-# zero-retry.
+# `set-zero` (owner-only, destructive) and the `left`/`right`/`stop`/
+# `home` motion commands are deliberately excluded and stay zero-retry --
+# including the envelope gate's pre-move offset read, which rides inside
+# `left`/`right`'s single session (`_travel_refusal`).
 RETRYABLE_COMMANDS = frozenset({"offset", "probe", "position"})
 
 _T = TypeVar("_T")
@@ -211,9 +229,114 @@ def _measurement_position(value: str) -> float:
         raise argparse.ArgumentTypeError("position must be finite")
     if not MEASUREMENT_MIN_DEGREES <= degrees <= MEASUREMENT_MAX_DEGREES:
         raise argparse.ArgumentTypeError(
-            "position must be between -45 and +45 degrees"
+            f"position must be between {MEASUREMENT_MIN_DEGREES:g} "
+            f"and +{MEASUREMENT_MAX_DEGREES:g} degrees"
         )
     return degrees
+
+
+def travel_endpoint(command: str, degrees: float, current_offset: float) -> float:
+    """Offset from saved zero this relative move ends at.
+
+    Verified on hardware (jts3, 2026-08-28): vendor ``left`` INCREASES the
+    offset reading -- ``left 5`` moved -80.87 to -75.87 -- so ``right``
+    decreases it. Note this is the opposite sign to ``position``'s own
+    argument axis, where negative means left; the envelope is symmetric,
+    so both scales share one cap.
+    """
+
+    return current_offset + (degrees if command == "left" else -degrees)
+
+
+def travel_is_allowed(endpoint: float, current_offset: float) -> bool:
+    """Whether a move ending at ``endpoint`` may be commanded.
+
+    Inside the envelope, yes. Outside it, only when the move stays on the
+    SAME side of saved zero and strictly reduces the distance from it: a
+    platform already stranded beyond the cap (a corrupted zero, a move
+    made before this gate existed) must always be recoverable inward,
+    never driven further out.
+
+    The same-sign term is load-bearing, not a tidier way to say the
+    second: a move that crosses zero and lands outside the FAR side can
+    still reduce the absolute distance -- from -80.87, ``left 161.7``
+    ends at +80.83 -- which is a full swing through the envelope to a
+    position just as far out as it started. Distance alone admits it.
+    """
+
+    if abs(endpoint) <= TRAVEL_ENVELOPE_DEGREES:
+        return True
+    return endpoint * current_offset > 0 and abs(endpoint) < abs(current_offset)
+
+
+def _believed_offset(reading: Any) -> float | None:
+    """The controller's believed offset, or ``None`` when it isn't usable.
+
+    A non-finite reading must never reach :func:`travel_is_allowed`: every
+    comparison against NaN is false, so an unparseable offset would sail
+    through the cap instead of tripping it.
+    """
+
+    if not getattr(reading, "acknowledged", False):
+        return None
+    try:
+        degrees = float(getattr(reading, "degrees", None))
+    except (TypeError, ValueError):
+        return None
+    return degrees if math.isfinite(degrees) else None
+
+
+def _travel_refusal(controller: Any, args: argparse.Namespace) -> dict[str, Any] | None:
+    """Gate one ``left``/``right`` move, returning a refusal or ``None``.
+
+    The offset is read in the SAME session that will issue the motion, so
+    the belief the gate decides on is the one the controller holds
+    immediately before the move -- no teardown and re-synchronize between
+    them. The read is deliberately not retried: ``left``/``right`` are
+    zero-retry by contract, and a raced read refuses the move, which is
+    already the fail-closed outcome.
+    """
+
+    current = _believed_offset(controller.offset_angle())
+    if current is None:
+        return {
+            "reason": TRAVEL_OFFSET_UNREADABLE,
+            "error": (
+                f"{args.command} refused: the controller's offset from saved zero "
+                "could not be read, so the travel envelope cannot be checked"
+            ),
+            "travel_envelope_degrees": TRAVEL_ENVELOPE_DEGREES,
+        }
+
+    endpoint = travel_endpoint(args.command, args.degrees, current)
+    if travel_is_allowed(endpoint, current):
+        return None
+
+    stranded = abs(current) > TRAVEL_ENVELOPE_DEGREES
+    inward = ("left" if current < 0 else "right") if stranded else None
+    # The ceiling, not "whatever ends nearer zero": a big enough inward
+    # move swings through the envelope and back out the far side, which
+    # the gate refuses even though it does end nearer zero.
+    remedy = (
+        f"the platform is already outside it, so only a `{inward}` move of at "
+        f"most {abs(current) + TRAVEL_ENVELOPE_DEGREES:g} deg, or `home`, is allowed"
+        if inward is not None
+        else "command a smaller move or `home`"
+    )
+    return {
+        "reason": TRAVEL_ENVELOPE_EXCEEDED,
+        "error": (
+            f"{args.command} {args.degrees:g} would leave the platform "
+            f"{endpoint:+.2f} deg from saved zero, outside the "
+            f"+/-{TRAVEL_ENVELOPE_DEGREES:g} deg travel envelope (hardware "
+            f"protection: cable wrap and rig clearance; no override exists). "
+            f"Current offset is {current:+.2f} deg; {remedy}"
+        ),
+        "travel_envelope_degrees": TRAVEL_ENVELOPE_DEGREES,
+        "current_offset_degrees": current,
+        "predicted_offset_degrees": endpoint,
+        "inward_command": inward,
+    }
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -601,6 +724,15 @@ def run(
     else:
         with resolved_api.controller.open(port=args.port) as controller:
             if args.command in {"left", "right"}:
+                refusal = _travel_refusal(controller, args)
+                if refusal is not None:
+                    payload = {"ok": False, **refusal}
+                    if power_status is not None:
+                        payload["power"] = _power_payload(
+                            power_status, args.allow_power_risk
+                        )
+                    _emit(payload, compact=args.json)
+                    return 1
                 direction = "cw" if args.command == "left" else "ccw"
                 result = controller.turn_relative(direction, args.degrees)
                 ok = _operation_succeeded(result)

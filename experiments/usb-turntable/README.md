@@ -126,6 +126,41 @@ never invoke it as a workaround. Use `offset` (above) as a drift screen before
 a session, but see "Detect and probe" above for why it cannot confirm zero is
 still valid on its own.
 
+`left` and `right` are gated by the travel envelope. Before sending motion,
+each reads the controller's believed offset from saved zero, predicts the
+offset the move would end at, and refuses to leave the inclusive `-45` to
+`+45` degree envelope. This is a hardware-protection cap: past it the arm
+fouls the rig and wraps its own cable. Verified on hardware, vendor `left`
+increases the offset reading and `right` decreases it.
+
+**There is no override.** No flag, environment variable, or config widens the
+envelope; `--allow-power-risk` covers only the Pi's supply. The cap is one
+constant in [`jts_turntable.py`](jts_turntable.py)
+(`TRAVEL_ENVELOPE_DEGREES`) that both this gate and the guarded `position`
+bound derive from, and it changes only by an owner-approved change to that
+file.
+
+One exception makes a stranded platform recoverable: when the arm is already
+outside the envelope, a move is allowed if it stays on the same side of saved
+zero *and* strictly reduces its distance from it, so the arm can always be
+walked back in but never driven further out. Both halves are load-bearing —
+a move big enough to cross zero and land outside the far side still ends
+nearer zero, but it is a full swing through the envelope to a position just
+as far out, so it is refused. In practice the ceiling for the recovering
+direction is the current offset plus `45`. `home` ends at zero and is never
+gated. `stop` is never gated at all.
+A refusal exits `1` with `"reason": "travel_envelope_exceeded"` plus the cap,
+the current offset, the predicted endpoint, and the direction that still
+recovers. If the offset cannot be read or does not parse, the move is refused
+(`"reason": "travel_offset_unreadable"`) rather than sent — the same
+fail-closed posture as the power preflight, and the read is not retried
+because `left`/`right` stay zero-retry.
+
+The gate checks the controller's *believed* offset from its saved zero. After
+a power event that belief can silently re-seat (see "Detect and probe"), so
+the envelope caps commanded runaway, not a corrupted zero; confirming the
+physical zero remains a human bench task.
+
 `left`, `right`, and `home` first run the bounded `vcgencmd get_throttled`
 preflight. Active under-voltage, frequency capping, throttling, thermal limiting,
 or an unreadable power status blocks movement. Since-boot flags remain visible

@@ -660,6 +660,221 @@ def test_offset_reads_without_motion_or_power_preflight(turntable, capsys) -> No
     assert controller.calls == [("offset_angle",)]
 
 
+# --- The travel envelope: one cap, checked at the move's endpoint ----------
+#
+# `left`/`right` were uncapped relative moves: nothing stopped a typo from
+# driving the arm into the rig and wrapping its cable -- component damage,
+# not a bad measurement. Each now predicts the offset from saved zero it
+# would end at and refuses to leave the envelope, with one exception so a
+# stranded platform can always be walked back in. No override exists.
+
+
+def seed_offset(controller, degrees: str) -> None:
+    """Set the controller's believed offset from saved zero."""
+
+    controller.offset_result = SimpleNamespace(
+        acknowledged=True,
+        degrees=Decimal(degrees),
+        frames=(f"OA={degrees}\N{DEGREE SIGN}",),
+    )
+
+
+def test_the_travel_envelope_is_one_constant_the_whole_tool_derives_from(
+    turntable,
+) -> None:
+    """Changing this number is an owner ruling, not a runtime decision.
+
+    `position`'s argument bound and the `left`/`right` endpoint gate both
+    derive from it, so they can never disagree about how far the arm goes.
+    """
+    assert turntable.TRAVEL_ENVELOPE_DEGREES == 45.0
+    assert turntable.MEASUREMENT_MAX_DEGREES == turntable.TRAVEL_ENVELOPE_DEGREES
+    assert turntable.MEASUREMENT_MIN_DEGREES == -turntable.TRAVEL_ENVELOPE_DEGREES
+
+
+@pytest.mark.parametrize(
+    ("command", "degrees", "seed", "endpoint", "allowed"),
+    [
+        ("left", "10", "0.0", 10.0, True),
+        ("right", "10", "0.0", -10.0, True),
+        # Inclusive, matching `position`'s argument bound.
+        ("left", "45", "0.0", 45.0, True),
+        ("right", "45", "0.0", -45.0, True),
+        ("left", "45.1", "0.0", 45.1, False),
+        # A legal-looking nudge that lands past the cap only because of
+        # where the platform already is -- why the gate checks the
+        # ENDPOINT and not the requested magnitude.
+        ("left", "10", "40.0", 50.0, False),
+        ("right", "10", "-40.0", -50.0, False),
+        # Today's literal rig state: jts3 is parked at -80.87, outside the
+        # envelope. Verified on hardware -- vendor `left` INCREASES the
+        # offset reading (`left 5` moved -80.87 to -75.87) -- so from a
+        # negative offset `left` recovers inward and `right` drives out.
+        ("left", "5", "-80.87", -75.87, True),
+        ("right", "5", "-80.87", -85.87, False),
+        # The same recovery, mirrored past the other end.
+        ("right", "5", "80.87", 75.87, True),
+        ("left", "5", "80.87", 85.87, False),
+        # Inward but not all the way back inside: still allowed. Recovery
+        # is a direction, not a single jump.
+        ("left", "1", "-80.87", -79.87, True),
+        # Inward far enough to cross zero and land outside the FAR side.
+        # It DOES end nearer saved zero (49.13 < 80.87), so a rule written
+        # on distance alone admits it -- a full swing through the envelope
+        # and back out. Recovery must also stay on its own side of zero.
+        ("left", "130", "-80.87", 49.13, False),
+        ("right", "130", "80.87", -49.13, False),
+    ],
+)
+def test_relative_moves_are_gated_at_their_predicted_endpoint(
+    turntable,
+    capsys,
+    command: str,
+    degrees: str,
+    seed: str,
+    endpoint: float,
+    allowed: bool,
+) -> None:
+    api, factory, controller = fake_api(turntable)
+    seed_offset(controller, seed)
+
+    exit_code = turntable.main(
+        ["--json", command, degrees], api=api, run_command=healthy_power
+    )
+    output = parse_output(capsys)
+    moved = [call for call in controller.calls if call[0] == "turn_relative"]
+
+    assert exit_code == (0 if allowed else 1)
+    assert output["ok"] is allowed
+    # One session either way: the gate reads the offset in the very session
+    # that would issue the motion, so the belief it decides on is the one
+    # the controller holds immediately before the move -- and no retry.
+    assert factory.open_calls == [{"port": None}]
+    assert controller.calls[0] == ("offset_angle",)
+    if allowed:
+        assert len(moved) == 1
+        assert "reason" not in output
+    else:
+        assert moved == []
+        assert output["reason"] == turntable.TRAVEL_ENVELOPE_EXCEEDED
+        assert output["predicted_offset_degrees"] == pytest.approx(endpoint)
+        assert output["current_offset_degrees"] == pytest.approx(float(seed))
+        assert output["travel_envelope_degrees"] == turntable.TRAVEL_ENVELOPE_DEGREES
+
+
+@pytest.mark.parametrize(
+    ("seed", "inward"),
+    [("-80.87", "left"), ("80.87", "right"), ("0.0", None)],
+)
+def test_a_refusal_names_the_one_direction_that_is_still_legal(
+    turntable, capsys, seed: str, inward: str | None
+) -> None:
+    """Stranded outside the envelope, exactly one direction recovers.
+    Inside it none is privileged -- a smaller move or `home` -- so the
+    field is null rather than naming a guess.
+    """
+    api, _factory, controller = fake_api(turntable)
+    seed_offset(controller, seed)
+
+    assert (
+        turntable.main(["--json", "left", "200"], api=api, run_command=healthy_power)
+        == 1
+    )
+    assert parse_output(capsys)["inward_command"] == inward
+
+
+def test_the_envelope_has_no_override(turntable, capsys) -> None:
+    """The tool's only motion override covers the Pi's supply, never the
+    hardware-protection cap. No other flag, environment variable, or
+    config widens it either -- by design.
+    """
+    api, _factory, controller = fake_api(turntable)
+    seed_offset(controller, "-80.87")
+
+    assert (
+        turntable.main(
+            ["--json", "--allow-power-risk", "right", "5"],
+            api=api,
+            run_command=healthy_power,
+        )
+        == 1
+    )
+    output = parse_output(capsys)
+    assert output["reason"] == turntable.TRAVEL_ENVELOPE_EXCEEDED
+    assert output["power"]["override"] is True
+    assert ("turn_relative", "ccw", 5.0) not in controller.calls
+
+
+@pytest.mark.parametrize(
+    "reading",
+    [
+        SimpleNamespace(acknowledged=False, degrees=Decimal("0.0"), frames=()),
+        SimpleNamespace(acknowledged=True, degrees=None, frames=()),
+        SimpleNamespace(acknowledged=True, degrees="not a number", frames=()),
+        # NaN is the dangerous one: every comparison against it is false,
+        # so an unguarded gate would wave it straight past the cap.
+        SimpleNamespace(acknowledged=True, degrees=float("nan"), frames=()),
+        SimpleNamespace(acknowledged=True, degrees=float("inf"), frames=()),
+    ],
+)
+def test_an_unusable_offset_reading_refuses_the_move(
+    turntable, capsys, reading
+) -> None:
+    api, _factory, controller = fake_api(turntable)
+    controller.offset_result = reading
+
+    assert (
+        turntable.main(["--json", "left", "5"], api=api, run_command=healthy_power) == 1
+    )
+    output = parse_output(capsys)
+    assert output["reason"] == turntable.TRAVEL_OFFSET_UNREADABLE
+    assert controller.calls == [("offset_angle",)]
+
+
+def test_a_failed_offset_query_sends_no_motion(turntable, capsys) -> None:
+    """Same posture as the power preflight: if the envelope cannot be
+    checked, nothing moves. The read is not retried -- `left`/`right` are
+    zero-retry by contract.
+    """
+    api, factory, controller = fake_api(turntable)
+    controller.offset_angle = record_and_queue(
+        controller,
+        "offset_angle",
+        FakeProtocolError("heartbeat byte appeared inside a protocol frame"),
+    )
+
+    assert (
+        turntable.main(["--json", "left", "5"], api=api, run_command=healthy_power) == 1
+    )
+    output = parse_output(capsys)
+    assert output["ok"] is False
+    assert "retried" not in output
+    assert controller.calls == [("offset_angle",)]
+    assert factory.open_calls == [{"port": None}]
+
+
+@pytest.mark.parametrize(
+    ("argv", "expected_calls"),
+    [
+        # `home` ends at zero, inside every envelope.
+        (["home"], [("return_to_zero",)]),
+        # `stop` is what an operator reaches for when something is already
+        # wrong -- it must never need a readable offset to work.
+        (["stop"], [("stop",)]),
+    ],
+)
+def test_home_and_stop_are_never_gated_even_from_outside_the_envelope(
+    turntable, capsys, argv: list[str], expected_calls
+) -> None:
+    api, _factory, controller = fake_api(turntable)
+    seed_offset(controller, "-80.87")
+
+    assert turntable.main(["--json", *argv], api=api, run_command=healthy_power) == 0
+    assert parse_output(capsys)["ok"] is True
+    # No offset read at all -- these commands do not consult the envelope.
+    assert controller.calls == expected_calls
+
+
 # --- Issue #2516: one bounded retry on the vendored ProtocolError -----------
 #
 # Fix round (adversarial gate on PR #2524): the vendored parser's own
@@ -933,7 +1148,10 @@ def test_retry_does_not_fire_for_unguarded_motion_commands(
     output = parse_output(capsys)
     assert output["ok"] is False
     assert "retried" not in output
-    assert len(controller.calls) == 1
+    # The failing call happened exactly once -- counted by name rather than
+    # by total length because `left` legitimately reads the offset first to
+    # gate its endpoint against the travel envelope.
+    assert [call[0] for call in controller.calls].count(expected_call) == 1
     assert factory.open_calls == [{"port": None}]
 
 
@@ -1126,7 +1344,8 @@ def test_should_fix_3_vendor_style_cause_chaining_never_implies_a_retry(
     assert "retried" not in output
     assert "after one retry" not in output["error"]
     assert output["error_type"] == "RuntimeError"
-    assert len(controller.calls) == 1
+    # One envelope-gate read, one motion attempt, no second of either.
+    assert controller.calls == [("offset_angle",), ("turn_relative", "cw", 10.0)]
     assert factory.open_calls == [{"port": None}]
 
 
@@ -1447,6 +1666,10 @@ def test_docs_keep_manual_safety_and_provenance_boundaries() -> None:
     assert "never sends a motion command" in readme
     assert "`--confirm-redefine-zero` is required" in readme
     assert "never whether that belief is still the acoustic axis" in readme
+    assert "There is no override" in readme
+    assert "travel_envelope_exceeded" in readme
+    assert "stays on the same side of saved zero" in readme
+    assert "caps commanded runaway, not a corrupted zero" in readme
     assert "python3 -m usb_turntable set-zero" in readme
     assert "development-time provenance" in vendor_readme
     assert "does not authenticate files at runtime" in vendor_readme
