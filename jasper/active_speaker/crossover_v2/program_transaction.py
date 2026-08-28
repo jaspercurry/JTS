@@ -2,7 +2,7 @@
 #
 # SPDX-License-Identifier: Apache-2.0
 
-"""The play seam filled: one stimulus, played, with the stage OBSERVED.
+"""The play seam filled: one stimulus, played and RECORDED, the stage OBSERVED.
 
 :class:`~.playback_transaction.PlaybackTransaction` is the fifth and last seam
 implementation. It wraps
@@ -43,30 +43,43 @@ a return value or an exception type, never a default.
              whole of what it has to put back.
 ===========  ====================================================================
 
-**DISCLOSED GAP — the ladder has no rung below ``ready``, and TWO arms need
+**DISCLOSED GAP — the ladder has no rung below ``ready``, and three arms need
 one.** :data:`~.playback_transaction.PLAYBACK_STAGES` starts at ``ready``, so a
-failure that lands before ``ready`` completed has no stage that says so. Both
-such arms report ``ready``, and both overstate what happened:
+failure that lands before ``ready`` completed has no stage that says so. Every
+such arm reports ``ready``, and every one of them overstates what happened
+(the count is :data:`BELOW_READY_INCIDENTS`, which a pin walks — this sentence
+is a summary of that set and never its authority):
 
 * :data:`STIMULUS_LEVEL_NOT_READY` — the measurement volume was not open,
   confirmed and fresh, so ``assert_ready()`` refused and ``ready`` never
   completed.
 * :data:`STIMULUS_NOT_COMPOSED` — the host could not assemble a program, so
   ``play_program`` was never called and ``ready`` was never even attempted.
+* :data:`STIMULUS_NOT_CAPTURED`, **when the recorder never rolled** — the
+  capture half is armed BEFORE the stimulus, so a microphone that will not
+  start means ``play_program`` was never called either. The same code at
+  ``restore`` means the opposite half of the story: the stimulus played and the
+  evidence was lost after it, which is why this one incident spans two stages
+  and the stage is what tells them apart.
 
-The incident is the load-bearing field in both, and ``played`` is ``False``
-either way, so nothing banks on either overstatement. Named here as a pair
-rather than left for a reader to find the second one: an honesty map that
-undercounts its own gaps is the defect this adapter exists to refuse.
+The incident is the load-bearing field in all three, and ``played`` is ``False``
+either way, so nothing banks on any overstatement. Named here as a set rather
+than left for a reader to find the last one: an honesty map that undercounts
+its own gaps is the defect this adapter exists to refuse.
 
-**This adapter mints no ``wav_path``, and that is not an omission.** Playing
-and capturing are two seams: what the microphone heard arrives through
-:class:`~.capture_source.CaptureAnswer`, and ``play_program``'s own result
-carries the path of the STIMULUS it emitted, never a capture. Filling
-``PlaybackOutcome.wav_path`` from it would point offline analysis at the sweep
-the speaker played instead of the sound the room made. It stays ``""`` and the
-analyze walker's ``no_capture_bytes`` skip stands as an honest report of the
-gap.
+**The ``wav_path`` comes from a CAPTURE half, never from ``play_program``.**
+That call's own result carries the path of the STIMULUS it emitted, and
+reporting it as the capture would point offline analysis at the sweep the
+speaker played instead of at the sound the room made. So the evidence is minted
+by an injected :class:`StimulusCapture`, which records ACROSS the play — the
+recorder rolls before the first sample and stops after the last — and hands
+back the bundle-relative path of what it heard. One stimulus, one transaction,
+one answer.
+
+**A host may bind none** — the Pi is not always the box holding the microphone
+— and such a transaction still plays, still reports ``restore``, and says
+:data:`STIMULUS_CAPTURE_NOT_BOUND` rather than returning a bare ``""``. An empty
+path beside an empty incident is the silence this adapter exists to refuse.
 
 **Composition is the host's.** What to play for one stimulus — the program and
 the seams bound around it — is assembled by the injected ``compose`` callable,
@@ -79,7 +92,7 @@ from __future__ import annotations
 
 import inspect
 from dataclasses import dataclass
-from typing import TYPE_CHECKING, Any, Callable, Mapping
+from typing import TYPE_CHECKING, Any, Awaitable, Callable, Mapping, Protocol
 
 from jasper.audio_measurement.playback import PlaybackError
 
@@ -102,15 +115,19 @@ if TYPE_CHECKING:  # pragma: no cover - typing only
 __all__ = [
     "BELOW_READY_INCIDENTS",
     "STIMULUS_ADMISSION_REFUSED",
+    "STIMULUS_CAPTURE_NOT_BOUND",
     "STIMULUS_LEVEL_NOT_READY",
+    "STIMULUS_NOT_CAPTURED",
     "STIMULUS_NOT_COMPOSED",
     "STIMULUS_PLAY_FAILED",
     "ProgramForStimulus",
     "ProgramPlaybackTransaction",
+    "StimulusCapture",
+    "StimulusCaptureError",
 ]
 
 #: The measurement volume was not open/confirmed/fresh, so nothing was played.
-#: One of the two below-``ready`` incidents the disclosed gap above pairs:
+#: One of the below-``ready`` incidents :data:`BELOW_READY_INCIDENTS` enumerates:
 #: ``ready`` is reported because the ladder has no lower rung, and this says
 #: what really happened.
 STIMULUS_LEVEL_NOT_READY = "session_level_not_ready"
@@ -122,6 +139,19 @@ STIMULUS_PLAY_FAILED = "program_play_failed"
 #: ``play_program`` was never called. The disclosed gap's OTHER below-``ready``
 #: incident — ``ready`` is reported for the same missing-rung reason.
 STIMULUS_NOT_COMPOSED = "program_not_composed"
+#: A bound capture half produced no evidence for this stimulus. Two stages
+#: carry it and they are two different facts: at ``ready`` the recorder never
+#: rolled, so nothing played; at ``restore`` the stimulus played and the
+#: recording could not be finished or placed. The record is banked in the
+#: second case with an empty ``wav_path`` — the room DID hear the sweep, and a
+#: capture that was lost afterwards is still a fact about this session.
+STIMULUS_NOT_CAPTURED = "stimulus_not_captured"
+#: This host bound no capture half, so the stimulus played and nothing on this
+#: box recorded it (a phone-relay session answers through
+#: :class:`~.capture_source.CaptureAnswer` instead). NOT a failure, and the
+#: reason it exists at all: an empty ``wav_path`` beside an empty ``incident``
+#: is the silence that made ``analyze``'s skip unattributable.
+STIMULUS_CAPTURE_NOT_BOUND = "capture_not_bound"
 
 #: The disclosed gap, as DATA rather than as four paragraphs: the incidents
 #: reported at ``ready`` where ``ready`` did not actually complete. Every other
@@ -130,9 +160,10 @@ STIMULUS_NOT_COMPOSED = "program_not_composed"
 #:
 #: A set rather than prose because the prose already lost count once: the gap
 #: paragraph called one of these *"the one place"* while the other was
-#: overstating too. A third arm now has to join this set to pass its pin.
+#: overstating too. A fourth arm now has to join this set to pass its pin.
 BELOW_READY_INCIDENTS = frozenset({
     STIMULUS_LEVEL_NOT_READY,
+    STIMULUS_NOT_CAPTURED,
     STIMULUS_NOT_COMPOSED,
 })
 
@@ -157,6 +188,51 @@ class ProgramForStimulus:
 Compose = Callable[..., "ProgramForStimulus | Any"]
 
 
+class StimulusCaptureError(RuntimeError):
+    """A bound capture half could not mint evidence for one stimulus.
+
+    The capture half's ONE error type, and it is narrow on purpose: this
+    adapter's ``except`` arms classify a play failure by the types
+    ``play_program`` raises, and an ``OSError`` escaping a recorder or a WAV
+    write would land in the ``play`` arm and report a play that in fact
+    succeeded. A capture half therefore wraps its own faults in this before
+    they cross the seam, and re-raises whatever the play raised untouched.
+    """
+
+
+class StimulusCapture(Protocol):
+    """Record what the room does while one stimulus plays.
+
+    **Host-supplied, for the same reason** :data:`Compose` **is**: what records
+    on this box — an ALSA device, a bundle to write into, a mic identity — is
+    not engine vocabulary. What the engine owns is the arity and the two rules
+    below.
+    """
+
+    async def around(
+        self, play: "Callable[[], Awaitable[None]]", *, program: Any,
+    ) -> str:
+        """Roll, run ``play()``, stop, and return the capture's path.
+
+        **The recorder is armed BEFORE ``play()`` and stopped after it.** That
+        ordering is the pre-roll guarantee and it is why this is one act rather
+        than two seams: a recording that started after the first sample has
+        already lost the part of the answer the analysis needs most.
+
+        ``program`` is what will be played, handed over so the half can size
+        its own budget from the schedule itself (``total_samples`` over
+        ``sample_rate_hz``) rather than from a duration somebody declared
+        beside it.
+
+        Returns the **bundle-relative** path of what was heard. Raises
+        :class:`StimulusCaptureError` when it cannot mint one, and lets
+        ``play()``'s own exception through unchanged — the adapter classifies
+        that one, and a capture half that re-wrapped it would report a lost
+        recording where a refused admission happened.
+        """
+        raise NotImplementedError
+
+
 class ProgramPlaybackTransaction:
     """``PlaybackTransaction`` over ``play_program``, one stimulus per call.
 
@@ -164,11 +240,24 @@ class ProgramPlaybackTransaction:
     NOT this transaction's to open or close — the session's volume claim owns
     the level, and MS-14's proof is taken through that claim before ``run`` is
     called. One prover, one door.
+
+    ``capture`` is the host's recording half, or ``None`` on a host that does
+    not record what it plays. Optional rather than required because the two
+    shipped capture sources differ exactly here: the Pi's wired microphone
+    records across the stimulus and binds one, and a phone-relay session
+    answers through its own conversation and binds none.
     """
 
-    def __init__(self, *, compose: Compose, session_volume_plan: Any) -> None:
+    def __init__(
+        self,
+        *,
+        compose: Compose,
+        session_volume_plan: Any,
+        capture: StimulusCapture | None = None,
+    ) -> None:
         self._compose = compose
         self._session_volume_plan = session_volume_plan
+        self._capture = capture
 
     async def run(
         self,
@@ -179,7 +268,7 @@ class ProgramPlaybackTransaction:
         level_db: float,
         stimulus_dbfs: float | None,
     ) -> PlaybackOutcome:
-        """Play one stimulus and report the last stage that COMPLETED.
+        """Play one stimulus, record it, and report the last stage COMPLETED.
 
         Never raises for a measurement problem — a transaction that raised
         would strand the session and lose the walk. Every failure below is a
@@ -198,18 +287,31 @@ class ProgramPlaybackTransaction:
             # rendered stimulus could not be written, or the parameters do not
             # describe a program. Anything else is a mis-bound host, which the
             # seam keeps raising for.
-            # One of the disclosed gap's two below-`ready` arms: `play_program`
+            # One of the disclosed gap's below-`ready` arms: `play_program`
             # was never called, so `ready` was never even attempted.
             return PlaybackOutcome(
                 stage_reached=STAGE_READY, incident=STIMULUS_NOT_COMPOSED,
             )
 
-        try:
+        played = False
+
+        async def _play() -> None:
+            nonlocal played
             await play_program(
                 prepared.program,
                 session_volume_plan=self._session_volume_plan,
                 **dict(prepared.seams),
             )
+            played = True
+
+        wav_path = ""
+        try:
+            if self._capture is None:
+                await _play()
+            else:
+                wav_path = await self._capture.around(
+                    _play, program=prepared.program,
+                )
         except SessionVolumePlanError:
             # The disclosed gap's other below-`ready` arm: `assert_ready()`
             # refused, so `ready` never completed and the ladder has no rung
@@ -222,6 +324,18 @@ class ProgramPlaybackTransaction:
             return PlaybackOutcome(
                 stage_reached=STAGE_READY, incident=STIMULUS_ADMISSION_REFUSED,
             )
+        except StimulusCaptureError:
+            # `played` is the whole discriminator, and it is OBSERVED rather
+            # than inferred from where the exception came from: the capture
+            # half arms before the stimulus and stops after it, so its faults
+            # sit on both sides of a play that may or may not have happened.
+            if not played:
+                return PlaybackOutcome(
+                    stage_reached=STAGE_READY, incident=STIMULUS_NOT_CAPTURED,
+                )
+            return PlaybackOutcome(
+                stage_reached=STAGE_RESTORE, incident=STIMULUS_NOT_CAPTURED,
+            )
         except (ProgramPlaybackError, PlaybackError, OSError):
             # Past admission and inside the writer lock, so `lock` completed
             # and `play` did not. Named types rather than a bare
@@ -231,7 +345,20 @@ class ProgramPlaybackTransaction:
                 stage_reached=STAGE_LOCK, incident=STIMULUS_PLAY_FAILED,
             )
 
-        return PlaybackOutcome(stage_reached=STAGE_RESTORE)
+        if wav_path:
+            return PlaybackOutcome(
+                stage_reached=STAGE_RESTORE, wav_path=wav_path,
+            )
+        # Played, restored, and no bytes to point a reader at. Which of the two
+        # reasons it is turns on whether anything was ever going to record —
+        # never on a bare `""`, which is the silence the module refuses.
+        return PlaybackOutcome(
+            stage_reached=STAGE_RESTORE,
+            incident=(
+                STIMULUS_CAPTURE_NOT_BOUND if self._capture is None
+                else STIMULUS_NOT_CAPTURED
+            ),
+        )
 
 
 async def _resolve(value: Any) -> ProgramForStimulus:

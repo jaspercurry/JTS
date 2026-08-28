@@ -72,17 +72,22 @@ named household-facing reason for a mid-session mic loss (today that is
 
 from __future__ import annotations
 
+import asyncio
 import logging
 import os
 import secrets
 import threading
 import time
 from dataclasses import dataclass
+from pathlib import Path
 from typing import TYPE_CHECKING, Any, Awaitable, Callable, Mapping
 
 from jasper.active_speaker.crossover_v2.capture_source import (
     SOURCE_RELAY,
     SOURCE_WIRED,
+)
+from jasper.active_speaker.crossover_v2.program_transaction import (
+    StimulusCaptureError,
 )
 from jasper.audio_measurement.wired_capture import (
     WiredCaptureError,
@@ -330,6 +335,137 @@ def _json_safe_dbfs(values: tuple[float, ...]) -> list[float | None]:
     ]
 
 
+def make_wired_recorder(
+    device: WiredMicDevice, *, sample_rate_hz: int, max_capture_s: float,
+) -> WiredRecorder:
+    """One recorder for this microphone, at the rate the program declares.
+
+    The channel count is the mic model's own (``SUPPORTED_MODELS``), which is
+    the one fact about a capture card that is neither on the device record nor
+    derivable from the PCM name. Two callers now — the plan walk and the play
+    seam's capture half — so it is named once rather than opened twice.
+    """
+    from jasper.audio_measurement.mic_identity import SUPPORTED_MODELS
+
+    channels = int(
+        SUPPORTED_MODELS.get(device.model_key, {}).get("capture_channels", 2)
+    )
+    return WiredRecorder(
+        device.pcm,
+        sample_rate_hz=sample_rate_hz,
+        channels=channels,
+        max_capture_s=max_capture_s,
+    )
+
+
+@dataclass(frozen=True)
+class WiredStimulusCapture:
+    """The engine play seam's capture half, for the Pi-attached microphone.
+
+    :class:`~jasper.active_speaker.crossover_v2.program_transaction.StimulusCapture`
+    for the one source that plays and records on the same box. It is bound
+    beside the play transaction rather than living in the engine because
+    everything it needs — an ALSA capture device, a bundle to write into — is
+    host vocabulary; what the engine owns is the arity and the two rules the
+    protocol states.
+
+    **Not the whole capture answer, and the gap is named.** The
+    :class:`~jasper.active_speaker.crossover_v2.capture_source.CaptureAnswer`
+    the plan walk mints carries three more facts — the device, the calibration
+    reference and the integrity counters — and
+    :class:`~jasper.active_speaker.crossover_v2.playback_transaction.PlaybackOutcome`
+    carries only the path. So a record banked through ``measure`` names WHERE
+    the capture is and not yet what recorded it; the walk that still runs
+    through ``consume_capture`` keeps reconciling frames and resolving
+    calibration for the takes it consumes.
+    """
+
+    device: WiredMicDevice
+    bundle_dir: Path
+    #: Test seam, and the same one the plan walk takes: ``(rate, budget_s)``
+    #: to a recorder. Unbound, the real ALSA device is opened.
+    recorder_factory: Callable[[int, float], Any] | None = None
+
+    async def around(
+        self, play: Callable[[], Awaitable[None]], *, program: Any,
+    ) -> str:
+        """Roll across ``play()``, place the bytes, return the relpath."""
+        recorder = self._recorder_for(program)
+        try:
+            await asyncio.to_thread(recorder.start)
+        except (WiredCaptureError, OSError, ValueError) as exc:
+            # Before any excitation, so nothing played: the adapter reads that
+            # off its own `played` flag and reports the below-`ready` rung.
+            raise StimulusCaptureError(
+                f"the measurement recorder never rolled: {exc}"
+            ) from exc
+        played = False
+        try:
+            await play()
+            played = True
+        finally:
+            # Flag-in-finally, the plan walk's own shape: nothing is caught
+            # here, and a play that raised must still release the live ALSA
+            # device before its exception goes on to the adapter unchanged.
+            if not played:
+                recorder.abort()
+        try:
+            recording = await asyncio.to_thread(
+                recorder.finish, tail_s=WIRED_POST_ROLL_S
+            )
+            return await asyncio.to_thread(
+                self._place, recording, str(program.phase),
+            )
+        except (WiredCaptureError, OSError, ValueError) as exc:
+            # The stimulus DID play and the evidence was lost after it. Wrapped
+            # rather than let through: a bare `OSError` from a full disk would
+            # land in the adapter's play arm and report a play that succeeded.
+            raise StimulusCaptureError(
+                f"the capture could not be placed: {exc}"
+            ) from exc
+
+    def _recorder_for(self, program: Any) -> Any:
+        """This stimulus's recorder, budgeted from the schedule itself.
+
+        The program's own length is exact where a declared duration beside it
+        is a claim, and it is the same arithmetic the plan walk's budget does
+        around the two named allowances.
+        """
+        rate = int(program.sample_rate_hz)
+        budget_s = (
+            float(program.total_samples) / float(rate)
+            + WIRED_PRE_PLAY_ALLOWANCE_S
+            + WIRED_POST_ROLL_S
+        )
+        if self.recorder_factory is not None:
+            return self.recorder_factory(rate, budget_s)
+        return make_wired_recorder(
+            self.device, sample_rate_hz=rate, max_capture_s=budget_s
+        )
+
+    def _place(self, recording: Any, phase: str) -> str:
+        """The blocking half: pick the channel, encode, write, name the path.
+
+        The path is minted BEFORE the write and returned, which is the whole
+        reason the transaction is the only party that can say it —
+        ``capture_artifact_relpath`` appends a ``uuid4`` hex, so no reader can
+        re-derive it from the take id the session mints afterwards. The
+        program's phase is the group, so a capture lands beside the flow's
+        other summed captures under a name that says what it was measuring.
+        """
+        from jasper.active_speaker.bundles import capture_artifact_relpath
+
+        _channel, mono, _rms_dbfs = select_capture_channel(recording)
+        wav, _encoded_frames = encode_wav_s32(
+            mono, sample_rate_hz=recording.sample_rate_hz
+        )
+        relpath = capture_artifact_relpath("summed", phase, None)
+        path = self.bundle_dir / relpath
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_bytes(wav)
+        return relpath
+
+
 def build_v2_wired_run_and_consume(
     conductor: Any,
     *,
@@ -451,17 +587,9 @@ def build_v2_wired_run_and_consume(
         def _make_recorder(max_capture_s: float) -> Any:
             if recorder_factory is not None:
                 return recorder_factory(max_capture_s)
-            from jasper.audio_measurement.mic_identity import SUPPORTED_MODELS
-
-            channels = int(
-                SUPPORTED_MODELS.get(device.model_key, {}).get(
-                    "capture_channels", 2
-                )
-            )
-            return WiredRecorder(
-                device.pcm,
+            return make_wired_recorder(
+                device,
                 sample_rate_hz=sample_rate_hz,
-                channels=channels,
                 max_capture_s=max_capture_s,
             )
 
@@ -842,8 +970,6 @@ def build_v2_wired_run_and_consume(
             raise CaptureFailed(
                 "the fixed measurement volume could not be confirmed"
             )
-
-        import asyncio
 
         walk_task = asyncio.create_task(asyncio.to_thread(_walk))
         try:

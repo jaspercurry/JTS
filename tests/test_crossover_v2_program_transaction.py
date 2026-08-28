@@ -10,9 +10,11 @@ stage" but "the stage it returns is the one that actually completed". Each pin
 below drives the real adapter over a real ``play_program`` with one step of the
 fail-closed order made to fail, and asserts the rung that step sits on.
 
-The one pin that is NOT about a stage is the last: no ``wav_path`` is minted
-from ``play_program``'s result, because that result names the STIMULUS the
-speaker emitted and not the sound the room made.
+The pins that are NOT about a stage are about the evidence: the ``wav_path``
+comes from the CAPTURE half that recorded across the stimulus, never from
+``play_program``'s own result (which names the sweep the speaker emitted), and
+a stimulus that played without leaving evidence says WHY rather than handing
+back a bare ``""``.
 """
 
 from __future__ import annotations
@@ -32,11 +34,14 @@ from jasper.active_speaker.crossover_v2.playback_transaction import (
 )
 from jasper.active_speaker.crossover_v2.program_transaction import (
     STIMULUS_ADMISSION_REFUSED,
+    STIMULUS_CAPTURE_NOT_BOUND,
     STIMULUS_LEVEL_NOT_READY,
+    STIMULUS_NOT_CAPTURED,
     STIMULUS_NOT_COMPOSED,
     STIMULUS_PLAY_FAILED,
     ProgramForStimulus,
     ProgramPlaybackTransaction,
+    StimulusCaptureError,
 )
 from jasper.active_speaker.session_volume_plan import SessionVolumePlanError
 from jasper.audio_measurement.playback import PlaybackError, PlaybackFailureCode
@@ -114,6 +119,45 @@ class _Seams:
 class _Program:
     program_id = "prog-1"
     phase = "measure"
+    sample_rate_hz = 48_000
+    total_samples = 48_000
+
+
+CAPTURE_RELPATH = "summed/summed_measure_deadbeef.wav"
+
+
+class _Capture:
+    """The host's recording half: rolls across the play, or fails on cue.
+
+    Records the ORDER it saw, because the ordering IS the contract — a
+    recorder armed after the first sample has already lost the answer.
+    """
+
+    def __init__(
+        self,
+        *,
+        start_raises: bool = False,
+        place_raises: bool = False,
+        relpath: str = CAPTURE_RELPATH,
+    ) -> None:
+        self.start_raises = start_raises
+        self.place_raises = place_raises
+        self.relpath = relpath
+        self.log: list[str] = []
+        self.programs: list[Any] = []
+
+    async def around(
+        self, play: Any, *, program: Any,
+    ) -> str:
+        self.programs.append(program)
+        if self.start_raises:
+            raise StimulusCaptureError("the recorder never rolled")
+        self.log.append("rolled")
+        await play()
+        self.log.append("stopped")
+        if self.place_raises:
+            raise StimulusCaptureError("the capture could not be placed")
+        return self.relpath
 
 
 def _transaction(
@@ -121,6 +165,7 @@ def _transaction(
     seams: _Seams | None = None,
     *,
     compose_raises: bool = False,
+    capture: _Capture | None = None,
 ) -> ProgramPlaybackTransaction:
     bound = seams or _Seams()
 
@@ -130,7 +175,7 @@ def _transaction(
         return ProgramForStimulus(program=_Program(), seams=bound.as_kwargs())
 
     return ProgramPlaybackTransaction(
-        compose=_compose, session_volume_plan=plan or _Plan(),
+        compose=_compose, session_volume_plan=plan or _Plan(), capture=capture,
     )
 
 
@@ -147,7 +192,7 @@ async def _run(transaction: ProgramPlaybackTransaction) -> Any:
 async def test_a_clean_stimulus_reports_restore_and_counts_as_played():
     seams = _Seams()
 
-    outcome = await _run(_transaction(seams=seams))
+    outcome = await _run(_transaction(seams=seams, capture=_Capture()))
 
     assert outcome.stage_reached == STAGE_RESTORE
     assert outcome.played is True
@@ -220,17 +265,143 @@ async def test_a_host_that_cannot_compose_a_program_is_an_incident_not_a_raise()
     assert outcome.incident == STIMULUS_NOT_COMPOSED
 
 
-async def test_no_wav_path_is_minted_from_the_stimulus_the_speaker_emitted():
-    """Playing and capturing are two seams.
+async def test_the_wav_path_is_the_capture_halfs_and_never_the_stimulus():
+    """``play_program``'s result names the sweep that was EMITTED.
 
-    ``play_program``'s result names the sweep that was emitted. Reporting it as
-    the capture would point offline analysis at the stimulus instead of at the
-    sound the room made, and every downstream verdict would be about the wrong
-    signal.
+    Reporting it as the capture would point offline analysis at the stimulus
+    instead of at the sound the room made, and every downstream verdict would
+    be about the wrong signal. So the path can only come from the half that
+    recorded — and it comes back whole, because the bundle-relative name
+    carries a ``uuid4`` no reader can re-derive.
+    """
+    capture = _Capture()
+
+    outcome = await _run(_transaction(capture=capture))
+
+    assert outcome.wav_path == CAPTURE_RELPATH
+    assert outcome.incident == ""
+    assert [p.program_id for p in capture.programs] == ["prog-1"], (
+        "the capture half sizes its own budget from the program that plays"
+    )
+
+
+async def test_the_recorder_rolls_before_the_stimulus_and_stops_after_it():
+    """The pre-roll guarantee, and the reason this is ONE transaction.
+
+    A recording that started after the first sample has already lost the part
+    of the answer the analysis needs most, so the ordering is asserted rather
+    than assumed: rolled, played, stopped.
+    """
+    order: list[str] = []
+    seams = _Seams()
+    inner_play_wav = seams._play_wav
+
+    async def _logged_play_wav() -> Any:
+        order.append("played")
+        return await inner_play_wav()
+
+    seams._play_wav = _logged_play_wav  # type: ignore[method-assign]
+
+    class _Ordered(_Capture):
+        async def around(self, play: Any, *, program: Any) -> str:
+            order.append("rolled")
+            await play()
+            order.append("stopped")
+            return self.relpath
+
+    await _run(_transaction(seams=seams, capture=_Ordered()))
+
+    assert order == ["rolled", "played", "stopped"]
+    assert seams.played == 1
+
+
+async def test_a_played_stimulus_with_no_evidence_never_returns_a_silent_path():
+    """The defect this whole seam exists to remove.
+
+    An empty ``wav_path`` beside an empty ``incident`` tells a reader nothing:
+    ``analyze`` can only answer it with a generic "no bytes", and the two real
+    causes — nothing was ever going to record here, versus a recording that was
+    lost — send an operator to two different places. So EVERY played-and-
+    restored outcome either carries a path or names which one it was.
+
+    Mutation: collapse the adapter's tail to a bare
+    ``PlaybackOutcome(stage_reached=STAGE_RESTORE)`` and this pin alone reds.
     """
     outcome = await _run(_transaction())
 
+    assert outcome.played is True
     assert outcome.wav_path == ""
+    assert outcome.incident == STIMULUS_CAPTURE_NOT_BOUND
+
+
+async def test_a_bound_half_that_hands_back_no_path_is_not_the_unbound_case():
+    """Two causes, two codes, and a broken half is not an absent one.
+
+    A host that bound a recorder and got nothing back has a fault to chase; a
+    host that bound none never had a microphone here. Collapsing them would
+    make ``capture_not_bound`` appear on a wired session, which is the one
+    reading that sends the operator to the wrong box.
+    """
+    outcome = await _run(_transaction(capture=_Capture(relpath="")))
+
+    assert outcome.played is True
+    assert outcome.wav_path == ""
+    assert outcome.incident == STIMULUS_NOT_CAPTURED
+
+
+async def test_a_recorder_that_never_rolled_means_the_stimulus_never_played():
+    """The capture half arms BEFORE the play, so its early fault is below-ready.
+
+    ``played`` is False, nothing banks, and the seam's own ``play_wav`` was
+    never reached — which is what makes the ``ready`` report an overstatement
+    the incident has to carry.
+    """
+    seams = _Seams()
+
+    outcome = await _run(
+        _transaction(seams=seams, capture=_Capture(start_raises=True))
+    )
+
+    assert outcome.stage_reached == STAGE_READY
+    assert outcome.played is False
+    assert outcome.incident == STIMULUS_NOT_CAPTURED
+    assert seams.played == 0 and seams.locked == 0
+
+
+async def test_a_capture_lost_after_the_stimulus_still_reports_it_played():
+    """The same code on the other side of the play, told apart by the STAGE.
+
+    The room really did hear the sweep, so a record IS banked for it — with an
+    empty path and this reason on it. Reporting ``ready`` here would deny a
+    stimulus the household stood through.
+    """
+    seams = _Seams()
+
+    outcome = await _run(
+        _transaction(seams=seams, capture=_Capture(place_raises=True))
+    )
+
+    assert outcome.stage_reached == STAGE_RESTORE
+    assert outcome.played is True
+    assert outcome.incident == STIMULUS_NOT_CAPTURED
+    assert seams.played == 1, "the stimulus reached the speaker"
+
+
+async def test_a_play_failure_under_a_bound_capture_is_still_a_play_failure():
+    """The capture half lets the play's own exception through unchanged.
+
+    A half that re-wrapped it would report a lost recording where a refused
+    admission happened, and the adapter's whole classification would move to
+    the wrong module.
+    """
+    seams = _Seams(admitted=False)
+    capture = _Capture()
+
+    outcome = await _run(_transaction(seams=seams, capture=capture))
+
+    assert outcome.stage_reached == STAGE_READY
+    assert outcome.incident == STIMULUS_ADMISSION_REFUSED
+    assert capture.log == ["rolled"], "the recorder rolled and the play refused"
 
 
 async def test_the_level_is_asserted_once_per_stimulus_by_the_callee():
