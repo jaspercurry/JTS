@@ -537,10 +537,11 @@ def test_install_sh_restarts_camilla_after_fanin():
     """Camilla captures fan-in's summed output; deploy must not leave it
     holding a stale capture fd after asound/fan-in updates.
 
-    The restart is `restart_core_camilla_after_dsp_reconcile` (a named helper,
-    because it must `start` rather than `try-restart` when the content-lane
-    width flip stopped Camilla to release the snd-aloop pair) — the contract is
-    that the step follows fan-in, whatever it is spelled."""
+    The restart is `restart_core_camilla_after_dsp_reconcile` (a named helper
+    shared by both install paths; ADR-0100 deleted the content-lane width-flip
+    mechanism that used to make it choose `start` over `try-restart`, so today
+    it is an unconditional `try-restart`) — the contract is that the step
+    follows fan-in, whatever it is spelled."""
     install_sh = installer_text()
     assert re.search(
         r"systemctl restart jasper-fanin\.service.*?"
