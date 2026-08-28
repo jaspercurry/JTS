@@ -400,17 +400,16 @@ def test_wire_gate_compares_outputd_only_once_armed(monkeypatch):
     """THE PR-1 DEFECT, structurally prevented.
 
     ``JASPER_OUTPUTD_CONTENT_FORMAT`` is written by the audio-hardware
-    reconciler, not by this one, and on a box still on loopback it correctly
-    carries the LOOPBACK lane's format. Comparing it at preflight would refuse
-    the arm on every box in the fleet — the exact shape of the defect this
-    gate's history records. Same file, two verdicts, decided by whether the box
-    is already armed.
+    reconciler, not by this one, so a not-yet-armed box's value is simply
+    whatever that reconciler last rendered — not yet proven to match THIS
+    arm. Comparing it at preflight would refuse the arm on every box in the
+    fleet — the exact shape of the defect this gate's history records. Same
+    file, two verdicts, decided by whether the box is already armed.
 
-    The stale token is ``S16_LE`` now — since the ring wire's resolver defaults
-    wide, the ring and the loopback lane carry the SAME width, so a leftover
-    narrow declaration is what an armed box must be refused for. The unarmed
-    half of the test is what proves the verdict is decided by ``armed`` and not
-    by the token.
+    The stale token is ``S16_LE`` now — since the ring wire's resolver
+    defaults wide, an unarmed box's leftover narrow declaration is what an
+    armed box must be refused for. The unarmed half of the test is what
+    proves the verdict is decided by ``armed`` and not by the token.
     """
     import jasper.ring_assets as ra
 

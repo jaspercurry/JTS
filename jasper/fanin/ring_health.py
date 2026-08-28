@@ -378,10 +378,14 @@ def ring_wire_declarations(
     ``armed`` gates the outputd FORMAT axis, and the reason is a real ordering
     fact rather than caution: ``JASPER_OUTPUTD_CONTENT_FORMAT`` is written by
     ``jasper-audio-hardware-reconcile`` (from ``content_lane_format_for_coupling``),
-    NOT by this reconciler, and while the box is still on loopback it correctly
-    carries the LOOPBACK lane's format. Comparing it against the ring wire at
-    preflight time would refuse every arm on every box — the exact shape of the
-    PR-1 defect this gate's history records. So before the arm that end is
+    NOT by this reconciler. Before ADR-0100 a not-yet-armed box correctly
+    carried that function's LOOPBACK answer there — a genuinely different
+    value from the ring's. Today the function answers the ring's resolved
+    format unconditionally (see its own note), so a pre-arm box's value is
+    simply whatever the LAST hardware-reconcile pass rendered, not proven
+    current for THIS arm. Comparing it against the ring wire at preflight time
+    would still refuse every arm on a box mid-convergence — the exact shape of
+    the PR-1 defect this gate's history records. So before the arm that end is
     reported as not-yet-declared; once armed it is compared, which is where a
     degraded deploy's half-moved format actually shows up.
 
@@ -482,9 +486,10 @@ def ring_wire_declarations(
                 ""
                 if armed
                 else (
-                    f"{_OUTPUTD_CONTENT_FORMAT_ENV_VAR} still declares the "
-                    "loopback lane until the hardware reconciler re-emits it on "
-                    "arm, so the format axis is not compared before arming"
+                    f"{_OUTPUTD_CONTENT_FORMAT_ENV_VAR} still declares "
+                    "whatever the hardware reconciler last rendered until it "
+                    "re-emits on arm, so the format axis is not compared "
+                    "before arming"
                 )
             ),
         ),
@@ -1327,10 +1332,11 @@ def composite_ring_wire_ready(topology: Any) -> tuple[bool, str]:
     if declared != RING_WIRE_FORMAT_WIDE:
         return False, (
             f"a composite sink may ride the ACTIVE ring only at the WIDE wire, "
-            f"but this box declares {RING_WIRE_FORMAT_ENV_VAR}={declared}. Its "
-            f"aloop lane carries the post-crossover per-driver program at "
-            f"S32_LE, so arming the ring narrow would quantize every driver's "
-            f"signal from 32 to 16 bits — a width REGRESSION disguised as a "
+            f"but this box declares {RING_WIRE_FORMAT_ENV_VAR}={declared}. The "
+            f"WIDE wire ({RING_WIRE_FORMAT_WIDE}) is what carries the "
+            f"post-crossover per-driver program at full width, so arming the "
+            f"ring at this narrow pin would quantize every driver's signal "
+            f"from 32 to 16 bits — a width REGRESSION disguised as a "
             f"transport change, which the every-end wire gate cannot see "
             f"(a narrow arm is perfectly self-consistent). An undeclared box "
             f"resolves the wide wire, so this is a deliberate pin: remove "
@@ -1534,40 +1540,6 @@ def resolve_effective_fanin_ring_slots(fanin_text: str) -> FaninRingSlotsResolut
             raw=raw,
             error=str(e),
         )
-
-
-def ring_slot_geometry_ready(fanin_text: str) -> tuple[bool, str]:
-    """The shm_ring PREFLIGHT gate for Ring-A slot COUNT: fanin env == conf.d n_slots.
-
-    Checked BEFORE arming (alongside the period gate). fan-in creates Ring A with
-    ``resolve_ring_slots(JASPER_FANIN_RING_SLOTS)`` slots; the ``jts_ring_capture``
-    ioplug attaches expecting the conf.d ``n_slots``. A mismatch is a hard
-    ``hw_params`` EINVAL + ioplug ``attach_fatal reason=ring header does not match
-    expected geometry`` → CamillaDSP crash-loop → start-limit-hit. This is the
-    default-migration class: old 8-slot state would make fan-in write an 8-slot
-    program.ring against the conf.d's pinned 2. The period gate
-    (:func:`ring_geometry_ready`) does NOT cover this second axis. Fail-SAFE:
-    refuse to arm and leave the box exactly as it was found, with a crisp
-    reason — never a fallback (ADR-0100).
-    """
-    from jasper.fanin_coupling import RING_SLOTS_ENV_VAR
-    from jasper.ring_assets import ring_slot_geometry_matches_conf
-
-    resolution = resolve_effective_fanin_ring_slots(fanin_text)
-    if resolution.value is None:
-        return False, (
-            f"{RING_SLOTS_ENV_VAR} from {resolution.source} is invalid "
-            f"({resolution.error}) — a shear-prone Ring A slot geometry must fail "
-            "loud; clear the stale value (default 2) before arming"
-        )
-    match = ring_slot_geometry_matches_conf(resolution.value)
-    if match.ok:
-        return True, (
-            "Ring A slot count matches "
-            f"(JASPER_FANIN_RING_SLOTS={match.fanin_n_slots} == conf.d "
-            f"jts_ring_capture n_slots={match.conf_n_slots})"
-        )
-    return False, match.detail
 
 
 def read_persisted_coupling(env_path: str | os.PathLike = FANIN_ENV_PATH) -> str:

@@ -1532,7 +1532,7 @@ def test_the_floor_render_ok_names_the_roleful_reason_a_box_cannot_ring(monkeypa
     box already carrying a proven graph (``ring_roleful_unattended_ready``).
     Reporting only
     "period_frames matches" there answers a question nobody asked and leaves the
-    real one ("why is this box on loopback?") unanswered, which is the same
+    real one ("why won't this box ring?") unanswered, which is the same
     defect #2294 fixed for the floor half.
     """
     from jasper.cli.doctor import audio_runtime

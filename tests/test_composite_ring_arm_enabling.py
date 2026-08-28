@@ -405,12 +405,12 @@ RING_CONF_D_SOURCE = REPO_ROOT / "deploy" / "alsa" / "conf.d" / "60-jts-ring.con
 def test_a_composite_may_not_arm_the_ring_at_the_narrow_wire(monkeypatch):
     """The width REGRESSION refusal.
 
-    ``content_lane_format_for_coupling`` answers S32_LE under ``loopback``, and
-    since the ring-wire default flip ``resolve_ring_wire().sample_format``
-    under ``shm_ring`` now answers S32_LE too — so an UNDECLARED composite
-    converges with no declaration at all and this gate never fires for it. The
-    one shape that still reaches the refusal is an operator's explicit narrow
-    PIN (``JASPER_FANIN_RING_WIRE_FORMAT=S16_LE``, the rollback lever): a
+    ``content_lane_format_for_coupling`` takes no coupling argument and
+    answers the ring wire's resolved format unconditionally, which defaults
+    WIDE — so an UNDECLARED composite converges with no declaration at all and
+    this gate never fires for it. The one shape that still reaches the
+    refusal is an operator's explicit narrow PIN
+    (``JASPER_FANIN_RING_WIRE_FORMAT=S16_LE``, the rollback lever): a
     composite arm that rode such a pin onto the ring, without this gate, would
     quantize the post-crossover per-driver program from 32 to 16 bits.
     """

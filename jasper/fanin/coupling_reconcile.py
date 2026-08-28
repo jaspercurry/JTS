@@ -110,7 +110,6 @@ from jasper.fanin.ring_health import (
     ring_edge_width_ready as ring_edge_width_ready,
     ring_endpoint_anchor_converged as ring_endpoint_anchor_converged,
     ring_geometry_ready as ring_geometry_ready,
-    ring_slot_geometry_ready as ring_slot_geometry_ready,
     ring_topology_ready as ring_topology_ready,
     ring_wire_caps_ready as ring_wire_caps_ready,
     ring_wire_declarations as ring_wire_declarations,
