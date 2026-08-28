@@ -189,6 +189,7 @@ from jasper.active_speaker.crossover_v2 import verification as _verification
 from jasper.active_speaker.crossover_v2 import contracts as _contracts
 from jasper.active_speaker.crossover_v2.contracts import (
     ENTRY_GRAPH_FINGERPRINT_UNKNOWN as _ENTRY_GRAPH_FINGERPRINT_UNKNOWN,
+    REFERENCE_MARK_DESIGN_AXIS as _REFERENCE_MARK_DESIGN_AXIS,
 )
 
 # #2291 Phase 2 moved the prescription policy — the two Layer-1a constants, the
@@ -263,33 +264,10 @@ logger = logging.getLogger(__name__)
 # does not import the monolith it replaces). They are re-exported from here —
 # the same objects, not copies — so every ``from ...crossover_v2_flow import
 # PHASE_CHECK`` keeps working, and ``__all__`` below still lists them.
-#
-# The phase-ADJACENT constants stay here with the concern that owns them:
-# ``_INDEX_PHASE`` and ``CAPTURE_PLAN_TARGET`` describe the relay capture plan,
-# ``SUMMED_SWEEP_PHASES`` selects an excitation program, and
-# ``PRE_CLOUD_CAPTURE_PHASES`` records what a session ran before the position
-# groups shipped. None of those answers "where is this round".
 
 ATTEMPT_METRIC_VERIFY_MAX_NOTCH_EXCLUDED = (
     _contracts.ATTEMPT_METRIC_VERIFY_MAX_NOTCH_EXCLUDED
 )
-
-ATTEMPT_INTEGRITY_UNAVAILABLE = "capture_integrity_unavailable"
-
-# Capture-plan index → phase. APPLYING is a control-page phase (no capture)
-# that sits between MEASURE-accepted and VERIFY-armed, so it has no index.
-# This is the pre-cloud 3-entry layout, kept as the fallback for a session
-# constructed with no explicit ``index_phase_map``; the shipped session builds
-# its map through ``build_v2_cloud_index_phase_map``.
-_INDEX_PHASE = {1: PHASE_CHECK, 2: PHASE_MEASURE, 3: PHASE_VERIFY}
-
-# What a session ran before the position groups shipped. Durable state written
-# then carries no ``session_phases`` field, and it came from a session that ran
-# exactly these three — so this, not the (now longer) ``CAPTURE_PHASES``, is the
-# honest fallback for reading such a state. Reading a pre-cloud state against
-# the full tuple would report a household mid-"cloud_measure" in a session that
-# never had one.
-PRE_CLOUD_CAPTURE_PHASES = (PHASE_CHECK, PHASE_MEASURE, PHASE_VERIFY)
 
 # Re-exported. It selects an excitation PROGRAM rather than a place in the walk,
 # so #2291 Phase 5a-ii moved it to
@@ -299,66 +277,17 @@ PRE_CLOUD_CAPTURE_PHASES = (PHASE_CHECK, PHASE_MEASURE, PHASE_VERIFY)
 # condition rather than an efficiency.
 SUMMED_SWEEP_PHASES = _programs.SUMMED_SWEEP_PHASES
 
-#: WHERE the two sides of #2291's before→after comparison were measured.
-#:
-#: The mark is the one spot CHECK asks the household to stand the microphone on
-#: and MEASURE names ("this spot is the mark"), and both the entry baseline and
-#: the post-apply VERIFY are taken there. ``program_id`` equality cannot see
-#: position — a capture a metre away replays the identical program — so
-#: :class:`~jasper.active_speaker.crossover_v2.verification.MeasurementComparand`
-#: carries this second identity and
-#: :func:`~jasper.active_speaker.crossover_v2.verification.evaluate_benefit`
-#: refuses a pair whose marks disagree.
-#:
-#: **One owner, deliberately.** Both sides must stamp the SAME string or every
-#: round grades
-#: :data:`~jasper.active_speaker.crossover_v2.verification.BENEFIT_MARK_MISMATCH`,
-#: so the post-apply side imports this constant rather than spelling the
-#: literal a second time. It is a stable identity, not a coordinate: nothing
-#: measures where the mark physically is, and the flow makes no claim that two
-#: sessions' marks are the same place — only that within ONE round the mic did
-#: not move between the two captures, which is what the round's own
-#: choreography (baseline last in stage 1, VERIFY first in stage 2, no prompted
-#: move between them) is for.
-REFERENCE_MARK_DESIGN_AXIS = "design_axis_mark"
-
 #: Re-exported from :mod:`jasper.active_speaker.crossover_v2.contracts`, which
 #: owns it alongside the two receipt fields it fills (#2291 Phase 5).  Every
 #: ``flow.ENTRY_GRAPH_FINGERPRINT_UNKNOWN`` read keeps resolving to that one
 #: object; see the contract for why the sentinel is a word rather than ``""``.
 ENTRY_GRAPH_FINGERPRINT_UNKNOWN = _ENTRY_GRAPH_FINGERPRINT_UNKNOWN
 
-# they belong to and states why each number is what it is (#2291 Phase 5a-vi).
+# Re-exported from :mod:`jasper.active_speaker.crossover_v2.admission`, which
+# owns them and states why each number is what it is (#2291 Phase 5a-vi).
 MAX_EXTRA_ATTEMPTS_PER_POSITION = _admission.MAX_EXTRA_ATTEMPTS_PER_POSITION
 ATTEMPT_INITIATOR_HOUSEHOLD = _admission.ATTEMPT_INITIATOR_HOUSEHOLD
 ATTEMPT_INITIATOR_SPEAKER = _admission.ATTEMPT_INITIATOR_SPEAKER
-
-# The fewest RESOLVED positions a cloud group can close with and still produce a
-# usable claim, so a position the flow gives up on degrades the group instead of
-# ending the session (ruling item 3: "continue the phase if it can proceed with
-# the positions it has").
-#
-# MEASURED, not chosen: the group close itself has no position floor at all
-# (``_close_cloud_group`` never compares ``len(positions)`` to anything), and
-# ``combine_cloud_positions`` tolerates any non-empty group. The binding
-# constraint is downstream, in the fit —
-# ``linearization_envelope.position_stability_limit`` raises ``ValueError`` for
-# ``n_positions < 2``, because a cross-position spread across fewer than two
-# positions is undefined. So two is where "can proceed" genuinely stops.
-#
-# Deliberately NOT ``MIN_CLOUD_MEASURE_POSITIONS`` / ``MIN_CLOUD_VERIFY_POSITIONS``
-# (6 / 5): those are PLAN-DECLARATION floors — how many positions the household
-# is asked to walk — enforced once by ``_validated_cloud_counts`` before any
-# capture happens. Reusing them at runtime would have killed the 2026-08-03
-# verify, which was running usefully at 4 positions of the 6 that tier declared
-# then. Between this floor
-# and the declared one the claim is degraded, and degradation is DISCLOSED (the
-# geometry verdict's ``n_positions`` / ``thin_evidence`` already ride the
-# envelope), not gated.
-MIN_RESOLVED_CLOUD_POSITIONS = 2
-
-
-
 
 # --------------------------------------------------------------------------- #
 # Corner admissibility (plan §4.2 / #1894 / #1675)
@@ -436,7 +365,6 @@ AUTO_ADVANCE_ON_APPLY = _plan.AUTO_ADVANCE_ON_APPLY
 AUTO_ADVANCE_TAP = _plan.AUTO_ADVANCE_TAP
 CAPTURE_ENTRY_MARGIN_MS = _plan.CAPTURE_ENTRY_MARGIN_MS
 CAPTURE_PLAN_MAX_ATTEMPTS = _plan.CAPTURE_PLAN_MAX_ATTEMPTS
-CAPTURE_PLAN_TARGET = _plan.CAPTURE_PLAN_TARGET
 CLOUD_GEOMETRY_RETRY_PROMPTS = _plan.CLOUD_GEOMETRY_RETRY_PROMPTS
 CLOUD_POSITION_PROMPTS = _plan.CLOUD_POSITION_PROMPTS
 CLOUD_RETAKE_ALLOWANCE = _plan.CLOUD_RETAKE_ALLOWANCE
@@ -447,7 +375,6 @@ CloudPositionPrompt = _plan.CloudPositionPrompt
 DEFAULT_CLOUD_MEASURE_POSITIONS = _contracts.DEFAULT_CLOUD_MEASURE_POSITIONS
 DEFAULT_CLOUD_VERIFY_POSITIONS = _plan.DEFAULT_CLOUD_VERIFY_POSITIONS
 DEFAULT_TIER = _plan.DEFAULT_TIER
-EXPRESS_CLOUD_VERIFY_POSITIONS = _plan.EXPRESS_CLOUD_VERIFY_POSITIONS
 GEOMETRY_RETRY_OFFSET_CM = _plan.GEOMETRY_RETRY_OFFSET_CM
 LATERAL_MARK_PROMPT = _plan.LATERAL_MARK_PROMPT
 LATERAL_MARK_RETURN_PROMPT = _plan.LATERAL_MARK_RETURN_PROMPT
@@ -474,7 +401,6 @@ TIER_REMOTE = _plan.TIER_REMOTE
 V2PlanShape = _plan.V2PlanShape
 V2_FIRST_BEGIN_TIMEOUT_S = _plan.V2_FIRST_BEGIN_TIMEOUT_S
 VERIFY_ANCHOR_HOLD_MESSAGE = _plan.VERIFY_ANCHOR_HOLD_MESSAGE
-VERIFY_MARK_PROMPT = _plan.VERIFY_MARK_PROMPT
 WALL_CLOCK_CEILING_PER_ENTRY_S = _plan.WALL_CLOCK_CEILING_PER_ENTRY_S
 WIDE_OFFSET_MIN_CM = _plan.WIDE_OFFSET_MIN_CM
 _DISPLAY_FC_HZ = _plan._DISPLAY_FC_HZ
@@ -567,28 +493,8 @@ from jasper.active_speaker.crossover_v2.spatial import (
 from jasper.active_speaker.crossover_v2.attempt_grading import (
     ATTEMPT_REASON_NO_FLOOR as ATTEMPT_REASON_NO_FLOOR,
     PREDICTED_SPEC_MATERIAL_IMPROVEMENT_DB as PREDICTED_SPEC_MATERIAL_IMPROVEMENT_DB,
+    PRESCRIBED_NON_WORSENING_DB as _PRESCRIBED_NON_WORSENING_DB,
 )
-
-#: The pre-Apply improvement bar for a candidate carrying PRESCRIBED branches:
-#: non-worsening (PR-B, conductor ruling 2026-08-20).
-#:
-#: Its sibling — :data:`PREDICTED_SPEC_MATERIAL_IMPROVEMENT_DB`, 0.5 dB — is
-#: field evidence about the FIT and keeps its original subject untouched. This
-#: one exists because that figure is a POOLED-RMS improvement and a per-driver
-#: prescription is by construction a narrow high-Q filter aimed at ONE banked
-#: feature: 0.077-0.152 dB pooled on realistic fixtures even when it is exactly
-#: right, so the fitted bar would file the whole class as no improvement before
-#: its first hardware exercise rather than judge it. Named and defined HERE,
-#: beside the reader that chooses between the two,
-#: because the choice is this module's (see ``_assert_accountable``) and the
-#: gate it is handed to never branches on either.
-#:
-#: 0.0 rather than "no bar at all": a model cannot settle whether a narrow cut
-#: helps, but it CAN say a proposal is predicted to make the speaker worse, and
-#: that is worth writing down. It is a LEDGER boundary, not a stop — neither
-#: bar refuses since the nanny burn-down (docs/measurement-loop-doctrine.md
-#: deviation (c)) — deciding ``improved`` against ``not_an_improvement``.
-PRESCRIBED_NON_WORSENING_DB: float = 0.0
 
 
 def _prescribed_roles(candidate: Any) -> tuple[str, ...]:
@@ -1829,7 +1735,8 @@ def attempt_record_from_verify(
     integrity = analysis.capture_integrity
     if integrity is None:
         attempt_integrity = AttemptIntegrity(
-            comparable=False, reasons=(ATTEMPT_INTEGRITY_UNAVAILABLE,),
+            comparable=False,
+            reasons=(_verification.CAPTURE_INTEGRITY_UNAVAILABLE,),
         )
     else:
         reasons = tuple(dict.fromkeys((*integrity.failed, *integrity.not_evaluated)))
@@ -1881,7 +1788,6 @@ _CloudPosition = _spatial._CloudPosition
 # it off this module without making it any less internal.
 LATERAL_EVIDENCE_BAND_HZ = _spatial.LATERAL_EVIDENCE_BAND_HZ
 LATERAL_EVIDENCE_POINTS_PER_OCTAVE = _spatial.LATERAL_EVIDENCE_POINTS_PER_OCTAVE
-LateralPoseCurve = _spatial.LateralPoseCurve
 LateralPose = _spatial.LateralPose
 lateral_evidence_grid_hz = _spatial.lateral_evidence_grid_hz
 lateral_pose_curve = _spatial.lateral_pose_curve
@@ -2402,7 +2308,8 @@ class CrossoverV2Session:
         # {1: PHASE_VERIFY}.
         self._journey = CommissionJourney(
             JourneyPlan.from_index_map(
-                index_phase_map if index_phase_map is not None else _INDEX_PHASE,
+                index_phase_map if index_phase_map is not None
+                else _plan.DEFAULT_INDEX_PHASE_MAP,
                 post_apply_verifies=post_apply_verifies,
             ),
             accepted_phases=accepted_phases,
@@ -5070,9 +4977,7 @@ class CrossoverV2Session:
         """How few resolved positions still lets a group stand — see
         :func:`~jasper.active_speaker.crossover_v2.spatial.group_position_floor`.
         """
-        return _spatial.group_position_floor(
-            phase, min_resolved_cloud_positions=MIN_RESOLVED_CLOUD_POSITIONS,
-        )
+        return _spatial.group_position_floor(phase)
 
     def _consume_lateral_pose(
         self, index: int, attempt: int, analysis: ProgramAnalysis, result: Any,
@@ -6718,7 +6623,7 @@ class CrossoverV2Session:
             state=linearization,
             grade_prediction=spec_report_for_predicted_sum,
             material_improvement_db=(
-                PRESCRIBED_NON_WORSENING_DB if prescribed_graph
+                _PRESCRIBED_NON_WORSENING_DB if prescribed_graph
                 else PREDICTED_SPEC_MATERIAL_IMPROVEMENT_DB
             ),
         )
@@ -7033,7 +6938,7 @@ class CrossoverV2Session:
         screen = _spatial.entry_baseline_screens(
             analysis,
             stimulus_located=_stimulus_locate_ok(analysis),
-            reference_mark=REFERENCE_MARK_DESIGN_AXIS,
+            reference_mark=_REFERENCE_MARK_DESIGN_AXIS,
         )
         if screen.kind is not None:
             return (
@@ -7272,7 +7177,7 @@ class CrossoverV2Session:
                 candidate_fingerprint=self._applied_candidate_id(),
                 commanded_delta_present=self._measure_commanded_delta is not None,
                 realization_tolerance_db=VERIFY_TOLERANCE_DB,
-                reference_mark=REFERENCE_MARK_DESIGN_AXIS,
+                reference_mark=_REFERENCE_MARK_DESIGN_AXIS,
                 # The map this session's own probe produced, or ``None`` when it
                 # never ran one (#2537). Both triggers reach this AFTER
                 # :meth:`_run_delta_probe` has stamped ``self._delta_probe``, so
@@ -7370,7 +7275,7 @@ class CrossoverV2Session:
             session_id=self.session_id, index=index,
             accepted=verdict.accepted, code=verdict.code or "",
             program_id=(baseline.program_id if baseline is not None else ""),
-            reference_mark=REFERENCE_MARK_DESIGN_AXIS,
+            reference_mark=_REFERENCE_MARK_DESIGN_AXIS,
             graph_fingerprint=(
                 baseline.graph_fingerprint if baseline is not None else ""
             ),
@@ -8171,7 +8076,7 @@ class CrossoverV2Session:
                     program_id=got_program,
                     reference_mark=got_mark,
                     other_program_id=want_program,
-                    other_reference_mark=REFERENCE_MARK_DESIGN_AXIS,
+                    other_reference_mark=_REFERENCE_MARK_DESIGN_AXIS,
                 )
                 if want_program and got_program and got_mark
                 else None
@@ -9218,55 +9123,6 @@ def derive_session_volume_db(
     )
 
 
-async def open_measurement_volume(
-    plan: Any,
-    *,
-    safety_profile: Mapping[str, Any],
-    target_fingerprints: Sequence[str],
-    set_main_volume_db: Any,
-    get_main_volume_db: Any,
-    declared_sensitivities: Mapping[str, float] | None = None,
-) -> Any:
-    """Open the one session volume for a fresh v2 session (§5.5).
-
-    Gates on ``plan.needs_recovery`` FIRST (not ``unresolved_volume_safety``
-    alone — the W2 gate ruling: a crash-hydrated active plan needs draining but
-    surfaces no unresolved payload), then derives the fixed volume via the SSOT
-    and opens the plan. Refuses to open over a plan that needs recovery.
-    """
-    if plan.needs_recovery:
-        raise CrossoverV2FlowError(
-            "the session volume needs recovery; drain it before opening a session"
-        )
-    from .session_volume_plan import FaderVolumeDoor
-
-    volume_db = derive_session_volume_db(
-        safety_profile,
-        target_fingerprints,
-        declared_sensitivities=declared_sensitivities,
-    )
-    return await plan.open(
-        volume_db, FaderVolumeDoor(set_main_volume_db, get_main_volume_db)
-    )
-
-
-async def abandon_measurement_volume(
-    plan: Any, *, set_main_volume_db: Any, get_main_volume_db: Any,
-) -> Any:
-    """Session-death observation hook — drain the restore-once path (§5.5).
-
-    The flow wires the relay session's death (TTL expiry / failure / explicit
-    stop) to this so a walked-away user can never leave the speaker pinned at
-    measurement volume. Delegates to the plan's ``abandon`` (the same
-    fail-closed latch trio ``close`` uses).
-    """
-    from .session_volume_plan import FaderVolumeDoor
-
-    return await plan.abandon(
-        FaderVolumeDoor(set_main_volume_db, get_main_volume_db)
-    )
-
-
 __all__ = [
     "CrossoverV2Session",
     "CrossoverV2FlowError",
@@ -9277,8 +9133,6 @@ __all__ = [
     "build_v2_verify_capture_plan",
     "build_v2_verify_session_spec",
     "derive_session_volume_db",
-    "open_measurement_volume",
-    "abandon_measurement_volume",
     "V2ConductorSnapshot",
     "V2FlowSeams",
     "ATTEMPT_METRIC_VERIFY_MAX_NOTCH_EXCLUDED",
@@ -9290,7 +9144,6 @@ __all__ = [
     "TIER_EXPRESS",
     "TIERS",
     "DEFAULT_TIER",
-    "EXPRESS_CLOUD_VERIFY_POSITIONS",
     "express_cloud_measure_positions",
     "normalize_tier",
     "resolve_plan_shape",
@@ -9300,18 +9153,14 @@ __all__ = [
     "stage1_plan_max_attempts",
     "LATERAL_POSE_PROMPTS",
     "CLOUD_VERIFY_POSE_PROMPTS",
-    "VERIFY_MARK_PROMPT",
     "verify_pose_table",
     "position_geometry",
     "LATERAL_EVIDENCE_BAND_HZ",
     "LATERAL_EVIDENCE_POINTS_PER_OCTAVE",
     "LateralPose",
-    "LateralPoseCurve",
     "lateral_evidence_grid_hz",
     "lateral_pose_curve",
-    "REFERENCE_MARK_DESIGN_AXIS",
     "STAGE1_INCLUDES_ENTRY_BASELINE",
-    "CAPTURE_PLAN_TARGET",
     "CAPTURE_PLAN_MAX_ATTEMPTS",
     "V2_FIRST_BEGIN_TIMEOUT_S",
     "v2_first_begin_timeout_s",
@@ -9324,7 +9173,6 @@ __all__ = [
     "VERIFY_TERMINAL_OUTCOME_DETERMINISTIC",
     "alignment_to_candidate_fields",
     "back_off_gain",
-    "PRESCRIBED_NON_WORSENING_DB",
     "verify_absolute_tolerance_db",
     "LINEARIZATION_TRIM_SANITY_MARGIN_DB",
     "PREDICTED_SPEC_MATERIAL_IMPROVEMENT_DB",

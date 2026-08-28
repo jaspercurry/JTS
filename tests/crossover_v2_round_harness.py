@@ -40,7 +40,7 @@ from jasper.active_speaker.crossover_v2.round_evidence import (
     EntryBaseline,
     measured_response_from_analysis,
 )
-from jasper.active_speaker.crossover_v2_flow import REFERENCE_MARK_DESIGN_AXIS
+from jasper.active_speaker.crossover_v2.contracts import REFERENCE_MARK_DESIGN_AXIS
 from jasper.web import correction_crossover_v2 as v2host
 
 from tests.crossover_v2_fixtures import _in_room_summed_db, _verify_analysis

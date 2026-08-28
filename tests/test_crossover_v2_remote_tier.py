@@ -1788,11 +1788,11 @@ def _tier_resolved_by_prepare(body, state, tmp_path):
     preparer runs several gates this harness cannot satisfy, and "it failed
     somewhere after the tier gate" is not evidence about the tier.
     """
-    import jasper.active_speaker.crossover_v2_flow as flow_mod
+    from jasper.active_speaker.crossover_v2 import capture_plan as plan_mod
     from jasper.web import correction_crossover_v2 as v2host
 
     seen: list = []
-    original = flow_mod.resolve_plan_shape
+    original = plan_mod.resolve_plan_shape
 
     def _record(tier=None, **kwargs):
         seen.append(tier)
@@ -1802,7 +1802,7 @@ def _tier_resolved_by_prepare(body, state, tmp_path):
     try:
         v2host.save_v2_state(state)
         with pytest.MonkeyPatch.context() as mp:
-            mp.setattr(flow_mod, "resolve_plan_shape", _record)
+            mp.setattr(plan_mod, "resolve_plan_shape", _record)
             with contextlib.suppress(Exception):
                 v2host.prepare_v2_session(
                     body, status={}, run_async=None, camilla_factory=None,

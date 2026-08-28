@@ -94,6 +94,7 @@ __all__ = [
     "PROPOSAL_FINGERPRINT_KINDS",
     "PlanRefusal",
     "QualityStatus",
+    "REFERENCE_MARK_DESIGN_AXIS",
     "REGIME_NEAR_FIELD",
     "REGIME_REFERENCE_AXIS",
     "ROUND_RECEIPT_KIND",
@@ -1412,6 +1413,29 @@ VERIFY_TOLERANCE_DB = 1.5
 # prediction of perfect realization, while the analyzer's value is what the
 # applied speaker actually realized.
 ATTEMPT_METRIC_VERIFY_MAX_NOTCH_EXCLUDED = "max_db_notch_excluded"
+
+#: WHERE the two sides of #2291's before→after comparison were measured.
+#:
+#: The mark is the one spot CHECK asks the household to stand the microphone on
+#: and MEASURE names ("this spot is the mark"), and both the entry baseline and
+#: the post-apply VERIFY are taken there. ``program_id`` equality cannot see
+#: position — a capture a metre away replays the identical program — so
+#: :class:`~jasper.active_speaker.crossover_v2.verification.MeasurementComparand`
+#: carries this second identity and
+#: :func:`~jasper.active_speaker.crossover_v2.verification.evaluate_benefit`
+#: refuses a pair whose marks disagree.
+#:
+#: **One owner, deliberately.** Both sides must stamp the SAME string or every
+#: round grades
+#: :data:`~jasper.active_speaker.crossover_v2.verification.BENEFIT_MARK_MISMATCH`,
+#: so the post-apply side imports this constant rather than spelling the
+#: literal a second time. It is a stable identity, not a coordinate: nothing
+#: measures where the mark physically is, and the flow makes no claim that two
+#: sessions' marks are the same place — only that within ONE round the mic did
+#: not move between the two captures, which is what the round's own
+#: choreography (baseline last in stage 1, VERIFY first in stage 2, no prompted
+#: move between them) is for.
+REFERENCE_MARK_DESIGN_AXIS = "design_axis_mark"
 
 
 # --------------------------------------------------------------------------- #

@@ -288,9 +288,9 @@ class Verdict(Generic[StatusT]):
 # 1. capture validity
 # --------------------------------------------------------------------------
 
-#: The integrity record was absent. Reuses the literal
-#: ``crossover_v2_flow.ATTEMPT_INTEGRITY_UNAVAILABLE`` so one absence reads
-#: the same word in the attempts ledger and here.
+#: The integrity record was absent. The attempts ledger stamps this same
+#: object (``crossover_v2_flow.attempt_record_from_verify``) so one absence
+#: reads the same word there and here.
 CAPTURE_INTEGRITY_UNAVAILABLE = "capture_integrity_unavailable"
 CAPTURE_INTEGRITY_FAILED = "capture_integrity_failed"
 CAPTURE_INTEGRITY_CLEAN = "capture_integrity_clean"

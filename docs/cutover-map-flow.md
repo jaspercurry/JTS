@@ -28,8 +28,12 @@ the wrapped half.
 at that altitude. Four things it says about this file do not survive a
 line-grained re-derivation:
 
-1. **`__all__` is 61 names, not 63.** No duplicates; the list is literally 61
-   elements. 17 of them are imported by nobody, anywhere (listed in §3).
+1. **`__all__` was 61 names, not 63; it is 53 at head.** No duplicates. #3248
+   removed 8 — four with no reader of any kind, the two test-only volume
+   wrappers, and two names that moved to their organ. **Zero of the 53 are
+   unread**: the earlier "17 imported by nobody" counted `from ...
+   crossover_v2_flow import X` only, and 13 of that 17 are live through
+   `import ... as flow` plus `flow.X` attribute reads (§3 item 6).
 2. **The 255–630 row says "delete. Historical-name doors."** It is not one
    thing. 133 names are bound in that range, and **50 of them are read by this
    file** — `PhaseVerdict` alone has 55 reads. Deleting the block breaks the
@@ -79,7 +83,7 @@ excluded), and it is the number the floor math should use — see §4.
 | A | 1–107 | 107 | 0 | Module charter: the flow→organ direction, the two-stage journey, the tier arithmetic, the D1/D2 history | none (prose) | `DIES` — the design doc owns this |
 | B | 108–253 | 146 | 120 | Imports + `TYPE_CHECKING` block (6 deferred prescription/coordinator types) | internal | `DIES` with the code that reads them |
 | C | 254–630 | 377 | 165 | **Four "barrels" — but 133 names in three populations.** 23 pure re-exports with no importer anywhere; 60 pure re-exports with a live importer (26 prod, 34 test-only); **50 names this file actually reads** | 7 prod modules take the 26 door names: the web host (12), `angle_capture.py` (11), `crossover_envelope_v2.py` (4), `cli/doctor/correction.py`, `correction_crossover_v2_relay.py`, 2 scripts | **split.** 23 → `DIES` today. 60 → `W5-d` (repoint the importer at the organ, then delete the door). 50 → `KEEPER` until their reader moves; they are imports, not doors |
-| D | 631–877 | 247 | **21** | Tuning constants + their justification essays. 21 lines of code carrying 185 comment lines. Also holds `CrossoverV2FlowError` (:875) — a re-export of `_contracts.CrossoverV2FlowError` and **the most-imported name in the file, 11 files, 4 of them prod** | tests mostly; `severed-twin-replay.py` takes `ALIGNMENT_DELAY_PLAUSIBILITY_MARGIN_MS`; the error class is load-bearing | **NO HOME 1.** Move `CrossoverV2FlowError`'s door first and separately — it is a barrel entry misfiled in a constants band, and it gates four prod modules |
+| D | 631–877 | 247 | **21** | Tuning constants + their justification essays. 21 lines of code carrying 185 comment lines. Also holds `CrossoverV2FlowError` (:875) — a re-export of `_contracts.CrossoverV2FlowError` and **the most-imported name in the file, 10 files, 3 of them prod** (the web host now takes it from `contracts`) | tests mostly; `severed-twin-replay.py` takes `ALIGNMENT_DELAY_PLAUSIBILITY_MARGIN_MS`; the error class is load-bearing | **NO HOME 1.** Move `CrossoverV2FlowError`'s door first and separately — it is a barrel entry misfiled in a constants band, and it gates three prod modules |
 | E | 878–1395 | 518 | 218 | Pure helpers, four clusters: alignment plausibility (:898–963), capture-integrity/SNR log fields (:970–1117), VERIFY evidence + claims + frame (:1123–1304), driver/pilot SNR fields (:1316–1393) | 4 prod-imported names: `alignment_delay_search_bounds_us` + `CLAIM_PASS`/`CLAIM_FAIL` → web host, `CLAIM_NO_PER_BRANCH_CAPTURE` → `crossover_envelope_v2.py`. The other ~19 are tests-only | `→ W2-a` + `→ W2-b` — these are analyses; they become registry units. The four `CLAIM_*` codes are vocabulary and should land wherever `W2-a`'s name table does |
 | F | 1396–1427 | 32 | **0** | A pure comment block: where the Layer-1a linearization policy went (`crossover_v2.intervention`) and where the deleted level tolerance went | none | `DIES` — 32 lines, zero code, a tombstone for two completed moves |
 | G | 1428–1698 | 271 | 78 | Seam protocols + snapshot: `AnalyzeCapture`, `RecordModelError`, `V2FlowSeams` (**17 fields**), `V2ConductorSnapshot` (**11 fields**) | web host binds `V2FlowSeams` at 5 sites; `V2ConductorSnapshot` + `AnalyzeCapture` prod | `W5-b` for `V2FlowSeams` → `EngineSeams` (`session_seams.py:275`); `W1-a` for `V2ConductorSnapshot` → `RecordStore` |
@@ -107,8 +111,8 @@ excluded), and it is the number the floor math should use — see §4.
 | AC | 8356–8728 | 373 | **250** | **Four per-phase diagnostic emitters** — `_log_measure_diag` (154), `_log_verify_diag` (103), `_log_check_diag`, `_log_measure_level_solve`, `_safe_log_diag`. **They feed no verdict.** Highest code density of any prose-light band | none — internal, and no consumer reads their output | **NO HOME 3** |
 | AD | 8729–8978 | 250 | 93 | Gate / candidate / linearization helpers: `_build_candidate` (82), `_plan_linearization` (51), `_journal_linearization` (45), `_exclusion_evidence_json`, four one-line gate accessors | `_plan_linearization` cited by `crossover_v2/planning.py`; rest tests-only. **`_linearization_ineligible_reason` (:8866–8878) has zero references tree-wide** | organs (`intervention.py`, `planning.py`). The orphan `DIES` now |
 | AE | 8979–9094 | 116 | 59 | Production playback seams: `confirm_graph_is_live` (33), `bind_program_playback_seams` (69) | `confirm_graph_is_live` → web host **and** `correction_setup.py` (2 prod); `bind_program_playback_seams` → web host | `W4-a` + `W5-b` — `PlaybackTransaction` binding (`playback_transaction.py:154`) |
-| AF | 9095–9165 | 71 | 35 | Session-volume lifecycle: `derive_session_volume_db`, `open_measurement_volume`, `abandon_measurement_volume` | `derive_session_volume_db` → web host (prod); the other two tests-only | **`W5-c`** — and `W4-c` for the claim. Adversarial tier |
-| AG | 9166–9228 | 63 | 63 | `__all__` — **61 names**, 17 of them imported by nobody | — | `DIES` with the barrels |
+| AF | 9095–9165 | 71 | 35 | Session-volume lifecycle: `derive_session_volume_db`. (`open_measurement_volume` / `abandon_measurement_volume` were here and are deleted — no production caller; the preparer runs its own `needs_recovery` gate) | `derive_session_volume_db` → web host (prod) | **`W5-c`** — and `W4-c` for the claim. Adversarial tier |
+| AG | 9166–9228 | 63 | 63 | `__all__` — **53 names** at head (was 61; #3248 pruned 8), **0 of them unread** once attribute reads are counted | — | `DIES` with the barrels |
 
 ---
 
@@ -122,10 +126,10 @@ join, with zero coordination and zero stranded callers:
 
 | What | Lines | Why it is safe |
 |---|---|---|
-| Band C's 23 importer-less re-exports | ~65 | No file in the tree imports these names, and this file does not read them |
+| Band C's 23 importer-less re-exports | ~65 | **Count is from-import-only — RE-DERIVE both-forms before executing.** That instrument is what made the `__all__` row below wrong by 13; at head roughly 12 of `__all__`'s 53 names are attribute-only readers, so expect this 23 to shrink materially |
 | Band F, the Layer-1a tombstone | 32 | Zero code lines |
 | `_linearization_ineligible_reason` (:8866–8878) | 13 | Zero references anywhere, including its own class |
-| `__all__`'s 17 never-imported entries | ~17 | Nothing resolves through them |
+| ~~`__all__`'s 17 never-imported entries~~ **EXECUTED BY #3248 — and the 17 was wrong** | 4 | Only **four** had no reader of any kind (`CAPTURE_PLAN_TARGET`, `EXPRESS_CLOUD_VERIFY_POSITIONS`, `LateralPoseCurve`, `VERIFY_MARK_PROMPT`); those are deleted. The other 13 are live through `flow.X` attribute reads and must NOT be cut — see §3 item 6 |
 
 **~127 lines** for one mechanical PR that needs no ruling and blocks nothing.
 Add oddity 3 below — repointing `attempts_loop.py:853` — and the same PR kills
@@ -225,21 +229,25 @@ step 6 sweeps.
 
 **5. `CrossoverV2FlowError` is in the wrong band.** It sits at `:875`, inside
 the tuning-constants band that NO HOME 1 covers, but it is a `_contracts`
-re-export with the widest reach of any name in the file (11 files: `angle_capture.py`,
-`angle_capture_spool.py`, `cli/angle_capture.py`, the web host, plus 7 test
-suites). If NO HOME 1 is ruled "each constant to its consuming organ," this one
-is not a constant and does not follow that rule. Move it with band C's doors.
+re-export with the widest reach of any name in the file. **Two counts, and say
+which:** by from-import only it is **10 files** (`angle_capture.py`,
+`angle_capture_spool.py`, `cli/angle_capture.py`, plus 7 test suites — the web
+host was the fourth prod reader and now imports it from `contracts`); counting
+`flow.X` attribute reads as well it is **15**, the extra five being
+`test_angle_capture_seam`, `test_crossover_v2_admission_wiring`,
+`test_crossover_v2_lateral_evidence`, `test_crossover_v2_planner_wiring` and
+`test_crossover_v2_programs`. If NO HOME 1 is ruled "each constant to its consuming organ,"
+this one is not a constant and does not follow that rule. Move it with band C's
+doors.
 
-**6. The 17 `__all__` names nobody imports.** `CAPTURE_PLAN_TARGET`,
-`CLOUD_VERIFY_POSE_PROMPTS`, `EXPRESS_CLOUD_VERIFY_POSITIONS`,
-`INTEGRITY_CHECK_SWEEP_HEARD`, `LATERAL_EVIDENCE_BAND_HZ`,
-`LATERAL_EVIDENCE_POINTS_PER_OCTAVE`, `LATERAL_POSE_PROMPTS`, `LateralPoseCurve`,
-`PRESCRIBED_NON_WORSENING_DB`, `VERIFY_MARK_PROMPT`, `VERIFY_REPEAT_FLOOR_DB`,
-`attempt_record_from_verify`, `capture_progress_label`, `lateral_pose_curve`,
-`normalize_tier`, `position_geometry`, `verify_pose_table`. Six of them are
-lateral-walk vocabulary, which was paused 2026-08-18 and retired with the corner
-hunt (module docstring `:42–45`) — they are the paused walk's residue, not
-active surface.
+**6. The `__all__` names nobody imports — count them BOTH ways.** A
+`from ...crossover_v2_flow import X` scan alone finds 17; thirteen of those are
+live through `import ...crossover_v2_flow as flow` plus `flow.X` attribute
+reads in the suites, which a from-import scan cannot see. Counting both forms,
+**four** names had no reader of any kind and were deleted with their doors:
+`CAPTURE_PLAN_TARGET`, `EXPRESS_CLOUD_VERIFY_POSITIONS`, `LateralPoseCurve`,
+`VERIFY_MARK_PROMPT`. Any future prune must count attribute reads too, or it
+deletes live surface.
 
 **7. The four "READ-ONLY door" comments are correct and should survive as a
 rule, not as prose.** `:385–389`, `:428–432`, `:536–539` all say the same thing:

@@ -63,9 +63,9 @@ from jasper.active_speaker.crossover_v2.journey import (
     PHASE_ENTRY_BASELINE,
     PHASE_VERIFY,
 )
+from jasper.active_speaker.crossover_v2.contracts import REFERENCE_MARK_DESIGN_AXIS
 from jasper.active_speaker.crossover_v2.programs import SUMMED_SWEEP_PHASES
 from jasper.active_speaker.crossover_v2_flow import (
-    REFERENCE_MARK_DESIGN_AXIS,
     build_v2_capture_plan,
     build_v2_cloud_index_phase_map,
     resolve_plan_shape,

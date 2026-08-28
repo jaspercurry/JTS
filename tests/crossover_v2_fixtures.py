@@ -28,7 +28,10 @@ import numpy as np
 
 from jasper.active_speaker import crossover_v2_flow as flow
 from jasper.active_speaker.crossover_v2 import intervention as iv
-from jasper.active_speaker.crossover_v2.contracts import ResponseCurve
+from jasper.active_speaker.crossover_v2.contracts import (
+    REFERENCE_MARK_DESIGN_AXIS,
+    ResponseCurve,
+)
 from jasper.active_speaker.crossover_v2.round_evidence import (
     EntryBaseline,
     measured_response_from_analysis,
@@ -611,7 +614,7 @@ def _fixture_entry_baseline(conductor: CrossoverV2Session) -> EntryBaseline:
             conductor.program_for_phase(PHASE_VERIFY),
             summed_db=_in_room_summed_db() * _ENTRY_BASELINE_SCALE,
         ),
-        reference_mark=flow.REFERENCE_MARK_DESIGN_AXIS,
+        reference_mark=REFERENCE_MARK_DESIGN_AXIS,
     )
     return EntryBaseline.from_measurement(
         measured,
@@ -802,21 +805,6 @@ def _rearm_conductor(fakes, **kwargs):
         measure_gate_window_ms=8.0,
         **kwargs,
     )
-
-
-class _FakeVolumePlan:
-    def __init__(self, needs_recovery: bool = False) -> None:
-        self.needs_recovery = needs_recovery
-        self.opened: list = []
-        self.abandoned: list = []
-
-    async def open(self, volume_db, door):
-        self.opened.append(volume_db)
-        return "opened"
-
-    async def abandon(self, door):
-        self.abandoned.append(True)
-        return "exact_restored"
 
 
 # Stage 1 (measure) and stage 2 (verify) are separate SESSIONS since the
