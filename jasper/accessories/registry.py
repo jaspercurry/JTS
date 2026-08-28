@@ -68,13 +68,9 @@ class TapAction:
     on_single: KeyAction
     on_double: KeyAction | None = None
     on_triple: KeyAction | None = None
-    # Inter-tap quiescence window. 400 ms is a deliberate compromise:
-    # tight enough that single-tap doesn't feel laggy, loose enough
-    # that natural human double/triple-taps register reliably. macOS's
-    # default double-click speed is ~500 ms; we run a touch tighter.
-    # BT HID physical knob clicks add springback delay between presses;
-    # too short a window drops legitimate multi-taps (verified on VK-01
-    # hardware).
+    # Inter-tap quiescence window: too short drops human double/triple
+    # taps on BT HID, where knob springback delays the next press; too
+    # long makes a single tap feel laggy.
     window_ms: int = 400
 
 

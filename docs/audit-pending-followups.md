@@ -88,12 +88,15 @@ barge-in.
 ### Lower wake refractory from 5 s → 2-3 s
 
 **Done — overshot the target.** `WAKE_REFRACTORY_SEC` was 5.0 when this
-entry was written; the value has since dropped through 0.7 s (May 2026)
-to the current 0.2 s, well past the 2-3 s this entry proposed. The
-comment block above `WAKE_REFRACTORY_SEC` in `voice_daemon.py` traces
-the full 5 s → 10 s → 0.7 s → 0.2 s history and why each step was safe
-once the TtsPlayout drain primitive started anchoring turn-end on
-samples actually queued.
+entry was written; it is now 0.2 s, well past the 2-3 s this entry
+proposed. The path was 10 s originally (pre-persistent-connection, when
+each wake cost a Live slot), 5 s (which read as a 15-20 s dead zone
+end-to-end once detector buffer warmup landed), 0.7 s in May 2026, then
+0.2 s. **0.7 s was still too long:** combined with the old post-response
+idle window it left a ~2.2 s deadzone after the model finished speaking,
+which dropped quick follow-ups silently. The TtsPlayout drain primitive
+now anchors turn-end on samples actually queued, so the refractory only
+has to cover the dmix tail — 0.2 s is ~2.5x the 85 ms dmix buffer.
 
 ### Multi-trigger ducking (wake / listening / TTS playback)
 
