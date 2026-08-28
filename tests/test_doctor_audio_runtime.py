@@ -3151,8 +3151,9 @@ def test_ok_when_the_conf_matches_the_declared_floor(monkeypatch, tmp_path):
 def test_ok_when_the_floor_exceeds_the_fixed_ring_slot(monkeypatch, tmp_path):
     # State 4, the product boundary: Ring A's slot is fan-in's COMPILE-TIME
     # RING_SLOT_FRAMES, so a DAC whose floor is not exactly that never gets a
-    # rendered conf.d — shm_ring is simply unavailable on it until #2147.
-    # That is a documented boundary, NOT drift, so it reports ok.
+    # rendered conf.d this way — shm_ring's floor-optimal period is simply out
+    # of reach here until #2147. That is a documented boundary, NOT drift, so
+    # it reports ok.
     from jasper.fanin_coupling import RING_SLOT_FRAMES
 
     monkeypatch.setattr(
@@ -3169,7 +3170,7 @@ def test_ok_when_the_floor_exceeds_the_fixed_ring_slot(monkeypatch, tmp_path):
     assert str(2 * RING_SLOT_FRAMES) in result.detail
     assert str(RING_SLOT_FRAMES) in result.detail
     assert "shm_ring" in result.detail
-    assert "loopback" in result.detail.lower()
+    assert "loopback" not in result.detail.lower()
     assert "#2147" in result.detail
 
 
@@ -3178,8 +3179,8 @@ def test_warns_when_the_conf_diverges_from_the_declared_floor(
 ):
     # State 5, real drift: the Apple dongle's floor IS renderable (it equals
     # RING_SLOT_FRAMES) but this box's conf.d was never rendered to it. Warn,
-    # not fail — the conf.d is inert unless shm_ring is armed, and the coupling
-    # reconciler independently fail-closes to loopback on this mismatch.
+    # not fail — an unrendered conf.d is inert until something arms shm_ring
+    # against it, so this is a dormant render gap, not a live fault.
     _stage_floor_conf(
         monkeypatch,
         tmp_path,
@@ -3250,8 +3251,8 @@ def test_no_floor_detail_names_both_routes_to_a_ring(monkeypatch, tmp_path):
     A DAC with no declared floor leaves outputd on its PACKAGED default period,
     which is not the fixed ring slot, so the conf.d has nothing to render. The
     conf.d is correct either way — hence `ok` — but the household's actual
-    question is "why is this box on loopback?", and before #2294 the answer
-    appeared on no surface.
+    question is "why hasn't this box reached shm_ring?", and before #2294 the
+    answer appeared on no surface.
 
     The answer it then gave was wrong. It said shm_ring was "unavailable on this
     box", which is a claim about outputd's RESOLVED period, and this check reads

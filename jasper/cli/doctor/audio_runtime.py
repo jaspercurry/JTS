@@ -2458,16 +2458,16 @@ def check_ring_conf_floor_render() -> CheckResult:
               product boundary, not drift — see below); or the conf.d already
               declares the floor's period.
       warn  — a renderable floor the conf.d has NOT been rendered to, or an
-              indeterminate conf.d period. Never fail: the conf.d is inert
-              unless shm_ring is armed, and the coupling reconciler
-              independently preflights this and fail-closes to loopback rather
-              than arming a mismatched geometry.
+              indeterminate conf.d period. Never fail: an unrendered conf.d
+              is inert until something arms shm_ring against it, so this is a
+              dormant render gap, not a live fault — the remedy is the one
+              command each warn detail below names.
 
-    An ``ok`` that leaves a box on loopback SAYS WHY (issue #2294). Both
-    no-floor and non-matching-floor are ok — the conf.d is right either way —
-    but they also bear on ring eligibility, so reporting only "nothing to
-    render" left the household's actual question ("why is this box on
-    loopback?") answered nowhere.
+    An ``ok`` that leaves shm_ring's floor-optimal period unreached SAYS WHY
+    (issue #2294). Both no-floor and non-matching-floor are ok — the conf.d is
+    right either way — but they also bear on ring eligibility, so reporting
+    only "nothing to render" left the household's actual question ("why
+    hasn't this box reached shm_ring?") answered nowhere.
 
     WHAT THOSE BRANCHES MAY AND MAY NOT CLAIM. They read the DECLARED floor,
     which is not the same fact as outputd's RESOLVED period — the two diverge
@@ -2507,10 +2507,10 @@ def check_ring_conf_floor_render() -> CheckResult:
     The product boundary: Ring A's slot size is fan-in's COMPILE-TIME
     ``RING_SLOT_FRAMES`` (``rust/jasper-fanin/src/config.rs``, no env
     override), so only a floor that EQUALS it is renderable. A DAC declaring
-    any other floor never gets a rendered conf.d, loopback continues, and the
-    floor's outputd period/buffer geometry still applies through
-    ``outputd.env``. That is a known limit with an owner (issue #2147), so it
-    reports ok, not warn.
+    any other floor never gets a rendered conf.d — shm_ring cannot reach its
+    floor-optimal period this way — and the floor's outputd period/buffer
+    geometry still applies through ``outputd.env`` regardless. That is a
+    known limit with an owner (issue #2147), so it reports ok, not warn.
 
     Scope: this compares the conf.d against the DECLARED floor, which is what
     the renderer uses. An operator ``JASPER_OUTPUTD_PERIOD_FRAMES`` override
@@ -2564,8 +2564,9 @@ def check_ring_conf_floor_render() -> CheckResult:
             "JASPER_OUTPUTD_DAC_BUFFER_FRAMES) in /etc/jasper/jasper.env, which "
             f"outranks this default; or a declared {RING_SLOT_FRAMES}-frame "
             "floor on this DAC, which is the codified form of the same values. "
-            "Until either, loopback coupling is correct. (Issue #2147 would make "
-            "the ring slot floor-derived and retire the question.)" + roleful_note,
+            "Until either, this DAC's outputd period stays off the ring slot. "
+            "(Issue #2147 would make the ring slot floor-derived and retire "
+            "the question.)" + roleful_note,
         )
     if floor.outputd_period_frames != RING_SLOT_FRAMES:
         return CheckResult(
@@ -2577,9 +2578,9 @@ def check_ring_conf_floor_render() -> CheckResult:
             "until issue #2147 makes the ring slot floor-derived. shm_ring "
             f"needs outputd's RESOLVED period to be {RING_SLOT_FRAMES}, which "
             "on this DAC only an operator JASPER_OUTPUTD_PERIOD_FRAMES in "
-            "/etc/jasper/jasper.env can produce; otherwise loopback coupling "
-            "continues and still receives the floor's outputd period/buffer "
-            "geometry." + roleful_note,
+            "/etc/jasper/jasper.env can produce; absent that override, this "
+            "DAC's own floor still governs outputd's period/buffer geometry."
+            + roleful_note,
         )
     conf_period = ring_assets.ring_conf_period_frames(_JTS_RING_CONF_D)
     if conf_period is None:
