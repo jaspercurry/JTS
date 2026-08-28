@@ -31,7 +31,10 @@ and a receipt owe — comes with them. **Fail-soft is the only thing the fold
 leaves at the caller**, in a named wrapper (``correction_crossover_v2``'s
 ``bank_take`` binding is the shape), never here and never a flag, so a
 publisher that must not fail quietly and one that deliberately fail-softs stay
-visibly different in the code that calls them.
+visibly different in the code that calls them. The one exception is the
+measurement index :meth:`BankedRecordStore._index` notes a take in — it is
+derived from the bytes this store just wrote and rebuildable from them, so a
+failure there is logged rather than raised over a bank that succeeded.
 
 **Every banked record carries its own ``take_id``.** The store requires it and
 never re-derives one: a geometry retake reuses its position id, so the position
@@ -42,6 +45,8 @@ on one write-once path.
 from __future__ import annotations
 
 import asyncio
+import logging
+import sqlite3
 from dataclasses import dataclass
 from typing import Any, Callable, Mapping
 
@@ -53,6 +58,7 @@ from jasper.attribution.session_identity import (
     stamp_session_identity,
 )
 from jasper.attribution.storage import findings_relative_path
+from jasper.log_event import log_event
 
 from ..commissioning_evidence_store import (
     EVIDENCE_ROOT,
@@ -62,14 +68,17 @@ from ..commissioning_evidence_store import (
     is_missing,
 )
 from ..measured_crossover_candidate import CANDIDATE_KIND, MeasuredCrossoverCandidate
-from .contracts import MEASURE_KINDS, ROUND_RECEIPT_KIND
+from .contracts import MEASURE_KIND_KEY, MEASURE_KINDS, ROUND_RECEIPT_KIND
 from .position_cycle import POSITION_EVIDENCE_KIND
+from .record_index import index_path, record_measurement
 
 __all__ = [
     "CHECK_EVIDENCE_KIND",
     "CLOUD_EVIDENCE_KIND",
     "BankedRecordStore",
 ]
+
+logger = logging.getLogger(__name__)
 
 #: The two artifact discriminators that exist only as bare literals in
 #: ``jasper.web.correction_crossover_v2``'s publisher bindings. Named here
@@ -84,17 +93,6 @@ CLOUD_EVIDENCE_KIND = "jts_crossover_v2_cloud_evidence"
 #: overwritten: the strip is only exact while the store is the sole author.
 _SCHEMA_VERSION = 1
 _ENVELOPE_KEYS = ("schema_version", "relay_session_id")
-
-#: A capture record names its MEASUREMENT kind — ``baseline`` / ``candidate``
-#: / ``verify`` — where the banked file has to name its ARTIFACT kind, because
-#: ``position_cycle``'s readers accept a file only when its ``kind`` is
-#: :data:`~.position_cycle.POSITION_EVIDENCE_KIND` while
-#: :meth:`~.prior_bank.PriorBank.read` selects records by the measurement kind.
-#: Two questions, so two keys: the file carries both and ``read`` puts the
-#: measurement kind back under ``kind``. Accepted under EITHER spelling on the
-#: way in — the engine hands its measurement kind as ``kind``, a builder-shaped
-#: record hands it as ``measure_kind`` — and always written under this one.
-_MEASURE_KIND_KEY = "measure_kind"
 
 #: The persist counter the store writes into the durable state, so
 #: :meth:`BankedRecordStore.read_state` can ask the FILE whether it is still
@@ -224,8 +222,8 @@ def _measure_kind(record: Mapping[str, Any]) -> str | None:
     kind = record.get("kind")
     if isinstance(kind, str) and kind in MEASURE_KINDS:
         return kind
-    if _MEASURE_KIND_KEY in record:
-        return str(record.get(_MEASURE_KIND_KEY) or "")
+    if MEASURE_KIND_KEY in record:
+        return str(record.get(MEASURE_KIND_KEY) or "")
     return None
 
 
@@ -359,10 +357,10 @@ class BankedRecordStore:
             )
         payload = {
             key: value for key, value in record.items()
-            if key not in ("kind", _MEASURE_KIND_KEY)
+            if key not in ("kind", MEASURE_KIND_KEY)
         }
         if measure is not None:
-            payload[_MEASURE_KIND_KEY] = measure
+            payload[MEASURE_KIND_KEY] = measure
         payload = {
             "schema_version": _SCHEMA_VERSION,
             "kind": discriminator,
@@ -395,6 +393,27 @@ class BankedRecordStore:
         artifact = self.evidence.publish_json_artifact(relative, payload)
         if route.verify is not None:
             route.verify(record, self.evidence.reopen_json_artifact(artifact))
+        self._index(relative, payload)
+
+    def _index(self, relative: str, payload: Mapping[str, Any]) -> None:
+        """Note a banked take in the little measurement database.
+
+        **The only contained failure in this store**, because it is the only
+        write that runs AFTER the record is durably on disk: raising here
+        would report a bank that succeeded as one that did not, and the
+        caller's fail-soft would drop the take from ``record_ids`` while its
+        bytes sit in the bundle. The index is derived, and
+        :func:`~.record_index.rebuild` recovers it from those same bytes.
+        """
+        try:
+            record_measurement(
+                index_path(self.evidence.bundle_dir), relative, payload,
+            )
+        except (OSError, sqlite3.Error):
+            log_event(
+                logger, "correction.crossover_v2_record_index_write_failed",
+                level=logging.WARNING, record_id=relative, exc_info=True,
+            )
 
     def _save_next(self, state: dict[str, Any]) -> Mapping[str, Any]:
         """Write the state one persist further on than the file already is."""
@@ -428,13 +447,13 @@ def _unwrap(document: Mapping[str, Any]) -> Mapping[str, Any]:
     route = _ROUTES.get(str(document.get("kind") or document.get("schema") or ""))
     if route is None or not route.enveloped:
         return document
-    owned = {*_ENVELOPE_KEYS, _MEASURE_KIND_KEY}
+    owned = {*_ENVELOPE_KEYS, MEASURE_KIND_KEY}
     if route.stamp_identity:
         owned.add(SESSION_IDENTITY_KEY)
     record = {
         key: value for key, value in document.items() if key not in owned
     }
-    measure_kind = document.get(_MEASURE_KIND_KEY)
+    measure_kind = document.get(MEASURE_KIND_KEY)
     if measure_kind is not None:
         record["kind"] = measure_kind
     return record
