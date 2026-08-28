@@ -101,8 +101,14 @@ POSITION_CYCLE_FILENAME = "position_cycle.json"
 #: publishes through the real store and derives from the result, so the segments
 #: still written as literals here are pinned to the actual writer rather than to
 #: a second reading of it.
+#: The take glob RELATIVE to the artifacts root — the half that is the store's
+#: own namespace rather than this module's untarred-bundle prefix.
+#: :mod:`.record_index` rescans the same files from inside the bundle, so the
+#: shared segments are spelled once here and composed by both.
+BANKED_TAKE_GLOB = "crossover_v2/*/positions/*.json"
+
 _BANKED_POSITIONS_GLOB = (
-    f"bundle/*/{EVIDENCE_ROOT}/artifacts/crossover_v2/*/positions/*.json"
+    f"bundle/*/{EVIDENCE_ROOT}/artifacts/{BANKED_TAKE_GLOB}"
 )
 
 #: ``kind`` on the speaker's own per-take record, stamped by

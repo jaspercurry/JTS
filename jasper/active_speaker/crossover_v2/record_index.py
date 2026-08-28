@@ -34,11 +34,11 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Mapping
 
-from .position_cycle import POSITION_EVIDENCE_KIND
+from .contracts import MEASURE_KIND_KEY
+from .position_cycle import BANKED_TAKE_GLOB, POSITION_EVIDENCE_KIND
 
 __all__ = [
     "INDEX_FILENAME",
-    "MEASURE_KIND_KEY",
     "Measurement",
     "find_measurements",
     "index_path",
@@ -49,20 +49,6 @@ __all__ = [
 #: ``round_views`` is the one reader that walks the bundle root, and it takes
 #: directories only — so a file here is invisible to it.
 INDEX_FILENAME = "measurements.sqlite3"
-
-#: Where the store files every take, relative to the artifacts root. One
-#: bundle can carry more than one round, so the relay segment is a wildcard.
-_TAKE_GLOB = "crossover_v2/*/positions/*.json"
-
-#: A capture record names its MEASUREMENT kind — ``baseline`` / ``candidate``
-#: / ``verify`` — where the banked file has to name its ARTIFACT kind, because
-#: ``position_cycle``'s readers accept a file only when its ``kind`` is
-#: :data:`~.position_cycle.POSITION_EVIDENCE_KIND` while ``PriorBank.read``
-#: selects records by the measurement kind. Two questions, so two keys, and
-#: the ``kind`` column here is asking the second one. Defined in this module
-#: rather than in ``record_store`` because the store imports the index, so a
-#: second spelling would let the writer and this reader drift apart.
-MEASURE_KIND_KEY = "measure_kind"
 
 _TABLE = """
 CREATE TABLE IF NOT EXISTS measurements (
@@ -147,10 +133,12 @@ def _captured_at(value: Any) -> str | None:
     try:
         return time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime(value))
     except (OverflowError, ValueError, OSError):
-        # A number outside the platform's ``time_t``, or a NaN. Unreachable
-        # from today's producers — every clock here originates in a local
-        # ``time.time()`` — but this function promises ``None`` for a clock it
-        # cannot use, and a raise here would travel out of ``bank``.
+        # A number outside the platform's ``time_t``, or a NaN. Belt for the
+        # bank path and unreachable from today's producers there — every clock
+        # reaching it originates in a local ``time.time()``, and the store
+        # refuses a non-finite float before the write — but kept because an
+        # uncaught raise here would cost a bank that had already succeeded.
+        # The rescan reaches it for real: ``json.loads`` accepts a bare NaN.
         return None
 
 
@@ -212,7 +200,7 @@ def rebuild(db_path: Path, artifacts_dir: Path) -> int:
     merging into a stale one.
     """
     rows = []
-    for take in sorted(Path(artifacts_dir).glob(_TAKE_GLOB)):
+    for take in sorted(Path(artifacts_dir).glob(BANKED_TAKE_GLOB)):
         row = _row(take.relative_to(artifacts_dir).as_posix(), _load(take))
         if row is not None:
             rows.append(row)
@@ -235,20 +223,21 @@ def _write_all(db_path: Path, rows: list[tuple[Any, ...]]) -> None:
 def find_measurements(
     db_path: Path,
     *,
-    session_id: str | None = None,
     kind: str | None = None,
     position_deg: int | None = None,
-    candidate_id: str | None = None,
 ) -> tuple[Measurement, ...]:
     """The takes matching every filter given, ordered by ``path``.
 
-    By path and not by ``captured_at``: the timestamp is the record's own and
-    can be absent, where the path is this table's key.
+    Two filter axes and not six: these are the two the banked corpus is
+    actually asked for — ``position_cycle``'s ``takes_by_position`` and its
+    kind listing, which this replaces. Every column is on
+    :class:`Measurement`, so a reader that needs to select by another one adds
+    the axis when it exists rather than before.
+
+    Ordered by path and not by ``captured_at``: the timestamp is the record's
+    own and can be absent, where the path is this table's key.
     """
-    filters = {
-        "session_id": session_id, "kind": kind,
-        "position_deg": position_deg, "candidate_id": candidate_id,
-    }
+    filters = {"kind": kind, "position_deg": position_deg}
     named = [(name, value) for name, value in filters.items() if value is not None]
     where = "".join(f" AND {name} = ?" for name, _ in named)
     with _connect(db_path) as connection:

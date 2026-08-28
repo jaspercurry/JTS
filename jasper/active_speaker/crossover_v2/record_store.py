@@ -68,9 +68,8 @@ from ..commissioning_evidence_store import (
     is_missing,
 )
 from ..measured_crossover_candidate import CANDIDATE_KIND, MeasuredCrossoverCandidate
-from .contracts import MEASURE_KINDS, ROUND_RECEIPT_KIND
+from .contracts import MEASURE_KIND_KEY, MEASURE_KINDS, ROUND_RECEIPT_KIND
 from .position_cycle import POSITION_EVIDENCE_KIND
-from .record_index import MEASURE_KIND_KEY as _MEASURE_KIND_KEY
 from .record_index import index_path, record_measurement
 
 __all__ = [
@@ -223,8 +222,8 @@ def _measure_kind(record: Mapping[str, Any]) -> str | None:
     kind = record.get("kind")
     if isinstance(kind, str) and kind in MEASURE_KINDS:
         return kind
-    if _MEASURE_KIND_KEY in record:
-        return str(record.get(_MEASURE_KIND_KEY) or "")
+    if MEASURE_KIND_KEY in record:
+        return str(record.get(MEASURE_KIND_KEY) or "")
     return None
 
 
@@ -358,10 +357,10 @@ class BankedRecordStore:
             )
         payload = {
             key: value for key, value in record.items()
-            if key not in ("kind", _MEASURE_KIND_KEY)
+            if key not in ("kind", MEASURE_KIND_KEY)
         }
         if measure is not None:
-            payload[_MEASURE_KIND_KEY] = measure
+            payload[MEASURE_KIND_KEY] = measure
         payload = {
             "schema_version": _SCHEMA_VERSION,
             "kind": discriminator,
@@ -448,13 +447,13 @@ def _unwrap(document: Mapping[str, Any]) -> Mapping[str, Any]:
     route = _ROUTES.get(str(document.get("kind") or document.get("schema") or ""))
     if route is None or not route.enveloped:
         return document
-    owned = {*_ENVELOPE_KEYS, _MEASURE_KIND_KEY}
+    owned = {*_ENVELOPE_KEYS, MEASURE_KIND_KEY}
     if route.stamp_identity:
         owned.add(SESSION_IDENTITY_KEY)
     record = {
         key: value for key, value in document.items() if key not in owned
     }
-    measure_kind = document.get(_MEASURE_KIND_KEY)
+    measure_kind = document.get(MEASURE_KIND_KEY)
     if measure_kind is not None:
         record["kind"] = measure_kind
     return record

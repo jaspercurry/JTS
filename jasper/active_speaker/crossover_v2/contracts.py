@@ -1466,6 +1466,15 @@ MEASURE_KINDS = (
     MEASURE_KIND_VERIFY,
 )
 
+#: The key a banked file carries its MEASUREMENT kind under. A record's own
+#: `kind` is its ARTIFACT kind — `position_cycle`'s readers accept a file only
+#: when that says `POSITION_EVIDENCE_KIND`, while `PriorBank.read` selects by
+#: the measurement kind. Two questions, so two keys. Spelled here, with the
+#: three values it takes, because `record_store` writes it and
+#: `record_index` reads it: a second spelling in either would let the store's
+#: on-disk format and its readers drift apart.
+MEASURE_KIND_KEY = "measure_kind"
+
 #: The two capture regimes. Owner: `driver_acoustics.CAPTURE_GEOMETRIES`.
 REGIME_NEAR_FIELD = "near_field"
 REGIME_REFERENCE_AXIS = "reference_axis"

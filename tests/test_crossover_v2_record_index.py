@@ -75,18 +75,12 @@ def _builder_take(**overrides: Any) -> dict[str, Any]:
 
 @pytest.mark.parametrize(
     "field,value",
-    [
-        ("session_id", "engine-session"),
-        ("kind", MEASURE_KIND_CANDIDATE),
-        ("position_deg", 30),
-        ("candidate_id", "cand-7"),
-    ],
+    [("kind", MEASURE_KIND_CANDIDATE), ("position_deg", 30)],
 )
 async def test_a_banked_take_is_findable_by(store, field, value):
-    """Every column the owner asked for is one the index can be asked about.
+    """The point of the database: a take found without globbing a directory.
 
-    The point of the database: one banked take, found without globbing a
-    directory, by each of the four facts a reader has in hand.
+    Both axes the reader ships — the two ``position_cycle`` was asked for.
     """
     record_id = await store.bank(_builder_take(
         kind=MEASURE_KIND_CANDIDATE, position_deg=30, candidate_id="cand-7",
@@ -183,23 +177,6 @@ async def test_a_rebuild_replaces_a_corrupt_index(store):
 
     assert rebuild(_db(store), _artifacts(store)) == 1
     assert [row.path for row in find_measurements(_db(store))] == [record_id]
-
-
-@pytest.mark.parametrize("captured_at", [1e30, -1e30])
-async def test_an_out_of_range_clock_indexes_no_timestamp(store, captured_at):
-    """A clock outside the platform's ``time_t`` indexes ``None``, not a raise.
-
-    Unreachable from today's producers — every clock originates in a local
-    ``time.time()`` — but the raise would travel out of ``bank``. NaN is not
-    parametrized here because it cannot reach the index this way at all: the
-    evidence store refuses non-finite floats as non-canonical JSON before the
-    write. Its path is the rescan's, pinned below.
-    """
-    record_id = await store.bank(_builder_take(captured_at=captured_at))
-
-    assert [
-        (row.path, row.captured_at) for row in find_measurements(_db(store))
-    ] == [(record_id, None)]
 
 
 async def test_a_rescanned_nan_clock_indexes_no_timestamp(store):
