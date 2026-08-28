@@ -278,6 +278,12 @@ def run_commissioning(
     _create_marker(marker_path)
     primary: BaseException | None = None
     try:
+        # With the marker live, this pass is the reconciler's arm-only
+        # dispatch: it publishes the final chip-reference vector and bounces
+        # outputd onto it. Without it the resting software-AEC3 env carries no
+        # chip-ref writer and the reference-queue preflight cannot pass. The
+        # finally below re-runs it marker-free to restore the resting vector.
+        runtime.reconcile()
         runtime.wait_reconciler_idle()
         artifact, evidence = _commission(runtime, artifact_path)
         log_event(logger, "chip_aec_commission.passed", **evidence)

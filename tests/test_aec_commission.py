@@ -327,8 +327,34 @@ def test_an_unregistered_dac_is_refused_before_anything_is_disturbed(
             effective_uid=0,
         )
 
-    assert io.events == ["idle", "reconciled"]
+    assert io.events == ["reconciled", "idle", "reconciled"]
     assert not artifact_path.exists()
+
+
+def test_commissioning_arms_reference_vector_before_measurement(
+    tmp_path: Path,
+) -> None:
+    # The reconciler routes into its reference-vector arm only while the
+    # marker is LIVE, so the arm reconcile must run after the marker lands and
+    # before anything waits or measures; the cleanup reconcile must run after
+    # the marker is removed so it restores the resting vector.
+    marker = tmp_path / "active"
+
+    class MarkerRecordingIO(_FakeIO):
+        def reconcile(self) -> None:
+            self.events.append(f"reconciled:marker={int(marker.exists())}")
+
+    io = MarkerRecordingIO()
+
+    aec_commission.run_commissioning(
+        io,
+        marker_path=marker,
+        artifact_path=tmp_path / "alignment.json",
+        effective_uid=0,
+    )
+
+    assert io.events[0] == "reconciled:marker=1"
+    assert io.events[-1] == "reconciled:marker=0"
 
 
 def test_commissioning_requires_root_before_creating_marker(tmp_path: Path) -> None:

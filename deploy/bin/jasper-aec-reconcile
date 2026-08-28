@@ -184,12 +184,17 @@ commission_marker_live() {
 }
 
 # The foreground commissioner owns every lifecycle mutation while its process
-# is alive. Its one volatile USB reset fires hotplug; that reconcile must be a
-# no-op, and the bridge ExecCondition must stay closed.
+# is alive. Its one volatile USB reset fires hotplug; that reconcile must not
+# touch voice/bridge/init or the wizard files, and the bridge ExecCondition
+# must stay closed. The pass is NOT a full no-op: it publishes the final
+# chip-reference vector (COMMISSION_ARM dispatch below) because the resting
+# software-AEC3 env has no chip-ref writer armed and the commissioner's
+# preflight needs outputd carrying one — only this script writes that vector.
+COMMISSION_ARM=0
 if commission_marker_live; then
     log "commissioning marker present; foreground commissioner owns AEC lifecycle"
     [[ "$CHECK_ONLY" == "1" ]] && exit 1
-    exit 0
+    COMMISSION_ARM=1
 elif [[ -e "$COMMISSION_MARKER" ]]; then
     log "removing stale commissioning marker"
     [[ "$CHECK_ONLY" == "1" ]] || rm -f "$COMMISSION_MARKER"
@@ -216,7 +221,11 @@ clear_mic_profile_state() {
 observe_mic_profile_state() {
     local payload args
     args=(-m jasper.cli.xvf_profile --asound-root "$ASOUND_ROOT" --env)
-    if [[ "$CHECK_ONLY" != "1" ]]; then
+    # An arm-only pass can observe mid-commission (the commissioner's volatile
+    # XVF reset fires hotplug while the card is off the bus); caching that
+    # transient absence would mislead every state-file reader until the
+    # post-commission pass.
+    if [[ "$CHECK_ONLY" != "1" && "$COMMISSION_ARM" != "1" ]]; then
         args+=(--state-path "$MIC_PROFILE_STATE_PATH" --write-state)
     fi
     if ! command -v "$MIC_PROFILE_PYTHON" >/dev/null 2>&1; then
@@ -1965,10 +1974,11 @@ load_env_file "$ENV_FILE"
 # and the restart gate below see the same pass-start view.
 snapshot_pass_start_env
 read_installed_build_id
-if [[ "$CHECK_ONLY" != "1" ]]; then
+if [[ "$CHECK_ONLY" != "1" && "$COMMISSION_ARM" != "1" ]]; then
     ensure_mode_file
     # Declared intent beats change detection — but only on a pass that can
-    # act on it; a --check pass must leave the marker for the real one.
+    # act on it; a --check or arm-only pass must leave the marker for the
+    # real one (the arm dispatch never restarts voice).
     consume_voice_restart_intent
 fi
 load_env_file "$MODE_FILE"
@@ -2008,6 +2018,24 @@ if profile_managed_mic_resolution && [[ -n "${JASPER_XVF_ALSA_CARD:-}" ]]; then
 else
     OUTPUTD_CHIP_REF_PCM="${JASPER_OUTPUTD_CHIP_REF_PCM:-hw:CARD=${AEC_MIC_DEVICE},DEV=0}"
 fi
+
+if [[ "$COMMISSION_ARM" == "1" ]]; then
+    # Arm-only dispatch for a live commissioning marker: publish the final
+    # chip-reference vector — the same write_leg_env "reference" arm
+    # activate_managed_chip_aec parks with (legs off, ref UDP target clear,
+    # chip-ref writer armed) — and hand it to jasper-outputd. Everything else
+    # this script does below stays excluded: the foreground commissioner owns
+    # voice/bridge/init, the wizard files, and the alignment record. Unchanged
+    # values mark no outputd restart, so the hotplug pass fired by the
+    # commissioner's own volatile XVF reset cannot bounce the writer
+    # mid-measurement; the commissioner's cleanup reconcile runs marker-free
+    # and re-derives the resting vector.
+    write_leg_env "reference" "0" "0" "1" "0" "0"
+    restart_outputd_if_needed
+    log "commission arm: published final chip-reference vector chip_ref_pcm=${OUTPUTD_CHIP_REF_PCM}"
+    exit 0
+fi
+
 CURRENT_MIC="${JASPER_MIC_DEVICE:-}"
 # Additive wake-detection legs (see write_leg_env for the mapping).
 # JASPER_AEC_MODE remains the master toggle; these only matter when
