@@ -3763,10 +3763,14 @@ def check_ring_transport_park() -> CheckResult:
     ``/state.resilience.transport_park`` and the household audio card use, so
     the three surfaces cannot name different issues for the same box.
 
-    One shape lands between ``ok`` and a park: the ADR-0184 coverage seam,
-    where a width resolves for a box no class can name and nothing has armed
-    the endpoint that would carry it. It warns here and nowhere else — there
-    is no rebuild issue and no command to carry, so it is not a fifth class.
+    Two shapes land between ``ok`` and a park, and both warn rather than park
+    because neither carries a rebuild issue or a command, which is the bar
+    ADR-0178 sets for a class: the ADR-0184 coverage seam (a width resolves
+    for a box no class can name, and nothing armed the endpoint), and a
+    converge refusal (the marker IS armed and the program still never reached
+    the endpoint). Both ride alongside ``status`` in the same snapshot, so
+    this check reads them here rather than letting ``ok`` speak for a box
+    neither the ring nor the converge pass is actually serving.
     """
     label = "ring transport parks"
 
@@ -3799,6 +3803,22 @@ def check_ring_transport_park() -> CheckResult:
                 "describes it (ADR-0184). Unproven, not parked — nothing is "
                 "claimed to the household. Report the saved layout "
                 "(/sound/setup/) if sound is missing.",
+            )
+        refusal = state.get("converge_refused")
+        if refusal:
+            # The seam's neighbour: the marker IS armed, so the endpoint class
+            # is scoped out and every topology class already passed — the box
+            # is ring-ELIGIBLE and still going nowhere. The reason is the
+            # snapshot's own sentence, carried verbatim so this surface cannot
+            # describe the refusal differently from `/state` and the /system
+            # card, which read the same field.
+            return CheckResult(
+                label,
+                "warn",
+                f"the ring can serve this box, but {refusal}. Not parked — the "
+                "graph it already had keeps playing, so nothing is claimed to "
+                "the household. Re-emit the active-speaker baseline onto the "
+                "ring endpoint if sound is missing.",
             )
         # The honest claim, not "the ring can serve this box": a box with no
         # ring geometry that no class names lands in `unclassified` below, and

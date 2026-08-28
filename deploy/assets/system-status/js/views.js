@@ -19,6 +19,7 @@ import {
 } from "./components.js";
 import {
   vitalsCards, softwareList, haBody, networkList, servicesTable, waitingNote,
+  transportParkCard, transportParkBody,
 } from "./sections.js";
 import { outputAlert, outputAlertBody } from "./audio-sections.js";
 import { buildDebugCard } from "./debug-card.js";
@@ -34,6 +35,13 @@ export function buildSystemPanel(handlers) {
   // a parked box looked exactly like an idle one on this page.
   const audioAlert = titledCard("Audio");
   audioAlert.section.hidden = true;
+
+  // Transport parks: hidden while the ring serves this box. Beside the audio
+  // alert because a park is the reason a box emits nothing, and this is the
+  // ONLY surface that shows one — owner ruling 2026-08-27 gives parks no
+  // banner anywhere else.
+  const parks = titledCard("Audio transport parks");
+  parks.section.hidden = true;
 
   // Data sections: title built once, body re-rendered (when changed) per poll.
   const vitals = h("section.stat-grid");
@@ -107,14 +115,15 @@ export function buildSystemPanel(handlers) {
   const forensics = buildUsbForensicsCard();
 
   const panel = h("main.app-main", { "attr:data-status-view": "system" },
-    live.el, audioAlert.section, vitals, software.section, ha.section,
-    network.section, actions.section,
+    live.el, audioAlert.section, parks.section, vitals, software.section,
+    ha.section, network.section, actions.section,
     diag.section, forensics.card, debugCard, services,
   );
 
   const refs = {
     staleness: live.label,
     audioAlertSection: audioAlert.section, audioAlert: audioAlert.body,
+    parksSection: parks.section, parks: parks.body,
     vitals, software: softwareDetails, ha: ha.body,
     network: network.body, svc: svcBody,
     actionsStatus, capabilityNote,
@@ -176,6 +185,16 @@ export function update(refs, snap) {
   if (alert) {
     renderSection(refs, "audioAlert", refs.audioAlert, alert,
       () => outputAlertBody(alert));
+  }
+
+  // Transport parks: same reasoning, and independent of the audio alert —
+  // a box can be parked on a shape the ring cannot serve while the live
+  // signal path reads healthy, which is exactly the state that used to be
+  // visible nowhere a browser could reach.
+  const parks = transportParkCard(snap.transport_park);
+  refs.parksSection.hidden = !parks;
+  if (parks) {
+    renderSection(refs, "parks", refs.parks, parks, () => transportParkBody(parks));
   }
 
   // Metrics-dependent cards: real content once sampling starts, else a

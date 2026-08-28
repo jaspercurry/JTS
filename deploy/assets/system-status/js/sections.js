@@ -41,6 +41,73 @@ export function waitingNote(spanGrid) {
   return p;
 }
 
+// ---- transport parks -----------------------------------------------------
+
+// Owner ruling 2026-08-27: no banner anywhere — every transport park names
+// itself here, on the operator's own screen. Every FACT below (the class
+// token, its tracked issue, its one-line reason, its remedy) is read from
+// `/system/snapshot.transport_park`, the same verdict `/state.resilience
+// .transport_park` and jasper-doctor read, so this card cannot name a park
+// the other two surfaces do not. Only the framing sentence per status is
+// written here.
+//
+// Class labels are DERIVED from the token rather than mapped, so a fifth
+// class added in jasper/control/transport_park.py appears here with no JS
+// edit and no second vocabulary to drift.
+// Exported so the harness can pin status -> entry SELECTION by identity
+// instead of matching the copy, which would make every reword a test edit.
+export const PARK_HEADLINE = {
+  parked: "No ring serves this box, so it emits nothing.",
+  pending: "This box still plays on the loopback route. It parks when that route is deleted.",
+  unclassified: "This box's saved layout resolves no ring geometry, and no named park describes it yet.",
+  unavailable: "The saved layout or the output daemon's settings could not be read, so a park cannot be ruled out.",
+};
+
+// `converge_refused` is not a park — the box is ring-eligible and every
+// status above reads clean — so it gets its own headline and its own row
+// rather than being folded in with the named classes.
+export const CONVERGE_HEADLINE =
+  "The ring can serve this box, but its program was never moved onto the ring.";
+
+// null while the transport is fine, so views.js can hide the whole card
+// rather than showing a permanently-green one nobody reads. Doubles as the
+// render memo key.
+export function transportParkCard(state) {
+  const park = state && typeof state === "object" ? state : {};
+  const status = String(park.status || "");
+  const rows = (Array.isArray(park.parks) ? park.parks : []).flatMap((entry) => {
+    if (!entry || typeof entry !== "object") return [];
+    const label = String(entry.park_class || "").replaceAll("_", " ");
+    const parts = [
+      String(entry.detail || ""),
+      entry.issue ? "Tracked: " + entry.issue : "",
+      entry.remedy ? "Clear it with: " + entry.remedy : "",
+    ].filter(Boolean);
+    if (!label && !parts.length) return [];
+    return [[label || "transport park", parts.join(" · ")]];
+  });
+  if (park.converge_refused) {
+    rows.push(["ring converge refused", String(park.converge_refused)]);
+  }
+  if (park.error) rows.push(["read failed", String(park.error)]);
+  // hasOwn, not a bare index: `status` is payload data, and a value like
+  // "constructor" reaches Object.prototype and reads as a truthy headline.
+  const headline = Object.hasOwn(PARK_HEADLINE, status)
+    ? PARK_HEADLINE[status]
+    : (rows.length ? CONVERGE_HEADLINE : "");
+  if (!headline) return null;
+  return { status, headline, rows };
+}
+
+// An ARRAY, not a wrapper: `.info-card > * + *` owns the spacing between a
+// card's blocks, so a div around these would collapse the gap to zero.
+export function transportParkBody(card) {
+  return [
+    h("p.info-card__note", null, card.headline),
+    card.rows.length ? defList(card.rows, "parks") : null,
+  ].filter(Boolean);
+}
+
 // ---- vitals --------------------------------------------------------------
 
 export function vitalsCards(cur, hist, cores) {

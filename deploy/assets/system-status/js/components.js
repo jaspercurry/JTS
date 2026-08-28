@@ -37,9 +37,11 @@ export function statCard({ label, value, sub, tone = "ok", chart }) {
 }
 
 // Key/value description list. `rows` is [[key, value], …]; value may be a
-// string or a Node.
-export function defList(rows) {
-  return h("dl.deflist", null,
+// string or a Node. `modifier` adds a `.deflist--<modifier>` hook for a list
+// whose labels need their own responsive treatment, exactly as table() does.
+export function defList(rows, modifier = "") {
+  const cls = ["dl.deflist", modifier ? `.deflist--${modifier}` : ""].join("");
+  return h(cls, null,
     rows.flatMap(([k, v]) => [h("dt", null, k), h("dd", null, v)]),
   );
 }

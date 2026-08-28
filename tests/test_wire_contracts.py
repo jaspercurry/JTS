@@ -583,3 +583,70 @@ def test_dashboard_audio_health_keys_exist_in_normalized_sampler():
         "dashboard Audio view reads keys the composed audio-health snapshot "
         f"does not build: {missing}"
     )
+
+
+# The transport-park card (sections.js transportParkCard) reads NESTED names,
+# which the top-level `snap.*` sweep above cannot see. Each entry is the JS
+# access spelling -> the payload key it must find, so a rename on either side
+# fails here instead of silently blanking the one surface a browser can learn
+# about a park from.
+DASHBOARD_TRANSPORT_PARK_READS = {
+    "park.status": "status",
+    "park.parks": "parks",
+    "park.converge_refused": "converge_refused",
+    "park.error": "error",
+    "entry.park_class": "park_class",
+    "entry.issue": "issue",
+    "entry.remedy": "remedy",
+    "entry.detail": "detail",
+}
+
+
+#: A complete `<object>.<property>` access, bounded on both ends. Whole
+#: tokens rather than a substring scan, because `park.converge_refused` is
+#: CONTAINED IN `park.converge_refused_text` — containment would wave an
+#: appending rename straight through the pin it exists to hold.
+_JS_PROPERTY_ACCESS = re.compile(r"\b([A-Za-z_$][\w$]*\.[A-Za-z_$][\w$]*)(?![\w$])")
+
+
+def _js_property_accesses(js: str) -> set[str]:
+    return set(_JS_PROPERTY_ACCESS.findall(js))
+
+
+def test_dashboard_transport_park_keys_exist_in_park_snapshot():
+    """Every name the park card reads must survive the park reader → payload.
+
+    Both snapshot shapes are driven from the real module: the healthy envelope
+    (which carries `error` only on the unavailable branch, so a deliberately
+    unreadable topology produces that one) plus a real `TransportPark` record
+    for the per-park names.
+
+    Both halves compare WHOLE names — a token set on the JS side, the payload's
+    own key set on the other — so neither direction can be satisfied by a
+    longer name that merely contains the pinned one.
+    """
+    from jasper.control import transport_park
+
+    js = _js_property_accesses(_system_status_js_text())
+    names = _payload_key_names(transport_park.snapshot(env={}))
+    # The unavailable branch: an object `_assess` cannot classify.
+    names |= _payload_key_names(transport_park.snapshot(topology=object(), env={}))
+    names |= _payload_key_names(
+        transport_park.TransportPark(
+            park_class="a_shape", issue="#1", remedy="run this", detail="why",
+        ).to_dict()
+    )
+
+    problems: list[str] = []
+    for spelling, key in sorted(DASHBOARD_TRANSPORT_PARK_READS.items()):
+        if spelling not in js:
+            problems.append(
+                f"contract pin stale: system-status JS no longer reads "
+                f"{spelling} — update this test's pins"
+            )
+        if key not in names:
+            problems.append(
+                f"the park card reads {spelling} but transport_park.snapshot() "
+                f"builds no {key!r} key — that row goes silently blank"
+            )
+    assert not problems, "\n".join(problems)

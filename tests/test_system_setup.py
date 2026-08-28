@@ -35,6 +35,9 @@ _LATENCY_HARNESS = Path(__file__).resolve().parent / "js" / "system_latency_cont
 _OPTIONAL_FEATURES_HARNESS = (
     Path(__file__).resolve().parent / "js" / "system_optional_features_test.mjs"
 )
+_TRANSPORT_PARK_HARNESS = (
+    Path(__file__).resolve().parent / "js" / "system_transport_park_test.mjs"
+)
 _MAIN_JS = (
     Path(__file__).resolve().parents[1]
     / "deploy" / "assets" / "system-status" / "js" / "main.js"
@@ -85,6 +88,32 @@ def test_optional_features_runtime_contract() -> None:
         pytest.skip("node not on PATH")
     proc = subprocess.run(
         [_NODE, str(_OPTIONAL_FEATURES_HARNESS), str(_OPTIONAL_FEATURES_JS)],
+        capture_output=True, text=True, timeout=30,
+    )
+    assert proc.returncode == 0, proc.stderr
+    assert json.loads(proc.stdout) == {"ok": True}
+
+
+def test_transport_park_card_runtime_contract() -> None:
+    """The park card's model, its body, and where its section lands.
+
+    Takes views.js too: the card's PLACEMENT (beside the audio alert, above
+    the vitals grid) is behaviour, and pinning it by building the panel beats
+    grepping the source for an argument list.
+    """
+    if _NODE is None:
+        pytest.skip("node not on PATH")
+    js_dir = (
+        Path(__file__).resolve().parents[1]
+        / "deploy" / "assets" / "system-status" / "js"
+    )
+    proc = subprocess.run(
+        [
+            _NODE,
+            str(_TRANSPORT_PARK_HARNESS),
+            str(js_dir / "sections.js"),
+            str(js_dir / "views.js"),
+        ],
         capture_output=True, text=True, timeout=30,
     )
     assert proc.returncode == 0, proc.stderr
@@ -763,7 +792,7 @@ def test_system_view_surfaces_a_speaker_that_cannot_play() -> None:
     assert 'const audioAlert = titledCard("Audio");' in views
     assert "audioAlert.section.hidden = true;" in views
     # First card in the panel: after the live pill, ahead of the vitals grid.
-    assert "live.el, audioAlert.section, vitals," in views
+    assert "live.el, audioAlert.section," in views
     assert "outputAlert(snap.audio_health)" in views
     assert "refs.audioAlertSection.hidden = !alert;" in views
     # The alert comes from the audio-health sampler, not the metrics sampler,
