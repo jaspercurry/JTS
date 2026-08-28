@@ -200,10 +200,12 @@ pub struct OutputdState {
     dac_period_frames: AtomicU64,
     content_buffer_frames: AtomicU64,
     dac_buffer_frames: AtomicU64,
-    // The resolved outputd content source: `direct` or `shm_ring`. Published as
-    // a plain mode string; the ring's own health lives in the `shm_ring` block
-    // below. (The rate-matched bridge that once published fill/ppm/lock
-    // counters here was deleted — see
+    // The resolved outputd content source: `direct`, `shm_ring`, or
+    // `dac_content_ring` (an armed round-trip marker, whose return lane is the
+    // whole source — no central hop attaches beside it). Published as a plain
+    // mode string; the ring's own health lives in the `shm_ring` block below and
+    // the return lane's in `dac_content`. (The rate-matched bridge that once
+    // published fill/ppm/lock counters here was deleted — see
     // `config::REMOVED_RATE_MATCH_BRIDGE_SPELLINGS`.)
     content_bridge_mode: String,
     // PROTOTYPE (latency/ring-proto-shm): SHM ping-pong ring reader health.
@@ -2960,16 +2962,19 @@ mod tests {
     }
 
     /// The ring transport's block names its own path key and keeps every field
-    /// the pair-lock verdict reads.
+    /// the pair-lock verdict reads — and the box says the return lane is where
+    /// its content comes from, with no central ring beside it.
     ///
     /// `serving_fifo` is the load-bearing one: `jasper.multiroom.state` and
     /// `jasper.control.grouping_supervisor` read it to decide whether bytes are
-    /// flowing, and they must keep working when a leader moves onto the ring.
+    /// flowing, and they must keep working when a member moves onto the ring.
     #[test]
     fn snapshot_json_dac_content_ring_keeps_the_pair_lock_fields() {
         let cfg = Config {
             dac_content_ring: Some(crate::config::DEFAULT_DAC_CONTENT_RING_PATH.to_string()),
             dac_content_channel: crate::dac_content::ChannelPick::Right,
+            content_bridge_mode: ContentBridgeMode::DacContentRing,
+            shm_ring: None,
             ..test_config()
         };
         let state = OutputdState::new(&cfg);
@@ -2991,6 +2996,10 @@ mod tests {
             r#""channel":"right""#,
             r#""serving_fifo":true"#,
             r#""starved_periods":2"#,
+            // The content source, named — and the central hop reported OFF, so
+            // the two blocks cannot both read as this box's upstream.
+            r#""content_bridge":{"mode":"dac_content_ring"}"#,
+            r#""shm_ring":{"enabled":false}"#,
         ] {
             assert!(j.contains(needle), "missing {needle} in {j}");
         }

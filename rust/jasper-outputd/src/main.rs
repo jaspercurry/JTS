@@ -385,7 +385,9 @@ fn run_alsa(
         vec![0 as ProgramSample; (config.period_frames as usize) * (CHANNELS as usize)];
     // Ring B: the SHM ping-pong ring content source — the one central
     // transport from CamillaDSP to the DAC (ADR-0100).
-    // Constructed ONLY under JASPER_OUTPUTD_CONTENT_BRIDGE=shm_ring;
+    // Constructed ONLY when the CENTRAL ring is the resolved content source —
+    // JASPER_OUTPUTD_CONTENT_BRIDGE=shm_ring, or an undeclared bridge on a box
+    // whose round-trip marker is not armed;
     // None leaves the loop byte-identical. A declaration this reader refuses, or
     // a geometry/version/size disagreement with the writer's existing ring, is a
     // hard error here — mapped to the config-class exit 78 so the unit parks
@@ -397,8 +399,9 @@ fn run_alsa(
     // `JASPER_OUTPUTD_CONTENT_*` names the reconciler renders the ring's other
     // ends from — so outputd declares one tuple and the crate's field-by-field
     // attach is the whole negotiation. The reader owns any staging its wire
-    // needs (see `ShmRingSource`), so a `direct` box — every box the flag does
-    // not arm — allocates nothing for it, which matters under `mlockall`.
+    // needs (see `ShmRingSource`), so a box that resolved some OTHER source —
+    // a `direct` declaration, or an armed round-trip marker — allocates nothing
+    // for it, which matters under `mlockall`.
     let mut shm_ring = match config.shm_ring.as_ref() {
         Some(ring) => {
             eprintln!(

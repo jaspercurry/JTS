@@ -237,12 +237,13 @@ def _assess(
             )
         )
 
-    # EITHER spelling arms the ONE round-trip lane, so both are this class.
-    # outputd requires ``JASPER_OUTPUTD_CONTENT_BRIDGE=direct`` for the FIFO
-    # and the ring alike (``rust/jasper-outputd/src/config.rs``), so the two
-    # park for one reason and the wire the lane arrived on is not a second
-    # shape; reading the FIFO key alone would leave a marker-armed box parked
-    # at outputd with no class naming it here.
+    # EITHER spelling arms the ONE round-trip lane, so both are this class —
+    # but no longer for one reason (``rust/jasper-outputd/src/config.rs``). The
+    # FIFO half needs ``JASPER_OUTPUTD_CONTENT_BRIDGE=direct``, which its own
+    # grouping writer no longer emits. The MARKER half now parses instead: it
+    # SELECTS the return ring as the sole content source, and is armed ahead of
+    # the reconciler that writes its producer. Reading the FIFO key alone would
+    # leave a marker-armed box with no class naming it here.
     #
     # Each key is read with the semantics outputd reads it with: the FIFO is a
     # PATH, non-empty rather than present, because the grouping reconciler
@@ -263,8 +264,9 @@ def _assess(
                 remedy=None,
                 detail=(
                     "this box is a bonded grouping member whose round-trip "
-                    "dac_content lane pins the direct content bridge, which "
-                    "outputd refuses against shm_ring"
+                    "dac_content lane has no producer: the FIFO half needs a "
+                    "content bridge its writer no longer emits, and the marker "
+                    "half is armed ahead of the reconciler that serves its ring"
                 ),
             )
         )
