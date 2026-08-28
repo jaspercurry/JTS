@@ -19,7 +19,7 @@
 // is sufficient on its own here, without also needing this file's name to
 // dodge any glob.
 
-// The 14 ids every crossover_*_test.mjs harness looks up via
+// The 19 ids every crossover_*_test.mjs harness looks up via
 // document.getElementById, in the crossover screen's own render order. Not
 // every consumer needs the same set — some add cloud/legend ids, one drops
 // "crossover-applied" — so this is a starting point files splice, not a
@@ -34,6 +34,11 @@ export const CROSSOVER_IDS = [
   "crossover-review-body",
   "crossover-action",
   "crossover-relay",
+  "crossover-walk",
+  "crossover-walk-progress",
+  "crossover-walk-headline",
+  "crossover-walk-detail",
+  "crossover-walk-action",
   "crossover-relay-status",
   "crossover-relay-link",
   "crossover-relay-qr",

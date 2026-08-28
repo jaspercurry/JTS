@@ -229,6 +229,36 @@
   vertical-align: baseline;
 }
 
+/* The measurement walkthrough (main.js renderWalk, #2881): one prompted spot
+ * at a time, for a session whose operator is at this browser. Same accent
+ * treatment as `.info-card--accent` so the live instruction reads as the
+ * page's subject rather than one more hint, and the same eyebrow/title/hint
+ * type ramp the cloud section uses — no new scale. `.measurement-row__actions`
+ * inside it keeps the release control on the established action row. */
+.capture-walk {
+  display: grid;
+  gap: 0.35rem;
+  margin-bottom: 0.9rem;
+  padding: 0.9rem;
+  border: 1px solid color-mix(in oklab, var(--primary) 40%, var(--border));
+  border-radius: var(--radius-md);
+  background: color-mix(in oklab, var(--primary) 6%, var(--surface));
+}
+
+.capture-walk > .section__title {
+  margin: 0;
+  font-size: 1.05rem;
+}
+
+.capture-walk > .form-hint,
+.capture-walk > .eyebrow {
+  margin: 0;
+}
+
+.capture-walk > .measurement-row__actions {
+  margin-top: 0.4rem;
+}
+
 /* QR hand-off (deploy/assets/shared/js/qr.js renderRelayQr) — mirrors
  * correction.css's block (the room flow's page_css) for the same shared
  * markup: a quiet card shown prominently by default on desktop/tablet,

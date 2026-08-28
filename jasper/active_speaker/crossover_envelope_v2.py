@@ -110,6 +110,7 @@ from .crossover_v2.contracts import (
     ADOPTION_ROW_KEEP_ITERATING,
     ADOPTION_ROW_KEEP_MISSED_EXHAUSTED,
 )
+from .crossover_v2.capture_source import SOURCE_WIRED
 from .crossover_v2.refusal_copy import REASON_VOLUME_UNRESOLVED
 # The round-outcome vocabulary this screen renders. Imported rather than
 # re-typed: the four codes are picked by the web host's ``_post_apply_grade``,
@@ -191,7 +192,17 @@ logger = logging.getLogger(__name__)
 # ignores the rest, so an unredeployed page is unaffected. The version is
 # bumped because the EXTERNAL DRIVER this key exists for is a separate program
 # that needs a stable way to know the contract is present.
-CROSSOVER_V2_ENVELOPE_SCHEMA_VERSION = 14
+#
+# Bumped 14 → 15 for the browser-driven wired round (#2881). Two additions,
+# both on the ``relay`` block's terms: ``source`` names the transport
+# (``wired``/``relay``) for the whole in-flight life of a session, and
+# ``position_pending`` gained ``prompt`` — the ``{progress, title, body}`` the
+# capture plan already composes for that entry, so a surface with no capture
+# page can say WHICH position it is waiting for in the plan's own words. The
+# closing screen additionally mints its confirm/re-record actions on a wired
+# session, where no phone owns them. Additive again; a driver reading
+# ``degrees`` is untouched.
+CROSSOVER_V2_ENVELOPE_SCHEMA_VERSION = 15
 
 # The v2 step tuple (§5.9, amended 2026-07-20). The step machinery inside each
 # step is gone; these five are the whole journey.
@@ -1422,9 +1433,9 @@ def _closing_envelope(status: Mapping[str, Any]) -> dict[str, Any]:
     Every stage-1 phase is accepted and no candidate exists yet. That is true
     at two very different moments, and this screen says which:
 
-    * ``awaiting_confirm`` — the pre-apply cloud is walked and the phone is
-      showing the group-close confirm. The household has something to do, and
-      it is on the phone, not here.
+    * ``awaiting_confirm`` — the pre-apply cloud is walked and the group-close
+      confirm is open. The household has something to do; WHERE depends on the
+      transport, which is what the two action branches below answer.
     * ``running`` — they confirmed; the combine and the fit are in flight.
       Nobody has anything to do. This is the flow's one genuinely
       machine-paced wait, so it is the one screen that sets ``busy``.
@@ -1438,15 +1449,25 @@ def _closing_envelope(status: Mapping[str, Any]) -> dict[str, Any]:
     "Measure again" beside it. The absence of a candidate was being reported as
     a verdict when it was only a timestamp.
 
-    **No actions at all**, and that is the point: every action this screen
-    could offer is destructive of work in progress. "Measure again" would throw
-    away a walked cloud; "Keep current sound" would abandon a fit that is about
-    to produce the very thing the household is waiting for. The phone owns the
-    only live control (Retake / Continue on the confirm screen), and Stop rides
-    the relay block as it does on every in-session screen.
+    **No SCREEN-LEVEL actions, and that is the point**: every action this
+    screen could offer of its own is destructive of work in progress. "Measure
+    again" would throw away a walked cloud; "Keep current sound" would abandon
+    a fit that is about to produce the very thing the household is waiting for.
+    Stop rides the relay block as it does on every in-session screen.
+
+    **The confirm itself belongs to whoever can reach it** (#2881). On a RELAY
+    session the phone owns Retake / Continue on its own confirm screen, and
+    this screen stays actionless and points there. On a WIRED session there is
+    no phone: the same two moves are the household's, here, so the screen mints
+    them against the endpoints the wired runner already listens on
+    (``/v2/complete``, ``/v2/retake``). They are not new machinery and not new
+    decisions — the same two the confirm screen has always offered, minted for
+    the surface that can actually show them. Both carry ``show_during_relay``
+    because the session they belong to is by definition still in flight.
     """
     v2 = _v2(status)
     running = str(v2.get("cloud_close") or "") == CLOUD_CLOSE_RUNNING
+    wired = _wired_session(status) and not running
     return _envelope(
         screen="closing",
         active_step="measure",
@@ -1454,10 +1475,25 @@ def _closing_envelope(status: Mapping[str, Any]) -> dict[str, Any]:
             "JTS is working out your correction from the measurements — this "
             "takes a few seconds."
             if running
+            else "All spots measured. Save this measurement, or record the "
+            "last spot again."
+            if wired
             else "All spots measured — confirm on the measurement page."
         ),
-        next_action=None,
-        alternate_actions=[],
+        next_action={
+            "id": "crossover_v2_complete",
+            "label": "Save this measurement",
+            "endpoint": "/correction/crossover/v2/complete",
+            "body": {},
+            "show_during_relay": True,
+        } if wired else None,
+        alternate_actions=[{
+            "id": "crossover_v2_retake",
+            "label": "Record the last spot again",
+            "endpoint": "/correction/crossover/v2/retake",
+            "body": {},
+            "show_during_relay": True,
+        }] if wired else [],
         busy=running,
         status=status,
         # The pre-apply cloud's own flatness/carve-out disclosure is already
@@ -2490,6 +2526,22 @@ def _flatness_unavailable_line(entry: Mapping[str, Any]) -> list[str]:
 
 def _v2(status: Mapping[str, Any]) -> Mapping[str, Any]:
     return _mapping(status.get("crossover_v2"))
+
+
+def _wired_session(status: Mapping[str, Any]) -> bool:
+    """Whether the session in flight is measuring on the WIRED source.
+
+    Reads the transport the slot itself published (``relay.source``,
+    ``correction_setup._begin_relay_capture``) rather than inferring it from an
+    absent ``tap_link``: "no phone link" is also what a relay session looks like
+    for the second before registration returns, and a screen that guessed would
+    offer the household a control the wrong session cannot serve.
+
+    False with no session in flight, which is what a caller minting live
+    controls wants — the seams those controls POST to are dropped with the
+    slot, so an offer outliving the session would be an offer to a 409.
+    """
+    return str(_mapping(status.get("relay")).get("source") or "") == SOURCE_WIRED
 
 
 def _step_payload(active_step: str, done_steps: set[str]) -> list[dict[str, str]]:

@@ -4210,6 +4210,70 @@ def test_the_eager_fit_is_invisible_to_the_speaker_page(monkeypatch):
     assert v2host.crossover_v2_status_block()["phase"] == "review"
 
 
+def test_the_held_set_offers_its_two_moves_to_a_wired_session(monkeypatch):
+    """#2881: on the WIRED source the confirm is the household's, on this page.
+
+    The relay's held set is closed from the phone's own confirm screen, so the
+    closing screen has always been actionless and pointed there. A wired
+    session has no phone — that screen was the last place a hand-walked round
+    could not be finished without a CLI. Both moves the phone offers are minted
+    here instead, against the endpoints the wired runner already listens on.
+
+    Driven through the REAL conductor and the REAL envelope, and asserted on
+    the action IDENTITIES rather than the copy, so a re-word does not fail it.
+    """
+    from jasper.active_speaker.crossover_envelope_v2 import (
+        build_crossover_envelope_v2,
+    )
+
+    backend = FakePlanRelayBackend()
+    spec = build_v2_session_spec(_roles(), FC_HZ, acknowledgement_binding=_BINDING)
+    client, session, phone = _mint_v2_session(backend, spec, driver_cls=None)
+    conductor = _conductor(backend, session, phone, published=[])
+    attempt = 0
+    for index in range(1, STAGE1_LAST_INDEX + 1):
+        attempt += 1
+        conductor.consume_capture(index, attempt, CaptureResult(wav=b"w"))
+        v2host.persist_conductor_state(conductor, failure_code=None)
+    block = v2host.crossover_v2_status_block()
+    assert block["cloud_close"] == "awaiting_confirm"
+
+    def envelope_for(relay):
+        return build_crossover_envelope_v2({
+            "active": True,
+            "setup": {"active": True, "status": "ready"},
+            "crossover_v2": block,
+            "relay": relay,
+        })
+
+    wired = envelope_for({"status": "starting", "source": "wired"})
+    assert wired["screen"] == "closing"
+    assert wired["busy"] is False
+    assert wired["next_action"]["id"] == "crossover_v2_complete"
+    assert wired["next_action"]["endpoint"] == "/correction/crossover/v2/complete"
+    assert wired["next_action"]["body"] == {}
+    assert [a["id"] for a in wired["alternate_actions"]] == ["crossover_v2_retake"]
+    assert (
+        wired["alternate_actions"][0]["endpoint"]
+        == "/correction/crossover/v2/retake"
+    )
+    # Both belong to a session that is BY DEFINITION still in flight, so both
+    # have to survive the action row's relay gate or neither ever renders.
+    assert wired["next_action"]["show_during_relay"] is True
+    assert wired["alternate_actions"][0]["show_during_relay"] is True
+
+    # The relay session is untouched: its phone still owns these two moves, and
+    # a second pair here would be a second answer to the same question.
+    for relay in (
+        {"status": "awaiting_phone", "source": "relay"},
+        None,  # no session in flight — the seams are gone with the slot
+    ):
+        other = envelope_for(relay)
+        assert other["screen"] == "closing"
+        assert other["next_action"] is None
+        assert other["alternate_actions"] == []
+
+
 def test_the_runner_starts_the_eager_fit_on_the_group_close_accept(monkeypatch):
     """The host wiring, through the REAL ``run_capture_plan`` and a real phone.
 

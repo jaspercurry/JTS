@@ -1,0 +1,243 @@
+// SPDX-FileCopyrightText: 2026 Jasper Curry
+//
+// SPDX-License-Identifier: Apache-2.0
+
+// The wired round's walkthrough (#2881): a human completes a GATED measurement
+// at this browser alone, with no CLI posting the release. Every screen state is
+// pinned here in the order a round meets them — opening, pending, the release
+// POST, capturing, the screen taking the control back, wind-down, terminal —
+// then the two holds this panel must NOT serve: one a driver releases, and a
+// relay session, whose phone owns the tap.
+
+import assert from "node:assert/strict";
+import { aliasGlobals, loadEsm, repoPath } from "./_loader.mjs";
+import { CROSSOVER_IDS, element, installFixedDocument } from "./_dom.mjs";
+
+const elements = installFixedDocument(CROSSOVER_IDS);
+globalThis.setTimeout = () => 1;
+globalThis.clearTimeout = () => {};
+
+let nextEnvelope = null;
+const posted = [];
+globalThis.__getJSON = async () => nextEnvelope;
+globalThis.__postJSON = async (path, body) => {
+  posted.push({ path, body });
+  return { ok: true, released: { index: body && body.index } };
+};
+globalThis.__renderRelayQr = () => {};
+globalThis.__renderCloud = () => {};
+globalThis.__redrawCloudChart = () => {};
+
+const { render } = await loadEsm(
+  repoPath("deploy/assets/correction/js/crossover/main.js"),
+  {
+    rewrite: [[/^import\s+\{[^}]+\}\s+from\s+["'][^"']+["'];\s*\n?/gm, ""]],
+    prelude: aliasGlobals([
+      "getJSON", "postJSON", "renderRelayQr", "renderCloud", "redrawCloudChart",
+    ]),
+    truncateBefore: "\nrefresh().catch((error) => {",
+    exportNames: ["render"],
+  },
+);
+
+const walk = () => elements.get("crossover-walk");
+const walkAction = () => elements.get("crossover-walk-action");
+const relayStatus = () => elements.get("crossover-relay-status");
+
+// The sentence a wired session used to be stuck on for the whole round, for a
+// link that is never created. Asserted by ABSENCE rather than pinning whatever
+// replaced it: the replacement is product copy and will be re-worded, while
+// "the phone sentence must never reach a wired session" is the defect.
+const PHONE_LINK_COPY = "Creating the measurement link…";
+const RELAY_TAP_COPY = "Open the trusted capture page and follow its one next step.";
+function assertWiredStatus() {
+  const text = relayStatus().textContent;
+  assert.notEqual(text, PHONE_LINK_COPY);
+  assert.notEqual(text, RELAY_TAP_COPY);
+  assert.ok(text.length > 0, "a wired session must never show a blank status");
+}
+
+// The words are the CAPTURE PLAN's, not this page's: the gate copies the
+// entry's own screen bag onto the hold, so a household reading the browser and
+// a household reading a capture page are given the same sentence.
+const PROMPT = {
+  progress: "Measurement 3 of 9",
+  title: "Turn the microphone to +7° (7° RIGHT of the design axis).",
+  body: "Keep it 1 m from the speaker and pointed at it.",
+};
+const PENDING = {
+  index: 3,
+  attempt: 1,
+  degrees: 7,
+  role: "onax",
+  prompt: PROMPT,
+  hand_released: true,
+  action: {
+    id: "crossover_v2_position_ready",
+    label: "Microphone is at +7°",
+    endpoint: "/correction/crossover/v2/position-ready",
+    body: { index: 3, degrees: 7 },
+  },
+};
+// The SAME hold shape on an externally positioned walk: the arm's driver
+// releases it, so no browser control may.
+const DRIVEN_PENDING = { ...PENDING, hand_released: false };
+
+function envelope(relay, extra = {}) {
+  return {
+    verdict_text: "",
+    steps: [],
+    nudges: [],
+    relay,
+    next_action: null,
+    alternate_actions: [],
+    ...extra,
+  };
+}
+
+// -- state: a wired session that has not begun holding yet ------------------ //
+// The panel stays down (there is nothing to say), and the status line names
+// the instrument rather than a link that will never be created.
+render(envelope({ status: "starting", source: "wired", tap_link: "" }));
+assert.equal(walk().hidden, true);
+assertWiredStatus();
+
+// -- state: PENDING — the hold a human releases ----------------------------- //
+render(envelope({
+  status: "awaiting_phone",
+  source: "wired",
+  position_pending: PENDING,
+}));
+assert.equal(walk().hidden, false);
+assert.equal(elements.get("crossover-walk-progress").textContent, PROMPT.progress);
+assert.equal(elements.get("crossover-walk-headline").textContent, PROMPT.title);
+assert.equal(elements.get("crossover-walk-detail").textContent, PROMPT.body);
+assert.equal(elements.get("crossover-walk-detail").hidden, false);
+const release = walkAction().children[0];
+assert.equal(release.tag, "button");
+// The SERVER's label, not one composed here — the copy is the gate's, so this
+// pins where the words come from rather than what they say.
+assert.equal(release.textContent, PENDING.action.label);
+assert.equal(release.disabled, false);
+// While HOLDING the status differs from the capturing sentence — the two
+// moments must not read alike.
+const holdingStatus = relayStatus().textContent;
+assertWiredStatus();
+
+// The release POSTs the endpoint the SERVER named, with the server's own body
+// — the index is checked against what is actually pending, so a control that
+// minted its own would release a position the microphone never reached.
+nextEnvelope = envelope({ status: "awaiting_phone", source: "wired" });
+await release.click();
+assert.deepEqual(posted, [{
+  path: "/correction/crossover/v2/position-ready",
+  body: { index: 3, degrees: 7 },
+}]);
+
+// -- state: CAPTURING — released, tone playing ------------------------------ //
+// The gate drops `position_pending` the moment it admits the begin, so the
+// spot's identity has to survive that or the household loses their place for
+// the whole sweep. No button: there is nothing to press, and a live one would
+// double-fire into a 409.
+render(envelope({ status: "awaiting_phone", source: "wired" }));
+assert.equal(walk().hidden, false);
+assert.equal(elements.get("crossover-walk-progress").textContent, PROMPT.progress);
+assert.equal(elements.get("crossover-walk-headline").textContent, PROMPT.title);
+// A paragraph, NOT a button: the structural claim, so a re-word of the note
+// does not fail this while a resurrected dead button would.
+assert.equal(walkAction().children.length, 1);
+assert.equal(walkAction().children[0].tag, "p");
+assert.ok(walkAction().children[0].textContent.length > 0);
+assertWiredStatus();
+// Holding and capturing are different moments and must not read alike — the
+// status line is the only thing that distinguishes them once the panel's own
+// prompt is retained across the release.
+assert.notEqual(relayStatus().textContent, holdingStatus);
+
+// -- state: the SCREEN takes the control back ------------------------------- //
+// The closing screen's Save / Record-again are `show_during_relay` primaries.
+// One primary at a time: the walkthrough stands down rather than competing.
+render(envelope(
+  { status: "awaiting_phone", source: "wired" },
+  {
+    next_action: {
+      id: "crossover_v2_complete",
+      label: "Save this measurement",
+      endpoint: "/correction/crossover/v2/complete",
+      body: {},
+      show_during_relay: true,
+    },
+    alternate_actions: [{
+      id: "crossover_v2_retake",
+      label: "Record the last spot again",
+      endpoint: "/correction/crossover/v2/retake",
+      body: {},
+      show_during_relay: true,
+    }],
+  },
+));
+assert.equal(walk().hidden, true);
+assert.equal(walkAction().children.length, 0);
+assert.deepEqual(
+  elements.get("crossover-action").children.map((node) => node.textContent),
+  ["Save this measurement", "Record the last spot again"],
+);
+assertWiredStatus();
+
+// -- state: WIND-DOWN — the captures are over ------------------------------- //
+// A retained prompt must not outlive the walk it described.
+render(envelope({
+  status: "committing",
+  source: "wired",
+  position_pending: PENDING,
+}));
+assert.equal(walk().hidden, true);
+assert.equal(relayStatus().textContent, "Saving the verified measurement…");
+
+// -- state: TERMINAL -------------------------------------------------------- //
+render(envelope({ status: "complete", source: "wired" }));
+assert.equal(elements.get("crossover-relay").hidden, true);
+assert.equal(walk().hidden, true);
+
+// -- a hold NOBODY here releases -------------------------------------------- //
+// The arm's own walk is gated identically and rides the identical payload, so
+// the discriminator has to be the hold's `hand_released`, not the transport.
+// A release control here could free a position the arm has not reached.
+render(envelope({
+  status: "awaiting_phone",
+  source: "wired",
+  position_pending: DRIVEN_PENDING,
+}));
+assert.equal(walk().hidden, true);
+assert.equal(walkAction().children.length, 0);
+assertWiredStatus();
+
+// -- a RELAY session is untouched ------------------------------------------- //
+// The connect affordance a phone needs still renders, and the panel that
+// replaced it on the wired path does not appear beside it.
+render(envelope({
+  status: "awaiting_phone",
+  source: "relay",
+  tap_link: "https://capture.test/#s=cap",
+  position_pending: DRIVEN_PENDING,
+}));
+assert.equal(walk().hidden, true);
+assert.equal(
+  relayStatus().textContent,
+  "Open the trusted capture page and follow its one next step.",
+);
+assert.equal(elements.get("crossover-relay-link").hidden, false);
+
+// A session with no source at all (an older slot, or a flow that never
+// stamped one) keeps the pre-#2881 behavior exactly.
+render(envelope({
+  status: "awaiting_phone",
+  tap_link: "https://capture.test/#s=cap",
+}));
+assert.equal(walk().hidden, true);
+assert.equal(
+  relayStatus().textContent,
+  "Open the trusted capture page and follow its one next step.",
+);
+
+console.log(JSON.stringify({ ok: true, passed: 46 }));

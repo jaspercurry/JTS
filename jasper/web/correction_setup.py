@@ -63,6 +63,10 @@ from pathlib import Path
 from typing import TYPE_CHECKING, Any
 from urllib.parse import parse_qs, urlparse
 
+from jasper.active_speaker.crossover_v2.capture_source import (
+    SOURCE_RELAY,
+    SOURCE_WIRED,
+)
 from jasper.active_speaker.test_signal_plan import CROSSOVER_CAPTURE_MAX_WAV_BYTES
 from jasper.audio_measurement import room_boundary
 
@@ -709,6 +713,7 @@ def _begin_relay_capture(
     position_gate: Any | None = None,
     request_complete: Callable[[], None] | None = None,
     request_retake: Callable[[], None] | None = None,
+    local: bool = False,
 ) -> bool:
     """Atomically claim the single relay-capture slot. Returns False if one is
     already in flight (so a double-tap can't spawn two relay sessions + a file
@@ -723,7 +728,18 @@ def _begin_relay_capture(
             and _relay_capture.get("status") in _RELAY_IN_FLIGHT_STATUSES
         ):
             return False
-        _relay_capture = {"status": "starting", "kind": kind_label}
+        # WHICH transport is running, published for the whole in-flight life of
+        # the slot (``_publish_relay_waiting`` carries it forward). A wired
+        # session has no ``tap_link`` by construction, so without this the
+        # browser cannot tell "no link yet" from "no link ever" and sat on
+        # "Creating the measurement link…" for the whole round; it is also what
+        # tells the closing screen whose move the all-spots-measured confirm is
+        # (#2881). The vocabulary is the capture seam's own, not a second one.
+        _relay_capture = {
+            "status": "starting",
+            "kind": kind_label,
+            "source": SOURCE_WIRED if local else SOURCE_RELAY,
+        }
         _relay_stop_request = request_stop
         _relay_position_gate = position_gate
         _relay_complete_request = request_complete
@@ -1073,6 +1089,7 @@ def _run_relay_capture(
         position_gate=kind.position_gate,
         request_complete=kind.request_complete,
         request_retake=kind.request_retake,
+        local=kind.local,
     ):
         raise ValueError("a phone-mic relay capture is already in progress")
     capture_origin = correction_adapter.capture_origin_from_env()

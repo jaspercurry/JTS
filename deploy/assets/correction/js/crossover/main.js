@@ -31,6 +31,11 @@ const els = {
   legendExcluded: document.getElementById('crossover-chart-legend-excluded'),
   action: document.getElementById('crossover-action'),
   relay: document.getElementById('crossover-relay'),
+  walk: document.getElementById('crossover-walk'),
+  walkProgress: document.getElementById('crossover-walk-progress'),
+  walkHeadline: document.getElementById('crossover-walk-headline'),
+  walkDetail: document.getElementById('crossover-walk-detail'),
+  walkAction: document.getElementById('crossover-walk-action'),
   relayStatus: document.getElementById('crossover-relay-status'),
   relayLink: document.getElementById('crossover-relay-link'),
   relayQr: document.getElementById('crossover-relay-qr'),
@@ -55,12 +60,16 @@ const RETRY_MS = 5000;
 // visibilitychange (and on the next render() call after that).
 const HIDDEN_POLL_MS = 10000;
 const RELAY_STOPPABLE = new Set(['starting', 'awaiting_phone']);
-const RELAY_IN_FLIGHT = new Set([
-  ...RELAY_STOPPABLE,
-  'finishing',
-  'committing',
-  'stopping',
-]);
+// Wind-down: in flight, but the captures are over and the session is finishing
+// its own work. A walkthrough has nothing to say here — the status line
+// narrates these three instead.
+const RELAY_WINDING_DOWN = new Set(['finishing', 'committing', 'stopping']);
+const RELAY_IN_FLIGHT = new Set([...RELAY_STOPPABLE, ...RELAY_WINDING_DOWN]);
+// Which capture source the live session opened on, as the slot publishes it
+// (`correction_setup._begin_relay_capture`). A WIRED session has no phone and
+// no tap link, so the whole connect affordance below is meaningless for it and
+// the walkthrough takes its place.
+const SOURCE_WIRED = 'wired';
 
 function publicCrossoverUrl(value) {
   const raw = String(value || '');
@@ -583,6 +592,83 @@ function renderActions(primary, alternates = []) {
   }
 }
 
+// The prompt the walk is standing on, kept across the poll that follows a
+// release. The gate clears `position_pending` the moment the capture is
+// admitted, so without this the panel would drop from "Measurement 3 of 9 —
+// turn the microphone to +7°" to a bare status line for the whole 25 s the
+// tone plays, and the household would lose their place mid-round. Cleared
+// whenever the session stops being in flight (renderWalk's own !active arm),
+// so it can never describe a session that is over.
+let walkPrompt = null;
+let lastWalkKey = null;
+
+// A stable serialization of exactly what renderWalk builds — the same
+// tap-preserving discipline as actionRowKey. renderWalk runs on every 1.5 s
+// poll, and rebuilding the release button under a finger that is already
+// down is how hardware round 4 lost taps on the action row.
+function walkKey(prompt, pending, yielded) {
+  return JSON.stringify({prompt, pending: pending || null, yielded, busy});
+}
+
+// The walkthrough: which spot, in the capture plan's own words, and the
+// control that says the microphone is there (#2881). Reads
+// `relay.position_pending` — the hold the position gate publishes, which until
+// now only `jasper-arm-walk` ever rendered.
+//
+// Transport-agnostic by construction: NOTHING here tests which source the
+// session opened on. What it tests is `hand_released` — the server's own
+// answer to "is a person expected to release this hold?" — so the panel
+// follows the hold rather than the transport. That is also what keeps the
+// arm's rig off this screen (ADR-0188 §4): an externally positioned walk is
+// gated too, but its driver POSTs the release, and a browser button beside it
+// could free a position the arm has not reached yet.
+//
+// `yielded` steps the panel aside when the SCREEN has minted its own control
+// for this session (the closing screen's Save / Record-again, the review
+// screen's Apply) — one primary at a time, the rule the action row's relay
+// gate already holds.
+function renderWalk(relay, {active, yielded}) {
+  const walking = Boolean(active && !RELAY_WINDING_DOWN.has(relay.status));
+  const held = walking ? relay.position_pending : null;
+  const pending = held && held.hand_released ? held : null;
+  if (pending && pending.prompt) walkPrompt = pending.prompt;
+  if (!walking) walkPrompt = null;
+  const show = Boolean(walking && walkPrompt && !yielded);
+  const key = walkKey(show ? walkPrompt : null, show ? pending : null, yielded);
+  if (key === lastWalkKey) return;
+  lastWalkKey = key;
+  els.walk.hidden = !show;
+  if (!show) {
+    els.walkAction.replaceChildren();
+    return;
+  }
+  els.walkProgress.textContent = walkPrompt.progress || '';
+  els.walkHeadline.textContent = walkPrompt.title || '';
+  els.walkDetail.textContent = walkPrompt.body || '';
+  els.walkDetail.hidden = !walkPrompt.body;
+  // Two states, and the difference is whose move it is. Holding: the server
+  // named the release action, so render it. Not holding: the tone is playing
+  // on the spot named above, and there is nothing to press — say that rather
+  // than leave a dead button the household can double-fire into a 409.
+  if (pending && pending.action && pending.action.endpoint) {
+    const button = el('button', {
+      class: 'btn btn--primary',
+      type: 'button',
+      disabled: busy,
+      text: pending.action.label || 'The microphone is in place',
+    });
+    button.addEventListener('click', () => runAction(pending.action, button));
+    els.walkAction.replaceChildren(button);
+  } else {
+    els.walkAction.replaceChildren(
+      el('p', {
+        class: 'measurement-row__meta',
+        text: 'Recording this spot — keep still until the tone stops.',
+      }),
+    );
+  }
+}
+
 // `suppressConnectAffordance` keeps the relay ACTIVE (so polling continues and
 // Stop stays wired) but hides the "Open phone capture" link + QR — used on the
 // review screen, where the phone is already connected, so a "scan to connect"
@@ -593,6 +679,7 @@ function renderActions(primary, alternates = []) {
 function renderRelay(relay, {suppressConnectAffordance = false} = {}) {
   const active = relay && RELAY_IN_FLIGHT.has(relay.status);
   const stoppable = relay && RELAY_STOPPABLE.has(relay.status);
+  const wired = Boolean(relay && relay.source === SOURCE_WIRED);
   els.relay.hidden = !active;
   els.relayLink.hidden = true;
   // Cleared by default alongside the link; repopulated below only in the
@@ -600,6 +687,10 @@ function renderRelay(relay, {suppressConnectAffordance = false} = {}) {
   renderRelayQr(els.relayQr, null);
   els.relayStop.hidden = !stoppable;
   els.relayStop.disabled = stopInFlight;
+  // Ahead of the status branches below, all of which return early: the walk is
+  // a property of the SESSION, not of the branch that happens to be describing
+  // it, and it has to be torn down on the terminal ones too.
+  renderWalk(relay, {active, yielded: suppressConnectAffordance});
   if (!active) {
     if (relay && relay.status === 'failed') {
       setStatus(relay.error || 'Capture failed. Retry this step.', 'bad');
@@ -623,9 +714,27 @@ function renderRelay(relay, {suppressConnectAffordance = false} = {}) {
     return;
   }
   if (suppressConnectAffordance) {
-    // Phone connected — keep the section (Stop stays wired, polling
-    // continues) but do not re-advertise a connect link/QR.
-    els.relayStatus.textContent = 'The measurement page is connected — review and apply below.';
+    // The screen owns the live control — keep the section (Stop stays wired,
+    // polling continues) but do not advertise a connect link/QR beside it.
+    els.relayStatus.textContent = wired
+      ? 'Measuring on the microphone plugged into the speaker.'
+      : 'The measurement page is connected — review and apply below.';
+    return;
+  }
+  if (wired) {
+    // A wired session has no tap_link BY CONSTRUCTION (there is no phone to
+    // hand one to), so it must never fall through to the "creating the link"
+    // arm below — that sentence was the whole in-flight status of a wired
+    // round before #2881, and it never came true. Which of the two sentences
+    // is keyed off the same `hand_released` the panel is: a hold nobody at
+    // this browser releases must not be narrated as if it waited on the
+    // reader.
+    const awaitingReader = Boolean(
+      relay.position_pending && relay.position_pending.hand_released,
+    );
+    els.relayStatus.textContent = awaitingReader
+      ? 'The tone plays as soon as you confirm the microphone is in place.'
+      : 'Measuring on the microphone plugged into the speaker.';
     return;
   }
   if (relay.tap_link) {
@@ -698,6 +807,15 @@ function renderActionRow(env) {
   renderActions(primary, shownAlternates);
 }
 
+// Whether the SCREEN has minted a primary the household is meant to press
+// while the session is still in flight — the review screen's Apply, and the
+// closing screen's Save / Record-again on a wired round. One primary at a
+// time: when this is true the relay block stops advertising a connect link
+// and the walkthrough stands down, so the two never compete.
+function screenOwnsLiveControl(env) {
+  return Boolean(env && env.next_action && env.next_action.show_during_relay);
+}
+
 function render(env) {
   envelope = env;
   els.verdict.textContent = env.verdict_text || '';
@@ -706,12 +824,9 @@ function render(env) {
   renderNudges(env.nudges, env.expert_details, env.findings);
   renderCandidateReview(env.candidate_review);
   renderCloud(els, env);
-  // On the review screen the show_during_relay primary (Apply) owns the screen
-  // — keep the relay live for polling/Stop but hide its connect link/QR.
-  const suppressConnectAffordance = Boolean(
-    env.next_action && env.next_action.show_during_relay,
-  );
-  renderRelay(env.relay, {suppressConnectAffordance});
+  renderRelay(env.relay, {
+    suppressConnectAffordance: screenOwnsLiveControl(env),
+  });
   renderActionRow(env);
   schedulePoll(relayIsActive(env.relay) ? POLL_MS : null);
 }
@@ -889,6 +1004,17 @@ async function runAction(action, button) {
     // directly, without that gate — the 2026-07-16 two-primary-buttons bug.
     if (!relayStarted) {
       renderActionRow(envelope);
+      // Same reason, same latest-known envelope: the walk's release button was
+      // built while busy was still true (render() ran inside the refresh
+      // above), so it carries a baked-in `disabled` that nothing else would
+      // clear until the next poll — a full second and a half in which the
+      // household's next spot looks refused.
+      if (envelope) {
+        renderWalk(envelope.relay, {
+          active: relayIsActive(envelope.relay),
+          yielded: screenOwnsLiveControl(envelope),
+        });
+      }
     }
   }
 }

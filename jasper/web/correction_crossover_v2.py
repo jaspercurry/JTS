@@ -5229,10 +5229,11 @@ class PositionGate:
         session's wall-clock ceiling, or when the entry carries no target.
         """
         from jasper.active_speaker.crossover_v2.capture_plan import (
+            AUTO_ADVANCE_TAP,
             POSITION_DEG_KEY,
             POSITION_ROLE_KEY,
         )
-        from jasper.capture_relay.session import (
+        from jasper.active_speaker.crossover_v2.capture_source import (
             CaptureBeginDeferred,
             CaptureBeginRefused,
         )
@@ -5317,9 +5318,47 @@ class PositionGate:
                     "attempt": int(attempt),
                     "degrees": target,
                     "role": role,
+                    # The words a PERSON acts on, lifted verbatim off the entry
+                    # the runner already handed us — the same
+                    # progress/title/body the capture page renders, composed
+                    # once in ``capture_plan`` and shared by every transport
+                    # (#2881). ``degrees`` above is the MOVER's number and says
+                    # nothing a household can follow; a browser walking the
+                    # round needs the sentence, and re-deriving it here from
+                    # the index would be a second copy of the plan's own copy.
+                    # Absent keys collapse to "" rather than a partial dict, so
+                    # a renderer can test one shape.
+                    "prompt": {
+                        key: str(screen.get(key) or "")
+                        for key in ("progress", "title", "body")
+                    },
+                    # Whether a PERSON is expected to release this hold, which
+                    # is the question a surface offering a release control has
+                    # to answer and is NOT the same question as the transport.
+                    # Both gated shapes reach here, and only one of them has a
+                    # hand: an externally positioned walk auto-begins behind a
+                    # countdown because its arm's driver POSTs the release
+                    # (ADR-0188 §4 keeps that rig off the household's screen),
+                    # while a hand-released round keeps the tap policy exactly
+                    # because a person is standing there. The plan already
+                    # states which, per entry, so this reads its answer rather
+                    # than minting a second one.
+                    "hand_released": (
+                        str(screen.get("auto_advance") or "") == AUTO_ADVANCE_TAP
+                    ),
                     "action": {
                         "id": "crossover_v2_position_ready",
-                        "label": f"Microphone is at {target:+d}°",
+                        # The SIGN is what tells the two off-axis sides apart,
+                        # so it stays everywhere it distinguishes something —
+                        # but "+0°" distinguishes nothing and reads as a typo
+                        # on a button a household presses. The design axis is
+                        # also how the pose's own prompt names it ("on the
+                        # design axis (0°)"), so the two now agree.
+                        "label": (
+                            "Microphone is on the design axis (0°)"
+                            if target == 0
+                            else f"Microphone is at {target:+d}°"
+                        ),
                         "endpoint": POSITION_READY_ENDPOINT,
                         "body": {"index": int(index), "degrees": target},
                     },
