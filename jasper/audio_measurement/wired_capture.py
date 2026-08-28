@@ -215,9 +215,9 @@ def resolve_wired_mic(
 
     Fail-soft to ``None`` on any probe error — including an unreadable or
     non-UTF-8 proc file (the ring_assets precedent for reads of
-    kernel-owned text): "no wired mic" selects the relay, which is the safe
-    default; only the explicit ``JASPER_CAPTURE_SOURCE=wired`` override
-    turns absence into a loud error (the provider owns that).
+    kernel-owned text). ``None`` means "no mic answered", never a source
+    choice: what a caller does with it is the caller's (the v2 flow
+    discloses and refuses to guess — ``resolve_v2_capture_source``).
     """
     from jasper.audio_measurement.mic_identity import SUPPORTED_MODELS
 

@@ -33,6 +33,7 @@ import pytest
 
 from jasper.active_speaker import commission_wiring, crossover_v2_flow, design_draft
 from jasper.active_speaker import driver_safety as driver_safety_mod
+from jasper.active_speaker.crossover_v2.capture_source import SOURCE_RELAY
 from jasper.active_speaker import excitation_safety_plan as excitation_safety_plan_mod
 from jasper.active_speaker.tone_plan import load_active_speaker_preset
 from jasper.audio_hardware.dac import HIFIBERRY_DAC8X
@@ -628,6 +629,10 @@ def test_prepare_v2_session_runs_the_real_conductor_context_resolver(monkeypatch
     fail-soft seam) is stubbed."""
     topo = _topology(HIFIBERRY_DAC8X.id, 8, card_id="DAC8")
     _patch_topology(monkeypatch, topo)
+    # The subject is the CONTEXT resolver, so the capture source is named
+    # rather than probed: wired is the default since the 2026-08-28 ruling,
+    # and no machine running this suite has a measurement mic plugged in.
+    monkeypatch.setenv("JASPER_CAPTURE_SOURCE", SOURCE_RELAY)
     monkeypatch.setattr(
         v2host, "open_v2_evidence_store", lambda topology: (object(), "sess-fake")
     )

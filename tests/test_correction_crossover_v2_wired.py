@@ -65,6 +65,7 @@ from jasper.capture_relay.session import (
 )
 from jasper.capture_relay.spec import CapturePlan, CapturePlanEntry
 from jasper.web import correction_crossover_v2 as v2host
+from jasper.web import correction_crossover_v2_relay as v2relay
 from jasper.web import correction_crossover_v2_wired as v2wired
 
 from tests.test_wired_capture import FakePcm, UMIK2_USB_ID, _make_card
@@ -95,52 +96,53 @@ def _device() -> WiredMicDevice:
 # --------------------------------------------------------------------------- #
 
 
-def test_auto_selects_wired_when_a_measurement_mic_is_present(tmp_path):
+#: Every spelling that means "measure on the local mic" — the default (unset)
+#: and the two ways of saying it out loud.
+WIRED_ENVS = [
+    {},
+    {"JASPER_CAPTURE_SOURCE": "auto"},
+    {"JASPER_CAPTURE_SOURCE": "wired"},
+]
+
+
+@pytest.mark.parametrize("env", WIRED_ENVS)
+def test_wired_is_the_default_source_when_a_mic_is_present(tmp_path, env):
     _make_card(tmp_path, 0, usbid=UMIK2_USB_ID, card_id="UMIK2")
-    source, device = v2wired.resolve_v2_capture_source(
-        {}, proc_asound=tmp_path
-    )
+    source, device = v2wired.resolve_v2_capture_source(env, proc_asound=tmp_path)
     assert source == SOURCE_WIRED
     assert device is not None and device.model_key == "minidsp_umik2"
 
 
-def test_auto_selects_relay_when_no_measurement_mic_is_present(tmp_path):
-    source, device = v2wired.resolve_v2_capture_source(
-        {}, proc_asound=tmp_path
-    )
-    assert (source, device) == (SOURCE_RELAY, None)
+@pytest.mark.parametrize("env", WIRED_ENVS)
+def test_no_mic_discloses_instead_of_falling_back_to_the_relay(tmp_path, env):
+    """The owner ruling (2026-08-28): wired is THE acoustic-measurement path,
+    so absence is DISCLOSED and the session refuses to guess. A silent relay
+    session here is the defect — a household measures their speaker through a
+    phone they never chose because a USB plug was loose."""
+    with pytest.raises(v2wired.WiredMicMissing) as caught:
+        v2wired.resolve_v2_capture_source(env, proc_asound=tmp_path)
+    assert caught.value.code == v2wired.CODE_WIRED_MIC_MISSING
 
 
-def test_explicit_relay_wins_even_with_a_mic_present(tmp_path):
-    """Disclose-and-recommend, never nanny: the phone flow stays fully
-    usable when chosen."""
-    _make_card(tmp_path, 0, usbid=UMIK2_USB_ID, card_id="UMIK2")
-    source, device = v2wired.resolve_v2_capture_source(
+@pytest.mark.parametrize("mic_present", [True, False])
+def test_the_parked_relay_is_reached_by_naming_it(tmp_path, mic_present):
+    """Disclose-and-recommend, never nanny: the phone flow stays fully usable
+    for whoever asks for it, mic plugged in or not."""
+    if mic_present:
+        _make_card(tmp_path, 0, usbid=UMIK2_USB_ID, card_id="UMIK2")
+    assert v2wired.resolve_v2_capture_source(
         {"JASPER_CAPTURE_SOURCE": "relay"}, proc_asound=tmp_path
-    )
-    assert (source, device) == (SOURCE_RELAY, None)
-
-
-def test_explicit_wired_without_a_mic_refuses_loudly(tmp_path):
-    with pytest.raises(WiredCaptureError, match="no measurement-class"):
-        v2wired.resolve_v2_capture_source(
-            {"JASPER_CAPTURE_SOURCE": "wired"}, proc_asound=tmp_path
-        )
+    ) == (SOURCE_RELAY, None)
 
 
 def test_an_unrecognized_override_refuses_rather_than_guessing(tmp_path):
-    with pytest.raises(WiredCaptureError, match="unrecognized"):
+    with pytest.raises(WiredCaptureError) as caught:
         v2wired.resolve_v2_capture_source(
             {"JASPER_CAPTURE_SOURCE": "phone"}, proc_asound=tmp_path
         )
-
-
-def test_auto_spelling_is_accepted(tmp_path):
-    _make_card(tmp_path, 0, usbid=UMIK2_USB_ID, card_id="UMIK2")
-    source, _device = v2wired.resolve_v2_capture_source(
-        {"JASPER_CAPTURE_SOURCE": "auto"}, proc_asound=tmp_path
-    )
-    assert source == SOURCE_WIRED
+    # NOT the missing-mic disclosure: an unreadable override is a different
+    # fault with a different fix, so it must not carry that code.
+    assert not isinstance(caught.value, v2wired.WiredMicMissing)
 
 
 # --------------------------------------------------------------------------- #
@@ -190,13 +192,27 @@ def test_the_wired_answer_satisfies_the_seam_contract():
     assert isinstance(answer, CaptureAnswer)
 
 
-def test_resolve_prepare_capture_source_translates_to_a_refusal(monkeypatch):
+@pytest.mark.parametrize(
+    "raised, expected_code",
+    [
+        (v2wired.WiredMicMissing, v2wired.CODE_WIRED_MIC_MISSING),
+        (WiredCaptureError, ""),
+    ],
+)
+def test_resolve_prepare_capture_source_translates_to_a_refusal(
+    monkeypatch, raised, expected_code,
+):
+    """The refusal reaches the tap CODED where the provider named it, so the
+    journal and the 400 say which disclosure this was rather than quoting a
+    sentence; a provider error with no code of its own carries none."""
+
     def _boom(*args, **kwargs):
-        raise WiredCaptureError("JASPER_CAPTURE_SOURCE=wired but no mic")
+        raise raised("no mic")
 
     monkeypatch.setattr(v2wired, "resolve_v2_capture_source", _boom)
-    with pytest.raises(v2host.CrossoverV2Refused, match="no mic"):
+    with pytest.raises(v2host.CrossoverV2Refused) as caught:
         v2host._resolve_prepare_capture_source()
+    assert caught.value.code == expected_code
 
 
 def test_a_relay_session_requires_the_relay_at_the_source_gate(monkeypatch):
@@ -333,7 +349,7 @@ def test_build_source_run_gives_each_provider_its_own_extras(monkeypatch):
         return "relay-run"
 
     monkeypatch.setattr(v2wired, "build_v2_wired_run_and_consume", _wired_builder)
-    monkeypatch.setattr(v2host, "build_v2_run_and_consume", _relay_builder)
+    monkeypatch.setattr(v2relay, "build_v2_run_and_consume", _relay_builder)
     device = _device()
     complete = threading.Event()
     retake = threading.Event()

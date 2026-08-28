@@ -21,12 +21,14 @@ dispatch branches in :mod:`jasper.web.correction_setup`) and the pure conductor
   :func:`jasper.active_speaker.crossover_v2_flow.bind_program_playback_seams`,
   and the apply gate reading the durable applied flag;
 * the **session assembly for the capture provider** (#2662): the preparers
-  below gate, build the conductor, and hand the walk to the capture source —
-  today the relay provider, :mod:`jasper.web.correction_crossover_v2_relay`,
-  which owns the plan-walk hosting (``build_v2_run_and_consume``), the phone
-  progress choreography, and the translation of relay-internal deaths into
-  the flow's reason vocabulary. This host stays the single writer of the
-  persisted failure state those reasons land in
+  below gate, build the conductor, and hand the walk to the capture source
+  the session resolved to — :mod:`jasper.web.correction_crossover_v2_wired`
+  by default, and :mod:`jasper.web.correction_crossover_v2_relay` when the
+  parked phone flow is named. Each owns its own plan-walk hosting, its own
+  choreography, and the translation of its internal deaths into the flow's
+  reason vocabulary; each is reached LAZILY, on its own branch, so a session
+  loads only the island it measures on. This host stays the single writer of
+  the persisted failure state those reasons land in
   (``status["crossover_v2"]["failure"]`` — ``relay_timeout``,
   ``user_stopped``, …), and of the walked-away volume guarantee the provider
   drives through ``V2VolumeHooks``.
@@ -131,32 +133,6 @@ from jasper.active_speaker.crossover_v2.verification import (
 )
 from jasper.dsp_apply import DSP_PROOF_INACTIVE_RESULTS
 from jasper.log_event import log_event
-# The RELAY capture provider (#2662 strangler slice 1). The plan-walk hosting,
-# the phone progress ladder, the purge grace, and the link-TTL policy are the
-# relay source's private choreography and moved behind the capture-source seam
-# (jasper.active_speaker.crossover_v2.capture_source), into
-# jasper.web.correction_crossover_v2_relay. The names stay published HERE —
-# same PEP 484 redundant-alias form as the journey block above — because they
-# are this host's existing surface: the preparers below call them, and
-# correction_setup and the test suite address them at this module. EAGER, and
-# safely so: the provider module never imports this one at module scope (its
-# host reach-backs are call-time), so the pair cannot deadlock an import.
-#
-# Patch contract for test doubles: this HOST calls build_v2_run_and_consume,
-# relay_link_ttl_s, and PlaybackStartSignal through these bindings, so
-# patching them on this module reaches the preparers.
-#
-# Three further names (program_phase_schedule, start_program_phase_ladder,
-# TERMINAL_FAILURE_PURGE_GRACE_S) were re-published here too, for external
-# callers the host never invoked. No external caller ever arrived — only tests
-# addressed them as ``v2host.<name>`` — so the re-exports are gone and the
-# provider module owns them outright. Reach them at
-# ``jasper.web.correction_crossover_v2_relay``.
-from jasper.web.correction_crossover_v2_relay import (
-    PlaybackStartSignal as PlaybackStartSignal,
-    build_v2_run_and_consume as build_v2_run_and_consume,
-    relay_link_ttl_s as relay_link_ttl_s,
-)
 
 if TYPE_CHECKING:
     from jasper.active_speaker.crossover_v2_flow import AnalyzeCapture
@@ -196,9 +172,11 @@ _volume_plan: Any = None
 class CrossoverV2Refused(ValueError):
     """A v2 endpoint refusal (maps to HTTP 400 in the dispatch ladder).
 
-    ``code`` is an optional
+    ``code`` names the refusal: a
     :data:`~jasper.active_speaker.crossover_v2.refusal_copy.REASON_REGISTRY`
-    code. A refusal raised BEFORE any durable state is written — which the
+    entry when one exists for it, else a provider-owned code that names it
+    for the journal and renders no action. A refusal raised BEFORE any
+    durable state is written — which the
     session-open pre-flight is, by design (issue #1821: no link minted, no
     session burned) — never reaches the envelope, because the envelope renders
     from a PERSISTED ``failure``. So a pre-flight refusal that carried only a
@@ -6116,11 +6094,13 @@ def _resolve_prepare_capture_source() -> tuple[str, Any]:
 
     Resolved ONCE per prepare and threaded into ``_open`` — the mint, the
     runner build, and the returned ``capture_source`` must describe one
-    decision, not three reads of a probe that can change between them. The
-    wired provider is imported lazily so a relay session keeps today's
-    import surface. A wired resolution error (an explicit override with no
-    mic present, an unrecognized override value) refuses at the tap, before
-    any evidence store or durable state is touched.
+    decision, not three reads of a probe that can change between them. Both
+    providers are imported lazily, so a session loads only the island it
+    measures on. A wired resolution error — no measurement mic on the
+    default wired path (``WiredMicMissing``), or an unrecognized override
+    value — refuses at the tap, before any evidence store or durable state
+    is touched, carrying the provider's own code so the journal names the
+    disclosure rather than quoting it.
 
     **The relay's own precondition is checked HERE too** (gate fix round
     S3): a session that resolved to the relay needs a configured relay
@@ -6138,7 +6118,9 @@ def _resolve_prepare_capture_source() -> tuple[str, Any]:
     try:
         source, device = wired.resolve_v2_capture_source()
     except WiredCaptureError as exc:
-        raise CrossoverV2Refused(str(exc)) from exc
+        raise CrossoverV2Refused(
+            str(exc), code=str(getattr(exc, "code", "") or ""),
+        ) from exc
     if source == SOURCE_RELAY:
         # The one owner of the relay-configured question and its message
         # (correction_setup._require_relay_base), reached lazily exactly as
@@ -6208,6 +6190,7 @@ def _mint_source_session(
 
         return wired.open_wired_capture(spec, device=wired_device)
     from jasper.capture_relay import correction_adapter
+    from jasper.web import correction_crossover_v2_relay as relay
 
     return correction_adapter.open_capture(
         client,
@@ -6215,7 +6198,7 @@ def _mint_source_session(
         relay_base=base,
         capture_origin=capture_origin,
         return_url=return_url,
-        ttl_s=relay_link_ttl_s(plan_shape, ceiling_s),
+        ttl_s=relay.relay_link_ttl_s(plan_shape, ceiling_s),
     )
 
 
@@ -6258,7 +6241,9 @@ def _build_source_run(
             position_gate=position_gate,
             evidence_refs=evidence_refs,
         )
-    return build_v2_run_and_consume(
+    from jasper.web import correction_crossover_v2_relay as relay
+
+    return relay.build_v2_run_and_consume(
         conductor,
         volume=volume,
         stop_event=stop_event,
@@ -6890,9 +6875,16 @@ def prepare_v2_session(
         publish_check, publish_candidate, refs = bind_evidence_publishers(
             evidence_store, relay_session_id
         )
-        # One signal per session, shared by the play seam (which fires it) and
-        # the runner (which installs the armed capture's phase ladder on it).
-        playback_started = PlaybackStartSignal()
+        # One signal per RELAY session, shared by the play seam (which fires
+        # it) and the relay runner (which installs the armed capture's phone
+        # progress ladder on it). A wired session has no page to pace, so it
+        # carries None — the seam's own documented "nobody is listening", and
+        # what keeps a wired measurement from loading the parked relay island.
+        playback_started = None
+        if capture_source == SOURCE_RELAY:
+            from jasper.web import correction_crossover_v2_relay as relay
+
+            playback_started = relay.PlaybackStartSignal()
         # Same shape, same reason: written by the play seam, read by analyze.
         capture_provenance = CaptureProvenanceRecorder()
         production_play = bind_production_play(
@@ -6913,7 +6905,9 @@ def prepare_v2_session(
                 None if verify_only else protection_sections
             ),
             declared_sensitivities=context.declared_sensitivities,
-            on_playback_started=playback_started.fire,
+            on_playback_started=(
+                None if playback_started is None else playback_started.fire
+            ),
             provenance=capture_provenance,
         )
         play = production_play.play

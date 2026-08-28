@@ -12,12 +12,14 @@ Pi plays AND records on one host, so everything the relay provider exists to
 choreograph — sessions, encrypted upload, deferred begins over a public
 Worker, host events, purge — does not exist here at all. What replaces it:
 
-* **Source resolution** (:func:`resolve_v2_capture_source`): wired is chosen
-  when a measurement-class USB capture card is present (registry-anchored
-  usbid match, probe-at-use — :func:`jasper.audio_measurement.wired_capture.
-  resolve_wired_mic`), with an explicit ``JASPER_CAPTURE_SOURCE`` override
-  either way. Disclose-and-recommend, never nanny: the relay stays fully
-  usable when chosen, and the auto pick is logged.
+* **Source resolution** (:func:`resolve_v2_capture_source`): wired is THE
+  acoustic-measurement path, chosen by default from a registry-anchored usbid
+  match (probe-at-use — :func:`jasper.audio_measurement.wired_capture.
+  resolve_wired_mic`); the relay is parked and reachable by naming it in
+  ``JASPER_CAPTURE_SOURCE``. Disclose-and-recommend, never nanny: no mic and
+  no override is a named disclosure carrying both remedies
+  (:class:`WiredMicMissing`), never a relay session nobody asked for, and the
+  relay stays whole for anyone who names it.
 * **The session identity** (:func:`open_wired_capture`): the provider mints
   ``wired-<token>`` and the host keys durable state, evidence publishers and
   phase artifacts by it — the same key vocabulary as a relay session id, per
@@ -99,9 +101,15 @@ if TYPE_CHECKING:
 logger = logging.getLogger(__name__)
 
 #: The source override (also documented in ``.env.example``): empty/``auto``
-#: resolves by mic presence, ``wired`` requires a measurement mic (loud error
-#: otherwise), ``relay`` keeps the phone flow even with a mic plugged in.
+#: and ``wired`` both mean the local measurement mic (loud disclosure when
+#: none is plugged in), ``relay`` opts back into the parked phone flow.
 CAPTURE_SOURCE_ENV = "JASPER_CAPTURE_SOURCE"
+
+#: The structured code :class:`WiredMicMissing` carries to the journal and the
+#: refused tap. Deliberately NOT a ``REASON_REGISTRY`` entry: that registry
+#: holds PERSISTED terminal failures the envelope renders, and this refusal
+#: fires before any durable state exists.
+CODE_WIRED_MIC_MISSING = "wired_mic_missing"
 
 #: How often a held begin retries the position gate. The phone re-posts its
 #: deferred ``begin_capture`` every 1.5 s (capture-page wait screen); the
@@ -154,6 +162,19 @@ class _RetakeRequested(Exception):
     """
 
 
+class WiredMicMissing(WiredCaptureError):
+    """Wired was asked for — by default or by name — and no mic answered.
+
+    The disclosure as a TYPE, so the host and the suite name one thing rather
+    than matching a sentence. Its message carries both ways forward (plug a
+    measurement mic in; or name the parked relay), because the owner ruling
+    is disclose-and-recommend: this refuses to guess a source, never to let
+    the household measure.
+    """
+
+    code = CODE_WIRED_MIC_MISSING
+
+
 def resolve_v2_capture_source(
     env: Mapping[str, str] | None = None,
     *,
@@ -161,36 +182,37 @@ def resolve_v2_capture_source(
 ) -> tuple[str, WiredMicDevice | None]:
     """Which capture source this session should open, resolved at prepare.
 
-    Probe-at-use: presence is read fresh from ``/proc/asound`` every time —
-    the mic is plugged in for a measurement, so there is no steady state for
-    a reconciler to own. Auto (unset/``auto``) selects wired exactly when a
-    measurement-class mic is present, and logs the pick; explicit ``wired``
-    with no mic raises :class:`WiredCaptureError` loudly (never a silent
-    fallback); explicit ``relay`` always keeps the phone flow; anything else
-    raises rather than measuring with a source nobody chose.
+    WIRED is the default and the only auto-selected source (owner ruling
+    2026-08-28: wired is the acoustic-measurement path, the phone relay is
+    parked and reachable only by explicit configuration). Probe-at-use:
+    presence is read fresh from ``/proc/asound`` every time — the mic is
+    plugged in for a measurement, so there is no steady state for a
+    reconciler to own.
+
+    * unset/``auto``/``wired`` → the local measurement mic when one is
+      present (the pick is logged), else :class:`WiredMicMissing`. There is
+      no silent fall back to the relay: a session that opened on the phone
+      because a USB cable was loose is a measurement nobody chose.
+    * ``relay`` → the phone flow, mic present or not.
+    * anything else raises rather than measuring on a source nobody chose.
     """
     source = env if env is not None else os.environ
     raw = str(source.get(CAPTURE_SOURCE_ENV) or "").strip().lower()
     if raw == SOURCE_RELAY:
         return SOURCE_RELAY, None
-    if raw == SOURCE_WIRED:
-        device = resolve_wired_mic(proc_asound=proc_asound)
-        if device is None:
-            raise WiredCaptureError(
-                f"{CAPTURE_SOURCE_ENV}=wired but no measurement-class USB "
-                "microphone was found — plug in a registered measurement mic "
-                "(e.g. miniDSP UMIK-2), or unset the override to use the "
-                "phone relay"
-            )
-        return SOURCE_WIRED, device
-    if raw not in ("", "auto"):
+    if raw not in ("", "auto", SOURCE_WIRED):
         raise WiredCaptureError(
             f"unrecognized {CAPTURE_SOURCE_ENV}={raw!r} "
             "(expected wired, relay, or empty/auto)"
         )
     device = resolve_wired_mic(proc_asound=proc_asound)
     if device is None:
-        return SOURCE_RELAY, None
+        raise WiredMicMissing(
+            "no measurement microphone is plugged into the speaker — connect "
+            "a registered measurement mic (e.g. miniDSP UMIK-2) and start "
+            f"again, or set {CAPTURE_SOURCE_ENV}=relay to measure with the "
+            "parked phone-mic flow"
+        )
     log_event(
         logger,
         "correction.crossover_v2_wired_selected",

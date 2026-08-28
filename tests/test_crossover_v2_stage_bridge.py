@@ -74,6 +74,7 @@ from jasper.active_speaker import design_draft
 from jasper.active_speaker import driver_safety as driver_safety_mod
 from jasper.active_speaker import excitation_safety_plan as excitation_safety_plan_mod
 from jasper.active_speaker.crossover_v2 import contracts
+from jasper.active_speaker.crossover_v2.capture_source import SOURCE_RELAY
 from jasper.active_speaker.crossover_v2.journey import (
     PHASE_CHECK,
     PHASE_CLOUD_MEASURE,
@@ -96,6 +97,7 @@ from jasper.output_topology import (
     OutputTopology,
 )
 from jasper.web import correction_crossover_v2 as v2host
+from jasper.web import correction_crossover_v2_relay as v2relay
 
 
 # Production refuses a session with no volume owner; stand one up.
@@ -244,11 +246,15 @@ def _production_host_seams(monkeypatch, tmp_path):
     Everything a preparer DECIDES — the plan shape, the index→phase map, the
     seam bindings, the conductor construction, the persist — runs for real.
     """
-    # The preparers' source gate (#2662 W2b, gate fix round S3) asks the
-    # relay-configured question BEFORE any evidence bundle opens. These
-    # suites model the fleet default — a relay-configured Pi (installs seed
-    # the public relay) — so the gate must see one; the relay-LESS refusal
-    # has its own pins in tests/test_correction_crossover_v2_wired.py.
+    # The preparers' source gate (#2662 W2b, gate fix round S3) resolves the
+    # capture source and asks the relay-configured question BEFORE any
+    # evidence bundle opens. These suites drive the PHONE-RELAY provider, so
+    # they name it: wired is the default source since the 2026-08-28 ruling,
+    # and a host with no measurement mic discloses rather than opening a
+    # relay session nobody asked for. Both halves of that — the disclosure
+    # and the relay-LESS refusal — have their own pins in
+    # tests/test_correction_crossover_v2_wired.py.
+    monkeypatch.setenv("JASPER_CAPTURE_SOURCE", SOURCE_RELAY)
     monkeypatch.setenv("JASPER_CAPTURE_RELAY_BASE", "https://relay.test")
     from jasper import output_topology as output_topology_mod
     from jasper.active_speaker import model_error_store
@@ -407,7 +413,7 @@ def _open_prepared(monkeypatch, prepared: Any) -> tuple[Any, dict[str, Any]]:
         return _run
 
     monkeypatch.setattr(correction_adapter, "open_capture", _fake_open_capture)
-    monkeypatch.setattr(v2host, "build_v2_run_and_consume", _fake_runner)
+    monkeypatch.setattr(v2relay, "build_v2_run_and_consume", _fake_runner)
 
     prepared.open(object(), "http://relay.test", "http://origin.test", "http://return.test")
 

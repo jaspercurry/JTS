@@ -1698,7 +1698,7 @@ def test_a_remote_stages_link_outlives_the_stage_it_hosts():
     link across the apply boundary and would have died the same way.
     """
     from jasper.capture_protocol import MAX_TTL_S
-    from jasper.web.correction_crossover_v2 import relay_link_ttl_s
+    from jasper.web.correction_crossover_v2_relay import relay_link_ttl_s
 
     shape = resolve_plan_shape(TIER_REMOTE)
     for plan in (_stage1(TIER_REMOTE), _stage2(TIER_REMOTE)):
@@ -1726,7 +1726,7 @@ def test_the_biggest_plan_the_ceiling_allows_still_asks_a_grantable_link():
     """
     from jasper.active_speaker.session_volume_plan import MAX_WALL_CLOCK_CEILING_S
     from jasper.capture_protocol import MAX_TTL_S
-    from jasper.web.correction_crossover_v2 import relay_link_ttl_s
+    from jasper.web.correction_crossover_v2_relay import relay_link_ttl_s
 
     shape = resolve_plan_shape(TIER_REMOTE)
     assert relay_link_ttl_s(shape, MAX_WALL_CLOCK_CEILING_S) == MAX_TTL_S
@@ -1738,7 +1738,7 @@ def test_a_hand_walked_stage_keeps_the_default_link():
     tapping through, and no run of one has been observed to reach 900 s; the
     tier-less recovery re-arm (``plan_shape=None``) is one sweep."""
     from jasper.capture_relay.session import DEFAULT_TTL_S
-    from jasper.web.correction_crossover_v2 import relay_link_ttl_s
+    from jasper.web.correction_crossover_v2_relay import relay_link_ttl_s
 
     for tier in HAND_WALKED:
         shape = resolve_plan_shape(tier)
@@ -1765,7 +1765,7 @@ def test_the_preparer_mints_its_link_from_the_ceiling_it_arms():
 
     # The one mint owner derives the link TTL from the ceiling it is handed.
     helper_source = inspect.getsource(v2host._mint_source_session)
-    assert "ttl_s=relay_link_ttl_s(plan_shape, ceiling_s)" in helper_source, (
+    assert "ttl_s=relay.relay_link_ttl_s(plan_shape, ceiling_s)" in helper_source, (
         "_mint_source_session's relay branch must mint from the ceiling it "
         "is handed"
     )
