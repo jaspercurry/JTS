@@ -918,10 +918,9 @@ PY
 # the device installs a different one, so a value the hardware cannot serve
 # silences the speaker rather than being quietly converted. STATUS dac.format
 # then reports what outputd's client edge negotiated — not an echo of this
-# value — and the chip-AEC alignment identity records that, so CHANGING a
-# profile's declared format invalidates every commissioned artifact on that
-# hardware and forces a foreground `sudo jasper-aec-commission`. Emit sites are
-# in apply_audio_runtime_env.
+# value — and the chip-AEC alignment identity records that for forensics only;
+# ADR-0190 excludes it from comparison, so a changed declaration never
+# invalidates a commissioned artifact. Emit sites are in apply_audio_runtime_env.
 #
 # This resolves BY ID, off whichever profile the caller armed — it never walks a
 # composite's child_profile_ids. That is load-bearing, not incidental: outputd's
@@ -957,9 +956,10 @@ PY
 # preserve the previous value rather than committing a guess. Empty is a
 # MEANINGFUL value on this key — outputd reads empty as S16_LE — so writing it
 # here would silently NARROW a wide edge (S24_3LE on an Apple dongle, S32_LE on a
-# DAC8x or InnoMaker) with no error anywhere. Because the edge format is also a
-# chip-AEC alignment identity input, that narrowing would additionally invalidate
-# the box's commissioned artifact. On an ordinary pass — same DAC id, transient
+# DAC8x or InnoMaker) with no error anywhere. The edge format is also a
+# chip-AEC alignment identity input, recorded for forensics only — ADR-0190
+# excludes it from comparison, so this narrowing would not even be disclosed.
+# On an ordinary pass — same DAC id, transient
 # probe loss — nothing about the hardware changed, only our ability to ask the
 # registry about it, so the previous value is still the safe one. That is NOT
 # true when the DAC id itself changed on the same pass as the probe loss (a

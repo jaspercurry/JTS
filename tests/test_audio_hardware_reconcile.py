@@ -3853,10 +3853,9 @@ def test_reconcile_leaves_the_edge_format_alone_when_the_registry_probe_is_absen
 
     Empty is a MEANINGFUL value on this key — outputd reads it as S16_LE — so
     writing it here would silently NARROW this box's declared S24_3LE edge with
-    no error anywhere, and because the edge format is a chip-AEC alignment
-    identity input it would also invalidate the box's commissioned artifact.
-    Nothing about the hardware changed on a lost probe, so the previous value is
-    still the right one: keep it and log the skip.
+    no error anywhere, misrepresenting the electrical edge outputd actually
+    opens at. Nothing about the hardware changed on a lost probe, so the
+    previous value is still the right one: keep it and log the skip.
 
     The recognized-DAC path only. The deliberate explicit-empty write for a
     DAC with no queryable profile is a different branch, where emptiness IS the

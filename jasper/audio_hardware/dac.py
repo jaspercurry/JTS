@@ -170,12 +170,11 @@ class DacProfile:
     # emit this as JASPER_OUTPUTD_DAC_FORMAT, which jasper-outputd READS: it
     # accepts exactly {S16_LE, S24_3LE, S32_LE} and parks at exit 78 otherwise,
     # requests that format on its DAC PCM, and reports what its client edge
-    # negotiated as STATUS dac.format, where the chip-AEC alignment identity
-    # records it — so changing a profile's declared format invalidates every
-    # commissioned artifact on that hardware and forces a foreground
-    # `sudo jasper-aec-commission`. A declaration the hardware cannot install
-    # now parks the speaker instead of being silently converted, so this field
-    # is load-bearing.
+    # negotiated as STATUS dac.format, which the chip-AEC alignment identity
+    # records for forensics only — ADR-0190 excludes it from comparison, so
+    # changing a profile's declared format never nags a fleet's disclosure.
+    # A declaration the hardware cannot install now parks the speaker instead
+    # of being silently converted, so this field is load-bearing.
     #
     # S24_3LE is 24 bits in three PACKED bytes — not ALSA's 4-byte-word S24_LE,
     # which is NOT accepted. outputd carries it on the coherent single-DAC sink
@@ -403,12 +402,9 @@ APPLE_USB_C_DONGLE = DacProfile(
     # composite that lists this profile as its child declares its own width and
     # stays where its transport can drive it — see DUAL_APPLE_USB_C_DAC_4CH.
     #
-    # Consequence: this field is part of the chip-AEC alignment identity
-    # (`AlignmentIdentity.output_format`, recorded from outputd's negotiated
-    # `dac.format` — see docs/HANDOFF-aec.md "Adding dac.format to the identity
-    # force-recommissions the fleet"), so every artifact commissioned against
-    # the old S16_LE edge on a single-dongle box is now invalid and needs a
-    # foreground `sudo jasper-aec-commission` (~2 minutes of audible sweeps).
+    # Consequence: `AlignmentIdentity.output_format` records this field for
+    # forensics only — ADR-0190 excludes it from comparison, so it never
+    # diverges or nags a fleet holding the old S16_LE edge.
     final_edge_format="S24_3LE",
 )
 
@@ -509,20 +505,12 @@ HIFIBERRY_DAC8X = DacProfile(
     # verdict pending the conductor's post-merge listen); see
     # docs/HANDOFF-speaker-output-reference.md "Current Operational Truth".
     #
-    # Consequence: this field is part of the chip-AEC alignment identity
-    # (`AlignmentIdentity.output_format`, recorded from outputd's negotiated
-    # `dac.format` — see docs/HANDOFF-aec.md "Adding dac.format to the
-    # identity force-recommissions the fleet"), so a box holding an artifact
-    # commissioned against the old S16_LE edge parks its managed-XVF stack
-    # (voice stopped, wake gated off via /var/lib/jasper/voice-input-absent)
-    # until a human runs `sudo jasper-aec-commission` in the foreground (~2
-    # minutes of audible sweeps). See plan
-    # captures/PLAN-wide-output-path-2026-08-07.md §6 PR-7 for the
-    # recommission drill. jts3, the lab box on this profile, is NOT such a
-    # box: it holds no alignment artifact and reaches chip-AEC through the
-    # corpus escape (JASPER_AEC_CORPUS_CHIP_AEC_ENABLED=1, re-confirmed on
-    # the box 2026-08-11), so it has no identity to invalidate and does not
-    # park.
+    # Consequence: `AlignmentIdentity.output_format` records this field for
+    # forensics only — ADR-0190 excludes it from comparison, so it never
+    # diverges or nags a fleet holding the old S16_LE edge. jts3, the lab box
+    # on this profile, reaches chip-AEC through the corpus escape
+    # (JASPER_AEC_CORPUS_CHIP_AEC_ENABLED=1) rather than a commissioned
+    # artifact at all.
     final_edge_format="S32_LE",
 )
 

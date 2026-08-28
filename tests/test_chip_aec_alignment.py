@@ -199,8 +199,9 @@ def test_the_class_key_is_the_identity_minus_the_unit_it_was_measured_on() -> No
     assert set(alignment.HARDWARE_CLASS_IDENTITY_FIELDS) == (
         set(AlignmentIdentity.__dataclass_fields__)
         - alignment.PER_UNIT_IDENTITY_FIELDS
+        - alignment.RECORDED_ONLY_IDENTITY_FIELDS
     )
-    for name in alignment.PER_UNIT_IDENTITY_FIELDS:
+    for name in alignment.PER_UNIT_IDENTITY_FIELDS | alignment.RECORDED_ONLY_IDENTITY_FIELDS:
         moved = replace(identity, **{name: "a-sibling-box"})
         assert alignment.hardware_class_key(moved) == key
     for name in alignment.HARDWARE_CLASS_IDENTITY_FIELDS:
@@ -216,24 +217,24 @@ def test_the_class_key_is_the_identity_minus_the_unit_it_was_measured_on() -> No
     assert alignment.hardware_class_key(_class_fields()) == key
     for broken in (
         _class_fields() | {"xvf_serial": identity.xvf_serial},
-        {name: value for name, value in _class_fields().items() if name != "beam_plan"},
+        {name: value for name, value in _class_fields().items() if name != "fixed_profile"},
         _class_fields() | {"output_rate": 0},
-        _class_fields() | {"output_format": " "},
+        _class_fields() | {"output_id": " "},
     ):
         with pytest.raises(ValueError):
             alignment.hardware_class_key(broken)
 
 
 def test_hardware_class_identity_placeholder_is_pinned_not_just_nonempty() -> None:
-    # AlignmentIdentity's per-unit fields currently clear the same rule as
-    # every other text field ("non-empty"), so "unkeyed" passes today by
-    # accident of that rule being generic. Nothing stops a later rule from
-    # tightening just the per-unit two to a real serial's or hardware key's
-    # shape — the placeholder would then fail it, and the first place that
-    # would show up is a pasted REGISTRY row, not a test. Pin the literal so
-    # that change breaks here, by name, instead.
+    # AlignmentIdentity's per-unit and recorded-only fields currently clear
+    # the same rule as every other text field ("non-empty"), so "unkeyed"
+    # passes today by accident of that rule being generic. Nothing stops a
+    # later rule from tightening one of them to a real serial's or hardware
+    # key's shape — the placeholder would then fail it, and the first place
+    # that would show up is a pasted REGISTRY row, not a test. Pin the
+    # literal so that change breaks here, by name, instead.
     resolved = alignment.hardware_class_identity(_class_fields())
-    for name in alignment.PER_UNIT_IDENTITY_FIELDS:
+    for name in alignment.PER_UNIT_IDENTITY_FIELDS | alignment.RECORDED_ONLY_IDENTITY_FIELDS:
         assert getattr(resolved, name) == "unkeyed"
 
 
@@ -275,7 +276,7 @@ def test_a_harvested_entry_round_trips_into_the_registry_it_is_pasted_into(
     monkeypatch.setattr(shipped, "REGISTRY", (row,))
     # A sibling box — same class, different serial — is what the row is for.
     assert shipped.for_identity(replace(_identity(), xvf_serial="sibling")) is row
-    assert shipped.for_identity(replace(_identity(), output_format="S32_LE")) is None
+    assert shipped.for_identity(replace(_identity(), output_id="different_dac")) is None
 
 
 def test_a_malformed_artifact_is_not_merely_a_superseded_one() -> None:
@@ -352,8 +353,29 @@ def test_artifact_is_strict_identity_plus_k_only() -> None:
             ("xvf_serial", "output_hardware_key"),
         ),
         (
-            {"output_format": "S32_LE", "xvf_serial": "XVF3800-002"},
-            ("xvf_serial", "output_format"),
+            {"output_id": "other_dac", "xvf_serial": "XVF3800-002"},
+            ("xvf_serial", "output_id"),
+        ),
+        # xvf_variant/beam_plan/output_format carry no timing story (ADR-0190):
+        # moving all three alone produces no divergence at all.
+        (
+            {
+                "xvf_variant": "other_variant",
+                "beam_plan": "other_plan",
+                "output_format": "S32_LE",
+            },
+            (),
+        ),
+        # ...even layered under a real physics-field move, which still
+        # diverges and reports only itself.
+        (
+            {
+                "xvf_variant": "other_variant",
+                "beam_plan": "other_plan",
+                "output_format": "S32_LE",
+                "output_id": "other_dac",
+            },
+            ("output_id",),
         ),
     ],
 )

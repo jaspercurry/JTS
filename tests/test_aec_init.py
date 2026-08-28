@@ -275,23 +275,39 @@ def _arm_chip_aec(monkeypatch, dev, *, artifact, live=None) -> None:
 
 
 @pytest.mark.parametrize(
-    "moved_field, value",
+    "changes, expected_disclosure_fields",
     [
-        ("xvf_serial", "replacement"),
-        ("output_hardware_key", "usb-serial:replacement"),
-        # The final-edge format is the electrical edge K was measured against,
-        # so it is hardware-class divergence — the loud kind, still not a park.
-        ("output_format", "S32_LE"),
+        ({"xvf_serial": "replacement"}, ("xvf_serial",)),
+        (
+            {"output_hardware_key": "usb-serial:replacement"},
+            ("output_hardware_key",),
+        ),
+        # The DAC identity is part of the hardware class K was measured
+        # against, so it is hardware-class divergence — the loud kind, still
+        # not a park.
+        ({"output_id": "different_dac"}, ("output_id",)),
+        # xvf_variant/beam_plan/output_format carry no timing story
+        # (ADR-0190): moving all three produces no divergence, so nothing is
+        # disclosed at all — the chip arms clean.
+        (
+            {
+                "xvf_variant": "other_variant",
+                "beam_plan": "other_plan",
+                "output_format": "S32_LE",
+            },
+            (),
+        ),
     ],
 )
 def test_a_commissioned_identity_that_moved_is_applied_and_disclosed(
-    monkeypatch, disclosure_file, moved_field, value
+    monkeypatch, disclosure_file, changes, expected_disclosure_fields
 ) -> None:
     # ADR-0101: the proof stopped describing this box, nothing observably
     # broke. The banked K is applied and the chip armed; what the household
-    # gets is a disclosure naming the field, not a deaf speaker.
+    # gets is a disclosure naming the field, not a deaf speaker — or nothing
+    # at all, when every moved field is recorded-only.
     dev = _FakeXvfDevice()
-    commissioned = replace(_live_identity(), **{moved_field: value})
+    commissioned = replace(_live_identity(), **changes)
     _arm_chip_aec(
         monkeypatch, dev, artifact=lambda: AlignmentArtifact(commissioned, 245, -38)
     )
@@ -301,7 +317,12 @@ def test_a_commissioned_identity_that_moved_is_applied_and_disclosed(
     writes = _write_map(dev)
     assert writes["SHF_BYPASS"] == [0]
     assert writes["AUDIO_MGR_SYS_DELAY"] == [-38]
-    assert moved_field in disclosure_file.read_text(encoding="utf-8")
+    if expected_disclosure_fields:
+        disclosure_text = disclosure_file.read_text(encoding="utf-8")
+        for field in expected_disclosure_fields:
+            assert field in disclosure_text
+    else:
+        assert not disclosure_file.exists()
 
 
 def test_an_older_schema_artifact_arms_the_chip_from_the_k_it_banked(
@@ -366,15 +387,15 @@ def test_a_fresh_install_on_a_shipped_hardware_class_arms_and_discloses(
 def test_a_fresh_install_on_an_unrecognized_hardware_class_still_parks(
     monkeypatch, disclosure_file, caplog
 ) -> None:
-    # The shipped row is for a different final-edge format, so it says nothing
-    # about this box: no K to run from, and the commissioner is the answer.
-    # The park names the near-miss field, or a row one firmware flash away is
+    # The shipped row is for a different DAC, so it says nothing about this
+    # box: no K to run from, and the commissioner is the answer. The park
+    # names the near-miss field, or a row one firmware flash away is
     # indistinguishable from an empty table.
     dev = _FakeXvfDevice()
     _arm_chip_aec(
         monkeypatch, dev, artifact=lambda: (_ for _ in ()).throw(ValueError("missing"))
     )
-    row = _shipped_row(output_format="S32_LE")
+    row = _shipped_row(output_id="different_dac")
     monkeypatch.setattr(shipped_alignment, "REGISTRY", (row,))
 
     with caplog.at_level(logging.ERROR, logger="jasper.aec_init"):
@@ -382,8 +403,8 @@ def test_a_fresh_install_on_an_unrecognized_hardware_class_still_parks(
 
     assert _write_map(dev)["SHF_BYPASS"] == [1]
     assert not disclosure_file.exists()
-    assert row.divergence(_live_identity()) == ("output_format",)
-    assert "output_format" in caplog.text
+    assert row.divergence(_live_identity()) == ("output_id",)
+    assert "output_id" in caplog.text
 
 
 @pytest.mark.parametrize(

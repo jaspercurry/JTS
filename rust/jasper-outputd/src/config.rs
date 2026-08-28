@@ -2184,9 +2184,9 @@ mod tests {
     fn declared_dac_format_parses_every_registry_value() {
         // Every value the registry can emit, including the `S24_3LE` the single
         // Apple dongle profile declares. The round trip through `as_str` is
-        // asserted too: that string is the STATUS wire value and a chip-AEC
-        // identity input, so a respelling silently invalidates commissioned
-        // alignment artifacts.
+        // asserted too: that string is the STATUS wire value other components
+        // parse by exact spelling, so a respelling silently breaks that shared
+        // ALSA-format vocabulary.
         for (raw, want) in [
             ("S16_LE", SampleFormat::S16Le),
             ("S24_3LE", SampleFormat::S24_3Le),

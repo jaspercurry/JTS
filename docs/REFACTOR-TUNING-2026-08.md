@@ -1849,11 +1849,14 @@ does not exist at `HEAD`; the nearest surviving name,
 `test_production_chip_profile_parks_when_nothing_is_banked_or_shipped`
 (`tests/test_aec_init.py:224`), parks when **nothing is banked**, not when
 geometry moves. The real behaviour is the opposite of the row's claim, pinned by
-`test_a_commissioned_identity_that_moved_is_applied_and_disclosed` (`:287`),
-which is parametrized over `("output_format", "S32_LE")` — MS-7's own subject —
-and asserts `main() == 0` with the moved field named in the disclosure file.
-Its in-test words: *"hardware-class divergence — the loud kind, still not a
-park."*
+`test_a_commissioned_identity_that_moved_is_applied_and_disclosed`
+(`:302`), which is parametrized over `("output_id", "different_dac")` — a
+hardware-class field — and asserts `main() == 0` with the moved field named
+in the disclosure file. Its in-test words: *"hardware-class divergence — the
+loud kind, still not a park."* A sibling row in the same table now pins
+MS-7's original subject directly: since ADR-0190, `output_format` is
+recorded-only and moving it alone produces no divergence at all — nothing is
+disclosed, not even the loud-but-not-parked kind.
 
 **So wave 6's R3 tripwire is answered NO**, and neither link in its chain
 exists. (1) `jasper/cli/aec_init.py:814-859` reads the final-edge geometry from
