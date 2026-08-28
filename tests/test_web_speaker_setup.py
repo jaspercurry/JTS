@@ -269,12 +269,14 @@ def test_apply_name_orders_surfaces_and_composes_restart_list(
         lambda **_kwargs: events.append(("source-reconcile",)) or {"ok": True},
     )
 
-    assert speaker_setup._apply_name("Kitchen") is True
+    assert speaker_setup._apply_name("Kitchen", name_changed=True) is True
 
     # The gadget restart is never folded into the batched core-services
     # restart -- it always keeps its own blocking call, immediately followed
     # by the ordered fan-in -> usbmic refresh, so the batch below is the same
-    # shape regardless of gadget_active.
+    # shape regardless of gadget_active. The active-probe itself now runs
+    # fresh right before that decision (not at the top of _apply_name), so
+    # it moves to just ahead of gadget_events below.
     gadget_events = (
         [
             ("restart", ("jasper-usbgadget.service",), False, 60.0),
@@ -285,7 +287,6 @@ def test_apply_name_orders_surfaces_and_composes_restart_list(
         else []
     )
     assert events == [
-        ("probe", "jasper-usbgadget.service"),
         ("bluez_conf", "Kitchen"),
         ("alias", "Kitchen"),
         ("advert", "Kitchen"),
@@ -297,16 +298,60 @@ def test_apply_name_orders_surfaces_and_composes_restart_list(
         ),
         ("source-reconcile",),
         ("source-reconcile",),
+        ("probe", "jasper-usbgadget.service"),
         *gadget_events,
         ("restart", tuple(original_units), True, 5.0),
     ]
     assert speaker_setup.RESTART_UNITS == original_units
 
 
+def test_apply_name_room_only_edit_skips_gadget_restart(monkeypatch):
+    """A room-only edit (name unchanged) must never pay for a gadget rebuild
+    plus a fan-in/usbmic bounce: the gadget descriptor carries only the NAME
+    (jasper/speaker_name.py's CLI reader prints just `.name`, which is all
+    deploy/usbsink/jasper-usbsink-name-patch reads), so nothing about a room
+    edit needs the gadget touched -- even though the gadget IS active."""
+    events = []
+
+    async def set_alias(name):
+        return None
+
+    def unit_active(unit):
+        events.append(("probe", unit))
+        return True  # gadget IS active; name_changed=False must still skip it
+
+    def restart_units(units, *, verb="restart", no_block=True, timeout=5.0):
+        events.append((verb, tuple(units), no_block, timeout))
+        return True
+
+    monkeypatch.setattr(speaker_setup, "_unit_active", unit_active)
+    monkeypatch.setattr(speaker_setup, "_write_bluez_main_conf_name", lambda name: None)
+    monkeypatch.setattr("jasper.bluetooth.adapter.set_alias", set_alias)
+    monkeypatch.setattr(
+        "jasper.control_advert.render_control_advert", lambda name: True
+    )
+    monkeypatch.setattr(speaker_setup, "_restart_units", restart_units)
+    monkeypatch.setattr(
+        speaker_setup, "kick_source_reconcile", lambda **_kwargs: {"ok": True}
+    )
+
+    assert speaker_setup._apply_name("Kitchen", name_changed=False) is True
+
+    # No probe, no gadget restart, no fan-in/usbmic try-restart at all -- the
+    # `not name_changed` short-circuit skips _unit_active entirely, it is
+    # never called just to be ignored.
+    assert ("probe", "jasper-usbgadget.service") not in events
+    assert not any(u and u[0] == "jasper-usbgadget.service" for _v, u, *_r in events)
+    assert not any(u and u[0] == "jasper-fanin.service" for _v, u, *_r in events)
+    assert not any(u and u[0] == "jasper-usbmic.service" for _v, u, *_r in events)
+
+
 def test_apply_name_skips_consumer_refresh_when_gadget_restart_fails(monkeypatch):
     """Fail-closed, mirroring jasper-usbgadget-converge: a rebuild that did not
     happen must not be followed by a fan-in/usbmic refresh -- there is nothing
-    fresh for them to pick up, and _restart_units already WARNed about it."""
+    fresh for them to pick up, and _restart_units already WARNed about it. The
+    failed rebuild must also surface: a False return here is what stops the
+    /save flash from claiming "Services restarting" over a gadget left dead."""
     events = []
 
     async def set_alias(name):
@@ -327,7 +372,9 @@ def test_apply_name_skips_consumer_refresh_when_gadget_restart_fails(monkeypatch
         speaker_setup, "kick_source_reconcile", lambda **_kwargs: {"ok": True}
     )
 
-    assert speaker_setup._apply_name("Kitchen") is True
+    # A failed gadget rebuild now sinks the overall return -- source_result is
+    # ok, but the gadget outcome must not be masked (F5).
+    assert speaker_setup._apply_name("Kitchen", name_changed=True) is False
 
     assert ("restart", ("jasper-usbgadget.service",), False, 60.0) in events
     refreshed_units = {units[0] for _verb, units, *_rest in events}
@@ -386,7 +433,7 @@ def test_apply_name_continues_after_bluez_alias_and_advert_failures(
     )
 
     with caplog.at_level(logging.WARNING, logger=speaker_setup.__name__):
-        assert speaker_setup._apply_name("Kitchen") is True
+        assert speaker_setup._apply_name("Kitchen", name_changed=True) is True
 
     assert events == [
         ("bluez_returned", "Kitchen"),
@@ -477,7 +524,8 @@ def test_post_save_applies_rename_and_restarts(monkeypatch):
     monkeypatch.setattr(
         speaker_setup,
         "_apply_name",
-        lambda name: calls["apply"].append(name) or True,
+        lambda name, *, name_changed: calls["apply"].append((name, name_changed))
+        or True,
     )
 
     handler = _handler_cls()
@@ -488,7 +536,46 @@ def test_post_save_applies_rename_and_restarts(monkeypatch):
 
     assert h.status == int(http.HTTPStatus.SEE_OTHER)
     assert calls["write"] == [("NewName", "Kitchen")]
-    assert calls["apply"] == ["NewName"]
+    # OldName -> NewName is a real rename, so name_changed must reach
+    # _apply_name as True (the gadget-rebuild gate, F2).
+    assert calls["apply"] == [("NewName", True)]
+
+
+def test_post_save_room_only_edit_marks_name_unchanged(monkeypatch):
+    """A room-only edit (name stays "OldName") must compute name_changed=False
+    at the do_POST call site -- this is the wiring _apply_name's gadget-rebuild
+    gate (F2) relies on; a bug here would silently reopen the room-only-edit
+    gadget rebuild the gate exists to prevent."""
+    token = "y" * 64
+    calls = {"apply": []}
+
+    monkeypatch.setattr(speaker_setup, "validate_name", lambda n: n.strip())
+    monkeypatch.setattr(speaker_setup, "validate_room", lambda r: r.strip())
+    monkeypatch.setattr(
+        speaker_setup,
+        "read_state",
+        lambda path: types.SimpleNamespace(name="OldName", room=""),
+    )
+    monkeypatch.setattr(speaker_setup, "_find_conflicts", lambda name: [])
+    monkeypatch.setattr(
+        speaker_setup,
+        "write_state",
+        lambda name, room, path, mode=0o644: name,
+    )
+    monkeypatch.setattr(
+        speaker_setup,
+        "_apply_name",
+        lambda name, *, name_changed: calls["apply"].append((name, name_changed))
+        or True,
+    )
+
+    handler = _handler_cls()
+    body = ("csrf_token=" + token + "&name=OldName&room=Kitchen").encode()
+    h = FakeHandler("/save", body=body, cookies="jts_csrf=" + token)
+    handler.do_POST(h)
+
+    assert h.status == int(http.HTTPStatus.SEE_OTHER)
+    assert calls["apply"] == [("OldName", False)]
 
 
 def test_post_save_surfaces_source_reconcile_failure(monkeypatch):
@@ -506,7 +593,7 @@ def test_post_save_surfaces_source_reconcile_failure(monkeypatch):
         "write_state",
         lambda name, room, path, mode=0o644: name,
     )
-    monkeypatch.setattr(speaker_setup, "_apply_name", lambda name: False)
+    monkeypatch.setattr(speaker_setup, "_apply_name", lambda name, **_kwargs: False)
 
     handler = _handler_cls()
     body = ("csrf_token=" + token + "&name=NewName&room=Kitchen").encode()

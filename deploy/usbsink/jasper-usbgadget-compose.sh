@@ -7,12 +7,16 @@
 # This fragment is sourced, never executed. The shebang exists only so the
 # static linter assumes bash (matches deploy/lib/jasper-core-graph-park-units.sh).
 #
-# THE COMPOSITION INTERFACE for the one composite USB gadget. Three consumers
-# share it so they can never disagree about what the gadget should carry:
+# THE COMPOSITION INTERFACE for the one composite USB gadget. Four consumers
+# share it so they can never disagree about what the gadget should carry (or
+# repeat a divergent copy of the post-rebuild refresh below):
 #
 #   jasper-usbgadget-wanted    the unit's ExecCondition (is anything wanted?)
 #   jasper-usbgadget-up        the ONLY ConfigFS writer
-#   jasper-usbgadget-converge  the ONLY caller-facing entry point
+#   jasper-usbgadget-converge  the ONLY caller-facing composition entry point
+#   jasper-usbgadget-snapshot  the /system forensics repair action (a forced
+#                              rebuild that bypasses converge -- see PHYSICS
+#                              beside jasper_usbgadget_refresh_consumers)
 #
 # Two facts, one vocabulary:
 #
@@ -41,6 +45,12 @@ UDC_CLASS_DIR="${JASPER_UDC_CLASS_DIR:-/sys/class/udc}"
 GADGET_NAME=jts-usb-audio
 GADGET_DIR="${CONFIGFS}/usb_gadget/${GADGET_NAME}"
 JASPER_ENV_FILE="${JASPER_USBGADGET_ENV_FILE:-/etc/jasper/jasper.env}"
+
+# The systemctl seam: every caller-facing consumer of this fragment (converge,
+# the forensics repair action) needs to drive systemctl hermetically under
+# pytest, so this is defined once here rather than once per caller. Production
+# never sets the override; the units that run those callers strip it.
+SYSTEMCTL="${JASPER_USBGADGET_SYSTEMCTL:-systemctl}"
 
 AUDIO_ALLOWED_CMD="${JASPER_USBGADGET_AUDIO_ALLOWED_CMD:-/opt/jasper/.venv/bin/jasper-local-source-allowed --source usbsink}"
 AUDIO_READY_CMD="${JASPER_USBGADGET_AUDIO_READY_CMD:-systemctl is-enabled --quiet jasper-usbsink.service}"
@@ -244,4 +254,37 @@ jasper_usbgadget_live() {
         fi
     fi
     LIVE_COMPOSITION="${LIVE_NETWORK}/${LIVE_AUDIO}/${LIVE_USB_MIC}"
+}
+
+# jasper_usbgadget_refresh_consumers <timeout_sec>
+#
+# PHYSICS, stated once for both callers. A real gadget rebuild unbinds the
+# UDC, so the host re-enumerates: the UAC2Gadget ALSA card is destroyed and
+# recreated, and every handle on it goes stale. jasper-fanin (deliberately
+# not PartOf= the gadget, it is the core mixer) and jasper-usbmic (whose
+# ExecCondition can leave it inactive after PartOf= propagation) are
+# refreshed here, in data-path order, fan-in before usbmic.
+#
+# Call this ONLY for a rebuild that is verified to have actually happened
+# (converge reads ConfigFS back; the snapshot repair action does the same) --
+# never for one that failed or that an ExecCondition skipped. There is no new
+# card for the consumers to pick up otherwise.
+#
+# Every caller times out at its own bound rather than leaving these as an
+# unbounded call in what is otherwise a fully-bounded chain -- see each
+# caller for its own derivation. Publishes REFRESH_FANIN_RESULT and
+# REFRESH_USBMIC_RESULT ("ok" or "failed") so the caller can report them in
+# its own event line; never raises -- a try-restart failure is reported, not
+# fatal, so the other unit's try-restart always still runs.
+#
+# SC2034 (appears unused) -- both REFRESH_* names are read by the caller.
+# shellcheck disable=SC2034
+jasper_usbgadget_refresh_consumers() {
+    local timeout_sec="$1"
+    REFRESH_FANIN_RESULT=ok
+    REFRESH_USBMIC_RESULT=ok
+    /usr/bin/timeout "${timeout_sec}s" ${SYSTEMCTL} try-restart jasper-fanin.service \
+        >/dev/null 2>&1 || REFRESH_FANIN_RESULT=failed
+    /usr/bin/timeout "${timeout_sec}s" ${SYSTEMCTL} try-restart jasper-usbmic.service \
+        >/dev/null 2>&1 || REFRESH_USBMIC_RESULT=failed
 }

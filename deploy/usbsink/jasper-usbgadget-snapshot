@@ -13,6 +13,9 @@
 set -euo pipefail
 PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
 
+# shellcheck source=deploy/usbsink/jasper-usbgadget-compose.sh
+source "$(dirname "$0")/jasper-usbgadget-compose.sh"
+
 CONFIGFS="${JASPER_USBGADGET_SNAPSHOT_CONFIGFS_ROOT:-/sys/kernel/config}"
 UDC_CLASS_DIR="${JASPER_USBGADGET_SNAPSHOT_UDC_CLASS_DIR:-/sys/class/udc}"
 DEBUG_ROOT="${JASPER_USBGADGET_SNAPSHOT_DEBUG_ROOT:-/sys/kernel/debug/usb}"
@@ -23,11 +26,13 @@ FORENSICS_ENABLED="${JASPER_USBGADGET_FORENSICS_ENABLED_FILE:-/var/lib/jasper/us
 FORENSICS_RUN_DIR="${JASPER_USBGADGET_FORENSICS_RUN_DIR:-/run/jasper-usb-gadget-forensics}"
 FORENSICS_INTERVAL="${JASPER_USBGADGET_FORENSICS_INTERVAL:-10}"
 FORENSICS_MAX_BYTES="${JASPER_USBGADGET_FORENSICS_MAX_BYTES:-262144}"
-# Same seam jasper-usbgadget-converge documents: pytest drives the repair
-# action's systemctl calls hermetically through this override. Production
-# never sets it (jasper-usbgadget-forensics.service strips it below).
-SYSTEMCTL="${JASPER_USBGADGET_SYSTEMCTL:-systemctl}"
 MAX_FILES=12
+# Re-derived from THIS script's own seam names, deliberately overwriting the
+# compose.sh source above: jasper_usbgadget_live still reads the CONFIGFS/
+# GADGET_DIR globals at CALL time (below, in the repair branch), so this is
+# what makes it honor JASPER_USBGADGET_SNAPSHOT_CONFIGFS_ROOT rather than
+# compose.sh's own JASPER_CONFIGFS_ROOT -- one seam vocabulary for this whole
+# script, matching every other JASPER_USBGADGET_SNAPSHOT_* line above.
 GADGET_DIR="${CONFIGFS}/usb_gadget/jts-usb-audio"
 TIMELINE="${FORENSICS_RUN_DIR}/timeline.tsv"
 PREVIOUS_TIMELINE="${FORENSICS_RUN_DIR}/timeline.previous.tsv"
@@ -36,6 +41,10 @@ PREVIOUS_TIMELINE="${FORENSICS_RUN_DIR}/timeline.previous.tsv"
 # tests/test_source_intent_systemd.py). The old 15 s bound sat below that
 # measurement, so a legal slow repair timed out and was misreported as
 # repair_failed; 60 s keeps ~26 s of margin over the documented worst case.
+# FLOOR: never set this below 33.64 -- nothing else pins this number (a
+# regex over this source line would be asserting on source text, and a real
+# timed-out-restart run costs ~34s of wall time), so this comment is the
+# only guard against silently reintroducing the false repair_failed.
 REPAIR_RESTART_TIMEOUT_SEC=60
 
 reason="${1:-manual}"
@@ -122,23 +131,30 @@ run_forensics() {
             last_action="${action}"; last_action_at="$(date +%s)"
             if [[ "${action}" == "capture" ]]; then
                 /usr/bin/timeout 2s "$0" forensics_manual || last_action="capture_failed"
-            elif /usr/bin/timeout "${REPAIR_RESTART_TIMEOUT_SEC}s" ${SYSTEMCTL} restart jasper-usbgadget.service; then
-                # Mirrors jasper-usbgadget-converge's post-rebuild refresh: this
-                # forced rebuild bypasses the converger the same way the
-                # speaker-rename path does (see jasper/web/speaker_setup.py), so
-                # it owes fan-in/usbmic the same stale-handle cleanup, in the
-                # same order. Reached only on a rebuild that happened -- the
-                # `else` below never runs this. A try-restart failure here WARNs
-                # via its own result line without touching last_action, which
-                # stays "repair": the refresh's outcome must never be read off
-                # the rebuild's own result.
-                fanin_result=ok; usbmic_result=ok
-                ${SYSTEMCTL} try-restart jasper-fanin.service >/dev/null 2>&1 || fanin_result=failed
-                ${SYSTEMCTL} try-restart jasper-usbmic.service >/dev/null 2>&1 || usbmic_result=failed
-                printf 'event=usb_gadget.forensics action=repair_refresh order=fanin,usbmic fanin=%s usbmic=%s\n' \
-                    "${fanin_result}" "${usbmic_result}" >&2
-            else
+            elif ! /usr/bin/timeout "${REPAIR_RESTART_TIMEOUT_SEC}s" ${SYSTEMCTL} restart jasper-usbgadget.service; then
                 last_action="repair_failed"
+            else
+                # rc=0 also fires when the unit's own ExecCondition skipped the
+                # start half (nothing wanted) -- ConfigFS is unchanged, not
+                # rebuilt. Verify the way jasper-usbgadget-converge does: read
+                # the live state back rather than trust the exit code alone.
+                jasper_usbgadget_live
+                if [[ "${LIVE_BOUND}" == "1" ]]; then
+                    # Mirrors jasper-usbgadget-converge's post-rebuild refresh:
+                    # this forced rebuild bypasses the converger the same way
+                    # the speaker-rename path does (see
+                    # jasper/web/speaker_setup.py), so it owes fan-in/usbmic
+                    # the same stale-handle cleanup, in the same order. A
+                    # try-restart failure here WARNs via its own result line
+                    # without touching last_action, which stays "repair": the
+                    # refresh's outcome must never be read off the rebuild's
+                    # own result.
+                    jasper_usbgadget_refresh_consumers "${REPAIR_RESTART_TIMEOUT_SEC}"
+                    printf 'event=usb_gadget.forensics action=repair_refresh order=fanin,usbmic fanin=%s usbmic=%s\n' \
+                        "${REFRESH_FANIN_RESULT}" "${REFRESH_USBMIC_RESULT}" >&2
+                else
+                    last_action="repair_failed"
+                fi
             fi
             snapshots=("${INCIDENT_DIR}"/usb-gadget-*.txt)
             [[ -e "${snapshots[0]}" ]] && latest_artifact="${snapshots[${#snapshots[@]}-1]}"

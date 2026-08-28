@@ -80,6 +80,16 @@ SOURCE_TRY_RESTART_UNITS = [
     "bt-agent.service",
 ]
 
+# 33.64 s is the worst FULL RESTART (Stopping -> Finished) measured for
+# jasper-usbgadget.service alone -- the same derivation
+# deploy/usbsink/jasper-usbgadget-snapshot's REPAIR_RESTART_TIMEOUT_SEC and
+# deploy/systemd/jasper-usbmic-apply.service's TimeoutStartSec document
+# (also see tests/test_source_intent_systemd.py). Every blocking restart in
+# this module needs the same "did it actually finish" answer, not merely
+# "did systemd accept the job", so they all share this one bound rather than
+# repeating the derivation at five call sites.
+_BLOCKING_RESTART_TIMEOUT_SEC = 60.0
+
 
 def _restart_units(
     units: list[str],
@@ -192,30 +202,80 @@ def _find_conflicts(name: str) -> list[NameConflict]:
         return []
 
 
-def _apply_name(name: str) -> bool:
+def _refresh_gadget_consumers_after_rebuild(name_changed: bool) -> bool:
+    """Rebuild the USB gadget for a name change, then refresh the consumers a
+    real rebuild leaves stale.
+
+    The composite USB gadget owns the host-visible device strings (product =
+    speaker name; the name-patch reruns as its ExecStartPre). Only a NAME
+    change touches those strings -- room is display-only and never reaches
+    the name-patch (jasper/speaker_name.py's CLI reader prints only
+    ``.name``, which is all deploy/usbsink/jasper-usbsink-name-patch reads),
+    so a room-only edit must never pay for a gadget rebuild plus a fan-in/
+    usbmic bounce. The audio label re-applies on a bound gadget's restart
+    only once the module index already names the override, which is the
+    steady state on any box that has composed USB audio before. On a box
+    where it does not yet (first enable, first boot after a kernel update)
+    the 10.3 s depmod runs out of band in jasper-usbsink-name-index.service
+    and the audio label lands on the following restart; jasper-doctor's
+    `usbsink name` check warns for that window rather than reporting a name
+    the host is not showing (#2176).
+
+    This restart is descriptor-string-only, never a composition change, so
+    jasper-usbgadget-converge would read it as already converged and skip
+    its own rebuild -- the token it reconciles on doesn't cover product/
+    audio strings. That makes this the only path that rebuilds the gadget
+    for a rename, so it also owes the converger's post-rebuild refresh: a
+    real rebuild destroys and recreates the UAC2Gadget ALSA card, and
+    jasper-fanin/jasper-usbmic hold the stale handle until bounced.
+
+    Active state is read fresh here, not from an earlier snapshot: by the
+    time this runs, _apply_name has already spent up to ~120 s in the
+    blocking bluetooth/source restarts above it, and the gadget's state at
+    rename-start is not pinned to its state now.
+
+    Returns False only when a rebuild was attempted and failed; True when
+    nothing needed doing (room-only edit, or gadget not active) or the
+    rebuild succeeded, so the caller can fold this straight into its own
+    success return.
+    """
+    if not name_changed or not _unit_active("jasper-usbgadget.service"):
+        return True
+    # Blocking, like the bluetooth restart in _apply_name: the caller must
+    # know the rebuild actually finished -- not merely that systemd accepted
+    # the job -- before it is safe to touch the consumers below.
+    gadget_restarted = _restart_units(
+        ["jasper-usbgadget.service"],
+        no_block=False,
+        timeout=_BLOCKING_RESTART_TIMEOUT_SEC,
+    )
+    if not gadget_restarted:
+        # A failed rebuild never gets a refresh -- there is no new card for
+        # fan-in/usbmic to pick up; _restart_units already logged the
+        # failure above.
+        return False
+    # Same order as jasper-usbgadget-converge's post-rebuild refresh
+    # (fan-in before usbmic). Each call WARNs on its own failure via
+    # _restart_units and never blocks the other unit's try-restart; that
+    # outcome is best-effort, like the bluetooth/source restarts in
+    # _apply_name, and does not change this function's own return.
+    _restart_units(
+        ["jasper-fanin.service"],
+        verb="try-restart",
+        no_block=False,
+        timeout=_BLOCKING_RESTART_TIMEOUT_SEC,
+    )
+    _restart_units(
+        ["jasper-usbmic.service"],
+        verb="try-restart",
+        no_block=False,
+        timeout=_BLOCKING_RESTART_TIMEOUT_SEC,
+    )
+    return True
+
+
+def _apply_name(name: str, *, name_changed: bool) -> bool:
     units = list(RESTART_UNITS)
-    # The composite USB gadget owns the host-visible device strings (product =
-    # speaker name; the name-patch reruns as its ExecStartPre). It is always-on
-    # (it carries the USB network), so restart it on any rename so both the NIC
-    # label and — when audio is composed — the audio label track the new name.
-    # The audio label re-applies on this restart only once the module index
-    # already names the override, which is the steady state on any box that
-    # has composed USB audio before. On a box where it does not yet (first
-    # enable, first boot after a kernel update) the 10.3 s depmod runs out of
-    # band in jasper-usbsink-name-index.service and the audio label lands on
-    # the following restart; jasper-doctor's `usbsink name` check warns for
-    # that window rather than reporting a name the host is not showing (#2176).
-    #
-    # This restart is descriptor-string-only, never a composition change, so
-    # jasper-usbgadget-converge would read it as already converged and skip
-    # its own rebuild -- the token it reconciles on doesn't cover product/
-    # audio strings. That makes this the only path that rebuilds the gadget
-    # for a rename, so it also owes the converger's post-rebuild refresh: a
-    # real rebuild destroys and recreates the UAC2Gadget ALSA card, and
-    # jasper-fanin/jasper-usbmic hold the stale handle until bounced. Kept
-    # out of the batched restart below and run blocking instead, so that
-    # refresh never races a rebuild still in flight.
-    gadget_active = _unit_active("jasper-usbgadget.service")
 
     _write_bluez_main_conf_name(name)
     bluetooth_alias_applied = False
@@ -259,7 +319,7 @@ def _apply_name(name: str) -> bool:
         logger,
         "speaker_name.restart",
         units=",".join(units),
-        gadget_active=gadget_active,
+        name_changed=name_changed,
         try_restart_units=",".join(SOURCE_TRY_RESTART_UNITS),
     )
     # A successful D-Bus alias update needs no bluetoothd restart. If it failed,
@@ -270,7 +330,7 @@ def _apply_name(name: str) -> bool:
         _restart_units(
             ["bluetooth.service"],
             no_block=False,
-            timeout=60.0,
+            timeout=_BLOCKING_RESTART_TIMEOUT_SEC,
         )
 
     # Refresh active source advertisements with a blocking active-only
@@ -281,7 +341,7 @@ def _apply_name(name: str) -> bool:
         SOURCE_TRY_RESTART_UNITS,
         verb="try-restart",
         no_block=False,
-        timeout=60.0,
+        timeout=_BLOCKING_RESTART_TIMEOUT_SEC,
     )
     # A start can join a source oneshot that was already activating before the
     # rename refresh. The first bounded call drains that snapshot; the second
@@ -297,39 +357,12 @@ def _apply_name(name: str) -> bool:
             level=logging.WARNING,
         )
 
-    if gadget_active:
-        # Blocking, like the bluetooth restart above: the caller must know the
-        # rebuild actually finished -- not merely that systemd accepted the
-        # job -- before it is safe to touch the consumers below.
-        gadget_restarted = _restart_units(
-            ["jasper-usbgadget.service"],
-            no_block=False,
-            timeout=60.0,
-        )
-        if gadget_restarted:
-            # Same order as jasper-usbgadget-converge's post-rebuild refresh
-            # (fan-in before usbmic). Each call WARNs on its own failure via
-            # _restart_units and never blocks the other unit's try-restart.
-            _restart_units(
-                ["jasper-fanin.service"],
-                verb="try-restart",
-                no_block=False,
-                timeout=60.0,
-            )
-            _restart_units(
-                ["jasper-usbmic.service"],
-                verb="try-restart",
-                no_block=False,
-                timeout=60.0,
-            )
-        # A failed rebuild never gets a refresh -- there is no new card for
-        # fan-in/usbmic to pick up; _restart_units already logged the
-        # failure above.
+    gadget_ok = _refresh_gadget_consumers_after_rebuild(name_changed)
 
     # Core services restart separately because jasper-control's broker has
     # special self-restart handling for the ordinary non-blocking restart verb.
     _restart_units(units)
-    return bool(source_result.get("ok"))
+    return bool(source_result.get("ok")) and gadget_ok
 
 
 def _index_html(
@@ -474,7 +507,7 @@ def _make_handler(cfg: dict[str, Any]) -> type[BaseHTTPRequestHandler]:
                 saved=repr(saved),
                 room=repr(requested_room),
             )
-            sources_ok = _apply_name(saved)
+            sources_ok = _apply_name(saved, name_changed=(saved != current))
             if sources_ok:
                 flash = (
                     f'Saved. Speaker renamed to "{saved}". Services restarting.'
