@@ -354,10 +354,15 @@ def _production_host_seams(monkeypatch, tmp_path):
         model_error_store.STATE_PATH_ENV, str(tmp_path / "model_errors.json")
     )
     # The evidence bundle: `bind_evidence_publishers` reads `store.session_id`
-    # eagerly, so the stand-in carries one; nothing in these tests publishes.
+    # eagerly, so the stand-in carries one. It also ACCEPTS writes, because
+    # every accepted capture banks a take of its own — CHECK, MEASURE and
+    # VERIFY included, since W1-c/2 gave the three unprompted phases their own
+    # banked record. What lands is not what these tests read; that they can
+    # land without a real bundle on disk is what keeps this module about the
+    # bridge.
     monkeypatch.setattr(
         v2host, "open_v2_evidence_store",
-        lambda topology: (SimpleNamespace(session_id="bundle-test"), "bundle-test"),
+        lambda topology: (_AcceptingStore(tmp_path / "bundle"), "bundle-test"),
     )
     # The measurement-volume plan: the REAL one, on a temp state path, so the
     # preparers' volume gates (`needs_recovery`, the stale-ceiling drain, the
@@ -507,6 +512,40 @@ def _seed_applied_stage_1_state() -> dict[str, Any]:
     }
     v2host.save_v2_state(state)
     return state
+
+
+class _AcceptingStore:
+    """An evidence store stand-in that takes a write and answers an identity.
+
+    Not a recorder: nothing in this module reads what was published. It exists
+    because banking is no longer optional on the happy path — a stand-in that
+    could not accept a write would turn every accepted capture into a logged
+    retention failure and make this module's subject (the bridge) depend on a
+    bundle being on disk.
+
+    **Scope: the position-take path only.** It answers the two calls that path
+    makes and nothing else — no ``reopen_json_artifact``, so a caller that
+    verifies a candidate or a receipt through it fails loudly rather than
+    quietly agreeing. That is the intended shape: this module tests the
+    bridge, and a stand-in that grew to cover every store caller would start
+    passing tests about the store.
+
+    ``bundle_dir`` is a real temp directory rather than ``""``. Empty resolves
+    to the pytest CWD, so the day the WAV leg of the banking path fires under
+    these tests it would write into the checkout instead of failing — the
+    quiet direction, and the one the previous double at least got loud.
+    """
+
+    session_id = "bundle-test"
+
+    def __init__(self, bundle_dir: Any) -> None:
+        self.bundle_dir = str(bundle_dir)
+
+    def publish_json_artifact(self, relpath: str, payload: Any) -> Any:
+        return SimpleNamespace(fingerprint=f"fp-{relpath}")
+
+    def identify_artifact(self, relpath: str) -> Any:
+        return SimpleNamespace(fingerprint=f"fp-{relpath}")
 
 
 # --------------------------------------------------------------------------- #

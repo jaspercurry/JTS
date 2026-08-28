@@ -210,14 +210,39 @@ def _post_apply_analysis(conductor: Any, *, scale: float = 1.0, max_db: float = 
     )
 
 
-def _consume_verify(conductor: Any, analysis: Any, *, attempt: int = 1) -> Any:
+#: The index the harness banks a VERIFY take under when a caller states none.
+#: Not a production index — production threads the walk's own — so the take it
+#: mints is ``verify_00_a01``.
+_HARNESS_VERIFY_INDEX = 0
+
+
+def _consume_verify(
+    conductor: Any, analysis: Any, *, attempt: int = 1,
+    index: int = _HARNESS_VERIFY_INDEX, result: Any = None,
+) -> Any:
     """Drive the production VERIFY trigger site.
 
     ``_consume_verify`` is where the Express tier grades its round, and it is
     the real entry point the relay runner calls — not a test-only shim. Reached
     directly because the runner in between is a thread and a websocket.
+
+    **The take this mints under the defaults is a PHANTOM: do not assert on
+    it.** ``index``/``result`` default because every caller here drives the
+    GRADING trigger rather than the banking, so the banked take comes out
+    ``verify_00_a01`` with a ``None`` digest — an identity production never
+    mints (its indexes start at 1) and a digest that only means "this call
+    passed no bytes". It is banked because banking is what an accepted VERIFY
+    does, and suppressing it here would make the harness diverge from the
+    production arm on the very branch these tests exercise. Any test that
+    wants to READ a banked VERIFY take must state ``index`` and ``result``.
+
+    ``phase`` is stated rather than defaulted: the arm is the dispatch's
+    catch-all, and a default would let the harness bank under a label the
+    caller never chose — the mislabel :meth:`_consume_verify` documents.
     """
-    return conductor._consume_verify(analysis, attempt=attempt)
+    return conductor._consume_verify(
+        index, attempt, analysis, result, phase=flow.PHASE_VERIFY,
+    )
 
 
 def _seed_round_state(*, anchor: bool = True) -> dict[str, Any]:

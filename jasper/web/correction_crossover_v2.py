@@ -3177,6 +3177,7 @@ def bind_production_analyze(
     resolve_calibration: Callable[[Any, Any], Any] | None = resolve_relay_calibration,
     meta: dict[str, Any] | None = None,
     provenance: CaptureProvenanceRecorder | None = None,
+    carry: CaptureProvenanceRecorder | None = None,
 ) -> "AnalyzeCapture":
     """The real ``analyze`` seam: CaptureResult → ``analyze_program_capture``.
 
@@ -3207,6 +3208,16 @@ def bind_production_analyze(
     — the same object ``bind_production_play`` records into, and the only way a
     retained capture can name the graph it went through. Omitted, retention
     behaves exactly as before.
+
+    ``carry`` (optional) is the SECOND recorder, the one the banking seam
+    drains. The shot stays single and stays here, because this is the only
+    place in a capture's life that runs exactly once between the play that
+    observed the graph and the arm that decides whether to bank — but the ring
+    it used to feed alone is being deleted, and a value taken here and given to
+    nobody would make the recorder write-only. Re-recorded rather than
+    re-observed: ``CaptureProvenance`` is a snapshot the play seam already
+    took, so the second hop moves bytes, never readings. See
+    ``bind_position_retention`` for the drain.
     """
 
     def _analyze(
@@ -3293,6 +3304,24 @@ def bind_production_analyze(
             # the only place the comparison can be made.
             capture_report=getattr(result, "capture_integrity", None),
         )
+        # THIS capture's stimulus, consumed ONCE: a second analyze with no
+        # play between gets ``None``, never the last capture's context. Both
+        # consumers below read this one value — the ring (until it dies) and
+        # the banking seam, through ``carry``.
+        taken = provenance.take() if provenance is not None else None
+        if carry is not None:
+            # DRAINED FIRST, unconditionally, and that is not tidiness. Banking
+            # is accepted-only, so a REFUSED capture leaves whatever this
+            # analyze put in the carry with nobody to take it out. The next
+            # accepted capture whose own observation missed would then drain a
+            # value belonging to a capture that never became evidence, and
+            # write it into a write-once forensic record naming the wrong
+            # graph and the wrong fader. ``record`` cannot clear that by
+            # itself: the case that strands a value is exactly the case where
+            # there is no new value to overwrite it with.
+            carry.take()
+            if taken is not None:
+                carry.record(taken)
         # #1855: retention labels the capture from the FLOW's phase (this
         # function's own required ``phase`` argument), never from
         # ``program.phase`` — see the docstring above and
@@ -3305,9 +3334,7 @@ def bind_production_analyze(
             # up as the corpus's only reliable join. ``meta`` is the evidence
             # ``refs`` dict, which already holds the bundle session id.
             bundle_session_id=str((meta or {}).get("bundle_session_id") or ""),
-            # THIS capture's stimulus, consumed once: a second analyze with no
-            # play between gets ``None``, never the last capture's context.
-            provenance=provenance.take() if provenance is not None else None,
+            provenance=taken,
         )
         return analysis
 
@@ -3627,7 +3654,12 @@ def bind_round_receipt(
 
 
 def bind_position_retention(
-    store: Any, relay_session_id: str, refs: dict[str, Any], run_async: Any
+    store: Any,
+    relay_session_id: str,
+    refs: dict[str, Any],
+    run_async: Any,
+    *,
+    provenance: CaptureProvenanceRecorder | None = None,
 ) -> Callable[[Any, Mapping[str, Any]], str]:
     """The real ``bank_take`` seam — one WAV + one banked record per take.
 
@@ -3665,6 +3697,13 @@ def bind_position_retention(
     retake. The WARN keeps its shipped event name so a log search spans the
     move. ``bundles.register_capture`` is the one write this does not have to
     guard: every public write in that module already fail-softs.
+
+    ``provenance`` (optional, keyword-only) is the recorder the ANALYZE seam
+    hands this one forward through — not the play seam's own. It is drained
+    once per banked take: what the play seam observed while this capture's
+    stimulus was emitting, carried rather than re-read, because by now the
+    routing graph is restored and the fader may have moved. Unbound, a take
+    simply names no provenance.
 
     Returns the store id that finds the record again, or ``""`` when nothing
     was banked — which is the whole vocabulary
@@ -3707,6 +3746,25 @@ def bind_position_retention(
     def _bank_one_take(result: Any, metadata: Mapping[str, Any]) -> str:
         wav = getattr(result, "wav", None)
         record = dict(metadata)
+        # What the play seam saw while THIS capture's stimulus was emitting —
+        # the graph it went through and the fader it went out at. Observed at
+        # play time and carried here, never re-read: by now the routing graph
+        # is restored and the fader may have moved, so a reading taken at this
+        # point would describe a speaker the capture never used. Drained, so a
+        # take banked with no analyze behind it names no provenance rather than
+        # the previous capture's.
+        #
+        # TODAY THE COMMON ANSWER IS "none", and not because captures go
+        # unobserved: the recorder is only fed when the capture-dump marker is
+        # present (``observing = provenance is not None and
+        # capture_dump_enabled()`` at the play seam), so an ordinary household
+        # session banks takes with no ``provenance`` key at all. That gate is
+        # the ring's, and it dies with the ring — the PR that deletes
+        # ``capture_dump_enabled`` has to re-express this condition or the
+        # carry starves permanently.
+        carried = provenance.take() if provenance is not None else None
+        if carried is not None:
+            record["provenance"] = carried.to_dict()
         # A geometry retake re-uses its position id — same prompted spot,
         # measured again from further out — so the id alone does NOT identify a
         # take. The evidence store is write-once (a repeated path is a
@@ -4126,7 +4184,7 @@ def bind_cloud_publisher(
     own boundary can log and continue rather than every OTHER caller of this
     store losing its strictness. :func:`bind_position_retention` is the
     opposite, deliberately: its conductor-side boundary moved INTO the binding
-    when the three retention sites lifted onto the record store, so it catches
+    when the flow's retention sites lifted onto the record store, so it catches
     where this one raises.
     """
 
@@ -6214,8 +6272,12 @@ def bind_v2_stage_seams(
     The unconditional seams are unconditional on purpose. ``apply_failed`` is
     never consulted by stage 2 (its conductor is constructed ``applied=True``,
     so ``authorize_begin``'s apply-observed short-circuit runs first), and
-    ``publish_cloud``/``bank_take`` do nothing for a single-entry recovery
-    re-verify — but Full's stage 2 IS a post-apply position group whose combined
+    ``publish_cloud`` does nothing for a single-entry recovery re-verify.
+    ``bank_take`` is no longer in that company: a recovery re-verify IS an
+    accepted VERIFY capture, so it banks a take like any other, and that is
+    the wanted behaviour rather than an accident of binding — the round whose
+    evidence a household is recovering is exactly the one whose capture should
+    survive it. Full's stage 2 is also a post-apply position group whose combined
     curve the after-chart, the post-apply spec verdict, and the delta probe all
     read, and ``V2FlowSeams`` requires the two apply gates outright. Binding a
     seam a plan never exercises costs nothing; omitting one a plan does
@@ -6251,15 +6313,24 @@ def bind_v2_stage_seams(
             level=logging.WARNING, stage=capabilities.stage,
             session_id=relay_session_id, missing=",".join(missing),
         )
+    # The one-capture handoff from the analyze seam to the banking seam, in
+    # the same type the play seam already uses for its own hop. A second
+    # recorder rather than a shared slot because the single-shot ``take`` is
+    # exactly the semantics this hop needs too: a take banked with no analyze
+    # behind it must name no provenance, never the previous capture's.
+    banked_provenance = CaptureProvenanceRecorder()
     return V2FlowSeams(
         play=play,
-        analyze=bind_production_analyze(meta=refs, provenance=provenance),
+        analyze=bind_production_analyze(
+            meta=refs, provenance=provenance, carry=banked_provenance,
+        ),
         publish_check=publish_check,
         publish_candidate=publish_candidate,
         apply_complete=_applied_gate,
         apply_failed=_apply_failure_gate,
         bank_take=bind_position_retention(
-            evidence_store, relay_session_id, refs, run_async
+            evidence_store, relay_session_id, refs, run_async,
+            provenance=banked_provenance,
         ),
         publish_cloud=bind_cloud_publisher(evidence_store, relay_session_id, refs),
         # #2291's round receipt. Bound on both stages rather than gated on a

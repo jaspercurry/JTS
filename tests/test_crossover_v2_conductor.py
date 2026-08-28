@@ -37,6 +37,7 @@ import yaml
 
 from jasper.active_speaker import crossover_v2_flow as flow
 from jasper.active_speaker.crossover_v2 import capture_plan
+from jasper.active_speaker.crossover_v2.contracts import MEASURE_KIND_VERIFY
 from jasper.active_speaker.crossover_v2 import refusal_copy
 from jasper.active_speaker.crossover_v2 import accountability
 from jasper.active_speaker.crossover_v2 import intervention as iv
@@ -3613,6 +3614,227 @@ def test_thin_evidence_lock_is_disclosed_not_retried(monkeypatch):
     assert PHASE_CLOUD_MEASURE in c.accepted_phases
 
 
+def test_the_three_unprompted_phases_each_bank_a_take_of_their_own():
+    """CHECK, MEASURE and VERIFY produce a banked take, like every other phase.
+
+    Before this they produced none at all: their arms were the three the
+    dispatch handed no ``index``, no ``attempt`` and no ``result``, so there
+    was no identity to bank one under and no bytes to bank. Offline analyze
+    could see a session's positions and its baseline and simply not its
+    CHECK, its MEASURE or its VERIFY.
+
+    What is banked is the CAPTURE — the digest and the identity — because
+    that is what makes an offline replay of these phases possible at all.
+    Their analyses are not duplicated into the take: those live where each
+    phase already puts them, and are rewritten inside a round that a take
+    outlives.
+    """
+    retained: list = []
+    fakes = FakeSeams()
+    c = CrossoverV2Session(
+        session_id=SESSION, source_preset=_preset(), roles_bands=_roles(),
+        fc_hz=FC_HZ, driver_caps_dbfs=CAPS, session_volume_db=SESSION_VOLUME_DB,
+        seams=replace(fakes.seams(), bank_take=bank_into(retained)),
+        index_phase_map=CLOUD_MAP,
+    )
+    _walk(c, (1, 2), 1)
+
+    # VERIFY is stage 2's, so it takes the stage-2 shape to reach.
+    verify_retained: list = []
+    verify_fakes = FakeSeams()
+    stage2 = CrossoverV2Session(
+        session_id=SESSION, source_preset=_preset(), roles_bands=_roles(),
+        fc_hz=FC_HZ, driver_caps_dbfs=CAPS, session_volume_db=SESSION_VOLUME_DB,
+        seams=replace(
+            verify_fakes.seams(), bank_take=bank_into(verify_retained),
+        ),
+        index_phase_map=STAGE2_MAP,
+        accepted_phases=(PHASE_CHECK, PHASE_MEASURE),
+        applied=True,
+    )
+    _run_phase(stage2, VERIFY_INDEX, 1)
+
+    # The LIST, not a phase-keyed dict: one take per accepted capture, and a
+    # dict would quietly collapse a double-bank into the single entry this pin
+    # was looking for — the real store would not catch it either, because two
+    # banks of one record are byte-identical and therefore idempotent.
+    all_banked = retained + verify_retained
+    assert [meta["phase"] for meta in all_banked] == [
+        PHASE_CHECK, PHASE_MEASURE, PHASE_VERIFY,
+    ]
+    banked = {meta["phase"]: meta for meta in all_banked}
+    # Every one carries the identity a replay resolves it by, and the digest
+    # that verifies the bytes it finds.
+    for phase in (PHASE_CHECK, PHASE_MEASURE, PHASE_VERIFY):
+        take = banked[phase]
+        assert take["session_id"] == SESSION
+        assert take["index"] > 0
+        assert take["attempt"] > 0
+        assert take["wav_sha256"]
+        assert take["captured_at"]
+
+
+def test_a_verify_take_banks_the_kind_its_own_round_can_derive():
+    """VERIFY classifies; it does not bank an unresolved kind it could resolve.
+
+    ``take_kind`` needs two named fingerprints: the graph this capture went
+    through, and the round's pre-apply comparand. By VERIFY the session holds
+    both — the entry baseline stage 1 took is what a post-apply re-measure is
+    post-apply OF — so leaving the comparand unstated would bank ``""`` for a
+    take whose kind the round already knows. CHECK and MEASURE genuinely
+    cannot: CHECK is kindless by design, and MEASURE's comparand is minted
+    after it banks.
+
+    The two fingerprints must also DIFFER, which is what makes this a verify
+    rather than a baseline — the same graph on both sides is the round that
+    changed nothing.
+    """
+    retained: list = []
+    fakes = FakeSeams()
+    c = _conductor(
+        fakes,
+        seams=replace(
+            fakes.seams(),
+            bank_take=bank_into(retained),
+            entry_graph_fingerprint=lambda: "fp-after-the-apply",
+        ),
+        index_phase_map=STAGE2_MAP,
+        accepted_phases=(PHASE_CHECK, PHASE_MEASURE),
+        applied=True,
+    )
+    # The fixture's stage-2 baseline, whose graph is "fixture_entry_graph" —
+    # named, and not the post-apply one above.
+    assert c.measure_entry_baseline is not None
+
+    _run_phase(c, VERIFY_INDEX, 1)
+
+    banked = [m for m in retained if m["phase"] == PHASE_VERIFY]
+    assert len(banked) == 1
+    assert banked[0]["measure_kind"] == MEASURE_KIND_VERIFY
+
+
+def test_a_catch_all_capture_banks_under_the_phase_it_actually_ran():
+    """The dispatch's ``else`` is a CATCH-ALL, and its take says so.
+
+    Every phase the dispatch does not name by hand lands in the VERIFY arm.
+    Banking those under a hardcoded ``verify`` would file them durably as
+    post-apply tracking evidence — the same mislabel the entry baseline's
+    explicit carve-out one branch up exists to prevent, except written into a
+    write-once record instead of a verdict, where no later capture can correct
+    it.
+
+    The program selector is stubbed because it refuses these phases before the
+    arm is reached; what is under test is which LABEL the arm banks, not which
+    stimulus the phase plays.
+    """
+    retained: list = []
+    fakes = FakeSeams()
+    odd_index = max(STAGE2_MAP) + 1
+    c = _conductor(
+        fakes,
+        seams=replace(fakes.seams(), bank_take=bank_into(retained)),
+        index_phase_map={**STAGE2_MAP, odd_index: PHASE_APPLYING},
+        accepted_phases=(PHASE_CHECK, PHASE_MEASURE),
+        applied=True,
+    )
+    c.program_for_phase = lambda phase: c._verify_program
+
+    _run_phase(c, odd_index, 1)
+
+    assert [m["phase"] for m in retained] == [PHASE_APPLYING]
+    assert retained[0]["take_id"].startswith(f"{PHASE_APPLYING}_")
+
+
+def test_an_unprompted_take_is_named_the_way_the_entry_baseline_named_its_own():
+    """One take-id convention across the four phases that prompt no spot.
+
+    The entry baseline hit this first — a retained capture with no table row —
+    and answered it by minting the position id from the phase and the index, so
+    that once ``take_id_for`` qualifies it by attempt the position id IS the
+    take id. A second convention here would mean a reader had to know which
+    phase wrote a take before it could parse its name.
+    """
+    retained: list = []
+    fakes = FakeSeams()
+    c = CrossoverV2Session(
+        session_id=SESSION, source_preset=_preset(), roles_bands=_roles(),
+        fc_hz=FC_HZ, driver_caps_dbfs=CAPS, session_volume_db=SESSION_VOLUME_DB,
+        seams=replace(fakes.seams(), bank_take=bank_into(retained)),
+        index_phase_map=CLOUD_MAP,
+    )
+    _walk(c, (1, 2), 1)
+
+    named = {meta["phase"]: meta for meta in retained}
+    assert named[PHASE_CHECK]["take_id"] == f"{PHASE_CHECK}_01_a01"
+    assert named[PHASE_MEASURE]["take_id"] == f"{PHASE_MEASURE}_02_a02"
+    # The coincidence the entry baseline records: no prompted spot of its own,
+    # so the position id and the take id are one string.
+    for take in named.values():
+        assert take["position_id"] == take["take_id"]
+
+
+def _refuse_check(fakes):
+    fakes.check = lambda program: _check_analysis(program, linearity=False)
+
+
+def _refuse_measure(fakes):
+    fakes.measure = lambda program: _measure_analysis(program, linearity=False)
+
+
+def _refuse_verify(fakes):
+    fakes.verify = lambda program: _verify_analysis(program, linearity=False)
+
+
+@pytest.mark.parametrize(
+    "phase", [PHASE_CHECK, PHASE_MEASURE, PHASE_VERIFY],
+)
+def test_a_refused_capture_of_an_unprompted_phase_banks_nothing(phase):
+    """Accepted-only, the rule every other retained kind already follows.
+
+    A refused capture is evidence about the room or the phone, not about the
+    speaker, and the journal is where that is recorded. Banking one would put a
+    take in the bundle that the round never graded and offline analyze would
+    have to learn to skip.
+
+    Parametrized over all three because the rule is one rule and the arms are
+    three call sites: pinning it on CHECK alone left deleting the guard from
+    the MEASURE or the VERIFY arm invisible to the whole suite.
+    """
+    # Resolved here rather than in the parametrize: ``VERIFY_INDEX`` is
+    # imported below this point in the module, so a decorator that named it
+    # would not collect.
+    refuse, warmup, index, stage_2 = {
+        PHASE_CHECK: (_refuse_check, (), 1, False),
+        PHASE_MEASURE: (_refuse_measure, (1,), 2, False),
+        PHASE_VERIFY: (_refuse_verify, (), VERIFY_INDEX, True),
+    }[phase]
+
+    retained: list = []
+    fakes = FakeSeams()
+    refuse(fakes)
+    kwargs = (
+        {"index_phase_map": STAGE2_MAP,
+         "accepted_phases": (PHASE_CHECK, PHASE_MEASURE), "applied": True}
+        if stage_2 else {"index_phase_map": CLOUD_MAP}
+    )
+    c = CrossoverV2Session(
+        session_id=SESSION, source_preset=_preset(), roles_bands=_roles(),
+        fc_hz=FC_HZ, driver_caps_dbfs=CAPS, session_volume_db=SESSION_VOLUME_DB,
+        seams=replace(fakes.seams(), bank_take=bank_into(retained)),
+        **kwargs,
+    )
+    for warm in warmup:
+        _run_phase(c, warm, 1)
+
+    verdict = _run_phase(c, index, 1)
+
+    assert verdict["accepted"] is False
+    assert [m for m in retained if m["phase"] == phase] == []
+    # ...and the warm-up captures that WERE accepted still banked, so this is
+    # reading a refusal rather than a seam that never fired.
+    assert len(retained) == len(warmup)
+
+
 def test_the_bank_seam_gets_every_accepted_position_with_its_prompt():
     """The forensic record the choreography owes: the prompt is the only durable
     statement of WHERE a curve was measured."""
@@ -3620,7 +3842,7 @@ def test_the_bank_seam_gets_every_accepted_position_with_its_prompt():
     fakes = FakeSeams()
     seams = replace(
         fakes.seams(),
-        bank_take=bank_into(retained),
+        bank_take=bank_into(retained, phase=PHASE_CLOUD_MEASURE),
     )
     c = CrossoverV2Session(
         session_id=SESSION, source_preset=_preset(), roles_bands=_roles(),
@@ -3675,7 +3897,7 @@ def test_a_verify_pose_banks_its_angle_axis_and_distance_as_fields():
         # a second FakeSeams() here would silently drop ``apply_done``.
         seams=replace(
             fakes.seams(),
-            bank_take=bank_into(retained),
+            bank_take=bank_into(retained, phase=PHASE_CLOUD_VERIFY),
         ),
         index_phase_map=STAGE2_MAP,
         accepted_phases=(PHASE_CHECK, PHASE_MEASURE),
@@ -10456,7 +10678,7 @@ def test_every_retained_position_carries_its_gate_provenance_as_a_sentence():
         fc_hz=FC_HZ, driver_caps_dbfs=CAPS, session_volume_db=SESSION_VOLUME_DB,
         seams=replace(
             fakes.seams(),
-            bank_take=bank_into(retained),
+            bank_take=bank_into(retained, phase=PHASE_CLOUD_MEASURE),
         ),
         index_phase_map=CLOUD_MAP,
     )
@@ -10515,7 +10737,7 @@ def test_every_retained_position_carries_the_numbers_behind_that_sentence():
         fc_hz=FC_HZ, driver_caps_dbfs=CAPS, session_volume_db=SESSION_VOLUME_DB,
         seams=replace(
             fakes.seams(),
-            bank_take=bank_into(retained),
+            bank_take=bank_into(retained, phase=PHASE_CLOUD_MEASURE),
         ),
         index_phase_map=CLOUD_MAP,
     )
