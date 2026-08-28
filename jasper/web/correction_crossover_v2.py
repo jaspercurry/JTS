@@ -1175,79 +1175,9 @@ def session_measurement_pause_held() -> bool:
 
 def reset_session_measurement_pause_for_tests() -> None:
     """Test seam: drop the held-window reference without an ``__aexit__``."""
-    global _session_pause_cm, _session_abort_target, _session_graph
+    global _session_pause_cm, _session_abort_target
     _session_pause_cm = None
     _session_abort_target = None
-    _session_graph = None
-
-
-# --------------------------------------------------------------------------- #
-# session-scoped measurement graph (wave 6b — installed once, not per stimulus)
-# --------------------------------------------------------------------------- #
-#
-# **The OUT-OF-RUNNER drains only, and this dies at W5-c.** The runner's own
-# path no longer comes through here: the stage's graph is ``EngineSeams.graph``
-# on a ``TuningSession`` whose lifetime is the run coroutine's, and both
-# runner-side restores (``_volume_hooks``'s close/abandon arms, and the
-# summed-sweep step-aside inside the play) go through that object.
-#
-# What still needs a process-global handle is the three drains that run when no
-# runner owns the session and there is therefore no session to reach through:
-# ceiling enforcement, unresolved recovery, and the new-session reconcile. W5-c
-# re-homes those three and deletes this global with them; the three callers in
-# ``tests/test_crossover_v2_session_graph.py`` die in that same PR.
-#
-# Not a second authority over the graph: every path calls ``restore()`` on the
-# SAME object, and that method is idempotent by contract.
-_session_graph: Any = None
-
-
-def register_session_measurement_graph(graph: Any) -> None:
-    """Hand the drain paths the graph this stage will install.
-
-    A registration that displaces a graph still holding an entry config is not
-    refused — the new stage needs its graph and blocking it would be a guard
-    where a fact belongs — but it is a fact worth seeing, because it means some
-    drain path did not run before the next stage began. Logged, not gated.
-    """
-    global _session_graph
-    outgoing = _session_graph
-    if outgoing is not None and outgoing is not graph and getattr(
-        outgoing, "installed", False
-    ):
-        log_event(
-            logger,
-            "correction.crossover_v2_session_graph_displaced",
-            level=logging.WARNING,
-        )
-    _session_graph = graph
-
-
-async def release_session_measurement_graph() -> None:
-    """Put the entry graph back (idempotent), then forget it.
-
-    **The OUT-OF-RUNNER drains only, and this function dies at W5-c.** Its one
-    remaining caller is :func:`_release_pause_best_effort`, serving the three
-    drains that run when no runner owns the session and there is therefore no
-    session object to reach the graph through: ceiling enforcement, unresolved
-    recovery, and the new-session reconcile. A session the runner DOES own goes
-    through ``TuningSession.close`` instead. W5-c re-homes those three drains
-    and deletes this with them. It still restores the graph BEFORE releasing
-    the measurement pause, so the swap never lands under a resumed household
-    programme.
-
-    A call that runs when nothing is installed — a session that never played a
-    routed stimulus, a crash-fresh process, a second drain — is a safe no-op,
-    because
-    :meth:`~jasper.active_speaker.crossover_v2.session_graph.MeasurementSessionGraph.restore`
-    is itself idempotent.
-    """
-    global _session_graph
-    graph = _session_graph
-    if graph is None:
-        return
-    _session_graph = None
-    await graph.restore()
 
 
 async def _play_under_session_pause(play_body: Callable[[], Any]) -> None:
@@ -1410,36 +1340,56 @@ def _volume_door(
     )
 
 
-def _release_pause_best_effort(run_async: Any) -> None:
-    """Put the measurement graph back, then release the pause — for a drain
-    that runs OUTSIDE the runner (recover / ceiling / new-session reconcile).
+def _session_measurement_claim_held() -> bool:
+    """Does a measurement session still own the fader, in this process?
 
-    Both halves, in this order, because these drains are the paths where the
-    runner is gone and nothing else will do it. The graph goes back FIRST,
-    while the measurement window still holds voice paused and music gated: once
-    the pause is released the household programme can resume, and a graph
-    restored after that would swap the pipeline under live audio — which is
-    also the precondition the measurement swap relies on being absent.
-
-    Idempotent both ways: a drain that runs when nothing is held — a session
-    that never played a routed stimulus, a crash-fresh process, a second drain
-    — is a safe no-op.
+    The ``VolumeOwner`` is process-global and already knows, so nothing here
+    needs a handle, a session object, or any knowledge of the graph. No owner
+    means no claim and therefore no session: releasing is correct, not a
+    fail-open, because a measurement session cannot have run without one.
     """
-    try:
-        run_async(
-            release_session_measurement_graph(),
-            timeout=_SESSION_VOLUME_DRAIN_TIMEOUT_S,
-        )
-    except (concurrent.futures.TimeoutError, OSError, RuntimeError, ValueError):
-        # Never at the pause's expense: a graph that will not come back must
-        # not strand voice paused and music gated on top of it.
+    from jasper.volume_owner import ClaimKind, volume_owner
+
+    owner = volume_owner()
+    if owner is None:
+        return False
+    return owner.holds_kind(ClaimKind.SESSION_MEASUREMENT)
+
+
+def _release_pause_best_effort(run_async: Any) -> None:
+    """Release the measurement pause for a drain that runs OUTSIDE the runner
+    (recover / ceiling / new-session reconcile).
+
+    **THE contract for all three drains, stated once, here.** Voice/mux
+    isolation is freed only when no ``SESSION_MEASUREMENT`` claim is held —
+    the owner's knowledge, never a restore OUTCOME. An outcome cannot tell
+    "the session is finished with its isolation" from "deferred", "the drain
+    raised", or "landed by coincidence": a household level that happens to
+    equal the measurement level answers ``LANDED`` under a live claim (both
+    default to ``MEASUREMENT_REFERENCE_VOLUME_DB`` on a box that never ran
+    seat-SPL), and a raising drain answers nothing at all. Gating on the claim
+    makes every one of those hold the pause.
+
+    Why the claim and not the graph: the graph is the session's, and the web
+    layer having its own handle on it is the process global this wave deleted.
+    The claim is the owner's, the owner is already process-wide, and a live
+    claim is the honest proxy for "a session is still measuring".
+
+    Gating on a claim cannot strand the pause: ``TuningSession._give_back_held``
+    releases the claim in the ``finally`` around the graph restore, so even a
+    graph that will not come back still gives the claim up, and the next drain
+    frees the isolation.
+
+    Idempotent: a drain that runs when nothing is held — a session that never
+    opened, a crash-fresh process, a second drain — is a safe no-op.
+    """
+    if _session_measurement_claim_held():
         log_event(
             logger,
-            "correction.crossover_v2_session_graph_restore_failed",
-            level=logging.CRITICAL,
-            drain="out_of_runner",
-            exc_info=True,
+            "correction.crossover_v2_pause_release_withheld",
+            level=logging.INFO,
         )
+        return
     try:
         run_async(
             release_session_measurement_pause(),
@@ -1466,9 +1416,12 @@ def enforce_session_volume_ceiling_if_stale(
     This runs on the request thread while a ``TuningSession`` may still hold
     the fader — the slow-but-alive positioner this exists for. The owner then
     RECORDS the household level behind that claim and lands it on release, so
-    the drain answers ``DEFERRED``: nothing is latched, no recovery is offered,
-    and the pause stays held because the session that owns it is still running.
-    The caller's gate still hears that the ceiling expired.
+    the drain answers ``DEFERRED``: nothing is latched and no recovery is
+    offered. The caller's gate still hears that the ceiling expired.
+
+    The measurement pause is NOT this arm's to reason about — a raising drain
+    reaches the release with no outcome at all. :func:`_release_pause_best_effort`
+    owns that contract for all three drains.
     """
     from jasper.active_speaker.session_volume_plan import (
         SessionVolumeRestoreResult,
@@ -1514,6 +1467,14 @@ def v2_volume_recovery_active() -> bool:
         return True  # fail-closed: an unreadable state still offers recovery
 
 
+#: The ``recovery`` value :func:`recover_session_volume` reports for a
+#: deferral, so its caller can say something true without importing the enum.
+#: Mirrors ``SessionVolumeRestoreResult.DEFERRED.value`` — this module keeps
+#: ``session_volume_plan`` out of its runtime import graph (the import above is
+#: ``TYPE_CHECKING``-only), and a test pins the two equal so they cannot drift.
+RECOVERY_DEFERRED = "deferred"
+
+
 def recover_session_volume(
     run_async: Any, camilla_factory: Any
 ) -> tuple[bool, str]:
@@ -1523,6 +1484,12 @@ def recover_session_volume(
     Routes to ``SessionVolumePlan.recover_unresolved`` — the v2 owner of the
     unresolved state — instead of the legacy lease, and releases any held
     measurement pause on success.
+
+    **A deferral is not a recovery.** A live session's claim outranks this
+    drain, so the household level is recorded rather than restored; telling
+    the household "recovered" would name an event that has not happened yet.
+    ``DEFERRED`` therefore reports failure here, and the caller's copy says
+    what is actually true — the restore lands when that session finishes.
     """
     from jasper.active_speaker.session_volume_plan import (
         SessionVolumeRestoreResult,
@@ -1541,7 +1508,10 @@ def recover_session_volume(
             level=logging.ERROR,
         )
         result = SessionVolumeRestoreResult.FAILED
-    succeeded = result is not SessionVolumeRestoreResult.FAILED
+    succeeded = result not in (
+        SessionVolumeRestoreResult.FAILED,
+        SessionVolumeRestoreResult.DEFERRED,
+    )
     if succeeded:
         _release_pause_best_effort(run_async)
     return succeeded, getattr(result, "value", str(result))
@@ -1565,6 +1535,8 @@ def reconcile_session_volume_for_new_session(
     household level is recorded behind that claim and lands on release, so
     nothing latches and the caller's ``needs_recovery`` gate does not send a
     household that simply opened a second session toward the recovery screen.
+    The pause is :func:`_release_pause_best_effort`'s call, not this one's:
+    this arm reaches it with no outcome whenever ``abandon`` raises.
     """
     from jasper.active_speaker.session_volume_plan import (
         SessionVolumeRestoreResult,
@@ -4229,10 +4201,9 @@ class _HeldSession:
 class ProductionPlay:
     """The play seam, and the measurement graph it was bound around.
 
-    The graph is RETURNED rather than registered in a module global. It is one
-    session's graph and its lifetime is that session's, so the session holds it
-    — as ``EngineSeams.graph`` — and a process-wide slot that two sessions
-    could displace each other in has no reason to exist.
+    The graph is RETURNED, not stashed. It is one session's graph and its
+    lifetime is that session's, so the session holds it — as
+    ``EngineSeams.graph`` — and it is reachable nowhere else.
     """
 
     play: Callable[[str, Any], None]
@@ -4397,12 +4368,6 @@ def bind_production_play(
         ),
         confirm_live=confirm_graph_is_live,
     )
-    # The three OUT-OF-RUNNER drains reach the graph only through here, and
-    # they run when no session object exists to reach it through. Without this
-    # the ceiling enforcer releases the measurement pause into a live
-    # crossover-free, role-routed graph — the household programme resuming
-    # through a graph built to measure one driver at a time.
-    register_session_measurement_graph(session_graph)
 
     def _play(phase: str, program: Any) -> None:
         bundle_dir = evidence_store.bundle_dir
@@ -4530,8 +4495,6 @@ def bind_production_play(
                 # Restoring here (not per stimulus) is what keeps an all-routed
                 # walk at two swaps for the whole session and bounds a mixed one
                 # by its routed/summed transitions.
-                # The session's own graph object, not the global: this play is
-                # bound around it, so the step-aside reaches it directly.
                 await session_graph.restore()
                 # The hold runs FIRST and unconditionally, so the provenance
                 # record below observes a fader that was just proven.
@@ -4553,7 +4516,6 @@ def bind_production_play(
             # check, ruling S10's shape — repair and disclose, never refuse to
             # play). A summed sweep between two routed stimuli lands here too,
             # because it released the graph on its way past.
-            register_session_measurement_graph(session_graph)
             await session_graph.install()
             # Hoisted so the observation below rides the SAME controller, not a
             # second one asking separately.
@@ -5865,9 +5827,10 @@ def _volume_hooks(
         the right place — but the ``finally`` below releases the measurement
         pause, and once that goes the household programme can resume. A graph
         swapped after it lands under live audio, which is exactly the condition
-        an un-ducked swap is only safe in the absence of. Same ordering, for the
-        same reason, that :func:`_release_pause_best_effort` keeps for the three
-        out-of-runner drains.
+        an un-ducked swap is only safe in the absence of. The graph goes back
+        through the SESSION and nowhere else — this arm's ``close``, or the
+        session's own failed-open teardown; no out-of-runner drain touches it
+        (see :func:`_release_pause_best_effort`).
 
         NEVER AT ITS COST, because a graph that will not come back must not
         stop the fader coming down: that would strand the speaker in the
@@ -5884,7 +5847,14 @@ def _volume_hooks(
             # what makes one authority out of two definitions of "where the
             # fader belongs" — the snapshot is last and wins. Called HERE and
             # not around the run, so the order this docstring promises is the
-            # order that happens.
+            # order that happens. Graph first is THIS path's order
+            # (``_give_back_held``); the failed-open teardown deliberately
+            # releases volume first, which is why no reader should take the
+            # ordering as universal.
+            #
+            # It restores here or not at all — nothing downstream will do it
+            # later, which is what makes the failure below CRITICAL rather
+            # than a retryable warning.
             await tuning.close()
         except (SessionGraphError, OSError, RuntimeError, TimeoutError, ValueError):
             log_event(
@@ -7361,8 +7331,7 @@ def prepare_v2_session(
         persist_conductor_state(conductor, failure_code=None, evidence=refs)
         # The engine's session, constructed HERE and held for the run's
         # lifetime. Its graph slot is the one this stage just bound, so the
-        # measurement graph is a field on an object that dies with the run
-        # rather than a module global two sessions could displace.
+        # measurement graph is a field on an object that dies with the run.
         from jasper.active_speaker.crossover_v2.session import TuningSession
 
         # ONE claim for this session, minted HERE and injected into both the
