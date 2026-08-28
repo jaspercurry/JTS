@@ -8635,6 +8635,63 @@ def test_enforce_ceiling_drains_a_stale_active_and_is_cheap_otherwise(monkeypatc
     assert cam.vol == -15.0
 
 
+def test_a_live_claim_defers_the_ceiling_drain_and_keeps_the_pause_held(monkeypatch):
+    """W5-c2: why the out-of-runner drains cannot strand a measurement graph.
+
+    An installed graph implies a HELD session claim — ``_give_back_held``
+    releases the claim in the ``finally`` around the graph restore, so the
+    claim outlives the graph in every ordering. A held claim outranks this
+    drain: the ladder defers and the host returns BEFORE
+    ``_release_pause_best_effort``, so a session still measuring through its
+    graph keeps both the graph and the isolation it measures behind. That is
+    what makes the graph the session's alone rather than something a drain has
+    to be able to reach.
+
+    The caller's gate still hears that the ceiling expired; what it does not
+    get is a drained plan or a released pause.
+    """
+    from jasper.active_speaker.crossover_v2.volume_claim import OwnerVolumeDoor
+    from jasper.active_speaker.session_volume_plan import (
+        SessionVolumeOpenResult,
+        SessionVolumePlan,
+    )
+    from jasper.volume_owner import volume_owner
+
+    log: list = []
+    _patch_measurement_window(monkeypatch, log)
+    clock = [1000.0]
+    plan = SessionVolumePlan(wall_clock_ceiling_s=10.0, clock=lambda: clock[0])
+    cam = _FakeVolCam(-15.0)
+    _own_the_fader(monkeypatch, cam)
+    claim = _session_claim()
+
+    async def _open_a_live_session():
+        await v2host.acquire_session_measurement_pause()
+        return await plan.open(
+            -20.0,
+            OwnerVolumeDoor(
+                volume_owner(), read_fader=cam.get_volume_db, claim=claim,
+            ),
+        )
+
+    assert asyncio.run(_open_a_live_session()) is SessionVolumeOpenResult.OPENED
+    v2host.set_volume_plan_for_tests(plan)
+    assert cam.vol == -20.0
+
+    clock[0] = 2000.0  # the slow-but-alive positioner outlives the ceiling
+    assert v2host.enforce_session_volume_ceiling_if_stale(
+        _bg_run_async, lambda: cam
+    ) is True, "the caller's gate must still hear that the ceiling expired"
+
+    assert plan.measurement_volume_db == -20.0, "a live session was drained"
+    assert cam.vol == -20.0, "the drain moved a fader it does not own"
+    assert v2host.session_measurement_pause_held(), (
+        "the drain freed the isolation a live session is measuring behind"
+    )
+    assert log == ["enter"], "the measurement window was exited under the session"
+    assert plan.needs_recovery is False, "no recovery screen for a live session"
+
+
 def test_v2_volume_recovery_active_tracks_needs_recovery():
     class _NeedsRecovery:
         needs_recovery = True

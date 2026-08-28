@@ -2312,30 +2312,6 @@ async def test_a_volume_that_did_not_confirm_installs_no_graph_at_all(
     v2host.set_volume_plan_for_tests(None)
 
 
-def test_the_installed_graph_stays_reachable_by_the_out_of_runner_drains(
-    monkeypatch,
-):
-    """B2's repro, as a pin: the drains that have no session still need one.
-
-    The three out-of-runner drains — ceiling, unresolved recovery, new-session
-    reconcile — run when no runner owns the session, so they reach the graph
-    only through the process-global registration. With that registration gone
-    they restore NOTHING, and the ceiling enforcer releases the measurement
-    pause into a live crossover-free, role-routed graph: the household
-    programme resuming through a graph built to measure one driver at a time.
-
-    Registration is therefore load-bearing until W5-c re-homes those drains,
-    and this pin is what says so.
-    """
-    monkeypatch.setattr(v2host, "_session_graph", None, raising=False)
-    _stage_1(monkeypatch)
-
-    assert v2host._session_graph is not None, (
-        "the stage's measurement graph is unreachable by the drains that "
-        "cannot see a session — B2's shape"
-    )
-
-
 async def test_a_stage_two_session_swaps_no_graph_for_a_walk_with_no_captures(
     monkeypatch,
 ):
