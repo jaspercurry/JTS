@@ -35,6 +35,7 @@ from jasper.active_speaker.commissioning_evidence_store import (
 from jasper.active_speaker.crossover_v2.journey import (
     PHASE_CHECK,
     PHASE_CLOUD_MEASURE,
+    PHASE_LATERAL,
     PHASE_MEASURE,
     PHASE_VERIFY,
 )
@@ -1224,6 +1225,7 @@ def test_position_retention_puts_the_wav_path_and_digest_in_the_state(
     [
         (PHASE_CHECK, CAPTURE_KIND_SEQUENTIAL),
         (PHASE_MEASURE, CAPTURE_KIND_SEQUENTIAL),
+        (PHASE_LATERAL, CAPTURE_KIND_SEQUENTIAL),
         (PHASE_VERIFY, "summed"),
         (PHASE_CLOUD_MEASURE, "summed"),
     ],
@@ -1231,11 +1233,14 @@ def test_position_retention_puts_the_wav_path_and_digest_in_the_state(
 def test_a_banked_take_records_the_kind_its_phase_actually_played(
     tmp_path: Path, phase: str, expected_kind: str,
 ) -> None:
-    """CHECK and MEASURE play ONE recording that steps through every driver in
-    turn, which is neither a single driver nor a simultaneous sum. They were
-    banked as ``summed`` only because the taxonomy had no third value; now they
-    are banked as what they are. VERIFY and the position groups really do play
-    one summed sweep and keep the old label.
+    """CHECK, MEASURE and LATERAL play ONE recording that steps through every
+    driver in turn, which is neither a single driver nor a simultaneous sum.
+    They were banked as ``summed`` only because the taxonomy had no third
+    value; now they are banked as what they are. A lateral pose belongs with
+    the other two because ``programs.program_for_phase`` answers it with
+    MEASURE's program OBJECT verbatim — the same stimulus under a third name.
+    VERIFY and the cloud position groups really do play one summed sweep and
+    keep the old label.
     """
 
     from jasper.web import correction_crossover_v2 as v2host
@@ -1246,10 +1251,14 @@ def test_a_banked_take_records_the_kind_its_phase_actually_played(
     class _Result:
         wav = b"take-bytes"
 
+    # A lateral pose names its prompted spot ``pose_id``; every other phase
+    # calls it ``position_id``. The two vocabularies ``spatial._take_identity``
+    # keeps apart, so the lateral row drives the shape a pose really banks.
+    id_key = "pose_id" if phase == PHASE_LATERAL else "position_id"
     bank(
         _Result(),
         {
-            "position_id": f"{phase}_00",
+            id_key: f"{phase}_00",
             "phase": phase,
             "index": 0,
             "attempt": 1,
