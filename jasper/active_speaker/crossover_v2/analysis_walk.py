@@ -74,6 +74,10 @@ ANALYSIS_FAILED_EVENT = "crossover_v2_analysis_failed"
 #: would have to carry, in the same shape as the table's own gate codes — a
 #: reader switching on a skip never has to know whether the input was missing
 #: from the record or from the analysis the record points at.
+#:
+#: :data:`NO_CAPTURE_BYTES` is the LAST RESORT of the missing-bytes answer, not
+#: its only spelling: a record whose stimulus played without leaving evidence
+#: carries the play transaction's own reason code, and the skip cites that.
 NO_BANKED_RECORD = "no_banked_record"
 NO_CAPTURE_ROOT = "no_capture_root"
 NO_CAPTURE_BYTES = "no_capture_bytes"
@@ -142,9 +146,13 @@ def _record_wav(record: Mapping[str, Any], root: Path | None) -> bytes | str:
     """The capture's bytes, or the code naming why they are out of reach."""
     relative = str(record.get("wav_path") or "")
     if not relative:
-        # `""` is the record saying no bytes were placed — an honest fact
-        # about the capture, never a path to guess at.
-        return NO_CAPTURE_BYTES
+        # `""` is the record saying no bytes were placed. The play transaction
+        # names WHY on the same record whenever a stimulus played without
+        # leaving evidence, so the skip cites that reason in preference to this
+        # module's generic one: `stimulus_not_captured` and `capture_not_bound`
+        # send a reader to two different places, and `no_capture_bytes` sends
+        # them to neither.
+        return str(record.get("incident") or "") or NO_CAPTURE_BYTES
     if root is None:
         return NO_CAPTURE_ROOT
     path = root / relative

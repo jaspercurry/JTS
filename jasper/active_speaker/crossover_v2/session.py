@@ -30,11 +30,12 @@ are fine; they share nothing but the seams handed to them.
 **What this class deliberately does NOT do yet.** The skeleton is seams and
 contracts; the waves fill them.
 
-* **It still plays nothing.** Every side effect crosses an injected seam. The
-  record store, the volume claim and the session graph now have production
-  implementations; the **play transaction does not**, so no capture bytes are
-  written yet and :meth:`TuningSession.analyze` says so by name rather than
-  pretending otherwise.
+* **Nothing calls these verbs in production yet.** Every side effect crosses an
+  injected seam, and all five now have production implementations — the play
+  transaction included, which on the wired source records across the stimulus
+  and banks the capture's path. What is missing is the CALLER: the capture walk
+  still runs through the flow's own callbacks, so ``measure`` is driven by tests
+  and by nothing else.
 * **``analyze`` now runs the wholesale default** — *every* analysis whose input
   kinds are present in the bank — and it does so in the CALLER, over
   :data:`~.analysis_units.ANALYSIS_UNITS`. The units port whole and unedited;
@@ -582,16 +583,17 @@ class TuningSession:
         missing both its driver bands and its capture bytes reports
         ``no_driver_bands`` and never mentions the bytes.
 
-        **DISCLOSED LIMIT — nothing here writes captures.** Reaching one needs
-        ``driver_bands_hz``, ``crossover_fc_hz`` and ``capture_root`` declared,
-        ``candidate_program_id`` and ``gain_plan_db`` set, and a record whose
-        ``wav_path`` is non-empty. No production
-        :class:`~.playback_transaction.PlaybackTransaction` exists, so nothing
-        fills that last one yet; a bank whose records all carry an empty
-        ``wav_path`` skips every unit, each saying so. That is a walker
-        reporting an honest gap, not an inert one — the day a transaction
-        writes bytes and a host makes the declarations, this same walk produces
-        results with no further edit here.
+        **DISCLOSED LIMIT — the host must still DECLARE where the captures
+        are.** Reaching one needs ``driver_bands_hz``, ``crossover_fc_hz`` and
+        ``capture_root`` declared, ``candidate_program_id`` and ``gain_plan_db``
+        set, and a record whose ``wav_path`` is non-empty. The last of those is
+        filled now — the play transaction's capture half writes the bytes and
+        banks their bundle-relative path — and the
+        :class:`~.analysis_walk.AnalysisDeclaration` is what a production caller
+        does not yet make, so a session constructed without it still skips every
+        unit with ``no_driver_bands``. A record whose bytes were never placed
+        skips with the play transaction's own reason code instead of a generic
+        one, which is the difference between an honest gap and an inert one.
 
         **DISCLOSED LIMIT — the offline walk runs UNCALIBRATED.** It hands the
         layer default :class:`~.program_analysis.MeasurementGeometry` and

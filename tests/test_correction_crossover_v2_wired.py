@@ -4,7 +4,7 @@
 
 """The WIRED capture provider's promises (#2662 W2b).
 
-Four layers, least to most integrated:
+Five layers, least to most integrated:
 
 1. **Source resolution** — auto picks wired exactly when a measurement-class
    mic is present; explicit overrides are honored, and an impossible override
@@ -22,6 +22,10 @@ Four layers, least to most integrated:
    real ``bind_production_analyze`` binding decoding the provider's own
    32-bit 48 kHz WAV, the real calibration-resolver injection point, and the
    real durable-state persist.
+5. **The play seam's capture half** — the same box plays and records, so one
+   stimulus is one transaction: the recorder rolls before the first sample,
+   stops after the last, and the bytes land in the bundle under a path the
+   engine's record can carry. Only the wired source binds one.
 
 Equal-or-more scrutiny is pinned here as behavior: every wired answer carries
 all four frame-ledger counters with real values (so the analyzer's frame
@@ -35,6 +39,7 @@ import io
 import logging
 import threading
 import time
+from pathlib import Path
 from types import SimpleNamespace
 
 import pytest
@@ -56,6 +61,7 @@ from jasper.audio_measurement.wired_capture import (
     WiredCaptureError,
     WiredMicDevice,
     WiredRecorder,
+    decode_wav_to_mono,
 )
 from jasper.capture_relay.session import (
     CaptureBeginDeferred,
@@ -1641,3 +1647,179 @@ def test_the_wired_provider_reaches_the_host_only_at_call_time():
         [sys.executable, "-c", probe], capture_output=True, text=True,
     )
     assert completed.returncode == 0, completed.stderr
+
+
+# --------------------------------------------------------------------------- #
+# layer 5: the PLAY SEAM's capture half
+# --------------------------------------------------------------------------- #
+#
+# The same box plays and records, so one stimulus is one transaction: the
+# recorder rolls before the first sample, the program plays, the recorder stops
+# after the last, and the bytes land in the bundle under a path the record can
+# carry. These pins are what stop `TuningSession.measure` banking a record that
+# points at nothing.
+
+
+class _StimulusProgram:
+    """What the play transaction hands the capture half: a real schedule."""
+
+    program_id = "prog-verify"
+    phase = "verify"
+    sample_rate_hz = RATE
+    total_samples = RATE // 10
+
+
+def _capture_half(tmp_path, *, factory=None):
+    def _factory(rate, budget_s):
+        assert rate == RATE, "the rate comes from the program that plays"
+        assert budget_s > 0
+        return WiredRecorder(
+            "fake:pcm",
+            sample_rate_hz=rate,
+            channels=2,
+            max_capture_s=budget_s,
+            pcm_factory=lambda: FakePcm([(64, [(1000, 0)] * 64)]),
+        )
+
+    return v2wired.WiredStimulusCapture(
+        device=_device(),
+        bundle_dir=tmp_path,
+        recorder_factory=factory or _factory,
+    )
+
+
+async def test_the_capture_half_records_across_the_play_and_places_the_bytes(
+    tmp_path,
+):
+    """One transaction, one answer: the path names bytes that exist.
+
+    The ordering is the pre-roll guarantee and the reason play and capture are
+    not two seams here — a recorder armed after the first sample has already
+    lost the part of the answer the analysis needs most.
+    """
+    order: list[str] = []
+    half = _capture_half(tmp_path)
+
+    async def _play() -> None:
+        order.append("played")
+
+    relpath = await half.around(_play, program=_StimulusProgram())
+
+    assert order == ["played"]
+    assert relpath.startswith("summed/summed_verify_")
+    written = tmp_path / relpath
+    assert written.exists()
+    samples, rate = decode_wav_to_mono(written.read_bytes())
+    assert rate == RATE
+    assert len(samples) > 0, "the placed capture is the audio that was heard"
+
+
+async def test_a_recorder_that_will_not_roll_refuses_before_any_excitation(
+    tmp_path,
+):
+    """`StimulusCaptureError` BEFORE the play, so nothing was emitted.
+
+    Wrapped rather than let through as its own `WiredCaptureError`: the play
+    transaction classifies an escaping `OSError` as a failed emission, which
+    would report a play that never happened.
+    """
+    played: list[str] = []
+
+    def _dead_factory(rate, budget_s):
+        return WiredRecorder(
+            "fake:pcm",
+            sample_rate_hz=rate,
+            channels=2,
+            max_capture_s=budget_s,
+            pcm_factory=lambda: (_ for _ in ()).throw(
+                WiredCaptureError("device is gone")
+            ),
+        )
+
+    half = _capture_half(tmp_path, factory=_dead_factory)
+
+    async def _play() -> None:
+        played.append("played")
+
+    with pytest.raises(v2wired.StimulusCaptureError):
+        await half.around(_play, program=_StimulusProgram())
+
+    assert played == [], "the stimulus must not reach a dead recorder"
+
+
+async def test_the_plays_own_failure_reaches_the_transaction_unchanged(
+    tmp_path,
+):
+    """A half that re-wrapped it would report a lost recording for a failed
+    emission, and the transaction's whole classification would move here.
+
+    An ``OSError`` on purpose: it is a type the half DOES wrap for its own
+    faults, so a half that put the play inside that same guard would pass every
+    weaker pin and fail this one. The live device is still released — an escape
+    that left the recorder holding ALSA would wedge the next stimulus.
+    """
+    opened: list = []
+
+    def _tracking_factory(rate, budget_s):
+        pcm = FakePcm([(64, [(1000, 0)] * 64)])
+        opened.append(pcm)
+        return WiredRecorder(
+            "fake:pcm", sample_rate_hz=rate, channels=2,
+            max_capture_s=budget_s, pcm_factory=lambda: pcm,
+        )
+
+    half = _capture_half(tmp_path, factory=_tracking_factory)
+
+    async def _play() -> None:
+        raise OSError("aplay died")
+
+    with pytest.raises(OSError):
+        await half.around(_play, program=_StimulusProgram())
+
+    assert not list(tmp_path.rglob("*.wav")), "nothing was heard, nothing placed"
+    assert [pcm.closed for pcm in opened] == [True]
+
+
+async def test_a_capture_that_cannot_be_placed_says_so_after_the_play(
+    tmp_path,
+):
+    """The other side of the play: the room heard it and the bytes were lost.
+
+    The transaction reads `played` off its own flag, so this becomes a banked
+    record with an empty path and `stimulus_not_captured` on it — never a
+    silent empty one.
+    """
+    played: list[str] = []
+    # A bundle root that is a FILE: the capture's own `mkdir` then raises where
+    # a full disk would, without needing one.
+    blocked = tmp_path / "bundle"
+    blocked.write_text("not a directory")
+    half = _capture_half(blocked)
+
+    async def _play() -> None:
+        played.append("played")
+
+    with pytest.raises(v2wired.StimulusCaptureError):
+        await half.around(_play, program=_StimulusProgram())
+
+    assert played == ["played"], "the stimulus really did play"
+
+
+def test_only_the_wired_source_binds_a_capture_half():
+    """The same question `_build_source_run` asks, and it must answer alike.
+
+    A relay session's microphone is on a phone answering through its own
+    conversation, so binding a local recorder for it would record the room
+    twice and hand the engine a path the phone's take never produced.
+    """
+    store = SimpleNamespace(bundle_dir="/var/lib/jasper/bundle")
+
+    wired_half = v2host._wired_stimulus_capture(SOURCE_WIRED, _device(), store)
+    relay_half = v2host._wired_stimulus_capture(SOURCE_RELAY, None, store)
+
+    assert isinstance(wired_half, v2wired.WiredStimulusCapture)
+    assert wired_half.device.model_key == "minidsp_umik2"
+    # The bundle this session's evidence lands in, so the path the record
+    # carries resolves against the same root `analyze` will be declared.
+    assert wired_half.bundle_dir == Path("/var/lib/jasper/bundle")
+    assert relay_half is None

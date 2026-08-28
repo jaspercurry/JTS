@@ -5901,6 +5901,7 @@ def bind_v2_engine_seams(
     relay_session_id: str,
     camilla_factory: Any,
     compose_stimulus: Any,
+    capture_stimulus: Any = None,
     volume_claim: Any = None,
     routed_phases: bool = True,
 ) -> Any:
@@ -5970,12 +5971,20 @@ def bind_v2_engine_seams(
         ),
         # The kind→phase mapping is bound (``measurement_phase``), so this seam
         # composes a real stimulus by identity from what the conductor
-        # composed. Production still does not DRIVE it: nothing calls
-        # ``measure`` until W1-c routes the capture walk through it, so the
-        # map's proof is its table pin rather than a production run.
+        # composed, and — where the box also RECORDS what it plays — hands back
+        # the capture's own path rather than an empty one. Production still
+        # does not DRIVE it: nothing calls ``measure`` until the capture walk
+        # is routed through it, so the map's proof is its table pin rather than
+        # a production run.
+        #
+        # ``capture_stimulus`` is bound for the WIRED source and ``None`` for
+        # the relay, whose microphone is on a phone answering through its own
+        # conversation. The transaction says which of the two it was in the
+        # outcome's incident, so an empty ``wav_path`` is never unattributed.
         play=ProgramPlaybackTransaction(
             compose=compose_stimulus,
             session_volume_plan=plan,
+            capture=capture_stimulus,
         ),
         # The bundle directory is read when the verb is ASKED, not when the
         # seam is bound: a recommendation needs a bundle on disk, and binding
@@ -6216,6 +6225,26 @@ def _mint_source_session(
         capture_origin=capture_origin,
         return_url=return_url,
         ttl_s=relay_link_ttl_s(plan_shape, ceiling_s),
+    )
+
+
+def _wired_stimulus_capture(
+    source: str, wired_device: Any, evidence_store: Any,
+) -> Any:
+    """The play seam's capture half for this source, or ``None``.
+
+    One source records what it plays, and it is the same question
+    :func:`_build_source_run` asks: the Pi's own microphone is on the box the
+    stimulus comes out of, and a phone is not. A relay session therefore binds
+    nothing here and its transaction says so by name — never by handing back an
+    empty path with nothing to explain it.
+    """
+    if source != SOURCE_WIRED or wired_device is None:
+        return None
+    from jasper.web import correction_crossover_v2_wired as wired
+
+    return wired.WiredStimulusCapture(
+        device=wired_device, bundle_dir=Path(evidence_store.bundle_dir),
     )
 
 
@@ -7129,6 +7158,11 @@ def prepare_v2_session(
                 compose_stimulus=functools.partial(
                     production_play.compose,
                     program_for_phase=conductor.program_for_phase,
+                ),
+                # The half that records what that stimulus does to the room.
+                # Bound only where the box holding the microphone is this one.
+                capture_stimulus=_wired_stimulus_capture(
+                    capture_source, wired_device, evidence_store,
                 ),
                 volume_claim=volume_claim,
                 # Stage 2 is verify-class on every tier — it grades through the

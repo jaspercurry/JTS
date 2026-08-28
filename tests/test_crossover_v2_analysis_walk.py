@@ -42,6 +42,10 @@ from jasper.active_speaker.crossover_v2.analysis_walk import (
     capture_inputs,
     walk_bank,
 )
+from jasper.active_speaker.crossover_v2.program_transaction import (
+    STIMULUS_CAPTURE_NOT_BOUND,
+    STIMULUS_NOT_CAPTURED,
+)
 from jasper.active_speaker.crossover_v2.programs import (
     PILOT_LEVEL_DELTA_DB,
     courtesy_prelude_for_phase,
@@ -202,6 +206,14 @@ def test_a_missing_input_kind_costs_exactly_its_units(bank):
         ({"wav_path": WAV_RELATIVE}, True, True, 0.0, True, ABSOLUTE_NO_FC),
         ({"wav_path": ""}, True, True, 2400.0, True, NO_CAPTURE_BYTES),
         (
+            {"wav_path": "", "incident": STIMULUS_NOT_CAPTURED},
+            True, True, 2400.0, True, STIMULUS_NOT_CAPTURED,
+        ),
+        (
+            {"wav_path": "", "incident": STIMULUS_CAPTURE_NOT_BOUND},
+            True, True, 2400.0, True, STIMULUS_CAPTURE_NOT_BOUND,
+        ),
+        (
             {"wav_path": "captures/absent.wav"},
             True, True, 2400.0, True, NO_CAPTURE_BYTES,
         ),
@@ -219,6 +231,14 @@ def test_every_unreachable_input_is_named_not_raised(
 
     A zero corner is "no corner", not a crossover at DC — the same truthiness
     the analysis layer's own normalization uses.
+
+    Two rows are about ATTRIBUTION rather than about a missing input: a record
+    whose stimulus played and left no bytes carries the play transaction's own
+    reason, and the skip cites that instead of this module's generic
+    ``no_capture_bytes``. ``stimulus_not_captured`` and ``capture_not_bound``
+    send a reader to two different places; ``no_capture_bytes`` sends them to
+    neither, and it is what the walk falls back to when the record says
+    nothing.
     """
     root, _records = bank
     answer = capture_inputs(

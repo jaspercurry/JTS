@@ -12,17 +12,22 @@ incident in this inventory happened — becomes a **named internal module inside
 vocabulary item."* Pipeline mechanics are *"just the mechanics of how we
 execute the verbs… the LLM doesn't really care about"* them.
 
-So this module is the boundary and the contract. **Nothing is built behind it
-yet** — the transaction's body is wave 2's (the VERIFY region lifts as
-``measure`` + ``analyze``), its graph half is wave 6's and its volume half is
-wave 5's. What exists here is the shape they land into, cut now so the waves
-that fill it do not each cut their own.
+So this module is the boundary and the contract, and
+:mod:`.program_transaction` is the implementation behind it — the one this
+engine binds in production.
 
-**Playing and capturing are two seams, not one.** This module owns the
-stimulus: getting the box ready, admitting the program, holding the level,
-playing, and putting everything back. What the microphone heard arrives through
-:class:`~.capture_source.CaptureAnswer`, which the capture provider owns and
-which is unchanged by any of this. A transaction therefore returns no WAV.
+**One stimulus is one transaction, and the evidence is its answer.** This
+module owns getting the box ready, admitting the program, holding the level,
+playing, and putting everything back — and, on a host that records what it
+plays, the recording that ran across those stages. ``run`` therefore returns
+the capture's path: the recorder rolls before the first sample and stops after
+the last, so no other party can say what was heard for THIS stimulus.
+
+The capture-source seam is unchanged by that and stays where it is. A provider
+whose microphone is somewhere else answers with :class:`~.capture_source.CaptureAnswer`
+through its own conversation; a host that plays and records on one box binds
+its recording half INTO this transaction, because splitting one act across two
+seams is what leaves a record pointing at nothing.
 
 **Where the mover fits, and why it is not an axis** (MS-17). ``ready`` is the
 stage that carries the *"the microphone is at position P"* precondition, and it
@@ -128,9 +133,16 @@ class PlaybackOutcome:
     anywhere. A capture's bundle-relative path is not derivable from the take
     id — ``bundles.capture_artifact_relpath`` appends a ``uuid4`` hex — so
     whoever mints it before the write is the only one who can say it, and this
-    transaction is that caller. ``""`` while no implementation writes bytes; a
-    record's ``wav_path`` is then empty and offline analysis has nothing to
-    reach, which is an honest statement of the gap rather than a guessed path.
+    transaction is that caller.
+
+    **An empty ``wav_path`` on a stimulus that PLAYED must name an incident.**
+    That pairing is the whole honesty of the field: a record whose path is
+    empty and whose incident is empty says nothing about why offline analysis
+    has nothing to reach, and ``analyze`` can only answer it with a generic
+    "no bytes". So the two arms that reach it — a bound capture half that could
+    not mint evidence, and a host that bound none at all — are two distinct
+    reason codes in :mod:`.program_transaction`, and ``analyze``'s skip cites
+    whichever one the record carries.
     """
 
     stage_reached: str
