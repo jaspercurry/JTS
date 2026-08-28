@@ -129,6 +129,9 @@
   margin-top: 0.45rem;
   overflow-wrap: anywhere;
 }
+#echo-commission-button {
+  margin-top: 0.45rem;
+}
 .firmware-update {
   display: grid;
   grid-template-columns: minmax(0, 1fr) auto;

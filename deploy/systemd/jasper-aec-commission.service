@@ -1,0 +1,33 @@
+# SPDX-FileCopyrightText: 2026 Jasper Curry
+#
+# SPDX-License-Identifier: Apache-2.0
+
+[Unit]
+Description=Re-measure XVF3800 chip-AEC alignment (audible sweeps)
+
+[Service]
+Type=oneshot
+EnvironmentFile=/etc/jasper/jasper.env
+ExecStart=/opt/jasper/.venv/bin/jasper-aec-commission
+# The CLI's own per-step ceilings (reconciler waits, service stops, the XVF
+# reset, three 30 s reference-queue windows, 24 timing captures, the 120 s
+# adaptation playback) sum to under 10 minutes; 15 keeps scheduling headroom
+# without letting a hang camp on the audio stack.
+TimeoutStartSec=15min
+
+# Root: it stops/starts the audio services, resets the XVF over USB, and
+# writes the alignment artifact. Started ONLY by explicit user action
+# (jasper-control POST /aec/commission) — the sweeps are audible, so there is
+# no Install section and no Restart=: a failed run must never replay itself.
+User=root
+Group=root
+UMask=0022
+
+NoNewPrivileges=true
+ProtectSystem=full
+ProtectHome=true
+PrivateTmp=true
+RestrictNamespaces=true
+LockPersonality=true
+SystemCallArchitectures=native
+SyslogIdentifier=jasper-aec-commission

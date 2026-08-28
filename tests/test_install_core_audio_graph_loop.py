@@ -41,6 +41,7 @@ EXPECTED_DSTS = (
     "jasper-control.service",
     "jasper-doctor-json.service",
     "jasper-xvf-firmware-update.service",
+    "jasper-aec-commission.service",
     "jasper-audio-hardware-reconcile.service",
     "jasper-audio-hardware-reconcile",
     "jasper-output-hardware-hotplug",

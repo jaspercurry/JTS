@@ -55,6 +55,7 @@ _JASPER_ENV_FILE = "/etc/jasper/jasper.env"
 _XVF_FIRMWARE_UPDATE_STATE_FILE = "/var/lib/jasper/xvf-firmware-update.json"
 _XVF_FIRMWARE_UPDATE_SERVICE = "jasper-xvf-firmware-update.service"
 _ENHANCED_AEC_INSTALL_SERVICE = "jasper-enhanced-aec-install.service"
+_AEC_COMMISSION_SERVICE = "jasper-aec-commission.service"
 _AEC_BRIDGE_STATS_FILE = "/run/jasper/aec_bridge_stats.json"
 _AEC_BRIDGE_STATS_FRESH_SECONDS = 3.0
 
@@ -291,9 +292,9 @@ def _unit_active(unit: str) -> bool:
     """Whether a foreground maintenance unit is live or starting.
 
     ``systemctl is-active`` reports a long-running ``Type=oneshot`` as
-    ``activating`` until its foreground command exits. Both callers use this
-    as job-liveness truth, so treating only ``active`` as live would make a
-    real multi-minute install/update look interrupted.
+    ``activating`` until its foreground command exits. Callers use this as
+    job-liveness truth, so treating only ``active`` as live would make a
+    real multi-minute install/update/measurement look interrupted.
     """
 
     try:
@@ -725,6 +726,7 @@ def _aec_full_status() -> dict:
         "microphone": profile_status["microphone"],
         "validation": _audio_validation_summary(**validation_filters),
         "firmware_update": _xvf_firmware_update_status(),
+        "commission": {"running": _unit_active(_AEC_COMMISSION_SERVICE)},
     }
     usb_mic = build_usb_mic_status(payload)
     usb_mic["source_selection"] = _usb_mic_source_selection(

@@ -1098,6 +1098,7 @@ def test_grouping_set_stays_in_token_gated_routes():
             "/aec/enhanced-aec/install",
             "/grouping/set",
         "/aec/firmware/update",
+        "/aec/commission",
         "/measurement/hold",
         "/measurement/release",
     })
@@ -1108,6 +1109,13 @@ def test_usb_mic_export_stays_in_token_gated_routes():
 
     assert "/aec/usb-mic" in _srv_mod._TOKEN_GATED_ROUTES
     assert "/aec/usb-mic-leg" in _srv_mod._TOKEN_GATED_ROUTES
+
+
+def test_aec_commission_stays_in_token_gated_routes():
+    """An audible, minutes-long measurement that stops voice/AEC is a
+    high-impact mutation, not a LAN-open control."""
+
+    assert "/aec/commission" in _srv_mod._TOKEN_GATED_ROUTES
 
 
 def _enable_control_token(monkeypatch, tmp_path, token="t0ken-value"):

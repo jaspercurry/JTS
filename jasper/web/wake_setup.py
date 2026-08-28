@@ -53,6 +53,8 @@ URL surface (after nginx strips the /wake/ prefix):
                         backend-owned mic_settings view model
   POST /firmware/update proxy jasper-control /aec/firmware/update — start
                         a required mic firmware update job
+  POST /commission      proxy jasper-control /aec/commission — start the
+                        audible chip-AEC re-measurement oneshot
   POST /profile         body {profile: str} — set canonical input profile
   POST /usb-mic         body {enabled: bool} — expose/remove the cleaned mic
                         as the UAC2 host-input direction
@@ -277,6 +279,9 @@ def _echo_card_html() -> str:
       <div class="echo-status__title" id="echo-status-title">checking…</div>
       <div class="echo-status__detail" id="echo-status-detail">—</div>
       <div class="echo-status__action" id="echo-status-action" hidden></div>
+      <button class="btn btn--primary" type="button"
+              id="echo-commission-button" hidden
+              disabled>Re-measure chip AEC (~3 min, plays test sweeps)</button>
     </div>
     <div class="firmware-update" id="firmware-update-card" hidden>
       <div class="firmware-update__copy">
@@ -731,6 +736,21 @@ def _start_firmware_update(
     )
 
 
+def _start_commission(
+    *,
+    control_base: str,
+    headers: dict[str, str] | None = None,
+) -> tuple[int, bytes]:
+    """Forward the chip-AEC re-measurement action to jasper-control."""
+    return proxy_post(
+        "/aec/commission",
+        control_base=control_base,
+        timeout=5.0,
+        body=b"{}",
+        headers=headers,
+    )
+
+
 # ----------------------------------------------------------------------
 # HTTP handler.
 # ----------------------------------------------------------------------
@@ -819,6 +839,21 @@ def _make_handler(cfg: dict[str, Any]) -> type[BaseHTTPRequestHandler]:
                     reject_csrf(self)
                     return
                 status, body = _start_firmware_update(
+                    control_base=cfg["control_base"],
+                    headers=forward_control_token_headers(self),
+                )
+                send_proxy_json(self, body, status=status)
+                return
+            if path == "/commission":
+                if not guard_mutating_request(self):
+                    reject_csrf(self)
+                    return
+                log_event(
+                    logger,
+                    "wake.commission",
+                    client=self.address_string(),
+                )
+                status, body = _start_commission(
                     control_base=cfg["control_base"],
                     headers=forward_control_token_headers(self),
                 )

@@ -185,6 +185,12 @@ START_ONLY_UNITS = frozenset({
     "jasper-wiim-remote-ce.service",
     "jasper-xvf-firmware-update.service",
     "jasper-enhanced-aec-install.service",
+    # Root oneshot running the audible chip-AEC re-measurement
+    # (jasper.cli.aec_commission). The non-root jasper-control starts it
+    # directly (POST /aec/commission) under the polkit manage-units grant this
+    # set derives; start-only for broker clients like every maintenance
+    # oneshot here.
+    "jasper-aec-commission.service",
 })
 
 POLKIT_MANAGE_UNITS = MANAGED_UNITS | START_ONLY_UNITS

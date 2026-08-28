@@ -441,6 +441,38 @@ class AecRoutes(ControlHandlerMixin):
         self._send_json({"threshold": threshold})
         return
 
+    def _post_aec_commission(self) -> None:
+        # One-tap chip-AEC re-commissioning: start the root oneshot that runs
+        # the audible measurement (minutes; stops voice/AEC while it runs).
+        # Button-initiated only — nothing else starts this unit. Token-gated
+        # like the other high-impact /aec mutations.
+        if _server._aec_commission_running():
+            self._send_json(
+                {
+                    "error": "chip-AEC re-commissioning is already running",
+                    "commission": {"running": True},
+                },
+                status=409,
+            )
+            return
+        if not _server._start_aec_commission():
+            self._send_json(
+                {
+                    "error": "the re-commissioning run could not be started",
+                    "code": "aec_commission_start_failed",
+                    "commission": {"running": False},
+                },
+                status=502,
+            )
+            return
+        _server.log_event(
+            _server.logger,
+            "aec.commission.start",
+            client=self.address_string(),
+        )
+        self._send_json(_server._aec_full_status())
+        return
+
     def _post_aec_firmware_update(self) -> None:
         status = _server._aec_full_status()
         firmware = status.get("firmware_update")

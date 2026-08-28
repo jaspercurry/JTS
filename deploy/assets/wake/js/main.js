@@ -39,6 +39,9 @@ let fusionToggles = {};
 let firmwareUpdateBusy = false;
 let usbMicBusy = false;
 let usbMicLegBusy = false;
+let commissionBusy = false;
+
+const COMMISSION_LABEL = "Re-measure chip AEC (~3 min, plays test sweeps)";
 
 const el = (id) => document.getElementById(id);
 
@@ -110,10 +113,25 @@ function applyProfileStatus(s) {
 
   setText("echo-status-title", echo.title || "Microphone input");
   setText("echo-status-detail", echo.detail || profile.reason || "—");
+  // A commissioning-shaped action renders as the one-tap button instead of
+  // the SSH instruction it replaces; every other action stays a text line.
+  const actionText = echo.action || "";
+  const commissionable = actionText.includes("jasper-aec-commission");
+  const running = !!((s.commission || {}).running);
   const action = el("echo-status-action");
   if (action) {
-    action.hidden = !echo.action;
-    action.textContent = echo.action || "";
+    action.hidden = !actionText || commissionable;
+    action.textContent = actionText;
+  }
+  const commissionButton = el("echo-commission-button");
+  if (commissionButton) {
+    commissionButton.hidden = !commissionable && !running;
+    if (!commissionBusy) {
+      commissionButton.disabled = running;
+      commissionButton.textContent = running
+        ? "Re-measuring chip AEC…"
+        : COMMISSION_LABEL;
+    }
   }
 
   const warning = el("echo-status-warning");
@@ -326,6 +344,11 @@ async function pollDetection() {
     if (echoAction) {
       echoAction.hidden = true;
       echoAction.textContent = "";
+    }
+    const commissionBtn = el("echo-commission-button");
+    if (commissionBtn) {
+      commissionBtn.hidden = true;
+      commissionBtn.disabled = true;
     }
     const fwCard = el("firmware-update-card");
     const fwButton = el("firmware-update-button");
@@ -551,6 +574,24 @@ if (firmwareButton) {
       await jtsAlert("Firmware update failed to start: " + err.message);
     }
     firmwareUpdateBusy = false;
+    setTimeout(pollDetection, 500);
+  });
+}
+
+const commissionButton = el("echo-commission-button");
+if (commissionButton) {
+  commissionButton.addEventListener("click", async () => {
+    commissionBusy = true;
+    commissionButton.disabled = true;
+    commissionButton.textContent = "Starting…";
+    try {
+      const body = await postJSON("commission", {});
+      commissionBusy = false;
+      applyState(body);
+    } catch (err) {
+      commissionBusy = false;
+      await jtsAlert("Re-measurement failed to start: " + err.message);
+    }
     setTimeout(pollDetection, 500);
   });
 }

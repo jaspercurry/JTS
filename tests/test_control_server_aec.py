@@ -804,6 +804,56 @@ def test_usb_mic_recompose_fails_when_restart_raises(monkeypatch):
     assert [event for event, _fields in events] == ["usb_mic.recompose_failed"]
 
 
+def test_aec_commission_starts_oneshot_when_idle(
+    monkeypatch, server_with_coordinator,
+):
+    """POST /aec/commission on an idle box resets then no-block-starts the
+    root measurement oneshot and answers with the full /aec status body."""
+    base, _ = server_with_coordinator
+    import jasper.control.server as srv_mod
+
+    commands: list[list[str]] = []
+    monkeypatch.setattr(srv_mod, "_aec_commission_running", lambda: False)
+    monkeypatch.setattr(
+        srv_mod.subprocess,
+        "run",
+        lambda command, **_kwargs: commands.append(command) or _SystemctlResult(),
+    )
+    monkeypatch.setattr(
+        srv_mod,
+        "_aec_full_status",
+        lambda: {"commission": {"running": True}},
+    )
+
+    status, body = _post(f"{base}/aec/commission", None)
+
+    assert status == 200
+    assert body == {"commission": {"running": True}}
+    assert commands == [
+        ["systemctl", "reset-failed", "jasper-aec-commission.service"],
+        ["systemctl", "start", "--no-block", "jasper-aec-commission.service"],
+    ]
+
+
+def test_aec_commission_409_while_a_run_is_active(
+    monkeypatch, server_with_coordinator,
+):
+    base, _ = server_with_coordinator
+    import jasper.control.server as srv_mod
+
+    monkeypatch.setattr(srv_mod, "_aec_commission_running", lambda: True)
+    monkeypatch.setattr(
+        srv_mod.subprocess,
+        "run",
+        lambda *_a, **_k: pytest.fail("an active run must not be started again"),
+    )
+
+    status, body = _post(f"{base}/aec/commission", None)
+
+    assert status == 409
+    assert body["commission"] == {"running": True}
+
+
 def test_aec_firmware_update_starts_when_required(
     monkeypatch, server_with_coordinator,
 ):

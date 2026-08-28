@@ -82,7 +82,8 @@ polkit.addRule(function(action, subject) {
         "jasper-wifi-scan-repair.service",
         "jasper-wiim-remote-ce.service",
         "jasper-xvf-firmware-update.service",
-        "jasper-enhanced-aec-install.service"
+        "jasper-enhanced-aec-install.service",
+        "jasper-aec-commission.service"
     ];
 
     // start / stop / restart / try-restart / reset-failed all flow through
