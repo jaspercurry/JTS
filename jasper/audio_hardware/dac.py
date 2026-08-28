@@ -170,12 +170,11 @@ class DacProfile:
     # emit this as JASPER_OUTPUTD_DAC_FORMAT, which jasper-outputd READS: it
     # accepts exactly {S16_LE, S24_3LE, S32_LE} and parks at exit 78 otherwise,
     # requests that format on its DAC PCM, and reports what its client edge
-    # negotiated as STATUS dac.format, where the chip-AEC alignment identity
-    # records it — so changing a profile's declared format invalidates every
-    # commissioned artifact on that hardware and forces a foreground
-    # `sudo jasper-aec-commission`. A declaration the hardware cannot install
-    # now parks the speaker instead of being silently converted, so this field
-    # is load-bearing.
+    # negotiated as STATUS dac.format, which the chip-AEC alignment identity
+    # records for forensics only — ADR-0190 excludes it from comparison, so
+    # changing a profile's declared format never nags a fleet's disclosure.
+    # A declaration the hardware cannot install now parks the speaker instead
+    # of being silently converted, so this field is load-bearing.
     #
     # S24_3LE is 24 bits in three PACKED bytes — not ALSA's 4-byte-word S24_LE,
     # which is NOT accepted. outputd carries it on the coherent single-DAC sink
@@ -404,7 +403,7 @@ APPLE_USB_C_DONGLE = DacProfile(
     # stays where its transport can drive it — see DUAL_APPLE_USB_C_DAC_4CH.
     #
     # Consequence: `AlignmentIdentity.output_format` records this field for
-    # forensics only — ADR-0189 excludes it from comparison, so it never
+    # forensics only — ADR-0190 excludes it from comparison, so it never
     # diverges or nags a fleet holding the old S16_LE edge.
     final_edge_format="S24_3LE",
 )
@@ -507,8 +506,11 @@ HIFIBERRY_DAC8X = DacProfile(
     # docs/HANDOFF-speaker-output-reference.md "Current Operational Truth".
     #
     # Consequence: `AlignmentIdentity.output_format` records this field for
-    # forensics only — ADR-0189 excludes it from comparison, so it never
-    # diverges or nags a fleet holding the old S16_LE edge.
+    # forensics only — ADR-0190 excludes it from comparison, so it never
+    # diverges or nags a fleet holding the old S16_LE edge. jts3, the lab box
+    # on this profile, reaches chip-AEC through the corpus escape
+    # (JASPER_AEC_CORPUS_CHIP_AEC_ENABLED=1) rather than a commissioned
+    # artifact at all.
     final_edge_format="S32_LE",
 )
 

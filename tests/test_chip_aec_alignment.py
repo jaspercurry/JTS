@@ -201,7 +201,7 @@ def test_the_class_key_is_the_identity_minus_the_unit_it_was_measured_on() -> No
         - alignment.PER_UNIT_IDENTITY_FIELDS
         - alignment.RECORDED_ONLY_IDENTITY_FIELDS
     )
-    for name in alignment.PER_UNIT_IDENTITY_FIELDS:
+    for name in alignment.PER_UNIT_IDENTITY_FIELDS | alignment.RECORDED_ONLY_IDENTITY_FIELDS:
         moved = replace(identity, **{name: "a-sibling-box"})
         assert alignment.hardware_class_key(moved) == key
     for name in alignment.HARDWARE_CLASS_IDENTITY_FIELDS:
@@ -226,15 +226,15 @@ def test_the_class_key_is_the_identity_minus_the_unit_it_was_measured_on() -> No
 
 
 def test_hardware_class_identity_placeholder_is_pinned_not_just_nonempty() -> None:
-    # AlignmentIdentity's per-unit fields currently clear the same rule as
-    # every other text field ("non-empty"), so "unkeyed" passes today by
-    # accident of that rule being generic. Nothing stops a later rule from
-    # tightening just the per-unit two to a real serial's or hardware key's
-    # shape — the placeholder would then fail it, and the first place that
-    # would show up is a pasted REGISTRY row, not a test. Pin the literal so
-    # that change breaks here, by name, instead.
+    # AlignmentIdentity's per-unit and recorded-only fields currently clear
+    # the same rule as every other text field ("non-empty"), so "unkeyed"
+    # passes today by accident of that rule being generic. Nothing stops a
+    # later rule from tightening one of them to a real serial's or hardware
+    # key's shape — the placeholder would then fail it, and the first place
+    # that would show up is a pasted REGISTRY row, not a test. Pin the
+    # literal so that change breaks here, by name, instead.
     resolved = alignment.hardware_class_identity(_class_fields())
-    for name in alignment.PER_UNIT_IDENTITY_FIELDS:
+    for name in alignment.PER_UNIT_IDENTITY_FIELDS | alignment.RECORDED_ONLY_IDENTITY_FIELDS:
         assert getattr(resolved, name) == "unkeyed"
 
 
@@ -356,6 +356,27 @@ def test_artifact_is_strict_identity_plus_k_only() -> None:
             {"output_id": "other_dac", "xvf_serial": "XVF3800-002"},
             ("xvf_serial", "output_id"),
         ),
+        # xvf_variant/beam_plan/output_format carry no timing story (ADR-0190):
+        # moving all three alone produces no divergence at all.
+        (
+            {
+                "xvf_variant": "other_variant",
+                "beam_plan": "other_plan",
+                "output_format": "S32_LE",
+            },
+            (),
+        ),
+        # ...even layered under a real physics-field move, which still
+        # diverges and reports only itself.
+        (
+            {
+                "xvf_variant": "other_variant",
+                "beam_plan": "other_plan",
+                "output_format": "S32_LE",
+                "output_id": "other_dac",
+            },
+            ("output_id",),
+        ),
     ],
 )
 def test_identity_divergence_reports_every_moved_field(changes, expected) -> None:
@@ -370,25 +391,6 @@ def test_identity_divergence_reports_every_moved_field(changes, expected) -> Non
     assert alignment.PER_UNIT_IDENTITY_FIELDS < set(
         AlignmentIdentity.__dataclass_fields__
     )
-
-
-def test_recorded_only_fields_never_diverge_but_a_physics_field_still_does() -> None:
-    # xvf_variant/beam_plan/output_format are recorded for forensics but carry
-    # no independent timing story (ADR-0189): the chip arms clean off a
-    # commissioned K even when all three moved. Layering a physics-field
-    # change on top still diverges, and reports only that field — proving the
-    # three are excluded even when mixed with a real change.
-    commissioned = _identity()
-    recorded_only_moved = replace(
-        commissioned,
-        xvf_variant="other_variant",
-        beam_plan="other_plan",
-        output_format="S32_LE",
-    )
-    assert alignment.identity_divergence(commissioned, recorded_only_moved) == ()
-
-    physics_moved = replace(recorded_only_moved, output_id="other_dac")
-    assert alignment.identity_divergence(commissioned, physics_moved) == ("output_id",)
 
 
 def test_global_delay_centers_all_four_mics_with_strong_edge_margin() -> None:

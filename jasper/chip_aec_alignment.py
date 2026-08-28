@@ -231,11 +231,8 @@ class AlignmentIdentity:
     output_id: str
     output_hardware_key: str
     output_pcm: str
-    # outputd's negotiated hw_params sample format (STATUS ``dac.format``).
-    # Recorded for forensics only — excluded from comparison
-    # (`RECORDED_ONLY_IDENTITY_FIELDS`): a width flip carries no bulk-delay
-    # mechanism, and outputd writes natively, so this has no independent
-    # timing story.  See ADR-0189.
+    # outputd's negotiated hw_params sample format (STATUS ``dac.format``),
+    # recorded for forensics only; excluded from comparison — ADR-0190.
     output_format: str
     output_rate: int
     output_channels: int
@@ -271,10 +268,8 @@ class AlignmentIdentity:
 # is running a proof measured on a sibling of itself — worth saying out loud,
 # not worth refusing (ADR-0101).
 PER_UNIT_IDENTITY_FIELDS = frozenset({"xvf_serial", "output_hardware_key"})
-# Recorded on every artifact but carrying no independent timing story:
-# xvf_variant is implied by xvf_firmware, beam_plan by fixed_profile, and
-# output_format has no bulk-delay mechanism of its own (ADR-0189).  Excluded
-# from comparison entirely, so an edit here never nags the fleet.
+# Recorded on every artifact for forensics only; excluded from comparison —
+# ADR-0190.
 RECORDED_ONLY_IDENTITY_FIELDS = frozenset({"xvf_variant", "beam_plan", "output_format"})
 # What K was actually measured against: every field but the two sets above.
 HARDWARE_CLASS_IDENTITY_FIELDS = tuple(
@@ -283,8 +278,7 @@ HARDWARE_CLASS_IDENTITY_FIELDS = tuple(
     if name not in PER_UNIT_IDENTITY_FIELDS
     and name not in RECORDED_ONLY_IDENTITY_FIELDS
 )
-# `identity_divergence`'s default walk: per-unit plus hardware-class, i.e.
-# everything except the recorded-only three.
+# `identity_divergence`'s default walk.
 COMPARED_IDENTITY_FIELDS = tuple(
     name
     for name in AlignmentIdentity.__dataclass_fields__
@@ -339,7 +333,7 @@ def identity_divergence(
 
     The default walk is `COMPARED_IDENTITY_FIELDS` — every field except
     `RECORDED_ONLY_IDENTITY_FIELDS`, which carry no timing story and so never
-    diverge (ADR-0189).  The names are what a household needs to see, so they
+    diverge (ADR-0190).  The names are what a household needs to see, so they
     travel rather than a verdict; a caller splits them against
     `PER_UNIT_IDENTITY_FIELDS`.  ``fields`` narrows the walk further — a
     shipped class row compares only `HARDWARE_CLASS_IDENTITY_FIELDS`, because

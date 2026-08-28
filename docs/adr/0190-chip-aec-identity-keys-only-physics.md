@@ -1,4 +1,4 @@
-# ADR-0189: Chip-AEC alignment identity compares only physics
+# ADR-0190: Chip-AEC alignment identity compares only physics
 
 - **Date:** 2026-08-28
 - **Status:** Accepted
@@ -35,6 +35,17 @@ Follow-up PR-B makes the artifact *reader* schema-aware: keys required per
 the artifact's own declared schema (a truthful reason for a pre-`sys_delay`
 artifact instead of "invalid"), plus a shared-physics-field comparison for
 genuinely superseded artifacts.
+
+This supersedes **only ADR-0106's classification of `output_format` as an
+edge-certifying identity field** — its Context calls `output_format` the
+field that "exists precisely to guard" the electrical edge, and its
+Consequences says to "read the scope of a field like `output_format`
+precisely before trusting it." Under this ADR `output_format` is
+recorded-only: still read back and stored, but it certifies nothing and is
+never compared. Everything else in ADR-0106 stands unchanged: the
+no-enrichment/no-migration rule for a schema bump, the v1→v2 enrichment
+precedent, and the artifact-migration mechanics generally. ADR-0106 is not
+edited — append-only, and still correct about the fields it was right about.
 
 ## Consequences
 

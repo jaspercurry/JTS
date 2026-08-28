@@ -272,10 +272,10 @@ mod tests {
     fn the_format_vocabulary_spells_every_variant_the_way_alsa_does() {
         // `as_str` is the STATUS wire value and the journal token, and the
         // chip-AEC alignment identity records `dac.format` off it — so a
-        // misspelling here silently invalidates or mis-matches commissioned
-        // artifacts. Pin all three literals, including the underscore position in
-        // `S24_3LE` (it is NOT `S24LE_3` or `S243LE`, whatever alsa-rs calls its
-        // own enum variant).
+        // misspelling here silently breaks that shared vocabulary across
+        // outputd, the reconciler, and the recorded identity. Pin all three
+        // literals, including the underscore position in `S24_3LE` (it is NOT
+        // `S24LE_3` or `S243LE`, whatever alsa-rs calls its own enum variant).
         assert_eq!(SampleFormat::S16Le.as_str(), "S16_LE");
         assert_eq!(SampleFormat::S24_3Le.as_str(), "S24_3LE");
         assert_eq!(SampleFormat::S32Le.as_str(), "S32_LE");

@@ -275,24 +275,39 @@ def _arm_chip_aec(monkeypatch, dev, *, artifact, live=None) -> None:
 
 
 @pytest.mark.parametrize(
-    "moved_field, value",
+    "changes, expected_disclosure_fields",
     [
-        ("xvf_serial", "replacement"),
-        ("output_hardware_key", "usb-serial:replacement"),
+        ({"xvf_serial": "replacement"}, ("xvf_serial",)),
+        (
+            {"output_hardware_key": "usb-serial:replacement"},
+            ("output_hardware_key",),
+        ),
         # The DAC identity is part of the hardware class K was measured
         # against, so it is hardware-class divergence — the loud kind, still
         # not a park.
-        ("output_id", "different_dac"),
+        ({"output_id": "different_dac"}, ("output_id",)),
+        # xvf_variant/beam_plan/output_format carry no timing story
+        # (ADR-0190): moving all three produces no divergence, so nothing is
+        # disclosed at all — the chip arms clean.
+        (
+            {
+                "xvf_variant": "other_variant",
+                "beam_plan": "other_plan",
+                "output_format": "S32_LE",
+            },
+            (),
+        ),
     ],
 )
 def test_a_commissioned_identity_that_moved_is_applied_and_disclosed(
-    monkeypatch, disclosure_file, moved_field, value
+    monkeypatch, disclosure_file, changes, expected_disclosure_fields
 ) -> None:
     # ADR-0101: the proof stopped describing this box, nothing observably
     # broke. The banked K is applied and the chip armed; what the household
-    # gets is a disclosure naming the field, not a deaf speaker.
+    # gets is a disclosure naming the field, not a deaf speaker — or nothing
+    # at all, when every moved field is recorded-only.
     dev = _FakeXvfDevice()
-    commissioned = replace(_live_identity(), **{moved_field: value})
+    commissioned = replace(_live_identity(), **changes)
     _arm_chip_aec(
         monkeypatch, dev, artifact=lambda: AlignmentArtifact(commissioned, 245, -38)
     )
@@ -302,7 +317,12 @@ def test_a_commissioned_identity_that_moved_is_applied_and_disclosed(
     writes = _write_map(dev)
     assert writes["SHF_BYPASS"] == [0]
     assert writes["AUDIO_MGR_SYS_DELAY"] == [-38]
-    assert moved_field in disclosure_file.read_text(encoding="utf-8")
+    if expected_disclosure_fields:
+        disclosure_text = disclosure_file.read_text(encoding="utf-8")
+        for field in expected_disclosure_fields:
+            assert field in disclosure_text
+    else:
+        assert not disclosure_file.exists()
 
 
 def test_an_older_schema_artifact_arms_the_chip_from_the_k_it_banked(

@@ -116,14 +116,10 @@ driver cap (non-negotiable 2), and checking it ahead of the margin is what makes
 the margin safe to disclose rather than park. It spans 320 frames against a
 39-frame causal window and was never a substitute for the margin.
 
-The same disposition covers a commissioned identity that moved and an artifact
-from a superseded schema. Identity divergence is split by meaning: the fields
-in `PER_UNIT_IDENTITY_FIELDS` name this physical box,
-`HARDWARE_CLASS_IDENTITY_FIELDS` names the hardware class `K` was measured
-against, and the disclosure says which — `K` is a property of the class, so a
-proof measured on a sibling still describes it. A third set,
-`RECORDED_ONLY_IDENTITY_FIELDS`, is written to every artifact but never
-compared: those fields carry no independent timing story (ADR-0189).
+The same disposition covers a commissioned identity that moved and an
+artifact from a superseded schema. Divergence splits by meaning into
+per-unit, hardware-class, and recorded-only-forensics fields — see
+ADR-0101 and ADR-0190 for the field sets and why.
 
 **An absent or unusable artifact falls back to the hardware class.**
 `jasper/chip_aec_shipped_alignment.py` banks one commissioned box's `K` and

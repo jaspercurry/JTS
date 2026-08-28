@@ -33,8 +33,9 @@ class ShippedAlignment:
     """One hardware class's alignment, as measured on a commissioned box."""
 
     label: str
-    # Exactly HARDWARE_CLASS_IDENTITY_FIELDS: the alignment identity minus the
-    # fields naming one physical unit. K is a property of the class, so a row
+    # Exactly HARDWARE_CLASS_IDENTITY_FIELDS: the alignment identity minus
+    # the per-unit fields and the recorded-only forensics fields — just the
+    # 8 that name the hardware class. K is a property of the class, so a row
     # that carried a serial would claim a proof it cannot transfer.
     identity: Mapping[str, Any]
     k_samples: int
@@ -91,7 +92,8 @@ def for_identity(identity: AlignmentIdentity) -> ShippedAlignment | None:
 def render_entry(identity: AlignmentIdentity, k_samples: int, sys_delay: int) -> str:
     """Render one commissioned alignment as a REGISTRY entry, ready to paste.
 
-    The per-unit fields are dropped here — that stripping is what makes the
+    The per-unit and recorded-only fields are dropped here — that stripping,
+    down to exactly the 8 HARDWARE_CLASS_IDENTITY_FIELDS, is what makes the
     proof transferable to a sibling box.  The label is a starting point for
     whoever pastes it, not derived data anything reads back.
     """

@@ -1277,8 +1277,8 @@ impl OutputdState {
         // NEGOTIATED once outputd has opened its edge: the format read back off
         // the installed hw_params, not the declaration that asked for it.
         // Consumers that must know what edge is running (chiefly the chip-AEC
-        // alignment identity, which force-invalidates a commissioned artifact
-        // when it moves) read it here.
+        // alignment identity, which records it for forensics — ADR-0190
+        // excludes it from comparison) read it here.
         //
         // Falls back to the registry declaration whenever no edge is open yet —
         // which is the fake backend for its whole life, AND the ALSA backend for
