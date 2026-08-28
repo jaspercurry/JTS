@@ -129,8 +129,8 @@ unlike its twin.
 | **A** | 1–43 | 43 | SPDX header + module docstring. Describes the file as the host between the v2 POST routes and the pure conductor. | — | **KEEP**, shrunk. The surviving apply host needs ~8 lines of it; the other 35 describe organs that will have left. |
 | **B** | 44–161 | 118 | Imports, and a **re-export barrel** inside them: 6 names re-exported with PEP 484 `X as X` redundant-alias form (3 from `journey` at `:77`, `:78`, `:80`; 3 from `relay` at `:157-159`) that this module names but never calls. The comment at `:63-71` records the cost: the eager `crossover_v2` import pulls `branch_chain` and numpy, taking import time **0.05 s → 0.34 s**. | `journey`/`round_anchor`/`refusal_copy`/`capture_source`/`verification` names reached through here by `setup`, `relay`, `wired`, tests | **SUPERSEDED** — every re-exported name already lives in a `crossover_v2/*` organ. Repoint importers at the organ and the barrel goes. Precedent in-file: `:150-155` records three such names already deleted once no external caller arrived. |
 | **C** | 162–188 | 27 | `logger`; durable-state schema constants (`STATE_SCHEMA_VERSION`, `STATE_KIND`, `DEFAULT_V2_STATE_PATH`); the two relay-kind labels; two more `durable_state` re-exports (`:186-187`). | setup, tests | **SPLIT** — schema constants →W1-a with the store; relay-kind labels →W5-a with the preparers; `:186-187` join row U's barrel. |
-| **D** | 189–219 | 31 | Operator capture-dump retention: dir, `ENABLED` marker filename, ring caps (90 files / 300 MB). 26 of 31 lines are the justifying essay. | in-file | **→W1-c**, gated on the owner's `ENABLED` ruling. |
-| **E** | 220–229 | 10 | `capture_dump_enabled` — is operator retention switched on right now. | in-file (row Z) | **→W1-c** |
+| **D** | — | — | Operator capture-dump retention: dir, `ENABLED` marker filename, ring caps (90 files / 300 MB). 26 of 31 lines were the justifying essay. **Gone** as of #3250 — deleted whole, not migrated. | — | **EXECUTED BY #3250** — the owner's ruling was to drop operator retention; the banked record store is the only retention path. |
+| **E** | — | — | `capture_dump_enabled` — was operator retention switched on right now. **Gone** as of #3250, with row D's marker it read. | — | **EXECUTED BY #3250** |
 | **F** | 230–236 | 7 | `_state_lock` (RLock), `_state_path_override`, `_volume_plan_lock`, `_volume_plan` — four of the file's seven module-level mutables. | in-file; **republish `:205`** holds `_state_lock` | **→W5** with the singletons they guard. **Move as one unit** — see §3. |
 | **G** | 237–447 | 211 | Refusal / error taxonomy: `CrossoverV2Refused`, `CrossoverV2LocalSeamError`, `refusal_next_action`, `classify_program_failure` (§5.10 reason codes), `refused_from_flow_error`, `profile_refusal_code`. | setup `:1010`, `:7394`, `:7536`; **relay `:574`, `:587`, `:978`; wired `:580`, `:609`, `:871`; republish `:60`** | **SUPERSEDED** → `crossover_v2/refusal_copy.py` (1,609 lines; 12 public functions/classes and 51 public constants, already the home of the `REASON_*` codes this row imports at `:118-122`). A clean leaf; no seam involved. |
 | **H** | 448–577 | 130 | Durable JSON state file I/O: path resolution, `load_v2_state`, `save_v2_state` (fsync decision), `_update_current_review`, `clear_v2_state`, `set_state_path_for_tests`. | xflow `:272`; **republish `:206`, `:269`** (and `_state_lock` at `:205`); tests | **→W1-a** (`RecordStore`). The *document* already lives in `crossover_v2/durable_state.py`; what is here is the **file** — path, envelope, atomic write, durability verdict (`:2550-2555` says exactly this). |
@@ -151,7 +151,7 @@ unlike its twin.
 | **W** | 2807–2929 | 123 | Conductor persistence, write side: `persist_conductor_state`, `_persist_terminal_failure`. | in-file (rows AM, AN); **relay `:589`, `:875`, `:954`, `:994`, `:1005`; wired `:611`, `:862`, `:883`, `:888`** | **→W1-a**. This is what `TuningSession.save()` replaces. |
 | **X** | 2930–3035 | 106 | Calibration resolution: `_wav_bytes_to_samples`, `resolve_relay_calibration`, `default_setup_calibration_for_v2`, `_setup_calibration_observation`. | in-file (row Y); named in `setup` prose `:2352`, `:3762`, `:3921` | **→W2-b** |
 | **Y** | 3036–3177 | 142 | `bind_production_analyze` — the real `analyze` seam, `CaptureResult` → `analyze_program_capture`, with the 101-line `_analyze` closure. | in-file (row AK) | **→W2-b** — this is the registry's production entry. |
-| **Z** | 3178–3362 | 185 | Capture-dump retention, implementation: `_prune_capture_dump` (oldest-first, bounded by count **and** bytes), `_maybe_retain_capture`. | in-file (row Y) | **→W1-c**, gated on the same `ENABLED` ruling as row D. |
+| **Z** | — | — | Capture-dump retention, implementation: `_prune_capture_dump` (oldest-first, bounded by count **and** bytes), `_maybe_retain_capture`. **Gone** as of #3250, same ruling as row D. | — | **EXECUTED BY #3250** |
 | **AA** | 3363–3963 | 601 | Evidence store + publishers — the file's largest concern: `open_v2_evidence_store`, `bind_evidence_publishers`, `bind_round_receipt`, `bind_position_retention`, `v2_session_identity`, `_publish_findings`, `_bank_household_findings`, `bind_findings_publisher`, `bind_cloud_publisher`. | in-file (row AK) | **→W1-a** (`RecordStore`). Cross-file note, corrected: retention is **three** sites, not the plan §0's four. `crossover_v2_flow.py:6879` is a *comment* inside a `publish_cloud` except arm, not an inlined retention copy; `self._seams.retain_position` occurs exactly twice in that file, both inside `_hand_to_retention`. Evidence: `cutover-briefs-w1.md` D6. |
 | **AB** | 3964–4340 | 377 | `bind_production_play` — the real `play` seam. 9 nested functions, 6 of them `async`. Contains `_hold_fader` (`:4173`), the 5th `_session_volume_io` site, which **discards `_set`** and re-proves the measurement volume per stimulus (`:4187`); and `run_async(_emit())` at `:4336`, a sync→async bridge fired from inside a play. | in-file (row AK) | **→W5-b** — `PlaybackTransaction` binding. |
 | **AC** | 4341–4435 | 95 | What the host hands the capture provider: `V2VolumeHooks` (frozen dataclass of three async callables), `drive_group_close`, `_start_speculative_group_close`. | relay `:411`→`:450`, `:616`; wired `:418`→`:619`, `:790` — **runtime**. Only `V2VolumeHooks` itself is `TYPE_CHECKING` | **→W5-b**. §6 flags this as *"one concern split 1,000 lines apart"* from row AH — correct, and the split is the interface half here, the implementation half there. |
@@ -259,8 +259,8 @@ through it, ordered so that each step shrinks the next one's diff.
 6. **Rows F, K, N, P, AH — volume (W5-c).**
    §6's step 5: *after* the walk, because the claim's lifetime is the walk's.
    **The three ordering sites in §3 must survive this step intact.**
-7. **Rows D, E, Z — capture-dump retention (W1-c).** Gated on the owner's
-   `ENABLED` ruling; schedulable any time after that ruling exists.
+7. **Rows D, E, Z — capture-dump retention (W1-c).** Executed by #3250 — the
+   owner's ruling was to delete the ring outright, not schedule it.
 8. **Row AF — `PositionGate` to its own module.** Cheap at any point: two
    `TYPE_CHECKING` lines for the class plus one runtime line for
    `POSITION_GATE_TERMINAL_CODES` (`relay:889`). Do it when convenient, not on
@@ -437,12 +437,13 @@ prove it by mutating the patched function and watching the test fail.
 different, relative vocabulary and is *not* the same constant — do not
 over-converge and break the dispatch match.
 
-### 3.7 A blocked ruling and a formatting tell
+### 3.7 A resolved ruling and a formatting tell
 
-Rows D, E and Z (226 lines) cannot be scheduled until the owner rules on
-`XOVER_CAPTURE_DUMP_ENABLED_MARKER`. It is off by default and bounded both ways;
-the question is whether operator capture retention survives the cutover at all.
-**These are the only rows in the file whose disposition waits on a person.**
+Rows D, E and Z (226 lines) are no longer scheduled: #3250 ruled on
+`XOVER_CAPTURE_DUMP_ENABLED_MARKER` by deleting the ring outright rather than
+carrying it into W1-c. Operator capture retention does not survive the
+cutover; the banked record store is the only retention path.
+**These were the only rows in the file whose disposition waited on a person.**
 
 Minor: `:2579-2582` is four consecutive blank lines, immediately below row U's
 barrel — harmless, but two more than this tree's spacing, and a tell that
@@ -479,8 +480,9 @@ to 8,088 exactly — no residual, no double count.
 ruling that *would* have produced one — *"candidate build · publish · commit …
 NO ENGINE HOME"* — offered two resolutions, a publish/commit organ **or a thin
 surviving host module**, and rows AO–AU are that host. The apply transaction is
-*"not a target. Ever."* Three rows (D, E, Z) are blocked on an owner ruling,
-which is a schedule problem, not a homelessness one.
+*"not a target. Ever."* Rows D, E and Z were never homeless either — #3250
+resolved the owner's ruling by deleting them outright, not by giving them a
+home.
 
 ### Against the floor
 

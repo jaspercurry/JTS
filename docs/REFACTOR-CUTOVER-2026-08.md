@@ -856,8 +856,9 @@ Two entry points into the host, both `def`, both near-duplicate twins:
 - **Teardown** — none for the conductor; it is collected when the runner closure
   returns. What is explicitly torn down is the ambient global state: the
   `_volume_hooks` close/abandon arms (`:5443`, `:5450`),
-  `_release_pause_best_effort` (`:1309`), `release_session_measurement_graph`
-  (`:1215`), and `_set_relay_capture(None)`.
+  `_release_pause_best_effort` (`:1309`), and `_set_relay_capture(None)`. (The
+  fourth item this bullet once named, `release_session_measurement_graph`, is
+  gone — deleted by #3240; see `docs/cutover-map-web.md` rows M/O.)
 - **The human's entry point** is `GET /correction/crossover` →
   `correction_setup.py:7847` → `correction_crossover_flow.render_page`
   (`correction_crossover_flow.py:24`); the page is fed by

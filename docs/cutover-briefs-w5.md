@@ -281,21 +281,17 @@ session's lifetime is the `_run()` coroutine's. The mapping:
 
 | `TuningSession` | What it replaces today |
 |---|---|
-| `open()` | `register_session_measurement_graph(session_graph)` (`correction_crossover_v2.py:4106`, from inside `bind_production_play` `:3965`) **plus** `_volume_hooks`'s `_open` arm (`:5399`), which is `acquire_session_measurement_pause()` then `await plan.open(context.session_volume_db, _set, _get)` (`:5408`) |
+| `open()` | `_volume_hooks`'s `_open` arm (`:5399`), which is `acquire_session_measurement_pause()` then `await plan.open(context.session_volume_db, _set, _get)` (`:5408`) |
 | `measure(spec)` | the consume/retain walk driven through `holder["run"]` (`:6432` / `:6856`, awaited `:6449` / `:6873`) |
 | `save()` | `persist_conductor_state(conductor, failure_code=None, evidence=refs)` `:6431` (def `:2809`) |
-| `close()` / abandon | `_volume_hooks`'s `_close` `:5443` and `_abandon` `:5450`, each of which is `_put_the_graph_back()` (`:5414` → `release_session_measurement_graph()` `:1215`) then `plan.close/abandon(_set, _get)` (`:5446` / `:5453`) then `release_session_measurement_pause()` in a `finally` |
+| `close()` / abandon | `_volume_hooks`'s `_close` `:5443` and `_abandon` `:5450`, each of which is `_put_the_graph_back()` (`:5414`) then `plan.close/abandon(_set, _get)` (`:5446` / `:5453`) then `release_session_measurement_pause()` in a `finally` |
 | `analyze()` | nothing yet — `bind_production_analyze` (`:3037`) is the flow's per-capture analyze seam, not the session-wide verb (§2 of the plan) |
 | `recommend()` | nothing yet — unbound (§3 of the plan) |
 
-**One deletion W5-b unlocks that the plan does not name.** The session graph is
-held in a **module global** — `_session_graph`, written by
-`register_session_measurement_graph` (`:1213`, from `bind_production_play` at
-`:4106`) and cleared by `release_session_measurement_graph` (`:1215`). Once the
-graph is `seams.graph` on a session object whose lifetime is the run coroutine's,
-that global and its displacement warning (`:1204-1211`) have no reason to exist.
-Its docstring already reads as a lifetime workaround: *"Two callers, and between
-them they cover every drain."*
+`_session_graph`, `register_session_measurement_graph` and
+`release_session_measurement_graph` were deleted by #3240 — see
+`docs/cutover-map-web.md` rows M and O for where the graph and its restore
+live now.
 
 ### 2.5 The five seam bindings at construction
 
@@ -483,10 +479,13 @@ get_main_volume_db)` at `:1573` and `plan.close(…, reason="seat_level_complete
 at `:1689`. The god file adds two more: `crossover_v2_flow.py:9150` (`open`) and
 `:9163` (`abandon`, the session-death hook). **Five production call sites across
 three files**, where the plan's W5-c reads as though `correction_crossover_v2.py`
-were the only one. `seat_level_ramp` is ledger row W10 and already holds a
-`SESSION_MEASUREMENT` claim of its own, so it can mint the `VolumeClaim` W5-c
-asks for — but it has no `TuningSession`, and a W5-c scoped to the wizard breaks
-it at import time.
+were the only one. `seat_level_ramp` is ledger row W10, but it holds **no
+claim at all** — its process (`jasper.cli.seat_level`) installs no
+`VolumeOwner` to arbitrate against, so it writes through a direct
+`FaderVolumeDoor` permanently, by design (W5-c1 moved the wizard's door onto
+the owner and deliberately left this one alone). A W5-c that hands it a
+`VolumeClaim` still breaks it at import time — there is no owner for the
+claim to acquire through.
 
 ### 3.4 The one ordering invariant that must not be lost
 
@@ -518,7 +517,7 @@ Six PRs. Sizes are re-estimated against what §2 and §3 found, not copied.
 | **W4-b** twin follows | `tests/engine_twin.py` (**418**, not 419) · `test_engine_twin.py` (401) · `test_crossover_v2_engine_skeleton.py` (1,267). `engine_declarations.py` (93) is untouched — it imports nothing and declares constants | ~200 | mechanical |
 | **W4-c** `VolumeClaim` adapter | one handle-holding class over `acquire_level` / `prove` / `release` | ~90 | **default** (demoted — §6) |
 | **W5-a** preparers converge | push `verify_only` one frame down; reconcile the `publish_check` asymmetry; re-point 26 comments in 4 further files (§5.1) | ~250 net, **6 files** | default |
-| **W5-b** `TuningSession` in production | build `EngineSeams` beside `bind_v2_stage_seams`; delete the two `holder` dicts and the `_session_graph` global | ~350 | **adversarial** |
+| **W5-b** `TuningSession` in production | build `EngineSeams` beside `bind_v2_stage_seams`; delete the two `holder` dicts (the `_session_graph` global is already gone — #3240; see `docs/cutover-map-web.md` row M) | ~350 | **adversarial** |
 | **W5-c** plan sheds its doors | three-way split (§3.3), five call sites across three files | ~350 | **adversarial** |
 | **W5-d** stale docs + grep | engine-design `:252-268` only; the widened grep | ~25 | docs |
 
@@ -583,7 +582,7 @@ HEAD`), not the branch. Paste each count into the PR.
 | W4-c | `grep -rn "acquire_level(" jasper/ \| grep -v volume_owner.py` | **5** (today: **4** — see §6, the owner already has takers) |
 | W5-a | `grep -rn "prepare_v2_verify" jasper/` | 0 (today: **28 across 6 files** — see below) |
 | W5-b | `grep -rn "TuningSession(\|EngineSeams(" jasper/` | ≥ 1 (today: **0** — production constructs neither) |
-| W5-b | `grep -n "_session_graph\b" jasper/web/correction_crossover_v2.py` | 0 (today: declared `:1191`, written `:1212`, cleared `:1179` / `:1235`, read `:1203` / `:1232`, plus `global` at `:1176` / `:1202` / `:1231`. Four further hits — `:1209`, `:1334`, `:4102`, `:5438` — are log-event names and a `source=` string, and stay) |
+| W5-b | `grep -n "_session_graph\b" jasper/web/correction_crossover_v2.py` | **executed by #3240** (ahead of W5-b) — 1 residual hit is an unrelated `source=` string; see `docs/cutover-map-web.md` rows M/O |
 | W5-b | `grep -n "holder\[" jasper/web/correction_crossover_v2.py` | 0 (today: `:6432`, `:6449`, `:6856`, `:6873`) |
 | W5-c | `grep -n "_session_volume_io" jasper/web/correction_crossover_v2.py` | def + the one read-only site (today: def + 5) |
 | W5-c | `grep -rn "set_main_volume_db=\|get_main_volume_db=" jasper/active_speaker/session_volume_plan.py` | the latch's internals only |
@@ -683,7 +682,7 @@ over; each is a place an executor following §4/§5 literally would go wrong.
 | 2 | §2.1 | the short endpoints bridge with `_run_async`, *"ten sites, e.g. `correction_crossover_v2.py:7274`, `:7883`"* | `_run_async` has **zero** hits in that file. The two examples are real, under the injected `run_async` parameter, and there are **nine** of them. `_run_async` itself lives in `correction_setup.py` with 34 call sites |
 | 3 | §2.2 | the four relay slots are *"written by `_set_relay_capture` `:719-731` and cleared at `:615-623`"* | two functions: `_begin_relay_capture` (`:706`) writes at `:719-731` and owns the in-flight **refusal**; `_set_relay_capture` (`:614`) clears at `:615-623` |
 | 4 | §2.4 | stage 2's `bind_v2_stage_seams` call is `:6800-6811`, *"the same call shape"* as stage 1's | `:6801-6812`, and it is **not** the same shape: stage 2 passes `publish_check=_publish_check` |
-| 5 | §2.4 | teardown includes `_release_pause_best_effort` (`:1309`) and `release_session_measurement_graph` (`:1215`), listed among `correction_setup.py` symbols | both live in `correction_crossover_v2.py`; `correction_setup.py` has **zero** hits for either |
+| 5 | §2.4 | teardown includes `_release_pause_best_effort` (`:1309`) and `release_session_measurement_graph` (`:1215`), listed among `correction_setup.py` symbols | both live in `correction_crossover_v2.py`; `correction_setup.py` has **zero** hits for either. (`release_session_measurement_graph` is gone at HEAD — deleted by #3240; see `docs/cutover-map-web.md` row M.) |
 | 6 | §3.1 | `_set` calls `CamillaController.set_volume_db` | it calls `camilla_factory().set_volume_db(...)` — the controller is injected |
 | 7 | §3.4 | `_clear_resolved`'s docstring is `:862-880` | `:859-891`; the mirror-image paragraph runs past `:880` |
 | 8 | §4 | `tests/engine_twin.py` is 419 lines | 418 |
