@@ -154,6 +154,10 @@ def test_forensics_is_opt_in_ram_bounded_and_deploy_persistent() -> None:
         "JASPER_USBGADGET_FORENSICS_RUN_DIR",
         "JASPER_USBGADGET_FORENSICS_INTERVAL",
         "JASPER_USBGADGET_FORENSICS_MAX_BYTES",
+        # The repair action's systemctl seam (jasper-usbgadget-converge's own
+        # JASPER_USBGADGET_SYSTEMCTL pattern): a test-only override, so this
+        # always-installed root daemon must never inherit one.
+        "JASPER_USBGADGET_SYSTEMCTL",
     } <= unset
 
 

@@ -247,6 +247,10 @@ def test_apply_name_orders_surfaces_and_composes_restart_list(
         events.append(("advert", name))
         return True
 
+    def restart_units(units, *, verb="restart", no_block=True, timeout=5.0):
+        events.append((verb, tuple(units), no_block, timeout))
+        return True
+
     monkeypatch.setattr(speaker_setup, "_unit_active", unit_active)
     monkeypatch.setattr(
         speaker_setup,
@@ -258,13 +262,7 @@ def test_apply_name_orders_surfaces_and_composes_restart_list(
         "jasper.control_advert.render_control_advert",
         render_advert,
     )
-    monkeypatch.setattr(
-        speaker_setup,
-        "_restart_units",
-        lambda units, *, verb="restart", no_block=True, timeout=5.0: events.append(
-            (verb, tuple(units), no_block, timeout)
-        ),
-    )
+    monkeypatch.setattr(speaker_setup, "_restart_units", restart_units)
     monkeypatch.setattr(
         speaker_setup,
         "kick_source_reconcile",
@@ -273,11 +271,18 @@ def test_apply_name_orders_surfaces_and_composes_restart_list(
 
     assert speaker_setup._apply_name("Kitchen") is True
 
-    expected_units = tuple(
+    # The gadget restart is never folded into the batched core-services
+    # restart -- it always keeps its own blocking call, immediately followed
+    # by the ordered fan-in -> usbmic refresh, so the batch below is the same
+    # shape regardless of gadget_active.
+    gadget_events = (
         [
-            *original_units,
-            *(["jasper-usbgadget.service"] if gadget_active else []),
-        ],
+            ("restart", ("jasper-usbgadget.service",), False, 60.0),
+            ("try-restart", ("jasper-fanin.service",), False, 60.0),
+            ("try-restart", ("jasper-usbmic.service",), False, 60.0),
+        ]
+        if gadget_active
+        else []
     )
     assert events == [
         ("probe", "jasper-usbgadget.service"),
@@ -292,9 +297,42 @@ def test_apply_name_orders_surfaces_and_composes_restart_list(
         ),
         ("source-reconcile",),
         ("source-reconcile",),
-        ("restart", expected_units, True, 5.0),
+        *gadget_events,
+        ("restart", tuple(original_units), True, 5.0),
     ]
     assert speaker_setup.RESTART_UNITS == original_units
+
+
+def test_apply_name_skips_consumer_refresh_when_gadget_restart_fails(monkeypatch):
+    """Fail-closed, mirroring jasper-usbgadget-converge: a rebuild that did not
+    happen must not be followed by a fan-in/usbmic refresh -- there is nothing
+    fresh for them to pick up, and _restart_units already WARNed about it."""
+    events = []
+
+    async def set_alias(name):
+        return None
+
+    def restart_units(units, *, verb="restart", no_block=True, timeout=5.0):
+        events.append((verb, tuple(units), no_block, timeout))
+        return units != ["jasper-usbgadget.service"]
+
+    monkeypatch.setattr(speaker_setup, "_unit_active", lambda _unit: True)
+    monkeypatch.setattr(speaker_setup, "_write_bluez_main_conf_name", lambda name: None)
+    monkeypatch.setattr("jasper.bluetooth.adapter.set_alias", set_alias)
+    monkeypatch.setattr(
+        "jasper.control_advert.render_control_advert", lambda name: True
+    )
+    monkeypatch.setattr(speaker_setup, "_restart_units", restart_units)
+    monkeypatch.setattr(
+        speaker_setup, "kick_source_reconcile", lambda **_kwargs: {"ok": True}
+    )
+
+    assert speaker_setup._apply_name("Kitchen") is True
+
+    assert ("restart", ("jasper-usbgadget.service",), False, 60.0) in events
+    refreshed_units = {units[0] for _verb, units, *_rest in events}
+    assert "jasper-fanin.service" not in refreshed_units
+    assert "jasper-usbmic.service" not in refreshed_units
 
 
 def test_apply_name_continues_after_bluez_alias_and_advert_failures(
