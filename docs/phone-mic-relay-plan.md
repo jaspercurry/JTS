@@ -712,9 +712,8 @@ Tokens are bearer tokens in a header. Sessions + blobs auto-expire at `ttl_s`
   standalone post would almost always be overwritten before the Pi's ~0.75s
   poll ever saw it. Nothing Pi-side reads it — ambient is measured from the
   capture itself, and the never-called Pi parser was deleted (#2662) — so the
-  emission is forward-compatible plumbing, not a wired feature (the solver
-  consumes per-band ambient only if a caller passes `ambient_bands=`, and no
-  shipped caller does).
+  emission is forward-compatible plumbing, not a wired feature (nothing in
+  the tree consumes per-band ambient data at all).
   After the recorder stops and **before** the blob, a capture-plan round posts
   its armed payload ONCE MORE carrying `capture_integrity` (issue #2151,
   `capture-page/js/capture-integrity.js`): whether the page held the foreground
