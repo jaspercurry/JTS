@@ -25,11 +25,19 @@ import pytest
 
 from jasper.active_speaker.bundles import (
     BUNDLE_FILE_MODE,
+    CAPTURE_KIND_SEQUENTIAL,
     enforce_retention,
     open_bundle,
 )
 from jasper.active_speaker.commissioning_evidence_store import (
     CommissioningEvidenceStore,
+)
+from jasper.active_speaker.crossover_v2.journey import (
+    PHASE_CHECK,
+    PHASE_CLOUD_MEASURE,
+    PHASE_LATERAL,
+    PHASE_MEASURE,
+    PHASE_VERIFY,
 )
 from jasper.active_speaker.crossover_v2_flow import (
     assemble_cloud_group_result,
@@ -1210,6 +1218,65 @@ def test_position_retention_puts_the_wav_path_and_digest_in_the_state(
     assert entry["wav_path"]
     # The path is bundle-relative and really points at the retained bytes.
     assert (bundle_dir / entry["wav_path"]).read_bytes() == b"take-bytes"
+
+
+@pytest.mark.parametrize(
+    ("phase", "expected_kind"),
+    [
+        (PHASE_CHECK, CAPTURE_KIND_SEQUENTIAL),
+        (PHASE_MEASURE, CAPTURE_KIND_SEQUENTIAL),
+        (PHASE_LATERAL, CAPTURE_KIND_SEQUENTIAL),
+        (PHASE_VERIFY, "summed"),
+        (PHASE_CLOUD_MEASURE, "summed"),
+    ],
+)
+def test_a_banked_take_records_the_kind_its_phase_actually_played(
+    tmp_path: Path, phase: str, expected_kind: str,
+) -> None:
+    """CHECK, MEASURE and LATERAL play ONE recording that steps through every
+    driver in turn, which is neither a single driver nor a simultaneous sum.
+    They were banked as ``summed`` only because the taxonomy had no third
+    value; now they are banked as what they are. A lateral pose belongs with
+    the other two because ``programs.program_for_phase`` answers it with
+    MEASURE's program OBJECT verbatim — the same stimulus under a third name.
+    VERIFY and the cloud position groups really do play one summed sweep and
+    keep the old label.
+    """
+
+    from jasper.web import correction_crossover_v2 as v2host
+
+    store, bundle_dir = _open_store(tmp_path)
+    bank = v2host.bind_position_retention(store, RELAY, {}, asyncio.run)
+
+    class _Result:
+        wav = b"take-bytes"
+
+    # A lateral pose names its prompted spot ``pose_id``; every other phase
+    # calls it ``position_id``. The two vocabularies ``spatial._take_identity``
+    # keeps apart, so the lateral row drives the shape a pose really banks.
+    id_key = "pose_id" if phase == PHASE_LATERAL else "position_id"
+    bank(
+        _Result(),
+        {
+            id_key: f"{phase}_00",
+            "phase": phase,
+            "index": 0,
+            "attempt": 1,
+            "take_id": f"{phase}_00_a01",
+            "measure_kind": "",
+            "prompt": "",
+            "wide": False,
+            "captured_at": 1.0,
+            "session_id": RELAY,
+            "wav_sha256": "d" * 64,
+        },
+    )
+
+    info = json.loads((bundle_dir / "info.json").read_text())
+    # Every kind here shares one list — the recorded kind is the only thing
+    # that tells the three apart, which is why it is written at all.
+    assert [e["kind"] for e in info["summed_captures"]] == [expected_kind]
+    assert info["captures"] == []
 
 
 # --------------------------------------------------------------------------- #

@@ -123,6 +123,18 @@ SESSIONS_MAX_BUNDLES_ENV = "JASPER_ACTIVE_SPEAKER_SESSIONS_MAX_BUNDLES"
 # _copy_wav_into_bundle(). Files stay at this mode.
 BUNDLE_FILE_MODE = 0o640
 
+#: One capture entry's kind. ``driver`` is one driver alone, ``summed`` is
+#: every driver sounding at once, and ``sequential`` is every driver in turn
+#: inside ONE recording — the CHECK and MEASURE programs, which are neither of
+#: the other two and were recorded as ``summed`` until this value existed.
+#: Records banked before it keep that label; their ``phase`` disambiguates them.
+#:
+#: A ``sequential`` capture keeps ``summed``'s ``summed/`` subdirectory and
+#: ``summed_captures`` list: the kind names what was PLAYED, not where the
+#: bytes land, and an opened bundle's layout is write-once.
+CAPTURE_KIND_SEQUENTIAL = "sequential"
+_CAPTURE_KINDS = frozenset({"driver", "summed", CAPTURE_KIND_SEQUENTIAL})
+
 _VALID_STATES = frozenset({"open", "proposal_ready", "applied", "failed", "abandoned"})
 _UNFINISHED_STATES = frozenset({"open", "proposal_ready"})
 
@@ -705,6 +717,10 @@ def _append_capture_entry(
     if not isinstance(measurement_block, Mapping):
         measurement_block = {}
     entry: dict[str, Any] = {
+        # The discriminator, written because the list an entry lands in no
+        # longer answers it: ``summed`` and ``sequential`` share
+        # ``summed_captures``. Absent on entries banked before this field.
+        "kind": kind,
         "group": group,
         "artifact_path": rel_path,
         "capture_json_path": json_rel,
@@ -767,7 +783,7 @@ def register_capture(
     ``*.json`` sidecar, and the compact ``info.json`` entry.
     """
 
-    if kind not in {"driver", "summed"}:
+    if kind not in _CAPTURE_KINDS:
         raise BundleError(f"unsupported capture kind: {kind!r}")
     _record_capture_wav(bundle_dir, relative_path)
     return _append_capture_entry(
@@ -798,7 +814,7 @@ def append_capture(
     bundle.
     """
 
-    if kind not in {"driver", "summed"}:
+    if kind not in _CAPTURE_KINDS:
         raise BundleError(f"unsupported capture kind: {kind!r}")
     source = _guarded_capture_source(bundle_dir, wav_source_path, op="append_capture")
     if source is None:
