@@ -131,6 +131,11 @@ MANAGED_UNITS = frozenset({
     # jasper-control restarts it after persisting intent; the root oneshot owns
     # the delayed recompose so an in-process timer cannot be lost on exit.
     "jasper-usbmic-apply.service",
+    # The relay itself (distinct from -apply above). /speaker rename's
+    # post-gadget-rebuild refresh try-restarts this directly, the same
+    # jasper-fanin incident repeating one unit over: never brokered before,
+    # so it was missing here even though jasper-web (non-root) needs it.
+    "jasper-usbmic.service",
     # jasper-usbgadget owns the hardware-gated composite ConfigFS gadget
     # (default-on USB network + wizard-toggled USB audio). The root coordinator restarts
     # it to recompose the audio function after source/role changes; /speaker

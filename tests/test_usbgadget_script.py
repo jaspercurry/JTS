@@ -46,6 +46,18 @@ SNAPSHOT = ROOT / "deploy" / "usbsink" / "jasper-usbgadget-snapshot"
 TRUE = "/usr/bin/true"
 FALSE = "/usr/bin/false"
 
+# jasper_usbgadget_refresh_consumers (jasper-usbgadget-compose.sh) wraps both
+# its try-restarts in the fixed path /usr/bin/timeout, so a test asserting a
+# real "ok" outcome from it needs that binary to exist -- present on the
+# Pi/Ubuntu-CI target, absent on a bare macOS dev machine with no GNU
+# coreutils. Shared by both the converge and the snapshot repair tests below.
+_HAS_USR_BIN_TIMEOUT = Path("/usr/bin/timeout").exists()
+_NO_USR_BIN_TIMEOUT_REASON = (
+    "jasper_usbgadget_refresh_consumers shells out to the fixed path "
+    "/usr/bin/timeout; present on the Pi/Ubuntu-CI target, absent on a bare "
+    "macOS dev machine with no GNU coreutils"
+)
+
 
 def _configfs(tmp_path: Path) -> Path:
     """A temp ConfigFS root with the usb_gadget dir the scripts cd into."""
@@ -552,6 +564,7 @@ def test_converge_on_matching_composition_writes_nothing_and_runs_no_job(tmp_pat
     assert _tree(cfg) == before
 
 
+@pytest.mark.skipif(not _HAS_USR_BIN_TIMEOUT, reason=_NO_USR_BIN_TIMEOUT_REASON)
 def test_converge_on_changed_composition_rebuilds_then_refreshes_in_order(tmp_path):
     """A real difference costs one rebuild and the ordered consumer refresh."""
     proc1, cfg = _run(UP, tmp_path, network="enabled", audio_intent=FALSE)
@@ -1598,16 +1611,7 @@ def test_forensics_watch_writes_only_to_bounded_ram_timeline(tmp_path):
         ["bash", str(SNAPSHOT), "watch"], cwd=ROOT, env=env,
         text=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
     )
-    deadline = time.monotonic() + 3
-    state = {}
-    while time.monotonic() < deadline:
-        try:
-            state = json.loads((run_dir / "status.json").read_text())
-        except (OSError, json.JSONDecodeError):
-            pass
-        if state.get("sample_count", 0) >= 10:
-            break
-        time.sleep(0.02)
+    state = _poll_status(run_dir, lambda s: s.get("sample_count", 0) >= 10)
     enabled.unlink()
     _stdout, stderr = watcher.communicate(timeout=3)
 
@@ -1633,3 +1637,121 @@ def test_snapshot_freezes_only_tail_of_forensics_timeline(tmp_path):
     body = next(incident_dir.glob("usb-gadget-*.txt")).read_text()
     assert "[forensics_timeline]" in body
     assert body.index("old-sample") < body.index("new-sample")
+
+
+# ---------- forensics repair action (the forced-rebuild consumer refresh) ---
+
+
+def _poll_status(run_dir: Path, predicate, deadline_sec: float = 3.0) -> dict:
+    deadline = time.monotonic() + deadline_sec
+    state: dict = {}
+    while time.monotonic() < deadline:
+        try:
+            state = json.loads((run_dir / "status.json").read_text())
+        except (OSError, json.JSONDecodeError):
+            pass
+        if predicate(state):
+            break
+        time.sleep(0.02)
+    return state
+
+
+def _run_repair_request(
+    tmp_path: Path, *, restart_rc: int, tears_down: bool = False,
+) -> tuple[dict, list[str], str]:
+    """Drive `watch` mode through one repair request against a fake systemctl
+    (the converger's own JASPER_USBGADGET_SYSTEMCTL seam), returning the final
+    status snapshot, the shim's recorded argv lines in call order, and the
+    watcher's stderr.
+
+    ``tears_down=True`` models an ExecCondition-skipped start: `restart`
+    still exits 0 (the STOP half ran; the START half's ExecCondition decided
+    nothing is wanted), but ConfigFS ends up with no bound descriptor --
+    exactly the false-success shape a repair must not read as a rebuild."""
+    _proc, incident_dir = _run_snapshot(tmp_path)
+    for artifact in incident_dir.glob("usb-gadget-*.txt"):
+        artifact.unlink()
+    enabled = tmp_path / "forensics.env"
+    enabled.write_text("JASPER_USB_GADGET_FORENSICS=1\n")
+    run_dir = tmp_path / "forensics-run"
+    configfs = tmp_path / "configfs"
+    shim, log = _systemctl_shim(
+        tmp_path, restart_rc=restart_rc,
+        tears_down=configfs if tears_down else None,
+    )
+    env = os.environ.copy()
+    env.update({
+        "JASPER_USBGADGET_SNAPSHOT_CONFIGFS_ROOT": str(tmp_path / "configfs"),
+        "JASPER_USBGADGET_SNAPSHOT_UDC_CLASS_DIR": str(tmp_path / "udc"),
+        "JASPER_USBGADGET_SNAPSHOT_DEBUG_ROOT": str(tmp_path / "debug"),
+        "JASPER_USBGADGET_SNAPSHOT_PROC_INTERRUPTS": str(tmp_path / "interrupts"),
+        "JASPER_USBGADGET_SNAPSHOT_DIR": str(incident_dir),
+        "JASPER_USBGADGET_FORENSICS_ENABLED_FILE": str(enabled),
+        "JASPER_USBGADGET_FORENSICS_RUN_DIR": str(run_dir),
+        "JASPER_USBGADGET_FORENSICS_INTERVAL": "0.005",
+        "JASPER_USBGADGET_SYSTEMCTL": str(shim),
+    })
+    watcher = subprocess.Popen(
+        ["bash", str(SNAPSHOT), "watch"], cwd=ROOT, env=env,
+        text=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+    )
+    _poll_status(run_dir, lambda s: s.get("sample_count", 0) >= 1)
+    (run_dir / "request.repair").touch()
+    state = _poll_status(
+        run_dir, lambda s: s.get("last_action") in {"repair", "repair_failed"},
+    )
+    enabled.unlink()
+    _stdout, stderr = watcher.communicate(timeout=3)
+
+    assert watcher.returncode == 0, stderr
+    calls = log.read_text().splitlines() if log.exists() else []
+    return state, calls, stderr
+
+
+@pytest.mark.skipif(not _HAS_USR_BIN_TIMEOUT, reason=_NO_USR_BIN_TIMEOUT_REASON)
+def test_repair_action_refreshes_fanin_then_usbmic_in_order(tmp_path):
+    """The /system repair button's forced rebuild bypasses the converger the
+    same way the speaker-rename path does, so it owes fan-in/usbmic the same
+    ordered post-rebuild refresh (see jasper/web/speaker_setup.py)."""
+    state, calls, stderr = _run_repair_request(tmp_path, restart_rc=0)
+
+    assert state.get("last_action") == "repair"
+    assert calls == [
+        "restart jasper-usbgadget.service",
+        "try-restart jasper-fanin.service",
+        "try-restart jasper-usbmic.service",
+    ]
+    assert "event=usb_gadget.forensics action=repair_refresh" in stderr
+    assert "order=fanin,usbmic fanin=ok usbmic=ok" in stderr
+
+
+@pytest.mark.skipif(not _HAS_USR_BIN_TIMEOUT, reason=_NO_USR_BIN_TIMEOUT_REASON)
+def test_repair_action_detects_a_false_success_and_skips_the_refresh(tmp_path):
+    """rc=0 from `systemctl restart` also fires when the unit's own
+    ExecCondition skipped the start half (nothing wanted) -- the exact
+    false-success shape jasper-usbgadget-converge itself guards against by
+    reading ConfigFS back rather than trusting the exit code. A repair that
+    trusted rc=0 alone would refresh fan-in/usbmic for a rebuild that never
+    happened."""
+    state, calls, stderr = _run_repair_request(tmp_path, restart_rc=0, tears_down=True)
+
+    assert state.get("last_action") == "repair_failed"
+    assert calls == ["restart jasper-usbgadget.service"]
+    assert "action=repair_refresh" not in stderr
+
+
+@pytest.mark.skipif(not _HAS_USR_BIN_TIMEOUT, reason=_NO_USR_BIN_TIMEOUT_REASON)
+def test_repair_action_skips_refresh_when_rebuild_fails(tmp_path):
+    """Fail-closed, mirroring jasper-usbgadget-converge: a rebuild that did
+    not happen must not be followed by a fan-in/usbmic refresh, and the
+    refresh must never mask the rebuild's own repair_failed result."""
+    state, calls, stderr = _run_repair_request(tmp_path, restart_rc=1)
+
+    assert state.get("last_action") == "repair_failed"
+    assert calls == ["restart jasper-usbgadget.service"]
+    assert "action=repair_refresh" not in stderr
+
+# No test pins REPAIR_RESTART_TIMEOUT_SEC's numeric value: that would be
+# asserting on source text (AGENTS.md), and a real timed-out-restart run
+# costs ~34s of wall time to exercise honestly. The floor is stated instead,
+# beside the constant in deploy/usbsink/jasper-usbgadget-snapshot.

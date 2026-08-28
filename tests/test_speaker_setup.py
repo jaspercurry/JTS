@@ -21,7 +21,11 @@ from ._web_test_helpers import post_with_csrf
 def server_with_state(tmp_path, monkeypatch):
     state_path = str(tmp_path / "speaker_name.env")
     apply_calls: list[str] = []
-    monkeypatch.setattr(speaker_setup, "_apply_name", lambda name: apply_calls.append(name))
+    monkeypatch.setattr(
+        speaker_setup,
+        "_apply_name",
+        lambda name, **_kwargs: apply_calls.append(name),
+    )
     monkeypatch.setattr(speaker_setup, "_find_conflicts", lambda name: [])
 
     s = socket.socket()

@@ -20,17 +20,14 @@
 # INSIDE that unit could not restart jasper-fanin — the gadget is ordered
 # After= fan-in, so a restart job issued from its own start phase would deadlock.
 #
-# PHYSICS, stated once. A real rebuild unbinds the UDC, so the host
-# re-enumerates: the UAC2Gadget ALSA card is destroyed and recreated, and every
-# handle on it goes stale. Two consequences, both load-bearing:
-#   - jasper-fanin (deliberately not PartOf= the gadget, it is the core mixer)
-#     and jasper-usbmic (whose ExecCondition can leave it inactive after PartOf=
-#     propagation) are refreshed here, in data-path order.
-#   - the HOST's player must reopen its stream. A default-device stream follows
-#     re-enumeration on its own; a DEVICE-TARGETED stream holds the dead
-#     pre-rebuild handle forever and has to be restarted by hand. Nothing on the
-#     Pi can fix that, which is exactly why an unchanged composition must not
-#     rebuild. See #3194.
+# PHYSICS: a real rebuild unbinds the UDC, so the host re-enumerates and every
+# handle on the old UAC2Gadget ALSA card goes stale -- see
+# jasper_usbgadget_refresh_consumers in jasper-usbgadget-compose.sh for the
+# fan-in/usbmic refresh that exists because of it. The other consequence is on
+# the HOST side: a default-device stream follows re-enumeration on its own, but
+# a DEVICE-TARGETED stream holds the dead pre-rebuild handle forever and has to
+# be restarted by hand. Nothing on the Pi can fix that, which is exactly why an
+# unchanged composition must not rebuild. See #3194.
 #
 # Usage: jasper-usbgadget-converge [reason]
 #   `reason` is a short operator tag echoed into the event line (install,
@@ -45,9 +42,16 @@ PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
 # shellcheck source=deploy/usbsink/jasper-usbgadget-compose.sh
 source "$(dirname "$0")/jasper-usbgadget-compose.sh"
 
-SYSTEMCTL="${JASPER_USBGADGET_SYSTEMCTL:-systemctl}"
 GADGET_UNIT=jasper-usbgadget.service
 REASON="${1:-unspecified}"
+# This script runs as jasper-usbmic-apply.service's ExecStartPost under
+# TimeoutStartSec=180s, sharing that budget with the ExecStart 0.35s sleep and
+# the ExecStartPost restart of jasper-aec-bridge.service ahead of it. Budgeted
+# at 60s for the gadget restart below (33.64s measured worst case, same
+# ceiling deploy/usbsink/jasper-usbgadget-snapshot's REPAIR_RESTART_TIMEOUT_SEC
+# uses) plus 2 x 50s for the refresh below: 160s, leaving ~20s margin for that
+# sleep and the AEC-bridge restart.
+REFRESH_TIMEOUT_SEC=50
 
 jasper_usbgadget_desired
 jasper_usbgadget_live
@@ -100,13 +104,10 @@ fi
 # Consumers are refreshed for a rebuild that happened, never a failed one, and
 # always in data-path order. Report each outcome rather than assuming both took:
 # this line is the operator surface for a refresh that did not.
-fanin=ok
-usbmic=ok
-${SYSTEMCTL} try-restart jasper-fanin.service >/dev/null 2>&1 || fanin=failed
-${SYSTEMCTL} try-restart jasper-usbmic.service >/dev/null 2>&1 || usbmic=failed
+jasper_usbgadget_refresh_consumers "${REFRESH_TIMEOUT_SEC}"
 # The composition reported here is the one READ BACK above, never the one that
 # was asked for: a rebuild that landed on a different shape than the truth table
 # computed (a probe that flipped between this script's read and gadget-up's) has
 # to name itself in the journal rather than hide behind the desired values.
 emit converge \
-    "state=rebuilt reason=${REASON} want_bound=${WANTED} network=${LIVE_NETWORK} audio=${LIVE_AUDIO} usb_mic=${LIVE_USB_MIC} order=fanin,usbmic fanin=${fanin} usbmic=${usbmic}"
+    "state=rebuilt reason=${REASON} want_bound=${WANTED} network=${LIVE_NETWORK} audio=${LIVE_AUDIO} usb_mic=${LIVE_USB_MIC} order=fanin,usbmic fanin=${REFRESH_FANIN_RESULT} usbmic=${REFRESH_USBMIC_RESULT}"
