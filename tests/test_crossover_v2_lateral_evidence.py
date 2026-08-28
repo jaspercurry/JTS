@@ -425,7 +425,7 @@ def test_the_relay_capacity_guard_counts_the_lateral_walk_unconditionally():
     guarded on a stage-1 flag would have reported 0 for exactly the shape that
     still runs six of them, so the count is unconditional and this pins that.
     """
-    import jasper.capture_relay.spec as spec
+    import jasper.capture_protocol as capture_protocol
 
     flow.assert_cloud_plan_fits_relay_capacity()  # holds as shipped
     worst = dict(
@@ -433,7 +433,7 @@ def test_the_relay_capacity_guard_counts_the_lateral_walk_unconditionally():
         cloud_verify_positions=flow.DEFAULT_CLOUD_VERIFY_POSITIONS,
     )
     with_walk = flow.relay_plan_attempts_required(**worst)
-    assert with_walk <= spec.MAX_CAPTURE_PLAN_ATTEMPTS, (
+    assert with_walk <= capture_protocol.MAX_CAPTURE_PLAN_ATTEMPTS, (
         "the shipped relay ceiling no longer carries the worst-case plan"
     )
 
@@ -455,7 +455,7 @@ def test_the_relay_capacity_guard_counts_the_lateral_walk_unconditionally():
     # walk-less plan but not the walk must REFUSE.
     without_walk = expected - LATERAL_COUNT
     with pytest.MonkeyPatch.context() as mp:
-        mp.setattr(spec, "MAX_CAPTURE_PLAN_ATTEMPTS", without_walk + 1)
+        mp.setattr(capture_protocol, "MAX_CAPTURE_PLAN_ATTEMPTS", without_walk + 1)
         with pytest.raises(flow.CrossoverV2FlowError):
             flow.assert_cloud_plan_fits_relay_capacity()
 

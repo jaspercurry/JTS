@@ -12,7 +12,7 @@ import pytest
 
 from jasper import chip_aec_alignment as alignment
 from jasper import chip_aec_shipped_alignment as shipped
-from jasper.capture_relay import alignment as relay_alignment
+from jasper.audio_measurement import alignment as kernel_alignment
 from jasper.chip_aec_alignment import (
     AlignmentArtifact,
     AlignmentIdentity,
@@ -412,14 +412,14 @@ def test_timing_correlation_removes_filtered_window_mean(monkeypatch) -> None:
         alignment, "_bandpass", lambda values: real_bandpass(values) + 50_000
     )
     observed_means: list[tuple[float, float]] = []
-    real_correlate = relay_alignment.cross_correlation_alignment
+    real_correlate = kernel_alignment.cross_correlation_alignment
 
     def observe_means(captured, stimulus, **kwargs):
         if kwargs.get("exclude_radius") == 8:
             observed_means.append((float(captured.mean()), float(stimulus.mean())))
         return real_correlate(captured, stimulus, **kwargs)
 
-    monkeypatch.setattr(relay_alignment, "cross_correlation_alignment", observe_means)
+    monkeypatch.setattr(kernel_alignment, "cross_correlation_alignment", observe_means)
 
     assert analyze_timing(capture, reference).lag == 20
     assert len(observed_means) == 1

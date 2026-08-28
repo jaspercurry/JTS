@@ -2,20 +2,20 @@
 #
 # SPDX-License-Identifier: Apache-2.0
 
-"""Cross-correlation alignment-confidence gate (phone-mic relay step 6, Pi side).
+"""Cross-correlation alignment-confidence gate.
 
 Measurement validity must extend past transport to whether the number is
-trustworthy (plan §9). The integrity hash proves the WAV is intact; it cannot
-catch an **intact-but-misaligned** capture — the phone recorded a window, but the
+trustworthy. An integrity hash proves a capture is intact; it cannot catch an
+**intact-but-misaligned** capture — the recorder captured a window, but the
 stimulus is buried in noise, clipped, or absent, so the cross-correlation peak
 that locates it is weak or ambiguous. That is a silently-wrong measurement unless
 it fails loud, which is what this module does.
 
-It is a reusable primitive: an owning analysis passes the decrypted capture and
-the **known** stimulus the Pi played (a sweep, a marker, …), and gets back an
+It is a reusable primitive: an owning analysis passes the capture and the
+**known** stimulus that was played (a sweep, a marker, …), and gets back an
 alignment with a 0..1 confidence. ``assert_alignment_confident`` can turn that
 score into a hard gate, but callers must validate their per-flow threshold before
-advertising ``validity.require_alignment=True``. The room-correction relay is
+advertising a hard gate of their own. The phone-relay room-correction flow is
 observation-only today and deliberately does not use this uncalibrated 0.40
 default as a fleet-wide rejection threshold.
 
@@ -29,7 +29,7 @@ refinement, mirroring the correction confidence model's staging):
 
   - The correlation is computed by **FFT** (`scipy.signal.correlate(method="fft")`,
     O(N log N)) — the repo's standard for capture-length signals (cf. the
-    FFT-based `jasper/audio_measurement/deconv.py` and its 1 GB-Pi size cap). A naive
+    FFT-based :mod:`.deconv` and its 1 GB-Pi size cap). A naive
     time-domain `np.correlate` here was O(N·M) ≈ tens of seconds per position on
     the Pi for a 10 s sweep.
   - The metric is a peak-to-second-peak **margin**, not an SNR or peak-to-RMS

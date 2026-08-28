@@ -1481,7 +1481,7 @@ def test_the_seam_returns_both_of_the_aligners_scores():
     orders of magnitude above its own presence.
     """
     from jasper.audio_measurement.program_analysis import _locate_in_window
-    from jasper.capture_relay.alignment import cross_correlation_alignment
+    from jasper.audio_measurement.alignment import cross_correlation_alignment
 
     prog = _measure_program()
     cap = _measure_room(prog)

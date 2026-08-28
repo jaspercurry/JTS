@@ -71,7 +71,7 @@ from jasper.active_speaker.crossover_v2_flow import (
 )
 from jasper.capture_relay.session import CaptureBeginDeferred, CaptureBeginRefused
 from jasper.web._common import CSRF_COOKIE_NAME
-from jasper.capture_relay.spec import MAX_CAPTURE_PLAN_ATTEMPTS
+from jasper.capture_protocol import MAX_CAPTURE_PLAN_ATTEMPTS
 from jasper.web.correction_crossover_v2 import (
     POSITION_HOLD_CODE,
     POSITION_HOLD_EXPIRED_CODE,
@@ -1697,7 +1697,7 @@ def test_a_remote_stages_link_outlives_the_stage_it_hosts():
     status poll with 404. Both stages are pinned, because stage 2 mints its own
     link across the apply boundary and would have died the same way.
     """
-    from jasper.capture_relay.session import MAX_TTL_S
+    from jasper.capture_protocol import MAX_TTL_S
     from jasper.web.correction_crossover_v2 import relay_link_ttl_s
 
     shape = resolve_plan_shape(TIER_REMOTE)
@@ -1725,7 +1725,7 @@ def test_the_biggest_plan_the_ceiling_allows_still_asks_a_grantable_link():
     day this tier silently goes back to expiring mid-walk.
     """
     from jasper.active_speaker.session_volume_plan import MAX_WALL_CLOCK_CEILING_S
-    from jasper.capture_relay.session import MAX_TTL_S
+    from jasper.capture_protocol import MAX_TTL_S
     from jasper.web.correction_crossover_v2 import relay_link_ttl_s
 
     shape = resolve_plan_shape(TIER_REMOTE)

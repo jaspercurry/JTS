@@ -770,7 +770,7 @@ def test_the_displayed_duration_estimate_matches_the_capture_pages_own():
     import re
     from pathlib import Path
 
-    from jasper.capture_relay.spec import (
+    from jasper.capture_protocol import (
         CAPTURE_PLAN_PER_CAPTURE_OVERHEAD_MS,
         CapturePlan,
         CapturePlanEntry,

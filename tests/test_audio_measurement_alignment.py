@@ -2,19 +2,19 @@
 #
 # SPDX-License-Identifier: Apache-2.0
 
-"""Tests for the alignment-confidence gate (phone-mic relay step 6, Pi side).
+"""Tests for the alignment-confidence gate.
 
-The integrity hash proves the WAV is intact; it cannot catch an
+An integrity hash proves a capture is intact; it cannot catch an
 intact-but-misaligned capture (stimulus buried in noise / absent). These tests
 prove the cross-correlation gate locates a clean stimulus confidently and fails
-loud on a weak/ambiguous one — but only when the kind requires alignment.
+loud on a weak/ambiguous one — but only when the caller requires alignment.
 """
 from __future__ import annotations
 
 import numpy as np
 import pytest
 
-from jasper.capture_relay import alignment
+from jasper.audio_measurement import alignment
 
 
 def _stimulus(rng, n=4096):

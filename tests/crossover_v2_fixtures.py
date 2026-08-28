@@ -1080,7 +1080,7 @@ def _dummy_program():
 # phone receives — not a proxy for them.
 #
 # WHAT MUST NEVER CHANGE THEM: raising the relay's transport ceiling
-# (`capture_relay.spec.MAX_CAPTURE_PLAN_ATTEMPTS`). That is the original point
+# (`capture_protocol.MAX_CAPTURE_PLAN_ATTEMPTS`). That is the original point
 # of this pin — the capacity raise from 8 to 32 had to be invisible to the
 # shipped flows, and a value-level assertion alone would not have caught a
 # serialization change that came along with it.

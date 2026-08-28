@@ -28,6 +28,9 @@ Modules:
     ``(program, capture) → ProgramAnalysis`` analysis (locate + integrity +
     clock-drift + per-driver response + GCC-PHAT alignment + candidate) for the
     session flow.
+  - :mod:`~jasper.audio_measurement.alignment` — cross-correlation location of a
+    KNOWN stimulus inside a capture, with a 0..1 confidence margin and an
+    optional fail-loud gate over it.
   - :mod:`~jasper.audio_measurement.deconv` — regularized FFT deconvolution
     (impulse-response extraction) + magnitude response.
   - :mod:`~jasper.audio_measurement.distortion` — harmonic-distortion read-out

@@ -30,6 +30,13 @@ from collections.abc import Callable, Mapping
 from dataclasses import dataclass
 from typing import Any, NamedTuple, TypeVar
 
+from jasper.active_speaker.crossover_v2.capture_source import (
+    CaptureBeginDeferred,
+    CaptureBeginRefused,
+)
+# Re-exported: the relay's TTL ceiling now lives with the shared capture
+# contract, and the relay host still reads it off this module.
+from jasper.capture_protocol import MAX_TTL_S as MAX_TTL_S
 from jasper.capture_relay.client import RelayClient, RelayError
 from jasper.capture_relay.cues import classify_failure_cue
 from jasper.capture_relay.crypto import (
@@ -54,20 +61,6 @@ logger = logging.getLogger(__name__)
 DEFAULT_TTL_S = 900
 DEFAULT_POLL_INTERVAL_S = 0.75
 DEFAULT_TIMEOUT_S = 120.0
-
-# The longest link the relay Worker grants (``MAX_TTL_S`` in
-# relay/src/worker.js, pinned in lockstep by tests/test_capture_relay_session.py).
-#
-# The Worker CLAMPS an over-large request rather than refusing it, so a caller
-# that asks for more is not an error there — it is a silent disagreement here.
-# ``open_capture`` publishes the requested ``ttl_s`` to the phone as
-# ``time_budget.session_s``, which is the number the household is told the link
-# lives for; a request the Worker quietly cut back would make that disclosure a
-# lie. So a caller sizing a TTL from its own budget clamps against this, and the
-# published number stays the granted one. It is a mirror of a separately
-# released artifact, exactly like ``LEGACY_MAX_CAPTURE_PLAN_ATTEMPTS``, not a
-# knob to tune from this side.
-MAX_TTL_S = 3600
 
 # How long the plan runner keeps polling through CONSECUTIVE transport failures
 # on ``client.status`` before it gives up and lets the failure end the session
@@ -439,47 +432,6 @@ class RelayCapacityUnavailable(ValueError):
     PR-3b is the first release that can actually reach this path (it is the
     first to emit a plan larger than ``LEGACY_MAX_CAPTURE_PLAN_ATTEMPTS``); the
     shape was chosen here rather than left to be discovered on a stale relay."""
-
-
-class CaptureBeginRefused(RuntimeError):
-    """The Pi refused a phone ``begin_capture`` request (capture plans).
-
-    Admission stays Pi-owned (SPEC W2.3): the host's injected
-    ``authorize_begin`` raises this to refuse — most importantly when
-    ``repeat_admission`` refuses the attempt budget. ``code`` is the stable
-    machine reason; ``user_message`` is the phone/operator-facing copy
-    (refusal-naming pattern, #1534). Both ride the refusal host event so the
-    phone can show why nothing started."""
-
-    def __init__(self, code: str, user_message: str = "") -> None:
-        super().__init__(user_message or code)
-        self.code = str(code)
-        self.user_message = str(user_message or code)
-
-
-class CaptureBeginDeferred(RuntimeError):
-    """A NON-terminal soft-hold on a phone's ``begin_capture`` (capture plans).
-
-    Distinct from :class:`CaptureBeginRefused` (terminal — ends the whole
-    plan): the host's injected ``authorize_begin`` raises this when the Pi
-    is not YET ready to admit this capture but the plan should stay alive —
-    e.g. a heterogeneous plan (crossover-measurement-productization-design.md
-    §5.7) parked between MEASURE and VERIFY awaiting the household's Apply
-    tap. The Pi replies with a ``capture_deferred`` host event
-    (index/attempt/code/reason) and keeps polling in the SAME
-    ``awaiting_begin`` phase, so the phone may retry the IDENTICAL
-    ``begin_capture {index, attempt}`` — the attempt budget is not spent and
-    the session does not end. ``code`` is the stable machine reason;
-    ``user_message`` is the phone-facing copy (mirrors
-    ``CaptureBeginRefused``). Because the phone retries throughout a hold,
-    the runner dedupes on the (index, code) transition: one INFO log + one
-    ``capture_deferred`` host event per state change, DEBUG for identical
-    repeats."""
-
-    def __init__(self, code: str, user_message: str = "") -> None:
-        super().__init__(user_message or code)
-        self.code = str(code)
-        self.user_message = str(user_message or code)
 
 
 @dataclass(frozen=True)
@@ -1596,7 +1548,7 @@ def run_capture_plan(
     **Per-capture entries (schema_version 2, additive — crossover-
     measurement-productization-design.md §5.7).** When
     ``session.spec.capture_plan.entries`` is set, this runner exposes the
-    active :class:`~jasper.capture_relay.spec.CapturePlanEntry` (or ``None``
+    active :class:`~jasper.capture_protocol.CapturePlanEntry` (or ``None``
     on a plan with no entry table) to ``authorize_begin`` and
     ``consume_capture`` — declare one extra positional parameter to receive
     it (existing 2-/3-arg callables are unaffected; see

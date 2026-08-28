@@ -49,7 +49,7 @@ const MAX_SPEC_BYTES = 64 * 1024;
 // `capture_index = attempt - 1`, so the valid indexes are EXACTLY
 // 0..MAX_CAPTURE_PLAN_ATTEMPTS-1 — the same value as the Pi-side plan attempt
 // cap, applied to indexes with a strict inequality. Keep in lockstep with
-// MAX_CAPTURE_PLAN_ATTEMPTS in jasper/capture_relay/spec.py (pinned by
+// MAX_CAPTURE_PLAN_ATTEMPTS in jasper/capture_protocol.py (pinned by
 // tests/test_capture_relay_spec.py), which carries the full sizing rationale.
 //
 // Raised 8 → 32 for the multi-position capture choreography: 21 worst-case

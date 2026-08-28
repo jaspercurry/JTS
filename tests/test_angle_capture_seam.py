@@ -520,7 +520,7 @@ def test_the_arc_removes_the_inverse_square_confound() -> None:
 
 
 def _relay_ceiling() -> int:
-    from jasper.capture_relay.spec import MAX_CAPTURE_PLAN_ATTEMPTS
+    from jasper.capture_protocol import MAX_CAPTURE_PLAN_ATTEMPTS
 
     return MAX_CAPTURE_PLAN_ATTEMPTS
 
