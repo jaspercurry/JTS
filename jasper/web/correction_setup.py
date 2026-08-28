@@ -7648,16 +7648,29 @@ def _make_handler(cfg: dict[str, Any]) -> type[BaseHTTPRequestHandler]:
                         succeeded, recovery = v2host.recover_session_volume(
                             _run_async, _camilla
                         )
+                        # A deferral is not a failure to recover, so it must
+                        # not send the household after CamillaDSP: a live
+                        # measurement session holds the fader and the restore
+                        # lands when that session finishes.
+                        if succeeded:
+                            next_step = (
+                                "Refresh and continue crossover commissioning."
+                            )
+                        elif recovery == v2host.RECOVERY_DEFERRED:
+                            next_step = (
+                                "A measurement session still holds the volume. "
+                                "It is restored when that session finishes."
+                            )
+                        else:
+                            next_step = (
+                                "Stop playback and retry recovery when "
+                                "CamillaDSP is available."
+                            )
                         self._send_json(
                             {
                                 "status": "recovered" if succeeded else "refused",
                                 "recovery": recovery,
-                                "next_step": (
-                                    "Refresh and continue crossover commissioning."
-                                    if succeeded
-                                    else "Stop playback and retry recovery when "
-                                    "CamillaDSP is available."
-                                ),
+                                "next_step": next_step,
                             },
                             status=(
                                 HTTPStatus.OK if succeeded else HTTPStatus.CONFLICT

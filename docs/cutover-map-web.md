@@ -138,9 +138,9 @@ unlike its twin.
 | **J** | 1013–1071 | 59 | Three conductor seams reading the durable state: `_applied_gate`, `_applied_offset_gate`, `_apply_failure_gate`. | in-file (row AK binds them) | **→W1-a** — they are reads of the record store wearing a seam. |
 | **K** | 1072–1098 | 27 | `session_volume_plan()` — the one durable-state-backed `SessionVolumePlan` this process owns, double-checked under `_volume_plan_lock`; plus its test setter. | in-file, tests | **→W5-c** |
 | **L** | 1099–1181 | 83 | Session-scoped measurement pause: `acquire`/`release` (idempotent), `session_measurement_pause_held`, test reset. Holds ONE exclusive `measurement_window` for the whole session so jasper-voice's idle reconciler cannot revert the −20 dB session volume (`:1105-1113` records the hardware finding: reverted within ~200 ms). | in-file (rows AB, AH, O) | **→W5-b** — becomes `TuningSession.open()`/`close()`. |
-| **M** | 1182–1278 | 97 | Session-scoped measurement graph: `register_session_measurement_graph` (logs, never refuses, a displacing registration), `release_session_measurement_graph`, and `_play_under_session_pause` — the abort-target dance that keeps the coordinator's isolation-loss cancel effective under a held window. | in-file (rows AB, AH, O) | **→W5-b** — `SessionGraph` seam. `MeasurementSessionGraph` already exists (`crossover_v2/session_graph.py`). |
+| **M** | — | — | `_play_under_session_pause` — the abort-target dance that keeps the coordinator's isolation-loss cancel effective under a held window. The registration pair beside it (`register_session_measurement_graph` / `release_session_measurement_graph`) is **gone** as of W5-c2. | in-file (rows AB, AH, O) | **→W5-b** done — the graph is `EngineSeams.graph` on the session (`crossover_v2/session_graph.py`). |
 | **N** | 1279–1307 | 29 | `_SESSION_VOLUME_DRAIN_TIMEOUT_S = 15.0` and `_session_volume_io` — the `(set, get)` fader-door factory, fail-closed on `CamillaUnavailable`. **5 call sites: `:1367`, `:1409`, `:1446`, `:4187` (discards `_set`), `:5397`.** | in-file | **→W5-c** — `_set` dies with its four consumers; `_get` survives for `:4187`'s read-only hold. |
-| **O** | 1308–1346 | 39 | `_release_pause_best_effort` — graph back, **then** pause released, for the three drains that run outside the runner. **Safety ordering site 1 of 3.** | in-file (rows P) | **→W5-b**, and the ordering is a preserved invariant, not a detail. See §3. |
+| **O** | — | — | `_release_pause_best_effort` — for the three drains that run outside the runner. Holds no graph since W5-c2; releases isolation only when no `SESSION_MEASUREMENT` claim is held, gated on the **owner's knowledge, never a restore outcome**. | in-file (rows P) | **→W5-b** done. The claim gate is a preserved invariant. See §3. |
 | **P** | 1347–1461 | 115 | Out-of-runner volume drains: `enforce_session_volume_ceiling_if_stale` (lazy 1800 s ceiling — W6.1 found it had zero callers so it never existed at runtime), `v2_volume_recovery_active`, `recover_session_volume`, `reconcile_session_volume_for_new_session`. | setup `:685`, `:7648`, `:7649`; in-file `:6039` | **→W5-c** |
 | **Q** | 1462–1792 | 331 | Status projection, part 1: `_phase_from_state` (102 L), `_provenance_note`, `_compact_cloud_status` (180 L). Pure read-side. 211 lines prose — 64%. | in-file (row S) | **LIFTS WHOLE** to its own module. §6 calls rows Q+R+S *"the cleanest large slice"*: no I/O beyond `load_v2_state`, no seam. |
 | **R** | 1793–1993 | 201 | Status projection, part 2: `CHART_CURVE_MAX_JSON_POINTS = 256`, `_decimate_curve_for_chart`, `_chart_cloud_status`, `_prediction_status`. | in-file (row S) | **LIFTS WHOLE**, same module as Q. |
@@ -159,7 +159,7 @@ unlike its twin.
 | **AE** | 4851–4991 | 141 | `attach_stage2_preflight` — the stage-2 openability predicate for the REVIEW screen (D3). 92 lines prose. | **xflow `:160`** | **→W5-b** |
 | **AF** | 4992–5352 | 361 | `PositionGate` (280 L, 6 methods) plus its banner and 8 constants, incl. `POSITION_READY_ENDPOINT` (`:5069`). Holds a gated session's begin until the angle reached is reported. | the class: relay `:49`, wired `:97` — **`TYPE_CHECKING` only**. But `POSITION_GATE_TERMINAL_CODES` is read at runtime by relay `:889`. tests | **OWN MODULE** — §6 calls it *"cleanest extractable class"* and the **class** is: both importers take it as a type annotation. The **row** is not quite as clean, because `POSITION_GATE_TERMINAL_CODES` is a runtime dependency of `relay:889`; move it with the class and repoint that one line. Converge `:5069` with `arm_walk.py:427` while there (§3). |
 | **AG** | 5353–5388 | 36 | `V2PreparedSession` — what the dispatch needs to host one session. | **setup `:6356`** (`.capture_source`), `:6342` (the return) | **→W5-a** |
-| **AH** | 5389–5459 | 71 | `_volume_hooks` — the in-runner drains. `_open` acquires the pause **before** the volume and releases it in a `finally` if the open did not take; `_put_the_graph_back` restores the graph **before** the pause release in both `_close` (`:5443`) and `_abandon` (`:5450`). **Safety ordering sites 2 and 3 of 3.** | in-file (rows AM, AN) | **→W5-c**, ordering preserved. See §3. |
+| **AH** | 5389–5459 | 71 | `_volume_hooks` — the in-runner drains. `_open` acquires the pause **before** the volume and releases it in a `finally` if the open did not take; `_put_the_graph_back` restores the graph **before** the pause release in both `_close` and `_abandon`. **The two safety ordering sites** — the only places the graph goes back on a teardown. | in-file (rows AM, AN) | **→W5-c**, ordering preserved. See §3. |
 | **AI** | 5460–5475 | 16 | Stage-capabilities banner — 15 of 16 lines are the essay recording that the declarations moved to `journey` in #2291 Phase 4. | — | **SUPERSEDED** — pure pointer at a completed move. Delete with row B. |
 | **AJ** | 5476–5673 | 198 | Applied-graph / rollback-anchor introspection: `_active_graph_fingerprint`, `_rollback_anchor_available`, `_applied_graph_boosts`, `_applied_profile_now`. | in-file (rows S, AP, AS, AT) | **KEEP** — apply-adjacent; lives in the surviving host beside the apply transaction. |
 | **AK** | 5674–5784 | 111 | `bind_v2_stage_seams` — builds one stage's `V2FlowSeams` and journals what it opened with. **The convergence point**: rows J, Y, AA, AB, AQ all arrive here. | in-file (rows AM, AN) | **→W5-b** — `EngineSeams` replaces `V2FlowSeams`. This is the file's single most consequential line-range for the cutover. |
@@ -285,30 +285,37 @@ condition an un-ducked swap is only safe in the absence of (the restore stopped
 ducking in wave 6d). Reverse the two statements anywhere and the failure is
 silent, intermittent, and only reproduces when music is playing.
 
-**Three sites encode it. All three must keep it.**
+**Two sites encode it now, and both must keep it** (W5-c2 removed the third).
 
-| Site | Lines | Shape | Serves |
-|---|---|---|---|
-| `_release_pause_best_effort` | `:1324-1345` | graph, then pause; each in its own `try` | the 3 out-of-runner drains |
-| `_volume_hooks._close` | `:5443-5448` | `_put_the_graph_back()` then `plan.close()`, pause released in `finally` | the runner's normal end |
-| `_volume_hooks._abandon` | `:5450-5455` | same shape | the runner's failure end |
+| Site | Shape | Serves |
+|---|---|---|
+| `_volume_hooks._close` | `_put_the_graph_back()` then `plan.close()`, pause released in `finally` | the runner's normal end |
+| `_volume_hooks._abandon` | same shape | the runner's failure end |
 
-**Five drain paths reach those three sites:** `close` and `abandon` directly;
-`enforce_session_volume_ceiling_if_stale` (`:1379`), `recover_session_volume`
-(`:1424`) and `reconcile_session_volume_for_new_session` (via the ceiling call
-at `:1443`) through `_release_pause_best_effort`.
+The graph goes back through the **session** and nowhere else — `_close`/
+`_abandon` call `TuningSession.close`, and a failed open restores through the
+session's own teardown. No out-of-runner drain touches the graph.
+
+**`_release_pause_best_effort` keeps a different rule.** The three drains that
+reach it — `enforce_session_volume_ceiling_if_stale`, `recover_session_volume`,
+`reconcile_session_volume_for_new_session` — hold no graph, so they gate the
+pause release on the **owner's** knowledge instead: isolation is freed only
+when no `SESSION_MEASUREMENT` claim is held. It is deliberately NOT gated on
+the restore outcome, because an outcome cannot tell a finished session from a
+deferral, from a drain that raised (no outcome at all), or from a coincidental
+`LANDED` when the household level already equals the measurement level.
 
 **Two subordinate rules ride with it**, and both are written into the code as
 prose that will not survive a careless rewrite:
 
 - *Never at the pause's expense.* A graph restore that fails logs **CRITICAL**
-  and the pause is released anyway (`:1330-1338`, `:5426-5429`). Stranding the
-  speaker in the measurement graph **and** at measurement volume is the worse
-  of the two failures; stranding voice paused with music gated is also
-  unacceptable. Both catch arms exist for that reason.
+  and the pause is released anyway. Stranding the speaker in the measurement
+  graph **and** at measurement volume is the worse of the two failures;
+  stranding voice paused with music gated is also unacceptable. The catch arm
+  in `_put_the_graph_back` exists for that reason.
 - *Idempotent both ways.* Every acquire/release is a safe no-op when nothing is
   held — a session that never played a routed stimulus, a crash-fresh process,
-  a second drain (`:1133`, `:1154-1157`, `:1225-1229`).
+  a second drain.
 
 **And the mirror on the way in:** `_volume_hooks._open` (`:5399-5412`) acquires
 the pause **before** setting the volume, and releases it in a `finally` when the
@@ -317,10 +324,10 @@ the idle reconciler reverting the −20 dB session volume within **~200 ms** of
 `session_volume_opened` when nothing held voice paused (`:1105-1113`). A failed
 open that strands voice paused is the symmetric bug.
 
-**Verification bar for any PR that touches these three sites:** mutate the
-order — swap the two statements at one site — and watch a named pin fail;
-restore; re-run green. A pin that stays green under its own mutation is not
-covering this.
+**Verification bar for any PR that touches these sites:** mutate — swap the
+two statements at an ordering site, or remove the claim gate in
+`_release_pause_best_effort` — and watch a named pin fail; restore; re-run
+green. A pin that stays green under its own mutation is not covering this.
 
 > `docs/REFACTOR-CUTOVER-2026-08.md` §5 records a *second*, separate ordering
 > invariant in the same neighbourhood — `SessionVolumePlan._clear_resolved`
@@ -336,18 +343,17 @@ covering this.
 | `_volume_plan` | 235 | `:1080`, `:1095` | `_volume_plan_lock` (234) |
 | `_session_pause_cm` | 1126 | `:1138`, `:1159`, `:1176` | *(none — loop-thread confinement)* |
 | `_session_abort_target` | 1127 | `:1138`, `:1159`, `:1176` | *(none)* |
-| `_session_graph` | 1191 | `:1176`, `:1202`, `:1231` | *(none)* |
 
-§6 names four; `_state_path_override` is the fifth. The three unguarded ones
-are safe only because they are entered and exited on jasper-web's **single**
-background loop thread (`jasper-correction-loop`) — that confinement *is* the
-lock. Anything that moves them to a differently-threaded owner must supply a
-real one.
+§6 names four; `_state_path_override` is the fifth. `_session_graph` was a
+sixth until W5-c2 deleted it — the measurement graph is now a field on the
+`TuningSession` that dies with the run, reachable through no module global.
+The two unguarded ones are safe only because they are entered and exited on
+jasper-web's **single** background loop thread (`jasper-correction-loop`) —
+that confinement *is* the lock. Anything that moves them to a
+differently-threaded owner must supply a real one.
 
-`reset_session_measurement_pause_for_tests` (`:1174-1179`) clears **three** of
-them in one `global` statement, including `_session_graph`, which belongs to the
-next banner section down. Move the pause without the graph and that test seam
-silently stops resetting half of what it claims to.
+`reset_session_measurement_pause_for_tests` clears **two** of them in one
+`global` statement.
 
 ### 3.3 `_run_async` — eleven bridging points, and the reap trap
 

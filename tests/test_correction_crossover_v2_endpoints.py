@@ -259,6 +259,61 @@ class _FakeVolCam:
         return self.vol
 
 
+def _live_measurement_session(
+    monkeypatch,
+    *,
+    household_db: float = -15.0,
+    measurement_db: float = -20.0,
+    ceiling_s: float = 10.0,
+):
+    """A plan holding a LIVE rank-1 claim over a real owner, as a drain finds it.
+
+    Every out-of-runner drain scenario needs the same four things standing up
+    together — a real ``VolumeOwner`` over a fake fader, a genuinely held
+    ``MeasurementVolumeClaim``, an opened plan, and that plan installed as the
+    host's — because a double that merely LOOKS held exercises the no-claim
+    door instead of the drain.
+
+    ``household_db == measurement_db`` is the same-level case: the door's
+    deferral test compares the level in effect against the level being
+    restored, so equal levels answer LANDED under a live claim rather than
+    DEFERRED.
+
+    Returns ``(plan, cam, claim, clock)``; ``clock`` is a one-element list the
+    caller advances to walk past the ceiling.
+    """
+    from jasper.active_speaker.crossover_v2.volume_claim import (
+        MeasurementVolumeClaim,
+        OwnerVolumeDoor,
+    )
+    from jasper.active_speaker.session_volume_plan import (
+        SessionVolumeOpenResult,
+        SessionVolumePlan,
+    )
+    from jasper.volume_owner import volume_owner
+
+    clock = [1000.0]
+    plan = SessionVolumePlan(
+        wall_clock_ceiling_s=ceiling_s, clock=lambda: clock[0],
+    )
+    cam = _FakeVolCam(household_db)
+    _own_the_fader(monkeypatch, cam)
+    owner = volume_owner()
+    claim = MeasurementVolumeClaim(owner)
+    opened = asyncio.run(
+        plan.open(
+            measurement_db,
+            OwnerVolumeDoor(
+                owner, read_fader=cam.get_volume_db, claim=claim,
+            ),
+        )
+    )
+    assert opened is SessionVolumeOpenResult.OPENED
+    assert cam.vol == measurement_db
+    v2host.set_volume_plan_for_tests(plan)
+    return plan, cam, claim, clock
+
+
 class VolumeRecorder:
     """Fake §5.5 volume lifecycle: records open/close/abandon order."""
 
@@ -8635,50 +8690,23 @@ def test_enforce_ceiling_drains_a_stale_active_and_is_cheap_otherwise(monkeypatc
     assert cam.vol == -15.0
 
 
-def test_a_live_claim_defers_the_ceiling_drain_and_keeps_the_pause_held(monkeypatch):
-    """W5-c2: why the out-of-runner drains cannot strand a measurement graph.
+# The household-visible conclusion the three drains share, one pin per arm:
+# **voice/mux isolation is never freed while a measurement session still owns
+# the fader.** Each arm reaches _release_pause_best_effort by a different
+# route -- an outcome that says DEFERRED, no outcome at all, and an outcome
+# that says LANDED -- which is exactly why the release cannot be gated on the
+# outcome. Freeing the pause here resumes the household programme through a
+# crossover-free, role-routed measurement graph.
 
-    An installed graph implies a HELD session claim — ``_give_back_held``
-    releases the claim in the ``finally`` around the graph restore, so the
-    claim outlives the graph in every ordering. A held claim outranks this
-    drain: the ladder defers and the host returns BEFORE
-    ``_release_pause_best_effort``, so a session still measuring through its
-    graph keeps both the graph and the isolation it measures behind. That is
-    what makes the graph the session's alone rather than something a drain has
-    to be able to reach.
 
-    The caller's gate still hears that the ceiling expired; what it does not
-    get is a drained plan or a released pause.
-    """
-    from jasper.active_speaker.crossover_v2.volume_claim import OwnerVolumeDoor
-    from jasper.active_speaker.session_volume_plan import (
-        SessionVolumeOpenResult,
-        SessionVolumePlan,
-    )
-    from jasper.volume_owner import volume_owner
-
+def test_a_live_claim_holds_the_pause_when_the_ceiling_drain_defers(monkeypatch):
+    """Arm 1: the ordinary deferral. The gate still hears the ceiling expired."""
     log: list = []
     _patch_measurement_window(monkeypatch, log)
-    clock = [1000.0]
-    plan = SessionVolumePlan(wall_clock_ceiling_s=10.0, clock=lambda: clock[0])
-    cam = _FakeVolCam(-15.0)
-    _own_the_fader(monkeypatch, cam)
-    claim = _session_claim()
+    plan, cam, _claim, clock = _live_measurement_session(monkeypatch)
+    asyncio.run(v2host.acquire_session_measurement_pause())
+    clock[0] += 3600.0
 
-    async def _open_a_live_session():
-        await v2host.acquire_session_measurement_pause()
-        return await plan.open(
-            -20.0,
-            OwnerVolumeDoor(
-                volume_owner(), read_fader=cam.get_volume_db, claim=claim,
-            ),
-        )
-
-    assert asyncio.run(_open_a_live_session()) is SessionVolumeOpenResult.OPENED
-    v2host.set_volume_plan_for_tests(plan)
-    assert cam.vol == -20.0
-
-    clock[0] = 2000.0  # the slow-but-alive positioner outlives the ceiling
     assert v2host.enforce_session_volume_ceiling_if_stale(
         _bg_run_async, lambda: cam
     ) is True, "the caller's gate must still hear that the ceiling expired"
@@ -8690,6 +8718,104 @@ def test_a_live_claim_defers_the_ceiling_drain_and_keeps_the_pause_held(monkeypa
     )
     assert log == ["enter"], "the measurement window was exited under the session"
     assert plan.needs_recovery is False, "no recovery screen for a live session"
+
+
+def test_a_raising_ceiling_drain_holds_the_pause_under_a_live_claim(monkeypatch):
+    """Arm 2: the drain RAISES, so there is no outcome to gate on at all.
+
+    ``result`` stays ``None`` — not DEFERRED — so an outcome-gated release
+    falls straight through to freeing the pause. The session is still holding
+    the fader and still measuring through its graph.
+    """
+    log: list = []
+    _patch_measurement_window(monkeypatch, log)
+    plan, cam, _claim, clock = _live_measurement_session(monkeypatch)
+    asyncio.run(v2host.acquire_session_measurement_pause())
+    clock[0] += 3600.0
+
+    def _raise(*_a, **_kw):
+        raise RuntimeError("camilla went away mid-drain")
+
+    monkeypatch.setattr(plan, "enforce_ceiling", _raise)
+
+    assert v2host.enforce_session_volume_ceiling_if_stale(
+        _bg_run_async, lambda: cam
+    ) is True
+
+    assert v2host.session_measurement_pause_held(), (
+        "a raising drain freed the isolation out from under a live session"
+    )
+    assert log == ["enter"], "the measurement window was exited under the session"
+
+
+def test_a_same_level_landed_holds_the_pause_under_a_live_claim(monkeypatch):
+    """Arm 3: the drain answers LANDED while the claim is still held.
+
+    When the household level already equals the measurement level, the door's
+    deferral test (level in effect vs level being restored) does not fire, so
+    a LIVE session reads as a completed restore. Reachable on defaults: both
+    sides sit at ``MEASUREMENT_REFERENCE_VOLUME_DB`` on a box that never ran
+    seat-SPL. No error anywhere — which is what makes an outcome-gated release
+    unsafe even on the happy path.
+    """
+    from jasper.active_speaker.session_volume_plan import (
+        MEASUREMENT_REFERENCE_VOLUME_DB,
+    )
+
+    log: list = []
+    _patch_measurement_window(monkeypatch, log)
+    plan, cam, _claim, clock = _live_measurement_session(
+        monkeypatch,
+        household_db=MEASUREMENT_REFERENCE_VOLUME_DB,
+        measurement_db=MEASUREMENT_REFERENCE_VOLUME_DB,
+    )
+    asyncio.run(v2host.acquire_session_measurement_pause())
+    clock[0] += 3600.0
+
+    assert v2host.enforce_session_volume_ceiling_if_stale(
+        _bg_run_async, lambda: cam
+    ) is True
+
+    # The LANDED branch really was taken -- the plan resolved and cleared its
+    # durable intent -- so this is not a deferral wearing a different hat.
+    assert plan.measurement_volume_db is None, (
+        "expected the LANDED branch; a deferral would leave the intent standing"
+    )
+    assert v2host.session_measurement_pause_held(), (
+        "a coincidental LANDED freed the isolation under a live session"
+    )
+    assert log == ["enter"], "the measurement window was exited under the session"
+
+
+def test_recover_on_a_deferral_reports_no_recovery(monkeypatch):
+    """Arm 3 of G2: a deferral is not a recovery, and must not be sold as one.
+
+    ``succeeded`` gates both the household's ``recovered`` banner and the
+    pause release, so counting DEFERRED as success told the household its
+    volume was restored while a live session still held the fader.
+    """
+    log: list = []
+    _patch_measurement_window(monkeypatch, log)
+    _plan, cam, _claim, _clock = _live_measurement_session(monkeypatch)
+    asyncio.run(v2host.acquire_session_measurement_pause())
+
+    succeeded, recovery = v2host.recover_session_volume(_bg_run_async, lambda: cam)
+
+    assert succeeded is False, "a deferral was reported to the household as recovered"
+    assert recovery == v2host.RECOVERY_DEFERRED
+    assert v2host.session_measurement_pause_held(), (
+        "recover freed the isolation on a restore that has not happened"
+    )
+
+
+def test_the_recovery_deferred_value_tracks_the_enum():
+    """``RECOVERY_DEFERRED`` mirrors a value this module cannot import at
+    runtime (the plan is a ``TYPE_CHECKING``-only import), so pin them equal."""
+    from jasper.active_speaker.session_volume_plan import (
+        SessionVolumeRestoreResult,
+    )
+
+    assert v2host.RECOVERY_DEFERRED == SessionVolumeRestoreResult.DEFERRED.value
 
 
 def test_v2_volume_recovery_active_tracks_needs_recovery():
@@ -13822,30 +13948,7 @@ def test_the_ceiling_defers_under_a_live_claim_and_offers_no_recovery(monkeypatc
     writes, nothing latched, and no recovery screen for a household whose
     session is simply still running.
     """
-    from jasper.active_speaker.crossover_v2.volume_claim import (
-        MeasurementVolumeClaim,
-        OwnerVolumeDoor,
-    )
-    from jasper.active_speaker.session_volume_plan import SessionVolumePlan
-    from jasper.volume_owner import volume_owner
-
-    clock = [1000.0]
-    plan = SessionVolumePlan(wall_clock_ceiling_s=10.0, clock=lambda: clock[0])
-    cam = _FakeVolCam(-15.0)
-    _own_the_fader(monkeypatch, cam)
-    owner = volume_owner()
-
-    claim = MeasurementVolumeClaim(owner)
-    asyncio.run(
-        plan.open(
-            -20.0,
-            OwnerVolumeDoor(
-                owner, read_fader=lambda: cam.get_volume_db(), claim=claim
-            ),
-        )
-    )
-    assert cam.vol == -20.0
-    v2host.set_volume_plan_for_tests(plan)
+    plan, cam, _claim, clock = _live_measurement_session(monkeypatch)
     clock[0] += 3600.0  # walked away, well past the ceiling
     writes_before = cam.vol
 

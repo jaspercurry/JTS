@@ -1340,21 +1340,56 @@ def _volume_door(
     )
 
 
+def _session_measurement_claim_held() -> bool:
+    """Does a measurement session still own the fader, in this process?
+
+    The ``VolumeOwner`` is process-global and already knows, so nothing here
+    needs a handle, a session object, or any knowledge of the graph. No owner
+    means no claim and therefore no session: releasing is correct, not a
+    fail-open, because a measurement session cannot have run without one.
+    """
+    from jasper.volume_owner import ClaimKind, volume_owner
+
+    owner = volume_owner()
+    if owner is None:
+        return False
+    return owner.holds_kind(ClaimKind.SESSION_MEASUREMENT)
+
+
 def _release_pause_best_effort(run_async: Any) -> None:
     """Release the measurement pause for a drain that runs OUTSIDE the runner
     (recover / ceiling / new-session reconcile).
 
-    **The graph is not this function's, and no longer can be.** An installed
-    measurement graph means ``TuningSession._give_back_held`` has not run, and
-    that method releases the session's fader claim in the ``finally`` around
-    the graph restore — so an installed graph implies a HELD rank-1 claim,
-    which makes ``OwnerVolumeDoor.restore_household_level_db`` answer
-    ``DEFERRED`` and stops all three drains before they reach here. The graph
-    goes back through ``TuningSession.close`` or not at all.
+    **THE contract for all three drains, stated once, here.** Voice/mux
+    isolation is freed only when no ``SESSION_MEASUREMENT`` claim is held —
+    the owner's knowledge, never a restore OUTCOME. An outcome cannot tell
+    "the session is finished with its isolation" from "deferred", "the drain
+    raised", or "landed by coincidence": a household level that happens to
+    equal the measurement level answers ``LANDED`` under a live claim (both
+    default to ``MEASUREMENT_REFERENCE_VOLUME_DB`` on a box that never ran
+    seat-SPL), and a raising drain answers nothing at all. Gating on the claim
+    makes every one of those hold the pause.
+
+    Why the claim and not the graph: the graph is the session's, and the web
+    layer having its own handle on it is the process global this wave deleted.
+    The claim is the owner's, the owner is already process-wide, and a live
+    claim is the honest proxy for "a session is still measuring".
+
+    Gating on a claim cannot strand the pause: ``TuningSession._give_back_held``
+    releases the claim in the ``finally`` around the graph restore, so even a
+    graph that will not come back still gives the claim up, and the next drain
+    frees the isolation.
 
     Idempotent: a drain that runs when nothing is held — a session that never
     opened, a crash-fresh process, a second drain — is a safe no-op.
     """
+    if _session_measurement_claim_held():
+        log_event(
+            logger,
+            "correction.crossover_v2_pause_release_withheld",
+            level=logging.INFO,
+        )
+        return
     try:
         run_async(
             release_session_measurement_pause(),
@@ -1381,9 +1416,12 @@ def enforce_session_volume_ceiling_if_stale(
     This runs on the request thread while a ``TuningSession`` may still hold
     the fader — the slow-but-alive positioner this exists for. The owner then
     RECORDS the household level behind that claim and lands it on release, so
-    the drain answers ``DEFERRED``: nothing is latched, no recovery is offered,
-    and the pause stays held because the session that owns it is still running.
-    The caller's gate still hears that the ceiling expired.
+    the drain answers ``DEFERRED``: nothing is latched and no recovery is
+    offered. The caller's gate still hears that the ceiling expired.
+
+    The measurement pause is NOT this arm's to reason about — a raising drain
+    reaches the release with no outcome at all. :func:`_release_pause_best_effort`
+    owns that contract for all three drains.
     """
     from jasper.active_speaker.session_volume_plan import (
         SessionVolumeRestoreResult,
@@ -1429,6 +1467,14 @@ def v2_volume_recovery_active() -> bool:
         return True  # fail-closed: an unreadable state still offers recovery
 
 
+#: The ``recovery`` value :func:`recover_session_volume` reports for a
+#: deferral, so its caller can say something true without importing the enum.
+#: Mirrors ``SessionVolumeRestoreResult.DEFERRED.value`` — this module keeps
+#: ``session_volume_plan`` out of its runtime import graph (the import above is
+#: ``TYPE_CHECKING``-only), and a test pins the two equal so they cannot drift.
+RECOVERY_DEFERRED = "deferred"
+
+
 def recover_session_volume(
     run_async: Any, camilla_factory: Any
 ) -> tuple[bool, str]:
@@ -1438,6 +1484,12 @@ def recover_session_volume(
     Routes to ``SessionVolumePlan.recover_unresolved`` — the v2 owner of the
     unresolved state — instead of the legacy lease, and releases any held
     measurement pause on success.
+
+    **A deferral is not a recovery.** A live session's claim outranks this
+    drain, so the household level is recorded rather than restored; telling
+    the household "recovered" would name an event that has not happened yet.
+    ``DEFERRED`` therefore reports failure here, and the caller's copy says
+    what is actually true — the restore lands when that session finishes.
     """
     from jasper.active_speaker.session_volume_plan import (
         SessionVolumeRestoreResult,
@@ -1456,7 +1508,10 @@ def recover_session_volume(
             level=logging.ERROR,
         )
         result = SessionVolumeRestoreResult.FAILED
-    succeeded = result is not SessionVolumeRestoreResult.FAILED
+    succeeded = result not in (
+        SessionVolumeRestoreResult.FAILED,
+        SessionVolumeRestoreResult.DEFERRED,
+    )
     if succeeded:
         _release_pause_best_effort(run_async)
     return succeeded, getattr(result, "value", str(result))
@@ -1480,6 +1535,8 @@ def reconcile_session_volume_for_new_session(
     household level is recorded behind that claim and lands on release, so
     nothing latches and the caller's ``needs_recovery`` gate does not send a
     household that simply opened a second session toward the recovery screen.
+    The pause is :func:`_release_pause_best_effort`'s call, not this one's:
+    this arm reaches it with no outcome whenever ``abandon`` raises.
     """
     from jasper.active_speaker.session_volume_plan import (
         SessionVolumeRestoreResult,
@@ -5770,9 +5827,10 @@ def _volume_hooks(
         the right place — but the ``finally`` below releases the measurement
         pause, and once that goes the household programme can resume. A graph
         swapped after it lands under live audio, which is exactly the condition
-        an un-ducked swap is only safe in the absence of. This arm is the ONLY
-        place the graph goes back on a teardown; the out-of-runner drains never
-        touch it (see :func:`_release_pause_best_effort`).
+        an un-ducked swap is only safe in the absence of. The graph goes back
+        through the SESSION and nowhere else — this arm's ``close``, or the
+        session's own failed-open teardown; no out-of-runner drain touches it
+        (see :func:`_release_pause_best_effort`).
 
         NEVER AT ITS COST, because a graph that will not come back must not
         stop the fader coming down: that would strand the speaker in the
@@ -5789,7 +5847,14 @@ def _volume_hooks(
             # what makes one authority out of two definitions of "where the
             # fader belongs" — the snapshot is last and wins. Called HERE and
             # not around the run, so the order this docstring promises is the
-            # order that happens.
+            # order that happens. Graph first is THIS path's order
+            # (``_give_back_held``); the failed-open teardown deliberately
+            # releases volume first, which is why no reader should take the
+            # ordering as universal.
+            #
+            # It restores here or not at all — nothing downstream will do it
+            # later, which is what makes the failure below CRITICAL rather
+            # than a retryable warning.
             await tuning.close()
         except (SessionGraphError, OSError, RuntimeError, TimeoutError, ValueError):
             log_event(

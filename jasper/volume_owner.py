@@ -256,6 +256,32 @@ class VolumeOwner:
         """Is this claim still held? False once released or never taken."""
         return self._claims.get(handle.token) == handle
 
+    def holds_kind(self, kind: ClaimKind) -> bool:
+        """Is any claim of this kind held, by anyone?
+
+        :meth:`holds` answers for a handle its caller already has;
+        this answers for a process that has no handle and must not be given
+        one. Its caller is the measurement-pause release, which needs to know
+        whether a session still owns the fader without being handed authority
+        over that session's claim.
+
+        SYNCHRONOUS and non-blocking, like the readers above it — it takes no
+        lock, because its caller cannot await one: the measurement-pause
+        release runs on the REQUEST thread and bridges into the loop only via
+        ``run_async``.
+
+        That thread is also why this snapshots and the readers above it do
+        not. They are asked from loop-thread coroutines, where nothing can
+        mutate ``_claims`` between two bytecodes; this one is asked while the
+        loop thread may be taking or releasing a claim, and iterating the live
+        mapping across that raises "dictionary changed size during iteration".
+        ``tuple()`` of the view is one atomic C-level copy, so the answer is a
+        consistent instant rather than a torn read.
+        """
+        return any(
+            claim.kind is kind for claim in tuple(self._claims.values())
+        )
+
     # ---- taking and giving back claims -----------------------------------
 
     async def acquire_level(
