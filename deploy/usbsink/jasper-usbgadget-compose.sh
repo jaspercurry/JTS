@@ -53,8 +53,6 @@ JASPER_ENV_FILE="${JASPER_USBGADGET_ENV_FILE:-/etc/jasper/jasper.env}"
 SYSTEMCTL="${JASPER_USBGADGET_SYSTEMCTL:-systemctl}"
 
 AUDIO_ALLOWED_CMD="${JASPER_USBGADGET_AUDIO_ALLOWED_CMD:-/opt/jasper/.venv/bin/jasper-local-source-allowed --source usbsink}"
-AUDIO_READY_CMD="${JASPER_USBGADGET_AUDIO_READY_CMD:-systemctl is-enabled --quiet jasper-usbsink.service}"
-AUDIO_DATA_READY_CMD="${JASPER_USBGADGET_AUDIO_DATA_READY_CMD:-/opt/jasper/.venv/bin/python -m jasper.fanin.status --usbsink-direct-armed}"
 HARDWARE_ALLOWED_CMD="${JASPER_USBGADGET_HARDWARE_ALLOWED_CMD:-/opt/jasper/.venv/bin/python -m jasper.audio_hardware.usb_port_role --require-management-transport}"
 USB_MIC_ENABLED_CMD="${JASPER_USBGADGET_USB_MIC_ENABLED_CMD:-/opt/jasper/.venv/bin/python -m jasper.usb_mic --check-intent}"
 
@@ -168,27 +166,22 @@ jasper_usbgadget_desired() {
         WANT_NETWORK=0
     fi
 
-    # Audio is on only when the canonical source guard accepts BOTH current
-    # household USB intent and role, the coordinator-derived lifecycle mirror is
-    # enabled, AND live fan-in reports the direct USB lane armed. Canonical Off
-    # dominates; derived enablement/readiness are never preference. The third
-    # gate is what makes a stale advertised endpoint self-correcting: UAC2 whose
-    # consumer is gone is not wanted, so the next converge withdraws it.
+    # Audio is on when the canonical source guard accepts current household USB
+    # intent and role. Derived state — the lifecycle mirror unit, fan-in's
+    # DIRECT consumer — is a CONSEQUENCE of that intent, disclosed by the
+    # doctor and /sources, never a precondition that can withdraw the endpoint.
+    # A composed UAC2 nobody is consuming is a silent device the household can
+    # see and reason about; a withdrawn one is an invisible failure. See
+    # ADR-0191.
     AUDIO_REASON="intent_disabled_or_parked"
     if ${AUDIO_ALLOWED_CMD} >/dev/null 2>&1; then
-        AUDIO_REASON="derived_unit_disabled"
-        if ${AUDIO_READY_CMD} >/dev/null 2>&1; then
-            AUDIO_REASON="direct_lane_unarmed"
-            if ${AUDIO_DATA_READY_CMD} >/dev/null 2>&1; then
-                WANT_AUDIO=1
-                AUDIO_REASON="enabled_direct_ready"
-            fi
-        fi
+        WANT_AUDIO=1
+        AUDIO_REASON="enabled"
     fi
 
     # The return microphone is a refinement of the existing UAC2 source, never
-    # an audio function of its own: USB Audio Input must already be authorized,
-    # armed, and ready above.
+    # an audio function of its own: USB Audio Input must already be authorized
+    # above.
     if [[ "${WANT_AUDIO}" == "1" ]] && ${USB_MIC_ENABLED_CMD} >/dev/null 2>&1; then
         WANT_USB_MIC=1
     fi

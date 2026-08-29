@@ -13,9 +13,9 @@ whose readiness marker is ``jasper-usbsink.service``). The old invariant
 "libcomposite loaded <=> usbsink active" no longer holds — libcomposite can be
 loaded for the network function alone with USB audio fully off. The checks below
 compare observed gadget/function state against the *composed intent*
-(network kill-switch + canonical audio authorization + derived lifecycle
-readiness), mirroring the truth table
-``jasper-usbgadget-up``/``jasper-usbgadget-wanted`` compute.
+(network kill-switch + canonical audio authorization), mirroring the truth table
+``jasper-usbgadget-up``/``jasper-usbgadget-wanted`` compute. Derived lifecycle
+readiness is reported, never composed on (ADR-0191).
 ``check_usbsink_low_latency_contract`` reads the actual fan-in direct-capture
 lane; the oneshot marker is lifecycle/readiness state, not data-plane liveness
 or latency evidence."""
@@ -160,11 +160,18 @@ def _network_wanted() -> bool:
 
 
 def _audio_wanted() -> tuple[bool, str]:
-    """Return canonical USB-audio authorization before lifecycle readiness.
+    """Return whether the gadget should compose UAC2, and why.
 
     Wanted when the canonical /sources intent is enabled AND local sources are
-    allowed (a bonded follower parks it). Unit enablement is derived state and
-    is checked separately where drift matters.
+    allowed (a bonded follower parks it). Derived state — the lifecycle mirror
+    unit, fan-in's DIRECT consumer — is a CONSEQUENCE of that intent, reported
+    by its own checks, never a precondition that can withdraw the endpoint
+    (ADR-0191).
+
+    Keep this in lockstep with ``deploy/usbsink/jasper-usbgadget-compose.sh``,
+    the single shell definition that ``jasper-usbgadget-{wanted,up,converge}``
+    all source.
+
     Returns ``(wanted, reason)`` so callers can distinguish intent Off,
     follower parking, invalid intent, and effective authorization."""
     try:
@@ -175,27 +182,6 @@ def _audio_wanted() -> tuple[bool, str]:
         return False, "intent_disabled"
     if _parked_as_bonded_follower():
         return False, "parked_follower"
-    return True, "enabled"
-
-
-def _audio_composition_wanted() -> tuple[bool, str]:
-    """Apply every gadget audio-readiness gate to authorization.
-
-    Keep this in lockstep with ``deploy/usbsink/jasper-usbgadget-compose.sh``,
-    the single shell definition that ``jasper-usbgadget-{wanted,up,converge}``
-    all source: advertising UAC2 is safe only after canonical authorization,
-    derived unit enablement, and a live fan-in DIRECT consumer.
-    """
-
-    allowed, reason = _audio_wanted()
-    if not allowed:
-        return False, reason
-    if _run(
-        ["systemctl", "is-enabled", "--quiet", USBSINK_UNIT]
-    ).returncode != 0:
-        return False, "derived_unit_disabled"
-    if not fanin_usbsink_lane_is_direct(read_fanin_status(timeout_sec=1.0)):
-        return False, "direct_lane_unarmed"
     return True, "enabled"
 
 @doctor_check(order=57, group="usbsink")
@@ -551,7 +537,7 @@ def check_usb_mic_export() -> CheckResult:
             "USB microphone export", "ok", "disabled; host microphone absent",
         )
 
-    audio_wanted, audio_reason = _audio_composition_wanted()
+    audio_wanted, audio_reason = _audio_wanted()
     if not audio_wanted:
         return CheckResult(
             "USB microphone export",
@@ -964,7 +950,7 @@ def check_usbgadget_composition() -> CheckResult:
         )
 
     want_network = _network_wanted()
-    want_audio, audio_reason = _audio_composition_wanted()
+    want_audio, audio_reason = _audio_wanted()
     if audio_reason.startswith("intent_invalid:"):
         return CheckResult(
             label,
@@ -976,6 +962,15 @@ def check_usbgadget_composition() -> CheckResult:
     uac2_present = _uac2_function_path().exists()
     intent = f"network={want_network} audio={want_audio} ({audio_reason})"
     observed = f"ncm.usb0={ncm_present} uac2.usb0={uac2_present}"
+    if uac2_present:
+        # Consumer state is DISCLOSED here, never a gate (ADR-0191). A composed
+        # endpoint with no fan-in DIRECT lane plays into a void, which the
+        # household can see and reason about; withdrawing the endpoint instead
+        # is the invisible failure. Informational only: an idle box legitimately
+        # reads consumed=False, so this must never become a warn.
+        observed += (
+            f" consumed={fanin_usbsink_lane_is_direct(read_fanin_status(timeout_sec=1.0))}"
+        )
 
     if not want_network and not want_audio:
         if ncm_present or uac2_present or USBSINK_GADGET_PATH.exists():
@@ -1017,5 +1012,5 @@ def check_usbgadget_composition() -> CheckResult:
     return CheckResult(
         label,
         status,
-        f"composition matches intent ({intent}){suffix}",
+        f"composition matches intent ({intent}; observed {observed}){suffix}",
     )

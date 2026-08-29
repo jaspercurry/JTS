@@ -149,15 +149,14 @@ Audio Input off/parked/unready the microphone preference stays saved but
 `jasper-local-source-allowed` `ExecCondition`, because the network function must
 keep serving even when USB Audio is Off or this speaker is a parked multiroom
 follower. Both scripts call the same source-aware
-`jasper-local-source-allowed --source usbsink` check, then require
-`jasper-usbsink.service` to be enabled as the derived readiness mirror **and**
-fan-in STATUS to report the direct USB lane armed. Canonical Off or follower
-parking always wins over stale enablement; desired-On with a disabled mirror or
-unarmed data plane produces NCM-only composition instead of advertising UAC2
-without its consumer. The mirrors are never treated as household intent. At boot
-the gadget orders after and wants `jasper-fanin.service`, so a previously
-converged USB-On box can prove the lane before composition; if it cannot, the
-coordinator later performs the normal arm-then-recompose transition.
+`jasper-local-source-allowed --source usbsink` check, and that is the whole
+audio gate. Canonical Off or follower parking always wins. Derived state —
+`jasper-usbsink.service` enablement, fan-in's DIRECT lane — is a **consequence**
+of intent, disclosed by `check_usbgadget_composition` as `consumed=<bool>`,
+never a precondition that can withdraw the endpoint (ADR-0191). Desired-On with
+a disabled mirror or an unarmed data plane still composes UAC2: the host gets a
+device that plays into a void, which is visible and diagnosable, rather than no
+device at all, which is not.
 
 ### Edge cases the truth table preserves
 
@@ -376,10 +375,11 @@ appendix; `/state` and doctor show desired vs observed address plus
 `enable_usbgadget` (`deploy/lib/install/systemd-units.sh`) expresses **no
 composition intent of its own**: it enables the units and runs
 `jasper-usbgadget-converge`, which compares the live ConfigFS composition
-against the shared truth table and rebinds only on a real difference. A stale
-UAC2 endpoint left by an old release has no armed DIRECT lane, so the truth
-table already says audio=0 and the converge withdraws it; a converged endpoint
-that still has its consumer is left alone. The installer no longer parks the
+against the shared truth table and rebinds only on a real difference. A UAC2
+endpoint whose consumer has gone away is **no longer withdrawn**: the truth
+table has no readiness gate left to turn it into audio=0 (ADR-0191). It
+persists until canonical intent changes, and `check_usbgadget_composition`
+discloses `consumed=False` in the meantime. The installer no longer parks the
 derived USB-audio unit first — that park was itself a false composition intent,
 flipped Off here and back On by the coordinator seconds later, which is the
 deploy-time double bind that wedged the dwc2 ISO data path (#3194).
