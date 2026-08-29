@@ -1469,6 +1469,34 @@ MEASURE_KINDS = (
     MEASURE_KIND_VERIFY,
 )
 
+#: ``kind`` on the speaker's own per-take record, stamped by
+#: `record_store.BankedRecordStore.bank` as it envelopes the take. Records that
+#: do not carry it are not a take reader's input, whatever else is in the
+#: directory.
+#:
+#: Here rather than in `position_cycle` for `MEASURE_KIND_KEY`'s reason below,
+#: which is the same reason: `record_store` writes it and `record_index` reads
+#: it, so an owner either of them had to import from the other would put a
+#: cycle in the package graph to hold one string.
+POSITION_EVIDENCE_KIND = "jts_crossover_v2_position_evidence"
+
+#: Where `bank` publishes one JSON record per accepted take, RELATIVE to the
+#: evidence store's artifacts root — the half that is the store's own namespace
+#: rather than any reader's own prefix onto it. `position_cycle` composes its
+#: untarred-bundle prefix onto this and `record_index` rescans the same files
+#: from inside the bundle, so the shared segments are spelled once.
+#:
+#: A record does not land at the relative path its writer passes:
+#: `publish_json_artifact` runs it through `_artifact_path`, which prefixes
+#: `{EVIDENCE_ROOT}/artifacts/`. Getting that wrong is not a loud failure — the
+#: glob simply matches nothing and a reader reports a walk that was never
+#: refused — which is what
+#: `test_the_glob_matches_a_record_the_REAL_store_wrote` exists for: it
+#: publishes through the real store and derives from the result, so the
+#: segments still written as literals here are pinned to the actual writer
+#: rather than to a second reading of it.
+BANKED_TAKE_GLOB = "crossover_v2/*/positions/*.json"
+
 #: The key a banked file carries its MEASUREMENT kind under. A record's own
 #: `kind` is its ARTIFACT kind — `position_cycle`'s readers accept a file only
 #: when that says `POSITION_EVIDENCE_KIND`, while `PriorBank.read` selects by

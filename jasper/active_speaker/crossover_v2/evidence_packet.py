@@ -126,7 +126,7 @@ from __future__ import annotations
 import json
 import math
 import statistics
-from collections.abc import Iterable, Mapping, Sequence
+from collections.abc import Callable, Iterable, Mapping, Sequence
 from pathlib import Path
 from typing import Any
 
@@ -143,7 +143,9 @@ from jasper.audio_measurement.evidence_identity import (
 # It is a plain float in a stdlib-only module, so this costs no cycle.
 from jasper.audio_measurement.null_walk import DEFAULT_SOUND_SPEED_M_S
 
+from ..commissioning_evidence_store import EVIDENCE_ROOT
 from .journey import PHASE_ENTRY_BASELINE, PHASE_LATERAL
+from .record_index import bundle_measurements
 # The MODULE, not the function: ``position_cycle`` owns the accept rule, and
 # resolving it through the module on every call is what makes that ownership
 # real rather than a copy taken once at import. A gate round proved the
@@ -221,7 +223,7 @@ GENERATED_BY = (
 #: under it is the relay session id, which is NOT the bundle's own
 #: ``session_id`` — the two namespaces are distinct on disk and conflating them
 #: is how a reader ends up joining the wrong round to the wrong bundle.
-_EVIDENCE_GLOB = "evidence/v1/artifacts/crossover_v2/*"
+_EVIDENCE_GLOB = f"{EVIDENCE_ROOT}/artifacts/crossover_v2/*"
 
 #: :func:`round_artifact_dir`'s reason when no
 #: ``evidence/v1/artifacts/crossover_v2/<relay>/`` directory exists under the
@@ -1050,7 +1052,30 @@ def _angle_deg_block(rows: Sequence[Mapping[str, Any]]) -> dict[str, Any]:
     }
 
 
-def _lateral_poses_block(round_dir: Path) -> dict[str, Any]:
+def _banked_takes(
+    session_dir: Path, phase: str, read: Callable[[Path], dict[str, Any] | None],
+) -> list[dict[str, Any]]:
+    """Every banked take of one ``phase``, narrowed by its own accept rule.
+
+    Selected out of the bundle's measurement index rather than by globbing a
+    directory: the index rescans the take files on every read (see
+    :func:`~.record_index.bundle_measurements`), so it names the same set a
+    glob would and names it in the one place the store also writes.
+
+    ``read`` still OPENS each selected file and may reject it. The index
+    narrows the candidates; the record decides. The bundle holds one round —
+    :func:`round_artifact_dir` refuses a bundle carrying two — so every row is
+    this round's.
+    """
+    artifacts = session_dir / EVIDENCE_ROOT / "artifacts"
+    takes = [
+        read(artifacts / row.path)
+        for row in bundle_measurements(session_dir, phase=phase)
+    ]
+    return [take for take in takes if take is not None]
+
+
+def _lateral_poses_block(session_dir: Path) -> dict[str, Any]:
     """The signed bearings a lateral walk banked, one row per accepted take.
 
     Read from the round's own ``positions/{take_id}.json`` sidecars through
@@ -1076,15 +1101,9 @@ def _lateral_poses_block(round_dir: Path) -> dict[str, Any]:
     both on disk deliberately and an index that hid one would be a third
     opinion about which take counted.
     """
-    directory = round_dir / _POSITIONS_SUBDIR
-    takes = [
-        take
-        for take in (
-            position_cycle.read_lateral_take(path)
-            for path in sorted(directory.glob("*.json"))
-        )
-        if take is not None
-    ]
+    takes = _banked_takes(
+        session_dir, PHASE_LATERAL, position_cycle.read_lateral_take,
+    )
     if not takes:
         return {
             "available": False,
@@ -1126,7 +1145,7 @@ def _lateral_poses_block(round_dir: Path) -> dict[str, Any]:
     }
 
 
-def _entry_baseline_block(round_dir: Path) -> dict[str, Any]:
+def _entry_baseline_block(session_dir: Path) -> dict[str, Any]:
     """The round's measured "before", read from the take that banked it.
 
     The receipt already names this capture — ``n_bins``, ``n_excluded``, the
@@ -1148,15 +1167,10 @@ def _entry_baseline_block(round_dir: Path) -> dict[str, Any]:
     evidence retention failed at take time — retention is fail-soft and never
     costs the household a retake, so a missing take is not a defect here.
     """
-    directory = round_dir / _POSITIONS_SUBDIR
-    takes = [
-        take
-        for take in (
-            position_cycle.read_entry_baseline_take(path)
-            for path in sorted(directory.glob("*.json"))
-        )
-        if take is not None
-    ]
+    takes = _banked_takes(
+        session_dir, PHASE_ENTRY_BASELINE,
+        position_cycle.read_entry_baseline_take,
+    )
     if not takes:
         return {
             "available": False,
@@ -2547,8 +2561,8 @@ def build_crossover_evidence_packet(
     operator_notes = _operator_notes_block(_mapping(draft_raw), draft_reason)
     classification = _classification_block(classification_raw, classification_reason)
     harmonics = _harmonics_block(harmonics_raw, harmonics_reason)
-    lateral_poses = _lateral_poses_block(round_dir)
-    entry_baseline = _entry_baseline_block(round_dir)
+    lateral_poses = _lateral_poses_block(session_dir)
+    entry_baseline = _entry_baseline_block(session_dir)
 
     capture_snr = _capture_snr_block(dump_ring_dir, info_raw.get("session_id"))
 

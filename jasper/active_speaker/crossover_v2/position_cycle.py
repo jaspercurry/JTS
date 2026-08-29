@@ -74,7 +74,9 @@ from pathlib import Path
 from typing import Any, Mapping
 
 from ..commissioning_evidence_store import EVIDENCE_ROOT
+from .contracts import BANKED_TAKE_GLOB, POSITION_EVIDENCE_KIND
 from .journey import PHASE_ENTRY_BASELINE, PHASE_LATERAL
+from .record_index import bundle_measurements
 
 #: The index's own name, so a reader that finds this document anywhere knows
 #: what it is holding without knowing which tool wrote it.
@@ -84,38 +86,17 @@ SCHEMA_VERSION = 1
 #: The file a round banks it as, inside the round directory.
 POSITION_CYCLE_FILENAME = "position_cycle.json"
 
-#: Where ``bank-crossover-round.sh`` untars the evidence bundle, and where the
-#: web host publishes one JSON record per accepted take inside it. Stated as a
-#: glob because both the session id and the relay session id are minted at run
-#: time.
-#:
-#: **The store's namespace is imported, never respelled.** A record does not land
-#: at the relative path its writer passes: ``publish_json_artifact`` runs it
-#: through ``_artifact_path``, which prefixes
-#: ``{EVIDENCE_ROOT}/artifacts/`` — so the writer's
-#: ``crossover_v2/{relay}/positions/{take_id}.json`` becomes
-#: ``evidence/v1/artifacts/crossover_v2/…`` inside the bundle. Getting that
-#: wrong is not a loud failure: the glob simply matches nothing and this module
-#: reports a walk that was never refused. It is what
-#: ``test_the_glob_matches_a_record_the_REAL_store_wrote`` exists for — that test
-#: publishes through the real store and derives from the result, so the segments
-#: still written as literals here are pinned to the actual writer rather than to
-#: a second reading of it.
-#: The take glob RELATIVE to the artifacts root — the half that is the store's
-#: own namespace rather than this module's untarred-bundle prefix.
-#: :mod:`.record_index` rescans the same files from inside the bundle, so the
-#: shared segments are spelled once here and composed by both.
-BANKED_TAKE_GLOB = "crossover_v2/*/positions/*.json"
+#: Where ``bank-crossover-round.sh`` untars each bundle inside the round
+#: directory. This is what :func:`_banked_take_records` walks; the takes
+#: THEMSELVES are selected out of each bundle's measurement index, which
+#: rescans :data:`BANKED_TAKE_GLOB` from the same tree.
+_BANKED_BUNDLE_GLOB = "bundle/*"
 
+#: Where a take lives, spelled whole for the refusal that names it. Composed,
+#: never a second literal.
 _BANKED_POSITIONS_GLOB = (
-    f"bundle/*/{EVIDENCE_ROOT}/artifacts/{BANKED_TAKE_GLOB}"
+    f"{_BANKED_BUNDLE_GLOB}/{EVIDENCE_ROOT}/artifacts/{BANKED_TAKE_GLOB}"
 )
-
-#: ``kind`` on the speaker's own per-take record, stamped by
-#: :meth:`~.record_store.BankedRecordStore.bank` as it envelopes the take.
-#: Records that do not carry it are not this document's input, whatever else
-#: is in the directory.
-POSITION_EVIDENCE_KIND = "jts_crossover_v2_position_evidence"
 
 #: What each take contributes to the index — the identity, the pose, and the
 #: verifier. Every one is a field ``lateral_pose_record`` writes; the banked
@@ -301,15 +282,27 @@ def read_entry_baseline_take(path: Path) -> dict[str, Any] | None:
 
 
 def _banked_take_records(round_dir: Path) -> tuple[list[dict[str, Any]], list[str]]:
-    """Every lateral take the bundle banked, with the directories they came from."""
+    """Every lateral take the bundle banked, with the directories they came from.
+
+    Selected through the measurement index rather than by globbing the tree:
+    one place decides what a banked take is and where it lives, and it is the
+    place the store writes. :func:`read_lateral_take` still opens every
+    selected file and applies its own accept rule, so the index narrows the
+    candidates and the record itself decides.
+    """
     records: list[dict[str, Any]] = []
     sources: set[str] = set()
-    for path in sorted(round_dir.glob(_BANKED_POSITIONS_GLOB)):
-        take = read_lateral_take(path)
-        if take is None:
-            continue
-        records.append(take)
-        sources.add(path.parent.relative_to(round_dir).as_posix())
+    for bundle in sorted(
+        path for path in round_dir.glob(_BANKED_BUNDLE_GLOB) if path.is_dir()
+    ):
+        artifacts = bundle / EVIDENCE_ROOT / "artifacts"
+        for row in bundle_measurements(bundle, phase=PHASE_LATERAL):
+            path = artifacts / row.path
+            take = read_lateral_take(path)
+            if take is None:
+                continue
+            records.append(take)
+            sources.add(path.parent.relative_to(round_dir).as_posix())
     return records, sorted(sources)
 
 
