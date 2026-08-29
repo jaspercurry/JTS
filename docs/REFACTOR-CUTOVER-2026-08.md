@@ -204,11 +204,22 @@ The VERIFY re-derivation is gone (`round_views.py:37-40`).
 `program_analysis.DriverResponse`** (`program_analysis.py:1426`), which has no
 serializer anywhere and is ~33.6 MB of ndarray for two occurrences
 (`crossover_v2_flow.py:2713`). What is banked is a 12-point/octave *sampling*.
-And the coverage is uneven: lateral banks a curve with phase, entry banks
-magnitude only (`spatial.py:1122-1124`), cloud banks **no curve at all**. Acceptance
-row 3's *"`DriverResponse` banked"* is therefore satisfied in spirit for one of
-three kinds and unsatisfied for two — **record this as an open acceptance
-question, not as done.**
+The coverage WAS uneven — lateral banked a curve with phase, entry banked
+magnitude only, cloud and the unprompted phases banked no curve at all — which
+made acceptance row 3's *"`DriverResponse` banked"* satisfied in spirit for one
+kind and unsatisfied for the rest, and it was recorded as an open acceptance
+question rather than as done.
+
+**Closed.** `spatial.analysis_curve_records` now carries the same
+`pose_curve_record` shape onto the other three builders — one `curves` key,
+one shape for all four kinds, so the reader-flip below has one thing to parse
+rather than four. CHECK banks an empty list because `_analyze_check` computes
+no transfer function at all; every other kind banks the PRIMARY responses its
+analysis produced (a MEASURE analysis's repeat occurrences stay diagnostic and
+unbanked, exactly as the walk leaves them). The 12-point/octave sampling and
+the absolute-phase caveat both stand, and nothing reads `curves` yet: this
+closes the PERSISTENCE half of ruling S3, not the resolution question and not
+the flip.
 
 ### The retention lift
 
