@@ -355,8 +355,11 @@ async def test_every_pipeline_replacement_is_bracketed_by_a_duck(
     tmp_path: Path,
 ) -> None:
     """The headroom gain can move tens of dB across a swap at an unchanged
-    volume; each mutation that REPLACES the pipeline must duck the fader
-    before it and restore after.
+    volume, so a mutation that REPLACES the pipeline and declares no step
+    must duck the fader before it and restore after.
+
+    Declaring nothing is the default for all three, and it must stay the
+    default: an unknown step is a ducked step.
 
     ``patch_config`` is deliberately absent and is pinned separately below:
     it writes one declared parameter of an already-running filter, so there is
@@ -380,15 +383,10 @@ async def test_every_pipeline_replacement_is_bracketed_by_a_duck(
 
 
 async def test_patch_config_is_serialized_but_never_ducked(tmp_path: Path) -> None:
-    """A filter-parameter patch touches the fader zero times.
+    """A filter-parameter patch touches the fader zero times by default.
 
-    Two shipped callers, both bounded. ``multiroom.runtime_balance.apply_local_trim``
-    is the per-speaker balance trim, where a 40 dB fade plus
-    ``MAIN_VOLUME_RAMP_SETTLE_S`` muted the speaker for half a second on every
-    slider nudge. ``bass_extension.bench.activation.temporary_bass_activation``
-    — reached from the shipped ``jasper-bass-extension-bench`` console script —
-    patches one limiter ``clip_limit`` and has already faded to floor and
-    proved it first, so the duck was redundant there rather than protective.
+    A patch replaces no pipeline: it writes declared parameters of filters
+    already running, so its default ``headroom_step_db`` is 0.0.
 
     The writer lock is NOT dropped with it —
     ``test_all_graph_mutations_enter_the_lowest_admission_context`` still
@@ -402,6 +400,41 @@ async def test_patch_config_is_serialized_but_never_ducked(tmp_path: Path) -> No
 
     assert fake.ops == ["query:PatchConfig"]
     assert not [op for op in fake.ops if op.startswith("vol=")]
+
+
+@pytest.mark.parametrize(
+    ("step_db", "ducks"),
+    [
+        (None, True),
+        (0.0, False),
+        (0.5, False),
+        (-0.5, False),
+        (camilla_module.GRAPH_SWAP_DUCK_THRESHOLD_DB, True),
+        (-camilla_module.GRAPH_SWAP_DUCK_THRESHOLD_DB, True),
+        (25.0, True),
+        (float("nan"), True),
+    ],
+)
+async def test_a_swap_ducks_only_when_its_declared_step_is_audible(
+    tmp_path: Path, step_db: float | None, ducks: bool,
+) -> None:
+    """The bracket is a function of the declared step, not of who is calling.
+
+    ``None`` means "I cannot say" and ducks; so does a NaN, because every
+    comparison against it is False and an unreadable number must not read as a
+    safe one. A declared step at or above the threshold ducks in EITHER
+    direction — a swap that gets suddenly quieter is a step too.
+    """
+    fake = _FakeClient()
+    cam = _controller(fake, tmp_path)
+
+    assert await cam.set_active_config_raw(
+        "---\nfilters: {}\n", headroom_step_db=step_db,
+    )
+
+    fader_ops = [op for op in fake.ops if op.startswith("vol=")]
+    assert bool(fader_ops) is ducks
+    assert "set_active_raw" in fake.ops
 
 
 async def test_graph_swap_never_touches_main_mute(tmp_path: Path) -> None:

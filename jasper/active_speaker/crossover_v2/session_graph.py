@@ -38,15 +38,11 @@ thing under test — so the caller restores before one and installs again after.
 That is what keeps the swap count at two for an all-routed walk and bounded by
 the routed/summed transitions otherwise, instead of two per stimulus.
 
-**Neither swap ducks the fader** (wave 6d). The 40 dB / ``MAIN_VOLUME_RAMP_SETTLE_S``
-bracket exists because replacing the pipeline under live household audio can
-step the graph's own gain by tens of dB at an unchanged volume. Neither
-condition holds here: the session has already claimed the fader at its declared
-measurement level and holds the measurement window, so there is no household
-programme for a step to be loud against, and the install happens once with
-nothing playing. Both swaps keep the writer lock. Every other
-``set_active_config_raw`` caller replaces the pipeline under live audio and
-still ducks.
+**Neither swap ducks the fader** (wave 6d): both declare
+``headroom_step_db=0.0``. The session has already claimed the fader at its
+declared measurement level and holds the measurement window, so there is no
+household programme for a step to be loud against, and the install happens once
+with nothing playing. Both swaps keep the writer lock.
 
 **Async, like the seam.** :class:`~.session_seams.SessionGraph` declares its
 three verbs ``async`` for the reason this implementation is: the transport
@@ -264,7 +260,7 @@ class MeasurementSessionGraph:
         async def _put_back() -> bool:
             async with self._writer_lock():
                 return await cam.set_active_config_raw(
-                    _read_text(entry), best_effort=False, duck=False,
+                    _read_text(entry), best_effort=False, headroom_step_db=0.0,
                 )
 
         took_effect, raise_message = await attempt_graph_restore(_put_back)
@@ -316,7 +312,7 @@ class MeasurementSessionGraph:
 
     async def _load(self, cam: Any, yaml_text: str) -> None:
         loaded = await cam.set_active_config_raw(
-            yaml_text, best_effort=False, duck=False,
+            yaml_text, best_effort=False, headroom_step_db=0.0,
         )
         if not loaded:
             raise SessionGraphError("the measurement graph load was not confirmed")

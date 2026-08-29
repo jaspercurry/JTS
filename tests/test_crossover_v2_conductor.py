@@ -6032,7 +6032,9 @@ def test_bind_program_playback_seams_is_the_play_transaction_and_confirms_strict
             calls.append(("get_path", best_effort))
             return str(tmp_path / "entry.yml")
 
-        async def set_active_config_raw(self, text, *, best_effort, duck=True):
+        async def set_active_config_raw(
+            self, text, *, best_effort, headroom_step_db=None,
+        ):
             calls.append(("set_raw", text, best_effort))
             self.live = text
             return True

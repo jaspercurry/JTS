@@ -1992,6 +1992,28 @@ async def audition_profile(
     )
 
 
+def _live_draft_headroom_step_db(settings: SoundSettings) -> float | None:
+    """How far a live-draft swap can move the graph's BROADBAND gain.
+
+    Per ADR-0121 the preference layer's only global attenuation is the output
+    trim — ``headroom_trim_db`` plus match-loudness compensation. Per-band
+    boosts apply at unity, and they are the change the listener is moving the
+    control to hear, so they are not a step this swap should hide.
+
+    With match-loudness OFF the trim is ``headroom_trim_db`` alone, which a
+    draft POST cannot move: settings change through the durable apply, which
+    bumps the DSP write epoch and makes the next draft stale. Consecutive
+    drafts therefore swap at identical broadband gain — the step is exactly
+    zero, and the fade is pure cost on the one page whose purpose is hearing
+    the edit.
+
+    With it ON the trim tracks the draft's own loudness compensation and this
+    path cannot see the outgoing value, so it says ``None`` and ducks as
+    before. #3308 covers closing that gap.
+    """
+    return None if settings.match_loudness else 0.0
+
+
 async def _live_draft_profile(
     profile: SoundProfile,
     *,
@@ -2108,7 +2130,11 @@ async def _live_draft_profile(
         yaml = result.yaml
 
         try:
-            await loader(yaml, best_effort=False)
+            await loader(
+                yaml,
+                best_effort=False,
+                headroom_step_db=_live_draft_headroom_step_db(settings),
+            )
         except Exception as e:  # noqa: BLE001
             _log_live_draft_unavailable(
                 reason="active_config_raw_failed",

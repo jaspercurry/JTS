@@ -63,6 +63,14 @@ MAIN_VOLUME_RAMP_SETTLE_S = 0.45
 # graph changes under something already inaudible.
 GRAPH_SWAP_DUCK_DB = 40.0
 
+# The broadband step below which a swap is not worth ducking. The bracket costs
+# `MAIN_VOLUME_RAMP_SETTLE_S` plus two 400 ms ramps, so under this it spends
+# ~0.9 s of fade to hide a level change nobody can hear. 1 dB for the reason
+# `volume_coordinator.RECONCILE_DRIFT_DB` picks the same number: below
+# human-noticeable, well above any jitter. Not imported from there — that
+# module imports this one.
+GRAPH_SWAP_DUCK_THRESHOLD_DB = 1.0
+
 _T = TypeVar("_T")
 
 # "What the fader should read right now, ignoring any duck." `VolumeCoordinator`
@@ -757,16 +765,35 @@ class CamillaController:
             raise
 
     @contextlib.asynccontextmanager
-    async def _graph_mutation(self, source: str, *, duck: bool = True):
-        """Admit one CamillaDSP graph mutation, ducked across the swap.
+    async def _graph_mutation(
+        self, source: str, *, headroom_step_db: float | None = None,
+    ):
+        """Admit one CamillaDSP graph mutation, ducked when its gain can step.
 
-        A mutation can move the graph's own gain by tens of dB while the
-        volume setting is unchanged — loudest when a boosted correction is
-        removed and the headroom attenuation it carried goes away. Ducking the
-        main fader by :data:`GRAPH_SWAP_DUCK_DB` turns that instant step into a
-        fade down and a fade back up, because CamillaDSP ramps a volume change
-        instead of applying it at once and keeps the fader as process state
-        that survives the reload.
+        A mutation can move the graph's own BROADBAND gain while the volume
+        setting is unchanged — loudest when a boosted correction is removed and
+        the headroom attenuation it carried goes away. Ducking the main fader
+        by :data:`GRAPH_SWAP_DUCK_DB` turns that instant step into a fade down
+        and a fade back up, because CamillaDSP ramps a volume change instead of
+        applying it at once and keeps the fader as process state that survives
+        the reload.
+
+        ``headroom_step_db`` is how far the caller's own arithmetic says that
+        broadband gain can move across THIS swap. ``None`` means "I cannot say"
+        and ducks. A number ducks only at or above
+        :data:`GRAPH_SWAP_DUCK_THRESHOLD_DB`, so a swap that provably cannot
+        step pays no fade.
+
+        **The step is computed from the graph being built, never read off the
+        fader.** Inferring one writer's intent from another's dB reading is the
+        defect ADR-0177 closed: a dB gap is a symptom shared by unrelated
+        causes. A caller that cannot do the arithmetic passes ``None``; it does
+        not go looking for a difference to measure.
+
+        **Per-band shaping is not a step.** A preference boost applies at unity
+        and raises only its own band (ADR-0121) — that is the change the
+        listener asked to hear, and it is not what this bracket protects
+        against.
 
         The duck deliberately rides ``main_volume`` rather than ``main_mute``:
         a mute reads to `VolumeCoordinator.maybe_reconcile_camilla` as mute
@@ -774,19 +801,8 @@ class CamillaController:
         clear the bracket mid-swap. A drop this deep reads as somebody's duck
         and is left alone. It also keeps the two existing ``main_mute``
         writers — the coordinator and the floor-tone audition — the only ones.
-
-        ``duck=False`` keeps the writer-lock serialization and drops the fader
-        bracket. Two callers take it, for two different reasons:
-
-        * :meth:`patch_config` changes ONE declared parameter of a running
-          filter rather than replacing the pipeline, so there is no new graph
-          whose headroom could step. Its safety is a property of ITS CALLERS'
-          bounded edits, not of ``PatchConfig`` itself — a patch that rewrote a
-          whole filter chain would step like any swap.
-        * the measurement session graph, through
-          :meth:`set_active_config_raw`, installs once into a session that
-          already holds the fader and the measurement window, so nothing is
-          playing for a step to be loud against.
+        That carve-out ride is why this bracket takes no ``VolumeOwner`` claim
+        like every other duck does; see #3308 for the refactor that ends it.
         """
         from jasper.dsp_apply import camilla_graph_mutation
 
@@ -794,7 +810,10 @@ class CamillaController:
             source=source,
             lock_path=self._graph_mutation_lock_path,
         ):
-            if not duck:
+            if (
+                headroom_step_db is not None
+                and abs(headroom_step_db) < GRAPH_SWAP_DUCK_THRESHOLD_DB
+            ):
                 yield
                 return
             before_db = await self.get_volume_db()
@@ -862,7 +881,7 @@ class CamillaController:
 
     async def set_active_config_raw(
         self, config: str, *, best_effort: bool = False,
-        duck: bool = True,
+        headroom_step_db: float | None = None,
     ) -> bool:
         """Upload and apply a complete YAML config without changing the
         persisted config file path.
@@ -874,13 +893,10 @@ class CamillaController:
         loader so validation, state recording, and rollback stay
         boring and inspectable.
 
-        ``duck=False`` skips the fader bracket and keeps the writer lock. The
-        measurement session graph takes it: its graph is installed ONCE into a
-        session that has already claimed the fader and paused voice, so there
-        is no household programme for a gain step to be loud against — and the
-        0.94 s of ramp the bracket cost was being paid inside a measurement
-        window with nothing playing. Every other caller replaces the pipeline
-        under live audio and keeps ducking.
+        ``headroom_step_db`` is :meth:`_graph_mutation`'s, unchanged: the
+        broadband gain this swap can move, or ``None`` when the caller cannot
+        say. The live-draft and measurement callers can; the rest pass
+        ``None`` and keep ducking.
         """
         if not isinstance(config, str) or not config.strip():
             if best_effort:
@@ -890,7 +906,8 @@ class CamillaController:
 
         try:
             async with self._graph_mutation(
-                "camilla.set_active_config_raw", duck=duck,
+                "camilla.set_active_config_raw",
+                headroom_step_db=headroom_step_db,
             ):
                 await self._call(lambda c: c.config.set_active_raw(config))
                 return True
@@ -974,6 +991,7 @@ class CamillaController:
 
     async def patch_config(
         self, patch: dict[str, Any], *, best_effort: bool = False,
+        headroom_step_db: float | None = 0.0,
     ) -> bool:
         """Apply a CamillaDSP partial-config patch to the active config.
 
@@ -984,26 +1002,12 @@ class CamillaController:
         escape hatch here prevents raw websocket command names from
         spreading through product code.
 
-        **Serialized but NOT ducked.** The swap duck exists because replacing
-        the pipeline can move the graph's own gain by tens of dB at an
-        unchanged volume — the headroom a boosted correction carried vanishes
-        with it. A patch does not replace anything: it writes declared
-        parameters of filters that are already running.
-
-        **That safety is a property of TODAY'S CALLERS, not of ``PatchConfig``.**
-        A patch that rewrote a whole filter chain would step like any swap.
-        Both shipped callers are bounded, and differently:
-
-        * ``multiroom.runtime_balance.apply_local_trim`` — the per-speaker
-          balance trim, clamped to ``TRIM_DB_MIN``…``TRIM_DB_MAX`` (−24…0 dB,
-          attenuation only). Paying a 40 dB fade and
-          ``MAIN_VOLUME_RAMP_SETTLE_S`` for it muted the speaker for half a
-          second per slider nudge.
-        * ``bass_extension.bench.activation.temporary_bass_activation``,
-          reached from the shipped ``jasper-bass-extension-bench`` console
-          script — one limiter ``clip_limit``, and it has already faded to
-          floor and proved it (``to_floor`` + ``assert_at_floor``) before it
-          patches, so the duck was redundant there rather than protective.
+        ``headroom_step_db`` defaults to ``0.0`` because a patch replaces no
+        pipeline: it writes declared parameters of filters already running.
+        **A patch that moves broadband gain must pass its own step** — the
+        default states a property of the write, not a promise about the value.
+        See #3308 for the balance trim, whose −24…0 dB range can exceed the
+        threshold and does not declare it today.
 
         The writer lock stays: a patch still mutates the running graph and must
         serialize against every other DSP writer.
@@ -1015,7 +1019,9 @@ class CamillaController:
             raise ValueError("patch must be a non-empty mapping")
 
         try:
-            async with self._graph_mutation("camilla.patch_config", duck=False):
+            async with self._graph_mutation(
+                "camilla.patch_config", headroom_step_db=headroom_step_db,
+            ):
                 await self._call(lambda c: c.query("PatchConfig", arg=patch))
                 return True
         except CamillaUnavailable as e:

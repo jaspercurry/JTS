@@ -254,6 +254,7 @@ class FakeCamilla:
         self.loaded_path: str | None = None
         self.set_calls: list[str] = []
         self.active_raw_values: list[str] = []
+        self.declared_steps: list[float | None] = []
         self.fail_set = fail_set
 
     async def get_config_file_path(self, *, best_effort: bool = False) -> str:
@@ -268,8 +269,10 @@ class FakeCamilla:
 
     async def set_active_config_raw(
         self, config: str, *, best_effort: bool = False,
+        headroom_step_db: float | None = None,
     ) -> bool:
         self.active_raw_values.append(config)
+        self.declared_steps.append(headroom_step_db)
         if self.fail_set and not best_effort:
             raise RuntimeError("live update failed")
         return True
@@ -7477,6 +7480,44 @@ async def test_live_draft_profile_updates_active_config_without_persisting(
     assert payload["preserved_room_peqs"] == 1
     assert payload["output_trim_db"] == 0
     assert not profile_path.exists()
+
+
+@pytest.mark.parametrize(
+    ("match_loudness", "expected_step_db"), [(False, 0.0), (True, None)],
+)
+async def test_live_draft_declares_its_broadband_step_so_editing_does_not_fade(
+    tmp_path: Path, monkeypatch, match_loudness: bool, expected_step_db,
+):
+    """Dragging an EQ control must not duck the speaker it is being judged on.
+
+    Per ADR-0121 the preference layer's only global attenuation is the output
+    trim. With match-loudness off that trim cannot move between two drafts, so
+    the swap declares a zero step and pays no fade. With it on the trim tracks
+    the draft and this path cannot see the outgoing value, so it declares
+    nothing and keeps ducking.
+    """
+    _configure_passive_layout_for_eq(monkeypatch, tmp_path)
+    state_path = tmp_path / "dsp_apply_state.json"
+    monkeypatch.setenv("JASPER_DSP_APPLY_STATE_PATH", str(state_path))
+    _record_dsp_epoch(state_path, "epoch-1")
+    settings_path = tmp_path / "sound_settings.json"
+    settings_path.write_text(json.dumps({"match_loudness": match_loudness}))
+    monkeypatch.setenv("JASPER_SOUND_SETTINGS_PATH", str(settings_path))
+    config_dir = tmp_path / "configs"
+    config_dir.mkdir()
+    current = config_dir / "sound_current.yml"
+    current.write_text(_room_config())
+    fake = FakeCamilla(str(current))
+
+    payload = await sound_setup._live_draft_profile(
+        SoundProfile(curve_id="harman", simple_eq=SimpleEq(bass_db=2.0)),
+        expected_dsp_write_epoch=dsp_write_epoch(),
+        config_dir=config_dir,
+        camilla_factory=lambda: fake,
+    )
+
+    assert payload["live_status"] == "live"
+    assert fake.declared_steps == [expected_step_db]
 
 
 async def test_live_draft_profile_skips_stale_epoch_without_touching_audio(

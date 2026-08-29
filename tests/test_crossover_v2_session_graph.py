@@ -35,16 +35,18 @@ class FakeCam:
         self.load_ok = load_ok
         self.load_raises = load_raises
         self.ops: list = []
-        self.ducked: list[bool] = []
+        self.declared_steps: list[float | None] = []
         self.live: str | None = None
 
     async def get_config_file_path(self, *, best_effort=False):
         self.ops.append("get_path")
         return self.entry_path
 
-    async def set_active_config_raw(self, text, *, best_effort=False, duck=True):
+    async def set_active_config_raw(
+        self, text, *, best_effort=False, headroom_step_db=None,
+    ):
         self.ops.append(("set_raw", text))
-        self.ducked.append(duck)
+        self.declared_steps.append(headroom_step_db)
         if self.load_raises is not None:
             raise self.load_raises
         if not self.load_ok:
@@ -204,17 +206,15 @@ def test_no_entry_config_refuses_before_loading_anything(tmp_path):
 
 
 def test_neither_swap_ducks_the_fader(tmp_path):
-    """Wave 6d: the measurement-swap duck goes.
+    """Wave 6d: the measurement-swap duck goes, as a declared zero step.
 
-    The 40 dB / ``MAIN_VOLUME_RAMP_SETTLE_S`` bracket exists because replacing
-    the pipeline under live household audio can step the graph's own gain by
-    tens of dB at an unchanged volume. Neither condition holds for this graph:
-    the session already claimed the fader at its declared measurement level and
+    The session already claimed the fader at its declared measurement level and
     holds the measurement window, so nothing is playing for a step to be loud
-    against — the ramp was 0.94 s per swapping stimulus spent on silence.
+    against — the ramp was 0.94 s per swapping stimulus spent on silence. Both
+    swaps say so with ``headroom_step_db=0.0`` rather than with a boolean.
 
-    Scope is the MEASUREMENT path only. ``/sound/`` and ``/correction/`` apply
-    keep their duck; ``test_camilla_controller.py`` pins that they still do.
+    Scope is the MEASUREMENT path only. ``/correction/`` apply still declares
+    nothing and still ducks; ``test_camilla_controller.py`` pins that.
     """
     cam = FakeCam(entry_path=_entry(tmp_path))
     graph = _graph(cam, tmp_path=tmp_path)
@@ -222,7 +222,7 @@ def test_neither_swap_ducks_the_fader(tmp_path):
     asyncio.run(graph.install())
     asyncio.run(graph.restore())
 
-    assert cam.ducked == [False, False]
+    assert cam.declared_steps == [0.0, 0.0]
 
 
 def test_both_swaps_ride_setconfig_and_never_repoint_the_statefile(tmp_path):
@@ -243,11 +243,13 @@ def test_both_swaps_ride_setconfig_and_never_repoint_the_statefile(tmp_path):
             return True
 
         async def set_active_config_raw(
-            self, text, *, best_effort=False, duck=True,
+            self, text, *, best_effort=False, headroom_step_db=None,
         ):
             calls.append("set_active_config_raw")
             return await super().set_active_config_raw(
-                text, best_effort=best_effort, duck=duck,
+                text,
+                best_effort=best_effort,
+                headroom_step_db=headroom_step_db,
             )
 
     cam = _RecordingCam(entry_path=_entry(tmp_path))
