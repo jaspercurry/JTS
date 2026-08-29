@@ -83,6 +83,11 @@ from jasper.active_speaker.angle_capture_spool import (
     stage_angle_request,
     withdraw_staged_angle_request,
 )
+from jasper.active_speaker.crossover_v2.contracts import (
+    DRIVER_ROLES,
+    POLARITIES,
+    POLARITY_NORMAL,
+)
 from jasper.active_speaker.crossover_v2_flow import CrossoverV2FlowError
 
 EXIT_OK = 0
@@ -147,7 +152,12 @@ def _build_request(args: argparse.Namespace) -> AngleCaptureRequest:
     stops = tuple(
         AngleStop(angle, regime) for angle in angles for regime in regimes
     )
-    return AngleCaptureRequest(stops=stops, mover=args.mover)
+    return AngleCaptureRequest(
+        stops=stops,
+        mover=args.mover,
+        polarity=args.polarity,
+        inverted_role=args.inverted_role,
+    )
 
 
 def _walk_payload(request: AngleCaptureRequest) -> dict[str, Any]:
@@ -168,6 +178,8 @@ def _walk_payload(request: AngleCaptureRequest) -> dict[str, Any]:
     return {
         "mover": request.mover,
         "externally_positioned": request.externally_positioned,
+        "polarity": request.polarity,
+        "inverted_role": request.inverted_role,
         "stops": [
             {
                 "index": stop.index,
@@ -230,6 +242,15 @@ def _print_walk(payload: dict[str, Any]) -> None:
             f"{banks['role']}{' wide' if banks['wide'] else '    '}  "
             f"advance {stop['screen']['auto_advance']}"
             + (f"  gate {gate} deg" if gate is not None else "")
+        )
+    if payload["polarity"] != POLARITY_NORMAL:
+        # Printed only when it is not the ordinary walk, and printed even when
+        # the branch is unnamed: a one-sided pair is refused when the session
+        # adopts the walk, and an operator seeing nothing here would read the
+        # staging that preceded that refusal as an ordinary success.
+        print(
+            f"  polarity: {payload['polarity']} on the design-axis MEASURE "
+            f"capture, flipping {payload['inverted_role']!r}"
         )
     announced = payload["announced_indexes"]
     print(
@@ -354,6 +375,27 @@ def _add_request_args(parser: argparse.ArgumentParser) -> None:
             "waits for a tap, and the session holds it at that bearing when it "
             "is a wired round) or arm (each stop auto-begins behind the "
             "countdown and declares the angle the position gate waits for)"
+        ),
+    )
+    parser.add_argument(
+        "--polarity",
+        default=POLARITY_NORMAL,
+        choices=sorted(POLARITIES),
+        help=(
+            "how the session's design-axis MEASURE capture rides: normal, or "
+            "inverted with --inverted-role naming the branch flipped (the "
+            "reverse-null; one act at one place, so it is not per angle). "
+            "Needs a WIRED session: only that source plays MEASURE through "
+            "the engine leg, so an inverted walk refuses any other"
+        ),
+    )
+    parser.add_argument(
+        "--inverted-role",
+        default="",
+        help=(
+            "which driver branch --polarity inverted flips, one of "
+            f"{', '.join(DRIVER_ROLES)}. Left unchecked here on purpose: the "
+            "measurement spec judges the pair when the session adopts the walk"
         ),
     )
     parser.add_argument(

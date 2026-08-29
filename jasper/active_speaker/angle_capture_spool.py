@@ -65,6 +65,7 @@ from jasper.atomic_io import atomic_write_text
 from jasper.log_event import log_event
 
 from .angle_capture import AngleCaptureRequest, AngleStop
+from .crossover_v2.contracts import POLARITY_NORMAL
 from .crossover_v2_flow import CrossoverV2FlowError
 
 logger = logging.getLogger(__name__)
@@ -253,6 +254,13 @@ def stage_angle_request(request: AngleCaptureRequest) -> Path:
         "artifact_schema_version": SPOOL_SCHEMA_VERSION,
         "kind": SPOOL_KIND,
         "mover": request.mover,
+        # Walk-level, beside ``mover``, because the reverse-null is one act at
+        # one place -- see :class:`~.angle_capture.AngleCaptureRequest`. Written
+        # unconditionally and read back with a default, so a document staged
+        # before these keys existed still reads as a normal-polarity walk and
+        # the schema version does not move.
+        "polarity": request.polarity,
+        "inverted_role": request.inverted_role,
         # Position-major and ORDERED, exactly as the request carries them: the
         # walk order is the measurement's (``both_at`` pairs regimes at one
         # angle so the microphone moves once per angle), so a set or a
@@ -275,6 +283,8 @@ def stage_angle_request(request: AngleCaptureRequest) -> Path:
         stops=len(request.stops),
         mover=request.mover,
         regimes=",".join(sorted({stop.regime for stop in request.stops})),
+        polarity=request.polarity,
+        inverted_role=request.inverted_role,
         replaced=replaced,
     )
     return path
@@ -444,6 +454,13 @@ def _validate(raw: bytes) -> AngleCaptureRequest:
     would truncate ``0.4`` to an on-axis capture the operator never asked for
     (see ``_validated_angle``). A document whose angles are not whole numbers is
     refused by the constructor, in the constructor's own words.
+
+    **The polarity pair is ADDITIVE and defaulted**, which is what keeps a
+    document staged before it existed valid at the same schema version: an
+    absent (or null) ``polarity`` is a normal-polarity walk, and an absent
+    ``inverted_role`` names no branch. Neither is checked here -- the pair is
+    judged by ``MeasureSpec`` when the host adopts the walk, in the spec's own
+    words, for the reason :class:`~.angle_capture.AngleCaptureRequest` records.
     """
     try:
         doc = json.loads(raw.decode("utf-8"))
@@ -479,7 +496,12 @@ def _validate(raw: bytes) -> AngleCaptureRequest:
         stops.append(
             AngleStop(entry.get("angle_deg"), str(entry.get("regime")))  # type: ignore[arg-type]
         )
-    return AngleCaptureRequest(stops=tuple(stops), mover=str(doc.get("mover")))
+    return AngleCaptureRequest(
+        stops=tuple(stops),
+        mover=str(doc.get("mover")),
+        polarity=str(doc.get("polarity") or POLARITY_NORMAL),
+        inverted_role=str(doc.get("inverted_role") or ""),
+    )
 
 
 def withdraw_staged_angle_request() -> bool:

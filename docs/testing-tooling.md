@@ -46,6 +46,7 @@
 | Grade a banked round shipped AND frozen to a baseline's own reference level, see every seat (including the VERIFY pose) on one comparable basis, check session-to-session repeatability, or read per-seat sign/magnitude agreement for a feature | [Round-grading comparison views](#round-grading-comparison-views) — `jasper-round-views {frozen,per-seat,repeat,agreement}` |
 | See exactly what a per-driver or summed capture walk at stated angles resolves to — pose, program, advance policy, banked shape — before anything plays | [Angle-walk door](#angle-walk-door) — `jasper-angle-capture plan` |
 | Put a stated angle walk where the next measurement session will take it, once | [Angle-walk door](#angle-walk-door) — `jasper-angle-capture stage` |
+| Ask the next session for R-1's reverse-null — the design-axis MEASURE capture with one named driver branch riding sign-flipped | [Angle-walk door](#angle-walk-door) — `jasper-angle-capture stage --polarity inverted --inverted-role <role>` |
 | Have the lab turntable arm actually WALK a live measurement session — move, settle, report the microphone in place, park | [Lab-arm walk harness](#lab-arm-walk-harness) — `jasper-arm-walk` |
 | Run one whole crossover-v2 round from the laptop — stage, walk, open, await, bank — and end with the candidate printed rather than applied | [Crossover round runner](#crossover-round-runner) — `scripts/run-crossover-round.py` |
 | Apply a measured candidate deliberately, by naming the exact fingerprint that will play | [Crossover round runner](#crossover-round-runner) — `scripts/run-crossover-round.py --apply` |
@@ -2320,6 +2321,10 @@ jasper-angle-capture plan --angles 0,7,-7,22,-22 --regime per_driver --mover hum
 # the door: same resolution, and the request is left for the next session
 jasper-angle-capture stage --angles 0,7,-7,22,-22 --regime per_driver --json
 
+# R-1's reverse-null: the same walk, with this session's design-axis MEASURE
+# capture riding the tweeter branch sign-flipped
+jasper-angle-capture stage --angles 0 --polarity inverted --inverted-role tweeter
+
 # the undo
 jasper-angle-capture withdraw
 ```
@@ -2338,6 +2343,23 @@ would silently turn a just-off-axis request into an **on-axis** capture. There
 is no second validator in the CLI or the mailbox — bounds, whole-degree-ness,
 the regime vocabulary and the mover vocabulary are all
 [`angle_capture.py`](../jasper/active_speaker/angle_capture.py)'s.
+
+**`--polarity` / `--inverted-role` are WALK-level, not per angle**, because the
+reverse-null is one act at one place: the pair names what this session's
+design-axis MEASURE capture rides, and every stop of the walk is unaffected.
+Nothing on the staging side judges the pair — its one gate is `MeasureSpec`,
+built when the session adopts the walk — so `--polarity inverted` with no
+`--inverted-role` stages cleanly and refuses the open at the next session
+(`walk_polarity_not_accepted`, carrying the spec's own sentence). A document
+staged without the pair at all is a normal-polarity walk: the keys are
+additive and the schema version did not move.
+
+**An inverted walk needs a WIRED session** (`walk_polarity_needs_wired`). The
+sign flip rides the engine's MEASURE leg, and only the wired source binds one —
+the Pi's own microphone records what the Pi plays. Every other source runs
+MEASURE on the flow leg, which has no spec and would play the ordinary graph,
+so the walk refuses rather than banking a normal capture under a record that
+says `inverted`.
 
 `stage` refuses while a measurement session already holds the speaker, read off
 the durable session-volume state — the one cross-process fact, since the
@@ -2378,14 +2400,16 @@ Read the journal, not the code, to find out what happened:
 
 | `event=correction.…` | says |
 |---|---|
-| `crossover_v2_angle_walk_taken` | stops, angles, mover, regimes, consumer |
+| `crossover_v2_angle_walk_taken` | stops, angles, mover, regimes, polarity, inverted_role, consumer |
 | `crossover_v2_angle_walk_refused` | the slug, and the arithmetic when it is a capacity refusal |
 | `crossover_v2_lateral_walk_closed` | `session_id`, `consumer`, `planned`, `captured`, `mark_return_drift_db` — fires on every lateral walk; publishes nothing else |
 
-**Six refusals.** The session opens in its ordinary shape after every one, and
-the document is consumed — except on the spool's two unreadable arms, which
-deliberately do not consume so a permissions mistake cannot destroy the evidence
-of itself. The `consumed=` field says which happened; do not assume it.
+**Eight refusals.** Every one REFUSES THE OPEN
+([ADR-0006](adr/0006-staged-walk-refuses-the-open.md)) rather than opening the
+session in its ordinary shape, and the document is consumed — except on the
+spool's two unreadable arms, which deliberately do not consume so a permissions
+mistake cannot destroy the evidence of itself. The `consumed=` field says which
+happened; do not assume it.
 
 | slug | why |
 |---|---|
@@ -2395,6 +2419,8 @@ of itself. The `consumed=` field says which happened; do not assume it.
 | `walk_over_relay_capacity` | the plan this session would emit needs more relay blob indexes than exist — reachable with a pre-apply cloud, and never for a legally staged walk on the shipped 3-capture shape |
 | `walk_lateral_group_already_planned` | the session already walks a lateral group |
 | `walk_stop_no_longer_valid` | a banked stop no longer satisfies the seam (a hand-edited angle); the detail carries the seam's own sentence |
+| `walk_polarity_not_accepted` | the walk's `(polarity, inverted_role)` pair is not one `MeasureSpec` accepts — either half alone is refused; the detail carries the spec's own sentence |
+| `walk_polarity_needs_wired` | the walk asks for a sign-flipped branch and this session's capture source is not `wired` — only wired binds the engine MEASURE leg the flip rides; the detail names the source |
 
 The spool's own slugs (`angle_request_spool_*`, `measurement_session_already_live`)
 reach the same journal line, so this table is the take's half, not the whole
