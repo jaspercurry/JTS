@@ -8,6 +8,10 @@
 > delete it — the roster and the campaign live in §5, and the procedure will
 > have been run.
 
+> **[Amended 2026-08-29]** Rows 9 and 10 merged — this brief's row-9/row-10
+> runbook is superseded by
+> [ADR-0192](adr/0192-the-campaign-is-the-validation.md); read that first.
+
 > **Chunk 3 of the tuning refactor.** Chunk 1 — waves 0–8 of
 > [`REFACTOR-TUNING-2026-08.md`](REFACTOR-TUNING-2026-08.md) §3 — built the
 > engine beside the god files. Chunk 2 —
