@@ -158,6 +158,88 @@ async def test_read_of_an_unknown_id_is_none(store):
     assert await store.read("crossover_v2/other/positions/nope_a01.json") is None
 
 
+#: What the analyze seam carries onto a banked take, with a real value each.
+#: The blocks themselves are ``correction_crossover_v2._capture_evidence_blocks``'
+#: subject; here they are three nested mappings the store has to carry
+#: whole — a shape it had never been handed before, since every other field on
+#: a take record is a scalar.
+_EVIDENCE_BLOCKS = {
+    "diagnostic": {
+        "phase": "measure", "epsilon_ppm": 1.5, "frames_received": 48000,
+    },
+    "capture_integrity": {
+        "frames": 48000, "encoded_frames": 48000, "block_gaps": 0,
+    },
+    "frame_ledger": {
+        "received_frames": 48000, "declared_frames": 48000,
+        "encoded_frames": 48000, "render_gaps": 0, "render_gap_frames": 0,
+        "lost_at": [],
+    },
+}
+
+
+@pytest.mark.parametrize("block", sorted(_EVIDENCE_BLOCKS))
+async def test_a_take_carries_its_capture_evidence_block(store, block):
+    """The additive half of the reader flip: the blocks BANK.
+
+    Since the capture-dump ring died, ``diagnostic``, ``capture_integrity``
+    and ``frame_ledger`` are computed at the analyze seam and land in no file
+    at all — the banked record is the only retention path left, so it has to
+    carry them or a round banked from here on cannot be graded on them.
+
+    Pinned at the store because the store is what a nested mapping has to
+    survive: every other field on a take record is a scalar, and canonical
+    JSON plus the envelope strip is where a whole sub-document would be
+    flattened, reordered or dropped without anything upstream noticing.
+    Round-tripped field for field, and asserted against the bytes so a reader
+    opening the file — not this store — sees the same block.
+    """
+    record = {**_take(), block: _EVIDENCE_BLOCKS[block]}
+
+    record_id = await store.bank(record)
+
+    assert await store.read(record_id) == record
+
+
+async def test_a_take_with_no_evidence_blocks_stays_exactly_as_readable(store):
+    """Additive, not required: a record from before the carry still reads.
+
+    Every take banked before this change carries none of the three, and the
+    engine's own ``_record`` still banks none — it names its capture at PLAY
+    time, before any analysis exists. Neither is a defect and neither may
+    become one, so the absence is pinned rather than left to the round-trip
+    pin's silence.
+    """
+    record_id = await store.bank(_take())
+
+    read_back = await store.read(record_id)
+
+    assert read_back is not None
+    assert not set(read_back) & set(_EVIDENCE_BLOCKS)
+
+
+async def test_a_banked_block_is_in_the_file_and_still_indexes(real_store):
+    """The two things only the REAL store can be asked about the blocks.
+
+    That they reach the bytes on disk whole — the store's canonical JSON is
+    where a nested mapping would be flattened — and that a take carrying them
+    is still a take: the measurement index reads six named columns off the
+    file, so three new top-level keys must move no row.
+    """
+    from jasper.active_speaker.crossover_v2.record_index import (
+        find_measurements,
+        index_path,
+    )
+
+    record_id = await real_store.bank({**_take(), **_EVIDENCE_BLOCKS})
+
+    banked = _banked_file(real_store, record_id)
+    for name, block in _EVIDENCE_BLOCKS.items():
+        assert banked[name] == block
+    found = find_measurements(index_path(real_store.evidence.bundle_dir))
+    assert [row.path for row in found] == [record_id]
+
+
 async def test_persist_then_read_state_round_trips(store):
     """P4: the five keys ``save`` writes come back as they were written."""
     state = {

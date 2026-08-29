@@ -2406,12 +2406,167 @@ def _setup_calibration_observation(setup: Any) -> tuple[str, str]:
     )
 
 
+class CaptureEvidenceCarry:
+    """The analyze seam's one-capture handoff of the blocks a take banks.
+
+    Same single-shot discipline, and for the same reason, as
+    :class:`~jasper.active_speaker.capture_provenance.CaptureProvenanceRecorder`
+    — read that class for why ``take`` consumes. A separate slot rather than a
+    second field on that one because the two hops answer different questions
+    and are fed by different seams: the play seam observes the graph and the
+    fader, and only the analyze seam has ever held the analysis.
+
+    ``record`` overwrites unconditionally, so nothing has to be drained first:
+    every analyze produces a block set (``diagnostic`` at minimum), so a
+    refused capture's blocks are always replaced by the next analyze rather
+    than stranded for the next accepted take to pick up.
+    """
+
+    def __init__(self) -> None:
+        self._lock = threading.Lock()
+        self._pending: Mapping[str, Any] | None = None
+
+    def record(self, blocks: Mapping[str, Any]) -> None:
+        with self._lock:
+            self._pending = blocks
+
+    def take(self) -> Mapping[str, Any] | None:
+        with self._lock:
+            pending, self._pending = self._pending, None
+        return pending
+
+
+def _bankable(value: Any) -> Any:
+    """One JSON document with unbankable floats nulled, recursively.
+
+    NOT decoration. ``CommissioningEvidenceStore`` canonicalises with
+    ``allow_nan=False``, so a single ``NaN`` anywhere in a banked record is a
+    ``MALFORMED`` refusal — and the retention seam fail-softs, which would
+    lose the WHOLE take record over one unmeasurable diagnostic. Since the
+    point of carrying these blocks is to stop losing data, an unmeasurable
+    number becomes ``null``. Same answer, same reason, as
+    ``commissioning_capture_producer._finite_json_evidence``.
+
+    **Keys are never dropped, only their values nulled**, and that is the whole
+    difference between a scrub and a lie. ``analysis_diagnostic_summary``
+    spends tri-states deliberately — ``polarity_agrees_with_sum`` is ``None``
+    for "nobody cross-checked" against an absent key for "no alignment at all",
+    and the ``frame_*`` block is "present with ``None`` terms when the
+    comparison ran but no frame could be fitted; absent only when no
+    comparison happened" — so a pass that removed empty keys would flatten
+    those two answers into one, permanently, on a write-once record.
+
+    Floats only. An unbounded JSON integer serializes exactly, so ``int`` is
+    left alone and only the type that can BE ``NaN``/``inf`` is screened —
+    through :func:`_finite`, this module's one "is that a usable number?"
+    test, rather than a second spelling of it. A non-native number (a
+    ``numpy`` scalar, an array) is NOT screened here and would cost the record
+    at the store's own ``TypeError``; no field on today's three blocks is one,
+    and :func:`_capture_evidence_blocks` names that contract.
+    """
+    if isinstance(value, float):
+        return _finite(value)
+    if isinstance(value, Mapping):
+        return {key: _bankable(item) for key, item in value.items()}
+    if isinstance(value, (list, tuple)):
+        return [_bankable(item) for item in value]
+    return value
+
+
+def _add_capture_block(
+    blocks: dict[str, Any], name: str, build: Callable[[], Any],
+) -> None:
+    """Add one evidence block, or lose that block and nothing else.
+
+    The belt the deleted ring writer carried in as many words — *"ANY failure
+    here must never affect the measurement itself"* — kept rather than dropped
+    with it. This runs inside the analyze seam, so a raise costs the CAPTURE:
+    the sweep played, the operator is standing at the mark, and a diagnostic
+    that could not be summarised would take the measurement with it.
+
+    Per block, not around all three, so a raise while summarising the analysis
+    still leaves the frame ledger banked. The caught tuple is concrete rather
+    than blind for the reason the shapes below are real: ``AttributeError`` and
+    ``TypeError`` are what a half-populated or foreign analysis produces, and
+    ``ValueError`` is what a hostile mapping produces. A genuinely unexpected
+    type still propagates to the analyze seam's own callers.
+    """
+    try:
+        blocks[name] = _bankable(build())
+    except (AttributeError, TypeError, ValueError):
+        log_event(
+            logger, "correction.crossover_v2_capture_evidence_block_failed",
+            level=logging.WARNING, block=name, exc_info=True,
+        )
+
+
+def _capture_evidence_blocks(result: Any, analysis: Any) -> dict[str, Any]:
+    """The three blocks a banked take carries about the capture it IS.
+
+    ``diagnostic`` is
+    :func:`~jasper.audio_measurement.program_analysis.analysis_diagnostic_summary`
+    — the flat numeric account that makes a banked take self-describing
+    without replaying the analysis. ``capture_integrity`` is the RECORDER's
+    own per-take counters (the wired chain's
+    ``build_capture_integrity_report``, or a relay page's equivalent), written
+    verbatim so a reader sees the counts as the recorder reported them.
+    ``frame_ledger`` is the reconciliation of those counters against the
+    frames that actually arrived — the one thing that names WHICH hop lost a
+    quantum.
+
+    **``capture_integrity`` names two different things in one record, and they
+    are not the same fact.** This block is the recorder's RAW counters, off the
+    capture result. The ``integrity_*`` fields inside ``diagnostic`` are the
+    analysis's own evaluated ``CaptureIntegrity`` verdict — computed during the
+    capture, on the signal. A reader comparing the two is comparing a report
+    against a judgement, not one number against itself.
+
+    Written only when there is something to write: an absent block is a
+    capture that reported none, never a clean take claimed on its behalf.
+
+    **NOT total, and guarded because of it.** The summary is defensive at its
+    top level but its nested reads are bare once a sub-object exists
+    (``drift.epsilon_ppm``, ``alignment.confidence``,
+    ``candidate.predicted_ripple_db``, and a ``math.isfinite`` over a pilot's
+    ``snr_db`` that raises ``TypeError`` on a non-number), and
+    ``ledger.to_dict()`` is a method call rather than a ``getattr`` default.
+    A half-populated analysis reaches every one of those. So each block is
+    built through :func:`_add_capture_block`, which trades the block for the
+    capture and never the other way round.
+
+    One hazard this does NOT cover, stated so a future analysis change knows
+    the contract: a non-native number (a ``numpy`` scalar, an array) raises
+    inside the STORE's canonical JSON, past this guard, and the retention
+    seam's fail-soft would drop the whole record. Every field on today's three
+    blocks is Python-native — the summary ``round(float(...))``s its own, the
+    ledger's are ``int``, and the page's arrive through ``json.loads`` — so
+    this is a contract to keep, not a live defect.
+    """
+    from jasper.audio_measurement import program_analysis as _pa
+
+    blocks: dict[str, Any] = {}
+    _add_capture_block(
+        blocks, "diagnostic", lambda: _pa.analysis_diagnostic_summary(analysis),
+    )
+    report = getattr(result, "capture_integrity", None)
+    if isinstance(report, Mapping) and report:
+        _add_capture_block(blocks, "capture_integrity", lambda: dict(report))
+    ledger = getattr(analysis, "frame_ledger", None)
+    if ledger is not None:
+        # A lambda and not ``ledger.to_dict``: the bound-method LOOKUP is
+        # itself an attribute read, and passing it would raise while building
+        # the argument — outside the guard that exists to catch exactly that.
+        _add_capture_block(blocks, "frame_ledger", lambda: ledger.to_dict())
+    return blocks
+
+
 def bind_production_analyze(
     *,
     resolve_calibration: Callable[[Any, Any], Any] | None = resolve_relay_calibration,
     meta: dict[str, Any] | None = None,
     provenance: CaptureProvenanceRecorder | None = None,
     carry: CaptureProvenanceRecorder | None = None,
+    evidence: CaptureEvidenceCarry | None = None,
 ) -> "AnalyzeCapture":
     """The real ``analyze`` seam: CaptureResult → ``analyze_program_capture``.
 
@@ -2446,6 +2601,14 @@ def bind_production_analyze(
     rather than re-observed: ``CaptureProvenance`` is a snapshot the play seam
     already took, so the second hop moves bytes, never readings. See
     ``bind_position_retention`` for the drain.
+
+    ``evidence`` (optional) is the analyze seam's OWN handoff to that same
+    banking seam: the ``diagnostic``/``capture_integrity``/``frame_ledger``
+    blocks, which exist nowhere else in a capture's life. This is the only
+    moment they can be taken — the analysis is rewritten inside the round and
+    the capture bytes are gone by the time anything reads the bundle — so a
+    binding without one computes them and drops them, which is the data-loss
+    window the dump ring's death opened. See :func:`_capture_evidence_blocks`.
     """
 
     def _analyze(
@@ -2549,6 +2712,11 @@ def bind_production_analyze(
             carry.take()
             if taken is not None:
                 carry.record(taken)
+        if evidence is not None:
+            # No drain-first, unlike the carry above: this block set is never
+            # empty, so a refused capture's blocks are overwritten here rather
+            # than stranded for the next accepted take to drain.
+            evidence.record(_capture_evidence_blocks(result, analysis))
         return analysis
 
     return _analyze
@@ -2688,6 +2856,7 @@ def bind_position_retention(
     run_async: Any,
     *,
     provenance: CaptureProvenanceRecorder | None = None,
+    evidence: CaptureEvidenceCarry | None = None,
 ) -> Callable[[Any, Mapping[str, Any]], str]:
     """The real ``bank_take`` seam — one WAV + one banked record per take.
 
@@ -2732,6 +2901,15 @@ def bind_position_retention(
     stimulus was emitting, carried rather than re-read, because by now the
     routing graph is restored and the fader may have moved. Unbound, a take
     simply names no provenance.
+
+    ``evidence`` (optional, keyword-only) is the analyze seam's own carry, on
+    the same terms: the ``diagnostic``/``capture_integrity``/``frame_ledger``
+    blocks, drained once and written onto the record UNCONDITIONALLY. There is
+    no marker and no opt-in — the store is the only retention path there is,
+    so a block computed at analyze and not banked here is a number that lands
+    in no file at all. Unbound, a take simply carries no blocks, and every
+    reader tolerates their absence: records banked before this change stay
+    exactly as readable as they were.
 
     Returns the store id that finds the record again, or ``""`` when nothing
     was banked — which is the whole vocabulary
@@ -2845,6 +3023,13 @@ def bind_position_retention(
                 relative_path=wav_rel,
                 payload={**record, "speaker_group_id": take_id},
             )
+        # AFTER ``register_capture``, deliberately: these blocks belong to the
+        # write-once take record, not to the bundle's own capture manifest,
+        # which is re-read on a 1 GB Pi and describes where the audio IS rather
+        # than what an analysis made of it.
+        blocks = evidence.take() if evidence is not None else None
+        if blocks:
+            record.update(blocks)
         # The store owns the envelope, the path and the discriminator. Driven
         # through ``run_async`` because the retention path is synchronous all
         # the way up from ``consume_capture`` — it runs on a relay/wired worker
@@ -5382,10 +5567,15 @@ def bind_v2_stage_seams(
     # exactly the semantics this hop needs too: a take banked with no analyze
     # behind it must name no provenance, never the previous capture's.
     banked_provenance = CaptureProvenanceRecorder()
+    # The analyze seam's own hop over the same gap, for the blocks only it
+    # holds. Bound unconditionally: with the capture-dump ring gone the banked
+    # record is the only file these numbers can land in.
+    banked_evidence = CaptureEvidenceCarry()
     return V2FlowSeams(
         play=play,
         analyze=bind_production_analyze(
             meta=refs, provenance=provenance, carry=banked_provenance,
+            evidence=banked_evidence,
         ),
         publish_check=publish_check,
         publish_candidate=publish_candidate,
@@ -5393,7 +5583,7 @@ def bind_v2_stage_seams(
         apply_failed=_apply_failure_gate,
         bank_take=bind_position_retention(
             evidence_store, relay_session_id, refs, run_async,
-            provenance=banked_provenance,
+            provenance=banked_provenance, evidence=banked_evidence,
         ),
         publish_cloud=bind_cloud_publisher(evidence_store, relay_session_id, refs),
         # #2291's round receipt. Bound on both stages rather than gated on a
