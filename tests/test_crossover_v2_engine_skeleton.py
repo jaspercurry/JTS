@@ -429,6 +429,46 @@ async def test_open_installs_the_graph_once_and_claims_the_declared_level():
     assert not session.is_open
 
 
+async def test_measure_proves_the_graph_before_every_stimulus():
+    """MS-13/S6: the idempotent install IS the health check, per stimulus.
+
+    Between two stimuli the writer lock is released and arbitrary time
+    passes, so another DSP writer may have replaced the running graph; a
+    session that proved only at open would play every later stimulus through
+    whatever is standing. One install at open, one more per stimulus.
+    Mutation: removing the per-stimulus prove leaves installs at 1 and this
+    reds alone.
+    """
+    session, parts = _session()
+
+    async with session:
+        await session.measure(MeasureSpec(
+            kind=MEASURE_KIND_CANDIDATE, positions=(0, 15),
+        ))
+
+    assert parts["graph"].installs == 1 + 2
+
+
+async def test_the_record_carries_the_fingerprint_its_own_stimulus_proved():
+    """Provenance follows the prove, not the open.
+
+    A graph swapped between open and the stimulus is re-proven (put back or
+    re-named) by the per-stimulus install, and the record must name THAT
+    answer — a record carrying open()'s fingerprint would claim evidence
+    measured through a graph the stimulus never played.
+    """
+    session, parts = _session()
+
+    async with session:
+        assert session.graph_fingerprint == "graph-abc"
+        parts["graph"].fingerprint = "graph-reproven"
+        await session.measure(MeasureSpec(kind=MEASURE_KIND_CANDIDATE))
+
+    [record] = parts["records"].banked
+    assert record["graph_fingerprint"] == "graph-reproven"
+    assert session.graph_fingerprint == "graph-reproven"
+
+
 async def test_opening_an_open_session_is_a_programming_error():
     session, _ = _session()
 

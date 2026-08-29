@@ -78,7 +78,7 @@ import os
 import secrets
 import threading
 import time
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, Awaitable, Callable, Mapping
 
@@ -335,6 +335,51 @@ def _json_safe_dbfs(values: tuple[float, ...]) -> list[float | None]:
     ]
 
 
+def mint_wired_answer(
+    recording: Any, *, device: WiredMicDevice, host: Any,
+) -> WiredCaptureAnswer:
+    """One recording as the seam's full answer — the ONE minter.
+
+    Channel selection, the zero-run scan, the 32-bit encode, the integrity
+    report in the frame ledger's wire spelling, the device identity, and the
+    household's stored calibration reference. Two callers — the plan walk's
+    consume path and the play seam's capture half — and the fields must agree
+    byte-for-byte between them, because the analyzer grades whichever path
+    delivered the take.
+
+    ``host`` is the late-bound host module (#2662): the calibration hint is
+    host policy, and resolving it at call time keeps a test double patched
+    there honored from this side of the seam.
+    """
+    channel, mono, rms_dbfs = select_capture_channel(recording)
+    zero_count, zero_runs = scan_zero_runs(mono)
+    wav, encoded_frames = encode_wav_s32(
+        mono, sample_rate_hz=recording.sample_rate_hz
+    )
+    report = build_capture_integrity_report(
+        recording,
+        encoded_frames=encoded_frames,
+        zero_run_count=zero_count,
+        zero_runs=zero_runs,
+    )
+    device_meta = {
+        "label": f"{device.model_label} ({device.card_id})",
+        "wired": True,
+        "card": device.card_id,
+        "usb_id": device.usb_id,
+        "model_key": device.model_key,
+        "pcm": device.pcm,
+        "channel_selected": channel,
+        "channel_rms_dbfs": _json_safe_dbfs(rms_dbfs),
+    }
+    return WiredCaptureAnswer(
+        wav=wav,
+        device=device_meta,
+        setup=_wired_setup_reference(host),
+        capture_integrity=report,
+    )
+
+
 def make_wired_recorder(
     device: WiredMicDevice, *, sample_rate_hz: int, max_capture_s: float,
 ) -> WiredRecorder:
@@ -369,15 +414,16 @@ class WiredStimulusCapture:
     host vocabulary; what the engine owns is the arity and the two rules the
     protocol states.
 
-    **Not the whole capture answer, and the gap is named.** The
+    **The full answer is minted and RETAINED, not only the path.** The
     :class:`~jasper.active_speaker.crossover_v2.capture_source.CaptureAnswer`
-    the plan walk mints carries three more facts — the device, the calibration
+    carries three facts beyond the audio — the device, the calibration
     reference and the integrity counters — and
     :class:`~jasper.active_speaker.crossover_v2.playback_transaction.PlaybackOutcome`
-    carries only the path. So a record banked through ``measure`` names WHERE
-    the capture is and not yet what recorded it; the walk that still runs
-    through ``consume_capture`` keeps reconciling frames and resolving
-    calibration for the takes it consumes.
+    carries only the path. So this half mints the whole answer through the one
+    minter (:func:`mint_wired_answer`), hands the transaction the path, and
+    holds the answer for its owner to drain (:meth:`take_answer`) — which is
+    how the walk's ``consume_capture`` grades the very take the engine banked,
+    instead of a second recording of a different moment.
     """
 
     device: WiredMicDevice
@@ -385,11 +431,19 @@ class WiredStimulusCapture:
     #: Test seam, and the same one the plan walk takes: ``(rate, budget_s)``
     #: to a recorder. Unbound, the real ALSA device is opened.
     recorder_factory: Callable[[int, float], Any] | None = None
+    #: The last minted answer, held for :meth:`take_answer`. A one-slot list
+    #: because the dataclass is frozen and the holder must mutate; never more
+    #: than one entry, because the play transaction is one-stimulus-at-a-time
+    #: and each mint overwrites rather than queues.
+    _pending: list[WiredCaptureAnswer] = field(default_factory=list)
 
     async def around(
         self, play: Callable[[], Awaitable[None]], *, program: Any,
     ) -> str:
-        """Roll across ``play()``, place the bytes, return the relpath."""
+        """Roll across ``play()``, mint the answer, place the bytes."""
+        # A stale answer from a take whose walk never drained it must not be
+        # served as THIS stimulus's recording.
+        self._pending.clear()
         recorder = self._recorder_for(program)
         try:
             await asyncio.to_thread(recorder.start)
@@ -414,7 +468,7 @@ class WiredStimulusCapture:
                 recorder.finish, tail_s=WIRED_POST_ROLL_S
             )
             return await asyncio.to_thread(
-                self._place, recording, str(program.phase),
+                self._mint_and_place, recording, str(program.phase),
             )
         except (WiredCaptureError, OSError, ValueError) as exc:
             # The stimulus DID play and the evidence was lost after it. Wrapped
@@ -423,6 +477,17 @@ class WiredStimulusCapture:
             raise StimulusCaptureError(
                 f"the capture could not be placed: {exc}"
             ) from exc
+
+    def take_answer(self) -> WiredCaptureAnswer | None:
+        """Drain the answer the last successful ``around`` minted.
+
+        Take-and-clear, the provenance recorder's own idiom: an answer serves
+        exactly one consume, and a walk that asks twice gets ``None`` rather
+        than the previous stimulus's audio under a new index.
+        """
+        if not self._pending:
+            return None
+        return self._pending.pop()
 
     def _recorder_for(self, program: Any) -> Any:
         """This stimulus's recorder, budgeted from the schedule itself.
@@ -443,8 +508,8 @@ class WiredStimulusCapture:
             self.device, sample_rate_hz=rate, max_capture_s=budget_s
         )
 
-    def _place(self, recording: Any, phase: str) -> str:
-        """The blocking half: pick the channel, encode, write, name the path.
+    def _mint_and_place(self, recording: Any, phase: str) -> str:
+        """The blocking half: mint the whole answer, write its bytes, name the path.
 
         The path is minted BEFORE the write and returned, which is the whole
         reason the transaction is the only party that can say it —
@@ -452,17 +517,20 @@ class WiredStimulusCapture:
         re-derive it from the take id the session mints afterwards. The
         program's phase is the group, so a capture lands beside the flow's
         other summed captures under a name that says what it was measuring.
+
+        The host module is imported at call time (#2662's late-binding rule):
+        the calibration hint inside the mint is host policy, and this module
+        must stay importable without the host.
         """
         from jasper.active_speaker.bundles import capture_artifact_relpath
+        from jasper.web import correction_crossover_v2 as host
 
-        _channel, mono, _rms_dbfs = select_capture_channel(recording)
-        wav, _encoded_frames = encode_wav_s32(
-            mono, sample_rate_hz=recording.sample_rate_hz
-        )
+        answer = mint_wired_answer(recording, device=self.device, host=host)
         relpath = capture_artifact_relpath("summed", phase, None)
         path = self.bundle_dir / relpath
         path.parent.mkdir(parents=True, exist_ok=True)
-        path.write_bytes(wav)
+        path.write_bytes(answer.wav)
+        self._pending.append(answer)
         return relpath
 
 
@@ -481,6 +549,7 @@ def build_v2_wired_run_and_consume(
     poll_interval_s: float | None = None,
     recorder_factory: Callable[[float], Any] | None = None,
     monotonic: Callable[[], float] = time.monotonic,
+    capture_stimulus: Callable[[int, int, Any], Any] | None = None,
 ) -> Callable[[Any, Any], Awaitable[Any]]:
     """The async ``run_and_consume(client, pi_session)`` for one WIRED session.
 
@@ -490,6 +559,16 @@ def build_v2_wired_run_and_consume(
     runner's host-owned error mapping, minus everything phone-shaped (host
     events, purge, TTLs). ``client`` is accepted and ignored: the shared
     hosting passes ``None`` for a local kind.
+
+    ``capture_stimulus`` is the host's ENGINE MEASURE LEG: a synchronous
+    ``(index, attempt, entry) -> CaptureAnswer | None`` that, for the indices
+    it claims, plays the stimulus through ``TuningSession.measure()`` (the
+    engine records across the play and banks its own evidence) and answers
+    with the very take it banked. ``None`` per index means "not mine", and
+    ``None`` for the parameter means no engine leg at all. Its failures arrive
+    as the same exception types the local leg raises, so the runner's error
+    arms and the persisted failure codes read identically whichever leg
+    played.
 
     The walk, per capture N (index = accepted count):
 
@@ -693,35 +772,32 @@ def build_v2_wired_run_and_consume(
                         raise _RetakeRequested from None
 
         def _mint_answer(recording: Any) -> WiredCaptureAnswer:
-            channel, mono, rms_dbfs = select_capture_channel(recording)
-            zero_count, zero_runs = scan_zero_runs(mono)
-            wav, encoded_frames = encode_wav_s32(
-                mono, sample_rate_hz=recording.sample_rate_hz
-            )
-            report = build_capture_integrity_report(
-                recording,
-                encoded_frames=encoded_frames,
-                zero_run_count=zero_count,
-                zero_runs=zero_runs,
-            )
-            device_meta = {
-                "label": f"{device.model_label} ({device.card_id})",
-                "wired": True,
-                "card": device.card_id,
-                "usb_id": device.usb_id,
-                "model_key": device.model_key,
-                "pcm": device.pcm,
-                "channel_selected": channel,
-                "channel_rms_dbfs": _json_safe_dbfs(rms_dbfs),
-            }
-            return WiredCaptureAnswer(
-                wav=wav,
-                device=device_meta,
-                setup=_wired_setup_reference(_host),
-                capture_integrity=report,
-            )
+            return mint_wired_answer(recording, device=device, host=_host)
 
-        def _capture_one(index: int, attempt: int, entry: Any) -> Mapping[str, Any]:
+        def _one_answer(index: int, attempt: int, entry: Any) -> WiredCaptureAnswer:
+            """This slot's capture, by whichever leg claims it.
+
+            The ENGINE leg first: where the host bound one and it claims this
+            index, `TuningSession.measure()` plays the stimulus through the
+            real play transaction, the shared capture half records across it,
+            and the engine banks its own record with the capture's path. The
+            answer this returns is drained from that same half, so the verdict
+            below grades the very take the engine banked. `None` from the leg
+            means "not mine" — the walk's own recorder + `on_armed` path is
+            unchanged for every such index.
+            """
+            if capture_stimulus is not None:
+                answer = capture_stimulus(index, attempt, entry)
+                if answer is not None:
+                    log_event(
+                        logger,
+                        "correction.crossover_v2_wired_capture",
+                        session_id=session_id,
+                        index=index,
+                        attempt=attempt,
+                        leg="engine",
+                    )
+                    return answer
             recorder = _make_recorder(_capture_budget_s(entry))
             recorder.start()
             played = False
@@ -762,6 +838,10 @@ def build_v2_wired_run_and_consume(
                 zero_runs=int(report.get("zero_run_count", 0)),
                 channel=int(device_meta.get("channel_selected", 0)),
             )
+            return answer
+
+        def _capture_one(index: int, attempt: int, entry: Any) -> Mapping[str, Any]:
+            answer = _one_answer(index, attempt, entry)
             try:
                 verdict = conductor.consume_capture(index, attempt, answer)
             except OSError as exc:
