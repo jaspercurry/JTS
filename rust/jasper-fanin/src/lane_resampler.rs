@@ -571,23 +571,10 @@ impl LaneResampler {
         }
     }
 
-    /// Render the shutdown tail into `out`, returning false when none is armed.
-    /// Spends the whole tail in one period and clears the remembered frame, so
-    /// every subsequent silent period is true digital zero.
-    fn render_shutdown_tail(&mut self, out: &mut [i32]) -> bool {
-        if self.shutdown_ramp_frames_remaining == 0 {
-            return false;
-        }
-        for frame in 0..self.period_frames {
-            let gain = self.shutdown_gain(frame);
-            for channel in 0..self.channels {
-                out[frame * self.channels + channel] =
-                    (self.last_frame[channel] as f64 * gain) as i32;
-            }
-        }
+    /// Retire a spent tail so every later silent period is true digital zero.
+    fn finish_shutdown_tail(&mut self) {
         self.shutdown_ramp_frames_remaining = 0;
         self.last_frame.fill(0);
-        true
     }
 
     /// Post-emit bookkeeping shared by both widths: free the ring history behind
@@ -868,14 +855,16 @@ impl LaneResampler {
 
     fn render_silence(&mut self, out: &mut [i16]) {
         if self.shutdown_ramp_frames_remaining > 0 {
-            let mut tail = vec![0i32; out.len()];
-            if self.render_shutdown_tail(&mut tail) {
-                for (slot, value) in out.iter_mut().zip(tail) {
-                    *slot = clamp_i16(value as f64);
+            for frame in 0..self.period_frames {
+                let gain = self.shutdown_gain(frame);
+                for channel in 0..self.channels {
+                    out[frame * self.channels + channel] =
+                        clamp_i16(self.last_frame[channel] as f64 * gain);
                 }
-                self.count_silence_period();
-                return;
             }
+            self.finish_shutdown_tail();
+            self.count_silence_period();
+            return;
         }
         out.fill(0);
         self.count_silence_period();
@@ -886,7 +875,15 @@ impl LaneResampler {
     /// shares the counter bump so a silent period is accounted identically no
     /// matter which width the lane renders.
     fn render_silence_wide(&mut self, out: &mut [i32]) {
-        if self.render_shutdown_tail(out) {
+        if self.shutdown_ramp_frames_remaining > 0 {
+            for frame in 0..self.period_frames {
+                let gain = self.shutdown_gain(frame);
+                for channel in 0..self.channels {
+                    out[frame * self.channels + channel] =
+                        (self.last_frame[channel] as f64 * gain) as i32;
+                }
+            }
+            self.finish_shutdown_tail();
             self.count_silence_period();
             return;
         }
