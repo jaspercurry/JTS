@@ -787,6 +787,13 @@ impl LaneResampler {
         // A fresh lock supersedes any pending tail: the startup ramp owns the
         // transition back to audio, so a stale tail must not play under it.
         self.shutdown_ramp_frames_remaining = 0;
+        // Clearing the remembered frame is NOT redundant with the line above.
+        // `plan_period` can lock here and then `unlock_for_underfill` in the
+        // SAME call — both the minimum-safe-fill and read-past-the-edge gates
+        // sit after `try_lock` — without emitting a frame in between. That
+        // unlock arms the tail; if the frame from the PREVIOUS session were
+        // still remembered, the lane would decay stale audio into a session it
+        // never played. Clearing here makes that arm a no-op.
         self.last_frame.fill(0);
         self.real_periods_since_lock = 0;
         self.controller.reset();
@@ -2237,6 +2244,44 @@ mod tests {
         assert_eq!(
             r.shutdown_ramp_frames_remaining, 0,
             "the pending tail is discarded by the new lock"
+        );
+        assert!(
+            r.last_frame.iter().any(|&s| s != 0),
+            "a locked lane remembers the frame it just emitted"
+        );
+    }
+
+    /// `try_lock` clears the remembered FRAME, not just the tail counter.
+    /// `plan_period` can lock and then `unlock_for_underfill` inside ONE call —
+    /// both post-lock gates return Silence — arming a tail before any frame is
+    /// emitted. Were the previous session's frame still remembered, that tail
+    /// would decay stale audio into a session that never played.
+    #[test]
+    fn a_fresh_lock_forgets_the_previous_sessions_frame() {
+        let mut r = build();
+        let period = PERIOD as usize;
+        let mut out = vec![0i16; period * 2];
+
+        r.push_input(&tone_at(0, deep_prefill() + period));
+        assert_eq!(r.render_period(&mut out), period);
+        assert!(
+            r.last_frame.iter().any(|&s| s != 0),
+            "session one must leave a frame that could go stale"
+        );
+
+        r.reset();
+        r.push_input(&tone_at(0, deep_prefill() + period));
+        r.try_lock();
+        assert!(
+            r.last_frame.iter().all(|&s| s == 0),
+            "a fresh lock must forget the previous session's frame"
+        );
+
+        // So an unlock before this session emits anything arms no tail.
+        r.arm_shutdown_ramp();
+        assert_eq!(
+            r.shutdown_ramp_frames_remaining, 0,
+            "nothing emitted this session, so nothing to decay"
         );
     }
 
