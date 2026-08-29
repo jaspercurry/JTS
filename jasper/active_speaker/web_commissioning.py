@@ -51,6 +51,7 @@ from jasper.active_speaker.measurement import (
     record_summed_test_artifact,
 )
 from jasper.active_speaker.profile import ActiveSpeakerPreset
+from jasper.active_speaker.restore_wait import resilient_restore
 from jasper.active_speaker.safe_playback import (
     arm_safe_playback_session,
     load_safe_playback_state,
@@ -203,16 +204,9 @@ async def attempt_graph_restore(
     return restored is True, None
 
 
-async def _resilient(
-    operation: Coroutine[Any, Any, dict[str, Any]],
-) -> dict[str, Any]:
-    """Run one restore coroutine to completion before propagating cancellation.
-
-    :func:`_await_restore_task_resilient` takes a Task, so every caller was
-    spelling its own ``create_task`` line first — a restore could be written
-    without the shield and still read as if it had one. One runner instead.
-    """
-    return await _await_restore_task_resilient(asyncio.create_task(operation))
+# Both live in ``restore_wait`` so a caller that only needs to put a graph back
+# does not import this module's commissioning stack to get there.
+_resilient = resilient_restore
 
 
 _SUMMED_TEST_ARM_REPORT: dict[str, Any] = {
@@ -1394,24 +1388,6 @@ async def _restore_applied_summed_previous_config_resilient(
             camilla_factory=camilla_factory,
         )
     )
-
-
-async def _await_restore_task_resilient(
-    restore_task: asyncio.Task[dict[str, Any]],
-) -> dict[str, Any]:
-    """Await one graph restoration before propagating caller cancellation."""
-    cancellation: asyncio.CancelledError | None = None
-    while True:
-        try:
-            result = await asyncio.shield(restore_task)
-            break
-        except asyncio.CancelledError as exc:
-            if restore_task.cancelled():
-                raise
-            cancellation = exc
-    if cancellation is not None:
-        raise cancellation
-    return result
 
 
 async def _rollback_applied_summed_measurement_config(

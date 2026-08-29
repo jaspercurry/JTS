@@ -99,12 +99,23 @@ _ENTRY_POINTS = {
     # is the plan's "uncounted 19th writer" (§3 wave 5), routed by the same
     # change that routed W18 and reachable only because it registers here.
     "jasper/cli/aec_commission.py": "main",
+    # `jasper-audition` — swaps the running graph down to the crossover-only
+    # layer and back (jasper/active_speaker/audition.py). Unlike every other
+    # row here it swaps UNDER live household audio, so it is the one that most
+    # needs the duck release to land on the real target rather than a stale
+    # entry snapshot. See ADR-0193.
+    "jasper/cli/audition.py": "main",
 }
 
 # Modules holding a call to one of `CamillaController`'s four graph mutators.
 # Frozen so that adding a swap somewhere new fails here until someone has said
 # which daemon hosts it and whether that daemon registers a target.
 _GRAPH_SWAP_MODULES = {
+    # The audition door: a runtime-only swap to a reduced DSP layer and back,
+    # hosted by `jasper-audition` (jasper/cli/audition.py, in _ENTRY_POINTS
+    # above). It never repoints the durable config path — that is what makes a
+    # restart revert it — so its mutator is `set_active_config_raw` only.
+    "jasper/active_speaker/audition.py",
     "jasper/active_speaker/commission_wiring.py",
     "jasper/active_speaker/commissioning_service.py",
     # Wave 6b: the measurement swap moved OUT of ``crossover_v2_flow.py`` and

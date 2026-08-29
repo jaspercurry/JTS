@@ -1,0 +1,253 @@
+# SPDX-FileCopyrightText: 2026 Jasper Curry
+#
+# SPDX-License-Identifier: Apache-2.0
+
+"""``jasper-audition`` — listen to this speaker at a reduced DSP layer.
+
+The operator door onto :mod:`jasper.active_speaker.audition`. Its own binary
+rather than a tenth ``jasper-active-speaker`` verb: that CLI already carries
+startup templates, path audits, re-emit and the whole commissioning ladder, and
+this is a different job — one an owner runs while music is playing.
+
+Usage::
+
+    jasper-audition start            # crossover-only, holds until you stop it
+    jasper-audition stop             # from a second shell; puts the full graph back
+    jasper-audition status           # what is playing, and until when
+
+Run it as root (``sudo``): the record lives in ``/run/jasper-active-speaker``,
+which the web units own, and the CamillaDSP socket is root-owned. A non-root
+run refuses at the write and undoes its own swap rather than half-starting.
+
+``start`` BLOCKS on purpose. The process that swaps the graph is the process
+that puts it back — at the deadline, on Ctrl-C, or on any error — so an
+abandoned SSH session ends the audition instead of stranding one. Killing it
+outright is still safe: nothing durable moved, so ``stop`` or any CamillaDSP
+restart reverts.
+
+Exit 0 when the speaker ends on its full graph; 1 on any refusal.
+"""
+
+from __future__ import annotations
+
+import argparse
+import asyncio
+import json
+import logging
+import sys
+import time
+from typing import Any
+
+from jasper.active_speaker.audition import (
+    AUDITION_LAYER_BASELINE,
+    AUDITION_LAYER_FULL,
+    AUDITION_LAYERS,
+    END_INTERRUPTED,
+    AuditionRefused,
+    hold_audition,
+    read_audition_state,
+    start_audition,
+    stop_audition,
+)
+from jasper.cli._logging import CLI_LOG_FORMAT
+from jasper.log_event import log_event
+
+logger = logging.getLogger(__name__)
+
+
+def _camilla_controller() -> Any:
+    """A CamillaController on the live websocket — the same graph the daemons see."""
+
+    from jasper.camilla import primary_controller
+
+    return primary_controller()
+
+
+def _play_cue(slug: str) -> None:
+    """Ask the running daemon to speak one cue.
+
+    Routed through ``jasper-control`` rather than played here for the reason
+    ``jasper-cues play`` gives: the daemon owns the TTS gain and routing, and a
+    standalone process gets the level wrong. Best-effort by contract — the
+    caller swallows whatever this raises.
+    """
+
+    from jasper.control import client as control
+
+    control.post("/cue/play", {"slug": slug}, timeout=35)
+
+
+def _print_status(payload: dict[str, Any]) -> None:
+    layer = payload.get("layer") or AUDITION_LAYER_FULL
+    print(f"audition: {payload.get('status')}")
+    print(f"  layer: {layer}")
+    if payload.get("deadline_at"):
+        remaining = float(payload["deadline_at"]) - time.time()
+        if remaining > 0:
+            print(f"  auto-restores in: {remaining / 60.0:.0f} min")
+        else:
+            # Past the deadline with the record still here means the owner died
+            # without restoring. Nothing will now: say so instead of counting
+            # down to a zero that never arrives.
+            print("  STALE: the owner is gone; run `jasper-audition stop`")
+    if payload.get("louder_than_full_db"):
+        print(
+            "  NOT level-matched: dropping the measured correction hands back "
+            f"up to {float(payload['louder_than_full_db']):.1f} dB where it "
+            "was cutting, so this layer plays louder in those bands"
+        )
+    if payload.get("entry_config_path"):
+        print(f"  durable graph (untouched): {payload['entry_config_path']}")
+
+
+def _cmd_start(args: argparse.Namespace) -> int:
+    cam = _camilla_controller()
+
+    async def _run() -> dict[str, Any]:
+        state = await start_audition(cam=cam, layer=args.layer, play_cue=_play_cue)
+        if state.get("status") != "auditioning":
+            return state
+        if not args.json:
+            _print_status(state)
+            print("Listening. Ctrl-C, or `jasper-audition stop`, to go back.")
+        reason = await hold_audition(state, cam=cam, play_cue=_play_cue)
+        return _ended(reason)
+
+    try:
+        payload = asyncio.run(_run())
+    except AuditionRefused as exc:
+        return _refused(exc, json_output=args.json)
+    except KeyboardInterrupt:
+        payload = _ended(END_INTERRUPTED)
+        print("", file=sys.stderr)
+    if args.json:
+        print(json.dumps(payload, indent=2, sort_keys=True, default=str))
+    else:
+        _print_status(payload)
+        if payload["layer"] != AUDITION_LAYER_FULL:
+            print(
+                "the applied graph is NOT back; run `jasper-audition stop`",
+                file=sys.stderr,
+            )
+    return 0 if payload["layer"] == AUDITION_LAYER_FULL else 1
+
+
+def _ended(reason: str) -> dict[str, Any]:
+    """What the speaker is actually on now, read rather than assumed.
+
+    ``hold_audition``'s reason alone cannot answer this: ``superseded`` covers
+    both an explicit stop (the applied graph IS back) and a takeover by a
+    second ``start`` (it is NOT). The record is the oracle for which happened,
+    and the exit code follows it.
+    """
+
+    live = read_audition_state()
+    if live is None:
+        return {"status": "restored", "layer": AUDITION_LAYER_FULL, "ended": reason}
+    return {"status": "auditioning", "ended": reason, **live}
+
+
+def _cmd_stop(args: argparse.Namespace) -> int:
+    try:
+        payload = asyncio.run(
+            stop_audition(cam=_camilla_controller(), play_cue=_play_cue)
+        )
+    except AuditionRefused as exc:
+        return _refused(exc, json_output=args.json)
+    if args.json:
+        print(json.dumps(payload, indent=2, sort_keys=True, default=str))
+    else:
+        _print_status(payload)
+    return 0
+
+
+def _cmd_status(args: argparse.Namespace) -> int:
+    state = read_audition_state()
+    payload = (
+        {"status": "auditioning", **state}
+        if state is not None
+        else {"status": "not_auditioning", "layer": AUDITION_LAYER_FULL}
+    )
+    if args.json:
+        print(json.dumps(payload, indent=2, sort_keys=True, default=str))
+    else:
+        _print_status(payload)
+    return 0
+
+
+def _refused(exc: AuditionRefused, *, json_output: bool) -> int:
+    log_event(
+        logger,
+        "active_speaker.audition",
+        level=logging.WARNING,
+        action="refused",
+        reason=exc.reason,
+        detail=exc.detail,
+    )
+    if json_output:
+        print(
+            json.dumps(
+                {"status": "refused", "reason": exc.reason, "detail": exc.detail},
+                indent=2,
+                sort_keys=True,
+            )
+        )
+    else:
+        print(f"refused ({exc.reason}): {exc.detail}", file=sys.stderr)
+    return 1
+
+
+def build_parser() -> argparse.ArgumentParser:
+    parser = argparse.ArgumentParser(
+        prog="jasper-audition",
+        description="Play this speaker at a reduced DSP layer, then put it back",
+    )
+    sub = parser.add_subparsers(dest="command", required=True)
+
+    start = sub.add_parser(
+        "start",
+        help="swap to a reduced layer and hold it until you stop or time out",
+    )
+    start.add_argument(
+        "--layer",
+        choices=AUDITION_LAYERS,
+        default=AUDITION_LAYER_BASELINE,
+        help=(
+            "baseline = crossover, trims, delays and protection with the "
+            "measured driver correction removed; full = the applied graph "
+            "(asking for it is the restore)"
+        ),
+    )
+    start.add_argument("--json", action="store_true")
+    start.set_defaults(func=_cmd_start)
+
+    stop = sub.add_parser("stop", help="put the applied graph back now")
+    stop.add_argument("--json", action="store_true")
+    stop.set_defaults(func=_cmd_stop)
+
+    status = sub.add_parser("status", help="which layer is playing, and until when")
+    status.add_argument("--json", action="store_true")
+    status.set_defaults(func=_cmd_status)
+
+    return parser
+
+
+def main(argv: list[str] | None = None) -> int:
+    # INFO floor, not configure_verbose_logging's WARNING one: the audition's
+    # own event= lines are the record of which graph the speaker was on.
+    logging.basicConfig(level=logging.INFO, format=CLI_LOG_FORMAT)
+    from jasper.env_load import load_env_files
+    from jasper.volume_coordinator import install_env_canonical_target_provider
+
+    load_env_files()
+    # Every swap here rides `set_active_config_raw`'s fader duck, and releasing
+    # that duck reads the canonical target. Without this the release lands on a
+    # stale entry snapshot — the household's level, restored wrong, in a process
+    # whose whole job is to leave the speaker exactly as it found it.
+    install_env_canonical_target_provider()
+    args = build_parser().parse_args(argv)
+    return int(args.func(args))
+
+
+if __name__ == "__main__":  # pragma: no cover
+    raise SystemExit(main())

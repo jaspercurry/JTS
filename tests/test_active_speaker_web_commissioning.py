@@ -3026,6 +3026,11 @@ def test_summed_measurement_loader_cancellation_orders_and_reports_restore(
 
 
 def test_resilient_restore_does_not_retry_cancelled_child(monkeypatch):
+    # The wait now lives in restore_wait, so a caller that only needs to put a
+    # graph back does not import this module's commissioning stack; this module
+    # still consumes it as `_resilient`.
+    from jasper.active_speaker import restore_wait
+
     shield_calls = 0
 
     async def fake_shield(_task):
@@ -3039,10 +3044,10 @@ def test_resilient_restore_does_not_retry_cancelled_child(monkeypatch):
         def cancelled(self):
             return True
 
-    monkeypatch.setattr(web.asyncio, "shield", fake_shield)
+    monkeypatch.setattr(restore_wait.asyncio, "shield", fake_shield)
 
     with pytest.raises(asyncio.CancelledError):
-        asyncio.run(web._await_restore_task_resilient(CancelledTask()))
+        asyncio.run(restore_wait.await_restore_task_resilient(CancelledTask()))
     assert shield_calls == 1
 
 
