@@ -313,7 +313,7 @@ VERIFY_F_HI_HZ = 20_000.0
 # band: 2.5 keeps the pilot's top edge below the Fc/2 shoulder with margin
 # (fc/2.5 < fc/2). When even that collapses the band (very low Fc), the
 # composer falls back to [fc/8, fc/4] — still comfortably below the crossover
-# region. All three constants PROVISIONAL pending W6 bench distributions.
+# region.
 VERIFY_PILOT_F_LO_HZ = 200.0
 VERIFY_PILOT_F_HI_HZ = 800.0
 VERIFY_PILOT_FC_CLEARANCE_RATIO = 2.5

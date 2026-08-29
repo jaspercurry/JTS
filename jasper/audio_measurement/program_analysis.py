@@ -195,9 +195,9 @@ MAX_DRIFT_PPM = 500.0
 # The two woofer sweeps of a MEASURE program are bit-identical stimuli, so a
 # clean capture reproduces the same captured level for both. A larger gap is a
 # gain-rider (browser AGC nudging the level between the two sweeps) — a
-# complement to the timing baselines (design §5.2). PROVISIONAL pending W6 bench
-# distributions. A failure REUSES the ``drift_baselines_disagree`` glitch
-# verdict — never a new user-facing reason code (design §5.2).
+# complement to the timing baselines (design §5.2). A failure REUSES the
+# ``drift_baselines_disagree`` glitch verdict — never a new user-facing
+# reason code (design §5.2).
 #
 # Level is measured band-relative (in-band RMS over the woofer's own declared
 # band, via `_band_power` — see `_estimate_drift`), not full-band single-sample
@@ -245,9 +245,9 @@ REPEAT_LEVEL_TOLERANCE_DB = 0.3
 # `INTEGRITY_CHECK_SWEEP_HEARD` from here), so this one importing back would
 # be a cycle — but the legal direction is available AND already in use for
 # exactly this kind of constant, so the graph is not what decides it. The
-# reason is the NUMBERS. Both are PROVISIONAL pending W6 bench validation and
-# they judge different segment kinds through different gates, so bench work
-# may well settle them at different values; two owners diverge by editing one
+# reason is the NUMBERS. They judge different segment kinds through
+# different gates, so bench work may well settle them at different values;
+# two owners diverge by editing one
 # line where one owner would first have to be re-split. That module's own
 # declaration carries the same rationale — keep the two in step. This module also needs its own "was this sweep even
 # heard" precondition before it fits a step, not merely a return value a
@@ -1032,8 +1032,7 @@ VERIFY_TRACKING_SMOOTHING_FRACTION = 6
 # branch differences and is not a meaningful tracking signal — the W6 run-7
 # hardware failure (3.05 dB rms / 27.83 dB max) was entirely a shifted
 # predicted notch, not a broadband divergence. RMS stays full-band (it
-# already behaves sanely — see `_analyze_verify`). PROVISIONAL pending W6
-# bench distributions on notch depth/shift variability.
+# already behaves sanely — see `_analyze_verify`).
 VERIFY_NOTCH_EXCLUSION_DB = 12.0
 
 # Flatness-verify (#1668 PR-D) lived HERE until the flat-linearization plan's

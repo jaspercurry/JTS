@@ -1069,9 +1069,10 @@ banner comments mark its own sections.
 (`:1630-1633`) already supply the mechanism, and a caller census removes the
 placement question. Nothing here is taste.
 
-**What the block IS.** `:631-877`, 247 lines, under a banner that still reads
-*"tuning constants (PROVISIONAL pending W6 bench validation)"* (`:632`). Fifteen
-names, and they are three unrelated things:
+**What the block IS.** `:631-877`, 247 lines, under a banner that read
+*"tuning constants (PROVISIONAL pending W6 bench validation)"* (`:632`) — RULED
+deleted, §6.1's close below. Fifteen names, and they are three unrelated
+things:
 
 - **Six re-export doors** — `GAIN_CAP_BACKOFF_DB` `:637`, `PILOT_LEVEL_DELTA_DB`
   `:641`, `LOCATE_MIN_CONFIDENCE` `:644`, `VERIFY_TOLERANCE_DB` `:647`,
@@ -1207,13 +1208,15 @@ deleted essay paragraph is quoted verbatim in exactly one ADR, and the surviving
 comment cites it — mutation-checked by grepping the tree for a second copy of the
 13-capture composition. *Tier:* mechanical (docs).
 
-**One stale-looking label, flagged not fixed.** The banner (`:632`) and five of
-the eight essays say *"PROVISIONAL pending W6 bench validation"*, while
-`crossover-measurement-productization-design.md:25` records **W1–W6 complete**
-(2026-07-19) and the trust floor's own text (`:693-695`) already cites a live
-bench datum that *"undercut it."* Either the label is spent or it names a bench
-that is not that W6. **A one-sentence question for whoever writes the ADRs — not
-the executor's to guess**, and not this pack's to answer.
+**One stale-looking label — RULED (owner 2026-08-29): delete it.** The banner
+(`:632`) and five of the eight essays said *"PROVISIONAL pending W6 bench
+validation"*, while `crossover-measurement-productization-design.md:25`
+records **W1–W6 complete** (2026-07-19) and the trust floor's own text
+(`:693-695`) already cited a live bench datum that *"undercut it."* Owner
+ruling, verbatim: *"i dont care about the banner. delete it."* The banner and
+its in-repo restatements are deleted; `docs/adr/0181` and `0182` keep their
+quotes of it unedited, as the record of what it read when each ADR was
+written.
 
 ### 6.2 RULED — this block never applies, 53% of it already has a home, and the five publishers FOLD
 

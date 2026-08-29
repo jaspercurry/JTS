@@ -7,8 +7,8 @@
 :mod:`jasper.active_speaker.session_volume_plan` derives the crossover
 session's fixed measurement volume as ``min(reference, max(driver caps))``.
 The caps half is measured hardware truth; the reference half was a codified
-guess (``MEASUREMENT_REFERENCE_VOLUME_DB = -20.0``, "PROVISIONAL pending W6
-bench validation"). This module is where that guess becomes an observation.
+guess (``MEASUREMENT_REFERENCE_VOLUME_DB = -20.0``). This module is where
+that guess becomes an observation.
 
 Ownership, deliberately narrow:
 
