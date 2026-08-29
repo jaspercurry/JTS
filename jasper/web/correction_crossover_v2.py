@@ -3129,30 +3129,67 @@ class CaptureEvidenceCarry:
 
 
 def _bankable(value: Any) -> Any:
-    """One JSON document with unbankable floats dropped, recursively.
+    """One JSON document with unbankable floats nulled, recursively.
 
     NOT decoration. ``CommissioningEvidenceStore`` canonicalises with
     ``allow_nan=False``, so a single ``NaN`` anywhere in a banked record is a
     ``MALFORMED`` refusal — and the retention seam fail-softs, which would
     lose the WHOLE take record over one unmeasurable diagnostic. Since the
     point of carrying these blocks is to stop losing data, an unmeasurable
-    number is dropped and reads as absent, which is the same unknown-vs-value
-    rule ``analysis_diagnostic_summary`` already applies to a field it could
-    not fill.
+    number becomes ``null``. Same answer, same reason, as
+    ``commissioning_capture_producer._finite_json_evidence``.
+
+    **Keys are never dropped, only their values nulled**, and that is the whole
+    difference between a scrub and a lie. ``analysis_diagnostic_summary``
+    spends tri-states deliberately — ``polarity_agrees_with_sum`` is ``None``
+    for "nobody cross-checked" against an absent key for "no alignment at all",
+    and the ``frame_*`` block is "present with ``None`` terms when the
+    comparison ran but no frame could be fitted; absent only when no
+    comparison happened" — so a pass that removed empty keys would flatten
+    those two answers into one, permanently, on a write-once record.
 
     Floats only. An unbounded JSON integer serializes exactly, so ``int`` is
     left alone and only the type that can BE ``NaN``/``inf`` is screened —
     through :func:`_finite`, this module's one "is that a usable number?"
-    test, rather than a second spelling of it.
+    test, rather than a second spelling of it. A non-native number (a
+    ``numpy`` scalar, an array) is NOT screened here and would cost the record
+    at the store's own ``TypeError``; no field on today's three blocks is one,
+    and :func:`_capture_evidence_blocks` names that contract.
     """
     if isinstance(value, float):
         return _finite(value)
     if isinstance(value, Mapping):
-        cleaned = {key: _bankable(item) for key, item in value.items()}
-        return {key: item for key, item in cleaned.items() if item is not None}
+        return {key: _bankable(item) for key, item in value.items()}
     if isinstance(value, (list, tuple)):
         return [_bankable(item) for item in value]
     return value
+
+
+def _add_capture_block(
+    blocks: dict[str, Any], name: str, build: Callable[[], Any],
+) -> None:
+    """Add one evidence block, or lose that block and nothing else.
+
+    The belt the deleted ring writer carried in as many words — *"ANY failure
+    here must never affect the measurement itself"* — kept rather than dropped
+    with it. This runs inside the analyze seam, so a raise costs the CAPTURE:
+    the sweep played, the operator is standing at the mark, and a diagnostic
+    that could not be summarised would take the measurement with it.
+
+    Per block, not around all three, so a raise while summarising the analysis
+    still leaves the frame ledger banked. The caught tuple is concrete rather
+    than blind for the reason the shapes below are real: ``AttributeError`` and
+    ``TypeError`` are what a half-populated or foreign analysis produces, and
+    ``ValueError`` is what a hostile mapping produces. A genuinely unexpected
+    type still propagates to the analyze seam's own callers.
+    """
+    try:
+        blocks[name] = _bankable(build())
+    except (AttributeError, TypeError, ValueError):
+        log_event(
+            logger, "correction.crossover_v2_capture_evidence_block_failed",
+            level=logging.WARNING, block=name, exc_info=True,
+        )
 
 
 def _capture_evidence_blocks(result: Any, analysis: Any) -> dict[str, Any]:
@@ -3169,27 +3206,49 @@ def _capture_evidence_blocks(result: Any, analysis: Any) -> dict[str, Any]:
     frames that actually arrived — the one thing that names WHICH hop lost a
     quantum.
 
+    **``capture_integrity`` names two different things in one record, and they
+    are not the same fact.** This block is the recorder's RAW counters, off the
+    capture result. The ``integrity_*`` fields inside ``diagnostic`` are the
+    analysis's own evaluated ``CaptureIntegrity`` verdict — computed during the
+    capture, on the signal. A reader comparing the two is comparing a report
+    against a judgement, not one number against itself.
+
     Written only when there is something to write: an absent block is a
     capture that reported none, never a clean take claimed on its behalf.
-    ``diagnostic`` is the exception and is always present, because the summary
-    is a total function over whatever the analysis holds.
 
-    Total, like the summary it calls: this runs inside the analyze seam, where
-    a raise would cost the measurement itself. Both reads are ``getattr``
-    defaults and the summary never raises, so a test double standing in for a
-    ``ProgramAnalysis`` degrades to an emptier block set.
+    **NOT total, and guarded because of it.** The summary is defensive at its
+    top level but its nested reads are bare once a sub-object exists
+    (``drift.epsilon_ppm``, ``alignment.confidence``,
+    ``candidate.predicted_ripple_db``, and a ``math.isfinite`` over a pilot's
+    ``snr_db`` that raises ``TypeError`` on a non-number), and
+    ``ledger.to_dict()`` is a method call rather than a ``getattr`` default.
+    A half-populated analysis reaches every one of those. So each block is
+    built through :func:`_add_capture_block`, which trades the block for the
+    capture and never the other way round.
+
+    One hazard this does NOT cover, stated so a future analysis change knows
+    the contract: a non-native number (a ``numpy`` scalar, an array) raises
+    inside the STORE's canonical JSON, past this guard, and the retention
+    seam's fail-soft would drop the whole record. Every field on today's three
+    blocks is Python-native — the summary ``round(float(...))``s its own, the
+    ledger's are ``int``, and the page's arrive through ``json.loads`` — so
+    this is a contract to keep, not a live defect.
     """
     from jasper.audio_measurement import program_analysis as _pa
 
-    blocks: dict[str, Any] = {
-        "diagnostic": _bankable(_pa.analysis_diagnostic_summary(analysis)),
-    }
+    blocks: dict[str, Any] = {}
+    _add_capture_block(
+        blocks, "diagnostic", lambda: _pa.analysis_diagnostic_summary(analysis),
+    )
     report = getattr(result, "capture_integrity", None)
     if isinstance(report, Mapping) and report:
-        blocks["capture_integrity"] = _bankable(dict(report))
+        _add_capture_block(blocks, "capture_integrity", lambda: dict(report))
     ledger = getattr(analysis, "frame_ledger", None)
     if ledger is not None:
-        blocks["frame_ledger"] = _bankable(ledger.to_dict())
+        # A lambda and not ``ledger.to_dict``: the bound-method LOOKUP is
+        # itself an attribute read, and passing it would raise while building
+        # the argument — outside the guard that exists to catch exactly that.
+        _add_capture_block(blocks, "frame_ledger", lambda: ledger.to_dict())
     return blocks
 
 

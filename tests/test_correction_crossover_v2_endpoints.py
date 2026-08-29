@@ -2832,8 +2832,6 @@ def _analysis_double(epsilon_ppm=1.25):
     reads are real ones, so the block it produces is really computed rather
     than a literal a stub handed back.
     """
-    from types import SimpleNamespace
-
     return SimpleNamespace(
         phase=PHASE_MEASURE,
         drift=SimpleNamespace(
@@ -2950,25 +2948,131 @@ def test_a_banked_take_carries_the_three_blocks_the_analysis_computed(
 def test_an_unmeasurable_diagnostic_never_costs_the_whole_take_record(
     tmp_path, monkeypatch,
 ):
-    """A ``NaN`` in one block drops that field, never the record.
+    """A ``NaN`` in one block nulls that field, never the record.
 
     The evidence store canonicalises with ``allow_nan=False`` and the
     retention seam fail-softs, so one unmeasurable number reaching the record
     unscrubbed would refuse the write and lose the take entirely — the take
     id, the digest, the pose, everything — over a diagnostic. That is worse
-    than the loss this change exists to stop, so the field is dropped and
-    reads as absent while the record banks.
+    than the loss this change exists to stop, so the value becomes ``null``
+    while the record banks.
+
+    ``null`` and not a removed key: the field's absence is its own answer
+    elsewhere in this block, so see
+    :func:`test_the_scrub_nulls_a_bad_number_without_flattening_a_tri_state`.
     """
     banked, _analysis = _bank_one_analyzed_take(
         tmp_path, monkeypatch, "cap_nan_session",
         report=_lossy_page_report(), epsilon_ppm=float("nan"),
     )
 
-    assert "epsilon_ppm" not in banked["diagnostic"]
+    assert banked["diagnostic"]["epsilon_ppm"] is None
     # The record itself is intact, blocks and all.
     assert banked["diagnostic"]["phase"] == PHASE_MEASURE
     assert banked["frame_ledger"]["received_frames"] == RECEIVED_FRAMES
     assert banked["take_id"]
+
+
+def test_the_scrub_nulls_a_bad_number_without_flattening_a_tri_state():
+    """Both directions, because the two answers are different facts.
+
+    ``analysis_diagnostic_summary`` spends ``None`` deliberately —
+    ``polarity_agrees_with_sum`` is ``None`` for "nobody cross-checked" where
+    an ABSENT key means "no alignment estimate at all", and the ``frame_*``
+    terms are "present with ``None`` when the comparison ran but no frame
+    could be fitted; absent only when no comparison happened". A scrub that
+    dropped empty keys would collapse those two into one on a WRITE-ONCE
+    record, so the distinction could never be recovered.
+
+    So: an unbankable number becomes ``null`` and an explicit ``null``
+    survives as a key. Nested, because the blocks are documents rather than
+    flat rows.
+    """
+    scrubbed = v2host._bankable({
+        "epsilon_ppm": float("nan"),
+        "overflowed": float("inf"),
+        "polarity_agrees_with_sum": None,
+        "frame": {"tilt_db": None, "max_db": -3.5},
+        "lost_at": ["encoder->host"],
+        "declared_frames": 4800,
+        "glitch_detected": False,
+        "phase": "measure",
+    })
+
+    # The scrub's own half: unbankable numbers stop being numbers.
+    assert scrubbed["epsilon_ppm"] is None
+    assert scrubbed["overflowed"] is None
+    # The tri-state's half: an explicit None is an ANSWER, and it keeps its key.
+    assert "polarity_agrees_with_sum" in scrubbed
+    assert scrubbed["polarity_agrees_with_sum"] is None
+    assert scrubbed["frame"] == {"tilt_db": None, "max_db": -3.5}
+    # Everything bankable is untouched, ``False`` and ``0`` included.
+    assert scrubbed["lost_at"] == ["encoder->host"]
+    assert scrubbed["declared_frames"] == 4800
+    assert scrubbed["glitch_detected"] is False
+    assert scrubbed["phase"] == "measure"
+
+
+@pytest.mark.parametrize(
+    "analysis, survives, lost",
+    [
+        # The two shapes the summary's own top-level defence already covers:
+        # nothing raises, so nothing is lost and nothing is disclosed.
+        pytest.param(object(), {"diagnostic"}, 0, id="foreign-object"),
+        pytest.param("analysis", {"diagnostic"}, 0, id="bare-string"),
+        # A sub-object that EXISTS makes the nested reads bare:
+        # ``drift.epsilon_ppm`` raises AttributeError.
+        pytest.param(
+            SimpleNamespace(phase="measure", drift=SimpleNamespace()),
+            set(), 1, id="drift-with-no-fields",
+        ),
+        # ``to_dict`` is a method call, not a getattr default — and the
+        # summary reads the same ledger, so BOTH blocks are lost here.
+        pytest.param(
+            SimpleNamespace(phase="measure", frame_ledger=object()),
+            set(), 2, id="ledger-with-no-to-dict",
+        ),
+        # ``math.isfinite`` over a pilot's ``snr_db`` raises TypeError on a
+        # non-number: the guard's second caught type, exercised for real.
+        pytest.param(
+            SimpleNamespace(
+                phase="measure",
+                pilots=[SimpleNamespace(role="woofer", snr_db="not-a-number")],
+            ),
+            set(), 1, id="pilot-snr-that-is-not-a-number",
+        ),
+    ],
+)
+def test_building_the_blocks_never_costs_the_capture(
+    analysis, survives, lost, caplog,
+):
+    """A half-populated analysis loses a BLOCK, never the measurement.
+
+    The deleted ring writer wrapped this whole computation in a guard whose
+    reason it stated outright — *"ANY failure here must never affect the
+    measurement itself"* — and the belt has to survive the move, because the
+    computation moved somewhere stricter: it now runs inside the analyze seam
+    on the accepted path, where a raise costs the CAPTURE. The sweep already
+    played and the operator is already standing at the mark.
+
+    ``analysis_diagnostic_summary`` is defensive at its TOP level and bare
+    below it — the first two rows are why the top-level defence is not enough
+    to lean on, and the last three are the real shapes that get past it. Each
+    is asserted by what survives rather than by "it did not raise", so a guard
+    that swallowed a block it should have banked fails here too.
+
+    A lost block is DISCLOSED and never silent: it is forensic evidence going
+    missing, and the count is asserted so losing two blocks cannot read as
+    losing one.
+    """
+    with caplog.at_level(logging.WARNING):
+        blocks = v2host._capture_evidence_blocks(_FakeResult(), analysis)
+
+    assert set(blocks) == survives
+    assert all(isinstance(value, dict) for value in blocks.values())
+    assert caplog.text.count(
+        "event=correction.crossover_v2_capture_evidence_block_failed"
+    ) == lost
 
 
 def test_a_take_with_no_analyze_behind_it_carries_no_blocks(
