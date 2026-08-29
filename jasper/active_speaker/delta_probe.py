@@ -595,7 +595,7 @@ DELTA_PROBE_SHORTFALL_GAIN_CEILING: float = 0.85
 #: the system is not even allowed to command in. On the 2026-08-16 shortfall
 #: round the pooled slope read 0.664 while the trusted HF realized 96-101% of
 #: commanded: ~90% of the squared error came from a -3.04 dB hole ABOVE the
-#: 16.4 kHz mic-trust ceiling.
+#: 16.4 kHz mic-trust ceiling (at the pre-ruling ceiling then in effect).
 #:
 #: ``crossover`` is the graded tier BELOW :data:`DELTA_PROBE_HF_SPLIT_HZ` —
 #: named for what it contains (the crossover region and the bulk of commanded

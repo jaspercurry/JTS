@@ -1433,6 +1433,7 @@ def _validated_biquad_entry(
     label: str,
     allowed_types: frozenset[str],
     max_gain_db: float,
+    sample_rate: int = DEFAULT_SAMPLE_RATE,
 ) -> dict[str, Any]:
     """Re-validate ONE persisted biquad record, or raise.
 
@@ -1453,6 +1454,18 @@ def _validated_biquad_entry(
 
     ``label`` names the owner in the message, so a household-visible refusal
     still says which stage refused.
+
+    The Nyquist refusal (``freq >= sample_rate / 2``) is this module's OWN
+    proof, independent of whatever produced the record: a fit-engine skip
+    condition (``linearization_fit._HF_TAPER_NYQUIST_HZ``) is a design-time
+    choice about what that ONE stage should emit, not a guarantee about every
+    biquad this function will ever see — "the emitter would never write this"
+    is not a proof (the doctrine `branch_chain.py` already states for exactly
+    this class of gap). A biquad at or above Nyquist is not a policy choice to
+    reject, it is not a realizable digital filter corner at all: CamillaDSP
+    itself refuses it at ``--check``, so admitting one here would let an
+    apply transaction stage a config guaranteed to fail load, rather than
+    refusing it at the boundary that can still say why.
     """
 
     if not isinstance(entry, Mapping):
@@ -1468,6 +1481,12 @@ def _validated_biquad_entry(
     gain = _finite_float(entry.get("gain"), f"{label} gain")
     if freq <= 0:
         raise ActiveSpeakerConfigError(f"{label} freq must be positive")
+    nyquist_hz = sample_rate / 2.0
+    if freq >= nyquist_hz:
+        raise ActiveSpeakerConfigError(
+            f"{label} freq must be below Nyquist ({nyquist_hz} Hz at "
+            f"{sample_rate} Hz sample rate)"
+        )
     if q <= 0:
         raise ActiveSpeakerConfigError(f"{label} q must be positive")
     if gain > max_gain_db:

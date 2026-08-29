@@ -876,10 +876,14 @@ def compose_envelope(
     calibrated microphone resolves nothing up there), and a statement of no
     trust cannot be softened by an adjacent bin that happens to have some.
     Before this rule the ladder leaked depth past every such zero: on the S0
-    replay at ``reference`` tier, mic-trust is exactly 0 from 16444.9 Hz up
-    yet the composed envelope carried 1.4846 dB at that bin and stayed
-    non-zero to 18912.3 Hz, putting the fit band's top edge at 18390.9 Hz.
-    It now ends at 15991.5 Hz, the last bin mic-trust actually trusts.
+    replay at ``reference`` tier (at the pre-ruling ceiling then in effect),
+    mic-trust was exactly 0 from 16444.9 Hz up yet the composed envelope
+    carried 1.4846 dB at that bin and stayed non-zero to 18912.3 Hz, putting
+    the fit band's top edge at 18390.9 Hz. It then ended at 15991.5 Hz, the
+    last bin mic-trust actually trusted — today (2026-08-29 horn-droop
+    correction ruling; reference now 12 k -> 20 k) that boundary is 20000.0
+    Hz exactly, the grid's own top edge, and the last-trusted bin is
+    19448.6 Hz.
 
     This makes all terms consistent rather than leaving two regimes: the
     newer ``spatial_exclusion`` term already preserved its exact zeros, by
@@ -1103,13 +1107,16 @@ def compose_envelope(
     # small number, it is a statement that this term extends no trust to this
     # bin at all. Without this mask the ladder window blurs neighbouring
     # in-band depth back across that boundary: measured on the S0 replay at
-    # `reference` tier, where `mic_trust_limit` is exactly 0 from 16444.9 Hz
-    # up, the composed envelope carried 1.4846 dB of allowed depth at that
-    # very bin and stayed non-zero to 18912.3 Hz, putting the fit band's top
-    # edge at 18390.9 Hz -- above the frequency the mic is trusted to resolve
-    # anything at. `<= 0.0` rather than `np.isclose` is deliberate: the rule
-    # is about an EXACT zero, and a bin holding a genuinely tiny but non-zero
-    # permission should keep it rather than be rounded away.
+    # `reference` tier (at the pre-ruling ceiling then in effect), where
+    # `mic_trust_limit` was exactly 0 from 16444.9 Hz up, the composed
+    # envelope carried 1.4846 dB of allowed depth at that very bin and stayed
+    # non-zero to 18912.3 Hz, putting the fit band's top edge at 18390.9 Hz --
+    # above the frequency the mic was trusted to resolve anything at (today,
+    # 2026-08-29 horn-droop correction ruling, that boundary is 20000.0 Hz
+    # exactly, the grid's own top edge). `<= 0.0` rather than `np.isclose`
+    # is deliberate: the rule is about an EXACT zero, and a bin holding a
+    # genuinely tiny but non-zero permission should keep it rather than be
+    # rounded away.
     hard_zero_mask = smoothable_value <= 0.0
     masked_depth_db = np.where(in_band_mask, smoothable_value, 0.0)
     smoothed_depth_db = _ladder_smooth(grid_hz, masked_depth_db)

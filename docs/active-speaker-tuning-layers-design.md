@@ -450,9 +450,10 @@ flat to ~16 k on its datasheet horn — so it is a broad, real, EQ-able trend
 **sized from measurement, not from the driver class.** The per-serial-calibrated
 UMIK-2 protocol resolves that band to ±1.5 dB @12k / ±2.3 @16k, and the deficit
 exceeds that 4–6×, so correcting the measured trend is objectively justified up
-to a ~16 kHz confidence ceiling. **Owner ethos: no subjectivity** — sizing is
-measurement; where measurement runs out, a declared-driver-type continuation
-policy takes over, disclosed as such.
+to the confidence ceiling below (20 kHz reference tier since the 2026-08-29
+horn-droop correction ruling above; was ~16 kHz). **Owner ethos: no
+subjectivity** — sizing is measurement; where measurement runs out, a
+declared-driver-type continuation policy takes over, disclosed as such.
 
 The stage (`_hf_continuation_stage`,
 [jasper/active_speaker/linearization_fit.py](../jasper/active_speaker/linearization_fit.py))

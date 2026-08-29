@@ -125,6 +125,7 @@ from typing import Any, Mapping, Sequence
 import numpy as np
 
 from jasper.audio_measurement.program_analysis import DriverResponse
+from jasper.camilla_config_contract import DEFAULT_SAMPLE_RATE
 from jasper.camilla_config_contract import SHELF_Q as _HIGHSHELF_Q
 from jasper.correction.peq import design_peq, predicted_response
 from jasper.sound.profile import RESPONSE_SAMPLE_RATE_HZ
@@ -165,8 +166,9 @@ PER_FILTER_CUT_CAP_DB: float = 12.0
 # Why 18 (6 → 12 on 2026-07-24, → 18 after that night's JTS3 hardware run):
 # the owner's "flat as a table top" directive requires the spend to actually
 # REACH the measured deficit. The live JTS3 tweeter measured a 14.2–14.3 dB
-# deficit at the reference-tier confidence ceiling (~16.4 kHz), but the 12 dB
-# budget capped spend at ~9.2 across both quiet-room runs — the correction was
+# deficit at the reference-tier confidence ceiling (~16.4 kHz, the pre-ruling
+# ceiling then in effect), but the 12 dB budget capped spend at ~9.2 across
+# both quiet-room runs — the correction was
 # budget-bound below the measured trend and the treble still sloped away. At
 # 18 the ledger covers it: total ledger = (plateau − target) + spend ≈ 17.3 on
 # that rig, inside the budget with margin.
@@ -405,6 +407,15 @@ _HF_RESIDUAL_FLATNESS_TARGET_DB: float = 0.5
 # 2026-07-24) so the taper protects the unseen top without itself becoming a
 # large unverified move.
 HF_TAPER_MAX_DB: float = 6.0
+
+# The taper's own corner (ceiling_hz * 1.25) must stay strictly below Nyquist
+# or CamillaDSP's own biquad check refuses the WHOLE config at load
+# (freq >= samplerate/2 is not a realizable digital filter corner).
+# Derived from the runtime contract's own sample rate -- never a fresh
+# literal -- so a future rate change cannot silently drift this from what
+# the emitter's independent validator enforces
+# (``camilla_yaml._validated_biquad_entry``'s matching guard).
+_HF_TAPER_NYQUIST_HZ: float = DEFAULT_SAMPLE_RATE / 2.0
 
 # Continuation policy above the confidence ceiling, keyed by DECLARED driver
 # class — the driver class's ONLY remaining authority over the CD-horn stage
@@ -2058,11 +2069,29 @@ def _hf_continuation_stage(
 
     # -- Continuation policy above the ceiling (declared class's authority) -
     emitted = [lowshelf, *hf_peaks]
-    if policy == "taper" and len(filters) + len(emitted) < MAX_FILTERS_PER_DRIVER:
+    if (
+        policy == "taper"
+        and len(filters) + len(emitted) < MAX_FILTERS_PER_DRIVER
+        and ceiling_hz * 1.25 < _HF_TAPER_NYQUIST_HZ
+    ):
         # One trailing Highshelf CUT above ceiling*1.25 walks the relative lift
         # back DOWN across the band we cannot see — protecting an unknown /
         # breakup-prone top from a projected lift with no measurement behind
         # it. Appended LAST (the emitter's taper-last construction contract).
+        #
+        # SKIPPED (not clamped) when ceiling*1.25 would reach or exceed
+        # Nyquist (the guard above): the multiplier's whole job is to give the
+        # shelf's own transition room to sit entirely in unmeasured territory
+        # above the ceiling, and a sample rate that squeezes that room to
+        # nothing has already removed the "band we cannot see" this filter
+        # exists to protect -- there is nothing left to walk back. Clamping
+        # the corner to an arbitrary point near Nyquist would keep emitting a
+        # filter whose frequency no longer means "ceiling*1.25" AND risk the
+        # numerically degenerate RBJ-cookbook coefficients a biquad gets as
+        # its corner approaches Nyquist (the bilinear transform's own
+        # frequency warping diverges there). An honest no-op is the smaller,
+        # safer move: the measured lowshelf + peaking correction above still
+        # fires; only this speculative, beyond-ceiling shelf does not.
         taper_gain = -min(spend / 2.0, HF_TAPER_MAX_DB)
         if -taper_gain >= _MIN_FILTER_GAIN_DB:
             emitted.append(LinearizationFilter(

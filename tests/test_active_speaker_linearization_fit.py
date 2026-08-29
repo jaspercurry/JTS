@@ -45,6 +45,7 @@ from jasper.active_speaker.linearization_fit import (
     PER_FILTER_CUT_CAP_DB,
     _CUT_REDUCTION_EPS_DB,
     _ENVELOPE_NONZERO_EPS_DB,
+    _HF_TAPER_NYQUIST_HZ,
     _MIN_FILTER_GAIN_DB,
     _PEAKING_Q_MAX,
     _PEAKING_Q_MIN,
@@ -1053,11 +1054,13 @@ _CD_HORN_ANCHOR_HZ = np.array(
 )
 _CD_HORN_ANCHOR_DB = np.array([0.0, 0.0, 0.0, -2.5, -5.8, -8.6, -11.5, -13.5, -15.0])
 # The LIVE JTS3 rig's own shape (2026-07-24): -14.3 dB at the 16 kHz ANCHOR,
-# which the fit measures as a 13.885 dB deficit at its 16444.9 Hz ceiling (the
-# give-back table below pins that). Do not read the anchor as the deficit — they
-# are different numbers, and conflating them is what made the table's row labels
-# drift. Exceeds PER_FILTER_CUT_CAP_DB, so it exercises the Lowshelf clamp +
-# peaking-residual absorption path.
+# which the fit measures as a 16.085 dB deficit at its 20000.0 Hz ceiling (the
+# 2026-08-29 horn-droop correction ruling's ceiling; was 13.885 dB at a
+# 16444.9 Hz ceiling -- the give-back table below pins the current figures).
+# Do not read the anchor as the deficit — they are different numbers, and
+# conflating them is what made the table's row labels drift. Exceeds
+# PER_FILTER_CUT_CAP_DB, so it exercises the Lowshelf clamp + peaking-residual
+# absorption path.
 _CD_HORN_LIVE_ANCHOR_DB = np.array([0.0, 0.0, 0.0, -3.2, -7.4, -11.0, -14.3, -16.0, -17.0])
 
 
@@ -1505,17 +1508,32 @@ def test_cd_horn_taper_policy_appends_trailing_highshelf_cut():
     HF_TAPER_MAX_DB)) that walks the lift back down. compression_horn (hold)
     appends nothing — its filters end on a Peaking.
 
+    Built at CONSUMER tier, not reference: since the 2026-08-29 horn-droop
+    correction ruling, reference tier's ceiling is permanently 20 kHz, so
+    ceiling*1.25 (25 kHz) always exceeds Nyquist at the runtime's 48 kHz rate
+    and the taper is correctly SKIPPED there — see
+    test_cd_horn_taper_skips_rather_than_exceeds_nyquist_at_reference_tier for
+    that boundary, pinned directly. Consumer's row is untouched by the ruling
+    (ceiling ~12.1 kHz, ceiling*1.25 ~15.1 kHz, comfortably legal) and still
+    exercises the taper mechanism itself, same as this test has always done.
+
     "unknown" is also a declared "taper" class (HF_CONTINUATION_POLICY) but is
-    not exercised here at reference tier on this synthetic — see
+    not exercised here — see
     test_cd_horn_unknown_class_ineligible_at_reference_tier_after_ruling.
     """
-    fit = _cd_horn_fit("metal_dome")
+    resp = _tweeter_response(_cd_horn_db(_NATIVE_FREQS_HZ))
+    envelope = compose_envelope(
+        "tweeter", resp, excited_band_hz=(2000.0, 20000.0),
+        mic_tier="consumer", driver_class="metal_dome",
+    )
+    fit = fit_driver_linearization(resp, envelope)
     assert fit.hf_continuation_policy == "taper"
     assert fit.filters[0].biquad_type == "Lowshelf"
     taper = fit.filters[-1]
     assert taper.biquad_type == "Highshelf"
     assert taper.gain <= 0.0  # a CUT, not a boost
     assert taper.freq == pytest.approx(fit.hf_continuation_ceiling_hz * 1.25)
+    assert taper.freq < _HF_TAPER_NYQUIST_HZ  # legal on this tier
     assert taper.gain == pytest.approx(
         -min(fit.hf_continuation_spend_db / 2.0, HF_TAPER_MAX_DB)
     )
@@ -1523,6 +1541,39 @@ def test_cd_horn_taper_policy_appends_trailing_highshelf_cut():
     hold_fit = _cd_horn_fit("compression_horn")
     assert hold_fit.hf_continuation_policy == "hold"
     assert all(f.biquad_type != "Highshelf" for f in hold_fit.filters)
+
+
+def test_cd_horn_taper_skips_rather_than_exceeds_nyquist_at_reference_tier():
+    """The reference-tier ceiling is now permanently 20 kHz (the grid's own
+    top edge, since the 2026-08-29 horn-droop correction ruling), so
+    ceiling*1.25 = 25 kHz -- above Nyquist at the runtime's 48 kHz rate
+    (24 kHz, _HF_TAPER_NYQUIST_HZ). metal_dome is declared "taper" but must
+    NOT emit an unrealizable Highshelf there: CamillaDSP refuses a biquad at
+    or above Nyquist at --check, and metal_dome's tweeter-role class prior
+    (16 kHz, well above the new ~12.1 kHz knee) makes this reachable in
+    production, not a synthetic-only corner.
+
+    The stage still FIRES (the measured lowshelf + peaking correction, same
+    as compression_horn's "hold" policy would produce) -- only the
+    speculative, beyond-ceiling taper shelf is skipped, the same kind of
+    honest no-op the taper already had for its other two skip conditions
+    (no filter slot; gain too small to matter). ``hf_continuation_policy``
+    still reports "taper" (the DECLARED class policy), consistent with how
+    those other two skip conditions already behaved before this one existed.
+
+    See test_cd_horn_taper_policy_appends_trailing_highshelf_cut (consumer
+    tier, untouched by the ruling) for proof the taper mechanism itself is
+    unaffected where it stays legal.
+    """
+    fit = _cd_horn_fit("metal_dome")
+    assert fit.hf_continuation_ceiling_hz == pytest.approx(20000.0, rel=0.01)
+    assert fit.hf_continuation_ceiling_hz * 1.25 >= _HF_TAPER_NYQUIST_HZ
+    assert fit.hf_continuation_policy == "taper"
+    assert fit.hf_continuation_spend_db > 0.0
+    assert fit.filters  # the stage fired
+    assert all(f.biquad_type != "Highshelf" for f in fit.filters)
+    for f in fit.filters:
+        assert f.freq < _HF_TAPER_NYQUIST_HZ
 
 
 def test_cd_horn_unknown_class_ineligible_at_reference_tier_after_ruling():
