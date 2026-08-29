@@ -2151,11 +2151,18 @@ mod tests {
             .map(|&s| i32::from(s).abs())
             .max()
             .unwrap();
-        assert!(last_peak > 500, "fixture must end on real audio, got {last_peak}");
+        assert!(
+            last_peak > 500,
+            "fixture must end on real audio, got {last_peak}"
+        );
 
         // The session ends. This period is the tail, not a hard cut.
         r.reset();
-        assert_eq!(r.render_period(&mut out), 0, "a reset lane consumes no input");
+        assert_eq!(
+            r.render_period(&mut out),
+            0,
+            "a reset lane consumes no input"
+        );
 
         let magnitudes: Vec<i32> = (0..period)
             .map(|f| {
@@ -2181,7 +2188,10 @@ mod tests {
             "tail must land exactly on zero so the next period adds no step"
         );
         for pair in magnitudes.windows(2) {
-            assert!(pair[1] <= pair[0], "tail must decay monotonically: {pair:?}");
+            assert!(
+                pair[1] <= pair[0],
+                "tail must decay monotonically: {pair:?}"
+            );
         }
 
         r.render_period(&mut out);
