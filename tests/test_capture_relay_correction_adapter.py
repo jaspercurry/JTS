@@ -557,10 +557,12 @@ def test_relay_capture_reentrancy_guard():
 
     correction_setup._set_relay_capture(None)
     assert correction_setup._begin_relay_capture("room_sweep") is True
-    assert correction_setup._get_relay_capture() == {
-        "status": "starting",
-        "kind": "room_sweep",
-    }
+    # Per key, not an exact dict: the slot carries whatever the live session
+    # publishes about itself (its transport, a gated hold, …) and this test is
+    # about the CLAIM, not the payload's full shape.
+    claimed = correction_setup._get_relay_capture()
+    assert claimed["status"] == "starting"
+    assert claimed["kind"] == "room_sweep"
     assert correction_setup._begin_relay_capture("room_repeat") is False
     correction_setup._set_relay_capture({"tap_link": "x", "status": "awaiting_phone"})
     assert correction_setup._begin_relay_capture("room_repeat") is False

@@ -294,8 +294,12 @@ seconds of every remote session.
 2. Poll `GET /correction/crossover/envelope` and POST the `next_action` specs as
    the wizard would.
 3. When `relay.position_pending` is present it names the target:
-   `{index, attempt, degrees, role, action}`. Move the positioner to `degrees`
-   (negative = left of the design axis), wait your own settle time.
+   `{index, attempt, degrees, role, prompt, hand_released, action}`. Move the
+   positioner to `degrees` (negative = left of the design axis), wait your own
+   settle time. `prompt` is the same `{progress, title, body}` the capture plan
+   composed for that entry, for a surface with words to render;
+   `hand_released` is false on this tier, which is how the wizard knows not to
+   offer a person a release control beside your driver.
 4. POST `position_pending.action` — `/correction/crossover/v2/position-ready`
    with `{"index": …}`. `index` must be a JSON integer (a malformed body is a
    400) and is checked against what is actually pending, so a retry that crossed
@@ -333,26 +337,20 @@ request names no index (WHICH slot is the walk's own fact), and a retake the wal
 cannot serve is journalled as
 `event=correction.crossover_v2_wired_retake_refused`.
 
-> **Until [#2881](https://github.com/jaspercurry/JTS/issues/2881) lands, the
-> release POST is MANUAL, once per capture.** Nothing shipped renders
-> `relay.position_pending` or posts the release except `jasper-arm-walk`. So a
-> Full/Express round on the wired source holds at **every** capture and waits for
-> a human. Left unattended, each hold expires after
-> `REMOTE_POSITION_HOLD_BUDGET_S` (600 s) as `position_hold_expired`: loud,
-> named, self-recovering, but a wasted session. **The tuning loop is
-> unaffected** — `scripts/run-crossover-round.py` defaults to `--tier remote`,
-> which `jasper-arm-walk` already releases. The release needs the CSRF dance (no
-> bypass exists, by design):
->
-> ```sh
-> JAR=$(mktemp)
-> TOKEN=$(curl -fsS -c "$JAR" http://jts.local/correction/crossover/ \
->   | sed -n 's/.*name="jts-csrf" content="\([^"]*\)".*/\1/p')
-> # ...read position_pending.index off the envelope, then per capture:
-> curl -fsS -b "$JAR" -H "X-CSRF-Token: $TOKEN" \
->   -H 'Content-Type: application/json' -d '{"index": 1}' \
->   http://jts.local/correction/crossover/v2/position-ready
-> ```
+**A hand-walked round is driven from the browser, not a CLI**
+([#2881](https://github.com/jaspercurry/JTS/issues/2881)). The wizard renders
+the hold as a walkthrough — the spot's counter, the plan's own instruction, and
+one control that posts the release — then the held set's Save / Record-again
+where the phone's confirm screen would have been. Nothing else is needed: no
+`jasper-arm-walk`, no CSRF dance, no second device. Left unattended a hold still
+expires after `REMOTE_POSITION_HOLD_BUDGET_S` (600 s) as
+`position_hold_expired`: loud, named, self-recovering, but a wasted session.
+
+The walkthrough follows the HOLD, not the transport — it renders when
+`position_pending.hand_released` is true, which is the plan's own statement that
+a person is expected to act. The remote tier's holds say false, so the arm's rig
+stays off the household's screen ([ADR-0188](adr/0188-wired-first-measurement-relay-parked.md)
+§4) and no browser button can free a position the arm has not reached.
 
 **A REJECTED capture ends an unattended run — watch for it.** A rejected capture
 (clipped, too quiet, locate failed, …) renders a human "Try again" affordance;

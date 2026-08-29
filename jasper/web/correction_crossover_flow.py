@@ -87,6 +87,23 @@ def render_page(hostname: str, csrf_token: str = "") -> bytes:
   <section class="info-card" aria-live="polite">
     <div id="crossover-action" class="measurement-row__actions"></div>
     <div id="crossover-relay" hidden>
+      <!-- The walkthrough: one prompted spot at a time, for a session whose
+           operator is at THIS browser rather than on a capture page (#2881).
+           Eyebrow (which spot) / title (the move) / hint (the supporting
+           clause) is the same three-slot grammar the capture page's step
+           screen uses, and the words in all three come from the capture
+           plan, so the two surfaces read alike without sharing markup. -->
+      <div id="crossover-walk" class="capture-walk" hidden>
+        <p id="crossover-walk-progress" class="eyebrow"></p>
+        <!-- A paragraph, not a heading: this block appears and disappears
+             inside the section's own `aria-live="polite"`, which announces
+             the instruction already, and a transient h3 under a section with
+             no h2 would put a hole in the page's heading outline. Same class,
+             same weight, as `.measurement-row__title`'s paragraph. -->
+        <p id="crossover-walk-headline" class="section__title"></p>
+        <p id="crossover-walk-detail" class="form-hint"></p>
+        <div id="crossover-walk-action" class="measurement-row__actions"></div>
+      </div>
       <p id="crossover-relay-status" class="form-hint"></p>
       <a id="crossover-relay-link" class="btn btn--primary" href="#" target="_blank" rel="noopener" hidden>Open measurement page</a>
       <div id="crossover-relay-qr" class="relay-qr"></div>

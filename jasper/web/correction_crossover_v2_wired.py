@@ -563,9 +563,15 @@ def build_v2_wired_run_and_consume(
             SessionGraphError,
         )
         from jasper.active_speaker.session_volume_plan import SessionVolumePlanError
-        from jasper.capture_relay.session import (
+        # The begin-admission pair comes from the SEAM's own home (ADR-0188
+        # §2 — the live measurement path does not import the parked relay);
+        # ``CaptureFailed``/``CaptureStopped`` genuinely live in the relay
+        # session module and stay there.
+        from jasper.active_speaker.crossover_v2.capture_source import (
             CaptureBeginDeferred,
             CaptureBeginRefused,
+        )
+        from jasper.capture_relay.session import (
             CaptureFailed,
             CaptureStopped,
         )

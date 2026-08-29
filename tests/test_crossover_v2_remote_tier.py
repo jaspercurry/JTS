@@ -623,6 +623,92 @@ def test_the_ceiling_latch_leaves_an_already_released_begin_alone():
     gate.gate(3, 3, entry)  # admitted — no raise
 
 
+def test_a_hold_carries_the_plans_own_words_and_says_who_releases_it():
+    """What a BROWSER needs to render a hold it cannot tap through (#2881).
+
+    Built from real shipped plans rather than a hand-made ``screen`` bag,
+    because the claim is that the gate re-publishes the capture plan's copy
+    rather than composing a second one: an edit to the prompt table has to
+    reach this screen, and a test that supplied its own sentences would keep
+    passing while the two drifted.
+
+    ``hand_released`` is the question a surface offering a release control must
+    answer, and it is NOT the transport. Both shapes below are gated and both
+    publish the identical hold; only one of them has a person standing at the
+    speaker, and the plan already states which per entry.
+    """
+    remote = resolve_plan_shape(TIER_REMOTE)
+    by_hand = dataclasses.replace(
+        resolve_plan_shape(TIER_FULL), hand_released_positions=True
+    )
+    for shape, hand_released in ((by_hand, True), (remote, False)):
+        entry = _stage2_of(shape).entries[0]
+        gate = PositionGate()
+        with pytest.raises(CaptureBeginDeferred):
+            gate.gate(1, 1, entry)
+        pending = gate.pending()
+        assert pending["hand_released"] is hand_released
+        # Verbatim, not paraphrased: same strings, same three slots.
+        assert pending["prompt"] == {
+            "progress": entry.screen["progress"],
+            "title": entry.screen["title"],
+            "body": entry.screen.get("body", ""),
+        }
+        # A person has to be able to act on it — an empty headline is a silent
+        # hold, which is the failure this whole block exists to prevent.
+        assert pending["prompt"]["title"].strip()
+        # The machine facts the external driver reads are untouched beside it.
+        assert pending["degrees"] == int(entry.screen[POSITION_DEG_KEY])
+        assert pending["action"]["endpoint"] == POSITION_READY_ENDPOINT
+
+
+def _label_at(degrees):
+    """The release action's label for one bearing."""
+    gate = PositionGate()
+    with pytest.raises(CaptureBeginDeferred):
+        gate.gate(1, 1, _entry(degrees))
+    return gate.pending()["action"]["label"]
+
+
+def test_the_release_label_signs_a_bearing_but_never_signs_zero():
+    """The two properties, not the sentence — this is a button a HOUSEHOLD
+    presses now, so its wording will be edited and a frozen string would only
+    be re-typed here.
+
+    The sign distinguishes the two off-axis sides, so it has to survive. At
+    the design axis it distinguishes nothing and "+0°" reads as a typo beside
+    a prompt that calls the same position the design axis.
+    """
+    assert "0" in _label_at(0)
+    assert "+0" not in _label_at(0)
+    assert _label_at(7) != _label_at(-7)
+    assert "+7" in _label_at(7)
+
+
+def test_hand_released_tracks_the_entrys_own_advance_policy():
+    """The derivation, pinned against its two inputs rather than its output.
+
+    ``hand_released`` is read off the entry's ``auto_advance`` — the plan's own
+    statement of whether a person is expected to act — so a shape that stops
+    advancing by tap stops offering a browser release in the same edit. The
+    mutation that matters is the middle case: a hold whose entry says
+    ``countdown`` must never claim a hand.
+    """
+    for policy, expected in (
+        (AUTO_ADVANCE_TAP, True),
+        (AUTO_ADVANCE_COUNTDOWN, False),
+        ("", False),
+    ):
+        gate = PositionGate()
+        with pytest.raises(CaptureBeginDeferred):
+            gate.gate(1, 1, SimpleNamespace(screen={
+                POSITION_DEG_KEY: "0",
+                POSITION_ROLE_KEY: POSITION_ROLE_ONAX,
+                "auto_advance": policy,
+            }))
+        assert gate.pending()["hand_released"] is expected
+
+
 def test_the_ceiling_refusal_is_a_registry_code_the_teardown_leaves_published():
     """Both halves of what makes a gate refusal honest, for the new code.
 
@@ -1457,6 +1543,35 @@ def test_a_live_hold_reaches_the_envelope_on_the_relay_block():
         assert setup._get_relay_capture_for("sync:") is None
         gate.release(2)
         assert "position_pending" not in setup._get_relay_capture_for("crossover_v2:")
+
+
+def test_the_slot_names_which_source_the_live_session_opened_on():
+    """WHICH transport is running, for the whole in-flight life of the slot.
+
+    Two surfaces have no other way to ask (#2881): the browser, which cannot
+    otherwise tell "no phone link YET" from a wired session's "no phone link
+    EVER" and sat on "creating the link" for the whole round; and the closing
+    screen, which has to know whose move the all-spots-measured confirm is.
+
+    Pinned across the registration hop as well as the claim, because
+    ``_publish_relay_waiting`` REBUILDS the dict — a field it dropped would be
+    present exactly until the session became reachable.
+    """
+    from jasper.active_speaker.crossover_v2.capture_source import (
+        SOURCE_RELAY,
+        SOURCE_WIRED,
+    )
+    from jasper.web import correction_setup as setup
+
+    for local, expected in ((True, SOURCE_WIRED), (False, SOURCE_RELAY)):
+        setup._set_relay_capture(None)
+        assert setup._begin_relay_capture("crossover_v2:session", local=local)
+        try:
+            assert setup._get_relay_capture()["source"] == expected
+            setup._publish_relay_waiting("crossover_v2:session", "https://t/#s=x")
+            assert setup._get_relay_capture_for("crossover_v2:")["source"] == expected
+        finally:
+            setup._set_relay_capture(None)
 
 
 def test_a_finished_session_stops_advertising_its_hold():
