@@ -2055,19 +2055,20 @@ def _take_staged_angle_walk(
     base_entries: int,
     lateral_group_present: bool,
     plans_cloud_group: bool,
-) -> tuple[tuple[Any, ...], str] | None:
-    """This session's staged angle walk as ``(poses, consumer)``, or ``None``.
+) -> tuple[tuple[Any, ...], str, Any] | None:
+    """This session's staged angle walk as ``(poses, consumer, spec)``, or ``None``.
 
     :func:`_take_staged_prescription`'s twin: ONE take, at ONE place.
     ``None`` means NOTHING WAS STAGED — an ordinary session — and nothing else.
 
     **A staged walk this session cannot honour REFUSES THE OPEN**
     (:class:`CrossoverV2Refused`), with the producing module's own slug in the
-    sentence. The three refusal classes are the spool's ``AngleRequestRefused``,
-    the seam's ``LateralWalkRefused``, and the bare ``CrossoverV2FlowError`` the
+    sentence. The four refusal classes are the spool's ``AngleRequestRefused``,
+    the seam's ``LateralWalkRefused``, the bare ``CrossoverV2FlowError`` the
     spool re-raises for a banked stop that no longer satisfies the seam's
     contract (a hand-edited angle), which that module deliberately does not
-    re-wrap.
+    re-wrap, and the bare ``ValueError`` ``MeasureSpec`` raises for a polarity
+    pair it will not accept (``spec``, below).
 
     It used to journal every one of them and return ``None``, and the session
     then opened in its ordinary 3-capture shape: an operator who staged a walk
@@ -2080,6 +2081,14 @@ def _take_staged_angle_walk(
     The consumer is always ``LATERAL_CONSUMER_FORWARD_MODEL`` — assigned here
     rather than read from the document, because it decides which pose table the
     walk runs and may have exactly one writer.
+
+    ``spec`` is this session's MEASURE ``MeasureSpec``, built HERE because
+    adoption is where the document's ``(polarity, inverted_role)`` pair first
+    meets the gate that judges it. Built rather than checked: the same object
+    the engine leg plays, so no second construction can disagree with the one
+    that was validated. A pair ``MeasureSpec.__post_init__`` refuses therefore
+    refuses the open here, in the spec's own sentence, rather than reaching a
+    capture callback as a 500.
 
     ``consumed`` on the journal line is READ BACK from the spool, never
     asserted: its two unreadable arms deliberately do not consume, so a
@@ -2097,6 +2106,7 @@ def _take_staged_angle_walk(
     """
     from jasper.active_speaker.angle_capture import (
         WALK_LATERAL_GROUP_ALREADY_PLANNED,
+        WALK_POLARITY_NOT_ACCEPTED,
         WALK_STOP_NO_LONGER_VALID,
         LateralWalkRefused,
         session_lateral_walk,
@@ -2107,10 +2117,14 @@ def _take_staged_angle_walk(
         take_staged_angle_request,
     )
     from jasper.active_speaker.crossover_v2.capture_plan import position_angle_deg
-    from jasper.active_speaker.crossover_v2.contracts import CrossoverV2FlowError
+    from jasper.active_speaker.crossover_v2.contracts import (
+        MEASURE_KIND_CANDIDATE,
+        CrossoverV2FlowError,
+    )
     from jasper.active_speaker.crossover_v2.journey import (
         LATERAL_CONSUMER_FORWARD_MODEL,
     )
+    from jasper.active_speaker.crossover_v2.measure_spec import MeasureSpec
 
     def refused(reason: str, detail: str) -> CrossoverV2Refused:
         log_event(
@@ -2152,15 +2166,28 @@ def _take_staged_angle_walk(
         # beats anything a second vocabulary could say, so it arrives with no
         # slug — it gets one here and keeps that sentence as the detail.
         raise refused(WALK_STOP_NO_LONGER_VALID, str(exc)) from exc
+    try:
+        # Its own arm rather than a fourth clause on the block above: only THIS
+        # construction may be read as a polarity refusal, and a ``ValueError``
+        # from anything else up there must not be relabelled as one.
+        measure_spec = MeasureSpec(
+            kind=MEASURE_KIND_CANDIDATE,
+            polarity=request.polarity,
+            inverted_role=request.inverted_role,
+        )
+    except ValueError as exc:
+        raise refused(WALK_POLARITY_NOT_ACCEPTED, str(exc)) from exc
     log_event(
         logger, "correction.crossover_v2_angle_walk_taken",
         stops=len(prompts),
         angles=",".join(f"{position_angle_deg(p):+d}" for p in prompts),
         mover=request.mover,
         regimes=",".join(sorted({stop.regime for stop in request.stops})),
+        polarity=request.polarity,
+        inverted_role=request.inverted_role,
         consumer=LATERAL_CONSUMER_FORWARD_MODEL,
     )
-    return prompts, LATERAL_CONSUMER_FORWARD_MODEL
+    return prompts, LATERAL_CONSUMER_FORWARD_MODEL, measure_spec
 
 
 
@@ -5764,6 +5791,7 @@ def _bind_engine_measure_leg(
     stimulus_capture: Any,
     index_phase_map: Mapping[int, str],
     run_async: Any,
+    measure_spec: Any = None,
 ) -> Callable[[int, int, Any], Any] | None:
     """The wired walk's engine leg: MEASURE captures through ``measure()``.
 
@@ -5858,6 +5886,15 @@ def _bind_engine_measure_leg(
     if not measure_indices:
         return None
 
+    # What this session's MEASURE capture asks for. ``None`` is the ordinary
+    # session's bare candidate spec; a staged walk that declared R-1's reverse
+    # polarity hands over the spec ADOPTION already built and validated, so the
+    # pair reaching the graph is the pair the refusal gate passed rather than a
+    # second construction from the same two words.
+    spec = measure_spec if measure_spec is not None else MeasureSpec(
+        kind=MEASURE_KIND_CANDIDATE,
+    )
+
     def _raise_as_todays_failure(incident: str) -> NoReturn:
         """The incident, as the exception type the classifier already maps.
 
@@ -5896,9 +5933,7 @@ def _bind_engine_measure_leg(
             measured: list[Any] = []
 
             async def _body() -> None:
-                measured.append(await tuning.measure(
-                    MeasureSpec(kind=MEASURE_KIND_CANDIDATE)
-                ))
+                measured.append(await tuning.measure(spec))
 
             await _under_measurement_isolation(_body)
             return measured[0]
@@ -6355,6 +6390,11 @@ def prepare_v2_session(
     # ONCE, here, so every surface downstream — the index map, the spec, the
     # gate — reads one shape rather than a half-updated one.
     plan_shape = _hand_released_plan_shape(plan_shape, capture_source)
+    # The MEASURE spec a staged walk may state (R-1's reverse polarity). Bound
+    # here rather than inside the branch below because ``_open`` reads it on
+    # both stages, and stage 2 takes no MEASURE capture at all: ``None`` is the
+    # engine leg's own default spec, which is every ordinary session.
+    engine_measure_spec: Any = None
     if not verify_only:
         include_cloud_measure = STAGE1_INCLUDES_CLOUD_MEASURE
         # R16's lateral walk (plan §4.4) is not a stage-1 group. Spelled here beside
@@ -6389,7 +6429,7 @@ def prepare_v2_session(
         lateral_prompts: tuple[Any, ...] | None = None
         lateral_consumer = LATERAL_CONSUMER_FC_SELECTOR
         if staged_walk is not None:
-            lateral_prompts, lateral_consumer = staged_walk
+            lateral_prompts, lateral_consumer, engine_measure_spec = staged_walk
             include_lateral = True
             stage1_index_phase = build_v2_cloud_index_phase_map(
                 plan_shape=plan_shape,
@@ -6915,6 +6955,7 @@ def prepare_v2_session(
                 stimulus_capture=stimulus_capture,
                 index_phase_map=opening.plan.index_phase_map,
                 run_async=run_async,
+                measure_spec=engine_measure_spec,
             ),
         )
         held = _HeldSession(tuning=tuning, run=source_run)

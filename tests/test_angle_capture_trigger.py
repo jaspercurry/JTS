@@ -42,6 +42,11 @@ from jasper.active_speaker.angle_capture import (
     resolve_request,
     summed_at,
 )
+from jasper.active_speaker.crossover_v2.contracts import (
+    DRIVER_ROLE_TWEETER,
+    POLARITY_INVERTED,
+    POLARITY_NORMAL,
+)
 from jasper.active_speaker.crossover_v2_flow import (
     AUTO_ADVANCE_COUNTDOWN,
     AUTO_ADVANCE_TAP,
@@ -343,6 +348,40 @@ def test_the_staged_document_round_trips_the_whole_walk(slot):
     assert doc["mover"] == MOVER_ARM
 
     assert spool.take_staged_angle_request() == request
+
+
+def test_the_polarity_pair_rides_the_document_and_an_older_one_reads_as_normal(slot):
+    """R-1's walk-level pair, from the operator's words to the banked walk.
+
+    Walk-level, beside ``mover``, because the reverse-null is one act at one
+    place: the pair names what the session's design-axis MEASURE capture rides,
+    not what happens at a stop. ADDITIVE at the same schema version, so a
+    document staged before the keys existed reads as a normal-polarity walk
+    rather than as a refusal an operator has to re-stage past.
+    """
+    path, _ = slot
+    args = cli.build_parser().parse_args([
+        "stage", "--angles", "0",
+        "--polarity", POLARITY_INVERTED,
+        "--inverted-role", DRIVER_ROLE_TWEETER,
+    ])
+    assert cli._cmd_stage(args) == cli.EXIT_OK
+
+    doc = json.loads(path.read_text(encoding="utf-8"))
+    assert doc["polarity"] == POLARITY_INVERTED
+    assert doc["inverted_role"] == DRIVER_ROLE_TWEETER
+    assert spool.take_staged_angle_request() == AngleCaptureRequest(
+        stops=(AngleStop(0, REGIME_PER_DRIVER),),
+        polarity=POLARITY_INVERTED,
+        inverted_role=DRIVER_ROLE_TWEETER,
+    )
+
+    older = {k: v for k, v in doc.items() if k not in ("polarity", "inverted_role")}
+    assert older["artifact_schema_version"] == spool.SPOOL_SCHEMA_VERSION
+    path.write_text(json.dumps(older), encoding="utf-8")
+    taken = spool.take_staged_angle_request()
+    assert (taken.polarity, taken.inverted_role) == (POLARITY_NORMAL, "")
+    assert taken.stops == (AngleStop(0, REGIME_PER_DRIVER),)
 
 
 def test_the_staged_order_is_the_walk_order_not_a_sorted_rewrite(slot):

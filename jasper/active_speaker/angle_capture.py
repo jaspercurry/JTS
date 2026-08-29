@@ -81,6 +81,7 @@ from typing import Mapping, Sequence
 
 from jasper.audio_measurement.program import ExcitationProgram
 
+from .crossover_v2.contracts import POLARITY_NORMAL
 from .crossover_v2.journey import PHASE_CLOUD_VERIFY, PHASE_MEASURE
 from .crossover_v2.programs import program_for_phase
 from .crossover_v2_flow import (
@@ -128,6 +129,7 @@ __all__ = [
     "WALK_OVER_RELAY_CAPACITY",
     "WALK_LATERAL_GROUP_ALREADY_PLANNED",
     "WALK_STOP_NO_LONGER_VALID",
+    "WALK_POLARITY_NOT_ACCEPTED",
     "WALK_REFUSAL_REASONS",
     "LateralWalkRefused",
     "session_lateral_walk",
@@ -304,10 +306,26 @@ class AngleCaptureRequest:
     walk still changes the COPY with the operator, and this does not, because a
     request stated in degrees reads back in degrees for whoever is holding the
     microphone (see :func:`pose_at_angle`).
+
+    ``polarity`` and ``inverted_role`` are walk-level rather than per-stop
+    because the reverse-null is **one act at one place**
+    (``docs/REFACTOR-TUNING-2026-08.md`` §1: design-axis-only, where the
+    per-driver sweeps are per-position). They name what the session's
+    design-axis MEASURE capture rides, not what happens at a stop -- which is
+    also why they sit beside ``mover`` and not on :class:`AngleStop`.
+
+    **Carried, never judged here.**
+    :class:`~.crossover_v2.measure_spec.MeasureSpec` already refuses every bad
+    combination of the two, including both one-sided forms, and a second copy
+    of that rule is a copy that drifts. The host builds the spec when it adopts
+    the walk, so a request stating one half refuses THE OPEN in the spec's own
+    words -- see ADR-0006.
     """
 
     stops: tuple[AngleStop, ...]
     mover: str = MOVER_HUMAN
+    polarity: str = POLARITY_NORMAL
+    inverted_role: str = ""
 
     def __post_init__(self) -> None:
         object.__setattr__(self, "stops", tuple(self.stops))
@@ -633,6 +651,13 @@ WALK_LATERAL_GROUP_ALREADY_PLANNED = "walk_lateral_group_already_planned"
 #: that exception this slug and keeps the sentence as the detail.
 WALK_STOP_NO_LONGER_VALID = "walk_stop_no_longer_valid"
 
+#: The walk's ``(polarity, inverted_role)`` pair is not one
+#: :class:`~.crossover_v2.measure_spec.MeasureSpec` accepts. Judged by BUILDING
+#: that spec at adoption, never by a copy of its rule here -- so the detail is
+#: the spec's own sentence, the same way :data:`WALK_STOP_NO_LONGER_VALID`
+#: keeps ``_validated_angle``'s.
+WALK_POLARITY_NOT_ACCEPTED = "walk_polarity_not_accepted"
+
 WALK_REFUSAL_REASONS = frozenset({
     WALK_REGIME_UNSUPPORTED,
     WALK_MOVER_MISMATCH,
@@ -640,6 +665,7 @@ WALK_REFUSAL_REASONS = frozenset({
     WALK_OVER_RELAY_CAPACITY,
     WALK_LATERAL_GROUP_ALREADY_PLANNED,
     WALK_STOP_NO_LONGER_VALID,
+    WALK_POLARITY_NOT_ACCEPTED,
 })
 
 

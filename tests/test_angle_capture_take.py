@@ -18,21 +18,31 @@ second validator is the thing this design exists to avoid.
 
 from __future__ import annotations
 
+import asyncio
 import inspect
 import json
 import logging
 import os
+from types import SimpleNamespace
 
 import pytest
 
 from jasper.active_speaker import angle_capture as ac
 from jasper.active_speaker import angle_capture_spool as spool
 from jasper.active_speaker import crossover_v2_flow as flow
+from jasper.active_speaker.crossover_v2.contracts import (
+    DRIVER_ROLE_TWEETER,
+    MEASURE_KIND_CANDIDATE,
+    POLARITY_INVERTED,
+    POLARITY_NORMAL,
+)
 from jasper.active_speaker.crossover_v2.journey import (
     LATERAL_CONSUMER_FC_SELECTOR,
     LATERAL_CONSUMER_FORWARD_MODEL,
     PHASE_LATERAL,
+    PHASE_MEASURE,
 )
+from jasper.active_speaker.crossover_v2.measure_spec import MeasureSpec
 from jasper.audio_measurement.excitation_admission import FrequencyBand
 from jasper.audio_measurement.program import RoleBand
 from jasper.web import correction_crossover_v2 as v2host
@@ -148,7 +158,7 @@ def test_a_staged_walk_is_taken_once_and_named_as_evidence(slot, caplog):
         taken = _take()
 
     assert taken is not None
-    prompts, consumer = taken
+    prompts, consumer, _spec = taken
     assert consumer == LATERAL_CONSUMER_FORWARD_MODEL
     assert [flow.position_angle_deg(p) for p in prompts] == CAMPAIGN_ANGLES
 
@@ -268,7 +278,7 @@ def test_the_taken_walk_becomes_the_sessions_map_and_its_prompted_entries(slot):
     six spots while the conductor measured five.
     """
     spool.stage_angle_request(ac.per_driver_at(CAMPAIGN_ANGLES))
-    prompts, _consumer = _take()
+    prompts, _consumer, _spec = _take()
     shape = _hand_shape()
 
     mapping = flow.build_v2_cloud_index_phase_map(
@@ -307,7 +317,7 @@ def test_an_arm_driven_walk_declares_the_angle_its_gate_waits_for(slot):
     spool.stage_angle_request(
         ac.per_driver_at(CAMPAIGN_ANGLES, mover=ac.MOVER_ARM)
     )
-    prompts, _consumer = _take(_arm_shape())
+    prompts, _consumer, _spec = _take(_arm_shape())
     plan = flow.build_v2_capture_plan(
         _ROLES_BANDS, _FC_HZ, plan_shape=_arm_shape(),
         include_cloud_measure=flow.STAGE1_INCLUDES_CLOUD_MEASURE,
@@ -330,13 +340,103 @@ def test_the_consent_copy_quotes_the_walk_the_household_will_actually_take(slot)
     reach at a household about to be walked past it is the dishonesty the
     orientation sentence exists to prevent."""
     spool.stage_angle_request(ac.per_driver_at([0, 45, -45]))
-    prompts, _consumer = _take()
+    prompts, _consumer, _spec = _take()
     wide = flow.walk_shape_for(
         cloud_positions=0, lateral=True, lateral_prompts=prompts,
     )
     ratified = flow.walk_shape_for(cloud_positions=0, lateral=True)
     assert wide != ratified
     assert "100 cm" in wide or "110 cm" in wide
+
+
+# --- R-1's reverse polarity ---------------------------------------------------
+
+
+def _inverted_walk(**pair):
+    return ac.AngleCaptureRequest(
+        stops=(ac.AngleStop(0, ac.REGIME_PER_DRIVER),),
+        polarity=POLARITY_INVERTED,
+        **pair,
+    )
+
+
+def _played_measure_spec(measure_spec, monkeypatch):
+    """The spec the engine leg actually hands ``TuningSession.measure``.
+
+    The leg's play runs under the session's measurement isolation; taking the
+    held-window arm keeps this pin off the real coordinator, the same way the
+    engine-leg suite's own fixture does.
+    """
+    monkeypatch.setattr(v2host, "session_measurement_pause_held", lambda: True)
+    monkeypatch.setattr(v2host, "_session_abort_target", None)
+    played: list = []
+
+    class _Tuning:
+        async def measure(self, spec):
+            played.append(spec)
+            return SimpleNamespace(stimuli=(SimpleNamespace(
+                record_id="rec-1", banked=True, incident="", level_db=-22.0,
+            ),))
+
+    leg = v2host._bind_engine_measure_leg(
+        tuning=_Tuning(),
+        stimulus_capture=SimpleNamespace(take_answer=lambda: "the-engine-take"),
+        index_phase_map={1: PHASE_MEASURE},
+        run_async=asyncio.run,
+        measure_spec=measure_spec,
+    )
+    assert leg(1, 1, entry=None) == "the-engine-take"
+    one, = played
+    return one
+
+
+def test_a_staged_polarity_reaches_the_engine_legs_measure_spec(slot, monkeypatch):
+    """R-1's carry, end to end at the host: document -> take -> engine spec.
+
+    The pair is walk-level because the reverse-null is one act at one place, so
+    it names what this session's design-axis MEASURE capture rides rather than
+    what happens at a stop. The spec the leg plays is the one ADOPTION built --
+    never a second one rebuilt downstream from the same two words, which is how
+    the validated pair and the played pair get to differ.
+    """
+    spool.stage_angle_request(_inverted_walk(inverted_role=DRIVER_ROLE_TWEETER))
+    _prompts, _consumer, spec = _take()
+
+    played = _played_measure_spec(spec, monkeypatch)
+    assert (played.kind, played.polarity, played.inverted_role) == (
+        MEASURE_KIND_CANDIDATE, POLARITY_INVERTED, DRIVER_ROLE_TWEETER,
+    )
+
+    # …and every ordinary session is untouched: nothing staged, no spec handed
+    # over, and the leg plays the bare candidate it always did.
+    ordinary = _played_measure_spec(None, monkeypatch)
+    assert (ordinary.polarity, ordinary.inverted_role) == (POLARITY_NORMAL, "")
+
+
+def test_a_one_sided_polarity_refuses_the_open_in_the_specs_own_words(slot, caplog):
+    """The pair is judged by the SPEC, at adoption, and nowhere upstream.
+
+    Staging is a dumb carrier on purpose — one copy of the rule, in
+    ``MeasureSpec`` — so a walk naming ``inverted`` and no branch does reach
+    the host. It refuses the open there, like every other walk this session
+    cannot honour, rather than raising out of a capture callback mid-round.
+    """
+    spool.stage_angle_request(_inverted_walk())
+    with caplog.at_level(logging.WARNING):
+        sentence = _refused()
+
+    assert ac.WALK_POLARITY_NOT_ACCEPTED in sentence
+    # The DETAIL is the spec's own refusal. Compared against what the spec
+    # actually raises rather than against a copy of its wording, so this pin
+    # cannot become the second vocabulary it exists to forbid.
+    with pytest.raises(ValueError) as spec_refusal:
+        MeasureSpec(kind=MEASURE_KIND_CANDIDATE, polarity=POLARITY_INVERTED)
+    assert str(spec_refusal.value) in sentence
+
+    line, = _events(caplog)
+    assert f"reason={ac.WALK_POLARITY_NOT_ACCEPTED}" in line
+    assert "consumed=true" in line and "session_continues=false" in line
+    assert spool.staged_angle_request_pending() is False
 
 
 # --- one take, four surfaces --------------------------------------------------
