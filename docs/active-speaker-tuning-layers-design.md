@@ -492,7 +492,9 @@ runs AFTER the flattening peaking loop:
   `HF_CONTINUATION_POLICY`: **hold** (compression horn, soft/beryllium/diamond
   dome, ribbon/AMT) keeps the lift constant; **taper** (metal dome, unknown)
   appends one trailing Highshelf CUT at ceiling×1.25 that walks the lift back
-  down over the unseen band. Unknown → taper is the conservative default.
+  down over the unseen band — pulled to the geometric mean of the ceiling and
+  Nyquist where ×1.25 would not fit below Nyquist (on a reference mic that is
+  21.9 kHz at 48 kHz). Unknown → taper is the conservative default.
 - **Budget 18 (6 → 12 → 18) — a max-SPL ledger.** `MAX_NORMALIZATION_SPEND_DB`
   is 18 dB so the spend can actually REACH the measured deficit: the live JTS3
   tweeter measured 14.2–14.3 dB at the ceiling but the 12 dB budget capped spend

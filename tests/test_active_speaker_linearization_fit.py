@@ -76,6 +76,7 @@ from jasper.active_speaker.branch_target import (
     SIGNIFICANT_GAIN_DB,
     STOPBAND_GAIN_MARGIN_OCTAVES,
 )
+from jasper.active_speaker.camilla_yaml import linearization_slot
 from jasper.audio_measurement.analysis import smooth_fractional_octave
 from jasper.audio_measurement.program_analysis import DriverResponse
 from jasper.correction.peq import PEQ, predicted_response
@@ -1549,17 +1550,69 @@ def test_cd_horn_taper_corner_is_clamped_below_nyquist_never_skipped(
     assert taper.gain == pytest.approx(
         -min(fit.hf_continuation_spend_db / 2.0, HF_TAPER_MAX_DB)
     )
+    # Legal at BOTH ends, on both rows: above the ceiling the shelf's whole
+    # transition would otherwise land inside the graded band, and at or above
+    # Nyquist the emitter refuses the filter outright.
+    assert ceiling_hz < taper.freq < _HF_TAPER_NYQUIST_HZ
     if designed_corner_fits:
-        assert taper.freq == pytest.approx(designed_hz)
-    else:
-        assert ceiling_hz < taper.freq < _HF_TAPER_NYQUIST_HZ
+        assert taper.freq == pytest.approx(ceiling_hz * 1.25)
+    # ...and it must still WALK THE LIFT DOWN over the band it exists to
+    # protect. An RBJ shelf collapses toward a pass-through as its corner
+    # approaches Nyquist, so "legal" is not the same claim as "does anything":
+    # averaged over [ceiling, Nyquist) the shelf delivers at least half its
+    # designed gain.
+    above_ceiling_hz = np.geomspace(
+        ceiling_hz, _HF_TAPER_NYQUIST_HZ * 0.9999, 400,
+    )
+    realized_db = 20.0 * np.log10(
+        np.abs(complex_correction_response((taper,), above_ceiling_hz))
+    )
+    assert float(np.mean(realized_db)) <= taper.gain / 2.0
     # The emitter's own bound, re-proved on every filter the stage shipped.
     for f in fit.filters:
         assert f.freq < _HF_TAPER_NYQUIST_HZ
 
+
+def test_cd_horn_hold_policy_appends_no_shelf():
+    """The negative case for the taper above: a "hold" class ends its filters
+    on a Peaking and appends no Highshelf at all."""
     hold_fit = _cd_horn_fit("compression_horn")
     assert hold_fit.hf_continuation_policy == "hold"
     assert all(f.biquad_type != "Highshelf" for f in hold_fit.filters)
+
+
+def test_cd_horn_taper_stays_trailing_when_the_lift_stage_boosts():
+    """The taper keeps the emitter's TAPER-LAST slot even when a lift boost is
+    emitted after it.
+
+    ``_lift_stage`` appends its boosts to the filter list it was handed, so a
+    trailing taper would otherwise stop being trailing. The emitter classifies
+    that slot by POSITION (``camilla_yaml.linearization_slot``, the public
+    alias that exists so a gate outside the emitter can ask "would the emitter
+    accept this list") and refuses a shelf anywhere else, which would refuse
+    the whole config at emission. Reordering is acoustically free — biquad
+    cascades commute — so the fit restores the contract itself.
+    """
+    freqs = _NATIVE_FREQS_HZ
+    magnitude_db = (
+        -1.8 * np.clip(np.log2(freqs / 10_000.0), 0.0, None)
+        - 4.0 * np.exp(-0.5 * (np.log2(freqs / 3000.0) / 0.12) ** 2)
+    )
+    resp = _tweeter_response(magnitude_db)
+    envelope = compose_envelope(
+        "tweeter", resp, excited_band_hz=(2000.0, 20000.0),
+        mic_tier="reference", driver_class="metal_dome",
+    )
+    fit = fit_driver_linearization(
+        resp, envelope, vocabulary=FitVocabulary(allow_boost=True),
+    )
+
+    entries = [f.to_dict() for f in fit.filters]
+    assert any(f.gain > 0.0 for f in fit.filters)  # a lift boost survived
+    slots = [linearization_slot(i, len(entries), entries) for i in range(len(entries))]
+    assert slots[0] == "shelf"
+    assert slots[-1] == "taper"
+    assert slots.count("taper") == 1
 
 
 def test_cd_horn_unknown_class_ineligible_at_reference_tier_after_ruling():

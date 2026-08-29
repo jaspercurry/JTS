@@ -2083,19 +2083,25 @@ def _hf_continuation_stage(
         # breakup-prone top from a projected lift with no measurement behind
         # it. Appended LAST (the emitter's taper-last construction contract).
         #
-        # The corner is CLAMPED, never skipped, when ceiling*ratio would not
-        # fit below Nyquist. Two facts bound where it may legally go:
-        #   * strictly ABOVE ceiling_hz — below it the shelf starts cutting
-        #     inside the measured band whose realization was already graded;
-        #   * strictly BELOW Nyquist — ``_validated_biquad_entry`` refuses
+        # The corner is CLAMPED, never skipped. Two facts bound where it may
+        # go, and the clamp is the geometric mean — the log-frequency midpoint
+        # between them, which is the domain this module's grid, bands and
+        # smoother all work in, so it needs no tuned constant and no per-rate
+        # table:
+        #   * ABOVE ceiling_hz. A Butterworth shelf's skirt reaches below its
+        #     corner either way (the designed 1.25x placement leaks into the
+        #     measured band too), but a corner AT or under the ceiling puts the
+        #     whole transition inside the band whose realization was already
+        #     graded without this filter.
+        #   * BELOW Nyquist. ``_validated_biquad_entry`` refuses
         #     freq >= samplerate/2, and an RBJ shelf degenerates to a literal
         #     pass-through as its corner reaches it (at w0 = pi the numerator
         #     equals the denominator coefficient-for-coefficient), so a corner
         #     parked just under Nyquist emits a shelf that walks nothing down.
-        # The clamp is the geometric mean — the log-frequency midpoint of that
-        # interval, which is the domain this module's grid, bands and smoother
-        # all work in. It lies strictly inside whenever ceiling < Nyquist (the
-        # guard above), so it needs no tuned constant and no per-rate table.
+        # min() therefore engages from ceiling_hz = Nyquist / ratio**2 upward
+        # — a little before the designed corner would itself become illegal,
+        # which is deliberate: the alternative (clamp only once illegal) parks
+        # the corner arbitrarily close to Nyquist and hits that degeneracy.
         taper_hz = min(
             ceiling_hz * _HF_TAPER_CORNER_RATIO,
             math.sqrt(ceiling_hz * _HF_TAPER_NYQUIST_HZ),
@@ -3312,6 +3318,24 @@ def fit_driver_linearization(
         ),
     )
     filters = list(lift.filters)
+
+    # Restore the emitter's taper-last contract. ``_lift_stage`` appends its
+    # boosts to the list it was handed, so a trailing CD-horn taper stops
+    # being trailing whenever a boost survives. Reordering is acoustically
+    # free — biquad cascades commute — but not structurally: the emitter
+    # classifies the taper slot BY POSITION
+    # (``camilla_yaml._linearization_slot``) and
+    # ``_validate_linearization_shelf_structure`` refuses a shelf that lands
+    # anywhere else, so the whole config would be refused at emission. A fit
+    # carries at most one Highshelf (``_hf_continuation_stage`` is inert when
+    # the rising-slope shelf already fired), so a Highshelf past index 0 is
+    # that taper.
+    taper_at = next(
+        (i for i, f in enumerate(filters) if i and f.biquad_type == "Highshelf"),
+        None,
+    )
+    if taper_at is not None and taper_at != len(filters) - 1:
+        filters.append(filters.pop(taper_at))
 
     # THE #2599 PLACEMENT SITE. Every emitted Peaking filter whose centre lands
     # in a span NO branch's own capture covers is NAMED here. It still ships —
