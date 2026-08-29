@@ -113,9 +113,9 @@ call and neither extends:
 * :mod:`.record_store` — the record seam filled: one durable writer over the
   write-once evidence bundle and the session's own state file, and the kind
   table that says where each banked artifact lands.
-* :mod:`.record_index` — the little measurement database: six columns over the
-  banked takes so a reader can ask for one instead of globbing a directory.
-  Derived, rebuildable by rescanning, and never an authority.
+* :mod:`.record_index` — the little measurement database: seven columns over
+  the banked takes so a reader can ask for one instead of globbing a
+  directory. Derived, rebuilt by rescanning on every read, never an authority.
 
 Offline evaluation, deliberately not a search:
 

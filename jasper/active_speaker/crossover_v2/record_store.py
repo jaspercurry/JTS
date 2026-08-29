@@ -68,8 +68,12 @@ from ..commissioning_evidence_store import (
     is_missing,
 )
 from ..measured_crossover_candidate import CANDIDATE_KIND, MeasuredCrossoverCandidate
-from .contracts import MEASURE_KIND_KEY, MEASURE_KINDS, ROUND_RECEIPT_KIND
-from .position_cycle import POSITION_EVIDENCE_KIND
+from .contracts import (
+    MEASURE_KIND_KEY,
+    MEASURE_KINDS,
+    POSITION_EVIDENCE_KIND,
+    ROUND_RECEIPT_KIND,
+)
 from .record_index import index_path, record_measurement
 
 __all__ = [

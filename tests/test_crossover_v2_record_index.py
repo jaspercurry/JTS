@@ -13,6 +13,7 @@ which is the whole claim that losing this database loses nothing.
 from __future__ import annotations
 
 import json
+import sqlite3
 from pathlib import Path
 from typing import Any
 
@@ -27,7 +28,13 @@ from jasper.active_speaker.crossover_v2.contracts import (
     MEASURE_KIND_VERIFY,
     ROUND_RECEIPT_KIND,
 )
+from jasper.active_speaker.crossover_v2.journey import (
+    PHASE_CHECK,
+    PHASE_ENTRY_BASELINE,
+    PHASE_LATERAL,
+)
 from jasper.active_speaker.crossover_v2.record_index import (
+    bundle_measurements,
     find_measurements,
     index_path,
     rebuild,
@@ -91,8 +98,114 @@ async def test_a_banked_take_is_findable_by(store, field, value):
     assert [row.path for row in found] == [record_id]
 
 
+@pytest.mark.parametrize("phase", [PHASE_LATERAL, PHASE_ENTRY_BASELINE])
+async def test_the_phase_axis_selects_the_takes_that_ARE_that_phase(store, phase):
+    """What a take IS, beside what it MEASURES — two columns, two questions.
+
+    Two takes differing ONLY in phase, so a filter that narrowed by kind
+    instead would return both: the axis has to select one and exclude the
+    other, which is what the packet's lateral and entry-baseline blocks read
+    it for.
+    """
+    wanted = await store.bank(_builder_take(phase=phase, take_id="pose_00_a01"))
+    await store.bank(_builder_take(phase=PHASE_CHECK, take_id="pose_00_a02"))
+
+    found = find_measurements(_db(store), phase=phase)
+
+    assert [row.path for row in found] == [wanted]
+    assert [row.phase for row in found] == [phase]
+
+
+async def test_a_bundle_read_rescans_before_it_answers(store):
+    """The reader's door does not trust the table it queries.
+
+    The store's own index write is contained — a bank that succeeded must
+    never be reported as one that failed — so a table missing rows is a
+    reachable state while every take's bytes sit in the bundle. Emptying it
+    here stands in for that, and the read still finds the take.
+    """
+    record_id = await store.bank(_builder_take(phase=PHASE_LATERAL))
+    connection = sqlite3.connect(_db(store))
+    try:
+        connection.execute("DELETE FROM measurements")
+        connection.commit()
+    finally:
+        connection.close()
+    assert find_measurements(_db(store)) == ()
+
+    found = bundle_measurements(store.evidence.bundle_dir, phase=PHASE_LATERAL)
+
+    assert [row.path for row in found] == [record_id]
+
+
+async def test_a_bundle_read_rescans_past_an_index_it_cannot_query(store):
+    """A table an older build wrote answers nothing, and costs nothing.
+
+    ``CREATE TABLE IF NOT EXISTS`` leaves an existing table alone, so a
+    database already on a speaker can hold the right NUMBER of rows under
+    columns this query does not name. The count check passes and the query
+    still raises, which is why both are here.
+    """
+    record_id = await store.bank(_builder_take(phase=PHASE_LATERAL))
+    _db(store).unlink()
+    connection = sqlite3.connect(_db(store))
+    try:
+        connection.execute("CREATE TABLE measurements (path TEXT PRIMARY KEY)")
+        connection.execute("INSERT INTO measurements VALUES (?)", (record_id,))
+        connection.commit()
+    finally:
+        connection.close()
+
+    found = bundle_measurements(store.evidence.bundle_dir, phase=PHASE_LATERAL)
+
+    assert [row.path for row in found] == [record_id]
+
+
+async def test_a_bundle_read_writes_no_index_of_its_own(store):
+    """The reader is a reader. It never mints the file it would rather have.
+
+    ``jasper-crossover-prescriber status`` is pinned to leave a banked corpus
+    byte-identical, and it reaches this function through the evidence packet —
+    so a read that rebuilt the table on the way past would be a reader with a
+    side effect. A corpus banked before the index existed carries none, and
+    still reads.
+    """
+    record_id = await store.bank(_builder_take(phase=PHASE_LATERAL))
+    _db(store).unlink()
+
+    found = bundle_measurements(store.evidence.bundle_dir, phase=PHASE_LATERAL)
+
+    assert [row.path for row in found] == [record_id]
+    assert not _db(store).exists()
+
+
+async def test_a_rebuild_replaces_a_table_whose_columns_predate_the_read(store):
+    """An index a previous build wrote self-heals rather than refusing rows.
+
+    ``CREATE TABLE IF NOT EXISTS`` leaves an existing table alone, so a
+    database already on a speaker refuses an insert naming a column it does
+    not have. Replacing the file is the recovery, and it is the same one
+    corrupt bytes get.
+    """
+    record_id = await store.bank(_builder_take(phase=PHASE_LATERAL))
+    _db(store).unlink()
+    connection = sqlite3.connect(_db(store))
+    try:
+        connection.execute(
+            "CREATE TABLE measurements (path TEXT PRIMARY KEY, kind TEXT)"
+        )
+        connection.commit()
+    finally:
+        connection.close()
+
+    assert rebuild(_db(store), _artifacts(store)) == 1
+
+    found = find_measurements(_db(store), phase=PHASE_LATERAL)
+    assert [row.path for row in found] == [record_id]
+
+
 async def test_a_rebuild_by_rescan_reproduces_the_banked_rows(store):
-    """Delete the index, rebuild it from the files, get the same six columns.
+    """Delete the index, rebuild it from the files, get the same seven columns.
 
     This is what makes the index derived rather than a second store: the
     banked records carry every column, so the database can be thrown away.
