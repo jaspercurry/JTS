@@ -1137,6 +1137,23 @@ async def _get_state(
         logger.exception("active speaker setup status read failed")
         active_speaker_setup = None
 
+    # Null means the speaker is on its applied graph. Non-null means somebody is
+    # auditioning a reduced one, and every other reading of this speaker's sound
+    # is about THAT graph. `stale` marks a record whose owner died without
+    # restoring: the graph is still reduced, but nothing is going to put it back.
+    try:
+        from ..active_speaker.audition import read_audition_state
+
+        audition_state: dict | None = read_audition_state()
+        if audition_state is not None:
+            audition_state = dict(audition_state)
+            audition_state["stale"] = (
+                float(audition_state.get("deadline_at") or 0.0) <= time.time()
+            )
+    except (ImportError, OSError, RuntimeError, TypeError, ValueError):
+        logger.exception("audition state read failed")
+        audition_state = None
+
     try:
         from ..bass_extension.profile import bass_extension_state_summary
 
@@ -1323,6 +1340,7 @@ async def _get_state(
         },
         "audio_graph": audio_graph_state,
         "active_speaker_setup": active_speaker_setup,
+        "audition": audition_state,
         "bass_extension": bass_extension_state,
         "renderers": {
             "spotify": spotify,

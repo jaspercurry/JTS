@@ -2934,6 +2934,7 @@ def recompose_applied_baseline_yaml(
     bass_extension_profile: BassExtensionProfile | None | object = (
         _DEFAULT_PERSISTED_BASS_PROFILE
     ),
+    drop_measured_correction: bool = False,
 ) -> tuple[str | None, list[dict[str, str]]]:
     """Re-emit Layer A strictly from the immutable applied-profile snapshot.
 
@@ -2957,6 +2958,15 @@ def recompose_applied_baseline_yaml(
     has to name the ring first. Passing anything that is not a legal active
     endpoint is refused by the emitter's own forbidden-token and width guards,
     not here.
+
+    ``drop_measured_correction`` omits the two stages that carry MEASURED
+    driver correction — the per-role linearization filters and the summed blend
+    correction — and changes nothing else, so the emitted graph keeps this
+    profile's own crossover, trims, delays, protection and program layers. It
+    exists for :mod:`jasper.active_speaker.audition`, which needs a graph that
+    differs from the applied one on exactly one axis and must never persist it.
+    Callers that WRITE a graph leave it False: a reduced graph is something to
+    listen to, never something to boot from.
     """
     snapshot, hardware_issues = applied_baseline_hardware_match(
         topology, applied_profile=applied_profile
@@ -3047,7 +3057,9 @@ def recompose_applied_baseline_yaml(
     # read, every /sound preference-EQ recompose (and any other
     # recompose_applied_baseline_yaml caller) silently dropped an applied
     # profile's linearization stage on the next recompose.
-    linearization_raw = snapshot.get("linearization")
+    linearization_raw = None if drop_measured_correction else snapshot.get(
+        "linearization"
+    )
     linearization = (
         {
             str(role): list(filters)
@@ -3062,7 +3074,9 @@ def recompose_applied_baseline_yaml(
     # written before the stage existed -> [] -> no stage emitted, and a
     # /sound preference-EQ save on a corrected speaker must NOT silently
     # revert the blend correction the household is listening to.
-    blend_correction_raw = snapshot.get("blend_correction")
+    blend_correction_raw = None if drop_measured_correction else snapshot.get(
+        "blend_correction"
+    )
     blend_correction = (
         [dict(entry) for entry in blend_correction_raw
          if isinstance(entry, Mapping)]

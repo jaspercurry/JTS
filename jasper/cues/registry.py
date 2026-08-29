@@ -158,6 +158,30 @@ CUES: tuple[CueDef, ...] = (
             "'hold the button', not on 'no primary leg was planned'."
         ),
     ),
+    CueDef(
+        slug="audition_reduced_graph",
+        template=(
+            "Heads up — I'm playing the crossover-only tuning for a listen. "
+            "I'll put the full one back within half an hour."
+        ),
+        description=(
+            "Played by jasper.active_speaker.audition right after it swaps the "
+            "running graph down to the crossover-only layer. Plays THROUGH the "
+            "new graph, so it is also the liveness proof. It prevents the "
+            "silent failure: a household listening to a deliberately reduced "
+            "tuning with nothing on the speaker having said so."
+        ),
+    ),
+    CueDef(
+        slug="audition_full_graph",
+        template="Back to the full tuning.",
+        description=(
+            "Played by jasper.active_speaker.audition after the durable graph "
+            "is proven back — on an explicit stop, on the deadline, or on the "
+            "owner being interrupted. Deliberately terse: it confirms a return "
+            "to normal and promises nothing else."
+        ),
+    ),
 )
 
 
