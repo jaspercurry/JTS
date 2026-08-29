@@ -867,25 +867,37 @@ def build_v2_run_and_consume(
             if gate_code not in REASON_REGISTRY:
                 gate_code = ""
             code = conductor.last_failure_code or gate_code or REASON_RELAY_TIMEOUT
-            _host._persist_terminal_failure(conductor, code)
-            # Only where the relay published nothing itself: on the
-            # authorize_begin path it already posted `capture_refused` for the
-            # REFUSED index, and this slot is last-write-wins (panel SF1). On
-            # the consume path nothing precedes it and the phone waits forever.
-            #
-            # A gate refusal is an authorize_begin refusal too — `run_capture_plan`
-            # posts `capture_refused` with the gate's own code and message before
-            # re-raising — but nothing sets the conductor's flag for it, because
-            # the conductor never saw it. Re-posting here would overwrite that
-            # honest, index-bearing event with a terminal one in the same
-            # last-write-wins slot.
-            already_published = (
-                conductor.relay_published_refusal
-                or gate_code in _host.POSITION_GATE_TERMINAL_CODES
-            )
-            if not already_published:
-                await _post_terminal_failure_host_event(code)
-            await _abandon_best_effort()
+            # THE DRAIN IS IN A ``finally`` IN EVERY CLEANUP ARM OF THIS FILE,
+            # and the reason is the same one each time: the persist ends in
+            # ``save_v2_state`` -> ``atomic_write_text``, so disk pressure
+            # (ENOSPC, EROFS) raises OSError out of it. The SESSION_MEASUREMENT
+            # claim it runs ahead of has NO TTL, and all three out-of-runner
+            # drains gate on ``VolumeOwner.holds_kind`` — so an abandon skipped
+            # by a raising persist leaks the claim and wedges the measurement
+            # pause until the process restarts. Recording the failure must
+            # never cost the household its fader.
+            try:
+                _host._persist_terminal_failure(conductor, code)
+                # Only where the relay published nothing itself: on the
+                # authorize_begin path it already posted `capture_refused` for
+                # the REFUSED index, and this slot is last-write-wins (panel
+                # SF1). On the consume path nothing precedes it and the phone
+                # waits forever.
+                #
+                # A gate refusal is an authorize_begin refusal too —
+                # `run_capture_plan` posts `capture_refused` with the gate's own
+                # code and message before re-raising — but nothing sets the
+                # conductor's flag for it, because the conductor never saw it.
+                # Re-posting here would overwrite that honest, index-bearing
+                # event with a terminal one in the same last-write-wins slot.
+                already_published = (
+                    conductor.relay_published_refusal
+                    or gate_code in _host.POSITION_GATE_TERMINAL_CODES
+                )
+                if not already_published:
+                    await _post_terminal_failure_host_event(code)
+            finally:
+                await _abandon_best_effort()
             await asyncio.sleep(TERMINAL_FAILURE_PURGE_GRACE_S)
             await _purge_best_effort()
             raise
@@ -946,10 +958,12 @@ def build_v2_run_and_consume(
                     # resume that does not exist.
                     accepted_phases=",".join(sorted(conductor.accepted_phases)),
                 )
-            verdict_preserved = _host._persist_terminal_failure(conductor, code)
-            if not verdict_preserved:
-                await _post_session_over_host_event(budget)
-            await _abandon_best_effort()
+            try:
+                verdict_preserved = _host._persist_terminal_failure(conductor, code)
+                if not verdict_preserved:
+                    await _post_session_over_host_event(budget)
+            finally:
+                await _abandon_best_effort()
             await asyncio.sleep(TERMINAL_FAILURE_PURGE_GRACE_S)
             await _purge_best_effort()
             raise
@@ -985,9 +999,11 @@ def build_v2_run_and_consume(
                     # a code; this is what distinguishes them (panel nit).
                     detail=str(exc),
                 )
-            await _post_terminal_failure_host_event(code)
-            _host._persist_terminal_failure(conductor, code, refusals=refusals)
-            await _abandon_best_effort()
+            try:
+                await _post_terminal_failure_host_event(code)
+                _host._persist_terminal_failure(conductor, code, refusals=refusals)
+            finally:
+                await _abandon_best_effort()
             # Finding H: give the just-posted terminal host event a bounded
             # grace window to reach the phone before the session is purged
             # out from under its next poll. Volume restore above stays
@@ -997,32 +1013,37 @@ def build_v2_run_and_consume(
             raise
         # Plan finished without a transport failure.
         done = conductor.current_phase == PHASE_DONE
-        _host.persist_conductor_state(
-            conductor,
-            failure_code=None if done else conductor.last_failure_code,
-            evidence=evidence_refs,
-        )
-        if done:
-            try:
-                await volume.close()
-            except (OSError, RuntimeError, ValueError) as exc:
-                log_event(
-                    logger,
-                    "correction.crossover_v2_volume_close_failed",
-                    level=logging.CRITICAL,
-                    session_id=pi_session.session_id,
-                    component="volume_close",
-                    error_type=type(exc).__name__,
-                )
+        # Same guarantee as the cleanup arms above, and BOTH branches need it:
+        # a raising persist would otherwise skip the close as well as the
+        # abandon, and the close releases the very same claim.
+        try:
+            _host.persist_conductor_state(
+                conductor,
+                failure_code=None if done else conductor.last_failure_code,
+                evidence=evidence_refs,
+            )
+        finally:
+            if done:
+                try:
+                    await volume.close()
+                except (OSError, RuntimeError, ValueError) as exc:
+                    log_event(
+                        logger,
+                        "correction.crossover_v2_volume_close_failed",
+                        level=logging.CRITICAL,
+                        session_id=pi_session.session_id,
+                        component="volume_close",
+                        error_type=type(exc).__name__,
+                    )
+                else:
+                    log_event(
+                        logger,
+                        "correction.crossover_v2_cleanup_complete",
+                        session_id=pi_session.session_id,
+                        component="volume_close",
+                    )
             else:
-                log_event(
-                    logger,
-                    "correction.crossover_v2_cleanup_complete",
-                    session_id=pi_session.session_id,
-                    component="volume_close",
-                )
-        else:
-            await _abandon_best_effort()
+                await _abandon_best_effort()
         await _purge_best_effort()
 
     return _run_and_consume

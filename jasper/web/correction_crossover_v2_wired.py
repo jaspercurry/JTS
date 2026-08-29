@@ -1098,8 +1098,18 @@ def build_v2_wired_run_and_consume(
             if refusal_code not in REASON_REGISTRY:
                 refusal_code = ""
             code = refusal_code or conductor.last_failure_code or REASON_INTERNAL_ERROR
-            _host._persist_terminal_failure(conductor, code)
-            await _abandon_best_effort(session_id, volume)
+            # THE DRAIN IS IN A ``finally`` IN EVERY CLEANUP ARM OF THIS FILE:
+            # the persist ends in ``save_v2_state`` -> ``atomic_write_text``, so
+            # disk pressure (ENOSPC, EROFS) raises OSError out of it. The
+            # SESSION_MEASUREMENT claim it runs ahead of has NO TTL, and all
+            # three out-of-runner drains gate on ``VolumeOwner.holds_kind`` — so
+            # an abandon skipped by a raising persist leaks the claim and wedges
+            # the measurement pause until the process restarts. Recording the
+            # failure must never cost the household its fader.
+            try:
+                _host._persist_terminal_failure(conductor, code)
+            finally:
+                await _abandon_best_effort(session_id, volume)
             raise
         except Exception as exc:  # noqa: BLE001 — cleanup-and-reraise, the relay's arm
             # The catch-all cleanup arm (W6.1 gate ruling), minus the phone:
@@ -1119,37 +1129,44 @@ def build_v2_wired_run_and_consume(
                 error_type=type(exc).__name__,
                 detail=str(exc),
             )
-            _host._persist_terminal_failure(conductor, code, refusals=refusals)
-            await _abandon_best_effort(session_id, volume)
+            try:
+                _host._persist_terminal_failure(conductor, code, refusals=refusals)
+            finally:
+                await _abandon_best_effort(session_id, volume)
             raise
         # Walk finished without a failure.
         done = conductor.current_phase == PHASE_DONE
-        _host.persist_conductor_state(
-            conductor,
-            failure_code=None if done else conductor.last_failure_code,
-            evidence=evidence_refs,
-        )
-        if done:
-            try:
-                await volume.close()
-            except (OSError, RuntimeError, ValueError) as exc:
-                log_event(
-                    logger,
-                    "correction.crossover_v2_volume_close_failed",
-                    level=logging.CRITICAL,
-                    session_id=session_id,
-                    component="volume_close",
-                    error_type=type(exc).__name__,
-                )
+        # Same guarantee as the cleanup arms above, and BOTH branches need it:
+        # a raising persist would otherwise skip the close as well as the
+        # abandon, and the close releases the very same claim.
+        try:
+            _host.persist_conductor_state(
+                conductor,
+                failure_code=None if done else conductor.last_failure_code,
+                evidence=evidence_refs,
+            )
+        finally:
+            if done:
+                try:
+                    await volume.close()
+                except (OSError, RuntimeError, ValueError) as exc:
+                    log_event(
+                        logger,
+                        "correction.crossover_v2_volume_close_failed",
+                        level=logging.CRITICAL,
+                        session_id=session_id,
+                        component="volume_close",
+                        error_type=type(exc).__name__,
+                    )
+                else:
+                    log_event(
+                        logger,
+                        "correction.crossover_v2_cleanup_complete",
+                        session_id=session_id,
+                        component="volume_close",
+                    )
             else:
-                log_event(
-                    logger,
-                    "correction.crossover_v2_cleanup_complete",
-                    session_id=session_id,
-                    component="volume_close",
-                )
-        else:
-            await _abandon_best_effort(session_id, volume)
+                await _abandon_best_effort(session_id, volume)
 
     return _run_and_consume
 
