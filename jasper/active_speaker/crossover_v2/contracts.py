@@ -75,6 +75,9 @@ __all__ = [
     "CrossoverV2FlowError",
     "DEFAULT_CLOUD_MEASURE_POSITIONS",
     "DESIGN_AXIS_DEG",
+    "DRIVER_ROLES",
+    "DRIVER_ROLE_TWEETER",
+    "DRIVER_ROLE_WOOFER",
     "EvidenceTrust",
     "InterventionProposal",
     "IterationHeadroom",
@@ -1488,6 +1491,14 @@ MEASURE_REGIMES = (REGIME_NEAR_FIELD, REGIME_REFERENCE_AXIS)
 POLARITY_NORMAL = "normal"
 POLARITY_INVERTED = "inverted"
 POLARITIES = (POLARITY_NORMAL, POLARITY_INVERTED)
+
+#: The driver branches a `polarity=inverted` measurement may flip. Owner:
+#: `profile.DRIVER_ROLES_BY_WAY[2]` — the program graph is scoped to a 2-way
+#: preset (`camilla_yaml.emit_active_speaker_program_config` refuses any other
+#: `way_count`), so these two roles are the whole set a measurement can name.
+DRIVER_ROLE_WOOFER = "woofer"
+DRIVER_ROLE_TWEETER = "tweeter"
+DRIVER_ROLES = (DRIVER_ROLE_WOOFER, DRIVER_ROLE_TWEETER)
 
 #: The pose axes. Owner: `spatial.POSITION_AXES`.
 POSITION_AXIS_HORIZONTAL = "horizontal"

@@ -33,6 +33,7 @@ decorative (deleting a gate call from one emitter would then ship red).
 
 from __future__ import annotations
 
+import re
 from dataclasses import replace
 from typing import Callable
 
@@ -700,3 +701,155 @@ def test_program_config_round_trips_through_camillas_own_check(tmp_path) -> None
     if result.status == ValidationStatus.MISSING:
         pytest.skip("camilladsp binary not installed in this environment")
     assert result.status == ValidationStatus.VALID, result.stderr_tail
+
+
+# --------------------------------------------------------------------------- #
+# R-1 — the reverse-null flip, in the measurement graph and nowhere else
+# --------------------------------------------------------------------------- #
+
+
+def _mixer_sources(yaml_text: str) -> list[str]:
+    """Every ``{ channel: …, gain: …, inverted: … }`` line, in emitted order."""
+    return [
+        line.strip() for line in yaml_text.splitlines()
+        if line.strip().startswith("- { channel:")
+    ]
+
+
+def _tweeter_outputs(preset) -> set[int]:
+    return {
+        output.index for output in preset.channel_map.outputs
+        if output.driver_role == "tweeter"
+    }
+
+
+def test_inverting_a_branch_flips_that_branch_and_leaves_every_other_alone():
+    """R-1's sign, at the one place it is applied.
+
+    Walks the emitted mixer rather than grepping the text: the pin must fail if
+    the flip lands on the wrong role, on every role, or on none.
+    """
+    preset = _preset("mono", 2)
+    kwargs = dict(role_channels=ROLE_CHANNELS, playback_device=ACTIVE_PCM)
+
+    normal = _mixer_sources(emit_active_speaker_program_config(preset, **kwargs))
+    flipped = _mixer_sources(
+        emit_active_speaker_program_config(
+            preset, inverted_roles=("tweeter",), **kwargs
+        )
+    )
+
+    tweeters = _tweeter_outputs(preset)
+    assert tweeters and len(normal) == len(flipped) > len(tweeters)
+    differing = {i for i, (a, b) in enumerate(zip(normal, flipped)) if a != b}
+    assert differing == tweeters
+    for index in differing:
+        assert "inverted: false" in normal[index]
+        assert "inverted: true" in flipped[index]
+
+
+def test_inverting_a_branch_moves_no_gain_and_therefore_no_peak():
+    """LEVEL NEUTRALITY, asserted rather than argued.
+
+    The whole safety claim of the reverse-null is that it negates samples and
+    changes no magnitude: every ``gain:`` in the graph — the mixer's routes,
+    the per-driver limiter's ceiling, the headroom block, ``volume_limit`` —
+    must be byte-identical to the non-inverted twin's. A flip implemented as a
+    -1.0 dB gain instead of the polarity flag reds this.
+    """
+    preset = _preset("mono", 2)
+    kwargs = dict(role_channels=ROLE_CHANNELS, playback_device=ACTIVE_PCM)
+
+    normal = emit_active_speaker_program_config(preset, **kwargs)
+    flipped = emit_active_speaker_program_config(
+        preset, inverted_roles=("tweeter",), **kwargs
+    )
+
+    def _levels(text: str) -> list[str]:
+        # Every number the graph states in dB or linear amplitude, wherever it
+        # appears: mixer route gains, the headroom Gain filters, each driver's
+        # limiter ceiling, and the software volume ceiling.
+        return re.findall(
+            r"(?:gain|volume_limit|clip_limit|limit)\s*[:=]\s*(-?[\d.]+)", text
+        )
+
+    assert _levels(normal) == _levels(flipped) != []
+    assert normal != flipped, "the flip must reach the graph somewhere"
+
+
+def test_the_flip_is_RELATIVE_to_the_polarity_the_graph_would_otherwise_carry():
+    """XOR, not assignment.
+
+    A preset whose design already inverts the tweeter must come back
+    NON-inverted when the measurement flips that branch — the reverse-null asks
+    for "the other sign", not for "inverted". An implementation that assigned
+    the flag instead of XOR-ing it emits the same bytes both ways here.
+    """
+    raw = _two_way_preset("mono")
+    raw["crossover_regions"][0]["upper_polarity"] = "inverted"
+    preset = ActiveSpeakerPreset.from_mapping(raw)
+    kwargs = dict(role_channels=ROLE_CHANNELS, playback_device=ACTIVE_PCM)
+
+    normal = _mixer_sources(emit_active_speaker_program_config(preset, **kwargs))
+    flipped = _mixer_sources(
+        emit_active_speaker_program_config(
+            preset, inverted_roles=("tweeter",), **kwargs
+        )
+    )
+
+    for index in _tweeter_outputs(preset):
+        assert "inverted: true" in normal[index], "the design inverts it"
+        assert "inverted: false" in flipped[index], "the measurement undoes that"
+
+
+def test_a_non_inverted_emit_is_byte_identical_to_what_it_always_was():
+    """R-1 is additive: the default must not move one byte of today's graph."""
+    preset = _preset("mono", 2)
+    kwargs = dict(role_channels=ROLE_CHANNELS, playback_device=ACTIVE_PCM)
+
+    assert emit_active_speaker_program_config(
+        preset, inverted_roles=(), **kwargs
+    ) == emit_active_speaker_program_config(preset, **kwargs)
+
+
+def test_the_flipped_graph_names_the_branch_it_flipped():
+    """Provenance in the artifact, beside the fingerprint a record cites."""
+    yaml_text = emit_active_speaker_program_config(
+        _preset("mono", 2),
+        role_channels=ROLE_CHANNELS,
+        playback_device=ACTIVE_PCM,
+        inverted_roles=("tweeter",),
+    )
+
+    assert "# inverted_roles=['tweeter']" in yaml_text
+
+
+def test_inverting_a_role_this_cabinet_has_no_output_for_is_refused():
+    """Fail-closed: a role that flips nothing would emit the normal graph and
+    let a record claim a reverse-null nobody measured."""
+    with pytest.raises(ActiveSpeakerConfigError, match="no output for"):
+        emit_active_speaker_program_config(
+            _preset("mono", 2),
+            role_channels=ROLE_CHANNELS,
+            playback_device=ACTIVE_PCM,
+            inverted_roles=("midrange",),
+        )
+
+
+def test_a_flipped_program_graph_still_passes_every_emit_gate():
+    """The flip is not a way past the tweeter proofs.
+
+    ``emit_active_speaker_program_config`` runs ``_assert_tweeter_outputs_protected``
+    and ``_assert_program_graph_proven`` before returning, so an emit that
+    returns at all has passed both — this asserts the flipped variant reaches
+    that return, and that the pipeline's references still close.
+    """
+    preset = _preset("mono", 2)
+    yaml_text = emit_active_speaker_program_config(
+        preset,
+        role_channels=ROLE_CHANNELS,
+        playback_device=ACTIVE_PCM,
+        inverted_roles=("woofer",),
+    )
+
+    _assert_pipeline_references_closed(yaml_text, preset)

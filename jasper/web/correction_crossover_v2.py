@@ -3566,12 +3566,15 @@ def bind_production_play(
         config_dir if config_dir is not None else str(DEFAULT_CAMILLA_CONFIG_DIR)
     )
 
-    def _emit_program_graph() -> str:
-        """The session's ONE measurement-graph emit.
+    def _emit_program_graph(inverted_roles: tuple[str, ...] = ()) -> str:
+        """The session's ONE measurement-graph emit, per polarity variant.
 
-        Every argument here is a bind-time closure variable, which is the fact
-        that makes the graph session-scoped rather than per-stimulus: the old
-        per-capture site emitted these same bytes for every stimulus.
+        Every argument here but ``inverted_roles`` is a bind-time closure
+        variable, which is the fact that makes the graph session-scoped rather
+        than per-stimulus: the old per-capture site emitted these same bytes
+        for every stimulus. ``inverted_roles`` is R-1's reverse-null flip and
+        is the one thing a measurement chooses — empty on every normal capture,
+        which keeps that emit byte-identical to what it was.
 
         BOTH HALVES OF THE DEVICE BLOCK, DERIVED TOGETHER (issue #2450).
         ``playback_device`` is already marker-aware — on an armed box
@@ -3611,6 +3614,7 @@ def bind_production_play(
             target_level=devices.target_level,
             queuelimit=devices.queuelimit,
             enable_rate_adjust=devices.enable_rate_adjust,
+            inverted_roles=inverted_roles,
         )
 
     session_graph = MeasurementSessionGraph(

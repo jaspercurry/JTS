@@ -68,7 +68,7 @@ logger = logging.getLogger(__name__)
 
 __all__ = ["MeasurementSessionGraph", "SessionGraphError"]
 
-EmitYaml = Callable[[], str]
+EmitYaml = Callable[[tuple[str, ...]], str]
 CamFactory = Callable[[], Any]
 WriterLock = Callable[[], AbstractAsyncContextManager]
 ConfirmLive = Callable[[Any, str], Awaitable[None]]
@@ -109,7 +109,8 @@ class MeasurementSessionGraph:
         self._cam_factory = cam_factory
         self._writer_lock = writer_lock
         self._confirm_live = confirm_live
-        self._yaml: str | None = None
+        self._yaml: dict[tuple[str, ...], str] = {}
+        self._installed_yaml: str | None = None
         self._entry_config_path: str | None = None
 
     @property
@@ -117,38 +118,62 @@ class MeasurementSessionGraph:
         """True while this session holds an entry graph to put back."""
         return self._entry_config_path is not None
 
-    def graph_yaml(self) -> str:
-        """The emitted graph, emitted at most once per session.
+    def graph_yaml(self, inverted_roles: tuple[str, ...] = ()) -> str:
+        """The emitted graph, emitted at most once per POLARITY VARIANT.
 
         The emitter runs its fail-closed proofs on every call
         (``_assert_program_graph_proven``), so caching the text is what turns
         MS-13's *"once, before the first stimulus"* from a scheduling promise
         into a structural fact.
-        """
-        if self._yaml is None:
-            self._yaml = self._emit()
-        return self._yaml
 
-    async def install(self) -> str:
+        R-1 makes that *once per variant* rather than once outright: a
+        reverse-null walk asks for a graph whose named driver branch is
+        sign-flipped, and that is a different graph with a different
+        fingerprint. It is still one emit per variant, and every variant pays
+        the same proofs — a flipped branch is not a way past them.
+        """
+        cached = self._yaml.get(inverted_roles)
+        if cached is None:
+            cached = self._emit(inverted_roles)
+            self._yaml[inverted_roles] = cached
+        return cached
+
+    async def install(self, inverted_roles: tuple[str, ...] = ()) -> str:
         """Install the measurement graph, or prove the installed one is still it.
 
         Returns the fingerprint of the graph the next stimulus will play
         through. Idempotent: called before every routed stimulus, it costs a
         liveness proof when nothing moved and a reload when something did.
 
+        ``inverted_roles`` picks the polarity VARIANT (R-1). Asking for one the
+        box is not running is a deliberate swap, not a stomp, and the two are
+        logged apart: a walk alternating normal and inverted captures would
+        otherwise report a concurrent DSP writer on every stimulus.
+
+        **A swap still asks whether we were stomped.** The two facts are
+        independent — a concurrent writer can replace the graph between two
+        stimuli of an alternating walk — and on that walk EVERY install is a
+        variant change, so deciding the level from "the text differs" alone
+        would repair a stomp silently for the whole walk and lose ruling S10's
+        disclosure. The liveness read below is the symmetric counterpart of the
+        fast path's: same question, asked about the graph this session last
+        submitted rather than about the one it is about to.
+
         **May raise** :class:`SessionGraphError`, and the caller treats that as
         "nothing new was installed" — :meth:`restore` stays able to put back
         whatever an earlier install displaced.
         """
-        yaml_text = self.graph_yaml()
+        yaml_text = self.graph_yaml(inverted_roles)
         cam = self._cam_factory()
 
-        if self._entry_config_path is not None and await self._is_live(cam, yaml_text):
+        if self._installed_yaml == yaml_text and await self._is_live(cam, yaml_text):
             return _fingerprint(yaml_text)
 
         async with self._writer_lock():
-            reinstall = self._entry_config_path is not None
-            if not reinstall:
+            # The ENTRY config is captured once and never re-read: after the
+            # first install the box is running OUR graph, so a second read
+            # would file the measurement graph as the thing to restore to.
+            if self._entry_config_path is None:
                 entry = await cam.get_config_file_path(best_effort=False)
                 if not entry:
                     raise SessionGraphError(
@@ -156,19 +181,48 @@ class MeasurementSessionGraph:
                         "refusing to install the measurement graph"
                     )
                 self._entry_config_path = str(entry)
+            result, stomped = await self._reason_for_loading(cam, yaml_text)
             log_event(
                 logger,
                 "active_speaker.session_graph",
                 action="install",
-                result="reinstall" if reinstall else "install",
-                # A reinstall means the running graph stopped being the one this
+                result=result,
+                # A stomp means the running graph stopped being the one this
                 # session submitted — a concurrent DSP writer, disclosed rather
-                # than silently measured through (ruling S10).
-                level=logging.WARNING if reinstall else logging.INFO,
+                # than silently measured through (ruling S10). A variant swap
+                # this session asked for is not that, and only the stomp is
+                # loud.
+                level=logging.WARNING if stomped else logging.INFO,
                 fingerprint=_fingerprint(yaml_text),
+                inverted_roles=",".join(inverted_roles),
             )
             await self._load(cam, yaml_text)
+            self._installed_yaml = yaml_text
         return _fingerprint(yaml_text)
+
+    async def _reason_for_loading(
+        self, cam: Any, yaml_text: str,
+    ) -> tuple[str, bool]:
+        """Why this load is happening, and whether it is somebody else's doing.
+
+        Three arms, and the middle one is R-1's: the graph this session last
+        submitted may have been replaced by a concurrent DSP writer whether or
+        not the next stimulus wants a different polarity variant, so a swap
+        asks the liveness question rather than assuming the answer.
+
+        ``stomped`` is what makes the journal line loud, and it is the ONE
+        input to that: a reinstall is always a stomp (the fast path already
+        read liveness and got ``False``), a swap is one only when the previous
+        variant is gone, and a first install displaced nothing of ours.
+        """
+        previous = self._installed_yaml
+        if previous is None:
+            return "install", False
+        if previous == yaml_text:
+            return "reinstall", True
+        if not await self._is_live(cam, previous):
+            return "reinstall", True
+        return "variant", False
 
     async def patch(self, changes: Mapping[str, Any]) -> None:
         """Change what one candidate needs, without re-installing.
@@ -204,6 +258,7 @@ class MeasurementSessionGraph:
         # believing it still owns a graph, or the next drain re-enters the same
         # failing path and the caller's error is replaced by a later one.
         self._entry_config_path = None
+        self._installed_yaml = None
         cam = self._cam_factory()
 
         async def _put_back() -> bool:

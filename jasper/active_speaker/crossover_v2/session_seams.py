@@ -99,8 +99,17 @@ class SessionGraph(Protocol):
     colour rather than one per seam.
     """
 
-    async def install(self) -> str:
+    async def install(self, inverted_roles: tuple[str, ...] = ()) -> str:
         """Install the graph and return its fingerprint.
+
+        ``inverted_roles`` names the driver branches this stimulus needs
+        sign-flipped — R-1's reverse-null, and the only per-stimulus input the
+        graph takes. It is on INSTALL rather than on a patch because the
+        fingerprint below must name the graph the stimulus actually played
+        through: a flip applied after the install would leave the record
+        pointing at the graph's non-inverted twin. Empty on every normal
+        capture, and a host that cannot flip a branch simply installs what it
+        always did.
 
         The fingerprint is provenance a record carries — which graph the
         evidence was measured through — never a gate. A host that cannot name
