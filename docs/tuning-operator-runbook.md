@@ -486,8 +486,8 @@ Five prescription doors, one refusal vocabulary each, counted at HEAD:
 |---|---|---|
 | alignment | 9 | `alignment_prescription.ALIGNMENT_PRESCRIPTION_REFUSAL_REASONS` |
 | topology | 9 | `topology_prescription.TOPOLOGY_PRESCRIPTION_REFUSAL_REASONS` |
-| blend | 19 | `blend_prescription.BLEND_PRESCRIPTION_REFUSAL_REASONS` |
-| driver | 19 | `driver_prescription.DRIVER_PRESCRIPTION_REFUSAL_REASONS` |
+| blend | 17 | `blend_prescription.BLEND_PRESCRIPTION_REFUSAL_REASONS` |
+| driver | 16 | `driver_prescription.DRIVER_PRESCRIPTION_REFUSAL_REASONS` |
 | spool | 4 | `prescription_spool.PRESCRIPTION_SPOOL_REFUSAL_REASONS` |
 
 The topology door lost `outside_declared_search_band` when
@@ -498,7 +498,10 @@ classification bar's — `driver_feature_not_classified`,
 `driver_feature_not_cuttable`, `driver_feature_not_boostable`,
 `driver_feature_depth_unavailable`, `driver_boost_exceeds_feature_depth` and
 `driver_boost_unvouched`: the owner ruled that a candidate inside the caps may be
-tested, so the vouch DISCLOSES and the round decides.
+tested, so the vouch DISCLOSES and the round decides. It dropped two more on
+2026-08-29 — `driver_filter_cut_too_shallow` and `driver_filter_boost_too_shallow`
+— on the same ruling: a filter under the fit engine's 0.5 dB cosmetic floor is
+now admitted and counted onto `prescription.subaudible_filters`.
 
 One refusal still shapes what you can ask for, and it is about **boosts**:
 
@@ -532,8 +535,9 @@ verdict backs are counted, not refused. Read the count on the same report: the
 backing verdicts in `prescription.classification_basis`. Filters repeated from
 the incumbent normally come back unvouched, because the fit engine placed them
 and nothing classified them. What still refuses is what a filter COSTS: the
-per-filter and composed caps, the declared band, the crossover knee for a boost,
-and the emitter's filter vocabulary.
+per-filter and composed caps, the declared band, a BOOST's width ceiling
+(`q_max_boost` = 8.0; a cut's width is free), and the emitter's filter
+vocabulary.
 
 **One durable apply door, one ephemeral activation door.** `handle_v2_apply`
 (behind `POST /crossover/v2/apply`) is the only path that durably applies a
