@@ -595,7 +595,7 @@ DELTA_PROBE_SHORTFALL_GAIN_CEILING: float = 0.85
 #: the system is not even allowed to command in. On the 2026-08-16 shortfall
 #: round the pooled slope read 0.664 while the trusted HF realized 96-101% of
 #: commanded: ~90% of the squared error came from a -3.04 dB hole ABOVE the
-#: 16.4 kHz mic-trust ceiling.
+#: 16.4 kHz mic-trust ceiling (at the pre-ruling ceiling then in effect).
 #:
 #: ``crossover`` is the graded tier BELOW :data:`DELTA_PROBE_HF_SPLIT_HZ` —
 #: named for what it contains (the crossover region and the bulk of commanded
@@ -1747,9 +1747,11 @@ def classify_delta_probe(
     #
     # Why it matters: the grading band comes from the capture's own gate
     # disclosure, which is blind to the mic tier. On a `reference` mic the fit
-    # envelope is exactly zero from about 16.4 kHz, so every bin above that was
-    # commanded at zero and measured through a microphone nobody trusts —
-    # grading them manufactured 90% of the 2026-08-16 round's squared error.
+    # envelope is exactly zero from 20 kHz (2026-08-29 horn-droop correction
+    # ruling; was ~16.4 kHz), so every bin above that was commanded at zero
+    # and measured through a microphone nobody trusts — grading them
+    # manufactured 90% of the 2026-08-16 round's squared error (at the
+    # pre-ruling ceiling then in effect).
     lo_hz, hi_hz = requested_band_hz
     graded_hi_hz = hi_hz
     if trust_ceiling_hz is not None and float(trust_ceiling_hz) < graded_hi_hz:

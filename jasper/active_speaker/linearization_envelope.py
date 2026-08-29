@@ -185,7 +185,7 @@ _SIGMA_TOLERABLE_DB: Mapping[str, float] = {
 # ceiling pair (two different tables exist in the research artifacts;
 # this module implements only the one the adopted design doc states).
 _MIC_TRUST_TABLE_HZ: Mapping[str, tuple[float, float]] = {
-    "reference": (8_000.0, 16_000.0),
+    "reference": (12_000.0, 20_000.0),
     "consumer": (6_000.0, 12_000.0),
     "phone": (3_000.0, 8_000.0),
 }
@@ -387,13 +387,15 @@ def mic_trust_limit(freqs_hz: np.ndarray, *, tier: str) -> np.ndarray:
     """Flat at the ceiling sentinel up to the tier's ``full_to`` frequency,
     octave-linear taper to 0 at ``taper_zero``, 0 above.
 
-    Table is the DESIGN-DOC-CANONICAL per-tier pair (reference 8 k -> 16 k,
-    consumer 6 k -> 12 k, phone 3 k -> 8 k) — this is NOT artifact 01's
-    separate fit/verify ceiling pair (the two research artifacts define a
-    distinct table for "how far the fit may extend" vs. "how far VERIFY
-    checks it"; only the design-doc table above is implemented here).
-    Grepping the research artifacts for HF breakpoints will find a
-    different-looking table — that one is not this one.
+    Table is the DESIGN-DOC-CANONICAL per-tier pair (reference 12 k -> 20 k
+    — widened from 8 k -> 16 k by the 2026-08-29 horn-droop correction
+    ruling, docs/active-speaker-tuning-layers-design.md; consumer 6 k -> 12 k,
+    phone 3 k -> 8 k, both unchanged) — this is NOT artifact 01's separate
+    fit/verify ceiling pair (the two research artifacts define a distinct
+    table for "how far the fit may extend" vs. "how far VERIFY checks it";
+    only the design-doc table above is implemented here). Grepping the
+    research artifacts for HF breakpoints will find a different-looking
+    table — that one is not this one.
     """
     _validate_tier(tier)
     full_to_hz, taper_zero_hz = _MIC_TRUST_TABLE_HZ[tier]
@@ -405,13 +407,16 @@ def class_prior_limit(freqs_hz: np.ndarray, *, driver_class: str) -> np.ndarray:
     frequency (artifact 02 §5's table), octave-linear taper to 0 at
     ``taper_zero = full_to * 2``, 0 above.
 
-    The ``* 2`` (one octave) is a HEURISTIC, not a researched value —
-    it was chosen only because the two rows of the design-doc's own
-    mic-trust table that use a full octave (reference 8 k->16 k, consumer
-    6 k->12 k) look like this shape; the third mic-trust row (phone,
-    3 k->8 k) is actually ~1.4 octaves, so "matching the mic-table
-    spacing" is approximate, not exact. Revisit with real per-class taper
-    research before trusting this width in a boundary case.
+    The ``* 2`` (one octave) is a HEURISTIC, not a researched value — it
+    was chosen only because two of the design-doc's own mic-trust rows
+    looked like this shape when it was picked: reference (then 8 k->16 k)
+    and consumer (6 k->12 k) both spanned a full octave. The 2026-08-29
+    horn-droop correction ruling widened reference to 12 k->20 k (~0.74
+    octaves), so consumer is now the ONLY mic-trust row this heuristic
+    actually matches; phone (3 k->8 k) was already off at ~1.4 octaves.
+    "Matching the mic-table spacing" was approximate before and is looser
+    now — revisit with real per-class taper research before trusting this
+    width in a boundary case.
     """
     _validate_driver_class(driver_class)
     full_to_hz = _CLASS_PRIOR_FULL_TO_HZ[driver_class]
@@ -871,10 +876,14 @@ def compose_envelope(
     calibrated microphone resolves nothing up there), and a statement of no
     trust cannot be softened by an adjacent bin that happens to have some.
     Before this rule the ladder leaked depth past every such zero: on the S0
-    replay at ``reference`` tier, mic-trust is exactly 0 from 16444.9 Hz up
-    yet the composed envelope carried 1.4846 dB at that bin and stayed
-    non-zero to 18912.3 Hz, putting the fit band's top edge at 18390.9 Hz.
-    It now ends at 15991.5 Hz, the last bin mic-trust actually trusts.
+    replay at ``reference`` tier (at the pre-ruling ceiling then in effect),
+    mic-trust was exactly 0 from 16444.9 Hz up yet the composed envelope
+    carried 1.4846 dB at that bin and stayed non-zero to 18912.3 Hz, putting
+    the fit band's top edge at 18390.9 Hz. It then ended at 15991.5 Hz, the
+    last bin mic-trust actually trusted — today (2026-08-29 horn-droop
+    correction ruling; reference now 12 k -> 20 k) that boundary is 20000.0
+    Hz exactly, the grid's own top edge, and the last-trusted bin is
+    19448.6 Hz.
 
     This makes all terms consistent rather than leaving two regimes: the
     newer ``spatial_exclusion`` term already preserved its exact zeros, by
@@ -1098,13 +1107,16 @@ def compose_envelope(
     # small number, it is a statement that this term extends no trust to this
     # bin at all. Without this mask the ladder window blurs neighbouring
     # in-band depth back across that boundary: measured on the S0 replay at
-    # `reference` tier, where `mic_trust_limit` is exactly 0 from 16444.9 Hz
-    # up, the composed envelope carried 1.4846 dB of allowed depth at that
-    # very bin and stayed non-zero to 18912.3 Hz, putting the fit band's top
-    # edge at 18390.9 Hz -- above the frequency the mic is trusted to resolve
-    # anything at. `<= 0.0` rather than `np.isclose` is deliberate: the rule
-    # is about an EXACT zero, and a bin holding a genuinely tiny but non-zero
-    # permission should keep it rather than be rounded away.
+    # `reference` tier (at the pre-ruling ceiling then in effect), where
+    # `mic_trust_limit` was exactly 0 from 16444.9 Hz up, the composed
+    # envelope carried 1.4846 dB of allowed depth at that very bin and stayed
+    # non-zero to 18912.3 Hz, putting the fit band's top edge at 18390.9 Hz --
+    # above the frequency the mic was trusted to resolve anything at (today,
+    # 2026-08-29 horn-droop correction ruling, that boundary is 20000.0 Hz
+    # exactly, the grid's own top edge). `<= 0.0` rather than `np.isclose`
+    # is deliberate: the rule is about an EXACT zero, and a bin holding a
+    # genuinely tiny but non-zero permission should keep it rather than be
+    # rounded away.
     hard_zero_mask = smoothable_value <= 0.0
     masked_depth_db = np.where(in_band_mask, smoothable_value, 0.0)
     smoothed_depth_db = _ladder_smooth(grid_hz, masked_depth_db)

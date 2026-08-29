@@ -786,6 +786,43 @@ def test_linearization_rejects_non_positive_or_non_finite_freq(bad_freq):
         )
 
 
+@pytest.mark.parametrize("bad_freq", [24000.0, 25000.0, 30000.0])
+def test_linearization_rejects_freq_at_or_above_nyquist(bad_freq):
+    """This module's OWN proof, independent of whatever produced the record
+    (``branch_chain.py``'s doctrine: "the emitter would never write this" is
+    not a proof). 25000.0 is not an arbitrary probe: it is
+    ``ceiling_hz * 1.25`` for the reference-tier confidence ceiling the
+    2026-08-29 horn-droop correction ruling moved to 20 kHz -- exactly the
+    corner ``linearization_fit._hf_continuation_stage`` would have emitted for
+    a ``metal_dome`` tweeter before its own Nyquist skip
+    (``_HF_TAPER_NYQUIST_HZ``) was added. This guard must refuse it on its
+    own, whether or not that upstream skip stays correct."""
+    preset = _preset()
+    with pytest.raises(ActiveSpeakerConfigError, match="Nyquist"):
+        emit_active_speaker_baseline_config(
+            preset, playback_device=ACTIVE_PCM,
+            linearization={"woofer": [{**_peak(), "freq": bad_freq}]},
+        )
+
+
+def test_linearization_freq_just_below_nyquist_is_allowed():
+    """The accepted-boundary companion to the refusal above: 23999 Hz, one Hz
+    under the 48 kHz runtime's 24 kHz Nyquist, is a legal corner and must not
+    be swept up by the guard."""
+    preset = _preset()
+    text = emit_active_speaker_baseline_config(
+        preset, playback_device=ACTIVE_PCM,
+        linearization={"woofer": [{**_peak(), "freq": 23999.0}]},
+    )
+    payload = yaml.safe_load(text)
+    freqs = [
+        f["parameters"]["freq"]
+        for name, f in payload["filters"].items()
+        if "linearization" in name
+    ]
+    assert freqs == [23999.0]
+
+
 @pytest.mark.parametrize("bad_q", [0.0, -1.0, float("nan")])
 def test_linearization_rejects_non_positive_or_non_finite_q(bad_q):
     preset = _preset()

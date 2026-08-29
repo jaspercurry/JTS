@@ -25,8 +25,10 @@ import pytest
 
 from jasper.active_speaker.linearization_envelope import (
     DEFAULT_ENVELOPE_GRID_HZ,
+    ENVELOPE_CEILING_SENTINEL_DB,
     ReasonCode,
     compose_envelope,
+    mic_trust_limit,
 )
 from jasper.active_speaker._common import DRIVER_CLASSES
 from jasper.active_speaker.linearization_fit import (
@@ -43,6 +45,7 @@ from jasper.active_speaker.linearization_fit import (
     PER_FILTER_CUT_CAP_DB,
     _CUT_REDUCTION_EPS_DB,
     _ENVELOPE_NONZERO_EPS_DB,
+    _HF_TAPER_NYQUIST_HZ,
     _MIN_FILTER_GAIN_DB,
     _PEAKING_Q_MAX,
     _PEAKING_Q_MIN,
@@ -1051,11 +1054,13 @@ _CD_HORN_ANCHOR_HZ = np.array(
 )
 _CD_HORN_ANCHOR_DB = np.array([0.0, 0.0, 0.0, -2.5, -5.8, -8.6, -11.5, -13.5, -15.0])
 # The LIVE JTS3 rig's own shape (2026-07-24): -14.3 dB at the 16 kHz ANCHOR,
-# which the fit measures as a 13.885 dB deficit at its 16444.9 Hz ceiling (the
-# give-back table below pins that). Do not read the anchor as the deficit — they
-# are different numbers, and conflating them is what made the table's row labels
-# drift. Exceeds PER_FILTER_CUT_CAP_DB, so it exercises the Lowshelf clamp +
-# peaking-residual absorption path.
+# which the fit measures as a 16.085 dB deficit at its 20000.0 Hz ceiling (the
+# 2026-08-29 horn-droop correction ruling's ceiling; was 13.885 dB at a
+# 16444.9 Hz ceiling -- the give-back table below pins the current figures).
+# Do not read the anchor as the deficit — they are different numbers, and
+# conflating them is what made the table's row labels drift. Exceeds
+# PER_FILTER_CUT_CAP_DB, so it exercises the Lowshelf clamp + peaking-residual
+# absorption path.
 _CD_HORN_LIVE_ANCHOR_DB = np.array([0.0, 0.0, 0.0, -3.2, -7.4, -11.0, -14.3, -16.0, -17.0])
 
 
@@ -1099,7 +1104,9 @@ def test_cd_horn_falling_top_octave_fires_lowshelf_give_back():
     the realized cascade tracking cut_target (the stage only fires when the
     fit-quality gate passed, and the give-back-frame residual is small).
 
-    This synthetic's measured deficit (~11.4 dB) sits just above the
+    This synthetic's measured deficit (~13.7 dB, at the 2026-08-29
+    horn-droop correction ruling's 20 kHz reference-tier ceiling — was
+    ~11.4 dB at the pre-ruling ~16.4 kHz ceiling) sits above the
     single-shelf realization cap, so spend lands ON that cap while
     ``measured_deficit_at_ceiling_db`` keeps reporting the uncapped measurement.
     """
@@ -1107,14 +1114,14 @@ def test_cd_horn_falling_top_octave_fires_lowshelf_give_back():
     assert fit.hf_continuation_spend_db > 0.0
     assert fit.hf_continuation_suppressed_reason == ""
     assert fit.hf_continuation_policy == "hold"
-    assert fit.hf_continuation_ceiling_hz == pytest.approx(16444.9, rel=0.01)
+    assert fit.hf_continuation_ceiling_hz == pytest.approx(20000.0, rel=0.01)
     assert fit.filters[0].biquad_type == "Lowshelf"  # backbone at position 0
     assert fit.filters[0].gain == pytest.approx(-fit.hf_continuation_spend_db)
     assert all(f.gain <= 0.0 for f in fit.filters)  # cut-only invariant
     # Spend is bounded by the single-shelf realization cap here, and the
     # UNCAPPED measurement stays disclosed alongside it.
     assert fit.hf_continuation_spend_db == pytest.approx(HF_SINGLE_SHELF_SPEND_CAP_DB)
-    assert 10.0 < fit.measured_deficit_at_ceiling_db < 12.0
+    assert 13.0 < fit.measured_deficit_at_ceiling_db < 14.5
     assert fit.measured_deficit_at_ceiling_db > fit.hf_continuation_spend_db
     assert fit.hf_continuation_spend_db <= MAX_NORMALIZATION_SPEND_DB
     # Realized cascade tracks cut_target -> the give-back frame is flat.
@@ -1142,9 +1149,18 @@ def test_cd_horn_realized_cascade_tracks_cut_target_within_tolerance():
     working = smoothed + realized
     frame_target = fit.target_level_db - fit.hf_continuation_spend_db
     # Over the trusted band up to the ceiling, the corrected curve tracks the
-    # give-back frame (flat) rather than falling ~spend below it.
+    # give-back frame (flat) rather than falling ~spend below it. The bound
+    # is 3.5 (was 2.0) since the 2026-08-29 horn-droop correction ruling
+    # widened the reference-tier ceiling from ~16.4 kHz to 20 kHz: this is an
+    # END-TO-END check (raw curve + the FULL filter cascade, flattening loop
+    # included) over a band that is now ~3.5 kHz wider, not the stage's own
+    # internal per-increment fit-quality gate (HF_REALIZATION_TOLERANCE_DB,
+    # still 2.0, checked only against the CD-horn stage's OWN sub-cascade) --
+    # the residual grows smoothly and monotonically to ~2.93 dB at the new
+    # 20 kHz top; 3.5 keeps real margin without loosening past what a
+    # deterministic, no-RNG fit actually produces.
     band = (grid >= 4000.0) & (grid <= fit.hf_continuation_ceiling_hz)
-    assert float(np.max(np.abs(working - frame_target)[band])) < 2.0
+    assert float(np.max(np.abs(working - frame_target)[band])) < 3.5
 
 
 # One tabulated row: a label, then the five numeric fields, anchored to the end
@@ -1247,15 +1263,17 @@ def test_correction_giveback_table_pins_the_fixture_family():
     fit, not decoration:
 
         row                   what it is                  spend  giveback   delta  deficit  filters
-        canonical             CD horn, flat core         11.000    11.775  +0.775   11.351        3
-        live-rig              CD horn, deeper rolloff    11.000    11.046  +0.046   13.885        2
-        budget-bound          + a core bump               9.880    12.725  +2.845   11.420        7
+        canonical             CD horn, flat core         11.000    10.916  -0.084   13.682        3
+        live-rig              CD horn, deeper rolloff    11.000    10.831  -0.169   16.085        3
+        budget-bound          + a core bump               9.868    12.267  +2.399   13.729        6
         flattening-cuts-only  woofer, no CD-horn stage    0.000     1.444  +1.444    0.000        1
         flat                  no filters                  0.000     0.000  +0.000    0.000        0
 
     (The two deficit cases share a spend: both exceed the single-shelf
     realization cap, so both land on it. live-rig's -14.3 dB anchor is NOT its
-    deficit — the fit measures 13.885 at its own ceiling.)
+    deficit — the fit measures 16.085 at its own ceiling, the 2026-08-29
+    horn-droop correction ruling's 20 kHz reference-tier ceiling, was 13.885
+    at the pre-ruling ~16.4 kHz ceiling.)
 
     The larger deltas are correct, not error: whenever the correction also cuts
     INSIDE the core band (the CD-horn residual peak near the onset, a flattening
@@ -1270,9 +1288,9 @@ def test_correction_giveback_table_pins_the_fixture_family():
     """
     # (spend, giveback, measured deficit, filter count) — the table above.
     expected = {
-        "canonical": (11.000, 11.775, 11.351, 3),
-        "live-rig": (11.000, 11.046, 13.885, 2),
-        "budget-bound": (9.880, 12.725, 11.420, 7),
+        "canonical": (11.000, 10.916, 13.682, 3),
+        "live-rig": (11.000, 10.831, 16.085, 3),
+        "budget-bound": (9.868, 12.267, 13.729, 6),
         "flattening-cuts-only": (0.000, 1.444, 0.000, 1),
         "flat": (0.000, 0.000, 0.000, 0),
     }
@@ -1485,25 +1503,111 @@ def test_cd_horn_sizing_is_class_blind():
 
 
 def test_cd_horn_taper_policy_appends_trailing_highshelf_cut():
-    """metal_dome / unknown are "taper" classes: above the ceiling they append
-    one TRAILING Highshelf CUT (freq = ceiling*1.25, gain = -min(spend/2,
+    """metal_dome is a "taper" class: above the ceiling it appends one
+    TRAILING Highshelf CUT (freq = ceiling*1.25, gain = -min(spend/2,
     HF_TAPER_MAX_DB)) that walks the lift back down. compression_horn (hold)
-    appends nothing — its filters end on a Peaking."""
-    for taper_class in ("metal_dome", "unknown"):
-        fit = _cd_horn_fit(taper_class)
-        assert fit.hf_continuation_policy == "taper"
-        assert fit.filters[0].biquad_type == "Lowshelf"
-        taper = fit.filters[-1]
-        assert taper.biquad_type == "Highshelf"
-        assert taper.gain <= 0.0  # a CUT, not a boost
-        assert taper.freq == pytest.approx(fit.hf_continuation_ceiling_hz * 1.25)
-        assert taper.gain == pytest.approx(
-            -min(fit.hf_continuation_spend_db / 2.0, HF_TAPER_MAX_DB)
-        )
+    appends nothing — its filters end on a Peaking.
+
+    Built at CONSUMER tier, not reference: since the 2026-08-29 horn-droop
+    correction ruling, reference tier's ceiling is permanently 20 kHz, so
+    ceiling*1.25 (25 kHz) always exceeds Nyquist at the runtime's 48 kHz rate
+    and the taper is correctly SKIPPED there — see
+    test_cd_horn_taper_skips_rather_than_exceeds_nyquist_at_reference_tier for
+    that boundary, pinned directly. Consumer's row is untouched by the ruling
+    (ceiling ~12.1 kHz, ceiling*1.25 ~15.1 kHz, comfortably legal) and still
+    exercises the taper mechanism itself, same as this test has always done.
+
+    "unknown" is also a declared "taper" class (HF_CONTINUATION_POLICY) but is
+    not exercised here — see
+    test_cd_horn_unknown_class_ineligible_at_reference_tier_after_ruling.
+    """
+    resp = _tweeter_response(_cd_horn_db(_NATIVE_FREQS_HZ))
+    envelope = compose_envelope(
+        "tweeter", resp, excited_band_hz=(2000.0, 20000.0),
+        mic_tier="consumer", driver_class="metal_dome",
+    )
+    fit = fit_driver_linearization(resp, envelope)
+    assert fit.hf_continuation_policy == "taper"
+    assert fit.filters[0].biquad_type == "Lowshelf"
+    taper = fit.filters[-1]
+    assert taper.biquad_type == "Highshelf"
+    assert taper.gain <= 0.0  # a CUT, not a boost
+    assert taper.freq == pytest.approx(fit.hf_continuation_ceiling_hz * 1.25)
+    assert taper.freq < _HF_TAPER_NYQUIST_HZ  # legal on this tier
+    assert taper.gain == pytest.approx(
+        -min(fit.hf_continuation_spend_db / 2.0, HF_TAPER_MAX_DB)
+    )
 
     hold_fit = _cd_horn_fit("compression_horn")
     assert hold_fit.hf_continuation_policy == "hold"
     assert all(f.biquad_type != "Highshelf" for f in hold_fit.filters)
+
+
+def test_cd_horn_taper_skips_rather_than_exceeds_nyquist_at_reference_tier():
+    """The reference-tier ceiling is now permanently 20 kHz (the grid's own
+    top edge, since the 2026-08-29 horn-droop correction ruling), so
+    ceiling*1.25 = 25 kHz -- above Nyquist at the runtime's 48 kHz rate
+    (24 kHz, _HF_TAPER_NYQUIST_HZ). metal_dome is declared "taper" but must
+    NOT emit an unrealizable Highshelf there: CamillaDSP refuses a biquad at
+    or above Nyquist at --check, and metal_dome's tweeter-role class prior
+    (16 kHz, well above the new ~12.1 kHz knee) makes this reachable in
+    production, not a synthetic-only corner.
+
+    The stage still FIRES (the measured lowshelf + peaking correction, same
+    as compression_horn's "hold" policy would produce) -- only the
+    speculative, beyond-ceiling taper shelf is skipped, the same kind of
+    honest no-op the taper already had for its other two skip conditions
+    (no filter slot; gain too small to matter). ``hf_continuation_policy``
+    still reports "taper" (the DECLARED class policy), consistent with how
+    those other two skip conditions already behaved before this one existed.
+
+    See test_cd_horn_taper_policy_appends_trailing_highshelf_cut (consumer
+    tier, untouched by the ruling) for proof the taper mechanism itself is
+    unaffected where it stays legal.
+    """
+    fit = _cd_horn_fit("metal_dome")
+    assert fit.hf_continuation_ceiling_hz == pytest.approx(20000.0, rel=0.01)
+    assert fit.hf_continuation_ceiling_hz * 1.25 >= _HF_TAPER_NYQUIST_HZ
+    assert fit.hf_continuation_policy == "taper"
+    assert fit.hf_continuation_spend_db > 0.0
+    assert fit.filters  # the stage fired
+    assert all(f.biquad_type != "Highshelf" for f in fit.filters)
+    for f in fit.filters:
+        assert f.freq < _HF_TAPER_NYQUIST_HZ
+
+
+def test_cd_horn_unknown_class_ineligible_at_reference_tier_after_ruling():
+    """"unknown" is declared a "taper" class (HF_CONTINUATION_POLICY), same as
+    metal_dome, but at reference tier it can no longer reach the CD-horn stage
+    at all on the canonical synthetic — a real, deliberate consequence of the
+    2026-08-29 horn-droop correction ruling, not a bug.
+
+    ``_CLASS_PRIOR_FULL_TO_HZ["unknown"]`` (6 kHz, taper_zero 12 kHz) is
+    unchanged and always the most conservative class prior — an undeclared
+    driver's own HF behavior stays unknown regardless of how far the mic is
+    trusted. It now caps this driver's fit band (``fit.fit_band_hz[1]``)
+    strictly below the reference-tier mic-trust knee, which the ruling moved
+    from ~8.2 kHz to ~12.1 kHz: the eligibility gate (``fit_hi_hz >=
+    knee_hz`` in ``_hf_continuation_stage``) correctly refuses, because not
+    knowing the driver's own top-end shape stays the binding constraint even
+    though the mic itself is now trusted further. Before the ruling this same
+    synthetic fired the stage successfully (metal_dome still does, above) —
+    the class prior was always this conservative, it simply never used to
+    bind before the knee moved past it.
+    """
+    fit = _cd_horn_fit("unknown")
+    assert fit.hf_continuation_spend_db == 0.0
+    assert fit.hf_continuation_policy == ""
+    assert fit.hf_continuation_suppressed_reason == ""
+    assert fit.hf_continuation_ceiling_hz == 0.0
+    # Prove the STRUCTURAL reason, not just the outcome: at this driver's own
+    # fit-band top, reference-tier mic-trust has not even started tapering
+    # yet, so the fit band cannot reach the knee -- no coincidence of this
+    # one synthetic's numbers.
+    trust_at_fit_hi = mic_trust_limit(
+        np.array([fit.fit_band_hz[1]]), tier="reference"
+    )
+    assert trust_at_fit_hi[0] == pytest.approx(ENVELOPE_CEILING_SENTINEL_DB)
 
 
 def test_cd_horn_continuation_policy_covers_every_driver_class():
@@ -1572,13 +1676,44 @@ def test_cd_horn_residual_and_observe_are_in_the_give_back_frame():
 def test_cd_horn_reason_override_above_ceiling_is_beyond_confidence():
     """Octave centers ABOVE the confidence ceiling are disclosed as
     beyond-measurement-confidence when the stage fired; centers at/below the
-    ceiling keep their ordinary envelope reason."""
-    fit = _cd_horn_fit("compression_horn")
+    ceiling keep their ordinary envelope reason.
+
+    Built at CONSUMER tier, not reference: the 2026-08-29 horn-droop
+    correction ruling widened the reference-tier ceiling to exactly 20 kHz,
+    the grid's own top edge, so there is no longer any in-grid frequency
+    ABOVE the reference-tier ceiling to demonstrate this override with (see
+    test_cd_horn_reference_tier_never_discloses_beyond_confidence_after_ruling
+    below for that fact, pinned directly). Consumer's row is untouched by the
+    ruling (6 k/12 k) and its ceiling still sits comfortably below 20 kHz, so
+    it exercises the same override mechanism this test has always covered.
+    """
+    resp = _tweeter_response(_cd_horn_db(_NATIVE_FREQS_HZ))
+    envelope = compose_envelope(
+        "tweeter", resp, excited_band_hz=(2000.0, 20000.0),
+        mic_tier="consumer", driver_class="compression_horn",
+    )
+    fit = fit_driver_linearization(resp, envelope)
     assert fit.hf_continuation_spend_db > 0.0
-    # 20 kHz is above the ~16.4 kHz reference-tier ceiling.
+    # 20 kHz is above consumer tier's ~12.1 kHz ceiling.
     assert fit.reason_summary["20000"] == ReasonCode.BEYOND_MEASUREMENT_CONFIDENCE.value
     # 8 kHz is below the ceiling -> keeps its ordinary (non-override) reason.
     assert fit.reason_summary["8000"] != ReasonCode.BEYOND_MEASUREMENT_CONFIDENCE.value
+
+
+def test_cd_horn_reference_tier_never_discloses_beyond_confidence_after_ruling():
+    """The flip side of the ruling, pinned directly: at reference tier the
+    mic-trust ceiling now IS the grid's own top edge (20 kHz), so a fired
+    reference-tier fit can never disclose BEYOND_MEASUREMENT_CONFIDENCE
+    anywhere on the default grid -- there is no in-grid frequency left above
+    its ceiling. Before the ruling, 20 kHz sat above the ~16.4 kHz ceiling and
+    carried exactly this reason (see the consumer-tier test above, which now
+    carries that coverage instead)."""
+    fit = _cd_horn_fit("compression_horn")
+    assert fit.hf_continuation_spend_db > 0.0
+    assert fit.hf_continuation_ceiling_hz == pytest.approx(20000.0, rel=0.01)
+    assert ReasonCode.BEYOND_MEASUREMENT_CONFIDENCE.value not in set(
+        fit.reason_summary.values()
+    )
 
 
 def test_cd_horn_stage_is_role_agnostic():

@@ -51,6 +51,14 @@
 > only then EQ what is left — not who owns which correction. Every stage there
 > carries an explicit EXISTS / IN FLIGHT / MISSING status, because most of the
 > middle stage does not exist yet.
+> **Horn-droop correction ruling (2026-08-29):** the reference-tier mic-trust
+> pair (`mic_trust_limit` / `_MIC_TRUST_TABLE_HZ`, "Cold-start priors" below)
+> widens from 8 k/16 k to **12 k/20 k** — full correction allowance through
+> the horn's measured droop, tapering to zero only past the tweeter's own
+> beaming onset rather than mid-droop. The taper still encodes beaming
+> prudence, not mic distrust: the registered reference mic stays
+> serial-calibrated across this whole range. Consumer/phone rows are
+> unchanged.
 
 ## Why this exists (one paragraph of history)
 
@@ -388,7 +396,8 @@ for the measured counterfactual.
 
 Correction is clamped to the envelope, which tapers smoothly (no cliffs).
 Cold-start priors: artifact 01's per-tier table (reference: full correction
-to 8 kHz, taper to zero by 16 k; consumer: 6 k/12 k; phone: 3 k/8 k) and
+to 12 kHz, taper to zero by 20 k — widened from 8 k/16 k by the 2026-08-29
+horn-droop correction ruling above; consumer: 6 k/12 k; phone: 3 k/8 k) and
 artifact 02 §5's driver-class rows. **Evidence can EARN depth beyond the
 priors** (clean measured excess phase + closed-loop verification passing —
 artifact 03's softened boost stance), **but never beyond what the
@@ -441,18 +450,21 @@ flat to ~16 k on its datasheet horn — so it is a broad, real, EQ-able trend
 **sized from measurement, not from the driver class.** The per-serial-calibrated
 UMIK-2 protocol resolves that band to ±1.5 dB @12k / ±2.3 @16k, and the deficit
 exceeds that 4–6×, so correcting the measured trend is objectively justified up
-to a ~16 kHz confidence ceiling. **Owner ethos: no subjectivity** — sizing is
-measurement; where measurement runs out, a declared-driver-type continuation
-policy takes over, disclosed as such.
+to the confidence ceiling below (20 kHz reference tier since the 2026-08-29
+horn-droop correction ruling above; was ~16 kHz). **Owner ethos: no
+subjectivity** — sizing is measurement; where measurement runs out, a
+declared-driver-type continuation policy takes over, disclosed as such.
 
 The stage (`_hf_continuation_stage`,
 [jasper/active_speaker/linearization_fit.py](../jasper/active_speaker/linearization_fit.py))
 runs AFTER the flattening peaking loop:
 
 - **Confidence ceiling from mic trust.** The ceiling is the mic-trust term's
-  taper-zero (~16.4 kHz reference tier); the knee is where its taper begins
-  (~8.2 kHz). Eligible only when the fit band reaches the ceiling region
-  (`fit_hi ≥ knee`) — woofers/mids fall out with no per-role branch.
+  taper-zero (20 kHz reference tier — the grid's own top edge, since the
+  2026-08-29 horn-droop correction ruling above widened it from ~16.4 kHz);
+  the knee is where its taper begins (~12.1 kHz, was ~8.2 kHz). Eligible
+  only when the fit band reaches the ceiling region (`fit_hi ≥ knee`) —
+  woofers/mids fall out with no per-role branch.
 - **Repeat-agreement gate (objective, replaces judgment).** Per-bin spread
   across the capture's repeats must stay under 1.0 dB below 10 kHz / 2.0 dB in
   [10 k, ceiling] (the measurement-uncertainty research), else the stage is

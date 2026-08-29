@@ -444,6 +444,43 @@ def test_class_prior_limit_rejects_unknown_class():
         class_prior_limit(DEFAULT_ENVELOPE_GRID_HZ, driver_class="tweeter")
 
 
+@pytest.mark.parametrize(
+    "tier,full_to_hz,taper_zero_hz",
+    [
+        # 2026-08-29 horn-droop correction ruling: reference widens from
+        # 8 k/16 k to 12 k/20 k so the allowance stays full through the
+        # horn's measured droop and only backs off past the tweeter's own
+        # beaming onset (docs/active-speaker-tuning-layers-design.md,
+        # "Cold-start priors"). Consumer/phone are the unchanged pre-ruling
+        # design-doc rows -- parametrized here too so a retune of either
+        # cannot slip through unnoticed.
+        ("reference", 12_000.0, 20_000.0),
+        ("consumer", 6_000.0, 12_000.0),
+        ("phone", 3_000.0, 8_000.0),
+    ],
+)
+def test_mic_trust_limit_pins_full_to_and_taper_zero_hz_by_tier(
+    tier, full_to_hz, taper_zero_hz
+):
+    """Pins ``_MIC_TRUST_TABLE_HZ``'s actual per-tier breakpoints in Hz.
+
+    The shape tests above (monotone, sentinel max, zero min, phone most
+    conservative) hold for ANY valid flat-then-taper table, so none of them
+    would catch a silent retune of a tier's own numbers. This checks the
+    three exact values :func:`_flat_then_taper`'s shape guarantees: full
+    trust AT ``full_to``, zero AT ``taper_zero``, and the taper's log-domain
+    midpoint (the geometric mean of the two), where the octave-linear ramp
+    must cross exactly half the sentinel.
+    """
+    freqs_hz = np.array(
+        [full_to_hz, math.sqrt(full_to_hz * taper_zero_hz), taper_zero_hz]
+    )
+    curve = mic_trust_limit(freqs_hz, tier=tier)
+    assert curve[0] == pytest.approx(ENVELOPE_CEILING_SENTINEL_DB)
+    assert curve[1] == pytest.approx(ENVELOPE_CEILING_SENTINEL_DB / 2.0)
+    assert curve[2] == pytest.approx(0.0, abs=1e-9)
+
+
 # --------------------------------------------------------------------------- #
 # linearity_limit / invertibility_limit -- stub contract
 # --------------------------------------------------------------------------- #
@@ -546,7 +583,7 @@ def test_compose_envelope_fitted_reason_when_no_term_binds():
     curve = compose_envelope(
         "tweeter", primary,
         excited_band_hz=(2000.0, 18000.0),
-        mic_tier="reference",  # mic_trust flat sentinel up to 8 kHz
+        mic_tier="reference",  # mic_trust flat sentinel up to 12 kHz
         driver_class="beryllium_diamond_dome",  # class_prior flat to 17 kHz
         grid_hz=grid,
     )
