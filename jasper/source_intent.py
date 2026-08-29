@@ -1334,17 +1334,12 @@ def _reconcile_usbsink(
                         "USB audio remained advertised without a direct consumer"
                     )
             if not ops.usb_direct_present():
-                # Deliberately NOT _check_result: this unit's exit code is the
-                # wrong gate. Besides arming the lane it runs an opportunistic
-                # CamillaDSP self-heal, and a self-heal that cannot run says
-                # nothing about USB transport — on jts3 a stale applied-baseline
-                # fingerprint made it exit 1 forever, failing this transition on
-                # a box that was playing fine (ADR-0191).
-                #
-                # The OUTCOME is what matters and is already verified: the
-                # direct-lane checks below, and the usb_direct_ready() settle
-                # loop, still fail this transition when the lane genuinely does
-                # not arm. Judge the lane, not the helper's exit status.
+                # NOT _check_result: this unit also runs an opportunistic
+                # CamillaDSP self-heal, so its exit status is not evidence
+                # about USB transport. The lane arming IS verified — by the
+                # checks below and the usb_direct_ready() settle loop, which
+                # still fail this transition when the lane does not arm.
+                # See ADR-0191.
                 ops.run_unit(_USB_COUPLING_UNIT, "start")
             if not ops.usb_audio_present():
                 rc, detail = ops.run_unit(gadget, "restart")
@@ -1363,24 +1358,13 @@ def _reconcile_usbsink(
                 )
             return "on"
         except (OSError, RuntimeError, TimeoutError, ValueError) as exc:
-            # A failed On transition no longer WITHDRAWS the transport
-            # (ADR-0191). The old rollback disabled the readiness mirror,
-            # recomposed to NCM-only, and — when audio survived that —
-            # `systemctl stop`ped the composite gadget, which takes the NCM
-            # management network down with the audio function.
-            #
-            # Observed on jts3: an unavailable DSP self-heal failed this
-            # transition and the rollback deleted usb0 from a box that was
-            # playing fine. The premise it was built on — "a host-visible UAC2
-            # without its fan-in consumer must not be stranded" — is exactly
-            # what ADR-0191 retired: an endpoint nobody is consuming is a
-            # disclosed state (`check_usbgadget_composition` reports
-            # `consumed=<bool>`), not a reason to delete hardware.
-            #
-            # Canonical intent still says On and the hardware still allows it,
-            # so the endpoint stays composed and the next pass retries. Off and
-            # follower parking keep their teardowns below: those ARE safety
-            # transitions, and the code is right to treat them that way.
+            # No teardown: a failed On leaves the endpoint composed. An
+            # unconsumed UAC2 is a disclosed state, not a reason to withdraw
+            # the transport, and the rollback this replaces stopped the whole
+            # composite gadget — taking the NCM management network with it.
+            # Canonical intent still says On, so the next pass retries.
+            # See ADR-0191. Off and follower parking below keep their
+            # teardowns: those ARE safety transitions.
             raise RuntimeError(f"USB On transition failed: {exc}") from exc
 
     # Off and follower parking are safety transitions. Keep going through
