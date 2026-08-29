@@ -605,7 +605,7 @@ def test_status_document_and_the_cli_json_carry_the_same_keys(tmp_path, capsys):
 
     _, cli_payload = _status([str(session), "--drivers", str(draft)], capsys)
     packet = cli.build_crossover_evidence_packet(
-        session, state_path=None, driver_draft_path=draft, dump_ring_dir=None
+        session, state_path=None, driver_draft_path=draft
     )
     doc_payload = cli.status_document(packet, "", state_supplied=False)
 

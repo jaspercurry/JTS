@@ -51,8 +51,6 @@ the only transform left anywhere here is the ``fraction=1`` residual
       bundle/<session-id>/...        one active-speaker session bundle
       state.json                     crossover-v2 flow state (optional)
       design-draft.json              active-speaker design draft (optional)
-      dumps/wav/*.wav                dump-ring captures (optional)
-      dumps/sidecar/*.json           dump-ring sidecars, one per wav (optional)
 
 **A seat's BEARING is read, and the position id alone is no longer enough.**
 Every view here keys a position by its stable ``position_id``
@@ -234,13 +232,11 @@ def load_banked_round(round_dir: Path) -> BankedRound:
     session_dir = _bundle_session_dir(round_dir)
     state_path = round_dir / _STATE_FILENAME
     draft_path = round_dir / "design-draft.json"
-    ring_dir = round_dir / "dumps"
     try:
         packet = build_crossover_evidence_packet(
             session_dir,
             state_path=state_path if state_path.is_file() else None,
             driver_draft_path=draft_path if draft_path.is_file() else None,
-            dump_ring_dir=ring_dir if ring_dir.is_dir() else None,
         )
     except CrossoverEvidencePacketError as exc:
         raise RoundViewsError(f"{round_dir}: {exc}") from exc

@@ -130,10 +130,6 @@ from collections.abc import Callable, Iterable, Mapping, Sequence
 from pathlib import Path
 from typing import Any
 
-from jasper.attribution.session_identity import (
-    SessionIdentityError,
-    read_session_identity,
-)
 from jasper.audio_measurement.evidence_identity import (
     EvidenceIdentityError,
     json_fingerprint,
@@ -144,6 +140,7 @@ from jasper.audio_measurement.evidence_identity import (
 from jasper.audio_measurement.null_walk import DEFAULT_SOUND_SPEED_M_S
 
 from ..commissioning_evidence_store import EVIDENCE_ROOT
+from .contracts import POSITION_EVIDENCE_KIND
 from .journey import PHASE_ENTRY_BASELINE, PHASE_LATERAL
 from .record_index import bundle_measurements
 # The MODULE, not the function: ``position_cycle`` owns the accept rule, and
@@ -324,21 +321,34 @@ HARMONICS_ARTIFACT = "harmonic_distortion.json"
 #: there rather than restated here.
 _POSITIONS_SUBDIR = "positions"
 
-#: How a banked capture ring's sidecars are found under the ring root, on
+#: How a FROZEN capture ring's sidecars are found under the ring root, on
 #: :func:`round_program_dir`'s rule that a location fact has ONE owner.
 #:
-#: ``**/`` because ``bank-crossover-round.sh`` splits the speaker's flat ring
-#: into ``dumps/wav/`` + ``dumps/sidecar/`` and a per-phase nesting of that
-#: shape exists too, so the ring ROOT is what a caller passes and the pattern
-#: finds the sidecars wherever inside it they sit.
-#: :func:`~.feature_classifier.load_round_captures` is the other reader of the
-#: same ring and consumes this constant, so ``jasper-crossover-prescriber
-#: --dumps`` and ``jasper-classify-features --dumps`` cannot come to mean two
-#: different directories.
+#: The ring's producer died with the speaker-side retention seam, so no round
+#: banked from then on has one. What remains are corpora banked before that,
+#: whose ``dumps/wav/`` + ``dumps/sidecar/`` tree still holds the capture
+#: BYTES no banked record carries — which is why the two readers below survive
+#: while this packet's own reader did not: the packet wanted a number the take
+#: record now carries, and they want a WAV.
+#:
+#: ``**/`` because the pull split the speaker's flat ring into
+#: ``dumps/wav/`` + ``dumps/sidecar/`` and a per-phase nesting of that shape
+#: exists too, so the ring ROOT is what a caller passes and the pattern finds
+#: the sidecars wherever inside it they sit.
+#: :func:`~.feature_classifier.load_round_captures` and
+#: :func:`~.harmonic_evidence.read_round_harmonics` are the two readers, and
+#: both consume this constant, so ``jasper-classify-features --dumps`` and
+#: ``jasper-read-distortion --dumps`` cannot come to mean two different
+#: directories.
 RING_SIDECAR_GLOB = "**/sidecar/*.json"
 
-#: The substring that identifies a signal-to-noise field in a dump-ring
-#: sidecar's flat ``diagnostic`` block.
+#: What :func:`_capture_snr_block` reads off one banked take: the two
+#: identities the packet's other take rows already carry, the phase that says
+#: which capture it was, and the analysis block the SNR columns live in.
+_TAKE_DIAGNOSTIC_FIELDS = ("take_id", "wav_sha256", "phase", "diagnostic")
+
+#: The substring that identifies a signal-to-noise field in a banked take's
+#: flat ``diagnostic`` block.
 #:
 #: A substring rather than a name list because the producer
 #: (:func:`~jasper.audio_measurement.program_analysis.analysis_diagnostic_summary`)
@@ -734,8 +744,8 @@ _CROSS_SEAT_SIGMA_NOT_AN_UNCERTAINTY: dict[str, str] = {
         "row can be read as a curve on this grid. That fourth cause is why the "
         "count can equal the row total while nothing was individually rejected; "
         "the block's reason says which case produced it. Counted rather than "
-        "dropped quietly, on the rule the capture_snr block keeps for the ring "
-        "leftovers it does not publish. A count, not a spread"
+        "dropped quietly, on the rule the capture_snr block keeps for the "
+        "takes it does not publish. A count, not a spread"
     ),
 }
 
@@ -1052,8 +1062,25 @@ def _angle_deg_block(rows: Sequence[Mapping[str, Any]]) -> dict[str, Any]:
     }
 
 
+def _read_take_diagnostic(path: Path) -> dict[str, Any] | None:
+    """One banked take narrowed to its identity and its analysis, or ``None``.
+
+    :func:`~.position_cycle.read_lateral_take`'s shape on the phase question
+    its two siblings answer for one phase each — this one takes every phase,
+    because an SNR is an SNR whichever capture produced it.
+    """
+    raw, _ = _read_json(path)
+    if not isinstance(raw, dict):
+        return None
+    if raw.get("kind") != POSITION_EVIDENCE_KIND:
+        return None
+    return {field: raw.get(field) for field in _TAKE_DIAGNOSTIC_FIELDS}
+
+
 def _banked_takes(
-    session_dir: Path, phase: str, read: Callable[[Path], dict[str, Any] | None],
+    session_dir: Path,
+    phase: str | None,
+    read: Callable[[Path], dict[str, Any] | None],
 ) -> list[dict[str, Any]]:
     """Every banked take of one ``phase``, narrowed by its own accept rule.
 
@@ -1061,6 +1088,8 @@ def _banked_takes(
     directory: the index rescans the take files on every read (see
     :func:`~.record_index.bundle_measurements`), so it names the same set a
     glob would and names it in the one place the store also writes.
+
+    ``phase`` of ``None`` takes every take the round banked.
 
     ``read`` still OPENS each selected file and may reject it. The index
     narrows the candidates; the record decides. The bundle holds one round —
@@ -1202,78 +1231,41 @@ def _entry_baseline_block(session_dir: Path) -> dict[str, Any]:
     }
 
 
-def _capture_snr_block(
-    dump_ring_dir: Path | None, session_id: Any
-) -> dict[str, Any]:
-    """Per-capture signal-to-noise, from the operator capture-retention ring.
+def _capture_snr_block(session_dir: Path) -> dict[str, Any]:
+    """Per-capture signal-to-noise, off the round's own banked takes.
 
-    ``dump_ring_dir`` is the ring's ROOT (``dumps/`` in a banked round), found
-    inside it by :data:`RING_SIDECAR_GLOB` — the same directory and the same
-    rule ``jasper-classify-features --dumps`` takes, so an operator hands the
-    two tools one path. The ring writes one JSON sidecar per retained WAV
-    carrying
+    Every accepted take carries the analysis's flat ``diagnostic`` block —
     :func:`~jasper.audio_measurement.program_analysis.analysis_diagnostic_summary`'s
-    flat diagnostic block. It is off by default and rolls over, so it is
-    OPTIONAL and its absence is reported like every other artifact's.
+    own output, written onto the record by ``bind_position_retention``. This
+    block publishes the SNR columns out of it, one row per take that carried
+    one.
 
-    **The ring is a rolling buffer, so attribution is fail-closed.** A pull
-    takes whatever the ring held, which can include captures from an earlier
-    round; the sidecar's banked session identity is the join that exists
-    precisely because directory mtime was measured misrouting them. Only
-    captures whose identity matches THIS bundle are published, and the two
-    kinds of leftover — another session's, and one carrying no readable
-    identity — are counted separately rather than silently dropped, because a
-    reader that saw a short list without them would not know the ring had more
-    in it.
+    **Read from the bundle, so there is nothing to attribute.** This used to
+    read the operator capture-retention ring, a rolling buffer outside the
+    bundle that could hold an earlier round's captures — so the block spent
+    three counters and a banked session identity deciding which sidecars were
+    even this round's. A take under this bundle's own artifacts root is this
+    bundle's by construction, and the whole attribution question goes with the
+    ring.
 
-    A capture is named by ``wav_sha256``, the identity the ``positions`` rows
-    already carry, so a reader that wants to know which position a ring
-    capture belongs to can join them. This module does not: a cloud row and a
-    ring sidecar agreeing on a digest is a fact, and deciding what follows from
-    a disagreement is a judgement.
+    A capture is named by its ``take_id`` and its ``wav_sha256``, both of them
+    identities the ``lateral_poses`` and ``positions`` rows already carry, so a
+    reader that wants to know which pose a row belongs to can join them.
+
+    A round banked before the take carried its analysis carries no diagnostic
+    at all, and that is an ordinary reported absence — the same one every
+    neighbouring block gives for an artifact its round never wrote.
     """
-    if dump_ring_dir is None:
-        return {
-            "available": False,
-            "status": "not_evaluated",
-            "reason": (
-                "no capture-retention ring directory was supplied; the ring is "
-                "off by default and a banked round carries one only when the "
-                "operator created its ENABLED marker before the round"
-            ),
-            "n_captures": 0,
-        }
-    if not dump_ring_dir.is_dir():
-        return {
-            "available": False,
-            "status": "not_evaluated",
-            "reason": "source_absent",
-            "n_captures": 0,
-        }
     captures: list[dict[str, Any]] = []
     non_finite: set[str] = set()
     undeclared: set[str] = set()
     declared_as: dict[str, str] = {}
-    other_session = 0
-    unattributed = 0
     seen = 0
-    for path in sorted(dump_ring_dir.glob(RING_SIDECAR_GLOB)):
+    for take in _banked_takes(session_dir, None, _read_take_diagnostic):
         seen += 1
-        raw, _ = _read_json(path)
-        if not isinstance(raw, dict):
-            unattributed += 1
+        diagnostic = _mapping(take.get("diagnostic"))
+        if not diagnostic:
             continue
-        try:
-            identity = read_session_identity(raw)
-        except SessionIdentityError:
-            identity = None
-        if identity is None:
-            unattributed += 1
-            continue
-        if identity.session_id != session_id:
-            other_session += 1
-            continue
-        diagnostic = _mapping(raw.get("diagnostic"))
         snr = {}
         for column, value in sorted(diagnostic.items()):
             if _DIAGNOSTIC_SNR_MARKER not in column:
@@ -1284,57 +1276,34 @@ def _capture_snr_block(
             else:
                 declared_as[column] = shape
             snr[column] = _exact_json_value(value, column, non_finite)
-        # An attributed capture whose analysis reported no SNR at all still
-        # gets its row, with an empty ``snr``. Dropping it would be a third
-        # kind of silent leftover in a block whose whole posture is that what
-        # it does not publish, it counts.
+        # A take whose analysis reported no SNR at all still gets its row, with
+        # an empty ``snr``. Dropping it would be a silent omission in a block
+        # whose whole posture is that what it does not publish, it counts.
         captures.append({
-            "wav_sha256": raw.get("wav_sha256"),
-            "phase": raw.get("phase"),
+            "take_id": take.get("take_id"),
+            "wav_sha256": take.get("wav_sha256"),
+            "phase": take.get("phase"),
             "snr": snr,
         })
     absent: dict[str, Any] = {}
-    if not captures and not seen:
-        # A path one level too deep — the ``sidecar/`` directory rather than
-        # the ring ROOT — finds nothing, and reporting that as "nothing was
-        # attributed to this session" would be a confident false absence with
-        # a 0/0/0 breakdown behind it. Distinguished so a wrong path can never
-        # read as a true one.
+    if not captures:
         absent = {
             "status": "not_evaluated",
             "reason": (
-                f"the directory supplied holds no sidecar matching "
-                f"{RING_SIDECAR_GLOB}. This argument is the ring ROOT (dumps/ "
-                "in a banked round), not the sidecar/ directory inside it, and "
-                "a path one level too deep looks exactly like an empty ring"
-            ),
-        }
-    elif not captures:
-        absent = {
-            "status": "not_evaluated",
-            "reason": (
-                f"the capture-retention ring holds {seen} sidecar(s) but none "
-                f"attributed to this session ({other_session} belonged to "
-                f"another, {unattributed} carried no readable session identity)"
-                + (
-                    "; this bundle's info.json carries no usable session_id, so "
-                    "nothing in the ring could be matched to it"
-                    if not (isinstance(session_id, str) and session_id)
-                    else ""
-                )
+                f"this round banked {seen} take(s) and none of them carries a "
+                "diagnostic block — the round was banked before a take carried "
+                "its own analysis, or every analysis it ran produced none"
             ),
         }
     return {
         "available": bool(captures),
         **absent,
         "n_captures": len(captures),
-        "n_sidecars_seen": seen,
-        "n_other_session": other_session,
-        "n_unattributed": unattributed,
+        "n_takes_seen": seen,
         "captures": captures,
         "non_finite_fields": sorted(non_finite),
         "undeclared_fields": sorted(undeclared),
-        "source": f"the capture-retention ring, {RING_SIDECAR_GLOB}",
+        "source": f"{_POSITIONS_SUBDIR}/<take_id>.json, the diagnostic block",
         "uncertainty": {
             "fields": {},
             "not_uncertainties": dict(sorted(_SNR_NOT_AN_UNCERTAINTY.items())),
@@ -1358,12 +1327,11 @@ def _capture_snr_block(
             ),
         },
         "note": (
-            "one row per retained capture attributed to this session, named by "
-            "the same wav_sha256 the positions rows carry so a reader can join "
-            "them. n_sidecars_seen is what the ring held at all; "
-            "n_other_session and n_unattributed count what this block did not "
-            "publish. The ring is off by default, so an empty block usually "
-            "means nobody turned it on"
+            "one row per banked take that carried an analysis, named by the "
+            "same take_id and wav_sha256 the lateral_poses and positions rows "
+            "carry so a reader can join them. n_takes_seen is every take this "
+            "round banked; the difference is takes whose record carries no "
+            "diagnostic block at all"
         ),
     }
 
@@ -2485,7 +2453,6 @@ def build_crossover_evidence_packet(
     *,
     state_path: Path | None = None,
     driver_draft_path: Path | None = None,
-    dump_ring_dir: Path | None = None,
 ) -> dict[str, Any]:
     """Assemble one round's banked evidence into one versioned document.
 
@@ -2507,15 +2474,6 @@ def build_crossover_evidence_packet(
     posture and same reason: OPTIONAL, absence reported. A packet without it
     cannot say where each driver's own band starts and ends, so the per-driver
     prescription class has no bound to be checked against and refuses by name.
-
-    ``dump_ring_dir`` is the operator capture-retention ring's root
-    (``dumps/`` in a banked round — the same directory
-    ``jasper-classify-features --dumps`` takes), which sits OUTSIDE the
-    bundle: it is a sibling of it, not a path derivable from ``session_dir``,
-    which is why it arrives as a third optional argument rather than being
-    guessed at from the tree. Same posture again: OPTIONAL, absence reported.
-    A packet without it carries no per-capture signal-to-noise, and the ring is
-    off by default so that is the ordinary case.
 
     Raises :class:`CrossoverEvidencePacketError` only when ``session_dir`` is
     not a crossover-v2 session bundle at all. Every other missing or
@@ -2564,7 +2522,7 @@ def build_crossover_evidence_packet(
     lateral_poses = _lateral_poses_block(session_dir)
     entry_baseline = _entry_baseline_block(session_dir)
 
-    capture_snr = _capture_snr_block(dump_ring_dir, info_raw.get("session_id"))
+    capture_snr = _capture_snr_block(session_dir)
 
     identity, identity_withheld = _copy_allowed(
         _mapping(info_raw.get("fingerprints")), _IDENTITY_FIELDS

@@ -149,7 +149,6 @@ def _load_packet(args: argparse.Namespace) -> dict[str, Any]:
         Path(args.session_dir),
         state_path=Path(args.state) if args.state else None,
         driver_draft_path=Path(args.drivers) if args.drivers else None,
-        dump_ring_dir=Path(args.dumps) if args.dumps else None,
     )
 
 
@@ -1024,22 +1023,6 @@ _DRIVERS_HELP = (
 )
 
 
-#: What ``--dumps`` is. Deliberately the SAME word and the same directory
-#: ``jasper-classify-features --dumps`` takes, so an operator hands one path to
-#: both tools rather than learning which of them wants the parent.
-#:
-#: Optional here, unlike there, and for a stronger reason than ``--drivers``:
-#: the capture-retention ring is OFF by default, so most rounds have no such
-#: directory to pass at all. The packet reports its absence rather than
-#: refusing anything over it — no prescription class needs it.
-_DUMPS_HELP = (
-    "the banked capture ring (sidecar JSON beside its WAV) — dumps/ in a "
-    "banked round. Optional; without it the packet carries no per-capture "
-    "signal-to-noise. Only captures whose banked session identity matches "
-    "this bundle are published: the ring rolls over and can hold an earlier "
-    "round's"
-)
-
 
 def _add_evidence_args(
     parser: argparse.ArgumentParser, *, state_help: str = _STATE_HELP_OPTIONAL
@@ -1056,7 +1039,6 @@ def _add_evidence_args(
     # that says WHY the flag matters here. The check lives in `_cmd_stage`.
     parser.add_argument("--state", default=None, help=state_help)
     parser.add_argument("--drivers", default=None, help=_DRIVERS_HELP)
-    parser.add_argument("--dumps", default=None, help=_DUMPS_HELP)
 
 
 def build_parser() -> argparse.ArgumentParser:

@@ -818,18 +818,18 @@ woofer sweep ends at 1333 Hz. Past an order's edge the columns are `null`, never
 a number: a value there would read as a preternaturally clean driver exactly
 where nothing was measured.
 
-**Per-capture SNR arrives with the ring, not with the round.** `capture_snr`
-carries each capture's magnitude and alignment signal-to-noise, keyed by the
-same `wav_sha256` the position rows use. It is populated only when you pass
-`--dumps <banked-round>/dumps` — the ring ROOT, the same path
-`jasper-classify-features --dumps` takes, **not** the `sidecar/` directory
-inside it. Only captures the bundle's own session identity claims are
-published; the leftovers are counted rather than dropped.
+**Per-capture SNR arrives with the round.** `capture_snr` carries each
+capture's magnitude and alignment signal-to-noise off the round's own banked
+take records, keyed by the same `take_id` and `wav_sha256` the position rows
+use. No flag: it comes out of `<bundle-dir>`, so a round that banked its
+analyses carries it and one that did not says so, with the take count behind
+the absence.
 
-**Rounds banked after the capture-dump ring was removed have no `dumps/`
-tree**, so `capture_snr` is absent for them and this flag has nothing to
-point at. The reader is unchanged and still opens corpora banked before the
-removal.
+**Rounds banked before a take carried its own analysis have no `diagnostic`
+block**, so `capture_snr` is honestly absent for them. Those corpora keep
+their `dumps/` tree, which is what `jasper-classify-features --dumps` and
+`jasper-read-distortion --dumps` still open — they want the capture WAVs, and
+no banked record holds those.
 
 ### Reading the gate and the reflector path honestly
 

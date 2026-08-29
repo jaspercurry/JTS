@@ -1778,14 +1778,15 @@ difference on that box), so `graph.kind` is the field that tells them apart. See
 + `dumps/sidecar/` tree this script used to pull and grade. Every accepted
 capture's WAV and its provenance now ride the session bundle's own banked
 take records, which this script already pulls. Corpora banked before the
-removal keep their `dumps/` tree and every reader below still opens it.
+removal keep their `dumps/` tree, which `jasper-classify-features` and
+`jasper-read-distortion` still open.
 
-What the banked record does **not** carry is the ring sidecar's
-`diagnostic`, `capture_integrity` and `frame_ledger` blocks. Those are still
-computed and still logged, but they no longer land in any file — so a new
-round cannot be graded on them, and the readers that want them
-(`--dumps`-taking tools, `capture_snr`) have nothing to open for rounds
-banked from here on.
+The banked record now carries the ring sidecar's `diagnostic`,
+`capture_integrity` and `frame_ledger` blocks too, so a new round is graded
+on them out of its own bundle — that is where the evidence packet's
+`capture_snr` block reads them from. What no record carries is the capture
+BYTES, which is why the two `--dumps`-taking tools below still open a frozen
+`dumps/` tree and only a frozen one.
 
 Two things can make the script refuse a run, and neither ever deletes a
 file that was already pulled — the refusal is the exit code plus the
@@ -1835,11 +1836,10 @@ jasper-crossover-prescriber status <bundle-dir> --state <flow-state.json> \
     --drivers <design-draft.json>
 
 # the read side: one round's banked evidence as one versioned JSON document.
-# --dumps is the same banked capture ring jasper-classify-features takes, and
-# adds per-capture SNR; the ring is off by default, so it is often absent and
-# the packet says so.
+# Per-capture SNR comes out of the bundle's own take records, so there is no
+# ring path to pass.
 jasper-crossover-prescriber packet <bundle-dir> --state <flow-state.json> \
-    --dumps <capture-ring> --out round.json
+    --out round.json
 
 # the write side: validate what came back, against the round it answers
 jasper-crossover-prescriber propose <bundle-dir> --state <flow-state.json> \
@@ -2198,9 +2198,9 @@ nothing to `git rm` — this tool is the one copy going forward.
 Every subcommand reads a *banked round directory*, the tree
 `scripts/bank-crossover-round.sh <dest-dir>` produces (see
 ["Crossover-v2 round banking"](#crossover-v2-round-banking) above): a
-`bundle/<session>/` evidence bundle, optional `state.json` / `design-draft.json`, and — in
-rounds banked before the capture-dump ring was removed — optional
-`dumps/wav/` + `dumps/sidecar/` captures. No file is globbed or
+`bundle/<session>/` evidence bundle and optional `state.json` /
+`design-draft.json`. `jasper-round-views` reads no `dumps/` tree: the ring is
+gone and the packet it builds takes no path into one. No file is globbed or
 re-parsed by hand — positions and the graded spec come from
 [`evidence_packet.build_crossover_evidence_packet`](../jasper/active_speaker/crossover_v2/evidence_packet.py),
 grading comes from
