@@ -1824,7 +1824,7 @@ CAPTURE_ENTRY_MARGIN_MS = 2000
 # The cancelable auto-advance countdown between an accepted CHECK and MEASURE
 # (§5.2 — one tap per session is the design; the countdown protects validity
 # because a user returning to the phone cold is the likeliest mic-displacement
-# event). PROVISIONAL pending W6.
+# event).
 AUTO_ADVANCE_COUNTDOWN_S = 5
 
 # Auto-advance policy vocabulary carried in the per-entry ``screen`` field

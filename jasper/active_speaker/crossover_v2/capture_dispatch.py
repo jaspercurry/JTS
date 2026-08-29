@@ -478,7 +478,6 @@ def verify_integrity_screens(
 # narrows but does not close the hole — a role's own pilots can still be the
 # segment that clears it, which is why this per-sweep floor exists). Both
 # thresholds carry wide margin on both sides of the two clusters above.
-# PROVISIONAL pending W6 bench validation.
 #
 # The two are read by DIFFERENT gates since #1838's D3: the residual ceiling
 # by ``_sweep_schedule_ok`` (a glitch — silent auto-retry), the confidence
@@ -499,9 +498,9 @@ def verify_integrity_screens(
 # module already uses it (``INTEGRITY_CHECK_SWEEP_HEARD`` is imported from
 # ``program_analysis`` above), so these two could be imported rather than
 # re-declared. They are not, for a reason about the NUMBERS rather than the
-# import graph: both are marked PROVISIONAL pending W6 bench validation, and
-# they judge different segment kinds through different gates. Bench work may
-# well settle them at different values, and two owners can diverge by editing
+# import graph: they judge different segment kinds through different gates,
+# and bench work may well settle them at different values, and two owners
+# can diverge by editing
 # one line where one owner would first have to be re-split. The contract test
 # is what keeps "equal today" honest until then; it is the guard for the
 # duplication, not an excuse for it.

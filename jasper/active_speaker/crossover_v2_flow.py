@@ -538,7 +538,7 @@ from jasper.active_speaker.crossover_v2.capture_dispatch import (
 )
 
 # --------------------------------------------------------------------------- #
-# tuning constants (PROVISIONAL pending W6 bench validation)
+# tuning constants
 # --------------------------------------------------------------------------- #
 
 # Re-exported from :mod:`jasper.active_speaker.crossover_v2.programs`, which
@@ -599,8 +599,7 @@ MEASUREMENT_DISTANCE_M = 1.0
 # ACCEPTED and the confidence is banked as a reservation — see
 # ``_note_alignment_confidence_reservation``. **It is a disclosure trigger, not
 # a gate**, since the nanny burn-down: it refused MEASURE and spent a retry
-# until then, on a number this file's own comment called PROVISIONAL pending
-# W6 bench validation, and the one live bench datum undercut it (two captures
+# until then, and the one live bench datum undercut it (two captures
 # at ~0.677, one accepted and one refused 58 s apart). Converting it did not
 # recalibrate it — 0.6 is the same number, and only what crossing it does
 # changed.
@@ -615,8 +614,7 @@ ALIGNMENT_CONFIDENCE_TRUST_FLOOR = 0.6
 # ``jasper.active_speaker.profile.CrossoverRegion``'s own docstring, not a
 # hard physical limit) before a measured delay outside it is rejected, so a
 # delay a little past the declared bound isn't treated the same as one
-# wildly outside it. PROVISIONAL pending W6 bench validation, same status as
-# the confidence floor above.
+# wildly outside it.
 ALIGNMENT_DELAY_PLAUSIBILITY_MARGIN_MS = 0.1
 
 # Measurement-honesty disclosure G1 (2026-07-22; converted from a refusal to a
@@ -670,9 +668,6 @@ ALIGNMENT_DELAY_PLAUSIBILITY_MARGIN_MS = 0.1
 # way round). The 2026-07-22 corpus predates that selection, but every capture
 # in it was graded at the polarity its own candidate shipped, so the frame is
 # the same one.
-#
-# PROVISIONAL pending W6 bench validation, same status as every other
-# MEASURE-phase threshold in this block.
 MEASURE_PREDICTED_RIPPLE_DISCLOSURE_DB = 15.0
 
 # Measurement-honesty gate G3 (2026-07-22): the gate's OWN metric (summed-
@@ -688,7 +683,6 @@ MEASURE_PREDICTED_RIPPLE_DISCLOSURE_DB = 15.0
 # applied graph on every attempt, so its own leading pilot pair's transfer
 # (captured level minus programmed gain) should not move between attempts
 # either — a step this large is the input chain moving, not the speaker.
-# PROVISIONAL pending W6 bench validation.
 VERIFY_PILOT_TRANSFER_STEP_CEILING_DB = 0.35
 
 # Issue #1873's repeatability discriminator: how close two consecutive graded
@@ -4756,8 +4750,7 @@ class CrossoverV2Session:
         """Bank the reservation about an accepted low-confidence alignment.
 
         The GCC trust floor used to REFUSE here and spend a retry. It named no
-        damage mechanism, its own file called it ``PROVISIONAL pending W6 bench
-        validation``, and §4 names its exact category as excluded — "geometry
+        damage mechanism, and §4 names its exact category as excluded — "geometry
         blindness, beaming priors, **confidence heuristics**, prediction-engine
         rankings — is provenance, not a gate". The one live bench datum
         undercuts it directly: the 2026-08-03 validation found two captures

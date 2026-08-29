@@ -881,8 +881,7 @@ def test_an_implausible_delay_never_renders_mic_placement_advice():
 def test_low_alignment_confidence_accepts_and_banks_a_reservation():
     """The nanny burn-down, at the trust floor.
 
-    It REFUSED here and spent a retry until then, on a number this module's own
-    comment called PROVISIONAL pending W6 bench validation. §4 names its exact
+    It REFUSED here and spent a retry until then. §4 names its exact
     category as excluded — "confidence heuristics ... is provenance, not a
     gate" — and the one live bench datum undercut it: two captures at ~0.677
     confidence, one accepted and one refused 58 s apart, so confidence was
