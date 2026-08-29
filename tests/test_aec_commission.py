@@ -22,6 +22,9 @@ from jasper.chip_aec_alignment import (
 from jasper.cli import aec_commission
 from jasper.mics import xvf3800
 
+ROOT = Path(__file__).resolve().parents[1]
+UNIT_PATH = ROOT / "deploy/systemd/jasper-aec-commission.service"
+
 
 def _status(counter: int = 0) -> dict:
     return {
@@ -501,3 +504,16 @@ def test_final_timing_rejects_causal_window_cusp() -> None:
     )
     with pytest.raises(aec_commission.CommissioningError, match="margin"):
         aec_commission._final_timing(evidence)
+
+
+def test_sandboxed_unit_keeps_the_reconciler_leg_env_path_writable() -> None:
+    """A ProtectSystem= sandbox must not lock out the arm reconcile's own
+    writes: it persists the leg env under /etc/jasper, so the unit needs
+    ReadWritePaths=/etc/jasper whenever it sandboxes with ProtectSystem=."""
+    text = UNIT_PATH.read_text(encoding="utf-8")
+    if "ProtectSystem=" in text:
+        assert "ReadWritePaths=/etc/jasper" in text, (
+            "jasper-aec-commission.service sandboxes with ProtectSystem= but "
+            "is missing ReadWritePaths=/etc/jasper, which the arm reconcile "
+            "needs writable for its leg-env writes"
+        )
