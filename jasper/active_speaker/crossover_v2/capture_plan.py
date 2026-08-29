@@ -1726,7 +1726,8 @@ def build_v2_cloud_index_phase_map(
     nothing is applied inside it, so nothing post-apply can be measured by it.
     The post-apply half is stage 2's own session and its own map — see
     :func:`build_v2_verify_index_phase_map`. VERIFY's absence here is what
-    ``jasper.web.correction_crossover_v2._phase_from_state`` reads to resolve a
+    ``jasper.web.correction_crossover_v2_status._phase_from_state`` reads to
+    resolve a
     measure-only session to the review interlude instead of "your speaker is
     tuned".
 

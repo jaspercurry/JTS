@@ -780,7 +780,7 @@ def test_state_projection_does_not_inherit_the_per_position_block() -> None:
     curve-shaped data. Adding members to the pipeline result must not leak
     into it."""
 
-    from jasper.web.correction_crossover_v2 import _compact_cloud_status
+    from jasper.web.correction_crossover_v2_status import _compact_cloud_status
 
     result = assemble_cloud_group_result(
         _combined(),

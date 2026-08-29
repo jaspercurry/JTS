@@ -116,6 +116,7 @@ from jasper.active_speaker.crossover_v2_flow import (
 )
 from jasper.audio_measurement.evidence_identity import json_fingerprint
 from jasper.web import correction_crossover_v2 as v2host
+from jasper.web import correction_crossover_v2_status as v2status
 
 # The round harness: one staging of "a real stage 2, post-apply, with a
 # comparable before". Shared with ``tests/test_crossover_v2_undo_and_anchor.py``
@@ -2146,7 +2147,7 @@ def test_the_status_block_forwards_the_receipt_to_the_screen():
     state["round_receipt"] = receipt
     v2host.save_v2_state(state)
 
-    block = v2host.crossover_v2_status_block()
+    block = v2status.crossover_v2_status_block()
 
     assert block is not None
     assert block["round_receipt"] == receipt, (

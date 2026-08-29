@@ -42,6 +42,7 @@ from jasper.active_speaker.crossover_v2.round_evidence import (
 )
 from jasper.active_speaker.crossover_v2.contracts import REFERENCE_MARK_DESIGN_AXIS
 from jasper.web import correction_crossover_v2 as v2host
+from jasper.web import correction_crossover_v2_status as v2status
 
 from tests.crossover_v2_fixtures import _in_room_summed_db, _verify_analysis
 from tests.test_crossover_v2_stage_bridge import (
@@ -324,6 +325,6 @@ def _household_sentence(conductor: Any, code: str) -> str:
     envelope = build_crossover_envelope_v2({
         "active": True,
         "setup": {"active": True, "status": "ready"},
-        "crossover_v2": v2host.crossover_v2_status_block(),
+        "crossover_v2": v2status.crossover_v2_status_block(),
     })
     return str(envelope["verdict_text"])

@@ -2813,7 +2813,7 @@ def _envelope(
         "cloud": _v2(status).get("cloud"),
         # PR-7: the before/after chart's own feed — the decimated combined
         # curve per phase, projected by
-        # ``jasper.web.correction_crossover_v2._chart_cloud_status`` and
+        # ``jasper.web.correction_crossover_v2_status._chart_cloud_status`` and
         # carried here unchanged (mirrors the "cloud" key's copy-through
         # pattern one line up). Kept off the ``cloud`` key above so the
         # doctor (which reads only ``cloud``) never has to parse curve-

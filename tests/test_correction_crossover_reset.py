@@ -247,6 +247,7 @@ def test_handle_reset_while_applied_keeps_undo_pointers(monkeypatch, tmp_path):
     would strand the household on the applied graph with Undo permanently
     unreachable."""
     from jasper.web import correction_crossover_v2 as v2
+    from jasper.web import correction_crossover_v2_status as v2status
 
     v2.set_state_path_for_tests(tmp_path / "v2_state.json")
     try:
@@ -279,7 +280,7 @@ def test_handle_reset_while_applied_keeps_undo_pointers(monkeypatch, tmp_path):
         assert state["failure"] is None
         assert state["gain_plan_db"] is None
         assert state["session_id"] is None
-        block = v2.crossover_v2_status_block()
+        block = v2status.crossover_v2_status_block()
         assert block is not None and block["phase"] == "check"
     finally:
         v2.set_state_path_for_tests(None)
@@ -526,6 +527,7 @@ def test_a_declined_review_stops_being_served_and_a_new_one_is_not(tmp_path):
     question was still on file.
     """
     from jasper.web import correction_crossover_v2 as v2
+    from jasper.web import correction_crossover_v2_status as v2status
 
     v2.set_state_path_for_tests(tmp_path / "v2_state.json")
     try:
@@ -537,19 +539,19 @@ def test_a_declined_review_stops_being_served_and_a_new_one_is_not(tmp_path):
             "candidate": {"fingerprint": "fp-1"},
         })
         # Before: the review interlude.
-        assert v2._phase_from_state(v2.load_v2_state()) == "review"
+        assert v2status._phase_from_state(v2.load_v2_state()) == "review"
 
         v2.observe_review_decline("fp-1")
 
         # After: the journey's resting screen, not the decision again.
-        assert v2._phase_from_state(v2.load_v2_state()) == "check"
+        assert v2status._phase_from_state(v2.load_v2_state()) == "check"
 
         # A NEWER measurement mints a different candidate, and the decline
         # does not cover it.
         state = v2.load_v2_state()
         state["candidate"] = {"fingerprint": "fp-2"}
         v2.save_v2_state(state)
-        assert v2._phase_from_state(v2.load_v2_state()) == "review"
+        assert v2status._phase_from_state(v2.load_v2_state()) == "review"
     finally:
         v2.set_state_path_for_tests(None)
 

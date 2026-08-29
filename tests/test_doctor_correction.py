@@ -1878,9 +1878,10 @@ def test_an_unknown_spatial_word_from_a_later_build_warns_and_names_it(
     at. The grade is injected directly because no producer path can emit it
     — that is the point of the case."""
     from jasper.web import correction_crossover_v2 as v2host
+    from jasper.web import correction_crossover_v2_status as v2status
 
     monkeypatch.setattr(
-        v2host,
+        v2status,
         "crossover_v2_status_block",
         lambda: {
             "tier": "full",

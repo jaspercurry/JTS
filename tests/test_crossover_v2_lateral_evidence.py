@@ -287,7 +287,7 @@ def test_a_flag_on_mid_walk_state_reaches_the_lateral_wizard_screen():
     from jasper.active_speaker.crossover_envelope_v2 import (
         build_crossover_envelope_v2,
     )
-    from jasper.web.correction_crossover_v2 import _phase_from_state
+    from jasper.web.correction_crossover_v2_status import _phase_from_state
 
     fakes = FakeSeams()
     c = _lateral_conductor(fakes)

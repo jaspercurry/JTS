@@ -2094,7 +2094,7 @@ def status_payload() -> dict[str, Any]:
     # v2 session state (Wave 5a). Fail-soft: an unreadable v2 state must
     # never take down the whole status surface.
     try:
-        from .correction_crossover_v2 import crossover_v2_status_block
+        from .correction_crossover_v2_status import crossover_v2_status_block
 
         v2_block = crossover_v2_status_block()
     except (OSError, RuntimeError, TypeError, ValueError):

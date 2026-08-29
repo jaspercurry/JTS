@@ -590,7 +590,7 @@ def check_crossover_v2_cloud_pipeline() -> CheckResult:
     not drive the warn.
     """
     from jasper.active_speaker.crossover_v2.journey import PHASE_CLOUD_VERIFY
-    from jasper.web.correction_crossover_v2 import crossover_v2_status_block
+    from jasper.web.correction_crossover_v2_status import crossover_v2_status_block
 
     label = "crossover v2 cloud pipeline"
     block = crossover_v2_status_block()
@@ -710,8 +710,8 @@ def check_crossover_v2_applied_is_graded() -> CheckResult:
         GRADE_SPATIAL_FAILED,
         GRADE_SPATIAL_PASSED,
         GRADE_SPATIAL_UNMEASURABLE,
-        crossover_v2_status_block,
     )
+    from jasper.web.correction_crossover_v2_status import crossover_v2_status_block
 
     label = "crossover v2 applied profile graded"
     block = crossover_v2_status_block() or {}
